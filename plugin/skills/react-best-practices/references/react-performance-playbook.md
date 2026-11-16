@@ -2,7 +2,7 @@
 
 **A neutral fork** of "React Best Practices" v1.0.0 (Vercel Engineering, January 2026), with
 corrections and a section on the Next.js 16 caching model, React 19 and React Compiler.
-The bundled reference of the `performance-budget` skill: read the head once per session, then
+The bundled reference of the `react-best-practices` skill: read the head once per session, then
 only the rules a change touches.
 License: MIT; the copyright and permission notice is in `LICENSE-react-best-practices.txt`
 beside this file.
@@ -4154,8 +4154,8 @@ Source: [react.dev/blog/2025/10/01/react-19-2](https://react.dev/blog/2025/10/01
 - **Performance Tracks** — React adds custom tracks to Chrome DevTools performance profiles:
   a **Scheduler** track (what React is working on at which priority), a **Components** track
   (render and effect durations as a flamegraph, with changed-props inspection in dev
-  builds), and a **Server** track. This is the concrete tool for the `performance-budget`
-  skill's "Measure, don't guess" commandment — prefer it over guessing at re-render causes.
+  builds), and a **Server** track. Use these tracks with `react-best-practices`
+  to measure re-renders rather than guess their cause.
   Reference: [react.dev/reference/dev-tools/react-performance-tracks](https://react.dev/reference/dev-tools/react-performance-tracks).
   Note the tracks only display effects lasting 0.05ms or longer, or that triggered an update.
 - **`useEffectEvent`** — shipped stable in 19.2. The playbook's sections 8.1 and 8.4 already

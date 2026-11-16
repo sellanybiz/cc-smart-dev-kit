@@ -18,6 +18,7 @@
  */
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { VENDORED_SKILLS } from "./vendor-skills";
 
 export const DESIGN_INDEX = "docs/design.md";
 export const DESIGN_DIR = "docs/design";
@@ -32,6 +33,7 @@ export const SKIPPED_FOLDERS = [
   "portal/node_modules/",
   "plugin/dist/",
   "plugin/portal-ui/",
+  ...VENDORED_SKILLS.map((skill) => `${skill.folder}/`),
 ];
 export const SKIPPED_FILES = new Set([
   "bun.lock",
@@ -177,7 +179,14 @@ export function checkDocs(files: readonly SourceFile[]): BrokenRef[] {
     if (SKIPPED_FILES.has(file.path)) continue;
     if (SKIPPED_FOLDERS.some((d) => file.path.startsWith(d))) continue;
     if (!TEXT.test(file.path)) continue;
-    const text = file.text;
+    // Hash keys are upstream file names, not authored pointers into this repo's rules.
+    const text =
+      file.path === "scripts/vendor-skills.ts"
+        ? file.text.replace(
+            /\/\/ BEGIN GENERATED HASHES\n[\s\S]*?\/\/ END GENERATED HASHES/g,
+            (block) => block.replace(/[^\n]/g, " "),
+          )
+        : file.text;
 
     // A link to another heading in the same file: its anchor must be a heading's.
     if (file.path.endsWith(".md")) {

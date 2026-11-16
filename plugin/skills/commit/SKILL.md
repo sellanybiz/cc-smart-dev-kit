@@ -97,4 +97,5 @@ or when the person asks. Run the push (its hooks may be slow) and any CI watch i
 background; write the pull request body while it runs (`/cc-smart-dev-kit:pull-request`). Open the
 pull request only after the push succeeded, and as `openPr` says: a draft a person marks ready,
 ready for review, or none at all. Then watch CI in the background. A re-push after a hook, CI
-or review fix needs nothing more.
+or review fix needs nothing more. When the machine is too busy for the push hook:
+`/cc-smart-dev-kit:verify-change` § 4 says when it may be skipped.

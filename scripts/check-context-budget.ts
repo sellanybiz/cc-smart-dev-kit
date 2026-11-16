@@ -5,7 +5,11 @@
  *
  * - **Always-on**: the names and descriptions of the plugin's skills and agents, as
  *   `claude plugin details` counts them for the copy in `plugin/`. Every session carries
- *   them, used or not (code.claude.com/docs/en/plugins/measure).
+ *   them, used or not (code.claude.com/docs/en/plugins/measure), except user-only skills.
+ *   Claude Code 2.1.325 (2026-11-16) counts disable-model-invocation skills here, but a
+ *   live request capture proved their descriptions never reach the model. So the check
+ *   measures a temporary copy of `plugin/` without those skill folders: an exact figure,
+ *   where subtracting the rounded per-component rows came out about 46 tokens too low.
  * - **core.md**: `plugin/instructions/core.md`, which `setup` imports into every session's
  *   CLAUDE.md. `plugin details` does not count it, so this check estimates it.
  *
@@ -17,8 +21,9 @@
  *   bun scripts/check-context-budget.ts
  */
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { cpSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, relative, sep } from "node:path";
 import { PLUGIN } from "../src/build-info/names";
 
 export const CORE_MD = "plugin/instructions/core.md";
@@ -34,9 +39,11 @@ export interface Budget {
  * Always-on tokens. 3,133 at 0.5.0; about 3,515 at 2.1.1; about 2,626 at 2.2.0, after its
  * description trims and with three more agents. The target is the line where Claude Code's
  * plugin browser highlights a plugin's per-turn cost as heavy: 2,000 tokens. The code-structure
- * rename trimmed the always-on figure to 2,690.
+ * rename trimmed the always-on figure to 2,690. 4.10.0 split react-best-practices out of
+ * performance-budget, one more always-on skill: 2,766, measured on a copy without the user-only skills. Its seven vendored skills are user-only
+ * and left out (see the header).
  */
-export const ALWAYS_ON: Budget = { max: 2_690, target: 2_000 };
+export const ALWAYS_ON: Budget = { max: 2_766, target: 2_000 };
 
 /**
  * core.md tokens, estimated. About 3,300 at 0.5.0 (189 lines); about 2,300 at 1.1.0, after
@@ -75,6 +82,39 @@ export function parseDetails(output: string): Details {
   return { alwaysOn: Number(alwaysOn[1].replaceAll(",", "")), source: source[1] };
 }
 
+/** Only frontmatter controls visibility; body text never opts a skill out of the budget. */
+export function userOnlySkills(repo: string): string[] {
+  const folder = join(repo, "plugin/skills");
+  return readdirSync(folder, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .flatMap((entry) => {
+      const file = join(folder, entry.name, "SKILL.md");
+      if (!existsSync(file)) return [];
+      const frontmatter = /^---\r?\n([\s\S]*?)\r?\n---/.exec(readFileSync(file, "utf8"))?.[1] ?? "";
+      return /^disable-model-invocation:\s*true\s*$/m.test(frontmatter) ? [entry.name] : [];
+    })
+    .sort();
+}
+
+/**
+ * Copies a plugin folder to `dest`, leaving out the named skill folders (and everything in
+ * them), so `plugin details` on the copy counts exactly what Claude sees.
+ */
+export function copyWithoutSkills(
+  pluginDir: string,
+  dest: string,
+  skills: readonly string[],
+): void {
+  const left = new Set(skills.map((name) => join("skills", name)));
+  cpSync(pluginDir, dest, {
+    recursive: true,
+    filter: (source) => {
+      const path = relative(pluginDir, source);
+      return ![...left].some((skill) => path === skill || path.startsWith(`${skill}${sep}`));
+    },
+  });
+}
+
 export interface BudgetResult {
   lines: string[];
   ok: boolean;
@@ -89,8 +129,11 @@ function line(name: string, value: number, budget: Budget): { ok: boolean; text:
   return { ok, text };
 }
 
-export function checkBudget(alwaysOn: number, coreTokens: number): BudgetResult {
+export function checkBudget(alwaysOn: number, coreTokens: number, userOnlyCount = 0): BudgetResult {
   const parts = [line("Always-on", alwaysOn, ALWAYS_ON), line(CORE_MD, coreTokens, CORE)];
+  if (userOnlyCount > 0 && parts[0]) {
+    parts[0].text += ` (${userOnlyCount} user-only skills left out: Claude never sees them).`;
+  }
   return {
     lines: [
       ...parts.map((part) => part.text),
@@ -100,25 +143,31 @@ export function checkBudget(alwaysOn: number, coreTokens: number): BudgetResult 
   };
 }
 
-/** `claude plugin details` for the copy in `plugin/`, never an installed one. */
-function readDetails(repo: string): Details {
-  const run = spawnSync(
-    "claude",
-    ["--plugin-dir", join(repo, "plugin"), "plugin", "details", PLUGIN],
-    { encoding: "utf8" },
-  );
-  if (run.error !== undefined || run.status !== 0) {
-    throw new Error(
-      `\`claude plugin details\` failed: ${run.error?.message ?? run.stderr.trim()}. Is Claude Code installed?`,
-    );
+/** `claude plugin details` for the copy in `plugin/` without its user-only skills. */
+function readDetails(repo: string): Details & { userOnlyCount: number } {
+  const names = userOnlySkills(repo);
+  const copy = mkdtempSync(join(tmpdir(), "context-budget-"));
+  try {
+    const pluginCopy = join(copy, "plugin");
+    copyWithoutSkills(join(repo, "plugin"), pluginCopy, names);
+    const run = spawnSync("claude", ["--plugin-dir", pluginCopy, "plugin", "details", PLUGIN], {
+      encoding: "utf8",
+    });
+    if (run.error !== undefined || run.status !== 0) {
+      throw new Error(
+        `\`claude plugin details\` failed: ${run.error?.message ?? run.stderr.trim()}. Is Claude Code installed?`,
+      );
+    }
+    const details = parseDetails(run.stdout);
+    if (!details.source.endsWith("@inline")) {
+      throw new Error(
+        `\`claude plugin details\` read ${details.source}, not the copy of plugin/ (@inline)`,
+      );
+    }
+    return { ...details, userOnlyCount: names.length };
+  } finally {
+    rmSync(copy, { recursive: true, force: true });
   }
-  const details = parseDetails(run.stdout);
-  if (!details.source.endsWith("@inline")) {
-    throw new Error(
-      `\`claude plugin details\` read ${details.source}, not the copy in plugin/ (@inline)`,
-    );
-  }
-  return details;
 }
 
 if (import.meta.main) {
@@ -126,7 +175,7 @@ if (import.meta.main) {
   try {
     const details = readDetails(repo);
     const core = estimateTokens(readFileSync(join(repo, CORE_MD), "utf8"));
-    const result = checkBudget(details.alwaysOn, core);
+    const result = checkBudget(details.alwaysOn, core, details.userOnlyCount);
     for (const text of result.lines) (result.ok ? console.log : console.error)(text);
     if (!result.ok) process.exitCode = 1;
   } catch (error) {

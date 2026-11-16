@@ -21,6 +21,11 @@ export const MCP_VERSIONS = {
   playwright: "0.0.83",
   /** `@modelcontextprotocol/server-sequential-thinking`. */
   sequentialThinking: "2026.8.31",
+  /**
+   * `shadcn` — the official shadcn/ui CLI, started as `shadcn mcp`. The same pin is patched into
+   * the vendored shadcn skills (`scripts/vendor-skills.ts`), so moving it means a re-vendor.
+   */
+  shadcn: "4.23.0",
 } as const;
 
 /** Tavily's remote MCP server: an HTTP server, so no version to pin. */

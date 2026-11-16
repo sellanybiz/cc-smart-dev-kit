@@ -1,9 +1,11 @@
 /** `doctor`'s checks of the project in the folder it runs in (`project-checks.ts`). */
 import { describe, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { chmodSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { VERSION } from "../build-info";
 import { hookEnv, makeRepo, writeClaudeFile } from "../testing/hooks";
+import { subprocessGuard } from "../testing/port-guard";
 import { tempDir, withGitVersion } from "../testing/temp";
 import { checkLine } from "./doctor";
 import { cliPaths } from "./paths";
@@ -69,6 +71,529 @@ function wireOnly(repo: string, events: string[], extra: Record<string, unknown>
     hooks: { ...Object.fromEntries(events.map((event) => [event, ENGINE_HOOKS[event]])), ...extra },
   });
 }
+
+describe("shadcn lint restrictions", () => {
+  const note =
+    "· project: . uses shadcn/ui without a lint rule against raw HTML controls Fix: add a restriction using the lint recipe in /cc-smart-dev-kit:react-best-practices";
+
+  test("no components.json: nothing", async () => {
+    expect(await check(makeRepo())).toEqual([]);
+  });
+
+  test("components.json without a linter config: an info line", async () => {
+    const repo = makeRepo();
+    writeFileSync(join(repo, "components.json"), "{}");
+    expect(await check(repo)).toEqual([note]);
+  });
+
+  test.each(["biome.json", "biome.jsonc"])("%s with elements: nothing", async (file) => {
+    const repo = makeRepo();
+    writeFileSync(join(repo, "components.json"), "{}");
+    writeFileSync(
+      join(repo, file),
+      JSON.stringify({
+        linter: {
+          rules: {
+            correctness: {
+              noRestrictedElements: {
+                level: "error",
+                options: { elements: { button: "Use Button" } },
+              },
+            },
+          },
+        },
+      }),
+    );
+    expect(await check(repo)).toEqual([]);
+  });
+
+  test("a Biome rule without elements: the info line", async () => {
+    const repo = makeRepo();
+    writeFileSync(join(repo, "components.json"), "{}");
+    writeFileSync(
+      join(repo, "biome.json"),
+      '{"linter":{"rules":{"correctness":{"noRestrictedElements":"error"}}}}',
+    );
+    expect(await check(repo)).toEqual([note]);
+  });
+
+  test("JSONC comments and trailing commas preserve strings and override rules", async () => {
+    const repo = makeRepo();
+    writeFileSync(join(repo, "components.json"), "{}");
+    writeFileSync(
+      join(repo, "biome.jsonc"),
+      `{
+        // The URL and comment-like text are strings, not comments.
+        "$schema": "https://biomejs.dev/schemas/2.0.0/schema.json",
+        "overrides": [{ /* app code */
+          "includes": ["**"],
+          "linter": {"rules": {"correctness": {
+            "noRestrictedElements": {"level": "error", "options": {
+              "elements": {"button": "Use Button /* here */, } and \\"quotes\\"",},
+            }},
+          }}},
+        },],
+      }`,
+    );
+    expect(await check(repo)).toEqual([]);
+  });
+
+  test.each([
+    ["eslint.config.js", "export default [{ rules: { 'react/forbid-elements': 'error' } }];"],
+    [
+      "eslint.config.mjs",
+      "export default [{ rules: { 'no-restricted-syntax': ['error', { selector: 'JSXOpeningElement[name.name=button]' }] } }];",
+    ],
+    [".eslintrc.json", '{"rules":{"react/forbid-elements":"error"}}'],
+  ])("%s with a restriction: nothing", async (file, text) => {
+    const repo = makeRepo();
+    writeFileSync(join(repo, "components.json"), "{}");
+    writeFileSync(join(repo, file), text);
+    expect(await check(repo)).toEqual([]);
+  });
+
+  test("an unrelated no-restricted-syntax rule still gets the note", async () => {
+    const repo = makeRepo();
+    writeFileSync(join(repo, "components.json"), "{}");
+    writeFileSync(
+      join(repo, "eslint.config.ts"),
+      "export default [{ rules: { 'no-restricted-syntax': ['error', 'WithStatement'] } }];",
+    );
+    expect(await check(repo)).toEqual([note]);
+  });
+
+  test("apps/*: only the shadcn workspace gets a line", async () => {
+    const repo = makeRepo();
+    writeFileSync(join(repo, "package.json"), '{"workspaces":["apps/*"]}');
+    mkdirSync(join(repo, "apps", "web"), { recursive: true });
+    mkdirSync(join(repo, "apps", "api"), { recursive: true });
+    writeFileSync(join(repo, "apps", "web", "components.json"), "{}");
+    expect(await check(repo)).toEqual([
+      "· project: apps/web uses shadcn/ui without a lint rule against raw HTML controls Fix: add a restriction using the lint recipe in /cc-smart-dev-kit:react-best-practices",
+    ]);
+  });
+
+  test("plain and glob entries check every shadcn folder once, including the root", async () => {
+    const repo = makeRepo();
+    writeFileSync(join(repo, "package.json"), '{"workspaces":{"packages":["apps/web","apps/*"]}}');
+    mkdirSync(join(repo, "apps", "web"), { recursive: true });
+    mkdirSync(join(repo, "apps", "admin"), { recursive: true });
+    writeFileSync(join(repo, "components.json"), "{}");
+    writeFileSync(join(repo, "apps", "web", "components.json"), "{}");
+    writeFileSync(join(repo, "apps", "admin", "components.json"), "{}");
+    writeFileSync(
+      join(repo, "apps", "admin", ".eslintrc"),
+      '{"rules":{"react/forbid-elements":"error"}}',
+    );
+    expect(await check(repo)).toEqual([
+      note,
+      "· project: apps/web uses shadcn/ui without a lint rule against raw HTML controls Fix: add a restriction using the lint recipe in /cc-smart-dev-kit:react-best-practices",
+    ]);
+  });
+
+  test("the note is info-only and project files stay unchanged", async () => {
+    const repo = makeRepo();
+    writeFileSync(join(repo, "components.json"), "{ broken but its presence is enough }");
+    writeFileSync(join(repo, "eslint.config.js"), "export default [];");
+    const env = hookEnv();
+    const lines = await projectChecks(repo, env, cliPaths(env), PLUGIN_HOOKS);
+    expect(lines).toEqual([
+      {
+        ok: true,
+        info: true,
+        text: "project: . uses shadcn/ui without a lint rule against raw HTML controls",
+        fix: "add a restriction using the lint recipe in /cc-smart-dev-kit:react-best-practices",
+      },
+    ]);
+    expect(readFileSync(join(repo, "components.json"), "utf8")).toBe(
+      "{ broken but its presence is enough }",
+    );
+    expect(readFileSync(join(repo, "eslint.config.js"), "utf8")).toBe("export default [];");
+  });
+
+  test("broken Biome JSON: could not check, never a failure or a missing-rule claim", async () => {
+    const repo = makeRepo();
+    writeFileSync(join(repo, "components.json"), "{}");
+    writeFileSync(join(repo, "biome.json"), "{");
+    expect(await check(repo)).toEqual([
+      "· project: . uses shadcn/ui; could not check raw HTML control restrictions (biome.json could not be read or parsed)",
+    ]);
+  });
+
+  test("broken package JSON: root checked, workspace scan is info-only", async () => {
+    const repo = makeRepo();
+    writeFileSync(join(repo, "components.json"), "{}");
+    writeFileSync(join(repo, "package.json"), "{");
+    expect(await check(repo)).toEqual([
+      "· project: could not check shadcn/ui workspaces from package.json",
+      "· project: . uses shadcn/ui; could not check raw HTML control restrictions (package.json could not be read or parsed)",
+    ]);
+  });
+
+  test.skipIf(process.getuid?.() === 0)(
+    "an unreadable linter config cannot fail doctor",
+    async () => {
+      const repo = makeRepo();
+      writeFileSync(join(repo, "components.json"), "{}");
+      const config = join(repo, "eslint.config.js");
+      writeFileSync(config, "export default [];");
+      chmodSync(config, 0o000);
+      try {
+        expect(await check(repo)).toEqual([
+          "· project: . uses shadcn/ui; could not check raw HTML control restrictions (eslint.config.js could not be read or parsed)",
+        ]);
+      } finally {
+        chmodSync(config, 0o600);
+      }
+    },
+  );
+
+  test.each([
+    ["off object", { level: "off", options: { elements: { button: "Use Button" } } }, true],
+    ["off string", "off", true],
+    ["empty elements", { level: "error", options: { elements: {} } }, true],
+    ["disabled linter", { level: "error", options: { elements: { button: "Use Button" } } }, false],
+  ])("fix round: Biome %s does not restrict controls", async (_name, rule, enabled) => {
+    const repo = makeRepo();
+    writeFileSync(join(repo, "components.json"), "{}");
+    writeFileSync(
+      join(repo, "biome.json"),
+      JSON.stringify({
+        linter: { enabled, rules: { correctness: { noRestrictedElements: rule } } },
+      }),
+    );
+    expect(await check(repo)).toEqual([note]);
+  });
+
+  test.each(["apps/admin/**", "apps/admin/**/*"])(
+    "fix round: scoped override %s covers admin only",
+    async (includes) => {
+      const repo = makeRepo();
+      writeFileSync(join(repo, "package.json"), '{"workspaces":["apps/*"]}');
+      for (const app of ["admin", "web"]) {
+        mkdirSync(join(repo, "apps", app), { recursive: true });
+        writeFileSync(join(repo, "apps", app, "components.json"), "{}");
+      }
+      writeFileSync(
+        join(repo, "biome.json"),
+        JSON.stringify({
+          overrides: [
+            {
+              includes: [includes],
+              linter: {
+                rules: {
+                  correctness: {
+                    noRestrictedElements: {
+                      level: "error",
+                      options: { elements: { button: "Use Button" } },
+                    },
+                  },
+                },
+              },
+            },
+          ],
+        }),
+      );
+      expect(await check(repo)).toEqual([
+        "· project: apps/web uses shadcn/ui without a lint rule against raw HTML controls Fix: add a restriction using the lint recipe in /cc-smart-dev-kit:react-best-practices",
+      ]);
+    },
+  );
+
+  test.each(["off", { level: "off" }])(
+    "fix round: later override %j removes web coverage",
+    async (off) => {
+      const repo = makeRepo();
+      writeFileSync(join(repo, "package.json"), '{"workspaces":["apps/*"]}');
+      for (const app of ["admin", "web"]) {
+        mkdirSync(join(repo, "apps", app), { recursive: true });
+        writeFileSync(join(repo, "apps", app, "components.json"), "{}");
+      }
+      writeFileSync(
+        join(repo, "biome.json"),
+        JSON.stringify({
+          linter: {
+            rules: {
+              correctness: {
+                noRestrictedElements: {
+                  level: "error",
+                  options: { elements: { button: "Use Button" } },
+                },
+              },
+            },
+          },
+          overrides: [
+            {
+              includes: ["apps/web/**"],
+              linter: { rules: { correctness: { noRestrictedElements: off } } },
+            },
+          ],
+        }),
+      );
+      expect(await check(repo)).toEqual([
+        "· project: apps/web uses shadcn/ui without a lint rule against raw HTML controls Fix: add a restriction using the lint recipe in /cc-smart-dev-kit:react-best-practices",
+      ]);
+    },
+  );
+
+  test.each([".", "apps/web"])("fix round: legacy eslintConfig at %s counts", async (folder) => {
+    const repo = makeRepo();
+    mkdirSync(join(repo, folder), { recursive: true });
+    writeFileSync(join(repo, folder, "components.json"), "{}");
+    writeFileSync(
+      join(repo, "package.json"),
+      JSON.stringify({
+        workspaces: ["apps/*"],
+        ...(folder === "."
+          ? { eslintConfig: { rules: { "react/forbid-elements": "error" } } }
+          : {}),
+      }),
+    );
+    if (folder !== ".")
+      writeFileSync(
+        join(repo, folder, "package.json"),
+        '{"eslintConfig":{"rules":{"no-restricted-syntax":["error","JSXOpeningElement"]}}}',
+      );
+    expect(await check(repo)).toEqual([]);
+  });
+
+  test("fix round: package text outside eslintConfig is not a restriction", async () => {
+    const repo = makeRepo();
+    writeFileSync(join(repo, "components.json"), "{}");
+    writeFileSync(join(repo, "package.json"), '{"description":"react/forbid-elements"}');
+    expect(await check(repo)).toEqual([note]);
+  });
+
+  test.skipIf(process.platform === "win32")(
+    "fix round: workspace directory symlinks are followed and deduplicated",
+    async () => {
+      const repo = makeRepo();
+      writeFileSync(join(repo, "package.json"), '{"workspaces":["apps/*","real/web"]}');
+      mkdirSync(join(repo, "real", "web"), { recursive: true });
+      writeFileSync(join(repo, "real", "web", "components.json"), "{}");
+      mkdirSync(join(repo, "apps"));
+      symlinkSync(join(repo, "real", "web"), join(repo, "apps", "web"));
+      const outside = tempDir();
+      writeFileSync(join(outside, "components.json"), "{}");
+      symlinkSync(outside, join(repo, "apps", "outside"));
+      symlinkSync(join(repo, "missing"), join(repo, "apps", "broken"));
+      expect(await check(repo)).toEqual([
+        "· project: apps/web uses shadcn/ui without a lint rule against raw HTML controls Fix: add a restriction using the lint recipe in /cc-smart-dev-kit:react-best-practices",
+      ]);
+    },
+  );
+
+  test.each(["biome.json", "eslint.config.js", "package.json"])(
+    "fix round: oversized %s is not read",
+    async (file) => {
+      const repo = makeRepo();
+      writeFileSync(join(repo, "components.json"), "{}");
+      writeFileSync(join(repo, file), " ".repeat(1_048_577));
+      expect(await check(repo)).toEqual(
+        file === "package.json"
+          ? [
+              "· project: could not check shadcn/ui workspaces from package.json",
+              "· project: . uses shadcn/ui; could not check raw HTML control restrictions (package.json could not be read or parsed)",
+            ]
+          : [
+              `· project: . uses shadcn/ui; could not check raw HTML control restrictions (${file} could not be read or parsed)`,
+            ],
+      );
+    },
+  );
+
+  test
+    .skipIf(process.platform === "win32")
+    .each(["biome.json", "eslint.config.js", "package.json"])(
+    "fix round: FIFO %s never blocks doctor",
+    (file) => {
+      const repo = makeRepo();
+      writeFileSync(join(repo, "components.json"), "{}");
+      expect(spawnSync("mkfifo", [join(repo, file)]).status).toBe(0);
+      const guard = subprocessGuard();
+      const env = hookEnv();
+      const script = `import { projectChecks } from ${JSON.stringify(join(import.meta.dir, "project-checks.ts"))}; import { cliPaths } from ${JSON.stringify(join(import.meta.dir, "paths.ts"))}; console.log(JSON.stringify(await projectChecks(${JSON.stringify(repo)}, process.env, cliPaths(process.env), ${JSON.stringify(PLUGIN_HOOKS)})));`;
+      const run = spawnSync(process.execPath, [...guard.args, "--eval", script], {
+        timeout: 3000,
+        env: { ...env, ...guard.env },
+        encoding: "utf8",
+      });
+      expect(run.error?.message).toBeUndefined();
+      expect(run.status).toBe(0);
+      expect(JSON.parse(run.stdout).map(checkLine)).toEqual(
+        file === "package.json"
+          ? [
+              "· project: could not check shadcn/ui workspaces from package.json",
+              "· project: . uses shadcn/ui; could not check raw HTML control restrictions (package.json could not be read or parsed)",
+            ]
+          : [
+              `· project: . uses shadcn/ui; could not check raw HTML control restrictions (${file} could not be read or parsed)`,
+            ],
+      );
+    },
+  );
+
+  test.each(["**", "**/*"])("fix round 2: root-wide %s enables a restriction", async (pattern) => {
+    const repo = makeRepo();
+    writeFileSync(join(repo, "components.json"), "{}");
+    writeFileSync(
+      join(repo, "biome.json"),
+      JSON.stringify({
+        overrides: [
+          {
+            includes: [pattern],
+            linter: {
+              rules: {
+                correctness: {
+                  noRestrictedElements: {
+                    level: "error",
+                    options: { elements: { button: "Use Button" } },
+                  },
+                },
+              },
+            },
+          },
+        ],
+      }),
+    );
+    expect(await check(repo)).toEqual([]);
+  });
+
+  test.each(["**", "**/*"])("fix round 2: root-wide %s disables a restriction", async (pattern) => {
+    const repo = makeRepo();
+    writeFileSync(join(repo, "components.json"), "{}");
+    writeFileSync(
+      join(repo, "biome.json"),
+      JSON.stringify({
+        linter: {
+          rules: {
+            correctness: {
+              noRestrictedElements: {
+                level: "error",
+                options: { elements: { button: "Use Button" } },
+              },
+            },
+          },
+        },
+        overrides: [{ includes: [pattern], linter: { enabled: false } }],
+      }),
+    );
+    expect(await check(repo)).toEqual([note]);
+  });
+
+  test.each(["!", "!!"])(
+    "fix round 2: %s excludes admin without reversing web coverage",
+    async (prefix) => {
+      const repo = makeRepo();
+      writeFileSync(join(repo, "package.json"), '{"workspaces":["apps/*"]}');
+      for (const app of ["admin", "web"]) {
+        mkdirSync(join(repo, "apps", app), { recursive: true });
+        writeFileSync(join(repo, "apps", app, "components.json"), "{}");
+      }
+      writeFileSync(
+        join(repo, "biome.json"),
+        JSON.stringify({
+          overrides: [
+            {
+              includes: ["**", `${prefix}apps/admin/**`],
+              linter: {
+                rules: {
+                  correctness: {
+                    noRestrictedElements: {
+                      level: "error",
+                      options: { elements: { button: "Use Button" } },
+                    },
+                  },
+                },
+              },
+            },
+          ],
+        }),
+      );
+      expect(await check(repo)).toEqual([
+        "· project: apps/admin uses shadcn/ui without a lint rule against raw HTML controls Fix: add a restriction using the lint recipe in /cc-smart-dev-kit:react-best-practices",
+      ]);
+    },
+  );
+
+  test.skipIf(process.platform === "win32").each(["replace", "grow"])(
+    "fix round 2: config %s race is bounded",
+    (race) => {
+      const repo = makeRepo();
+      writeFileSync(join(repo, "components.json"), "{}");
+      const file = join(repo, "biome.json");
+      writeFileSync(file, "{}");
+      const guard = subprocessGuard();
+      const env = hookEnv();
+      // Run mocks in their own process: never replace filesystem methods used by other tests.
+      const script = `
+      import * as fs from 'node:fs';
+      import {mock} from 'bun:test';
+      import {spawnSync} from 'node:child_process';
+      const {statSync, fstatSync, openSync, writeFileSync, unlinkSync} = fs;
+      const target = ${JSON.stringify(file)};
+      let changed = false;
+      let targetFd;
+      function change() {
+        if (changed) return;
+        changed = true;
+        if (${JSON.stringify(race)} === 'replace') {
+          unlinkSync(target);
+          if (spawnSync('mkfifo', [target]).status !== 0) throw new Error('mkfifo failed');
+        } else {
+          writeFileSync(target, '{}'+ ' '.repeat(1048577));
+        }
+      }
+      mock.module('node:fs', () => ({...fs,
+        statSync: (...args) => {
+          const result = statSync(...args);
+          if (args[0] === target) change();
+          return result;
+        },
+        openSync: (...args) => {
+          if (args[0] === target && ${JSON.stringify(race)} === 'replace') change();
+          const fd = openSync(...args);
+          if (args[0] === target) targetFd = fd;
+          return fd;
+        },
+        fstatSync: (...args) => {
+          const result = fstatSync(...args);
+          if (args[0] === targetFd && ${JSON.stringify(race)} === 'grow') change();
+          return result;
+        },
+      }));
+      const {projectChecks} = await import(${JSON.stringify(join(import.meta.dir, "project-checks.ts"))});
+      const {cliPaths} = await import(${JSON.stringify(join(import.meta.dir, "paths.ts"))});
+      const lines = await projectChecks(${JSON.stringify(repo)}, process.env, cliPaths(process.env), ${JSON.stringify(PLUGIN_HOOKS)});
+      console.log(JSON.stringify({changed, lines}));
+    `;
+      const run = spawnSync(process.execPath, [...guard.args, "--eval", script], {
+        timeout: 3000,
+        env: { ...env, ...guard.env },
+        encoding: "utf8",
+      });
+      expect(run.error?.message).toBeUndefined();
+      expect(run.status).toBe(0);
+      const result = JSON.parse(run.stdout);
+      expect(result.changed).toBe(true);
+      expect(result.lines.map(checkLine)).toEqual([
+        "· project: . uses shadcn/ui; could not check raw HTML control restrictions (biome.json could not be read or parsed)",
+      ]);
+    },
+  );
+
+  test("plain workspace entries are deduplicated and root lint rules cover them", async () => {
+    const repo = makeRepo();
+    writeFileSync(join(repo, "package.json"), '{"workspaces":["apps/web","apps/*"]}');
+    mkdirSync(join(repo, "apps", "web"), { recursive: true });
+    writeFileSync(join(repo, "apps", "web", "components.json"), "{}");
+    writeFileSync(
+      join(repo, "eslint.config.cjs"),
+      "module.exports = [{ rules: { 'react/forbid-elements': 'error' } }];",
+    );
+    expect(await check(repo)).toEqual([]);
+  });
+});
 
 describe("the retired review agent", () => {
   // Root reads a mode-000 file or folder all the same, so these two prove nothing as root.

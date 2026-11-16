@@ -47,7 +47,7 @@ function bunTooOld(version, path) {
 
 // src/build-info/index.ts
 var info = {
-  version: "4.9.0",
+  version: "4.10.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -12130,9 +12130,11 @@ import { join as join10 } from "path";
 var TASKS_SERVER_NAME = `${COMMAND}-tasks`;
 
 // src/mcp/servers.ts
+var SHADCN_SERVER_NAME = "shadcn";
 var SERVER_NAMES = [
   "playwright",
   "sequential-thinking",
+  SHADCN_SERVER_NAME,
   TAVILY_SERVER_NAME,
   TASKS_SERVER_NAME
 ];
@@ -13065,6 +13067,11 @@ function readKeyFile(paths, platform) {
 
 // src/mcp/doctor.ts
 var FIRST_START_LIMIT_MS = 180000;
+var PROJECT_SHADCN_CHECK = {
+  ok: true,
+  info: true,
+  text: "the project's own shadcn MCP server is used; nothing to do"
+};
 function realMcpDoctorDeps(read) {
   return {
     run: async (argv, extraEnv) => {
@@ -13132,7 +13139,7 @@ async function mcpChecks(paths, deps, env, cwd = process.cwd()) {
       continue;
     }
     const overriding = overridingServer(paths.userConfigFile, cwd, name);
-    if (overriding !== null) {
+    if (overriding !== null && name !== SHADCN_SERVER_NAME) {
       checks.push({
         ok: true,
         warn: true,
@@ -13162,7 +13169,8 @@ async function mcpChecks(paths, deps, env, cwd = process.cwd()) {
       });
       continue;
     }
-    if (!scope.startsWith("User config")) {
+    const projectShadcn = name === SHADCN_SERVER_NAME && (overriding !== null || /^(Project|Local) config/.test(scope));
+    if (!scope.startsWith("User config") && !projectShadcn) {
       checks.push({
         ok: false,
         text: `another copy of "${name}" wins over yours: ${scope}`,
@@ -13171,10 +13179,10 @@ async function mcpChecks(paths, deps, env, cwd = process.cwd()) {
       continue;
     }
     const line = `MCP server "${name}": ${status}`;
-    checks.push(status.includes("Connected") ? { ok: true, text: line } : {
+    checks.push(status.includes("Connected") ? projectShadcn ? PROJECT_SHADCN_CHECK : { ok: true, text: line } : {
       ok: false,
       text: line,
-      fix: `run \`claude mcp get ${name}\` to see why it does not connect`
+      fix: projectShadcn ? "the project's own shadcn server does not start: check its command in the project's .mcp.json or local MCP config, then run `claude mcp get shadcn`" : `run \`claude mcp get ${name}\` to see why it does not connect`
     });
   }
   if (!names.includes("tavily-websearch")) {
@@ -29336,7 +29344,7 @@ function resolvePluginFolder(installedPluginsFile, fallback) {
 import { dirname as dirname30, extname as extname3, join as join79 } from "path";
 
 // src/cli/doctor.ts
-import { accessSync as accessSync2, constants as constants2, existsSync as existsSync61, readFileSync as readFileSync72 } from "fs";
+import { accessSync as accessSync2, constants as constants3, existsSync as existsSync61, readFileSync as readFileSync72 } from "fs";
 import { dirname as dirname29, join as join72 } from "path";
 
 // src/herdr/hc.ts
@@ -31034,8 +31042,19 @@ function checkGitBash(platform, env, facts) {
 }
 
 // src/cli/project-checks.ts
-import { existsSync as existsSync60, readFileSync as readFileSync71 } from "fs";
-import { join as join71 } from "path";
+import {
+  closeSync as closeSync10,
+  constants as constants2,
+  existsSync as existsSync60,
+  fstatSync as fstatSync4,
+  openSync as openSync10,
+  readdirSync as readdirSync20,
+  readFileSync as readFileSync71,
+  readSync as readSync7,
+  realpathSync as realpathSync10,
+  statSync as statSync19
+} from "fs";
+import { isAbsolute as isAbsolute12, join as join71, relative as relative11, resolve as resolve19, sep as sep9 } from "path";
 
 // src/hooks/after-merge.ts
 import { createHash as createHash9 } from "crypto";
@@ -39071,6 +39090,192 @@ function jobKindLines(config, configFile, projectDir, home) {
     }
   ];
 }
+function parseLintJson(text) {
+  const uncommented = text.replace(/"(?:\\.|[^"\\])*"|\/\/[^\r\n]*|\/\*[\s\S]*?\*\//g, (token) => token.startsWith('"') ? token : " ");
+  return parseUserJson(uncommented.replace(/"(?:\\.|[^"\\])*"|,(?=\s*[}\]])/g, (token) => token === "," ? "" : token));
+}
+var MAX_LINT_CONFIG_BYTES = 1024 * 1024;
+function readLintConfig(file) {
+  const fd = openSync10(file, constants2.O_RDONLY | (constants2.O_NONBLOCK ?? 0));
+  try {
+    const stat = fstatSync4(fd);
+    if (!stat.isFile() || stat.size > MAX_LINT_CONFIG_BYTES) {
+      throw new Error("not a regular config file within the size limit");
+    }
+    const bytes = Buffer.alloc(MAX_LINT_CONFIG_BYTES + 1);
+    let length = 0;
+    while (length < bytes.length) {
+      const count = readSync7(fd, bytes, length, bytes.length - length, null);
+      if (count === 0)
+        break;
+      length += count;
+    }
+    if (length > MAX_LINT_CONFIG_BYTES)
+      throw new Error("config exceeds the size limit");
+    return bytes.toString("utf8", 0, length);
+  } finally {
+    closeSync10(fd);
+  }
+}
+function overrideMatches(patterns, path) {
+  if (!Array.isArray(patterns))
+    return false;
+  let included = false;
+  for (const pattern of patterns) {
+    if (typeof pattern !== "string")
+      continue;
+    const excluded = pattern.startsWith("!");
+    const positive = pattern.replace(/^!{1,2}/, "");
+    const glob = new Bun.Glob(positive === "**/*" ? "**" : positive.replace(/\/\*\*\/\*$/, "/**"));
+    if (glob.match(path))
+      included = !excluded;
+  }
+  return included;
+}
+function biomeRestriction(value, path) {
+  if (!isObject2(value))
+    return false;
+  let enabled = true;
+  let level;
+  let elements;
+  const apply = (block) => {
+    if (!isObject2(block.linter))
+      return;
+    const linter = block.linter;
+    if (typeof linter.enabled === "boolean")
+      enabled = linter.enabled;
+    const rules = isObject2(linter.rules) ? linter.rules : null;
+    const correctness = rules && isObject2(rules.correctness) ? rules.correctness : null;
+    const rule = correctness?.noRestrictedElements;
+    if (typeof rule === "string")
+      level = rule;
+    else if (isObject2(rule)) {
+      if (rule.level !== undefined)
+        level = rule.level;
+      if (isObject2(rule.options) && rule.options.elements !== undefined)
+        elements = rule.options.elements;
+    }
+  };
+  apply(value);
+  if (Array.isArray(value.overrides)) {
+    for (const override of value.overrides) {
+      if (isObject2(override) && overrideMatches(override.includes, path))
+        apply(override);
+    }
+  }
+  return enabled && level !== "off" && isObject2(elements) && Object.keys(elements).length > 0;
+}
+function eslintRestriction(text) {
+  return text.includes("forbid-elements") || text.includes("no-restricted-syntax") && text.includes("JSXOpeningElement");
+}
+function lintRestriction(folder, projectFolder) {
+  const result = { restricted: false, unreadable: [] };
+  let files;
+  try {
+    files = readdirSync20(folder);
+  } catch {
+    return { restricted: false, unreadable: ["linter configs"] };
+  }
+  for (const file of files.sort()) {
+    const biome = file === "biome.json" || file === "biome.jsonc";
+    const eslint = /^eslint\.config\.(js|mjs|cjs|ts)$/.test(file) || file.startsWith(".eslintrc");
+    const packageConfig = file === "package.json";
+    if (!biome && !eslint && !packageConfig)
+      continue;
+    try {
+      const text = readLintConfig(join71(folder, file));
+      if (packageConfig) {
+        const pkg = parseUserJson(text);
+        result.restricted ||= isObject2(pkg) && eslintRestriction(JSON.stringify(pkg.eslintConfig) ?? "");
+      } else {
+        const path = relative11(folder, projectFolder).replaceAll("\\", "/");
+        result.restricted ||= biome ? biomeRestriction(parseLintJson(text), path === "" ? "" : `${path}/`) : eslintRestriction(text);
+      }
+    } catch {
+      result.unreadable.push(file);
+    }
+  }
+  return result;
+}
+function shadcnFolders(root) {
+  const folders = new Map([[realpathSync10(root), root]]);
+  const lines = [];
+  const addFolder = (folder) => {
+    try {
+      const target = realpathSync10(folder);
+      const rel = relative11(realpathSync10(root), target);
+      if (rel === ".." || rel.startsWith(`..${sep9}`) || isAbsolute12(rel))
+        return;
+      if (statSync19(folder).isDirectory() && !folders.has(target))
+        folders.set(target, folder);
+    } catch {}
+  };
+  const packageFile = join71(root, "package.json");
+  if (existsSync60(packageFile)) {
+    try {
+      const pkg = parseUserJson(readLintConfig(packageFile));
+      const workspaces = isObject2(pkg) ? pkg.workspaces : null;
+      const entries = Array.isArray(workspaces) ? workspaces : isObject2(workspaces) && Array.isArray(workspaces.packages) ? workspaces.packages : [];
+      for (const entry of entries) {
+        if (typeof entry !== "string" || isAbsolute12(entry))
+          continue;
+        const folder = resolve19(root, entry.replace(/\/\*$/, ""));
+        const rel = relative11(root, folder);
+        if (rel === ".." || rel.startsWith(`..${sep9}`) || isAbsolute12(rel))
+          continue;
+        if (entry.endsWith("/*") && !entry.slice(0, -2).includes("*")) {
+          if (!existsSync60(folder))
+            continue;
+          const realFolder = realpathSync10(folder);
+          const realRel = relative11(realpathSync10(root), realFolder);
+          if (realRel === ".." || realRel.startsWith(`..${sep9}`) || isAbsolute12(realRel))
+            continue;
+          for (const child of readdirSync20(folder).sort())
+            addFolder(join71(folder, child));
+        } else if (!entry.includes("*"))
+          addFolder(folder);
+      }
+    } catch {
+      lines.push({
+        ok: true,
+        info: true,
+        text: "project: could not check shadcn/ui workspaces from package.json"
+      });
+    }
+  }
+  return {
+    folders: [...folders.values()].filter((folder) => existsSync60(join71(folder, "components.json"))).sort(),
+    lines
+  };
+}
+function shadcnLintLines(root) {
+  const { folders, lines } = shadcnFolders(root);
+  if (folders.length === 0)
+    return lines;
+  for (const folder of folders) {
+    const rootLint = lintRestriction(root, folder);
+    const local = folder === root ? rootLint : lintRestriction(folder, folder);
+    if (rootLint.restricted || local.restricted)
+      continue;
+    const label = relative11(root, folder).replaceAll("\\", "/") || ".";
+    const unreadable = [...new Set([...rootLint.unreadable, ...local.unreadable])];
+    if (unreadable.length > 0) {
+      lines.push({
+        ok: true,
+        info: true,
+        text: `project: ${label} uses shadcn/ui; could not check raw HTML control restrictions (${unreadable.join(", ")} could not be read or parsed)`
+      });
+    } else {
+      lines.push({
+        ok: true,
+        info: true,
+        text: `project: ${label} uses shadcn/ui without a lint rule against raw HTML controls`,
+        fix: `add a restriction using the lint recipe in /${PLUGIN}:react-best-practices`
+      });
+    }
+  }
+  return lines;
+}
 async function projectChecks2(cwd, env, paths, pluginHooksFile, gh = runGh) {
   if (Bun.which("git", { PATH: env.PATH ?? "" }) === null) {
     return [{ ok: true, info: true, text: "project: not checked, git is not on PATH" }];
@@ -39110,6 +39315,7 @@ async function projectChecks2(cwd, env, paths, pluginHooksFile, gh = runGh) {
     ...engine,
     ...configFile === null ? [] : requiresLines(configFile, projectDir, paths.home),
     ...jobKindLines(config, configFile, projectDir, paths.home),
+    ...shadcnLintLines(checkout.root),
     ...await worktreeLines(config, sources, checkout, env)
   ];
   if (config !== null) {
@@ -39269,7 +39475,7 @@ function checkPlugin(paths) {
 }
 function isExecutable(file) {
   try {
-    accessSync2(file, constants2.X_OK);
+    accessSync2(file, constants3.X_OK);
     return true;
   } catch {
     return false;
@@ -40098,7 +40304,7 @@ function checkLine(check) {
 }
 
 // src/jobs/status.ts
-import { mkdirSync as mkdirSync26, readdirSync as readdirSync21, readFileSync as readFileSync74, statSync as statSync20 } from "fs";
+import { mkdirSync as mkdirSync26, readdirSync as readdirSync22, readFileSync as readFileSync74, statSync as statSync21 } from "fs";
 import { join as join74 } from "path";
 
 // src/jobs/queue.ts
@@ -40171,10 +40377,10 @@ function holderLines(held, store, now) {
 import {
   chmodSync as chmodSync3,
   mkdirSync as mkdirSync25,
-  readdirSync as readdirSync20,
+  readdirSync as readdirSync21,
   readFileSync as readFileSync73,
   renameSync as renameSync5,
-  statSync as statSync19,
+  statSync as statSync20,
   unlinkSync as unlinkSync4,
   utimesSync,
   writeFileSync as writeFileSync10
@@ -40339,14 +40545,14 @@ function leaseStore(options) {
   };
   const removeLeftover = (path) => {
     try {
-      if (Date.now() - statSync19(path).mtimeMs > LEFTOVER_MS)
+      if (Date.now() - statSync20(path).mtimeMs > LEFTOVER_MS)
         removeQuietly(path);
     } catch {}
   };
   const readLive = (folder) => {
     let names;
     try {
-      names = readdirSync20(folder);
+      names = readdirSync21(folder);
     } catch (error) {
       if (errorCode(error) === "ENOENT")
         return [];
@@ -40372,7 +40578,7 @@ function leaseStore(options) {
       let text;
       let mtimeMs;
       try {
-        mtimeMs = statSync19(path).mtimeMs;
+        mtimeMs = statSync20(path).mtimeMs;
       } catch (error) {
         if (errorCode(error) === "ENOENT")
           continue;
@@ -40571,14 +40777,14 @@ function jobsFingerprint(home) {
     const folder = join74(dir, sub);
     let names;
     try {
-      names = readdirSync21(folder).sort();
+      names = readdirSync22(folder).sort();
     } catch {
       parts.push(`${folder}:-`);
       continue;
     }
     for (const name of names) {
       try {
-        const stat = statSync20(join74(folder, name));
+        const stat = statSync21(join74(folder, name));
         parts.push(`${folder}/${name}:${stat.size}:${stat.mtimeMs}`);
       } catch {
         parts.push(`${folder}/${name}:gone`);
@@ -40590,8 +40796,8 @@ function jobsFingerprint(home) {
 
 // src/portal/actions.ts
 import { createHash as createHash11 } from "crypto";
-import { existsSync as existsSync63, statSync as statSync21 } from "fs";
-import { isAbsolute as isAbsolute13, join as join77 } from "path";
+import { existsSync as existsSync63, statSync as statSync22 } from "fs";
+import { isAbsolute as isAbsolute14, join as join77 } from "path";
 
 // src/update/check.ts
 import { mkdtempSync as mkdtempSync4, rmSync as rmSync15 } from "fs";
@@ -41424,10 +41630,10 @@ function applyAutoMode(settingsFile, stateDir, wanted, dryRun) {
 
 // src/tasks/ops.ts
 import { readFileSync as readFileSync75, rmSync as rmSync16 } from "fs";
-import { relative as relative11 } from "path";
+import { relative as relative12 } from "path";
 
 // src/tasks/schemas.ts
-import { isAbsolute as isAbsolute12 } from "path";
+import { isAbsolute as isAbsolute13 } from "path";
 
 // src/tasks/work/types.ts
 var SUBJECT_LIMIT = 200;
@@ -41445,7 +41651,7 @@ var blockedBy = array(ref).describe("Tasks (#n) it waits for: it cannot start or
 var bindings = {
   agent: string2().describe("The builder subagent's name or id.").optional(),
   branch: string2().describe("The builder's git branch.").optional(),
-  worktree: string2().refine(isAbsolute12, "worktree must be an absolute path").describe("The builder's absolute worktree path.").optional(),
+  worktree: string2().refine(isAbsolute13, "worktree must be an absolute path").describe("The builder's absolute worktree path.").optional(),
   base: string2().describe("The commit sha the builder started from.").optional()
 };
 var projectFields = {
@@ -42037,7 +42243,7 @@ function createTaskOps(options = {}) {
           }, { now: new Date(now), random: Math.random });
           return {
             ok: true,
-            text: `${task.id} "${task.title}" \xB7 ${relative11(ctx.checkoutRoot ?? cwd, task.file)} \xB7 commit it with your branch`
+            text: `${task.id} "${task.title}" \xB7 ${relative12(ctx.checkoutRoot ?? cwd, task.file)} \xB7 commit it with your branch`
           };
         }
         const blockedBy = input.blocked_by?.map((r) => work(r).id) ?? [];
@@ -42230,7 +42436,7 @@ History: not committed yet.`;
             "--date=iso-strict",
             "--format=%ad %an %h %s",
             "--",
-            relative11(ctx.checkoutRoot, file)
+            relative12(ctx.checkoutRoot, file)
           ], env);
           const history = !log.ok ? `History: git could not read it (${log.err})` : log.out ? `History (git, oldest first):
 ${log.out.split(`
@@ -42276,10 +42482,10 @@ ${historyText(gone, { full: input.history })}`;
           const task = project(input.task);
           if (!ctx.checkoutRoot)
             throw new Error("Project tasks need a checkout");
-          const tracked = runGit(ctx.checkoutRoot, ["ls-files", "--error-unmatch", "--", relative11(ctx.checkoutRoot, task.file)], env);
+          const tracked = runGit(ctx.checkoutRoot, ["ls-files", "--error-unmatch", "--", relative12(ctx.checkoutRoot, task.file)], env);
           if (tracked.ok)
             throw new Error("Tracked project task: drop it with task_done outcome dropped");
-          const index = runGit(ctx.checkoutRoot, ["ls-files", "--", relative11(ctx.checkoutRoot, task.file)], env);
+          const index = runGit(ctx.checkoutRoot, ["ls-files", "--", relative12(ctx.checkoutRoot, task.file)], env);
           if (!index.ok)
             throw new Error(`Could not read git's index: ${index.err}`);
           if (index.out)
@@ -43137,7 +43343,7 @@ async function projectAdd(action, body) {
   if (folder === "") {
     return { lines: ["Type the folder to add, with its full path."], ok: false };
   }
-  if (!isAbsolute13(folder)) {
+  if (!isAbsolute14(folder)) {
     return {
       lines: [`"${folder}" is not an absolute path: give the folder's full path.`],
       ok: false
@@ -43145,7 +43351,7 @@ async function projectAdd(action, body) {
   }
   let isFolder = false;
   try {
-    isFolder = existsSync63(folder) && statSync21(folder).isDirectory();
+    isFolder = existsSync63(folder) && statSync22(folder).isDirectory();
   } catch {
     isFolder = false;
   }
@@ -44071,7 +44277,7 @@ async function projectGatewayAnswerFor(deps, id) {
 }
 
 // src/portal/api/project-tasks.ts
-import { relative as relative12 } from "path";
+import { relative as relative13 } from "path";
 
 // src/tasks/work/tree.ts
 var TREE_TASK_LIMIT = 300;
@@ -44228,7 +44434,7 @@ function workTaskNodeOf(node, counts) {
 function rowOf2(task, root, stale) {
   return {
     created: task.created,
-    file: relative12(root, task.file),
+    file: relative13(root, task.file),
     flags: [...task.flags ?? []],
     id: task.id,
     kind: task.kind,
@@ -44256,7 +44462,7 @@ function filesOf(root, tasks, now) {
     return {
       broken: scan.broken.length,
       closed: scan.tasks.length - open.length,
-      dir: relative12(root, tasks.dir),
+      dir: relative13(root, tasks.dir),
       staleDays: tasks.staleDays,
       state: "ready",
       tasks: open
@@ -45872,7 +46078,7 @@ class LiveHub {
 }
 
 // src/portal/live/sources.ts
-import { readFileSync as readFileSync76, statSync as statSync22 } from "fs";
+import { readFileSync as readFileSync76, statSync as statSync23 } from "fs";
 var LIVE_POLL_MS = 2000;
 function fingerprintOf(entry) {
   return [entry.at, entry.slot, entry.status, entry.target, entry.ms].join("\x00");
@@ -46009,7 +46215,7 @@ function createLiveSources(deps) {
     const file = workDbFile(deps.paths);
     return [file, `${file}-wal`].map((one) => {
       try {
-        const stat = statSync22(one);
+        const stat = statSync23(one);
         return `${stat.size}:${stat.mtimeMs}`;
       } catch {
         return "-";
@@ -46061,8 +46267,8 @@ function createLiveSources(deps) {
 }
 
 // src/portal/static.ts
-import { existsSync as existsSync64, readFileSync as readFileSync77, statSync as statSync23 } from "fs";
-import { extname as extname2, join as join78, resolve as resolve19, sep as sep9 } from "path";
+import { existsSync as existsSync64, readFileSync as readFileSync77, statSync as statSync24 } from "fs";
+import { extname as extname2, join as join78, resolve as resolve20, sep as sep10 } from "path";
 var TYPES = {
   ".css": "text/css; charset=utf-8",
   ".html": "text/html; charset=utf-8",
@@ -46091,11 +46297,11 @@ function fileInside(folder, pathname) {
   }
   if (decoded.includes("\x00") || decoded.includes("\\"))
     return null;
-  const file = resolve19(join78(folder, decoded));
-  if (file !== folder && !file.startsWith(`${folder}${sep9}`))
+  const file = resolve20(join78(folder, decoded));
+  if (file !== folder && !file.startsWith(`${folder}${sep10}`))
     return null;
   try {
-    return statSync23(file).isFile() ? file : null;
+    return statSync24(file).isFile() ? file : null;
   } catch {
     return null;
   }
@@ -46127,7 +46333,7 @@ function readCsp(folder) {
 function readExport(folder) {
   if (folder === null)
     return null;
-  const absolute = resolve19(folder);
+  const absolute = resolve20(folder);
   if (!existsSync64(join78(absolute, "index.html")))
     return null;
   return { csp: readCsp(absolute), folder: absolute };
@@ -46175,8 +46381,8 @@ function exportServer(source) {
       if (!pathname.startsWith("/_next/static/"))
         return null;
       const file = fileInside(source.folder, pathname.slice(1));
-      const build = resolve19(source.folder, "_next", "static");
-      return file?.startsWith(`${build}${sep9}`) === true ? file : null;
+      const build = resolve20(source.folder, "_next", "static");
+      return file?.startsWith(`${build}${sep10}`) === true ? file : null;
     }
   };
 }

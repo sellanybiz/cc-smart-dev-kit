@@ -1,0 +1,23 @@
+schema_version: "1.1"
+name: react-best-practices-on-component-change
+description: >-
+  A routine React component change must load react-best-practices, not wait for a performance complaint.
+tags: [watch, trigger]
+plugins: ["../../under-test/plugin", "../../harness"]
+execution:
+  max_turns: 12
+  allowed_tools: [Read, Glob, Grep, Skill, Edit]
+  prompt: |
+    In src/NotificationList.jsx, show "No notifications yet" when the notifications array is empty.
+    Keep the existing list for nonempty arrays.
+context:
+  scaffold_script: scaffold.sh
+graders:
+  - name: fires-react-best-practices
+    type: tool_used
+    tool: 'Skill'
+    input_match: '"skill"\s*:\s*"(?:[\w-]+:)?react-best-practices"'
+  - name: edited-component
+    type: tool_used
+    tool: 'Edit'
+    input_match: 'NotificationList\.jsx'

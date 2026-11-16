@@ -14,6 +14,7 @@
  */
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join, relative, sep } from "node:path";
+import { isVendored } from "./vendor-skills";
 
 /** The folders checked, relative to the repo root. */
 export const CHECKED_FOLDERS = [
@@ -187,6 +188,7 @@ export function readSourceFiles(root: string): SourceFile[] {
         )
         .map((entry) => join(entry.parentPath, entry.name)),
     )
+    .filter((file) => !isVendored(relative(root, file).split(sep).join("/")))
     .sort()
     .map((file) => {
       const path = relative(root, file).split(sep).join("/");
