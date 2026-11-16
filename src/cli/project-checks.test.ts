@@ -433,6 +433,155 @@ describe("shadcn lint restrictions", () => {
     },
   );
 
+  test.each(["**", "**/*"])("fix round 2: root-wide %s enables a restriction", async (pattern) => {
+    const repo = makeRepo();
+    writeFileSync(join(repo, "components.json"), "{}");
+    writeFileSync(
+      join(repo, "biome.json"),
+      JSON.stringify({
+        overrides: [
+          {
+            includes: [pattern],
+            linter: {
+              rules: {
+                correctness: {
+                  noRestrictedElements: {
+                    level: "error",
+                    options: { elements: { button: "Use Button" } },
+                  },
+                },
+              },
+            },
+          },
+        ],
+      }),
+    );
+    expect(await check(repo)).toEqual([]);
+  });
+
+  test.each(["**", "**/*"])("fix round 2: root-wide %s disables a restriction", async (pattern) => {
+    const repo = makeRepo();
+    writeFileSync(join(repo, "components.json"), "{}");
+    writeFileSync(
+      join(repo, "biome.json"),
+      JSON.stringify({
+        linter: {
+          rules: {
+            correctness: {
+              noRestrictedElements: {
+                level: "error",
+                options: { elements: { button: "Use Button" } },
+              },
+            },
+          },
+        },
+        overrides: [{ includes: [pattern], linter: { enabled: false } }],
+      }),
+    );
+    expect(await check(repo)).toEqual([note]);
+  });
+
+  test.each(["!", "!!"])(
+    "fix round 2: %s excludes admin without reversing web coverage",
+    async (prefix) => {
+      const repo = makeRepo();
+      writeFileSync(join(repo, "package.json"), '{"workspaces":["apps/*"]}');
+      for (const app of ["admin", "web"]) {
+        mkdirSync(join(repo, "apps", app), { recursive: true });
+        writeFileSync(join(repo, "apps", app, "components.json"), "{}");
+      }
+      writeFileSync(
+        join(repo, "biome.json"),
+        JSON.stringify({
+          overrides: [
+            {
+              includes: ["**", `${prefix}apps/admin/**`],
+              linter: {
+                rules: {
+                  correctness: {
+                    noRestrictedElements: {
+                      level: "error",
+                      options: { elements: { button: "Use Button" } },
+                    },
+                  },
+                },
+              },
+            },
+          ],
+        }),
+      );
+      expect(await check(repo)).toEqual([
+        "· project: apps/admin uses shadcn/ui without a lint rule against raw HTML controls Fix: add a restriction using the lint recipe in /cc-smart-dev-kit:react-best-practices",
+      ]);
+    },
+  );
+
+  test.skipIf(process.platform === "win32").each(["replace", "grow"])(
+    "fix round 2: config %s race is bounded",
+    (race) => {
+      const repo = makeRepo();
+      writeFileSync(join(repo, "components.json"), "{}");
+      const file = join(repo, "biome.json");
+      writeFileSync(file, "{}");
+      const guard = subprocessGuard();
+      const env = hookEnv();
+      // Run mocks in their own process: never replace filesystem methods used by other tests.
+      const script = `
+      import * as fs from 'node:fs';
+      import {mock} from 'bun:test';
+      import {spawnSync} from 'node:child_process';
+      const {statSync, fstatSync, openSync, writeFileSync, unlinkSync} = fs;
+      const target = ${JSON.stringify(file)};
+      let changed = false;
+      let targetFd;
+      function change() {
+        if (changed) return;
+        changed = true;
+        if (${JSON.stringify(race)} === 'replace') {
+          unlinkSync(target);
+          if (spawnSync('mkfifo', [target]).status !== 0) throw new Error('mkfifo failed');
+        } else {
+          writeFileSync(target, '{}'+ ' '.repeat(1048577));
+        }
+      }
+      mock.module('node:fs', () => ({...fs,
+        statSync: (...args) => {
+          const result = statSync(...args);
+          if (args[0] === target) change();
+          return result;
+        },
+        openSync: (...args) => {
+          if (args[0] === target && ${JSON.stringify(race)} === 'replace') change();
+          const fd = openSync(...args);
+          if (args[0] === target) targetFd = fd;
+          return fd;
+        },
+        fstatSync: (...args) => {
+          const result = fstatSync(...args);
+          if (args[0] === targetFd && ${JSON.stringify(race)} === 'grow') change();
+          return result;
+        },
+      }));
+      const {projectChecks} = await import(${JSON.stringify(join(import.meta.dir, "project-checks.ts"))});
+      const {cliPaths} = await import(${JSON.stringify(join(import.meta.dir, "paths.ts"))});
+      const lines = await projectChecks(${JSON.stringify(repo)}, process.env, cliPaths(process.env), ${JSON.stringify(PLUGIN_HOOKS)});
+      console.log(JSON.stringify({changed, lines}));
+    `;
+      const run = spawnSync(process.execPath, [...guard.args, "--eval", script], {
+        timeout: 3000,
+        env: { ...env, ...guard.env },
+        encoding: "utf8",
+      });
+      expect(run.error?.message).toBeUndefined();
+      expect(run.status).toBe(0);
+      const result = JSON.parse(run.stdout);
+      expect(result.changed).toBe(true);
+      expect(result.lines.map(checkLine)).toEqual([
+        "· project: . uses shadcn/ui; could not check raw HTML control restrictions (biome.json could not be read or parsed)",
+      ]);
+    },
+  );
+
   test("plain workspace entries are deduplicated and root lint rules cover them", async () => {
     const repo = makeRepo();
     writeFileSync(join(repo, "package.json"), '{"workspaces":["apps/web","apps/*"]}');

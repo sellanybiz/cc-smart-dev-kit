@@ -36,7 +36,18 @@
  * it is set (doctor run from a session), else the checkout of the folder doctor runs in.
  * Outside a git project it says nothing.
  */
-import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
+import {
+  closeSync,
+  constants,
+  existsSync,
+  fstatSync,
+  openSync,
+  readdirSync,
+  readFileSync,
+  readSync,
+  realpathSync,
+  statSync,
+} from "node:fs";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { COMMAND, PLUGIN_UPDATE_COMMAND } from "../build-info";
 import { PLUGIN } from "../build-info/names";
@@ -578,13 +589,26 @@ function parseLintJson(text: string): unknown {
 
 const MAX_LINT_CONFIG_BYTES = 1024 * 1024;
 
-/** Never open a pipe or device, or consume an unbounded optional config. */
+/** Inspect and bound one open descriptor; nonblocking open cannot wait for a FIFO writer. */
 function readLintConfig(file: string): string {
-  const stat = statSync(file);
-  if (!stat.isFile() || stat.size > MAX_LINT_CONFIG_BYTES) {
-    throw new Error("not a regular config file within the size limit");
+  const fd = openSync(file, constants.O_RDONLY | (constants.O_NONBLOCK ?? 0));
+  try {
+    const stat = fstatSync(fd);
+    if (!stat.isFile() || stat.size > MAX_LINT_CONFIG_BYTES) {
+      throw new Error("not a regular config file within the size limit");
+    }
+    const bytes = Buffer.alloc(MAX_LINT_CONFIG_BYTES + 1);
+    let length = 0;
+    while (length < bytes.length) {
+      const count = readSync(fd, bytes, length, bytes.length - length, null);
+      if (count === 0) break;
+      length += count;
+    }
+    if (length > MAX_LINT_CONFIG_BYTES) throw new Error("config exceeds the size limit");
+    return bytes.toString("utf8", 0, length);
+  } finally {
+    closeSync(fd);
   }
-  return readFileSync(file, "utf8");
 }
 
 /** A folder-level nudge: match directory coverage, not a guessed source filename. */
@@ -595,9 +619,8 @@ function overrideMatches(patterns: unknown, path: string): boolean {
     if (typeof pattern !== "string") continue;
     const excluded = pattern.startsWith("!");
     // Bun's **/* needs a filename; ** already matches the directory and its descendants.
-    const glob = new Bun.Glob(
-      (excluded ? pattern.slice(1) : pattern).replace(/\/\*\*\/\*$/, "/**"),
-    );
+    const positive = pattern.replace(/^!{1,2}/, "");
+    const glob = new Bun.Glob(positive === "**/*" ? "**" : positive.replace(/\/\*\*\/\*$/, "/**"));
     if (glob.match(path)) included = !excluded;
   }
   return included;
