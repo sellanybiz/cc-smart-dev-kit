@@ -13,8 +13,10 @@ import { checkDocs, SKIPPED_FOLDERS } from "./check-docs";
 import { readSourceFiles } from "./check-duplicates";
 import {
   patchSkill,
+  prepareSkill,
   serializeHashes,
   sha256,
+  skillDestination,
   VENDORED_SKILLS,
   verifyIntegrity,
 } from "./vendor-skills";
@@ -88,6 +90,26 @@ describe("user-only budget (offline)", () => {
 });
 
 describe("vendored skills (offline)", () => {
+  test("source paths reject traversal and native absolute forms before writes", () => {
+    const skill = VENDORED_SKILLS[0];
+    if (!skill) throw new Error("missing shadcn skill");
+    const folder = tempDir("vendor-paths");
+    for (const path of [
+      "../escape.txt",
+      "..\\..\\escape.txt",
+      "/escape.txt",
+      "C:escape.txt",
+      "C:/escape.txt",
+      "\\\\server\\share\\escape.txt",
+    ]) {
+      const upstream = new Map([[skill.upstreamPath + path, new TextEncoder().encode("bad")]]);
+      expect(() => prepareSkill(skill, upstream, "2026-11-16")).toThrow("Unsafe path");
+      expect(() => skillDestination(folder, path)).toThrow("Unsafe path");
+      expect(readdirSync(folder)).toEqual([]);
+    }
+    expect(skillDestination(folder, "references/safe.md")).toBe(join(folder, "references/safe.md"));
+  });
+
   test("serialized hashes exactly match the formatted block on disk", () => {
     const source = readFileSync(join(root, "scripts/vendor-skills.ts"), "utf8");
     const block = /\/\/ BEGIN GENERATED HASHES\n([\s\S]*?)\/\/ END GENERATED HASHES/.exec(
@@ -146,7 +168,7 @@ describe("vendored skills (offline)", () => {
     for (const skill of VENDORED_SKILLS)
       for (const file of filesIn(join(root, skill.folder))) {
         expect(readFileSync(join(root, skill.folder, file), "utf8")).not.toMatch(
-          /\b(?:npx|bunx(?:\s+--bun)?|pnpm\s+dlx)\s+shadcn(?=[\s`])/,
+          /\b(?:npx|bunx(?:\s+--bun)?|pnpm\s+dlx|yarn\s+dlx)\s+shadcn(?=[\s`])/,
         );
       }
   });
@@ -158,10 +180,10 @@ describe("vendored skills (offline)", () => {
       patchSkill(
         skill,
         "fixture.md",
-        "npx shadcn init\nbunx shadcn add\npnpm dlx shadcn add\nnpx tsc\nnpx other-package\nbunx shadcn@1.2.3 info",
+        "npx shadcn init\nbunx shadcn add\npnpm dlx shadcn add\nyarn dlx shadcn add button\nnpx tsc\nnpx other-package\nbunx shadcn@1.2.3 info",
       ).text,
     ).toBe(
-      `bunx shadcn@${MCP_VERSIONS.shadcn} init\nbunx shadcn@${MCP_VERSIONS.shadcn} add\nbunx shadcn@${MCP_VERSIONS.shadcn} add\nnpx tsc\nnpx other-package\nbunx shadcn@1.2.3 info`,
+      `bunx shadcn@${MCP_VERSIONS.shadcn} init\nbunx shadcn@${MCP_VERSIONS.shadcn} add\nbunx shadcn@${MCP_VERSIONS.shadcn} add\nbunx shadcn@${MCP_VERSIONS.shadcn} add button\nnpx tsc\nnpx other-package\nbunx shadcn@1.2.3 info`,
     );
   });
 

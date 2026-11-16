@@ -2,7 +2,7 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import { COMMAND } from "../src/build-info/names";
@@ -243,10 +243,13 @@ export function patchSkill(
       });
   }
   if (skill.patches.includes("pin-unversioned-runner")) {
-    text = text.replace(/\b(?:npx|bunx(?:\s+--bun)?|pnpm\s+dlx)\s+shadcn(?=[\s`])/g, () => {
-      counts.unversioned += 1;
-      return `bunx shadcn@${MCP_VERSIONS.shadcn}`;
-    });
+    text = text.replace(
+      /\b(?:npx|bunx(?:\s+--bun)?|pnpm\s+dlx|yarn\s+dlx)\s+shadcn(?=[\s`])/g,
+      () => {
+        counts.unversioned += 1;
+        return `bunx shadcn@${MCP_VERSIONS.shadcn}`;
+      },
+    );
   }
   if (path === "references/project-setup.md" && skill.patches.includes("local-license-key")) {
     const instruction = "**If the key is missing, stop and ask the user for it.**";
@@ -349,7 +352,7 @@ async function npmFiles(): Promise<Map<string, Uint8Array>> {
   return files;
 }
 
-function prepareSkill(
+export function prepareSkill(
   skill: VendoredSkill,
   upstream: Map<string, Uint8Array>,
   date: string,
@@ -371,8 +374,7 @@ function prepareSkill(
     if (!path.startsWith(skill.upstreamPath)) continue;
     const local = path.slice(skill.upstreamPath.length);
     if (skill.leftOut.some((part) => local.startsWith(part))) continue;
-    if (local.split("/").some((part) => part === ".." || part === ""))
-      throw new Error(`Unsafe path: ${path}`);
+    validateSourcePath(local);
     if (bytes.includes(0)) files.set(local, bytes);
     else {
       const patched = patchSkill(
@@ -414,6 +416,26 @@ function prepareSkill(
   return { files, counts };
 }
 
+function validateSourcePath(path: string): void {
+  if (
+    path.includes("\\") ||
+    isAbsolute(path) ||
+    /^[a-z]:/i.test(path) ||
+    path.split("/").some((part) => part === ".." || part === "")
+  ) {
+    throw new Error(`Unsafe path: ${path}`);
+  }
+}
+
+/** Resolve a prepared file's destination before any file write. */
+export function skillDestination(folder: string, path: string): string {
+  validateSourcePath(path);
+  const root = resolve(folder);
+  const destination = resolve(root, path);
+  if (!destination.startsWith(`${root}${sep}`)) throw new Error(`Unsafe path: ${path}`);
+  return destination;
+}
+
 /** Use the project's installed formatter so regenerated metadata has no formatting diff. */
 export function serializeHashes(hashes: Record<string, Record<string, string>>): string {
   const source = `const FILE_HASHES: Record<string, Record<string, string>> = ${JSON.stringify(hashes, null, 2)};\n`;
@@ -439,14 +461,19 @@ async function main(): Promise<void> {
     skill,
     ...prepareSkill(skill, skill.source.kind === "github" ? github : npm, "2026-11-16"),
   }));
+  // Validate every destination before removing or writing any folder.
+  for (const { skill, files } of prepared) {
+    for (const path of files.keys()) skillDestination(join(root, skill.folder), path);
+  }
   const hashes: Record<string, Record<string, string>> = {};
   for (const { skill, files, counts } of prepared) {
     const folder = join(root, skill.folder);
     rmSync(folder, { recursive: true, force: true });
     const entries: Record<string, string> = {};
     for (const [path, bytes] of [...files].sort(([a], [b]) => a.localeCompare(b))) {
-      mkdirSync(dirname(join(folder, path)), { recursive: true });
-      writeFileSync(join(folder, path), bytes);
+      const destination = skillDestination(folder, path);
+      mkdirSync(dirname(destination), { recursive: true });
+      writeFileSync(destination, bytes);
       entries[path] = sha256(bytes);
     }
     hashes[skill.folder.split("/").at(-1) ?? ""] = entries;
