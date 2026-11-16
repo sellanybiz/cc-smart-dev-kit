@@ -10,7 +10,8 @@
  *     scope, so a server registered somewhere else (a project's `.mcp.json`) is caught too —
  *     it would win over the user-scope one, and a session that moves into a worktree would
  *     lose it. A project/local shadcn server is expected (`shadcn mcp init` writes one), so
- *     that override is information, not a request to remove it.
+ *     a connected override is information, not a request to remove it. A failed connection
+ *     asks the person to check its launch command.
  *   - Tavily's key: from the environment or the key file. No key is a `·` line, never a
  *     failure: a person who never wanted Tavily has no server and loses nothing. Its value is
  *     never read into a message.
@@ -37,7 +38,7 @@ export type McpCheck = Check;
  */
 const FIRST_START_LIMIT_MS = 180_000;
 
-/** `shadcn mcp init` writes a project server: its registry settings belong to the project. */
+/** `shadcn mcp init` writes a project server: its launch settings belong to the project. */
 const PROJECT_SHADCN_CHECK: McpCheck = {
   ok: true,
   info: true,
@@ -156,11 +157,7 @@ export async function mcpChecks(
     // plugin's server is not the one starting. `!`, never a failure, and never a key: what
     // runs instead goes through the same redacting line as above.
     const overriding = overridingServer(paths.userConfigFile, cwd, name);
-    if (overriding !== null) {
-      if (name === "shadcn") {
-        checks.push(PROJECT_SHADCN_CHECK);
-        continue;
-      }
+    if (overriding !== null && name !== "shadcn") {
       checks.push({
         ok: true,
         warn: true,
@@ -195,11 +192,9 @@ export async function mcpChecks(
       });
       continue;
     }
-    if (!scope.startsWith("User config")) {
-      if (name === "shadcn" && /^(Project|Local) config/.test(scope)) {
-        checks.push(PROJECT_SHADCN_CHECK);
-        continue;
-      }
+    const projectShadcn =
+      name === "shadcn" && (overriding !== null || /^(Project|Local) config/.test(scope));
+    if (!scope.startsWith("User config") && !projectShadcn) {
       checks.push({
         ok: false,
         text: `another copy of "${name}" wins over yours: ${scope}`,
@@ -210,11 +205,15 @@ export async function mcpChecks(
     const line = `MCP server "${name}": ${status}`;
     checks.push(
       status.includes("Connected")
-        ? { ok: true, text: line }
+        ? projectShadcn
+          ? PROJECT_SHADCN_CHECK
+          : { ok: true, text: line }
         : {
             ok: false,
             text: line,
-            fix: `run \`claude mcp get ${name}\` to see why it does not connect`,
+            fix: projectShadcn
+              ? "the project's own shadcn server does not start: check its command in the project's .mcp.json or local MCP config, then run `claude mcp get shadcn`"
+              : `run \`claude mcp get ${name}\` to see why it does not connect`,
           },
     );
   }

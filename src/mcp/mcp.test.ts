@@ -1256,53 +1256,71 @@ describe("a same-name server one scope down wins over the user scope", () => {
     expect(overridingServer(paths_.userConfigFile, sub, "sequential-thinking")).toBeNull();
   });
 
-  test.each(["project", "local", "reported"])(
-    "doctor treats a %s shadcn override as information, not a removal request",
-    async (scope) => {
-      const home = tempDir("mcp-shadcn-override");
-      const paths_ = paths(home);
-      const project = join(home, "repo");
-      mkdirSync(join(project, ".git"), { recursive: true });
-      const ours = '{"args":["-y","shadcn@4.23.0","mcp"],"command":"bunx"}';
-      const ownServer = { args: ["shadcn", "mcp"], command: "bunx" };
-      if (scope === "project") {
-        writeFileSync(
-          join(project, ".mcp.json"),
-          JSON.stringify({ mcpServers: { shadcn: ownServer } }),
-        );
-      }
-      mkdirSync(dirname(paths_.userConfigFile), { recursive: true });
+  test.each([
+    ["project", "Connected"],
+    ["local", "Connected"],
+    ["reported", "Connected"],
+    ["project", "Failed to connect"],
+    ["local", "Failed to connect"],
+    ["reported", "Failed to connect"],
+  ])("doctor checks a %s shadcn override with status %s", async (scope, status) => {
+    const home = tempDir("mcp-shadcn-override");
+    const paths_ = paths(home);
+    const project = join(home, "repo");
+    mkdirSync(join(project, ".git"), { recursive: true });
+    const ours = '{"args":["-y","shadcn@4.23.0","mcp"],"command":"bunx"}';
+    const ownServer = {
+      args: ["shadcn", "mcp"],
+      command: status === "Connected" ? "bunx" : "/nonexistent/shadcn",
+    };
+    if (scope === "project") {
       writeFileSync(
-        paths_.userConfigFile,
-        JSON.stringify({
-          mcpServers: { shadcn: JSON.parse(ours) },
-          ...(scope === "local"
-            ? { projects: { [project]: { mcpServers: { shadcn: ownServer } } } }
-            : {}),
-        }),
+        join(project, ".mcp.json"),
+        JSON.stringify({ mcpServers: { shadcn: ownServer } }),
       );
-      recordMcpServer(paths_.stateDir, "shadcn", ours, "then");
-      const calls: string[][] = [];
-      const checks = await mcpChecks(
-        paths_,
-        {
-          run: (argv) => {
-            calls.push(argv);
-            return { ok: true, output: "Scope: Project config\nStatus: ✓ Connected" };
-          },
-          which: () => "/usr/bin/claude",
+    }
+    mkdirSync(dirname(paths_.userConfigFile), { recursive: true });
+    writeFileSync(
+      paths_.userConfigFile,
+      JSON.stringify({
+        mcpServers: { shadcn: JSON.parse(ours) },
+        ...(scope === "local"
+          ? { projects: { [project]: { mcpServers: { shadcn: ownServer } } } }
+          : {}),
+      }),
+    );
+    recordMcpServer(paths_.stateDir, "shadcn", ours, "then");
+    const calls: string[][] = [];
+    const checks = await mcpChecks(
+      paths_,
+      {
+        run: (argv) => {
+          calls.push(argv);
+          return {
+            ok: status === "Connected",
+            output: `Scope: ${scope === "local" ? "Local" : "Project"} config\nStatus: ${status === "Connected" ? "✓" : "✗"} ${status}`,
+          };
         },
-        {},
-        project,
-      );
-      expect(checks.find((one) => one.text.includes("shadcn"))).toEqual({
-        ok: true,
-        info: true,
-        text: "the project's own shadcn MCP server is used; nothing to do",
-      });
-      expect(calls).toEqual(scope === "reported" ? [["claude", "mcp", "get", "shadcn"]] : []);
-    },
-  );
+        which: () => "/usr/bin/claude",
+      },
+      {},
+      project,
+    );
+    expect(checks.find((one) => one.text.includes("shadcn"))).toEqual(
+      status === "Connected"
+        ? {
+            ok: true,
+            info: true,
+            text: "the project's own shadcn MCP server is used; nothing to do",
+          }
+        : {
+            ok: false,
+            text: 'MCP server "shadcn": Failed to connect',
+            fix: "the project's own shadcn server does not start: check its command in the project's .mcp.json or local MCP config, then run `claude mcp get shadcn`",
+          },
+    );
+    expect(calls).toEqual([["claude", "mcp", "get", "shadcn"]]);
+  });
 
   test("doctor's line names the file and what runs instead", async () => {
     const home = tempDir("mcp-doctor-override");
