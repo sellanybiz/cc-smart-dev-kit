@@ -64,8 +64,8 @@ Code's default, or `run_in_background: true`). Do not start one and wait before 
 others.
 
 Put caller rulings first: commit or not, allowed checks, how to meet a refusal (the builder
-agent tells the three kinds apart), and decide small calls with a `Ruling:` note. The brief has four parts:
-objective, files and boundaries, patterns/tools, and output format.
+agent tells the three kinds apart), and decide small calls with a `Ruling:` note. Use the
+four-part brief and the **patterns and tools** requirements in `/cc-smart-dev-kit:plan-task` § 4.
 Every launch brief includes the exact line `Your task: #<n>` with the phase number.
 The hand-back guard reads that line and refuses a return while blocking steps remain open.
 The launch prompt says: read that task with `task_get` first;

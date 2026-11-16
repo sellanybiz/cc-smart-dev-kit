@@ -23,9 +23,10 @@ already does the job: by name, by the words a caller would use, and in the depen
 
 ## 2. Then the maintained solutions
 
-No fit in the project? Find the maintained library or the standard approach for exactly this
-job — a UI library's input or chat component, a form or validation library, a queue, an SDK.
-Judge each candidate:
+For UI, check the project's design system before a new library; React's reuse procedure is
+`/cc-smart-dev-kit:react-best-practices` § Design system first.
+No fit there? Find a maintained library or standard approach for this job — a form or
+validation library, a queue, an SDK. Judge each candidate:
 
 - **Maintained** — recent releases, open issues answered, not deprecated.
 - **Fits** — the project's language version, framework version, runtime and bundle budget.

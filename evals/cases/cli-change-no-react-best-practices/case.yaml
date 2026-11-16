@@ -1,0 +1,25 @@
+schema_version: "1.1"
+name: cli-change-no-react-best-practices
+description: >-
+  A command-line flag is not React work and must not load react-best-practices.
+tags: [watch, no-trigger]
+plugins: ["../../under-test/plugin", "../../harness"]
+execution:
+  max_turns: 10
+  allowed_tools: [Read, Glob, Grep, Skill, Edit]
+  prompt: |
+    Add a --verbose flag to cli.js that prints each step it takes.
+context:
+  scaffold_script: scaffold.sh
+graders:
+  - name: no-react-best-practices
+    type: tool_used
+    tool: 'Skill'
+    input_match: '"skill"\s*:\s*"(?:[\w-]+:)?react-best-practices"'
+    min: 0
+    max: 0
+    arm: 'both'
+  - name: edited
+    type: tool_used
+    tool: 'Edit'
+    input_match: 'cli\.js'

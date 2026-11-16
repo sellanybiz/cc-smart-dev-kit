@@ -45,7 +45,7 @@ Each of these happened to a widely used tool. Memory misses every one of them:
   Valibot) shared by the client and the server.
 - **Styling and components:** the design system, its component library, accessibility.
 - **React Compiler:** on in a new React app, from its first setup
-  (`/cc-smart-dev-kit:performance-budget` § React Compiler).
+  (`/cc-smart-dev-kit:react-best-practices` § React Compiler).
 
 ## Backend and API
 

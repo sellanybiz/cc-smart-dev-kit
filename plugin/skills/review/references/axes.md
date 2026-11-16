@@ -12,7 +12,7 @@ one line each.
    guard the opposite just as hard (deliver what was asked; build for a future only when asked):
    an interface with one implementation is a finding too.
 2. **Performance** — waterfalls, N+1 queries, bundle weight, re-renders, missing cache. In a
-   React or Next.js app, a broken playbook rule is a finding: `/cc-smart-dev-kit:performance-budget`.
+   React or Next.js app, a broken playbook rule is a finding: `/cc-smart-dev-kit:react-best-practices`.
 3. **Pattern consistency** — does it match its sibling files? A new pattern needs a reason.
    If the old pattern is the wrong one, fix it across the plan's files (beyond them: the core
    instructions' one-plan rule).
@@ -22,6 +22,9 @@ one line each.
 6. **Reuse over reinvent** — hand-written code for a job the project or a maintained library
    already does (the core instructions give the order to look in). Name the exact replacement
    when you flag one, and confirm it exists, in the project or in the installed package.
+   In UI code, a raw control or hand-made widget where the design system has one is a
+   finding: select, table, textarea, radio group, tabs, date input, avatar, menu, combobox,
+   dialog. Name the design-system component that replaces it.
 7. **Craft** — would a senior engineer be embarrassed to approve this? Dead code, debug
    output left in, names that lie (`data2`), one function doing five things, nesting that
    should be early returns, clever one-liners, user-facing errors that say "Something went

@@ -53,10 +53,11 @@ Before the first edit, bring your worktree to the commit the brief names as its 
 build on another base. The brief names no commit: say so in your report, with the commit
 you started from.
 
-1. Read callers before changing shared code. Use the loaded impact-analysis skill without
-   dispatching a helper. Use existing code before adding a second implementation.
-   Shape new and changed code by the loaded code-structure skill. In a React or Next.js web
-   app, load `cc-smart-dev-kit:performance-budget` before the first edit and follow it.
+1. Read callers before changing shared code; use impact-analysis without a helper and
+   code-structure to shape the change. Before any component, control, hook or helper,
+   look in the project, then its design system, then a maintained library.
+   For React or Next.js web apps, load `cc-smart-dev-kit:react-best-practices` before editing.
+   Use `cc-smart-dev-kit:performance-budget` for performance work.
 2. Work the phase's tasks in order and close each with its check as you go. Create a
    missing step as a task under the phase, never a new phase. Routing and the CLI fallback:
    `cc-smart-dev-kit:memory-routing`.
@@ -76,7 +77,8 @@ you started from.
 
 Save `task_note` on the phase beginning `Report:`. Include status, files changed, diff stat,
 commits, branch, worktree, starting base, commands and results, concerns, rulings, anything
-outside scope and what you could not do. No report file or second ledger.
+outside scope and what you could not do. List the standard parts used; give each custom
+control a `Why custom:` line. No report file or second ledger.
 Return only a short status, commit ids, one-line check result and blocking concerns.
 When resumed with `SendMessage`, read the new findings, fix within the same scope, rerun
 allowed checks, commit if allowed and append another report note. The caller owns the

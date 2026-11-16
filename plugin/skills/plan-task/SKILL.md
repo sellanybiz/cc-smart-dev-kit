@@ -126,6 +126,8 @@ phases and their tasks, briefs included, now: nothing waits in a file. The first
 the others stay queued (§ 6). Put the complete builder brief in each phase's description, in
 four parts: objective; files and boundaries; patterns and tools; output format (`Report:`
 task note and short status). Include interfaces, edge cases and done-check.
+In **patterns and tools**, name the standard components or libraries to use — for example,
+the design system's Select or a table library — or explain why none fits.
 Put caller rulings up front: commit permission, allowed checks, the refusal handling the
 builder agent gives, decide small calls and note them as `Ruling:`.
 The dispatch includes `Your task: #<n>` for the phase; the build skill explains the
