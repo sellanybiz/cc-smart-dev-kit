@@ -8,9 +8,20 @@ hook matcher that names `mcp__<server>__*`; and a server from a project
 file or the "local" scope is stopped by Claude Code as soon as the session's folder changes,
 which every session that works in a worktree does. Registered for the user, the names stay.
 
-- **Three servers** (`SERVER_NAMES`): `playwright` (the browser above), `sequential-thinking`,
-  and `tavily-websearch`. Each version is pinned in `src/mcp/versions.ts`; the file's header
-  says why, and how to move one. A project's own servers stay in that project.
+- **The managed servers** come from `SERVER_NAMES` in `src/mcp/servers.ts`; `mcpServers`
+  builds their registrations. Each local package's version is pinned in `src/mcp/versions.ts`;
+  the file's header says why, and how to move one. Tavily is remote. A project's own servers
+  stay in that project.
+- **The official shadcn server** runs the CLI as `bunx -y shadcn@<pin> mcp`, using
+  `MCP_VERSIONS.shadcn`. Like sequential-thinking, it uses the machine's absolute `bunx` path
+  when one is found, or the bare name otherwise. It needs no key and is registered at user
+  scope even outside a UI project. An existing user-scope `shadcn` that setup did not register
+  stays untouched and unrecorded; setup says how to hand the name back.
+  **The session folder matters:** the pinned shadcn CLI reads `components.json` from its
+  process folder (`process.cwd()`), the folder the session started in. It has no per-call
+  folder and does not follow a move into a worktree. Its tools can still list, search and
+  view registry items without a project. Run the add command it returns in the target
+  worktree, where that worktree's `components.json` supplies the registry settings.
 - **A retired server** (`RETIRED_SERVER_NAMES`; today `serena`, dropped in 0.6.0 — one server
   per session at about 3 GB each in a large project, for tools sessions seldom called) is taken
   back by the next setup, in `src/mcp/retired.ts`, the one home of that cleanup:
@@ -96,7 +107,14 @@ which every session that works in a worktree does. Registered for the user, the 
   scope (Claude Code's own file, `projects[<cwd>].mcpServers`) or a project's `.mcp.json` at the
   folder doctor runs in (or a parent, up to the one holding `.git`) takes precedence over the
   user-scope registration, so `doctor` warns with what runs instead — the same
-  `describeServerConfig` line, never a key (premium review).
+  `describeServerConfig` line, never a key (premium review). **shadcn is the exception**:
+  upstream's `shadcn mcp init` writes a project server with that name. That `.mcp.json` copy
+  only changes how the server is launched; registry settings live in `components.json`.
+  Doctor probes a project or local `shadcn` override with `claude mcp get`. When it connects,
+  doctor prints `· the project's own shadcn MCP server is used; nothing to do`. A failed
+  connection is a failure with advice to check the project's launch command, never to remove
+  the server. The same rule applies when `claude mcp get` reports Project or Local config
+  instead of User config. Other servers keep their warning and removal advice.
   **The installer asks with it** (seen live: all four names were registered by a
   project's own script, setup's `!` line was lost among the installer's output, and the plugin's
   browser never took over): per foreign server, "Replace it with cc-smart-dev-kit's?"; a yes

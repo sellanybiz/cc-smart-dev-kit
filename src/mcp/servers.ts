@@ -13,6 +13,9 @@
  *   - `playwright`: the browser (`browser/launcher.ts`): the Playwright MCP server on the
  *     person's own Chrome, through the Playwright extension, in the profile `claude-code`.
  *   - `sequential-thinking`: the general reasoning server.
+ *   - `shadcn`: the official shadcn/ui registry server, through the pinned CLI. A project's
+ *     own shadcn server may override this one's launch settings; its registry settings
+ *     come from `components.json` in the server's process folder.
  *   - `tavily-websearch`: Tavily's remote HTTP server. Its key is never written here: the
  *     header carries `${TAVILY_API_KEY}`, which Claude Code fills in from its own
  *     environment when it connects, and the key itself lives in the person's environment or
@@ -34,6 +37,7 @@ import { MCP_VERSIONS, TAVILY_MCP_URL } from "./versions";
 export const SERVER_NAMES = [
   "playwright",
   "sequential-thinking",
+  "shadcn",
   TAVILY_SERVER_NAME,
   TASKS_SERVER_NAME,
 ] as const;
@@ -101,6 +105,13 @@ export function mcpServers(context: McpContext): McpServer[] {
           "-y",
           `@modelcontextprotocol/server-sequential-thinking@${MCP_VERSIONS.sequentialThinking}`,
         ],
+        command: context.bunx,
+      }),
+    },
+    {
+      name: "shadcn",
+      json: json({
+        args: ["-y", `shadcn@${MCP_VERSIONS.shadcn}`, "mcp"],
         command: context.bunx,
       }),
     },

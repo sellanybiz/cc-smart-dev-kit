@@ -96,12 +96,27 @@ const noPending = (): void => {};
 const NO_POSIX_MODES = process.platform === "win32";
 
 describe("the servers the plugin registers", () => {
-  test("the three general servers, pinned and at user scope; the browser runs the launcher", () => {
+  test("shadcn uses the pinned CLI through bunx, with args first", () => {
+    const servers = mcpServers({ ...context(tempDir("mcp-shadcn")), bunx: "/opt/bin/bunx" });
+    expect(servers.find((server) => server.name === "shadcn")?.json).toBe(
+      '{"args":["-y","shadcn@4.23.0","mcp"],"command":"/opt/bin/bunx"}',
+    );
+  });
+
+  test("without an absolute bunx path, shadcn uses the same fallback as sequential-thinking", () => {
+    const servers = mcpServers(context(tempDir("mcp-shadcn")));
+    expect(servers.find((server) => server.name === "shadcn")?.json).toBe(
+      '{"args":["-y","shadcn@4.23.0","mcp"],"command":"bunx"}',
+    );
+  });
+
+  test("the general servers, pinned and at user scope; the browser runs the launcher", () => {
     const home = tempDir("mcp-servers");
     const servers = mcpServers(context(home));
     expect(servers.map((server) => server.name)).toEqual([
       "playwright",
       "sequential-thinking",
+      "shadcn",
       "tavily-websearch",
       "cc-smart-dev-kit-tasks",
     ]);
@@ -117,14 +132,14 @@ describe("the servers the plugin registers", () => {
       command: "bunx",
     });
     // Tavily: the key is a placeholder Claude Code fills in; no key is written anywhere.
-    expect(JSON.parse(servers[2]?.json ?? "{}")).toEqual({
+    expect(JSON.parse(servers[3]?.json ?? "{}")).toEqual({
       // biome-ignore lint/suspicious/noTemplateCurlyInString: Claude Code's placeholder.
       headers: { Authorization: "Bearer ${TAVILY_API_KEY}" },
       timeout: 300_000,
       type: "http",
       url: TAVILY_MCP_URL,
     });
-    expect(servers[2]?.json).not.toContain("tvly-");
+    expect(servers[3]?.json).not.toContain("tvly-");
   });
 
   test("ST-7: on Windows the browser server starts the .cmd launcher through cmd.exe", () => {
@@ -146,7 +161,7 @@ describe("the servers the plugin registers", () => {
       ...context(home),
       tavily: { key: false, reason: "no TAVILY_API_KEY in the environment, and no key file" },
     });
-    const tavily = servers[2];
+    const tavily = servers[3];
     expect(tavily?.json).toBe("");
     // The note setup prints carries the reason, so a person reads what to do.
     expect(tavily?.skipped).toBe("no TAVILY_API_KEY in the environment, and no key file");
@@ -159,13 +174,14 @@ describe("what setup registers, and what it leaves alone", () => {
     const fake = fakeClaude(home);
     const servers = mcpServers(context(home));
     const plan = planMcpServers(servers, {}, readUserServers(fake.paths.userConfigFile));
-    expect(plan.map((entry) => entry.action)).toEqual(["add", "add", "add", "add"]);
+    expect(plan.map((entry) => entry.action)).toEqual(["add", "add", "add", "add", "add"]);
 
     const applied = applyMcpServers(plan, fake.run, () => "/usr/bin/claude", false, noPending);
     expect(applied.ok).toBe(true);
     expect(applied.changes).toEqual([
       "+ MCP server playwright registered for your user",
       "+ MCP server sequential-thinking registered for your user",
+      "+ MCP server shadcn registered for your user",
       "+ MCP server tavily-websearch registered for your user",
       "+ MCP server cc-smart-dev-kit-tasks registered for your user",
     ]);
@@ -173,15 +189,17 @@ describe("what setup registers, and what it leaves alone", () => {
     expect(readMcpRecords(fake.paths.stateDir)).toEqual({
       playwright: { at: "2026-10-16T00:00:00.000Z", json: servers[0]?.json ?? "" },
       "sequential-thinking": { at: "2026-10-16T00:00:00.000Z", json: servers[1]?.json ?? "" },
-      "tavily-websearch": { at: "2026-10-16T00:00:00.000Z", json: servers[2]?.json ?? "" },
-      "cc-smart-dev-kit-tasks": { at: "2026-10-16T00:00:00.000Z", json: servers[3]?.json ?? "" },
+      shadcn: { at: "2026-10-16T00:00:00.000Z", json: servers[2]?.json ?? "" },
+      "tavily-websearch": { at: "2026-10-16T00:00:00.000Z", json: servers[3]?.json ?? "" },
+      "cc-smart-dev-kit-tasks": { at: "2026-10-16T00:00:00.000Z", json: servers[4]?.json ?? "" },
     });
     // The commands ran remove-then-add for nobody: first registrations are one command each.
     expect(fake.calls.map((argv) => argv.join(" "))).toEqual([
       `claude mcp add-json --scope user playwright ${servers[0]?.json ?? ""}`,
       `claude mcp add-json --scope user sequential-thinking ${servers[1]?.json ?? ""}`,
-      `claude mcp add-json --scope user tavily-websearch ${servers[2]?.json ?? ""}`,
-      `claude mcp add-json --scope user cc-smart-dev-kit-tasks ${servers[3]?.json ?? ""}`,
+      `claude mcp add-json --scope user shadcn ${servers[2]?.json ?? ""}`,
+      `claude mcp add-json --scope user tavily-websearch ${servers[3]?.json ?? ""}`,
+      `claude mcp add-json --scope user cc-smart-dev-kit-tasks ${servers[4]?.json ?? ""}`,
     ]);
 
     // A second setup: nothing to do.
@@ -190,7 +208,7 @@ describe("what setup registers, and what it leaves alone", () => {
       readMcpRecords(fake.paths.stateDir),
       readUserServers(fake.paths.userConfigFile),
     );
-    expect(again.map((entry) => entry.action)).toEqual(["keep", "keep", "keep", "keep"]);
+    expect(again.map((entry) => entry.action)).toEqual(["keep", "keep", "keep", "keep", "keep"]);
     expect(
       applyMcpServers(again, fake.run, () => "/usr/bin/claude", false, noPending).changes,
     ).toEqual([]);
@@ -231,6 +249,35 @@ describe("what setup registers, and what it leaves alone", () => {
     ).toBe(true);
   });
 
+  test("a foreign shadcn registration stays untouched and unrecorded", () => {
+    const home = tempDir("mcp-shadcn-foreign");
+    const fake = fakeClaude(home);
+    const foreign = { command: "/opt/their-shadcn", args: ["mcp"] };
+    mkdirSync(dirname(fake.paths.userConfigFile), { recursive: true });
+    writeFileSync(fake.paths.userConfigFile, JSON.stringify({ mcpServers: { shadcn: foreign } }));
+    const plan = planMcpServers(
+      mcpServers(context(home)),
+      {},
+      readUserServers(fake.paths.userConfigFile),
+    );
+    expect(plan.find((entry) => entry.name === "shadcn")).toEqual({
+      action: "foreign",
+      json: '{"args":["-y","shadcn@4.23.0","mcp"],"command":"bunx"}',
+      name: "shadcn",
+      note: "! shadcn is registered already, and not by cc-smart-dev-kit: left alone. To let setup manage it: claude mcp remove shadcn --scope user",
+    });
+    const applied = applyMcpServers(plan, fake.run, () => "/usr/bin/claude", false, noPending);
+    recordApplied(fake.paths.stateDir, applied, "then");
+    expect(fake.calls.some((argv) => argv.includes("shadcn"))).toBe(false);
+    expect(readUserServers(fake.paths.userConfigFile)?.shadcn).toEqual(foreign);
+    expect(readMcpRecords(fake.paths.stateDir).shadcn).toBeUndefined();
+    expect(mcpServerStatus(fake.paths).find((server) => server.name === "shadcn")).toEqual({
+      name: "shadcn",
+      state: "foreign",
+      runsWhat: "their-shadcn mcp",
+    });
+  });
+
   test("a server of the person's own is left alone, with a note", () => {
     const home = tempDir("mcp-register");
     const fake = fakeClaude(home);
@@ -251,6 +298,7 @@ describe("what setup registers, and what it leaves alone", () => {
       applyMcpServers(plan, fake.run, () => "/usr/bin/claude", false, noPending).changes,
     ).toEqual([
       "+ MCP server sequential-thinking registered for your user",
+      "+ MCP server shadcn registered for your user",
       "+ MCP server tavily-websearch registered for your user",
       "+ MCP server cc-smart-dev-kit-tasks registered for your user",
     ]);
@@ -333,7 +381,7 @@ describe("what setup registers, and what it leaves alone", () => {
     const live = readUserServers(fake.paths.userConfigFile);
     expect(live).toBeNull();
     const plan = planMcpServers(servers, records, live);
-    expect(plan.map((entry) => entry.action)).toEqual(["keep", "keep", "keep", "keep"]);
+    expect(plan.map((entry) => entry.action)).toEqual(["keep", "keep", "keep", "keep", "keep"]);
     expect(plan.every((entry) => entry.forget === undefined)).toBe(true);
     const again = applyMcpServers(plan, fake.run, () => "/usr/bin/claude", false, noPending);
     expect(again.changes).toEqual([]);
@@ -344,7 +392,7 @@ describe("what setup registers, and what it leaves alone", () => {
     expect(readMcpRecords(fake.paths.stateDir)).toEqual(records);
     // The one line the caller prints, with every kept name.
     expect(unreadableUserConfigNote("~/.claude.json", Object.keys(records))).toBe(
-      "! cannot read ~/.claude.json: nothing changed — the MCP servers cc-smart-dev-kit registered stay as they are: cc-smart-dev-kit-tasks, playwright, sequential-thinking, tavily-websearch",
+      "! cannot read ~/.claude.json: nothing changed — the MCP servers cc-smart-dev-kit registered stay as they are: cc-smart-dev-kit-tasks, playwright, sequential-thinking, shadcn, tavily-websearch",
     );
   });
 
@@ -423,7 +471,7 @@ describe("what setup registers, and what it leaves alone", () => {
       },
     );
     // Each add ran with its pending record already there.
-    expect(seen).toEqual([true, true, true, true]);
+    expect(seen).toEqual([true, true, true, true, true]);
     // ... and no `recordApplied`: the run stopped here. The next setup keeps them all as ours.
     const again = planMcpServers(
       servers,
@@ -435,9 +483,10 @@ describe("what setup registers, and what it leaves alone", () => {
       ["keep", true],
       ["keep", true],
       ["keep", true],
+      ["keep", true],
     ]);
     const applied = applyMcpServers(again, fake.run, () => "/usr/bin/claude", false, noPending);
-    expect(fake.calls).toHaveLength(4);
+    expect(fake.calls).toHaveLength(5);
     recordApplied(fake.paths.stateDir, applied, "later");
     expect(readMcpRecords(fake.paths.stateDir).playwright).toEqual({
       at: "later",
@@ -587,7 +636,7 @@ describe("what setup registers, and what it leaves alone", () => {
       readMcpRecords(fake.paths.stateDir),
       readUserServers(fake.paths.userConfigFile),
     );
-    expect(plan[2]?.action).toBe("remove");
+    expect(plan[3]?.action).toBe("remove");
     const applied = applyMcpServers(plan, fake.run, () => "/usr/bin/claude", false, noPending);
     expect(applied.changes).toEqual([
       "- MCP server tavily-websearch removed from your user config",
@@ -627,6 +676,7 @@ describe("restore: exactly what setup registered", () => {
     expect(removal.removed).toEqual([
       "- MCP server cc-smart-dev-kit-tasks removed from your user config",
       "- MCP server playwright removed from your user config",
+      "- MCP server shadcn removed from your user config",
       "- MCP server tavily-websearch removed from your user config",
     ]);
     expect(removal.notes).toEqual([
@@ -636,6 +686,7 @@ describe("restore: exactly what setup registered", () => {
       "cc-smart-dev-kit-tasks",
       "playwright",
       "sequential-thinking",
+      "shadcn",
       "tavily-websearch",
     ]);
     expect(readUserServers(fake.paths.userConfigFile)).toEqual({
@@ -657,9 +708,9 @@ describe("restore: exactly what setup registered", () => {
     recordApplied(fake.paths.stateDir, applied, "then");
     const removal = removeMcpServers(fake.paths, fake.run, () => null, false);
     expect(removal.removed).toEqual([]);
-    expect(removal.kept).toHaveLength(4);
+    expect(removal.kept).toHaveLength(5);
     expect(removal.notes[0]).toContain("The claude command is not on PATH");
-    expect(Object.keys(readMcpRecords(fake.paths.stateDir))).toHaveLength(4);
+    expect(Object.keys(readMcpRecords(fake.paths.stateDir))).toHaveLength(5);
   });
 
   test("nothing of ours is registered: nothing to do, and no command runs", () => {
@@ -700,14 +751,15 @@ describe("restore: exactly what setup registered", () => {
       "cc-smart-dev-kit-tasks",
       "playwright",
       "sequential-thinking",
+      "shadcn",
       "tavily-websearch",
     ]);
     // `~` and then the platform's own separators: `~\.claude\.claude.json` on Windows.
     expect(removal.notes).toEqual([
-      `! cannot read ${join("~", ".claude", ".claude.json")}: nothing changed — the MCP servers cc-smart-dev-kit registered stay as they are: cc-smart-dev-kit-tasks, playwright, sequential-thinking, tavily-websearch`,
+      `! cannot read ${join("~", ".claude", ".claude.json")}: nothing changed — the MCP servers cc-smart-dev-kit registered stay as they are: cc-smart-dev-kit-tasks, playwright, sequential-thinking, shadcn, tavily-websearch`,
     ]);
     expect(fake.calls).toHaveLength(callsBefore);
-    expect(Object.keys(readMcpRecords(fake.paths.stateDir))).toHaveLength(4);
+    expect(Object.keys(readMcpRecords(fake.paths.stateDir))).toHaveLength(5);
   });
 });
 
@@ -822,6 +874,7 @@ describe("mcp status: what is registered by something else", () => {
     expect(mcpServerStatus(paths_).map((one) => `${one.name}:${one.state}`)).toEqual([
       "playwright:missing",
       "sequential-thinking:missing",
+      "shadcn:missing",
       "tavily-websearch:missing",
       "cc-smart-dev-kit-tasks:missing",
     ]);
@@ -855,6 +908,7 @@ describe("mcp status: what is registered by something else", () => {
     expect(mcpServerStatus(paths_).map((one) => one.name)).toEqual([
       "playwright",
       "sequential-thinking",
+      "shadcn",
       "tavily-websearch",
       "cc-smart-dev-kit-tasks",
     ]);
@@ -1143,6 +1197,7 @@ describe("M3: the live scenario — every name registered by a project's script"
     expect(status.map((one) => `${one.name}:${one.state}`)).toEqual([
       "playwright:foreign",
       "sequential-thinking:foreign",
+      "shadcn:foreign",
       "tavily-websearch:foreign",
       "cc-smart-dev-kit-tasks:foreign",
     ]);
@@ -1199,6 +1254,72 @@ describe("a same-name server one scope down wins over the user scope", () => {
     expect(describeServerConfig(found?.config)).not.toContain(planted);
     // Nothing of the plugin's: null, so doctor says nothing.
     expect(overridingServer(paths_.userConfigFile, sub, "sequential-thinking")).toBeNull();
+  });
+
+  test.each([
+    ["project", "Connected"],
+    ["local", "Connected"],
+    ["reported", "Connected"],
+    ["project", "Failed to connect"],
+    ["local", "Failed to connect"],
+    ["reported", "Failed to connect"],
+  ])("doctor checks a %s shadcn override with status %s", async (scope, status) => {
+    const home = tempDir("mcp-shadcn-override");
+    const paths_ = paths(home);
+    const project = join(home, "repo");
+    mkdirSync(join(project, ".git"), { recursive: true });
+    const ours = '{"args":["-y","shadcn@4.23.0","mcp"],"command":"bunx"}';
+    const ownServer = {
+      args: ["shadcn", "mcp"],
+      command: status === "Connected" ? "bunx" : "/nonexistent/shadcn",
+    };
+    if (scope === "project") {
+      writeFileSync(
+        join(project, ".mcp.json"),
+        JSON.stringify({ mcpServers: { shadcn: ownServer } }),
+      );
+    }
+    mkdirSync(dirname(paths_.userConfigFile), { recursive: true });
+    writeFileSync(
+      paths_.userConfigFile,
+      JSON.stringify({
+        mcpServers: { shadcn: JSON.parse(ours) },
+        ...(scope === "local"
+          ? { projects: { [project]: { mcpServers: { shadcn: ownServer } } } }
+          : {}),
+      }),
+    );
+    recordMcpServer(paths_.stateDir, "shadcn", ours, "then");
+    const calls: string[][] = [];
+    const checks = await mcpChecks(
+      paths_,
+      {
+        run: (argv) => {
+          calls.push(argv);
+          return {
+            ok: status === "Connected",
+            output: `Scope: ${scope === "local" ? "Local" : "Project"} config\nStatus: ${status === "Connected" ? "✓" : "✗"} ${status}`,
+          };
+        },
+        which: () => "/usr/bin/claude",
+      },
+      {},
+      project,
+    );
+    expect(checks.find((one) => one.text.includes("shadcn"))).toEqual(
+      status === "Connected"
+        ? {
+            ok: true,
+            info: true,
+            text: "the project's own shadcn MCP server is used; nothing to do",
+          }
+        : {
+            ok: false,
+            text: 'MCP server "shadcn": Failed to connect',
+            fix: "the project's own shadcn server does not start: check its command in the project's .mcp.json or local MCP config, then run `claude mcp get shadcn`",
+          },
+    );
+    expect(calls).toEqual([["claude", "mcp", "get", "shadcn"]]);
   });
 
   test("doctor's line names the file and what runs instead", async () => {

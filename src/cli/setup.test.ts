@@ -305,6 +305,7 @@ describe("setup and the MCP servers' record", () => {
       [
         "playwright locked recorded",
         "sequential-thinking locked recorded",
+        "shadcn locked recorded",
         "cc-smart-dev-kit-tasks locked recorded",
         "",
       ].join("\n"),
