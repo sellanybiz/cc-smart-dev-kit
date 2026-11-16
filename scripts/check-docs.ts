@@ -18,6 +18,7 @@
  */
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { VENDORED_SKILLS } from "./vendor-skills";
 
 export const DESIGN_INDEX = "docs/design.md";
 export const DESIGN_DIR = "docs/design";
@@ -32,6 +33,7 @@ export const SKIPPED_FOLDERS = [
   "portal/node_modules/",
   "plugin/dist/",
   "plugin/portal-ui/",
+  ...VENDORED_SKILLS.map((skill) => `${skill.folder}/`),
 ];
 export const SKIPPED_FILES = new Set([
   "bun.lock",

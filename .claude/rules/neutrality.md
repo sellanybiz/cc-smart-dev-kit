@@ -26,6 +26,9 @@ messages, branch names.
   <owner>/<branch>`). That line is GitHub's, not ours: it holds the publisher's account the
   way exception 1 does. Nothing else in a commit message may. Never write a name into a
   commit message or a branch name yourself, and never quote that title in a file of ours.
+- **Exception 4, vendored skills:** the third-party folders listed in
+  `scripts/vendor-skills.ts` keep upstream's text, names, URLs and license notices,
+  changed only by that table's patches. Nothing outside those folders may borrow them.
 - **The code never writes the publisher as text.** It reads the repository from
   `plugin.json` at build time (`src/build-info/`, a Bun macro) and uses
   `MARKETPLACE_SOURCE`. So the publisher reaches command output in one place, built
