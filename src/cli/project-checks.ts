@@ -36,8 +36,8 @@
  * it is set (doctor run from a session), else the checkout of the folder doctor runs in.
  * Outside a git project it says nothing.
  */
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { isAbsolute, join, relative, resolve } from "node:path";
+import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { COMMAND, PLUGIN_UPDATE_COMMAND } from "../build-info";
 import { PLUGIN } from "../build-info/names";
 import { runGitAsync } from "../hooks/git";
@@ -576,19 +576,73 @@ function parseLintJson(text: string): unknown {
   );
 }
 
-/** Rules may live in the main linter block or in an override. */
-function hasRestrictedElements(value: unknown): boolean {
-  if (Array.isArray(value)) return value.some(hasRestrictedElements);
+const MAX_LINT_CONFIG_BYTES = 1024 * 1024;
+
+/** Never open a pipe or device, or consume an unbounded optional config. */
+function readLintConfig(file: string): string {
+  const stat = statSync(file);
+  if (!stat.isFile() || stat.size > MAX_LINT_CONFIG_BYTES) {
+    throw new Error("not a regular config file within the size limit");
+  }
+  return readFileSync(file, "utf8");
+}
+
+/** A folder-level nudge: match directory coverage, not a guessed source filename. */
+function overrideMatches(patterns: unknown, path: string): boolean {
+  if (!Array.isArray(patterns)) return false;
+  let included = false;
+  for (const pattern of patterns) {
+    if (typeof pattern !== "string") continue;
+    const excluded = pattern.startsWith("!");
+    // Bun's **/* needs a filename; ** already matches the directory and its descendants.
+    const glob = new Bun.Glob(
+      (excluded ? pattern.slice(1) : pattern).replace(/\/\*\*\/\*$/, "/**"),
+    );
+    if (glob.match(path)) included = !excluded;
+  }
+  return included;
+}
+
+/** Merge only the relevant linter settings, in matching override order. */
+function biomeRestriction(value: unknown, path: string): boolean {
   if (!isObject(value)) return false;
-  const rule = value.noRestrictedElements;
-  if (isObject(rule) && isObject(rule.options) && isObject(rule.options.elements)) return true;
-  return Object.values(value).some(hasRestrictedElements);
+  let enabled = true;
+  let level: unknown;
+  let elements: unknown;
+  const apply = (block: Record<string, unknown>) => {
+    if (!isObject(block.linter)) return;
+    const linter = block.linter;
+    if (typeof linter.enabled === "boolean") enabled = linter.enabled;
+    const rules = isObject(linter.rules) ? linter.rules : null;
+    const correctness = rules && isObject(rules.correctness) ? rules.correctness : null;
+    const rule = correctness?.noRestrictedElements;
+    if (typeof rule === "string") level = rule;
+    else if (isObject(rule)) {
+      if (rule.level !== undefined) level = rule.level;
+      if (isObject(rule.options) && rule.options.elements !== undefined)
+        elements = rule.options.elements;
+    }
+  };
+  apply(value);
+  if (Array.isArray(value.overrides)) {
+    for (const override of value.overrides) {
+      if (isObject(override) && overrideMatches(override.includes, path)) apply(override);
+    }
+  }
+  return enabled && level !== "off" && isObject(elements) && Object.keys(elements).length > 0;
+}
+
+function eslintRestriction(text: string): boolean {
+  return (
+    text.includes("forbid-elements") ||
+    (text.includes("no-restricted-syntax") && text.includes("JSXOpeningElement"))
+  );
 }
 
 type LintRestriction = { restricted: boolean; unreadable: string[] };
 
 /** ESLint is read as text, never executed: this is a nudge, not a proof of enforcement. */
-function lintRestriction(folder: string): LintRestriction {
+function lintRestriction(folder: string, projectFolder: string): LintRestriction {
   const result: LintRestriction = { restricted: false, unreadable: [] };
   let files: string[];
   try {
@@ -599,13 +653,20 @@ function lintRestriction(folder: string): LintRestriction {
   for (const file of files.sort()) {
     const biome = file === "biome.json" || file === "biome.jsonc";
     const eslint = /^eslint\.config\.(js|mjs|cjs|ts)$/.test(file) || file.startsWith(".eslintrc");
-    if (!biome && !eslint) continue;
+    const packageConfig = file === "package.json";
+    if (!biome && !eslint && !packageConfig) continue;
     try {
-      const text = readFileSync(join(folder, file), "utf8");
-      result.restricted ||= biome
-        ? hasRestrictedElements(parseLintJson(text))
-        : text.includes("forbid-elements") ||
-          (text.includes("no-restricted-syntax") && text.includes("JSXOpeningElement"));
+      const text = readLintConfig(join(folder, file));
+      if (packageConfig) {
+        const pkg = parseUserJson(text);
+        result.restricted ||=
+          isObject(pkg) && eslintRestriction(JSON.stringify(pkg.eslintConfig) ?? "");
+      } else {
+        const path = relative(folder, projectFolder).replaceAll("\\", "/");
+        result.restricted ||= biome
+          ? biomeRestriction(parseLintJson(text), path === "" ? "" : `${path}/`)
+          : eslintRestriction(text);
+      }
     } catch {
       result.unreadable.push(file);
     }
@@ -615,12 +676,22 @@ function lintRestriction(folder: string): LintRestriction {
 
 /** Root plus package.json workspaces: plain folders and one-level dir/* patterns only. */
 function shadcnFolders(root: string): { folders: string[]; lines: ProjectLine[] } {
-  const folders = new Set([root]);
+  const folders = new Map([[realpathSync(root), root]]);
   const lines: ProjectLine[] = [];
+  const addFolder = (folder: string) => {
+    try {
+      const target = realpathSync(folder);
+      const rel = relative(realpathSync(root), target);
+      if (rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) return;
+      if (statSync(folder).isDirectory() && !folders.has(target)) folders.set(target, folder);
+    } catch {
+      // A broken symlink or a disappearing workspace is not a project doctor can check.
+    }
+  };
   const packageFile = join(root, "package.json");
   if (existsSync(packageFile)) {
     try {
-      const pkg = readUserJson(packageFile);
+      const pkg = parseUserJson(readLintConfig(packageFile));
       const workspaces = isObject(pkg) ? pkg.workspaces : null;
       const entries = Array.isArray(workspaces)
         ? workspaces
@@ -631,15 +702,14 @@ function shadcnFolders(root: string): { folders: string[]; lines: ProjectLine[] 
         if (typeof entry !== "string" || isAbsolute(entry)) continue;
         const folder = resolve(root, entry.replace(/\/\*$/, ""));
         const rel = relative(root, folder);
-        if (rel === ".." || rel.startsWith("../") || isAbsolute(rel)) continue;
+        if (rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) continue;
         if (entry.endsWith("/*") && !entry.slice(0, -2).includes("*")) {
           if (!existsSync(folder)) continue;
-          for (const child of readdirSync(folder, { withFileTypes: true })) {
-            if (child.isDirectory()) folders.add(join(folder, child.name));
-          }
-        } else if (!entry.includes("*") && existsSync(folder) && statSync(folder).isDirectory()) {
-          folders.add(folder);
-        }
+          const realFolder = realpathSync(folder);
+          const realRel = relative(realpathSync(root), realFolder);
+          if (realRel === ".." || realRel.startsWith(`..${sep}`) || isAbsolute(realRel)) continue;
+          for (const child of readdirSync(folder).sort()) addFolder(join(folder, child));
+        } else if (!entry.includes("*")) addFolder(folder);
       }
     } catch {
       lines.push({
@@ -650,7 +720,9 @@ function shadcnFolders(root: string): { folders: string[]; lines: ProjectLine[] 
     }
   }
   return {
-    folders: [...folders].filter((folder) => existsSync(join(folder, "components.json"))).sort(),
+    folders: [...folders.values()]
+      .filter((folder) => existsSync(join(folder, "components.json")))
+      .sort(),
     lines,
   };
 }
@@ -659,9 +731,9 @@ function shadcnFolders(root: string): { folders: string[]; lines: ProjectLine[] 
 function shadcnLintLines(root: string): ProjectLine[] {
   const { folders, lines } = shadcnFolders(root);
   if (folders.length === 0) return lines;
-  const rootLint = lintRestriction(root);
   for (const folder of folders) {
-    const local = folder === root ? rootLint : lintRestriction(folder);
+    const rootLint = lintRestriction(root, folder);
+    const local = folder === root ? rootLint : lintRestriction(folder, folder);
     if (rootLint.restricted || local.restricted) continue;
     const label = relative(root, folder).replaceAll("\\", "/") || ".";
     const unreadable = [...new Set([...rootLint.unreadable, ...local.unreadable])];
