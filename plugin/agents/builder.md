@@ -54,9 +54,9 @@ build on another base. The brief names no commit: say so in your report, with th
 you started from.
 
 1. Read callers before changing shared code; use impact-analysis without a helper and
-   code-structure to shape the change. Before any component, control, hook or helper,
-   look in the project, then its design system, then a maintained library.
-   For React or Next.js web apps, load `cc-smart-dev-kit:react-best-practices` before editing.
+   code-structure to shape the change. Reuse before you write (the core instructions'
+   research rule). For React or Next.js web apps, load `cc-smart-dev-kit:react-best-practices`
+   before editing and follow its § Design system first.
    Use `cc-smart-dev-kit:performance-budget` for performance work.
 2. Work the phase's tasks in order and close each with its check as you go. Create a
    missing step as a task under the phase, never a new phase. Routing and the CLI fallback:
