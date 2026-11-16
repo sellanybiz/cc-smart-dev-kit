@@ -37,9 +37,11 @@ export interface Budget {
  * Always-on tokens. 3,133 at 0.5.0; about 3,515 at 2.1.1; about 2,626 at 2.2.0, after its
  * description trims and with three more agents. The target is the line where Claude Code's
  * plugin browser highlights a plugin's per-turn cost as heavy: 2,000 tokens. The code-structure
- * rename trimmed the always-on figure to 2,690.
+ * rename trimmed the always-on figure to 2,690. 4.10.0 split react-best-practices out of
+ * performance-budget, one more always-on skill: 2,720. Its seven vendored skills are user-only
+ * and left out (see the header).
  */
-export const ALWAYS_ON: Budget = { max: 2_690, target: 2_000 };
+export const ALWAYS_ON: Budget = { max: 2_720, target: 2_000 };
 
 /**
  * core.md tokens, estimated. About 3,300 at 0.5.0 (189 lines); about 2,300 at 1.1.0, after

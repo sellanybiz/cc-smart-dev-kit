@@ -39,7 +39,7 @@ var MIN_BUN = "1.4.3";
 
 // src/build-info/index.ts
 var info = {
-  version: "4.9.0",
+  version: "4.10.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -37886,9 +37886,9 @@ take-over records the values you set by hand in claude-mem's file as ${COMMAND}'
 });
 
 // src/entries/cli.ts
-import { existsSync as existsSync80, statSync as statSync28 } from "fs";
+import { existsSync as existsSync80, statSync as statSync29 } from "fs";
 import { uptime as uptime2 } from "os";
-import { join as join97, resolve as resolve26 } from "path";
+import { join as join97, resolve as resolve27 } from "path";
 
 // src/browser/check.ts
 init_build_info();
@@ -38370,7 +38370,8 @@ function ensurePrivateDir(dir, say, platform = hostPlatform()) {
 // src/mcp/versions.ts
 var MCP_VERSIONS = {
   playwright: "0.0.83",
-  sequentialThinking: "2026.8.31"
+  sequentialThinking: "2026.8.31",
+  shadcn: "4.23.0"
 };
 var TAVILY_MCP_URL = "https://mcp.tavily.com/mcp/";
 
@@ -40202,7 +40203,7 @@ async function runClaudeMem(argv, deps) {
 init_doctor();
 init_build_info();
 init_config();
-import { accessSync as accessSync2, constants as constants3, existsSync as existsSync70, readFileSync as readFileSync81 } from "fs";
+import { accessSync as accessSync2, constants as constants4, existsSync as existsSync70, readFileSync as readFileSync81 } from "fs";
 import { dirname as dirname32, join as join84 } from "path";
 
 // src/gateway/doctor.ts
@@ -41533,6 +41534,7 @@ init_task_server_name();
 var SERVER_NAMES = [
   "playwright",
   "sequential-thinking",
+  "shadcn",
   TAVILY_SERVER_NAME,
   TASKS_SERVER_NAME
 ];
@@ -41555,6 +41557,13 @@ function mcpServers(context) {
           "-y",
           `@modelcontextprotocol/server-sequential-thinking@${MCP_VERSIONS.sequentialThinking}`
         ],
+        command: context.bunx
+      })
+    },
+    {
+      name: "shadcn",
+      json: json2({
+        args: ["-y", `shadcn@${MCP_VERSIONS.shadcn}`, "mcp"],
         command: context.bunx
       })
     },
@@ -41927,6 +41936,11 @@ function readKeyFile(paths, platform) {
 
 // src/mcp/doctor.ts
 var FIRST_START_LIMIT_MS = 180000;
+var PROJECT_SHADCN_CHECK = {
+  ok: true,
+  info: true,
+  text: "the project's own shadcn MCP server is used; nothing to do"
+};
 function realMcpDoctorDeps(read) {
   return {
     run: async (argv, extraEnv) => {
@@ -41994,7 +42008,7 @@ async function mcpChecks(paths, deps, env, cwd = process.cwd()) {
       continue;
     }
     const overriding = overridingServer(paths.userConfigFile, cwd, name);
-    if (overriding !== null) {
+    if (overriding !== null && name !== "shadcn") {
       checks.push({
         ok: true,
         warn: true,
@@ -42024,7 +42038,8 @@ async function mcpChecks(paths, deps, env, cwd = process.cwd()) {
       });
       continue;
     }
-    if (!scope.startsWith("User config")) {
+    const projectShadcn = name === "shadcn" && (overriding !== null || /^(Project|Local) config/.test(scope));
+    if (!scope.startsWith("User config") && !projectShadcn) {
       checks.push({
         ok: false,
         text: `another copy of "${name}" wins over yours: ${scope}`,
@@ -42033,10 +42048,10 @@ async function mcpChecks(paths, deps, env, cwd = process.cwd()) {
       continue;
     }
     const line = `MCP server "${name}": ${status}`;
-    checks.push(status.includes("Connected") ? { ok: true, text: line } : {
+    checks.push(status.includes("Connected") ? projectShadcn ? PROJECT_SHADCN_CHECK : { ok: true, text: line } : {
       ok: false,
       text: line,
-      fix: `run \`claude mcp get ${name}\` to see why it does not connect`
+      fix: projectShadcn ? "the project's own shadcn server does not start: check its command in the project's .mcp.json or local MCP config, then run `claude mcp get shadcn`" : `run \`claude mcp get ${name}\` to see why it does not connect`
     });
   }
   if (!names.includes("tavily-websearch")) {
@@ -44162,8 +44177,19 @@ init_build_info();
 init_names();
 init_git();
 init_settings_hooks();
-import { existsSync as existsSync69, readFileSync as readFileSync80 } from "fs";
-import { join as join83 } from "path";
+import {
+  closeSync as closeSync12,
+  constants as constants3,
+  existsSync as existsSync69,
+  fstatSync as fstatSync4,
+  openSync as openSync12,
+  readdirSync as readdirSync31,
+  readFileSync as readFileSync80,
+  readSync as readSync8,
+  realpathSync as realpathSync11,
+  statSync as statSync26
+} from "fs";
+import { isAbsolute as isAbsolute13, join as join83, relative as relative14, resolve as resolve24, sep as sep9 } from "path";
 
 // src/hooks/specs.ts
 init_command2();
@@ -50686,6 +50712,192 @@ function jobKindLines(config, configFile, projectDir, home) {
     }
   ];
 }
+function parseLintJson(text) {
+  const uncommented = text.replace(/"(?:\\.|[^"\\])*"|\/\/[^\r\n]*|\/\*[\s\S]*?\*\//g, (token) => token.startsWith('"') ? token : " ");
+  return parseUserJson(uncommented.replace(/"(?:\\.|[^"\\])*"|,(?=\s*[}\]])/g, (token) => token === "," ? "" : token));
+}
+var MAX_LINT_CONFIG_BYTES = 1024 * 1024;
+function readLintConfig(file) {
+  const fd = openSync12(file, constants3.O_RDONLY | (constants3.O_NONBLOCK ?? 0));
+  try {
+    const stat = fstatSync4(fd);
+    if (!stat.isFile() || stat.size > MAX_LINT_CONFIG_BYTES) {
+      throw new Error("not a regular config file within the size limit");
+    }
+    const bytes = Buffer.alloc(MAX_LINT_CONFIG_BYTES + 1);
+    let length = 0;
+    while (length < bytes.length) {
+      const count = readSync8(fd, bytes, length, bytes.length - length, null);
+      if (count === 0)
+        break;
+      length += count;
+    }
+    if (length > MAX_LINT_CONFIG_BYTES)
+      throw new Error("config exceeds the size limit");
+    return bytes.toString("utf8", 0, length);
+  } finally {
+    closeSync12(fd);
+  }
+}
+function overrideMatches(patterns, path) {
+  if (!Array.isArray(patterns))
+    return false;
+  let included = false;
+  for (const pattern of patterns) {
+    if (typeof pattern !== "string")
+      continue;
+    const excluded = pattern.startsWith("!");
+    const positive = pattern.replace(/^!{1,2}/, "");
+    const glob = new Bun.Glob(positive === "**/*" ? "**" : positive.replace(/\/\*\*\/\*$/, "/**"));
+    if (glob.match(path))
+      included = !excluded;
+  }
+  return included;
+}
+function biomeRestriction(value, path) {
+  if (!isObject(value))
+    return false;
+  let enabled = true;
+  let level;
+  let elements;
+  const apply = (block) => {
+    if (!isObject(block.linter))
+      return;
+    const linter = block.linter;
+    if (typeof linter.enabled === "boolean")
+      enabled = linter.enabled;
+    const rules = isObject(linter.rules) ? linter.rules : null;
+    const correctness = rules && isObject(rules.correctness) ? rules.correctness : null;
+    const rule = correctness?.noRestrictedElements;
+    if (typeof rule === "string")
+      level = rule;
+    else if (isObject(rule)) {
+      if (rule.level !== undefined)
+        level = rule.level;
+      if (isObject(rule.options) && rule.options.elements !== undefined)
+        elements = rule.options.elements;
+    }
+  };
+  apply(value);
+  if (Array.isArray(value.overrides)) {
+    for (const override of value.overrides) {
+      if (isObject(override) && overrideMatches(override.includes, path))
+        apply(override);
+    }
+  }
+  return enabled && level !== "off" && isObject(elements) && Object.keys(elements).length > 0;
+}
+function eslintRestriction(text) {
+  return text.includes("forbid-elements") || text.includes("no-restricted-syntax") && text.includes("JSXOpeningElement");
+}
+function lintRestriction(folder, projectFolder) {
+  const result = { restricted: false, unreadable: [] };
+  let files;
+  try {
+    files = readdirSync31(folder);
+  } catch {
+    return { restricted: false, unreadable: ["linter configs"] };
+  }
+  for (const file of files.sort()) {
+    const biome = file === "biome.json" || file === "biome.jsonc";
+    const eslint = /^eslint\.config\.(js|mjs|cjs|ts)$/.test(file) || file.startsWith(".eslintrc");
+    const packageConfig = file === "package.json";
+    if (!biome && !eslint && !packageConfig)
+      continue;
+    try {
+      const text = readLintConfig(join83(folder, file));
+      if (packageConfig) {
+        const pkg = parseUserJson(text);
+        result.restricted ||= isObject(pkg) && eslintRestriction(JSON.stringify(pkg.eslintConfig) ?? "");
+      } else {
+        const path = relative14(folder, projectFolder).replaceAll("\\", "/");
+        result.restricted ||= biome ? biomeRestriction(parseLintJson(text), path === "" ? "" : `${path}/`) : eslintRestriction(text);
+      }
+    } catch {
+      result.unreadable.push(file);
+    }
+  }
+  return result;
+}
+function shadcnFolders(root) {
+  const folders = new Map([[realpathSync11(root), root]]);
+  const lines = [];
+  const addFolder = (folder) => {
+    try {
+      const target = realpathSync11(folder);
+      const rel = relative14(realpathSync11(root), target);
+      if (rel === ".." || rel.startsWith(`..${sep9}`) || isAbsolute13(rel))
+        return;
+      if (statSync26(folder).isDirectory() && !folders.has(target))
+        folders.set(target, folder);
+    } catch {}
+  };
+  const packageFile = join83(root, "package.json");
+  if (existsSync69(packageFile)) {
+    try {
+      const pkg = parseUserJson(readLintConfig(packageFile));
+      const workspaces = isObject(pkg) ? pkg.workspaces : null;
+      const entries = Array.isArray(workspaces) ? workspaces : isObject(workspaces) && Array.isArray(workspaces.packages) ? workspaces.packages : [];
+      for (const entry of entries) {
+        if (typeof entry !== "string" || isAbsolute13(entry))
+          continue;
+        const folder = resolve24(root, entry.replace(/\/\*$/, ""));
+        const rel = relative14(root, folder);
+        if (rel === ".." || rel.startsWith(`..${sep9}`) || isAbsolute13(rel))
+          continue;
+        if (entry.endsWith("/*") && !entry.slice(0, -2).includes("*")) {
+          if (!existsSync69(folder))
+            continue;
+          const realFolder = realpathSync11(folder);
+          const realRel = relative14(realpathSync11(root), realFolder);
+          if (realRel === ".." || realRel.startsWith(`..${sep9}`) || isAbsolute13(realRel))
+            continue;
+          for (const child of readdirSync31(folder).sort())
+            addFolder(join83(folder, child));
+        } else if (!entry.includes("*"))
+          addFolder(folder);
+      }
+    } catch {
+      lines.push({
+        ok: true,
+        info: true,
+        text: "project: could not check shadcn/ui workspaces from package.json"
+      });
+    }
+  }
+  return {
+    folders: [...folders.values()].filter((folder) => existsSync69(join83(folder, "components.json"))).sort(),
+    lines
+  };
+}
+function shadcnLintLines(root) {
+  const { folders, lines } = shadcnFolders(root);
+  if (folders.length === 0)
+    return lines;
+  for (const folder of folders) {
+    const rootLint = lintRestriction(root, folder);
+    const local = folder === root ? rootLint : lintRestriction(folder, folder);
+    if (rootLint.restricted || local.restricted)
+      continue;
+    const label = relative14(root, folder).replaceAll("\\", "/") || ".";
+    const unreadable = [...new Set([...rootLint.unreadable, ...local.unreadable])];
+    if (unreadable.length > 0) {
+      lines.push({
+        ok: true,
+        info: true,
+        text: `project: ${label} uses shadcn/ui; could not check raw HTML control restrictions (${unreadable.join(", ")} could not be read or parsed)`
+      });
+    } else {
+      lines.push({
+        ok: true,
+        info: true,
+        text: `project: ${label} uses shadcn/ui without a lint rule against raw HTML controls`,
+        fix: `add a restriction using the lint recipe in /${PLUGIN}:react-best-practices`
+      });
+    }
+  }
+  return lines;
+}
 async function projectChecks2(cwd, env, paths, pluginHooksFile, gh = runGh) {
   if (Bun.which("git", { PATH: env.PATH ?? "" }) === null) {
     return [{ ok: true, info: true, text: "project: not checked, git is not on PATH" }];
@@ -50725,6 +50937,7 @@ async function projectChecks2(cwd, env, paths, pluginHooksFile, gh = runGh) {
     ...engine,
     ...configFile === null ? [] : requiresLines(configFile, projectDir, paths.home),
     ...jobKindLines(config, configFile, projectDir, paths.home),
+    ...shadcnLintLines(checkout.root),
     ...await worktreeLines(config, sources, checkout, env)
   ];
   if (config !== null) {
@@ -50885,7 +51098,7 @@ function checkPlugin(paths) {
 }
 function isExecutable(file) {
   try {
-    accessSync2(file, constants3.X_OK);
+    accessSync2(file, constants4.X_OK);
     return true;
   } catch {
     return false;
@@ -51815,7 +52028,7 @@ init_config();
 init_health();
 init_service();
 init_settings();
-import { existsSync as existsSync71, readdirSync as readdirSync31, readFileSync as readFileSync82, renameSync as renameSync6, rmSync as rmSync21, statSync as statSync26 } from "fs";
+import { existsSync as existsSync71, readdirSync as readdirSync32, readFileSync as readFileSync82, renameSync as renameSync6, rmSync as rmSync21, statSync as statSync27 } from "fs";
 import { basename as basename16, dirname as dirname33, join as join85 } from "path";
 init_path_compare();
 init_file_mode();
@@ -51985,7 +52198,7 @@ var BOOKKEEPING_NAMES = [
 function foreignStateEntries(old) {
   if (!existsSync71(old.stateDir))
     return [];
-  return readdirSync31(old.stateDir).filter((name) => !BOOKKEEPING_NAMES.includes(name));
+  return readdirSync32(old.stateDir).filter((name) => !BOOKKEEPING_NAMES.includes(name));
 }
 function oldPiecesPresent(paths, old, renamer) {
   if ([
@@ -52053,7 +52266,7 @@ function recordsNameOldPaths(stateDir, renamer) {
   }
   const backups = join85(stateDir, "backups");
   if (existsSync71(backups)) {
-    for (const folder of readdirSync31(backups)) {
+    for (const folder of readdirSync32(backups)) {
       if (renamer.path(decodeURIComponent(folder)) !== decodeURIComponent(folder))
         return true;
     }
@@ -52086,7 +52299,7 @@ function absorbStateFolder(from, to, dryRun) {
   if (!existsSync71(from))
     return 0;
   let moved = 0;
-  for (const name of readdirSync31(from)) {
+  for (const name of readdirSync32(from)) {
     const source = join85(from, name);
     const target = join85(to, name);
     if (!existsSync71(target)) {
@@ -52095,7 +52308,7 @@ function absorbStateFolder(from, to, dryRun) {
         renameSync6(source, target);
       continue;
     }
-    if (statSync26(source).isDirectory() && statSync26(target).isDirectory()) {
+    if (statSync27(source).isDirectory() && statSync27(target).isDirectory()) {
       moved += absorbStateFolder(source, target, dryRun);
       if (!dryRun)
         rmSync21(source, { recursive: true, force: true });
@@ -52104,7 +52317,7 @@ function absorbStateFolder(from, to, dryRun) {
     if (!dryRun)
       rmSync21(source, { recursive: true, force: true });
   }
-  if (!dryRun && readdirSync31(from).length === 0)
+  if (!dryRun && readdirSync32(from).length === 0)
     rmSync21(from, { recursive: true, force: true });
   return moved;
 }
@@ -52146,10 +52359,10 @@ function rewriteStateFolder(stateDir, renamer, dryRun) {
   const backupsDir = join85(stateDir, "backups");
   if (!existsSync71(backupsDir))
     return { files, backups };
-  const folders = readdirSync31(backupsDir, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => entry.name);
+  const folders = readdirSync32(backupsDir, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => entry.name);
   for (const folder of folders) {
     const folderPath = join85(backupsDir, folder);
-    for (const name of readdirSync31(folderPath)) {
+    for (const name of readdirSync32(folderPath)) {
       const renamed = renamer.backupName(name);
       if (renamed === name)
         continue;
@@ -52165,7 +52378,7 @@ function rewriteStateFolder(stateDir, renamer, dryRun) {
       continue;
     const target = join85(backupsDir, renamedFolder);
     if (existsSync71(target)) {
-      for (const name of readdirSync31(folderPath))
+      for (const name of readdirSync32(folderPath))
         renameSync6(join85(folderPath, name), join85(target, name));
       rmSync21(folderPath, { recursive: true, force: true });
     } else {
@@ -52205,7 +52418,7 @@ function settingsChanges(settingsFile, stateDir, oldEnv, newEnv) {
   return { set, remove, kept };
 }
 function readOldConfig(file, platform = hostPlatform()) {
-  const mode = statSync26(file).mode;
+  const mode = statSync27(file).mode;
   if (!isOwnerOnly(mode, platform)) {
     throw new ConfigError(`${file} can be read by other users (mode ${(mode & 511).toString(8)}); it holds API keys. Run: chmod 600 ${file}`);
   }
@@ -52273,7 +52486,7 @@ function rewriteLimitState(file, stateDir, renamer, dryRun) {
   if (changed === 0)
     return 0;
   if (!dryRun) {
-    const mode = statSync26(file).mode & 4095;
+    const mode = statSync27(file).mode & 4095;
     backupFile(stateDir, file);
     atomicWrite(file, `${JSON.stringify({ ...parsed, fallbacks }, null, 2)}
 `, mode);
@@ -52967,7 +53180,7 @@ init_secret_line();
 
 // src/cli/setup.ts
 import { existsSync as existsSync75, mkdirSync as mkdirSync29, rmSync as rmSync24 } from "fs";
-import { basename as basename18, delimiter, dirname as dirname35, isAbsolute as isAbsolute13, join as join90, relative as relative14 } from "path";
+import { basename as basename18, delimiter, dirname as dirname35, isAbsolute as isAbsolute14, join as join90, relative as relative15 } from "path";
 init_build_info();
 init_config();
 init_model_picker_step();
@@ -53533,8 +53746,8 @@ function pathStep(paths, platform, env) {
   if (platform === "win32") {
     return `Add ${paths.binDir} to your PATH, so the ${COMMAND} command works: Windows Settings \u2192 System \u2192 About \u2192 Advanced system settings \u2192 Environment Variables \u2192 Path for your account. Then open a new terminal.`;
   }
-  const inHome = relative14(paths.home, paths.binDir);
-  const underHome = inHome !== "" && !inHome.startsWith("..") && !isAbsolute13(inHome);
+  const inHome = relative15(paths.home, paths.binDir);
+  const underHome = inHome !== "" && !inHome.startsWith("..") && !isAbsolute14(inHome);
   const shown = tildify(paths.binDir, paths.home);
   const why = `Add ${shown} to your PATH, so the ${COMMAND} command works`;
   const shell = basename18(env.SHELL ?? "");
@@ -53859,8 +54072,8 @@ import { readFileSync as readFileSync86 } from "fs";
 // src/machine/claude-settings.ts
 init_targets();
 init_user_json();
-import { readFileSync as readFileSync84, statSync as statSync27 } from "fs";
-import { basename as basename19, dirname as dirname36, join as join91, resolve as resolve24 } from "path";
+import { readFileSync as readFileSync84, statSync as statSync28 } from "fs";
+import { basename as basename19, dirname as dirname36, join as join91, resolve as resolve25 } from "path";
 var AUTOCOMPACT_WINDOW_ENV = "CLAUDE_CODE_AUTO_COMPACT_WINDOW";
 var AUTOCOMPACT_PERCENT_ENV = "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE";
 var AUTOCOMPACT_MIN_TOKENS = 1e5;
@@ -53978,24 +54191,24 @@ function compactWindowsOf(sources, model) {
   return { env: envFrom(files, sources.env), settings: settingsWindowFrom(files, model) };
 }
 function mainCheckoutOfFolder(folder) {
-  for (let dir = resolve24(folder);; dir = dirname36(dir)) {
+  for (let dir = resolve25(folder);; dir = dirname36(dir)) {
     const root = checkoutRootAt(dir);
     if (root !== null)
       return root;
     if (dirname36(dir) === dir)
-      return resolve24(folder);
+      return resolve25(folder);
   }
 }
 function checkoutRootAt(dir) {
   const entry = join91(dir, ".git");
   try {
-    if (statSync27(entry).isDirectory())
+    if (statSync28(entry).isDirectory())
       return dir;
     const line = readFileSync84(entry, "utf8").split(`
 `, 1)[0] ?? "";
     if (!line.startsWith("gitdir:"))
       return dir;
-    const gitdir = resolve24(dir, line.slice("gitdir:".length).trim());
+    const gitdir = resolve25(dir, line.slice("gitdir:".length).trim());
     const worktrees = dirname36(gitdir);
     const common = dirname36(worktrees);
     return basename19(worktrees) === "worktrees" && basename19(common) === ".git" ? dirname36(common) : dir;
@@ -54480,8 +54693,8 @@ init_git();
 init_context();
 init_ops();
 init_db();
-import { existsSync as existsSync77, readdirSync as readdirSync32, readFileSync as readFileSync87 } from "fs";
-import { basename as basename20, dirname as dirname38, isAbsolute as isAbsolute14, join as join94, relative as relative15, resolve as resolve25 } from "path";
+import { existsSync as existsSync77, readdirSync as readdirSync33, readFileSync as readFileSync87 } from "fs";
+import { basename as basename20, dirname as dirname38, isAbsolute as isAbsolute15, join as join94, relative as relative16, resolve as resolve26 } from "path";
 
 // src/herdr/brief.ts
 init_names();
@@ -54865,7 +55078,7 @@ function remoteCollision(r, machine, cwd, worktree, branch) {
 }
 function remoteReportFolder(ctx) {
   const defaults = cliPaths({ HOME: ctx.paths.home });
-  return join94(relative15(defaults.home, defaults.stateDir), "herdr", "briefs");
+  return join94(relative16(defaults.home, defaults.stateDir), "herdr", "briefs");
 }
 function remoteReportHint(ctx, machine) {
   const folder = remoteReportFolder(ctx);
@@ -54875,14 +55088,14 @@ function remoteReportHint(ctx, machine) {
 }
 async function remoteBrief(r, ctx, machine, file) {
   const defaults = cliPaths({ HOME: ctx.paths.home });
-  const rel = join94(relative15(defaults.home, defaults.stateDir), "herdr", "briefs", basename20(dirname38(file)), basename20(file));
+  const rel = join94(relative16(defaults.home, defaults.stateDir), "herdr", "briefs", basename20(dirname38(file)), basename20(file));
   execRemote(r, machine, ["mkdir", "-p", "-m", "700", dirname38(rel)]);
   execRemote(r, machine, ["chmod", "700", dirname38(dirname38(rel))]);
   execRemote(r, machine, ["chmod", "700", dirname38(rel)]);
   const answer = JSON.parse(invoke(r, ["file", "write", "--on", machine, "--json", rel], {
     stdin: readFileSync87(file, "utf8")
   }));
-  if (!answer || typeof answer !== "object" || !("path" in answer) || typeof answer.path !== "string" || !isAbsolute14(answer.path))
+  if (!answer || typeof answer !== "object" || !("path" in answer) || typeof answer.path !== "string" || !isAbsolute15(answer.path))
     throw new Error("The remote brief write returned no absolute path; no session was started.");
   execRemote(r, machine, ["chmod", "600", answer.path]);
   return answer.path;
@@ -54893,7 +55106,7 @@ async function start(a, ctx, r) {
     return refuse2(ctx, "This model and effort need the person's approval (--asked).");
   if (a.on && !a.cwd)
     return refuse2(ctx, "A remote start needs --cwd on that machine.");
-  const cwd = a.on ? a.cwd ?? ctx.cwd : resolve25(ctx.cwd, a.cwd ?? ".");
+  const cwd = a.on ? a.cwd ?? ctx.cwd : resolve26(ctx.cwd, a.cwd ?? ".");
   if (a.task && a.on)
     return refuse2(ctx, "A task cannot cross projects or machines. Put its text in the brief instead.");
   const project = taskContext(a.on ? ctx.cwd : cwd, ctx.env), caller = taskContext(ctx.cwd, ctx.env);
@@ -55317,7 +55530,7 @@ async function runHerdr(args, ctx) {
           const folder = dirname38(briefPath(ctx.paths.stateDir, me.core, child.name ?? child.address));
           try {
             if (existsSync77(folder))
-              for (const file of readdirSync32(folder).filter((f) => /^report-.*\.md$/.test(f)).sort())
+              for (const file of readdirSync33(folder).filter((f) => /^report-.*\.md$/.test(f)).sort())
                 ctx.out.say(`Saved report for ${child.address}: ${join94(folder, file)}`);
           } catch (error) {
             ctx.out.line("warn", `Could not list saved reports for ${child.address}: ${error instanceof Error ? error.message : String(error)}`);
@@ -55508,7 +55721,7 @@ init_resolve2();
 init_schema();
 import { createHash as createHash9 } from "crypto";
 import { existsSync as existsSync79, mkdirSync as mkdirSync31, readFileSync as readFileSync89 } from "fs";
-import { basename as basename22, dirname as dirname39, join as join96, relative as relative16 } from "path";
+import { basename as basename22, dirname as dirname39, join as join96, relative as relative17 } from "path";
 
 // src/portal/facts.ts
 init_legacy();
@@ -55704,8 +55917,8 @@ async function uncommittedProject(root, env) {
     "status",
     "--porcelain",
     "--",
-    relative16(root, files.config),
-    relative16(root, files.settings)
+    relative17(root, files.config),
+    relative17(root, files.settings)
   ], env);
   return status.ok ? status.out !== "" : null;
 }
@@ -56301,7 +56514,7 @@ async function main(argv) {
             console.error(usageError("--project needs a folder", "setup"));
             return 2;
           }
-          project = resolve26(dir);
+          project = resolve27(dir);
           index += 1;
         } else if (!flags.includes(arg)) {
           unknown.push(arg);
@@ -56323,7 +56536,7 @@ async function main(argv) {
         console.error(usageError(`Use ${RETRY_WATCHDOG_FLAG} or ${NO_RETRY_WATCHDOG_FLAG}, not both.`, "setup"));
         return 2;
       }
-      if (!existsSync80(project) || !statSync28(project).isDirectory()) {
+      if (!existsSync80(project) || !statSync29(project).isDirectory()) {
         console.error(`Not a folder: ${project}
 Fix: give the folder of a project, or leave --project out to use the folder you are in`);
         return 1;
