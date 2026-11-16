@@ -26,6 +26,9 @@
  *   (`src/jobs/kinds.ts`). A project file written for an older plugin may still set `gb`,
  *   `filesGb`, `maxFiles` or `workers` on a kind (`IGNORED_KIND_FIELDS`): it parses, the queue
  *   ignores every one, and one information line says so once, with the fix.
+ * - **A shadcn/ui project without raw-control lint restrictions.** The checkout root and
+ *   named workspaces get an information line pointing to the React lint recipe. Configs
+ *   are only read, never executed or edited; a read failure stays information too.
  * - **A git too old for the review gate's measure.** In a project with a `cc-smart-dev-kit.json`,
  *   git older than 2.40 is a warning: a review then counts for its exact commit only (D17).
  *
@@ -33,8 +36,19 @@
  * it is set (doctor run from a session), else the checkout of the folder doctor runs in.
  * Outside a git project it says nothing.
  */
-import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import {
+  closeSync,
+  constants,
+  existsSync,
+  fstatSync,
+  openSync,
+  readdirSync,
+  readFileSync,
+  readSync,
+  realpathSync,
+  statSync,
+} from "node:fs";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { COMMAND, PLUGIN_UPDATE_COMMAND } from "../build-info";
 import { PLUGIN } from "../build-info/names";
 import { runGitAsync } from "../hooks/git";
@@ -64,7 +78,7 @@ import {
   locateCheckoutAsync,
 } from "../project/resolve";
 import { isObject } from "../setup/managed-json";
-import { readUserJson } from "../setup/user-json";
+import { parseUserJson, readUserJson } from "../setup/user-json";
 import { taskContext } from "../tasks/context";
 import { checkProjectTasks } from "../tasks/project/check";
 import { shippedIdsOn } from "../tasks/project/release";
@@ -561,6 +575,209 @@ function jobKindLines(
   ];
 }
 
+/** Strip JSONC comments and trailing commas without changing quoted strings. */
+function parseLintJson(text: string): unknown {
+  const uncommented = text.replace(/"(?:\\.|[^"\\])*"|\/\/[^\r\n]*|\/\*[\s\S]*?\*\//g, (token) =>
+    token.startsWith('"') ? token : " ",
+  );
+  return parseUserJson(
+    uncommented.replace(/"(?:\\.|[^"\\])*"|,(?=\s*[}\]])/g, (token) =>
+      token === "," ? "" : token,
+    ),
+  );
+}
+
+const MAX_LINT_CONFIG_BYTES = 1024 * 1024;
+
+/** Inspect and bound one open descriptor; nonblocking open cannot wait for a FIFO writer. */
+function readLintConfig(file: string): string {
+  const fd = openSync(file, constants.O_RDONLY | (constants.O_NONBLOCK ?? 0));
+  try {
+    const stat = fstatSync(fd);
+    if (!stat.isFile() || stat.size > MAX_LINT_CONFIG_BYTES) {
+      throw new Error("not a regular config file within the size limit");
+    }
+    const bytes = Buffer.alloc(MAX_LINT_CONFIG_BYTES + 1);
+    let length = 0;
+    while (length < bytes.length) {
+      const count = readSync(fd, bytes, length, bytes.length - length, null);
+      if (count === 0) break;
+      length += count;
+    }
+    if (length > MAX_LINT_CONFIG_BYTES) throw new Error("config exceeds the size limit");
+    return bytes.toString("utf8", 0, length);
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/** A folder-level nudge: match directory coverage, not a guessed source filename. */
+function overrideMatches(patterns: unknown, path: string): boolean {
+  if (!Array.isArray(patterns)) return false;
+  let included = false;
+  for (const pattern of patterns) {
+    if (typeof pattern !== "string") continue;
+    const excluded = pattern.startsWith("!");
+    // Bun's **/* needs a filename; ** already matches the directory and its descendants.
+    const positive = pattern.replace(/^!{1,2}/, "");
+    const glob = new Bun.Glob(positive === "**/*" ? "**" : positive.replace(/\/\*\*\/\*$/, "/**"));
+    if (glob.match(path)) included = !excluded;
+  }
+  return included;
+}
+
+/** Merge only the relevant linter settings, in matching override order. */
+function biomeRestriction(value: unknown, path: string): boolean {
+  if (!isObject(value)) return false;
+  let enabled = true;
+  let level: unknown;
+  let elements: unknown;
+  const apply = (block: Record<string, unknown>) => {
+    if (!isObject(block.linter)) return;
+    const linter = block.linter;
+    if (typeof linter.enabled === "boolean") enabled = linter.enabled;
+    const rules = isObject(linter.rules) ? linter.rules : null;
+    const correctness = rules && isObject(rules.correctness) ? rules.correctness : null;
+    const rule = correctness?.noRestrictedElements;
+    if (typeof rule === "string") level = rule;
+    else if (isObject(rule)) {
+      if (rule.level !== undefined) level = rule.level;
+      if (isObject(rule.options) && rule.options.elements !== undefined)
+        elements = rule.options.elements;
+    }
+  };
+  apply(value);
+  if (Array.isArray(value.overrides)) {
+    for (const override of value.overrides) {
+      if (isObject(override) && overrideMatches(override.includes, path)) apply(override);
+    }
+  }
+  return enabled && level !== "off" && isObject(elements) && Object.keys(elements).length > 0;
+}
+
+function eslintRestriction(text: string): boolean {
+  return (
+    text.includes("forbid-elements") ||
+    (text.includes("no-restricted-syntax") && text.includes("JSXOpeningElement"))
+  );
+}
+
+type LintRestriction = { restricted: boolean; unreadable: string[] };
+
+/** ESLint is read as text, never executed: this is a nudge, not a proof of enforcement. */
+function lintRestriction(folder: string, projectFolder: string): LintRestriction {
+  const result: LintRestriction = { restricted: false, unreadable: [] };
+  let files: string[];
+  try {
+    files = readdirSync(folder);
+  } catch {
+    return { restricted: false, unreadable: ["linter configs"] };
+  }
+  for (const file of files.sort()) {
+    const biome = file === "biome.json" || file === "biome.jsonc";
+    const eslint = /^eslint\.config\.(js|mjs|cjs|ts)$/.test(file) || file.startsWith(".eslintrc");
+    const packageConfig = file === "package.json";
+    if (!biome && !eslint && !packageConfig) continue;
+    try {
+      const text = readLintConfig(join(folder, file));
+      if (packageConfig) {
+        const pkg = parseUserJson(text);
+        result.restricted ||=
+          isObject(pkg) && eslintRestriction(JSON.stringify(pkg.eslintConfig) ?? "");
+      } else {
+        const path = relative(folder, projectFolder).replaceAll("\\", "/");
+        result.restricted ||= biome
+          ? biomeRestriction(parseLintJson(text), path === "" ? "" : `${path}/`)
+          : eslintRestriction(text);
+      }
+    } catch {
+      result.unreadable.push(file);
+    }
+  }
+  return result;
+}
+
+/** Root plus package.json workspaces: plain folders and one-level dir/* patterns only. */
+function shadcnFolders(root: string): { folders: string[]; lines: ProjectLine[] } {
+  const folders = new Map([[realpathSync(root), root]]);
+  const lines: ProjectLine[] = [];
+  const addFolder = (folder: string) => {
+    try {
+      const target = realpathSync(folder);
+      const rel = relative(realpathSync(root), target);
+      if (rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) return;
+      if (statSync(folder).isDirectory() && !folders.has(target)) folders.set(target, folder);
+    } catch {
+      // A broken symlink or a disappearing workspace is not a project doctor can check.
+    }
+  };
+  const packageFile = join(root, "package.json");
+  if (existsSync(packageFile)) {
+    try {
+      const pkg = parseUserJson(readLintConfig(packageFile));
+      const workspaces = isObject(pkg) ? pkg.workspaces : null;
+      const entries = Array.isArray(workspaces)
+        ? workspaces
+        : isObject(workspaces) && Array.isArray(workspaces.packages)
+          ? workspaces.packages
+          : [];
+      for (const entry of entries) {
+        if (typeof entry !== "string" || isAbsolute(entry)) continue;
+        const folder = resolve(root, entry.replace(/\/\*$/, ""));
+        const rel = relative(root, folder);
+        if (rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) continue;
+        if (entry.endsWith("/*") && !entry.slice(0, -2).includes("*")) {
+          if (!existsSync(folder)) continue;
+          const realFolder = realpathSync(folder);
+          const realRel = relative(realpathSync(root), realFolder);
+          if (realRel === ".." || realRel.startsWith(`..${sep}`) || isAbsolute(realRel)) continue;
+          for (const child of readdirSync(folder).sort()) addFolder(join(folder, child));
+        } else if (!entry.includes("*")) addFolder(folder);
+      }
+    } catch {
+      lines.push({
+        ok: true,
+        info: true,
+        text: "project: could not check shadcn/ui workspaces from package.json",
+      });
+    }
+  }
+  return {
+    folders: [...folders.values()]
+      .filter((folder) => existsSync(join(folder, "components.json")))
+      .sort(),
+    lines,
+  };
+}
+
+/** One info-only lint recipe per shadcn project, with a root rule covering its workspaces. */
+function shadcnLintLines(root: string): ProjectLine[] {
+  const { folders, lines } = shadcnFolders(root);
+  if (folders.length === 0) return lines;
+  for (const folder of folders) {
+    const rootLint = lintRestriction(root, folder);
+    const local = folder === root ? rootLint : lintRestriction(folder, folder);
+    if (rootLint.restricted || local.restricted) continue;
+    const label = relative(root, folder).replaceAll("\\", "/") || ".";
+    const unreadable = [...new Set([...rootLint.unreadable, ...local.unreadable])];
+    if (unreadable.length > 0) {
+      lines.push({
+        ok: true,
+        info: true,
+        text: `project: ${label} uses shadcn/ui; could not check raw HTML control restrictions (${unreadable.join(", ")} could not be read or parsed)`,
+      });
+    } else {
+      lines.push({
+        ok: true,
+        info: true,
+        text: `project: ${label} uses shadcn/ui without a lint rule against raw HTML controls`,
+        fix: `add a restriction using the lint recipe in /${PLUGIN}:react-best-practices`,
+      });
+    }
+  }
+  return lines;
+}
+
 /** The project checks for the folder `cwd`; none outside git. */
 export async function projectChecks(
   cwd: string,
@@ -622,6 +839,7 @@ export async function projectChecks(
     ...engine,
     ...(configFile === null ? [] : requiresLines(configFile, projectDir, paths.home)),
     ...jobKindLines(config, configFile, projectDir, paths.home),
+    ...shadcnLintLines(checkout.root),
     ...(await worktreeLines(config, sources, checkout, env)),
   ];
   // Without cc-smart-dev-kit.json every plugin hook is silent: nothing can answer twice.
