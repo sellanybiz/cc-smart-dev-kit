@@ -41531,10 +41531,11 @@ import { join as join67 } from "path";
 
 // src/mcp/servers.ts
 init_task_server_name();
+var SHADCN_SERVER_NAME = "shadcn";
 var SERVER_NAMES = [
   "playwright",
   "sequential-thinking",
-  "shadcn",
+  SHADCN_SERVER_NAME,
   TAVILY_SERVER_NAME,
   TASKS_SERVER_NAME
 ];
@@ -41561,7 +41562,7 @@ function mcpServers(context) {
       })
     },
     {
-      name: "shadcn",
+      name: SHADCN_SERVER_NAME,
       json: json2({
         args: ["-y", `shadcn@${MCP_VERSIONS.shadcn}`, "mcp"],
         command: context.bunx
@@ -42008,7 +42009,7 @@ async function mcpChecks(paths, deps, env, cwd = process.cwd()) {
       continue;
     }
     const overriding = overridingServer(paths.userConfigFile, cwd, name);
-    if (overriding !== null && name !== "shadcn") {
+    if (overriding !== null && name !== SHADCN_SERVER_NAME) {
       checks.push({
         ok: true,
         warn: true,
@@ -42038,7 +42039,7 @@ async function mcpChecks(paths, deps, env, cwd = process.cwd()) {
       });
       continue;
     }
-    const projectShadcn = name === "shadcn" && (overriding !== null || /^(Project|Local) config/.test(scope));
+    const projectShadcn = name === SHADCN_SERVER_NAME && (overriding !== null || /^(Project|Local) config/.test(scope));
     if (!scope.startsWith("User config") && !projectShadcn) {
       checks.push({
         ok: false,

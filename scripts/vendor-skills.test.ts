@@ -3,12 +3,7 @@ import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { MCP_VERSIONS } from "../src/mcp/versions";
 import { tempDir } from "../src/testing/temp";
-import {
-  checkBudget,
-  parseComponentCosts,
-  subtractUserOnlySkills,
-  userOnlySkills,
-} from "./check-context-budget";
+import { checkBudget, copyWithoutSkills, userOnlySkills } from "./check-context-budget";
 import { checkDocs, SKIPPED_FOLDERS } from "./check-docs";
 import { readSourceFiles } from "./check-duplicates";
 import {
@@ -34,42 +29,27 @@ function filesIn(folder: string): string[] {
     .sort();
 }
 
-const output = `Source: example@inline
-Projected token cost
-  Always-on: ~1,200 tok
-Per-component (rounded)
-  component always-on on-invoke
-  open ~100 ~2.5k
-  private ~150 ~2.5k
-  tiny < 20 ~1k
-  large ~1.2k ~3k
-
-  On-invoke cost is paid each time a skill or agent fires.
-`;
-
 describe("user-only budget (offline)", () => {
-  test("reads per-component always-on costs, conservatively counting < 20 as 20", () => {
-    expect([...parseComponentCosts(output)]).toEqual([
-      ["open", 100],
-      ["private", 150],
-      ["tiny", 20],
-      ["large", 1200],
+  test("the measured copy leaves out exactly the user-only skill folders", () => {
+    const folder = tempDir("budget-copy");
+    const plugin = join(folder, "plugin");
+    for (const file of [
+      "skills/open/SKILL.md",
+      "skills/private/SKILL.md",
+      "skills/private/references/a.md",
+      "skills/private-two/SKILL.md",
+      "agents/builder.md",
+    ]) {
+      mkdirSync(join(plugin, file, ".."), { recursive: true });
+      writeFileSync(join(plugin, file), "x");
+    }
+    const copy = join(folder, "copy");
+    copyWithoutSkills(plugin, copy, ["private"]);
+    expect(filesIn(copy).sort()).toEqual([
+      "agents/builder.md",
+      "skills/open/SKILL.md",
+      "skills/private-two/SKILL.md",
     ]);
-    expect(() => parseComponentCosts("Always-on: ~100 tok")).toThrow("Per-component");
-    expect(() => parseComponentCosts(output.replace("~150", "unknown"))).toThrow("component row");
-  });
-
-  test("subtracts only user-only skills, and fails closed for missing or impossible rows", () => {
-    expect(subtractUserOnlySkills(1200, parseComponentCosts(output), ["private", "tiny"])).toBe(
-      1030,
-    );
-    expect(subtractUserOnlySkills(1200, parseComponentCosts(output), [])).toBe(1200);
-    expect(() => subtractUserOnlySkills(1200, parseComponentCosts(output), ["missing"])).toThrow(
-      "missing",
-    );
-    expect(() => subtractUserOnlySkills(100, parseComponentCosts(output), ["private"])).toThrow(
-      "exceeds",
-    );
     expect(checkBudget(1030, 1000, 2).lines[0]).toContain(
       "2 user-only skills left out: Claude never sees them",
     );

@@ -25,7 +25,7 @@ import type { CommandRunner } from "../update/apply";
 import { readMcpRecords } from "./records";
 import { overridingServer, readUserServers, sameConfig } from "./register";
 import { retiredChecks } from "./retired";
-import { SERVER_NAMES } from "./servers";
+import { SERVER_NAMES, SHADCN_SERVER_NAME } from "./servers";
 import { describeServerConfig } from "./status";
 import { readTavilyKey } from "./tavily";
 
@@ -157,7 +157,7 @@ export async function mcpChecks(
     // plugin's server is not the one starting. `!`, never a failure, and never a key: what
     // runs instead goes through the same redacting line as above.
     const overriding = overridingServer(paths.userConfigFile, cwd, name);
-    if (overriding !== null && name !== "shadcn") {
+    if (overriding !== null && name !== SHADCN_SERVER_NAME) {
       checks.push({
         ok: true,
         warn: true,
@@ -193,7 +193,7 @@ export async function mcpChecks(
       continue;
     }
     const projectShadcn =
-      name === "shadcn" && (overriding !== null || /^(Project|Local) config/.test(scope));
+      name === SHADCN_SERVER_NAME && (overriding !== null || /^(Project|Local) config/.test(scope));
     if (!scope.startsWith("User config") && !projectShadcn) {
       checks.push({
         ok: false,

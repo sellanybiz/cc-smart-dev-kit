@@ -12130,10 +12130,11 @@ import { join as join10 } from "path";
 var TASKS_SERVER_NAME = `${COMMAND}-tasks`;
 
 // src/mcp/servers.ts
+var SHADCN_SERVER_NAME = "shadcn";
 var SERVER_NAMES = [
   "playwright",
   "sequential-thinking",
-  "shadcn",
+  SHADCN_SERVER_NAME,
   TAVILY_SERVER_NAME,
   TASKS_SERVER_NAME
 ];
@@ -13138,7 +13139,7 @@ async function mcpChecks(paths, deps, env, cwd = process.cwd()) {
       continue;
     }
     const overriding = overridingServer(paths.userConfigFile, cwd, name);
-    if (overriding !== null && name !== "shadcn") {
+    if (overriding !== null && name !== SHADCN_SERVER_NAME) {
       checks.push({
         ok: true,
         warn: true,
@@ -13168,7 +13169,7 @@ async function mcpChecks(paths, deps, env, cwd = process.cwd()) {
       });
       continue;
     }
-    const projectShadcn = name === "shadcn" && (overriding !== null || /^(Project|Local) config/.test(scope));
+    const projectShadcn = name === SHADCN_SERVER_NAME && (overriding !== null || /^(Project|Local) config/.test(scope));
     if (!scope.startsWith("User config") && !projectShadcn) {
       checks.push({
         ok: false,

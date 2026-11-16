@@ -34,10 +34,13 @@ import { TASKS_SERVER_NAME } from "./task-server-name";
 import { MCP_VERSIONS, TAVILY_MCP_URL } from "./versions";
 
 /** The servers this plugin manages, in the order setup registers them. */
+/** The official shadcn/ui server: a project may run its own copy under this name. */
+export const SHADCN_SERVER_NAME = "shadcn";
+
 export const SERVER_NAMES = [
   "playwright",
   "sequential-thinking",
-  "shadcn",
+  SHADCN_SERVER_NAME,
   TAVILY_SERVER_NAME,
   TASKS_SERVER_NAME,
 ] as const;
@@ -109,7 +112,7 @@ export function mcpServers(context: McpContext): McpServer[] {
       }),
     },
     {
-      name: "shadcn",
+      name: SHADCN_SERVER_NAME,
       json: json({
         args: ["-y", `shadcn@${MCP_VERSIONS.shadcn}`, "mcp"],
         command: context.bunx,

@@ -810,8 +810,8 @@ as one JSON object instead: `format`, `version`, `ok`, `counts`, and `groups`, e
   MCP servers' own line, just below;
 - the MCP servers setup registers (the `playwright` browser, `sequential-thinking`, `shadcn`,
   `tavily-websearch`): each is registered at user scope and starts
-  (`claude mcp get`, which starts it once). ✗ when one is missing (fix: `cc-smart-dev-kit setup`)
-  or when another copy of it wins — a project's `.mcp.json`, or the local scope — naming
+  (`claude mcp get`, which starts it once). ✗ when one is missing (fix: `cc-smart-dev-kit setup`);
+  `!` when another copy of it wins — a project's `.mcp.json`, or the local scope — naming
   what to remove. A project's own `shadcn` copy (what `shadcn mcp init` writes) is the one
   exception: while it connects, it is a `·` line and stays; when it does not start, ✗ names its
   command to check, never a removal. Without a Tavily key its server is skipped, as a `·` line that names the
@@ -2256,7 +2256,7 @@ folders. Registered for the user, the names stay and the servers stay.
 |---|---|
 | `playwright` | The browser ([The browser](#the-browser)): the launcher, `browser mcp`, on your own Chrome through the Playwright extension. On Windows it starts the `.cmd` launcher through `cmd.exe /c` — Claude Code starts the server as a program, and a program there cannot run the `sh` launcher. |
 | `sequential-thinking` | `@modelcontextprotocol/server-sequential-thinking`, at a pinned version, through `bunx`. |
-| `shadcn` | The official shadcn/ui CLI's server (`shadcn mcp`), at a pinned version, through `bunx`: it lists, searches and shows registry components and their examples, and gives the add command. It reads `components.json` from the folder the session started in and does not follow a worktree, so run the add command it gives in the worktree you work in. A project's own `shadcn` server (what `shadcn mcp init` writes) wins, and stays. |
+| `shadcn` | The official shadcn/ui CLI's server (`shadcn mcp`), at a pinned version, through `bunx`: it lists, searches and shows registry components and their examples, and gives the add command. It reads `components.json` from the folder the session started in and does not follow a worktree, so run the add command it gives in the worktree you work in. That command names `shadcn@latest`; `react-best-practices` tells Claude to run the pinned version instead. That command names `shadcn@latest`; `react-best-practices` tells Claude to run the pinned version instead. A project's own `shadcn` server (what `shadcn mcp init` writes) wins, and stays. |
 | `tavily-websearch` | [Tavily](https://tavily.com)'s remote web-search server (`https://mcp.tavily.com/mcp/`). Its key is **never** written into a registration or printed: the header carries `Bearer ${TAVILY_API_KEY}`, which Claude Code fills in from its own environment at connect time. |
 
 - **The Tavily key**, in this order:

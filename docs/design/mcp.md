@@ -21,7 +21,11 @@ which every session that works in a worktree does. Registered for the user, the 
   process folder (`process.cwd()`), the folder the session started in. It has no per-call
   folder and does not follow a move into a worktree. Its tools can still list, search and
   view registry items without a project. Run the add command it returns in the target
-  worktree, where that worktree's `components.json` supplies the registry settings.
+  worktree, where that worktree's `components.json` supplies the registry settings. The
+  server builds that command with `shadcn@latest` (its own code), so `react-best-practices`
+  tells Claude to run the pinned version instead. A project's own `shadcn` server is a
+  project-file server: whether it keeps running after the session moves into a worktree is
+  not proved (`docs/claude-code-contract.md` § MCP servers).
 - **A retired server** (`RETIRED_SERVER_NAMES`; today `serena`, dropped in 0.6.0 — one server
   per session at about 3 GB each in a large project, for tools sessions seldom called) is taken
   back by the next setup, in `src/mcp/retired.ts`, the one home of that cleanup:

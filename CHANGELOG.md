@@ -25,7 +25,7 @@ in your own terminal after the update; the user guide is [README.md](README.md).
   hand-made widget as a finding when the design system has one.
 - **Seven skills only you start.** The official `shadcn` and `migrate-radix-to-base` skills and
   the five shadcncraft skills ship as their authors wrote them, with their licences, pinned and
-  patched by `scripts/vendor-skills.ts`: the shadcn CLI is pinned to the server's version, a
+  patched by `scripts/vendor-skills.ts`: the shadcn CLI in their text is pinned to the server's version, a
   licence key is never asked for in the chat, and the shadcn guide says the server is already
   registered. Claude never starts them and never sees their descriptions, so they cost no
   context. Some shadcncraft steps need a paid licence or a Figma MCP server.
@@ -36,7 +36,8 @@ in your own terminal after the update; the user guide is [README.md](README.md).
   the same checks. It says so, then watches CI (`verify-change` § 4).
 - **The context budget counts only what Claude sees.** A skill marked
   `disable-model-invocation` is left out of the check, because its description never reaches
-  the model (proved live on Claude Code 2.1.325).
+  the model (proved live on Claude Code 2.1.325). The check measures a copy of the plugin
+  without those skills, so the figure is exact; the always-on budget is 2,766 tokens.
 
 **What to run:** `cc-smart-dev-kit setup` (it registers the shadcn MCP server), then
 `cc-smart-dev-kit doctor`, then restart Claude Code so the new server and skills load.

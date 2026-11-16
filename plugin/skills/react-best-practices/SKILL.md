@@ -18,7 +18,8 @@ Before writing a component, control, widget, hook or helper, look in this order:
    the project uses shadcn/ui. Read the vendored `/cc-smart-dev-kit:shadcn` guide: `../shadcn/SKILL.md`
    and its reference files, beside this skill in the plugin. A project's own shadcn skill
    takes precedence. Use the shadcn MCP tools to search, view items, read examples and get
-   the add command. Run that command in your own worktree, with the project's package runner.
+   the add command. Run that command in your own worktree, with the project's package runner,
+   but replace its `shadcn@latest` with the version the vendored guide pins: never `@latest`.
 3. **A maintained library:** find one that fits the gap (`/cc-smart-dev-kit:research-first`).
 4. **Custom code:** explain why the earlier options do not fit with a `Why custom:` line
    in the report or pull request.
