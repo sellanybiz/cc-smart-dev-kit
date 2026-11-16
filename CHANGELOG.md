@@ -3,6 +3,44 @@
 What each release changed, newest first. A release's **What to run** steps are the ones to do
 in your own terminal after the update; the user guide is [README.md](README.md).
 
+## 4.10.0
+
+- **shadcn/ui support.** Setup registers the official shadcn MCP server for your user, pinned
+  (`shadcn` 4.23.0, through `bunx`), like the other servers. Claude can then search, view and
+  add registry components in any project. A project's own `shadcn` server (what
+  `shadcn mcp init` writes) wins, and `doctor` shows it as information while it connects. The
+  server reads `components.json` from the folder the session started in; it does not follow a
+  worktree.
+- **`react-best-practices`, split out of `performance-budget`.** The React playbook and React
+  Compiler move to the new skill, which also puts the design system first: the project's own
+  parts, then shadcn/ui (its guide and the MCP server), then a maintained library, then your own
+  code with a `Why custom:` line. It carries the lint rule that enforces this (Biome
+  `noRestrictedElements`, or ESLint). `performance-budget` keeps the performance and UX budgets,
+  for performance work only. Its project add-on still works: without
+  `.claude/cc-smart-dev-kit/react-best-practices.md`, the new skill reads
+  `.claude/cc-smart-dev-kit/performance-budget.md`, where your React Compiler opt-out lives.
+- **Design system first, where Claude decides.** The builder looks in the project, then its design
+  system, then a library, before it writes a component, and reports the standard parts it used.
+  A phase brief names the standard components to use. Review axis 6 counts a raw control or a
+  hand-made widget as a finding when the design system has one.
+- **Seven skills only you start.** The official `shadcn` and `migrate-radix-to-base` skills and
+  the five shadcncraft skills ship as their authors wrote them, with their licences, pinned and
+  patched by `scripts/vendor-skills.ts`: the shadcn CLI is pinned to the server's version, a
+  licence key is never asked for in the chat, and the shadcn guide says the server is already
+  registered. Claude never starts them and never sees their descriptions, so they cost no
+  context. Some shadcncraft steps need a paid licence or a Figma MCP server.
+- **`doctor` notes a shadcn project with no lint rule** against raw HTML controls, as information,
+  and points to the recipe. It only reads.
+- **A busy machine may skip the push hook, but only safely.** Under heavy load, Claude may push
+  with `--no-verify` only when the full check already passed on that exact commit and CI runs
+  the same checks. It says so, then watches CI (`verify-change` § 4).
+- **The context budget counts only what Claude sees.** A skill marked
+  `disable-model-invocation` is left out of the check, because its description never reaches
+  the model (proved live on Claude Code 2.1.325).
+
+**What to run:** `cc-smart-dev-kit setup` (it registers the shadcn MCP server), then
+`cc-smart-dev-kit doctor`, then restart Claude Code so the new server and skills load.
+
 ## 4.9.0
 
 - **Lay out all your plans up front; one runs at a time.** In 4.8.0 a session could queue

@@ -73,8 +73,8 @@ a step that failed, and running it again goes on from there.
     the file, says why, and the question comes once more.
   A key that cannot be checked (OmniRoute not running, a 5xx) is saved with a warning, never
   silently. With no OmniRoute at all, nothing is asked and the gateway goes on the list at the end.
-- **An MCP server of yours.** If one of the plugin's three server names (`playwright`,
-  `sequential-thinking`, `tavily-websearch`) is registered at user scope by something else — a
+- **An MCP server of yours.** If one of the plugin's server names (`playwright`,
+  `sequential-thinking`, `shadcn`, `tavily-websearch`) is registered at user scope by something else — a
   project's own script, say — setup leaves it alone, as it must. The installer then shows what
   runs instead and asks whether to replace it, one server at a time. A yes runs
   `claude mcp remove <name> --scope user` and then setup again, so the plugin's own server is
@@ -234,7 +234,7 @@ Its task system is the ledger; the optional gateway supplies model choices.
 | The portal | A page on this machine with the same facts and actions as the commands, always up with your sessions: [The portal](#the-portal). |
 | The hooks and guards | Small programs at the moments that matter: a guard before a git push, a merge, an agent launch or an edit of your settings; the self-update: [The hooks](#the-hooks). |
 | The browser | Claude Code's browser tools on **your own** Google Chrome, in a profile of its own: [The browser](#the-browser). |
-| MCP servers | `playwright`, `sequential-thinking` and `tavily-websearch`, registered for your user: [MCP servers](#mcp-servers). |
+| MCP servers | `playwright`, `sequential-thinking`, `shadcn` and `tavily-websearch`, registered for your user: [MCP servers](#mcp-servers). |
 | The task system | The kit's own task list: the ledger of plans, phases and steps that the main session and its subagents share: [Tasks](#tasks-1100), [Subagent-driven parallel development](#subagent-driven-parallel-development). |
 | The heavy-job queue | One queue for the machine's type checks, lints, tests and builds, so only the chosen number of full runs go at a time (default 1): [Heavy jobs](#heavy-jobs-one-queue-for-the-machine). |
 | Worktrees and sessions | Claude Code's own worktrees, a command that clears the finished ones, and one that brings a session back: [Worktrees](#worktrees), [Sessions](#sessions). |
@@ -340,7 +340,7 @@ list.
 | `cc-smart-dev-kit setup --max-subagents <n>` | Sets the kit's value for how many subagents one session runs at once, a whole number from 1 to 100: [Subagent concurrency](#subagent-concurrency). |
 | `cc-smart-dev-kit usage [--hours <n>] [--project <folder or name>] [--json]` | Which models answered on this machine, per session, from Claude Code's transcripts: the main session's replies by model, and apart, its subagents (how each was launched, the model of each reply, the share on Opus). Each subagent's own record adds its type, its replies by model, its input/output/cache tokens and an estimated cost (Claude's list price; a backend whose price is unknown is counted with no cost). Default: the last 6 hours. It also lists the Opus and Fable launches the agent guard allowed, by effort and by reason, and auto mode's safety checks, which the gateway's router counted, by day, with the tokens each answer reported (below). `--json` prints the same facts as one object. Read only; no message text. |
 | `cc-smart-dev-kit report [--hours <n> \| --days <n>] [--project <folder or name>] [--session <id>] [--json]` | What this machine's Claude Code sessions did in the window (default: the last 7 days; at most 8): per session, the time Claude Code timed for its turns, agent launches and the parallel share, the minutes blocked on permission prompts and which guard asked, the questions, the waits on background work, the idle time until the person wrote, the compactions, auto-mode's blocks by rule, and the merges that asked — then the totals, every prompt's cause, and the calls waiting on you now. Read only; no message text. A prompt's wait is an upper bound: from the tool call's line to the person's answer. `--json` prints the whole report. |
-| `cc-smart-dev-kit mcp status [--json]` | Read-only: the three MCP servers cc-smart-dev-kit registers for your user, and which of them are registered by something else instead (a project's own script, say). One line each, naming what runs instead (the command and its arguments — never an `env` or a `headers`), or `--json` for a script. Exit 1 means Claude Code's own config could not be read, so "nothing is foreign" and "could not check" are never confused. The [installer](#install) asks with it before it replaces one of yours; `doctor` warns from the same facts. |
+| `cc-smart-dev-kit mcp status [--json]` | Read-only: the MCP servers cc-smart-dev-kit registers for your user, and which of them are registered by something else instead (a project's own script, say). One line each, naming what runs instead (the command and its arguments — never an `env` or a `headers`), or `--json` for a script. Exit 1 means Claude Code's own config could not be read, so "nothing is foreign" and "could not check" are never confused. The [installer](#install) asks with it before it replaces one of yours; `doctor` warns from the same facts. |
 | `cc-smart-dev-kit doctor [--verbose] [--json] [--live]` | Checks the install, the cc-smart-dev-kit files the current project's `CLAUDE.md` imports, and the project of the folder you run it in (the list is below), in groups. A group that passed shows one line; a group with a ✗ or a `!` shows every line, and each ✗ has a `Fix:` line under it. `·` is information and `!` a warning (neither is a failure). The last line is the verdict, and the exit code is 1 when a check fails. `--verbose` opens every group; `--json` prints the whole report for a program (the installers read it). `--live` also proves the hooks and Claude Code's own worktrees on the Claude Code installed here (below); it never runs without the flag. |
 | `cc-smart-dev-kit restore [--yes] [--now]` | Removes what setup added (the subagent cap's key too, while it still holds the kit's value) and keeps everything else, including any value you changed since, `gateway.json`, and the state it still needs. With the gateway on it runs in two stages, so running sessions are not cut off. Full text: [below](#cc-smart-dev-kit-restore). |
 | `cc-smart-dev-kit update [--check \| --hold \| --resume]` | Installs a newer cc-smart-dev-kit now, showing each step: `claude plugin marketplace update cc-smart-dev-kit`, then `claude plugin update cc-smart-dev-kit@cc-smart-dev-kit --scope user` when there is a newer version; a new major version too, which the background update holds for this. When an installed companion plugin is outside the range the new version needs, or has no version number, it installs nothing, names the companion and the command that updates it, and exits 1 (§ The background update). `--check` only says whether a newer version exists, and whether it is a major one (it reads the remote's version without changing anything). `--hold` stops the background update on this machine; `--resume` starts it again. Both answer at once (no lock); while a check runs, they say "A check is running now; it finishes." Nothing restarts: restart Claude sessions to load the new version. |
@@ -808,11 +808,13 @@ as one JSON object instead: `format`, `version`, `ok`, `counts`, and `groups`, e
   command or the click that fixes it; without the token nothing runs at all
   ([The browser](#the-browser)). Whether the `playwright` server is registered and starts is the
   MCP servers' own line, just below;
-- the MCP servers setup registers (the `playwright` browser, `sequential-thinking`,
+- the MCP servers setup registers (the `playwright` browser, `sequential-thinking`, `shadcn`,
   `tavily-websearch`): each is registered at user scope and starts
   (`claude mcp get`, which starts it once). ✗ when one is missing (fix: `cc-smart-dev-kit setup`)
   or when another copy of it wins — a project's `.mcp.json`, or the local scope — naming
-  what to remove. Without a Tavily key its server is skipped, as a `·` line that names the
+  what to remove. A project's own `shadcn` copy (what `shadcn mcp init` writes) is the one
+  exception: while it connects, it is a `·` line and stays; when it does not start, ✗ names its
+  command to check, never a removal. Without a Tavily key its server is skipped, as a `·` line that names the
   key file: a person who never wanted web search loses nothing. A key is never printed;
 - what an older setup left for Serena ([0.6.0](#060-serena-is-removed)): one ✗ line while
   setup still has to take back the `serena` registration it made, its context file or the
@@ -893,6 +895,12 @@ as one JSON object instead: `format`, `version`, `ok`, `counts`, and `groups`, e
   - `!` warnings (never a failure) for an `ownHooks` entry with no project hook left to
     answer, and for a project hook that runs next to a plugin hook `ownHooks` does not
     name: both would answer (§ The hooks);
+  - as information (`·`), one line per project folder that uses shadcn/ui (a `components.json`
+    at the root, or in a folder the root `package.json` `workspaces` names) when no lint rule
+    stops raw HTML controls there: no Biome `noRestrictedElements` with elements, and no ESLint
+    `react/forbid-elements` or JSX `no-restricted-syntax`. It points to the lint recipe in
+    `/cc-smart-dev-kit:react-best-practices`. It reads only, and a file it cannot read is
+    "could not check", never a failure;
   - as information (`·`), once: a kind in `jobs.kinds` that still sets a size field (`gb`,
     `filesGb`, `maxFiles`, `workers`, `light`). The heavy-job queue ignores them, so they can
     go; the line names the kinds and the fields;
@@ -1636,13 +1644,28 @@ names such a missing import.
 | `self-evolve` | Turning a correction into a rule, skill, hook, doc or memory; size budgets. |
 | `memory-routing` | Where a fact, a preference or a to-do belongs. |
 | `explain` | Teaching code or an idea in plain words. |
-| `performance-budget` | Every React or Next.js web app change: the React playbook the code follows, React Compiler on, and the performance and UX budget. |
+| `react-best-practices` | Every React or Next.js web app change: the design system first (the project's parts, then shadcn/ui with its guide and MCP server, then a library, then your own with a `Why custom:` line), the lint rule that enforces it, the React playbook, React Compiler on. Its project add-on is `.claude/cc-smart-dev-kit/react-best-practices.md`; without it, the older `performance-budget.md` add-on is read. |
+| `performance-budget` | Performance work: slow loading, re-renders, bundle size, N+1 queries, Core Web Vitals; the performance and UX budget. |
 | `ui-verify` | A browser check of a UI change, and your design verdict. |
 | `worktree` | The steps of one-worktree-per-session work (for projects that opt in). |
 | `gateway` | The optional AI gateway. |
 | `audit` | A sweep of an area for one class of defect, not a diff: scope, tracks and budget, the `audit-run` workflow, then every finding proved in the code. |
 | `user-unavailable` | While you cannot answer (`user unavailable`): never stop to ask, take the easy-to-undo choices and park them as decisions, park your questions and the actions that need your yes, go on with the rest, and write the stretch's summary into the list. |
 | `user-available` | When you are back: switches the state off, shows what was done while you were away, then goes through the list — decisions to keep or undo, questions in one call, each action run on your yes with its command shown. |
+
+**Skills only you start.** Seven third-party skills ship as they are upstream, with their
+licences, pinned and patched by `scripts/vendor-skills.ts` (each folder's `VENDORED.md` says
+what changed). Claude never starts them and never sees their descriptions; you start them with
+`/cc-smart-dev-kit:<name>`. `react-best-practices` tells Claude to read the `shadcn` guide's
+files when a project uses shadcn/ui.
+
+| Skill | Use it for |
+|---|---|
+| `shadcn` | The official shadcn/ui guide: components, registries, theming, the CLI (pinned to the same `shadcn` version as the MCP server). |
+| `migrate-radix-to-base` | The official move of shadcn/ui components from Radix UI to Base UI. |
+| `shadcncraft-generate-code` | shadcncraft's code generation from its kit. Some parts need a paid shadcncraft licence (`SHADCNCRAFT_LICENSE_KEY`, set by you in your own environment) or a Figma MCP server. |
+| `shadcncraft-import-variables` | shadcncraft's design-token import. |
+| `shadcncraft-import-app`, `shadcncraft-import-block`, `shadcncraft-import-component` | shadcncraft's Figma import chain, which you run step by step (app, then block, then component); it needs shadcncraft's Figma kit. |
 
 The plugin ships three workflows. The `audit` skill starts `audit-run`
 (`plugin/workflows/audit-run.js`): one read-only `auditor` per track, a second one to refute each
@@ -2233,6 +2256,7 @@ folders. Registered for the user, the names stay and the servers stay.
 |---|---|
 | `playwright` | The browser ([The browser](#the-browser)): the launcher, `browser mcp`, on your own Chrome through the Playwright extension. On Windows it starts the `.cmd` launcher through `cmd.exe /c` — Claude Code starts the server as a program, and a program there cannot run the `sh` launcher. |
 | `sequential-thinking` | `@modelcontextprotocol/server-sequential-thinking`, at a pinned version, through `bunx`. |
+| `shadcn` | The official shadcn/ui CLI's server (`shadcn mcp`), at a pinned version, through `bunx`: it lists, searches and shows registry components and their examples, and gives the add command. It reads `components.json` from the folder the session started in and does not follow a worktree, so run the add command it gives in the worktree you work in. A project's own `shadcn` server (what `shadcn mcp init` writes) wins, and stays. |
 | `tavily-websearch` | [Tavily](https://tavily.com)'s remote web-search server (`https://mcp.tavily.com/mcp/`). Its key is **never** written into a registration or printed: the header carries `Bearer ${TAVILY_API_KEY}`, which Claude Code fills in from its own environment at connect time. |
 
 - **The Tavily key**, in this order:
