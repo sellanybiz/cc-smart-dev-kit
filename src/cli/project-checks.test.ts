@@ -1424,6 +1424,12 @@ describe("deploy tasks in doctor's project group", () => {
     writeClaudeFile(repo, "cc-smart-dev-kit.json", { requires: ">=1.0" });
     expect(await check(repo)).toEqual([]);
   });
+
+  test("deploy folders and a requires already at 5.0: nothing on requires", async () => {
+    const { repo, dir } = project({ requires: ">=5.0" });
+    mkdirSync(join(dir, "prod"), { recursive: true });
+    expect(await check(repo)).toEqual(["✓ deploy tasks: no findings"]);
+  });
 });
 
 describe("the deploy-skill block in doctor", () => {

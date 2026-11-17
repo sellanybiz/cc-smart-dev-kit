@@ -21525,7 +21525,7 @@ var COMMAND = "cc-smart-dev-kit";
 
 // src/build-info/index.ts
 var info = {
-  version: "4.10.1",
+  version: "5.0.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -21555,29 +21555,70 @@ import { relative as relative2 } from "path";
 
 // src/tasks/schemas.ts
 import { isAbsolute } from "path";
-// src/tasks/project/format.ts
-var date3 = string2().regex(/^\d{4}-\d{2}-\d{2}$/).refine((value) => !Number.isNaN(Date.parse(value)) && new Date(value).toISOString().slice(0, 10) === value, "Expected a calendar date (YYYY-MM-DD)");
-var projectTaskSchema = object({
-  id: string2().regex(/^T-[a-z2-7]{6}$/),
+// src/project/frontmatter.ts
+function splitFrontmatter(text) {
+  const match = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(text);
+  if (!match)
+    return null;
+  return { header: match[1] ?? "", body: text.slice(match[0].length) };
+}
+
+// src/tasks/deploy/format.ts
+var DEPLOY_ENVS = ["staging", "prod"];
+var DEPLOY_STEPS = ["before", "after"];
+var DEPLOY_TYPES = ["blocking", "non-blocking"];
+var DEPLOY_FLAGS = [
+  "needs-yes",
+  "twice-safe",
+  "spends-money",
+  "real-people",
+  "destructive"
+];
+var DEPLOY_TASK_ID = /^(prod|staging)-\d{8}-\d{6}(-\d+)?$/;
+function isDeployTaskId(value) {
+  return DEPLOY_TASK_ID.test(value);
+}
+function deployIdEnv(value) {
+  return DEPLOY_TASK_ID.test(value) ? value.split("-")[0] : null;
+}
+function deployIdOfFileName(name) {
+  const parts = name.replace(/\.md$/, "").split("-");
+  for (const length of [4, 3]) {
+    const candidate = parts.slice(0, length).join("-");
+    if (parts.length >= length && DEPLOY_TASK_ID.test(candidate))
+      return candidate;
+  }
+  return null;
+}
+var instant = string2().regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/, "Expected a UTC date-time ending in Z").refine((value) => {
+  const parsed = new Date(value);
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 19) === value.slice(0, 19);
+}, "Expected a calendar date-time that exists");
+function taskInstant(now) {
+  return now.toISOString().replace(/\.\d{3}Z$/, "Z");
+}
+var deployTaskSchema = object({
+  id: string2().regex(DEPLOY_TASK_ID),
   title: string2().min(1).max(200),
-  kind: _enum(["production", "database", "teammate", "follow-up"]),
+  env: _enum(DEPLOY_ENVS),
   status: _enum(["open", "done", "dropped"]),
-  when: _enum(["now", "next-release", "any"]).optional(),
-  weight: _enum(["blocks-release", "after-deploy", "owner"]).optional(),
-  flags: array(_enum(["needs-yes", "twice-safe", "spends-money", "real-people", "destructive"])).optional(),
-  created: date3,
-  closed: date3.optional(),
+  deploy: _enum(DEPLOY_STEPS),
+  type: _enum(DEPLOY_TYPES),
+  twin: string2().regex(DEPLOY_TASK_ID).optional(),
+  flags: array(_enum(DEPLOY_FLAGS)).optional(),
+  created: instant,
+  closed: instant.optional(),
   from: string2().optional(),
   refs: array(string2()).optional(),
   evidence: string2().optional()
 }).passthrough();
 var RESERVED_KEYS = ["body", "file"];
-function parseProjectTask(text, file) {
-  const match = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(text);
-  if (!match)
+function parseDeployTask(text, file, env) {
+  const parts = splitFrontmatter(text);
+  if (!parts)
     return { ok: false, why: `${file}: missing front matter --- delimiters` };
   try {
-    const raw = Bun.YAML.parse(match[1] ?? "");
+    const raw = Bun.YAML.parse(parts.header);
     for (const key of RESERVED_KEYS) {
       if (typeof raw === "object" && raw !== null && Object.hasOwn(raw, key)) {
         return {
@@ -21586,10 +21627,21 @@ function parseProjectTask(text, file) {
         };
       }
     }
-    const parsed = projectTaskSchema.safeParse(raw);
+    const parsed = deployTaskSchema.safeParse(raw);
     if (!parsed.success)
       return { ok: false, why: `${file}: invalid front matter: ${parsed.error.message}` };
-    return { ok: true, task: { ...parsed.data, body: text.slice(match[0].length), file } };
+    const fields = parsed.data;
+    if (fields.env !== env)
+      return {
+        ok: false,
+        why: `${file}: env is "${fields.env}" but the file is in the ${env} folder: move it, or fix the env`
+      };
+    if (deployIdEnv(fields.id) !== env)
+      return {
+        ok: false,
+        why: `${file}: id ${fields.id} does not start with "${env}-" like the folder it is in`
+      };
+    return { ok: true, task: { ...fields, body: parts.body, file } };
   } catch (error) {
     return {
       ok: false,
@@ -21597,9 +21649,9 @@ function parseProjectTask(text, file) {
     };
   }
 }
-function renderProjectTask(task) {
+function renderDeployTask(task) {
   const { body, file: _file, ...fields } = task;
-  const known = Object.keys(projectTaskSchema.shape);
+  const known = Object.keys(deployTaskSchema.shape);
   const keys = [
     ...known,
     ...Object.keys(fields).filter((key) => !known.includes(key)).sort()
@@ -21617,12 +21669,12 @@ var DESCRIPTION_LIMIT = 200000;
 var NOTE_LIMIT = 64000;
 
 // src/tasks/schemas.ts
-var fields = projectTaskSchema.shape;
+var fields = deployTaskSchema.shape;
 var subject = string2().trim().min(1).max(SUBJECT_LIMIT);
 var description = string2().max(DESCRIPTION_LIMIT);
 var note = string2().trim().min(1).max(NOTE_LIMIT);
 var ref = string2().min(1);
-var type = _enum(["blocking", "non-blocking"]).describe("blocking (the default): its parent cannot be done, while it is open. non-blocking: noted work that holds nothing.");
+var type = _enum(DEPLOY_TYPES).describe("blocking or non-blocking. A work task: blocking (the default) holds its parent while it is open; non-blocking holds nothing. A prod or staging deploy task: required; blocking holds the release gate until it is done, non-blocking is done or dropped with a reason.");
 var blockedBy = array(ref).describe("Tasks (#n) it waits for: it cannot start or be done while one of them is open.");
 var bindings = {
   agent: string2().describe("The builder subagent's name or id.").optional(),
@@ -21630,9 +21682,8 @@ var bindings = {
   worktree: string2().refine(isAbsolute, "worktree must be an absolute path").describe("The builder's absolute worktree path.").optional(),
   base: string2().describe("The commit sha the builder started from.").optional()
 };
-var projectFields = {
-  when: fields.when,
-  weight: fields.weight,
+var deployFields = {
+  deploy: fields.deploy.optional().describe("Deploy task only, required there: when the step is owed, before or after the deploy."),
   flags: fields.flags,
   refs: fields.refs,
   from: fields.from
@@ -21642,14 +21693,15 @@ var taskSchemas = {
     subject,
     ...bindings,
     description: description.optional(),
-    kind: _enum(["work", ...fields.kind.options]).default("work"),
+    kind: _enum(["work", ...DEPLOY_ENVS]).default("work").describe("work (the default): a task on this machine. prod or staging: a deploy task, a step owed around a deploy, written as a file to commit with your branch (deploy and type are then required)."),
+    pair: boolean2().optional().describe("Deploy task only, with kind staging: also create the prod task, each naming the other as its twin."),
     parent: ref.optional().describe("The task (#n) it goes under: a phase, or its plan (the task then waits there for a phase). Layers: plan \u203A phase \u203A task; a task holds nothing."),
     status: _enum(["pending", "in_progress"]).optional(),
     type: type.optional(),
     blocked_by: blockedBy.optional(),
     phase: string2().trim().min(1).optional().describe("Create the plan phase once, by its id."),
     plan: string2().trim().min(1).optional().describe("The plan's slug. For a phase it defaults to the caller's plan in flight, else the plan being finished, else the next queued plan (the lowest-numbered own open plan with an open phase), else its latest own open plan, never an older one; with no open default a phase needs plan. With no phase or parent, it makes the plan task. A task with neither plan nor parent is loose, whatever plans are open; to add a task to a plan, name its phase, or its plan, as parent."),
-    ...projectFields
+    ...deployFields
   }).strict(),
   take: object({
     task: ref.describe("A plan slug or task reference (#n)."),
@@ -21661,19 +21713,18 @@ var taskSchemas = {
     ...bindings,
     subject: subject.optional(),
     description: description.optional(),
-    status: _enum(["pending", "in_progress", "done", "dropped"]).optional(),
+    status: _enum(["pending", "in_progress", "done", "dropped", "open"]).optional().describe("open reopens a closed deploy task (a deploy that was rolled back); a work task has pending and in_progress. Close a task with task_done."),
     parent: ref.nullable().optional(),
     type: type.optional(),
     blocked_by_add: blockedBy.optional(),
     blocked_by_remove: array(ref).optional(),
-    ...projectFields
+    ...deployFields
   }).strict(),
   done: object({
     task: ref,
     outcome: _enum(["done", "dropped"]).default("done"),
     evidence: note.optional(),
-    note: note.optional(),
-    for_everyone: boolean2().optional()
+    note: note.optional()
   }).strict(),
   note: object({ task: ref, text: note }).strict(),
   list: object({
@@ -21835,13 +21886,6 @@ function spawnGit(cwd, args, env, timeoutMs, own, trim) {
   }
 }
 
-// src/workflow/resolve.ts
-import { existsSync as existsSync4, readFileSync as readFileSync3 } from "fs";
-
-// src/project/resolve.ts
-import { existsSync as existsSync2, realpathSync, statSync } from "fs";
-import { join as join3 } from "path";
-
 // src/project/config.ts
 import { existsSync, readFileSync } from "fs";
 import { posix, win32 } from "path";
@@ -21981,7 +22025,7 @@ var workflowDefaults = {
   },
   clearWorktreeAfterMerge: true,
   issues: {
-    enabled: false,
+    enabled: true,
     allowPublic: false,
     foundLabel: "kit:found",
     fixedLabel: "fixed-unreleased",
@@ -22115,7 +22159,13 @@ var RETIRED_HOOK_NAMES = [
 ];
 var UNSWITCHABLE_HOOK_NAMES = ["job-route"];
 var RETIRED_WORKTREE_FIELDS = ["prefix", "setup", "engine"];
+var DEPLOY_TASKS_SINCE = "5.0.0";
 var inCheckout = string2().min(1).refine((path) => !posix.isAbsolute(path) && !win32.isAbsolute(path) && !path.split(/[\\/]/).includes(".."), "must be relative to the checkout root, without ..").refine((path) => !path.includes("\\"), "use / as the separator").refine((path) => !path.split("/").includes("."), "must not contain . segments");
+var IGNORED_TASK_SCHEMAS = {
+  releaseBranch: string2().trim().min(1).optional(),
+  legacyFolders: array(inCheckout).optional()
+};
+var IGNORED_TASK_FIELDS = Object.keys(IGNORED_TASK_SCHEMAS);
 var ccSmartDevKitConfigSchema = strictObject({
   requires: string2().refine(isValidRange, 'not a valid version range (like ">=1.2" or "^1.2")').optional(),
   worktrees: strictObject({
@@ -22140,8 +22190,8 @@ var ccSmartDevKitConfigSchema = strictObject({
   tasks: strictObject({
     dir: inCheckout.optional(),
     staleDays: number2().int().min(1).optional(),
-    releaseBranch: string2().trim().min(1).optional(),
-    legacyFolders: array(inCheckout).optional()
+    envs: array(_enum(DEPLOY_ENVS)).min(1).refine((envs) => new Set(envs).size === envs.length, "Each environment once").optional(),
+    ...IGNORED_TASK_SCHEMAS
   }).optional(),
   workflow: workflowSchema.optional(),
   ownHooks: array(_enum([...PLUGIN_HOOK_NAMES, ...RETIRED_HOOK_NAMES, ...UNSWITCHABLE_HOOK_NAMES])).optional()
@@ -22224,7 +22274,12 @@ function checkCcSmartDevKitConfig(raw, where, pluginVersion = VERSION) {
   return parsed.data;
 }
 
+// src/workflow/resolve.ts
+import { existsSync as existsSync4, readFileSync as readFileSync3 } from "fs";
+
 // src/project/resolve.ts
+import { existsSync as existsSync2, realpathSync, statSync } from "fs";
+import { join as join3 } from "path";
 var MIN_GIT_VERSION = "2.31.0";
 var RESOLVE_GIT_TIMEOUT_MS = 5000;
 var GIT_NOT_FOUND = "git was not found, so this project's own values cannot be read. Install git, then try again.";
@@ -22545,11 +22600,26 @@ function repoKey(repo) {
   return createHash("sha256").update(repo).digest("hex").slice(0, 16);
 }
 
-// src/tasks/project/files.ts
-import { existsSync as existsSync5, mkdirSync as mkdirSync2, readdirSync as readdirSync2, readFileSync as readFileSync4, rmSync } from "fs";
+// src/tasks/words.ts
+var TASK_TOOL = {
+  create: "task_create",
+  take: "task_take",
+  update: "task_update",
+  done: "task_done",
+  note: "task_note",
+  list: "task_list",
+  get: "task_get",
+  search: "task_search",
+  delete: "task_delete"
+};
+var TASK_TOOLS_ALLOW_RULE = `mcp__${TASKS_SERVER_NAME}__*`;
+var TASK_COMMAND = `${COMMAND} task`;
+
+// src/tasks/deploy/files.ts
+import { existsSync as existsSync5, mkdirSync as mkdirSync2, readdirSync as readdirSync2, readFileSync as readFileSync4, rmSync, writeFileSync as writeFileSync2 } from "fs";
 import { basename as basename2, dirname as dirname2, isAbsolute as isAbsolute2, join as join5, relative, resolve as resolve2, sep as sep2 } from "path";
 var DEFAULT_TASKS_DIR = ".claude/tasks";
-function projectTasksDir(checkoutRoot, settings) {
+function deployTasksDir(checkoutRoot, settings) {
   const dir = settings.dir ?? DEFAULT_TASKS_DIR;
   const target = resolve2(checkoutRoot, dir);
   const rel = relative(checkoutRoot, target);
@@ -22560,107 +22630,170 @@ function projectTasksDir(checkoutRoot, settings) {
 function isTaskFile(name) {
   return !name.startsWith(".") && name !== "README.md" && name.endsWith(".md");
 }
-function scanProjectTasks(dir, options) {
-  const tasks = [];
+var ARCHIVE = "archive";
+function envFolder(dir, env) {
+  return join5(dir, env);
+}
+function isArchived(file) {
+  return basename2(dirname2(file)) === ARCHIVE;
+}
+function archiveFolder(dir, env) {
+  return join5(dir, env, ARCHIVE);
+}
+function scanDeployTasks(dir, options) {
+  const found = [];
   const broken = [];
-  for (const folder of options.archive ? [dir, join5(dir, "archive")] : [dir]) {
-    if (!existsSync5(folder))
-      continue;
-    for (const entry of readdirSync2(folder, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
-      if (!entry.isFile() || !isTaskFile(entry.name))
+  for (const env of DEPLOY_ENVS) {
+    for (const folder of options.archive ? [envFolder(dir, env), archiveFolder(dir, env)] : [envFolder(dir, env)]) {
+      if (!existsSync5(folder))
         continue;
-      const file = join5(folder, entry.name);
-      const result = parseProjectTask(readFileSync4(file, "utf8"), file);
-      if (result.ok)
-        tasks.push(result.task);
-      else
-        broken.push({ file, why: result.why });
+      for (const entry of readdirSync2(folder, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+        if (!entry.isFile() || !isTaskFile(entry.name))
+          continue;
+        const file = join5(folder, entry.name);
+        const result = parseDeployTask(readFileSync4(file, "utf8"), file, env);
+        if (result.ok)
+          found.push(result.task);
+        else
+          broken.push({ file, why: result.why });
+      }
     }
   }
-  const archive = join5(dir, "archive");
-  const kept = new Map;
-  for (const task of tasks) {
-    const seen = kept.get(task.id);
-    if (seen === undefined) {
-      kept.set(task.id, task);
+  const byId = new Map;
+  for (const task of found)
+    byId.set(task.id, [...byId.get(task.id) ?? [], task]);
+  const tasks = [];
+  const duplicates = [];
+  for (const copies of byId.values()) {
+    const first = copies[0];
+    if (!first)
+      continue;
+    if (new Set(copies.map((task) => basename2(task.file))).size > 1) {
+      duplicates.push({ id: first.id, files: copies.map((task) => task.file) });
+      tasks.push(...copies);
       continue;
     }
-    const [keep, drop] = dirname2(seen.file) === archive ? [seen, task] : [task, seen];
-    kept.set(task.id, keep);
-    broken.push({
-      file: drop.file,
-      why: `a second copy of ${task.id}: the one in archive/ is kept; remove this file`
-    });
+    const kept = copies.find((task) => isArchived(task.file)) ?? first;
+    tasks.push(kept);
+    for (const task of copies)
+      if (task !== kept)
+        broken.push({
+          file: task.file,
+          why: `a second copy of ${task.id}: the one in archive/ is kept; remove this file`
+        });
   }
-  return { tasks: [...kept.values()], broken };
+  return { tasks, broken, duplicates };
 }
-function taskDate(now) {
-  return now.toISOString().slice(0, 10);
+function newDeployId(env, now, used) {
+  const stamp = now.toISOString().replace(/\.\d+Z$/, "").replace(/[-:]/g, "").replace("T", "-");
+  const base = `${env}-${stamp}`;
+  let id = base;
+  for (let n = 2;used.has(id); n++)
+    id = `${base}-${n}`;
+  return id;
 }
-var BASE32 = "abcdefghijklmnopqrstuvwxyz234567";
-var ID_ATTEMPTS = 100;
-function planProjectTask(dir, input, sources, used) {
-  let id = "";
-  for (let attempt = 0;attempt < ID_ATTEMPTS; attempt++) {
-    id = "T-";
-    for (let index = 0;index < 6; index++) {
-      const n = sources.random();
-      if (!Number.isFinite(n) || n < 0 || n >= 1)
-        throw new Error("random must return a number in [0, 1)");
-      id += BASE32[Math.floor(n * BASE32.length)];
-    }
-    if (!used.has(id))
-      break;
-    id = "";
-  }
-  if (!id)
-    throw new Error("Could not allocate a unique project task id");
-  const { body = "", ...fields } = input;
-  const validated = projectTaskSchema.parse({
-    ...fields,
-    id,
-    status: "open",
-    created: fields.created ?? taskDate(sources.now)
-  });
-  const slug = validated.title.normalize("NFKD").replace(/[\u0300-\u036F]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 50).replace(/-$/, "") || "task";
-  used.add(id);
-  return { ...validated, body, file: join5(dir, `${id}-${slug}.md`) };
-}
-function existingTaskIds(dir) {
-  const ids = new Set(scanProjectTasks(dir, { archive: true }).tasks.map((task) => task.id));
-  for (const folder of [dir, join5(dir, "archive")])
+function takenDeployIds(dir, env) {
+  const ids = new Set(scanDeployTasks(dir, { archive: true }).tasks.filter((task) => task.env === env).map((task) => task.id));
+  for (const folder of [envFolder(dir, env), archiveFolder(dir, env)])
     if (existsSync5(folder))
       for (const name of readdirSync2(folder)) {
-        const id = /^(T-[a-z2-7]{6})(?:-|\.md$)/.exec(name)?.[1];
+        const id = deployIdOfFileName(name);
         if (id)
           ids.add(id);
       }
   return ids;
 }
+function slugOf(title) {
+  return title.normalize("NFKD").replace(/[\u0300-\u036F]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 50).replace(/-$/, "") || "task";
+}
+function planDeployTask(dir, input, sources, used) {
+  const id = newDeployId(input.env, sources.now, used);
+  const { body = "", ...fields } = input;
+  const validated = deployTaskSchema.parse({
+    ...fields,
+    id,
+    status: "open",
+    created: taskInstant(sources.now)
+  });
+  used.add(id);
+  return {
+    ...validated,
+    body,
+    file: join5(envFolder(dir, validated.env), `${id}-${slugOf(validated.title)}.md`)
+  };
+}
 function save(task) {
-  atomicWrite(task.file, renderProjectTask(task), 420);
+  atomicWrite(task.file, renderDeployTask(task), 420);
   return task;
 }
-function createProjectTask(dir, input, sources) {
-  const task = planProjectTask(dir, input, sources, existingTaskIds(dir));
-  mkdirSync2(dir, { recursive: true });
-  return save(task);
+var CLAIM_ATTEMPTS = 5;
+function claim2(dir, task, sources) {
+  sources.beforeClaim?.(task);
+  try {
+    writeFileSync2(task.file, renderDeployTask(task), { flag: "wx", mode: 420 });
+  } catch (error) {
+    if (error.code === "EEXIST")
+      return false;
+    throw error;
+  }
+  const own = basename2(task.file);
+  const rival = [envFolder(dir, task.env), archiveFolder(dir, task.env)].filter((folder) => existsSync5(folder)).flatMap((folder) => readdirSync2(folder)).some((name) => name !== own && deployIdOfFileName(name) === task.id);
+  if (rival)
+    rmSync(task.file, { force: true });
+  return !rival;
 }
-function find(dir, id) {
-  const matches = scanProjectTasks(dir, { archive: true }).tasks.filter((task) => task.id === id);
-  const match = matches[0];
-  if (matches.length !== 1 || !match)
-    throw new Error(matches.length ? `Duplicate project task id: ${id}` : `Project task not found: ${id}`);
+function createDeployTask(dir, input, sources) {
+  mkdirSync2(envFolder(dir, input.env), { recursive: true });
+  for (let attempt = 0;attempt < CLAIM_ATTEMPTS; attempt++) {
+    const task = planDeployTask(dir, input, sources, takenDeployIds(dir, input.env));
+    if (claim2(dir, task, sources))
+      return task;
+  }
+  throw new Error("Could not allocate a unique deploy task id");
+}
+function createDeployPair(dir, input, sources, envs) {
+  for (const env of DEPLOY_ENVS)
+    if (!envs.includes(env))
+      throw new Error(`A staging and prod pair needs both environments; this project lists only: ${envs.join(", ")}`);
+  mkdirSync2(envFolder(dir, "staging"), { recursive: true });
+  mkdirSync2(envFolder(dir, "prod"), { recursive: true });
+  for (let attempt = 0;attempt < CLAIM_ATTEMPTS; attempt++) {
+    const staging = planDeployTask(dir, { ...input, env: "staging" }, sources, takenDeployIds(dir, "staging"));
+    const prod = planDeployTask(dir, { ...input, env: "prod" }, sources, takenDeployIds(dir, "prod"));
+    staging.twin = prod.id;
+    prod.twin = staging.id;
+    if (!claim2(dir, staging, sources))
+      continue;
+    let claimed = false;
+    try {
+      claimed = claim2(dir, prod, sources);
+    } finally {
+      if (!claimed)
+        rmSync(staging.file, { force: true });
+    }
+    if (claimed)
+      return { staging, prod };
+  }
+  throw new Error("Could not allocate unique ids for a staging and prod pair");
+}
+function findDeployTask(dir, id) {
+  const scan = scanDeployTasks(dir, { archive: true });
+  const clash = scan.duplicates.find((duplicate) => duplicate.id === id);
+  if (clash)
+    throw new Error(`Deploy task id ${id} is ambiguous: ${clash.files.join(" and ")} both claim it. Rename the id inside one of them`);
+  const match = scan.tasks.find((task) => task.id === id);
+  if (!match)
+    throw new Error(`Deploy task not found: ${id}`);
   return match;
 }
-function updateProjectTask(dir, id, patch, _now) {
-  const task = find(dir, id);
+function updateDeployTask(dir, id, patch, _now) {
+  const task = findDeployTask(dir, id);
   const merged = { ...task, ...patch };
   const { body, file, ...fields } = merged;
-  return save({ ...projectTaskSchema.parse(fields), body, file });
+  return save({ ...deployTaskSchema.parse(fields), body, file });
 }
 function withNote(task, text, now) {
-  const line = `- ${taskDate(now)} ${text.replace(/\r?\n/g, `
+  const line = `- ${taskInstant(now).slice(0, 10)} ${text.replace(/\r?\n/g, `
   `)}
 `;
   const heading = /^## Log\s*$/m.exec(task.body);
@@ -22684,18 +22817,24 @@ ${line}`
 `}${line}${task.body.slice(end)}`
   };
 }
-function addProjectNote(dir, id, text, now) {
-  return save(withNote(find(dir, id), text, now));
+function addDeployNote(dir, id, text, now) {
+  return save(withNote(findDeployTask(dir, id), text, now));
 }
-function closeProjectTask(dir, id, options, now) {
-  const task = find(dir, id);
+function closeDeployTask(dir, id, options, now) {
+  const task = findDeployTask(dir, id);
+  if (task.status !== "open")
+    throw new Error(`${id} is already ${task.status}: reopen it first to close it again`);
+  if (options.status === "done" && !options.evidence?.trim())
+    throw new Error(`${id} needs evidence to be done: what you ran or checked, and its result`);
+  if (options.status === "dropped" && !options.note?.trim())
+    throw new Error(`${id} needs a note to be dropped: the reason it no longer applies`);
   const closed = withNote({
     ...task,
     status: options.status,
-    closed: taskDate(now),
+    closed: taskInstant(now),
     ...options.evidence === undefined ? {} : { evidence: options.evidence }
-  }, options.note ?? `${options.status}${options.evidence ? `: ${options.evidence}` : ""}`, now);
-  const archive = join5(dir, "archive");
+  }, options.note ?? `${options.status}: ${options.evidence ?? ""}`, now);
+  const archive = archiveFolder(dir, task.env);
   mkdirSync2(archive, { recursive: true });
   const destination = join5(archive, basename2(task.file));
   if (destination !== task.file && existsSync5(destination))
@@ -22705,13 +22844,27 @@ function closeProjectTask(dir, id, options, now) {
     rmSync(task.file, { force: true });
   return saved;
 }
+function reopenDeployTask(dir, id, now, note) {
+  const task = findDeployTask(dir, id);
+  const archived = isArchived(task.file);
+  if (task.status === "open" && !archived)
+    throw new Error(`${id} is already open`);
+  let reopened = task;
+  if (task.status !== "open") {
+    const { closed: _closed, evidence: _evidence, ...rest } = task;
+    reopened = save(withNote({ ...rest, status: "open" }, note?.trim() ? `reopened: ${note}` : "reopened", now));
+  }
+  const destination = join5(envFolder(dir, task.env), basename2(task.file));
+  const saved = save({ ...reopened, file: destination });
+  if (destination !== task.file)
+    rmSync(task.file, { force: true });
+  return saved;
+}
 
-// src/tasks/project/check.ts
+// src/tasks/deploy/check.ts
 var DEFAULT_STALE_DAYS = 30;
 
 // src/tasks/context.ts
-var DEFAULT_RELEASE_BRANCH = "main";
-var RELEASE_BRANCH_GIT_TIMEOUT_MS = 5000;
 function projectKey(repo) {
   return repoKey(repo);
 }
@@ -22722,12 +22875,12 @@ function taskContext(cwd, env = process.env) {
   } catch (error) {
     return { ok: false, why: checkoutFailure(error) };
   }
-  return contextOf(checkout, cwd, env);
+  return contextOf(checkout, cwd);
 }
 function keyOf(checkout, cwd) {
   return projectKey(checkout === null ? realpathSync3(cwd) : checkout.mainCheckout ?? checkout.root);
 }
-function contextOf(checkout, cwd, env) {
+function contextOf(checkout, cwd) {
   if (checkout === null) {
     return {
       ok: true,
@@ -22759,34 +22912,12 @@ function contextOf(checkout, cwd, env) {
     projectConfig: { ok: true, config },
     projectTasks: {
       ok: true,
-      dir: projectTasksDir(root, settings?.dir === undefined ? {} : { dir: settings.dir }),
+      dir: deployTasksDir(root, settings?.dir === undefined ? {} : { dir: settings.dir }),
       staleDays: settings?.staleDays ?? DEFAULT_STALE_DAYS,
-      legacyFolders: settings?.legacyFolders ?? [],
-      releaseBranch: () => {
-        if (settings?.releaseBranch !== undefined)
-          return settings.releaseBranch;
-        const head = runGit(root, ["rev-parse", "--abbrev-ref", "origin/HEAD"], env, RELEASE_BRANCH_GIT_TIMEOUT_MS);
-        const name = head.ok ? head.out.replace(/^origin\//, "") : "";
-        return name === "" ? DEFAULT_RELEASE_BRANCH : name;
-      }
+      envs: settings?.envs ?? DEPLOY_ENVS
     }
   };
 }
-
-// src/tasks/words.ts
-var TASK_TOOL = {
-  create: "task_create",
-  take: "task_take",
-  update: "task_update",
-  done: "task_done",
-  note: "task_note",
-  list: "task_list",
-  get: "task_get",
-  search: "task_search",
-  delete: "task_delete"
-};
-var TASK_TOOLS_ALLOW_RULE = `mcp__${TASKS_SERVER_NAME}__*`;
-var TASK_COMMAND = `${COMMAND} task`;
 
 // src/tasks/work/queries.ts
 function allTasks(db, project) {
@@ -23089,7 +23220,7 @@ function planNote(all, plan, cap) {
 
 // src/tasks/work/db.ts
 import { Database } from "bun:sqlite";
-import { chmodSync as chmodSync2, existsSync as existsSync6, mkdirSync as mkdirSync3, renameSync as renameSync2, rmSync as rmSync2, writeFileSync as writeFileSync2 } from "fs";
+import { chmodSync as chmodSync2, existsSync as existsSync6, mkdirSync as mkdirSync3, renameSync as renameSync2, rmSync as rmSync2, writeFileSync as writeFileSync3 } from "fs";
 import { dirname as dirname3, join as join6 } from "path";
 var WORK_SCHEMA_VERSION = 5;
 var LEGACY_LIFT_REASON = "lift legacy nested task";
@@ -23153,7 +23284,7 @@ function repairTaskLayers(sqlite, file) {
     if (!backed) {
       if (!existsSync6(`${file}.v4.bak`)) {
         try {
-          writeFileSync2(`${file}.v4.bak.tmp`, sqlite.serialize(), { mode: 384 });
+          writeFileSync3(`${file}.v4.bak.tmp`, sqlite.serialize(), { mode: 384 });
           renameSync2(`${file}.v4.bak.tmp`, `${file}.v4.bak`);
         } catch (error) {
           let cleanup = "";
@@ -23947,12 +24078,6 @@ function layPhase(db, input, who, now) {
   }, who, now);
   return { task, made: true };
 }
-function ack(db, project, taskRef, now) {
-  return writeWork(db, () => {
-    db.sqlite.query("INSERT INTO acks VALUES (?,?,?) ON CONFLICT(project,task_ref) DO UPDATE SET at=excluded.at").run(project, taskRef, now);
-    return true;
-  });
-}
 function takeTasks(db, project, id, who, now, options) {
   return writeWork(db, () => {
     if (!who.sessionId)
@@ -24003,6 +24128,20 @@ function bindings2(input) {
     ...input.base === undefined ? {} : { base: input.base }
   };
 }
+var OLD_TASK_ID = /^T-/;
+var OLD_ID_ANSWER = `old task ids are gone in ${DEPLOY_TASKS_SINCE}: the file is not read; recreate it as a deploy task or delete it`;
+function refuseDeployFields(fields) {
+  const given = Object.keys(fields).filter((name) => {
+    const value = fields[name];
+    return !(value === undefined || value === false || value === "" || Array.isArray(value) && value.length === 0);
+  });
+  if (given.length > 0)
+    throw new Error(`Deploy fields (${given.join(", ")}) need kind prod or staging: a work task has none`);
+}
+function personOnly(id, action, command) {
+  return `${id} is blocking: only the person ${action}. Ask the person to run \`${TASK_COMMAND} ${command}\` in their own terminal, outside Claude Code`;
+}
+var DELETE_TRACKED = "Tracked deploy task: it is part of a commit, so close it with task_done instead";
 var TASK_LINE_CAP = 200;
 var TASK_TEXT_CAP = 20000;
 function value(result) {
@@ -24038,7 +24177,7 @@ function stateWords(task, byId, withLayer = false, queue) {
   ].join(" \xB7 ");
 }
 function projectLine(task) {
-  return `${task.id} [${[task.kind, task.when, task.weight].filter(Boolean).join(" \xB7 ")}] ${task.title}`;
+  return `${task.id} [${[task.deploy, task.type].join(" \xB7 ")}] ${task.title}`;
 }
 function capped(lines) {
   return lines.length ? [
@@ -24106,20 +24245,21 @@ function createTaskOps(options = {}) {
           throw new Error(ctx.projectTasks.why);
         return ctx.projectTasks.dir;
       };
-      const projectTasks = (archive) => scanProjectTasks(projectDir(), { archive }).tasks;
+      const projectEnvs = () => {
+        if (!ctx.projectTasks.ok)
+          throw new Error(ctx.projectTasks.why);
+        return ctx.projectTasks.envs;
+      };
+      const projectTasks = (archive) => scanDeployTasks(projectDir(), { archive }).tasks;
       const work = (reference) => {
+        if (OLD_TASK_ID.test(reference))
+          throw new Error(OLD_ID_ANSWER);
         const task = getTask(store, ctx.project, reference);
         if (!task)
           throw new Error(`Task not found: ${reference}`);
         return task;
       };
-      const project = (reference) => {
-        const task = projectTasks(true).find((t) => t.id === reference);
-        if (!task)
-          throw new Error(`Project task not found: ${reference}`);
-        return task;
-      };
-      const acked = (id) => !!store.sqlite.query("SELECT 1 FROM acks WHERE project=? AND task_ref=?").get(ctx.project, id);
+      const project = (reference) => findDeployTask(projectDir(), reference);
       if (operation === "take") {
         const input = taskSchemas.take.parse(raw);
         if (!caller?.sessionId)
@@ -24138,27 +24278,47 @@ function createTaskOps(options = {}) {
       if (operation === "create") {
         const input = taskSchemas.create.parse(raw);
         if (input.kind !== "work") {
-          if (Object.keys(bindings2(input)).length || input.parent || input.blocked_by?.length || input.status || input.type || input.phase || input.plan)
-            throw new Error("Project tasks have no parent, blocked-by, work status, type, phase or plan");
-          const branch = ctx.checkoutRoot ? runGit(ctx.checkoutRoot, ["branch", "--show-current"], env) : null;
-          if (!branch?.ok)
+          if (Object.keys(bindings2(input)).length || input.parent || input.blocked_by?.length || input.status || input.phase || input.plan)
+            throw new Error("Deploy tasks have no parent, blocked-by, work status, phase or plan");
+          if (input.deploy === undefined)
+            throw new Error("A deploy task needs deploy (before or after)");
+          if (input.type === undefined)
+            throw new Error("A deploy task needs type (blocking or non-blocking)");
+          const envs = projectEnvs();
+          if (!envs.includes(input.kind))
+            throw new Error(`${input.kind} is not one of this project's environments (tasks.envs: ${envs.join(", ")})`);
+          if (input.pair && input.kind !== "staging")
+            throw new Error("pair is for kind staging: it creates the staging task and its prod twin");
+          const root = ctx.checkoutRoot;
+          if (root === null)
+            throw new Error("Deploy tasks need a git checkout to be written in");
+          const branch = runGit(root, ["branch", "--show-current"], env);
+          if (!branch.ok)
             throw new Error("Could not read the current branch");
-          const from = input.from ?? `branch ${branch.out}`;
-          const task = createProjectTask(projectDir(), {
+          const fields = {
             title: input.subject,
-            kind: input.kind,
+            deploy: input.deploy,
+            type: input.type,
             ...input.description === undefined ? {} : { body: input.description },
-            ...input.when === undefined ? {} : { when: input.when },
-            ...input.weight === undefined ? {} : { weight: input.weight },
             ...input.flags === undefined ? {} : { flags: input.flags },
             ...input.refs === undefined ? {} : { refs: input.refs },
-            from
-          }, { now: new Date(now), random: Math.random });
+            from: input.from ?? (branch.out ? `branch ${branch.out}` : "a detached HEAD")
+          };
+          const sources = { now: new Date(now) };
+          const made = input.pair ? Object.values(createDeployPair(projectDir(), fields, sources, envs)) : [createDeployTask(projectDir(), { ...fields, env: input.kind }, sources)];
           return {
             ok: true,
-            text: `${task.id} "${task.title}" \xB7 ${relative2(ctx.checkoutRoot ?? cwd, task.file)} \xB7 commit it with your branch`
+            text: made.map((task) => `${task.id} "${task.title}" \xB7 ${relative2(root, task.file)} \xB7 written in ${root}: commit the file with your branch`).join(`
+`)
           };
         }
+        refuseDeployFields({
+          deploy: input.deploy,
+          pair: input.pair,
+          flags: input.flags,
+          refs: input.refs,
+          from: input.from
+        });
         const blockedBy = input.blocked_by?.map((r) => work(r).id) ?? [];
         if (input.phase !== undefined || input.plan !== undefined && input.parent === undefined) {
           if (input.parent !== undefined)
@@ -24238,44 +24398,68 @@ function createTaskOps(options = {}) {
       }
       if (operation === "update") {
         const input = taskSchemas.update.parse(raw);
-        if (input.task.startsWith("T-")) {
-          if (Object.keys(bindings2(input)).length || input.status !== undefined || input.parent !== undefined || input.type !== undefined || input.blocked_by_add !== undefined || input.blocked_by_remove !== undefined)
-            throw new Error("Project task status changes only through task_done; project tasks have no parent, type or blocked-by");
-          const task = updateProjectTask(projectDir(), input.task, {
+        if (isDeployTaskId(input.task)) {
+          if (Object.keys(bindings2(input)).length || input.parent !== undefined || input.blocked_by_add !== undefined || input.blocked_by_remove !== undefined)
+            throw new Error("Deploy tasks have no parent, blocked-by or builder bindings");
+          if (input.status !== undefined && input.status !== "open")
+            throw new Error(`A deploy task closes through ${TASK_TOOL.done} (done with evidence, dropped with a note); status open reopens a closed one`);
+          const current = project(input.task);
+          if (options.refuseBlockingDrop && current.type === "blocking") {
+            if (input.type === "non-blocking")
+              throw new Error(personOnly(current.id, "weakens a blocking deploy task", `set ${current.id} --type non-blocking`));
+            if (input.deploy === "after" && current.deploy === "before")
+              throw new Error(personOnly(current.id, "weakens a blocking deploy task", `set ${current.id} --deploy after`));
+          }
+          const patch = {
             ...input.subject === undefined ? {} : { title: input.subject },
             ...input.description === undefined ? {} : { body: input.description },
-            ...input.when === undefined ? {} : { when: input.when },
-            ...input.weight === undefined ? {} : { weight: input.weight },
+            ...input.deploy === undefined ? {} : { deploy: input.deploy },
+            ...input.type === undefined ? {} : { type: input.type },
             ...input.flags === undefined ? {} : { flags: input.flags },
             ...input.refs === undefined ? {} : { refs: input.refs },
             ...input.from === undefined ? {} : { from: input.from }
-          }, new Date(now));
-          return { ok: true, text: `${task.id} "${task.title}" \xB7 updated` };
+          };
+          if (input.status === "open")
+            reopenDeployTask(projectDir(), input.task, new Date(now));
+          const task = Object.keys(patch).length > 0 ? updateDeployTask(projectDir(), input.task, patch, new Date(now)) : project(input.task);
+          return {
+            ok: true,
+            text: `${task.id} "${task.title}" \xB7 ${input.status === "open" ? "open again" : "updated"}`
+          };
         }
+        refuseDeployFields({
+          deploy: input.deploy,
+          flags: input.flags,
+          refs: input.refs,
+          from: input.from
+        });
+        const { status } = input;
+        if (status === "open")
+          throw new Error("status open reopens a closed deploy task; a work task is pending or in_progress");
         const task = work(input.task);
-        if (task.kind === "phase" && task.status === "dropped" && (input.status === "pending" || input.status === "in_progress") && task.plan !== null) {
+        if (task.kind === "phase" && task.status === "dropped" && (status === "pending" || status === "in_progress") && task.plan !== null) {
           const cap = phaseCap();
           refuseOverCap(all, task.plan, cap);
         }
-        const starting = input.status === "in_progress" && task.status !== "in_progress";
+        const starting = status === "in_progress" && task.status !== "in_progress";
         const destination = input.parent ? work(input.parent) : null;
         const landing = destination === null ? task.plan : destination.plan;
-        const entering = starting || landing !== task.plan && (input.status ?? task.status) === "in_progress";
+        const entering = starting || landing !== task.plan && (status ?? task.status) === "in_progress";
         if (starting)
           refuseEmptyPhase(all, task);
         if (entering && landing !== null)
           refuseOther(landing);
-        refuseParkWhileBusy(all, task, input.status);
+        refuseParkWhileBusy(all, task, status);
         if (input.parent !== undefined)
           refuseStepEscape(all, task, destination);
-        if (input.status === "done" || input.status === "dropped")
-          refuseBareClose(all, task, input.status, {});
+        if (status === "done" || status === "dropped")
+          refuseBareClose(all, task, status, {});
         const updated = value(writeWork(store, () => {
           const changed = applyUpdate(store, task.id, {
             ...input.subject === undefined ? {} : { subject: input.subject },
             ...input.description === undefined ? {} : { description: input.description },
             ...bindings2(input),
-            ...input.status === undefined ? {} : { status: input.status },
+            ...status === undefined ? {} : { status },
             ...input.parent === undefined ? {} : { parentId: input.parent === null ? null : work(input.parent).id },
             ...input.type === undefined ? {} : { type: input.type },
             waitsFor: {
@@ -24297,13 +24481,11 @@ function createTaskOps(options = {}) {
       }
       if (operation === "done") {
         const input = taskSchemas.done.parse(raw);
-        if (input.task.startsWith("T-")) {
+        if (isDeployTaskId(input.task)) {
           const task = project(input.task);
-          if (task.kind === "teammate" && !input.for_everyone && input.outcome === "done") {
-            value(ack(store, ctx.project, task.id, now));
-            return { ok: true, text: `${task.id} "${task.title}" \xB7 done on this machine` };
-          }
-          closeProjectTask(projectDir(), task.id, {
+          if (options.refuseBlockingDrop && input.outcome === "dropped" && task.status === "open" && task.type === "blocking")
+            throw new Error(personOnly(task.id, "drops a blocking deploy task", `drop ${task.id} --note "<reason>"`));
+          closeDeployTask(projectDir(), task.id, {
             status: input.outcome,
             ...input.evidence === undefined ? {} : { evidence: input.evidence },
             ...input.note === undefined ? {} : { note: input.note }
@@ -24325,15 +24507,15 @@ function createTaskOps(options = {}) {
       }
       if (operation === "note") {
         const input = taskSchemas.note.parse(raw);
-        if (input.task.startsWith("T-")) {
-          addProjectNote(projectDir(), input.task, input.text, new Date(now));
+        if (isDeployTaskId(input.task)) {
+          addDeployNote(projectDir(), input.task, input.text, new Date(now));
         } else
           value(writeWork(store, () => insertNote(store, work(input.task).id, input.text, who, now)));
         return { ok: true, text: `${input.task} \xB7 note saved` };
       }
       if (operation === "get") {
         const input = taskSchemas.get.parse(raw);
-        const text = input.task.startsWith("T-") ? (() => {
+        const text = isDeployTaskId(input.task) ? (() => {
           const file = project(input.task).file;
           const body = readFileSync8(file, "utf8");
           if (!ctx.checkoutRoot)
@@ -24359,6 +24541,8 @@ ${log.out.split(`
 
 ${history}`;
         })() : (() => {
+          if (OLD_TASK_ID.test(input.task))
+            throw new Error(OLD_ID_ANSWER);
           const task = getTask(store, ctx.project, input.task);
           if (!task) {
             const gone = deletedHistory(store, ctx.project, input.task);
@@ -24391,18 +24575,22 @@ ${historyText(gone, { full: input.history })}`;
       }
       if (operation === "delete") {
         const input = taskSchemas.delete.parse(raw);
-        if (input.task.startsWith("T-")) {
+        if (isDeployTaskId(input.task)) {
           const task = project(input.task);
+          const guarded = options.refuseBlockingDrop && task.status === "open" && task.type === "blocking";
+          const trackedRefusal = guarded ? personOnly(task.id, "drops a blocking deploy task", `drop ${task.id} --note "<reason>"`) : DELETE_TRACKED;
           if (!ctx.checkoutRoot)
-            throw new Error("Project tasks need a checkout");
+            throw new Error("Deploy tasks need a git checkout");
           const tracked = runGit(ctx.checkoutRoot, ["ls-files", "--error-unmatch", "--", relative2(ctx.checkoutRoot, task.file)], env);
           if (tracked.ok)
-            throw new Error("Tracked project task: drop it with task_done outcome dropped");
+            throw new Error(trackedRefusal);
           const index = runGit(ctx.checkoutRoot, ["ls-files", "--", relative2(ctx.checkoutRoot, task.file)], env);
           if (!index.ok)
             throw new Error(`Could not read git's index: ${index.err}`);
           if (index.out)
-            throw new Error("Tracked project task: drop it with task_done outcome dropped");
+            throw new Error(trackedRefusal);
+          if (guarded)
+            throw new Error(personOnly(task.id, "deletes a blocking deploy task", `delete ${task.id}`));
           rmSync3(task.file);
         } else {
           const result = deleteTask(store, work(input.task).id, who, now);
@@ -24434,7 +24622,7 @@ ${t.body}`.toLowerCase().includes(input.text.toLowerCase()));
           const ownPlans = new Set(all.filter(owns).map((t) => t.plan).filter((p) => p !== null && ownsPlan(all, owns, p)));
           selected = selected.filter((t) => t.kind !== "task" && (input.plan === undefined && ownPlans.size > 1 ? t.plan !== null && ownPlans.has(t.plan) : shown !== null && t.plan === shown));
         } else if (ctx.projectTasks.ok)
-          projects = projectTasks(!openOnly).filter((t) => (!openOnly || t.status === "open") && (input.scope === "all" || t.kind !== "teammate" || !acked(t.id)));
+          projects = projectTasks(!openOnly).filter((t) => !openOnly || t.status === "open");
       }
       const selectedIds = new Set(selected.map((t) => t.id));
       const byId = new Map(all.map((t) => [t.id, t]));
@@ -24482,7 +24670,7 @@ ${t.body}`.toLowerCase().includes(input.text.toLowerCase()));
 
 // src/tasks/mcp.ts
 var TASK_SERVER_INSTRUCTIONS = `These tools are your session's task list. Work tasks stay on this machine.
-An obligation for production, the database, a teammate or later is a project task: commit its file with your branch.
+A step owed before or after a deploy to prod or staging is a deploy task (kind prod or staging): its file travels with your branch, so commit it. Before any deploy, production or database work, list them (${TASK_TOOL.list} with scope project); close each with evidence (/${PLUGIN}:tasks).
 The phase task's description is the builder's brief. Read it with task_get; save the report with task_note, starting Report:.
 The main session saves Ruling: notes and sets agent, branch, worktree and base on the phase.
 After compaction, task_list scope plan and git log are the truth.
@@ -24493,18 +24681,18 @@ A step of a phase closes done with evidence, or dropped with a note that gives t
 Save notes as you go with ${TASK_TOOL.note}.`;
 var descriptions = {
   take: "Take a plan or task into the calling session. Live claims need force; a refusal changes nothing.",
-  create: "Create a work task, or a project task file to commit with this branch. Create the plan's phases here (phase): at most plans.maxPhases per plan, each holding its tasks. A plan without parent creates the plan itself; to add a task to a plan, give its phase as parent, or the plan as parent to make it wait there for a phase. A task with neither plan nor parent is loose, whatever plans are open. Phases may be laid in any of your plans; one plan is in flight at a time.",
-  update: `Update a task: its status, type, parent or blockers. Starting work claims it for this Claude process and puts its plan in flight; a phase starts only with tasks, and not while another plan of yours is in flight. Setting an in-flight plan's task to pending parks it, refused while its phases run. A task waiting under a plan moves under a phase of that plan with parent. Close a step with ${TASK_TOOL.done}.`,
-  done: 'Finish or drop a task. Its open blocking tasks must be finished or dropped first. A step of a phase finishes with evidence, or drops with a note. The answer lists your own work this close freed ("now ready"): start it, phases together.',
+  create: "Create a work task (kind work, the default), or a deploy task for prod or staging (deploy and type required; pair true with staging also creates its prod twin): a file to commit with this branch. Create the plan's phases here (phase): at most plans.maxPhases per plan, each holding its tasks. A plan without parent creates the plan itself; to add a task to a plan, give its phase as parent, or the plan as parent to make it wait there for a phase. A task with neither plan nor parent is loose, whatever plans are open. Phases may be laid in any of your plans; one plan is in flight at a time.",
+  update: `Update a task: its status, type, parent or blockers; status open reopens a closed deploy task. Starting work claims it for this Claude process and puts its plan in flight; a phase starts only with tasks, and not while another plan of yours is in flight. Setting an in-flight plan's task to pending parks it, refused while its phases run. A task waiting under a plan moves under a phase of that plan with parent. Close a step with ${TASK_TOOL.done}.`,
+  done: 'Finish or drop a task. Its open blocking tasks must be finished or dropped first. A step of a phase, and every deploy task, finishes with evidence or drops with a note; only the person drops a blocking deploy task. The answer lists your own work this close freed ("now ready"): start it, phases together.',
   note: "Save a note on a task as work proceeds.",
-  list: "List the caller's tasks as a tree, or list the plan or project.",
+  list: "List the caller's tasks as a tree, or list the plan or project (scope project also lists the open deploy tasks).",
   get: "Read a task, its notes and its history: each change with its time, the values before and after, and the session that made it. Use offset to read the next part; history true also prints every earlier description.",
-  search: "Search work and project tasks.",
-  delete: "Delete a mistaken task with no notes or tasks, or an untracked project task file."
+  search: "Search work tasks and deploy tasks.",
+  delete: "Delete a mistaken task with no notes or tasks, or an untracked deploy task file."
 };
 var READ_ONLY = new Set(["list", "get", "search"]);
 function createTaskServer(options = {}) {
-  const ops = createTaskOps(options);
+  const ops = createTaskOps({ ...options, refuseBlockingDrop: true });
   const server = new McpServer({ name: TASKS_SERVER_NAME, version: VERSION }, { instructions: TASK_SERVER_INSTRUCTIONS });
   for (const operation of Object.keys(taskSchemas)) {
     server.registerTool(TASK_TOOL[operation], {
