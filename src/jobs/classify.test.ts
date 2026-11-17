@@ -715,7 +715,7 @@ describe("routableLine: a heavy command piped into read-only filters", () => {
 function weightSourceOf(
   packages: Record<string, Record<string, string> | null>,
   files: readonly string[] = [],
-  options: { packageAt?: Record<string, string>; folder?: string } = {},
+  options: { packageAt?: Record<string, string>; folder?: string; yarnBerry?: boolean } = {},
 ): WeightSource & { asked: string[] } {
   const asked: string[] = [];
   const present = new Set(files);
@@ -729,6 +729,7 @@ function weightSourceOf(
       if (scripts === undefined || scripts === null) return null;
       const bodies: ScriptBodies = Object.assign(new Map(Object.entries(scripts)), {
         folder: home,
+        yarnBerry: options.yarnBerry === true,
       });
       return bodies;
     },
@@ -812,6 +813,69 @@ describe("a package script is classified by its body", () => {
     expect(routed("npm test", { pretest: "tsc --noEmit", test: "vitest run" })).toBe("tsc");
     // A name that merely starts with `pre` is no hook of a script that does not exist.
     expect(anyHeavy("bun run build", { prebuilder: "tsc --noEmit", build: "echo hi" })).toBeNull();
+  });
+
+  test("yarn berry runs no pre or post script; classic yarn, and every other runner, does", () => {
+    const packages = { "/repo": { prebuild: "tsc --noEmit", build: "echo hi" } };
+    const classic = weightSourceOf(packages);
+    const berry = weightSourceOf(packages, [], { yarnBerry: true });
+    expect(classifyHeavyCommand("yarn build", DEFAULT_KINDS, classic)).toBe("tsc");
+    expect(classifyHeavyCommand("yarn run build", DEFAULT_KINDS, classic)).toBe("tsc");
+    expect(classifyHeavyCommand("yarn build", DEFAULT_KINDS, berry)).toBeNull();
+    expect(classifyHeavyCommand("yarn run build", DEFAULT_KINDS, berry)).toBeNull();
+    // The flag is yarn's alone: bun, npm and pnpm read the hooks whatever the file says.
+    for (const line of ["bun run build", "npm run build", "pnpm build"]) {
+      expect([line, classifyHeavyCommand(line, DEFAULT_KINDS, berry)]).toEqual([line, "tsc"]);
+    }
+    // Berry still reads the script's own body.
+    expect(
+      classifyHeavyCommand(
+        "yarn build",
+        DEFAULT_KINDS,
+        weightSourceOf({ "/repo": { build: "tsc" } }, [], { yarnBerry: true }),
+      ),
+    ).toBe("tsc");
+  });
+
+  test("a script that already queues itself is never routed again, whatever launcher it names", () => {
+    // The queue nests on macOS and Windows: the inner job waits for its own parent's slot.
+    const LAUNCHERS = [
+      "cc-smart-dev-kit",
+      '"$HOME/.local/bin/cc-smart-dev-kit"',
+      "$HOME/.local/bin/cc-smart-dev-kit",
+      "/usr/local/bin/cc-smart-dev-kit",
+      "~/.local/bin/cc-smart-dev-kit",
+    ];
+    for (const launcher of LAUNCHERS) {
+      const body = `${launcher} job run --kind tsc -- tsgo`;
+      const source = weightSourceOf({ "/repo": { tsc: body, check: "bun run tsc" } });
+      for (const line of ["bun run tsc", "bun tsc", "npm run tsc", "bun run check"]) {
+        expect([launcher, line, classifyRoutableLine(line, DEFAULT_KINDS, source)]).toEqual([
+          launcher,
+          line,
+          null,
+        ]);
+        expect([launcher, line, runWeight(line, DEFAULT_KINDS, source)]).toEqual([
+          launcher,
+          line,
+          { weight: "none" },
+        ]);
+        // The any-heavy walk still reports the kind: the reservation and the hook's questions read it.
+        expect([launcher, line, classifyHeavyCommand(line, DEFAULT_KINDS, source)]).toEqual([
+          launcher,
+          line,
+          "tsc",
+        ]);
+      }
+    }
+    // The line itself, outside a script.
+    const none = weightSourceOf({ "/repo": {} });
+    const queued = "cc-smart-dev-kit job run --kind tsc -- bunx tsc --noEmit";
+    expect(classifyRoutableLine(queued, DEFAULT_KINDS, none)).toBeNull();
+    expect(runWeight(queued, DEFAULT_KINDS, none)).toEqual({ weight: "none" });
+    expect(classifyRoutableLine(`cd app && ${queued}`, DEFAULT_KINDS, none)).toBeNull();
+    // The same script with the tool alone in its body is routed, as the plan intends.
+    expect(routed("bun run tsc", { tsc: "tsgo" })).toBe("tsc");
   });
 
   test("a script named like a tool is read by its body, and the tool inside is the tool", () => {
@@ -1096,6 +1160,32 @@ describe("runWeight: light, heavy or none", () => {
     expect(runWeight("bun run test src/a.test.ts", DEFAULT_KINDS, source)).toEqual(
       heavy("test:run"),
     );
+  });
+
+  test("a runner's folder option moves the folder a tool's files are read in", () => {
+    // `a.test.ts` is in `/repo` and `/repo/app`; `b.test.ts` in `/repo` only.
+    expect(weight("pnpm -C app vitest run a.test.ts")).toEqual(LIGHT);
+    expect(weight("pnpm -C app vitest run b.test.ts")).toEqual(heavy("test:run"));
+    expect(weight("pnpm --dir app vitest run b.test.ts")).toEqual(heavy("test:run"));
+    expect(weight("pnpm vitest run b.test.ts")).toEqual(LIGHT);
+    expect(weight("bun run --cwd app vitest run b.test.ts")).toEqual(heavy("test:run"));
+    expect(weight("bun run --cwd app vitest run a.test.ts")).toEqual(LIGHT);
+    expect(weight("npm --prefix app exec vitest run b.test.ts")).toEqual(LIGHT);
+    // A script rule's files are read in the package folder the script runs in.
+    const kinds = mergeKinds({ unit: { match: [{ script: "unit" }], noSlotForFiles: true } });
+    const source = weightSourceOf({ "/repo/app": { unit: "vitest run" } }, FILES);
+    expect(runWeight("bun run --cwd app unit a.test.ts", kinds, source)).toEqual(LIGHT);
+    expect(runWeight("bun run --cwd app unit b.test.ts", kinds, source)).toEqual(heavy("unit"));
+  });
+
+  test("`&>file` is one redirection: the run still names only its files", () => {
+    expect(weight("tsc --noEmit src/a.ts &>/dev/null")).toEqual(LIGHT);
+    expect(weight("tsc --noEmit src/a.ts &>> build.log")).toEqual(LIGHT);
+    expect(weight("tsc --noEmit src/a.ts &> out.txt")).toEqual(LIGHT);
+    expect(weight("bunx vitest run a.test.ts &>/dev/null")).toEqual(LIGHT);
+    expect(weight("tsc --noEmit &>/dev/null")).toEqual(heavy("tsc"));
+    // The `&` of `&>` is no background.
+    expect(weight("tsc --noEmit src/a.ts &>/dev/null && tsc --noEmit src/a.ts")).toEqual(LIGHT);
   });
 
   test("cross-env, env and a wrapper in front of a tool are read through", () => {

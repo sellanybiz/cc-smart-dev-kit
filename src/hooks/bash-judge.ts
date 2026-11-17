@@ -313,13 +313,8 @@ function proposalOf(step: Step, moved: boolean): Proposal {
   return { folder };
 }
 
-/**
- * `cc-smart-dev-kit job run …`, whatever path the launcher is named by: the queue must not
- * nest.
- */
-export function isJobRun(program: string, args: string[]): boolean {
-  return program === COMMAND && args[0] === "job" && args[1] === "run";
-}
+// The one home of "this is `job run`" is the shell reader; job-route imports it from here.
+export { isJobRun } from "../shell/command";
 
 /**
  * One line's commands, in order, its shells' inner text read too (`bash -c '…'`), three

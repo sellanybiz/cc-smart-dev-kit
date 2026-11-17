@@ -162,14 +162,15 @@ describe("noSlotForFiles: a run on named files takes no slot", () => {
   });
 
   test("vitest run and jest on existing files run at once, past options and their values", () => {
-    expect(namesOnlyFiles(testRun, ["run", "src/a.test.ts", "src/b.test.ts"], isFile)).toBe(true);
+    // `run` is vitest's own command: its table skips it, and the kind lists no skip word.
+    expect(testRun.skipWords).toBeUndefined();
+    const vitest = (args: string[]) => namesOnlyFiles(testRun, args, isFile, "vitest");
+    expect(vitest(["run", "src/a.test.ts", "src/b.test.ts"])).toBe(true);
     expect(namesOnlyFiles(testRun, ["src/a.test.ts"], isFile)).toBe(true);
-    expect(namesOnlyFiles(testRun, ["run", "--project", "api", "src/a.test.ts"], isFile)).toBe(
-      true,
-    );
-    expect(
-      namesOnlyFiles(testRun, ["run", "--reporter=dot", "-t", "adds", "src/a.test.ts"], isFile),
-    ).toBe(true);
+    expect(vitest(["run", "--project", "api", "src/a.test.ts"])).toBe(true);
+    expect(vitest(["run", "--reporter=dot", "-t", "adds", "src/a.test.ts"])).toBe(true);
+    // Jest and bun read `run` as a filter, and no file is named `run`.
+    expect(namesOnlyFiles(testRun, ["run", "src/a.test.ts"], isFile, "jest")).toBe(false);
     // A script's words after its name, with npm's `--` before them.
     expect(namesOnlyFiles(testRun, ["--", "src/a.test.ts"], isFile)).toBe(true);
   });
@@ -218,7 +219,12 @@ describe("noSlotForFiles: a run on named files takes no slot", () => {
 
     test("an option with `=`, a known one with no value, and a kind's own valued one stay free", () => {
       expect(
-        namesOnlyFiles(testRun, ["run", "--outputFile.junit=results.xml", "src/a.test.ts"], exists),
+        namesOnlyFiles(
+          testRun,
+          ["run", "--outputFile.junit=results.xml", "src/a.test.ts"],
+          exists,
+          "vitest",
+        ),
       ).toBe(true);
       expect(
         namesOnlyFiles(
@@ -227,9 +233,9 @@ describe("noSlotForFiles: a run on named files takes no slot", () => {
           exists,
         ),
       ).toBe(true);
-      expect(namesOnlyFiles(testRun, ["run", "--passWithNoTests", "src/a.test.ts"], exists)).toBe(
-        true,
-      );
+      expect(
+        namesOnlyFiles(testRun, ["run", "--passWithNoTests", "src/a.test.ts"], exists, "vitest"),
+      ).toBe(true);
       // A project kind's own `valuedFlags` add to the built-in list; vitest's still count.
       const own: KindSpec = {
         match: [{ script: "test:run" }],
@@ -313,6 +319,26 @@ describe("namesOnlyFiles: each tool's own options", () => {
     expect(namesOnlyFiles(testRun, ["test", "--unknown", "./a.test.ts"], isFile, "bun")).toBe(
       false,
     );
+    // Only what `bun test --help` lists is read past (Bun 1.4.4); `--parallel` takes an optional value.
+    for (const option of ["--only", "--pass-with-no-tests", "--only-failures", "--no-orphans"]) {
+      expect(namesOnlyFiles(testRun, ["test", option, "./a.test.ts"], isFile, "bun")).toBe(true);
+    }
+    expect(
+      namesOnlyFiles(
+        testRun,
+        ["test", "--path-ignore-patterns", "x", "./a.test.ts"],
+        isFile,
+        "bun",
+      ),
+    ).toBe(true);
+    for (const option of ["--parallel", "--aot", "--react-compiler", "--changed"]) {
+      expect(namesOnlyFiles(testRun, ["test", option, "./a.test.ts"], isFile, "bun")).toBe(false);
+    }
+    for (const option of ["--globals", "--environment", "--reporter-junit-suites"]) {
+      expect(namesOnlyFiles(testRun, ["test", option, "x", "./a.test.ts"], isFile, "bun")).toBe(
+        false,
+      );
+    }
     // Without the tool, the shared table reads `test` as an operand that is no file.
     expect(namesOnlyFiles(testRun, ["test", "./a.test.ts"], isFile)).toBe(false);
   });
@@ -327,6 +353,11 @@ describe("namesOnlyFiles: each tool's own options", () => {
       namesOnlyFiles(testRun, ["--reporters", "default", "src/a.test.ts"], isFile, "jest"),
     ).toBe(false);
     expect(namesOnlyFiles(testRun, ["--reporters", "default", "src/a.test.ts"], isFile)).toBe(true);
+    // Jest's pattern options are array options: only the `=` form is read.
+    for (const option of ["--testPathPatterns", "--testPathPattern"]) {
+      expect(namesOnlyFiles(testRun, [option, "x", "src/a.test.ts"], isFile, "jest")).toBe(false);
+      expect(namesOnlyFiles(testRun, [`${option}=x`, "src/a.test.ts"], isFile, "jest")).toBe(true);
+    }
     // Each tool's own bare and valued options.
     expect(
       namesOnlyFiles(testRun, ["run", "--project", "api", "src/a.test.ts"], isFile, "vitest"),

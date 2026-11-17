@@ -65,13 +65,25 @@ function scriptsOf(text: string, folder: string): ScriptBodies | null {
   const scripts = (parsed as { scripts?: unknown }).scripts;
   // No `scripts` key at all is a real answer: this project defines no script, so the name is
   // the package manager's `node_modules/.bin` tool.
-  if (scripts === undefined) return Object.assign(new Map<string, string>(), { folder });
-  if (scripts === null || typeof scripts !== "object" || Array.isArray(scripts)) return null;
   const bodies = new Map<string, string>();
-  for (const [name, body] of Object.entries(scripts)) {
-    if (typeof body === "string") bodies.set(name, body);
+  if (scripts !== undefined) {
+    if (scripts === null || typeof scripts !== "object" || Array.isArray(scripts)) return null;
+    for (const [name, body] of Object.entries(scripts)) {
+      if (typeof body === "string") bodies.set(name, body);
+    }
   }
-  return Object.assign(bodies, { folder });
+  return Object.assign(bodies, { folder, yarnBerry: usesYarnBerry(parsed, folder) });
+}
+
+/**
+ * True when the project uses Yarn 2 or newer (berry): its `packageManager` field says `yarn@2`
+ * or newer, or a `.yarnrc.yml` sits beside the `package.json`. Berry runs no `pre` or `post`
+ * script of a script; classic yarn does.
+ */
+function usesYarnBerry(packageJson: object, folder: string): boolean {
+  const manager = (packageJson as { packageManager?: unknown }).packageManager;
+  const major = typeof manager === "string" ? /^yarn@(\d+)/.exec(manager)?.[1] : undefined;
+  return (major !== undefined && Number(major) >= 2) || existsSync(join(folder, ".yarnrc.yml"));
 }
 
 /** True when `word` names a file (not a folder) from `folder`; anything that cannot be read is no file. */

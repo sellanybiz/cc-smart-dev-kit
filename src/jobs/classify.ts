@@ -14,15 +14,19 @@
  * names is read by its **body**: the commands in it are classified as if the line ran them, in
  * the folder of the `package.json`, with the `pre<name>` and `post<name>` scripts the runner
  * runs beside it. When the name is a script of the folder the line runs in, a tool rule never
- * matches it, so a project whose `tsc` script wraps a type check is not queued twice. The
- * classifier learns the scripts and the files through injected readers (`ScriptSource`,
- * `WeightSource`, `package-scripts.ts`); it reads no file itself.
+ * matches it (the script is read, not the tool of the same name). A line or a script body that
+ * already runs `cc-smart-dev-kit job run` is queued already: it is never routed or weighed
+ * again, so a project whose `tsc` script wraps the queue is not queued twice. The classifier
+ * learns the scripts and the files through injected readers (`ScriptSource`, `WeightSource`,
+ * `package-scripts.ts`); it reads no file itself.
  *
  * Three questions, one walk of the line (`scan`):
- * - `classifyHeavyCommand`: the first heavy kind the line runs (any command of it).
- * - `routableLine`: the line the route may queue, when **every** command in it is heavy.
+ * - `classifyHeavyCommand`: the first heavy kind the line runs (any command of it), also inside
+ *   a `job run` it already holds.
+ * - `routableLine`: the line the route may queue, when **every** command in it is heavy and
+ *   none of them is `job run`.
  * - `runWeight`: whether a run is light (it names only existing files, or only prints), heavy
- *   (with its kind) or none (nothing heavy, or a watch run that never ends).
+ *   (with its kind) or none (nothing heavy, a watch run that never ends, or already queued).
  *
  * Pure: no file, no environment — the readers are the caller's, and the script reader is asked
  * at most once per folder in a run.
@@ -34,6 +38,7 @@ import {
   type Dialect,
   invocationOf,
   isAssignmentOnly,
+  isJobRun,
   isRunnerProgram,
   MAX_NESTING,
   nestedCommand,
@@ -67,7 +72,11 @@ export interface ToolCall {
  * the `package.json` itself — where a script runs — when it is not the folder that was asked
  * (the reader walks up to the nearest file, as the package managers do).
  */
-export type ScriptBodies = ReadonlyMap<string, string> & { readonly folder?: string };
+export type ScriptBodies = ReadonlyMap<string, string> & {
+  readonly folder?: string;
+  /** The project uses Yarn 2 or newer (berry), which runs no `pre` or `post` script of a script. */
+  readonly yarnBerry?: boolean;
+};
 
 /**
  * The `scripts` of a folder's `package.json`, or null when there is none to read (no file, or
@@ -498,11 +507,16 @@ interface Found extends Hit {
   compound: boolean;
 }
 
-/** What one walk of a line finds: its heavy commands, and whether it sends any to the background. */
+/** What one walk of a line finds: its heavy commands, and what else the weight depends on. */
 interface Scan {
   found: Found[];
+  /** The line sends a command to the background. */
   background: boolean;
+  /** The line (or a script it runs) already runs `job run`: it is queued, and must not nest. */
+  queued: boolean;
 }
+
+const newScan = (): Scan => ({ found: [], background: false, queued: false });
 
 /** A lone `&` (a command sent to the background): not `&&`, `2>&1`, `&>file` or `|&`. */
 const LONE_AMPERSAND = /(?<![&|>])&(?![&>])/;
@@ -540,9 +554,9 @@ function isOneCommand(body: string): boolean {
 
 /**
  * Reads a script's body (and its `pre` and `post` scripts, which bun, npm, pnpm and yarn classic
- * run beside it; yarn berry does not, and its `pre`/`post` of a script that exists are read
- * anyway: the safe side). `all`: every command in them must be heavy, as on a line. Returns
- * false when that fails, or when the script cannot be read (too deep, or it calls itself).
+ * run beside it; yarn berry does not, and the reader says so: `ScriptBodies.yarnBerry`).
+ * `all`: every command in them must be heavy, as on a line. Returns false when that fails, or
+ * when the script cannot be read (too deep, or it calls itself).
  */
 function expandScript(
   call: ToolCall,
@@ -558,7 +572,10 @@ function expandScript(
   if (depth >= MAX_NESTING) return false;
   const name = call.script ?? "";
   const folder = bodies.folder ?? lookedUpIn;
-  const parts = [`pre${name}`, name, `post${name}`].filter((part) => bodies.has(part));
+  const hooks = !(runner === "yarn" && bodies.yarnBerry === true);
+  const parts = [hooks ? `pre${name}` : "", name, hooks ? `post${name}` : ""].filter((part) =>
+    bodies.has(part),
+  );
   const main = bodies.get(name) ?? "";
   // Extra arguments reach a body that is one plain command; a body of several is never light.
   const one = parts.length === 1 && isOneCommand(main);
@@ -603,7 +620,9 @@ function matchCall(
   const hit = matchOfCall(call, kinds, isScript);
   if (hit !== null) {
     if (all && hit.printOnly) return false; // a run that only prints is not heavy
-    const folder = hit.tool === undefined ? (bodies?.folder ?? lookedUpIn) : run.folder;
+    // The command runs in the folder the runner was told to use (`pnpm -C app vitest …`); a
+    // script rule's arguments go to a script that runs in its package.json's folder.
+    const folder = hit.tool === undefined ? (bodies?.folder ?? lookedUpIn) : lookedUpIn;
     out.found.push({ ...hit, call, folder, compound: run.compound });
     return true;
   }
@@ -657,6 +676,8 @@ function scan(
       continue;
     }
     if (all && isRunnerProgram(program)) return false;
+    // The queue's own command: whatever it runs is queued already, and must not nest.
+    if (isJobRun(program, args)) out.queued = true;
     const inner = nestedCommand(program, args, step.pipedFrom);
     // The line a shell runs starts in this folder, and gets none of a script's extra arguments.
     const readInner = (line: string) =>
@@ -686,7 +707,7 @@ export function classifyHeavyCommand(
   source?: ScriptSource,
   dialect: Dialect = "bash",
 ): string | null {
-  const out: Scan = { found: [], background: false };
+  const out = newScan();
   scan(command, kinds, dialect, 0, runOf(source), false, out);
   return out.found.find((one) => !one.printOnly)?.kind ?? null;
 }
@@ -712,17 +733,21 @@ function isLight(one: Found, kinds: Kinds, source: WeightSource): boolean {
  *   under its kind's `noSlotForFiles`. A positive finding only: a command the reader cannot
  *   place is not light. Several heavy runs sent to the background (`a & b &`) are not light.
  * - **heavy**: the first heavy command that is not light, with its kind.
- * - **none**: no heavy command in the line, or a watch run (`--watch`, `vitest watch`) that
- *   never ends and so must never wait for a slot.
+ * - **none**: no heavy command in the line, a watch run (`--watch`, `vitest watch`) that
+ *   never ends and so must never wait for a slot, or a line that runs `job run` already (a
+ *   script whose body queues itself): queued once, never again. `classifyHeavyCommand` still
+ *   reports the kind of such a line: the reservation and the hook's questions read it.
  *
  * It does not say whether the line may be queued: `routableLine` does (every command heavy).
  */
 export function runWeight(line: string, kinds: Kinds, source: WeightSource): Weight {
-  const out: Scan = { found: [], background: false };
+  const out = newScan();
   scan(line, kinds, "bash", 0, runOf(source), false, out);
   const { found } = out;
   const first = found[0];
-  if (first === undefined) return { weight: "none" };
+  // A line that runs `job run` (itself, or through a script's body) is queued already: a second
+  // queue around it would nest, and the inner job would wait for its own parent's slot.
+  if (first === undefined || out.queued) return { weight: "none" };
   if (found.some((one) => one.tool !== undefined && isWatchRun(one.tool, one.call.args))) {
     return { weight: "none" };
   }
@@ -1112,8 +1137,9 @@ function feedsFiltersAlone(heavy: string): boolean {
  * same way, so `bash -c "tsc && rm x"` is no pure line.
  */
 function routableKinds(command: string, kinds: Kinds, source?: ScriptSource): string[] | null {
-  const out: Scan = { found: [], background: false };
-  if (!scan(command, kinds, "bash", 0, runOf(source), true, out)) return null;
+  const out = newScan();
+  // A line that runs `job run` (itself, or through a script's body) is queued already.
+  if (!scan(command, kinds, "bash", 0, runOf(source), true, out) || out.queued) return null;
   return out.found.map((one) => one.kind);
 }
 

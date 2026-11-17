@@ -55,6 +55,24 @@ describe("packageScripts", () => {
     expect(packageScripts(folder)?.folder).toBe(folder);
   });
 
+  test("says whether the project uses yarn berry, which runs no pre or post script", () => {
+    const berry = (text: string, yarnrc = false) => {
+      const folder = folderWith(text);
+      if (yarnrc) writeFileSync(join(folder, ".yarnrc.yml"), "nodeLinker: node-modules\n");
+      return packageScripts(folder)?.yarnBerry;
+    };
+    expect(berry('{"packageManager":"yarn@4.5.0","scripts":{}}')).toBe(true);
+    expect(berry('{"packageManager":"yarn@2.4.3"}')).toBe(true);
+    expect(berry('{"scripts":{}}', true)).toBe(true);
+    // Classic yarn, another manager, or nothing that says so.
+    expect(berry('{"packageManager":"yarn@1.22.22"}')).toBe(false);
+    expect(berry('{"packageManager":"pnpm@9.0.0"}')).toBe(false);
+    expect(berry('{"scripts":{}}')).toBe(false);
+    expect(berry('{"packageManager":42}')).toBe(false);
+    // A package.json with no scripts key still says it.
+    expect(berry('{"packageManager":"yarn@4.0.0"}')).toBe(true);
+  });
+
   test("gives null when there is no package.json, or no folder", () => {
     expect(packageScripts(tempDir("package-scripts-none"))).toBeNull();
     expect(packageScripts(join(tempDir("package-scripts-gone"), "missing"))).toBeNull();

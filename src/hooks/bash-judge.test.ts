@@ -642,7 +642,9 @@ describe("J1: a package script is a script, not the tool of the same name", () =
 
   test("the folder after a cd decides: a script there is no tool, a tool there still is", async () => {
     const { env, repo } = project({ jobs: { route: true } });
-    writeFileSync(join(repo, "package.json"), `${JSON.stringify({ scripts: { tsc: "tsgo" } })}\n`);
+    // The root's tsc script queues itself already (its body is `job run`): no rewrite there.
+    const queued = `${LAUNCHER} job run --kind tsc -- tsgo`;
+    writeFileSync(join(repo, "package.json"), `${JSON.stringify({ scripts: { tsc: queued } })}\n`);
     mkdirSync(join(repo, "sub"));
     writeFileSync(join(repo, "sub", "package.json"), `${JSON.stringify({ scripts: {} })}\n`);
     // The root defines tsc as a script: no rewrite there.
@@ -655,6 +657,14 @@ describe("J1: a package script is a script, not the tool of the same name", () =
     ).updatedInput as { command: string };
     expect(routed.command).toContain("job run --kind tsc");
     expect(routed.command).toContain("cd sub && bun run tsc --noEmit");
+  });
+
+  test("a script whose body is the tool alone is read by its body, and routed", async () => {
+    const { env, repo } = project({ jobs: { route: true } });
+    writeFileSync(join(repo, "package.json"), `${JSON.stringify({ scripts: { tsc: "tsgo" } })}\n`);
+    const routed = output(await runHook(jobRouteHook, call(repo, "bun run tsc --noEmit"), env))
+      .updatedInput as { command: string };
+    expect(routed.command).toContain("job run --kind tsc");
   });
 });
 

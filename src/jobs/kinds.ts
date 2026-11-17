@@ -387,8 +387,9 @@ const VITEST_OPTIONS: ToolOptions = {
 
 /**
  * jest (`jestjs.io/docs/cli`). The array options (`--reporters`, `--roots`,
- * `--testPathIgnorePatterns`, `--projects`, `--setupFilesAfterEnv`, …) take every word up to the
- * next option, so only their `=` form is read: a file after one may be one of its values.
+ * `--testPathIgnorePatterns`, `--testPathPatterns`, `--projects`, `--setupFilesAfterEnv`, …)
+ * take every word up to the next option, so only their `=` form is read: a file after one may
+ * be one of its values.
  */
 const JEST_OPTIONS: ToolOptions = {
   valued: [
@@ -409,8 +410,6 @@ const JEST_OPTIONS: ToolOptions = {
     "--testEnvironment",
     "--testEnvironmentOptions",
     "--testNamePattern",
-    "--testPathPattern",
-    "--testPathPatterns",
     "--testRunner",
     "--testSequencer",
     "--testTimeout",
@@ -466,20 +465,20 @@ const JEST_OPTIONS: ToolOptions = {
 };
 
 /**
- * `bun test` (`bun.com/docs/cli/test`). A positional word is a path filter, and names a file
- * only when it starts with `./` or `/`.
+ * `bun test` (`bun test --help`, Bun 1.4.4, and `bun.com/docs/cli/test`). A positional word is a
+ * path filter, and names a file only when it starts with `./` or `/`. Only options the help
+ * lists are here. Left out on purpose: `--bail`, `--changed` and `--parallel` take optional
+ * values.
  */
 const BUN_TEST_OPTIONS: ToolOptions = {
   valued: [
     "--coverage-dir",
     "--coverage-reporter",
-    "--environment",
-    "--globals",
     "--max-concurrency",
-    "--preload",
+    "--parallel-delay",
+    "--path-ignore-patterns",
     "--rerun-each",
     "--reporter",
-    "--reporter-junit-suites",
     "--reporter-outfile",
     "--retry",
     "--seed",
@@ -490,16 +489,16 @@ const BUN_TEST_OPTIONS: ToolOptions = {
     "-t",
   ],
   bare: [
-    "--aot",
-    "--bun",
     "--check",
     "--concurrent",
     "--dots",
-    "--no-compile-function-source",
+    "--isolate",
     "--no-isolate",
-    "--parallel",
+    "--no-orphans",
+    "--only",
+    "--only-failures",
+    "--pass-with-no-tests",
     "--randomize",
-    "--react-compiler",
     "--todo",
     "--update-snapshots",
     "--update-timings",
@@ -559,11 +558,11 @@ export const DEFAULT_KINDS: Kinds = {
     about:
       "A test run (vitest, jest, bun test). A run on named test files runs at once, with no slot.",
     printOnly: TEST_PRINT_ONLY,
-    // `vitest related` is no skip word on purpose: the tests that import a file may be all of
-    // them, so such a run takes a slot. Each tool's own options are read by its table
-    // (`TOOL_OPTIONS`); the shared lists below serve a project kind that sets this field.
+    // Each tool's own options and leading words are read by its table (`TOOL_OPTIONS`):
+    // vitest skips `run` (never `related`: the tests that import a file may be all of them, so
+    // such a run takes a slot), and bun and jest read `run` as a filter. The shared lists
+    // serve a project kind that sets this field.
     noSlotForFiles: true,
-    skipWords: ["run"],
     match: [{ tool: "vitest" }, { tool: "jest" }, { tool: "bun", sub: ["test"] }],
   },
   build: {

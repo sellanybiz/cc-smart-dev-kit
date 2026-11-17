@@ -781,7 +781,10 @@ export function wordsWithFill(segment: string, dialect: Dialect = "bash"): Shell
       add(next === "" ? char : bash ? next : (POWERSHELL_ESCAPES[next] ?? next));
       i += 2;
     } else if (char === "<" || char === ">") {
-      if (quoted || !/^\d+$/.test(word)) end();
+      // Bash's `&>file` and `&>>file` (both streams to a file) are one redirection: the bare `&`
+      // before the `>` belongs to it, as a file number does.
+      const bothStreams = bash && !quoted && char === ">" && word === "&";
+      if (!bothStreams && (quoted || !/^\d+$/.test(word))) end();
       while (oneOf("<>", segment.charAt(i))) add(segment.charAt(i++));
       if (oneOf("&|", segment.charAt(i))) add(segment.charAt(i++));
     } else if (bash && char === "$" && next === "'") {
@@ -866,7 +869,7 @@ export const CHANGE_DIR: ReadonlySet<string> = new Set([
 ]);
 
 /** A redirection word: group 1 is the operator, group 2 its target when it is attached. */
-const REDIRECTION = /^\d*(<<<|<<|<>|<|>>|>\||>|>&|&>)(.*)$/s;
+const REDIRECTION = /^\d*(<<<|<<|<>|<|>>|>\||>|>&|&>>|&>)(.*)$/s;
 
 /**
  * Wrappers: each runs the command after it, so the command a line really runs is reached
@@ -1357,7 +1360,7 @@ export function withoutRedirections(args: readonly string[]): string[] {
 }
 
 /** The redirection operators that open their target for writing (`<>` reads and writes). */
-const WRITING_REDIRECTIONS = new Set([">", ">>", ">|", "&>", "<>"]);
+const WRITING_REDIRECTIONS = new Set([">", ">>", ">|", "&>", "&>>", "<>"]);
 
 /**
  * The files a command's words redirect output into (`>log`, `2>>log`, `>| log`, `&>log`,
@@ -1871,6 +1874,14 @@ function parallelCommand(args: readonly string[]): string | undefined {
 }
 
 /**
+ * `cc-smart-dev-kit job run …`, whatever path the launcher is named by: the queue must not
+ * nest.
+ */
+export function isJobRun(program: string, args: readonly string[]): boolean {
+  return program === COMMAND && args[0] === "job" && args[1] === "run";
+}
+
+/**
  * The command line a wrapper runs, when the line gives it one: `bash -c "…"` (a `c`
  * anywhere in a group of short options: `-ce`, `-ec`), a shell that reads its script from
  * standard input (`sh <<< "…"`, or the text piped from the command before it), `cmd /c …`,
@@ -1892,7 +1903,7 @@ export function nestedCommand(
     }
     return pipedFrom === null ? undefined : (writtenText(pipedFrom) ?? undefined);
   }
-  if (program === COMMAND && args[0] === "job" && args[1] === "run") {
+  if (isJobRun(program, args)) {
     // The queue runs the words after `--` as they are: quoted again, they read back the same.
     const dashes = args.indexOf("--");
     return dashes === -1 || dashes === args.length - 1
