@@ -37,7 +37,7 @@ person asked for three things:
 | D5 | Nothing lingers: the deploy run is not finished while any task for that environment is open. |
 | D6 | A bug, gap or follow-up that **belongs to the plan** is covered by the plan. Found while planning, it goes into the design and phases. Found while building, it becomes a task under the owning phase, done before the plan closes. Only a finding **outside** the plan becomes a GitHub issue, filed by the main session; a subagent lists it in its report. Without GitHub, the finding goes in the end-of-turn summary. |
 | D7 | GitHub issues on by default; `allowPublic` stays off. |
-| D8 | `project init` finds the deploy skill, shows the section, asks, then writes it. `project init --no-deploy-block` removes it. `restore` never touches project files. |
+| D8 | `project init` finds the deploy skill, shows the section, asks, then writes it. `project init --no-deploy-block` removes it. `restore` never touches project files. **With no deploy skill (the person, 2026-11-18), init creates one** at `.claude/skills/deploy/SKILL.md` (asked, default yes; `--yes` creates it): frontmatter `name: deploy` with a deploy/staging/prod description, a "This project's deploy steps" section that says they are not written yet (Claude asks the person how the project deploys and writes them; it never invents a deploy command), and the kit's managed block. |
 | D9 | Old task files are not migrated; the person deletes them. The kit only *names* them, as "not read since 5.0.0". |
 | D10 | Version 5.0.0, so the self-update holds until `cc-smart-dev-kit update`. #353 becomes 5.1.0. |
 | D11 | A clean break: no compatibility for old kinds, fields or ids. |
