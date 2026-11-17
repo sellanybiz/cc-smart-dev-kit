@@ -1,8 +1,8 @@
 import { existsSync, realpathSync } from "node:fs";
-import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path";
+import { basename, isAbsolute, relative, resolve, sep } from "node:path";
 import { DEPLOY_TASKS_SINCE } from "../../project/config";
 import { TASK_COMMAND } from "../words";
-import { archiveFolder, type DeployTaskSettings, oldTaskFiles, scanDeployTasks } from "./files";
+import { type DeployTaskSettings, isArchived, oldTaskFiles, scanDeployTasks } from "./files";
 
 export const DEFAULT_STALE_DAYS = 30;
 /** One day, the unit of `tasks.staleDays` and every task age. */
@@ -51,7 +51,7 @@ export function checkDeployTasks(options: {
     if (task.status !== "open") continue;
     const common = { id: task.id, file: task.file };
     // A reopen that stopped after its first step leaves an open task in archive/ (`reopenDeployTask`).
-    if (dirname(task.file) === archiveFolder(dir, task.env))
+    if (isArchived(task.file))
       findings.push({
         ...common,
         kind: "open-in-archive",

@@ -9,7 +9,7 @@ import { locateCheckout } from "../project/resolve";
 import { insideClaudeCode } from "../workflow/commands";
 import { baseBranch } from "../worktrees/command";
 import { taskContext } from "./context";
-import { branchTaskChanges, readGitFacts, unmergedBranchTasks } from "./deploy/branch";
+import { branchTaskChanges, readGitFacts, taskGit, unmergedBranchTasks } from "./deploy/branch";
 import { checkDeployTasks } from "./deploy/check";
 import { scanDeployTasks } from "./deploy/files";
 import { DEPLOY_ENVS, DEPLOY_STEPS, DEPLOY_TYPES, type DeployEnv } from "./deploy/format";
@@ -19,7 +19,8 @@ import { TASK_COMMAND } from "./words";
 import { openWorkDb, workDbFile } from "./work/db";
 import { importClaudeMem } from "./work/import-claude-mem";
 
-const KINDS = ["work", ...DEPLOY_ENVS].join("|");
+const KIND_LIST: readonly string[] = ["work", ...DEPLOY_ENVS];
+const KINDS = KIND_LIST.join("|");
 const TYPES = DEPLOY_TYPES.join("|");
 const STEPS = DEPLOY_STEPS.join("|");
 const ENVS = DEPLOY_ENVS.join("|");
@@ -31,7 +32,7 @@ add <subject> [--description <text> | --file <path|->] [--kind ${KINDS}]
     [--phase <id>] [--plan <slug>]
     [--agent <id>] [--branch <name>] [--worktree <absolute-path>] [--base <sha>]
     [--deploy ${STEPS}] [--pair] [--flag <flag>]... [--ref <path>]...
-set <ref> [--type ${TYPES}] [--block <ref>]... [--unblock <ref>]... [--parent <ref> | --top]
+set <ref> [--type ${TYPES}] [--deploy ${STEPS}] [--block <ref>]... [--unblock <ref>]... [--parent <ref> | --top]
     Bindings on set/start: --agent <id> --branch <name> --worktree <absolute-path> --base <sha>
 start <ref>
 done <ref> [--evidence <text>] [--note <text>]
@@ -93,7 +94,7 @@ const definitions: Record<
   },
   take: { values: ["--from"], flags: ["--force"], min: 1, max: 1 },
   set: {
-    values: [...bindingFlags, "--type", "--block", "--unblock", "--parent"],
+    values: [...bindingFlags, "--type", "--deploy", "--block", "--unblock", "--parent"],
     flags: ["--top"],
     repeat: ["--block", "--unblock"],
     min: 1,
@@ -150,6 +151,7 @@ export async function runTaskCommand(argv: string[]): Promise<number> {
     let operation: TaskOperation;
     let input: Record<string, unknown>;
     const task = args[0];
+    const kind = get("kind");
     const bindings = Object.fromEntries(
       bindingFlags
         .filter((flag) => options.has(flag))
@@ -162,12 +164,16 @@ export async function runTaskCommand(argv: string[]): Promise<number> {
         break;
       case "add":
         if (get("file") && get("description")) return bad("Use --description or --file, not both");
+        if (kind !== undefined && !KIND_LIST.includes(kind))
+          return bad(
+            `Unknown kind: ${kind} (${KIND_LIST.join(", ")}); follow-up and teammate are gone in 5.0.0`,
+          );
         operation = "create";
         input = {
           ...bindings,
           subject: args.join(" "),
           description: get("file") ? await fileText() : get("description"),
-          kind: get("kind"),
+          kind,
           parent: get("parent"),
           status: has("start") ? "in_progress" : undefined,
           type: get("type"),
@@ -187,6 +193,7 @@ export async function runTaskCommand(argv: string[]): Promise<number> {
           task,
           ...bindings,
           type: get("type"),
+          deploy: get("deploy"),
           blocked_by_add: lists.get("--block"),
           blocked_by_remove: lists.get("--unblock"),
           parent: has("top") ? null : get("parent"),
@@ -323,7 +330,7 @@ export async function runTaskCommand(argv: string[]): Promise<number> {
         }
       }
       if (!ctx.projectTasks.ok) throw new Error(ctx.projectTasks.why);
-      if (!ctx.checkoutRoot) throw new Error("Project tasks need a checkout");
+      if (!ctx.checkoutRoot) throw new Error("Deploy tasks need a git checkout");
       const root = ctx.checkoutRoot;
       const settings = ctx.projectTasks;
       const dir = settings.dir;
@@ -368,14 +375,16 @@ export async function runTaskCommand(argv: string[]): Promise<number> {
         // The gates read the folder themselves, closed tasks too (`gateBefore`, `gateAfter`).
         const ref =
           get("ref") ?? `origin/${baseBranch(locateCheckout(cwd), process.env, root).base}`;
-        let facts: ReturnType<typeof readGitFacts>;
+        // The ref is resolved on its own, so only a ref git does not know gets the fetch advice;
+        // any other git failure below (HEAD with no commit, say) is reported as git says it.
         try {
-          facts = readGitFacts(root, dir, ref);
+          taskGit(root, ["rev-parse", "--verify", "--end-of-options", `${ref}^{commit}`]);
         } catch (error) {
           throw new Error(
             `Cannot read ${ref} (${error instanceof Error ? error.message : String(error)}): run \`git fetch origin\`, or name the commit that ships with --ref <ref>`,
           );
         }
+        const facts = readGitFacts(root, dir, ref);
         const gate = (step === "before" ? gateBefore : gateAfter)(env, {
           dir,
           facts,

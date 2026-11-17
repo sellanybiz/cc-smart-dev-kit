@@ -111,7 +111,7 @@ test("drop of a blocking deploy task is refused inside Claude Code and allowed i
   expect(inside).toEqual({
     code: 1,
     text: "",
-    error: `${id} is blocking: only the person drops a blocking deploy task. Run \`cc-smart-dev-kit task drop ${id} --note "<reason>"\` in your own terminal, outside Claude Code\n`,
+    error: `${id} is blocking: only the person drops a blocking deploy task. Ask the person to run \`cc-smart-dev-kit task drop ${id} --note "<reason>"\` in their own terminal, outside Claude Code\n`,
   });
   expect(await run(["drop", id, "--note", "no longer owed"])).toEqual({
     code: 0,
@@ -274,6 +274,65 @@ test("list --branches keeps listing when one branch has a broken file", async ()
   expect(listed.text).toContain(`good-branch: ${id} [before · blocking] Real`);
   expect(listed.text).toContain("broken-branch:");
   expect(listed.text).toContain("garbage.md");
+});
+
+test("set and delete of a blocking deploy task are refused inside Claude Code and work in a terminal", async () => {
+  const { run, add, tasks } = world();
+  const id = await add("Gate", "prod", "before", "blocking");
+  const refusal = (action: string, command: string) =>
+    `${id} is blocking: only the person ${action}. Ask the person to run \`cc-smart-dev-kit task ${command}\` in their own terminal, outside Claude Code\n`;
+  const inside = { CLAUDECODE: "1" };
+  expect(await run(["set", id, "--type", "non-blocking"], inside)).toEqual({
+    code: 1,
+    text: "",
+    error: refusal("weakens a blocking deploy task", `set ${id} --type non-blocking`),
+  });
+  expect(await run(["set", id, "--deploy", "after"], inside)).toEqual({
+    code: 1,
+    text: "",
+    error: refusal("weakens a blocking deploy task", `set ${id} --deploy after`),
+  });
+  expect(await run(["delete", id], inside)).toEqual({
+    code: 1,
+    text: "",
+    error: refusal("deletes a blocking deploy task", `delete ${id}`),
+  });
+  expect(readdirSync(join(tasks, "prod"))).toHaveLength(1);
+  // The person's own terminal may do each of them.
+  expect(await run(["set", id, "--type", "non-blocking"])).toEqual({
+    code: 0,
+    text: `${id} "Gate" · updated\n`,
+    error: "",
+  });
+  expect(await run(["set", id, "--deploy", "after"])).toMatchObject({ code: 0 });
+  expect(await run(["delete", id])).toEqual({ code: 0, text: `${id} · deleted\n`, error: "" });
+  expect(readdirSync(join(tasks, "prod"))).toHaveLength(0);
+});
+
+test("add --kind with a retired or unknown kind is a usage error", async () => {
+  const { run } = world();
+  expect(await run(["add", "x", "--kind", "follow-up"])).toEqual({
+    code: 2,
+    text: "",
+    error:
+      "Unknown kind: follow-up (work, staging, prod); follow-up and teammate are gone in 5.0.0\nSee: cc-smart-dev-kit task --help\n",
+  });
+});
+
+test("release reports a ref git cannot resolve, and any other git failure as it is", async () => {
+  const bare = world({ origin: false });
+  // No origin/main in this repo: the default ref cannot be resolved.
+  const noOrigin = await bare.run(["release", "prod", "--before"]);
+  expect(noOrigin.code).toBe(1);
+  expect(noOrigin.error).toContain("Cannot read origin/main");
+  expect(noOrigin.error).toContain("git fetch origin");
+  // A ref that resolves, in a repo whose HEAD has no commit: git's own message, no fetch advice.
+  const empty = world();
+  git(empty.cwd, "checkout", "--orphan", "fresh");
+  const unborn = await empty.run(["release", "prod", "--before", "--ref", "main"]);
+  expect(unborn.code).toBe(1);
+  expect(unborn.error).toContain("git rev-parse failed");
+  expect(unborn.error).not.toContain("Cannot read");
 });
 
 test("list --branch groups the branch's task changes under their environment", async () => {

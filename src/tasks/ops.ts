@@ -105,11 +105,26 @@ const OLD_ID_ANSWER =
  * silently make a machine-local task out of a deploy step. `fields` are the call's own values.
  */
 function refuseDeployFields(fields: Record<string, unknown>): void {
-  const given = Object.keys(fields).filter((name) => fields[name] !== undefined);
+  const given = Object.keys(fields).filter((name) => {
+    const value = fields[name];
+    return !(
+      value === undefined ||
+      value === false ||
+      (Array.isArray(value) && value.length === 0)
+    );
+  });
   if (given.length > 0)
     throw new Error(
       `Deploy fields (${given.join(", ")}) need kind prod or staging: a work task has none`,
     );
+}
+
+/**
+ * The refusal of what only the person may do to a blocking deploy task (D14): the text a session
+ * reads, naming the exact command the person runs in their own terminal.
+ */
+function personOnly(id: string, action: string, command: string): string {
+  return `${id} is blocking: only the person ${action}. Ask the person to run \`${TASK_COMMAND} ${command}\` in their own terminal, outside Claude Code`;
 }
 
 const DELETE_TRACKED =
@@ -496,6 +511,28 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
             throw new Error(
               `A deploy task closes through ${TASK_TOOL.done} (done with evidence, dropped with a note); status open reopens a closed one`,
             );
+          // A blocking task that turns non-blocking, or moves after the deploy, no longer holds
+          // the gate: that is a drop by another name, so it is the person's too (D14). Judged on
+          // the task as it is now, closed or open, so a reopen cannot carry the change.
+          const current = project(input.task);
+          if (options.refuseBlockingDrop && current.type === "blocking") {
+            if (input.type === "non-blocking")
+              throw new Error(
+                personOnly(
+                  current.id,
+                  "weakens a blocking deploy task",
+                  `set ${current.id} --type non-blocking`,
+                ),
+              );
+            if (input.deploy === "after" && current.deploy === "before")
+              throw new Error(
+                personOnly(
+                  current.id,
+                  "weakens a blocking deploy task",
+                  `set ${current.id} --deploy after`,
+                ),
+              );
+          }
           const patch = {
             ...(input.subject === undefined ? {} : { title: input.subject }),
             ...(input.description === undefined ? {} : { body: input.description }),
@@ -602,7 +639,11 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
             task.type === "blocking"
           )
             throw new Error(
-              `${task.id} is blocking: only the person drops a blocking deploy task. Run \`${TASK_COMMAND} drop ${task.id} --note "<reason>"\` in your own terminal, outside Claude Code`,
+              personOnly(
+                task.id,
+                "drops a blocking deploy task",
+                `drop ${task.id} --note "<reason>"`,
+              ),
             );
           closeDeployTask(
             projectDir(),
@@ -646,7 +687,7 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
         const input = taskSchemas.get.parse(raw);
         const text = isDeployTaskId(input.task)
           ? (() => {
-              // A project task's history is its file's git log: every commit that changed it,
+              // A deploy task's history is its file's git log: every commit that changed it,
               // across its move into `archive/`. `--follow` loses the move with `--reverse`
               // (seen on git 2.53), so the lines are put oldest first here.
               const file = project(input.task).file;
@@ -722,6 +763,10 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
         const input = taskSchemas.delete.parse(raw);
         if (isDeployTaskId(input.task)) {
           const task = project(input.task);
+          if (options.refuseBlockingDrop && task.status === "open" && task.type === "blocking")
+            throw new Error(
+              personOnly(task.id, "deletes a blocking deploy task", `delete ${task.id}`),
+            );
           if (!ctx.checkoutRoot) throw new Error("Deploy tasks need a git checkout");
           const tracked = runGit(
             ctx.checkoutRoot,

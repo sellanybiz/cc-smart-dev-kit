@@ -174,7 +174,7 @@ for (const refuse of [true, false]) {
       expect(answer.ok).toBe(!refuse);
       if (!answer.ok)
         expect(answer.why).toBe(
-          `${gate} is blocking: only the person drops a blocking deploy task. Run \`cc-smart-dev-kit task drop ${gate} --note "<reason>"\` in your own terminal, outside Claude Code`,
+          `${gate} is blocking: only the person drops a blocking deploy task. Ask the person to run \`cc-smart-dev-kit task drop ${gate} --note "<reason>"\` in their own terminal, outside Claude Code`,
         );
       expect(scanDeployTasks(dir, { archive: false }).tasks.some((t) => t.id === gate)).toBe(
         refuse,
