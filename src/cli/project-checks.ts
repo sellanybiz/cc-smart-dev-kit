@@ -31,6 +31,11 @@
  *   are only read, never executed or edited; a read failure stays information too.
  * - **A git too old for the review gate's measure.** In a project with a `cc-smart-dev-kit.json`,
  *   git older than 2.40 is a warning: a review then counts for its exact commit only (D17).
+ * - **Deploy tasks (5.0.0).** A `✗` line for each kind of finding in the task folders (fix:
+ *   `task check`); the 4.x top-level files as a `!` line (recreate or delete); each `tasks`
+ *   field nothing reads any more (`IGNORED_TASK_FIELDS`) as a `!` line (fix: `project init`);
+ *   a `requires` below 5.0 while deploy folders exist; and a deploy-skill block that is out of
+ *   date (`staleBlocks`; fix: `project init`, or by hand where init will not write the file).
  *
  * The project's settings are read where Claude Code reads them: `$CLAUDE_PROJECT_DIR` when
  * it is set (doctor run from a session), else the checkout of the folder doctor runs in.
@@ -66,10 +71,13 @@ import {
   type CcSmartDevKitConfig,
   CcSmartDevKitConfigError,
   CcSmartDevKitVersionError,
+  DEPLOY_TASKS_SINCE,
+  IGNORED_TASK_FIELDS,
   RETIRED_HOOK_NAMES,
   UNSWITCHABLE_HOOK_NAMES,
   WORKTREE_ENGINE_RETIRED_IN,
 } from "../project/config";
+import { skillsFolderLink, staleBlocks } from "../project/deploy-skill";
 import { requiresFloor, requiresTooLow } from "../project/init";
 import {
   type Checkout,
@@ -81,6 +89,8 @@ import { isObject } from "../setup/managed-json";
 import { parseUserJson, readUserJson } from "../setup/user-json";
 import { taskContext } from "../tasks/context";
 import { checkDeployTasks } from "../tasks/deploy/check";
+import { deployTasksDir, envFolder, oldTaskFiles } from "../tasks/deploy/files";
+import { DEPLOY_ENVS } from "../tasks/deploy/format";
 import { allTasks, isOpen, livePhaseCount } from "../tasks/work/queries";
 import { readWorkStore } from "../tasks/work/read";
 import { type GhExec, runGh } from "../workflow/merge-check";
@@ -526,7 +536,12 @@ function ownCopyLines(
  * of it, instead of saying "update" (a `workflow.issues` group, from 1.4.0, under `>=1.0`). A
  * file with no `requires`, or one in a form not read there, is not judged. `workflow set --project` and `project init` both raise it.
  */
-function requiresLines(configFile: string, projectDir: string, home: string): ProjectLine[] {
+function requiresLines(
+  configFile: string,
+  projectDir: string,
+  home: string,
+  deployFolders: boolean,
+): ProjectLine[] {
   let file: unknown;
   try {
     file = readUserJson(configFile);
@@ -535,16 +550,86 @@ function requiresLines(configFile: string, projectDir: string, home: string): Pr
     return [];
   }
   if (!isObject(file)) return [];
-  const needed = requiresFloor(file);
+  // Deploy task folders need the plugin that reads them (5.0.0) even when no field says so: a
+  // 4.x plugin shows nothing of them. Only `project init` knows them; `workflow set` does not.
+  const needed = requiresFloor(file, { deployTasks: deployFolders });
   if (!requiresTooLow(file.requires, needed.version)) return [];
+  const byFolders = deployFolders && needed.version !== requiresFloor(file).version;
   return [
     {
       ok: true,
       warn: true,
-      text: `project: ${shown(configFile, projectDir, home)} says requires "${String(file.requires)}", but its fields need "${needed.floor}": a teammate on an older plugin gets the whole file refused instead of "update"`,
-      fix: `${COMMAND} project init (or any ${COMMAND} workflow set … --project) raises it to "${needed.floor}"`,
+      text: `project: ${shown(configFile, projectDir, home)} says requires "${String(file.requires)}", but its fields${byFolders ? " and its deploy task folders" : ""} need "${needed.floor}": a teammate on an older plugin gets the whole file refused instead of "update"`,
+      fix: byFolders
+        ? `${COMMAND} project init raises it to "${needed.floor}"`
+        : `${COMMAND} project init (or any ${COMMAND} workflow set … --project) raises it to "${needed.floor}"`,
     },
   ];
+}
+
+/** True when the project has a folder for any deploy environment: it uses deploy tasks. */
+function hasDeployFolders(root: string, config: CcSmartDevKitConfig | null): boolean {
+  let dir: string;
+  try {
+    dir = deployTasksDir(root, config?.tasks?.dir === undefined ? {} : { dir: config.tasks.dir });
+  } catch {
+    return false;
+  }
+  return DEPLOY_ENVS.some((env) => existsSync(envFolder(dir, env)));
+}
+
+/**
+ * One `!` line for each `tasks` field the file still sets that nothing reads since
+ * `DEPLOY_TASKS_SINCE` (`IGNORED_TASK_FIELDS`): the file loads, so nothing fails, and
+ * `project init` takes them out.
+ */
+function ignoredTaskFieldLines(
+  config: CcSmartDevKitConfig | null,
+  configFile: string | null,
+  projectDir: string,
+  home: string,
+): ProjectLine[] {
+  if (config === null || configFile === null) return [];
+  return IGNORED_TASK_FIELDS.filter((field) => config.tasks?.[field] !== undefined).map(
+    (field) => ({
+      ok: true,
+      warn: true,
+      text: `project: ${shown(configFile, projectDir, home)} sets tasks.${field}, no longer read since ${DEPLOY_TASKS_SINCE}: remove it`,
+      fix: `${COMMAND} project init removes it`,
+    }),
+  );
+}
+
+/**
+ * The deploy-skill block (`src/project/deploy-skill.ts`): one `!` line for each skill file whose
+ * block is out of date, and one `·` line when the skills folder is a link out of the checkout,
+ * which is not searched, in a project that uses deploy tasks. A block `project init` cannot
+ * write (broken markers, a file outside the checkout) is fixed by hand.
+ */
+function deployBlockLines(root: string, usesDeployTasks: boolean): ProjectLine[] {
+  try {
+    const lines: ProjectLine[] = staleBlocks(root).map((stale) => ({
+      ok: true,
+      warn: true,
+      text: `project: the deploy-skill block in ${stale.shown} is out of date (${stale.why})`,
+      fix:
+        stale.fix === "init"
+          ? `${COMMAND} project init rewrites it`
+          : `correct that file by hand: ${COMMAND} cannot write it`,
+    }));
+    const link = skillsFolderLink(root);
+    if (link !== null && usesDeployTasks)
+      lines.push({
+        ok: true,
+        info: true,
+        text: `project: ${link}, so the deploy-skill block there is not checked`,
+      });
+    return lines;
+  } catch (error) {
+    return [
+      { ok: true, info: true, text: `project: deploy-skill block not checked, ${message(error)}` },
+    ];
+  }
 }
 
 /**
@@ -824,6 +909,7 @@ export async function projectChecks(
       ...engine,
     ];
   }
+  const usesDeployTasks = hasDeployFolders(checkout.root, config);
   const retired =
     configFile === null
       ? null
@@ -836,7 +922,10 @@ export async function projectChecks(
     ...retiredReviewMentions(projectDir),
     ...oldNameLines(projectDir, sources, paths.home),
     ...engine,
-    ...(configFile === null ? [] : requiresLines(configFile, projectDir, paths.home)),
+    ...(configFile === null
+      ? []
+      : requiresLines(configFile, projectDir, paths.home, usesDeployTasks)),
+    ...ignoredTaskFieldLines(config, configFile, projectDir, paths.home),
     ...jobKindLines(config, configFile, projectDir, paths.home),
     ...shadcnLintLines(checkout.root),
     ...(await worktreeLines(config, sources, checkout, env)),
@@ -849,6 +938,7 @@ export async function projectChecks(
   // GitHub Issues (D67): a line only while the switch is on, from the person's file or the base's.
   lines.push(...(await issuesChecks({ cwd: checkout.root, env, gh, paths })));
   lines.push(...(await projectTaskChecks(checkout.root, env)));
+  lines.push(...deployBlockLines(checkout.root, usesDeployTasks));
   lines.push(...planCapChecks(checkout.root, env, paths, config));
   return lines;
 }
@@ -893,9 +983,9 @@ export function planCapChecks(
 }
 
 /**
- * One `!` line when this git is too old to measure a change made after a review
- * (`MIN_COVER_GIT`, `src/workflow/review-cover.ts`): the review gate then counts a review of
- * the exact head only, so every fix needs a review of its own.
+ * The deploy tasks' findings (`checkDeployTasks`): one `✗` line for each kind, with the fix
+ * `task check`; the old 4.x files as one `!` line instead (nothing is wrong with the tasks, the
+ * files are only not read); and "no findings" when there is nothing at all.
  */
 export async function projectTaskChecks(cwd: string, env: Env): Promise<Check[]> {
   const context = taskContext(cwd, env);
@@ -919,14 +1009,26 @@ export async function projectTaskChecks(cwd: string, env: Env): Promise<Check[]>
       now: new Date(),
     });
     const counts = new Map<string, number>();
-    for (const finding of findings) counts.set(finding.kind, (counts.get(finding.kind) ?? 0) + 1);
+    for (const finding of findings)
+      if (finding.kind !== "old-files")
+        counts.set(finding.kind, (counts.get(finding.kind) ?? 0) + 1);
     for (const [kind, count] of counts)
       lines.push({
         ok: false,
         text: `project tasks: ${count} ${kind}`,
         fix: `run \`${COMMAND} task check\``,
       });
-    if (findings.length === 0) lines.push({ ok: true, text: "project tasks: no findings" });
+    const old = oldTaskFiles(tasks.dir).length;
+    if (old > 0) {
+      const many = old > 1;
+      lines.push({
+        ok: true,
+        warn: true,
+        text: `project tasks: ${old} old task ${many ? "files are" : "file is"} not read since ${DEPLOY_TASKS_SINCE}`,
+        fix: `recreate ${many ? "each" : "it"} as a deploy task, or delete it (\`${COMMAND} task check\` names ${many ? "them" : "it"})`,
+      });
+    }
+    if (lines.length === 0) lines.push({ ok: true, text: "project tasks: no findings" });
     return lines;
   } catch (error) {
     return [
@@ -935,6 +1037,11 @@ export async function projectTaskChecks(cwd: string, env: Env): Promise<Check[]>
   }
 }
 
+/**
+ * One `!` line when this git is too old to measure a change made after a review
+ * (`MIN_COVER_GIT`, `src/workflow/review-cover.ts`): the review gate then counts a review of
+ * the exact head only, so every fix needs a review of its own.
+ */
 async function coverGitLines(checkout: Checkout, env: Env): Promise<ProjectLine[]> {
   const version = parseGitVersion((await runGitAsync(checkout.root, ["--version"], env)).out);
   if (version === null || !tooOldToCover(version)) return [];
