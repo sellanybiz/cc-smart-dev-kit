@@ -11,7 +11,7 @@ import { gitEnv } from "../../project/git-env";
 import { RESOLVE_GIT_TIMEOUT_MS } from "../../project/resolve";
 import { isTaskFile } from "./files";
 import { type DeployTask, folderPlace, parseDeployTask } from "./format";
-import type { GitFacts } from "./release";
+import { type GitFacts, underTasks } from "./release";
 
 export function taskGit(repo: string, args: string[], env: Env = process.env): string {
   const result = runGit(repo, args, env, RESOLVE_GIT_TIMEOUT_MS, {
@@ -141,14 +141,23 @@ export function branchTaskChanges(
   return changes;
 }
 export interface UnmergedBranchTasks {
+  /** Open tasks the base does not have yet. */
   tasks: { branch: string; task: DeployTask }[];
+  /** Tasks closed (done or dropped) on a branch that are still open on the base: a close not merged. */
+  closed: { branch: string; task: DeployTask }[];
   /** A file that does not parse on one branch: listed with its branch, and the others still read. */
   broken: (BranchBroken & { branch: string })[];
 }
-/** Open tasks on local branches not merged into `base` (a deploy run in progress), by branch. */
+/**
+ * What local branches not merged into `base` (a deploy run in progress) hold, by branch: open
+ * tasks the base lacks, and closes of tasks the base still has open (`closed`). The second is why
+ * a gate can still see an open task whose close was already pushed on a deploy branch.
+ */
 export function unmergedBranchTasks(repo: string, dir: string, base: string): UnmergedBranchTasks {
   const baseCommit = refCommit(repo, base);
-  const existing = new Set(tasksOn(repo, dir, baseCommit).tasks.map((task) => task.id));
+  const onBase = tasksOn(repo, dir, baseCommit).tasks;
+  const existing = new Set(onBase.map((task) => task.id));
+  const openOnBase = new Set(onBase.filter((task) => task.status === "open").map((t) => t.id));
   const branches = taskGit(repo, [
     "for-each-ref",
     "--format=%(refname:short)",
@@ -157,11 +166,13 @@ export function unmergedBranchTasks(repo: string, dir: string, base: string): Un
   ])
     .split("\n")
     .filter(Boolean);
-  const result: UnmergedBranchTasks = { tasks: [], broken: [] };
+  const result: UnmergedBranchTasks = { tasks: [], closed: [], broken: [] };
   for (const branch of branches) {
     const read = tasksOn(repo, dir, branch);
-    for (const task of read.tasks)
+    for (const task of read.tasks) {
       if (task.status === "open" && !existing.has(task.id)) result.tasks.push({ branch, task });
+      if (task.status !== "open" && openOnBase.has(task.id)) result.closed.push({ branch, task });
+    }
     for (const item of read.broken) result.broken.push({ branch, ...item });
   }
   return result;
@@ -199,14 +210,16 @@ export function readGitFacts(
     refSha === headCommit
       ? []
       : pathsOf(["diff", "--name-only", "--no-renames", "-z", refSha, headCommit]);
-  const scope = tasksPath ? ["--", tasksPath] : [];
-  // Staged, unstaged and untracked changes under the tasks folder: a close not yet committed.
-  const uncommitted = [
+  // Staged, unstaged and untracked changes: under the tasks folder, a close not yet committed;
+  // anywhere else, code the gate did not judge.
+  const dirty = [
     ...new Set([
-      ...pathsOf(["diff", "--name-only", "--no-renames", "-z", "HEAD", ...scope]),
-      ...pathsOf(["ls-files", "--others", "--exclude-standard", "-z", ...scope]),
+      ...pathsOf(["diff", "--name-only", "--no-renames", "-z", "HEAD"]),
+      ...pathsOf(["ls-files", "--others", "--exclude-standard", "-z"]),
     ]),
   ].sort();
+  const uncommitted = dirty.filter((path) => underTasks(path, tasksPath));
+  const uncommittedOutside = dirty.filter((path) => !underTasks(path, tasksPath));
   const currentBranch = runGit(repo, ["branch", "--show-current"], env, RESOLVE_GIT_TIMEOUT_MS);
   const branch = currentBranch.ok && currentBranch.out ? currentBranch.out : null;
   // Origin's own copy of the branch, not `@{upstream}`: a branch cut from origin/main tracks main
@@ -227,6 +240,7 @@ export function readGitFacts(
     changedPaths,
     tasksPath,
     uncommitted,
+    uncommittedOutside,
     push: {
       branch,
       remote: remoteKnown && branch !== null ? `origin/${branch}` : null,

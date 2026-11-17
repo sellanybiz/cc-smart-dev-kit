@@ -5,7 +5,7 @@ import { TASKS_SERVER_NAME } from "../mcp/task-server-name";
 import { taskContext } from "../tasks/context";
 import { DAY_MS, DEFAULT_STALE_DAYS } from "../tasks/deploy/check";
 import { oldTaskFiles, scanDeployTasks } from "../tasks/deploy/files";
-import type { DeployEnv } from "../tasks/deploy/format";
+import { DEPLOY_ENVS_RISK_FIRST, type DeployEnv } from "../tasks/deploy/format";
 import { TASK_TOOL } from "../tasks/words";
 import { callerOf } from "../tasks/work/identity";
 import { startView } from "../tasks/work/read";
@@ -14,9 +14,6 @@ import type { Env } from "./run";
 
 /** Context lost at a start, clear or compaction is rebuilt with at most eight task lines. */
 export const START_TASK_LIMIT = 8;
-
-/** Prod first: it is the environment a deploy puts at risk. */
-const LINE_ENV_ORDER: readonly DeployEnv[] = ["prod", "staging"];
 
 const plural = (count: number, one: string, many: string) => `${count} ${count === 1 ? one : many}`;
 
@@ -39,7 +36,7 @@ export function deployTaskLine(
   const old = options.countOldFiles ? oldTaskFiles(dir).length : 0;
   if (open.size === 0 && scan.broken.length === 0 && scan.duplicates.length === 0 && old === 0)
     return null;
-  const parts = LINE_ENV_ORDER.flatMap((env) => {
+  const parts = DEPLOY_ENVS_RISK_FIRST.flatMap((env) => {
     const mine = [...open.values()].filter((task) => task.env === env);
     if (mine.length === 0 && !envs.includes(env)) return [];
     const blocking = mine.filter((task) => task.deploy === "before" && task.type === "blocking");

@@ -378,15 +378,19 @@ origin string; `evidence` is set when the task closes.
   its outbound keys), and the answer names the command to run. `task delete` removes an
   untracked file only; a tracked one closes. `task set <id> --type … --deploy …` changes a
   task's type or step, but weakening a blocking task (`--type non-blocking`, or `--deploy after`
-  on a `before` one) is a drop by another name, so it is the person's too. A deploy task has no
-  parent, `blocked_by` or builder bindings.
+  on a `before` one) is a drop by another name, so it is the person's too. This rule (D14)
+  covers the task tools and the CLI, not a hand edit or removal of the file: no file guard
+  stands behind it. A deploy task has no parent, `blocked_by` or builder bindings.
 - **Reopen** (`task reopen <id>`, or `task_update` with status `open`) puts a closed task back
   from `archive/`, for a deploy that was rolled back. An open task left in `archive/` by an
   interrupted reopen is a `task check` finding; running the reopen again finishes it.
 - `task list --branch [--base <branch>]` lists the task files this branch changed against the
   base, grouped by environment, for the pull request's notes. `task list --branches` finds open
-  tasks on local branches not yet merged, and reports a broken file on one branch while it
-  keeps listing the others. A deploy branch left unmerged is a visible run in progress.
+  tasks on local branches not yet merged, and, for a task the base still has open, the closes
+  already made on such a branch (`closed on <branch>, not merged`). It reports a broken file on
+  one branch while it keeps listing the others. A deploy branch left unmerged is a visible run in
+  progress, and a prod gate that waits on an open staging twin points at this list: the twin's
+  close may sit on a branch not merged yet.
 - **Old ids.** An id that starts with `T-` answers "old task ids are gone in 5.0.0". The old
   kinds answer the same on the CLI (`--kind follow-up|teammate`, exit 2). The files themselves
   are never read; every surface counts them (`task check`, doctor, the session-start line) so
@@ -401,20 +405,27 @@ ships, so the closes reach main through that branch's small pull request and not
 Exit codes: 0 the gate passes, 1 a refusal (also a ref git does not know, or a place outside
 git), 2 a wrong command.
 
-1. Cut the branch: `git switch --no-track -c deploy/<env>-<YYYYMMDD-HHMM> origin/<base>`, or
-   `git worktree add --no-track -b deploy/<env>-<YYYYMMDD-HHMM> <folder> origin/<base>` in a
-   project with a worktree per session. `--no-track` keeps a plain `git push` from targeting
-   the base. A refusal for the wrong HEAD prints these commands.
-2. `--before` exits 1 when the environment is not in `tasks.envs`; HEAD is not the ref's commit
+1. Cut the branch: `git switch --no-track -c deploy/<env>-<YYYYMMDD-HHMM> origin/<base>`, in
+   the session's own checkout. `--no-track` keeps a plain `git push` from targeting the base.
+   A refusal for the wrong HEAD prints this command. The `task` command acts in the folder it
+   runs in, and every deploy-task answer names the checkout and file it wrote, so a close lands
+   where the gates read it.
+2. `--before` exits 1 when the environment is not in `tasks.envs`; the current branch is the
+   base branch (`worktrees.base`: a run happens on a deploy branch, D12); HEAD is not the ref's commit
    (it may differ from it only under `tasks.dir`, closes already made, and it must hold every
    commit of the ref); a blocking `before` task is open; a task file is broken or its id is
-   claimed by two file names; or, for prod, a task's staging twin is open. It names the open
-   non-blocking `before` tasks as notes: do them now, or drop them with a reason.
+   claimed by two file names; or, for prod, a task's staging twin is open, or names no task
+   (live or archived: a deleted twin must not pass as a finished one; `task check` names it,
+   `twin-missing`). It names the open non-blocking `before` tasks as notes: do them now, or drop
+   them with a reason. It adds a `!` warning line, never a refusal, when the working tree has
+   uncommitted changes outside `tasks.dir` (`GitFacts.uncommittedOutside`): the gate judged
+   committed code only, and a local-folder deploy could still ship those edits.
 3. Claude closes each task with evidence and commits the closes on the deploy branch.
 4. The deploy itself is the project's own deploy skill.
 5. `--after` exits 1 when **any** task of that environment is open, before or after; `tasks.dir`
    has uncommitted changes; the branch is not pushed (`git push -u origin <branch>`, or it is
-   ahead of its remote copy); HEAD is detached; or a task file is broken.
+   ahead of its remote copy); HEAD is detached; the current branch is the base branch (no line
+   ever prints a push to it); or a task file is broken.
 6. The branch's pull request (the task files only) merges as the workflow says.
 
 With no flag, `release [<env>]` lists the open tasks by environment, step and type, blocking

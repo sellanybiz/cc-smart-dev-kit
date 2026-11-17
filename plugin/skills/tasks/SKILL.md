@@ -69,7 +69,8 @@ its secret screen knows only common shapes.
   `task_delete` removes a mistake that has no notes, and a deploy task only while its file is
   untracked; a committed one closes. Weakening a blocking
   task (`--type non-blocking`, or `--deploy after` on a `before` task) and deleting an open
-  blocking one are the person's too, in their own terminal.
+  blocking one are the person's too, in their own terminal. The rule covers the task tools and
+  the `task` command, not a hand edit or removal of the file.
 - **Reopen** a closed deploy task after a rolled-back deploy: `task_update` with status `open`,
   or `task reopen <id>`.
 - `task_take` takes a plan or task into this session (live claims need `force`). Park and
@@ -106,20 +107,26 @@ Before any deploy, production or database work, list the deploy tasks (`task_lis
 `project`, or `task release <env>`). Then, in your own checkout:
 
 1. **Cut a deploy branch** from the commit that ships: `git fetch origin`, then
-   `git switch --no-track -c deploy/<env>-<YYYYMMDD-HHMM> origin/<base>`. In a project with a
-   worktree per session: `git worktree add --no-track -b deploy/<env>-<YYYYMMDD-HHMM> <folder>
-   origin/<base>`. `--no-track` stops a plain `git push` from targeting the base.
+   `git switch --no-track -c deploy/<env>-<YYYYMMDD-HHMM> origin/<base>`, in the checkout you work
+   in (the deploy task commands act in the folder they run in). `--no-track` stops a plain `git
+   push` from targeting the base.
 2. **`cc-smart-dev-kit task release <env> --before`.** Exit 1 while a blocking `before` task is
-   open, a task file is broken or its id repeats, prod waits on an open staging twin, or HEAD is
-   not the ref (default `origin/<worktrees.base>`) apart from task files. It names the open
-   non-blocking `before` tasks: do them, or drop them with a reason.
+   open, a task file is broken or its id repeats, prod waits on an open staging twin (or names a
+   twin that is no task: `task check` shows it), the branch is the base itself, or HEAD is not
+   the ref (default `origin/<worktrees.base>`) apart from task files. It names the open
+   non-blocking `before` tasks: do them, or drop them with a reason. It also warns (`!`, no
+   refusal) when files outside the tasks folder have uncommitted changes: the gate judged
+   committed code only.
 3. **Do each task and close it** with evidence; commit the closes on the deploy branch.
 4. **Deploy**, with the project's own deploy skill.
 5. **`git push -u origin <branch>`**, then **`task release <env> --after`.** Exit 1 while any
-   task of that environment is open (before or after), a close is uncommitted, or the branch is
-   not pushed. With no flag, `release` lists the open tasks and exits 0.
+   task of that environment is open (before or after), a close is uncommitted, the branch is not
+   pushed, or the branch is the base (a close is never pushed there). With no flag, `release`
+   lists the open tasks and exits 0.
 6. **The branch's pull request** (the task files only) merges as the workflow says
    (`/cc-smart-dev-kit:commit`, `/cc-smart-dev-kit:pull-request`).
 
 A wrong command exits 2; a refusal, an unknown ref or a place outside git exits 1. `--json`
-prints the answer as data. A deploy branch left unmerged shows in `task list --branches`.
+prints the answer as data. A deploy branch left unmerged shows in `task list --branches`: its
+open tasks, and its closes of tasks the base still has open ("closed on <branch>, not merged").
+A prod refusal for an open staging twin may mean that close waits there.

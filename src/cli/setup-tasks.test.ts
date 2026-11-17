@@ -102,7 +102,7 @@ test("doctor warns for a newer store and reports damaged files", () => {
     {
       ok: false,
       text: "task work store cannot be read: file is not a database",
-      fix: "move ~/.claude/cc-smart-dev-kit/tasks/work.db aside, with its -wal and -shm files; the next task call starts an empty store (project task files are in git and stay)",
+      fix: "move ~/.claude/cc-smart-dev-kit/tasks/work.db aside, with its -wal and -shm files; the next task call starts an empty store (deploy task files are in git and stay)",
     },
   ]);
 });

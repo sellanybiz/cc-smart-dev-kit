@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { realpathSync } from "node:fs";
 import { InMemoryTransport, type JSONRPCMessage } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import { hookEnv } from "../testing/hooks";
@@ -173,7 +174,9 @@ test("the server refuses to drop a blocking deploy task, and says who can", asyn
       textOf(
         await request("tools/call", { name: "task_done", arguments: { task: id, evidence: "ok" } }),
       ),
-    ).toBe(`${id} "Gate" · done`);
+    ).toBe(
+      `${id} "Gate" · done · .claude/tasks/prod/archive/${id}-gate.md · written in ${realpathSync(cwd)}: commit the file with your branch`,
+    );
   } finally {
     await kit.close();
     await client.close();

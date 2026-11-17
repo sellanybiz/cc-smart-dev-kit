@@ -9,7 +9,7 @@
  *   repo shares one list. A folder outside git is its own project, by its real path.
  * - **Deploy task files** go into the checkout the folder is in (a worktree's own root), so a
  *   task ships in that branch's commit and pull request.
- * - **A broken or too-new project file** leaves the work store usable: only the project tasks
+ * - **A broken or too-new project file** leaves the work store usable: only the deploy tasks
  *   are unavailable, with the reason. Git that cannot answer is an error: a guessed key would
  *   split one project's tasks in two.
  */
@@ -120,7 +120,7 @@ function contextOf(checkout: Checkout | null, cwd: string): TaskContext {
       project: keyOf(null, cwd),
       repo: null,
       checkoutRoot: null,
-      projectTasks: { ok: false, why: "not in a git checkout: project tasks live in a repository" },
+      projectTasks: { ok: false, why: "not in a git checkout: deploy tasks live in a repository" },
       projectConfig: { ok: true, config: null },
     };
   }

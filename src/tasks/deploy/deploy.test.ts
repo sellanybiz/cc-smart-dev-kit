@@ -19,6 +19,8 @@ import {
   updateDeployTask,
 } from "./files";
 import {
+  DEPLOY_ENVS,
+  DEPLOY_ENVS_RISK_FIRST,
   type DeployTask,
   deployIdOfFileName,
   isDeployTaskId,
@@ -36,6 +38,12 @@ import {
 } from "./release";
 
 const now = new Date("2026-11-17T14:45:03Z");
+
+test("the risk-first environment order is the release order, reversed, and holds every environment", () => {
+  expect([...DEPLOY_ENVS]).toEqual(["staging", "prod"]);
+  expect([...DEPLOY_ENVS_RISK_FIRST]).toEqual(["prod", "staging"]);
+});
+
 const task: DeployTask = {
   id: "prod-20261117-144503",
   title: 'Drop old: "invite" # functions\nand more',
@@ -474,22 +482,35 @@ test("the gate reads the folder itself, closed tasks included: an archived twin 
     { title: "Prod half", env: "prod", deploy: "after", type: "non-blocking", twin: staging.id },
     { now },
   );
-  const refusals = gateBefore("prod", { dir, facts: cleanFacts, envs: both, now }).refusals;
+  const refusals = gateBefore("prod", {
+    dir,
+    facts: cleanFacts,
+    envs: both,
+    baseBranch: "main",
+    now,
+  }).refusals;
   expect(refusals).toEqual([
-    `${prod.id} "Prod half" waits for its staging twin ${staging.id}, which is still open: finish staging first`,
+    `${prod.id} "Prod half" waits for its staging twin ${staging.id}, which is still open: finish staging first, or its close waits on an unmerged branch: \`task list --branches\``,
   ]);
   closeDeployTask(dir, staging.id, { status: "done", evidence: "ok" }, now);
-  expect(gateBefore("prod", { dir, facts: cleanFacts, envs: both, now }).ok).toBe(true);
-  expect(gateAfter("staging", { dir, facts: cleanFacts, envs: both, now }).ok).toBe(true);
+  expect(
+    gateBefore("prod", { dir, facts: cleanFacts, envs: both, baseBranch: "main", now }).ok,
+  ).toBe(true);
+  expect(
+    gateAfter("staging", { dir, facts: cleanFacts, envs: both, baseBranch: "main", now }).ok,
+  ).toBe(true);
   // A broken file in an archive/ folder counts: the gate reads every folder, not only the open ones.
   mkdirSync(join(dir, "staging", "archive"), { recursive: true });
   const badArchived = join(dir, "staging", "archive", "bad.md");
   writeFileSync(badArchived, "not a task");
-  expect(gateAfter("staging", { dir, facts: cleanFacts, envs: both, now }).refusals[0]).toContain(
-    `${badArchived} cannot be read`,
-  );
+  expect(
+    gateAfter("staging", { dir, facts: cleanFacts, envs: both, baseBranch: "main", now })
+      .refusals[0],
+  ).toContain(`${badArchived} cannot be read`);
   rmSync(badArchived);
-  expect(gateAfter("prod", { dir, facts: cleanFacts, envs: both, now }).refusals).toEqual([
+  expect(
+    gateAfter("prod", { dir, facts: cleanFacts, envs: both, baseBranch: "main", now }).refusals,
+  ).toEqual([
     `Task is open: ${prod.id} "Prod half" (after the deploy, non-blocking): close it with evidence, or drop it with a reason`,
   ]);
 });
@@ -605,6 +626,7 @@ const cleanFacts: GitFacts = {
   tasksPath: ".claude/tasks",
   refIsAncestor: true,
   uncommitted: [],
+  uncommittedOutside: [],
   push: {
     branch: "deploy/prod-20261117-1445",
     remote: "origin/deploy/prod-20261117-1445",
@@ -617,20 +639,22 @@ function before(
   tasks: DeployTask[],
   facts = cleanFacts,
   envs: readonly ("prod" | "staging")[] = both,
+  baseBranch = "main",
 ) {
-  return judgeBefore(env, { scan: scanOf(tasks), facts, envs, now });
+  return judgeBefore(env, { scan: scanOf(tasks), facts, envs, baseBranch, now });
 }
 function after(
   env: "prod" | "staging",
   tasks: DeployTask[],
   facts = cleanFacts,
   scan = scanOf(tasks),
+  baseBranch = "main",
 ) {
-  return judgeAfter(env, { scan, facts, envs: both, now });
+  return judgeAfter(env, { scan, facts, envs: both, baseBranch, now });
 }
 
 test("gate before: passes with no open blocking before-task", () => {
-  expect(before("prod", [])).toEqual({ ok: true, refusals: [], notes: [] });
+  expect(before("prod", [])).toEqual({ ok: true, refusals: [], notes: [], warnings: [] });
   const result = before("prod", [
     mk({ id: "prod-20261117-100000", title: "Warm cache", type: "non-blocking" }),
     mk({ id: "prod-20261117-100001", title: "Done one", status: "done" }),
@@ -667,7 +691,7 @@ test("gate before: HEAD that is not the ref refuses with the branch commands; ta
   expect(refused.refusals[0]).toContain(
     "git switch --no-track -c deploy/prod-20261117-1445 origin/main",
   );
-  expect(refused.refusals[0]).toContain("git worktree add --no-track -b deploy/prod-20261117-1445");
+  expect(refused.refusals[0]).not.toContain("worktree add");
   const closesOnly = {
     ...cleanFacts,
     headCommit: "b".repeat(40),
@@ -694,6 +718,7 @@ test("gate before: a broken file or a duplicate id refuses", () => {
     scan: scanOf([], [{ file: "/t/prod/bad.md", why: "bad.md: invalid YAML: x" }]),
     facts: cleanFacts,
     envs: both,
+    baseBranch: "main",
     now,
   });
   expect(broken.ok).toBe(false);
@@ -702,6 +727,7 @@ test("gate before: a broken file or a duplicate id refuses", () => {
     scan: { tasks: [], broken: [], duplicates: [{ id: "prod-1", files: ["/t/a.md", "/t/b.md"] }] },
     facts: cleanFacts,
     envs: both,
+    baseBranch: "main",
     now,
   });
   expect(duplicate.ok).toBe(false);
@@ -728,12 +754,31 @@ test("gate before: prod refuses while the staging twin is open; staging does not
   const refused = before("prod", [staging, prod]);
   expect(refused.ok).toBe(false);
   expect(refused.refusals).toEqual([
-    'prod-20261117-100000 "Prod half" waits for its staging twin staging-20261117-100000, which is still open: finish staging first',
+    'prod-20261117-100000 "Prod half" waits for its staging twin staging-20261117-100000, which is still open: finish staging first, or its close waits on an unmerged branch: `task list --branches`',
   ]);
   expect(before("staging", [staging, prod]).ok).toBe(true);
-  // Once the twin is closed, prod goes on; a twin that names no task is not this gate's concern.
+  // Once the twin is closed, prod goes on. A twin that names no task, live or archived, is
+  // refused with the way out: it must not pass for a finished one.
   expect(before("prod", [{ ...staging, status: "done" }, prod]).ok).toBe(true);
-  expect(before("prod", [{ ...prod, twin: "staging-20990101-000000" }]).ok).toBe(true);
+  expect(before("prod", [{ ...prod, twin: "staging-20990101-000000" }]).refusals).toEqual([
+    'prod-20261117-100000 "Prod half" names its staging twin staging-20990101-000000, but no task has that id: run `task check` to see it, then create the twin or remove the twin field',
+  ]);
+  // Staging never waits on a twin.
+  expect(before("staging", [{ ...staging, twin: "prod-20990101-000000" }]).ok).toBe(true);
+});
+
+test("gate before warns, never refuses, for uncommitted changes outside the tasks folder", () => {
+  const dirty = { ...cleanFacts, uncommittedOutside: ["src/app.ts", "notes.txt"] };
+  expect(before("prod", [], dirty)).toEqual({
+    ok: true,
+    refusals: [],
+    notes: [],
+    warnings: [
+      "2 uncommitted change(s) outside .claude/tasks (src/app.ts, notes.txt): this gate judged committed code only, so a deploy from this folder may ship them",
+    ],
+  });
+  // The after gate judges the closes only: it says nothing of other files.
+  expect(after("prod", [], dirty).warnings).toEqual([]);
 });
 
 test("gate before and after: an environment outside tasks.envs refuses", () => {
@@ -741,7 +786,13 @@ test("gate before and after: an environment outside tasks.envs refuses", () => {
     "staging is not one of this project's environments (tasks.envs: prod)",
   ]);
   expect(
-    judgeAfter("staging", { scan: scanOf([]), facts: cleanFacts, envs: ["prod"], now }).ok,
+    judgeAfter("staging", {
+      scan: scanOf([]),
+      facts: cleanFacts,
+      envs: ["prod"],
+      baseBranch: "main",
+      now,
+    }).ok,
   ).toBe(false);
 });
 
@@ -752,7 +803,7 @@ test("gate after: passes when nothing of the env is open, committed and pushed",
       mk({ id: "prod-20261117-100001", status: "dropped" }),
       mk({ id: "staging-20261117-100002", env: "staging" }),
     ]),
-  ).toEqual({ ok: true, refusals: [], notes: [] });
+  ).toEqual({ ok: true, refusals: [], notes: [], warnings: [] });
 });
 
 test("gate after: any open task of the env refuses, before or after, either type", () => {
@@ -787,6 +838,42 @@ test("gate after: uncommitted closes, an unpushed branch and a broken file refus
   const broken = after("prod", [], cleanFacts, scanOf([], [{ file: "/t/x.md", why: "why" }]));
   expect(broken.ok).toBe(false);
   expect(broken.refusals[0]).toContain("/t/x.md cannot be read");
+});
+
+test("both gates refuse on the base branch, print the branch to cut, and never print a push to it", () => {
+  const onMain = {
+    ...cleanFacts,
+    push: { branch: "main", remote: "origin/main", ahead: 1 },
+  };
+  const cut =
+    "Start the run on a deploy branch cut from the commit that ships: `git fetch origin`, then `git switch --no-track -c deploy/prod-20261117-1445 origin/main` in this checkout";
+  const refusal = `HEAD is on main, the branch deploys ship to: the closes must reach it through a deploy branch's pull request, never by a push to it. ${cut}`;
+  expect(before("prod", [], onMain)).toEqual({
+    ok: false,
+    refusals: [refusal],
+    notes: [],
+    warnings: [],
+  });
+  expect(after("prod", [], onMain)).toEqual({
+    ok: false,
+    refusals: [refusal],
+    notes: [],
+    warnings: [],
+  });
+  // An unpushed base is the same refusal, not a `git push` line naming main.
+  const neverPushed = { ...cleanFacts, push: { branch: "main", remote: null, ahead: 0 } };
+  expect(after("prod", [], neverPushed).refusals).toEqual([refusal]);
+  // The base is the project's, not a fixed name: a deploy branch of any name is not it.
+  expect(before("prod", [], onMain, both, "release").ok).toBe(true);
+});
+
+test("the gates read the base branch from the input, never a fixed name", () => {
+  const onRelease = {
+    ...cleanFacts,
+    push: { branch: "release", remote: "origin/release", ahead: 0 },
+  };
+  expect(before("prod", [], onRelease, both, "release").refusals).toHaveLength(1);
+  expect(before("prod", [], onRelease).ok).toBe(true);
 });
 
 test("the no-flag listing groups open tasks by env, deploy and type, blocking first", () => {
@@ -876,9 +963,15 @@ test("git facts: the tasks folder dirty, staged, untracked, then committed, then
   git(repo, "commit", "-m", "close");
   const committed = readGitFacts(repo, dir, "origin/main", env);
   expect(committed.uncommitted).toEqual([]);
-  // A change outside the tasks folder is not the gate's business.
+  // A change outside the tasks folder is not a close, but the gate says it did not judge it.
+  expect(readGitFacts(repo, dir, "origin/main", env).uncommittedOutside).toEqual([]);
   writeFileSync(join(repo, "scratch.txt"), "x");
+  writeFileSync(join(repo, "README.md"), "changed");
   expect(readGitFacts(repo, dir, "origin/main", env).uncommitted).toEqual([]);
+  expect(readGitFacts(repo, dir, "origin/main", env).uncommittedOutside).toEqual([
+    "README.md",
+    "scratch.txt",
+  ]);
   // Not on origin yet.
   expect(committed.push).toEqual({ branch: "deploy/prod-20261117-1445", remote: null, ahead: 0 });
   expect(after("prod", scanDeployTasks(dir, { archive: true }).tasks, committed).ok).toBe(false);
@@ -893,6 +986,7 @@ test("git facts: the tasks folder dirty, staged, untracked, then committed, then
     ok: true,
     refusals: [],
     notes: [],
+    warnings: [],
   });
   // One more local commit is ahead of origin's copy of the branch.
   writeFileSync(join(repo, "more.txt"), "x");
@@ -929,7 +1023,7 @@ test("a blocking task pushed to the ref after the deploy branch was cut refuses 
   expect(facts.refIsAncestor).toBe(false);
   // This checkout has never seen the task, so a scan of its folder is empty.
   expect(scanDeployTasks(dir, { archive: true }).tasks).toEqual([]);
-  const gate = gateBefore("prod", { dir, facts, envs, now });
+  const gate = gateBefore("prod", { dir, facts, envs, baseBranch: "main", now });
   expect(gate.ok).toBe(false);
   expect(gate.refusals).toHaveLength(1);
   expect(gate.refusals[0]).toContain("does not contain origin/main");
@@ -938,7 +1032,9 @@ test("a blocking task pushed to the ref after the deploy branch was cut refuses 
   const merged = readGitFacts(repo, dir, "origin/main", env);
   expect(merged.refIsAncestor).toBe(true);
   expect(merged.headCommit).toBe(merged.refCommit);
-  expect(gateBefore("prod", { dir, facts: merged, envs, now }).refusals).toEqual([
+  expect(
+    gateBefore("prod", { dir, facts: merged, envs, baseBranch: "main", now }).refusals,
+  ).toEqual([
     `Blocking task is open: ${theirs.id} "Run the migration": do it, then close it with evidence`,
   ]);
 });
@@ -956,11 +1052,11 @@ test("a deploy branch behind the ref, over code, refuses; cut from the ref it pa
   const facts = readGitFacts(repo, dir, "origin/main", env);
   expect(facts.refIsAncestor).toBe(false);
   expect(facts.changedPaths).toEqual(["app.ts"]);
-  expect(gateBefore("prod", { dir, facts, envs, now }).ok).toBe(false);
+  expect(gateBefore("prod", { dir, facts, envs, baseBranch: "main", now }).ok).toBe(false);
   git(repo, "switch", "--no-track", "-c", "deploy/prod-20261117-1500", "origin/main");
   const fresh = readGitFacts(repo, dir, "origin/main", env);
   expect(fresh.headCommit).toBe(fresh.refCommit);
-  expect(gateBefore("prod", { dir, facts: fresh, envs, now }).ok).toBe(true);
+  expect(gateBefore("prod", { dir, facts: fresh, envs, baseBranch: "main", now }).ok).toBe(true);
 });
 
 test("pushed is judged against origin's copy of the branch, not the branch's upstream", () => {
@@ -977,7 +1073,7 @@ test("pushed is judged against origin's copy of the branch, not the branch's ups
   git(repo, "commit", "-m", "close");
   const unpushed = readGitFacts(repo, dir, "origin/main", env);
   expect(unpushed.push).toEqual({ branch: "deploy/prod-20261117-1445", remote: null, ahead: 0 });
-  const refused = gateAfter("prod", { dir, facts: unpushed, envs, now });
+  const refused = gateAfter("prod", { dir, facts: unpushed, envs, baseBranch: "main", now });
   expect(refused.refusals).toEqual([
     "Branch deploy/prod-20261117-1445 is not pushed: run `git push -u origin deploy/prod-20261117-1445`",
   ]);
@@ -990,17 +1086,18 @@ test("pushed is judged against origin's copy of the branch, not the branch's ups
     remote: "origin/deploy/prod-20261117-1445",
     ahead: 0,
   });
-  expect(gateAfter("prod", { dir, facts: pushed, envs, now })).toEqual({
+  expect(gateAfter("prod", { dir, facts: pushed, envs, baseBranch: "main", now })).toEqual({
     ok: true,
     refusals: [],
     notes: [],
+    warnings: [],
   });
   writeFileSync(join(repo, "more.txt"), "x");
   git(repo, "add", "more.txt");
   git(repo, "commit", "-m", "more");
   const ahead = readGitFacts(repo, dir, "origin/main", env);
   expect(ahead.push.ahead).toBe(1);
-  expect(gateAfter("prod", { dir, facts: ahead, envs, now }).refusals).toEqual([
+  expect(gateAfter("prod", { dir, facts: ahead, envs, baseBranch: "main", now }).refusals).toEqual([
     "Branch deploy/prod-20261117-1445 is 1 commit(s) ahead of origin/deploy/prod-20261117-1445: run `git push origin deploy/prod-20261117-1445`",
   ]);
 });
@@ -1039,6 +1136,34 @@ test("branch changes, archived tasks, deleted paths and unmerged branches read t
   const unmerged = unmergedBranchTasks(root, dir, "main");
   expect(unmerged.tasks.map((t) => [t.branch, t.task.id])).toEqual([["work", added.id]]);
   expect(unmerged.broken).toEqual([]);
+});
+
+test("a close pushed on an unmerged branch is reported for a task the base still has open", () => {
+  const root = tempDir();
+  git(root, "init", "-b", "main");
+  writeFileSync(join(root, "README.md"), "repo");
+  git(root, "add", ".");
+  git(root, "commit", "-m", "initial");
+  const dir = join(root, "tasks");
+  const open = create(dir, "Staging gate", "staging");
+  git(root, "add", ".");
+  git(root, "commit", "-m", "task");
+  git(root, "checkout", "-b", "deploy/staging-1");
+  closeDeployTask(dir, open.id, { status: "done", evidence: "ran it: ok" }, now);
+  // Created and closed on the branch: the base never had it open, so nothing waits on it.
+  const own = create(dir, "Own", "prod", new Date("2026-11-17T15:00:00Z"));
+  closeDeployTask(dir, own.id, { status: "dropped", note: "not needed" }, now);
+  git(root, "add", ".");
+  git(root, "commit", "-m", "closes");
+  git(root, "checkout", "main");
+  const unmerged = unmergedBranchTasks(root, dir, "main");
+  expect(unmerged.closed.map((t) => [t.branch, t.task.id, t.task.status])).toEqual([
+    ["deploy/staging-1", open.id, "done"],
+  ]);
+  expect(unmerged.tasks).toEqual([]);
+  // Once the branch is merged, nothing is listed.
+  git(root, "merge", "--no-ff", "-m", "merge", "deploy/staging-1");
+  expect(unmergedBranchTasks(root, dir, "main").closed).toEqual([]);
 });
 
 test("a broken file on one branch is reported with its branch and the others are still read", () => {

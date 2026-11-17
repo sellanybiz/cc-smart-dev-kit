@@ -81,7 +81,7 @@ test("outside git: the folder is its own project, with no project tasks", () => 
   expect(context.project).toMatch(/^[0-9a-f]{16}$/);
   expect(context.projectTasks).toEqual({
     ok: false,
-    why: "not in a git checkout: project tasks live in a repository",
+    why: "not in a git checkout: deploy tasks live in a repository",
   });
 });
 

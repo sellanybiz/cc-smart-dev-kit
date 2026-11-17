@@ -105,7 +105,7 @@ test("add --pair writes a staging and a prod file", async () => {
 });
 
 test("drop of a blocking deploy task is refused inside Claude Code and allowed in a terminal", async () => {
-  const { run, add } = world();
+  const { run, add, cwd } = world();
   const id = await add("Gate", "prod", "before", "blocking");
   const inside = await run(["drop", id, "--note", "no longer owed"], { CLAUDECODE: "1" });
   expect(inside).toEqual({
@@ -115,20 +115,20 @@ test("drop of a blocking deploy task is refused inside Claude Code and allowed i
   });
   expect(await run(["drop", id, "--note", "no longer owed"])).toEqual({
     code: 0,
-    text: `${id} "Gate" · dropped\n`,
+    text: `${id} "Gate" · dropped · .claude/tasks/prod/archive/${id}-gate.md · written in ${cwd}: commit the file with your branch\n`,
     error: "",
   });
 });
 
 test("done needs evidence; reopen moves the file back; an old id is answered", async () => {
-  const { run, add, tasks } = world();
+  const { run, add, tasks, cwd } = world();
   const id = await add("Cache", "staging", "after", "blocking");
   expect((await run(["done", id])).code).toBe(1);
   expect((await run(["done", id, "--evidence", "ran it: ok"])).code).toBe(0);
   expect(existsSync(join(tasks, "staging", "archive"))).toBe(true);
   expect(await run(["reopen", id])).toEqual({
     code: 0,
-    text: `${id} "Cache" · open again\n`,
+    text: `${id} "Cache" · open again · .claude/tasks/staging/${id}-cache.md · written in ${cwd}: commit the file with your branch\n`,
     error: "",
   });
   expect(readdirSync(join(tasks, "staging")).filter((name) => name.endsWith(".md"))).toHaveLength(
@@ -159,6 +159,7 @@ test("release with no flag lists the open tasks by environment, deploy step and 
 
 test("release --before: refuses on an open blocking task, passes once it is closed", async () => {
   const { run, add, cwd } = world();
+  git(cwd, "switch", "--no-track", "-c", "deploy/prod-20261117-1445", "origin/main");
   const id = await add("Migrate", "prod", "before", "blocking");
   const head = git(cwd, "rev-parse", "HEAD").trim();
   const refused = await run(["release", "prod", "--before"]);
@@ -177,6 +178,7 @@ test("release --before: refuses on an open blocking task, passes once it is clos
     ok: true,
     refusals: [],
     notes: [],
+    warnings: [],
   });
 });
 
@@ -192,16 +194,83 @@ test("release --before names the deploy-branch commands when HEAD is not the ref
   expect(refused.text).toContain("origin/main");
 });
 
+test("both gates refuse on the base branch and never print a push to it", async () => {
+  const { run, add, cwd } = world();
+  const id = await add("Warm cache", "prod", "after", "blocking");
+  expect((await run(["done", id, "--evidence", "warm: ok"])).code).toBe(0);
+  git(cwd, "add", "-A");
+  git(cwd, "commit", "-m", "close the deploy task on main");
+  for (const step of ["--before", "--after"]) {
+    const gate = await run(["release", "prod", step]);
+    expect(gate.code).toBe(1);
+    expect(gate.text).toContain(
+      "HEAD is on main, the branch deploys ship to: the closes must reach it through a deploy branch's pull request, never by a push to it.",
+    );
+    expect(gate.text).toContain("git switch --no-track -c deploy/prod-");
+    expect(gate.text).not.toContain("git push");
+  }
+  // --ref changes the commit judged, never the base the run must stay off.
+  expect((await run(["release", "prod", "--after", "--ref", "HEAD"])).code).toBe(1);
+});
+
 test("release lists the non-blocking before tasks as notes, not refusals", async () => {
-  const { run, add } = world();
+  const { run, add, cwd } = world();
+  git(cwd, "switch", "--no-track", "-c", "deploy/prod-20261117-1445", "origin/main");
   const id = await add("Tidy", "prod", "before", "non-blocking");
   const passed = await run(["release", "prod", "--before"]);
   expect(passed.code).toBe(0);
   expect(passed.text).toContain(`Non-blocking, still open: ${id} "Tidy"`);
 });
 
+test("release --before warns, and still passes, for uncommitted changes outside the tasks folder", async () => {
+  const { run, cwd } = world();
+  git(cwd, "switch", "--no-track", "-c", "deploy/prod-20261117-1445", "origin/main");
+  writeFileSync(join(cwd, "app.ts"), "x");
+  const passed = await run(["release", "prod", "--before"]);
+  expect(passed.code).toBe(0);
+  expect(passed.text).toContain(
+    "1 uncommitted change(s) outside .claude/tasks (app.ts): this gate judged committed code only, so a deploy from this folder may ship them",
+  );
+  expect(passed.text).toContain("Ready:");
+  const json = JSON.parse((await run(["release", "prod", "--before", "--json"])).text);
+  expect(json.warnings).toHaveLength(1);
+  // The close gate does not warn about files it never reads.
+  expect(JSON.parse((await run(["release", "prod", "--after", "--json"])).text).warnings).toEqual(
+    [],
+  );
+});
+
+test("release --before refuses a prod task whose twin names no task", async () => {
+  const { run, cwd } = world();
+  git(cwd, "switch", "--no-track", "-c", "deploy/prod-20261117-1445", "origin/main");
+  const made = await run([
+    "add",
+    "Migrate",
+    "--kind",
+    "staging",
+    "--pair",
+    "--deploy",
+    "after",
+    "--type",
+    "non-blocking",
+  ]);
+  expect(made.code).toBe(0);
+  const [stagingId = "", prodId = ""] = made.text.split("\n").map((line) => line.split(" ")[0]);
+  // While the twin exists and is open, prod waits for it.
+  expect((await run(["release", "prod", "--before"])).text).toContain("waits for its staging twin");
+  expect((await run(["delete", stagingId])).code).toBe(0);
+  const refused = await run(["release", "prod", "--before"]);
+  expect(refused.code).toBe(1);
+  expect(refused.text).toContain(
+    `${prodId} "Migrate" names its staging twin ${stagingId}, but no task has that id: run \`task check\` to see it`,
+  );
+  const checked = await run(["check"]);
+  expect(checked.text).toContain(`twin-missing: Its twin ${stagingId} is not a task`);
+});
+
 test("release --after refuses an open task, an uncommitted close and an unpushed branch", async () => {
   const { run, add, cwd } = world();
+  git(cwd, "switch", "--no-track", "-c", "deploy/prod-20261117-1445", "origin/main");
   const id = await add("Warm cache", "prod", "after", "blocking");
   const open = await run(["release", "prod", "--after"]);
   expect(open.code).toBe(1);
@@ -214,8 +283,8 @@ test("release --after refuses an open task, an uncommitted close and an unpushed
   git(cwd, "commit", "-m", "close the deploy task");
   const ahead = await run(["release", "prod", "--after"]);
   expect(ahead.code).toBe(1);
-  expect(ahead.text).toContain("1 commit(s) ahead of origin/main: run `git push origin main`");
-  git(cwd, "push", "origin", "main");
+  expect(ahead.text).toContain("not pushed: run `git push -u origin deploy/prod-20261117-1445`");
+  git(cwd, "push", "-u", "origin", "deploy/prod-20261117-1445");
   const pushed = await run(["release", "prod", "--after"]);
   expect(pushed.code).toBe(0);
   expect(pushed.text).toContain("Ready:");
@@ -276,8 +345,25 @@ test("list --branches keeps listing when one branch has a broken file", async ()
   expect(listed.text).toContain("garbage.md");
 });
 
+test("list --branches shows a close that waits on an unmerged branch", async () => {
+  const { run, add, cwd } = world();
+  const id = await add("Gate", "staging", "before", "blocking");
+  git(cwd, "add", "-A");
+  git(cwd, "commit", "-m", "the task");
+  git(cwd, "switch", "-c", "deploy/staging-20261117-1445");
+  expect((await run(["done", id, "--evidence", "ran it: ok"])).code).toBe(0);
+  git(cwd, "add", "-A");
+  git(cwd, "commit", "-m", "close it");
+  git(cwd, "switch", "main");
+  expect(await run(["list", "--branches"])).toEqual({
+    code: 0,
+    text: `closed on deploy/staging-20261117-1445, not merged: ${id} [before · blocking] Gate · done\n`,
+    error: "",
+  });
+});
+
 test("set and delete of a blocking deploy task are refused inside Claude Code and work in a terminal", async () => {
-  const { run, add, tasks } = world();
+  const { run, add, tasks, cwd } = world();
   const id = await add("Gate", "prod", "before", "blocking");
   const refusal = (action: string, command: string) =>
     `${id} is blocking: only the person ${action}. Ask the person to run \`cc-smart-dev-kit task ${command}\` in their own terminal, outside Claude Code\n`;
@@ -301,11 +387,15 @@ test("set and delete of a blocking deploy task are refused inside Claude Code an
   // The person's own terminal may do each of them.
   expect(await run(["set", id, "--type", "non-blocking"])).toEqual({
     code: 0,
-    text: `${id} "Gate" · updated\n`,
+    text: `${id} "Gate" · updated · .claude/tasks/prod/${id}-gate.md · written in ${cwd}: commit the file with your branch\n`,
     error: "",
   });
   expect(await run(["set", id, "--deploy", "after"])).toMatchObject({ code: 0 });
-  expect(await run(["delete", id])).toEqual({ code: 0, text: `${id} · deleted\n`, error: "" });
+  expect(await run(["delete", id])).toEqual({
+    code: 0,
+    text: `${id} · deleted · .claude/tasks/prod/${id}-gate.md · removed from ${cwd}\n`,
+    error: "",
+  });
   expect(readdirSync(join(tasks, "prod"))).toHaveLength(0);
 });
 

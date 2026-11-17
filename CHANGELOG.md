@@ -15,10 +15,13 @@ A major version: `update` holds it until you run `cc-smart-dev-kit update` on ea
   waits for its staging twin.
 - **A deploy run with two checks.** Cut a deploy branch from the commit that ships, then
   `task release <env> --before`: it refuses while a blocking before-task is open, a staging twin
-  is open, or the branch is not that commit. Close each task with evidence and commit the closes;
-  deploy; `task release <env> --after` refuses while any task is open or the closes are not
-  committed and pushed. The branch's small pull request carries the closes to main, so nothing
-  lingers.
+  is open (or names no task), you are on the base branch, or the branch is not that commit. It
+  warns, without refusing, when files outside the tasks folder have uncommitted changes. Close
+  each task with evidence and commit the closes; deploy; `task release <env> --after` refuses
+  while any task is open, the closes are not committed and pushed, or you are on the base branch.
+  The branch's small pull request carries the closes to main, so nothing lingers. The `task`
+  command acts in the folder it runs in, and `task list --branches` also shows closes made on a
+  branch that is not merged yet.
 - **Only you drop a blocking task.** Inside Claude Code, dropping, weakening (non-blocking, or
   before to after) or deleting an open blocking task is refused; you run the command in your own
   terminal. `task reopen` puts a task back after a rolled-back deploy.
@@ -26,9 +29,11 @@ A major version: `update` holds it until you run `cc-smart-dev-kit update` on ea
   One outside it becomes a GitHub issue, filed by the main session; without GitHub, a line in the
   summary. The `follow-up` and `teammate` kinds, `when`, `weight`, `--for-everyone` and
   `task import notes` are gone.
-- **GitHub issues are on by default.** The kit now files issues without an opt-in, in a private
-  repository whose project has a kit config. A public one still needs `issues.allowPublic`. Where
-  the kit cannot file, `doctor` shows an information line, not a failure.
+- **GitHub issues are on by default.** The kit files issues, and marks them fixed
+  (`issue mark-fixed`: a comment and a label), without an opt-in, in any repository on github.com
+  that is not public (private or internal) whose project has a kit config, when `gh` is logged
+  in. A public repository still needs `issues.allowPublic`. Where the kit cannot file, `doctor`
+  shows an information line, not a failure.
 - **A `tasks` skill.** `/cc-smart-dev-kit:tasks` is the one place that says which task to make
   and how to use it: work tasks, plans, deploy tasks and the deploy run. `memory-routing` points
   to it.

@@ -24,7 +24,7 @@ export function deployBlockBody(): string {
     "",
     "Steps owed around a deploy are deploy tasks; each one belongs to prod or staging. Run these steps in the checkout you work in:",
     "",
-    "1. Cut a deploy branch from the commit that ships: `git fetch origin`, then `git switch --no-track -c deploy/<env>-<date> origin/<base>` (--no-track keeps `git push` from targeting `<base>`). In a project that uses a worktree per session: `git worktree add --no-track -b deploy/<env>-<date> <folder> origin/<base>`.",
+    "1. Cut a deploy branch from the commit that ships: `git fetch origin`, then `git switch --no-track -c deploy/<env>-<date> origin/<base>` (--no-track keeps `git push` from targeting `<base>`).",
     `2. Run \`${release} <env> --before\`. It lists what must be done first and exits 1 while a blocking task is open.`,
     "3. Do each task. Close it with evidence (what you ran or checked, and its result), and commit the closes on the deploy branch.",
     "4. Deploy, with the steps of this skill.",

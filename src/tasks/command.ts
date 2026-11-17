@@ -147,7 +147,10 @@ export async function runTaskCommand(argv: string[]): Promise<number> {
   const fileText = async () =>
     get("file") === "-" ? await Bun.stdin.text() : readFileSync(get("file") ?? "", "utf8");
   // Inside Claude Code a blocking deploy task is not dropped: it is the person's (D14).
-  const ops = createTaskOps({ refuseBlockingDrop: insideClaudeCode(process.env) });
+  const ops = createTaskOps({
+    cwd: () => process.cwd(),
+    refuseBlockingDrop: insideClaudeCode(process.env),
+  });
   try {
     let operation: TaskOperation;
     let input: Record<string, unknown>;
@@ -338,10 +341,15 @@ export async function runTaskCommand(argv: string[]): Promise<number> {
       if (command === "list") {
         const base = get("base") ?? baseBranch(locateCheckout(cwd), process.env, root).base;
         if (has("branches")) {
-          const { tasks, broken } = unmergedBranchTasks(root, dir, base);
+          const { tasks, closed, broken } = unmergedBranchTasks(root, dir, base);
           for (const item of tasks) out.say(`${item.branch}: ${projectLine(item.task)}`);
+          for (const item of closed)
+            out.say(
+              `closed on ${item.branch}, not merged: ${projectLine(item.task)} · ${item.task.status}`,
+            );
           for (const item of broken) out.say(`${item.branch}: ${item.file} · ${item.why}`);
-          if (!tasks.length && !broken.length) out.say("No deploy tasks on unmerged branches.");
+          if (!tasks.length && !closed.length && !broken.length)
+            out.say("No deploy tasks on unmerged branches.");
         } else {
           const changes = branchTaskChanges(root, dir, base);
           for (const env of DEPLOY_ENVS) {
@@ -374,8 +382,8 @@ export async function runTaskCommand(argv: string[]): Promise<number> {
       const { env, step } = release ?? { env: undefined, step: null };
       if (step !== null && env !== undefined) {
         // The gates read the folder themselves, closed tasks too (`gateBefore`, `gateAfter`).
-        const ref =
-          get("ref") ?? `origin/${baseBranch(locateCheckout(cwd), process.env, root).base}`;
+        const base = baseBranch(locateCheckout(cwd), process.env, root).base;
+        const ref = get("ref") ?? `origin/${base}`;
         // The ref is resolved on its own, so only a ref git does not know gets the fetch advice;
         // any other git failure below (HEAD with no commit, say) is reported as git says it.
         try {
@@ -390,6 +398,7 @@ export async function runTaskCommand(argv: string[]): Promise<number> {
           dir,
           facts,
           envs: settings.envs,
+          baseBranch: base,
           now: new Date(),
         });
         if (has("json"))
@@ -399,12 +408,14 @@ export async function runTaskCommand(argv: string[]): Promise<number> {
             ok: gate.ok,
             refusals: gate.refusals,
             notes: gate.notes,
+            warnings: gate.warnings,
           });
         else {
           out.heading(`Release gate: ${env} --${step}`);
           out.say(`Ref: ${facts.ref} (${facts.refCommit})`);
           for (const reason of gate.refusals) out.line("fail", reason);
           for (const note of gate.notes) out.line("info", note);
+          for (const warning of gate.warnings) out.line("warn", warning);
           out.verdict(
             gate.ok ? "ok" : "fail",
             gate.ok
