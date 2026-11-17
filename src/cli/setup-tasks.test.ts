@@ -125,8 +125,13 @@ test("doctor counts broken project files with their fix", async () => {
   // A top-level file is the 4.x layout: not read, and counted as an old file.
   writeFileSync(join(dir, "T-abcd-old.md"), "an old task");
   expect(await projectTaskChecks(repo, hookEnv())).toEqual([
-    { ok: false, text: "project tasks: 1 broken-file", fix: "run `cc-smart-dev-kit task check`" },
-    { ok: false, text: "project tasks: 1 old-files", fix: "run `cc-smart-dev-kit task check`" },
+    { ok: false, text: "deploy tasks: 1 broken-file", fix: "run `cc-smart-dev-kit task check`" },
+    {
+      ok: true,
+      warn: true,
+      text: "deploy tasks: 1 old task file is not read since 5.0.0",
+      fix: "recreate it as a deploy task, or delete it (`cc-smart-dev-kit task check` names it)",
+    },
   ]);
 });
 

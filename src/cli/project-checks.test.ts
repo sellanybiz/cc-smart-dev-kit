@@ -1321,7 +1321,7 @@ describe("deploy tasks in doctor's project group", () => {
   test("a clean tasks folder: one line that there are no findings", async () => {
     const { repo, dir } = project();
     made(dir, "prod", "Run the migration");
-    expect(await taskLines(repo)).toEqual(["✓ project tasks: no findings"]);
+    expect(await taskLines(repo)).toEqual(["✓ deploy tasks: no findings"]);
   });
 
   test("no tasks folder at all: nothing to say", async () => {
@@ -1335,9 +1335,9 @@ describe("deploy tasks in doctor's project group", () => {
     writeFileSync(join(dir, "prod", "prod-20260101-000000-broken.md"), "not a task");
     copyFileSync(task.file, join(dir, "prod", `${task.id}-twin.md`));
     expect(await taskLines(repo)).toEqual([
-      `✗ project tasks: 1 broken-file Fix: ${FIX}`,
-      `✗ project tasks: 1 duplicate-id Fix: ${FIX}`,
-      `✗ project tasks: 1 duplicate-title Fix: ${FIX}`,
+      `✗ deploy tasks: 1 broken-file Fix: ${FIX}`,
+      `✗ deploy tasks: 1 duplicate-id Fix: ${FIX}`,
+      `✗ deploy tasks: 1 duplicate-title Fix: ${FIX}`,
     ]);
   });
 
@@ -1347,11 +1347,11 @@ describe("deploy tasks in doctor's project group", () => {
     writeFileSync(join(dir, "T-abcd-old.md"), "an old task");
     writeFileSync(join(dir, "T-efgh-old.md"), "an old task");
     expect(await taskLines(repo)).toEqual([
-      "! project tasks: 2 old task files are not read since 5.0.0 Fix: recreate each as a deploy task, or delete it (`cc-smart-dev-kit task check` names them)",
+      "! deploy tasks: 2 old task files are not read since 5.0.0 Fix: recreate each as a deploy task, or delete it (`cc-smart-dev-kit task check` names them)",
     ]);
     rmSync(join(dir, "T-efgh-old.md"));
     expect(await taskLines(repo)).toEqual([
-      "! project tasks: 1 old task file is not read since 5.0.0 Fix: recreate it as a deploy task, or delete it (`cc-smart-dev-kit task check` names it)",
+      "! deploy tasks: 1 old task file is not read since 5.0.0 Fix: recreate it as a deploy task, or delete it (`cc-smart-dev-kit task check` names it)",
     ]);
   });
 
@@ -1381,16 +1381,16 @@ describe("deploy tasks in doctor's project group", () => {
     mkdirSync(join(dir, "prod"), { recursive: true });
     expect(await check(repo)).toEqual([
       '! project: .claude/cc-smart-dev-kit.json says requires ">=1.0", but its fields and its deploy task folders need ">=5.0": a teammate on an older plugin gets the whole file refused instead of "update" Fix: cc-smart-dev-kit project init raises it to ">=5.0"',
-      "✓ project tasks: no findings",
+      "✓ deploy tasks: no findings",
     ]);
   });
 
   test("deploy folders with no requires, or a requires below 5.0 and no folders: nothing on requires", async () => {
     const { repo, dir } = project();
     mkdirSync(join(dir, "staging"), { recursive: true });
-    expect(await check(repo)).toEqual(["✓ project tasks: no findings"]);
+    expect(await check(repo)).toEqual(["✓ deploy tasks: no findings"]);
     writeClaudeFile(repo, "cc-smart-dev-kit.json", {});
-    expect(await check(repo)).toEqual(["✓ project tasks: no findings"]);
+    expect(await check(repo)).toEqual(["✓ deploy tasks: no findings"]);
     rmSync(dir, { recursive: true });
     writeClaudeFile(repo, "cc-smart-dev-kit.json", { requires: ">=1.0" });
     expect(await check(repo)).toEqual([]);
@@ -1446,7 +1446,7 @@ describe("the deploy-skill block in doctor", () => {
     expect(await check(repo)).toEqual([]);
     mkdirSync(join(repo, ".claude", "tasks", "prod"), { recursive: true });
     expect(await check(repo)).toEqual([
-      "✓ project tasks: no findings",
+      "✓ deploy tasks: no findings",
       "· project: .claude/skills is a link outside this checkout: not searched, so the deploy-skill block there is not checked",
     ]);
   });

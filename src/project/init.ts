@@ -411,7 +411,7 @@ function settingsPlan(file: string, existing: string | null, head: boolean): Set
  * task folder (`tasks.dir`, default `.claude/tasks`). A `tasks.dir` that leaves the checkout
  * has none here: the schema check in `planProjectInit` refuses the file and names the field.
  */
-function hasDeployTaskFolders(root: string, tasks: Record<string, unknown>): boolean {
+export function hasDeployTaskFolders(root: string, tasks: Record<string, unknown>): boolean {
   const settings = typeof tasks.dir === "string" ? { dir: tasks.dir } : {};
   let dir: string;
   try {

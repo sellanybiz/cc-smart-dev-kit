@@ -78,7 +78,7 @@ import {
   WORKTREE_ENGINE_RETIRED_IN,
 } from "../project/config";
 import { skillsFolderLink, staleBlocks } from "../project/deploy-skill";
-import { requiresFloor, requiresTooLow } from "../project/init";
+import { hasDeployTaskFolders, requiresFloor, requiresTooLow } from "../project/init";
 import {
   type Checkout,
   checkoutFailure,
@@ -89,8 +89,7 @@ import { isObject } from "../setup/managed-json";
 import { parseUserJson, readUserJson } from "../setup/user-json";
 import { taskContext } from "../tasks/context";
 import { checkDeployTasks } from "../tasks/deploy/check";
-import { deployTasksDir, envFolder, oldTaskFiles } from "../tasks/deploy/files";
-import { DEPLOY_ENVS } from "../tasks/deploy/format";
+import { oldTaskFiles } from "../tasks/deploy/files";
 import { allTasks, isOpen, livePhaseCount } from "../tasks/work/queries";
 import { readWorkStore } from "../tasks/work/read";
 import { type GhExec, runGh } from "../workflow/merge-check";
@@ -567,17 +566,6 @@ function requiresLines(
   ];
 }
 
-/** True when the project has a folder for any deploy environment: it uses deploy tasks. */
-function hasDeployFolders(root: string, config: CcSmartDevKitConfig | null): boolean {
-  let dir: string;
-  try {
-    dir = deployTasksDir(root, config?.tasks?.dir === undefined ? {} : { dir: config.tasks.dir });
-  } catch {
-    return false;
-  }
-  return DEPLOY_ENVS.some((env) => existsSync(envFolder(dir, env)));
-}
-
 /**
  * One `!` line for each `tasks` field the file still sets that nothing reads since
  * `DEPLOY_TASKS_SINCE` (`IGNORED_TASK_FIELDS`): the file loads, so nothing fails, and
@@ -909,7 +897,7 @@ export async function projectChecks(
       ...engine,
     ];
   }
-  const usesDeployTasks = hasDeployFolders(checkout.root, config);
+  const usesDeployTasks = hasDeployTaskFolders(checkout.root, config?.tasks ?? {});
   const retired =
     configFile === null
       ? null
@@ -991,13 +979,13 @@ export async function projectTaskChecks(cwd: string, env: Env): Promise<Check[]>
   const context = taskContext(cwd, env);
   if (!context.ok)
     return [
-      { ok: false, text: `project tasks: ${context.why}`, fix: `run \`${COMMAND} task check\`` },
+      { ok: false, text: `deploy tasks: ${context.why}`, fix: `run \`${COMMAND} task check\`` },
     ];
   if (context.checkoutRoot === null) return [];
   const tasks = context.projectTasks;
   if (!tasks.ok)
     return [
-      { ok: false, text: `project tasks: ${tasks.why}`, fix: `run \`${COMMAND} task check\`` },
+      { ok: false, text: `deploy tasks: ${tasks.why}`, fix: `run \`${COMMAND} task check\`` },
     ];
   if (!existsSync(tasks.dir)) return [];
   const lines: Check[] = [];
@@ -1015,7 +1003,7 @@ export async function projectTaskChecks(cwd: string, env: Env): Promise<Check[]>
     for (const [kind, count] of counts)
       lines.push({
         ok: false,
-        text: `project tasks: ${count} ${kind}`,
+        text: `deploy tasks: ${count} ${kind}`,
         fix: `run \`${COMMAND} task check\``,
       });
     const old = oldTaskFiles(tasks.dir).length;
@@ -1024,15 +1012,15 @@ export async function projectTaskChecks(cwd: string, env: Env): Promise<Check[]>
       lines.push({
         ok: true,
         warn: true,
-        text: `project tasks: ${old} old task ${many ? "files are" : "file is"} not read since ${DEPLOY_TASKS_SINCE}`,
+        text: `deploy tasks: ${old} old task ${many ? "files are" : "file is"} not read since ${DEPLOY_TASKS_SINCE}`,
         fix: `recreate ${many ? "each" : "it"} as a deploy task, or delete it (\`${COMMAND} task check\` names ${many ? "them" : "it"})`,
       });
     }
-    if (lines.length === 0) lines.push({ ok: true, text: "project tasks: no findings" });
+    if (lines.length === 0) lines.push({ ok: true, text: "deploy tasks: no findings" });
     return lines;
   } catch (error) {
     return [
-      { ok: false, text: `project tasks: ${message(error)}`, fix: `run \`${COMMAND} task check\`` },
+      { ok: false, text: `deploy tasks: ${message(error)}`, fix: `run \`${COMMAND} task check\`` },
     ];
   }
 }
