@@ -11,6 +11,9 @@ in your own terminal after the update; the user guide is [README.md](README.md).
   until the child is done, fails or ends), and the `herdr` skill tells it never to ask you the
   child's question or answer for it. The `herdr answer` command, its dialog reader and its
   judge rules are removed. An old `wait --seen` cursor with a `blocked` entry still works.
+- **A patch by the owner's decision.** Removing a command would make a major version, which
+  waits for each machine's `update`. Only a lead ever ran `herdr answer`, always behind an ask,
+  so nothing a person or project runs breaks, and the fix ships at once as a patch.
 
 **What to run:** nothing. A running lead picks up the skill change at its next session.
 
