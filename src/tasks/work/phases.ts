@@ -10,9 +10,11 @@
  * work this session must finish, and a pending one with no open blocker and at least one live
  * task is ready to start, in a plan with a phase running or in the plan in flight.
  */
+
+import { claimLive } from "./identity";
 import {
   allTasks,
-  claimHeldBy,
+  claimIsMine,
   inFlightPlanOf,
   isInFlight,
   isStartable,
@@ -95,7 +97,7 @@ export function openPhasesOf(
   );
   // A phase in progress is the caller's when its plan is, or when the caller claims the phase or
   // one of its steps (work it took in another session's plan).
-  const claimedBy = (task: WorkTask) => claimHeldBy(task.claim, who);
+  const claimedBy = (task: WorkTask) => claimIsMine(task.claim, who, claimLive);
   const isMine = (phase: WorkTask & { plan: string }) =>
     owned.has(phase.plan) ||
     claimedBy(phase) ||

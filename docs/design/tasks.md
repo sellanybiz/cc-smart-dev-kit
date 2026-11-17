@@ -305,6 +305,21 @@ call. The record supplies the session id and cwd, including a move into a worktr
 work is marked as belonging to another session. Live proof of these Claude Code behaviours
 is still owed in [the contract](../claude-code-contract.md).
 
+A reopened session (`claude --resume`, `cc-smart-dev-kit sessions --open`) keeps its session id
+in a new process, so its in-progress claims name a process that is gone. A claim like that is a
+**resumed claim** (`resumedClaim` in `queries.ts`): the caller has a process and a session id,
+the claim carries that session id, the caller's process does not hold it, and the claim's
+process is not live. A live claim with the same session id (two processes opened one
+conversation) is never the caller's. Every read that asks "is this my running work" counts a
+resumed claim as the caller's (`claimIsMine`: the status line's rows, `claimState`, the keep-going
+guard's phases); a question about who holds a claim now (a take's refusal, a claim's liveness)
+keeps `claimHeldBy` alone. The next task call from the resumed session also moves the claims
+(`reclaimResumed`, run by `createTaskOps` before the operation, any operation): each goes to the
+caller's pid, start time and session in one write, and its history says the claim moved to the
+resumed session's process. A dead claim of another session id stays free. `callerOf` reads only
+its own ancestors' session records (`sessionRecordOf`), so another session's record that cannot
+be read never blanks the caller's rows; the caller's own unreadable record still fails.
+
 ## Project tasks
 
 `src/tasks/project/` owns one `<id>-<slug>.md` file per task under `tasks.dir` (default

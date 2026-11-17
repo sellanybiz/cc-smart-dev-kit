@@ -59,6 +59,7 @@ import {
   layPhase,
   type PhaseCap,
   planTask,
+  reclaimResumed,
   refuseOverCap,
   takeTasks,
 } from "./work/store";
@@ -195,6 +196,9 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
       if (!ctx.ok) throw new Error(ctx.why);
       const now = options.now?.() ?? Date.now();
       const store = database();
+      // A reopened session keeps its session id in a new process: its running claims move to this
+      // process before anything reads them, so every reader (the status line too) finds them.
+      if (store.writable) value(reclaimResumed(store, ctx.project, who, now, claimLive));
       const all = allTasks(store, ctx.project);
       // The caller's own task (`ownerOf`: made under its session id, claimed by its process, or
       // made by its process under an earlier session id, as before a `/clear`).

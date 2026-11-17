@@ -1,5 +1,5 @@
 import { cliPaths } from "../../cli/paths";
-import { isRunning, liveSessions, sessionIdentityProved } from "../../hooks/sessions";
+import { isRunning, sessionIdentityProved, sessionRecordOf } from "../../hooks/sessions";
 import {
   ancestorPids,
   type ParentReader,
@@ -75,16 +75,21 @@ export function callerOf(
   const readStat = facts.readStat ?? readProcStat;
   const config = facts.claudeConfigDir ?? cliPaths(env).claudeConfigDir;
   const cacheKey = `${config}:${pid}:${platform}`;
-  const records = liveSessions(config, {
-    readStat,
-    platform,
-    ...(facts.running ? { running: facts.running } : {}),
-  });
+  // Only the caller's own record is read, never every running session's: an unrelated session's
+  // record, unreadable at this moment, must not blank the caller's rows. The caller's own
+  // unreadable record still throws.
+  const recordOf = (p: number) =>
+    sessionRecordOf(config, p, {
+      readStat,
+      platform,
+      ...(facts.running ? { running: facts.running } : {}),
+    });
   const previous = cached.get(cacheKey);
-  const live = previous
-    ? records.find((r) => r.pid === previous.pid && (r.procStart ?? null) === previous.procStart)
-    : null;
-  let record = live;
+  const remembered = previous ? recordOf(previous.pid) : null;
+  let record =
+    remembered !== null && (remembered.procStart ?? null) === previous?.procStart
+      ? remembered
+      : null;
   if (!record) {
     const parent = facts.ppid ?? process.ppid;
     const grandparent =
@@ -93,7 +98,10 @@ export function callerOf(
       platform === "linux"
         ? ancestorPids(pid, readStat)
         : [parent, ...(grandparent ? [grandparent] : [])];
-    record = pids.map((p) => records.find((r) => r.pid === p)).find((r) => r !== undefined);
+    for (const p of pids) {
+      record = recordOf(p);
+      if (record !== null) break;
+    }
   }
   if (record) {
     cached.set(cacheKey, { pid: record.pid, procStart: record.procStart ?? null });

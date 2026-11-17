@@ -11,14 +11,17 @@ import {
   openBlockers,
   openChildren,
   planIsOpen,
+  resumedClaim,
   taskById,
   waitsForTask,
 } from "./queries";
 import {
   DESCRIPTION_LIMIT,
   NOTE_LIMIT,
+  type Result,
   SUBJECT_LIMIT,
   type Who,
+  type WorkClaim,
   type WorkEventAction,
   type WorkKind,
   type WorkStatus,
@@ -633,7 +636,7 @@ export function takeTasks(
   options: {
     from?: string;
     force?: boolean;
-    isLive: (claim: import("./types").WorkClaim) => boolean;
+    isLive: (claim: WorkClaim) => boolean;
   },
 ) {
   return writeWork(db, () => {
@@ -709,5 +712,46 @@ export function takeTasks(
       );
     }
     return rows.map((t) => taskById(db, t.id));
+  });
+}
+
+/**
+ * Moves the caller's resumed claims to its process: a reopened session keeps its session id in a
+ * new process, so the claims on its running tasks name a dead one (`resumedClaim`). Each moves
+ * to the caller's pid, start time and session in one write, with a history entry. A live claim
+ * is never moved, and a caller with no process or session has none. Nothing to move writes
+ * nothing, so the check can run before every task call. Returns how many claims moved.
+ */
+export function reclaimResumed(
+  db: WorkDb,
+  project: string,
+  who: Who,
+  now: number,
+  isLive: (claim: WorkClaim) => boolean,
+): Result<number> {
+  const resumed = () =>
+    allTasks(db, project).filter(
+      (t) => t.status === "in_progress" && resumedClaim(t.claim, who, isLive),
+    );
+  if (who.pid === null || who.sessionId === null || resumed().length === 0)
+    return { ok: true, value: 0 };
+  return writeWork(db, () => {
+    // Read again inside the write: another process may have moved or closed one meanwhile.
+    const rows = resumed();
+    for (const task of rows) {
+      db.sqlite
+        .query("UPDATE tasks SET claim_pid=?,claim_start=?,claim_session=?,updated_at=? WHERE id=?")
+        .run(who.pid, who.procStart, who.sessionId, now, task.id);
+      recordEvent(
+        db,
+        task,
+        "changed",
+        { claim: [`process ${task.claim?.pid}`, `process ${who.pid}`] },
+        who,
+        now,
+        "claim moved to the resumed session's process",
+      );
+    }
+    return rows.length;
   });
 }
