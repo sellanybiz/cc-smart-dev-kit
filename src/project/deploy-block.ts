@@ -8,7 +8,14 @@
  */
 import { COMMAND, PLUGIN } from "../build-info/names";
 
-/** The text between the managed markers. `<env>`, `<date>` and `<base>` are for the reader to fill in. */
+/**
+ * The text between the managed markers. `<env>`, `<date>` and `<base>` are for the reader to fill in.
+ *
+ * **The first line, `## Deploy tasks`, must not change.** It is how `deploy-skill.ts` tells this
+ * block from any other cc-smart-dev-kit block, in a skill written by an older kit version too:
+ * a block that starts with another line is no longer found, so it is never updated and `doctor`
+ * never warns about it. The rest of the text may change freely.
+ */
 export function deployBlockBody(): string {
   const release = `${COMMAND} task release`;
   return [

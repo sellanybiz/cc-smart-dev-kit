@@ -747,3 +747,85 @@ describe("the checks field's schema and messages", () => {
     ).toThrow("this project needs cc-smart-dev-kit >=1.1; you have 1.0.1");
   });
 });
+
+describe("the deploy tasks floor and the ignored task fields", () => {
+  const withTasks = (tasks: Record<string, unknown>) =>
+    JSON.stringify({ requires: ">=1.10", worktrees: { base: "dev" }, tasks }, null, 2);
+
+  test("the ignored task fields are deleted, each as a - line, and a note says why", () => {
+    const plan = planProjectInit(
+      input({
+        existing: withTasks({
+          dir: "work",
+          releaseBranch: "main",
+          legacyFolders: ["notes/old"],
+        }),
+      }),
+    );
+    expect(JSON.parse(plan.text).tasks).toEqual({ dir: "work" });
+    expect(plan.diff).toContain('- tasks.releaseBranch: "main"');
+    expect(plan.diff).toContain('- tasks.legacyFolders: ["notes/old"]');
+    expect(plan.notes).toContain(
+      "tasks.releaseBranch, tasks.legacyFolders are read by nothing since 5.0.0, so they go",
+    );
+  });
+
+  test("a tasks object the removal empties goes too; one the project wrote empty stays", () => {
+    const emptied = planProjectInit(input({ existing: withTasks({ releaseBranch: "main" }) }));
+    expect(JSON.parse(emptied.text)).not.toHaveProperty("tasks");
+    expect(emptied.diff).toContain('- tasks.releaseBranch: "main"');
+    const own = planProjectInit(input({ existing: withTasks({}) }));
+    expect(JSON.parse(own.text).tasks).toEqual({});
+  });
+
+  test("a file with no ignored field gets no note and no tasks change", () => {
+    const plan = planProjectInit(input({ existing: withTasks({ staleDays: 10 }) }));
+    expect(JSON.parse(plan.text).tasks).toEqual({ staleDays: 10 });
+    expect(plan.notes.join("\n")).not.toContain("read by nothing");
+  });
+
+  test("requires is raised to >=5.0 when a prod or staging folder exists under tasks.dir", () => {
+    for (const env of ["prod", "staging"]) {
+      const root = tempDir("project-init");
+      mkdirSync(join(root, ".claude", "tasks", env), { recursive: true });
+      const plan = planProjectInit(input({ root, existing: '{"requires": ">=1.10"}' }));
+      expect(JSON.parse(plan.text).requires).toBe(">=5.0");
+    }
+    const root = tempDir("project-init");
+    mkdirSync(join(root, "ops", "prod"), { recursive: true });
+    const plan = planProjectInit(
+      input({ root, existing: '{"requires": ">=1.10", "tasks": {"dir": "ops"}}' }),
+    );
+    expect(JSON.parse(plan.text).requires).toBe(">=5.0");
+  });
+
+  test("no deploy folder and no block: requires stays where it is", () => {
+    const root = tempDir("project-init");
+    mkdirSync(join(root, ".claude", "tasks"), { recursive: true });
+    const plan = planProjectInit(input({ root, existing: null }));
+    expect(JSON.parse(plan.text).requires).toBe(NO_PREFIX_MINOR);
+  });
+
+  test("the deploy block raises requires, and a newer range is never lowered", () => {
+    const raised = planProjectInit(input({ existing: '{"requires": ">=1.10"}' }), {
+      deployBlock: true,
+    });
+    expect(JSON.parse(raised.text).requires).toBe(">=5.0");
+    expect(raised.diff).toContain('~ requires: ">=1.10" -> ">=5.0"');
+    const kept = planProjectInit(input({ existing: '{"requires": ">=5.2"}' }), {
+      deployBlock: true,
+    });
+    expect(JSON.parse(kept.text).requires).toBe(">=5.2");
+  });
+
+  test("a tasks.dir that leaves the checkout is refused by the schema, not read as a folder", () => {
+    expect(() => planProjectInit(input({ existing: withTasks({ dir: "../elsewhere" }) }))).toThrow(
+      "tasks.dir",
+    );
+  });
+
+  test("requiresFloor: deployTasks asks for 5.0.0, and the option alone changes nothing else", () => {
+    expect(requiresFloor({}, { deployTasks: true })).toEqual({ floor: ">=5.0", version: "5.0.0" });
+    expect(requiresFloor({})).toEqual({ floor: ">=0.5.2", version: "0.5.2" });
+  });
+});
