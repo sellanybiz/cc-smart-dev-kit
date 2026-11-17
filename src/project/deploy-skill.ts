@@ -7,11 +7,12 @@
  * project's files through that, and it must never write a skill. `project-init.ts` composes
  * the two.
  *
- * - **Find** (`findDeploySkills`): a file that already holds the kit's marker anywhere under
- *   `.claude/skills/` (the block is decided: it is updated in place), else a
+ * - **Find** (`findDeploySkills`): a file that already holds the deploy block anywhere under
+ *   `.claude/skills/` (the block is decided: it is updated in place; a skill that only shows the
+ *   markers in a code fence, or whose block is something else, is not one), else a
  *   `.claude/skills/<name>/SKILL.md` whose folder name or front matter `name` has "deploy" in it.
  * - **Plan** (`planDeploySkill`): pure of writes. The text around the block stays byte for
- *   byte, in LF and in CRLF files. A real path outside the checkout is refused (a skill linked
+ *   byte, in LF, CRLF and mixed files. A real path outside the checkout is refused (a skill linked
  *   in from a plugin or a dotfiles repo is not the project's to change), and a broken marker
  *   pair is named, never written to.
  * - **Write** (`applyDeploySkill`): a backup and an atomic write, never `changed.json`, so
@@ -19,7 +20,7 @@
  *   read again just before the rename; a change while init ran aborts that write.
  */
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { basename, isAbsolute, join, relative } from "node:path";
+import { basename, isAbsolute, join, relative, resolve } from "node:path";
 import {
   BLOCK_BEGIN,
   BLOCK_END,
@@ -48,14 +49,62 @@ function isInside(realRoot: string, real: string): boolean {
 }
 
 /** A path from the project's root, as a person reads it (`/` on every system). */
-function shownPath(root: string, file: string): string {
+export function shownPath(root: string, file: string): string {
   return relative(root, file).split("\\").join("/");
 }
 
-/** The text of a file with its CRLF line breaks made LF; whether every break was CRLF. */
-function lineBreaksOf(text: string): { lf: string; crlf: boolean } {
-  const lf = text.replace(/\r\n/g, "\n");
-  return { lf, crlf: lf !== text && !/\n/.test(text.replace(/\r\n/g, "")) };
+/** True when every line break in the text is CRLF (and there is at least one). */
+function isCrlf(text: string): boolean {
+  return text.includes("\r\n") && !/\n/.test(text.replace(/\r\n/g, ""));
+}
+
+/** An opening or closing line of a fenced code block: three or more backticks or tildes. */
+const FENCE_LINE = /^ {0,3}(`{3,}|~{3,})/;
+
+/**
+ * Where the kit's markers stand in a file: whether any is inside a fenced code block (a docs
+ * skill that shows the markers as an example), and the line right after the first begin marker
+ * outside a fence (the first line of the block's text), or null.
+ */
+function markerPlaces(text: string): { inFence: boolean; firstBodyLine: string | null } {
+  let fence: string | null = null;
+  let inFence = false;
+  let firstBodyLine: string | null = null;
+  let afterBegin = false;
+  for (const line of text.split(/\r?\n/)) {
+    if (afterBegin) {
+      firstBodyLine = line.trim();
+      afterBegin = false;
+    }
+    const opens = FENCE_LINE.exec(line)?.[1];
+    if (fence !== null) {
+      if (
+        opens !== undefined &&
+        opens[0] === fence[0] &&
+        opens.length >= fence.length &&
+        line.trim() === opens
+      ) {
+        fence = null;
+      }
+    } else if (opens !== undefined) {
+      fence = opens;
+      continue;
+    }
+    const hasMarker = line.includes(BLOCK_BEGIN) || line.includes(BLOCK_END);
+    if (hasMarker && fence !== null) inFence = true;
+    else if (line.includes(BLOCK_BEGIN) && firstBodyLine === null) afterBegin = true;
+  }
+  return { inFence, firstBodyLine };
+}
+
+/** The first line of the deploy block's text: what tells it from another cc-smart-dev-kit block. */
+function deployBlockHeading(): string {
+  return deployBlockBody().split("\n")[0] ?? "";
+}
+
+/** True when the file holds the kit's deploy block: its markers, outside a code fence, round that heading. */
+function holdsDeployBlock(text: string): boolean {
+  return markerPlaces(text).firstBodyLine === deployBlockHeading();
 }
 
 /** The folder name or the front matter `name` of a `<skills>/<folder>/SKILL.md` has "deploy" in it. */
@@ -74,35 +123,47 @@ function namesDeploy(file: string): boolean {
 }
 
 /** Every `SKILL.md` under `folder`, to `depth` folders down; a folder is visited once. */
-function skillFilesUnder(folder: string, depth: number, seen = new Set<string>()): string[] {
+function skillFilesUnder(
+  folder: string,
+  depth: number,
+  realRoot: string,
+  seen = new Set<string>(),
+): string[] {
   const real = realTarget(folder);
   if (seen.has(real) || !existsSync(folder) || !statSync(folder).isDirectory()) return [];
   seen.add(real);
   const found: string[] = [];
   if (existsSync(join(folder, SKILL_FILE))) found.push(join(folder, SKILL_FILE));
-  if (depth === 0) return found;
+  // A folder linked in from outside the checkout is looked at, never walked: the plan refuses
+  // its skill by name, and a link to a big tree costs nothing.
+  if (depth === 0 || !isInside(realRoot, real)) return found;
   for (const entry of readdirSync(folder).sort()) {
-    if (entry !== "node_modules")
-      found.push(...skillFilesUnder(join(folder, entry), depth - 1, seen));
+    if (entry !== "node_modules") {
+      found.push(...skillFilesUnder(join(folder, entry), depth - 1, realRoot, seen));
+    }
   }
   return found;
 }
 
 /** What `findDeploySkills` found, each file as a path under the project's root. */
 export interface DeploySkillsFound {
-  /** Files that already hold the kit's marker: the block is there, and is kept current. */
+  /** Files that already hold the kit's deploy block: it is kept current. */
   holders: string[];
-  /** Files that name a deploy skill and hold no marker yet: where a block may go. */
+  /** Files that name a deploy skill and hold no block yet: where a block may go. */
   named: string[];
 }
 
-/** The project's deploy skills (see the header). A file outside the checkout is still listed: the plan refuses it by name. */
+/**
+ * The project's deploy skills (see the header). A file outside the checkout is still listed:
+ * the plan refuses it by name. Another skill that carries the kit's markers (a docs skill that
+ * shows them in a code fence, a block with other text) is not a holder.
+ */
 export function findDeploySkills(root: string): DeploySkillsFound {
   const holders: string[] = [];
   const named: string[] = [];
   const top = skillsFolder(root);
-  for (const file of skillFilesUnder(top, MARKER_SEARCH_DEPTH)) {
-    if (readFileSync(file, "utf8").includes(BLOCK_BEGIN)) holders.push(file);
+  for (const file of skillFilesUnder(top, MARKER_SEARCH_DEPTH, realTarget(root))) {
+    if (holdsDeployBlock(readFileSync(file, "utf8"))) holders.push(file);
     else if (relative(top, file).split(/[\\/]/).length === 2 && namesDeploy(file)) named.push(file);
   }
   return { holders, named };
@@ -142,14 +203,21 @@ function refused(root: string, file: string, problem: string, before = ""): Depl
 }
 
 /** The lines between the markers of a file whose markers `renderManagedMarkdown` has proved. */
-function blockLines(lf: string): string[] {
-  const start = lf.indexOf(BLOCK_BEGIN);
+function blockLines(text: string): string[] {
+  const start = text.indexOf(BLOCK_BEGIN);
   if (start === -1) return [];
-  const end = lf.indexOf(BLOCK_END);
-  return lf
+  const end = text.indexOf(BLOCK_END);
+  return text
     .slice(start + BLOCK_BEGIN.length, end)
-    .split("\n")
+    .split(/\r?\n/)
     .slice(1, -1);
+}
+
+/** Why a link, or a path, leaves the checkout; the link's target is named when the path is a link. */
+function outsideMessage(root: string, file: string, real: string): string {
+  const shown = shownPath(root, file);
+  const link = real === resolve(file) ? "" : ` (a link to ${real})`;
+  return `${shown} is outside this checkout${link}: not changed`;
 }
 
 /** The lines `from` has and `other` does not, counting repeats: what a change adds or takes away. */
@@ -176,27 +244,51 @@ export function planDeploySkill(
   const shown = shownPath(root, file);
   const real = realTarget(file);
   if (!isInside(realTarget(root), real)) {
-    return refused(root, file, `${shown} is a link to ${real}, outside this checkout: not changed`);
+    return refused(root, file, outsideMessage(root, file, real));
   }
   if (!existsSync(real) || !statSync(real).isFile()) {
     return refused(root, file, `${shown} is not a file`);
   }
   const before = readFileSync(real, "utf8");
   // A file whose every line break is CRLF is worked on as LF and written back as CRLF, so the
-  // text around the block stays byte for byte. A mixed file is left as it is.
-  const { lf, crlf } = lineBreaksOf(before);
+  // text around the block stays byte for byte. Any other file, mixed endings included, is
+  // worked on as it is: the markers are found by position, and only the block's own text
+  // (written with LF) is new.
+  const crlf = isCrlf(before);
+  const work = crlf ? before.replace(/\r\n/g, "\n") : before;
   let next: string;
   try {
     next =
       mode === "write"
-        ? renderManagedMarkdown(lf, deployBlockBody(), shown)
-        : renderWithoutBlock(lf, shown);
+        ? renderManagedMarkdown(work, deployBlockBody(), shown)
+        : renderWithoutBlock(work, shown);
   } catch (error) {
     return refused(root, file, error instanceof Error ? error.message : String(error), before);
   }
-  const had = lf.includes(BLOCK_BEGIN);
-  const action = next === lf ? "none" : mode === "remove" ? "remove" : had ? "update" : "add";
-  const was = blockLines(lf);
+  const had = work.includes(BLOCK_BEGIN);
+  if (had) {
+    // Only the deploy block is ours to change: a block with other text, or markers shown in a
+    // code fence as an example, belong to something else.
+    const places = markerPlaces(work);
+    if (places.inFence) {
+      return refused(
+        root,
+        file,
+        `${shown} shows the cc-smart-dev-kit markers inside a code block: not changed`,
+        before,
+      );
+    }
+    if (places.firstBodyLine !== deployBlockHeading()) {
+      return refused(
+        root,
+        file,
+        `${shown} has a cc-smart-dev-kit block that is not the deploy block: not changed`,
+        before,
+      );
+    }
+  }
+  const action = next === work ? "none" : mode === "remove" ? "remove" : had ? "update" : "add";
+  const was = blockLines(work);
   const is = blockLines(next);
   return {
     file,
@@ -204,7 +296,7 @@ export function planDeploySkill(
     action,
     before,
     text: crlf ? next.replace(/\n/g, "\r\n") : next,
-    changed: next !== lf,
+    changed: next !== work,
     diff: [
       ...linesOnlyIn(was, is).map((line) => `- ${line}`),
       ...linesOnlyIn(is, was).map((line) => `+ ${line}`),
@@ -226,7 +318,7 @@ export function applyDeploySkill(
   if (!plan.changed) return null;
   const real = realTarget(plan.file);
   if (!isInside(realTarget(root), real)) {
-    throw new Error(`${plan.shown} is a link to ${real}, outside this checkout: not changed`);
+    throw new Error(outsideMessage(root, plan.file, real));
   }
   if (options.dryRun === true) return { file: plan.file, created: false, backup: null };
   const unchanged = (): void => {
@@ -247,20 +339,26 @@ export interface StaleBlock {
   file: string;
   shown: string;
   why: string;
+  /**
+   * What fixes it: `init` (`project init` rewrites the block), or `by-hand` (broken markers,
+   * or a file outside the checkout: init refuses to write those, so the person must).
+   */
+  fix: "init" | "by-hand";
 }
 
 /**
- * The deploy skills whose block differs from `deployBlockBody()` (what `doctor` warns about,
- * with the fix `project init`). A file with no block is not listed: a project that has no
- * block has not chosen one.
+ * The deploy skills whose block differs from `deployBlockBody()` (what `doctor` warns about).
+ * A file with no block is not listed: a project that has no block has not chosen one.
  */
 export function staleBlocks(root: string): StaleBlock[] {
   const stale: StaleBlock[] = [];
   for (const file of findDeploySkills(root).holders) {
     const plan = planDeploySkill(root, file, "write");
-    if (plan.action === "refused") stale.push({ file, shown: plan.shown, why: plan.problem ?? "" });
-    else if (plan.changed)
-      stale.push({ file, shown: plan.shown, why: "the block's text is out of date" });
+    if (plan.action === "refused") {
+      stale.push({ file, shown: plan.shown, why: plan.problem ?? "", fix: "by-hand" });
+    } else if (plan.changed) {
+      stale.push({ file, shown: plan.shown, why: "the block's text is out of date", fix: "init" });
+    }
   }
   return stale;
 }

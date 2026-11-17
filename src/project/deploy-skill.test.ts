@@ -5,6 +5,7 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -71,7 +72,7 @@ describe("plan and write: the text around the block stays byte for byte", () => 
       expect(readFileSync(file, "utf8")).toBe(`${original}${eol}${block}${eol}`);
 
       // The block in the middle of the person's own text, with an old wording.
-      const old = `${BLOCK_BEGIN}\nold text\n${BLOCK_END}`;
+      const old = `${BLOCK_BEGIN}\n## Deploy tasks\nold text\n${BLOCK_END}`;
       const middle = around(`${AROUND_BEFORE}\n${old}\n${AROUND_AFTER}`);
       writeFileSync(file, middle);
       const update = planDeploySkill(root, file, "write");
@@ -135,7 +136,106 @@ describe("plan and write: the text around the block stays byte for byte", () => 
   });
 });
 
+describe("mixed line endings are never rewritten", () => {
+  for (const [label, original] of [
+    ["ends with CRLF", "# Deploy\r\n\r\nRun it.\nthen ship\r\n"],
+    ["ends with LF", "# Deploy\r\nRun it.\nthen ship\n"],
+  ] as const) {
+    test(`${label}: insert, update, then remove leave every other byte as it was`, () => {
+      const { root, stateDir } = world();
+      const file = skill(root, "deploy", original);
+      const add = planDeploySkill(root, file, "write");
+      expect(add.action).toBe("add");
+      expect(add.text.startsWith(original)).toBe(true);
+      applyDeploySkill(root, add, { stateDir });
+      expect(readFileSync(file, "utf8")).toBe(add.text);
+      // The same file again is no change at all.
+      expect(planDeploySkill(root, file, "write").action).toBe("none");
+      const remove = planDeploySkill(root, file, "remove");
+      expect(remove.action).toBe("remove");
+      applyDeploySkill(root, remove, { stateDir });
+      expect(readFileSync(file, "utf8")).toBe(original);
+    });
+  }
+
+  test("an old block in a mixed file is replaced and its surroundings stay byte for byte", () => {
+    const { root, stateDir } = world();
+    const around = ["a\r\n\r\n", "\nb\r\nc\n"];
+    const file = skill(
+      root,
+      "deploy",
+      `${around[0]}${BLOCK_BEGIN}\n## Deploy tasks\nold\n${BLOCK_END}${around[1]}`,
+    );
+    applyDeploySkill(root, planDeploySkill(root, file, "write"), { stateDir });
+    expect(readFileSync(file, "utf8")).toBe(`${around[0]}${BLOCK}${around[1]}`);
+  });
+});
+
+describe("only the deploy block counts", () => {
+  const FENCED = `# Kit blocks\n\nA managed section looks like this:\n\n\`\`\`md\n${BLOCK_BEGIN}\n${BODY}\n${BLOCK_END}\n\`\`\`\n`;
+  const OTHER = `# Other\n\n${BLOCK_BEGIN}\nSome other kit section.\n${BLOCK_END}\n`;
+
+  test("a skill that shows the markers in a code fence, or holds another block, is no holder", () => {
+    const { root } = world();
+    skill(root, "kit-docs", FENCED);
+    skill(root, "other", OTHER);
+    skill(root, "tilde", `~~~\n${BLOCK}\n~~~\n`);
+    expect(findDeploySkills(root)).toEqual({ holders: [], named: [] });
+    expect(staleBlocks(root)).toEqual([]);
+  });
+
+  test("a real block after a fenced example is still found", () => {
+    const { root } = world();
+    // The fence holds markers, so the file is a holder whose plan refuses (by hand), never a rewrite.
+    const file = skill(root, "kit-docs", `${FENCED}\n${BLOCK}\n`);
+    expect(findDeploySkills(root).holders).toEqual([file]);
+    expect(planDeploySkill(root, file, "write").action).toBe("refused");
+  });
+
+  test("a deploy-named skill with fenced markers or another block is refused, not rewritten", () => {
+    const { root, stateDir } = world();
+    const fenced = skill(root, "deploy-docs", FENCED);
+    const other = skill(root, "deploy-other", OTHER);
+    for (const [file, text, why] of [
+      [fenced, FENCED, "shows the cc-smart-dev-kit markers inside a code block"],
+      [other, OTHER, "has a cc-smart-dev-kit block that is not the deploy block"],
+    ] as const) {
+      for (const mode of ["write", "remove"] as const) {
+        const plan = planDeploySkill(root, file, mode);
+        expect(plan.action).toBe("refused");
+        expect(plan.problem).toContain(why);
+        expect(applyDeploySkill(root, plan, { stateDir })).toBeNull();
+      }
+      expect(readFileSync(file, "utf8")).toBe(text);
+    }
+  });
+});
+
 describe("refusals", () => {
+  test("a symlinked folder that points outside the checkout is found and refused, naming the link", () => {
+    const { root, stateDir } = world();
+    const outside = tempDir("deploy-skill-outside");
+    writeFileSync(join(outside, "SKILL.md"), AROUND_BEFORE);
+    mkdirSync(join(root, ".claude", "skills"), { recursive: true });
+    const link = join(root, ".claude", "skills", "deploy");
+    symlinkSync(outside, link);
+    const found = findDeploySkills(root);
+    expect(found.named).toEqual([join(link, "SKILL.md")]);
+    const plan = planDeploySkill(root, found.named[0] ?? "", "write");
+    expect(plan.action).toBe("refused");
+    expect(plan.problem).toBe(
+      `.claude/skills/deploy/SKILL.md is outside this checkout (a link to ${join(realpathSync(outside), "SKILL.md")}): not changed`,
+    );
+    expect(applyDeploySkill(root, plan, { stateDir })).toBeNull();
+    expect(readFileSync(join(outside, "SKILL.md"), "utf8")).toBe(AROUND_BEFORE);
+  });
+
+  test("a plain path that leaves the checkout says so without naming a link", () => {
+    const { root } = world();
+    const plan = planDeploySkill(root, join(root, "..", "elsewhere.md"), "write");
+    expect(plan.problem).toBe("../elsewhere.md is outside this checkout: not changed");
+  });
+
   test("a symlink that points outside the checkout is refused, in the plan and in the write", () => {
     const { root, stateDir } = world();
     const outside = tempDir("deploy-skill-outside");
@@ -209,12 +309,29 @@ describe("staleBlocks", () => {
   test("lists a block whose text is old or whose markers are broken, not a current one or none", () => {
     const { root } = world();
     skill(root, "deploy", `x\n${BLOCK}\n`);
-    const old = skill(root, "ship-deploy", `${BLOCK_BEGIN}\nold\n${BLOCK_END}\n`);
-    const broken = skill(root, "ops/deploy", `${BLOCK_BEGIN}\nhalf\n${BLOCK_BEGIN}\n`);
+    const old = skill(root, "ship-deploy", `${BLOCK_BEGIN}\n## Deploy tasks\nold\n${BLOCK_END}\n`);
+    const broken = skill(
+      root,
+      "ops/deploy",
+      `${BLOCK_BEGIN}\n## Deploy tasks\nhalf\n${BLOCK_BEGIN}\n`,
+    );
     skill(root, "deploy-none", "no block here");
     const stale = staleBlocks(root);
     expect(stale.map((one) => one.file).sort()).toEqual([old, broken].sort());
     expect(stale.find((one) => one.file === old)?.why).toBe("the block's text is out of date");
+    expect(stale.find((one) => one.file === old)?.fix).toBe("init");
     expect(stale.find((one) => one.file === broken)?.why).toContain("broken");
+    expect(stale.find((one) => one.file === broken)?.fix).toBe("by-hand");
+  });
+
+  test("a holder outside the checkout is by hand: init refuses to write it", () => {
+    const { root } = world();
+    const outside = tempDir("deploy-skill-outside");
+    writeFileSync(join(outside, "SKILL.md"), `x\n${BLOCK}\n`);
+    mkdirSync(join(root, ".claude", "skills"), { recursive: true });
+    symlinkSync(outside, join(root, ".claude", "skills", "deploy"));
+    const [only] = staleBlocks(root);
+    expect(only?.fix).toBe("by-hand");
+    expect(only?.why).toContain("outside this checkout");
   });
 });

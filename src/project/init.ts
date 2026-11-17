@@ -22,8 +22,10 @@
  * or `staging/` folder under `tasks.dir`) or has the deploy skill's block (`extras.deployBlock`;
  * the block itself is `deploy-skill.ts`'s, never this plan's, so the portal never writes it).
  *
- * `planProjectInit` is pure: the files as text (null: not there) and the answers go in; the
- * text each file will hold and the changes to show come back. The command asks its questions
+ * `planProjectInit` writes nothing and reads nothing but one thing: it looks whether a `prod/`
+ * or `staging/` folder is under `tasks.dir` in `root`. Otherwise the files as text (null: not
+ * there) and the answers go in; the text each file will hold and the changes to show come
+ * back. The command asks its questions
  * first, prints the plan, and writes it with `applyProjectInit`. Nothing here commits: the
  * files belong to the project, and the person commits them.
  *

@@ -1209,7 +1209,7 @@ describe("the deploy skill", () => {
 
   test("--deploy-skill names the file, whatever its folder is called", async () => {
     const repo = repoWith({ "ship/SKILL.md": OWN_TEXT, "deploy-web/SKILL.md": OWN_TEXT });
-    const run = context(repo);
+    const run = context(repo, { cwd: repo });
     expect(
       await runProjectInit(
         ["--yes", "--deploy-skill", ".claude/skills/ship/SKILL.md"],
@@ -1219,6 +1219,101 @@ describe("the deploy skill", () => {
     ).toBe(0);
     expect(skillText(repo, "ship/SKILL.md")).toContain("<!-- cc-smart-dev-kit:begin -->");
     expect(skillText(repo, "deploy-web/SKILL.md")).toBe(OWN_TEXT);
+  });
+
+  test("--deploy-skill is typed from where the person stands, not from the checkout root", async () => {
+    const repo = repoWith({ "ship/SKILL.md": OWN_TEXT });
+    mkdirSync(join(repo, "sub"), { recursive: true });
+    const run = context(repo, { cwd: join(repo, "sub") });
+    expect(
+      await runProjectInit(
+        ["--yes", "--deploy-skill", "../.claude/skills/ship/SKILL.md"],
+        run.context,
+        runner({}),
+      ),
+    ).toBe(0);
+    expect(skillText(repo, "ship/SKILL.md")).toContain("<!-- cc-smart-dev-kit:begin -->");
+    // The same words from the root name nothing: a usage error, not a guess.
+    const root = context(repo, { cwd: repo });
+    expect(
+      await runProjectInit(
+        ["--yes", "--deploy-skill", "../.claude/skills/ship/SKILL.md"],
+        root.context,
+        runner({}),
+      ),
+    ).toBe(2);
+  });
+
+  test("--deploy-skill naming a folder is a usage error: it is not a file", async () => {
+    const repo = repoWith({ "ship/SKILL.md": OWN_TEXT });
+    const run = context(repo, { cwd: repo });
+    expect(
+      await runProjectInit(
+        ["--yes", "--deploy-skill", ".claude/skills/ship"],
+        run.context,
+        runner({}),
+      ),
+    ).toBe(2);
+    expect(run.errors[0]).toStartWith("--deploy-skill: .claude/skills/ship is not a file");
+  });
+
+  test("--deploy-skill X while another file holds the block: a note names the other, which is left alone", async () => {
+    const holder = `# Ops\n\n<!-- cc-smart-dev-kit:begin -->\n## Deploy tasks\nold text\n<!-- cc-smart-dev-kit:end -->\n`;
+    const repo = repoWith({ "ops/SKILL.md": holder, "ship/SKILL.md": OWN_TEXT });
+    const run = context(repo, { cwd: repo });
+    expect(
+      await runProjectInit(
+        ["--yes", "--deploy-skill", ".claude/skills/ship/SKILL.md"],
+        run.context,
+        runner({}),
+      ),
+    ).toBe(0);
+    expect(run.lines).toContain(
+      "· the deploy block is also in .claude/skills/ops/SKILL.md: left as it is",
+    );
+    expect(skillText(repo, "ops/SKILL.md")).toBe(holder);
+    expect(skillText(repo, "ship/SKILL.md")).toContain("<!-- cc-smart-dev-kit:begin -->");
+  });
+
+  test("one named skill, on a terminal: asked once, yes by default; a no drops only the skill write", async () => {
+    const yes = repoWith({ "deploy/SKILL.md": OWN_TEXT });
+    // Eight Enter answers, the skill question (Enter: yes), then the final yes.
+    const asked = scripted([...Array(8).fill(null), null, "y"]);
+    expect(
+      await runProjectInit([], context(yes, { prompts: asked.prompts }).context, runner({})),
+    ).toBe(0);
+    expect(asked.shown.join("")).toContain(
+      "Add the kit's deploy-task section to .claude/skills/deploy/SKILL.md? [Y/n]",
+    );
+    expect(skillText(yes, "deploy/SKILL.md")).toContain("<!-- cc-smart-dev-kit:begin -->");
+
+    const no = repoWith({ "deploy/SKILL.md": OWN_TEXT });
+    const declined = scripted([...Array(8).fill(null), "n", "y"]);
+    const run = context(no, { prompts: declined.prompts });
+    expect(await runProjectInit([], run.context, runner({}))).toBe(0);
+    expect(skillText(no, "deploy/SKILL.md")).toBe(OWN_TEXT);
+    // The project's own file is still written, and no block means requires stays low.
+    const config = JSON.parse(readFileSync(join(no, ".claude", "cc-smart-dev-kit.json"), "utf8"));
+    expect(config.requires).toBe(">=0.5.2");
+    expect(run.lines).toContain("✓ Done: 1 file written.");
+  });
+
+  test("an update of a block already there asks nothing about the skill", async () => {
+    const old = `<!-- cc-smart-dev-kit:begin -->\n## Deploy tasks\nold\n<!-- cc-smart-dev-kit:end -->\n`;
+    const repo = repoWith({ "deploy/SKILL.md": old });
+    const { prompts, shown } = scripted([...Array(8).fill(null), "y"]);
+    expect(await runProjectInit([], context(repo, { prompts }).context, runner({}))).toBe(0);
+    expect(shown.join("")).not.toContain("Add the kit's deploy-task section");
+    expect(skillText(repo, "deploy/SKILL.md")).not.toContain("\nold\n");
+  });
+
+  test("a docs skill that shows the markers in a code fence is never taken for the deploy skill", async () => {
+    const docs = `# Kit blocks\n\n\`\`\`md\n<!-- cc-smart-dev-kit:begin -->\n## Deploy tasks\n<!-- cc-smart-dev-kit:end -->\n\`\`\`\n`;
+    const repo = repoWith({ "kit-docs/SKILL.md": docs });
+    const run = context(repo);
+    expect(await runProjectInit(["--yes"], run.context, runner({}))).toBe(0);
+    expect(skillText(repo, "kit-docs/SKILL.md")).toBe(docs);
+    expect(run.lines).toContain("· no deploy skill found; --deploy-skill <path> names one");
   });
 
   test("--deploy-skill with a path that is not a file is a usage error", async () => {
@@ -1232,7 +1327,7 @@ describe("the deploy skill", () => {
   });
 
   test("a file that already holds the block is updated in place, with no question", async () => {
-    const old = `# Ops\n\n<!-- cc-smart-dev-kit:begin -->\nold text\n<!-- cc-smart-dev-kit:end -->\n\nTail.\n`;
+    const old = `# Ops\n\n<!-- cc-smart-dev-kit:begin -->\n## Deploy tasks\nold text\n<!-- cc-smart-dev-kit:end -->\n\nTail.\n`;
     const repo = repoWith({ "ops/SKILL.md": old, "deploy-web/SKILL.md": OWN_TEXT });
     const run = context(repo);
     expect(await runProjectInit(["--yes"], run.context, runner({}))).toBe(0);
@@ -1268,7 +1363,9 @@ describe("the deploy skill", () => {
     const run = context(repo);
     expect(await runProjectInit(["--yes"], run.context, runner({}))).toBe(0);
     expect(readFileSync(join(outside, "SKILL.md"), "utf8")).toBe(OWN_TEXT);
-    expect(run.lines.join("\n")).toContain("outside this checkout: not changed");
+    expect(run.lines.join("\n")).toContain(
+      ".claude/skills/deploy/SKILL.md is outside this checkout (a link to ",
+    );
     expect(existsSync(join(repo, ".claude", "cc-smart-dev-kit.json"))).toBe(true);
     expect(run.lines).toContain("✓ Done: 1 file written.");
   });

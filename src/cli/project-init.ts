@@ -29,8 +29,8 @@
  * Nothing here touches a network: `gh api` is read-only, runs only when `gh` is on PATH, and
  * quietly says nothing when it fails.
  */
-import { existsSync, readFileSync } from "node:fs";
-import { join, relative, resolve } from "node:path";
+import { existsSync, readFileSync, statSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { VERSION } from "../build-info";
 import { COMMAND } from "../build-info/names";
 import { runGit, runGitAsync } from "../hooks/git";
@@ -40,6 +40,7 @@ import {
   type DeploySkillPlan,
   findDeploySkills,
   planDeploySkill,
+  shownPath,
 } from "../project/deploy-skill";
 import {
   applyProjectInit,
@@ -67,6 +68,8 @@ type Env = Record<string, string | undefined>;
 export interface ProjectInitContext {
   /** The repo root to write into: `<root>/.claude/`. */
   root: string;
+  /** The folder a relative `--deploy-skill` path is typed from; the process's own when left out. */
+  cwd?: string;
   env: Env;
   stateDir: string;
   home: string;
@@ -718,7 +721,7 @@ function printPlan(
   context: ProjectInitContext,
   skills: DeploySkillChoice,
 ): number {
-  const shown = (file: string) => relative(context.root, file);
+  const shown = (file: string) => shownPath(context.root, file);
   const settings = [plan.settings, plan.localSettings].filter((one) => one.changed);
   const titleWidth = Math.max(
     ...[plan.file, ...settings.map((one) => one.file), ...skills.plans.map((one) => one.file)].map(
@@ -844,7 +847,9 @@ function askedDeploySkill(prompts: Prompts, shown: string[]): number | null {
  * The deploy skill files for this run, planned. `--deploy-skill` names one file. Otherwise
  * the files that already hold the block are the ones (kept current, or taken out with
  * `--no-deploy-block`); with none, the one skill that names a deploy; with several, one
- * question, asked with the others, or a note when nobody can be asked.
+ * question, asked with the others, or a note when nobody can be asked. A block that would be
+ * added to a file that has none is asked once more (yes by default): `--yes`,
+ * `--deploy-skill` and a pick from the list already say yes, `--no-deploy-block` is a no.
  */
 function chosenDeploySkills(
   context: ProjectInitContext,
@@ -855,34 +860,50 @@ function chosenDeploySkills(
   const mode = flags.noDeployBlock === true ? "remove" : "write";
   const notes: string[] = [];
   let files: string[] = [];
+  let askBeforeAdding = false;
+  const found = findDeploySkills(root);
   if (flags.deploySkill !== undefined) {
-    files = [resolve(root, flags.deploySkill)];
+    const file = resolve(context.cwd ?? process.cwd(), flags.deploySkill);
+    files = [file];
+    const others = found.holders.filter((holder) => resolve(holder) !== file);
+    if (others.length > 0) {
+      notes.push(
+        `the deploy block is also in ${others.map((other) => shownPath(root, other)).join(", ")}: left as it is`,
+      );
+    }
+  } else if (mode === "remove") {
+    files = found.holders;
+    if (files.length === 0)
+      notes.push("no deploy block found in .claude/skills: nothing to remove");
+  } else if (found.holders.length > 0) {
+    files = found.holders;
+  } else if (found.named.length === 0) {
+    notes.push("no deploy skill found; --deploy-skill <path> names one");
+  } else if (found.named.length === 1) {
+    files = found.named;
+    askBeforeAdding = true;
   } else {
-    const found = findDeploySkills(root);
-    if (mode === "remove") {
-      files = found.holders;
-      if (files.length === 0)
-        notes.push("no deploy block found in .claude/skills: nothing to remove");
-    } else if (found.holders.length > 0) {
-      files = found.holders;
-    } else if (found.named.length === 0) {
-      notes.push("no deploy skill found; --deploy-skill <path> names one");
-    } else if (found.named.length === 1) {
-      files = found.named;
+    const shown = found.named.map((file) => shownPath(root, file));
+    if (prompts === null) {
+      notes.push(
+        `several deploy skills found (${shown.join(", ")}); --deploy-skill <path> names one`,
+      );
     } else {
-      const shown = found.named.map((file) => relative(root, file));
-      if (prompts === null) {
-        notes.push(
-          `several deploy skills found (${shown.join(", ")}); --deploy-skill <path> names one`,
-        );
-      } else {
-        const picked = askedDeploySkill(prompts, shown);
-        const file = picked === null ? undefined : found.named[picked];
-        if (file !== undefined) files = [file];
-      }
+      const picked = askedDeploySkill(prompts, shown);
+      const file = picked === null ? undefined : found.named[picked];
+      if (file !== undefined) files = [file];
     }
   }
-  const plans = files.map((file) => planDeploySkill(root, file, mode));
+  let plans = files.map((file) => planDeploySkill(root, file, mode));
+  const adding = plans.find((plan) => plan.action === "add");
+  if (
+    askBeforeAdding &&
+    prompts !== null &&
+    adding !== undefined &&
+    !prompts.confirm(`Add the kit's deploy-task section to ${adding.shown}?`, true)
+  ) {
+    plans = [];
+  }
   return {
     plans,
     notes,
@@ -921,7 +942,7 @@ the project.
                          it, else the one .claude/skills/*/SKILL.md that names a deploy; with
                          several, one question (with --yes, a note and no write)
   --no-deploy-block      take the deploy block out of the deploy skill
-  --dry-run             print the plan of the flags and the defaults (no questions), and
+  --dry-run              print the plan of the flags and the defaults (no questions), and
                          write nothing
   --yes                  no questions: write the flags and the defaults
 
@@ -949,7 +970,12 @@ export async function runProjectInit(
     return 2;
   }
   const flags = parsed.flags;
-  if (flags.deploySkill !== undefined && !existsSync(resolve(context.root, flags.deploySkill))) {
+  if (
+    flags.deploySkill !== undefined &&
+    statSync(resolve(context.cwd ?? process.cwd(), flags.deploySkill), {
+      throwIfNoEntry: false,
+    })?.isFile() !== true
+  ) {
     context.error(`--deploy-skill: ${flags.deploySkill} is not a file\n\n${PROJECT_INIT_USAGE}`);
     return 2;
   }
@@ -1037,7 +1063,7 @@ export async function runProjectInit(
     }
   }
   for (const write of writes) {
-    const shown = relative(context.root, write.file);
+    const shown = shownPath(context.root, write.file);
     out.line(
       write.created ? "created" : "changed",
       `${shown}: ${write.created ? "created" : "changed"}`,
@@ -1059,8 +1085,8 @@ export async function runProjectInit(
   // `.claude/settings.local.json` is each person's own (Claude Code keeps it out of git): it is
   // never one of the files to commit.
   const shared = writes
-    .map((write) => relative(context.root, write.file))
-    .filter((shown) => shown !== relative(context.root, plan.localSettings.file));
+    .map((write) => shownPath(context.root, write.file))
+    .filter((shown) => shown !== shownPath(context.root, plan.localSettings.file));
   out.blank();
   out.next([
     ...(shared.length === 0
