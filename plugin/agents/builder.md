@@ -59,8 +59,8 @@ you started from.
    before editing and follow its § Design system first.
    Use `cc-smart-dev-kit:performance-budget` for performance work.
 2. Work the phase's tasks in order and close each with its check as you go. Create a
-   missing step as a task under the phase, never a new phase. Routing and the CLI fallback:
-   `cc-smart-dev-kit:memory-routing`.
+   missing step as a task under the phase, never a new phase. Which task, and the CLI fallback:
+   `cc-smart-dev-kit:tasks`.
 3. For a behavior change, write the failing test first where this kind of code has tests.
    Implement the whole brief, not a first slice. Do not invent a test framework for prose.
 4. Run targeted tests and lint, plus checks the brief allows. What a subagent may run of

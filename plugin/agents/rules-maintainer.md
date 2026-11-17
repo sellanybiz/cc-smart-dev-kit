@@ -18,7 +18,7 @@ review your own work, contact peers or ask the person. Delete only files you cre
 never clean a shared folder. Track each file or check with kit tasks under your phase.
 Follow `cc-smart-dev-kit:builder` for caller rulings, refusals, allowed checks and the
 `Report:` task note. Return this report's details there and only a short status to your caller.
-Use `cc-smart-dev-kit:memory-routing` for the CLI fallback; no second ledger.
+Use `cc-smart-dev-kit:tasks` for the CLI fallback; no second ledger.
 
 **Your files:** the ones the brief names, plus any instruction file that now conflicts
 because of your edit, or says the same rule on the edit's own topic — list each in your
