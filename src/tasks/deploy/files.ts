@@ -39,6 +39,10 @@ const ARCHIVE = "archive";
 export function envFolder(dir: string, env: DeployEnv): string {
   return join(dir, env);
 }
+/** True when a task file sits in an `archive/` folder: the home of closed tasks. */
+export function isArchived(file: string): boolean {
+  return basename(dirname(file)) === ARCHIVE;
+}
 /** The folder of an environment's closed tasks. */
 export function archiveFolder(dir: string, env: DeployEnv): string {
   return join(dir, env, ARCHIVE);
@@ -98,7 +102,7 @@ export function scanDeployTasks(dir: string, options: { archive: boolean }): Tas
       tasks.push(...copies);
       continue;
     }
-    const kept = copies.find((task) => basename(dirname(task.file)) === ARCHIVE) ?? first;
+    const kept = copies.find((task) => isArchived(task.file)) ?? first;
     tasks.push(kept);
     for (const task of copies)
       if (task !== kept)
@@ -391,7 +395,7 @@ export function closeDeployTask(
  */
 export function reopenDeployTask(dir: string, id: string, now: Date, note?: string): DeployTask {
   const task = findDeployTask(dir, id);
-  const archived = basename(dirname(task.file)) === ARCHIVE;
+  const archived = isArchived(task.file);
   if (task.status === "open" && !archived) throw new Error(`${id} is already open`);
   let reopened: DeployTask = task;
   if (task.status !== "open") {

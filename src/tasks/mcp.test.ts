@@ -2,12 +2,11 @@ import { expect, test } from "bun:test";
 import { InMemoryTransport, type JSONRPCMessage } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import { hookEnv } from "../testing/hooks";
-import { tempDir } from "../testing/temp";
-import { createTaskServer } from "./mcp";
+import { git, tempDir } from "../testing/temp";
+import { createTaskServer, TASK_SERVER_INSTRUCTIONS } from "./mcp";
 
 const resultSchema = z.object({ result: z.unknown() });
-test("SDK transport initializes, lists nine annotated tools and runs work", async () => {
-  const cwd = tempDir();
+async function connectKit(cwd: string) {
   const kit = createTaskServer({
     stateDir: tempDir(),
     cwd: () => cwd,
@@ -33,6 +32,12 @@ test("SDK transport initializes, lists nine annotated tools and runs work", asyn
       });
       client.send({ jsonrpc: "2.0", id: current, method, params }).catch(reject);
     });
+  return { kit, client, request };
+}
+
+test("SDK transport initializes, lists nine annotated tools and runs work", async () => {
+  const cwd = tempDir();
+  const { kit, client, request } = await connectKit(cwd);
   try {
     const initialized = await request("initialize", {
       protocolVersion: "2025-11-25",
@@ -127,4 +132,110 @@ test("SDK transport initializes, lists nine annotated tools and runs work", asyn
     await kit.close();
     await client.close();
   }
+});
+
+test("the server refuses to drop a blocking deploy task, and says who can", async () => {
+  const cwd = tempDir();
+  git(cwd, "init", "-b", "main");
+  const { kit, client, request } = await connectKit(cwd);
+  const textOf = (result: unknown) =>
+    z.object({ content: z.array(z.object({ text: z.string() })) }).parse(result).content[0]?.text ??
+    "";
+  try {
+    await request("initialize", {
+      protocolVersion: "2025-11-25",
+      capabilities: {},
+      clientInfo: { name: "test", version: "1" },
+    });
+    await client.send({ jsonrpc: "2.0", method: "notifications/initialized" });
+    const created = textOf(
+      await request("tools/call", {
+        name: "task_create",
+        arguments: { subject: "Gate", kind: "prod", deploy: "before", type: "blocking" },
+      }),
+    );
+    const id = created.split(" ")[0] ?? "";
+    expect(id).toMatch(/^prod-\d{8}-\d{6}$/);
+    const dropped = await request("tools/call", {
+      name: "task_done",
+      arguments: { task: id, outcome: "dropped", note: "no longer owed" },
+    });
+    expect(dropped).toEqual({
+      isError: true,
+      content: [
+        {
+          type: "text",
+          text: `${id} is blocking: only the person drops a blocking deploy task. Ask the person to run \`cc-smart-dev-kit task drop ${id} --note "<reason>"\` in their own terminal, outside Claude Code`,
+        },
+      ],
+    });
+    expect(
+      textOf(
+        await request("tools/call", { name: "task_done", arguments: { task: id, evidence: "ok" } }),
+      ),
+    ).toBe(`${id} "Gate" · done`);
+  } finally {
+    await kit.close();
+    await client.close();
+  }
+});
+
+test("the server refuses to weaken or delete a blocking deploy task too", async () => {
+  const cwd = tempDir();
+  git(cwd, "init", "-b", "main");
+  const { kit, client, request } = await connectKit(cwd);
+  const textOf = (result: unknown) =>
+    z.object({ content: z.array(z.object({ text: z.string() })) }).parse(result).content[0]?.text ??
+    "";
+  try {
+    await request("initialize", {
+      protocolVersion: "2025-11-25",
+      capabilities: {},
+      clientInfo: { name: "test", version: "1" },
+    });
+    await client.send({ jsonrpc: "2.0", method: "notifications/initialized" });
+    const id =
+      textOf(
+        await request("tools/call", {
+          name: "task_create",
+          arguments: { subject: "Gate", kind: "prod", deploy: "before", type: "blocking" },
+        }),
+      ).split(" ")[0] ?? "";
+    const refused = (action: string, command: string) => ({
+      isError: true,
+      content: [
+        {
+          type: "text",
+          text: `${id} is blocking: only the person ${action}. Ask the person to run \`cc-smart-dev-kit task ${command}\` in their own terminal, outside Claude Code`,
+        },
+      ],
+    });
+    expect(
+      await request("tools/call", {
+        name: "task_update",
+        arguments: { task: id, type: "non-blocking" },
+      }),
+    ).toEqual(refused("weakens a blocking deploy task", `set ${id} --type non-blocking`));
+    expect(
+      await request("tools/call", {
+        name: "task_update",
+        arguments: { task: id, deploy: "after" },
+      }),
+    ).toEqual(refused("weakens a blocking deploy task", `set ${id} --deploy after`));
+    expect(await request("tools/call", { name: "task_delete", arguments: { task: id } })).toEqual(
+      refused("deletes a blocking deploy task", `delete ${id}`),
+    );
+  } finally {
+    await kit.close();
+    await client.close();
+  }
+});
+
+test("the server's instructions name deploy tasks, never project tasks", () => {
+  expect(TASK_SERVER_INSTRUCTIONS).toContain(
+    "A step owed before or after a deploy to prod or staging is a deploy task",
+  );
+  expect(TASK_SERVER_INSTRUCTIONS).toContain("/cc-smart-dev-kit:tasks");
+  expect(TASK_SERVER_INSTRUCTIONS).not.toContain("project task");
+  expect(TASK_SERVER_INSTRUCTIONS).not.toContain("teammate");
 });

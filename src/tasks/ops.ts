@@ -7,13 +7,16 @@ export type { TaskOperation } from "./schemas";
 import { cliPaths } from "../cli/paths";
 import { cappedHookList } from "../hooks/capped-list";
 import { runGit } from "../hooks/git";
+import { DEPLOY_TASKS_SINCE } from "../project/config";
 import { resolvePlans } from "../workflow/resolve";
 import { taskContext } from "./context";
 import {
   addDeployNote,
   closeDeployTask,
+  createDeployPair,
   createDeployTask,
   findDeployTask,
+  reopenDeployTask,
   scanDeployTasks,
   updateDeployTask,
 } from "./deploy/files";
@@ -27,7 +30,7 @@ import {
   refuseParkWhileBusy,
   refuseStepEscape,
 } from "./plan-guards";
-import { TASK_TOOL } from "./words";
+import { TASK_COMMAND, TASK_TOOL } from "./words";
 import { openWorkDb, type WorkDb, workDbFile, writeWork } from "./work/db";
 import { historyText } from "./work/history";
 import { callerOf, claimLive } from "./work/identity";
@@ -93,6 +96,41 @@ function bindings(input: {
   };
 }
 
+/** A 4.x task id (`T-gpmiae`): the files they named are not read since `DEPLOY_TASKS_SINCE`. */
+const OLD_TASK_ID = /^T-/;
+const OLD_ID_ANSWER = `old task ids are gone in ${DEPLOY_TASKS_SINCE}: the file is not read; recreate it as a deploy task or delete it`;
+
+/**
+ * Refuses the fields only a deploy task has, on a work task: a forgotten `kind` must never
+ * silently make a machine-local task out of a deploy step. `fields` are the call's own values.
+ */
+function refuseDeployFields(fields: Record<string, unknown>): void {
+  const given = Object.keys(fields).filter((name) => {
+    const value = fields[name];
+    return !(
+      value === undefined ||
+      value === false ||
+      value === "" ||
+      (Array.isArray(value) && value.length === 0)
+    );
+  });
+  if (given.length > 0)
+    throw new Error(
+      `Deploy fields (${given.join(", ")}) need kind prod or staging: a work task has none`,
+    );
+}
+
+/**
+ * The refusal of what only the person may do to a blocking deploy task (D14): the text a session
+ * reads, naming the exact command the person runs in their own terminal.
+ */
+function personOnly(id: string, action: string, command: string): string {
+  return `${id} is blocking: only the person ${action}. Ask the person to run \`${TASK_COMMAND} ${command}\` in their own terminal, outside Claude Code`;
+}
+
+const DELETE_TRACKED =
+  "Tracked deploy task: it is part of a commit, so close it with task_done instead";
+
 export const TASK_LINE_CAP = 200;
 export const TASK_TEXT_CAP = 20_000;
 export type TaskAnswer = { ok: true; text: string; data?: unknown } | { ok: false; why: string };
@@ -102,6 +140,11 @@ export interface TaskOpsOptions {
   caller?: () => (Who & { cwd: string }) | null;
   cwd?: () => string;
   now?: () => number;
+  /**
+   * Refuse to drop a blocking deploy task: only the person drops one (D14). The MCP server sets
+   * it always; the command sets it inside Claude Code.
+   */
+  refuseBlockingDrop?: boolean;
 }
 function value<T>(result: Result<T>): T {
   if (!result.ok) throw new Error(result.why);
@@ -246,8 +289,13 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
         if (!ctx.projectTasks.ok) throw new Error(ctx.projectTasks.why);
         return ctx.projectTasks.dir;
       };
+      const projectEnvs = () => {
+        if (!ctx.projectTasks.ok) throw new Error(ctx.projectTasks.why);
+        return ctx.projectTasks.envs;
+      };
       const projectTasks = (archive: boolean) => scanDeployTasks(projectDir(), { archive }).tasks;
       const work = (reference: string) => {
+        if (OLD_TASK_ID.test(reference)) throw new Error(OLD_ID_ANSWER);
         const task = getTask(store, ctx.project, reference);
         if (!task) throw new Error(`Task not found: ${reference}`);
         return task;
@@ -282,32 +330,53 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
             input.plan
           )
             throw new Error("Deploy tasks have no parent, blocked-by, work status, phase or plan");
-          if (input.deploy === undefined || input.type === undefined)
-            throw new Error("A deploy task needs deploy (before or after) and type");
-          const branch = ctx.checkoutRoot
-            ? runGit(ctx.checkoutRoot, ["branch", "--show-current"], env)
-            : null;
-          if (!branch?.ok) throw new Error("Could not read the current branch");
-          const from = input.from ?? `branch ${branch.out}`;
-          const task = createDeployTask(
-            projectDir(),
-            {
-              title: input.subject,
-              env: input.kind,
-              deploy: input.deploy,
-              type: input.type,
-              ...(input.description === undefined ? {} : { body: input.description }),
-              ...(input.flags === undefined ? {} : { flags: input.flags }),
-              ...(input.refs === undefined ? {} : { refs: input.refs }),
-              from,
-            },
-            { now: new Date(now) },
-          );
+          if (input.deploy === undefined)
+            throw new Error("A deploy task needs deploy (before or after)");
+          if (input.type === undefined)
+            throw new Error("A deploy task needs type (blocking or non-blocking)");
+          const envs = projectEnvs();
+          if (!envs.includes(input.kind))
+            throw new Error(
+              `${input.kind} is not one of this project's environments (tasks.envs: ${envs.join(", ")})`,
+            );
+          if (input.pair && input.kind !== "staging")
+            throw new Error(
+              "pair is for kind staging: it creates the staging task and its prod twin",
+            );
+          const root = ctx.checkoutRoot;
+          if (root === null) throw new Error("Deploy tasks need a git checkout to be written in");
+          const branch = runGit(root, ["branch", "--show-current"], env);
+          if (!branch.ok) throw new Error("Could not read the current branch");
+          const fields = {
+            title: input.subject,
+            deploy: input.deploy,
+            type: input.type,
+            ...(input.description === undefined ? {} : { body: input.description }),
+            ...(input.flags === undefined ? {} : { flags: input.flags }),
+            ...(input.refs === undefined ? {} : { refs: input.refs }),
+            from: input.from ?? (branch.out ? `branch ${branch.out}` : "a detached HEAD"),
+          };
+          const sources = { now: new Date(now) };
+          const made = input.pair
+            ? Object.values(createDeployPair(projectDir(), fields, sources, envs))
+            : [createDeployTask(projectDir(), { ...fields, env: input.kind }, sources)];
           return {
             ok: true,
-            text: `${task.id} "${task.title}" · ${relative(ctx.checkoutRoot ?? cwd, task.file)} · commit it with your branch`,
+            text: made
+              .map(
+                (task) =>
+                  `${task.id} "${task.title}" · ${relative(root, task.file)} · written in ${root}: commit the file with your branch`,
+              )
+              .join("\n"),
           };
         }
+        refuseDeployFields({
+          deploy: input.deploy,
+          pair: input.pair,
+          flags: input.flags,
+          refs: input.refs,
+          from: input.from,
+        });
         // Every blocker is found before anything is written: a wrong one leaves no task behind.
         const blockedBy = input.blocked_by?.map((r) => work(r).id) ?? [];
         if (input.phase !== undefined || (input.plan !== undefined && input.parent === undefined)) {
@@ -434,56 +503,94 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
         if (isDeployTaskId(input.task)) {
           if (
             Object.keys(bindings(input)).length ||
-            input.status !== undefined ||
             input.parent !== undefined ||
             input.blocked_by_add !== undefined ||
             input.blocked_by_remove !== undefined
           )
+            throw new Error("Deploy tasks have no parent, blocked-by or builder bindings");
+          if (input.status !== undefined && input.status !== "open")
             throw new Error(
-              "Deploy task status changes only through task_done; deploy tasks have no parent or blocked-by",
+              `A deploy task closes through ${TASK_TOOL.done} (done with evidence, dropped with a note); status open reopens a closed one`,
             );
-          const task = updateDeployTask(
-            projectDir(),
-            input.task,
-            {
-              ...(input.subject === undefined ? {} : { title: input.subject }),
-              ...(input.description === undefined ? {} : { body: input.description }),
-              ...(input.deploy === undefined ? {} : { deploy: input.deploy }),
-              ...(input.type === undefined ? {} : { type: input.type }),
-              ...(input.flags === undefined ? {} : { flags: input.flags }),
-              ...(input.refs === undefined ? {} : { refs: input.refs }),
-              ...(input.from === undefined ? {} : { from: input.from }),
-            },
-            new Date(now),
-          );
-          return { ok: true, text: `${task.id} "${task.title}" · updated` };
+          // A blocking task that turns non-blocking, or moves after the deploy, no longer holds
+          // the gate: that is a drop by another name, so it is the person's too (D14). Judged on
+          // the task as it is now, closed or open, so a reopen cannot carry the change.
+          const current = project(input.task);
+          if (options.refuseBlockingDrop && current.type === "blocking") {
+            if (input.type === "non-blocking")
+              throw new Error(
+                personOnly(
+                  current.id,
+                  "weakens a blocking deploy task",
+                  `set ${current.id} --type non-blocking`,
+                ),
+              );
+            if (input.deploy === "after" && current.deploy === "before")
+              throw new Error(
+                personOnly(
+                  current.id,
+                  "weakens a blocking deploy task",
+                  `set ${current.id} --deploy after`,
+                ),
+              );
+          }
+          const patch = {
+            ...(input.subject === undefined ? {} : { title: input.subject }),
+            ...(input.description === undefined ? {} : { body: input.description }),
+            ...(input.deploy === undefined ? {} : { deploy: input.deploy }),
+            ...(input.type === undefined ? {} : { type: input.type }),
+            ...(input.flags === undefined ? {} : { flags: input.flags }),
+            ...(input.refs === undefined ? {} : { refs: input.refs }),
+            ...(input.from === undefined ? {} : { from: input.from }),
+          };
+          // Reopen first, so a call that also edits fields edits the reopened file.
+          if (input.status === "open") reopenDeployTask(projectDir(), input.task, new Date(now));
+          const task =
+            Object.keys(patch).length > 0
+              ? updateDeployTask(projectDir(), input.task, patch, new Date(now))
+              : project(input.task);
+          return {
+            ok: true,
+            text: `${task.id} "${task.title}" · ${input.status === "open" ? "open again" : "updated"}`,
+          };
         }
+        refuseDeployFields({
+          deploy: input.deploy,
+          flags: input.flags,
+          refs: input.refs,
+          from: input.from,
+        });
+        // Narrowed here, once: the closures below keep this type, `input.status` would not.
+        const { status } = input;
+        if (status === "open")
+          throw new Error(
+            "status open reopens a closed deploy task; a work task is pending or in_progress",
+          );
         const task = work(input.task);
         // A dropped phase coming back is a phase laid again: the cap judges it.
         if (
           task.kind === "phase" &&
           task.status === "dropped" &&
-          (input.status === "pending" || input.status === "in_progress") &&
+          (status === "pending" || status === "in_progress") &&
           task.plan !== null
         ) {
           const cap = phaseCap();
           refuseOverCap(all, task.plan, cap);
         }
-        const starting = input.status === "in_progress" && task.status !== "in_progress";
+        const starting = status === "in_progress" && task.status !== "in_progress";
         const destination = input.parent ? work(input.parent) : null;
         // The plan the task is in after this call (moving to the top keeps it). A running task
         // moved into another plan puts work there, so it is a start in that plan: the one-plan
         // rule judges it, and the plan goes in flight.
         const landing = destination === null ? task.plan : destination.plan;
         const entering =
-          starting || (landing !== task.plan && (input.status ?? task.status) === "in_progress");
+          starting || (landing !== task.plan && (status ?? task.status) === "in_progress");
         if (starting) refuseEmptyPhase(all, task);
         if (entering && landing !== null) refuseOther(landing);
-        refuseParkWhileBusy(all, task, input.status);
+        refuseParkWhileBusy(all, task, status);
         if (input.parent !== undefined) refuseStepEscape(all, task, destination);
         // This call carries no evidence or note, so a step cannot close here.
-        if (input.status === "done" || input.status === "dropped")
-          refuseBareClose(all, task, input.status, {});
+        if (status === "done" || status === "dropped") refuseBareClose(all, task, status, {});
         // Starting work puts its plan in flight, in the same write (a plan's own start sets it).
         const updated = value(
           writeWork(store, () => {
@@ -494,7 +601,7 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
                 ...(input.subject === undefined ? {} : { subject: input.subject }),
                 ...(input.description === undefined ? {} : { description: input.description }),
                 ...bindings(input),
-                ...(input.status === undefined ? {} : { status: input.status }),
+                ...(status === undefined ? {} : { status: status }),
                 ...(input.parent === undefined
                   ? {}
                   : { parentId: input.parent === null ? null : work(input.parent).id }),
@@ -526,6 +633,19 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
         const input = taskSchemas.done.parse(raw);
         if (isDeployTaskId(input.task)) {
           const task = project(input.task);
+          if (
+            options.refuseBlockingDrop &&
+            input.outcome === "dropped" &&
+            task.status === "open" &&
+            task.type === "blocking"
+          )
+            throw new Error(
+              personOnly(
+                task.id,
+                "drops a blocking deploy task",
+                `drop ${task.id} --note "<reason>"`,
+              ),
+            );
           closeDeployTask(
             projectDir(),
             task.id,
@@ -568,7 +688,7 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
         const input = taskSchemas.get.parse(raw);
         const text = isDeployTaskId(input.task)
           ? (() => {
-              // A project task's history is its file's git log: every commit that changed it,
+              // A deploy task's history is its file's git log: every commit that changed it,
               // across its move into `archive/`. `--follow` loses the move with `--reverse`
               // (seen on git 2.53), so the lines are put oldest first here.
               const file = project(input.task).file;
@@ -602,6 +722,7 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
               return `${body.trimEnd()}\n\n${history}`;
             })()
           : (() => {
+              if (OLD_TASK_ID.test(input.task)) throw new Error(OLD_ID_ANSWER);
               const task = getTask(store, ctx.project, input.task);
               if (!task) {
                 // A deleted task is gone from the list, not from its history.
@@ -643,14 +764,24 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
         const input = taskSchemas.delete.parse(raw);
         if (isDeployTaskId(input.task)) {
           const task = project(input.task);
-          if (!ctx.checkoutRoot) throw new Error("Project tasks need a checkout");
+          // What a session may not do to an open blocking task is the person's: a tracked file
+          // closes (drop), it is never deleted, so the command named depends on the file's state.
+          const guarded =
+            options.refuseBlockingDrop && task.status === "open" && task.type === "blocking";
+          const trackedRefusal = guarded
+            ? personOnly(
+                task.id,
+                "drops a blocking deploy task",
+                `drop ${task.id} --note "<reason>"`,
+              )
+            : DELETE_TRACKED;
+          if (!ctx.checkoutRoot) throw new Error("Deploy tasks need a git checkout");
           const tracked = runGit(
             ctx.checkoutRoot,
             ["ls-files", "--error-unmatch", "--", relative(ctx.checkoutRoot, task.file)],
             env,
           );
-          if (tracked.ok)
-            throw new Error("Tracked project task: drop it with task_done outcome dropped");
+          if (tracked.ok) throw new Error(trackedRefusal);
           // A failed git command is not evidence that a file is untracked. Check the index separately.
           const index = runGit(
             ctx.checkoutRoot,
@@ -658,8 +789,11 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
             env,
           );
           if (!index.ok) throw new Error(`Could not read git's index: ${index.err}`);
-          if (index.out)
-            throw new Error("Tracked project task: drop it with task_done outcome dropped");
+          if (index.out) throw new Error(trackedRefusal);
+          if (guarded)
+            throw new Error(
+              personOnly(task.id, "deletes a blocking deploy task", `delete ${task.id}`),
+            );
           rmSync(task.file);
         } else {
           const result = deleteTask(store, work(input.task).id, who, now);

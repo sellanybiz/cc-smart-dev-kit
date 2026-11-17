@@ -1,7 +1,8 @@
 import { existsSync, realpathSync } from "node:fs";
 import { basename, isAbsolute, relative, resolve, sep } from "node:path";
 import { DEPLOY_TASKS_SINCE } from "../../project/config";
-import { type DeployTaskSettings, oldTaskFiles, scanDeployTasks } from "./files";
+import { TASK_COMMAND } from "../words";
+import { type DeployTaskSettings, isArchived, oldTaskFiles, scanDeployTasks } from "./files";
 
 export const DEFAULT_STALE_DAYS = 30;
 /** One day, the unit of `tasks.staleDays` and every task age. */
@@ -16,6 +17,7 @@ export interface DeployTaskFinding {
     | "broken-file"
     | "duplicate-id"
     | "twin-missing"
+    | "open-in-archive"
     | "old-files";
   id?: string;
   file: string;
@@ -48,6 +50,13 @@ export function checkDeployTasks(options: {
   for (const task of tasks) {
     if (task.status !== "open") continue;
     const common = { id: task.id, file: task.file };
+    // A reopen that stopped after its first step leaves an open task in archive/ (`reopenDeployTask`).
+    if (isArchived(task.file))
+      findings.push({
+        ...common,
+        kind: "open-in-archive",
+        text: `${task.id} is open but sits in archive/: run \`${TASK_COMMAND} reopen ${task.id}\` again`,
+      });
     if (
       (now.getTime() - Date.parse(task.created)) / DAY_MS >
       (settings.staleDays ?? DEFAULT_STALE_DAYS)

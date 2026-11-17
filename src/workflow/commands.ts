@@ -291,7 +291,7 @@ function show(context: WorkflowContext): number {
  * keeps a session from changing the review gate by mistake; the merge guard reading only the
  * committed policy is what keeps a session's own edits out of it.
  */
-function insideClaudeCode(env: Env): boolean {
+export function insideClaudeCode(env: Env): boolean {
   return env.CLAUDECODE !== undefined;
 }
 

@@ -780,7 +780,7 @@ test("gate after: uncommitted closes, an unpushed branch and a broken file refus
   expect(
     after("prod", [], { ...cleanFacts, push: { branch: "b", remote: "origin/b", ahead: 2 } })
       .refusals,
-  ).toEqual(["Branch b is 2 commit(s) ahead of origin/b: push it"]);
+  ).toEqual(["Branch b is 2 commit(s) ahead of origin/b: run `git push origin b`"]);
   expect(
     after("prod", [], { ...cleanFacts, push: { branch: null, remote: null, ahead: 0 } }).refusals,
   ).toEqual(["HEAD is detached: the closes need a branch to be pushed from"]);
@@ -1001,7 +1001,7 @@ test("pushed is judged against origin's copy of the branch, not the branch's ups
   const ahead = readGitFacts(repo, dir, "origin/main", env);
   expect(ahead.push.ahead).toBe(1);
   expect(gateAfter("prod", { dir, facts: ahead, envs, now }).refusals).toEqual([
-    "Branch deploy/prod-20261117-1445 is 1 commit(s) ahead of origin/deploy/prod-20261117-1445: push it",
+    "Branch deploy/prod-20261117-1445 is 1 commit(s) ahead of origin/deploy/prod-20261117-1445: run `git push origin deploy/prod-20261117-1445`",
   ]);
 });
 
