@@ -318,7 +318,15 @@ keeps `claimHeldBy` alone. The next task call from the resumed session also move
 caller's pid, start time and session in one write, and its history says the claim moved to the
 resumed session's process. A dead claim of another session id stays free. `callerOf` reads only
 its own ancestors' session records (`sessionRecordOf`), so another session's record that cannot
-be read never blanks the caller's rows; the caller's own unreadable record still fails.
+be read never blanks the caller's rows; the caller's own unreadable record still fails. A read
+operation whose move fails still answers, with one line saying the claims were not moved and the
+next call retries; a write fails loudly.
+
+Two live processes of one conversation both count a dead claim as theirs until one of them makes a
+task call, which moves it. A `/clear` keeps the process and gives the session a new id, so the
+same step also re-stamps the claims the caller's process holds, and the open tasks it made, to the new
+session id (with a history entry each). A later resume under that id then finds the work. Off
+Linux, `claimHeldBy` needs the session id, so this re-stamp never fires there.
 
 ## Project tasks
 
@@ -401,8 +409,9 @@ no writer holding it open. Three hooks read it ([hooks](hooks.md) has each one's
 
 - `task-start` (SessionStart) is machine-wide. At every start, clear and compaction it adds one
   block of the project's open work tasks, without descriptions, at most eight lines
-  (`START_TASK_LIMIT`) and "+n more". This process's own claimed tasks come first, then the
-  ones in progress, then the most recently touched. A task untouched for `tasks.staleDays`
+  (`START_TASK_LIMIT`) and "+n more". This process's own claimed tasks come first (a resumed
+  claim, one its session left in a process that is gone, counts as its own), then the ones in
+  progress, then the most recently touched. A task untouched for `tasks.staleDays`
   (default 30) is not listed but counted in one line, unless this process claims it. Until
   registration exists, the hook says to run setup.
 - `keep-going` (Stop) holds the main session's turn end once per stalled state while a phase

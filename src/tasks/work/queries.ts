@@ -549,7 +549,7 @@ export function resumedClaim(
   claim: WorkClaim | null,
   who: Who | null | undefined,
   isLive: (claim: WorkClaim) => boolean,
-): claim is WorkClaim {
+): boolean {
   return (
     claim !== null &&
     who !== null &&

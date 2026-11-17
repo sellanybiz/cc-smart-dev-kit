@@ -5,6 +5,7 @@
  * moves the claims to the new process (`reclaimResumed`, run by `createTaskOps`). The old
  * process here has a pid no machine runs, so `claimLive` finds its claims dead on every platform.
  */
+import { Database } from "bun:sqlite";
 import { expect, test } from "bun:test";
 import { cliPaths } from "../cli/paths";
 import { taskSegment } from "../cli/statusline";
@@ -14,7 +15,7 @@ import { folderProject } from "./context";
 import { createTaskOps, type TaskAnswer } from "./ops";
 import { openWorkDb, workDbFile, writeWork } from "./work/db";
 import { claimLive } from "./work/identity";
-import { allTasks, claimState, eventsOf, resumedClaim } from "./work/queries";
+import { allTasks, claimState, eventsOf, ownerOf, resumedClaim } from "./work/queries";
 import { planProgress } from "./work/read";
 import { createTask, ensurePlanTask, layPhase, reclaimResumed, updateTask } from "./work/store";
 import type { Result, Who } from "./work/types";
@@ -140,35 +141,47 @@ test("reclaimResumed never takes a live claim, another session's claim, or a pro
   }
 });
 
-test("the next task call by the resumed session moves its claims, whatever the call", () => {
+/** A temp repo and store, with the task operations for any caller and a reader of the rows. */
+function opsWorld() {
   const repo = makeRepo();
   const env = hookEnv();
   const paths = cliPaths(env);
   const project = folderProject(repo);
-  const opsFor = (who: Who) =>
+  /** The operations for a caller; a function names it at each call, so a test can switch it. */
+  const opsFor = (who: Who | (() => Who)) =>
     createTaskOps({
       stateDir: paths.stateDir,
       env,
       cwd: () => repo,
-      caller: () => ({ ...who, cwd: repo }),
+      caller: () => ({ ...(typeof who === "function" ? who() : who), cwd: repo }),
     });
-  const claimOfPhase = () => {
+  const tasks = () => {
     const db = openWorkDb(workDbFile(paths), { mode: "hook" });
     try {
-      return allTasks(db, project).find((t) => t.number === 2)?.claim;
+      return allTasks(db, project);
     } finally {
       db.close();
     }
   };
-  const first = opsFor(OLD);
-  try {
-    said(first.call("create", { subject: "Plan", plan: "big" }));
-    said(first.call("create", { subject: "Area", plan: "big", phase: "A" }));
-    said(first.call("create", { subject: "Step", parent: "#2" }));
-    said(first.call("update", { task: "#2", status: "in_progress" }));
-  } finally {
-    first.close();
-  }
+  /** Plan #1, phase #2 (in progress, claimed by `who`) and a step #3, all made by `who`. */
+  const startPhase = (who: Who) => {
+    const ops = opsFor(who);
+    try {
+      said(ops.call("create", { subject: "Plan", plan: "big" }));
+      said(ops.call("create", { subject: "Area", plan: "big", phase: "A" }));
+      said(ops.call("create", { subject: "Step", parent: "#2" }));
+      said(ops.call("update", { task: "#2", status: "in_progress" }));
+    } finally {
+      ops.close();
+    }
+  };
+  return { paths, project, opsFor, tasks, startPhase, stateDir: paths.stateDir };
+}
+
+test("the next task call by the resumed session moves its claims, whatever the call", () => {
+  const { paths, project, opsFor, tasks, startPhase } = opsWorld();
+  const claimOfPhase = () => tasks().find((t) => t.number === 2)?.claim;
+  startPhase(OLD);
   expect(claimOfPhase()?.pid).toBe(OLD.pid as number);
   // Another session's call leaves the claim where it is.
   const other = opsFor(OTHER);
@@ -192,3 +205,100 @@ test("the next task call by the resumed session moves its claims, whatever the c
     resumed.close();
   }
 });
+
+// `/clear` keeps the process and gives the session a new id.
+const P: Who = { sessionId: "before-clear", pid: 999999994, procStart: "444" };
+const AFTER_CLEAR: Who = { ...P, sessionId: "after-clear" };
+const Q: Who = { sessionId: "after-clear", pid: 999999995, procStart: "555" };
+const Q_BEFORE: Who = { sessionId: "before-clear", pid: 999999996, procStart: "666" };
+
+test("a /clear moves the process's claims and made-by rows to the new session id, so a later resume finds them", () => {
+  const { paths, project, opsFor, tasks, startPhase } = opsWorld();
+  startPhase(P);
+  // A closed task #4 the process made keeps its old session id: closed work needs no owner.
+  const before = opsFor(P);
+  try {
+    said(before.call("create", { subject: "Loose" }));
+    said(before.call("done", { task: "#4", outcome: "dropped", note: "not needed" }));
+  } finally {
+    before.close();
+  }
+  const open = () => tasks().filter((t) => t.number !== 4);
+  const closedMadeBy = () => tasks().find((t) => t.number === 4)?.createdBy;
+  expect(open().map((t) => t.createdBy)).toEqual(["before-clear", "before-clear", "before-clear"]);
+  expect(tasks().find((t) => t.number === 2)?.claim?.sessionId).toBe("before-clear");
+  const afterClear = opsFor(AFTER_CLEAR);
+  try {
+    said(afterClear.call("list", { scope: "project" }));
+  } finally {
+    afterClear.close();
+  }
+  // The claim and the three rows the process made say the new session id; the process is the same.
+  expect(open().map((t) => t.createdBy)).toEqual(["after-clear", "after-clear", "after-clear"]);
+  expect(closedMadeBy()).toBe("before-clear");
+  expect(open().map((t) => t.creator?.sessionId)).toEqual([
+    "after-clear",
+    "after-clear",
+    "after-clear",
+  ]);
+  expect(tasks().find((t) => t.number === 2)?.claim).toEqual({
+    pid: P.pid as number,
+    procStart: "444",
+    sessionId: "after-clear",
+  });
+  // The process is gone, and the session is reopened as Q under the id it had after the clear.
+  expect(taskSegment(paths, project, Q)).toContain("Phases 0/1 · Area");
+  expect(taskSegment(paths, project, Q_BEFORE)).toBeNull();
+  const owns = (who: Who) => open().filter(ownerOf(who)).length;
+  expect(owns(Q)).toBe(3);
+  expect(owns(Q_BEFORE)).toBe(0);
+  // A caller under the old id finds nothing to move; the resumed one moves the claim.
+  const old = opsFor(Q_BEFORE);
+  try {
+    said(old.call("list", { scope: "project" }));
+  } finally {
+    old.close();
+  }
+  expect(tasks().find((t) => t.number === 2)?.claim?.pid).toBe(P.pid as number);
+  const resumed = opsFor(Q);
+  try {
+    said(resumed.call("list", { scope: "project" }));
+  } finally {
+    resumed.close();
+  }
+  expect(tasks().find((t) => t.number === 2)?.claim?.pid).toBe(Q.pid as number);
+});
+
+test("a read answers when the claims cannot be moved, with one line saying so; a write fails", () => {
+  const { stateDir, opsFor, startPhase } = opsWorld();
+  startPhase(OLD);
+  const holder = new Database(workDbFile({ stateDir }));
+  let caller: Who = OTHER;
+  const resumed = opsFor(() => caller);
+  try {
+    // The store is open already (another session's call, which moves nothing). Now the resumed
+    // session calls while another connection holds the write lock: moving the claim must wait,
+    // then give up.
+    said(resumed.call("list", { scope: "project" }));
+    caller = RESUMED;
+    holder.run("BEGIN IMMEDIATE");
+    const read = resumed.call("list", { scope: "project" });
+    if (!read.ok) throw new Error(read.why);
+    const lines = read.text.split("\n");
+    expect(lines[0]).toContain("#1");
+    expect(lines.at(-1)).toMatch(
+      /^claims of the resumed session not moved: .*locked.*; the next call retries$/,
+    );
+    const write = resumed.call("note", { task: "#2", text: "a note" });
+    expect(write.ok).toBe(false);
+    if (!write.ok) expect(write.why).toContain("locked");
+    // The lock is gone: the next call moves the claim and prints no line.
+    holder.run("ROLLBACK");
+    const retried = resumed.call("list", { scope: "project" });
+    if (!retried.ok) throw new Error(retried.why);
+    expect(retried.text).not.toContain("not moved");
+  } finally {
+    holder.close();
+    resumed.close();
+  }
+}, 20_000);

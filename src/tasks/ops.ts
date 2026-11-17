@@ -94,6 +94,9 @@ function bindings(input: {
   };
 }
 
+/** The operations that change nothing: they answer even when the caller's claims cannot be moved. */
+const READ_ONLY: ReadonlySet<TaskOperation> = new Set(["list", "get", "search"]);
+
 export const TASK_LINE_CAP = 200;
 export const TASK_TEXT_CAP = 20_000;
 export type TaskAnswer = { ok: true; text: string; data?: unknown } | { ok: false; why: string };
@@ -187,7 +190,8 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
     if (db === undefined) db = openWorkDb(workDbFile({ stateDir }), { mode: "write" });
     return db;
   };
-  function call(operation: TaskOperation, raw: unknown): TaskAnswer {
+  /** `notes` collects lines the answer carries after its own text (`call`). */
+  function run(operation: TaskOperation, raw: unknown, notes: string[]): TaskAnswer {
     try {
       const caller = options.caller ? options.caller() : callerOf({ env });
       const who: Who = caller ?? { sessionId: null, pid: null, procStart: null };
@@ -198,7 +202,16 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
       const store = database();
       // A reopened session keeps its session id in a new process: its running claims move to this
       // process before anything reads them, so every reader (the status line too) finds them.
-      if (store.writable) value(reclaimResumed(store, ctx.project, who, now, claimLive));
+      if (store.writable) {
+        const reclaimed = reclaimResumed(store, ctx.project, who, now, claimLive);
+        if (!reclaimed.ok) {
+          // A read still answers, with the failure on a line of its own; a write fails loudly.
+          if (!READ_ONLY.has(operation)) throw new Error(reclaimed.why);
+          notes.push(
+            `claims of the resumed session not moved: ${reclaimed.why}; the next call retries`,
+          );
+        }
+      }
       const all = allTasks(store, ctx.project);
       // The caller's own task (`ownerOf`: made under its session id, claimed by its process, or
       // made by its process under an earlier session id, as before a `/clear`).
@@ -791,6 +804,13 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
         why: (error instanceof Error ? error.message : String(error)).replace(/\s*\n\s*/g, " "),
       };
     }
+  }
+  function call(operation: TaskOperation, raw: unknown): TaskAnswer {
+    const notes: string[] = [];
+    const answer = run(operation, raw, notes);
+    return answer.ok && notes.length > 0
+      ? { ...answer, text: [answer.text, ...notes].join("\n") }
+      : answer;
   }
   return {
     call,

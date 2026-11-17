@@ -7,6 +7,7 @@ import {
   claimHeldBy,
   descendants,
   holdingUnder,
+  isOpen,
   livePhaseCount,
   openBlockers,
   openChildren,
@@ -715,12 +716,54 @@ export function takeTasks(
   });
 }
 
+/** One task's changes when the caller's session or process is its own again (`reclaimResumed`). */
+interface Restamp {
+  task: WorkTask;
+  /** The claim moves to the caller's process (a resumed claim), or only its session id changes. */
+  claim?: "moved" | "session";
+  /** The session id the task was made under changes to the caller's. */
+  createdBy: boolean;
+}
+
 /**
- * Moves the caller's resumed claims to its process: a reopened session keeps its session id in a
- * new process, so the claims on its running tasks name a dead one (`resumedClaim`). Each moves
- * to the caller's pid, start time and session in one write, with a history entry. A live claim
- * is never moved, and a caller with no process or session has none. Nothing to move writes
- * nothing, so the check can run before every task call. Returns how many claims moved.
+ * What `reclaimResumed` changes for this caller, by the rules the readers use:
+ * - a resumed claim (`resumedClaim`: a dead process's claim under the caller's session id) moves
+ *   to the caller's process;
+ * - a claim the caller's process holds under an older session id (`/clear` keeps the process and
+ *   gives the session a new id) takes the new id, so a later resume under it finds the claim;
+ * - an open task the caller's process made under an older session id takes the new id too, so
+ *   `ownerOf` survives a `/clear`, a restart and a resume.
+ * Off Linux `claimHeldBy` also needs the session id, so the last two never differ there.
+ */
+function restampsOf(
+  all: readonly WorkTask[],
+  who: Who,
+  isLive: (claim: WorkClaim) => boolean,
+): Restamp[] {
+  if (who.pid === null || who.sessionId === null) return [];
+  const found: Restamp[] = [];
+  for (const task of all) {
+    let claim: Restamp["claim"];
+    if (task.status === "in_progress" && task.claim !== null) {
+      if (resumedClaim(task.claim, who, isLive)) claim = "moved";
+      else if (claimHeldBy(task.claim, who) && task.claim.sessionId !== who.sessionId)
+        claim = "session";
+    }
+    // Only open work: a closed task needs no owner to carry on, and each `/clear` would add history.
+    const createdBy =
+      isOpen(task) && claimHeldBy(task.creator, who) && task.createdBy !== who.sessionId;
+    if (claim !== undefined || createdBy)
+      found.push({ task, ...(claim === undefined ? {} : { claim }), createdBy });
+  }
+  return found;
+}
+
+/**
+ * Makes the caller's own work its own again after its session or process changed: the three
+ * cases of `restampsOf`, each task with a history entry, all in one write. A live claim of
+ * another process is never moved, and a caller with no process or session changes nothing.
+ * Nothing to change takes no write lock, so the check can run before every task call. Returns
+ * how many tasks changed.
  */
 export function reclaimResumed(
   db: WorkDb,
@@ -729,28 +772,54 @@ export function reclaimResumed(
   now: number,
   isLive: (claim: WorkClaim) => boolean,
 ): Result<number> {
-  const resumed = () =>
-    allTasks(db, project).filter(
-      (t) => t.status === "in_progress" && resumedClaim(t.claim, who, isLive),
-    );
-  if (who.pid === null || who.sessionId === null || resumed().length === 0)
-    return { ok: true, value: 0 };
+  if (restampsOf(allTasks(db, project), who, isLive).length === 0) return { ok: true, value: 0 };
   return writeWork(db, () => {
-    // Read again inside the write: another process may have moved or closed one meanwhile.
-    const rows = resumed();
-    for (const task of rows) {
-      db.sqlite
-        .query("UPDATE tasks SET claim_pid=?,claim_start=?,claim_session=?,updated_at=? WHERE id=?")
-        .run(who.pid, who.procStart, who.sessionId, now, task.id);
-      recordEvent(
-        db,
-        task,
-        "changed",
-        { claim: [`process ${task.claim?.pid}`, `process ${who.pid}`] },
-        who,
-        now,
-        "claim moved to the resumed session's process",
-      );
+    // Read again inside the write: another process may have changed or closed one meanwhile.
+    const rows = restampsOf(allTasks(db, project), who, isLive);
+    for (const { task, claim, createdBy } of rows) {
+      if (claim === "moved") {
+        db.sqlite
+          .query(
+            "UPDATE tasks SET claim_pid=?,claim_start=?,claim_session=?,updated_at=? WHERE id=?",
+          )
+          .run(who.pid, who.procStart, who.sessionId, now, task.id);
+        recordEvent(
+          db,
+          task,
+          "changed",
+          { claim: [`process ${task.claim?.pid}`, `process ${who.pid}`] },
+          who,
+          now,
+          "claim moved to the resumed session's process",
+        );
+      } else if (claim === "session") {
+        db.sqlite
+          .query("UPDATE tasks SET claim_session=?,updated_at=? WHERE id=?")
+          .run(who.sessionId, now, task.id);
+        recordEvent(
+          db,
+          task,
+          "changed",
+          { claim: [task.claim?.sessionId ?? `process ${task.claim?.pid}`, who.sessionId] },
+          who,
+          now,
+          "claim follows the session id its process now runs under",
+        );
+      }
+      if (createdBy) {
+        db.sqlite
+          .query("UPDATE tasks SET created_by=?,updated_at=? WHERE id=?")
+          .run(who.sessionId, now, task.id);
+        recordEvent(
+          db,
+          task,
+          "changed",
+          { createdBy: [task.createdBy, who.sessionId] },
+          who,
+          now,
+          "made-by session follows the session id its process now runs under",
+        );
+      }
     }
     return rows.length;
   });

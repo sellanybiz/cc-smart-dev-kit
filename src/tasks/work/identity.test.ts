@@ -67,3 +67,25 @@ test("an unrelated session's broken record never blanks the caller; the caller's
   writeFileSync(own, "{not json");
   expect(() => callerOf(facts)).toThrow("the record of running session 10 in");
 });
+
+test("the caller's own broken record throws on the first walk too, with no remembered process", () => {
+  const dir = tempDir();
+  mkdirSync(join(dir, "sessions"));
+  writeFileSync(join(dir, "sessions", "10.json"), "{not json");
+  // A healthy record of another session beside it changes nothing.
+  writeFileSync(
+    join(dir, "sessions", "77.json"),
+    JSON.stringify({ pid: 77, sessionId: "other", cwd: "/work", name: "Name", procStart: "100" }),
+  );
+  expect(() =>
+    callerOf({
+      claudeConfigDir: dir,
+      pid: 20,
+      platform: "linux",
+      readStat: (pid) =>
+        `${pid} (process) S ${pid === 20 ? 10 : 1} ${Array(17).fill("0").join(" ")} 100`,
+      running: () => true,
+      env: {},
+    }),
+  ).toThrow("the record of running session 10 in");
+});
