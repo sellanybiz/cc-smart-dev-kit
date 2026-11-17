@@ -30966,8 +30966,8 @@ import { basename as basename12, isAbsolute as isAbsolute3, relative as relative
 function twinIsMissing(task, known) {
   return task.twin !== undefined && !known.has(task.twin);
 }
-function twinMissingFix(task) {
-  return `remove the \`twin\` line from ${task.file}, or make a new pair with \`${TASK_COMMAND} add "<title>" --kind staging --pair --deploy <${DEPLOY_STEPS.join("|")}> --type <${DEPLOY_TYPES.join("|")}>\``;
+function twinMissingFix(task, place = task.file) {
+  return `remove the \`twin\` line from ${place}, or drop ${task.id} (only the person drops a blocking one) and make a new pair with \`${TASK_COMMAND} add "<title>" --kind staging --pair --deploy <${DEPLOY_STEPS.join("|")}> --type <${DEPLOY_TYPES.join("|")}>\``;
 }
 function inside(root, target) {
   const rel = relative5(root, target);
@@ -31004,7 +31004,7 @@ function checkDeployTasks(options) {
       findings.push({
         ...common,
         kind: "twin-missing",
-        text: `Its twin ${task.twin} is not a task: ${twinMissingFix(task)}`
+        text: `Its twin ${task.twin} is not a task: ${twinMissingFix(task, "this file")}`
       });
     for (const ref of task.refs ?? []) {
       const target = resolve12(checkoutRoot, ref);
@@ -31134,7 +31134,7 @@ function notOnDeployBranch(env, input) {
     return [
       `HEAD is on ${baseBranch}, the branch deploys ship to: the closes must reach it through a deploy branch's pull request, never by a push to it. ${fix}`
     ];
-  if (branch === facts.ref.replace(/^origin\//, ""))
+  if (branch === facts.refBranch)
     return [
       `HEAD is on ${branch}, the branch this run ships from (${facts.ref}): the closes must reach it through a deploy branch's pull request, never by a push to it. ${fix}`
     ];
@@ -31158,12 +31158,13 @@ function judgeBefore(env, input) {
   const wrongBranch = notOnDeployBranch(env, input);
   const refusals = [...envRefusal(env, envs), ...wrongBranch];
   const foreign = facts.changedPaths.filter((path) => !underTasks(path, facts.tasksPath));
-  const again = wrongBranch.length > 0 ? "" : ` ${startAgain(env, facts, now)}`;
+  const wrong = wrongBranch.length > 0;
+  const cutFromRef = ` The deploy branch to cut above starts from ${facts.ref}, so it holds what the ref holds.`;
   if (facts.headCommit !== facts.refCommit) {
     if (!facts.refIsAncestor)
-      refusals.push(`HEAD ${facts.headCommit.slice(0, 12)} does not contain ${facts.ref} (${facts.refCommit.slice(0, 12)}): the ref has commits this branch has not taken in, and may hold tasks it cannot see. ` + `Run \`git fetch origin\`, then rebase or merge the deploy branch onto ${facts.ref}.${again}`);
+      refusals.push(`HEAD ${facts.headCommit.slice(0, 12)} does not contain ${facts.ref} (${facts.refCommit.slice(0, 12)}): the ref has commits this branch has not taken in, and may hold tasks it cannot see.${wrong ? cutFromRef : ` Run \`git fetch origin\`, then rebase or merge the deploy branch onto ${facts.ref}. ${startAgain(env, facts, now)}`}`);
     else if (foreign.length > 0)
-      refusals.push(`HEAD ${facts.headCommit.slice(0, 12)} is not ${facts.ref} (${facts.refCommit.slice(0, 12)}): it differs in ${foreign.length} path(s) outside ${facts.tasksPath || "the tasks folder"}.${again}`);
+      refusals.push(`HEAD ${facts.headCommit.slice(0, 12)} is not ${facts.ref} (${facts.refCommit.slice(0, 12)}): it differs in ${foreign.length} path(s) outside ${facts.tasksPath || "the tasks folder"}.${wrong ? cutFromRef : ` ${startAgain(env, facts, now)}`}`);
   }
   const mine = scan.tasks.filter((task) => task.env === env && open2(task));
   for (const task of mine.filter((one) => one.deploy === "before" && one.type === "blocking"))
@@ -31192,13 +31193,14 @@ function gateAfter(env, input) {
 }
 function judgeAfter(env, input) {
   const { scan, facts, envs } = input;
-  const refusals = [...envRefusal(env, envs), ...notOnDeployBranch(env, input)];
+  const wrongBranch = notOnDeployBranch(env, input);
+  const refusals = [...envRefusal(env, envs), ...wrongBranch];
   for (const task of scan.tasks.filter((one) => one.env === env && open2(one)))
     refusals.push(`Task is open: ${describe3(task)} (${task.deploy} the deploy, ${task.type}): close it with evidence, or drop it with a reason`);
   if (facts.uncommitted.length > 0)
     refusals.push(`${facts.uncommitted.length} uncommitted change(s) under ${facts.tasksPath || "the tasks folder"} (${facts.uncommitted.slice(0, 5).join(", ")}${facts.uncommitted.length > 5 ? ", ..." : ""}): commit the closes on the deploy branch`);
   const { branch, remote, ahead } = facts.push;
-  if (branch !== null && notOnDeployBranch(env, input).length === 0) {
+  if (branch !== null && wrongBranch.length === 0) {
     if (remote === null)
       refusals.push(`Branch ${branch} is not pushed: run \`git push -u origin ${branch}\``);
     else if (ahead > 0)
@@ -31366,6 +31368,15 @@ function isAncestor2(repo, ancestor, commit, env) {
     return false;
   throw new Error(`git merge-base failed: ${result.err}`);
 }
+function refBranchOf(repo, ref, env) {
+  if (ref === "HEAD" || ref === "@" || ref.startsWith("-"))
+    return null;
+  const named = runGit(repo, ["rev-parse", "--symbolic-full-name", ref], env, RESOLVE_GIT_TIMEOUT_MS);
+  if (!named.ok)
+    return null;
+  const match = /^refs\/(?:remotes\/[^/]+|heads)\/(.+)$/.exec(named.out);
+  return match?.[1] ?? null;
+}
 function readGitFacts(repo, dir, ref, env = process.env, options = {}) {
   const tasksPath = taskRepoPath(repo, dir);
   const refSha = refCommit(repo, ref, env);
@@ -31388,6 +31399,7 @@ function readGitFacts(repo, dir, ref, env = process.env, options = {}) {
   const ahead = remoteKnown && remoteRef !== null ? Number(taskGit(repo, ["rev-list", "--count", `${remoteRef}..HEAD`], env)) : 0;
   return {
     ref,
+    refBranch: refBranchOf(repo, ref, env),
     refCommit: refSha,
     headCommit,
     refIsAncestor: isAncestor2(repo, refSha, headCommit, env),

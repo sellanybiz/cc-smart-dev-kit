@@ -620,6 +620,7 @@ test("a pair is refused when the project lacks either environment, and writes no
 
 const cleanFacts: GitFacts = {
   ref: "origin/main",
+  refBranch: "main",
   refCommit: "a".repeat(40),
   headCommit: "a".repeat(40),
   changedPaths: [],
@@ -761,7 +762,7 @@ test("gate before: prod refuses while the staging twin is open; staging does not
   // refused with the way out: it must not pass for a finished one.
   expect(before("prod", [{ ...staging, status: "done" }, prod]).ok).toBe(true);
   expect(before("prod", [{ ...prod, twin: "staging-20990101-000000" }]).refusals).toEqual([
-    'prod-20261117-100000 "Prod half" names its staging twin staging-20990101-000000, but no task has that id: remove the `twin` line from /t/prod-20261117-100000.md, or make a new pair with `cc-smart-dev-kit task add "<title>" --kind staging --pair --deploy <before|after> --type <blocking|non-blocking>`',
+    'prod-20261117-100000 "Prod half" names its staging twin staging-20990101-000000, but no task has that id: remove the `twin` line from /t/prod-20261117-100000.md, or drop prod-20261117-100000 (only the person drops a blocking one) and make a new pair with `cc-smart-dev-kit task add "<title>" --kind staging --pair --deploy <before|after> --type <blocking|non-blocking>`',
   ]);
   // Staging never waits on a twin.
   expect(before("staging", [{ ...staging, twin: "prod-20990101-000000" }]).ok).toBe(true);
@@ -864,7 +865,10 @@ test("both gates refuse on the base branch, print the branch to cut, and never p
   const neverPushed = { ...cleanFacts, push: { branch: "main", remote: null, ahead: 0 } };
   expect(after("prod", [], neverPushed).refusals).toEqual([refusal]);
   // The base is the project's, not a fixed name.
-  expect(before("prod", [], { ...onMain, ref: "origin/release" }, both, "release").ok).toBe(true);
+  expect(
+    before("prod", [], { ...onMain, ref: "origin/release", refBranch: "release" }, both, "release")
+      .ok,
+  ).toBe(true);
 });
 
 const CUT =
@@ -879,6 +883,7 @@ test("both gates refuse a detached HEAD and the ref's own branch, each with the 
   const onTrunk = {
     ...cleanFacts,
     ref: "origin/trunk",
+    refBranch: "trunk",
     push: { branch: "trunk", remote: "origin/trunk", ahead: 2 },
   };
   const trunkRefusal = `HEAD is on trunk, the branch this run ships from (origin/trunk): the closes must reach it through a deploy branch's pull request, never by a push to it. ${CUT.replace("origin/main", "origin/trunk")}`;
@@ -901,11 +906,33 @@ test("the branch to cut is printed once: a wrong branch leaves it out of the HEA
   expect(refusals).toHaveLength(2);
   expect(refusals.join("\n").split("git switch --no-track").length - 1).toBe(1);
   expect(refusals[1]).toBe(
-    "HEAD bbbbbbbbbbbb does not contain origin/main (aaaaaaaaaaaa): the ref has commits this branch has not taken in, and may hold tasks it cannot see. Run `git fetch origin`, then rebase or merge the deploy branch onto origin/main.",
+    "HEAD bbbbbbbbbbbb does not contain origin/main (aaaaaaaaaaaa): the ref has commits this branch has not taken in, and may hold tasks it cannot see. The deploy branch to cut above starts from origin/main, so it holds what the ref holds.",
   );
-  // On a deploy branch the HEAD refusal keeps its fix.
+  // On a deploy branch the HEAD refusal keeps its own fix.
   const onDeploy = { ...onMainBehind, push: cleanFacts.push };
   expect(before("prod", [], onDeploy).refusals[0]).toContain("git switch --no-track");
+  // Detached HEAD, the same: the pointer, not a second branch command.
+  const detachedBehind = { ...onMainBehind, push: { branch: null, remote: null, ahead: 0 } };
+  expect(before("prod", [], detachedBehind).refusals[1]).toContain(
+    "The deploy branch to cut above starts from origin/main",
+  );
+});
+
+test("git facts: the ref's branch is read by git, never cut from the text", () => {
+  const { repo, remote, dir } = repoWithRemote();
+  const env = cleanGitEnv();
+  git(repo, "remote", "add", "upstream", remote);
+  git(repo, "fetch", "-q", "upstream");
+  git(repo, "tag", "v1");
+  const sha = git(repo, "rev-parse", "HEAD").trim();
+  const branchOf = (ref: string) => readGitFacts(repo, dir, ref, env).refBranch;
+  expect(branchOf("origin/main")).toBe("main");
+  expect(branchOf("upstream/main")).toBe("main");
+  expect(branchOf("refs/remotes/origin/main")).toBe("main");
+  expect(branchOf("main")).toBe("main");
+  expect(branchOf("v1")).toBeNull();
+  expect(branchOf(sha)).toBeNull();
+  expect(branchOf("HEAD")).toBeNull();
 });
 
 test("the gates read the base branch from the input, never a fixed name", () => {

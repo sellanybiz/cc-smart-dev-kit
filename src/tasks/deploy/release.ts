@@ -21,6 +21,11 @@ import {
 export interface GitFacts {
   /** The ref the run was told to ship (default `origin/<worktrees.base>`), as written. */
   ref: string;
+  /**
+   * The branch the ref names, as git resolves it (`origin/x`, `upstream/x`, `refs/heads/x` are all
+   * `x`), or null for a commit, a tag or HEAD: a run on that branch is a run on the ship branch.
+   */
+  refBranch: string | null;
   refCommit: string;
   headCommit: string;
   /** Whether the ref's commit is HEAD or one of HEAD's ancestors: HEAD has taken in everything the ref has. */
@@ -101,7 +106,7 @@ function startAgain(env: DeployEnv, facts: GitFacts, now: Date): string {
 
 /**
  * The refusal when the run is not on a deploy branch (D12): on the base branch, on the branch the
- * ref names (`origin/<x>` is `<x>`), or on a detached HEAD. Its closes would be pushed straight to
+ * ref names (`GitFacts.refBranch`), or on a detached HEAD. Its closes would be pushed straight to
  * a shared branch, or have no branch to be pushed from. One home for both gates, and the only
  * refusal that prints `startAgain` when it holds: the others then leave it out.
  */
@@ -115,7 +120,7 @@ function notOnDeployBranch(env: DeployEnv, input: JudgeInput): string[] {
     return [
       `HEAD is on ${baseBranch}, the branch deploys ship to: the closes must reach it through a deploy branch's pull request, never by a push to it. ${fix}`,
     ];
-  if (branch === facts.ref.replace(/^origin\//, ""))
+  if (branch === facts.refBranch)
     return [
       `HEAD is on ${branch}, the branch this run ships from (${facts.ref}): the closes must reach it through a deploy branch's pull request, never by a push to it. ${fix}`,
     ];
@@ -164,17 +169,23 @@ export function judgeBefore(env: DeployEnv, input: JudgeInput): GateResult {
   const wrongBranch = notOnDeployBranch(env, input);
   const refusals = [...envRefusal(env, envs), ...wrongBranch];
   const foreign = facts.changedPaths.filter((path) => !underTasks(path, facts.tasksPath));
-  // The fix is printed once: a refusal above already says how to start again.
-  const again = wrongBranch.length > 0 ? "" : ` ${startAgain(env, facts, now)}`;
+  // The branch to cut is printed once: with a wrong-branch refusal above, these lines point to it.
+  const wrong = wrongBranch.length > 0;
+  const cutFromRef = ` The deploy branch to cut above starts from ${facts.ref}, so it holds what the ref holds.`;
   if (facts.headCommit !== facts.refCommit) {
     if (!facts.refIsAncestor)
       refusals.push(
-        `HEAD ${facts.headCommit.slice(0, 12)} does not contain ${facts.ref} (${facts.refCommit.slice(0, 12)}): the ref has commits this branch has not taken in, and may hold tasks it cannot see. ` +
-          `Run \`git fetch origin\`, then rebase or merge the deploy branch onto ${facts.ref}.${again}`,
+        `HEAD ${facts.headCommit.slice(0, 12)} does not contain ${facts.ref} (${facts.refCommit.slice(0, 12)}): the ref has commits this branch has not taken in, and may hold tasks it cannot see.${
+          wrong
+            ? cutFromRef
+            : ` Run \`git fetch origin\`, then rebase or merge the deploy branch onto ${facts.ref}. ${startAgain(env, facts, now)}`
+        }`,
       );
     else if (foreign.length > 0)
       refusals.push(
-        `HEAD ${facts.headCommit.slice(0, 12)} is not ${facts.ref} (${facts.refCommit.slice(0, 12)}): it differs in ${foreign.length} path(s) outside ${facts.tasksPath || "the tasks folder"}.${again}`,
+        `HEAD ${facts.headCommit.slice(0, 12)} is not ${facts.ref} (${facts.refCommit.slice(0, 12)}): it differs in ${foreign.length} path(s) outside ${facts.tasksPath || "the tasks folder"}.${
+          wrong ? cutFromRef : ` ${startAgain(env, facts, now)}`
+        }`,
       );
   }
   const mine = scan.tasks.filter((task) => task.env === env && open(task));
@@ -232,7 +243,8 @@ export function gateAfter(env: DeployEnv, input: GateInput): GateResult {
 /** `gateAfter`'s rules over a scan that holds every task, open and closed. */
 export function judgeAfter(env: DeployEnv, input: JudgeInput): GateResult {
   const { scan, facts, envs } = input;
-  const refusals = [...envRefusal(env, envs), ...notOnDeployBranch(env, input)];
+  const wrongBranch = notOnDeployBranch(env, input);
+  const refusals = [...envRefusal(env, envs), ...wrongBranch];
   for (const task of scan.tasks.filter((one) => one.env === env && open(one)))
     refusals.push(
       `Task is open: ${describe(task)} (${task.deploy} the deploy, ${task.type}): close it with evidence, or drop it with a reason`,
@@ -244,7 +256,7 @@ export function judgeAfter(env: DeployEnv, input: JudgeInput): GateResult {
   const { branch, remote, ahead } = facts.push;
   // A detached HEAD, the base and the ref's branch are refused above, each with the branch to
   // cut: a push line here would name a shared branch.
-  if (branch !== null && notOnDeployBranch(env, input).length === 0) {
+  if (branch !== null && wrongBranch.length === 0) {
     if (remote === null)
       refusals.push(`Branch ${branch} is not pushed: run \`git push -u origin ${branch}\``);
     else if (ahead > 0)

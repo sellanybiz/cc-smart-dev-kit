@@ -28,9 +28,13 @@ export interface DeployTaskFinding {
 export function twinIsMissing(task: DeployTask, known: ReadonlySet<string>): boolean {
   return task.twin !== undefined && !known.has(task.twin);
 }
-/** The way out of a missing twin: `task check` and the prod gate print this one sentence. */
-export function twinMissingFix(task: DeployTask): string {
-  return `remove the \`twin\` line from ${task.file}, or make a new pair with \`${TASK_COMMAND} add "<title>" --kind staging --pair --deploy <${DEPLOY_STEPS.join("|")}> --type <${DEPLOY_TYPES.join("|")}>\``;
+/**
+ * The way out of a missing twin: `task check` and the gates print this one sentence. A pair is
+ * always two new tasks, so the second way out drops the old task first. `place` says which file:
+ * its path in a line that has no file of its own, "this file" where the line ends with the path.
+ */
+export function twinMissingFix(task: DeployTask, place: string = task.file): string {
+  return `remove the \`twin\` line from ${place}, or drop ${task.id} (only the person drops a blocking one) and make a new pair with \`${TASK_COMMAND} add "<title>" --kind staging --pair --deploy <${DEPLOY_STEPS.join("|")}> --type <${DEPLOY_TYPES.join("|")}>\``;
 }
 function inside(root: string, target: string): boolean {
   const rel = relative(root, target);
@@ -75,7 +79,7 @@ export function checkDeployTasks(options: {
       findings.push({
         ...common,
         kind: "twin-missing",
-        text: `Its twin ${task.twin} is not a task: ${twinMissingFix(task)}`,
+        text: `Its twin ${task.twin} is not a task: ${twinMissingFix(task, "this file")}`,
       });
     for (const ref of task.refs ?? []) {
       const target = resolve(checkoutRoot, ref);

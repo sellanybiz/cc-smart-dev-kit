@@ -120,8 +120,8 @@ Before any deploy, production or database work, list the deploy tasks (`task_lis
 3. **Do each task and close it** with evidence; commit the closes on the deploy branch.
 4. **Deploy**, with the project's own deploy skill.
 5. **`git push -u origin <branch>`**, then **`task release <env> --after`.** Exit 1 while any
-   task of that environment is open (before or after), a close is uncommitted, the branch is not
-   pushed, or the branch is the base, detached or the ref's own branch (a close is never pushed
+   task of that environment is open (before or after), a close is uncommitted, a task file is
+   broken, the branch is not pushed, or the branch is the base, detached or the ref's own branch (a close is never pushed
    there). With no flag, `release`
    lists the open tasks and exits 0.
 6. **The branch's pull request** (the task files only) merges as the workflow says
