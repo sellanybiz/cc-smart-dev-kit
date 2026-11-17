@@ -5992,7 +5992,7 @@ function superRefine(fn, params) {
 }
 // src/build-info/index.ts
 var info = {
-  version: "4.10.0",
+  version: "4.10.1",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -16586,11 +16586,6 @@ function parseOptions(argv, known, flagNames = [], repeatable = []) {
 }
 
 // src/herdr/words.ts
-var RELAY_MESSAGE_LIMIT = 800;
-var RELAY_TRANSPORT_CUT_MIN_BYTES = 2048 - 4 + 1;
-function relayMessageLength(text) {
-  return text.length;
-}
 var MODE_ORDER = ["plan", "default", "acceptEdits", "auto", "dontAsk"];
 function normalizeMode(mode) {
   const value = mode === "manual" ? "default" : mode;
@@ -16617,7 +16612,6 @@ var HERDR_VERBS = [
   "start",
   "list",
   "send",
-  "answer",
   "wait",
   "report",
   "adopt",
@@ -16628,8 +16622,7 @@ var USAGE_LINES = {
   start: `start --model <${CLAUDE_FAMILIES.join("|")}> --effort <${ALLOWED_EFFORTS.join("|")}> --mode <${MODE_ORDER.join("|")}|manual> [--cwd <dir>] [--on <machine>] [--name <name>] [--task <#n>] [--independent] [--asked] -- <brief>`,
   list: "list [--all] [--json]",
   send: "send <terminal> <text>",
-  answer: "answer <terminal> --expect <msg> --expect-turn <n> (--option <k> | --text <words>)",
-  wait: "wait [--any | --all] [--timeout <seconds>] [--seen <addr>:<turn|?>:<blocked|error|done|end>[,\u2026]]",
+  wait: "wait [--any | --all] [--timeout <seconds>] [--seen <addr>:<turn|?>:<error|done|end>[,\u2026]]",
   report: "report <text>",
   adopt: "adopt",
   stop: "stop <terminal>",
@@ -16683,7 +16676,7 @@ ${verb ? `Usage: ${COMMAND} herdr ${USAGE_LINES[verb]}` : HERDR_USAGE}`
       ...task ? { task } : {}
     };
   }
-  const known = verb === "answer" ? ["--expect", "--expect-turn", "--option", "--text"] : verb === "wait" ? ["--timeout", "--seen"] : [];
+  const known = verb === "wait" ? ["--timeout", "--seen"] : [];
   const flags = verb === "list" ? ["--all", "--json"] : verb === "wait" ? ["--any", "--all"] : [];
   const parsed = parseOptions(rest, known, flags);
   if ("error" in parsed)
@@ -16713,7 +16706,9 @@ ${verb ? `Usage: ${COMMAND} herdr ${USAGE_LINES[verb]}` : HERDR_USAGE}`
           if (!address || Object.hasOwn(seen, address) || match[2] !== "?" && !Number.isSafeInteger(Number(match[2])))
             return fail("--seen needs unique addresses and safe turn numbers.");
           const state = match[3];
-          if (state !== "blocked" && state !== "error" && state !== "done" && state !== "end")
+          if (state === "blocked")
+            continue;
+          if (state !== "error" && state !== "done" && state !== "end")
             return fail("Unknown cursor state.");
           seen[address] = { turn: match[2] === "?" ? null : Number(match[2]), state };
         }
@@ -16734,13 +16729,6 @@ ${verb ? `Usage: ${COMMAND} herdr ${USAGE_LINES[verb]}` : HERDR_USAGE}`
       return p.length === 2 ? { verb, target, text: p[1] ?? "" } : fail("Give a terminal and text.");
     case "report":
       return p.length === 1 ? { verb, text: target } : fail("Give the report text.");
-    case "answer": {
-      const expect = o.get("--expect"), turn = o.get("--expect-turn"), option = o.get("--option"), text = o.get("--text");
-      if (p.length !== 1 || !expect || !turn || !/^\d+$/.test(turn) || !Number.isSafeInteger(Number(turn)) || o.has("--option") === o.has("--text") || !(option ?? text)?.trim())
-        return fail("Give the terminal, expected message and turn, and one answer.");
-      const common = { verb, target, expect, expectTurn: Number(turn) };
-      return option !== undefined ? { ...common, option } : { ...common, text: text ?? "" };
-    }
     case "machines": {
       const action = p[0] ?? "list";
       if (action === "list")
@@ -17002,7 +16990,6 @@ function readBash(command, dialect = "bash") {
   return {
     launches,
     proposals,
-    steps,
     workflowPropose,
     invocations,
     namesHerdr,
@@ -17158,12 +17145,6 @@ function herdrArguments(one, reading) {
 function herdrDomain(reading) {
   return reading.invocations.some((one) => one.program === "hc" || one.program === "herdr-app" || one.computed && reading.namesHerdr || herdrArguments(one, reading) !== null);
 }
-function herdrExcerpt(text) {
-  const excerpt = text.slice(0, RELAY_MESSAGE_LIMIT);
-  const points = Array.from(excerpt);
-  const quoted = points.map((char) => /[\p{Cc}\p{Cf}]/u.test(char) ? Array.from({ length: char.length }, (_, i) => `\\u${char.charCodeAt(i).toString(16).padStart(4, "0")}`).join("") : JSON.stringify(char).slice(1, -1)).join("");
-  return `"${quoted}"${relayMessageLength(text) > RELAY_MESSAGE_LIMIT ? "\u2026" : ""}`;
-}
 function judgeHerdr(reading, context) {
   if (!herdrDomain(reading))
     return null;
@@ -17175,13 +17156,6 @@ function judgeHerdr(reading, context) {
   if (reading.identityAssigned)
     return verdict("deny", "Do not set HC_TERMINAL_ID: Herdr supplies the terminal identity.");
   let ask = null;
-  const hasAnswer = reading.steps.some((step) => herdrArguments(step, reading)?.[0] === "answer");
-  if (reading.invocations.some((one) => herdrArguments(one, reading)?.[0] === "answer" && one.filled.length > 0))
-    return verdict("deny", "Pass the exact prompt msg literally in single quotes; do not let the shell fill any herdr answer words.");
-  if (reading.steps.some((step) => herdrArguments(step, reading)?.[0] === "answer" && step.words[0] !== COMMAND && !step.words[0]?.endsWith(`/${COMMAND}`)))
-    return verdict("deny", "Run herdr answer directly, with no wrapper, so one approval sends one answer.");
-  if (hasAnswer && reading.steps.length > 1)
-    return verdict("deny", "Run herdr answer as the only step on its Bash line so the person approves exactly one answer.");
   const remember = (reason) => {
     ask ??= isAttended(context.env) ? verdict("ask", reason) : verdict("deny", `${reason}
 Nobody answers a question in \`claude -p\`; run this in an interactive session.`);
@@ -17204,7 +17178,7 @@ Nobody answers a question in \`claude -p\`; run this in an interactive session.`
     if (["export", "declare", "typeset", "local", "readonly"].includes(one.program) && args.some(isComputedWord))
       remember("This line computes an environment assignment on a Herdr line. Approve only if it does not change HC_TERMINAL_ID.");
     if (one.program === "herdr-app" && args[0] === "do") {
-      return verdict("deny", `Raw herdr-app do is not allowed. Use ${COMMAND} herdr start, send, answer or stop instead.`);
+      return verdict("deny", `Raw herdr-app do is not allowed. Use ${COMMAND} herdr start, send or stop instead.`);
     }
     if (one.program === "hc") {
       const raw = [...args];
@@ -17242,18 +17216,12 @@ Nobody answers a question in \`claude -p\`; run this in an interactive session.`
       }
       if (read)
         continue;
-      const fix = verb === "run" ? "herdr start" : verb === "send" || verb === "keys" ? "herdr send or herdr answer" : verb === "kill" || verb === "rm" ? "herdr stop" : verb === "label" ? "herdr adopt" : verb === "attach" ? "herdr send or herdr answer" : "job run for a background program (or a guarded herdr verb)";
+      const fix = verb === "run" ? "herdr start" : verb === "send" || verb === "keys" ? "herdr send (a child's question is the person's, in its pane)" : verb === "kill" || verb === "rm" ? "herdr stop" : verb === "label" ? "herdr adopt" : verb === "attach" ? "herdr send (the person attaches to a pane, never Claude)" : "job run for a background program (or a guarded herdr verb)";
       return verdict("deny", `Raw hc ${verb ?? "write"} is not allowed. Use ${COMMAND} ${fix}.`);
     }
     const herdr = herdrArguments(one, reading);
     if (herdr === null || herdr.length === 2 && ["--help", "-h"].includes(herdr[1] ?? ""))
       continue;
-    if (herdr[0] === "answer") {
-      const parsed = parseHerdrArgs(herdr);
-      const detail = !("error" in parsed) && parsed.verb === "answer" ? `${herdrExcerpt(parsed.target)}: ${parsed.option !== undefined ? `option ${herdrExcerpt(parsed.option)}` : `text ${herdrExcerpt(parsed.text ?? "")}`}; expected prompt ${herdrExcerpt(parsed.expect)}` : herdrExcerpt(herdr.slice(1).join(" "));
-      remember(`Approve the answer to Herdr child ${detail}. Only the person may answer a permission prompt.`);
-      continue;
-    }
     if (herdr[0] === "machines") {
       const parsed = parseHerdrArgs(herdr);
       if (!("error" in parsed) && parsed.verb === "machines" && parsed.action === "list")

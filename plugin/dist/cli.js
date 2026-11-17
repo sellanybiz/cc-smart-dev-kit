@@ -39,7 +39,7 @@ var MIN_BUN = "1.4.3";
 
 // src/build-info/index.ts
 var info = {
-  version: "4.10.0",
+  version: "4.10.1",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -19189,9 +19189,6 @@ var init_labels = __esm(() => {
 });
 
 // src/herdr/words.ts
-function relayMessageLength(text) {
-  return text.length;
-}
 function normalizeMode(mode) {
   const value = mode === "manual" ? "default" : mode;
   return MODE_ORDER.find((one) => one === value) ?? null;
@@ -19262,7 +19259,7 @@ ${verb ? `Usage: ${COMMAND} herdr ${USAGE_LINES[verb]}` : HERDR_USAGE}`
       ...task ? { task } : {}
     };
   }
-  const known = verb === "answer" ? ["--expect", "--expect-turn", "--option", "--text"] : verb === "wait" ? ["--timeout", "--seen"] : [];
+  const known = verb === "wait" ? ["--timeout", "--seen"] : [];
   const flags = verb === "list" ? ["--all", "--json"] : verb === "wait" ? ["--any", "--all"] : [];
   const parsed = parseOptions(rest, known, flags);
   if ("error" in parsed)
@@ -19292,7 +19289,9 @@ ${verb ? `Usage: ${COMMAND} herdr ${USAGE_LINES[verb]}` : HERDR_USAGE}`
           if (!address || Object.hasOwn(seen, address) || match[2] !== "?" && !Number.isSafeInteger(Number(match[2])))
             return fail("--seen needs unique addresses and safe turn numbers.");
           const state = match[3];
-          if (state !== "blocked" && state !== "error" && state !== "done" && state !== "end")
+          if (state === "blocked")
+            continue;
+          if (state !== "error" && state !== "done" && state !== "end")
             return fail("Unknown cursor state.");
           seen[address] = { turn: match[2] === "?" ? null : Number(match[2]), state };
         }
@@ -19313,13 +19312,6 @@ ${verb ? `Usage: ${COMMAND} herdr ${USAGE_LINES[verb]}` : HERDR_USAGE}`
       return p.length === 2 ? { verb, target, text: p[1] ?? "" } : fail("Give a terminal and text.");
     case "report":
       return p.length === 1 ? { verb, text: target } : fail("Give the report text.");
-    case "answer": {
-      const expect = o.get("--expect"), turn = o.get("--expect-turn"), option = o.get("--option"), text = o.get("--text");
-      if (p.length !== 1 || !expect || !turn || !/^\d+$/.test(turn) || !Number.isSafeInteger(Number(turn)) || o.has("--option") === o.has("--text") || !(option ?? text)?.trim())
-        return fail("Give the terminal, expected message and turn, and one answer.");
-      const common = { verb, target, expect, expectTurn: Number(turn) };
-      return option !== undefined ? { ...common, option } : { ...common, text: text ?? "" };
-    }
     case "machines": {
       const action = p[0] ?? "list";
       if (action === "list")
@@ -19330,19 +19322,17 @@ ${verb ? `Usage: ${COMMAND} herdr ${USAGE_LINES[verb]}` : HERDR_USAGE}`
     }
   }
 }
-var RELAY_MESSAGE_LIMIT = 800, RELAY_TRANSPORT_CUT_MIN_BYTES, MODE_ORDER, HERDR_VERBS, USAGE_LINES, HERDR_USAGE;
+var MODE_ORDER, HERDR_VERBS, USAGE_LINES, HERDR_USAGE;
 var init_words = __esm(() => {
   init_names();
   init_targets();
   init_launch_policy();
   init_labels();
-  RELAY_TRANSPORT_CUT_MIN_BYTES = 2048 - 4 + 1;
   MODE_ORDER = ["plan", "default", "acceptEdits", "auto", "dontAsk"];
   HERDR_VERBS = [
     "start",
     "list",
     "send",
-    "answer",
     "wait",
     "report",
     "adopt",
@@ -19353,8 +19343,7 @@ var init_words = __esm(() => {
     start: `start --model <${CLAUDE_FAMILIES.join("|")}> --effort <${ALLOWED_EFFORTS.join("|")}> --mode <${MODE_ORDER.join("|")}|manual> [--cwd <dir>] [--on <machine>] [--name <name>] [--task <#n>] [--independent] [--asked] -- <brief>`,
     list: "list [--all] [--json]",
     send: "send <terminal> <text>",
-    answer: "answer <terminal> --expect <msg> --expect-turn <n> (--option <k> | --text <words>)",
-    wait: "wait [--any | --all] [--timeout <seconds>] [--seen <addr>:<turn|?>:<blocked|error|done|end>[,\u2026]]",
+    wait: "wait [--any | --all] [--timeout <seconds>] [--seen <addr>:<turn|?>:<error|done|end>[,\u2026]]",
     report: "report <text>",
     adopt: "adopt",
     stop: "stop <terminal>",
@@ -41017,9 +41006,6 @@ function hcRun(runner, args) {
 function hcSend(runner, target, text, opts) {
   return json(runner, ["send", "--json", ...opts.ifStatus ? ["--if", opts.ifStatus] : [], "--", target, text], ObjectSchema);
 }
-function hcKeys(runner, target, keys) {
-  return json(runner, ["keys", "--json", "--", target, ...keys], ObjectSchema);
-}
 function hcKill(runner, target) {
   return json(runner, ["kill", "--json", "--", target], ObjectSchema);
 }
@@ -48144,7 +48130,6 @@ function readBash(command, dialect = "bash") {
   return {
     launches,
     proposals,
-    steps,
     workflowPropose,
     invocations,
     namesHerdr,
@@ -48300,12 +48285,6 @@ function herdrArguments(one, reading) {
 function herdrDomain(reading) {
   return reading.invocations.some((one) => one.program === "hc" || one.program === "herdr-app" || one.computed && reading.namesHerdr || herdrArguments(one, reading) !== null);
 }
-function herdrExcerpt(text) {
-  const excerpt = text.slice(0, RELAY_MESSAGE_LIMIT);
-  const points = Array.from(excerpt);
-  const quoted = points.map((char) => /[\p{Cc}\p{Cf}]/u.test(char) ? Array.from({ length: char.length }, (_, i) => `\\u${char.charCodeAt(i).toString(16).padStart(4, "0")}`).join("") : JSON.stringify(char).slice(1, -1)).join("");
-  return `"${quoted}"${relayMessageLength(text) > RELAY_MESSAGE_LIMIT ? "\u2026" : ""}`;
-}
 function judgeHerdr(reading, context) {
   if (!herdrDomain(reading))
     return null;
@@ -48317,13 +48296,6 @@ function judgeHerdr(reading, context) {
   if (reading.identityAssigned)
     return verdict("deny", "Do not set HC_TERMINAL_ID: Herdr supplies the terminal identity.");
   let ask = null;
-  const hasAnswer = reading.steps.some((step) => herdrArguments(step, reading)?.[0] === "answer");
-  if (reading.invocations.some((one) => herdrArguments(one, reading)?.[0] === "answer" && one.filled.length > 0))
-    return verdict("deny", "Pass the exact prompt msg literally in single quotes; do not let the shell fill any herdr answer words.");
-  if (reading.steps.some((step) => herdrArguments(step, reading)?.[0] === "answer" && step.words[0] !== COMMAND && !step.words[0]?.endsWith(`/${COMMAND}`)))
-    return verdict("deny", "Run herdr answer directly, with no wrapper, so one approval sends one answer.");
-  if (hasAnswer && reading.steps.length > 1)
-    return verdict("deny", "Run herdr answer as the only step on its Bash line so the person approves exactly one answer.");
   const remember = (reason) => {
     ask ??= isAttended(context.env) ? verdict("ask", reason) : verdict("deny", `${reason}
 Nobody answers a question in \`claude -p\`; run this in an interactive session.`);
@@ -48346,7 +48318,7 @@ Nobody answers a question in \`claude -p\`; run this in an interactive session.`
     if (["export", "declare", "typeset", "local", "readonly"].includes(one.program) && args.some(isComputedWord))
       remember("This line computes an environment assignment on a Herdr line. Approve only if it does not change HC_TERMINAL_ID.");
     if (one.program === "herdr-app" && args[0] === "do") {
-      return verdict("deny", `Raw herdr-app do is not allowed. Use ${COMMAND} herdr start, send, answer or stop instead.`);
+      return verdict("deny", `Raw herdr-app do is not allowed. Use ${COMMAND} herdr start, send or stop instead.`);
     }
     if (one.program === "hc") {
       const raw = [...args];
@@ -48384,18 +48356,12 @@ Nobody answers a question in \`claude -p\`; run this in an interactive session.`
       }
       if (read)
         continue;
-      const fix = verb === "run" ? "herdr start" : verb === "send" || verb === "keys" ? "herdr send or herdr answer" : verb === "kill" || verb === "rm" ? "herdr stop" : verb === "label" ? "herdr adopt" : verb === "attach" ? "herdr send or herdr answer" : "job run for a background program (or a guarded herdr verb)";
+      const fix = verb === "run" ? "herdr start" : verb === "send" || verb === "keys" ? "herdr send (a child's question is the person's, in its pane)" : verb === "kill" || verb === "rm" ? "herdr stop" : verb === "label" ? "herdr adopt" : verb === "attach" ? "herdr send (the person attaches to a pane, never Claude)" : "job run for a background program (or a guarded herdr verb)";
       return verdict("deny", `Raw hc ${verb ?? "write"} is not allowed. Use ${COMMAND} ${fix}.`);
     }
     const herdr = herdrArguments(one, reading);
     if (herdr === null || herdr.length === 2 && ["--help", "-h"].includes(herdr[1] ?? ""))
       continue;
-    if (herdr[0] === "answer") {
-      const parsed = parseHerdrArgs(herdr);
-      const detail = !("error" in parsed) && parsed.verb === "answer" ? `${herdrExcerpt(parsed.target)}: ${parsed.option !== undefined ? `option ${herdrExcerpt(parsed.option)}` : `text ${herdrExcerpt(parsed.text ?? "")}`}; expected prompt ${herdrExcerpt(parsed.expect)}` : herdrExcerpt(herdr.slice(1).join(" "));
-      remember(`Approve the answer to Herdr child ${detail}. Only the person may answer a permission prompt.`);
-      continue;
-    }
     if (herdr[0] === "machines") {
       const parsed = parseHerdrArgs(herdr);
       if (!("error" in parsed) && parsed.verb === "machines" && parsed.action === "list")
@@ -54797,7 +54763,7 @@ function encodeCursorAddress(address) {
   return encodeURIComponent(address).replace(/[!'()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`);
 }
 function settled(state) {
-  return ["blocked", "error", "done", "finished"].includes(state);
+  return ["error", "done", "finished"].includes(state);
 }
 function unseen(fact, seen) {
   const old = seen[fact.terminal];
@@ -55036,7 +55002,7 @@ function send(r, target, text) {
   const t = hcGet(r, target);
   const state = t.status?.state;
   if (!isLiveClaude(t) || !state || !["idle", "working", "done"].includes(state))
-    throw new HcError("blocked", `This terminal cannot receive a message; answer it in its pane: hc attach ${target}`);
+    throw new HcError("blocked", `This terminal cannot receive a message; the person answers it in its pane: hc attach ${target}`);
   hcSend(r, target, text, state === "done" ? {} : { ifStatus: state === "idle" ? "idle" : "working" });
 }
 function remoteResult(r, machine, args, cwd) {
@@ -55246,7 +55212,7 @@ Your lead is on another core. Reports stay on this machine in ${remoteReportFold
         ctx.out.say(`Worktree folder ${folderExists === 0 ? "exists" : "does not exist"}: ${worktree}`);
         return refuse2(ctx, `The child ${child.address} exited during launch.`, "Resolve the screen error above, then retry with the same name if its worktree and branch are absent.");
       }
-      ctx.out.line("warn", `The child ${child.address} has not reported yet; answer it in its pane: hc attach ${child.address}`);
+      ctx.out.line("warn", `The child ${child.address} has not reported yet; the person answers it in its pane: hc attach ${child.address}`);
       break;
     }
     await ctx.sleep(Math.min(LAUNCH_POLL_MS, Math.max(0, deadline - ctx.now())));
@@ -55281,122 +55247,6 @@ Your lead is on another core. Reports stay on this machine in ${remoteReportFold
   if (a.on && !a.independent)
     remoteReportHint(ctx, a.on);
   count4(ctx, terminals(r).filter(kit));
-  return 0;
-}
-function ruleLine(line) {
-  return /^[\u2500-\u257F]+$/u.test(line.trim());
-}
-function dialog(screen) {
-  const lines = screen.split(/\r?\n/);
-  const blocks = [];
-  let block = { start: 0, options: [] };
-  for (const [index, line] of lines.entries()) {
-    const match = /^\s*(\u276F)?\s*(\d+)\.\s+(.+)$/.exec(line);
-    if (match) {
-      if (!block.options.length)
-        block.start = index;
-      block.options.push({ number: Number(match[2]), label: match[3] ?? "", cursor: !!match[1] });
-      continue;
-    }
-    if (ruleLine(line)) {
-      const next = /^\s*(?:\u276F)?\s*(\d+)\.\s+/.exec(lines[index + 1] ?? "");
-      if (block.options.length && Number(next?.[1]) === (block.options.at(-1)?.number ?? 0) + 1)
-        continue;
-    } else if (block.options.length && /^\s{3,}\S/.test(line)) {
-      const last = block.options.at(-1);
-      if (last)
-        last.label += ` ${line.trim()}`;
-      continue;
-    }
-    if (block.options.length) {
-      blocks.push(block);
-      block = { start: 0, options: [] };
-    }
-  }
-  if (block.options.length)
-    blocks.push(block);
-  const result = blocks.at(-1);
-  if (result?.options.filter((o) => o.cursor).length !== 1 || result.options.some((o, i) => o.number !== i + 1))
-    return null;
-  let start = result.start;
-  while (start > 0 && !ruleLine(lines[start - 1] ?? ""))
-    start--;
-  const frame = (line, rule) => rule.test(line?.trimEnd() ?? "");
-  let top = result.start - 1;
-  while (top >= 0 && !frame(lines[top], /^\u2500+$/u))
-    top--;
-  const dashed = [];
-  for (let i = top + 1;top >= 0 && i < result.start; i++)
-    if (frame(lines[i], /^\u254C+$/u))
-      dashed.push(i);
-  const [open, close] = dashed;
-  const inside = dashed.length === 2 && open !== undefined && close !== undefined ? lines.slice(open + 1, close) : [];
-  const bordered = inside.filter((line) => line.trimStart().startsWith("\u2502")).length;
-  const box = !inside.length ? null : bordered === inside.length ? inside.map((line) => line.trimStart().slice(1)) : bordered === 0 ? inside : null;
-  return {
-    options: result.options,
-    box,
-    above: lines.slice(Math.max(0, start - 3), Math.max(0, start - 1)),
-    region: lines.slice(start)
-  };
-}
-function dialogOptions(screen) {
-  return dialog(screen)?.options ?? null;
-}
-function boxShowsAction(box, action) {
-  const compact = (text) => text.replace(/\s/g, "");
-  return compact(action) !== "" && compact(box.join("")) === compact(action);
-}
-function answer(a, ctx, r, me) {
-  const child = own2(r, a.target, me);
-  const target = child.address;
-  const s = child.status;
-  if (s?.kind === "auth")
-    return refuse2(ctx, `Answer authentication in its pane: hc attach ${target}`);
-  const changed = () => refuse2(ctx, `The prompt changed; read it again (hc get ${a.target}).`);
-  if (s?.state !== "blocked" || !["question", "permission"].includes(s.kind ?? "") || s.msg !== a.expect || child.turn !== a.expectTurn)
-    return changed();
-  if (s.msg?.endsWith("\u2026") || Buffer.byteLength(s.msg ?? "", "utf8") >= RELAY_TRANSPORT_CUT_MIN_BYTES || relayMessageLength(s.msg ?? "") > RELAY_MESSAGE_LIMIT)
-    return refuse2(ctx, `The prompt may be cut short; answer it in its pane: hc attach ${target}`);
-  if (/(?:^| \u00B7 )approve plan/i.test(s.msg ?? ""))
-    return refuse2(ctx, `Answer the plan in its pane: hc attach ${a.target}`);
-  const screen = hcRead(r, target, SCREEN_LINES).text;
-  if (a.text !== undefined)
-    return refuse2(ctx, `Text answers need its pane: hc attach ${a.target}`);
-  const parsed = dialog(screen);
-  const region = parsed?.region.join(`
-`) ?? "";
-  if (s.kind === "question" && (/multi.?select|select all|space to (?:select|toggle)/i.test(region) || /\u2714\s*Submit|\u2190[^\n]*\u2192/.test(parsed?.above.join(`
-`) ?? "") || region.split(`
-`).some((line) => (line.match(/\u2610/g)?.length ?? 0) >= 2) || /\u2714\s*Submit|\u2190[^\n]*\u2192|\d+\s*\/\s*[2-9]\d*\s*questions?/i.test(region) || parsed?.options.some((o) => /^\[(?: |x|\u2714)\]/i.test(o.label))))
-    return refuse2(ctx, `Several questions or a multi-select need its pane: hc attach ${a.target}`);
-  const action = /(?:^| \u00B7 )approve Bash: (.*)$/s.exec(s.msg ?? "")?.[1];
-  if (s.kind === "permission" && action !== undefined && (!parsed?.box || !boxShowsAction(parsed.box, action)))
-    return refuse2(ctx, `The Bash action does not match the dialog; answer it in its pane: hc attach ${target}`);
-  const options = parsed?.options;
-  const option = Number(a.option);
-  if (!options || !/^[1-9]\d*$/.test(a.option ?? "") || !Number.isSafeInteger(option) || option > options.length)
-    return refuse2(ctx, "The option is not visible; read the pane again.");
-  const selected = options[option - 1];
-  if (!selected)
-    return refuse2(ctx, "The option is not visible; read the pane again.");
-  if (s.kind === "question" && /^(?:Type something|Chat about this)/i.test(selected.label))
-    return refuse2(ctx, "Text and chat answers need the pane.");
-  if (s.kind === "permission" && /don[\u2019']t ask again|do not ask again|always|for this session/i.test(selected.label))
-    return refuse2(ctx, "A remembered permission must be answered in the pane.");
-  if (s.kind === "permission" && !/^(?:no(?:,.*)?|yes(?:,? (?:once|allow once))?|deny|allow once)(?:[.! ]|$)/i.test(selected.label))
-    return refuse2(ctx, "Only a one-time yes or no permission can be relayed; answer this in the pane.");
-  const last = own2(r, target, me);
-  if (last.status?.state !== "blocked" || last.status.kind !== s.kind || last.status.msg !== a.expect || last.turn !== a.expectTurn)
-    return changed();
-  if (JSON.stringify(dialogOptions(hcRead(r, target, SCREEN_LINES).text)) !== JSON.stringify(options))
-    return changed();
-  const difference = option - (options.findIndex((o) => o.cursor) + 1);
-  hcKeys(r, target, [
-    ...Array.from({ length: Math.abs(difference) }, () => difference < 0 ? "up" : "down"),
-    "enter"
-  ]);
-  ctx.out.line("ok", "Answer sent.");
   return 0;
 }
 async function report(text, ctx, r) {
@@ -55483,16 +55333,12 @@ async function runHerdr(args, ctx) {
       }
       case "send": {
         const child = own2(r, parsed.target, me);
-        if (child.status?.state === "blocked")
-          return refuse2(ctx, `Answer it with ${COMMAND} herdr answer.`);
-        if (!child.status)
-          return refuse2(ctx, `Answer it in its pane: hc attach ${parsed.target}`);
+        if (child.status?.state === "blocked" || !child.status)
+          return refuse2(ctx, `This child waits for the person, who answers it in its pane: hc attach ${parsed.target}`);
         send(r, child.address, escapeReport(parsed.text, "lead"));
         ctx.out.line("ok", "Message sent.");
         return 0;
       }
-      case "answer":
-        return answer(parsed, ctx, r, me);
       case "stop": {
         const child = own2(r, parsed.target, me);
         hcKill(r, child.address);
@@ -55554,7 +55400,7 @@ async function runHerdr(args, ctx) {
           return 0;
         }
         if (news === "timeout")
-          ctx.out.line("info", "Still working.");
+          ctx.out.line("info", "Not settled yet.");
         else if ("news" in news && Array.isArray(news.news)) {
           for (const fact of news.news) {
             ctx.out.say(`${fact.terminal}: ${fact.state}; status_ms=${fact.status_ms ?? "unknown"}`);
@@ -55562,14 +55408,14 @@ async function runHerdr(args, ctx) {
               remoteReportHint(ctx, fact.terminal.split("/")[0] ?? "");
           }
           if (news.timeout)
-            ctx.out.line("info", `Still working: ${Array.isArray(news.pending) ? news.pending.join(", ") : "unknown"}`);
+            ctx.out.line("info", `Not settled yet (a blocked child waits for the person; see herdr list): ${Array.isArray(news.pending) ? news.pending.join(", ") : "unknown"}`);
         } else
           ctx.out.json(news);
         const cursor = Object.fromEntries(Object.entries(parsed.seen ?? {}).filter(([address]) => typeof news === "string" || !Array.isArray(news.addresses) || news.addresses.includes(address)));
         if (typeof news !== "string" && "news" in news && Array.isArray(news.news))
           for (const fact of news.news) {
             const state = fact.state === "finished" ? "end" : fact.state;
-            if (state === "blocked" || state === "error" || state === "done" || state === "end")
+            if (state === "error" || state === "done" || state === "end")
               cursor[fact.terminal] = { turn: fact.turn ?? null, state };
           }
         const seen = Object.entries(cursor).map(([address, c]) => `${encodeCursorAddress(address)}:${c.turn ?? "?"}:${c.state}`);

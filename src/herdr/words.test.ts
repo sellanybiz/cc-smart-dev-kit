@@ -6,8 +6,6 @@ import {
   modeWiderThan,
   normalizeMode,
   parseHerdrArgs,
-  RELAY_MESSAGE_LIMIT,
-  relayMessageLength,
 } from "./words";
 
 test("every mode pair", () => {
@@ -112,12 +110,19 @@ test("every verb", () => {
     target: "t7",
     text: "hello",
   });
-  expect(
-    parseHerdrArgs(["answer", "t7", "--expect", "q", "--expect-turn", "0", "--option", "2"]),
-  ).toEqual({ verb: "answer", target: "t7", expect: "q", expectTurn: 0, option: "2" });
-  expect(
-    parseHerdrArgs(["answer", "t7", "--expect", "q", "--expect-turn", "1", "--text", "words"]),
-  ).toMatchObject({ verb: "answer", text: "words" });
+  // 4.10.1: the relay is gone; a child's question is the person's.
+  const answer = parseHerdrArgs([
+    "answer",
+    "t7",
+    "--expect",
+    "q",
+    "--expect-turn",
+    "0",
+    "--option",
+    "2",
+  ]);
+  expect(answer).toHaveProperty("error");
+  if ("error" in answer) expect(answer.error).toStartWith("Choose a herdr verb.\nUsage:");
   expect(parseHerdrArgs(["wait"])).toEqual({ verb: "wait", mode: "any" });
   for (const mode of ["any", "all"] as const)
     expect(parseHerdrArgs(["wait", `--${mode}`])).toEqual({ verb: "wait", mode });
@@ -172,9 +177,4 @@ test("errors carry usage", () => {
     expect(r).toHaveProperty("error");
     if ("error" in r) expect(r.error).toContain("Usage:");
   }
-});
-
-test("relay limit counts UTF-16 units, not Unicode points or bytes", () => {
-  expect(RELAY_MESSAGE_LIMIT).toBe(800);
-  expect(relayMessageLength("A😀界")).toBe(4);
 });

@@ -4,37 +4,25 @@ import { join } from "node:path";
 import { withLock } from "../setup/lock";
 import { tempDir } from "../testing/temp";
 import { reportPath, writeBrief, writePrivate } from "./brief";
-import { dialogOptions, followEvents, WaitBarrier, waitFacts } from "./command";
+import { followEvents, WaitBarrier, waitFacts } from "./command";
 import { herdrChecks } from "./doctor";
 import type { HcRunner } from "./hc";
 import { processAncestors } from "./identity";
 import { parseHerdrArgs } from "./words";
 
-test("1 dialog ignores conversation and requires contiguous numbers and one cursor", () => {
-  expect(
-    dialogOptions(
-      "1. Old\n2. Old\n5. Old\n\nChoose\n❯ 1. Yes\n  2. Yes, always\n     for this session\n\nEnter to confirm",
-    ),
-  ).toEqual([
-    { number: 1, label: "Yes", cursor: true },
-    { number: 2, label: "Yes, always for this session", cursor: false },
-  ]);
-  for (const text of ["1. A\n2. B", "❯ 1. A\n❯ 2. B", "❯ 1. A\n3. C"])
-    expect(dialogOptions(text)).toBeNull();
-});
 test("2/6 snapshots, since and all barrier", () => {
   const snapshot = {
     terminals: [
-      { address: "t1", state: "live", status: { state: "blocked" }, status_ms: 8, turn: 6 },
+      { address: "t1", state: "live", status: { state: "error" }, status_ms: 8, turn: 6 },
       { address: "t2", state: "live", status: { state: "done" }, status_ms: 4, turn: 4 },
     ],
   };
   expect(waitFacts(snapshot, { t2: { turn: 4, state: "done" } })).toEqual([
-    { terminal: "t1", state: "blocked", status_ms: 8, turn: 6 },
+    { terminal: "t1", state: "error", status_ms: 8, turn: 6 },
   ]);
   expect(
     waitFacts({ method: "missed", params: snapshot }, { t2: { turn: 4, state: "done" } }),
-  ).toEqual([{ terminal: "t1", state: "blocked", status_ms: 8, turn: 6 }]);
+  ).toEqual([{ terminal: "t1", state: "error", status_ms: 8, turn: 6 }]);
   expect(waitFacts(snapshot)).toHaveLength(2);
   const barrier = new WaitBarrier("all", { t2: { turn: 4, state: "done" } });
   expect(barrier.consume(snapshot)).toBe(true);
@@ -110,12 +98,12 @@ test("8 event stream ignores blank lines and carries stderr errors", async () =>
     process.env.PATH = dir;
     writeFileSync(
       file,
-      `#!/bin/sh\nprintf '\\n%s\\n' '{"terminals":[{"address":"t1","state":"live","status":{"state":"blocked"},"status_ms":8,"turn":6}]}'\n`,
+      `#!/bin/sh\nprintf '\\n%s\\n' '{"terminals":[{"address":"t1","state":"live","status":{"state":"done"},"status_ms":8,"turn":6}]}'\n`,
     );
     chmodSync(file, 0o755);
     expect(await followEvents({}, 1000)).toEqual({
       addresses: ["t1"],
-      news: [{ terminal: "t1", state: "blocked", status_ms: 8, turn: 6 }],
+      news: [{ terminal: "t1", state: "done", status_ms: 8, turn: 6 }],
       pending: [],
       timeout: false,
     });
@@ -190,13 +178,4 @@ test("10 process list shares bounded ancestry walk and 11 since parses", () => {
     mode: "any",
     seen: { t1: { turn: 123, state: "done" } },
   });
-});
-
-test("question separator keeps consecutive chat option separate from labels", () => {
-  expect(dialogOptions("❯ 1. A\n  2. Type something.\n    ─────\n  3. Chat about this")).toEqual([
-    { number: 1, label: "A", cursor: true },
-    { number: 2, label: "Type something.", cursor: false },
-    { number: 3, label: "Chat about this", cursor: false },
-  ]);
-  expect(dialogOptions("❯ 1. Old\n  2. Old\n    ───\n  1. A\n  2. B")).toBeNull();
 });

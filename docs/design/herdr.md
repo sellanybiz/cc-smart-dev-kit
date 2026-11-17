@@ -2,7 +2,8 @@
 
 The kit adds coordination to Herdr, not another session engine. Herdr owns terminals,
 status, turns, panes and remote connections. The kit supplies checked starts, ownership,
-briefs, a question relay and the task link. The user workflow is
+briefs, waiting and the task link. A blocked child is the person's: they answer it in its
+own pane, and the lead never relays it (4.10.1). The user workflow is
 `plugin/skills/herdr/SKILL.md`; command help comes from `src/herdr/words.ts` (`HERDR_USAGE`).
 
 ## Parts
@@ -137,59 +138,24 @@ raw hc exec remains denied to Claude by the judge. A different remote config ove
 not alter the absolute brief path already handed to the child; report retrieval with such
 an override still needs live verification.
 
-## The relay
+## A blocked child is the person's
 
-`answer <terminal> --expect <msg> --expect-turn <n> --option <k>` is for an owned, blocked
-child with kind question or permission. The exact status message and turn must still match.
-The screen reader takes the bottom contiguous numbered option block, requires entries
-1..n and one cursor, and checks the selected label. It refuses multi-question, multi-select,
-authentication, plan approval and remembered permissions; only a one-time yes/no permission
-can be relayed. A lone `☐` question header is allowed; tab rows and checkbox options are not.
-Question options named Type something or Chat about this require the pane, as does `--text`.
-The parser crosses a rule only when the next option continues at n+1, before joining label
-continuations. Remembered-permission labels are refused only for permission dialogs.
-
-Claude Code collapses whitespace and caps messages at 800 UTF-16 units, marking cuts with
-“…”; OSC transport can also cut silently at 2048 UTF-8 bytes. Messages ending in “…” or
-longer than 800 units, or with at least 2045 bytes, require the pane. For Bash, the action
-after an optional description prefix must equal the dialog's whole command box, with
-whitespace removed. Claude Code 2.1.322 draws a Bash dialog as a solid top rule, its header
-lines, then the command between two dashed rules. The box is exactly the lines between the last
-two dashed rules below the last solid rule above the options. The frame rules are found at
-column 0 only, because every content line is indented, so a rule-like line inside the command
-never counts; anything but exactly two dashed rules refuses. The box comes in two layouts, both
-captured live in the same version: every line starts with a `│` border, or none does (a plain
-prompt that matched no rule, with "This command requires approval" below the box). A box that
-mixes the two refuses. Transcript history, the description line and a part of the box never
-count. Without that solid rule or the two dashed rules, Bash matching refuses. Question-tab
-markers in the two lines above the rule nearest the options (of any kind) also refuse, as do
-multi-select instructions inside the dialog. These hints apply
-only to question dialogs, not Bash actions. Other tools need no screen match: Write can show a
-relative path. The person approves that path, not the file's content.
-
-Immediately before keys, the command reads status and screen again, requiring the same
-message, turn, options and cursor. It moves up/down from that cursor to k, then Enter.
-It never assumes number-key selection or a Home key. There is still a get-to-keys race:
-hc has no atomic expected-turn keys operation. Live acceptance of this boundary is owed.
-
-The skill asks the person with mirrored options and quotes the full permission action from
-`hc read`, not just its status msg. Then it runs the guarded answer line. The judge includes
-a safely quoted `--expect` of up to the same 800-unit limit in its reason. A Bash line
-must contain only the answer step, with literal words: shell-filled words, loops, functions
-and other steps are refused. Each answer gets its own approval.
-The judge always asks again for that line; it cannot inspect a prompt kind without an hc
-call. Plan approval, login and unsupported dialogs stay with the person in `hc attach`.
-A plan dialog's first option ("Yes, and use auto mode") switches the child to auto mode, which
-can be wider than a lead in default mode. That is the person's own choice in the pane, so no
-guard stops it (seen live in 4.3.0).
-While away, the existing frame denies and parks questions instead of guessing answers.
+The person answers a child's questions, permission prompts, plan approval and login in the
+child's own pane. The lead takes no part: `wait` does not report a blocked child, the skill
+tells the lead never to ask or answer for it, and the judge refuses raw input into a child's
+dialog, so only the person answers. Until 4.10.0 the kit had a relay (`herdr answer`, with a
+screen reader that matched the dialog and a judge question for every answer); the person
+chose to answer in the pane instead, so 4.10.1 removed it, and its guards with it.
+While away, the existing frame denies and parks the lead's own questions; a child waits in its
+pane until the person comes back.
 
 ## Waiting without polling
 
 `wait [--any | --all] [--timeout <seconds>] [--seen <addr>:<turn|?>:<state>,…]` follows
 label-filtered hc events in a background Bash call. The initial and missed snapshots count
-as status evidence. Settled states are blocked, error, done and terminal end (`end` in the
-cursor). A different state at the same turn is news; a backwards turn is stale and reported.
+as status evidence. Settled states are error, done and terminal end (`end` in the cursor).
+Blocked is not settled: the child waits for the person, and the wait goes on. An old cursor's
+`blocked` entry (printed by 4.10.0) is accepted and ignored. A different state at the same turn is news; a backwards turn is stale and reported.
 An unknown turn can be printed and carried as `?`. Addresses are percent-encoded.
 
 Default/`--any` returns on news, retaining all news buffered in that chunk. `--all` is a
@@ -207,15 +173,15 @@ not a successful completion. Remote news also prints the report retrieval hints.
 ## Judge and command boundaries
 
 The command holds ownership, identity, names, task locality, remote version, brief privacy,
-report safety and relay guards. It requires `--asked` for Fable, Opus/max, and non-free remote
+report safety and send guards. It requires `--asked` for Fable, Opus/max, and non-free remote
 starts. The judge still asks for every such launch, even with that flag: the approved line
-is the line that runs. It also asks for every answer and machine-rule change, denies raw hc
+is the line that runs. It also asks for every machine-rule change, denies raw hc
 writes and identity assignments, and caps mode from PreToolUse's `permission_mode`.
 
 The mode cap, premium/remote approval prompts and machine-rule approval prompts live only
 in the judge, as does the refusal of unattended starts (`claude -p`): nobody watches their
 children or receives their reports. A script calling the command directly meets only the
-command's identity, ownership, name, task-locality, version, privacy and relay checks, its
+command's identity, ownership, name, task-locality, version, privacy and send checks, its
 explicit model/effort/mode requirements, its bypassPermissions ban and its `--asked` flag
 requirements. The flag alone is not a recorded approval outside the judge. Raw remote hc
 reads also meet the judge's machine rule: production and unknown machines ask; free ones
@@ -230,14 +196,11 @@ fragments. These are policy checks, not a sandbox; keep that limit explicit.
 | Lead dies or becomes a shell | Child stays; new lead adopts it by labels and sees saved report paths. |
 | Old lead is a blocked Claude | Adopt skips its children. |
 | Claude restarts in the old terminal | It is still the lead by terminal identity. |
-| Bash action appears only in transcript or as part of a line | Relay refuses; use the pane. |
-| Status ends in “…” or could be transport-cut | Relay refuses rather than approve an incomplete action. |
 | Child exits during launch, including a trust error | Show screen and folder state, remove terminal, exit 1; no task binding. |
 | First Claude status takes more than 20 seconds | Show screen, warn with attach command, exit 0 and bind the task. |
 | Login shell is unset or not in the supported shell family | Use sh login fallback; user arguments stay positional. |
 | Trust screen, booting child or unknown status | No text send; person uses the pane. |
-| Same question text appears again | Turn check rejects the stale answer. |
-| Cursor or options change | Final screen comparison refuses. |
+| Child blocked on a question or permission | The person answers in its pane; `wait` keeps waiting. |
 | Lead has become a shell or is blocked | Report falls back to a unique file. |
 | Old terminal name still has worktree/branch | Refuse reuse rather than resume old work. |
 | New hc fields | Tolerant schemas keep them; unknown dialog kinds stay pane-only. |
@@ -251,9 +214,9 @@ these are not claims that real doctor already performs those reads.
 
 ## Live evidence and work still owed
 
-For 4.3.1, the remaining live checks are still owed in #273: a 300+ character Bash
-relay with the judge's full quote, option 2 of a single question, and adoption from a
-shell lead with saved reports listed. The release also owes the launch-failure, independent
+For 4.3.1, one live check is still owed in #273: adoption from a shell lead with saved
+reports listed (the relay checks it also listed went with the relay in 4.10.1). The
+release also owes the launch-failure, independent
 space and attention, and remote-start checks after the start fixes. Unit fixtures copy
 2.1.322 screens; they do not establish these live outcomes.
 
@@ -268,10 +231,8 @@ not live UI behavior.
 **Not yet proved live** (release proof task #273):
 
 - Actual Bash permission kind/msg and labels; plain send at a blocked prompt types nothing.
-- The current cursor-relative answer route at permission and single-question dialogs,
-  including the judge's confirmation. Number-key selection and Type something remain unproved;
-  neither is used by the relay.
-- Plan approval kind/msg and pane-only refusal; multi-question and multi-select refusal.
+- Whether Herdr marks a blocked linked child as needing the person (proved only for
+  independent sessions). Since 4.10.1 that mark is the person's only signal: `wait` stays quiet.
 - A real child's report to a live lead and a gone lead's report-file fallback.
 - Remote version/git/collision checks, private brief transfer and launch on an allowed machine.
 - Herdr's toast for an independent session's unseen question.

@@ -80,13 +80,3 @@ test("start refuses premium models before launch", async () => {
   ).toBe(1);
   expect(calls.some((a) => a[0] === "run")).toBe(false);
 });
-test("answer refuses stale prompts and text without typing", async () => {
-  const { ctx, calls } = setup();
-  expect(
-    await runHerdr(
-      ["answer", "t2", "--expect", "question", "--expect-turn", "3", "--option", "1"],
-      ctx,
-    ),
-  ).toBe(1);
-  expect(calls.some((a) => a[0] === "keys")).toBe(false);
-});

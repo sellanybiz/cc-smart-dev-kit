@@ -3,15 +3,6 @@ import { parseOptions } from "../cli/args";
 import { CLAUDE_FAMILIES, type ClaudeFamily } from "../gateway/targets";
 import { ALLOWED_EFFORTS, type Effort } from "../models/launch-policy";
 import { validChildName } from "./labels";
-/** Claude Code collapses whitespace, then caps msg at 800 UTF-16 units with “…”.
- * OSC transport can silently cut at 2048 UTF-8 bytes (a cut result has at least 2045).
- */
-export const RELAY_MESSAGE_LIMIT = 800;
-/** A 2048-byte OSC cut can lose up to three bytes at a four-byte character boundary. */
-export const RELAY_TRANSPORT_CUT_MIN_BYTES = 2048 - 4 + 1;
-export function relayMessageLength(text: string): number {
-  return text.length;
-}
 export const MODE_ORDER = ["plan", "default", "acceptEdits", "auto", "dontAsk"] as const;
 export type HerdrMode = (typeof MODE_ORDER)[number];
 export function normalizeMode(mode: string): HerdrMode | null {
@@ -43,7 +34,6 @@ export const HERDR_VERBS = [
   "start",
   "list",
   "send",
-  "answer",
   "wait",
   "report",
   "adopt",
@@ -55,8 +45,7 @@ const USAGE_LINES = {
   start: `start --model <${CLAUDE_FAMILIES.join("|")}> --effort <${ALLOWED_EFFORTS.join("|")}> --mode <${MODE_ORDER.join("|")}|manual> [--cwd <dir>] [--on <machine>] [--name <name>] [--task <#n>] [--independent] [--asked] -- <brief>`,
   list: "list [--all] [--json]",
   send: "send <terminal> <text>",
-  answer: "answer <terminal> --expect <msg> --expect-turn <n> (--option <k> | --text <words>)",
-  wait: "wait [--any | --all] [--timeout <seconds>] [--seen <addr>:<turn|?>:<blocked|error|done|end>[,…]]",
+  wait: "wait [--any | --all] [--timeout <seconds>] [--seen <addr>:<turn|?>:<error|done|end>[,…]]",
   report: "report <text>",
   adopt: "adopt",
   stop: "stop <terminal>",
@@ -81,15 +70,11 @@ export type HerdrArgs =
     }
   | { verb: "list"; all: boolean; json: boolean }
   | { verb: "send"; target: string; text: string }
-  | ({ verb: "answer"; target: string; expect: string; expectTurn: number } & (
-      | { option: string; text?: never }
-      | { text: string; option?: never }
-    ))
   | {
       verb: "wait";
       mode: "any" | "all";
       timeoutMs?: number;
-      seen?: Record<string, { turn: number | null; state: "blocked" | "error" | "done" | "end" }>;
+      seen?: Record<string, { turn: number | null; state: "error" | "done" | "end" }>;
     }
   | { verb: "report"; text: string }
   | { verb: "adopt" }
@@ -143,12 +128,7 @@ export function parseHerdrArgs(args: string[]): HerdrArgs | { error: string } {
       ...(task ? { task } : {}),
     };
   }
-  const known =
-    verb === "answer"
-      ? ["--expect", "--expect-turn", "--option", "--text"]
-      : verb === "wait"
-        ? ["--timeout", "--seen"]
-        : [];
+  const known = verb === "wait" ? ["--timeout", "--seen"] : [];
   const flags = verb === "list" ? ["--all", "--json"] : verb === "wait" ? ["--any", "--all"] : [];
   const parsed = parseOptions(rest, known, flags);
   if ("error" in parsed) return fail(parsed.error);
@@ -163,10 +143,7 @@ export function parseHerdrArgs(args: string[]): HerdrArgs | { error: string } {
     case "wait": {
       const timeout = o.get("--timeout");
       const cursor = o.get("--seen");
-      const seen: Record<
-        string,
-        { turn: number | null; state: "blocked" | "error" | "done" | "end" }
-      > = {};
+      const seen: Record<string, { turn: number | null; state: "error" | "done" | "end" }> = {};
       if (cursor !== undefined)
         for (const pair of cursor.split(",")) {
           const match = /^([^:]+):(\d+|\?):(blocked|error|done|end)$/.exec(pair);
@@ -185,7 +162,9 @@ export function parseHerdrArgs(args: string[]): HerdrArgs | { error: string } {
           )
             return fail("--seen needs unique addresses and safe turn numbers.");
           const state = match[3];
-          if (state !== "blocked" && state !== "error" && state !== "done" && state !== "end")
+          // A blocked child is the person's, not news (4.10.1): an old cursor's entry is ignored.
+          if (state === "blocked") continue;
+          if (state !== "error" && state !== "done" && state !== "end")
             return fail("Unknown cursor state.");
           seen[address] = { turn: match[2] === "?" ? null : Number(match[2]), state };
         }
@@ -215,24 +194,6 @@ export function parseHerdrArgs(args: string[]): HerdrArgs | { error: string } {
         : fail("Give a terminal and text.");
     case "report":
       return p.length === 1 ? { verb, text: target } : fail("Give the report text.");
-    case "answer": {
-      const expect = o.get("--expect"),
-        turn = o.get("--expect-turn"),
-        option = o.get("--option"),
-        text = o.get("--text");
-      if (
-        p.length !== 1 ||
-        !expect ||
-        !turn ||
-        !/^\d+$/.test(turn) ||
-        !Number.isSafeInteger(Number(turn)) ||
-        o.has("--option") === o.has("--text") ||
-        !(option ?? text)?.trim()
-      )
-        return fail("Give the terminal, expected message and turn, and one answer.");
-      const common = { verb, target, expect, expectTurn: Number(turn) } as const;
-      return option !== undefined ? { ...common, option } : { ...common, text: text ?? "" };
-    }
     case "machines": {
       const action = p[0] ?? "list";
       if (action === "list")
