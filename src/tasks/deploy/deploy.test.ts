@@ -482,7 +482,7 @@ test("the gate reads the folder itself, closed tasks included: an archived twin 
     now,
   }).refusals;
   expect(refusals).toEqual([
-    `${prod.id} "Prod half" waits for its staging twin ${staging.id}, which is still open: finish staging first`,
+    `${prod.id} "Prod half" waits for its staging twin ${staging.id}, which is still open: finish staging first, or its close waits on an unmerged branch: \`task list --branches\``,
   ]);
   closeDeployTask(dir, staging.id, { status: "done", evidence: "ok" }, now);
   expect(
@@ -745,7 +745,7 @@ test("gate before: prod refuses while the staging twin is open; staging does not
   const refused = before("prod", [staging, prod]);
   expect(refused.ok).toBe(false);
   expect(refused.refusals).toEqual([
-    'prod-20261117-100000 "Prod half" waits for its staging twin staging-20261117-100000, which is still open: finish staging first',
+    'prod-20261117-100000 "Prod half" waits for its staging twin staging-20261117-100000, which is still open: finish staging first, or its close waits on an unmerged branch: `task list --branches`',
   ]);
   expect(before("staging", [staging, prod]).ok).toBe(true);
   // Once the twin is closed, prod goes on; a twin that names no task is not this gate's concern.
@@ -1090,6 +1090,34 @@ test("branch changes, archived tasks, deleted paths and unmerged branches read t
   const unmerged = unmergedBranchTasks(root, dir, "main");
   expect(unmerged.tasks.map((t) => [t.branch, t.task.id])).toEqual([["work", added.id]]);
   expect(unmerged.broken).toEqual([]);
+});
+
+test("a close pushed on an unmerged branch is reported for a task the base still has open", () => {
+  const root = tempDir();
+  git(root, "init", "-b", "main");
+  writeFileSync(join(root, "README.md"), "repo");
+  git(root, "add", ".");
+  git(root, "commit", "-m", "initial");
+  const dir = join(root, "tasks");
+  const open = create(dir, "Staging gate", "staging");
+  git(root, "add", ".");
+  git(root, "commit", "-m", "task");
+  git(root, "checkout", "-b", "deploy/staging-1");
+  closeDeployTask(dir, open.id, { status: "done", evidence: "ran it: ok" }, now);
+  // Created and closed on the branch: the base never had it open, so nothing waits on it.
+  const own = create(dir, "Own", "prod", new Date("2026-11-17T15:00:00Z"));
+  closeDeployTask(dir, own.id, { status: "dropped", note: "not needed" }, now);
+  git(root, "add", ".");
+  git(root, "commit", "-m", "closes");
+  git(root, "checkout", "main");
+  const unmerged = unmergedBranchTasks(root, dir, "main");
+  expect(unmerged.closed.map((t) => [t.branch, t.task.id, t.task.status])).toEqual([
+    ["deploy/staging-1", open.id, "done"],
+  ]);
+  expect(unmerged.tasks).toEqual([]);
+  // Once the branch is merged, nothing is listed.
+  git(root, "merge", "--no-ff", "-m", "merge", "deploy/staging-1");
+  expect(unmergedBranchTasks(root, dir, "main").closed).toEqual([]);
 });
 
 test("a broken file on one branch is reported with its branch and the others are still read", () => {

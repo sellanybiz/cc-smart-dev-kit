@@ -385,8 +385,11 @@ origin string; `evidence` is set when the task closes.
   interrupted reopen is a `task check` finding; running the reopen again finishes it.
 - `task list --branch [--base <branch>]` lists the task files this branch changed against the
   base, grouped by environment, for the pull request's notes. `task list --branches` finds open
-  tasks on local branches not yet merged, and reports a broken file on one branch while it
-  keeps listing the others. A deploy branch left unmerged is a visible run in progress.
+  tasks on local branches not yet merged, and, for a task the base still has open, the closes
+  already made on such a branch (`closed on <branch>, not merged`). It reports a broken file on
+  one branch while it keeps listing the others. A deploy branch left unmerged is a visible run in
+  progress, and a prod gate that waits on an open staging twin points at this list: the twin's
+  close may sit on a branch not merged yet.
 - **Old ids.** An id that starts with `T-` answers "old task ids are gone in 5.0.0". The old
   kinds answer the same on the CLI (`--kind follow-up|teammate`, exit 2). The files themselves
   are never read; every surface counts them (`task check`, doctor, the session-start line) so

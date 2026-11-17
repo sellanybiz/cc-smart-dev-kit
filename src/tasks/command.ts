@@ -341,10 +341,15 @@ export async function runTaskCommand(argv: string[]): Promise<number> {
       if (command === "list") {
         const base = get("base") ?? baseBranch(locateCheckout(cwd), process.env, root).base;
         if (has("branches")) {
-          const { tasks, broken } = unmergedBranchTasks(root, dir, base);
+          const { tasks, closed, broken } = unmergedBranchTasks(root, dir, base);
           for (const item of tasks) out.say(`${item.branch}: ${projectLine(item.task)}`);
+          for (const item of closed)
+            out.say(
+              `closed on ${item.branch}, not merged: ${projectLine(item.task)} · ${item.task.status}`,
+            );
           for (const item of broken) out.say(`${item.branch}: ${item.file} · ${item.why}`);
-          if (!tasks.length && !broken.length) out.say("No deploy tasks on unmerged branches.");
+          if (!tasks.length && !closed.length && !broken.length)
+            out.say("No deploy tasks on unmerged branches.");
         } else {
           const changes = branchTaskChanges(root, dir, base);
           for (const env of DEPLOY_ENVS) {

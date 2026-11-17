@@ -141,14 +141,23 @@ export function branchTaskChanges(
   return changes;
 }
 export interface UnmergedBranchTasks {
+  /** Open tasks the base does not have yet. */
   tasks: { branch: string; task: DeployTask }[];
+  /** Tasks closed (done or dropped) on a branch that are still open on the base: a close not merged. */
+  closed: { branch: string; task: DeployTask }[];
   /** A file that does not parse on one branch: listed with its branch, and the others still read. */
   broken: (BranchBroken & { branch: string })[];
 }
-/** Open tasks on local branches not merged into `base` (a deploy run in progress), by branch. */
+/**
+ * What local branches not merged into `base` (a deploy run in progress) hold, by branch: open
+ * tasks the base lacks, and closes of tasks the base still has open (`closed`). The second is why
+ * a gate can still see an open task whose close was already pushed on a deploy branch.
+ */
 export function unmergedBranchTasks(repo: string, dir: string, base: string): UnmergedBranchTasks {
   const baseCommit = refCommit(repo, base);
-  const existing = new Set(tasksOn(repo, dir, baseCommit).tasks.map((task) => task.id));
+  const onBase = tasksOn(repo, dir, baseCommit).tasks;
+  const existing = new Set(onBase.map((task) => task.id));
+  const openOnBase = new Set(onBase.filter((task) => task.status === "open").map((t) => t.id));
   const branches = taskGit(repo, [
     "for-each-ref",
     "--format=%(refname:short)",
@@ -157,11 +166,13 @@ export function unmergedBranchTasks(repo: string, dir: string, base: string): Un
   ])
     .split("\n")
     .filter(Boolean);
-  const result: UnmergedBranchTasks = { tasks: [], broken: [] };
+  const result: UnmergedBranchTasks = { tasks: [], closed: [], broken: [] };
   for (const branch of branches) {
     const read = tasksOn(repo, dir, branch);
-    for (const task of read.tasks)
+    for (const task of read.tasks) {
       if (task.status === "open" && !existing.has(task.id)) result.tasks.push({ branch, task });
+      if (task.status !== "open" && openOnBase.has(task.id)) result.closed.push({ branch, task });
+    }
     for (const item of read.broken) result.broken.push({ branch, ...item });
   }
   return result;

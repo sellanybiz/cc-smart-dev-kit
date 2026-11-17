@@ -71,6 +71,10 @@ export interface GateResult {
 const open = (task: DeployTask) => task.status === "open";
 const describe = (task: DeployTask) => `${task.id} "${task.title}"`;
 
+/** What a prod refusal adds to "its twin is open": the twin may be closed on a branch not merged. */
+export const UNMERGED_CLOSE_HINT =
+  "or its close waits on an unmerged branch: `task list --branches`";
+
 function underTasks(path: string, tasksPath: string): boolean {
   return tasksPath === "" || path.startsWith(`${tasksPath}/`);
 }
@@ -167,7 +171,7 @@ export function judgeBefore(env: DeployEnv, input: JudgeInput): GateResult {
       const twin = task.twin === undefined ? undefined : staging.get(task.twin);
       if (twin && open(twin))
         refusals.push(
-          `${describe(task)} waits for its staging twin ${twin.id}, which is still open: finish staging first`,
+          `${describe(task)} waits for its staging twin ${twin.id}, which is still open: finish staging first, ${UNMERGED_CLOSE_HINT}`,
         );
     }
   }

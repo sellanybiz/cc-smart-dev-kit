@@ -31213,7 +31213,9 @@ function branchTaskChanges(checkoutRoot, dir, base) {
 }
 function unmergedBranchTasks(repo, dir, base) {
   const baseCommit = refCommit(repo, base);
-  const existing = new Set(tasksOn(repo, dir, baseCommit).tasks.map((task) => task.id));
+  const onBase = tasksOn(repo, dir, baseCommit).tasks;
+  const existing = new Set(onBase.map((task) => task.id));
+  const openOnBase = new Set(onBase.filter((task) => task.status === "open").map((t) => t.id));
   const branches = taskGit(repo, [
     "for-each-ref",
     "--format=%(refname:short)",
@@ -31221,12 +31223,15 @@ function unmergedBranchTasks(repo, dir, base) {
     "refs/heads"
   ]).split(`
 `).filter(Boolean);
-  const result = { tasks: [], broken: [] };
+  const result = { tasks: [], closed: [], broken: [] };
   for (const branch of branches) {
     const read = tasksOn(repo, dir, branch);
-    for (const task of read.tasks)
+    for (const task of read.tasks) {
       if (task.status === "open" && !existing.has(task.id))
         result.tasks.push({ branch, task });
+      if (task.status !== "open" && openOnBase.has(task.id))
+        result.closed.push({ branch, task });
+    }
     for (const item of read.broken)
       result.broken.push({ branch, ...item });
   }
@@ -31331,7 +31336,7 @@ function judgeBefore(env, input) {
     for (const task of mine) {
       const twin = task.twin === undefined ? undefined : staging.get(task.twin);
       if (twin && open2(twin))
-        refusals.push(`${describe3(task)} waits for its staging twin ${twin.id}, which is still open: finish staging first`);
+        refusals.push(`${describe3(task)} waits for its staging twin ${twin.id}, which is still open: finish staging first, ${UNMERGED_CLOSE_HINT}`);
     }
   }
   const notes = mine.filter((task) => task.deploy === "before" && task.type === "non-blocking").map((task) => `Non-blocking, still open: ${describe3(task)}: do it now, or drop it with a reason`);
@@ -31371,7 +31376,7 @@ function releaseList(tasks, env) {
       }
   return groups;
 }
-var open2 = (task) => task.status === "open", describe3 = (task) => `${task.id} "${task.title}"`;
+var open2 = (task) => task.status === "open", describe3 = (task) => `${task.id} "${task.title}"`, UNMERGED_CLOSE_HINT = "or its close waits on an unmerged branch: `task list --branches`";
 var init_release = __esm(() => {
   init_files();
   init_format();
@@ -33356,12 +33361,14 @@ async function runTaskCommand(argv) {
       if (command === "list") {
         const base = get("base") ?? baseBranch(locateCheckout(cwd), process.env, root).base;
         if (has("branches")) {
-          const { tasks, broken } = unmergedBranchTasks(root, dir, base);
+          const { tasks, closed, broken } = unmergedBranchTasks(root, dir, base);
           for (const item of tasks)
             out.say(`${item.branch}: ${projectLine(item.task)}`);
+          for (const item of closed)
+            out.say(`closed on ${item.branch}, not merged: ${projectLine(item.task)} \xB7 ${item.task.status}`);
           for (const item of broken)
             out.say(`${item.branch}: ${item.file} \xB7 ${item.why}`);
-          if (!tasks.length && !broken.length)
+          if (!tasks.length && !closed.length && !broken.length)
             out.say("No deploy tasks on unmerged branches.");
         } else {
           const changes = branchTaskChanges(root, dir, base);

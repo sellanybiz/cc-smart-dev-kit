@@ -298,6 +298,23 @@ test("list --branches keeps listing when one branch has a broken file", async ()
   expect(listed.text).toContain("garbage.md");
 });
 
+test("list --branches shows a close that waits on an unmerged branch", async () => {
+  const { run, add, cwd } = world();
+  const id = await add("Gate", "staging", "before", "blocking");
+  git(cwd, "add", "-A");
+  git(cwd, "commit", "-m", "the task");
+  git(cwd, "switch", "-c", "deploy/staging-20261117-1445");
+  expect((await run(["done", id, "--evidence", "ran it: ok"])).code).toBe(0);
+  git(cwd, "add", "-A");
+  git(cwd, "commit", "-m", "close it");
+  git(cwd, "switch", "main");
+  expect(await run(["list", "--branches"])).toEqual({
+    code: 0,
+    text: `closed on deploy/staging-20261117-1445, not merged: ${id} [before · blocking] Gate · done\n`,
+    error: "",
+  });
+});
+
 test("set and delete of a blocking deploy task are refused inside Claude Code and work in a terminal", async () => {
   const { run, add, tasks, cwd } = world();
   const id = await add("Gate", "prod", "before", "blocking");

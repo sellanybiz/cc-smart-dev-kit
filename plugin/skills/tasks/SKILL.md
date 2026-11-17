@@ -118,9 +118,12 @@ Before any deploy, production or database work, list the deploy tasks (`task_lis
 4. **Deploy**, with the project's own deploy skill.
 5. **`git push -u origin <branch>`**, then **`task release <env> --after`.** Exit 1 while any
    task of that environment is open (before or after), a close is uncommitted, the branch is not
-   pushed, or the branch is the base (a close is never pushed there). With no flag, `release` lists the open tasks and exits 0.
+   pushed, or the branch is the base (a close is never pushed there). With no flag, `release`
+   lists the open tasks and exits 0.
 6. **The branch's pull request** (the task files only) merges as the workflow says
    (`/cc-smart-dev-kit:commit`, `/cc-smart-dev-kit:pull-request`).
 
 A wrong command exits 2; a refusal, an unknown ref or a place outside git exits 1. `--json`
-prints the answer as data. A deploy branch left unmerged shows in `task list --branches`.
+prints the answer as data. A deploy branch left unmerged shows in `task list --branches`: its
+open tasks, and its closes of tasks the base still has open ("closed on <branch>, not merged").
+A prod refusal for an open staging twin may mean that close waits there.

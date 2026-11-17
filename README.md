@@ -517,7 +517,7 @@ tasks: it cannot start or be done while one of them is open. Lists mark both:
 | `task note <ref> [<text> \| --file <path\|->]` | Add a work-log note. |
 | `task list [--scope mine\|plan\|project\|all] [--plan <slug>] [--json]` | List tasks in the selected scope. |
 | `task list --branch [--base <branch>]` | The deploy task changes of this branch, by environment, for the pull request body. |
-| `task list --branches` | Open deploy tasks on local unmerged branches; a broken file on one branch is named and the others still list. |
+| `task list --branches` | Open deploy tasks on local unmerged branches, and closes made on such a branch of tasks the base still has open ("closed on <branch>, not merged"); a broken file on one branch is named and the others still list. |
 | `task show <ref> [--offset <n>] [--history]` | Read a task with its notes and its history: each change with its time, the values before and after, and the session (name and id) and process that made it, or the kit's reason (an import, for example). A deleted task shows its history, its last version included. A deploy task's history is its file's git log. `--history` also prints every earlier description in full. Output is capped; `--offset` reads more. |
 | `task search <text> [--all]` | Search tasks; include closed work with `--all`. |
 | `task check [--json]` | Find deploy task problems: a broken file, an id two files claim, a twin that names no task, an open task left in `archive/`, a missing reference, a task open past `tasks.staleDays`, a repeated title, and the old 4.x files (`T-…`), which are not read since 5.0.0. Exit 1 on any finding. |
