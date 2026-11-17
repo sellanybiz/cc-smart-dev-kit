@@ -1,10 +1,11 @@
 /**
- * The release gates (`task release <env> --before|--after`, `docs/design/tasks.md`): pure
- * functions over the scanned tasks and the git facts they are given. Reading the tasks is
- * `files.ts`, reading git is `branch.ts`; nothing here touches either, so every refusal is tested
- * with plain data.
+ * The release gates (`task release <env> --before|--after`, `docs/design/tasks.md`).
+ * `gateBefore` and `gateAfter` read the tasks folder themselves (every task, closed ones too), so
+ * no caller can hand them a partial scan; the git facts come from `branch.ts` (`readGitFacts`).
+ * `judgeBefore` and `judgeAfter` are the same rules as pure functions over a scan and the facts,
+ * so every refusal is tested with plain data.
  */
-import type { TaskScan } from "./files";
+import { scanDeployTasks, type TaskScan } from "./files";
 import {
   DEPLOY_ENVS,
   DEPLOY_STEPS,
@@ -21,6 +22,8 @@ export interface GitFacts {
   ref: string;
   refCommit: string;
   headCommit: string;
+  /** Whether the ref's commit is HEAD or one of HEAD's ancestors: HEAD has taken in everything the ref has. */
+  refIsAncestor: boolean;
   /** Repo-relative paths (`/` separators) that differ between the ref's commit and HEAD. */
   changedPaths: readonly string[];
   /** The tasks folder, repo-relative with `/` separators. */
@@ -30,20 +33,29 @@ export interface GitFacts {
   push: {
     /** The current branch, or null on a detached HEAD. */
     branch: string | null;
-    /** Its upstream, or null when it has none. */
-    upstream: string | null;
-    /** Commits on HEAD the upstream does not have. */
+    /**
+     * Origin's own copy of that branch (`origin/<branch>`), or null when it was never pushed. Not
+     * the branch's upstream: a branch cut from `origin/main` tracks main until it is pushed with `-u`.
+     */
+    remote: string | null;
+    /** Commits on HEAD that copy does not have. */
     ahead: number;
   };
 }
 
 export interface GateInput {
-  scan: TaskScan;
+  /** The tasks folder (`tasks.dir`): the gate scans it, closed tasks included. */
+  dir: string;
   facts: GitFacts;
   /** The project's `tasks.envs`. */
   envs: readonly DeployEnv[];
   /** The time for the deploy branch name in a refusal's fix. */
   now: Date;
+}
+
+/** What the pure rules judge: the same input, with the scan already made. */
+export interface JudgeInput extends Omit<GateInput, "dir"> {
+  scan: TaskScan;
 }
 
 export interface GateResult {
@@ -67,6 +79,17 @@ function deployBranchName(env: DeployEnv, now: Date): string {
   return `deploy/${env}-${stamp}`;
 }
 
+/** How to start the run again on the right commit: the fix every "wrong HEAD" refusal ends with. */
+function startAgain(env: DeployEnv, facts: GitFacts, now: Date): string {
+  const branch = deployBranchName(env, now);
+  // --no-track: a branch cut from origin/main would otherwise track main, and a plain `git push`
+  // could send the closes there instead of to the deploy branch.
+  return (
+    `Start the run on a deploy branch cut from the commit that ships: \`git fetch origin\`, then \`git switch --no-track -c ${branch} ${facts.ref}\` ` +
+    `(in a project that uses a worktree per session: \`git worktree add --no-track -b ${branch} <folder> ${facts.ref}\`)`
+  );
+}
+
 function brokenRefusals(scan: TaskScan): string[] {
   return [
     ...scan.broken.map(
@@ -88,24 +111,35 @@ function envRefusal(env: DeployEnv, envs: readonly DeployEnv[]): string[] {
 /**
  * The gate before a deploy. It refuses when:
  * - the environment is not in `tasks.envs`;
- * - HEAD is not the ref's commit and differs from it in anything but the tasks folder (closes
- *   already made on the deploy branch are fine);
+ * - HEAD is not the ref's commit, unless HEAD holds every commit of the ref and differs from it
+ *   only in the tasks folder (closes already made on the deploy branch are fine). A ref that has
+ *   commits HEAD lacks may hold tasks this checkout cannot see, even when those commits changed
+ *   task files only;
  * - a blocking `before` task of the environment is open;
  * - any task file is broken or its id is claimed twice;
  * - for prod, a task whose staging twin is still open.
  * An open non-blocking `before` task is a note: do it now, or drop it with a reason.
  */
 export function gateBefore(env: DeployEnv, input: GateInput): GateResult {
+  const { dir, ...rest } = input;
+  return judgeBefore(env, { ...rest, scan: scanDeployTasks(dir, { archive: true }) });
+}
+
+/** `gateBefore`'s rules over a scan that holds every task, open and closed. */
+export function judgeBefore(env: DeployEnv, input: JudgeInput): GateResult {
   const { scan, facts, envs, now } = input;
   const refusals = [...envRefusal(env, envs)];
   const foreign = facts.changedPaths.filter((path) => !underTasks(path, facts.tasksPath));
-  if (facts.headCommit !== facts.refCommit && foreign.length > 0) {
-    const branch = deployBranchName(env, now);
-    refusals.push(
-      `HEAD ${facts.headCommit.slice(0, 12)} is not ${facts.ref} (${facts.refCommit.slice(0, 12)}): it differs in ${foreign.length} path(s) outside ${facts.tasksPath || "the tasks folder"}. ` +
-        `Start the run on a deploy branch cut from the commit that ships: \`git fetch origin\`, then \`git switch -c ${branch} ${facts.ref}\` ` +
-        `(in a project that uses a worktree per session: \`git worktree add -b ${branch} <folder> ${facts.ref}\`)`,
-    );
+  if (facts.headCommit !== facts.refCommit) {
+    if (!facts.refIsAncestor)
+      refusals.push(
+        `HEAD ${facts.headCommit.slice(0, 12)} does not contain ${facts.ref} (${facts.refCommit.slice(0, 12)}): the ref has commits this branch has not taken in, and may hold tasks it cannot see. ` +
+          `Run \`git fetch origin\`, then rebase or merge the deploy branch onto ${facts.ref}. ${startAgain(env, facts, now)}`,
+      );
+    else if (foreign.length > 0)
+      refusals.push(
+        `HEAD ${facts.headCommit.slice(0, 12)} is not ${facts.ref} (${facts.refCommit.slice(0, 12)}): it differs in ${foreign.length} path(s) outside ${facts.tasksPath || "the tasks folder"}. ${startAgain(env, facts, now)}`,
+      );
   }
   const mine = scan.tasks.filter((task) => task.env === env && open(task));
   for (const task of mine.filter((one) => one.deploy === "before" && one.type === "blocking"))
@@ -136,10 +170,16 @@ export function gateBefore(env: DeployEnv, input: GateInput): GateResult {
  * - the environment is not in `tasks.envs`;
  * - any task of the environment is open, before or after (nothing lingers);
  * - the tasks folder has uncommitted changes (a close not yet committed);
- * - the branch is not pushed: detached, no upstream, or commits the upstream lacks;
+ * - the branch is not pushed: detached, never pushed to origin, or commits origin's copy lacks;
  * - any task file is broken or its id is claimed twice.
  */
 export function gateAfter(env: DeployEnv, input: GateInput): GateResult {
+  const { dir, ...rest } = input;
+  return judgeAfter(env, { ...rest, scan: scanDeployTasks(dir, { archive: true }) });
+}
+
+/** `gateAfter`'s rules over a scan that holds every task, open and closed. */
+export function judgeAfter(env: DeployEnv, input: JudgeInput): GateResult {
   const { scan, facts, envs } = input;
   const refusals = [...envRefusal(env, envs)];
   for (const task of scan.tasks.filter((one) => one.env === env && open(one)))
@@ -150,13 +190,13 @@ export function gateAfter(env: DeployEnv, input: GateInput): GateResult {
     refusals.push(
       `${facts.uncommitted.length} uncommitted change(s) under ${facts.tasksPath || "the tasks folder"} (${facts.uncommitted.slice(0, 5).join(", ")}${facts.uncommitted.length > 5 ? ", ..." : ""}): commit the closes on the deploy branch`,
     );
-  const { branch, upstream, ahead } = facts.push;
+  const { branch, remote, ahead } = facts.push;
   if (branch === null)
     refusals.push("HEAD is detached: the closes need a branch to be pushed from");
-  else if (upstream === null)
+  else if (remote === null)
     refusals.push(`Branch ${branch} is not pushed: run \`git push -u origin ${branch}\``);
   else if (ahead > 0)
-    refusals.push(`Branch ${branch} is ${ahead} commit(s) ahead of ${upstream}: push it`);
+    refusals.push(`Branch ${branch} is ${ahead} commit(s) ahead of ${remote}: push it`);
   refusals.push(...brokenRefusals(scan));
   return { ok: refusals.length === 0, refusals, notes: [] };
 }

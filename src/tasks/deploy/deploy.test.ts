@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { cleanGitEnv, git, tempDir } from "../../testing/temp";
 import { branchTaskChanges, readGitFacts, tasksOn, unmergedBranchTasks } from "./branch";
@@ -26,7 +26,14 @@ import {
   renderDeployTask,
   taskInstant,
 } from "./format";
-import { type GitFacts, gateAfter, gateBefore, releaseList } from "./release";
+import {
+  type GitFacts,
+  gateAfter,
+  gateBefore,
+  judgeAfter,
+  judgeBefore,
+  releaseList,
+} from "./release";
 
 const now = new Date("2026-11-17T14:45:03Z");
 const task: DeployTask = {
@@ -345,7 +352,147 @@ test("reopen moves an archived task back, open, with closed and evidence cleared
   );
 });
 
+test("reopen after a crash: an open task left in archive/, or two copies, is finished by running it again", () => {
+  const dir = tempDir();
+  // Crash after the first step: the archived file is already open.
+  const one = create(dir, "First");
+  closeDeployTask(dir, one.id, { status: "done", evidence: "ok" }, now);
+  const archivedFile = join(dir, "prod", "archive", basename(one.file));
+  writeFileSync(
+    archivedFile,
+    readFileSync(archivedFile, "utf8")
+      .replace('status: "done"', 'status: "open"')
+      .replace(/^closed: .*\n/m, "")
+      .replace(/^evidence: .*\n/m, ""),
+  );
+  expect(findDeployTask(dir, one.id).status).toBe("open");
+  const moved = reopenDeployTask(dir, one.id, now);
+  expect(moved.file).toBe(one.file);
+  expect(existsSync(archivedFile)).toBe(false);
+  expect(scanDeployTasks(dir, { archive: true }).broken).toEqual([]);
+  // Crash after the second step: the open copy is there too, and the archived one is open.
+  const two = create(dir, "Second", "prod", new Date("2026-11-17T15:00:00Z"));
+  closeDeployTask(dir, two.id, { status: "done", evidence: "ok" }, now);
+  const twoArchived = join(dir, "prod", "archive", basename(two.file));
+  const openText = readFileSync(twoArchived, "utf8")
+    .replace('status: "done"', 'status: "open"')
+    .replace(/^closed: .*\n/m, "")
+    .replace(/^evidence: .*\n/m, "");
+  writeFileSync(twoArchived, openText);
+  writeFileSync(two.file, openText);
+  expect(scanDeployTasks(dir, { archive: true }).tasks.map((t) => [t.id, t.file])).toContainEqual([
+    two.id,
+    twoArchived,
+  ]);
+  expect(reopenDeployTask(dir, two.id, now).file).toBe(two.file);
+  expect(existsSync(twoArchived)).toBe(false);
+  expect(scanDeployTasks(dir, { archive: true }).broken).toEqual([]);
+  // The task is never read as closed along the way, and a plain open task is still refused.
+  expect(() => reopenDeployTask(dir, two.id, now)).toThrow("already open");
+});
+
 // --- copies and collisions -------------------------------------------------------------------
+
+test("a create that loses a race for its file name or its id takes the next id and never writes over", () => {
+  const dir = tempDir();
+  // Another creator takes the same file name between the id being chosen and the file written.
+  let raced = false;
+  const sameName = createDeployTask(
+    dir,
+    { title: "Deploy", env: "prod", deploy: "before", type: "blocking" },
+    {
+      now,
+      beforeClaim: (planned) => {
+        if (raced) return;
+        raced = true;
+        mkdirSync(join(dir, "prod"), { recursive: true });
+        writeFileSync(planned.file, "someone else's task, not ours to overwrite");
+      },
+    },
+  );
+  expect(sameName.id).toBe("prod-20261117-144503-2");
+  expect(readFileSync(join(dir, "prod", "prod-20261117-144503-deploy.md"), "utf8")).toBe(
+    "someone else's task, not ours to overwrite",
+  );
+  // Another creator with a different title takes the same id under another file name: the names
+  // differ, so only the id check stops a duplicate.
+  const other = tempDir();
+  let rivalled = false;
+  const made = createDeployTask(
+    other,
+    { title: "Deploy", env: "prod", deploy: "before", type: "blocking" },
+    {
+      now,
+      beforeClaim: (planned) => {
+        if (rivalled) return;
+        rivalled = true;
+        put(other, "prod", "prod-20261117-144503-other-title.md", {
+          id: planned.id,
+          title: "Other",
+        });
+      },
+    },
+  );
+  expect(made.id).toBe("prod-20261117-144503-2");
+  const scan = scanDeployTasks(other, { archive: true });
+  expect(scan.duplicates).toEqual([]);
+  expect(scan.tasks.map((t) => t.id).sort()).toEqual([
+    "prod-20261117-144503",
+    "prod-20261117-144503-2",
+  ]);
+  expect(readdirSync(join(other, "prod")).filter((name) => name.startsWith("."))).toEqual([]);
+});
+
+test("a pair that loses a race for one half leaves no half pair behind", () => {
+  const dir = tempDir();
+  let raced = false;
+  const { staging, prod } = createDeployPair(
+    dir,
+    { title: "Both", deploy: "before", type: "blocking" },
+    {
+      now,
+      beforeClaim: (planned) => {
+        if (raced || planned.env !== "prod") return;
+        raced = true;
+        writeFileSync(planned.file, "someone else's task");
+      },
+    },
+    ["staging", "prod"],
+  );
+  expect(prod.id).toBe("prod-20261117-144503-2");
+  expect(staging.twin).toBe(prod.id);
+  expect(prod.twin).toBe(staging.id);
+  const scan = scanDeployTasks(dir, { archive: true });
+  expect(scan.tasks.map((t) => t.id).sort()).toEqual([staging.id, prod.id].sort());
+});
+
+test("the gate reads the folder itself, closed tasks included: an archived twin is closed, an open one blocks", () => {
+  const dir = tempDir();
+  const staging = create(dir, "Staging half", "staging");
+  const prod = createDeployTask(
+    dir,
+    { title: "Prod half", env: "prod", deploy: "after", type: "non-blocking", twin: staging.id },
+    { now },
+  );
+  const refusals = gateBefore("prod", { dir, facts: cleanFacts, envs: both, now }).refusals;
+  expect(refusals).toEqual([
+    `${prod.id} "Prod half" waits for its staging twin ${staging.id}, which is still open: finish staging first`,
+  ]);
+  closeDeployTask(dir, staging.id, { status: "done", evidence: "ok" }, now);
+  expect(gateBefore("prod", { dir, facts: cleanFacts, envs: both, now }).ok).toBe(true);
+  expect(gateAfter("staging", { dir, facts: cleanFacts, envs: both, now }).ok).toBe(true);
+  // A broken file in an archive/ folder counts: the gate reads every folder, not only the open ones.
+  mkdirSync(join(dir, "staging", "archive"), { recursive: true });
+  const badArchived = join(dir, "staging", "archive", "bad.md");
+  writeFileSync(badArchived, "not a task");
+  expect(gateAfter("staging", { dir, facts: cleanFacts, envs: both, now }).refusals[0]).toContain(
+    `${badArchived} cannot be read`,
+  );
+  rmSync(badArchived);
+  expect(gateAfter("prod", { dir, facts: cleanFacts, envs: both, now }).refusals).toEqual([
+    `Task is open: ${prod.id} "Prod half" (after the deploy, non-blocking): close it with evidence, or drop it with a reason`,
+  ]);
+});
 
 test("a second copy of one id and one file name is a crash copy: the archived copy wins", () => {
   // A close writes the closed copy into archive/ first, then removes the open file. A crash between
@@ -456,10 +603,11 @@ const cleanFacts: GitFacts = {
   headCommit: "a".repeat(40),
   changedPaths: [],
   tasksPath: ".claude/tasks",
+  refIsAncestor: true,
   uncommitted: [],
   push: {
     branch: "deploy/prod-20261117-1445",
-    upstream: "origin/deploy/prod-20261117-1445",
+    remote: "origin/deploy/prod-20261117-1445",
     ahead: 0,
   },
 };
@@ -470,7 +618,7 @@ function before(
   facts = cleanFacts,
   envs: readonly ("prod" | "staging")[] = both,
 ) {
-  return gateBefore(env, { scan: scanOf(tasks), facts, envs, now });
+  return judgeBefore(env, { scan: scanOf(tasks), facts, envs, now });
 }
 function after(
   env: "prod" | "staging",
@@ -478,7 +626,7 @@ function after(
   facts = cleanFacts,
   scan = scanOf(tasks),
 ) {
-  return gateAfter(env, { scan, facts, envs: both, now });
+  return judgeAfter(env, { scan, facts, envs: both, now });
 }
 
 test("gate before: passes with no open blocking before-task", () => {
@@ -516,8 +664,10 @@ test("gate before: HEAD that is not the ref refuses with the branch commands; ta
   expect(refused.refusals[0]).toContain("bbbbbbbbbbbb is not origin/main (aaaaaaaaaaaa)");
   expect(refused.refusals[0]).toContain("1 path(s) outside .claude/tasks");
   expect(refused.refusals[0]).toContain("git fetch origin");
-  expect(refused.refusals[0]).toContain("git switch -c deploy/prod-20261117-1445 origin/main");
-  expect(refused.refusals[0]).toContain("git worktree add -b deploy/prod-20261117-1445");
+  expect(refused.refusals[0]).toContain(
+    "git switch --no-track -c deploy/prod-20261117-1445 origin/main",
+  );
+  expect(refused.refusals[0]).toContain("git worktree add --no-track -b deploy/prod-20261117-1445");
   const closesOnly = {
     ...cleanFacts,
     headCommit: "b".repeat(40),
@@ -528,10 +678,19 @@ test("gate before: HEAD that is not the ref refuses with the branch commands; ta
   expect(before("prod", [], { ...closesOnly, changedPaths: [".claude/tasks-old/x.md"] }).ok).toBe(
     false,
   );
+  // HEAD that lacks the ref's commits refuses even when every changed path is a task file: the
+  // ref may hold a blocking task this checkout has never seen.
+  const missing = before("prod", [], { ...closesOnly, refIsAncestor: false });
+  expect(missing.ok).toBe(false);
+  expect(missing.refusals).toHaveLength(1);
+  expect(missing.refusals[0]).toContain("does not contain origin/main (aaaaaaaaaaaa)");
+  expect(missing.refusals[0]).toContain("rebase or merge the deploy branch onto origin/main");
+  // On the ref itself nothing else is asked.
+  expect(before("prod", [], { ...cleanFacts, refIsAncestor: false }).ok).toBe(true);
 });
 
 test("gate before: a broken file or a duplicate id refuses", () => {
-  const broken = gateBefore("prod", {
+  const broken = judgeBefore("prod", {
     scan: scanOf([], [{ file: "/t/prod/bad.md", why: "bad.md: invalid YAML: x" }]),
     facts: cleanFacts,
     envs: both,
@@ -539,7 +698,7 @@ test("gate before: a broken file or a duplicate id refuses", () => {
   });
   expect(broken.ok).toBe(false);
   expect(broken.refusals[0]).toContain("/t/prod/bad.md cannot be read");
-  const duplicate = gateBefore("prod", {
+  const duplicate = judgeBefore("prod", {
     scan: { tasks: [], broken: [], duplicates: [{ id: "prod-1", files: ["/t/a.md", "/t/b.md"] }] },
     facts: cleanFacts,
     envs: both,
@@ -582,7 +741,7 @@ test("gate before and after: an environment outside tasks.envs refuses", () => {
     "staging is not one of this project's environments (tasks.envs: prod)",
   ]);
   expect(
-    gateAfter("staging", { scan: scanOf([]), facts: cleanFacts, envs: ["prod"], now }).ok,
+    judgeAfter("staging", { scan: scanOf([]), facts: cleanFacts, envs: ["prod"], now }).ok,
   ).toBe(false);
 });
 
@@ -616,14 +775,14 @@ test("gate after: uncommitted closes, an unpushed branch and a broken file refus
   expect(uncommitted.refusals).toHaveLength(1);
   expect(uncommitted.refusals[0]).toContain("2 uncommitted change(s) under .claude/tasks");
   expect(
-    after("prod", [], { ...cleanFacts, push: { branch: "b", upstream: null, ahead: 0 } }).refusals,
+    after("prod", [], { ...cleanFacts, push: { branch: "b", remote: null, ahead: 0 } }).refusals,
   ).toEqual(["Branch b is not pushed: run `git push -u origin b`"]);
   expect(
-    after("prod", [], { ...cleanFacts, push: { branch: "b", upstream: "origin/b", ahead: 2 } })
+    after("prod", [], { ...cleanFacts, push: { branch: "b", remote: "origin/b", ahead: 2 } })
       .refusals,
   ).toEqual(["Branch b is 2 commit(s) ahead of origin/b: push it"]);
   expect(
-    after("prod", [], { ...cleanFacts, push: { branch: null, upstream: null, ahead: 0 } }).refusals,
+    after("prod", [], { ...cleanFacts, push: { branch: null, remote: null, ahead: 0 } }).refusals,
   ).toEqual(["HEAD is detached: the closes need a branch to be pushed from"]);
   const broken = after("prod", [], cleanFacts, scanOf([], [{ file: "/t/x.md", why: "why" }]));
   expect(broken.ok).toBe(false);
@@ -671,7 +830,7 @@ function repoWithRemote() {
   return { repo, remote, dir: join(repo, ".claude/tasks") };
 }
 
-test("git facts: HEAD on the ref, behind it, and ahead of it with only task changes", () => {
+test("git facts: HEAD on the ref, and ahead of it with only task changes (behind it: see below)", () => {
   const { repo, dir } = repoWithRemote();
   const env = cleanGitEnv();
   const onRef = readGitFacts(repo, dir, "origin/main", env);
@@ -679,7 +838,8 @@ test("git facts: HEAD on the ref, behind it, and ahead of it with only task chan
   expect(onRef.changedPaths).toEqual([]);
   expect(onRef.tasksPath).toBe(".claude/tasks");
   expect(onRef.ref).toBe("origin/main");
-  git(repo, "switch", "-c", "deploy/prod-20261117-1445");
+  expect(onRef.refIsAncestor).toBe(true);
+  git(repo, "switch", "--no-track", "-c", "deploy/prod-20261117-1445", "origin/main");
   const one = create(dir);
   git(repo, "add", ".");
   git(repo, "commit", "-m", "task");
@@ -698,7 +858,7 @@ test("git facts: HEAD on the ref, behind it, and ahead of it with only task chan
 test("git facts: the tasks folder dirty, staged, untracked, then committed, then pushed", () => {
   const { repo, dir } = repoWithRemote();
   const env = cleanGitEnv();
-  git(repo, "switch", "-c", "deploy/prod-20261117-1445");
+  git(repo, "switch", "--no-track", "-c", "deploy/prod-20261117-1445", "origin/main");
   const one = create(dir);
   const rel = (file: string) => file.slice(repo.length + 1);
   // Untracked.
@@ -719,14 +879,14 @@ test("git facts: the tasks folder dirty, staged, untracked, then committed, then
   // A change outside the tasks folder is not the gate's business.
   writeFileSync(join(repo, "scratch.txt"), "x");
   expect(readGitFacts(repo, dir, "origin/main", env).uncommitted).toEqual([]);
-  // No upstream yet.
-  expect(committed.push).toEqual({ branch: "deploy/prod-20261117-1445", upstream: null, ahead: 0 });
+  // Not on origin yet.
+  expect(committed.push).toEqual({ branch: "deploy/prod-20261117-1445", remote: null, ahead: 0 });
   expect(after("prod", scanDeployTasks(dir, { archive: true }).tasks, committed).ok).toBe(false);
   git(repo, "push", "-u", "origin", "deploy/prod-20261117-1445");
   const pushed = readGitFacts(repo, dir, "origin/main", env);
   expect(pushed.push).toEqual({
     branch: "deploy/prod-20261117-1445",
-    upstream: "origin/deploy/prod-20261117-1445",
+    remote: "origin/deploy/prod-20261117-1445",
     ahead: 0,
   });
   expect(after("prod", scanDeployTasks(dir, { archive: true }).tasks, pushed)).toEqual({
@@ -734,7 +894,7 @@ test("git facts: the tasks folder dirty, staged, untracked, then committed, then
     refusals: [],
     notes: [],
   });
-  // One more local commit is ahead of the upstream.
+  // One more local commit is ahead of origin's copy of the branch.
   writeFileSync(join(repo, "more.txt"), "x");
   git(repo, "add", "more.txt");
   git(repo, "commit", "-m", "more");
@@ -742,6 +902,107 @@ test("git facts: the tasks folder dirty, staged, untracked, then committed, then
   // A detached HEAD has no branch.
   git(repo, "checkout", "--detach");
   expect(readGitFacts(repo, dir, "origin/main", env).push.branch).toBeNull();
+});
+
+/** A second clone of `remote`: another person's checkout, which can push to main. */
+function secondClone(remote: string): string {
+  const parent = tempDir("clone");
+  git(parent, "clone", "-q", remote, "other");
+  return join(parent, "other");
+}
+const envs = ["staging", "prod"] as const;
+
+test("a blocking task pushed to the ref after the deploy branch was cut refuses the gate", () => {
+  const { repo, remote, dir } = repoWithRemote();
+  const env = cleanGitEnv();
+  git(repo, "switch", "--no-track", "-c", "deploy/prod-20261117-1445", "origin/main");
+  // A teammate pushes a commit to main that only adds a blocking prod task.
+  const other = secondClone(remote);
+  const theirs = create(join(other, ".claude/tasks"), "Run the migration");
+  git(other, "add", ".");
+  git(other, "commit", "-m", "task");
+  git(other, "push", "-q", "origin", "HEAD:main");
+  git(repo, "fetch", "-q", "origin");
+  const facts = readGitFacts(repo, dir, "origin/main", env);
+  // Every changed path is a task file, which used to look like closes made on the deploy branch.
+  expect(facts.changedPaths).toEqual([`.claude/tasks/prod/${basename(theirs.file)}`]);
+  expect(facts.refIsAncestor).toBe(false);
+  // This checkout has never seen the task, so a scan of its folder is empty.
+  expect(scanDeployTasks(dir, { archive: true }).tasks).toEqual([]);
+  const gate = gateBefore("prod", { dir, facts, envs, now });
+  expect(gate.ok).toBe(false);
+  expect(gate.refusals).toHaveLength(1);
+  expect(gate.refusals[0]).toContain("does not contain origin/main");
+  // After the branch takes the ref in, the task is seen and it blocks.
+  git(repo, "merge", "-q", "--no-edit", "origin/main");
+  const merged = readGitFacts(repo, dir, "origin/main", env);
+  expect(merged.refIsAncestor).toBe(true);
+  expect(merged.headCommit).toBe(merged.refCommit);
+  expect(gateBefore("prod", { dir, facts: merged, envs, now }).refusals).toEqual([
+    `Blocking task is open: ${theirs.id} "Run the migration": do it, then close it with evidence`,
+  ]);
+});
+
+test("a deploy branch behind the ref, over code, refuses; cut from the ref it passes", () => {
+  const { repo, remote, dir } = repoWithRemote();
+  const env = cleanGitEnv();
+  git(repo, "switch", "--no-track", "-c", "deploy/prod-20261117-1445", "origin/main");
+  const other = secondClone(remote);
+  writeFileSync(join(other, "app.ts"), "x");
+  git(other, "add", ".");
+  git(other, "commit", "-m", "code");
+  git(other, "push", "-q", "origin", "HEAD:main");
+  git(repo, "fetch", "-q", "origin");
+  const facts = readGitFacts(repo, dir, "origin/main", env);
+  expect(facts.refIsAncestor).toBe(false);
+  expect(facts.changedPaths).toEqual(["app.ts"]);
+  expect(gateBefore("prod", { dir, facts, envs, now }).ok).toBe(false);
+  git(repo, "switch", "--no-track", "-c", "deploy/prod-20261117-1500", "origin/main");
+  const fresh = readGitFacts(repo, dir, "origin/main", env);
+  expect(fresh.headCommit).toBe(fresh.refCommit);
+  expect(gateBefore("prod", { dir, facts: fresh, envs, now }).ok).toBe(true);
+});
+
+test("pushed is judged against origin's copy of the branch, not the branch's upstream", () => {
+  const { repo, dir } = repoWithRemote();
+  const env = cleanGitEnv();
+  // Cut the way a plain `git switch -c` does: the upstream is origin/main.
+  git(repo, "switch", "-c", "deploy/prod-20261117-1445", "origin/main");
+  expect(git(repo, "rev-parse", "--abbrev-ref", "@{upstream}").trim()).toBe("origin/main");
+  const one = create(dir);
+  git(repo, "add", ".");
+  git(repo, "commit", "-m", "task");
+  closeDeployTask(dir, one.id, { status: "done", evidence: "ok" }, now);
+  git(repo, "add", "-A", ".");
+  git(repo, "commit", "-m", "close");
+  const unpushed = readGitFacts(repo, dir, "origin/main", env);
+  expect(unpushed.push).toEqual({ branch: "deploy/prod-20261117-1445", remote: null, ahead: 0 });
+  const refused = gateAfter("prod", { dir, facts: unpushed, envs, now });
+  expect(refused.refusals).toEqual([
+    "Branch deploy/prod-20261117-1445 is not pushed: run `git push -u origin deploy/prod-20261117-1445`",
+  ]);
+  // Pushed by name, with no -u: the upstream stays origin/main, and the branch is still pushed.
+  git(repo, "push", "-q", "origin", "deploy/prod-20261117-1445");
+  expect(git(repo, "rev-parse", "--abbrev-ref", "@{upstream}").trim()).toBe("origin/main");
+  const pushed = readGitFacts(repo, dir, "origin/main", env);
+  expect(pushed.push).toEqual({
+    branch: "deploy/prod-20261117-1445",
+    remote: "origin/deploy/prod-20261117-1445",
+    ahead: 0,
+  });
+  expect(gateAfter("prod", { dir, facts: pushed, envs, now })).toEqual({
+    ok: true,
+    refusals: [],
+    notes: [],
+  });
+  writeFileSync(join(repo, "more.txt"), "x");
+  git(repo, "add", "more.txt");
+  git(repo, "commit", "-m", "more");
+  const ahead = readGitFacts(repo, dir, "origin/main", env);
+  expect(ahead.push.ahead).toBe(1);
+  expect(gateAfter("prod", { dir, facts: ahead, envs, now }).refusals).toEqual([
+    "Branch deploy/prod-20261117-1445 is 1 commit(s) ahead of origin/deploy/prod-20261117-1445: push it",
+  ]);
 });
 
 test("branch changes, archived tasks, deleted paths and unmerged branches read the nested folders", () => {

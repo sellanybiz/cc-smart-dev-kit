@@ -173,6 +173,19 @@ export function unmergedBranchTasks(repo: string, dir: string, base: string): Un
   return result;
 }
 
+/** True when `ancestor` is `commit` or one of its ancestors. Exit 1 is "no"; any other failure throws. */
+function isAncestor(repo: string, ancestor: string, commit: string, env: Env): boolean {
+  const result = runGit(
+    repo,
+    ["merge-base", "--is-ancestor", ancestor, commit],
+    env,
+    RESOLVE_GIT_TIMEOUT_MS,
+  );
+  if (result.ok) return true;
+  if (result.code === 1) return false;
+  throw new Error(`git merge-base failed: ${result.err}`);
+}
+
 /**
  * The git facts the release gate judges by, read from `repo` (the checkout the run is in). A ref
  * git does not know throws: the caller turns it into exit 1. `env` is the git environment, so a
@@ -204,26 +217,29 @@ export function readGitFacts(
       ...pathsOf(["ls-files", "--others", "--exclude-standard", "-z", ...scope]),
     ]),
   ].sort();
-  const branch = runGit(repo, ["branch", "--show-current"], env, RESOLVE_GIT_TIMEOUT_MS);
-  const upstream = runGit(
-    repo,
-    ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"],
-    env,
-    RESOLVE_GIT_TIMEOUT_MS,
-  );
-  const ahead = upstream.ok
-    ? Number(taskGit(repo, ["rev-list", "--count", "@{upstream}..HEAD"], env))
-    : 0;
+  const currentBranch = runGit(repo, ["branch", "--show-current"], env, RESOLVE_GIT_TIMEOUT_MS);
+  const branch = currentBranch.ok && currentBranch.out ? currentBranch.out : null;
+  // Origin's own copy of the branch, not `@{upstream}`: a branch cut from origin/main tracks main
+  // until it is pushed with -u, and "ahead of origin/main" would then never end.
+  const remoteRef = branch === null ? null : `refs/remotes/origin/${branch}`;
+  const remoteKnown =
+    remoteRef !== null &&
+    runGit(repo, ["rev-parse", "--verify", "--quiet", remoteRef], env, RESOLVE_GIT_TIMEOUT_MS).ok;
+  const ahead =
+    remoteKnown && remoteRef !== null
+      ? Number(taskGit(repo, ["rev-list", "--count", `${remoteRef}..HEAD`], env))
+      : 0;
   return {
     ref,
     refCommit,
     headCommit,
+    refIsAncestor: isAncestor(repo, refCommit, headCommit, env),
     changedPaths,
     tasksPath,
     uncommitted,
     push: {
-      branch: branch.ok && branch.out ? branch.out : null,
-      upstream: upstream.ok && upstream.out ? upstream.out : null,
+      branch,
+      remote: remoteKnown && branch !== null ? `origin/${branch}` : null,
       ahead,
     },
   };

@@ -3,7 +3,7 @@
  * `<tasks.dir>/<env>/archive/`. This file scans, creates, updates, closes and reopens them. Git
  * facts live in `branch.ts`, the release gate in `release.ts`, the findings in `check.ts`.
  */
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { atomicWrite } from "../../setup/write";
 import {
@@ -129,6 +129,8 @@ export type DeployTaskPatch = Partial<
 > & { body?: string };
 export interface TaskSources {
   now: Date;
+  /** Tests only: runs after an id is chosen and before its file is claimed, to play another creator. */
+  beforeClaim?: (task: DeployTask) => void;
 }
 
 /** `<env>-<YYYYMMDD>-<HHMMSS>` in UTC from `now`, with `-2`, `-3` while `used` holds it. */
@@ -204,14 +206,43 @@ function save(task: DeployTask): DeployTask {
   return task;
 }
 
+/** How many times a create picks a new id after losing a race for one. */
+const CLAIM_ATTEMPTS = 5;
+
+/**
+ * Claims a new task's file: an exclusive create, so a name another creator already took is never
+ * written over. The name holds the slug, so two creators with different titles in one second pick
+ * the same id under different names and both exclusive creates succeed; the id is then checked
+ * too, and the later claim backs off. False means the id was lost: the caller picks the next one.
+ */
+function claim(dir: string, task: DeployTask, sources: TaskSources): boolean {
+  sources.beforeClaim?.(task);
+  try {
+    writeFileSync(task.file, renderDeployTask(task), { flag: "wx", mode: 0o644 });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") return false;
+    throw error;
+  }
+  const own = basename(task.file);
+  const rival = [envFolder(dir, task.env), archiveFolder(dir, task.env)]
+    .filter((folder) => existsSync(folder))
+    .flatMap((folder) => readdirSync(folder))
+    .some((name) => name !== own && deployIdOfFileName(name) === task.id);
+  if (rival) rmSync(task.file, { force: true });
+  return !rival;
+}
+
 export function createDeployTask(
   dir: string,
   input: DeployTaskInput,
   sources: TaskSources,
 ): DeployTask {
-  const task = planDeployTask(dir, input, sources, takenDeployIds(dir, input.env));
-  mkdirSync(envFolder(dir, task.env), { recursive: true });
-  return save(task);
+  mkdirSync(envFolder(dir, input.env), { recursive: true });
+  for (let attempt = 0; attempt < CLAIM_ATTEMPTS; attempt++) {
+    const task = planDeployTask(dir, input, sources, takenDeployIds(dir, input.env));
+    if (claim(dir, task, sources)) return task;
+  }
+  throw new Error("Could not allocate a unique deploy task id");
 }
 
 /**
@@ -230,25 +261,34 @@ export function createDeployPair(
       throw new Error(
         `A staging and prod pair needs both environments; this project lists only: ${envs.join(", ")}`,
       );
-  const staging = planDeployTask(
-    dir,
-    { ...input, env: "staging" },
-    sources,
-    takenDeployIds(dir, "staging"),
-  );
-  const prod = planDeployTask(dir, { ...input, env: "prod" }, sources, takenDeployIds(dir, "prod"));
-  staging.twin = prod.id;
-  prod.twin = staging.id;
   mkdirSync(envFolder(dir, "staging"), { recursive: true });
   mkdirSync(envFolder(dir, "prod"), { recursive: true });
-  save(staging);
-  try {
-    save(prod);
-  } catch (error) {
-    rmSync(staging.file, { force: true });
-    throw error;
+  for (let attempt = 0; attempt < CLAIM_ATTEMPTS; attempt++) {
+    const staging = planDeployTask(
+      dir,
+      { ...input, env: "staging" },
+      sources,
+      takenDeployIds(dir, "staging"),
+    );
+    const prod = planDeployTask(
+      dir,
+      { ...input, env: "prod" },
+      sources,
+      takenDeployIds(dir, "prod"),
+    );
+    staging.twin = prod.id;
+    prod.twin = staging.id;
+    if (!claim(dir, staging, sources)) continue;
+    let claimed = false;
+    try {
+      claimed = claim(dir, prod, sources);
+    } finally {
+      // A lost race or a failed write leaves no half pair behind.
+      if (!claimed) rmSync(staging.file, { force: true });
+    }
+    if (claimed) return { staging, prod };
   }
-  return { staging, prod };
+  throw new Error("Could not allocate unique ids for a staging and prod pair");
 }
 
 /**
@@ -343,17 +383,23 @@ export function closeDeployTask(
 /**
  * Puts a closed task back to open, for a deploy that was rolled back: the file moves from
  * `archive/` to its env folder, `closed` and `evidence` are cleared, and a log line says so.
- * The open copy is written first and the archived one removed after, as a close does in reverse.
+ * The order keeps a crash from ever leaving the task closed: the archived file is first rewritten
+ * in place as open (one atomic write), then the copy in the env folder is written, then the
+ * archived one is removed. A crash after the first step leaves an open task in `archive/`, a crash
+ * after the second leaves two copies, and the scan keeps the archived one for both; running reopen
+ * again finishes the move. A task that is open and already in its env folder is refused.
  */
 export function reopenDeployTask(dir: string, id: string, now: Date, note?: string): DeployTask {
   const task = findDeployTask(dir, id);
-  if (task.status === "open") throw new Error(`${id} is already open`);
-  const { closed: _closed, evidence: _evidence, ...rest } = task;
-  const reopened = withNote(
-    { ...rest, status: "open" },
-    note?.trim() ? `reopened: ${note}` : "reopened",
-    now,
-  );
+  const archived = basename(dirname(task.file)) === ARCHIVE;
+  if (task.status === "open" && !archived) throw new Error(`${id} is already open`);
+  let reopened: DeployTask = task;
+  if (task.status !== "open") {
+    const { closed: _closed, evidence: _evidence, ...rest } = task;
+    reopened = save(
+      withNote({ ...rest, status: "open" }, note?.trim() ? `reopened: ${note}` : "reopened", now),
+    );
+  }
   const destination = join(envFolder(dir, task.env), basename(task.file));
   const saved = save({ ...reopened, file: destination });
   if (destination !== task.file) rmSync(task.file, { force: true });

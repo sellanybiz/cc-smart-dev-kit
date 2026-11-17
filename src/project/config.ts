@@ -169,14 +169,6 @@ export const TASKS_SINCE = "1.10.0";
  */
 export const DEPLOY_TASKS_SINCE = "5.0.0";
 
-/**
- * The `tasks` fields no one reads since `DEPLOY_TASKS_SINCE`: the release branch and the old
- * notes folders. They are accepted and ignored, not retired: a retired field fails every guard
- * closed, and `project init` cannot repair a file that does. `doctor` names them with the fix
- * (`project init` removes them).
- */
-export const IGNORED_TASK_FIELDS = ["releaseBranch", "legacyFolders"] as const;
-
 /** A path inside the checkout, written with `/`: never absolute, never `.` or `..` segments. */
 const inCheckout = z
   .string()
@@ -188,6 +180,20 @@ const inCheckout = z
   )
   .refine((path) => !path.includes("\\"), "use / as the separator")
   .refine((path) => !path.split("/").includes("."), "must not contain . segments");
+
+/**
+ * The `tasks` fields no one reads since `DEPLOY_TASKS_SINCE`: the release branch and the old
+ * notes folders. They are accepted and ignored, not retired: a retired field fails every guard
+ * closed, and `project init` cannot repair a file that does. `doctor` names them with the fix
+ * (`project init` removes them). The schema entries and the list of names are one table.
+ */
+const IGNORED_TASK_SCHEMAS = {
+  releaseBranch: z.string().trim().min(1).optional(),
+  legacyFolders: z.array(inCheckout).optional(),
+};
+export const IGNORED_TASK_FIELDS = Object.keys(IGNORED_TASK_SCHEMAS) as ReadonlyArray<
+  keyof typeof IGNORED_TASK_SCHEMAS
+>;
 
 /**
  * The per-project opt-in file, `.claude/cc-smart-dev-kit.json`.
@@ -303,8 +309,7 @@ export const ccSmartDevKitConfigSchema = z.strictObject({
         .min(1)
         .refine((envs) => new Set(envs).size === envs.length, "Each environment once")
         .optional(),
-      releaseBranch: z.string().trim().min(1).optional(),
-      legacyFolders: z.array(inCheckout).optional(),
+      ...IGNORED_TASK_SCHEMAS,
     })
     .optional(),
   /**
