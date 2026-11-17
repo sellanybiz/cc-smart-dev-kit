@@ -57,11 +57,11 @@ import {
   wordsOf,
   wordsWithFill,
 } from "../shell/command";
+import { gitCalls } from "../shell/git-calls";
 import { resolveWorkflow, WorkflowConfigError } from "../workflow/resolve";
 import { startAutoClean } from "../worktrees/auto-start";
 import { startBudget } from "./budget";
 import { GUARD_GIT_TIMEOUT_MS, innermostWorktree, listWorktrees, runGit } from "./git";
-import { gitCalls } from "./git-guard";
 import { addContext, type HookResult, SILENT, stringField, toolInput } from "./io";
 import type { Env, HookContext } from "./run";
 

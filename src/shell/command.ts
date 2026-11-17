@@ -128,6 +128,8 @@ interface Lexed {
    * about what the program gets (the script of a here-doc with no quoted delimiter).
    */
   expanded: boolean[];
+  /** For each segment: how many `( … )` and substitutions it is inside (0 at the top of the line). */
+  depths: number[];
 }
 
 interface LexOptions {
@@ -175,6 +177,9 @@ function lex(text: string, options: LexOptions): Lexed {
   const segments: string[] = [];
   const piped: (string | null)[] = [];
   const expanded: boolean[] = [];
+  const depths: number[] = [];
+  /** The `( … )` and `$( … )` the text being read is inside. */
+  let subshells = 0;
   const owed: OwedBody[] = [];
   let open = false;
   let unparsable = false;
@@ -186,10 +191,11 @@ function lex(text: string, options: LexOptions): Lexed {
   /** Where each `;` is, counted up to an index: an arithmetic expansion holds none. */
   let semicolons: Int32Array | null = null;
 
-  const push = (piece: string, from: string | null, filledIn = false): void => {
+  const push = (piece: string, from: string | null, filledIn = false, inner = 0): void => {
     segments.push(piece);
     piped.push(from);
     expanded.push(filledIn);
+    depths.push(subshells + inner);
   };
 
   /** Reads `inner` as text of its own and adds the commands it runs (a substitution, a script). */
@@ -203,7 +209,13 @@ function lex(text: string, options: LexOptions): Lexed {
     if (read.open) open = true;
     if (read.unparsable) unparsable = true;
     for (let i = 0; i < read.segments.length; i++) {
-      push(read.segments[i] ?? "", read.piped[i] ?? null, filledIn || read.expanded[i] === true);
+      // A substitution, a backtick or a script body runs in a shell of its own: one level in.
+      push(
+        read.segments[i] ?? "",
+        read.piped[i] ?? null,
+        filledIn || read.expanded[i] === true,
+        (read.depths[i] ?? 0) + 1,
+      );
     }
   }
 
@@ -353,7 +365,9 @@ function lex(text: string, options: LexOptions): Lexed {
         const end = bash ? arithmeticEnd(at + 1) : -1;
         if (end === -1) {
           at += 2;
+          subshells++;
           raw += `$(${read(true).raw}`;
+          subshells--;
         } else {
           raw += readArithmetic(end);
         }
@@ -370,6 +384,7 @@ function lex(text: string, options: LexOptions): Lexed {
     segments.length = mark;
     piped.length = mark;
     expanded.length = mark;
+    depths.length = mark;
     return raw;
   }
 
@@ -488,7 +503,9 @@ function lex(text: string, options: LexOptions): Lexed {
         // commands inside are still read.
         if (char === "$" && next === "(" && substitutions < MAX_INNER) {
           at += 2;
+          subshells++;
           const substitution = read(true, substitutions + 1);
+          subshells--;
           if (!substitution.closed) open = true;
           take(`$(${substitution.raw}`);
           continue;
@@ -578,6 +595,8 @@ function lex(text: string, options: LexOptions): Lexed {
         }
         if (nested && char === "(") depth++;
         if (nested && char === ")") depth--;
+        if (char === "(") subshells++;
+        else if (char === ")") subshells = Math.max(0, subshells - 1);
         current = "";
         stdinShell = null;
         raw += char;
@@ -597,7 +616,7 @@ function lex(text: string, options: LexOptions): Lexed {
 
   if (options.body === true) readDouble(false);
   else read(false);
-  return { expanded, open, piped, segments, unparsable };
+  return { depths, expanded, open, piped, segments, unparsable };
 }
 
 /** How a caller reads a line: its dialect (Bash by default), and the two switches below. */
@@ -623,6 +642,11 @@ export interface ShellStep {
    * what the program gets: the script of a here-doc whose delimiter is not quoted.
    */
   expanded: boolean;
+  /**
+   * How many `( … )` or substitutions the command is inside; left out at the top of the line. A
+   * `cd` there changes the folder only for the commands at its own depth or deeper, up to the `)`.
+   */
+  subshellDepth?: number;
 }
 
 /**
@@ -641,6 +665,7 @@ export function shellSteps(
   return chosen.segments.map((text, index) => ({
     expanded: chosen.expanded[index] === true,
     pipedFrom: chosen.piped[index] ?? null,
+    ...(chosen.depths[index] ? { subshellDepth: chosen.depths[index] } : {}),
     text,
   }));
 }

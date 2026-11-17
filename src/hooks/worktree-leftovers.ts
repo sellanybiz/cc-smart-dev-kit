@@ -36,6 +36,12 @@
  *   only when it can be worked out without a probe.
  *
  * No fetch: a session start must stay quick, so `origin/<base>` is read as it is.
+ *
+ * THE MAIN-CHECKOUT NUDGE
+ *   A project that guards its main checkout (`worktrees.guardMainFolder`) also gets one line at an
+ *   attended start in that checkout: the first change belongs in a worktree (`mainCheckoutNudge`).
+ *   It says the same way in as the main-folder guard's refusal (`ENTER_WORKTREE_PHRASE`), before
+ *   the session is ever refused.
  */
 import { closeSync, existsSync, fstatSync, openSync, readSync, statSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
@@ -56,6 +62,7 @@ import {
 } from "./git";
 import { addContext, addContextAndMessage, type HookResult, SILENT, systemMessage } from "./io";
 import { localFiles } from "./local-files";
+import { ENTER_WORKTREE_PHRASE } from "./main-folder-guard";
 import type { Env, HookContext } from "./run";
 import { liveSessions, type SessionRecord } from "./sessions";
 
@@ -314,7 +321,7 @@ export function mainFolderNotes(
 export function mainCheckoutNudge(project: Project, env: Env): string | null {
   if (project.config?.worktrees?.guardMainFolder !== true) return null;
   if (project.isWorktree || project.mainCheckout === null || !isAttended(env)) return null;
-  return "This session is in the main checkout. Make the first change in a worktree: `EnterWorktree` with the task's name as its `name` (dashes, not `/`), or `claude -w <name>` from a terminal.";
+  return `This session is in the main checkout. Make the first change in a worktree: ${ENTER_WORKTREE_PHRASE}, or \`claude -w <name>\` from a terminal.`;
 }
 
 export function worktreeLeftovers(context: HookContext): HookResult {
