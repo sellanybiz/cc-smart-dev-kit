@@ -1,7 +1,7 @@
 /**
  * `GET /api/tasks` and `GET /api/projects/<id>/tasks` (D75, D76): the Tasks tab — the kit's
  * work store for each project as a tree with each task's layer, type and blockers, and its open
- * task files, what blocks a release first, stale marked.
+ * deploy tasks, by environment, before then after, blocking first, stale marked.
  * Every file is in `tempDir()`, git runs in a clean environment, the store is a temp home's.
  */
 import { beforeEach, describe, expect, test } from "bun:test";
@@ -143,7 +143,7 @@ beforeEach(() => {
 });
 
 describe("a project's tasks answer (D75)", () => {
-  test("the work tree and the open task files, what blocks a release first, stale marked", async () => {
+  test("the work tree and the open deploy tasks, by environment, blocking first, stale marked", async () => {
     const root = repo();
     const { deps, paths } = await world(root);
     const db = openWorkDb(workDbFile(paths), { mode: "write" });
@@ -472,6 +472,29 @@ describe("a project's tasks answer (D75)", () => {
         { id: "staging-20260205-100000", status: "open" },
       ],
       ["prod-20260210-100000-task.md", "after", "blocking", null],
+    ]);
+  });
+
+  test("an id two files claim: only the file open past staleDays is stale", async () => {
+    const root = repo();
+    const { deps } = await world(root);
+    const staging = join(root, ".claude", "tasks", "staging");
+    mkdirSync(staging, { recursive: true });
+    const copy = (name: string, created: string) =>
+      writeFileSync(
+        join(staging, name),
+        `---\nid: "staging-20260115-100000"\ntitle: "${name}"\nenv: "staging"\nstatus: "open"\ndeploy: "before"\ntype: "blocking"\ncreated: "${created}"\n---\n`,
+      );
+    // 45 days before NOW on one branch, 4 days on the other: one id, two ages.
+    copy("staging-20260115-100000-old.md", "2026-01-15T10:00:00Z");
+    copy("staging-20260115-100000-new.md", "2026-02-25T10:00:00Z");
+
+    const body = (await answerOf(deps, idOf(root)))?.body as ProjectTasksAnswer;
+    if (body.files.state !== "ready") throw new Error("the files should read");
+    expect(body.files.duplicateIds).toEqual(["staging-20260115-100000"]);
+    expect(body.files.tasks.map((row) => [row.file.split("/").pop(), row.stale])).toEqual([
+      ["staging-20260115-100000-old.md", true],
+      ["staging-20260115-100000-new.md", false],
     ]);
   });
 

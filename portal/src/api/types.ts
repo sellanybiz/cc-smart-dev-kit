@@ -72,7 +72,7 @@ export type {
   WorkTaskType,
 };
 
-/** One project's tasks (D75): its work tree and its task files, as the server answers them. */
+/** One project's tasks (D75): its work tree and its deploy tasks, as the server answers them. */
 export type ProjectTasksData = ProjectTasksAnswer;
 
 /** One project on the Tasks tab: its row, as the project list draws it, and its tasks. */

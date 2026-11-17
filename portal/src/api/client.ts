@@ -74,9 +74,9 @@ export interface PortalClient {
   projectGateway(id: string): Promise<ProjectGatewayData>;
   /** A project's Workflow card (D57): its settings, the base a change goes into, gh's state. */
   projectWorkflow(id: string): Promise<ProjectWorkflowData>;
-  /** One project's tasks (D75): its work tree on this machine and its task files. */
+  /** One project's tasks (D75): its work tree on this machine and its deploy tasks. */
   projectTasks(id: string): Promise<ProjectTasksData>;
-  /** The Tasks tab (D76): every project with its work tree and its task files. */
+  /** The Tasks tab (D76): every project with its work tree and its deploy tasks. */
   tasks(): Promise<TasksData>;
   /** One work task as the store keeps it: its description, notes and history (the side panel). */
   taskDetail(id: string): Promise<TaskDetailAnswer>;

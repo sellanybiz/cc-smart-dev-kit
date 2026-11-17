@@ -220,7 +220,9 @@ describe("the Tasks tab", () => {
       page({ tab: "files" }, { note: null, projects: leftOver.projects.slice(2) }),
     );
     expect(none).toContain("Nothing owed in any project");
-    expect(none).toContain("task add --kind prod --deploy before --type blocking");
+    expect(none).toContain(
+      'task add "<subject>" --kind prod --deploy before --type blocking ; a step owed on both environments is --kind staging --pair',
+    );
   });
 
   test("the session and plan pickers list what the projects hold", () => {

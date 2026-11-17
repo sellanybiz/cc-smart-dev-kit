@@ -7,13 +7,18 @@ import type { ProjectTaskFiles, ProjectTaskRow, ProjectTasksData, WorkTaskNode }
 
 /** The words a person reads: the tags gone, the entities React writes turned back. */
 export function words(html: string): string {
-  return html
-    .replace(/<[^>]+>/g, " ")
-    .replace(/&#x27;/g, "'")
-    .replace(/&quot;/g, '"')
-    .replace(/&amp;/g, "&")
-    .replace(/\s+/g, " ")
-    .trim();
+  return (
+    html
+      .replace(/<[^>]+>/g, " ")
+      .replace(/&#x27;/g, "'")
+      .replace(/&quot;/g, '"')
+      .replace(/&lt;/g, "<")
+      .replace(/&gt;/g, ">")
+      // Last, so a written `&amp;lt;` stays `&lt;` and is not read twice.
+      .replace(/&amp;/g, "&")
+      .replace(/\s+/g, " ")
+      .trim()
+  );
 }
 
 export function task(

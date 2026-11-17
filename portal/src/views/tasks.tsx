@@ -255,9 +255,11 @@ function NothingShown({ view, onView }: { view: TaskView; onView: (view: TaskVie
       <EmptyState title="Nothing owed in any project">
         A project owes something once its repository has an open deploy task (
         <code className="font-mono">
-          {KIT_NAME} task add --kind prod --deploy before --type blocking
-        </code>{" "}
-        and the like).
+          {KIT_NAME} task add "&lt;subject&gt;" --kind prod --deploy before --type blocking
+        </code>
+        ; a step owed on both environments is{" "}
+        <code className="font-mono">--kind staging --pair</code>
+        ).
       </EmptyState>
     );
   }

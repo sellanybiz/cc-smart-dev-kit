@@ -133,6 +133,7 @@ function statusById(tasks: readonly DeployTask[]): Map<string, ProjectTaskTwin["
 function rowOf(
   task: DeployTask,
   root: string,
+  /** The stale tasks' files (absolute, as the scan names them). */
   stale: ReadonlySet<string>,
   statuses: ReadonlyMap<string, ProjectTaskTwin["status"]>,
 ): ProjectTaskRow {
@@ -143,7 +144,7 @@ function rowOf(
     file: relative(root, task.file),
     flags: [...(task.flags ?? [])],
     id: task.id,
-    stale: stale.has(task.id),
+    stale: stale.has(task.file),
     title: task.title,
     twin:
       task.twin === undefined
@@ -177,6 +178,8 @@ function filesOf(
 ): ProjectTaskFiles {
   try {
     const scan = scanDeployTasks(tasks.dir, { archive: true });
+    // By file, not id: two files can claim one id, and only the one open too long is stale.
+    // Both readers build each path from the same folder, so the two scans name a file alike.
     const stale = new Set(
       checkDeployTasks({
         checkoutRoot: root,
@@ -184,8 +187,8 @@ function filesOf(
         settings: { staleDays: tasks.staleDays },
         now,
       })
-        .filter((finding) => finding.kind === "stale" && finding.id !== undefined)
-        .map((finding) => finding.id as string),
+        .filter((finding) => finding.kind === "stale")
+        .map((finding) => finding.file),
     );
     const statuses = statusById(scan.tasks);
     const open = scan.tasks
