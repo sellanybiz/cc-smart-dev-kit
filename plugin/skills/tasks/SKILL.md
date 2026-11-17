@@ -110,14 +110,15 @@ Before any deploy, production or database work, list the deploy tasks (`task_lis
    in (the deploy task commands act in the folder they run in). `--no-track` stops a plain `git
    push` from targeting the base.
 2. **`cc-smart-dev-kit task release <env> --before`.** Exit 1 while a blocking `before` task is
-   open, a task file is broken or its id repeats, prod waits on an open staging twin, or HEAD is
-   not the ref (default `origin/<worktrees.base>`) apart from task files. It names the open
+   open, a task file is broken or its id repeats, prod waits on an open staging twin, the branch
+   is the base itself, or HEAD is not the ref (default `origin/<worktrees.base>`) apart from task
+   files. It names the open
    non-blocking `before` tasks: do them, or drop them with a reason.
 3. **Do each task and close it** with evidence; commit the closes on the deploy branch.
 4. **Deploy**, with the project's own deploy skill.
 5. **`git push -u origin <branch>`**, then **`task release <env> --after`.** Exit 1 while any
-   task of that environment is open (before or after), a close is uncommitted, or the branch is
-   not pushed. With no flag, `release` lists the open tasks and exits 0.
+   task of that environment is open (before or after), a close is uncommitted, the branch is not
+   pushed, or the branch is the base (a close is never pushed there). With no flag, `release` lists the open tasks and exits 0.
 6. **The branch's pull request** (the task files only) merges as the workflow says
    (`/cc-smart-dev-kit:commit`, `/cc-smart-dev-kit:pull-request`).
 

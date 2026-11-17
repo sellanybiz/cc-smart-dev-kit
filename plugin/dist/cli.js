@@ -31293,6 +31293,12 @@ function startAgain(env, facts, now) {
   const branch = deployBranchName(env, now);
   return `Start the run on a deploy branch cut from the commit that ships: \`git fetch origin\`, then \`git switch --no-track -c ${branch} ${facts.ref}\` in this checkout`;
 }
+function onBaseRefusal(env, input) {
+  const { facts, baseBranch, now } = input;
+  return facts.push.branch === baseBranch ? [
+    `HEAD is on ${baseBranch}, the branch deploys ship to: the closes must reach it through a deploy branch's pull request, never by a push to it. ${startAgain(env, facts, now)}`
+  ] : [];
+}
 function brokenRefusals(scan) {
   return [
     ...scan.broken.map((item) => `${item.file} cannot be read (${item.why}): fix or delete it, then run again`),
@@ -31308,7 +31314,7 @@ function gateBefore(env, input) {
 }
 function judgeBefore(env, input) {
   const { scan, facts, envs, now } = input;
-  const refusals = [...envRefusal(env, envs)];
+  const refusals = [...envRefusal(env, envs), ...onBaseRefusal(env, input)];
   const foreign = facts.changedPaths.filter((path) => !underTasks(path, facts.tasksPath));
   if (facts.headCommit !== facts.refCommit) {
     if (!facts.refIsAncestor)
@@ -31337,7 +31343,7 @@ function gateAfter(env, input) {
 }
 function judgeAfter(env, input) {
   const { scan, facts, envs } = input;
-  const refusals = [...envRefusal(env, envs)];
+  const refusals = [...envRefusal(env, envs), ...onBaseRefusal(env, input)];
   for (const task of scan.tasks.filter((one) => one.env === env && open2(one)))
     refusals.push(`Task is open: ${describe3(task)} (${task.deploy} the deploy, ${task.type}): close it with evidence, or drop it with a reason`);
   if (facts.uncommitted.length > 0)
@@ -31345,10 +31351,12 @@ function judgeAfter(env, input) {
   const { branch, remote, ahead } = facts.push;
   if (branch === null)
     refusals.push("HEAD is detached: the closes need a branch to be pushed from");
-  else if (remote === null)
-    refusals.push(`Branch ${branch} is not pushed: run \`git push -u origin ${branch}\``);
-  else if (ahead > 0)
-    refusals.push(`Branch ${branch} is ${ahead} commit(s) ahead of ${remote}: run \`git push origin ${branch}\``);
+  else if (branch !== input.baseBranch) {
+    if (remote === null)
+      refusals.push(`Branch ${branch} is not pushed: run \`git push -u origin ${branch}\``);
+    else if (ahead > 0)
+      refusals.push(`Branch ${branch} is ${ahead} commit(s) ahead of ${remote}: run \`git push origin ${branch}\``);
+  }
   refusals.push(...brokenRefusals(scan));
   return { ok: refusals.length === 0, refusals, notes: [] };
 }
@@ -33390,7 +33398,8 @@ async function runTaskCommand(argv) {
       }
       const { env, step } = release ?? { env: undefined, step: null };
       if (step !== null && env !== undefined) {
-        const ref = get("ref") ?? `origin/${baseBranch(locateCheckout(cwd), process.env, root).base}`;
+        const base = baseBranch(locateCheckout(cwd), process.env, root).base;
+        const ref = get("ref") ?? `origin/${base}`;
         try {
           refCommit(root, ref);
         } catch (error) {
@@ -33401,6 +33410,7 @@ async function runTaskCommand(argv) {
           dir,
           facts,
           envs: settings.envs,
+          baseBranch: base,
           now: new Date
         });
         if (has("json"))

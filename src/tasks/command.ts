@@ -377,8 +377,8 @@ export async function runTaskCommand(argv: string[]): Promise<number> {
       const { env, step } = release ?? { env: undefined, step: null };
       if (step !== null && env !== undefined) {
         // The gates read the folder themselves, closed tasks too (`gateBefore`, `gateAfter`).
-        const ref =
-          get("ref") ?? `origin/${baseBranch(locateCheckout(cwd), process.env, root).base}`;
+        const base = baseBranch(locateCheckout(cwd), process.env, root).base;
+        const ref = get("ref") ?? `origin/${base}`;
         // The ref is resolved on its own, so only a ref git does not know gets the fetch advice;
         // any other git failure below (HEAD with no commit, say) is reported as git says it.
         try {
@@ -393,6 +393,7 @@ export async function runTaskCommand(argv: string[]): Promise<number> {
           dir,
           facts,
           envs: settings.envs,
+          baseBranch: base,
           now: new Date(),
         });
         if (has("json"))

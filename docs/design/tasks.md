@@ -406,7 +406,8 @@ git), 2 a wrong command.
    A refusal for the wrong HEAD prints this command. The `task` command acts in the folder it
    runs in, and every deploy-task answer names the checkout and file it wrote, so a close lands
    where the gates read it.
-2. `--before` exits 1 when the environment is not in `tasks.envs`; HEAD is not the ref's commit
+2. `--before` exits 1 when the environment is not in `tasks.envs`; the current branch is the
+   base branch (`worktrees.base`: a run happens on a deploy branch, D12); HEAD is not the ref's commit
    (it may differ from it only under `tasks.dir`, closes already made, and it must hold every
    commit of the ref); a blocking `before` task is open; a task file is broken or its id is
    claimed by two file names; or, for prod, a task's staging twin is open. It names the open
@@ -415,7 +416,8 @@ git), 2 a wrong command.
 4. The deploy itself is the project's own deploy skill.
 5. `--after` exits 1 when **any** task of that environment is open, before or after; `tasks.dir`
    has uncommitted changes; the branch is not pushed (`git push -u origin <branch>`, or it is
-   ahead of its remote copy); HEAD is detached; or a task file is broken.
+   ahead of its remote copy); HEAD is detached; the current branch is the base branch (no line
+   ever prints a push to it); or a task file is broken.
 6. The branch's pull request (the task files only) merges as the workflow says.
 
 With no flag, `release [<env>]` lists the open tasks by environment, step and type, blocking

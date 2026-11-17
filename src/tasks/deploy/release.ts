@@ -49,6 +49,8 @@ export interface GateInput {
   facts: GitFacts;
   /** The project's `tasks.envs`. */
   envs: readonly DeployEnv[];
+  /** The branch deploys ship to (`worktrees.base`, without `origin/`): a run is never on it. */
+  baseBranch: string;
   /** The time for the deploy branch name in a refusal's fix. */
   now: Date;
 }
@@ -87,6 +89,20 @@ function startAgain(env: DeployEnv, facts: GitFacts, now: Date): string {
   return `Start the run on a deploy branch cut from the commit that ships: \`git fetch origin\`, then \`git switch --no-track -c ${branch} ${facts.ref}\` in this checkout`;
 }
 
+/**
+ * The refusal when the run is on the base branch itself (D12): its closes would be committed and
+ * pushed straight to the base, with no deploy branch and no pull request. Empty on any other
+ * branch (and on a detached HEAD, which `judgeAfter` refuses on its own).
+ */
+function onBaseRefusal(env: DeployEnv, input: JudgeInput): string[] {
+  const { facts, baseBranch, now } = input;
+  return facts.push.branch === baseBranch
+    ? [
+        `HEAD is on ${baseBranch}, the branch deploys ship to: the closes must reach it through a deploy branch's pull request, never by a push to it. ${startAgain(env, facts, now)}`,
+      ]
+    : [];
+}
+
 function brokenRefusals(scan: TaskScan): string[] {
   return [
     ...scan.broken.map(
@@ -108,6 +124,7 @@ function envRefusal(env: DeployEnv, envs: readonly DeployEnv[]): string[] {
 /**
  * The gate before a deploy. It refuses when:
  * - the environment is not in `tasks.envs`;
+ * - the current branch is the base branch (a run happens on a deploy branch);
  * - HEAD is not the ref's commit, unless HEAD holds every commit of the ref and differs from it
  *   only in the tasks folder (closes already made on the deploy branch are fine). A ref that has
  *   commits HEAD lacks may hold tasks this checkout cannot see, even when those commits changed
@@ -125,7 +142,7 @@ export function gateBefore(env: DeployEnv, input: GateInput): GateResult {
 /** `gateBefore`'s rules over a scan that holds every task, open and closed. */
 export function judgeBefore(env: DeployEnv, input: JudgeInput): GateResult {
   const { scan, facts, envs, now } = input;
-  const refusals = [...envRefusal(env, envs)];
+  const refusals = [...envRefusal(env, envs), ...onBaseRefusal(env, input)];
   const foreign = facts.changedPaths.filter((path) => !underTasks(path, facts.tasksPath));
   if (facts.headCommit !== facts.refCommit) {
     if (!facts.refIsAncestor)
@@ -165,6 +182,7 @@ export function judgeBefore(env: DeployEnv, input: JudgeInput): GateResult {
 /**
  * The gate after a deploy. It refuses when:
  * - the environment is not in `tasks.envs`;
+ * - the current branch is the base branch (never a push to it, so no push is ever printed for it);
  * - any task of the environment is open, before or after (nothing lingers);
  * - the tasks folder has uncommitted changes (a close not yet committed);
  * - the branch is not pushed: detached, never pushed to origin, or commits origin's copy lacks;
@@ -178,7 +196,7 @@ export function gateAfter(env: DeployEnv, input: GateInput): GateResult {
 /** `gateAfter`'s rules over a scan that holds every task, open and closed. */
 export function judgeAfter(env: DeployEnv, input: JudgeInput): GateResult {
   const { scan, facts, envs } = input;
-  const refusals = [...envRefusal(env, envs)];
+  const refusals = [...envRefusal(env, envs), ...onBaseRefusal(env, input)];
   for (const task of scan.tasks.filter((one) => one.env === env && open(one)))
     refusals.push(
       `Task is open: ${describe(task)} (${task.deploy} the deploy, ${task.type}): close it with evidence, or drop it with a reason`,
@@ -190,12 +208,15 @@ export function judgeAfter(env: DeployEnv, input: JudgeInput): GateResult {
   const { branch, remote, ahead } = facts.push;
   if (branch === null)
     refusals.push("HEAD is detached: the closes need a branch to be pushed from");
-  else if (remote === null)
-    refusals.push(`Branch ${branch} is not pushed: run \`git push -u origin ${branch}\``);
-  else if (ahead > 0)
-    refusals.push(
-      `Branch ${branch} is ${ahead} commit(s) ahead of ${remote}: run \`git push origin ${branch}\``,
-    );
+  // On the base the refusal above already says what to do: a push line here would name the base.
+  else if (branch !== input.baseBranch) {
+    if (remote === null)
+      refusals.push(`Branch ${branch} is not pushed: run \`git push -u origin ${branch}\``);
+    else if (ahead > 0)
+      refusals.push(
+        `Branch ${branch} is ${ahead} commit(s) ahead of ${remote}: run \`git push origin ${branch}\``,
+      );
+  }
   refusals.push(...brokenRefusals(scan));
   return { ok: refusals.length === 0, refusals, notes: [] };
 }

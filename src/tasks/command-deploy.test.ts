@@ -159,6 +159,7 @@ test("release with no flag lists the open tasks by environment, deploy step and 
 
 test("release --before: refuses on an open blocking task, passes once it is closed", async () => {
   const { run, add, cwd } = world();
+  git(cwd, "switch", "--no-track", "-c", "deploy/prod-20261117-1445", "origin/main");
   const id = await add("Migrate", "prod", "before", "blocking");
   const head = git(cwd, "rev-parse", "HEAD").trim();
   const refused = await run(["release", "prod", "--before"]);
@@ -192,8 +193,28 @@ test("release --before names the deploy-branch commands when HEAD is not the ref
   expect(refused.text).toContain("origin/main");
 });
 
+test("both gates refuse on the base branch and never print a push to it", async () => {
+  const { run, add, cwd } = world();
+  const id = await add("Warm cache", "prod", "after", "blocking");
+  expect((await run(["done", id, "--evidence", "warm: ok"])).code).toBe(0);
+  git(cwd, "add", "-A");
+  git(cwd, "commit", "-m", "close the deploy task on main");
+  for (const step of ["--before", "--after"]) {
+    const gate = await run(["release", "prod", step]);
+    expect(gate.code).toBe(1);
+    expect(gate.text).toContain(
+      "HEAD is on main, the branch deploys ship to: the closes must reach it through a deploy branch's pull request, never by a push to it.",
+    );
+    expect(gate.text).toContain("git switch --no-track -c deploy/prod-");
+    expect(gate.text).not.toContain("git push");
+  }
+  // --ref changes the commit judged, never the base the run must stay off.
+  expect((await run(["release", "prod", "--after", "--ref", "HEAD"])).code).toBe(1);
+});
+
 test("release lists the non-blocking before tasks as notes, not refusals", async () => {
-  const { run, add } = world();
+  const { run, add, cwd } = world();
+  git(cwd, "switch", "--no-track", "-c", "deploy/prod-20261117-1445", "origin/main");
   const id = await add("Tidy", "prod", "before", "non-blocking");
   const passed = await run(["release", "prod", "--before"]);
   expect(passed.code).toBe(0);
@@ -202,6 +223,7 @@ test("release lists the non-blocking before tasks as notes, not refusals", async
 
 test("release --after refuses an open task, an uncommitted close and an unpushed branch", async () => {
   const { run, add, cwd } = world();
+  git(cwd, "switch", "--no-track", "-c", "deploy/prod-20261117-1445", "origin/main");
   const id = await add("Warm cache", "prod", "after", "blocking");
   const open = await run(["release", "prod", "--after"]);
   expect(open.code).toBe(1);
@@ -214,8 +236,8 @@ test("release --after refuses an open task, an uncommitted close and an unpushed
   git(cwd, "commit", "-m", "close the deploy task");
   const ahead = await run(["release", "prod", "--after"]);
   expect(ahead.code).toBe(1);
-  expect(ahead.text).toContain("1 commit(s) ahead of origin/main: run `git push origin main`");
-  git(cwd, "push", "origin", "main");
+  expect(ahead.text).toContain("not pushed: run `git push -u origin deploy/prod-20261117-1445`");
+  git(cwd, "push", "-u", "origin", "deploy/prod-20261117-1445");
   const pushed = await run(["release", "prod", "--after"]);
   expect(pushed.code).toBe(0);
   expect(pushed.text).toContain("Ready:");
