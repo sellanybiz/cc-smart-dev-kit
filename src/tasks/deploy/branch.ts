@@ -11,7 +11,7 @@ import { gitEnv } from "../../project/git-env";
 import { RESOLVE_GIT_TIMEOUT_MS } from "../../project/resolve";
 import { isTaskFile } from "./files";
 import { type DeployTask, folderPlace, parseDeployTask } from "./format";
-import type { GitFacts } from "./release";
+import { type GitFacts, underTasks } from "./release";
 
 export function taskGit(repo: string, args: string[], env: Env = process.env): string {
   const result = runGit(repo, args, env, RESOLVE_GIT_TIMEOUT_MS, {
@@ -210,14 +210,16 @@ export function readGitFacts(
     refSha === headCommit
       ? []
       : pathsOf(["diff", "--name-only", "--no-renames", "-z", refSha, headCommit]);
-  const scope = tasksPath ? ["--", tasksPath] : [];
-  // Staged, unstaged and untracked changes under the tasks folder: a close not yet committed.
-  const uncommitted = [
+  // Staged, unstaged and untracked changes: under the tasks folder, a close not yet committed;
+  // anywhere else, code the gate did not judge.
+  const dirty = [
     ...new Set([
-      ...pathsOf(["diff", "--name-only", "--no-renames", "-z", "HEAD", ...scope]),
-      ...pathsOf(["ls-files", "--others", "--exclude-standard", "-z", ...scope]),
+      ...pathsOf(["diff", "--name-only", "--no-renames", "-z", "HEAD"]),
+      ...pathsOf(["ls-files", "--others", "--exclude-standard", "-z"]),
     ]),
   ].sort();
+  const uncommitted = dirty.filter((path) => underTasks(path, tasksPath));
+  const uncommittedOutside = dirty.filter((path) => !underTasks(path, tasksPath));
   const currentBranch = runGit(repo, ["branch", "--show-current"], env, RESOLVE_GIT_TIMEOUT_MS);
   const branch = currentBranch.ok && currentBranch.out ? currentBranch.out : null;
   // Origin's own copy of the branch, not `@{upstream}`: a branch cut from origin/main tracks main
@@ -238,6 +240,7 @@ export function readGitFacts(
     changedPaths,
     tasksPath,
     uncommitted,
+    uncommittedOutside,
     push: {
       branch,
       remote: remoteKnown && branch !== null ? `origin/${branch}` : null,

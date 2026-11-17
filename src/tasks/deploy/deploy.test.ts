@@ -626,6 +626,7 @@ const cleanFacts: GitFacts = {
   tasksPath: ".claude/tasks",
   refIsAncestor: true,
   uncommitted: [],
+  uncommittedOutside: [],
   push: {
     branch: "deploy/prod-20261117-1445",
     remote: "origin/deploy/prod-20261117-1445",
@@ -653,7 +654,7 @@ function after(
 }
 
 test("gate before: passes with no open blocking before-task", () => {
-  expect(before("prod", [])).toEqual({ ok: true, refusals: [], notes: [] });
+  expect(before("prod", [])).toEqual({ ok: true, refusals: [], notes: [], warnings: [] });
   const result = before("prod", [
     mk({ id: "prod-20261117-100000", title: "Warm cache", type: "non-blocking" }),
     mk({ id: "prod-20261117-100001", title: "Done one", status: "done" }),
@@ -756,9 +757,28 @@ test("gate before: prod refuses while the staging twin is open; staging does not
     'prod-20261117-100000 "Prod half" waits for its staging twin staging-20261117-100000, which is still open: finish staging first, or its close waits on an unmerged branch: `task list --branches`',
   ]);
   expect(before("staging", [staging, prod]).ok).toBe(true);
-  // Once the twin is closed, prod goes on; a twin that names no task is not this gate's concern.
+  // Once the twin is closed, prod goes on. A twin that names no task, live or archived, is
+  // refused with the way out: it must not pass for a finished one.
   expect(before("prod", [{ ...staging, status: "done" }, prod]).ok).toBe(true);
-  expect(before("prod", [{ ...prod, twin: "staging-20990101-000000" }]).ok).toBe(true);
+  expect(before("prod", [{ ...prod, twin: "staging-20990101-000000" }]).refusals).toEqual([
+    'prod-20261117-100000 "Prod half" names its staging twin staging-20990101-000000, but no task has that id: run `task check` to see it, then create the twin or remove the twin field',
+  ]);
+  // Staging never waits on a twin.
+  expect(before("staging", [{ ...staging, twin: "prod-20990101-000000" }]).ok).toBe(true);
+});
+
+test("gate before warns, never refuses, for uncommitted changes outside the tasks folder", () => {
+  const dirty = { ...cleanFacts, uncommittedOutside: ["src/app.ts", "notes.txt"] };
+  expect(before("prod", [], dirty)).toEqual({
+    ok: true,
+    refusals: [],
+    notes: [],
+    warnings: [
+      "2 uncommitted change(s) outside .claude/tasks (src/app.ts, notes.txt): this gate judged committed code only, so a deploy from this folder may ship them",
+    ],
+  });
+  // The after gate judges the closes only: it says nothing of other files.
+  expect(after("prod", [], dirty).warnings).toEqual([]);
 });
 
 test("gate before and after: an environment outside tasks.envs refuses", () => {
@@ -783,7 +803,7 @@ test("gate after: passes when nothing of the env is open, committed and pushed",
       mk({ id: "prod-20261117-100001", status: "dropped" }),
       mk({ id: "staging-20261117-100002", env: "staging" }),
     ]),
-  ).toEqual({ ok: true, refusals: [], notes: [] });
+  ).toEqual({ ok: true, refusals: [], notes: [], warnings: [] });
 });
 
 test("gate after: any open task of the env refuses, before or after, either type", () => {
@@ -828,8 +848,18 @@ test("both gates refuse on the base branch, print the branch to cut, and never p
   const cut =
     "Start the run on a deploy branch cut from the commit that ships: `git fetch origin`, then `git switch --no-track -c deploy/prod-20261117-1445 origin/main` in this checkout";
   const refusal = `HEAD is on main, the branch deploys ship to: the closes must reach it through a deploy branch's pull request, never by a push to it. ${cut}`;
-  expect(before("prod", [], onMain)).toEqual({ ok: false, refusals: [refusal], notes: [] });
-  expect(after("prod", [], onMain)).toEqual({ ok: false, refusals: [refusal], notes: [] });
+  expect(before("prod", [], onMain)).toEqual({
+    ok: false,
+    refusals: [refusal],
+    notes: [],
+    warnings: [],
+  });
+  expect(after("prod", [], onMain)).toEqual({
+    ok: false,
+    refusals: [refusal],
+    notes: [],
+    warnings: [],
+  });
   // An unpushed base is the same refusal, not a `git push` line naming main.
   const neverPushed = { ...cleanFacts, push: { branch: "main", remote: null, ahead: 0 } };
   expect(after("prod", [], neverPushed).refusals).toEqual([refusal]);
@@ -933,9 +963,15 @@ test("git facts: the tasks folder dirty, staged, untracked, then committed, then
   git(repo, "commit", "-m", "close");
   const committed = readGitFacts(repo, dir, "origin/main", env);
   expect(committed.uncommitted).toEqual([]);
-  // A change outside the tasks folder is not the gate's business.
+  // A change outside the tasks folder is not a close, but the gate says it did not judge it.
+  expect(readGitFacts(repo, dir, "origin/main", env).uncommittedOutside).toEqual([]);
   writeFileSync(join(repo, "scratch.txt"), "x");
+  writeFileSync(join(repo, "README.md"), "changed");
   expect(readGitFacts(repo, dir, "origin/main", env).uncommitted).toEqual([]);
+  expect(readGitFacts(repo, dir, "origin/main", env).uncommittedOutside).toEqual([
+    "README.md",
+    "scratch.txt",
+  ]);
   // Not on origin yet.
   expect(committed.push).toEqual({ branch: "deploy/prod-20261117-1445", remote: null, ahead: 0 });
   expect(after("prod", scanDeployTasks(dir, { archive: true }).tasks, committed).ok).toBe(false);
@@ -950,6 +986,7 @@ test("git facts: the tasks folder dirty, staged, untracked, then committed, then
     ok: true,
     refusals: [],
     notes: [],
+    warnings: [],
   });
   // One more local commit is ahead of origin's copy of the branch.
   writeFileSync(join(repo, "more.txt"), "x");
@@ -1053,6 +1090,7 @@ test("pushed is judged against origin's copy of the branch, not the branch's ups
     ok: true,
     refusals: [],
     notes: [],
+    warnings: [],
   });
   writeFileSync(join(repo, "more.txt"), "x");
   git(repo, "add", "more.txt");

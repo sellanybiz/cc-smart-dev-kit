@@ -378,8 +378,9 @@ origin string; `evidence` is set when the task closes.
   its outbound keys), and the answer names the command to run. `task delete` removes an
   untracked file only; a tracked one closes. `task set <id> --type … --deploy …` changes a
   task's type or step, but weakening a blocking task (`--type non-blocking`, or `--deploy after`
-  on a `before` one) is a drop by another name, so it is the person's too. A deploy task has no
-  parent, `blocked_by` or builder bindings.
+  on a `before` one) is a drop by another name, so it is the person's too. This rule (D14)
+  covers the task tools and the CLI, not a hand edit or removal of the file: no file guard
+  stands behind it. A deploy task has no parent, `blocked_by` or builder bindings.
 - **Reopen** (`task reopen <id>`, or `task_update` with status `open`) puts a closed task back
   from `archive/`, for a deploy that was rolled back. An open task left in `archive/` by an
   interrupted reopen is a `task check` finding; running the reopen again finishes it.
@@ -413,8 +414,12 @@ git), 2 a wrong command.
    base branch (`worktrees.base`: a run happens on a deploy branch, D12); HEAD is not the ref's commit
    (it may differ from it only under `tasks.dir`, closes already made, and it must hold every
    commit of the ref); a blocking `before` task is open; a task file is broken or its id is
-   claimed by two file names; or, for prod, a task's staging twin is open. It names the open
-   non-blocking `before` tasks as notes: do them now, or drop them with a reason.
+   claimed by two file names; or, for prod, a task's staging twin is open, or names no task
+   (live or archived: a deleted twin must not pass as a finished one; `task check` names it,
+   `twin-missing`). It names the open non-blocking `before` tasks as notes: do them now, or drop
+   them with a reason. It adds a `!` warning line, never a refusal, when the working tree has
+   uncommitted changes outside `tasks.dir` (`GitFacts.uncommittedOutside`): the gate judged
+   committed code only, and a local-folder deploy could still ship those edits.
 3. Claude closes each task with evidence and commits the closes on the deploy branch.
 4. The deploy itself is the project's own deploy skill.
 5. `--after` exits 1 when **any** task of that environment is open, before or after; `tasks.dir`

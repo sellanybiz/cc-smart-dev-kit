@@ -31105,6 +31105,108 @@ var init_context = __esm(() => {
   init_format();
 });
 
+// src/tasks/deploy/release.ts
+function underTasks(path, tasksPath) {
+  return tasksPath === "" || path.startsWith(`${tasksPath}/`);
+}
+function deployBranchName(env, now) {
+  const stamp = now.toISOString().slice(0, 16).replace(/[-:]/g, "").replace("T", "-");
+  return `deploy/${env}-${stamp}`;
+}
+function startAgain(env, facts, now) {
+  const branch = deployBranchName(env, now);
+  return `Start the run on a deploy branch cut from the commit that ships: \`git fetch origin\`, then \`git switch --no-track -c ${branch} ${facts.ref}\` in this checkout`;
+}
+function onBaseRefusal(env, input) {
+  const { facts, baseBranch, now } = input;
+  return facts.push.branch === baseBranch ? [
+    `HEAD is on ${baseBranch}, the branch deploys ship to: the closes must reach it through a deploy branch's pull request, never by a push to it. ${startAgain(env, facts, now)}`
+  ] : [];
+}
+function brokenRefusals(scan) {
+  return [
+    ...scan.broken.map((item) => `${item.file} cannot be read (${item.why}): fix or delete it, then run again`),
+    ...scan.duplicates.map((item) => `Task id ${item.id} is claimed by ${item.files.join(" and ")}: rename the id inside one of them`)
+  ];
+}
+function envRefusal(env, envs) {
+  return envs.includes(env) ? [] : [`${env} is not one of this project's environments (tasks.envs: ${envs.join(", ")})`];
+}
+function gateBefore(env, input) {
+  const { dir, ...rest } = input;
+  return judgeBefore(env, { ...rest, scan: scanDeployTasks(dir, { archive: true }) });
+}
+function judgeBefore(env, input) {
+  const { scan, facts, envs, now } = input;
+  const refusals = [...envRefusal(env, envs), ...onBaseRefusal(env, input)];
+  const foreign = facts.changedPaths.filter((path) => !underTasks(path, facts.tasksPath));
+  if (facts.headCommit !== facts.refCommit) {
+    if (!facts.refIsAncestor)
+      refusals.push(`HEAD ${facts.headCommit.slice(0, 12)} does not contain ${facts.ref} (${facts.refCommit.slice(0, 12)}): the ref has commits this branch has not taken in, and may hold tasks it cannot see. ` + `Run \`git fetch origin\`, then rebase or merge the deploy branch onto ${facts.ref}. ${startAgain(env, facts, now)}`);
+    else if (foreign.length > 0)
+      refusals.push(`HEAD ${facts.headCommit.slice(0, 12)} is not ${facts.ref} (${facts.refCommit.slice(0, 12)}): it differs in ${foreign.length} path(s) outside ${facts.tasksPath || "the tasks folder"}. ${startAgain(env, facts, now)}`);
+  }
+  const mine = scan.tasks.filter((task) => task.env === env && open2(task));
+  for (const task of mine.filter((one) => one.deploy === "before" && one.type === "blocking"))
+    refusals.push(`Blocking task is open: ${describe3(task)}: do it, then close it with evidence`);
+  refusals.push(...brokenRefusals(scan));
+  if (env === "prod") {
+    const staging = new Map(scan.tasks.filter((task) => task.env === "staging").map((task) => [task.id, task]));
+    const known = new Set(scan.tasks.map((task) => task.id));
+    for (const task of mine) {
+      if (task.twin !== undefined && !known.has(task.twin))
+        refusals.push(`${describe3(task)} names its staging twin ${task.twin}, but no task has that id: run \`task check\` to see it, then create the twin or remove the twin field`);
+      const twin = task.twin === undefined ? undefined : staging.get(task.twin);
+      if (twin && open2(twin))
+        refusals.push(`${describe3(task)} waits for its staging twin ${twin.id}, which is still open: finish staging first, ${UNMERGED_CLOSE_HINT}`);
+    }
+  }
+  const notes = mine.filter((task) => task.deploy === "before" && task.type === "non-blocking").map((task) => `Non-blocking, still open: ${describe3(task)}: do it now, or drop it with a reason`);
+  const warnings = facts.uncommittedOutside.length > 0 ? [
+    `${facts.uncommittedOutside.length} uncommitted change(s) outside ${facts.tasksPath || "the tasks folder"} (${facts.uncommittedOutside.slice(0, 5).join(", ")}${facts.uncommittedOutside.length > 5 ? ", ..." : ""}): this gate judged committed code only, so a deploy from this folder may ship them`
+  ] : [];
+  return { ok: refusals.length === 0, refusals, notes, warnings };
+}
+function gateAfter(env, input) {
+  const { dir, ...rest } = input;
+  return judgeAfter(env, { ...rest, scan: scanDeployTasks(dir, { archive: true }) });
+}
+function judgeAfter(env, input) {
+  const { scan, facts, envs } = input;
+  const refusals = [...envRefusal(env, envs), ...onBaseRefusal(env, input)];
+  for (const task of scan.tasks.filter((one) => one.env === env && open2(one)))
+    refusals.push(`Task is open: ${describe3(task)} (${task.deploy} the deploy, ${task.type}): close it with evidence, or drop it with a reason`);
+  if (facts.uncommitted.length > 0)
+    refusals.push(`${facts.uncommitted.length} uncommitted change(s) under ${facts.tasksPath || "the tasks folder"} (${facts.uncommitted.slice(0, 5).join(", ")}${facts.uncommitted.length > 5 ? ", ..." : ""}): commit the closes on the deploy branch`);
+  const { branch, remote, ahead } = facts.push;
+  if (branch === null)
+    refusals.push("HEAD is detached: the closes need a branch to be pushed from");
+  else if (branch !== input.baseBranch) {
+    if (remote === null)
+      refusals.push(`Branch ${branch} is not pushed: run \`git push -u origin ${branch}\``);
+    else if (ahead > 0)
+      refusals.push(`Branch ${branch} is ${ahead} commit(s) ahead of ${remote}: run \`git push origin ${branch}\``);
+  }
+  refusals.push(...brokenRefusals(scan));
+  return { ok: refusals.length === 0, refusals, notes: [], warnings: [] };
+}
+function releaseList(tasks, env) {
+  const groups = [];
+  for (const one of env === undefined ? DEPLOY_ENVS : [env])
+    for (const deploy of DEPLOY_STEPS)
+      for (const type of DEPLOY_TYPES) {
+        const found = tasks.filter((task) => open2(task) && task.env === one && task.deploy === deploy && task.type === type);
+        if (found.length > 0)
+          groups.push({ env: one, deploy, type, tasks: found });
+      }
+  return groups;
+}
+var open2 = (task) => task.status === "open", describe3 = (task) => `${task.id} "${task.title}"`, UNMERGED_CLOSE_HINT = "or its close waits on an unmerged branch: `task list --branches`";
+var init_release = __esm(() => {
+  init_files();
+  init_format();
+});
+
 // src/tasks/deploy/branch.ts
 import { existsSync as existsSync39, readFileSync as readFileSync42 } from "fs";
 import { isAbsolute as isAbsolute4, join as join45, relative as relative6, resolve as resolve13, sep as sep5 } from "path";
@@ -31252,13 +31354,14 @@ function readGitFacts(repo, dir, ref, env = process.env) {
   const headCommit = taskGit(repo, ["rev-parse", "--verify", "HEAD"], env);
   const pathsOf = (args) => taskGit(repo, args, env).split("\x00").filter(Boolean);
   const changedPaths = refSha === headCommit ? [] : pathsOf(["diff", "--name-only", "--no-renames", "-z", refSha, headCommit]);
-  const scope = tasksPath ? ["--", tasksPath] : [];
-  const uncommitted = [
+  const dirty = [
     ...new Set([
-      ...pathsOf(["diff", "--name-only", "--no-renames", "-z", "HEAD", ...scope]),
-      ...pathsOf(["ls-files", "--others", "--exclude-standard", "-z", ...scope])
+      ...pathsOf(["diff", "--name-only", "--no-renames", "-z", "HEAD"]),
+      ...pathsOf(["ls-files", "--others", "--exclude-standard", "-z"])
     ])
   ].sort();
+  const uncommitted = dirty.filter((path) => underTasks(path, tasksPath));
+  const uncommittedOutside = dirty.filter((path) => !underTasks(path, tasksPath));
   const currentBranch = runGit(repo, ["branch", "--show-current"], env, RESOLVE_GIT_TIMEOUT_MS);
   const branch = currentBranch.ok && currentBranch.out ? currentBranch.out : null;
   const remoteRef = branch === null ? null : `refs/remotes/origin/${branch}`;
@@ -31272,6 +31375,7 @@ function readGitFacts(repo, dir, ref, env = process.env) {
     changedPaths,
     tasksPath,
     uncommitted,
+    uncommittedOutside,
     push: {
       branch,
       remote: remoteKnown && branch !== null ? `origin/${branch}` : null,
@@ -31285,102 +31389,7 @@ var init_branch = __esm(() => {
   init_resolve();
   init_files();
   init_format();
-});
-
-// src/tasks/deploy/release.ts
-function underTasks(path, tasksPath) {
-  return tasksPath === "" || path.startsWith(`${tasksPath}/`);
-}
-function deployBranchName(env, now) {
-  const stamp = now.toISOString().slice(0, 16).replace(/[-:]/g, "").replace("T", "-");
-  return `deploy/${env}-${stamp}`;
-}
-function startAgain(env, facts, now) {
-  const branch = deployBranchName(env, now);
-  return `Start the run on a deploy branch cut from the commit that ships: \`git fetch origin\`, then \`git switch --no-track -c ${branch} ${facts.ref}\` in this checkout`;
-}
-function onBaseRefusal(env, input) {
-  const { facts, baseBranch, now } = input;
-  return facts.push.branch === baseBranch ? [
-    `HEAD is on ${baseBranch}, the branch deploys ship to: the closes must reach it through a deploy branch's pull request, never by a push to it. ${startAgain(env, facts, now)}`
-  ] : [];
-}
-function brokenRefusals(scan) {
-  return [
-    ...scan.broken.map((item) => `${item.file} cannot be read (${item.why}): fix or delete it, then run again`),
-    ...scan.duplicates.map((item) => `Task id ${item.id} is claimed by ${item.files.join(" and ")}: rename the id inside one of them`)
-  ];
-}
-function envRefusal(env, envs) {
-  return envs.includes(env) ? [] : [`${env} is not one of this project's environments (tasks.envs: ${envs.join(", ")})`];
-}
-function gateBefore(env, input) {
-  const { dir, ...rest } = input;
-  return judgeBefore(env, { ...rest, scan: scanDeployTasks(dir, { archive: true }) });
-}
-function judgeBefore(env, input) {
-  const { scan, facts, envs, now } = input;
-  const refusals = [...envRefusal(env, envs), ...onBaseRefusal(env, input)];
-  const foreign = facts.changedPaths.filter((path) => !underTasks(path, facts.tasksPath));
-  if (facts.headCommit !== facts.refCommit) {
-    if (!facts.refIsAncestor)
-      refusals.push(`HEAD ${facts.headCommit.slice(0, 12)} does not contain ${facts.ref} (${facts.refCommit.slice(0, 12)}): the ref has commits this branch has not taken in, and may hold tasks it cannot see. ` + `Run \`git fetch origin\`, then rebase or merge the deploy branch onto ${facts.ref}. ${startAgain(env, facts, now)}`);
-    else if (foreign.length > 0)
-      refusals.push(`HEAD ${facts.headCommit.slice(0, 12)} is not ${facts.ref} (${facts.refCommit.slice(0, 12)}): it differs in ${foreign.length} path(s) outside ${facts.tasksPath || "the tasks folder"}. ${startAgain(env, facts, now)}`);
-  }
-  const mine = scan.tasks.filter((task) => task.env === env && open2(task));
-  for (const task of mine.filter((one) => one.deploy === "before" && one.type === "blocking"))
-    refusals.push(`Blocking task is open: ${describe3(task)}: do it, then close it with evidence`);
-  refusals.push(...brokenRefusals(scan));
-  if (env === "prod") {
-    const staging = new Map(scan.tasks.filter((task) => task.env === "staging").map((task) => [task.id, task]));
-    for (const task of mine) {
-      const twin = task.twin === undefined ? undefined : staging.get(task.twin);
-      if (twin && open2(twin))
-        refusals.push(`${describe3(task)} waits for its staging twin ${twin.id}, which is still open: finish staging first, ${UNMERGED_CLOSE_HINT}`);
-    }
-  }
-  const notes = mine.filter((task) => task.deploy === "before" && task.type === "non-blocking").map((task) => `Non-blocking, still open: ${describe3(task)}: do it now, or drop it with a reason`);
-  return { ok: refusals.length === 0, refusals, notes };
-}
-function gateAfter(env, input) {
-  const { dir, ...rest } = input;
-  return judgeAfter(env, { ...rest, scan: scanDeployTasks(dir, { archive: true }) });
-}
-function judgeAfter(env, input) {
-  const { scan, facts, envs } = input;
-  const refusals = [...envRefusal(env, envs), ...onBaseRefusal(env, input)];
-  for (const task of scan.tasks.filter((one) => one.env === env && open2(one)))
-    refusals.push(`Task is open: ${describe3(task)} (${task.deploy} the deploy, ${task.type}): close it with evidence, or drop it with a reason`);
-  if (facts.uncommitted.length > 0)
-    refusals.push(`${facts.uncommitted.length} uncommitted change(s) under ${facts.tasksPath || "the tasks folder"} (${facts.uncommitted.slice(0, 5).join(", ")}${facts.uncommitted.length > 5 ? ", ..." : ""}): commit the closes on the deploy branch`);
-  const { branch, remote, ahead } = facts.push;
-  if (branch === null)
-    refusals.push("HEAD is detached: the closes need a branch to be pushed from");
-  else if (branch !== input.baseBranch) {
-    if (remote === null)
-      refusals.push(`Branch ${branch} is not pushed: run \`git push -u origin ${branch}\``);
-    else if (ahead > 0)
-      refusals.push(`Branch ${branch} is ${ahead} commit(s) ahead of ${remote}: run \`git push origin ${branch}\``);
-  }
-  refusals.push(...brokenRefusals(scan));
-  return { ok: refusals.length === 0, refusals, notes: [] };
-}
-function releaseList(tasks, env) {
-  const groups = [];
-  for (const one of env === undefined ? DEPLOY_ENVS : [env])
-    for (const deploy of DEPLOY_STEPS)
-      for (const type of DEPLOY_TYPES) {
-        const found = tasks.filter((task) => open2(task) && task.env === one && task.deploy === deploy && task.type === type);
-        if (found.length > 0)
-          groups.push({ env: one, deploy, type, tasks: found });
-      }
-  return groups;
-}
-var open2 = (task) => task.status === "open", describe3 = (task) => `${task.id} "${task.title}"`, UNMERGED_CLOSE_HINT = "or its close waits on an unmerged branch: `task list --branches`";
-var init_release = __esm(() => {
-  init_files();
-  init_format();
+  init_release();
 });
 
 // src/tasks/work/types.ts
@@ -33427,7 +33436,8 @@ async function runTaskCommand(argv) {
             commit: facts.refCommit,
             ok: gate.ok,
             refusals: gate.refusals,
-            notes: gate.notes
+            notes: gate.notes,
+            warnings: gate.warnings
           });
         else {
           out.heading(`Release gate: ${env} --${step}`);
@@ -33436,6 +33446,8 @@ async function runTaskCommand(argv) {
             out.line("fail", reason);
           for (const note of gate.notes)
             out.line("info", note);
+          for (const warning of gate.warnings)
+            out.line("warn", warning);
           out.verdict(gate.ok ? "ok" : "fail", gate.ok ? `Ready: ${env} ${step === "before" ? "may deploy" : "is clean after the deploy"}.` : `Not ready: ${plural(gate.refusals.length, "reason", "reasons")} to stop. Fix each one, then run this again.`);
         }
         return gate.ok ? 0 : 1;

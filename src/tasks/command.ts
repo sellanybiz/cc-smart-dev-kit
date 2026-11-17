@@ -408,12 +408,14 @@ export async function runTaskCommand(argv: string[]): Promise<number> {
             ok: gate.ok,
             refusals: gate.refusals,
             notes: gate.notes,
+            warnings: gate.warnings,
           });
         else {
           out.heading(`Release gate: ${env} --${step}`);
           out.say(`Ref: ${facts.ref} (${facts.refCommit})`);
           for (const reason of gate.refusals) out.line("fail", reason);
           for (const note of gate.notes) out.line("info", note);
+          for (const warning of gate.warnings) out.line("warn", warning);
           out.verdict(
             gate.ok ? "ok" : "fail",
             gate.ok

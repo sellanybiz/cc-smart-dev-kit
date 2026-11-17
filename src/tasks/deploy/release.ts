@@ -30,6 +30,8 @@ export interface GitFacts {
   tasksPath: string;
   /** Repo-relative paths with uncommitted changes under the tasks folder (staged, unstaged, new). */
   uncommitted: readonly string[];
+  /** Repo-relative paths with uncommitted changes anywhere else: code the gate did not judge. */
+  uncommittedOutside: readonly string[];
   push: {
     /** The current branch, or null on a detached HEAD. */
     branch: string | null;
@@ -66,6 +68,8 @@ export interface GateResult {
   refusals: string[];
   /** What the run may go on with, but should know: open non-blocking tasks, listed. */
   notes: string[];
+  /** What the gate could not judge, and the run may still go on with: a `!` line, never a refusal. */
+  warnings: string[];
 }
 
 const open = (task: DeployTask) => task.status === "open";
@@ -75,7 +79,8 @@ const describe = (task: DeployTask) => `${task.id} "${task.title}"`;
 export const UNMERGED_CLOSE_HINT =
   "or its close waits on an unmerged branch: `task list --branches`";
 
-function underTasks(path: string, tasksPath: string): boolean {
+/** True when the repo-relative `path` is inside the tasks folder (`tasksPath`, empty for the repo root). */
+export function underTasks(path: string, tasksPath: string): boolean {
   return tasksPath === "" || path.startsWith(`${tasksPath}/`);
 }
 
@@ -167,7 +172,14 @@ export function judgeBefore(env: DeployEnv, input: JudgeInput): GateResult {
     const staging = new Map(
       scan.tasks.filter((task) => task.env === "staging").map((task) => [task.id, task]),
     );
+    const known = new Set(scan.tasks.map((task) => task.id));
     for (const task of mine) {
+      // A twin that names no task, live or archived, holds nothing: it must not pass for a
+      // finished one. `task check` names it (`twin-missing`).
+      if (task.twin !== undefined && !known.has(task.twin))
+        refusals.push(
+          `${describe(task)} names its staging twin ${task.twin}, but no task has that id: run \`task check\` to see it, then create the twin or remove the twin field`,
+        );
       const twin = task.twin === undefined ? undefined : staging.get(task.twin);
       if (twin && open(twin))
         refusals.push(
@@ -180,7 +192,13 @@ export function judgeBefore(env: DeployEnv, input: JudgeInput): GateResult {
     .map(
       (task) => `Non-blocking, still open: ${describe(task)}: do it now, or drop it with a reason`,
     );
-  return { ok: refusals.length === 0, refusals, notes };
+  const warnings =
+    facts.uncommittedOutside.length > 0
+      ? [
+          `${facts.uncommittedOutside.length} uncommitted change(s) outside ${facts.tasksPath || "the tasks folder"} (${facts.uncommittedOutside.slice(0, 5).join(", ")}${facts.uncommittedOutside.length > 5 ? ", ..." : ""}): this gate judged committed code only, so a deploy from this folder may ship them`,
+        ]
+      : [];
+  return { ok: refusals.length === 0, refusals, notes, warnings };
 }
 
 /**
@@ -222,7 +240,7 @@ export function judgeAfter(env: DeployEnv, input: JudgeInput): GateResult {
       );
   }
   refusals.push(...brokenRefusals(scan));
-  return { ok: refusals.length === 0, refusals, notes: [] };
+  return { ok: refusals.length === 0, refusals, notes: [], warnings: [] };
 }
 
 export interface ReleaseGroup {

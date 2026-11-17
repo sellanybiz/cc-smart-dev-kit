@@ -178,6 +178,7 @@ test("release --before: refuses on an open blocking task, passes once it is clos
     ok: true,
     refusals: [],
     notes: [],
+    warnings: [],
   });
 });
 
@@ -219,6 +220,52 @@ test("release lists the non-blocking before tasks as notes, not refusals", async
   const passed = await run(["release", "prod", "--before"]);
   expect(passed.code).toBe(0);
   expect(passed.text).toContain(`Non-blocking, still open: ${id} "Tidy"`);
+});
+
+test("release --before warns, and still passes, for uncommitted changes outside the tasks folder", async () => {
+  const { run, cwd } = world();
+  git(cwd, "switch", "--no-track", "-c", "deploy/prod-20261117-1445", "origin/main");
+  writeFileSync(join(cwd, "app.ts"), "x");
+  const passed = await run(["release", "prod", "--before"]);
+  expect(passed.code).toBe(0);
+  expect(passed.text).toContain(
+    "1 uncommitted change(s) outside .claude/tasks (app.ts): this gate judged committed code only, so a deploy from this folder may ship them",
+  );
+  expect(passed.text).toContain("Ready:");
+  const json = JSON.parse((await run(["release", "prod", "--before", "--json"])).text);
+  expect(json.warnings).toHaveLength(1);
+  // The close gate does not warn about files it never reads.
+  expect(JSON.parse((await run(["release", "prod", "--after", "--json"])).text).warnings).toEqual(
+    [],
+  );
+});
+
+test("release --before refuses a prod task whose twin names no task", async () => {
+  const { run, cwd } = world();
+  git(cwd, "switch", "--no-track", "-c", "deploy/prod-20261117-1445", "origin/main");
+  const made = await run([
+    "add",
+    "Migrate",
+    "--kind",
+    "staging",
+    "--pair",
+    "--deploy",
+    "after",
+    "--type",
+    "non-blocking",
+  ]);
+  expect(made.code).toBe(0);
+  const [stagingId = "", prodId = ""] = made.text.split("\n").map((line) => line.split(" ")[0]);
+  // While the twin exists and is open, prod waits for it.
+  expect((await run(["release", "prod", "--before"])).text).toContain("waits for its staging twin");
+  expect((await run(["delete", stagingId])).code).toBe(0);
+  const refused = await run(["release", "prod", "--before"]);
+  expect(refused.code).toBe(1);
+  expect(refused.text).toContain(
+    `${prodId} "Migrate" names its staging twin ${stagingId}, but no task has that id: run \`task check\` to see it`,
+  );
+  const checked = await run(["check"]);
+  expect(checked.text).toContain(`twin-missing: Its twin ${stagingId} is not a task`);
 });
 
 test("release --after refuses an open task, an uncommitted close and an unpushed branch", async () => {
