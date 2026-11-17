@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 
 import { dirname, join } from "node:path";
 import { COMMAND } from "../build-info/names";
 import { parseCcSmartDevKitConfig } from "../project/config";
+import { staleBlocks } from "../project/deploy-skill";
 import { hookEnv, makeRepo } from "../testing/hooks";
 import { subprocessGuard } from "../testing/port-guard";
 import { cleanGitEnv, git, tempDir } from "../testing/temp";
@@ -53,8 +54,8 @@ function scripted(answers: (string | null)[]): { prompts: Prompts; shown: string
   return { prompts, shown };
 }
 
-/** What a project with no deploy skill reads under its plan (D8), written out by hand. */
-const NO_DEPLOY_SKILL_TEXT = "no deploy skill found; --deploy-skill <path> names one";
+/** What a run with --no-deploy-block in a project with no deploy skill reads under its plan, by hand. */
+const NO_DEPLOY_SKILL_TEXT = "no deploy block found in .claude/skills: nothing to remove";
 const NO_DEPLOY_SKILL = `· ${NO_DEPLOY_SKILL_TEXT}`;
 
 // This file starts the CLI as a real process: its own speed limit (src/testing/timeouts.ts).
@@ -510,7 +511,7 @@ describe("the run", () => {
   test("no terminal and no --yes: the plan, and nothing written, with the flag that answers", async () => {
     const repo = makeRepo();
     const run = context(repo);
-    expect(await runProjectInit([], run.context, runner({}))).toBe(0);
+    expect(await runProjectInit(["--no-deploy-block"], run.context, runner({}))).toBe(0);
     expect(run.lines).toEqual([
       `cc-smart-dev-kit project init: ${repo}`,
       "",
@@ -535,7 +536,7 @@ describe("the run", () => {
     const run = context(repo);
     expect(
       await runProjectInit(
-        ["--yes", "--base", "dev", "--bases", "hotfix/=main"],
+        ["--yes", "--no-deploy-block", "--base", "dev", "--bases", "hotfix/=main"],
         run.context,
         runner({}, () => ({ ok: false, out: "", err: "" })),
       ),
@@ -587,7 +588,7 @@ describe("the run", () => {
     const repo = makeRepo();
     const lines: string[] = [];
     const run = context(repo, { out: createOut(RICH, lineSink(lines)) });
-    expect(await runProjectInit(["--yes"], run.context, runner({}))).toBe(0);
+    expect(await runProjectInit(["--yes", "--no-deploy-block"], run.context, runner({}))).toBe(0);
     expect(lines).toEqual([
       `\x1b[1mcc-smart-dev-kit project init: ${repo}\x1b[0m`,
       "",
@@ -716,7 +717,9 @@ describe("the run", () => {
   test("--dry-run prints the plan and writes nothing, also with --yes, and asks nothing on a terminal", async () => {
     const repo = makeRepo();
     const run = context(repo);
-    expect(await runProjectInit(["--dry-run", "--yes"], run.context, runner({}))).toBe(0);
+    expect(
+      await runProjectInit(["--dry-run", "--yes", "--no-deploy-block"], run.context, runner({})),
+    ).toBe(0);
     expect(run.lines.slice(-3)).toEqual([
       "",
       "· A real run writes 1 file.",
@@ -725,7 +728,9 @@ describe("the run", () => {
     // UX-12: a terminal is not asked either; the plan is the flags' and the defaults'.
     const { prompts, shown } = scripted(["dev"]);
     const asked = context(repo, { prompts });
-    expect(await runProjectInit(["--dry-run"], asked.context, runner({}))).toBe(0);
+    expect(
+      await runProjectInit(["--dry-run", "--no-deploy-block"], asked.context, runner({})),
+    ).toBe(0);
     expect(shown).toEqual([]);
     expect(asked.lines[0]).toBe(`cc-smart-dev-kit project init: ${repo} (dry run)`);
     expect(asked.lines).toContain('  + worktrees.base: "main"');
@@ -747,7 +752,7 @@ describe("the run", () => {
       )}\n`,
     );
     const run = context(repo);
-    expect(await runProjectInit(["--yes"], run.context, runner({}))).toBe(0);
+    expect(await runProjectInit(["--yes", "--no-deploy-block"], run.context, runner({}))).toBe(0);
     expect(run.errors).toEqual([]);
     // The file's own answers were read: its base stays (not the repo's default), and a field
     // the flags do not set stays too.
@@ -778,7 +783,11 @@ describe("the run", () => {
     );
     const run = context(repo);
     expect(
-      await runProjectInit(["--yes", "--workflow", "autoPush=true"], run.context, runner({})),
+      await runProjectInit(
+        ["--yes", "--no-deploy-block", "--workflow", "autoPush=true"],
+        run.context,
+        runner({}),
+      ),
     ).toBe(0);
     const written = JSON.parse(readFileSync(file, "utf8")) as {
       workflow: Record<string, unknown>;
@@ -824,7 +833,7 @@ describe("the run", () => {
       "y",
     ]);
     const run = context(repo, { prompts });
-    expect(await runProjectInit([], run.context, runner({}))).toBe(0);
+    expect(await runProjectInit(["--no-deploy-block"], run.context, runner({}))).toBe(0);
     expect(run.lines[2]).toBe("8 questions. Enter keeps the answer in [brackets].");
     expect(
       (
@@ -840,7 +849,7 @@ describe("the run", () => {
     const repo = makeRepo();
     const { prompts, shown } = scripted([]);
     const run = context(repo, { prompts });
-    expect(await runProjectInit([], run.context, runner({}))).toBe(0);
+    expect(await runProjectInit(["--no-deploy-block"], run.context, runner({}))).toBe(0);
     expect(shown.at(-1)).toBe("Write this file? [y/N] ");
     expect(run.lines.at(-1)).toBe("· Left alone: nothing was written.");
     expect(existsSync(join(repo, ".claude", "cc-smart-dev-kit.json"))).toBe(false);
@@ -872,7 +881,9 @@ describe("the run", () => {
     const { repo, file, settings, local } = engineLeftovers();
     const before = [file, settings, local].map((one) => readFileSync(one, "utf8"));
     const run = context(repo);
-    expect(await runProjectInit(["--dry-run", "--yes"], run.context, runner({}))).toBe(0);
+    expect(
+      await runProjectInit(["--dry-run", "--yes", "--no-deploy-block"], run.context, runner({})),
+    ).toBe(0);
     expect(run.lines).toEqual([
       `cc-smart-dev-kit project init: ${repo} (dry run)`,
       "",
@@ -902,7 +913,9 @@ describe("the run", () => {
     const { repo } = engineLeftovers();
     const lines: string[] = [];
     const run = context(repo, { out: createOut(RICH, lineSink(lines)) });
-    expect(await runProjectInit(["--dry-run"], run.context, runner({}))).toBe(0);
+    expect(await runProjectInit(["--dry-run", "--no-deploy-block"], run.context, runner({}))).toBe(
+      0,
+    );
     const add = (text: string) => `  \x1b[32m+\x1b[0m ${text}`;
     const cut = (text: string) => `  \x1b[31m-\x1b[0m ${text}`;
     expect(lines).toEqual([
@@ -933,7 +946,7 @@ describe("the run", () => {
   test("D20: --yes on the retired engine's leftovers writes a file that loads, and clean settings", async () => {
     const { repo, file, settings, local } = engineLeftovers();
     const run = context(repo);
-    expect(await runProjectInit(["--yes"], run.context, runner({}))).toBe(0);
+    expect(await runProjectInit(["--yes", "--no-deploy-block"], run.context, runner({}))).toBe(0);
     // The file the hooks read loads again: the same parse every hook runs.
     expect(parseCcSmartDevKitConfig(readFileSync(file, "utf8"), file)).toEqual({
       requires: ">=0.5.2",
@@ -994,7 +1007,7 @@ describe("what the file asks for", () => {
       `${JSON.stringify({ requires: ">=0.5.2", worktrees: { base: "main" } }, null, 2)}\n`,
     );
     const run = context(repo);
-    expect(await runProjectInit(["--yes"], run.context, runner({}))).toBe(0);
+    expect(await runProjectInit(["--yes", "--no-deploy-block"], run.context, runner({}))).toBe(0);
     expect((JSON.parse(readFileSync(file, "utf8")) as { requires: string }).requires).toBe(
       ">=0.5.2",
     );
@@ -1012,7 +1025,7 @@ describe("what the file asks for", () => {
       `${JSON.stringify({ requires: ">=1.0", worktrees: { base: "main" } }, null, 2)}\n`,
     );
     const run = context(repo);
-    expect(await runProjectInit(["--yes"], run.context, runner({}))).toBe(0);
+    expect(await runProjectInit(["--yes", "--no-deploy-block"], run.context, runner({}))).toBe(0);
     expect((JSON.parse(readFileSync(file, "utf8")) as { requires: string }).requires).toBe(">=1.0");
   });
 });
@@ -1091,6 +1104,7 @@ describe("the command itself, as Claude Code runs it", () => {
         "project",
         "init",
         "--yes",
+        "--no-deploy-block",
         "--base",
         "dev",
       ],
@@ -1352,8 +1366,10 @@ describe("the deploy skill", () => {
     const repo = repoWith({ "kit-docs/SKILL.md": docs });
     const run = context(repo);
     expect(await runProjectInit(["--yes"], run.context, runner({}))).toBe(0);
+    // Not the deploy skill: it is left as it is, and the project, which has none, gets its own.
     expect(skillText(repo, "kit-docs/SKILL.md")).toBe(docs);
-    expect(run.lines).toContain("· no deploy skill found; --deploy-skill <path> names one");
+    expect(skillText(repo, "deploy/SKILL.md")).toContain("name: deploy\n");
+    expect(run.lines).toContain("+ .claude/skills/deploy/SKILL.md: created");
   });
 
   test("--deploy-skill with a path that is not a file is a usage error", async () => {
@@ -1435,13 +1451,150 @@ describe("the deploy skill", () => {
     expect(skillText(repo, "deploy/SKILL.md")).toBe(crlf);
   });
 
-  test("a project with deploy task folders and no skill: requires is raised, and a note says so", async () => {
+  test("a project with deploy task folders and no skill, no block wanted: requires is raised anyway", async () => {
     const repo = repoWith({});
     mkdirSync(join(repo, ".claude", "tasks", "prod"), { recursive: true });
     const run = context(repo);
-    expect(await runProjectInit(["--yes"], run.context, runner({}))).toBe(0);
+    expect(await runProjectInit(["--yes", "--no-deploy-block"], run.context, runner({}))).toBe(0);
     const config = JSON.parse(readFileSync(join(repo, ".claude", "cc-smart-dev-kit.json"), "utf8"));
     expect(config.requires).toBe(">=5.0");
-    expect(run.lines).toContain("· no deploy skill found; --deploy-skill <path> names one");
+    expect(run.lines).toContain("· no deploy block found in .claude/skills: nothing to remove");
+    expect(existsSync(join(repo, ".claude", "skills", "deploy"))).toBe(false);
+  });
+});
+
+describe("a project with no deploy skill gets one (D8)", () => {
+  const NEW = ".claude/skills/deploy/SKILL.md";
+  const QUESTION = `Create a deploy skill at ${NEW}, with the kit's deploy-task section? [Y/n]`;
+  const newSkill = (repo: string) => join(repo, ".claude", "skills", "deploy", "SKILL.md");
+  const configOf = (repo: string) =>
+    JSON.parse(readFileSync(join(repo, ".claude", "cc-smart-dev-kit.json"), "utf8"));
+
+  test("on a terminal: asked once with the other questions, yes by default; the file is created", async () => {
+    const repo = makeRepo();
+    // Eight Enter answers, the skill question (Enter: yes), then the final yes.
+    const asked = scripted([...Array(8).fill(null), null, "y"]);
+    const run = context(repo, { prompts: asked.prompts });
+    expect(await runProjectInit([], run.context, runner({}))).toBe(0);
+    const shown = asked.shown.join("");
+    expect(shown).toContain(QUESTION);
+    // Every question comes before the final "Write these N files?".
+    expect(shown.indexOf(QUESTION)).toBeLessThan(shown.indexOf("Write these 2 files?"));
+    const text = readFileSync(newSkill(repo), "utf8");
+    expect(text.startsWith("---\nname: deploy\ndescription: Use when deploying this project")).toBe(
+      true,
+    );
+    expect(text).toContain("\n## This project's deploy steps\n");
+    expect(text).toContain("<!-- cc-smart-dev-kit:begin -->\n## Deploy tasks\n");
+    expect(text.endsWith("<!-- cc-smart-dev-kit:end -->\n")).toBe(true);
+    expect(configOf(repo).requires).toBe(">=5.0");
+    expect(run.lines).toContain(`+ ${NEW}: created`);
+    expect(run.lines).toContain("✓ Done: 2 files written.");
+    expect(run.lines.join("\n")).toContain(
+      `git add .claude/cc-smart-dev-kit.json ${NEW} && git commit`,
+    );
+    // A new file has nothing to back up, and `restore` never knows of it.
+    expect(existsSync(join(run.context.stateDir, "changed.json"))).toBe(false);
+  });
+
+  test("a no to the question drops only the skill: no file, requires stays low, the rest is written", async () => {
+    const repo = makeRepo();
+    const asked = scripted([...Array(8).fill(null), "n", "y"]);
+    const run = context(repo, { prompts: asked.prompts });
+    expect(await runProjectInit([], run.context, runner({}))).toBe(0);
+    expect(existsSync(join(repo, ".claude", "skills"))).toBe(false);
+    expect(configOf(repo).requires).toBe(">=0.5.2");
+    expect(run.lines).toContain("✓ Done: 1 file written.");
+  });
+
+  test("--yes creates it without asking", async () => {
+    const repo = makeRepo();
+    const run = context(repo);
+    expect(await runProjectInit(["--yes"], run.context, runner({}))).toBe(0);
+    expect(readFileSync(newSkill(repo), "utf8")).toContain("name: deploy\n");
+    expect(configOf(repo).requires).toBe(">=5.0");
+    expect(run.lines).toContain(`· ${NEW}  new file, 18 lines`);
+    expect(run.lines).toContain("  + name: deploy");
+    expect(run.lines).toContain("  + ## This project's deploy steps");
+    expect(run.lines).toContain(`+ ${NEW}: created`);
+    expect(run.lines).toContain("✓ Done: 2 files written.");
+  });
+
+  test("--dry-run shows the new file as + lines, counts it, and writes nothing", async () => {
+    const repo = makeRepo();
+    const run = context(repo);
+    expect(await runProjectInit(["--dry-run"], run.context, runner({}))).toBe(0);
+    expect(run.lines).toContain(`· ${NEW}  new file, 18 lines`);
+    expect(run.lines).toContain("  + ## Deploy tasks");
+    expect(run.lines).toContain("· A real run writes 2 files.");
+    expect(existsSync(join(repo, ".claude", "skills"))).toBe(false);
+    expect(existsSync(join(repo, ".claude", "cc-smart-dev-kit.json"))).toBe(false);
+  });
+
+  test("no terminal and no --yes: the plan shows the file, and nothing is written", async () => {
+    const repo = makeRepo();
+    const run = context(repo);
+    expect(await runProjectInit([], run.context, runner({}))).toBe(0);
+    expect(run.lines).toContain(`· ${NEW}  new file, 18 lines`);
+    expect(run.lines).toContain("· Nothing was written: run this on a terminal, or add --yes.");
+    expect(existsSync(join(repo, ".claude"))).toBe(false);
+  });
+
+  test("--no-deploy-block: no file", async () => {
+    const repo = makeRepo();
+    const run = context(repo);
+    expect(await runProjectInit(["--yes", "--no-deploy-block"], run.context, runner({}))).toBe(0);
+    expect(existsSync(join(repo, ".claude", "skills"))).toBe(false);
+    expect(run.lines).toContain("✓ Done: 1 file written.");
+  });
+
+  test("a path already there is not overwritten: a note, and init goes on", async () => {
+    const repo = makeRepo();
+    // A dangling link is not a skill anyone found, but it is a path that is taken.
+    mkdirSync(join(repo, ".claude", "skills", "deploy"), { recursive: true });
+    symlinkSync(join(repo, "missing.md"), newSkill(repo));
+    const run = context(repo);
+    expect(await runProjectInit(["--yes"], run.context, runner({}))).toBe(0);
+    expect(run.lines).toContain(
+      `· ${NEW} already exists: not overwritten; --deploy-skill <path> names the deploy skill`,
+    );
+    expect(existsSync(join(repo, "missing.md"))).toBe(false);
+    expect(configOf(repo).requires).toBe(">=0.5.2");
+    expect(run.lines).toContain("✓ Done: 1 file written.");
+  });
+
+  test("a skills folder linked out of the checkout: nothing is created there", async () => {
+    const repo = makeRepo();
+    const outside = tempDir("deploy-skill-outside");
+    mkdirSync(join(repo, ".claude"), { recursive: true });
+    symlinkSync(outside, join(repo, ".claude", "skills"));
+    const run = context(repo);
+    expect(await runProjectInit(["--yes"], run.context, runner({}))).toBe(0);
+    expect(run.lines).toContain("· .claude/skills is a link outside this checkout: not searched");
+    expect(existsSync(join(outside, "deploy"))).toBe(false);
+  });
+
+  test("a project that names a deploy skill is not given a second one", async () => {
+    const repo = makeRepo();
+    mkdirSync(join(repo, ".claude", "skills", "ship"), { recursive: true });
+    writeFileSync(
+      join(repo, ".claude", "skills", "ship", "SKILL.md"),
+      "---\nname: ship-deploy\ndescription: x\n---\n# Ship\n",
+    );
+    const run = context(repo);
+    expect(await runProjectInit(["--yes"], run.context, runner({}))).toBe(0);
+    expect(existsSync(join(repo, ".claude", "skills", "deploy"))).toBe(false);
+    expect(readFileSync(join(repo, ".claude", "skills", "ship", "SKILL.md"), "utf8")).toContain(
+      "<!-- cc-smart-dev-kit:begin -->",
+    );
+  });
+
+  test("doctor's stale-block check sees what init created as current, and a second init changes nothing", async () => {
+    const repo = makeRepo();
+    expect(await runProjectInit(["--yes"], context(repo).context, runner({}))).toBe(0);
+    expect(staleBlocks(repo)).toEqual([]);
+    const again = context(repo);
+    expect(await runProjectInit(["--yes"], again.context, runner({}))).toBe(0);
+    expect(again.lines).toContain("✓ Nothing to change.");
   });
 });

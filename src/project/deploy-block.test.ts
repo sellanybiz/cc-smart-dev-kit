@@ -1,7 +1,12 @@
 import { expect, test } from "bun:test";
 import { COMMAND, PLUGIN } from "../build-info/names";
-import { renderManagedMarkdown, renderWithoutBlock } from "../setup/managed-markdown";
-import { deployBlockBody } from "./deploy-block";
+import {
+  BLOCK_BEGIN,
+  BLOCK_END,
+  renderManagedMarkdown,
+  renderWithoutBlock,
+} from "../setup/managed-markdown";
+import { deployBlockBody, deploySkillStarter } from "./deploy-block";
 
 test("the block names both gate commands, the deploy branch, the closes and the tasks skill", () => {
   const body = deployBlockBody();
@@ -30,4 +35,25 @@ test("the block goes in and out of a skill file and leaves the text around it as
   expect(withBlock).toContain(deployBlockBody());
   expect(withBlock.startsWith(skill)).toBe(true);
   expect(renderWithoutBlock(withBlock)).toBe(skill);
+});
+
+test("the starter skill: front matter, the steps section that says none are written, then the block", () => {
+  const starter = deploySkillStarter();
+  expect(starter.startsWith("---\nname: deploy\ndescription: ")).toBe(true);
+  const header = starter.split("\n---\n")[0]?.replace(/^---\n/, "") ?? "";
+  const parsed = Bun.YAML.parse(header) as { name: string; description: string };
+  expect(parsed.name).toBe("deploy");
+  expect(parsed.description).toContain("deploying this project");
+  expect(parsed.description).toContain("staging");
+  expect(parsed.description).toContain("prod");
+  expect(starter).toContain("\n# Deploy\n");
+  expect(starter).toContain("\n## This project's deploy steps\n");
+  expect(starter).toContain("never invent a deploy command");
+  // The block is the managed one: the same markers and body every other writer uses.
+  expect(starter.endsWith(`${BLOCK_BEGIN}\n${deployBlockBody()}\n${BLOCK_END}\n`)).toBe(true);
+  expect(starter.indexOf("## This project's deploy steps")).toBeLessThan(
+    starter.indexOf(BLOCK_BEGIN),
+  );
+  // Neutral: no package manager or project command in the text that is not the block.
+  expect(starter.split(BLOCK_BEGIN)[0]).not.toMatch(/\b(bun|npm|pnpm|yarn)\b/);
 });

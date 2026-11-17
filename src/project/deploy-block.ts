@@ -7,6 +7,7 @@
  * gate commands and the order of a deploy run where the person's own deploy steps are.
  */
 import { COMMAND, PLUGIN } from "../build-info/names";
+import { renderManagedMarkdown } from "../setup/managed-markdown";
 
 /**
  * The text between the managed markers. `<env>`, `<date>` and `<base>` are for the reader to fill in.
@@ -32,4 +33,28 @@ export function deployBlockBody(): string {
     "",
     `The rules for every kind of task: \`/${PLUGIN}:tasks\`.`,
   ].join("\n");
+}
+
+/**
+ * The starter text of a deploy skill `project init` creates when a project has none: front
+ * matter that lets Claude pick the skill for a deploy, a section that says the project's own
+ * steps are not written yet (Claude asks the person for them and never makes up a command), and
+ * then the managed block, put in by `renderManagedMarkdown` so its markers are the ones every
+ * other writer and `doctor` read. It names no project and no tool: the steps are the person's.
+ */
+export function deploySkillStarter(): string {
+  const own = [
+    "---",
+    "name: deploy",
+    "description: Use when deploying this project to staging or prod, or when asked to release, ship or roll back a deploy.",
+    "---",
+    "",
+    "# Deploy",
+    "",
+    "## This project's deploy steps",
+    "",
+    "The deploy steps of this project are not written yet. Ask the person how this project deploys: the commands, their order, the checks to run and how to roll back. Write the answer in this section, and never invent a deploy command.",
+    "",
+  ].join("\n");
+  return renderManagedMarkdown(own, deployBlockBody());
 }

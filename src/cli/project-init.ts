@@ -19,8 +19,10 @@
  * **The deploy skill** (D8, `src/project/deploy-skill.ts`): the plan also shows the kit's
  * managed block in the project's deploy skill and writes it with the project's files, the
  * text around it untouched. `--deploy-skill <path>` names the file, `--no-deploy-block` takes
- * the block out. The portal's Project card never writes it: it plans through `planProjectInit`
- * alone.
+ * the block out. A project with no deploy skill at all is asked once, yes by default, whether to
+ * create `.claude/skills/deploy/SKILL.md` (the starter text, `deploySkillStarter`); `--yes` says
+ * yes, `--no-deploy-block` no file, and a path already there is never overwritten. The portal's
+ * Project card never writes it: it plans through `planProjectInit` alone.
  *
  * **Every question has a flag**, so a run with no terminal and `--yes` writes the whole file
  * from the flags and the defaults. With no terminal and no `--yes`, nothing is written: the
@@ -40,6 +42,7 @@ import {
   type DeploySkillPlan,
   findDeploySkills,
   planDeploySkill,
+  planNewDeploySkill,
   shownPath,
   skillsFolderLink,
 } from "../project/deploy-skill";
@@ -764,9 +767,11 @@ function printPlan(
         summary:
           problem !== null
             ? "not changed"
-            : one.changed
-              ? `${one.diff.length} to change in its deploy block`
-              : "no change",
+            : one.action === "create"
+              ? `new file, ${plural(one.diff.length, "line", "lines")}`
+              : one.changed
+                ? `${one.diff.length} to change in its deploy block`
+                : "no change",
         title: shown(one.file),
         titleWidth,
       },
@@ -863,6 +868,8 @@ function chosenDeploySkills(
   const notes: string[] = [];
   let files: string[] = [];
   let askBeforeAdding = false;
+  // A new file when the project has no deploy skill at all (D8): planned below, asked like an add.
+  let fresh: DeploySkillPlan | null = null;
   const found = findDeploySkills(root);
   if (flags.deploySkill !== undefined) {
     const file = resolve(context.cwd ?? process.cwd(), flags.deploySkill);
@@ -883,7 +890,9 @@ function chosenDeploySkills(
   } else if (found.holders.length > 0) {
     files = found.holders;
   } else if (found.named.length === 0) {
-    notes.push(skillsFolderLink(root) ?? "no deploy skill found; --deploy-skill <path> names one");
+    const made = planNewDeploySkill(root);
+    if ("plan" in made) fresh = made.plan;
+    else notes.push(made.note);
   } else if (found.named.length === 1) {
     files = found.named;
     askBeforeAdding = true;
@@ -899,14 +908,15 @@ function chosenDeploySkills(
       if (file !== undefined) files = [file];
     }
   }
-  let plans = files.map((file) => planDeploySkill(root, file, mode));
+  let plans = fresh !== null ? [fresh] : files.map((file) => planDeploySkill(root, file, mode));
   const adding = plans.find((plan) => plan.action === "add");
-  if (
-    askBeforeAdding &&
-    prompts !== null &&
-    adding !== undefined &&
-    !prompts.confirm(`Add the kit's deploy-task section to ${adding.shown}?`, true)
-  ) {
+  const question =
+    fresh !== null
+      ? `Create a deploy skill at ${fresh.shown}, with the kit's deploy-task section?`
+      : askBeforeAdding && adding !== undefined
+        ? `Add the kit's deploy-task section to ${adding.shown}?`
+        : null;
+  if (question !== null && prompts !== null && !prompts.confirm(question, true)) {
     plans = [];
   }
   return {
@@ -945,8 +955,9 @@ the project.
   --deploy-skill <path>  the deploy skill that gets the kit's deploy block (a managed section,
                          the text around it untouched). Default: the skill that already holds
                          it, else the one .claude/skills/*/SKILL.md that names a deploy; with
-                         several, one question (with --yes, a note and no write)
-  --no-deploy-block      take the deploy block out of the deploy skill
+                         several, one question (with --yes, a note and no write); with none,
+                         a new .claude/skills/deploy/SKILL.md (asked, yes by default)
+  --no-deploy-block      take the deploy block out of the deploy skill (and create no skill)
   --dry-run              print the plan of the flags and the defaults (no questions), and
                          write nothing
   --yes                  no questions: write the flags and the defaults
