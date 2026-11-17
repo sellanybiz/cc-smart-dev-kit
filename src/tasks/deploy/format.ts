@@ -11,6 +11,12 @@ import { splitFrontmatter } from "../../project/frontmatter";
 export const DEPLOY_ENVS = ["staging", "prod"] as const;
 export type DeployEnv = (typeof DEPLOY_ENVS)[number];
 
+/**
+ * The environments with the riskiest first (prod, then staging): the order a short summary lists
+ * them in. Derived from `DEPLOY_ENVS`, so an environment added there is never left out of it.
+ */
+export const DEPLOY_ENVS_RISK_FIRST: readonly DeployEnv[] = [...DEPLOY_ENVS].reverse();
+
 /** When in the deploy the step is owed. */
 export const DEPLOY_STEPS = ["before", "after"] as const;
 export type DeployStep = (typeof DEPLOY_STEPS)[number];

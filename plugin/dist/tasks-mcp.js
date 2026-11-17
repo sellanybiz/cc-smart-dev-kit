@@ -21565,6 +21565,7 @@ function splitFrontmatter(text) {
 
 // src/tasks/deploy/format.ts
 var DEPLOY_ENVS = ["staging", "prod"];
+var DEPLOY_ENVS_RISK_FIRST = [...DEPLOY_ENVS].reverse();
 var DEPLOY_STEPS = ["before", "after"];
 var DEPLOY_TYPES = ["blocking", "non-blocking"];
 var DEPLOY_FLAGS = [
@@ -22887,7 +22888,7 @@ function contextOf(checkout, cwd) {
       project: keyOf(null, cwd),
       repo: null,
       checkoutRoot: null,
-      projectTasks: { ok: false, why: "not in a git checkout: project tasks live in a repository" },
+      projectTasks: { ok: false, why: "not in a git checkout: deploy tasks live in a repository" },
       projectConfig: { ok: true, config: null }
     };
   }

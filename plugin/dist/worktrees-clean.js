@@ -6127,6 +6127,7 @@ function parseUserJson(text) {
 
 // src/tasks/deploy/format.ts
 var DEPLOY_ENVS = ["staging", "prod"];
+var DEPLOY_ENVS_RISK_FIRST = [...DEPLOY_ENVS].reverse();
 var DEPLOY_STEPS = ["before", "after"];
 var DEPLOY_TYPES = ["blocking", "non-blocking"];
 var DEPLOY_FLAGS = [

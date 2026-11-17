@@ -13585,6 +13585,7 @@ function readFrontmatterHeader(file) {
 
 // src/tasks/deploy/format.ts
 var DEPLOY_ENVS = ["staging", "prod"];
+var DEPLOY_ENVS_RISK_FIRST = [...DEPLOY_ENVS].reverse();
 var DEPLOY_STEPS = ["before", "after"];
 var DEPLOY_TYPES = ["blocking", "non-blocking"];
 var DEPLOY_FLAGS = [
@@ -19821,7 +19822,7 @@ function contextOf(checkout, cwd) {
       project: keyOf(null, cwd),
       repo: null,
       checkoutRoot: null,
-      projectTasks: { ok: false, why: "not in a git checkout: project tasks live in a repository" },
+      projectTasks: { ok: false, why: "not in a git checkout: deploy tasks live in a repository" },
       projectConfig: { ok: true, config: null }
     };
   }
@@ -38110,7 +38111,6 @@ function subagentBackground(context) {
 
 // src/hooks/task-start.ts
 var START_TASK_LIMIT = 8;
-var LINE_ENV_ORDER = ["prod", "staging"];
 var plural3 = (count, one, many) => `${count} ${count === 1 ? one : many}`;
 function deployTaskLine(dir, envs, options) {
   const scan = scanDeployTasks(dir, { archive: false });
@@ -38118,7 +38118,7 @@ function deployTaskLine(dir, envs, options) {
   const old = options.countOldFiles ? oldTaskFiles(dir).length : 0;
   if (open.size === 0 && scan.broken.length === 0 && scan.duplicates.length === 0 && old === 0)
     return null;
-  const parts = LINE_ENV_ORDER.flatMap((env) => {
+  const parts = DEPLOY_ENVS_RISK_FIRST.flatMap((env) => {
     const mine = [...open.values()].filter((task) => task.env === env);
     if (mine.length === 0 && !envs.includes(env))
       return [];
@@ -40537,7 +40537,7 @@ function taskStoreChecks(paths) {
   const file = workDbFile(paths);
   if (!existsSync62(file))
     return [{ ok: true, info: true, text: "task work store: not made yet" }];
-  const brokenFix = `move ${tildify(file, paths.home)} aside, with its -wal and -shm files; the next task call starts an empty store (project task files are in git and stay)`;
+  const brokenFix = `move ${tildify(file, paths.home)} aside, with its -wal and -shm files; the next task call starts an empty store (deploy task files are in git and stay)`;
   try {
     const db = openWorkDb(file, { mode: "hook" });
     try {

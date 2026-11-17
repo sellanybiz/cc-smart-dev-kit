@@ -19,6 +19,8 @@ import {
   updateDeployTask,
 } from "./files";
 import {
+  DEPLOY_ENVS,
+  DEPLOY_ENVS_RISK_FIRST,
   type DeployTask,
   deployIdOfFileName,
   isDeployTaskId,
@@ -36,6 +38,12 @@ import {
 } from "./release";
 
 const now = new Date("2026-11-17T14:45:03Z");
+
+test("the risk-first environment order is the release order, reversed, and holds every environment", () => {
+  expect([...DEPLOY_ENVS]).toEqual(["staging", "prod"]);
+  expect([...DEPLOY_ENVS_RISK_FIRST]).toEqual(["prod", "staging"]);
+});
+
 const task: DeployTask = {
   id: "prod-20261117-144503",
   title: 'Drop old: "invite" # functions\nand more',

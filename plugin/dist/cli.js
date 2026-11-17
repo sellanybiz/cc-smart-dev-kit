@@ -14827,11 +14827,12 @@ ${keys.filter((key) => fields[key] !== undefined).map((key) => `${/^[a-zA-Z][a-z
 ---
 ${body}`;
 }
-var DEPLOY_ENVS, DEPLOY_STEPS, DEPLOY_TYPES, DEPLOY_FLAGS, DEPLOY_TASK_ID, instant, deployTaskSchema, RESERVED_KEYS;
+var DEPLOY_ENVS, DEPLOY_ENVS_RISK_FIRST, DEPLOY_STEPS, DEPLOY_TYPES, DEPLOY_FLAGS, DEPLOY_TASK_ID, instant, deployTaskSchema, RESERVED_KEYS;
 var init_format = __esm(() => {
   init_zod();
   init_frontmatter();
   DEPLOY_ENVS = ["staging", "prod"];
+  DEPLOY_ENVS_RISK_FIRST = [...DEPLOY_ENVS].reverse();
   DEPLOY_STEPS = ["before", "after"];
   DEPLOY_TYPES = ["blocking", "non-blocking"];
   DEPLOY_FLAGS = [
@@ -31065,7 +31066,7 @@ function contextOf(checkout, cwd) {
       project: keyOf(null, cwd),
       repo: null,
       checkoutRoot: null,
-      projectTasks: { ok: false, why: "not in a git checkout: project tasks live in a repository" },
+      projectTasks: { ok: false, why: "not in a git checkout: deploy tasks live in a repository" },
       projectConfig: { ok: true, config: null }
     };
   }
@@ -50564,11 +50565,11 @@ init_task_server_name();
 init_context();
 init_check2();
 init_files();
+init_format();
 init_words2();
 init_identity();
 init_io();
 var START_TASK_LIMIT = 8;
-var LINE_ENV_ORDER = ["prod", "staging"];
 var plural5 = (count, one, many) => `${count} ${count === 1 ? one : many}`;
 function deployTaskLine(dir, envs, options) {
   const scan = scanDeployTasks(dir, { archive: false });
@@ -50576,7 +50577,7 @@ function deployTaskLine(dir, envs, options) {
   const old = options.countOldFiles ? oldTaskFiles(dir).length : 0;
   if (open.size === 0 && scan.broken.length === 0 && scan.duplicates.length === 0 && old === 0)
     return null;
-  const parts = LINE_ENV_ORDER.flatMap((env) => {
+  const parts = DEPLOY_ENVS_RISK_FIRST.flatMap((env) => {
     const mine = [...open.values()].filter((task) => task.env === env);
     if (mine.length === 0 && !envs.includes(env))
       return [];
@@ -52640,7 +52641,7 @@ function taskStoreChecks(paths) {
   const file = workDbFile(paths);
   if (!existsSync71(file))
     return [{ ok: true, info: true, text: "task work store: not made yet" }];
-  const brokenFix = `move ${tildify(file, paths.home)} aside, with its -wal and -shm files; the next task call starts an empty store (project task files are in git and stay)`;
+  const brokenFix = `move ${tildify(file, paths.home)} aside, with its -wal and -shm files; the next task call starts an empty store (deploy task files are in git and stay)`;
   try {
     const db = openWorkDb(file, { mode: "hook" });
     try {
