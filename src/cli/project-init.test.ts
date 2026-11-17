@@ -1275,6 +1275,46 @@ describe("the deploy skill", () => {
     expect(skillText(repo, "ship/SKILL.md")).toContain("<!-- cc-smart-dev-kit:begin -->");
   });
 
+  test("--deploy-skill through a link to the file that holds the block: no note, it is the same file", async () => {
+    const holder = `# Ops\n\n<!-- cc-smart-dev-kit:begin -->\n## Deploy tasks\nold text\n<!-- cc-smart-dev-kit:end -->\n`;
+    const repo = repoWith({ "ops/SKILL.md": holder });
+    symlinkSync(
+      join(repo, ".claude", "skills", "ops", "SKILL.md"),
+      join(repo, ".claude", "alias.md"),
+    );
+    const run = context(repo, { cwd: repo });
+    expect(
+      await runProjectInit(
+        ["--yes", "--deploy-skill", ".claude/alias.md"],
+        run.context,
+        runner({}),
+      ),
+    ).toBe(0);
+    expect(run.lines.join("\n")).not.toContain("is also in");
+    expect(skillText(repo, "ops/SKILL.md")).toContain("## Deploy tasks\n\nSteps owed");
+  });
+
+  test("a skills folder linked in from outside the checkout is named, not reported as missing", async () => {
+    const repo = repoWith({});
+    const outside = tempDir("deploy-skill-outside");
+    mkdirSync(join(outside, "deploy"), { recursive: true });
+    writeFileSync(join(outside, "deploy", "SKILL.md"), OWN_TEXT);
+    mkdirSync(join(repo, ".claude"), { recursive: true });
+    symlinkSync(outside, join(repo, ".claude", "skills"));
+    const run = context(repo);
+    expect(await runProjectInit(["--yes"], run.context, runner({}))).toBe(0);
+    expect(run.lines).toContain("· .claude/skills is a link outside this checkout: not searched");
+    expect(run.lines.join("\n")).not.toContain("no deploy skill found");
+    expect(readFileSync(join(outside, "deploy", "SKILL.md"), "utf8")).toBe(OWN_TEXT);
+    const remove = context(repo);
+    expect(await runProjectInit(["--yes", "--no-deploy-block"], remove.context, runner({}))).toBe(
+      0,
+    );
+    expect(remove.lines).toContain(
+      "· .claude/skills is a link outside this checkout: not searched",
+    );
+  });
+
   test("one named skill, on a terminal: asked once, yes by default; a no drops only the skill write", async () => {
     const yes = repoWith({ "deploy/SKILL.md": OWN_TEXT });
     // Eight Enter answers, the skill question (Enter: yes), then the final yes.

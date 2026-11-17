@@ -13,7 +13,13 @@ import { join } from "node:path";
 import { BLOCK_BEGIN, BLOCK_END } from "../setup/managed-markdown";
 import { tempDir } from "../testing/temp";
 import { deployBlockBody } from "./deploy-block";
-import { applyDeploySkill, findDeploySkills, planDeploySkill, staleBlocks } from "./deploy-skill";
+import {
+  applyDeploySkill,
+  findDeploySkills,
+  planDeploySkill,
+  skillsFolderLink,
+  staleBlocks,
+} from "./deploy-skill";
 
 const BODY = deployBlockBody();
 const BLOCK = `${BLOCK_BEGIN}\n${BODY}\n${BLOCK_END}`;
@@ -184,6 +190,21 @@ describe("only the deploy block counts", () => {
     expect(staleBlocks(root)).toEqual([]);
   });
 
+  test("an indented example of the block (four spaces, or in a list) is no holder", () => {
+    const { root, stateDir } = world();
+    const indented = `# Docs\n\n    ${BLOCK_BEGIN}\n    ${BODY.split("\n")[0]}\n    ${BLOCK_END}\n`;
+    const listed = `- Example:\n  ${BLOCK_BEGIN}\n  ${BODY.split("\n")[0]}\n  ${BLOCK_END}\n`;
+    skill(root, "indented-docs", indented);
+    skill(root, "listed-docs", listed);
+    expect(findDeploySkills(root)).toEqual({ holders: [], named: [] });
+    // Named deploy, the example is still not rewritten.
+    const named = skill(root, "deploy", indented);
+    const plan = planDeploySkill(root, named, "write");
+    expect(plan.action).toBe("refused");
+    expect(applyDeploySkill(root, plan, { stateDir })).toBeNull();
+    expect(readFileSync(named, "utf8")).toBe(indented);
+  });
+
   test("a real block after a fenced example is still found", () => {
     const { root } = world();
     // The fence holds markers, so the file is a holder whose plan refuses (by hand), never a rewrite.
@@ -228,6 +249,30 @@ describe("refusals", () => {
     );
     expect(applyDeploySkill(root, plan, { stateDir })).toBeNull();
     expect(readFileSync(join(outside, "SKILL.md"), "utf8")).toBe(AROUND_BEFORE);
+  });
+
+  test("a skills folder that is a link out of the checkout is named, and not searched", () => {
+    const { root } = world();
+    expect(skillsFolderLink(root)).toBeNull();
+    const outside = tempDir("deploy-skill-outside");
+    mkdirSync(join(outside, "deploy"), { recursive: true });
+    writeFileSync(join(outside, "deploy", "SKILL.md"), AROUND_BEFORE);
+    mkdirSync(join(root, ".claude"), { recursive: true });
+    symlinkSync(outside, join(root, ".claude", "skills"));
+    expect(skillsFolderLink(root)).toBe(
+      ".claude/skills is a link outside this checkout: not searched",
+    );
+    expect(findDeploySkills(root)).toEqual({ holders: [], named: [] });
+  });
+
+  test("a skills folder inside the checkout, even through a link, is searched as usual", () => {
+    const { root } = world();
+    mkdirSync(join(root, "shared", "deploy"), { recursive: true });
+    writeFileSync(join(root, "shared", "deploy", "SKILL.md"), AROUND_BEFORE);
+    mkdirSync(join(root, ".claude"), { recursive: true });
+    symlinkSync(join(root, "shared"), join(root, ".claude", "skills"));
+    expect(skillsFolderLink(root)).toBeNull();
+    expect(findDeploySkills(root).named).toHaveLength(1);
   });
 
   test("a plain path that leaves the checkout says so without naming a link", () => {

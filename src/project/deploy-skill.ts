@@ -42,6 +42,17 @@ function skillsFolder(root: string): string {
   return join(root, ...SKILLS_DIR);
 }
 
+/**
+ * A sentence when `.claude/skills` is a link that leaves the checkout, else null: it is not
+ * searched (a skills folder linked in from a dotfiles repo is not the project's to change), and
+ * "no deploy skill found" would be the wrong thing to say about it.
+ */
+export function skillsFolderLink(root: string): string | null {
+  const folder = skillsFolder(root);
+  if (!existsSync(folder) || isInside(realTarget(root), realTarget(folder))) return null;
+  return `${shownPath(root, folder)} is a link outside this checkout: not searched`;
+}
+
 /** True when `real` is the checkout's real root or a path under it. */
 function isInside(realRoot: string, real: string): boolean {
   const rel = relative(realRoot, real);
@@ -92,7 +103,9 @@ function markerPlaces(text: string): { inFence: boolean; firstBodyLine: string |
     }
     const hasMarker = line.includes(BLOCK_BEGIN) || line.includes(BLOCK_END);
     if (hasMarker && fence !== null) inFence = true;
-    else if (line.includes(BLOCK_BEGIN) && firstBodyLine === null) afterBegin = true;
+    // A begin marker counts only at the start of its line: an indented example of the block
+    // (in a list or an indented code block) is shown, not kept.
+    else if (line.startsWith(BLOCK_BEGIN) && firstBodyLine === null) afterBegin = true;
   }
   return { inFence, firstBodyLine };
 }

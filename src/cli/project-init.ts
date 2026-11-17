@@ -41,6 +41,7 @@ import {
   findDeploySkills,
   planDeploySkill,
   shownPath,
+  skillsFolderLink,
 } from "../project/deploy-skill";
 import {
   applyProjectInit,
@@ -51,6 +52,7 @@ import {
 } from "../project/init";
 import { isObject } from "../setup/managed-json";
 import { parseUserJson } from "../setup/user-json";
+import { realTarget } from "../setup/write";
 import { personalWorkflowOrDefault } from "../workflow/resolve";
 import {
   isSwitchKey,
@@ -865,7 +867,7 @@ function chosenDeploySkills(
   if (flags.deploySkill !== undefined) {
     const file = resolve(context.cwd ?? process.cwd(), flags.deploySkill);
     files = [file];
-    const others = found.holders.filter((holder) => resolve(holder) !== file);
+    const others = found.holders.filter((holder) => realTarget(holder) !== realTarget(file));
     if (others.length > 0) {
       notes.push(
         `the deploy block is also in ${others.map((other) => shownPath(root, other)).join(", ")}: left as it is`,
@@ -873,12 +875,15 @@ function chosenDeploySkills(
     }
   } else if (mode === "remove") {
     files = found.holders;
-    if (files.length === 0)
-      notes.push("no deploy block found in .claude/skills: nothing to remove");
+    if (files.length === 0) {
+      notes.push(
+        skillsFolderLink(root) ?? "no deploy block found in .claude/skills: nothing to remove",
+      );
+    }
   } else if (found.holders.length > 0) {
     files = found.holders;
   } else if (found.named.length === 0) {
-    notes.push("no deploy skill found; --deploy-skill <path> names one");
+    notes.push(skillsFolderLink(root) ?? "no deploy skill found; --deploy-skill <path> names one");
   } else if (found.named.length === 1) {
     files = found.named;
     askBeforeAdding = true;
