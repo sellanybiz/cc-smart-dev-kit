@@ -3,9 +3,9 @@
 The kit files its follow-ups and its findings as GitHub issues, one switch (decision D67, the
 owner, 2026-10-25). The switch began opt-in, off by default, like `autoPush` and `openPr`. Since
 5.0.0 it is **on by default** (D7 of the deploy-tasks plan, the owner's choice), in a project that
-has a kit config; `allowPublic` stays off, so a public repository still needs its own yes. Before the kit filed issues, a
-follow-up outside a plan, a review finding left open or a hunch ended as a line in a summary and
-was lost when the plan was archived. This page is the contract: filing (GI1), the fixed mark and
+has a kit config; `allowPublic` stays off, so a public repository still needs its own yes. Before
+the kit filed issues, a follow-up outside a plan, a review finding left open or a hunch ended as a
+line in a summary and was lost when the plan was archived. This page is the contract: filing (GI1), the fixed mark and
 the release list (GI2), and the markers the kit trusts (GI4). The research behind it:
 `.claude/research/2026-10-25-gi1-issues.md`.
 

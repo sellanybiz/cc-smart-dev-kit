@@ -8,6 +8,7 @@ import { fakeGh } from "../testing/fake-gh";
 import { hookEnv, makeRepo, writeClaudeFile } from "../testing/hooks";
 import { subprocessGuard } from "../testing/port-guard";
 import { tempDir, withGitVersion } from "../testing/temp";
+import type { Check } from "./check";
 import { checkLine } from "./doctor";
 import { cliPaths } from "./paths";
 import { projectChecks, renamedCommand } from "./project-checks";
@@ -68,7 +69,8 @@ const fakeGhExec = () => fakeGh().exec;
  * that match whole reports are about the other lines, so they drop it; the issues line has its own
  * test at the end of this file.
  */
-const notIssuesLine = (line: { text: string }) => !line.text.startsWith("issues:");
+const notIssuesLine = (line: Check) =>
+  !(line.text.startsWith("issues:") && line.ok && line.info === true);
 
 async function check(repo: string, env = hookEnv(), hooksFile = PLUGIN_HOOKS) {
   return (await projectChecks(repo, env, cliPaths(env), hooksFile, fakeGhExec()))

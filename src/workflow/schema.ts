@@ -360,7 +360,7 @@ export const REVIEW_GATE_KEYS: readonly WorkflowKey[] = [
  * The settings that let text leave the machine for GitHub (`issues.enabled`, `issues.allowPublic`).
  * `issues.enabled` is on by default, the owner's choice; these keys are still the person's to
  * change. `workflow set` and `unset` refuse them inside Claude Code (`commands.ts`), as they do a
- * review-gate key: a session must not turn off or on its own way out. `propose` stays open: its pull
+ * review-gate key: a session must not change its own way out. `propose` stays open: its pull
  * request is reviewed and merged by a person.
  */
 export const OUTBOUND_KEYS: readonly WorkflowKey[] = ["issues.enabled", "issues.allowPublic"];
