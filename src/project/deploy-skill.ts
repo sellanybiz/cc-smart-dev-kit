@@ -18,9 +18,26 @@
  * - **Write** (`applyDeploySkill`): a backup and an atomic write, never `changed.json`, so
  *   `restore` never touches a project file (the reason is in `init.ts`'s header). The file is
  *   read again just before the rename; a change while init ran aborts that write.
+ * - **A project with no deploy skill** (`planNewDeploySkill`): a new
+ *   `.claude/skills/deploy/SKILL.md` from the starter text (`deploy-block.ts`). Its write
+ *   creates the folders and the file exclusively, so a file that appeared since the plan is
+ *   never overwritten. A new file has nothing to back up, and like every project file it is
+ *   not in `changed.json`: `restore` leaves it alone.
  */
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { basename, isAbsolute, join, relative, resolve } from "node:path";
+import {
+  closeSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  openSync,
+  readdirSync,
+  readFileSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { setFileMode } from "../setup/file-mode";
 import {
   BLOCK_BEGIN,
   BLOCK_END,
@@ -28,7 +45,7 @@ import {
   renderWithoutBlock,
 } from "../setup/managed-markdown";
 import { atomicWrite, backupFile, fileMode, realTarget } from "../setup/write";
-import { deployBlockBody } from "./deploy-block";
+import { deployBlockBody, deploySkillStarter } from "./deploy-block";
 import { readFrontmatterHeader } from "./frontmatter";
 import type { ProjectInitWrite } from "./init";
 
@@ -120,9 +137,10 @@ function holdsDeployBlock(text: string): boolean {
   return markerPlaces(text).firstBodyLine === deployBlockHeading();
 }
 
-/** The folder name or the front matter `name` of a `<skills>/<folder>/SKILL.md` has "deploy" in it. */
-function namesDeploy(file: string): boolean {
-  if (basename(join(file, "..")).toLowerCase().includes("deploy")) return true;
+/** The folder name or the front matter `name` of a `<skills>/<folder>/SKILL.md` has one of `words` in it. */
+function namesAny(file: string, words: readonly string[]): boolean {
+  const has = (text: string) => words.some((word) => text.toLowerCase().includes(word));
+  if (has(basename(join(file, "..")))) return true;
   const header = readFrontmatterHeader(file);
   if (header === null) return false;
   let name: unknown;
@@ -132,7 +150,12 @@ function namesDeploy(file: string): boolean {
     // A skill with unreadable front matter has no name to match; its folder name was checked.
     return false;
   }
-  return typeof name === "string" && name.toLowerCase().includes("deploy");
+  return typeof name === "string" && has(name);
+}
+
+/** True for a `<skills>/<folder>/SKILL.md`: a skill one folder down, as a person names it. */
+function isTopSkill(top: string, file: string): boolean {
+  return relative(top, file).split(/[\\/]/).length === 2;
 }
 
 /** Every `SKILL.md` under `folder`, to `depth` folders down; a folder is visited once. */
@@ -177,7 +200,7 @@ export function findDeploySkills(root: string): DeploySkillsFound {
   const top = skillsFolder(root);
   for (const file of skillFilesUnder(top, MARKER_SEARCH_DEPTH, realTarget(root))) {
     if (holdsDeployBlock(readFileSync(file, "utf8"))) holders.push(file);
-    else if (relative(top, file).split(/[\\/]/).length === 2 && namesDeploy(file)) named.push(file);
+    else if (isTopSkill(top, file) && namesAny(file, ["deploy"])) named.push(file);
   }
   return { holders, named };
 }
@@ -188,10 +211,11 @@ export interface DeploySkillPlan {
   /** The file as a person reads its path: from the project's root. */
   shown: string;
   /**
-   * `add`: a new block; `update`: the block's text changed; `remove`: the block goes; `none`:
-   * the file is already right; `refused`: it cannot be changed (`problem` says why).
+   * `create`: a new skill file, starter text and block; `add`: a new block; `update`: the
+   * block's text changed; `remove`: the block goes; `none`: the file is already right;
+   * `refused`: it cannot be changed (`problem` says why).
    */
-  action: "add" | "update" | "remove" | "none" | "refused";
+  action: "create" | "add" | "update" | "remove" | "none" | "refused";
   /** The file as read, the exact text the write compares with just before it renames. */
   before: string;
   /** What the file will hold. */
@@ -318,10 +342,132 @@ export function planDeploySkill(
   };
 }
 
+/** The only place a new deploy skill goes, from the project's root. */
+const NEW_SKILL_PATH = [...SKILLS_DIR, "deploy", SKILL_FILE];
+
+/** A command file that answers /deploy: a `deploy*.md` anywhere under `.claude/commands`. */
+const DEPLOY_COMMAND_FILE = /^deploy.*\.md$/i;
+/** How deep under `.claude/commands/` a command is looked for. */
+const COMMANDS_SEARCH_DEPTH = 4;
+/** A skill that names one of these may already hold the project's deploy steps. */
+const DEPLOY_LIKE_WORDS = ["release", "ship"];
+
+/** The first `deploy*.md` under `folder` (sorted, links followed, `depth` folders down), or null. */
+function deployCommandUnder(folder: string, depth: number): string | null {
+  if (statSync(folder, { throwIfNoEntry: false })?.isDirectory() !== true) return null;
+  for (const entry of readdirSync(folder).sort()) {
+    const path = join(folder, entry);
+    const stat = statSync(path, { throwIfNoEntry: false });
+    if (stat?.isFile() === true && DEPLOY_COMMAND_FILE.test(entry)) return path;
+    if (stat?.isDirectory() === true && depth > 0 && entry !== "node_modules") {
+      const found = deployCommandUnder(path, depth - 1);
+      if (found !== null) return found;
+    }
+  }
+  return null;
+}
+
+/** The skills, one folder down, whose name says release or ship, as paths from the root. */
+function deployLikeSkills(root: string): string[] {
+  const top = skillsFolder(root);
+  return skillFilesUnder(top, 1, realTarget(root))
+    .filter((file) => isTopSkill(top, file) && namesAny(file, DEPLOY_LIKE_WORDS))
+    .map((file) => shownPath(root, file));
+}
+
+/**
+ * The plan for a deploy skill the project does not have: the starter text as a new
+ * `.claude/skills/deploy/SKILL.md`, every non-blank line shown as a `+` line. Or a note, and no
+ * plan, when the file must not be made: `.claude/skills` is linked out of the checkout, a
+ * `.claude/commands/deploy*.md` already answers /deploy (Claude Code gives a skill precedence
+ * over a command of the same name, so a new skill would silently replace it), something is
+ * already at that path (a file, a folder, a link, even a dangling one: it is never overwritten),
+ * its real place is outside the checkout, or its folders cannot be made. A skill whose name says
+ * release or ship may hold the project's deploy steps: the plan stands, with a note naming it.
+ * Writes nothing.
+ */
+export function planNewDeploySkill(
+  root: string,
+): { plan: DeploySkillPlan; notes: string[] } | { note: string } {
+  const linked = skillsFolderLink(root);
+  if (linked !== null) return { note: linked };
+  const file = join(root, ...NEW_SKILL_PATH);
+  const shown = shownPath(root, file);
+  const command = deployCommandUnder(join(root, ".claude", "commands"), COMMANDS_SEARCH_DEPTH);
+  if (command !== null) {
+    return {
+      note: `${shownPath(root, command)} already answers /deploy: no skill created; --deploy-skill <path> names a skill to add the section to`,
+    };
+  }
+  try {
+    if (lstatSync(file, { throwIfNoEntry: false }) !== undefined) {
+      return {
+        note: `${shown} already exists: not overwritten; --deploy-skill <path> names the deploy skill`,
+      };
+    }
+    if (!isInside(realTarget(root), realTarget(file))) {
+      return { note: `${shown} would be outside this checkout: not created` };
+    }
+  } catch (error) {
+    // A file where a folder should be (ENOTDIR), a link loop: the path cannot be made.
+    const why = error instanceof Error ? error.message : String(error);
+    return { note: `${shown} cannot be created (${why})` };
+  }
+  const text = deploySkillStarter();
+  return {
+    notes: deployLikeSkills(root).map(
+      (path) =>
+        `${path} may already hold this project's deploy steps; --deploy-skill ${path} adds the section there instead`,
+    ),
+    plan: {
+      file,
+      shown,
+      action: "create",
+      before: "",
+      text,
+      changed: true,
+      diff: text
+        .split("\n")
+        .filter((line) => line.trim() !== "")
+        .map((line) => `+ ${line}`),
+      problem: null,
+    },
+  };
+}
+
+/**
+ * Creates the new file of a `create` plan: its folders, then the file, exclusively (`wx`), so
+ * a file that appeared since the plan is never overwritten. Mode 0644, as a skill is shared.
+ */
+function createDeploySkill(plan: DeploySkillPlan, real: string): void {
+  mkdirSync(dirname(real), { recursive: true });
+  let fd: number;
+  try {
+    fd = openSync(real, "wx", 0o644);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+      throw new Error(`${plan.shown} already exists: nothing was written to it. Run it again.`);
+    }
+    throw error;
+  }
+  // This call made the file, so only this call may remove it: half a file is worse than none.
+  let written = false;
+  try {
+    writeFileSync(fd, plan.text);
+    written = true;
+  } finally {
+    closeSync(fd);
+    if (!written) unlinkSync(real);
+  }
+  // The open's mode passes through the umask: set the bits asked for.
+  setFileMode(real, 0o644);
+}
+
 /**
  * Writes one planned change: backup, then an atomic write that first reads the file again and
- * aborts (throws, the file untouched) when it is not the text the plan was made from. Null
- * when the plan changes nothing. `dryRun` writes nothing.
+ * aborts (throws, the file untouched) when it is not the text the plan was made from. A
+ * `create` plan makes the new file instead (`createDeploySkill`, no backup: nothing was there).
+ * Null when the plan changes nothing. `dryRun` writes nothing.
  */
 export function applyDeploySkill(
   root: string,
@@ -333,7 +479,12 @@ export function applyDeploySkill(
   if (!isInside(realTarget(root), real)) {
     throw new Error(outsideMessage(root, plan.file, real));
   }
-  if (options.dryRun === true) return { file: plan.file, created: false, backup: null };
+  const created = plan.action === "create";
+  if (options.dryRun === true) return { file: plan.file, created, backup: null };
+  if (created) {
+    createDeploySkill(plan, real);
+    return { file: plan.file, created: true, backup: null };
+  }
   const unchanged = (): void => {
     if (!existsSync(real) || readFileSync(real, "utf8") !== plan.before) {
       throw new Error(
