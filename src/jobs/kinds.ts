@@ -91,8 +91,10 @@ const TSC_PRINT_ONLY = ["--help", "--listfilesonly", "--showconfig", "--version"
 const TEST_PRINT_ONLY = ["--help", "--version", "-h", "-v"];
 
 /**
- * The options of vitest and jest whose value is the next word. A value that happens to be a
- * file (`--config vitest.config.ts`) must never make a full run look like a run on named files.
+ * The shared options of vitest and jest whose value is the next word, for a run whose tool has
+ * no table (`TOOL_OPTIONS`): a project's own kind, and every `{ script }` rule. A value that
+ * happens to be a file (`--config vitest.config.ts`) must never make a full run look like a
+ * run on named files.
  */
 const TEST_VALUED_FLAGS = [
   "--bail",
@@ -129,7 +131,7 @@ const TEST_VALUED_FLAGS = [
 ];
 
 /**
- * The options of vitest and jest that take no value. With `TEST_VALUED_FLAGS`, the only options
+ * The shared options of vitest and jest that take no value. With `TEST_VALUED_FLAGS`, the only options
  * `namesOnlyFiles` knows how to read past without `=`: any other one gives the run a slot, so an
  * option whose value is a file (`--outputFile.junit results.xml`, `--setupFilesAfterEnv
  * jest.setup.ts`) never makes a full run look like a run on named files. Short on purpose, and
@@ -152,6 +154,373 @@ const TEST_BARE_FLAGS = [
 ];
 
 /**
+ * What one tool's command line looks like, for `namesOnlyFiles` and `isWatchRun`. Looked up by
+ * the tool a matched call runs (`TOOL_OPTIONS`): the tools differ where the shared table cannot
+ * follow (`-w` is vitest's watch flag and jest's worker count; a jest array option takes every
+ * word up to the next option; tsc has far more options than a test runner). An option a table
+ * does not list is never read past: the run is a full run. Taken from each tool's own
+ * documentation or `--help`, current when this was written (2026-11); an option that may take
+ * an optional value (`--bail`, vitest's `-u` and `--silent`) is left out on purpose, since the
+ * file after it may be that value.
+ */
+interface ToolOptions {
+  /** Options whose value is the next word (`--project x`); `--opt=x` needs no table. */
+  valued: readonly string[];
+  /** Options that take no value. */
+  bare: readonly string[];
+  /** Leading words that are the tool's own command, not files (`bun test`, `vitest run`). */
+  skip?: readonly string[];
+  /** The only words that may name a file: Bun reads any other positional word as a path filter. */
+  isOperand?: (word: string) => boolean;
+  /** What makes the run watch for changes, and so never end. */
+  watch?: {
+    /** Options that mean watch mode, unless given `=false` (or `=0`). */
+    flags: readonly string[];
+    /** The tool's own commands that mean watch mode (`vitest watch`). */
+    commands?: readonly string[];
+    /** The tool reads its options in any case (tsc). */
+    ignoreCase?: boolean;
+  };
+}
+
+/** `tsc`, `tsgo` and `vue-tsc` share one command line (`tsc --help --all`, TypeScript 7.0). */
+const TSC_OPTIONS: ToolOptions = {
+  valued: [
+    "--baseUrl",
+    "--charset",
+    "--checkers",
+    "--customConditions",
+    "--declarationDir",
+    "--excludeDirectories",
+    "--excludeFiles",
+    "--fallbackPolling",
+    "--generateCpuProfile",
+    "--generateTrace",
+    "--ignoreDeprecations",
+    "--jsx",
+    "--jsxFactory",
+    "--jsxFragmentFactory",
+    "--jsxImportSource",
+    "--lib",
+    "--locale",
+    "--mapRoot",
+    "--maxNodeModuleJsDepth",
+    "--module",
+    "--moduleDetection",
+    "--moduleResolution",
+    "--moduleSuffixes",
+    "--newLine",
+    "--outDir",
+    "--outFile",
+    "--plugins",
+    "--pprofDir",
+    "--reactNamespace",
+    "--rootDir",
+    "--rootDirs",
+    "--sourceRoot",
+    "--target",
+    "--tsBuildInfoFile",
+    "--typeRoots",
+    "--types",
+    "--watchDirectory",
+    "--watchFile",
+    "--watchInterval",
+    "-m",
+    "-t",
+  ],
+  // Not here on purpose: `-p`/`--project` and `-b`/`--build` (a project is a full run, and
+  // `tsc` ignores `tsconfig.json` only when it is given files), `--init`, `--watch`.
+  bare: [
+    "--allowArbitraryExtensions",
+    "--allowImportingTsExtensions",
+    "--allowJs",
+    "--allowSyntheticDefaultImports",
+    "--allowUmdGlobalAccess",
+    "--allowUnreachableCode",
+    "--allowUnusedLabels",
+    "--alwaysStrict",
+    "--checkJs",
+    "--composite",
+    "--declaration",
+    "--declarationMap",
+    "--deduplicatePackages",
+    "--diagnostics",
+    "--disableSizeLimit",
+    "--downlevelIteration",
+    "--emitBOM",
+    "--emitDeclarationOnly",
+    "--emitDecoratorMetadata",
+    "--erasableSyntaxOnly",
+    "--esModuleInterop",
+    "--exactOptionalPropertyTypes",
+    "--experimentalDecorators",
+    "--explainFiles",
+    "--extendedDiagnostics",
+    "--forceConsistentCasingInFileNames",
+    "--ignoreConfig",
+    "--importHelpers",
+    "--incremental",
+    "--inlineSourceMap",
+    "--inlineSources",
+    "--isolatedDeclarations",
+    "--isolatedModules",
+    "--libReplacement",
+    "--listEmittedFiles",
+    "--listFiles",
+    "--noCheck",
+    "--noEmit",
+    "--noEmitHelpers",
+    "--noEmitOnError",
+    "--noErrorTruncation",
+    "--noFallthroughCasesInSwitch",
+    "--noImplicitAny",
+    "--noImplicitOverride",
+    "--noImplicitReturns",
+    "--noImplicitThis",
+    "--noLib",
+    "--noPropertyAccessFromIndexSignature",
+    "--noResolve",
+    "--noUncheckedIndexedAccess",
+    "--noUncheckedSideEffectImports",
+    "--noUnusedLocals",
+    "--noUnusedParameters",
+    "--preserveConstEnums",
+    "--preserveSymlinks",
+    "--preserveWatchOutput",
+    "--pretty",
+    "--quiet",
+    "--removeComments",
+    "--resolveJsonModule",
+    "--resolvePackageJsonExports",
+    "--resolvePackageJsonImports",
+    "--rewriteRelativeImportExtensions",
+    "--singleThreaded",
+    "--skipDefaultLibCheck",
+    "--skipLibCheck",
+    "--sourceMap",
+    "--stableTypeOrdering",
+    "--strict",
+    "--strictBindCallApply",
+    "--strictBuiltinIteratorReturn",
+    "--strictFunctionTypes",
+    "--strictNullChecks",
+    "--strictPropertyInitialization",
+    "--stripInternal",
+    "--traceResolution",
+    "--useDefineForClassFields",
+    "--useUnknownInCatchVariables",
+    "--verbatimModuleSyntax",
+    "-d",
+    "-i",
+    "-q",
+  ],
+  watch: { flags: ["--watch", "-w"], ignoreCase: true },
+};
+
+/** vitest (`vitest.dev/guide/cli`). `-w` is `--watch` here, and `-u`, `--silent`, `--bail` take optional values. */
+const VITEST_OPTIONS: ToolOptions = {
+  valued: [
+    "--attachmentsDir",
+    "--config",
+    "--configLoader",
+    "--dir",
+    "--environment",
+    "--exclude",
+    "--execArgv",
+    "--hookTimeout",
+    "--maxConcurrency",
+    "--maxWorkers",
+    "--minWorkers",
+    "--mode",
+    "--outputFile",
+    "--pool",
+    "--project",
+    "--reporter",
+    "--repeats",
+    "--retry",
+    "--retry.count",
+    "--root",
+    "--sequence.hooks",
+    "--sequence.seed",
+    "--sequence.setupFiles",
+    "--shard",
+    "--slowTestThreshold",
+    "--tagsFilter",
+    "--teardownTimeout",
+    "--testNamePattern",
+    "--testTimeout",
+    "--vmMemoryLimit",
+    "-c",
+    "-p",
+    "-r",
+    "-t",
+  ],
+  bare: [
+    "--allowOnly",
+    "--cache",
+    "--clearScreen",
+    "--detectAsyncLeaks",
+    "--disableConsoleIntercept",
+    "--expandSnapshotDiff",
+    "--fileParallelism",
+    "--globals",
+    "--hideSkippedTests",
+    "--includeTaskLocation",
+    "--isolate",
+    "--last-failed",
+    "--lastFailed",
+    "--logHeapUsage",
+    "--no-cache",
+    "--no-color",
+    "--no-file-parallelism",
+    "--no-isolate",
+    "--passWithNoTests",
+    "--printConsoleTrace",
+    "--run",
+    "--sequence.concurrent",
+    "--sequence.shuffle.files",
+    "--sequence.shuffle.tests",
+  ],
+  skip: ["run"],
+  watch: { flags: ["--watch", "-w"], commands: ["watch", "dev"] },
+};
+
+/**
+ * jest (`jestjs.io/docs/cli`). The array options (`--reporters`, `--roots`,
+ * `--testPathIgnorePatterns`, `--projects`, `--setupFilesAfterEnv`, …) take every word up to the
+ * next option, so only their `=` form is read: a file after one may be one of its values.
+ */
+const JEST_OPTIONS: ToolOptions = {
+  valued: [
+    "--changedSince",
+    "--collectCoverageFrom",
+    "--config",
+    "--coverageDirectory",
+    "--coverageProvider",
+    "--env",
+    "--filter",
+    "--maxConcurrency",
+    "--maxWorkers",
+    "--openHandlesTimeout",
+    "--outputFile",
+    "--rootDir",
+    "--seed",
+    "--shard",
+    "--testEnvironment",
+    "--testEnvironmentOptions",
+    "--testNamePattern",
+    "--testPathPattern",
+    "--testPathPatterns",
+    "--testRunner",
+    "--testSequencer",
+    "--testTimeout",
+    "--workerGracefulExitTimeout",
+    "-c",
+    "-t",
+    "-w",
+  ],
+  bare: [
+    "--cache",
+    "--changedFilesWithAncestor",
+    "--ci",
+    "--clearMocks",
+    "--colors",
+    "--debug",
+    "--detectOpenHandles",
+    "--errorOnDeprecated",
+    "--expand",
+    "--forceExit",
+    "--injectGlobals",
+    "--json",
+    "--lastCommit",
+    "--listTests",
+    "--logHeapUsage",
+    "--no-cache",
+    "--no-watchman",
+    "--noStackTrace",
+    "--notify",
+    "--onlyChanged",
+    "--onlyFailures",
+    "--passWithNoTests",
+    "--randomize",
+    "--resetMocks",
+    "--restoreMocks",
+    "--runInBand",
+    "--runTestsByPath",
+    "--showSeed",
+    "--silent",
+    "--testLocationInResults",
+    "--updateSnapshot",
+    "--useStderr",
+    "--verbose",
+    "--waitForUnhandledRejections",
+    "--watchman",
+    "--workerThreads",
+    "-e",
+    "-f",
+    "-i",
+    "-o",
+    "-u",
+  ],
+  watch: { flags: ["--watch", "--watchAll"] },
+};
+
+/**
+ * `bun test` (`bun.com/docs/cli/test`). A positional word is a path filter, and names a file
+ * only when it starts with `./` or `/`.
+ */
+const BUN_TEST_OPTIONS: ToolOptions = {
+  valued: [
+    "--coverage-dir",
+    "--coverage-reporter",
+    "--environment",
+    "--globals",
+    "--max-concurrency",
+    "--preload",
+    "--rerun-each",
+    "--reporter",
+    "--reporter-junit-suites",
+    "--reporter-outfile",
+    "--retry",
+    "--seed",
+    "--shard",
+    "--test-name-pattern",
+    "--timeout",
+    "--timings",
+    "-t",
+  ],
+  bare: [
+    "--aot",
+    "--bun",
+    "--check",
+    "--concurrent",
+    "--dots",
+    "--no-compile-function-source",
+    "--no-isolate",
+    "--parallel",
+    "--randomize",
+    "--react-compiler",
+    "--todo",
+    "--update-snapshots",
+    "--update-timings",
+    "-u",
+  ],
+  skip: ["test"],
+  isOperand: (word) => word.startsWith("./") || word.startsWith("/"),
+  watch: { flags: ["--watch"] },
+};
+
+/** The tables, by the name of the tool a matched call runs. */
+const TOOL_OPTIONS: Readonly<Record<string, ToolOptions>> = {
+  bun: BUN_TEST_OPTIONS,
+  jest: JEST_OPTIONS,
+  tsc: TSC_OPTIONS,
+  tsgo: TSC_OPTIONS,
+  vitest: VITEST_OPTIONS,
+  "vue-tsc": TSC_OPTIONS,
+};
+
+/**
  * The defaults: one kind per common heavy tool. The names are the jobs, not the tools:
  * a project points its own commands at them, or adds kinds of its own.
  *
@@ -161,8 +530,11 @@ const TEST_BARE_FLAGS = [
  */
 export const DEFAULT_KINDS: Kinds = {
   tsc: {
-    about: "A TypeScript type check (tsc, tsgo, vue-tsc).",
+    about:
+      "A TypeScript type check (tsc, tsgo, vue-tsc). A run on named files runs at once, with no slot.",
     printOnly: TSC_PRINT_ONLY,
+    // `tsc -p`, `--build` and a run with no file stay full runs (`TSC_OPTIONS`).
+    noSlotForFiles: true,
     match: [{ tool: "tsc" }, { tool: "tsgo" }, { tool: "vue-tsc" }],
   },
   "lint:typed": {
@@ -175,22 +547,24 @@ export const DEFAULT_KINDS: Kinds = {
     ],
   },
   "test:coverage": {
-    about: "A test run with coverage (vitest or jest with --coverage).",
+    about: "A test run with coverage (vitest, jest or bun test with --coverage).",
     printOnly: TEST_PRINT_ONLY,
     match: [
       { tool: "vitest", argIncludes: "--coverage" },
       { tool: "jest", argIncludes: "--coverage" },
+      { tool: "bun", sub: ["test"], argIncludes: "--coverage" },
     ],
   },
   "test:run": {
-    about: "A test run (vitest, jest). A run on named test files runs at once, with no slot.",
+    about:
+      "A test run (vitest, jest, bun test). A run on named test files runs at once, with no slot.",
     printOnly: TEST_PRINT_ONLY,
     // `vitest related` is no skip word on purpose: the tests that import a file may be all of
-    // them, so such a run takes a slot.
+    // them, so such a run takes a slot. Each tool's own options are read by its table
+    // (`TOOL_OPTIONS`); the shared lists below serve a project kind that sets this field.
     noSlotForFiles: true,
     skipWords: ["run"],
-    valuedFlags: TEST_VALUED_FLAGS,
-    match: [{ tool: "vitest" }, { tool: "jest" }],
+    match: [{ tool: "vitest" }, { tool: "jest" }, { tool: "bun", sub: ["test"] }],
   },
   build: {
     about: "A framework production build (next build).",
@@ -244,22 +618,28 @@ export function isPrintOnly(kind: KindSpec, args: readonly string[]): boolean {
  * name), name only existing files, at most `LIGHT_FILE_LIMIT`? Such a run takes no slot
  * when the kind says `noSlotForFiles`. The leading `skipWords` are read past, and every word after `--` is an
  * operand. An option is read past only when its reading is certain: written with `=`
- * (`--reporter=dot`), a known option with a value (`TEST_VALUED_FLAGS` and the kind's own
- * `valuedFlags`: the next word goes with it), or a known option with none (`TEST_BARE_FLAGS`).
- * Any other option may take the next word, which may be a file, so it gives the run a heavy
- * slot. No operand at all is a full run, and one operand that is not a file (`isFile`: a
- * folder, a name filter, a word that names nothing) gives the run a heavy slot: the safe
- * answer.
+ * (`--reporter=dot`), a known option with a value (the tool's table and the kind's own
+ * `valuedFlags`: the next word goes with it), or a known option with none. Any other option may
+ * take the next word, which may be a file, so it gives the run a heavy slot. No operand at all
+ * is a full run, and one operand that is not a file (`isFile`: a folder, a name filter, a word
+ * that names nothing) gives the run a heavy slot: the safe answer.
+ *
+ * `tool` is the program a tool rule matched (`vitest`, `bun`, `tsc`): its own table of options
+ * is read (`TOOL_OPTIONS`). Without one, or for a tool with no table, and for every `{ script }`
+ * rule, the shared vitest-and-jest lists are (`TEST_VALUED_FLAGS`, `TEST_BARE_FLAGS`), as they
+ * always were.
  */
 export function namesOnlyFiles(
   kind: KindSpec,
   args: readonly string[],
   isFile: (word: string) => boolean,
+  tool?: string,
 ): boolean {
   if (kind.noSlotForFiles !== true) return false;
-  const skip = new Set(kind.skipWords ?? []);
-  const valued = new Set([...TEST_VALUED_FLAGS, ...(kind.valuedFlags ?? [])]);
-  const bare = new Set(TEST_BARE_FLAGS);
+  const table = tool === undefined ? undefined : TOOL_OPTIONS[tool];
+  const skip = new Set([...(kind.skipWords ?? []), ...(table?.skip ?? [])]);
+  const valued = new Set([...(table?.valued ?? TEST_VALUED_FLAGS), ...(kind.valuedFlags ?? [])]);
+  const bare = new Set(table?.bare ?? TEST_BARE_FLAGS);
   let index = 0;
   while (index < args.length && skip.has(args[index] ?? "")) index++;
   const operands: string[] = [];
@@ -273,7 +653,37 @@ export function namesOnlyFiles(
       index++; // `--project x`
     } else operands.push(arg);
   }
-  return operands.length > 0 && operands.length <= LIGHT_FILE_LIMIT && operands.every(isFile);
+  const names = table?.isOperand;
+  return (
+    operands.length > 0 &&
+    operands.length <= LIGHT_FILE_LIMIT &&
+    operands.every((word) => (names === undefined || names(word)) && isFile(word))
+  );
+}
+
+/**
+ * Does a run of `tool` with `args` watch for changes, so it never ends? Such a run must never
+ * wait in the queue: it would hold its slot for ever. A tool with no table is never a watch run.
+ * `--watch=false` is no watch; the tool's own watch commands (`vitest watch`, `vitest dev`) are
+ * read as the first word that is no option.
+ */
+export function isWatchRun(tool: string, args: readonly string[]): boolean {
+  const watch = TOOL_OPTIONS[tool]?.watch;
+  if (watch === undefined) return false;
+  const fold = (word: string) => (watch.ignoreCase === true ? word.toLowerCase() : word);
+  for (const arg of args) {
+    if (arg === "--") break;
+    const [flag = "", value] = arg.split("=", 2);
+    if (watch.flags.includes(fold(flag)) && value !== "false" && value !== "0") return true;
+  }
+  if (watch.commands === undefined) return false;
+  const valued = new Set(TOOL_OPTIONS[tool]?.valued);
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index] ?? "";
+    if (!arg.startsWith("-")) return watch.commands.includes(arg);
+    if (valued.has(arg)) index++;
+  }
+  return false;
 }
 
 /** The ignored size fields one kind still sets, in `IGNORED_KIND_FIELDS` order. */

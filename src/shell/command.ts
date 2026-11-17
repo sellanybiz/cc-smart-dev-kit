@@ -921,6 +921,9 @@ const WRAPPERS: Record<string, WrapperSpec> = {
     skip: (word) => /^-?\d+$/.test(word),
   },
   command: { inert: ["-v", "-V"], long: [], short: "" },
+  // `cross-env A=1 B=2 prog args`: its VAR=x words are stepped over like any assignment
+  // (`invocationOf` skips them after the wrapper), and it has no options of its own to read.
+  "cross-env": { long: [], short: "" },
   doas: { long: [], short: "uC" },
   env: {
     long: ["--unset", "--chdir", "--split-string"],

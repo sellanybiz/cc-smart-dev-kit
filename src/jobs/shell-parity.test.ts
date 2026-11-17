@@ -106,6 +106,29 @@ const ROWS: Row[] = [
   ['git commit -m "bunx tsc --noEmit"', null, null],
   ['x @"\nbunx tsc --noEmit\n"@', null, null],
   ["CI=1 timeout 60 npx tsc", "tsc", viaShell("tsc", "CI=1 timeout 60 npx tsc")],
+  // Bun's own test runner is a heavy test run (it was raw: `test` is one of Bun's own commands).
+  ["bun test", "test:run", queued("test:run", "bun test")],
+  ["bun --bun test", "test:run", queued("test:run", "bun --bun test")],
+  ["bun test src/a.test.ts", "test:run", queued("test:run", "bun test src/a.test.ts")],
+  ["bun test --coverage", "test:coverage", queued("test:coverage", "bun test --coverage")],
+  ["bun add zod", null, null],
+  // A light run is the route's own decision (`runWeight`, with the folder's files): the line
+  // is routable here, as the kind says.
+  ["bun test ./src/a.test.ts", "test:run", queued("test:run", "bun test ./src/a.test.ts")],
+  // A cross-env word is a wrapper: the program after its VAR=x words is what runs.
+  [
+    "cross-env NODE_ENV=test jest",
+    "test:run",
+    viaShell("test:run", "cross-env NODE_ENV=test jest"),
+  ],
+  [
+    "cross-env NODE_ENV=test CI=1 bunx tsc --noEmit",
+    "tsc",
+    viaShell("tsc", "cross-env NODE_ENV=test CI=1 bunx tsc --noEmit"),
+  ],
+  // was: heavy. Any one print-only option prints and stops (`isPrintOnly`).
+  ["bunx tsc --noEmit --version", null, null],
+  ["bunx tsc --version --noEmit", null, null],
   // was: kind null, not `job run`: the queue is read through `timeout`, and its command too.
   [`timeout 60 ${LAUNCHER} job run --kind tsc -- bunx tsc`, "tsc", null, true],
   // was: kind null: the command `job run` queues is read (HK hunch 6). Never routed again.

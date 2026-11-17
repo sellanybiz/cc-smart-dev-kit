@@ -406,6 +406,22 @@ describe("invocationOf", () => {
     }
   });
 
+  test("`cross-env` runs the program after its VAR=x words, like env does", () => {
+    expect(invocationOf(["cross-env", "NODE_ENV=test", "CI=1", "git", "push", "-f"])).toEqual({
+      args: ["push", "-f"],
+      computed: false,
+      prefix: ["cross-env", "NODE_ENV=test", "CI=1"],
+      program: "git",
+    });
+    expect(invocationOf(["./node_modules/.bin/cross-env", "A=1", "jest"])?.program).toBe("jest");
+    expect(invocationOf(["CI=1", "cross-env.cmd", "A=1", "sudo", "git", "push"])?.program).toBe(
+      "git",
+    );
+    // With no VAR=x word, the command after it still runs; with nothing after it, nothing runs.
+    expect(invocationOf(["cross-env", "git", "x"])?.program).toBe("git");
+    expect(invocationOf(["cross-env", "A=1"])).toBeUndefined();
+  });
+
   test("HK-9: `env -S` splits its string into the command's words", () => {
     expect(invocationOf(["env", "-S", "git push -f", "origin"])).toEqual({
       args: ["push", "-f", "origin"],
