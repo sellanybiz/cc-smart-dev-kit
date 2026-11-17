@@ -2,7 +2,7 @@
 
 /**
  * The Tasks tab (D76, `/tasks`): every project's work on this machine as Session › Plan › Phase
- * › Task, and, on its own tab, what each project still owes in its task files. Each level folds
+ * › Task, and, on its own tab, the deploy tasks each project still owes. Each level folds
  * (remembered in this browser), the filter bar narrows it, the list shows a page of rows at a
  * time, and a row opens the task in a side panel, where a plan or a task can move to another
  * session. The view lives in the address (`?project=…&status=blocked&session=…&q=…&task=<id>`),
@@ -72,10 +72,19 @@ function hasWork(one: TasksProjectData): boolean {
   return work.state === "unreadable" || (work.state === "ready" && work.tasks.length > 0);
 }
 
-/** True when a project has files to show: open ones, broken ones, or a folder it cannot read. */
+/**
+ * True when a project has deploy files to show: open tasks, or a file that needs a look (broken,
+ * an id claimed twice, the old layout), or a folder it cannot read.
+ */
 function hasFiles(one: TasksProjectData): boolean {
   const { files } = one.tasks;
-  return files.state === "unavailable" || files.tasks.length > 0 || files.broken > 0;
+  return (
+    files.state === "unavailable" ||
+    files.tasks.length > 0 ||
+    files.broken > 0 ||
+    files.duplicateIds.length > 0 ||
+    files.old > 0
+  );
 }
 
 /**
@@ -110,12 +119,9 @@ function TasksStats({ projects }: { projects: readonly TasksProjectData[] }) {
   const files = projects.reduce(
     (sum, one) => {
       const counts = fileCountsOf(one.tasks.files);
-      return {
-        open: sum.open + counts.open,
-        blocksRelease: sum.blocksRelease + counts.blocksRelease,
-      };
+      return { open: sum.open + counts.open, blocking: sum.blocking + counts.blocking };
     },
-    { open: 0, blocksRelease: 0 },
+    { open: 0, blocking: 0 },
   );
   return (
     <SectionCards>
@@ -148,12 +154,10 @@ function TasksStats({ projects }: { projects: readonly TasksProjectData[] }) {
         label={projects.length === 1 ? "Owed by the project" : "Owed by the projects"}
         value={files.open}
         badge={
-          files.blocksRelease > 0 ? (
-            <TonePill tone="bad">{files.blocksRelease} block the release</TonePill>
-          ) : undefined
+          files.blocking > 0 ? <TonePill tone="bad">{files.blocking} blocking</TonePill> : undefined
         }
-        headline="Open task files in the repositories"
-        detail="Production, database, teammates and follow-ups"
+        headline="Open deploy tasks in the repositories"
+        detail="Steps owed before or after a deploy to staging or prod"
       />
     </SectionCards>
   );
@@ -245,12 +249,15 @@ function NothingShown({ view, onView }: { view: TaskView; onView: (view: TaskVie
   if (view.tab === "files") {
     return view.q.trim() !== "" ? (
       <EmptyState title="Nothing matches the search">
-        <p>No open task file in any project holds “{view.q.trim()}” in its title or id.</p>
+        <p>No open deploy task in any project holds “{view.q.trim()}” in its title or id.</p>
       </EmptyState>
     ) : (
       <EmptyState title="Nothing owed in any project">
-        A project owes something once its repository has an open task file (
-        <code className="font-mono">{KIT_NAME} task add --kind production</code> and the like).
+        A project owes something once its repository has an open deploy task (
+        <code className="font-mono">
+          {KIT_NAME} task add --kind prod --deploy before --type blocking
+        </code>{" "}
+        and the like).
       </EmptyState>
     );
   }
