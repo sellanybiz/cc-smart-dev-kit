@@ -5,6 +5,7 @@
  * `judgeBefore` and `judgeAfter` are the same rules as pure functions over a scan and the facts,
  * so every refusal is tested with plain data.
  */
+import { twinIsMissing, twinMissingFix } from "./check";
 import { scanDeployTasks, type TaskScan } from "./files";
 import {
   DEPLOY_ENVS,
@@ -99,17 +100,26 @@ function startAgain(env: DeployEnv, facts: GitFacts, now: Date): string {
 }
 
 /**
- * The refusal when the run is on the base branch itself (D12): its closes would be committed and
- * pushed straight to the base, with no deploy branch and no pull request. Empty on any other
- * branch (and on a detached HEAD, which `judgeAfter` refuses on its own).
+ * The refusal when the run is not on a deploy branch (D12): on the base branch, on the branch the
+ * ref names (`origin/<x>` is `<x>`), or on a detached HEAD. Its closes would be pushed straight to
+ * a shared branch, or have no branch to be pushed from. One home for both gates, and the only
+ * refusal that prints `startAgain` when it holds: the others then leave it out.
  */
-function onBaseRefusal(env: DeployEnv, input: JudgeInput): string[] {
+function notOnDeployBranch(env: DeployEnv, input: JudgeInput): string[] {
   const { facts, baseBranch, now } = input;
-  return facts.push.branch === baseBranch
-    ? [
-        `HEAD is on ${baseBranch}, the branch deploys ship to: the closes must reach it through a deploy branch's pull request, never by a push to it. ${startAgain(env, facts, now)}`,
-      ]
-    : [];
+  const branch = facts.push.branch;
+  const fix = startAgain(env, facts, now);
+  if (branch === null)
+    return [`HEAD is detached: the closes need a branch to be committed and pushed from. ${fix}`];
+  if (branch === baseBranch)
+    return [
+      `HEAD is on ${baseBranch}, the branch deploys ship to: the closes must reach it through a deploy branch's pull request, never by a push to it. ${fix}`,
+    ];
+  if (branch === facts.ref.replace(/^origin\//, ""))
+    return [
+      `HEAD is on ${branch}, the branch this run ships from (${facts.ref}): the closes must reach it through a deploy branch's pull request, never by a push to it. ${fix}`,
+    ];
+  return [];
 }
 
 function brokenRefusals(scan: TaskScan): string[] {
@@ -133,7 +143,7 @@ function envRefusal(env: DeployEnv, envs: readonly DeployEnv[]): string[] {
 /**
  * The gate before a deploy. It refuses when:
  * - the environment is not in `tasks.envs`;
- * - the current branch is the base branch (a run happens on a deploy branch);
+ * - HEAD is detached, or on the base branch or the ref's own branch (a run happens on a deploy branch);
  * - HEAD is not the ref's commit, unless HEAD holds every commit of the ref and differs from it
  *   only in the tasks folder (closes already made on the deploy branch are fine). A ref that has
  *   commits HEAD lacks may hold tasks this checkout cannot see, even when those commits changed
@@ -151,17 +161,20 @@ export function gateBefore(env: DeployEnv, input: GateInput): GateResult {
 /** `gateBefore`'s rules over a scan that holds every task, open and closed. */
 export function judgeBefore(env: DeployEnv, input: JudgeInput): GateResult {
   const { scan, facts, envs, now } = input;
-  const refusals = [...envRefusal(env, envs), ...onBaseRefusal(env, input)];
+  const wrongBranch = notOnDeployBranch(env, input);
+  const refusals = [...envRefusal(env, envs), ...wrongBranch];
   const foreign = facts.changedPaths.filter((path) => !underTasks(path, facts.tasksPath));
+  // The fix is printed once: a refusal above already says how to start again.
+  const again = wrongBranch.length > 0 ? "" : ` ${startAgain(env, facts, now)}`;
   if (facts.headCommit !== facts.refCommit) {
     if (!facts.refIsAncestor)
       refusals.push(
         `HEAD ${facts.headCommit.slice(0, 12)} does not contain ${facts.ref} (${facts.refCommit.slice(0, 12)}): the ref has commits this branch has not taken in, and may hold tasks it cannot see. ` +
-          `Run \`git fetch origin\`, then rebase or merge the deploy branch onto ${facts.ref}. ${startAgain(env, facts, now)}`,
+          `Run \`git fetch origin\`, then rebase or merge the deploy branch onto ${facts.ref}.${again}`,
       );
     else if (foreign.length > 0)
       refusals.push(
-        `HEAD ${facts.headCommit.slice(0, 12)} is not ${facts.ref} (${facts.refCommit.slice(0, 12)}): it differs in ${foreign.length} path(s) outside ${facts.tasksPath || "the tasks folder"}. ${startAgain(env, facts, now)}`,
+        `HEAD ${facts.headCommit.slice(0, 12)} is not ${facts.ref} (${facts.refCommit.slice(0, 12)}): it differs in ${foreign.length} path(s) outside ${facts.tasksPath || "the tasks folder"}.${again}`,
       );
   }
   const mine = scan.tasks.filter((task) => task.env === env && open(task));
@@ -175,10 +188,10 @@ export function judgeBefore(env: DeployEnv, input: JudgeInput): GateResult {
     const known = new Set(scan.tasks.map((task) => task.id));
     for (const task of mine) {
       // A twin that names no task, live or archived, holds nothing: it must not pass for a
-      // finished one. `task check` names it (`twin-missing`).
-      if (task.twin !== undefined && !known.has(task.twin))
+      // finished one. `task check` names it too (`twin-missing`), with the same fix.
+      if (twinIsMissing(task, known))
         refusals.push(
-          `${describe(task)} names its staging twin ${task.twin}, but no task has that id: run \`task check\` to see it, then create the twin or remove the twin field`,
+          `${describe(task)} names its staging twin ${task.twin}, but no task has that id: ${twinMissingFix(task)}`,
         );
       const twin = task.twin === undefined ? undefined : staging.get(task.twin);
       if (twin && open(twin))
@@ -204,7 +217,8 @@ export function judgeBefore(env: DeployEnv, input: JudgeInput): GateResult {
 /**
  * The gate after a deploy. It refuses when:
  * - the environment is not in `tasks.envs`;
- * - the current branch is the base branch (never a push to it, so no push is ever printed for it);
+ * - HEAD is detached, or on the base branch or the ref's own branch (never a push to it, so no push
+ *   is ever printed for it);
  * - any task of the environment is open, before or after (nothing lingers);
  * - the tasks folder has uncommitted changes (a close not yet committed);
  * - the branch is not pushed: detached, never pushed to origin, or commits origin's copy lacks;
@@ -218,7 +232,7 @@ export function gateAfter(env: DeployEnv, input: GateInput): GateResult {
 /** `gateAfter`'s rules over a scan that holds every task, open and closed. */
 export function judgeAfter(env: DeployEnv, input: JudgeInput): GateResult {
   const { scan, facts, envs } = input;
-  const refusals = [...envRefusal(env, envs), ...onBaseRefusal(env, input)];
+  const refusals = [...envRefusal(env, envs), ...notOnDeployBranch(env, input)];
   for (const task of scan.tasks.filter((one) => one.env === env && open(one)))
     refusals.push(
       `Task is open: ${describe(task)} (${task.deploy} the deploy, ${task.type}): close it with evidence, or drop it with a reason`,
@@ -228,10 +242,9 @@ export function judgeAfter(env: DeployEnv, input: JudgeInput): GateResult {
       `${facts.uncommitted.length} uncommitted change(s) under ${facts.tasksPath || "the tasks folder"} (${facts.uncommitted.slice(0, 5).join(", ")}${facts.uncommitted.length > 5 ? ", ..." : ""}): commit the closes on the deploy branch`,
     );
   const { branch, remote, ahead } = facts.push;
-  if (branch === null)
-    refusals.push("HEAD is detached: the closes need a branch to be pushed from");
-  // On the base the refusal above already says what to do: a push line here would name the base.
-  else if (branch !== input.baseBranch) {
+  // A detached HEAD, the base and the ref's branch are refused above, each with the branch to
+  // cut: a push line here would name a shared branch.
+  if (branch !== null && notOnDeployBranch(env, input).length === 0) {
     if (remote === null)
       refusals.push(`Branch ${branch} is not pushed: run \`git push -u origin ${branch}\``);
     else if (ahead > 0)

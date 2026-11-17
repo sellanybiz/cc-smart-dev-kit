@@ -108,12 +108,12 @@ Before any deploy, production or database work, list the deploy tasks (`task_lis
 
 1. **Cut a deploy branch** from the commit that ships: `git fetch origin`, then
    `git switch --no-track -c deploy/<env>-<YYYYMMDD-HHMM> origin/<base>`, in the checkout you work
-   in (the deploy task commands act in the folder they run in). `--no-track` stops a plain `git
-   push` from targeting the base.
+   in. The `task` command writes and reads deploy tasks in the folder it runs in; the task tools
+   use the session's checkout. `--no-track` stops a plain `git push` from targeting the base.
 2. **`cc-smart-dev-kit task release <env> --before`.** Exit 1 while a blocking `before` task is
    open, a task file is broken or its id repeats, prod waits on an open staging twin (or names a
-   twin that is no task: `task check` shows it), the branch is the base itself, or HEAD is not
-   the ref (default `origin/<worktrees.base>`) apart from task files. It names the open
+   twin that is no task: `task check` shows it), the branch is the base itself (or detached, or
+   the ref's own branch), or HEAD is not the ref (default `origin/<worktrees.base>`) apart from task files. It names the open
    non-blocking `before` tasks: do them, or drop them with a reason. It also warns (`!`, no
    refusal) when files outside the tasks folder have uncommitted changes: the gate judged
    committed code only.
@@ -121,7 +121,8 @@ Before any deploy, production or database work, list the deploy tasks (`task_lis
 4. **Deploy**, with the project's own deploy skill.
 5. **`git push -u origin <branch>`**, then **`task release <env> --after`.** Exit 1 while any
    task of that environment is open (before or after), a close is uncommitted, the branch is not
-   pushed, or the branch is the base (a close is never pushed there). With no flag, `release`
+   pushed, or the branch is the base, detached or the ref's own branch (a close is never pushed
+   there). With no flag, `release`
    lists the open tasks and exits 0.
 6. **The branch's pull request** (the task files only) merges as the workflow says
    (`/cc-smart-dev-kit:commit`, `/cc-smart-dev-kit:pull-request`).

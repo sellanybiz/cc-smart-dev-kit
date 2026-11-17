@@ -362,8 +362,13 @@ origin string; `evidence` is set when the task closes.
 
 ### The life of a deploy task
 
-- **Create** writes in the session's checkout, a builder's worktree included, so the task ships
-  in that branch's commit and pull request; the tool's answer names the checkout it wrote in.
+- **Create** writes in the checkout the call resolves to, so the task ships in that branch's
+  commit and pull request, and the answer names the checkout it wrote in. The `task` command
+  resolves it from the folder it runs in (a builder's worktree included, and an explicit folder
+  wins over a session record's); the task tools resolve it from the session record's folder, so a
+  builder subagent's tool calls reach the session's checkout, and a builder that must write in its
+  own worktree runs the command there. When a read shows deploy tasks from a checkout other than
+  the session's (the command run in a second folder), it says "Deploy tasks in <folder>:".
   `kind` is `work | prod | staging` and defaults to `work`. `deploy`, `pair`, `flags`, `refs` and
   `from` on a work task are refused, so a forgotten `kind` never silently makes a
   machine-local task. `deploy` and `type` are required on a deploy task.
@@ -410,13 +415,14 @@ git), 2 a wrong command.
    A refusal for the wrong HEAD prints this command. The `task` command acts in the folder it
    runs in, and every deploy-task answer names the checkout and file it wrote, so a close lands
    where the gates read it.
-2. `--before` exits 1 when the environment is not in `tasks.envs`; the current branch is the
-   base branch (`worktrees.base`: a run happens on a deploy branch, D12); HEAD is not the ref's commit
+2. `--before` exits 1 when the environment is not in `tasks.envs`; HEAD is detached, or on the
+   base branch (`worktrees.base`) or the ref's own branch (`origin/<x>` is `<x>`): a run happens on
+   a deploy branch, D12, and that refusal alone prints the branch to cut; HEAD is not the ref's commit
    (it may differ from it only under `tasks.dir`, closes already made, and it must hold every
    commit of the ref); a blocking `before` task is open; a task file is broken or its id is
    claimed by two file names; or, for prod, a task's staging twin is open, or names no task
    (live or archived: a deleted twin must not pass as a finished one; `task check` names it,
-   `twin-missing`). It names the open non-blocking `before` tasks as notes: do them now, or drop
+   `twin-missing`, with the same fix line). It names the open non-blocking `before` tasks as notes: do them now, or drop
    them with a reason. It adds a `!` warning line, never a refusal, when the working tree has
    uncommitted changes outside `tasks.dir` (`GitFacts.uncommittedOutside`): the gate judged
    committed code only, and a local-folder deploy could still ship those edits.
@@ -424,8 +430,9 @@ git), 2 a wrong command.
 4. The deploy itself is the project's own deploy skill.
 5. `--after` exits 1 when **any** task of that environment is open, before or after; `tasks.dir`
    has uncommitted changes; the branch is not pushed (`git push -u origin <branch>`, or it is
-   ahead of its remote copy); HEAD is detached; the current branch is the base branch (no line
-   ever prints a push to it); or a task file is broken.
+   ahead of its remote copy); HEAD is detached, or on the base branch or the ref's own branch (no
+   line ever prints a push to it); or a task file is broken. Only `--before` reads the uncommitted
+   changes outside `tasks.dir`; `--after` reads the tasks folder alone.
 6. The branch's pull request (the task files only) merges as the workflow says.
 
 With no flag, `release [<env>]` lists the open tasks by environment, step and type, blocking

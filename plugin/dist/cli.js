@@ -30963,6 +30963,12 @@ var init_words2 = __esm(() => {
 // src/tasks/deploy/check.ts
 import { existsSync as existsSync38, realpathSync as realpathSync7 } from "fs";
 import { basename as basename12, isAbsolute as isAbsolute3, relative as relative5, resolve as resolve12, sep as sep4 } from "path";
+function twinIsMissing(task, known) {
+  return task.twin !== undefined && !known.has(task.twin);
+}
+function twinMissingFix(task) {
+  return `remove the \`twin\` line from ${task.file}, or make a new pair with \`${TASK_COMMAND} add "<title>" --kind staging --pair --deploy <${DEPLOY_STEPS.join("|")}> --type <${DEPLOY_TYPES.join("|")}>\``;
+}
 function inside(root, target) {
   const rel = relative5(root, target);
   return rel !== ".." && !rel.startsWith(`..${sep4}`) && !isAbsolute3(rel);
@@ -30994,11 +31000,11 @@ function checkDeployTasks(options) {
       });
     if ((now.getTime() - Date.parse(task.created)) / DAY_MS > (settings.staleDays ?? DEFAULT_STALE_DAYS))
       findings.push({ ...common, kind: "stale", text: `Open since ${task.created}` });
-    if (task.twin !== undefined && !known.has(task.twin))
+    if (twinIsMissing(task, known))
       findings.push({
         ...common,
         kind: "twin-missing",
-        text: `Its twin ${task.twin} is not a task: create it, or remove the twin field`
+        text: `Its twin ${task.twin} is not a task: ${twinMissingFix(task)}`
       });
     for (const ref of task.refs ?? []) {
       const target = resolve12(checkoutRoot, ref);
@@ -31037,6 +31043,7 @@ var init_check2 = __esm(() => {
   init_config2();
   init_words2();
   init_files();
+  init_format();
 });
 
 // src/tasks/context.ts
@@ -31117,11 +31124,21 @@ function startAgain(env, facts, now) {
   const branch = deployBranchName(env, now);
   return `Start the run on a deploy branch cut from the commit that ships: \`git fetch origin\`, then \`git switch --no-track -c ${branch} ${facts.ref}\` in this checkout`;
 }
-function onBaseRefusal(env, input) {
+function notOnDeployBranch(env, input) {
   const { facts, baseBranch, now } = input;
-  return facts.push.branch === baseBranch ? [
-    `HEAD is on ${baseBranch}, the branch deploys ship to: the closes must reach it through a deploy branch's pull request, never by a push to it. ${startAgain(env, facts, now)}`
-  ] : [];
+  const branch = facts.push.branch;
+  const fix = startAgain(env, facts, now);
+  if (branch === null)
+    return [`HEAD is detached: the closes need a branch to be committed and pushed from. ${fix}`];
+  if (branch === baseBranch)
+    return [
+      `HEAD is on ${baseBranch}, the branch deploys ship to: the closes must reach it through a deploy branch's pull request, never by a push to it. ${fix}`
+    ];
+  if (branch === facts.ref.replace(/^origin\//, ""))
+    return [
+      `HEAD is on ${branch}, the branch this run ships from (${facts.ref}): the closes must reach it through a deploy branch's pull request, never by a push to it. ${fix}`
+    ];
+  return [];
 }
 function brokenRefusals(scan) {
   return [
@@ -31138,13 +31155,15 @@ function gateBefore(env, input) {
 }
 function judgeBefore(env, input) {
   const { scan, facts, envs, now } = input;
-  const refusals = [...envRefusal(env, envs), ...onBaseRefusal(env, input)];
+  const wrongBranch = notOnDeployBranch(env, input);
+  const refusals = [...envRefusal(env, envs), ...wrongBranch];
   const foreign = facts.changedPaths.filter((path) => !underTasks(path, facts.tasksPath));
+  const again = wrongBranch.length > 0 ? "" : ` ${startAgain(env, facts, now)}`;
   if (facts.headCommit !== facts.refCommit) {
     if (!facts.refIsAncestor)
-      refusals.push(`HEAD ${facts.headCommit.slice(0, 12)} does not contain ${facts.ref} (${facts.refCommit.slice(0, 12)}): the ref has commits this branch has not taken in, and may hold tasks it cannot see. ` + `Run \`git fetch origin\`, then rebase or merge the deploy branch onto ${facts.ref}. ${startAgain(env, facts, now)}`);
+      refusals.push(`HEAD ${facts.headCommit.slice(0, 12)} does not contain ${facts.ref} (${facts.refCommit.slice(0, 12)}): the ref has commits this branch has not taken in, and may hold tasks it cannot see. ` + `Run \`git fetch origin\`, then rebase or merge the deploy branch onto ${facts.ref}.${again}`);
     else if (foreign.length > 0)
-      refusals.push(`HEAD ${facts.headCommit.slice(0, 12)} is not ${facts.ref} (${facts.refCommit.slice(0, 12)}): it differs in ${foreign.length} path(s) outside ${facts.tasksPath || "the tasks folder"}. ${startAgain(env, facts, now)}`);
+      refusals.push(`HEAD ${facts.headCommit.slice(0, 12)} is not ${facts.ref} (${facts.refCommit.slice(0, 12)}): it differs in ${foreign.length} path(s) outside ${facts.tasksPath || "the tasks folder"}.${again}`);
   }
   const mine = scan.tasks.filter((task) => task.env === env && open2(task));
   for (const task of mine.filter((one) => one.deploy === "before" && one.type === "blocking"))
@@ -31154,8 +31173,8 @@ function judgeBefore(env, input) {
     const staging = new Map(scan.tasks.filter((task) => task.env === "staging").map((task) => [task.id, task]));
     const known = new Set(scan.tasks.map((task) => task.id));
     for (const task of mine) {
-      if (task.twin !== undefined && !known.has(task.twin))
-        refusals.push(`${describe3(task)} names its staging twin ${task.twin}, but no task has that id: run \`task check\` to see it, then create the twin or remove the twin field`);
+      if (twinIsMissing(task, known))
+        refusals.push(`${describe3(task)} names its staging twin ${task.twin}, but no task has that id: ${twinMissingFix(task)}`);
       const twin = task.twin === undefined ? undefined : staging.get(task.twin);
       if (twin && open2(twin))
         refusals.push(`${describe3(task)} waits for its staging twin ${twin.id}, which is still open: finish staging first, ${UNMERGED_CLOSE_HINT}`);
@@ -31173,15 +31192,13 @@ function gateAfter(env, input) {
 }
 function judgeAfter(env, input) {
   const { scan, facts, envs } = input;
-  const refusals = [...envRefusal(env, envs), ...onBaseRefusal(env, input)];
+  const refusals = [...envRefusal(env, envs), ...notOnDeployBranch(env, input)];
   for (const task of scan.tasks.filter((one) => one.env === env && open2(one)))
     refusals.push(`Task is open: ${describe3(task)} (${task.deploy} the deploy, ${task.type}): close it with evidence, or drop it with a reason`);
   if (facts.uncommitted.length > 0)
     refusals.push(`${facts.uncommitted.length} uncommitted change(s) under ${facts.tasksPath || "the tasks folder"} (${facts.uncommitted.slice(0, 5).join(", ")}${facts.uncommitted.length > 5 ? ", ..." : ""}): commit the closes on the deploy branch`);
   const { branch, remote, ahead } = facts.push;
-  if (branch === null)
-    refusals.push("HEAD is detached: the closes need a branch to be pushed from");
-  else if (branch !== input.baseBranch) {
+  if (branch !== null && notOnDeployBranch(env, input).length === 0) {
     if (remote === null)
       refusals.push(`Branch ${branch} is not pushed: run \`git push -u origin ${branch}\``);
     else if (ahead > 0)
@@ -31203,6 +31220,7 @@ function releaseList(tasks, env) {
 }
 var open2 = (task) => task.status === "open", describe3 = (task) => `${task.id} "${task.title}"`, UNMERGED_CLOSE_HINT = "or its close waits on an unmerged branch: `task list --branches`";
 var init_release = __esm(() => {
+  init_check2();
   init_files();
   init_format();
 });
@@ -31348,16 +31366,17 @@ function isAncestor2(repo, ancestor, commit, env) {
     return false;
   throw new Error(`git merge-base failed: ${result.err}`);
 }
-function readGitFacts(repo, dir, ref, env = process.env) {
+function readGitFacts(repo, dir, ref, env = process.env, options = {}) {
   const tasksPath = taskRepoPath(repo, dir);
   const refSha = refCommit(repo, ref, env);
   const headCommit = taskGit(repo, ["rev-parse", "--verify", "HEAD"], env);
   const pathsOf = (args) => taskGit(repo, args, env).split("\x00").filter(Boolean);
   const changedPaths = refSha === headCommit ? [] : pathsOf(["diff", "--name-only", "--no-renames", "-z", refSha, headCommit]);
+  const scope = options.outside || !tasksPath ? [] : ["--", tasksPath];
   const dirty = [
     ...new Set([
-      ...pathsOf(["diff", "--name-only", "--no-renames", "-z", "HEAD"]),
-      ...pathsOf(["ls-files", "--others", "--exclude-standard", "-z"])
+      ...pathsOf(["diff", "--name-only", "--no-renames", "-z", "HEAD", ...scope]),
+      ...pathsOf(["ls-files", "--others", "--exclude-standard", "-z", ...scope])
     ])
   ].sort();
   const uncommitted = dirty.filter((path) => underTasks(path, tasksPath));
@@ -32516,6 +32535,9 @@ function personOnly(id, action, command) {
 function deployWrote(root, file) {
   return `${relative7(root, file)} \xB7 written in ${root}: commit the file with your branch`;
 }
+function deployTasksIn(root) {
+  return `Deploy tasks in ${root}:`;
+}
 function value(result) {
   if (!result.ok)
     throw new Error(result.why);
@@ -32639,6 +32661,10 @@ function createTaskOps(options = {}) {
         if (here.checkoutRoot === null)
           throw new Error("Deploy tasks need a git checkout");
         return here.checkoutRoot;
+      };
+      const otherDeployRoot = () => {
+        const here = deployContext();
+        return here.ok && here.checkoutRoot !== null && here.checkoutRoot !== ctx.checkoutRoot ? here.checkoutRoot : null;
       };
       const wroteIn = (task) => deployWrote(deployRoot(), task.file);
       const projectTasks = (archive) => scanDeployTasks(projectDir(), { archive }).tasks;
@@ -32909,11 +32935,14 @@ function createTaskOps(options = {}) {
         const input = taskSchemas.get.parse(raw);
         const text = isDeployTaskId(input.task) ? (() => {
           const file = project(input.task).file;
-          const body = readFileSync43(file, "utf8");
+          const text = readFileSync43(file, "utf8");
           const here = deployContext();
           const root = here.ok ? here.checkoutRoot : null;
           if (root === null)
-            return body;
+            return text;
+          const elsewhere = otherDeployRoot();
+          const body = elsewhere === null ? text : `${deployTasksIn(elsewhere)}
+${text}`;
           const head = runGit(root, ["rev-parse", "--verify", "--quiet", "HEAD"], env);
           if (!head.ok && head.code === 1)
             return `${body.trimEnd()}
@@ -33044,6 +33073,9 @@ ${t.body}`.toLowerCase().includes(input.text.toLowerCase()));
       };
       for (const task of selected.filter((t) => !t.parentId || !selectedIds.has(t.parentId)))
         visit(task, 0);
+      const elsewhere = projects.length > 0 ? otherDeployRoot() : null;
+      if (elsewhere !== null)
+        lines.push(deployTasksIn(elsewhere));
       lines.push(...projects.map(projectLine));
       if (capWhy !== null)
         lines.push(capWhy);
@@ -33422,7 +33454,7 @@ async function runTaskCommand(argv) {
         } catch (error) {
           throw new Error(`Cannot read ${ref} (${error instanceof Error ? error.message : String(error)}): run \`git fetch origin\`, or name the commit that ships with --ref <ref>`);
         }
-        const facts = readGitFacts(root, dir, ref);
+        const facts = readGitFacts(root, dir, ref, process.env, { outside: step === "before" });
         const gate = (step === "before" ? gateBefore : gateAfter)(env, {
           dir,
           facts,

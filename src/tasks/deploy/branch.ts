@@ -194,13 +194,15 @@ function isAncestor(repo: string, ancestor: string, commit: string, env: Env): b
 /**
  * The git facts the release gate judges by, read from `repo` (the checkout the run is in). A ref
  * git does not know throws: the caller turns it into exit 1. `env` is the git environment, so a
- * test can run with a clean one.
+ * test can run with a clean one. `options.outside` also reads the uncommitted changes outside the
+ * tasks folder (`uncommittedOutside`); without it that list is empty and git reads only the folder.
  */
 export function readGitFacts(
   repo: string,
   dir: string,
   ref: string,
   env: Env = process.env,
+  options: { outside?: boolean } = {},
 ): GitFacts {
   const tasksPath = taskRepoPath(repo, dir);
   const refSha = refCommit(repo, ref, env);
@@ -211,11 +213,12 @@ export function readGitFacts(
       ? []
       : pathsOf(["diff", "--name-only", "--no-renames", "-z", refSha, headCommit]);
   // Staged, unstaged and untracked changes: under the tasks folder, a close not yet committed;
-  // anywhere else, code the gate did not judge.
+  // anywhere else (read only when `outside`: the before gate), code the gate did not judge.
+  const scope = options.outside || !tasksPath ? [] : ["--", tasksPath];
   const dirty = [
     ...new Set([
-      ...pathsOf(["diff", "--name-only", "--no-renames", "-z", "HEAD"]),
-      ...pathsOf(["ls-files", "--others", "--exclude-standard", "-z"]),
+      ...pathsOf(["diff", "--name-only", "--no-renames", "-z", "HEAD", ...scope]),
+      ...pathsOf(["ls-files", "--others", "--exclude-standard", "-z", ...scope]),
     ]),
   ].sort();
   const uncommitted = dirty.filter((path) => underTasks(path, tasksPath));

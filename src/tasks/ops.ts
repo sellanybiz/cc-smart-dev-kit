@@ -137,6 +137,14 @@ function deployWrote(root: string, file: string): string {
   return `${relative(root, file)} · written in ${root}: commit the file with your branch`;
 }
 
+/**
+ * The line a read answer puts before the deploy tasks it shows from another checkout than the
+ * session's (the CLI run in a second folder): which checkout's files they are.
+ */
+function deployTasksIn(root: string): string {
+  return `Deploy tasks in ${root}:`;
+}
+
 const DELETE_TRACKED =
   "Tracked deploy task: it is part of a commit, so close it with task_done instead";
 
@@ -323,6 +331,16 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
         if (!here.ok) throw new Error(here.why);
         if (here.checkoutRoot === null) throw new Error("Deploy tasks need a git checkout");
         return here.checkoutRoot;
+      };
+      /**
+       * The checkout the deploy tasks are read from when it is not the session's own checkout
+       * (an explicit `cwd`, the CLI in another folder), else null: a read then names it.
+       */
+      const otherDeployRoot = () => {
+        const here = deployContext();
+        return here.ok && here.checkoutRoot !== null && here.checkoutRoot !== ctx.checkoutRoot
+          ? here.checkoutRoot
+          : null;
       };
       /** A write's answer part: the file and the checkout it is in, as create says it. */
       const wroteIn = (task: DeployTask) => deployWrote(deployRoot(), task.file);
@@ -724,10 +742,12 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
               // across its move into `archive/`. `--follow` loses the move with `--reverse`
               // (seen on git 2.53), so the lines are put oldest first here.
               const file = project(input.task).file;
-              const body = readFileSync(file, "utf8");
+              const text = readFileSync(file, "utf8");
               const here = deployContext();
               const root = here.ok ? here.checkoutRoot : null;
-              if (root === null) return body;
+              if (root === null) return text;
+              const elsewhere = otherDeployRoot();
+              const body = elsewhere === null ? text : `${deployTasksIn(elsewhere)}\n${text}`;
               // A branch with no commit yet has no log at all: git's own answer, not its message.
               const head = runGit(root, ["rev-parse", "--verify", "--quiet", "HEAD"], env);
               if (!head.ok && head.code === 1)
@@ -923,6 +943,8 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
       };
       for (const task of selected.filter((t) => !t.parentId || !selectedIds.has(t.parentId)))
         visit(task, 0);
+      const elsewhere = projects.length > 0 ? otherDeployRoot() : null;
+      if (elsewhere !== null) lines.push(deployTasksIn(elsewhere));
       lines.push(...projects.map(projectLine));
       if (capWhy !== null) lines.push(capWhy);
       return { ok: true, text: capped(lines), data: { work: selected, project: projects } };

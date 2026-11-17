@@ -12,13 +12,14 @@ function twoCheckouts() {
   const shell = realpathSync(tempDir());
   git(session, "init", "-b", "main");
   git(shell, "init", "-b", "main");
+  const stateDir = tempDir();
   const ops = createTaskOps({
-    stateDir: tempDir(),
+    stateDir,
     cwd: () => shell,
     caller: () => ({ sessionId: "s", pid: null, procStart: null, cwd: session }),
     env: hookEnv(),
   });
-  return { session, shell, ops };
+  return { session, shell, stateDir, ops };
 }
 
 test("a deploy task acts in the folder the command runs in, not the session record's", () => {
@@ -43,6 +44,52 @@ test("a deploy task acts in the folder the command runs in, not the session reco
     expect(closed.text).toBe(
       `${id} "Gate" · done · ${join(".claude", "tasks", "staging", "archive", `${id}-gate.md`)} · written in ${shell}: commit the file with your branch`,
     );
+  } finally {
+    ops.close();
+  }
+});
+
+test("a work task keeps the session's project; list, search and get name the shell's checkout", () => {
+  const { session, shell, stateDir, ops } = twoCheckouts();
+  try {
+    expect(ops.call("create", { subject: "Plain" })).toEqual({ ok: true, text: '#1 "Plain"' });
+    const made = ops.call("create", {
+      subject: "Gate",
+      kind: "staging",
+      deploy: "after",
+      type: "blocking",
+    });
+    if (!made.ok) throw new Error(made.why);
+    const id = made.text.split(" ")[0] ?? "";
+    // The work task is the session's project's: a second ops on the session folder alone sees it.
+    const sessionOnly = createTaskOps({
+      stateDir,
+      cwd: () => session,
+      caller: () => ({ sessionId: "s", pid: null, procStart: null, cwd: session }),
+      env: hookEnv(),
+    });
+    try {
+      expect(sessionOnly.call("list", { scope: "all" })).toEqual({
+        ok: true,
+        text: "#1 [pending] Plain",
+        data: expect.anything(),
+      });
+    } finally {
+      sessionOnly.close();
+    }
+    const label = `Deploy tasks in ${shell}:`;
+    const line = `${id} [after · blocking] Gate`;
+    expect(ops.call("list", { scope: "all" })).toMatchObject({
+      ok: true,
+      text: `#1 [pending] Plain\n${label}\n${line}`,
+    });
+    expect(ops.call("search", { text: "Gate" })).toMatchObject({
+      ok: true,
+      text: `${label}\n${line}`,
+    });
+    const got = ops.call("get", { task: id });
+    if (!got.ok) throw new Error(got.why);
+    expect(got.text.startsWith(`${label}\n---\n`)).toBe(true);
   } finally {
     ops.close();
   }

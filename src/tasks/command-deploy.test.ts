@@ -262,7 +262,7 @@ test("release --before refuses a prod task whose twin names no task", async () =
   const refused = await run(["release", "prod", "--before"]);
   expect(refused.code).toBe(1);
   expect(refused.text).toContain(
-    `${prodId} "Migrate" names its staging twin ${stagingId}, but no task has that id: run \`task check\` to see it`,
+    `${prodId} "Migrate" names its staging twin ${stagingId}, but no task has that id: remove the \`twin\` line from ${cwd}/.claude/tasks/prod/${prodId}-migrate.md, or make a new pair with \`cc-smart-dev-kit task add "<title>" --kind staging --pair --deploy <before|after> --type <blocking|non-blocking>\``,
   );
   const checked = await run(["check"]);
   expect(checked.text).toContain(`twin-missing: Its twin ${stagingId} is not a task`);
