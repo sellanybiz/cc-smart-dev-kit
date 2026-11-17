@@ -262,10 +262,13 @@ test("release --before refuses a prod task whose twin names no task", async () =
   const refused = await run(["release", "prod", "--before"]);
   expect(refused.code).toBe(1);
   expect(refused.text).toContain(
-    `${prodId} "Migrate" names its staging twin ${stagingId}, but no task has that id: remove the \`twin\` line from ${cwd}/.claude/tasks/prod/${prodId}-migrate.md, or make a new pair with \`cc-smart-dev-kit task add "<title>" --kind staging --pair --deploy <before|after> --type <blocking|non-blocking>\``,
+    `${prodId} "Migrate" names its staging twin ${stagingId}, but no task has that id: remove the \`twin\` line from ${cwd}/.claude/tasks/prod/${prodId}-migrate.md, or drop ${prodId} (only the person drops a blocking one) and make a new pair with \`cc-smart-dev-kit task add "<title>" --kind staging --pair --deploy <before|after> --type <blocking|non-blocking>\``,
   );
   const checked = await run(["check"]);
-  expect(checked.text).toContain(`twin-missing: Its twin ${stagingId} is not a task`);
+  // `task check` ends each finding with its file, so the fix says "this file" instead.
+  expect(checked.text).toContain(
+    `twin-missing: Its twin ${stagingId} is not a task: remove the \`twin\` line from this file, or drop ${prodId} (only the person drops a blocking one) and make a new pair with \`cc-smart-dev-kit task add "<title>" --kind staging --pair --deploy <before|after> --type <blocking|non-blocking>\` · ${cwd}/.claude/tasks/prod/${prodId}-migrate.md`,
+  );
 });
 
 test("release --after refuses an open task, an uncommitted close and an unpushed branch", async () => {

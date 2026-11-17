@@ -192,6 +192,26 @@ function isAncestor(repo: string, ancestor: string, commit: string, env: Env): b
 }
 
 /**
+ * The branch `ref` names, read by git (`rev-parse --symbolic-full-name`): `refs/remotes/<remote>/<x>`
+ * and `refs/heads/<x>` give `<x>`; a commit, a tag, or HEAD (which is the current branch, not a
+ * ship branch) give null. No `--end-of-options` here: with `--symbolic-full-name`, git prints that
+ * word back as a line of output. A ref name never starts with `-` (git check-ref-format), so such
+ * text is refused before git sees it, and nothing can read it as an option.
+ */
+function refBranchOf(repo: string, ref: string, env: Env): string | null {
+  if (ref === "HEAD" || ref === "@" || ref.startsWith("-")) return null;
+  const named = runGit(
+    repo,
+    ["rev-parse", "--symbolic-full-name", ref],
+    env,
+    RESOLVE_GIT_TIMEOUT_MS,
+  );
+  if (!named.ok) return null;
+  const match = /^refs\/(?:remotes\/[^/]+|heads)\/(.+)$/.exec(named.out);
+  return match?.[1] ?? null;
+}
+
+/**
  * The git facts the release gate judges by, read from `repo` (the checkout the run is in). A ref
  * git does not know throws: the caller turns it into exit 1. `env` is the git environment, so a
  * test can run with a clean one. `options.outside` also reads the uncommitted changes outside the
@@ -237,6 +257,7 @@ export function readGitFacts(
       : 0;
   return {
     ref,
+    refBranch: refBranchOf(repo, ref, env),
     refCommit: refSha,
     headCommit,
     refIsAncestor: isAncestor(repo, refSha, headCommit, env),

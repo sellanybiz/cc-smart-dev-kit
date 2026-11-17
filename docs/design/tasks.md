@@ -412,7 +412,8 @@ git), 2 a wrong command.
 
 1. Cut the branch: `git switch --no-track -c deploy/<env>-<YYYYMMDD-HHMM> origin/<base>`, in
    the session's own checkout. `--no-track` keeps a plain `git push` from targeting the base.
-   A refusal for the wrong HEAD prints this command. The `task` command acts in the folder it
+   The refusal for a wrong branch prints this command; on a deploy branch, the refusal for a HEAD
+   that is not the ref prints it instead, so an answer holds it once. The `task` command acts in the folder it
    runs in, and every deploy-task answer names the checkout and file it wrote, so a close lands
    where the gates read it.
 2. `--before` exits 1 when the environment is not in `tasks.envs`; HEAD is detached, or on the
