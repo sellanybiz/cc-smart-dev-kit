@@ -39,6 +39,7 @@
  */
 import { closeSync, existsSync, fstatSync, openSync, readSync, statSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
+import type { Project } from "../project/resolve";
 import { startAutoClean, takeToldLine } from "../worktrees/auto-start";
 import { autoCleanFiles, readRepoRecord } from "../worktrees/auto-state";
 import { isAttended } from "./attended";
@@ -302,6 +303,20 @@ export function mainFolderNotes(
   return notes;
 }
 
+/**
+ * The one line for a session that starts in a guarded main checkout (`worktrees.guardMainFolder`):
+ * its first change belongs in a worktree. It is about the session's own place, so it shows
+ * whatever branch the checkout is on. `project.isWorktree` is the frame's own answer for the
+ * session's cwd (true in a linked worktree, even one nested inside the main folder), and a
+ * bare repo (`mainCheckout` null) has no main checkout.
+ * Attended sessions only, like the notes above: `claude -p` has nobody to tell.
+ */
+export function mainCheckoutNudge(project: Project, env: Env): string | null {
+  if (project.config?.worktrees?.guardMainFolder !== true) return null;
+  if (project.isWorktree || project.mainCheckout === null || !isAttended(env)) return null;
+  return "This session is in the main checkout. Make the first change in a worktree: `EnterWorktree` with the task's name as its `name` (dashes, not `/`), or `claude -w <name>` from a terminal.";
+}
+
 export function worktreeLeftovers(context: HookContext): HookResult {
   const { project, env, paths, event } = context;
   const base = project.config?.worktrees?.base;
@@ -314,7 +329,11 @@ export function worktreeLeftovers(context: HookContext): HookResult {
   // The main checkout's own notes, before the finished-worktree ones: they are about the
   // folder the person starts in. Read without a fetch, and only when someone is there.
   const guarded = project.config?.worktrees?.guardMainFolder === true;
-  const mainNotes = main === undefined ? [] : mainFolderNotes(repo, main, base, env, guarded);
+  const nudge = mainCheckoutNudge(project, env);
+  const mainNotes = [
+    ...(main === undefined ? [] : mainFolderNotes(repo, main, base, env, guarded)),
+    ...(nudge === null ? [] : [nudge]),
+  ];
   const answer = (note: string | null): HookResult => {
     const lines = [...mainNotes, ...(note === null ? [] : [note])];
     if (lines.length === 0) return told === null ? SILENT : systemMessage(told);
