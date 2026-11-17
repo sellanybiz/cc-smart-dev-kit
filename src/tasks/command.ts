@@ -393,7 +393,7 @@ export async function runTaskCommand(argv: string[]): Promise<number> {
             `Cannot read ${ref} (${error instanceof Error ? error.message : String(error)}): run \`git fetch origin\`, or name the commit that ships with --ref <ref>`,
           );
         }
-        const facts = readGitFacts(root, dir, ref);
+        const facts = readGitFacts(root, dir, ref, process.env, { outside: step === "before" });
         const gate = (step === "before" ? gateBefore : gateAfter)(env, {
           dir,
           facts,

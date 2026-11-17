@@ -3,6 +3,7 @@ import { basename, isAbsolute, relative, resolve, sep } from "node:path";
 import { DEPLOY_TASKS_SINCE } from "../../project/config";
 import { TASK_COMMAND } from "../words";
 import { type DeployTaskSettings, isArchived, oldTaskFiles, scanDeployTasks } from "./files";
+import { DEPLOY_STEPS, DEPLOY_TYPES, type DeployTask } from "./format";
 
 export const DEFAULT_STALE_DAYS = 30;
 /** One day, the unit of `tasks.staleDays` and every task age. */
@@ -22,6 +23,14 @@ export interface DeployTaskFinding {
   id?: string;
   file: string;
   text: string;
+}
+/** True when `task` names a twin that no task, live or archived, has as its id. */
+export function twinIsMissing(task: DeployTask, known: ReadonlySet<string>): boolean {
+  return task.twin !== undefined && !known.has(task.twin);
+}
+/** The way out of a missing twin: `task check` and the prod gate print this one sentence. */
+export function twinMissingFix(task: DeployTask): string {
+  return `remove the \`twin\` line from ${task.file}, or make a new pair with \`${TASK_COMMAND} add "<title>" --kind staging --pair --deploy <${DEPLOY_STEPS.join("|")}> --type <${DEPLOY_TYPES.join("|")}>\``;
 }
 function inside(root: string, target: string): boolean {
   const rel = relative(root, target);
@@ -62,11 +71,11 @@ export function checkDeployTasks(options: {
       (settings.staleDays ?? DEFAULT_STALE_DAYS)
     )
       findings.push({ ...common, kind: "stale", text: `Open since ${task.created}` });
-    if (task.twin !== undefined && !known.has(task.twin))
+    if (twinIsMissing(task, known))
       findings.push({
         ...common,
         kind: "twin-missing",
-        text: `Its twin ${task.twin} is not a task: create it, or remove the twin field`,
+        text: `Its twin ${task.twin} is not a task: ${twinMissingFix(task)}`,
       });
     for (const ref of task.refs ?? []) {
       const target = resolve(checkoutRoot, ref);

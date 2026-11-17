@@ -761,7 +761,7 @@ test("gate before: prod refuses while the staging twin is open; staging does not
   // refused with the way out: it must not pass for a finished one.
   expect(before("prod", [{ ...staging, status: "done" }, prod]).ok).toBe(true);
   expect(before("prod", [{ ...prod, twin: "staging-20990101-000000" }]).refusals).toEqual([
-    'prod-20261117-100000 "Prod half" names its staging twin staging-20990101-000000, but no task has that id: run `task check` to see it, then create the twin or remove the twin field',
+    'prod-20261117-100000 "Prod half" names its staging twin staging-20990101-000000, but no task has that id: remove the `twin` line from /t/prod-20261117-100000.md, or make a new pair with `cc-smart-dev-kit task add "<title>" --kind staging --pair --deploy <before|after> --type <blocking|non-blocking>`',
   ]);
   // Staging never waits on a twin.
   expect(before("staging", [{ ...staging, twin: "prod-20990101-000000" }]).ok).toBe(true);
@@ -834,7 +834,7 @@ test("gate after: uncommitted closes, an unpushed branch and a broken file refus
   ).toEqual(["Branch b is 2 commit(s) ahead of origin/b: run `git push origin b`"]);
   expect(
     after("prod", [], { ...cleanFacts, push: { branch: null, remote: null, ahead: 0 } }).refusals,
-  ).toEqual(["HEAD is detached: the closes need a branch to be pushed from"]);
+  ).toEqual([`HEAD is detached: the closes need a branch to be committed and pushed from. ${CUT}`]);
   const broken = after("prod", [], cleanFacts, scanOf([], [{ file: "/t/x.md", why: "why" }]));
   expect(broken.ok).toBe(false);
   expect(broken.refusals[0]).toContain("/t/x.md cannot be read");
@@ -863,8 +863,49 @@ test("both gates refuse on the base branch, print the branch to cut, and never p
   // An unpushed base is the same refusal, not a `git push` line naming main.
   const neverPushed = { ...cleanFacts, push: { branch: "main", remote: null, ahead: 0 } };
   expect(after("prod", [], neverPushed).refusals).toEqual([refusal]);
-  // The base is the project's, not a fixed name: a deploy branch of any name is not it.
-  expect(before("prod", [], onMain, both, "release").ok).toBe(true);
+  // The base is the project's, not a fixed name.
+  expect(before("prod", [], { ...onMain, ref: "origin/release" }, both, "release").ok).toBe(true);
+});
+
+const CUT =
+  "Start the run on a deploy branch cut from the commit that ships: `git fetch origin`, then `git switch --no-track -c deploy/prod-20261117-1445 origin/main` in this checkout";
+
+test("both gates refuse a detached HEAD and the ref's own branch, each with the branch to cut", () => {
+  const detached = { ...cleanFacts, push: { branch: null, remote: null, ahead: 0 } };
+  const detachedRefusal = `HEAD is detached: the closes need a branch to be committed and pushed from. ${CUT}`;
+  expect(before("prod", [], detached).refusals).toEqual([detachedRefusal]);
+  expect(after("prod", [], detached).refusals).toEqual([detachedRefusal]);
+  // A ref that is not the base: `origin/trunk` is the branch `trunk`.
+  const onTrunk = {
+    ...cleanFacts,
+    ref: "origin/trunk",
+    push: { branch: "trunk", remote: "origin/trunk", ahead: 2 },
+  };
+  const trunkRefusal = `HEAD is on trunk, the branch this run ships from (origin/trunk): the closes must reach it through a deploy branch's pull request, never by a push to it. ${CUT.replace("origin/main", "origin/trunk")}`;
+  expect(before("prod", [], onTrunk).refusals).toEqual([trunkRefusal]);
+  expect(after("prod", [], onTrunk).refusals).toEqual([trunkRefusal]);
+  // A deploy branch of any other name is fine.
+  expect(before("prod", [], { ...onTrunk, push: { ...onTrunk.push, branch: "deploy/x" } }).ok).toBe(
+    true,
+  );
+});
+
+test("the branch to cut is printed once: a wrong branch leaves it out of the HEAD refusal", () => {
+  const onMainBehind = {
+    ...cleanFacts,
+    headCommit: "b".repeat(40),
+    refIsAncestor: false,
+    push: { branch: "main", remote: "origin/main", ahead: 0 },
+  };
+  const refusals = before("prod", [], onMainBehind).refusals;
+  expect(refusals).toHaveLength(2);
+  expect(refusals.join("\n").split("git switch --no-track").length - 1).toBe(1);
+  expect(refusals[1]).toBe(
+    "HEAD bbbbbbbbbbbb does not contain origin/main (aaaaaaaaaaaa): the ref has commits this branch has not taken in, and may hold tasks it cannot see. Run `git fetch origin`, then rebase or merge the deploy branch onto origin/main.",
+  );
+  // On a deploy branch the HEAD refusal keeps its fix.
+  const onDeploy = { ...onMainBehind, push: cleanFacts.push };
+  expect(before("prod", [], onDeploy).refusals[0]).toContain("git switch --no-track");
 });
 
 test("the gates read the base branch from the input, never a fixed name", () => {
@@ -963,15 +1004,18 @@ test("git facts: the tasks folder dirty, staged, untracked, then committed, then
   git(repo, "commit", "-m", "close");
   const committed = readGitFacts(repo, dir, "origin/main", env);
   expect(committed.uncommitted).toEqual([]);
-  // A change outside the tasks folder is not a close, but the gate says it did not judge it.
-  expect(readGitFacts(repo, dir, "origin/main", env).uncommittedOutside).toEqual([]);
+  // A change outside the tasks folder is not a close, but the before gate says it did not judge it.
+  const outside = { outside: true };
+  expect(readGitFacts(repo, dir, "origin/main", env, outside).uncommittedOutside).toEqual([]);
   writeFileSync(join(repo, "scratch.txt"), "x");
   writeFileSync(join(repo, "README.md"), "changed");
-  expect(readGitFacts(repo, dir, "origin/main", env).uncommitted).toEqual([]);
-  expect(readGitFacts(repo, dir, "origin/main", env).uncommittedOutside).toEqual([
+  expect(readGitFacts(repo, dir, "origin/main", env, outside).uncommitted).toEqual([]);
+  expect(readGitFacts(repo, dir, "origin/main", env, outside).uncommittedOutside).toEqual([
     "README.md",
     "scratch.txt",
   ]);
+  // The after gate reads the tasks folder only: it never lists the rest.
+  expect(readGitFacts(repo, dir, "origin/main", env).uncommittedOutside).toEqual([]);
   // Not on origin yet.
   expect(committed.push).toEqual({ branch: "deploy/prod-20261117-1445", remote: null, ahead: 0 });
   expect(after("prod", scanDeployTasks(dir, { archive: true }).tasks, committed).ok).toBe(false);

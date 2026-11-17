@@ -24145,6 +24145,9 @@ function personOnly(id, action, command) {
 function deployWrote(root, file) {
   return `${relative2(root, file)} \xB7 written in ${root}: commit the file with your branch`;
 }
+function deployTasksIn(root) {
+  return `Deploy tasks in ${root}:`;
+}
 var DELETE_TRACKED = "Tracked deploy task: it is part of a commit, so close it with task_done instead";
 var TASK_LINE_CAP = 200;
 var TASK_TEXT_CAP = 20000;
@@ -24271,6 +24274,10 @@ function createTaskOps(options = {}) {
         if (here.checkoutRoot === null)
           throw new Error("Deploy tasks need a git checkout");
         return here.checkoutRoot;
+      };
+      const otherDeployRoot = () => {
+        const here = deployContext();
+        return here.ok && here.checkoutRoot !== null && here.checkoutRoot !== ctx.checkoutRoot ? here.checkoutRoot : null;
       };
       const wroteIn = (task) => deployWrote(deployRoot(), task.file);
       const projectTasks = (archive) => scanDeployTasks(projectDir(), { archive }).tasks;
@@ -24541,11 +24548,14 @@ function createTaskOps(options = {}) {
         const input = taskSchemas.get.parse(raw);
         const text = isDeployTaskId(input.task) ? (() => {
           const file = project(input.task).file;
-          const body = readFileSync8(file, "utf8");
+          const text = readFileSync8(file, "utf8");
           const here = deployContext();
           const root = here.ok ? here.checkoutRoot : null;
           if (root === null)
-            return body;
+            return text;
+          const elsewhere = otherDeployRoot();
+          const body = elsewhere === null ? text : `${deployTasksIn(elsewhere)}
+${text}`;
           const head = runGit(root, ["rev-parse", "--verify", "--quiet", "HEAD"], env);
           if (!head.ok && head.code === 1)
             return `${body.trimEnd()}
@@ -24676,6 +24686,9 @@ ${t.body}`.toLowerCase().includes(input.text.toLowerCase()));
       };
       for (const task of selected.filter((t) => !t.parentId || !selectedIds.has(t.parentId)))
         visit(task, 0);
+      const elsewhere = projects.length > 0 ? otherDeployRoot() : null;
+      if (elsewhere !== null)
+        lines.push(deployTasksIn(elsewhere));
       lines.push(...projects.map(projectLine));
       if (capWhy !== null)
         lines.push(capWhy);
