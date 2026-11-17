@@ -67,7 +67,9 @@ its secret screen knows only common shapes.
 - **Only the person drops a blocking deploy task**, in their own terminal, outside Claude Code:
   `cc-smart-dev-kit task drop <id> --note "<reason>"`. Inside Claude Code it is refused; ask.
   `task_delete` removes a mistake that has no notes, and a deploy task only while its file is
-  untracked; a committed one closes.
+  untracked; a committed one closes. Weakening a blocking
+  task (`--type non-blocking`, or `--deploy after` on a `before` task) and deleting an open
+  blocking one are the person's too, in their own terminal.
 - **Reopen** a closed deploy task after a rolled-back deploy: `task_update` with status `open`,
   or `task reopen <id>`.
 - `task_take` takes a plan or task into this session (live claims need `force`). Park and

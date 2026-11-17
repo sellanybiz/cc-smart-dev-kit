@@ -64,7 +64,8 @@ and the merge order.
    Commit those files with the change that needs them. Close deploy tasks completed by this
    change with `task_done` and evidence, in this same change. A deploy run commits its closes on
    its own deploy branch, whose small pull request carries them (`/cc-smart-dev-kit:tasks` § 5).
-   The output fills the PR's Deploy tasks and Still owed headings (`/cc-smart-dev-kit:pull-request`).
+   The output fills the PR's Deploy tasks heading and, with the open issues, its Still owed
+   heading (`/cc-smart-dev-kit:pull-request`).
    **Stage by path** — never `git add -A` while subagents still write. Read
    `git diff --staged --stat`; investigate any unexpected path before committing.
 5. **The message:** follow the style in `git log` (for example conventional commits:

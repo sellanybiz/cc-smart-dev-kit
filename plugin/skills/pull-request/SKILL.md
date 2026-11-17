@@ -36,8 +36,7 @@ heading reads as "not considered".
    it. **Names only, never values.**
 3. **Deploy tasks** — one list for each environment (prod, staging) the branch task list below
    shows: the deploy tasks this branch adds, changes or closes, each with its ID, its step
-   (before or after the deploy) and type, and what it asks; blocking ones first. A finding
-   filed as an issue goes here too, with its number.
+   (before or after the deploy) and type, and what it asks; blocking ones first.
 4. **Data changes** — each migration or data script, and what it does on a **populated**
    database, not only an empty one. Say "no-op in production" only when you checked.
 5. **How it was verified** — the real commands and their results. **Say what was not
@@ -46,8 +45,8 @@ heading reads as "not considered".
    plan and lists each phase's spec-and-quality verdicts, then the final whole-branch review.
    "Verified" with nothing behind it is worse than an honest gap.
 6. **Still owed after the merge** — the open deploy tasks from that same task output, with their
-   step and type, and the issues still open. A pull request built on another open one says
-   "stacked on #n — merge after it".
+   step and type, and the findings filed as issues that are still open, with their numbers. A
+   pull request built on another open one says "stacked on #n — merge after it".
 
 Run `cc-smart-dev-kit task list --branch --base <base>` against the pull request's real base
 before filling both task headings. Do not infer "none" from a failed command; state the gap.

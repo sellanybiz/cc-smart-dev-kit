@@ -1655,7 +1655,7 @@ names such a missing import.
 | `impact-analysis` | Every consumer of a shared thing, before and after a change. |
 | `code-structure` | Shape code, split responsibilities, name things, place files and decide when to extract. |
 | `self-evolve` | Turning a correction into a rule, skill, hook, doc or memory; size budgets. |
-| `memory-routing` | Where a fact, a preference or a to-do belongs. |
+| `memory-routing` | Where a fact or a preference belongs, and which tool saves it; tasks go to `tasks`. |
 | `tasks` | Which task fits (loose, plan › phase › task, a prod or staging deploy task, a finding), how to create, close, drop and reopen it, and the deploy run. |
 | `explain` | Teaching code or an idea in plain words. |
 | `react-best-practices` | Every React or Next.js web app change: the design system first (the project's parts, then shadcn/ui with its guide and MCP server, then a library, then your own with a `Why custom:` line), the lint rule that enforces it, the React playbook, React Compiler on. Its project add-on is `.claude/cc-smart-dev-kit/react-best-practices.md`; without it, the older `performance-budget.md` add-on is read. |
@@ -2921,7 +2921,7 @@ every question it holds.
 | `tasks.dir` | Task folder inside the checkout, default `.claude/tasks`. Use `/`; no absolute path, backslash, or `.`/`..` segment. Shares the in-checkout path check with `worktrees.rebuildable`; that field's contract is unchanged. |
 | `tasks.staleDays` | Whole number at least 1; default 30. Open deploy tasks older than this appear in `task check`. |
 | `tasks.envs` | The environments the project deploys to: `"staging"`, `"prod"` or both, each once; default both. Each has a folder under `tasks.dir` (`prod/`, `staging/`, each with an `archive/`). A deploy task for an environment not listed is refused. Since 5.0.0: setting it needs `requires: >=5.0`. |
-| `tasks.releaseBranch`, `tasks.legacyFolders` | **Accepted and ignored since 5.0.0**: nothing reads them (the release branch went with the deploy branch). A file that still sets one loads; `doctor` says "no longer read: remove it", and `project init` removes both. |
+| `tasks.releaseBranch`, `tasks.legacyFolders` | **Accepted and ignored since 5.0.0**: nothing reads them (the release branch went with the deploy branch). A file that still sets one loads; `doctor` says "no longer read since 5.0.0: remove it" (a `!` line), and `project init` removes both. |
 | `worktrees` | Turns on the notes and guards that work with worktrees (the after-merge and leftovers notes, the stash question, the main-folder guard). Every project uses Claude Code's own worktrees (§ Worktrees). |
 | `worktrees.base` | The branch a new worktree starts from and pull requests go into; the base the after-merge and leftovers notes compare with. |
 | `worktrees.prefix` | **Retired in 1.0.0, and refused**: the folder-name prefix the plugin's worktree engine gave a worktree beside the repo. A file that still sets it does not load; `cc-smart-dev-kit project init` removes it (§ Worktrees). |
