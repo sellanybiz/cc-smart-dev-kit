@@ -509,10 +509,66 @@ const BUN_TEST_OPTIONS: ToolOptions = {
   watch: { flags: ["--watch"] },
 };
 
+/**
+ * `playwright test` (`playwright test --help`, Playwright 1.64.1). Its `e2e` kind takes a slot for
+ * every run, one spec file too: each run starts the project's web server and its browsers. So the
+ * table serves the watch rule: `--ui` (and `--ui-host`, `--ui-port`, which open it) and `--debug`
+ * (the Inspector) wait for a person and never end on their own. Left out on purpose: `--debug`,
+ * `--only-changed`, `--shuffle` and `-u` take optional values, so they are no valued option.
+ */
+const PLAYWRIGHT_OPTIONS: ToolOptions = {
+  valued: [
+    "--add-reporter",
+    "--browser",
+    "--config",
+    "--global-timeout",
+    "--grep",
+    "--grep-invert",
+    "--last-failed-file",
+    "--max-failures",
+    "--output",
+    "--project",
+    "--repeat-each",
+    "--reporter",
+    "--retries",
+    "--run-agents",
+    "--shard",
+    "--test-list",
+    "--test-list-invert",
+    "--timeout",
+    "--trace",
+    "--tsconfig",
+    "--ui-host",
+    "--ui-port",
+    "--update-source-method",
+    "--workers",
+    "-c",
+    "-G",
+    "-g",
+    "-j",
+  ],
+  bare: [
+    "--fail-on-flaky-tests",
+    "--forbid-only",
+    "--fully-parallel",
+    "--headed",
+    "--ignore-snapshots",
+    "--last-failed",
+    "--no-deps",
+    "--pass-with-no-tests",
+    "--quiet",
+    "--ui",
+    "-x",
+  ],
+  skip: ["test"],
+  watch: { flags: ["--debug", "--ui", "--ui-host", "--ui-port"] },
+};
+
 /** The tables, by the name of the tool a matched call runs. */
 const TOOL_OPTIONS: Readonly<Record<string, ToolOptions>> = {
   bun: BUN_TEST_OPTIONS,
   jest: JEST_OPTIONS,
+  playwright: PLAYWRIGHT_OPTIONS,
   tsc: TSC_OPTIONS,
   tsgo: TSC_OPTIONS,
   vitest: VITEST_OPTIONS,
@@ -564,6 +620,13 @@ export const DEFAULT_KINDS: Kinds = {
     // serve a project kind that sets this field.
     noSlotForFiles: true,
     match: [{ tool: "vitest" }, { tool: "jest" }, { tool: "bun", sub: ["test"] }],
+  },
+  e2e: {
+    about:
+      "An end-to-end test run (playwright test). Every run takes a slot, one spec file too: it starts the app and its browsers.",
+    // `--list` collects the tests and runs none.
+    printOnly: ["--list", "--help", "-h"],
+    match: [{ tool: "playwright", sub: ["test"] }],
   },
   build: {
     about: "A framework production build (next build).",

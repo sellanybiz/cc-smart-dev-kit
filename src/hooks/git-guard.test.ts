@@ -252,6 +252,12 @@ describe("git reset --hard asks", () => {
     expect(guard(command)).toContain("`git reset --hard`");
   });
 
+  // `&>` attached to the option: the option is still `--hard`. Read as the Bash tool reads it:
+  // PowerShell's reading splits at the `&` anyway.
+  it.each([["git reset --hard&>/dev/null"], ["git reset --hard&>>log"]])("bash: %j", (command) => {
+    expect(guard(command, neutral, true, "bash")).toContain("`git reset --hard`");
+  });
+
   it.each([
     ["git reset --soft HEAD~1"],
     ["git reset HEAD file.ts"],

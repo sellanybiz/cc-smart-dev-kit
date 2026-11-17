@@ -78,11 +78,12 @@ function scan(args: readonly string[], spec: OptionSpec, named = false): Scanned
       scanned.longs.push(arg.split(":")[0] ?? arg);
     } else if (arg.startsWith("--")) {
       const name = arg.split("=")[0] ?? arg;
-      scanned.longs.push(name);
-      // GNU programs take any unique prefix of a long option (`--target` is `--target-directory`).
+      // GNU programs take any unique prefix of a long option (`--target` is `--target-directory`,
+      // `--expr` is `--expression`): the full name is kept, so a caller asks for it by that.
       const full = spec.long.find(
         (long) => long === name || (name.length >= 4 && long.startsWith(name)),
       );
+      scanned.longs.push(full ?? name);
       if (full === undefined) continue;
       const value = arg.includes("=") ? arg.slice(name.length + 1) : args[++index];
       if (full === "--target-directory" && value !== undefined) scanned.targetDirectory = value;
@@ -125,7 +126,12 @@ const SED_OPTIONS: OptionSpec = {
   long: ["--expression", "--file", "--line-length"],
   suffix: "i",
 };
-const PERL_OPTIONS: OptionSpec = { short: "eEIMmCDdFVx", long: [], suffix: "i" };
+/**
+ * perl's switches (`perlrun`): `-e`, `-E`, `-I`, `-M` and `-m` take a value; `-C`, `-D`, `-d`,
+ * `-F`, `-V`, `-x` and `-i` take only an attached one (`-i.bak`), never the next word, so
+ * `perl -C -i -pe … f` still edits `f` in place.
+ */
+const PERL_OPTIONS: OptionSpec = { short: "eEIMm", long: [], suffix: "iCDdFVx" };
 
 /** The programs that change every operand they are given, and the options of theirs that take a value. */
 const CHANGES_OPERANDS: ReadonlyMap<string, OptionSpec> = new Map([
@@ -309,7 +315,8 @@ export interface WriteTarget {
 /** The words of `words` as absolute paths in `folder`; a word the reader cannot know is left out. */
 function inFolder(folder: string | null, words: readonly string[]): string[] {
   return words.flatMap((word) => {
-    if (word === "" || /^[~%]|[$`]/.test(word)) return [];
+    // `<( … )` / `>( … )`: the shell fills in a file of its own, no path the line names.
+    if (word === "" || /^[~%]|[$`]|^[<>]\(/.test(word)) return [];
     if (isAbsolute(word)) return [resolve(word)];
     return folder === null ? [] : [resolve(folder, word)];
   });
@@ -358,7 +365,7 @@ function inspect(command: string, cwd: string | null, reading: Reading, depth = 
   const { dialect, joinLines } = reading;
   // A quote left open is read blind: more pieces, so nothing hides inside it.
   for (const step of shellSteps(command, { blindWhenOpen: true, dialect, joinLines })) {
-    const folder = tracker.enter(step.subshellDepth ?? 0);
+    const folder = tracker.enter(step.subshell);
     const words = wordsOf(step.text, dialect);
     const invocation = invocationOf(words);
     if (invocation === undefined) {

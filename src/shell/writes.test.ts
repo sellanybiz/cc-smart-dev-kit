@@ -32,6 +32,14 @@ describe("redirections", () => {
     expect(targets(command)).toEqual(expected);
   });
 
+  test("a substitution is one word: what it holds is no target of the line around it", () => {
+    expect(targets("out=$(bun test 2>&1)")).toEqual([]);
+    expect(targets('x="$(a "b c" > log)"')).toEqual(["/code/app/log"]);
+    expect(targets("cmd > >(tee out.txt)")).toEqual(["/code/app/out.txt"]);
+    expect(targets("cmd >(tee out.txt)")).toEqual(["/code/app/out.txt"]);
+    expect(targets("diff <(sort a) <(sort b)")).toEqual([]);
+  });
+
   test("a read, a descriptor and /dev/null write nothing in the repo", () => {
     expect(targets("cat < a.txt")).toEqual([]);
     expect(targets("cmd 2>&1")).toEqual([]);
@@ -210,6 +218,30 @@ describe("git commands that change the work tree or its branch", () => {
     expect(targets("{ cd /tmp; }; touch a")).toEqual(["/tmp/a"]);
   });
 
+  test("two groups side by side each start where the line is", () => {
+    expect(targets("echo $(cd /tmp) $(touch b)")).toEqual(["/code/app/b"]);
+    expect(targets("(cd /tmp); (touch b)")).toEqual(["/code/app/b"]);
+    expect(targets("( (cd /tmp) ) && ( (touch b) )")).toEqual(["/code/app/b"]);
+    expect(targets("(cd /tmp; (touch a); (touch b))")).toEqual(["/tmp/a", "/tmp/b"]);
+  });
+
+  test("a case pattern's ) closes no group", () => {
+    expect(targets("(case x in a) cd /tmp;; esac; touch b); touch c")).toEqual([
+      "/tmp/b",
+      "/code/app/c",
+    ]);
+    expect(targets("(case x in (a) cd /tmp;; (b) cd /var;; esac; touch b); touch c")).toEqual([
+      "/var/b",
+      "/code/app/c",
+    ]);
+    expect(targets("(case x in\n a|b) cd /tmp ;;\n esac\n touch b); touch c")).toEqual([
+      "/tmp/b",
+      "/code/app/c",
+    ]);
+    // A group inside a case's command still ends at its own close.
+    expect(targets("case x in a) (cd /tmp); touch b;; esac")).toEqual(["/code/app/b"]);
+  });
+
   test("a git command that changes nothing: a dry run, a bare checkout", () => {
     for (const command of [
       "git commit --dry-run",
@@ -256,6 +288,15 @@ describe("what the session-escape guard reads: writtenWords", () => {
     ["sed -i.bak s/x/y/ file", ["file"]],
     ["sed -i.save s/x/y/ file", ["file"]],
     ["sed -n s/x/y/p file", []],
+    // A long option given as a prefix of its name is that option (review 2, the High).
+    ["sed -i --expr=s/x/y/ file", ["file"]],
+    ["sed -i --expr s/x/y/ file", ["file"]],
+    ["sed -i --fil=edit.sed file", ["file"]],
+    // perl's -C and -x take only an attached value: the -i after them still counts.
+    ["perl -C -i -pe s/a/b/ file", ["file"]],
+    ["perl -x -i -pe s/a/b/ file", ["file"]],
+    ["perl -C7 -i -pe s/a/b/ file", ["file"]],
+    ["perl -d -i -pe s/a/b/ file", ["file"]],
   ])("%j", (step, expected) => {
     expect(words(step)).toEqual(expected);
   });

@@ -139,7 +139,8 @@ describe("classifyHeavyCommand: tests", () => {
       "bunx vitest --version",
       "vitest -v",
       "bunx vitest --help",
-      "bunx playwright test",
+      "bunx playwright test --list",
+      "bunx playwright show-report",
       "node scripts/other.js run",
       'node -e "console.log(1)"',
       "node --version",
@@ -978,6 +979,27 @@ describe("runWeight: light, heavy or none", () => {
   const LIGHT = { weight: "light" } as const;
   const NONE = { weight: "none" } as const;
   const heavy = (kind: string) => ({ weight: "heavy", kind }) as const;
+
+  test("e2e: every playwright test run takes a slot, a spec file too; the UI and the Inspector never", () => {
+    expect(weight("bunx playwright test")).toEqual(heavy("e2e"));
+    expect(weight("npx playwright test --project=chromium")).toEqual(heavy("e2e"));
+    expect(weight("./node_modules/.bin/playwright test")).toEqual(heavy("e2e"));
+    // `a.test.ts` exists: still a full run, it starts the app's web server and its browsers.
+    expect(weight("bunx playwright test ./a.test.ts")).toEqual(heavy("e2e"));
+    expect(weight("bunx playwright test a.test.ts:42 -g login")).toEqual(heavy("e2e"));
+    expect(weight("bun run e2e", { "/repo": { e2e: "playwright test" } })).toEqual(heavy("e2e"));
+    expect(weight("bunx playwright test --list")).toEqual(LIGHT);
+    expect(weight("bunx playwright test --help")).toEqual(LIGHT);
+    // They wait for a person, so a queued one would hold the slot for ever.
+    expect(weight("bunx playwright test --ui")).toEqual(NONE);
+    expect(weight("bunx playwright test --ui-port 0")).toEqual(NONE);
+    expect(weight("bunx playwright test --debug")).toEqual(NONE);
+    expect(weight("bunx playwright test --debug=cli a.test.ts")).toEqual(NONE);
+    // Playwright's other commands are no test run.
+    expect(weight("bunx playwright show-report")).toEqual(NONE);
+    expect(weight("bunx playwright install chromium")).toEqual(NONE);
+    expect(weight("bunx playwright codegen")).toEqual(NONE);
+  });
 
   test("bun test: a file named with ./ or / is light; a filter, a bare name and bail are not", () => {
     expect(weight("bun test")).toEqual(heavy("test:run"));

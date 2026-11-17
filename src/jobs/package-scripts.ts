@@ -77,13 +77,31 @@ function scriptsOf(text: string, folder: string): ScriptBodies | null {
 
 /**
  * True when the project uses Yarn 2 or newer (berry): its `packageManager` field says `yarn@2`
- * or newer, or a `.yarnrc.yml` sits beside the `package.json`. Berry runs no `pre` or `post`
- * script of a script; classic yarn does.
+ * or newer, or a `.yarnrc.yml` is there. Berry runs no `pre` or `post` script of a script;
+ * classic yarn does. In a workspace both usually sit at the project's root, not beside a
+ * package's own `package.json`, so the folders up to the checkout root count too: the nearest
+ * `packageManager` field decides, and a `.yarnrc.yml` on the way says berry.
  */
 function usesYarnBerry(packageJson: object, folder: string): boolean {
-  const manager = (packageJson as { packageManager?: unknown }).packageManager;
-  const major = typeof manager === "string" ? /^yarn@(\d+)/.exec(manager)?.[1] : undefined;
-  return (major !== undefined && Number(major) >= 2) || existsSync(join(folder, ".yarnrc.yml"));
+  let json: object | null = packageJson;
+  for (const dir of foldersToCheckoutRoot(folder)) {
+    if (existsSync(join(dir, ".yarnrc.yml"))) return true;
+    json ??= packageJsonAt(dir);
+    const manager = (json as { packageManager?: unknown } | null)?.packageManager;
+    if (typeof manager === "string") return Number(/^yarn@(\d+)/.exec(manager)?.[1] ?? 0) >= 2;
+    json = null;
+  }
+  return false;
+}
+
+/** The parsed `package.json` in `dir`, or null when there is none it can read. */
+function packageJsonAt(dir: string): object | null {
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(join(dir, "package.json"), "utf8"));
+    return parsed !== null && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null; // No file, or not JSON: it names no package manager.
+  }
 }
 
 /** True when `word` names a file (not a folder) from `folder`; anything that cannot be read is no file. */

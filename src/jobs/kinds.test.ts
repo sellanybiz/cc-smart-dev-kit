@@ -70,7 +70,7 @@ describe("isPrintOnly", () => {
 describe("the kinds a project sees", () => {
   test("knows the default kinds, each with a way to be found and no size", () => {
     expect(Object.keys(DEFAULT_KINDS).sort()).toEqual(
-      ["build", "image:build", "lint:typed", "test:coverage", "test:run", "tsc"].sort(),
+      ["build", "e2e", "image:build", "lint:typed", "test:coverage", "test:run", "tsc"].sort(),
     );
     for (const spec of Object.values(DEFAULT_KINDS)) {
       expect(spec.match?.length ?? 0).toBeGreaterThan(0);

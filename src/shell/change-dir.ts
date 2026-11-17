@@ -4,7 +4,7 @@
  * commands before it left, and name paths as the platform reads them.
  */
 import { posix, win32 } from "node:path";
-import { CHANGE_DIR, type Dialect } from "./command";
+import { CHANGE_DIR, type Dialect, type Subshell } from "./command";
 
 /**
  * The folder a command runs in: a path, or null when a `cd` went somewhere a guard cannot
@@ -33,7 +33,8 @@ export function shellTargetPath(
   dialect: Dialect = "bash",
 ): string {
   if (platform !== "win32" || dialect !== "bash") return path;
-  const drive = /^\/+([A-Za-z])\//.exec(path);
+  // `/c/x` is `C:/x`, and `/c` alone the drive's root.
+  const drive = /^\/+([A-Za-z])(?:\/+|$)/.exec(path);
   return drive === null ? path : `${drive[1]?.toUpperCase()}:/${path.slice(drive[0].length)}`;
 }
 
@@ -83,22 +84,42 @@ export function movedTo(
  */
 export class FolderTracker {
   private folder: Folder;
-  /** The folder at each level of `( … )` the line is inside, outermost first. */
-  private readonly outer: Folder[] = [];
+  /** The groups the last step was inside, outermost first, each with the folder it was entered from. */
+  private readonly outer: { group: Subshell; from: Folder }[] = [];
 
   constructor(start: Folder) {
     this.folder = start;
   }
 
-  /** The folder a step at `depth` (`ShellStep.subshellDepth`) runs in. */
-  enter(depth: number): Folder {
-    while (this.outer.length < depth) this.outer.push(this.folder);
-    while (this.outer.length > depth) this.folder = this.outer.pop() ?? this.folder;
+  /**
+   * The folder a step inside `subshell` (`ShellStep.subshell`) runs in: each group it left gives
+   * back the folder it was entered from, and each group it enters starts where the step is. The
+   * walk goes only as far as the two steps' groups differ, so a deep line stays linear.
+   */
+  enter(subshell: Subshell | null = null): Folder {
+    const entering: Subshell[] = [];
+    let at = subshell;
+    while (at !== null && at.depth > this.outer.length) {
+      entering.push(at);
+      at = at.outer;
+    }
+    while (this.outer.length > (at?.depth ?? 0)) this.leave();
+    while (at !== null && this.outer.at(-1)?.group !== at) {
+      entering.push(at);
+      at = at.outer;
+      this.leave();
+    }
+    for (const group of entering.reverse()) this.outer.push({ from: this.folder, group });
     return this.folder;
   }
 
-  /** The step just run was a `cd`: the folder the rest of its level runs in. */
+  /** The step just run was a `cd`: the folder the rest of its group runs in. */
   moveTo(folder: Folder): void {
     this.folder = folder;
+  }
+
+  private leave(): void {
+    const left = this.outer.pop();
+    if (left !== undefined) this.folder = left.from;
   }
 }

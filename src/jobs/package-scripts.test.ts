@@ -73,6 +73,32 @@ describe("packageScripts", () => {
     expect(berry('{"packageManager":"yarn@4.0.0"}')).toBe(true);
   });
 
+  test("in a workspace, the root's packageManager or .yarnrc.yml says it for each package", () => {
+    const fromRoot = checkoutWith({
+      ".": '{"packageManager":"yarn@4.5.0","workspaces":["packages/*"]}',
+      "packages/a": '{"scripts":{"test":"vitest"}}',
+    });
+    expect(packageScripts(join(fromRoot, "packages/a"))?.yarnBerry).toBe(true);
+
+    const yarnrc = checkoutWith({ "packages/a": '{"scripts":{"test":"vitest"}}' });
+    writeFileSync(join(yarnrc, ".yarnrc.yml"), "nodeLinker: node-modules\n");
+    expect(packageScripts(join(yarnrc, "packages/a"))?.yarnBerry).toBe(true);
+
+    // The nearest packageManager decides: the package's own classic yarn wins over the root's.
+    const own = checkoutWith({
+      ".": '{"packageManager":"yarn@4.5.0"}',
+      "packages/a": '{"packageManager":"yarn@1.22.22","scripts":{}}',
+    });
+    expect(packageScripts(join(own, "packages/a"))?.yarnBerry).toBe(false);
+
+    // Nothing above the checkout root counts.
+    const outer = tempDir("package-scripts-outer");
+    writeFileSync(join(outer, ".yarnrc.yml"), "nodeLinker: node-modules\n");
+    mkdirSync(join(outer, "repo", ".git"), { recursive: true });
+    writeFileSync(join(outer, "repo", "package.json"), '{"scripts":{}}');
+    expect(packageScripts(join(outer, "repo"))?.yarnBerry).toBe(false);
+  });
+
   test("gives null when there is no package.json, or no folder", () => {
     expect(packageScripts(tempDir("package-scripts-none"))).toBeNull();
     expect(packageScripts(join(tempDir("package-scripts-gone"), "missing"))).toBeNull();
