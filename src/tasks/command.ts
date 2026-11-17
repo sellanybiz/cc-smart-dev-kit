@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { basename, dirname, join, relative } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { parseOptions } from "../cli/args";
 import { usageError } from "../cli/help";
 import { cliPaths } from "../cli/paths";
@@ -8,29 +8,28 @@ import { currentTerminal } from "../cli/ui/terminal";
 import { locateCheckout } from "../project/resolve";
 import { baseBranch } from "../worktrees/command";
 import { taskContext } from "./context";
+import { branchTaskChanges, unmergedBranchTasks } from "./deploy/branch";
+import { checkDeployTasks } from "./deploy/check";
+import { scanDeployTasks } from "./deploy/files";
+import { DEPLOY_ENVS } from "./deploy/format";
+import { releaseList } from "./deploy/release";
 import { createTaskOps, projectLine, type TaskOperation } from "./ops";
-import { branchTaskChanges, unmergedBranchTasks } from "./project/branch";
-import { checkProjectTasks } from "./project/check";
-import { scanProjectTasks } from "./project/files";
-import { projectTaskSchema } from "./project/format";
-import { importNotes } from "./project/import-notes";
-import { releaseList, shippedIdsOn } from "./project/release";
 import { TASK_COMMAND } from "./words";
 import { openWorkDb, workDbFile } from "./work/db";
 import { importClaudeMem } from "./work/import-claude-mem";
 
 export const TASK_USAGE = `Usage: ${TASK_COMMAND} <command>
 
-add <subject> [--description <text> | --file <path|->] [--kind work|production|database|teammate|follow-up]
+add <subject> [--description <text> | --file <path|->] [--kind work|prod|staging]
     [--parent <ref>] [--start] [--type blocking|non-blocking] [--blocked-by <ref>]...
     [--phase <id>] [--plan <slug>]
     [--agent <id>] [--branch <name>] [--worktree <absolute-path>] [--base <sha>]
-    [--when now|next-release|any] [--weight blocks-release|after-deploy|owner]
+    [--deploy before|after]
     [--flag <flag>]... [--ref <path>]...
 set <ref> [--type blocking|non-blocking] [--block <ref>]... [--unblock <ref>]... [--parent <ref> | --top]
     Bindings on set/start: --agent <id> --branch <name> --worktree <absolute-path> --base <sha>
 start <ref>
-done <ref> [--evidence <text>] [--note <text>] [--for-everyone]
+done <ref> [--evidence <text>] [--note <text>]
 drop <ref> [--note <text>]
 note <ref> [<text> | --file <path|->]
 list [--scope mine|plan|project|all] [--plan <slug>] [--json]
@@ -41,12 +40,11 @@ show <ref> [--offset <n>] [--history]
 search <text> [--all]
 check [--json]
 release [--json]
-import notes <folder> --kind <kind> [--since YYYY-MM-DD] [--dry-run]
 import claude-mem [--project <name>] [--dry-run]
 delete <ref>
 mcp
 
-Work tasks stay on this machine. Project task files travel with your branch: commit them.
+Work tasks stay on this machine. Deploy task files travel with your branch: commit them.
 Layers: plan › phase › task. A blocking task (the default) holds its parent; a non-blocking
 one holds nothing. A task blocked by an open task cannot start or be done.
 --parent may name a plan (#n): the task waits there for a phase, and set --parent <phase> moves it under a phase of that plan.
@@ -68,8 +66,7 @@ const definitions: Record<
       "--blocked-by",
       "--phase",
       "--plan",
-      "--when",
-      "--weight",
+      "--deploy",
       "--flag",
       "--ref",
     ],
@@ -86,7 +83,7 @@ const definitions: Record<
     max: 1,
   },
   start: { values: bindingFlags, min: 1, max: 1 },
-  done: { values: ["--evidence", "--note"], flags: ["--for-everyone"], min: 1, max: 1 },
+  done: { values: ["--evidence", "--note"], min: 1, max: 1 },
   drop: { values: ["--note"], min: 1, max: 1 },
   note: { values: ["--file"], min: 1 },
   list: {
@@ -99,7 +96,7 @@ const definitions: Record<
   search: { flags: ["--all"], min: 1 },
   check: { flags: ["--json"], min: 0, max: 0 },
   release: { flags: ["--json"], min: 0, max: 0 },
-  import: { values: ["--kind", "--since", "--project"], flags: ["--dry-run"], min: 1, max: 2 },
+  import: { values: ["--project"], flags: ["--dry-run"], min: 1, max: 1 },
   delete: { min: 1, max: 1 },
 };
 export async function runTaskCommand(argv: string[]): Promise<number> {
@@ -158,8 +155,7 @@ export async function runTaskCommand(argv: string[]): Promise<number> {
           blocked_by: lists.get("--blocked-by"),
           phase: get("phase"),
           plan: get("plan"),
-          when: get("when"),
-          weight: get("weight"),
+          deploy: get("deploy"),
           flags: lists.get("--flag"),
           refs: lists.get("--ref"),
         };
@@ -188,7 +184,6 @@ export async function runTaskCommand(argv: string[]): Promise<number> {
           outcome: command === "drop" ? "dropped" : "done",
           evidence: get("evidence"),
           note: get("note"),
-          for_everyone: has("for-everyone"),
         };
         break;
       case "note":
@@ -243,8 +238,8 @@ export async function runTaskCommand(argv: string[]): Promise<number> {
       const ctx = taskContext(cwd);
       if (!ctx.ok) throw new Error(ctx.why);
       const paths = cliPaths();
-      if (command === "import" && args[0] === "claude-mem") {
-        if (args.length !== 1 || get("kind") || get("since"))
+      if (command === "import") {
+        if (args[0] !== "claude-mem")
           return bad("Use import claude-mem [--project <name>] [--dry-run]");
         const db = openWorkDb(workDbFile(paths), { mode: "write" });
         try {
@@ -293,57 +288,31 @@ export async function runTaskCommand(argv: string[]): Promise<number> {
       if (command === "list") {
         const base = get("base") ?? baseBranch(locateCheckout(cwd), process.env, root).base;
         if (has("branches")) {
-          const tasks = unmergedBranchTasks(root, dir, base);
+          const { tasks, broken } = unmergedBranchTasks(root, dir, base);
           for (const item of tasks) out.say(`${item.branch}: ${projectLine(item.task)}`);
-          if (!tasks.length) out.say("No project tasks on unmerged branches.");
+          for (const item of broken) out.say(`${item.branch}: ${item.file} · ${item.why}`);
+          if (!tasks.length && !broken.length) out.say("No deploy tasks on unmerged branches.");
         } else {
           const changes = branchTaskChanges(root, dir, base);
-          for (const kind of projectTaskSchema.shape.kind.options) {
-            const group = changes.filter((c) => c.task?.kind === kind);
+          for (const env of DEPLOY_ENVS) {
+            const group = changes.filter((c) => c.task?.env === env);
             if (!group.length) continue;
-            out.heading(kind);
+            out.heading(env);
             for (const item of group)
               out.say(`${item.change}: ${item.task ? projectLine(item.task) : item.file}`);
           }
           for (const item of changes.filter((c) => !c.task))
             out.say(`${item.change}: ${item.file}${item.why ? ` · ${item.why}` : ""}`);
-          if (!changes.length) out.say("No project task changes on this branch.");
+          if (!changes.length) out.say("No deploy task changes on this branch.");
         }
         return 0;
       }
-      if (command === "import") {
-        if (args[0] !== "notes" || !args[1] || get("project"))
-          return bad("Use import notes <folder> --kind <kind>");
-        const kind = projectTaskSchema.shape.kind.parse(get("kind"));
-        const since = get("since");
-        const result = importNotes({
-          folder: args[1],
-          dir,
-          kind,
-          dryRun: has("dry-run"),
-          ...(since === undefined ? {} : { since }),
-          now: new Date(),
-          random: Math.random,
-        });
-        for (const task of result.tasks) out.say(`${task.id} "${task.title}" · ${task.file}`);
-        for (const skipped of result.skipped) out.say(`Skipped ${skipped.file}: ${skipped.reason}`);
-        for (const file of result.noDate) out.say(`No date in file name: ${file}`);
-        if (has("dry-run")) out.say(dryRunEnding([]));
-        else
-          out.say(
-            `Imported ${plural(result.tasks.length, "note", "notes")} into ${relative(root, dir)}: commit the task files with your branch.`,
-          );
-        return 0;
-      }
-      const shippedIds = shippedIdsOn(root, dir, settings.releaseBranch());
       if (command === "check") {
-        const findings = checkProjectTasks({
+        const findings = checkDeployTasks({
           checkoutRoot: root,
           dir,
           settings: { staleDays: settings.staleDays },
           now: new Date(),
-          shippedIds,
-          legacyFolders: settings.legacyFolders,
         });
         if (has("json")) out.json(findings);
         else if (!findings.length) out.say("Project tasks: no problems found.");
@@ -352,24 +321,14 @@ export async function runTaskCommand(argv: string[]): Promise<number> {
             out.say(`${finding.kind}: ${finding.text} · ${finding.file}`);
         return findings.length ? 1 : 0;
       }
-      const result = releaseList(scanProjectTasks(dir, { archive: false }).tasks, { shippedIds });
+      const result = releaseList(scanDeployTasks(dir, { archive: false }).tasks);
       if (has("json")) out.json(result);
       else {
-        for (const [name, tasks] of Object.entries({
-          ...result.groups,
-          "next-release": result.nextRelease,
-          "missed-release": result.missed,
-        })) {
-          if (!tasks.length) continue;
-          out.heading(name);
-          for (const task of tasks) out.say(projectLine(task));
+        for (const group of result) {
+          out.heading(`${group.env} · ${group.deploy} · ${group.type}`);
+          for (const task of group.tasks) out.say(projectLine(task));
         }
-        if (
-          ![...Object.values(result.groups), result.nextRelease, result.missed].some(
-            (g) => g.length,
-          )
-        )
-          out.say("No release tasks.");
+        if (!result.length) out.say("No release tasks.");
       }
       return 0;
     }

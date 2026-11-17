@@ -612,17 +612,6 @@ export function layPhase(
 export function ensurePlanTask(db: WorkDb, input: PlanTask, who: Who, now: number) {
   return writeWork(db, () => planTask(db, input, who, now));
 }
-export function ack(db: WorkDb, project: string, taskRef: string, now: number) {
-  return writeWork(db, () => {
-    db.sqlite
-      .query(
-        "INSERT INTO acks VALUES (?,?,?) ON CONFLICT(project,task_ref) DO UPDATE SET at=excluded.at",
-      )
-      .run(project, taskRef, now);
-    return true;
-  });
-}
-
 /** One transaction checks and transfers the complete selection, including detached plan tasks. */
 export function takeTasks(
   db: WorkDb,

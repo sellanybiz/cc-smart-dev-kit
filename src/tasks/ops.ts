@@ -10,6 +10,15 @@ import { runGit } from "../hooks/git";
 import { resolvePlans } from "../workflow/resolve";
 import { taskContext } from "./context";
 import {
+  addDeployNote,
+  closeDeployTask,
+  createDeployTask,
+  findDeployTask,
+  scanDeployTasks,
+  updateDeployTask,
+} from "./deploy/files";
+import { type DeployTask, isDeployTaskId } from "./deploy/format";
+import {
   planInTheWay,
   planNote,
   refuseBareClose,
@@ -18,14 +27,6 @@ import {
   refuseParkWhileBusy,
   refuseStepEscape,
 } from "./plan-guards";
-import {
-  addProjectNote,
-  closeProjectTask,
-  createProjectTask,
-  scanProjectTasks,
-  updateProjectTask,
-} from "./project/files";
-import type { ProjectTask } from "./project/format";
 import { TASK_TOOL } from "./words";
 import { openWorkDb, type WorkDb, workDbFile, writeWork } from "./work/db";
 import { historyText } from "./work/history";
@@ -51,7 +52,6 @@ import {
   subtreeProgress,
 } from "./work/queries";
 import {
-  ack,
   applyUpdate,
   deleteTask,
   insertNote,
@@ -156,8 +156,8 @@ function stateWords(
     ...marks(task, byId),
   ].join(" · ");
 }
-export function projectLine(task: ProjectTask): string {
-  return `${task.id} [${[task.kind, task.when, task.weight].filter(Boolean).join(" · ")}] ${task.title}`;
+export function projectLine(task: DeployTask): string {
+  return `${task.id} [${[task.deploy, task.type].join(" · ")}] ${task.title}`;
 }
 function capped(lines: string[]): string {
   return lines.length
@@ -246,21 +246,13 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
         if (!ctx.projectTasks.ok) throw new Error(ctx.projectTasks.why);
         return ctx.projectTasks.dir;
       };
-      const projectTasks = (archive: boolean) => scanProjectTasks(projectDir(), { archive }).tasks;
+      const projectTasks = (archive: boolean) => scanDeployTasks(projectDir(), { archive }).tasks;
       const work = (reference: string) => {
         const task = getTask(store, ctx.project, reference);
         if (!task) throw new Error(`Task not found: ${reference}`);
         return task;
       };
-      const project = (reference: string) => {
-        const task = projectTasks(true).find((t) => t.id === reference);
-        if (!task) throw new Error(`Project task not found: ${reference}`);
-        return task;
-      };
-      const acked = (id: string) =>
-        !!store.sqlite
-          .query("SELECT 1 FROM acks WHERE project=? AND task_ref=?")
-          .get(ctx.project, id);
+      const project = (reference: string) => findDeployTask(projectDir(), reference);
       if (operation === "take") {
         const input = taskSchemas.take.parse(raw);
         if (!caller?.sessionId) throw new Error("take needs a resolvable calling session");
@@ -286,31 +278,30 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
             input.parent ||
             input.blocked_by?.length ||
             input.status ||
-            input.type ||
             input.phase ||
             input.plan
           )
-            throw new Error(
-              "Project tasks have no parent, blocked-by, work status, type, phase or plan",
-            );
+            throw new Error("Deploy tasks have no parent, blocked-by, work status, phase or plan");
+          if (input.deploy === undefined || input.type === undefined)
+            throw new Error("A deploy task needs deploy (before or after) and type");
           const branch = ctx.checkoutRoot
             ? runGit(ctx.checkoutRoot, ["branch", "--show-current"], env)
             : null;
           if (!branch?.ok) throw new Error("Could not read the current branch");
           const from = input.from ?? `branch ${branch.out}`;
-          const task = createProjectTask(
+          const task = createDeployTask(
             projectDir(),
             {
               title: input.subject,
-              kind: input.kind,
+              env: input.kind,
+              deploy: input.deploy,
+              type: input.type,
               ...(input.description === undefined ? {} : { body: input.description }),
-              ...(input.when === undefined ? {} : { when: input.when }),
-              ...(input.weight === undefined ? {} : { weight: input.weight }),
               ...(input.flags === undefined ? {} : { flags: input.flags }),
               ...(input.refs === undefined ? {} : { refs: input.refs }),
               from,
             },
-            { now: new Date(now), random: Math.random },
+            { now: new Date(now) },
           );
           return {
             ok: true,
@@ -440,26 +431,25 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
       }
       if (operation === "update") {
         const input = taskSchemas.update.parse(raw);
-        if (input.task.startsWith("T-")) {
+        if (isDeployTaskId(input.task)) {
           if (
             Object.keys(bindings(input)).length ||
             input.status !== undefined ||
             input.parent !== undefined ||
-            input.type !== undefined ||
             input.blocked_by_add !== undefined ||
             input.blocked_by_remove !== undefined
           )
             throw new Error(
-              "Project task status changes only through task_done; project tasks have no parent, type or blocked-by",
+              "Deploy task status changes only through task_done; deploy tasks have no parent or blocked-by",
             );
-          const task = updateProjectTask(
+          const task = updateDeployTask(
             projectDir(),
             input.task,
             {
               ...(input.subject === undefined ? {} : { title: input.subject }),
               ...(input.description === undefined ? {} : { body: input.description }),
-              ...(input.when === undefined ? {} : { when: input.when }),
-              ...(input.weight === undefined ? {} : { weight: input.weight }),
+              ...(input.deploy === undefined ? {} : { deploy: input.deploy }),
+              ...(input.type === undefined ? {} : { type: input.type }),
               ...(input.flags === undefined ? {} : { flags: input.flags }),
               ...(input.refs === undefined ? {} : { refs: input.refs }),
               ...(input.from === undefined ? {} : { from: input.from }),
@@ -534,13 +524,9 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
       }
       if (operation === "done") {
         const input = taskSchemas.done.parse(raw);
-        if (input.task.startsWith("T-")) {
+        if (isDeployTaskId(input.task)) {
           const task = project(input.task);
-          if (task.kind === "teammate" && !input.for_everyone && input.outcome === "done") {
-            value(ack(store, ctx.project, task.id, now));
-            return { ok: true, text: `${task.id} "${task.title}" · done on this machine` };
-          }
-          closeProjectTask(
+          closeDeployTask(
             projectDir(),
             task.id,
             {
@@ -570,8 +556,8 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
       }
       if (operation === "note") {
         const input = taskSchemas.note.parse(raw);
-        if (input.task.startsWith("T-")) {
-          addProjectNote(projectDir(), input.task, input.text, new Date(now));
+        if (isDeployTaskId(input.task)) {
+          addDeployNote(projectDir(), input.task, input.text, new Date(now));
         } else
           value(
             writeWork(store, () => insertNote(store, work(input.task).id, input.text, who, now)),
@@ -580,7 +566,7 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
       }
       if (operation === "get") {
         const input = taskSchemas.get.parse(raw);
-        const text = input.task.startsWith("T-")
+        const text = isDeployTaskId(input.task)
           ? (() => {
               // A project task's history is its file's git log: every commit that changed it,
               // across its move into `archive/`. `--follow` loses the move with `--reverse`
@@ -655,7 +641,7 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
       }
       if (operation === "delete") {
         const input = taskSchemas.delete.parse(raw);
-        if (input.task.startsWith("T-")) {
+        if (isDeployTaskId(input.task)) {
           const task = project(input.task);
           if (!ctx.checkoutRoot) throw new Error("Project tasks need a checkout");
           const tracked = runGit(
@@ -682,7 +668,7 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
         return { ok: true, text: `${input.task} · deleted` };
       }
       let selected: WorkTask[];
-      let projects: ProjectTask[] = [];
+      let projects: DeployTask[] = [];
       let planLedger = false;
       if (operation === "search") {
         const input = taskSchemas.search.parse(raw);
@@ -729,11 +715,7 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
                 : shown !== null && t.plan === shown),
           );
         } else if (ctx.projectTasks.ok)
-          projects = projectTasks(!openOnly).filter(
-            (t) =>
-              (!openOnly || t.status === "open") &&
-              (input.scope === "all" || t.kind !== "teammate" || !acked(t.id)),
-          );
+          projects = projectTasks(!openOnly).filter((t) => !openOnly || t.status === "open");
       }
       const selectedIds = new Set(selected.map((t) => t.id));
       const byId = new Map(all.map((t) => [t.id, t]));

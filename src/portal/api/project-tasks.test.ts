@@ -165,30 +165,33 @@ describe("a project's tasks answer (D75)", () => {
     db.close();
 
     const tasks = join(root, ".claude", "tasks");
-    taskFile(tasks, "T-aaaaaa", {
+    taskFile(join(tasks, "staging"), "staging-20260225-100000", {
       title: "Tell the team",
-      kind: "teammate",
+      env: "staging",
       status: "open",
-      when: "any",
-      created: "2026-02-25",
+      deploy: "after",
+      type: "non-blocking",
+      created: "2026-02-25T10:00:00Z",
     });
-    taskFile(tasks, "T-bbbbbb", {
+    taskFile(join(tasks, "prod"), "prod-20260102-100000", {
       title: "Run the backfill",
-      kind: "database",
+      env: "prod",
       status: "open",
-      when: "next-release",
-      weight: "blocks-release",
+      deploy: "before",
+      type: "blocking",
       flags: ["twice-safe"],
-      created: "2026-01-02",
+      created: "2026-01-02T10:00:00Z",
     });
-    taskFile(join(tasks, "archive"), "T-cccccc", {
+    taskFile(join(tasks, "prod", "archive"), "prod-20251201-100000", {
       title: "Old one",
-      kind: "production",
+      env: "prod",
       status: "done",
-      created: "2025-12-01",
-      closed: "2026-01-01",
+      deploy: "after",
+      type: "blocking",
+      created: "2025-12-01T10:00:00Z",
+      closed: "2026-01-01T10:00:00Z",
     });
-    writeFileSync(join(tasks, "T-dddddd-broken.md"), "no front matter\n");
+    writeFileSync(join(tasks, "prod", "prod-20260301-000000-broken.md"), "no front matter\n");
 
     const answer = await answerOf(deps, idOf(root));
     expect(answer?.status).toBe(200);
@@ -291,25 +294,25 @@ describe("a project's tasks answer (D75)", () => {
       tasks: [
         {
           created: "2026-01-02",
-          file: ".claude/tasks/T-bbbbbb-task.md",
+          file: ".claude/tasks/prod/prod-20260102-100000-task.md",
           flags: ["twice-safe"],
-          id: "T-bbbbbb",
-          kind: "database",
+          id: "prod-20260102-100000",
+          kind: "production",
           stale: true,
           title: "Run the backfill",
           weight: "blocks-release",
-          when: "next-release",
+          when: null,
         },
         {
           created: "2026-02-25",
-          file: ".claude/tasks/T-aaaaaa-task.md",
+          file: ".claude/tasks/staging/staging-20260225-100000-task.md",
           flags: [],
-          id: "T-aaaaaa",
-          kind: "teammate",
+          id: "staging-20260225-100000",
+          kind: "production",
           stale: false,
           title: "Tell the team",
           weight: null,
-          when: "any",
+          when: null,
         },
       ],
     });
