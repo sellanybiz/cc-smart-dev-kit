@@ -7,7 +7,7 @@
  * | Hook | Event (matcher) | Fails closed by |
  * |---|---|---|
  * | git-guard | PreToolUse (Bash, PowerShell) | asking before every command that runs git |
- * | main-folder-guard | PreToolUse (Edit, Write, NotebookEdit) | asking before every edit in the repo |
+ * | main-folder-guard | PreToolUse (Edit, Write, NotebookEdit, Bash) | asking before every edit, and every shell command that writes, in the repo |
  * | agent-guard | PreToolUse (Agent, Task, Workflow) | machine-wide: it judges the same way without cc-smart-dev-kit.json (`agent-guard.ts`) |
  * | fable-session | SessionStart, PostModelSwitch, Stop | machine-wide: it says the same line without cc-smart-dev-kit.json (`fable-session.ts`) |
  * | tier-view | SessionStart, UserPromptSubmit | machine-wide: the note of what each subagent tier runs now says the same without cc-smart-dev-kit.json (`tier-view.ts`) |
@@ -62,7 +62,7 @@ import {
   routeFacts,
 } from "./job-route";
 import { KEEP_GOING, keepGoing, keepGoingAnswer } from "./keep-going";
-import { editedFile, mainFolderGuard } from "./main-folder-guard";
+import { mainFolderGuard, writtenPaths } from "./main-folder-guard";
 import { mergeGuard } from "./merge-guard";
 import { autoPushQuestion } from "./push-policy";
 import { agentTypeOf, reviewRecord } from "./review-record";
@@ -204,17 +204,20 @@ export const mainFolderGuardHook: HookSpec = {
   name: "main-folder-guard",
   events: ["PreToolUse"],
   onConfigProblem: (message, input, _event, checkout) => {
-    const file = typeof input.cwd === "string" ? editedFile(input, input.cwd) : null;
+    const cwd = stringField(input.cwd);
     const repo = checkout.mainCheckout ?? checkout.root;
-    return file !== null && isInside(file, repo)
+    // A shell command asks when its words write in the repo, as an edit of a file there does.
+    return cwd !== null && writtenPaths(input, cwd).paths.some((path) => isInside(path, repo))
       ? toolDecision("ask", cannotCheck("whether this edit belongs in a worktree", message))
       : SILENT;
   },
-  // A crash must not let an edit through: the guard asks about the edit it was asked to
-  // judge.
-  onCrash: guardCrash("whether this edit belongs in a worktree", (input) =>
-    ["Edit", "Write", "NotebookEdit"].includes(toolOf(input)),
-  ),
+  // A crash must not let a change through: the guard asks about the edit, or the shell
+  // command that writes, it was asked to judge.
+  onCrash: guardCrash("whether this edit belongs in a worktree", (input) => {
+    if (["Edit", "Write", "NotebookEdit"].includes(toolOf(input))) return true;
+    const cwd = stringField(input.cwd);
+    return cwd === null || writtenPaths(input, cwd).paths.length > 0;
+  }),
   run: mainFolderGuard,
 };
 

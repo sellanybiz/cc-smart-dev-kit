@@ -27,11 +27,9 @@
  * **`notify` asks this module's decision** (`verifyGateWouldBlock`): a Stop that this hook will
  * block is not the end of the turn, so the "finished" alert waits for the stop that ends it.
  */
-import { extname, isAbsolute, join, resolve } from "node:path";
-import { cliPaths } from "../cli/paths";
+import { extname, isAbsolute } from "node:path";
 import type { CcSmartDevKitConfig } from "../project/config";
 import { loadProjectConfig, locateCheckout } from "../project/resolve";
-import { readJsonObject } from "../setup/managed-json";
 import {
   type Dialect,
   dialectOfTool,
@@ -45,6 +43,7 @@ import {
 import { isInside, realPath } from "./git";
 import { type HookInput, type HookResult, SILENT, stringField } from "./io";
 import { editedFile } from "./main-folder-guard";
+import { plansFolders } from "./plans-folders";
 import type { Env, HookContext } from "./run";
 import { STOP_FEEDBACK, stopFeedbackTexts, tailLines } from "./transcript";
 
@@ -244,20 +243,7 @@ export function verifyGateWouldBlock(
   const checkout = locateCheckout(cwd, { env });
   if (checkout === null) return false;
   const root = realPath(checkout.root);
-  const paths = cliPaths(env);
-  let plans = join(paths.claudeConfigDir, "plans");
-  for (const settings of [
-    paths.settingsFile,
-    join(root, ".claude/settings.json"),
-    join(root, ".claude/settings.local.json"),
-  ]) {
-    const configured = stringField(readJsonObject(settings).data.plansDirectory);
-    if (configured !== null)
-      plans = configured.startsWith("~/")
-        ? join(paths.home, configured.slice(2))
-        : resolve(root, configured);
-  }
-  const excluded = [realPath(plans), realPath(join(root, ".claude/plans"))];
+  const excluded = plansFolders(root, env);
   const seen = seenIn(lines, check, (block, editCwd) => {
     const fields = objectOf(block.input);
     const path = stringField(
