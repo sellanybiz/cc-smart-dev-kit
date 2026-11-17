@@ -105,8 +105,6 @@ export interface BashReading {
   identityAssigned: boolean;
   /** The `claude` launches it starts, in order. */
   launches: ClaudeLaunch[];
-  /** Every command the line runs, its inner shell text included (three levels). */
-  steps: Step[];
   /** The line runs `workflow propose` (`isWorkflowPropose`). */
   workflowPropose: boolean;
   /** The project each `workflow propose` of the line proposes into (`proposalOf`), in order. */
@@ -397,7 +395,6 @@ export function readBash(command: string, dialect: Dialect = "bash"): BashReadin
   return {
     launches,
     proposals,
-    steps,
     workflowPropose,
     invocations,
     namesHerdr,

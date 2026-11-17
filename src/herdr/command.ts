@@ -721,7 +721,7 @@ async function start(a: Start, ctx: HerdrContext, r: HcRunner): Promise<number> 
       }
       ctx.out.line(
         "warn",
-        `The child ${child.address} has not reported yet; answer it in its pane: hc attach ${child.address}`,
+        `The child ${child.address} has not reported yet; the person answers it in its pane: hc attach ${child.address}`,
       );
       break;
     }
@@ -953,7 +953,7 @@ export async function runHerdr(args: string[], ctx: HerdrContext): Promise<numbe
           ctx.out.say("Nothing to wait for: every child has settled and was reported.");
           return 0;
         }
-        if (news === "timeout") ctx.out.line("info", "Still working.");
+        if (news === "timeout") ctx.out.line("info", "Not settled yet.");
         else if ("news" in news && Array.isArray(news.news)) {
           for (const fact of news.news) {
             ctx.out.say(
@@ -965,7 +965,7 @@ export async function runHerdr(args: string[], ctx: HerdrContext): Promise<numbe
           if (news.timeout)
             ctx.out.line(
               "info",
-              `Still working: ${Array.isArray(news.pending) ? news.pending.join(", ") : "unknown"}`,
+              `Not settled yet (a blocked child waits for the person; see herdr list): ${Array.isArray(news.pending) ? news.pending.join(", ") : "unknown"}`,
             );
         } else ctx.out.json(news);
         const cursor: Seen = Object.fromEntries(

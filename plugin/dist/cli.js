@@ -48130,7 +48130,6 @@ function readBash(command, dialect = "bash") {
   return {
     launches,
     proposals,
-    steps,
     workflowPropose,
     invocations,
     namesHerdr,
@@ -55213,7 +55212,7 @@ Your lead is on another core. Reports stay on this machine in ${remoteReportFold
         ctx.out.say(`Worktree folder ${folderExists === 0 ? "exists" : "does not exist"}: ${worktree}`);
         return refuse2(ctx, `The child ${child.address} exited during launch.`, "Resolve the screen error above, then retry with the same name if its worktree and branch are absent.");
       }
-      ctx.out.line("warn", `The child ${child.address} has not reported yet; answer it in its pane: hc attach ${child.address}`);
+      ctx.out.line("warn", `The child ${child.address} has not reported yet; the person answers it in its pane: hc attach ${child.address}`);
       break;
     }
     await ctx.sleep(Math.min(LAUNCH_POLL_MS, Math.max(0, deadline - ctx.now())));
@@ -55401,7 +55400,7 @@ async function runHerdr(args, ctx) {
           return 0;
         }
         if (news === "timeout")
-          ctx.out.line("info", "Still working.");
+          ctx.out.line("info", "Not settled yet.");
         else if ("news" in news && Array.isArray(news.news)) {
           for (const fact of news.news) {
             ctx.out.say(`${fact.terminal}: ${fact.state}; status_ms=${fact.status_ms ?? "unknown"}`);
@@ -55409,7 +55408,7 @@ async function runHerdr(args, ctx) {
               remoteReportHint(ctx, fact.terminal.split("/")[0] ?? "");
           }
           if (news.timeout)
-            ctx.out.line("info", `Still working: ${Array.isArray(news.pending) ? news.pending.join(", ") : "unknown"}`);
+            ctx.out.line("info", `Not settled yet (a blocked child waits for the person; see herdr list): ${Array.isArray(news.pending) ? news.pending.join(", ") : "unknown"}`);
         } else
           ctx.out.json(news);
         const cursor = Object.fromEntries(Object.entries(parsed.seen ?? {}).filter(([address]) => typeof news === "string" || !Array.isArray(news.addresses) || news.addresses.includes(address)));

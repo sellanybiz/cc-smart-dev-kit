@@ -375,6 +375,12 @@ test("send selects status guard, refuses unsafe states and never retries", async
       ["idle", "working", "done"].includes(state ?? "") ? 0 : 1,
     );
     const send = w.calls.find((c) => c.args[0] === "send");
+    if (state === "blocked" || state === null) {
+      expect(w.lines.at(-1)).toBe(
+        "✗ This child waits for the person, who answers it in its pane: hc attach t2",
+      );
+      expect(send).toBeUndefined();
+    }
     if (state === "done")
       expect(send?.args).toEqual([
         "send",
@@ -557,7 +563,7 @@ test("wait prints every news timestamp and exact continuation", async () => {
   );
   expect(w.lines).toEqual([
     "t2: error; status_ms=9",
-    "· Still working: t3",
+    "· Not settled yet (a blocked child waits for the person; see herdr list): t3",
     `${COMMAND} herdr wait --all --timeout 9 --seen t2:3:error`,
   ]);
 });
@@ -738,7 +744,7 @@ test("launch polls for first status and warns without failing at its deadline", 
     } else {
       expect(w.ctx.now()).toBe(20_000);
       expect(w.lines.join("\n")).toContain(
-        "has not reported yet; answer it in its pane: hc attach t2",
+        "has not reported yet; the person answers it in its pane: hc attach t2",
       );
       expect(w.lines).toContain("The child's screen (t2):");
       expect(w.lines).toContain("  Yes, I trust this folder");
@@ -851,7 +857,7 @@ test("stationary launch clock exhausts its finite poll budget and still binds ta
     expect(await runHerdr([...launch, "--task", "#1", "--", "work"], w.ctx)).toBe(0);
     expect(sleeps).toBe(80);
     expect(w.lines.join("\n")).toContain(
-      "has not reported yet; answer it in its pane: hc attach t2",
+      "has not reported yet; the person answers it in its pane: hc attach t2",
     );
     const task = ops.call("get", { task: "#1" });
     expect(task.ok).toBe(true);

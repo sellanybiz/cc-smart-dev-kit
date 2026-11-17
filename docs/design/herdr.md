@@ -231,10 +231,8 @@ not live UI behavior.
 **Not yet proved live** (release proof task #273):
 
 - Actual Bash permission kind/msg and labels; plain send at a blocked prompt types nothing.
-- The current cursor-relative answer route at permission and single-question dialogs,
-  including the judge's confirmation. Number-key selection and Type something remain unproved;
-  neither is used by the relay.
-- Plan approval kind/msg and pane-only refusal; multi-question and multi-select refusal.
+- Whether Herdr marks a blocked linked child as needing the person (proved only for
+  independent sessions). Since 4.10.1 that mark is the person's only signal: `wait` stays quiet.
 - A real child's report to a live lead and a gone lead's report-file fallback.
 - Remote version/git/collision checks, private brief transfer and launch on an allowed machine.
 - Herdr's toast for an independent session's unseen question.

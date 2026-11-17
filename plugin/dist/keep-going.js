@@ -16990,7 +16990,6 @@ function readBash(command, dialect = "bash") {
   return {
     launches,
     proposals,
-    steps,
     workflowPropose,
     invocations,
     namesHerdr,
