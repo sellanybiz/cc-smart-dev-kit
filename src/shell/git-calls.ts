@@ -4,6 +4,16 @@
  * a git command line through `gitCalls`, so a spelling git accepts is fixed here and nowhere else.
  */
 
+/**
+ * True when `arg` is the long option `full`, or a prefix of it that git accepts (git takes
+ * any unique prefix: `--har` is `--hard`, `--force-w` is `--force-with-lease`). `min` is the
+ * shortest prefix that still names one option of that subcommand.
+ */
+export function longOption(arg: string, full: string, min: number): boolean {
+  const name = arg.split("=")[0] ?? arg;
+  return name.length >= min && name.length <= full.length && full.startsWith(name);
+}
+
 /** A config key as git compares it: section and key lowercase, a subsection as it is. */
 function configKey(raw: string): string {
   const parts = raw.split(".");

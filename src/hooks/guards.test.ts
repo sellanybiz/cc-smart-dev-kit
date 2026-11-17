@@ -1,10 +1,11 @@
 /** The main-folder guard. */
 import { describe, expect, test } from "bun:test";
 import { symlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { hookEnv, makeRepo, runHook, wireProjectHook, writeClaudeFile } from "../testing/hooks";
 import { git, tempDir } from "../testing/temp";
-import { editsMainFolder, mainFolderRefusal } from "./main-folder-guard";
+import { editsMainFolder, mainFolderRefusal, mayWriteInRepo } from "./main-folder-guard";
 import { mainFolderGuardHook } from "./specs";
 
 const SESSION = "11111111-2222-3333-4444-555555555555";
@@ -68,7 +69,7 @@ describe("the main-folder guard", () => {
       [
         "This file is in the main checkout (/code/app). This project makes every change in a worktree (cc-smart-dev-kit.json `worktrees.guardMainFolder`).",
         "Already working in a worktree? Edit the same file under that worktree's folder.",
-        "Not in one yet: `EnterWorktree` with the task name as its `name` makes one, or resumes an existing one — use dashes, since a `/` becomes `+`.",
+        "Not in one yet: `EnterWorktree` with the task's name as its `name` (dashes, not `/`) makes one, or resumes an existing one.",
       ].join("\n"),
     );
   });
@@ -163,6 +164,29 @@ describe("the main-folder guard", () => {
   });
 });
 
+describe("mayWriteInRepo: what a crashed guard still asks about", () => {
+  const input = (command: string) => ({ tool_name: "Bash", tool_input: { command } });
+
+  test("a write to /dev or the temp folder is none of its business, a write in the project is", () => {
+    const cwd = "/code/app";
+    expect(mayWriteInRepo(input("echo x > /dev/null"), cwd)).toBe(false);
+    expect(mayWriteInRepo(input("make 2>/dev/null"), cwd)).toBe(false);
+    expect(mayWriteInRepo(input(`echo x > ${join(tmpdir(), "out.txt")}`), cwd)).toBe(false);
+    expect(mayWriteInRepo(input("git status"), cwd)).toBe(false);
+    expect(mayWriteInRepo(input("echo x > a.txt"), cwd)).toBe(true);
+    expect(mayWriteInRepo(input("echo x > /dev/null; git commit -m x"), cwd)).toBe(true);
+  });
+
+  test("a session that itself works in the temp folder is asked about a write there", () => {
+    const cwd = join(tmpdir(), "my-project");
+    expect(mayWriteInRepo(input(`echo x > ${join(cwd, "a.txt")}`), cwd)).toBe(true);
+  });
+
+  test("no known folder: it cannot tell, so it asks", () => {
+    expect(mayWriteInRepo(input("echo x > /dev/null"), null)).toBe(true);
+  });
+});
+
 describe("the main-folder guard: plan mode's plan file", () => {
   function guarded() {
     const repo = makeRepo();
@@ -180,8 +204,24 @@ describe("the main-folder guard: plan mode's plan file", () => {
     tool_input: { file_path: file },
   });
 
-  test("a file in the project's .claude/plans passes; the rest of .claude is refused", async () => {
+  test("with no plansDirectory the plans live outside the repo: .claude/plans is no exception", async () => {
     const repo = guarded();
+    expect(
+      await runHook(mainFolderGuardHook, edit(repo, join(repo, ".claude/plans/x.md")), hookEnv()),
+    ).toEqual(deny(mainFolderRefusal(repo)));
+    const env = hookEnv();
+    expect(
+      await runHook(
+        mainFolderGuardHook,
+        edit(repo, join(env.CLAUDE_CONFIG_DIR ?? "", "plans/x.md")),
+        env,
+      ),
+    ).toEqual({});
+  });
+
+  test("a file in the project's .claude/plans passes when that is the plansDirectory; the rest of .claude is refused", async () => {
+    const repo = guarded();
+    writeClaudeFile(repo, "settings.json", { plansDirectory: ".claude/plans" });
     expect(
       await runHook(mainFolderGuardHook, edit(repo, join(repo, ".claude/plans/x.md")), hookEnv()),
     ).toEqual({});
@@ -206,6 +246,7 @@ describe("the main-folder guard: plan mode's plan file", () => {
 
   test("a plan reached through a link is still the plan, and a link does not widen it", async () => {
     const repo = guarded();
+    writeClaudeFile(repo, "settings.json", { plansDirectory: ".claude/plans" });
     const link = join(tempDir("link"), "app");
     symlinkSync(repo, link);
     expect(
@@ -245,7 +286,7 @@ describe("the main-folder guard: Bash writes", () => {
       [
         "This command writes in the main checkout (/code/app). This project makes every change in a worktree (cc-smart-dev-kit.json `worktrees.guardMainFolder`).",
         "Already working in a worktree? Run the command in that worktree's folder: `cd` into it first, or give `git -C <worktree>` to a git command.",
-        "Not in one yet: `EnterWorktree` with the task name as its `name` makes one, or resumes an existing one — use dashes, since a `/` becomes `+`.",
+        "Not in one yet: `EnterWorktree` with the task's name as its `name` (dashes, not `/`) makes one, or resumes an existing one.",
       ].join("\n"),
     );
   });
@@ -326,6 +367,70 @@ describe("the main-folder guard: Bash writes", () => {
     }
   });
 
+  test("a cd inside ( … ) does not move the commands after it", async () => {
+    const { repo } = guarded();
+    expect(
+      await runHook(
+        mainFolderGuardHook,
+        bash(repo, "(cd .claude/worktrees/w && make); git commit -m x"),
+        hookEnv(),
+      ),
+    ).toEqual(refused(repo));
+    expect(
+      await runHook(
+        mainFolderGuardHook,
+        bash(repo, "(cd .claude/worktrees/w && git commit -m x)"),
+        hookEnv(),
+      ),
+    ).toEqual({});
+  });
+
+  test("a git command that changes nothing passes: a dry run, a bare checkout", async () => {
+    const { repo } = guarded();
+    for (const command of ["git commit --dry-run", "git checkout", "sed -n -i '' p /tmp/f"]) {
+      expect(await runHook(mainFolderGuardHook, bash(repo, command), hookEnv())).toEqual({});
+    }
+    // BSD sed: the empty word is the backup suffix, the script is no file; the file is.
+    expect(
+      await runHook(mainFolderGuardHook, bash(repo, "sed -i '' s/x/y/ /tmp/out.txt"), hookEnv()),
+    ).toEqual({});
+    expect(
+      await runHook(mainFolderGuardHook, bash(repo, "sed -i '' s/x/y/ README.md"), hookEnv()),
+    ).toEqual(refused(repo));
+  });
+
+  test("a program the line works out, naming a git command that changes the checkout, asks", async () => {
+    const { repo, inner } = guarded();
+    for (const command of ["$GIT commit -m x", "$(which git) checkout main"]) {
+      const result = await runHook(mainFolderGuardHook, bash(repo, command), hookEnv());
+      expect(JSON.parse(result.stdout ?? "{}").hookSpecificOutput).toMatchObject({
+        permissionDecision: "ask",
+        permissionDecisionReason: expect.stringContaining("works out when it runs"),
+      });
+      // The same line in a worktree is fine, and so is one that names no checkout-changing word.
+      expect(await runHook(mainFolderGuardHook, bash(inner, command), hookEnv())).toEqual({});
+    }
+    expect(await runHook(mainFolderGuardHook, bash(repo, "$GIT status"), hookEnv())).toEqual({});
+    // A line that also writes a literal path in the main checkout is a plain refusal.
+    expect(
+      await runHook(mainFolderGuardHook, bash(repo, "$GIT commit -m x; touch a"), hookEnv()),
+    ).toEqual(refused(repo));
+  });
+
+  test("a line of 64 KB is read in well under the hook's 10 seconds", async () => {
+    const { repo, inner } = guarded();
+    const line = "cd a && touch b;".repeat(4_096);
+    expect(line.length).toBeGreaterThan(64_000);
+    for (const [cwd, expected] of [
+      [repo, refused(repo)],
+      [inner, {}],
+    ] as const) {
+      const started = performance.now();
+      expect(await runHook(mainFolderGuardHook, bash(cwd, line), hookEnv())).toEqual(expected);
+      expect(performance.now() - started).toBeLessThan(2_000);
+    }
+  });
+
   test("a word the shell works out when the line runs passes: the guard cannot know it", async () => {
     const { repo } = guarded();
     for (const command of [
@@ -341,6 +446,7 @@ describe("the main-folder guard: Bash writes", () => {
 
   test("the session's plans folder passes for a command too, the rest of .claude does not", async () => {
     const { repo } = guarded();
+    writeClaudeFile(repo, "settings.json", { plansDirectory: ".claude/plans" });
     expect(
       await runHook(mainFolderGuardHook, bash(repo, "echo x > .claude/plans/p.md"), hookEnv()),
     ).toEqual({});

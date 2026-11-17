@@ -55,11 +55,18 @@
  * `src/shell/command.ts`'s job; this file adds no lexer of its own.
  */
 
-import { dirname, isAbsolute, posix, relative, resolve, win32 } from "node:path";
+import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { COMMAND } from "../build-info/names";
 import type { CliPaths } from "../cli/paths";
 import { isInside } from "../path-compare";
 import { DEFAULT_PORTAL_PORT } from "../ports";
+import {
+  CHANGES_FOLDER,
+  COMPUTED_PATH,
+  movedTo,
+  pathRules,
+  shellTargetPath,
+} from "../shell/change-dir";
 import {
   type Dialect,
   dialectOfTool,
@@ -73,12 +80,12 @@ import {
   programName,
   type Reading,
   readingsOf,
-  redirectionTargets,
   shellSteps,
   shortFlags,
   withoutRedirections,
   wordsOf,
 } from "../shell/command";
+import { writtenWords } from "../shell/writes";
 import { realPath } from "./git";
 import {
   type HookInput,
@@ -89,6 +96,9 @@ import {
   toolInput,
 } from "./io";
 import { isKitWord, kitArguments, namesKit } from "./kit-invocation";
+
+/** A Bash line's path as the platform reads it: the home of the reader is `src/shell/change-dir.ts`. */
+export { shellTargetPath };
 
 /** The shell tools, and the tools that edit a file. */
 export const ESCAPE_SHELL_TOOLS: readonly string[] = ["Bash", "PowerShell"];
@@ -247,28 +257,6 @@ interface ShellContext {
   text: string;
 }
 
-/** `node:path`'s Windows or POSIX rules, for the platform whose paths the line names. */
-function pathRules(platform: NodeJS.Platform): typeof posix {
-  return platform === "win32" ? win32 : posix;
-}
-
-/**
- * A path a Bash line names, as the platform reads it. Claude Code's Bash tool is Git Bash on
- * Windows, where MSYS2 maps the drive `C:` to `/c`: a line that writes `/c/Users/…` writes
- * `C:/Users/…`. Read as it is, `/c/…` would look like a folder named `c` on whatever drive
- * the line runs on, and a write into the kit's own files would go unseen. PowerShell runs
- * natively, so its `/c/…` is no drive and is left alone.
- */
-export function shellTargetPath(
-  path: string,
-  platform: NodeJS.Platform = process.platform,
-  dialect: Dialect = "bash",
-): string {
-  if (platform !== "win32" || dialect !== "bash") return path;
-  const drive = /^\/+([A-Za-z])\//.exec(path);
-  return drive === null ? path : `${drive[1]?.toUpperCase()}:/${path.slice(drive[0].length)}`;
-}
-
 const REVIEW_DONE_DENIAL = `\`${COMMAND} workflow review-done\` records a review by hand, for the person in their own terminal. A session never records its own review: the review-record hook records it when a review agent (the \`reviewAgents\` setting) returns. Run the review agent on the change instead; if it did and nothing was recorded, tell the person.`;
 
 function droppedDenial(why: string): string {
@@ -289,125 +277,11 @@ function judgeKitCommand(
 }
 
 // ---- Shell writes into the kit's own files ---------------------------------------------
-
-/** Programs that write the file(s) among their arguments in place: `tee`, `Set-Content`, … */
-const WRITES_ITS_FILES: ReadonlySet<string> = new Set([
-  "ac",
-  "add-content",
-  "out-file",
-  "sc",
-  "set-content",
-  "tee",
-  "tee-object",
-]);
-
-/** Programs that put their last argument (or `-t` / `-Destination`) in place. */
-const COPIES: ReadonlySet<string> = new Set([
-  "copy",
-  "copy-item",
-  "cp",
-  "cpi",
-  "install",
-  "ln",
-  "mi",
-  "move",
-  "move-item",
-  "mv",
-]);
-
-/** The ones among them that also take their source away: every argument is written. */
-const MOVES: ReadonlySet<string> = new Set(["mi", "move", "move-item", "mv"]);
-
-/** Programs that change the folder the next commands of the line run in. */
-const CHANGES_FOLDER: ReadonlySet<string> = new Set([
-  "cd",
-  "chdir",
-  "popd",
-  "push-location",
-  "pushd",
-  "set-location",
-  "sl",
-]);
+// What a line writes and where a `cd` goes are read by `src/shell/writes.ts` and
+// `src/shell/change-dir.ts`, the same readers the main-folder guard uses.
 
 function isString(value: string | null | undefined): value is string {
   return typeof value === "string";
-}
-
-/** The words of a path that are not a path yet: a variable, a command, a glob, `%VAR%`. */
-const COMPUTED_PATH = /[$`*?[\]]|%\w+%/;
-
-/** The values of the PowerShell parameters `names` (any prefix of a name: `-Dest`, `-Path:x`). */
-function parameterValues(args: readonly string[], names: readonly string[]): string[] {
-  const values: string[] = [];
-  for (let index = 0; index < args.length; index++) {
-    const parameter = /^-([a-z]+)(?::(.*))?$/i.exec(args[index] ?? "");
-    const given = parameter?.[1]?.toLowerCase() ?? "";
-    if (given.length < 2 || !names.some((name) => name.startsWith(given))) continue;
-    const value = parameter?.[2] ?? args[++index];
-    if (value !== undefined) values.push(value);
-  }
-  return values;
-}
-
-/** `cp -t DIR`, `cp -tDIR`, `cp --target-directory=DIR`, `cp --target-directory DIR`. */
-function targetDirectories(args: readonly string[]): string[] {
-  const found: string[] = [];
-  for (let index = 0; index < args.length; index++) {
-    const arg = args[index] ?? "";
-    if (arg === "-t" || arg === "--target-directory") found.push(args[++index] ?? "");
-    else if (arg.startsWith("--target-directory=")) found.push(arg.slice(19));
-    else if (/^-t./.test(arg) && !arg.startsWith("--")) found.push(arg.slice(2));
-  }
-  return found.filter((one) => one !== "");
-}
-
-/**
- * The paths one command of the line writes, as the line spells them: its redirections, and the
- * files a program that writes in place is given. Nothing for a program that only reads.
- * `words` are all the step's words (a redirection may stand before the program).
- */
-function writtenPaths(
-  words: readonly string[],
-  invocation: ReturnType<typeof invocationOf>,
-): string[] {
-  const written = redirectionTargets(words);
-  if (invocation === undefined) return written;
-  const { program } = invocation;
-  const args = withoutRedirections(invocation.args);
-  const operands = args.filter((arg) => !arg.startsWith("-"));
-  if (WRITES_ITS_FILES.has(program)) written.push(...operands);
-  else if (program === "dd")
-    written.push(...args.filter((arg) => arg.startsWith("of=")).map((arg) => arg.slice(3)));
-  else if (program === "sed" || program === "perl") {
-    // `-i`, `-i.bak`, `-pi`, `-ni`, `--in-place`: the files are edited in place.
-    if (args.some((arg) => arg.startsWith("--in-place") || /^-[a-z]*i/.test(arg))) {
-      written.push(...operands);
-    }
-  } else if (COPIES.has(program)) {
-    const given = [...parameterValues(args, ["destination"]), ...targetDirectories(args)];
-    written.push(...(given.length > 0 ? given : operands.slice(-1)));
-    if (MOVES.has(program)) written.push(...operands);
-  }
-  return written;
-}
-
-/** The folder a `cd` (or the like) moves the line to; null when it cannot be told. */
-function movedTo(
-  invocation: NonNullable<ReturnType<typeof invocationOf>>,
-  folder: string | null,
-  ctx: ShellContext,
-  dialect: Dialect,
-): string | null {
-  const to = withoutRedirections(invocation.args).find((arg) => !arg.startsWith("-"));
-  if (to === undefined) return invocation.program === "cd" ? ctx.paths.home : folder;
-  const path = shellTargetPath(expanded(to, ctx.paths.home), ctx.platform, dialect);
-  if (COMPUTED_PATH.test(path) || path === "-") return null;
-  const rules = pathRules(ctx.platform);
-  return rules.isAbsolute(path)
-    ? rules.resolve(path)
-    : folder === null
-      ? null
-      : rules.resolve(folder, path);
 }
 
 /** The places in the text of a command that name the protected files, normalised for `includes`. */
@@ -527,10 +401,14 @@ function readLine(
   for (const step of shellSteps(line, { blindWhenOpen: true, dialect, joinLines })) {
     const words = wordsOf(step.text, dialect);
     const invocation = invocationOf(words);
-    const writes = writtenPaths(words, invocation);
+    const writes = writtenWords(words, invocation, dialect);
     if (writes.length > 0) judgeWrites(writes, where, ctx, found, dialect);
     if (invocation !== undefined && CHANGES_FOLDER.has(invocation.program)) {
-      where = invocation.program === "popd" ? null : movedTo(invocation, where, ctx, dialect);
+      where = movedTo(invocation.program, where, withoutRedirections(invocation.args), {
+        dialect,
+        home: ctx.paths.home,
+        platform: ctx.platform,
+      });
     }
     const later = persistentDrop(
       words,

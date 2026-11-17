@@ -62,7 +62,7 @@ import {
   routeFacts,
 } from "./job-route";
 import { KEEP_GOING, keepGoing, keepGoingAnswer } from "./keep-going";
-import { mainFolderGuard, writtenPaths } from "./main-folder-guard";
+import { mainFolderGuard, mayWriteInRepo, writtenPaths } from "./main-folder-guard";
 import { mergeGuard } from "./merge-guard";
 import { autoPushQuestion } from "./push-policy";
 import { agentTypeOf, reviewRecord } from "./review-record";
@@ -207,17 +207,17 @@ export const mainFolderGuardHook: HookSpec = {
     const cwd = stringField(input.cwd);
     const repo = checkout.mainCheckout ?? checkout.root;
     // A shell command asks when its words write in the repo, as an edit of a file there does.
-    return cwd !== null && writtenPaths(input, cwd).paths.some((path) => isInside(path, repo))
+    return cwd !== null && writtenPaths(input, cwd).targets.some(({ path }) => isInside(path, repo))
       ? toolDecision("ask", cannotCheck("whether this edit belongs in a worktree", message))
       : SILENT;
   },
   // A crash must not let a change through: the guard asks about the edit, or the shell
   // command that writes, it was asked to judge.
-  onCrash: guardCrash("whether this edit belongs in a worktree", (input) => {
-    if (["Edit", "Write", "NotebookEdit"].includes(toolOf(input))) return true;
-    const cwd = stringField(input.cwd);
-    return cwd === null || writtenPaths(input, cwd).paths.length > 0;
-  }),
+  onCrash: guardCrash("whether this edit belongs in a worktree", (input) =>
+    ["Edit", "Write", "NotebookEdit"].includes(toolOf(input))
+      ? true
+      : mayWriteInRepo(input, stringField(input.cwd)),
+  ),
   run: mainFolderGuard,
 };
 

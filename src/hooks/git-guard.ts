@@ -71,7 +71,7 @@ import {
   withoutRedirections,
   wordsOf,
 } from "../shell/command";
-import { type GitCall, gitCalls } from "../shell/git-calls";
+import { type GitCall, gitCalls, longOption } from "../shell/git-calls";
 import { GUARD_GIT_TIMEOUT_MS, runGit } from "./git";
 import type { Env } from "./run";
 
@@ -109,16 +109,6 @@ const PUSH_VALUE_OPTIONS: Array<[string, number]> = [
   ["--receive-pack", 5],
   ["--repo", 6],
 ];
-
-/**
- * True when `arg` is the long option `full`, or a prefix of it that git accepts (git takes
- * any unique prefix: `--har` is `--hard`, `--force-w` is `--force-with-lease`). `min` is the
- * shortest prefix that still names one option of that subcommand.
- */
-function longOption(arg: string, full: string, min: number): boolean {
-  const name = arg.split("=")[0] ?? arg;
-  return name.length >= min && name.length <= full.length && full.startsWith(name);
-}
 
 /** The branch checked out in `where`, or undefined: detached, unknown, no git. Read once a run. */
 function currentBranch(where: string, run: GuardRun): string | undefined {

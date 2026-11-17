@@ -1,12 +1,22 @@
 /** What a shell line writes: the one reader the main-folder guard asks. Paths are POSIX. */
 import { describe, expect, test } from "bun:test";
-import { writeTargets } from "./writes";
+import { type Invocation, invocationOf, wordsOf } from "./command";
+import { writeTargets, writtenWords } from "./writes";
 
 const CWD = "/code/app";
 
-/** The targets of `command` run in `/code/app`. */
+/** The paths `command` run in `/code/app` writes for certain (not the computed ones). */
 function targets(command: string, cwd: string | null = CWD): string[] {
-  return writeTargets(command, cwd, "bash");
+  return writeTargets(command, cwd, "bash")
+    .filter((target) => !target.computed)
+    .map((target) => target.path);
+}
+
+/** The words one command writes as the line spells them, for a bash or PowerShell step. */
+function words(step: string, dialect: "bash" | "powershell" = "bash"): string[] {
+  const all = wordsOf(step, dialect);
+  const invocation: Invocation | undefined = invocationOf(all);
+  return writtenWords(all, invocation, dialect);
 }
 
 describe("redirections", () => {
@@ -185,5 +195,87 @@ describe("git commands that change the work tree or its branch", () => {
     ]);
     expect(targets('git -C "$WT" commit -m x')).toEqual([]);
     expect(targets("cd $WT && git commit -m x")).toEqual([]);
+  });
+
+  test("a cd inside ( … ) or a substitution ends at its close", () => {
+    expect(targets("(cd .claude/worktrees/w && make); git commit -m x")).toEqual([CWD]);
+    expect(targets("(cd /tmp && touch a); touch b")).toEqual(["/tmp/a", "/code/app/b"]);
+    expect(targets("echo $(cd /tmp; ls); touch b")).toEqual(["/code/app/b"]);
+    expect(targets("(cd /tmp; (cd /var; touch a); touch b); touch c")).toEqual([
+      "/var/a",
+      "/tmp/b",
+      "/code/app/c",
+    ]);
+    // A brace group runs in the same shell: its cd lasts.
+    expect(targets("{ cd /tmp; }; touch a")).toEqual(["/tmp/a"]);
+  });
+
+  test("a git command that changes nothing: a dry run, a bare checkout", () => {
+    for (const command of [
+      "git commit --dry-run",
+      "git commit --dry",
+      "git pull --dry-run",
+      "git checkout",
+      "git checkout --",
+    ]) {
+      expect(targets(command)).toEqual(command === "git checkout --" ? [CWD] : []);
+    }
+    expect(targets("git commit -m x")).toEqual([CWD]);
+    expect(targets("git checkout main")).toEqual([CWD]);
+  });
+
+  test("a program the line works out, with a checkout-changing git word, is marked computed", () => {
+    const all = (command: string) => writeTargets(command, CWD, "bash");
+    expect(all("$GIT commit -m x")).toEqual([{ computed: true, path: CWD }]);
+    expect(all("$GIT -C sub checkout x")).toEqual([{ computed: true, path: "/code/app/sub" }]);
+    // The words of a substitution run on (`$(which`, `git)`): git's own options cannot be read.
+    expect(all("$(which git) checkout x")).toEqual([{ computed: true, path: CWD }]);
+    expect(all("$GIT status")).toEqual([]);
+    expect(all("$EDITOR notes.txt")).toEqual([]);
+    expect(all("$TOOL --fast")).toEqual([]);
+    // A plain git command is never marked.
+    expect(all("git commit -m x")).toEqual([{ computed: false, path: CWD }]);
+  });
+});
+
+describe("what the session-escape guard reads: writtenWords", () => {
+  test.each([
+    ["perl -i -pe s/a/b/ a.txt", ["a.txt"]],
+    ["perl -pi -e 's/a/b/' a.txt b.txt", ["a.txt", "b.txt"]],
+    ["perl -i.bak script.pl a.txt", ["a.txt"]],
+    ["perl -Mstrict -e 1 a.txt", []],
+    ["dd if=/dev/zero of=out.img bs=1", ["out.img"]],
+    ["install -m 644 a /etc/b", ["/etc/b"]],
+    ["install -d one two", ["one", "two"]],
+    ["install -t /etc a b", ["/etc"]],
+    ["cp -t /etc a b", ["/etc"]],
+    ["cp --target-directory=/etc a b", ["/etc"]],
+    ["mv a b", ["b", "a"]],
+    ["ln -s a b", ["b"]],
+    ["sed -i '' s/x/y/ file", ["file"]],
+    ["sed -i.bak s/x/y/ file", ["file"]],
+    ["sed -i.save s/x/y/ file", ["file"]],
+    ["sed -n s/x/y/p file", []],
+  ])("%j", (step, expected) => {
+    expect(words(step)).toEqual(expected);
+  });
+
+  test("PowerShell's cmdlets, their parameters and aliases", () => {
+    expect(words("Set-Content x.txt hello", "powershell")).toEqual(["x.txt", "hello"]);
+    expect(words("Out-File -FilePath a.txt", "powershell")).toEqual(["a.txt"]);
+    expect(words("Copy-Item a.txt -Destination b.txt", "powershell")).toEqual(["b.txt"]);
+    expect(words("Copy-Item -Destination b.txt -Path a.txt", "powershell")).toEqual(["b.txt"]);
+    expect(words("Move-Item -Path a.txt -Destination b.txt", "powershell")).toEqual([
+      "b.txt",
+      "a.txt",
+      "b.txt",
+    ]);
+    expect(words("cpi a b", "powershell")).toEqual(["b"]);
+    expect(words("Get-Content a.txt", "powershell")).toEqual([]);
+  });
+
+  test("a redirection stands before or after the program", () => {
+    expect(words(">out.log cmd")).toEqual(["out.log"]);
+    expect(words("cmd 2>err.log")).toEqual(["err.log"]);
   });
 });
