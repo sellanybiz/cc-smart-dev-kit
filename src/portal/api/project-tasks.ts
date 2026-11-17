@@ -7,10 +7,12 @@
  *   and those closed in the last `TASKS_CARD_RECENT_DAYS` days. Every worktree of the repo
  *   shares the one list. Each phase carries its ledger (G3): the agent, branch, worktree and
  *   base the main session set on it, and its steps (`phase-steps.ts`).
- * - **Project task files**: the open ones in the main checkout's task folder
- *   (`src/tasks/deploy/`), what blocks a release first. Stale is `task check`'s own rule
- *   (`checkDeployTasks`), never a second copy of it. A task on a branch not merged yet is not in
- *   the main checkout: `task list --branches` shows those.
+ * - **Deploy tasks**: the open ones in the main checkout's task folder (`src/tasks/deploy/`),
+ *   each environment's, before the deploy then after, blocking first; each with its linked
+ *   twin's state, and beside them the ids two files claim and the old layout's files left
+ *   unread. Stale is `task check`'s own rule (`checkDeployTasks`), never a second copy of it.
+ *   A task on a branch not merged yet is not in the main checkout: `task list --branches` shows
+ *   those.
  *
  * - **Sessions**: every session that made a task in the tree, and every session that runs now
  *   with its folder in the project (Claude Code's own records, `liveSessions`), each with its
@@ -27,8 +29,14 @@ import { liveSessions, type SessionRecord } from "../../hooks/sessions";
 import { isInside } from "../../path-compare";
 import { taskContextAsync } from "../../tasks/context";
 import { checkDeployTasks, DAY_MS } from "../../tasks/deploy/check";
-import { scanDeployTasks } from "../../tasks/deploy/files";
-import type { DeployTask } from "../../tasks/deploy/format";
+import { oldTaskFiles, scanDeployTasks } from "../../tasks/deploy/files";
+import {
+  DEPLOY_ENVS,
+  DEPLOY_STEPS,
+  DEPLOY_TYPES,
+  type DeployEnv,
+  type DeployTask,
+} from "../../tasks/deploy/format";
 import { allTasks, layerProgress, sessionNames } from "../../tasks/work/queries";
 import { readWorkStore } from "../../tasks/work/read";
 import { projectTaskTree, type TaskTreeNode } from "../../tasks/work/tree";
@@ -41,6 +49,7 @@ import type {
   ProjectTaskFiles,
   ProjectTaskRow,
   ProjectTasksAnswer,
+  ProjectTaskTwin,
   ProjectWorkTasks,
   TaskSession,
   TasksAnswer,
@@ -50,17 +59,6 @@ import type {
 
 /** A closed work task stays on the card this many days after its last change. */
 export const TASKS_CARD_RECENT_DAYS = 7;
-
-/**
- * Interim wire words for a deploy task, until the portal phase gives the row its own fields (env,
- * deploy, type, twin): a blocking task before the deploy is what "blocks the release", any other
- * blocking one is "after the deploy", and a non-blocking one has no weight. Every deploy task is
- * a "production" row; `when` is gone.
- */
-function weightOf(task: DeployTask): ProjectTaskRow["weight"] {
-  if (task.type === "non-blocking") return null;
-  return task.deploy === "before" ? "blocks-release" : "after-deploy";
-}
 
 /** What the project's whole list counts for the tree's plans and phases, by task id. */
 export interface ListCounts {
@@ -123,34 +121,65 @@ export function workTaskNodeOf(node: TaskTreeNode, counts: ListCounts): WorkTask
   };
 }
 
-function rowOf(task: DeployTask, root: string, stale: ReadonlySet<string>): ProjectTaskRow {
+/** Each task's state by id, read from every file: an id two files claim is open when either is. */
+function statusById(tasks: readonly DeployTask[]): Map<string, ProjectTaskTwin["status"]> {
+  const byId = new Map<string, ProjectTaskTwin["status"]>();
+  for (const task of tasks) {
+    if (byId.get(task.id) !== "open") byId.set(task.id, task.status);
+  }
+  return byId;
+}
+
+function rowOf(
+  task: DeployTask,
+  root: string,
+  /** The stale tasks' files (absolute, as the scan names them). */
+  stale: ReadonlySet<string>,
+  statuses: ReadonlyMap<string, ProjectTaskTwin["status"]>,
+): ProjectTaskRow {
   return {
-    created: task.created.slice(0, 10),
+    created: task.created,
+    deploy: task.deploy,
+    env: task.env,
     file: relative(root, task.file),
     flags: [...(task.flags ?? [])],
     id: task.id,
-    kind: "production",
-    stale: stale.has(task.id),
+    stale: stale.has(task.file),
     title: task.title,
-    weight: weightOf(task),
-    when: null,
+    twin:
+      task.twin === undefined
+        ? null
+        : { id: task.twin, status: statuses.get(task.twin) ?? "missing" },
+    type: task.type,
   };
 }
 
-/** What blocks a release comes first, then the rest after it, then the non-blocking. */
-const WEIGHT_ORDER: Readonly<Record<string, number>> = { "blocks-release": 0, "after-deploy": 1 };
-
-function rank(order: Readonly<Record<string, number>>, value: null | string): number {
-  return value === null ? Object.keys(order).length : (order[value] ?? Object.keys(order).length);
+/**
+ * The open tasks in the order a deploy run meets them, from the store's own lists
+ * (`DEPLOY_ENVS`, `DEPLOY_STEPS`, `DEPLOY_TYPES`): by environment as a release visits them,
+ * before the deploy then after, blocking first, then the oldest. The file breaks the last tie:
+ * two files of one id are both listed, always in one order.
+ */
+function deployOrder(a: DeployTask, b: DeployTask): number {
+  return (
+    DEPLOY_ENVS.indexOf(a.env) - DEPLOY_ENVS.indexOf(b.env) ||
+    DEPLOY_STEPS.indexOf(a.deploy) - DEPLOY_STEPS.indexOf(b.deploy) ||
+    DEPLOY_TYPES.indexOf(a.type) - DEPLOY_TYPES.indexOf(b.type) ||
+    a.created.localeCompare(b.created) ||
+    a.id.localeCompare(b.id) ||
+    a.file.localeCompare(b.file)
+  );
 }
 
 function filesOf(
   root: string,
-  tasks: { dir: string; staleDays: number },
+  tasks: { dir: string; envs: readonly DeployEnv[]; staleDays: number },
   now: Date,
 ): ProjectTaskFiles {
   try {
     const scan = scanDeployTasks(tasks.dir, { archive: true });
+    // By file, not id: two files can claim one id, and only the one open too long is stale.
+    // Both readers build each path from the same folder, so the two scans name a file alike.
     const stale = new Set(
       checkDeployTasks({
         checkoutRoot: root,
@@ -158,22 +187,21 @@ function filesOf(
         settings: { staleDays: tasks.staleDays },
         now,
       })
-        .filter((finding) => finding.kind === "stale" && finding.id !== undefined)
-        .map((finding) => finding.id as string),
+        .filter((finding) => finding.kind === "stale")
+        .map((finding) => finding.file),
     );
+    const statuses = statusById(scan.tasks);
     const open = scan.tasks
       .filter((task) => task.status === "open")
-      .sort(
-        (a, b) =>
-          rank(WEIGHT_ORDER, weightOf(a)) - rank(WEIGHT_ORDER, weightOf(b)) ||
-          a.created.localeCompare(b.created) ||
-          a.id.localeCompare(b.id),
-      )
-      .map((task) => rowOf(task, root, stale));
+      .sort(deployOrder)
+      .map((task) => rowOf(task, root, stale, statuses));
     return {
       broken: scan.broken.length,
       closed: scan.tasks.length - open.length,
       dir: relative(root, tasks.dir),
+      duplicateIds: scan.duplicates.map((duplicate) => duplicate.id).sort(),
+      envs: DEPLOY_ENVS.filter((env) => tasks.envs.includes(env)),
+      old: oldTaskFiles(tasks.dir).length,
       staleDays: tasks.staleDays,
       state: "ready",
       tasks: open,

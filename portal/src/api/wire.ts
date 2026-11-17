@@ -694,19 +694,26 @@ export interface WorkTaskNode {
   worktree: null | string;
 }
 
-/** One open project task file. */
+/** The other half of a linked pair: `missing` when its id names no task. */
+export interface ProjectTaskTwin {
+  id: string;
+  status: "done" | "dropped" | "missing" | "open";
+}
+
+/** One open deploy task. */
 export interface ProjectTaskRow {
-  /** `YYYY-MM-DD`. */
+  /** ISO 8601 in UTC. */
   created: string;
-  /** Relative to the main checkout. */
+  deploy: "after" | "before";
+  env: "prod" | "staging";
+  /** Relative to the main checkout: unique, where two files may share an id. */
   file: string;
   flags: string[];
   id: string;
-  kind: "database" | "follow-up" | "production" | "teammate";
   stale: boolean;
   title: string;
-  weight: "after-deploy" | "blocks-release" | "owner" | null;
-  when: "any" | "next-release" | "now" | null;
+  twin: null | ProjectTaskTwin;
+  type: "blocking" | "non-blocking";
 }
 
 /** A session the Tasks tab names: in the tree, or running in the project now. */
@@ -729,19 +736,25 @@ export type ProjectWorkTasks =
   | { state: "none" }
   | { state: "unreadable"; why: string };
 
-/** The project's task files in its main checkout. */
+/** The project's deploy tasks in its main checkout. */
 export type ProjectTaskFiles =
   | {
       broken: number;
       closed: number;
       dir: string;
+      /** Ids two differently named files claim. */
+      duplicateIds: string[];
+      /** `tasks.envs`, in the order a release visits them. */
+      envs: ("prod" | "staging")[];
+      /** Files of the old layout, not read. */
+      old: number;
       staleDays: number;
       state: "ready";
       tasks: ProjectTaskRow[];
     }
   | { state: "unavailable"; why: string };
 
-/** `GET /api/projects/<id>/tasks` (D75): the project's work tasks and open task files. */
+/** `GET /api/projects/<id>/tasks` (D75): the project's work tasks and open deploy tasks. */
 export interface ProjectTasksAnswer {
   files: ProjectTaskFiles;
   work: ProjectWorkTasks;
