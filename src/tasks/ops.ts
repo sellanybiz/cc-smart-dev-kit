@@ -7,6 +7,7 @@ export type { TaskOperation } from "./schemas";
 import { cliPaths } from "../cli/paths";
 import { cappedHookList } from "../hooks/capped-list";
 import { runGit } from "../hooks/git";
+import { DEPLOY_TASKS_SINCE } from "../project/config";
 import { resolvePlans } from "../workflow/resolve";
 import { taskContext } from "./context";
 import {
@@ -95,10 +96,9 @@ function bindings(input: {
   };
 }
 
-/** A 4.x task id (`T-gpmiae`): the files they named are not read since 5.0.0. */
+/** A 4.x task id (`T-gpmiae`): the files they named are not read since `DEPLOY_TASKS_SINCE`. */
 const OLD_TASK_ID = /^T-/;
-const OLD_ID_ANSWER =
-  "old task ids are gone in 5.0.0: the file is not read; recreate it as a deploy task or delete it";
+const OLD_ID_ANSWER = `old task ids are gone in ${DEPLOY_TASKS_SINCE}: the file is not read; recreate it as a deploy task or delete it`;
 
 /**
  * Refuses the fields only a deploy task has, on a work task: a forgotten `kind` must never
@@ -110,6 +110,7 @@ function refuseDeployFields(fields: Record<string, unknown>): void {
     return !(
       value === undefined ||
       value === false ||
+      value === "" ||
       (Array.isArray(value) && value.length === 0)
     );
   });
@@ -763,17 +764,24 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
         const input = taskSchemas.delete.parse(raw);
         if (isDeployTaskId(input.task)) {
           const task = project(input.task);
-          if (options.refuseBlockingDrop && task.status === "open" && task.type === "blocking")
-            throw new Error(
-              personOnly(task.id, "deletes a blocking deploy task", `delete ${task.id}`),
-            );
+          // What a session may not do to an open blocking task is the person's: a tracked file
+          // closes (drop), it is never deleted, so the command named depends on the file's state.
+          const guarded =
+            options.refuseBlockingDrop && task.status === "open" && task.type === "blocking";
+          const trackedRefusal = guarded
+            ? personOnly(
+                task.id,
+                "drops a blocking deploy task",
+                `drop ${task.id} --note "<reason>"`,
+              )
+            : DELETE_TRACKED;
           if (!ctx.checkoutRoot) throw new Error("Deploy tasks need a git checkout");
           const tracked = runGit(
             ctx.checkoutRoot,
             ["ls-files", "--error-unmatch", "--", relative(ctx.checkoutRoot, task.file)],
             env,
           );
-          if (tracked.ok) throw new Error(DELETE_TRACKED);
+          if (tracked.ok) throw new Error(trackedRefusal);
           // A failed git command is not evidence that a file is untracked. Check the index separately.
           const index = runGit(
             ctx.checkoutRoot,
@@ -781,7 +789,11 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
             env,
           );
           if (!index.ok) throw new Error(`Could not read git's index: ${index.err}`);
-          if (index.out) throw new Error(DELETE_TRACKED);
+          if (index.out) throw new Error(trackedRefusal);
+          if (guarded)
+            throw new Error(
+              personOnly(task.id, "deletes a blocking deploy task", `delete ${task.id}`),
+            );
           rmSync(task.file);
         } else {
           const result = deleteTask(store, work(input.task).id, who, now);

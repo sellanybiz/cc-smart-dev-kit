@@ -20,6 +20,10 @@ export function taskGit(repo: string, args: string[], env: Env = process.env): s
   if (!result.ok) throw new Error(`git ${args[0]} failed: ${result.err}`);
   return result.out;
 }
+/** The commit `ref` names, or a throw when git does not know it: the one way a ref becomes a commit here. */
+export function refCommit(repo: string, ref: string, env: Env = process.env): string {
+  return taskGit(repo, ["rev-parse", "--verify", "--end-of-options", `${ref}^{commit}`], env);
+}
 export function taskRepoPath(repo: string, dir: string): string {
   const path = relative(resolve(repo), resolve(repo, dir));
   if (path === ".." || path.startsWith(`..${sep}`) || isAbsolute(path))
@@ -46,7 +50,7 @@ export function tasksOn(
   ref: string,
 ): { tasks: DeployTask[]; broken: BranchBroken[] } {
   const prefix = taskRepoPath(repo, dir);
-  const commit = taskGit(repo, ["rev-parse", "--verify", "--end-of-options", `${ref}^{commit}`]);
+  const commit = refCommit(repo, ref);
   const paths = taskGit(repo, [
     "ls-tree",
     "-r",
@@ -92,12 +96,7 @@ export function branchTaskChanges(
   base: string,
 ): BranchTaskChange[] {
   const prefix = taskRepoPath(checkoutRoot, dir);
-  const baseCommit = taskGit(checkoutRoot, [
-    "rev-parse",
-    "--verify",
-    "--end-of-options",
-    `${base}^{commit}`,
-  ]);
+  const baseCommit = refCommit(checkoutRoot, base);
   const mergeBase = taskGit(checkoutRoot, ["merge-base", baseCommit, "HEAD"]);
   // No rename detection: an archive move must expose both the old path and the closed task.
   const tokens = taskGit(checkoutRoot, [
@@ -148,12 +147,7 @@ export interface UnmergedBranchTasks {
 }
 /** Open tasks on local branches not merged into `base` (a deploy run in progress), by branch. */
 export function unmergedBranchTasks(repo: string, dir: string, base: string): UnmergedBranchTasks {
-  const baseCommit = taskGit(repo, [
-    "rev-parse",
-    "--verify",
-    "--end-of-options",
-    `${base}^{commit}`,
-  ]);
+  const baseCommit = refCommit(repo, base);
   const existing = new Set(tasksOn(repo, dir, baseCommit).tasks.map((task) => task.id));
   const branches = taskGit(repo, [
     "for-each-ref",
@@ -198,17 +192,13 @@ export function readGitFacts(
   env: Env = process.env,
 ): GitFacts {
   const tasksPath = taskRepoPath(repo, dir);
-  const refCommit = taskGit(
-    repo,
-    ["rev-parse", "--verify", "--end-of-options", `${ref}^{commit}`],
-    env,
-  );
+  const refSha = refCommit(repo, ref, env);
   const headCommit = taskGit(repo, ["rev-parse", "--verify", "HEAD"], env);
   const pathsOf = (args: string[]) => taskGit(repo, args, env).split("\0").filter(Boolean);
   const changedPaths =
-    refCommit === headCommit
+    refSha === headCommit
       ? []
-      : pathsOf(["diff", "--name-only", "--no-renames", "-z", refCommit, headCommit]);
+      : pathsOf(["diff", "--name-only", "--no-renames", "-z", refSha, headCommit]);
   const scope = tasksPath ? ["--", tasksPath] : [];
   // Staged, unstaged and untracked changes under the tasks folder: a close not yet committed.
   const uncommitted = [
@@ -231,9 +221,9 @@ export function readGitFacts(
       : 0;
   return {
     ref,
-    refCommit,
+    refCommit: refSha,
     headCommit,
-    refIsAncestor: isAncestor(repo, refCommit, headCommit, env),
+    refIsAncestor: isAncestor(repo, refSha, headCommit, env),
     changedPaths,
     tasksPath,
     uncommitted,

@@ -17,7 +17,7 @@ function deployOps(refuseBlockingDrop: boolean) {
     env: hookEnv(),
     refuseBlockingDrop,
   });
-  return { dir: join(cwd, ".claude", "tasks"), ops };
+  return { cwd, dir: join(cwd, ".claude", "tasks"), ops };
 }
 
 const personOnly = (id: string, action: string, command: string) =>
@@ -70,6 +70,26 @@ for (const refuse of [true, false]) {
   });
 }
 
+test("a tracked open blocking deploy task is never deleted: the refusal names the person's drop", () => {
+  const { ops, dir, cwd } = deployOps(true);
+  try {
+    ops.call("create", { subject: "Gate", kind: "prod", deploy: "before", type: "blocking" });
+    const id = scanDeployTasks(dir, { archive: false }).tasks[0]?.id ?? "";
+    git(cwd, "add", ".claude/tasks");
+    expect(ops.call("delete", { task: id })).toEqual({
+      ok: false,
+      why: personOnly(
+        id,
+        "drops a blocking deploy task",
+        `cc-smart-dev-kit task drop ${id} --note "<reason>"`,
+      ),
+    });
+    expect(scanDeployTasks(dir, { archive: false }).tasks).toHaveLength(1);
+  } finally {
+    ops.close();
+  }
+});
+
 test("a closed blocking deploy task cannot be weakened and reopened in one call", () => {
   const { ops, dir } = deployOps(true);
   try {
@@ -90,7 +110,9 @@ test("a closed blocking deploy task cannot be weakened and reopened in one call"
 test("a work task takes pair false and empty lists as not given", () => {
   const { ops } = deployOps(false);
   try {
-    expect(ops.call("create", { subject: "Plain", pair: false, flags: [], refs: [] })).toEqual({
+    expect(
+      ops.call("create", { subject: "Plain", pair: false, flags: [], refs: [], from: "" }),
+    ).toEqual({
       ok: true,
       text: '#1 "Plain"',
     });

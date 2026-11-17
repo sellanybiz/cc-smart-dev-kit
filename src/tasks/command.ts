@@ -5,11 +5,12 @@ import { usageError } from "../cli/help";
 import { cliPaths } from "../cli/paths";
 import { createOut, dryRunEnding, plural } from "../cli/ui/out";
 import { currentTerminal } from "../cli/ui/terminal";
+import { DEPLOY_TASKS_SINCE } from "../project/config";
 import { locateCheckout } from "../project/resolve";
 import { insideClaudeCode } from "../workflow/commands";
 import { baseBranch } from "../worktrees/command";
 import { taskContext } from "./context";
-import { branchTaskChanges, readGitFacts, taskGit, unmergedBranchTasks } from "./deploy/branch";
+import { branchTaskChanges, readGitFacts, refCommit, unmergedBranchTasks } from "./deploy/branch";
 import { checkDeployTasks } from "./deploy/check";
 import { scanDeployTasks } from "./deploy/files";
 import { DEPLOY_ENVS, DEPLOY_STEPS, DEPLOY_TYPES, type DeployEnv } from "./deploy/format";
@@ -166,7 +167,7 @@ export async function runTaskCommand(argv: string[]): Promise<number> {
         if (get("file") && get("description")) return bad("Use --description or --file, not both");
         if (kind !== undefined && !KIND_LIST.includes(kind))
           return bad(
-            `Unknown kind: ${kind} (${KIND_LIST.join(", ")}); follow-up and teammate are gone in 5.0.0`,
+            `Unknown kind: ${kind} (${KIND_LIST.join(", ")}); follow-up and teammate are gone in ${DEPLOY_TASKS_SINCE}`,
           );
         operation = "create";
         input = {
@@ -378,7 +379,7 @@ export async function runTaskCommand(argv: string[]): Promise<number> {
         // The ref is resolved on its own, so only a ref git does not know gets the fetch advice;
         // any other git failure below (HEAD with no commit, say) is reported as git says it.
         try {
-          taskGit(root, ["rev-parse", "--verify", "--end-of-options", `${ref}^{commit}`]);
+          refCommit(root, ref);
         } catch (error) {
           throw new Error(
             `Cannot read ${ref} (${error instanceof Error ? error.message : String(error)}): run \`git fetch origin\`, or name the commit that ships with --ref <ref>`,
