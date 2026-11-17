@@ -315,7 +315,7 @@ test("deploy tasks update, log, archive, search and protect tracked files", () =
     git(cwd, "add", ".claude/tasks");
     expect(ops.call("delete", { task: task.id })).toEqual({
       ok: false,
-      why: "Tracked project task: drop it with task_done outcome dropped",
+      why: "Tracked deploy task: it is part of a commit, so close it with task_done instead",
     });
     expect(ops.call("done", { task: task.id })).toMatchObject({ ok: false });
     expect(ops.call("done", { task: task.id, evidence: "Applied" }).ok).toBe(true);

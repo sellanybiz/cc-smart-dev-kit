@@ -103,7 +103,7 @@ test("task command creates, lists, completes and checks as a process", async () 
   });
   expect(await run("check")).toEqual({
     code: 0,
-    text: "Project tasks: no problems found.\n",
+    text: "Deploy tasks: no problems found.\n",
     error: "",
   });
   expect(

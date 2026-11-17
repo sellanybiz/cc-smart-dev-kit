@@ -6,31 +6,37 @@ import { cliPaths } from "../cli/paths";
 import { createOut, dryRunEnding, plural } from "../cli/ui/out";
 import { currentTerminal } from "../cli/ui/terminal";
 import { locateCheckout } from "../project/resolve";
+import { insideClaudeCode } from "../workflow/commands";
 import { baseBranch } from "../worktrees/command";
 import { taskContext } from "./context";
-import { branchTaskChanges, unmergedBranchTasks } from "./deploy/branch";
+import { branchTaskChanges, readGitFacts, unmergedBranchTasks } from "./deploy/branch";
 import { checkDeployTasks } from "./deploy/check";
 import { scanDeployTasks } from "./deploy/files";
-import { DEPLOY_ENVS } from "./deploy/format";
-import { releaseList } from "./deploy/release";
+import { DEPLOY_ENVS, DEPLOY_STEPS, DEPLOY_TYPES, type DeployEnv } from "./deploy/format";
+import { gateAfter, gateBefore, releaseList } from "./deploy/release";
 import { createTaskOps, projectLine, type TaskOperation } from "./ops";
 import { TASK_COMMAND } from "./words";
 import { openWorkDb, workDbFile } from "./work/db";
 import { importClaudeMem } from "./work/import-claude-mem";
 
+const KINDS = ["work", ...DEPLOY_ENVS].join("|");
+const TYPES = DEPLOY_TYPES.join("|");
+const STEPS = DEPLOY_STEPS.join("|");
+const ENVS = DEPLOY_ENVS.join("|");
+
 export const TASK_USAGE = `Usage: ${TASK_COMMAND} <command>
 
-add <subject> [--description <text> | --file <path|->] [--kind work|prod|staging]
-    [--parent <ref>] [--start] [--type blocking|non-blocking] [--blocked-by <ref>]...
+add <subject> [--description <text> | --file <path|->] [--kind ${KINDS}]
+    [--parent <ref>] [--start] [--type ${TYPES}] [--blocked-by <ref>]...
     [--phase <id>] [--plan <slug>]
     [--agent <id>] [--branch <name>] [--worktree <absolute-path>] [--base <sha>]
-    [--deploy before|after]
-    [--flag <flag>]... [--ref <path>]...
-set <ref> [--type blocking|non-blocking] [--block <ref>]... [--unblock <ref>]... [--parent <ref> | --top]
+    [--deploy ${STEPS}] [--pair] [--flag <flag>]... [--ref <path>]...
+set <ref> [--type ${TYPES}] [--block <ref>]... [--unblock <ref>]... [--parent <ref> | --top]
     Bindings on set/start: --agent <id> --branch <name> --worktree <absolute-path> --base <sha>
 start <ref>
 done <ref> [--evidence <text>] [--note <text>]
 drop <ref> [--note <text>]
+reopen <deploy-task-id>
 note <ref> [<text> | --file <path|->]
 list [--scope mine|plan|project|all] [--plan <slug>] [--json]
 take <plan-slug|#n> [--from <session>] [--force]
@@ -39,17 +45,28 @@ list --branches
 show <ref> [--offset <n>] [--history]
 search <text> [--all]
 check [--json]
-release [--json]
+release [${ENVS}] [--before | --after] [--ref <ref>] [--json]
 import claude-mem [--project <name>] [--dry-run]
 delete <ref>
 mcp
 
-Work tasks stay on this machine. Deploy task files travel with your branch: commit them.
+Work tasks stay on this machine. A deploy task (--kind ${DEPLOY_ENVS.join(" or ")}) is a step owed
+before or after a deploy: it needs --deploy and --type, and its file travels with your branch, so
+commit it. --pair, with --kind staging, makes the staging task and its prod twin together.
+Deploy tasks close with done --evidence <text>, or drop --note <reason>; only the person drops a
+blocking one, in their own terminal. reopen puts a closed one back after a rolled-back deploy.
+release <env> --before / --after is the gate around a deploy; --ref defaults to origin/<base>.
+With no flag, release lists the open deploy tasks.
 Layers: plan › phase › task. A blocking task (the default) holds its parent; a non-blocking
 one holds nothing. A task blocked by an open task cannot start or be done.
 --parent may name a plan (#n): the task waits there for a phase, and set --parent <phase> moves it under a phase of that plan.
 A plan holds at most plans.maxPhases phases, and a phase starts only once it holds tasks.
 A step of a phase closes with done --evidence <text>, or drop --note <reason>.`;
+/** What `task release` was asked: an environment (none lists them all) and a gate (none lists the tasks). */
+interface ReleaseRequest {
+  env: DeployEnv | undefined;
+  step: "before" | "after" | null;
+}
 const bindingFlags = ["--agent", "--branch", "--worktree", "--base"];
 const definitions: Record<
   string,
@@ -70,7 +87,7 @@ const definitions: Record<
       "--flag",
       "--ref",
     ],
-    flags: ["--start"],
+    flags: ["--start", "--pair"],
     repeat: ["--flag", "--ref", "--blocked-by"],
     min: 1,
   },
@@ -85,6 +102,7 @@ const definitions: Record<
   start: { values: bindingFlags, min: 1, max: 1 },
   done: { values: ["--evidence", "--note"], min: 1, max: 1 },
   drop: { values: ["--note"], min: 1, max: 1 },
+  reopen: { min: 1, max: 1 },
   note: { values: ["--file"], min: 1 },
   list: {
     values: ["--scope", "--base", "--plan"],
@@ -95,7 +113,7 @@ const definitions: Record<
   show: { values: ["--offset"], flags: ["--history"], min: 1, max: 1 },
   search: { flags: ["--all"], min: 1 },
   check: { flags: ["--json"], min: 0, max: 0 },
-  release: { flags: ["--json"], min: 0, max: 0 },
+  release: { values: ["--ref"], flags: ["--json", "--before", "--after"], min: 0, max: 1 },
   import: { values: ["--project"], flags: ["--dry-run"], min: 1, max: 1 },
   delete: { min: 1, max: 1 },
 };
@@ -126,7 +144,8 @@ export async function runTaskCommand(argv: string[]): Promise<number> {
   const has = (key: string) => flags.has(`--${key}`);
   const fileText = async () =>
     get("file") === "-" ? await Bun.stdin.text() : readFileSync(get("file") ?? "", "utf8");
-  const ops = createTaskOps();
+  // Inside Claude Code a blocking deploy task is not dropped: it is the person's (D14).
+  const ops = createTaskOps({ refuseBlockingDrop: insideClaudeCode(process.env) });
   try {
     let operation: TaskOperation;
     let input: Record<string, unknown>;
@@ -156,6 +175,7 @@ export async function runTaskCommand(argv: string[]): Promise<number> {
           phase: get("phase"),
           plan: get("plan"),
           deploy: get("deploy"),
+          pair: has("pair") ? true : undefined,
           flags: lists.get("--flag"),
           refs: lists.get("--ref"),
         };
@@ -185,6 +205,10 @@ export async function runTaskCommand(argv: string[]): Promise<number> {
           evidence: get("evidence"),
           note: get("note"),
         };
+        break;
+      case "reopen":
+        operation = "update";
+        input = { task, status: "open" };
         break;
       case "note":
         if (get("file") && args.length > 1) return bad("Use note text or --file, not both");
@@ -217,8 +241,11 @@ export async function runTaskCommand(argv: string[]): Promise<number> {
         }
         if (get("scope") || has("json")) return bad("Branch lists do not take --scope or --json");
         return projectCommand();
+      case "release": {
+        const wanted = releaseRequest();
+        return "error" in wanted ? bad(wanted.error) : projectCommand(wanted);
+      }
       case "check":
-      case "release":
       case "import":
         return projectCommand();
       default:
@@ -233,7 +260,22 @@ export async function runTaskCommand(argv: string[]): Promise<number> {
     else for (const line of answer.text.split("\n")) out.say(line);
     return 0;
 
-    function projectCommand(): number {
+    /** What `release` was asked, judged before git or the project are read: a wrong command is a usage error. */
+    function releaseRequest(): ReleaseRequest | { error: string } {
+      const step = has("before") ? "before" : has("after") ? "after" : null;
+      if (has("before") && has("after")) return { error: "Use --before or --after, not both" };
+      const name = args[0];
+      const env = name === undefined ? undefined : DEPLOY_ENVS.find((one) => one === name);
+      if (name !== undefined && env === undefined)
+        return { error: `Unknown environment: ${name} (${ENVS})` };
+      if (step !== null && env === undefined)
+        return { error: `--${step} needs an environment: release <${ENVS}> --${step}` };
+      if (get("ref") !== undefined && step === null)
+        return { error: "--ref needs --before or --after" };
+      return { env, step };
+    }
+
+    function projectCommand(release?: ReleaseRequest): number {
       const cwd = process.cwd();
       const ctx = taskContext(cwd);
       if (!ctx.ok) throw new Error(ctx.why);
@@ -315,20 +357,61 @@ export async function runTaskCommand(argv: string[]): Promise<number> {
           now: new Date(),
         });
         if (has("json")) out.json(findings);
-        else if (!findings.length) out.say("Project tasks: no problems found.");
+        else if (!findings.length) out.say("Deploy tasks: no problems found.");
         else
           for (const finding of findings)
             out.say(`${finding.kind}: ${finding.text} · ${finding.file}`);
         return findings.length ? 1 : 0;
       }
-      const result = releaseList(scanDeployTasks(dir, { archive: false }).tasks);
+      const { env, step } = release ?? { env: undefined, step: null };
+      if (step !== null && env !== undefined) {
+        // The gates read the folder themselves, closed tasks too (`gateBefore`, `gateAfter`).
+        const ref =
+          get("ref") ?? `origin/${baseBranch(locateCheckout(cwd), process.env, root).base}`;
+        let facts: ReturnType<typeof readGitFacts>;
+        try {
+          facts = readGitFacts(root, dir, ref);
+        } catch (error) {
+          throw new Error(
+            `Cannot read ${ref} (${error instanceof Error ? error.message : String(error)}): run \`git fetch origin\`, or name the commit that ships with --ref <ref>`,
+          );
+        }
+        const gate = (step === "before" ? gateBefore : gateAfter)(env, {
+          dir,
+          facts,
+          envs: settings.envs,
+          now: new Date(),
+        });
+        if (has("json"))
+          out.json({
+            ref: facts.ref,
+            commit: facts.refCommit,
+            ok: gate.ok,
+            refusals: gate.refusals,
+            notes: gate.notes,
+          });
+        else {
+          out.heading(`Release gate: ${env} --${step}`);
+          out.say(`Ref: ${facts.ref} (${facts.refCommit})`);
+          for (const reason of gate.refusals) out.line("fail", reason);
+          for (const note of gate.notes) out.line("info", note);
+          out.verdict(
+            gate.ok ? "ok" : "fail",
+            gate.ok
+              ? `Ready: ${env} ${step === "before" ? "may deploy" : "is clean after the deploy"}.`
+              : `Not ready: ${plural(gate.refusals.length, "reason", "reasons")} to stop. Fix each one, then run this again.`,
+          );
+        }
+        return gate.ok ? 0 : 1;
+      }
+      const result = releaseList(scanDeployTasks(dir, { archive: false }).tasks, env);
       if (has("json")) out.json(result);
       else {
         for (const group of result) {
           out.heading(`${group.env} · ${group.deploy} · ${group.type}`);
           for (const task of group.tasks) out.say(projectLine(task));
         }
-        if (!result.length) out.say("No release tasks.");
+        if (!result.length) out.say(`No open ${env ?? "deploy"} tasks.`);
       }
       return 0;
     }

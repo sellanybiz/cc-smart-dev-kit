@@ -196,7 +196,9 @@ export function judgeAfter(env: DeployEnv, input: JudgeInput): GateResult {
   else if (remote === null)
     refusals.push(`Branch ${branch} is not pushed: run \`git push -u origin ${branch}\``);
   else if (ahead > 0)
-    refusals.push(`Branch ${branch} is ${ahead} commit(s) ahead of ${remote}: push it`);
+    refusals.push(
+      `Branch ${branch} is ${ahead} commit(s) ahead of ${remote}: run \`git push origin ${branch}\``,
+    );
   refusals.push(...brokenRefusals(scan));
   return { ok: refusals.length === 0, refusals, notes: [] };
 }
