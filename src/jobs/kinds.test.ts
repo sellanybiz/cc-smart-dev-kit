@@ -10,6 +10,7 @@ import {
   IGNORED_KIND_FIELDS,
   ignoredFieldsOf,
   isPrintOnly,
+  isWatchRun,
   type KindSpec,
   kindsSchema,
   mergeKinds,
@@ -161,14 +162,15 @@ describe("noSlotForFiles: a run on named files takes no slot", () => {
   });
 
   test("vitest run and jest on existing files run at once, past options and their values", () => {
-    expect(namesOnlyFiles(testRun, ["run", "src/a.test.ts", "src/b.test.ts"], isFile)).toBe(true);
+    // `run` is vitest's own command: its table skips it, and the kind lists no skip word.
+    expect(testRun.skipWords).toBeUndefined();
+    const vitest = (args: string[]) => namesOnlyFiles(testRun, args, isFile, "vitest");
+    expect(vitest(["run", "src/a.test.ts", "src/b.test.ts"])).toBe(true);
     expect(namesOnlyFiles(testRun, ["src/a.test.ts"], isFile)).toBe(true);
-    expect(namesOnlyFiles(testRun, ["run", "--project", "api", "src/a.test.ts"], isFile)).toBe(
-      true,
-    );
-    expect(
-      namesOnlyFiles(testRun, ["run", "--reporter=dot", "-t", "adds", "src/a.test.ts"], isFile),
-    ).toBe(true);
+    expect(vitest(["run", "--project", "api", "src/a.test.ts"])).toBe(true);
+    expect(vitest(["run", "--reporter=dot", "-t", "adds", "src/a.test.ts"])).toBe(true);
+    // Jest and bun read `run` as a filter, and no file is named `run`.
+    expect(namesOnlyFiles(testRun, ["run", "src/a.test.ts"], isFile, "jest")).toBe(false);
     // A script's words after its name, with npm's `--` before them.
     expect(namesOnlyFiles(testRun, ["--", "src/a.test.ts"], isFile)).toBe(true);
   });
@@ -217,7 +219,12 @@ describe("noSlotForFiles: a run on named files takes no slot", () => {
 
     test("an option with `=`, a known one with no value, and a kind's own valued one stay free", () => {
       expect(
-        namesOnlyFiles(testRun, ["run", "--outputFile.junit=results.xml", "src/a.test.ts"], exists),
+        namesOnlyFiles(
+          testRun,
+          ["run", "--outputFile.junit=results.xml", "src/a.test.ts"],
+          exists,
+          "vitest",
+        ),
       ).toBe(true);
       expect(
         namesOnlyFiles(
@@ -226,9 +233,9 @@ describe("noSlotForFiles: a run on named files takes no slot", () => {
           exists,
         ),
       ).toBe(true);
-      expect(namesOnlyFiles(testRun, ["run", "--passWithNoTests", "src/a.test.ts"], exists)).toBe(
-        true,
-      );
+      expect(
+        namesOnlyFiles(testRun, ["run", "--passWithNoTests", "src/a.test.ts"], exists, "vitest"),
+      ).toBe(true);
       // A project kind's own `valuedFlags` add to the built-in list; vitest's still count.
       const own: KindSpec = {
         match: [{ script: "test:run" }],
@@ -250,7 +257,7 @@ describe("noSlotForFiles: a run on named files takes no slot", () => {
   });
 
   test("a kind without it, and a project kind that sets it, read the same way", () => {
-    expect(namesOnlyFiles(kind("tsc"), ["src/a.test.ts"], isFile)).toBe(false);
+    expect(namesOnlyFiles(kind("build"), ["src/a.test.ts"], isFile)).toBe(false);
     const own: KindSpec = { match: [{ script: "test:run" }], noSlotForFiles: true };
     expect(namesOnlyFiles(own, ["src/a.test.ts"], isFile)).toBe(true);
     expect(namesOnlyFiles({ ...own, noSlotForFiles: false }, ["src/a.test.ts"], isFile)).toBe(
@@ -260,6 +267,190 @@ describe("noSlotForFiles: a run on named files takes no slot", () => {
       ccSmartDevKitConfigSchema.safeParse({ jobs: { kinds: { e2e: { noSlotForFiles: "yes" } } } })
         .success,
     ).toBe(false);
+  });
+});
+
+describe("bun test and tsc are default kinds' matches", () => {
+  test("test:run and test:coverage match Bun's own test runner, the coverage form first", () => {
+    expect(kind("test:run").match).toContainEqual({ tool: "bun", sub: ["test"] });
+    expect(kind("test:coverage").match).toContainEqual({
+      tool: "bun",
+      sub: ["test"],
+      argIncludes: "--coverage",
+    });
+    expect(Object.keys(DEFAULT_KINDS).indexOf("test:coverage")).toBeLessThan(
+      Object.keys(DEFAULT_KINDS).indexOf("test:run"),
+    );
+  });
+
+  test("tsc takes no slot for named files, like the test runners", () => {
+    expect(kind("tsc").noSlotForFiles).toBe(true);
+    expect(kindsSchema.safeParse(DEFAULT_KINDS).success).toBe(true);
+  });
+});
+
+// Each tool reads its own options: `-w` is vitest's watch flag and jest's worker count, a
+// jest array option takes every word up to the next option, and tsc has far more options than
+// the test runners. A table is looked up by the tool the call runs; an unknown tool keeps the
+// shared vitest-and-jest table, as every project kind and `{ script }` rule does.
+describe("namesOnlyFiles: each tool's own options", () => {
+  const files = new Set(["src/a.test.ts", "./a.test.ts", "src/a.ts", "/abs/a.test.ts"]);
+  const isFile = (word: string) => files.has(word);
+  const testRun = kind("test:run");
+  const tsc = kind("tsc");
+
+  test("bun test: the operand must start with ./ or / (a filter otherwise)", () => {
+    expect(namesOnlyFiles(testRun, ["test", "./a.test.ts"], isFile, "bun")).toBe(true);
+    expect(namesOnlyFiles(testRun, ["test", "/abs/a.test.ts"], isFile, "bun")).toBe(true);
+    expect(namesOnlyFiles(testRun, ["test", "src/a.test.ts"], isFile, "bun")).toBe(false);
+    expect(namesOnlyFiles(testRun, ["test"], isFile, "bun")).toBe(false);
+    expect(
+      namesOnlyFiles(testRun, ["test", "--timeout", "500", "./a.test.ts"], isFile, "bun"),
+    ).toBe(true);
+    expect(namesOnlyFiles(testRun, ["test", "-t", "adds", "./a.test.ts"], isFile, "bun")).toBe(
+      true,
+    );
+    expect(namesOnlyFiles(testRun, ["test", "--concurrent", "./a.test.ts"], isFile, "bun")).toBe(
+      true,
+    );
+    // `--bail` takes an optional number, so the word after it may be its value.
+    expect(namesOnlyFiles(testRun, ["test", "--bail", "./a.test.ts"], isFile, "bun")).toBe(false);
+    expect(namesOnlyFiles(testRun, ["test", "--bail=2", "./a.test.ts"], isFile, "bun")).toBe(true);
+    expect(namesOnlyFiles(testRun, ["test", "--unknown", "./a.test.ts"], isFile, "bun")).toBe(
+      false,
+    );
+    // Only what `bun test --help` lists is read past (Bun 1.4.4); `--parallel` takes an optional value.
+    for (const option of ["--only", "--pass-with-no-tests", "--only-failures", "--no-orphans"]) {
+      expect(namesOnlyFiles(testRun, ["test", option, "./a.test.ts"], isFile, "bun")).toBe(true);
+    }
+    expect(
+      namesOnlyFiles(
+        testRun,
+        ["test", "--path-ignore-patterns", "x", "./a.test.ts"],
+        isFile,
+        "bun",
+      ),
+    ).toBe(true);
+    for (const option of ["--parallel", "--aot", "--react-compiler", "--changed"]) {
+      expect(namesOnlyFiles(testRun, ["test", option, "./a.test.ts"], isFile, "bun")).toBe(false);
+    }
+    for (const option of ["--globals", "--environment", "--reporter-junit-suites"]) {
+      expect(namesOnlyFiles(testRun, ["test", option, "x", "./a.test.ts"], isFile, "bun")).toBe(
+        false,
+      );
+    }
+    // Without the tool, the shared table reads `test` as an operand that is no file.
+    expect(namesOnlyFiles(testRun, ["test", "./a.test.ts"], isFile)).toBe(false);
+  });
+
+  test("vitest and jest differ where the shared table cannot", () => {
+    // `-w` is a worker count for jest, the watch flag for vitest, a valued option in the shared table.
+    expect(namesOnlyFiles(testRun, ["-w", "2", "src/a.test.ts"], isFile, "jest")).toBe(true);
+    expect(namesOnlyFiles(testRun, ["-w", "src/a.test.ts"], isFile, "vitest")).toBe(false);
+    expect(namesOnlyFiles(testRun, ["-w", "2", "src/a.test.ts"], isFile)).toBe(true);
+    // A jest array option takes the words after it: not read past, so a slot.
+    expect(
+      namesOnlyFiles(testRun, ["--reporters", "default", "src/a.test.ts"], isFile, "jest"),
+    ).toBe(false);
+    expect(namesOnlyFiles(testRun, ["--reporters", "default", "src/a.test.ts"], isFile)).toBe(true);
+    // Jest's pattern options are array options: only the `=` form is read.
+    for (const option of ["--testPathPatterns", "--testPathPattern"]) {
+      expect(namesOnlyFiles(testRun, [option, "x", "src/a.test.ts"], isFile, "jest")).toBe(false);
+      expect(namesOnlyFiles(testRun, [`${option}=x`, "src/a.test.ts"], isFile, "jest")).toBe(true);
+    }
+    // Each tool's own bare and valued options.
+    expect(
+      namesOnlyFiles(testRun, ["run", "--project", "api", "src/a.test.ts"], isFile, "vitest"),
+    ).toBe(true);
+    expect(namesOnlyFiles(testRun, ["--ci", "--runInBand", "src/a.test.ts"], isFile, "jest")).toBe(
+      true,
+    );
+    expect(namesOnlyFiles(testRun, ["run", "--runInBand", "src/a.test.ts"], isFile, "vitest")).toBe(
+      false,
+    );
+    // vitest's `-u`, `--silent` and `--bail` take optional values; they are no bare option.
+    for (const option of ["-u", "--silent", "--bail"]) {
+      expect(namesOnlyFiles(testRun, ["run", option, "src/a.test.ts"], isFile, "vitest")).toBe(
+        false,
+      );
+    }
+  });
+
+  test("tsc: named files, past its own options; a project or a build is no named file", () => {
+    expect(namesOnlyFiles(tsc, ["--noEmit", "src/a.ts"], isFile, "tsc")).toBe(true);
+    expect(namesOnlyFiles(tsc, ["src/a.ts", "--noEmit", "--pretty"], isFile, "tsc")).toBe(true);
+    expect(namesOnlyFiles(tsc, ["--target", "es2022", "src/a.ts"], isFile, "tsgo")).toBe(true);
+    expect(namesOnlyFiles(tsc, ["--module", "nodenext", "src/a.ts"], isFile, "vue-tsc")).toBe(true);
+    expect(namesOnlyFiles(tsc, ["-p", ".", "src/a.ts"], isFile, "tsc")).toBe(false);
+    expect(namesOnlyFiles(tsc, ["--project", "tsconfig.json"], isFile, "tsc")).toBe(false);
+    expect(namesOnlyFiles(tsc, ["--build", "src/a.ts"], isFile, "tsc")).toBe(false);
+    expect(namesOnlyFiles(tsc, ["-b"], isFile, "tsc")).toBe(false);
+    expect(namesOnlyFiles(tsc, ["--noEmit"], isFile, "tsc")).toBe(false);
+    expect(namesOnlyFiles(tsc, [], isFile, "tsc")).toBe(false);
+    expect(namesOnlyFiles(tsc, ["--brandNew", "src/a.ts"], isFile, "tsc")).toBe(false);
+    expect(namesOnlyFiles(tsc, ["--noEmit", "src/a.ts", "src/missing.ts"], isFile, "tsc")).toBe(
+      false,
+    );
+  });
+
+  test("an unknown tool keeps the shared table; a kind's own valuedFlags still add", () => {
+    const own: KindSpec = {
+      match: [{ tool: "mytest" }],
+      noSlotForFiles: true,
+      valuedFlags: ["--suite"],
+    };
+    expect(namesOnlyFiles(own, ["--suite", "api", "src/a.test.ts"], isFile, "mytest")).toBe(true);
+    expect(namesOnlyFiles(own, ["--project", "api", "src/a.test.ts"], isFile, "mytest")).toBe(true);
+    expect(namesOnlyFiles(own, ["--shuffle", "src/a.test.ts"], isFile, "mytest")).toBe(false);
+    // A tool with a table still takes the kind's own valued options.
+    expect(
+      namesOnlyFiles(
+        { ...testRun, valuedFlags: ["--suite"] },
+        ["test", "--suite", "api", "./a.test.ts"],
+        isFile,
+        "bun",
+      ),
+    ).toBe(true);
+  });
+});
+
+describe("isWatchRun", () => {
+  test("finds the flags and commands that never end, per tool", () => {
+    for (const [tool, args] of [
+      ["tsc", ["--watch"]],
+      ["tsc", ["--noEmit", "-w"]],
+      ["tsc", ["--noEmit", "-W"]],
+      ["tsgo", ["-w"]],
+      ["vue-tsc", ["--watch", "--noEmit"]],
+      ["vitest", ["--watch"]],
+      ["vitest", ["-w"]],
+      ["vitest", ["watch"]],
+      ["vitest", ["dev"]],
+      ["vitest", ["--config", "vitest.config.ts", "watch"]],
+      ["vitest", ["--watch=true"]],
+      ["jest", ["--watch"]],
+      ["jest", ["--watchAll"]],
+      ["bun", ["test", "--watch"]],
+    ] as const) {
+      expect([tool, args, isWatchRun(tool, args)]).toEqual([tool, args, true]);
+    }
+  });
+
+  test("is false for a run that ends, and for a flag that means something else", () => {
+    for (const [tool, args] of [
+      ["tsc", ["--noEmit"]],
+      ["tsc", ["--watchFile", "x"]],
+      ["vitest", ["run"]],
+      ["vitest", ["run", "src/dev.test.ts"]],
+      ["vitest", ["--watch=false"]],
+      ["jest", ["-w", "2"]],
+      ["jest", ["--watchAll=false"]],
+      ["jest", ["--watchman"]],
+      ["bun", ["test", "./watch.test.ts"]],
+      ["next", ["build"]],
+    ] as const) {
+      expect([tool, args, isWatchRun(tool, args)]).toEqual([tool, args, false]);
+    }
   });
 });
 

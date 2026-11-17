@@ -335,6 +335,27 @@ describe("wordsOf", () => {
   });
 });
 
+describe("wordsOf: bash's `&>file` and `&>>file` are one redirection", () => {
+  test("the bare & belongs to the redirection, attached or apart", () => {
+    expect(wordsOf("tsc a.ts &>/dev/null")).toEqual(["tsc", "a.ts", "&>/dev/null"]);
+    expect(wordsOf("tsc a.ts &>>log")).toEqual(["tsc", "a.ts", "&>>log"]);
+    expect(wordsOf("tsc a.ts &> out.txt")).toEqual(["tsc", "a.ts", "&>", "out.txt"]);
+    expect(withoutRedirections(wordsOf("tsc a.ts &>/dev/null").slice(1))).toEqual(["a.ts"]);
+    expect(withoutRedirections(wordsOf("tsc a.ts &>>log").slice(1))).toEqual(["a.ts"]);
+    expect(withoutRedirections(wordsOf("tsc a.ts &> out.txt").slice(1))).toEqual(["a.ts"]);
+    expect(withoutRedirections(wordsOf("tsc a.ts &>> out.txt").slice(1))).toEqual(["a.ts"]);
+    expect(redirectionTargets(wordsOf("tsc a.ts &>> out.txt"))).toEqual(["out.txt"]);
+    expect(redirectionTargets(wordsOf("tsc a.ts &>/dev/null"))).toEqual(["/dev/null"]);
+    expect(redirectionTargets(wordsOf("tsc a.ts &>>log"))).toEqual(["log"]);
+  });
+
+  test("a quoted or escaped & is a character, and PowerShell has no such operator", () => {
+    expect(wordsOf("echo '&'>x")).toEqual(["echo", "&", ">x"]);
+    expect(wordsOf("echo \\&>x")).toEqual(["echo", "&", ">x"]);
+    expect(wordsOf("tsc a.ts &>x", "powershell")).toEqual(["tsc", "a.ts", "&", ">x"]);
+  });
+});
+
 describe("redirectionTargets — the files a command's words write", () => {
   test("every writing operator, attached or apart, before or after the program", () => {
     expect(
@@ -404,6 +425,22 @@ describe("invocationOf", () => {
     ]) {
       expect({ words, program: invocationOf(words)?.program }).toEqual({ words, program: "git" });
     }
+  });
+
+  test("`cross-env` runs the program after its VAR=x words, like env does", () => {
+    expect(invocationOf(["cross-env", "NODE_ENV=test", "CI=1", "git", "push", "-f"])).toEqual({
+      args: ["push", "-f"],
+      computed: false,
+      prefix: ["cross-env", "NODE_ENV=test", "CI=1"],
+      program: "git",
+    });
+    expect(invocationOf(["./node_modules/.bin/cross-env", "A=1", "jest"])?.program).toBe("jest");
+    expect(invocationOf(["CI=1", "cross-env.cmd", "A=1", "sudo", "git", "push"])?.program).toBe(
+      "git",
+    );
+    // With no VAR=x word, the command after it still runs; with nothing after it, nothing runs.
+    expect(invocationOf(["cross-env", "git", "x"])?.program).toBe("git");
+    expect(invocationOf(["cross-env", "A=1"])).toBeUndefined();
   });
 
   test("HK-9: `env -S` splits its string into the command's words", () => {
