@@ -67,6 +67,10 @@ export function editsMainFolder(file: string, mainCheckout: string, worktrees: s
   return innermostWorktree(file, [mainCheckout, ...worktrees]) === mainCheckout;
 }
 
+/** The way into a worktree, said once: the refusal here and the session-start nudge both give it. */
+export const ENTER_WORKTREE_HINT =
+  "Not in one yet: `EnterWorktree` with the task name as its `name` makes one, or resumes an existing one — use dashes, since a `/` becomes `+`.";
+
 export function mainFolderRefusal(mainCheckout: string, byCommand = false): string {
   return [
     byCommand
@@ -75,7 +79,7 @@ export function mainFolderRefusal(mainCheckout: string, byCommand = false): stri
     byCommand
       ? "Already working in a worktree? Run the command in that worktree's folder: `cd` into it first, or give `git -C <worktree>` to a git command."
       : "Already working in a worktree? Edit the same file under that worktree's folder.",
-    "Not in one yet: `EnterWorktree` with the task name as its `name` makes one, or resumes an existing one — use dashes, since a `/` becomes `+`.",
+    ENTER_WORKTREE_HINT,
   ].join("\n");
 }
 
