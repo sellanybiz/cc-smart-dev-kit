@@ -34,8 +34,10 @@ heading reads as "not considered".
 2. **Configuration** — every environment variable or setting added, renamed or removed:
    what it is for, where to get its value, and whether the build or only the runtime needs
    it. **Names only, never values.**
-3. **Follow-up notes** — the project tasks this branch adds, changes or closes, from the
-   branch task list below: IDs, what each asks, who does it; release blockers first.
+3. **Deploy tasks** — one list for each environment (prod, staging) the branch task list below
+   shows: the deploy tasks this branch adds, changes or closes, each with its ID, its step
+   (before or after the deploy) and type, and what it asks; blocking ones first. A finding
+   filed as an issue goes here too, with its number.
 4. **Data changes** — each migration or data script, and what it does on a **populated**
    database, not only an empty one. Say "no-op in production" only when you checked.
 5. **How it was verified** — the real commands and their results. **Say what was not
@@ -43,8 +45,9 @@ heading reads as "not considered".
    opinion's result (or "small fix"). A planned build has one pull request for the whole
    plan and lists each phase's spec-and-quality verdicts, then the final whole-branch review.
    "Verified" with nothing behind it is worse than an honest gap.
-6. **Still owed after the merge** — open obligations from that same task output, with timing
-   and weight. A pull request built on another open one says "stacked on #n — merge after it".
+6. **Still owed after the merge** — the open deploy tasks from that same task output, with their
+   step and type, and the issues still open. A pull request built on another open one says
+   "stacked on #n — merge after it".
 
 Run `cc-smart-dev-kit task list --branch --base <base>` against the pull request's real base
 before filling both task headings. Do not infer "none" from a failed command; state the gap.
@@ -55,7 +58,7 @@ Task files travel with the change that needs them; closing and staging them is
 
 GitHub closes an issue only when a pull request that names it merges into the **default
 branch**: a fix merged into a release branch closes nothing, and a `Fixes` line in a pull
-request into any other branch is ignored. Where `workflow.issues.enabled` is on, the main
+request into any other branch is ignored. Unless `workflow.issues.enabled` is off (it is on by default), the main
 session labelled each issue a merged phase fixed `fixed-unreleased` (`issue mark-fixed`,
 `/cc-smart-dev-kit:build` § 5); the pull request that ships them lists them. Run
 

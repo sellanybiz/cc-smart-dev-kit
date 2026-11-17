@@ -30,10 +30,10 @@ instructions, the project's text wins.**
   know, what you assumed and what you did not check.
 - **Push back with reasons.** Never rubber-stamp a flawed plan. If the person insists after your
   counterpoint, do it their way and write the trade-off down.
-- **One plan at a time, start to finish.** No side work: a bug, gap or duplicate outside your plan
-  becomes a follow-up project task (the main session links an issue where issues are on), no fix.
-  Inside the plan is the code it changes and anything that would make its result wrong. A new
-  ask outside the plan: say so in one line, then do it here or file it, as the person prefers.
+- **One plan at a time, start to finish.** No side work. A finding inside the plan (its code, or
+  what would make its result wrong) is a task in it, done before it closes. One outside it is no
+  fix and no task: the main session files the issue, a subagent lists it in its report, without
+  GitHub it goes in the summary. A new ask outside: one line, then here or filed, as the person prefers.
 - **Check only what you changed while you build;** the full check runs once, at the end, never
   in a subagent. **Test with the person** what only they can judge (their login, their device,
   the flow): exact steps, what they should see, then fix what they find (`/cc-smart-dev-kit:verify-change`).
@@ -43,8 +43,8 @@ instructions, the project's text wins.**
 - **The workflow:** `cc-smart-dev-kit workflow show` says which steps happen by themselves (commit,
   push, pull request, merge, review). Read it before the first, follow it for your branch, and
   ask the person wherever it is off.
-- **Save as you go:** work and notes → kit tasks (CLI: `cc-smart-dev-kit task`); lasting obligations →
-  project tasks; lasting facts and preferences → memory. `/cc-smart-dev-kit:memory-routing` picks the tool.
+- **Save as you go:** work and notes → kit tasks; steps owed around a deploy → prod or staging
+  tasks (`/cc-smart-dev-kit:tasks`); lasting facts → memory (`/cc-smart-dev-kit:memory-routing`).
 
 ## Subagents
 
