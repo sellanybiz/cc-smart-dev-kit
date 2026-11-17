@@ -196,11 +196,11 @@ describe("resolveWorkflow: the order", () => {
     expect(resolved.alerts.usagePercent).toEqual({ value: 85, source: "default" });
   });
 
-  test("D67: GitHub Issues are off by default, with the three labels", () => {
+  test("D67: GitHub Issues are on by default (D7, 5.0.0), allowPublic off, with the three labels", () => {
     const resolved = resolveWorkflow(pathsFor(hookEnv()), null);
     expect(resolved.issues).toEqual({
       allowPublic: { source: "default", value: false },
-      enabled: { source: "default", value: false },
+      enabled: { source: "default", value: true },
       fixedLabel: { source: "default", value: "fixed-unreleased" },
       foundLabel: { source: "default", value: "kit:found" },
       readyLabel: { source: "default", value: "kit:ready" },

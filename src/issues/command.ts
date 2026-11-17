@@ -24,7 +24,7 @@ key is hashed into a hidden comment at the end of the body. --body-file - reads 
 standard input. --label adds a label beside the found label; a label the repository lacks is
 created.
 
-It files nothing unless issues.enabled is on (off by default; read from your own workflow.json
+It files nothing unless issues.enabled is on (on by default; read from your own workflow.json
 and the project's file as committed on the base), and a public repository needs issues.allowPublic
 too. A title or body that holds a home path (in any spelling of it), a key or token of a known
 shape or a value after key, token, secret or password, or a URL with credentials is refused with

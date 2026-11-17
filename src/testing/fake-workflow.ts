@@ -39,7 +39,7 @@ export function defaultResolved(): ResolvedWorkflow {
     fixesAfterReview: { files: at(10), lines: at(200), percent: at(20) },
     issues: {
       allowPublic: at(false),
-      enabled: at(false),
+      enabled: at(true),
       fixedLabel: at("fixed-unreleased"),
       foundLabel: at("kit:found"),
       readyLabel: at("kit:ready"),

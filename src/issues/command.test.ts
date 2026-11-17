@@ -20,7 +20,7 @@ function setup(enabled = true) {
   commitConfig(repo, { worktrees: { base: "main" } }, ["main"]);
   const home = tempDir("issue-cmd-home");
   const env = { ...cleanGitEnv(), CLAUDE_CONFIG_DIR: `${home}/.claude`, HOME: home };
-  if (enabled) writePersonalWorkflow(env, { issues: { enabled: true } });
+  writePersonalWorkflow(env, { issues: { enabled } });
   const gh = fakeGh();
   const lines: string[] = [];
   const errors: string[] = [];
@@ -78,7 +78,7 @@ describe("issue file: the command", () => {
     const run = setup(false);
     expect(await runIssue(ARGS, run.context)).toBe(1);
     expect(run.lines).toHaveLength(1);
-    expect(run.lines[0]).toStartWith("refused: issues.enabled is off (default)");
+    expect(run.lines[0]).toStartWith("refused: issues.enabled is off (personal");
     expect(run.lines[0]).toContain("workflow set issues.enabled true");
     expect(run.gh.calls).toEqual([]);
   });

@@ -1,7 +1,9 @@
 # GitHub Issues
 
-The kit files its follow-ups and its findings as GitHub issues — **opt-in**, one switch, off by
-default, like `autoPush` and `openPr` (decision D67, the owner, 2026-10-25). Before it, a
+The kit files its follow-ups and its findings as GitHub issues, one switch (decision D67, the
+owner, 2026-10-25). The switch began opt-in, off by default, like `autoPush` and `openPr`. Since
+5.0.0 it is **on by default** (D7 of the deploy-tasks plan, the owner's choice), in a project that
+has a kit config; `allowPublic` stays off, so a public repository still needs its own yes. Before the kit filed issues, a
 follow-up outside a plan, a review finding left open or a hunch ended as a line in a summary and
 was lost when the plan was archived. This page is the contract: filing (GI1), the fixed mark and
 the release list (GI2), and the markers the kit trusts (GI4). The research behind it:
@@ -15,7 +17,7 @@ the release list (GI2), and the markers the kit trusts (GI4). The research behin
 
 | Field | Default | Meaning |
 |---|---|---|
-| `enabled` | `false` | The kit may file issues in the project's repository. |
+| `enabled` | `true` | The kit may file issues in the project's repository. On by default since 5.0.0; set it `false` to stop. |
 | `allowPublic` | `false` | It may also file in a **public** repository. A second yes, because everyone reads an issue there. |
 | `foundLabel` | `kit:found` | On every issue the kit files; how it finds the one a fingerprint already filed. |
 | `fixedLabel` | `fixed-unreleased` | An issue whose fix is merged and not released (§ Resolved when it ships). |
@@ -42,9 +44,9 @@ A policy that cannot be read (no `origin/<base>`, a committed file that is broke
 the plugin) is a refusal, not a guess. `workflow show` prints each key with its source; `workflow
 set` writes the person's own value, `--project` the project's file.
 
-**A session cannot turn it on.** `workflow set` and `unset` of `enabled` and `allowPublic` refuse
+**A session cannot change it.** `workflow set` and `unset` of `enabled` and `allowPublic` refuse
 inside Claude Code (`OUTBOUND_KEYS`, as a review-gate key does): a session must not open its own
-way out. So does `readyLabel` (`INBOUND_KEYS`, IX2): a session must never pick which issues
+way out, nor switch off what the person left on. So does `readyLabel` (`INBOUND_KEYS`, IX2): a session must never pick which issues
 count as chosen. Each is read as `enabled` is, from the person's file and the project's
 file as committed on the base (`resolveSwitch`), never a working copy. `workflow propose` stays
 open, because a person reviews and merges its pull request. The refusal is a courtesy that a
@@ -203,13 +205,24 @@ refusal above is its own.
 
 ## doctor
 
-With `issues.enabled` on, one line in the project's group: `gh` is logged in for github.com
+With `issues.enabled` on (by default, or set), one line in the project's group: `gh` is logged in for github.com
 (`gh auth status --hostname github.com --active`: only the account gh uses, so a stale second
 account does not fail the line) and can file issues in `origin`'s repository, each failure
 with its fix — `gh` missing, logged out, timed out; `origin` not on github.com; issues turned off
 for the repository; read-only access (Read cannot apply a label). Triage (it applies labels but
 cannot create them) and a public repository with `allowPublic` off are `!` warnings. With the
 switch off: no line, and no `gh` call.
+
+**While the switch is only the default, `doctor` is quiet.** Nobody chose it, so a project the kit
+cannot file in is not a failure (`.claude/rules/command-output.md`: a part the person may leave
+out is never one). When the resolved source of `issues.enabled` is `default`, every "cannot file
+here" result (`origin` not on github.com, `gh` missing, logged out or timed out, the repository
+unreadable or with issues turned off, read-only access, Triage, a public repository without
+`allowPublic`) is a `·` info line that says the follow-up goes in the summary instead, and the
+`allowPublic` nudge is not shown. A working setup still gets its one `ok` line. A person or
+project that sets the switch (`enabled: true` in either file) keeps every failure, warning and fix
+above. `issue file` is unchanged: it still needs the project's config, and it refuses with its
+own reason where it cannot file; the follow-up then goes in the summary.
 
 ## Resolved when it ships
 
