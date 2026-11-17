@@ -49,6 +49,10 @@ test("the starter skill: front matter, the steps section that says none are writ
   expect(starter).toContain("\n# Deploy\n");
   expect(starter).toContain("\n## This project's deploy steps\n");
   expect(starter).toContain("never invent a deploy command");
+  // The paragraph removes itself once the steps are in, and an empty skill never deploys.
+  expect(starter).toContain(
+    "Replace this paragraph with them. Until then, do not run a deploy: ask the person.",
+  );
   // The block is the managed one: the same markers and body every other writer uses.
   expect(starter.endsWith(`${BLOCK_BEGIN}\n${deployBlockBody()}\n${BLOCK_END}\n`)).toBe(true);
   expect(starter.indexOf("## This project's deploy steps")).toBeLessThan(

@@ -53,7 +53,7 @@ export function deploySkillStarter(): string {
     "",
     "## This project's deploy steps",
     "",
-    "The deploy steps of this project are not written yet. Ask the person how this project deploys: the commands, their order, the checks to run and how to roll back. Write the answer in this section, and never invent a deploy command.",
+    "The deploy steps of this project are not written yet. Ask the person how this project deploys: the commands, their order, the checks to run and how to roll back. Write the steps in this section, and never invent a deploy command. Replace this paragraph with them. Until then, do not run a deploy: ask the person.",
     "",
   ].join("\n");
   return renderManagedMarkdown(own, deployBlockBody());

@@ -6,6 +6,7 @@ import {
   readdirSync,
   readFileSync,
   realpathSync,
+  rmSync,
   statSync,
   symlinkSync,
   writeFileSync,
@@ -499,6 +500,42 @@ describe("a new deploy skill (planNewDeploySkill)", () => {
     const result = planNewDeploySkill(root);
     expect("note" in result && result.note).toContain("outside this checkout");
     expect(readdirSync(outside)).toEqual([]);
+  });
+
+  test("a /deploy command would be shadowed by the skill: a note, no plan", () => {
+    const { root } = world();
+    for (const path of ["deploy.md", "ops/Deploy-prod.md"]) {
+      const file = join(root, ".claude", "commands", path);
+      mkdirSync(join(file, ".."), { recursive: true });
+      writeFileSync(file, "run the deploy\n");
+      expect(planNewDeploySkill(root)).toEqual({
+        note: `.claude/commands/${path} already answers /deploy: no skill created; --deploy-skill <path> names a skill to add the section to`,
+      });
+      rmSync(file);
+    }
+  });
+
+  test("a command that is not a deploy leaves the plan alone", () => {
+    const { root } = world();
+    mkdirSync(join(root, ".claude", "commands"), { recursive: true });
+    writeFileSync(join(root, ".claude", "commands", "review.md"), "review\n");
+    writeFileSync(join(root, ".claude", "commands", "deploy-notes.txt"), "not a command\n");
+    const result = planNewDeploySkill(root);
+    expect("plan" in result && result.notes).toEqual([]);
+  });
+
+  test("a skill that says release or ship may hold the steps: the plan stands, with a note naming it", () => {
+    const { root } = world();
+    skill(root, "release-train", "x");
+    skill(root, "publish", "x", "ship-it");
+    skill(root, "review", "x", "review");
+    const result = planNewDeploySkill(root);
+    if (!("plan" in result)) throw new Error("expected a plan");
+    expect(result.plan.action).toBe("create");
+    expect(result.notes).toEqual([
+      ".claude/skills/publish/SKILL.md may already hold this project's deploy steps; --deploy-skill .claude/skills/publish/SKILL.md adds the section there instead",
+      ".claude/skills/release-train/SKILL.md may already hold this project's deploy steps; --deploy-skill .claude/skills/release-train/SKILL.md adds the section there instead",
+    ]);
   });
 
   test("a file where the folder should be gives a note, not a crash", () => {

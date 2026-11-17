@@ -1513,7 +1513,7 @@ describe("a project with no deploy skill gets one (D8)", () => {
     expect(await runProjectInit(["--yes"], run.context, runner({}))).toBe(0);
     expect(readFileSync(newSkill(repo), "utf8")).toContain("name: deploy\n");
     expect(configOf(repo).requires).toBe(">=5.0");
-    expect(run.lines).toContain(`· ${NEW}  new file, 18 lines`);
+    expect(run.lines).toContain(`· ${NEW}  new file, 25 lines`);
     expect(run.lines).toContain("  + name: deploy");
     expect(run.lines).toContain("  + ## This project's deploy steps");
     expect(run.lines).toContain(`+ ${NEW}: created`);
@@ -1524,7 +1524,7 @@ describe("a project with no deploy skill gets one (D8)", () => {
     const repo = makeRepo();
     const run = context(repo);
     expect(await runProjectInit(["--dry-run"], run.context, runner({}))).toBe(0);
-    expect(run.lines).toContain(`· ${NEW}  new file, 18 lines`);
+    expect(run.lines).toContain(`· ${NEW}  new file, 25 lines`);
     expect(run.lines).toContain("  + ## Deploy tasks");
     expect(run.lines).toContain("· A real run writes 2 files.");
     expect(existsSync(join(repo, ".claude", "skills"))).toBe(false);
@@ -1535,7 +1535,7 @@ describe("a project with no deploy skill gets one (D8)", () => {
     const repo = makeRepo();
     const run = context(repo);
     expect(await runProjectInit([], run.context, runner({}))).toBe(0);
-    expect(run.lines).toContain(`· ${NEW}  new file, 18 lines`);
+    expect(run.lines).toContain(`· ${NEW}  new file, 25 lines`);
     expect(run.lines).toContain("· Nothing was written: run this on a terminal, or add --yes.");
     expect(existsSync(join(repo, ".claude"))).toBe(false);
   });
@@ -1572,6 +1572,61 @@ describe("a project with no deploy skill gets one (D8)", () => {
     expect(await runProjectInit(["--yes"], run.context, runner({}))).toBe(0);
     expect(run.lines).toContain("· .claude/skills is a link outside this checkout: not searched");
     expect(existsSync(join(outside, "deploy"))).toBe(false);
+  });
+
+  test("a /deploy command is never shadowed: a note, no skill, requires stays low", async () => {
+    const repo = makeRepo();
+    mkdirSync(join(repo, ".claude", "commands"), { recursive: true });
+    writeFileSync(join(repo, ".claude", "commands", "deploy.md"), "run the deploy\n");
+    const run = context(repo);
+    expect(await runProjectInit(["--yes"], run.context, runner({}))).toBe(0);
+    expect(run.lines).toContain(
+      "· .claude/commands/deploy.md already answers /deploy: no skill created; --deploy-skill <path> names a skill to add the section to",
+    );
+    expect(existsSync(join(repo, ".claude", "skills"))).toBe(false);
+    expect(configOf(repo).requires).toBe(">=0.5.2");
+  });
+
+  test("a release or ship skill is named in a note, and the new skill is still offered", async () => {
+    const repo = makeRepo();
+    mkdirSync(join(repo, ".claude", "skills", "release"), { recursive: true });
+    writeFileSync(join(repo, ".claude", "skills", "release", "SKILL.md"), "# Release\n");
+    const run = context(repo);
+    expect(await runProjectInit(["--yes"], run.context, runner({}))).toBe(0);
+    expect(run.lines).toContain(
+      "· .claude/skills/release/SKILL.md may already hold this project's deploy steps; --deploy-skill .claude/skills/release/SKILL.md adds the section there instead",
+    );
+    expect(existsSync(newSkill(repo))).toBe(true);
+    expect(readFileSync(join(repo, ".claude", "skills", "release", "SKILL.md"), "utf8")).toBe(
+      "# Release\n",
+    );
+  });
+
+  test("as Claude Code runs it: `--yes` alone in a skill-less repo creates the skill", async () => {
+    const home = tempDir("init-cli-home");
+    const repo = makeRepo();
+    const guard = subprocessGuard();
+    const result = Bun.spawnSync(
+      [
+        process.execPath,
+        ...guard.args,
+        join(import.meta.dir, "..", "entries", "cli.ts"),
+        "project",
+        "init",
+        "--yes",
+      ],
+      {
+        cwd: repo,
+        env: { ...hookEnv(), HOME: home, CLAUDE_CONFIG_DIR: join(home, ".claude"), ...guard.env },
+        stdout: "pipe",
+        stderr: "pipe",
+      },
+    );
+    expect(result.stderr.toString()).toBe("");
+    expect(result.exitCode).toBe(0);
+    expect(readFileSync(newSkill(repo), "utf8")).toContain("<!-- cc-smart-dev-kit:begin -->");
+    expect(result.stdout.toString()).toContain(`+ ${NEW}: created`);
+    expect(configOf(repo).requires).toBe(">=5.0");
   });
 
   test("a project that names a deploy skill is not given a second one", async () => {

@@ -768,7 +768,7 @@ function printPlan(
           problem !== null
             ? "not changed"
             : one.action === "create"
-              ? `new file, ${plural(one.diff.length, "line", "lines")}`
+              ? `new file, ${plural(one.text.trimEnd().split("\n").length, "line", "lines")}`
               : one.changed
                 ? `${one.diff.length} to change in its deploy block`
                 : "no change",
@@ -891,8 +891,12 @@ function chosenDeploySkills(
     files = found.holders;
   } else if (found.named.length === 0) {
     const made = planNewDeploySkill(root);
-    if ("plan" in made) fresh = made.plan;
-    else notes.push(made.note);
+    if ("plan" in made) {
+      fresh = made.plan;
+      notes.push(...made.notes);
+    } else {
+      notes.push(made.note);
+    }
   } else if (found.named.length === 1) {
     files = found.named;
     askBeforeAdding = true;
