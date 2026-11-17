@@ -80,8 +80,7 @@ import {
 import { isObject } from "../setup/managed-json";
 import { parseUserJson, readUserJson } from "../setup/user-json";
 import { taskContext } from "../tasks/context";
-import { checkProjectTasks } from "../tasks/project/check";
-import { shippedIdsOn } from "../tasks/project/release";
+import { checkDeployTasks } from "../tasks/deploy/check";
 import { allTasks, isOpen, livePhaseCount } from "../tasks/work/queries";
 import { readWorkStore } from "../tasks/work/read";
 import { type GhExec, runGh } from "../workflow/merge-check";
@@ -910,32 +909,14 @@ export async function projectTaskChecks(cwd: string, env: Env): Promise<Check[]>
     return [
       { ok: false, text: `project tasks: ${tasks.why}`, fix: `run \`${COMMAND} task check\`` },
     ];
-  if (!existsSync(tasks.dir) && tasks.legacyFolders.length === 0) return [];
+  if (!existsSync(tasks.dir)) return [];
   const lines: Check[] = [];
   try {
-    const branch = tasks.releaseBranch();
-    const present = (
-      await runGitAsync(
-        context.checkoutRoot,
-        ["rev-parse", "--verify", "--end-of-options", `${branch}^{commit}`],
-        env,
-      )
-    ).ok;
-    if (!present)
-      lines.push({
-        ok: true,
-        info: true,
-        text: `project tasks: release branch ${branch} is not available locally; missed releases were not checked`,
-      });
-    const findings = checkProjectTasks({
+    const findings = checkDeployTasks({
       checkoutRoot: context.checkoutRoot,
       dir: tasks.dir,
       settings: { staleDays: tasks.staleDays },
       now: new Date(),
-      shippedIds: present
-        ? shippedIdsOn(context.checkoutRoot, tasks.dir, branch)
-        : new Set<string>(),
-      legacyFolders: tasks.legacyFolders,
     });
     const counts = new Map<string, number>();
     for (const finding of findings) counts.set(finding.kind, (counts.get(finding.kind) ?? 0) + 1);

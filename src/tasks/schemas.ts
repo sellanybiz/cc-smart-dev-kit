@@ -1,9 +1,9 @@
 import { isAbsolute } from "node:path";
 import { z } from "zod";
-import { projectTaskSchema } from "./project/format";
+import { DEPLOY_ENVS, deployTaskSchema } from "./deploy/format";
 import { DESCRIPTION_LIMIT, NOTE_LIMIT, SUBJECT_LIMIT } from "./work/types";
 
-const fields = projectTaskSchema.shape;
+const fields = deployTaskSchema.shape;
 const subject = z.string().trim().min(1).max(SUBJECT_LIMIT);
 const description = z.string().max(DESCRIPTION_LIMIT);
 const note = z.string().trim().min(1).max(NOTE_LIMIT);
@@ -27,8 +27,7 @@ const bindings = {
   base: z.string().describe("The commit sha the builder started from.").optional(),
 };
 const projectFields = {
-  when: fields.when,
-  weight: fields.weight,
+  deploy: fields.deploy.optional(),
   flags: fields.flags,
   refs: fields.refs,
   from: fields.from,
@@ -39,7 +38,7 @@ export const taskSchemas = {
       subject,
       ...bindings,
       description: description.optional(),
-      kind: z.enum(["work", ...fields.kind.options]).default("work"),
+      kind: z.enum(["work", ...DEPLOY_ENVS]).default("work"),
       parent: ref
         .optional()
         .describe(
@@ -87,7 +86,6 @@ export const taskSchemas = {
       outcome: z.enum(["done", "dropped"]).default("done"),
       evidence: note.optional(),
       note: note.optional(),
-      for_everyone: z.boolean().optional(),
     })
     .strict(),
   note: z.object({ task: ref, text: note }).strict(),

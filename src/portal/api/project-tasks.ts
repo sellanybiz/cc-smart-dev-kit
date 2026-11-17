@@ -8,8 +8,8 @@
  *   shares the one list. Each phase carries its ledger (G3): the agent, branch, worktree and
  *   base the main session set on it, and its steps (`phase-steps.ts`).
  * - **Project task files**: the open ones in the main checkout's task folder
- *   (`src/tasks/project/`), what blocks a release first. Stale is `task check`'s own rule
- *   (`checkProjectTasks`), never a second copy of it. A task on a branch not merged yet is not in
+ *   (`src/tasks/deploy/`), what blocks a release first. Stale is `task check`'s own rule
+ *   (`checkDeployTasks`), never a second copy of it. A task on a branch not merged yet is not in
  *   the main checkout: `task list --branches` shows those.
  *
  * - **Sessions**: every session that made a task in the tree, and every session that runs now
@@ -26,9 +26,9 @@ import { relative } from "node:path";
 import { liveSessions, type SessionRecord } from "../../hooks/sessions";
 import { isInside } from "../../path-compare";
 import { taskContextAsync } from "../../tasks/context";
-import { checkProjectTasks, DAY_MS } from "../../tasks/project/check";
-import { scanProjectTasks } from "../../tasks/project/files";
-import type { ProjectTask } from "../../tasks/project/format";
+import { checkDeployTasks, DAY_MS } from "../../tasks/deploy/check";
+import { scanDeployTasks } from "../../tasks/deploy/files";
+import type { DeployTask } from "../../tasks/deploy/format";
 import { allTasks, layerProgress, sessionNames } from "../../tasks/work/queries";
 import { readWorkStore } from "../../tasks/work/read";
 import { projectTaskTree, type TaskTreeNode } from "../../tasks/work/tree";
@@ -51,15 +51,16 @@ import type {
 /** A closed work task stays on the card this many days after its last change. */
 export const TASKS_CARD_RECENT_DAYS = 7;
 
-/** What blocks a release comes first, then what must be done after a deploy, then the owner's. */
-const WEIGHT_ORDER: Readonly<Record<string, number>> = {
-  "blocks-release": 0,
-  "after-deploy": 1,
-  owner: 2,
-};
-
-/** Now before the next release, before any time. */
-const WHEN_ORDER: Readonly<Record<string, number>> = { now: 0, "next-release": 1, any: 2 };
+/**
+ * Interim wire words for a deploy task, until the portal phase gives the row its own fields (env,
+ * deploy, type, twin): a blocking task before the deploy is what "blocks the release", any other
+ * blocking one is "after the deploy", and a non-blocking one has no weight. Every deploy task is
+ * a "production" row; `when` is gone.
+ */
+function weightOf(task: DeployTask): ProjectTaskRow["weight"] {
+  if (task.type === "non-blocking") return null;
+  return task.deploy === "before" ? "blocks-release" : "after-deploy";
+}
 
 /** What the project's whole list counts for the tree's plans and phases, by task id. */
 export interface ListCounts {
@@ -122,19 +123,22 @@ export function workTaskNodeOf(node: TaskTreeNode, counts: ListCounts): WorkTask
   };
 }
 
-function rowOf(task: ProjectTask, root: string, stale: ReadonlySet<string>): ProjectTaskRow {
+function rowOf(task: DeployTask, root: string, stale: ReadonlySet<string>): ProjectTaskRow {
   return {
-    created: task.created,
+    created: task.created.slice(0, 10),
     file: relative(root, task.file),
     flags: [...(task.flags ?? [])],
     id: task.id,
-    kind: task.kind,
+    kind: "production",
     stale: stale.has(task.id),
     title: task.title,
-    weight: task.weight ?? null,
-    when: task.when ?? null,
+    weight: weightOf(task),
+    when: null,
   };
 }
+
+/** What blocks a release comes first, then the rest after it, then the non-blocking. */
+const WEIGHT_ORDER: Readonly<Record<string, number>> = { "blocks-release": 0, "after-deploy": 1 };
 
 function rank(order: Readonly<Record<string, number>>, value: null | string): number {
   return value === null ? Object.keys(order).length : (order[value] ?? Object.keys(order).length);
@@ -142,33 +146,30 @@ function rank(order: Readonly<Record<string, number>>, value: null | string): nu
 
 function filesOf(
   root: string,
-  tasks: { dir: string; staleDays: number; legacyFolders: string[] },
+  tasks: { dir: string; staleDays: number },
   now: Date,
 ): ProjectTaskFiles {
   try {
-    const scan = scanProjectTasks(tasks.dir, { archive: true });
+    const scan = scanDeployTasks(tasks.dir, { archive: true });
     const stale = new Set(
-      checkProjectTasks({
+      checkDeployTasks({
         checkoutRoot: root,
         dir: tasks.dir,
         settings: { staleDays: tasks.staleDays },
         now,
-        shippedIds: new Set(),
-        legacyFolders: tasks.legacyFolders,
       })
         .filter((finding) => finding.kind === "stale" && finding.id !== undefined)
         .map((finding) => finding.id as string),
     );
     const open = scan.tasks
       .filter((task) => task.status === "open")
-      .map((task) => rowOf(task, root, stale))
       .sort(
         (a, b) =>
-          rank(WEIGHT_ORDER, a.weight) - rank(WEIGHT_ORDER, b.weight) ||
-          rank(WHEN_ORDER, a.when) - rank(WHEN_ORDER, b.when) ||
+          rank(WEIGHT_ORDER, weightOf(a)) - rank(WEIGHT_ORDER, weightOf(b)) ||
           a.created.localeCompare(b.created) ||
           a.id.localeCompare(b.id),
-      );
+      )
+      .map((task) => rowOf(task, root, stale));
     return {
       broken: scan.broken.length,
       closed: scan.tasks.length - open.length,

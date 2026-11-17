@@ -4,6 +4,7 @@ import { z } from "zod";
 import { COMMAND, PLUGIN_UPDATE_COMMAND, VERSION } from "../build-info";
 import { type KindSpec, kindsSchema } from "../jobs/kinds";
 import { parseUserJson, readUserJson } from "../setup/user-json";
+import { DEPLOY_ENVS } from "../tasks/deploy/format";
 import { workflowSchema } from "../workflow/schema";
 import { allowsNewer, isValidRange, lowestAllowed, satisfiesRange } from "./version-range";
 
@@ -161,6 +162,21 @@ export const OWN_HOOK_NAMES_SINCE: Readonly<
  */
 export const TASKS_SINCE = "1.10.0";
 
+/**
+ * The release that made the project's task files deploy tasks (prod and staging) and brought
+ * `tasks.envs`. A project file that sets `envs` needs that plugin version or newer. A 4.x plugin
+ * does not know `envs` and refuses the whole file, so the floor makes it say "update".
+ */
+export const DEPLOY_TASKS_SINCE = "5.0.0";
+
+/**
+ * The `tasks` fields no one reads since `DEPLOY_TASKS_SINCE`: the release branch and the old
+ * notes folders. They are accepted and ignored, not retired: a retired field fails every guard
+ * closed, and `project init` cannot repair a file that does. `doctor` names them with the fix
+ * (`project init` removes them).
+ */
+export const IGNORED_TASK_FIELDS = ["releaseBranch", "legacyFolders"] as const;
+
 /** A path inside the checkout, written with `/`: never absolute, never `.` or `..` segments. */
 const inCheckout = z
   .string()
@@ -267,22 +283,26 @@ export const ccSmartDevKitConfigSchema = z.strictObject({
    */
   jobs: z.strictObject({ kinds: kindsSchema.optional(), route: z.boolean().optional() }).optional(),
   /**
-   * The project's task files (D75, `docs/design/tasks.md`): one Markdown file per obligation
-   * for production, the database, a teammate or later, kept in the repo so it ships with its
-   * branch. Every key is optional.
-   * - `dir`: the folder, inside the checkout (default `.claude/tasks`); closed ones go to its
-   *   `archive/`.
+   * The project's deploy tasks (D75, `docs/design/tasks.md`): one Markdown file per step owed
+   * before or after a deploy to staging or prod, kept in the repo so it ships with its branch.
+   * Every key is optional.
+   * - `dir`: the folder, inside the checkout (default `.claude/tasks`); each environment has a
+   *   folder in it, with its own `archive/` for closed tasks.
    * - `staleDays`: when an open task counts as stale for `task check` (default 30).
-   * - `releaseBranch`: the branch a release ships from, so `task release` can tell a
-   *   `next-release` task that already missed one (default: the repo's default branch).
-   * - `legacyFolders`: the old hand-kept notes folders a project moved from; `task check`
-   *   flags a new file in one.
+   * - `envs`: the environments the project deploys to, from `staging` and `prod`, no repeats
+   *   (default both). A project with only prod lists `["prod"]`. A field of 5.0.0.
+   * - `releaseBranch`, `legacyFolders`: read by nothing since 5.0.0 (`IGNORED_TASK_FIELDS`).
    * A field of 1.10.0: a project that sets it raises `requires` to `>=1.10`.
    */
   tasks: z
     .strictObject({
       dir: inCheckout.optional(),
       staleDays: z.number().int().min(1).optional(),
+      envs: z
+        .array(z.enum(DEPLOY_ENVS))
+        .min(1)
+        .refine((envs) => new Set(envs).size === envs.length, "Each environment once")
+        .optional(),
       releaseBranch: z.string().trim().min(1).optional(),
       legacyFolders: z.array(inCheckout).optional(),
     })

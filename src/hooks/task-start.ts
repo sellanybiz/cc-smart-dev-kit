@@ -3,7 +3,7 @@ import type { CliPaths } from "../cli/paths";
 import { readMcpRecords } from "../mcp/records";
 import { TASKS_SERVER_NAME } from "../mcp/task-server-name";
 import { taskContext } from "../tasks/context";
-import { DAY_MS, DEFAULT_STALE_DAYS } from "../tasks/project/check";
+import { DAY_MS, DEFAULT_STALE_DAYS } from "../tasks/deploy/check";
 import { TASK_TOOL } from "../tasks/words";
 import { callerOf } from "../tasks/work/identity";
 import { startView } from "../tasks/work/read";

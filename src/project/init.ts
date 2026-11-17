@@ -39,6 +39,7 @@ import { type Workflow, workflowDefaults } from "../workflow/schema";
 import {
   CHECKS_SINCE,
   ccSmartDevKitConfigSchema,
+  DEPLOY_TASKS_SINCE,
   JOB_KIND_KEYS_SINCE,
   OWN_HOOK_NAMES_SINCE,
   RETIRED_WORKTREE_FIELDS,
@@ -234,6 +235,7 @@ export function requiresFloor(file: Record<string, unknown>): {
   const needs: string[] = [];
   if (Object.hasOwn(file, "checks")) needs.push(CHECKS_SINCE);
   if (Object.hasOwn(file, "tasks")) needs.push(TASKS_SINCE);
+  if (isObject(file.tasks) && Object.hasOwn(file.tasks, "envs")) needs.push(DEPLOY_TASKS_SINCE);
   if (Object.hasOwn(workflow, "issues")) needs.push(WORKFLOW_ISSUES_SINCE);
   const ownHooks = Array.isArray(file.ownHooks) ? file.ownHooks : [];
   for (const [name, since] of Object.entries(OWN_HOOK_NAMES_SINCE)) {
