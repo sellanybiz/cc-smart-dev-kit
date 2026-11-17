@@ -46,14 +46,7 @@ import { isAbsolute, resolve } from "node:path";
 import { COMMAND } from "../build-info/names";
 import type { CliPaths } from "../cli/paths";
 import { machineRule, readMachines } from "../herdr/machines";
-import {
-  childModeAllowed,
-  HERDR_VERBS,
-  normalizeMode,
-  parseHerdrArgs,
-  RELAY_MESSAGE_LIMIT,
-  relayMessageLength,
-} from "../herdr/words";
+import { childModeAllowed, HERDR_VERBS, normalizeMode, parseHerdrArgs } from "../herdr/words";
 import {
   checkoutFailure,
   loadProjectConfig,
@@ -658,23 +651,6 @@ function herdrDomain(reading: BashReading): boolean {
   );
 }
 
-/** Quote short prompt excerpts without terminal controls or invisible direction changes. */
-function herdrExcerpt(text: string): string {
-  const excerpt = text.slice(0, RELAY_MESSAGE_LIMIT);
-  const points = Array.from(excerpt);
-  const quoted = points
-    .map((char) =>
-      /[\p{Cc}\p{Cf}]/u.test(char)
-        ? Array.from(
-            { length: char.length },
-            (_, i) => `\\u${char.charCodeAt(i).toString(16).padStart(4, "0")}`,
-          ).join("")
-        : JSON.stringify(char).slice(1, -1),
-    )
-    .join("");
-  return `"${quoted}"${relayMessageLength(text) > RELAY_MESSAGE_LIMIT ? "…" : ""}`;
-}
-
 /** Herdr policy never calls hc: it uses only the line, hook mode and machine allowlist. */
 function judgeHerdr(reading: BashReading, context: JudgeContext): BashVerdict | null {
   if (!herdrDomain(reading)) return null;
@@ -686,34 +662,6 @@ function judgeHerdr(reading: BashReading, context: JudgeContext): BashVerdict | 
   if (reading.identityAssigned)
     return verdict("deny", "Do not set HC_TERMINAL_ID: Herdr supplies the terminal identity.");
   let ask: BashVerdict | null = null;
-  // steps preserves repeated executions, unlike the deduplicated invocations.
-  const hasAnswer = reading.steps.some((step) => herdrArguments(step, reading)?.[0] === "answer");
-  if (
-    reading.invocations.some(
-      (one) => herdrArguments(one, reading)?.[0] === "answer" && one.filled.length > 0,
-    )
-  )
-    return verdict(
-      "deny",
-      "Pass the exact prompt msg literally in single quotes; do not let the shell fill any herdr answer words.",
-    );
-  if (
-    reading.steps.some(
-      (step) =>
-        herdrArguments(step, reading)?.[0] === "answer" &&
-        step.words[0] !== COMMAND &&
-        !step.words[0]?.endsWith(`/${COMMAND}`),
-    )
-  )
-    return verdict(
-      "deny",
-      "Run herdr answer directly, with no wrapper, so one approval sends one answer.",
-    );
-  if (hasAnswer && reading.steps.length > 1)
-    return verdict(
-      "deny",
-      "Run herdr answer as the only step on its Bash line so the person approves exactly one answer.",
-    );
   const remember = (reason: string) => {
     ask ??= isAttended(context.env)
       ? verdict("ask", reason)
@@ -751,7 +699,7 @@ function judgeHerdr(reading: BashReading, context: JudgeContext): BashVerdict | 
     if (one.program === "herdr-app" && args[0] === "do") {
       return verdict(
         "deny",
-        `Raw herdr-app do is not allowed. Use ${COMMAND} herdr start, send, answer or stop instead.`,
+        `Raw herdr-app do is not allowed. Use ${COMMAND} herdr start, send or stop instead.`,
       );
     }
     if (one.program === "hc") {
@@ -810,32 +758,19 @@ function judgeHerdr(reading: BashReading, context: JudgeContext): BashVerdict | 
         verb === "run"
           ? "herdr start"
           : verb === "send" || verb === "keys"
-            ? "herdr send or herdr answer"
+            ? "herdr send (a child's question is the person's, in its pane)"
             : verb === "kill" || verb === "rm"
               ? "herdr stop"
               : verb === "label"
                 ? "herdr adopt"
                 : verb === "attach"
-                  ? "herdr send or herdr answer"
+                  ? "herdr send (the person attaches to a pane, never Claude)"
                   : "job run for a background program (or a guarded herdr verb)";
       return verdict("deny", `Raw hc ${verb ?? "write"} is not allowed. Use ${COMMAND} ${fix}.`);
     }
     const herdr = herdrArguments(one, reading);
     if (herdr === null || (herdr.length === 2 && ["--help", "-h"].includes(herdr[1] ?? "")))
       continue;
-    // These always ask, even when malformed or carrying --asked: no hook-side hc read
-    // can tell a question from a permission prompt.
-    if (herdr[0] === "answer") {
-      const parsed = parseHerdrArgs(herdr);
-      const detail =
-        !("error" in parsed) && parsed.verb === "answer"
-          ? `${herdrExcerpt(parsed.target)}: ${parsed.option !== undefined ? `option ${herdrExcerpt(parsed.option)}` : `text ${herdrExcerpt(parsed.text ?? "")}`}; expected prompt ${herdrExcerpt(parsed.expect)}`
-          : herdrExcerpt(herdr.slice(1).join(" "));
-      remember(
-        `Approve the answer to Herdr child ${detail}. Only the person may answer a permission prompt.`,
-      );
-      continue;
-    }
     if (herdr[0] === "machines") {
       const parsed = parseHerdrArgs(herdr);
       if (!("error" in parsed) && parsed.verb === "machines" && parsed.action === "list") continue;

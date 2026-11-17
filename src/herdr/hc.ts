@@ -208,9 +208,6 @@ export function hcSend(
     ObjectSchema,
   );
 }
-export function hcKeys(runner: HcRunner, target: string, keys: string[]) {
-  return json(runner, ["keys", "--json", "--", target, ...keys], ObjectSchema);
-}
 export function hcKill(runner: HcRunner, target: string) {
   return json(runner, ["kill", "--json", "--", target], ObjectSchema);
 }

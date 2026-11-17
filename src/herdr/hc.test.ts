@@ -8,7 +8,6 @@ import {
   HcError,
   type HcRunner,
   hcGet,
-  hcKeys,
   hcKill,
   hcLabel,
   hcList,
@@ -67,7 +66,6 @@ test("literal argv for every wrapper", () => {
   hcList(fake, { all: true, labels: { "kit.lead": "core/t7", "kit.repo": "/repo" } });
   hcRun(fake, ["--bg", "claude", "a;b"]);
   hcSend(fake, "t7", "$(bad)", { ifStatus: "idle" });
-  hcKeys(fake, "t7", ["down", "enter"]);
   hcKill(fake, "t7");
   hcRm(fake, "t7");
   hcLabel(fake, "t7", { "kit.task": "#7" });
@@ -78,7 +76,6 @@ test("literal argv for every wrapper", () => {
     ["ls", "--json", "--all", "--label", "kit.lead=core/t7", "--label", "kit.repo=/repo"],
     ["run", "--json", "--bg", "claude", "a;b"],
     ["send", "--json", "--if", "idle", "--", "t7", "$(bad)"],
-    ["keys", "--json", "--", "t7", "down", "enter"],
     ["kill", "--json", "--", "t7"],
     ["rm", "--json", "--", "t7"],
     ["label", "--json", "--", "t7", "kit.task=#7"],

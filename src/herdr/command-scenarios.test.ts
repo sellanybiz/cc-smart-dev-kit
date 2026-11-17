@@ -408,91 +408,7 @@ test("send selects status guard, refuses unsafe states and never retries", async
     expect(await runHerdr(["send", "t2", "hi"], x.ctx)).toBe(1);
   }
 });
-const answerArgs = ["answer", "t2", "--expect", "Choose", "--expect-turn", "3", "--option", "2"];
-test("answer rechecks prompt then sends arrow keys, refuses unsafe prompts", async () => {
-  const prompt = {
-    address: "t2",
-    state: "live",
-    labels: { "kit.lead": "core/t1" },
-    status: { state: "blocked", kind: "question", msg: "Choose" },
-    turn: 3,
-  };
-  const w = world();
-  w.rows.t2 = prompt;
-  expect(await runHerdr(answerArgs, w.ctx)).toBe(0);
-  expect(w.calls.find((c) => c.args[0] === "keys")?.args).toEqual([
-    "keys",
-    "--json",
-    "--",
-    "t2",
-    "down",
-    "enter",
-  ]);
-  expect(w.calls.filter((c) => c.args[0] === "get")).toHaveLength(2);
-  for (const change of [
-    { turn: 4 },
-    { status: { state: "blocked", kind: "auth", msg: "Choose" } },
-    { status: { state: "blocked", kind: "permission", msg: "approve plan: work" } },
-    { status: null },
-  ]) {
-    const x = world();
-    x.rows.t2 = { ...prompt, ...change };
-    expect(await runHerdr(answerArgs, x.ctx)).toBe(1);
-    expect(x.calls.some((c) => c.args[0] === "keys")).toBe(false);
-  }
-  for (const screen of [
-    "1. Yes\n2. Always allow for this session",
-    "1. A\n2. B\nSpace to select",
-    "← Question 1 →\n❯ 1. A\n2. B",
-    "1. Only",
-  ]) {
-    const x = world();
-    x.rows.t2 = prompt;
-    x.setScreen(screen);
-    expect(await runHerdr(answerArgs, x.ctx)).toBe(1);
-    expect(x.calls.some((c) => c.args[0] === "keys")).toBe(false);
-  }
-  const x = world();
-  x.rows.t2 = prompt;
-  expect(await runHerdr(answerArgs.slice(0, -2).concat(["--text", "hello"]), x.ctx)).toBe(1);
-});
-test("review dialog movement, conversation, no labels, aliases and launch preflight", async () => {
-  const prompt = {
-    address: "t2",
-    state: "live",
-    labels: { "kit.lead": "core/t1" },
-    status: { state: "blocked", kind: "permission", msg: "Choose" },
-    turn: 3,
-  };
-  for (const [screen, k, keys] of [
-    ["  1. Yes\n❯ 2. No, tell Claude what to do differently", 1, ["up", "enter"]],
-    ["❯ 1. Yes\n  2. No\n  3. No, cancel", 3, ["down", "down", "enter"]],
-  ] as const) {
-    const w = world();
-    w.rows.t2 = prompt;
-    w.setScreen(screen);
-    expect(await runHerdr([...answerArgs.slice(0, -1), String(k)], w.ctx)).toBe(0);
-    expect(w.calls.find((c) => c.args[0] === "keys")?.args).toEqual([
-      "keys",
-      "--json",
-      "--",
-      "t2",
-      ...keys,
-    ]);
-  }
-  for (const k of ["2", "5"]) {
-    const w = world();
-    w.rows.t2 = prompt;
-    w.setScreen(
-      "1. old\n2. old\n5. old\n\nPermission\n❯ 1. Yes\n  2. Yes, always for this session",
-    );
-    expect(await runHerdr([...answerArgs.slice(0, -1), k], w.ctx)).toBe(1);
-    expect(w.lines.at(-1)).toBe(
-      k === "2"
-        ? "✗ A remembered permission must be answered in the pane."
-        : "✗ The option is not visible; read the pane again.",
-    );
-  }
+test("no identity, aliases and launch preflight", async () => {
   const w = world();
   w.ctx.identity = () => ({
     why: "This session is not inside a Herdr terminal (HC_TERMINAL_ID is missing).",
@@ -578,7 +494,7 @@ test("report saves every result when lead becomes blocked and aliases resolve on
     ["kill", "--json", "--", "t2"],
   ]);
 });
-test("round 2 empty waits and stale screen cursors", async () => {
+test("round 2 empty waits", async () => {
   for (const mode of ["--all", "--any"]) {
     const w = world();
     w.ctx.events = async () => {
@@ -587,23 +503,6 @@ test("round 2 empty waits and stale screen cursors", async () => {
     expect(await runHerdr(["wait", mode], w.ctx)).toBe(0);
     expect(w.lines).toEqual(["No live kit children."]);
   }
-  const w = world();
-  w.rows.t2 = {
-    address: "t2",
-    state: "live",
-    labels: { "kit.lead": "core/t1" },
-    status: { state: "blocked", kind: "question", msg: "Choose" },
-    turn: 3,
-  };
-  let reads = 0;
-  w.setResponse((a) =>
-    a[0] === "read"
-      ? { text: ++reads === 1 ? "❯ 1. A\n  2. B" : "  1. A\n❯ 2. B", complete: true, how: "screen" }
-      : undefined,
-  );
-  expect(await runHerdr(answerArgs, w.ctx)).toBe(1);
-  expect(w.lines.at(-1)).toBe("✗ The prompt changed; read it again (hc get t2).");
-  expect(w.calls.some((c) => c.args[0] === "keys")).toBe(false);
 });
 test("cursor includes only printed facts, preserving unprinted child and missing turn", async () => {
   const w = world();
@@ -616,13 +515,13 @@ test("cursor includes only printed facts, preserving unprinted child and missing
   w.ctx.events = async () => {
     closed = true;
     return {
-      news: [{ terminal: "t2", state: "blocked", turn: null, status_ms: 9 }],
+      news: [{ terminal: "t2", state: "error", turn: null, status_ms: 9 }],
       pending: [],
       timeout: false,
     };
   };
   expect(await runHerdr(["wait", "--seen", "t3:1:done"], w.ctx)).toBe(0);
-  expect(w.lines.at(-1)).toBe(`${COMMAND} herdr wait --seen t3:1:done,t2:?:blocked`);
+  expect(w.lines.at(-1)).toBe(`${COMMAND} herdr wait --seen t3:1:done,t2:?:error`);
 });
 test("cursor prunes absent snapshot addresses and shell encodes punctuation", async () => {
   const w = world();
@@ -633,9 +532,9 @@ test("cursor prunes absent snapshot addresses and shell encodes punctuation", as
     pending: [],
     timeout: false,
   });
-  expect(await runHerdr(["wait", "--seen", "gone:1:done,t2:1:blocked"], w.ctx)).toBe(0);
+  expect(await runHerdr(["wait", "--seen", "gone:1:done,t2:1:error"], w.ctx)).toBe(0);
   const line = w.lines.at(-1) ?? "";
-  expect(line).toBe(`${COMMAND} herdr wait --seen t2:1:blocked,box%21%27%28%29%2A%2Ft3:2:done`);
+  expect(line).toBe(`${COMMAND} herdr wait --seen t2:1:error,box%21%27%28%29%2A%2Ft3:2:done`);
   expect(line).not.toMatch(/[!'()*]/);
 });
 test("empty all barrier has no continuation", async () => {
@@ -649,17 +548,17 @@ test("wait prints every news timestamp and exact continuation", async () => {
   const w = world();
   w.setList(["t2"]);
   w.ctx.events = async () => ({
-    news: [{ terminal: "t2", state: "blocked", status_ms: 9, turn: 3 }],
+    news: [{ terminal: "t2", state: "error", status_ms: 9, turn: 3 }],
     pending: ["t3"],
     timeout: true,
   });
-  expect(await runHerdr(["wait", "--all", "--timeout", "9", "--seen", "t2:2:blocked"], w.ctx)).toBe(
+  expect(await runHerdr(["wait", "--all", "--timeout", "9", "--seen", "t2:2:error"], w.ctx)).toBe(
     0,
   );
   expect(w.lines).toEqual([
-    "t2: blocked; status_ms=9",
+    "t2: error; status_ms=9",
     "· Still working: t3",
-    `${COMMAND} herdr wait --all --timeout 9 --seen t2:3:blocked`,
+    `${COMMAND} herdr wait --all --timeout 9 --seen t2:3:error`,
   ]);
 });
 test("adopt skips independent/live leads and stop retains worktree", async () => {
@@ -705,27 +604,6 @@ test("wait reports stream loss, timeout and meaningful event news", async () => 
   }
 });
 
-test("permission messages at the status limit need the pane", async () => {
-  for (const length of [801, 802]) {
-    const w = world();
-    const msg = "x".repeat(length);
-    w.rows.t2 = {
-      address: "t2",
-      state: "live",
-      labels: { "kit.lead": "core/t1" },
-      status: { state: "blocked", kind: "permission", msg },
-      turn: 3,
-    };
-    expect(
-      await runHerdr(
-        ["answer", "t2", "--expect", msg, "--expect-turn", "3", "--option", "1"],
-        w.ctx,
-      ),
-    ).toBe(1);
-    expect(w.calls.some((c) => c.args[0] === "keys")).toBe(false);
-    expect(w.lines.at(-1)).toContain("pane");
-  }
-});
 test("send resolves an owned alias before typing", async () => {
   const w = world();
   w.rows.alias = w.rows.t2;
@@ -741,148 +619,6 @@ test("send resolves an owned alias before typing", async () => {
   ]);
 });
 
-function blocked(w: ReturnType<typeof world>, msg: string, kind = "permission") {
-  w.rows.t2 = {
-    address: "t2",
-    name: "kit-one",
-    state: "live",
-    labels: { "kit.lead": "core/t1" },
-    status: { app: "claude-code", state: "blocked", kind, msg },
-    turn: 3,
-  };
-  return ["answer", "t2", "--expect", msg, "--expect-turn", "3", "--option", "1"];
-}
-/** A Bash permission dialog as Claude Code 2.1.322 draws it (captured live for 4.3.2). */
-function bashDialog(command: string[], description = "Run the command"): string {
-  const dashed = "╌".repeat(40);
-  return [
-    "─".repeat(40),
-    " Bash command",
-    ' Tip: auto mode handles these prompts for you — choose "switch to auto mode" below',
-    ` ${description}`,
-    dashed,
-    ...command.map((line) => ` │ ${line}`),
-    dashed,
-    " Do you want to proceed?",
-    " ❯ 1. Yes",
-    "   2. No",
-    "",
-    " Esc to cancel · Tab to amend",
-  ].join("\n");
-}
-/** The borderless layout captured live on 2026-11-12: a plain "no rule matched" Bash prompt. */
-function plainBashDialog(
-  command: string[],
-  description = "Report linked child status to lead",
-): string {
-  const dashed = "╌".repeat(40);
-  return [
-    "─".repeat(40),
-    " Bash command",
-    ' Tip: auto mode handles these prompts for you — choose "switch to auto mode" below',
-    ` ${description}`,
-    dashed,
-    ...command.map((line) => ` ${line}`),
-    dashed,
-    " This command requires approval",
-    "",
-    " Do you want to proceed?",
-    " ❯ 1. Yes",
-    `   2. Yes, and don’t ask again for: ${COMMAND} herdr *`,
-    "   3. Yes, and switch to auto mode · auto mode handles these prompts for you",
-    "   4. No",
-    "",
-    " Esc to cancel · Tab to amend",
-  ].join("\n");
-}
-test("long Bash action matches whole dialog lines, not transcript or substrings", async () => {
-  const action = `printf '%s' ${"a".repeat(297)}`;
-  expect(`approve Bash: ${action}`.length).toBe(323);
-  for (const [msg, screen, code] of [
-    [`approve Bash: ${action}`, bashDialog([action.slice(0, 50), action.slice(50)]), 0],
-    ["Run proof · approve Bash: echo ok", bashDialog(["echo ok"]), 0],
-    ["approve Bash: echo ok…", bashDialog(["echo ok"]), 1],
-    [`approve Write: ${"界".repeat(677)}`, "❯ 1. Yes\n  2. No", 1],
-    ["approve Bash: echo ok", `echo ok\n${bashDialog(["echo other"])}`, 1],
-    ["approve Bash: echo ok", bashDialog(["echo ok && false"]), 1],
-    // Only the box lines count: a description equal to the action does not.
-    ["approve Bash: echo ok", bashDialog(["rm -rf ~/x"], "echo ok"), 1],
-    // The whole box must equal the action: a partial match, a second box or a description
-    // drawn like a box line does not count.
-    ["approve Bash: echo ok", bashDialog(["echo ok", "rm -rf ~/x"]), 1],
-    [
-      "approve Bash: echo ok",
-      `${bashDialog(["echo ok"])}`.replace(
-        " Do you want",
-        `${"╌".repeat(40)}\n │ rm -rf ~/x\n${"╌".repeat(40)}\n Do you want`,
-      ),
-      1,
-    ],
-    ["approve Bash: echo ok", bashDialog(["rm -rf ~/x"], "│ echo ok"), 1],
-    // The borderless layout: the whole box must still equal the action.
-    [
-      `approve Bash: ${COMMAND} herdr report "remote linked child kit-r8 is up"`,
-      plainBashDialog([`${COMMAND} herdr report "remote linked child kit-r8 is up"`]),
-      0,
-    ],
-    [`approve Bash: ${action}`, plainBashDialog([action.slice(0, 50), action.slice(50)]), 0],
-    ["approve Bash: echo ok", plainBashDialog(["echo ok", "rm -rf ~/x"]), 1],
-    ["approve Bash: echo ok", plainBashDialog(["rm -rf ~/x"], "echo ok"), 1],
-    // A box that mixes bordered and plain lines refuses, even when its text matches.
-    ["approve Bash: echo ok", bashDialog(["echo"]).replace(" │ echo", " │ echo\n ok"), 1],
-    // Rule-like lines inside the command never count as the frame, even when the msg names
-    // only the tail of the command (the mismatch the box check exists to catch).
-    ["approve Bash: echo ok", plainBashDialog(["rm -rf ~/x", "╌".repeat(40), "echo ok"]), 1],
-    [
-      "approve Bash: echo ok",
-      plainBashDialog(["rm -rf ~/x", "─".repeat(40), "╌".repeat(40), "echo ok"]),
-      1,
-    ],
-    // The command without its box border (the 4.3.1 assumption) does not match.
-    ["approve Bash: echo ok", "───\nBash command\n  echo ok\n❯ 1. Yes\n  2. No", 1],
-    ["approve Write: /repo/PROOF.md", "Write PROOF.md\n❯ 1. Yes\n  2. No", 0],
-  ] as const) {
-    const w = world();
-    const args = blocked(w, msg);
-    w.setScreen(screen);
-    expect(await runHerdr(args, w.ctx)).toBe(code);
-    expect(w.calls.some((c) => c.args[0] === "keys")).toBe(code === 0);
-  }
-});
-const singleQuestion =
-  "───\n ☐ Proof\n Proof: which letter?\n❯ 1. A\n     Choose A.\n  2. B\n     Choose B.\n  3. Type something.\n ───────\n  4. Chat about this\nEnter to select · ↑/↓ to navigate · Esc to cancel";
-test("single question relays real options, not text or chat actions", async () => {
-  for (const [option, code] of [
-    [2, 0],
-    [3, 1],
-    [4, 1],
-  ] as const) {
-    const w = world();
-    const args = blocked(w, "answer: Proof: which letter? (A · B)", "question");
-    args[args.length - 1] = String(option);
-    w.setScreen(singleQuestion);
-    expect(await runHerdr(args, w.ctx)).toBe(code);
-    expect(w.calls.find((c) => c.args[0] === "keys")?.args).toEqual(
-      code === 0 ? ["keys", "--json", "--", "t2", "down", "enter"] : undefined,
-    );
-  }
-  for (const screen of [
-    singleQuestion.replace("☐ Proof", "←  ☐ Colors  ☐ Size  ✔ Submit  →"),
-    singleQuestion.replace("1. A", "1. [ ] A"),
-    singleQuestion.replace("1. A", "1. [x] A"),
-    singleQuestion.replace("1. A", "1. [✔] A"),
-    "❯ 1. Old\n2. Old\n ───\n1. A\n2. B",
-  ]) {
-    const w = world();
-    const args = blocked(w, "question", "question");
-    w.setScreen(screen);
-    expect(await runHerdr(args, w.ctx)).toBe(1);
-  }
-  const w = world();
-  const args = blocked(w, "question", "question");
-  w.setScreen(singleQuestion.replace("1. A", "1. Always use tabs"));
-  expect(await runHerdr(args, w.ctx)).toBe(0);
-});
 test("shell lead is adoptable, saved reports are listed, and shell sends refuse", async () => {
   const w = world();
   w.rows.old = { address: "old", state: "live", agent: "zsh", status: null };
@@ -915,24 +651,6 @@ test("shell lead is adoptable, saved reports are listed, and shell sends refuse"
   expect(w.lines.at(-1)).toContain("Saved it at");
 });
 
-test("Bash match needs a rule and question hints include tabs above that rule", async () => {
-  const w = world();
-  const args = blocked(w, "approve Bash: echo ok");
-  w.setScreen("echo ok\nsome output\nBash command\n  rm -rf ~/x\n❯ 1. Yes\n  2. No");
-  expect(await runHerdr(args, w.ctx)).toBe(1);
-  for (const screen of [
-    "← ☐ First ☐ Second ✔ Submit →\n───\nQuestion\n❯ 1. A\n  2. B",
-    "✔ Submit\n\n───\nQuestion\n❯ 1. A\n  2. B",
-    ...["multi-select", "select all", "space to toggle"].map(
-      (hint) => `───\n${hint}\n❯ 1. A\n  2. B`,
-    ),
-  ]) {
-    const x = world();
-    const a = blocked(x, "question", "question");
-    x.setScreen(screen);
-    expect(await runHerdr(a, x.ctx)).toBe(1);
-  }
-});
 test("adopt leaves a booting Claude lead and reports folder failures separately", async () => {
   const w = world();
   w.rows.t2 = {
@@ -960,14 +678,6 @@ test("adopt leaves a booting Claude lead and reports folder failures separately"
   expect(w.lines.join("\n")).not.toContain("Could not adopt");
 });
 
-test("question hints in Bash actions are not question dialogs", async () => {
-  for (const action of ['grep -rn "multi-select" src', "echo '← a →'"]) {
-    const w = world();
-    const args = blocked(w, `approve Bash: ${action}`);
-    w.setScreen(bashDialog([action]));
-    expect(await runHerdr(args, w.ctx)).toBe(0);
-  }
-});
 test("foreground Claude name without argv keeps lead ownership", async () => {
   const w = world();
   w.rows.t2 = { address: "t2", state: "live", labels: { "kit.lead": "core/old" }, status: null };
@@ -1221,62 +931,4 @@ test("a failed state read after launch keeps the started child and its task bind
   } finally {
     ops.close();
   }
-});
-test("a plan dialog with a description prefix still goes to the pane", async () => {
-  const w = world();
-  w.rows.t2 = {
-    address: "t2",
-    state: "live",
-    labels: { "kit.lead": "core/t1" },
-    status: { state: "blocked", kind: "permission", msg: "Ship it · approve plan" },
-    turn: 3,
-  };
-  w.setScreen("Ready to code?\n❯ 1. Yes, and use auto mode\n  2. No, keep planning");
-  expect(
-    await runHerdr(
-      ["answer", "t2", "--expect", "Ship it · approve plan", "--expect-turn", "3", "--option", "2"],
-      w.ctx,
-    ),
-  ).toBe(1);
-  expect(w.lines.join("\n")).toContain("Answer the plan in its pane");
-  expect(w.calls.some((c) => c.args[0] === "keys")).toBe(false);
-});
-
-test("the live 2.1.322 Bash dialog relays a 440-character command", async () => {
-  const file = "/tmp/claude-1000/project/scratchpad/proof5.txt";
-  const text =
-    "proof five line one: this text is long on purpose so the permission prompt carries more than three hundred characters, which older kit versions refused to relay; the relay must quote all of it to the person before it sends a single key to this pane, and it must match the command shown on screen";
-  const msg = `approve Bash: printf '%s\\n' '${text}' > ${file}`;
-  const screen = [
-    "  ⎿  $ printf '%s\\n' 'proof five line one: this text is long on purpose so the permission prompt carries more than three hundred characters, which older kit versions refused to relay; the relay must",
-    "     quote all of it to the person before it sends a single key to this pane, and it must match the command sh…",
-    "",
-    "─".repeat(200),
-    " Bash command",
-    ' Tip: auto mode handles these prompts for you — choose "switch to auto mode" below',
-    " Write proof text to scratchpad file",
-    "╌".repeat(200),
-    " │ printf '%s\\n' 'proof five line one: this text is long on purpose so the permission prompt carries more than three hundred characters, which older kit versions refused to relay; the relay must",
-    " │ quote all of it to the person before it sends a single key to this pane, and it must match the command shown on screen' >",
-    ` │ ${file}`,
-    "╌".repeat(200),
-    " Do you want to proceed?",
-    " ❯ 1. Yes",
-    "   2. Yes, and always allow access to /tmp/claude-1000/project/scratchpad from this project",
-    "   3. Yes, and switch to auto mode · auto mode handles these prompts for you",
-    "   4. No",
-    "",
-    " Esc to cancel · Tab to amend",
-  ].join("\n");
-  const w = world();
-  const args = blocked(w, msg);
-  w.setScreen(screen);
-  expect(await runHerdr(args, w.ctx)).toBe(0);
-  expect(w.calls.find((c) => c.args[0] === "keys")?.args).toEqual([
-    "keys",
-    "--json",
-    "--",
-    "t2",
-    "enter",
-  ]);
 });
