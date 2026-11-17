@@ -106,9 +106,9 @@ Before any deploy, production or database work, list the deploy tasks (`task_lis
 `project`, or `task release <env>`). Then, in your own checkout:
 
 1. **Cut a deploy branch** from the commit that ships: `git fetch origin`, then
-   `git switch --no-track -c deploy/<env>-<YYYYMMDD-HHMM> origin/<base>`. In a project with a
-   worktree per session: `git worktree add --no-track -b deploy/<env>-<YYYYMMDD-HHMM> <folder>
-   origin/<base>`. `--no-track` stops a plain `git push` from targeting the base.
+   `git switch --no-track -c deploy/<env>-<YYYYMMDD-HHMM> origin/<base>`, in the checkout you work
+   in (the deploy task commands act in the folder they run in). `--no-track` stops a plain `git
+   push` from targeting the base.
 2. **`cc-smart-dev-kit task release <env> --before`.** Exit 1 while a blocking `before` task is
    open, a task file is broken or its id repeats, prod waits on an open staging twin, or HEAD is
    not the ref (default `origin/<worktrees.base>`) apart from task files. It names the open

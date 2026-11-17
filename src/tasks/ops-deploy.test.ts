@@ -186,7 +186,7 @@ for (const refuse of [true, false]) {
 }
 
 test("task_update with status open reopens a closed deploy task, and only that", () => {
-  const { ops, dir } = deployOps();
+  const { ops, dir, cwd } = deployOps();
   try {
     ops.call("create", { subject: "Cache", kind: "staging", deploy: "after", type: "blocking" });
     const id = scanDeployTasks(dir, { archive: false }).tasks[0]?.id ?? "";
@@ -195,7 +195,7 @@ test("task_update with status open reopens a closed deploy task, and only that",
     expect(scanDeployTasks(dir, { archive: false }).tasks).toEqual([]);
     expect(ops.call("update", { task: id, status: "open" })).toEqual({
       ok: true,
-      text: `${id} "Cache" · open again`,
+      text: `${id} "Cache" · open again · ${join(".claude", "tasks", "staging", `${id}-cache.md`)} · written in ${cwd}: commit the file with your branch`,
     });
     const [task] = scanDeployTasks(dir, { archive: true }).tasks;
     expect(task?.status).toBe("open");

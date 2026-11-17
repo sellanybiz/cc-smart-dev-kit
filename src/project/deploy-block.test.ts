@@ -13,9 +13,7 @@ test("the block names both gate commands, the deploy branch, the closes and the 
   expect(body).toContain(`\`${COMMAND} task release <env> --before\``);
   expect(body).toContain(`\`${COMMAND} task release <env> --after\``);
   expect(body).toContain("git switch --no-track -c deploy/<env>-<date> origin/<base>");
-  expect(body).toContain(
-    "git worktree add --no-track -b deploy/<env>-<date> <folder> origin/<base>",
-  );
+  expect(body).not.toContain("worktree add");
   expect(body).toContain("each one belongs to prod or staging");
   expect(body).toContain("commit the closes on the deploy branch");
   expect(body).toContain("pull request");

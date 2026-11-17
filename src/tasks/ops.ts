@@ -9,7 +9,7 @@ import { cappedHookList } from "../hooks/capped-list";
 import { runGit } from "../hooks/git";
 import { DEPLOY_TASKS_SINCE } from "../project/config";
 import { resolvePlans } from "../workflow/resolve";
-import { taskContext } from "./context";
+import { type TaskContext, taskContext } from "./context";
 import {
   addDeployNote,
   closeDeployTask,
@@ -128,6 +128,15 @@ function personOnly(id: string, action: string, command: string): string {
   return `${id} is blocking: only the person ${action}. Ask the person to run \`${TASK_COMMAND} ${command}\` in their own terminal, outside Claude Code`;
 }
 
+/**
+ * What every deploy-task write says about where it landed: the file, relative to its checkout, and
+ * the checkout. The one place the words live; `create` and every later op read it, so a person who
+ * runs the command in another folder sees it at once.
+ */
+function deployWrote(root: string, file: string): string {
+  return `${relative(root, file)} · written in ${root}: commit the file with your branch`;
+}
+
 const DELETE_TRACKED =
   "Tracked deploy task: it is part of a commit, so close it with task_done instead";
 
@@ -236,6 +245,16 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
       const cwd = caller?.cwd ?? options.cwd?.() ?? process.cwd();
       const ctx = taskContext(cwd, env);
       if (!ctx.ok) throw new Error(ctx.why);
+      // Deploy task files are written where the command runs: an explicit `cwd` (the CLI's own
+      // folder) wins over the session record's, so a close lands in the checkout the gates read.
+      // Work-task identity and project stay with `ctx`. Read once, and only when it differs.
+      const explicitCwd = options.cwd?.();
+      let deployCtx: TaskContext | undefined;
+      const deployContext = (): TaskContext => {
+        deployCtx ??=
+          explicitCwd === undefined || explicitCwd === cwd ? ctx : taskContext(explicitCwd, env);
+        return deployCtx;
+      };
       const now = options.now?.() ?? Date.now();
       const store = database();
       const all = allTasks(store, ctx.project);
@@ -285,14 +304,28 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
         if (row === undefined || row.status !== "pending" || !owns(row)) return;
         applyUpdate(store, row.id, { status: "in_progress" }, who, now);
       };
-      const projectDir = () => {
-        if (!ctx.projectTasks.ok) throw new Error(ctx.projectTasks.why);
-        return ctx.projectTasks.dir;
+      const deployTasksOf = () => {
+        const here = deployContext();
+        if (!here.ok) throw new Error(here.why);
+        if (!here.projectTasks.ok) throw new Error(here.projectTasks.why);
+        return here.projectTasks;
       };
-      const projectEnvs = () => {
-        if (!ctx.projectTasks.ok) throw new Error(ctx.projectTasks.why);
-        return ctx.projectTasks.envs;
+      /** True when the deploy task folder can be read (a list or search shows them then). */
+      const deployReadable = () => {
+        const here = deployContext();
+        return here.ok && here.projectTasks.ok;
       };
+      const projectDir = () => deployTasksOf().dir;
+      const projectEnvs = () => deployTasksOf().envs;
+      /** The deploy task checkout, or why there is none: one answer for every op that names it. */
+      const deployRoot = () => {
+        const here = deployContext();
+        if (!here.ok) throw new Error(here.why);
+        if (here.checkoutRoot === null) throw new Error("Deploy tasks need a git checkout");
+        return here.checkoutRoot;
+      };
+      /** A write's answer part: the file and the checkout it is in, as create says it. */
+      const wroteIn = (task: DeployTask) => deployWrote(deployRoot(), task.file);
       const projectTasks = (archive: boolean) => scanDeployTasks(projectDir(), { archive }).tasks;
       const work = (reference: string) => {
         if (OLD_TASK_ID.test(reference)) throw new Error(OLD_ID_ANSWER);
@@ -343,8 +376,7 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
             throw new Error(
               "pair is for kind staging: it creates the staging task and its prod twin",
             );
-          const root = ctx.checkoutRoot;
-          if (root === null) throw new Error("Deploy tasks need a git checkout to be written in");
+          const root = deployRoot();
           const branch = runGit(root, ["branch", "--show-current"], env);
           if (!branch.ok) throw new Error("Could not read the current branch");
           const fields = {
@@ -362,12 +394,7 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
             : [createDeployTask(projectDir(), { ...fields, env: input.kind }, sources)];
           return {
             ok: true,
-            text: made
-              .map(
-                (task) =>
-                  `${task.id} "${task.title}" · ${relative(root, task.file)} · written in ${root}: commit the file with your branch`,
-              )
-              .join("\n"),
+            text: made.map((task) => `${task.id} "${task.title}" · ${wroteIn(task)}`).join("\n"),
           };
         }
         refuseDeployFields({
@@ -544,14 +571,17 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
             ...(input.from === undefined ? {} : { from: input.from }),
           };
           // Reopen first, so a call that also edits fields edits the reopened file.
-          if (input.status === "open") reopenDeployTask(projectDir(), input.task, new Date(now));
+          const reopened =
+            input.status === "open"
+              ? reopenDeployTask(projectDir(), input.task, new Date(now))
+              : undefined;
           const task =
             Object.keys(patch).length > 0
               ? updateDeployTask(projectDir(), input.task, patch, new Date(now))
-              : project(input.task);
+              : (reopened ?? project(input.task));
           return {
             ok: true,
-            text: `${task.id} "${task.title}" · ${input.status === "open" ? "open again" : "updated"}`,
+            text: `${task.id} "${task.title}" · ${input.status === "open" ? "open again" : "updated"} · ${wroteIn(task)}`,
           };
         }
         refuseDeployFields({
@@ -646,7 +676,7 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
                 `drop ${task.id} --note "<reason>"`,
               ),
             );
-          closeDeployTask(
+          const closed = closeDeployTask(
             projectDir(),
             task.id,
             {
@@ -656,7 +686,10 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
             },
             new Date(now),
           );
-          return { ok: true, text: `${task.id} "${task.title}" · ${input.outcome}` };
+          return {
+            ok: true,
+            text: `${task.id} "${task.title}" · ${input.outcome} · ${wroteIn(closed)}`,
+          };
         }
         const task = work(input.task);
         refuseBareClose(all, task, input.outcome, { evidence: input.evidence, note: input.note });
@@ -677,11 +710,10 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
       if (operation === "note") {
         const input = taskSchemas.note.parse(raw);
         if (isDeployTaskId(input.task)) {
-          addDeployNote(projectDir(), input.task, input.text, new Date(now));
-        } else
-          value(
-            writeWork(store, () => insertNote(store, work(input.task).id, input.text, who, now)),
-          );
+          const noted = addDeployNote(projectDir(), input.task, input.text, new Date(now));
+          return { ok: true, text: `${input.task} · note saved · ${wroteIn(noted)}` };
+        }
+        value(writeWork(store, () => insertNote(store, work(input.task).id, input.text, who, now)));
         return { ok: true, text: `${input.task} · note saved` };
       }
       if (operation === "get") {
@@ -693,24 +725,22 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
               // (seen on git 2.53), so the lines are put oldest first here.
               const file = project(input.task).file;
               const body = readFileSync(file, "utf8");
-              if (!ctx.checkoutRoot) return body;
+              const here = deployContext();
+              const root = here.ok ? here.checkoutRoot : null;
+              if (root === null) return body;
               // A branch with no commit yet has no log at all: git's own answer, not its message.
-              const head = runGit(
-                ctx.checkoutRoot,
-                ["rev-parse", "--verify", "--quiet", "HEAD"],
-                env,
-              );
+              const head = runGit(root, ["rev-parse", "--verify", "--quiet", "HEAD"], env);
               if (!head.ok && head.code === 1)
                 return `${body.trimEnd()}\n\nHistory: not committed yet.`;
               const log = runGit(
-                ctx.checkoutRoot,
+                root,
                 [
                   "log",
                   "--follow",
                   "--date=iso-strict",
                   "--format=%ad %an %h %s",
                   "--",
-                  relative(ctx.checkoutRoot, file),
+                  relative(root, file),
                 ],
                 env,
               );
@@ -775,19 +805,15 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
                 `drop ${task.id} --note "<reason>"`,
               )
             : DELETE_TRACKED;
-          if (!ctx.checkoutRoot) throw new Error("Deploy tasks need a git checkout");
+          const root = deployRoot();
           const tracked = runGit(
-            ctx.checkoutRoot,
-            ["ls-files", "--error-unmatch", "--", relative(ctx.checkoutRoot, task.file)],
+            root,
+            ["ls-files", "--error-unmatch", "--", relative(root, task.file)],
             env,
           );
           if (tracked.ok) throw new Error(trackedRefusal);
           // A failed git command is not evidence that a file is untracked. Check the index separately.
-          const index = runGit(
-            ctx.checkoutRoot,
-            ["ls-files", "--", relative(ctx.checkoutRoot, task.file)],
-            env,
-          );
+          const index = runGit(root, ["ls-files", "--", relative(root, task.file)], env);
           if (!index.ok) throw new Error(`Could not read git's index: ${index.err}`);
           if (index.out) throw new Error(trackedRefusal);
           if (guarded)
@@ -795,10 +821,13 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
               personOnly(task.id, "deletes a blocking deploy task", `delete ${task.id}`),
             );
           rmSync(task.file);
-        } else {
-          const result = deleteTask(store, work(input.task).id, who, now);
-          if (!result.ok) throw new Error(`${result.why}; drop it instead`);
+          return {
+            ok: true,
+            text: `${input.task} · deleted · ${relative(root, task.file)} · removed from ${root}`,
+          };
         }
+        const result = deleteTask(store, work(input.task).id, who, now);
+        if (!result.ok) throw new Error(`${result.why}; drop it instead`);
         return { ok: true, text: `${input.task} · deleted` };
       }
       let selected: WorkTask[];
@@ -809,7 +838,7 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
         selected = searchTasks(store, ctx.project, input.text).filter(
           (t) => input.include_closed || isOpen(t),
         );
-        if (ctx.projectTasks.ok)
+        if (deployReadable())
           projects = projectTasks(input.include_closed).filter(
             (t) =>
               (input.include_closed || t.status === "open") &&
@@ -848,7 +877,7 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
                 ? t.plan !== null && ownPlans.has(t.plan)
                 : shown !== null && t.plan === shown),
           );
-        } else if (ctx.projectTasks.ok)
+        } else if (deployReadable())
           projects = projectTasks(!openOnly).filter((t) => !openOnly || t.status === "open");
       }
       const selectedIds = new Set(selected.map((t) => t.id));

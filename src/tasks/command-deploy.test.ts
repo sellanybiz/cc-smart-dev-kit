@@ -105,7 +105,7 @@ test("add --pair writes a staging and a prod file", async () => {
 });
 
 test("drop of a blocking deploy task is refused inside Claude Code and allowed in a terminal", async () => {
-  const { run, add } = world();
+  const { run, add, cwd } = world();
   const id = await add("Gate", "prod", "before", "blocking");
   const inside = await run(["drop", id, "--note", "no longer owed"], { CLAUDECODE: "1" });
   expect(inside).toEqual({
@@ -115,20 +115,20 @@ test("drop of a blocking deploy task is refused inside Claude Code and allowed i
   });
   expect(await run(["drop", id, "--note", "no longer owed"])).toEqual({
     code: 0,
-    text: `${id} "Gate" · dropped\n`,
+    text: `${id} "Gate" · dropped · .claude/tasks/prod/archive/${id}-gate.md · written in ${cwd}: commit the file with your branch\n`,
     error: "",
   });
 });
 
 test("done needs evidence; reopen moves the file back; an old id is answered", async () => {
-  const { run, add, tasks } = world();
+  const { run, add, tasks, cwd } = world();
   const id = await add("Cache", "staging", "after", "blocking");
   expect((await run(["done", id])).code).toBe(1);
   expect((await run(["done", id, "--evidence", "ran it: ok"])).code).toBe(0);
   expect(existsSync(join(tasks, "staging", "archive"))).toBe(true);
   expect(await run(["reopen", id])).toEqual({
     code: 0,
-    text: `${id} "Cache" · open again\n`,
+    text: `${id} "Cache" · open again · .claude/tasks/staging/${id}-cache.md · written in ${cwd}: commit the file with your branch\n`,
     error: "",
   });
   expect(readdirSync(join(tasks, "staging")).filter((name) => name.endsWith(".md"))).toHaveLength(
@@ -277,7 +277,7 @@ test("list --branches keeps listing when one branch has a broken file", async ()
 });
 
 test("set and delete of a blocking deploy task are refused inside Claude Code and work in a terminal", async () => {
-  const { run, add, tasks } = world();
+  const { run, add, tasks, cwd } = world();
   const id = await add("Gate", "prod", "before", "blocking");
   const refusal = (action: string, command: string) =>
     `${id} is blocking: only the person ${action}. Ask the person to run \`cc-smart-dev-kit task ${command}\` in their own terminal, outside Claude Code\n`;
@@ -301,11 +301,15 @@ test("set and delete of a blocking deploy task are refused inside Claude Code an
   // The person's own terminal may do each of them.
   expect(await run(["set", id, "--type", "non-blocking"])).toEqual({
     code: 0,
-    text: `${id} "Gate" · updated\n`,
+    text: `${id} "Gate" · updated · .claude/tasks/prod/${id}-gate.md · written in ${cwd}: commit the file with your branch\n`,
     error: "",
   });
   expect(await run(["set", id, "--deploy", "after"])).toMatchObject({ code: 0 });
-  expect(await run(["delete", id])).toEqual({ code: 0, text: `${id} · deleted\n`, error: "" });
+  expect(await run(["delete", id])).toEqual({
+    code: 0,
+    text: `${id} · deleted · .claude/tasks/prod/${id}-gate.md · removed from ${cwd}\n`,
+    error: "",
+  });
   expect(readdirSync(join(tasks, "prod"))).toHaveLength(0);
 });
 

@@ -147,7 +147,10 @@ export async function runTaskCommand(argv: string[]): Promise<number> {
   const fileText = async () =>
     get("file") === "-" ? await Bun.stdin.text() : readFileSync(get("file") ?? "", "utf8");
   // Inside Claude Code a blocking deploy task is not dropped: it is the person's (D14).
-  const ops = createTaskOps({ refuseBlockingDrop: insideClaudeCode(process.env) });
+  const ops = createTaskOps({
+    cwd: () => process.cwd(),
+    refuseBlockingDrop: insideClaudeCode(process.env),
+  });
   try {
     let operation: TaskOperation;
     let input: Record<string, unknown>;

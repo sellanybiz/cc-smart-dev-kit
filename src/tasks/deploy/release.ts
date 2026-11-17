@@ -84,10 +84,7 @@ function startAgain(env: DeployEnv, facts: GitFacts, now: Date): string {
   const branch = deployBranchName(env, now);
   // --no-track: a branch cut from origin/main would otherwise track main, and a plain `git push`
   // could send the closes there instead of to the deploy branch.
-  return (
-    `Start the run on a deploy branch cut from the commit that ships: \`git fetch origin\`, then \`git switch --no-track -c ${branch} ${facts.ref}\` ` +
-    `(in a project that uses a worktree per session: \`git worktree add --no-track -b ${branch} <folder> ${facts.ref}\`)`
-  );
+  return `Start the run on a deploy branch cut from the commit that ships: \`git fetch origin\`, then \`git switch --no-track -c ${branch} ${facts.ref}\` in this checkout`;
 }
 
 function brokenRefusals(scan: TaskScan): string[] {

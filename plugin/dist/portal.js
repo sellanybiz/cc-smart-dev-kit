@@ -26638,7 +26638,7 @@ function deployBlockBody() {
     "",
     "Steps owed around a deploy are deploy tasks; each one belongs to prod or staging. Run these steps in the checkout you work in:",
     "",
-    "1. Cut a deploy branch from the commit that ships: `git fetch origin`, then `git switch --no-track -c deploy/<env>-<date> origin/<base>` (--no-track keeps `git push` from targeting `<base>`). In a project that uses a worktree per session: `git worktree add --no-track -b deploy/<env>-<date> <folder> origin/<base>`.",
+    "1. Cut a deploy branch from the commit that ships: `git fetch origin`, then `git switch --no-track -c deploy/<env>-<date> origin/<base>` (--no-track keeps `git push` from targeting `<base>`).",
     `2. Run \`${release} <env> --before\`. It lists what must be done first and exits 1 while a blocking task is open.`,
     "3. Do each task. Close it with evidence (what you ran or checked, and its result), and commit the closes on the deploy branch.",
     "4. Deploy, with the steps of this skill.",
@@ -42553,6 +42553,9 @@ function refuseDeployFields(fields) {
 function personOnly(id, action, command) {
   return `${id} is blocking: only the person ${action}. Ask the person to run \`${TASK_COMMAND} ${command}\` in their own terminal, outside Claude Code`;
 }
+function deployWrote(root, file) {
+  return `${relative11(root, file)} \xB7 written in ${root}: commit the file with your branch`;
+}
 var DELETE_TRACKED = "Tracked deploy task: it is part of a commit, so close it with task_done instead";
 var TASK_LINE_CAP = 200;
 var TASK_TEXT_CAP = 20000;
@@ -42625,6 +42628,12 @@ function createTaskOps(options = {}) {
       const ctx = taskContext(cwd, env);
       if (!ctx.ok)
         throw new Error(ctx.why);
+      const explicitCwd = options.cwd?.();
+      let deployCtx;
+      const deployContext = () => {
+        deployCtx ??= explicitCwd === undefined || explicitCwd === cwd ? ctx : taskContext(explicitCwd, env);
+        return deployCtx;
+      };
       const now = options.now?.() ?? Date.now();
       const store = database();
       const all = allTasks(store, ctx.project);
@@ -42652,16 +42661,29 @@ function createTaskOps(options = {}) {
           return;
         applyUpdate2(store, row.id, { status: "in_progress" }, who, now);
       };
-      const projectDir = () => {
-        if (!ctx.projectTasks.ok)
-          throw new Error(ctx.projectTasks.why);
-        return ctx.projectTasks.dir;
+      const deployTasksOf = () => {
+        const here = deployContext();
+        if (!here.ok)
+          throw new Error(here.why);
+        if (!here.projectTasks.ok)
+          throw new Error(here.projectTasks.why);
+        return here.projectTasks;
       };
-      const projectEnvs = () => {
-        if (!ctx.projectTasks.ok)
-          throw new Error(ctx.projectTasks.why);
-        return ctx.projectTasks.envs;
+      const deployReadable = () => {
+        const here = deployContext();
+        return here.ok && here.projectTasks.ok;
       };
+      const projectDir = () => deployTasksOf().dir;
+      const projectEnvs = () => deployTasksOf().envs;
+      const deployRoot = () => {
+        const here = deployContext();
+        if (!here.ok)
+          throw new Error(here.why);
+        if (here.checkoutRoot === null)
+          throw new Error("Deploy tasks need a git checkout");
+        return here.checkoutRoot;
+      };
+      const wroteIn = (task) => deployWrote(deployRoot(), task.file);
       const projectTasks = (archive) => scanDeployTasks(projectDir(), { archive }).tasks;
       const work = (reference) => {
         if (OLD_TASK_ID.test(reference))
@@ -42701,9 +42723,7 @@ function createTaskOps(options = {}) {
             throw new Error(`${input.kind} is not one of this project's environments (tasks.envs: ${envs.join(", ")})`);
           if (input.pair && input.kind !== "staging")
             throw new Error("pair is for kind staging: it creates the staging task and its prod twin");
-          const root = ctx.checkoutRoot;
-          if (root === null)
-            throw new Error("Deploy tasks need a git checkout to be written in");
+          const root = deployRoot();
           const branch = runGit(root, ["branch", "--show-current"], env);
           if (!branch.ok)
             throw new Error("Could not read the current branch");
@@ -42720,7 +42740,7 @@ function createTaskOps(options = {}) {
           const made = input.pair ? Object.values(createDeployPair(projectDir(), fields, sources, envs)) : [createDeployTask(projectDir(), { ...fields, env: input.kind }, sources)];
           return {
             ok: true,
-            text: made.map((task) => `${task.id} "${task.title}" \xB7 ${relative11(root, task.file)} \xB7 written in ${root}: commit the file with your branch`).join(`
+            text: made.map((task) => `${task.id} "${task.title}" \xB7 ${wroteIn(task)}`).join(`
 `)
           };
         }
@@ -42831,12 +42851,11 @@ function createTaskOps(options = {}) {
             ...input.refs === undefined ? {} : { refs: input.refs },
             ...input.from === undefined ? {} : { from: input.from }
           };
-          if (input.status === "open")
-            reopenDeployTask(projectDir(), input.task, new Date(now));
-          const task = Object.keys(patch).length > 0 ? updateDeployTask(projectDir(), input.task, patch, new Date(now)) : project(input.task);
+          const reopened = input.status === "open" ? reopenDeployTask(projectDir(), input.task, new Date(now)) : undefined;
+          const task = Object.keys(patch).length > 0 ? updateDeployTask(projectDir(), input.task, patch, new Date(now)) : reopened ?? project(input.task);
           return {
             ok: true,
-            text: `${task.id} "${task.title}" \xB7 ${input.status === "open" ? "open again" : "updated"}`
+            text: `${task.id} "${task.title}" \xB7 ${input.status === "open" ? "open again" : "updated"} \xB7 ${wroteIn(task)}`
           };
         }
         refuseDeployFields({
@@ -42897,12 +42916,15 @@ function createTaskOps(options = {}) {
           const task = project(input.task);
           if (options.refuseBlockingDrop && input.outcome === "dropped" && task.status === "open" && task.type === "blocking")
             throw new Error(personOnly(task.id, "drops a blocking deploy task", `drop ${task.id} --note "<reason>"`));
-          closeDeployTask(projectDir(), task.id, {
+          const closed = closeDeployTask(projectDir(), task.id, {
             status: input.outcome,
             ...input.evidence === undefined ? {} : { evidence: input.evidence },
             ...input.note === undefined ? {} : { note: input.note }
           }, new Date(now));
-          return { ok: true, text: `${task.id} "${task.title}" \xB7 ${input.outcome}` };
+          return {
+            ok: true,
+            text: `${task.id} "${task.title}" \xB7 ${input.outcome} \xB7 ${wroteIn(closed)}`
+          };
         }
         const task = work(input.task);
         refuseBareClose(all, task, input.outcome, { evidence: input.evidence, note: input.note });
@@ -42920,9 +42942,10 @@ function createTaskOps(options = {}) {
       if (operation === "note") {
         const input = taskSchemas.note.parse(raw);
         if (isDeployTaskId(input.task)) {
-          addDeployNote(projectDir(), input.task, input.text, new Date(now));
-        } else
-          value(writeWork(store, () => insertNote(store, work(input.task).id, input.text, who, now)));
+          const noted = addDeployNote(projectDir(), input.task, input.text, new Date(now));
+          return { ok: true, text: `${input.task} \xB7 note saved \xB7 ${wroteIn(noted)}` };
+        }
+        value(writeWork(store, () => insertNote(store, work(input.task).id, input.text, who, now)));
         return { ok: true, text: `${input.task} \xB7 note saved` };
       }
       if (operation === "get") {
@@ -42930,20 +42953,22 @@ function createTaskOps(options = {}) {
         const text = isDeployTaskId(input.task) ? (() => {
           const file = project(input.task).file;
           const body = readFileSync76(file, "utf8");
-          if (!ctx.checkoutRoot)
+          const here = deployContext();
+          const root = here.ok ? here.checkoutRoot : null;
+          if (root === null)
             return body;
-          const head = runGit(ctx.checkoutRoot, ["rev-parse", "--verify", "--quiet", "HEAD"], env);
+          const head = runGit(root, ["rev-parse", "--verify", "--quiet", "HEAD"], env);
           if (!head.ok && head.code === 1)
             return `${body.trimEnd()}
 
 History: not committed yet.`;
-          const log = runGit(ctx.checkoutRoot, [
+          const log = runGit(root, [
             "log",
             "--follow",
             "--date=iso-strict",
             "--format=%ad %an %h %s",
             "--",
-            relative11(ctx.checkoutRoot, file)
+            relative11(root, file)
           ], env);
           const history = !log.ok ? `History: git could not read it (${log.err})` : log.out ? `History (git, oldest first):
 ${log.out.split(`
@@ -42991,12 +43016,11 @@ ${historyText(gone, { full: input.history })}`;
           const task = project(input.task);
           const guarded = options.refuseBlockingDrop && task.status === "open" && task.type === "blocking";
           const trackedRefusal = guarded ? personOnly(task.id, "drops a blocking deploy task", `drop ${task.id} --note "<reason>"`) : DELETE_TRACKED;
-          if (!ctx.checkoutRoot)
-            throw new Error("Deploy tasks need a git checkout");
-          const tracked = runGit(ctx.checkoutRoot, ["ls-files", "--error-unmatch", "--", relative11(ctx.checkoutRoot, task.file)], env);
+          const root = deployRoot();
+          const tracked = runGit(root, ["ls-files", "--error-unmatch", "--", relative11(root, task.file)], env);
           if (tracked.ok)
             throw new Error(trackedRefusal);
-          const index = runGit(ctx.checkoutRoot, ["ls-files", "--", relative11(ctx.checkoutRoot, task.file)], env);
+          const index = runGit(root, ["ls-files", "--", relative11(root, task.file)], env);
           if (!index.ok)
             throw new Error(`Could not read git's index: ${index.err}`);
           if (index.out)
@@ -43004,11 +43028,14 @@ ${historyText(gone, { full: input.history })}`;
           if (guarded)
             throw new Error(personOnly(task.id, "deletes a blocking deploy task", `delete ${task.id}`));
           rmSync16(task.file);
-        } else {
-          const result = deleteTask(store, work(input.task).id, who, now);
-          if (!result.ok)
-            throw new Error(`${result.why}; drop it instead`);
+          return {
+            ok: true,
+            text: `${input.task} \xB7 deleted \xB7 ${relative11(root, task.file)} \xB7 removed from ${root}`
+          };
         }
+        const result = deleteTask(store, work(input.task).id, who, now);
+        if (!result.ok)
+          throw new Error(`${result.why}; drop it instead`);
         return { ok: true, text: `${input.task} \xB7 deleted` };
       }
       let selected;
@@ -43017,7 +43044,7 @@ ${historyText(gone, { full: input.history })}`;
       if (operation === "search") {
         const input = taskSchemas.search.parse(raw);
         selected = searchTasks(store, ctx.project, input.text).filter((t) => input.include_closed || isOpen(t));
-        if (ctx.projectTasks.ok)
+        if (deployReadable())
           projects = projectTasks(input.include_closed).filter((t) => (input.include_closed || t.status === "open") && `${t.title}
 ${t.body}`.toLowerCase().includes(input.text.toLowerCase()));
       } else {
@@ -43033,7 +43060,7 @@ ${t.body}`.toLowerCase().includes(input.text.toLowerCase()));
           const shown = input.plan ?? ownPlan ?? all.filter((t) => t.kind === "plan").sort((a, b) => b.updatedAt - a.updatedAt || b.number - a.number)[0]?.plan ?? null;
           const ownPlans = new Set(all.filter(owns).map((t) => t.plan).filter((p) => p !== null && ownsPlan(all, owns, p)));
           selected = selected.filter((t) => t.kind !== "task" && (input.plan === undefined && ownPlans.size > 1 ? t.plan !== null && ownPlans.has(t.plan) : shown !== null && t.plan === shown));
-        } else if (ctx.projectTasks.ok)
+        } else if (deployReadable())
           projects = projectTasks(!openOnly).filter((t) => !openOnly || t.status === "open");
       }
       const selectedIds = new Set(selected.map((t) => t.id));

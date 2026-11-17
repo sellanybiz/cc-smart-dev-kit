@@ -667,7 +667,7 @@ test("gate before: HEAD that is not the ref refuses with the branch commands; ta
   expect(refused.refusals[0]).toContain(
     "git switch --no-track -c deploy/prod-20261117-1445 origin/main",
   );
-  expect(refused.refusals[0]).toContain("git worktree add --no-track -b deploy/prod-20261117-1445");
+  expect(refused.refusals[0]).not.toContain("worktree add");
   const closesOnly = {
     ...cleanFacts,
     headCommit: "b".repeat(40),

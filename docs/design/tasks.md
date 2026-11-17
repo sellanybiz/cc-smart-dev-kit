@@ -401,10 +401,11 @@ ships, so the closes reach main through that branch's small pull request and not
 Exit codes: 0 the gate passes, 1 a refusal (also a ref git does not know, or a place outside
 git), 2 a wrong command.
 
-1. Cut the branch: `git switch --no-track -c deploy/<env>-<YYYYMMDD-HHMM> origin/<base>`, or
-   `git worktree add --no-track -b deploy/<env>-<YYYYMMDD-HHMM> <folder> origin/<base>` in a
-   project with a worktree per session. `--no-track` keeps a plain `git push` from targeting
-   the base. A refusal for the wrong HEAD prints these commands.
+1. Cut the branch: `git switch --no-track -c deploy/<env>-<YYYYMMDD-HHMM> origin/<base>`, in
+   the session's own checkout. `--no-track` keeps a plain `git push` from targeting the base.
+   A refusal for the wrong HEAD prints this command. The `task` command acts in the folder it
+   runs in, and every deploy-task answer names the checkout and file it wrote, so a close lands
+   where the gates read it.
 2. `--before` exits 1 when the environment is not in `tasks.envs`; HEAD is not the ref's commit
    (it may differ from it only under `tasks.dir`, closes already made, and it must hold every
    commit of the ref); a blocking `before` task is open; a task file is broken or its id is
