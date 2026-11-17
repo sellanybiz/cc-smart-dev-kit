@@ -3,6 +3,17 @@
 What each release changed, newest first. A release's **What to run** steps are the ones to do
 in your own terminal after the update; the user guide is [README.md](README.md).
 
+## 4.10.1
+
+- **A child session's questions are yours.** You answer a child's questions, permission
+  prompts, plan approval and login in its own pane (its Herdr tab, or `hc attach <terminal>`).
+  The lead no longer takes part: `herdr wait` does not wake it for a blocked child (it waits on
+  until the child is done, fails or ends), and the `herdr` skill tells it never to ask you the
+  child's question or answer for it. The `herdr answer` command, its dialog reader and its
+  judge rules are removed. An old `wait --seen` cursor with a `blocked` entry still works.
+
+**What to run:** nothing. A running lead picks up the skill change at its next session.
+
 ## 4.10.0
 
 - **shadcn/ui support.** Setup registers the official shadcn MCP server for your user, pinned

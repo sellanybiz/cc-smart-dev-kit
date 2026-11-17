@@ -453,10 +453,9 @@ installed command's full usage. A usage mistake exits 2; a refusal or failure ex
 | After `cc-smart-dev-kit herdr` | What it does |
 |---|---|
 | `start --model <model> --effort <effort> --mode <mode> [--cwd <dir>] [--on <machine>] [--name <name>] [--task <#n>] [--independent] [--asked] -- <brief>` | Starts a session with a private brief file. `--task` is only for an existing open task in the same project and machine. In git, Claude creates a worktree; existing terminal, folder or branch names are refused. Every session starts through your login shell, so it gets your own PATH. Independent sessions, local or remote, get their own space in Herdr's window; a linked child, local or remote, nests under its lead. Start waits until the child comes up: a child that exits at launch (for example, an untrusted folder) shows its error, is removed, and start fails with no task binding. |
-| `list [--all] [--json]` | Owned children, or all kit sessions including independent ones; includes counts and blocked status. |
-| `send <terminal> <text>` | Tagged lead text to an owned linked child. A done child gets a plain send, never force; a blocked child needs answer or its pane. |
-| `answer <terminal> --expect <msg> --expect-turn <n> (--option <k> \| --text <words>)` | Revalidates the prompt and selects option k with arrows from the current cursor. Always asks you, with the whole prompt quoted; the line must hold only this answer, with literal words. A prompt Claude Code cut short is refused, and a Bash prompt's whole command box on screen must equal the command. Text answers, "Type something" and "Chat about this" are refused; plans, logins, multi-question, multi-select and remembered permissions stay in the pane. |
-| `wait [--any \| --all] [--timeout <seconds>] [--seen <addr>:<turn\|?>:<blocked\|error\|done\|end>[,…]]` | Waits for news (default/any) or each child in the initial barrier (all), up to the timeout. Run in a background Bash call. Copy its exact next command, whose percent-encoded address/turn/state cursor covers news already printed. No live children returns immediately; timeout does not mean done. |
+| `list [--all] [--json]` | Owned children, or all kit sessions including independent ones; includes counts and blocked status (a blocked child waits for you, in its pane). |
+| `send <terminal> <text>` | Tagged lead text to an owned linked child. A done child gets a plain send, never force; a blocked child is yours to answer in its pane. |
+| `wait [--any \| --all] [--timeout <seconds>] [--seen <addr>:<turn\|?>:<error\|done\|end>[,…]]` | Waits for news (default/any) or each child in the initial barrier (all), up to the timeout. A blocked child is not news: it waits for you, so the lead keeps waiting. Run in a background Bash call. Copy its exact next command, whose percent-encoded address/turn/state cursor covers news already printed. No live children returns immediately; timeout does not mean done. |
 | `report <text>` | Child reports to a live Claude lead, or saves a unique private file when it cannot. A report is never your consent. |
 | `adopt` | Recovers this repo's same-core linked children after their lead disappears: a lead terminal with no live Claude in it counts as gone. Lists each adopted child's saved report files. A new Claude in the old lead's own terminal is that lead already and needs no adopt. |
 | `stop <terminal>` | Stops and removes an owned linked terminal; leaves the worktree for separate cleanup. |
@@ -470,7 +469,7 @@ for retrieval. The exec line is for your own terminal: Claude cannot run raw hc 
 or exec through the Bash judge. Local reads are allowed; remote reads ask for production
 or unallowlisted machines, and unreadable machine rules ask too. `hc events` must run in
 the background.
-Use `hc attach <terminal>` yourself for dialogs that cannot be relayed.
+**A child's questions are yours.** You answer its questions, permission prompts, plan approval and login in its own pane (`hc attach <terminal>`, or its tab in Herdr). The lead never asks you for it, answers for it or types into it.
 
 Remote approval rules live in `~/.config/cc-smart-dev-kit/machines.json` (not the project's
 config, and not moved by `CLAUDE_CONFIG_DIR`):
@@ -484,8 +483,7 @@ asks and requires `--asked`. `production` always asks, even with an allow entry.
 removes the entry. A missing file means no approvals; a broken file is an error, not a free
 pass. These rules do not register machines with Herdr or grant network access.
 
-The [design page](docs/design/herdr.md) explains ownership, report files, the relay's remaining
-race boundary and live proofs still owed. See [doctor](#doctor) for its current diagnostic limits.
+The [design page](docs/design/herdr.md) explains ownership, report files and live proofs still owed. See [doctor](#doctor) for its current diagnostic limits.
 
 ### Tasks (1.10.0)
 
@@ -1638,7 +1636,7 @@ names such a missing import.
 | `verify-change` | The affordable loop after edits; the checks the push will run; testing with the person. |
 | `research-first` | Research before you build; reuse before you write your own; choose a new app's stack and architecture from current sources. |
 | `subagent-decision` | Which agent for which job, and how to brief it. |
-| `herdr` | Separate linked or independent sessions, child reports, remote starts and relaying a question. |
+| `herdr` | Separate linked or independent sessions, child reports and remote starts; a child's questions stay with you, in its pane. |
 | `impact-analysis` | Every consumer of a shared thing, before and after a change. |
 | `code-structure` | Shape code, split responsibilities, name things, place files and decide when to extract. |
 | `self-evolve` | Turning a correction into a rule, skill, hook, doc or memory; size budgets. |
