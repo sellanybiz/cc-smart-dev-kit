@@ -4,9 +4,11 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { VERSION } from "../build-info";
+import { fakeGh } from "../testing/fake-gh";
 import { hookEnv, makeRepo, writeClaudeFile } from "../testing/hooks";
 import { subprocessGuard } from "../testing/port-guard";
 import { tempDir, withGitVersion } from "../testing/temp";
+import type { Check } from "./check";
 import { checkLine } from "./doctor";
 import { cliPaths } from "./paths";
 import { projectChecks, renamedCommand } from "./project-checks";
@@ -56,8 +58,24 @@ const ENGINE_HOOKS: Record<string, Array<{ hooks: Array<Record<string, unknown>>
 const engineLine = (file: string, names: string[]) =>
   `✗ project: ${file} still runs ${names.map((name) => `cc-smart-dev-kit hook ${name}`).join(", ")}, retired with the plugin's worktree engine in 1.0.0, so ${names.length === 1 ? "it fails" : "each of them fails"} every time (Claude Code's own worktrees need no hook) Fix: cc-smart-dev-kit project init (it takes ${names.length === 1 ? "the line" : "those lines"} out)`;
 
+/**
+ * `gh` for `projectChecks`: GitHub Issues are on by default, so every call gets a fake and no
+ * test can start the real `gh`.
+ */
+const fakeGhExec = () => fakeGh().exec;
+
+/**
+ * The default-on issues switch adds one `· issues:` line to a repository with no origin. The tests
+ * that match whole reports are about the other lines, so they drop it; the issues line has its own
+ * test at the end of this file.
+ */
+const notIssuesLine = (line: Check) =>
+  !(line.text.startsWith("issues:") && line.ok && line.info === true);
+
 async function check(repo: string, env = hookEnv(), hooksFile = PLUGIN_HOOKS) {
-  return (await projectChecks(repo, env, cliPaths(env), hooksFile)).map(checkLine);
+  return (await projectChecks(repo, env, cliPaths(env), hooksFile, fakeGhExec()))
+    .filter(notIssuesLine)
+    .map(checkLine);
 }
 
 /** The repo ignores `.claude/worktrees/`, where Claude Code makes its worktrees. */
@@ -196,7 +214,7 @@ describe("shadcn lint restrictions", () => {
     writeFileSync(join(repo, "components.json"), "{ broken but its presence is enough }");
     writeFileSync(join(repo, "eslint.config.js"), "export default [];");
     const env = hookEnv();
-    const lines = await projectChecks(repo, env, cliPaths(env), PLUGIN_HOOKS);
+    const lines = await projectChecks(repo, env, cliPaths(env), PLUGIN_HOOKS, fakeGhExec());
     expect(lines).toEqual([
       {
         ok: true,
@@ -970,9 +988,11 @@ describe("the project's own copies of plugin hooks (ownHooks)", () => {
       both("session-name", "bun p.ts", "UserPromptSubmit"),
     ]);
     const env = hookEnv();
-    expect((await projectChecks(repo, env, cliPaths(env), PLUGIN_HOOKS)).every((l) => l.ok)).toBe(
-      true,
-    );
+    expect(
+      (await projectChecks(repo, env, cliPaths(env), PLUGIN_HOOKS, fakeGhExec())).every(
+        (l) => l.ok,
+      ),
+    ).toBe(true);
   });
 
   test("a listed hook: one · line, and no warning for its copy", async () => {
@@ -1031,9 +1051,11 @@ describe("the project's own copies of plugin hooks (ownHooks)", () => {
       '· project: .claude/cc-smart-dev-kit.json lists serena-root in ownHooks, a plugin hook that is retired: it silences nothing. Take "serena-root" out of ownHooks',
     ]);
     const env = hookEnv();
-    expect((await projectChecks(repo, env, cliPaths(env), PLUGIN_HOOKS)).every((l) => l.ok)).toBe(
-      true,
-    );
+    expect(
+      (await projectChecks(repo, env, cliPaths(env), PLUGIN_HOOKS, fakeGhExec())).every(
+        (l) => l.ok,
+      ),
+    ).toBe(true);
   });
 
   test("message-guard in ownHooks still parses and doctor names it as retired", async () => {
@@ -1230,7 +1252,9 @@ describe("the heavy-job queue counts jobs: size fields in jobs.kinds", () => {
     const repo = makeRepo();
     writeClaudeFile(repo, "cc-smart-dev-kit.json", SIZED);
     ignoreWorktrees(repo);
-    const lines = await projectChecks(repo, hookEnv(), cliPaths(hookEnv()), PLUGIN_HOOKS);
+    const lines = (
+      await projectChecks(repo, hookEnv(), cliPaths(hookEnv()), PLUGIN_HOOKS, fakeGhExec())
+    ).filter(notIssuesLine);
     expect(lines).toHaveLength(1);
     expect(lines[0]).toMatchObject({ info: true, ok: true });
   });
@@ -1248,5 +1272,21 @@ describe("the heavy-job queue counts jobs: size fields in jobs.kinds", () => {
       writeClaudeFile(repo, "cc-smart-dev-kit.json", { jobs });
       expect(await check(repo)).toEqual([]);
     }
+  });
+});
+
+describe("GitHub Issues are on by default: doctor stays quiet", () => {
+  test("a project with a config and no GitHub origin: one · line, never a failure", async () => {
+    const repo = makeRepo();
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", {});
+    const env = hookEnv();
+    const gh = fakeGh();
+    const lines = (await projectChecks(repo, env, cliPaths(env), PLUGIN_HOOKS, gh.exec)).filter(
+      (line) => line.text.startsWith("issues:"),
+    );
+    expect(lines.map(checkLine)).toEqual([
+      "· issues: this project has no `origin` remote, so it has no repository of its own to file in; follow-ups go in the summary instead",
+    ]);
+    expect(gh.calls).toEqual([]);
   });
 });

@@ -256,7 +256,7 @@ function issueWriteQuestion(context: HookContext): string | null {
     writes.length > 0
       ? `writes to GitHub's issues (${writes.join(", ")})`
       : "runs a program it works out when it runs, and its words name an issue, so this guard cannot tell whether it writes to GitHub's issues";
-  return `${COMMAND} asks before this command ${what}: an issue is text that leaves the machine, so a raw gh write is yours to approve. The kit files issues itself with \`${COMMAND} issue file\` once issues.enabled is on. Approve it yourself if you meant it.`;
+  return `${COMMAND} asks before this command ${what}: an issue is text that leaves the machine, so a raw gh write is yours to approve. The kit files issues itself with \`${COMMAND} issue file\` when issues.enabled is on (the default). Approve it yourself if you meant it.`;
 }
 
 /** The guard's last answer for an issue write: the person is asked (D67). */
