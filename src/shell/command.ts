@@ -454,13 +454,18 @@ function lex(text: string, options: LexOptions): Lexed {
    */
   function casePattern(current: string, char: string, next: string): boolean {
     const words = current.trim();
+    // `for f in a; do case $f in …`: the keyword that opens a list stands before `case`.
+    const command = words.replace(/^(?:(?:do|then|else|elif|!)\s+)+/, "");
     const level = group;
     let top = cases.at(-1);
-    if (top?.level === level && /^esac(?:\s|$)/.test(words)) {
+    // `esac` ends it, also with a redirection attached (`esac>log`).
+    if (top?.level === level && /^esac(?![\w-])/.test(command)) {
       cases.pop();
       top = cases.at(-1);
     }
-    const starts = /^case\s[\s\S]*\sin(?:\s|$)/.test(words);
+    // `case x in esac` holds no pattern: it ends where it starts.
+    const starts =
+      /^case\s[\s\S]*\sin(?:\s|$)/.test(command) && !/\sin\s+esac(?![\w-])/.test(command);
     if (starts) {
       top = { level, pattern: true };
       cases.push(top);
@@ -473,7 +478,7 @@ function lex(text: string, options: LexOptions): Lexed {
       return true;
     }
     // The `(` a pattern may start with stands right after `in` or `;;`, before any of its words.
-    return char === "(" && (words === "" || (starts && /\sin$/.test(words)));
+    return char === "(" && (words === "" || (starts && /\sin$/.test(command)));
   }
 
   /**
@@ -858,6 +863,12 @@ export function wordsWithFill(segment: string, dialect: Dialect = "bash"): Shell
     if ((char === "$" && startsExpansion(after)) || (bash && char === "`")) filled = true;
     add(char);
   };
+  /** Each `(`'s close, worked out once for the segment and only when a substitution needs it. */
+  let closes: Int32Array | null = null;
+  const closeOf = (open: number) => {
+    closes ??= parenCloses(segment);
+    return closes[open] ?? -1;
+  };
   let i = 0;
   while (i < segment.length) {
     const char = segment.charAt(i);
@@ -875,12 +886,12 @@ export function wordsWithFill(segment: string, dialect: Dialect = "bash"): Shell
       bash &&
       (char === "$" || (!inWord && (char === "<" || char === ">"))) &&
       next === "(" &&
-      substitutionEnd(segment, i + 1) !== -1
+      closeOf(i + 1) !== -1
     ) {
       // `$( … )`, and `<( … )` / `>( … )` at the start of a word: the shell fills in its answer (a
       // file name for the last two), so the whole substitution stays in its word, as the line
       // reader keeps it (`out=$(bun test 2>&1)` is one word, never `2>&1)`).
-      const close = substitutionEnd(segment, i + 1);
+      const close = closeOf(i + 1);
       add(segment.slice(i, close));
       filled = true;
       i = close;
@@ -935,8 +946,7 @@ export function wordsWithFill(segment: string, dialect: Dialect = "bash"): Shell
           i += 2;
           continue;
         }
-        const substitution =
-          bash && inside === "$" && after === "(" ? substitutionEnd(segment, i + 1) : -1;
+        const substitution = bash && inside === "$" && after === "(" ? closeOf(i + 1) : -1;
         if (substitution !== -1) {
           // `"$(a "b c")"`: inside a substitution the quotes start again.
           add(segment.slice(i, substitution));
@@ -965,40 +975,51 @@ export function wordsWithFill(segment: string, dialect: Dialect = "bash"): Shell
 }
 
 /**
- * The index after the `)` that closes the bash `(` at `open` (a `$(`'s, a `<(`'s), or -1 when
- * none does: quotes and escapes inside are stepped over, and `"…"` may hold substitutions of its
- * own. A `case` pattern's `)` inside counts as a close, so such a substitution splits as before.
+ * For each bash `(` in `text`, the index after the `)` that closes it, else -1: one pass over the
+ * text, so a line of a thousand unclosed `$(` costs no more than one. It steps over what bash
+ * reads as text — `'…'`, `$'…'` (where `\'` is a quote), an escaped character, a backtick's
+ * command — and reads `"…"` as bash does: only a `$(` inside it opens, and inside that the quotes
+ * start again. A `case` pattern's `)` inside counts as a close, so such a substitution is cut
+ * there, as the word reader always cut it.
  */
-function substitutionEnd(text: string, open: number): number {
-  let depth = 0;
-  for (let i = open; i < text.length; i++) {
-    const char = text.charAt(i);
-    if (char === "\\") i++;
-    else if (char === "'") {
-      i = text.indexOf("'", i + 1);
-      if (i === -1) return -1;
-    } else if (char === '"') {
-      i = doubleQuoteEnd(text, i);
-      if (i === -1) return -1;
-    } else if (char === "(") depth++;
-    else if (char === ")" && --depth === 0) return i + 1;
-  }
-  return -1;
-}
-
-/** The index of the `"` that closes the bash `"` at `open`, or -1; its `$( … )` are stepped over. */
-function doubleQuoteEnd(text: string, open: number): number {
-  for (let i = open + 1; i < text.length; i++) {
-    const char = text.charAt(i);
-    if (char === "\\") i++;
-    else if (char === '"') return i;
-    else if (char === "$" && text.charAt(i + 1) === "(") {
-      const end = substitutionEnd(text, i + 1);
-      if (end === -1) return -1;
-      i = end - 1;
+function parenCloses(text: string): Int32Array {
+  const closes = new Int32Array(text.length).fill(-1);
+  /** Each open `(` by its index, and -1 for an open `"`: the innermost last. */
+  const open: number[] = [];
+  /** The index of the quote that ends text read from `from` (`'` or a backtick), or -1. */
+  const quoteEnd = (quote: string, from: number, escapes: boolean) => {
+    for (let at = from; at < text.length; at++) {
+      const char = text.charAt(at);
+      if (escapes && char === "\\") at++;
+      else if (char === quote) return at;
     }
+    return -1;
+  };
+  for (let i = 0; i < text.length; i++) {
+    const char = text.charAt(i);
+    const next = text.charAt(i + 1);
+    if (char === "\\") {
+      i++;
+    } else if (char === "`") {
+      i = quoteEnd("`", i + 1, true);
+    } else if (open.at(-1) === -1) {
+      if (char === '"') open.pop();
+      else if (char === "$" && next === "(") open.push(++i);
+    } else if (char === "'") {
+      i = quoteEnd("'", i + 1, false);
+    } else if (char === "$" && next === "'") {
+      i = quoteEnd("'", i + 2, true);
+    } else if (char === '"') {
+      open.push(-1);
+    } else if (char === "(") {
+      open.push(i);
+    } else if (char === ")") {
+      const at = open.pop();
+      if (at !== undefined && at >= 0) closes[at] = i + 1;
+    }
+    if (i === -1) break; // a quote that never closes: nothing after it is read
   }
-  return -1;
+  return closes;
 }
 
 /** Text that is data, not a command: skipped over when a segment is read for its program. */
@@ -1028,6 +1049,24 @@ export const CHANGE_DIR: ReadonlySet<string> = new Set([
  * or `>(` starts a process substitution, which is a word the program gets, not a redirection.
  */
 const REDIRECTION = /^\d*(<<<|<<|<>|<|>>|>\||>|&>>|&>)(?!\()(.*)$/s;
+
+/**
+ * `REDIRECTION` for a word the reader knows the shell fills nothing into: its `(` was quoted or
+ * escaped (`>\(x`, `>"(x"`), so the word is a redirection to a file whose name starts `(`.
+ */
+const ANY_REDIRECTION = /^\d*(<<<|<<|<>|<|>>|>\||>|&>>|&>)(.*)$/s;
+
+/** A word's text, from `wordsOf` (a string) or `wordsWithFill`. */
+const textOf = (word: string | ShellWord): string => (typeof word === "string" ? word : word.text);
+
+/**
+ * True for a bash process substitution, `<( … )` or `>( … )`: the shell puts a file of its own
+ * there (`/dev/fd/63`). A string from `wordsOf` cannot say whether its `(` was quoted, so it
+ * counts as one; a `ShellWord` says, by being filled.
+ */
+function isProcessSubstitution(word: string | ShellWord): boolean {
+  return /^[<>]\(/.test(textOf(word)) && (typeof word === "string" || word.filled);
+}
 
 /**
  * Wrappers: each runs the command after it, so the command a line really runs is reached
@@ -1523,16 +1562,25 @@ const WRITING_REDIRECTIONS = new Set([">", ">>", ">|", "&>", "&>>", "<>"]);
 /**
  * The files a command's words redirect output into (`>log`, `2>>log`, `>| log`, `&>log`,
  * `> log`, `<>log`): the targets of `withoutRedirections`' dropped words that write. A
- * redirection to a file descriptor (`2>&1`, `>&2`, `>&-`) names no file. The words may hold
- * the redirection before the program (`>log cmd`), so pass every word of the step.
+ * redirection to a file descriptor (`2>&1`, `>&2`, `>&-`) names no file, nor does one to a
+ * process substitution (`> >(tee x)`). The words may hold the redirection before the program
+ * (`>log cmd`), so pass every word of the step. Pass `wordsWithFill`'s words to tell a quoted
+ * `(` (`>"(x"` writes the file `(x`) from a process substitution.
  */
-export function redirectionTargets(words: readonly string[]): string[] {
+export function redirectionTargets(words: readonly (string | ShellWord)[]): string[] {
   const targets: string[] = [];
   for (let index = 0; index < words.length; index++) {
-    const redirection = REDIRECTION.exec(words[index] ?? "");
+    const word = words[index] ?? "";
+    const known = typeof word !== "string" && !word.filled;
+    const redirection = (known ? ANY_REDIRECTION : REDIRECTION).exec(textOf(word));
     if (redirection === null) continue;
     let target = redirection[2] ?? "";
-    if (target === "") target = words[++index] ?? ""; // the target is the next word
+    if (target === "") {
+      // The target is the next word.
+      const next = words[++index] ?? "";
+      if (isProcessSubstitution(next)) continue;
+      target = textOf(next);
+    }
     const operator = redirection[1] ?? "";
     if (operator === ">" && target.startsWith("&")) {
       // `>&2` and `>&-` name a descriptor; `>&log` sends both streams to the file.

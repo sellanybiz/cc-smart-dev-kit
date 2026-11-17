@@ -96,6 +96,23 @@ describe("a force-push asks", () => {
     expect(guard(command)).toContain("force-push");
   });
 
+  // Review 3, L6: a word the shell works out may become the force option.
+  it.each([
+    ["git push origin feat $(echo -f)"],
+    ["git push origin feat $(echo --force-with-lease)"],
+    ["git push origin $(echo +feat)"],
+    ["git push origin feat `echo -uf`"],
+  ])("bash, a computed word: %j", (command) => {
+    expect(guard(command, neutral, true, "bash")).toContain("force-push");
+  });
+
+  it.each([["git push origin $(git branch --show-current)"], ["git push origin feat-$(date +%s)"]])(
+    "bash, a computed word with no force spelling: %j",
+    (command) => {
+      expect(guard(command, neutral, true, "bash") ?? "").not.toContain("force-push");
+    },
+  );
+
   it.each([
     ["git push origin fix/x"],
     ["git push -u origin fix/devtools"],
@@ -977,6 +994,9 @@ describe("a 64 KB command line is read within the guard's time", () => {
     ["many here-docs", fill("cat <<A ")],
     ["deep arithmetic", `echo ${"$((".repeat(SIZE / 6)}1${"))".repeat(SIZE / 6)}`],
     ["nested quotes and substitutions", fill("\"$(echo `a` 'b')\" ")],
+    // Review 3, M3: a `$( … )` whose `$'…'` quote hides its `)`, many times over.
+    ["substitutions that never close", `echo ${fill("$($'\\'\"')")}`],
+    ["unclosed substitutions", `echo ${fill("$(a ")}`],
     ["many PowerShell comments", fill("<# x #> ")],
     ["an unclosed quote", `echo "${fill("a; b ")}`],
   ])("%s", (_name, command) => {

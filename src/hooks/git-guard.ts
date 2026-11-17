@@ -110,6 +110,16 @@ const PUSH_VALUE_OPTIONS: Array<[string, number]> = [
   ["--repo", 6],
 ];
 
+/**
+ * A word of the push the shell works out when the line runs (`$(echo -f)`, `` `cat opts` ``) may
+ * become any option, so one that holds a force-push spelling — a short group with `f`,
+ * `--force…`, a `+` before a branch name — asks as a force-push does (`hooks.md`: a guard whose
+ * domain words are in a computed command asks).
+ */
+function computedForce(arg: string): boolean {
+  return /\$[({\w]|`/.test(arg) && /(?:^|[\s(`'"])(?:-[A-Za-z]*f|--force|\+[A-Za-z])/.test(arg);
+}
+
 /** The branch checked out in `where`, or undefined: detached, unknown, no git. Read once a run. */
 function currentBranch(where: string, run: GuardRun): string | undefined {
   if (!run.branches.has(where)) {
@@ -242,6 +252,7 @@ function pushQuestions(
       positional.push(...args.slice(i + 1));
       break;
     }
+    if (computedForce(arg)) force = true;
     if (arg.startsWith("--")) {
       if (
         longOption(arg, "--force", 6) ||

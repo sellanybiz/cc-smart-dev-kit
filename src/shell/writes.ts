@@ -34,10 +34,11 @@ import {
   type Reading,
   readingsOf,
   redirectionTargets,
+  type ShellWord,
   shellSteps,
   shortFlags,
   withoutRedirections,
-  wordsOf,
+  wordsWithFill,
 } from "./command";
 import { type GitCall, gitCalls, longOption } from "./git-calls";
 
@@ -45,8 +46,13 @@ import { type GitCall, gitCalls, longOption } from "./git-calls";
 interface OptionSpec {
   /** The short option letters that take a value (`-t DIR`; the rest of the group may be it). */
   short: string;
-  /** The long options that take a value (`--target-directory DIR`; `=` may attach it). */
-  long: readonly string[];
+  /**
+   * The long options that take a value (`--target-directory DIR`; `=` may attach it), each with
+   * the fewest letters, dashes counted, that name it: GNU takes any prefix that names one option
+   * of the program (`--e` is sed's `--expression`; `--f` names none, `--file` and
+   * `--follow-symlinks` both start so).
+   */
+  long: Readonly<Record<string, number>>;
   /** The short letters whose attached rest is an optional value (`sed -i.bak`), never the next word. */
   suffix?: string;
 }
@@ -79,10 +85,10 @@ function scan(args: readonly string[], spec: OptionSpec, named = false): Scanned
     } else if (arg.startsWith("--")) {
       const name = arg.split("=")[0] ?? arg;
       // GNU programs take any unique prefix of a long option (`--target` is `--target-directory`,
-      // `--expr` is `--expression`): the full name is kept, so a caller asks for it by that.
-      const full = spec.long.find(
-        (long) => long === name || (name.length >= 4 && long.startsWith(name)),
-      );
+      // `--e` is `--expression`): the full name is kept, so a caller asks for it by that.
+      const full = Object.entries(spec.long).find(([long, min]) =>
+        longOption(name, long, min),
+      )?.[0];
       scanned.longs.push(full ?? name);
       if (full === undefined) continue;
       const value = arg.includes("=") ? arg.slice(name.length + 1) : args[++index];
@@ -115,15 +121,21 @@ function parameterValues(args: readonly string[], names: readonly string[]): str
   return values;
 }
 
-const NO_VALUES: OptionSpec = { short: "", long: [] };
-const COPY_OPTIONS: OptionSpec = { short: "tS", long: ["--target-directory", "--suffix"] };
+// The prefixes come from each program's own list of long options (GNU coreutils 9 and sed 4.9,
+// tried on the real programs): `cp`, `mv` and `ln` share `--sparse`, `--strip-trailing-slashes`
+// or `--symbolic` with `--s`, so `--suffix` needs `--su`.
+const NO_VALUES: OptionSpec = { short: "", long: {} };
+const COPY_OPTIONS: OptionSpec = {
+  short: "tS",
+  long: { "--target-directory": 3, "--suffix": 4 },
+};
 const INSTALL_OPTIONS: OptionSpec = {
   short: "mogtS",
-  long: ["--mode", "--owner", "--group", "--target-directory", "--suffix"],
+  long: { "--mode": 3, "--owner": 3, "--group": 3, "--target-directory": 3, "--suffix": 4 },
 };
 const SED_OPTIONS: OptionSpec = {
   short: "efl",
-  long: ["--expression", "--file", "--line-length"],
+  long: { "--expression": 3, "--file": 4, "--line-length": 3 },
   suffix: "i",
 };
 /**
@@ -131,15 +143,16 @@ const SED_OPTIONS: OptionSpec = {
  * `-F`, `-V`, `-x` and `-i` take only an attached one (`-i.bak`), never the next word, so
  * `perl -C -i -pe … f` still edits `f` in place.
  */
-const PERL_OPTIONS: OptionSpec = { short: "eEIMm", long: [], suffix: "iCDdFVx" };
+const PERL_OPTIONS: OptionSpec = { short: "eEIMm", long: {}, suffix: "iCDdFVx" };
 
 /** The programs that change every operand they are given, and the options of theirs that take a value. */
 const CHANGES_OPERANDS: ReadonlyMap<string, OptionSpec> = new Map([
-  ["mkdir", { short: "m", long: ["--mode", "--context"] }],
+  // `--context` takes only an attached value (`--context=CTX`): the word after it is a folder.
+  ["mkdir", { short: "m", long: { "--mode": 3 } }],
   ["rm", NO_VALUES],
   ["rmdir", NO_VALUES],
   ["tee", NO_VALUES],
-  ["touch", { short: "dtr", long: ["--date", "--reference", "--time"] }],
+  ["touch", { short: "dtr", long: { "--date": 3, "--reference": 3, "--time": 3 } }],
 ]);
 
 /** PowerShell's cmdlets (and their aliases) that write the file they are given, each non-option word. */
@@ -213,7 +226,7 @@ function inPlaceWords(program: string, args: readonly string[]): string[] {
  * are all the step's words (a redirection may stand before the program).
  */
 export function writtenWords(
-  words: readonly string[],
+  words: readonly (string | ShellWord)[],
   invocation: Invocation | undefined,
   dialect: Dialect = "bash",
 ): string[] {
@@ -315,8 +328,7 @@ export interface WriteTarget {
 /** The words of `words` as absolute paths in `folder`; a word the reader cannot know is left out. */
 function inFolder(folder: string | null, words: readonly string[]): string[] {
   return words.flatMap((word) => {
-    // `<( … )` / `>( … )`: the shell fills in a file of its own, no path the line names.
-    if (word === "" || /^[~%]|[$`]|^[<>]\(/.test(word)) return [];
+    if (word === "" || /^[~%]|[$`]/.test(word)) return [];
     if (isAbsolute(word)) return [resolve(word)];
     return folder === null ? [] : [resolve(folder, word)];
   });
@@ -324,7 +336,7 @@ function inFolder(folder: string | null, words: readonly string[]): string[] {
 
 /** The places one command of the line writes, in the folder it runs in. */
 function stepWrites(
-  words: readonly string[],
+  words: readonly ShellWord[],
   invocation: Invocation,
   folder: string | null,
   dialect: Dialect,
@@ -366,8 +378,8 @@ function inspect(command: string, cwd: string | null, reading: Reading, depth = 
   // A quote left open is read blind: more pieces, so nothing hides inside it.
   for (const step of shellSteps(command, { blindWhenOpen: true, dialect, joinLines })) {
     const folder = tracker.enter(step.subshell);
-    const words = wordsOf(step.text, dialect);
-    const invocation = invocationOf(words);
+    const words = wordsWithFill(step.text, dialect);
+    const invocation = invocationOf(words.map((word) => word.text));
     if (invocation === undefined) {
       found.push(
         ...inFolder(folder, redirectionTargets(words)).map((path) => ({ computed: false, path })),

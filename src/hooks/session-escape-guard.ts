@@ -83,7 +83,7 @@ import {
   shellSteps,
   shortFlags,
   withoutRedirections,
-  wordsOf,
+  wordsWithFill,
 } from "../shell/command";
 import { writtenWords } from "../shell/writes";
 import { realPath } from "./git";
@@ -399,9 +399,10 @@ function readLine(
   let ranKit = false;
   // A quote left open is read blind: more pieces, so nothing hides inside it.
   for (const step of shellSteps(line, { blindWhenOpen: true, dialect, joinLines })) {
-    const words = wordsOf(step.text, dialect);
+    const filled = wordsWithFill(step.text, dialect);
+    const words = filled.map((word) => word.text);
     const invocation = invocationOf(words);
-    const writes = writtenWords(words, invocation, dialect);
+    const writes = writtenWords(filled, invocation, dialect);
     if (writes.length > 0) judgeWrites(writes, where, ctx, found, dialect);
     if (invocation !== undefined && CHANGES_FOLDER.has(invocation.program)) {
       where = movedTo(invocation.program, where, withoutRedirections(invocation.args), {

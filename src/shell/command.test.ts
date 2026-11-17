@@ -379,10 +379,32 @@ describe("wordsOf: a substitution is one word", () => {
   test("bash's <( … ) and >( … ) at the start of a word, never after one", () => {
     expect(wordsOf("diff <(sort a) <(sort b)")).toEqual(["diff", "<(sort a)", "<(sort b)"]);
     expect(wordsOf("cmd > >(tee x)")).toEqual(["cmd", ">", ">(tee x)"]);
-    expect(redirectionTargets(wordsOf("cmd > >(tee x)"))).toEqual([">(tee x)"]);
+    // The shell puts a file of its own there: no file of the line's.
+    expect(redirectionTargets(wordsOf("cmd > >(tee x)"))).toEqual([]);
     // Not a redirection: the program gets a file name in its place.
     expect(redirectionTargets(wordsOf("cmd >(tee x)"))).toEqual([]);
     expect(withoutRedirections(wordsOf("diff <(a) <(b)").slice(1))).toEqual(["<(a)", "<(b)"]);
+  });
+
+  test("a $'…' quote or a backtick inside it is text: its ) closes nothing (review 3, M2)", () => {
+    expect(wordsOf("echo $(printf $'\\'') > X \"')\"")).toEqual([
+      "echo",
+      "$(printf $'\\'')",
+      ">",
+      "X",
+      "')",
+    ]);
+    expect(redirectionTargets(wordsOf("echo $(printf $'\\'') > X \"')\""))).toEqual(["X"]);
+    expect(wordsOf("echo $(echo `echo )`) y")).toEqual(["echo", "$(echo `echo )`)", "y"]);
+    expect(wordsOf('echo "$(a "$(b ")")")" z')).toEqual(["echo", '$(a "$(b ")")")', "z"]);
+  });
+
+  test("a quoted or escaped ( after > is a file's name, not a process substitution (review 3, L5)", () => {
+    expect(redirectionTargets(wordsWithFill("echo x >\\(foo"))).toEqual(["(foo"]);
+    expect(redirectionTargets(wordsWithFill('echo x >"(foo"'))).toEqual(["(foo"]);
+    expect(redirectionTargets(wordsWithFill('echo x > "(foo"'))).toEqual(["(foo"]);
+    expect(redirectionTargets(wordsWithFill("cmd > >(tee x)"))).toEqual([]);
+    expect(redirectionTargets(wordsWithFill("cmd >(tee x)"))).toEqual([]);
   });
 
   test("an unclosed one, and PowerShell, split as before", () => {

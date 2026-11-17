@@ -32,6 +32,12 @@ describe("redirections", () => {
     expect(targets(command)).toEqual(expected);
   });
 
+  test("a file whose name starts with ( is written; a process substitution is not (review 3, L5)", () => {
+    expect(targets("echo x >\\(foo")).toEqual(["/code/app/(foo"]);
+    expect(targets('echo x >"(foo"')).toEqual(["/code/app/(foo"]);
+    expect(targets("echo $(printf $'\\'') > X \"')\"")).toEqual(["/code/app/X"]);
+  });
+
   test("a substitution is one word: what it holds is no target of the line around it", () => {
     expect(targets("out=$(bun test 2>&1)")).toEqual([]);
     expect(targets('x="$(a "b c" > log)"')).toEqual(["/code/app/log"]);
@@ -73,6 +79,11 @@ describe("the programs that change files", () => {
     ["touch a.txt", ["/code/app/a.txt"]],
     ["touch -d yesterday a.txt", ["/code/app/a.txt"]],
     ["mkdir -p -m 755 x/y", ["/code/app/x/y"]],
+    // `--context` takes only an attached value: the word after it is a folder.
+    ["mkdir --context new", ["/code/app/new"]],
+    ["cp --t=/tmp/out a b", ["/tmp/out"]],
+    ["cp --su=.b -b a b", ["/code/app/b"]],
+    ["touch --d yesterday a.txt", ["/code/app/a.txt"]],
     ["ln -s ../a link", ["/code/app/link"]],
     ["ln -s /etc/hosts", ["/code/app/hosts"]],
     ["ln -s a b -t /tmp", ["/tmp"]],
@@ -225,6 +236,20 @@ describe("git commands that change the work tree or its branch", () => {
     expect(targets("(cd /tmp; (touch a); (touch b))")).toEqual(["/tmp/a", "/tmp/b"]);
   });
 
+  test("a case that starts after a keyword, ends at esac>file, or holds nothing (review 3, L4)", () => {
+    expect(targets("(for f in a; do case $f in a) cd /tmp;; esac; done); touch b")).toEqual([
+      "/code/app/b",
+    ]);
+    expect(targets("(if true; then case x in a) cd /tmp;; esac; fi); touch b")).toEqual([
+      "/code/app/b",
+    ]);
+    expect(targets("(case x in a) echo;; esac>/dev/null; cd /tmp); touch b")).toEqual([
+      "/dev/null",
+      "/code/app/b",
+    ]);
+    expect(targets("(case x in esac; cd /tmp); touch b")).toEqual(["/code/app/b"]);
+  });
+
   test("a case pattern's ) closes no group", () => {
     expect(targets("(case x in a) cd /tmp;; esac; touch b); touch c")).toEqual([
       "/tmp/b",
@@ -288,7 +313,13 @@ describe("what the session-escape guard reads: writtenWords", () => {
     ["sed -i.bak s/x/y/ file", ["file"]],
     ["sed -i.save s/x/y/ file", ["file"]],
     ["sed -n s/x/y/p file", []],
-    // A long option given as a prefix of its name is that option (review 2, the High).
+    // A long option given as a prefix of its name is that option (review 2, the High; review
+    // 3, H1: `--e` is the shortest that names `--expression`, `--fi` the shortest for `--file`).
+    ["sed -i --e=s/x/y/ file", ["file"]],
+    ["sed --in-place --e=s/x/y/ file", ["file"]],
+    ["sed -i --ex s/x/y/ file", ["file"]],
+    ["sed -i --fi=edit.sed file", ["file"]],
+    ["sed -i --l 80 s/x/y/ file", ["file"]],
     ["sed -i --expr=s/x/y/ file", ["file"]],
     ["sed -i --expr s/x/y/ file", ["file"]],
     ["sed -i --fil=edit.sed file", ["file"]],
