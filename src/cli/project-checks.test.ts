@@ -10,7 +10,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { VERSION } from "../build-info";
 import { deployBlockBody } from "../project/deploy-block";
 import { BLOCK_BEGIN, BLOCK_END } from "../setup/managed-markdown";
@@ -1304,7 +1304,7 @@ describe("GitHub Issues are on by default: doctor stays quiet", () => {
 
 describe("deploy tasks in doctor's project group", () => {
   const FIX = "run `cc-smart-dev-kit task check`";
-  const NOW = new Date("2026-11-17T14:45:03Z");
+  const DAY = 86_400_000;
 
   /** A repo with a config (so `requires` is judged), the worktrees folder ignored, and a tasks folder. */
   function project(config: unknown = {}) {
@@ -1314,7 +1314,7 @@ describe("deploy tasks in doctor's project group", () => {
     return { repo, dir: join(repo, ".claude", "tasks") };
   }
   const made = (dir: string, env: "prod" | "staging", title: string) =>
-    createDeployTask(dir, { title, env, deploy: "before", type: "blocking" }, { now: NOW });
+    createDeployTask(dir, { title, env, deploy: "before", type: "blocking" }, { now: new Date() });
   const taskLines = async (repo: string) =>
     (await projectTaskChecks(repo, hookEnv())).map(checkLine);
 
@@ -1329,16 +1329,45 @@ describe("deploy tasks in doctor's project group", () => {
     expect(await taskLines(repo)).toEqual([]);
   });
 
-  test("one ✗ line for each kind of finding, with the task check fix", async () => {
+  test("a broken file and a shared id are ✗ lines in plain words; the repeated title they cause is a ! line", async () => {
     const { repo, dir } = project();
     const task = made(dir, "prod", "Run the migration");
     writeFileSync(join(dir, "prod", "prod-20260101-000000-broken.md"), "not a task");
     copyFileSync(task.file, join(dir, "prod", `${task.id}-twin.md`));
     expect(await taskLines(repo)).toEqual([
-      `✗ deploy tasks: 1 broken-file Fix: ${FIX}`,
-      `✗ deploy tasks: 1 duplicate-id Fix: ${FIX}`,
-      `✗ deploy tasks: 1 duplicate-title Fix: ${FIX}`,
+      `✗ deploy tasks: 1 broken task file Fix: ${FIX}`,
+      `✗ deploy tasks: 1 task id used by more than one file Fix: ${FIX}`,
+      `! deploy tasks: 1 repeated title Fix: ${FIX}`,
     ]);
+  });
+
+  test("a twin that names no task, a missing reference and an open task left in archive/ are ✗; a stale task is a !", async () => {
+    const { repo, dir } = project({ tasks: { staleDays: 30 } });
+    const input = { env: "prod", deploy: "before", type: "blocking" } as const;
+    createDeployTask(dir, { ...input, title: "Old one" }, { now: new Date(Date.now() - 40 * DAY) });
+    createDeployTask(
+      dir,
+      { ...input, title: "Has twin", twin: "staging-20260101-000000", refs: ["missing.txt"] },
+      { now: new Date() },
+    );
+    const left = made(dir, "prod", "Left in archive");
+    mkdirSync(join(dir, "prod", "archive"), { recursive: true });
+    writeFileSync(join(dir, "prod", "archive", basename(left.file)), readFileSync(left.file));
+    rmSync(left.file);
+    expect(await taskLines(repo)).toEqual([
+      `✗ deploy tasks: 1 twin that names no task Fix: ${FIX}`,
+      `✗ deploy tasks: 1 missing reference Fix: ${FIX}`,
+      `✗ deploy tasks: 1 open task left in archive/ Fix: ${FIX}`,
+      `! deploy tasks: 1 task open for over 30 days Fix: ${FIX}`,
+    ]);
+  });
+
+  test("two of a kind are worded in the plural", async () => {
+    const { repo, dir } = project();
+    mkdirSync(join(dir, "prod"), { recursive: true });
+    writeFileSync(join(dir, "prod", "prod-20260101-000000-a.md"), "not a task");
+    writeFileSync(join(dir, "prod", "prod-20260102-000000-b.md"), "not a task");
+    expect(await taskLines(repo)).toEqual([`✗ deploy tasks: 2 broken task files Fix: ${FIX}`]);
   });
 
   test("old files: a ! line that names the count and says to recreate or delete them, never a ✗", async () => {
@@ -1380,7 +1409,7 @@ describe("deploy tasks in doctor's project group", () => {
     const { repo, dir } = project({ requires: ">=1.0" });
     mkdirSync(join(dir, "prod"), { recursive: true });
     expect(await check(repo)).toEqual([
-      '! project: .claude/cc-smart-dev-kit.json says requires ">=1.0", but its fields and its deploy task folders need ">=5.0": a teammate on an older plugin gets the whole file refused instead of "update" Fix: cc-smart-dev-kit project init raises it to ">=5.0"',
+      '! project: .claude/cc-smart-dev-kit.json says requires ">=1.0", but its fields and its deploy tasks need ">=5.0": a teammate on an older plugin gets the whole file refused instead of "update" Fix: cc-smart-dev-kit project init raises it to ">=5.0"',
       "✓ deploy tasks: no findings",
     ]);
   });
@@ -1416,7 +1445,16 @@ describe("the deploy-skill block in doctor", () => {
     const repo = project();
     skill(repo, "deploy", `# Deploy\n${OLD}`);
     expect(await check(repo)).toEqual([
-      "! project: the deploy-skill block in .claude/skills/deploy/SKILL.md is out of date (the block's text is out of date) Fix: cc-smart-dev-kit project init rewrites it",
+      "! project: the deploy-skill block in .claude/skills/deploy/SKILL.md is out of date Fix: cc-smart-dev-kit project init rewrites it",
+    ]);
+  });
+
+  test("a skill that holds the block and no deploy folder: a requires below 5.0 still warns", async () => {
+    const repo = project();
+    skill(repo, "deploy", `# Deploy\n${CURRENT}`);
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", { requires: ">=1.0" });
+    expect(await check(repo)).toEqual([
+      '! project: .claude/cc-smart-dev-kit.json says requires ">=1.0", but its fields and its deploy tasks need ">=5.0": a teammate on an older plugin gets the whole file refused instead of "update" Fix: cc-smart-dev-kit project init raises it to ">=5.0"',
     ]);
   });
 
@@ -1425,8 +1463,9 @@ describe("the deploy-skill block in doctor", () => {
     skill(repo, "deploy", `${BLOCK_BEGIN}\n## Deploy tasks\nhalf\n${BLOCK_BEGIN}\n`);
     const [line] = await check(repo);
     expect(line).toStartWith(
-      "! project: the deploy-skill block in .claude/skills/deploy/SKILL.md is out of date (",
+      "! project: the deploy-skill block in .claude/skills/deploy/SKILL.md cannot be updated (",
     );
+    expect(line).not.toContain("is out of date");
     expect(line).toContain("Fix: correct that file by hand");
     expect(line).not.toContain("project init");
   });

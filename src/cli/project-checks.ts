@@ -77,7 +77,7 @@ import {
   UNSWITCHABLE_HOOK_NAMES,
   WORKTREE_ENGINE_RETIRED_IN,
 } from "../project/config";
-import { skillsFolderLink, staleBlocks } from "../project/deploy-skill";
+import { findDeploySkills, skillsFolderLink, staleBlocks } from "../project/deploy-skill";
 import { hasDeployTaskFolders, requiresFloor, requiresTooLow } from "../project/init";
 import {
   type Checkout,
@@ -88,7 +88,7 @@ import {
 import { isObject } from "../setup/managed-json";
 import { parseUserJson, readUserJson } from "../setup/user-json";
 import { taskContext } from "../tasks/context";
-import { checkDeployTasks } from "../tasks/deploy/check";
+import { checkDeployTasks, type DeployTaskFinding } from "../tasks/deploy/check";
 import { oldTaskFiles } from "../tasks/deploy/files";
 import { allTasks, isOpen, livePhaseCount } from "../tasks/work/queries";
 import { readWorkStore } from "../tasks/work/read";
@@ -539,7 +539,7 @@ function requiresLines(
   configFile: string,
   projectDir: string,
   home: string,
-  deployFolders: boolean,
+  usesDeployTasks: boolean,
 ): ProjectLine[] {
   let file: unknown;
   try {
@@ -551,15 +551,15 @@ function requiresLines(
   if (!isObject(file)) return [];
   // Deploy task folders need the plugin that reads them (5.0.0) even when no field says so: a
   // 4.x plugin shows nothing of them. Only `project init` knows them; `workflow set` does not.
-  const needed = requiresFloor(file, { deployTasks: deployFolders });
+  const needed = requiresFloor(file, { deployTasks: usesDeployTasks });
   if (!requiresTooLow(file.requires, needed.version)) return [];
-  const byFolders = deployFolders && needed.version !== requiresFloor(file).version;
+  const byDeploy = usesDeployTasks && needed.version !== requiresFloor(file).version;
   return [
     {
       ok: true,
       warn: true,
-      text: `project: ${shown(configFile, projectDir, home)} says requires "${String(file.requires)}", but its fields${byFolders ? " and its deploy task folders" : ""} need "${needed.floor}": a teammate on an older plugin gets the whole file refused instead of "update"`,
-      fix: byFolders
+      text: `project: ${shown(configFile, projectDir, home)} says requires "${String(file.requires)}", but its fields${byDeploy ? " and its deploy tasks" : ""} need "${needed.floor}": a teammate on an older plugin gets the whole file refused instead of "update"`,
+      fix: byDeploy
         ? `${COMMAND} project init raises it to "${needed.floor}"`
         : `${COMMAND} project init (or any ${COMMAND} workflow set … --project) raises it to "${needed.floor}"`,
     },
@@ -589,6 +589,20 @@ function ignoredTaskFieldLines(
 }
 
 /**
+ * True when the project uses deploy tasks: it has an environment folder, or a skill that holds
+ * the kit's deploy block. Both need the plugin that reads them (`project init` raises `requires`
+ * for either). A skill that cannot be read is not a holder here: `deployBlockLines` names it.
+ */
+function usesDeployTasksOf(root: string, config: CcSmartDevKitConfig | null): boolean {
+  if (hasDeployTaskFolders(root, config?.tasks ?? {})) return true;
+  try {
+    return findDeploySkills(root).holders.length > 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * The deploy-skill block (`src/project/deploy-skill.ts`): one `!` line for each skill file whose
  * block is out of date, and one `·` line when the skills folder is a link out of the checkout,
  * which is not searched, in a project that uses deploy tasks. A block `project init` cannot
@@ -599,7 +613,10 @@ function deployBlockLines(root: string, usesDeployTasks: boolean): ProjectLine[]
     const lines: ProjectLine[] = staleBlocks(root).map((stale) => ({
       ok: true,
       warn: true,
-      text: `project: the deploy-skill block in ${stale.shown} is out of date (${stale.why})`,
+      text:
+        stale.fix === "init"
+          ? `project: the deploy-skill block in ${stale.shown} is out of date`
+          : `project: the deploy-skill block in ${stale.shown} cannot be updated (${stale.why})`,
       fix:
         stale.fix === "init"
           ? `${COMMAND} project init rewrites it`
@@ -897,7 +914,7 @@ export async function projectChecks(
       ...engine,
     ];
   }
-  const usesDeployTasks = hasDeployTaskFolders(checkout.root, config?.tasks ?? {});
+  const usesDeployTasks = usesDeployTasksOf(checkout.root, config);
   const retired =
     configFile === null
       ? null
@@ -970,10 +987,38 @@ export function planCapChecks(
     });
 }
 
+type FindingKind = Exclude<DeployTaskFinding["kind"], "old-files">;
+
 /**
- * The deploy tasks' findings (`checkDeployTasks`): one `✗` line for each kind, with the fix
- * `task check`; the old 4.x files as one `!` line instead (nothing is wrong with the tasks, the
- * files are only not read); and "no findings" when there is nothing at all.
+ * What each kind of finding is called in doctor's lines, singular and plural, in plain words.
+ * `warn` marks the kinds that are advice (a task left open a long time, a repeated title): they
+ * block nothing, so they are `!`, never `✗`. `{days}` is `tasks.staleDays`.
+ */
+const FINDING_WORDS: Record<FindingKind, { one: string; many: string; warn?: true }> = {
+  "broken-file": { one: "broken task file", many: "broken task files" },
+  "duplicate-id": {
+    one: "task id used by more than one file",
+    many: "task ids used by more than one file",
+  },
+  "twin-missing": { one: "twin that names no task", many: "twins that name no task" },
+  "open-in-archive": {
+    one: "open task left in archive/",
+    many: "open tasks left in archive/",
+  },
+  "broken-ref": { one: "missing reference", many: "missing references" },
+  stale: {
+    one: "task open for over {days} days",
+    many: "tasks open for over {days} days",
+    warn: true,
+  },
+  "duplicate-title": { one: "repeated title", many: "repeated titles", warn: true },
+};
+
+/**
+ * The deploy tasks' findings (`checkDeployTasks`): one line for each kind, with the fix
+ * `task check` (`✗`, or `!` for the advice kinds in `FINDING_WORDS`); the old 4.x files as one
+ * `!` line (nothing is wrong with the tasks, the files are only not read); and "no findings"
+ * when there is nothing at all.
  */
 export async function projectTaskChecks(cwd: string, env: Env): Promise<Check[]> {
   const context = taskContext(cwd, env);
@@ -996,16 +1041,18 @@ export async function projectTaskChecks(cwd: string, env: Env): Promise<Check[]>
       settings: { staleDays: tasks.staleDays },
       now: new Date(),
     });
-    const counts = new Map<string, number>();
+    const counts = new Map<FindingKind, number>();
     for (const finding of findings)
       if (finding.kind !== "old-files")
         counts.set(finding.kind, (counts.get(finding.kind) ?? 0) + 1);
-    for (const [kind, count] of counts)
-      lines.push({
-        ok: false,
-        text: `deploy tasks: ${count} ${kind}`,
-        fix: `run \`${COMMAND} task check\``,
-      });
+    const fix = `run \`${COMMAND} task check\``;
+    const found = [...counts].map(([kind, count]): Check => {
+      const words = FINDING_WORDS[kind];
+      const text = `deploy tasks: ${count} ${(count === 1 ? words.one : words.many).replace("{days}", String(tasks.staleDays))}`;
+      return words.warn === true ? { ok: true, warn: true, text, fix } : { ok: false, text, fix };
+    });
+    // The failures first, then the warnings.
+    lines.push(...found.filter((line) => !line.ok), ...found.filter((line) => line.ok));
     const old = oldTaskFiles(tasks.dir).length;
     if (old > 0) {
       const many = old > 1;

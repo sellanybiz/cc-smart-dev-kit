@@ -194,8 +194,10 @@ describe("the deploy task line", () => {
   const LINE_END = " — /cc-smart-dev-kit:tasks";
 
   /** A clone with the task server recorded, so the only line a start can say is the deploy one. */
-  function world() {
+  function world(options: { optedIn?: boolean } = {}) {
     const { repo } = makeClone();
+    // The project opted in with its file: only then are old files counted.
+    if (options.optedIn !== false) writeClaudeFile(repo, "cc-smart-dev-kit.json", {});
     const env = hookEnv();
     const records = mcpRecordsFile(cliPaths(env).stateDir);
     mkdirSync(dirname(records), { recursive: true });
@@ -285,6 +287,52 @@ describe("the deploy task line", () => {
         `Deploy tasks open: prod 0, staging 0; 1 old file not read${LINE_END}`,
       ),
     );
+  });
+
+  test("a project with no .claude/cc-smart-dev-kit.json: Markdown in .claude/tasks is not counted as old files", async () => {
+    const { dir, start } = world({ optedIn: false });
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "notes.md"), "unrelated notes");
+    expect(await start()).toEqual({});
+  });
+
+  test("an unreadable work store: its stderr note stays, and the deploy line still shows", async () => {
+    const { env, dir, start } = world();
+    made(dir, "prod", "Run the migration");
+    const file = workDbFile(cliPaths(env));
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, "not a database");
+    expect(await start()).toEqual({
+      ...addContext(
+        "SessionStart",
+        `Deploy tasks open: prod 1 (1 blocking before the deploy), staging 0${LINE_END}`,
+      ),
+      stderr: "cc-smart-dev-kit task-start: file is not a database",
+    });
+  });
+
+  test("a scan that throws: the work list still shows, and stderr is one line", async () => {
+    const { repo, env, dir, start } = world();
+    const db = openWorkDb(workDbFile(cliPaths(env)), { mode: "write" });
+    const nobody = { sessionId: "other", crewId: null, pid: null, procStart: null };
+    const created = createTask(
+      db,
+      { project: projectKey(repo), subject: "Step" },
+      nobody,
+      Date.now() - 60_000,
+    );
+    if (!created.ok) throw new Error(created.why);
+    db.close();
+    mkdirSync(dir, { recursive: true });
+    // `prod` is a file, not a folder: listing it throws.
+    writeFileSync(join(dir, "prod"), "not a folder");
+    const result = await start();
+    expect(result.stdout).toBe(
+      addContext("SessionStart", "Open tasks here (the kit's task list):\n#1 [pending] Step")
+        .stdout,
+    );
+    expect(result.stderr).toStartWith("cc-smart-dev-kit task-start: deploy tasks not read: ");
+    expect(result.stderr).not.toContain("\n");
   });
 
   test("archive/ is never scanned: closed tasks and a broken file there add nothing", async () => {

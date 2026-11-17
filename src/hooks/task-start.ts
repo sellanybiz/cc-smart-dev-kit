@@ -24,13 +24,19 @@ const plural = (count: number, one: string, many: string) => `${count} ${count =
  * The one line about deploy tasks, or null when none is open, unreadable, a duplicate id or old.
  * It reads only the top level of each environment folder (never `archive/`) and the top level of
  * the tasks folder: a few small files, inside the hook's budget. An environment the project does
- * not deploy to (`tasks.envs`) is left out unless it holds an open task.
+ * not deploy to (`tasks.envs`) is left out unless it holds an open task. Old files are counted
+ * only for a project that opted in (`countOldFiles`): any Markdown file in an unrelated repo's
+ * `.claude/tasks/` is none of the kit's business.
  */
-export function deployTaskLine(dir: string, envs: readonly DeployEnv[]): string | null {
+export function deployTaskLine(
+  dir: string,
+  envs: readonly DeployEnv[],
+  options: { countOldFiles: boolean },
+): string | null {
   const scan = scanDeployTasks(dir, { archive: false });
   // A duplicate id lists every file that claims it: count each id once.
   const open = new Map(scan.tasks.filter((task) => task.status === "open").map((t) => [t.id, t]));
-  const old = oldTaskFiles(dir).length;
+  const old = options.countOldFiles ? oldTaskFiles(dir).length : 0;
   if (open.size === 0 && scan.broken.length === 0 && scan.duplicates.length === 0 && old === 0)
     return null;
   const parts = LINE_ENV_ORDER.flatMap((env) => {
@@ -73,7 +79,10 @@ export function taskStart(
     limit: START_TASK_LIMIT,
     staleBefore: now() - staleDays * DAY_MS,
   });
-  if (view.state === "unreadable") return { stderr: `${COMMAND} task-start: ${view.why}` };
+  // An unreadable store is told on stderr, and the deploy line below is still built: it reads
+  // the project's own files, not the store.
+  const notes: string[] = [];
+  if (view.state === "unreadable") notes.push(view.why);
   const lines: string[] = [];
   if (view.state === "ready" && view.value.tasks.length > 0) {
     lines.push("Open tasks here (the kit's task list):");
@@ -94,22 +103,27 @@ export function taskStart(
       `${view.value.stale} open ${view.value.stale === 1 ? "task" : "tasks"} untouched for ${staleDays} days or more, not shown: ${TASK_TOOL.list} with scope "project", then finish or drop them.`,
     );
   }
-  let deployError: string | null = null;
   if (context.projectTasks.ok) {
     try {
-      const line = deployTaskLine(context.projectTasks.dir, context.projectTasks.envs);
+      const line = deployTaskLine(context.projectTasks.dir, context.projectTasks.envs, {
+        countOldFiles: context.projectConfig.ok && context.projectConfig.config !== null,
+      });
       if (line !== null) lines.push(line);
     } catch (error) {
       // One bad file must not hide the work list: the line is left out and says why on stderr.
-      deployError = error instanceof Error ? error.message : String(error);
+      notes.push(
+        `deploy tasks not read: ${error instanceof Error ? error.message : String(error)}`,
+      );
     }
   }
   const record = readMcpRecords(paths.stateDir)[TASKS_SERVER_NAME];
-  if (record === undefined || record.pending === true) {
+  // A store that cannot be read is already reported: "not set up" would be a second, wrong, reason.
+  if (view.state !== "unreadable" && (record === undefined || record.pending === true)) {
     lines.push(`The kit's task list is not set up on this machine yet: run \`${COMMAND} setup\`.`);
   }
   const result = lines.length === 0 ? SILENT : addContext("SessionStart", lines.join("\n"));
-  return deployError === null
+  // One short line, whatever went wrong (the frame's contract for stderr).
+  return notes.length === 0
     ? result
-    : { ...result, stderr: `${COMMAND} task-start: deploy tasks not read: ${deployError}` };
+    : { ...result, stderr: `${COMMAND} task-start: ${notes.join("; ").replace(/\s*\n\s*/g, " ")}` };
 }
