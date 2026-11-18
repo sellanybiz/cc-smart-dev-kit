@@ -54,7 +54,7 @@ function reservedState(
   if (child === null || process.live(child)) return "with-child";
   // "Gone" is not enough: a reopened child session runs in a new process before it has made one
   // task call, so the store still names the dead one. Its session must be over too (`ended`).
-  const ended = process.ended ?? process.gone;
+  const ended = process.ended;
   const claimEnded = plan.claim === null || ended(plan.claim);
   return ended(child) && claimEnded ? "child-gone" : "with-child";
 }

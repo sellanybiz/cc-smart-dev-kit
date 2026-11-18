@@ -27,7 +27,7 @@ import type { ClaimProcess, Result, Who, WorkClaim, WorkTask } from "./types";
 const LEAD: Who = { sessionId: "lead", pid: 4101, procStart: "41010" };
 const CHILD: Who = { sessionId: "child", pid: 5202, procStart: "52020" };
 const OTHER: Who = { sessionId: "other", pid: 6303, procStart: "63030" };
-const NOBODY: ClaimProcess = { live: () => false, gone: () => false };
+const NOBODY: ClaimProcess = { live: () => false, gone: () => false, ended: () => false };
 
 function ok<T>(result: Result<T>): T {
   if (!result.ok) throw new Error(result.why);
@@ -575,6 +575,7 @@ test("the classifier names each state from the store alone", () => {
   const process = {
     live: (c: { pid: number }) => c.pid === CHILD.pid,
     gone: (c: { pid: number }) => c.pid === 7,
+    ended: (c: { pid: number }) => c.pid === 7,
   };
   expect(states(db, LEAD, process)).toEqual({
     own: "own",
@@ -632,6 +633,10 @@ test("the classifier reads the store and nothing else: no git, no process but th
       asked += 1;
       return false;
     },
+    ended: () => {
+      asked += 1;
+      return false;
+    },
   };
   expect(states(db, LEAD, counting)).toEqual({ alpha: "own" });
   // An owned, unhanded plan needs no process question at all.
@@ -640,7 +645,11 @@ test("the classifier reads the store and nothing else: no git, no process but th
 
 /** A process list where only the named pids still run. */
 function running(...pids: number[]): ClaimProcess {
-  return { live: (c) => pids.includes(c.pid), gone: (c) => !pids.includes(c.pid) };
+  return {
+    live: (c) => pids.includes(c.pid),
+    gone: (c) => !pids.includes(c.pid),
+    ended: (c) => !pids.includes(c.pid),
+  };
 }
 
 test("H1: a resumed child reads with-child while it runs, and child-gone only when its claim and maker are both gone", () => {
@@ -677,7 +686,7 @@ function machine(pids: number[], sessions: () => { pid: number; sessionId: strin
     gone: (c) => !pids.includes(c.pid),
     ended: (c) => sessionEnded(c, facts),
   };
-  return { process, isEnded: process.ended as (c: WorkClaim) => boolean };
+  return { process, isEnded: process.ended };
 }
 
 /** A plan taken and started by CHILD, whose session is then reopened in a new process that made no task call. */
@@ -732,6 +741,7 @@ test("H1: a child whose maker is gone but whose claim still runs is with-child",
   const unproved: ClaimProcess = {
     live: () => false,
     gone: (c) => c.pid === CHILD.pid,
+    ended: (c) => c.pid === CHILD.pid,
   };
   expect(states(db, LEAD, unproved)).toEqual({ alpha: "with-child" });
 });
