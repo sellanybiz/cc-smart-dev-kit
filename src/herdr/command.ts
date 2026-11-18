@@ -10,8 +10,8 @@ import { taskContext } from "../tasks/context";
 import { createTaskOps } from "../tasks/ops";
 import { openWorkDb, workDbFile } from "../tasks/work/db";
 import { CLAIM_PROCESS, callerOf } from "../tasks/work/identity";
-import { getTask, isOpen } from "../tasks/work/queries";
-import { adoptLeadPlans, releasePlan } from "../tasks/work/store";
+import { getTask, isOpen, planByRef } from "../tasks/work/queries";
+import { adoptLeadPlans, releasePlan, swapPlanAgent } from "../tasks/work/store";
 import type { Who } from "../tasks/work/types";
 import { briefPath, reportPath, writeBrief, writePrivate } from "./brief";
 import {
@@ -54,7 +54,6 @@ import {
 } from "./labels";
 import { MachinesFileError, machineRule, readMachines, writeMachines } from "./machines";
 import {
-  findPlan,
   openPlansWorld,
   type PlanStart,
   type PlansEnv,
@@ -62,7 +61,14 @@ import {
   prepareStart,
   runPlans,
 } from "./plans";
-import { cliModeFlag, type HerdrArgs, parseHerdrArgs, START_FLAGS, START_OPTIONS } from "./words";
+import {
+  cliModeFlag,
+  type HerdrArgs,
+  PLAN_EXCLUSION,
+  parseHerdrArgs,
+  START_FLAGS,
+  START_OPTIONS,
+} from "./words";
 
 export const WAIT_TIMEOUT_MS = 180_000;
 export const LAUNCH_CHECK_MS = 20_000;
@@ -356,6 +362,20 @@ function identity(ctx: HerdrContext, r: HcRunner): Identity {
   if ("why" in me) throw new Error(me.why);
   return me;
 }
+/** A plan child builds its one plan and never coordinates (D1): a refusal, or null when this terminal is no plan child. */
+function refusePlanChild(
+  ctx: HerdrContext,
+  r: HcRunner,
+  me: Identity,
+  doing: string,
+): number | null {
+  if (hcGet(r, me.address).labels[KIT_PLAN] === undefined) return null;
+  return refuse(
+    ctx,
+    `A plan child never coordinates: it builds its own plan only, so it cannot ${doing}.`,
+    `Report to your lead with ${COMMAND} herdr report; the lead hands plans out.`,
+  );
+}
 function own(r: HcRunner, target: string, me: Identity): Terminal {
   const child = hcGet(r, target);
   if (
@@ -581,6 +601,7 @@ function releaseAfterFailedStart(
   project: string,
   plan: string,
   who: Who,
+  handoutId: string,
 ): () => void {
   return () => {
     const db = openWorkDb(workDbFile(ctx.paths), { mode: "write" });
@@ -591,10 +612,40 @@ function releaseAfterFailedStart(
         who,
         now: ctx.now(),
         reason: "launch failed",
+        handoutId,
       });
       if (!released.ok)
         ctx.out.line("warn", `Plan ${plan} stays reserved: ${released.why}`, {
           fix: `${COMMAND} herdr plans releases a hand-out that never started`,
+        });
+    } finally {
+      db.close();
+    }
+  };
+}
+/** Gives a resume's claim back: the launch failed, so the plan's agent is what it was. */
+function restoreAfterFailedStart(
+  ctx: HerdrContext,
+  project: string,
+  plan: string,
+  who: Who,
+  claim: { marker: string; previous: string | null },
+): () => void {
+  return () => {
+    const db = openWorkDb(workDbFile(ctx.paths), { mode: "write" });
+    try {
+      const restored = swapPlanAgent(db, {
+        project,
+        plan,
+        who,
+        from: claim.marker,
+        to: claim.previous,
+        now: ctx.now(),
+        reason: "launch failed",
+      });
+      if (!restored.ok)
+        ctx.out.line("warn", `Plan ${plan}'s launch claim stays: ${restored.why}`, {
+          fix: `it reads as a dead start after a few minutes: ${COMMAND} herdr plans shows it`,
         });
     } finally {
       db.close();
@@ -646,17 +697,13 @@ async function startChild(
         ctx,
         "A plan hand-out needs a git project, and the plan must be this session's own.",
       );
-    if (hcGet(r, me.address).labels[KIT_PLAN] !== undefined)
-      return refuse(
-        ctx,
-        "A plan child never coordinates: it builds its own plan only.",
-        `Report to your lead with ${COMMAND} herdr report; the lead hands plans out.`,
-      );
+    const child = refusePlanChild(ctx, r, me, "hand out plans");
+    if (child !== null) return child;
     const opened = openPlansWorld(ctx, r, me.core, cwd);
-    if (!opened.ok) return refuse(ctx, opened.why);
+    if (!opened.ok) return refuse(ctx, opened.why, opened.fix);
     run.close = opened.close;
     planWorld = opened.world;
-    const row = findPlan(opened.world.db, opened.world.project, a.plan);
+    const row = planByRef(opened.world.db, opened.world.project, a.plan);
     if (row === null) return refuse(ctx, `Plan "${a.plan}" was not found in this project.`);
     slug = row.plan ?? a.plan;
   }
@@ -709,7 +756,21 @@ async function startChild(
     if (!prepared.ok) return refuse(ctx, prepared.why, prepared.fix);
     handout = prepared;
     if (prepared.reserved)
-      run.giveBack = releaseAfterFailedStart(ctx, planWorld.project, slug, planWorld.who);
+      run.giveBack = releaseAfterFailedStart(
+        ctx,
+        planWorld.project,
+        slug,
+        planWorld.who,
+        prepared.handoutId,
+      );
+    else if (prepared.claim)
+      run.giveBack = restoreAfterFailedStart(
+        ctx,
+        planWorld.project,
+        slug,
+        planWorld.who,
+        prepared.claim,
+      );
   }
   // A resume or a relaunch continues the recorded worktree and branch: it is the one reuse allowed.
   const reuse = handout?.recorded ?? null;
@@ -800,6 +861,9 @@ async function startChild(
   programArgs.push(first);
   args.push("--", ...loginShellArgv("claude", ...programArgs));
   const child = hcRun(r, args);
+  // From here a child exists: a throw below must not give its reservation back. Only a launch
+  // proved finished (below) does.
+  run.launched = true;
   const deadline = ctx.now() + LAUNCH_CHECK_MS;
   for (let poll = 0; poll < LAUNCH_POLL_LIMIT; poll++) {
     let state: Terminal;
@@ -818,6 +882,7 @@ async function startChild(
     }
     if (state.status?.app === CLAUDE_CODE_APP && state.state !== "finished") break;
     if (state.state === "finished" || ctx.now() >= deadline || poll === LAUNCH_POLL_LIMIT - 1) {
+      if (state.state === "finished") run.launched = false;
       try {
         const screen = hcRead(r, child.address, SCREEN_LINES);
         ctx.out.say(`The child's screen (${child.address}):`);
@@ -872,8 +937,6 @@ async function startChild(
     }
     await ctx.sleep(Math.min(LAUNCH_POLL_MS, Math.max(0, deadline - ctx.now())));
   }
-  // The child exists: a failed launch is over, and its reservation is the child's now (D6).
-  run.launched = true;
   if (a.task || handout) {
     const ops = createTaskOps({
       stateDir: ctx.paths.stateDir,
@@ -970,12 +1033,13 @@ export async function runHerdr(args: string[], ctx: HerdrContext): Promise<numbe
         return refuse(ctx, "bypassPermissions is never allowed.");
       if (options.flags.has("--independent") && options.options.has("--task"))
         return refuse(ctx, "An independent session cannot have a task.");
-      if (options.options.has("--plan")) {
-        if (options.flags.has("--independent") || options.options.has("--task"))
-          return refuse(ctx, "--plan cannot be combined with --task or --independent.");
-        if (options.options.has("--on"))
-          return refuse(ctx, "A plan cannot cross projects or machines.");
-      }
+      if (
+        options.options.has("--plan") &&
+        (options.flags.has("--independent") ||
+          options.options.has("--task") ||
+          options.options.has("--on"))
+      )
+        return refuse(ctx, PLAN_EXCLUSION);
     }
   }
   const parsed = parseHerdrArgs(args);
@@ -1044,6 +1108,8 @@ export async function runHerdr(args: string[], ctx: HerdrContext): Promise<numbe
         return 0;
       }
       case "adopt": {
+        const child = refusePlanChild(ctx, r, me, "adopt another lead's plans");
+        if (child !== null) return child;
         const project = taskContext(ctx.cwd, ctx.env);
         if (!project.ok) return refuse(ctx, project.why);
         const rows = terminals(r, { [KIT_REPO]: project.repo ?? ctx.cwd }, true);

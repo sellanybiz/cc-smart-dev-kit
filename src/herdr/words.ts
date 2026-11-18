@@ -47,7 +47,7 @@ const USAGE_LINES = {
   list: "list [--all] [--json]",
   send: "send <terminal> <text>",
   wait: "wait [--any | --all] [--timeout <seconds>] [--seen <addr>:<turn|?>:<error|done|end>[,…]]",
-  plans: "plans [--json] [--wait] [--timeout <seconds>]",
+  plans: "plans [--json] [--wait] [--timeout <seconds>] | plans --release <plan>",
   report: "report <text>",
   adopt: "adopt",
   stop: "stop <terminal>",
@@ -68,6 +68,8 @@ export const START_OPTIONS = [
   "--plan",
 ];
 export const START_FLAGS = ["--independent", "--asked"];
+/** The one refusal for `--plan` beside an option it cannot share a start with. */
+export const PLAN_EXCLUSION = "--plan cannot be combined with --task, --independent or --on.";
 export type HerdrArgs =
   | {
       verb: "start";
@@ -92,7 +94,7 @@ export type HerdrArgs =
       timeoutMs?: number;
       seen?: Record<string, { turn: number | null; state: "error" | "done" | "end" }>;
     }
-  | { verb: "plans"; json: boolean; wait: boolean; timeoutMs?: number }
+  | { verb: "plans"; json: boolean; wait: boolean; timeoutMs?: number; release?: string }
   | { verb: "report"; text: string }
   | { verb: "adopt" }
   | { verb: "stop"; target: string }
@@ -129,8 +131,7 @@ export function parseHerdrArgs(args: string[]): HerdrArgs | { error: string } {
       plan = o.get("--plan"),
       name = o.get("--name");
     if (task && independent) return fail("An independent session cannot have a task.");
-    if (plan && (task || independent || o.has("--on")))
-      return fail("--plan cannot be combined with --task, --independent or --on.");
+    if (plan && (task || independent || o.has("--on"))) return fail(PLAN_EXCLUSION);
     if (task && !/^#[1-9]\d*$/.test(task)) return fail("Use a task reference such as #7.");
     if (name && !validChildName(name))
       return fail("A name needs 1–32 lower-case letters, digits, - or _.");
@@ -152,7 +153,8 @@ export function parseHerdrArgs(args: string[]): HerdrArgs | { error: string } {
       ...(plan ? { plan } : {}),
     };
   }
-  const known = verb === "wait" ? ["--timeout", "--seen"] : verb === "plans" ? ["--timeout"] : [];
+  const known =
+    verb === "wait" ? ["--timeout", "--seen"] : verb === "plans" ? ["--timeout", "--release"] : [];
   const flags =
     verb === "list"
       ? ["--all", "--json"]
@@ -214,11 +216,15 @@ export function parseHerdrArgs(args: string[]): HerdrArgs | { error: string } {
       if (!validTimeout(timeout)) return fail(TIMEOUT_WORDS);
       if (p.length) return fail("plans takes no arguments.");
       if (timeout !== undefined && !f.has("--wait")) return fail("--timeout belongs to --wait.");
+      const release = o.get("--release");
+      if (release !== undefined && (!release.trim() || f.has("--wait") || f.has("--json")))
+        return fail("--release names one plan and stands alone.");
       return {
         verb,
         json: f.has("--json"),
         wait: f.has("--wait"),
         ...(timeout === undefined ? {} : { timeoutMs: Number(timeout) * 1000 }),
+        ...(release === undefined ? {} : { release }),
       };
     }
     case "adopt":

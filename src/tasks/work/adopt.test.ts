@@ -5,6 +5,7 @@
 import { expect, test } from "bun:test";
 import { tempDir } from "../../testing/temp";
 import { openWorkDb, workDbFile } from "./db";
+import { classifyLeadPlans } from "./lead-plans";
 import { eventsOf, taskById } from "./queries";
 import { adoptLeadPlans, createTask, reservePlan, takeTasks, updateTask } from "./store";
 import type { Result, Who, WorkClaim, WorkTask } from "./types";
@@ -172,4 +173,40 @@ test("after an adopt, the child's take with the old hand-out id passes, ", () =>
   });
   expect(taken.ok).toBe(true);
   expect(taskById(s.db, alpha.id).createdBy).toBe("child");
+});
+
+const NOBODY = { live: () => false, gone: () => false, ended: () => false };
+
+test("after an adopt, a hand-out nobody took reads with-child, a taken one with-child, a self plan own", () => {
+  const s = setup();
+  const handOut = s.plan("handout", ["src/a/"], DEAD);
+  const taken = s.plan("taken", ["src/b/"], DEAD);
+  const self = s.plan("self", ["src/c/"], DEAD);
+  const handoutId = s.reserve("handout", DEAD, "child").lead?.handoutId ?? "";
+  const takenId = s.reserve("taken", DEAD, "child").lead?.handoutId ?? "";
+  s.reserve("self", DEAD, "self");
+  ok(takeTasks(s.db, "p", taken.id, CHILD, 20, { from: takenId, isLive: () => false }));
+  ok(adoptLeadPlans(s.db, { project: "p", who: ME, isDead: s.deadBy("dead"), now: 30 }));
+  const states = Object.fromEntries(
+    classifyLeadPlans(s.db, "p", ME, NOBODY).map((p) => [p.plan.plan, p.state]),
+  );
+  expect(states).toEqual({ handout: "with-child", taken: "with-child", self: "own" });
+  // The maker of the plans the dead lead made is the adopter now; a child's plan keeps its child.
+  expect(taskById(s.db, handOut.id)).toMatchObject({ createdBy: "me" });
+  expect(taskById(s.db, handOut.id).creator).toMatchObject({ pid: 4303, procStart: "43030" });
+  expect(taskById(s.db, self.id).createdBy).toBe("me");
+  expect(taskById(s.db, taken.id).createdBy).toBe("child");
+  // The hand-out nobody took is still the child's to take, by its id.
+  const take = takeTasks(s.db, "p", handOut.id, CHILD, 40, {
+    from: handoutId,
+    isLive: () => false,
+  });
+  expect(take.ok).toBe(true);
+  // One history row says the lead and the maker both moved.
+  const row = eventsOf(s.db, self).findLast((e) => e.reason === "lead adopted");
+  expect(row?.changes).toMatchObject({
+    lead: ["dead (self)", "me (self)"],
+    createdBy: ["dead", "me"],
+  });
+  expect(row?.changes.creator).toEqual(["process 4101", "process 4303"]);
 });

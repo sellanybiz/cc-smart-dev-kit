@@ -3,7 +3,7 @@
  * (`classifyLeadPlans`); this file adds what only git, gh and hc can say, so it runs from
  * `herdr start --plan` and `herdr plans`, never from a hook or the status line:
  *
- * - whether a closed blocker's pull request merged (`pullRequestMerged`), or, with no pull request,
+ * - whether a closed blocker's pull request merged (`pullRequestState`), or, with no pull request,
  *   whether its branch reached the default branch;
  * - each held plan's branch diff, read before any write lock, for overlaps and drift;
  * - the pane of a child (hc).
@@ -11,6 +11,7 @@
  * Every refusal and every line says what is wrong and how to fix it.
  */
 import { existsSync } from "node:fs";
+import { basename, join } from "node:path";
 import { COMMAND } from "../build-info/names";
 import type { CliPaths } from "../cli/paths";
 import type { Out } from "../cli/ui/out";
@@ -25,17 +26,18 @@ import { classifyLeadPlans, type LeadPlan, type LeadPlanState } from "../tasks/w
 import {
   allTasks,
   filesOverlap,
-  getTask,
   type HeldPlan,
   heldPlansIn,
+  isLead,
   isOpen,
   ownerOf,
+  planByRef,
 } from "../tasks/work/queries";
-import { releasePlan, reservePlan } from "../tasks/work/store";
+import { releasePlan, reservePlan, swapPlanAgent } from "../tasks/work/store";
 import type { ClaimProcess, Who, WorkTask } from "../tasks/work/types";
 import { baseBranch } from "../worktrees/command";
-import { pullRequestMerged } from "../worktrees/scan";
-import { HcError, type HcRunner, hcGet } from "./hc";
+import { type PullRequestState, pullRequestState } from "../worktrees/scan";
+import { HcError, type HcRunner, hcGet, hcList } from "./hc";
 import { HERDR_AGENT_PREFIX, isHerdrAgent, KIT_PLAN, parseLeadId } from "./labels";
 
 /** How often `herdr plans --wait` looks again: a gh call per plan with a child, so not often. */
@@ -46,8 +48,12 @@ export const PLAN_POLL_MS = 15_000;
  * that died between the two.
  */
 export const HANDOUT_GRACE_MS = 120_000;
-/** How long one gh call may take (the same 10 s `pullRequestMerged` allows). */
-const GH_TIMEOUT_MS = 10_000;
+/**
+ * What a start writes into a plan's `agent` while it launches the child (`swapPlanAgent`): the
+ * claim that keeps a second start out of the same worktree. The child's real address replaces it.
+ * Past the grace it reads as a start that died.
+ */
+export const PENDING_AGENT_PREFIX = "pending:";
 
 /** Where a plan child's pane stands: `none` (no child was bound), `live`, `gone`, or `unknown` (another core, say). */
 export type PaneState = "none" | "live" | "gone" | "unknown";
@@ -60,50 +66,9 @@ export interface Pane {
 /** Reads the pane a plan's `agent` names. `slug` guards against a reused address. */
 export type PaneProbe = (agent: string | null, slug: string) => Pane;
 
-/** A pull request, as gh shows it for one branch at one head. */
-export type PrState = "merged" | "closed" | "open" | "none" | "unknown";
+/** A pull request, as gh shows it for one branch at one head (`pullRequestState`). */
+export type PrState = PullRequestState;
 export type PrReader = (repo: string, branch: string, head: string, env: Env) => PrState;
-
-/**
- * The pull request of a branch at its head. `pullRequestMerged` answers the merged case (the
- * safe one for squash merges); it cannot tell a closed pull request from none, so a second read
- * of gh classifies the rest. `unknown` is gh missing or silent: never evidence either way.
- */
-export const ghPrState: PrReader = (repo, branch, head, env) => {
-  if (pullRequestMerged(repo, branch, head, env)) return "merged";
-  try {
-    if (Bun.which("gh", { PATH: env.PATH ?? "" }) === null) return "unknown";
-    const run = Bun.spawnSync(
-      [
-        "gh",
-        "pr",
-        "list",
-        "--head",
-        branch,
-        "--state",
-        "all",
-        "--json",
-        "state,headRefOid",
-        "--limit",
-        "10",
-      ],
-      { cwd: repo, env, stdin: "ignore", stderr: "pipe", stdout: "pipe", timeout: GH_TIMEOUT_MS },
-    );
-    if (run.exitCode !== 0) return "unknown";
-    const parsed: unknown = JSON.parse(run.stdout.toString() || "null");
-    if (!Array.isArray(parsed)) return "unknown";
-    const rows = parsed.filter(
-      (row): row is { state?: unknown; headRefOid?: unknown } =>
-        row !== null && typeof row === "object",
-    );
-    if (rows.some((row) => row.state === "OPEN")) return "open";
-    return rows.some((row) => row.state === "CLOSED" && row.headRefOid === head)
-      ? "closed"
-      : "none";
-  } catch {
-    return "unknown";
-  }
-};
 
 /** What `herdr plans` says of one plan. Store states keep their names; the live gates add the rest. */
 export type PlanState = LeadPlanState | "released" | "stale" | "blocked" | "overlaps";
@@ -132,15 +97,18 @@ export interface PlansWorld {
   /** The main checkout: git runs here, and branches are shared by every worktree. */
   repo: string;
   env: Env;
-  /** The default branch's name, looked up, never assumed. */
+  /** The default branch's name, and where it came from: `default` is a guess (`main`), never proof. */
   base: string;
+  baseFrom: "config" | "origin" | "default";
   process: ClaimProcess;
   pr: PrReader;
   pane: PaneProbe;
+  /** The address of a live terminal labelled `kit.plan=<slug>`, or null: a child that no plan row names. */
+  labelled: (slug: string) => string | null;
   /** `plans.mergeFiles` and `core.ignorecase` (`planFilesCheck`), read before any write lock. */
   check: { ignore: readonly string[]; caseFold: boolean };
-  /** For store writes and the age of a hand-out. */
-  now: number;
+  /** The clock, read fresh each time: a store write is stamped when it happens, not when this opened. */
+  now: () => number;
 }
 
 function git(world: PlansWorld, args: string[]) {
@@ -189,11 +157,63 @@ type Blocker =
   | { clear: false; kind: "waiting" | "blocked"; text: string; fix: string | null };
 const CLEAR: Blocker = { clear: true };
 
+/** Why a branch is not proved on the default branch: still on its way (`waiting`), or needs a person (`blocked`). */
+type Proof =
+  | { proved: true }
+  | { proved: false; kind: "waiting" | "blocked"; text: string; fix: string | null };
+
+/**
+ * The proof of a merge when gh has no pull request to show (`none`) or cannot answer (`unknown`):
+ * the branch holds commits past its recorded start, and its tip is on the default branch. An empty
+ * branch is trivially an ancestor, so it proves nothing, and with no start recorded nothing can
+ * be proved. One home for a blocker (D5) and for a finished plan waiting to be released.
+ */
+function onDefaultBranch(
+  world: PlansWorld,
+  plan: WorkTask,
+  tip: string,
+  gh: "none" | "unknown",
+): Proof {
+  const name = label(plan);
+  const asked = gh === "unknown" ? "gh cannot say whether it merged" : "no pull request was found";
+  if (plan.base === null)
+    return {
+      proved: false,
+      kind: "blocked",
+      text: `${name}: ${asked}, and no start commit is recorded, so a merge cannot be proved`,
+      fix: `log in to gh, or record where it started: task_update #${plan.number} with base`,
+    };
+  const past = git(world, ["rev-list", "--count", `${plan.base}..${tip}`]);
+  if (!past.ok)
+    return {
+      proved: false,
+      kind: "blocked",
+      text: `${name}: git cannot compare its branch with its recorded start`,
+      fix: `check it with task_update #${plan.number} base`,
+    };
+  if (Number(past.out) === 0)
+    return {
+      proved: false,
+      kind: "blocked",
+      text: `${name}: its branch holds no commit past its start`,
+      fix: `an empty branch proves nothing: merge its work first`,
+    };
+  const base = baseRef(world);
+  const onBase = base === null ? null : git(world, ["merge-base", "--is-ancestor", tip, base]);
+  if (onBase?.code === 0) return { proved: true };
+  return {
+    proved: false,
+    kind: "waiting",
+    text: `${name} (${asked}; its branch is not on ${base ?? world.base} yet)`,
+    fix: null,
+  };
+}
+
 /**
  * One blocker, judged beyond the store (D5). A dropped blocker is clear, as `isBlocked` has it;
  * so is a closed blocker that is a task or a phase. A closed plan is clear when its pull request
- * merged at its head, or, with no pull request, when its branch holds commits past its start and
- * its tip is on the default branch. Anything unknown is never clear.
+ * merged at its head, or, with no pull request, when its branch is proved on the default branch
+ * (`onDefaultBranch`). Anything unknown is never clear.
  */
 function judgeBlocker(world: PlansWorld, blocker: WorkTask): Blocker {
   if (blocker.status === "dropped") return CLEAR;
@@ -227,46 +247,35 @@ function judgeBlocker(world: PlansWorld, blocker: WorkTask): Blocker {
     };
   if (pr === "open")
     return { clear: false, kind: "waiting", text: `${name} (its pull request is open)`, fix: null };
-  // No pull request found, or gh cannot say: its branch must have reached the default branch.
-  if (blocker.base === null)
-    return {
-      clear: false,
-      kind: "blocked",
-      text: `blocker ${name}: no pull request was found and no start commit is recorded, so a merge cannot be proved`,
-      fix: `log in to gh, or record where it started: task_update #${blocker.number} with base`,
-    };
-  const past = git(world, ["rev-list", "--count", `${blocker.base}..${tip}`]);
-  if (!past.ok)
-    return {
-      clear: false,
-      kind: "blocked",
-      text: `blocker ${name}: git cannot compare its branch with its recorded start`,
-      fix: `check it with task_update #${blocker.number} base`,
-    };
-  if (Number(past.out) === 0)
-    return {
-      clear: false,
-      kind: "blocked",
-      text: `blocker ${name}: its branch holds no commit past its start`,
-      fix: `an empty branch proves nothing: merge its work, or lift the block with task_update blocked_by_remove`,
-    };
-  const base = baseRef(world);
-  const onBase = base === null ? null : git(world, ["merge-base", "--is-ancestor", tip, base]);
-  if (onBase?.code === 0) return CLEAR;
+  const proof = onDefaultBranch(world, blocker, tip, pr);
+  if (proof.proved) return CLEAR;
   return {
     clear: false,
-    kind: "waiting",
-    text: `${name} (not merged into ${base ?? world.base} yet)`,
-    fix: null,
+    kind: proof.kind,
+    text: proof.kind === "blocked" ? `blocker ${proof.text}` : proof.text,
+    fix: proof.fix,
   };
 }
 
 function paneWords(pane: Pane | null): string {
   if (pane === null || pane.state === "none") return "no child bound";
+  if (pane.state === "live" && pane.address === null) return "a child is starting";
   if (pane.state === "live")
     return `pane ${pane.address} live${pane.status ? `, ${pane.status}` : ""}`;
   if (pane.state === "gone") return `pane ${pane.address ?? ""} gone`.replace("  ", " ");
   return `pane ${pane.address ?? ""} cannot be read from this core`.replace("  ", " ");
+}
+
+/**
+ * The pane of a plan's child. A start that claimed the plan and is still launching
+ * (`PENDING_AGENT_PREFIX`) reads as a live child; past the grace it died, and reads as gone.
+ */
+function paneOf(world: PlansWorld, plan: WorkTask): Pane {
+  if (plan.agent?.startsWith(PENDING_AGENT_PREFIX))
+    return world.now() - plan.updatedAt <= HANDOUT_GRACE_MS
+      ? { state: "live", status: "starting", address: null }
+      : { state: "gone", status: null, address: null };
+  return world.pane(plan.agent, plan.plan ?? plan.subject);
 }
 
 /** The resume command a line suggests: the person fills in the model, effort, mode and brief. */
@@ -304,15 +313,20 @@ function lineOf(
 }
 
 /**
- * What the lead's bookkeeping owes, done first so every reading after it sees the files free: a
- * closed plan whose pull request merged or closed releases its reservation, and so does a
- * hand-out that never started and has nothing to relaunch into. Returns the lines of what it
- * released; a release the store refuses is left for the reading to show.
+ * What the lead's bookkeeping owes, done first so every reading after it sees the files free:
+ * - a closed plan whose pull request merged or closed releases its reservation; so does one with
+ *   no pull request (or none gh can show) whose branch is proved on the default branch
+ *   (`onDefaultBranch`);
+ * - a hand-out that never started and has nothing to relaunch into, when no live terminal carries
+ *   its label.
+ * A release guards the hand-out id it read, so a plan handed out again meanwhile is left alone.
+ * Returns the lines of what it released; a release the store refuses is left for the reading.
  */
 function settle(world: PlansWorld, owns: (task: WorkTask) => boolean): PlanLine[] {
   const released: PlanLine[] = [];
   for (const entry of classifyLeadPlans(world.db, world.project, world.who, world.process)) {
     const plan = entry.plan;
+    if (plan.lead === null) continue;
     const base = baseLine(plan);
     let reason: string | null = null;
     let text = "";
@@ -322,9 +336,19 @@ function settle(world: PlansWorld, owns: (task: WorkTask) => boolean): PlanLine[
       if (pr === "merged" || pr === "closed") {
         reason = `pull request ${pr}`;
         text = `finished: its pull request ${pr}, so its files are free`;
+      } else if (pr === "none" || pr === "unknown") {
+        const tip = plan.branch === null ? null : tipOf(world, plan.branch);
+        if (tip !== null && onDefaultBranch(world, plan, tip, pr).proved) {
+          const onto = baseRef(world) ?? world.base;
+          reason = `its branch is on ${onto}`;
+          text = `finished: its branch is on ${onto}, so its files are free`;
+        }
       }
     } else if (entry.state === "with-child") {
-      if (staleHandout(world, plan, world.pane(plan.agent, base.plan), owns) === "release") {
+      if (
+        staleHandout(world, plan, paneOf(world, plan), owns) === "release" &&
+        world.labelled(base.plan) === null
+      ) {
         reason = "hand-out never started";
         text = "a hand-out that never started: its reservation is released";
       }
@@ -334,8 +358,9 @@ function settle(world: PlansWorld, owns: (task: WorkTask) => boolean): PlanLine[
       project: world.project,
       plan: base.plan,
       who: world.who,
-      now: world.now,
+      now: world.now(),
       reason,
+      handoutId: plan.lead.handoutId,
     });
     if (done.ok) released.push(lineOf(base, "released", text, null, { pr }));
   }
@@ -397,25 +422,33 @@ export function judgePlans(input: PlansWorld, only?: string): Judgment {
               { pr },
             ),
           );
-        else
+        else {
+          const out = `if its work is merged or given up, release its files: ${COMMAND} herdr plans --release ${slug}`;
           lines.push(
             lineOf(
               base,
               "merging",
               pr === null
                 ? "finished, but no branch is recorded: its files stay held"
-                : `finished: its files stay held until its pull request merges or closes (${pr === "open" ? "open" : "none found"})`,
+                : pr === "open"
+                  ? "finished: its files stay held until its pull request merges or closes (open)"
+                  : pr === "unknown"
+                    ? `finished: gh cannot say whether its pull request merged, and its branch is not proved on ${baseRef(world) ?? world.base}: its files stay held`
+                    : `finished: no pull request was found, and its branch is not proved on ${baseRef(world) ?? world.base}: its files stay held`,
               pr === null
-                ? `task_update #${plan.number} with branch, so its pull request can be found`
-                : null,
+                ? `task_update #${plan.number} with branch, so its pull request can be found; or ${out}`
+                : pr === "open"
+                  ? null
+                  : out,
               { pr },
             ),
           );
+        }
         break;
       }
       case "with-child":
       case "child-gone": {
-        const pane = world.pane(plan.agent, slug);
+        const pane = paneOf(world, plan);
         const handout = entry.state === "with-child" ? staleHandout(world, plan, pane, owns) : null;
         if (handout === "relaunch") {
           lines.push(
@@ -430,12 +463,17 @@ export function judgePlans(input: PlansWorld, only?: string): Judgment {
           break;
         }
         if (handout === "release") {
+          const stray = world.labelled(slug);
           lines.push(
             lineOf(
               base,
               "stale",
-              "a hand-out that never started, but the store did not release it",
-              `run ${COMMAND} herdr plans again`,
+              stray === null
+                ? "a hand-out that never started, but the store did not release it"
+                : `no pane is bound, but terminal ${stray} carries its label, so it is not released`,
+              stray === null
+                ? `run ${COMMAND} herdr plans again`
+                : `if ${stray} is its child, leave it; if not: ${COMMAND} herdr stop ${stray}`,
               { pane },
             ),
           );
@@ -539,7 +577,7 @@ function staleHandout(
 ): Handout | null {
   if (plan.lead === null || plan.lead.holder !== "child" || !owns(plan)) return null;
   const stale =
-    plan.agent === null ? world.now - plan.updatedAt > HANDOUT_GRACE_MS : pane.state === "gone";
+    plan.agent === null ? world.now() - plan.updatedAt > HANDOUT_GRACE_MS : pane.state === "gone";
   if (!stale) return null;
   return plan.worktree === null ? "release" : "relaunch";
 }
@@ -606,13 +644,6 @@ function summary(lines: readonly PlanLine[]): string {
   return shown.length ? shown.join(" · ") : "nothing to hand out";
 }
 
-/** The plan a slug (or a task reference) names, as the take names it: the slug first, then `#n`. */
-export function findPlan(db: WorkDb, project: string, ref: string): WorkTask | null {
-  const all = allTasks(db, project);
-  const row = all.find((t) => t.kind === "plan" && t.plan === ref) ?? getTask(db, project, ref);
-  return row === null ? null : row;
-}
-
 /** The outcome of getting a plan ready for a child to start on. */
 export type PlanStart =
   | { ok: false; why: string; fix?: string }
@@ -627,6 +658,12 @@ export type PlanStart =
       resume: boolean;
       /** The worktree and branch a child already ran in; null for a first start. */
       recorded: { worktree: string; branch: string } | null;
+      /**
+       * A resume or a relaunch claims the plan's agent before it launches (`swapPlanAgent`): the
+       * marker it wrote, and the agent it replaced, which a failed launch puts back. Null for a
+       * first start, where the reservation is the claim.
+       */
+      claim: { marker: string; previous: string | null } | null;
     };
 
 const refuse = (why: string, fix?: string): PlanStart =>
@@ -644,7 +681,13 @@ const refuse = (why: string, fix?: string): PlanStart =>
  */
 export function prepareStart(world: PlansWorld, ref: string): PlanStart {
   if (!world.who.sessionId) return refuse("A plan hand-out needs a resolvable calling session.");
-  const plan = findPlan(world.db, world.project, ref);
+  // `main` is a guess when nothing says otherwise: a child built and reset from the wrong branch.
+  if (world.baseFrom === "default")
+    return refuse(
+      "The default branch cannot be found: origin/HEAD is not set and no worktrees.base is configured, so a child would reset to a guess.",
+      "run `git remote set-head origin --auto`, or set worktrees.base in .claude/cc-smart-dev-kit.json",
+    );
+  const plan = planByRef(world.db, world.project, ref);
   if (plan === null) return refuse(`Plan "${ref}" was not found in this project.`);
   if (plan.kind !== "plan")
     return refuse(`#${plan.number} is a ${plan.kind}, not a plan.`, "name the plan's slug");
@@ -675,7 +718,7 @@ export function prepareStart(world: PlansWorld, ref: string): PlanStart {
       `${COMMAND} herdr plans releases it`,
     );
   if (stored.state === "with-child" || stored.state === "child-gone") {
-    const pane = world.pane(plan.agent, slug);
+    const pane = paneOf(world, plan);
     const handout = stored.state === "with-child" ? staleHandout(world, plan, pane, owns) : null;
     const gone = pane.state === "gone" || pane.state === "none";
     if (stored.state === "child-gone" && !gone)
@@ -699,16 +742,57 @@ export function prepareStart(world: PlansWorld, ref: string): PlanStart {
         `Plan "${slug}": no worktree is recorded, so the first launch's binding failed.`,
         `find its worktree (git worktree list), then task_update #${plan.number} with worktree and branch`,
       );
+    // The recorded worktree is a task row, which any session may write: only the folder a child
+    // starts in (`<repo>/.claude/worktrees/<name>`) is reused, never a path someone put there.
+    if (recorded !== null) {
+      const home = join(world.repo, ".claude", "worktrees", basename(recorded.worktree));
+      if (recorded.worktree !== home)
+        return refuse(
+          `Plan "${slug}": its recorded worktree ${recorded.worktree} is not a child's folder (${home}).`,
+          `correct it with task_update #${plan.number} worktree, or release the plan`,
+        );
+    }
+    // A live terminal labelled for this plan is a child no row names: never start a second.
+    const stray = world.labelled(slug);
+    if (stray !== null)
+      return refuse(
+        `Plan "${slug}": terminal ${stray} carries its label and is live.`,
+        `if it is the plan's child, wait for it (${COMMAND} herdr wait); if not: ${COMMAND} herdr stop ${stray}`,
+      );
+    // Claim the launch: if the plan moved since it was read (another start), nothing launches.
+    const marker = `${PENDING_AGENT_PREFIX}${world.now()}`;
+    const claimed = swapPlanAgent(world.db, {
+      project: world.project,
+      plan: slug,
+      who: world.who,
+      from: plan.agent,
+      fromUpdatedAt: plan.updatedAt,
+      to: marker,
+      now: world.now(),
+      reason: "child launching",
+    });
+    if (!claimed.ok)
+      return refuse(
+        claimed.why,
+        `run ${COMMAND} herdr plans, and start again only if the plan still has no child`,
+      );
     return {
       ok: true,
-      plan,
+      plan: claimed.value,
       handoutId: plan.lead.handoutId,
       reserved: false,
       resume: stored.state === "child-gone",
       recorded,
+      claim: { marker, previous: plan.agent },
     };
   }
   // A plan nothing holds: the live gates, the diffs, then the one transaction.
+  const strayChild = world.labelled(slug);
+  if (strayChild !== null)
+    return refuse(
+      `Plan "${slug}": terminal ${strayChild} carries its label and is live.`,
+      `if it is a child of this plan, leave it; if not: ${COMMAND} herdr stop ${strayChild}`,
+    );
   const judged = judgePlans(world, slug);
   const line = judged.lines.find((one) => one.number === plan.number);
   if (line === undefined || line.state !== "ready")
@@ -724,7 +808,7 @@ export function prepareStart(world: PlansWorld, ref: string): PlanStart {
     ignore: world.check.ignore,
     caseFold: world.check.caseFold,
     extraFiles: judged.extraFiles,
-    now: world.now,
+    now: world.now(),
   });
   if (!reserved.ok) return refuse(reserved.why);
   const lead = reserved.value.lead;
@@ -737,7 +821,57 @@ export function prepareStart(world: PlansWorld, ref: string): PlanStart {
     reserved: true,
     resume: false,
     recorded: null,
+    claim: null,
   };
+}
+
+/**
+ * `herdr plans --release <plan>`: the person's way out for a finished plan whose files stay held
+ * because nothing proves its work merged (no pull request, gh silent, an unproved branch). It
+ * releases a closed plan this session leads and nothing else: an open plan is held by a child or
+ * the lead, and only finishing or dropping it lets go.
+ */
+export function releaseByHand(
+  world: PlansWorld,
+  ref: string,
+): { ok: true; text: string } | { ok: false; why: string; fix: string } {
+  const plan = planByRef(world.db, world.project, ref);
+  if (plan === null || plan.kind !== "plan")
+    return {
+      ok: false,
+      why: `Plan "${ref}" was not found in this project.`,
+      fix: `name a plan from ${COMMAND} herdr plans`,
+    };
+  const slug = plan.plan ?? plan.subject;
+  if (plan.lead === null)
+    return {
+      ok: false,
+      why: `Plan "${slug}" is not reserved: it holds no files.`,
+      fix: `${COMMAND} herdr plans lists the plans this session leads`,
+    };
+  if (!isLead(plan.lead, world.who))
+    return {
+      ok: false,
+      why: `Plan "${slug}" is reserved for another session.`,
+      fix: "only its lead releases it",
+    };
+  if (isOpen(plan))
+    return {
+      ok: false,
+      why: `Plan "${slug}" is still open: a child or this session is building it, and its files stay held.`,
+      fix: "finish it (task_done) or drop it, or stop its child; then release it",
+    };
+  const released = releasePlan(world.db, {
+    project: world.project,
+    plan: slug,
+    who: world.who,
+    now: world.now(),
+    reason: "released by hand",
+    handoutId: plan.lead.handoutId,
+  });
+  return released.ok
+    ? { ok: true, text: `Released plan #${plan.number} ${slug}: its files are free.` }
+    : { ok: false, why: released.why, fix: `run ${COMMAND} herdr plans, then try again` };
 }
 
 /** The mark a line prints with: a plan the person or the lead must act on is `warn` or `fail`. */
@@ -820,9 +954,27 @@ export function paneProbe(r: HcRunner, core: string): PaneProbe {
   };
 }
 
+/** The live terminal labelled `kit.plan=<slug>`, read through hc (`ls` by label, then each one's own label). */
+export function labelledProbe(r: HcRunner): (slug: string) => string | null {
+  return (slug) => {
+    for (const listed of hcList(r, { labels: { [KIT_PLAN]: slug } }).terminals) {
+      try {
+        const terminal = hcGet(r, listed.address);
+        if (terminal.state === "live" && terminal.labels[KIT_PLAN] === slug)
+          return terminal.address;
+      } catch (error) {
+        if (!(error instanceof HcError) || !["finished", "not_found"].includes(error.kind))
+          throw error;
+      }
+    }
+    return null;
+  };
+}
+
 export type OpenedWorld =
   | { ok: true; world: PlansWorld; close(): void }
-  | { ok: false; why: string };
+  /** `empty`: nothing is wrong, there is just no store yet, so there are no plans. */
+  | { ok: false; why: string; fix: string; empty?: true };
 
 /**
  * The world a plan command reads, for the project of `cwd`: the store (opened to write, since a
@@ -836,17 +988,30 @@ export function openPlansWorld(
   cwd: string = ctx.cwd,
 ): OpenedWorld {
   const project = taskContext(cwd, ctx.env);
-  if (!project.ok) return { ok: false, why: project.why };
+  if (!project.ok) return { ok: false, why: project.why, fix: "Run it in the project's folder." };
   if (project.repo === null)
-    return { ok: false, why: "Plans live in a git repository: this folder is in none." };
+    return {
+      ok: false,
+      why: "Plans live in a git repository: this folder is in none.",
+      fix: "Run it in the project's git checkout.",
+    };
   const who = ctx.caller ? ctx.caller() : callerOf({ env: ctx.env });
   if (who === null || !who.sessionId)
-    return { ok: false, why: "Plans belong to a session: this one cannot be resolved." };
+    return {
+      ok: false,
+      why: "Plans belong to a session: this one cannot be resolved.",
+      fix: "Run it from a Claude Code session, in a Herdr terminal.",
+    };
   if (!existsSync(workDbFile(ctx.paths)))
-    return { ok: false, why: "No task store exists yet: this project has no plans." };
+    return {
+      ok: false,
+      empty: true,
+      why: "No task store exists yet: this project has no plans.",
+      fix: "Lay a plan first (the plan-task skill).",
+    };
   const db = openWorkDb(workDbFile(ctx.paths), { mode: "write" });
   try {
-    const base = baseBranch(locateCheckout(cwd, { env: ctx.env }), ctx.env, project.repo).base;
+    const chosen = baseBranch(locateCheckout(cwd, { env: ctx.env }), ctx.env, project.repo);
     const check = ctx.filesCheck ? ctx.filesCheck(cwd) : planFilesCheck(cwd, ctx.env);
     return {
       ok: true,
@@ -857,12 +1022,14 @@ export function openPlansWorld(
         who,
         repo: project.repo,
         env: ctx.env,
-        base,
+        base: chosen.base,
+        baseFrom: chosen.from,
         process: ctx.process ?? CLAIM_PROCESS,
-        pr: ctx.pr ?? ghPrState,
+        pr: ctx.pr ?? pullRequestState,
         pane: paneProbe(r, core),
+        labelled: labelledProbe(r),
         check: { ignore: check.ignore, caseFold: check.caseFold },
-        now: ctx.now(),
+        now: ctx.now,
       },
     };
   } catch (error) {
@@ -885,7 +1052,7 @@ function show(out: Out, lines: readonly PlanLine[]): void {
  * ready or nothing could still change, and at the timeout with the command to continue.
  */
 export async function runPlans(
-  args: { json: boolean; wait: boolean; timeoutMs?: number },
+  args: { json: boolean; wait: boolean; timeoutMs?: number; release?: string },
   ctx: PlansEnv,
   r: HcRunner,
   core: string,
@@ -893,11 +1060,23 @@ export async function runPlans(
 ): Promise<number> {
   const opened = openPlansWorld(ctx, r, core);
   if (!opened.ok) {
-    ctx.out.line("fail", opened.why);
+    // No store yet is no failure: there are simply no plans.
+    if (opened.empty) {
+      if (args.json) ctx.out.json({ plans: [], changed: [] });
+      else ctx.out.say(opened.why);
+      return 0;
+    }
+    ctx.out.line("fail", opened.why, { fix: opened.fix });
     return 1;
   }
   try {
-    const judge = () => judgePlans({ ...opened.world, now: ctx.now() });
+    if (args.release !== undefined) {
+      const done = releaseByHand(opened.world, args.release);
+      if (!done.ok) ctx.out.line("fail", done.why, { fix: done.fix });
+      else ctx.out.line("removed", done.text);
+      return done.ok ? 0 : 1;
+    }
+    const judge = () => judgePlans(opened.world);
     const first = judge().lines;
     const finish = (lines: readonly PlanLine[], changed: readonly PlanLine[]) => {
       if (args.json) ctx.out.json({ plans: lines, changed });

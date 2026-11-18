@@ -6,6 +6,7 @@ import {
   MODE_ORDER,
   modeWiderThan,
   normalizeMode,
+  PLAN_EXCLUSION,
   parseHerdrArgs,
 } from "./words";
 
@@ -225,4 +226,40 @@ test("the usage names --plan and plans", () => {
   if (!("error" in parsed)) throw new Error("expected an error");
   expect(parsed.error).toContain("herdr plans [--json] [--wait] [--timeout <seconds>]");
   expect(HERDR_USAGE).toContain("[--task <#n> | --plan <slug>]");
+});
+
+test("plans --release names one plan and stands alone", () => {
+  expect(parseHerdrArgs(["plans", "--release", "alpha"])).toEqual({
+    verb: "plans",
+    json: false,
+    wait: false,
+    release: "alpha",
+  });
+  for (const bad of [
+    ["--release"],
+    ["--release", " "],
+    ["--release", "alpha", "--wait"],
+    ["--release", "alpha", "--json"],
+  ])
+    expect(parseHerdrArgs(["plans", ...bad])).toHaveProperty("error");
+});
+
+test("the --plan exclusion has one text, in the parser and in the early refusal", () => {
+  const parsed = parseHerdrArgs([
+    "start",
+    "--model",
+    "sonnet",
+    "--effort",
+    "high",
+    "--mode",
+    "manual",
+    "--plan",
+    "alpha",
+    "--task",
+    "#7",
+    "--",
+    "go",
+  ]);
+  if (!("error" in parsed)) throw new Error("expected an error");
+  expect(parsed.error).toStartWith(PLAN_EXCLUSION);
 });

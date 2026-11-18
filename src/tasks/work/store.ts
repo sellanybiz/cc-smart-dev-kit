@@ -963,10 +963,21 @@ export function reservePlan(db: WorkDb, input: ReservePlan): Result<WorkTask> {
  * Used when a launch fails, when the plan's pull request has merged or closed (`herdr plans`),
  * and by a drop (which does it by itself). A plan that is not reserved is left as it is. Anyone
  * may release: the reservation is the lead's bookkeeping, not a lock a session can be locked out by.
+ *
+ * `handoutId` guards a release decided from an earlier reading: it only releases the reservation
+ * that reading saw. If the plan was released and handed out again since (a new hand-out id), the
+ * new child's reservation is left alone and the call is refused.
  */
 export function releasePlan(
   db: WorkDb,
-  input: { project: string; plan: string; who: Who; now: number; reason?: string },
+  input: {
+    project: string;
+    plan: string;
+    who: Who;
+    now: number;
+    reason?: string;
+    handoutId?: string;
+  },
 ): Result<WorkTask> {
   return writeWork(db, () => {
     const plan = allTasks(db, input.project).find(
@@ -974,6 +985,10 @@ export function releasePlan(
     );
     if (plan === undefined) throw new Error(`Plan "${input.plan}" not found`);
     if (plan.lead === null) return plan;
+    if (input.handoutId !== undefined && plan.lead.handoutId !== input.handoutId)
+      throw new Error(
+        `${label(plan)} was handed out again since it was read: its new reservation is left alone`,
+      );
     const before = shape(db, plan);
     clearLead(db, plan.id);
     db.sqlite.query("UPDATE tasks SET updated_at=? WHERE id=?").run(input.now, plan.id);
@@ -984,11 +999,54 @@ export function releasePlan(
 }
 
 /**
+ * Sets a plan's `agent` only if it is still what the caller judged: the compare-and-set that
+ * claims a resume or a relaunch, so two starts that judged the same plan cannot both launch into
+ * its worktree. `from` is the agent that was read (null for none) and `fromUpdatedAt` the plan's
+ * `updated_at` at that reading; the write refuses when either has moved. Nothing but the agent
+ * and `updated_at` changes. `fromUpdatedAt` left out compares the agent alone (giving a claim back).
+ */
+export function swapPlanAgent(
+  db: WorkDb,
+  input: {
+    project: string;
+    plan: string;
+    who: Who;
+    from: string | null;
+    fromUpdatedAt?: number;
+    to: string | null;
+    now: number;
+    reason: string;
+  },
+): Result<WorkTask> {
+  return writeWork(db, () => {
+    const plan = allTasks(db, input.project).find(
+      (t) => t.kind === "plan" && t.plan === input.plan,
+    );
+    if (plan === undefined) throw new Error(`Plan "${input.plan}" not found`);
+    if (
+      plan.agent !== input.from ||
+      (input.fromUpdatedAt !== undefined && plan.updatedAt !== input.fromUpdatedAt)
+    )
+      throw new Error(
+        `${label(plan)} changed since it was read (another start got there first): nothing was launched`,
+      );
+    const before = shape(db, plan);
+    db.sqlite
+      .query("UPDATE tasks SET agent=?,updated_at=? WHERE id=?")
+      .run(input.to, input.now, plan.id);
+    const changed = taskById(db, plan.id);
+    recordChange(db, before, changed, input.who, input.now, input.reason);
+    return changed;
+  });
+}
+
+/**
  * Moves the lead identity of every plan whose lead is proved dead to the caller (`herdr adopt`):
  * the plans a lead left reserved, open or closed (a closed plan still reserved is `merging`: the
- * new lead releases it after its pull request settles). One transaction. Only `lead_session`,
- * `lead_pid` and `lead_start` change: the holder kind and the hand-out id stay, so a child that
- * holds the old hand-out id still takes the plan. `isDead` judges the lead's process in the shape
+ * new lead releases it after its pull request settles). One transaction. `lead_session`,
+ * `lead_pid` and `lead_start` change, and so does the plan's maker (`created_by`, `created_pid`,
+ * `created_start`) when the dead lead was the maker; a plan a child took keeps the child. The
+ * holder kind and the hand-out id stay, so a child that holds the old hand-out id still takes it. `isDead` judges the lead's process in the shape
  * of a claim, and the caller passes `sessionEnded` (a reopened session keeps its id in a new
  * process, so a dead pid alone is not proof). A lead with no process, a live one, one that cannot
  * be proved dead, and the caller's own plans are never moved. Returns the plans it moved.
@@ -1006,11 +1064,42 @@ export function adoptLeadPlans(
       const process = leadProcess(plan.lead);
       if (process === null || !input.isDead(process)) continue;
       const before = shape(db, plan);
+      const procStart = who.pid === null ? null : who.procStart;
       db.sqlite
         .query("UPDATE tasks SET lead_session=?,lead_pid=?,lead_start=?,updated_at=? WHERE id=?")
-        .run(who.sessionId, who.pid, who.pid === null ? null : who.procStart, input.now, plan.id);
+        .run(who.sessionId, who.pid, procStart, input.now, plan.id);
+      // A plan the dead lead made and nobody took is the adopter's to hand out or build now: its
+      // maker moves too, or it would read as a child's plan whose child is gone. A plan a child
+      // took has the child as its maker, and the child keeps it.
+      const lead: Who = { ...plan.lead };
+      const leadMadeIt =
+        (lead.sessionId !== null && plan.createdBy === lead.sessionId) ||
+        claimHeldBy(plan.creator, lead);
+      if (leadMadeIt)
+        db.sqlite
+          .query("UPDATE tasks SET created_by=?,created_pid=?,created_start=? WHERE id=?")
+          .run(who.sessionId, who.pid, procStart, plan.id);
       const adopted = taskById(db, plan.id);
-      recordChange(db, before, adopted, who, input.now, "lead adopted");
+      recordEvent(
+        db,
+        adopted,
+        "changed",
+        {
+          ...diff(before, shape(db, adopted)),
+          ...(leadMadeIt
+            ? {
+                createdBy: [plan.createdBy, who.sessionId],
+                creator: [
+                  plan.creator === null ? null : `process ${plan.creator.pid}`,
+                  who.pid === null ? null : `process ${who.pid}`,
+                ],
+              }
+            : {}),
+        },
+        who,
+        input.now,
+        "lead adopted",
+      );
       moved.push(adopted);
     }
     return moved;

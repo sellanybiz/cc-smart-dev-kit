@@ -16,12 +16,21 @@ import { briefPath } from "./brief";
 import { type HerdrContext, LOGIN_SHELL_SCRIPT, loginShellArgv, runHerdr } from "./command";
 import type { HcRunner } from "./hc";
 import { PLAN_POLL_MS, type PrState } from "./plans";
+import { PLAN_EXCLUSION } from "./words";
 
 function world() {
   const dir = tempDir(),
     lines: string[] = [],
     calls: { args: string[]; stdin?: string }[] = [];
   const rows: Record<string, unknown> = {
+    // The caller's own terminal: a plan child's refusals read its labels (D1).
+    t1: {
+      address: "t1",
+      name: "lead",
+      state: "live",
+      labels: {},
+      status: { app: "claude-code", state: "idle" },
+    },
     t2: {
       address: "t2",
       name: "kit-one",
@@ -958,6 +967,12 @@ function planWorld() {
   const w = world();
   git(w.ctx.cwd, "init", "-q", "-b", "main");
   git(w.ctx.cwd, "commit", "-q", "--allow-empty", "-m", "initial");
+  // The default branch is looked up, never guessed: an origin whose HEAD is main says it.
+  const origin = join(tempDir(), "origin.git");
+  git(w.ctx.cwd, "init", "-q", "--bare", "-b", "main", origin);
+  git(w.ctx.cwd, "remote", "add", "origin", origin);
+  git(w.ctx.cwd, "push", "-q", "origin", "main");
+  git(w.ctx.cwd, "remote", "set-head", "origin", "main");
   const context = taskContext(w.ctx.cwd, w.ctx.env);
   if (!context.ok) throw new Error(context.why);
   const project = context.project;
@@ -967,13 +982,6 @@ function planWorld() {
   w.ctx.process = UNPROVEN;
   w.ctx.filesCheck = () => ({ ignore: [], caseFold: false });
   w.ctx.pr = (_repo, branch) => prs[branch] ?? "none";
-  w.rows.t1 = {
-    address: "t1",
-    name: "lead",
-    state: "live",
-    labels: {},
-    status: { app: "claude-code", state: "idle" },
-  };
   let number = 0;
   const plan = (slug: string, files: string[] | undefined, over: { blockedBy?: string[] } = {}) => {
     const made = createTask(
@@ -1012,15 +1020,9 @@ test("--plan refuses what it cannot hand out, each with its words, and launches 
   p.plan("blocked", ["src/b/"], { blockedBy: [first.id] });
   p.plan("nofiles", undefined);
   const refusals: [string[], string][] = [
-    [
-      ["--plan", "alpha", "--task", "#1"],
-      "--plan cannot be combined with --task or --independent.",
-    ],
-    [
-      ["--plan", "alpha", "--independent"],
-      "--plan cannot be combined with --task or --independent.",
-    ],
-    [["--plan", "alpha", "--on", "remote", "--asked"], "A plan cannot cross projects or machines."],
+    [["--plan", "alpha", "--task", "#1"], PLAN_EXCLUSION],
+    [["--plan", "alpha", "--independent"], PLAN_EXCLUSION],
+    [["--plan", "alpha", "--on", "remote", "--asked"], PLAN_EXCLUSION],
     [["--plan", "missing"], 'Plan "missing" was not found in this project.'],
     [["--plan", "blocked"], 'Plan "blocked" is not ready: waiting on #2 first'],
     [["--plan", "nofiles"], "has no file list"],
@@ -1291,8 +1293,11 @@ test("herdr plans in a folder with no session or no store says why", async () =>
   const bare = world();
   git(bare.ctx.cwd, "init", "-q", "-b", "main");
   bare.ctx.caller = () => LEAD;
-  expect(await runHerdr(["plans"], bare.ctx)).toBe(1);
+  // No store is no failure: there are simply no plans.
+  expect(await runHerdr(["plans"], bare.ctx)).toBe(0);
   expect(bare.lines.join("\n")).toContain("No task store exists yet");
+  // A failure carries its fix.
+  expect(p.lines.join("\n")).toContain("Fix: Run it from a Claude Code session");
 });
 
 test("plans --wait ends with what changed when a blocker's pull request merges", async () => {
@@ -1431,4 +1436,139 @@ test("adopt without a store or a session still adopts children, and says why pla
   p.ctx.caller = () => null;
   expect(await runHerdr(["adopt"], p.ctx)).toBe(0);
   expect(p.lines.join("\n")).toContain("Plans were not adopted: this session cannot be resolved.");
+});
+
+// ---- fix round 1: the review's findings, each from its trigger ----
+
+/** A plan handed out, taken by its child, whose child and pane are gone: ready for a resume. */
+async function deadChild(p: ReturnType<typeof planWorld>) {
+  const alpha = p.plan("alpha", ["src/a/"]);
+  expect(await runHerdr([...planLaunch, "--plan", "alpha", "--", "work"], p.ctx)).toBe(0);
+  const handout = p.row("alpha").lead?.handoutId ?? "";
+  takeTasks(p.db, p.project, alpha.id, CHILD, 30, { from: handout, isLive: () => false });
+  mkdirSync(join(p.ctx.cwd, ".claude", "worktrees", "kit-alpha"), { recursive: true });
+  delete p.rows.t2;
+  p.ctx.process = ENDED;
+  p.calls.length = 0;
+  p.lines.length = 0;
+  return { alpha, handout };
+}
+
+test("two resumes at once: the first claims the plan, the second is refused, one child launches", async () => {
+  const p = planWorld();
+  await deadChild(p);
+  p.rows.t3 = {
+    address: "t3",
+    name: "kit-alpha",
+    state: "live",
+    labels: { "kit.lead": "core/t1", "kit.plan": "alpha" },
+    status: { app: "claude-code", state: "idle" },
+  };
+  p.setResponse((args) =>
+    args[0] === "run"
+      ? { address: "t3", state: "live", first_message: "sent", labels: {} }
+      : undefined,
+  );
+  const codes = await Promise.all([
+    runHerdr([...planLaunch, "--plan", "alpha", "--", "work"], p.ctx),
+    runHerdr([...planLaunch, "--plan", "alpha", "--", "work"], p.ctx),
+  ]);
+  expect([...codes].sort()).toEqual([0, 1]);
+  expect(p.calls.filter((c) => c.args[0] === "run")).toHaveLength(1);
+  expect(p.lines.join("\n")).toContain("its child's session ended, but a child is starting");
+  expect(p.row("alpha").agent).toBe("herdr:core/t3");
+});
+
+test("a resume whose launch failed gives its claim back: the plan's agent is what it was", async () => {
+  const p = planWorld();
+  await deadChild(p);
+  const before = p.row("alpha").agent;
+  expect(before).toBe("herdr:core/t2");
+  p.rows.t2 = { address: "t2", state: "finished", labels: {} };
+  p.setScreen("Error: could not start.\n");
+  expect(await runHerdr([...planLaunch, "--plan", "alpha", "--", "work"], p.ctx)).toBe(1);
+  expect(p.row("alpha").agent).toBe(before);
+  expect(p.row("alpha").lead).not.toBeNull();
+});
+
+test("a launch that failed after the child started keeps the reservation: only an exit proved by hc gives it back", async () => {
+  const p = planWorld();
+  p.plan("alpha", ["src/a/"]);
+  // The child is up but has not reported, so the launch polls to its deadline, and hc cannot read its screen.
+  p.rows.t2 = { address: "t2", name: "kit-alpha", state: "live", labels: {}, status: null };
+  p.setFailure((args) => (args[0] === "read" ? "unavailable" : null));
+  expect(await runHerdr([...planLaunch, "--plan", "alpha", "--", "work"], p.ctx)).toBe(1);
+  expect(p.calls.some((c) => c.args[0] === "run")).toBe(true);
+  expect(p.row("alpha").lead).toMatchObject({ holder: "child" });
+});
+
+test("a start is refused when the default branch can only be guessed, with the fix", async () => {
+  const p = planWorld();
+  p.plan("alpha", ["src/a/"]);
+  git(p.ctx.cwd, "remote", "remove", "origin");
+  expect(await runHerdr([...planLaunch, "--plan", "alpha", "--", "work"], p.ctx)).toBe(1);
+  const text = p.lines.join("\n");
+  expect(text).toContain("The default branch cannot be found");
+  expect(text).toContain("Fix: run `git remote set-head origin --auto`");
+  p.noRun();
+  expect(p.row("alpha").lead).toBeNull();
+});
+
+test("a start in a project with no store says so, with its fix", async () => {
+  const w = world();
+  git(w.ctx.cwd, "init", "-q", "-b", "main");
+  w.ctx.caller = () => LEAD;
+  expect(await runHerdr([...planLaunch, "--plan", "alpha", "--", "work"], w.ctx)).toBe(1);
+  expect(w.lines.join("\n")).toContain("No task store exists yet: this project has no plans.");
+  expect(w.lines.join("\n")).toContain("Fix: Lay a plan first");
+  expect(w.calls.some((c) => c.args[0] === "run")).toBe(false);
+});
+
+test("a plan child cannot adopt: D1 holds for every verb that coordinates", async () => {
+  const p = planWorld();
+  p.rows.t1 = { ...(p.rows.t1 as object), labels: { "kit.lead": "core/t0", "kit.plan": "other" } };
+  expect(await runHerdr(["adopt"], p.ctx)).toBe(1);
+  expect(p.lines.join("\n")).toContain("A plan child never coordinates");
+  expect(p.lines.join("\n")).toContain("cannot adopt another lead's plans");
+  expect(p.calls.some((c) => c.args[0] === "label")).toBe(false);
+});
+
+test("plans --release lets the person free a closed plan the proofs could not, and refuses an open one", async () => {
+  const p = planWorld();
+  p.plan("alpha", ["src/a/"]);
+  p.plan("beta", ["src/b/"]);
+  expect(await runHerdr([...planLaunch, "--plan", "alpha", "--", "work"], p.ctx)).toBe(0);
+  expect(
+    await runHerdr([...planLaunch, "--plan", "beta", "--name", "two", "--", "work"], p.ctx),
+  ).toBe(0);
+  p.rows.t2 = {
+    address: "t2",
+    name: "kit-alpha",
+    state: "live",
+    labels: { "kit.lead": "core/t1", "kit.plan": "alpha" },
+    status: { app: "claude-code", state: "working" },
+  };
+  // Open: refused with the way out.
+  p.lines.length = 0;
+  expect(await runHerdr(["plans", "--release", "alpha"], p.ctx)).toBe(1);
+  expect(p.lines.join("\n")).toContain('Plan "alpha" is still open');
+  expect(p.lines.join("\n")).toContain("Fix: finish it (task_done)");
+  expect(p.row("alpha").lead).not.toBeNull();
+  // Finished, with no pull request and no proof: it stays held, and the line names the command.
+  p.change("alpha", { status: "done" });
+  p.lines.length = 0;
+  expect(await runHerdr(["plans"], p.ctx)).toBe(0);
+  expect(p.lines.join("\n")).toContain("herdr plans --release alpha");
+  expect(p.row("alpha").lead).not.toBeNull();
+  p.lines.length = 0;
+  expect(await runHerdr(["plans", "--release", "alpha"], p.ctx)).toBe(0);
+  expect(p.lines.join("\n")).toContain("Released plan #1 alpha: its files are free.");
+  expect(p.row("alpha").lead).toBeNull();
+  expect(p.row("beta").lead).not.toBeNull();
+});
+
+test("herdr plans with nothing led says so and exits 0", async () => {
+  const p = planWorld();
+  expect(await runHerdr(["plans"], p.ctx)).toBe(0);
+  expect(p.lines.join("\n")).toContain("No plans led by this session.");
 });

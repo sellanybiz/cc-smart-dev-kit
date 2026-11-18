@@ -3,11 +3,11 @@
  * `prepareStart` decides a start. Real git in a temp clone; gh and hc are fakes.
  */
 import { expect, test } from "bun:test";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { openWorkDb, workDbFile } from "../tasks/work/db";
-import { allTasks, taskById } from "../tasks/work/queries";
-import { createTask, reservePlan, takeTasks, updateTask } from "../tasks/work/store";
+import { allTasks, eventsOf, taskById } from "../tasks/work/queries";
+import { createTask, releasePlan, reservePlan, takeTasks, updateTask } from "../tasks/work/store";
 import type { ClaimProcess, Result, Who, WorkTask } from "../tasks/work/types";
 import { makeClone } from "../testing/hooks";
 import { cleanGitEnv, git, tempDir } from "../testing/temp";
@@ -22,6 +22,7 @@ import {
   type PlansWorld,
   type PrState,
   prepareStart,
+  releaseByHand,
 } from "./plans";
 
 const LEAD: Who = { sessionId: "lead", pid: 4101, procStart: "41010" };
@@ -45,6 +46,8 @@ function build() {
   const db = openWorkDb(workDbFile(paths), { mode: "write" });
   const prs: Record<string, PrState> = {};
   const panes: Record<string, Pane> = {};
+  /** A live terminal labelled `kit.plan=<slug>`, by slug: hc's answer to "who carries this label". */
+  const strays: Record<string, string> = {};
   const base: PlansWorld = {
     db,
     project: "p",
@@ -52,11 +55,13 @@ function build() {
     repo,
     env: cleanGitEnv(),
     base: "main",
+    baseFrom: "origin",
     process: NOBODY,
     pr: (_repo, branch) => prs[branch] ?? "none",
     pane: (agent) => (agent === null ? NONE : (panes[agent] ?? GONE)),
+    labelled: (slug) => strays[slug] ?? null,
     check: { ignore: [], caseFold: false },
-    now: 1000,
+    now: () => 1000,
   };
   let number = 0;
   const plan = (
@@ -116,6 +121,7 @@ function build() {
     db,
     prs,
     panes,
+    strays,
     base,
     plan,
     change,
@@ -213,7 +219,7 @@ test("with no pull request found, ancestry on the default branch decides, and an
   w.change(first, { base: start });
   const waiting = w.line("second");
   expect(waiting.state).toBe("waiting");
-  expect(waiting.text).toContain("not merged into origin/main yet");
+  expect(waiting.text).toContain("its branch is not on origin/main yet");
   // gh cannot say (unknown) gives the same answer as none.
   w.prs["feature-one"] = "unknown";
   expect(w.line("second").state).toBe("waiting");
@@ -350,9 +356,9 @@ test("a hand-out whose child never started: relaunch with a worktree, release wi
   w.reserve("first");
   w.reserve("second");
   // No agent bound, inside the grace: a start is still launching.
-  expect(w.line("first", { now: 10 + HANDOUT_GRACE_MS - 1 }).state).toBe("with-child");
+  expect(w.line("first", { now: () => 10 + HANDOUT_GRACE_MS - 1 }).state).toBe("with-child");
   // Past the grace with no agent: the start died between the reserve and the bind.
-  const late = judgePlans({ ...w.base, now: 10 + HANDOUT_GRACE_MS + 1 }).lines;
+  const late = judgePlans({ ...w.base, now: () => 10 + HANDOUT_GRACE_MS + 1 }).lines;
   expect(late.find((one) => one.plan === "first")).toMatchObject({ state: "released" });
   expect(taskById(w.db, first.id).lead).toBeNull();
   // Bound, with its worktree recorded, and the pane gone: relaunch into it.
@@ -484,7 +490,11 @@ test("a plan with a live child refuses a second start; a gone child resumes in i
   const first = w.plan("first", ["src/one/"]);
   const handout = w.reserve("first").lead?.handoutId ?? "";
   ok(takeTasks(w.db, "p", first.id, CHILD, 20, { from: handout, isLive: () => false }));
-  w.change(first, { agent: "herdr:core/t2", worktree: "/repo/wt", branch: "wt-branch" });
+  w.change(first, {
+    agent: "herdr:core/t2",
+    worktree: join(w.repo, ".claude", "worktrees", "kit-first"),
+    branch: "wt-branch",
+  });
   // The child's process cannot be proved gone: it may still run.
   const running = prepareStart({ ...w.base, process: NOBODY }, "first");
   if (running.ok) throw new Error("expected a refusal");
@@ -503,7 +513,7 @@ test("a plan with a live child refuses a second start; a gone child resumes in i
     reserved: false,
     resume: true,
     handoutId: handout,
-    recorded: { worktree: "/repo/wt", branch: "wt-branch" },
+    recorded: { worktree: join(w.repo, ".claude", "worktrees", "kit-first"), branch: "wt-branch" },
   });
   // The reservation is untouched: no second reservation, no new hand-out id.
   expect(taskById(w.db, first.id).lead?.handoutId).toBe(handout);
@@ -543,4 +553,210 @@ test("a plan the lead builds, or one finished and held, is not handed out", () =
   if (closing.ok) throw new Error("expected a refusal");
   expect(closing.why).toContain("files stay held until its pull request settles");
   expect(allTasks(w.db, "p").filter((t) => t.lead !== null)).toHaveLength(2);
+});
+
+// ---- fix round 1: the review's findings, each from its trigger ----
+
+/** A finished plan whose branch has a commit past its recorded start, with no pull request. */
+function finishedPlan(w: ReturnType<typeof build>, merged: boolean) {
+  const first = w.plan("first", ["src/one/"]);
+  w.reserve("first");
+  const start = w.git("rev-parse", "main");
+  w.branch("first-branch", { "src/one/a.ts": "1\n" });
+  w.change(first, { status: "done", branch: "first-branch", base: start });
+  if (merged) {
+    w.git("merge", "-q", "--no-edit", "first-branch");
+    w.git("push", "-q", "origin", "main");
+  }
+  return first;
+}
+
+test("a finished plan with no pull request is released once its branch is proved on the default branch", () => {
+  for (const gh of ["none", "unknown"] as const) {
+    const w = build();
+    const first = finishedPlan(w, false);
+    w.prs["first-branch"] = gh;
+    // Not on the default branch yet: it stays held, and the line names the person's way out.
+    const held = w.line("first");
+    expect(held.state).toBe("merging");
+    expect(held.fix).toContain("herdr plans --release first");
+    expect(held.text).toContain(
+      gh === "unknown"
+        ? "gh cannot say whether its pull request merged"
+        : "no pull request was found",
+    );
+    expect(taskById(w.db, first.id).lead).not.toBeNull();
+    // Merged into origin/main: the same reading releases it.
+    w.git("merge", "-q", "--no-edit", "first-branch");
+    w.git("push", "-q", "origin", "main");
+    const released = judgePlans(w.base).lines.find((one) => one.plan === "first");
+    expect(released).toMatchObject({ state: "released" });
+    expect(released?.text).toContain("its branch is on origin/main");
+    expect(taskById(w.db, first.id).lead).toBeNull();
+  }
+});
+
+test("a finished plan whose branch is empty past its start is never released by ancestry", () => {
+  const w = build();
+  const first = w.plan("first", ["src/one/"]);
+  w.reserve("first");
+  const start = w.git("rev-parse", "main");
+  w.git("branch", "empty-branch", "main");
+  w.change(first, { status: "done", branch: "empty-branch", base: start });
+  expect(w.line("first").state).toBe("merging");
+  expect(taskById(w.db, first.id).lead).not.toBeNull();
+});
+
+test("--release lets the person release a closed plan, and only that", () => {
+  const w = build();
+  const open = w.plan("open", ["src/a/"]);
+  const closed = w.plan("closed", ["src/b/"]);
+  w.plan("loose", ["src/c/"]);
+  w.reserve("open");
+  w.reserve("closed");
+  w.change(closed, { status: "done" });
+  const refused = (ref: string, world: Partial<PlansWorld> = {}) => {
+    const answer = releaseByHand({ ...w.base, ...world }, ref);
+    if (answer.ok) throw new Error("expected a refusal");
+    return answer;
+  };
+  expect(refused("nothing").why).toBe('Plan "nothing" was not found in this project.');
+  expect(refused("loose").why).toBe('Plan "loose" is not reserved: it holds no files.');
+  const stillOpen = refused("open");
+  expect(stillOpen.why).toContain('Plan "open" is still open');
+  expect(stillOpen.fix).toContain("task_done");
+  expect(taskById(w.db, open.id).lead).not.toBeNull();
+  expect(refused("closed", { who: { ...LEAD, sessionId: "x", pid: 1, procStart: "1" } }).why).toBe(
+    'Plan "closed" is reserved for another session.',
+  );
+  const done = releaseByHand(w.base, "closed");
+  expect(done).toEqual({ ok: true, text: "Released plan #2 closed: its files are free." });
+  expect(taskById(w.db, closed.id).lead).toBeNull();
+  expect(eventsOf(w.db, closed).at(-1)?.reason).toBe("released by hand");
+});
+
+test("a start is refused when the default branch can only be guessed", () => {
+  const w = build();
+  w.plan("alpha", ["src/a/"]);
+  const answer = prepareStart({ ...w.base, baseFrom: "default" }, "alpha");
+  if (answer.ok) throw new Error("expected a refusal");
+  expect(answer.why).toContain("The default branch cannot be found");
+  expect(answer.fix).toBe(
+    "run `git remote set-head origin --auto`, or set worktrees.base in .claude/cc-smart-dev-kit.json",
+  );
+  expect(allTasks(w.db, "p").every((t) => t.lead === null)).toBe(true);
+  expect(prepareStart({ ...w.base, baseFrom: "config" }, "alpha").ok).toBe(true);
+});
+
+test("a resume claims the plan before it launches, and a second reading of it finds a child starting", () => {
+  const w = build();
+  const first = w.plan("first", ["src/one/"]);
+  const handout = w.reserve("first").lead?.handoutId ?? "";
+  ok(takeTasks(w.db, "p", first.id, CHILD, 20, { from: handout, isLive: () => false }));
+  const worktree = join(w.repo, ".claude", "worktrees", "kit-first");
+  w.change(first, { agent: "herdr:core/t2", worktree, branch: "wt-branch" });
+  let clock = 5000;
+  const world = { ...w.base, process: ENDED, now: () => clock };
+  const claimed = prepareStart(world, "first");
+  if (!claimed.ok) throw new Error(claimed.why);
+  expect(claimed.claim).toEqual({ marker: "pending:5000", previous: "herdr:core/t2" });
+  expect(taskById(w.db, first.id).agent).toBe("pending:5000");
+  // The second start reads the claim: a child is starting, so it is refused.
+  const second = prepareStart(world, "first");
+  if (second.ok) throw new Error("expected a refusal");
+  expect(second.why).toContain("its child's session ended, but a child is starting");
+  // A start that died leaves the claim behind: past the grace it reads as gone, and a resume goes.
+  clock = 5000 + HANDOUT_GRACE_MS + 1;
+  const again = prepareStart(world, "first");
+  if (!again.ok) throw new Error(again.why);
+  expect(again.claim?.previous).toBe("pending:5000");
+});
+
+test("a live terminal that carries the plan's label stops a start, whichever way it would go", () => {
+  const w = build();
+  const first = w.plan("first", ["src/one/"]);
+  w.plan("second", ["src/two/"]);
+  w.strays.second = "t9";
+  const fresh = prepareStart(w.base, "second");
+  if (fresh.ok) throw new Error("expected a refusal");
+  expect(fresh.why).toBe('Plan "second": terminal t9 carries its label and is live.');
+  expect(taskById(w.db, first.id).lead).toBeNull();
+  // A resume: the plan's own pane is gone, but another terminal carries its label.
+  const handout = w.reserve("first").lead?.handoutId ?? "";
+  ok(takeTasks(w.db, "p", first.id, CHILD, 20, { from: handout, isLive: () => false }));
+  w.change(first, {
+    agent: "herdr:core/t2",
+    worktree: join(w.repo, ".claude", "worktrees", "kit-first"),
+    branch: "b",
+  });
+  w.strays.first = "t7";
+  const resume = prepareStart({ ...w.base, process: ENDED }, "first");
+  if (resume.ok) throw new Error("expected a refusal");
+  expect(resume.why).toContain("terminal t7 carries its label");
+  expect(taskById(w.db, first.id).agent).toBe("herdr:core/t2");
+});
+
+test("a hand-out with no pane bound is not released while a terminal carries its label", () => {
+  const w = build();
+  const first = w.plan("first", ["src/one/"]);
+  w.reserve("first");
+  const late = { ...w.base, now: () => 10 + HANDOUT_GRACE_MS + 1 };
+  w.strays.first = "t9";
+  const kept = judgePlans(late).lines.find((one) => one.plan === "first");
+  expect(kept?.state).toBe("stale");
+  expect(kept?.text).toContain("terminal t9 carries its label");
+  expect(taskById(w.db, first.id).lead).not.toBeNull();
+  delete w.strays.first;
+  expect(judgePlans(late).lines.find((one) => one.plan === "first")?.state).toBe("released");
+  expect(taskById(w.db, first.id).lead).toBeNull();
+});
+
+test("a release decided on an old reading leaves a plan that was handed out again alone", () => {
+  const w = build();
+  const first = w.plan("first", ["src/one/"]);
+  w.reserve("first");
+  // While the lead reads the pane, another start releases the plan and hands it out again.
+  const late = {
+    ...w.base,
+    now: () => 10 + HANDOUT_GRACE_MS + 1,
+    pane: () => {
+      ok(releasePlan(w.db, { project: "p", plan: "first", who: LEAD, now: 5 }));
+      w.reserve("first");
+      return NONE;
+    },
+  };
+  judgePlans(late);
+  const lead = taskById(w.db, first.id).lead;
+  expect(lead).not.toBeNull();
+  expect(lead?.handoutId).not.toBe("");
+});
+
+test("the reservation is stamped when it is made, not when the command opened", () => {
+  const w = build();
+  const first = w.plan("first", ["src/one/"]);
+  let clock = 1000;
+  const world = { ...w.base, now: () => clock };
+  clock = 7777;
+  const start = prepareStart(world, "first");
+  if (!start.ok) throw new Error(start.why);
+  expect(taskById(w.db, first.id).updatedAt).toBe(7777);
+});
+
+test("a recorded worktree outside .claude/worktrees is never reused", () => {
+  const w = build();
+  const first = w.plan("first", ["src/one/"]);
+  const handout = w.reserve("first").lead?.handoutId ?? "";
+  ok(takeTasks(w.db, "p", first.id, CHILD, 20, { from: handout, isLive: () => false }));
+  w.change(first, { agent: "herdr:core/t2", worktree: "/etc", branch: "b" });
+  const answer = prepareStart({ ...w.base, process: ENDED }, "first");
+  if (answer.ok) throw new Error("expected a refusal");
+  expect(answer.why).toContain("its recorded worktree /etc is not a child's folder");
+  expect(answer.fix).toContain("task_update #1 worktree");
+});
+
+test("plans.ts holds no gh code of its own: pullRequestState is the one home", () => {
+  const source = readFileSync(join(import.meta.dir, "plans.ts"), "utf8");
+  expect(source).not.toContain("Bun.spawn");
+  expect(source).not.toContain('"gh"');
+  expect(source).toContain("pullRequestState");
 });

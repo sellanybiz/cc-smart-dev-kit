@@ -53,6 +53,7 @@ import {
   ownerOf,
   ownsPlan,
   PARK_NOTE_PREFIX,
+  planByRef,
   planQueueState,
   searchTasks,
   subtreeProgress,
@@ -402,8 +403,7 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
       if (operation === "take") {
         const input = taskSchemas.take.parse(raw);
         if (!caller?.sessionId) throw new Error("take needs a resolvable calling session");
-        const target =
-          all.find((t) => t.kind === "plan" && t.plan === input.task) ?? work(input.task);
+        const target = planByRef(store, ctx.project, input.task) ?? work(input.task);
         const moved = value(
           takeTasks(store, ctx.project, target.id, who, now, {
             ...(input.from === undefined ? {} : { from: input.from }),
