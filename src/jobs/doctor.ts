@@ -1,11 +1,53 @@
 import { readFileSync } from "node:fs";
 import { COMMAND } from "../build-info/names";
 import type { Check } from "../cli/check";
-import type { CliPaths } from "../cli/paths";
+import { type CliPaths, tildify } from "../cli/paths";
+import { hostPlatform } from "../machine/host";
 import { parseUserJson } from "../setup/user-json";
 import { heavyLimitLine, jobsPaths, readHeavyLimit } from "./config";
+import { HOOK_NAMES } from "./git-hooks";
+import { gitHooksState } from "./hook-folder";
 
-export function heavyJobChecks(paths: CliPaths): Check[] {
+/** How many problems of the git hooks folder one doctor line names. */
+const PROBLEMS_SHOWN = 3;
+
+/**
+ * The line for the kit's git hooks folder (`hook-folder.ts`): present, every hook name there,
+ * executable and in this version's text. Native Windows has no folder yet: one line says so.
+ */
+export function gitHooksCheck(paths: CliPaths, platform: NodeJS.Platform = hostPlatform()): Check {
+  if (platform === "win32") {
+    return {
+      ok: true,
+      info: true,
+      text: "Git hook queue: not set up on Windows yet; commit and push hooks run as they are",
+    };
+  }
+  const where = tildify(paths.gitHooksFolder, paths.home);
+  const fix = `Run ${COMMAND} setup`;
+  const state = gitHooksState(paths);
+  if (state.kind === "missing") {
+    return { ok: false, text: `Git hooks folder is missing (${where})`, fix };
+  }
+  if (state.kind === "problems") {
+    const shown = state.problems.slice(0, PROBLEMS_SHOWN).join(", ");
+    const more = state.problems.length - PROBLEMS_SHOWN;
+    return {
+      ok: false,
+      text: `Git hooks folder ${where}: ${shown}${more > 0 ? ` and ${more} more` : ""}`,
+      fix,
+    };
+  }
+  return {
+    ok: true,
+    text: `Git hooks folder: ${HOOK_NAMES.length} hook scripts, executable and up to date`,
+  };
+}
+
+export function heavyJobChecks(
+  paths: CliPaths,
+  platform: NodeJS.Platform = hostPlatform(),
+): Check[] {
   const checks: Check[] = [];
   try {
     checks.push({ ok: true, info: true, text: heavyLimitLine(readHeavyLimit(paths.home)) });
@@ -36,5 +78,6 @@ export function heavyJobChecks(paths: CliPaths): Check[] {
         fix: "Remove the old file if it is no longer needed",
       });
   }
+  checks.push(gitHooksCheck(paths, platform));
   return checks;
 }

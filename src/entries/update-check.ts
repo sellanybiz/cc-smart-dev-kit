@@ -1,8 +1,9 @@
 // The SessionStart hook that keeps cc-smart-dev-kit up to date (plugin/hooks/hooks.json), and,
 // with `--background`, the detached check it starts. The hook returns at once: it only
 // records the session, starts the portal's own detached starter when this session should
-// have one (D10), brings the instructions copy up to this version when it is behind (the copy
-// only, quietly), and starts the check when one is due (src/update/background.ts).
+// have one (D10), brings the instructions copy and the git hooks folder up to this version when
+// they are behind (those two only, quietly), and starts the check when one is due
+// (src/update/background.ts).
 import { PLUGIN, VERSION } from "../build-info";
 import { cliPaths } from "../cli/paths";
 import { startDetached } from "../hooks/detached";
@@ -14,6 +15,7 @@ import { capturingRunner, commandContext } from "../update/apply";
 import {
   backgroundCheck,
   backgroundCheckArgv,
+  refreshGitHooksAtSessionStart,
   refreshInstructionsAtSessionStart,
   sessionSourceOf,
   sessionStart,
@@ -95,6 +97,12 @@ if (process.argv.includes("--background")) {
     // session. Nothing on stdout — a session start's text goes into Claude's context.
     await refreshInstructionsAtSessionStart({
       where: instructionsPaths(paths, instructionsFolder(import.meta.dir)),
+      version: VERSION,
+      log: (line) => console.error(line),
+    });
+    // The same for the git hooks folder setup wrote: its scripts are this version's text.
+    await refreshGitHooksAtSessionStart({
+      paths,
       version: VERSION,
       log: (line) => console.error(line),
     });

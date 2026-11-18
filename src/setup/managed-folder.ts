@@ -26,16 +26,18 @@ import {
   readFileSync,
   renameSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { basename, dirname, join, relative, sep } from "node:path";
+import { hostPlatform } from "../machine/host";
 import { setFileMode } from "./file-mode";
 import { atomicWrite, realTarget } from "./write";
 
 /** The record of the folders cc-smart-dev-kit owns: `<stateDir>/owned-folders.json`. */
 const OWNED_FOLDERS_FILE = "owned-folders.json";
 
-/** Files are build output: readable by everyone, never executable. Folders the same. */
+/** Files are build output: readable by everyone, never executable unless the caller says so. */
 const FILE_MODE = 0o644;
 const DIR_MODE = 0o755;
 
@@ -65,6 +67,13 @@ export interface ManagedFolderResult {
 export interface ManagedFolderOptions {
   /** Write nothing; answer what a real run would do. */
   dryRun?: boolean;
+  /**
+   * The mode of every file but the folder's own mark (`0o755` for a folder of scripts). Left
+   * out: `0o644`, and a folder whose bytes match is `unchanged` whatever its modes are. Given:
+   * a folder whose files have another mode is `updated` (except on Windows, where a mode is
+   * no protection and `statSync` makes one up: `file-mode.ts`).
+   */
+  fileMode?: number;
   stateDir: string;
 }
 
@@ -81,12 +90,23 @@ function hashFile(file: string): string {
   return createHash("sha256").update(readFileSync(file)).digest("base64");
 }
 
-/** True when `target` is ours and holds exactly the files of `source`, with the same bytes. */
-function sameFolder(target: string, source: string, files: readonly string[]): boolean {
+/**
+ * True when `target` is ours and holds exactly the files of `source`, with the same bytes and,
+ * when `mode` is given, the same mode on every file.
+ */
+function sameFolder(
+  target: string,
+  source: string,
+  files: readonly string[],
+  mode: number | undefined,
+): boolean {
   if (!existsSync(target) || !markedOwned(target)) return false;
   const have = listFiles(target).filter((file) => file !== OWNED_FOLDER_MARK);
   if (have.length !== files.length || have.some((file, index) => file !== files[index])) {
     return false;
+  }
+  if (mode !== undefined && hostPlatform() !== "win32") {
+    if (files.some((file) => (statSync(join(target, file)).mode & 0o777) !== mode)) return false;
   }
   return files.every((file) => hashFile(join(target, file)) === hashFile(join(source, file)));
 }
@@ -135,13 +155,13 @@ function forgetOwnedFolder(stateDir: string, folder: string): void {
   );
 }
 
-/** Copies `source`'s files into the new folder `into`, never executable. */
-function copyFolder(source: string, into: string, files: readonly string[]): void {
+/** Copies `source`'s files into the new folder `into`, each with `mode`; the mark is never executable. */
+function copyFolder(source: string, into: string, files: readonly string[], mode: number): void {
   for (const file of files) {
     const to = join(into, ...file.split("/"));
     mkdirSync(dirname(to), { recursive: true, mode: DIR_MODE });
-    writeFileSync(to, readFileSync(join(source, ...file.split("/"))), { mode: FILE_MODE });
-    setFileMode(to, FILE_MODE); // the umask may have changed the bits
+    writeFileSync(to, readFileSync(join(source, ...file.split("/"))), { mode });
+    setFileMode(to, mode); // the umask may have changed the bits
   }
   // A folder with no file at all still exists as a folder.
   mkdirSync(into, { recursive: true, mode: DIR_MODE });
@@ -163,7 +183,7 @@ export function writeManagedFolder(
 ): ManagedFolderResult {
   const real = realTarget(target);
   const files = listFiles(source);
-  if (sameFolder(real, source, files)) {
+  if (sameFolder(real, source, files, options.fileMode)) {
     // A folder that is already right but unrecorded (a crash before the record): record it.
     if (!options.dryRun) recordOwnedFolder(options.stateDir, real);
     return { files: files.length, outcome: "unchanged" };
@@ -182,7 +202,7 @@ export function writeManagedFolder(
   const temp = join(dirname(real), `.${basename(real)}.cc-smart-dev-kit-tmp-${token}`);
   const old = join(dirname(real), `.${basename(real)}.cc-smart-dev-kit-old-${token}`);
   try {
-    copyFolder(source, temp, files);
+    copyFolder(source, temp, files, options.fileMode ?? FILE_MODE);
     const hadOld = existsSync(real);
     if (hadOld) renameSync(real, old);
     try {
