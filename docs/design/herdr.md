@@ -134,22 +134,34 @@ take) is `docs/design/tasks.md` § Plans handed to children.
   with the fix `git remote set-head origin --auto`: the child resets onto that branch.
 - The child's name is the slug. When `kit-<slug>` is not a valid child name, `--name` is the fix.
 
-**The order** is: those refusals, the live gates (below), each held plan's branch diff, the
-reservation, the name and worktree checks, the brief, the launch, the binding. The diffs are read
-first, outside any store write (`git diff --name-only --no-renames origin/<default>...<branch>`
-lists both sides of a rename), so no git runs under the write lock. `reservePlan` then takes the
-plan in one transaction and refuses a plan with an open blocker, no file list, an existing
-reservation or files that overlap a **held** plan. A held plan is any reserved plan until it is
-released, and any session's own plan in flight. `plans.mergeFiles` never counts, and case folds
-when `core.ignorecase` is on. Both come from `planFilesCheck`: the committed copy on
-`origin/<default>`, never the working copy. The reservation records the lead (session and
-process), a holder kind and a **hand-out id**, the key a child takes the plan with. A launch
-proved failed releases the reservation. A child that started but cannot be read does not.
+**The order** is: those refusals, then the name check (`kit-<slug>` must be a valid child name),
+then the live gates (below) and each held plan's branch diff, then the reservation, and only then
+the worktree and terminal collision checks, the brief, the launch and the binding. The diffs are
+read first, outside any store write (`git diff --name-only --no-renames
+origin/<default>...<branch>` lists both sides of a rename), so no git runs under the write lock.
+
+**The reservation.** `reservePlan` takes the plan in one transaction. It refuses a plan with an
+open blocker, no file list, an existing reservation or files that overlap a **held** plan. A held
+plan is any reserved plan until it is released, and any session's own plan in flight.
+`plans.mergeFiles` never counts, and case folds when `core.ignorecase` is on. Both come from
+`planFilesCheck`: the committed copy on `origin/<default>`, never the working copy. The reservation
+records the lead (session and process), a holder kind (`child`, or `self` for the lead's own plan)
+and a **hand-out id**, the key a child takes the plan with. A launch proved failed releases the
+reservation. A child that started but cannot be read does not.
 
 The binding writes `agent` (`herdr:<core>/<address>`) and the label `kit.plan=<slug>`; `worktree`
-and `branch` go in once, on a first start. No command reserves a plan for the lead itself (holder
-`self`). The store and `herdr plans` know that state (`own`), but the lead's own plan is held by
-being in flight, so in lead + children mode the lead starts it first and hands out the rest.
+and `branch` go in once, on a first start.
+
+**`plans --reserve <plan>`** is the lead's own hand-out, for lead + children mode. The plan
+resolves with `planByRef`, then it runs the same live gates and held-plan diffs as `start --plan`
+and `reservePlan` with holder `self`, with `ignore` and `caseFold` from `planFilesCheck`, read
+before the write lock. It prints one line naming the plan and the next step: start its first phase
+as usual. It refuses from a plan child (the terminal carries `kit.plan`), when the default branch
+is only a guess, and for a plan that is not pending, not the caller's own or already reserved, each
+with its fix. It stands alone: `--wait`, `--json` and `--release` cannot join it. The Bash judge
+stays silent, since it reserves the caller's own plan and frees nothing. The plan stays held until
+its pull request merges: the classifier reads it as `own`, then `merging` once it is closed, and a
+`herdr plans` pass releases it like any other.
 
 **The plan trailer** (`planTrailer` in `brief.ts`) replaces the task trailer:
 
@@ -163,32 +175,39 @@ being in flight, so in lead + children mode the lead starts it first and hands o
 5. `herdr report` with the pull request link, what shipped and what failed. Then stop.
 
 **Resume.** A plan whose child is gone comes back with `start --plan <slug>`. "Gone" needs two
-proofs: the store's classifier reads `child-gone` (the child's process is gone and no running
-session carries its id, `sessionEnded`, so a reopened child that has made no task call yet still
-counts as alive), and hc shows its pane gone. The new child starts in the **recorded** worktree
-(`claude -w <name>`), which may be reused once, and only when it sits under
-`<repo>/.claude/worktrees/`. The hand-out id is the same, the brief skips the reset, and an
-`in_progress` plan is allowed on this path only. A hand-out its child never took, with the pane
-gone, relaunches the same way; with no worktree recorded, `herdr plans` releases it. Before a
-resume or a relaunch launches, the start claims the plan's `agent` with a `pending:<clock>`
-marker by compare-and-set (`swapPlanAgent`), so two starts cannot both launch into one worktree.
-The marker reads as a live child for `HANDOUT_GRACE_MS` (120 s). A live terminal labelled
+proofs. The store's classifier reads `child-gone`: the child's process is gone and no running
+session carries its id (`sessionEnded`), so a reopened child that has made no task call yet still
+counts as alive. And hc shows its pane gone.
+
+The new child starts in the **recorded** worktree (`claude -w <name>`). That worktree may be reused
+once, and only when it sits under `<repo>/.claude/worktrees/`. The hand-out id is the same, the
+brief skips the reset, and an `in_progress` plan is allowed on this path only. A hand-out its child
+never took, with the pane gone, relaunches the same way; with no worktree recorded, `herdr plans`
+releases it.
+
+Two starts must not launch into one worktree. Before a resume or a relaunch launches, the start
+claims the plan's `agent` with a `pending:<clock>` marker by compare-and-set (`swapPlanAgent`): a
+write that succeeds only if the value is still the one just read, so the second of two starts is
+refused. The marker reads as a live child for `HANDOUT_GRACE_MS` (120 s). A live terminal labelled
 `kit.plan=<slug>` also stops a start.
 
 **`herdr plans [--json] [--wait] [--timeout <seconds>]`** is the lead's view, with every gate the
 status line and the Stop hook may not run. It starts from the store's classifier and adds git,
 gh and hc: a blocker's pull request (one reader, `pullRequestState` in `src/worktrees/scan.ts`,
 which counts a merge only at exactly this head, so a squash merge is safe), the branch diffs and
-each pane. One line per plan:
+each pane. It prints a summary (`Plans: 2 with children · 1 built here · 1 child gone · 1 closing ·
+1 waiting · 1 need you · 1 ready`), then one line per plan with its mark, its reason in words and
+its fix. In the table, the first column is the `state` of that line in `--json`; the status line
+has words of its own (`docs/design/tasks.md`).
 
-| State | Meaning |
+| `--json` state | Meaning |
 |---|---|
 | `ready` | Every blocker is clear and the files overlap no held plan. |
 | `waiting` | A blocker is open, or its pull request is open or not yet on the default branch. |
 | `blocked` | A blocker cannot clear by itself: no branch recorded, no start commit to prove a merge from, an empty branch, a branch not in this repository, or a pull request closed unmerged. The line carries its fix. |
 | `overlaps` | Files shared with a held plan; the line names both. |
-| `no-files` | No file list yet: `task_update` with `files`. |
-| `own` | Reserved for this session itself (store only; see above). |
+| `no-files` | No file list yet (the line says "has no file list"; the status line says "needs files"): `task_update` with `files`. |
+| `own` | Reserved for this session itself with `plans --reserve`: it builds the plan. |
 | `with-child` | A child holds it. Drift shows here: its branch reached another held plan's files. |
 | `child-gone` | The child's session ended: resume it. |
 | `stale` | A hand-out no child took, its pane gone. |

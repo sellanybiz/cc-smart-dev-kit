@@ -383,10 +383,17 @@ open blocker (the store's view), and one whose files overlap a held plan. Each r
 plan in the way and the files; an overlap with a finished, unreleased plan says so and that
 `herdr plans` releases it. On success it writes the lead, the holder kind and a new hand-out id.
 `releasePlan` clears all five columns, guards the hand-out id and `updated_at` it was given (so a
-plan handed out again meanwhile is left alone) and is idempotent. A **drop releases by itself;
-a done plan does not**: it keeps holding until `herdr plans` releases it once its pull request
-merged or closed. `swapPlanAgent` is the compare-and-set that lets one start claim a plan's
-`agent` (herdr's resume), and `adoptLeadPlans` moves the leads of plans whose lead has ended.
+plan handed out again meanwhile is left alone) and is idempotent: releasing a plan that is not
+reserved changes nothing and adds no history. A **drop releases by itself; a done plan does
+not**: it keeps holding until `herdr plans` releases it once its pull request merged or closed.
+`swapPlanAgent` is a compare-and-set, a write that succeeds only if the value is still the one the
+caller read. It lets one start claim a plan's `agent` (herdr's resume). `adoptLeadPlans` moves the
+leads of plans whose lead has ended.
+
+**The lead's own plan.** In lead + children mode the lead reserves its own plan with holder `self`,
+through the same `reservePlan` and the same gates as a hand-out (`herdr plans --reserve <plan>`,
+`docs/design/herdr.md` § Handing out plans), and then starts it as usual. Unlike a plan held only
+by being in flight, it stays held after it is done, until its pull request merges.
 
 **The take.** A reserved plan is taken only when `from` names the hand-out id or the current lead
 session, when the taker already owns the plan, or when the person passes `force`. Then each row
@@ -401,7 +408,7 @@ or let the child build it. Every existing refusal and message is unchanged.
 
 **The classifier** (`classifyLeadPlans`, `src/tasks/work/lead-plans.ts`) is the store-only reader
 the status line and the keep-going hook share: no git, no gh, no hc. For the plans this caller
-leads, and the queued plans it laid, it returns `own` (holder `self`), `with-child`, `child-gone`,
+leads, and the queued plans it laid, it returns `own` (holder `self`, reserved by the lead for itself), `with-child`, `child-gone`,
 `merging` (closed, still reserved), `waiting` (an open blocker), `no-files` and `ready`. `ready`
 means ready by the store: overlaps need the branch diffs, which `reservePlan` and `herdr plans`
 read. A hand-out the lead still owns reads `with-child`. After a take, `child-gone` needs the

@@ -190,41 +190,40 @@ These apply when two or more plans are open and `plans.runMode` is `lead-childre
 `coordinator` (the person's choice: `/cc-smart-dev-kit:plan-task` § 6). `solo` is everything
 above. Both modes need a Herdr terminal (`/cc-smart-dev-kit:herdr`); without one, build solo
 and say why in one line. A child is a full linked session, so each hand-out follows the herdr
-skill's start rules, with model and effort judged as in § 2.
+skill's start rules, with model and effort judged as in § 2. A plan child skips to the last
+paragraph.
 
-**See the plans.** `cc-smart-dev-kit herdr plans` prints one line per plan this session leads and
-the live gates behind it. A plan is `ready` only when every blocker's pull request has merged and
-its files overlap no plan another session holds. Other lines say what waits and its fix: `waiting`
-(for a blocker, or a blocker's merge), `overlaps` (a file shared with a held plan), `needs files`
-(no file list), `with child`, `child gone`, `merging`. Paths every plan touches and each merge
-settles (`plans.mergeFiles`) never count as overlap; how a child settles them after a rebase is
-the project's `.claude/cc-smart-dev-kit/build.md`.
+**See the plans.** `cc-smart-dev-kit herdr plans` shows where each plan this session leads stands,
+and which are ready (`/cc-smart-dev-kit:herdr`). How a child settles the project's merge files
+after a rebase is the project's `.claude/cc-smart-dev-kit/build.md`.
 
 **Coordinator: the lead builds nothing**, even when one plan is ready.
 
-1. Run `herdr plans`. Start each `ready` plan with `herdr start --plan <slug>`, all in one
+1. Run `herdr plans`. Start each ready plan with `herdr start --plan <slug>`, all in one
    message. The store reserves a plan in one step before its child launches, so two starts that
    share a file cannot both pass: the second is refused and names the plan in its way.
 2. Run `herdr wait` in the background. Each child's `herdr report` names its pull request, what
    shipped and what failed. Read the pull request itself: a report is evidence, not proof.
 3. When a pull request merges (as `workflow show` says, or by the person), run `herdr plans`: it
-   releases the plan's files, and what waited on them turns `ready`. Start those the same way.
+   releases the plan's files, and what waited on them turns ready. Start those the same way.
    While a merge is pending, `herdr plans --wait` in the background returns when a plan changes.
-4. A `child gone` plan resumes with `herdr start --plan <slug>`, in the child's own worktree. The
+4. A plan whose child is gone resumes with `herdr start --plan <slug>`, in the child's own worktree. The
    store never gives the plan to a second child while the first lives.
 5. Release a reservation by hand only when the person says so (`herdr plans --release <slug>`).
 
 **Lead + children** is the same, plus one plan the lead builds itself.
 
-1. Take the lowest-numbered `ready` plan: start it as in §§ 1 and 2. In flight, it is held, so no
-   child's plan can overlap it.
-2. Hand every other `ready` plan to a child, as in Coordinator step 1.
+1. Reserve the lowest-numbered ready plan for yourself with `herdr plans --reserve <slug>`. It
+   runs the gates a hand-out runs. Then start the plan as in §§ 1 and 2. The plan stays held
+   until its pull request merges, even after it closes, so no child's plan can overlap it.
+2. Hand every other ready plan to a child, as in Coordinator step 1.
 3. Build the own plan with builder subagents, §§ 2 to 6. A child's report or a merge is not the
    person's prompt: handle it after the current hand-back, never in the middle of a phase.
-4. When the own plan closes, run `herdr plans`. Start the next `ready` plan yourself, or, with
-   none ready, wait as a coordinator does.
+4. When the own plan closes, run `herdr plans`. Reserve and start the next ready plan yourself
+   the same way, or, with none ready, wait as a coordinator does.
 
-**A plan child** is a session started by `herdr start --plan`; its brief begins `Your plan:`. It
+**A plan child** is a session started by `herdr start --plan`; its brief holds the line
+`Your plan: <slug>.`, after the lead's own text. It
 builds only that plan with this skill, starts no session, takes no other plan, reports once with
 the pull request link and stops. This overrides § 6's "start the next queued plan". It never
 coordinates: `--plan` and `adopt` refuse a plan child.

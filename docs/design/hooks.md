@@ -1303,8 +1303,8 @@ approval. It never skips a hook question or a mode failure.
 `cc-smart-dev-kit herdr plans --release` asks too: it frees a finished plan's files with no proof
 that its work merged, a write the person approves the way they approve a machine-rule change. The
 judge asks for any `plans` line that holds `--release` or `--release=`, even a malformed one
-(fail safe), and stays silent for the other forms, which only read: `plans`, `--json`, `--wait`,
-`--timeout` and `--help`. `herdr start --plan` is judged as any linked start (explicit model,
+(fail safe), and stays silent for the other forms: `plans`, `--json`, `--wait`, `--timeout`, `--help`, which only
+read, and `--reserve`, which reserves the caller's own plan and frees nothing. `herdr start --plan` is judged as any linked start (explicit model,
 effort and mode; the mode cap); the plan's own refusals live in the command.
 
 A child's questions are the person's, answered in its pane: there is no answer verb (the relay

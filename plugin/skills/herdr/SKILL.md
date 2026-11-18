@@ -51,12 +51,13 @@ The first message is wrapped as lead evidence, never the person’s approval.
   that task and never takes it.
 - Use `--plan <slug>` to give a whole queued plan to a child. The plan must be one this session
   laid and not started, with a file list, no open blocker and files that overlap no held plan:
-  `herdr plans` shows it as `ready`. The command reserves the plan, and the child takes it,
+  `herdr plans` shows it ready. The command reserves the plan, and the child takes it,
   resets its worktree to `origin/<default branch>`, builds it with `/cc-smart-dev-kit:build`,
   opens its own pull request and reports. The child is named after the slug, so a long slug
   needs `--name`. `--plan` cannot be combined with `--task`, `--independent` or `--on`, and it
   refuses while the default branch is unknown (fix: `git remote set-head origin --auto`). The plan holds the
-  scope, so the brief after `--` can be short: the command adds the plan's steps to it.
+  scope, so the brief after `--` can be short: the command adds the steps (take the plan, reset to
+  the default branch, build it, report).
 - For an allowlisted remote machine, add `--on <machine>` and its own `--cwd <dir>`.
   The remote user’s login shell must find Claude Code and the kit, with the kit at least as new as this one. Remote reports stay there as files;
   keep the report-list and file-read commands printed by start and wait.
@@ -80,7 +81,9 @@ needs its pane. Never force text into a dialog.
 overlaps, which child works and which is gone, which pull request still holds files. With
 `--wait` (background, like `wait`) it returns when a plan turns ready or a pull request merges,
 and prints its own next command on timeout. It also releases a plan's files once its pull
-request has merged or closed. `plans --release <slug>` frees a finished plan nothing can prove
+request has merged or closed. `plans --reserve <slug>` reserves one of your own ready plans for
+yourself, with the gates `start --plan` runs; then you start it as usual (lead + children mode). It
+stays held until its pull request merges. `plans --release <slug>` frees a finished plan nothing can prove
 merged; it is the person's call, and the Bash judge asks first.
 
 Run `cc-smart-dev-kit herdr wait` with Bash's `run_in_background: true`; let completion
@@ -105,7 +108,7 @@ stands in for the person's answer.
 
 ## Stop or recover
 
-A `child gone` plan restarts with `cc-smart-dev-kit herdr start --plan <slug>`: the child
+A plan whose child is gone restarts with `cc-smart-dev-kit herdr start --plan <slug>`: the child
 continues in its own worktree and branch, and takes no fresh start. It is refused while that
 child's pane still lives.
 
@@ -120,8 +123,8 @@ hand-outs no child took. A plan the old lead built itself must be taken before i
 adopt prints `task_take <slug>` for it.
 
 **A plan child never coordinates.** A session started with `--plan` builds that one plan, starts
-no session, takes no other plan and stops after its report. Its terminal carries `kit.plan`, and
-`start` and `adopt` refuse there.
+no session, takes no other plan and stops after its report. Its terminal carries `kit.plan`;
+`start --plan` and `adopt` refuse there, and its brief forbids any other start.
 
 Use the kit commands for writes. The Bash judge rejects raw `hc` writes and `herdr-app do`;
 local read-only inspection is allowed (`hc events` only in the background). Remote reads

@@ -83,8 +83,8 @@ its secret screen knows only common shapes.
 - `task_take` takes a plan or task into this session (live claims need `force`). Park and
   resume a plan: `/cc-smart-dev-kit:plan-task` § 6.
 - A plan **reserved** for a child (`task_get` shows `Reserved for:` and a hand-out id) is taken
-  only with `from` set to that hand-out id, which the child's brief names; `force` is the
-  person's. Another session's start in it is refused, and so is the lead's. Its files stay held
+  only with `from` set to the hand-out id (which the child's brief names) or to the lead's
+  current session, or by its owner; `force` is the person's. Another session's start in it is refused, and so is the lead's. Its files stay held
   until `herdr plans` releases them (`/cc-smart-dev-kit:build` § Lead + children and coordinator
   modes, `/cc-smart-dev-kit:herdr`); dropping the plan releases them at once.
 - `task_list` reads `mine` (the default), `plan`, `project` (also the open deploy tasks) or
