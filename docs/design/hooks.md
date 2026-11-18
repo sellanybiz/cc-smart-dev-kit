@@ -727,7 +727,11 @@ the calls in its domain (§ One frame for every hook).
 **How `CLAUDECODE` counts as removed.** The shell reader (`src/shell/command.ts`) gives each
 command of the line, its wrappers (`setsid env …`, `flock <file> env …`, `script -c …`,
 `busybox sh -c …`), and the lines it runs (`bash -c`, `eval`, a here-string,
-`cc-smart-dev-kit job run --`, `ssh host '…'`) — and the commands its **runners** run: `find`'s
+`cc-smart-dev-kit job run --`, `ssh host '…'`). A wrapper is read as itself first and the kit's
+`job run` inside it one level deeper; a wrapper that finds no command of its own (`sh
+<launcher> job run -- …`, `su root <launcher> …`, `cmd` with no `/c`, `pwsh` with no
+`-Command`, or a `/c` or `-c` that comes after the kit's `job run` and so belongs to it) is
+read as the kit's job, in the wrapper's dialect. It also reads the commands its **runners** run: `find`'s
 `-exec`/`-execdir`/`-ok`/`-okdir` (every action, up to its `;` or a `+` right after `{}`; the
 value of a test such as `-name` starts none), `watch`'s command (`-x` or through `sh -c`; `-d`
 takes its value only attached), `su -c`/`--command`/`--session-command` (wherever the user

@@ -439,6 +439,17 @@ describe("a shell wrapper's inner command is read", () => {
       "su root /home/user/.local/bin/cc-smart-dev-kit job run -- git reset --hard",
       "git reset --hard",
     ],
+    // `cmd` with no /c and PowerShell with no -Command run the kit as a file: its job is read.
+    ["cmd cc-smart-dev-kit job run -- git reset --hard", "git reset --hard"],
+    ["powershell cc-smart-dev-kit job run -- git reset --hard", "git reset --hard"],
+    // Read as PowerShell, a job word holding a `'` or a line break is quoted the PowerShell way.
+    [
+      `pwsh cc-smart-dev-kit job run -- git -c "a'b" push --force "/tmp/it's-repo" main`,
+      "force-push",
+    ],
+    ['pwsh cc-smart-dev-kit job run -- git push --force origin "a\nb"', "force-push"],
+    // A kit `job run` with no `--` names no command, so the -Command after it is still read.
+    ['pwsh cc-smart-dev-kit job run -c "git push --force"', "force-push"],
   ])("asks about %j", (command, fragment) => {
     expect(guard(command)).toContain(fragment);
   });

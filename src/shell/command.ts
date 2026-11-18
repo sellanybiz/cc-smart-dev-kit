@@ -52,6 +52,7 @@
  * Pure: no file, no environment, no process.
  */
 import { kitArguments } from "./kit-invocation";
+import { powershellQuoted } from "./powershell";
 import { programName } from "./program-name";
 import { shellQuote } from "./quote";
 
@@ -2200,14 +2201,20 @@ export function nestedCommand(
   if (program === "watch") return watchCommand(args) ?? jobRunLine(program, args);
   if (program === "su") return suCommand(args) ?? jobRunLine(program, args);
   if (program === "parallel") return parallelCommand(args) ?? jobRunLine(program, args);
+  // `cmd` and PowerShell run the file their first plain argument names, and every word after it
+  // is that file's: a `/c` or `-c` after the kit's `job run` belongs to the job
+  // (`pwsh cc-smart-dev-kit job run -- git -c x=y push --force`), so the job is read.
   if (program === "cmd") {
     const at = args.findIndex((arg) => /^\/[ck]$/i.test(arg));
-    return at === -1 ? jobRunLine(program, args) : args.slice(at + 1).join(" ");
+    return at === -1 ? jobRunLine(program, args) : afterCommandFlag(program, args, at, shellQuote);
   }
   if (program === "powershell" || program === "pwsh") {
     // PowerShell takes any prefix of a parameter name: -c, -com, -Command.
     const at = args.findIndex((arg) => arg.length > 1 && "-command".startsWith(arg.toLowerCase()));
-    return at === -1 ? jobRunLine(program, args) : args.slice(at + 1).join(" ");
+    // With no -Command the kit's job is read as PowerShell (`nestedDialect`), so it is quoted so.
+    return at === -1
+      ? jobRunLine(program, args, powershellQuoted)
+      : afterCommandFlag(program, args, at, powershellQuoted);
   }
   if (program === "eval" || program === "iex" || program === "invoke-expression") {
     return args.join(" ");
@@ -2215,8 +2222,33 @@ export function nestedCommand(
   return jobRunLine(program, args);
 }
 
-/** The command the kit's `job run -- …` runs, when `program args` is one (`jobRunArguments`). */
-function jobRunLine(program: string, args: string[]): string | undefined {
+/**
+ * What `cmd` or PowerShell runs when its `/c` or `-Command` is at `at`: the kit's job when the
+ * words before `at` already start its `job run` (the flag is then the job's), else, and when
+ * that job names no command (no `--`), the words after the flag.
+ */
+function afterCommandFlag(
+  program: string,
+  args: string[],
+  at: number,
+  quote: (word: string) => string,
+): string {
+  const job =
+    jobRunArguments(program, args.slice(0, at)) === null
+      ? undefined
+      : jobRunLine(program, args, quote);
+  return job ?? args.slice(at + 1).join(" ");
+}
+
+/**
+ * The command the kit's `job run -- …` runs, when `program args` is one (`jobRunArguments`),
+ * each word quoted by `quote`: the dialect `nestedDialect(program)` reads the line in.
+ */
+function jobRunLine(
+  program: string,
+  args: string[],
+  quote: (word: string) => string = shellQuote,
+): string | undefined {
   const queued = jobRunArguments(program, args);
   if (queued === null) return undefined;
   // The queue runs the words after `--` as they are: quoted again, they read back the same.
@@ -2225,7 +2257,7 @@ function jobRunLine(program: string, args: string[]): string | undefined {
     ? undefined
     : queued
         .slice(dashes + 1)
-        .map(shellQuote)
+        .map(quote)
         .join(" ");
 }
 
