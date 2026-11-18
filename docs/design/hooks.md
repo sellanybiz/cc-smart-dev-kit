@@ -1188,7 +1188,7 @@ with the one shell reader. Alongside the Herdr rules below, it answers these lau
   start (the frame's `nowMs`), so the frame's own project lookup, which runs first, is already
   spent from it.
   **How it finds the command.** It reads the kit's argv through one recogniser
-  (`kitArguments`, `src/hooks/kit-invocation.ts`), shared with `session-escape-guard` — a
+  (`kitArguments`, `src/shell/kit-invocation.ts`), shared with `session-escape-guard` — a
   spelling that gets past one guard must not get past the other. It knows the kit by its name,
   by a path to the launcher, and by its bundle behind another program (`bun …/dist/cli.js
   workflow …`, `find . -exec cc-smart-dev-kit … \;`, `watch -n 5 cc-smart-dev-kit …`), never a
