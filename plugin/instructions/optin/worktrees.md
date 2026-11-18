@@ -19,7 +19,8 @@ more.
 **A base branch that is not the repo's default branch** sets `"worktree": {"baseRef": "head"}`
 in its committed `.claude/settings.json`: a new worktree then starts from your current branch,
 not from `origin`'s default branch. Start new work from the main checkout on the base branch
-(`git switch <base>` first if it was switched to explore), and a subagent's worktree gets the
+(`git switch <base>` first if it was switched to explore; with `worktrees.guardMainFolder` on,
+the guard refuses that switch, so ask the person to run it), and a subagent's worktree gets the
 session's commits too. Under `fresh` (Claude Code's default), a worktree and its subagents
 start from `origin`'s default branch.
 

@@ -951,6 +951,7 @@ describe("a project that used the old anymodel name", () => {
       engineLine(".claude/settings.json", ["worktree-create", "worktree-remove", "subagent-stop"]),
       "! project: the plugin's git-guard and the project's ./note-anymodel.sh (.claude/settings.json) both run on PreToolUse (Bash), so both may answer. If that is the project's own copy of git-guard, list \"git-guard\" in ownHooks in .claude/cc-smart-dev-kit.json until the copy is removed",
       "! project: the plugin's merge-guard and the project's ./note-anymodel.sh (.claude/settings.json) both run on PreToolUse (Bash), so both may answer. If that is the project's own copy of merge-guard, list \"merge-guard\" in ownHooks in .claude/cc-smart-dev-kit.json until the copy is removed",
+      "! project: the plugin's main-folder-guard and the project's ./note-anymodel.sh (.claude/settings.json) both run on PreToolUse (Bash), so both may answer. If that is the project's own copy of main-folder-guard, list \"main-folder-guard\" in ownHooks in .claude/cc-smart-dev-kit.json until the copy is removed",
       "! project: the plugin's job-route and the project's ./note-anymodel.sh (.claude/settings.json) both run on PreToolUse (Bash), so both may answer. The plugin's job-route cannot be switched off (it judges every launch): remove the project's copy, or keep it knowing both answer",
     ]);
   });
@@ -993,6 +994,7 @@ describe("the project's own copies of plugin hooks (ownHooks)", () => {
     expect(await check(repo)).toEqual([
       both("git-guard", "./guard.sh", "PreToolUse (Bash)"),
       both("merge-guard", "./guard.sh", "PreToolUse (Bash)"),
+      both("main-folder-guard", "./guard.sh", "PreToolUse (Bash)"),
       bothJobRoute("./guard.sh", "PreToolUse (Bash)"),
       both("worktree-leftovers", "./hello.sh", "SessionStart (startup)"),
       both("session-name", "./hello.sh", "SessionStart (startup)"),
@@ -1014,6 +1016,7 @@ describe("the project's own copies of plugin hooks (ownHooks)", () => {
       "· project: the plugin's git-guard is off here: .claude/cc-smart-dev-kit.json lists it in ownHooks, so the project's own copy answers alone",
       "· project: the plugin's session-name is off here: .claude/cc-smart-dev-kit.json lists it in ownHooks, so the project's own copy answers alone",
       both("merge-guard", "./guard.sh", "PreToolUse (Bash)"),
+      both("main-folder-guard", "./guard.sh", "PreToolUse (Bash)"),
       bothJobRoute("./guard.sh", "PreToolUse (Bash)"),
       both("worktree-leftovers", "./hello.sh", "SessionStart (startup)"),
     ]);
@@ -1051,7 +1054,7 @@ describe("the project's own copies of plugin hooks (ownHooks)", () => {
     const repo = makeRepo();
     writeClaudeFile(repo, "cc-smart-dev-kit.json", { ownHooks: ["main-folder-guard"] });
     expect(await check(repo)).toEqual([
-      "! project: .claude/cc-smart-dev-kit.json lists main-folder-guard in ownHooks, so the plugin's main-folder-guard is off here, but the project's settings wire no hook on PreToolUse (Edit, Write, NotebookEdit): nothing answers in its place. Take \"main-folder-guard\" out of ownHooks once the project's copy is gone",
+      "! project: .claude/cc-smart-dev-kit.json lists main-folder-guard in ownHooks, so the plugin's main-folder-guard is off here, but the project's settings wire no hook on PreToolUse (Edit, Write, NotebookEdit, Bash): nothing answers in its place. Take \"main-folder-guard\" out of ownHooks once the project's copy is gone",
     ]);
   });
 
@@ -1092,6 +1095,7 @@ describe("the project's own copies of plugin hooks (ownHooks)", () => {
       '· project: .claude/cc-smart-dev-kit.json lists job-route in ownHooks, a plugin hook no project can switch off any more: it silences nothing. Take "job-route" out of ownHooks',
       both("git-guard", "./guard.sh", "PreToolUse (Bash)"),
       both("merge-guard", "./guard.sh", "PreToolUse (Bash)"),
+      both("main-folder-guard", "./guard.sh", "PreToolUse (Bash)"),
       bothJobRoute("./guard.sh", "PreToolUse (Bash)"),
     ]);
   });

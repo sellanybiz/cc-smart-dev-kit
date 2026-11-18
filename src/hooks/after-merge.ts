@@ -48,7 +48,6 @@ import {
   MAX_NESTING,
   nestedCommand,
   nestedDialect,
-  programName,
   readingsOf,
   redirectionTargets,
   shellSteps,
@@ -57,11 +56,12 @@ import {
   wordsOf,
   wordsWithFill,
 } from "../shell/command";
+import { gitCalls } from "../shell/git-calls";
+import { programName } from "../shell/program-name";
 import { resolveWorkflow, WorkflowConfigError } from "../workflow/resolve";
 import { startAutoClean } from "../worktrees/auto-start";
 import { startBudget } from "./budget";
 import { GUARD_GIT_TIMEOUT_MS, innermostWorktree, listWorktrees, runGit } from "./git";
-import { gitCalls } from "./git-guard";
 import { addContext, type HookResult, SILENT, stringField, toolInput } from "./io";
 import type { Env, HookContext } from "./run";
 
@@ -1379,8 +1379,10 @@ export function exactMergeOf(command: string, dialect?: Dialect): MergeCall | nu
   const steps = shellSteps(command, { dialect: reading.dialect, joinLines: reading.joinLines });
   const step = steps[0];
   if (steps.length !== 1 || step === undefined || step.pipedFrom !== null) return null;
-  const words = wordsOf(step.text, reading.dialect);
-  if (redirectionTargets(words).length > 0) return null;
+  const filled = wordsWithFill(step.text, reading.dialect);
+  // The filled words tell `>"(x"` (a file) from `>(x)`: a merge that writes a file is no plain merge.
+  if (redirectionTargets(filled).length > 0) return null;
+  const words = filled.map((word) => word.text);
   const invocation = invocationOf(words);
   if (invocation === undefined || invocation.program !== "gh") return null;
   // An assignment or a wrapper before gh (`env`, `sudo`, `timeout`) runs more than the merge.

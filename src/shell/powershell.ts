@@ -34,5 +34,14 @@ export function powershellLiteral(value: string): string {
   if (/[\r\n]/.test(value)) {
     throw new Error(`cannot put ${JSON.stringify(value)} in a PowerShell command`);
   }
+  return powershellQuoted(value);
+}
+
+/**
+ * `value` as a PowerShell single-quoted string for text the shell reader reads back, never a
+ * command line that runs: a line break stays in it (PowerShell's single-quoted strings span
+ * lines), so a guard reading a job's words never fails on one.
+ */
+export function powershellQuoted(value: string): string {
   return `'${value.replace(SINGLE_QUOTES, (quote) => quote + quote)}'`;
 }

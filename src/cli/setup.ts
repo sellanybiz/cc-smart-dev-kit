@@ -16,6 +16,7 @@ import {
 } from "../gateway/claude-defaults";
 import { type GatewayConfig, messageOf } from "../gateway/config";
 import { applyModelPickerStep } from "../gateway/model-picker-step";
+import { installGitHooksFolder } from "../jobs/hook-folder";
 import {
   applyClaudeMem,
   type ClaudeMemPlan,
@@ -339,6 +340,19 @@ function applySetup(
     if (cmd.outcome !== "unchanged") {
       const mark = cmd.outcome === "created" ? "created" : "changed";
       add("command", mark, `${short(cmd.path)}: launcher ${cmd.outcome}`);
+    }
+  }
+  // The kit's git hooks folder: one `sh` script for every hook name, which a routed `git commit`
+  // or `git push` uses for that one command so a heavy hook waits for a slot. A folder the kit
+  // owns whole (no backup; `restore` removes it). The scripts are `sh`: native Windows has none
+  // yet, and says so.
+  if (platform === "win32") {
+    add("command", "info", "git hook queue: not set up on Windows yet; hooks run as they are");
+  } else {
+    const hooks = installGitHooksFolder(paths, { dryRun });
+    if (hooks.outcome !== "unchanged") {
+      const mark = hooks.outcome === "created" ? "created" : "changed";
+      add("command", mark, `${short(paths.gitHooksFolder)}: git hooks folder ${hooks.outcome}`);
     }
   }
 

@@ -42,6 +42,66 @@ test("status ignores even a malformed old jobs.json", async () => {
     ],
   });
 });
+/** A waiting job's record: `what` tells the jobs apart in the status lines. */
+const waitingRecord = (what: string, since: number) =>
+  holderText({
+    checkout: "/repo",
+    kind: "build",
+    person: "host",
+    pid: process.pid,
+    since,
+    slot: true,
+    v: 1,
+    what,
+  });
+
+/** The `what` of each waiting line `job status` prints, in order. */
+async function waitingOrder(ctx: JobContext): Promise<string[]> {
+  return statusLines(await readJobs(ctx), ctx.paths.home, 0)
+    .filter((line) => line.startsWith("  waiting:"))
+    .map((line) => (line.match(/, (\w+) in \/repo/) ?? [])[1] ?? line);
+}
+
+// The order the queue serves them in (`decide`): oldest first, an equal start by the ticket's
+// token, a record nobody can read last. `job status` shows the same order, so the place a
+// waiting line prints ("3rd in line") is the place `job status` lists.
+test("status lists waiting jobs in the order the queue serves them", async () => {
+  const ctx = world();
+  const store = openStores(ctx).machine;
+  const tickets = [
+    await store.enqueue(waitingRecord("third", 3000)),
+    await store.enqueue("not a record"),
+    await store.enqueue(waitingRecord("first", 1000)),
+    await store.enqueue(waitingRecord("second", 2000)),
+  ];
+  try {
+    expect(await waitingOrder(ctx)).toEqual([
+      "first",
+      "second",
+      "third",
+      "  waiting: unknown holder",
+    ]);
+  } finally {
+    for (const ticket of tickets) ticket?.release();
+  }
+});
+test("status breaks a tie between equal start times by the ticket token, as the queue does", async () => {
+  const ctx = world();
+  const store = openStores(ctx).machine;
+  const a = await store.enqueue(waitingRecord("a", 1000));
+  const b = await store.enqueue(waitingRecord("b", 1000));
+  try {
+    const tokens = new Map(
+      (await store.waiting()).map((unit) => [unit.tie, JSON.parse(unit.text).what as string]),
+    );
+    // Written by hand: the smaller token is served first.
+    const expected = [...tokens.keys()].sort().map((tie) => tokens.get(tie));
+    expect(await waitingOrder(ctx)).toEqual(expected as string[]);
+  } finally {
+    a?.release();
+    b?.release();
+  }
+});
 test("status and fingerprint show the holder and waiting job", async () => {
   const ctx = world();
   const store = openStores(ctx).machine;

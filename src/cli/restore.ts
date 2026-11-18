@@ -38,11 +38,12 @@ import { forgetMcpServer, mcpRecordsFile } from "../mcp/records";
 import { removeMcpServers } from "../mcp/register";
 import { bunConfigPath } from "../setup/bun-config";
 import { forgetInstructionsState } from "../setup/instructions";
-import { LAUNCHER_NAME, shellQuote } from "../setup/launcher";
+import { LAUNCHER_NAME } from "../setup/launcher";
 import { withLock } from "../setup/lock";
 import { samePath } from "../setup/managed-json";
 import { type RestoreResult, restore } from "../setup/restore";
 import { readChanged, realTarget } from "../setup/write";
+import { shellQuote } from "../shell/quote";
 import { type CliPaths, tildify } from "./paths";
 
 function describe(result: RestoreResult, short: (path: string) => string): string {

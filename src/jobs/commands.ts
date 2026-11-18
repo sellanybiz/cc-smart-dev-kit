@@ -1,11 +1,11 @@
-/** The heavy-job command: run, status and kinds. */
-import { readdirSync, statSync } from "node:fs";
+/** The heavy-job command: run, status, kinds, and the git hooks' question (`hook`). */
+import { readdirSync } from "node:fs";
 import { hostname } from "node:os";
-import { resolve } from "node:path";
 import { COMMAND } from "../build-info";
 import { resolveProject } from "../project/resolve";
+import { shellWord } from "../shell/quote";
 import { isInsideHeavyJob, readProcStat } from "./ancestry";
-import { toolCallOfArgv } from "./classify";
+import { runWeight } from "./classify";
 import {
   HEAVY_SLOTS,
   heavyLimitLine,
@@ -14,24 +14,31 @@ import {
   readHeavyLimit,
   setHeavyLimit,
 } from "./config";
-import { isPrintOnly, type Kinds, mergeKinds, namesOnlyFiles } from "./kinds";
+import { projectKinds, runHookCommand } from "./hook-command";
+import { type Kinds, mergeKinds } from "./kinds";
 import { exitCodeOf, spawnAndWait } from "./launch";
 import { acquireFrom, pidsHolding, WaitStoppedError } from "./queue";
 import { runJob } from "./run";
 import { type JobContext, openStores, readJobs, statusLines } from "./status";
+import { diskWeightSource } from "./weight-source";
 
 export type { JobContext } from "./status";
 
 export const USAGE = `Usage: ${COMMAND} job <command>
 
 Commands:
-  run [--kind <kind>] [--exclusive <name>] -- <command...>
+  run [--kind <kind>] [--exclusive <name>] [--hook] -- <command...>
                  Wait for a free heavy slot on this machine, then run the command.
                  Named-file and print-only runs skip the queue.
                  Output, exit code and signals pass through.
+                 --hook: for the kit's git hooks. The slot is taken without reading
+                 the command's words, and when the queue cannot be used the command
+                 runs at once: a broken kit never blocks a commit.
   status         Limit, its source, running jobs and waiting jobs.
   set max <n>    Set the machine limit (${HEAVY_SLOTS}..${MAX_HEAVY_SLOTS}); default ${HEAVY_SLOTS}.
   kinds          The kinds of heavy job.
+  hook <name>    For the kit's git hooks: prints "direct" or "queue <kind>" for git
+                 hook <name> in this repo. Always ends with 0.
 
 How it works: docs/jobs.md in the plugin's repo.`;
 
@@ -46,24 +53,36 @@ function envFilesIn(dir: string): string[] {
   }
 }
 
-/** True when `word` names a file (not a folder) from `cwd`; anything that cannot be read is no file. */
-function isFileIn(cwd: string, word: string): boolean {
-  try {
-    return statSync(resolve(cwd, word)).isFile();
-  } catch {
-    return false;
-  }
-}
-
-function projectKinds(cwd: string): Kinds {
-  const project = resolveProject(cwd);
-  return mergeKinds(project?.config?.jobs?.kinds);
+/**
+ * True when the judge (`runWeight`) proves the command light: it only prints, or names only
+ * files that exist, in the folder it runs in. The words are read as the line a shell would run
+ * (`shellWord` quotes what needs it), so a command given through `sh -c '…'`, a wrapper or a
+ * `cd` is read as the route reads it. Only a positive finding lowers a run to light: a heavy
+ * run, and a command the judge cannot read (`none`), keep their slot.
+ */
+function isLightRun(command: readonly string[], kinds: Kinds, cwd: string): boolean {
+  const line = command.map(shellWord).join(" ");
+  return runWeight(line, kinds, diskWeightSource(cwd)).weight === "light";
 }
 
 interface RunArgs {
   kind: string | null;
   exclusive: string | null;
+  /** `--hook`: a git hook the kit's hooks folder already judged heavy (`job hook`). */
+  hook: boolean;
   command: [string, ...string[]];
+}
+
+/**
+ * The command of a `job run --hook` line whose options could not be read: the words after the
+ * first `--`, when `--hook` is before it. A hook line runs even then, so a CLI that reads the
+ * options another way never blocks a commit.
+ */
+function hookCommandOf(args: readonly string[]): [string, ...string[]] | null {
+  const end = args.indexOf("--");
+  if (end < 0 || !args.slice(0, end).includes("--hook")) return null;
+  const [program, ...rest] = args.slice(end + 1);
+  return program === undefined || program === "" ? null : [program, ...rest];
 }
 
 /** An `--exclusive` name: a word, as a person types it in a script. */
@@ -72,9 +91,15 @@ const EXCLUSIVE_NAME = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/;
 function parseRunArgs(args: readonly string[]): RunArgs | { error: string } {
   let kind: string | null = null;
   let exclusive: string | null = null;
+  let hook = false;
   let index = 0;
   while (index < args.length && args[index] !== "--") {
     const arg = args[index] ?? "";
+    if (arg === "--hook") {
+      hook = true;
+      index += 1;
+      continue;
+    }
     if (!arg.startsWith("-")) return { error: "put -- before the command" };
     const [name, inline] = arg.includes("=") ? arg.split(/=(.*)/s, 2) : [arg, undefined];
     if (name !== "--kind" && name !== "--exclusive") {
@@ -99,44 +124,59 @@ function parseRunArgs(args: readonly string[]): RunArgs | { error: string } {
   if (args[index] !== "--") return { error: "put -- before the command" };
   const [program, ...rest] = args.slice(index + 1);
   if (program === undefined || program === "") return { error: "no command after --" };
-  return { kind, exclusive, command: [program, ...rest] };
+  return { kind, exclusive, hook, command: [program, ...rest] };
+}
+
+const messageOf = (error: unknown) => (error instanceof Error ? error.message : String(error));
+
+/** A hook the queue cannot take: one line on stderr, then the hook runs as git would run it. */
+async function runHookDirect(
+  command: readonly [string, ...string[]],
+  reason: string,
+  say: (line: string) => void,
+): Promise<number> {
+  say(`${reason}; the git hook runs without the queue.`);
+  return (await spawnAndWait(command, process, say)).code;
 }
 
 /** `job run`: returns the exit code to end with. */
 async function jobRun(args: readonly string[], ctx: JobContext): Promise<number> {
+  const say = (line: string) => ctx.say(`${PREFIX} ${line}`);
   const parsed = parseRunArgs(args);
   if ("error" in parsed) {
+    const hookCommand = hookCommandOf(args);
+    if (hookCommand !== null) return runHookDirect(hookCommand, parsed.error, say);
     ctx.say(`${PREFIX} ${parsed.error}\n\n${USAGE}`);
     return 2;
   }
+  // Before the job starts, a hook never fails on the kit: it runs at once instead.
+  const cannotQueue = (reason: string): Promise<number> | number => {
+    if (parsed.hook) return runHookDirect(parsed.command, reason, say);
+    say(reason);
+    return 2;
+  };
   // Bun loads .env files from the working folder into its own environment, and the job
   // would get them. A job must get exactly the environment it was given.
   const envFiles = envFilesIn(ctx.cwd);
   if (!ctx.execArgv.includes("--no-env-file") && envFiles.length > 0) {
-    ctx.say(
-      `${PREFIX} this folder has ${envFiles.join(", ")}, and bun was started without --no-env-file: ` +
+    return cannotQueue(
+      `this folder has ${envFiles.join(", ")}, and bun was started without --no-env-file: ` +
         `the job would get their values. Run "${COMMAND} setup" to update the launcher, then try again.`,
     );
-    return 2;
   }
-  const say = (line: string) => ctx.say(`${PREFIX} ${line}`);
   let kinds: Kinds;
   try {
     kinds = projectKinds(ctx.cwd);
   } catch (error) {
-    say(error instanceof Error ? error.message : String(error));
-    return 2;
+    return cannotQueue(messageOf(error));
   }
   const spec = parsed.kind === null ? null : kinds[parsed.kind];
   if (spec === undefined) {
-    ctx.say(`${PREFIX} unknown kind "${parsed.kind}": one of ${Object.keys(kinds).join(", ")}`);
-    return 2;
+    return cannotQueue(`unknown kind "${parsed.kind}": one of ${Object.keys(kinds).join(", ")}`);
   }
-  const call = toolCallOfArgv(parsed.command);
-  const slot =
-    spec !== null &&
-    !isPrintOnly(spec, call.args) &&
-    !namesOnlyFiles(spec, call.args, (word) => isFileIn(ctx.cwd, word));
+  // A hook's words are git's (a message file, refs), not the tool's: `job hook` already judged
+  // the hook's body heavy, so its slot is never lowered by reading them.
+  const slot = spec !== null && (parsed.hook || !isLightRun(parsed.command, kinds, ctx.cwd));
   const exclusive = parsed.exclusive ?? undefined;
   // A narrow run never opens or reads the lease store.
   if (!slot && exclusive === undefined)
@@ -145,8 +185,7 @@ async function jobRun(args: readonly string[], ctx: JobContext): Promise<number>
   try {
     stores = [openStores(ctx).machine];
   } catch (error) {
-    say(error instanceof Error ? error.message : String(error));
-    return 2;
+    return cannotQueue(messageOf(error));
   }
   const now = ctx.now ?? Date.now;
 
@@ -165,6 +204,7 @@ async function jobRun(args: readonly string[], ctx: JobContext): Promise<number>
   let started = false;
   const releaseOnExit = () => held?.release();
   process.once("exit", releaseOnExit);
+  let failedBeforeStart = "";
 
   try {
     const nestedIn = (exclusiveName?: string) =>
@@ -213,11 +253,16 @@ async function jobRun(args: readonly string[], ctx: JobContext): Promise<number>
     return started || caught === null ? code : exitCodeOf(null, caught);
   } catch (error) {
     if (error instanceof WaitStoppedError) return exitCodeOf(null, caught ?? "SIGTERM");
-    throw error;
+    if (!parsed.hook || started) throw error;
+    // The queue broke before the hook started (a store it cannot read or write): give back
+    // what it holds, and run the hook below, once the signal handlers are gone.
+    releaseOnExit();
+    failedBeforeStart = messageOf(error);
   } finally {
     for (const [signal, handler] of handlers) process.off(signal, handler);
     process.off("exit", releaseOnExit);
   }
+  return runHookDirect(parsed.command, failedBeforeStart, say);
 }
 
 /** `job status`: the queue's own lines, from the one reader (`status.ts`). */
@@ -266,6 +311,8 @@ export async function runJobCommand(args: readonly string[], ctx: JobContext): P
       return jobStatus(ctx);
     case "kinds":
       return jobKinds(ctx);
+    case "hook":
+      return runHookCommand(rest, ctx);
     case undefined:
     case "help":
     case "--help":
