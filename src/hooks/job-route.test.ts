@@ -815,6 +815,13 @@ describe("a routed call gets the Bash tool's longest timeout", () => {
 // Real git in temp repos, the kit's real folder written in a temp home, a fake launcher.
 // ---------------------------------------------------------------------------------------
 
+/**
+ * Native Windows gets no prefix yet (docs/windows-jobs.md § Limits): the blocks below prove the
+ * POSIX route, with `#!/bin/sh` hooks, file modes and bash, so the Windows job skips them and
+ * runs the one test after them, which proves the real platform leaves the line as written.
+ */
+const NATIVE_WINDOWS = process.platform === "win32";
+
 /** A hook that runs the tests: heavy. */
 const HEAVY_HOOK = "#!/bin/sh\nbun test\n";
 /** A hook that only checks the style: light. */
@@ -852,72 +859,75 @@ function gitRewrite(
     : JSON.parse(result.stdout).hookSpecificOutput.updatedInput.command;
 }
 
-describe("a git command with a heavy hook gets the hooks-folder prefix", () => {
-  it("git push with a heavy pre-push: the three assignments, then the line as written", () => {
-    const world = worldWithHooks({ "pre-push": HEAVY_HOOK });
-    expect(prefixOf(world)).toBe(
-      `GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=${world.home}/.local/share/cc-smart-dev-kit/git-hooks`,
-    );
-    expect(gitRewrite(world, "git push origin x")).toBe(`${prefixOf(world)} git push origin x`);
-    // The answer carries the Bash tool's longest timeout, as a routed heavy command does.
-    const answer = jobRoute(
-      contextFor(world.repo, "git push origin x", "Bash", { env: { HOME: world.home } }),
-      () => true,
-    );
-    expect(JSON.parse(answer.stdout ?? "{}").hookSpecificOutput.updatedInput).toEqual({
-      command: `${prefixOf(world)} git push origin x`,
-      timeout: 600_000,
+describe.skipIf(NATIVE_WINDOWS)(
+  "a git command with a heavy hook gets the hooks-folder prefix",
+  () => {
+    it("git push with a heavy pre-push: the three assignments, then the line as written", () => {
+      const world = worldWithHooks({ "pre-push": HEAVY_HOOK });
+      expect(prefixOf(world)).toBe(
+        `GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=${world.home}/.local/share/cc-smart-dev-kit/git-hooks`,
+      );
+      expect(gitRewrite(world, "git push origin x")).toBe(`${prefixOf(world)} git push origin x`);
+      // The answer carries the Bash tool's longest timeout, as a routed heavy command does.
+      const answer = jobRoute(
+        contextFor(world.repo, "git push origin x", "Bash", { env: { HOME: world.home } }),
+        () => true,
+      );
+      expect(JSON.parse(answer.stdout ?? "{}").hookSpecificOutput.updatedInput).toEqual({
+        command: `${prefixOf(world)} git push origin x`,
+        timeout: 600_000,
+      });
     });
-  });
 
-  it("only the git command of a chain is prefixed; the commands before it are byte-identical", () => {
-    const world = worldWithHooks({ "pre-commit": HEAVY_HOOK });
-    expect(gitRewrite(world, 'git add -A && git commit -m "x"')).toBe(
-      `git add -A && ${prefixOf(world)} git commit -m "x"`,
-    );
-    expect(gitRewrite(world, "cd .   ;  ls | wc -l\ngit  commit -m x  # note")).toBe(
-      `cd .   ;  ls | wc -l\n${prefixOf(world)} git  commit -m x  # note`,
-    );
-    expect(gitRewrite(world, "FOO=1 git commit -m x")).toBe(
-      `${prefixOf(world)} FOO=1 git commit -m x`,
-    );
-  });
-
-  it("two git commands with heavy hooks in one line are both prefixed, each in its place", () => {
-    const world = worldWithHooks({ "pre-commit": HEAVY_HOOK, "pre-push": HEAVY_HOOK });
-    expect(gitRewrite(world, "git commit -m x && git push")).toBe(
-      `${prefixOf(world)} git commit -m x && ${prefixOf(world)} git push`,
-    );
-    // The one with a light hook stays as it is.
-    const mixed = worldWithHooks({ "pre-commit": LIGHT_HOOK, "pre-push": HEAVY_HOOK });
-    expect(gitRewrite(mixed, "git commit -m x && git push")).toBe(
-      `git commit -m x && ${prefixOf(mixed)} git push`,
-    );
-  });
-
-  it("the hook a command runs decides: commit-msg counts for a commit, pre-merge-commit for a merge", () => {
-    const world = worldWithHooks({
-      "commit-msg": HEAVY_HOOK,
-      "pre-merge-commit": HEAVY_HOOK,
-      "post-commit": HEAVY_HOOK,
+    it("only the git command of a chain is prefixed; the commands before it are byte-identical", () => {
+      const world = worldWithHooks({ "pre-commit": HEAVY_HOOK });
+      expect(gitRewrite(world, 'git add -A && git commit -m "x"')).toBe(
+        `git add -A && ${prefixOf(world)} git commit -m "x"`,
+      );
+      expect(gitRewrite(world, "cd .   ;  ls | wc -l\ngit  commit -m x  # note")).toBe(
+        `cd .   ;  ls | wc -l\n${prefixOf(world)} git  commit -m x  # note`,
+      );
+      expect(gitRewrite(world, "FOO=1 git commit -m x")).toBe(
+        `${prefixOf(world)} FOO=1 git commit -m x`,
+      );
     });
-    expect(gitRewrite(world, "git commit -m x")).toBe(`${prefixOf(world)} git commit -m x`);
-    expect(gitRewrite(world, "git merge topic")).toBe(`${prefixOf(world)} git merge topic`);
-    // A heavy hook of another command, or one this command does not run, changes nothing.
-    expect(gitRewrite(world, "git push")).toBeNull();
-    const after = worldWithHooks({ "post-commit": HEAVY_HOOK });
-    expect(gitRewrite(after, "git commit -m x")).toBeNull();
-    expect(gitRewrite(world, "git status")).toBeNull();
-  });
 
-  it("a commit message with a here-doc is no obstacle: one prefix, the line otherwise untouched", () => {
-    const world = worldWithHooks({ "pre-commit": HEAVY_HOOK });
-    const line = "git commit -m \"$(cat <<'EOF'\nfix: x; git push\nEOF\n)\"";
-    expect(gitRewrite(world, line)).toBe(`${prefixOf(world)} ${line}`);
-  });
-});
+    it("two git commands with heavy hooks in one line are both prefixed, each in its place", () => {
+      const world = worldWithHooks({ "pre-commit": HEAVY_HOOK, "pre-push": HEAVY_HOOK });
+      expect(gitRewrite(world, "git commit -m x && git push")).toBe(
+        `${prefixOf(world)} git commit -m x && ${prefixOf(world)} git push`,
+      );
+      // The one with a light hook stays as it is.
+      const mixed = worldWithHooks({ "pre-commit": LIGHT_HOOK, "pre-push": HEAVY_HOOK });
+      expect(gitRewrite(mixed, "git commit -m x && git push")).toBe(
+        `git commit -m x && ${prefixOf(mixed)} git push`,
+      );
+    });
 
-describe("a git command that stays as written", () => {
+    it("the hook a command runs decides: commit-msg counts for a commit, pre-merge-commit for a merge", () => {
+      const world = worldWithHooks({
+        "commit-msg": HEAVY_HOOK,
+        "pre-merge-commit": HEAVY_HOOK,
+        "post-commit": HEAVY_HOOK,
+      });
+      expect(gitRewrite(world, "git commit -m x")).toBe(`${prefixOf(world)} git commit -m x`);
+      expect(gitRewrite(world, "git merge topic")).toBe(`${prefixOf(world)} git merge topic`);
+      // A heavy hook of another command, or one this command does not run, changes nothing.
+      expect(gitRewrite(world, "git push")).toBeNull();
+      const after = worldWithHooks({ "post-commit": HEAVY_HOOK });
+      expect(gitRewrite(after, "git commit -m x")).toBeNull();
+      expect(gitRewrite(world, "git status")).toBeNull();
+    });
+
+    it("a commit message with a here-doc is no obstacle: one prefix, the line otherwise untouched", () => {
+      const world = worldWithHooks({ "pre-commit": HEAVY_HOOK });
+      const line = "git commit -m \"$(cat <<'EOF'\nfix: x; git push\nEOF\n)\"";
+      expect(gitRewrite(world, line)).toBe(`${prefixOf(world)} ${line}`);
+    });
+  },
+);
+
+describe.skipIf(NATIVE_WINDOWS)("a git command that stays as written", () => {
   it("--no-verify and a commit's -n skip the hook: no prefix; a push's -n is --dry-run: prefix", () => {
     const world = worldWithHooks({ "pre-commit": HEAVY_HOOK, "pre-push": HEAVY_HOOK });
     for (const line of [
@@ -1017,7 +1027,7 @@ describe("a git command that stays as written", () => {
   });
 });
 
-describe("which repo's hook decides", () => {
+describe.skipIf(NATIVE_WINDOWS)("which repo's hook decides", () => {
   it("git -C sub decides by sub's own hooks, not the folder the call started in", () => {
     const world = worldWithHooks({ "pre-commit": HEAVY_HOOK });
     const sub = join(world.repo, "sub");
@@ -1090,7 +1100,7 @@ describe("which repo's hook decides", () => {
   });
 });
 
-describe("an environment that already holds GIT_CONFIG pairs", () => {
+describe.skipIf(NATIVE_WINDOWS)("an environment that already holds GIT_CONFIG pairs", () => {
   const pair = {
     GIT_CONFIG_COUNT: "1",
     GIT_CONFIG_KEY_0: "safe.directory",
@@ -1149,7 +1159,7 @@ describe("an environment that already holds GIT_CONFIG pairs", () => {
   });
 });
 
-describe("a line with a git command is never queued whole", () => {
+describe.skipIf(NATIVE_WINDOWS)("a line with a git command is never queued whole", () => {
   it("git is no heavy kind, so a line of heavy commands and git has no route of its own", () => {
     const source: WeightSource = { folder: "/repo", isFile: () => false, scriptsIn: () => null };
     for (const line of [
@@ -1170,7 +1180,7 @@ describe("a line with a git command is never queued whole", () => {
   });
 });
 
-describe("the rewritten line, run by bash with real git", () => {
+describe.skipIf(NATIVE_WINDOWS)("the rewritten line, run by bash with real git", () => {
   it("a heavy pre-commit runs through the launcher: job hook, then job run --hook", () => {
     const world = worldWithHooks({});
     const marker = join(world.repo, "marker");
@@ -1233,7 +1243,7 @@ describe("the rewritten line, run by bash with real git", () => {
   });
 });
 
-describe("a git command inside another git command's substitution", () => {
+describe.skipIf(NATIVE_WINDOWS)("a git command inside another git command's substitution", () => {
   it("each command gets its own prefix, whatever order the reader lists them in", () => {
     const world = worldWithHooks({ "pre-commit": HEAVY_HOOK, "pre-push": HEAVY_HOOK });
     const p = prefixOf(world);
@@ -1279,7 +1289,7 @@ describe("a git command inside another git command's substitution", () => {
   });
 });
 
-describe("a git command in a bash array stays as written", () => {
+describe.skipIf(NATIVE_WINDOWS)("a git command in a bash array stays as written", () => {
   it("the list of an array assignment holds words, not commands", () => {
     const world = worldWithHooks({ "pre-commit": HEAVY_HOOK, "pre-push": HEAVY_HOOK });
     for (const line of [
@@ -1298,28 +1308,39 @@ describe("a git command in a bash array stays as written", () => {
   });
 });
 
-describe("only the kit's own folder, as this version writes it, is routed to", () => {
-  it("a folder without the kit's mark, or with a stale script or a stray file: no prefix", () => {
-    const marked = worldWithHooks({ "pre-push": HEAVY_HOOK });
-    expect(gitRewrite(marked, "git push")).toBe(`${prefixOf(marked)} git push`);
-    rmSync(join(marked.paths.gitHooksFolder, OWNED_FOLDER_MARK));
-    expect(gitRewrite(marked, "git push")).toBeNull();
+describe.skipIf(NATIVE_WINDOWS)(
+  "only the kit's own folder, as this version writes it, is routed to",
+  () => {
+    it("a folder without the kit's mark, or with a stale script or a stray file: no prefix", () => {
+      const marked = worldWithHooks({ "pre-push": HEAVY_HOOK });
+      expect(gitRewrite(marked, "git push")).toBe(`${prefixOf(marked)} git push`);
+      rmSync(join(marked.paths.gitHooksFolder, OWNED_FOLDER_MARK));
+      expect(gitRewrite(marked, "git push")).toBeNull();
 
-    const stale = worldWithHooks({ "pre-push": HEAVY_HOOK });
-    writeFileIn(join(stale.paths.gitHooksFolder, "pre-push"), "#!/bin/sh\nexit 0\n", 0o755);
-    expect(gitRewrite(stale, "git push")).toBeNull();
+      const stale = worldWithHooks({ "pre-push": HEAVY_HOOK });
+      writeFileIn(join(stale.paths.gitHooksFolder, "pre-push"), "#!/bin/sh\nexit 0\n", 0o755);
+      expect(gitRewrite(stale, "git push")).toBeNull();
 
-    const stray = worldWithHooks({ "pre-push": HEAVY_HOOK });
-    writeFileIn(join(stray.paths.gitHooksFolder, "push-to-checkout"), "#!/bin/sh\n", 0o755);
-    expect(gitRewrite(stray, "git push")).toBeNull();
-  });
-});
+      const stray = worldWithHooks({ "pre-push": HEAVY_HOOK });
+      writeFileIn(join(stray.paths.gitHooksFolder, "push-to-checkout"), "#!/bin/sh\n", 0o755);
+      expect(gitRewrite(stray, "git push")).toBeNull();
+    });
+  },
+);
 
-describe("git merge runs commit-msg too", () => {
+describe.skipIf(NATIVE_WINDOWS)("git merge runs commit-msg too", () => {
   it("a merge whose only heavy hook is commit-msg is prefixed", () => {
     const world = worldWithHooks({ "commit-msg": HEAVY_HOOK });
     expect(gitRewrite(world, "git merge topic")).toBe(`${prefixOf(world)} git merge topic`);
     const light = worldWithHooks({ "commit-msg": LIGHT_HOOK, "pre-merge-commit": LIGHT_HOOK });
     expect(gitRewrite(light, "git merge topic")).toBeNull();
+  });
+});
+
+describe.skipIf(!NATIVE_WINDOWS)("on native Windows, the real platform", () => {
+  it("leaves a git command with a heavy hook as written: no prefix yet", () => {
+    const world = worldWithHooks({ "pre-push": HEAVY_HOOK, "pre-commit": HEAVY_HOOK });
+    expect(gitRewrite(world, "git push")).toBeNull();
+    expect(gitRewrite(world, 'git add -A && git commit -m "x"')).toBeNull();
   });
 });
