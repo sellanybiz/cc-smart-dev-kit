@@ -5992,7 +5992,7 @@ function superRefine(fn, params) {
 }
 // src/build-info/index.ts
 var info = {
-  version: "4.10.1",
+  version: "4.10.2",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -9049,36 +9049,45 @@ function isRunning(pid) {
     return error.code === "EPERM";
   }
 }
+function sessionRecordOf(claudeConfigDir, pid, facts = {}) {
+  if (!(facts.running ?? isRunning)(pid))
+    return null;
+  const dir = join9(claudeConfigDir, "sessions");
+  const file = join9(dir, `${pid}.json`);
+  const bootedAt = Date.now() - uptime() * 1000;
+  let text;
+  try {
+    if (statSync6(file).mtimeMs < bootedAt)
+      return null;
+    text = readFileSync9(file, "utf8");
+  } catch (error) {
+    if (error.code === "ENOENT")
+      return null;
+    throw new Error(`the record of running session ${pid} cannot be read; retry`);
+  }
+  const record = parseSessionRecord(text);
+  if (record === null) {
+    throw new Error(`the record of running session ${pid} in ${dir} cannot be read, so it is unknown where it works`);
+  }
+  if ((facts.platform ?? process.platform) === "linux" && record.procStart !== undefined) {
+    const start = processStart(pid, facts);
+    if (start !== undefined && record.procStart !== start)
+      return null;
+  }
+  return record;
+}
 function liveSessions(claudeConfigDir, facts = {}) {
   const dir = join9(claudeConfigDir, "sessions");
   if (!existsSync5(dir))
     return [];
-  const bootedAt = Date.now() - uptime() * 1000;
   const live = [];
   for (const file of readdirSync3(dir)) {
     const pid = Number(file.replace(/\.json$/, ""));
-    if (!file.endsWith(".json") || !Number.isInteger(pid) || !(facts.running ?? isRunning)(pid))
+    if (!file.endsWith(".json") || !Number.isInteger(pid))
       continue;
-    let text;
-    try {
-      if (statSync6(join9(dir, file)).mtimeMs < bootedAt)
-        continue;
-      text = readFileSync9(join9(dir, file), "utf8");
-    } catch (error) {
-      if (error.code === "ENOENT")
-        continue;
-      throw new Error(`the record of running session ${pid} cannot be read; retry`);
-    }
-    const record = parseSessionRecord(text);
-    if (record === null) {
-      throw new Error(`the record of running session ${pid} in ${dir} cannot be read, so it is unknown where it works`);
-    }
-    if ((facts.platform ?? process.platform) === "linux" && record.procStart !== undefined) {
-      const start = processStart(pid, facts);
-      if (start !== undefined && record.procStart !== start)
-        continue;
-    }
-    live.push(record);
+    const record = sessionRecordOf(claudeConfigDir, pid, facts);
+    if (record !== null)
+      live.push(record);
   }
   return live;
 }
@@ -20276,9 +20285,17 @@ function claimHeldBy(claim, who) {
     return claim.procStart === who.procStart;
   return who.sessionId !== null && claim.sessionId === who.sessionId;
 }
+function resumedClaim(claim, who, isLive) {
+  return claim !== null && who !== null && who !== undefined && who.pid !== null && who.sessionId !== null && claim.sessionId === who.sessionId && !claimHeldBy(claim, who) && !isLive(claim);
+}
+function claimIsMine(claim, who, isLive) {
+  return claimHeldBy(claim, who) || resumedClaim(claim, who, isLive);
+}
 function claimState(task, isLive, who) {
-  if (!task.claim || !isLive(task.claim))
+  if (!task.claim)
     return "free";
+  if (!isLive(task.claim))
+    return resumedClaim(task.claim, who, isLive) ? "mine" : "free";
   return claimHeldBy(task.claim, who) ? "mine" : "another session";
 }
 function waitsForTask(tasks, start, target) {
@@ -20626,19 +20643,23 @@ function callerOf(facts = {}) {
   const readStat = facts.readStat ?? readProcStat;
   const config = facts.claudeConfigDir ?? cliPaths(env).claudeConfigDir;
   const cacheKey = `${config}:${pid}:${platform}`;
-  const records = liveSessions(config, {
+  const recordOf = (p) => sessionRecordOf(config, p, {
     readStat,
     platform,
     ...facts.running ? { running: facts.running } : {}
   });
   const previous = cached2.get(cacheKey);
-  const live = previous ? records.find((r) => r.pid === previous.pid && (r.procStart ?? null) === previous.procStart) : null;
-  let record = live;
+  const remembered = previous ? recordOf(previous.pid) : null;
+  let record = remembered !== null && (remembered.procStart ?? null) === previous?.procStart ? remembered : null;
   if (!record) {
     const parent = facts.ppid ?? process.ppid;
     const grandparent = platform === "linux" ? null : (facts.parentOf ?? listedParentOf(platform))(parent);
     const pids = platform === "linux" ? ancestorPids(pid, readStat) : [parent, ...grandparent ? [grandparent] : []];
-    record = pids.map((p) => records.find((r) => r.pid === p)).find((r) => r !== undefined);
+    for (const p of pids) {
+      record = recordOf(p);
+      if (record !== null)
+        break;
+    }
   }
   if (record) {
     cached2.set(cacheKey, { pid: record.pid, procStart: record.procStart ?? null });
@@ -22930,7 +22951,7 @@ function openPhasesOf(paths, project, caller) {
     return { state: "ready", value: NOTHING_OPEN };
   const owns = ownerOf2(who);
   const owned = new Set(all.flatMap((t) => t.plan !== null && ownsPlan(all, owns, t.plan) ? [t.plan] : []));
-  const claimedBy = (task) => claimHeldBy(task.claim, who);
+  const claimedBy = (task) => claimIsMine(task.claim, who, claimLive);
   const isMine = (phase) => owned.has(phase.plan) || claimedBy(phase) || all.some((t) => t.parentId === phase.id && claimedBy(t));
   const inProgress = phases.filter((t) => t.status === "in_progress" && isMine(t));
   const working = new Set(inProgress.map((t) => t.plan));

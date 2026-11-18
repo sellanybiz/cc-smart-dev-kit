@@ -3,6 +3,26 @@
 What each release changed, newest first. A release's **What to run** steps are the ones to do
 in your own terminal after the update; the user guide is [README.md](README.md).
 
+## 4.10.2
+
+- **A reopened session keeps its plan on the status line.** `claude --resume` (or
+  `cc-smart-dev-kit sessions --open`) gives a session a new process under the same session id.
+  Task claims belong to a process, so the claims named a process that was gone, and the
+  status line's Plan, Phases and Tasks rows vanished. Now a dead claim under the caller's own
+  session id counts as the caller's, and the next task call moves it to the new process, with
+  a history entry. A live claim in another process is never taken, even under the same id.
+- **A `/clear` keeps the work for a later resume.** A `/clear` keeps the process and gives the
+  session a new id. The next task call moves the process's claims, and the open tasks it made,
+  to the new id, in every project, so a resume under that id still finds them.
+- **Another session's record can no longer blank your status line.** The task server read every
+  running session's record and failed when any one could not be read. It now reads only its
+  own process and that process's parents.
+- **A read never fails because a claim could not be moved.** `list`, `get` and `search` still
+  answer, with one line saying the claims were not moved and the next call retries. A write
+  fails with that reason.
+
+**What to run:** nothing. A session picks up the change at its next start.
+
 ## 4.10.1
 
 - **A child session's questions are yours.** You answer a child's questions, permission

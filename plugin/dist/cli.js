@@ -39,7 +39,7 @@ var MIN_BUN = "1.4.3";
 
 // src/build-info/index.ts
 var info = {
-  version: "4.10.1",
+  version: "4.10.2",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -26821,36 +26821,45 @@ function isRunning2(pid) {
     return error.code === "EPERM";
   }
 }
+function sessionRecordOf(claudeConfigDir, pid, facts = {}) {
+  if (!(facts.running ?? isRunning2)(pid))
+    return null;
+  const dir = join34(claudeConfigDir, "sessions");
+  const file = join34(dir, `${pid}.json`);
+  const bootedAt = Date.now() - uptime() * 1000;
+  let text;
+  try {
+    if (statSync14(file).mtimeMs < bootedAt)
+      return null;
+    text = readFileSync37(file, "utf8");
+  } catch (error) {
+    if (error.code === "ENOENT")
+      return null;
+    throw new Error(`the record of running session ${pid} cannot be read; retry`);
+  }
+  const record = parseSessionRecord(text);
+  if (record === null) {
+    throw new Error(`the record of running session ${pid} in ${dir} cannot be read, so it is unknown where it works`);
+  }
+  if ((facts.platform ?? process.platform) === "linux" && record.procStart !== undefined) {
+    const start = processStart(pid, facts);
+    if (start !== undefined && record.procStart !== start)
+      return null;
+  }
+  return record;
+}
 function liveSessions(claudeConfigDir, facts = {}) {
   const dir = join34(claudeConfigDir, "sessions");
   if (!existsSync30(dir))
     return [];
-  const bootedAt = Date.now() - uptime() * 1000;
   const live = [];
   for (const file of readdirSync15(dir)) {
     const pid = Number(file.replace(/\.json$/, ""));
-    if (!file.endsWith(".json") || !Number.isInteger(pid) || !(facts.running ?? isRunning2)(pid))
+    if (!file.endsWith(".json") || !Number.isInteger(pid))
       continue;
-    let text;
-    try {
-      if (statSync14(join34(dir, file)).mtimeMs < bootedAt)
-        continue;
-      text = readFileSync37(join34(dir, file), "utf8");
-    } catch (error) {
-      if (error.code === "ENOENT")
-        continue;
-      throw new Error(`the record of running session ${pid} cannot be read; retry`);
-    }
-    const record = parseSessionRecord(text);
-    if (record === null) {
-      throw new Error(`the record of running session ${pid} in ${dir} cannot be read, so it is unknown where it works`);
-    }
-    if ((facts.platform ?? process.platform) === "linux" && record.procStart !== undefined) {
-      const start = processStart(pid, facts);
-      if (start !== undefined && record.procStart !== start)
-        continue;
-    }
-    live.push(record);
+    const record = sessionRecordOf(claudeConfigDir, pid, facts);
+    if (record !== null)
+      live.push(record);
   }
   return live;
 }
@@ -29180,7 +29189,7 @@ var SUBJECT_LIMIT = 200, DESCRIPTION_LIMIT = 200000, NOTE_LIMIT = 64000;
 
 // src/tasks/schemas.ts
 import { isAbsolute as isAbsolute4 } from "path";
-var fields, subject, description, note, ref2, type, blockedBy, bindings, projectFields, taskSchemas;
+var fields, subject, description, note, ref2, type, blockedBy, bindings, projectFields, taskSchemas, READ_ONLY_OPERATIONS;
 var init_schemas3 = __esm(() => {
   init_zod();
   init_format();
@@ -29256,6 +29265,7 @@ var init_schemas3 = __esm(() => {
     search: object({ text: string2().min(1), include_closed: boolean2().default(false) }).strict(),
     delete: object({ task: ref2 }).strict()
   };
+  READ_ONLY_OPERATIONS = new Set(["list", "get", "search"]);
 });
 
 // src/mcp/task-server-name.ts
@@ -29528,9 +29538,17 @@ function claimHeldBy(claim, who) {
     return claim.procStart === who.procStart;
   return who.sessionId !== null && claim.sessionId === who.sessionId;
 }
+function resumedClaim(claim, who, isLive) {
+  return claim !== null && who !== null && who !== undefined && who.pid !== null && who.sessionId !== null && claim.sessionId === who.sessionId && !claimHeldBy(claim, who) && !isLive(claim);
+}
+function claimIsMine(claim, who, isLive) {
+  return claimHeldBy(claim, who) || resumedClaim(claim, who, isLive);
+}
 function claimState(task, isLive, who) {
-  if (!task.claim || !isLive(task.claim))
+  if (!task.claim)
     return "free";
+  if (!isLive(task.claim))
+    return resumedClaim(task.claim, who, isLive) ? "mine" : "free";
   return claimHeldBy(task.claim, who) ? "mine" : "another session";
 }
 function waitsForTask(tasks, start, target) {
@@ -29946,19 +29964,23 @@ function callerOf(facts = {}) {
   const readStat = facts.readStat ?? readProcStat;
   const config = facts.claudeConfigDir ?? cliPaths(env).claudeConfigDir;
   const cacheKey = `${config}:${pid}:${platform}`;
-  const records = liveSessions(config, {
+  const recordOf = (p) => sessionRecordOf(config, p, {
     readStat,
     platform,
     ...facts.running ? { running: facts.running } : {}
   });
   const previous = cached2.get(cacheKey);
-  const live = previous ? records.find((r) => r.pid === previous.pid && (r.procStart ?? null) === previous.procStart) : null;
-  let record = live;
+  const remembered = previous ? recordOf(previous.pid) : null;
+  let record = remembered !== null && (remembered.procStart ?? null) === previous?.procStart ? remembered : null;
   if (!record) {
     const parent = facts.ppid ?? process.ppid;
     const grandparent = platform === "linux" ? null : (facts.parentOf ?? listedParentOf(platform))(parent);
     const pids = platform === "linux" ? ancestorPids(pid, readStat) : [parent, ...grandparent ? [grandparent] : []];
-    record = pids.map((p) => records.find((r) => r.pid === p)).find((r) => r !== undefined);
+    for (const p of pids) {
+      record = recordOf(p);
+      if (record !== null)
+        break;
+    }
   }
   if (record) {
     cached2.set(cacheKey, { pid: record.pid, procStart: record.procStart ?? null });
@@ -30300,6 +30322,51 @@ function takeTasks(db, project, id, who, now, options) {
     return rows.map((t) => taskById(db, t.id));
   });
 }
+function restampsOf(all, who, isLive) {
+  if (who.pid === null || who.sessionId === null)
+    return [];
+  const found = [];
+  for (const task of all) {
+    let claim;
+    if (task.status === "in_progress" && task.claim !== null) {
+      if (resumedClaim(task.claim, who, isLive))
+        claim = "moved";
+      else if (claimHeldBy(task.claim, who) && task.claim.sessionId !== who.sessionId)
+        claim = "session";
+    }
+    const createdBy = isOpen(task) && claimHeldBy(task.creator, who) && task.createdBy !== who.sessionId;
+    if (claim !== undefined || createdBy)
+      found.push({ task, ...claim === undefined ? {} : { claim }, createdBy });
+  }
+  return found;
+}
+function restampsEverywhere(db, who, isLive) {
+  if (who.pid === null || who.sessionId === null)
+    return [];
+  const projects = db.sqlite.query("SELECT DISTINCT project FROM tasks WHERE status IN ('pending','in_progress') AND (claim_pid=? OR claim_session=? OR created_pid=?) ORDER BY project").all(who.pid, who.sessionId, who.pid);
+  return projects.flatMap(({ project }) => restampsOf(allTasks(db, project), who, isLive));
+}
+function reclaimResumed(db, who, now, isLive) {
+  if (restampsEverywhere(db, who, isLive).length === 0)
+    return { ok: true, value: 0 };
+  return writeWork(db, () => {
+    const rows = restampsEverywhere(db, who, isLive);
+    for (const { task, claim, createdBy } of rows) {
+      if (claim === "moved") {
+        db.sqlite.query("UPDATE tasks SET claim_pid=?,claim_start=?,claim_session=?,updated_at=? WHERE id=?").run(who.pid, who.procStart, who.sessionId, now, task.id);
+        recordEvent(db, task, "changed", { claim: [`process ${task.claim?.pid}`, `process ${who.pid}`] }, who, now, "claim moved to the resumed session's process");
+      } else if (claim === "session") {
+        db.sqlite.query("UPDATE tasks SET claim_session=?,updated_at=? WHERE id=?").run(who.sessionId, now, task.id);
+        recordEvent(db, task, "changed", { claim: [task.claim?.sessionId ?? `process ${task.claim?.pid}`, who.sessionId] }, who, now, "claim follows the session id its process now runs under");
+      }
+      if (createdBy) {
+        db.sqlite.query("UPDATE tasks SET created_by=?,updated_at=? WHERE id=?").run(who.sessionId, now, task.id);
+        recordEvent(db, task, "changed", { createdBy: [task.createdBy, who.sessionId] }, who, now, "made-by session follows the session id its process now runs under");
+      }
+    }
+    return rows.length;
+  });
+}
 var NOTE_PREVIEW = 120, CAP_ORIGIN;
 var init_store2 = __esm(() => {
   init_names();
@@ -30387,7 +30454,7 @@ function createTaskOps(options = {}) {
       db = openWorkDb(workDbFile({ stateDir }), { mode: "write" });
     return db;
   };
-  function call(operation, raw) {
+  function run(operation, raw, notes) {
     try {
       const caller = options.caller ? options.caller() : callerOf({ env });
       const who = caller ?? { sessionId: null, pid: null, procStart: null };
@@ -30397,6 +30464,15 @@ function createTaskOps(options = {}) {
         throw new Error(ctx.why);
       const now = options.now?.() ?? Date.now();
       const store = database();
+      if (store.writable) {
+        const reclaimed = reclaimResumed(store, who, now, claimLive);
+        if (!reclaimed.ok) {
+          const why = `claims of this session not moved: ${reclaimed.why}`;
+          if (!READ_ONLY_OPERATIONS.has(operation))
+            throw new Error(why);
+          notes.push(`${why}; the next call retries`);
+        }
+      }
       const all = allTasks(store, ctx.project);
       const owns = ownerOf(who);
       const ownPlan = [...all].reverse().find((t) => t.plan !== null && owns(t) && ownsPlan(all, owns, t.plan))?.plan ?? null;
@@ -30791,6 +30867,12 @@ ${t.body}`.toLowerCase().includes(input.text.toLowerCase()));
         why: (error instanceof Error ? error.message : String(error)).replace(/\s*\n\s*/g, " ")
       };
     }
+  }
+  function call(operation, raw) {
+    const notes = [];
+    const answer = run(operation, raw, notes);
+    return answer.ok && notes.length > 0 ? { ...answer, text: [answer.text, ...notes].join(`
+`) } : answer;
   }
   return {
     call,
@@ -47219,7 +47301,7 @@ function planProgress(paths, project, who) {
   return readWorkStore(paths, (db) => {
     const all = allTasks(db, project);
     const started = (id) => eventsOf(db, id).filter((e) => e.changes.status?.[1] === "in_progress").at(-1)?.at ?? all.find((t) => t.id === id)?.createdAt ?? 0;
-    const task = all.filter((t) => t.status === "in_progress" && (claimHeldBy(t.claim, who) || who.pid === null && who.sessionId !== null && t.createdBy === who.sessionId)).sort((a, b) => started(b.id) - started(a.id) || b.number - a.number)[0];
+    const task = all.filter((t) => t.status === "in_progress" && (claimIsMine(t.claim, who, claimLive) || who.pid === null && who.sessionId !== null && t.createdBy === who.sessionId)).sort((a, b) => started(b.id) - started(a.id) || b.number - a.number)[0];
     if (!task)
       return null;
     const plan = task.plan === null ? null : all.find((t) => t.kind === "plan" && t.plan === task.plan) ?? null;
@@ -48658,7 +48740,9 @@ init_resolve();
 init_context();
 init_words2();
 init_identity();
+
 // src/tasks/work/phases.ts
+init_identity();
 var NOTHING_OPEN = { inProgress: [], ready: [] };
 function refOf(task) {
   const agent = task.agent?.trim() || null;
@@ -48683,7 +48767,7 @@ function openPhasesOf(paths, project, caller) {
     return { state: "ready", value: NOTHING_OPEN };
   const owns = ownerOf(who);
   const owned = new Set(all.flatMap((t) => t.plan !== null && ownsPlan(all, owns, t.plan) ? [t.plan] : []));
-  const claimedBy = (task) => claimHeldBy(task.claim, who);
+  const claimedBy = (task) => claimIsMine(task.claim, who, claimLive);
   const isMine = (phase) => owned.has(phase.plan) || claimedBy(phase) || all.some((t) => t.parentId === phase.id && claimedBy(t));
   const inProgress = phases.filter((t) => t.status === "in_progress" && isMine(t));
   const working = new Set(inProgress.map((t) => t.plan));
