@@ -20121,7 +20121,7 @@ function nestedCommand(program, args, pipedFrom = null) {
     return parallelCommand(args) ?? jobRunLine(program, args);
   if (program === "cmd") {
     const at = args.findIndex((arg) => /^\/[ck]$/i.test(arg));
-    return at === -1 ? jobRunLine(program, args) : afterCommandFlag(program, args, at, shellQuote);
+    return at === -1 ? jobRunLine(program, args) : args.slice(at + 1).join(" ");
   }
   if (program === "powershell" || program === "pwsh") {
     const at = args.findIndex((arg) => arg.length > 1 && "-command".startsWith(arg.toLowerCase()));
