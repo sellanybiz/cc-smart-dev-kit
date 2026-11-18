@@ -2176,10 +2176,16 @@ export function nestedCommand(
   args: string[],
   pipedFrom: string | null = null,
 ): string | undefined {
+  // A program that runs its arguments (a shell, a runner, `cmd /c`, `pwsh -c`, `eval`) is read
+  // as that program first, its whole line joined, so an operator a quoted word holds
+  // (`eval cc-smart-dev-kit job run -- true '&&' git reset --hard`) is still a second command;
+  // the kit inside it is then reached one level deeper. A branch that claims the program but
+  // finds no command of its own (`sh <launcher> job run -- …`: a script, no `-c`) falls back to
+  // the kit's `job run`, so no spelling the kit's recogniser knows goes unread.
   if (SHELLS.has(program)) {
     const script = shellCommandString(args);
     if (script !== undefined) return script;
-    if (!shellTakesStdin(args)) return undefined;
+    if (!shellTakesStdin(args)) return jobRunLine(program, args);
     const here = args.findIndex((arg) => arg === "<<<" || arg.startsWith("<<<"));
     if (here !== -1) {
       const word = args[here] ?? "";
@@ -2190,38 +2196,37 @@ export function nestedCommand(
   // The runners: programs that run a command they are given (`find -exec`, `watch`, `su -c`,
   // `parallel`). They stay the line's program, so the merge reader's rule for what a runner
   // does to a merge still holds; the command they run is read here, once, for every guard.
-  if (program === "find") return findCommands(args);
-  if (program === "watch") return watchCommand(args);
-  if (program === "su") return suCommand(args);
-  if (program === "parallel") return parallelCommand(args);
+  if (program === "find") return findCommands(args) ?? jobRunLine(program, args);
+  if (program === "watch") return watchCommand(args) ?? jobRunLine(program, args);
+  if (program === "su") return suCommand(args) ?? jobRunLine(program, args);
+  if (program === "parallel") return parallelCommand(args) ?? jobRunLine(program, args);
   if (program === "cmd") {
     const at = args.findIndex((arg) => /^\/[ck]$/i.test(arg));
-    return at === -1 ? undefined : args.slice(at + 1).join(" ");
+    return at === -1 ? jobRunLine(program, args) : args.slice(at + 1).join(" ");
   }
   if (program === "powershell" || program === "pwsh") {
     // PowerShell takes any prefix of a parameter name: -c, -com, -Command.
     const at = args.findIndex((arg) => arg.length > 1 && "-command".startsWith(arg.toLowerCase()));
-    return at === -1 ? undefined : args.slice(at + 1).join(" ");
+    return at === -1 ? jobRunLine(program, args) : args.slice(at + 1).join(" ");
   }
   if (program === "eval" || program === "iex" || program === "invoke-expression") {
     return args.join(" ");
   }
-  // Last: a program that runs its arguments (the runners above, `cmd /c`, `pwsh -c`, `eval`)
-  // is read as that program, its whole line joined, so an operator a quoted word holds
-  // (`eval cc-smart-dev-kit job run -- true '&&' git reset --hard`) is still a second command.
-  // The kit inside it is then reached one level deeper.
+  return jobRunLine(program, args);
+}
+
+/** The command the kit's `job run -- …` runs, when `program args` is one (`jobRunArguments`). */
+function jobRunLine(program: string, args: string[]): string | undefined {
   const queued = jobRunArguments(program, args);
-  if (queued !== null) {
-    // The queue runs the words after `--` as they are: quoted again, they read back the same.
-    const dashes = queued.indexOf("--");
-    return dashes === -1 || dashes === queued.length - 1
-      ? undefined
-      : queued
-          .slice(dashes + 1)
-          .map(shellQuote)
-          .join(" ");
-  }
-  return undefined;
+  if (queued === null) return undefined;
+  // The queue runs the words after `--` as they are: quoted again, they read back the same.
+  const dashes = queued.indexOf("--");
+  return dashes === -1 || dashes === queued.length - 1
+    ? undefined
+    : queued
+        .slice(dashes + 1)
+        .map(shellQuote)
+        .join(" ");
 }
 
 /** The dialect of the line `nestedCommand` finds: PowerShell's for `pwsh -c` and `iex`. */

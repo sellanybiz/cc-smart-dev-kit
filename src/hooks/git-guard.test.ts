@@ -427,6 +427,18 @@ describe("a shell wrapper's inner command is read", () => {
     ["eval cc-smart-dev-kit job run -- true '&&' git reset --hard", "git reset --hard"],
     ["pwsh -c cc-smart-dev-kit job run -- 'true;' git reset --hard", "git reset --hard"],
     ["cmd /c cc-smart-dev-kit job run -- true '&' git reset --hard", "git reset --hard"],
+    // A shell given the kit's launcher as its script (no `-c`) runs the kit's job: the shell
+    // branch found no command of its own and left the job's unread.
+    ["sh /home/user/.local/bin/cc-smart-dev-kit job run -- git reset --hard", "git reset --hard"],
+    ['bash -x "$HOME/.local/bin/cc-smart-dev-kit" job run -- git push --force', "force-push"],
+    [
+      "eval sh /home/user/.local/bin/cc-smart-dev-kit job run -- git reset --hard",
+      "git reset --hard",
+    ],
+    [
+      "su root /home/user/.local/bin/cc-smart-dev-kit job run -- git reset --hard",
+      "git reset --hard",
+    ],
   ])("asks about %j", (command, fragment) => {
     expect(guard(command)).toContain(fragment);
   });
