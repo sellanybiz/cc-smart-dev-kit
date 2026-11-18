@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { cliPaths } from "../cli/paths";
 import {
@@ -227,6 +227,10 @@ describe("worktree-leftovers", () => {
   });
 });
 
+/** The line a session that starts in a guarded main checkout gets (`mainCheckoutNudge`). */
+const MAIN_CHECKOUT_NUDGE =
+  "This session is in the main checkout. Make the first change in a worktree: `EnterWorktree` with the task's name as its `name` (dashes, not `/`), or `claude -w <name>` from a terminal.";
+
 describe("the main checkout's own notes (WA1)", () => {
   /** A project with no linked worktree: the main checkout is the only one. */
   function bare(): string {
@@ -285,6 +289,7 @@ describe("the main checkout's own notes (WA1)", () => {
         "The main checkout is in the middle of a merge: ask the person to finish it or abort it before starting a new worktree.",
         "The main checkout is on `feature/x`, not `main`: a new worktree starts from its HEAD, so ask the person to run `git switch main` in the main checkout first.",
         "The main checkout's `main` is 1 commit behind origin/main: after the switch, ask the person to run `git merge --ff-only origin/main` in the main checkout before starting a new worktree.",
+        MAIN_CHECKOUT_NUDGE,
       ].join("\n"),
     );
   });
@@ -314,6 +319,75 @@ describe("the main checkout's own notes (WA1)", () => {
         CLAUDE_CODE_SESSION_ATTENDED: "0",
       }),
     ).toEqual({});
+  });
+});
+
+describe("the move-to-a-worktree line", () => {
+  /** A project that guards its main checkout, with one worktree to start a session in. */
+  function guarded(
+    config: Record<string, unknown> = { worktrees: { base: "main", guardMainFolder: true } },
+  ) {
+    const { repo } = makeClone();
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", config);
+    const folder = join(repo, "..", "app-wt-topic");
+    git(repo, "worktree", "add", "-q", "-b", "topic", folder, "origin/main");
+    return { folder, repo };
+  }
+
+  const contextOf = (result: { stdout?: string }): string =>
+    JSON.parse(result.stdout ?? "{}").hookSpecificOutput?.additionalContext ?? "";
+
+  test("an attended session in a guarded main checkout is told once, whatever branch it is on", async () => {
+    const { repo } = guarded();
+    expect(contextOf(await runHook(worktreeLeftoversHook, start(repo), hookEnv()))).toBe(
+      MAIN_CHECKOUT_NUDGE,
+    );
+    git(repo, "checkout", "-q", "-b", "feature/x");
+    const text = contextOf(await runHook(worktreeLeftoversHook, start(repo), hookEnv()));
+    expect(text.split(MAIN_CHECKOUT_NUDGE)).toHaveLength(2);
+    expect(text).toStartWith("The main checkout is on `feature/x`, not `main`");
+  });
+
+  test("a folder inside the main checkout is still the main checkout", async () => {
+    const { repo } = guarded();
+    const sub = join(repo, "sub");
+    mkdirSync(sub);
+    expect(contextOf(await runHook(worktreeLeftoversHook, start(sub), hookEnv()))).toBe(
+      MAIN_CHECKOUT_NUDGE,
+    );
+  });
+
+  test("a session in a linked worktree gets no such line", async () => {
+    const { folder } = guarded();
+    expect(contextOf(await runHook(worktreeLeftoversHook, start(folder), hookEnv()))).not.toContain(
+      "first change in a worktree",
+    );
+  });
+
+  test("`claude -p` gets no such line", async () => {
+    const { repo } = guarded();
+    expect(
+      await runHook(worktreeLeftoversHook, start(repo), {
+        ...hookEnv(),
+        CLAUDE_CODE_SESSION_ATTENDED: "0",
+      }),
+    ).toEqual({});
+  });
+
+  test("the guard off: no such line", async () => {
+    const { repo } = guarded({ worktrees: { base: "main", guardMainFolder: false } });
+    expect(await runHook(worktreeLeftoversHook, start(repo), hookEnv())).toEqual({});
+  });
+
+  test("no worktrees section, or no cc-smart-dev-kit.json: no such line", async () => {
+    const { repo } = guarded({});
+    expect(await runHook(worktreeLeftoversHook, start(repo), hookEnv())).toEqual({});
+    rmSync(join(repo, ".claude", "cc-smart-dev-kit.json"));
+    expect(await runHook(worktreeLeftoversHook, start(repo), hookEnv())).toEqual({});
+  });
+
+  test("outside git: silent", async () => {
+    expect(await runHook(worktreeLeftoversHook, start(tempDir("not-git")), hookEnv())).toEqual({});
   });
 });
 

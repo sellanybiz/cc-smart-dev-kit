@@ -39,6 +39,24 @@ keeps its lease. The hook only rewrites the call through this API, never runs a 
   project's `package.json` through an injected reader, only to tell a script from the tool of
   the same name (`docs/jobs.md` § The classifier).
 
+- **One judge says how heavy a run is** (`runWeight`, `src/jobs/classify.ts`): light, heavy or none.
+  The route and `job run` both ask it, so a line is judged the same where it is routed and where
+  it runs. Light needs a positive finding (every heavy command only prints or names existing
+  files, and the reader understands every other command); a watch run and a line that queues
+  itself are none. Each tool (vitest, jest, `bun test`, tsc) has its own option table in
+  `src/jobs/kinds.ts`, and a package script is read by its body. The classifier stays pure: the
+  scripts and the files come in through injected readers (`weight-source.ts`).
+  `docs/jobs.md` § Kinds, § The classifier.
+- **Git hooks go through a folder the kit owns** (`src/jobs/hook-folder.ts`,
+  `src/jobs/git-hooks.ts`). A routed `git commit`, `git merge` or `git push` whose own hook is
+  heavy gets three `GIT_CONFIG_*` assignments in front of the git word, pointing `core.hooksPath`
+  at `<dataDir>/git-hooks/` for that one command. It is a prefix, not a wrapper, so the person's
+  own deny and ask rules still read the `git` line. One `sh` script, under every hook name, asks
+  `job hook <name>` (`direct` or `queue <kind>`) and either runs the real hook or runs it inside
+  `job run --hook`. Every doubt, and every failure of the kit, runs the hook as it is: the kit
+  never blocks a commit. `setup` writes the folder, a session start of a new version rewrites it
+  in place, `restore` removes it. `docs/jobs.md` § Git hooks.
+
 `job status`, `/api/jobs` and the portal share the same status reader. The queue stores live
 state, not project settings. Old machine `jobs.json` settings are ignored since 2.0.
 

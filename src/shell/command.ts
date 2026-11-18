@@ -51,8 +51,10 @@
  *
  * Pure: no file, no environment, no process.
  */
-import { COMMAND } from "../build-info/names";
-import { shellQuote } from "../setup/launcher";
+import { kitArguments } from "./kit-invocation";
+import { powershellQuoted } from "./powershell";
+import { programName } from "./program-name";
+import { shellQuote } from "./quote";
 
 /** The shell a line is written for: Claude Code's `Bash` tool, or its `PowerShell` tool. */
 export type Dialect = "bash" | "powershell";
@@ -92,6 +94,9 @@ const SEPARATORS = new Set(["\n", "\r", "&", "(", ")", ";", "|"]);
 /** A PowerShell here-string: `@"` or `@'`, a line break, any lines, then `"@` at a line's start. */
 const HERE_STRING = /@(["'])\r?\n([\s\S]*?)\r?\n\1@/y;
 
+/** The end of the text before a `(` that opens a bash array: `name=`, `name+=`, `-a name=`. */
+const ARRAY_ASSIGNMENT = /(?:^|\s)[A-Za-z_][A-Za-z0-9_]*\+?=$/;
+
 /** One way to read a line: its dialect, and whether a line that ends in an escape goes on. */
 export interface Reading {
   dialect: Dialect;
@@ -128,6 +133,14 @@ interface Lexed {
    * about what the program gets (the script of a here-doc with no quoted delimiter).
    */
   expanded: boolean[];
+  /** For each segment: the innermost `( … )` group or substitution it is inside, else null. */
+  groups: (Subshell | null)[];
+  /**
+   * For each segment: where its text starts in the text that was lexed, or null when the segment
+   * is read out of another text (a here-doc body, a backtick, an arithmetic expansion), whose
+   * offsets are not this text's.
+   */
+  starts: (number | null)[];
 }
 
 interface LexOptions {
@@ -143,6 +156,8 @@ interface LexOptions {
   body?: boolean;
   /** How many texts this one is inside (a substitution's, a body's): `MAX_INNER` at most. */
   depth?: number;
+  /** The group the text runs in (a substitution's, a script's): its commands are inside it. */
+  outer?: Subshell | null;
 }
 
 /**
@@ -175,6 +190,22 @@ function lex(text: string, options: LexOptions): Lexed {
   const segments: string[] = [];
   const piped: (string | null)[] = [];
   const expanded: boolean[] = [];
+  const groups: (Subshell | null)[] = [];
+  const starts: (number | null)[] = [];
+  /** The innermost `( … )` or `$( … )` the text being read is inside. */
+  let group: Subshell | null = options.outer ?? null;
+  const enterGroup = (array = false) => {
+    group = { depth: (group?.depth ?? 0) + 1, outer: group, ...(array ? { array } : {}) };
+  };
+  const leaveGroup = () => {
+    // A stray `)` never leaves the group the text itself runs in.
+    if (group !== (options.outer ?? null)) group = group?.outer ?? null;
+  };
+  /**
+   * The `case … in … esac` commands open, each with the group it began in, and whether a
+   * pattern comes next: a pattern's `)` ends the pattern, not a group.
+   */
+  const cases: { level: Subshell | null; pattern: boolean }[] = [];
   const owed: OwedBody[] = [];
   let open = false;
   let unparsable = false;
@@ -186,10 +217,18 @@ function lex(text: string, options: LexOptions): Lexed {
   /** Where each `;` is, counted up to an index: an arithmetic expansion holds none. */
   let semicolons: Int32Array | null = null;
 
-  const push = (piece: string, from: string | null, filledIn = false): void => {
+  const push = (
+    piece: string,
+    from: string | null,
+    filledIn = false,
+    inner: Subshell | null = group,
+    start: number | null = null,
+  ): void => {
     segments.push(piece);
     piped.push(from);
     expanded.push(filledIn);
+    groups.push(inner);
+    starts.push(start);
   };
 
   /** Reads `inner` as text of its own and adds the commands it runs (a substitution, a script). */
@@ -199,11 +238,18 @@ function lex(text: string, options: LexOptions): Lexed {
       open = true;
       return;
     }
-    const read = lex(inner, { blind, dialect, join, body: body && !blind, depth });
+    // A substitution, a backtick or a script body runs in a shell of its own: one group in.
+    const outer: Subshell = { depth: (group?.depth ?? 0) + 1, outer: group };
+    const read = lex(inner, { blind, dialect, join, body: body && !blind, depth, outer });
     if (read.open) open = true;
     if (read.unparsable) unparsable = true;
     for (let i = 0; i < read.segments.length; i++) {
-      push(read.segments[i] ?? "", read.piped[i] ?? null, filledIn || read.expanded[i] === true);
+      push(
+        read.segments[i] ?? "",
+        read.piped[i] ?? null,
+        filledIn || read.expanded[i] === true,
+        read.groups[i] ?? outer,
+      );
     }
   }
 
@@ -349,11 +395,16 @@ function lex(text: string, options: LexOptions): Lexed {
       if (char === escaper && next !== "") {
         raw += char + next;
         at += 2;
+      } else if (bash && char === "$" && next === "$") {
+        raw += "$$"; // the shell's process id
+        at += 2;
       } else if (char === "$" && next === "(") {
         const end = bash ? arithmeticEnd(at + 1) : -1;
         if (end === -1) {
           at += 2;
+          enterGroup();
           raw += `$(${read(true).raw}`;
+          leaveGroup();
         } else {
           raw += readArithmetic(end);
         }
@@ -370,6 +421,8 @@ function lex(text: string, options: LexOptions): Lexed {
     segments.length = mark;
     piped.length = mark;
     expanded.length = mark;
+    groups.length = mark;
+    starts.length = mark;
     return raw;
   }
 
@@ -413,6 +466,44 @@ function lex(text: string, options: LexOptions): Lexed {
   }
 
   /**
+   * Keeps track of `case … in … esac` at a separator, and says whether the separator is part of
+   * a pattern (`a)`, or the `(` some write before one: `(a)`) rather than a group's parenthesis.
+   * `current` is the text of the command the separator ends.
+   */
+  function casePattern(current: string, char: string, next: string): boolean {
+    const words = current.trim();
+    // `for f in a; do case $f in …`, `if case …`: a keyword that opens a list or times a
+    // pipeline stands before `case`.
+    const command = words.replace(
+      /^(?:(?:do|then|else|elif|if|while|until|!|time(?:\s+-p)?)\s+)+/,
+      "",
+    );
+    const level = group;
+    let top = cases.at(-1);
+    // `esac` ends it, also with a redirection attached (`esac>log`).
+    if (top?.level === level && /^esac(?![\w-])/.test(command)) {
+      cases.pop();
+      top = cases.at(-1);
+    }
+    // `case x in esac` holds no pattern: it ends where it starts.
+    const starts =
+      /^case\s[\s\S]*\sin(?:\s|$)/.test(command) && !/\sin\s+esac(?![\w-])/.test(command);
+    if (starts) {
+      top = { level, pattern: true };
+      cases.push(top);
+    }
+    if (top?.level !== level) return false;
+    if (char === ";" && (next === ";" || next === "&")) top.pattern = true; // `;;`, `;&`, `;;&`
+    if (!top.pattern) return false;
+    if (char === ")") {
+      top.pattern = false;
+      return true;
+    }
+    // The `(` a pattern may start with stands right after `in` or `;;`, before any of its words.
+    return char === "(" && (words === "" || (starts && /\sin$/.test(command)));
+  }
+
+  /**
    * Reads commands to the end of the text, or (`nested`) to the `)` that closes a `$(`.
    * Returns the text read, bodies cut, and whether that `)` closed it: what the enclosing
    * quoted word holds, and whether the substitution it was reading is whole. `substitutions`
@@ -423,6 +514,8 @@ function lex(text: string, options: LexOptions): Lexed {
   function read(nested: boolean, substitutions = 0): { closed: boolean; raw: string } {
     let raw = "";
     let current = "";
+    /** Where `current` starts in `text`: the character after the separator that ended the last one. */
+    let currentStart = at;
     let depth = 0;
     /** No character of a word yet: a `#` here starts a comment, a lone `{` a group. */
     let wordStart = true;
@@ -466,6 +559,13 @@ function lex(text: string, options: LexOptions): Lexed {
           take(readDouble(true));
           continue;
         }
+        if (bash && char === "$" && next === "$") {
+          // `$$` is the shell's process id: the `$` after it starts nothing (`$$'x'` is the id and
+          // a plain `'x'`).
+          take("$$");
+          at += 2;
+          continue;
+        }
         if (bash && char === "$" && next === "'") {
           at++;
           take(`$${readSingle(true)}`);
@@ -486,11 +586,16 @@ function lex(text: string, options: LexOptions): Lexed {
         // the word after it. An unclosed `$(` runs nothing, and is read blind past. Past
         // `MAX_INNER` levels its parentheses split as plain separators (linear time), and the
         // commands inside are still read.
-        if (char === "$" && next === "(" && substitutions < MAX_INNER) {
+        // Bash's process substitution, `<( … )` or `>( … )` at the start of a word, is one word
+        // too (the shell fills in a file name), and its commands run in a shell of their own.
+        const processSubstitution = bash && (char === "<" || char === ">") && wordStart;
+        if (next === "(" && (char === "$" || processSubstitution) && substitutions < MAX_INNER) {
           at += 2;
+          enterGroup();
           const substitution = read(true, substitutions + 1);
+          leaveGroup();
           if (!substitution.closed) open = true;
-          take(`$(${substitution.raw}`);
+          take(`${char}(${substitution.raw}`);
           continue;
         }
         if (char === "#" && wordStart && !afterClose) {
@@ -570,14 +675,25 @@ function lex(text: string, options: LexOptions): Lexed {
         isGroupBrace(char, wordStart) ||
         (blind && bash && char === "`")
       ) {
-        push(current, afterPipe ? (segments[segments.length - 1] ?? null) : null);
+        const pattern = !blind && bash ? casePattern(current, char, next) : false;
+        push(
+          current,
+          afterPipe ? (segments[segments.length - 1] ?? null) : null,
+          false,
+          group,
+          currentStart,
+        );
         afterPipe = char === "|";
-        if (nested && char === ")" && depth === 0) {
+        if (!pattern && nested && char === ")" && depth === 0) {
           at++;
           return { closed: true, raw: `${raw})` };
         }
-        if (nested && char === "(") depth++;
-        if (nested && char === ")") depth--;
+        if (!pattern && nested && char === "(") depth++;
+        if (!pattern && nested && char === ")") depth--;
+        // Bash's array assignment `name=( … )`, `name+=( … )`, `declare -a name=( … )`: what is
+        // inside is a list of words, not commands.
+        if (!pattern && char === "(") enterGroup(bash && ARRAY_ASSIGNMENT.test(current));
+        else if (!pattern && char === ")") leaveGroup();
         current = "";
         stdinShell = null;
         raw += char;
@@ -585,19 +701,26 @@ function lex(text: string, options: LexOptions): Lexed {
         wordStart = true;
         afterClose = char === ")";
         if (char === "\n") skipBodies();
+        currentStart = at;
         continue;
       }
       take(char, isBlank(char));
       at++;
     }
     // The end of the text. A `$(` that never closed: `readDouble` marks its quote open.
-    push(current, afterPipe ? (segments[segments.length - 1] ?? null) : null);
+    push(
+      current,
+      afterPipe ? (segments[segments.length - 1] ?? null) : null,
+      false,
+      group,
+      currentStart,
+    );
     return { closed: false, raw };
   }
 
   if (options.body === true) readDouble(false);
   else read(false);
-  return { expanded, open, piped, segments, unparsable };
+  return { expanded, groups, open, piped, segments, starts, unparsable };
 }
 
 /** How a caller reads a line: its dialect (Bash by default), and the two switches below. */
@@ -613,6 +736,22 @@ export interface ShellOptions {
   joinLines?: boolean;
 }
 
+/**
+ * A `( … )` group or a substitution of one line: the commands inside it share this object, and
+ * a group inside it points back to it (`outer`). Two groups are the same only when they are one
+ * object.
+ */
+export interface Subshell {
+  /** How many groups it is inside, itself counted: 1 at the top of the line. */
+  readonly depth: number;
+  readonly outer: Subshell | null;
+  /**
+   * The group is a bash array's list (`cmd=(git push)`): its words are the array's elements, so
+   * a "command" in it runs nothing and nothing may be put in front of it. Left out otherwise.
+   */
+  readonly array?: boolean;
+}
+
 /** One command of a shell line: its text, and the command whose output feeds it. */
 export interface ShellStep {
   text: string;
@@ -623,6 +762,23 @@ export interface ShellStep {
    * what the program gets: the script of a here-doc whose delimiter is not quoted.
    */
   expanded: boolean;
+  /**
+   * The innermost `( … )` group or substitution the command is inside; left out at the top of
+   * the line. A `cd` inside a group changes the folder only for the commands of that group, up
+   * to its `)`: two groups side by side (`$(cd a) $(touch b)`) are two objects, so the second
+   * does not run where the first went.
+   */
+  subshell?: Subshell;
+  /**
+   * Where `text` starts in the line this step was read from: set when the command stands in the
+   * line itself, left out when it was read out of a here-doc body, a backtick or an arithmetic
+   * expansion (their offsets belong to another text), and in a reading that joins escaped line
+   * breaks (`joinLines`), which rewrites the text. Text before the first line break of `text`
+   * is the line's own text at this offset, so a caller that edits the line at the command's first
+   * word checks that against the line and leaves a line it cannot place exactly as it is: a here-doc
+   * body inside a `$( … )` is cut out of `text`, and a comment skipped inside it is gone too.
+   */
+  start?: number;
 }
 
 /**
@@ -638,11 +794,16 @@ export function shellSteps(
   if (read.unparsable) return [];
   const chosen =
     read.open && blindWhenOpen ? lex(command, { blind: true, dialect, join: joinLines }) : read;
-  return chosen.segments.map((text, index) => ({
-    expanded: chosen.expanded[index] === true,
-    pipedFrom: chosen.piped[index] ?? null,
-    text,
-  }));
+  return chosen.segments.map((text, index) => {
+    const start = chosen.starts[index];
+    return {
+      expanded: chosen.expanded[index] === true,
+      pipedFrom: chosen.piped[index] ?? null,
+      ...(chosen.groups[index] ? { subshell: chosen.groups[index] } : {}),
+      ...(typeof start === "number" && !joinLines ? { start } : {}),
+      text,
+    };
+  });
 }
 
 /** `shellSteps`, the text of each command only. */
@@ -767,6 +928,12 @@ export function wordsWithFill(segment: string, dialect: Dialect = "bash"): Shell
     if ((char === "$" && startsExpansion(after)) || (bash && char === "`")) filled = true;
     add(char);
   };
+  /** Each `(`'s close, worked out once for the segment and only when a substitution needs it. */
+  let closes: Int32Array | null = null;
+  const closeOf = (open: number) => {
+    closes ??= parenCloses(segment);
+    return closes[open] ?? -1;
+  };
   let i = 0;
   while (i < segment.length) {
     const char = segment.charAt(i);
@@ -780,10 +947,36 @@ export function wordsWithFill(segment: string, dialect: Dialect = "bash"): Shell
       quoted = true;
       add(next === "" ? char : bash ? next : (POWERSHELL_ESCAPES[next] ?? next));
       i += 2;
+    } else if (
+      bash &&
+      (char === "$" || (!inWord && (char === "<" || char === ">"))) &&
+      next === "(" &&
+      closeOf(i + 1) !== -1
+    ) {
+      // `$( … )`, and `<( … )` / `>( … )` at the start of a word: the shell fills in its answer (a
+      // file name for the last two), so the whole substitution stays in its word, as the line
+      // reader keeps it (`out=$(bun test 2>&1)` is one word, never `2>&1)`).
+      const close = closeOf(i + 1);
+      add(segment.slice(i, close));
+      filled = true;
+      i = close;
+    } else if (bash && char === "&" && next === ">") {
+      // `x&>file`: the `&` starts the redirection, so the word before it ends here.
+      end();
+      add(char);
+      i++;
     } else if (char === "<" || char === ">") {
-      if (quoted || !/^\d+$/.test(word)) end();
+      // Bash's `&>file` and `&>>file` (both streams to a file) are one redirection: the bare `&`
+      // before the `>` belongs to it, as a file number does.
+      const bothStreams = bash && !quoted && char === ">" && word === "&";
+      if (!bothStreams && (quoted || !/^\d+$/.test(word))) end();
       while (oneOf("<>", segment.charAt(i))) add(segment.charAt(i++));
       if (oneOf("&|", segment.charAt(i))) add(segment.charAt(i++));
+    } else if (bash && char === "$" && next === "$") {
+      // `$$`, the shell's process id: filled, and the `$` after it starts nothing.
+      filled = true;
+      add("$$");
+      i += 2;
     } else if (bash && char === "$" && next === "'") {
       let close = i + 2;
       while (close < segment.length && segment.charAt(close) !== "'") {
@@ -823,6 +1016,20 @@ export function wordsWithFill(segment: string, dialect: Dialect = "bash"): Shell
           i += 2;
           continue;
         }
+        if (bash && inside === "$" && after === "$") {
+          filled = true;
+          add("$$");
+          i += 2;
+          continue;
+        }
+        const substitution = bash && inside === "$" && after === "(" ? closeOf(i + 1) : -1;
+        if (substitution !== -1) {
+          // `"$(a "b c")"`: inside a substitution the quotes start again.
+          add(segment.slice(i, substitution));
+          filled = true;
+          i = substitution;
+          continue;
+        }
         if (inside === escaper && after !== "") {
           if (!bash) add(POWERSHELL_ESCAPES[after] ?? after);
           else if ('$`"\\'.includes(after)) add(after);
@@ -841,6 +1048,54 @@ export function wordsWithFill(segment: string, dialect: Dialect = "bash"): Shell
   }
   end();
   return words;
+}
+
+/**
+ * For each bash `(` in `text`, the index after the `)` that closes it, else -1: one pass over the
+ * text, so a line of a thousand unclosed `$(` costs no more than one. It steps over what bash
+ * reads as text — `'…'`, `$'…'` (where `\'` is a quote), an escaped character, a backtick's
+ * command — and reads `"…"` as bash does: only a `$(` inside it opens, and inside that the quotes
+ * start again. A `case` pattern's `)` inside counts as a close, so such a substitution is cut
+ * there, as the word reader always cut it.
+ */
+function parenCloses(text: string): Int32Array {
+  const closes = new Int32Array(text.length).fill(-1);
+  /** Each open `(` by its index, and -1 for an open `"`: the innermost last. */
+  const open: number[] = [];
+  /** The index of the quote that ends text read from `from` (`'` or a backtick), or -1. */
+  const quoteEnd = (quote: string, from: number, escapes: boolean) => {
+    for (let at = from; at < text.length; at++) {
+      const char = text.charAt(at);
+      if (escapes && char === "\\") at++;
+      else if (char === quote) return at;
+    }
+    return -1;
+  };
+  for (let i = 0; i < text.length; i++) {
+    const char = text.charAt(i);
+    const next = text.charAt(i + 1);
+    if (char === "\\" || (char === "$" && next === "$")) {
+      i++; // an escaped character, or `$$` (the shell's process id): the second starts nothing
+    } else if (char === "`") {
+      i = quoteEnd("`", i + 1, true);
+    } else if (open.at(-1) === -1) {
+      if (char === '"') open.pop();
+      else if (char === "$" && next === "(") open.push(++i);
+    } else if (char === "'") {
+      i = quoteEnd("'", i + 1, false);
+    } else if (char === "$" && next === "'") {
+      i = quoteEnd("'", i + 2, true);
+    } else if (char === '"') {
+      open.push(-1);
+    } else if (char === "(") {
+      open.push(i);
+    } else if (char === ")") {
+      const at = open.pop();
+      if (at !== undefined && at >= 0) closes[at] = i + 1;
+    }
+    if (i === -1) break; // a quote that never closes: nothing after it is read
+  }
+  return closes;
 }
 
 /** Text that is data, not a command: skipped over when a segment is read for its program. */
@@ -865,8 +1120,29 @@ export const CHANGE_DIR: ReadonlySet<string> = new Set([
   "sl",
 ]);
 
-/** A redirection word: group 1 is the operator, group 2 its target when it is attached. */
-const REDIRECTION = /^\d*(<<<|<<|<>|<|>>|>\||>|>&|&>)(.*)$/s;
+/**
+ * A redirection word: group 1 is the operator, group 2 its target when it is attached. A `<(`
+ * or `>(` starts a process substitution, which is a word the program gets, not a redirection.
+ */
+const REDIRECTION = /^\d*(<<<|<<|<>|<|>>|>\||>|&>>|&>)(?!\()(.*)$/s;
+
+/**
+ * `REDIRECTION` for a word the reader knows the shell fills nothing into: its `(` was quoted or
+ * escaped (`>\(x`, `>"(x"`), so the word is a redirection to a file whose name starts `(`.
+ */
+const ANY_REDIRECTION = /^\d*(<<<|<<|<>|<|>>|>\||>|&>>|&>)(.*)$/s;
+
+/** A word's text, from `wordsOf` (a string) or `wordsWithFill`. */
+const textOf = (word: string | ShellWord): string => (typeof word === "string" ? word : word.text);
+
+/**
+ * True for a bash process substitution, `<( … )` or `>( … )`: the shell puts a file of its own
+ * there (`/dev/fd/63`). A string from `wordsOf` cannot say whether its `(` was quoted, so it
+ * counts as one; a `ShellWord` says, by being filled.
+ */
+function isProcessSubstitution(word: string | ShellWord): boolean {
+  return /^[<>]\(/.test(textOf(word)) && (typeof word === "string" || word.filled);
+}
 
 /**
  * Wrappers: each runs the command after it, so the command a line really runs is reached
@@ -921,6 +1197,9 @@ const WRAPPERS: Record<string, WrapperSpec> = {
     skip: (word) => /^-?\d+$/.test(word),
   },
   command: { inert: ["-v", "-V"], long: [], short: "" },
+  // `cross-env A=1 B=2 prog args`: its VAR=x words are stepped over like any assignment
+  // (`invocationOf` skips them after the wrapper), and it has no options of its own to read.
+  "cross-env": { long: [], short: "" },
   doas: { long: [], short: "uC" },
   env: {
     long: ["--unset", "--chdir", "--split-string"],
@@ -1040,11 +1319,6 @@ function packageCommand(
     return CLAUDE_PACKAGE.test(word) ? { args: rest.slice(index + 1), program: "claude" } : null;
   }
   return null;
-}
-
-/** `git.exe` → `git`, `C:\Program Files\Git\cmd\git` → `git`. */
-export function programName(word: string): string {
-  return (word.split(/[\\/]/).pop() ?? word).toLowerCase().replace(/\.(exe|cmd|ps1|bat)$/, "");
 }
 
 /**
@@ -1354,24 +1628,31 @@ export function withoutRedirections(args: readonly string[]): string[] {
 }
 
 /** The redirection operators that open their target for writing (`<>` reads and writes). */
-const WRITING_REDIRECTIONS = new Set([">", ">>", ">|", "&>", "<>"]);
+const WRITING_REDIRECTIONS = new Set([">", ">>", ">|", "&>", "&>>", "<>"]);
 
 /**
  * The files a command's words redirect output into (`>log`, `2>>log`, `>| log`, `&>log`,
  * `> log`, `<>log`): the targets of `withoutRedirections`' dropped words that write. A
- * redirection to a file descriptor (`2>&1`, `>&2`, `>&-`) names no file. The words may hold
- * the redirection before the program (`>log cmd`), so pass every word of the step.
+ * redirection to a file descriptor (`2>&1`, `>&2`, `>&-`) names no file, nor does one to a
+ * process substitution (`> >(tee x)`). The words may hold the redirection before the program
+ * (`>log cmd`), so pass every word of the step. Pass `wordsWithFill`'s words to tell a quoted
+ * `(` (`>"(x"` writes the file `(x`) from a process substitution.
  */
-export function redirectionTargets(words: readonly string[]): string[] {
+export function redirectionTargets(words: readonly (string | ShellWord)[]): string[] {
   const targets: string[] = [];
   for (let index = 0; index < words.length; index++) {
-    const redirection = REDIRECTION.exec(words[index] ?? "");
+    const word = words[index] ?? "";
+    const known = typeof word !== "string" && !word.filled;
+    const redirection = (known ? ANY_REDIRECTION : REDIRECTION).exec(textOf(word));
     if (redirection === null) continue;
     let target = redirection[2] ?? "";
-    if (target === "") target = words[++index] ?? ""; // the target is the next word
+    if (target === "") {
+      // The target is the next word.
+      const next = words[++index] ?? "";
+      if (isProcessSubstitution(next)) continue;
+      target = textOf(next);
+    }
     const operator = redirection[1] ?? "";
-    if (operator === ">&") continue;
-    if (operator === "&>" && target.startsWith(">")) target = target.slice(1); // `&>>log`
     if (operator === ">" && target.startsWith("&")) {
       // `>&2` and `>&-` name a descriptor; `>&log` sends both streams to the file.
       target = /^&(\d+|-)$/.test(target) ? "" : target.slice(1);
@@ -1868,6 +2149,24 @@ function parallelCommand(args: readonly string[]): string | undefined {
 }
 
 /**
+ * The words after `job run` when a program runs the kit's `job run`, else null. The kit's
+ * command is recognised in one place (`kitArguments`, `kit-invocation.ts`): its name or a path
+ * to the launcher, `bunx`, `sh <launcher>`, `bun …/dist/cli.js`, the bun shim.
+ */
+function jobRunArguments(program: string, args: readonly string[]): string[] | null {
+  const kit = kitArguments(program, args);
+  return kit !== null && kit[0] === "job" && kit[1] === "run" ? kit.slice(2) : null;
+}
+
+/**
+ * `cc-smart-dev-kit job run …` under any spelling of the kit's command: the queue must not
+ * nest.
+ */
+export function isJobRun(program: string, args: readonly string[]): boolean {
+  return jobRunArguments(program, args) !== null;
+}
+
+/**
  * The command line a wrapper runs, when the line gives it one: `bash -c "…"` (a `c`
  * anywhere in a group of short options: `-ce`, `-ec`), a shell that reads its script from
  * standard input (`sh <<< "…"`, or the text piped from the command before it), `cmd /c …`,
@@ -1878,10 +2177,16 @@ export function nestedCommand(
   args: string[],
   pipedFrom: string | null = null,
 ): string | undefined {
+  // A program that runs its arguments (a shell, a runner, `cmd /c`, `pwsh -c`, `eval`) is read
+  // as that program first, its whole line joined, so an operator a quoted word holds
+  // (`eval cc-smart-dev-kit job run -- true '&&' git reset --hard`) is still a second command;
+  // the kit inside it is then reached one level deeper. A branch that claims the program but
+  // finds no command of its own (`sh <launcher> job run -- …`: a script, no `-c`) falls back to
+  // the kit's `job run`, so no spelling the kit's recogniser knows goes unread.
   if (SHELLS.has(program)) {
     const script = shellCommandString(args);
     if (script !== undefined) return script;
-    if (!shellTakesStdin(args)) return undefined;
+    if (!shellTakesStdin(args)) return jobRunLine(program, args);
     const here = args.findIndex((arg) => arg === "<<<" || arg.startsWith("<<<"));
     if (here !== -1) {
       const word = args[here] ?? "";
@@ -1889,36 +2194,73 @@ export function nestedCommand(
     }
     return pipedFrom === null ? undefined : (writtenText(pipedFrom) ?? undefined);
   }
-  if (program === COMMAND && args[0] === "job" && args[1] === "run") {
-    // The queue runs the words after `--` as they are: quoted again, they read back the same.
-    const dashes = args.indexOf("--");
-    return dashes === -1 || dashes === args.length - 1
-      ? undefined
-      : args
-          .slice(dashes + 1)
-          .map(shellQuote)
-          .join(" ");
-  }
   // The runners: programs that run a command they are given (`find -exec`, `watch`, `su -c`,
   // `parallel`). They stay the line's program, so the merge reader's rule for what a runner
   // does to a merge still holds; the command they run is read here, once, for every guard.
-  if (program === "find") return findCommands(args);
-  if (program === "watch") return watchCommand(args);
-  if (program === "su") return suCommand(args);
-  if (program === "parallel") return parallelCommand(args);
+  if (program === "find") return findCommands(args) ?? jobRunLine(program, args);
+  if (program === "watch") return watchCommand(args) ?? jobRunLine(program, args);
+  if (program === "su") return suCommand(args) ?? jobRunLine(program, args);
+  if (program === "parallel") return parallelCommand(args) ?? jobRunLine(program, args);
+  // `cmd` runs what follows its first `/c` or `/k`, wherever it stands: every word before it is
+  // ignored (`cmd cc-smart-dev-kit job run -- echo /c git reset --hard` runs the reset).
   if (program === "cmd") {
     const at = args.findIndex((arg) => /^\/[ck]$/i.test(arg));
-    return at === -1 ? undefined : args.slice(at + 1).join(" ");
+    return at === -1 ? jobRunLine(program, args) : args.slice(at + 1).join(" ");
   }
+  // PowerShell runs the file its first plain argument names, and every word after it is that
+  // file's: a `-c` after the kit's `job run` belongs to the job
+  // (`pwsh cc-smart-dev-kit job run -- git -c x=y push --force`), so the job is read.
   if (program === "powershell" || program === "pwsh") {
     // PowerShell takes any prefix of a parameter name: -c, -com, -Command.
     const at = args.findIndex((arg) => arg.length > 1 && "-command".startsWith(arg.toLowerCase()));
-    return at === -1 ? undefined : args.slice(at + 1).join(" ");
+    // With no -Command the kit's job is read as PowerShell (`nestedDialect`), so it is quoted so.
+    return at === -1
+      ? jobRunLine(program, args, powershellQuoted)
+      : afterCommandFlag(program, args, at, powershellQuoted);
   }
   if (program === "eval" || program === "iex" || program === "invoke-expression") {
     return args.join(" ");
   }
-  return undefined;
+  return jobRunLine(program, args);
+}
+
+/**
+ * What PowerShell runs when its `-Command` is at `at`: the kit's job when the words before `at`
+ * already start its `job run` (the flag is then the job's), else, and when that job names no
+ * command (no `--`), the words after the flag. Never `cmd`, which takes its first `/c` anywhere.
+ */
+function afterCommandFlag(
+  program: string,
+  args: string[],
+  at: number,
+  quote: (word: string) => string,
+): string {
+  const job =
+    jobRunArguments(program, args.slice(0, at)) === null
+      ? undefined
+      : jobRunLine(program, args, quote);
+  return job ?? args.slice(at + 1).join(" ");
+}
+
+/**
+ * The command the kit's `job run -- …` runs, when `program args` is one (`jobRunArguments`),
+ * each word quoted by `quote`: the dialect `nestedDialect(program)` reads the line in.
+ */
+function jobRunLine(
+  program: string,
+  args: string[],
+  quote: (word: string) => string = shellQuote,
+): string | undefined {
+  const queued = jobRunArguments(program, args);
+  if (queued === null) return undefined;
+  // The queue runs the words after `--` as they are: quoted again, they read back the same.
+  const dashes = queued.indexOf("--");
+  return dashes === -1 || dashes === queued.length - 1
+    ? undefined
+    : queued
+        .slice(dashes + 1)
+        .map(quote)
+        .join(" ");
 }
 
 /** The dialect of the line `nestedCommand` finds: PowerShell's for `pwsh -c` and `iex`. */

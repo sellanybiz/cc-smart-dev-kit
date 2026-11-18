@@ -26,7 +26,8 @@ sessions and their agents run on one machine, they start these at the same time.
 runs out of memory, and the kernel kills what it picks: often the desktop, and every session
 with it. A rule like "one heavy job at a time" in each session does not help: nothing limits
 heavy jobs **across** sessions, agents and people. So each heavy job runs through
-`cc-smart-dev-kit job run`, and the next one waits for the slot.
+`cc-smart-dev-kit job run`, and the next one waits for the slot. A hook that git itself runs on
+`git commit` or `git push` goes through it too (§ Git hooks).
 
 The same queue runs on native Windows, where a lease's start time and how a job's tree is
 ended differ: [Windows](windows-jobs.md).
@@ -38,19 +39,24 @@ cc-smart-dev-kit job run --kind test:run -- bun test
 cc-smart-dev-kit job run --kind image:build --exclusive image -- docker buildx build .
 cc-smart-dev-kit job status
 cc-smart-dev-kit job kinds
+cc-smart-dev-kit job hook pre-commit
 ```
 
 | Command | What it does |
 |---|---|
-| `job run [--kind <kind>] [--exclusive <name>] -- <command…>` | Waits for a free machine slot, runs the command, and gives the slot back when it ends. The command keeps its stdin, stdout, stderr and exit code, and signals reach its child processes too. `--kind`, `--exclusive`, or both. |
+| `job run [--kind <kind>] [--exclusive <name>] [--hook] -- <command…>` | Waits for a free machine slot, runs the command, and gives the slot back when it ends. The command keeps its stdin, stdout, stderr and exit code, and signals reach its child processes too. `--kind`, `--exclusive`, or both. `--hook` is for the kit's git hooks (§ Git hooks): the slot is taken without reading the command's words, and when the queue cannot be used the command runs at once, so a broken kit never blocks a commit. |
 | `job set max <n>` | Sets the machine limit (1–8); default 1. No running job is stopped. |
-| `job status` | The limit, its source, who holds slots and who waits, and the job route for the folder it runs in: on or off, and whether the project, your own `switches.jobRoute` or the default decided. Stale files it finds are removed. Its lines and the portal's `/api/jobs` come from one reader (`src/jobs/status.ts`), so the queue has one shape and no printed line is parsed again. |
+| `job status` | The limit, its source, who holds slots and who waits (the waiting jobs in the order the queue serves them, the same order the waiting line's place counts), and the job route for the folder it runs in: on or off, and whether the project, your own `switches.jobRoute` or the default decided. Stale files it finds are removed. Its lines and the portal's `/api/jobs` come from one reader (`src/jobs/status.ts`), so the queue has one shape and no printed line is parsed again. |
 | `job kinds` | Every kind: where it comes from (`default` or `project`) and its `about` line. Not its match rules: those are in `cc-smart-dev-kit.json` and § Kinds. |
+| `job hook <name>` | For the kit's git hook scripts, not for you: prints `direct` or `queue <kind>` for git hook `<name>` in the repo of the folder it runs in (§ Git hooks). It always ends with 0. |
 
 ## How a job runs
 
-1. **Narrow runs go at once.** A run that only prints (`tsc --version`) or a test run on named
-   files (§ Kinds) takes no slot and never opens the queue, unless it has `--exclusive`.
+1. **Narrow runs go at once.** The judge (`runWeight`, § The classifier) reads the command the
+   way a shell would run it. A run it proves light — it only prints (`tsc --version`), or it
+   names only files that exist (§ Kinds) — takes no slot and never opens the queue, unless it
+   has `--exclusive`. Only a positive finding lowers a run to light; a command the judge cannot
+   read keeps its slot. With `--hook` the judge is not asked: the slot is always taken.
 2. **Nesting.** A heavy job may start another one (a script that runs the type check, then the
    build). The inner one must not wait for a slot its parent holds. So `job run` walks its
    parent processes (`/proc/<pid>/stat`) and, when one of them holds a lease on this machine,
@@ -72,8 +78,9 @@ The job's output is the job's: stdout and stderr are passed through untouched, s
 that never waits prints none of the lines below: a free machine gets no noise.
 
 ```text
-[cc-smart-dev-kit job] Heavy job waits for a free slot: bunx tsc --noEmit. Why: this machine's only slot is taken.
+[cc-smart-dev-kit job] Heavy job waits for a free slot: bunx tsc --noEmit. Why: this machine's only slot is taken. Place: 3rd in line, 2 jobs ahead.
 [cc-smart-dev-kit job] A pipe (| tail) hides this job's exit status: the "Heavy job ended" line carries it.
+[cc-smart-dev-kit job] A long wait: run it in the background (run_in_background) so the call does not time out.
 [cc-smart-dev-kit job]   this machine: a heavy slot is held by host-a: build, bun run build in /home/user/app, since 11:44 (pid 4242)
    … a line a minute while it waits …
 [cc-smart-dev-kit job] Heavy job starts after 18 min: bunx tsc --noEmit
@@ -82,9 +89,13 @@ that never waits prints none of the lines below: a free machine gets no noise.
 ```
 
 - **The waiting line**, once when the wait starts and then every minute, with why it waits
-  and who holds the slot (person, kind, command, folder, since when, pid). **The first one
-  carries the pipe hint**, once per job: a job whose output goes down a pipe (`| tail`)
-  reports the pipe's own status, so the hint points at the end line, which holds the job's own.
+  and who holds the slot (person, kind, command, folder, since when, pid). **The place** (`Place:
+  3rd in line, 2 jobs ahead.`) counts only the jobs that are in the way of this one, never the
+  holder; it is left out when none is. `job status` lists every waiting job in the same order.
+  **The first line carries two hints**, once per job. The pipe hint: a job whose output goes
+  down a pipe (`| tail`) reports the pipe's own status, so the hint points at the end line,
+  which holds the job's own. The background hint: a call that runs the job in the foreground
+  ends at its timeout, so a long wait belongs in the background (`run_in_background`).
 - **The start line** says the wait is over, and how long it took.
 - **The end line** says how the job ended, and how long it ran. A job a signal stops **while it
   waits** never starts, so it gets neither this line nor the start line.
@@ -102,10 +113,11 @@ A kind only says **which commands the queue counts**. It has no size.
 
 | Kind | Finds | Takes no slot with |
 |---|---|---|
-| `tsc` | `tsc`, `tsgo`, `vue-tsc` | `--version`, `--help`, `--listFilesOnly`, `--showConfig`, `-v`, `-h`. |
+| `tsc` | `tsc`, `tsgo`, `vue-tsc` | `--version`, `--help`, `--listFilesOnly`, `--showConfig`, `-v`, `-h`; a run on named files. |
 | `lint:typed` | `eslint` with a typed config (an argument holds `typed.` or `type-checked`), `oxlint --type-aware` | `--help`, `--version`, `-h`, `-v`. |
-| `test:coverage` | `vitest` / `jest` with `--coverage` | `--help`, `--version`, `-h`, `-v`. |
-| `test:run` | `vitest`, `jest` | `--help`, `--version`, `-h`, `-v`; a run on named files. |
+| `test:coverage` | `vitest`, `jest` or `bun test` with `--coverage` | `--help`, `--version`, `-h`, `-v`. |
+| `test:run` | `vitest`, `jest`, `bun test` | `--help`, `--version`, `-h`, `-v`; a run on named files. |
+| `e2e` | `playwright test` | `--list`, `--help`, `-h`. A run on one spec file still takes a slot: it starts the app and its browsers. |
 | `build` | `next build` | none. |
 | `image:build` | `docker build`, `docker buildx build`, `docker compose build`, `podman build`, `buildah build` and their other build forms | none. |
 
@@ -114,6 +126,33 @@ When one command matches two kinds (`vitest --coverage` is a coverage run and a 
 one, and a project's own kinds come after the defaults. Several heavy commands in one line are
 named by the **first** one the line runs. `job run` adds nothing to a command: a test runner
 gets no `--maxWorkers`, so with the slot it uses what it would use outside the queue.
+
+**A run on named files takes no slot** (`noSlotForFiles`: `tsc` and `test:run`). Every operand
+must be a file that exists, at most 10, read in the folder the command runs in (after a `cd`,
+or with the runner's folder option, § Scripts are read by their body). Each tool has its own
+table of options, taken from its `--help` or documentation (`TOOL_OPTIONS`, `src/jobs/kinds.ts`),
+because they differ: `-w` is vitest's watch flag and jest's worker count. An option written
+without `=` that the table does not know may take the next word, which may be a file, so the
+run waits. Options with an optional value (`--bail`, vitest's `-u` and `--silent`, jest's array
+options such as `--reporters`) are left out of the tables on purpose: such a run waits.
+
+- **`bun test`**: a positional word is a path filter to Bun, not a file. It counts as a file only
+  when it starts with `./` or `/` and exists: `bun test ./src/a.test.ts` is light, `bun test
+  src/a.test.ts` is a filter (it may match many files) and waits.
+- **vitest and jest**: a named file is still a filter to the runner (vitest reads each word as
+  a part of a path, jest as a regular expression), so `vitest run a.test.ts` also runs
+  `data.test.ts`. A full path (`src/a.test.ts`) keeps the run narrow. `vitest related` always
+  waits: the tests that import a file may be all of them.
+- **`tsc`, `tsgo`, `vue-tsc`**: a run that names files (`tsc --noEmit src/a.ts`) is light. `-p`
+  and `--project`, `--build` and `-b`, and a run with no file are full runs.
+- **A run that only prints** takes no slot, with one rule for every kind: any one print-only
+  option is enough, so `tsc --noEmit --version` is light too.
+- **A watch run is never queued** (it never ends, so it would hold its slot for ever): `--watch`
+  (and `-w` for tsc and vitest), `vitest watch` and `vitest dev`, `bun test --watch`, `jest
+  --watch` and `--watchAll`, `playwright test --ui` and `--debug`. `--watch=false` is no watch
+  run. `vitest --ui` is not on the list: with no terminal it prints its report and exits, so it
+  is a full run and keeps its slot. `job run` itself still queues a watch run you wrote on its
+  command line: only the route leaves one alone.
 
 **A project's own kinds.** `.claude/cc-smart-dev-kit.json` can replace a kind or add one:
 
@@ -137,20 +176,59 @@ is. The fields:
 | `printOnly` | Options that only print and stop: a run with any of them takes no slot. |
 | `match` | How the classifier finds the kind (§ The classifier): `{ "tool", "sub", "flags", "argIncludes", "valued" }` or `{ "script" }`. |
 | `about` | One line for `job kinds`. |
-| `noSlotForFiles` | `true`: a run whose operands are all existing files, at most 10 of them (`vitest run src/a.test.ts`), runs at once with no slot. A run with no operand, or with one that is not a file (a folder, a pattern, a name filter), is a full run and waits. So does a run with an option the reader does not know, written without `=`: its next word may be its value, a file or not. A named file is still a filter to the runner: vitest reads each word as a part of a path and jest as a regular expression, so `vitest run a.test.ts` also runs `data.test.ts`. A full path (`src/a.test.ts`) keeps the run narrow. Came with 1.5.0: a project that sets it raises `requires` to `>=1.5`. |
+| `noSlotForFiles` | `true`: a run whose operands are all existing files, at most 10 of them (`vitest run src/a.test.ts`), runs at once with no slot. A run with no operand, or with one that is not a file (a folder, a pattern, a name filter), is a full run and waits. So does a run with an option the reader does not know, written without `=`: its next word may be its value, a file or not. Came with 1.5.0: a project that sets it raises `requires` to `>=1.5`. |
 | `skipWords` | With `noSlotForFiles`: the words after the tool that are a subcommand, not an operand (`run` in `vitest run`). |
-| `valuedFlags` | With `noSlotForFiles`: the options whose value is the next word (`--config x.ts`, `-t name`), over vitest's and jest's own list, so that value is not read as an operand. |
+| `valuedFlags` | With `noSlotForFiles`: the options whose value is the next word (`--config x.ts`, `-t name`), added to the tool's own table, so that value is not read as an operand. |
 
-The default `test:run` kind sets `noSlotForFiles`, with `run` as its skip word. `test:coverage`
-does not: a coverage run instruments and reports on the whole project whatever files it names.
-For a `script` kind, the operands are the words after the script's name (`bun run test
-src/a.test.ts`). Each operand is checked against the folder the job runs in.
+The default `test:run` and `tsc` kinds set `noSlotForFiles`; `test:coverage` does not: a coverage
+run instruments and reports on the whole project whatever files it names. The default kinds
+need no `skipWords` or `valuedFlags`: the tool's own table holds both. A project's own
+kind that matches `vitest`, `jest`, `bun test` or `tsc` gets that table too; a kind that matches
+any other tool, and every `{ "script" }` rule, reads operands with the older shared list of
+vitest's and jest's options, plus its own `skipWords` and `valuedFlags`. For a `script` kind, the
+operands are the words after the script's name (`bun run test src/a.test.ts`). Each operand is
+checked against the folder the job runs in.
 
 **Old fields.** A project file written for an older plugin may still set `gb`, `filesGb`,
 `maxFiles`, `workers` or `light` on a kind (`IGNORED_KIND_FIELDS`, `src/jobs/kinds.ts`). They
 still parse, so the file keeps working, and the queue ignores every one of them. `doctor` says
 once, in the project's lines, that they can go. The project's file cannot set how many jobs
 run at once: the slot is the machine's, and there is one.
+
+### Scripts are read by their body
+
+A `package.json` script is not a tool, and its name says nothing about its work. So the
+classifier reads what a script runs:
+
+- **A `{ "script": "<name>" }` rule wins.** A project that names a script in a kind's `match`
+  gets that kind for it, whatever the body holds.
+- **Any other script is read by its body**, as if the line ran those commands, in the folder of
+  the `package.json`. `bun run typecheck` with the body `tsc --noEmit` is a `tsc` run.
+  `$npm_execpath` (or `"$npm_execpath"`) as a body's program reads as the runner that ran the
+  script, so `"$npm_execpath" test` under `bun run test` is `bun test`. A script that calls
+  another script is followed, three levels deep (`MAX_NESTING`); a script that calls itself,
+  or goes deeper, is not read.
+- **The route needs every command of the body to be heavy** (a `cd`, an assignment or another
+  such script are fine; § The route). A **mixed** script — `biome check . && tsc --noEmit` — is
+  never routed, because the queue would also hold the lint. To queue it, give the project a
+  kind with `{ "script": "check" }`: the whole script then waits for one slot.
+- **`pre<name>` and `post<name>`** are read where the runner runs them: Bun, npm, pnpm and Yarn
+  classic. Yarn Berry (a `packageManager` of `yarn@2` or newer, or a `.yarnrc.yml`) runs
+  none, so none is read.
+- **Extra words after the script name** reach a body that is one plain command, so `bun run
+  test ./src/a.test.ts` can be light. A body of several commands is never light.
+- **The `package.json` is the nearest one**, found walking up from the folder the line runs in
+  to the checkout root (the folder with `.git`) and never above it. A file the reader cannot
+  use counts as none, and the word is then the tool.
+- **A runner's folder option moves the folder**: `bun --cwd`, `pnpm -C` and `--dir`, `npm
+  --prefix` and `-C`, `yarn --cwd`.
+- **A runner takes some `--` words for itself.** `npm run e2e -- --ui` hands `--ui` to the
+  script: npm drops the first `--`, and drops its own flags written before it. Bun and Yarn
+  Berry drop a `--` only when it comes first, Yarn classic drops the first one wherever it
+  stands, and pnpm keeps it. These come from real runs of each runner, so `bun run e2e -- --ui`
+  is read as `playwright test --ui` (a watch run, so never queued).
+- **Not read:** several packages at once (`--filter`, `-r`, `--workspaces`, `turbo`, `nx`), and a
+  script that already runs `cc-smart-dev-kit job run` (it is queued, and never queued again).
 
 ## The route: `job-route`
 
@@ -179,9 +257,10 @@ the slot and the waiting line come out the same as a person's own `job run`. One
 goes in as its own argv words (`bunx vitest run src/a.test.ts`); anything else (a pipe, `&&`, a
 glob, an expansion) through the **person's own shell** (`<shell> -c '<the line>'`: `$SHELL` when
 it is bash or zsh, else `bash` where the machine has it, else `sh` — never `/bin/sh`, which is
-dash on Debian and Ubuntu, and cannot read bash syntax). A command already inside
-`cc-smart-dev-kit job run` is left alone. Outside git there is no project, so a heavy command
-there runs raw. The hook's other part, the launch judge, is always on:
+dash on Debian and Ubuntu, and cannot read bash syntax). Each word is quoted unless it holds
+only letters, digits and `_ . / -`, so one with `=`, `:`, `@`, `,`, `%` or `+` is quoted too. A
+command already inside `cc-smart-dev-kit job run` is left alone, also when it is inside a
+script's body. Outside git there is no project, so a heavy command there runs raw. The hook's other part, the launch judge, is always on:
 `docs/design/hooks.md` § The Bash judge and the job route.
 
 **Only a line whose every command is heavy, a `cd` or an assignment is queued**
@@ -205,6 +284,32 @@ the pipe — a filter with an option that writes, a second heavy command, a filt
 heavy one (`cat x | tsc`), `|&`, a group in parentheses — keeps the whole line raw. The exit
 code is the pipeline's own, exactly as without the queue.
 
+**A light line stays raw.** A line is queued only when the judge (`runWeight`) also says it is
+heavy. A run on named files, or one that only prints, starts at once, so wrapping it would only
+add the launcher's start. A watch run, and a line that already queues itself, answer `none`:
+they must never hold a slot, so they are left raw too (the route never wraps `tsc && vitest
+--watch`). The judge calls a line light only when it understands **every** command in it — a
+`cd`, an assignment, a heavy-kind command, a script it followed into its body, a read-only
+filter: in `tsc --noEmit a.ts && ./build.sh` the unknown `./build.sh` may be the heavy work, so
+the line is not light. Several heavy runs sent to the background with `&` are not light.
+
+**The timeout.** A job may wait many minutes for a slot, and a Bash call ends at its timeout.
+When the call set none, the rewrite gives it the Bash tool's longest: the larger of
+`BASH_MAX_TIMEOUT_MS` (default 600000) and `BASH_DEFAULT_TIMEOUT_MS` (default 120000), read
+from the hook's environment (`routedTimeoutMs`). A timeout the call chose is kept, and a call
+sent to the background (`run_in_background`) is left alone. The hook's `updatedInput` setting
+`timeout` was proved live on 2.1.326 (`claude-code-contract.md`); whether a value set in a
+settings file's `env` reaches the hook's environment is not proved, and without it the
+defaults hold. The longest timeout is still a limit, so the first waiting line also says to run
+a long wait in the background (§ What a job prints). `REWRITE_TIMEOUT_SUPPORTED` in the hook is
+the switch to turn the timeout off.
+
+**A git command whose hook is heavy gets a prefix, not a wrapper** (§ Git hooks). Claude Code
+reads a person's own Bash rules past a leading variable assignment, but not past
+`job run -- git push`: a wrapper would hide the `git` from a `Bash(git push:*)` rule (proved
+live on 2.1.326, `claude-code-contract.md`). So the line stays as written, with three
+assignments in front of the git command.
+
 **A heavy PowerShell line is refused while the route is on.** The rewritten line is a `sh` line
 the PowerShell tool cannot run, so a heavy command run there would not wait for the slot. The
 hook denies it and names the Bash tool with the exact Bash line to run when the line is one
@@ -214,6 +319,100 @@ print-only one, and every PowerShell line with the route off are left as written
 
 **The folder.** The rewritten command runs in the Bash tool's own shell, so it starts in the
 folder that shell is in. A `cd` **inside** the command lives only for that command.
+
+## Git hooks
+
+A repo's own hook often runs the heaviest work of a commit: a `pre-commit` that type-checks and
+tests, a `pre-push` that builds. It runs inside `git commit` or `git push`, and git is no heavy
+command, so the queue never saw it. The route fixes that without touching the person's git
+settings, with a folder the kit owns and a prefix on the git line.
+
+**The kit's folder.** `~/.local/share/cc-smart-dev-kit/git-hooks/` holds one `sh` script under
+every client-side hook name in `git help githooks`, all with the same text and mode 755. It
+also holds a script under the four server-side names (`pre-receive`, `update`, `post-receive`,
+`post-update`), which only pass through: a server hook never runs on a commit or a push from
+this machine, so none is read or queued. It never holds `push-to-checkout` or `proc-receive`:
+git changes what it does when one of them exists. `cc-smart-dev-kit setup` writes the folder,
+the first session start of a new version rewrites it (each script in place, one file at a
+time, because git reads the folder while a commit runs), and `restore` removes it. It is a
+folder the kit owns whole, marked as its own: a folder at that path that the kit did not make
+is never replaced, and `doctor` says to move it away. Native Windows has no folder yet: the
+scripts are `sh`.
+
+**The prefix.** With the route on, a `git commit`, `git merge` or `git push` whose hook is heavy
+gets three variable assignments in front of the `git` word, and no other change:
+
+    GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=<the kit's folder> git commit -m x
+
+**Your permission rules see the prefixed line.** Claude Code matches a `deny` or `ask` rule past
+leading variable assignments, so `Bash(git push *)` there still holds (proved live:
+`docs/claude-code-contract.md`). An `allow` rule does not: Claude Code's docs say it will not
+match past an assignment of another variable. So with `Bash(git push *)` only in your allow
+list, a prefixed push asks you again, and nothing that was asked becomes allowed. How auto mode
+judges a prefixed line is not proved yet.
+
+Git reads them for that one command, so it uses the kit's folder instead of the repo's own. The
+hooks asked about are the ones the command runs: `pre-commit` and `commit-msg` for a commit,
+`pre-merge-commit` and `commit-msg` for a merge, `pre-push` for a push. Why a prefix and not
+the wrapper the other heavy lines get: § The route. Any doubt leaves the line as written, so no
+hook is ever skipped:
+
+- no prefix when the route is off, on native Windows, or when the kit's folder is missing or
+  not this version's (`doctor` names it);
+- none when the command skips its hooks (`--no-verify`, a commit's `-n`; a push's `-n` is
+  `--dry-run`), or sets `core.hooksPath` itself (`git -c core.hooksPath=… commit`: the person's
+  own folder still wins), or the line sets any `GIT_CONFIG_*` variable;
+- none when the session's environment already sets `core.hooksPath` through `GIT_CONFIG_*`. When
+  it holds other pairs (CI often sets a `safe.directory` one), the kit's pair is added after
+  them: the count grows by one and nothing is lost;
+- none when the command is not plain `git` (a wrapper, a keyword, a computed word), or the
+  reader cannot place it exactly in the line (inside `bash -c '…'`, a backtick, a here-doc, a
+  bash array's list). `git --git-dir` and `--work-tree` also leave the hook unqueued: `job hook`
+  cannot find the repo, answers `direct`, and the hook runs as it is;
+- none when the hook is not heavy, or git does not answer in time (the questions share the
+  guards' short time budget, 8 s of the hook's 10).
+
+The prefixed call gets the same longest timeout as a wrapped one (§ The route).
+
+**The script** does the same for every name, and tries never to be the thing that breaks a
+commit. It takes the kit's own pair out of the environment, so nothing the hook starts (a test
+suite that commits in temp repos) sends its own git calls through the folder. It finds the
+repo's real hooks folder and the real hook file of that name, with git's own question; no file
+means it ends with 0, as git does. A file that is not executable gets git's own hint and ends
+with 0. It asks `cc-smart-dev-kit job hook <name>`. Only the answer `queue <kind>` changes
+anything: then it runs `job run --hook --kind <kind> -- <the real hook> <git's arguments>`.
+Every other answer, a missing launcher and a failing one run the real hook as it is. Standard
+input and the environment pass through, so `pre-push` still reads its refs and `pre-commit`
+still sees `GIT_INDEX_FILE`.
+
+**How a hook is read** (`job hook`). It finds the repo's real hooks folder: `core.hooksPath` of
+the repo, else `<git dir>/hooks`. For husky v9, whose folder (`.husky/_`) holds a stub for every
+name, it reads the person's commands in `.husky/<name>`, and a stub with none behind it is no hook.
+The text is classified **any-heavy**: one heavy command anywhere in it makes the hook heavy,
+because nothing is hidden (the git line is still visible to the person's rules). A package script
+in it is followed into its body (`bun run typecheck` reads as `tsc`), from the `package.json` at
+the top of the work tree, where git runs the hook, whatever folder the commit was typed in. A
+hook that already queues itself (it runs `cc-smart-dev-kit job run …`, directly or through a
+script it calls) runs as it is: queued again, it would wait for the slot its own job holds. A
+hook that only starts a
+manager is queued only when a kind of the project matches a command in that hook's text. The
+hook lefthook writes (`lefthook install`) ends with `call_lefthook run "pre-push" "$@"`, a shell
+function, and inside it runs `lefthook -h` and `lefthook "$@"`: `lefthook run` is never a
+command of the file. So the kind `{ "tool": "lefthook" }`, with no `sub`, queues it (proved
+against lefthook's own template, `src/jobs/git-hooks.test.ts`), and `{ "tool": "lefthook",
+"sub": ["run"] }` does not; it only matches a hook you wrote that calls `lefthook run …`
+directly. The kind then queues every lefthook hook of the project, whatever its YAML runs. It
+also matches every `lefthook …` line typed in a session, so `lefthook install` would wait for the
+slot too: give the kind `"printOnly": ["-h", "--help", "install"]`, which keeps those light and
+still queues the hook:
+
+```json
+"lefthook": { "match": [{ "tool": "lefthook" }], "printOnly": ["-h", "--help", "install"] }
+```
+
+The managers' own files (lefthook's and pre-commit's YAML) are not read, and no kind is proved for
+the pre-commit framework's generated hook. A binary file, or a file over 256 KB, is run as it
+is.
 
 ## One job per name: `--exclusive`
 
@@ -313,30 +512,46 @@ working folder into a script's environment by itself, so the launchers start the
 ## The classifier
 
 `classifyHeavyCommand(bashCommand, kinds)` (`src/jobs/classify.ts`) says which kind a Bash
-command runs, or null: it is what the route names a job by. The route adds one rule on top
-(`classifyRoutableLine`): a line is queued only when every command in it is heavy, a `cd` or an
-assignment, or when one heavy command is piped into read-only filters (§ The route). It reads
-the line with the one shell reader the guards use too (`src/shell/command.ts`), so the queue and
-the guards see the same commands: a tool inside quotes, an `echo`, a quoted here-doc, a comment
-or a commit message is text, not a run; a substitution (`$( … )`, a backtick, the body of an
-unquoted here-doc) is a run. It finds the tool behind `bunx`, `bun x`, `bun run`, `bun <name>`,
-`npx`, `npm exec`, `npm run`, `pnpm`, `yarn`, `node_modules/.bin/` paths and `node <script
-path>`; behind a shell keyword (`if`, `while`, `!`); behind the wrappers `time`, `timeout`,
-`nice`, `ionice`, `nohup`, `stdbuf`, `env`, `sudo`, `doas`, `exec`, `command`, `builtin` and
-`xargs`, **with their own options**; inside `bash -c '…'`, `env -S '…'`, a here-doc or a pipe
-fed to a shell; and behind a name the shell resolves first (`b\unx`, `$'bunx'`). The reader's
-cases are pinned in `src/jobs/shell-parity.test.ts`.
+command runs, or null. The route and the hook's questions ask it, and it asks three things of
+one walk of the line:
 
-**A script is a script, not the tool of the same name.** A `package.json` script is found only
-through a kind's `{ "script": "<name>" }` rule. To tell a script from a tool, the classifier
-reads the project's `package.json` in the folder the line runs in (after a `cd`, the folder it
-moves to), through an injected reader (`packageScripts` in `src/jobs/package-scripts.ts`), once
-per folder and run. A name that is a **script** there matches only a `script` rule, so a
-project whose `tsc` script already wraps the type check is not queued a second time. A name that
-is **no script** there is the package manager's `node_modules/.bin/<name>`, so a tool rule
-matches it. With no `package.json` there, or one the reader cannot use, the answer is the tool —
-a broken file is treated as no file. These cases are in `src/jobs/classify.test.ts` and, through
-the hook, in `src/hooks/bash-judge.test.ts`.
+- **`classifyHeavyCommand`**: the first heavy kind the line runs, anywhere in it (any-heavy). A
+  run that only prints is no heavy run.
+- **`routableLine`** (`classifyRoutableLine` gives its kind): may the route queue the line? Only
+  when every command in it is heavy, a `cd` or an assignment, or when one heavy command is
+  piped into read-only filters (§ The route). A script is followed into its body by the same
+  rule (§ Scripts are read by their body).
+- **`runWeight(line, kinds, source)`**: how heavy is the run? `{ weight: "light" }` (it only
+  prints, or names only existing files), `{ weight: "heavy", kind }` (it waits for a slot), or
+  `{ weight: "none" }` (no heavy command in the line, a watch run, or a line that queues
+  itself). The route and `job run` both ask it, so a line is judged the same where it is routed
+  and where it runs. It unwraps `bash -c '…'` and `zsh -c '…'`, and reads each command's files
+  in the folder it runs in (after a `cd`). **Light needs a positive finding**: every heavy
+  command only prints or names existing files, and every other command of the line is one the
+  reader understands. Anything else is heavy.
+
+The classifier reads the line with the one shell reader the guards use too
+(`src/shell/command.ts`), so the queue and the guards see the same commands: a tool inside
+quotes, an `echo`, a quoted here-doc, a comment or a commit message is text, not a run; a
+substitution (`$( … )`, a backtick, the body of an unquoted here-doc) is a run. It finds the
+tool behind `bunx`, `bun x`, `bun run`, `bun test`, `bun <name>`, `npx`, `npm exec`, `npm run`,
+`pnpm`, `yarn`, `node_modules/.bin/` paths and `node <script path>`; behind a shell keyword
+(`if`, `while`, `!`); behind the wrappers `time`, `timeout`, `nice`, `ionice`, `nohup`,
+`stdbuf`, `env`, `cross-env`, `sudo`, `doas`, `exec`, `command`, `builtin` and `xargs`,
+**with their own options**; inside `bash -c '…'`, `env -S '…'`, a here-doc or a pipe fed to a
+shell; and behind a name the shell resolves first (`b\unx`, `$'bunx'`). `cross-env NODE_ENV=test
+jest` is a `jest` run: its `VAR=x` words are stepped over. The reader's cases are pinned in
+`src/jobs/shell-parity.test.ts`.
+
+**A script is a script, not the tool of the same name.** To tell a script from a tool, the
+classifier reads the project's `package.json` in the folder the line runs in, through an
+injected reader (`packageScripts` in `src/jobs/package-scripts.ts`), once per folder and run. A
+name that is a **script** there matches only a `script` rule, or is read by its body; a project
+whose `tsc` script already wraps the type check is not queued a second time. A name that is **no
+script** there is the package manager's `node_modules/.bin/<name>`, so a tool rule matches it.
+With no `package.json` there, or one the reader cannot use, the answer is the tool: a broken
+file is treated as no file. These cases are in `src/jobs/classify.test.ts` and, through the
+hook, in `src/hooks/bash-judge.test.ts`.
 
 ## What 2.0 took out
 
@@ -357,14 +572,38 @@ only the heavy-job count. The queue never changes process priority. An old
   `/dev/tty` cannot, and Ctrl+Z stops `job run` only, not the job. Heavy jobs are builds and
   checks that ask nothing.
 - **A hung job holds the slot for ever:** there is no timeout. Every waiting line names it.
-- **Nesting is found on Linux only.** On macOS and Windows, a heavy job must not start another
-  one through `job run`.
+- **Nesting is found on Linux only** (unchanged by the git hooks). On macOS and Windows, a heavy
+  job must not start another one through `job run`.
 - **Windows:** `job run` watches the job's first process, so a worker left behind is not seen
   and the slot is given back while it runs; and a holder whose start time cannot be read counts
   as alive (`windows-jobs.md`).
 - **A dead ticket from another pid namespace** cannot be judged by its pid: it holds the line
   until it is stale, 30 seconds after its last touch.
 - **The classifier's `typed.` rule for ESLint** can match a file whose name holds that text.
+- **Watch runs are never queued by the route**, and a run the judge cannot read is never
+  called light: it keeps its slot. A `job run` you type holds a slot for a watch run too.
+- **Multi-package script forms are not read** (`--filter`, `-r`, `--workspaces`, `turbo`,
+  `nx`): the line runs raw, or takes the slot of the kind you gave it.
+- **lefthook's and pre-commit's YAML files are not read.** What their hooks run is invisible: a
+  generated lefthook hook is queued only by a kind with `{ "tool": "lefthook" }` (every
+  lefthook hook then waits, and so does a typed `lefthook …` line its `printOnly` does not name),
+  not by `lefthook run`; the pre-commit framework's has no proved kind (§ Git hooks).
+- **`tsc` on named files ignores `tsconfig.json`** and may pull in the whole import graph of
+  those files, so a "light" run can still be large. Name few, narrow files.
+- **vitest and `bun test` file arguments are filters**, not exact files. A named file that exists
+  counts as light (Bun only with `./` or `/`), yet the runner may run more than it.
+- **A waiting hook holds git's `index.lock`.** A `git commit` whose `pre-commit` waits for the
+  slot keeps the lock, so another git command in that repo that needs the index fails until the
+  hook runs.
+- **The hook names are git 2.53's** (`HOOK_NAMES` in `src/jobs/git-hooks.ts`, from `git help
+  githooks`). A hook name a later git adds has no script in the kit's folder, so for a prefixed
+  command git finds no hook of that name and runs nothing. `doctor` does not compare the list
+  with the running git's.
+- **`git -C <other repo> commit` is judged with this session's project kinds**, while `job hook`
+  reads the other repo's: with kinds of its own, that repo may get a prefix it does not need
+  (harmless: its `job hook` answers `direct`) or miss one.
+- **Git hooks are not prefixed on native Windows yet**: the scripts are `sh`, and the proof
+  through Git for Windows is still to do. `doctor` says so.
 - **The queue is not a substitute** for running targeted checks while building and one full
   check at the end.
 

@@ -22,6 +22,7 @@ import { isOlder } from "../build-info/semver";
 import { type CliPaths, tildify } from "../cli/paths";
 import { isAttended } from "../hooks/attended";
 import { detachedArgv } from "../hooks/detached";
+import { refreshGitHooksFolder } from "../jobs/hook-folder";
 import {
   AUTO_UPDATE_KEY,
   AUTO_UPDATE_VALUE,
@@ -237,6 +238,38 @@ export async function refreshInstructionsAtSessionStart(
     if (error instanceof LockBusyError) return;
     deps.log(
       `${PLUGIN}: the instructions copy was not refreshed (${messageOf(error)}). A plain ${COMMAND} setup brings it up to date.`,
+    );
+  }
+}
+
+/** What the git hooks folder's refresh needs: this session's version, and where a failure goes. */
+export interface GitHooksRefreshDeps {
+  paths: CliPaths;
+  /** The plugin version this session loaded: the folder is brought up to it. */
+  version: string;
+  /** One line, when the refresh fails; the session goes on either way. */
+  log: (line: string) => void;
+  /** How long it may wait for the state folder's lock. Default 2 s. */
+  waitMs?: number;
+}
+
+/**
+ * The git hooks folder's part of a session start, the same shape as the instructions copy's: a
+ * plugin update installs new files but the old version's code wrote the folder, so the first
+ * session start of a new version rewrites it (`refreshGitHooksFolder`). Only a folder setup
+ * wrote, only from the installed version's session, under the state lock; never created here.
+ * A failure is one line, and the session goes on; a busy lock says nothing (another process
+ * does the work).
+ */
+export async function refreshGitHooksAtSessionStart(deps: GitHooksRefreshDeps): Promise<void> {
+  try {
+    await refreshGitHooksFolder(deps.paths, deps.version, {
+      ...(deps.waitMs !== undefined && { waitMs: deps.waitMs }),
+    });
+  } catch (error) {
+    if (error instanceof LockBusyError) return;
+    deps.log(
+      `${PLUGIN}: the git hooks folder was not refreshed (${messageOf(error)}). A plain ${COMMAND} setup brings it up to date.`,
     );
   }
 }

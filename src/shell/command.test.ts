@@ -267,9 +267,9 @@ describe("shellSegments — a line that goes on", () => {
 describe("shellSteps — the command piped into each one", () => {
   test("names the text of the command before a pipe", () => {
     expect(shellSteps("echo hi | sh; ls")).toEqual([
-      { text: "echo hi ", pipedFrom: null, expanded: false },
-      { text: " sh", pipedFrom: "echo hi ", expanded: false },
-      { text: " ls", pipedFrom: null, expanded: false },
+      { text: "echo hi ", pipedFrom: null, expanded: false, start: 0 },
+      { text: " sh", pipedFrom: "echo hi ", expanded: false, start: 9 },
+      { text: " ls", pipedFrom: null, expanded: false, start: 13 },
     ]);
   });
 
@@ -277,8 +277,8 @@ describe("shellSteps — the command piped into each one", () => {
   // `tail` piped from that `1`, so a heavy command with its stderr sent on was never routable.
   test("the & of 2>&1, >&2 and &>log is part of the redirection, not a separator", () => {
     expect(shellSteps("tsc --noEmit 2>&1 | tail -20")).toEqual([
-      { text: "tsc --noEmit 2>&1 ", pipedFrom: null, expanded: false },
-      { text: " tail -20", pipedFrom: "tsc --noEmit 2>&1 ", expanded: false },
+      { text: "tsc --noEmit 2>&1 ", pipedFrom: null, expanded: false, start: 0 },
+      { text: " tail -20", pipedFrom: "tsc --noEmit 2>&1 ", expanded: false, start: 19 },
     ]);
     expect(shellSegments("echo x >&2; ls")).toEqual(["echo x >&2", " ls"]);
     expect(shellSegments("make &>build.log && ls")).toEqual(["make &>build.log ", "", " ls"]);
@@ -291,6 +291,86 @@ describe("shellSteps — the command piped into each one", () => {
     expect(shellSegments("a && b")).toEqual(["a ", "", " b"]);
     // An escaped `>` is a character, so the `&` after it is a separator again.
     expect(shellSegments("echo a\\>& ls")).toEqual(["echo a\\>", " ls"]);
+  });
+});
+
+describe("shellSteps: where each command starts in the line", () => {
+  /** The step texts with their offsets, as `[start, text]`. */
+  const starts = (line: string) =>
+    shellSteps(line).map((step) => [step.start, step.text] as [number | undefined, string]);
+
+  test("a command's offset is the character after the separator that ended the one before", () => {
+    expect(starts("git add -A && git commit -m x")).toEqual([
+      [0, "git add -A "],
+      [12, ""],
+      [13, " git commit -m x"],
+    ]);
+    expect(starts("a;b\nc")).toEqual([
+      [0, "a"],
+      [2, "b"],
+      [4, "c"],
+    ]);
+  });
+
+  test("a command inside ( … ) or a substitution has its own offset in the same line", () => {
+    expect(starts("(cd a; git push)")).toEqual([
+      [0, ""],
+      [1, "cd a"],
+      [6, " git push"],
+      [16, ""],
+    ]);
+    expect(starts("echo $(git rev-parse HEAD) x")).toEqual([
+      [7, "git rev-parse HEAD"],
+      [0, "echo $(git rev-parse HEAD) x"],
+    ]);
+  });
+
+  test("what is read out of another text has no offset: a backtick, a here-doc body", () => {
+    expect(starts("echo `git push`")).toEqual([
+      [undefined, "git push"],
+      [0, "echo `git push`"],
+    ]);
+    expect(starts("sh <<EOF\ngit push\nEOF\nls")).toEqual([
+      [0, "sh <<EOF"],
+      [undefined, "git push"],
+      [undefined, ""],
+      [22, "ls"],
+    ]);
+  });
+
+  test("a reading that joins escaped line breaks rewrites the text, so its steps have no offset", () => {
+    const steps = shellSteps("git commit -m x \\\n  --no-verify", { joinLines: true });
+    expect(steps.map((step) => step.start)).toEqual([undefined]);
+    expect(shellSteps("git commit -m x \\\n  --no-verify").map((step) => step.start)).toEqual([
+      0, 18,
+    ]);
+  });
+
+  test("the commands of a bash array's list are marked, no other group is", () => {
+    const array = (line: string) =>
+      shellSteps(line)
+        .filter((step) => step.text.trim().startsWith("git"))
+        .map((step) => step.subshell?.array ?? false);
+    expect(array("cmd=(git push)")).toEqual([true]);
+    expect(array("args+=(git push)")).toEqual([true]);
+    expect(array("declare -a a=( git push )")).toEqual([true]);
+    expect(array("a=(\n git push\n)")).toEqual([true]);
+    expect(array("(git push)")).toEqual([false]);
+    expect(array("x=$(git push)")).toEqual([false]);
+    expect(array("echo hi; (git push)")).toEqual([false]);
+    // Inside the list, a substitution is a command again.
+    expect(array("a=($(git push))")).toEqual([false]);
+  });
+
+  test("a here-doc body cut out of a substitution leaves the text before its first line break whole", () => {
+    const line = "git commit -m \"$(cat <<'EOF'\nmsg\nEOF\n)\"";
+    // The substitution's own command comes first (`cat <<'EOF'`, at 17); the git command is last.
+    const step = shellSteps(line).find((one) => one.text.startsWith("git commit"));
+    expect(step?.start).toBe(0);
+    // The body is cut out of the text, so the whole text is no slice of the line any more …
+    expect(line.startsWith(step?.text ?? "x", step?.start)).toBe(false);
+    // … but the text before its first line break is.
+    expect(line.startsWith((step?.text ?? "").split("\n")[0] ?? "x", step?.start)).toBe(true);
   });
 });
 
@@ -331,6 +411,133 @@ describe("wordsOf", () => {
     expect(withoutRedirections(["push", "origin", ">", "out", "2>", "<in"])).toEqual([
       "push",
       "origin",
+    ]);
+  });
+});
+
+describe("wordsOf: bash's `&>file` and `&>>file` are one redirection", () => {
+  test("the bare & belongs to the redirection, attached or apart", () => {
+    expect(wordsOf("tsc a.ts &>/dev/null")).toEqual(["tsc", "a.ts", "&>/dev/null"]);
+    expect(wordsOf("tsc a.ts &>>log")).toEqual(["tsc", "a.ts", "&>>log"]);
+    expect(wordsOf("tsc a.ts &> out.txt")).toEqual(["tsc", "a.ts", "&>", "out.txt"]);
+    expect(withoutRedirections(wordsOf("tsc a.ts &>/dev/null").slice(1))).toEqual(["a.ts"]);
+    expect(withoutRedirections(wordsOf("tsc a.ts &>>log").slice(1))).toEqual(["a.ts"]);
+    expect(withoutRedirections(wordsOf("tsc a.ts &> out.txt").slice(1))).toEqual(["a.ts"]);
+    expect(withoutRedirections(wordsOf("tsc a.ts &>> out.txt").slice(1))).toEqual(["a.ts"]);
+    expect(redirectionTargets(wordsOf("tsc a.ts &>> out.txt"))).toEqual(["out.txt"]);
+    expect(redirectionTargets(wordsOf("tsc a.ts &>/dev/null"))).toEqual(["/dev/null"]);
+    expect(redirectionTargets(wordsOf("tsc a.ts &>>log"))).toEqual(["log"]);
+  });
+
+  test("attached to the word before it, the & still starts the redirection", () => {
+    expect(wordsOf("git reset --hard&>/dev/null")).toEqual([
+      "git",
+      "reset",
+      "--hard",
+      "&>/dev/null",
+    ]);
+    expect(wordsOf("make all&>>log")).toEqual(["make", "all", "&>>log"]);
+    expect(redirectionTargets(wordsOf("make all&>log"))).toEqual(["log"]);
+  });
+
+  test("a quoted or escaped & is a character, and PowerShell has no such operator", () => {
+    expect(wordsOf("echo '&'>x")).toEqual(["echo", "&", ">x"]);
+    expect(wordsOf("echo \\&>x")).toEqual(["echo", "&", ">x"]);
+    expect(wordsOf("tsc a.ts &>x", "powershell")).toEqual(["tsc", "a.ts", "&", ">x"]);
+  });
+});
+
+describe("wordsOf: a substitution is one word", () => {
+  test("$( … ) keeps its spaces and redirections, outside quotes and inside them", () => {
+    expect(wordsOf("out=$(bun test 2>&1)")).toEqual(["out=$(bun test 2>&1)"]);
+    expect(wordsOf("echo $(a b) c")).toEqual(["echo", "$(a b)", "c"]);
+    expect(wordsOf("echo $(a $(b c)) d")).toEqual(["echo", "$(a $(b c))", "d"]);
+    expect(wordsOf('x="$(a "b c")" d')).toEqual(['x=$(a "b c")', "d"]);
+    expect(wordsOf("echo $(a ')' b) c")).toEqual(["echo", "$(a ')' b)", "c"]);
+  });
+
+  test("bash's <( … ) and >( … ) at the start of a word, never after one", () => {
+    expect(wordsOf("diff <(sort a) <(sort b)")).toEqual(["diff", "<(sort a)", "<(sort b)"]);
+    expect(wordsOf("cmd > >(tee x)")).toEqual(["cmd", ">", ">(tee x)"]);
+    // The shell puts a file of its own there: no file of the line's.
+    expect(redirectionTargets(wordsOf("cmd > >(tee x)"))).toEqual([]);
+    // Not a redirection: the program gets a file name in its place.
+    expect(redirectionTargets(wordsOf("cmd >(tee x)"))).toEqual([]);
+    expect(withoutRedirections(wordsOf("diff <(a) <(b)").slice(1))).toEqual(["<(a)", "<(b)"]);
+  });
+
+  test("a $'…' quote or a backtick inside it is text: its ) closes nothing (review 3, M2)", () => {
+    expect(wordsOf("echo $(printf $'\\'') > X \"')\"")).toEqual([
+      "echo",
+      "$(printf $'\\'')",
+      ">",
+      "X",
+      "')",
+    ]);
+    expect(redirectionTargets(wordsOf("echo $(printf $'\\'') > X \"')\""))).toEqual(["X"]);
+    expect(wordsOf("echo $(echo `echo )`) y")).toEqual(["echo", "$(echo `echo )`)", "y"]);
+    expect(wordsOf('echo "$(a "$(b ")")")" z')).toEqual(["echo", '$(a "$(b ")")")', "z"]);
+  });
+
+  test("a quoted or escaped ( after > is a file's name, not a process substitution (review 3, L5)", () => {
+    expect(redirectionTargets(wordsWithFill("echo x >\\(foo"))).toEqual(["(foo"]);
+    expect(redirectionTargets(wordsWithFill('echo x >"(foo"'))).toEqual(["(foo"]);
+    expect(redirectionTargets(wordsWithFill('echo x > "(foo"'))).toEqual(["(foo"]);
+    expect(redirectionTargets(wordsWithFill("cmd > >(tee x)"))).toEqual([]);
+    expect(redirectionTargets(wordsWithFill("cmd >(tee x)"))).toEqual([]);
+  });
+
+  test("$$ is the shell's process id, so the $ after it starts nothing (review 4)", () => {
+    // The `'` after `$$` opens a plain quote, so the second `'` is a comment's.
+    expect(shellSteps("echo $$'\\' > P #'").map((step) => step.text)).toEqual(["echo $$'\\' > P "]);
+    expect(wordsOf("echo $$'\\' > P ")).toEqual(["echo", "$$\\", ">", "P"]);
+    expect(wordsWithFill("echo $$ x")[1]).toEqual({ filled: true, text: "$$" });
+  });
+
+  test("an unclosed one, and PowerShell, split as before", () => {
+    expect(wordsOf("echo $(a b")).toEqual(["echo", "$(a", "b"]);
+    expect(wordsOf("echo $(a b) c", "powershell")).toEqual(["echo", "$(a", "b)", "c"]);
+  });
+});
+
+describe("shellSteps: the group each command runs in", () => {
+  test("commands of one group share it; groups side by side are two", () => {
+    const [first, second, outer] = shellSteps("echo $(cd a) $(touch b)");
+    expect(first?.text).toBe("cd a");
+    expect(second?.text).toBe("touch b");
+    expect(first?.subshell?.depth).toBe(1);
+    expect(second?.subshell?.depth).toBe(1);
+    expect(first?.subshell === second?.subshell).toBe(false);
+    expect(outer?.subshell).toBeUndefined();
+  });
+
+  test("a group inside a group points back to it", () => {
+    const steps = shellSteps("(cd a; (touch b))");
+    const inner = steps.find((step) => step.text === "touch b")?.subshell;
+    const outer = steps.find((step) => step.text === "cd a")?.subshell;
+    expect(inner?.depth).toBe(2);
+    expect(inner?.outer === outer).toBe(true);
+  });
+
+  test("a process substitution keeps its word whole and runs its commands one group in", () => {
+    const steps = shellSteps("cmd > >(tee x)");
+    expect(steps.map((step) => step.text)).toEqual(["tee x", "cmd > >(tee x)"]);
+    expect(steps[0]?.subshell?.depth).toBe(1);
+  });
+
+  test("a case pattern's ) closes neither a group nor a substitution", () => {
+    const steps = shellSteps("x=$(case y in a) echo one;; (b) echo two;; esac); touch c");
+    expect(steps.map((step) => [step.text.trim(), step.subshell?.depth ?? 0])).toEqual([
+      ["case y in a", 1],
+      ["echo one", 1],
+      ["", 1],
+      ["", 1],
+      ["b", 1],
+      ["echo two", 1],
+      ["", 1],
+      ["esac", 1],
+      ["x=$(case y in a) echo one;; (b) echo two;; esac)", 0],
+      ["touch c", 0],
     ]);
   });
 });
@@ -404,6 +611,22 @@ describe("invocationOf", () => {
     ]) {
       expect({ words, program: invocationOf(words)?.program }).toEqual({ words, program: "git" });
     }
+  });
+
+  test("`cross-env` runs the program after its VAR=x words, like env does", () => {
+    expect(invocationOf(["cross-env", "NODE_ENV=test", "CI=1", "git", "push", "-f"])).toEqual({
+      args: ["push", "-f"],
+      computed: false,
+      prefix: ["cross-env", "NODE_ENV=test", "CI=1"],
+      program: "git",
+    });
+    expect(invocationOf(["./node_modules/.bin/cross-env", "A=1", "jest"])?.program).toBe("jest");
+    expect(invocationOf(["CI=1", "cross-env.cmd", "A=1", "sudo", "git", "push"])?.program).toBe(
+      "git",
+    );
+    // With no VAR=x word, the command after it still runs; with nothing after it, nothing runs.
+    expect(invocationOf(["cross-env", "git", "x"])?.program).toBe("git");
+    expect(invocationOf(["cross-env", "A=1"])).toBeUndefined();
   });
 
   test("HK-9: `env -S` splits its string into the command's words", () => {
@@ -825,14 +1048,14 @@ describe("wordsWithFill — which words the shell fills in (IX3)", () => {
   });
 
   test("bash: an expansion outside single quotes is filled, in every spelling", () => {
-    // `$(cat q)` and a backtick pair split on their space: each piece is a word of its own.
+    // `$(cat q)` is one word, the shell's answer; a backtick pair splits on its space: each piece
+    // is a word of its own.
     // biome-ignore lint/suspicious/noTemplateCurlyInString: shell text, read by the lexer under test.
     expect(filledOf("a $x ${x} $(cat q) $((1+2)) `cat q` $1 $? x$y")).toEqual([
       false, // a
       true, // $x
       true, // ${x}
-      true, // $(cat
-      false, // q)
+      true, // $(cat q)
       true, // $((1+2))
       true, // `cat
       true, // q`

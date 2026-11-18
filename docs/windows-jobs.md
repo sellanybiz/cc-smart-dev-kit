@@ -93,6 +93,10 @@ never hangs `job status`, a job's wait, or a stop.
   being gone frees its lease. If PowerShell cannot run on a machine at all, a lease is therefore
   kept until its process ends (a dead pid is still freed at once).
 - A pid reused inside one clock tick (about 16 ms) can look like the holder.
+- A git hook never waits for the slot on native Windows: the route gives `git commit`, `git merge`
+  and `git push` no git hooks prefix there yet, so the repo's own hooks run as they always did
+  (`jobs.md` § Git hooks). The hooks folder's scripts are `sh` scripts, still unproved through Git
+  for Windows' `sh`.
 - `PowerShell` means Windows PowerShell 5.1 (`powershell.exe`), which ships with Windows 10 (1809
   or later) and Windows 11.
 

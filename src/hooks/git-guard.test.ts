@@ -96,6 +96,29 @@ describe("a force-push asks", () => {
     expect(guard(command)).toContain("force-push");
   });
 
+  // Review 3, L6: a word the shell works out may become the force option.
+  it.each([
+    ["git push origin feat $(echo -f)"],
+    ["git push origin feat $(echo --force-with-lease)"],
+    ["git push origin $(echo +feat)"],
+    ["git push origin feat `echo -uf`"],
+    // Review 4, L3: after `--`, and as a `${x:-…}` default.
+    ["git push origin -- $(echo +main)"],
+    ["git push -- origin $(echo +main)"],
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: shell text, read by the guard under test.
+    ["git push origin ${B:--f}"],
+  ])("bash, a computed word: %j", (command) => {
+    expect(guard(command, neutral, true, "bash")).toContain("force-push");
+  });
+
+  it.each([
+    ["git push origin $(git branch --show-current)"],
+    ["git push origin feat-$(date +%s)"],
+    ["git push origin $(git branch --show-current | cut -d/ -f2)"],
+  ])("bash, a computed word with no force spelling: %j", (command) => {
+    expect(guard(command, neutral, true, "bash") ?? "").not.toContain("force-push");
+  });
+
   it.each([
     ["git push origin fix/x"],
     ["git push -u origin fix/devtools"],
@@ -252,6 +275,12 @@ describe("git reset --hard asks", () => {
     expect(guard(command)).toContain("`git reset --hard`");
   });
 
+  // `&>` attached to the option: the option is still `--hard`. Read as the Bash tool reads it:
+  // PowerShell's reading splits at the `&` anyway.
+  it.each([["git reset --hard&>/dev/null"], ["git reset --hard&>>log"]])("bash: %j", (command) => {
+    expect(guard(command, neutral, true, "bash")).toContain("`git reset --hard`");
+  });
+
   it.each([
     ["git reset --soft HEAD~1"],
     ["git reset HEAD file.ts"],
@@ -393,6 +422,40 @@ describe("a shell wrapper's inner command is read", () => {
     ['Invoke-Expression "git branch -D fix/x"', "git branch -D"],
     ['eval "git push -f"', "force-push"],
     ["bash -c \"bash -c 'git push -f'\"", "force-push"],
+    // A program that runs its whole line is read as that program first, the kit's `job run`
+    // inside it one level deeper: read as the job run alone, the quoted operator hid the reset.
+    ["eval cc-smart-dev-kit job run -- true '&&' git reset --hard", "git reset --hard"],
+    ["pwsh -c cc-smart-dev-kit job run -- 'true;' git reset --hard", "git reset --hard"],
+    ["cmd /c cc-smart-dev-kit job run -- true '&' git reset --hard", "git reset --hard"],
+    // A shell given the kit's launcher as its script (no `-c`) runs the kit's job: the shell
+    // branch found no command of its own and left the job's unread.
+    ["sh /home/user/.local/bin/cc-smart-dev-kit job run -- git reset --hard", "git reset --hard"],
+    ['bash -x "$HOME/.local/bin/cc-smart-dev-kit" job run -- git push --force', "force-push"],
+    [
+      "eval sh /home/user/.local/bin/cc-smart-dev-kit job run -- git reset --hard",
+      "git reset --hard",
+    ],
+    [
+      "su root /home/user/.local/bin/cc-smart-dev-kit job run -- git reset --hard",
+      "git reset --hard",
+    ],
+    // `cmd` with no /c and PowerShell with no -Command run the kit as a file: its job is read.
+    ["cmd cc-smart-dev-kit job run -- git reset --hard", "git reset --hard"],
+    ["powershell cc-smart-dev-kit job run -- git reset --hard", "git reset --hard"],
+    // `cmd` runs what follows its first `/c`, wherever it stands: the words before it are ignored.
+    ["cmd cc-smart-dev-kit job run -- echo /c git reset --hard", "git reset --hard"],
+    // Under pwsh the job is read as PowerShell, so its words are quoted that way: a `'` in a
+    // word read with bash quoting would end the word early and hide the push to `main`.
+    ['pwsh cc-smart-dev-kit job run -- git push "/tmp/it\'s-repo" main', "`main`"],
+    // A `-c` after the kit's `job run` is the job's (git's here), and the job is read.
+    [
+      `pwsh cc-smart-dev-kit job run -- git -c "a'b" push --force "/tmp/it's-repo" main`,
+      "force-push",
+    ],
+    // A line break in a job word is read, never refused (the guard must not crash on it).
+    ['pwsh cc-smart-dev-kit job run -- git push --force origin "a\nb"', "force-push"],
+    // A kit `job run` with no `--` names no command, so the -Command after it is still read.
+    ['pwsh cc-smart-dev-kit job run -c "git push --force"', "force-push"],
   ])("asks about %j", (command, fragment) => {
     expect(guard(command)).toContain(fragment);
   });
@@ -971,6 +1034,9 @@ describe("a 64 KB command line is read within the guard's time", () => {
     ["many here-docs", fill("cat <<A ")],
     ["deep arithmetic", `echo ${"$((".repeat(SIZE / 6)}1${"))".repeat(SIZE / 6)}`],
     ["nested quotes and substitutions", fill("\"$(echo `a` 'b')\" ")],
+    // Review 3, M3: a `$( … )` whose `$'…'` quote hides its `)`, many times over.
+    ["substitutions that never close", `echo ${fill("$($'\\'\"')")}`],
+    ["unclosed substitutions", `echo ${fill("$(a ")}`],
     ["many PowerShell comments", fill("<# x #> ")],
     ["an unclosed quote", `echo "${fill("a; b ")}`],
   ])("%s", (_name, command) => {

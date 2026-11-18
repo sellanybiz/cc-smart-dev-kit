@@ -48,6 +48,12 @@ const GUARD_CASES: { spec: HookSpec; what: string; input: Record<string, unknown
     what: "whether this edit belongs in a worktree",
     input: { tool_name: "Edit", tool_input: { file_path: "/code/app/README.md" } },
   },
+  {
+    // A shell command that writes in the repo is the same question as an edit of a file there.
+    spec: mainFolderGuardHook,
+    what: "whether this edit belongs in a worktree",
+    input: { tool_name: "Bash", tool_input: { command: "git commit -m x" } },
+  },
 
   {
     spec: jobRouteHook,
@@ -124,6 +130,27 @@ describe("a guard's own crash", () => {
     );
     expect(result.stdout).toBeUndefined();
     expect(result.exitCode ?? 0).toBe(0);
+  });
+
+  test("the main-folder guard asks about a command that writes, and says nothing about one that only reads", async () => {
+    const repo = makeRepo();
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", {});
+    const crash = (command: string) =>
+      runHook(
+        crashing(mainFolderGuardHook),
+        {
+          hook_event_name: "PreToolUse",
+          session_id: SESSION,
+          cwd: repo,
+          tool_name: "Bash",
+          tool_input: { command },
+        },
+        hookEnv(),
+      );
+    expect(askOf(await crash("echo x > a.txt"))).toBe(
+      "cc-smart-dev-kit cannot check whether this edit belongs in a worktree: boom",
+    );
+    expect((await crash("git status && ls -la")).stdout).toBeUndefined();
   });
 
   test("guardCrash: a domain check that throws is no reason to let the call through", () => {
