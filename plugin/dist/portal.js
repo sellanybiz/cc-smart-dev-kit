@@ -18511,6 +18511,68 @@ function addContextAndMessage(event, text, message) {
   };
 }
 
+// src/shell/program-name.ts
+function programName(word) {
+  return (word.split(/[\\/]/).pop() ?? word).toLowerCase().replace(/\.(exe|cmd|ps1|bat)$/, "");
+}
+
+// src/shell/kit-invocation.ts
+var INERT = new Set([
+  "[",
+  "[[",
+  "awk",
+  "cat",
+  "chmod",
+  "chown",
+  "cp",
+  "diff",
+  "echo",
+  "egrep",
+  "fgrep",
+  "file",
+  "git",
+  "grep",
+  "head",
+  "less",
+  "ln",
+  "ls",
+  "man",
+  "mkdir",
+  "more",
+  "mv",
+  "printf",
+  "readlink",
+  "realpath",
+  "rg",
+  "rm",
+  "sed",
+  "stat",
+  "tail",
+  "tee",
+  "test",
+  "touch",
+  "type",
+  "wc",
+  "which"
+]);
+var KIT_BUNDLE = /(?:^|[\\/])(?:dist|entries)[\\/](?:cli|portal)\.(?:js|ts)$/;
+var KIT_TOKEN = new RegExp(`(^|[^\\w.-])${COMMAND.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?:\\.(?:exe|cmd|ps1|bat))?(?=$|[^\\w.\\-/\\\\])`, "i");
+var PATH_BREAKS = /[\s"'`=;&|<>()]+/;
+function namesKit(text) {
+  return KIT_TOKEN.test(text) || text.split(PATH_BREAKS).some((piece) => KIT_BUNDLE.test(piece));
+}
+function isKitWord(word) {
+  return programName(word) === COMMAND || KIT_BUNDLE.test(word);
+}
+function kitArguments(program, args) {
+  if (programName(program) === COMMAND)
+    return [...args];
+  if (INERT.has(program))
+    return null;
+  const at = args.findIndex(isKitWord);
+  return at === -1 ? null : args.slice(at + 1);
+}
+
 // src/shell/command.ts
 function dialectOfTool(tool) {
   if (tool === "Bash")
@@ -19379,9 +19441,6 @@ function packageCommand(program, args) {
   }
   return null;
 }
-function programName(word) {
-  return (word.split(/[\\/]/).pop() ?? word).toLowerCase().replace(/\.(exe|cmd|ps1|bat)$/, "");
-}
 function shortFlags(arg, valued) {
   let flags = "";
   for (let i = 1;i < arg.length; i++) {
@@ -20019,8 +20078,12 @@ function parallelCommand(args) {
   const lines = [...new Set(parallelLines(args))];
   return lines.length === 0 ? undefined : lines.join(" ; ");
 }
+function jobRunArguments(program, args) {
+  const kit = kitArguments(program, args);
+  return kit !== null && kit[0] === "job" && kit[1] === "run" ? kit.slice(2) : null;
+}
 function isJobRun(program, args) {
-  return program === COMMAND && args[0] === "job" && args[1] === "run";
+  return jobRunArguments(program, args) !== null;
 }
 function nestedCommand(program, args, pipedFrom = null) {
   if (SHELLS.has(program)) {
@@ -20035,10 +20098,6 @@ function nestedCommand(program, args, pipedFrom = null) {
       return word.length > 3 ? word.slice(3) : args.slice(here + 1).join(" ");
     }
     return pipedFrom === null ? undefined : writtenText(pipedFrom) ?? undefined;
-  }
-  if (isJobRun(program, args)) {
-    const dashes = args.indexOf("--");
-    return dashes === -1 || dashes === args.length - 1 ? undefined : args.slice(dashes + 1).map(shellQuote).join(" ");
   }
   if (program === "find")
     return findCommands(args);
@@ -20058,6 +20117,11 @@ function nestedCommand(program, args, pipedFrom = null) {
   }
   if (program === "eval" || program === "iex" || program === "invoke-expression") {
     return args.join(" ");
+  }
+  const queued = jobRunArguments(program, args);
+  if (queued !== null) {
+    const dashes = queued.indexOf("--");
+    return dashes === -1 || dashes === queued.length - 1 ? undefined : queued.slice(dashes + 1).map(shellQuote).join(" ");
   }
   return;
 }
@@ -30793,8 +30857,8 @@ function heavyLimitLine(limit) {
 }
 
 // src/jobs/git-hooks.ts
-import { closeSync as closeSync9, openSync as openSync9, readSync as readSync5, statSync as statSync19 } from "fs";
-import { basename as basename12, dirname as dirname23, join as join55 } from "path";
+import { closeSync as closeSync9, openSync as openSync9, readSync as readSync5, realpathSync as realpathSync9, statSync as statSync19 } from "fs";
+import { basename as basename12, dirname as dirname23, join as join55, resolve as resolve12 } from "path";
 
 // src/jobs/classify.ts
 import { isAbsolute as isAbsolute4, join as join54, normalize } from "path";
@@ -31223,9 +31287,16 @@ function scan(command, kinds, dialect, depth, run, all, out) {
   return true;
 }
 function classifyHeavyCommand(command, kinds, source, dialect = "bash") {
+  return readHeavy(command, kinds, source, dialect).kind;
+}
+function readHeavy(command, kinds, source, dialect) {
   const out = newScan();
   scan(command, kinds, dialect, 0, runOf(source), false, out);
-  return out.found.find((one) => !one.printOnly)?.kind ?? null;
+  return { kind: out.found.find((one) => !one.printOnly)?.kind ?? null, queued: out.queued };
+}
+function classifyUnqueuedHeavy(command, kinds, source, dialect = "bash") {
+  const { kind, queued } = readHeavy(command, kinds, source, dialect);
+  return queued ? null : kind;
 }
 function isLight(one, kinds, source) {
   if (one.printOnly)
@@ -31582,14 +31653,38 @@ var HOOK_NAMES = [
 ];
 var TIMED_OUT = "timed-out";
 var MAX_HOOK_BYTES = 256 * 1024;
-var HOOKS_PATH_ARGS = ["rev-parse", "--path-format=absolute", "--git-path", "hooks"];
-function realHooksFolder(cwd, env = process.env, timeoutMs = GUARD_GIT_TIMEOUT_MS) {
+var HOOKS_PATH_ARGS = [
+  "rev-parse",
+  "--path-format=absolute",
+  "--git-path",
+  "hooks",
+  "--show-cdup",
+  "--is-inside-work-tree"
+];
+function hooksPlace(cwd, env = process.env, timeoutMs = GUARD_GIT_TIMEOUT_MS) {
   if (timeoutMs <= 0)
     return TIMED_OUT;
   const run = runGit(cwd, HOOKS_PATH_ARGS, env, timeoutMs, { GIT_CONFIG_COUNT: "0" });
   if (run.code === null && run.err === GIT_TIMED_OUT)
     return TIMED_OUT;
-  return run.ok && run.out !== "" ? run.out : null;
+  if (!run.ok)
+    return null;
+  const lines = run.out.split(`
+`);
+  const inside = lines.pop() === "true";
+  const up = inside ? lines.pop() ?? "" : "";
+  const folder = lines.join(`
+`);
+  if (folder === "")
+    return null;
+  return { folder, top: inside ? resolve12(realFolder2(cwd), up) : cwd };
+}
+function realFolder2(folder) {
+  try {
+    return realpathSync9(folder);
+  } catch {
+    return folder;
+  }
 }
 function isHuskyStubFolder(folder) {
   return basename12(folder) === "_" && basename12(dirname23(folder)) === ".husky";
@@ -31619,11 +31714,14 @@ function hookText(file) {
       closeSync9(fd);
   }
 }
-function hookDecision(name, cwd, kinds, source, env = process.env, gitTimeoutMs = GUARD_GIT_TIMEOUT_MS) {
-  const folder = realHooksFolder(cwd, env, gitTimeoutMs);
-  if (folder === TIMED_OUT)
+function hookDecision(name, cwd, kinds, scriptsIn, env = process.env, gitTimeoutMs = GUARD_GIT_TIMEOUT_MS) {
+  const place = hooksPlace(cwd, env, gitTimeoutMs);
+  if (place === TIMED_OUT)
     return "timed-out";
-  if (folder === null || !isFile3(join55(folder, name)))
+  if (place === null)
+    return "none";
+  const { folder, top } = place;
+  if (!isFile3(join55(folder, name)))
     return "none";
   const file = isHuskyStubFolder(folder) ? join55(dirname23(folder), name) : join55(folder, name);
   if (!isFile3(file))
@@ -31631,7 +31729,7 @@ function hookDecision(name, cwd, kinds, source, env = process.env, gitTimeoutMs 
   const text = hookText(file);
   if (text === null)
     return "direct";
-  const kind = classifyHeavyCommand(text, kinds, source);
+  const kind = classifyUnqueuedHeavy(text, kinds, { folder: top, scriptsIn });
   return kind === null ? "direct" : { queue: kind };
 }
 
@@ -33231,10 +33329,10 @@ import {
   readdirSync as readdirSync21,
   readFileSync as readFileSync73,
   readSync as readSync8,
-  realpathSync as realpathSync11,
+  realpathSync as realpathSync12,
   statSync as statSync25
 } from "fs";
-import { isAbsolute as isAbsolute12, join as join74, relative as relative10, resolve as resolve22, sep as sep8 } from "path";
+import { isAbsolute as isAbsolute12, join as join74, relative as relative10, resolve as resolve23, sep as sep8 } from "path";
 
 // src/hooks/after-merge.ts
 import { createHash as createHash8 } from "crypto";
@@ -34465,8 +34563,8 @@ async function afterMerge(context) {
 }
 
 // src/models/agent-definition.ts
-import { existsSync as existsSync54, readdirSync as readdirSync17, readFileSync as readFileSync64, realpathSync as realpathSync9, statSync as statSync21 } from "fs";
-import { dirname as dirname26, isAbsolute as isAbsolute5, join as join64, relative as relative8, resolve as resolve12, sep as sep6 } from "path";
+import { existsSync as existsSync54, readdirSync as readdirSync17, readFileSync as readFileSync64, realpathSync as realpathSync10, statSync as statSync21 } from "fs";
+import { dirname as dirname26, isAbsolute as isAbsolute5, join as join64, relative as relative8, resolve as resolve13, sep as sep6 } from "path";
 var AGENT_SCAN_MAX_DEPTH = 8;
 var AGENT_SCAN_MAX_ENTRIES = 2000;
 
@@ -34481,7 +34579,7 @@ var BUILT_INS = {
   "general-purpose": null
 };
 function files(path, budget, depth = 0, visited = new Set) {
-  const found = readable(() => ({ real: realpathSync9(path), stat: statSync21(path) }));
+  const found = readable(() => ({ real: realpathSync10(path), stat: statSync21(path) }));
   if (found === null || visited.has(found.real))
     return [];
   visited.add(found.real);
@@ -34528,7 +34626,7 @@ function claiming(paths, name, local = true) {
   return null;
 }
 function inside2(checkout, project) {
-  const path = relative8(resolve12(project), resolve12(checkout));
+  const path = relative8(resolve13(project), resolve13(checkout));
   return path === "" || path !== ".." && !path.startsWith(`..${sep6}`) && !isAbsolute5(path);
 }
 function topFiles(folder, budget) {
@@ -34555,7 +34653,7 @@ function pluginFiles(root, budget) {
   return paths.flatMap((path) => {
     if (typeof path !== "string" || !path.startsWith("./"))
       return [];
-    const file = resolve12(root, path);
+    const file = resolve13(root, path);
     if (!inside2(file, root))
       return [];
     try {
@@ -34566,8 +34664,8 @@ function pluginFiles(root, budget) {
   });
 }
 function projectFolders(checkout, cwd) {
-  const root = realpathSync9(checkout);
-  const start = realpathSync9(cwd ?? checkout);
+  const root = realpathSync10(checkout);
+  const start = realpathSync10(cwd ?? checkout);
   const folders = [];
   let at = isInsideOnDisk(start, root) ? start : root;
   for (;; ) {
@@ -34606,7 +34704,7 @@ function lookup(name, place, budget) {
   if (colon !== -1) {
     const installs = installsOfPlugin(place.paths.installedPluginsFile, name.slice(0, colon));
     const given = place.cwd ?? place.checkout;
-    const real = given == null ? null : readable(() => realpathSync9(given));
+    const real = given == null ? null : readable(() => realpathSync10(given));
     const cwds = [given, real].filter((one) => one != null);
     const project = installs.filter((one) => one.scope !== "user" && one.projectPath !== null && cwds.some((cwd) => isInsideOnDisk(cwd, one.projectPath ?? ""))).sort((a, b) => (b.projectPath?.length ?? 0) - (a.projectPath?.length ?? 0));
     const root = [...project, ...installs.filter((one) => one.scope === "user")].find((one) => existsSync54(one.installPath))?.installPath;
@@ -34617,7 +34715,7 @@ function lookup(name, place, budget) {
 
 // src/hooks/agent-guard-workflows.ts
 import { existsSync as existsSync55, readdirSync as readdirSync18, readFileSync as readFileSync65, statSync as statSync22 } from "fs";
-import { dirname as dirname27, isAbsolute as isAbsolute6, join as join65, resolve as resolve13, sep as sep7 } from "path";
+import { dirname as dirname27, isAbsolute as isAbsolute6, join as join65, resolve as resolve14, sep as sep7 } from "path";
 var WORKFLOW_SCRIPT_MAX_BYTES = 524288;
 function stringAt(text, from) {
   const quote = text[from];
@@ -34785,7 +34883,7 @@ function scriptAtPath(path, cwd) {
       unreadable: `The workflow script \`${path}\` is a relative path, and the hook input names no folder it is relative to.`
     };
   }
-  const file = resolve13(cwd, path);
+  const file = resolve14(cwd, path);
   let size;
   try {
     const stat = statSync22(file);
@@ -34842,8 +34940,8 @@ function oneOf2(found, name) {
 }
 function savedFolders(place) {
   const folders = [];
-  let at = resolve13(place.cwd);
-  const home = resolve13(place.home);
+  let at = resolve14(place.cwd);
+  const home = resolve14(place.home);
   while (place.cwd !== "" && at !== home) {
     folders.push(join65(at, ".claude", "workflows"));
     if (existsSync55(join65(at, ".git")))
@@ -34862,8 +34960,8 @@ function noFile(name) {
   };
 }
 function within(folder, inside) {
-  const root = resolve13(inside);
-  const path = resolve13(folder);
+  const root = resolve14(inside);
+  const path = resolve14(folder);
   return path === root || path.startsWith(root.endsWith(sep7) ? root : `${root}${sep7}`);
 }
 function pluginFolder(plugin, place) {
@@ -34886,7 +34984,7 @@ function pluginWorkflowFiles(root) {
   if (paths === null)
     return workflowFiles(join65(root, "workflows"));
   return paths.filter((one) => typeof one === "string").flatMap((one) => {
-    const path = resolve13(root, one);
+    const path = resolve14(root, one);
     try {
       if (statSync22(path).isDirectory())
         return workflowFiles(path);
@@ -36619,7 +36717,7 @@ function fableSession(input, env, paths) {
 }
 
 // src/hooks/git-guard.ts
-import { resolve as resolve14 } from "path";
+import { resolve as resolve15 } from "path";
 
 // src/shell/change-dir.ts
 import { posix as posix3, win32 as win324 } from "path";
@@ -36923,7 +37021,7 @@ function callQuestions(call, folder, run) {
   const { rest, sub } = call;
   const alias = pushAlias(call);
   if (sub === "push" || sub === "send-pack" || alias !== null) {
-    const where = folder === null ? null : resolve14(folder, ...call.dirs);
+    const where = folder === null ? null : resolve15(folder, ...call.dirs);
     const place = {
       branch: () => where === null ? undefined : currentBranch(where, run),
       bare: (remote) => {
@@ -37209,7 +37307,7 @@ import { existsSync as existsSync60 } from "fs";
 
 // src/jobs/package-scripts.ts
 import { existsSync as existsSync59, readFileSync as readFileSync68, statSync as statSync23 } from "fs";
-import { dirname as dirname29, join as join68, resolve as resolve15 } from "path";
+import { dirname as dirname29, join as join68, resolve as resolve16 } from "path";
 var NO_FILE_HERE = new Set(["ENOENT", "ENOTDIR", "EISDIR"]);
 function foldersToCheckoutRoot(start) {
   const chain = [];
@@ -37222,7 +37320,7 @@ function foldersToCheckoutRoot(start) {
   }
 }
 function packageScripts(folder) {
-  for (const dir of foldersToCheckoutRoot(resolve15(folder))) {
+  for (const dir of foldersToCheckoutRoot(resolve16(folder))) {
     let text;
     try {
       text = readFileSync68(join68(dir, "package.json"), "utf8");
@@ -37279,7 +37377,7 @@ function packageJsonAt(dir) {
 }
 function fileExistsIn(folder, word) {
   try {
-    return statSync23(resolve15(folder, word)).isFile();
+    return statSync23(resolve16(folder, word)).isFile();
   } catch {
     return false;
   }
@@ -37291,7 +37389,7 @@ function diskWeightSource(folder) {
 }
 
 // src/hooks/bash-judge.ts
-import { isAbsolute as isAbsolute7, resolve as resolve16 } from "path";
+import { isAbsolute as isAbsolute7, resolve as resolve17 } from "path";
 
 // src/herdr/machines.ts
 import { readFileSync as readFileSync69 } from "fs";
@@ -37529,63 +37627,6 @@ ${verb ? `Usage: ${COMMAND} herdr ${USAGE_LINES[verb]}` : HERDR_USAGE}`
       return fail("Choose a machines action and its name.");
     }
   }
-}
-
-// src/hooks/kit-invocation.ts
-var INERT = new Set([
-  "[",
-  "[[",
-  "awk",
-  "cat",
-  "chmod",
-  "chown",
-  "cp",
-  "diff",
-  "echo",
-  "egrep",
-  "fgrep",
-  "file",
-  "git",
-  "grep",
-  "head",
-  "less",
-  "ln",
-  "ls",
-  "man",
-  "mkdir",
-  "more",
-  "mv",
-  "printf",
-  "readlink",
-  "realpath",
-  "rg",
-  "rm",
-  "sed",
-  "stat",
-  "tail",
-  "tee",
-  "test",
-  "touch",
-  "type",
-  "wc",
-  "which"
-]);
-var KIT_BUNDLE = /(?:^|[\\/])(?:dist|entries)[\\/](?:cli|portal)\.(?:js|ts)$/;
-var KIT_TOKEN = new RegExp(`(^|[^\\w.-])${COMMAND.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?:\\.(?:exe|cmd|ps1|bat))?(?=$|[^\\w.\\-/\\\\])`, "i");
-var PATH_BREAKS = /[\s"'`=;&|<>()]+/;
-function namesKit(text) {
-  return KIT_TOKEN.test(text) || text.split(PATH_BREAKS).some((piece) => KIT_BUNDLE.test(piece));
-}
-function isKitWord(word) {
-  return programName(word) === COMMAND || KIT_BUNDLE.test(word);
-}
-function kitArguments(program, args) {
-  if (programName(program) === COMMAND)
-    return [...args];
-  if (INERT.has(program))
-    return null;
-  const at = args.findIndex(isKitWord);
-  return at === -1 ? null : args.slice(at + 1);
 }
 
 // src/hooks/bash-judge.ts
@@ -37847,7 +37888,7 @@ function judgeProposals(proposals, context) {
     } else if (cwd === null) {
       question = cannotTellProject("the call names no folder");
     } else {
-      question = proposeQuestion(proposal.folder === null ? cwd : resolve16(cwd, proposal.folder), context, timeFor);
+      question = proposeQuestion(proposal.folder === null ? cwd : resolve17(cwd, proposal.folder), context, timeFor);
     }
     if (question !== null)
       break;
@@ -38225,7 +38266,7 @@ function routeGitHooks(command, context, kinds, platform = process.platform) {
       const key = `${step.folder}\x00${name}`;
       let answer = answers.get(key);
       if (answer === undefined) {
-        answer = hookDecision(name, step.folder, kinds, diskWeightSource(step.folder), context.env, timeFor(GUARD_GIT_TIMEOUT_MS));
+        answer = hookDecision(name, step.folder, kinds, packageScripts, context.env, timeFor(GUARD_GIT_TIMEOUT_MS));
         answers.set(key, answer);
       }
       if (typeof answer === "object") {
@@ -38556,12 +38597,12 @@ function keepGoing(context) {
 }
 
 // src/hooks/main-folder-guard.ts
-import { realpathSync as realpathSync10 } from "fs";
+import { realpathSync as realpathSync11 } from "fs";
 import { tmpdir as tmpdir6 } from "os";
-import { basename as basename15, dirname as dirname30, isAbsolute as isAbsolute9, join as join70, resolve as resolve19 } from "path";
+import { basename as basename15, dirname as dirname30, isAbsolute as isAbsolute9, join as join70, resolve as resolve20 } from "path";
 
 // src/shell/writes.ts
-import { basename as basename14, isAbsolute as isAbsolute8, resolve as resolve17 } from "path";
+import { basename as basename14, isAbsolute as isAbsolute8, resolve as resolve18 } from "path";
 function scan2(args, spec, named = false) {
   const scanned = { operands: [], targetDirectory: null, letters: "", longs: [] };
   let optionsEnded = false;
@@ -38768,8 +38809,8 @@ function inFolder2(folder, words) {
     if (word === "" || /^[~%]|[$`]/.test(word))
       return [];
     if (isAbsolute8(word))
-      return [resolve17(word)];
-    return folder === null ? [] : [resolve17(folder, word)];
+      return [resolve18(word)];
+    return folder === null ? [] : [resolve18(folder, word)];
   });
 }
 function stepWrites(words, invocation, folder, dialect) {
@@ -38830,7 +38871,7 @@ function writeTargets(command, cwd, dialect) {
 }
 
 // src/hooks/plans-folders.ts
-import { join as join69, resolve as resolve18 } from "path";
+import { join as join69, resolve as resolve19 } from "path";
 function plansDirectory(root, env) {
   const paths = cliPaths(env);
   let plans = join69(paths.claudeConfigDir, "plans");
@@ -38841,7 +38882,7 @@ function plansDirectory(root, env) {
   ]) {
     const configured = stringField(readJsonObject(settings).data.plansDirectory);
     if (configured !== null)
-      plans = configured.startsWith("~/") ? join69(paths.home, configured.slice(2)) : resolve18(root, configured);
+      plans = configured.startsWith("~/") ? join69(paths.home, configured.slice(2)) : resolve19(root, configured);
   }
   return realPath(plans);
 }
@@ -38858,7 +38899,7 @@ function memoizedRealPath() {
       return hit;
     let answer;
     try {
-      answer = realpathSync10(path);
+      answer = realpathSync11(path);
     } catch {
       const parent = dirname30(path);
       answer = parent === path ? path : join70(real(parent), basename15(path));
@@ -38873,7 +38914,7 @@ function editedFile(input, cwd, real = realPath) {
   const path = stringField(fields.file_path) ?? stringField(fields.notebook_path);
   if (path === null)
     return null;
-  return real(isAbsolute9(path) ? resolve19(path) : resolve19(cwd, path));
+  return real(isAbsolute9(path) ? resolve20(path) : resolve20(cwd, path));
 }
 function writtenPaths(input, cwd, real = realPath) {
   const file = editedFile(input, cwd, real);
@@ -39279,7 +39320,7 @@ function autoPushQuestion(context) {
 }
 
 // src/hooks/session-escape-guard.ts
-import { dirname as dirname31, isAbsolute as isAbsolute10, relative as relative9, resolve as resolve20 } from "path";
+import { dirname as dirname31, isAbsolute as isAbsolute10, relative as relative9, resolve as resolve21 } from "path";
 var ESCAPE_SHELL_TOOLS = ["Bash", "PowerShell"];
 var ESCAPE_EDIT_TOOLS = ["Edit", "Write", "NotebookEdit"];
 var CLAUDECODE = "CLAUDECODE";
@@ -39562,7 +39603,7 @@ function editedPaths(input, cwd, home) {
   if (given === null)
     return [];
   const path = expanded(given, home);
-  const written = isAbsolute10(path) ? resolve20(path) : resolve20(cwd ?? "/", path);
+  const written = isAbsolute10(path) ? resolve21(path) : resolve21(cwd ?? "/", path);
   return [...new Set([written, realPath(written)])];
 }
 function judgeEdit(input, paths) {
@@ -40037,7 +40078,7 @@ function verifyGate(context) {
 
 // src/hooks/worktree-leftovers.ts
 import { closeSync as closeSync11, existsSync as existsSync62, fstatSync as fstatSync3, openSync as openSync11, readSync as readSync7, statSync as statSync24 } from "fs";
-import { basename as basename16, join as join73, resolve as resolve21 } from "path";
+import { basename as basename16, join as join73, resolve as resolve22 } from "path";
 
 // src/hooks/local-files.ts
 import {
@@ -40285,7 +40326,7 @@ function operationInProgress(repo, env) {
   if (!paths.ok)
     return null;
   const [merge, rebaseMerge, rebaseApply, cherryPick] = paths.out.split(/\r?\n/);
-  const held = (path) => path !== undefined && path !== "" && existsSync62(resolve21(repo, path));
+  const held = (path) => path !== undefined && path !== "" && existsSync62(resolve22(repo, path));
   if (held(merge))
     return "merge";
   if (held(rebaseMerge) || held(rebaseApply))
@@ -41217,12 +41258,12 @@ function lintRestriction(folder, projectFolder) {
   return result;
 }
 function shadcnFolders(root) {
-  const folders = new Map([[realpathSync11(root), root]]);
+  const folders = new Map([[realpathSync12(root), root]]);
   const lines = [];
   const addFolder = (folder) => {
     try {
-      const target = realpathSync11(folder);
-      const rel = relative10(realpathSync11(root), target);
+      const target = realpathSync12(folder);
+      const rel = relative10(realpathSync12(root), target);
       if (rel === ".." || rel.startsWith(`..${sep8}`) || isAbsolute12(rel))
         return;
       if (statSync25(folder).isDirectory() && !folders.has(target))
@@ -41238,15 +41279,15 @@ function shadcnFolders(root) {
       for (const entry of entries) {
         if (typeof entry !== "string" || isAbsolute12(entry))
           continue;
-        const folder = resolve22(root, entry.replace(/\/\*$/, ""));
+        const folder = resolve23(root, entry.replace(/\/\*$/, ""));
         const rel = relative10(root, folder);
         if (rel === ".." || rel.startsWith(`..${sep8}`) || isAbsolute12(rel))
           continue;
         if (entry.endsWith("/*") && !entry.slice(0, -2).includes("*")) {
           if (!existsSync63(folder))
             continue;
-          const realFolder = realpathSync11(folder);
-          const realRel = relative10(realpathSync11(root), realFolder);
+          const realFolder = realpathSync12(folder);
+          const realRel = relative10(realpathSync12(root), realFolder);
           if (realRel === ".." || realRel.startsWith(`..${sep8}`) || isAbsolute12(realRel))
             continue;
           for (const child of readdirSync21(folder).sort())
@@ -48499,7 +48540,7 @@ function createLiveSources(deps) {
 
 // src/portal/static.ts
 import { existsSync as existsSync67, readFileSync as readFileSync79, statSync as statSync30 } from "fs";
-import { extname as extname2, join as join81, resolve as resolve23, sep as sep9 } from "path";
+import { extname as extname2, join as join81, resolve as resolve24, sep as sep9 } from "path";
 var TYPES = {
   ".css": "text/css; charset=utf-8",
   ".html": "text/html; charset=utf-8",
@@ -48528,7 +48569,7 @@ function fileInside(folder, pathname) {
   }
   if (decoded.includes("\x00") || decoded.includes("\\"))
     return null;
-  const file = resolve23(join81(folder, decoded));
+  const file = resolve24(join81(folder, decoded));
   if (file !== folder && !file.startsWith(`${folder}${sep9}`))
     return null;
   try {
@@ -48564,7 +48605,7 @@ function readCsp(folder) {
 function readExport(folder) {
   if (folder === null)
     return null;
-  const absolute = resolve23(folder);
+  const absolute = resolve24(folder);
   if (!existsSync67(join81(absolute, "index.html")))
     return null;
   return { csp: readCsp(absolute), folder: absolute };
@@ -48612,7 +48653,7 @@ function exportServer(source) {
       if (!pathname.startsWith("/_next/static/"))
         return null;
       const file = fileInside(source.folder, pathname.slice(1));
-      const build = resolve23(source.folder, "_next", "static");
+      const build = resolve24(source.folder, "_next", "static");
       return file?.startsWith(`${build}${sep9}`) === true ? file : null;
     }
   };

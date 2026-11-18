@@ -7301,6 +7301,47 @@ function chunks(paths) {
 import { closeSync as closeSync4, existsSync as existsSync6, fstatSync, openSync as openSync4, readSync as readSync2, statSync as statSync6 } from "fs";
 import { basename as basename3, join as join11, resolve as resolve4 } from "path";
 
+// src/shell/kit-invocation.ts
+var INERT = new Set([
+  "[",
+  "[[",
+  "awk",
+  "cat",
+  "chmod",
+  "chown",
+  "cp",
+  "diff",
+  "echo",
+  "egrep",
+  "fgrep",
+  "file",
+  "git",
+  "grep",
+  "head",
+  "less",
+  "ln",
+  "ls",
+  "man",
+  "mkdir",
+  "more",
+  "mv",
+  "printf",
+  "readlink",
+  "realpath",
+  "rg",
+  "rm",
+  "sed",
+  "stat",
+  "tail",
+  "tee",
+  "test",
+  "touch",
+  "type",
+  "wc",
+  "which"
+]);
+var KIT_TOKEN = new RegExp(`(^|[^\\w.-])${COMMAND.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?:\\.(?:exe|cmd|ps1|bat))?(?=$|[^\\w.\\-/\\\\])`, "i");
+
 // src/shell/command.ts
 var SEPARATORS = new Set([`
 `, "\r", "&", "(", ")", ";", "|"]);
@@ -7811,7 +7852,7 @@ function lineage(programs, pid) {
   return chain;
 }
 var OUR_TOOLS = new Set(["git", "docker", "ps", "powershell", "pgrep"]);
-function programName(program) {
+function programName2(program) {
   const file = (program.path ?? "").split(/[\s"'`]/)[0] ?? "";
   const base = file.replace(/^.*[\\/]/, "");
   return base === "" ? `pid ${String(program.pid)}` : base;
@@ -7819,7 +7860,7 @@ function programName(program) {
 var SHELL_NAMES = new Set(["sh", "bash", "zsh", "dash", "fish", "ksh", "pwsh", "powershell"]);
 var CLAUDE_NAME = "claude";
 function isShell(program) {
-  const name = programName(program).replace(/^-/, "").replace(/\.exe$/i, "").toLowerCase();
+  const name = programName2(program).replace(/^-/, "").replace(/\.exe$/i, "").toLowerCase();
   return SHELL_NAMES.has(name);
 }
 function ownerChild(program, byPid, owner) {
@@ -7828,7 +7869,7 @@ function ownerChild(program, byPid, owner) {
   const seen = new Set;
   let at = program;
   for (;; ) {
-    if (isShell(at) || programName(at) === CLAUDE_NAME)
+    if (isShell(at) || programName2(at) === CLAUDE_NAME)
       return false;
     seen.add(at.pid);
     const parent = at.parentPid;
@@ -7855,7 +7896,7 @@ function programsUsing(programs, worktree, ignoreCase = IGNORE_CASE, ownPid = pr
       continue;
     if (!working && asking.has(program.pid))
       continue;
-    if (OUR_TOOLS.has(programName(program)))
+    if (OUR_TOOLS.has(programName2(program)))
       continue;
     if (owner !== undefined && !named && ownerChild(program, byPid, owner))
       continue;
@@ -7866,7 +7907,7 @@ function programsUsing(programs, worktree, ignoreCase = IGNORE_CASE, ownPid = pr
 function programsInside(programs, worktree, ignoreCase = IGNORE_CASE, ownPid = process.pid, owner) {
   const names = new Set;
   for (const program of programsUsing(programs, worktree, ignoreCase, ownPid, owner)) {
-    names.add(programName(program));
+    names.add(programName2(program));
   }
   return [...names].sort();
 }
@@ -8269,7 +8310,7 @@ function ownerSession(listed, look) {
   }
   for (const pid of ancestorsBy(process.pid, look.parentOf)) {
     const program = look.programs.find((one) => one.pid === pid);
-    if (program !== undefined && programName(program) === CLAUDE_NAME)
+    if (program !== undefined && programName2(program) === CLAUDE_NAME)
       return { claudePid: pid };
   }
   return;

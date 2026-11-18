@@ -22348,6 +22348,72 @@ function readProcStat(pid) {
 var MAX_DEPTH = 128;
 var init_ancestry = () => {};
 
+// src/shell/program-name.ts
+function programName(word) {
+  return (word.split(/[\\/]/).pop() ?? word).toLowerCase().replace(/\.(exe|cmd|ps1|bat)$/, "");
+}
+
+// src/shell/kit-invocation.ts
+function namesKit(text) {
+  return KIT_TOKEN.test(text) || text.split(PATH_BREAKS).some((piece) => KIT_BUNDLE.test(piece));
+}
+function isKitWord(word) {
+  return programName(word) === COMMAND || KIT_BUNDLE.test(word);
+}
+function kitArguments(program, args) {
+  if (programName(program) === COMMAND)
+    return [...args];
+  if (INERT.has(program))
+    return null;
+  const at = args.findIndex(isKitWord);
+  return at === -1 ? null : args.slice(at + 1);
+}
+var INERT, KIT_BUNDLE, KIT_TOKEN, PATH_BREAKS;
+var init_kit_invocation = __esm(() => {
+  init_names();
+  INERT = new Set([
+    "[",
+    "[[",
+    "awk",
+    "cat",
+    "chmod",
+    "chown",
+    "cp",
+    "diff",
+    "echo",
+    "egrep",
+    "fgrep",
+    "file",
+    "git",
+    "grep",
+    "head",
+    "less",
+    "ln",
+    "ls",
+    "man",
+    "mkdir",
+    "more",
+    "mv",
+    "printf",
+    "readlink",
+    "realpath",
+    "rg",
+    "rm",
+    "sed",
+    "stat",
+    "tail",
+    "tee",
+    "test",
+    "touch",
+    "type",
+    "wc",
+    "which"
+  ]);
+  KIT_BUNDLE = /(?:^|[\\/])(?:dist|entries)[\\/](?:cli|portal)\.(?:js|ts)$/;
+  KIT_TOKEN = new RegExp(`(^|[^\\w.-])${COMMAND.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?:\\.(?:exe|cmd|ps1|bat))?(?=$|[^\\w.\\-/\\\\])`, "i");
+  PATH_BREAKS = /[\s"'`=;&|<>()]+/;
+});
+
 // src/shell/command.ts
 function dialectOfTool(tool) {
   if (tool === "Bash")
@@ -23077,9 +23143,6 @@ function packageCommand(program, args) {
   }
   return null;
 }
-function programName(word) {
-  return (word.split(/[\\/]/).pop() ?? word).toLowerCase().replace(/\.(exe|cmd|ps1|bat)$/, "");
-}
 function shortFlags(arg, valued) {
   let flags = "";
   for (let i = 1;i < arg.length; i++) {
@@ -23533,8 +23596,12 @@ function parallelCommand(args) {
   const lines = [...new Set(parallelLines(args))];
   return lines.length === 0 ? undefined : lines.join(" ; ");
 }
+function jobRunArguments(program, args) {
+  const kit = kitArguments(program, args);
+  return kit !== null && kit[0] === "job" && kit[1] === "run" ? kit.slice(2) : null;
+}
 function isJobRun(program, args) {
-  return program === COMMAND && args[0] === "job" && args[1] === "run";
+  return jobRunArguments(program, args) !== null;
 }
 function nestedCommand(program, args, pipedFrom = null) {
   if (SHELLS.has(program)) {
@@ -23549,10 +23616,6 @@ function nestedCommand(program, args, pipedFrom = null) {
       return word.length > 3 ? word.slice(3) : args.slice(here + 1).join(" ");
     }
     return pipedFrom === null ? undefined : writtenText(pipedFrom) ?? undefined;
-  }
-  if (isJobRun(program, args)) {
-    const dashes = args.indexOf("--");
-    return dashes === -1 || dashes === args.length - 1 ? undefined : args.slice(dashes + 1).map(shellQuote).join(" ");
   }
   if (program === "find")
     return findCommands(args);
@@ -23572,6 +23635,11 @@ function nestedCommand(program, args, pipedFrom = null) {
   }
   if (program === "eval" || program === "iex" || program === "invoke-expression") {
     return args.join(" ");
+  }
+  const queued = jobRunArguments(program, args);
+  if (queued !== null) {
+    const dashes = queued.indexOf("--");
+    return dashes === -1 || dashes === queued.length - 1 ? undefined : queued.slice(dashes + 1).map(shellQuote).join(" ");
   }
   return;
 }
@@ -23661,7 +23729,7 @@ function invocationsOf(command, dialect) {
 }
 var DIALECTS, MAX_NESTING = 3, ESCAPE, SINGLE, DOUBLE, oneOf = (chars, char) => char !== "" && chars.includes(char), CONTINUATION, SEPARATORS, HERE_STRING, ARRAY_ASSIGNMENT, MAX_INNER = 8, isBlank = (char) => char === " " || char === "\t", ANSI_ESCAPES, POWERSHELL_ESCAPES, EXPANDS, KEYWORDS, ASSIGNMENT, CHANGE_DIR, REDIRECTION, ANY_REDIRECTION, textOf2 = (word) => typeof word === "string" ? word : word.text, DURATION = (word) => /^\d+(?:\.\d+)?[smhd]?$/.test(word), CPU_MASK = (word) => /^(?:0x)?[0-9a-f]+(?:[,-][0-9a-f]+)*$/i.test(word), WRAPPERS, SHELLS, CLAUDE_PACKAGE, PACKAGE_RUNNERS, START_PROCESS_PARAMETERS, START_PROCESS = "start-process", WRITING_REDIRECTIONS, RUNNER_PROGRAM_NAMES, FIND_EXEC, FIND_VALUED, WATCH_LONG, WATCH_VALUED, SU_LONG, SU_VALUED, PARALLEL_VALUED, PARALLEL_SWITCHES, PARALLEL_SOURCES, PARALLEL_LONG, anyFill = (word) => /[$`]/.test(word);
 var init_command2 = __esm(() => {
-  init_names();
+  init_kit_invocation();
   DIALECTS = ["bash", "powershell"];
   ESCAPE = { bash: "\\", powershell: "`" };
   SINGLE = { bash: "'", powershell: "'\u2018\u2019\u201A\u201B" };
@@ -24313,9 +24381,16 @@ function scan(command, kinds, dialect, depth, run, all, out) {
   return true;
 }
 function classifyHeavyCommand(command, kinds, source, dialect = "bash") {
+  return readHeavy(command, kinds, source, dialect).kind;
+}
+function readHeavy(command, kinds, source, dialect) {
   const out = newScan();
   scan(command, kinds, dialect, 0, runOf(source), false, out);
-  return out.found.find((one) => !one.printOnly)?.kind ?? null;
+  return { kind: out.found.find((one) => !one.printOnly)?.kind ?? null, queued: out.queued };
+}
+function classifyUnqueuedHeavy(command, kinds, source, dialect = "bash") {
+  const { kind, queued } = readHeavy(command, kinds, source, dialect);
+  return queued ? null : kind;
 }
 function isLight(one, kinds, source) {
   if (one.printOnly)
@@ -24796,15 +24871,32 @@ function startBudget(env, now = Date.now, ceilingMs = GUARD_BUDGET_MS, startedAt
 var GUARD_BUDGET_MS = 25000, SHORT_GUARD_BUDGET_MS = 8000, BUDGET_MARGIN_MS = 2000, GUARD_BUDGET_ENV = "CC_SMART_DEV_KIT_GUARD_BUDGET_MS";
 
 // src/jobs/git-hooks.ts
-import { closeSync as closeSync6, openSync as openSync6, readSync as readSync2, statSync as statSync11 } from "fs";
-import { basename as basename5, dirname as dirname10, join as join26 } from "path";
-function realHooksFolder(cwd, env = process.env, timeoutMs = GUARD_GIT_TIMEOUT_MS) {
+import { closeSync as closeSync6, openSync as openSync6, readSync as readSync2, realpathSync as realpathSync5, statSync as statSync11 } from "fs";
+import { basename as basename5, dirname as dirname10, join as join26, resolve as resolve7 } from "path";
+function hooksPlace(cwd, env = process.env, timeoutMs = GUARD_GIT_TIMEOUT_MS) {
   if (timeoutMs <= 0)
     return TIMED_OUT;
   const run = runGit(cwd, HOOKS_PATH_ARGS, env, timeoutMs, { GIT_CONFIG_COUNT: "0" });
   if (run.code === null && run.err === GIT_TIMED_OUT2)
     return TIMED_OUT;
-  return run.ok && run.out !== "" ? run.out : null;
+  if (!run.ok)
+    return null;
+  const lines = run.out.split(`
+`);
+  const inside = lines.pop() === "true";
+  const up = inside ? lines.pop() ?? "" : "";
+  const folder = lines.join(`
+`);
+  if (folder === "")
+    return null;
+  return { folder, top: inside ? resolve7(realFolder2(cwd), up) : cwd };
+}
+function realFolder2(folder) {
+  try {
+    return realpathSync5(folder);
+  } catch {
+    return folder;
+  }
 }
 function isHuskyStubFolder(folder) {
   return basename5(folder) === "_" && basename5(dirname10(folder)) === ".husky";
@@ -24834,11 +24926,14 @@ function hookText(file) {
       closeSync6(fd);
   }
 }
-function hookDecision(name, cwd, kinds, source, env = process.env, gitTimeoutMs = GUARD_GIT_TIMEOUT_MS) {
-  const folder = realHooksFolder(cwd, env, gitTimeoutMs);
-  if (folder === TIMED_OUT)
+function hookDecision(name, cwd, kinds, scriptsIn, env = process.env, gitTimeoutMs = GUARD_GIT_TIMEOUT_MS) {
+  const place = hooksPlace(cwd, env, gitTimeoutMs);
+  if (place === TIMED_OUT)
     return "timed-out";
-  if (folder === null || !isFile(join26(folder, name)))
+  if (place === null)
+    return "none";
+  const { folder, top } = place;
+  if (!isFile(join26(folder, name)))
     return "none";
   const file = isHuskyStubFolder(folder) ? join26(dirname10(folder), name) : join26(folder, name);
   if (!isFile(file))
@@ -24846,7 +24941,7 @@ function hookDecision(name, cwd, kinds, source, env = process.env, gitTimeoutMs 
   const text = hookText(file);
   if (text === null)
     return "direct";
-  const kind = classifyHeavyCommand(text, kinds, source);
+  const kind = classifyUnqueuedHeavy(text, kinds, { folder: top, scriptsIn });
   return kind === null ? "direct" : { queue: kind };
 }
 var HOOK_NAMES, TIMED_OUT = "timed-out", MAX_HOOK_BYTES, HOOKS_PATH_ARGS;
@@ -24882,12 +24977,19 @@ var init_git_hooks = __esm(() => {
     "post-index-change"
   ];
   MAX_HOOK_BYTES = 256 * 1024;
-  HOOKS_PATH_ARGS = ["rev-parse", "--path-format=absolute", "--git-path", "hooks"];
+  HOOKS_PATH_ARGS = [
+    "rev-parse",
+    "--path-format=absolute",
+    "--git-path",
+    "hooks",
+    "--show-cdup",
+    "--is-inside-work-tree"
+  ];
 });
 
 // src/jobs/package-scripts.ts
 import { existsSync as existsSync25, readFileSync as readFileSync29, statSync as statSync12 } from "fs";
-import { dirname as dirname11, join as join27, resolve as resolve7 } from "path";
+import { dirname as dirname11, join as join27, resolve as resolve8 } from "path";
 function foldersToCheckoutRoot(start) {
   const chain = [];
   for (let dir = start;; dir = dirname11(dir)) {
@@ -24899,7 +25001,7 @@ function foldersToCheckoutRoot(start) {
   }
 }
 function packageScripts(folder) {
-  for (const dir of foldersToCheckoutRoot(resolve7(folder))) {
+  for (const dir of foldersToCheckoutRoot(resolve8(folder))) {
     let text;
     try {
       text = readFileSync29(join27(dir, "package.json"), "utf8");
@@ -24956,7 +25058,7 @@ function packageJsonAt(dir) {
 }
 function fileExistsIn(folder, word) {
   try {
-    return statSync12(resolve7(folder, word)).isFile();
+    return statSync12(resolve8(folder, word)).isFile();
   } catch {
     return false;
   }
@@ -24975,7 +25077,7 @@ function hookAnswer(name, cwd, env = process.env) {
     return "direct";
   const budget = startBudget(env, Date.now, SHORT_GUARD_BUDGET_MS);
   const kinds = projectKinds(cwd, env, budget.timeFor);
-  const decision = hookDecision(name, cwd, kinds, { folder: cwd, scriptsIn: packageScripts }, env, budget.timeFor(GUARD_GIT_TIMEOUT_MS));
+  const decision = hookDecision(name, cwd, kinds, packageScripts, env, budget.timeFor(GUARD_GIT_TIMEOUT_MS));
   if (decision === "timed-out")
     throw new GitTimedOutError;
   return typeof decision === "object" ? `queue ${decision.queue}` : "direct";
@@ -26173,7 +26275,7 @@ import {
   existsSync as existsSync26,
   readdirSync as readdirSync12,
   readFileSync as readFileSync32,
-  realpathSync as realpathSync5
+  realpathSync as realpathSync6
 } from "fs";
 import { dirname as dirname12, join as join30 } from "path";
 function tokenize(text) {
@@ -26308,7 +26410,7 @@ function fromPath(which) {
   if (found === null)
     return null;
   try {
-    const real = realpathSync5(found);
+    const real = realpathSync6(found);
     return packageFolderOf(real, PACKAGE);
   } catch {
     return null;
@@ -28072,10 +28174,10 @@ var init_json_edit = __esm(() => {
 
 // src/tasks/deploy/files.ts
 import { existsSync as existsSync32, mkdirSync as mkdirSync14, readdirSync as readdirSync14, readFileSync as readFileSync37, rmSync as rmSync9, writeFileSync as writeFileSync6 } from "fs";
-import { basename as basename7, dirname as dirname14, isAbsolute as isAbsolute2, join as join35, relative as relative2, resolve as resolve8, sep as sep3 } from "path";
+import { basename as basename7, dirname as dirname14, isAbsolute as isAbsolute2, join as join35, relative as relative2, resolve as resolve9, sep as sep3 } from "path";
 function deployTasksDir(checkoutRoot, settings) {
   const dir = settings.dir ?? DEFAULT_TASKS_DIR;
-  const target = resolve8(checkoutRoot, dir);
+  const target = resolve9(checkoutRoot, dir);
   const rel = relative2(checkoutRoot, target);
   if (isAbsolute2(dir) || rel === ".." || rel.startsWith(`..${sep3}`))
     throw new Error("Task folder must be inside the checkout");
@@ -29192,7 +29294,7 @@ var init_propose = __esm(() => {
 });
 
 // src/workflow/commands.ts
-import { resolve as resolve9 } from "path";
+import { resolve as resolve10 } from "path";
 function project(cwd, env) {
   try {
     const checkout = locateCheckout(cwd, { env });
@@ -29589,7 +29691,7 @@ ${WORKFLOW_USAGE}`);
   }
   return await proposeWorkflow({
     env: context.env,
-    folder: parsed.folder === null ? context.cwd : resolve9(context.cwd, parsed.folder),
+    folder: parsed.folder === null ? context.cwd : resolve10(context.cwd, parsed.folder),
     paths: context.paths,
     print: context.print,
     error: context.error,
@@ -30452,7 +30554,7 @@ var init_git_calls = __esm(() => {
 });
 
 // src/shell/writes.ts
-import { basename as basename9, isAbsolute as isAbsolute3, resolve as resolve10 } from "path";
+import { basename as basename9, isAbsolute as isAbsolute3, resolve as resolve11 } from "path";
 function scan2(args, spec, named = false) {
   const scanned = { operands: [], targetDirectory: null, letters: "", longs: [] };
   let optionsEnded = false;
@@ -30591,8 +30693,8 @@ function inFolder2(folder, words) {
     if (word === "" || /^[~%]|[$`]/.test(word))
       return [];
     if (isAbsolute3(word))
-      return [resolve10(word)];
-    return folder === null ? [] : [resolve10(folder, word)];
+      return [resolve11(word)];
+    return folder === null ? [] : [resolve11(folder, word)];
   });
 }
 function stepWrites(words, invocation, folder, dialect) {
@@ -30727,7 +30829,7 @@ var init_writes = __esm(() => {
 });
 
 // src/hooks/plans-folders.ts
-import { join as join43, resolve as resolve11 } from "path";
+import { join as join43, resolve as resolve12 } from "path";
 function plansDirectory(root, env) {
   const paths = cliPaths(env);
   let plans = join43(paths.claudeConfigDir, "plans");
@@ -30738,7 +30840,7 @@ function plansDirectory(root, env) {
   ]) {
     const configured = stringField(readJsonObject(settings).data.plansDirectory);
     if (configured !== null)
-      plans = configured.startsWith("~/") ? join43(paths.home, configured.slice(2)) : resolve11(root, configured);
+      plans = configured.startsWith("~/") ? join43(paths.home, configured.slice(2)) : resolve12(root, configured);
   }
   return realPath(plans);
 }
@@ -30753,9 +30855,9 @@ var init_plans_folders = __esm(() => {
 });
 
 // src/hooks/main-folder-guard.ts
-import { realpathSync as realpathSync6 } from "fs";
+import { realpathSync as realpathSync7 } from "fs";
 import { tmpdir as tmpdir5 } from "os";
-import { basename as basename10, dirname as dirname17, isAbsolute as isAbsolute4, join as join44, resolve as resolve12 } from "path";
+import { basename as basename10, dirname as dirname17, isAbsolute as isAbsolute4, join as join44, resolve as resolve13 } from "path";
 function memoizedRealPath() {
   const known = new Map;
   const real = (path) => {
@@ -30764,7 +30866,7 @@ function memoizedRealPath() {
       return hit;
     let answer;
     try {
-      answer = realpathSync6(path);
+      answer = realpathSync7(path);
     } catch {
       const parent = dirname17(path);
       answer = parent === path ? path : join44(real(parent), basename10(path));
@@ -30779,7 +30881,7 @@ function editedFile(input, cwd, real = realPath) {
   const path = stringField(fields.file_path) ?? stringField(fields.notebook_path);
   if (path === null)
     return null;
-  return real(isAbsolute4(path) ? resolve12(path) : resolve12(cwd, path));
+  return real(isAbsolute4(path) ? resolve13(path) : resolve13(cwd, path));
 }
 function writtenPaths(input, cwd, real = realPath) {
   const file = editedFile(input, cwd, real);
@@ -30861,7 +30963,7 @@ var init_main_folder_guard = __esm(() => {
 
 // src/hooks/worktree-leftovers.ts
 import { closeSync as closeSync8, existsSync as existsSync36, fstatSync, openSync as openSync8, readSync as readSync4, statSync as statSync17 } from "fs";
-import { basename as basename11, join as join45, resolve as resolve13 } from "path";
+import { basename as basename11, join as join45, resolve as resolve14 } from "path";
 function lastReflogTime(file, now) {
   try {
     const fd = openSync8(file, "r");
@@ -30955,7 +31057,7 @@ function operationInProgress(repo, env) {
   if (!paths.ok)
     return null;
   const [merge, rebaseMerge, rebaseApply, cherryPick] = paths.out.split(/\r?\n/);
-  const held = (path) => path !== undefined && path !== "" && existsSync36(resolve13(repo, path));
+  const held = (path) => path !== undefined && path !== "" && existsSync36(resolve14(repo, path));
   if (held(merge))
     return "merge";
   if (held(rebaseMerge) || held(rebaseApply))
@@ -31054,7 +31156,7 @@ var init_worktree_leftovers = __esm(() => {
 });
 
 // src/worktrees/agent-lock.ts
-import { readdirSync as readdirSync17, readFileSync as readFileSync41, realpathSync as realpathSync7 } from "fs";
+import { readdirSync as readdirSync17, readFileSync as readFileSync41, realpathSync as realpathSync8 } from "fs";
 import { join as join46 } from "path";
 function parseClaudeLock(reason) {
   const match = /^claude (agent|session) (.{1,255}) \(pid (\d{1,10})(?: start (.{1,255}))?\)$/.exec(reason);
@@ -31081,7 +31183,7 @@ function agentFinished(agentId, worktreePath, claudeConfigDir) {
   if (claudeConfigDir === undefined || !/^[A-Za-z0-9_-]+$/.test(agentId))
     return false;
   try {
-    const target = realpathSync7(worktreePath);
+    const target = realpathSync8(worktreePath);
     const projects = join46(claudeConfigDir, "projects");
     let found = false;
     for (const project of readdirSync17(projects, { withFileTypes: true })) {
@@ -31101,7 +31203,7 @@ function agentFinished(agentId, worktreePath, claudeConfigDir) {
           return false;
         }
         const parsed = JSON.parse(text);
-        if (parsed === null || typeof parsed !== "object" || !("finished" in parsed) || parsed.finished !== true || !("worktreePath" in parsed) || typeof parsed.worktreePath !== "string" || realpathSync7(parsed.worktreePath) !== target)
+        if (parsed === null || typeof parsed !== "object" || !("finished" in parsed) || parsed.finished !== true || !("worktreePath" in parsed) || typeof parsed.worktreePath !== "string" || realpathSync8(parsed.worktreePath) !== target)
           return false;
         found = true;
       }
@@ -32276,7 +32378,7 @@ var init_clean = __esm(() => {
 });
 
 // src/worktrees/command.ts
-import { basename as basename14, resolve as resolve14 } from "path";
+import { basename as basename14, resolve as resolve15 } from "path";
 function baseBranch(checkout, env, repo) {
   if (checkout !== null) {
     const config = loadProjectConfig(checkout).config;
@@ -32405,7 +32507,7 @@ async function runWorktrees(paths, options, env, cwd = process.cwd(), sinks = CO
     return 0;
   }
   const checkout = locateCheckout(cwd, { env });
-  const repo = checkout?.mainCheckout ?? resolve14(cwd);
+  const repo = checkout?.mainCheckout ?? resolve15(cwd);
   const { base, from } = baseBranch(checkout, env, repo);
   if (from !== "config") {
     print(`No \`worktrees.base\` in .claude/cc-smart-dev-kit.json: judging against ${base}.
@@ -32417,7 +32519,7 @@ async function runWorktrees(paths, options, env, cwd = process.cwd(), sinks = CO
       error(`Run this in the main checkout, ${repo}. A session working in a worktree leaves it first (ExitWorktree, action "keep").`);
       return 1;
     }
-    if (options.remove !== null && isInside(realPath(cwd), realPath(resolve14(options.remove)))) {
+    if (options.remove !== null && isInside(realPath(cwd), realPath(resolve15(options.remove)))) {
       error('A session leaves its worktree first (ExitWorktree, action "keep") before removing it.');
       return 1;
     }
@@ -32453,7 +32555,7 @@ async function runWorktrees(paths, options, env, cwd = process.cwd(), sinks = CO
 `);
     }
     if (options.remove !== null) {
-      const target = resolve14(options.remove);
+      const target = resolve15(options.remove);
       const judged = {
         base,
         claudeConfigDir: paths.claudeConfigDir,
@@ -32569,8 +32671,8 @@ var init_words2 = __esm(() => {
 });
 
 // src/tasks/deploy/check.ts
-import { existsSync as existsSync39, realpathSync as realpathSync8 } from "fs";
-import { basename as basename15, isAbsolute as isAbsolute5, relative as relative5, resolve as resolve15, sep as sep4 } from "path";
+import { existsSync as existsSync39, realpathSync as realpathSync9 } from "fs";
+import { basename as basename15, isAbsolute as isAbsolute5, relative as relative5, resolve as resolve16, sep as sep4 } from "path";
 function twinIsMissing(task, known) {
   return task.twin !== undefined && !known.has(task.twin);
 }
@@ -32595,7 +32697,7 @@ function checkDeployTasks(options) {
   ];
   const known = new Set(tasks.map((task) => task.id));
   const titles = new Map;
-  const root = realpathSync8(checkoutRoot);
+  const root = realpathSync9(checkoutRoot);
   for (const task of tasks) {
     if (task.status !== "open")
       continue;
@@ -32615,8 +32717,8 @@ function checkDeployTasks(options) {
         text: `Its twin ${task.twin} is not a task: ${twinMissingFix(task, "this file")}`
       });
     for (const ref of task.refs ?? []) {
-      const target = resolve15(checkoutRoot, ref);
-      if (isAbsolute5(ref) || !inside(resolve15(checkoutRoot), target) || !existsSync39(target) || !inside(root, realpathSync8(target)))
+      const target = resolve16(checkoutRoot, ref);
+      if (isAbsolute5(ref) || !inside(resolve16(checkoutRoot), target) || !existsSync39(target) || !inside(root, realpathSync9(target)))
         findings.push({
           ...common,
           kind: "broken-ref",
@@ -32655,7 +32757,7 @@ var init_check2 = __esm(() => {
 });
 
 // src/tasks/context.ts
-import { realpathSync as realpathSync9 } from "fs";
+import { realpathSync as realpathSync10 } from "fs";
 function projectKey(repo) {
   return repoKey(repo);
 }
@@ -32669,7 +32771,7 @@ function taskContext(cwd, env = process.env) {
   return contextOf(checkout, cwd);
 }
 function keyOf(checkout, cwd) {
-  return projectKey(checkout === null ? realpathSync9(cwd) : checkout.mainCheckout ?? checkout.root);
+  return projectKey(checkout === null ? realpathSync10(cwd) : checkout.mainCheckout ?? checkout.root);
 }
 function folderProject(cwd, options = {}) {
   return keyOf(locateCheckout(cwd, options), cwd);
@@ -32837,7 +32939,7 @@ var init_release = __esm(() => {
 
 // src/tasks/deploy/branch.ts
 import { existsSync as existsSync40, readFileSync as readFileSync43 } from "fs";
-import { isAbsolute as isAbsolute6, join as join49, relative as relative6, resolve as resolve16, sep as sep5 } from "path";
+import { isAbsolute as isAbsolute6, join as join49, relative as relative6, resolve as resolve17, sep as sep5 } from "path";
 function taskGit(repo, args, env = process.env) {
   const result = runGit(repo, args, env, RESOLVE_GIT_TIMEOUT_MS, {
     GIT_TERMINAL_PROMPT: "0"
@@ -32850,7 +32952,7 @@ function refCommit(repo, ref, env = process.env) {
   return taskGit(repo, ["rev-parse", "--verify", "--end-of-options", `${ref}^{commit}`], env);
 }
 function taskRepoPath(repo, dir) {
-  const path = relative6(resolve16(repo), resolve16(repo, dir));
+  const path = relative6(resolve17(repo), resolve17(repo, dir));
   if (path === ".." || path.startsWith(`..${sep5}`) || isAbsolute6(path))
     throw new Error("Task folder must be inside the checkout");
   return path.split(sep5).join("/");
@@ -36037,7 +36139,7 @@ import {
   unlinkSync as unlinkSync6,
   writeFileSync as writeFileSync8
 } from "fs";
-import { basename as basename17, dirname as dirname21, isAbsolute as isAbsolute8, join as join54, relative as relative8, resolve as resolve17 } from "path";
+import { basename as basename17, dirname as dirname21, isAbsolute as isAbsolute8, join as join54, relative as relative8, resolve as resolve18 } from "path";
 function skillsFolder(root) {
   return join54(root, ...SKILLS_DIR);
 }
@@ -36160,7 +36262,7 @@ function blockLines(text) {
 }
 function outsideMessage(root, file, real) {
   const shown = shownPath(root, file);
-  const link = real === resolve17(file) ? "" : ` (a link to ${real})`;
+  const link = real === resolve18(file) ? "" : ` (a link to ${real})`;
   return `${shown} is outside this checkout${link}: not changed`;
 }
 function linesOnlyIn(from, other) {
@@ -36356,7 +36458,7 @@ var init_deploy_skill = __esm(() => {
 
 // src/cli/project-init.ts
 import { existsSync as existsSync45, readFileSync as readFileSync48, statSync as statSync21 } from "fs";
-import { join as join55, resolve as resolve18 } from "path";
+import { join as join55, resolve as resolve19 } from "path";
 async function runGh2(ghPath, args, env) {
   try {
     const child = Bun.spawn([ghPath, ...args], {
@@ -36815,7 +36917,7 @@ function chosenDeploySkills(context, flags, prompts) {
   let fresh = null;
   const found = findDeploySkills(root);
   if (flags.deploySkill !== undefined) {
-    const file = resolve18(context.cwd ?? process.cwd(), flags.deploySkill);
+    const file = resolve19(context.cwd ?? process.cwd(), flags.deploySkill);
     files = [file];
     const others = found.holders.filter((holder) => realTarget(holder) !== realTarget(file));
     if (others.length > 0) {
@@ -36876,7 +36978,7 @@ ${PROJECT_INIT_USAGE}`);
     return 2;
   }
   const flags = parsed.flags;
-  if (flags.deploySkill !== undefined && statSync21(resolve18(context.cwd ?? process.cwd(), flags.deploySkill), {
+  if (flags.deploySkill !== undefined && statSync21(resolve19(context.cwd ?? process.cwd(), flags.deploySkill), {
     throwIfNoEntry: false
   })?.isFile() !== true) {
     context.error(`--deploy-skill: ${flags.deploySkill} is not a file
@@ -37505,7 +37607,7 @@ function transcriptChangedAt(ref) {
 var init_transcripts = () => {};
 
 // src/cli/usage.ts
-import { basename as basename18, resolve as resolve19 } from "path";
+import { basename as basename18, resolve as resolve20 } from "path";
 function isJsonObject12(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -37558,7 +37660,7 @@ function matches(project, folder, cwd) {
     return true;
   if (cwd === null)
     return false;
-  return cwd === resolve19(project) || basename18(cwd) === project;
+  return cwd === resolve20(project) || basename18(cwd) === project;
 }
 function count2(into, replies) {
   for (const model of replies.values())
@@ -39745,7 +39847,7 @@ import {
   rmSync as rmSync16,
   statSync as statSync25
 } from "fs";
-import { dirname as dirname25, join as join66, resolve as resolve20 } from "path";
+import { dirname as dirname25, join as join66, resolve as resolve21 } from "path";
 function readTail(path, size) {
   const start = Math.max(0, size - TAIL_BYTES);
   const buffer = Buffer.alloc(size - start);
@@ -39947,9 +40049,9 @@ async function runSessions(paths, options, deps, cwd = process.cwd()) {
   }
   if (options.finished) {
     const term = currentTerminal(process.env);
-    return finishedPart(paths, options, deps, resolve20(cwd), createOut(term), term);
+    return finishedPart(paths, options, deps, resolve21(cwd), createOut(term), term);
   }
-  let mainCheckout = resolve20(cwd);
+  let mainCheckout = resolve21(cwd);
   try {
     const checkout = locateCheckout(cwd, { env: process.env });
     if (checkout !== null)
@@ -40683,7 +40785,7 @@ take-over records the values you set by hand in claude-mem's file as ${COMMAND}'
 // src/entries/cli.ts
 import { existsSync as existsSync83, statSync as statSync34 } from "fs";
 import { uptime as uptime2 } from "os";
-import { join as join100, resolve as resolve30 } from "path";
+import { join as join100, resolve as resolve31 } from "path";
 
 // src/browser/check.ts
 init_build_info();
@@ -44191,7 +44293,7 @@ function markMcpServerAdding(stateDir, name, json, now, file = mcpRecordsFile(st
 init_paths2();
 init_user_json();
 import { existsSync as existsSync54, readFileSync as readFileSync65 } from "fs";
-import { dirname as dirname27, join as join71, resolve as resolve21 } from "path";
+import { dirname as dirname27, join as join71, resolve as resolve22 } from "path";
 function readUserServers(file) {
   let text;
   try {
@@ -44478,7 +44580,7 @@ function readProjectServers(file) {
 }
 function projectMcpFiles(cwd) {
   const files = [];
-  let folder = resolve21(cwd);
+  let folder = resolve22(cwd);
   for (let depth = 0;depth < 40; depth += 1) {
     files.push(join71(folder, ".mcp.json"));
     const parent = dirname27(folder);
@@ -46038,7 +46140,7 @@ import {
   mkdirSync as mkdirSync24,
   mkdtempSync as mkdtempSync6,
   readFileSync as readFileSync74,
-  realpathSync as realpathSync10,
+  realpathSync as realpathSync11,
   rmSync as rmSync19,
   writeFileSync as writeFileSync9
 } from "fs";
@@ -47008,7 +47110,7 @@ function runLiveCheck(paths, env, deps) {
       }
     ];
   }
-  const root = realpathSync10(mkdtempSync6(join79(tmpdir8(), "cc-smart-dev-kit-live-")));
+  const root = realpathSync11(mkdtempSync6(join79(tmpdir8(), "cc-smart-dev-kit-live-")));
   try {
     const gitEnv = { ...env, ...GIT_ID };
     const git = (cwd, ...args) => {
@@ -47064,10 +47166,10 @@ import {
   readdirSync as readdirSync31,
   readFileSync as readFileSync81,
   readSync as readSync9,
-  realpathSync as realpathSync12,
+  realpathSync as realpathSync13,
   statSync as statSync31
 } from "fs";
-import { isAbsolute as isAbsolute14, join as join86, relative as relative13, resolve as resolve27, sep as sep9 } from "path";
+import { isAbsolute as isAbsolute14, join as join86, relative as relative13, resolve as resolve28, sep as sep9 } from "path";
 
 // src/hooks/specs.ts
 init_command2();
@@ -48109,8 +48211,8 @@ init_io();
 init_path_compare();
 init_frontmatter();
 init_installed_plugins();
-import { existsSync as existsSync65, readdirSync as readdirSync29, readFileSync as readFileSync75, realpathSync as realpathSync11, statSync as statSync29 } from "fs";
-import { dirname as dirname31, isAbsolute as isAbsolute9, join as join81, relative as relative11, resolve as resolve22, sep as sep7 } from "path";
+import { existsSync as existsSync65, readdirSync as readdirSync29, readFileSync as readFileSync75, realpathSync as realpathSync12, statSync as statSync29 } from "fs";
+import { dirname as dirname31, isAbsolute as isAbsolute9, join as join81, relative as relative11, resolve as resolve23, sep as sep7 } from "path";
 var AGENT_SCAN_MAX_DEPTH = 8;
 var AGENT_SCAN_MAX_ENTRIES = 2000;
 
@@ -48125,7 +48227,7 @@ var BUILT_INS = {
   "general-purpose": null
 };
 function files(path, budget, depth = 0, visited = new Set) {
-  const found = readable(() => ({ real: realpathSync11(path), stat: statSync29(path) }));
+  const found = readable(() => ({ real: realpathSync12(path), stat: statSync29(path) }));
   if (found === null || visited.has(found.real))
     return [];
   visited.add(found.real);
@@ -48172,7 +48274,7 @@ function claiming(paths, name, local = true) {
   return null;
 }
 function inside2(checkout, project) {
-  const path = relative11(resolve22(project), resolve22(checkout));
+  const path = relative11(resolve23(project), resolve23(checkout));
   return path === "" || path !== ".." && !path.startsWith(`..${sep7}`) && !isAbsolute9(path);
 }
 function topFiles(folder, budget) {
@@ -48199,7 +48301,7 @@ function pluginFiles(root, budget) {
   return paths.flatMap((path) => {
     if (typeof path !== "string" || !path.startsWith("./"))
       return [];
-    const file = resolve22(root, path);
+    const file = resolve23(root, path);
     if (!inside2(file, root))
       return [];
     try {
@@ -48210,8 +48312,8 @@ function pluginFiles(root, budget) {
   });
 }
 function projectFolders(checkout, cwd) {
-  const root = realpathSync11(checkout);
-  const start = realpathSync11(cwd ?? checkout);
+  const root = realpathSync12(checkout);
+  const start = realpathSync12(cwd ?? checkout);
   const folders = [];
   let at = isInsideOnDisk(start, root) ? start : root;
   for (;; ) {
@@ -48250,7 +48352,7 @@ function lookup(name, place, budget) {
   if (colon !== -1) {
     const installs = installsOfPlugin(place.paths.installedPluginsFile, name.slice(0, colon));
     const given = place.cwd ?? place.checkout;
-    const real = given == null ? null : readable(() => realpathSync11(given));
+    const real = given == null ? null : readable(() => realpathSync12(given));
     const cwds = [given, real].filter((one) => one != null);
     const project = installs.filter((one) => one.scope !== "user" && one.projectPath !== null && cwds.some((cwd) => isInsideOnDisk(cwd, one.projectPath ?? ""))).sort((a, b) => (b.projectPath?.length ?? 0) - (a.projectPath?.length ?? 0));
     const root = [...project, ...installs.filter((one) => one.scope === "user")].find((one) => existsSync65(one.installPath))?.installPath;
@@ -48267,7 +48369,7 @@ init_resolve();
 init_names();
 init_installed_plugins();
 import { existsSync as existsSync66, readdirSync as readdirSync30, readFileSync as readFileSync76, statSync as statSync30 } from "fs";
-import { dirname as dirname32, isAbsolute as isAbsolute10, join as join82, resolve as resolve23, sep as sep8 } from "path";
+import { dirname as dirname32, isAbsolute as isAbsolute10, join as join82, resolve as resolve24, sep as sep8 } from "path";
 var WORKFLOW_SCRIPT_MAX_BYTES = 524288;
 function stringAt(text, from) {
   const quote = text[from];
@@ -48435,7 +48537,7 @@ function scriptAtPath(path, cwd) {
       unreadable: `The workflow script \`${path}\` is a relative path, and the hook input names no folder it is relative to.`
     };
   }
-  const file = resolve23(cwd, path);
+  const file = resolve24(cwd, path);
   let size;
   try {
     const stat = statSync30(file);
@@ -48492,8 +48594,8 @@ function oneOf2(found, name) {
 }
 function savedFolders(place) {
   const folders = [];
-  let at = resolve23(place.cwd);
-  const home = resolve23(place.home);
+  let at = resolve24(place.cwd);
+  const home = resolve24(place.home);
   while (place.cwd !== "" && at !== home) {
     folders.push(join82(at, ".claude", "workflows"));
     if (existsSync66(join82(at, ".git")))
@@ -48512,8 +48614,8 @@ function noFile(name) {
   };
 }
 function within(folder, inside) {
-  const root = resolve23(inside);
-  const path = resolve23(folder);
+  const root = resolve24(inside);
+  const path = resolve24(folder);
   return path === root || path.startsWith(root.endsWith(sep8) ? root : `${root}${sep8}`);
 }
 function pluginFolder(plugin, place) {
@@ -48536,7 +48638,7 @@ function pluginWorkflowFiles(root) {
   if (paths === null)
     return workflowFiles(join82(root, "workflows"));
   return paths.filter((one) => typeof one === "string").flatMap((one) => {
-    const path = resolve23(root, one);
+    const path = resolve24(root, one);
     try {
       if (statSync30(path).isDirectory())
         return workflowFiles(path);
@@ -50027,7 +50129,7 @@ init_change_dir();
 init_command2();
 init_git_calls();
 init_git();
-import { resolve as resolve24 } from "path";
+import { resolve as resolve25 } from "path";
 var DEFAULT_PROTECTED_BRANCHES = ["main"];
 var PUSH_VALUE_OPTIONS = [
   ["--exec", 4],
@@ -50265,7 +50367,7 @@ function callQuestions(call, folder, run) {
   const { rest, sub } = call;
   const alias = pushAlias(call);
   if (sub === "push" || sub === "send-pack" || alias !== null) {
-    const where = folder === null ? null : resolve24(folder, ...call.dirs);
+    const where = folder === null ? null : resolve25(folder, ...call.dirs);
     const place = {
       branch: () => where === null ? undefined : currentBranch(where, run),
       bare: (remote) => {
@@ -50555,6 +50657,7 @@ import { existsSync as existsSync70 } from "fs";
 init_classify();
 init_git_hooks();
 init_kinds();
+init_package_scripts();
 init_weight_source();
 init_launcher();
 init_change_dir();
@@ -50564,7 +50667,7 @@ init_resolve2();
 
 // src/hooks/bash-judge.ts
 init_names();
-import { isAbsolute as isAbsolute11, resolve as resolve25 } from "path";
+import { isAbsolute as isAbsolute11, resolve as resolve26 } from "path";
 
 // src/herdr/machines.ts
 init_zod();
@@ -50625,70 +50728,10 @@ async function writeMachines(file, change, stateDir) {
 init_words();
 init_resolve();
 init_command2();
+init_kit_invocation();
 init_resolve2();
 init_git();
 init_io();
-
-// src/hooks/kit-invocation.ts
-init_names();
-init_command2();
-var INERT = new Set([
-  "[",
-  "[[",
-  "awk",
-  "cat",
-  "chmod",
-  "chown",
-  "cp",
-  "diff",
-  "echo",
-  "egrep",
-  "fgrep",
-  "file",
-  "git",
-  "grep",
-  "head",
-  "less",
-  "ln",
-  "ls",
-  "man",
-  "mkdir",
-  "more",
-  "mv",
-  "printf",
-  "readlink",
-  "realpath",
-  "rg",
-  "rm",
-  "sed",
-  "stat",
-  "tail",
-  "tee",
-  "test",
-  "touch",
-  "type",
-  "wc",
-  "which"
-]);
-var KIT_BUNDLE = /(?:^|[\\/])(?:dist|entries)[\\/](?:cli|portal)\.(?:js|ts)$/;
-var KIT_TOKEN = new RegExp(`(^|[^\\w.-])${COMMAND.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?:\\.(?:exe|cmd|ps1|bat))?(?=$|[^\\w.\\-/\\\\])`, "i");
-var PATH_BREAKS = /[\s"'`=;&|<>()]+/;
-function namesKit(text) {
-  return KIT_TOKEN.test(text) || text.split(PATH_BREAKS).some((piece) => KIT_BUNDLE.test(piece));
-}
-function isKitWord(word) {
-  return programName(word) === COMMAND || KIT_BUNDLE.test(word);
-}
-function kitArguments(program, args) {
-  if (programName(program) === COMMAND)
-    return [...args];
-  if (INERT.has(program))
-    return null;
-  const at = args.findIndex(isKitWord);
-  return at === -1 ? null : args.slice(at + 1);
-}
-
-// src/hooks/bash-judge.ts
 var CLAUDE_VALUED = [
   "--add-dir",
   "--agent",
@@ -50947,7 +50990,7 @@ function judgeProposals(proposals, context) {
     } else if (cwd === null) {
       question = cannotTellProject("the call names no folder");
     } else {
-      question = proposeQuestion(proposal.folder === null ? cwd : resolve25(cwd, proposal.folder), context, timeFor);
+      question = proposeQuestion(proposal.folder === null ? cwd : resolve26(cwd, proposal.folder), context, timeFor);
     }
     if (question !== null)
       break;
@@ -51327,7 +51370,7 @@ function routeGitHooks(command, context, kinds, platform = process.platform) {
       const key = `${step.folder}\x00${name}`;
       let answer = answers.get(key);
       if (answer === undefined) {
-        answer = hookDecision(name, step.folder, kinds, diskWeightSource(step.folder), context.env, timeFor(GUARD_GIT_TIMEOUT_MS));
+        answer = hookDecision(name, step.folder, kinds, packageScripts, context.env, timeFor(GUARD_GIT_TIMEOUT_MS));
         answers.set(key, answer);
       }
       if (typeof answer === "object") {
@@ -51992,10 +52035,11 @@ init_path_compare();
 init_ports();
 init_change_dir();
 init_command2();
+init_kit_invocation();
 init_writes();
 init_git();
 init_io();
-import { dirname as dirname34, isAbsolute as isAbsolute12, relative as relative12, resolve as resolve26 } from "path";
+import { dirname as dirname34, isAbsolute as isAbsolute12, relative as relative12, resolve as resolve27 } from "path";
 var ESCAPE_SHELL_TOOLS = ["Bash", "PowerShell"];
 var ESCAPE_EDIT_TOOLS = ["Edit", "Write", "NotebookEdit"];
 var CLAUDECODE = "CLAUDECODE";
@@ -52278,7 +52322,7 @@ function editedPaths(input, cwd, home) {
   if (given === null)
     return [];
   const path = expanded(given, home);
-  const written = isAbsolute12(path) ? resolve26(path) : resolve26(cwd ?? "/", path);
+  const written = isAbsolute12(path) ? resolve27(path) : resolve27(cwd ?? "/", path);
   return [...new Set([written, realPath(written)])];
 }
 function judgeEdit(input, paths) {
@@ -53576,12 +53620,12 @@ function lintRestriction(folder, projectFolder) {
   return result;
 }
 function shadcnFolders(root) {
-  const folders = new Map([[realpathSync12(root), root]]);
+  const folders = new Map([[realpathSync13(root), root]]);
   const lines = [];
   const addFolder = (folder) => {
     try {
-      const target = realpathSync12(folder);
-      const rel = relative13(realpathSync12(root), target);
+      const target = realpathSync13(folder);
+      const rel = relative13(realpathSync13(root), target);
       if (rel === ".." || rel.startsWith(`..${sep9}`) || isAbsolute14(rel))
         return;
       if (statSync31(folder).isDirectory() && !folders.has(target))
@@ -53597,15 +53641,15 @@ function shadcnFolders(root) {
       for (const entry of entries) {
         if (typeof entry !== "string" || isAbsolute14(entry))
           continue;
-        const folder = resolve27(root, entry.replace(/\/\*$/, ""));
+        const folder = resolve28(root, entry.replace(/\/\*$/, ""));
         const rel = relative13(root, folder);
         if (rel === ".." || rel.startsWith(`..${sep9}`) || isAbsolute14(rel))
           continue;
         if (entry.endsWith("/*") && !entry.slice(0, -2).includes("*")) {
           if (!existsSync72(folder))
             continue;
-          const realFolder = realpathSync12(folder);
-          const realRel = relative13(realpathSync12(root), realFolder);
+          const realFolder = realpathSync13(folder);
+          const realRel = relative13(realpathSync13(root), realFolder);
           if (realRel === ".." || realRel.startsWith(`..${sep9}`) || isAbsolute14(realRel))
             continue;
           for (const child of readdirSync31(folder).sort())
@@ -56862,7 +56906,7 @@ import { readFileSync as readFileSync87 } from "fs";
 init_targets();
 init_user_json();
 import { readFileSync as readFileSync85, statSync as statSync33 } from "fs";
-import { basename as basename23, dirname as dirname40, join as join94, resolve as resolve28 } from "path";
+import { basename as basename23, dirname as dirname40, join as join94, resolve as resolve29 } from "path";
 var AUTOCOMPACT_WINDOW_ENV = "CLAUDE_CODE_AUTO_COMPACT_WINDOW";
 var AUTOCOMPACT_PERCENT_ENV = "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE";
 var AUTOCOMPACT_MIN_TOKENS = 1e5;
@@ -56980,12 +57024,12 @@ function compactWindowsOf(sources, model) {
   return { env: envFrom(files, sources.env), settings: settingsWindowFrom(files, model) };
 }
 function mainCheckoutOfFolder(folder) {
-  for (let dir = resolve28(folder);; dir = dirname40(dir)) {
+  for (let dir = resolve29(folder);; dir = dirname40(dir)) {
     const root = checkoutRootAt(dir);
     if (root !== null)
       return root;
     if (dirname40(dir) === dir)
-      return resolve28(folder);
+      return resolve29(folder);
   }
 }
 function checkoutRootAt(dir) {
@@ -56997,7 +57041,7 @@ function checkoutRootAt(dir) {
 `, 1)[0] ?? "";
     if (!line.startsWith("gitdir:"))
       return dir;
-    const gitdir = resolve28(dir, line.slice("gitdir:".length).trim());
+    const gitdir = resolve29(dir, line.slice("gitdir:".length).trim());
     const worktrees = dirname40(gitdir);
     const common = dirname40(worktrees);
     return basename23(worktrees) === "worktrees" && basename23(common) === ".git" ? dirname40(common) : dir;
@@ -57483,7 +57527,7 @@ init_context();
 init_ops();
 init_db();
 import { existsSync as existsSync80, readdirSync as readdirSync33, readFileSync as readFileSync88 } from "fs";
-import { basename as basename24, dirname as dirname42, isAbsolute as isAbsolute16, join as join97, relative as relative15, resolve as resolve29 } from "path";
+import { basename as basename24, dirname as dirname42, isAbsolute as isAbsolute16, join as join97, relative as relative15, resolve as resolve30 } from "path";
 
 // src/herdr/brief.ts
 init_names();
@@ -57895,7 +57939,7 @@ async function start(a, ctx, r) {
     return refuse2(ctx, "This model and effort need the person's approval (--asked).");
   if (a.on && !a.cwd)
     return refuse2(ctx, "A remote start needs --cwd on that machine.");
-  const cwd = a.on ? a.cwd ?? ctx.cwd : resolve29(ctx.cwd, a.cwd ?? ".");
+  const cwd = a.on ? a.cwd ?? ctx.cwd : resolve30(ctx.cwd, a.cwd ?? ".");
   if (a.task && a.on)
     return refuse2(ctx, "A task cannot cross projects or machines. Put its text in the brief instead.");
   const project = taskContext(a.on ? ctx.cwd : cwd, ctx.env), caller = taskContext(ctx.cwd, ctx.env);
@@ -59183,7 +59227,7 @@ async function main(argv) {
             console.error(usageError("--project needs a folder", "setup"));
             return 2;
           }
-          project = resolve30(dir);
+          project = resolve31(dir);
           index += 1;
         } else if (!flags.includes(arg)) {
           unknown.push(arg);
