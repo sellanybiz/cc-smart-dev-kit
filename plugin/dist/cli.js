@@ -31368,23 +31368,39 @@ function isAncestor2(repo, ancestor, commit, env) {
     return false;
   throw new Error(`git merge-base failed: ${result.err}`);
 }
+function refExists(repo, name, env) {
+  const result = runGit(repo, ["show-ref", "--verify", "--quiet", name], env, RESOLVE_GIT_TIMEOUT_MS);
+  if (result.ok)
+    return true;
+  if (result.code === 1)
+    return false;
+  throw new Error(`git show-ref failed: ${result.err}`);
+}
+function refCandidates(ref) {
+  return [
+    `refs/${ref}`,
+    `refs/tags/${ref}`,
+    `refs/heads/${ref}`,
+    `refs/remotes/${ref}`,
+    `refs/remotes/${ref}/HEAD`
+  ];
+}
 function refBranchOf(repo, ref, env) {
   if (ref === "HEAD" || ref === "@" || ref.startsWith("-"))
     return null;
   const named = taskGit(repo, ["rev-parse", "--symbolic-full-name", ref], env);
   if (named === "") {
-    const branch = runGit(repo, ["show-ref", "--verify", "--quiet", `refs/heads/${ref}`], env, RESOLVE_GIT_TIMEOUT_MS);
-    if (branch.ok)
-      throw new Error(`${ref} names both a tag and a branch: name it in full (refs/tags/${ref} or refs/heads/${ref})`);
+    const found = refCandidates(ref).filter((name) => refExists(repo, name, env));
+    if (found.length > 1)
+      throw new Error(`${ref} names more than one ref (${found.join(", ")}): name the one that ships in full with --ref, or delete the one that should not be there`);
     return null;
   }
   if (named.startsWith("refs/heads/"))
     return named.slice("refs/heads/".length);
   if (!named.startsWith("refs/remotes/"))
     return null;
-  const remotes = taskGit(repo, ["remote"], env).split(`
-`).filter(Boolean);
-  const remote = remotes.find((name) => named.startsWith(`refs/remotes/${name}/`));
+  const remote = taskGit(repo, ["remote"], env).split(`
+`).filter((name) => name !== "" && named.startsWith(`refs/remotes/${name}/`)).sort((a, b) => b.length - a.length)[0];
   return remote === undefined ? null : named.slice(`refs/remotes/${remote}/`.length);
 }
 function readGitFacts(repo, dir, ref, env = process.env, options = {}) {

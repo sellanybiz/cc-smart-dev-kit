@@ -115,8 +115,7 @@ Before any deploy, production or database work, list the deploy tasks (`task_lis
    waits on an open staging twin (or names a twin that is no task: `task check` shows it), the
    branch is the base itself (or detached, or the ref's own branch), or HEAD is not the ref
    (default `origin/<worktrees.base>`): it must hold every commit of the ref and differ from it
-   only in task files. A ref that names both a tag and a branch exits 1 too: give it in full
-   (`refs/heads/<x>`). It names the open non-blocking `before` tasks: do them, or drop them with
+   only in task files. It names the open non-blocking `before` tasks: do them, or drop them with
    a reason. It also warns (`!`, no
    refusal) when files outside the tasks folder have uncommitted changes: the gate judged
    committed code only.
@@ -130,7 +129,8 @@ Before any deploy, production or database work, list the deploy tasks (`task_lis
 6. **The branch's pull request** (the task files only) merges as the workflow says
    (`/cc-smart-dev-kit:commit`, `/cc-smart-dev-kit:pull-request`).
 
-A wrong command exits 2; a refusal, an unknown ref or a place outside git exits 1. `--json`
+A wrong command exits 2; a refusal, an unknown ref, a ref name that matches more than one ref
+(the answer names them: pick the one that ships) or a place outside git exits 1. `--json`
 prints the answer as data. A deploy branch left unmerged shows in `task list --branches`: its
 open tasks, and its closes of tasks the base still has open ("closed on <branch>, not merged").
 A prod refusal for an open staging twin may mean that close waits there.

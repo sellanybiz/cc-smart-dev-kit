@@ -963,18 +963,42 @@ test("git facts: the ref's branch is read by git, never cut from the text", () =
   expect(branchOf(sha)).toBeNull();
   expect(branchOf("HEAD")).toBeNull();
   expect(branchOf("@")).toBeNull();
-  // A remote whose name holds "/" (git refuses a second remote inside it, such as `my`).
+  // A remote whose name holds "/".
   git(repo, "remote", "add", "my/fork", remote);
   git(repo, "fetch", "-q", "my/fork");
   expect(branchOf("my/fork/main")).toBe("main");
-  // A name that is both a tag and a branch: the gate cannot tell which ships, so it stops.
+  // `git remote add` refuses `my` beside `my/fork`, a config edit does not: the longest name wins.
+  git(repo, "config", "remote.my.url", remote);
+  git(repo, "config", "remote.my.fetch", "+refs/heads/*:refs/remotes/my/*");
+  expect(git(repo, "remote").split("\n")).toContain("my");
+  expect(branchOf("my/fork/main")).toBe("main");
+  // A short name that matches more than one ref: git ships the first, so the gate stops.
   git(repo, "branch", "rel2");
   git(repo, "tag", "rel2");
   expect(() => branchOf("rel2")).toThrow(
-    "rel2 names both a tag and a branch: name it in full (refs/tags/rel2 or refs/heads/rel2)",
+    "rel2 names more than one ref (refs/tags/rel2, refs/heads/rel2): name the one that ships in full with --ref, or delete the one that should not be there",
   );
   expect(branchOf("refs/heads/rel2")).toBe("rel2");
   expect(branchOf("refs/tags/rel2")).toBeNull();
+});
+
+test("git facts: a stray local branch or a tag named like origin's branch stops the gate", () => {
+  const env = cleanGitEnv();
+  // A stray local branch `origin/main`, no tag: both are named, the tag is not.
+  const stray = repoWithRemote();
+  git(stray.repo, "branch", "origin/main");
+  expect(() => readGitFacts(stray.repo, stray.dir, "origin/main", env)).toThrow(
+    "origin/main names more than one ref (refs/heads/origin/main, refs/remotes/origin/main): name the one that ships in full with --ref, or delete the one that should not be there",
+  );
+  expect(readGitFacts(stray.repo, stray.dir, "refs/remotes/origin/main", env).refBranch).toBe(
+    "main",
+  );
+  // A tag `origin/main` beside origin's branch, no local branch: git would ship the tag.
+  const tagged = repoWithRemote();
+  git(tagged.repo, "tag", "origin/main");
+  expect(() => readGitFacts(tagged.repo, tagged.dir, "origin/main", env)).toThrow(
+    "origin/main names more than one ref (refs/tags/origin/main, refs/remotes/origin/main)",
+  );
 });
 
 test("the gates read the base branch from the input, never a fixed name", () => {

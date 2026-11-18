@@ -426,7 +426,7 @@ test("release reports a ref git cannot resolve, and any other git failure as it 
   expect(unborn.code).toBe(1);
   expect(unborn.error).toContain("git rev-parse failed");
   expect(unborn.error).not.toContain("Cannot read");
-  // A name that is both a tag and a branch: the gate cannot tell which ships, so it stops.
+  // A name that matches a tag and a branch: git would ship the first match, so the gate stops.
   const both = world();
   git(both.cwd, "branch", "rel2");
   git(both.cwd, "tag", "rel2");
@@ -435,7 +435,7 @@ test("release reports a ref git cannot resolve, and any other git failure as it 
     code: 1,
     text: "",
     error:
-      "rel2 names both a tag and a branch: name it in full (refs/tags/rel2 or refs/heads/rel2)\n",
+      "rel2 names more than one ref (refs/tags/rel2, refs/heads/rel2): name the one that ships in full with --ref, or delete the one that should not be there\n",
   });
 });
 

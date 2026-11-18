@@ -407,20 +407,22 @@ origin string; `evidence` is set when the task closes.
 deploy (`release.ts`). `--ref` defaults to `origin/<worktrees.base>`; every answer prints the
 ref and the commit it read. A run happens on a **deploy branch** cut from the commit that
 ships, so the closes reach main through that branch's small pull request and nothing lingers.
-Exit codes: 0 the gate passes, 1 a refusal (also a ref git does not know, or a place outside
-git), 2 a wrong command.
+Exit codes: 0 the gate passes, 1 a refusal (also a ref git does not know, a place outside git,
+or a short ref name that matches more than one ref, such as a stray local branch `origin/main`
+beside origin's or a tag beside a branch: git would ship the first match, so both gates stop
+and name every match, `refBranchOf` in `branch.ts`), 2 a wrong command.
 
 1. Cut the branch: `git switch --no-track -c deploy/<env>-<YYYYMMDD-HHMM> origin/<base>`, in
    the session's own checkout. `--no-track` keeps a plain `git push` from targeting the base.
    The refusal for a wrong branch prints this command; on a deploy branch, the refusal for a HEAD
-   that is not the ref prints it instead, so an answer holds it once. The `task` command acts in the folder it
-   runs in, and every deploy-task answer names the checkout and file it wrote, so a close lands
-   where the gates read it.
+   that is not the ref prints it instead, so an answer holds it once. The `task` command acts in
+   the folder it runs in, and every deploy-task answer names the checkout and file it wrote, so a
+   close lands where the gates read it.
 2. `--before` exits 1 when the environment is not in `tasks.envs`; HEAD is detached, or on the
    base branch (`worktrees.base`) or the ref's own branch (the branch git resolves the ref to:
-   `origin/<x>`, `upstream/<x>` and `refs/heads/<x>` are `<x>`; a tag or a commit has none; a name
-   that is both a tag and a branch exits 1 and asks for the full name): a run happens on a deploy
-   branch, D12, and that refusal prints the branch to cut; HEAD is not the ref's commit
+   `origin/<x>`, `upstream/<x>` and `refs/heads/<x>` are `<x>`; a tag or a commit has none): a
+   run happens on a deploy branch, D12, and that refusal prints the branch to cut; HEAD is not
+   the ref's commit
    (it may differ from it only under `tasks.dir`, closes already made, and it must hold every
    commit of the ref); a blocking `before` task is open; a task file is broken or its id is
    claimed by two file names; or, for prod, a task's staging twin is open, or names no task

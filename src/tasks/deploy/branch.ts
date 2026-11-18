@@ -191,13 +191,41 @@ function isAncestor(repo: string, ancestor: string, commit: string, env: Env): b
   throw new Error(`git merge-base failed: ${result.err}`);
 }
 
+/** True when the full ref name `name` exists. Exit 1 is "no"; any other failure throws. */
+function refExists(repo: string, name: string, env: Env): boolean {
+  const result = runGit(
+    repo,
+    ["show-ref", "--verify", "--quiet", name],
+    env,
+    RESOLVE_GIT_TIMEOUT_MS,
+  );
+  if (result.ok) return true;
+  if (result.code === 1) return false;
+  throw new Error(`git show-ref failed: ${result.err}`);
+}
+
+/**
+ * Where git looks for a short name, in its own order (gitrevisions: the first match wins).
+ * `$GIT_DIR/<name>` (HEAD, FETCH_HEAD) comes first in git's list and is left out: no branch lives there.
+ */
+function refCandidates(ref: string): string[] {
+  return [
+    `refs/${ref}`,
+    `refs/tags/${ref}`,
+    `refs/heads/${ref}`,
+    `refs/remotes/${ref}`,
+    `refs/remotes/${ref}/HEAD`,
+  ];
+}
+
 /**
  * The branch `ref` names, read by git (`rev-parse --symbolic-full-name`): `refs/heads/<x>` gives
- * `<x>`, and `refs/remotes/<remote>/<x>` gives `<x>` for the remote whose name fits (a remote may
- * be named `my/fork`). A commit, a tag, or HEAD (the current branch, not a ship branch) give
- * null. A failed read throws, as every read in `readGitFacts` does: a null would let a run on the
- * ref's own branch through. So does a name that is both a tag and a branch (git then prints
- * nothing): the gate cannot tell which one ships.
+ * `<x>`, and `refs/remotes/<remote>/<x>` gives `<x>` for the longest remote name that fits (a
+ * remote may be named `my/fork`). A commit, a tag, or HEAD (the current branch, not a ship branch)
+ * give null. A failed read throws, as every read in `readGitFacts` does: a null would let a run on
+ * the ref's own branch through. So does a short name that matches more than one ref (a stray local
+ * branch `origin/main` beside origin's, a tag beside a branch): git then prints nothing and ships
+ * the first match, which may not be the one meant, so the gate stops and names them all.
  *
  * No `--end-of-options` here: with `--symbolic-full-name`, git prints that word back as a line of
  * output. A ref name never starts with `-` (git check-ref-format), so such text is refused before
@@ -207,23 +235,21 @@ function refBranchOf(repo: string, ref: string, env: Env): string | null {
   if (ref === "HEAD" || ref === "@" || ref.startsWith("-")) return null;
   const named = taskGit(repo, ["rev-parse", "--symbolic-full-name", ref], env);
   if (named === "") {
-    const branch = runGit(
-      repo,
-      ["show-ref", "--verify", "--quiet", `refs/heads/${ref}`],
-      env,
-      RESOLVE_GIT_TIMEOUT_MS,
-    );
-    if (branch.ok)
+    const found = refCandidates(ref).filter((name) => refExists(repo, name, env));
+    if (found.length > 1)
       throw new Error(
-        `${ref} names both a tag and a branch: name it in full (refs/tags/${ref} or refs/heads/${ref})`,
+        `${ref} names more than one ref (${found.join(", ")}): name the one that ships in full with --ref, or delete the one that should not be there`,
       );
     return null;
   }
   if (named.startsWith("refs/heads/")) return named.slice("refs/heads/".length);
   if (!named.startsWith("refs/remotes/")) return null;
-  const remotes = taskGit(repo, ["remote"], env).split("\n").filter(Boolean);
-  // Git refuses a remote name inside another (`my` beside `my/fork`), so one remote fits at most.
-  const remote = remotes.find((name) => named.startsWith(`refs/remotes/${name}/`));
+  // `git remote add` refuses a name inside another (`my` beside `my/fork`), but a config edit
+  // does not: the longest name that fits is the remote.
+  const remote = taskGit(repo, ["remote"], env)
+    .split("\n")
+    .filter((name) => name !== "" && named.startsWith(`refs/remotes/${name}/`))
+    .sort((a, b) => b.length - a.length)[0];
   return remote === undefined ? null : named.slice(`refs/remotes/${remote}/`.length);
 }
 
