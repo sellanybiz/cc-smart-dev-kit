@@ -1379,7 +1379,7 @@ describe("plans.runMode and plans.mergeFiles", () => {
     const run = context(repo, hookEnv());
     expect(await runWorkflow(["propose", "plans.runMode", "solo"], run.context)).toBe(1);
     expect(run.errors).toEqual([
-      `plans.runMode is your own setting, not the project's, so there is nothing to propose: it is per person, per machine — change it with \`${COMMAND} workflow set plans.runMode <value>\`.`,
+      `plans.runMode is your own setting, not the project's, so there is nothing to propose: a committed value would spend every teammate's usage — change it with \`${COMMAND} workflow set plans.runMode <value>\`.`,
     ]);
   });
 
