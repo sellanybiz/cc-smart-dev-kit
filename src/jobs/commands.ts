@@ -1,11 +1,11 @@
 /** The heavy-job command: run, status and kinds. */
-import { readdirSync, statSync } from "node:fs";
+import { readdirSync } from "node:fs";
 import { hostname } from "node:os";
-import { resolve } from "node:path";
 import { COMMAND } from "../build-info";
 import { resolveProject } from "../project/resolve";
+import { shellWord } from "../setup/launcher";
 import { isInsideHeavyJob, readProcStat } from "./ancestry";
-import { toolCallOfArgv } from "./classify";
+import { runWeight } from "./classify";
 import {
   HEAVY_SLOTS,
   heavyLimitLine,
@@ -14,11 +14,12 @@ import {
   readHeavyLimit,
   setHeavyLimit,
 } from "./config";
-import { isPrintOnly, type Kinds, mergeKinds, namesOnlyFiles } from "./kinds";
+import { type Kinds, mergeKinds } from "./kinds";
 import { exitCodeOf, spawnAndWait } from "./launch";
 import { acquireFrom, pidsHolding, WaitStoppedError } from "./queue";
 import { runJob } from "./run";
 import { type JobContext, openStores, readJobs, statusLines } from "./status";
+import { diskWeightSource } from "./weight-source";
 
 export type { JobContext } from "./status";
 
@@ -46,13 +47,16 @@ function envFilesIn(dir: string): string[] {
   }
 }
 
-/** True when `word` names a file (not a folder) from `cwd`; anything that cannot be read is no file. */
-function isFileIn(cwd: string, word: string): boolean {
-  try {
-    return statSync(resolve(cwd, word)).isFile();
-  } catch {
-    return false;
-  }
+/**
+ * True when the judge (`runWeight`) proves the command light: it only prints, or names only
+ * files that exist, in the folder it runs in. The words are read as the line a shell would run
+ * (`shellWord` quotes what needs it), so a command given through `sh -c '…'`, a wrapper or a
+ * `cd` is read as the route reads it. Only a positive finding lowers a run to light: a heavy
+ * run, and a command the judge cannot read (`none`), keep their slot.
+ */
+function isLightRun(command: readonly string[], kinds: Kinds, cwd: string): boolean {
+  const line = command.map(shellWord).join(" ");
+  return runWeight(line, kinds, diskWeightSource(cwd)).weight === "light";
 }
 
 function projectKinds(cwd: string): Kinds {
@@ -132,11 +136,7 @@ async function jobRun(args: readonly string[], ctx: JobContext): Promise<number>
     ctx.say(`${PREFIX} unknown kind "${parsed.kind}": one of ${Object.keys(kinds).join(", ")}`);
     return 2;
   }
-  const call = toolCallOfArgv(parsed.command);
-  const slot =
-    spec !== null &&
-    !isPrintOnly(spec, call.args) &&
-    !namesOnlyFiles(spec, call.args, (word) => isFileIn(ctx.cwd, word));
+  const slot = spec !== null && !isLightRun(parsed.command, kinds, ctx.cwd);
   const exclusive = parsed.exclusive ?? undefined;
   // A narrow run never opens or reads the lease store.
   if (!slot && exclusive === undefined)

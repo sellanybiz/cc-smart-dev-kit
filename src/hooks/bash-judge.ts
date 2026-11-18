@@ -313,9 +313,6 @@ function proposalOf(step: Step, moved: boolean): Proposal {
   return { folder };
 }
 
-// The one home of "this is `job run`" is the shell reader; job-route imports it from here.
-export { isJobRun } from "../shell/command";
-
 /**
  * One line's commands, in order, its shells' inner text read too (`bash -c '…'`), three
  * levels deep — the same walk the classifier and `programsOf` make, over the one reader.

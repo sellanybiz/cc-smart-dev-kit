@@ -10,13 +10,28 @@
  * change stays visible.
  */
 import { describe, expect, test } from "bun:test";
-import { routeHeavyCommand, runsJobRun } from "../hooks/job-route";
-import { classifyHeavyCommand, toolCallOfArgv } from "./classify";
+import { routeHeavyCommand } from "../hooks/job-route";
+import { classifyHeavyCommand, runWeight, toolCallOfArgv, type WeightSource } from "./classify";
 import { DEFAULT_KINDS } from "./kinds";
 import { type JobDeps, runJob } from "./run";
 
 const LAUNCHER = '"$HOME/.local/bin/cc-smart-dev-kit"';
 const SHELL = "/bin/bash";
+
+/** A folder with no file and no `package.json`: every run on a named file is a full run. */
+const EMPTY_FOLDER: WeightSource = {
+  folder: "/repo",
+  isFile: () => false,
+  scriptsIn: () => null,
+};
+
+/**
+ * True when the classifier finds a heavy kind in the line and the judge still says `none`: the
+ * line runs `job run` already (no row here is a watch run), so it is queued once and never again.
+ */
+const runsJobRun = (line: string) =>
+  classifyHeavyCommand(line, DEFAULT_KINDS) !== null &&
+  runWeight(line, DEFAULT_KINDS, EMPTY_FOLDER).weight === "none";
 
 /** One line: its kind, the routed command (null: not routed), and whether it runs `job run`. */
 type Row = [line: string, kind: string | null, routed: string | null, jobRun?: boolean];
@@ -148,7 +163,7 @@ describe("job-route and the classifier read a line the same way, case by case", 
     test(JSON.stringify(line), () => {
       expect({
         kind: classifyHeavyCommand(line, DEFAULT_KINDS),
-        routed: routeHeavyCommand(line, DEFAULT_KINDS, SHELL)?.command ?? null,
+        routed: routeHeavyCommand(line, DEFAULT_KINDS, SHELL, EMPTY_FOLDER)?.command ?? null,
         jobRun: runsJobRun(line),
       }).toEqual({ kind, routed, jobRun });
     });

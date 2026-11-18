@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { cliPaths } from "../cli/paths";
 import { tempDir } from "../testing/temp";
@@ -28,11 +28,73 @@ test("plain child keeps its exit code and old machine settings are never read", 
   expect(await runJobCommand(["run", "--kind", "tsc", "--", "sh", "-c", "exit 7"], ctx)).toBe(7);
   expect(await openStores(ctx).machine.held()).toEqual([]);
 });
+/** A tool in the folder's `node_modules/.bin` that does nothing and ends with 0. */
+function fakeTool(folder: string, name: string): string {
+  const bin = join(folder, "node_modules", ".bin");
+  mkdirSync(bin, { recursive: true });
+  writeFileSync(join(bin, name), "#!/bin/sh\nexit 0\n");
+  chmodSync(join(bin, name), 0o755);
+  return join(bin, name);
+}
+const stateDirOf = (ctx: JobContext) => jobsPaths(ctx.paths.home).stateDir;
+
 test("named files skip the queue entirely", async () => {
   const { ctx } = world();
+  const vitest = fakeTool(ctx.cwd, "vitest");
+  writeFileSync(join(ctx.cwd, "file.test.ts"), "");
+  expect(
+    await runJobCommand(["run", "--kind", "test:run", "--", vitest, "run", "file.test.ts"], ctx),
+  ).toBe(0);
+  expect(existsSync(stateDirOf(ctx))).toBe(false);
+});
+// The judge reads the line the way a shell runs it: through `sh -c`, after a `cd`, in the folder
+// the `cd` moves to. Read as argv words it saw `-c` and a string, took a slot and waited.
+test("named files in a shell string, after a cd, skip the queue", async () => {
+  const { ctx } = world();
+  const app = join(ctx.cwd, "app");
+  mkdirSync(app);
+  const vitest = fakeTool(app, "vitest");
+  writeFileSync(join(app, "a.test.ts"), "");
+  const line = `cd ${app} && ${vitest} run a.test.ts`;
+  expect(await runJobCommand(["run", "--kind", "test:run", "--", "sh", "-c", line], ctx)).toBe(0);
+  expect(existsSync(stateDirOf(ctx))).toBe(false);
+});
+test("a run on a file that is not there is a full run and takes a slot", async () => {
+  const { ctx } = world();
+  const vitest = fakeTool(ctx.cwd, "vitest");
+  expect(
+    await runJobCommand(["run", "--kind", "test:run", "--", vitest, "run", "missing.test.ts"], ctx),
+  ).toBe(0);
+  expect(existsSync(stateDirOf(ctx))).toBe(true);
+});
+// The judge may only lower a run to light on a finding it can prove: a command it cannot read
+// keeps its slot, whatever its words look like.
+test("a command the judge cannot read takes a slot", async () => {
+  const { ctx } = world();
   writeFileSync(join(ctx.cwd, "file.ts"), "");
-  expect(await runJobCommand(["run", "--kind", "test:run", "--", "true", "file.ts"], ctx)).toBe(0);
-  expect(existsSync(jobsPaths(ctx.paths.home).stateDir)).toBe(false);
+  expect(await runJobCommand(["run", "--kind", "tsc", "--", "true", "file.ts"], ctx)).toBe(0);
+  expect(existsSync(stateDirOf(ctx))).toBe(true);
+});
+test("a watch run is no light run: it takes a slot as it did", async () => {
+  const { ctx } = world();
+  const vitest = fakeTool(ctx.cwd, "vitest");
+  writeFileSync(join(ctx.cwd, "file.test.ts"), "");
+  expect(
+    await runJobCommand(
+      ["run", "--kind", "test:run", "--", vitest, "--watch", "file.test.ts"],
+      ctx,
+    ),
+  ).toBe(0);
+  expect(existsSync(stateDirOf(ctx))).toBe(true);
+});
+test("--exclusive opens the queue whatever the weight of the run", async () => {
+  const { ctx } = world();
+  const vitest = fakeTool(ctx.cwd, "vitest");
+  writeFileSync(join(ctx.cwd, "file.test.ts"), "");
+  expect(
+    await runJobCommand(["run", "--exclusive", "db", "--", vitest, "run", "file.test.ts"], ctx),
+  ).toBe(0);
+  expect(existsSync(stateDirOf(ctx))).toBe(true);
 });
 test("named files start while a heavy slot is occupied", async () => {
   const { ctx } = world();
@@ -50,11 +112,12 @@ test("named files start while a heavy slot is occupied", async () => {
       what: "build",
     }),
   );
-  writeFileSync(join(ctx.cwd, "file.ts"), "");
+  const vitest = fakeTool(ctx.cwd, "vitest");
+  writeFileSync(join(ctx.cwd, "file.test.ts"), "");
   try {
-    expect(await runJobCommand(["run", "--kind", "test:run", "--", "true", "file.ts"], ctx)).toBe(
-      0,
-    );
+    expect(
+      await runJobCommand(["run", "--kind", "test:run", "--", vitest, "run", "file.test.ts"], ctx),
+    ).toBe(0);
     expect(await store.held()).toHaveLength(1);
     expect(await store.waiting()).toEqual([]);
   } finally {
@@ -63,8 +126,9 @@ test("named files start while a heavy slot is occupied", async () => {
 });
 test("print-only runs skip the store", async () => {
   const { ctx } = world();
-  expect(await runJobCommand(["run", "--kind", "tsc", "--", "true", "--version"], ctx)).toBe(0);
-  expect(existsSync(jobsPaths(ctx.paths.home).stateDir)).toBe(false);
+  const tsc = fakeTool(ctx.cwd, "tsc");
+  expect(await runJobCommand(["run", "--kind", "tsc", "--", tsc, "--version"], ctx)).toBe(0);
+  expect(existsSync(stateDirOf(ctx))).toBe(false);
 });
 test("removed set and gb options are rejected", async () => {
   const { ctx } = world();

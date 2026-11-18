@@ -227,28 +227,86 @@ export interface DecideInput {
   line: readonly ParsedEntry[];
   slot: boolean;
 }
+/** The names held right now: a ticket for one of them cannot run, so it holds nobody up. */
+function heldNamesOf(input: DecideInput): ReadonlySet<string | undefined> {
+  return new Set(input.held.map((unit) => unit.holder?.exclusive));
+}
+
+/** Is `entry` an older ticket for the name this job waits for (`--exclusive`)? */
+function isOlderForName(entry: ParsedEntry, me: ParsedEntry, input: DecideInput): boolean {
+  return (
+    !entry.mine &&
+    isBefore(entry, me) &&
+    entry.exclusive !== null &&
+    entry.exclusive === input.exclusive
+  );
+}
+
+/**
+ * Does `entry` keep this job waiting? An older ticket does when it is for the same name, or
+ * when both take a slot and its own name (if any) is not one somebody holds. One rule: `decide`
+ * waits on it, and the place in line (`jobsAhead`) counts it.
+ */
+function isInTheWay(
+  entry: ParsedEntry,
+  me: ParsedEntry,
+  input: DecideInput,
+  heldNames: ReadonlySet<string | undefined>,
+): boolean {
+  return (
+    isOlderForName(entry, me, input) ||
+    (!entry.mine &&
+      isBefore(entry, me) &&
+      input.slot &&
+      entry.slot &&
+      !(entry.exclusive !== null && heldNames.has(entry.exclusive)))
+  );
+}
+
 /** Oldest runnable ticket first. A named job cannot block unrelated names. */
 export function decide(input: DecideInput): Decision {
   const me = input.line.find((entry) => entry.mine);
   if (me === undefined) return { wait: { kind: "no-ticket" } };
-  const heldNames = new Set(input.held.map((unit) => unit.holder?.exclusive));
+  const heldNames = heldNamesOf(input);
   if (input.exclusive !== null && heldNames.has(input.exclusive))
     return { wait: { kind: "exclusive", name: input.exclusive } };
-  if (
-    input.line.some(
-      (entry) =>
-        !entry.mine &&
-        isBefore(entry, me) &&
-        ((entry.exclusive !== null && entry.exclusive === input.exclusive) ||
-          (input.slot &&
-            entry.slot &&
-            !(entry.exclusive !== null && heldNames.has(entry.exclusive)))),
-    )
-  )
+  if (input.line.some((entry) => isInTheWay(entry, me, input, heldNames)))
     return { wait: { kind: "behind" } };
   if (input.slot && slotsUsed(input.held) >= (input.capacity ?? HEAVY_SLOTS))
     return { wait: { kind: "no-room", capacity: input.capacity ?? HEAVY_SLOTS } };
   return { take: true };
+}
+
+/**
+ * How many jobs are ahead of this one in the line, for the reason it waits. A wait for a held
+ * name counts only the older jobs that wait for that same name; any other wait counts the jobs
+ * `decide` waits on (`isInTheWay`), not every ticket. The holder is not counted: it is not in
+ * the line. No ticket, no place: 0.
+ */
+export function jobsAhead(input: DecideInput, reason: WaitReason): number {
+  const me = input.line.find((entry) => entry.mine);
+  if (me === undefined || reason.kind === "no-ticket") return 0;
+  if (reason.kind === "exclusive") {
+    return input.line.filter((entry) => isOlderForName(entry, me, input)).length;
+  }
+  const heldNames = heldNamesOf(input);
+  return input.line.filter((entry) => isInTheWay(entry, me, input, heldNames)).length;
+}
+
+/** 1 → "1st", 2 → "2nd", 3 → "3rd", 4 → "4th", 11 → "11th", 21 → "21st". */
+function ordinal(count: number): string {
+  const teen = count % 100 >= 11 && count % 100 <= 13;
+  const suffix = teen ? undefined : ["th", "st", "nd", "rd"][count % 10];
+  return `${String(count)}${suffix ?? "th"}`;
+}
+
+/**
+ * The place in line, for the waiting line: "Place: 3rd in line, 2 jobs ahead." Empty when no job
+ * is ahead: the only one in the way is the holder, and the reason already says the slot is taken.
+ */
+export function placeText(ahead: number): string {
+  if (ahead === 0) return "";
+  return `Place: ${ordinal(ahead + 1)} in line, ${String(ahead)} ${ahead === 1 ? "job" : "jobs"} ahead.`;
 }
 
 function twoDigits(value: number): string {
@@ -335,6 +393,15 @@ function pipeHint(): string {
   return `A pipe (| tail) hides this job's exit status: the "${ENDED_LINE_LEAD}" line carries it.`;
 }
 
+/**
+ * The other thing the first waiting line carries: a wait may be long, and a call that runs the
+ * job in the foreground ends at its timeout. Once per job, like `pipeHint`. The route also gives
+ * a rewritten call the Bash tool's longest timeout (`job-route.ts`), but even that is a limit.
+ */
+function backgroundHint(): string {
+  return "A long wait: run it in the background (run_in_background) so the call does not time out.";
+}
+
 /** Thrown when `signal` stops a wait; everything taken so far is given back first. */
 export class WaitStoppedError extends Error {
   override name = "WaitStoppedError";
@@ -405,13 +472,14 @@ export async function acquireFrom(
         holder: parseHolder(unit.text),
         slot: unit.slot,
       }));
-      const decision = decide({
+      const input: DecideInput = {
         capacity: store.capacity?.() ?? HEAVY_SLOTS,
         exclusive: job.exclusive ?? null,
         held,
         line,
         slot: job.slot,
-      });
+      };
+      const decision = decide(input);
       let reason: WaitReason;
       if ("take" in decision) {
         const units = await store.tryTake(job.slot, text(now()), job.exclusive);
@@ -423,10 +491,14 @@ export async function acquireFrom(
         const first = waitedSince === null;
         waitedSince ??= at;
         lastLine = at;
+        const place = placeText(jobsAhead(input, reason));
         options.onWaiting(
-          `Heavy job waits for ${job.slot ? "a free slot" : "its exclusive name"}: ${job.what}. Why: ${reasonText(reason)}.`,
+          `Heavy job waits for ${job.slot ? "a free slot" : "its exclusive name"}: ${job.what}. Why: ${reasonText(reason)}.${place === "" ? "" : ` ${place}`}`,
         );
-        if (first) options.onWaiting(pipeHint());
+        if (first) {
+          options.onWaiting(pipeHint());
+          options.onWaiting(backgroundHint());
+        }
         for (const line of holderLines(held, store.label, at)) options.onWaiting(line);
       }
       await sleep(options.pollMs ?? POLL_MS);

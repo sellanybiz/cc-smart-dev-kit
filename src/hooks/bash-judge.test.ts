@@ -637,7 +637,7 @@ describe("J1: a package script is a script, not the tool of the same name", () =
     // A real tool behind a package runner is no script, and is still routed.
     expect(
       output(await runHook(jobRouteHook, call(repo, "bunx tsc --noEmit"), env)).updatedInput,
-    ).toEqual({ command: `${LAUNCHER} job run --kind tsc -- bunx tsc --noEmit` });
+    ).toEqual({ command: `${LAUNCHER} job run --kind tsc -- bunx tsc --noEmit`, timeout: 600_000 });
   });
 
   test("the folder after a cd decides: a script there is no tool, a tool there still is", async () => {
@@ -673,7 +673,8 @@ describe("J1: a package script is a script, not the tool of the same name", () =
 // resolver (`resolveJobRoute`), with or without a project file.
 describe("the route switch: the person's default, and the project wins", () => {
   const TSC = "bunx tsc --noEmit";
-  const ROUTED = { command: `${LAUNCHER} job run --kind tsc -- ${TSC}` };
+  // A routed call that set no timeout gets the Bash tool's longest one (ten minutes).
+  const ROUTED = { command: `${LAUNCHER} job run --kind tsc -- ${TSC}`, timeout: 600_000 };
   const on = { switches: { jobRoute: true } };
   const off = { switches: { jobRoute: false } };
 
