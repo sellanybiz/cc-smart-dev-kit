@@ -59,24 +59,62 @@
  * A command already inside `cc-smart-dev-kit job run` stays as it is (the queue would nest: the
  * classifier says so, through a script's body too), and anything the hook cannot read lets the
  * call through.
+ *
+ * **A git command whose hook is heavy** (`git commit`, `git merge`, `git push`; `routeGitHooks`)
+ * is not wrapped, because the person's own deny and ask rules must still match the `git` line
+ * (Claude Code reads past a leading variable assignment, not past a wrapper). It gets three
+ * variable assignments in front instead, which point git at the kit's hooks folder for that one
+ * command (`GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_<n>=core.hooksPath`, `GIT_CONFIG_VALUE_<n>=<folder>`).
+ * The scripts in that folder run the repo's own hook, inside the queue when it is heavy
+ * (`src/jobs/hook-folder.ts`). Every other byte of the line stays as written. The prefix is
+ * added only when all of these hold; any doubt leaves the line as it is, so no hook is ever
+ * skipped:
+ * - the route is on, and this is not native Windows (the scripts are `sh`);
+ * - the kit's folder is whole and this version's own (`gitHooksState` says ok: its mark, a
+ *   runnable script under every name, no stray file);
+ * - the command is a plain `git` (only variable assignments before it), does not skip its hooks
+ *   (`--no-verify`, a commit's `-n`; a push's `-n` is `--dry-run`), sets no `core.hooksPath` of
+ *   its own (`-c`), and the line sets no `GIT_CONFIG_*` variable;
+ * - the session's own environment does not already set `core.hooksPath` through `GIT_CONFIG_*`
+ *   (the person chose a hooks folder), and when it holds other pairs (CI often sets a
+ *   `safe.directory` one) the kit's pair is added after them: the count grows, nothing is lost;
+ * - the hook that command would run (commit: `pre-commit` and `commit-msg`; merge:
+ *   `pre-merge-commit` and `commit-msg`; push: `pre-push`) is heavy (`hookDecision`), read in
+ *   the folder the command runs in (after a `cd`, and `git -C`);
+ * - the command's place in the line is known exactly (`ShellStep.start`). One inside `bash -c '…'`,
+ *   a backtick, a here-doc or a bash array's list (`cmd=(git push)`) is left as it is.
+ *
+ * With `git --git-dir` or `--work-tree`, `job hook` cannot find the repo (it asks git without
+ * the `GIT_DIR` variable) and answers direct: the hook then runs as it is, unqueued, which is
+ * safe. A line is never both routable and a git command: git is not a heavy kind, so a line
+ * with a git command in it is never queued whole.
  */
 
 import { existsSync } from "node:fs";
 import { findGitBash, type GitBashFacts } from "../cli/git-bash";
 import { classifyHeavyCommand, routableLine, runWeight, type WeightSource } from "../jobs/classify";
+import { hookDecision } from "../jobs/git-hooks";
+import { gitHooksState } from "../jobs/hook-folder";
 import { type Kinds, mergeKinds } from "../jobs/kinds";
 import { diskWeightSource } from "../jobs/weight-source";
 import { LAUNCHER_IN_SHELL } from "../setup/launcher";
+import { CHANGES_FOLDER, FolderTracker, movedTo } from "../shell/change-dir";
 import {
   type Dialect,
   dialectOfTool,
   invocationOf,
+  isAssignmentOnly,
+  isShort,
   programName,
+  readingsOf,
   shellSegments,
+  shellSteps,
+  shortFlags,
   withoutRedirections,
   wordsOf,
   wordsWithFill,
 } from "../shell/command";
+import { gitCalls, longOption } from "../shell/git-calls";
 import { shellQuote, shellWord } from "../shell/quote";
 import { resolveJobRoute } from "../workflow/resolve";
 import {
@@ -87,6 +125,8 @@ import {
   judgedDomain,
   readBash,
 } from "./bash-judge";
+import { SHORT_GUARD_BUDGET_MS, startBudget } from "./budget";
+import { GUARD_GIT_TIMEOUT_MS } from "./git";
 import {
   type HookInput,
   type HookResult,
@@ -190,6 +230,177 @@ export function routeHeavyCommand(
     command: line.filters === "" ? queued : `${queued} ${line.filters}`,
     kind: line.kind,
   };
+}
+
+/** The hooks of a git command that the kit's folder may queue: the ones the command runs. */
+const GIT_COMMAND_HOOKS: Readonly<Record<string, readonly string[]>> = {
+  commit: ["pre-commit", "commit-msg"],
+  merge: ["pre-merge-commit", "commit-msg"],
+  push: ["pre-push"],
+};
+
+/** `git commit`'s short options that take a value: a letter after them is part of the value. */
+const COMMIT_VALUED_SHORT = "cCFmtuS";
+
+/**
+ * True when the command's own arguments skip its hooks: `--no-verify` (git takes any unique
+ * prefix, so every prefix of eight characters or more), and a commit's `-n`. A push's `-n` is
+ * `--dry-run`, and a merge has no short one. Arguments after `--` are paths.
+ */
+function skipsHooks(sub: string, rest: readonly string[]): boolean {
+  for (const arg of rest) {
+    if (arg === "--") return false;
+    if (longOption(arg, "--no-verify", 8)) return true;
+    if (
+      sub === "commit" &&
+      isShort(arg) &&
+      shortFlags(arg, COMMIT_VALUED_SHORT).flags.includes("n")
+    )
+      return true;
+  }
+  return false;
+}
+
+/** One git command of a line that runs a hook: where its first word is, and where it runs. */
+interface GitHookStep {
+  /** The offset of the command's first word in the line. */
+  at: number;
+  /** `commit`, `merge` or `push`. */
+  sub: string;
+  folder: string;
+}
+
+/**
+ * The git commands of a Bash line that run a hook the route may queue, each placed exactly in
+ * the line. A command is left out when it is anything but plain `git` (a wrapper, a keyword, a
+ * redirection or a computed word before it), when git may read its subcommand in more than one
+ * way, when it skips its hooks or sets `core.hooksPath` itself, when a word before the
+ * subcommand is filled in by the shell (`git -C "$dir" push`), when a `cd` took the line
+ * somewhere unknown, and when the line's own text at the command's offset is not the text the
+ * reader cut out (`ShellStep.start`).
+ */
+function gitHookSteps(command: string, cwd: string): GitHookStep[] {
+  const found: GitHookStep[] = [];
+  const tracker = new FolderTracker(cwd);
+  for (const step of shellSteps(command)) {
+    const folder = tracker.enter(step.subshell);
+    const words = wordsWithFill(step.text);
+    const invocation = invocationOf(words.map((word) => word.text));
+    if (invocation === undefined) continue;
+    const { args, computed, prefix, program } = invocation;
+    if (CHANGES_FOLDER.has(program)) {
+      tracker.moveTo(movedTo(program, folder, withoutRedirections(args)));
+    }
+    if (program !== "git" || computed || step.start === undefined || folder === null) continue;
+    // A bash array's list (`cmd=(git push)`) holds words: nothing may be put in front of them.
+    if (step.subshell?.array === true) continue;
+    if (prefix.length > 0 && !isAssignmentOnly(prefix)) continue;
+    const calls = gitCalls(withoutRedirections(args));
+    const call = calls.length === 1 ? calls[0] : undefined;
+    if (call === undefined || GIT_COMMAND_HOOKS[call.sub] === undefined) continue;
+    if (call.config.has("core.hookspath") || skipsHooks(call.sub, call.rest)) continue;
+    if (words.slice(0, words.length - call.rest.length).some((word) => word.filled)) continue;
+    // `-C dir` moves the command: its hooks are the hooks of the repo it lands in.
+    let runsIn: string | null = folder;
+    for (const dir of call.dirs) runsIn = runsIn === null ? null : movedTo("cd", runsIn, [dir]);
+    if (runsIn === null) continue;
+    // The reader cuts a here-doc body out of a `$( … )` word, so only the text before the first
+    // line break must match the line; and what it cut must be at this offset, or the line stays.
+    const lead = step.text.split("\n")[0] ?? "";
+    if (!command.startsWith(lead, step.start)) continue;
+    const blanks = /^[ \t]*/.exec(step.text)?.[0].length ?? 0;
+    found.push({ at: step.start + blanks, folder: runsIn, sub: call.sub });
+  }
+  return found;
+}
+
+/**
+ * The number the kit's `core.hooksPath` pair takes in the `GIT_CONFIG_*` list of the session's
+ * own environment (its count: unset is zero, so the pair is number 0), or null when the line
+ * must get no pair: the count is not a plain whole number, or a pair of the environment already
+ * sets `core.hooksPath` (a person's own hooks folder for this session).
+ */
+function hooksPairNumber(env: Env): number | null {
+  const given = env.GIT_CONFIG_COUNT;
+  if (given === undefined) return 0;
+  if (!/^(0|[1-9]\d*)$/.test(given) || !Number.isSafeInteger(Number(given) + 1)) return null;
+  const count = Number(given);
+  for (const [name, value] of Object.entries(env)) {
+    const number = /^GIT_CONFIG_KEY_(\d+)$/.exec(name)?.[1];
+    if (
+      number !== undefined &&
+      Number(number) < count &&
+      value?.toLowerCase() === "core.hookspath"
+    ) {
+      return null;
+    }
+  }
+  return count;
+}
+
+/**
+ * The line with the kit's hooks-folder prefix in front of each git command whose hook is heavy
+ * (the header of this file says when), and the kind of the first such hook; null when no
+ * command gets one. Every other byte of the line is as written. `platform` is a test's.
+ */
+export function routeGitHooks(
+  command: string,
+  context: HookContext,
+  kinds: Kinds,
+  platform: NodeJS.Platform = process.platform,
+): null | Routed {
+  // The scripts are `sh`; and a line that sets `GIT_CONFIG_*` itself, or continues past an escaped
+  // line break (read two ways, so a `--no-verify` could hide), is left as it is.
+  if (platform === "win32" || command.includes("GIT_CONFIG_")) return null;
+  if (readingsOf(command, "bash").length > 1) return null;
+  const pair = hooksPairNumber(context.env);
+  if (pair === null) return null;
+  const steps = gitHookSteps(command, context.cwd);
+  const folder = context.paths.gitHooksFolder;
+  // Only a folder `setup` wrote whole, in this version's text, with every name runnable: git
+  // skips a hook that is not executable, so a broken folder would skip the person's own hook.
+  if (steps.length === 0 || gitHooksState(context.paths).kind !== "ok") return null;
+  const { timeFor } = startBudget(context.env, Date.now, SHORT_GUARD_BUDGET_MS, context.nowMs);
+  // One answer per folder and hook, whatever the number of commands; every git call takes the
+  // smaller of its own limit and the time left, and `timed-out` (no answer) queues nothing.
+  const answers = new Map<string, ReturnType<typeof hookDecision>>();
+  const queued: { at: number; kind: string }[] = [];
+  for (const step of steps) {
+    for (const name of GIT_COMMAND_HOOKS[step.sub] ?? []) {
+      const key = `${step.folder}\0${name}`;
+      let answer = answers.get(key);
+      if (answer === undefined) {
+        answer = hookDecision(
+          name,
+          step.folder,
+          kinds,
+          diskWeightSource(step.folder),
+          context.env,
+          timeFor(GUARD_GIT_TIMEOUT_MS),
+        );
+        answers.set(key, answer);
+      }
+      if (typeof answer === "object") {
+        queued.push({ at: step.at, kind: answer.queue });
+        break;
+      }
+    }
+  }
+  const first = queued[0];
+  if (first === undefined) return null;
+  const prefix = [
+    `GIT_CONFIG_COUNT=${pair + 1}`,
+    `GIT_CONFIG_KEY_${pair}=core.hooksPath`,
+    `GIT_CONFIG_VALUE_${pair}=${shellWord(folder)}`,
+  ].join(" ");
+  // From the last offset to the first, so an earlier offset is still where it was. The reader
+  // lists the commands of a substitution before the command that holds it, so the order of
+  // `queued` is not the order in the line.
+  let routed = command;
+  for (const { at } of queued.toSorted((one, other) => other.at - one.at)) {
+    routed = `${routed.slice(0, at)}${prefix} ${routed.slice(at)}`;
+  }
+  return { command: routed, kind: first.kind };
 }
 
 /**
@@ -423,6 +634,7 @@ function inputDialect(input: HookInput): Dialect {
 export function jobRoute(
   context: HookContext,
   bashTool: (env: Env) => boolean = bashToolExists,
+  platform: NodeJS.Platform = process.platform,
 ): HookResult {
   const fields = toolInput(context.input);
   const command = stringField(fields.command);
@@ -444,8 +656,11 @@ export function jobRoute(
     const refused = powerShellDenial(command, kinds, source);
     return refused !== null && bashTool(context.env) ? refused : SILENT;
   }
+  // A line is queued whole (every command heavy) or has a git command whose hook is heavy; never
+  // both, because git is no heavy kind. So the second is asked only when the first has no route.
   const routed = routesHeavyCommands(context)
-    ? routeHeavyCommand(command, kinds, routedShell(context.env), source)
+    ? (routeHeavyCommand(command, kinds, routedShell(context.env), source) ??
+      routeGitHooks(command, context, kinds, platform))
     : null;
   if (routed === null) return SILENT;
   if (!REWRITE_SUPPORTED) return routeDenial(routed);

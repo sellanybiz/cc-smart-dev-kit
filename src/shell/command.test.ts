@@ -267,9 +267,9 @@ describe("shellSegments — a line that goes on", () => {
 describe("shellSteps — the command piped into each one", () => {
   test("names the text of the command before a pipe", () => {
     expect(shellSteps("echo hi | sh; ls")).toEqual([
-      { text: "echo hi ", pipedFrom: null, expanded: false },
-      { text: " sh", pipedFrom: "echo hi ", expanded: false },
-      { text: " ls", pipedFrom: null, expanded: false },
+      { text: "echo hi ", pipedFrom: null, expanded: false, start: 0 },
+      { text: " sh", pipedFrom: "echo hi ", expanded: false, start: 9 },
+      { text: " ls", pipedFrom: null, expanded: false, start: 13 },
     ]);
   });
 
@@ -277,8 +277,8 @@ describe("shellSteps — the command piped into each one", () => {
   // `tail` piped from that `1`, so a heavy command with its stderr sent on was never routable.
   test("the & of 2>&1, >&2 and &>log is part of the redirection, not a separator", () => {
     expect(shellSteps("tsc --noEmit 2>&1 | tail -20")).toEqual([
-      { text: "tsc --noEmit 2>&1 ", pipedFrom: null, expanded: false },
-      { text: " tail -20", pipedFrom: "tsc --noEmit 2>&1 ", expanded: false },
+      { text: "tsc --noEmit 2>&1 ", pipedFrom: null, expanded: false, start: 0 },
+      { text: " tail -20", pipedFrom: "tsc --noEmit 2>&1 ", expanded: false, start: 19 },
     ]);
     expect(shellSegments("echo x >&2; ls")).toEqual(["echo x >&2", " ls"]);
     expect(shellSegments("make &>build.log && ls")).toEqual(["make &>build.log ", "", " ls"]);
@@ -291,6 +291,86 @@ describe("shellSteps — the command piped into each one", () => {
     expect(shellSegments("a && b")).toEqual(["a ", "", " b"]);
     // An escaped `>` is a character, so the `&` after it is a separator again.
     expect(shellSegments("echo a\\>& ls")).toEqual(["echo a\\>", " ls"]);
+  });
+});
+
+describe("shellSteps: where each command starts in the line", () => {
+  /** The step texts with their offsets, as `[start, text]`. */
+  const starts = (line: string) =>
+    shellSteps(line).map((step) => [step.start, step.text] as [number | undefined, string]);
+
+  test("a command's offset is the character after the separator that ended the one before", () => {
+    expect(starts("git add -A && git commit -m x")).toEqual([
+      [0, "git add -A "],
+      [12, ""],
+      [13, " git commit -m x"],
+    ]);
+    expect(starts("a;b\nc")).toEqual([
+      [0, "a"],
+      [2, "b"],
+      [4, "c"],
+    ]);
+  });
+
+  test("a command inside ( … ) or a substitution has its own offset in the same line", () => {
+    expect(starts("(cd a; git push)")).toEqual([
+      [0, ""],
+      [1, "cd a"],
+      [6, " git push"],
+      [16, ""],
+    ]);
+    expect(starts("echo $(git rev-parse HEAD) x")).toEqual([
+      [7, "git rev-parse HEAD"],
+      [0, "echo $(git rev-parse HEAD) x"],
+    ]);
+  });
+
+  test("what is read out of another text has no offset: a backtick, a here-doc body", () => {
+    expect(starts("echo `git push`")).toEqual([
+      [undefined, "git push"],
+      [0, "echo `git push`"],
+    ]);
+    expect(starts("sh <<EOF\ngit push\nEOF\nls")).toEqual([
+      [0, "sh <<EOF"],
+      [undefined, "git push"],
+      [undefined, ""],
+      [22, "ls"],
+    ]);
+  });
+
+  test("a reading that joins escaped line breaks rewrites the text, so its steps have no offset", () => {
+    const steps = shellSteps("git commit -m x \\\n  --no-verify", { joinLines: true });
+    expect(steps.map((step) => step.start)).toEqual([undefined]);
+    expect(shellSteps("git commit -m x \\\n  --no-verify").map((step) => step.start)).toEqual([
+      0, 18,
+    ]);
+  });
+
+  test("the commands of a bash array's list are marked, no other group is", () => {
+    const array = (line: string) =>
+      shellSteps(line)
+        .filter((step) => step.text.trim().startsWith("git"))
+        .map((step) => step.subshell?.array ?? false);
+    expect(array("cmd=(git push)")).toEqual([true]);
+    expect(array("args+=(git push)")).toEqual([true]);
+    expect(array("declare -a a=( git push )")).toEqual([true]);
+    expect(array("a=(\n git push\n)")).toEqual([true]);
+    expect(array("(git push)")).toEqual([false]);
+    expect(array("x=$(git push)")).toEqual([false]);
+    expect(array("echo hi; (git push)")).toEqual([false]);
+    // Inside the list, a substitution is a command again.
+    expect(array("a=($(git push))")).toEqual([false]);
+  });
+
+  test("a here-doc body cut out of a substitution leaves the text before its first line break whole", () => {
+    const line = "git commit -m \"$(cat <<'EOF'\nmsg\nEOF\n)\"";
+    // The substitution's own command comes first (`cat <<'EOF'`, at 17); the git command is last.
+    const step = shellSteps(line).find((one) => one.text.startsWith("git commit"));
+    expect(step?.start).toBe(0);
+    // The body is cut out of the text, so the whole text is no slice of the line any more …
+    expect(line.startsWith(step?.text ?? "x", step?.start)).toBe(false);
+    // … but the text before its first line break is.
+    expect(line.startsWith((step?.text ?? "").split("\n")[0] ?? "x", step?.start)).toBe(true);
   });
 });
 
