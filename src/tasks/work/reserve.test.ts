@@ -1397,9 +1397,17 @@ test("a running task holds its plan when a session made it or a process claims i
     ),
   );
   expect([nobodys.createdBy, nobodys.creator, nobodys.claim]).toEqual([null, null, null]);
-  // Both plan rows stay pending: only the running tasks can put them in flight.
+  // A task no session made, started by a Claude process: no maker, but the start claims it.
+  const delta = laid("delta", ["src/d/"], OTHER);
+  const unmade = ok(
+    createTask(db, { project: "p", subject: "unmade step", parentId: delta }, NONE, 3),
+  );
+  const claimed = ok(updateTask(db, unmade.id, { status: "in_progress" }, LEAD, 4));
+  expect([claimed.createdBy, claimed.creator, claimed.claim?.pid]).toEqual([null, null, 4101]);
+  // The plan rows stay pending: only the running tasks can put them in flight.
   expect(heldPlans(db, "p", LEAD).map((h) => [h.plan.plan, h.why, h.plan.status])).toEqual([
     ["beta", "in-flight", "pending"],
+    ["delta", "in-flight", "pending"],
   ]);
 });
 

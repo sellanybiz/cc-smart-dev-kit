@@ -6244,6 +6244,24 @@ var deployTaskSchema = object({
   evidence: string2().optional()
 }).passthrough();
 
+// src/workflow/repo-path.ts
+function normalizeRepoPath(raw) {
+  const text = raw.trim().replaceAll("\\", "/");
+  if (/\p{Cc}/u.test(text))
+    return { ok: false, problem: "control" };
+  if (/[*?]/.test(text))
+    return { ok: false, problem: "pattern" };
+  const kept = text.split("/").filter((segment) => segment !== "" && segment !== ".");
+  if (kept.length === 0)
+    return { ok: false, problem: "root" };
+  if (text.startsWith("/") || /^[A-Za-z]:/.test(text))
+    return { ok: false, problem: "absolute" };
+  if (kept.includes(".."))
+    return { ok: false, problem: "up" };
+  const folder = text.endsWith("/") || text.endsWith("/.");
+  return { ok: true, path: `${kept.join("/")}${folder ? "/" : ""}` };
+}
+
 // src/workflow/schema.ts
 var PERCENT = { kind: "whole", max: 100, min: 1 };
 var AT_LEAST_ZERO = { kind: "whole", min: 0 };
@@ -6282,28 +6300,18 @@ function labelsClash(labels) {
 }
 var RUN_MODES = ["ask", "solo", "lead-children", "coordinator"];
 function normalizeMergeFile(raw) {
-  const text = raw.trim().replaceAll("\\", "/");
+  const parsed = normalizeRepoPath(raw);
+  if (parsed.ok)
+    return parsed;
   const shown = JSON.stringify(raw);
-  if (/\p{Cc}/u.test(text))
-    return { ok: false, why: `${shown} holds a control character` };
-  if (/[*?[]/.test(text)) {
-    return {
-      ok: false,
-      why: `${shown} holds a pattern character (*, ? or [): name the path itself, and a whole folder with a trailing / (like plugin/dist/)`
-    };
-  }
-  const kept = text.split("/").filter((segment) => segment !== "" && segment !== ".");
-  if (kept.length === 0) {
-    return { ok: false, why: `${shown} is the root: name the files or folders under it` };
-  }
-  if (text.startsWith("/") || /^[A-Za-z]:/.test(text)) {
-    return { ok: false, why: `${shown} is absolute: write it relative to the repository root` };
-  }
-  if (kept.includes("..")) {
-    return { ok: false, why: `${shown} leaves the repository: no .. segments` };
-  }
-  const folder = text.endsWith("/") || text.endsWith("/.");
-  return { ok: true, path: `${kept.join("/")}${folder ? "/" : ""}` };
+  const why = {
+    control: `${shown} holds a control character`,
+    pattern: `${shown} holds a pattern character (* or ?): name the path itself, and a whole folder with a trailing / (like plugin/dist/)`,
+    root: `${shown} is the root: name the files or folders under it`,
+    absolute: `${shown} is absolute: write it relative to the repository root`,
+    up: `${shown} leaves the repository: no .. segments`
+  };
+  return { ok: false, why: why[parsed.problem] };
 }
 var mergeFilesSchema = array(string2()).transform((paths, context) => {
   const normalised = [];

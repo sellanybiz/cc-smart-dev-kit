@@ -750,9 +750,9 @@ An item claude-mem marks `doing` is stored `in_progress`, with no maker and no c
 session's work: the import is the kit's own write, so it is never judged as a plan's start
 (`insertTask` with a `reason`), and the item holds no plan (`isInFlight`). A start by a
 Claude process claims the task, and a task a session makes keeps its session id, so a session's
-work counts. Two starts store neither, and hold no plan: one from a terminal with no Claude
-identity, and one by a session known only by its id (no Claude process found) of a task no
-session made.
+work counts. Two starts store neither, and hold no plan: a start of a task no session made, by
+a terminal with no Claude identity or by a session known only by its id (no Claude process
+found).
 `--dry-run` makes every write and rolls them all back (`writeWork`'s `rehearse`), so it
 refuses what the real run refuses.
 

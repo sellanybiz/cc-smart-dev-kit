@@ -6367,6 +6367,24 @@ function parseDeployTask(text, file, env) {
   }
 }
 
+// src/workflow/repo-path.ts
+function normalizeRepoPath(raw) {
+  const text = raw.trim().replaceAll("\\", "/");
+  if (/\p{Cc}/u.test(text))
+    return { ok: false, problem: "control" };
+  if (/[*?]/.test(text))
+    return { ok: false, problem: "pattern" };
+  const kept = text.split("/").filter((segment) => segment !== "" && segment !== ".");
+  if (kept.length === 0)
+    return { ok: false, problem: "root" };
+  if (text.startsWith("/") || /^[A-Za-z]:/.test(text))
+    return { ok: false, problem: "absolute" };
+  if (kept.includes(".."))
+    return { ok: false, problem: "up" };
+  const folder = text.endsWith("/") || text.endsWith("/.");
+  return { ok: true, path: `${kept.join("/")}${folder ? "/" : ""}` };
+}
+
 // src/workflow/schema.ts
 var PERCENT = { kind: "whole", max: 100, min: 1 };
 var AT_LEAST_ZERO = { kind: "whole", min: 0 };
@@ -6405,28 +6423,18 @@ function labelsClash(labels) {
 }
 var RUN_MODES = ["ask", "solo", "lead-children", "coordinator"];
 function normalizeMergeFile(raw) {
-  const text = raw.trim().replaceAll("\\", "/");
+  const parsed = normalizeRepoPath(raw);
+  if (parsed.ok)
+    return parsed;
   const shown = JSON.stringify(raw);
-  if (/\p{Cc}/u.test(text))
-    return { ok: false, why: `${shown} holds a control character` };
-  if (/[*?[]/.test(text)) {
-    return {
-      ok: false,
-      why: `${shown} holds a pattern character (*, ? or [): name the path itself, and a whole folder with a trailing / (like plugin/dist/)`
-    };
-  }
-  const kept = text.split("/").filter((segment) => segment !== "" && segment !== ".");
-  if (kept.length === 0) {
-    return { ok: false, why: `${shown} is the root: name the files or folders under it` };
-  }
-  if (text.startsWith("/") || /^[A-Za-z]:/.test(text)) {
-    return { ok: false, why: `${shown} is absolute: write it relative to the repository root` };
-  }
-  if (kept.includes("..")) {
-    return { ok: false, why: `${shown} leaves the repository: no .. segments` };
-  }
-  const folder = text.endsWith("/") || text.endsWith("/.");
-  return { ok: true, path: `${kept.join("/")}${folder ? "/" : ""}` };
+  const why = {
+    control: `${shown} holds a control character`,
+    pattern: `${shown} holds a pattern character (* or ?): name the path itself, and a whole folder with a trailing / (like plugin/dist/)`,
+    root: `${shown} is the root: name the files or folders under it`,
+    absolute: `${shown} is absolute: write it relative to the repository root`,
+    up: `${shown} leaves the repository: no .. segments`
+  };
+  return { ok: false, why: why[parsed.problem] };
 }
 var mergeFilesSchema = array(string2()).transform((paths, context) => {
   const normalised = [];
@@ -20433,15 +20441,23 @@ function allTasks(db, project) {
 function isOpen(task) {
   return task.status === "pending" || task.status === "in_progress";
 }
-function hasRunningPhase(all, plan) {
-  return all.some((p) => p.kind === "phase" && p.plan === plan.plan && p.status === "in_progress");
+function runningTasksOf(all, plan) {
+  if (plan === null)
+    return [];
+  return all.filter((t) => t.kind !== "plan" && t.plan === plan && t.status === "in_progress");
+}
+function isSessionWork(task) {
+  return task.createdBy !== null || task.creator !== null || task.claim !== null;
+}
+function hasRunningTask(all, plan) {
+  return runningTasksOf(all, plan.plan).some(isSessionWork);
 }
 function isInFlight(all, plan) {
-  return plan.kind === "plan" && isOpen(plan) && (plan.status === "in_progress" || hasRunningPhase(all, plan));
+  return plan.kind === "plan" && isOpen(plan) && (plan.status === "in_progress" || hasRunningTask(all, plan));
 }
 function inFlightPlanOf(all, owns) {
   const candidates = all.filter((t) => t.kind === "plan" && t.plan !== null && owns(t) && isInFlight(all, t));
-  return candidates.find((t) => hasRunningPhase(all, t)) ?? candidates[0] ?? null;
+  return candidates.find((t) => hasRunningTask(all, t)) ?? candidates[0] ?? null;
 }
 function ownerOf2(who) {
   return (t) => who.sessionId !== null && t.createdBy === who.sessionId || claimHeldBy(t.claim, who) || claimHeldBy(t.creator, who);

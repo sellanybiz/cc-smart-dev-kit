@@ -22023,6 +22023,24 @@ function isObject2(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+// src/workflow/repo-path.ts
+function normalizeRepoPath(raw) {
+  const text = raw.trim().replaceAll("\\", "/");
+  if (/\p{Cc}/u.test(text))
+    return { ok: false, problem: "control" };
+  if (/[*?]/.test(text))
+    return { ok: false, problem: "pattern" };
+  const kept = text.split("/").filter((segment) => segment !== "" && segment !== ".");
+  if (kept.length === 0)
+    return { ok: false, problem: "root" };
+  if (text.startsWith("/") || /^[A-Za-z]:/.test(text))
+    return { ok: false, problem: "absolute" };
+  if (kept.includes(".."))
+    return { ok: false, problem: "up" };
+  const folder = text.endsWith("/") || text.endsWith("/.");
+  return { ok: true, path: `${kept.join("/")}${folder ? "/" : ""}` };
+}
+
 // src/workflow/schema.ts
 var PERCENT = { kind: "whole", max: 100, min: 1 };
 var AT_LEAST_ZERO = { kind: "whole", min: 0 };
@@ -22061,28 +22079,18 @@ function labelsClash(labels) {
 }
 var RUN_MODES = ["ask", "solo", "lead-children", "coordinator"];
 function normalizeMergeFile(raw) {
-  const text = raw.trim().replaceAll("\\", "/");
+  const parsed = normalizeRepoPath(raw);
+  if (parsed.ok)
+    return parsed;
   const shown = JSON.stringify(raw);
-  if (/\p{Cc}/u.test(text))
-    return { ok: false, why: `${shown} holds a control character` };
-  if (/[*?[]/.test(text)) {
-    return {
-      ok: false,
-      why: `${shown} holds a pattern character (*, ? or [): name the path itself, and a whole folder with a trailing / (like plugin/dist/)`
-    };
-  }
-  const kept = text.split("/").filter((segment) => segment !== "" && segment !== ".");
-  if (kept.length === 0) {
-    return { ok: false, why: `${shown} is the root: name the files or folders under it` };
-  }
-  if (text.startsWith("/") || /^[A-Za-z]:/.test(text)) {
-    return { ok: false, why: `${shown} is absolute: write it relative to the repository root` };
-  }
-  if (kept.includes("..")) {
-    return { ok: false, why: `${shown} leaves the repository: no .. segments` };
-  }
-  const folder = text.endsWith("/") || text.endsWith("/.");
-  return { ok: true, path: `${kept.join("/")}${folder ? "/" : ""}` };
+  const why = {
+    control: `${shown} holds a control character`,
+    pattern: `${shown} holds a pattern character (* or ?): name the path itself, and a whole folder with a trailing / (like plugin/dist/)`,
+    root: `${shown} is the root: name the files or folders under it`,
+    absolute: `${shown} is absolute: write it relative to the repository root`,
+    up: `${shown} leaves the repository: no .. segments`
+  };
+  return { ok: false, why: why[parsed.problem] };
 }
 var mergeFilesSchema = array(string2()).transform((paths, context) => {
   const normalised = [];
@@ -23472,15 +23480,23 @@ function planIsOpen(all, plan) {
 function livePhaseCount(all, plan) {
   return all.filter((t) => t.kind === "phase" && t.plan === plan && t.status !== "dropped").length;
 }
-function hasRunningPhase(all, plan) {
-  return all.some((p) => p.kind === "phase" && p.plan === plan.plan && p.status === "in_progress");
+function runningTasksOf(all, plan) {
+  if (plan === null)
+    return [];
+  return all.filter((t) => t.kind !== "plan" && t.plan === plan && t.status === "in_progress");
+}
+function isSessionWork(task) {
+  return task.createdBy !== null || task.creator !== null || task.claim !== null;
+}
+function hasRunningTask(all, plan) {
+  return runningTasksOf(all, plan.plan).some(isSessionWork);
 }
 function isInFlight(all, plan) {
-  return plan.kind === "plan" && isOpen(plan) && (plan.status === "in_progress" || hasRunningPhase(all, plan));
+  return plan.kind === "plan" && isOpen(plan) && (plan.status === "in_progress" || hasRunningTask(all, plan));
 }
 function inFlightPlanOf(all, owns) {
   const candidates = all.filter((t) => t.kind === "plan" && t.plan !== null && owns(t) && isInFlight(all, t));
-  return candidates.find((t) => hasRunningPhase(all, t)) ?? candidates[0] ?? null;
+  return candidates.find((t) => hasRunningTask(all, t)) ?? candidates[0] ?? null;
 }
 function defaultPlanOf(all, owns, inFlight, fallback) {
   if (inFlight?.plan)
@@ -23511,21 +23527,17 @@ function leadProcess(lead) {
   return lead.pid === null ? null : { pid: lead.pid, procStart: lead.procStart, sessionId: lead.sessionId };
 }
 function normalizePlanFile(raw) {
-  const text = raw.trim().replaceAll("\\", "/");
-  if (text.startsWith("/") || /^[A-Za-z]:/.test(text))
-    throw new Error(`file "${raw}" is an absolute path: write it relative to the repository root`);
-  const segments = text.split("/");
-  const parts = [];
-  for (const part of segments) {
-    if (part === "..")
-      throw new Error(`file "${raw}" goes up with "..": list the path from the repository root`);
-    if (part !== "" && part !== ".")
-      parts.push(part);
-  }
-  if (parts.length === 0)
-    throw new Error(`file "${raw}" is the repository root: list the files or folders the plan changes`);
-  const last = segments.at(-1);
-  return parts.join("/") + (last === "" || last === "." ? "/" : "");
+  const parsed = normalizeRepoPath(raw);
+  if (parsed.ok)
+    return parsed.path;
+  const why = {
+    control: `file ${JSON.stringify(raw)} holds a control character: write the path itself`,
+    pattern: `file ${JSON.stringify(raw)} holds a pattern character (* or ?): list the path itself, and a whole folder with a trailing /`,
+    root: `file "${raw}" is the repository root: list the files or folders the plan changes`,
+    absolute: `file "${raw}" is an absolute path: write it relative to the repository root`,
+    up: `file "${raw}" goes up with "..": list the path from the repository root`
+  };
+  throw new Error(why[parsed.problem]);
 }
 function normalizePlanFiles(raw) {
   return [...new Set(raw.map(normalizePlanFile))].sort();
@@ -23749,13 +23761,22 @@ function refuseOtherPlan(options) {
   }
   const n = inFlight.number;
   const finish = `Finish "${inFlight.plan}" (${TASK_TOOL.done} on its #${n} once its phases are closed)`;
-  const park = inFlight.status === "in_progress" ? `park it in two calls: ${TASK_TOOL.update} with task "#${n}" and status "pending" (refused while any phase or task of "${inFlight.plan}" is running, so stop that first), then ${TASK_TOOL.note} on "#${n}" with a note that starts "${PARK_NOTE_PREFIX}" and says why` : `stop its running phase (finish it with ${TASK_TOOL.done}, or set it back to pending with ${TASK_TOOL.update}); "${inFlight.plan}" was started before plans carried their own status, so it is in flight only while a phase runs`;
-  throw new Error(`Plan "${inFlight.plan}" (#${n}) is in flight: your session runs one plan at a time. Do not start work in plan "${plan}" yet. ${finish}, or ${park}.`);
+  throw new Error(`Plan "${inFlight.plan}" (#${n}) is in flight: your session runs one plan at a time. Do not start work in plan "${plan}" yet. ${finish}, or ${stopOrPark(options.all, inFlight)}.`);
+}
+function stopOrPark(all, inFlight) {
+  const n = inFlight.number;
+  if (inFlight.status === "in_progress")
+    return `park it in two calls: ${TASK_TOOL.update} with task "#${n}" and status "pending" (refused while any phase or task of "${inFlight.plan}" is running, so stop that first), then ${TASK_TOOL.note} on "#${n}" with a note that starts "${PARK_NOTE_PREFIX}" and says why`;
+  const running = runningTasksOf(all, inFlight.plan);
+  if (running.every((t) => t.kind === "phase"))
+    return `stop its running phase (finish it with ${TASK_TOOL.done}, or set it back to pending with ${TASK_TOOL.update}); "${inFlight.plan}" was started before plans carried their own status, so it is in flight only while a phase runs`;
+  const them = running.length === 1 ? "it" : "them";
+  return `stop the work running in "${inFlight.plan}" (${running.map((t) => `#${t.number}`).join(", ")}): finish ${them} (${TASK_TOOL.done}), or set ${them} back to pending (${TASK_TOOL.update} with status "pending")`;
 }
 function refuseParkWhileBusy(all, task, status) {
   if (task.kind !== "plan" || task.status !== "in_progress" || status !== "pending")
     return;
-  const running = all.filter((t) => t.kind !== "plan" && t.plan === task.plan && t.status === "in_progress");
+  const running = runningTasksOf(all, task.plan);
   if (running.length === 0)
     return;
   throw new Error(`Plan "${task.plan}" (#${task.number}) has work in progress (${running.map((t) => `#${t.number}`).join(", ")}): do not park it yet. Finish that work (${TASK_TOOL.done}), or set it back to pending (${TASK_TOOL.update} with status "pending"), then park the plan.`);
@@ -24351,7 +24372,11 @@ function mergeFilesNote(check) {
   return check.reason ? `. plans.mergeFiles was not read in full, so a merge file may count: ${check.reason}` : "";
 }
 function overlapsWith(held, files, check) {
-  return held.map(({ plan, files: theirs }) => ({ plan, overlaps: filesOverlap(files, theirs, check) })).filter((one) => one.overlaps.length > 0);
+  return held.map(({ plan, why, files: theirs }) => ({
+    plan,
+    why,
+    overlaps: filesOverlap(files, theirs, check)
+  })).filter((one) => one.overlaps.length > 0);
 }
 function refuseHeldOverlap(db, task, who, check) {
   const held = heldPlansIn(allTasks(db, task.project), who);
@@ -24360,6 +24385,37 @@ function refuseHeldOverlap(db, task, who, check) {
   const clashes = overlapsWith(held.filter((h) => h.plan.id !== task.id), taskById(db, task.id).files, check);
   if (clashes.length > 0)
     throw new Error(`${label(task)} is held, so its files may not overlap another held plan: overlaps ${clashes.map((c) => overlapText(c.plan, c.overlaps)).join("; ")}${mergeFilesNote(check)}`);
+}
+var NO_FILES_CHECK = { ignore: [], caseFold: false };
+function wayOut(held) {
+  return held.why === "reserved" ? `${label(held.plan)} is reserved: wait until its pull request merges or closes` : `${label(held.plan)} is running: wait until it is done or parked; if its session is gone, take it (${TASK_TOOL.take}), or park or drop it`;
+}
+function refuseFlightOverlap(db, plan, who, check) {
+  const others = heldPlansIn(allTasks(db, plan.project), who).filter((h) => h.plan.id !== plan.id);
+  if (others.length === 0)
+    return;
+  const files = taskById(db, plan.id).files;
+  if (files.length === 0) {
+    const reserved = others.filter((h) => h.why === "reserved");
+    if (reserved.length > 0)
+      throw new Error(`${label(plan)} has no file list, so it cannot be shown clear of ${reserved.map((h) => label(h.plan)).join(", ")}: set its files first (${TASK_TOOL.update} with files)`);
+    return;
+  }
+  const clashes = overlapsWith(others, files, check);
+  if (clashes.length > 0)
+    throw new Error(`${label(plan)} cannot start, since it overlaps ${clashes.map((c) => overlapText(c.plan, c.overlaps)).join("; ")}. Two plans that share a file never run at once: ${clashes.map(wayOut).join("; ")}; or change this plan's files (${TASK_TOOL.update} with files)${mergeFilesNote(check)}`);
+}
+function enteringPlan(db, task, status, plan) {
+  if (status !== "in_progress" || plan === null)
+    return null;
+  if (task.status === "in_progress" && task.plan === plan)
+    return null;
+  return planNotInFlight(db, task.project, plan);
+}
+function planNotInFlight(db, project, plan) {
+  const all = allTasks(db, project);
+  const row = all.find((t) => t.kind === "plan" && t.plan === plan);
+  return row === undefined || isInFlight(all, row) ? null : row;
 }
 function insertTask(db, input, who, now, reason = null) {
   const subject = subjectOf(input.subject);
@@ -24375,6 +24431,8 @@ function insertTask(db, input, who, now, reason = null) {
   const number = db.sqlite.query("SELECT MAX(n)+1 AS n FROM (SELECT COALESCE(MAX(number),0) AS n FROM tasks WHERE project=? UNION ALL SELECT COALESCE(MAX(number),0) FROM task_events WHERE project=?)").get(input.project, input.project)?.n ?? 1;
   const status = input.status ?? "pending";
   const claimed = status === "in_progress" && who.pid !== null;
+  const starts = status === "in_progress" && reason === null;
+  const entering = starts && plan !== null && (input.kind ?? "task") !== "plan" ? planNotInFlight(db, input.project, plan) : null;
   db.sqlite.query("INSERT INTO tasks(id,project,number,parent_id,kind,subject,description,status,plan,phase,agent,branch,worktree,base,created_by,created_pid,created_start,claim_pid,claim_start,claim_session,created_at,updated_at,closed_at,blocking) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)").run(id, input.project, number, input.parentId ?? null, input.kind ?? "task", subject, description, status, plan, input.phase ?? null, input.agent ?? null, input.branch ?? null, input.worktree ?? null, input.base ?? null, who.sessionId, who.pid, who.pid === null ? null : who.procStart, claimed ? who.pid : null, claimed ? who.procStart : null, claimed ? who.sessionId : null, now, now, status === "done" || status === "dropped" ? now : null, input.type === "non-blocking" ? 0 : 1);
   addBlockers(db, taskById(db, id), input.blockedBy ?? []);
   if (input.files !== undefined)
@@ -24382,6 +24440,9 @@ function insertTask(db, input, who, now, reason = null) {
   const task = taskById(db, id);
   if (status === "in_progress")
     unblockedValid(db, task);
+  const joining = starts && task.kind === "plan" ? task : entering;
+  if (joining !== null)
+    refuseFlightOverlap(db, joining, who, input.filesCheck ?? NO_FILES_CHECK);
   const initial = {
     kind: task.kind,
     plan: task.plan,
@@ -24422,13 +24483,17 @@ function applyUpdate(db, id, change, who, now) {
     unblockedValid(db, taskById(db, id));
   const claiming = status === "in_progress" && (change.status === "in_progress" || change.claim === true);
   const claim = change.claim === false || status !== "in_progress" ? null : claiming ? who.pid === null ? null : { pid: who.pid, procStart: who.procStart, sessionId: who.sessionId } : task.claim;
+  const entering = enteringPlan(db, task, status, plan);
   db.sqlite.query("UPDATE tasks SET subject=?,description=?,status=?,parent_id=?,plan=?,claim_pid=?,claim_start=?,claim_session=?,updated_at=?,closed_at=?,blocking=?,agent=?,branch=?,worktree=?,base=? WHERE id=?").run(change.subject === undefined ? task.subject : subjectOf(change.subject), descriptionOf(change.description ?? task.description), status, parent, plan, claim?.pid ?? null, claim?.procStart ?? null, claim?.sessionId ?? null, now, status === "done" || status === "dropped" ? task.closedAt ?? now : null, (change.type ?? task.type) === "non-blocking" ? 0 : 1, change.agent ?? task.agent, change.branch ?? task.branch, change.worktree ?? task.worktree, change.base ?? task.base, id);
   if (status === "dropped" && task.kind === "plan")
     clearLead(db, id);
+  const check = change.filesCheck ?? NO_FILES_CHECK;
   if (change.files !== undefined) {
     storeFiles(db, task, change.files);
-    refuseHeldOverlap(db, task, who, change.filesCheck ?? { ignore: [], caseFold: false });
+    refuseHeldOverlap(db, task, who, check);
   }
+  if (entering !== null)
+    refuseFlightOverlap(db, entering, who, check);
   const changed = taskById(db, id);
   recordChange(db, before, changed, who, now, null);
   return changed;
@@ -24798,11 +24863,15 @@ function createTaskOps(options = {}) {
         }
         return { files, filesCheck: (options.filesCheck ?? planFilesCheck)(cwd) };
       };
-      const enterFlight = (plan) => {
+      const startCheck = (plan) => {
+        const row = all.find((t) => t.kind === "plan" && t.plan === plan);
+        return row === undefined || isInFlight(all, row) ? {} : { filesCheck: (options.filesCheck ?? planFilesCheck)(cwd) };
+      };
+      const enterFlight = (plan, check) => {
         const row = all.find((t) => t.kind === "plan" && t.plan === plan);
         if (row === undefined || row.status !== "pending" || !owns(row))
           return;
-        applyUpdate(store, row.id, { status: "in_progress" }, who, now);
+        applyUpdate(store, row.id, { status: "in_progress", ...check }, who, now);
       };
       const deployTasksOf = () => {
         const here = deployContext();
@@ -24958,6 +25027,7 @@ function createTaskOps(options = {}) {
         const taskPlan = parent?.plan ?? null;
         if (input.status === "in_progress" && taskPlan !== null)
           refuseOther(taskPlan);
+        const flight = input.status === "in_progress" ? startCheck(taskPlan) : {};
         const task = value(writeWork(store, () => {
           const made = insertTask(store, {
             project: ctx.project,
@@ -24968,10 +25038,11 @@ function createTaskOps(options = {}) {
             ...input.type === undefined ? {} : { type: input.type },
             parentId: parent?.id ?? null,
             plan: taskPlan,
-            blockedBy
+            blockedBy,
+            ...flight
           }, who, now);
           if (input.status === "in_progress")
-            enterFlight(taskPlan);
+            enterFlight(taskPlan, flight);
           return made;
         }));
         const byId = new Map(allTasks(store, ctx.project).map((t) => [t.id, t]));
@@ -25043,6 +25114,7 @@ function createTaskOps(options = {}) {
           refuseStepEscape(all, task, destination);
         if (status === "done" || status === "dropped")
           refuseBareClose(all, task, status, {});
+        const flight = entering ? startCheck(task.kind === "plan" ? task.plan : landing) : {};
         const updated = value(writeWork(store, () => {
           const changed = applyUpdate(store, task.id, {
             ...input.subject === undefined ? {} : { subject: input.subject },
@@ -25051,6 +25123,7 @@ function createTaskOps(options = {}) {
             ...status === undefined ? {} : { status },
             ...input.parent === undefined ? {} : { parentId: input.parent === null ? null : work(input.parent).id },
             ...input.type === undefined ? {} : { type: input.type },
+            ...flight,
             ...listed,
             waitsFor: {
               add: (input.blocked_by_add ?? []).map((r) => work(r).id),
@@ -25058,7 +25131,7 @@ function createTaskOps(options = {}) {
             }
           }, who, now);
           if (entering && task.kind !== "plan")
-            enterFlight(landing);
+            enterFlight(landing, flight);
           return changed;
         }));
         const afterAll = allTasks(store, ctx.project);
