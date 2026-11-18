@@ -10,6 +10,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync }
 import { join } from "node:path";
 import { isOlder } from "../build-info/semver";
 import { cliPaths } from "../cli/paths";
+import { gitHooksState, installGitHooksFolder } from "../jobs/hook-folder";
 import { AUTO_UPDATE_KEY } from "../setup/auto-update";
 import {
   installInstructions,
@@ -27,6 +28,7 @@ import {
   backgroundCheck,
   backgroundCheckArgv,
   backgroundCommand,
+  refreshGitHooksAtSessionStart,
   refreshInstructionsAtSessionStart,
   sessionSourceOf,
   sessionStart,
@@ -1364,6 +1366,97 @@ describe("the instructions copy at a session start", () => {
 
     expect(said).toEqual([]);
     expect(readVersionStamp(where.stateDir)).toBe("0.2.0");
+    release();
+    await busy;
+  });
+});
+
+describe("the git hooks folder at a session start", () => {
+  /** A temp home with the folder written, one script stale, and `version` recorded as installed. */
+  function staleFolder(version: string) {
+    const home = tempDir("hooks-home");
+    const paths = cliPaths({ CLAUDE_CONFIG_DIR: join(home, ".claude"), HOME: home });
+    installGitHooksFolder(paths);
+    const script = join(paths.gitHooksFolder, "pre-commit");
+    writeFileSync(script, "#!/bin/sh\n# an older version\n");
+    chmodSync(script, 0o755);
+    mkdirSync(join(paths.claudeConfigDir, "plugins"), { recursive: true });
+    writeFileSync(
+      paths.installedPluginsFile,
+      JSON.stringify({
+        version: 2,
+        plugins: {
+          "cc-smart-dev-kit@cc-smart-dev-kit": [
+            { installPath: join(home, "plugin"), scope: "user", version },
+          ],
+        },
+      }),
+    );
+    return { paths, script };
+  }
+
+  test("a stale folder setup wrote is rewritten by the installed version's session, quietly", async () => {
+    const { paths, script } = staleFolder("1.2.0");
+    const said: string[] = [];
+    await refreshGitHooksAtSessionStart({
+      paths,
+      version: "1.2.0",
+      log: (line) => said.push(line),
+    });
+    expect(gitHooksState(paths)).toEqual({ kind: "ok" });
+    expect(readFileSync(script, "utf8")).toContain('exec "$real" "$@"');
+    expect(said).toEqual([]);
+  });
+
+  test("an older session never writes its text back over the installed version's folder", async () => {
+    const { paths, script } = staleFolder("1.2.0");
+    await refreshGitHooksAtSessionStart({ paths, version: "1.1.0", log: () => {} });
+    expect(readFileSync(script, "utf8")).toBe("#!/bin/sh\n# an older version\n");
+  });
+
+  test("a machine that never ran setup gets no folder and no state folder", async () => {
+    const home = tempDir("hooks-home");
+    const paths = cliPaths({ CLAUDE_CONFIG_DIR: join(home, ".claude"), HOME: home });
+    await refreshGitHooksAtSessionStart({ paths, version: "1.2.0", log: () => {} });
+    expect(existsSync(paths.gitHooksFolder)).toBe(false);
+    expect(existsSync(paths.stateDir)).toBe(false);
+  });
+
+  test("a refresh that cannot write is one line, and the session goes on", async () => {
+    const { paths } = staleFolder("1.2.0");
+    // The mark is gone: the folder is no longer proven ours, so the swap refuses it.
+    rmSync(join(paths.gitHooksFolder, ".cc-smart-dev-kit-owned"));
+    const said: string[] = [];
+    await refreshGitHooksAtSessionStart({
+      paths,
+      version: "1.2.0",
+      log: (line) => said.push(line),
+    });
+    expect(said).toHaveLength(1);
+    expect(said[0]).toContain("the git hooks folder was not refreshed");
+    expect(said[0]).toContain("A plain cc-smart-dev-kit setup brings it up to date.");
+  });
+
+  test("another session holds the state lock: silent (it is doing the refresh)", async () => {
+    const { paths, script } = staleFolder("1.2.0");
+    let release: () => void = () => {};
+    const busy = withLock(
+      paths.stateDir,
+      () =>
+        new Promise<void>((resolve) => {
+          release = resolve;
+        }),
+    );
+    await Bun.sleep(20);
+    const said: string[] = [];
+    await refreshGitHooksAtSessionStart({
+      paths,
+      version: "1.2.0",
+      log: (line) => said.push(line),
+      waitMs: 50,
+    });
+    expect(said).toEqual([]);
+    expect(readFileSync(script, "utf8")).toBe("#!/bin/sh\n# an older version\n");
     release();
     await busy;
   });

@@ -562,8 +562,9 @@ describe("cc-smart-dev-kit setup", () => {
       setupStdout(
         SETUP_HEADING,
         [
-          "✓ The command           1 change",
+          "✓ The command           2 changes",
           "  + ~/.local/bin/cc-smart-dev-kit: launcher created",
+          "  + ~/.local/share/cc-smart-dev-kit/git-hooks: git hooks folder created",
           "✓ Claude Code settings  12 changes, 2 notes",
           '  ~ ~/.claude/settings.json: plansDirectory: (none) -> ".claude/plans"',
           '  ~ ~/.claude/settings.json: extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate: (none) -> false',
@@ -585,7 +586,7 @@ describe("cc-smart-dev-kit setup", () => {
           ...MCP_REGISTERED,
           TAVILY_SKIPPED,
         ],
-        [`! Done: 22 changes, with 1 warning to read above. ${BACKUPS}`],
+        [`! Done: 23 changes, with 1 warning to read above. ${BACKUPS}`],
         [RESTART_WITH_CLAUDE_MEM],
       ),
     );
@@ -679,6 +680,34 @@ describe("cc-smart-dev-kit setup", () => {
     expect(listBackups(stateDir, settingsFile)).toHaveLength(3);
   });
 
+  test("writes the kit's git hooks folder (executable scripts, recorded as ours); restore removes it", () => {
+    const { home, stateDir, run } = setup();
+    run(["setup"]);
+    const folder = join(home, ".local", "share", "cc-smart-dev-kit", "git-hooks");
+    const scripts = readdirSync(folder).filter((name) => name !== ".cc-smart-dev-kit-owned");
+    // One script for each of the 26 hook names; never the two that change how git behaves.
+    expect(scripts).toHaveLength(26);
+    expect(scripts).toContain("pre-commit");
+    expect(scripts).toContain("pre-push");
+    expect(scripts).not.toContain("push-to-checkout");
+    expect(scripts).not.toContain("proc-receive");
+    for (const name of scripts) expect(statSync(join(folder, name)).mode & 0o777).toBe(0o755);
+    // The script calls the launcher setup wrote, by its absolute path.
+    expect(readFileSync(join(folder, "pre-commit"), "utf8")).toContain(
+      `launcher='${join(home, ".local", "bin", "cc-smart-dev-kit")}'\n`,
+    );
+    expect(readJson(join(stateDir, "owned-folders.json")).folders).toEqual([folder]);
+    // A second run writes nothing; a script that lost its execute bit is put right again.
+    expect(run(["setup"]).stdout).toBe(NOTHING_TO_CHANGE);
+    chmodSync(join(folder, "pre-commit"), 0o644);
+    expect(run(["setup"]).stdout).toContain(
+      `~/.local/share/cc-smart-dev-kit/git-hooks: git hooks folder updated`,
+    );
+    expect(statSync(join(folder, "pre-commit")).mode & 0o777).toBe(0o755);
+    expect(run(["restore"]).exitCode).toBe(0);
+    expect(existsSync(folder)).toBe(false);
+  });
+
   test("--dry-run prints the changes and writes nothing at all: no state folder, no lock", () => {
     const { home, stateDir, settingsFile, run } = setup();
     const before = readFileSync(settingsFile, "utf8");
@@ -688,8 +717,9 @@ describe("cc-smart-dev-kit setup", () => {
       setupStdout(
         SETUP_DRY_HEADING,
         [
-          "· The command           1 to change",
+          "· The command           2 to change",
           "  + ~/.local/bin/cc-smart-dev-kit: launcher created",
+          "  + ~/.local/share/cc-smart-dev-kit/git-hooks: git hooks folder created",
           "· Claude Code settings  12 to change, 2 notes",
           '  ~ ~/.claude/settings.json: plansDirectory: (none) -> ".claude/plans"',
           '  ~ ~/.claude/settings.json: extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate: (none) -> false',
@@ -712,7 +742,7 @@ describe("cc-smart-dev-kit setup", () => {
           ...mcpDryRunLines(home),
           TAVILY_SKIPPED,
         ],
-        ["· A real run makes 22 changes.", "Dry run: nothing was written or run."],
+        ["· A real run makes 23 changes.", "Dry run: nothing was written or run."],
       ),
     );
     expect(readFileSync(settingsFile, "utf8")).toBe(before);
@@ -956,8 +986,9 @@ describe("cc-smart-dev-kit setup: the instructions", () => {
       setupStdout(
         SETUP_HEADING,
         [
-          "✓ The command           1 change",
+          "✓ The command           2 changes",
           "  + ~/.local/bin/cc-smart-dev-kit: launcher created",
+          "  + ~/.local/share/cc-smart-dev-kit/git-hooks: git hooks folder created",
           "✓ Claude Code settings  12 changes, 2 notes",
           '  ~ ~/.claude/settings.json: plansDirectory: (none) -> ".claude/plans"',
           '  ~ ~/.claude/settings.json: extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate: (none) -> false',
@@ -979,7 +1010,7 @@ describe("cc-smart-dev-kit setup: the instructions", () => {
           ...MCP_REGISTERED,
           TAVILY_SKIPPED,
         ],
-        [`! Done: 20 changes, with 1 warning to read above. ${BACKUPS}`],
+        [`! Done: 21 changes, with 1 warning to read above. ${BACKUPS}`],
         [RESTART_WITH_CLAUDE_MEM],
       ),
     );
@@ -1161,7 +1192,7 @@ describe("cc-smart-dev-kit doctor", () => {
         "✓ Browser            6 passed, 1 note",
         // Chrome closed is the state a restart leaves: the first browser call starts it.
         '  · Google Chrome is not running: the first browser call starts it in the "claude-code" profile',
-        "· Alerts and limits  3 notes",
+        "✓ Alerts and limits  1 passed, 3 notes",
         "  · retry watchdog: on (set by cc-smart-dev-kit): a session waits and retries at a limit; turn it off with: cc-smart-dev-kit setup --no-retry-watchdog",
         "  · max subagents: 10 at once (set by cc-smart-dev-kit); to change it, run: cc-smart-dev-kit setup --max-subagents <n> (1–100)",
         "  · Heavy-job limit: 1 (default)",
@@ -1171,8 +1202,8 @@ describe("cc-smart-dev-kit doctor", () => {
         "· Herdr sessions     1 note",
         "  · Herdr: hc is not installed; session orchestration is optional.",
         "",
-        "✓ Everything works: 23 checks passed.",
-        "To see the 23 lines that passed too: cc-smart-dev-kit doctor --verbose",
+        "✓ Everything works: 24 checks passed.",
+        "To see the 24 lines that passed too: cc-smart-dev-kit doctor --verbose",
         "",
       ].join("\n"),
     );
@@ -1186,6 +1217,7 @@ describe("cc-smart-dev-kit doctor", () => {
       `✓ cc-smart-dev-kit@cc-smart-dev-kit ${VERSION} is installed at ~/.claude/plugins/cache/cc-smart-dev-kit/cc-smart-dev-kit/${VERSION}`,
       `✓ the installed version ${VERSION} is up to date with the marketplace`,
       `✓ the launcher ~/.local/bin/cc-smart-dev-kit runs cc-smart-dev-kit ${VERSION}`,
+      "✓ Git hooks folder: 26 hook scripts, executable and up to date",
       INSTRUCTIONS_OK,
       "✓ can read the marketplace at git@github.com:example-org/cc-smart-dev-kit.git",
       "✓ Claude Code's own plugin auto-update is off: cc-smart-dev-kit's own check updates the plugin",
@@ -1209,7 +1241,7 @@ describe("cc-smart-dev-kit doctor", () => {
       expect(verbose).toContain(`\n  ${line}\n`);
     }
     expect(verbose).not.toContain("--verbose");
-    expect(verbose).toEndWith("\n✓ Everything works: 23 checks passed.\n");
+    expect(verbose).toEndWith("\n✓ Everything works: 24 checks passed.\n");
     // git is asked for the user's own ssh command, then told never to ask for a password.
     // Then which project the folder is in (this fake git says: none) — once for the project
     // group, once by the gateway's project list (the portal's own reader, GP4a: the doctor
@@ -1407,14 +1439,16 @@ describe("cc-smart-dev-kit doctor", () => {
         "  ✗ claude-mem's start blocks in ~/.claude-mem/settings.json: work state is on (claude-mem's default), memory-use block is on (claude-mem's default). The memory-use block must be off so the kit owns instruction routing; it still points at work_state_write. Work state must be off so the kit owns the task list",
         "    Fix: cc-smart-dev-kit setup",
         '  · claude-mem\'s My Work auto-refresh is on (default). It can run logged-in agents outside the note-taker route shown by the kit. To turn it off: set CLAUDE_MEM_WORK_VIEW_AUTO_REFRESH to "false" in ~/.claude-mem/settings.json',
-        "· Alerts and limits  3 notes",
+        "! Alerts and limits  1 warning, 3 notes",
         "  · retry watchdog: off, so a session fails at a limit instead of waiting; to turn it on, run: cc-smart-dev-kit setup --retry-watchdog",
         "  · max subagents: Claude Code's own default; to use the kit's 10, run: cc-smart-dev-kit setup",
         "  · Heavy-job limit: 1 (default)",
+        "  ! Git hooks folder is missing (~/.local/share/cc-smart-dev-kit/git-hooks): a commit or push whose hook runs heavy work does not wait for a slot",
+        "    Fix: cc-smart-dev-kit setup",
         "· Gateway            1 note",
         "  · gateway: not checked on this Bun (its checks send the backend key)",
         "",
-        "✗ 5 to fix, 8 passed. Run each Fix: line above, then: cc-smart-dev-kit doctor",
+        "✗ 5 to fix, 8 passed, 1 warning. Run each Fix: line above, then: cc-smart-dev-kit doctor",
         "To see the 3 lines that passed too: cc-smart-dev-kit doctor --verbose",
         "",
       ].join("\n"),
@@ -1994,8 +2028,9 @@ describe("cc-smart-dev-kit setup: the companion plugins", () => {
       setupStdout(
         SETUP_HEADING,
         [
-          "✓ The command           1 change",
+          "✓ The command           2 changes",
           "  + ~/.local/bin/cc-smart-dev-kit: launcher created",
+          "  + ~/.local/share/cc-smart-dev-kit/git-hooks: git hooks folder created",
           "✓ Claude Code settings  12 changes, 2 notes",
           '  ~ ~/.claude/settings.json: plansDirectory: (none) -> ".claude/plans"',
           '  ~ ~/.claude/settings.json: extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate: (none) -> false',
@@ -2017,7 +2052,7 @@ describe("cc-smart-dev-kit setup: the companion plugins", () => {
           ...MCP_REGISTERED,
           TAVILY_SKIPPED,
         ],
-        [`! Done: 22 changes, with 1 warning to read above. ${BACKUPS}`],
+        [`! Done: 23 changes, with 1 warning to read above. ${BACKUPS}`],
         [RESTART_STEP],
       ),
     );
@@ -2101,8 +2136,9 @@ describe("cc-smart-dev-kit setup: the companion plugins", () => {
       setupStdout(
         SETUP_HEADING,
         [
-          "✓ The command           1 change",
+          "✓ The command           2 changes",
           "  + ~/.local/bin/cc-smart-dev-kit: launcher created",
+          "  + ~/.local/share/cc-smart-dev-kit/git-hooks: git hooks folder created",
           "✓ Claude Code settings  12 changes, 2 notes",
           '  ~ ~/.claude/settings.json: plansDirectory: (none) -> ".claude/plans"',
           '  ~ ~/.claude/settings.json: extraKnownMarketplaces["cc-smart-dev-kit"].autoUpdate: (none) -> false',
@@ -2231,7 +2267,7 @@ describe("cc-smart-dev-kit doctor: the companion plugins", () => {
     writeGatewayConfig(home, "http://127.0.0.1:9");
     const result = run(["setup"]);
     expect(result.stdout).toContain(`! ${unknown}. Run: ${update}\n`);
-    expect(result.stdout).not.toContain("older");
+    expect(result.stdout).not.toMatch(/\bolder\b/);
     expect(result.stdout).not.toContain("claude-mem settings left alone");
   });
 });
@@ -4229,6 +4265,16 @@ describe("cc-smart-dev-kit on Windows: the launcher, Git Bash, and what doctor s
     expect(readFileSync(cmd, "utf8")).toContain(`set "baked_bun=${process.execPath}"`);
     // A second setup changes nothing.
     expect(run(["setup"], windowsHost()).stdout).toContain(`\n${UP_TO_DATE}\n`);
+  });
+
+  test("on Windows setup writes no git hooks folder, and says so in one plain line", () => {
+    const { home, run } = setup();
+    const result = run(["setup"], windowsHost());
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain(
+      "  · git hook queue: not set up on Windows yet; hooks run as they are\n",
+    );
+    expect(existsSync(join(home, ".local", "share", "cc-smart-dev-kit", "git-hooks"))).toBe(false);
   });
 
   test("off Windows setup writes no .cmd, and Linux output is untouched", () => {

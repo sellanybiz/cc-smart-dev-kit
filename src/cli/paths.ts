@@ -47,6 +47,13 @@ export interface CliPaths extends RouterPaths {
    */
   portalUiFolder: string;
   /**
+   * The kit's git hooks folder: `~/.local/share/cc-smart-dev-kit/git-hooks/`. One `sh` script
+   * for every git hook name, which a routed `git commit` or `git push` points git at for that
+   * one command (`src/jobs/hook-folder.ts`). A folder the kit owns whole, written by `setup`
+   * (`src/setup/managed-folder.ts`) and removed by `restore`.
+   */
+  gitHooksFolder: string;
+  /**
    * The folders the person added to the Projects page: `<stateDir>/portal-projects.json`
    * (`src/portal/api/projects.ts`). A list of main checkout roots, nothing else.
    */
@@ -157,6 +164,7 @@ export function cliPaths(env: Record<string, string | undefined> = process.env):
     routerTaskFile: join(router.home, ".local", "share", "cc-smart-dev-kit", "router-task.xml"),
     portalCopy: join(router.home, ".local", "share", "cc-smart-dev-kit", "portal.js"),
     portalUiFolder: join(router.home, ".local", "share", "cc-smart-dev-kit", "portal-ui"),
+    gitHooksFolder: join(router.home, ".local", "share", "cc-smart-dev-kit", "git-hooks"),
     portalProjectsFile: join(claudeConfigDir, "cc-smart-dev-kit", "portal-projects.json"),
     portalLogFile: join(claudeConfigDir, "cc-smart-dev-kit", "portal.log"),
     portalHeldFile: join(claudeConfigDir, "cc-smart-dev-kit", "portal-held.json"),
