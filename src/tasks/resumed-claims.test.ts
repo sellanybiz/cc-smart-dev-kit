@@ -3,7 +3,7 @@
  * its running work name a process that is gone (`docs/claude-code-contract.md`). These tests cover
  * what the caller then sees (`planProgress`, `taskSegment`, `claimState`) and the write that
  * moves the claims to the new process (`reclaimResumed`, run by `createTaskOps`). The old
- * process here has a pid no machine runs, so `claimLive` finds its claims dead on every platform.
+ * process here has a pid no machine runs, so `claimGone` finds it ended on every platform.
  */
 import { Database } from "bun:sqlite";
 import { expect, test } from "bun:test";
@@ -14,7 +14,7 @@ import { tempDir } from "../testing/temp";
 import { folderProject } from "./context";
 import { createTaskOps, type TaskAnswer } from "./ops";
 import { openWorkDb, workDbFile, writeWork } from "./work/db";
-import { claimLive } from "./work/identity";
+import { CLAIM_PROCESS, claimGone } from "./work/identity";
 import { allTasks, claimState, eventsOf, ownerOf, resumedClaim } from "./work/queries";
 import { planProgress } from "./work/read";
 import { createTask, ensurePlanTask, layPhase, reclaimResumed, updateTask } from "./work/store";
@@ -70,15 +70,17 @@ test("claimState: mine for the resumed caller, free for another session id, and 
   try {
     const task = allTasks(db, PROJECT).find((t) => t.id === phase.id);
     if (task === undefined) throw new Error("no phase");
-    expect(claimState(task, claimLive, RESUMED)).toBe("mine");
-    expect(claimState(task, claimLive, OTHER)).toBe("free");
-    expect(claimState(task, claimLive, undefined)).toBe("free");
+    expect(claimState(task, CLAIM_PROCESS, RESUMED)).toBe("mine");
+    expect(claimState(task, CLAIM_PROCESS, OTHER)).toBe("free");
+    expect(claimState(task, CLAIM_PROCESS, undefined)).toBe("free");
     // The same session id in a second, live process: it is that process's work, never the caller's.
-    expect(claimState(task, () => true, RESUMED)).toBe("another session");
-    expect(resumedClaim(task.claim, RESUMED, () => true)).toBe(false);
+    expect(claimState(task, { live: () => true, gone: () => false }, RESUMED)).toBe(
+      "another session",
+    );
+    expect(resumedClaim(task.claim, RESUMED, () => false)).toBe(false);
     // A caller with no process or no session id has no resumed claim either.
-    expect(resumedClaim(task.claim, { ...RESUMED, pid: null }, claimLive)).toBe(false);
-    expect(resumedClaim(task.claim, { ...RESUMED, sessionId: null }, claimLive)).toBe(false);
+    expect(resumedClaim(task.claim, { ...RESUMED, pid: null }, claimGone)).toBe(false);
+    expect(resumedClaim(task.claim, { ...RESUMED, sessionId: null }, claimGone)).toBe(false);
   } finally {
     db.close();
   }
@@ -96,7 +98,7 @@ test("reclaimResumed moves the dead process's claims to the caller and records i
       ),
     );
     ok(updateTask(db, step.id, { status: "in_progress" }, OLD, 5));
-    expect(ok(reclaimResumed(db, RESUMED, 10, claimLive))).toBe(2);
+    expect(ok(reclaimResumed(db, RESUMED, 10, claimGone))).toBe(2);
     for (const id of [phase.id, step.id]) {
       const task = allTasks(db, PROJECT).find((t) => t.id === id);
       expect(task?.claim).toEqual({
@@ -114,7 +116,7 @@ test("reclaimResumed moves the dead process's claims to the caller and records i
     }
     // Nothing is left to move: the second call writes no history.
     const events = eventsOf(db, phase.id).length;
-    expect(ok(reclaimResumed(db, RESUMED, 11, claimLive))).toBe(0);
+    expect(ok(reclaimResumed(db, RESUMED, 11, claimGone))).toBe(0);
     expect(eventsOf(db, phase.id).length).toBe(events);
   } finally {
     db.close();
@@ -126,10 +128,10 @@ test("reclaimResumed never takes a live claim, another session's claim, or a pro
   try {
     const claimOf = () => allTasks(db, PROJECT).find((t) => t.id === phase.id)?.claim;
     const before = claimOf();
-    expect(ok(reclaimResumed(db, RESUMED, 10, () => true))).toBe(0);
-    expect(ok(reclaimResumed(db, OTHER, 10, claimLive))).toBe(0);
-    expect(ok(reclaimResumed(db, { ...RESUMED, pid: null }, 10, claimLive))).toBe(0);
-    expect(ok(reclaimResumed(db, { ...RESUMED, sessionId: null }, 10, claimLive))).toBe(0);
+    expect(ok(reclaimResumed(db, RESUMED, 10, () => false))).toBe(0);
+    expect(ok(reclaimResumed(db, OTHER, 10, claimGone))).toBe(0);
+    expect(ok(reclaimResumed(db, { ...RESUMED, pid: null }, 10, claimGone))).toBe(0);
+    expect(ok(reclaimResumed(db, { ...RESUMED, sessionId: null }, 10, claimGone))).toBe(0);
     expect(claimOf()).toEqual(before);
     expect(
       eventsOf(db, phase.id).every(
@@ -315,7 +317,7 @@ test("reclaimResumed re-stamps the caller's work in every project, not only the 
     });
     // Another session's open task in a third repo is never read or changed.
     const other = ok(createTask(db, { project: "r", subject: "Not ours" }, OTHER, 3));
-    expect(ok(reclaimResumed(db, AFTER_CLEAR, 10, claimLive))).toBe(2);
+    expect(ok(reclaimResumed(db, AFTER_CLEAR, 10, claimGone))).toBe(2);
     for (const { project, id } of ids) {
       const task = allTasks(db, project).find((t) => t.id === id);
       expect(task?.claim?.sessionId).toBe("after-clear");
@@ -325,4 +327,34 @@ test("reclaimResumed re-stamps the caller's work in every project, not only the 
   } finally {
     db.close();
   }
+});
+
+test("two live processes of one conversation never pass a claim between them, even with no start time", () => {
+  const db = openWorkDb(workDbFile({ stateDir: tempDir() }), { mode: "write" });
+  try {
+    // Two running processes (this test's own and its parent) under one session id, and records
+    // with no start time, so neither can be proved live or gone.
+    const a: Who = { sessionId: "resumed", pid: process.pid, procStart: null };
+    const b: Who = { sessionId: "resumed", pid: process.ppid, procStart: null };
+    const task = ok(createTask(db, { project: PROJECT, subject: "Work" }, a, 1));
+    ok(updateTask(db, task.id, { status: "in_progress" }, a, 2));
+    const events = eventsOf(db, task.id).length;
+    expect(ok(reclaimResumed(db, b, 10, claimGone))).toBe(0);
+    expect(ok(reclaimResumed(db, a, 11, claimGone))).toBe(0);
+    const after = allTasks(db, PROJECT).find((t) => t.id === task.id);
+    if (after === undefined) throw new Error("the task is gone");
+    expect(after.claim).toEqual({ pid: process.pid, procStart: null, sessionId: "resumed" });
+    expect(eventsOf(db, task.id).length).toBe(events);
+    expect(claimState(after, CLAIM_PROCESS, b)).not.toBe("mine");
+  } finally {
+    db.close();
+  }
+});
+
+test("reclaimResumed answers a failed read with a failure, never a throw", () => {
+  const db = openWorkDb(workDbFile({ stateDir: tempDir() }), { mode: "write" });
+  db.close();
+  const result = reclaimResumed(db, RESUMED, 10, claimGone);
+  expect(result.ok).toBe(false);
+  if (!result.ok) expect(result.why).toContain("closed");
 });

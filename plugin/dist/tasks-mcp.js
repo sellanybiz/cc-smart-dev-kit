@@ -23008,14 +23008,14 @@ function claimHeldBy(claim, who) {
     return claim.procStart === who.procStart;
   return who.sessionId !== null && claim.sessionId === who.sessionId;
 }
-function resumedClaim(claim, who, isLive) {
-  return claim !== null && who !== null && who !== undefined && who.pid !== null && who.sessionId !== null && claim.sessionId === who.sessionId && !claimHeldBy(claim, who) && !isLive(claim);
+function resumedClaim(claim, who, isGone) {
+  return claim !== null && who !== null && who !== undefined && who.pid !== null && who.sessionId !== null && claim.sessionId === who.sessionId && !claimHeldBy(claim, who) && isGone(claim);
 }
-function claimState(task, isLive, who) {
+function claimState(task, process2, who) {
   if (!task.claim)
     return "free";
-  if (!isLive(task.claim))
-    return resumedClaim(task.claim, who, isLive) ? "mine" : "free";
+  if (!process2.live(task.claim))
+    return resumedClaim(task.claim, who, process2.gone) ? "mine" : "free";
   return claimHeldBy(task.claim, who) ? "mine" : "another session";
 }
 function waitsForTask(tasks, start, target) {
@@ -23643,6 +23643,22 @@ function claimLive(claim, facts = {}) {
     name: ""
   }, { platform, ...facts.readStat ? { readStat: facts.readStat } : {} });
 }
+function claimGone(claim, facts = {}) {
+  if (!(facts.running ?? isRunning)(claim.pid))
+    return true;
+  const platform = facts.platform ?? process.platform;
+  if (platform !== "linux" || claim.procStart === null)
+    return false;
+  const start = processStart(claim.pid, {
+    platform,
+    ...facts.readStat ? { readStat: facts.readStat } : {}
+  });
+  return start !== undefined && start !== claim.procStart;
+}
+var CLAIM_PROCESS = {
+  live: (claim) => claimLive(claim),
+  gone: (claim) => claimGone(claim)
+};
 var cached2 = new Map;
 function callerOf(facts = {}) {
   const env = facts.env ?? process.env;
@@ -23992,14 +24008,14 @@ function takeTasks(db, project, id, who, now, options) {
     return rows.map((t) => taskById(db, t.id));
   });
 }
-function restampsOf(all, who, isLive) {
+function restampsOf(all, who, isGone) {
   if (who.pid === null || who.sessionId === null)
     return [];
   const found = [];
   for (const task of all) {
     let claim;
     if (task.status === "in_progress" && task.claim !== null) {
-      if (resumedClaim(task.claim, who, isLive))
+      if (resumedClaim(task.claim, who, isGone))
         claim = "moved";
       else if (claimHeldBy(task.claim, who) && task.claim.sessionId !== who.sessionId)
         claim = "session";
@@ -24010,17 +24026,23 @@ function restampsOf(all, who, isLive) {
   }
   return found;
 }
-function restampsEverywhere(db, who, isLive) {
+function restampsEverywhere(db, who, isGone) {
   if (who.pid === null || who.sessionId === null)
     return [];
   const projects = db.sqlite.query("SELECT DISTINCT project FROM tasks WHERE status IN ('pending','in_progress') AND (claim_pid=? OR claim_session=? OR created_pid=?) ORDER BY project").all(who.pid, who.sessionId, who.pid);
-  return projects.flatMap(({ project }) => restampsOf(allTasks(db, project), who, isLive));
+  return projects.flatMap(({ project }) => restampsOf(allTasks(db, project), who, isGone));
 }
-function reclaimResumed(db, who, now, isLive) {
-  if (restampsEverywhere(db, who, isLive).length === 0)
+function reclaimResumed(db, who, now, isGone) {
+  let found;
+  try {
+    found = restampsEverywhere(db, who, isGone);
+  } catch (error) {
+    return { ok: false, why: error instanceof Error ? error.message : String(error) };
+  }
+  if (found.length === 0)
     return { ok: true, value: 0 };
   return writeWork(db, () => {
-    const rows = restampsEverywhere(db, who, isLive);
+    const rows = restampsEverywhere(db, who, isGone);
     for (const { task, claim, createdBy } of rows) {
       if (claim === "moved") {
         db.sqlite.query("UPDATE tasks SET claim_pid=?,claim_start=?,claim_session=?,updated_at=? WHERE id=?").run(who.pid, who.procStart, who.sessionId, now, task.id);
@@ -24126,7 +24148,7 @@ function createTaskOps(options = {}) {
       const now = options.now?.() ?? Date.now();
       const store = database();
       if (store.writable) {
-        const reclaimed = reclaimResumed(store, who, now, claimLive);
+        const reclaimed = reclaimResumed(store, who, now, claimGone);
         if (!reclaimed.ok) {
           const why = `claims of this session not moved: ${reclaimed.why}`;
           if (!READ_ONLY_OPERATIONS.has(operation))
@@ -24145,7 +24167,7 @@ function createTaskOps(options = {}) {
         const { value, source } = resolvePlans(paths, ctx.projectConfig.config).maxPhases;
         return { max: value, source };
       };
-      const claimedElsewhere = (t) => claimState(t, claimLive, who) === "another session";
+      const claimedElsewhere = (t) => claimState(t, CLAIM_PROCESS, who) === "another session";
       const refuseOther = (plan) => refuseOtherPlan({ all, inFlight, plan, claimedElsewhere });
       const freedAfter = (after, closed) => freedText(after, closed, owns, (plan) => planInTheWay({
         all: after,
@@ -24510,7 +24532,7 @@ ${t.body}`.toLowerCase().includes(input.text.toLowerCase()));
         const count = subtreeProgress(all, task.id);
         const progress = (count.total || task.kind === "phase" ? ` \xB7 ${count.closed}/${count.total}` : "") + (task.kind === "plan" && (cap !== null || capWhy !== null) ? ` \xB7 ${planNote(all, task, cap)}` : "");
         const binding = task.kind === "phase" ? ` \xB7 agent ${task.agent ?? "none"} \xB7 branch ${task.branch ?? "none"}` : "";
-        const state = claimState(task, claimLive, who);
+        const state = claimState(task, CLAIM_PROCESS, who);
         const queue = planLedger && task.kind === "plan" && isOpen(task) ? planQueueState(all, task, notesOf(store, task).some((n) => n.text.startsWith(PARK_NOTE_PREFIX))) : undefined;
         lines.push(`${"  ".repeat(depth)}#${task.number} [${stateWords(task, byId, false, queue)}] ${task.subject}${progress}${binding}${state === "another session" ? " (another session)" : ""}`);
         for (const child of selected.filter((t) => t.parentId === task.id))

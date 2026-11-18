@@ -41,7 +41,8 @@ export function parseSessionRecord(json: string): SessionRecord | null {
 
 type SessionIdentityFacts = { readStat?: StatReader; platform?: NodeJS.Platform };
 
-function processStart(pid: number, facts: SessionIdentityFacts): string | undefined {
+/** A process's start time from `/proc` on Linux; undefined elsewhere, or when it cannot be read. */
+export function processStart(pid: number, facts: SessionIdentityFacts): string | undefined {
   if ((facts.platform ?? process.platform) !== "linux") return undefined;
   const stat = (facts.readStat ?? readProcStat)(pid);
   const end = stat?.lastIndexOf(")") ?? -1;

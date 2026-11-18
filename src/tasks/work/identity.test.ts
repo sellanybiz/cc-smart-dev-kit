@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tempDir } from "../../testing/temp";
-import { callerOf } from "./identity";
+import { callerOf, claimGone } from "./identity";
 
 test("identity re-reads a live record after clear and worktree move", () => {
   const dir = tempDir();
@@ -88,4 +88,32 @@ test("the caller's own broken record throws on the first walk too, with no remem
       env: {},
     }),
   ).toThrow("the record of running session 10 in");
+});
+
+test("claimGone: only a proved end; a running process that cannot be proved either way is not gone", () => {
+  const stat = (start: string) => () => `7 (claude) S 1 ${Array(17).fill("0").join(" ")} ${start}`;
+  const claim = { pid: 7, procStart: "100", sessionId: "s" };
+  // The pid no longer runs: gone, on any platform.
+  expect(claimGone(claim, { running: () => false, platform: "linux" })).toBe(true);
+  expect(claimGone(claim, { running: () => false, platform: "darwin" })).toBe(true);
+  // Linux: the pid runs with another start time (a reused pid): gone.
+  expect(claimGone(claim, { running: () => true, platform: "linux", readStat: stat("200") })).toBe(
+    true,
+  );
+  // The same start time: not gone.
+  expect(claimGone(claim, { running: () => true, platform: "linux", readStat: stat("100") })).toBe(
+    false,
+  );
+  // No start time on the claim, or `/proc` unreadable: not proved, so not gone.
+  expect(
+    claimGone(
+      { ...claim, procStart: null },
+      { running: () => true, platform: "linux", readStat: stat("200") },
+    ),
+  ).toBe(false);
+  expect(claimGone(claim, { running: () => true, platform: "linux", readStat: () => null })).toBe(
+    false,
+  );
+  // Off Linux a running pid is never proved gone.
+  expect(claimGone(claim, { running: () => true, platform: "darwin" })).toBe(false);
 });

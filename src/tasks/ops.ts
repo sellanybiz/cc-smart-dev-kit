@@ -29,7 +29,7 @@ import type { ProjectTask } from "./project/format";
 import { TASK_TOOL } from "./words";
 import { openWorkDb, type WorkDb, workDbFile, writeWork } from "./work/db";
 import { historyText } from "./work/history";
-import { callerOf, claimLive } from "./work/identity";
+import { CLAIM_PROCESS, callerOf, claimGone, claimLive } from "./work/identity";
 import {
   allTasks,
   claimState,
@@ -200,7 +200,7 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
       // A reopened session keeps its session id in a new process: its running claims move to this
       // process before anything reads them, so every reader (the status line too) finds them.
       if (store.writable) {
-        const reclaimed = reclaimResumed(store, who, now, claimLive);
+        const reclaimed = reclaimResumed(store, who, now, claimGone);
         if (!reclaimed.ok) {
           // A read still answers, with the failure on a line of its own; a write fails loudly.
           const why = `claims of this session not moved: ${reclaimed.why}`;
@@ -228,7 +228,8 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
         return { max: value, source };
       };
       // A plan another process holds live is that session's work, not a queued plan to refuse.
-      const claimedElsewhere = (t: WorkTask) => claimState(t, claimLive, who) === "another session";
+      const claimedElsewhere = (t: WorkTask) =>
+        claimState(t, CLAIM_PROCESS, who) === "another session";
       const refuseOther = (plan: string) =>
         refuseOtherPlan({ all, inFlight, plan, claimedElsewhere });
       /** What a close freed, judged on the list read after it: the plan in flight may have closed. */
@@ -773,7 +774,7 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
           task.kind === "phase"
             ? ` · agent ${task.agent ?? "none"} · branch ${task.branch ?? "none"}`
             : "";
-        const state = claimState(task, claimLive, who);
+        const state = claimState(task, CLAIM_PROCESS, who);
         // On the plan ledger an open plan says where it stands in the queue; a plan with a
         // `parked:` note counts as parked only once it is not running (`planQueueState`).
         const queue =

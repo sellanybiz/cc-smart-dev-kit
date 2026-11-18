@@ -11,7 +11,7 @@
  * task is ready to start, in a plan with a phase running or in the plan in flight.
  */
 
-import { claimLive } from "./identity";
+import { claimGone } from "./identity";
 import {
   allTasks,
   claimIsMine,
@@ -97,7 +97,7 @@ export function openPhasesOf(
   );
   // A phase in progress is the caller's when its plan is, or when the caller claims the phase or
   // one of its steps (work it took in another session's plan).
-  const claimedBy = (task: WorkTask) => claimIsMine(task.claim, who, claimLive);
+  const claimedBy = (task: WorkTask) => claimIsMine(task.claim, who, claimGone);
   const isMine = (phase: WorkTask & { plan: string }) =>
     owned.has(phase.plan) ||
     claimedBy(phase) ||

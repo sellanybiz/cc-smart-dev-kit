@@ -14889,17 +14889,17 @@ function claimHeldBy(claim, who) {
     return claim.procStart === who.procStart;
   return who.sessionId !== null && claim.sessionId === who.sessionId;
 }
-function resumedClaim(claim, who, isLive) {
-  return claim !== null && who !== null && who !== undefined && who.pid !== null && who.sessionId !== null && claim.sessionId === who.sessionId && !claimHeldBy(claim, who) && !isLive(claim);
+function resumedClaim(claim, who, isGone) {
+  return claim !== null && who !== null && who !== undefined && who.pid !== null && who.sessionId !== null && claim.sessionId === who.sessionId && !claimHeldBy(claim, who) && isGone(claim);
 }
-function claimIsMine(claim, who, isLive) {
-  return claimHeldBy(claim, who) || resumedClaim(claim, who, isLive);
+function claimIsMine(claim, who, isGone) {
+  return claimHeldBy(claim, who) || resumedClaim(claim, who, isGone);
 }
-function claimState(task, isLive, who) {
+function claimState(task, process2, who) {
   if (!task.claim)
     return "free";
-  if (!isLive(task.claim))
-    return resumedClaim(task.claim, who, isLive) ? "mine" : "free";
+  if (!process2.live(task.claim))
+    return resumedClaim(task.claim, who, process2.gone) ? "mine" : "free";
   return claimHeldBy(task.claim, who) ? "mine" : "another session";
 }
 function waitsForTask(tasks, start, target) {
@@ -15239,6 +15239,22 @@ function claimLive(claim, facts = {}) {
     name: ""
   }, { platform, ...facts.readStat ? { readStat: facts.readStat } : {} });
 }
+function claimGone(claim, facts = {}) {
+  if (!(facts.running ?? isRunning)(claim.pid))
+    return true;
+  const platform = facts.platform ?? process.platform;
+  if (platform !== "linux" || claim.procStart === null)
+    return false;
+  const start = processStart(claim.pid, {
+    platform,
+    ...facts.readStat ? { readStat: facts.readStat } : {}
+  });
+  return start !== undefined && start !== claim.procStart;
+}
+var CLAIM_PROCESS = {
+  live: (claim) => claimLive(claim),
+  gone: (claim) => claimGone(claim)
+};
 var cached2 = new Map;
 function callerOf(facts = {}) {
   const env = facts.env ?? process.env;
@@ -15305,7 +15321,7 @@ function startView(paths, project, who, options) {
   return readWorkStore(paths, (db) => {
     const all = allTasks(db, project);
     const byId = new Map(all.map((t) => [t.id, t]));
-    const open = all.filter((t) => isOpen(t)).map((t) => ({ task: t, claim: claimState(t, claimLive, who) }));
+    const open = all.filter((t) => isOpen(t)).map((t) => ({ task: t, claim: claimState(t, CLAIM_PROCESS, who) }));
     const shown = open.filter(({ task, claim }) => claim === "mine" || options.staleBefore === undefined || task.updatedAt >= options.staleBefore);
     shown.sort((a, b) => Number(b.claim === "mine") - Number(a.claim === "mine") || Number(b.task.status === "in_progress") - Number(a.task.status === "in_progress") || b.task.updatedAt - a.task.updatedAt || a.task.number - b.task.number);
     const limit = Math.max(0, Math.floor(options.limit));
@@ -17555,7 +17571,7 @@ function openPhasesOf(paths, project, caller) {
     return { state: "ready", value: NOTHING_OPEN };
   const owns = ownerOf2(who);
   const owned = new Set(all.flatMap((t) => t.plan !== null && ownsPlan(all, owns, t.plan) ? [t.plan] : []));
-  const claimedBy = (task) => claimIsMine(task.claim, who, claimLive);
+  const claimedBy = (task) => claimIsMine(task.claim, who, claimGone);
   const isMine = (phase) => owned.has(phase.plan) || claimedBy(phase) || all.some((t) => t.parentId === phase.id && claimedBy(t));
   const inProgress = phases.filter((t) => t.status === "in_progress" && isMine(t));
   const working = new Set(inProgress.map((t) => t.plan));

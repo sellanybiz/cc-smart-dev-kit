@@ -309,8 +309,10 @@ A reopened session (`claude --resume`, `cc-smart-dev-kit sessions --open`) keeps
 in a new process, so its in-progress claims name a process that is gone. A claim like that is a
 **resumed claim** (`resumedClaim` in `queries.ts`): the caller has a process and a session id,
 the claim carries that session id, the caller's process does not hold it, and the claim's
-process is not live. A live claim with the same session id (two processes opened one
-conversation) is never the caller's. Every read that asks "is this my running work" counts a
+process is proved gone (`claimGone` in `identity.ts`: its pid no longer runs, or on Linux the pid
+now has another start time). A claim whose process may still run is never the caller's, even
+when its liveness cannot be proved (a record with no start time): two processes that opened one
+conversation never pass a claim between them. Every read that asks "is this my running work" counts a
 resumed claim as the caller's (`claimIsMine`: the status line's rows, `claimState`, the keep-going
 guard's phases); a question about who holds a claim now (a take's refusal, a claim's liveness)
 keeps `claimHeldBy` alone. The next task call from the resumed session also moves the claims
@@ -326,7 +328,10 @@ Two live processes of one conversation both count a dead claim as theirs until o
 task call, which moves it. A `/clear` keeps the process and gives the session a new id, so the
 same step also re-stamps the claims the caller's process holds, and the open tasks it made, to
 the new session id (with a history entry each). A later resume under that id then finds the
-work. The step covers every project in the store, not only the one the call is in: a session
+work. The re-stamp needs a task call under the new id: a `/clear` followed by an exit, with no
+task call between them, leaves the claims under the old id, and a resume under the new one does
+not find them (nothing links the two ids once the process is gone). The step covers every
+project in the store, not only the one the call is in: a session
 that works in two repos keeps its work in both. When the session record gives no process start
 time, `claimHeldBy` needs the session id too, so the `/clear` re-stamp never fires; the
 resumed-claim move still does.

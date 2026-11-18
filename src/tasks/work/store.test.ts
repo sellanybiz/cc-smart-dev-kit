@@ -128,9 +128,13 @@ test("plan upserts and process claims survive a clear", () => {
   const own = value(
     createTask(db, { project: "p", subject: "Work", status: "in_progress" }, who, 3),
   );
-  expect(claimState(own, () => true, { ...who, sessionId: "clear" })).toBe("mine");
-  expect(claimState(own, () => true, { ...who, pid: 99 })).toBe("another session");
-  expect(claimState(own, () => false, who)).toBe("free");
+  expect(
+    claimState(own, { live: () => true, gone: () => false }, { ...who, sessionId: "clear" }),
+  ).toBe("mine");
+  expect(claimState(own, { live: () => true, gone: () => false }, { ...who, pid: 99 })).toBe(
+    "another session",
+  );
+  expect(claimState(own, { live: () => false, gone: () => true }, who)).toBe("free");
   db.close();
   expect(hasOwnTask(paths, "p", { sessionId: "session", pid: null, procStart: null })).toEqual({
     state: "ready",
@@ -160,7 +164,9 @@ test("one claim match: the start time names the process; without one the session
   const task = value(createTask(db, { project: "p", subject: "Work" }, who, 1));
   db.close();
   const other = { sessionId: "other", pid: 12, procStart: null };
-  expect(claimState({ ...task, claim: elsewhere }, () => true, other)).toBe("another session");
+  expect(
+    claimState({ ...task, claim: elsewhere }, { live: () => true, gone: () => false }, other),
+  ).toBe("another session");
 });
 test("fresh, reopened, newer, missing, broken and locked databases", () => {
   const { db, paths } = setup();

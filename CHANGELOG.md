@@ -10,7 +10,8 @@ in your own terminal after the update; the user guide is [README.md](README.md).
   Task claims belong to a process, so the claims named a process that was gone, and the
   status line's Plan, Phases and Tasks rows vanished. Now a dead claim under the caller's own
   session id counts as the caller's, and the next task call moves it to the new process, with
-  a history entry. A live claim in another process is never taken, even under the same id.
+  a history entry. Only a claim whose process is proved gone moves: a claim of another process
+  that may still run is never taken, even under the same id.
 - **A `/clear` keeps the work for a later resume.** A `/clear` keeps the process and gives the
   session a new id. The next task call moves the process's claims, and the open tasks it made,
   to the new id, in every project, so a resume under that id still finds them.

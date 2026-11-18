@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { openWorkDb, type WorkDb, workDbFile } from "./db";
 import { historyChanges } from "./history";
-import { claimLive } from "./identity";
+import { CLAIM_PROCESS, claimGone } from "./identity";
 import {
   allTasks,
   claimIsMine,
@@ -52,7 +52,7 @@ export function startView(
     const byId = new Map(all.map((t) => [t.id, t]));
     const open = all
       .filter((t) => isOpen(t))
-      .map((t) => ({ task: t, claim: claimState(t, claimLive, who) }));
+      .map((t) => ({ task: t, claim: claimState(t, CLAIM_PROCESS, who) }));
     const shown = open.filter(
       ({ task, claim }) =>
         claim === "mine" ||
@@ -129,7 +129,7 @@ export function planProgress(paths: Paths, project: string, who: Who) {
       .filter(
         (t) =>
           t.status === "in_progress" &&
-          (claimIsMine(t.claim, who, claimLive) ||
+          (claimIsMine(t.claim, who, claimGone) ||
             (who.pid === null && who.sessionId !== null && t.createdBy === who.sessionId)),
       )
       .sort((a, b) => started(b.id) - started(a.id) || b.number - a.number)[0];

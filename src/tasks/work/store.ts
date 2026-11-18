@@ -738,14 +738,14 @@ interface Restamp {
 function restampsOf(
   all: readonly WorkTask[],
   who: Who,
-  isLive: (claim: WorkClaim) => boolean,
+  isGone: (claim: WorkClaim) => boolean,
 ): Restamp[] {
   if (who.pid === null || who.sessionId === null) return [];
   const found: Restamp[] = [];
   for (const task of all) {
     let claim: Restamp["claim"];
     if (task.status === "in_progress" && task.claim !== null) {
-      if (resumedClaim(task.claim, who, isLive)) claim = "moved";
+      if (resumedClaim(task.claim, who, isGone)) claim = "moved";
       else if (claimHeldBy(task.claim, who) && task.claim.sessionId !== who.sessionId)
         claim = "session";
     }
@@ -766,7 +766,7 @@ function restampsOf(
 function restampsEverywhere(
   db: WorkDb,
   who: Who,
-  isLive: (claim: WorkClaim) => boolean,
+  isGone: (claim: WorkClaim) => boolean,
 ): Restamp[] {
   if (who.pid === null || who.sessionId === null) return [];
   const projects = db.sqlite
@@ -774,7 +774,7 @@ function restampsEverywhere(
       "SELECT DISTINCT project FROM tasks WHERE status IN ('pending','in_progress') AND (claim_pid=? OR claim_session=? OR created_pid=?) ORDER BY project",
     )
     .all(who.pid, who.sessionId, who.pid);
-  return projects.flatMap(({ project }) => restampsOf(allTasks(db, project), who, isLive));
+  return projects.flatMap(({ project }) => restampsOf(allTasks(db, project), who, isGone));
 }
 
 /**
@@ -788,12 +788,20 @@ export function reclaimResumed(
   db: WorkDb,
   who: Who,
   now: number,
-  isLive: (claim: WorkClaim) => boolean,
+  isGone: (claim: WorkClaim) => boolean,
 ): Result<number> {
-  if (restampsEverywhere(db, who, isLive).length === 0) return { ok: true, value: 0 };
+  // The first look is outside the write lock: a read error there fails like a busy lock, never
+  // throws, so a read operation still answers (`createTaskOps`).
+  let found: Restamp[];
+  try {
+    found = restampsEverywhere(db, who, isGone);
+  } catch (error) {
+    return { ok: false, why: error instanceof Error ? error.message : String(error) };
+  }
+  if (found.length === 0) return { ok: true, value: 0 };
   return writeWork(db, () => {
     // Read again inside the write: another process may have changed or closed one meanwhile.
-    const rows = restampsEverywhere(db, who, isLive);
+    const rows = restampsEverywhere(db, who, isGone);
     for (const { task, claim, createdBy } of rows) {
       if (claim === "moved") {
         db.sqlite
