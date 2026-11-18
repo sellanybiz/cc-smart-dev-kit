@@ -10,6 +10,8 @@
 
 File home after approval: `.claude/plans/2026-11-18-plan-children.md`. Research archive: `.claude/research/archive/2026-11-18-plan-children.md`. Ships as **5.1.0**, built **after plan #392 (5.0.0) merges**.
 
+**Shipped as 5.2.0**, not 5.1.0: the heavy-job queue (PR #75) merged first and took 5.1.0. This file keeps the plan as it was approved.
+
 ## Context
 
 The person asked (2026-11-15): "a session have like 4 plans can it start a herdr child sessions on unblocking plans?" On 2026-11-18 they ruled:
