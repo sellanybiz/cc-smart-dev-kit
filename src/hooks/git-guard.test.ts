@@ -442,11 +442,17 @@ describe("a shell wrapper's inner command is read", () => {
     // `cmd` with no /c and PowerShell with no -Command run the kit as a file: its job is read.
     ["cmd cc-smart-dev-kit job run -- git reset --hard", "git reset --hard"],
     ["powershell cc-smart-dev-kit job run -- git reset --hard", "git reset --hard"],
-    // Read as PowerShell, a job word holding a `'` or a line break is quoted the PowerShell way.
+    // `cmd` runs what follows its first `/c`, wherever it stands: the words before it are ignored.
+    ["cmd cc-smart-dev-kit job run -- echo /c git reset --hard", "git reset --hard"],
+    // Under pwsh the job is read as PowerShell, so its words are quoted that way: a `'` in a
+    // word read with bash quoting would end the word early and hide the push to `main`.
+    ['pwsh cc-smart-dev-kit job run -- git push "/tmp/it\'s-repo" main', "`main`"],
+    // A `-c` after the kit's `job run` is the job's (git's here), and the job is read.
     [
       `pwsh cc-smart-dev-kit job run -- git -c "a'b" push --force "/tmp/it's-repo" main`,
       "force-push",
     ],
+    // A line break in a job word is read, never refused (the guard must not crash on it).
     ['pwsh cc-smart-dev-kit job run -- git push --force origin "a\nb"', "force-push"],
     // A kit `job run` with no `--` names no command, so the -Command after it is still read.
     ['pwsh cc-smart-dev-kit job run -c "git push --force"', "force-push"],

@@ -730,8 +730,9 @@ command of the line, its wrappers (`setsid env …`, `flock <file> env …`, `sc
 `cc-smart-dev-kit job run --`, `ssh host '…'`). A wrapper is read as itself first and the kit's
 `job run` inside it one level deeper; a wrapper that finds no command of its own (`sh
 <launcher> job run -- …`, `su root <launcher> …`, `cmd` with no `/c`, `pwsh` with no
-`-Command`, or a `/c` or `-c` that comes after the kit's `job run` and so belongs to it) is
-read as the kit's job, in the wrapper's dialect. It also reads the commands its **runners** run: `find`'s
+`-Command`, or a PowerShell `-c` that comes after the kit's `job run` and so belongs to it) is
+read as the kit's job, in the wrapper's dialect. `cmd` is the exception: it runs what follows
+its first `/c` or `/k` wherever that stands, so the words after it are read. It also reads the commands its **runners** run: `find`'s
 `-exec`/`-execdir`/`-ok`/`-okdir` (every action, up to its `;` or a `+` right after `{}`; the
 value of a test such as `-name` starts none), `watch`'s command (`-x` or through `sh -c`; `-d`
 takes its value only attached), `su -c`/`--command`/`--session-command` (wherever the user

@@ -2201,13 +2201,15 @@ export function nestedCommand(
   if (program === "watch") return watchCommand(args) ?? jobRunLine(program, args);
   if (program === "su") return suCommand(args) ?? jobRunLine(program, args);
   if (program === "parallel") return parallelCommand(args) ?? jobRunLine(program, args);
-  // `cmd` and PowerShell run the file their first plain argument names, and every word after it
-  // is that file's: a `/c` or `-c` after the kit's `job run` belongs to the job
-  // (`pwsh cc-smart-dev-kit job run -- git -c x=y push --force`), so the job is read.
+  // `cmd` runs what follows its first `/c` or `/k`, wherever it stands: every word before it is
+  // ignored (`cmd cc-smart-dev-kit job run -- echo /c git reset --hard` runs the reset).
   if (program === "cmd") {
     const at = args.findIndex((arg) => /^\/[ck]$/i.test(arg));
-    return at === -1 ? jobRunLine(program, args) : afterCommandFlag(program, args, at, shellQuote);
+    return at === -1 ? jobRunLine(program, args) : args.slice(at + 1).join(" ");
   }
+  // PowerShell runs the file its first plain argument names, and every word after it is that
+  // file's: a `-c` after the kit's `job run` belongs to the job
+  // (`pwsh cc-smart-dev-kit job run -- git -c x=y push --force`), so the job is read.
   if (program === "powershell" || program === "pwsh") {
     // PowerShell takes any prefix of a parameter name: -c, -com, -Command.
     const at = args.findIndex((arg) => arg.length > 1 && "-command".startsWith(arg.toLowerCase()));
@@ -2223,9 +2225,9 @@ export function nestedCommand(
 }
 
 /**
- * What `cmd` or PowerShell runs when its `/c` or `-Command` is at `at`: the kit's job when the
- * words before `at` already start its `job run` (the flag is then the job's), else, and when
- * that job names no command (no `--`), the words after the flag.
+ * What PowerShell runs when its `-Command` is at `at`: the kit's job when the words before `at`
+ * already start its `job run` (the flag is then the job's), else, and when that job names no
+ * command (no `--`), the words after the flag. Never `cmd`, which takes its first `/c` anywhere.
  */
 function afterCommandFlag(
   program: string,
