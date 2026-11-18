@@ -5,13 +5,22 @@
  * ever ignores that, a denial naming the command.
  */
 import { describe, expect, it } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, join } from "node:path";
 import { findGitBash, GIT_BASH_INSTALLS, GIT_BASH_VAR } from "../cli/git-bash";
 import { cliPaths } from "../cli/paths";
 import { runWeight, type WeightSource } from "../jobs/classify";
 import { HOOK_NAMES } from "../jobs/git-hooks";
 import { mergeKinds } from "../jobs/kinds";
+import { OWNED_FOLDER_MARK } from "../setup/managed-folder";
 import {
   type GitHookWorld,
   gitHookWorld,
@@ -1160,7 +1169,7 @@ describe("the rewritten line, run by bash with real git", () => {
     ]);
   });
 
-  it("an inherited pair survives: the hook sees both pairs, and git still runs the hook", () => {
+  it("an inherited pair survives: the hook sees it alone (the kit's own pair is taken out), and git still runs the hook", () => {
     const world = worldWithHooks({});
     const seen = join(world.repo, "seen");
     writeFileIn(
@@ -1182,7 +1191,7 @@ describe("the rewritten line, run by bash with real git", () => {
       ...inherited,
     });
     expect(ran.code).toBe(0);
-    expect(readFileSync(seen, "utf8")).toBe("2 safe.directory=*\n");
+    expect(readFileSync(seen, "utf8")).toBe("1 safe.directory=*\n");
     expect(world.calls()).toHaveLength(2);
   });
 
@@ -1200,5 +1209,96 @@ describe("the rewritten line, run by bash with real git", () => {
     expect(runIn(world.repo, ["git", "commit", "-q", "-m", "two"], cleanGitEnv()).code).toBe(0);
     expect(readFileSync(marker, "utf8")).toBe("ran\n");
     expect(world.calls()).toEqual([]);
+  });
+});
+
+describe("a git command inside another git command's substitution", () => {
+  it("each command gets its own prefix, whatever order the reader lists them in", () => {
+    const world = worldWithHooks({ "pre-commit": HEAVY_HOOK, "pre-push": HEAVY_HOOK });
+    const p = prefixOf(world);
+    expect(gitRewrite(world, 'git commit -m "$(git push -n)"')).toBe(
+      `${p} git commit -m "$(${p} git push -n)"`,
+    );
+    expect(
+      gitRewrite(world, "git push -n origin $(git commit -q --allow-empty -m y && echo HEAD)"),
+    ).toBe(`${p} git push -n origin $(${p} git commit -q --allow-empty -m y && echo HEAD)`);
+  });
+
+  it("run by bash, both hooks reach the launcher", () => {
+    const world = worldWithHooks({});
+    const origin = tempDir("route-git-origin");
+    git(origin, "init", "-q", "--bare");
+    git(world.repo, "remote", "add", "origin", origin);
+    const hooks = join(world.repo, ".git", "hooks");
+    const noop = "#!/bin/sh\nif false; then bun test; fi\n";
+    writeFileIn(join(hooks, "pre-commit"), noop, 0o755);
+    writeFileIn(join(hooks, "pre-push"), noop, 0o755);
+    world.fakeLauncher({ answer: "queue test:run", strict: true });
+    const p = prefixOf(world);
+    const lines = [
+      [
+        'git commit -q --allow-empty --allow-empty-message -m "$(git push -n origin HEAD:refs/heads/x 2>/dev/null)"',
+        `${p} git commit -q --allow-empty --allow-empty-message -m "$(${p} git push -n origin HEAD:refs/heads/x 2>/dev/null)"`,
+      ],
+      [
+        "git push -q -n origin $(git commit -q --allow-empty -m y && echo HEAD:refs/heads/x)",
+        `${p} git push -q -n origin $(${p} git commit -q --allow-empty -m y && echo HEAD:refs/heads/x)`,
+      ],
+    ] as const;
+    for (const [line, expected] of lines) {
+      const rewritten = gitRewrite(world, line);
+      expect(rewritten).toBe(expected);
+      const ran = runIn(world.repo, ["bash", "-c", rewritten ?? "false"], cleanGitEnv());
+      expect([line, ran.err, ran.code]).toEqual([line, "", 0]);
+      const asked = world.calls().filter((call) => call.startsWith("job hook "));
+      expect(asked.toSorted()).toEqual(["job hook pre-commit", "job hook pre-push"]);
+      expect(world.calls().filter((call) => call.startsWith("job run "))).toHaveLength(2);
+      rmSync(world.log);
+    }
+  });
+});
+
+describe("a git command in a bash array stays as written", () => {
+  it("the list of an array assignment holds words, not commands", () => {
+    const world = worldWithHooks({ "pre-commit": HEAVY_HOOK, "pre-push": HEAVY_HOOK });
+    for (const line of [
+      `cmd=(git commit --allow-empty -m x); "\${cmd[@]}"`,
+      "args+=(git push)",
+      "local -a cmd=(git push origin main)",
+      "declare -a a=(git push)",
+      "cmd=(\n  git push\n)",
+      "cmd=( git push )",
+    ]) {
+      expect([line, gitRewrite(world, line)]).toEqual([line, null]);
+    }
+    // A plain subshell, and a substitution that is assigned, are commands.
+    expect(gitRewrite(world, "(git push)")).toBe(`(${prefixOf(world)} git push)`);
+    expect(gitRewrite(world, "x=$(git push)")).toBe(`x=$(${prefixOf(world)} git push)`);
+  });
+});
+
+describe("only the kit's own folder, as this version writes it, is routed to", () => {
+  it("a folder without the kit's mark, or with a stale script or a stray file: no prefix", () => {
+    const marked = worldWithHooks({ "pre-push": HEAVY_HOOK });
+    expect(gitRewrite(marked, "git push")).toBe(`${prefixOf(marked)} git push`);
+    rmSync(join(marked.paths.gitHooksFolder, OWNED_FOLDER_MARK));
+    expect(gitRewrite(marked, "git push")).toBeNull();
+
+    const stale = worldWithHooks({ "pre-push": HEAVY_HOOK });
+    writeFileIn(join(stale.paths.gitHooksFolder, "pre-push"), "#!/bin/sh\nexit 0\n", 0o755);
+    expect(gitRewrite(stale, "git push")).toBeNull();
+
+    const stray = worldWithHooks({ "pre-push": HEAVY_HOOK });
+    writeFileIn(join(stray.paths.gitHooksFolder, "push-to-checkout"), "#!/bin/sh\n", 0o755);
+    expect(gitRewrite(stray, "git push")).toBeNull();
+  });
+});
+
+describe("git merge runs commit-msg too", () => {
+  it("a merge whose only heavy hook is commit-msg is prefixed", () => {
+    const world = worldWithHooks({ "commit-msg": HEAVY_HOOK });
+    expect(gitRewrite(world, "git merge topic")).toBe(`${prefixOf(world)} git merge topic`);
+    const light = worldWithHooks({ "commit-msg": LIGHT_HOOK, "pre-merge-commit": LIGHT_HOOK });
+    expect(gitRewrite(light, "git merge topic")).toBeNull();
   });
 });

@@ -44,6 +44,10 @@ export function hookLauncher(paths: CliPaths): string {
  *
  * What it does, in order:
  *
+ * 0. Takes the kit's own `GIT_CONFIG_*` pair out of the environment (the top pair, when it sets
+ *    `core.hooksPath` to the folder this script is in; a pair below it stays, and the count
+ *    goes down by one), so the hook and everything it runs see the person's own git setup. The
+ *    only `eval` is given a number it checked itself.
  * 1. Finds the person's real hooks folder and the real file of that name, with git's own switch
  *    for it (`GIT_CONFIG_COUNT=0` throws away the `GIT_CONFIG_*` pair that brought git here).
  *    No file: `exit 0`, as git does for a hook that is not there. husky v9's folder
@@ -70,6 +74,25 @@ export function hookScript(launcher: string): string {
 # heavy work. Every doubt runs the hook as it is, so a broken kit never blocks a commit.
 name=\${0##*/}
 launcher=${shellQuote(launcher)}
+# Take the kit's own pair out of the environment, so nothing the hook runs (a staged-files linter,
+# a test suite that commits in temp repos) sends its own git calls through this folder. Only the
+# top pair, and only when it sets core.hooksPath to this very folder: a pair below it stays.
+count=\${GIT_CONFIG_COUNT-}
+case $count in
+  '' | 0* | *[!0-9]* | [0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]*) ;;
+  *)
+    top=$((count - 1))
+    eval "key=\\\${GIT_CONFIG_KEY_$top-} value=\\\${GIT_CONFIG_VALUE_$top-}"
+    case $key in
+      [Cc][Oo][Rr][Ee].[Hh][Oo][Oo][Kk][Ss][Pp][Aa][Tt][Hh])
+        if [ "$value" = "\${0%/*}" ]; then
+          unset "GIT_CONFIG_KEY_$top" "GIT_CONFIG_VALUE_$top"
+          if [ "$top" = 0 ]; then unset GIT_CONFIG_COUNT; else GIT_CONFIG_COUNT=$top; fi
+        fi
+        ;;
+    esac
+    ;;
+esac
 real_dir=$(GIT_CONFIG_COUNT=0 git rev-parse --path-format=absolute --git-path hooks 2>/dev/null) || exit 0
 [ -n "$real_dir" ] || exit 0
 real=$real_dir/$name

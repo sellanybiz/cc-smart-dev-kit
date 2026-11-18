@@ -454,6 +454,137 @@ describe("the script, run by real git", () => {
   });
 });
 
+describe("the script takes its own pair out of the environment", () => {
+  /** A hook that writes what git config and the GIT_CONFIG_* variables look like from inside it. */
+  function seeingHook(world: GitHookWorld): { file: string; seen: string } {
+    const seen = join(world.repo, "seen");
+    const file = join(world.repo, ".git", "hooks", "pre-commit");
+    writeFileIn(
+      file,
+      `#!/bin/sh
+{
+  git config core.hooksPath
+  git config safe.directory
+  echo "count=\${GIT_CONFIG_COUNT-unset}"
+  echo "key0=\${GIT_CONFIG_KEY_0-unset}"
+  echo "key1=\${GIT_CONFIG_KEY_1-unset}"
+} > ${seen}
+`,
+      0o755,
+    );
+    return { file, seen };
+  }
+
+  /** The kit's pair, as a routed command sets it, after `before` pairs of the person's own. */
+  function pairsEnv(world: GitHookWorld, before: [string, string][]): Record<string, string> {
+    const env: Record<string, string> = { ...cleanGitEnv() };
+    const all = [...before, ["core.hooksPath", world.paths.gitHooksFolder]];
+    env.GIT_CONFIG_COUNT = String(all.length);
+    all.forEach(([key, value], index) => {
+      env[`GIT_CONFIG_KEY_${index}`] = key ?? "";
+      env[`GIT_CONFIG_VALUE_${index}`] = value ?? "";
+    });
+    return env;
+  }
+
+  for (const [branch, answer] of [
+    ["direct", "direct"],
+    ["queue", "queue test:run"],
+  ] as const) {
+    test(`the ${branch} branch: the hook sees the person's own setup, no pair and no count`, () => {
+      const world = installed(answer);
+      const { seen } = seeingHook(world);
+      stageFile(world.repo);
+      expect(world.run(world.repo, ["commit", "-q", "-m", "two"]).code).toBe(0);
+      expect(readFileSync(seen, "utf8")).toBe("count=unset\nkey0=unset\nkey1=unset\n");
+      expect(world.calls()).toHaveLength(answer === "direct" ? 1 : 2);
+    });
+
+    test(`the ${branch} branch: a pair of the person's below the kit's survives, the count goes down by one`, () => {
+      const world = installed(answer);
+      const { seen } = seeingHook(world);
+      stageFile(world.repo);
+      const env = pairsEnv(world, [["safe.directory", "*"]]);
+      expect(world.run(world.repo, ["commit", "-q", "-m", "two"], env).code).toBe(0);
+      expect(readFileSync(seen, "utf8")).toBe("*\ncount=1\nkey0=safe.directory\nkey1=unset\n");
+    });
+  }
+
+  test("the key is read in any case", () => {
+    const world = installed("direct");
+    const { seen } = seeingHook(world);
+    stageFile(world.repo);
+    const env = pairsEnv(world, []);
+    env.GIT_CONFIG_KEY_0 = "CORE.HOOKSPATH";
+    expect(world.run(world.repo, ["commit", "-q", "-m", "two"], env).code).toBe(0);
+    expect(readFileSync(seen, "utf8")).toBe("count=unset\nkey0=unset\nkey1=unset\n");
+  });
+
+  test("a pair at the top that is not the kit's is left alone", () => {
+    const world = installed("direct");
+    const { seen } = seeingHook(world);
+    stageFile(world.repo);
+    const env = pairsEnv(world, []);
+    env.GIT_CONFIG_COUNT = "2";
+    env.GIT_CONFIG_KEY_1 = "user.name";
+    env.GIT_CONFIG_VALUE_1 = "x";
+    expect(world.run(world.repo, ["commit", "-q", "-m", "two"], env).code).toBe(0);
+    expect(readFileSync(seen, "utf8")).toBe(
+      `${world.paths.gitHooksFolder}\ncount=2\nkey0=core.hooksPath\nkey1=user.name\n`,
+    );
+  });
+
+  test("a core.hooksPath pair at the top for another folder is left alone", () => {
+    const world = installed("direct");
+    // Run the script by hand: git would never bring it here with that pair, which is the point.
+    const script = join(world.paths.gitHooksFolder, "pre-commit");
+    const out = join(world.repo, "out");
+    const real = join(world.repo, ".git", "hooks", "pre-commit");
+    writeFileIn(
+      real,
+      `#!/bin/sh\necho "\${GIT_CONFIG_COUNT-unset} \${GIT_CONFIG_VALUE_0-unset}" > ${out}\n`,
+      0o755,
+    );
+    const env = {
+      ...cleanGitEnv(),
+      GIT_CONFIG_COUNT: "1",
+      GIT_CONFIG_KEY_0: "core.hooksPath",
+      GIT_CONFIG_VALUE_0: "/somewhere/else",
+    };
+    expect(runIn(world.repo, [script], env).code).toBe(0);
+    expect(readFileSync(out, "utf8")).toBe("1 /somewhere/else\n");
+  });
+
+  test("a count that is not a plain whole number, or a pair that is missing, changes nothing", () => {
+    const world = installed("direct");
+    const script = join(world.paths.gitHooksFolder, "pre-commit");
+    const out = join(world.repo, "out");
+    writeFileIn(
+      join(world.repo, ".git", "hooks", "pre-commit"),
+      `#!/bin/sh\necho "\${GIT_CONFIG_COUNT-unset}" > ${out}\n`,
+      0o755,
+    );
+    for (const count of [
+      "abc",
+      "-1",
+      "01",
+      "0",
+      "1;touch pwned",
+      "$(touch pwned)",
+      "99999999999",
+    ]) {
+      const env = { ...cleanGitEnv(), GIT_CONFIG_COUNT: count };
+      expect(runIn(world.repo, [script], env).code).toBe(0);
+      expect([count, readFileSync(out, "utf8")]).toEqual([count, `${count}\n`]);
+    }
+    expect(existsSync(join(world.repo, "pwned"))).toBe(false);
+    // A count of 1 with no pair behind it: the script leaves it alone too.
+    const env = { ...cleanGitEnv(), GIT_CONFIG_COUNT: "1" };
+    expect(runIn(world.repo, [script], env).code).toBe(0);
+    expect(readFileSync(out, "utf8")).toBe("1\n");
+  });
+});
+
 describe("gitHooksState", () => {
   test("a folder without the kit's mark is not the kit's, whatever it holds", () => {
     const world = gitHookWorld();

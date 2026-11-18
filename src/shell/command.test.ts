@@ -338,6 +338,30 @@ describe("shellSteps: where each command starts in the line", () => {
     ]);
   });
 
+  test("a reading that joins escaped line breaks rewrites the text, so its steps have no offset", () => {
+    const steps = shellSteps("git commit -m x \\\n  --no-verify", { joinLines: true });
+    expect(steps.map((step) => step.start)).toEqual([undefined]);
+    expect(shellSteps("git commit -m x \\\n  --no-verify").map((step) => step.start)).toEqual([
+      0, 18,
+    ]);
+  });
+
+  test("the commands of a bash array's list are marked, no other group is", () => {
+    const array = (line: string) =>
+      shellSteps(line)
+        .filter((step) => step.text.trim().startsWith("git"))
+        .map((step) => step.subshell?.array ?? false);
+    expect(array("cmd=(git push)")).toEqual([true]);
+    expect(array("args+=(git push)")).toEqual([true]);
+    expect(array("declare -a a=( git push )")).toEqual([true]);
+    expect(array("a=(\n git push\n)")).toEqual([true]);
+    expect(array("(git push)")).toEqual([false]);
+    expect(array("x=$(git push)")).toEqual([false]);
+    expect(array("echo hi; (git push)")).toEqual([false]);
+    // Inside the list, a substitution is a command again.
+    expect(array("a=($(git push))")).toEqual([false]);
+  });
+
   test("a here-doc body cut out of a substitution leaves the text before its first line break whole", () => {
     const line = "git commit -m \"$(cat <<'EOF'\nmsg\nEOF\n)\"";
     // The substitution's own command comes first (`cat <<'EOF'`, at 17); the git command is last.

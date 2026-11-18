@@ -92,6 +92,9 @@ const SEPARATORS = new Set(["\n", "\r", "&", "(", ")", ";", "|"]);
 /** A PowerShell here-string: `@"` or `@'`, a line break, any lines, then `"@` at a line's start. */
 const HERE_STRING = /@(["'])\r?\n([\s\S]*?)\r?\n\1@/y;
 
+/** The end of the text before a `(` that opens a bash array: `name=`, `name+=`, `-a name=`. */
+const ARRAY_ASSIGNMENT = /(?:^|\s)[A-Za-z_][A-Za-z0-9_]*\+?=$/;
+
 /** One way to read a line: its dialect, and whether a line that ends in an escape goes on. */
 export interface Reading {
   dialect: Dialect;
@@ -189,8 +192,8 @@ function lex(text: string, options: LexOptions): Lexed {
   const starts: (number | null)[] = [];
   /** The innermost `( … )` or `$( … )` the text being read is inside. */
   let group: Subshell | null = options.outer ?? null;
-  const enterGroup = () => {
-    group = { depth: (group?.depth ?? 0) + 1, outer: group };
+  const enterGroup = (array = false) => {
+    group = { depth: (group?.depth ?? 0) + 1, outer: group, ...(array ? { array } : {}) };
   };
   const leaveGroup = () => {
     // A stray `)` never leaves the group the text itself runs in.
@@ -685,7 +688,9 @@ function lex(text: string, options: LexOptions): Lexed {
         }
         if (!pattern && nested && char === "(") depth++;
         if (!pattern && nested && char === ")") depth--;
-        if (!pattern && char === "(") enterGroup();
+        // Bash's array assignment `name=( … )`, `name+=( … )`, `declare -a name=( … )`: what is
+        // inside is a list of words, not commands.
+        if (!pattern && char === "(") enterGroup(bash && ARRAY_ASSIGNMENT.test(current));
         else if (!pattern && char === ")") leaveGroup();
         current = "";
         stdinShell = null;
@@ -738,6 +743,11 @@ export interface Subshell {
   /** How many groups it is inside, itself counted: 1 at the top of the line. */
   readonly depth: number;
   readonly outer: Subshell | null;
+  /**
+   * The group is a bash array's list (`cmd=(git push)`): its words are the array's elements, so
+   * a "command" in it runs nothing and nothing may be put in front of it. Left out otherwise.
+   */
+  readonly array?: boolean;
 }
 
 /** One command of a shell line: its text, and the command whose output feeds it. */
@@ -760,7 +770,8 @@ export interface ShellStep {
   /**
    * Where `text` starts in the line this step was read from: set when the command stands in the
    * line itself, left out when it was read out of a here-doc body, a backtick or an arithmetic
-   * expansion (their offsets belong to another text). Text before the first line break of `text`
+   * expansion (their offsets belong to another text), and in a reading that joins escaped line
+   * breaks (`joinLines`), which rewrites the text. Text before the first line break of `text`
    * is the line's own text at this offset, so a caller that edits the line at the command's first
    * word checks that against the line and leaves a line it cannot place exactly as it is: a here-doc
    * body inside a `$( … )` is cut out of `text`, and a comment skipped inside it is gone too.
@@ -787,7 +798,7 @@ export function shellSteps(
       expanded: chosen.expanded[index] === true,
       pipedFrom: chosen.piped[index] ?? null,
       ...(chosen.groups[index] ? { subshell: chosen.groups[index] } : {}),
-      ...(typeof start === "number" ? { start } : {}),
+      ...(typeof start === "number" && !joinLines ? { start } : {}),
       text,
     };
   });

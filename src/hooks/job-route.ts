@@ -70,7 +70,8 @@
  * added only when all of these hold; any doubt leaves the line as it is, so no hook is ever
  * skipped:
  * - the route is on, and this is not native Windows (the scripts are `sh`);
- * - the kit's folder exists and every hook name in it is executable;
+ * - the kit's folder is whole and this version's own (`gitHooksState` says ok: its mark, a
+ *   runnable script under every name, no stray file);
  * - the command is a plain `git` (only variable assignments before it), does not skip its hooks
  *   (`--no-verify`, a commit's `-n`; a push's `-n` is `--dry-run`), sets no `core.hooksPath` of
  *   its own (`-c`), and the line sets no `GIT_CONFIG_*` variable;
@@ -78,10 +79,10 @@
  *   (the person chose a hooks folder), and when it holds other pairs (CI often sets a
  *   `safe.directory` one) the kit's pair is added after them: the count grows, nothing is lost;
  * - the hook that command would run (commit: `pre-commit` and `commit-msg`; merge:
- *   `pre-merge-commit`; push: `pre-push`) is heavy (`hookDecision`), read in the folder the
- *   command runs in (after a `cd`, and `git -C`);
+ *   `pre-merge-commit` and `commit-msg`; push: `pre-push`) is heavy (`hookDecision`), read in
+ *   the folder the command runs in (after a `cd`, and `git -C`);
  * - the command's place in the line is known exactly (`ShellStep.start`). One inside `bash -c '…'`,
- *   a backtick or a here-doc is left as it is.
+ *   a backtick, a here-doc or a bash array's list (`cmd=(git push)`) is left as it is.
  *
  * With `git --git-dir` or `--work-tree`, `job hook` cannot find the repo (it asks git without
  * the `GIT_DIR` variable) and answers direct: the hook then runs as it is, unqueued, which is
@@ -89,11 +90,11 @@
  * with a git command in it is never queued whole.
  */
 
-import { accessSync, constants, existsSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync } from "node:fs";
 import { findGitBash, type GitBashFacts } from "../cli/git-bash";
 import { classifyHeavyCommand, routableLine, runWeight, type WeightSource } from "../jobs/classify";
-import { HOOK_NAMES, hookDecision } from "../jobs/git-hooks";
+import { hookDecision } from "../jobs/git-hooks";
+import { gitHooksState } from "../jobs/hook-folder";
 import { type Kinds, mergeKinds } from "../jobs/kinds";
 import { diskWeightSource } from "../jobs/weight-source";
 import { LAUNCHER_IN_SHELL } from "../setup/launcher";
@@ -234,7 +235,7 @@ export function routeHeavyCommand(
 /** The hooks of a git command that the kit's folder may queue: the ones the command runs. */
 const GIT_COMMAND_HOOKS: Readonly<Record<string, readonly string[]>> = {
   commit: ["pre-commit", "commit-msg"],
-  merge: ["pre-merge-commit"],
+  merge: ["pre-merge-commit", "commit-msg"],
   push: ["pre-push"],
 };
 
@@ -291,6 +292,8 @@ function gitHookSteps(command: string, cwd: string): GitHookStep[] {
       tracker.moveTo(movedTo(program, folder, withoutRedirections(args)));
     }
     if (program !== "git" || computed || step.start === undefined || folder === null) continue;
+    // A bash array's list (`cmd=(git push)`) holds words: nothing may be put in front of them.
+    if (step.subshell?.array === true) continue;
     if (prefix.length > 0 && !isAssignmentOnly(prefix)) continue;
     const calls = gitCalls(withoutRedirections(args));
     const call = calls.length === 1 ? calls[0] : undefined;
@@ -309,25 +312,6 @@ function gitHookSteps(command: string, cwd: string): GitHookStep[] {
     found.push({ at: step.start + blanks, folder: runsIn, sub: call.sub });
   }
   return found;
-}
-
-/** True when `file` is a regular file that git may run (its own check is `X_OK`). */
-function isRunnableFile(file: string): boolean {
-  try {
-    accessSync(file, constants.X_OK);
-    return statSync(file).isFile();
-  } catch {
-    return false;
-  }
-}
-
-/**
- * True when the kit's hooks folder holds a runnable script under every hook name: a folder that
- * is missing or broken must never route a command to it, because git would then skip the hook
- * the person's repo has (git ignores a hook that is not executable).
- */
-function hooksFolderReady(folder: string): boolean {
-  return HOOK_NAMES.every((name) => isRunnableFile(join(folder, name)));
 }
 
 /**
@@ -373,7 +357,9 @@ export function routeGitHooks(
   if (pair === null) return null;
   const steps = gitHookSteps(command, context.cwd);
   const folder = context.paths.gitHooksFolder;
-  if (steps.length === 0 || !hooksFolderReady(folder)) return null;
+  // Only a folder `setup` wrote whole, in this version's text, with every name runnable: git
+  // skips a hook that is not executable, so a broken folder would skip the person's own hook.
+  if (steps.length === 0 || gitHooksState(context.paths).kind !== "ok") return null;
   const { timeFor } = startBudget(context.env, Date.now, SHORT_GUARD_BUDGET_MS, context.nowMs);
   // One answer per folder and hook, whatever the number of commands; every git call takes the
   // smaller of its own limit and the time left, and `timed-out` (no answer) queues nothing.
@@ -407,9 +393,11 @@ export function routeGitHooks(
     `GIT_CONFIG_KEY_${pair}=core.hooksPath`,
     `GIT_CONFIG_VALUE_${pair}=${shellWord(folder)}`,
   ].join(" ");
-  // From the last command to the first, so an earlier offset is still where it was.
+  // From the last offset to the first, so an earlier offset is still where it was. The reader
+  // lists the commands of a substitution before the command that holds it, so the order of
+  // `queued` is not the order in the line.
   let routed = command;
-  for (const { at } of queued.toReversed()) {
+  for (const { at } of queued.toSorted((one, other) => other.at - one.at)) {
     routed = `${routed.slice(0, at)}${prefix} ${routed.slice(at)}`;
   }
   return { command: routed, kind: first.kind };
