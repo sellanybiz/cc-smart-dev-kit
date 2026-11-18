@@ -897,6 +897,33 @@ describe("a package script is classified by its body", () => {
     expect(routed("bun run tsc", { tsc: "tsgo" })).toBe("tsc");
   });
 
+  // The kit's command has one recogniser (`src/shell/kit-invocation.ts`): the queue's own line
+  // is queued already under every spelling it knows, not only the bare name.
+  test("a line that queues itself is queued already under every spelling of the kit's command", () => {
+    const none = weightSourceOf({ "/repo": {} });
+    for (const kit of [
+      "cc-smart-dev-kit",
+      "bunx cc-smart-dev-kit",
+      "bun /opt/plugin/dist/cli.js",
+      "sh /home/user/.local/bin/cc-smart-dev-kit",
+      "/opt/plugin/bin/cc-smart-dev-kit-bun.sh /opt/plugin/dist/cli.js",
+    ]) {
+      // A heavy command beside the queue's own line: the line that queues itself decides.
+      const line = `bun test && ${kit} job run --kind tsc -- tsc --noEmit`;
+      expect([line, runWeight(line, DEFAULT_KINDS, none)]).toEqual([line, { weight: "none" }]);
+      expect([line, classifyRoutableLine(line, DEFAULT_KINDS, none)]).toEqual([line, null]);
+      expect([line, classifyUnqueuedHeavy(line, DEFAULT_KINDS, none)]).toEqual([line, null]);
+    }
+    // Another `job` command of the kit queues nothing: the tool inside it is still the tool.
+    expect(
+      classifyUnqueuedHeavy("bunx cc-smart-dev-kit job status", DEFAULT_KINDS, none),
+    ).toBeNull();
+    expect(runWeight("bunx tsc --noEmit", DEFAULT_KINDS, none)).toEqual({
+      weight: "heavy",
+      kind: "tsc",
+    });
+  });
+
   test("a script named like a tool is read by its body, and the tool inside is the tool", () => {
     expect(routed("bun run tsc", { tsc: "tsc --noEmit" })).toBe("tsc");
     expect(routed("bun tsc --noEmit", { tsc: "tsc --noEmit" })).toBe("tsc");

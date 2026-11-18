@@ -3,7 +3,7 @@
  * repos, never the real home. Every expected value is written by hand.
  */
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { gitHookWorld, writeFileIn } from "../testing/git-hook-world";
 import { cleanGitEnv, git, tempDir } from "../testing/temp";
@@ -335,6 +335,20 @@ describe("hookDecision", () => {
     expect(hookDecision("pre-commit", world.repo, DEFAULT_KINDS, packageScripts, ENV)).toBe(
       "direct",
     );
+    // A queue line under any other spelling of the kit's command is queued already too.
+    for (const kit of [
+      "bunx cc-smart-dev-kit",
+      "bun /opt/plugin/dist/cli.js",
+      "sh /home/user/.local/bin/cc-smart-dev-kit",
+      "/opt/plugin/bin/cc-smart-dev-kit-bun.sh /opt/plugin/dist/cli.js",
+    ]) {
+      const body = `bun test\n${kit} job run --kind tsc -- tsc --noEmit\n`;
+      writeFileIn(hook, `#!/bin/sh\n${body}`, 0o755);
+      expect([
+        kit,
+        hookDecision("pre-commit", world.repo, DEFAULT_KINDS, packageScripts, ENV),
+      ]).toEqual([kit, "direct"]);
+    }
     // The same script name with a plain body is still heavy.
     writeFileIn(hook, "#!/bin/sh\nbun run plain\n", 0o755);
     expect(hookDecision("pre-commit", world.repo, DEFAULT_KINDS, packageScripts, ENV)).toEqual({
@@ -361,6 +375,47 @@ describe("hookDecision", () => {
       queue: "test:run",
     });
     expect(hookDecision("pre-commit", web, DEFAULT_KINDS, packageScripts, ENV)).toEqual({
+      queue: "test:run",
+    });
+  });
+
+  test("a repo whose path holds a line break still has its hook read", () => {
+    const home = tempDir("git-hooks-newline");
+    const repo = join(home, "re\npo");
+    mkdirSync(repo);
+    git(repo, "init", "-q");
+    const sub = join(repo, "sub");
+    mkdirSync(sub);
+    writeFileSync(join(repo, "package.json"), JSON.stringify({ scripts: { test: "vitest run" } }));
+    writeFileIn(join(repo, ".git", "hooks", "pre-commit"), "#!/bin/sh\nbun run test\n", 0o755);
+    expect(hooksPlace(sub, ENV)).toEqual({ folder: join(repo, ".git", "hooks"), top: repo });
+    expect(hookDecision("pre-commit", sub, DEFAULT_KINDS, packageScripts, ENV)).toEqual({
+      queue: "test:run",
+    });
+  });
+
+  test("a call that starts in a symlinked folder is judged at the real top", () => {
+    const world = gitHookWorld();
+    const app = join(world.repo, "packages", "app");
+    mkdirSync(app, { recursive: true });
+    writeFileSync(
+      join(world.repo, "package.json"),
+      JSON.stringify({ scripts: { test: "vitest run" } }),
+    );
+    writeFileSync(join(app, "package.json"), JSON.stringify({ scripts: { test: "echo ok" } }));
+    writeFileIn(
+      join(world.repo, ".git", "hooks", "pre-commit"),
+      "#!/bin/sh\nbun run test\n",
+      0o755,
+    );
+    // git counts `../` from the real folder (two levels), which text from the link would miss.
+    const link = join(tempDir("git-hooks-link"), "app-link");
+    symlinkSync(app, link);
+    expect(hooksPlace(link, ENV)).toEqual({
+      folder: join(world.repo, ".git", "hooks"),
+      top: realpathSync(world.repo),
+    });
+    expect(hookDecision("pre-commit", link, DEFAULT_KINDS, packageScripts, ENV)).toEqual({
       queue: "test:run",
     });
   });

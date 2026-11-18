@@ -7,15 +7,16 @@
  * …/dist/cli.js …`), and a program that runs its arguments may hold it (`find . -exec
  * cc-smart-dev-kit … \;`, `watch -n 5 cc-smart-dev-kit …`).
  *
- * Two guards ask, for two different reasons, and a spelling that gets past one must not get past
- * the other: `session-escape-guard` (a kit command run with `CLAUDECODE` unset, `workflow
- * review-done` by hand) and `job-route`, through `bash-judge.ts` (`workflow propose`, where the
- * push gate says the push or the pull request is the person's). So the recogniser lives here,
- * once, and both import it — never a copy (`.claude/rules/hooks-guards.md` § A machine-wide
- * hook). `user-away` reads the kit's name too, on purpose without this recogniser.
+ * Three readers ask, and a spelling that gets past one must not get past the others: the
+ * heavy-job queue's scan (`isJobRun`: a line that already runs `job run` is never queued again),
+ * `session-escape-guard` (a kit command run with `CLAUDECODE` unset, `workflow review-done` by
+ * hand) and `job-route`, through `bash-judge.ts` (`workflow propose`, where the push gate says
+ * the push or the pull request is the person's). So the recogniser lives here, once, and all of
+ * them import it — never a copy (`.claude/rules/hooks-guards.md` § A machine-wide hook).
+ * `user-away` reads the kit's name too, on purpose without this recogniser.
  */
 import { COMMAND } from "../build-info/names";
-import { programName } from "../shell/command";
+import { programName } from "./command";
 
 /**
  * Programs that only read, search or move their arguments, never run them: a path to the kit

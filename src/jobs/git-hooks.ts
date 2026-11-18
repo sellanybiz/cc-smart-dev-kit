@@ -8,7 +8,7 @@
  * it inside `job run`, so it waits for a heavy slot like any other heavy command).
  */
 
-import { closeSync, openSync, readSync, statSync } from "node:fs";
+import { closeSync, openSync, readSync, realpathSync, statSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { GIT_TIMED_OUT, GUARD_GIT_TIMEOUT_MS, runGit } from "../hooks/git";
 import { classifyUnqueuedHeavy, type ScriptsOf } from "./classify";
@@ -55,7 +55,7 @@ export const HOOK_NAMES: readonly string[] = [
   "post-index-change",
 ];
 
-/** What `realHooksFolder` answers when git did not answer in time, or had no time left. */
+/** What `hooksPlace` answers when git did not answer in time, or had no time left. */
 export const TIMED_OUT = "timed-out";
 
 /**
@@ -114,13 +114,27 @@ export function hooksPlace(
   // No exit code and `GIT_TIMED_OUT`: the timeout stopped git.
   if (run.code === null && run.err === GIT_TIMED_OUT) return TIMED_OUT;
   if (!run.ok) return null;
-  // Lines: the hooks folder; the way up (empty at the top, and then a blank line); `true` or
-  // `false`. A path may hold a space, never a line break.
+  // Read from the end, because the folder is a path and a path may hold a line break: the last
+  // line is `true` or `false`; after `true`, the line before it is the way up (empty at the
+  // top, and then a blank line; only `../` pieces, never a line break); the rest is the folder.
   const lines = run.out.split("\n");
-  const folder = lines[0];
-  if (folder === undefined || folder === "") return null;
-  const inside = lines.at(-1) === "true";
-  return { folder, top: inside ? resolve(cwd, lines[1] ?? "") : cwd };
+  const inside = lines.pop() === "true";
+  const up = inside ? (lines.pop() ?? "") : "";
+  const folder = lines.join("\n");
+  if (folder === "") return null;
+  return { folder, top: inside ? resolve(realFolder(cwd), up) : cwd };
+}
+
+/**
+ * `folder` with its links followed: git counts the way up from the real folder, so a call that
+ * starts in a link must be resolved from there. `folder` itself when it cannot be resolved.
+ */
+function realFolder(folder: string): string {
+  try {
+    return realpathSync(folder);
+  } catch {
+    return folder;
+  }
 }
 
 /** True when `folder` is husky v9's generated stub folder (`<repo>/.husky/_`). */
