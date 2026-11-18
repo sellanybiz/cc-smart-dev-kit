@@ -11,6 +11,7 @@ import {
   type HeldPlan,
   heldPlansIn,
   holdingUnder,
+  isInFlight,
   isLead,
   isOpen,
   leadProcess,
@@ -333,9 +334,13 @@ function overlapsWith(
   held: readonly HeldPlan[],
   files: readonly string[],
   check: FilesCheck,
-): { plan: WorkTask; overlaps: FileOverlap[] }[] {
+): { plan: WorkTask; why: HeldPlan["why"]; overlaps: FileOverlap[] }[] {
   return held
-    .map(({ plan, files: theirs }) => ({ plan, overlaps: filesOverlap(files, theirs, check) }))
+    .map(({ plan, why, files: theirs }) => ({
+      plan,
+      why,
+      overlaps: filesOverlap(files, theirs, check),
+    }))
     .filter((one) => one.overlaps.length > 0);
 }
 
@@ -353,7 +358,7 @@ function unlistedWords(plans: readonly WorkTask[]): string {
   return plans
     .map(
       (plan) =>
-        `${label(plan)} is held with no file list: set its files first (${TASK_TOOL.update} on #${plan.number} with files)`,
+        `${label(plan)} is held with no file list: set its files first (${TASK_TOOL.update} on #${plan.number} with files), or finish, park or drop it`,
     )
     .join("; ");
 }
@@ -378,31 +383,63 @@ function refuseHeldOverlap(db: WorkDb, task: WorkTask, who: Who, check: FilesChe
 }
 
 /**
+ * The way out of an overlap with a held plan, by why it is held: a reserved plan holds its files
+ * until its pull request merges or closes; a plan in flight holds them until it is done or parked,
+ * and one whose session is gone is taken, parked or dropped.
+ */
+function wayOut(held: { plan: WorkTask; why: HeldPlan["why"] }): string {
+  return held.why === "reserved"
+    ? `${label(held.plan)} is reserved: wait until its pull request merges or closes`
+    : `${label(held.plan)} is running: wait until it is done or parked; if its session is gone, take it (${TASK_TOOL.take}), or park or drop it`;
+}
+
+/**
  * A plan going into flight may not reach a plan held for someone else (D4, the solo first start):
  * `reservePlan` judges a plan when it is reserved, and a session that starts a plan without
- * reserving it would otherwise slip past. Runs in the start's own transaction, after the status
- * and any new file list are written, over stored lists. With no other plan held nothing changes,
- * so a session that never hands out a plan sees no refusal. A plan with no list is refused while a
+ * reserving it would otherwise slip past. `plan` is the plan row that goes into flight, whichever
+ * task of it started (`enteringPlan`). Runs in the start's own transaction, after the status and
+ * any new file list are written, over stored lists. With no other plan held nothing changes, so a
+ * session that never hands out a plan sees no refusal. A plan with no list is refused while a
  * *reserved* plan is held (it cannot be shown clear of it); beside another session's plan in
  * flight alone it starts as before. The plan's own reservation never counts against it.
  */
-function refuseFlightOverlap(db: WorkDb, task: WorkTask, who: Who, check: FilesCheck): void {
-  const others = heldPlansIn(allTasks(db, task.project), who).filter((h) => h.plan.id !== task.id);
+function refuseFlightOverlap(db: WorkDb, plan: WorkTask, who: Who, check: FilesCheck): void {
+  const others = heldPlansIn(allTasks(db, plan.project), who).filter((h) => h.plan.id !== plan.id);
   if (others.length === 0) return;
-  const files = taskById(db, task.id).files;
+  const files = taskById(db, plan.id).files;
   if (files.length === 0) {
     const reserved = others.filter((h) => h.why === "reserved");
     if (reserved.length > 0)
       throw new Error(
-        `${label(task)} has no file list, so it cannot be shown clear of ${reserved.map((h) => label(h.plan)).join(", ")}: set its files first (${TASK_TOOL.update} with files)`,
+        `${label(plan)} has no file list, so it cannot be shown clear of ${reserved.map((h) => label(h.plan)).join(", ")}: set its files first (${TASK_TOOL.update} with files)`,
       );
     return;
   }
   const clashes = overlapsWith(others, files, check);
   if (clashes.length > 0)
     throw new Error(
-      `${label(task)} cannot start, since it overlaps ${clashes.map((c) => overlapText(c.plan, c.overlaps)).join("; ")}. Two plans that share a file never run at once: wait until that plan's pull request merges or closes, or change this plan's files (${TASK_TOOL.update} with files)${mergeFilesNote(check)}`,
+      `${label(plan)} cannot start, since it overlaps ${clashes.map((c) => overlapText(c.plan, c.overlaps)).join("; ")}. Two plans that share a file never run at once: ${clashes.map(wayOut).join("; ")}; or change this plan's files (${TASK_TOOL.update} with files)${mergeFilesNote(check)}`,
     );
+}
+
+/**
+ * The plan row that this update puts into flight, or null. Any task of plan P that starts (the
+ * plan's own task, a phase, a step, or a running task moved into P) puts P into flight, held from
+ * then on whoever owns P (`isInFlight` counts a running phase), so the start is judged the same
+ * way for each. Null when P is already in flight, has no plan row (an older plan) or the task
+ * does not start. Read before the UPDATE, so the answer is P as it was.
+ */
+function enteringPlan(
+  db: WorkDb,
+  task: WorkTask,
+  status: WorkTask["status"],
+  plan: string | null,
+): WorkTask | null {
+  if (status !== "in_progress" || plan === null) return null;
+  if (task.status === "in_progress" && task.plan === plan) return null;
+  const all = allTasks(db, task.project);
+  const row = all.find((t) => t.kind === "plan" && t.plan === plan);
+  return row === undefined || isInFlight(all, row) ? null : row;
 }
 
 /**
@@ -538,6 +575,7 @@ export function applyUpdate(
           ? null
           : { pid: who.pid, procStart: who.procStart, sessionId: who.sessionId }
         : task.claim;
+  const entering = enteringPlan(db, task, status, plan);
   db.sqlite
     .query(
       "UPDATE tasks SET subject=?,description=?,status=?,parent_id=?,plan=?,claim_pid=?,claim_start=?,claim_session=?,updated_at=?,closed_at=?,blocking=?,agent=?,branch=?,worktree=?,base=? WHERE id=?",
@@ -568,8 +606,7 @@ export function applyUpdate(
     refuseHeldOverlap(db, task, who, check);
   }
   // A plan entering flight (a first start, or a reopen) is judged by its list as stored just now.
-  if (task.kind === "plan" && status === "in_progress" && task.status !== "in_progress")
-    refuseFlightOverlap(db, task, who, check);
+  if (entering !== null) refuseFlightOverlap(db, entering, who, check);
   const changed = taskById(db, id);
   recordChange(db, before, changed, who, now, null);
   return changed;

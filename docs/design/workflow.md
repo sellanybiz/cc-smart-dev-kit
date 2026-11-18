@@ -102,7 +102,7 @@ the project config passed in, so no caller reads it for a decision. It is in `PL
 `workflow set` refuses it inside Claude Code and the person commits it themselves (`propose` stays
 open); the person's file refuses it (`PROJECT_ONLY_KEYS`) and `set` needs `--project`. Entries are
 `/`-separated and tidied (`./`, `\`); an absolute path, `..`, the root and the pattern
-characters `*`, `?` and `[` are refused. A folder ends in `/`, and a bare name that is a folder in
+characters `*` and `?` are refused (`[` and `]` stay: no list reaches git as a pathspec, `docs/design/tasks.md`). A folder ends in `/`, and a bare name that is a folder in
 the committed tree is left out of the list, with that in the reason. `workflow show` prints the
 list as written in the working copy, and a second line with the list the plan tools read from the
 base. A project that sets it needs `requires` `>=5.1` (`WORKFLOW_MERGE_FILES_SINCE`), per key: the

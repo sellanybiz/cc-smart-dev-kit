@@ -851,12 +851,16 @@ test("a held plan with no file list and no branch diff is never clear: a hand-ou
   const line = w.line("beta");
   expect(line.state).toBe("blocked");
   expect(line.text).toContain("#1 solo is held with no file list and no branch diff");
-  expect(line.fix).toBe("task_update #1 with files: the paths and folders it changes");
+  expect(line.fix).toBe(
+    "task_update #1 with files: the paths and folders it changes, or finish, park or drop it",
+  );
   expect(markOf("blocked")).toBe("fail");
   for (const answer of [prepareStart(w.base, "beta"), prepareReserve(w.base, "beta")]) {
     if (answer.ok) throw new Error("expected a refusal");
     expect(answer.why).toContain('Plan "beta" is not ready: blocked: #1 solo is held');
-    expect(answer.fix).toBe("task_update #1 with files: the paths and folders it changes");
+    expect(answer.fix).toBe(
+      "task_update #1 with files: the paths and folders it changes, or finish, park or drop it",
+    );
   }
   expect(taskById(w.db, allTasks(w.db, "p")[1]?.id ?? "").lead).toBeNull();
 });

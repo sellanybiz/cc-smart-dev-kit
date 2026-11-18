@@ -43,8 +43,8 @@ import {
   eventsOf,
   freedBy,
   getTask,
-  heldPlansIn,
   inFlightPlanOf,
+  isInFlight,
   isLead,
   isOpen,
   layerOf,
@@ -353,15 +353,18 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
       };
       /**
        * How a plan's start is judged against the plans held for others (the store refuses an
-       * overlap in the start's own write): the `plans.mergeFiles` and case read, taken before the
-       * lock, and only when another plan is held now. With none held it is empty, so a session
-       * that never hands out a plan runs no git here; a plan held between this read and the lock
-       * is judged with nothing ignored, which can only refuse more.
+       * overlap in the start's own write): the real `plans.mergeFiles` and case read, taken before
+       * the lock, whenever this start puts a plan into flight (it has a plan row that is not in
+       * flight yet). A step in a plan that already runs reads nothing, so git runs once per plan
+       * start, never once per step. The store's own default (nothing ignored, case compared) is
+       * for a caller with no read, and is never used on this path.
        */
-      const startCheck = (plan: string | null): { filesCheck?: FilesCheck } =>
-        heldPlansIn(all, who).some((held) => held.plan.plan !== plan)
-          ? { filesCheck: (options.filesCheck ?? planFilesCheck)(cwd) }
-          : {};
+      const startCheck = (plan: string | null): { filesCheck?: FilesCheck } => {
+        const row = all.find((t) => t.kind === "plan" && t.plan === plan);
+        return row === undefined || isInFlight(all, row)
+          ? {}
+          : { filesCheck: (options.filesCheck ?? planFilesCheck)(cwd) };
+      };
       /**
        * Marks the caller's own plan in flight when work in it starts: its task goes from pending
        * to `in_progress` in the same write, claimed by this process. A plan that is not the

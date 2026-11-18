@@ -497,7 +497,8 @@ Herdr terminal. Each plan keeps a file list (`task_update` with `files`, or `tas
 --path`), and the store reserves a plan in one step before its child starts. Two plans that share a
 file never run at once: that holds for a plan handed to a child or reserved by the lead, and for a
 solo start beside one, which is refused until the other plan's pull request merges or closes (or you
-change the files). A reserved plan stays held until its pull request merges or closes; a plan you
+change the files). Two plans of two sessions that share a file are refused the same way, with no
+child at all. A reserved plan stays held until its pull request merges or closes; a plan you
 start yourself and never reserve stops being held once it is done or parked. A plan is also held
 back until the pull request of every plan it waits on has merged. `herdr plans` shows where each stands. A child takes its plan, builds it with
 `/cc-smart-dev-kit:build`, opens its own pull request and reports. `herdr start --plan <slug>`
@@ -2741,7 +2742,7 @@ merge.
 | `alerts.usagePercent` | `85` | The plan usage, in percent, a warning starts at (1–100). |
 | `plans.maxPhases` | `10` | The most phases one plan may hold (a whole number, 1–50). A plan is a short list of areas, each with its tasks; more phases than this is a plan to split. Your own default, or the project's in this checkout's `.claude/cc-smart-dev-kit.json` (`workflow set plans.maxPhases 12 --project`); the project's wins. Only you raise it: `workflow set` and `unset` of it refuse inside Claude Code, so a session cannot lift its own limit (`propose` stays open). A project that sets it needs `"requires": ">=4.8"`. |
 | `plans.runMode` | `ask` | How queued plans run when two or more are laid (§ [Plans for children](#plans-for-children-510)): `ask`, `solo`, `lead-children` or `coordinator`. With `ask` Claude asks once and states each mode's cost. Yours alone: a project file that sets it is refused, because a committed value would spend every teammate's usage. `workflow set` and `unset` of it refuse inside Claude Code and print the command to run in your own terminal. |
-| `plans.mergeFiles` | `[]` | Paths every plan touches and each merge settles (a version manifest, a changelog, a lockfile, build output): the overlap check between plans leaves them out. Repo-relative, a folder ends in `/` (`plugin/dist/`); no `..`, no root, no `*`, `?` or `[`. The project's, with `--project` (`workflow set plans.mergeFiles CHANGELOG.md,plugin/dist/ --project`), and read **only as committed on the base branch**, so a session cannot widen it by editing its own copy; `workflow set` and `unset` of it refuse inside Claude Code (`propose` stays open). A project that sets it needs `"requires": ">=5.1"`. |
+| `plans.mergeFiles` | `[]` | Paths every plan touches and each merge settles (a version manifest, a changelog, a lockfile, build output): the overlap check between plans leaves them out. Repo-relative, a folder ends in `/` (`plugin/dist/`); no `..`, no root, no `*` or `?`. The project's, with `--project` (`workflow set plans.mergeFiles CHANGELOG.md,plugin/dist/ --project`), and read **only as committed on the base branch**, so a session cannot widen it by editing its own copy; `workflow set` and `unset` of it refuse inside Claude Code (`propose` stays open). A project that sets it needs `"requires": ">=5.1"`. |
 
 **Auto-merge is the strictest one.** Even with `autoMerge` on, cc-smart-dev-kit merges by
 itself only when the pull request's base **is** the project's integration base

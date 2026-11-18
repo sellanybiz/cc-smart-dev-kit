@@ -232,7 +232,7 @@ test("task command sets a plan's files with --path, replaces them on set, and cl
   expect((await run("set", "#1", "--path", "src/*.ts")).error).toContain(
     "holds a pattern character",
   );
-  expect((await run("add", "Wild plan", "--plan", "w", "--path", "src/[ab].ts")).error).toContain(
+  expect((await run("add", "Wild plan", "--plan", "w", "--path", "src/?.ts")).error).toContain(
     "holds a pattern character",
   );
   // A task is no plan: it holds no file list.

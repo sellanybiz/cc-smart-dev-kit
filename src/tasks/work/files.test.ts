@@ -10,6 +10,7 @@ import { join } from "node:path";
 import { cliPaths } from "../../cli/paths";
 import { hookEnv, makeRepo } from "../../testing/hooks";
 import { tempDir } from "../../testing/temp";
+import { normalizeMergeFile } from "../../workflow/schema";
 import { createTaskOps, type TaskAnswer } from "../ops";
 import { openWorkDb, workDbFile } from "./db";
 import { allTasks, eventsOf, filesOverlap, normalizePlanFile, planFiles } from "./queries";
@@ -83,11 +84,21 @@ test("an absolute path, a .. and the root are refused, each with the fix", () =>
 });
 
 test("a wildcard or a control character is refused, as plans.mergeFiles refuses it", () => {
-  for (const given of ["src/*.ts", "src/?.ts", "src/[ab].ts", "plugin/dist/*", "a\nb"])
+  for (const given of ["src/*.ts", "src/?.ts", "plugin/dist/*", "a\nb"])
     expect(() => normalizePlanFile(given)).toThrow(/pattern character|control character/);
   expect(() => normalizePlanFile("src/*.ts")).toThrow(
-    'file "src/*.ts" holds a pattern character (*, ? or [): list the path itself, and a whole folder with a trailing /',
+    'file "src/*.ts" holds a pattern character (* or ?): list the path itself, and a whole folder with a trailing /',
   );
+});
+
+test("brackets are plain characters of a path, for a plan's files and for plans.mergeFiles", () => {
+  expect(normalizePlanFile("app/[id]/page.tsx")).toBe("app/[id]/page.tsx");
+  expect(normalizePlanFile("./app/[id]/")).toBe("app/[id]/");
+  expect(normalizeMergeFile("app/[id]/page.tsx")).toEqual({ ok: true, path: "app/[id]/page.tsx" });
+  // And they still overlap by the same rule: the folder holds the file.
+  expect(filesOverlap(["app/[id]/"], ["app/[id]/page.tsx"])).toEqual([
+    { path: "app/[id]/", other: "app/[id]/page.tsx" },
+  ]);
 });
 
 test("two lists overlap when a path is equal or inside the other's folder, and not on a shared prefix", () => {

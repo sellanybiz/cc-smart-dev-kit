@@ -47,7 +47,7 @@ its secret screen knows only common shapes.
   `/cc-smart-dev-kit:plan-task` § 4 and § 5.
 - **`files`** (CLI: `--path`, repeated) is the file list of a **plan task**; any other kind
   refuses it. Each path is repo-relative with `/` separators, and a folder ends in `/`. The call
-  tidies `./` and `\`, and refuses an absolute path, `..` and the repository root. A set
+  tidies `./` and `\`, and refuses an absolute path, `..`, the root, `*` and `?`. A set
   replaces the list (`[]` or `--no-files` clears it). Two plans overlap when a path is equal or
   sits inside the other's folder, except paths the project lists in `plans.mergeFiles`. A plan
   with no list is never handed to a child. `task_get` prints the list. A session opened before
@@ -87,6 +87,7 @@ its secret screen knows only common shapes.
   current session, or by its owner; `force` is the person's. Another session's start in it is refused, and so is the lead's. Its files stay held
   until `herdr plans` releases them (`/cc-smart-dev-kit:build` § Lead + children and coordinator
   modes, `/cc-smart-dev-kit:herdr`); dropping the plan releases them at once.
+  A start of a plan that shares a file with a held plan is refused too, with the plan and the way out.
 - `task_list` reads `mine` (the default), `plan`, `project` (also the open deploy tasks) or
   `all`; ids look like `#12` or `prod-20261117-144503`. An old `T-…` id answers "old task ids
   are gone": the 4.x files are not read; recreate each as a deploy task or delete it.

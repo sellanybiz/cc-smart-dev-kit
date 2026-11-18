@@ -625,7 +625,7 @@ function readiness(
       unlisted
         .map(
           (other) =>
-            `task_update #${other.plan.number} with files: the paths and folders it changes`,
+            `task_update #${other.plan.number} with files: the paths and folders it changes, or finish, park or drop it`,
         )
         .join("; "),
     );

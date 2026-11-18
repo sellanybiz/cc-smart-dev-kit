@@ -725,7 +725,6 @@ describe("plans.mergeFiles: parsing", () => {
     ["plugin/dist/*", "holds a pattern character"],
     ["*.lock", "holds a pattern character"],
     ["src/?.ts", "holds a pattern character"],
-    ["src/[ab].ts", "holds a pattern character"],
   ])("%j is refused (%s)", (raw, why) => {
     const parsed = normalizeMergeFile(raw);
     expect(parsed.ok).toBe(false);

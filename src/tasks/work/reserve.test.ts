@@ -979,7 +979,7 @@ test("a held plan with no file list and no branch diff refuses a reservation, na
   const beta = plan(db, "beta", ["src/b/"], { now: 2 });
   ok(updateTask(db, solo.id, { status: "in_progress" }, OTHER, 3));
   expect(why(reserve(db, "beta"))).toBe(
-    '#1 "solo" is held with no file list: set its files first (task_update on #1 with files)',
+    '#1 "solo" is held with no file list: set its files first (task_update on #1 with files), or finish, park or drop it',
   );
   expect(leadOf(db, beta.id)).toBeNull();
   // Its branch diff is what it holds then, and a plan elsewhere is clear.
@@ -1020,7 +1020,7 @@ test("a solo first start that overlaps a reserved plan is refused, and the plan 
   const words = refused(startPhase(w, OTHER, beta.phase));
   expect(words).toContain('"beta" cannot start, since it overlaps #1 "alpha": src/a/x.ts (src/a/)');
   expect(words).toContain("Two plans that share a file never run at once");
-  expect(words).toContain("wait until that plan's pull request merges or closes");
+  expect(words).toContain('#1 "alpha" is reserved: wait until its pull request merges or closes');
   expect(words).toContain("task_update with files");
   expect(planStatus(w, "beta")).toBe("pending");
 });
@@ -1102,4 +1102,133 @@ test("a plan task started directly, and a task made in progress, are judged the 
     other.close();
   }
   expect(planStatus(w, "beta")).toBe("pending");
+});
+
+const THIRD: Who = { sessionId: "third", pid: 7404, procStart: "74040" };
+
+function statusOf(w: ReturnType<typeof world>, ref: string) {
+  const db = w.store();
+  try {
+    return allTasks(db, w.project).find((t) => `#${t.number}` === ref)?.status;
+  } finally {
+    db.close();
+  }
+}
+function numberOf(w: ReturnType<typeof world>, subject: string) {
+  const db = w.store();
+  try {
+    const found = allTasks(db, w.project).find((t) => t.subject === subject);
+    if (found === undefined) throw new Error(`no task "${subject}"`);
+    return `#${found.number}`;
+  } finally {
+    db.close();
+  }
+}
+
+test("a phase started by a session that does not own the plan is judged like the owner's start", () => {
+  const w = world();
+  laidPlan(w, LEAD, "alpha", ["src/a/"]);
+  const beta = laidPlan(w, OTHER, "beta", ["src/a/x.ts"]);
+  expect(ok(reserveIn(w, "alpha", LEAD)).lead).not.toBeNull();
+  // A third session starts the phase of OTHER's plan: the plan goes into flight all the same.
+  expect(refused(startPhase(w, THIRD, beta.phase))).toContain(
+    'cannot start, since it overlaps #1 "alpha": src/a/x.ts (src/a/)',
+  );
+  expect(statusOf(w, beta.phase)).toBe("pending");
+  expect(planStatus(w, "beta")).toBe("pending");
+});
+
+test("a step started in a plan that is not in flight is judged too, and a step in a running plan is not", () => {
+  const w = world();
+  laidPlan(w, LEAD, "alpha", ["src/a/"]);
+  const beta = laidPlan(w, OTHER, "beta", ["src/a/x.ts"]);
+  const gamma = laidPlan(w, THIRD, "gamma", ["lib/g/"]);
+  expect(ok(reserveIn(w, "alpha", LEAD)).lead).not.toBeNull();
+  const betaStep = numberOf(w, "beta step");
+  const gammaStep = numberOf(w, "gamma step");
+  const third = w.ops(THIRD);
+  try {
+    expect(refused(third.call("update", { task: betaStep, status: "in_progress" }))).toContain(
+      'overlaps #1 "alpha"',
+    );
+    expect(statusOf(w, beta.phase)).toBe("pending");
+    expect(planStatus(w, "beta")).toBe("pending");
+    // A disjoint plan runs; its later steps need no new judgment.
+    said(third.call("update", { task: gamma.phase, status: "in_progress" }));
+    said(third.call("update", { task: gammaStep, status: "in_progress" }));
+    expect(planStatus(w, "gamma")).toBe("in_progress");
+  } finally {
+    third.close();
+  }
+});
+
+test("the way out of an overlap follows why the plan is held: a reserved plan merges, a running one is done or parked", () => {
+  const w = world();
+  const solo = laidPlan(w, LEAD, "solo", ["src/s/"]);
+  laidPlan(w, OTHER, "alpha", ["src/a/"]);
+  const beta = laidPlan(w, THIRD, "beta", ["src/a/x.ts", "src/s/y.ts"]);
+  said(startPhase(w, LEAD, solo.phase));
+  expect(ok(reserveIn(w, "alpha", OTHER)).lead).not.toBeNull();
+  const words = refused(startPhase(w, THIRD, beta.phase));
+  expect(words).toContain('#1 "solo" is running: wait until it is done or parked');
+  expect(words).toContain("if its session is gone, take it (task_take), or park or drop it");
+  expect(words).toContain('#4 "alpha" is reserved: wait until its pull request merges or closes');
+  expect(words).toContain("or change this plan's files (task_update with files)");
+});
+
+/** Ops that count how often the files check is read, and what it says. */
+function countingOps(
+  w: ReturnType<typeof world>,
+  who: Who,
+  check = { ignore: [] as string[], caseFold: false },
+) {
+  const reads = { count: 0 };
+  const ops = createTaskOps({
+    stateDir: w.paths.stateDir,
+    env: w.env,
+    cwd: () => w.repo,
+    caller: () => ({ ...who, cwd: w.repo }),
+    filesCheck: () => {
+      reads.count += 1;
+      return { ...check, reason: null };
+    },
+  });
+  return { ops, reads };
+}
+
+test("the files check is read once when a plan goes into flight, and never for a step in a running plan", () => {
+  const w = world();
+  const alpha = laidPlan(w, LEAD, "alpha", ["src/a/"]);
+  const { ops, reads } = countingOps(w, LEAD);
+  try {
+    said(ops.call("create", { subject: "second phase", plan: "alpha", phase: "B" }));
+    const second = numberOf(w, "second phase");
+    said(ops.call("create", { subject: "its step", parent: second }));
+    said(ops.call("update", { task: alpha.phase, status: "in_progress" }));
+    expect(reads.count).toBe(1);
+    said(ops.call("update", { task: second, status: "in_progress" }));
+    expect(reads.count).toBe(1);
+  } finally {
+    ops.close();
+  }
+});
+
+test("a start is judged with the files check the caller read: plans.mergeFiles and case", () => {
+  const w = world();
+  laidPlan(w, LEAD, "alpha", ["CHANGELOG.md", "src/A.ts"]);
+  const beta = laidPlan(w, OTHER, "beta", ["CHANGELOG.md"]);
+  const gamma = laidPlan(w, THIRD, "gamma", ["src/a.ts"]);
+  expect(ok(reserveIn(w, "alpha", LEAD)).lead).not.toBeNull();
+  const ignoring = countingOps(w, OTHER, { ignore: ["CHANGELOG.md"], caseFold: true });
+  const folding = countingOps(w, THIRD, { ignore: ["CHANGELOG.md"], caseFold: true });
+  try {
+    // The merge file takes no part, so beta is clear of alpha; gamma differs from alpha only in case.
+    said(ignoring.ops.call("update", { task: beta.phase, status: "in_progress" }));
+    expect(
+      refused(folding.ops.call("update", { task: gamma.phase, status: "in_progress" })),
+    ).toContain('overlaps #1 "alpha": src/a.ts (src/A.ts)');
+  } finally {
+    ignoring.ops.close();
+    folding.ops.close();
+  }
 });

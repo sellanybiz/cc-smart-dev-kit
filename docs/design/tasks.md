@@ -362,8 +362,8 @@ columns on `tasks`: the lead (`lead_session`, `lead_pid`, `lead_start`), the hol
 
 **Files.** `task_create` and `task_update` take `files` for a plan task only (CLI: `--path`, repeated;
 `--no-files` clears). Each path is repo-relative with `/`, a folder ends in `/`; `./` and `\` are
-tidied, and an absolute path, `..`, the root, a control character and `*`, `?` or `[` (a wildcard
-would overlap nothing) are refused. The rule is `normalizeRepoPath` (`src/workflow/repo-path.ts`),
+tidied, and an absolute path, `..`, the root, a control character and `*` or `?` (a wildcard
+would overlap nothing; `[` and `]` are plain characters of a name, as in `app/[id]/page.tsx`) are refused. The rule is `normalizeRepoPath` (`src/workflow/repo-path.ts`),
 the one `plans.mergeFiles` follows too. The list replaces the stored one and
 is in the task's history (`files` and `lead` are history fields). `task_get` prints a `Files:` line
 and, for a reserved plan, `Reserved for: session … (a child builds it | the lead builds it) ·
@@ -379,7 +379,8 @@ files are its stored list plus, for a plan with a recorded branch, the branch di
 before the transaction (`extraFiles`). `task_update` of `files` on a held plan refuses an overlap
 with another held plan, from stored lists only, in the transaction. A held plan with no stored
 list and no branch diff holds nothing a check can find, and unknown is never clear: a reservation
-or hand-out beside it is refused, with the plan named and `task_update` with `files` as the fix.
+or hand-out beside it is refused, with the plan named and the fix: set its files, or finish, park
+or drop it. A plan already in flight when 5.1.0 is installed has no list, so it reads this way.
 
 **`reservePlan`** runs inside `writeWork`. It refuses a caller that does not own the plan or has no
 session, a plan that is not pending, one that is already reserved, one with no file list, one with an
@@ -412,15 +413,21 @@ for another lead or owned by another session, with the hint to take it first wit
 brief names. The lead never starts a plan whose holder is a child, owned or not: release it first
 or let the child build it. Every existing refusal and message is unchanged.
 
-**The solo first start.** A plan going into flight (its first phase or task started, or its own
-task set to `in_progress`) is judged in the same write (`refuseFlightOverlap`, `store.ts`), over
-stored lists with the same `filesOverlap` and `plans.mergeFiles` read before the lock, against
-every held plan but its own: a plan reserved for another lead or child, or in flight in another
-session. An overlap is refused, naming the plan and the ways out (wait for its pull request, or
-change the files). A plan with no list is refused while a **reserved** plan is held, with the fix;
-beside another session's unreserved plan alone it starts as before, so a session that hands out
-no plan sees no new refusal. The plan's own reservation, as the lead's `self` or a child's take of
-its hand-out, never counts against it.
+**The solo first start.** A plan going into flight is judged in the same write
+(`refuseFlightOverlap`, `store.ts`), over stored lists with the same `filesOverlap`, against every
+held plan but its own: a plan reserved for another lead or child, or in flight in another session.
+Any task of the plan that starts puts it into flight, so any of them is judged (`enteringPlan`): its
+own task, a phase, a step, and a running task moved into it, whoever owns the plan. A plan already
+in flight is not judged again. The `plans.mergeFiles` and case read (`planFilesCheck`) is taken
+before the lock, once for each such start and never for a step in a running plan. An overlap is
+refused, naming the plan and the way out for each plan in the way: a reserved plan holds its files
+until its pull request merges or closes; a plan in flight, until it is done or parked, and if its
+session is gone, take it (`task_take`), or park or drop it. Changing this plan's files is the other
+way out. A plan with no list is refused while a **reserved** plan is held, with the fix. Beside
+another session's unreserved plan alone it starts as before, and a plan whose list overlaps that
+plan is refused: only a list can show it. A session that hands out no plan, and has no other
+session's plan in flight, sees no new refusal. The plan's own reservation, as the lead's `self` or
+a child's take of its hand-out, never counts against it.
 
 **The classifier** (`classifyLeadPlans`, `src/tasks/work/lead-plans.ts`) is the store-only reader
 the status line and the keep-going hook share: no git, no gh, no hc. For the plans this caller

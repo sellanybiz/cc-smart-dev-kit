@@ -140,7 +140,7 @@ export function normalizeMergeFile(raw: string): MergeFilePath {
   const shown = JSON.stringify(raw);
   const why: Record<RepoPathProblem, string> = {
     control: `${shown} holds a control character`,
-    pattern: `${shown} holds a pattern character (*, ? or [): name the path itself, and a whole folder with a trailing / (like plugin/dist/)`,
+    pattern: `${shown} holds a pattern character (* or ?): name the path itself, and a whole folder with a trailing / (like plugin/dist/)`,
     root: `${shown} is the root: name the files or folders under it`,
     absolute: `${shown} is absolute: write it relative to the repository root`,
     up: `${shown} leaves the repository: no .. segments`,
