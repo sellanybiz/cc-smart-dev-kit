@@ -384,9 +384,16 @@ name, it reads the person's commands in `.husky/<name>`, and a stub with none be
 The text is classified **any-heavy**: one heavy command anywhere in it makes the hook heavy,
 because nothing is hidden (the git line is still visible to the person's rules). A package script
 in it is followed into its body (`bun run typecheck` reads as `tsc`). A hook that only starts a
-manager (`lefthook run pre-commit`) is queued when a kind of the project matches that command,
-for example `{ "tool": "lefthook", "sub": ["run"] }`; the managers' own files (lefthook's and
-pre-commit's YAML) are not read. A binary file, or a file over 256 KB, is run as it is.
+manager is queued only when a kind of the project matches a command in that hook's text. The
+hook lefthook writes (`lefthook install`) ends with `call_lefthook run "pre-push" "$@"`, a shell
+function, and inside it runs `lefthook -h` and `lefthook "$@"`: `lefthook run` is never a
+command of the file. So the kind `{ "tool": "lefthook" }`, with no `sub`, queues it (proved
+against lefthook's own template, `src/jobs/git-hooks.test.ts`), and `{ "tool": "lefthook",
+"sub": ["run"] }` does not; it only matches a hook you wrote that calls `lefthook run …`
+directly. The kind then queues every lefthook hook of the project, whatever its YAML runs. The
+managers' own files (lefthook's and pre-commit's YAML) are not read, and no kind is proved for
+the pre-commit framework's generated hook. A binary file, or a file over 256 KB, is run as it
+is.
 
 ## One job per name: `--exclusive`
 
@@ -558,8 +565,10 @@ only the heavy-job count. The queue never changes process priority. An old
   called light: it keeps its slot. A `job run` you type holds a slot for a watch run too.
 - **Multi-package script forms are not read** (`--filter`, `-r`, `--workspaces`, `turbo`,
   `nx`): the line runs raw, or takes the slot of the kind you gave it.
-- **lefthook's and pre-commit's YAML files are not read.** A hook that only starts one is queued
-  when a kind of the project matches the command that starts it (§ Git hooks).
+- **lefthook's and pre-commit's YAML files are not read.** What their hooks run is invisible: a
+  generated lefthook hook is queued only by a kind with `{ "tool": "lefthook" }` (every
+  lefthook hook then waits), not by `lefthook run`; the pre-commit framework's has no proved kind
+  (§ Git hooks).
 - **`tsc` on named files ignores `tsconfig.json`** and may pull in the whole import graph of
   those files, so a "light" run can still be large. Name few, narrow files.
 - **vitest and `bun test` file arguments are filters**, not exact files. A named file that exists
