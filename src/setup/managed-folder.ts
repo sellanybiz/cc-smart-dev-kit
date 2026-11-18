@@ -53,7 +53,7 @@ const DIR_MODE = 0o755;
 export const OWNED_FOLDER_MARK = ".cc-smart-dev-kit-owned";
 
 const OWNED_FOLDER_MARK_TEXT =
-  "cc-smart-dev-kit made this folder and replaces it whole; `cc-smart-dev-kit restore` removes it.\n";
+  "cc-smart-dev-kit made this folder and writes every file in it; `cc-smart-dev-kit restore` removes it.\n";
 
 /** True when `folder` holds the mark: cc-smart-dev-kit made it. */
 function markedOwned(folder: string): boolean {

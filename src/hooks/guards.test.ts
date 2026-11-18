@@ -226,7 +226,7 @@ describe("the main-folder guard: plan mode's plan file", () => {
       await runHook(mainFolderGuardHook, edit(repo, join(repo, ".claude/plans/x.md")), hookEnv()),
     ).toEqual({});
     expect(
-      await runHook(mainFolderGuardHook, edit(repo, join(repo, ".claude/rules/x.md")), hookEnv()),
+      await runHook(mainFolderGuardHook, edit(repo, join(repo, ".claude/agents/x.md")), hookEnv()),
     ).toEqual(deny(mainFolderRefusal(repo)));
     expect(
       await runHook(mainFolderGuardHook, edit(repo, join(repo, ".claude/plans-x/x.md")), hookEnv()),
@@ -451,7 +451,7 @@ describe("the main-folder guard: Bash writes", () => {
       await runHook(mainFolderGuardHook, bash(repo, "echo x > .claude/plans/p.md"), hookEnv()),
     ).toEqual({});
     expect(
-      await runHook(mainFolderGuardHook, bash(repo, "echo x > .claude/rules/r.md"), hookEnv()),
+      await runHook(mainFolderGuardHook, bash(repo, "echo x > .claude/agents/r.md"), hookEnv()),
     ).toEqual(refused(repo));
     // One write in the plans folder does not excuse another in the repo.
     expect(
