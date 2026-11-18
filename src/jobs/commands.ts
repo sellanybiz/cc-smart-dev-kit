@@ -1,4 +1,4 @@
-/** The heavy-job command: run, status and kinds. */
+/** The heavy-job command: run, status, kinds, and the git hooks' question (`hook`). */
 import { readdirSync } from "node:fs";
 import { hostname } from "node:os";
 import { COMMAND } from "../build-info";
@@ -14,6 +14,7 @@ import {
   readHeavyLimit,
   setHeavyLimit,
 } from "./config";
+import { projectKinds, runHookCommand } from "./hook-command";
 import { type Kinds, mergeKinds } from "./kinds";
 import { exitCodeOf, spawnAndWait } from "./launch";
 import { acquireFrom, pidsHolding, WaitStoppedError } from "./queue";
@@ -36,6 +37,8 @@ Commands:
   status         Limit, its source, running jobs and waiting jobs.
   set max <n>    Set the machine limit (${HEAVY_SLOTS}..${MAX_HEAVY_SLOTS}); default ${HEAVY_SLOTS}.
   kinds          The kinds of heavy job.
+  hook <name>    For the kit's git hooks: prints "direct" or "queue <kind>" for git
+                 hook <name> in this repo. Always ends with 0.
 
 How it works: docs/jobs.md in the plugin's repo.`;
 
@@ -60,11 +63,6 @@ function envFilesIn(dir: string): string[] {
 function isLightRun(command: readonly string[], kinds: Kinds, cwd: string): boolean {
   const line = command.map(shellWord).join(" ");
   return runWeight(line, kinds, diskWeightSource(cwd)).weight === "light";
-}
-
-function projectKinds(cwd: string): Kinds {
-  const project = resolveProject(cwd);
-  return mergeKinds(project?.config?.jobs?.kinds);
 }
 
 interface RunArgs {
@@ -313,6 +311,8 @@ export async function runJobCommand(args: readonly string[], ctx: JobContext): P
       return jobStatus(ctx);
     case "kinds":
       return jobKinds(ctx);
+    case "hook":
+      return runHookCommand(rest, ctx);
     case undefined:
     case "help":
     case "--help":

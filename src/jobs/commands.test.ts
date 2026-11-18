@@ -163,6 +163,14 @@ test("bad kind and missing command never launch", async () => {
   expect(await runJobCommand(["run", "--kind", "tsc", "--"], ctx)).toBe(2);
 });
 
+// `job hook <name>` is the script's question; its answers are tested in hook-command.test.ts. A
+// name the folder holds no script for is answered without git.
+test("job hook answers through the job command, and always ends with 0", async () => {
+  const { ctx, lines } = world();
+  expect(await runJobCommand(["hook", "not-a-hook"], ctx)).toBe(0);
+  expect(lines).toEqual(["direct"]);
+});
+
 // `job run --hook`: a git hook from the kit's hooks folder, which `job hook` already judged heavy.
 // commit-msg gets git's message file as its one word, which the named-file rule read as a light
 // run, so the hook never took a slot.

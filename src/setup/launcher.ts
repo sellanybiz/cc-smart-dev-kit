@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import { PLUGIN_ID } from "../build-info";
-import { shellQuote, shellWord } from "../shell/quote";
+import { shellQuote } from "../shell/quote";
 import { type WriteOutcome, writeManagedFile } from "./write";
 
 export const LAUNCHER_NAME = "cc-smart-dev-kit";

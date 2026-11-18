@@ -40,7 +40,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { COMMAND } from "../build-info/names";
-import { type GitRun, GUARD_GIT_TIMEOUT_MS, runGitAsync } from "../hooks/git";
+import { GIT_TIMED_OUT, type GitRun, GUARD_GIT_TIMEOUT_MS, runGitAsync } from "../hooks/git";
 import type { Env } from "../hooks/run";
 import type { Checkout } from "../project/resolve";
 import { COMMIT_SHA, type TrustedReview } from "./reviews";
@@ -339,7 +339,7 @@ async function measure(
     const left = (git.timeFor ?? ((limit: number) => limit))(GUARD_GIT_TIMEOUT_MS);
     if (left <= 0) throw new Uncovered("the time to measure the change after the review ran out");
     const result = await (git.run ?? runGitAsync)(checkout.root, args, git.env, left, own);
-    if (result.code === null && result.err === "timed out") {
+    if (result.code === null && result.err === GIT_TIMED_OUT) {
       throw new Uncovered("the time to measure the change after the review ran out");
     }
     return result;

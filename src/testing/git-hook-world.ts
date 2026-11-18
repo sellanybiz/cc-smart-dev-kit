@@ -10,7 +10,8 @@ import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { type CliPaths, cliPaths } from "../cli/paths";
 import { installGitHooksFolder } from "../jobs/hook-folder";
-import { LAUNCHER_NAME, shellQuote } from "../setup/launcher";
+import { LAUNCHER_NAME } from "../setup/launcher";
+import { shellQuote } from "../shell/quote";
 import { cleanGitEnv, git, tempDir } from "./temp";
 
 export interface GitRun {

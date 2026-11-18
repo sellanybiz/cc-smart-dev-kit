@@ -10,7 +10,7 @@
 
 import { closeSync, openSync, readSync, statSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import { GUARD_GIT_TIMEOUT_MS, runGit } from "../hooks/git";
+import { GIT_TIMED_OUT, GUARD_GIT_TIMEOUT_MS, runGit } from "../hooks/git";
 import { classifyHeavyCommand, type ScriptSource } from "./classify";
 import type { Kinds } from "./kinds";
 
@@ -89,8 +89,8 @@ export function realHooksFolder(
 ): string | null | typeof TIMED_OUT {
   if (timeoutMs <= 0) return TIMED_OUT;
   const run = runGit(cwd, HOOKS_PATH_ARGS, env, timeoutMs, { GIT_CONFIG_COUNT: "0" });
-  // `runGit` says "timed out" (and no exit code) when its timeout stopped git (`GitRun.err`).
-  if (run.code === null && run.err === "timed out") return TIMED_OUT;
+  // No exit code and `GIT_TIMED_OUT`: the timeout stopped git.
+  if (run.code === null && run.err === GIT_TIMED_OUT) return TIMED_OUT;
   return run.ok && run.out !== "" ? run.out : null;
 }
 

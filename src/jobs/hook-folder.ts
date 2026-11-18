@@ -18,7 +18,7 @@ import { join } from "node:path";
 import { COMMAND, PLUGIN } from "../build-info";
 import type { CliPaths } from "../cli/paths";
 import { findUserInstall } from "../setup/installed-plugins";
-import { LAUNCHER_NAME, shellQuote } from "../setup/launcher";
+import { LAUNCHER_NAME } from "../setup/launcher";
 import { withLock } from "../setup/lock";
 import {
   type ManagedFolderResult,
@@ -27,6 +27,7 @@ import {
   writeManagedFiles,
 } from "../setup/managed-folder";
 import { realTarget } from "../setup/write";
+import { shellQuote } from "../shell/quote";
 import { HOOK_NAMES } from "./git-hooks";
 
 /** The scripts must run: owner, group and others may execute them (git's own check is `X_OK`). */

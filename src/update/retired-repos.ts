@@ -26,8 +26,8 @@ import {
 import { retiredFieldsOf, WORKTREE_ENGINE_RETIRED_IN } from "../project/config";
 import { type Checkout, locateCheckout, locateCheckoutAsync } from "../project/resolve";
 import { sessionWorkFolders } from "../sessions/command";
-import { shellWord } from "../shell/quote";
 import { parseUserJson } from "../setup/user-json";
+import { shellWord } from "../shell/quote";
 
 type Env = Record<string, string | undefined>;
 
