@@ -9465,7 +9465,7 @@ function nestedCommand(program, args, pipedFrom = null) {
     if (script !== undefined)
       return script;
     if (!shellTakesStdin(args))
-      return;
+      return jobRunLine(program, args);
     const here = args.findIndex((arg) => arg === "<<<" || arg.startsWith("<<<"));
     if (here !== -1) {
       const word = args[here] ?? "";
@@ -9474,30 +9474,32 @@ function nestedCommand(program, args, pipedFrom = null) {
     return pipedFrom === null ? undefined : writtenText(pipedFrom) ?? undefined;
   }
   if (program === "find")
-    return findCommands(args);
+    return findCommands(args) ?? jobRunLine(program, args);
   if (program === "watch")
-    return watchCommand(args);
+    return watchCommand(args) ?? jobRunLine(program, args);
   if (program === "su")
-    return suCommand(args);
+    return suCommand(args) ?? jobRunLine(program, args);
   if (program === "parallel")
-    return parallelCommand(args);
+    return parallelCommand(args) ?? jobRunLine(program, args);
   if (program === "cmd") {
     const at = args.findIndex((arg) => /^\/[ck]$/i.test(arg));
-    return at === -1 ? undefined : args.slice(at + 1).join(" ");
+    return at === -1 ? jobRunLine(program, args) : args.slice(at + 1).join(" ");
   }
   if (program === "powershell" || program === "pwsh") {
     const at = args.findIndex((arg) => arg.length > 1 && "-command".startsWith(arg.toLowerCase()));
-    return at === -1 ? undefined : args.slice(at + 1).join(" ");
+    return at === -1 ? jobRunLine(program, args) : args.slice(at + 1).join(" ");
   }
   if (program === "eval" || program === "iex" || program === "invoke-expression") {
     return args.join(" ");
   }
+  return jobRunLine(program, args);
+}
+function jobRunLine(program, args) {
   const queued = jobRunArguments(program, args);
-  if (queued !== null) {
-    const dashes = queued.indexOf("--");
-    return dashes === -1 || dashes === queued.length - 1 ? undefined : queued.slice(dashes + 1).map(shellQuote).join(" ");
-  }
-  return;
+  if (queued === null)
+    return;
+  const dashes = queued.indexOf("--");
+  return dashes === -1 || dashes === queued.length - 1 ? undefined : queued.slice(dashes + 1).map(shellQuote).join(" ");
 }
 function nestedDialect(program) {
   return ["iex", "invoke-expression", "powershell", "pwsh"].includes(program) ? "powershell" : "bash";
