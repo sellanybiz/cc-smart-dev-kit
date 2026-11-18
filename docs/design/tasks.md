@@ -181,7 +181,9 @@ checkout's working copy through the normal workflow resolver:
   the starting process, as any started task). A plan started under 4.8.0, which never set its
   task, is in flight too while one of its phases is `in_progress`, and so is a plan whose work
   another session started (`isInFlight` in `queries.ts`: a phase or a step of it is `in_progress`,
-  whatever its own task says). A caller's plan in flight (`inFlightPlanOf`: an own plan, judged on
+  whatever its own task says). Only a session's work counts: a running task no session made and
+  no process claims, such as an imported item, puts no plan in flight (§ Setup and the move from
+  older lists). A caller's plan in flight (`inFlightPlanOf`: an own plan, judged on
   the plan's own task `owns`) is normally one. After a `task_take` it may hold two: the one with
   work in progress counts first, else the lower number. Another session's plan never counts.
   A plan stays in flight until its own `task_done`, so its final review and fix pass belong to
@@ -190,9 +192,9 @@ checkout's working copy through the normal workflow resolver:
   (`task_update` or `task_create` with `in_progress`, the plan task's own start too) is
   refused while the caller has a plan in flight (`refuseOtherPlan`); the refusal names that
   plan and the ways forward: finish it (`task_done` on its `#n`), or park it in two calls
-  (the plan task to `pending`, then a `parked:` note). For a plan started under 4.8.0, whose
-  task never ran, it says to stop the running phase instead, since there is no status to set
-  back. The refusal does not depend on owning the target: a queued plan the caller's process
+  (the plan task to `pending`, then a `parked:` note). For a plan whose task never ran, there is
+  no status to set back, so it says to stop the work running in it instead: the running phase of
+  a plan started under 4.8.0, or else each running task by `#n` (`stopOrPark`). The refusal does not depend on owning the target: a queued plan the caller's process
   made under an earlier session id (`/clear`), or another session laid but never started, is
   judged too. Only a plan another process holds a live claim in (`claimState`: another
   session's running work), and a plan with no task, are left alone.
@@ -744,6 +746,13 @@ name matched in any case, an entry with an empty item name as the list's own rec
 `done`, `dropped`, `completed` and `failed` as closed. Each task keeps claude-mem's first and
 last entry times, so `tasks.staleDays` hides an old one; its history says when the kit
 imported it. A name longer than a subject may be is cut, and kept whole in the description.
+An item claude-mem marks `doing` is stored `in_progress`, with no maker and no claim. It is no
+session's work: the import is the kit's own write, so it is never judged as a plan's start
+(`insertTask` with a `reason`), and the item holds no plan (`isInFlight`). A start by a
+Claude process claims the task, and a task a session makes keeps its session id, so a session's
+work counts. Two starts store neither, and hold no plan: one from a terminal with no Claude
+identity, and one by a session known only by its id (no Claude process found) of a task no
+session made.
 `--dry-run` makes every write and rolls them all back (`writeWork`'s `rehearse`), so it
 refuses what the real run refuses.
 

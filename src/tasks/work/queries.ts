@@ -207,13 +207,31 @@ export function livePhaseCount(all: readonly WorkTask[], plan: string): number {
   return all.filter((t) => t.kind === "phase" && t.plan === plan && t.status !== "dropped").length;
 }
 
+/** The phases and steps of `plan` that are `in_progress`, whoever runs them, in number order. */
+export function runningTasksOf(all: readonly WorkTask[], plan: string | null): WorkTask[] {
+  if (plan === null) return [];
+  return all.filter((t) => t.kind !== "plan" && t.plan === plan && t.status === "in_progress");
+}
+
 /**
- * Whether a phase or a step of the plan is `in_progress`: work running now, whatever the plan task
- * says. A step counts like a phase: work in the plan is work in the plan, and a plan that runs
- * holds its files (`heldPlansIn`) whichever task of it was started.
+ * Whether a task is some session's work: a session made it (`createdBy`, or its process,
+ * `creator`) or a process claims it. A session's own start always stores one of them: a task it
+ * makes keeps its session id, and a start by a process claims the task. A task with none is no
+ * session's (`ownerOf` gives it to none): an imported claude-mem item, or one a terminal with no
+ * Claude identity made and started.
+ */
+function isSessionWork(task: WorkTask): boolean {
+  return task.createdBy !== null || task.creator !== null || task.claim !== null;
+}
+
+/**
+ * Whether a phase or a step of the plan is `in_progress` as a session's work: work running now,
+ * whatever the plan task says. A step counts like a phase: work in the plan is work in the plan,
+ * and a plan that runs holds its files (`heldPlansIn`) whichever task of it was started. A task
+ * no session runs (`isSessionWork`) holds nothing: an import must not hold a plan no one builds.
  */
 function hasRunningTask(all: readonly WorkTask[], plan: WorkTask): boolean {
-  return all.some((p) => p.kind !== "plan" && p.plan === plan.plan && p.status === "in_progress");
+  return runningTasksOf(all, plan.plan).some(isSessionWork);
 }
 
 /**

@@ -497,8 +497,8 @@ Herdr terminal. Each plan keeps a file list (`task_update` with `files`, or `tas
 --path`), and the store reserves a plan in one step before its child starts. Two plans that share a
 file never run at once: that holds for a plan handed to a child or reserved by the lead, and for a
 solo start beside one, which is refused until the other plan's pull request merges or closes (or you
-change the files). Two plans of two sessions that share a file are refused the same way, with no
-child at all. A reserved plan stays held until its pull request merges or closes; a plan you
+change the files). A plan whose list overlaps another session's running plan is refused too,
+until that plan is done or parked. A reserved plan stays held until its pull request merges or closes; a plan you
 start yourself and never reserve stops being held once it is done or parked. A plan is also held
 back until the pull request of every plan it waits on has merged. `herdr plans` shows where each stands. A child takes its plan, builds it with
 `/cc-smart-dev-kit:build`, opens its own pull request and reports. `herdr start --plan <slug>`

@@ -7,7 +7,7 @@
  * resolver.
  */
 import { TASK_TOOL } from "./words";
-import { isOpen, livePhaseCount, PARK_NOTE_PREFIX } from "./work/queries";
+import { isOpen, livePhaseCount, PARK_NOTE_PREFIX, runningTasksOf } from "./work/queries";
 import type { WorkStatus, WorkTask } from "./work/types";
 
 /** What `planInTheWay` judges: the caller's plan in flight, and the plan work would start in. */
@@ -63,8 +63,8 @@ export function planInTheWay(options: OtherPlanCheck): WorkTask | null {
 /**
  * Refuses starting work in a plan while the caller has another plan in flight
  * (`inFlightPlanOf`): a session runs one plan at a time. The words name the plan in flight and
- * the ways forward: finish it, or park it (two calls), or, for a plan started under 4.8.0 whose
- * task never ran, stop its running phase. The target need not be the caller's own: a plan
+ * the ways forward: finish it, or park it (two calls), or, for a plan whose task never ran, stop
+ * the work running in it (`stopOrPark`). The target need not be the caller's own: a plan
  * another session made but never started (queued) is judged too, so a `/clear` that gave the
  * process a new session id cannot slip past. Only a plan claimed live by another process
  * (`claimedElsewhere`) is that session's own work and is left alone, and a plan with no task
@@ -92,15 +92,26 @@ export function refuseOtherPlan(options: OtherPlanCheck): void {
   }
   const n = inFlight.number;
   const finish = `Finish "${inFlight.plan}" (${TASK_TOOL.done} on its #${n} once its phases are closed)`;
-  // A plan started under 4.8.0 never set its task, so there is nothing to set back: it is in
-  // flight only while a phase runs.
-  const park =
-    inFlight.status === "in_progress"
-      ? `park it in two calls: ${TASK_TOOL.update} with task "#${n}" and status "pending" (refused while any phase or task of "${inFlight.plan}" is running, so stop that first), then ${TASK_TOOL.note} on "#${n}" with a note that starts "${PARK_NOTE_PREFIX}" and says why`
-      : `stop its running phase (finish it with ${TASK_TOOL.done}, or set it back to pending with ${TASK_TOOL.update}); "${inFlight.plan}" was started before plans carried their own status, so it is in flight only while a phase runs`;
   throw new Error(
-    `Plan "${inFlight.plan}" (#${n}) is in flight: your session runs one plan at a time. Do not start work in plan "${plan}" yet. ${finish}, or ${park}.`,
+    `Plan "${inFlight.plan}" (#${n}) is in flight: your session runs one plan at a time. Do not start work in plan "${plan}" yet. ${finish}, or ${stopOrPark(options.all, inFlight)}.`,
   );
+}
+
+/**
+ * The second way out of the one-plan refusal. A plan whose task runs is parked. One whose task is
+ * still pending runs only while its work does (`isInFlight`), so there is nothing to park: that
+ * work stops. When only phases run, the plan was started under 4.8.0, which never set its task;
+ * otherwise the running work is named by number (another session may have started a step).
+ */
+function stopOrPark(all: readonly WorkTask[], inFlight: WorkTask): string {
+  const n = inFlight.number;
+  if (inFlight.status === "in_progress")
+    return `park it in two calls: ${TASK_TOOL.update} with task "#${n}" and status "pending" (refused while any phase or task of "${inFlight.plan}" is running, so stop that first), then ${TASK_TOOL.note} on "#${n}" with a note that starts "${PARK_NOTE_PREFIX}" and says why`;
+  const running = runningTasksOf(all, inFlight.plan);
+  if (running.every((t) => t.kind === "phase"))
+    return `stop its running phase (finish it with ${TASK_TOOL.done}, or set it back to pending with ${TASK_TOOL.update}); "${inFlight.plan}" was started before plans carried their own status, so it is in flight only while a phase runs`;
+  const them = running.length === 1 ? "it" : "them";
+  return `stop the work running in "${inFlight.plan}" (${running.map((t) => `#${t.number}`).join(", ")}): finish ${them} (${TASK_TOOL.done}), or set ${them} back to pending (${TASK_TOOL.update} with status "pending")`;
 }
 
 /**
@@ -114,9 +125,7 @@ export function refuseParkWhileBusy(
   status: WorkStatus | undefined,
 ): void {
   if (task.kind !== "plan" || task.status !== "in_progress" || status !== "pending") return;
-  const running = all.filter(
-    (t) => t.kind !== "plan" && t.plan === task.plan && t.status === "in_progress",
-  );
+  const running = runningTasksOf(all, task.plan);
   if (running.length === 0) return;
   throw new Error(
     `Plan "${task.plan}" (#${task.number}) has work in progress (${running.map((t) => `#${t.number}`).join(", ")}): do not park it yet. Finish that work (${TASK_TOOL.done}), or set it back to pending (${TASK_TOOL.update} with status "pending"), then park the plan.`,

@@ -7,12 +7,14 @@ import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { COMMAND } from "../../build-info/names";
 import { cliPaths } from "../../cli/paths";
+import { claudeMemDb } from "../../testing/claude-mem-db";
 import { hookEnv, makeRepo } from "../../testing/hooks";
 import { tempDir } from "../../testing/temp";
 import { folderProject } from "../context";
 import { createTaskOps, type TaskAnswer } from "../ops";
 import { openWorkDb, workDbFile } from "./db";
 import { sessionEnded } from "./identity";
+import { importClaudeMem } from "./import-claude-mem";
 import { classifyLeadPlans, type LeadPlanState } from "./lead-plans";
 import { allTasks, eventsOf, heldPlans, isLead, taskById } from "./queries";
 import {
@@ -1306,4 +1308,136 @@ test("a step started in a plan holds the plan, so a later reservation that overl
   expect(why(reserveIn(w, "alpha", LEAD))).toBe(
     '#4 "alpha" overlaps #1 "beta": src/b/inner/ (src/b/)',
   );
+});
+
+const DAY = 86400000;
+/** A claude-mem import into project "p": one open list holding one item that is "doing". */
+function importDoing(db: Db) {
+  const file = claudeMemDb([
+    ["Plan", { status: "todo" }, 5 * DAY],
+    ["Plan", { task: "Doing", status: "doing" }, 6 * DAY],
+  ]);
+  return importClaudeMem({
+    claudeMemDb: file,
+    workDb: db,
+    project: "p",
+    claudeMemProject: "home",
+    dryRun: false,
+    now: 20,
+  });
+}
+
+test("an import beside a reserved plan stores its running item, and the reservation stands", () => {
+  const { db } = setup();
+  plan(db, "alpha", ["src/a/"]);
+  expect(ok(reserve(db, "alpha")).lead).not.toBeNull();
+  // The import is the kit's own write: no session starts the imported plan.
+  expect(ok(importDoing(db)).imported.map((t) => [t.subject, t.status])).toEqual([
+    ["Plan", "pending"],
+    ["Doing", "in_progress"],
+  ]);
+  expect(heldPlans(db, "p", LEAD).map((h) => [h.plan.plan, h.why])).toEqual([
+    ["alpha", "reserved"],
+  ]);
+});
+
+test("an imported running item holds no plan: a reservation beside it is allowed", () => {
+  const { db } = setup();
+  plan(db, "alpha", ["src/a/"]);
+  ok(importDoing(db));
+  expect(allTasks(db, "p").some((t) => t.subject === "Doing" && t.status === "in_progress")).toBe(
+    true,
+  );
+  expect(heldPlans(db, "p", LEAD)).toEqual([]);
+  expect(ok(reserve(db, "alpha")).lead).not.toBeNull();
+});
+
+test("a running task holds its plan when a session made it or a process claims it, never when neither", () => {
+  const { db } = setup();
+  /** A plan with one phase, made by `who`; the phase's id. */
+  const laid = (slug: string, files: string[], who: Who) => {
+    const row = plan(db, slug, files, { who });
+    return ok(
+      createTask(
+        db,
+        {
+          project: "p",
+          subject: `${slug} phase`,
+          kind: "phase",
+          phase: "A",
+          plan: slug,
+          parentId: row.id,
+        },
+        who,
+        2,
+      ),
+    ).id;
+  };
+  // A session known by its id alone (no process): its task keeps the maker, with no claim.
+  const BARE: Who = { sessionId: "bare", pid: null, procStart: null };
+  // A terminal with no Claude identity, like the importer: neither maker nor claim.
+  const NONE: Who = { sessionId: null, pid: null, procStart: null };
+  const beta = laid("beta", ["src/b/"], OTHER);
+  const gamma = laid("gamma", ["src/g/"], OTHER);
+  const made = ok(
+    createTask(
+      db,
+      { project: "p", subject: "bare step", parentId: beta, status: "in_progress" },
+      BARE,
+      3,
+    ),
+  );
+  expect([made.createdBy, made.claim]).toEqual(["bare", null]);
+  const nobodys = ok(
+    createTask(
+      db,
+      { project: "p", subject: "no one's", parentId: gamma, status: "in_progress" },
+      NONE,
+      3,
+    ),
+  );
+  expect([nobodys.createdBy, nobodys.creator, nobodys.claim]).toEqual([null, null, null]);
+  // Both plan rows stay pending: only the running tasks can put them in flight.
+  expect(heldPlans(db, "p", LEAD).map((h) => [h.plan.plan, h.why, h.plan.status])).toEqual([
+    ["beta", "in-flight", "pending"],
+  ]);
+});
+
+test("a step reopened, or a running task moved into a plan, is judged like a start", () => {
+  const w = world();
+  laidPlan(w, LEAD, "alpha", ["src/a/"]);
+  const beta = laidPlan(w, OTHER, "beta", ["src/a/x.ts"]);
+  const step = numberOf(w, "beta step");
+  const third = w.ops(THIRD);
+  try {
+    // Before alpha is reserved, beta runs one step and closes it: beta then holds nothing.
+    said(third.call("update", { task: step, status: "in_progress" }));
+    said(third.call("done", { task: step, evidence: "ran it" }));
+    said(third.call("create", { subject: "loose", status: "in_progress" }));
+  } finally {
+    third.close();
+  }
+  expect(ok(reserveIn(w, "alpha", LEAD)).lead).not.toBeNull();
+  const loose = numberOf(w, "loose");
+  const again = w.ops(THIRD);
+  try {
+    expect(refused(again.call("update", { task: step, status: "in_progress" }))).toContain(
+      '"beta" cannot start, since it overlaps #1 "alpha": src/a/x.ts (src/a/)',
+    );
+    expect(refused(again.call("update", { task: loose, parent: beta.phase }))).toContain(
+      '"beta" cannot start, since it overlaps #1 "alpha": src/a/x.ts (src/a/)',
+    );
+  } finally {
+    again.close();
+  }
+  // Neither write landed: the step stays done, the loose task stays outside the plan.
+  expect(statusOf(w, step)).toBe("done");
+  const db = w.store();
+  try {
+    expect(allTasks(db, w.project).find((t) => t.subject === "loose")?.plan).toBeNull();
+    expect(heldPlans(db, w.project, LEAD).map((h) => h.plan.plan)).toEqual(["alpha"]);
+  } finally {
+    db.close();
+  }
+  expect(planStatus(w, "beta")).toBe("pending");
 });

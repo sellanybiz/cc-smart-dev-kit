@@ -357,7 +357,9 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
        * the lock, whenever this start puts a plan into flight (it has a plan row that is not in
        * flight yet). A step in a plan that already runs reads nothing, so git runs once per plan
        * start, never once per step. The store's own default (nothing ignored, case compared) is
-       * for a caller with no read, and is never used on this path.
+       * for a caller with no read. It judges this path in one race: the read here sees the plan
+       * in flight, then its last running task closes before the lock, so the start is judged with
+       * that default.
        */
       const startCheck = (plan: string | null): { filesCheck?: FilesCheck } => {
         const row = all.find((t) => t.kind === "plan" && t.plan === plan);

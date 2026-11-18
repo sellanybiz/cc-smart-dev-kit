@@ -457,7 +457,8 @@ function planNotInFlight(db: WorkDb, project: string, plan: string): WorkTask | 
 
 /**
  * Internal operations run only within writeWork, also used by the atomic importer. `reason`
- * says why the kit made the task itself (an import), for its history.
+ * says why the kit made the task itself (an import), for its history; such a write is never
+ * judged as a plan's start (`refuseFlightOverlap`).
  */
 export function insertTask(
   db: WorkDb,
@@ -486,8 +487,11 @@ export function insertTask(
   const claimed = status === "in_progress" && who.pid !== null;
   // A task made already running puts its plan into flight like one started later (`enteringPlan`).
   // Read before the INSERT, so the plan is as it was; a plan task made running is its own plan.
+  // A write the kit makes itself (`reason`: an import) starts no session's work, so it is no
+  // start: the rows it stores running have no maker and no claim, and hold no plan (`isInFlight`).
+  const starts = status === "in_progress" && reason === null;
   const entering =
-    status === "in_progress" && plan !== null && (input.kind ?? "task") !== "plan"
+    starts && plan !== null && (input.kind ?? "task") !== "plan"
       ? planNotInFlight(db, input.project, plan)
       : null;
   db.sqlite
@@ -524,7 +528,7 @@ export function insertTask(
   if (input.files !== undefined) storeFiles(db, taskById(db, id), input.files);
   const task = taskById(db, id);
   if (status === "in_progress") unblockedValid(db, task);
-  const joining = task.kind === "plan" && status === "in_progress" ? task : entering;
+  const joining = starts && task.kind === "plan" ? task : entering;
   if (joining !== null) refuseFlightOverlap(db, joining, who, input.filesCheck ?? NO_FILES_CHECK);
   const initial: Record<string, unknown> = {
     kind: task.kind,
