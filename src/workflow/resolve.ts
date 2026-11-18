@@ -475,7 +475,27 @@ export function resolveMergeFiles(
     return { files: [], reason: error instanceof Error ? error.message : String(error) };
   }
   if (!committed.found) return { files: [], reason: committed.why };
-  const listed = committed.config.workflow?.plans?.mergeFiles ?? [];
+  return settleMergeFiles(
+    checkout,
+    base,
+    committed.config.workflow?.plans?.mergeFiles ?? [],
+    options,
+  );
+}
+
+/**
+ * The list `listed` (already read from the committed file on `origin/<base>`) as the plan tools
+ * use it: a bare entry that names a folder on the committed tree is left out, named in `reason`.
+ * The second half of `resolveMergeFiles`, apart so that a caller that has the committed file
+ * already (`workflow show`, through the gate's read) asks git about the tree only and never reads
+ * the file a second time.
+ */
+export function settleMergeFiles(
+  checkout: Checkout,
+  base: string,
+  listed: readonly string[],
+  options: CommittedOptions = {},
+): MergeFiles {
   const files: string[] = [];
   const folders: string[] = [];
   for (const path of listed) {

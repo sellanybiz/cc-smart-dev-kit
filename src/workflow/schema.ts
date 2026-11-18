@@ -129,7 +129,8 @@ export type MergeFilePath = { ok: true; path: string } | { ok: false; why: strin
  * One path of `plans.mergeFiles` (the paths every plan touches and each merge settles: a version
  * manifest, a changelog, a lockfile, build output), normalised: `/` as the separator, no `./`
  * segments, a folder written with a trailing `/`. Refuses what is not a path inside the
- * checkout: an absolute path, a `..` segment, the root (`""`, `.`, `/`) and a control character.
+ * checkout: an absolute path, a `..` segment, the root (`""`, `.`, `/`), a control character and a
+ * pattern character (`*`, `?`, `[`: the list names paths, and a folder is named with a trailing `/`).
  * Pure: whether a path without a trailing `/` names a folder needs the repository, so
  * `resolveMergeFiles` (`resolve.ts`) checks that, on the committed tree. One home: the schema
  * checks a file with it, and `parseWorkflowValue` a value a person types.
@@ -138,6 +139,12 @@ export function normalizeMergeFile(raw: string): MergeFilePath {
   const text = raw.trim().replaceAll("\\", "/");
   const shown = JSON.stringify(raw);
   if (/\p{Cc}/u.test(text)) return { ok: false, why: `${shown} holds a control character` };
+  if (/[*?[]/.test(text)) {
+    return {
+      ok: false,
+      why: `${shown} holds a pattern character (*, ? or [): name the path itself, and a whole folder with a trailing / (like plugin/dist/)`,
+    };
+  }
   const kept = text.split("/").filter((segment) => segment !== "" && segment !== ".");
   if (kept.length === 0) {
     return { ok: false, why: `${shown} is the root: name the files or folders under it` };
@@ -518,6 +525,19 @@ export function isProjectKey(key: WorkflowKey): boolean {
   if (PERSONAL_ONLY_KEYS.includes(key)) return false;
   return !isSwitchKey(key) || PROJECT_SWITCH_NAMES.includes(switchOf(key));
 }
+
+/**
+ * Why each key the project's file cannot hold (`isProjectKey` false) is the person's own: one
+ * entry for each, so `workflow set --project` (`write.ts`) and the project file's refusal
+ * (`checkPersonalOnlyFields` in `src/project/config.ts`) say the same true thing. `workflow.test.ts`
+ * holds the keys of this table equal to the keys `isProjectKey` refuses.
+ */
+export const PERSONAL_ONLY_REASONS: Readonly<Partial<Record<WorkflowKey, string>>> = {
+  "plans.runMode": "a committed value would spend every teammate's usage",
+  "switches.statusLine": "the status line is per person, per machine",
+  "switches.updateHold": "the update hold is per person, per machine",
+  "switches.leadHint": "the lead-model hint is per person, per machine",
+};
 
 /** True when the person's own file holds the key (a switch with a machine-wide default). */
 export function isPersonalFileSwitch(key: string): key is `switches.${SwitchName}` {

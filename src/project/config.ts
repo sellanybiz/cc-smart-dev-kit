@@ -6,7 +6,7 @@ import { type KindSpec, kindsSchema } from "../jobs/kinds";
 import { isObject } from "../setup/managed-json";
 import { parseUserJson, readUserJson } from "../setup/user-json";
 import { DEPLOY_ENVS } from "../tasks/deploy/format";
-import { PERSONAL_ONLY_KEYS, workflowSchema } from "../workflow/schema";
+import { PERSONAL_ONLY_KEYS, PERSONAL_ONLY_REASONS, workflowSchema } from "../workflow/schema";
 import { allowsNewer, isValidRange, lowestAllowed, satisfiesRange } from "./version-range";
 
 /**
@@ -459,7 +459,7 @@ function checkPersonalOnlyFields(where: string, raw: unknown): void {
     const settings = isObject(workflow) ? workflow[group ?? ""] : undefined;
     if (!isObject(settings) || !Object.hasOwn(settings, field ?? "")) continue;
     throw new CcSmartDevKitConfigError(
-      `Invalid ${where}: workflow.${key} is your own setting, not the project's, because a committed value would spend every teammate's usage: remove it from this file and run \`${COMMAND} workflow set ${key} <value>\` in your own terminal.`,
+      `Invalid ${where}: workflow.${key} is your own setting, not the project's, because ${PERSONAL_ONLY_REASONS[key]}: remove it from this file and run \`${COMMAND} workflow set ${key} <value>\` in your own terminal.`,
     );
   }
 }

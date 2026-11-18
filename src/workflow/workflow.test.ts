@@ -26,12 +26,14 @@ import {
   normalizeMergeFile,
   PERSONAL_FILE_SWITCH_NAMES,
   PERSONAL_ONLY_KEYS,
+  PERSONAL_ONLY_REASONS,
   PROJECT_ONLY_KEYS,
   parseWorkflowValue,
   personalWorkflowSchema,
   RUN_MODES,
   setWorkflowValue,
   unsetWorkflowValue,
+  WORKFLOW_KEYS,
   workflowSchema,
   workflowValue,
 } from "./schema";
@@ -680,6 +682,15 @@ describe("plans.runMode: the person's own, never the project's", () => {
   });
 });
 
+describe("the keys only the person holds", () => {
+  test("the reasons table names exactly the keys the project's file cannot hold", () => {
+    const refused = WORKFLOW_KEYS.filter((key) => !isProjectKey(key));
+    expect(Object.keys(PERSONAL_ONLY_REASONS).sort()).toEqual([...refused].sort());
+    for (const key of refused) expect(PERSONAL_ONLY_REASONS[key]).toBeString();
+    expect(PERSONAL_ONLY_KEYS.every((key) => refused.includes(key))).toBe(true);
+  });
+});
+
 describe("plans.mergeFiles: parsing", () => {
   test.each([
     ["plugin/dist/", "plugin/dist/"],
@@ -711,6 +722,10 @@ describe("plans.mergeFiles: parsing", () => {
     ["a/..", "leaves the repository"],
     ["a\\..\\b", "leaves the repository"],
     ["a\nb", "holds a control character"],
+    ["plugin/dist/*", "holds a pattern character"],
+    ["*.lock", "holds a pattern character"],
+    ["src/?.ts", "holds a pattern character"],
+    ["src/[ab].ts", "holds a pattern character"],
   ])("%j is refused (%s)", (raw, why) => {
     const parsed = normalizeMergeFile(raw);
     expect(parsed.ok).toBe(false);

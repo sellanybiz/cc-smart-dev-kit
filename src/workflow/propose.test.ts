@@ -18,6 +18,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
+import { PLUGIN_UPDATE_COMMAND, VERSION } from "../build-info";
 import { COMMAND } from "../build-info/names";
 import { type CliPaths, cliPaths } from "../cli/paths";
 import { makeClone, writeClaudeFile, writePersonalWorkflow } from "../testing/hooks";
@@ -251,6 +252,33 @@ It counts once this pull request is merged into main: the merge guard reads the 
     // Nothing was left in the main checkout, and no worktree of the change is still registered.
     expect(git(w.repo, "status", "--porcelain").trim()).not.toContain("cc-smart-dev-kit.json");
     expect(git(w.repo, "worktree", "list", "--porcelain")).toContain(branch);
+  });
+
+  // `plans.mergeFiles` raises `requires` to the 5.1 floor, and the writer checks the file it is
+  // about to write against the running version. So this build either meets the floor (the list is
+  // proposed, normalised) or says to update and makes nothing. One test, both cases.
+  test("plans.mergeFiles: proposed with its paths normalised, or on an older build refused with the fix and nothing made", async () => {
+    const w = world();
+    const run = await w.run(["propose", "plans.mergeFiles", "./plugin/dist\\, CHANGELOG.md"]);
+    if (Bun.semver.order(VERSION, "5.1.0") < 0) {
+      expect(run.status).toBe(1);
+      expect(run.lines).toEqual([]);
+      expect(run.errors).toHaveLength(1);
+      expect(run.errors[0]).toContain(
+        `this project needs cc-smart-dev-kit >=5.1; you have ${VERSION}; run ${PLUGIN_UPDATE_COMMAND}`,
+      );
+      expect(branchesIn(w.repo, "worktree-workflow-*")).toEqual([]);
+      expect(w.ghLog().filter((call) => call.startsWith("pr create"))).toEqual([]);
+      return;
+    }
+    const branch = "worktree-workflow-plans-mergeFiles-20261023";
+    expect(run.status).toBe(0);
+    expect(run.errors).toEqual([]);
+    expect(fileOn(w.repo, branch).workflow).toEqual({
+      plans: { mergeFiles: ["plugin/dist/", "CHANGELOG.md"] },
+    });
+    expect(fileOn(w.repo, branch).requires).toBe(">=5.1");
+    expect(fileOn(w.repo, "main").workflow).toBeUndefined();
   });
 
   test("--unset removes the project's value, and the branch carries the file without it", async () => {

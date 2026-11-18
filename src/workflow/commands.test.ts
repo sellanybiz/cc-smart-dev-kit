@@ -11,7 +11,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
-import { VERSION } from "../build-info";
+import { PLUGIN_UPDATE_COMMAND, VERSION } from "../build-info";
 import { COMMAND } from "../build-info/names";
 import { cliPaths, tildify } from "../cli/paths";
 import { hookEnv, makeClone, makeRepo, writeClaudeFile } from "../testing/hooks";
@@ -1455,32 +1455,38 @@ describe("plans.runMode and plans.mergeFiles", () => {
     expect(readFileSync(file, "utf8")).toBe(before);
   });
 
-  // `--project` raises `requires` to the 5.1 floor, which a build before 5.1.0 does not meet:
-  // the write checks the file it is about to write against the running version. The test runs
-  // from the release that brought the key.
-  test.skipIf(Bun.semver.order(VERSION, "5.1.0") < 0)(
-    "mergeFiles: --project writes the normalised list and raises requires to 5.1; unset removes it",
-    async () => {
-      const env = hookEnv();
-      const repo = makeRepo();
-      const file = writeClaudeFile(repo, "cc-smart-dev-kit.json", SETTINGS);
-      const run = context(repo, env);
-      expect(
-        await runWorkflow(
-          ["set", "plans.mergeFiles", "./plugin/dist\\, CHANGELOG.md", "--project"],
-          run.context,
-        ),
-      ).toBe(0);
-      expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({
-        ...SETTINGS,
-        requires: ">=5.1",
-        workflow: { plans: { mergeFiles: ["plugin/dist/", "CHANGELOG.md"] } },
-      });
-      const off = context(repo, env);
-      expect(await runWorkflow(["unset", "plans.mergeFiles", "--project"], off.context)).toBe(0);
-      expect(JSON.parse(readFileSync(file, "utf8")).workflow).toBeUndefined();
-    },
-  );
+  // `--project` raises `requires` to the 5.1 floor, and the write checks the file it is about to
+  // write against the running version. So this build either meets the floor (5.1.0 and later:
+  // the list is written) or tells the person to update and writes nothing. One test, both cases.
+  test("mergeFiles: --project writes the normalised list and raises requires to 5.1, or on an older build says to update", async () => {
+    const env = hookEnv();
+    const repo = makeRepo();
+    const file = writeClaudeFile(repo, "cc-smart-dev-kit.json", SETTINGS);
+    const before = readFileSync(file, "utf8");
+    const run = context(repo, env);
+    const code = await runWorkflow(
+      ["set", "plans.mergeFiles", "./plugin/dist\\, CHANGELOG.md", "--project"],
+      run.context,
+    );
+    if (Bun.semver.order(VERSION, "5.1.0") < 0) {
+      expect(code).toBe(1);
+      expect(run.lines).toEqual([]);
+      expect(run.errors).toEqual([
+        `${file}: this project needs cc-smart-dev-kit >=5.1; you have ${VERSION}; run ${PLUGIN_UPDATE_COMMAND}`,
+      ]);
+      expect(readFileSync(file, "utf8")).toBe(before);
+      return;
+    }
+    expect(code).toBe(0);
+    expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({
+      ...SETTINGS,
+      requires: ">=5.1",
+      workflow: { plans: { mergeFiles: ["plugin/dist/", "CHANGELOG.md"] } },
+    });
+    const off = context(repo, env);
+    expect(await runWorkflow(["unset", "plans.mergeFiles", "--project"], off.context)).toBe(0);
+    expect(JSON.parse(readFileSync(file, "utf8")).workflow).toBeUndefined();
+  });
 
   test("show: the working copy's list and the committed one it counts, side by side", async () => {
     const { repo } = makeClone();
@@ -1501,6 +1507,24 @@ describe("plans.runMode and plans.mergeFiles", () => {
     expect(run.lines).toContain("plans.mergeFiles = src/, plugin/ (project)");
     expect(run.lines).toContain(
       "plans.mergeFiles as the plan tools read it, from origin/main:.claude/cc-smart-dev-kit.json = CHANGELOG.md",
+    );
+  });
+
+  test("show: a bare folder in the committed list is left out of the line, with the fix", async () => {
+    const { repo } = makeClone();
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", {
+      ...SETTINGS,
+      workflow: { plans: { mergeFiles: ["docs", "CHANGELOG.md"] } },
+    });
+    mkdirSync(join(repo, "docs"));
+    writeFileSync(join(repo, "docs", "guide.md"), "x\n");
+    git(repo, "add", "-A");
+    git(repo, "commit", "-q", "-m", "policy");
+    git(repo, "update-ref", "refs/remotes/origin/main", "HEAD");
+    const run = context(repo, hookEnv());
+    expect(await runWorkflow(["show"], run.context)).toBe(0);
+    expect(run.lines).toContain(
+      "plans.mergeFiles as the plan tools read it, from origin/main:.claude/cc-smart-dev-kit.json = CHANGELOG.md (plans.mergeFiles on origin/main leaves out docs until fixed (docs is a folder: write it docs/))",
     );
   });
 

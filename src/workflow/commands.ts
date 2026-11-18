@@ -49,8 +49,8 @@ import {
   type ResolvedWorkflow,
   resolvedValueOf,
   resolveGate,
-  resolveMergeFiles,
   resolveWorkflow,
+  settleMergeFiles,
   sourceLabel,
 } from "./resolve";
 import {
@@ -65,7 +65,6 @@ import type { WorkflowKey } from "./schema";
 import {
   INBOUND_KEYS,
   OUTBOUND_KEYS,
-  PERSONAL_ONLY_KEYS,
   PLAN_KEYS,
   PROJECT_ONLY_KEYS,
   parseWorkflowValue,
@@ -214,7 +213,8 @@ function reviewLine(
  * The gate's lines: the review gate exactly as the merge guard reads it — the policy committed
  * on `origin/<worktrees.base>`, the same read (`resolveGate`) — so `show` never disagrees with
  * the guard, even while this checkout's own file says something else. Nothing for a folder
- * with no project file: there the guard is silent.
+ * with no project file: there the guard is silent. It ends with the `plans.mergeFiles` line, from the
+ * same read.
  */
 function gateLines(
   paths: CliPaths,
@@ -237,6 +237,7 @@ function gateLines(
     return {
       lines: [
         `gate: the merge guard cannot read the policy committed on ${base} (${read.why}), so it asks before every merge`,
+        mergeFilesLine(base, [], read.why),
       ],
       gate: null,
     };
@@ -250,26 +251,22 @@ function gateLines(
     lines.push(`gate ${key} = ${showValue(key, value.value)} (${sourceLabel(value, gate.branch)})`);
   }
   lines.push(`gate fixesAfterReview in force: ${fixesInForce(gate.resolved)}`);
+  // The committed list is the gate's own read; git is asked only which entries are folders.
+  const settled = settleMergeFiles(checkout, base, gate.resolved.plans.mergeFiles.value, {
+    env,
+    timeoutMs: WORKFLOW_GIT_TIMEOUT_MS,
+  });
+  lines.push(mergeFilesLine(base, settled.files, settled.reason));
   return { lines, gate };
 }
 
 /**
  * The line `show` prints for `plans.mergeFiles` as the plan store and herdr read it: the list
- * committed on `origin/<worktrees.base>` (`resolveMergeFiles`), never this checkout's own copy,
- * with why it is empty or short when that is so. Null for a folder with no project file or no base
- * (`gateLines` says so already).
+ * committed on `origin/<worktrees.base>`, never this checkout's own copy, with why it is empty or
+ * short when that is so. Built from the gate's own read of the committed file (`gateLines`), so
+ * the file is read once.
  */
-function mergeFilesLine(
-  checkout: Checkout | null,
-  config: CcSmartDevKitConfig | null,
-  env: Env,
-): string | null {
-  const base = config?.worktrees?.base;
-  if (checkout === null || base === undefined) return null;
-  const { files, reason } = resolveMergeFiles(checkout, base, {
-    env,
-    timeoutMs: WORKFLOW_GIT_TIMEOUT_MS,
-  });
+function mergeFilesLine(base: string, files: readonly string[], reason: string | null): string {
   const value = showValue("plans.mergeFiles", files);
   return `plans.mergeFiles as the plan tools read it, from origin/${base}:${CONFIG_PATH} = ${value}${reason === null ? "" : ` (${reason})`}`;
 }
@@ -306,8 +303,6 @@ function show(context: WorkflowContext): number {
     print(`${key} = ${showValue(key, value)} (${source})`);
   }
   for (const line of gate.lines) print(line);
-  const mergeFiles = mergeFilesLine(here.checkout, here.config, env);
-  if (mergeFiles !== null) print(mergeFiles);
   for (const line of clashLines(clashesOf(resolved, here.config?.worktrees?.base ?? null))) {
     print(line);
   }
@@ -381,15 +376,10 @@ function planKeyRefusal(sub: "set" | "unset", key: WorkflowKey): string {
 }
 
 /**
- * The refusal of a key written to the wrong file, or null when the file fits: a personal-only key
- * (`PERSONAL_ONLY_KEYS`) with `--project`, a project-only key (`PROJECT_ONLY_KEYS`) without it.
- * Said here, before the writer, so the words fit the key (the writer's own list names the
- * switches).
+ * The refusal of a project-only key (`PROJECT_ONLY_KEYS`) written without `--project`, or null.
+ * (A personal-only key with `--project` is refused by the writer, `write.ts`, in the table's words.)
  */
 function wrongFileRefusal(key: WorkflowKey, projectFlag: boolean): string | null {
-  if (projectFlag && PERSONAL_ONLY_KEYS.includes(key)) {
-    return `${key} is your own setting, not the project's: run it without --project (a committed value would spend every teammate's usage)`;
-  }
   if (!projectFlag && PROJECT_ONLY_KEYS.includes(key)) {
     return `${key} is the project's setting, not yours: run it with --project inside the project, and commit it to the base (it counts only as committed on origin/<worktrees.base>)`;
   }
