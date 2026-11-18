@@ -8,6 +8,7 @@ import { createOut } from "../cli/ui/out";
 import { taskContext } from "../tasks/context";
 import { createTaskOps } from "../tasks/ops";
 import { openWorkDb, workDbFile } from "../tasks/work/db";
+import { classifyLeadPlans } from "../tasks/work/lead-plans";
 import { allTasks } from "../tasks/work/queries";
 import { createTask, reservePlan, takeTasks, updateTask } from "../tasks/work/store";
 import type { ClaimProcess, Who, WorkTask } from "../tasks/work/types";
@@ -1634,4 +1635,118 @@ test("adopt tells the new lead to take a self plan it was handed, and says nothi
     "take it first (task_take mine) before you start its next phase",
   );
   expect(lines.find((line) => line.includes("theirs"))).not.toContain("take it first");
+});
+
+// ---- `herdr plans --reserve`: the lead reserves the plan it builds itself (D1, D4) ----
+
+const RESERVE = ["plans", "--reserve"];
+
+test("plans --reserve writes holder self, names the next step, and the classifier reads own", async () => {
+  const p = planWorld();
+  p.plan("alpha", ["src/a/"]);
+  expect(await runHerdr([...RESERVE, "alpha"], p.ctx)).toBe(0);
+  expect(p.lines.join("\n")).toContain(
+    "Reserved plan #1 alpha for this session: start its first phase as usual.",
+  );
+  expect(p.row("alpha").lead).toMatchObject({ sessionId: "lead", holder: "self" });
+  const state = classifyLeadPlans(p.db, p.project, LEAD, UNPROVEN).find(
+    (entry) => entry.plan.plan === "alpha",
+  )?.state;
+  expect(state).toBe("own");
+  // No child is launched: the lead builds this plan itself.
+  p.noRun();
+});
+
+test("a plan the lead reserved for itself keeps its files held in flight, and after it is done with its pull request not merged", async () => {
+  const p = planWorld();
+  p.plan("alpha", ["src/shared/"]);
+  p.plan("beta", ["src/shared/inner.ts"]);
+  expect(await runHerdr([...RESERVE, "alpha"], p.ctx)).toBe(0);
+  const hand = async () => {
+    p.lines.length = 0;
+    expect(await runHerdr([...planLaunch, "--plan", "beta", "--", "work"], p.ctx)).toBe(1);
+    p.noRun();
+    expect(p.row("beta").lead).toBeNull();
+    return p.lines.join("\n");
+  };
+  expect(await hand()).toContain('Plan "beta" is not ready: overlaps #1 alpha: src/shared');
+  p.change("alpha", { status: "in_progress" });
+  expect(await hand()).toContain('Plan "beta" is not ready: overlaps #1 alpha: src/shared');
+  p.change("alpha", { status: "done" });
+  expect(await hand()).toContain(
+    "overlaps #1 alpha (finished: held until its pull request settles): src/shared",
+  );
+  expect(p.row("alpha").lead).toMatchObject({ holder: "self" });
+});
+
+test("plans --reserve refuses a plan child, and a default branch that can only be guessed", async () => {
+  const p = planWorld();
+  p.plan("alpha", ["src/a/"]);
+  p.rows.t1 = { ...(p.rows.t1 as object), labels: { "kit.lead": "core/t0", "kit.plan": "other" } };
+  expect(await runHerdr([...RESERVE, "alpha"], p.ctx)).toBe(1);
+  expect(p.lines.join("\n")).toContain("A plan child never coordinates");
+  expect(p.lines.join("\n")).toContain("cannot reserve plans");
+  expect(p.row("alpha").lead).toBeNull();
+  p.rows.t1 = { ...(p.rows.t1 as object), labels: {} };
+  p.lines.length = 0;
+  git(p.ctx.cwd, "remote", "remove", "origin");
+  expect(await runHerdr([...RESERVE, "alpha"], p.ctx)).toBe(1);
+  expect(p.lines.join("\n")).toContain("The default branch cannot be found");
+  expect(p.lines.join("\n")).toContain("Fix: run `git remote set-head origin --auto`");
+  expect(p.row("alpha").lead).toBeNull();
+});
+
+test("plans --reserve refuses a plan that is not the lead's to reserve now, each with its words", async () => {
+  const p = planWorld();
+  p.plan("running", ["src/r/"]);
+  p.plan("finished", ["src/f/"]);
+  p.plan("again", ["src/g/"]);
+  p.plan("handed", ["src/h/"]);
+  const made = createTask(
+    p.db,
+    { project: p.project, subject: "foreign", kind: "plan", plan: "foreign", files: ["src/o/"] },
+    { sessionId: "other", pid: 6303, procStart: "63030" },
+    50,
+  );
+  expect(made.ok).toBe(true);
+  p.change("running", { status: "in_progress" });
+  p.change("finished", { status: "done" });
+  expect(await runHerdr([...RESERVE, "again"], p.ctx)).toBe(0);
+  expect(await runHerdr([...planLaunch, "--plan", "handed", "--", "work"], p.ctx)).toBe(0);
+  const refusals: [string, string][] = [
+    ["foreign", "is not one of this session's queued plans"],
+    ["running", "is not one of this session's queued plans"],
+    ["finished", 'Plan "finished" is done: nothing to reserve.'],
+    ["again", 'Plan "again" is already reserved (own).'],
+    ["handed", 'Plan "handed" is already reserved (with-child).'],
+    ["missing", 'Plan "missing" was not found in this project.'],
+  ];
+  for (const [slug, why] of refusals) {
+    p.lines.length = 0;
+    expect(await runHerdr([...RESERVE, slug], p.ctx)).toBe(1);
+    expect(p.lines.join("\n")).toContain(why);
+  }
+  expect(p.row("foreign").lead).toBeNull();
+  expect(p.row("running").lead).toBeNull();
+  expect(p.row("handed").lead).toMatchObject({ holder: "child" });
+});
+
+test("plans --reserve reads the same gates as a hand-out: a blocked, a file-less or an overlapping plan is not reserved", async () => {
+  const p = planWorld();
+  const first = p.plan("first", ["src/f/"]);
+  p.plan("waits", ["src/w/"], { blockedBy: [first.id] });
+  p.plan("nofiles", undefined);
+  p.plan("clash", ["src/f/inner.ts"]);
+  expect(await runHerdr([...RESERVE, "first"], p.ctx)).toBe(0);
+  const refusals: [string, string][] = [
+    ["waits", 'Plan "waits" is not ready: waiting on #1 first'],
+    ["nofiles", "has no file list"],
+    ["clash", 'Plan "clash" is not ready: overlaps #1 first: src/f'],
+  ];
+  for (const [slug, why] of refusals) {
+    p.lines.length = 0;
+    expect(await runHerdr([...RESERVE, slug], p.ctx)).toBe(1);
+    expect(p.lines.join("\n")).toContain(why);
+    expect(p.row(slug).lead).toBeNull();
+  }
 });

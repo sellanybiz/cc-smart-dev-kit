@@ -1169,8 +1169,14 @@ export async function runHerdr(args: string[], ctx: HerdrContext): Promise<numbe
         adoptPlans(ctx, project.project);
         return 0;
       }
-      case "plans":
+      case "plans": {
+        // A plan child builds its one plan and never reserves another (D1).
+        if (parsed.reserve !== undefined) {
+          const child = refusePlanChild(ctx, r, me, "reserve plans");
+          if (child !== null) return child;
+        }
         return await runPlans(parsed, ctx, r, me.core, WAIT_TIMEOUT_MS);
+      }
       case "wait": {
         const before = terminals(r, { [KIT_LEAD]: me.leadId }, true);
         if (!before.some((t) => t.state === "live")) {

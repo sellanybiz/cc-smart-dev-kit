@@ -667,8 +667,113 @@ export type PlanStart =
       claim: { marker: string; previous: string | null } | null;
     };
 
-const refuse = (why: string, fix?: string): PlanStart =>
+type Refusal = Extract<PlanStart, { ok: false }>;
+const refuse = (why: string, fix?: string): Refusal =>
   fix === undefined ? { ok: false, why } : { ok: false, why, fix };
+
+/** The plan a ref names, after the checks every plan command shares: a session, a real default branch, a plan. */
+type Located = { ok: true; plan: WorkTask; slug: string } | Refusal;
+
+function locatePlan(world: PlansWorld, ref: string): Located {
+  if (!world.who.sessionId) return refuse("A plan hand-out needs a resolvable calling session.");
+  // `main` is a guess when nothing says otherwise: a child built and reset from the wrong branch.
+  if (world.baseFrom === "default")
+    return refuse(
+      "The default branch cannot be found: origin/HEAD is not set and no worktrees.base is configured, so a child would reset to a guess.",
+      "run `git remote set-head origin --auto`, or set worktrees.base in .claude/cc-smart-dev-kit.json",
+    );
+  const plan = planByRef(world.db, world.project, ref);
+  if (plan === null) return refuse(`Plan "${ref}" was not found in this project.`);
+  if (plan.kind !== "plan")
+    return refuse(`#${plan.number} is a ${plan.kind}, not a plan.`, "name the plan's slug");
+  return { ok: true, plan, slug: plan.plan ?? plan.subject };
+}
+
+/**
+ * A plan nothing holds: the live gates (D5), the held plans' diffs (D7), then `reservePlan`'s one
+ * transaction, for `holder`: a child (`start --plan`) or the lead itself (`plans --reserve`).
+ * Both read the same gates, so a plan is ready or not the same way for either.
+ */
+function reserveReady(
+  world: PlansWorld,
+  plan: WorkTask,
+  slug: string,
+  holder: "self" | "child",
+): PlanStart {
+  const strayChild = world.labelled(slug);
+  if (strayChild !== null)
+    return refuse(
+      `Plan "${slug}": terminal ${strayChild} carries its label and is live.`,
+      `if it is a child of this plan, leave it; if not: ${COMMAND} herdr stop ${strayChild}`,
+    );
+  const judged = judgePlans(world, slug);
+  const line = judged.lines.find((one) => one.number === plan.number);
+  if (line === undefined || line.state !== "ready")
+    return refuse(
+      `Plan "${slug}" is not ready: ${line?.text ?? "it is not a queued plan of this session"}.`,
+      line?.fix ?? undefined,
+    );
+  const reserved = reservePlan(world.db, {
+    project: world.project,
+    plan: slug,
+    who: world.who,
+    holder,
+    ignore: world.check.ignore,
+    caseFold: world.check.caseFold,
+    extraFiles: judged.extraFiles,
+    now: world.now(),
+  });
+  if (!reserved.ok) return refuse(reserved.why);
+  const lead = reserved.value.lead;
+  if (lead === null)
+    return refuse(`Plan "${slug}" was reserved, but the store shows no reservation.`);
+  return {
+    ok: true,
+    plan: reserved.value,
+    handoutId: lead.handoutId,
+    reserved: true,
+    resume: false,
+    recorded: null,
+    claim: null,
+  };
+}
+
+/**
+ * `herdr plans --reserve <plan>` (D1, D4): the lead reserves the plan it builds itself, with holder
+ * `self`, so its files stay held after the plan is done, until its pull request settles. The same
+ * gates and diffs as a hand-out (`reserveReady`). Refused unless the plan is a pending, unreserved
+ * plan of this session: the lead then starts its first phase as usual.
+ */
+export function prepareReserve(world: PlansWorld, ref: string): PlanStart {
+  const found = locatePlan(world, ref);
+  if (!found.ok) return found;
+  const { plan, slug } = found;
+  const stored = classifyLeadPlans(world.db, world.project, world.who, world.process).find(
+    (entry) => entry.plan.id === plan.id,
+  );
+  if (stored === undefined) {
+    if (plan.lead !== null)
+      return refuse(
+        `Plan "${slug}" is reserved for another session.`,
+        `${COMMAND} herdr plans lists the plans this session can reserve`,
+      );
+    if (!isOpen(plan))
+      return refuse(
+        `Plan "${slug}" is ${plan.status}: nothing to reserve.`,
+        `${COMMAND} herdr plans lists the plans this session can reserve`,
+      );
+    return refuse(
+      `Plan "${slug}" is not one of this session's queued plans: another session owns it, or it is running.`,
+      "a lead reserves only a plan it laid and has not started",
+    );
+  }
+  if (["own", "with-child", "child-gone", "merging"].includes(stored.state))
+    return refuse(
+      `Plan "${slug}" is already reserved (${stored.state}).`,
+      `${COMMAND} herdr plans shows where it stands`,
+    );
+  return reserveReady(world, plan, slug, "self");
+}
 
 /**
  * Decides how a plan starts, and reserves it (D6):
@@ -681,18 +786,9 @@ const refuse = (why: string, fix?: string): PlanStart =>
  * Everything else is refused with its reason and fix.
  */
 export function prepareStart(world: PlansWorld, ref: string): PlanStart {
-  if (!world.who.sessionId) return refuse("A plan hand-out needs a resolvable calling session.");
-  // `main` is a guess when nothing says otherwise: a child built and reset from the wrong branch.
-  if (world.baseFrom === "default")
-    return refuse(
-      "The default branch cannot be found: origin/HEAD is not set and no worktrees.base is configured, so a child would reset to a guess.",
-      "run `git remote set-head origin --auto`, or set worktrees.base in .claude/cc-smart-dev-kit.json",
-    );
-  const plan = planByRef(world.db, world.project, ref);
-  if (plan === null) return refuse(`Plan "${ref}" was not found in this project.`);
-  if (plan.kind !== "plan")
-    return refuse(`#${plan.number} is a ${plan.kind}, not a plan.`, "name the plan's slug");
-  const slug = plan.plan ?? plan.subject;
+  const found = locatePlan(world, ref);
+  if (!found.ok) return found;
+  const { plan, slug } = found;
   const owns = ownerOf(world.who);
   const stored = classifyLeadPlans(world.db, world.project, world.who, world.process).find(
     (entry) => entry.plan.id === plan.id,
@@ -787,43 +883,7 @@ export function prepareStart(world: PlansWorld, ref: string): PlanStart {
       claim: { marker, previous: plan.agent },
     };
   }
-  // A plan nothing holds: the live gates, the diffs, then the one transaction.
-  const strayChild = world.labelled(slug);
-  if (strayChild !== null)
-    return refuse(
-      `Plan "${slug}": terminal ${strayChild} carries its label and is live.`,
-      `if it is a child of this plan, leave it; if not: ${COMMAND} herdr stop ${strayChild}`,
-    );
-  const judged = judgePlans(world, slug);
-  const line = judged.lines.find((one) => one.number === plan.number);
-  if (line === undefined || line.state !== "ready")
-    return refuse(
-      `Plan "${slug}" is not ready: ${line?.text ?? stored.state}.`,
-      line?.fix ?? undefined,
-    );
-  const reserved = reservePlan(world.db, {
-    project: world.project,
-    plan: slug,
-    who: world.who,
-    holder: "child",
-    ignore: world.check.ignore,
-    caseFold: world.check.caseFold,
-    extraFiles: judged.extraFiles,
-    now: world.now(),
-  });
-  if (!reserved.ok) return refuse(reserved.why);
-  const lead = reserved.value.lead;
-  if (lead === null)
-    return refuse(`Plan "${slug}" was reserved, but the store shows no reservation.`);
-  return {
-    ok: true,
-    plan: reserved.value,
-    handoutId: lead.handoutId,
-    reserved: true,
-    resume: false,
-    recorded: null,
-    claim: null,
-  };
+  return reserveReady(world, plan, slug, "child");
 }
 
 /**
@@ -1076,13 +1136,16 @@ function show(out: Out, lines: readonly PlanLine[]): void {
 }
 
 /**
+ * `herdr plans --reserve <plan>` reserves the caller's own plan (`prepareReserve`); `--release`
+ * lets go of a finished one (`releaseByHand`).
+ *
  * `herdr plans`: one line per plan this session leads, with the live gates (D7). `--wait` polls
  * every `PLAN_POLL_MS` until a plan turns ready, a reservation is released or a reserved plan's
  * pull request merges; it prints what changed and ends. It ends at once when a plan is already
  * ready or nothing could still change, and at the timeout with the command to continue.
  */
 export async function runPlans(
-  args: { json: boolean; wait: boolean; timeoutMs?: number; release?: string },
+  args: { json: boolean; wait: boolean; timeoutMs?: number; release?: string; reserve?: string },
   ctx: PlansEnv,
   r: HcRunner,
   core: string,
@@ -1105,6 +1168,16 @@ export async function runPlans(
       if (!done.ok) ctx.out.line("fail", done.why, { fix: done.fix });
       else ctx.out.line("removed", done.text);
       return done.ok ? 0 : 1;
+    }
+    if (args.reserve !== undefined) {
+      const reserved = prepareReserve(opened.world, args.reserve);
+      if (!reserved.ok) ctx.out.line("fail", reserved.why, { fix: reserved.fix });
+      else
+        ctx.out.line(
+          "ok",
+          `Reserved plan #${reserved.plan.number} ${reserved.plan.plan ?? reserved.plan.subject} for this session: start its first phase as usual.`,
+        );
+      return reserved.ok ? 0 : 1;
     }
     const judge = () => judgePlans(opened.world);
     const first = judge().lines;

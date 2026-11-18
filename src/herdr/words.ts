@@ -47,7 +47,8 @@ const USAGE_LINES = {
   list: "list [--all] [--json]",
   send: "send <terminal> <text>",
   wait: "wait [--any | --all] [--timeout <seconds>] [--seen <addr>:<turn|?>:<error|done|end>[,…]]",
-  plans: "plans [--json] [--wait] [--timeout <seconds>] | plans --release <plan>",
+  plans:
+    "plans [--json] [--wait] [--timeout <seconds>] | plans --release <plan> | plans --reserve <plan>",
   report: "report <text>",
   adopt: "adopt",
   stop: "stop <terminal>",
@@ -94,7 +95,14 @@ export type HerdrArgs =
       timeoutMs?: number;
       seen?: Record<string, { turn: number | null; state: "error" | "done" | "end" }>;
     }
-  | { verb: "plans"; json: boolean; wait: boolean; timeoutMs?: number; release?: string }
+  | {
+      verb: "plans";
+      json: boolean;
+      wait: boolean;
+      timeoutMs?: number;
+      release?: string;
+      reserve?: string;
+    }
   | { verb: "report"; text: string }
   | { verb: "adopt" }
   | { verb: "stop"; target: string }
@@ -154,7 +162,11 @@ export function parseHerdrArgs(args: string[]): HerdrArgs | { error: string } {
     };
   }
   const known =
-    verb === "wait" ? ["--timeout", "--seen"] : verb === "plans" ? ["--timeout", "--release"] : [];
+    verb === "wait"
+      ? ["--timeout", "--seen"]
+      : verb === "plans"
+        ? ["--timeout", "--release", "--reserve"]
+        : [];
   const flags =
     verb === "list"
       ? ["--all", "--json"]
@@ -217,14 +229,27 @@ export function parseHerdrArgs(args: string[]): HerdrArgs | { error: string } {
       if (p.length) return fail("plans takes no arguments.");
       if (timeout !== undefined && !f.has("--wait")) return fail("--timeout belongs to --wait.");
       const release = o.get("--release");
-      if (release !== undefined && (!release.trim() || f.has("--wait") || f.has("--json")))
-        return fail("--release names one plan and stands alone.");
+      const reserve = o.get("--reserve");
+      // Each of the two names one plan and nothing else: no list, no wait, no other action.
+      for (const [flag, value] of [
+        ["--release", release],
+        ["--reserve", reserve],
+      ] as const)
+        if (
+          value !== undefined &&
+          (!value.trim() ||
+            f.has("--wait") ||
+            f.has("--json") ||
+            (release !== undefined && reserve !== undefined))
+        )
+          return fail(`${flag} names one plan and stands alone.`);
       return {
         verb,
         json: f.has("--json"),
         wait: f.has("--wait"),
         ...(timeout === undefined ? {} : { timeoutMs: Number(timeout) * 1000 }),
         ...(release === undefined ? {} : { release }),
+        ...(reserve === undefined ? {} : { reserve }),
       };
     }
     case "adopt":

@@ -468,6 +468,9 @@ test("herdr plans --release asks, and every other plans form stays silent", () =
     "plans --json",
     "plans --wait",
     "plans --wait --timeout 30",
+    // It reserves the caller's own plan: a bookkeeping write, not a release of anything.
+    "plans --reserve alpha",
+    "plans --reserve=alpha",
     "plans --help",
   ])
     expect(judgeBash(readBash(`${COMMAND} herdr ${args}`), world())).toBeNull();
