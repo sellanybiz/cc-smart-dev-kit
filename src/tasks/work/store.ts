@@ -11,6 +11,7 @@ import {
   type HeldPlan,
   heldPlansIn,
   holdingUnder,
+  isLead,
   isOpen,
   leadProcess,
   livePhaseCount,
@@ -979,6 +980,40 @@ export function releasePlan(
     const released = taskById(db, plan.id);
     recordChange(db, before, released, input.who, input.now, input.reason ?? "plan released");
     return released;
+  });
+}
+
+/**
+ * Moves the lead identity of every plan whose lead is proved dead to the caller (`herdr adopt`):
+ * the plans a lead left reserved, open or closed (a closed plan still reserved is `merging`: the
+ * new lead releases it after its pull request settles). One transaction. Only `lead_session`,
+ * `lead_pid` and `lead_start` change: the holder kind and the hand-out id stay, so a child that
+ * holds the old hand-out id still takes the plan. `isDead` judges the lead's process in the shape
+ * of a claim, and the caller passes `sessionEnded` (a reopened session keeps its id in a new
+ * process, so a dead pid alone is not proof). A lead with no process, a live one, one that cannot
+ * be proved dead, and the caller's own plans are never moved. Returns the plans it moved.
+ */
+export function adoptLeadPlans(
+  db: WorkDb,
+  input: { project: string; who: Who; isDead: (lead: WorkClaim) => boolean; now: number },
+): Result<WorkTask[]> {
+  return writeWork(db, () => {
+    const { who } = input;
+    if (!who.sessionId) throw new Error("adopt needs a resolvable calling session");
+    const moved: WorkTask[] = [];
+    for (const plan of allTasks(db, input.project)) {
+      if (plan.kind !== "plan" || plan.lead === null || isLead(plan.lead, who)) continue;
+      const process = leadProcess(plan.lead);
+      if (process === null || !input.isDead(process)) continue;
+      const before = shape(db, plan);
+      db.sqlite
+        .query("UPDATE tasks SET lead_session=?,lead_pid=?,lead_start=?,updated_at=? WHERE id=?")
+        .run(who.sessionId, who.pid, who.pid === null ? null : who.procStart, input.now, plan.id);
+      const adopted = taskById(db, plan.id);
+      recordChange(db, before, adopted, who, input.now, "lead adopted");
+      moved.push(adopted);
+    }
+    return moved;
   });
 }
 

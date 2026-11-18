@@ -9,8 +9,9 @@ import { runGit } from "../hooks/git";
 import { taskContext } from "../tasks/context";
 import { createTaskOps } from "../tasks/ops";
 import { openWorkDb, workDbFile } from "../tasks/work/db";
+import { CLAIM_PROCESS, callerOf } from "../tasks/work/identity";
 import { getTask, isOpen } from "../tasks/work/queries";
-import { releasePlan } from "../tasks/work/store";
+import { adoptLeadPlans, releasePlan } from "../tasks/work/store";
 import type { Who } from "../tasks/work/types";
 import { briefPath, reportPath, writeBrief, writePrivate } from "./brief";
 import {
@@ -540,6 +541,40 @@ async function start(a: Start, ctx: HerdrContext, r: HcRunner): Promise<number> 
     run.close?.();
   }
 }
+/**
+ * The plans a dead lead left reserved move to this session: its children's takes keep working,
+ * since only the lead's identity moves (`adoptLeadPlans`). "Dead" is `ended`, a whole session
+ * over, never a dead pid alone (a reopened session keeps its id in a new process).
+ */
+function adoptPlans(ctx: HerdrContext, project: string): void {
+  if (!existsSync(workDbFile(ctx.paths))) return;
+  const who = ctx.caller ? ctx.caller() : callerOf({ env: ctx.env });
+  if (who === null || !who.sessionId) {
+    ctx.out.line("warn", "Plans were not adopted: this session cannot be resolved.");
+    return;
+  }
+  const db = openWorkDb(workDbFile(ctx.paths), { mode: "write" });
+  try {
+    const liveness = ctx.process ?? CLAIM_PROCESS;
+    const moved = adoptLeadPlans(db, {
+      project,
+      who,
+      isDead: (claim) => liveness.ended(claim),
+      now: ctx.now(),
+    });
+    if (!moved.ok) {
+      ctx.out.line("warn", `Plans were not adopted: ${moved.why}`);
+      return;
+    }
+    for (const plan of moved.value)
+      ctx.out.line(
+        "changed",
+        `Adopted plan #${plan.number} ${plan.plan ?? plan.subject}: its lead had ended, so ${plan.lead?.holder === "child" ? "its child's" : "its"} reservation is yours now`,
+      );
+  } finally {
+    db.close();
+  }
+}
 /** Releases a plan this start reserved: its launch failed, so no child holds it. */
 function releaseAfterFailedStart(
   ctx: HerdrContext,
@@ -1057,6 +1092,7 @@ export async function runHerdr(args: string[], ctx: HerdrContext): Promise<numbe
           }
         }
         show(ctx, adopted);
+        adoptPlans(ctx, project.project);
         return 0;
       }
       case "plans":

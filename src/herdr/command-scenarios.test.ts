@@ -1368,3 +1368,67 @@ test("plans --wait times out with the command to continue, and ends at once when
   expect(await runHerdr(["plans", "--wait"], r.ctx)).toBe(0);
   expect(r.lines.join("\n")).toContain("Nothing to wait for: no plan can change by itself.");
 });
+
+test("adopt moves a dead lead's plans to this session, and the child's take with the old hand-out id passes", async () => {
+  const p = planWorld();
+  const alpha = p.plan("alpha", ["src/a/"]);
+  p.plan("beta", ["src/b/"]);
+  expect(await runHerdr([...planLaunch, "--plan", "alpha", "--", "work"], p.ctx)).toBe(0);
+  const before = p.row("alpha").lead;
+  expect(before).toMatchObject({ sessionId: "lead", holder: "child" });
+  // The lead's session is over; another session adopts. Its own plan (beta) is unreserved and stays.
+  const ME: Who = { sessionId: "me", pid: 4303, procStart: "43030" };
+  p.ctx.caller = () => ME;
+  p.ctx.process = ENDED;
+  p.lines.length = 0;
+  expect(await runHerdr(["adopt"], p.ctx)).toBe(0);
+  const text = p.lines.join("\n");
+  expect(text).toContain(
+    "Adopted plan #1 alpha: its lead had ended, so its child's reservation is yours now",
+  );
+  expect(text).not.toContain("beta");
+  const after = p.row("alpha").lead;
+  expect(after).toMatchObject({ sessionId: "me", pid: 4303, holder: "child" });
+  expect(after?.handoutId).toBe(before?.handoutId ?? "x");
+  expect(p.row("beta").lead).toBeNull();
+  // The child, started under the old hand-out id, still takes the plan.
+  const taken = takeTasks(p.db, p.project, alpha.id, CHILD, 60, {
+    from: before?.handoutId ?? "",
+    isLive: () => false,
+    isEnded: () => true,
+  });
+  expect(taken.ok).toBe(true);
+  // A second adopt moves nothing and says nothing.
+  p.lines.length = 0;
+  expect(await runHerdr(["adopt"], p.ctx)).toBe(0);
+  expect(p.lines.join("\n")).not.toContain("Adopted plan");
+});
+
+test("adopt leaves a lead that runs, or cannot be proved gone, with its plans", async () => {
+  const p = planWorld();
+  p.plan("alpha", ["src/a/"]);
+  expect(await runHerdr([...planLaunch, "--plan", "alpha", "--", "work"], p.ctx)).toBe(0);
+  p.ctx.caller = () => ({ sessionId: "me", pid: 4303, procStart: "43030" });
+  // The last one is a reopened session: its old process is gone, but the session runs on.
+  for (const unproved of [
+    UNPROVEN,
+    { ...UNPROVEN, live: () => true },
+    { ...UNPROVEN, gone: () => true },
+  ]) {
+    p.ctx.process = unproved;
+    p.lines.length = 0;
+    expect(await runHerdr(["adopt"], p.ctx)).toBe(0);
+    expect(p.lines.join("\n")).not.toContain("Adopted plan");
+    expect(p.row("alpha").lead?.sessionId).toBe("lead");
+  }
+});
+
+test("adopt without a store or a session still adopts children, and says why plans stay", async () => {
+  const w = world();
+  expect(await runHerdr(["adopt"], w.ctx)).toBe(0);
+  expect(w.lines.join("\n")).not.toContain("Plans were not adopted");
+  const p = planWorld();
+  p.ctx.caller = () => null;
+  expect(await runHerdr(["adopt"], p.ctx)).toBe(0);
+  expect(p.lines.join("\n")).toContain("Plans were not adopted: this session cannot be resolved.");
+});
