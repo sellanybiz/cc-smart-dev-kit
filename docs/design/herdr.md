@@ -157,10 +157,10 @@ resolves with `planByRef`, then it runs the same live gates and held-plan diffs 
 and `reservePlan` with holder `self`, with `ignore` and `caseFold` from `planFilesCheck`, read
 before the write lock. It prints one line naming the plan and the next step: start its first phase
 as usual. It refuses from a plan child (the terminal carries `kit.plan`), when the default branch
-is only a guess, and for a plan that is not pending, not the caller's own or already reserved, each
-with its fix. It stands alone: `--wait`, `--json` and `--release` cannot join it. The Bash judge
+is only a guess, and for a plan that is not pending (one already started: park it first, then reserve it), not the
+caller's own or already reserved, each with its fix. It stands alone: `--wait`, `--json` and `--release` cannot join it. The Bash judge
 stays silent, since it reserves the caller's own plan and frees nothing. The plan stays held until
-its pull request merges: the classifier reads it as `own`, then `merging` once it is closed, and a
+its pull request merges or closes (or the settle proof below holds): the classifier reads it as `own`, then `merging` once it is closed, and a
 `herdr plans` pass releases it like any other.
 
 **The plan trailer** (`planTrailer` in `brief.ts`) replaces the task trailer:

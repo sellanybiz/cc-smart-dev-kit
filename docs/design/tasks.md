@@ -393,7 +393,8 @@ leads of plans whose lead has ended.
 **The lead's own plan.** In lead + children mode the lead reserves its own plan with holder `self`,
 through the same `reservePlan` and the same gates as a hand-out (`herdr plans --reserve <plan>`,
 `docs/design/herdr.md` § Handing out plans), and then starts it as usual. Unlike a plan held only
-by being in flight, it stays held after it is done, until its pull request merges.
+by being in flight, it stays held after it is done, until its pull request merges or closes
+(`docs/design/herdr.md` says when a pass releases it with no pull request).
 
 **The take.** A reserved plan is taken only when `from` names the hand-out id or the current lead
 session, when the taker already owns the plan, or when the person passes `force`. Then each row

@@ -215,7 +215,8 @@ after a rebase is the project's `.claude/cc-smart-dev-kit/build.md`.
 
 1. Reserve the lowest-numbered ready plan for yourself with `herdr plans --reserve <slug>`. It
    runs the gates a hand-out runs. Then start the plan as in §§ 1 and 2. The plan stays held
-   until its pull request merges, even after it closes, so no child's plan can overlap it.
+   until its pull request merges or closes, even after the plan closes, so no child's plan can
+   overlap it.
 2. Hand every other ready plan to a child, as in Coordinator step 1.
 3. Build the own plan with builder subagents, §§ 2 to 6. A child's report or a merge is not the
    person's prompt: handle it after the current hand-back, never in the middle of a phase.
@@ -226,7 +227,7 @@ after a rebase is the project's `.claude/cc-smart-dev-kit/build.md`.
 `Your plan: <slug>.`, after the lead's own text. It
 builds only that plan with this skill, starts no session, takes no other plan, reports once with
 the pull request link and stops. This overrides § 6's "start the next queued plan". It never
-coordinates: `--plan` and `adopt` refuse a plan child.
+coordinates: `herdr start --plan`, `adopt` and `plans --reserve` refuse a plan child.
 
 ## Rulings, not stalls
 

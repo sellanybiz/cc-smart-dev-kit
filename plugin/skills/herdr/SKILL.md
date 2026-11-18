@@ -83,7 +83,7 @@ overlaps, which child works and which is gone, which pull request still holds fi
 and prints its own next command on timeout. It also releases a plan's files once its pull
 request has merged or closed. `plans --reserve <slug>` reserves one of your own ready plans for
 yourself, with the gates `start --plan` runs; then you start it as usual (lead + children mode). It
-stays held until its pull request merges. `plans --release <slug>` frees a finished plan nothing can prove
+stays held until its pull request merges or closes. `plans --release <slug>` frees a finished plan nothing can prove
 merged; it is the person's call, and the Bash judge asks first.
 
 Run `cc-smart-dev-kit herdr wait` with Bash's `run_in_background: true`; let completion
@@ -124,7 +124,8 @@ adopt prints `task_take <slug>` for it.
 
 **A plan child never coordinates.** A session started with `--plan` builds that one plan, starts
 no session, takes no other plan and stops after its report. Its terminal carries `kit.plan`;
-`start --plan` and `adopt` refuse there, and its brief forbids any other start.
+`start --plan`, `adopt` and `plans --reserve` refuse there, and its brief forbids any other
+start.
 
 Use the kit commands for writes. The Bash judge rejects raw `hc` writes and `herdr-app do`;
 local read-only inspection is allowed (`hc events` only in the background). Remote reads
