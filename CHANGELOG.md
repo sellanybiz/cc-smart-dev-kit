@@ -24,7 +24,8 @@ in your own terminal after the update; the user guide is [README.md](README.md).
   (husky, a plain `pre-commit` or `pre-push`) waits like any other heavy run. Setup writes a
   folder of hook scripts, `~/.local/share/cc-smart-dev-kit/git-hooks/`; when the route is on, the
   git line gets three `GIT_CONFIG_*` words in front of it, so your own `git` deny and ask rules
-  still match. Your hook runs inside `job run --hook`. `--no-verify`, your own `core.hooksPath`
+  still match. An allow rule does not match past them: with `Bash(git push *)` only in your
+  allow list, a prefixed push asks you again. Your hook runs inside `job run --hook`. `--no-verify`, your own `core.hooksPath`
   and native Windows are left alone, and any doubt runs the hook as it is. New commands:
   `job hook <name>`, and `job run --hook` for the scripts. `doctor` has a git hooks line: a
   missing folder is a warning until `setup` runs, and a folder the kit did not make is a ✗ that says

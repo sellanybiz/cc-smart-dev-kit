@@ -344,6 +344,13 @@ gets three variable assignments in front of the `git` word, and no other change:
 
     GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=<the kit's folder> git commit -m x
 
+**Your permission rules see the prefixed line.** Claude Code matches a `deny` or `ask` rule past
+leading variable assignments, so `Bash(git push *)` there still holds (proved live:
+`docs/claude-code-contract.md`). An `allow` rule does not: Claude Code's docs say it will not
+match past an assignment of another variable. So with `Bash(git push *)` only in your allow
+list, a prefixed push asks you again, and nothing that was asked becomes allowed. How auto mode
+judges a prefixed line is not proved yet.
+
 Git reads them for that one command, so it uses the kit's folder instead of the repo's own. The
 hooks asked about are the ones the command runs: `pre-commit` and `commit-msg` for a commit,
 `pre-merge-commit` and `commit-msg` for a merge, `pre-push` for a push. Why a prefix and not
@@ -584,6 +591,13 @@ only the heavy-job count. The queue never changes process priority. An old
 - **A waiting hook holds git's `index.lock`.** A `git commit` whose `pre-commit` waits for the
   slot keeps the lock, so another git command in that repo that needs the index fails until the
   hook runs.
+- **The hook names are git 2.53's** (`HOOK_NAMES` in `src/jobs/git-hooks.ts`, from `git help
+  githooks`). A hook name a later git adds has no script in the kit's folder, so for a prefixed
+  command git finds no hook of that name and runs nothing. `doctor` does not compare the list
+  with the running git's.
+- **`git -C <other repo> commit` is judged with this session's project kinds**, while `job hook`
+  reads the other repo's: with kinds of its own, that repo may get a prefix it does not need
+  (harmless: its `job hook` answers `direct`) or miss one.
 - **Git hooks are not prefixed on native Windows yet**: the scripts are `sh`, and the proof
   through Git for Windows is still to do. `doctor` says so.
 - **The queue is not a substitute** for running targeted checks while building and one full
