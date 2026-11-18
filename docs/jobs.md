@@ -26,7 +26,8 @@ sessions and their agents run on one machine, they start these at the same time.
 runs out of memory, and the kernel kills what it picks: often the desktop, and every session
 with it. A rule like "one heavy job at a time" in each session does not help: nothing limits
 heavy jobs **across** sessions, agents and people. So each heavy job runs through
-`cc-smart-dev-kit job run`, and the next one waits for the slot.
+`cc-smart-dev-kit job run`, and the next one waits for the slot. A hook that git itself runs on
+`git commit` or `git push` goes through it too (§ Git hooks).
 
 The same queue runs on native Windows, where a lease's start time and how a job's tree is
 ended differ: [Windows](windows-jobs.md).
@@ -485,30 +486,46 @@ working folder into a script's environment by itself, so the launchers start the
 ## The classifier
 
 `classifyHeavyCommand(bashCommand, kinds)` (`src/jobs/classify.ts`) says which kind a Bash
-command runs, or null: it is what the route names a job by. The route adds one rule on top
-(`classifyRoutableLine`): a line is queued only when every command in it is heavy, a `cd` or an
-assignment, or when one heavy command is piped into read-only filters (§ The route). It reads
-the line with the one shell reader the guards use too (`src/shell/command.ts`), so the queue and
-the guards see the same commands: a tool inside quotes, an `echo`, a quoted here-doc, a comment
-or a commit message is text, not a run; a substitution (`$( … )`, a backtick, the body of an
-unquoted here-doc) is a run. It finds the tool behind `bunx`, `bun x`, `bun run`, `bun <name>`,
-`npx`, `npm exec`, `npm run`, `pnpm`, `yarn`, `node_modules/.bin/` paths and `node <script
-path>`; behind a shell keyword (`if`, `while`, `!`); behind the wrappers `time`, `timeout`,
-`nice`, `ionice`, `nohup`, `stdbuf`, `env`, `sudo`, `doas`, `exec`, `command`, `builtin` and
-`xargs`, **with their own options**; inside `bash -c '…'`, `env -S '…'`, a here-doc or a pipe
-fed to a shell; and behind a name the shell resolves first (`b\unx`, `$'bunx'`). The reader's
-cases are pinned in `src/jobs/shell-parity.test.ts`.
+command runs, or null. The route and the hook's questions ask it, and it asks three things of
+one walk of the line:
 
-**A script is a script, not the tool of the same name.** A `package.json` script is found only
-through a kind's `{ "script": "<name>" }` rule. To tell a script from a tool, the classifier
-reads the project's `package.json` in the folder the line runs in (after a `cd`, the folder it
-moves to), through an injected reader (`packageScripts` in `src/jobs/package-scripts.ts`), once
-per folder and run. A name that is a **script** there matches only a `script` rule, so a
-project whose `tsc` script already wraps the type check is not queued a second time. A name that
-is **no script** there is the package manager's `node_modules/.bin/<name>`, so a tool rule
-matches it. With no `package.json` there, or one the reader cannot use, the answer is the tool —
-a broken file is treated as no file. These cases are in `src/jobs/classify.test.ts` and, through
-the hook, in `src/hooks/bash-judge.test.ts`.
+- **`classifyHeavyCommand`**: the first heavy kind the line runs, anywhere in it (any-heavy). A
+  run that only prints is no heavy run.
+- **`routableLine`** (`classifyRoutableLine` gives its kind): may the route queue the line? Only
+  when every command in it is heavy, a `cd` or an assignment, or when one heavy command is
+  piped into read-only filters (§ The route). A script is followed into its body by the same
+  rule (§ Scripts are read by their body).
+- **`runWeight(line, kinds, source)`**: how heavy is the run? `{ weight: "light" }` (it only
+  prints, or names only existing files), `{ weight: "heavy", kind }` (it waits for a slot), or
+  `{ weight: "none" }` (no heavy command in the line, a watch run, or a line that queues
+  itself). The route and `job run` both ask it, so a line is judged the same where it is routed
+  and where it runs. It unwraps `bash -c '…'` and `zsh -c '…'`, and reads each command's files
+  in the folder it runs in (after a `cd`). **Light needs a positive finding**: every heavy
+  command only prints or names existing files, and every other command of the line is one the
+  reader understands. Anything else is heavy.
+
+The classifier reads the line with the one shell reader the guards use too
+(`src/shell/command.ts`), so the queue and the guards see the same commands: a tool inside
+quotes, an `echo`, a quoted here-doc, a comment or a commit message is text, not a run; a
+substitution (`$( … )`, a backtick, the body of an unquoted here-doc) is a run. It finds the
+tool behind `bunx`, `bun x`, `bun run`, `bun test`, `bun <name>`, `npx`, `npm exec`, `npm run`,
+`pnpm`, `yarn`, `node_modules/.bin/` paths and `node <script path>`; behind a shell keyword
+(`if`, `while`, `!`); behind the wrappers `time`, `timeout`, `nice`, `ionice`, `nohup`,
+`stdbuf`, `env`, `cross-env`, `sudo`, `doas`, `exec`, `command`, `builtin` and `xargs`,
+**with their own options**; inside `bash -c '…'`, `env -S '…'`, a here-doc or a pipe fed to a
+shell; and behind a name the shell resolves first (`b\unx`, `$'bunx'`). `cross-env NODE_ENV=test
+jest` is a `jest` run: its `VAR=x` words are stepped over. The reader's cases are pinned in
+`src/jobs/shell-parity.test.ts`.
+
+**A script is a script, not the tool of the same name.** To tell a script from a tool, the
+classifier reads the project's `package.json` in the folder the line runs in, through an
+injected reader (`packageScripts` in `src/jobs/package-scripts.ts`), once per folder and run. A
+name that is a **script** there matches only a `script` rule, or is read by its body; a project
+whose `tsc` script already wraps the type check is not queued a second time. A name that is **no
+script** there is the package manager's `node_modules/.bin/<name>`, so a tool rule matches it.
+With no `package.json` there, or one the reader cannot use, the answer is the tool: a broken
+file is treated as no file. These cases are in `src/jobs/classify.test.ts` and, through the
+hook, in `src/hooks/bash-judge.test.ts`.
 
 ## What 2.0 took out
 
@@ -529,14 +546,29 @@ only the heavy-job count. The queue never changes process priority. An old
   `/dev/tty` cannot, and Ctrl+Z stops `job run` only, not the job. Heavy jobs are builds and
   checks that ask nothing.
 - **A hung job holds the slot for ever:** there is no timeout. Every waiting line names it.
-- **Nesting is found on Linux only.** On macOS and Windows, a heavy job must not start another
-  one through `job run`.
+- **Nesting is found on Linux only** (unchanged by the git hooks). On macOS and Windows, a heavy
+  job must not start another one through `job run`.
 - **Windows:** `job run` watches the job's first process, so a worker left behind is not seen
   and the slot is given back while it runs; and a holder whose start time cannot be read counts
   as alive (`windows-jobs.md`).
 - **A dead ticket from another pid namespace** cannot be judged by its pid: it holds the line
   until it is stale, 30 seconds after its last touch.
 - **The classifier's `typed.` rule for ESLint** can match a file whose name holds that text.
+- **Watch runs are never queued by the route**, and a run the judge cannot read is never
+  called light: it keeps its slot. A `job run` you type holds a slot for a watch run too.
+- **Multi-package script forms are not read** (`--filter`, `-r`, `--workspaces`, `turbo`,
+  `nx`): the line runs raw, or takes the slot of the kind you gave it.
+- **lefthook's and pre-commit's YAML files are not read.** A hook that only starts one is queued
+  when a kind of the project matches the command that starts it (§ Git hooks).
+- **`tsc` on named files ignores `tsconfig.json`** and may pull in the whole import graph of
+  those files, so a "light" run can still be large. Name few, narrow files.
+- **vitest and `bun test` file arguments are filters**, not exact files. A named file that exists
+  counts as light (Bun only with `./` or `/`), yet the runner may run more than it.
+- **A waiting hook holds git's `index.lock`.** A `git commit` whose `pre-commit` waits for the
+  slot keeps the lock, so another git command in that repo that needs the index fails until the
+  hook runs.
+- **Git hooks are not prefixed on native Windows yet**: the scripts are `sh`, and the proof
+  through Git for Windows is still to do. `doctor` says so.
 - **The queue is not a substitute** for running targeted checks while building and one full
   check at the end.
 
