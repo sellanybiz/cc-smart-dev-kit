@@ -244,6 +244,25 @@ test("plans --release names one plan and stands alone", () => {
     expect(parseHerdrArgs(["plans", ...bad])).toHaveProperty("error");
 });
 
+test("plans --reserve names one plan and stands alone", () => {
+  expect(parseHerdrArgs(["plans", "--reserve", "alpha"])).toEqual({
+    verb: "plans",
+    json: false,
+    wait: false,
+    reserve: "alpha",
+  });
+  for (const bad of [
+    ["--reserve"],
+    ["--reserve", " "],
+    ["--reserve", "alpha", "--wait"],
+    ["--reserve", "alpha", "--json"],
+    ["--reserve", "alpha", "--release", "beta"],
+    ["--reserve", "alpha", "--timeout", "30"],
+  ])
+    expect(parseHerdrArgs(["plans", ...bad])).toHaveProperty("error");
+  expect(HERDR_USAGE).toContain("plans --reserve <plan>");
+});
+
 test("the --plan exclusion has one text, in the parser and in the early refusal", () => {
   const parsed = parseHerdrArgs([
     "start",
