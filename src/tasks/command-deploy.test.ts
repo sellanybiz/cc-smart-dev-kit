@@ -459,10 +459,9 @@ test("release --check judges the task files alone: 1 with a blocking task, 0 onc
   const refused = await run(["release", "prod", "--check"]);
   expect(refused.code).toBe(1);
   expect(refused.error).toBe("");
-  expect(refused.text).toContain("Release check: prod");
-  expect(refused.text).toContain(blocking);
-  expect(refused.text).toContain(noted);
-  expect(refused.text).toContain("Not ready: 1 reason to stop");
+  expect(refused.text).toBe(
+    `Release check: prod\n✗ ${blocking}\n· ${noted}\n✗ Not ready: 1 reason to stop. Fix each one, then run this again.\n`,
+  );
   expect(JSON.parse((await run(["release", "prod", "--check", "--json"])).text)).toEqual({
     ok: false,
     refusals: [blocking],
@@ -471,7 +470,9 @@ test("release --check judges the task files alone: 1 with a blocking task, 0 onc
   expect((await run(["done", id, "--evidence", "ran it: ok"])).code).toBe(0);
   const passed = await run(["release", "prod", "--check"]);
   expect(passed.code).toBe(0);
-  expect(passed.text).toContain("Ready: prod has no open task that holds a deploy.");
+  expect(passed.text).toBe(
+    `Release check: prod\n· ${noted}\n✓ Ready: prod has no open task that holds a deploy.\n`,
+  );
   expect(JSON.parse((await run(["release", "prod", "--check", "--json"])).text)).toEqual({
     ok: true,
     refusals: [],

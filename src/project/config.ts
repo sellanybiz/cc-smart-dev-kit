@@ -139,7 +139,7 @@ export const JOB_KIND_KEYS_SINCE: Readonly<Partial<Record<keyof KindSpec, string
  * open. A project file that sets the field, or lists the hook in `ownHooks`, needs that plugin
  * version or newer, for the same reason as `DEPLOY_TASKS_SINCE`.
  */
-export const DEPLOY_GUARD_SINCE = "5.1.0";
+export const DEPLOY_GUARD_SINCE = "5.2.0";
 
 /**
  * The plugin hooks `ownHooks` may list that came after `ownHooks` itself (0.3.0), with the
@@ -184,36 +184,32 @@ export const DEPLOY_TASKS_SINCE = "5.0.0";
 export type DeployCommandEntry = string | MatchRule;
 
 /**
- * One entry of `tasks.deployCommands`. A string is ONE command as typed (`"vercel --prod"`): the
- * shell reader counts its commands, and a string with a separator outside quotes (`;`, `&&`,
- * `||`, `|`) holds more than one, so it is refused with the fix. A rule is checked by the jobs
- * grammar. Kept as written: the guard turns a string into a rule when it loads. The error's
- * field path (`tasks.deployCommands.prod.0`) names the entry; each message also quotes it.
+ * One entry of `tasks.deployCommands`: a string, or a rule of the jobs grammar. A string is ONE
+ * plain command as typed (`"vercel --prod"`): the shell reader counts its commands, and any
+ * separator or shell construct outside quotes (`;`, `&&`, `||`, `|`, `&`, a new line, `$(…)`, a
+ * here-doc, a group) makes more than one, so it is refused with the fix. A rule is checked by
+ * the jobs grammar; the entry stays a union, so the floor's drift test (`config.test.ts`) walks
+ * the rule's keys. Kept as written: the guard turns a string into a rule when it loads. The
+ * error's field path (`tasks.deployCommands.prod.0`) names the entry; a string's message also
+ * quotes it.
  */
-const deployCommandEntry = z.custom<DeployCommandEntry>().superRefine((entry, ctx) => {
-  if (typeof entry !== "string") {
-    const rule = matchRuleSchema.safeParse(entry);
-    if (!rule.success)
-      for (const issue of rule.error.issues)
-        ctx.addIssue({
-          code: "custom",
-          message: `is not a command or a match rule (${issue.path.join(".") || "rule"}: ${issue.message})`,
-        });
-    return;
-  }
-  // A separator makes more than one step even when a side is empty (`vercel --prod;`).
-  const steps = shellSteps(entry);
-  if (steps.every((step) => step.text.trim() === ""))
-    ctx.addIssue({
-      code: "custom",
-      message: `${JSON.stringify(entry)} holds no command: write one command, such as \`vercel --prod\``,
-    });
-  else if (steps.length > 1)
-    ctx.addIssue({
-      code: "custom",
-      message: `${JSON.stringify(entry)} holds more than one command (a ;, &&, || or | outside quotes, or a substitution): list each command as its own entry`,
-    });
-});
+const deployCommandEntry = z
+  .union([z.string(), matchRuleSchema], { error: "is not a command or a match rule" })
+  .superRefine((entry, ctx) => {
+    if (typeof entry !== "string") return;
+    // A separator makes more than one step even when a side is empty (`vercel --prod;`).
+    const steps = shellSteps(entry);
+    if (steps.every((step) => step.text.trim() === ""))
+      ctx.addIssue({
+        code: "custom",
+        message: `${JSON.stringify(entry)} holds no command: write one command, such as \`vercel --prod\``,
+      });
+    else if (steps.length > 1)
+      ctx.addIssue({
+        code: "custom",
+        message: `${JSON.stringify(entry)} holds more than one command or a shell construct (;, &&, ||, |, &, a new line, $(…), a here-doc or a group): write one plain command, such as \`vercel --prod\`; extra words in a run still match`,
+      });
+  });
 
 const deployCommandList = z
   .array(deployCommandEntry)
@@ -365,10 +361,16 @@ export const ccSmartDevKitConfigSchema = z.strictObject({
         .optional(),
       deployCommands: z
         .strictObject({ prod: deployCommandList.optional(), staging: deployCommandList.optional() })
+        .refine(
+          (commands) => Object.keys(commands).length > 0,
+          "is empty: list the commands for an environment, or remove the key",
+        )
         .optional(),
       ...IGNORED_TASK_SCHEMAS,
     })
     .superRefine((tasks, ctx) => {
+      // An empty `envs` has its own refusal above; a second issue here would only confuse.
+      if (tasks.envs?.length === 0) return;
       const envs: readonly string[] = tasks.envs ?? DEPLOY_ENVS;
       for (const env of Object.keys(tasks.deployCommands ?? {}))
         if (!envs.includes(env))

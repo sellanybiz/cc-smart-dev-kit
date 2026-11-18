@@ -106,10 +106,23 @@ const FIRST_ACCEPTED_IN: Record<string, string> = {
   "tasks.legacyFolders": "1.10.0",
   // 5.0.0 made the task files deploy tasks: the environments a project deploys to.
   "tasks.envs": "5.0.0",
-  // 5.1.0: the commands a project deploys with, for the deploy guard.
-  "tasks.deployCommands": "5.1.0",
-  "tasks.deployCommands.prod": "5.1.0",
-  "tasks.deployCommands.staging": "5.1.0",
+  // 5.2.0: the commands a project deploys with, for the deploy guard.
+  "tasks.deployCommands": "5.2.0",
+  "tasks.deployCommands.prod": "5.2.0",
+  "tasks.deployCommands.staging": "5.2.0",
+  // The entries are a string or a match rule (`jobs.kinds.*.match`): each rule key is a key.
+  "tasks.deployCommands.prod.tool": "5.2.0",
+  "tasks.deployCommands.prod.sub": "5.2.0",
+  "tasks.deployCommands.prod.flags": "5.2.0",
+  "tasks.deployCommands.prod.argIncludes": "5.2.0",
+  "tasks.deployCommands.prod.valued": "5.2.0",
+  "tasks.deployCommands.prod.script": "5.2.0",
+  "tasks.deployCommands.staging.tool": "5.2.0",
+  "tasks.deployCommands.staging.sub": "5.2.0",
+  "tasks.deployCommands.staging.flags": "5.2.0",
+  "tasks.deployCommands.staging.argIncludes": "5.2.0",
+  "tasks.deployCommands.staging.valued": "5.2.0",
+  "tasks.deployCommands.staging.script": "5.2.0",
 };
 
 /** The `ownHooks` names the 0.5.2 plugin accepted, the retired and the unswitchable ones too. */
@@ -139,7 +152,7 @@ const HOOK_NAME_FIRST_ACCEPTED_IN: Record<string, string> = {
   "task-start": "1.10.0",
   "keep-going": "2.0.0",
   "builder-finish": "2.0.0",
-  "deploy-guard": "5.1.0",
+  "deploy-guard": "5.2.0",
 };
 
 /** Every key of a schema, by dotted path. A record's keys are a person's, so they show as `*`. */
@@ -355,6 +368,7 @@ describe("tasks.deployCommands", () => {
         "npm run deploy:prod",
         "./scripts/deploy.sh prod",
         "fly deploy --config 'a;b && c'",
+        'vercel --prod "a && b"',
         { tool: "vercel", flags: ["--prod"] },
         { script: "deploy:prod" },
       ],
@@ -383,9 +397,16 @@ describe("tasks.deployCommands", () => {
     "vercel --prod | tee log",
     "a; b && c",
     "vercel --prod;",
-  ])("a string with a separator is refused, naming the entry: %j", (entry) => {
+    "vercel $(date)",
+    "vercel `date`",
+    "vercel --prod &",
+    "vercel --prod\nvercel --staging",
+    "vercel <<EOF\nbody\nEOF",
+    "(vercel --prod)",
+    "{ vercel --prod; }",
+  ])("a string with a separator or a shell construct is refused, naming the entry: %j", (entry) => {
     expect(refusal({ deployCommands: { prod: ["fly deploy", entry] } })).toBe(
-      `tasks.deployCommands.prod.1: ${JSON.stringify(entry)} holds more than one command (a ;, &&, || or | outside quotes, or a substitution): list each command as its own entry`,
+      `tasks.deployCommands.prod.1: ${JSON.stringify(entry)} holds more than one command or a shell construct (;, &&, ||, |, &, a new line, $(…), a here-doc or a group): write one plain command, such as \`vercel --prod\`; extra words in a run still match`,
     );
   });
 
@@ -398,12 +419,23 @@ describe("tasks.deployCommands", () => {
     );
   });
 
-  test("a rule that is not in the jobs grammar is refused", () => {
-    expect(refusal({ deployCommands: { prod: [{ tool: "vercel", nope: 1 }] } })).toContain(
-      "tasks.deployCommands.prod.0: is not a command or a match rule (",
+  test("a rule that is not in the jobs grammar is refused, naming the entry", () => {
+    // A rule that is nearly right gets zod's own message; anything else gets the entry's.
+    expect(refusal({ deployCommands: { prod: [{ tool: "vercel", nope: 1 }] } })).toBe(
+      'tasks.deployCommands.prod.0: Unrecognized key: "nope"',
     );
-    expect(refusal({ deployCommands: { prod: [7] } })).toContain(
-      "tasks.deployCommands.prod.0: is not a command or a match rule (",
+    expect(refusal({ deployCommands: { prod: [{ script: "" }] } })).toBe(
+      "tasks.deployCommands.prod.0.script: Too small: expected string to have >=1 characters",
+    );
+    for (const entry of [{}, 7, null, { tool: "vercel", script: "deploy" }])
+      expect(refusal({ deployCommands: { prod: [entry] } })).toBe(
+        "tasks.deployCommands.prod.0: is not a command or a match rule",
+      );
+  });
+
+  test("an empty deployCommands object is refused", () => {
+    expect(refusal({ deployCommands: {} })).toBe(
+      "tasks.deployCommands: is empty: list the commands for an environment, or remove the key",
     );
   });
 
@@ -413,11 +445,15 @@ describe("tasks.deployCommands", () => {
     );
     expect(refusal({ deployCommands: { prod: ["a"], staging: ["b"] } })).toBeNull();
     expect(refusal({ deployCommands: { production: ["a"] } })).toContain("production");
+    // An empty envs has its own refusal: no second, confusing one for the commands.
+    expect(refusal({ envs: [], deployCommands: { prod: ["a"] } })).toBe(
+      "tasks.envs: Too small: expected array to have >=1 items",
+    );
   });
 
-  test("a file that sets it needs 5.1.0, and the hook name needs the same", () => {
-    expect(requiresFloor({ tasks: { deployCommands: { prod: ["x"] } } }).version).toBe("5.1.0");
-    expect(requiresFloor({ ownHooks: ["deploy-guard"] }).version).toBe("5.1.0");
+  test("a file that sets it needs 5.2.0, and the hook name needs the same", () => {
+    expect(requiresFloor({ tasks: { deployCommands: { prod: ["x"] } } }).version).toBe("5.2.0");
+    expect(requiresFloor({ ownHooks: ["deploy-guard"] }).version).toBe("5.2.0");
   });
 });
 
