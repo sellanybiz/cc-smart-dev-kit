@@ -106,7 +106,6 @@ import {
   invocationOf,
   isAssignmentOnly,
   isShort,
-  programName,
   readingsOf,
   shellSegments,
   shellSteps,
@@ -116,6 +115,7 @@ import {
   wordsWithFill,
 } from "../shell/command";
 import { gitCalls, longOption } from "../shell/git-calls";
+import { programName } from "../shell/program-name";
 import { shellQuote, shellWord } from "../shell/quote";
 import { resolveJobRoute } from "../workflow/resolve";
 import {

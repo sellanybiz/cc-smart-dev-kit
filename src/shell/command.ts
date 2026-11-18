@@ -52,6 +52,7 @@
  * Pure: no file, no environment, no process.
  */
 import { kitArguments } from "./kit-invocation";
+import { programName } from "./program-name";
 import { shellQuote } from "./quote";
 
 /** The shell a line is written for: Claude Code's `Bash` tool, or its `PowerShell` tool. */
@@ -1317,11 +1318,6 @@ function packageCommand(
     return CLAUDE_PACKAGE.test(word) ? { args: rest.slice(index + 1), program: "claude" } : null;
   }
   return null;
-}
-
-/** `git.exe` → `git`, `C:\Program Files\Git\cmd\git` → `git`. */
-export function programName(word: string): string {
-  return (word.split(/[\\/]/).pop() ?? word).toLowerCase().replace(/\.(exe|cmd|ps1|bat)$/, "");
 }
 
 /**

@@ -46,7 +46,6 @@ import {
   MAX_NESTING,
   nestedCommand,
   nestedDialect,
-  programName,
   redirectionTargets,
   type ShellStep,
   shellSteps,
@@ -54,6 +53,7 @@ import {
   wordsOf,
   wordsWithFill,
 } from "../shell/command";
+import { programName } from "../shell/program-name";
 import { isPrintOnly, isWatchRun, type Kinds, type MatchRule, namesOnlyFiles } from "./kinds";
 
 /** What a command really runs: a program (by name) and its arguments. */

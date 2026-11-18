@@ -77,7 +77,6 @@ import {
   MAX_NESTING,
   nestedCommand,
   nestedDialect,
-  programName,
   type Reading,
   readingsOf,
   shellSteps,
@@ -86,6 +85,7 @@ import {
   wordsWithFill,
 } from "../shell/command";
 import { isKitWord, kitArguments, namesKit } from "../shell/kit-invocation";
+import { programName } from "../shell/program-name";
 import { writtenWords } from "../shell/writes";
 import { realPath } from "./git";
 import {

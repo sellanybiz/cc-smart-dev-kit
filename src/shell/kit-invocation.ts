@@ -16,7 +16,7 @@
  * `user-away` reads the kit's name too, on purpose without this recogniser.
  */
 import { COMMAND } from "../build-info/names";
-import { programName } from "./command";
+import { programName } from "./program-name";
 
 /**
  * Programs that only read, search or move their arguments, never run them: a path to the kit
