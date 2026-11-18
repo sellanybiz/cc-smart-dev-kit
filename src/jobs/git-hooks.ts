@@ -8,10 +8,10 @@
  * it inside `job run`, so it waits for a heavy slot like any other heavy command).
  */
 
-import { closeSync, openSync, readSync, statSync } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { closeSync, openSync, readSync, realpathSync, statSync } from "node:fs";
+import { basename, dirname, join, resolve } from "node:path";
 import { GIT_TIMED_OUT, GUARD_GIT_TIMEOUT_MS, runGit } from "../hooks/git";
-import { classifyHeavyCommand, type ScriptSource } from "./classify";
+import { classifyUnqueuedHeavy, type ScriptsOf } from "./classify";
 import type { Kinds } from "./kinds";
 
 /**
@@ -55,7 +55,7 @@ export const HOOK_NAMES: readonly string[] = [
   "post-index-change",
 ];
 
-/** What `realHooksFolder` answers when git did not answer in time, or had no time left. */
+/** What `hooksPlace` answers when git did not answer in time, or had no time left. */
 export const TIMED_OUT = "timed-out";
 
 /**
@@ -71,27 +71,70 @@ export type HookDecision = "direct" | "none" | "timed-out" | { queue: string };
  */
 export const MAX_HOOK_BYTES = 256 * 1024;
 
-/** Git's own answer to "where do hooks live", asked with the kit's override switched off. */
-const HOOKS_PATH_ARGS = ["rev-parse", "--path-format=absolute", "--git-path", "hooks"];
+/**
+ * Git's own answer to "where do hooks live, and where does a hook run", asked with the kit's
+ * override switched off: the hooks folder, then (when there is a work tree) the way up to its
+ * top and `true`, or just `false` where there is none (a bare repo, the `.git` folder).
+ * `--show-cdup` and `--is-inside-work-tree` stand in for `--show-toplevel`, which stops git
+ * with an error where there is no work tree, and would take the hooks folder's answer with it.
+ */
+const HOOKS_PATH_ARGS = [
+  "rev-parse",
+  "--path-format=absolute",
+  "--git-path",
+  "hooks",
+  "--show-cdup",
+  "--is-inside-work-tree",
+];
+
+/** Where git looks for hooks in a folder, and the folder it runs them in. */
+export interface HooksPlace {
+  /** The hooks folder git itself would use. */
+  folder: string;
+  /** The top of the work tree, where git runs a hook; the asking folder when there is none. */
+  top: string;
+}
 
 /**
  * The hooks folder git itself would use in `cwd`: the repo's own `core.hooksPath` (a relative
- * one is read from the work tree's root), else `<git dir>/hooks`. `GIT_CONFIG_COUNT=0` throws
- * away the `GIT_CONFIG_*` pairs a routed command sets, so the answer is the person's folder and
- * never the kit's. Null when git cannot say (not a repo, no git): the caller treats that as "no
- * hook". `TIMED_OUT` when git did not answer in `timeoutMs`, or no time is left (zero or less
- * asks git nothing): that says nothing about the repo, and the caller says so.
+ * one is read from the work tree's root), else `<git dir>/hooks`; and the folder git runs a
+ * hook in, the top of the work tree (`cwd` itself where the repo has none). `GIT_CONFIG_COUNT=0`
+ * throws away the `GIT_CONFIG_*` pairs a routed command sets, so the answer is the person's
+ * folder and never the kit's. Null when git cannot say (not a repo, no git): the caller treats
+ * that as "no hook". `TIMED_OUT` when git did not answer in `timeoutMs`, or no time is left
+ * (zero or less asks git nothing): that says nothing about the repo, and the caller says so.
  */
-export function realHooksFolder(
+export function hooksPlace(
   cwd: string,
   env: Record<string, string | undefined> = process.env,
   timeoutMs: number = GUARD_GIT_TIMEOUT_MS,
-): string | null | typeof TIMED_OUT {
+): HooksPlace | null | typeof TIMED_OUT {
   if (timeoutMs <= 0) return TIMED_OUT;
   const run = runGit(cwd, HOOKS_PATH_ARGS, env, timeoutMs, { GIT_CONFIG_COUNT: "0" });
   // No exit code and `GIT_TIMED_OUT`: the timeout stopped git.
   if (run.code === null && run.err === GIT_TIMED_OUT) return TIMED_OUT;
-  return run.ok && run.out !== "" ? run.out : null;
+  if (!run.ok) return null;
+  // Read from the end, because the folder is a path and a path may hold a line break: the last
+  // line is `true` or `false`; after `true`, the line before it is the way up (empty at the
+  // top, and then a blank line; only `../` pieces, never a line break); the rest is the folder.
+  const lines = run.out.split("\n");
+  const inside = lines.pop() === "true";
+  const up = inside ? (lines.pop() ?? "") : "";
+  const folder = lines.join("\n");
+  if (folder === "") return null;
+  return { folder, top: inside ? resolve(realFolder(cwd), up) : cwd };
+}
+
+/**
+ * `folder` with its links followed: git counts the way up from the real folder, so a call that
+ * starts in a link must be resolved from there. `folder` itself when it cannot be resolved.
+ */
+function realFolder(folder: string): string {
+  try {
+    return realpathSync(folder);
+  } catch {
+    return folder;
+  }
 }
 
 /** True when `folder` is husky v9's generated stub folder (`<repo>/.husky/_`). */
@@ -137,11 +180,14 @@ function hookText(file: string): string | null {
  * - `{ queue: kind }`: the hook's text runs a heavy command. Read **any-heavy**: one heavy
  *   command anywhere in it is enough, because nothing is hidden (the git line stays visible
  *   to the person's own rules). A package script in it is followed into its body through
- *   `source`, so `bun run typecheck` reads as `tsc --noEmit`.
+ *   `scriptsIn`, so `bun run typecheck` reads as `tsc --noEmit`. Git runs a hook at the top
+ *   of the work tree, so the scripts are the top's, whichever folder `cwd` is (the route and
+ *   `job hook` ask from different folders and must get one answer).
  * - `timed-out`: git did not answer within `gitTimeoutMs` (or no time was left), so it never
  *   asked: no answer about the hook, which is not the same as no hook.
  * - `direct`: anything else, a hook it cannot read included: a broken guess never blocks a
- *   commit, it only skips the queue.
+ *   commit, it only skips the queue. A hook that already runs `job run` (itself, or through a
+ *   script's body) is one too: it is queued already, and `job run --hook` around it would nest.
  *
  * For husky v9 the executable file git runs is the stub in `.husky/_/`, and the person's
  * commands are in `.husky/<name>`, so that is the file read.
@@ -150,17 +196,19 @@ export function hookDecision(
   name: string,
   cwd: string,
   kinds: Kinds,
-  source: ScriptSource,
+  scriptsIn: ScriptsOf,
   env: Record<string, string | undefined> = process.env,
   gitTimeoutMs: number = GUARD_GIT_TIMEOUT_MS,
 ): HookDecision {
-  const folder = realHooksFolder(cwd, env, gitTimeoutMs);
-  if (folder === TIMED_OUT) return "timed-out";
-  if (folder === null || !isFile(join(folder, name))) return "none";
+  const place = hooksPlace(cwd, env, gitTimeoutMs);
+  if (place === TIMED_OUT) return "timed-out";
+  if (place === null) return "none";
+  const { folder, top } = place;
+  if (!isFile(join(folder, name))) return "none";
   const file = isHuskyStubFolder(folder) ? join(dirname(folder), name) : join(folder, name);
   if (!isFile(file)) return "none";
   const text = hookText(file);
   if (text === null) return "direct";
-  const kind = classifyHeavyCommand(text, kinds, source);
+  const kind = classifyUnqueuedHeavy(text, kinds, { folder: top, scriptsIn });
   return kind === null ? "direct" : { queue: kind };
 }

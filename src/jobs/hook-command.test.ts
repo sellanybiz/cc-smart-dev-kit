@@ -37,6 +37,24 @@ describe("job hook", () => {
     expect(hookAnswer("pre-commit", world.repo, ENV)).toBe("direct");
   });
 
+  test("a hook that already queues itself answers direct; one at the top is read from a package folder", () => {
+    const world = gitHookWorld();
+    writeFileSync(
+      join(world.repo, "package.json"),
+      JSON.stringify({ scripts: { test: "vitest run", check: "cc-smart-dev-kit job run -- tsc" } }),
+    );
+    const web = join(world.repo, "web");
+    mkdirSync(web);
+    writeFileSync(join(web, "package.json"), JSON.stringify({ scripts: { test: "echo ok" } }));
+    const hook = join(world.repo, ".git", "hooks", "pre-commit");
+    writeFileIn(hook, "#!/bin/sh\nbun run test\n", 0o755);
+    // Git runs the hook at the top: the root's `test` is the one that counts, from either folder.
+    expect(hookAnswer("pre-commit", world.repo, ENV)).toBe("queue test:run");
+    expect(hookAnswer("pre-commit", web, ENV)).toBe("queue test:run");
+    writeFileIn(hook, "#!/bin/sh\nbun run check\n", 0o755);
+    expect(hookAnswer("pre-commit", web, ENV)).toBe("direct");
+  });
+
   test("a package script in the hook is followed into its body", () => {
     const world = gitHookWorld();
     writeFileSync(

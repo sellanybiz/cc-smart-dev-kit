@@ -7,7 +7,7 @@ paths:
   - "src/hooks/agent-launches*"
   - "src/hooks/job-route*"
   - "src/hooks/bash-judge*"
-  - "src/hooks/kit-invocation*"
+  - "src/shell/kit-invocation*"
   - "src/hooks/session-escape-guard*"
   - "src/hooks/user-away*"
   - "src/hooks/prompt-source.ts"
@@ -41,7 +41,7 @@ The hook frame and shell reader: `hooks.md`. Event contracts and evidence:
 - Rewrite a heavy Bash call through the jobs API with PreToolUse `updatedInput`, never run
   the command in the hook. Keep the Bash tool's working folder.
 - **The kit's own command is recognised in one place** (`kitArguments`, `namesKit`,
-  `src/hooks/kit-invocation.ts`): its name, a path to the launcher, its bundle behind another
+  `src/shell/kit-invocation.ts`): its name, a path to the launcher, its bundle behind another
   program, a program that runs its arguments. Every guard that asks about a kit command imports
   it; a spelling that gets past it is fixed there, never in one guard.
 

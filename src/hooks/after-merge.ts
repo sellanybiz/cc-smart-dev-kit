@@ -48,7 +48,6 @@ import {
   MAX_NESTING,
   nestedCommand,
   nestedDialect,
-  programName,
   readingsOf,
   redirectionTargets,
   shellSteps,
@@ -58,6 +57,7 @@ import {
   wordsWithFill,
 } from "../shell/command";
 import { gitCalls } from "../shell/git-calls";
+import { programName } from "../shell/program-name";
 import { resolveWorkflow, WorkflowConfigError } from "../workflow/resolve";
 import { startAutoClean } from "../worktrees/auto-start";
 import { startBudget } from "./budget";

@@ -77,7 +77,6 @@ import {
   MAX_NESTING,
   nestedCommand,
   nestedDialect,
-  programName,
   type Reading,
   readingsOf,
   shellSteps,
@@ -85,6 +84,8 @@ import {
   withoutRedirections,
   wordsWithFill,
 } from "../shell/command";
+import { isKitWord, kitArguments, namesKit } from "../shell/kit-invocation";
+import { programName } from "../shell/program-name";
 import { writtenWords } from "../shell/writes";
 import { realPath } from "./git";
 import {
@@ -95,7 +96,6 @@ import {
   toolDecision,
   toolInput,
 } from "./io";
-import { isKitWord, kitArguments, namesKit } from "./kit-invocation";
 
 /** A Bash line's path as the platform reads it: the home of the reader is `src/shell/change-dir.ts`. */
 export { shellTargetPath };
@@ -136,7 +136,7 @@ const RESETTERS: ReadonlySet<string> = new Set([
 ]);
 
 // The kit's own command, under every spelling it runs by, has one recogniser
-// (`./kit-invocation`): the escape guard and the shell judge both ask what a step runs, and a
+// (`../shell/kit-invocation`): the escape guard and the shell judge both ask what a step runs, and a
 // spelling that gets past one must not get past the other.
 
 const ASSIGNS_CLAUDECODE = new RegExp(`^${CLAUDECODE}=`, "i");

@@ -51,7 +51,8 @@
  *
  * Pure: no file, no environment, no process.
  */
-import { COMMAND } from "../build-info/names";
+import { kitArguments } from "./kit-invocation";
+import { programName } from "./program-name";
 import { shellQuote } from "./quote";
 
 /** The shell a line is written for: Claude Code's `Bash` tool, or its `PowerShell` tool. */
@@ -1319,11 +1320,6 @@ function packageCommand(
   return null;
 }
 
-/** `git.exe` → `git`, `C:\Program Files\Git\cmd\git` → `git`. */
-export function programName(word: string): string {
-  return (word.split(/[\\/]/).pop() ?? word).toLowerCase().replace(/\.(exe|cmd|ps1|bat)$/, "");
-}
-
 /**
  * The letters of a short option group (`-fdx` → `fdx`), up to the first one that takes a
  * value (the rest of the word, or the next word when nothing is attached). `value` is the
@@ -2152,11 +2148,21 @@ function parallelCommand(args: readonly string[]): string | undefined {
 }
 
 /**
- * `cc-smart-dev-kit job run …`, whatever path the launcher is named by: the queue must not
+ * The words after `job run` when a program runs the kit's `job run`, else null. The kit's
+ * command is recognised in one place (`kitArguments`, `kit-invocation.ts`): its name or a path
+ * to the launcher, `bunx`, `sh <launcher>`, `bun …/dist/cli.js`, the bun shim.
+ */
+function jobRunArguments(program: string, args: readonly string[]): string[] | null {
+  const kit = kitArguments(program, args);
+  return kit !== null && kit[0] === "job" && kit[1] === "run" ? kit.slice(2) : null;
+}
+
+/**
+ * `cc-smart-dev-kit job run …` under any spelling of the kit's command: the queue must not
  * nest.
  */
 export function isJobRun(program: string, args: readonly string[]): boolean {
-  return program === COMMAND && args[0] === "job" && args[1] === "run";
+  return jobRunArguments(program, args) !== null;
 }
 
 /**
@@ -2181,16 +2187,6 @@ export function nestedCommand(
     }
     return pipedFrom === null ? undefined : (writtenText(pipedFrom) ?? undefined);
   }
-  if (isJobRun(program, args)) {
-    // The queue runs the words after `--` as they are: quoted again, they read back the same.
-    const dashes = args.indexOf("--");
-    return dashes === -1 || dashes === args.length - 1
-      ? undefined
-      : args
-          .slice(dashes + 1)
-          .map(shellQuote)
-          .join(" ");
-  }
   // The runners: programs that run a command they are given (`find -exec`, `watch`, `su -c`,
   // `parallel`). They stay the line's program, so the merge reader's rule for what a runner
   // does to a merge still holds; the command they run is read here, once, for every guard.
@@ -2198,6 +2194,18 @@ export function nestedCommand(
   if (program === "watch") return watchCommand(args);
   if (program === "su") return suCommand(args);
   if (program === "parallel") return parallelCommand(args);
+  // After the runners, so a program that runs its arguments is read as the runner it is.
+  const queued = jobRunArguments(program, args);
+  if (queued !== null) {
+    // The queue runs the words after `--` as they are: quoted again, they read back the same.
+    const dashes = queued.indexOf("--");
+    return dashes === -1 || dashes === queued.length - 1
+      ? undefined
+      : queued
+          .slice(dashes + 1)
+          .map(shellQuote)
+          .join(" ");
+  }
   if (program === "cmd") {
     const at = args.findIndex((arg) => /^\/[ck]$/i.test(arg));
     return at === -1 ? undefined : args.slice(at + 1).join(" ");

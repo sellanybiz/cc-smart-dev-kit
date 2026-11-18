@@ -1050,6 +1050,27 @@ describe("which repo's hook decides", () => {
     expect(gitRewrite(world, 'cd "$DIR" && git commit -m x')).toBeNull();
   });
 
+  it("a package folder of a monorepo: git runs the hook at the top, so the root's script decides", () => {
+    const world = worldWithHooks({ "pre-commit": "#!/bin/sh\nbun run test\n" });
+    writeFileSync(
+      join(world.repo, "package.json"),
+      JSON.stringify({ scripts: { test: "vitest run" } }),
+    );
+    const web = join(world.repo, "web");
+    mkdirSync(web);
+    // The folder the call starts in has a `test` that is light, but the hook never runs there.
+    writeFileSync(join(web, "package.json"), JSON.stringify({ scripts: { test: "echo ok" } }));
+    const line = "git commit -m x";
+    const fromWeb = jobRoute(
+      contextFor(web, line, "Bash", { env: { HOME: world.home } }),
+      () => true,
+    );
+    expect(JSON.parse(fromWeb.stdout ?? "{}").hookSpecificOutput.updatedInput.command).toBe(
+      `${prefixOf(world)} ${line}`,
+    );
+    expect(gitRewrite(world, line)).toBe(`${prefixOf(world)} ${line}`);
+  });
+
   it("a separate --git-dir: decided in the folder the call is in, and job hook answers direct for the rest", () => {
     const world = worldWithHooks({ "pre-commit": HEAVY_HOOK });
     // From inside the repo, the prefix is placed (the hook is heavy there). When git runs the

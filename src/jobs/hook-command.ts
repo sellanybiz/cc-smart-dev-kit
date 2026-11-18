@@ -50,7 +50,7 @@ export function hookAnswer(name: string | undefined, cwd: string, env: Env = pro
     name,
     cwd,
     kinds,
-    { folder: cwd, scriptsIn: packageScripts },
+    packageScripts,
     env,
     budget.timeFor(GUARD_GIT_TIMEOUT_MS),
   );

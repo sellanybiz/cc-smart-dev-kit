@@ -3,20 +3,17 @@
  * repos, never the real home. Every expected value is written by hand.
  */
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { gitHookWorld, writeFileIn } from "../testing/git-hook-world";
 import { cleanGitEnv, git, tempDir } from "../testing/temp";
 import { runWeight } from "./classify";
-import { HOOK_NAMES, hookDecision, MAX_HOOK_BYTES, realHooksFolder, TIMED_OUT } from "./git-hooks";
+import { HOOK_NAMES, hookDecision, hooksPlace, MAX_HOOK_BYTES, TIMED_OUT } from "./git-hooks";
 import { DEFAULT_KINDS } from "./kinds";
 import { packageScripts } from "./package-scripts";
 import { diskWeightSource } from "./weight-source";
 
 const ENV = cleanGitEnv();
-
-/** The classifier's reader for the repo at `folder`: its own `package.json` scripts. */
-const sourceFor = (folder: string) => ({ folder, scriptsIn: packageScripts });
 
 describe("the hook list", () => {
   test("holds every hook the folder covers, and never the two that change git's behaviour", () => {
@@ -31,12 +28,14 @@ describe("the hook list", () => {
   });
 });
 
-describe("realHooksFolder", () => {
+describe("hooksPlace", () => {
+  const hooksOf = (repo: string) => join(repo, ".git", "hooks");
+
   test("is the repo's own hooks folder, and ignores the pair that names the kit's folder", () => {
     const world = gitHookWorld();
-    const routed = world.routedEnv();
-    expect(realHooksFolder(world.repo, routed)).toBe(join(world.repo, ".git", "hooks"));
-    expect(realHooksFolder(world.repo, ENV)).toBe(join(world.repo, ".git", "hooks"));
+    const place = { folder: hooksOf(world.repo), top: world.repo };
+    expect(hooksPlace(world.repo, world.routedEnv())).toEqual(place);
+    expect(hooksPlace(world.repo, ENV)).toEqual(place);
   });
 
   test("follows the repo's own core.hooksPath, a relative one too, from a subfolder", () => {
@@ -45,17 +44,38 @@ describe("realHooksFolder", () => {
     const deep = join(world.repo, "sub", "deep");
     mkdirSync(deep, { recursive: true });
     // A relative path is read from the root of the work tree, wherever git runs.
-    expect(realHooksFolder(world.repo, world.routedEnv())).toBe(join(world.repo, "hooks"));
-    expect(realHooksFolder(deep, world.routedEnv())).toBe(join(world.repo, "hooks"));
+    expect(hooksPlace(world.repo, world.routedEnv())).toEqual({
+      folder: join(world.repo, "hooks"),
+      top: world.repo,
+    });
+    expect(hooksPlace(deep, world.routedEnv())).toEqual({
+      folder: join(world.repo, "hooks"),
+      top: world.repo,
+    });
     git(world.repo, "config", "core.hooksPath", "/elsewhere/hooks");
-    expect(realHooksFolder(deep, world.routedEnv())).toBe("/elsewhere/hooks");
+    expect(hooksPlace(deep, world.routedEnv())).toEqual({
+      folder: "/elsewhere/hooks",
+      top: world.repo,
+    });
   });
 
-  test("a linked worktree shares the main checkout's hooks folder", () => {
+  test("a linked worktree shares the main checkout's hooks folder, and runs its hooks at its own top", () => {
     const world = gitHookWorld();
     const linked = join(tempDir("git-hooks-linked"), "wt");
     git(world.repo, "worktree", "add", "-q", "-b", "other", linked);
-    expect(realHooksFolder(linked, world.routedEnv())).toBe(join(world.repo, ".git", "hooks"));
+    expect(hooksPlace(linked, world.routedEnv())).toEqual({
+      folder: hooksOf(world.repo),
+      top: linked,
+    });
+  });
+
+  test("where there is no work tree (a bare repo, the git folder) the top is the asking folder", () => {
+    const world = gitHookWorld();
+    const bare = join(tempDir("git-hooks-bare"), "origin.git");
+    git(world.repo, "init", "-q", "--bare", bare);
+    expect(hooksPlace(bare, ENV)).toEqual({ folder: join(bare, "hooks"), top: bare });
+    const gitDir = join(world.repo, ".git");
+    expect(hooksPlace(gitDir, ENV)).toEqual({ folder: hooksOf(world.repo), top: gitDir });
   });
 
   test("with no time left it never starts git, and a git slower than its limit is stopped: timed out, not null", () => {
@@ -65,16 +85,16 @@ describe("realHooksFolder", () => {
     // A `git` first on PATH that records that it was started, then sleeps.
     writeFileIn(join(bin, "git"), `#!/bin/sh\necho started >> "${marker}"\nexec sleep 30\n`, 0o755);
     const env = { ...ENV, PATH: `${bin}:${ENV.PATH ?? ""}` };
-    expect(realHooksFolder(world.repo, env, 0)).toBe(TIMED_OUT);
-    expect(realHooksFolder(world.repo, env, -50)).toBe(TIMED_OUT);
+    expect(hooksPlace(world.repo, env, 0)).toBe(TIMED_OUT);
+    expect(hooksPlace(world.repo, env, -50)).toBe(TIMED_OUT);
     expect(existsSync(marker)).toBe(false);
-    expect(realHooksFolder(world.repo, env, 300)).toBe(TIMED_OUT);
+    expect(hooksPlace(world.repo, env, 300)).toBe(TIMED_OUT);
     expect(existsSync(marker)).toBe(true);
   });
 
   test("is null outside a repo", () => {
     const world = gitHookWorld();
-    expect(realHooksFolder(join(world.home, "nowhere"), ENV)).toBeNull();
+    expect(hooksPlace(join(world.home, "nowhere"), ENV)).toBeNull();
   });
 });
 
@@ -83,11 +103,11 @@ describe("hookDecision", () => {
     const world = gitHookWorld();
     const hook = join(world.repo, ".git", "hooks", "pre-commit");
     writeFileIn(hook, "#!/bin/sh\nbun test\n", 0o755);
-    expect(
-      hookDecision("pre-commit", world.repo, DEFAULT_KINDS, sourceFor(world.repo), ENV),
-    ).toEqual({ queue: "test:run" });
+    expect(hookDecision("pre-commit", world.repo, DEFAULT_KINDS, packageScripts, ENV)).toEqual({
+      queue: "test:run",
+    });
     writeFileIn(hook, "#!/bin/sh\nbunx biome check .\n", 0o755);
-    expect(hookDecision("pre-commit", world.repo, DEFAULT_KINDS, sourceFor(world.repo), ENV)).toBe(
+    expect(hookDecision("pre-commit", world.repo, DEFAULT_KINDS, packageScripts, ENV)).toBe(
       "direct",
     );
   });
@@ -99,9 +119,9 @@ describe("hookDecision", () => {
       "#!/bin/sh\nset -e\necho start\nbunx biome check .\nbun test\necho done\n",
       0o755,
     );
-    expect(hookDecision("pre-push", world.repo, DEFAULT_KINDS, sourceFor(world.repo), ENV)).toEqual(
-      { queue: "test:run" },
-    );
+    expect(hookDecision("pre-push", world.repo, DEFAULT_KINDS, packageScripts, ENV)).toEqual({
+      queue: "test:run",
+    });
   });
 
   test("a package script inside the hook is read by its body", () => {
@@ -112,25 +132,21 @@ describe("hookDecision", () => {
     );
     const hook = join(world.repo, ".git", "hooks", "pre-commit");
     writeFileIn(hook, "#!/bin/sh\nbun run typecheck\n", 0o755);
-    expect(
-      hookDecision("pre-commit", world.repo, DEFAULT_KINDS, sourceFor(world.repo), ENV),
-    ).toEqual({ queue: "tsc" });
+    expect(hookDecision("pre-commit", world.repo, DEFAULT_KINDS, packageScripts, ENV)).toEqual({
+      queue: "tsc",
+    });
     writeFileIn(hook, "#!/bin/sh\nbun run lint\n", 0o755);
-    expect(hookDecision("pre-commit", world.repo, DEFAULT_KINDS, sourceFor(world.repo), ENV)).toBe(
+    expect(hookDecision("pre-commit", world.repo, DEFAULT_KINDS, packageScripts, ENV)).toBe(
       "direct",
     );
   });
 
   test("a hook that is not there is none", () => {
     const world = gitHookWorld();
-    expect(hookDecision("pre-commit", world.repo, DEFAULT_KINDS, sourceFor(world.repo), ENV)).toBe(
-      "none",
-    );
+    expect(hookDecision("pre-commit", world.repo, DEFAULT_KINDS, packageScripts, ENV)).toBe("none");
     // A folder named like a hook is no hook.
     mkdirSync(join(world.repo, ".git", "hooks", "pre-push"), { recursive: true });
-    expect(hookDecision("pre-push", world.repo, DEFAULT_KINDS, sourceFor(world.repo), ENV)).toBe(
-      "none",
-    );
+    expect(hookDecision("pre-push", world.repo, DEFAULT_KINDS, packageScripts, ENV)).toBe("none");
   });
 
   test("with no time left for git the answer is timed-out, and git is never started", () => {
@@ -140,11 +156,14 @@ describe("hookDecision", () => {
     const marker = join(bin, "..", "started");
     writeFileIn(join(bin, "git"), `#!/bin/sh\necho started >> "${marker}"\nexit 1\n`, 0o755);
     const env = { ...ENV, PATH: `${bin}:${ENV.PATH ?? ""}` };
-    const source = sourceFor(world.repo);
-    expect(hookDecision("pre-commit", world.repo, DEFAULT_KINDS, source, env, 0)).toBe("timed-out");
+    expect(hookDecision("pre-commit", world.repo, DEFAULT_KINDS, packageScripts, env, 0)).toBe(
+      "timed-out",
+    );
     expect(existsSync(marker)).toBe(false);
     // With time, the same call asks git (this fake says no) and finds no repo: a plain none.
-    expect(hookDecision("pre-commit", world.repo, DEFAULT_KINDS, source, env, 5000)).toBe("none");
+    expect(hookDecision("pre-commit", world.repo, DEFAULT_KINDS, packageScripts, env, 5000)).toBe(
+      "none",
+    );
     expect(existsSync(marker)).toBe(true);
   });
 
@@ -152,9 +171,7 @@ describe("hookDecision", () => {
     const world = gitHookWorld();
     const outside = join(world.home, "nowhere");
     mkdirSync(outside);
-    expect(hookDecision("pre-commit", outside, DEFAULT_KINDS, sourceFor(outside), ENV)).toBe(
-      "none",
-    );
+    expect(hookDecision("pre-commit", outside, DEFAULT_KINDS, packageScripts, ENV)).toBe("none");
   });
 
   test("a hook in a core.hooksPath folder is found from a subfolder", () => {
@@ -164,7 +181,7 @@ describe("hookDecision", () => {
     const deep = join(world.repo, "sub", "deep");
     mkdirSync(deep, { recursive: true });
     expect(
-      hookDecision("pre-commit", deep, DEFAULT_KINDS, sourceFor(deep), world.routedEnv()),
+      hookDecision("pre-commit", deep, DEFAULT_KINDS, packageScripts, world.routedEnv()),
     ).toEqual({
       queue: "test:run",
     });
@@ -182,12 +199,12 @@ describe("hookDecision", () => {
     writeFileIn(join(world.repo, ".husky", "_", "post-commit"), stub, 0o755);
     // Not executable: husky runs it through `sh`, so git never needs the bit.
     writeFileIn(join(world.repo, ".husky", "pre-commit"), "bun run typecheck\n", 0o644);
-    expect(
-      hookDecision("pre-commit", world.repo, DEFAULT_KINDS, sourceFor(world.repo), ENV),
-    ).toEqual({ queue: "tsc" });
+    expect(hookDecision("pre-commit", world.repo, DEFAULT_KINDS, packageScripts, ENV)).toEqual({
+      queue: "tsc",
+    });
     // The stub holds no `tsc`: reading it instead would answer "direct".
     // A stub with no `.husky/<name>` behind it is no hook.
-    expect(hookDecision("post-commit", world.repo, DEFAULT_KINDS, sourceFor(world.repo), ENV)).toBe(
+    expect(hookDecision("post-commit", world.repo, DEFAULT_KINDS, packageScripts, ENV)).toBe(
       "none",
     );
   });
@@ -196,18 +213,16 @@ describe("hookDecision", () => {
     const world = gitHookWorld();
     const hook = join(world.repo, ".git", "hooks", "pre-commit");
     writeFileIn(hook, "bun test\n\u0000\u0001binary", 0o755);
-    expect(hookDecision("pre-commit", world.repo, DEFAULT_KINDS, sourceFor(world.repo), ENV)).toBe(
+    expect(hookDecision("pre-commit", world.repo, DEFAULT_KINDS, packageScripts, ENV)).toBe(
       "direct",
     );
     writeFileIn(hook, `bun test\n${"#".repeat(MAX_HOOK_BYTES)}\n`, 0o755);
-    expect(hookDecision("pre-commit", world.repo, DEFAULT_KINDS, sourceFor(world.repo), ENV)).toBe(
+    expect(hookDecision("pre-commit", world.repo, DEFAULT_KINDS, packageScripts, ENV)).toBe(
       "direct",
     );
     // A link to nothing: `isFile` is false, so it is no hook at all.
     symlinkSync(join(world.repo, "missing"), join(world.repo, ".git", "hooks", "commit-msg"));
-    expect(hookDecision("commit-msg", world.repo, DEFAULT_KINDS, sourceFor(world.repo), ENV)).toBe(
-      "none",
-    );
+    expect(hookDecision("commit-msg", world.repo, DEFAULT_KINDS, packageScripts, ENV)).toBe("none");
   });
 
   test("a hook the project's own kind names is queued under that kind", () => {
@@ -221,12 +236,10 @@ describe("hookDecision", () => {
       ...DEFAULT_KINDS,
       checks: { match: [{ tool: "lefthook", sub: ["run"] }] },
     };
-    expect(hookDecision("pre-push", world.repo, kinds, sourceFor(world.repo), ENV)).toEqual({
+    expect(hookDecision("pre-push", world.repo, kinds, packageScripts, ENV)).toEqual({
       queue: "checks",
     });
-    expect(hookDecision("pre-push", world.repo, DEFAULT_KINDS, sourceFor(world.repo), ENV)).toBe(
-      "direct",
-    );
+    expect(hookDecision("pre-push", world.repo, DEFAULT_KINDS, packageScripts, ENV)).toBe("direct");
   });
 
   // The hook lefthook writes (`lefthook install`), cut to the lines that matter and rendered for
@@ -276,7 +289,7 @@ describe("hookDecision", () => {
       checks: { match: [match] },
     });
     const ask = (kinds: ReturnType<typeof named>) =>
-      hookDecision("pre-push", world.repo, kinds, sourceFor(world.repo), ENV);
+      hookDecision("pre-push", world.repo, kinds, packageScripts, ENV);
     expect(ask(named({ tool: "lefthook" }))).toEqual({ queue: "checks" });
     // `lefthook run` never appears as a command of that file, so this kind does not match it.
     expect(ask(named({ tool: "lefthook", sub: ["run"] }))).toBe("direct");
@@ -291,12 +304,130 @@ describe("hookDecision", () => {
       ...DEFAULT_KINDS,
       lefthook: { match: [{ tool: "lefthook" }], printOnly: ["-h", "--help", "install"] },
     };
-    expect(hookDecision("pre-push", world.repo, kinds, sourceFor(world.repo), ENV)).toEqual({
+    expect(hookDecision("pre-push", world.repo, kinds, packageScripts, ENV)).toEqual({
       queue: "lefthook",
     });
     const weigh = (line: string) => runWeight(line, kinds, diskWeightSource(world.repo));
     expect(weigh("lefthook install")).toEqual({ weight: "light" });
     expect(weigh("lefthook -h")).toEqual({ weight: "light" });
     expect(weigh("lefthook run pre-push")).toEqual({ weight: "heavy", kind: "lefthook" });
+  });
+
+  // `job run --hook` takes the slot for a hook; a hook that queues itself would then wait, inside
+  // that slot, for its own parent's slot.
+  test("a hook that already queues itself runs direct, in its own text and through a script", () => {
+    const world = gitHookWorld();
+    const hook = join(world.repo, ".git", "hooks", "pre-commit");
+    writeFileSync(
+      join(world.repo, "package.json"),
+      JSON.stringify({
+        scripts: {
+          typecheck: "cc-smart-dev-kit job run --kind tsc -- tsc --noEmit",
+          plain: "tsc --noEmit",
+        },
+      }),
+    );
+    writeFileIn(hook, "#!/bin/sh\ncc-smart-dev-kit job run --kind test:run -- bun test\n", 0o755);
+    expect(hookDecision("pre-commit", world.repo, DEFAULT_KINDS, packageScripts, ENV)).toBe(
+      "direct",
+    );
+    writeFileIn(hook, "#!/bin/sh\nbun run typecheck\n", 0o755);
+    expect(hookDecision("pre-commit", world.repo, DEFAULT_KINDS, packageScripts, ENV)).toBe(
+      "direct",
+    );
+    // A queue line under any other spelling of the kit's command is queued already too.
+    for (const kit of [
+      "bunx cc-smart-dev-kit",
+      "bun /opt/plugin/dist/cli.js",
+      "sh /home/user/.local/bin/cc-smart-dev-kit",
+      "/opt/plugin/bin/cc-smart-dev-kit-bun.sh /opt/plugin/dist/cli.js",
+    ]) {
+      const body = `bun test\n${kit} job run --kind tsc -- tsc --noEmit\n`;
+      writeFileIn(hook, `#!/bin/sh\n${body}`, 0o755);
+      expect([
+        kit,
+        hookDecision("pre-commit", world.repo, DEFAULT_KINDS, packageScripts, ENV),
+      ]).toEqual([kit, "direct"]);
+    }
+    // The same script name with a plain body is still heavy.
+    writeFileIn(hook, "#!/bin/sh\nbun run plain\n", 0o755);
+    expect(hookDecision("pre-commit", world.repo, DEFAULT_KINDS, packageScripts, ENV)).toEqual({
+      queue: "tsc",
+    });
+  });
+
+  // Git runs a hook at the top of the work tree, so a package script in it is the root's.
+  test("the hook is judged at the top of the work tree, whichever folder the call starts in", () => {
+    const world = gitHookWorld();
+    writeFileSync(
+      join(world.repo, "package.json"),
+      JSON.stringify({ scripts: { test: "vitest run" } }),
+    );
+    const web = join(world.repo, "web");
+    mkdirSync(web);
+    writeFileSync(join(web, "package.json"), JSON.stringify({ scripts: { test: "echo ok" } }));
+    writeFileIn(
+      join(world.repo, ".git", "hooks", "pre-commit"),
+      "#!/bin/sh\nbun run test\n",
+      0o755,
+    );
+    expect(hookDecision("pre-commit", world.repo, DEFAULT_KINDS, packageScripts, ENV)).toEqual({
+      queue: "test:run",
+    });
+    expect(hookDecision("pre-commit", web, DEFAULT_KINDS, packageScripts, ENV)).toEqual({
+      queue: "test:run",
+    });
+  });
+
+  test("a repo whose path holds a line break still has its hook read", () => {
+    const home = tempDir("git-hooks-newline");
+    const repo = join(home, "re\npo");
+    mkdirSync(repo);
+    git(repo, "init", "-q");
+    const sub = join(repo, "sub");
+    mkdirSync(sub);
+    writeFileSync(join(repo, "package.json"), JSON.stringify({ scripts: { test: "vitest run" } }));
+    writeFileIn(join(repo, ".git", "hooks", "pre-commit"), "#!/bin/sh\nbun run test\n", 0o755);
+    expect(hooksPlace(sub, ENV)).toEqual({ folder: join(repo, ".git", "hooks"), top: repo });
+    expect(hookDecision("pre-commit", sub, DEFAULT_KINDS, packageScripts, ENV)).toEqual({
+      queue: "test:run",
+    });
+  });
+
+  test("a call that starts in a symlinked folder is judged at the real top", () => {
+    const world = gitHookWorld();
+    const app = join(world.repo, "packages", "app");
+    mkdirSync(app, { recursive: true });
+    writeFileSync(
+      join(world.repo, "package.json"),
+      JSON.stringify({ scripts: { test: "vitest run" } }),
+    );
+    writeFileSync(join(app, "package.json"), JSON.stringify({ scripts: { test: "echo ok" } }));
+    writeFileIn(
+      join(world.repo, ".git", "hooks", "pre-commit"),
+      "#!/bin/sh\nbun run test\n",
+      0o755,
+    );
+    // git counts `../` from the real folder (two levels), which text from the link would miss.
+    const link = join(tempDir("git-hooks-link"), "app-link");
+    symlinkSync(app, link);
+    expect(hooksPlace(link, ENV)).toEqual({
+      folder: join(world.repo, ".git", "hooks"),
+      top: realpathSync(world.repo),
+    });
+    expect(hookDecision("pre-commit", link, DEFAULT_KINDS, packageScripts, ENV)).toEqual({
+      queue: "test:run",
+    });
+  });
+
+  test("a bare repo has no work tree: its hook is read from the folder the call starts in", () => {
+    const world = gitHookWorld();
+    const bare = join(tempDir("git-hooks-bare"), "origin.git");
+    git(world.repo, "init", "-q", "--bare", bare);
+    writeFileSync(join(bare, "package.json"), JSON.stringify({ scripts: { test: "vitest run" } }));
+    writeFileIn(join(bare, "hooks", "pre-receive"), "#!/bin/sh\nbun run test\n", 0o755);
+    expect(hookDecision("pre-receive", bare, DEFAULT_KINDS, packageScripts, ENV)).toEqual({
+      queue: "test:run",
+    });
   });
 });

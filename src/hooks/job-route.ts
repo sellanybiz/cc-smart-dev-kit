@@ -96,6 +96,7 @@ import { classifyHeavyCommand, routableLine, runWeight, type WeightSource } from
 import { hookDecision } from "../jobs/git-hooks";
 import { gitHooksState } from "../jobs/hook-folder";
 import { type Kinds, mergeKinds } from "../jobs/kinds";
+import { packageScripts } from "../jobs/package-scripts";
 import { diskWeightSource } from "../jobs/weight-source";
 import { LAUNCHER_IN_SHELL } from "../setup/launcher";
 import { CHANGES_FOLDER, FolderTracker, movedTo } from "../shell/change-dir";
@@ -105,7 +106,6 @@ import {
   invocationOf,
   isAssignmentOnly,
   isShort,
-  programName,
   readingsOf,
   shellSegments,
   shellSteps,
@@ -115,6 +115,7 @@ import {
   wordsWithFill,
 } from "../shell/command";
 import { gitCalls, longOption } from "../shell/git-calls";
+import { programName } from "../shell/program-name";
 import { shellQuote, shellWord } from "../shell/quote";
 import { resolveJobRoute } from "../workflow/resolve";
 import {
@@ -374,7 +375,7 @@ export function routeGitHooks(
           name,
           step.folder,
           kinds,
-          diskWeightSource(step.folder),
+          packageScripts,
           context.env,
           timeFor(GUARD_GIT_TIMEOUT_MS),
         );
