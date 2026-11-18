@@ -597,6 +597,9 @@ describe("a light line stays raw, a heavy one is routed", () => {
       "bunx playwright test --ui",
       "bunx playwright test --debug",
       "bun run e2e --ui",
+      // Bun drops the `--` before it hands the words to the script, so the script sees `--ui`.
+      "bun run e2e -- --ui",
+      "npm run e2e -- --ui",
     ]) {
       expect([line, rewrittenTo(repo, line)]).toEqual([line, null]);
     }

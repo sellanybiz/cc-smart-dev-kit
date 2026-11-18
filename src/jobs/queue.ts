@@ -148,6 +148,11 @@ export interface StoreHeld {
   readonly text: string;
 }
 
+/** A job waiting in the line: its record, and the ticket's token (`StoreLineEntry.tie`). */
+export interface StoreWaiting extends StoreHeld {
+  readonly tie: string;
+}
+
 /** A live ticket in a store's line. `tie` breaks ties between equal start times. */
 export interface StoreLineEntry {
   readonly mine: boolean;
@@ -205,8 +210,23 @@ export function parseEntry(entry: StoreLineEntry): ParsedEntry {
   };
 }
 
+/**
+ * The order the queue serves tickets in: the oldest start first, an equal start by the ticket's
+ * token, and a ticket nobody can read (`since` infinite) last. The one home of that order:
+ * `decide` and the place in line read it through `isBefore`, and `job status` lists the waiting
+ * jobs with it, so the place a waiting line prints is the place `job status` shows.
+ */
+export function inLineOrder(
+  a: Pick<ParsedEntry, "since" | "tie">,
+  b: Pick<ParsedEntry, "since" | "tie">,
+): number {
+  if (a.since !== b.since) return a.since < b.since ? -1 : 1;
+  if (a.tie === b.tie) return 0;
+  return a.tie < b.tie ? -1 : 1;
+}
+
 function isBefore(a: ParsedEntry, b: ParsedEntry): boolean {
-  return a.since < b.since || (a.since === b.since && a.tie < b.tie);
+  return inLineOrder(a, b) < 0;
 }
 
 /** How many of `held` hold a slot. */

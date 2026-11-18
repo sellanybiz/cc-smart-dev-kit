@@ -5,6 +5,7 @@ import {
   type DecideInput,
   decide,
   holderText,
+  inLineOrder,
   jobsAhead,
   type ParsedEntry,
   type ParsedHeld,
@@ -181,6 +182,24 @@ test("the place: an exclusive-name wait counts only the jobs that wait for that 
     ],
   };
   expect(placeOf(input)).toEqual({ ahead: 1, reason: { kind: "exclusive", name: "db" } });
+});
+test("the line order: oldest first, an equal start by token, an unreadable record last", () => {
+  const at = (since: number, tie: string) => ({ since, tie });
+  expect(inLineOrder(at(1, "b"), at(2, "a"))).toBe(-1);
+  expect(inLineOrder(at(2, "a"), at(1, "b"))).toBe(1);
+  expect(inLineOrder(at(1, "a"), at(1, "b"))).toBe(-1);
+  expect(inLineOrder(at(1, "b"), at(1, "a"))).toBe(1);
+  expect(inLineOrder(at(1, "a"), at(1, "a"))).toBe(0);
+  expect(inLineOrder(at(Number.POSITIVE_INFINITY, "a"), at(5, "z"))).toBe(1);
+  expect(inLineOrder(at(Number.POSITIVE_INFINITY, "a"), at(Number.POSITIVE_INFINITY, "b"))).toBe(
+    -1,
+  );
+  // `decide` serves in the same order: the older ticket is the one in the way.
+  const older = { ...entry(false, 1), tie: "b" };
+  const newer = { ...entry(true, 1), tie: "c" };
+  expect(decide({ exclusive: null, slot: true, held: [], line: [newer, older] })).toEqual({
+    wait: { kind: "behind" },
+  });
 });
 test("the place: no ticket, nothing ahead to count", () => {
   const input: DecideInput = { exclusive: null, slot: true, held: [], line: [] };

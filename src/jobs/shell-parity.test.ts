@@ -1,7 +1,7 @@
 /**
  * What the job queue decides from a shell line, pinned case by case: the kind the classifier
  * finds (`classifyHeavyCommand`), the command job-route turns the line into, whether the line
- * already runs `job run`, and, for `job run`'s own argv, the tool it reads and the argv it
+ * already runs `job run`, and, for `job run`'s own argv, the run it reads and the argv it
  * starts (`runJob` starts the command as it was given: the queue adds no option to it).
  *
  * These cases are where the job code's reading of a line and the guards' reading differed
@@ -11,7 +11,8 @@
  */
 import { describe, expect, test } from "bun:test";
 import { routeHeavyCommand } from "../hooks/job-route";
-import { classifyHeavyCommand, runWeight, toolCallOfArgv, type WeightSource } from "./classify";
+import { shellWord } from "../setup/launcher";
+import { classifyHeavyCommand, runWeight, type WeightSource } from "./classify";
 import { DEFAULT_KINDS } from "./kinds";
 import { type JobDeps, runJob } from "./run";
 
@@ -197,34 +198,27 @@ async function startedArgv(command: [string, ...string[]]): Promise<readonly str
   return started;
 }
 
-describe("job run's own argv: the tool it reads, and the argv it starts as given", () => {
-  const ARGV_ROWS: [argv: [string, ...string[]], tool: { name: string; args: string[] }][] = [
-    [["bunx", "vitest", "run"], { name: "vitest", args: ["run"] }],
-    [["timeout", "600", "bunx", "vitest", "run"], { name: "vitest", args: ["run"] }],
-    [["sh", "-c", "bunx vitest run"], { name: "sh", args: ["-c", "bunx vitest run"] }],
-    [
-      ["timeout", "600", "sh", "-c", "bunx vitest run"],
-      { name: "sh", args: ["-c", "bunx vitest run"] },
-    ],
-    [
-      ["env", "-i", "bunx", "vitest", "run"],
-      // was: { name: "-i", … } (CM-9).
-      { name: "vitest", args: ["run"] },
-    ],
-    [
-      ["time", "-p", "bunx", "vitest", "run"],
-      // was: { name: "-p", … } (CM-9).
-      { name: "vitest", args: ["run"] },
-    ],
-    [
-      ["sudo", "-u", "x", "bunx", "vitest", "run"],
-      // was: { name: "-u", … } (CM-9).
-      { name: "vitest", args: ["run"] },
-    ],
+describe("job run's own argv: the run it reads, and the argv it starts as given", () => {
+  // Each argv runs a full vitest run, read the way `job run` reads it (`runWeight` over the argv
+  // as a shell line): the wrapper, the option of the wrapper and the shell string are stepped over.
+  const ARGV_ROWS: [string, ...string[]][] = [
+    ["bunx", "vitest", "run"],
+    ["timeout", "600", "bunx", "vitest", "run"],
+    ["sh", "-c", "bunx vitest run"],
+    ["timeout", "600", "sh", "-c", "bunx vitest run"],
+    // was: read as the tool `-i` (CM-9).
+    ["env", "-i", "bunx", "vitest", "run"],
+    // was: read as the tool `-p` (CM-9).
+    ["time", "-p", "bunx", "vitest", "run"],
+    // was: read as the tool `-u` (CM-9).
+    ["sudo", "-u", "x", "bunx", "vitest", "run"],
   ];
-  for (const [argv, tool] of ARGV_ROWS) {
+  for (const argv of ARGV_ROWS) {
     test(argv.join(" "), async () => {
-      expect(toolCallOfArgv(argv)).toEqual(tool);
+      expect(runWeight(argv.map(shellWord).join(" "), DEFAULT_KINDS, EMPTY_FOLDER)).toEqual({
+        kind: "test:run",
+        weight: "heavy",
+      });
       // No worker count and no other option is added, whatever the command is.
       expect(await startedArgv(argv)).toEqual(argv);
     });

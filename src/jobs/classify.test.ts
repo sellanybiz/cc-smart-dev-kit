@@ -13,8 +13,8 @@ import {
   type ScriptBodies,
   type ScriptSource,
   sedScriptReadsOnly,
-  toolCallOfArgv,
   toolName,
+  toolOf,
   type WeightSource,
 } from "./classify";
 import { DEFAULT_KINDS, mergeKinds } from "./kinds";
@@ -464,7 +464,7 @@ describe("a package script is a script, not the tool of the same name", () => {
   });
 });
 
-describe("toolName and toolCallOfArgv", () => {
+describe("toolName and toolOf", () => {
   test("strips folders, .exe, @version and a script path's extension", () => {
     expect(toolName("./node_modules/.bin/vitest")).toBe("vitest");
     expect(toolName("vitest@latest")).toBe("vitest");
@@ -476,20 +476,23 @@ describe("toolName and toolCallOfArgv", () => {
   });
 
   test("finds the tool's own arguments behind a runner", () => {
-    expect(toolCallOfArgv(["bunx", "tsc", "--noEmit"])).toEqual({
+    expect(toolOf("bunx", ["tsc", "--noEmit"])).toEqual({
       name: "tsc",
       args: ["--noEmit"],
     });
-    expect(toolCallOfArgv(["vitest", "run", "a.ts"])).toEqual({
+    expect(toolOf("vitest", ["run", "a.ts"])).toEqual({
       name: "vitest",
       args: ["run", "a.ts"],
     });
-    expect(toolCallOfArgv(["npm", "run", "x", "--", "a.ts"])).toEqual({
+    // The script's own call keeps what was written; a runner's `--` is dropped later, where the
+    // script is known to be one (`runWeight`: "the `--` a package runner drops").
+    expect(toolOf("npm", ["run", "x", "--", "a.ts"])).toEqual({
       name: "",
       args: ["--", "a.ts"],
       script: "x",
     });
-    expect(toolCallOfArgv(["node", "--version"])).toEqual({ name: "node", args: ["--version"] });
+    // `node` with no script path runs no tool the reader knows.
+    expect(toolOf("node", ["--version"])).toBeUndefined();
   });
 });
 
@@ -942,23 +945,19 @@ describe("a package script is classified by its body", () => {
   });
 
   test("the folder options are part of the tool call", () => {
-    expect(toolCallOfArgv(["bun", "run", "--cwd", "app", "test"]).dir).toBe("app");
-    expect(toolCallOfArgv(["pnpm", "-C", "app", "test"]).dir).toBe("app");
-    expect(toolCallOfArgv(["npm", "--prefix", "app", "run", "x"]).dir).toBe("app");
-    expect(toolCallOfArgv(["yarn", "--cwd", "app", "x"]).dir).toBe("app");
-    expect(toolCallOfArgv(["bun", "run", "test"]).dir).toBeUndefined();
+    expect(toolOf("bun", ["run", "--cwd", "app", "test"])?.dir).toBe("app");
+    expect(toolOf("pnpm", ["-C", "app", "test"])?.dir).toBe("app");
+    expect(toolOf("npm", ["--prefix", "app", "run", "x"])?.dir).toBe("app");
+    expect(toolOf("yarn", ["--cwd", "app", "x"])?.dir).toBe("app");
+    expect(toolOf("bun", ["run", "test"])?.dir).toBeUndefined();
   });
 
   test("bun test is Bun's own runner: its options before and after `test` stay in the arguments", () => {
-    expect(toolCallOfArgv(["bun", "test", "./a.test.ts"])).toEqual({
+    expect(toolOf("bun", ["test", "./a.test.ts"])).toEqual({
       name: "bun",
       args: ["test", "./a.test.ts"],
     });
-    expect(toolCallOfArgv(["bun", "--bun", "test", "--watch"]).args).toEqual([
-      "test",
-      "--bun",
-      "--watch",
-    ]);
+    expect(toolOf("bun", ["--bun", "test", "--watch"])?.args).toEqual(["test", "--bun", "--watch"]);
     // Every other Bun command of its own is still no tool call.
     for (const word of ["install", "add", "build", "pm", "x"]) {
       expect(classifyHeavyCommand(`bun ${word}`, DEFAULT_KINDS)).toBeNull();
@@ -1166,6 +1165,38 @@ describe("runWeight: light, heavy or none", () => {
     expect(weight("bun run typecheck src/a.ts", typecheck)).toEqual(LIGHT);
     expect(weight("bun run typecheck --version", typecheck)).toEqual(LIGHT);
     expect(weight("bun run lint", { "/repo": { lint: "biome check ." } })).toEqual(NONE);
+  });
+
+  // A package runner takes a `--` for itself and hands the script what follows it: npm's
+  // documented `npm run <command> [-- <args>]`; Bun drops a `--` that comes first (checked on
+  // Bun 1.4.4: `bun run s -- --ui` gives the script `--ui`, `bun run s a -- --ui` gives it
+  // `a -- --ui`); Yarn 1 (classic) prints "scripts don't require `--` for options to be
+  // forwarded" and drops it. pnpm (since 7, "run scripts without `--`") and Yarn 2+ (no `--`
+  // of their own) pass it on, so for them it is the script's own end of options.
+  test("the `--` a package runner drops is not the script's: a watch flag behind it is seen", () => {
+    const e2e = { "/repo": { e2e: "playwright test", test: "vitest run" } };
+    expect(weight("bun run e2e -- --ui", e2e)).toEqual(NONE);
+    expect(weight("bun e2e -- --ui", e2e)).toEqual(NONE);
+    expect(weight("bun run test -- --watch", e2e)).toEqual(NONE);
+    expect(weight("npm run e2e -- --ui", e2e)).toEqual(NONE);
+    expect(weight("npm run e2e --silent -- --debug", e2e)).toEqual(NONE);
+    // npm's `--` ends its own options wherever it stands; Bun's only when it comes first.
+    expect(weight("npm run e2e a.test.ts -- --ui", e2e)).toEqual(NONE);
+    expect(weight("bun run e2e a.test.ts -- --ui", e2e)).toEqual(heavy("e2e"));
+    expect(weight("yarn run e2e -- --ui", e2e)).toEqual(NONE);
+    // The same script, run by a runner that passes `--` on: the flag is behind the script's
+    // own `--`, a positional word to it, so the run is a full one.
+    expect(weight("pnpm run e2e -- --ui", e2e)).toEqual(heavy("e2e"));
+    const berry = weightSourceOf(e2e, FILES, { yarnBerry: true });
+    expect(runWeight("yarn run e2e -- --ui", DEFAULT_KINDS, berry)).toEqual(heavy("e2e"));
+    // Without a flag after it, a `--` changes nothing.
+    expect(weight("bun run e2e --", e2e)).toEqual(heavy("e2e"));
+    expect(weight("bun run test -- ./a.test.ts", e2e)).toEqual(LIGHT);
+    expect(weight("bun run test -- ./missing.test.ts", e2e)).toEqual(heavy("test:run"));
+    expect(weight("npm run test -- ./a.test.ts", e2e)).toEqual(LIGHT);
+    expect(weight("pnpm run test -- ./a.test.ts", e2e)).toEqual(LIGHT);
+    // A name that is no script is the tool, and its `--` stays the tool's.
+    expect(weight("bun run vitest -- --watch")).toEqual(heavy("test:run"));
   });
 
   test("a script's files are read in its package folder, found by walking up", () => {

@@ -601,11 +601,29 @@ function expandScript(
 }
 
 /**
+ * The arguments a package runner hands to the script, from those written after its name. A
+ * runner takes a `--` for itself and drops it, so what follows is the script's own words and
+ * the watch rule must see them (`bun run e2e -- --ui` runs `playwright test --ui`):
+ * - npm: the first `--`, wherever it stands (`npm run <command> [-- <args>]`);
+ * - Bun: a `--` that comes first (checked on Bun 1.4.4: `bun run s a -- --ui` keeps it);
+ * - Yarn 1 (classic): a `--` that comes first, with its warning "scripts don't require `--`".
+ * pnpm (since 7) and Yarn 2+ pass the `--` on to the script, so it stays.
+ */
+function scriptArgs(args: string[], runner: string, bodies: ScriptBodies): string[] {
+  const at = args.indexOf("--");
+  if (at === -1) return args;
+  const drops =
+    runner === "npm" ||
+    (at === 0 && (runner === "bun" || (runner === "yarn" && bodies.yarnBerry !== true)));
+  return drops ? [...args.slice(0, at), ...args.slice(at + 1)] : args;
+}
+
+/**
  * Reads one command's tool call: records the heavy command it is, or reads the script it runs.
  * Returns whether it is heavy (a script: whether its body is, when `all`).
  */
 function matchCall(
-  call: ToolCall,
+  asked: ToolCall,
   runner: string,
   kinds: Kinds,
   depth: number,
@@ -613,9 +631,14 @@ function matchCall(
   all: boolean,
   out: Scan,
 ): boolean {
-  const lookedUpIn = call.dir === undefined ? run.folder : resolveFolder(run.folder, call.dir);
-  const bodies = call.script === undefined ? null : scriptsAt(run, lookedUpIn);
-  const isScript = call.script !== undefined && bodies?.has(call.script) === true;
+  const lookedUpIn = asked.dir === undefined ? run.folder : resolveFolder(run.folder, asked.dir);
+  const bodies = asked.script === undefined ? null : scriptsAt(run, lookedUpIn);
+  const isScript = asked.script !== undefined && bodies?.has(asked.script) === true;
+  // A script gets its arguments from the runner, which drops its own `--`.
+  const call =
+    isScript && bodies !== null
+      ? { ...asked, args: scriptArgs(asked.args, runner, bodies) }
+      : asked;
   // A name the project defines as a script is never a tool: only a script rule can match it.
   const hit = matchOfCall(call, kinds, isScript);
   if (hit !== null) {
@@ -756,22 +779,6 @@ export function runWeight(line: string, kinds: Kinds, source: WeightSource): Wei
   return found.length > 1 && out.background
     ? { weight: "heavy", kind: first.kind }
     : { weight: "light" };
-}
-
-/**
- * The tool and its own arguments behind a `job run` command (`bunx tsc --noEmit` gives
- * `tsc`, `--noEmit`), so the reservation reads the tool's arguments, not the runner's.
- * Falls back to the command as it is.
- */
-export function toolCallOfArgv(argv: readonly [string, ...string[]]): ToolCall {
-  const invocation = invocationOf([...argv]);
-  if (invocation === undefined) return { name: argv[0], args: argv.slice(1) };
-  return (
-    toolOf(invocation.program, invocation.args) ?? {
-      name: invocation.program,
-      args: invocation.args,
-    }
-  );
 }
 
 /** Reads a filter's own arguments: true when that run of it only reads and prints. */
