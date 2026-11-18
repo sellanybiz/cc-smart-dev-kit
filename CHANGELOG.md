@@ -35,7 +35,7 @@ The release step sets the number.
   file in the main checkout or changes its branch (`echo x > a.txt`, `sed -i`, `git checkout`,
   `git commit`), and lets plan mode's plan file through. A session that starts in the main checkout
   is told to make its first change in a worktree. After you approve a plan there, the `plan-task`
-  skill moves the plan file into the worktree.
+  skill copies the plan file into the worktree.
 
 **What to run:** `cc-smart-dev-kit setup`, to write the git hooks folder (a plugin update
 rewrites it at the next session start once it exists). A project with its own `jobs.kinds` for

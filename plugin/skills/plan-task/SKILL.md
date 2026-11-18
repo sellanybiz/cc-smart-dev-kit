@@ -115,9 +115,10 @@ approves it there or keeps planning — never a second "Start building?" with
 move a plan kept outside its home there. **In a project that guards its main folder**
 (`worktrees.guardMainFolder`) and a session in the main checkout, plan mode wrote the plan in
 the main checkout's plans folder: call `EnterWorktree` first (the plan's slug as its `name`),
-then move the approved plan file from the main checkout's plans folder into the worktree's, so
-the plan, its research and the build are all on the worktree's branch. Commit the plan file on
-the current branch as the workflow allows. Move full research to
+then copy the approved plan into the worktree's plans folder (`Read`, then `Write`), so the
+plan and the build are on the worktree's branch. Remove the original in the main checkout only
+if that is allowed; if it is refused, tell the person its exact path and never retry it another
+way. Commit the plan file on the current branch as the workflow allows. Move full research to
 `.claude/research/archive/<YYYY-MM-DD>-<slug>.md` (or the add-on's home), linked from the plan.
 Changes wanted: revise and ask again; never build without approval.
 
