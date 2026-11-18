@@ -8,6 +8,7 @@ import { resolve } from "node:path";
 import {
   classifyHeavyCommand,
   classifyRoutableLine,
+  classifyUnqueuedHeavy,
   routableLine,
   runWeight,
   type ScriptBodies,
@@ -872,6 +873,20 @@ describe("a package script is classified by its body", () => {
         ]);
       }
     }
+    // The kind a caller may queue a line under: none for a line that queues itself, the kind
+    // for the same script with a plain body.
+    const own = weightSourceOf({ "/repo": { tsc: "cc-smart-dev-kit job run --kind tsc -- tsgo" } });
+    expect(classifyUnqueuedHeavy("bun run tsc", DEFAULT_KINDS, own)).toBeNull();
+    expect(
+      classifyUnqueuedHeavy("cc-smart-dev-kit job run --kind tsc -- tsgo", DEFAULT_KINDS, own),
+    ).toBeNull();
+    expect(
+      classifyUnqueuedHeavy(
+        "bun run tsc",
+        DEFAULT_KINDS,
+        weightSourceOf({ "/repo": { tsc: "tsgo" } }),
+      ),
+    ).toBe("tsc");
     // The line itself, outside a script.
     const none = weightSourceOf({ "/repo": {} });
     const queued = "cc-smart-dev-kit job run --kind tsc -- bunx tsc --noEmit";

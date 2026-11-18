@@ -752,9 +752,35 @@ export function classifyHeavyCommand(
   source?: ScriptSource,
   dialect: Dialect = "bash",
 ): string | null {
+  return readHeavy(command, kinds, source, dialect).kind;
+}
+
+/** One any-heavy read of a line: its first heavy kind, and whether it already runs `job run`. */
+function readHeavy(
+  command: string,
+  kinds: Kinds,
+  source: ScriptSource | undefined,
+  dialect: Dialect,
+): { kind: string | null; queued: boolean } {
   const out = newScan();
   scan(command, kinds, dialect, 0, runOf(source), false, out);
-  return out.found.find((one) => !one.printOnly)?.kind ?? null;
+  return { kind: out.found.find((one) => !one.printOnly)?.kind ?? null, queued: out.queued };
+}
+
+/**
+ * `classifyHeavyCommand`, except that a line which already runs `job run` (itself, or through a
+ * script's body) gives null: the queue holds it, and a second queue around it would nest, so the
+ * inner job would wait for its own parent's slot. The kind a caller may queue a command under;
+ * `runWeight` and `routableLine` refuse the same line, by the same scan.
+ */
+export function classifyUnqueuedHeavy(
+  command: string,
+  kinds: Kinds,
+  source?: ScriptSource,
+  dialect: Dialect = "bash",
+): string | null {
+  const { kind, queued } = readHeavy(command, kinds, source, dialect);
+  return queued ? null : kind;
 }
 
 /** How heavy one run is: light (starts at once), heavy (waits for a slot, of this kind), or none. */
