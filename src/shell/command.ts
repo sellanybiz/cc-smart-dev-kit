@@ -2194,18 +2194,6 @@ export function nestedCommand(
   if (program === "watch") return watchCommand(args);
   if (program === "su") return suCommand(args);
   if (program === "parallel") return parallelCommand(args);
-  // After the runners, so a program that runs its arguments is read as the runner it is.
-  const queued = jobRunArguments(program, args);
-  if (queued !== null) {
-    // The queue runs the words after `--` as they are: quoted again, they read back the same.
-    const dashes = queued.indexOf("--");
-    return dashes === -1 || dashes === queued.length - 1
-      ? undefined
-      : queued
-          .slice(dashes + 1)
-          .map(shellQuote)
-          .join(" ");
-  }
   if (program === "cmd") {
     const at = args.findIndex((arg) => /^\/[ck]$/i.test(arg));
     return at === -1 ? undefined : args.slice(at + 1).join(" ");
@@ -2217,6 +2205,21 @@ export function nestedCommand(
   }
   if (program === "eval" || program === "iex" || program === "invoke-expression") {
     return args.join(" ");
+  }
+  // Last: a program that runs its arguments (the runners above, `cmd /c`, `pwsh -c`, `eval`)
+  // is read as that program, its whole line joined, so an operator a quoted word holds
+  // (`eval cc-smart-dev-kit job run -- true '&&' git reset --hard`) is still a second command.
+  // The kit inside it is then reached one level deeper.
+  const queued = jobRunArguments(program, args);
+  if (queued !== null) {
+    // The queue runs the words after `--` as they are: quoted again, they read back the same.
+    const dashes = queued.indexOf("--");
+    return dashes === -1 || dashes === queued.length - 1
+      ? undefined
+      : queued
+          .slice(dashes + 1)
+          .map(shellQuote)
+          .join(" ");
   }
   return undefined;
 }

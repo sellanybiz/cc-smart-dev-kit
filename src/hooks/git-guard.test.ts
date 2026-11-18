@@ -422,6 +422,11 @@ describe("a shell wrapper's inner command is read", () => {
     ['Invoke-Expression "git branch -D fix/x"', "git branch -D"],
     ['eval "git push -f"', "force-push"],
     ["bash -c \"bash -c 'git push -f'\"", "force-push"],
+    // A program that runs its whole line is read as that program first, the kit's `job run`
+    // inside it one level deeper: read as the job run alone, the quoted operator hid the reset.
+    ["eval cc-smart-dev-kit job run -- true '&&' git reset --hard", "git reset --hard"],
+    ["pwsh -c cc-smart-dev-kit job run -- 'true;' git reset --hard", "git reset --hard"],
+    ["cmd /c cc-smart-dev-kit job run -- true '&' git reset --hard", "git reset --hard"],
   ])("asks about %j", (command, fragment) => {
     expect(guard(command)).toContain(fragment);
   });

@@ -15,8 +15,9 @@
  * the folder of the `package.json`, with the `pre<name>` and `post<name>` scripts the runner
  * runs beside it. When the name is a script of the folder the line runs in, a tool rule never
  * matches it (the script is read, not the tool of the same name). A line or a script body that
- * already runs `cc-smart-dev-kit job run` (under any spelling of the kit's command, `isJobRun`)
- * is queued already: it is never routed or weighed
+ * already runs `cc-smart-dev-kit job run` (under any spelling of the kit's command, `isJobRun`,
+ * which is the guards' recogniser and leans toward yes: another tool's `dist/cli.js job run`
+ * counts too, a missed queue at worst) is queued already: it is never routed or weighed
  * again, so a project whose `tsc` script wraps the queue is not queued twice. The classifier
  * learns the scripts and the files through injected readers (`ScriptSource`, `WeightSource`,
  * `package-scripts.ts`); it reads no file itself.
@@ -810,7 +811,8 @@ function isLight(one: Found, kinds: Kinds, source: WeightSource): boolean {
  * - **none**: no heavy command in the line, a watch run (`--watch`, `vitest watch`) that
  *   never ends and so must never wait for a slot, or a line that runs `job run` already (a
  *   script whose body queues itself): queued once, never again. `classifyHeavyCommand` still
- *   reports the kind of such a line: the route's reservation reads it.
+ *   reports the kind of such a line: job-route's `heavyRunKind` reads it, then drops a line
+ *   that queues itself through `runWeight`.
  *
  * It does not say whether the line may be queued: `routableLine` does (every command heavy).
  */

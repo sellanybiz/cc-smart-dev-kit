@@ -914,14 +914,29 @@ describe("a package script is classified by its body", () => {
       expect([line, classifyRoutableLine(line, DEFAULT_KINDS, none)]).toEqual([line, null]);
       expect([line, classifyUnqueuedHeavy(line, DEFAULT_KINDS, none)]).toEqual([line, null]);
     }
-    // Another `job` command of the kit queues nothing: the tool inside it is still the tool.
+    // Another `job` command of the kit queues nothing: a heavy command beside it is still heavy.
     expect(
-      classifyUnqueuedHeavy("bunx cc-smart-dev-kit job status", DEFAULT_KINDS, none),
-    ).toBeNull();
+      classifyUnqueuedHeavy(
+        "bunx cc-smart-dev-kit job status && tsc --noEmit",
+        DEFAULT_KINDS,
+        none,
+      ),
+    ).toBe("tsc");
     expect(runWeight("bunx tsc --noEmit", DEFAULT_KINDS, none)).toEqual({
       weight: "heavy",
       kind: "tsc",
     });
+  });
+
+  // The guards' recogniser leans toward yes (a guard asks or denies on it), and the queued flag
+  // shares it: another tool whose bundle is a `dist/cli.js` with a `job run` command reads as the
+  // kit, so the heavy line beside it runs without the queue. A missed queue, never a guard: one
+  // recogniser for both (hooks-guards.md) is worth that.
+  test("another tool's dist/cli.js job run reads as the kit's own: a missed queue, by design", () => {
+    const none = weightSourceOf({ "/repo": {} });
+    const line = "tsc --noEmit && bun node_modules/other-tool/dist/cli.js job run nightly";
+    expect(runWeight(line, DEFAULT_KINDS, none)).toEqual({ weight: "none" });
+    expect(classifyUnqueuedHeavy(line, DEFAULT_KINDS, none)).toBeNull();
   });
 
   test("a script named like a tool is read by its body, and the tool inside is the tool", () => {
