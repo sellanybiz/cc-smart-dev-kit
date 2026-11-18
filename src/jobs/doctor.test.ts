@@ -33,12 +33,14 @@ test("doctor reports default, chosen source and ignored legacy maxJobs with a fi
 });
 
 describe("the git hooks folder's line", () => {
-  test("a machine that never ran setup: a failure that names the fix", () => {
+  test("a machine that never ran setup: a warning that names the fix, never a failure", () => {
     const paths = cliPaths({ HOME: tempDir("jobs-doctor-hooks") });
+    // `update` does not run setup, and the route adds nothing without the folder: nothing is broken.
     expect(gitHooksCheck(paths, "linux")).toEqual({
-      ok: false,
-      text: "Git hooks folder is missing (~/.local/share/cc-smart-dev-kit/git-hooks)",
-      fix: "Run cc-smart-dev-kit setup",
+      ok: true,
+      warn: true,
+      text: "Git hooks folder is missing (~/.local/share/cc-smart-dev-kit/git-hooks): a commit or push whose hook runs heavy work does not wait for a slot",
+      fix: "cc-smart-dev-kit setup",
     });
     // It is the last line of the queue's group, so a person sees it with the others.
     expect(heavyJobChecks(paths, "linux").at(-1)).toEqual(gitHooksCheck(paths, "linux"));
@@ -61,7 +63,7 @@ describe("the git hooks folder's line", () => {
     expect(gitHooksCheck(paths, "linux")).toEqual({
       ok: false,
       text: "Git hooks folder ~/.local/share/cc-smart-dev-kit/git-hooks: pre-commit is not executable",
-      fix: "Run cc-smart-dev-kit setup",
+      fix: "cc-smart-dev-kit setup",
     });
     writeFileSync(join(folder, "pre-push"), "#!/bin/sh\n# an older version\n");
     chmodSync(join(folder, "pre-push"), 0o755);
@@ -70,7 +72,7 @@ describe("the git hooks folder's line", () => {
     expect(gitHooksCheck(paths, "linux")).toEqual({
       ok: false,
       text: "Git hooks folder ~/.local/share/cc-smart-dev-kit/git-hooks: pre-commit is not executable, commit-msg is missing, post-merge is missing and 1 more",
-      fix: "Run cc-smart-dev-kit setup",
+      fix: "cc-smart-dev-kit setup",
     });
   });
 

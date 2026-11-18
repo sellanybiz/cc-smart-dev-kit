@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { COMMAND } from "../build-info/names";
-import type { Check } from "../cli/check";
+import { type Check, SETUP_FIX } from "../cli/check";
 import { type CliPaths, tildify } from "../cli/paths";
 import { hostPlatform } from "../machine/host";
 import { parseUserJson } from "../setup/user-json";
@@ -24,10 +24,16 @@ export function gitHooksCheck(paths: CliPaths, platform: NodeJS.Platform = hostP
     };
   }
   const where = tildify(paths.gitHooksFolder, paths.home);
-  const fix = `Run ${COMMAND} setup`;
   const state = gitHooksState(paths);
+  // A folder that is not there is no breakage: `update` does not run setup, and the route adds
+  // nothing without the folder, so a heavy hook just runs without waiting for a slot. A warning.
   if (state.kind === "missing") {
-    return { ok: false, text: `Git hooks folder is missing (${where})`, fix };
+    return {
+      ok: true,
+      warn: true,
+      text: `Git hooks folder is missing (${where}): a commit or push whose hook runs heavy work does not wait for a slot`,
+      fix: SETUP_FIX,
+    };
   }
   if (state.kind === "problems") {
     const shown = state.problems.slice(0, PROBLEMS_SHOWN).join(", ");
@@ -35,7 +41,7 @@ export function gitHooksCheck(paths: CliPaths, platform: NodeJS.Platform = hostP
     return {
       ok: false,
       text: `Git hooks folder ${where}: ${shown}${more > 0 ? ` and ${more} more` : ""}`,
-      fix,
+      fix: SETUP_FIX,
     };
   }
   return {

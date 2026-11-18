@@ -13,18 +13,7 @@
  * scripts are `sh`, and the proof through Git for Windows' `sh` is a follow-up.
  */
 
-import {
-  accessSync,
-  constants,
-  existsSync,
-  mkdtempSync,
-  readdirSync,
-  readFileSync,
-  rmSync,
-  statSync,
-  writeFileSync,
-} from "node:fs";
-import { tmpdir } from "node:os";
+import { accessSync, constants, existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { COMMAND, PLUGIN } from "../build-info";
 import type { CliPaths } from "../cli/paths";
@@ -35,7 +24,7 @@ import {
   type ManagedFolderResult,
   OWNED_FOLDER_MARK,
   readOwnedFolders,
-  writeManagedFolder,
+  writeManagedFiles,
 } from "../setup/managed-folder";
 import { realTarget } from "../setup/write";
 import { HOOK_NAMES } from "./git-hooks";
@@ -59,13 +48,18 @@ export function hookLauncher(paths: CliPaths): string {
  *    No file: `exit 0`, as git does for a hook that is not there. husky v9's folder
  *    (`.husky/_`) holds a stub for every name: a stub whose `.husky/<name>` is missing is no
  *    hook either, and it ends here without starting the command. A file git itself would skip
- *    (not executable) gets git's own hint and `exit 0`. husky's `HUSKY=0` skips step 2.
+ *    (not executable) gets git's own hint (unless `advice.ignoredHook` or `GIT_ADVICE=0` turned
+ *    it off) and `exit 0`. husky's `HUSKY=0` skips step 2.
  * 2. Asks `<launcher> job hook <name>`. Only `queue <kind>` changes anything: every other answer,
  *    a missing launcher and a failing one run the hook as it is, so a broken kit never blocks a
  *    commit.
- * 3. `exec`s the real file (or `<launcher> job run --kind <kind> -- <real file>`) with git's
- *    own arguments. Standard input and the environment pass through untouched: `pre-push` reads
- *    the refs from stdin, and `pre-commit` needs `GIT_INDEX_FILE`.
+ * 3. `exec`s the real file (or `<launcher> job run --hook --kind <kind> -- <real file>`) with
+ *    git's own arguments. `--hook` takes the slot without judging the arguments (`job hook`
+ *    judged the hook's body; a `commit-msg` file argument must not skip the slot), and runs
+ *    the command direct when its own setup fails. A hook with no `#!` line runs through
+ *    `/bin/sh` in the queue, as git and sh run it. Standard input and the environment pass
+ *    through untouched: `pre-push` reads the refs from stdin, and `pre-commit` needs
+ *    `GIT_INDEX_FILE`.
  */
 export function hookScript(launcher: string): string {
   return `#!/bin/sh
@@ -87,7 +81,13 @@ case $real_dir in
     ;;
 esac
 if [ ! -x "$real" ]; then
-  echo "hint: The '$real' hook was ignored because it's not set as executable." >&2
+  # Git's own hint, unless the person turned it off (advice.ignoredHook=false, or GIT_ADVICE=0).
+  hint=1
+  if [ "\${GIT_ADVICE:-}" = 0 ]; then hint=; fi
+  if [ -n "$hint" ] && [ "$(git config --type=bool advice.ignoredHook 2>/dev/null)" = false ]; then hint=; fi
+  if [ -n "$hint" ]; then
+    echo "hint: The '$real' hook was ignored because it's not set as executable." >&2
+  fi
   exit 0
 fi
 answer=direct
@@ -99,7 +99,15 @@ case $answer in
     kind=\${answer#queue }
     case $kind in
       '' | *[!A-Za-z0-9:._-]*) ;;
-      *) exec "$launcher" job run --kind "$kind" -- "$real" "$@" ;;
+      *)
+        # A hook with no #! line: git and sh run it through sh, but the queue starts it itself.
+        first=
+        IFS= read -r first < "$real"
+        case $first in
+          '#!'*) exec "$launcher" job run --hook --kind "$kind" -- "$real" "$@" ;;
+          *) exec "$launcher" job run --hook --kind "$kind" -- /bin/sh "$real" "$@" ;;
+        esac
+        ;;
     esac
     ;;
 esac
@@ -108,26 +116,20 @@ exec "$real" "$@"
 }
 
 /**
- * Writes the folder from this version's script: into a temporary folder first (the managed
- * writer copies a folder into place whole), then `writeManagedFolder` swaps it in. With `dryRun`
- * nothing of the person's changes: the temporary folder is removed either way.
+ * Writes the folder from this version's script, held in memory (`writeManagedFiles`): a dry run
+ * writes nothing at all, and git, which reads the folder while a commit runs, never meets it
+ * missing — an update rewrites each script in place, and a name no longer in `HOOK_NAMES` goes.
  */
 export function installGitHooksFolder(
   paths: CliPaths,
   options: { dryRun?: boolean } = {},
 ): ManagedFolderResult {
-  const source = mkdtempSync(join(tmpdir(), `${COMMAND}-git-hooks-`));
-  try {
-    const text = hookScript(hookLauncher(paths));
-    for (const name of HOOK_NAMES) writeFileSync(join(source, name), text);
-    return writeManagedFolder(paths.gitHooksFolder, source, {
-      stateDir: paths.stateDir,
-      fileMode: HOOK_FILE_MODE,
-      ...(options.dryRun !== undefined && { dryRun: options.dryRun }),
-    });
-  } finally {
-    rmSync(source, { force: true, recursive: true });
-  }
+  const text = hookScript(hookLauncher(paths));
+  return writeManagedFiles(paths.gitHooksFolder, new Map(HOOK_NAMES.map((name) => [name, text])), {
+    stateDir: paths.stateDir,
+    fileMode: HOOK_FILE_MODE,
+    ...(options.dryRun !== undefined && { dryRun: options.dryRun }),
+  });
 }
 
 /** What `doctor` and the refresh find in the folder. */

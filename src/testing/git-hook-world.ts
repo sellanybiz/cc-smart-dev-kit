@@ -24,6 +24,12 @@ export interface FakeLauncherAnswer {
   answer: string | null;
   /** The exit code of `job hook`. */
   exit?: number;
+  /**
+   * `job run` starts its command the way the real one does, with no `sh` fallback for a file
+   * with no `#!` line (`exec` in `sh` would run it through `sh` by itself and hide the bug).
+   * It is a program of Bun's: the command's own exit code comes back, 126 when it cannot start.
+   */
+  strict?: boolean;
 }
 
 export interface GitHookWorld {
@@ -43,6 +49,30 @@ export interface GitHookWorld {
   run(cwd: string, args: string[], env?: Record<string, string>): GitRun;
   /** The calls the fake launcher recorded; empty when it never ran. */
   calls(): string[];
+}
+
+/** The strict fake launcher (`FakeLauncherAnswer.strict`): a Bun script that logs every call. */
+function strictLauncher(log: string, answer: string | null, exit: number): string {
+  return `#!${process.execPath}
+import { appendFileSync } from "node:fs";
+const args = process.argv.slice(2);
+appendFileSync(${JSON.stringify(log)}, \`\${args.join(" ")}\\n\`);
+if (args[0] === "job" && args[1] === "hook") {
+  if (${JSON.stringify(answer)} !== null) console.log(${JSON.stringify(answer)});
+  process.exit(${exit});
+}
+if (args[0] === "job" && args[1] === "run") {
+  const command = args.slice(args.indexOf("--") + 1);
+  try {
+    const result = Bun.spawnSync(command, { stdin: "inherit", stdout: "inherit", stderr: "inherit" });
+    process.exit(result.exitCode ?? 126);
+  } catch (error) {
+    console.error(String(error));
+    process.exit(126);
+  }
+}
+process.exit(99);
+`;
 }
 
 /** Runs `argv` in `cwd`, never throwing. */
@@ -88,11 +118,16 @@ export function gitHookWorld(label = "git-hooks"): GitHookWorld {
     install: () => {
       installGitHooksFolder(paths);
     },
-    fakeLauncher: ({ answer, exit = 0 }) => {
+    fakeLauncher: ({ answer, exit = 0, strict = false }) => {
+      const launcher = join(paths.binDir, LAUNCHER_NAME);
+      if (strict) {
+        writeFileIn(launcher, strictLauncher(log, answer, exit), 0o755);
+        return;
+      }
       const hook =
         answer === null ? `exit ${exit}` : `printf '%s\\n' ${shellQuote(answer)}\n  exit ${exit}`;
       writeFileIn(
-        join(paths.binDir, LAUNCHER_NAME),
+        launcher,
         `#!/bin/sh
 printf '%s\\n' "$*" >> ${shellQuote(log)}
 if [ "$1" = job ] && [ "$2" = hook ]; then
@@ -100,8 +135,10 @@ if [ "$1" = job ] && [ "$2" = hook ]; then
   ${hook}
 fi
 if [ "$1" = job ] && [ "$2" = run ]; then
-  shift 4
-  [ "$1" = -- ] && shift
+  shift 2
+  if [ "$1" = --hook ]; then shift; fi
+  shift 2
+  if [ "$1" = -- ]; then shift; fi
   exec "$@"
 fi
 exit 99

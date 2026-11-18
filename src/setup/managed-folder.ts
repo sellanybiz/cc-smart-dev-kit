@@ -12,13 +12,16 @@
  *   3. **The swap**: the old folder is renamed aside, the new one renamed into its place, the
  *      old one removed. A reader sees the old folder or the new one, never half of one.
  *
+ * A folder something else reads while it is rewritten (git reads the kit's hooks folder during a
+ * commit) is written by `writeManagedFiles` instead: the same record and checks, but an update
+ * rewrites each file in place (temp file and rename), so the folder is never missing.
+ *
  * It is build output, so there is **no backup**: `restore` removes the folder whole. That is why
  * the record is its own file and not a `changed.json` kind — a `changed.json` kind is read by
  * every cc-smart-dev-kit, and a running older CLI refuses one it does not know (the same rule as
  * the managed hook entries, `managed-hook.ts`).
  */
 
-import { createHash } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
@@ -85,21 +88,35 @@ function listFiles(folder: string): string[] {
     .sort();
 }
 
-/** The SHA-256 of a file's bytes, base64: what "the same file" means here. */
-function hashFile(file: string): string {
-  return createHash("sha256").update(readFileSync(file)).digest("base64");
+/** What a folder is to hold: the names of its files, and the bytes of each. */
+interface Content {
+  /** Relative paths with `/`, sorted. */
+  names: readonly string[];
+  read: (name: string) => Buffer;
+}
+
+/** The files of the folder `source`, read when asked. */
+function contentOfFolder(source: string): Content {
+  return {
+    names: listFiles(source),
+    read: (name) => readFileSync(join(source, ...name.split("/"))),
+  };
+}
+
+/** Files held in memory: their text, by name. */
+function contentOfFiles(files: ReadonlyMap<string, string>): Content {
+  return {
+    names: [...files.keys()].sort(),
+    read: (name) => Buffer.from(files.get(name) ?? ""),
+  };
 }
 
 /**
- * True when `target` is ours and holds exactly the files of `source`, with the same bytes and,
+ * True when `target` is ours and holds exactly the files of `content`, with the same bytes and,
  * when `mode` is given, the same mode on every file.
  */
-function sameFolder(
-  target: string,
-  source: string,
-  files: readonly string[],
-  mode: number | undefined,
-): boolean {
+function sameFolder(target: string, content: Content, mode: number | undefined): boolean {
+  const files = content.names;
   if (!existsSync(target) || !markedOwned(target)) return false;
   const have = listFiles(target).filter((file) => file !== OWNED_FOLDER_MARK);
   if (have.length !== files.length || have.some((file, index) => file !== files[index])) {
@@ -108,7 +125,7 @@ function sameFolder(
   if (mode !== undefined && hostPlatform() !== "win32") {
     if (files.some((file) => (statSync(join(target, file)).mode & 0o777) !== mode)) return false;
   }
-  return files.every((file) => hashFile(join(target, file)) === hashFile(join(source, file)));
+  return files.every((file) => readFileSync(join(target, file)).equals(content.read(file)));
 }
 
 /** The record file; a state folder that cannot be read is an error, as `changed.json` is. */
@@ -155,12 +172,12 @@ function forgetOwnedFolder(stateDir: string, folder: string): void {
   );
 }
 
-/** Copies `source`'s files into the new folder `into`, each with `mode`; the mark is never executable. */
-function copyFolder(source: string, into: string, files: readonly string[], mode: number): void {
-  for (const file of files) {
+/** Writes `content` into the new folder `into`, each file with `mode`; the mark is never executable. */
+function copyFolder(content: Content, into: string, mode: number): void {
+  for (const file of content.names) {
     const to = join(into, ...file.split("/"));
     mkdirSync(dirname(to), { recursive: true, mode: DIR_MODE });
-    writeFileSync(to, readFileSync(join(source, ...file.split("/"))), { mode });
+    writeFileSync(to, content.read(file), { mode });
     setFileMode(to, mode); // the umask may have changed the bits
   }
   // A folder with no file at all still exists as a folder.
@@ -169,41 +186,48 @@ function copyFolder(source: string, into: string, files: readonly string[], mode
   setFileMode(join(into, OWNED_FOLDER_MARK), FILE_MODE);
 }
 
+/** How a folder that is there already is brought to the new content. */
+type Update = "swap" | "in-place";
+
 /**
- * Writes `source` into `target` as a folder cc-smart-dev-kit owns, atomically: a new folder
- * beside the old one, then the swap. The same files with the same bytes write nothing.
- *
- * A failure leaves the old folder as it was, and throws: the caller decides whether its work
- * can go on without the new folder.
+ * The one writer behind `writeManagedFolder` and `writeManagedFiles`: the record, the check
+ * that the folder is ours, the dry run, and a new folder built beside its place and renamed in.
+ * Only an update differs: `swap` replaces the whole folder, `in-place` rewrites its files.
  */
-export function writeManagedFolder(
+function writeFolder(
   target: string,
-  source: string,
+  content: Content,
   options: ManagedFolderOptions,
+  update: Update,
 ): ManagedFolderResult {
   const real = realTarget(target);
-  const files = listFiles(source);
-  if (sameFolder(real, source, files, options.fileMode)) {
+  const mode = options.fileMode ?? FILE_MODE;
+  const count = content.names.length;
+  if (sameFolder(real, content, options.fileMode)) {
     // A folder that is already right but unrecorded (a crash before the record): record it.
     if (!options.dryRun) recordOwnedFolder(options.stateDir, real);
-    return { files: files.length, outcome: "unchanged" };
+    return { files: count, outcome: "unchanged" };
   }
-  const outcome = existsSync(real) ? "updated" : "created";
+  const hadOld = existsSync(real);
+  const outcome = hadOld ? "updated" : "created";
   // A folder already at that path that cc-smart-dev-kit did not make is the person's: never
-  // replaced (a replace removes the old folder).
-  if (outcome === "updated" && !markedOwned(real)) {
+  // replaced or rewritten (a replace removes the old folder).
+  if (hadOld && !markedOwned(real)) {
     throw new Error(
       `${real} is not a folder cc-smart-dev-kit made (it has no ${OWNED_FOLDER_MARK}): move it away, then run this again`,
     );
   }
-  if (options.dryRun) return { files: files.length, outcome };
+  if (options.dryRun) return { files: count, outcome };
   recordOwnedFolder(options.stateDir, real);
+  if (hadOld && update === "in-place") {
+    rewriteFiles(real, content, mode);
+    return { files: count, outcome };
+  }
   const token = `${process.pid}-${crypto.randomUUID()}`;
   const temp = join(dirname(real), `.${basename(real)}.cc-smart-dev-kit-tmp-${token}`);
   const old = join(dirname(real), `.${basename(real)}.cc-smart-dev-kit-old-${token}`);
   try {
-    copyFolder(source, temp, files, options.fileMode ?? FILE_MODE);
-    const hadOld = existsSync(real);
+    copyFolder(content, temp, mode);
     if (hadOld) renameSync(real, old);
     try {
       renameSync(temp, real);
@@ -218,7 +242,62 @@ export function writeManagedFolder(
     rmSync(old, { force: true, recursive: true });
     throw error;
   }
-  return { files: files.length, outcome };
+  return { files: count, outcome };
+}
+
+/**
+ * Brings the files of the folder `real` (ours) to `content`, one file at a time: each is written
+ * to a temp file beside it and renamed over it, so a reader sees the old file or the new one and
+ * never a missing one; the folder itself is never renamed. Only a file that differs is written.
+ * Files `content` does not hold go last, so the folder is complete while they are removed.
+ */
+function rewriteFiles(real: string, content: Content, mode: number): void {
+  const checkMode = hostPlatform() !== "win32";
+  for (const name of content.names) {
+    const file = join(real, ...name.split("/"));
+    const bytes = content.read(name);
+    const same =
+      existsSync(file) &&
+      readFileSync(file).equals(bytes) &&
+      (!checkMode || (statSync(file).mode & 0o777) === mode);
+    if (!same) atomicWrite(file, bytes.toString("utf8"), mode);
+  }
+  const wanted = new Set(content.names.map((name) => name.split("/")[0]));
+  for (const entry of readdirSync(real)) {
+    if (entry !== OWNED_FOLDER_MARK && !wanted.has(entry)) {
+      rmSync(join(real, entry), { force: true, recursive: true });
+    }
+  }
+}
+
+/**
+ * Writes `source` into `target` as a folder cc-smart-dev-kit owns, atomically: a new folder
+ * beside the old one, then the swap. The same files with the same bytes write nothing.
+ *
+ * A failure leaves the old folder as it was, and throws: the caller decides whether its work
+ * can go on without the new folder.
+ */
+export function writeManagedFolder(
+  target: string,
+  source: string,
+  options: ManagedFolderOptions,
+): ManagedFolderResult {
+  return writeFolder(target, contentOfFolder(source), options, "swap");
+}
+
+/**
+ * `writeManagedFolder` for files held in memory (name to text), for a folder something else may
+ * be using as it is rewritten: git reads the kit's hooks folder while a commit runs. A new
+ * folder is built beside its place and renamed in, like the swap; an update rewrites each file
+ * in place (`rewriteFiles`), so no moment has the folder missing or a name absent. A dry run
+ * writes nothing at all, not even a temporary file.
+ */
+export function writeManagedFiles(
+  target: string,
+  files: ReadonlyMap<string, string>,
+  options: ManagedFolderOptions,
+): ManagedFolderResult {
+  return writeFolder(target, contentOfFiles(files), options, "in-place");
 }
 
 /**

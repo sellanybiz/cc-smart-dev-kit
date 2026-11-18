@@ -71,14 +71,16 @@ const HOOKS_PATH_ARGS = ["rev-parse", "--path-format=absolute", "--git-path", "h
  * The hooks folder git itself would use in `cwd`: the repo's own `core.hooksPath` (a relative
  * one is read from the work tree's root), else `<git dir>/hooks`. `GIT_CONFIG_COUNT=0` throws
  * away the `GIT_CONFIG_*` pairs a routed command sets, so the answer is the person's folder and
- * never the kit's. Null when git cannot say (not a repo, no git, too slow): the caller treats
- * that as "no hook".
+ * never the kit's. Null when git cannot say (not a repo, no git, slower than `timeoutMs`, or
+ * no time left: zero or less asks git nothing): the caller treats that as "no hook".
  */
 export function realHooksFolder(
   cwd: string,
   env: Record<string, string | undefined> = process.env,
+  timeoutMs: number = GUARD_GIT_TIMEOUT_MS,
 ): string | null {
-  const run = runGit(cwd, HOOKS_PATH_ARGS, env, GUARD_GIT_TIMEOUT_MS, { GIT_CONFIG_COUNT: "0" });
+  if (timeoutMs <= 0) return null;
+  const run = runGit(cwd, HOOKS_PATH_ARGS, env, timeoutMs, { GIT_CONFIG_COUNT: "0" });
   return run.ok && run.out !== "" ? run.out : null;
 }
 
@@ -138,8 +140,9 @@ export function hookDecision(
   kinds: Kinds,
   source: ScriptSource,
   env: Record<string, string | undefined> = process.env,
+  gitTimeoutMs: number = GUARD_GIT_TIMEOUT_MS,
 ): HookDecision {
-  const folder = realHooksFolder(cwd, env);
+  const folder = realHooksFolder(cwd, env, gitTimeoutMs);
   if (folder === null || !isFile(join(folder, name))) return "none";
   const file = isHuskyStubFolder(folder) ? join(dirname(folder), name) : join(folder, name);
   if (!isFile(file)) return "none";

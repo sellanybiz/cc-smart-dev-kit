@@ -89,6 +89,81 @@ describe("the folder", () => {
     );
   });
 
+  test("a rewrite keeps the folder where it is, fixes a stale script, and drops a file that does not belong", () => {
+    const world = gitHookWorld();
+    installGitHooksFolder(world.paths);
+    const folder = world.paths.gitHooksFolder;
+    const before = statSync(folder).ino;
+    writeFileIn(join(folder, "pre-commit"), "#!/bin/sh\n# an older version\n", 0o755);
+    writeFileIn(join(folder, "push-to-checkout"), "#!/bin/sh\n", 0o755);
+    rmSync(join(folder, "commit-msg"));
+    expect(installGitHooksFolder(world.paths)).toEqual({
+      files: HOOK_NAMES.length,
+      outcome: "updated",
+    });
+    // The same folder (never renamed away), complete, with nothing left over.
+    expect(statSync(folder).ino).toBe(before);
+    expect(readdirSync(folder).sort()).toEqual([...HOOK_NAMES, ".cc-smart-dev-kit-owned"].sort());
+    expect(gitHooksState(world.paths)).toEqual({ kind: "ok" });
+  });
+
+  test("while it is rewritten over and over, no script is ever missing", async () => {
+    const world = gitHookWorld();
+    installGitHooksFolder(world.paths);
+    const folder = world.paths.gitHooksFolder;
+    // Another process looks at every name in a loop while this one rewrites the folder.
+    const watcherFile = join(tempDir("git-hooks-watcher"), "watch.ts");
+    const stopFile = join(tempDir("git-hooks-stop"), "stop");
+    writeFileSync(
+      watcherFile,
+      `import { existsSync } from "node:fs";
+import { join } from "node:path";
+const [folder, stop, ...names] = process.argv.slice(2);
+let looks = 0;
+const missing = new Set();
+while (!existsSync(stop)) {
+  for (const name of names) if (!existsSync(join(folder, name))) missing.add(name);
+  looks++;
+}
+console.log(JSON.stringify({ looks, missing: [...missing] }));
+`,
+    );
+    const watcher = Bun.spawn([process.execPath, watcherFile, folder, stopFile, ...HOOK_NAMES], {
+      stdout: "pipe",
+      env: cleanGitEnv(),
+    });
+    // A wrong mode makes each pass rewrite every script.
+    for (let round = 0; round < 40; round++) {
+      for (const name of HOOK_NAMES) chmodSync(join(folder, name), round % 2 === 0 ? 0o644 : 0o700);
+      installGitHooksFolder(world.paths);
+    }
+    writeFileSync(stopFile, "");
+    const seen = JSON.parse(await new Response(watcher.stdout).text()) as {
+      looks: number;
+      missing: string[];
+    };
+    expect(seen.looks).toBeGreaterThan(0);
+    expect(seen.missing).toEqual([]);
+  });
+
+  test("a dry run, and a real run, need no temporary folder: an unusable TMPDIR changes nothing", () => {
+    const world = gitHookWorld();
+    const saved = process.env.TMPDIR;
+    process.env.TMPDIR = join(world.home, "no-such-folder");
+    try {
+      expect(installGitHooksFolder(world.paths, { dryRun: true })).toEqual({
+        files: HOOK_NAMES.length,
+        outcome: "created",
+      });
+      expect(existsSync(world.paths.gitHooksFolder)).toBe(false);
+      expect(existsSync(join(world.home, "no-such-folder"))).toBe(false);
+      expect(installGitHooksFolder(world.paths).outcome).toBe("created");
+    } finally {
+      if (saved === undefined) delete process.env.TMPDIR;
+      else process.env.TMPDIR = saved;
+    }
+  });
+
   test("the launcher's path is baked in, quoted: a home with a space and an apostrophe works", () => {
     const parent = tempDir("git-hooks-quote");
     const home = join(parent, "it's a home");
@@ -104,7 +179,7 @@ describe("the folder", () => {
     writeFileIn(join(world.repo, ".git", "hooks", "pre-commit"), markerHook(marker), 0o755);
     writeFileIn(
       hookLauncher(paths),
-      '#!/bin/sh\n[ "$2" = hook ] && echo "queue x" && exit 0\nshift 4; shift; exec "$@"\n',
+      '#!/bin/sh\n[ "$2" = hook ] && echo "queue x" && exit 0\nshift 6; exec "$@"\n',
       0o755,
     );
     const ran = runIn(world.repo, [join(paths.gitHooksFolder, "pre-commit")], cleanGitEnv());
@@ -122,7 +197,10 @@ describe("the script, run by real git", () => {
     stageFile(world.repo);
     expect(world.run(world.repo, ["commit", "-q", "-m", "two"]).code).toBe(0);
     expect(readFileSync(marker, "utf8")).toBe("ran\n");
-    expect(world.calls()).toEqual(["job hook pre-commit", `job run --kind test:run -- ${hook}`]);
+    expect(world.calls()).toEqual([
+      "job hook pre-commit",
+      `job run --hook --kind test:run -- ${hook}`,
+    ]);
   });
 
   test("a light hook runs direct: no `job run`", () => {
@@ -212,6 +290,51 @@ describe("the script, run by real git", () => {
     expect(world.calls()).toEqual([]);
   });
 
+  test("the hint for a hook that is not executable follows git's own switches: advice.ignoredHook and GIT_ADVICE", () => {
+    const world = installed("queue test:run");
+    const hook = join(world.repo, ".git", "hooks", "pre-commit");
+    writeFileIn(hook, markerHook(join(world.repo, "marker")), 0o644);
+    const hint = `hint: The '${hook}' hook was ignored because it's not set as executable.`;
+    const commit = (extra: string[], env?: Record<string, string>) => {
+      stageFile(world.repo, `f${Math.random()}.txt`);
+      return world.run(world.repo, [...extra, "commit", "-q", "-m", "x"], env);
+    };
+    // The same switches that silence git's own hint (probed on git 2.53, with the same hook).
+    expect(commit([]).err).toContain(hint);
+    expect(commit(["-c", "advice.ignoredHook=true"]).err).toContain(hint);
+    for (const off of ["false", "no", "0"]) {
+      const quiet = commit(["-c", `advice.ignoredHook=${off}`]);
+      expect(quiet.code).toBe(0);
+      expect(quiet.err).toBe("");
+    }
+    const noAdvice = commit([], { ...world.routedEnv(), GIT_ADVICE: "0" });
+    expect(noAdvice.code).toBe(0);
+    expect(noAdvice.err).toBe("");
+    expect(world.calls()).toEqual([]);
+  });
+
+  test("a heavy hook with no #! line runs through /bin/sh in the queue, and its exit code comes back", () => {
+    const world = gitHookWorld();
+    world.install();
+    // The fake `job run` starts its command like the real one: no `sh` fallback for it.
+    world.fakeLauncher({ answer: "queue test:run", strict: true });
+    const marker = join(world.repo, "marker");
+    const hook = join(world.repo, ".git", "hooks", "pre-commit");
+    writeFileIn(hook, `echo ran >> "${marker}"\nexit 7\n`, 0o755);
+    const script = join(world.paths.gitHooksFolder, "pre-commit");
+    const ran = runIn(world.repo, [script], world.routedEnv());
+    expect(ran.code).toBe(7);
+    expect(readFileSync(marker, "utf8")).toBe("ran\n");
+    expect(world.calls()).toEqual([
+      "job hook pre-commit",
+      `job run --hook --kind test:run -- /bin/sh ${hook}`,
+    ]);
+    // With a #! line the file itself is the command.
+    writeFileIn(hook, markerHook(marker, 5), 0o755);
+    expect(runIn(world.repo, [script], world.routedEnv()).code).toBe(5);
+    expect(world.calls().at(-1)).toBe(`job run --hook --kind test:run -- ${hook}`);
+  });
+
   test("the repo's own core.hooksPath (relative) is the folder that is read, from a subfolder", () => {
     const world = installed("queue test:run");
     git(world.repo, "config", "core.hooksPath", "hooks");
@@ -223,7 +346,10 @@ describe("the script, run by real git", () => {
     mkdirSync(deep, { recursive: true });
     expect(world.run(deep, ["commit", "-q", "-m", "two"]).code).toBe(0);
     expect(readFileSync(marker, "utf8")).toBe("ran\n");
-    expect(world.calls()).toEqual(["job hook pre-commit", `job run --kind test:run -- ${hook}`]);
+    expect(world.calls()).toEqual([
+      "job hook pre-commit",
+      `job run --hook --kind test:run -- ${hook}`,
+    ]);
   });
 
   test("husky v9: the stub runs, not .husky/<name>; a stub with no .husky/<name> never starts the launcher", () => {
@@ -243,7 +369,7 @@ describe("the script, run by real git", () => {
     // The queue ran the STUB (the file in the real hooks folder), never `.husky/pre-commit`.
     expect(world.calls()).toEqual([
       "job hook pre-commit",
-      `job run --kind tsc -- ${join(world.repo, ".husky", "_", "pre-commit")}`,
+      `job run --hook --kind tsc -- ${join(world.repo, ".husky", "_", "pre-commit")}`,
     ]);
     // post-commit has a stub and no `.husky/post-commit`: no launcher call, no stub run.
     expect(world.calls().some((call) => call.includes("post-commit"))).toBe(false);
