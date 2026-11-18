@@ -19,8 +19,13 @@ export interface PlanFilesCheck extends FilesCheck {
 /**
  * The check for the checkout `cwd` is in. `plans.mergeFiles` comes only from the committed copy
  * on `origin/<base>` (`resolveMergeFiles`), never from the working copy. A folder outside git
- * has no list and compares with case. A git that cannot answer throws: a guessed list would let
- * an overlap through.
+ * has no list and compares with case.
+ *
+ * `resolveMergeFiles` does not throw: a list it cannot read (no base, no ref, no file, a bad
+ * entry) comes back empty or short with a `reason`, so more paths count as overlaps, and the
+ * refusal that follows says why (`FilesCheck.reason`). An unreadable `core.ignorecase` reads as
+ * false (paths compare with case). Only locating the checkout and reading the project's own
+ * file (`locateCheckout`, `baseBranch`) can throw, and that fails the call.
  */
 export function planFilesCheck(cwd: string, env: Env = process.env): PlanFilesCheck {
   const checkout = locateCheckout(cwd, { env });

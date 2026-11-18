@@ -9,16 +9,26 @@ import { allTasks, isInFlight, isLead, isOpen, openBlockers, ownerOf } from "./q
 import type { ClaimProcess, Who, WorkTask } from "./types";
 
 /**
- * - `own`: reserved for this lead itself (lead + children mode): it builds the plan.
- * - `with-child`: reserved and handed to a child. Its process runs, or cannot be proved gone: a
- *   resume must never start a second child beside a live one.
- * - `child-gone`: reserved and handed to a child whose process is proved gone.
+ * - `own`: reserved for this lead itself (lead + children mode, holder `self`): it builds the plan.
+ * - `with-child`: reserved as a hand-out (holder `child`). Its child has not taken it yet, or it
+ *   runs, or it cannot be proved gone: a resume must never start a second child beside a live one.
+ * - `child-gone`: a hand-out whose child took it and is proved gone: its maker and its claim, if
+ *   it has one, both ended.
+ * - `merging`: the plan is closed but still reserved for this lead: its pull request has not
+ *   settled (`herdr plans` releases it).
  * - `waiting`: not reserved, and a blocker is still open in the store.
  * - `no-files`: not reserved, nothing blocks it, and it has no file list: it is never handed out.
  * - `ready`: not reserved, nothing blocks it and it has files. Overlaps with held plans are not
  *   judged here: they need the branch diffs, which `reservePlan` and `herdr plans` read.
  */
-export type LeadPlanState = "own" | "with-child" | "child-gone" | "waiting" | "no-files" | "ready";
+export type LeadPlanState =
+  | "own"
+  | "with-child"
+  | "child-gone"
+  | "merging"
+  | "waiting"
+  | "no-files"
+  | "ready";
 
 export interface LeadPlan {
   plan: WorkTask;
@@ -28,28 +38,29 @@ export interface LeadPlan {
 }
 
 /**
- * The state of a plan reserved for the caller. A plan the caller still owns was never taken by a
- * child: it is the lead's own, unless herdr already bound a child's agent to it (a launch whose
- * child has not taken it yet), which is a child's. After a take the plan's creator is the child,
- * so that process's liveness says whether the child still runs.
+ * The state of an open plan reserved for the caller. The holder kind was recorded at the
+ * reservation, so a hand-out the lead still owns (its child has not taken it) is `with-child`,
+ * never `own`. After a take the plan's maker is the child (`reclaimResumed` keeps it the running
+ * process): `child-gone` needs it proved gone, and the claim too when the child started the plan.
  */
 function reservedState(
   plan: WorkTask,
   owns: (task: WorkTask) => boolean,
   process: ClaimProcess,
 ): "own" | "with-child" | "child-gone" {
-  if (owns(plan)) return plan.agent === null ? "own" : "with-child";
+  if (owns(plan)) return plan.lead?.holder === "self" ? "own" : "with-child";
   const child = plan.creator;
   if (child === null || process.live(child)) return "with-child";
-  return process.gone(child) ? "child-gone" : "with-child";
+  const claimEnded = plan.claim === null || process.gone(plan.claim);
+  return process.gone(child) && claimEnded ? "child-gone" : "with-child";
 }
 
 /**
- * The open plans this caller leads, each with its state, in plan order: every open plan reserved
- * for the caller (`isLead`: its session, or the same process, so a `/clear` keeps them), and
+ * The plans this caller leads, each with its state, in plan order: every plan reserved for the
+ * caller (`isLead`: its session, or the same process, so a `/clear` and a resume keep them), and
  * every open plan the caller owns that is neither reserved nor running (queued plans it laid).
- * Another session's plans, closed plans and the caller's own solo plan in flight are left out.
- * `process` answers the child's liveness (`CLAIM_PROCESS` by default).
+ * Another session's plans, closed plans that are not reserved and the caller's own solo plan in
+ * flight are left out. `process` answers the child's liveness (`CLAIM_PROCESS` by default).
  */
 export function classifyLeadPlans(
   db: WorkDb,
@@ -62,10 +73,11 @@ export function classifyLeadPlans(
   const owns = ownerOf(who);
   const found: LeadPlan[] = [];
   for (const plan of all) {
-    if (plan.kind !== "plan" || !isOpen(plan)) continue;
+    if (plan.kind !== "plan") continue;
     if (isLead(plan.lead, who)) {
-      found.push({ plan, state: reservedState(plan, owns, process), waitingOn: [] });
-    } else if (plan.lead === null && owns(plan) && !isInFlight(all, plan)) {
+      const state = isOpen(plan) ? reservedState(plan, owns, process) : "merging";
+      found.push({ plan, state, waitingOn: [] });
+    } else if (isOpen(plan) && plan.lead === null && owns(plan) && !isInFlight(all, plan)) {
       const waitingOn = openBlockers(plan, byId);
       const state =
         waitingOn.length > 0 ? "waiting" : plan.files.length === 0 ? "no-files" : "ready";

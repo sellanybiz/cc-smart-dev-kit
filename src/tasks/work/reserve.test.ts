@@ -3,6 +3,7 @@
  * reserved plan, who may start work in it, and the store-only classifier the status line reads.
  */
 import { expect, test } from "bun:test";
+import { COMMAND } from "../../build-info/names";
 import { cliPaths } from "../../cli/paths";
 import { hookEnv, makeRepo } from "../../testing/hooks";
 import { tempDir } from "../../testing/temp";
@@ -14,6 +15,7 @@ import { allTasks, eventsOf, heldPlans, isLead, taskById } from "./queries";
 import {
   createTask,
   type ReservePlan,
+  reclaimResumed,
   releasePlan,
   reservePlan,
   takeTasks,
@@ -79,6 +81,7 @@ function reserve(db: Db, slug: string, over: Partial<ReservePlan> = {}) {
     project: "p",
     plan: slug,
     who: LEAD,
+    holder: "child",
     ignore: [],
     caseFold: false,
     now: 10,
@@ -93,13 +96,19 @@ test("a reservation writes the lead, records it in the history, and the plan is 
   const { db } = setup();
   const alpha = plan(db, "alpha", ["src/a/"]);
   const reserved = ok(reserve(db, "alpha"));
-  expect(reserved.lead).toEqual({ sessionId: "lead", pid: 4101, procStart: "41010" });
+  expect(reserved.lead).toMatchObject({
+    sessionId: "lead",
+    pid: 4101,
+    procStart: "41010",
+    holder: "child",
+  });
+  expect(reserved.lead?.handoutId).toMatch(/^h[a-z2-7]{10}$/);
   expect(reserved.status).toBe("pending");
   const event = eventsOf(db, alpha).at(-1);
   expect([event?.action, event?.reason, event?.changes.lead]).toEqual([
     "changed",
     "plan reserved",
-    [null, "lead"],
+    [null, "lead (child)"],
   ]);
   expect(heldPlans(db, "p", LEAD).map((h) => [h.plan.plan, h.why, h.mine, h.files])).toEqual([
     ["alpha", "reserved", true, ["src/a/"]],
@@ -338,6 +347,7 @@ function reserveIn(
       project: w.project,
       plan: slug,
       who,
+      holder: "child",
       ignore: [],
       caseFold: false,
       now: 10,
@@ -355,7 +365,7 @@ test("the lead reserves its own plan, starts it, and a later overlapping reserva
   try {
     said(ops.call("create", { subject: "Beta", plan: "beta", files: ["src/a/inner.ts"] }));
     said(ops.call("create", { subject: "Gamma", plan: "gamma", files: ["lib/g/"] }));
-    expect(ok(reserveIn(w, "alpha", LEAD)).lead?.sessionId).toBe("lead");
+    expect(ok(reserveIn(w, "alpha", LEAD, { holder: "self" })).lead?.sessionId).toBe("lead");
     // The usual start: the phase goes in progress, and the reserved plan with it.
     said(ops.call("update", { task: alpha.phase, status: "in_progress" }));
     expect(said(ops.call("get", { task: "#1" }))).toContain("[plan · in progress]");
@@ -419,7 +429,17 @@ test("task_update files on a held plan works with the real git read of the check
     said(lead.call("create", { subject: "Beta", plan: "beta", files: ["src/b/"] }));
     const project = folderProject(repo);
     for (const slug of ["alpha", "beta"])
-      ok(reservePlan(db, { project, plan: slug, who: LEAD, ignore: [], caseFold: false, now: 5 }));
+      ok(
+        reservePlan(db, {
+          project,
+          plan: slug,
+          who: LEAD,
+          holder: "child",
+          ignore: [],
+          caseFold: false,
+          now: 5,
+        }),
+      );
     // No origin and no committed list: the merge files are empty, the check still runs.
     expect(refused(lead.call("update", { task: "#2", files: ["src/a/"] }))).toContain(
       "overlaps #1",
@@ -438,7 +458,7 @@ test("a reserved plan is taken only from its lead, once", () => {
   const take = (who: Who, options: { from?: string; force?: boolean } = {}) =>
     takeTasks(db, "p", alpha.id, who, 20, { ...live, ...options });
   expect(why(take(CHILD))).toBe(
-    '#1 "alpha" is reserved for session lead: take it with from set to that session',
+    '#1 "alpha" is reserved for session lead: take it with from set to the hand-out id its brief names',
   );
   expect(why(take(CHILD, { from: "somebody" }))).toContain("is reserved for session lead");
   expect(taskById(db, alpha.id).createdBy).toBe("lead");
@@ -472,13 +492,17 @@ test("only the owner of a reserved plan starts work in it", () => {
   const child = w.ops(CHILD);
   const other = w.ops(OTHER);
   try {
-    expect(ok(reserveIn(w, "alpha", LEAD)).lead).not.toBeNull();
+    const handout = ok(reserveIn(w, "alpha", LEAD)).lead?.handoutId;
     // Another session may not start it, and says whose it is.
     expect(refused(other.call("update", { task: alpha.phase, status: "in_progress" }))).toBe(
-      "Plan \"alpha\" (#1) is reserved for session lead: it is that lead's, or its child's. Do not start work in it.",
+      `Plan "alpha" (#1) is reserved for session lead: it is that lead's, or its child's. Do not start work in it. If it was handed to you, take it first with from: ${handout}`,
+    );
+    // A hand-out is never the lead's to build, even before its child takes it.
+    expect(refused(lead.call("update", { task: alpha.phase, status: "in_progress" }))).toBe(
+      'Plan "alpha" (#1) is reserved as a hand-out: its child builds it, never you. Do not start work in it. To build it yourself, release the reservation first.',
     );
     // The child takes it, then it is the child's to run, and no longer the lead's.
-    said(child.call("take", { task: "alpha", from: "lead" }));
+    said(child.call("take", { task: "alpha", from: handout }));
     expect(refused(lead.call("update", { task: alpha.phase, status: "in_progress" }))).toBe(
       'Plan "alpha" (#1) was handed to another session: it owns the plan now. Do not start work in it; its report arrives when it finishes.',
     );
@@ -521,7 +545,8 @@ test("the classifier names each state from the store alone", () => {
   const running = plan(db, "running", ["src/running/"]);
   const dead = plan(db, "dead", ["src/dead/"]);
   const unsure = plan(db, "unsure", ["src/unsure/"]);
-  for (const slug of ["own", "running", "dead", "unsure"]) ok(reserve(db, slug));
+  for (const slug of ["running", "dead", "unsure"]) ok(reserve(db, slug));
+  ok(reserve(db, "own", { holder: "self" }));
   ok(takeTasks(db, "p", running.id, CHILD, 20, { ...live, from: "lead" }));
   ok(
     takeTasks(db, "p", dead.id, { ...CHILD, sessionId: "child2", pid: 7, procStart: "7" }, 21, {
@@ -564,27 +589,38 @@ test("the classifier names each state from the store alone", () => {
   expect(waiting?.waitingOn.map((t) => t.plan)).toEqual(["blocker"]);
 });
 
-test("the classifier follows the lead across a /clear, and a plan bound to a child is the child's", () => {
+test("the classifier follows the lead across a /clear; a hand-out is the child's from the reservation on", () => {
   const { db } = setup();
   const alpha = plan(db, "alpha", ["src/a/"]);
-  const beta = plan(db, "beta", ["src/b/"]);
-  ok(reserve(db, "alpha"));
-  ok(reserve(db, "beta"));
+  plan(db, "beta", ["src/b/"]);
+  ok(reserve(db, "alpha", { holder: "self" }));
+  ok(reserve(db, "beta", { holder: "child" }));
   // A /clear: the same process under a new session id is still the lead.
   const cleared: Who = { ...LEAD, sessionId: "lead-after-clear" };
   expect(isLead(taskById(db, alpha.id).lead, cleared)).toBe(true);
-  expect(states(db, cleared)).toEqual({ alpha: "own", beta: "own" });
+  // The holder kind says it, the lead owning both: no binding or take is needed first.
+  expect(states(db, cleared)).toEqual({ alpha: "own", beta: "with-child" });
   // Another session and another process are not the lead.
   expect(states(db, OTHER)).toEqual({});
-  // herdr bound a child's agent before the child took the plan: it is no longer the lead's own.
-  ok(updateTask(db, beta.id, { agent: "herdr:1/2" }, LEAD, 30));
-  expect(states(db, cleared)).toEqual({ alpha: "own", beta: "with-child" });
+});
+
+test("a closed plan still reserved for the lead is merging until it is released", () => {
+  const { db } = setup();
+  const alpha = plan(db, "alpha", ["src/a/"]);
+  ok(reserve(db, "alpha"));
+  ok(takeTasks(db, "p", alpha.id, CHILD, 20, { isLive: () => false, from: "lead" }));
+  ok(updateTask(db, alpha.id, { status: "done" }, CHILD, 21));
+  expect(states(db, LEAD)).toEqual({ alpha: "merging" });
+  // Other sessions do not lead it, and a release ends it.
+  expect(states(db, OTHER)).toEqual({});
+  ok(releasePlan(db, { project: "p", plan: "alpha", who: LEAD, now: 30 }));
+  expect(states(db, LEAD)).toEqual({});
 });
 
 test("the classifier reads the store and nothing else: no git, no process but the one it is given", () => {
   const { db } = setup();
   plan(db, "alpha", ["src/a/"]);
-  ok(reserve(db, "alpha"));
+  ok(reserve(db, "alpha", { holder: "self" }));
   let asked = 0;
   const counting = {
     live: () => {
@@ -599,4 +635,240 @@ test("the classifier reads the store and nothing else: no git, no process but th
   expect(states(db, LEAD, counting)).toEqual({ alpha: "own" });
   // An owned, unhanded plan needs no process question at all.
   expect(asked).toBe(0);
+});
+
+/** A process list where only the named pids still run. */
+function running(...pids: number[]): ClaimProcess {
+  return { live: (c) => pids.includes(c.pid), gone: (c) => !pids.includes(c.pid) };
+}
+
+test("H1: a resumed child reads with-child while it runs, and child-gone only when its claim and maker are both gone", () => {
+  const { db } = setup();
+  const alpha = plan(db, "alpha", ["src/a/"]);
+  ok(reserve(db, "alpha"));
+  ok(takeTasks(db, "p", alpha.id, CHILD, 20, { isLive: () => false, from: "lead" }));
+  ok(updateTask(db, alpha.id, { status: "in_progress" }, CHILD, 21));
+  // The child's session is reopened in a new process; the old one is gone.
+  const resumed: Who = { sessionId: "child", pid: 5303, procStart: "53030" };
+  expect(ok(reclaimResumed(db, resumed, 30, (c) => c.pid === CHILD.pid))).toBe(1);
+  const row = taskById(db, alpha.id);
+  expect([row.claim?.pid, row.creator?.pid]).toEqual([5303, 5303]);
+  expect(
+    eventsOf(db, alpha).some((e) => e.reason === "maker moved to the resumed session's process"),
+  ).toBe(true);
+  expect(states(db, LEAD, running(resumed.pid as number))).toEqual({ alpha: "with-child" });
+  // With no process running, the restamped claim and maker are both gone.
+  expect(states(db, LEAD, running())).toEqual({ alpha: "child-gone" });
+});
+
+test("H1: a child whose maker is gone but whose claim still runs is with-child", () => {
+  const { db } = setup();
+  const alpha = plan(db, "alpha", ["src/a/"]);
+  ok(reserve(db, "alpha"));
+  ok(takeTasks(db, "p", alpha.id, CHILD, 20, { isLive: () => false, from: "lead" }));
+  // Another process of the plan's work holds the claim (a live claim the maker's process lacks).
+  ok(updateTask(db, alpha.id, { status: "in_progress" }, OTHER, 21));
+  expect(taskById(db, alpha.id).claim?.pid).toBe(OTHER.pid as number);
+  expect(states(db, LEAD, running(OTHER.pid as number))).toEqual({ alpha: "with-child" });
+  expect(states(db, LEAD, running())).toEqual({ alpha: "child-gone" });
+  // A claim that cannot be proved gone keeps it with-child too.
+  const unproved: ClaimProcess = {
+    live: () => false,
+    gone: (c) => c.pid === CHILD.pid,
+  };
+  expect(states(db, LEAD, unproved)).toEqual({ alpha: "with-child" });
+});
+
+test("M1: a take with the hand-out id passes after the lead's /clear moved its session", () => {
+  const { db } = setup();
+  const alpha = plan(db, "alpha", ["src/a/"]);
+  const handout = ok(reserve(db, "alpha")).lead?.handoutId;
+  const cleared: Who = { ...LEAD, sessionId: "lead-2" };
+  expect(ok(reclaimResumed(db, cleared, 15, () => false))).toBe(1);
+  const moved = taskById(db, alpha.id);
+  // The lead's session moved, the hand-out id did not: the child's brief still names it.
+  expect([moved.createdBy, moved.lead?.sessionId, moved.lead?.handoutId]).toEqual([
+    "lead-2",
+    "lead-2",
+    handout,
+  ]);
+  const take = (from: string) =>
+    takeTasks(db, "p", alpha.id, CHILD, 20, { isLive: () => false, from });
+  ok(take(handout ?? ""));
+  expect(taskById(db, alpha.id).createdBy).toBe("child");
+});
+
+test("M1: the lead's current session also names the reservation", () => {
+  const { db } = setup();
+  const alpha = plan(db, "alpha", ["src/a/"]);
+  ok(reserve(db, "alpha"));
+  ok(reclaimResumed(db, { ...LEAD, sessionId: "lead-2" }, 15, () => false));
+  expect(
+    why(takeTasks(db, "p", alpha.id, CHILD, 20, { isLive: () => false, from: "wrong" })),
+  ).toContain("is reserved for session lead-2");
+  ok(takeTasks(db, "p", alpha.id, CHILD, 21, { isLive: () => false, from: "lead-2" }));
+});
+
+test("M2: a take of a reserved plan passes a maker proved gone, and refuses one that may run", () => {
+  const { db } = setup();
+  const alpha = plan(db, "alpha", ["src/a/"]);
+  const handout = ok(reserve(db, "alpha")).lead?.handoutId;
+  ok(takeTasks(db, "p", alpha.id, CHILD, 20, { isLive: () => false, from: handout ?? "" }));
+  // The child died; herdr starts a new child session. Its maker is gone: the take passes.
+  const second: Who = { sessionId: "child-2", pid: 5404, procStart: "54040" };
+  const options = { isLive: () => false, from: handout ?? "" };
+  expect(why(takeTasks(db, "p", alpha.id, second, 30, { ...options, isGone: () => false }))).toBe(
+    `#1 "alpha" belongs to session child, not ${handout}`,
+  );
+  ok(takeTasks(db, "p", alpha.id, second, 31, { ...options, isGone: (c) => c.pid === CHILD.pid }));
+  expect(taskById(db, alpha.id).createdBy).toBe("child-2");
+  // The live-claim check stays: a claim that runs is never taken without force.
+  ok(updateTask(db, alpha.id, { status: "in_progress" }, second, 32));
+  const third: Who = { sessionId: "child-3", pid: 5505, procStart: "55050" };
+  expect(
+    why(
+      takeTasks(db, "p", alpha.id, third, 33, {
+        from: handout ?? "",
+        isLive: () => true,
+        isGone: () => true,
+      }),
+    ),
+  ).toContain("is live in session child-2; use force to take it");
+});
+
+test("M3: the lead's identity follows its process through a /clear and a resume, the hand-out id never moves", () => {
+  const { db } = setup();
+  const alpha = plan(db, "alpha", ["src/a/"]);
+  const handout = ok(reserve(db, "alpha")).lead?.handoutId;
+  const cleared: Who = { ...LEAD, sessionId: "lead-2" };
+  ok(reclaimResumed(db, cleared, 15, () => false));
+  // Then the reopened session runs in a new process, the old one gone.
+  const after: Who = { sessionId: "lead-2", pid: 9999, procStart: "99990" };
+  expect(ok(reclaimResumed(db, after, 16, (c) => c.pid === LEAD.pid))).toBe(1);
+  const lead = taskById(db, alpha.id).lead;
+  expect([lead?.sessionId, lead?.pid, lead?.procStart, lead?.handoutId]).toEqual([
+    "lead-2",
+    9999,
+    "99990",
+    handout,
+  ]);
+  expect(isLead(lead ?? null, after)).toBe(true);
+  expect(states(db, after, NOBODY)).toEqual({ alpha: "with-child" });
+  // A release clears the hand-out id with the rest.
+  ok(releasePlan(db, { project: "p", plan: "alpha", who: after, now: 20 }));
+  expect(taskById(db, alpha.id).lead).toBeNull();
+  // A different reservation gets a different id.
+  expect(ok(reserve(db, "alpha", { who: after })).lead?.handoutId).not.toBe(handout);
+});
+
+test("M3: a live process is never replaced as the lead, and another session never moves it", () => {
+  const { db } = setup();
+  const alpha = plan(db, "alpha", ["src/a/"]);
+  ok(reserve(db, "alpha"));
+  const same: Who = { sessionId: "lead", pid: 9999, procStart: "99990" };
+  expect(ok(reclaimResumed(db, same, 16, () => false))).toBe(0);
+  expect(ok(reclaimResumed(db, OTHER, 17, () => true))).toBe(0);
+  expect(taskById(db, alpha.id).lead?.pid).toBe(LEAD.pid as number);
+});
+
+test("M4: the holder kind is recorded once, shown in the history, and read by the classifier", () => {
+  const { db } = setup();
+  const alpha = plan(db, "alpha", ["src/a/"]);
+  plan(db, "beta", ["src/b/"]);
+  expect(ok(reserve(db, "alpha", { holder: "self" })).lead?.holder).toBe("self");
+  expect(ok(reserve(db, "beta", { holder: "child" })).lead?.holder).toBe("child");
+  expect(eventsOf(db, alpha).at(-1)?.changes.lead).toEqual([null, "lead (self)"]);
+  // Both are the lead's own rows (it made them), yet only the self plan reads own.
+  expect(states(db, LEAD)).toEqual({ alpha: "own", beta: "with-child" });
+});
+
+test("M4: the lead may start its own plan and may not start a plan it handed out, taken or not", () => {
+  const w = world();
+  const alpha = laidPlan(w, LEAD, "alpha", ["src/a/"]);
+  const beta = laidPlan(w, LEAD, "beta", ["src/b/"]);
+  const lead = w.ops(LEAD);
+  try {
+    expect(ok(reserveIn(w, "alpha", LEAD, { holder: "self" })).lead?.holder).toBe("self");
+    expect(ok(reserveIn(w, "beta", LEAD, { holder: "child" })).lead?.holder).toBe("child");
+    expect(refused(lead.call("update", { task: beta.phase, status: "in_progress" }))).toContain(
+      "is reserved as a hand-out",
+    );
+    said(lead.call("update", { task: alpha.phase, status: "in_progress" }));
+  } finally {
+    lead.close();
+  }
+});
+
+test("L1 and L2: the merge files are read for every list, and a read that fell short is named in the refusal", () => {
+  const repo = makeRepo();
+  const env = hookEnv();
+  const stateDir = cliPaths(env).stateDir;
+  let reads = 0;
+  const ops = createTaskOps({
+    stateDir,
+    env,
+    cwd: () => repo,
+    caller: () => ({ ...LEAD, cwd: repo }),
+    filesCheck: () => {
+      reads += 1;
+      return { ignore: [], caseFold: false, reason: "no ref origin/main was found" };
+    },
+  });
+  const db = openWorkDb(workDbFile({ stateDir }), { mode: "write" });
+  try {
+    said(ops.call("create", { subject: "Alpha", plan: "alpha", files: ["src/a/"] }));
+    said(ops.call("create", { subject: "Beta", plan: "beta" }));
+    // Neither plan is held, and the list is still read: only the transaction knows if it is held.
+    said(ops.call("update", { task: "#2", files: ["src/b/"] }));
+    expect(reads).toBe(2);
+    const project = folderProject(repo);
+    for (const slug of ["alpha", "beta"])
+      ok(
+        reservePlan(db, {
+          project,
+          plan: slug,
+          who: LEAD,
+          holder: "child",
+          ignore: [],
+          caseFold: false,
+          reason: null,
+          now: 5,
+        }),
+      );
+    expect(refused(ops.call("update", { task: "#2", files: ["src/a/x.ts"] }))).toBe(
+      '#2 "Beta" is held, so its files may not overlap another held plan: overlaps #1 "Alpha": src/a/x.ts (src/a/). plans.mergeFiles was not read in full, so a merge file may count: no ref origin/main was found',
+    );
+    // reservePlan says it too.
+    said(ops.call("create", { subject: "Gamma", plan: "gamma", files: ["src/a/y.ts"] }));
+    expect(
+      why(
+        reservePlan(db, {
+          project,
+          plan: "gamma",
+          who: LEAD,
+          holder: "child",
+          ignore: [],
+          caseFold: false,
+          reason: "bad entry docs",
+          now: 7,
+        }),
+      ),
+    ).toBe(
+      '#3 "Gamma" overlaps #1 "Alpha": src/a/y.ts (src/a/). plans.mergeFiles was not read in full, so a merge file may count: bad entry docs',
+    );
+  } finally {
+    db.close();
+    ops.close();
+  }
+});
+
+test("L3: an overlap with a done plan that is not released says so, and what releases it", () => {
+  const { db } = setup();
+  const alpha = plan(db, "alpha", ["src/a/"]);
+  plan(db, "beta", ["src/a/x.ts"]);
+  ok(reserve(db, "alpha"));
+  ok(updateTask(db, alpha.id, { status: "done" }, LEAD, 5));
+  expect(why(reserve(db, "beta"))).toBe(
+    `#2 "beta" overlaps #1 "alpha" (done, not released: \`${COMMAND} herdr plans\` releases it when its pull request merges): src/a/x.ts (src/a/)`,
+  );
 });

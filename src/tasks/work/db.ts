@@ -56,8 +56,11 @@ CREATE INDEX task_event_number ON task_events(project,number);
  * that made a task (`created_pid`, `created_start`; null on a row made before), so a task stays
  * its maker's across a `/clear`, and an index for a task's notes. Schema 6: a plan's file list
  * (`task_files`, which goes with its plan through the cascade, so an older kit's plain `DELETE
- * FROM tasks` still works) and the reservation of a plan for a lead (`lead_session`,
- * `lead_pid`, `lead_start`; null while the plan is unreserved).
+ * FROM tasks` still works) and the reservation of a plan for a lead: the lead's identity
+ * (`lead_session`, `lead_pid`, `lead_start`, moved like `created_by` when its session or
+ * process changes), the holder kind (`lead_child`: 0 the lead builds it itself, 1 a child does),
+ * and the hand-out id (`lead_handout`, written once, the `from` a child takes the plan with).
+ * All null while the plan is unreserved.
  */
 const MIGRATIONS: (string | ((sqlite: Database, file: string) => void))[] = [
   "ALTER TABLE tasks ADD COLUMN blocking INTEGER NOT NULL DEFAULT 1 CHECK(blocking IN (0,1))",
@@ -72,7 +75,9 @@ const MIGRATIONS: (string | ((sqlite: Database, file: string) => void))[] = [
   `CREATE TABLE IF NOT EXISTS task_files(task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE, path TEXT NOT NULL, PRIMARY KEY(task_id,path));
    ALTER TABLE tasks ADD COLUMN lead_session TEXT;
    ALTER TABLE tasks ADD COLUMN lead_pid INTEGER;
-   ALTER TABLE tasks ADD COLUMN lead_start TEXT;`,
+   ALTER TABLE tasks ADD COLUMN lead_start TEXT;
+   ALTER TABLE tasks ADD COLUMN lead_child INTEGER NOT NULL DEFAULT 0 CHECK(lead_child IN (0,1));
+   ALTER TABLE tasks ADD COLUMN lead_handout TEXT;`,
 ];
 class BackupFailure extends Error {}
 /** Lift legacy tasks under the write lock. A failed snapshot leaves the store readable. */

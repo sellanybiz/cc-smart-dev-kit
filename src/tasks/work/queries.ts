@@ -45,6 +45,8 @@ interface TaskRow {
   lead_session?: string | null;
   lead_pid?: number | null;
   lead_start?: string | null;
+  lead_child?: number;
+  lead_handout?: string | null;
 }
 /** False in a store a hook reads before a writer moved it to schema 6: no file list is stored yet. */
 function hasFilesTable(db: WorkDb): boolean {
@@ -119,12 +121,14 @@ export function allTasks(db: WorkDb, project: string): WorkTask[] {
       type: row.blocking === 0 ? "non-blocking" : "blocking",
       files: files.get(row.id) ?? [],
       lead:
-        row.lead_session == null && row.lead_pid == null
+        row.lead_handout == null
           ? null
           : {
               sessionId: row.lead_session ?? null,
               pid: row.lead_pid ?? null,
               procStart: row.lead_start ?? null,
+              holder: row.lead_child === 1 ? "child" : "self",
+              handoutId: row.lead_handout,
             },
     }));
 }
@@ -280,10 +284,14 @@ export function ownerOf(who: Who): (task: WorkTask) => boolean {
 export function isLead(lead: WorkLead | null, who: Who | null | undefined): boolean {
   if (lead === null || !who) return false;
   if (who.sessionId !== null && lead.sessionId === who.sessionId) return true;
-  return (
-    lead.pid !== null &&
-    claimHeldBy({ pid: lead.pid, procStart: lead.procStart, sessionId: lead.sessionId }, who)
-  );
+  return claimHeldBy(leadProcess(lead), who);
+}
+
+/** The lead's process in the shape of a claim (`claimHeldBy`, `claimGone` judge both); null without a process. */
+export function leadProcess(lead: WorkLead): WorkClaim | null {
+  return lead.pid === null
+    ? null
+    : { pid: lead.pid, procStart: lead.procStart, sessionId: lead.sessionId };
 }
 
 /**

@@ -1200,6 +1200,10 @@ interface WorkLead {
   sessionId: string | null;
   pid: number | null;
   procStart: string | null;
+  /** Who builds the plan: the lead itself, or a child it hands the plan to. */
+  holder: "self" | "child";
+  /** The hand-out id: written once at the reservation, the `from` a child takes the plan with. */
+  handoutId: string;
 }
 interface WorkTask {
   id: string;

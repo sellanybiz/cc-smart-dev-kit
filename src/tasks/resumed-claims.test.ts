@@ -98,7 +98,8 @@ test("reclaimResumed moves the dead process's claims to the caller and records i
       ),
     );
     ok(updateTask(db, step.id, { status: "in_progress" }, OLD, 5));
-    expect(ok(reclaimResumed(db, RESUMED, 10, claimGone))).toBe(2);
+    // The phase and its step (claims), and the plan row (its maker process moved too: three tasks).
+    expect(ok(reclaimResumed(db, RESUMED, 10, claimGone))).toBe(3);
     for (const id of [phase.id, step.id]) {
       const task = allTasks(db, PROJECT).find((t) => t.id === id);
       expect(task?.claim).toEqual({

@@ -43,7 +43,6 @@ import {
   eventsOf,
   freedBy,
   getTask,
-  heldPlansIn,
   inFlightPlanOf,
   isLead,
   isOpen,
@@ -337,22 +336,18 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
         );
       /**
        * A plan's new file list, checked before the write lock: each entry is normalised (D2) and
-       * a folder written without its `/` is refused with the fix. For a held plan (a lead's or one
-       * in flight) it also reads `plans.mergeFiles` and case from git here, so no git runs under
-       * the lock; the store then judges the overlap inside its transaction.
+       * a folder written without its `/` is refused with the fix. It always reads `plans.mergeFiles`
+       * and case from git here (whether the plan is held is only known inside the transaction), so
+       * no git runs under the lock; the store then judges an overlap there.
        */
-      const filesWrite = (files: readonly string[], plan: WorkTask | undefined) => {
+      const filesWrite = (files: readonly string[]) => {
         for (const raw of files) {
           const path = normalizePlanFile(raw);
           if (ctx.checkoutRoot === null || path.endsWith("/")) continue;
           if (isFolderOnDisk(ctx.checkoutRoot, path))
             throw new Error(`file "${raw}" is a folder: write it ${path}/`);
         }
-        const held = plan !== undefined && heldPlansIn(all, who).some((h) => h.plan.id === plan.id);
-        return {
-          files,
-          ...(held ? { filesCheck: (options.filesCheck ?? planFilesCheck)(cwd) } : {}),
-        };
+        return { files, filesCheck: (options.filesCheck ?? planFilesCheck)(cwd) };
       };
       /**
        * Marks the caller's own plan in flight when work in it starts: its task goes from pending
@@ -414,6 +409,7 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
             ...(input.from === undefined ? {} : { from: input.from }),
             force: input.force,
             isLive: claimLive,
+            isGone: claimGone,
           }),
         );
         return {
@@ -508,8 +504,7 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
             const existing = all.find((t) => t.kind === "plan" && t.plan === slug);
             const there = existing !== undefined;
             // A plan that is there takes the list as an update, held or not (`applyUpdate`).
-            const listed =
-              input.files === undefined ? undefined : filesWrite(input.files, existing);
+            const listed = input.files === undefined ? undefined : filesWrite(input.files);
             const made = value(
               writeWork(store, () => {
                 const row = planTask(
@@ -686,7 +681,7 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
           throw new Error(
             `${label(task)} is a ${task.kind}: only a plan task has a file list (set files on the plan's own #n)`,
           );
-        const listed = input.files === undefined ? undefined : filesWrite(input.files, task);
+        const listed = input.files === undefined ? undefined : filesWrite(input.files);
         // A dropped phase coming back is a phase laid again: the cap judges it.
         if (
           task.kind === "phase" &&
@@ -877,7 +872,7 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
                   ...(task.lead === null
                     ? []
                     : [
-                        `Reserved for: session ${task.lead.sessionId ?? `process ${task.lead.pid}`}`,
+                        `Reserved for: session ${task.lead.sessionId ?? `process ${task.lead.pid}`} (${task.lead.holder === "child" ? "a child builds it" : "the lead builds it"}) · hand-out id ${task.lead.handoutId}`,
                       ]),
                 ].join("\n"),
                 task.description,

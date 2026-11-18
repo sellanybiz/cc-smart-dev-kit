@@ -46,7 +46,7 @@ test("four legacy task levels lift to the phase, closed children add no blocker,
   db.sqlite.run("DROP INDEX task_note_task");
   // Schema 6 added the file list and the lead columns: the older store has neither.
   db.sqlite.run("DROP TABLE task_files");
-  for (const column of ["lead_session", "lead_pid", "lead_start"])
+  for (const column of ["lead_session", "lead_pid", "lead_start", "lead_child", "lead_handout"])
     db.sqlite.run(`ALTER TABLE tasks DROP COLUMN ${column}`);
   for (const column of ["created_pid", "created_start"])
     db.sqlite.run(`ALTER TABLE tasks DROP COLUMN ${column}`);

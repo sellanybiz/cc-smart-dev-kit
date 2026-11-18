@@ -25,18 +25,21 @@ interface OtherPlanCheck {
 }
 
 /**
- * The reserved plan work may not start in: `plan` has a reservation (a lead holds it, D4) and
- * the caller does not own it. A lead that handed the plan to a child no longer owns it, and a
- * session that is not its lead never did. Closes the gap that a pending plan has no claim, so a
- * handed-out plan would read as free. Null for an unreserved plan, a legacy plan with no task, a
- * plan the caller owns, and a caller that gave no `caller`.
+ * The reserved plan work may not start in: `plan` has a reservation (D4) and either the caller
+ * does not own it, or it is a hand-out (holder `child`) and the caller is its lead. A lead that
+ * handed the plan to a child never builds it, owned or not (before the child takes it the plan
+ * is still the lead's own); a session that is not its lead never may. Closes the gap that a
+ * pending plan has no claim, so a handed-out plan would read as free. Null for an unreserved
+ * plan, a legacy plan with no task, a plan the caller owns and builds, and a caller that gave no
+ * `caller`.
  */
 function reservedAgainstCaller(options: OtherPlanCheck): WorkTask | null {
   const { all, plan, caller } = options;
   if (caller === undefined) return null;
   const row = all.find((t) => t.kind === "plan" && t.plan === plan);
-  if (row === undefined || row.lead === null || caller.owns(row)) return null;
-  return row;
+  if (row === undefined || row.lead === null) return null;
+  if (row.lead.holder === "child" && caller.isLead(row)) return row;
+  return caller.owns(row) ? null : row;
 }
 
 /**
@@ -73,13 +76,18 @@ export function refuseOtherPlan(options: OtherPlanCheck): void {
   if (inFlight === null) return;
   const { plan, caller } = options;
   if (inFlight.plan === plan) {
-    // The plan itself is in the way: it is reserved and the caller does not own it.
+    // The plan itself is in the way: it is reserved, and it is a hand-out or not the caller's.
     const mine = caller?.isLead(inFlight) === true;
     const holder = inFlight.lead?.sessionId ?? `process ${inFlight.lead?.pid}`;
+    const first = `Plan "${plan}" (#${inFlight.number})`;
+    if (mine)
+      throw new Error(
+        caller?.owns(inFlight) === true
+          ? `${first} is reserved as a hand-out: its child builds it, never you. Do not start work in it. To build it yourself, release the reservation first.`
+          : `${first} was handed to another session: it owns the plan now. Do not start work in it; its report arrives when it finishes.`,
+      );
     throw new Error(
-      mine
-        ? `Plan "${plan}" (#${inFlight.number}) was handed to another session: it owns the plan now. Do not start work in it; its report arrives when it finishes.`
-        : `Plan "${plan}" (#${inFlight.number}) is reserved for session ${holder}: it is that lead's, or its child's. Do not start work in it.`,
+      `${first} is reserved for session ${holder}: it is that lead's, or its child's. Do not start work in it. If it was handed to you, take it first with from: ${inFlight.lead?.handoutId}`,
     );
   }
   const n = inFlight.number;

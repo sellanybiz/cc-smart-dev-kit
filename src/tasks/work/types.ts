@@ -55,12 +55,21 @@ export interface ClaimProcess {
 /**
  * The lead a plan is reserved for (`reservePlan`): the session and process that handed the plan
  * out, or that builds it itself. Judged by the same rule as an owner (`isLead`): its session id,
- * or the same process, so a `/clear` keeps it.
+ * or the same process, so a `/clear` and a resume keep it: its session and process move with the
+ * caller's (`reclaimResumed`), like `createdBy`.
  */
 export interface WorkLead {
   sessionId: string | null;
   pid: number | null;
   procStart: string | null;
+  /** Who builds the plan: the lead itself, or a child it hands the plan to. Set once, at the reservation. */
+  holder: "self" | "child";
+  /**
+   * The hand-out id: written by the reservation, cleared by the release, never moved. A child
+   * takes the plan with `from` set to it (or to the lead's current session), so a `/clear` of the
+   * lead after the hand-out never strands the child's brief.
+   */
+  handoutId: string;
 }
 export interface WorkTask {
   id: string;

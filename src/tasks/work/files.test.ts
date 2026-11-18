@@ -211,7 +211,7 @@ test("a schema 5 store moves to 6: the table and columns appear, old plans have 
   const { paths, db } = setup();
   plan(db, "alpha");
   db.sqlite.run("DROP TABLE task_files");
-  for (const column of ["lead_session", "lead_pid", "lead_start"])
+  for (const column of ["lead_session", "lead_pid", "lead_start", "lead_child", "lead_handout"])
     db.sqlite.run(`ALTER TABLE tasks DROP COLUMN ${column}`);
   db.sqlite.run("PRAGMA user_version = 5");
   db.close();
@@ -228,7 +228,7 @@ test("a schema 5 store moves to 6: the table and columns appear, old plans have 
         .all()
         .map((c) => c.name)
         .filter((name) => name.startsWith("lead_")),
-    ).toEqual(["lead_session", "lead_pid", "lead_start"]);
+    ).toEqual(["lead_session", "lead_pid", "lead_start", "lead_child", "lead_handout"]);
     expect(
       moved.sqlite
         .query<{ name: string }, []>("PRAGMA table_info(task_files)")
