@@ -17487,6 +17487,9 @@ function powershellLiteral(value) {
   if (/[\r\n]/.test(value)) {
     throw new Error(`cannot put ${JSON.stringify(value)} in a PowerShell command`);
   }
+  return powershellQuoted(value);
+}
+function powershellQuoted(value) {
   return `'${value.replace(SINGLE_QUOTES, (quote) => quote + quote)}'`;
 }
 var SINGLE_QUOTES;
@@ -23627,23 +23630,27 @@ function nestedCommand(program, args, pipedFrom = null) {
     return parallelCommand(args) ?? jobRunLine(program, args);
   if (program === "cmd") {
     const at = args.findIndex((arg) => /^\/[ck]$/i.test(arg));
-    return at === -1 ? jobRunLine(program, args) : args.slice(at + 1).join(" ");
+    return at === -1 ? jobRunLine(program, args) : afterCommandFlag(program, args, at, shellQuote);
   }
   if (program === "powershell" || program === "pwsh") {
     const at = args.findIndex((arg) => arg.length > 1 && "-command".startsWith(arg.toLowerCase()));
-    return at === -1 ? jobRunLine(program, args) : args.slice(at + 1).join(" ");
+    return at === -1 ? jobRunLine(program, args, powershellQuoted) : afterCommandFlag(program, args, at, powershellQuoted);
   }
   if (program === "eval" || program === "iex" || program === "invoke-expression") {
     return args.join(" ");
   }
   return jobRunLine(program, args);
 }
-function jobRunLine(program, args) {
+function afterCommandFlag(program, args, at, quote) {
+  const job = jobRunArguments(program, args.slice(0, at)) === null ? undefined : jobRunLine(program, args, quote);
+  return job ?? args.slice(at + 1).join(" ");
+}
+function jobRunLine(program, args, quote = shellQuote) {
   const queued = jobRunArguments(program, args);
   if (queued === null)
     return;
   const dashes = queued.indexOf("--");
-  return dashes === -1 || dashes === queued.length - 1 ? undefined : queued.slice(dashes + 1).map(shellQuote).join(" ");
+  return dashes === -1 || dashes === queued.length - 1 ? undefined : queued.slice(dashes + 1).map(quote).join(" ");
 }
 function nestedDialect(program) {
   return ["iex", "invoke-expression", "powershell", "pwsh"].includes(program) ? "powershell" : "bash";
@@ -23732,6 +23739,7 @@ function invocationsOf(command, dialect) {
 var DIALECTS, MAX_NESTING = 3, ESCAPE, SINGLE, DOUBLE, oneOf = (chars, char) => char !== "" && chars.includes(char), CONTINUATION, SEPARATORS, HERE_STRING, ARRAY_ASSIGNMENT, MAX_INNER = 8, isBlank = (char) => char === " " || char === "\t", ANSI_ESCAPES, POWERSHELL_ESCAPES, EXPANDS, KEYWORDS, ASSIGNMENT, CHANGE_DIR, REDIRECTION, ANY_REDIRECTION, textOf2 = (word) => typeof word === "string" ? word : word.text, DURATION = (word) => /^\d+(?:\.\d+)?[smhd]?$/.test(word), CPU_MASK = (word) => /^(?:0x)?[0-9a-f]+(?:[,-][0-9a-f]+)*$/i.test(word), WRAPPERS, SHELLS, CLAUDE_PACKAGE, PACKAGE_RUNNERS, START_PROCESS_PARAMETERS, START_PROCESS = "start-process", WRITING_REDIRECTIONS, RUNNER_PROGRAM_NAMES, FIND_EXEC, FIND_VALUED, WATCH_LONG, WATCH_VALUED, SU_LONG, SU_VALUED, PARALLEL_VALUED, PARALLEL_SWITCHES, PARALLEL_SOURCES, PARALLEL_LONG, anyFill = (word) => /[$`]/.test(word);
 var init_command2 = __esm(() => {
   init_kit_invocation();
+  init_powershell();
   DIALECTS = ["bash", "powershell"];
   ESCAPE = { bash: "\\", powershell: "`" };
   SINGLE = { bash: "'", powershell: "'\u2018\u2019\u201A\u201B" };

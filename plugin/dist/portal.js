@@ -18573,6 +18573,18 @@ function kitArguments(program, args) {
   return at === -1 ? null : args.slice(at + 1);
 }
 
+// src/shell/powershell.ts
+var SINGLE_QUOTES = /['\u2018\u2019\u201A\u201B]/g;
+function powershellLiteral(value) {
+  if (/[\r\n]/.test(value)) {
+    throw new Error(`cannot put ${JSON.stringify(value)} in a PowerShell command`);
+  }
+  return powershellQuoted(value);
+}
+function powershellQuoted(value) {
+  return `'${value.replace(SINGLE_QUOTES, (quote) => quote + quote)}'`;
+}
+
 // src/shell/command.ts
 function dialectOfTool(tool) {
   if (tool === "Bash")
@@ -20109,23 +20121,27 @@ function nestedCommand(program, args, pipedFrom = null) {
     return parallelCommand(args) ?? jobRunLine(program, args);
   if (program === "cmd") {
     const at = args.findIndex((arg) => /^\/[ck]$/i.test(arg));
-    return at === -1 ? jobRunLine(program, args) : args.slice(at + 1).join(" ");
+    return at === -1 ? jobRunLine(program, args) : afterCommandFlag(program, args, at, shellQuote);
   }
   if (program === "powershell" || program === "pwsh") {
     const at = args.findIndex((arg) => arg.length > 1 && "-command".startsWith(arg.toLowerCase()));
-    return at === -1 ? jobRunLine(program, args) : args.slice(at + 1).join(" ");
+    return at === -1 ? jobRunLine(program, args, powershellQuoted) : afterCommandFlag(program, args, at, powershellQuoted);
   }
   if (program === "eval" || program === "iex" || program === "invoke-expression") {
     return args.join(" ");
   }
   return jobRunLine(program, args);
 }
-function jobRunLine(program, args) {
+function afterCommandFlag(program, args, at, quote) {
+  const job = jobRunArguments(program, args.slice(0, at)) === null ? undefined : jobRunLine(program, args, quote);
+  return job ?? args.slice(at + 1).join(" ");
+}
+function jobRunLine(program, args, quote = shellQuote) {
   const queued = jobRunArguments(program, args);
   if (queued === null)
     return;
   const dashes = queued.indexOf("--");
-  return dashes === -1 || dashes === queued.length - 1 ? undefined : queued.slice(dashes + 1).map(shellQuote).join(" ");
+  return dashes === -1 || dashes === queued.length - 1 ? undefined : queued.slice(dashes + 1).map(quote).join(" ");
 }
 function nestedDialect(program) {
   return ["iex", "invoke-expression", "powershell", "pwsh"].includes(program) ? "powershell" : "bash";
@@ -23774,15 +23790,6 @@ function stopUnits(runner, options) {
   }
   result.stopped = there;
   return result;
-}
-
-// src/shell/powershell.ts
-var SINGLE_QUOTES = /['\u2018\u2019\u201A\u201B]/g;
-function powershellLiteral(value) {
-  if (/[\r\n]/.test(value)) {
-    throw new Error(`cannot put ${JSON.stringify(value)} in a PowerShell command`);
-  }
-  return `'${value.replace(SINGLE_QUOTES, (quote) => quote + quote)}'`;
 }
 
 // src/gateway/service-windows.ts
