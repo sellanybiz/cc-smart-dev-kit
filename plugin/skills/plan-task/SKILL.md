@@ -149,8 +149,8 @@ Names, so every list and status line reads the same way:
 | Waiting task | the ask in plain words; it gets its prefix under a phase | `Show the unread count in the tab title` |
 
 Order comes from `blocked_by` and the waves, never from the name.
-Create project tasks for production, database, teammate and follow-up obligations.
-Task fields and the CLI fallback: `/cc-smart-dev-kit:memory-routing`.
+A step owed around a deploy is a prod or staging deploy task. Which task, its fields and the
+CLI fallback: `/cc-smart-dev-kit:tasks`.
 
 ## 5. Phases, owners and waves
 
@@ -209,7 +209,7 @@ Task fields and the CLI fallback: `/cc-smart-dev-kit:memory-routing`.
   (`task_update` it to `in_progress`). Resuming is refused while another plan is in flight: park
   or finish that one first.
   Name the intended plan with `plan` on `task_list` and on `task_create` with `phase`; never on
-  a project task, which refuses it. A call that names no plan goes to the plan in flight; else
+  a deploy task, which refuses it. A call that names no plan goes to the plan in flight; else
   to the plan being finished (every phase closed, one done, the plan task still open); else to
   the lowest-numbered open plan with an open phase; else to the newest open plan. That order is
   for laying a phase and for `task_list`. A `task_create` with neither `plan` nor `parent` is a
@@ -220,8 +220,8 @@ Task fields and the CLI fallback: `/cc-smart-dev-kit:memory-routing`.
   that owns its files. For later: one task per ask in the next queued plan (make that plan if
   none), with `task_create`: under its phase when one fits (`parent` set to the phase's `#n`),
   else waiting under the plan (`parent` set to the plan's `#n`) until a phase is laid.
-  A lasting duty (production, database, teammate): a project task. Scope still follows the
-  core instructions' "one plan" rule.
+  A step owed around a deploy: a deploy task (`/cc-smart-dev-kit:tasks`). Scope still follows
+  the core instructions' "one plan" rule.
 - After compaction, read the task tree for progress and the file for design.
 
 ## 7. Execute without check-ins between phases

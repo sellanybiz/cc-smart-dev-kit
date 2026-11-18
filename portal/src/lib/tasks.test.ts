@@ -1,9 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { FULL, PHASE, task } from "@/components/tasks-fixtures";
+import { deployFiles, deployTask, FULL, PHASE, task } from "@/components/tasks-fixtures";
 import {
   countTasks,
   DEFAULT_FILTER,
   DEFAULT_VIEW,
+  deploySectionsOf,
+  fileCountsOf,
   filesMatching,
   filterTasks,
   ledgerOf,
@@ -142,6 +144,39 @@ describe("what a filter shows", () => {
 });
 
 describe("the files", () => {
+  test("the counts: every open deploy task, and the blocking ones", () => {
+    expect(
+      fileCountsOf(
+        deployFiles([
+          deployTask("staging-20261101-100000", "One"),
+          deployTask("prod-20261101-100000", "Two", { type: "non-blocking" }),
+          deployTask("prod-20261102-100000", "Three", { deploy: "after" }),
+        ]),
+      ),
+    ).toEqual({ open: 3, blocking: 2 });
+    expect(fileCountsOf({ state: "unavailable", why: "no git" })).toEqual({
+      open: 0,
+      blocking: 0,
+    });
+  });
+
+  test("the sections: the project's environments in order, then any other a task holds", () => {
+    const staging = deployTask("staging-20261101-100000", "One");
+    const prod = deployTask("prod-20261101-100000", "Two");
+    expect(
+      deploySectionsOf(["staging", "prod"], [prod]).map((one) => [one.env, one.tasks.length]),
+    ).toEqual([
+      ["staging", 0],
+      ["prod", 1],
+    ]);
+    expect(
+      deploySectionsOf(["prod"], [staging, prod]).map((one) => [one.env, one.tasks.length]),
+    ).toEqual([
+      ["prod", 1],
+      ["staging", 1],
+    ]);
+  });
+
   test("the files' search takes a title or an id, any case", () => {
     const files = [
       { id: "T-aaaaaa", title: "Set the live key" },

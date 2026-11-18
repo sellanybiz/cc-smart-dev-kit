@@ -111,7 +111,7 @@ const WORKFLOW_SETTINGS: ProjectWorkflowSetting[] = [
   { key: "fixesAfterReview.files", source: "default", value: 10 },
   { key: "fixesAfterReview.percent", source: "default", value: 20 },
   { key: "clearWorktreeAfterMerge", source: "personal", value: true },
-  { key: "issues.enabled", source: "default", value: false },
+  { key: "issues.enabled", source: "default", value: true },
   { key: "issues.allowPublic", source: "default", value: false },
   { key: "issues.foundLabel", source: "default", value: "kit:found" },
   { key: "issues.fixedLabel", source: "default", value: "fixed-unreleased" },

@@ -22,7 +22,7 @@ person, or the whole team — and by **how fast it goes stale**.
 | **Hook** | the project's settings (in git) | whole team | what must happen every time, with no judgment |
 | **Memory** | `save_memory` (claude-mem), or the project's memory tool | this person, across sessions | a fact or preference that outlives one task |
 | **Work task** | the kit's local task store; no `kind` | sessions working on this project | live asks, tasks, progress and work notes |
-| **Project task** | one file in `.claude/tasks/` (or the project's `tasks.dir`); `kind` = `production`, `database`, `teammate` or `follow-up` | everyone who pulls the branch | an obligation that outlives the session |
+| **Deploy task** | one file under `.claude/tasks/<env>/` (or the project's `tasks.dir`); `kind` = `prod` or `staging` | everyone who pulls the branch | a step owed before or after a deploy |
 | **Plan file** | the project's plans folder (`/cc-smart-dev-kit:plan-task`) | every session of the plan | design: context, decisions, approach, phases and verification |
 | **Live system** | the database, the service, the config | whoever asks | current data — columns, rows, lists of things. Never copy it into markdown; it drifts. |
 
@@ -37,7 +37,7 @@ person, or the whole team — and by **how fast it goes stale**.
 | How this person likes to work; a lasting fact about a tool | memory |
 | An ask, a to-do, where work stands across sessions | work task — record it when it arrives |
 | A design decision and its reason | plan file; work notes point to it |
-| Owed production or database work, teammate setup, a later follow-up | project task with the matching kind |
+| A step owed around a deploy (production, database, a migration) | prod or staging deploy task (`/cc-smart-dev-kit:tasks`) |
 | Tables, columns, current entities | the live system: query it |
 
 **The test before you write a rule:** "Is this an instruction to follow next time?" Current
@@ -46,43 +46,8 @@ state, dated history or rollout status is not a rule. New rules, and where they 
 
 ## Using tasks
 
-Use server `cc-smart-dev-kit-tasks`: its tools are always loaded, with no lookup step.
-`task_create` takes a subject, a free-form description, an optional parent and kind, and for
-a work task its `type` (`blocking`, the default: it holds its parent; or `non-blocking`) and
-`blocked_by` (the tasks it waits for: it cannot start or be done while one is open). Put
-obligations' timing (`now`, `next-release`, `any`), weight (`blocks-release`, `after-deploy`,
-`owner`), safety flags and file refs on the project task, not in a separate ledger.
-
-- `task_update` keeps fields and status true: work is `pending`, `in_progress`, `done` or
-  `dropped`; project tasks are `open`, `done` or `dropped`. Use `task_done` with evidence to
-  finish; its blocking tasks must be done or dropped first. Record work notes with `task_note`.
-- `task_take` takes a plan slug or task reference into this session; live claims need `force`.
-  `task_list` takes `plan` to choose a named plan. A session can own several plans.
-- `task_list` reads `mine`, `plan`, `project` or `all` (open by default); `task_get` reads a task,
-  with an offset for long text; `task_search` finds text. IDs look like `#12` or `T-7k2m4q`.
-- **A follow-up as an issue** (with `workflow.issues.enabled` on, the main session only):
-  `cc-smart-dev-kit issue file --title "<title>" --body-file - --fingerprint <stable key>`,
-  the body on standard input. The same fingerprint updates the issue it filed, never a second
-  one. Read the text first: its secret screen knows only common shapes. Put the printed URL
-  in the project task's `refs`; never copy the issue's body into the task.
-- A teammate task's `task_done` means done on this machine; `for_everyone` closes it for all.
-  `task_delete` removes only a mistake that has no notes or tasks; otherwise drop it.
-- Without the tools, use `cc-smart-dev-kit task`:
-  `add|set|start|done|drop|note|list|show|search|check|release|import|delete|take`. Never fall back to
-  a plan log or a second to-do system. If the CLI is missing too, report the blocker.
-
-For a plan, the phase description is the builder brief. Use work-task fields `agent`,
-`branch`, `worktree` and `base` (the starting commit) to record its execution identity.
-`task_create` and `task_update` set them. Keep them true on hand-back, including after a
-replacement builder. `task_list` with `scope: "plan"` shows each phase's agent, branch,
-state and completed steps. Use `open_only: false` when recovering completed work.
-Builders save a `Report:` note; the main session saves decisions as `Ruling:` notes.
-The build skill owns when to write them; no separate progress file.
-
-An ask that arrives during a build: in scope, a task under the phase that owns its files;
-for later, a task in the next queued plan, under its phase when one fits, else waiting under
-the plan (`task_create` with `parent` set to the phase's or plan's `#n`;
-`/cc-smart-dev-kit:plan-task` § 6); a lasting duty, a project task.
+Which task, how to create, close, drop and reopen one, a plan's tasks and notes, and the deploy
+run: `/cc-smart-dev-kit:tasks`.
 
 ## Saving to memory
 

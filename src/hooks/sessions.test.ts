@@ -2,7 +2,12 @@ import { expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tempDir } from "../testing/temp";
-import { liveSessions, parseSessionRecord, sessionIdentityProved } from "./sessions";
+import {
+  liveSessions,
+  parseSessionRecord,
+  sessionIdentityProved,
+  sessionRecordOf,
+} from "./sessions";
 
 test("session identity is proved only by a matching readable start", () => {
   const noStart = { pid: 300, sessionId: "lead", cwd: "/project", name: "lead" };
@@ -82,4 +87,39 @@ test.each([
   ).toEqual([
     { pid: 300, sessionId: "unproved-session", cwd: "/project", name: "lead", procStart: "10" },
   ]);
+});
+
+test("sessionRecordOf reads one pid's record: null for a pid with none, throws for its own broken one", () => {
+  const config = tempDir("session-record-of");
+  mkdirSync(join(config, "sessions"));
+  writeFileSync(
+    join(config, "sessions", "300.json"),
+    JSON.stringify({ pid: 300, sessionId: "lead", cwd: "/home/user/my-app", procStart: "10" }),
+  );
+  writeFileSync(join(config, "sessions", "301.json"), "{not json");
+  const facts = {
+    platform: "linux" as const,
+    running: () => true,
+    readStat: () => "300 (session name) S 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 10 0",
+  };
+  expect(sessionRecordOf(config, 300, facts)).toEqual({
+    pid: 300,
+    sessionId: "lead",
+    cwd: "/home/user/my-app",
+    name: "lead",
+    procStart: "10",
+  });
+  // No file for the pid, a process that is gone, and a proved start mismatch: no record.
+  expect(sessionRecordOf(config, 302, facts)).toBeNull();
+  expect(sessionRecordOf(config, 300, { ...facts, running: () => false })).toBeNull();
+  expect(
+    sessionRecordOf(config, 300, {
+      ...facts,
+      readStat: () => "300 (session name) S 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 11 0",
+    }),
+  ).toBeNull();
+  // A running process whose record cannot be read: the caller must not guess.
+  expect(() => sessionRecordOf(config, 301, facts)).toThrow("the record of running session 301 in");
+  // The list throws for the same record: one reading, one home.
+  expect(() => liveSessions(config, facts)).toThrow("the record of running session 301 in");
 });

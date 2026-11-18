@@ -15,6 +15,7 @@ import { z } from "zod";
 import { VERSION } from "../build-info";
 import {
   ccSmartDevKitConfigSchema,
+  IGNORED_TASK_FIELDS,
   JOB_KIND_KEYS_SINCE,
   OWN_HOOK_NAMES_SINCE,
   PLUGIN_HOOK_NAMES,
@@ -103,6 +104,8 @@ const FIRST_ACCEPTED_IN: Record<string, string> = {
   "tasks.staleDays": "1.10.0",
   "tasks.releaseBranch": "1.10.0",
   "tasks.legacyFolders": "1.10.0",
+  // 5.0.0 made the task files deploy tasks: the environments a project deploys to.
+  "tasks.envs": "5.0.0",
 };
 
 /** The `ownHooks` names the 0.5.2 plugin accepted, the retired and the unswitchable ones too. */
@@ -282,15 +285,25 @@ describe("worktrees.rebuildable", () => {
 });
 
 describe("tasks", () => {
-  test("accepts the folder, the stale age, the release branch and the old notes folders", () => {
+  test("accepts the folder, the stale age and the environments", () => {
+    const tasks = { dir: "docs/tasks", staleDays: 14, envs: ["prod" as const] };
+    expect(ccSmartDevKitConfigSchema.parse({ requires: ">=5.0", tasks }).tasks).toEqual(tasks);
+    expect(
+      ccSmartDevKitConfigSchema.parse({ tasks: { envs: ["staging", "prod"] } }).tasks?.envs,
+    ).toEqual(["staging", "prod"]);
+    expect(ccSmartDevKitConfigSchema.parse({ tasks: {} }).tasks).toEqual({});
+  });
+
+  test("the release branch and the old notes folders still load: accepted and ignored", () => {
+    expect(IGNORED_TASK_FIELDS).toEqual(["releaseBranch", "legacyFolders"]);
     const tasks = {
-      dir: "docs/tasks",
-      staleDays: 14,
       releaseBranch: "main",
       legacyFolders: [".claude/db-notes", ".claude/prod-notes"],
     };
     expect(ccSmartDevKitConfigSchema.parse({ requires: ">=1.10", tasks }).tasks).toEqual(tasks);
-    expect(ccSmartDevKitConfigSchema.parse({ tasks: {} }).tasks).toEqual({});
+    // They are not read: no other part of the schema names them as a setting that does anything.
+    for (const field of IGNORED_TASK_FIELDS)
+      expect(Object.keys(ccSmartDevKitConfigSchema.shape.tasks.unwrap().shape)).toContain(field);
   });
 
   test.each([
@@ -306,13 +319,18 @@ describe("tasks", () => {
     { staleDays: 0 },
     { staleDays: 1.5 },
     { releaseBranch: " " },
+    { envs: [] },
+    { envs: ["prod", "prod"] },
+    { envs: ["production"] },
+    { envs: "prod" },
     { folder: "x" },
   ])("refuses %j", (tasks) => {
     expect(ccSmartDevKitConfigSchema.safeParse({ tasks }).success).toBe(false);
   });
 
-  test("a file that sets it needs 1.10.0", () => {
+  test("a file that sets it needs 1.10.0, and one that sets envs needs 5.0.0", () => {
     expect(requiresFloor({ tasks: { dir: ".claude/tasks" } }).version).toBe("1.10.0");
+    expect(requiresFloor({ tasks: { envs: ["prod"] } }).version).toBe("5.0.0");
   });
 });
 

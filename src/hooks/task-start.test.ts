@@ -1,10 +1,11 @@
-import { expect, test } from "bun:test";
-import { mkdirSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { describe, expect, test } from "bun:test";
+import { copyFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
 import { cliPaths } from "../cli/paths";
 import { mcpRecordsFile } from "../mcp/records";
 import { TASKS_SERVER_NAME } from "../mcp/task-server-name";
 import { projectKey } from "../tasks/context";
+import { closeDeployTask, createDeployTask } from "../tasks/deploy/files";
 import { openWorkDb, workDbFile } from "../tasks/work/db";
 import { planProgress, startView } from "../tasks/work/read";
 import { createTask } from "../tasks/work/store";
@@ -186,4 +187,196 @@ test("ownHooks can silence the machine-wide start note", async () => {
       hookEnv(),
     ),
   ).toEqual({});
+});
+
+describe("the deploy task line", () => {
+  const NOW = new Date("2026-11-17T14:45:03Z");
+  const LINE_END = " — /cc-smart-dev-kit:tasks";
+
+  /** A clone with the task server recorded, so the only line a start can say is the deploy one. */
+  function world(options: { optedIn?: boolean } = {}) {
+    const { repo } = makeClone();
+    // The project opted in with its file: only then are old files counted.
+    if (options.optedIn !== false) writeClaudeFile(repo, "cc-smart-dev-kit.json", {});
+    const env = hookEnv();
+    const records = mcpRecordsFile(cliPaths(env).stateDir);
+    mkdirSync(dirname(records), { recursive: true });
+    writeFileSync(
+      records,
+      JSON.stringify({ servers: { [TASKS_SERVER_NAME]: { at: "2026-11-03", json: "{}" } } }),
+    );
+    const dir = join(repo, ".claude", "tasks");
+    const start = (source = "startup") =>
+      runHook(taskStartHook, { hook_event_name: "SessionStart", source, cwd: repo }, env);
+    return { repo, env, dir, start };
+  }
+  const made = (
+    dir: string,
+    env: "prod" | "staging",
+    title: string,
+    deploy: "before" | "after" = "before",
+    type: "blocking" | "non-blocking" = "blocking",
+  ) => createDeployTask(dir, { title, env, deploy, type }, { now: NOW });
+
+  test("a project with no deploy tasks, no old files and no unreadable files says nothing", async () => {
+    const { dir, start } = world();
+    expect(await start()).toEqual({});
+    mkdirSync(join(dir, "prod"), { recursive: true });
+    mkdirSync(join(dir, "staging"), { recursive: true });
+    expect(await start()).toEqual({});
+  });
+
+  test("open tasks are counted per environment, with the blocking ones owed before the deploy", async () => {
+    const { dir, start } = world();
+    made(dir, "prod", "Run the migration");
+    made(dir, "prod", "Tell support", "after", "non-blocking");
+    expect(await start()).toEqual(
+      addContext(
+        "SessionStart",
+        `Deploy tasks open: prod 2 (1 blocking before the deploy), staging 0${LINE_END}`,
+      ),
+    );
+  });
+
+  test("a blocking task owed after the deploy, or a non-blocking one, is not owed before it", async () => {
+    const { dir, start } = world();
+    made(dir, "staging", "Check the dashboard", "after");
+    made(dir, "staging", "Warm the cache", "before", "non-blocking");
+    expect(await start()).toEqual(
+      addContext("SessionStart", `Deploy tasks open: prod 0, staging 2${LINE_END}`),
+    );
+  });
+
+  test("unreadable files, a duplicate id and old files each add their count", async () => {
+    const { dir, start } = world();
+    const task = made(dir, "prod", "Run the migration");
+    writeFileSync(join(dir, "prod", "prod-20260101-000000-broken.md"), "not a task");
+    writeFileSync(join(dir, "prod", "prod-20260102-000000-bad.md"), "also not a task");
+    copyFileSync(task.file, join(dir, "prod", `${task.id}-twin.md`));
+    writeFileSync(join(dir, "T-abcd-old.md"), "an old task");
+    writeFileSync(join(dir, "T-efgh-old.md"), "an old task");
+    writeFileSync(join(dir, "T-ijkl-old.md"), "an old task");
+    expect(await start()).toEqual(
+      addContext(
+        "SessionStart",
+        `Deploy tasks open: prod 1 (1 blocking before the deploy), staging 0; 2 unreadable; 1 duplicate id; 3 old files not read${LINE_END}`,
+      ),
+    );
+  });
+
+  test("a single unreadable file or old file is worded in the singular", async () => {
+    const { dir, start } = world();
+    mkdirSync(join(dir, "staging"), { recursive: true });
+    writeFileSync(join(dir, "staging", "staging-20260101-000000-broken.md"), "not a task");
+    writeFileSync(join(dir, "T-abcd-old.md"), "an old task");
+    expect(await start()).toEqual(
+      addContext(
+        "SessionStart",
+        `Deploy tasks open: prod 0, staging 0; 1 unreadable; 1 old file not read${LINE_END}`,
+      ),
+    );
+  });
+
+  test("only old files: the line still shows, with no open task", async () => {
+    const { dir, start } = world();
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "T-abcd-old.md"), "an old task");
+    expect(await start()).toEqual(
+      addContext(
+        "SessionStart",
+        `Deploy tasks open: prod 0, staging 0; 1 old file not read${LINE_END}`,
+      ),
+    );
+  });
+
+  test("a project with no .claude/cc-smart-dev-kit.json: Markdown in .claude/tasks is not counted as old files", async () => {
+    const { dir, start } = world({ optedIn: false });
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "notes.md"), "unrelated notes");
+    expect(await start()).toEqual({});
+  });
+
+  test("an unreadable work store: its stderr note stays, and the deploy line still shows", async () => {
+    const { env, dir, start } = world();
+    made(dir, "prod", "Run the migration");
+    const file = workDbFile(cliPaths(env));
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, "not a database");
+    expect(await start()).toEqual({
+      ...addContext(
+        "SessionStart",
+        `Deploy tasks open: prod 1 (1 blocking before the deploy), staging 0${LINE_END}`,
+      ),
+      stderr: "cc-smart-dev-kit task-start: file is not a database",
+    });
+  });
+
+  test("a scan that throws: the work list still shows, and stderr is one line", async () => {
+    const { repo, env, dir, start } = world();
+    const db = openWorkDb(workDbFile(cliPaths(env)), { mode: "write" });
+    const nobody = { sessionId: "other", crewId: null, pid: null, procStart: null };
+    const created = createTask(
+      db,
+      { project: projectKey(repo), subject: "Step" },
+      nobody,
+      Date.now() - 60_000,
+    );
+    if (!created.ok) throw new Error(created.why);
+    db.close();
+    mkdirSync(dir, { recursive: true });
+    // `prod` is a file, not a folder: listing it throws.
+    writeFileSync(join(dir, "prod"), "not a folder");
+    const result = await start();
+    expect(result.stdout).toBe(
+      addContext("SessionStart", "Open tasks here (the kit's task list):\n#1 [pending] Step")
+        .stdout,
+    );
+    expect(result.stderr).toStartWith("cc-smart-dev-kit task-start: deploy tasks not read: ");
+    expect(result.stderr).not.toContain("\n");
+  });
+
+  test("archive/ is never scanned: closed tasks and a broken file there add nothing", async () => {
+    const { dir, start } = world();
+    const done = made(dir, "prod", "Run the migration");
+    closeDeployTask(dir, done.id, { status: "done", evidence: "ran it" }, NOW);
+    mkdirSync(join(dir, "prod", "archive"), { recursive: true });
+    writeFileSync(join(dir, "prod", "archive", "prod-20260101-000000-broken.md"), "not a task");
+    expect(existsSync(join(dir, "prod", "archive", basename(done.file)))).toBe(true);
+    expect(await start()).toEqual({});
+  });
+
+  test("an environment the project does not deploy to is left out of the counts", async () => {
+    const { repo, dir, start } = world();
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", { tasks: { envs: ["prod"] } });
+    made(dir, "prod", "Run the migration");
+    expect(await start()).toEqual(
+      addContext(
+        "SessionStart",
+        `Deploy tasks open: prod 1 (1 blocking before the deploy)${LINE_END}`,
+      ),
+    );
+  });
+
+  test("the line shows after every kind of start and sits with the work-list lines", async () => {
+    const { repo, env, dir, start } = world();
+    made(dir, "prod", "Run the migration");
+    const db = openWorkDb(workDbFile(cliPaths(env)), { mode: "write" });
+    const nobody = { sessionId: "other", crewId: null, pid: null, procStart: null };
+    const created = createTask(
+      db,
+      { project: projectKey(repo), subject: "Step" },
+      nobody,
+      Date.now() - 60_000,
+    );
+    if (!created.ok) throw new Error(created.why);
+    db.close();
+    for (const source of ["startup", "resume", "clear", "compact"]) {
+      expect(await start(source)).toEqual(
+        addContext(
+          "SessionStart",
+          `Open tasks here (the kit's task list):\n#1 [pending] Step\nDeploy tasks open: prod 1 (1 blocking before the deploy), staging 0${LINE_END}`,
+        ),
+      );
+    }
+  });
 });

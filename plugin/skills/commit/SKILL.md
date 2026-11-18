@@ -59,10 +59,13 @@ and the merge order.
    with the person's explicit yes. A small fix is exempt: say so in one line.
 3. **The checks on what you changed ran?** `/cc-smart-dev-kit:verify-change` § 2. The full check
    (§ 4) runs once, not per commit. A commit hook that fails: fix the cause and commit again.
-4. **Include project tasks.** Run `cc-smart-dev-kit task list --branch --base <base>` for
-   the branch's real base. Commit task files with the change that needs them. Close tasks
-   completed by this change with `task_done` and evidence, in this same change. The output
-   fills the PR's Follow-up notes and Still owed headings (`/cc-smart-dev-kit:pull-request`).
+4. **Include deploy tasks.** Run `cc-smart-dev-kit task list --branch --base <base>` for
+   the branch's real base: it groups the deploy task files this branch changes by environment.
+   Commit those files with the change that needs them. Close deploy tasks completed by this
+   change with `task_done` and evidence, in this same change. A deploy run commits its closes on
+   its own deploy branch, whose small pull request carries them (`/cc-smart-dev-kit:tasks` § 5).
+   The output fills the PR's Deploy tasks heading and, with the open issues, its Still owed
+   heading (`/cc-smart-dev-kit:pull-request`).
    **Stage by path** — never `git add -A` while subagents still write. Read
    `git diff --staged --stat`; investigate any unexpected path before committing.
 5. **The message:** follow the style in `git log` (for example conventional commits:

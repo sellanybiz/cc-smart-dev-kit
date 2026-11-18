@@ -1,15 +1,28 @@
 /** `doctor`'s checks of the project in the folder it runs in (`project-checks.ts`). */
 import { describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import {
+  chmodSync,
+  copyFileSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { basename, join } from "node:path";
 import { VERSION } from "../build-info";
+import { deployBlockBody } from "../project/deploy-block";
+import { BLOCK_BEGIN, BLOCK_END } from "../setup/managed-markdown";
+import { createDeployTask } from "../tasks/deploy/files";
+import { fakeGh } from "../testing/fake-gh";
 import { hookEnv, makeRepo, writeClaudeFile } from "../testing/hooks";
 import { subprocessGuard } from "../testing/port-guard";
 import { tempDir, withGitVersion } from "../testing/temp";
+import type { Check } from "./check";
 import { checkLine } from "./doctor";
 import { cliPaths } from "./paths";
-import { projectChecks, renamedCommand } from "./project-checks";
+import { projectChecks, projectTaskChecks, renamedCommand } from "./project-checks";
 
 const PLUGIN_HOOKS = join(import.meta.dir, "..", "..", "plugin", "hooks", "hooks.json");
 const NOT_IGNORED =
@@ -56,8 +69,24 @@ const ENGINE_HOOKS: Record<string, Array<{ hooks: Array<Record<string, unknown>>
 const engineLine = (file: string, names: string[]) =>
   `✗ project: ${file} still runs ${names.map((name) => `cc-smart-dev-kit hook ${name}`).join(", ")}, retired with the plugin's worktree engine in 1.0.0, so ${names.length === 1 ? "it fails" : "each of them fails"} every time (Claude Code's own worktrees need no hook) Fix: cc-smart-dev-kit project init (it takes ${names.length === 1 ? "the line" : "those lines"} out)`;
 
+/**
+ * `gh` for `projectChecks`: GitHub Issues are on by default, so every call gets a fake and no
+ * test can start the real `gh`.
+ */
+const fakeGhExec = () => fakeGh().exec;
+
+/**
+ * The default-on issues switch adds one `· issues:` line to a repository with no origin. The tests
+ * that match whole reports are about the other lines, so they drop it; the issues line has its own
+ * test at the end of this file.
+ */
+const notIssuesLine = (line: Check) =>
+  !(line.text.startsWith("issues:") && line.ok && line.info === true);
+
 async function check(repo: string, env = hookEnv(), hooksFile = PLUGIN_HOOKS) {
-  return (await projectChecks(repo, env, cliPaths(env), hooksFile)).map(checkLine);
+  return (await projectChecks(repo, env, cliPaths(env), hooksFile, fakeGhExec()))
+    .filter(notIssuesLine)
+    .map(checkLine);
 }
 
 /** The repo ignores `.claude/worktrees/`, where Claude Code makes its worktrees. */
@@ -196,7 +225,7 @@ describe("shadcn lint restrictions", () => {
     writeFileSync(join(repo, "components.json"), "{ broken but its presence is enough }");
     writeFileSync(join(repo, "eslint.config.js"), "export default [];");
     const env = hookEnv();
-    const lines = await projectChecks(repo, env, cliPaths(env), PLUGIN_HOOKS);
+    const lines = await projectChecks(repo, env, cliPaths(env), PLUGIN_HOOKS, fakeGhExec());
     expect(lines).toEqual([
       {
         ok: true,
@@ -972,9 +1001,11 @@ describe("the project's own copies of plugin hooks (ownHooks)", () => {
       both("session-name", "bun p.ts", "UserPromptSubmit"),
     ]);
     const env = hookEnv();
-    expect((await projectChecks(repo, env, cliPaths(env), PLUGIN_HOOKS)).every((l) => l.ok)).toBe(
-      true,
-    );
+    expect(
+      (await projectChecks(repo, env, cliPaths(env), PLUGIN_HOOKS, fakeGhExec())).every(
+        (l) => l.ok,
+      ),
+    ).toBe(true);
   });
 
   test("a listed hook: one · line, and no warning for its copy", async () => {
@@ -1034,9 +1065,11 @@ describe("the project's own copies of plugin hooks (ownHooks)", () => {
       '· project: .claude/cc-smart-dev-kit.json lists serena-root in ownHooks, a plugin hook that is retired: it silences nothing. Take "serena-root" out of ownHooks',
     ]);
     const env = hookEnv();
-    expect((await projectChecks(repo, env, cliPaths(env), PLUGIN_HOOKS)).every((l) => l.ok)).toBe(
-      true,
-    );
+    expect(
+      (await projectChecks(repo, env, cliPaths(env), PLUGIN_HOOKS, fakeGhExec())).every(
+        (l) => l.ok,
+      ),
+    ).toBe(true);
   });
 
   test("message-guard in ownHooks still parses and doctor names it as retired", async () => {
@@ -1234,7 +1267,9 @@ describe("the heavy-job queue counts jobs: size fields in jobs.kinds", () => {
     const repo = makeRepo();
     writeClaudeFile(repo, "cc-smart-dev-kit.json", SIZED);
     ignoreWorktrees(repo);
-    const lines = await projectChecks(repo, hookEnv(), cliPaths(hookEnv()), PLUGIN_HOOKS);
+    const lines = (
+      await projectChecks(repo, hookEnv(), cliPaths(hookEnv()), PLUGIN_HOOKS, fakeGhExec())
+    ).filter(notIssuesLine);
     expect(lines).toHaveLength(1);
     expect(lines[0]).toMatchObject({ info: true, ok: true });
   });
@@ -1252,5 +1287,216 @@ describe("the heavy-job queue counts jobs: size fields in jobs.kinds", () => {
       writeClaudeFile(repo, "cc-smart-dev-kit.json", { jobs });
       expect(await check(repo)).toEqual([]);
     }
+  });
+});
+
+describe("GitHub Issues are on by default: doctor stays quiet", () => {
+  test("a project with a config and no GitHub origin: one · line, never a failure", async () => {
+    const repo = makeRepo();
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", {});
+    const env = hookEnv();
+    const gh = fakeGh();
+    const lines = (await projectChecks(repo, env, cliPaths(env), PLUGIN_HOOKS, gh.exec)).filter(
+      (line) => line.text.startsWith("issues:"),
+    );
+    expect(lines.map(checkLine)).toEqual([
+      "· issues: this project has no `origin` remote, so it has no repository of its own to file in; follow-ups go in the summary instead",
+    ]);
+    expect(gh.calls).toEqual([]);
+  });
+});
+
+describe("deploy tasks in doctor's project group", () => {
+  const FIX = "run `cc-smart-dev-kit task check`";
+  const DAY = 86_400_000;
+
+  /** A repo with a config (so `requires` is judged), the worktrees folder ignored, and a tasks folder. */
+  function project(config: unknown = {}) {
+    const repo = makeRepo();
+    ignoreWorktrees(repo);
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", config);
+    return { repo, dir: join(repo, ".claude", "tasks") };
+  }
+  const made = (dir: string, env: "prod" | "staging", title: string) =>
+    createDeployTask(dir, { title, env, deploy: "before", type: "blocking" }, { now: new Date() });
+  const taskLines = async (repo: string) =>
+    (await projectTaskChecks(repo, hookEnv())).map(checkLine);
+
+  test("a clean tasks folder: one line that there are no findings", async () => {
+    const { repo, dir } = project();
+    made(dir, "prod", "Run the migration");
+    expect(await taskLines(repo)).toEqual(["✓ deploy tasks: no findings"]);
+  });
+
+  test("no tasks folder at all: nothing to say", async () => {
+    const { repo } = project();
+    expect(await taskLines(repo)).toEqual([]);
+  });
+
+  test("a broken file and a shared id are ✗ lines in plain words; the repeated title they cause is a ! line", async () => {
+    const { repo, dir } = project();
+    const task = made(dir, "prod", "Run the migration");
+    writeFileSync(join(dir, "prod", "prod-20260101-000000-broken.md"), "not a task");
+    copyFileSync(task.file, join(dir, "prod", `${task.id}-twin.md`));
+    expect(await taskLines(repo)).toEqual([
+      `✗ deploy tasks: 1 broken task file Fix: ${FIX}`,
+      `✗ deploy tasks: 1 task id used by more than one file Fix: ${FIX}`,
+      `! deploy tasks: 1 repeated title Fix: ${FIX}`,
+    ]);
+  });
+
+  test("a twin that names no task, a missing reference and an open task left in archive/ are ✗; a stale task is a !", async () => {
+    const { repo, dir } = project({ tasks: { staleDays: 30 } });
+    const input = { env: "prod", deploy: "before", type: "blocking" } as const;
+    createDeployTask(dir, { ...input, title: "Old one" }, { now: new Date(Date.now() - 40 * DAY) });
+    createDeployTask(
+      dir,
+      { ...input, title: "Has twin", twin: "staging-20260101-000000", refs: ["missing.txt"] },
+      { now: new Date() },
+    );
+    const left = made(dir, "prod", "Left in archive");
+    mkdirSync(join(dir, "prod", "archive"), { recursive: true });
+    writeFileSync(join(dir, "prod", "archive", basename(left.file)), readFileSync(left.file));
+    rmSync(left.file);
+    expect(await taskLines(repo)).toEqual([
+      `✗ deploy tasks: 1 twin that names no task Fix: ${FIX}`,
+      `✗ deploy tasks: 1 missing reference Fix: ${FIX}`,
+      `✗ deploy tasks: 1 open task left in archive/ Fix: ${FIX}`,
+      `! deploy tasks: 1 task open for over 30 days Fix: ${FIX}`,
+    ]);
+  });
+
+  test("two of a kind are worded in the plural", async () => {
+    const { repo, dir } = project();
+    mkdirSync(join(dir, "prod"), { recursive: true });
+    writeFileSync(join(dir, "prod", "prod-20260101-000000-a.md"), "not a task");
+    writeFileSync(join(dir, "prod", "prod-20260102-000000-b.md"), "not a task");
+    expect(await taskLines(repo)).toEqual([`✗ deploy tasks: 2 broken task files Fix: ${FIX}`]);
+  });
+
+  test("old files: a ! line that names the count and says to recreate or delete them, never a ✗", async () => {
+    const { repo, dir } = project();
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "T-abcd-old.md"), "an old task");
+    writeFileSync(join(dir, "T-efgh-old.md"), "an old task");
+    expect(await taskLines(repo)).toEqual([
+      "! deploy tasks: 2 old task files are not read since 5.0.0 Fix: recreate each as a deploy task, or delete it (`cc-smart-dev-kit task check` names them)",
+    ]);
+    rmSync(join(dir, "T-efgh-old.md"));
+    expect(await taskLines(repo)).toEqual([
+      "! deploy tasks: 1 old task file is not read since 5.0.0 Fix: recreate it as a deploy task, or delete it (`cc-smart-dev-kit task check` names it)",
+    ]);
+  });
+
+  test("old files beside a real finding: both lines, and no 'no findings'", async () => {
+    const { repo, dir } = project();
+    mkdirSync(join(dir, "prod"), { recursive: true });
+    writeFileSync(join(dir, "prod", "prod-20260101-000000-broken.md"), "not a task");
+    writeFileSync(join(dir, "T-abcd-old.md"), "an old task");
+    expect((await taskLines(repo)).map((line) => line.slice(0, 1))).toEqual(["✗", "!"]);
+  });
+
+  test("the whole report: each ignored tasks field gets a ! line and the fix project init", async () => {
+    const { repo } = project({ tasks: { releaseBranch: "release", legacyFolders: ["notes"] } });
+    expect(await check(repo)).toEqual([
+      "! project: .claude/cc-smart-dev-kit.json sets tasks.releaseBranch, no longer read since 5.0.0: remove it Fix: cc-smart-dev-kit project init removes it",
+      "! project: .claude/cc-smart-dev-kit.json sets tasks.legacyFolders, no longer read since 5.0.0: remove it Fix: cc-smart-dev-kit project init removes it",
+    ]);
+  });
+
+  test("a tasks group without the ignored fields says nothing about them", async () => {
+    const { repo } = project({ tasks: { staleDays: 7, envs: ["prod"] } });
+    expect(await check(repo)).toEqual([]);
+  });
+
+  test("deploy folders and a requires below 5.0: a ! line whose fix is project init alone", async () => {
+    const { repo, dir } = project({ requires: ">=1.0" });
+    mkdirSync(join(dir, "prod"), { recursive: true });
+    expect(await check(repo)).toEqual([
+      '! project: .claude/cc-smart-dev-kit.json says requires ">=1.0", but its fields and its deploy tasks need ">=5.0": a teammate on an older plugin gets the whole file refused instead of "update" Fix: cc-smart-dev-kit project init raises it to ">=5.0"',
+      "✓ deploy tasks: no findings",
+    ]);
+  });
+
+  test("deploy folders with no requires, or a requires below 5.0 and no folders: nothing on requires", async () => {
+    const { repo, dir } = project();
+    mkdirSync(join(dir, "staging"), { recursive: true });
+    expect(await check(repo)).toEqual(["✓ deploy tasks: no findings"]);
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", {});
+    expect(await check(repo)).toEqual(["✓ deploy tasks: no findings"]);
+    rmSync(dir, { recursive: true });
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", { requires: ">=1.0" });
+    expect(await check(repo)).toEqual([]);
+  });
+
+  test("deploy folders and a requires already at 5.0: nothing on requires", async () => {
+    const { repo, dir } = project({ requires: ">=5.0" });
+    mkdirSync(join(dir, "prod"), { recursive: true });
+    expect(await check(repo)).toEqual(["✓ deploy tasks: no findings"]);
+  });
+});
+
+describe("the deploy-skill block in doctor", () => {
+  const OLD = `${BLOCK_BEGIN}\n## Deploy tasks\nold text\n${BLOCK_END}\n`;
+  const CURRENT = `${BLOCK_BEGIN}\n${deployBlockBody()}\n${BLOCK_END}\n`;
+
+  function skill(repo: string, folder: string, text: string): void {
+    mkdirSync(join(repo, ".claude", "skills", folder), { recursive: true });
+    writeFileSync(join(repo, ".claude", "skills", folder, "SKILL.md"), text);
+  }
+  function project() {
+    const repo = makeRepo();
+    ignoreWorktrees(repo);
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", {});
+    return repo;
+  }
+
+  test("a block whose text is old: a ! line with the fix project init", async () => {
+    const repo = project();
+    skill(repo, "deploy", `# Deploy\n${OLD}`);
+    expect(await check(repo)).toEqual([
+      "! project: the deploy-skill block in .claude/skills/deploy/SKILL.md is out of date Fix: cc-smart-dev-kit project init rewrites it",
+    ]);
+  });
+
+  test("a skill that holds the block and no deploy folder: a requires below 5.0 still warns", async () => {
+    const repo = project();
+    skill(repo, "deploy", `# Deploy\n${CURRENT}`);
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", { requires: ">=1.0" });
+    expect(await check(repo)).toEqual([
+      '! project: .claude/cc-smart-dev-kit.json says requires ">=1.0", but its fields and its deploy tasks need ">=5.0": a teammate on an older plugin gets the whole file refused instead of "update" Fix: cc-smart-dev-kit project init raises it to ">=5.0"',
+    ]);
+  });
+
+  test("broken markers: a ! line whose fix is by hand, since init will not write the file", async () => {
+    const repo = project();
+    skill(repo, "deploy", `${BLOCK_BEGIN}\n## Deploy tasks\nhalf\n${BLOCK_BEGIN}\n`);
+    const [line] = await check(repo);
+    expect(line).toStartWith(
+      "! project: the deploy-skill block in .claude/skills/deploy/SKILL.md cannot be updated (",
+    );
+    expect(line).not.toContain("is out of date");
+    expect(line).toContain("Fix: correct that file by hand");
+    expect(line).not.toContain("project init");
+  });
+
+  test("a current block, or no block at all: nothing to say", async () => {
+    const repo = project();
+    skill(repo, "deploy", `# Deploy\n${CURRENT}`);
+    skill(repo, "deploy-other", "no block here");
+    expect(await check(repo)).toEqual([]);
+  });
+
+  test("a skills folder linked out of the checkout, in a project with deploy folders: one · line, no failure", async () => {
+    const repo = project();
+    const outside = tempDir("skills-outside");
+    mkdirSync(join(repo, ".claude"), { recursive: true });
+    symlinkSync(outside, join(repo, ".claude", "skills"));
+    expect(await check(repo)).toEqual([]);
+    mkdirSync(join(repo, ".claude", "tasks", "prod"), { recursive: true });
+    expect(await check(repo)).toEqual([
+      "✓ deploy tasks: no findings",
+      "· project: .claude/skills is a link outside this checkout: not searched, so the deploy-skill block there is not checked",
+    ]);
   });
 });

@@ -23,6 +23,11 @@ export interface WorkDb {
 export function workDbFile(paths: { stateDir: string }): string {
   return join(paths.stateDir, "tasks", "work.db");
 }
+/**
+ * The first schema. The `acks` table (a teammate task done on one machine) stays in it although
+ * nothing in 5.x writes or reads it: a 4.x server still queries it, `min_compatible` stays 1, and
+ * schema steps only add, so a store that 5.x opens must still hold the table 4.x expects.
+ */
 const SCHEMA = `
 CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
 INSERT INTO meta VALUES ('min_compatible','1');

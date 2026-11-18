@@ -115,7 +115,7 @@ names `ExitWorktree` (keep) with `worktrees --remove`, or closing the session, a
   nowhere else.
   The **branch** goes only when the base holds it; otherwise the line says "kept branch: its
   work is held by <other>, not yet on <base>". Deleting those kept branches later is an open
-  follow-up project task.
+  follow-up.
 - **Untouched include copies.** Claude Code copies `.worktreeinclude` files with the copy time
   as their modified time. An ignored file that also exists at the same path in the main checkout
   and whose time is not after the worktree's set-up time (the earlier of its first reflog entry

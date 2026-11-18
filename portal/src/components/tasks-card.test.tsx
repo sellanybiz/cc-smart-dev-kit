@@ -1,6 +1,6 @@
 /**
  * One project's tasks on the Tasks tab, drawn from data alone: the work tree by session and
- * layer (`WorkSection`, `TaskList`), a phase's ledger, and the project's task files
+ * layer (`WorkSection`, `TaskList`), a phase's ledger, and the project's deploy tasks
  * (`FilesSection`).
  */
 import { describe, expect, test } from "bun:test";
@@ -9,7 +9,15 @@ import type { ProjectWorkTasks, TaskSession, WorkTaskNode } from "@/api/types";
 import { TaskList } from "@/components/task-tree";
 import { WorkSection } from "@/components/task-work";
 import { FilesSection } from "@/components/tasks-card";
-import { FULL, LEDGER, PHASE, task, words } from "@/components/tasks-fixtures";
+import {
+  deployFiles,
+  deployTask,
+  FULL,
+  LEDGER,
+  PHASE,
+  task,
+  words,
+} from "@/components/tasks-fixtures";
 import { foldKey } from "@/lib/task-groups";
 import { DEFAULT_FILTER, filterTasks, SHOW_ALL, type TaskFilter } from "@/lib/tasks";
 
@@ -340,56 +348,144 @@ describe("one project's work", () => {
   });
 });
 
-describe("one project's task files", () => {
-  test("by kind, what blocks a release first, each flag in words", () => {
+describe("one project's deploy tasks", () => {
+  test("a section per environment, staging first; each task's deploy time, blocking mark, twin and age", () => {
     const html = files();
     expect(html).not.toContain("style=");
     const text = words(html);
-    expect(text).toContain("2 open in .claude/tasks · 4 closed");
+    expect(text).toContain("2 open, 1 blocking in .claude/tasks · 4 closed");
     expect(text).toContain("1 file does not read as a task");
-    expect(text).toContain("Production · 1");
-    expect(text).toContain("Follow-ups · 1");
-    expect(text).not.toContain("Database ·");
-    expect(text).toContain("blocks the release");
-    expect(text).toContain("next release");
+    // The sections in the order a release visits them, each with its count.
+    expect(text.indexOf("Staging · 1")).toBeGreaterThan(-1);
+    expect(text.indexOf("Prod · 1")).toBeGreaterThan(text.indexOf("Staging · 1"));
+    expect(text).toContain("✗ blocking");
+    expect(text).toContain("· non-blocking");
+    expect(text).toContain("before the deploy");
+    expect(text).toContain("after the deploy");
     expect(text).toContain("needs a yes");
     // A flag the page has no words for is shown as written, never dropped.
     expect(text).toContain("a-flag-of-its-own");
     expect(text).toContain("open over 30 days");
-    expect(text).toContain(".claude/tasks/T-z5h8ks-retire.md · written 2026-09-01");
+    expect(text).toContain("Paired with staging-20261030-091500 , done");
+    // The age in words, the exact time in its title and for a machine.
+    expect(text).toMatch(
+      /\.claude\/tasks\/staging\/staging-20260901-080000-retire\.md · written \d+ days ago/,
+    );
+    expect(html).toContain('dateTime="2026-09-01T08:00:00Z"');
+    expect(html).toContain('title="2026-09-01T08:00:00Z"');
+    // Nothing left over: no copies, no old files.
+    expect(text).not.toContain("claimed by more than one file");
+    expect(text).not.toContain("old task file");
   });
 
-  test("the search keeps the files it finds, and says when it finds none", () => {
+  test("a twin in each state says it in words; an open one is a warning", () => {
+    const twin = (status: "done" | "dropped" | "missing" | "open") =>
+      words(
+        renderToStaticMarkup(
+          <FilesSection
+            files={deployFiles([
+              deployTask("prod-20261101-100000", "Run the migration", {
+                twin: { id: "staging-20261101-100000", status },
+              }),
+            ])}
+          />,
+        ),
+      );
+    expect(twin("open")).toContain("! Paired with staging-20261101-100000 , still open");
+    expect(twin("dropped")).toContain("Paired with staging-20261101-100000 , dropped");
+    expect(twin("missing")).toContain(
+      "! Paired with staging-20261101-100000 , which names no task",
+    );
+    expect(words(files())).not.toContain("still open");
+  });
+
+  test("an environment with nothing owed says so beside one that has", () => {
+    const text = words(
+      renderToStaticMarkup(
+        <FilesSection files={deployFiles([deployTask("prod-20261101-100000", "Run it")])} />,
+      ),
+    );
+    expect(text).toContain("Staging · 0 Nothing owed before or after a staging deploy.");
+    expect(text).toContain("Prod · 1");
+  });
+
+  test("a task outside the project's environments still shows, after them", () => {
+    const html = renderToStaticMarkup(
+      <FilesSection
+        files={deployFiles(
+          [
+            deployTask("staging-20261101-100000", "Left over"),
+            deployTask("prod-20261101-100000", "Run it"),
+          ],
+          { envs: ["prod"] },
+        )}
+      />,
+    );
+    const text = words(html);
+    expect(text.indexOf("Prod · 1")).toBeLessThan(text.indexOf("Staging · 1"));
+    expect(text).toContain("Left over");
+  });
+
+  test("two files of one id: both rows, keyed by file, and the id named", () => {
+    const copy = (file: string, title: string) =>
+      deployTask("staging-20261101-100000", title, {
+        file: `.claude/tasks/staging/${file}`,
+      });
+    const html = renderToStaticMarkup(
+      <FilesSection
+        files={deployFiles(
+          [
+            copy("staging-20261101-100000-a.md", "One branch's"),
+            copy("staging-20261101-100000-b.md", "The other's"),
+          ],
+          {
+            duplicateIds: ["staging-20261101-100000"],
+          },
+        )}
+      />,
+    );
+    const text = words(html);
+    expect(text).toContain("One branch's");
+    expect(text).toContain("The other's");
+    expect(text).toContain("Id staging-20261101-100000 is claimed by more than one file");
+    expect(text).toContain(
+      "Rename the id inside one of them: the deploy gate refuses while it is.",
+    );
+  });
+
+  test("old files: counted, never read, with what to do", () => {
+    const one = words(renderToStaticMarkup(<FilesSection files={deployFiles([], { old: 1 })} />));
+    expect(one).toContain("1 old task file is not read");
+    const three = words(renderToStaticMarkup(<FilesSection files={deployFiles([], { old: 3 })} />));
+    expect(three).toContain("3 old task files are not read");
+    expect(three).toContain("recreate each as a deploy task, or delete it");
+  });
+
+  test("the search keeps the tasks it finds, and says when it finds none", () => {
     const found = words(renderToStaticMarkup(<FilesSection files={FULL.files} q="retire" />));
     expect(found).toContain("Retire the old service");
     expect(found).not.toContain("Set the live key");
+    // A section the search empties is left out, not called empty.
+    expect(found).not.toContain("Prod ·");
+    expect(found).not.toContain("Nothing owed before or after");
     const none = words(renderToStaticMarkup(<FilesSection files={FULL.files} q="nothing" />));
     expect(none).toContain("Nothing matches the search");
-    expect(none).toContain("No open task file here holds “nothing” in its title or id.");
+    expect(none).toContain("No open deploy task here holds “nothing” in its title or id.");
   });
 
   test("nothing owed, and files that cannot be read, each say so", () => {
-    const none = words(
-      renderToStaticMarkup(
-        <FilesSection
-          files={{
-            broken: 0,
-            closed: 0,
-            dir: ".claude/tasks",
-            staleDays: 30,
-            state: "ready",
-            tasks: [],
-          }}
-        />,
-      ),
+    const none = words(renderToStaticMarkup(<FilesSection files={deployFiles([])} />));
+    expect(none).toContain("No deploy step owed");
+    expect(none).toContain(
+      "No open deploy task in .claude/tasks : nothing waits before or after a deploy to staging or prod.",
     );
-    expect(none).toContain("Nothing owed");
+    expect(none).not.toContain("Staging ·");
     const broken = words(
       renderToStaticMarkup(
         <FilesSection files={{ state: "unavailable", why: "the project file is broken" }} />,
       ),
     );
-    expect(broken).toContain("The task files cannot be read");
+    expect(broken).toContain("The deploy tasks cannot be read");
     expect(broken).toContain("the project file is broken");
   });
 });

@@ -304,36 +304,45 @@ function isRunning(pid) {
     return error.code === "EPERM";
   }
 }
+function sessionRecordOf(claudeConfigDir, pid, facts = {}) {
+  if (!(facts.running ?? isRunning)(pid))
+    return null;
+  const dir = join4(claudeConfigDir, "sessions");
+  const file = join4(dir, `${pid}.json`);
+  const bootedAt = Date.now() - uptime() * 1000;
+  let text;
+  try {
+    if (statSync(file).mtimeMs < bootedAt)
+      return null;
+    text = readFileSync3(file, "utf8");
+  } catch (error) {
+    if (error.code === "ENOENT")
+      return null;
+    throw new Error(`the record of running session ${pid} cannot be read; retry`);
+  }
+  const record = parseSessionRecord(text);
+  if (record === null) {
+    throw new Error(`the record of running session ${pid} in ${dir} cannot be read, so it is unknown where it works`);
+  }
+  if ((facts.platform ?? process.platform) === "linux" && record.procStart !== undefined) {
+    const start = processStart(pid, facts);
+    if (start !== undefined && record.procStart !== start)
+      return null;
+  }
+  return record;
+}
 function liveSessions(claudeConfigDir, facts = {}) {
   const dir = join4(claudeConfigDir, "sessions");
   if (!existsSync(dir))
     return [];
-  const bootedAt = Date.now() - uptime() * 1000;
   const live = [];
   for (const file of readdirSync(dir)) {
     const pid = Number(file.replace(/\.json$/, ""));
-    if (!file.endsWith(".json") || !Number.isInteger(pid) || !(facts.running ?? isRunning)(pid))
+    if (!file.endsWith(".json") || !Number.isInteger(pid))
       continue;
-    let text;
-    try {
-      if (statSync(join4(dir, file)).mtimeMs < bootedAt)
-        continue;
-      text = readFileSync3(join4(dir, file), "utf8");
-    } catch (error) {
-      if (error.code === "ENOENT")
-        continue;
-      throw new Error(`the record of running session ${pid} cannot be read; retry`);
-    }
-    const record = parseSessionRecord(text);
-    if (record === null) {
-      throw new Error(`the record of running session ${pid} in ${dir} cannot be read, so it is unknown where it works`);
-    }
-    if ((facts.platform ?? process.platform) === "linux" && record.procStart !== undefined) {
-      const start = processStart(pid, facts);
-      if (start !== undefined && record.procStart !== start)
-        continue;
-    }
-    live.push(record);
+    const record = sessionRecordOf(claudeConfigDir, pid, facts);
+    if (record !== null)
+      live.push(record);
   }
   return live;
 }
@@ -6066,7 +6075,7 @@ function superRefine(fn, params) {
 }
 // src/build-info/index.ts
 var info = {
-  version: "4.10.1",
+  version: "5.0.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -6124,6 +6133,39 @@ function withoutBom(text) {
 function parseUserJson(text) {
   return JSON.parse(withoutBom(text));
 }
+
+// src/tasks/deploy/format.ts
+var DEPLOY_ENVS = ["staging", "prod"];
+var DEPLOY_ENVS_RISK_FIRST = [...DEPLOY_ENVS].reverse();
+var DEPLOY_STEPS = ["before", "after"];
+var DEPLOY_TYPES = ["blocking", "non-blocking"];
+var DEPLOY_FLAGS = [
+  "needs-yes",
+  "twice-safe",
+  "spends-money",
+  "real-people",
+  "destructive"
+];
+var DEPLOY_TASK_ID = /^(prod|staging)-\d{8}-\d{6}(-\d+)?$/;
+var instant = string2().regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/, "Expected a UTC date-time ending in Z").refine((value) => {
+  const parsed = new Date(value);
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 19) === value.slice(0, 19);
+}, "Expected a calendar date-time that exists");
+var deployTaskSchema = object({
+  id: string2().regex(DEPLOY_TASK_ID),
+  title: string2().min(1).max(200),
+  env: _enum(DEPLOY_ENVS),
+  status: _enum(["open", "done", "dropped"]),
+  deploy: _enum(DEPLOY_STEPS),
+  type: _enum(DEPLOY_TYPES),
+  twin: string2().regex(DEPLOY_TASK_ID).optional(),
+  flags: array(_enum(DEPLOY_FLAGS)).optional(),
+  created: instant,
+  closed: instant.optional(),
+  from: string2().optional(),
+  refs: array(string2()).optional(),
+  evidence: string2().optional()
+}).passthrough();
 
 // src/workflow/schema.ts
 var PERCENT = { kind: "whole", max: 100, min: 1 };
@@ -6222,7 +6264,7 @@ var workflowDefaults = {
   },
   clearWorktreeAfterMerge: true,
   issues: {
-    enabled: false,
+    enabled: true,
     allowPublic: false,
     foundLabel: "kit:found",
     fixedLabel: "fixed-unreleased",
@@ -6348,6 +6390,11 @@ var RETIRED_HOOK_NAMES = [
 var UNSWITCHABLE_HOOK_NAMES = ["job-route"];
 var RETIRED_WORKTREE_FIELDS = ["prefix", "setup", "engine"];
 var inCheckout = string2().min(1).refine((path) => !posix.isAbsolute(path) && !win32.isAbsolute(path) && !path.split(/[\\/]/).includes(".."), "must be relative to the checkout root, without ..").refine((path) => !path.includes("\\"), "use / as the separator").refine((path) => !path.split("/").includes("."), "must not contain . segments");
+var IGNORED_TASK_SCHEMAS = {
+  releaseBranch: string2().trim().min(1).optional(),
+  legacyFolders: array(inCheckout).optional()
+};
+var IGNORED_TASK_FIELDS = Object.keys(IGNORED_TASK_SCHEMAS);
 var ccSmartDevKitConfigSchema = strictObject({
   requires: string2().refine(isValidRange, 'not a valid version range (like ">=1.2" or "^1.2")').optional(),
   worktrees: strictObject({
@@ -6372,8 +6419,8 @@ var ccSmartDevKitConfigSchema = strictObject({
   tasks: strictObject({
     dir: inCheckout.optional(),
     staleDays: number2().int().min(1).optional(),
-    releaseBranch: string2().trim().min(1).optional(),
-    legacyFolders: array(inCheckout).optional()
+    envs: array(_enum(DEPLOY_ENVS)).min(1).refine((envs) => new Set(envs).size === envs.length, "Each environment once").optional(),
+    ...IGNORED_TASK_SCHEMAS
   }).optional(),
   workflow: workflowSchema.optional(),
   ownHooks: array(_enum([...PLUGIN_HOOK_NAMES, ...RETIRED_HOOK_NAMES, ...UNSWITCHABLE_HOOK_NAMES])).optional()

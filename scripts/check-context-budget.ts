@@ -40,17 +40,19 @@ export interface Budget {
  * description trims and with three more agents. The target is the line where Claude Code's
  * plugin browser highlights a plugin's per-turn cost as heavy: 2,000 tokens. The code-structure
  * rename trimmed the always-on figure to 2,690. 4.10.0 split react-best-practices out of
- * performance-budget, one more always-on skill: 2,766, measured on a copy without the user-only skills. Its seven vendored skills are user-only
- * and left out (see the header).
+ * performance-budget, one more always-on skill: 2,766, measured on a copy without the user-only
+ * skills. Its seven vendored skills are user-only and left out (see the header). 5.0.0 adds the
+ * tasks skill, the one home for deploy tasks: 2,851.
  */
-export const ALWAYS_ON: Budget = { max: 2_766, target: 2_000 };
+export const ALWAYS_ON: Budget = { max: 2_851, target: 2_000 };
 
 /**
  * core.md tokens, estimated. About 3,300 at 0.5.0 (189 lines); about 2,300 at 1.1.0, after
  * its trim to 128 lines; about 2,298 at 2.2.0 (126 lines). The target is still roughly
- * 1,900 tokens. The code-structure wording trimmed it to about 2,345.
+ * 1,900 tokens. The code-structure wording trimmed it to about 2,345; 5.0.0's task lines,
+ * moved into the tasks skill, bring it to 2,338.
  */
-export const CORE: Budget = { max: 2_345, target: 1_900 };
+export const CORE: Budget = { max: 2_338, target: 1_900 };
 
 /**
  * Characters per token for the core.md estimate: about four for English prose. The check

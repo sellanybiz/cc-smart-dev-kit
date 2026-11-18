@@ -93,7 +93,7 @@ export const API_READS: Readonly<
   "/api/machine": async (deps) => ok(await machineAnswer(deps)),
   "/api/settings": async (deps) => ok(await settingsAnswer(deps)),
   "/api/projects": async (deps) => ok(await projectsAnswer(deps)),
-  // The Tasks tab (D76): every project's work tree and task files at once.
+  // The Tasks tab (D76): every project's work tree and deploy tasks at once.
   "/api/tasks": async (deps) => ok(await tasksAnswer(deps)),
   "/api/work": async (deps) => ok(await workAnswer(deps)),
   "/api/worktrees": async (deps) => ok(await worktreesAnswer(deps)),
@@ -242,7 +242,7 @@ export async function answerApi(deps: PageDataDeps, url: URL): Promise<ApiAnswer
       // `/api/projects/<id>/<part>`: one card's own read. `workflow` (D57): the project's
       // workflow settings, its base and whether gh can open a pull request; `gateway` (GP4b):
       // its gateway state, the file that decides it, and its profile's chains; `tasks` (D75):
-      // its work tasks and its open task files.
+      // its work tasks and its open deploy tasks.
       const slash = id.indexOf("/");
       const named = slash < 0 ? "" : id.slice(0, slash);
       const part = slash < 0 ? "" : id.slice(slash + 1);

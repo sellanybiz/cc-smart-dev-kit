@@ -102,7 +102,7 @@ test("doctor warns for a newer store and reports damaged files", () => {
     {
       ok: false,
       text: "task work store cannot be read: file is not a database",
-      fix: "move ~/.claude/cc-smart-dev-kit/tasks/work.db aside, with its -wal and -shm files; the next task call starts an empty store (project task files are in git and stay)",
+      fix: "move ~/.claude/cc-smart-dev-kit/tasks/work.db aside, with its -wal and -shm files; the next task call starts an empty store (deploy task files are in git and stay)",
     },
   ]);
 });
@@ -117,31 +117,25 @@ test("doctor checks existing store schema and integrity without writing", () => 
   ]);
 });
 
-test("doctor says when the release branch is missing locally", async () => {
-  const repo = makeRepo();
-  const dir = join(repo, ".claude", "tasks");
-  mkdirSync(dir, { recursive: true });
-  writeFileSync(
-    join(repo, ".claude", "cc-smart-dev-kit.json"),
-    JSON.stringify({ tasks: { releaseBranch: "release" } }),
-  );
-  expect(await projectTaskChecks(repo, hookEnv())).toEqual([
-    {
-      ok: true,
-      info: true,
-      text: "project tasks: release branch release is not available locally; missed releases were not checked",
-    },
-    { ok: true, text: "project tasks: no findings" },
-  ]);
-});
-
 test("doctor counts broken project files with their fix", async () => {
   const repo = makeRepo();
   const dir = join(repo, ".claude", "tasks");
-  mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, "T-abcd-broken.md"), "not a task");
+  mkdirSync(join(dir, "prod"), { recursive: true });
+  writeFileSync(join(dir, "prod", "prod-20261117-144503-broken.md"), "not a task");
+  // A top-level file is the 4.x layout: not read, and counted as an old file.
+  writeFileSync(join(dir, "T-abcd-old.md"), "an old task");
   expect(await projectTaskChecks(repo, hookEnv())).toEqual([
-    { ok: false, text: "project tasks: 1 broken-file", fix: "run `cc-smart-dev-kit task check`" },
+    {
+      ok: false,
+      text: "deploy tasks: 1 broken task file",
+      fix: "run `cc-smart-dev-kit task check`",
+    },
+    {
+      ok: true,
+      warn: true,
+      text: "deploy tasks: 1 old task file is not read since 5.0.0",
+      fix: "recreate it as a deploy task, or delete it (`cc-smart-dev-kit task check` names it)",
+    },
   ]);
 });
 

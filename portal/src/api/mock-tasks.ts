@@ -543,60 +543,66 @@ export function mockTaskDetail(
   return null;
 }
 
-function file(
-  id: string,
+/** A deploy task's id from its time, in the store's shape: `<env>-<YYYYMMDD>-<HHMMSS>` in UTC. */
+function deployId(env: ProjectTaskRow["env"], at: number): string {
+  return `${env}-${iso(at).slice(0, 19).replace(/[-:]/g, "").replace("T", "-")}`;
+}
+
+function deployTask(
+  env: ProjectTaskRow["env"],
   title: string,
-  kind: ProjectTaskRow["kind"],
-  created: string,
-  more: Partial<Pick<ProjectTaskRow, "flags" | "stale" | "weight" | "when">> = {},
+  at: number,
+  more: Partial<Pick<ProjectTaskRow, "deploy" | "flags" | "stale" | "twin" | "type">> = {},
 ): ProjectTaskRow {
+  const id = deployId(env, at);
   return {
-    created,
-    file: `.claude/tasks/${id}-${title
+    created: iso(at).replace(/\.\d{3}Z$/, "Z"),
+    deploy: more.deploy ?? "before",
+    env,
+    file: `.claude/tasks/${env}/${id}-${title
       .toLowerCase()
       .replace(/[^a-z0-9]+/g, "-")
       .replace(/^-|-$/g, "")
       .slice(0, 40)}.md`,
     flags: more.flags ?? [],
     id,
-    kind,
     stale: more.stale ?? false,
     title,
-    weight: more.weight ?? null,
-    when: more.when ?? null,
+    twin: more.twin ?? null,
+    type: more.type ?? "blocking",
   };
 }
 
-const FULL_FILES: ProjectTaskRow[] = [
-  file(
-    "T-7k2m4q",
-    "Set the payment provider's live key in production",
-    "production",
-    "2026-10-30",
-    {
+/** The full project's open deploy tasks, in the server's order: staging, then prod. */
+function fullFiles(now: number): ProjectTaskRow[] {
+  const migration = now - 2 * DAY - 3 * HOUR;
+  return [
+    deployTask("staging", "Run the orders migration", migration, {
+      flags: ["twice-safe"],
+      twin: { id: deployId("prod", migration), status: "open" },
+    }),
+    deployTask("staging", "Tell support the new export is live", now - DAY, {
+      deploy: "after",
+      type: "non-blocking",
+    }),
+    deployTask("prod", "Set the payment provider's live key", now - 6 * DAY, {
       flags: ["needs-yes", "spends-money"],
-      weight: "blocks-release",
-      when: "next-release",
-    },
-  ),
-  file("T-p3x9ab", "Backfill the orders' region column", "database", "2026-10-28", {
-    flags: ["twice-safe", "real-people"],
-    weight: "after-deploy",
-    when: "next-release",
-  }),
-  file("T-d4r7wz", "Drop the old sessions table once nothing reads it", "database", "2026-10-12", {
-    flags: ["destructive", "needs-yes"],
-    weight: "owner",
-    when: "any",
-  }),
-  file("T-m6c2qe", "Run the new seed script on your own database", "teammate", "2026-11-01", {
-    when: "now",
-  }),
-  file("T-z5h8ks", "Retire the second image service", "follow-up", "2026-09-20", {
-    stale: true,
-    when: "any",
-  }),
-];
+    }),
+    deployTask("prod", "Run the orders migration", migration, {
+      flags: ["twice-safe", "real-people"],
+      twin: { id: deployId("staging", migration), status: "open" },
+    }),
+    deployTask("prod", "Rotate the webhook secret", now - 9 * DAY, {
+      twin: { id: deployId("staging", now - 9 * DAY), status: "done" },
+      type: "non-blocking",
+    }),
+    deployTask("prod", "Drop the old sessions table once nothing reads it", now - 40 * DAY, {
+      deploy: "after",
+      flags: ["destructive", "needs-yes"],
+      stale: true,
+    }),
+  ];
+}
 
 /** Each project's tasks, by project id. */
 export function tasksPagesFor(
@@ -611,9 +617,12 @@ export function tasksPagesFor(
           broken: 1,
           closed: 12,
           dir: ".claude/tasks",
+          duplicateIds: [],
+          envs: ["staging", "prod"],
+          old: 3,
           staleDays: 30,
           state: "ready",
-          tasks: FULL_FILES,
+          tasks: fullFiles(now),
         },
         work: {
           more: 0,
@@ -637,6 +646,9 @@ export function tasksPagesFor(
           broken: 0,
           closed: 3,
           dir: ".claude/tasks",
+          duplicateIds: [],
+          envs: ["staging", "prod"],
+          old: 0,
           staleDays: 30,
           state: "ready",
           tasks: [],
@@ -656,6 +668,9 @@ export function tasksPagesFor(
           broken: 0,
           closed: 0,
           dir: ".claude/tasks",
+          duplicateIds: [],
+          envs: ["prod"],
+          old: 0,
           staleDays: 30,
           state: "ready",
           tasks: [],
