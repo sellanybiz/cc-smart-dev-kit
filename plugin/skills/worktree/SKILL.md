@@ -33,6 +33,9 @@ isolated (Claude Code refuses `ExitWorktree` there), and it uses `cd` inside its
    `origin`'s default branch.
    **Already in a worktree and starting an unrelated task?** `ExitWorktree` first, then start
    the new one from the main checkout.
+   **A plan just approved in plan mode, in a project that guards its main folder?** The plan
+   file is still in the main checkout's plans folder: enter the worktree first, then copy the
+   file into it (`/cc-smart-dev-kit:plan-task` § 4, the one home of this step).
 2. **`EnterWorktree` with `path` enters an existing worktree.** On first entry from the
    launch folder, the path must appear in `git worktree list` for this repo, or for a repo
    nested in a multi-repo workspace. From inside a worktree, or from a pinned agent folder,

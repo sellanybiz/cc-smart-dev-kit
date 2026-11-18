@@ -29,6 +29,9 @@ const SESSION_VARIABLES: readonly string[] = [
   "TMUX",
   "DISPLAY",
   "WAYLAND_DISPLAY",
+  // Claude Code's Bash tool timeouts: the job route reads them for the timeout it asks for.
+  "BASH_DEFAULT_TIMEOUT_MS",
+  "BASH_MAX_TIMEOUT_MS",
 ];
 const SESSION_PREFIXES: readonly string[] = [
   "ANTHROPIC_",

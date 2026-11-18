@@ -14,7 +14,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { GIT_BASH_VAR } from "../cli/git-bash";
 import { cliPaths } from "../cli/paths";
-import { shellQuote } from "../setup/launcher";
+import { shellQuote } from "../shell/quote";
 import {
   commitConfig,
   hookEnv,
@@ -637,12 +637,14 @@ describe("J1: a package script is a script, not the tool of the same name", () =
     // A real tool behind a package runner is no script, and is still routed.
     expect(
       output(await runHook(jobRouteHook, call(repo, "bunx tsc --noEmit"), env)).updatedInput,
-    ).toEqual({ command: `${LAUNCHER} job run --kind tsc -- bunx tsc --noEmit` });
+    ).toEqual({ command: `${LAUNCHER} job run --kind tsc -- bunx tsc --noEmit`, timeout: 600_000 });
   });
 
   test("the folder after a cd decides: a script there is no tool, a tool there still is", async () => {
     const { env, repo } = project({ jobs: { route: true } });
-    writeFileSync(join(repo, "package.json"), `${JSON.stringify({ scripts: { tsc: "tsgo" } })}\n`);
+    // The root's tsc script queues itself already (its body is `job run`): no rewrite there.
+    const queued = `${LAUNCHER} job run --kind tsc -- tsgo`;
+    writeFileSync(join(repo, "package.json"), `${JSON.stringify({ scripts: { tsc: queued } })}\n`);
     mkdirSync(join(repo, "sub"));
     writeFileSync(join(repo, "sub", "package.json"), `${JSON.stringify({ scripts: {} })}\n`);
     // The root defines tsc as a script: no rewrite there.
@@ -656,6 +658,14 @@ describe("J1: a package script is a script, not the tool of the same name", () =
     expect(routed.command).toContain("job run --kind tsc");
     expect(routed.command).toContain("cd sub && bun run tsc --noEmit");
   });
+
+  test("a script whose body is the tool alone is read by its body, and routed", async () => {
+    const { env, repo } = project({ jobs: { route: true } });
+    writeFileSync(join(repo, "package.json"), `${JSON.stringify({ scripts: { tsc: "tsgo" } })}\n`);
+    const routed = output(await runHook(jobRouteHook, call(repo, "bun run tsc --noEmit"), env))
+      .updatedInput as { command: string };
+    expect(routed.command).toContain("job run --kind tsc");
+  });
 });
 
 // The route is the `switches.jobRoute` switch: the project's `jobs.route` when it sets one, else
@@ -663,7 +673,8 @@ describe("J1: a package script is a script, not the tool of the same name", () =
 // resolver (`resolveJobRoute`), with or without a project file.
 describe("the route switch: the person's default, and the project wins", () => {
   const TSC = "bunx tsc --noEmit";
-  const ROUTED = { command: `${LAUNCHER} job run --kind tsc -- ${TSC}` };
+  // A routed call that set no timeout gets the Bash tool's longest one (ten minutes).
+  const ROUTED = { command: `${LAUNCHER} job run --kind tsc -- ${TSC}`, timeout: 600_000 };
   const on = { switches: { jobRoute: true } };
   const off = { switches: { jobRoute: false } };
 

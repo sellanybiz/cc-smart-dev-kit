@@ -93,6 +93,7 @@ import {
   checkStatus,
   FIX_LABEL,
   groupTitle,
+  SETUP_FIX,
 } from "./check";
 import { checkGitBash } from "./git-bash";
 import { type LiveDeps, parseClaudeVersion, readLiveRecord, runLiveCheck } from "./live-check";
@@ -109,9 +110,6 @@ export function checkReviewAgent(paths: CliPaths): Check | null {
     true,
   );
 }
-
-/** The fix most checks name: setup puts the plugin's files back in place. */
-const SETUP_FIX = `${COMMAND} setup`;
 
 export type { Check } from "./check";
 

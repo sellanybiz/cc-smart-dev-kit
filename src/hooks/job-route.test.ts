@@ -5,29 +5,52 @@
  * ever ignores that, a denial naming the command.
  */
 import { describe, expect, it } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { dirname, join } from "node:path";
 import { findGitBash, GIT_BASH_INSTALLS, GIT_BASH_VAR } from "../cli/git-bash";
 import { cliPaths } from "../cli/paths";
+import { runWeight, type WeightSource } from "../jobs/classify";
+import { HOOK_NAMES } from "../jobs/git-hooks";
 import { mergeKinds } from "../jobs/kinds";
+import { OWNED_FOLDER_MARK } from "../setup/managed-folder";
+import {
+  type GitHookWorld,
+  gitHookWorld,
+  runIn,
+  stageFile,
+  writeFileIn,
+} from "../testing/git-hook-world";
 import { hookEnv } from "../testing/hooks";
-import { tempDir } from "../testing/temp";
+import { cleanGitEnv, git, tempDir } from "../testing/temp";
 import { pullRequestMerges } from "./after-merge";
 import { guardQuestions } from "./git-guard";
 import type { HookInput, HookResult } from "./io";
 import {
   bashLineOf,
   bashToolExists,
+  DEFAULT_BASH_MAX_TIMEOUT_MS,
+  DEFAULT_BASH_TIMEOUT_MS,
   jobRoute,
   jobRouteConfigAnswer,
+  jobRouteDomain,
   jobRunCommand,
   judgeCommandAnswer,
   powerShellDenial,
+  REWRITE_TIMEOUT_SUPPORTED,
   rewriteAnswer,
   routeDenial,
   routedShell,
+  routedTimeoutMs,
+  routeGitHooks,
   routeHeavyCommand,
-  runsJobRun,
 } from "./job-route";
 import type { HookContext, HookEnvContext } from "./run";
 
@@ -35,50 +58,54 @@ const KINDS = mergeKinds(undefined);
 const LAUNCHER = '"$HOME/.local/bin/cc-smart-dev-kit"';
 /** The person's shell, as the hook finds it; every routed shell line goes through it. */
 const SHELL = "/bin/bash";
+/** A folder with no `package.json` and no file: nothing is light, no name is a script. */
+const SOURCE: WeightSource = { folder: "/repo", isFile: () => false, scriptsIn: () => null };
 
 describe("which commands are routed", () => {
   it("a dependency install is no heavy job: it runs as written (2.0 has no light lane)", () => {
-    expect(routeHeavyCommand("bun install --frozen-lockfile", KINDS, SHELL)).toBeNull();
-    expect(routeHeavyCommand("npm ci", KINDS, SHELL)).toBeNull();
+    expect(routeHeavyCommand("bun install --frozen-lockfile", KINDS, SHELL, SOURCE)).toBeNull();
+    expect(routeHeavyCommand("npm ci", KINDS, SHELL, SOURCE)).toBeNull();
   });
   it("a heavy command of a default kind is routed; a light one is not", () => {
-    expect(routeHeavyCommand("bunx vitest run src/a.test.ts", KINDS, SHELL)).toEqual({
+    expect(routeHeavyCommand("bunx vitest run src/a.test.ts", KINDS, SHELL, SOURCE)).toEqual({
       command: `${LAUNCHER} job run --kind test:run -- bunx vitest run src/a.test.ts`,
       kind: "test:run",
     });
-    expect(routeHeavyCommand("bunx tsc --noEmit", KINDS, SHELL)?.kind).toBe("tsc");
-    expect(routeHeavyCommand("npx next build", KINDS, SHELL)?.kind).toBe("build");
-    expect(routeHeavyCommand("bunx vitest run --coverage", KINDS, SHELL)?.kind).toBe(
+    expect(routeHeavyCommand("bunx tsc --noEmit", KINDS, SHELL, SOURCE)?.kind).toBe("tsc");
+    expect(routeHeavyCommand("npx next build", KINDS, SHELL, SOURCE)?.kind).toBe("build");
+    expect(routeHeavyCommand("bunx vitest run --coverage", KINDS, SHELL, SOURCE)?.kind).toBe(
       "test:coverage",
     );
-    expect(routeHeavyCommand("ls -la", KINDS, SHELL)).toBeNull();
-    expect(routeHeavyCommand("git status", KINDS, SHELL)).toBeNull();
+    expect(routeHeavyCommand("ls -la", KINDS, SHELL, SOURCE)).toBeNull();
+    expect(routeHeavyCommand("git status", KINDS, SHELL, SOURCE)).toBeNull();
     // A print-only run reserves nothing, so it is not heavy.
-    expect(routeHeavyCommand("bunx tsc --version", KINDS, SHELL)).toBeNull();
+    expect(routeHeavyCommand("bunx tsc --version", KINDS, SHELL, SOURCE)).toBeNull();
     // A package.json script is matched only by a kind's own `script` rule.
-    expect(routeHeavyCommand("bun run build", KINDS, SHELL)).toBeNull();
+    expect(routeHeavyCommand("bun run build", KINDS, SHELL, SOURCE)).toBeNull();
   });
 
   it("the project's own kinds are used, over the defaults", () => {
     const kinds = mergeKinds({ build: { gb: 14, match: [{ script: "build" }] } });
-    expect(routeHeavyCommand("bun run build", kinds, SHELL)).toEqual({
+    expect(routeHeavyCommand("bun run build", kinds, SHELL, SOURCE)).toEqual({
       command: `${LAUNCHER} job run --kind build -- bun run build`,
       kind: "build",
     });
-    expect(routeHeavyCommand("bun run build", KINDS, SHELL)).toBeNull();
+    expect(routeHeavyCommand("bun run build", KINDS, SHELL, SOURCE)).toBeNull();
   });
 
   it("what is already queued stays as it is", () => {
-    expect(runsJobRun(`${LAUNCHER} job run --kind tsc -- bun run tsc`)).toBe(true);
-    expect(runsJobRun("cc-smart-dev-kit job run --kind tsc -- bun run tsc")).toBe(true);
-    expect(runsJobRun("~/.local/bin/cc-smart-dev-kit job run --kind tsc -- bun run tsc")).toBe(
-      true,
-    );
-    expect(runsJobRun(`sh -c "${LAUNCHER} job run --kind tsc -- bun run tsc"`)).toBe(true);
-    expect(runsJobRun("cc-smart-dev-kit job status")).toBe(false);
-    expect(runsJobRun("bun run tsc")).toBe(false);
+    // The classifier's own answer: a line that runs `job run` has no route and no weight.
+    for (const line of [
+      `${LAUNCHER} job run --kind tsc -- bun run tsc`,
+      "cc-smart-dev-kit job run --kind tsc -- bun run tsc",
+      "~/.local/bin/cc-smart-dev-kit job run --kind tsc -- bun run tsc",
+      `sh -c "${LAUNCHER} job run --kind tsc -- bun run tsc"`,
+    ]) {
+      expect([line, routeHeavyCommand(line, KINDS, SHELL, SOURCE)]).toEqual([line, null]);
+      expect([line, runWeight(line, KINDS, SOURCE)]).toEqual([line, { weight: "none" }]);
+    }
     expect(
-      routeHeavyCommand(`${LAUNCHER} job run --kind tsc -- bun run tsc`, KINDS, SHELL),
+      routeHeavyCommand(`${LAUNCHER} job run --kind tsc -- bun run tsc`, KINDS, SHELL, SOURCE),
     ).toBeNull();
     // The line the guard is really for: it queues one heavy command AND runs another one the
     // classifier knows. Rewriting it would nest the queue inside the queue, so it stays.
@@ -87,6 +114,7 @@ describe("which commands are routed", () => {
         `${LAUNCHER} job run --kind test:run -- bunx vitest run; bunx tsc --noEmit`,
         KINDS,
         SHELL,
+        SOURCE,
       ),
     ).toBeNull();
   });
@@ -137,8 +165,10 @@ describe("which commands are routed", () => {
   });
 
   it("a nested heavy command in a shell string is routed too (the whole line goes)", () => {
-    expect(routeHeavyCommand("sh -c 'bunx vitest run'", KINDS, SHELL)?.kind).toBe("test:run");
-    expect(routeHeavyCommand('bash -c "npx next build"', KINDS, SHELL)?.kind).toBe("build");
+    expect(routeHeavyCommand("sh -c 'bunx vitest run'", KINDS, SHELL, SOURCE)?.kind).toBe(
+      "test:run",
+    );
+    expect(routeHeavyCommand('bash -c "npx next build"', KINDS, SHELL, SOURCE)?.kind).toBe("build");
   });
 
   it("a runner's line stays as written: find, watch, su and parallel do work of their own", () => {
@@ -152,7 +182,7 @@ describe("which commands are routed", () => {
       "su -c 'tsc --noEmit' root",
       "parallel -S host1 tsc ::: a b",
     ]) {
-      expect([command, routeHeavyCommand(command, KINDS, SHELL)]).toEqual([command, null]);
+      expect([command, routeHeavyCommand(command, KINDS, SHELL, SOURCE)]).toEqual([command, null]);
     }
   });
 
@@ -176,7 +206,7 @@ describe("which commands are routed", () => {
       "export FOO=1 && bunx tsc --noEmit",
     ];
     for (const line of raw) {
-      expect([line, routeHeavyCommand(line, KINDS, SHELL)]).toEqual([line, null]);
+      expect([line, routeHeavyCommand(line, KINDS, SHELL, SOURCE)]).toEqual([line, null]);
     }
   });
 
@@ -189,15 +219,15 @@ describe("which commands are routed", () => {
       ["bash -c 'bunx tsc --noEmit && bunx vitest run'", "tsc"],
     ];
     for (const [line, kind] of routed) {
-      expect([line, routeHeavyCommand(line, KINDS, SHELL)?.kind]).toEqual([line, kind]);
+      expect([line, routeHeavyCommand(line, KINDS, SHELL, SOURCE)?.kind]).toEqual([line, kind]);
     }
-    const plain = routeHeavyCommand("bash -c 'bunx tsc --noEmit'", KINDS, SHELL);
+    const plain = routeHeavyCommand("bash -c 'bunx tsc --noEmit'", KINDS, SHELL, SOURCE);
     // One quoted word with no shell meaning: the argv form, the person's `bash -c` kept.
     expect(plain?.command).toBe(`${LAUNCHER} job run --kind tsc -- bash -c 'bunx tsc --noEmit'`);
   });
 
   it("HK hunch 1: the kit's own guards still read inside a routed line", () => {
-    const routed = routeHeavyCommand("cd app && bunx tsc --noEmit", KINDS, SHELL);
+    const routed = routeHeavyCommand("cd app && bunx tsc --noEmit", KINDS, SHELL, SOURCE);
     const options = {
       protectedBranches: ["main"],
       autoPushAsk: () => null,
@@ -308,7 +338,7 @@ describe("the judge alone, and a project file that cannot be read", () => {
 // A heavy command piped into read-only filters: only the heavy part is queued, and the filters
 // stay after the queue's command, where the person's own Bash rules still see them.
 describe("a heavy command piped into read-only filters", () => {
-  const routed = (line: string) => routeHeavyCommand(line, KINDS, SHELL)?.command ?? null;
+  const routed = (line: string) => routeHeavyCommand(line, KINDS, SHELL, SOURCE)?.command ?? null;
 
   it("tail: the redirection stays with the heavy step, the filter after the queue's command", () => {
     expect(routed("bunx tsc --noEmit 2>&1 | tail -20")).toBe(
@@ -378,7 +408,7 @@ describe("a heavy command piped into read-only filters", () => {
     chmodSync(join(bin, "cc-smart-dev-kit"), 0o755);
     chmodSync(join(home, "tsc"), 0o755);
     const line = "./tsc --noEmit 2>&1 | tail -1";
-    const rewritten = routeHeavyCommand(line, KINDS, "bash")?.command ?? "";
+    const rewritten = routeHeavyCommand(line, KINDS, "bash", SOURCE)?.command ?? "";
     expect(rewritten).toBe(
       `${LAUNCHER} job run --kind tsc -- bash -c './tsc --noEmit 2>&1' | tail -1`,
     );
@@ -415,7 +445,7 @@ describe("a heavy PowerShell line", () => {
   });
 
   it("is refused with the Bash tool and the exact line, which the Bash tool then queues", () => {
-    const answer = JSON.parse(powerShellDenial("npx tsc --noEmit", KINDS)?.stdout ?? "{}");
+    const answer = JSON.parse(powerShellDenial("npx tsc --noEmit", KINDS, SOURCE)?.stdout ?? "{}");
     expect(answer.hookSpecificOutput).toEqual({
       hookEventName: "PreToolUse",
       permissionDecision: "deny",
@@ -425,7 +455,9 @@ describe("a heavy PowerShell line", () => {
   });
 
   it("a line it cannot translate is refused too, and told to write it for Bash", () => {
-    const answer = JSON.parse(powerShellDenial("cd app; npx tsc --noEmit", KINDS)?.stdout ?? "{}");
+    const answer = JSON.parse(
+      powerShellDenial("cd app; npx tsc --noEmit", KINDS, SOURCE)?.stdout ?? "{}",
+    );
     expect(answer.hookSpecificOutput.permissionDecision).toBe("deny");
     expect(answer.hookSpecificOutput.permissionDecisionReason).toEndWith(
       "Run it with the Bash tool instead, written for Bash: there a heavy command alone (or after a cd, or piped into a filter such as tail) waits for a slot in the queue.",
@@ -433,9 +465,9 @@ describe("a heavy PowerShell line", () => {
   });
 
   it("a print-only run and a light line are not refused", () => {
-    expect(powerShellDenial("npx tsc --version", KINDS)).toBeNull();
-    expect(powerShellDenial("Get-ChildItem", KINDS)).toBeNull();
-    expect(powerShellDenial("git status", KINDS)).toBeNull();
+    expect(powerShellDenial("npx tsc --version", KINDS, SOURCE)).toBeNull();
+    expect(powerShellDenial("Get-ChildItem", KINDS, SOURCE)).toBeNull();
+    expect(powerShellDenial("git status", KINDS, SOURCE)).toBeNull();
   });
 
   it("the Bash tool exists off Windows, and on Windows only where Git Bash is found", () => {
@@ -469,5 +501,846 @@ describe("a heavy PowerShell line", () => {
     expect(jobRoute(context, () => false)).toEqual({});
     const refused = JSON.parse(jobRoute(context, () => true).stdout ?? "{}");
     expect(refused.hookSpecificOutput.permissionDecision).toBe("deny");
+  });
+});
+
+// ---------------------------------------------------------------------------------------
+// The judge in the route (`runWeight`): a light line is answered with nothing, a heavy one is
+// routed as before. These run the whole hook against a real folder, so the files and the
+// `package.json` scripts the judge reads are real ones.
+// ---------------------------------------------------------------------------------------
+
+/** A real folder holding these files (a name with a `/` makes its folders). */
+function repoWith(files: Record<string, string>): string {
+  const repo = tempDir("route-weight");
+  for (const [name, text] of Object.entries(files)) {
+    mkdirSync(dirname(join(repo, name)), { recursive: true });
+    writeFileSync(join(repo, name), text);
+  }
+  return repo;
+}
+
+/** The hook's context for one line the Bash (or PowerShell) tool is about to run in `repo`. */
+function contextFor(
+  repo: string,
+  command: string,
+  tool = "Bash",
+  more: { env?: Record<string, string>; fields?: Record<string, unknown> } = {},
+): HookContext {
+  // hookEnv drops the session's own Bash timeouts (cleanGitEnv): a test sets them itself.
+  const env = { ...hookEnv(), SHELL, ...more.env };
+  return {
+    cwd: repo,
+    env,
+    event: "PreToolUse",
+    input: {
+      hook_event_name: "PreToolUse",
+      tool_input: { command, ...more.fields },
+      tool_name: tool,
+    },
+    nowMs: Date.now(),
+    paths: cliPaths(env),
+    project: { config: { jobs: { route: true } }, mainCheckout: null, root: repo },
+  } as unknown as HookContext;
+}
+
+/** The command the hook rewrites a Bash line to, or null when it answers nothing. */
+function rewrittenTo(repo: string, command: string): null | string {
+  const result = jobRoute(contextFor(repo, command));
+  if (result.stdout === undefined) return null;
+  return JSON.parse(result.stdout).hookSpecificOutput.updatedInput.command;
+}
+
+/** The decision the hook gives a PowerShell line, or null when it answers nothing. */
+function powerShellDecision(repo: string, command: string): null | Record<string, unknown> {
+  const result = jobRoute(contextFor(repo, command, "PowerShell"), () => true);
+  return result.stdout === undefined ? null : JSON.parse(result.stdout).hookSpecificOutput;
+}
+
+const TEST_FILE = { "a.test.ts": "" };
+
+describe("a light line stays raw, a heavy one is routed", () => {
+  it("a test run on a file that exists is answered with nothing", () => {
+    const repo = repoWith({ "src/a.test.ts": "" });
+    expect(rewrittenTo(repo, "bunx vitest run src/a.test.ts")).toBeNull();
+    // The same line on a file that is not there is a full run: routed.
+    expect(rewrittenTo(repo, "bunx vitest run src/missing.test.ts")).toBe(
+      `${LAUNCHER} job run --kind test:run -- bunx vitest run src/missing.test.ts`,
+    );
+  });
+
+  it("a cd, then a run on a file of that folder: nothing", () => {
+    const repo = repoWith({ "app/a.test.ts": "" });
+    expect(rewrittenTo(repo, "cd app && bunx vitest run a.test.ts")).toBeNull();
+    // The file is read in the folder the cd moves to, not in the one the call started in.
+    expect(rewrittenTo(repo, "bunx vitest run a.test.ts")).not.toBeNull();
+  });
+
+  it("bun test with no file is routed as a test run; with a file that exists it is not", () => {
+    const repo = repoWith(TEST_FILE);
+    expect(rewrittenTo(repo, "bun test")).toBe(`${LAUNCHER} job run --kind test:run -- bun test`);
+    expect(rewrittenTo(repo, "bun test ./a.test.ts")).toBeNull();
+  });
+
+  it("a type check on named files is light; a whole-project one is routed", () => {
+    const repo = repoWith({ "src/a.ts": "" });
+    expect(rewrittenTo(repo, "bunx tsc --noEmit src/a.ts")).toBeNull();
+    expect(rewrittenTo(repo, "bunx tsc --noEmit")).toBe(
+      `${LAUNCHER} job run --kind tsc -- bunx tsc --noEmit`,
+    );
+  });
+
+  it("a package script is read by its body: a lone tsc is routed, a mixed body is not", () => {
+    const repo = repoWith({
+      "package.json": JSON.stringify({
+        scripts: { typecheck: "tsc --noEmit", check: "tsc --noEmit && biome check ." },
+      }),
+    });
+    expect(rewrittenTo(repo, "bun run typecheck")).toBe(
+      `${LAUNCHER} job run --kind tsc -- bun run typecheck`,
+    );
+    expect(rewrittenTo(repo, "bun run check")).toBeNull();
+  });
+
+  it("two heavy commands in one line are queued once, as one job", () => {
+    const repo = repoWith({});
+    const command = rewrittenTo(repo, "bunx tsc --noEmit && bun test") ?? "";
+    expect(command).toBe(
+      `${LAUNCHER} job run --kind tsc -- /bin/bash -c 'bunx tsc --noEmit && bun test'`,
+    );
+    expect(command.match(/job run/g)).toHaveLength(1);
+  });
+
+  // `routableLine` knows the kind and says nothing of weight: a run that never ends must not
+  // hold a slot while a person uses it (review 3 of the judge).
+  it("a watch run or an interactive run is never queued", () => {
+    const repo = repoWith({
+      "package.json": JSON.stringify({ scripts: { e2e: "playwright test" } }),
+    });
+    for (const line of [
+      "bunx vitest --watch",
+      "bunx tsc --noEmit && bunx vitest --watch",
+      "bunx playwright test --ui",
+      "bunx playwright test --debug",
+      "bun run e2e --ui",
+      // Bun drops the `--` before it hands the words to the script, so the script sees `--ui`.
+      "bun run e2e -- --ui",
+      "npm run e2e -- --ui",
+    ]) {
+      expect([line, rewrittenTo(repo, line)]).toEqual([line, null]);
+    }
+    // The same script without the flag is a heavy e2e run.
+    expect(rewrittenTo(repo, "bun run e2e")).toBe(`${LAUNCHER} job run --kind e2e -- bun run e2e`);
+    // npm keeps a flag written before its `--` for itself: the plain script runs, a full run.
+    expect(rewrittenTo(repo, "npm run e2e --ui")).toBe(
+      `${LAUNCHER} job run --kind e2e -- npm run e2e --ui`,
+    );
+    const tests = repoWith({ "package.json": JSON.stringify({ scripts: { test: "vitest run" } }) });
+    expect(rewrittenTo(tests, "npm test --watch")).toBe(
+      `${LAUNCHER} job run --kind test:run -- npm test --watch`,
+    );
+  });
+
+  it("a script whose body already queues itself is not queued again", () => {
+    const repo = repoWith({
+      "package.json": JSON.stringify({
+        scripts: { tsc: "cc-smart-dev-kit job run --kind tsc -- tsc --noEmit" },
+      }),
+    });
+    expect(rewrittenTo(repo, "bun run tsc")).toBeNull();
+  });
+
+  it("with the route switch off nothing is routed, heavy or light", () => {
+    const repo = repoWith({});
+    const off = {
+      ...contextFor(repo, "bun test"),
+      project: { config: { jobs: { route: false } }, mainCheckout: null, root: repo },
+    } as unknown as HookContext;
+    expect(jobRoute(off)).toEqual({});
+  });
+});
+
+describe("a PowerShell line: only a heavy run is refused", () => {
+  it("a test run on a file that exists is not refused; a full run is, with its Bash line", () => {
+    const repo = repoWith(TEST_FILE);
+    expect(powerShellDecision(repo, "bun test ./a.test.ts")).toBeNull();
+    const refused = powerShellDecision(repo, "bun test");
+    expect(refused?.permissionDecision).toBe("deny");
+    expect(String(refused?.permissionDecisionReason)).toEndWith(
+      "Run it with the Bash tool instead, where it waits for a slot in the queue:\nbun test",
+    );
+  });
+
+  it("a line that already queues itself is not refused", () => {
+    const repo = repoWith({
+      "package.json": JSON.stringify({
+        scripts: { tsc: "cc-smart-dev-kit job run --kind tsc -- tsc --noEmit" },
+      }),
+    });
+    expect(powerShellDecision(repo, "cc-smart-dev-kit job run --kind tsc -- tsc")).toBeNull();
+    expect(powerShellDecision(repo, "bun run tsc")).toBeNull();
+  });
+
+  it("a watch run is not refused", () => {
+    expect(powerShellDecision(repoWith({}), "bunx vitest --watch")).toBeNull();
+  });
+
+  it("a line the Bash translation cannot read stays refused, as before", () => {
+    const refused = powerShellDecision(repoWith(TEST_FILE), "cd app; bun test");
+    expect(refused?.permissionDecision).toBe("deny");
+  });
+});
+
+describe("a project file that cannot be read: a light line is not asked about", () => {
+  const input = (repo: string, command: string, tool = "Bash"): HookInput => ({
+    cwd: repo,
+    hook_event_name: "PreToolUse",
+    tool_input: { command },
+    tool_name: tool,
+  });
+  const context = (): HookEnvContext => {
+    const env = hookEnv();
+    return { env, nowMs: 0, paths: cliPaths(env) };
+  };
+  const asked = (repo: string, command: string) =>
+    JSON.parse(jobRouteConfigAnswer("broken", input(repo, command), context()).stdout ?? "{}")
+      .hookSpecificOutput?.permissionDecision ?? null;
+
+  it("a run on a file that exists is silent; a full run is asked about", () => {
+    const repo = repoWith(TEST_FILE);
+    expect(asked(repo, "bun test ./a.test.ts")).toBeNull();
+    expect(asked(repo, "bun test")).toBe("ask");
+  });
+
+  it("a script that is a lone tsc is asked about, as the route would have routed it", () => {
+    const repo = repoWith({ "package.json": JSON.stringify({ scripts: { tc: "tsc --noEmit" } }) });
+    expect(asked(repo, "bun run tc")).toBe("ask");
+  });
+
+  it("the crash domain: a light line is out of it, a heavy one is in", () => {
+    const repo = repoWith(TEST_FILE);
+    expect(jobRouteDomain(input(repo, "bun test ./a.test.ts"))).toBe(false);
+    expect(jobRouteDomain(input(repo, "bun test"))).toBe(true);
+    expect(jobRouteDomain(input(repo, "bunx vitest --watch"))).toBe(false);
+    // The judge's own lines stay in it, whatever the weight.
+    expect(jobRouteDomain(input(repo, "claude --bg 'x'"))).toBe(true);
+    // No cwd: the files cannot be read, so the line is judged by its kind alone, as before.
+    expect(
+      jobRouteDomain({
+        hook_event_name: "PreToolUse",
+        tool_input: { command: "bun test ./a.test.ts" },
+        tool_name: "Bash",
+      }),
+    ).toBe(true);
+  });
+});
+
+// Claude Code's docs (https://code.claude.com/docs/en/env-vars): BASH_MAX_TIMEOUT_MS is the
+// longest timeout the model can set (default 600000), BASH_DEFAULT_TIMEOUT_MS the default one
+// (default 120000), and "the effective ceiling is the larger of" the two. A routed call that
+// set no timeout gets that ceiling: never a shorter one than the call would have had.
+describe("a routed call gets the Bash tool's longest timeout", () => {
+  const fields = { command: "bunx tsc --noEmit", description: "check types" };
+  const updated = (answer: HookResult) => JSON.parse(answer.stdout ?? "{}").hookSpecificOutput;
+
+  it("the defaults are the docs' ones, and the switch is on", () => {
+    expect(DEFAULT_BASH_MAX_TIMEOUT_MS).toBe(600_000);
+    expect(DEFAULT_BASH_TIMEOUT_MS).toBe(120_000);
+    expect(REWRITE_TIMEOUT_SUPPORTED).toBe(true);
+  });
+
+  it("with a ceiling: a call with no timeout gets it; one that set a timeout keeps it", () => {
+    expect(updated(rewriteAnswer(fields, "queued", 600_000))).toEqual({
+      hookEventName: "PreToolUse",
+      updatedInput: { ...fields, command: "queued", timeout: 600_000 },
+    });
+    expect(
+      updated(rewriteAnswer({ ...fields, timeout: 120_000 }, "queued", 600_000)).updatedInput,
+    ).toEqual({ ...fields, command: "queued", timeout: 120_000 });
+  });
+
+  it("a background call is not given one: it has its own limit", () => {
+    const background = { ...fields, run_in_background: true };
+    expect(updated(rewriteAnswer(background, "queued", 600_000)).updatedInput).toEqual({
+      ...background,
+      command: "queued",
+    });
+    // Only `true` is background.
+    expect(
+      updated(rewriteAnswer({ ...fields, run_in_background: false }, "queued", 600_000))
+        .updatedInput.timeout,
+    ).toBe(600_000);
+  });
+
+  it("no ceiling (not supported): the answer carries no timeout of its own", () => {
+    expect(updated(rewriteAnswer(fields, "queued", null)).updatedInput).toEqual({
+      ...fields,
+      command: "queued",
+    });
+    expect(
+      updated(rewriteAnswer({ ...fields, timeout: 120_000 }, "queued", null)).updatedInput,
+    ).toEqual({ ...fields, command: "queued", timeout: 120_000 });
+  });
+
+  it("the ceiling is the larger of the Bash tool's max and default, read from the env", () => {
+    expect(routedTimeoutMs({})).toBe(600_000);
+    expect(routedTimeoutMs({ BASH_DEFAULT_TIMEOUT_MS: "1800000" })).toBe(1_800_000);
+    expect(routedTimeoutMs({ BASH_MAX_TIMEOUT_MS: "900000" })).toBe(900_000);
+    // A default below the max changes nothing; a max below the default does not shorten it.
+    expect(routedTimeoutMs({ BASH_DEFAULT_TIMEOUT_MS: "300000" })).toBe(600_000);
+    expect(routedTimeoutMs({ BASH_MAX_TIMEOUT_MS: "60000" })).toBe(120_000);
+    // A value that is no positive whole number takes the default.
+    for (const garbage of ["", "abc", "-5", "0", "1.5", "10m", "NaN"]) {
+      expect(
+        routedTimeoutMs({ BASH_MAX_TIMEOUT_MS: garbage, BASH_DEFAULT_TIMEOUT_MS: garbage }),
+      ).toBe(600_000);
+    }
+  });
+
+  it("the hook's own rewrite carries the ceiling of its env when the call set none", () => {
+    const repo = repoWith({});
+    const timeoutOf = (more: Parameters<typeof contextFor>[3]) =>
+      updated(jobRoute(contextFor(repo, "bun test", "Bash", more))).updatedInput.timeout;
+    expect(timeoutOf({})).toBe(600_000);
+    expect(timeoutOf({ env: { BASH_DEFAULT_TIMEOUT_MS: "1800000" } })).toBe(1_800_000);
+    expect(timeoutOf({ env: { BASH_MAX_TIMEOUT_MS: "900000" } })).toBe(900_000);
+    expect(timeoutOf({ env: { BASH_MAX_TIMEOUT_MS: "garbage" } })).toBe(600_000);
+    expect(timeoutOf({ fields: { timeout: 5000 } })).toBe(5000);
+    expect(timeoutOf({ fields: { run_in_background: true } })).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------------------
+// A git command whose own hook is heavy gets the kit's hooks-folder prefix (`routeGitHooks`).
+// Real git in temp repos, the kit's real folder written in a temp home, a fake launcher.
+// ---------------------------------------------------------------------------------------
+
+/**
+ * Native Windows gets no prefix yet (docs/windows-jobs.md § Limits): the blocks below prove the
+ * POSIX route, with `#!/bin/sh` hooks, file modes and bash, so the Windows job skips them and
+ * runs the one test after them, which proves the real platform leaves the line as written.
+ */
+const NATIVE_WINDOWS = process.platform === "win32";
+
+/** A hook that runs the tests: heavy. */
+const HEAVY_HOOK = "#!/bin/sh\nbun test\n";
+/** A hook that only checks the style: light. */
+const LIGHT_HOOK = "#!/bin/sh\nbunx biome check .\n";
+
+/** A git world, the kit's folder written (unless `installed` is false), with these repo hooks. */
+function worldWithHooks(hooks: Record<string, string>, installed = true): GitHookWorld {
+  const world = gitHookWorld("route-git");
+  if (installed) world.install();
+  for (const [name, text] of Object.entries(hooks)) {
+    writeFileIn(join(world.repo, ".git", "hooks", name), text, 0o755);
+  }
+  return world;
+}
+
+/** The three assignments in front of a routed git command; `pair` is the number of the pair. */
+function prefixOf(world: GitHookWorld, pair = 0): string {
+  return `GIT_CONFIG_COUNT=${pair + 1} GIT_CONFIG_KEY_${pair}=core.hooksPath GIT_CONFIG_VALUE_${pair}=${world.paths.gitHooksFolder}`;
+}
+
+/** The line the hook rewrites `command` to in the world's repo, or null when it answers nothing. */
+function gitRewrite(
+  world: GitHookWorld,
+  command: string,
+  more: Parameters<typeof contextFor>[3] = {},
+  platform?: NodeJS.Platform,
+): null | string {
+  const context = contextFor(world.repo, command, "Bash", {
+    ...more,
+    env: { HOME: world.home, ...more.env },
+  });
+  const result = jobRoute(context, () => true, platform);
+  return result.stdout === undefined
+    ? null
+    : JSON.parse(result.stdout).hookSpecificOutput.updatedInput.command;
+}
+
+describe.skipIf(NATIVE_WINDOWS)(
+  "a git command with a heavy hook gets the hooks-folder prefix",
+  () => {
+    it("git push with a heavy pre-push: the three assignments, then the line as written", () => {
+      const world = worldWithHooks({ "pre-push": HEAVY_HOOK });
+      expect(prefixOf(world)).toBe(
+        `GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=${world.home}/.local/share/cc-smart-dev-kit/git-hooks`,
+      );
+      expect(gitRewrite(world, "git push origin x")).toBe(`${prefixOf(world)} git push origin x`);
+      // The answer carries the Bash tool's longest timeout, as a routed heavy command does.
+      const answer = jobRoute(
+        contextFor(world.repo, "git push origin x", "Bash", { env: { HOME: world.home } }),
+        () => true,
+      );
+      expect(JSON.parse(answer.stdout ?? "{}").hookSpecificOutput.updatedInput).toEqual({
+        command: `${prefixOf(world)} git push origin x`,
+        timeout: 600_000,
+      });
+    });
+
+    it("only the git command of a chain is prefixed; the commands before it are byte-identical", () => {
+      const world = worldWithHooks({ "pre-commit": HEAVY_HOOK });
+      expect(gitRewrite(world, 'git add -A && git commit -m "x"')).toBe(
+        `git add -A && ${prefixOf(world)} git commit -m "x"`,
+      );
+      expect(gitRewrite(world, "cd .   ;  ls | wc -l\ngit  commit -m x  # note")).toBe(
+        `cd .   ;  ls | wc -l\n${prefixOf(world)} git  commit -m x  # note`,
+      );
+      expect(gitRewrite(world, "FOO=1 git commit -m x")).toBe(
+        `${prefixOf(world)} FOO=1 git commit -m x`,
+      );
+    });
+
+    it("two git commands with heavy hooks in one line are both prefixed, each in its place", () => {
+      const world = worldWithHooks({ "pre-commit": HEAVY_HOOK, "pre-push": HEAVY_HOOK });
+      expect(gitRewrite(world, "git commit -m x && git push")).toBe(
+        `${prefixOf(world)} git commit -m x && ${prefixOf(world)} git push`,
+      );
+      // The one with a light hook stays as it is.
+      const mixed = worldWithHooks({ "pre-commit": LIGHT_HOOK, "pre-push": HEAVY_HOOK });
+      expect(gitRewrite(mixed, "git commit -m x && git push")).toBe(
+        `git commit -m x && ${prefixOf(mixed)} git push`,
+      );
+    });
+
+    it("the hook a command runs decides: commit-msg counts for a commit, pre-merge-commit for a merge", () => {
+      const world = worldWithHooks({
+        "commit-msg": HEAVY_HOOK,
+        "pre-merge-commit": HEAVY_HOOK,
+        "post-commit": HEAVY_HOOK,
+      });
+      expect(gitRewrite(world, "git commit -m x")).toBe(`${prefixOf(world)} git commit -m x`);
+      expect(gitRewrite(world, "git merge topic")).toBe(`${prefixOf(world)} git merge topic`);
+      // A heavy hook of another command, or one this command does not run, changes nothing.
+      expect(gitRewrite(world, "git push")).toBeNull();
+      const after = worldWithHooks({ "post-commit": HEAVY_HOOK });
+      expect(gitRewrite(after, "git commit -m x")).toBeNull();
+      expect(gitRewrite(world, "git status")).toBeNull();
+    });
+
+    it("a commit message with a here-doc is no obstacle: one prefix, the line otherwise untouched", () => {
+      const world = worldWithHooks({ "pre-commit": HEAVY_HOOK });
+      const line = "git commit -m \"$(cat <<'EOF'\nfix: x; git push\nEOF\n)\"";
+      expect(gitRewrite(world, line)).toBe(`${prefixOf(world)} ${line}`);
+    });
+  },
+);
+
+describe.skipIf(NATIVE_WINDOWS)("a git command that stays as written", () => {
+  it("--no-verify and a commit's -n skip the hook: no prefix; a push's -n is --dry-run: prefix", () => {
+    const world = worldWithHooks({ "pre-commit": HEAVY_HOOK, "pre-push": HEAVY_HOOK });
+    for (const line of [
+      "git push --no-verify",
+      "git push origin x --no-verify",
+      "git commit --no-verify -m x",
+      "git commit -n -m x",
+      "git commit -nm x",
+      "git commit -anm x",
+      "git merge --no-verify topic",
+    ]) {
+      expect([line, gitRewrite(world, line)]).toEqual([line, null]);
+    }
+    expect(gitRewrite(world, "git push -n")).toBe(`${prefixOf(world)} git push -n`);
+    // `-m n` is a message, not the flag; so is an `n` after the value letter of a group.
+    expect(gitRewrite(world, "git commit -m n")).toBe(`${prefixOf(world)} git commit -m n`);
+    expect(gitRewrite(world, "git commit -mn")).toBe(`${prefixOf(world)} git commit -mn`);
+  });
+
+  it("a light hook, no hook, or a hook the kit cannot route: unchanged", () => {
+    const light = worldWithHooks({ "pre-push": LIGHT_HOOK });
+    expect(gitRewrite(light, "git push")).toBeNull();
+    const none = worldWithHooks({});
+    expect(gitRewrite(none, "git push")).toBeNull();
+    expect(gitRewrite(none, "git commit -m x")).toBeNull();
+  });
+
+  it("the kit's folder missing, or one name in it not executable: unchanged, never a skipped hook", () => {
+    const missing = worldWithHooks({ "pre-push": HEAVY_HOOK }, false);
+    expect(gitRewrite(missing, "git push")).toBeNull();
+    const broken = worldWithHooks({ "pre-push": HEAVY_HOOK });
+    expect(gitRewrite(broken, "git push")).toBe(`${prefixOf(broken)} git push`);
+    expect(HOOK_NAMES).toContain("post-index-change");
+    chmodSync(join(broken.paths.gitHooksFolder, "post-index-change"), 0o644);
+    expect(gitRewrite(broken, "git push")).toBeNull();
+    // A name that is gone is as bad.
+    const gone = worldWithHooks({ "pre-push": HEAVY_HOOK });
+    unlinkSync(join(gone.paths.gitHooksFolder, "pre-push"));
+    expect(gitRewrite(gone, "git push")).toBeNull();
+  });
+
+  it("with the route off, on native Windows, or in PowerShell: unchanged", () => {
+    const world = worldWithHooks({ "pre-push": HEAVY_HOOK });
+    const off = {
+      ...contextFor(world.repo, "git push", "Bash", { env: { HOME: world.home } }),
+      project: { config: { jobs: { route: false } }, mainCheckout: null, root: world.repo },
+    } as unknown as HookContext;
+    expect(jobRoute(off, () => true)).toEqual({});
+    expect(gitRewrite(world, "git push", {}, "win32")).toBeNull();
+    expect(gitRewrite(world, "git push", {}, "darwin")).toBe(`${prefixOf(world)} git push`);
+    const powerShell = contextFor(world.repo, "git push", "PowerShell", {
+      env: { HOME: world.home },
+    });
+    expect(jobRoute(powerShell, () => true)).toEqual({});
+  });
+
+  it("a git command the reader cannot place, or that is not plain git: unchanged", () => {
+    const world = worldWithHooks({ "pre-commit": HEAVY_HOOK, "pre-push": HEAVY_HOOK });
+    for (const line of [
+      "bash -c 'git commit -m x'",
+      'sh -c "git push"',
+      "echo `git push`",
+      "sudo git push",
+      "env git push",
+      "command git push",
+      "if git push; then echo ok; fi",
+      "$GIT push",
+      'git -C "$dir" push',
+      ">/dev/null git push",
+      "git --unknown-option push origin",
+    ]) {
+      expect([line, gitRewrite(world, line)]).toEqual([line, null]);
+    }
+  });
+
+  it("a line that sets GIT_CONFIG_* itself, or git -c core.hooksPath, is the person's: unchanged", () => {
+    const world = worldWithHooks({ "pre-commit": HEAVY_HOOK });
+    for (const line of [
+      "GIT_CONFIG_COUNT=0 git commit -m x",
+      "GIT_CONFIG_KEY_0=core.hooksPath git commit -m x",
+      "export GIT_CONFIG_COUNT=0; git commit -m x",
+      "git -c core.hooksPath=/elsewhere commit -m x",
+      "git -c core.hookspath=/elsewhere commit -m x",
+      "git --config-env=core.hooksPath=HOOKS commit -m x",
+    ]) {
+      expect([line, gitRewrite(world, line)]).toEqual([line, null]);
+    }
+    // Another setting of `-c` changes nothing about the hook.
+    expect(gitRewrite(world, "git -c user.name=a commit -m x")).toBe(
+      `${prefixOf(world)} git -c user.name=a commit -m x`,
+    );
+  });
+
+  it("a line that continues past an escaped line break is read two ways: unchanged", () => {
+    const world = worldWithHooks({ "pre-commit": HEAVY_HOOK });
+    expect(gitRewrite(world, "git commit -m x \\\n  --no-verify")).toBeNull();
+  });
+});
+
+describe.skipIf(NATIVE_WINDOWS)("which repo's hook decides", () => {
+  it("git -C sub decides by sub's own hooks, not the folder the call started in", () => {
+    const world = worldWithHooks({ "pre-commit": HEAVY_HOOK });
+    const sub = join(world.repo, "sub");
+    mkdirSync(sub);
+    git(sub, "init", "-q");
+    // The outer repo's hook is heavy, but the command runs in `sub`, which has none.
+    expect(gitRewrite(world, "git -C sub commit -m x")).toBeNull();
+    writeFileIn(join(sub, ".git", "hooks", "pre-commit"), HEAVY_HOOK, 0o755);
+    expect(gitRewrite(world, "git -C sub commit -m x")).toBe(
+      `${prefixOf(world)} git -C sub commit -m x`,
+    );
+    // And the other way round: a light hook in `sub`, the heavy one outside.
+    writeFileIn(join(sub, ".git", "hooks", "pre-commit"), LIGHT_HOOK, 0o755);
+    expect(gitRewrite(world, "git -C sub commit -m x")).toBeNull();
+    expect(gitRewrite(world, "git commit -m x")).toBe(`${prefixOf(world)} git commit -m x`);
+  });
+
+  it("a cd before the command moves it to the folder it names; a cd to an unknown folder leaves the line", () => {
+    const world = worldWithHooks({});
+    const sub = join(world.repo, "sub");
+    mkdirSync(sub);
+    git(sub, "init", "-q");
+    writeFileIn(join(sub, ".git", "hooks", "pre-commit"), HEAVY_HOOK, 0o755);
+    expect(gitRewrite(world, "cd sub && git commit -m x")).toBe(
+      `cd sub && ${prefixOf(world)} git commit -m x`,
+    );
+    expect(gitRewrite(world, "git commit -m x")).toBeNull();
+    // A `cd` inside ( … ) ends at its `)`.
+    expect(gitRewrite(world, "(cd sub); git commit -m x")).toBeNull();
+    expect(gitRewrite(world, 'cd "$DIR" && git commit -m x')).toBeNull();
+  });
+
+  it("a package folder of a monorepo: git runs the hook at the top, so the root's script decides", () => {
+    const world = worldWithHooks({ "pre-commit": "#!/bin/sh\nbun run test\n" });
+    writeFileSync(
+      join(world.repo, "package.json"),
+      JSON.stringify({ scripts: { test: "vitest run" } }),
+    );
+    const web = join(world.repo, "web");
+    mkdirSync(web);
+    // The folder the call starts in has a `test` that is light, but the hook never runs there.
+    writeFileSync(join(web, "package.json"), JSON.stringify({ scripts: { test: "echo ok" } }));
+    const line = "git commit -m x";
+    const fromWeb = jobRoute(
+      contextFor(web, line, "Bash", { env: { HOME: world.home } }),
+      () => true,
+    );
+    expect(JSON.parse(fromWeb.stdout ?? "{}").hookSpecificOutput.updatedInput.command).toBe(
+      `${prefixOf(world)} ${line}`,
+    );
+    expect(gitRewrite(world, line)).toBe(`${prefixOf(world)} ${line}`);
+  });
+
+  it("a separate --git-dir: decided in the folder the call is in, and job hook answers direct for the rest", () => {
+    const world = worldWithHooks({ "pre-commit": HEAVY_HOOK });
+    // From inside the repo, the prefix is placed (the hook is heavy there). When git runs the
+    // hook, `GIT_DIR` is set and `job hook` asks git without it, so a repo it cannot find from the
+    // hook's folder answers direct: the hook runs unqueued, which is safe.
+    expect(gitRewrite(world, `git --git-dir=${world.repo}/.git commit -m x`)).toBe(
+      `${prefixOf(world)} git --git-dir=${world.repo}/.git commit -m x`,
+    );
+    // From a folder that is no repo, nothing is known about any hook: the line stays.
+    const outside = contextFor(
+      tempDir("route-git-nowhere"),
+      `git --git-dir=${world.repo}/.git commit -m x`,
+      "Bash",
+      { env: { HOME: world.home } },
+    );
+    expect(jobRoute(outside, () => true)).toEqual({});
+  });
+});
+
+describe.skipIf(NATIVE_WINDOWS)("an environment that already holds GIT_CONFIG pairs", () => {
+  const pair = {
+    GIT_CONFIG_COUNT: "1",
+    GIT_CONFIG_KEY_0: "safe.directory",
+    GIT_CONFIG_VALUE_0: "*",
+  };
+
+  it("the kit's pair is added after them: the count grows, nothing is overwritten", () => {
+    const world = worldWithHooks({ "pre-push": HEAVY_HOOK });
+    expect(gitRewrite(world, "git push", { env: pair })).toBe(`${prefixOf(world, 1)} git push`);
+    expect(
+      gitRewrite(world, "git push", {
+        env: {
+          GIT_CONFIG_COUNT: "2",
+          GIT_CONFIG_KEY_0: "safe.directory",
+          GIT_CONFIG_VALUE_0: "*",
+          GIT_CONFIG_KEY_1: "user.name",
+          GIT_CONFIG_VALUE_1: "x",
+        },
+      }),
+    ).toBe(`${prefixOf(world, 2)} git push`);
+    expect(gitRewrite(world, "git push", { env: { GIT_CONFIG_COUNT: "0" } })).toBe(
+      `${prefixOf(world, 0)} git push`,
+    );
+  });
+
+  it("a pair of the environment that sets core.hooksPath is the person's choice: unchanged", () => {
+    const world = worldWithHooks({ "pre-push": HEAVY_HOOK });
+    for (const key of ["core.hooksPath", "CORE.HOOKSPATH", "Core.hookspath"]) {
+      expect(
+        gitRewrite(world, "git push", {
+          env: {
+            ...pair,
+            GIT_CONFIG_COUNT: "2",
+            GIT_CONFIG_KEY_1: key,
+            GIT_CONFIG_VALUE_1: "/mine",
+          },
+        }),
+      ).toBeNull();
+    }
+    // A key past the count is not a pair git reads.
+    expect(
+      gitRewrite(world, "git push", {
+        env: { ...pair, GIT_CONFIG_KEY_1: "core.hooksPath", GIT_CONFIG_VALUE_1: "/mine" },
+      }),
+    ).toBe(`${prefixOf(world, 1)} git push`);
+  });
+
+  it("a count that is not a plain whole number: unchanged", () => {
+    const world = worldWithHooks({ "pre-push": HEAVY_HOOK });
+    for (const count of ["", "abc", "-1", "01", "1.5", " 1", "1e3", "99999999999999999999"]) {
+      expect([count, gitRewrite(world, "git push", { env: { GIT_CONFIG_COUNT: count } })]).toEqual([
+        count,
+        null,
+      ]);
+    }
+  });
+});
+
+describe.skipIf(NATIVE_WINDOWS)("a line with a git command is never queued whole", () => {
+  it("git is no heavy kind, so a line of heavy commands and git has no route of its own", () => {
+    const source: WeightSource = { folder: "/repo", isFile: () => false, scriptsIn: () => null };
+    for (const line of [
+      "git commit -m x && bun test",
+      "bun test && git push",
+      "git push; bunx tsc",
+    ]) {
+      expect([line, routeHeavyCommand(line, KINDS, SHELL, source)]).toEqual([line, null]);
+    }
+  });
+
+  it("a heavy command next to a git command: the git command still gets its prefix", () => {
+    const world = worldWithHooks({ "pre-push": HEAVY_HOOK });
+    expect(gitRewrite(world, "bun test && git push")).toBe(
+      `bun test && ${prefixOf(world)} git push`,
+    );
+    expect(routeGitHooks("git status", contextFor(world.repo, "git status"), KINDS)).toBeNull();
+  });
+});
+
+describe.skipIf(NATIVE_WINDOWS)("the rewritten line, run by bash with real git", () => {
+  it("a heavy pre-commit runs through the launcher: job hook, then job run --hook", () => {
+    const world = worldWithHooks({});
+    const marker = join(world.repo, "marker");
+    const hook = join(world.repo, ".git", "hooks", "pre-commit");
+    writeFileIn(hook, `#!/bin/sh\necho ran >> ${marker}\nif false; then bun test; fi\n`, 0o755);
+    world.fakeLauncher({ answer: "queue test:run", strict: true });
+    stageFile(world.repo);
+    const line = gitRewrite(world, 'git commit -q -m "two"');
+    expect(line).toBe(`${prefixOf(world)} git commit -q -m "two"`);
+    const ran = runIn(world.repo, ["bash", "-c", line ?? "false"], cleanGitEnv());
+    expect(ran.code).toBe(0);
+    expect(git(world.repo, "log", "--format=%s", "-1")).toBe("two\n");
+    expect(readFileSync(marker, "utf8")).toBe("ran\n");
+    expect(world.calls()).toEqual([
+      "job hook pre-commit",
+      `job run --hook --kind test:run -- ${hook}`,
+    ]);
+  });
+
+  it("an inherited pair survives: the hook sees it alone (the kit's own pair is taken out), and git still runs the hook", () => {
+    const world = worldWithHooks({});
+    const seen = join(world.repo, "seen");
+    writeFileIn(
+      join(world.repo, ".git", "hooks", "pre-commit"),
+      `#!/bin/sh\necho "$GIT_CONFIG_COUNT $GIT_CONFIG_KEY_0=$GIT_CONFIG_VALUE_0" > ${seen}\nif false; then bun test; fi\n`,
+      0o755,
+    );
+    world.fakeLauncher({ answer: "queue test:run", strict: true });
+    stageFile(world.repo);
+    const inherited = {
+      GIT_CONFIG_COUNT: "1",
+      GIT_CONFIG_KEY_0: "safe.directory",
+      GIT_CONFIG_VALUE_0: "*",
+    };
+    const line = gitRewrite(world, "git commit -q -m two", { env: inherited });
+    expect(line).toBe(`${prefixOf(world, 1)} git commit -q -m two`);
+    const ran = runIn(world.repo, ["bash", "-c", line ?? "false"], {
+      ...cleanGitEnv(),
+      ...inherited,
+    });
+    expect(ran.code).toBe(0);
+    expect(readFileSync(seen, "utf8")).toBe("1 safe.directory=*\n");
+    expect(world.calls()).toHaveLength(2);
+  });
+
+  it("the commit that was left as written runs its hook as git always did: the launcher is never asked", () => {
+    const world = worldWithHooks({});
+    const marker = join(world.repo, "marker");
+    writeFileIn(
+      join(world.repo, ".git", "hooks", "pre-commit"),
+      `#!/bin/sh\necho ran >> ${marker}\nbunx biome check .\nexit 0\n`,
+      0o755,
+    );
+    world.fakeLauncher({ answer: "queue test:run", strict: true });
+    stageFile(world.repo);
+    expect(gitRewrite(world, "git commit -q -m two")).toBeNull();
+    expect(runIn(world.repo, ["git", "commit", "-q", "-m", "two"], cleanGitEnv()).code).toBe(0);
+    expect(readFileSync(marker, "utf8")).toBe("ran\n");
+    expect(world.calls()).toEqual([]);
+  });
+});
+
+describe.skipIf(NATIVE_WINDOWS)("a git command inside another git command's substitution", () => {
+  it("each command gets its own prefix, whatever order the reader lists them in", () => {
+    const world = worldWithHooks({ "pre-commit": HEAVY_HOOK, "pre-push": HEAVY_HOOK });
+    const p = prefixOf(world);
+    expect(gitRewrite(world, 'git commit -m "$(git push -n)"')).toBe(
+      `${p} git commit -m "$(${p} git push -n)"`,
+    );
+    expect(
+      gitRewrite(world, "git push -n origin $(git commit -q --allow-empty -m y && echo HEAD)"),
+    ).toBe(`${p} git push -n origin $(${p} git commit -q --allow-empty -m y && echo HEAD)`);
+  });
+
+  it("run by bash, both hooks reach the launcher", () => {
+    const world = worldWithHooks({});
+    const origin = tempDir("route-git-origin");
+    git(origin, "init", "-q", "--bare");
+    git(world.repo, "remote", "add", "origin", origin);
+    const hooks = join(world.repo, ".git", "hooks");
+    const noop = "#!/bin/sh\nif false; then bun test; fi\n";
+    writeFileIn(join(hooks, "pre-commit"), noop, 0o755);
+    writeFileIn(join(hooks, "pre-push"), noop, 0o755);
+    world.fakeLauncher({ answer: "queue test:run", strict: true });
+    const p = prefixOf(world);
+    const lines = [
+      [
+        'git commit -q --allow-empty --allow-empty-message -m "$(git push -n origin HEAD:refs/heads/x 2>/dev/null)"',
+        `${p} git commit -q --allow-empty --allow-empty-message -m "$(${p} git push -n origin HEAD:refs/heads/x 2>/dev/null)"`,
+      ],
+      [
+        "git push -q -n origin $(git commit -q --allow-empty -m y && echo HEAD:refs/heads/x)",
+        `${p} git push -q -n origin $(${p} git commit -q --allow-empty -m y && echo HEAD:refs/heads/x)`,
+      ],
+    ] as const;
+    for (const [line, expected] of lines) {
+      const rewritten = gitRewrite(world, line);
+      expect(rewritten).toBe(expected);
+      const ran = runIn(world.repo, ["bash", "-c", rewritten ?? "false"], cleanGitEnv());
+      expect([line, ran.err, ran.code]).toEqual([line, "", 0]);
+      const asked = world.calls().filter((call) => call.startsWith("job hook "));
+      expect(asked.toSorted()).toEqual(["job hook pre-commit", "job hook pre-push"]);
+      expect(world.calls().filter((call) => call.startsWith("job run "))).toHaveLength(2);
+      rmSync(world.log);
+    }
+  });
+});
+
+describe.skipIf(NATIVE_WINDOWS)("a git command in a bash array stays as written", () => {
+  it("the list of an array assignment holds words, not commands", () => {
+    const world = worldWithHooks({ "pre-commit": HEAVY_HOOK, "pre-push": HEAVY_HOOK });
+    for (const line of [
+      `cmd=(git commit --allow-empty -m x); "\${cmd[@]}"`,
+      "args+=(git push)",
+      "local -a cmd=(git push origin main)",
+      "declare -a a=(git push)",
+      "cmd=(\n  git push\n)",
+      "cmd=( git push )",
+    ]) {
+      expect([line, gitRewrite(world, line)]).toEqual([line, null]);
+    }
+    // A plain subshell, and a substitution that is assigned, are commands.
+    expect(gitRewrite(world, "(git push)")).toBe(`(${prefixOf(world)} git push)`);
+    expect(gitRewrite(world, "x=$(git push)")).toBe(`x=$(${prefixOf(world)} git push)`);
+  });
+});
+
+describe.skipIf(NATIVE_WINDOWS)(
+  "only the kit's own folder, as this version writes it, is routed to",
+  () => {
+    it("a folder without the kit's mark, or with a stale script or a stray file: no prefix", () => {
+      const marked = worldWithHooks({ "pre-push": HEAVY_HOOK });
+      expect(gitRewrite(marked, "git push")).toBe(`${prefixOf(marked)} git push`);
+      rmSync(join(marked.paths.gitHooksFolder, OWNED_FOLDER_MARK));
+      expect(gitRewrite(marked, "git push")).toBeNull();
+
+      const stale = worldWithHooks({ "pre-push": HEAVY_HOOK });
+      writeFileIn(join(stale.paths.gitHooksFolder, "pre-push"), "#!/bin/sh\nexit 0\n", 0o755);
+      expect(gitRewrite(stale, "git push")).toBeNull();
+
+      const stray = worldWithHooks({ "pre-push": HEAVY_HOOK });
+      writeFileIn(join(stray.paths.gitHooksFolder, "push-to-checkout"), "#!/bin/sh\n", 0o755);
+      expect(gitRewrite(stray, "git push")).toBeNull();
+    });
+  },
+);
+
+describe.skipIf(NATIVE_WINDOWS)("git merge runs commit-msg too", () => {
+  it("a merge whose only heavy hook is commit-msg is prefixed", () => {
+    const world = worldWithHooks({ "commit-msg": HEAVY_HOOK });
+    expect(gitRewrite(world, "git merge topic")).toBe(`${prefixOf(world)} git merge topic`);
+    const light = worldWithHooks({ "commit-msg": LIGHT_HOOK, "pre-merge-commit": LIGHT_HOOK });
+    expect(gitRewrite(light, "git merge topic")).toBeNull();
+  });
+});
+
+describe.skipIf(!NATIVE_WINDOWS)("on native Windows, the real platform", () => {
+  it("leaves a git command with a heavy hook as written: no prefix yet", () => {
+    const world = worldWithHooks({ "pre-push": HEAVY_HOOK, "pre-commit": HEAVY_HOOK });
+    expect(gitRewrite(world, "git push")).toBeNull();
+    expect(gitRewrite(world, 'git add -A && git commit -m "x"')).toBeNull();
   });
 });

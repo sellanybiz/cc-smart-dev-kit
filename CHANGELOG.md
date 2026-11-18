@@ -3,6 +3,43 @@
 What each release changed, newest first. A release's **What to run** steps are the ones to do
 in your own terminal after the update; the user guide is [README.md](README.md).
 
+## 5.1.0
+
+- **The heavy-job queue sees more of the real heavy work.** `bun test` joins `vitest` and `jest`
+  (and `bun test --coverage` is a coverage run). A run on named files skips the queue: `bun test`
+  only for a path that starts with `./` or `/`, because Bun reads a bare word as a filter, and now
+  `tsc --noEmit src/a.ts` too. `tsc -p`, `--build` and a run with no file still wait. Each tool
+  has its own option table, so `-w` (watch for vitest, workers for jest) is read right.
+  `playwright test` is a new `e2e` kind, and a watch run (`--watch`, `--ui`) is never queued.
+  `cross-env` is read through. A line is called light only when every command in it is understood.
+- **Package scripts are read by what they run.** `bun run typecheck` with the body `tsc --noEmit`
+  is a type check, and `"$npm_execpath" test` is the runner's test. The `package.json` is the
+  nearest one up to the repo root, `pre` and `post` scripts are read where the runner runs them,
+  and each runner's `--` rule is the one it really has. A script that mixes a linter and `tsc` is
+  not queued; a `{ "script": "check" }` kind queues it whole.
+- **The route leaves light lines alone**, and a call with no timeout gets the Bash tool's longest.
+  A waiting line says your place in line, and says to run a long wait in the background.
+  `job status` lists the waiting jobs in the order the queue serves them.
+- **Git hooks wait for a slot.** A `git commit`, `git merge` or `git push` whose own hook is heavy
+  (husky, a plain `pre-commit` or `pre-push`) waits like any other heavy run. Setup writes a
+  folder of hook scripts, `~/.local/share/cc-smart-dev-kit/git-hooks/`; when the route is on, the
+  git line gets three `GIT_CONFIG_*` words in front of it, so your own `git` deny and ask rules
+  still match. An allow rule does not match past them: with `Bash(git push *)` only in your
+  allow list, a prefixed push asks you again. Your hook runs inside `job run --hook`. `--no-verify`, your own `core.hooksPath`
+  and native Windows are left alone, and any doubt runs the hook as it is. New commands:
+  `job hook <name>`, and `job run --hook` for the scripts. `doctor` has a git hooks line: a
+  missing folder is a warning until `setup` runs, and a folder the kit did not make is a ✗ that says
+  to move it away first.
+- **`worktrees.guardMainFolder` covers Bash.** The guard also refuses a Bash command that writes a
+  file in the main checkout or changes its branch (`echo x > a.txt`, `sed -i`, `git checkout`,
+  `git commit`), and lets plan mode's plan file through. A session that starts in the main checkout
+  is told to make its first change in a worktree. After you approve a plan there, the `plan-task`
+  skill copies the plan file into the worktree.
+
+**What to run:** `cc-smart-dev-kit setup`, to write the git hooks folder (a plugin update
+rewrites it at the next session start once it exists). A project with its own `jobs.kinds` for
+`bun test` or `tsc` can drop them.
+
 ## 5.0.0
 
 A major version: `update` holds it until you run `cc-smart-dev-kit update` on each machine.

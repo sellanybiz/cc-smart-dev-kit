@@ -12,11 +12,14 @@ import type { Env } from "./run";
 // them from here, so this file hands them on rather than every hook changing its import.
 export { IGNORE_CASE, isInside, samePath } from "../path-compare";
 
+/** What `GitRun.err` says when the timeout stopped git. */
+export const GIT_TIMED_OUT = "timed out";
+
 export interface GitRun {
   ok: boolean;
   /** stdout, trimmed. */
   out: string;
-  /** stderr, trimmed; "timed out" when the timeout stopped it. */
+  /** stderr, trimmed; `GIT_TIMED_OUT` when the timeout stopped it. */
   err: string;
   /** git's exit code; null when it did not exit on its own (a timeout, or it never started). */
   code: number | null;
@@ -71,7 +74,7 @@ function spawnGit(
       // A guard runs with no console of its own on Windows: without this, git opens one.
       windowsHide: true,
     });
-    const err = result.signalCode ? "timed out" : result.stderr.toString().trim();
+    const err = result.signalCode ? GIT_TIMED_OUT : result.stderr.toString().trim();
     const code = result.signalCode ? null : result.exitCode;
     const out = result.stdout.toString();
     return { ok: result.exitCode === 0, out: trim ? out.trim() : out, err, code };
@@ -115,7 +118,7 @@ export async function runGitAsync(
     return {
       ok: code === 0,
       out: stdout.trim(),
-      err: signaled ? "timed out" : stderr.trim(),
+      err: signaled ? GIT_TIMED_OUT : stderr.trim(),
       code: signaled ? null : code,
     };
   } catch (error) {

@@ -1,20 +1,39 @@
 /**
- * Which heavy-job kind does a Bash command run, if any? `classifyHeavyCommand` reads the
- * command with the one shell reader the guards use too (`src/shell/command.ts`), so a tool
- * named inside quotes, a quoted here-doc, a comment or an `echo` is text, not a run, and a
- * tool a substitution, a here-doc fed to `sh` or a pipe into `sh` runs is a run.
+ * Which heavy-job kind does a Bash command run, if any, and how heavy is the run?
+ * `classifyHeavyCommand` reads the command with the one shell reader the guards use too
+ * (`src/shell/command.ts`), so a tool named inside quotes, a quoted here-doc, a comment or an
+ * `echo` is text, not a run, and a tool a substitution, a here-doc fed to `sh` or a pipe into
+ * `sh` runs is a run.
  *
- * It finds the tool behind the usual runners: `bunx`, `bun x`, `bun run`, `bun <name>`,
- * `npx`, `npm exec`, `npm run`, `pnpm`, `yarn`, a `node_modules/.bin/` path, `node <script
- * path>`, the wrappers the shell reader steps over (`time -p`, `timeout`, `nice`, `env -i`,
- * `sudo -u x`, `xargs`, …, with their options), and `bash -c "…"`. A `package.json` script is
- * matched only by a kind's `{ "script": … }` rule: when the name is a script of the folder the
- * line runs in, a tool rule never matches it, so a project whose `tsc` script wraps a type
- * check is not queued twice. The classifier learns that through an injected reader
- * (`ScriptSource`, `package-scripts.ts`); it reads no file itself.
+ * It finds the tool behind the usual runners: `bunx`, `bun x`, `bun run`, `bun test`, `bun
+ * <name>`, `npx`, `npm exec`, `npm run`, `pnpm`, `yarn`, a `node_modules/.bin/` path, `node
+ * <script path>`, the wrappers the shell reader steps over (`time -p`, `timeout`, `nice`, `env
+ * -i`, `cross-env`, `sudo -u x`, `xargs`, …, with their options), and `bash -c "…"`.
  *
- * Pure: no file, no environment — the reader is the caller's, and it is asked at most once per
- * folder in a run. A later hook routes what it finds through `job run`.
+ * A `package.json` script is matched by a kind's `{ "script": … }` rule first. A script no rule
+ * names is read by its **body**: the commands in it are classified as if the line ran them, in
+ * the folder of the `package.json`, with the `pre<name>` and `post<name>` scripts the runner
+ * runs beside it. When the name is a script of the folder the line runs in, a tool rule never
+ * matches it (the script is read, not the tool of the same name). A line or a script body that
+ * already runs `cc-smart-dev-kit job run` (under any spelling of the kit's command, `isJobRun`,
+ * which is the guards' recogniser and leans toward yes: another tool's `dist/cli.js job run`
+ * counts too, a missed queue at worst) is queued already: it is never routed or weighed
+ * again, so a project whose `tsc` script wraps the queue is not queued twice. The classifier
+ * learns the scripts and the files through injected readers (`ScriptSource`, `WeightSource`,
+ * `package-scripts.ts`); it reads no file itself.
+ *
+ * Four questions, one walk of the line (`scan`):
+ * - `classifyHeavyCommand`: the first heavy kind the line runs (any command of it), also inside
+ *   a `job run` it already holds.
+ * - `classifyUnqueuedHeavy`: the same, but none for a line that already runs `job run`: what
+ *   the git hook's question reads.
+ * - `routableLine`: the line the route may queue, when **every** command in it is heavy and
+ *   none of them is `job run`.
+ * - `runWeight`: whether a run is light (it names only existing files, or only prints), heavy
+ *   (with its kind) or none (nothing heavy, a watch run that never ends, or already queued).
+ *
+ * Pure: no file, no environment — the readers are the caller's, and the script reader is asked
+ * at most once per folder in a run.
  */
 
 import { isAbsolute, join, normalize } from "node:path";
@@ -23,11 +42,11 @@ import {
   type Dialect,
   invocationOf,
   isAssignmentOnly,
+  isJobRun,
   isRunnerProgram,
   MAX_NESTING,
   nestedCommand,
   nestedDialect,
-  programName,
   redirectionTargets,
   type ShellStep,
   shellSteps,
@@ -35,7 +54,8 @@ import {
   wordsOf,
   wordsWithFill,
 } from "../shell/command";
-import type { KindSpec, Kinds, MatchRule } from "./kinds";
+import { programName } from "../shell/program-name";
+import { isPrintOnly, isWatchRun, type Kinds, type MatchRule, namesOnlyFiles } from "./kinds";
 
 /** What a command really runs: a program (by name) and its arguments. */
 export interface ToolCall {
@@ -44,21 +64,43 @@ export interface ToolCall {
   args: string[];
   /** Set when the word may name a `package.json` script (`bun run <name>`, `yarn <name>`). */
   script?: string;
+  /**
+   * The folder the package manager was told to run in (`bun --cwd app`, `pnpm -C app`, `npm
+   * --prefix app`), as written: relative to the folder the line runs in.
+   */
+  dir?: string;
 }
 
 /**
- * The `scripts` names of a folder's `package.json`, or null when there is none to read (no
- * file, or one the reader cannot use). Injected, so the classifier stays pure; the real one is
+ * The scripts of a folder's `package.json`: each name with its body. `folder` is the folder of
+ * the `package.json` itself — where a script runs — when it is not the folder that was asked
+ * (the reader walks up to the nearest file, as the package managers do).
+ */
+export type ScriptBodies = ReadonlyMap<string, string> & {
+  readonly folder?: string;
+  /** The project uses Yarn 2 or newer (berry), which runs no `pre` or `post` script of a script. */
+  readonly yarnBerry?: boolean;
+};
+
+/**
+ * The `scripts` of a folder's `package.json`, or null when there is none to read (no file, or
+ * one the reader cannot use). Injected, so the classifier stays pure; the real one is
  * `packageScripts` (`package-scripts.ts`).
  */
-export type ScriptsOf = (folder: string) => ReadonlySet<string> | null;
+export type ScriptsOf = (folder: string) => ScriptBodies | null;
 
 /** Where a line runs, and how a package manager's script name is looked up there. */
 export interface ScriptSource {
   /** The folder the line starts in: the Bash tool's own folder (after a `cd`, the one it moves to). */
   folder: string;
-  /** Reads a folder's `scripts` names. Called at most once per folder in a run. */
+  /** Reads a folder's `scripts`. Called at most once per folder in a run. */
   scriptsIn: ScriptsOf;
+}
+
+/** A `ScriptSource` that can also say whether a word names a file: what `runWeight` needs. */
+export interface WeightSource extends ScriptSource {
+  /** True when `word` names an existing file, read from `folder` (`fileExistsIn`). */
+  isFile: (folder: string, word: string) => boolean;
 }
 
 /** What one classification run knows: the folder each command runs in, and one read per folder. */
@@ -67,26 +109,48 @@ interface Run {
   source: ScriptSource | undefined;
   /** The folder the command being read runs in; null when the line moves somewhere unknown. */
   folder: string | null;
-  /** Per folder: its `scripts` names, or null when it has no `package.json` to read. */
-  cache: Map<string, ReadonlySet<string> | null>;
+  /** Per folder: its `scripts`, or null when it has no `package.json` to read. */
+  cache: Map<string, ScriptBodies | null>;
+  /** Inside a script's body: the package manager that ran it, which `$npm_execpath` names. */
+  runner: string | undefined;
+  /** Inside a one-command script body: the words after the script's name, given to that command. */
+  extra: readonly string[] | undefined;
+  /** Inside a script's body of several commands: no run in it is a run on named files. */
+  compound: boolean;
+  /** The (folder, script) pairs being read, so a script that calls itself ends. */
+  reading: readonly string[];
+  /**
+   * With `all`: a run that only prints counts as understood. The route's own walk refuses it (a
+   * print-only run is not heavy, so it is never queued); the weight's walk accepts it, since
+   * such a run is light and so is a line made of it.
+   */
+  printOk: boolean;
 }
 
 /** The state a top-level classification starts with. */
 function runOf(source: ScriptSource | undefined): Run {
-  return { source, folder: source?.folder ?? null, cache: new Map() };
+  return {
+    source,
+    folder: source?.folder ?? null,
+    cache: new Map(),
+    runner: undefined,
+    extra: undefined,
+    compound: false,
+    reading: [],
+    printOk: false,
+  };
 }
 
 /**
- * The `scripts` names of the folder the line is in, or null when nothing can say: no reader,
- * no folder (the line moved somewhere unknown), or no `package.json` there. Null keeps the
- * classifier's old answer — the word is the tool — which is also the safe one for a project
- * whose file is broken: it is treated as one with no file, never as one with no scripts.
+ * The scripts of `folder`, or null when nothing can say: no reader, no folder (the line moved
+ * somewhere unknown), or no `package.json` there. Null keeps the classifier's old answer — the
+ * word is the tool — which is also the safe one for a project whose file is broken: it is
+ * treated as one with no file, never as one with no scripts.
  */
-function scriptsAt(run: Run): ReadonlySet<string> | null {
-  if (run.source === undefined || run.folder === null) return null;
-  const folder = run.folder;
+function scriptsAt(run: Run, folder: string | null): ScriptBodies | null {
+  if (run.source === undefined || folder === null) return null;
   if (!run.cache.has(folder)) {
-    let found: ReadonlySet<string> | null = null;
+    let found: ScriptBodies | null = null;
     try {
       found = run.source.scriptsIn(folder);
     } catch {
@@ -95,20 +159,6 @@ function scriptsAt(run: Run): ReadonlySet<string> | null {
     run.cache.set(folder, found);
   }
   return run.cache.get(folder) ?? null;
-}
-
-/**
- * True when the word is a script of the folder the line runs in: then only a kind's
- * `{ "script": … }` rule can match it, and no tool rule does. False when it is no script
- * there, and the package manager runs `node_modules/.bin/<name>`, so a tool rule matches as
- * before. Undefined when nothing says (no reader, no folder, no file): the tool, as before.
- */
-function scriptOnly(call: ToolCall, run: Run): boolean | undefined {
-  // An empty name (`npm test`) is no tool name: no tool rule could match it anyway, so the
-  // folder is not read for it.
-  if (call.script === undefined || call.name === "") return undefined;
-  const scripts = scriptsAt(run);
-  return scripts === null ? undefined : scripts.has(call.script);
 }
 
 /** `cd`'s own options, which name no folder: `-L`, `-P`, `-e`, `-@` and the end of options. */
@@ -125,6 +175,16 @@ function folderWord(args: readonly string[]): string | undefined {
 }
 
 /**
+ * The folder `target` names from `folder`; null when the target is not written out (a variable,
+ * a glob, `-`) or `folder` is not known and the target is relative.
+ */
+function resolveFolder(folder: string | null, target: string | undefined): string | null {
+  if (target === undefined || target === "-" || COMPUTED_FOLDER.test(target)) return null;
+  if (isAbsolute(target)) return normalize(target);
+  return folder === null ? null : normalize(join(folder, target));
+}
+
+/**
  * The folder a change-dir command moves the rest of the line to; null when the line does not
  * name it: `cd` alone (`$HOME`), `cd -`, a folder a variable or a glob gives, or a folder stack
  * (`popd`, and `pushd` with no word). A `cd` is tracked; the other dialects' spellings are
@@ -137,15 +197,51 @@ function folderAfter(
 ): string | null {
   if (folder === null) return null;
   if (program !== "cd" && program !== "chdir" && program !== "pushd") return null;
-  const target = folderWord(args);
-  if (target === undefined || target === "-" || COMPUTED_FOLDER.test(target)) return null;
-  return isAbsolute(target) ? normalize(target) : normalize(join(folder, target));
+  return resolveFolder(folder, folderWord(args));
 }
 
 /** Options whose value is the next word, per runner: so the value is not the program. */
 const BUN_VALUED = ["--config", "--cwd", "--env-file", "--filter", "--preload", "-c", "-F", "-r"];
 const NPX_VALUED = ["--package", "-p", "--call", "-c", "--workspace", "-w"];
+const NPM_VALUED = ["--prefix", "-C"];
 const PNPM_VALUED = ["--filter", "-F", "--dir", "-C", "--workspace-root"];
+const YARN_VALUED = [...PNPM_VALUED, "--cwd"];
+/** The valued options of each package manager, so a value is never read as the command. */
+const RUNNER_VALUED: Readonly<Record<string, readonly string[]>> = {
+  bun: BUN_VALUED,
+  npm: NPM_VALUED,
+  pnpm: PNPM_VALUED,
+  yarn: YARN_VALUED,
+};
+
+/**
+ * The options that tell a package manager which folder to run in, per runner: `bun --cwd`,
+ * `pnpm -C` / `--dir`, `npm --prefix` / `-C`, `yarn --cwd` (each one's own documentation).
+ */
+const RUNNER_FOLDER_OPTIONS: Readonly<Record<string, readonly string[]>> = {
+  bun: ["--cwd"],
+  npm: ["--prefix", "-C"],
+  pnpm: ["-C", "--dir"],
+  yarn: ["--cwd"],
+};
+
+/** The folder option among `head` (the runner's words before the script or tool name), as written. */
+function runnerFolder(program: string, head: readonly string[]): string | undefined {
+  const names = RUNNER_FOLDER_OPTIONS[program] ?? [];
+  for (let index = 0; index < head.length; index++) {
+    const word = head[index] ?? "";
+    const equals = word.indexOf("=");
+    if (!names.includes(equals === -1 ? word : word.slice(0, equals))) continue;
+    return equals === -1 ? head[index + 1] : word.slice(equals + 1);
+  }
+  return undefined;
+}
+
+/** `call` with the folder the runner was told to run in, when it was told. */
+function inFolder(call: ToolCall, program: string, head: readonly string[]): ToolCall {
+  const dir = runnerFolder(program, head);
+  return dir === undefined ? call : { ...call, dir };
+}
 /** `node` options that take the next word (a module, or code): it is not the script. */
 const NODE_VALUED = [
   "--conditions",
@@ -202,7 +298,10 @@ const TOOL_VALUED: Readonly<Record<string, readonly string[]>> = {
   podman: ["--connection", "--url", "--root", "--runroot", "--log-level"],
 };
 
-/** Bun's own commands: `bun <one of these>` is never a script or a package's program. */
+/**
+ * Bun's own commands, other than `test`: `bun <one of these>` is never a script or a package's
+ * program. `bun test` is Bun's own test runner, a heavy command (`toolOf`).
+ */
 const BUN_COMMANDS = new Set([
   "add",
   "build",
@@ -219,7 +318,6 @@ const BUN_COMMANDS = new Set([
   "remove",
   "repl",
   "rm",
-  "test",
   "unlink",
   "update",
   "upgrade",
@@ -262,9 +360,7 @@ export function toolOf(program: string, args: string[], depth = 0): ToolCall | u
   if (depth > 4) return undefined;
   const at = (valued: readonly string[], from = 0) => firstWord(args, from, valued);
   if (["bun", "npm", "pnpm", "yarn"].includes(program)) {
-    const index = at(
-      program === "bun" ? BUN_VALUED : program === "pnpm" || program === "yarn" ? PNPM_VALUED : [],
-    );
+    const index = at(RUNNER_VALUED[program] ?? []);
     const sub = args[index];
     if (
       (program === "yarn" && sub === undefined) ||
@@ -289,39 +385,52 @@ export function toolOf(program: string, args: string[], depth = 0): ToolCall | u
       if (sub === "run") {
         const nameAt = firstWord(args, index + 1, BUN_VALUED);
         const name = args[nameAt];
-        return name === undefined ? undefined : scriptOrTool(name, args.slice(nameAt + 1));
+        if (name === undefined) return undefined;
+        return inFolder(scriptOrTool(name, args.slice(nameAt + 1)), program, args.slice(0, nameAt));
+      }
+      // Bun's own test runner, never a script: its options before `test` (`bun --bun test`)
+      // stay in the arguments, where the table of `bun test` reads them.
+      if (sub === "test") {
+        return { name: "bun", args: ["test", ...args.slice(0, index), ...args.slice(index + 1)] };
       }
       if (BUN_COMMANDS.has(sub)) return undefined;
-      return scriptOrTool(sub, args.slice(index + 1));
+      return inFolder(scriptOrTool(sub, args.slice(index + 1)), program, args.slice(0, index));
     }
     case "npm": {
-      const index = at([]);
+      const index = at(NPM_VALUED);
       const sub = args[index];
       const rest = args.slice(index + 1);
       if (sub === "exec" || sub === "x") return toolOf("npx", rest, depth + 1);
-      if (sub === "test" || sub === "t") return { name: "", args: rest, script: "test" };
+      if (sub === "test" || sub === "t") {
+        return inFolder({ name: "", args: rest, script: "test" }, program, args.slice(0, index));
+      }
       if (sub === "run" || sub === "run-script") {
-        const nameAt = firstWord(rest, 0, []);
+        const nameAt = firstWord(rest, 0, NPM_VALUED);
         const name = rest[nameAt];
         if (name === undefined) return undefined;
-        return { name: "", args: rest.slice(nameAt + 1), script: name };
+        const call = { name: "", args: rest.slice(nameAt + 1), script: name };
+        return inFolder(call, program, args.slice(0, index + 1 + nameAt));
       }
       return undefined;
     }
     case "pnpm":
     case "yarn": {
-      const index = at(PNPM_VALUED);
+      const index = at(RUNNER_VALUED[program] ?? []);
       const sub = args[index];
       if (sub === undefined) return undefined;
       const rest = args.slice(index + 1);
       if (sub === "exec" || sub === "dlx") return toolOf("npx", rest, depth + 1);
-      if (sub === "test" || sub === "t") return { name: "", args: rest, script: "test" };
+      if (sub === "test" || sub === "t") {
+        return inFolder({ name: "", args: rest, script: "test" }, program, args.slice(0, index));
+      }
       if (sub === "run" || sub === "run-script") {
         const nameAt = firstWord(rest, 0, []);
         const name = rest[nameAt];
-        return name === undefined ? undefined : scriptOrTool(name, rest.slice(nameAt + 1));
+        if (name === undefined) return undefined;
+        const call = scriptOrTool(name, rest.slice(nameAt + 1));
+        return inFolder(call, program, args.slice(0, index + 1 + nameAt));
       }
-      return scriptOrTool(sub, rest);
+      return inFolder(scriptOrTool(sub, rest), program, args.slice(0, index));
     }
     case "node": {
       // `node node_modules/vitest/vitest.mjs run` runs the tool through its script path.
@@ -352,14 +461,6 @@ function startsWithSub(args: readonly string[], sub: readonly string[], valued: 
   return true;
 }
 
-/** A run that only prints and stops: every argument is a print-only option. */
-function printsOnly(kind: KindSpec, args: readonly string[]): boolean {
-  const printOnly = new Set((kind.printOnly ?? []).map((flag) => flag.toLowerCase()));
-  return (
-    printOnly.size > 0 && args.length > 0 && args.every((arg) => printOnly.has(arg.toLowerCase()))
-  );
-}
-
 /**
  * Does `rule` match what the command runs? `scriptOnly`: the word is a `package.json` script
  * of its folder, so a tool rule never matches it — only a script rule can.
@@ -377,38 +478,245 @@ export function ruleMatches(rule: MatchRule, call: ToolCall, scriptOnly = false)
   return text === undefined || call.args.some((arg) => arg.toLowerCase().includes(text));
 }
 
+/** The kind a call matched, and how: by a tool rule (`tool`: its name) or by a script rule. */
+interface Hit {
+  kind: string;
+  /** The tool a tool rule matched, whose own options are read; undefined for a script rule. */
+  tool: string | undefined;
+  /** The run only prints and stops (`tsc --version`): any one print-only option of its kind. */
+  printOnly: boolean;
+}
+
 /**
  * The kind `call` runs, or null. When several match (`vitest --coverage` is a test run and a
  * coverage run), the first one listed wins: the kinds are listed with the specific one first
- * (`DEFAULT_KINDS`), and a project's own kinds come after the defaults.
+ * (`DEFAULT_KINDS`), and a project's own kinds come after the defaults. A run that only prints
+ * is a match too, flagged: a kind of its own that matches it without printing wins over it, and
+ * a script is a script, never print-only.
  */
-function kindOfCall(call: ToolCall, kinds: Kinds, scriptOnly = false): string | null {
+function matchOfCall(call: ToolCall, kinds: Kinds, scriptOnly: boolean): Hit | null {
+  let printing: Hit | null = null;
   for (const [name, kind] of Object.entries(kinds)) {
-    const heavy = (kind.match ?? []).some(
-      (rule) =>
-        ruleMatches(rule, call, scriptOnly) &&
-        // A program that only prints (`tsc --version`) is not heavy; a script is a script.
-        ("script" in rule || !printsOnly(kind, call.args)),
-    );
-    if (heavy) return name;
+    const rules = (kind.match ?? []).filter((rule) => ruleMatches(rule, call, scriptOnly));
+    if (rules.length === 0) continue;
+    if (rules.some((rule) => "script" in rule)) {
+      return { kind: name, tool: undefined, printOnly: false };
+    }
+    const hit = { kind: name, tool: call.name, printOnly: isPrintOnly(kind, call.args) };
+    if (!hit.printOnly) return hit;
+    printing ??= hit;
   }
-  return null;
+  return printing;
 }
 
-function inspect(
+/** One heavy command a line runs, with what the weight of it depends on. */
+interface Found extends Hit {
+  call: ToolCall;
+  /** The folder the command runs in; null when the line moves somewhere unknown. */
+  folder: string | null;
+  /** The command is one of several in a script's body: its arguments are not all it is given. */
+  compound: boolean;
+}
+
+/** What one walk of a line finds: its heavy commands, and what else the weight depends on. */
+interface Scan {
+  found: Found[];
+  /** The line sends a command to the background. */
+  background: boolean;
+  /** The line (or a script it runs) already runs `job run`: it is queued, and must not nest. */
+  queued: boolean;
+}
+
+const newScan = (): Scan => ({ found: [], background: false, queued: false });
+
+/** A lone `&` (a command sent to the background): not `&&`, `2>&1`, `&>file` or `|&`. */
+const LONE_AMPERSAND = /(?<![&|>])&(?![&>])/;
+
+/**
+ * True when a line sends a command to the background (`a & b`). The reader gives the commands
+ * of the line, not the separators between them, so the text between each two is read here. A
+ * command the line does not hold as written (a substitution, a here-doc) cannot be placed, and
+ * the answer is then yes: the safe one for the caller, which only asks about several heavy runs.
+ */
+function sendsToBackground(command: string, steps: readonly ShellStep[]): boolean {
+  let at = 0;
+  for (const step of steps) {
+    // The reader leaves an empty step where an operator (`&&`, `;`) sits.
+    if (step.text === "") continue;
+    const start = command.indexOf(step.text, at);
+    if (start === -1 || LONE_AMPERSAND.test(command.slice(at, start))) return true;
+    at = start + step.text.length;
+  }
+  return LONE_AMPERSAND.test(command.slice(at));
+}
+
+/** `$npm_execpath`, `${npm_execpath}`: the package manager that runs a script, as the program. */
+const NPM_EXECPATH = /^\$\{?npm_execpath\}?$/;
+
+/** True when the body is one plain command (an assignment alone is no command). */
+function isOneCommand(body: string): boolean {
+  const steps = shellSteps(body, { blindWhenOpen: true, dialect: "bash", joinLines: true });
+  return (
+    steps
+      .map((step) => wordsOf(step.text))
+      .filter((words) => words.length > 0 && !isAssignmentOnly(words)).length === 1
+  );
+}
+
+/**
+ * Reads a script's body (and its `pre` and `post` scripts, which bun, npm, pnpm and yarn classic
+ * run beside it; yarn berry does not, and the reader says so: `ScriptBodies.yarnBerry`).
+ * `all`: every command in them must be heavy, as on a line. Returns false when that fails, or
+ * when the script cannot be read (too deep, or it calls itself).
+ */
+function expandScript(
+  call: ToolCall,
+  runner: string,
+  bodies: ScriptBodies,
+  lookedUpIn: string | null,
+  kinds: Kinds,
+  depth: number,
+  run: Run,
+  all: boolean,
+  out: Scan,
+): boolean {
+  if (depth >= MAX_NESTING) return false;
+  const name = call.script ?? "";
+  const folder = bodies.folder ?? lookedUpIn;
+  const hooks = !(runner === "yarn" && bodies.yarnBerry === true);
+  const parts = [hooks ? `pre${name}` : "", name, hooks ? `post${name}` : ""].filter((part) =>
+    bodies.has(part),
+  );
+  const main = bodies.get(name) ?? "";
+  // Extra arguments reach a body that is one plain command; a body of several is never light.
+  const one = parts.length === 1 && isOneCommand(main);
+  for (const part of parts) {
+    const key = JSON.stringify([folder, part]);
+    if (run.reading.includes(key)) {
+      if (all) return false;
+      continue;
+    }
+    const inside: Run = {
+      ...run,
+      folder,
+      runner,
+      extra: one && part === name ? call.args : undefined,
+      compound: run.compound || !one,
+      reading: [...run.reading, key],
+    };
+    if (!scan(bodies.get(part) ?? "", kinds, "bash", depth + 1, inside, all, out) && all) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * The arguments a package runner hands to the script, from those written after its name. A
+ * runner takes a `--` for itself and drops it, so what follows is the script's own words and
+ * the watch rule must see them (`bun run e2e -- --ui` runs `playwright test --ui`):
+ * - npm: the first `--`, wherever it stands (`npm run <command> [-- <args>]`, its docs: not
+ *   run here). A flag written before it is npm's own, and goes (see below);
+ * - Bun: a `--` that comes first (run on Bun 1.4.4: `s -- --ui` gives `--ui`, `s a -- --ui` gives
+ *   `a -- --ui`);
+ * - Yarn 1 (classic): the first `--`, wherever it stands (run on 1.22.22: `run p a -- --ui` gives
+ *   `a --ui`, with the warning "scripts don't require `--`");
+ * - Yarn 2+ (berry): a `--` that comes first (run on 3.8.7 and 4.9.2, same as Bun).
+ * pnpm passes the `--` on to the script (run on 7, 8, 9 and 10: `run p -- --ui` gives
+ * `-- --ui`), so it stays.
+ */
+function scriptArgs(args: string[], runner: string, bodies: ScriptBodies): string[] {
+  const at = args.indexOf("--");
+  if (runner === "npm") {
+    // npm keeps a flag written before the `--` for itself (`npm run e2e --ui` runs the plain
+    // script: "Use `--` to pass `-`-prefixed flags and options which would otherwise be parsed
+    // by npm"). Its valued options are not guessed: a value left in is a plain word, and a
+    // plain word only makes a run light when it names a file that exists.
+    const own = at === -1 ? args : args.slice(0, at);
+    const after = at === -1 ? [] : args.slice(at + 1);
+    return [...own.filter((word) => word === "-" || !word.startsWith("-")), ...after];
+  }
+  if (at === -1) return args;
+  const anywhere = runner === "yarn" && bodies.yarnBerry !== true;
+  const leading = runner === "bun" || (runner === "yarn" && bodies.yarnBerry === true);
+  const drops = anywhere || (leading && at === 0);
+  return drops ? [...args.slice(0, at), ...args.slice(at + 1)] : args;
+}
+
+/**
+ * Reads one command's tool call: records the heavy command it is, or reads the script it runs.
+ * Returns whether it is heavy (a script: whether its body is, when `all`).
+ */
+function matchCall(
+  asked: ToolCall,
+  runner: string,
+  kinds: Kinds,
+  depth: number,
+  run: Run,
+  all: boolean,
+  out: Scan,
+): boolean {
+  const lookedUpIn = asked.dir === undefined ? run.folder : resolveFolder(run.folder, asked.dir);
+  const bodies = asked.script === undefined ? null : scriptsAt(run, lookedUpIn);
+  const isScript = asked.script !== undefined && bodies?.has(asked.script) === true;
+  // A script gets its arguments from the runner, which drops its own `--`.
+  const call =
+    isScript && bodies !== null
+      ? { ...asked, args: scriptArgs(asked.args, runner, bodies) }
+      : asked;
+  // A name the project defines as a script is never a tool: only a script rule can match it.
+  const hit = matchOfCall(call, kinds, isScript);
+  if (hit !== null) {
+    // A run that only prints is not heavy (the weight's walk still understands it: `printOk`).
+    if (all && hit.printOnly && !run.printOk) return false;
+    // The command runs in the folder the runner was told to use (`pnpm -C app vitest …`); a
+    // script rule's arguments go to a script that runs in its package.json's folder.
+    const folder = hit.tool === undefined ? (bodies?.folder ?? lookedUpIn) : lookedUpIn;
+    out.found.push({ ...hit, call, folder, compound: run.compound });
+    return true;
+  }
+  if (!isScript || bodies === null) return false;
+  return expandScript(call, runner, bodies, lookedUpIn, kinds, depth, run, all, out);
+}
+
+/**
+ * Walks a line, and everything it runs: each command, the line a shell or wrapper runs, and the
+ * body of a package script, three levels deep (`MAX_NESTING`). Records the heavy commands it
+ * finds in `out`, in order.
+ *
+ * `all` is the route's rule: **every** command must be heavy, a `cd` or an assignment, and the
+ * walk returns false at the first that is not (a print-only run is not heavy, and neither is a
+ * runner such as `find` or `watch`: it does work of its own beside the command it runs, and the
+ * person's `Bash(find:*)` rules only see the words of the line). Without `all`, anything else is
+ * skipped: the walk finds the heavy commands wherever they are. A `cd` moves the rest of the
+ * line; a shell of its own starts in this folder and its own `cd` stays inside it.
+ */
+function scan(
   command: string,
   kinds: Kinds,
   dialect: Dialect,
   depth: number,
   run: Run,
-): string[] {
-  const found: string[] = [];
+  all: boolean,
+  out: Scan,
+): boolean {
   // A quote left open is read blind: more pieces, so nothing hides inside it.
   const steps = shellSteps(command, { blindWhenOpen: true, dialect, joinLines: true });
+  if (sendsToBackground(command, steps)) out.background = true;
   for (const step of steps) {
-    const invocation = invocationOf(wordsOf(step.text, dialect));
-    if (invocation === undefined) continue;
-    const { program, args } = invocation;
+    const words = wordsOf(step.text, dialect);
+    if (all && (words.length === 0 || isAssignmentOnly(words))) continue;
+    const invocation = invocationOf(words);
+    if (invocation === undefined) {
+      if (all) return false;
+      continue;
+    }
+    const { args } = invocation;
+    // In a script's body, `$npm_execpath` is the package manager that ran the script.
+    const program =
+      run.runner !== undefined && NPM_EXECPATH.test(invocation.program)
+        ? run.runner
+        : invocation.program;
     // A redirection (`> out.txt`) is the shell's, never the tool's argument.
     const plain = withoutRedirections(args);
     // A `cd` moves the rest of the line: the script lookup reads the folder it moves to.
@@ -416,22 +724,31 @@ function inspect(
       run.folder = folderAfter(program, plain, run.folder);
       continue;
     }
-    const call = toolOf(program, plain);
-    const kind =
-      call === undefined ? null : kindOfCall(call, kinds, scriptOnly(call, run) === true);
-    if (kind !== null) found.push(kind);
+    if (all && isRunnerProgram(program)) return false;
+    // The queue's own command: whatever it runs is queued already, and must not nest.
+    if (isJobRun(program, args)) out.queued = true;
     const inner = nestedCommand(program, args, step.pipedFrom);
-    if (inner !== undefined && depth < MAX_NESTING) {
-      // A shell of its own starts in this folder, and its own `cd` stays inside it.
-      found.push(...inspect(inner, kinds, nestedDialect(program), depth + 1, { ...run }));
+    // The line a shell runs starts in this folder, and gets none of a script's extra arguments.
+    const readInner = (line: string) =>
+      depth < MAX_NESTING &&
+      scan(line, kinds, nestedDialect(program), depth + 1, { ...run, extra: undefined }, all, out);
+    if (all && inner !== undefined) {
+      // A shell or wrapper that runs a line: that line must be pure too.
+      if (!readInner(inner)) return false;
+      continue;
     }
+    const call = toolOf(program, run.extra === undefined ? plain : [...plain, ...run.extra]);
+    const heavy = call !== undefined && matchCall(call, program, kinds, depth, run, all, out);
+    if (all && !heavy) return false;
+    if (inner !== undefined) readInner(inner);
   }
-  return found;
+  return true;
 }
 
 /**
  * The heavy-job kind a shell command runs, or null. When it runs several (`tsc && next
- * build`), the first kind the line runs.
+ * build`), the first kind the line runs. A run that only prints (`tsc --version`) is no heavy
+ * run; a package script is read by its body.
  */
 export function classifyHeavyCommand(
   command: string,
@@ -439,24 +756,104 @@ export function classifyHeavyCommand(
   source?: ScriptSource,
   dialect: Dialect = "bash",
 ): string | null {
-  const found = inspect(command, kinds, dialect, 0, runOf(source));
-  return found[0] ?? null;
+  return readHeavy(command, kinds, source, dialect).kind;
+}
+
+/** One any-heavy read of a line: its first heavy kind, and whether it already runs `job run`. */
+function readHeavy(
+  command: string,
+  kinds: Kinds,
+  source: ScriptSource | undefined,
+  dialect: Dialect,
+): { kind: string | null; queued: boolean } {
+  const out = newScan();
+  scan(command, kinds, dialect, 0, runOf(source), false, out);
+  return { kind: out.found.find((one) => !one.printOnly)?.kind ?? null, queued: out.queued };
 }
 
 /**
- * The tool and its own arguments behind a `job run` command (`bunx tsc --noEmit` gives
- * `tsc`, `--noEmit`), so the reservation reads the tool's arguments, not the runner's.
- * Falls back to the command as it is.
+ * `classifyHeavyCommand`, except that a line which already runs `job run` (itself, or through a
+ * script's body) gives null: the queue holds it, and a second queue around it would nest, so the
+ * inner job would wait for its own parent's slot. The kind a caller may queue a command under;
+ * `runWeight` and `routableLine` refuse the same line, by the same scan.
  */
-export function toolCallOfArgv(argv: readonly [string, ...string[]]): ToolCall {
-  const invocation = invocationOf([...argv]);
-  if (invocation === undefined) return { name: argv[0], args: argv.slice(1) };
-  return (
-    toolOf(invocation.program, invocation.args) ?? {
-      name: invocation.program,
-      args: invocation.args,
-    }
-  );
+export function classifyUnqueuedHeavy(
+  command: string,
+  kinds: Kinds,
+  source?: ScriptSource,
+  dialect: Dialect = "bash",
+): string | null {
+  const { kind, queued } = readHeavy(command, kinds, source, dialect);
+  return queued ? null : kind;
+}
+
+/** How heavy one run is: light (starts at once), heavy (waits for a slot, of this kind), or none. */
+export type Weight = { weight: "light" } | { weight: "heavy"; kind: string } | { weight: "none" };
+
+/** True when this run takes no slot: it only prints, or names only existing files. */
+function isLight(one: Found, kinds: Kinds, source: WeightSource): boolean {
+  if (one.printOnly) return true;
+  const spec = kinds[one.kind];
+  const { folder } = one;
+  if (spec === undefined || folder === null || one.compound) return false;
+  return namesOnlyFiles(spec, one.call.args, (word) => source.isFile(folder, word), one.tool);
+}
+
+/**
+ * How heavy the heavy commands of a line are, read the way the shell would run them: through a
+ * shell's `-c` string, a wrapper and a package script, with each command's files read in the
+ * folder it runs in (after a `cd`).
+ *
+ * - **light**: every heavy command only prints (`isPrintOnly`), or names only existing files
+ *   under its kind's `noSlotForFiles`. A positive finding only: a command the reader cannot
+ *   place is not light. Several heavy runs sent to the background (`a & b &`) are not light.
+ * - **heavy**: the first heavy command that is not light, with its kind.
+ * - **none**: no heavy command in the line, a watch run (`--watch`, `vitest watch`) that
+ *   never ends and so must never wait for a slot, or a line that runs `job run` already (a
+ *   script whose body queues itself): queued once, never again. `classifyHeavyCommand` still
+ *   reports the kind of such a line: job-route's `heavyRunKind` reads it, then drops a line
+ *   that queues itself through `runWeight`.
+ *
+ * It does not say whether the line may be queued: `routableLine` does (every command heavy).
+ */
+export function runWeight(line: string, kinds: Kinds, source: WeightSource): Weight {
+  const out = newScan();
+  const run = runOf(source);
+  scan(line, kinds, "bash", 0, run, false, out);
+  const { found } = out;
+  const first = found[0];
+  // A line that runs `job run` (itself, or through a script's body) is queued already: a second
+  // queue around it would nest, and the inner job would wait for its own parent's slot.
+  if (first === undefined || out.queued) return { weight: "none" };
+  if (found.some((one) => one.tool !== undefined && isWatchRun(one.tool, one.call.args))) {
+    return { weight: "none" };
+  }
+  const heavy = found.find((one) => !isLight(one, kinds, source));
+  if (heavy !== undefined) return { weight: "heavy", kind: heavy.kind };
+  // Every heavy run is light, but a line is light only when it is nothing else: a command the
+  // reader does not know (`make all`, `./build.sh`) may be the heavy work.
+  if (!everyCommandUnderstood(line, kinds, source, run.cache)) {
+    return { weight: "heavy", kind: first.kind };
+  }
+  return found.length > 1 && out.background
+    ? { weight: "heavy", kind: first.kind }
+    : { weight: "light" };
+}
+
+/**
+ * True when every command of the line is one the reader understands: a `cd`, an assignment, a
+ * heavy-kind command (a run that only prints too), a script followed into its body, or, at the
+ * end, the read-only filters a routed line may pipe into. The same every-command walk the route
+ * uses (`routableKinds`), in its mode that accepts print-only runs.
+ */
+function everyCommandUnderstood(
+  line: string,
+  kinds: Kinds,
+  source: WeightSource,
+  cache: Run["cache"],
+): boolean {
+  const run: Run = { ...runOf(source), cache, printOk: true };
+  return scan(cutAtFilters(line).heavy, kinds, "bash", 0, run, true, newScan());
 }
 
 /** Reads a filter's own arguments: true when that run of it only reads and prints. */
@@ -769,7 +1166,7 @@ function isReadOnlyFilter(step: ShellStep): boolean {
   ) {
     return false;
   }
-  if (redirectionTargets(words).some((target) => target !== "/dev/null")) return false;
+  if (redirectionTargets(filled).some((target) => target !== "/dev/null")) return false;
   return check(withoutRedirections(invocation.args));
 }
 
@@ -817,55 +1214,25 @@ function feedsFiltersAlone(heavy: string): boolean {
 }
 
 /**
+ * The line cut before its trailing read-only filters (`tsc 2>&1 | tail -20` gives `tsc 2>&1`
+ * and `| tail -20`), or the whole line with no filters when it has none to cut. The route queues
+ * the first part; the weight understands it, and the filters are read-only by their own list.
+ */
+function cutAtFilters(line: string): { heavy: string; filters: string } {
+  const split = splitAtFilters(line.trim());
+  return split !== null && feedsFiltersAlone(split.heavy) ? split : { heavy: line, filters: "" };
+}
+
+/**
  * The kinds a line runs, when every command in it is heavy, a `cd`, or an assignment: null
  * as soon as one is anything else. The inner command of a shell (`bash -c "…"`) is read the
  * same way, so `bash -c "tsc && rm x"` is no pure line.
  */
-function routableKinds(
-  command: string,
-  kinds: Kinds,
-  dialect: Dialect,
-  depth: number,
-  run: Run,
-): string[] | null {
-  const found: string[] = [];
-  const steps = shellSteps(command, { blindWhenOpen: true, dialect, joinLines: true });
-  for (const step of steps) {
-    const words = wordsOf(step.text, dialect);
-    // The reader leaves an empty step where an operator (`&&`, `;`) sits.
-    if (words.length === 0 || isAssignmentOnly(words)) continue;
-    const invocation = invocationOf(words);
-    if (invocation === undefined) return null;
-    const { program, args } = invocation;
-    const plain = withoutRedirections(args);
-    // A `cd` is allowed on a routed line, and moves the rest of the line's folder.
-    if (CHANGE_DIR.has(program)) {
-      run.folder = folderAfter(program, plain, run.folder);
-      continue;
-    }
-    // A runner (`find`, `watch`, `su`, `parallel`) does work of its own beside the command it
-    // runs — a delete, a user switch, an endless repeat — and the person's `Bash(find:*)` rules
-    // only see the words of the line that runs: never a pure step (`classifyHeavyCommand` still
-    // reads through it, for the hook's questions).
-    if (isRunnerProgram(program)) return null;
-    const inner = nestedCommand(program, args, step.pipedFrom);
-    if (inner !== undefined) {
-      // A shell or wrapper that runs a line: that line must be pure too.
-      if (depth >= MAX_NESTING) return null;
-      const nested = routableKinds(inner, kinds, nestedDialect(program), depth + 1, {
-        ...run,
-      });
-      if (nested === null) return null;
-      found.push(...nested);
-      continue;
-    }
-    const call = toolOf(program, plain);
-    const kind =
-      call === undefined ? null : kindOfCall(call, kinds, scriptOnly(call, run) === true);
-    if (kind === null) return null;
-    found.push(kind);
-  }
-  return found;
+function routableKinds(command: string, kinds: Kinds, source?: ScriptSource): string[] | null {
+  const out = newScan();
+  // A line that runs `job run` (itself, or through a script's body) is queued already.
+  if (!scan(command, kinds, "bash", 0, runOf(source), true, out) || out.queued) return null;
+  return out.found.map((one) => one.kind);
 }
 
 /** A Bash line the queue can take: its kind, the part that is queued, and the filters after it. */
@@ -898,13 +1265,9 @@ export function routableLine(
   kinds: Kinds,
   source?: ScriptSource,
 ): RoutableLine | null {
-  const split = splitAtFilters(bashCommand.trim());
-  if (split !== null && feedsFiltersAlone(split.heavy)) {
-    const kind = routableKinds(split.heavy, kinds, "bash", 0, runOf(source))?.[0];
-    return kind === undefined ? null : { filters: split.filters, heavy: split.heavy, kind };
-  }
-  const kind = routableKinds(bashCommand, kinds, "bash", 0, runOf(source))?.[0];
-  return kind === undefined ? null : { filters: "", heavy: bashCommand, kind };
+  const { heavy, filters } = cutAtFilters(bashCommand);
+  const kind = routableKinds(heavy, kinds, source)?.[0];
+  return kind === undefined ? null : { filters, heavy, kind };
 }
 
 /** `routableLine`'s kind alone: the heavy-job kind to queue a Bash line under, or null. */

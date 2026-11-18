@@ -7,8 +7,11 @@ import { heavyLimitLine, jobsPaths, readHeavyLimit } from "./config";
 import {
   formatSince,
   holderLines,
+  inLineOrder,
   type ParsedHeld,
+  parseEntry,
   parseHolder,
+  type StoreWaiting,
   shownHolder,
   slotsUsed,
 } from "./queue";
@@ -76,6 +79,17 @@ export function openStores(ctx: JobContext): { machine: LeaseStore } {
   };
 }
 
+/**
+ * The waiting jobs in the order the queue serves them (`inLineOrder`, the order `decide` uses),
+ * so the place a job's waiting line prints is its place here.
+ */
+function inLine(units: readonly StoreWaiting[]): ParsedHeld[] {
+  return units
+    .map((unit) => ({ entry: parseEntry({ mine: false, ...unit }), unit }))
+    .sort((a, b) => inLineOrder(a.entry, b.entry))
+    .map(({ unit }) => ({ holder: parseHolder(unit.text), slot: unit.slot }));
+}
+
 export async function readJobs(ctx: JobContext): Promise<JobsRead> {
   const notes: string[] = [];
   let project: ReturnType<typeof resolveProject> = null;
@@ -103,7 +117,7 @@ export async function readJobs(ctx: JobContext): Promise<JobsRead> {
   };
   try {
     store.held = parsed(await machine.held());
-    store.waiting = parsed(await machine.waiting());
+    store.waiting = inLine(await machine.waiting());
   } catch (error) {
     store.note = error instanceof Error ? error.message : String(error);
   }

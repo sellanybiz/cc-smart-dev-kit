@@ -2,13 +2,25 @@
   "requires": ">=1.0",
   "worktrees": {
     "base": "main",
-    "guardMainFolder": false,
+    "guardMainFolder": true,
     "bases": {
       "hotfix/": "main",
       "release/": "main"
     }
   },
   "protectedBranches": ["main"],
+  "jobs": {
+    "kinds": {
+      "check": {
+        "match": [{ "script": "check" }],
+        "about": "The repo's full check: typecheck, lint, the doc checks, the tests and the build check."
+      },
+      "bundle": {
+        "match": [{ "script": "build" }, { "script": "build:check" }],
+        "about": "The plugin's bundle build, and its staleness check."
+      }
+    }
+  },
   "sessionNames": false,
   "workflow": {
     "reviewBeforePush": true,

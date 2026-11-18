@@ -386,7 +386,7 @@ const CASES: Case[] = [
   },
   {
     spec: mainFolderGuardHook,
-    own: { event: "PreToolUse", matcher: "Edit|Write|NotebookEdit" },
+    own: { event: "PreToolUse", matcher: "Edit|Write|NotebookEdit|Bash" },
     setup: (config) => {
       const repo = project(config);
       return {
