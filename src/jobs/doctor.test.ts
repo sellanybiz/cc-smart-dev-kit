@@ -76,6 +76,22 @@ describe("the git hooks folder's line", () => {
     });
   });
 
+  test("a folder at that path the kit did not make: the fix that works, not setup alone", () => {
+    const paths = cliPaths({ HOME: tempDir("jobs-doctor-hooks") });
+    mkdirSync(paths.gitHooksFolder, { recursive: true });
+    writeFileSync(join(paths.gitHooksFolder, "pre-commit"), "#!/bin/sh\nmine\n");
+    // Setup refuses it ("move it away"), so the fix names that step first.
+    expect(gitHooksCheck(paths, "linux")).toEqual({
+      ok: false,
+      text: "Git hooks folder ~/.local/share/cc-smart-dev-kit/git-hooks was not made by cc-smart-dev-kit, so setup leaves it alone",
+      fix: "move that folder away by hand, then run: cc-smart-dev-kit setup",
+    });
+    // Once it is moved away, setup writes the kit's own folder and the line passes.
+    rmSync(paths.gitHooksFolder, { recursive: true });
+    installGitHooksFolder(paths);
+    expect(gitHooksCheck(paths, "linux").ok).toBe(true);
+  });
+
   test("native Windows: one plain line, never a failure", () => {
     const paths = cliPaths({ HOME: tempDir("jobs-doctor-hooks") });
     expect(gitHooksCheck(paths, "win32")).toEqual({

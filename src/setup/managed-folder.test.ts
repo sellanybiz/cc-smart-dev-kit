@@ -224,6 +224,22 @@ describe("a managed folder written from memory", () => {
     expect(readdirSync(target)).toEqual(["mine.txt"]);
   });
 
+  test("an update with no fileMode keeps each file's own mode; a new file gets 0644", () => {
+    const stateDir = tempDir("managed-folder-state");
+    const target = join(tempDir("managed-folder-target"), "hooks");
+    writeManagedFiles(target, files("one"), options(stateDir));
+    chmodSync(join(target, "b"), 0o700);
+    const more = new Map([...files("two"), ["c", "two\n"]]);
+    expect(writeManagedFiles(target, more, { stateDir }).outcome).toBe("updated");
+    expect(readFileSync(join(target, "b"), "utf8")).toBe("two\n");
+    expect(statSync(join(target, "a")).mode & 0o777).toBe(0o755);
+    expect(statSync(join(target, "b")).mode & 0o777).toBe(0o700);
+    expect(statSync(join(target, "c")).mode & 0o777).toBe(0o644);
+    // Without a mode asked for, a drifted mode is no difference.
+    chmodSync(join(target, "a"), 0o600);
+    expect(writeManagedFiles(target, more, { stateDir }).outcome).toBe("unchanged");
+  });
+
   test("restore removes it whole", () => {
     const stateDir = tempDir("managed-folder-state");
     const target = join(tempDir("managed-folder-target"), "hooks");

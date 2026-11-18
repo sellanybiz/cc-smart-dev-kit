@@ -3,11 +3,11 @@
  * repos, never the real home. Every expected value is written by hand.
  */
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { gitHookWorld, writeFileIn } from "../testing/git-hook-world";
 import { cleanGitEnv, git, tempDir } from "../testing/temp";
-import { HOOK_NAMES, hookDecision, MAX_HOOK_BYTES, realHooksFolder } from "./git-hooks";
+import { HOOK_NAMES, hookDecision, MAX_HOOK_BYTES, realHooksFolder, TIMED_OUT } from "./git-hooks";
 import { DEFAULT_KINDS } from "./kinds";
 import { packageScripts } from "./package-scripts";
 
@@ -54,6 +54,20 @@ describe("realHooksFolder", () => {
     const linked = join(tempDir("git-hooks-linked"), "wt");
     git(world.repo, "worktree", "add", "-q", "-b", "other", linked);
     expect(realHooksFolder(linked, world.routedEnv())).toBe(join(world.repo, ".git", "hooks"));
+  });
+
+  test("with no time left it never starts git, and a git slower than its limit is stopped: timed out, not null", () => {
+    const world = gitHookWorld();
+    const bin = join(tempDir("git-hooks-fake-git"), "bin");
+    const marker = join(bin, "..", "started");
+    // A `git` first on PATH that records that it was started, then sleeps.
+    writeFileIn(join(bin, "git"), `#!/bin/sh\necho started >> "${marker}"\nexec sleep 30\n`, 0o755);
+    const env = { ...ENV, PATH: `${bin}:${ENV.PATH ?? ""}` };
+    expect(realHooksFolder(world.repo, env, 0)).toBe(TIMED_OUT);
+    expect(realHooksFolder(world.repo, env, -50)).toBe(TIMED_OUT);
+    expect(existsSync(marker)).toBe(false);
+    expect(realHooksFolder(world.repo, env, 300)).toBe(TIMED_OUT);
+    expect(existsSync(marker)).toBe(true);
   });
 
   test("is null outside a repo", () => {
@@ -115,6 +129,21 @@ describe("hookDecision", () => {
     expect(hookDecision("pre-push", world.repo, DEFAULT_KINDS, sourceFor(world.repo), ENV)).toBe(
       "none",
     );
+  });
+
+  test("with no time left for git the answer is timed-out, and git is never started", () => {
+    const world = gitHookWorld();
+    writeFileIn(join(world.repo, ".git", "hooks", "pre-commit"), "#!/bin/sh\nbun test\n", 0o755);
+    const bin = join(tempDir("git-hooks-fake-git"), "bin");
+    const marker = join(bin, "..", "started");
+    writeFileIn(join(bin, "git"), `#!/bin/sh\necho started >> "${marker}"\nexit 1\n`, 0o755);
+    const env = { ...ENV, PATH: `${bin}:${ENV.PATH ?? ""}` };
+    const source = sourceFor(world.repo);
+    expect(hookDecision("pre-commit", world.repo, DEFAULT_KINDS, source, env, 0)).toBe("timed-out");
+    expect(existsSync(marker)).toBe(false);
+    // With time, the same call asks git (this fake says no) and finds no repo: a plain none.
+    expect(hookDecision("pre-commit", world.repo, DEFAULT_KINDS, source, env, 5000)).toBe("none");
+    expect(existsSync(marker)).toBe(true);
   });
 
   test("outside a repo there is nothing to run", () => {

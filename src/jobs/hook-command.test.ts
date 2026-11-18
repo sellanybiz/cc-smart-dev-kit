@@ -118,6 +118,33 @@ describe("job hook", () => {
     }
   });
 
+  test("the question for the hooks folder is bounded by the budget too, and a timeout there says so", () => {
+    const world = gitHookWorld();
+    writeFileIn(join(world.repo, ".git", "hooks", "pre-commit"), "#!/bin/sh\nbun test\n", 0o755);
+    // A `git` that answers everything but the question for the hooks folder, which it never does.
+    const real = Bun.which("git") ?? "git";
+    const fake = join(tempDir("hook-hang"), "bin");
+    writeFileIn(
+      join(fake, "git"),
+      `#!/bin/sh\ncase "$*" in *--git-path*) exec sleep 30 ;; esac\nexec ${real} "$@"\n`,
+      0o755,
+    );
+    const env = {
+      ...ENV,
+      PATH: `${fake}:${ENV.PATH ?? ""}`,
+      CC_SMART_DEV_KIT_GUARD_BUDGET_MS: "2600",
+    };
+    const started = Date.now();
+    const result = runIt(["pre-commit"], world.repo, env);
+    // About 0.6 s of the budget is left for that call; the fixed 5 s limit would show here.
+    expect(Date.now() - started).toBeLessThan(3_500);
+    expect(result.code).toBe(0);
+    expect(result.printed).toEqual(["direct"]);
+    expect(result.said).toHaveLength(1);
+    expect(result.said[0]).toContain("git did not answer in time");
+    expect(result.said[0]).toContain("the hook runs as it is");
+  });
+
   test("a git that hangs is stopped within the budget: direct, with one line, never a hung commit", () => {
     const world = gitHookWorld();
     writeFileIn(join(world.repo, ".git", "hooks", "pre-commit"), "#!/bin/sh\nbun test\n", 0o755);

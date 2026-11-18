@@ -307,9 +307,15 @@ describe("the script, run by real git", () => {
       expect(quiet.code).toBe(0);
       expect(quiet.err).toBe("");
     }
-    const noAdvice = commit([], { ...world.routedEnv(), GIT_ADVICE: "0" });
-    expect(noAdvice.code).toBe(0);
-    expect(noAdvice.err).toBe("");
+    // GIT_ADVICE is a git boolean (probed on git 2.53): set and empty, false, no, off, 0 (any
+    // case) are off; true, yes, on, 1 are on.
+    for (const off of ["", "false", "no", "off", "0", "FALSE", "No"]) {
+      const noAdvice = commit([], { ...world.routedEnv(), GIT_ADVICE: off });
+      expect([off, noAdvice.code, noAdvice.err]).toEqual([off, 0, ""]);
+    }
+    for (const on of ["true", "yes", "on", "1"]) {
+      expect(commit([], { ...world.routedEnv(), GIT_ADVICE: on }).err).toContain(hint);
+    }
     expect(world.calls()).toEqual([]);
   });
 
@@ -449,6 +455,13 @@ describe("the script, run by real git", () => {
 });
 
 describe("gitHooksState", () => {
+  test("a folder without the kit's mark is not the kit's, whatever it holds", () => {
+    const world = gitHookWorld();
+    installGitHooksFolder(world.paths);
+    rmSync(join(world.paths.gitHooksFolder, ".cc-smart-dev-kit-owned"));
+    expect(gitHooksState(world.paths)).toEqual({ kind: "not-ours" });
+  });
+
   test("missing, ok, and each problem named", () => {
     const world = gitHookWorld();
     expect(gitHooksState(world.paths)).toEqual({ kind: "missing" });

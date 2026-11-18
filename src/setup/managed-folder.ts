@@ -112,8 +112,21 @@ function contentOfFiles(files: ReadonlyMap<string, string>): Content {
 }
 
 /**
- * True when `target` is ours and holds exactly the files of `content`, with the same bytes and,
- * when `mode` is given, the same mode on every file.
+ * True when `file` is there with exactly `bytes` and, when `mode` is given, that mode — except
+ * on Windows, where a mode is no protection and `statSync` makes one up (`file-mode.ts`). The one
+ * meaning of "the same file" for a folder's check and for an in-place rewrite.
+ */
+function sameFile(file: string, bytes: Buffer, mode: number | undefined): boolean {
+  if (!existsSync(file)) return false;
+  if (mode !== undefined && hostPlatform() !== "win32" && (statSync(file).mode & 0o777) !== mode) {
+    return false;
+  }
+  return readFileSync(file).equals(bytes);
+}
+
+/**
+ * True when `target` is ours and holds exactly the files of `content`, each the same
+ * (`sameFile`).
  */
 function sameFolder(target: string, content: Content, mode: number | undefined): boolean {
   const files = content.names;
@@ -122,10 +135,7 @@ function sameFolder(target: string, content: Content, mode: number | undefined):
   if (have.length !== files.length || have.some((file, index) => file !== files[index])) {
     return false;
   }
-  if (mode !== undefined && hostPlatform() !== "win32") {
-    if (files.some((file) => (statSync(join(target, file)).mode & 0o777) !== mode)) return false;
-  }
-  return files.every((file) => readFileSync(join(target, file)).equals(content.read(file)));
+  return files.every((file) => sameFile(join(target, file), content.read(file), mode));
 }
 
 /** The record file; a state folder that cannot be read is an error, as `changed.json` is. */
@@ -220,7 +230,7 @@ function writeFolder(
   if (options.dryRun) return { files: count, outcome };
   recordOwnedFolder(options.stateDir, real);
   if (hadOld && update === "in-place") {
-    rewriteFiles(real, content, mode);
+    rewriteFiles(real, content, options.fileMode);
     return { files: count, outcome };
   }
   const token = `${process.pid}-${crypto.randomUUID()}`;
@@ -251,16 +261,14 @@ function writeFolder(
  * never a missing one; the folder itself is never renamed. Only a file that differs is written.
  * Files `content` does not hold go last, so the folder is complete while they are removed.
  */
-function rewriteFiles(real: string, content: Content, mode: number): void {
-  const checkMode = hostPlatform() !== "win32";
+function rewriteFiles(real: string, content: Content, mode: number | undefined): void {
   for (const name of content.names) {
     const file = join(real, ...name.split("/"));
     const bytes = content.read(name);
-    const same =
-      existsSync(file) &&
-      readFileSync(file).equals(bytes) &&
-      (!checkMode || (statSync(file).mode & 0o777) === mode);
-    if (!same) atomicWrite(file, bytes.toString("utf8"), mode);
+    if (sameFile(file, bytes, mode)) continue;
+    // With no mode asked for, a file keeps the one it has (a new file gets the default).
+    const keep = existsSync(file) ? statSync(file).mode & 0o777 : FILE_MODE;
+    atomicWrite(file, bytes.toString("utf8"), mode ?? keep);
   }
   const wanted = new Set(content.names.map((name) => name.split("/")[0]));
   for (const entry of readdirSync(real)) {

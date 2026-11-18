@@ -48,7 +48,7 @@ export function hookLauncher(paths: CliPaths): string {
  *    No file: `exit 0`, as git does for a hook that is not there. husky v9's folder
  *    (`.husky/_`) holds a stub for every name: a stub whose `.husky/<name>` is missing is no
  *    hook either, and it ends here without starting the command. A file git itself would skip
- *    (not executable) gets git's own hint (unless `advice.ignoredHook` or `GIT_ADVICE=0` turned
+ *    (not executable) gets git's own hint (unless `advice.ignoredHook` or a false `GIT_ADVICE` turned
  *    it off) and `exit 0`. husky's `HUSKY=0` skips step 2.
  * 2. Asks `<launcher> job hook <name>`. Only `queue <kind>` changes anything: every other answer,
  *    a missing launcher and a failing one run the hook as it is, so a broken kit never blocks a
@@ -81,9 +81,14 @@ case $real_dir in
     ;;
 esac
 if [ ! -x "$real" ]; then
-  # Git's own hint, unless the person turned it off (advice.ignoredHook=false, or GIT_ADVICE=0).
+  # Git's own hint, unless the person turned it off (advice.ignoredHook=false, or GIT_ADVICE read
+  # as git reads a boolean: set and empty, false, no, off or 0, in any case, is off).
   hint=1
-  if [ "\${GIT_ADVICE:-}" = 0 ]; then hint=; fi
+  if [ "\${GIT_ADVICE+set}" = set ]; then
+    case $GIT_ADVICE in
+      '' | [Ff][Aa][Ll][Ss][Ee] | [Nn][Oo] | [Oo][Ff][Ff] | 0) hint= ;;
+    esac
+  fi
   if [ -n "$hint" ] && [ "$(git config --type=bool advice.ignoredHook 2>/dev/null)" = false ]; then hint=; fi
   if [ -n "$hint" ]; then
     echo "hint: The '$real' hook was ignored because it's not set as executable." >&2
@@ -135,6 +140,7 @@ export function installGitHooksFolder(
 /** What `doctor` and the refresh find in the folder. */
 export type GitHooksState =
   | { kind: "missing" }
+  | { kind: "not-ours" }
   | { kind: "ok" }
   | { kind: "problems"; problems: string[] };
 
@@ -149,13 +155,16 @@ function isExecutable(file: string): boolean {
 }
 
 /**
- * The folder as it is: missing, as this version writes it, or with problems, one short phrase
- * each — a name that is missing, is not executable, holds another version's text, or is a file
+ * The folder as it is: missing, not the kit's own (a folder at that path without the kit's mark:
+ * setup refuses it until it is moved away), as this version writes it, or with problems, one
+ * short phrase each — a name that is missing, is not executable, holds another version's text, or is a file
  * that should not be there (a stray `push-to-checkout` would change how git pushes).
  */
 export function gitHooksState(paths: CliPaths): GitHooksState {
   const folder = paths.gitHooksFolder;
   if (!existsSync(folder)) return { kind: "missing" };
+  // A folder at that path the kit did not make (no mark): setup never replaces it.
+  if (!existsSync(join(folder, OWNED_FOLDER_MARK))) return { kind: "not-ours" };
   const wanted = hookScript(hookLauncher(paths));
   const problems: string[] = [];
   for (const name of HOOK_NAMES) {
@@ -186,7 +195,8 @@ function recordedAsOurs(paths: CliPaths): boolean {
  */
 function refreshDue(paths: CliPaths, version: string): boolean {
   if (!recordedAsOurs(paths)) return false;
-  if (gitHooksState(paths).kind !== "problems") return false;
+  const state = gitHooksState(paths).kind;
+  if (state !== "problems" && state !== "not-ours") return false;
   return findUserInstall(paths.installedPluginsFile)?.version === version;
 }
 

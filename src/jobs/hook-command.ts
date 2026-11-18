@@ -14,7 +14,7 @@
 import { COMMAND } from "../build-info";
 import { SHORT_GUARD_BUDGET_MS, startBudget } from "../hooks/budget";
 import { GUARD_GIT_TIMEOUT_MS } from "../hooks/git";
-import { resolveProject, type TimeFor } from "../project/resolve";
+import { GitTimedOutError, resolveProject, type TimeFor } from "../project/resolve";
 import { HOOK_NAMES, hookDecision } from "./git-hooks";
 import { type Kinds, mergeKinds } from "./kinds";
 import { packageScripts } from "./package-scripts";
@@ -54,6 +54,8 @@ export function hookAnswer(name: string | undefined, cwd: string, env: Env = pro
     env,
     budget.timeFor(GUARD_GIT_TIMEOUT_MS),
   );
+  // The same error, and so the same one line, as the project lookup's own timeout.
+  if (decision === "timed-out") throw new GitTimedOutError();
   return typeof decision === "object" ? `queue ${decision.queue}` : "direct";
 }
 

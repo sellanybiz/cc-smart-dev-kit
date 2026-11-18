@@ -55,8 +55,15 @@ export const HOOK_NAMES: readonly string[] = [
   "post-index-change",
 ];
 
-/** What the kit does with one hook: run it as it is, run it inside a queue slot, or nothing. */
-export type HookDecision = "direct" | "none" | { queue: string };
+/** What `realHooksFolder` answers when git did not answer in time, or had no time left. */
+export const TIMED_OUT = "timed-out";
+
+/**
+ * What the kit does with one hook: run it as it is, run it inside a queue slot, or nothing.
+ * `timed-out`: git did not say where the hooks are, so nothing is known about this hook; the
+ * command answers `direct` and says why.
+ */
+export type HookDecision = "direct" | "none" | "timed-out" | { queue: string };
 
 /**
  * A hook larger than this runs direct, unread. A hook that runs tests is a few lines; a file
@@ -71,16 +78,19 @@ const HOOKS_PATH_ARGS = ["rev-parse", "--path-format=absolute", "--git-path", "h
  * The hooks folder git itself would use in `cwd`: the repo's own `core.hooksPath` (a relative
  * one is read from the work tree's root), else `<git dir>/hooks`. `GIT_CONFIG_COUNT=0` throws
  * away the `GIT_CONFIG_*` pairs a routed command sets, so the answer is the person's folder and
- * never the kit's. Null when git cannot say (not a repo, no git, slower than `timeoutMs`, or
- * no time left: zero or less asks git nothing): the caller treats that as "no hook".
+ * never the kit's. Null when git cannot say (not a repo, no git): the caller treats that as "no
+ * hook". `TIMED_OUT` when git did not answer in `timeoutMs`, or no time is left (zero or less
+ * asks git nothing): that says nothing about the repo, and the caller says so.
  */
 export function realHooksFolder(
   cwd: string,
   env: Record<string, string | undefined> = process.env,
   timeoutMs: number = GUARD_GIT_TIMEOUT_MS,
-): string | null {
-  if (timeoutMs <= 0) return null;
+): string | null | typeof TIMED_OUT {
+  if (timeoutMs <= 0) return TIMED_OUT;
   const run = runGit(cwd, HOOKS_PATH_ARGS, env, timeoutMs, { GIT_CONFIG_COUNT: "0" });
+  // `runGit` says "timed out" (and no exit code) when its timeout stopped git (`GitRun.err`).
+  if (run.code === null && run.err === "timed out") return TIMED_OUT;
   return run.ok && run.out !== "" ? run.out : null;
 }
 
@@ -128,6 +138,8 @@ function hookText(file: string): string | null {
  *   command anywhere in it is enough, because nothing is hidden (the git line stays visible
  *   to the person's own rules). A package script in it is followed into its body through
  *   `source`, so `bun run typecheck` reads as `tsc --noEmit`.
+ * - `timed-out`: git did not answer within `gitTimeoutMs` (or no time was left), so it never
+ *   asked: no answer about the hook, which is not the same as no hook.
  * - `direct`: anything else, a hook it cannot read included: a broken guess never blocks a
  *   commit, it only skips the queue.
  *
@@ -143,6 +155,7 @@ export function hookDecision(
   gitTimeoutMs: number = GUARD_GIT_TIMEOUT_MS,
 ): HookDecision {
   const folder = realHooksFolder(cwd, env, gitTimeoutMs);
+  if (folder === TIMED_OUT) return "timed-out";
   if (folder === null || !isFile(join(folder, name))) return "none";
   const file = isHuskyStubFolder(folder) ? join(dirname(folder), name) : join(folder, name);
   if (!isFile(file)) return "none";

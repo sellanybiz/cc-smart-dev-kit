@@ -35,6 +35,14 @@ export function gitHooksCheck(paths: CliPaths, platform: NodeJS.Platform = hostP
       fix: SETUP_FIX,
     };
   }
+  // Setup never replaces a folder it did not make, so "run setup" would only fail the same way.
+  if (state.kind === "not-ours") {
+    return {
+      ok: false,
+      text: `Git hooks folder ${where} was not made by ${COMMAND}, so setup leaves it alone`,
+      fix: `move that folder away by hand, then run: ${SETUP_FIX}`,
+    };
+  }
   if (state.kind === "problems") {
     const shown = state.problems.slice(0, PROBLEMS_SHOWN).join(", ");
     const more = state.problems.length - PROBLEMS_SHOWN;
