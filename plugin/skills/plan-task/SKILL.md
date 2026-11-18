@@ -80,7 +80,7 @@ What the recommended option must be, and how a workaround is labelled: the core 
 Answer eight questions; they are the plan's sections:
 
 1. **Goal** — the real outcome, not the literal request.
-2. **Files to change.**
+2. **Files to change** — every path, repo-relative, a folder as `dir/`. Approval copies the list into the store (§ 4), where it decides which plans may run together.
 3. **Patterns to follow** — from step 1.
 4. **Edge cases** — walk the axes in the review skill's `references/axes.md`
    (`../review/references/axes.md` from this skill's folder) and write down every one this
@@ -122,8 +122,11 @@ queued earlier (§ 6) already has its plan task, so use that one and make no sec
 one phase task per phase (`phase`: its id, with the same `plan`). When the work is several
 plans, write one plan file per plan, and write and commit the other plans' files with the
 approved one: the approval covers them all. Create every plan task, and lay out every plan's
-phases and their tasks, briefs included, now: nothing waits in a file. The first plan starts;
-the others stay queued (§ 6). Put the complete builder brief in each phase's description, in
+phases and their tasks, briefs included, now: nothing waits in a file. Put each plan's
+**Files to change** on its plan task with `files` (`task_create`, or `task_update` for a plan
+queued earlier): the store reads overlaps from that list, and a plan without one is never
+handed to a child (`/cc-smart-dev-kit:tasks` § 2). The first plan starts; the others stay
+queued (§ 6). Put the complete builder brief in each phase's description, in
 four parts: objective; files and boundaries; patterns and tools; output format (`Report:`
 task note and short status). Include interfaces, edge cases and done-check.
 In **patterns and tools**, name the standard components or libraries to use — for example,
@@ -163,6 +166,10 @@ CLI fallback: `/cc-smart-dev-kit:tasks`.
   tasks under the phase that owns its files, or queue it as a task in the next plan (§ 6).
   Only the person raises the cap: a session's `workflow set` of it is refused, so ask them to
   run it in their own terminal.
+- **Several plans: split them by files.** Make plans file-disjoint where the work allows: two
+  plans that share no file can run side by side (§ 6). Set `blocked_by` between plans only for a
+  real dependency (one needs the other's merged code), never to order plans that merely share
+  a file you could split.
 - **A phase is one area of the code with its own file set.** One fresh subagent builds it
   and one review reads it. Its real steps are its tasks, usually 3 to 10, each with a
   done-check. Size a phase by files and area, not by minutes; never make a step a phase.
@@ -216,6 +223,20 @@ CLI fallback: `/cc-smart-dev-kit:tasks`.
   loose task, whatever plans are open: a small fix needs no plan, runs even while a plan is in
   flight, is never refused by the one-plan rule and never puts a plan in flight. Work joins a
   plan only through `parent`: its phase, or the plan's `#n`.
+- **Two or more open plans: the run mode.** When a build starts with two or more open plans
+  (ready or not), `plans.runMode` in `cc-smart-dev-kit workflow show` decides how they run:
+  `solo`, `lead-children` or `coordinator` (`/cc-smart-dev-kit:build` § Lead + children and
+  coordinator modes). With one open plan the mode is solo and nothing is asked. Under `ask`
+  (the default), ask once with `AskUserQuestion`, and say what each costs:
+  - **Solo:** one session builds the plans one after another. The cheapest, and the slowest.
+  - **Lead + children:** the lead builds one plan itself, keeping its full build context, and
+    hands each other ready plan to a linked session. One full session per child on top.
+  - **Coordinator:** the lead builds nothing and stays light; every ready plan goes to a linked
+    session, one full session each.
+
+  The key is the person's own: `workflow set` of it is refused inside Claude Code. Never set
+  it. To keep the answer, give the person the command, `cc-smart-dev-kit workflow set
+  plans.runMode <mode>`, to run in their own terminal. Without that, ask again next time.
 - **A new ask during a build:** track it before acting. In scope: a task under the phase
   that owns its files. For later: one task per ask in the next queued plan (make that plan if
   none), with `task_create`: under its phase when one fits (`parent` set to the phase's `#n`),

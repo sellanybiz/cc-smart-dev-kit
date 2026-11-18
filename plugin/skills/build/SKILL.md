@@ -27,7 +27,8 @@ The phase description is its complete brief; never make a second brief or progre
 Task fields and the CLI fallback belong to `/cc-smart-dev-kit:tasks`.
 
 Work on the plan branch in its worktree. Read `cc-smart-dev-kit workflow show` before git
-side effects. Record the plan's starting commit on its task. Check each phase's files,
+side effects. Record the plan's starting commit (`base`) and its `branch` on its task, in every mode: `herdr plans` judges a
+blocker's merge and a held plan's files from them. Check each phase's files,
 contracts and blockers. Set `blocked_by` only for a real dependency or a shared file;
 disjoint phases run together. Noted work that holds nothing is `non-blocking`, and a
 follow-up is a task in its plan or an issue (`/cc-smart-dev-kit:tasks`), never a blocker. Batch small same-shape edits into one phase
@@ -44,7 +45,8 @@ task in the next queued plan (plan-task § 6). The store refuses a phase beyond 
 flight: finish that plan or park it (plan-task § 6, which holds the whole model, the default
 plan of a call that names none included). Queued plans may already hold their phases; build
 the plan you are building: the one in flight, or, when none is, the lowest-numbered queued
-plan (plan-task § 6). Leave the others queued until it is closed.
+plan (plan-task § 6). Leave the others queued until it is closed, unless the run mode hands them to
+children (§ Lead + children and coordinator modes).
 
 The kit defaults to 10 running subagents per session through Claude Code's own
 `CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS`. Setup writes the managed value and preserves a
@@ -178,9 +180,54 @@ The one pull request of the plan opens after this review passes, as `openPr` and
 person's permissions allow (`/cc-smart-dev-kit:commit`, `/cc-smart-dev-kit:pull-request`).
 Include phase verdicts, final review and real checks. Close the plan with evidence and archive its
 design as the plan skill describes. Remove only merged, finished worktrees and branches.
-After that `task_done`, start the next queued plan yourself; until then it stays queued, with
-its phases already laid. A plan nobody laid is a fresh plan task from
+After that `task_done`, start the next queued plan yourself (a plan child never does: § Lead +
+children and coordinator modes); until then it stays queued, with its phases already laid. A plan nobody laid is a fresh plan task from
 `/cc-smart-dev-kit:plan-task`, never more phases on the closed one.
+
+## Lead + children and coordinator modes
+
+These apply when two or more plans are open and `plans.runMode` is `lead-children` or
+`coordinator` (the person's choice: `/cc-smart-dev-kit:plan-task` § 6). `solo` is everything
+above. Both modes need a Herdr terminal (`/cc-smart-dev-kit:herdr`); without one, build solo
+and say why in one line. A child is a full linked session, so each hand-out follows the herdr
+skill's start rules, with model and effort judged as in § 2.
+
+**See the plans.** `cc-smart-dev-kit herdr plans` prints one line per plan this session leads and
+the live gates behind it. A plan is `ready` only when every blocker's pull request has merged and
+its files overlap no plan another session holds. Other lines say what waits and its fix: `waiting`
+(for a blocker, or a blocker's merge), `overlaps` (a file shared with a held plan), `needs files`
+(no file list), `with child`, `child gone`, `merging`. Paths every plan touches and each merge
+settles (`plans.mergeFiles`) never count as overlap; how a child settles them after a rebase is
+the project's `.claude/cc-smart-dev-kit/build.md`.
+
+**Coordinator: the lead builds nothing**, even when one plan is ready.
+
+1. Run `herdr plans`. Start each `ready` plan with `herdr start --plan <slug>`, all in one
+   message. The store reserves a plan in one step before its child launches, so two starts that
+   share a file cannot both pass: the second is refused and names the plan in its way.
+2. Run `herdr wait` in the background. Each child's `herdr report` names its pull request, what
+   shipped and what failed. Read the pull request itself: a report is evidence, not proof.
+3. When a pull request merges (as `workflow show` says, or by the person), run `herdr plans`: it
+   releases the plan's files, and what waited on them turns `ready`. Start those the same way.
+   While a merge is pending, `herdr plans --wait` in the background returns when a plan changes.
+4. A `child gone` plan resumes with `herdr start --plan <slug>`, in the child's own worktree. The
+   store never gives the plan to a second child while the first lives.
+5. Release a reservation by hand only when the person says so (`herdr plans --release <slug>`).
+
+**Lead + children** is the same, plus one plan the lead builds itself.
+
+1. Take the lowest-numbered `ready` plan: start it as in §§ 1 and 2. In flight, it is held, so no
+   child's plan can overlap it.
+2. Hand every other `ready` plan to a child, as in Coordinator step 1.
+3. Build the own plan with builder subagents, §§ 2 to 6. A child's report or a merge is not the
+   person's prompt: handle it after the current hand-back, never in the middle of a phase.
+4. When the own plan closes, run `herdr plans`. Start the next `ready` plan yourself, or, with
+   none ready, wait as a coordinator does.
+
+**A plan child** is a session started by `herdr start --plan`; its brief begins `Your plan:`. It
+builds only that plan with this skill, starts no session, takes no other plan, reports once with
+the pull request link and stops. This overrides § 6's "start the next queued plan". It never
+coordinates: `--plan` and `adopt` refuse a plan child.
 
 ## Rulings, not stalls
 

@@ -22,6 +22,10 @@ Choose from the person's words, without an extra question when the intent is cle
 
 Say which kind you started. Do not promise reports from an independent session.
 
+A **queued plan** of this project goes to a linked child with `--plan` (below). When to hand
+plans out, and what the lead does meanwhile: `/cc-smart-dev-kit:build` § Lead + children and
+coordinator modes.
+
 ## Start it
 
 Judge model and effort with `/cc-smart-dev-kit:subagent-decision`. For example:
@@ -43,7 +47,16 @@ The first message is wrapped as lead evidence, never the person’s approval.
 - Select `--mode` no broader than the lead's current mode. A plan-mode lead must get its
   plan approved first; never use `bypassPermissions`.
 - Use `--task '#n'` only for an existing open task in this repository on this machine.
-  Else put the scope in the brief, not a task id from another project.
+  Else put the scope in the brief, not a task id from another project. The child works on
+  that task and never takes it.
+- Use `--plan <slug>` to give a whole queued plan to a child. The plan must be one this session
+  laid and not started, with a file list, no open blocker and files that overlap no held plan:
+  `herdr plans` shows it as `ready`. The command reserves the plan, and the child takes it,
+  resets its worktree to `origin/<default branch>`, builds it with `/cc-smart-dev-kit:build`,
+  opens its own pull request and reports. The child is named after the slug, so a long slug
+  needs `--name`. `--plan` cannot be combined with `--task`, `--independent` or `--on`, and it
+  refuses while the default branch is unknown (fix: `git remote set-head origin --auto`). The plan holds the
+  scope, so the brief after `--` can be short: the command adds the plan's steps to it.
 - For an allowlisted remote machine, add `--on <machine>` and its own `--cwd <dir>`.
   The remote user’s login shell must find Claude Code and the kit, with the kit at least as new as this one. Remote reports stay there as files;
   keep the report-list and file-read commands printed by start and wait.
@@ -62,6 +75,13 @@ sessions. Read a pane with `hc get <terminal> --json` and `hc read <terminal>` w
 Send a follow-up with `cc-smart-dev-kit herdr send <terminal> "<scope>"`. The command tags it
 as lead text. A blocked child is the person's, not a send: see below. An unknown status
 needs its pane. Never force text into a dialog.
+
+`cc-smart-dev-kit herdr plans [--json]` shows each plan this session leads: what waits, what
+overlaps, which child works and which is gone, which pull request still holds files. With
+`--wait` (background, like `wait`) it returns when a plan turns ready or a pull request merges,
+and prints its own next command on timeout. It also releases a plan's files once its pull
+request has merged or closed. `plans --release <slug>` frees a finished plan nothing can prove
+merged; it is the person's call, and the Bash judge asks first.
 
 Run `cc-smart-dev-kit herdr wait` with Bash's `run_in_background: true`; let completion
 notify you, rather than polling. Default/`--any` waits for news (done, error, ended);
@@ -85,12 +105,23 @@ stands in for the person's answer.
 
 ## Stop or recover
 
+A `child gone` plan restarts with `cc-smart-dev-kit herdr start --plan <slug>`: the child
+continues in its own worktree and branch, and takes no fresh start. It is refused while that
+child's pane still lives.
+
 `cc-smart-dev-kit herdr stop <terminal>` stops and removes an owned linked terminal. Its
 worktree remains; cleanup is a separate `cc-smart-dev-kit worktrees --clean` decision.
 After a lead restart, run `cc-smart-dev-kit herdr adopt` to recover same-repository children
 whose old lead no longer runs Claude. A bare shell counts as gone; a blocked Claude does
 not. Adopt prints saved report paths. A restarted Claude in the same terminal is still the
 lead, without adoption. The hc parent stays unchanged. Independent sessions are not adopted.
+Adopt also moves every plan whose lead ended, so the new lead owns its children's plans and the
+hand-outs no child took. A plan the old lead built itself must be taken before its next phase:
+adopt prints `task_take <slug>` for it.
+
+**A plan child never coordinates.** A session started with `--plan` builds that one plan, starts
+no session, takes no other plan and stops after its report. Its terminal carries `kit.plan`, and
+`start` and `adopt` refuse there.
 
 Use the kit commands for writes. The Bash judge rejects raw `hc` writes and `herdr-app do`;
 local read-only inspection is allowed (`hc events` only in the background). Remote reads

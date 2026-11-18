@@ -258,7 +258,7 @@ Commit, push and pull request steps follow the project's workflow policy.
 
 The task system is the ledger. `Ruling:` notes keep decisions; `Report:` notes keep results.
 After compaction, `task_list scope plan` and git history show what is done. A finished phase
-is not run again. See [the task design](docs/design/tasks.md).
+is not run again. See [the task design](docs/design/tasks.md). With several plans laid, the lead can hand whole plans to child sessions: [Plans for children](#plans-for-children-510).
 
 ## Release notes
 
@@ -452,12 +452,13 @@ installed command's full usage. A usage mistake exits 2; a refusal or failure ex
 
 | After `cc-smart-dev-kit herdr` | What it does |
 |---|---|
-| `start --model <model> --effort <effort> --mode <mode> [--cwd <dir>] [--on <machine>] [--name <name>] [--task <#n>] [--independent] [--asked] -- <brief>` | Starts a session with a private brief file. `--task` is only for an existing open task in the same project and machine. In git, Claude creates a worktree; existing terminal, folder or branch names are refused. Every session starts through your login shell, so it gets your own PATH. Independent sessions, local or remote, get their own space in Herdr's window; a linked child, local or remote, nests under its lead. Start waits until the child comes up: a child that exits at launch (for example, an untrusted folder) shows its error, is removed, and start fails with no task binding. |
+| `start --model <model> --effort <effort> --mode <mode> [--cwd <dir>] [--on <machine>] [--name <name>] [--task <#n> \| --plan <slug>] [--independent] [--asked] -- <brief>` | Starts a session with a private brief file. `--task` is only for an existing open task in the same project and machine. `--plan` hands one queued plan of this project to a child that builds it end to end (§ [Plans for children](#plans-for-children-510)); it cannot be combined with `--task`, `--independent` or `--on`. In git, Claude creates a worktree; existing terminal, folder or branch names are refused. Every session starts through your login shell, so it gets your own PATH. Independent sessions, local or remote, get their own space in Herdr's window; a linked child, local or remote, nests under its lead. Start waits until the child comes up: a child that exits at launch (for example, an untrusted folder) shows its error, is removed, and start fails with no task binding. |
 | `list [--all] [--json]` | Owned children, or all kit sessions including independent ones; includes counts and blocked status (a blocked child waits for you, in its pane). |
 | `send <terminal> <text>` | Tagged lead text to an owned linked child. A done child gets a plain send, never force; a blocked child is yours to answer in its pane. |
 | `wait [--any \| --all] [--timeout <seconds>] [--seen <addr>:<turn\|?>:<error\|done\|end>[,…]]` | Waits for news (default/any) or each child in the initial barrier (all), up to the timeout. A blocked child is not news: it waits for you, so the lead keeps waiting. Run in a background Bash call. Copy its exact next command, whose percent-encoded address/turn/state cursor covers news already printed. No live children returns immediately; timeout does not mean done. |
+| `plans [--json] [--wait] [--timeout <seconds>] \| plans --release <plan>` | One line per plan this session leads: `ready`, `waiting`, `overlaps`, `needs files`, `with child`, `child gone`, `merging` and the rest, each with its fix. It also releases a finished plan's files once its pull request merged or closed. `--wait`, in a background Bash call, returns when a plan turns ready or a pull request merges, and prints the command to run again on timeout. `--release <plan>` frees a finished plan nothing can prove merged: your call, so Claude's Bash judge asks you first. |
 | `report <text>` | Child reports to a live Claude lead, or saves a unique private file when it cannot. A report is never your consent. |
-| `adopt` | Recovers this repo's same-core linked children after their lead disappears: a lead terminal with no live Claude in it counts as gone. Lists each adopted child's saved report files. A new Claude in the old lead's own terminal is that lead already and needs no adopt. |
+| `adopt` | Recovers this repo's same-core linked children after their lead disappears: a lead terminal with no live Claude in it counts as gone. Lists each adopted child's saved report files. A new Claude in the old lead's own terminal is that lead already and needs no adopt. It also moves the plans of an ended lead to the new one. |
 | `stop <terminal>` | Stops and removes an owned linked terminal; leaves the worktree for separate cleanup. |
 | `machines [list \| allow <name> \| forget <name> \| production <name>]` | Lists or changes remote approval rules. Changes ask you first. |
 
@@ -485,6 +486,30 @@ pass. These rules do not register machines with Herdr or grant network access.
 
 The [design page](docs/design/herdr.md) explains ownership, report files and live proofs still owed. See [doctor](#doctor) for its current diagnostic limits.
 
+#### Plans for children (5.1.0)
+
+With two or more plans laid, `plans.runMode` (§ [The workflow](#the-workflow)) says how they run:
+**solo** (one session, one plan after another), **lead + children** (this session builds one plan
+and hands each other ready plan to a linked session) or **coordinator** (it builds nothing; every
+ready plan goes to a session of its own). Each child is a full session, so it spends more of your
+usage: with `ask`, the default, Claude asks once and states each cost. Both child modes need a
+Herdr terminal. Each plan keeps a file list (`task_update` with `files`, or `task add --plan ...
+--path`), and the store reserves a plan in one step before its child starts, so two plans that
+share a file never run at once. A plan is also held back until the pull request of every plan it
+waits on has merged. `herdr plans` shows where each stands. A child takes its plan, builds it with
+`/cc-smart-dev-kit:build`, opens its own pull request and reports. `herdr start --plan <slug>`
+resumes a child that is gone, in its own worktree. Needs a git project whose default branch is
+known (`git remote set-head origin --auto`). Paths every plan touches and each merge settles go in
+`plans.mergeFiles`. The design: [Herdr](docs/design/herdr.md) and [tasks](docs/design/tasks.md).
+
+**After updating to 5.1.0:** restart every Claude Code session that was open before the update. A
+session from before it does not know `files`, and it ignores reservations: its take and start do
+not check them and its drop does not free them. **Going back to an older kit:** unset
+`plans.runMode` (`cc-smart-dev-kit workflow unset plans.runMode`) in your own file and
+`plans.mergeFiles` (`workflow unset plans.mergeFiles --project`, then commit it) first. An older
+kit's workflow schema is strict and refuses a key it does not know. The task store needs nothing:
+its new table and columns stay, unread, and a plan handed to a child is an ordinary plan again.
+
 ### Tasks (1.10.0)
 
 Work tasks live locally; deploy tasks travel with the branch. `task_create`,
@@ -507,9 +532,9 @@ tasks: it cannot start or be done while one of them is open. Lists mark both:
 
 | Command | What it does |
 |---|---|
-| `task add <subject> [--description <text> \| --file <path\|->] [--kind work\|staging\|prod] [--parent <ref>] [--start] [--type blocking\|non-blocking] [--blocked-by <ref>]... [--phase <id>] [--plan <slug>] [--agent <id>] [--branch <name>] [--worktree <absolute-path>] [--base <sha>] [--deploy before\|after] [--pair] [--flag <flag>]... [--ref <path>]...` | Create work (the default) or a deploy task for `prod` or `staging`: a step owed before or after a deploy, which needs `--deploy` and `--type` and is written as a file under `tasks.dir/<env>/` to commit with your branch. `--pair` with `--kind staging` makes the staging task and its prod twin together. The deploy fields are refused on a work task. The old kinds `follow-up` and `teammate` answer "gone in 5.0.0" (exit 2). Description and file input are alternatives; `-` reads stdin. `--plan` alone makes the plan's own task (subject: its title); `--phase` lays out a phase of the plan (the plan of your latest task when `--plan` is left out); you may lay out the phases of every plan up front, and only one plan runs at a time. `--parent` may name a plan (`#n`): the task waits there for a phase. `--agent`, `--branch`, `--worktree` and `--base` record on a phase who builds it and where: the main session sets them when it starts the phase's builder. A plan holds at most `plans.maxPhases` phases, and a phase starts only once it holds tasks. |
-| `task set <ref> [--type blocking\|non-blocking] [--deploy before\|after] [--block <ref>]... [--unblock <ref>]... [--parent <ref> \| --top] [--agent <id>] [--branch <name>] [--worktree <absolute-path>] [--base <sha>]` | Change a work task's type, its blockers, its parent, or a phase's agent, branch, worktree and base (`task start` takes those four too), or a deploy task's `--type` and `--deploy` (making a blocking one non-blocking, or moving it after the deploy, is the person's, in their own terminal). A move that would put a task under another task is refused, and so is a blocker that sits above the task. `--parent` moves a task that waits under a plan to a phase of that plan. |
-| `task take <plan-slug\|#n> [--from <session>] [--force]` | Take a plan and its members, or one task, into this session. Live claims need `--force`; a refusal changes nothing. Dead claims need no force. A session id without a process gets ownership but no claim. |
+| `task add <subject> [--description <text> \| --file <path\|->] [--kind work\|staging\|prod] [--parent <ref>] [--start] [--type blocking\|non-blocking] [--blocked-by <ref>]... [--phase <id>] [--plan <slug> [--path <file-or-folder/>]...] [--agent <id>] [--branch <name>] [--worktree <absolute-path>] [--base <sha>] [--deploy before\|after] [--pair] [--flag <flag>]... [--ref <path>]...` | Create work (the default) or a deploy task for `prod` or `staging`: a step owed before or after a deploy, which needs `--deploy` and `--type` and is written as a file under `tasks.dir/<env>/` to commit with your branch. `--pair` with `--kind staging` makes the staging task and its prod twin together. The deploy fields are refused on a work task. The old kinds `follow-up` and `teammate` answer "gone in 5.0.0" (exit 2). Description and file input are alternatives; `-` reads stdin. `--plan` alone makes the plan's own task (subject: its title); `--phase` lays out a phase of the plan (the plan of your latest task when `--plan` is left out); you may lay out the phases of every plan up front, and a session runs one plan at a time (children run the others). `--parent` may name a plan (`#n`): the task waits there for a phase. `--agent`, `--branch`, `--worktree` and `--base` record on a phase who builds it and where: the main session sets them when it starts the phase's builder. A plan holds at most `plans.maxPhases` phases, and a phase starts only once it holds tasks. `--path` (repeat it) is the plan's file list, which decides whether it may run beside another plan (§ [Plans for children](#plans-for-children-510)). |
+| `task set <ref> [--type blocking\|non-blocking] [--deploy before\|after] [--block <ref>]... [--unblock <ref>]... [--parent <ref> \| --top] [--agent <id>] [--branch <name>] [--worktree <absolute-path>] [--base <sha>] [--path <file-or-folder/>]... \| --no-files` | Change a work task's type, its blockers, its parent, or a phase's agent, branch, worktree and base (`task start` takes those four too), or a deploy task's `--type` and `--deploy` (making a blocking one non-blocking, or moving it after the deploy, is the person's, in their own terminal). A move that would put a task under another task is refused, and so is a blocker that sits above the task. `--parent` moves a task that waits under a plan to a phase of that plan. `--path` replaces a plan's file list (repo-relative, a folder ends in `/`); `--no-files` clears it. Both are for a plan task only. |
+| `task take <plan-slug\|#n> [--from <session>] [--force]` | Take a plan and its members, or one task, into this session. Live claims need `--force`; a refusal changes nothing. Dead claims need no force. A session id without a process gets ownership but no claim. A plan reserved for a child (§ [Plans for children](#plans-for-children-510)) is taken only with `--from` set to its hand-out id, or by the person with `--force`. |
 | `task start <ref>` | Claim work and mark it in progress. Refused while a task it is blocked by is open, for a phase with no task, and for work in a plan while another plan of yours is in flight (the refusal names that plan: finish it, or park it). The first start in a plan marks its plan task in progress. |
 | `task done <ref> [--evidence <text>] [--note <text>]` | Finish work after its blocking tasks; a deploy task needs `--evidence` and moves to its `archive/`. A step of a phase finishes only with `--evidence`. The answer ends with `· now ready: #12 Phase x, #13 Phase y: start them together` when the close freed your own work (nothing waits on it any more), and is unchanged when it freed none; `task drop` and `task_update` to done or dropped say the same. |
 | `task drop <ref> [--note <text>]` | Drop work no longer needed, with its reason. A step of a phase and a deploy task drop only with `--note`. A **blocking** deploy task is dropped only by the person, in their own terminal: inside Claude Code it is refused, and the answer names the command. |
@@ -534,7 +559,7 @@ are gone in 5.0.0". The status line shows current work on rows of its own, one p
 `Phases 5/25 · <current phase>` (closed phases out of all the plan's phases), then `Tasks 1/3`
 (the current phase's tasks, with the current task's title when it is one). A plan with no phase
 shows `Tasks` for its own tasks instead; a loose task shows its title alone. `task_list` and the
-portal count a plan the same way: its phases, or its tasks when it has no phase.
+portal count a plan the same way: its phases, or its tasks when it has no phase. A session that has handed plans to children adds one more row, `Plans · 2 with children · 1 child gone · 1 merging · 1 waiting · 1 needs files · 2 ready` (zero counts left out; below the rows above when you also build a plan yourself). A session that laid queued plans and has started none shows `Plans · N ready`.
 
 **Schema v4:** old nested tasks lift automatically on every write open. A SQLite snapshot
 (`work.db.v4.bak`) keeps the pre-move data, including the write-ahead log. Notes and history
@@ -2712,6 +2737,8 @@ merge.
 | `alerts.sound` | — | Retired: the same load-only handling as `alerts.events`. |
 | `alerts.usagePercent` | `85` | The plan usage, in percent, a warning starts at (1–100). |
 | `plans.maxPhases` | `10` | The most phases one plan may hold (a whole number, 1–50). A plan is a short list of areas, each with its tasks; more phases than this is a plan to split. Your own default, or the project's in this checkout's `.claude/cc-smart-dev-kit.json` (`workflow set plans.maxPhases 12 --project`); the project's wins. Only you raise it: `workflow set` and `unset` of it refuse inside Claude Code, so a session cannot lift its own limit (`propose` stays open). A project that sets it needs `"requires": ">=4.8"`. |
+| `plans.runMode` | `ask` | How queued plans run when two or more are laid (§ [Plans for children](#plans-for-children-510)): `ask`, `solo`, `lead-children` or `coordinator`. With `ask` Claude asks once and states each mode's cost. Yours alone: a project file that sets it is refused, because a committed value would spend every teammate's usage. `workflow set` and `unset` of it refuse inside Claude Code and print the command to run in your own terminal. |
+| `plans.mergeFiles` | `[]` | Paths every plan touches and each merge settles (a version manifest, a changelog, a lockfile, build output): the overlap check between plans leaves them out. Repo-relative, a folder ends in `/` (`plugin/dist/`); no `..`, no root, no `*`, `?` or `[`. The project's, with `--project` (`workflow set plans.mergeFiles CHANGELOG.md,plugin/dist/ --project`), and read **only as committed on the base branch**, so a session cannot widen it by editing its own copy; `workflow set` and `unset` of it refuse inside Claude Code (`propose` stays open). A project that sets it needs `"requires": ">=5.1"`. |
 
 **Auto-merge is the strictest one.** Even with `autoMerge` on, cc-smart-dev-kit merges by
 itself only when the pull request's base **is** the project's integration base
@@ -2745,6 +2772,7 @@ CI is green and the review is done is the caller's check (the merge guard hook),
 | `alerts.events`, `alerts.sound` | No runtime consumer; retired load-only keys (§ Notifications). |
 | `alerts.usagePercent` | the status line: from that share of a plan window it warns. |
 | `plans.maxPhases` | the kit's task store: the most phases one plan may hold ([docs/design/tasks.md](docs/design/tasks.md)). |
+| `plans.runMode`, `plans.mergeFiles` | the instructions and the plan tools: Claude's `plan-task` and `build` skills ask for and follow the mode, and the store and `herdr start --plan` read the committed `mergeFiles` ([docs/design/workflow.md](docs/design/workflow.md)). |
 | `fixesAfterReview.*` | how much a branch may change after its review and still count as reviewed: the merge guard judges a merge with them, and `workflow merge-check` prints the same verdicts (§ The review record, below). |
 
 **The review record.** The record says one thing: the commit the change set was on had its one
@@ -2941,7 +2969,7 @@ every question it holds.
 | `jobs.route` | `true` or `false`: whether the `job-route` hook sends a heavy Bash command through `cc-smart-dev-kit job run` instead of running it raw (§ The hooks). When left out, your own default decides (`switches.jobRoute` in your `workflow.json`), and without one it is off. The project's value wins over yours. That hook's other part — the launch judge — reads neither this field nor any other: it runs machine-wide. |
 | `workflow` | This project's [workflow](#the-workflow) policy, over your own defaults: what cc-smart-dev-kit may do by itself here. Each field is optional, and the project's value wins field by field. |
 | `workflow.fixesAfterReview` | How much a branch may change after its review and still count as reviewed: `lines`, `files` and `percent` (§ [The workflow](#the-workflow)). Part of the review gate, so the merge guard reads it as committed on the base. |
-| `workflow.plans` | How the kit's plans are shaped (4.8.0): `maxPhases`, the most phases one plan may hold, 1-50 (10 by default) (§ [The workflow](#the-workflow)). |
+| `workflow.plans` | How the kit's plans are shaped (4.8.0): `maxPhases`, the most phases one plan may hold, 1-50 (10 by default); `mergeFiles` (5.1.0), the paths every plan touches and each merge settles, read as committed on the base. `runMode` is yours alone and is refused here (§ [The workflow](#the-workflow)). |
 | `workflow.issues` | GitHub Issues (1.4.0): `enabled` (on by default since 5.0.0) and `allowPublic` (off by default) and the labels `foundLabel`, `fixedLabel`, `readyLabel` (three different words) (§ [The workflow](#the-workflow); `cc-smart-dev-kit issue file`). Read as committed on the base. `watch` and `watchMinutes` are accepted and ignored since 2.0. |
 
 `requires` is a version range (npm syntax). When the installed plugin is older than the range,
