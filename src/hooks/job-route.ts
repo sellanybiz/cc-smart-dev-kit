@@ -33,8 +33,11 @@
  * of memory, or fight for the same cores. Outside git there is no project, so the route does
  * not apply there: a heavy command runs raw. The classifier reads the project's `package.json`
  * in the folder the line runs in (the `cwd` the hook was given, and after a `cd`, the folder it
- * moves to), only to tell a script from the tool of the same name: a `tsc` script that already
- * wraps the job is not wrapped a second time. A heavy command piped into read-only filters
+ * moves to), to tell a script from the tool of the same name and to read a script by its body:
+ * a `tsc` script that already wraps the job is not wrapped a second time. **Only a heavy run is
+ * routed** (`runWeight`): a run that names only files that exist, or only prints, starts at
+ * once and is left raw; so is a watch run or a `--ui` run, which never ends and must not hold a
+ * slot. A heavy command piped into read-only filters
  * (`tsc --noEmit 2>&1 | tail -20`, the list is `READ_ONLY_FILTERS`) is queued without them: the
  * filters stay after the queue's command, where the person's own Bash rules see them.
  *
@@ -50,32 +53,35 @@
  * own shell and starts in the folder that shell is in; a `cd` **inside** the command lives
  * only for that command, and does not move the Bash tool's folder for the next call.
  *
- * A command already inside `cc-smart-dev-kit job run` stays as it is (the queue would nest), and
- * anything the hook cannot read lets the call through.
+ * The rewrite also gives a call that set no `timeout` the Bash tool's longest one
+ * (`REWRITE_TIMEOUT_SUPPORTED`): a job may wait for a slot for many minutes.
+ *
+ * A command already inside `cc-smart-dev-kit job run` stays as it is (the queue would nest: the
+ * classifier says so, through a script's body too), and anything the hook cannot read lets the
+ * call through.
  */
 
 import { existsSync } from "node:fs";
 import { findGitBash, type GitBashFacts } from "../cli/git-bash";
-import { classifyHeavyCommand, routableLine, type ScriptSource } from "../jobs/classify";
+import { classifyHeavyCommand, routableLine, runWeight, type WeightSource } from "../jobs/classify";
 import { type Kinds, mergeKinds } from "../jobs/kinds";
-import { packageScripts } from "../jobs/package-scripts";
-import { LAUNCHER_IN_SHELL, shellQuote } from "../setup/launcher";
+import { diskWeightSource } from "../jobs/weight-source";
+import { LAUNCHER_IN_SHELL } from "../setup/launcher";
 import {
   type Dialect,
   dialectOfTool,
   invocationOf,
-  nestedCommand,
   programName,
   shellSegments,
   withoutRedirections,
   wordsOf,
   wordsWithFill,
 } from "../shell/command";
+import { shellQuote, shellWord } from "../shell/quote";
 import { resolveJobRoute } from "../workflow/resolve";
 import {
   type BashVerdict,
   commandOf,
-  isJobRun,
   judgeAnswer,
   judgeBash,
   judgedDomain,
@@ -90,9 +96,6 @@ import {
   toolInput,
 } from "./io";
 import type { Env, HookContext, HookEnvContext } from "./run";
-
-/** A word that needs no quoting for a shell to keep it as it is. */
-const PLAIN_WORD = /^[A-Za-z0-9_@%+=:,./-]+$/;
 
 /**
  * A character whose shell meaning quoting would change (an expansion, a glob, a redirect, a
@@ -112,11 +115,6 @@ function plainWords(command: string): null | string[] {
   if (words.length === 0 || !words.every((word) => !SHELL_MEANING.test(word))) return null;
   const invocation = invocationOf(words);
   return invocation === undefined || invocation.program !== words[0] ? null : words;
-}
-
-/** One word for the shell: bare when it is plain, quoted otherwise. */
-function shellWord(word: string): string {
-  return PLAIN_WORD.test(word) ? word : shellQuote(word);
 }
 
 /**
@@ -153,20 +151,6 @@ export function jobRunCommand(kind: string, command: string, shell: string): str
   return `${LAUNCHER_IN_SHELL} job run --kind ${kind} -- ${inner}`;
 }
 
-/** True when the line already runs `cc-smart-dev-kit job run` (that queue must not nest). */
-export function runsJobRun(command: string): boolean {
-  return shellSegments(command).some((segment) => {
-    const words = wordsOf(segment);
-    const inner = invocationOf(words);
-    if (inner === undefined) return false;
-    if (isJobRun(inner.program, inner.args)) return true;
-    const nested = nestedCommand(inner.program, inner.args);
-    if (nested === undefined) return false;
-    const deeper = invocationOf(wordsOf(nested));
-    return deeper !== undefined && isJobRun(deeper.program, deeper.args);
-  });
-}
-
 /** The kind a command runs, and the queue command that would run it instead. */
 export interface Routed {
   command: string;
@@ -175,8 +159,15 @@ export interface Routed {
 
 /**
  * The route for a heavy command, or null when there is nothing to route. Pure: `source` is the
- * folder the line runs in and the reader of its `package.json`, so the classifier tells a
- * project's script from a tool of the same name without reading a file itself.
+ * folder the line runs in and the readers of its `package.json` and its files, so the
+ * classifier tells a project's script from a tool of the same name, and the judge tells a run
+ * on named files from a full run, without reading a file themselves.
+ *
+ * Two questions, and both must say yes. `routableLine` says the line may be queued (every
+ * command in it is heavy) and names its kind; `runWeight` says it is heavy. A light run (it
+ * names only files that exist, or only prints) starts at once, so it is never wrapped; a watch
+ * run, a `--ui` run, or a line that queues itself (`weight: none`) must never hold a slot, so it
+ * is never wrapped either. The kind is `routableLine`'s.
  *
  * A line that pipes its heavy command into read-only filters (`tsc --noEmit 2>&1 | tail -20`)
  * queues the heavy part only and keeps the filters after it, outside the queue's command:
@@ -190,11 +181,10 @@ export function routeHeavyCommand(
   command: string,
   kinds: Kinds,
   shell: string,
-  source?: ScriptSource,
+  source: WeightSource,
 ): null | Routed {
-  if (runsJobRun(command)) return null;
   const line = routableLine(command, kinds, source);
-  if (line === null) return null;
+  if (line === null || runWeight(line.heavy, kinds, source).weight !== "heavy") return null;
   const queued = jobRunCommand(line.kind, line.heavy, shell);
   return {
     command: line.filters === "" ? queued : `${queued} ${line.filters}`,
@@ -212,18 +202,95 @@ export function routeHeavyCommand(
 export const REWRITE_SUPPORTED = true;
 
 /**
- * The answer that makes the call run `command` instead: the same tool input, its `command`
- * replaced. **No `permissionDecision`**: the hook replaces the input and the permission system
- * still decides about the rewritten command, so a person's own deny or ask rule for Bash is not
- * overridden by the rewrite (proved live on 2.1.301: without a decision Claude Code ran the
- * rewritten command).
+ * Does this Claude Code take a `timeout` in `updatedInput`? Proved live on 2.1.326 (fake
+ * Anthropic server, throwaway HOME): a PreToolUse hook's `updatedInput.timeout` cut `sleep 6`
+ * at 2 s ("Command timed out after 2s") and raised a 1000 ms call to 10000, so `sleep 3; echo
+ * done` printed `done`. A routed job may wait for a slot for many minutes, so the rewrite gives
+ * a call that set no timeout the Bash tool's longest one. If a version ignores it, flip this to
+ * false: the rewrite then carries the call's own timeout and nothing else.
  */
-export function rewriteAnswer(fields: Record<string, unknown>, command: string): HookResult {
+export const REWRITE_TIMEOUT_SUPPORTED = true;
+
+/**
+ * The Bash tool's own limits, from Claude Code's docs (https://code.claude.com/docs/en/env-vars):
+ * `BASH_MAX_TIMEOUT_MS` is the longest timeout the model can set for a foreground command
+ * (default 600000, ten minutes) and `BASH_DEFAULT_TIMEOUT_MS` the timeout a call gets when it
+ * sets none (default 120000, two minutes). "The effective ceiling is the larger of" the two.
+ */
+export const DEFAULT_BASH_MAX_TIMEOUT_MS = 600_000;
+export const DEFAULT_BASH_TIMEOUT_MS = 120_000;
+
+/** A limit from the environment: a positive whole number of milliseconds, else the default. */
+function limitFromEnv(value: string | undefined, fallback: number): number {
+  if (value === undefined || !/^[1-9]\d*$/.test(value)) return fallback;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) ? parsed : fallback;
+}
+
+/**
+ * The timeout a routed call gets when it set none: the Bash tool's effective ceiling in this
+ * environment (`context.env`, which holds the variables Claude Code runs with). Never shorter
+ * than the call would have had on its own.
+ */
+export function routedTimeoutMs(env: Env): number {
+  return Math.max(
+    limitFromEnv(env.BASH_MAX_TIMEOUT_MS, DEFAULT_BASH_MAX_TIMEOUT_MS),
+    limitFromEnv(env.BASH_DEFAULT_TIMEOUT_MS, DEFAULT_BASH_TIMEOUT_MS),
+  );
+}
+
+/**
+ * The answer that makes the call run `command` instead: the same tool input, its `command`
+ * replaced, and, given a `timeoutMs` ceiling, its `timeout` raised to it when the call set none.
+ * A timeout the call chose is kept, and a call sent to the background (`run_in_background`) is
+ * left alone: it has its own limit. **No `permissionDecision`**: the hook replaces the input
+ * and the permission system still decides about the rewritten command, so a person's own deny
+ * or ask rule for Bash is not overridden by the rewrite (proved live on 2.1.301: without a
+ * decision Claude Code ran the rewritten command).
+ */
+export function rewriteAnswer(
+  fields: Record<string, unknown>,
+  command: string,
+  timeoutMs: number | null = null,
+): HookResult {
+  const timeout =
+    timeoutMs !== null && fields.timeout === undefined && fields.run_in_background !== true
+      ? { timeout: timeoutMs }
+      : {};
   return {
     stdout: JSON.stringify({
-      hookSpecificOutput: { hookEventName: "PreToolUse", updatedInput: { ...fields, command } },
+      hookSpecificOutput: {
+        hookEventName: "PreToolUse",
+        updatedInput: { ...fields, command, ...timeout },
+      },
     }),
   };
+}
+
+/**
+ * The kind of the heavy run a line makes, as the queue would weigh it, or null: no heavy
+ * command, or one that needs no slot (a light run, a watch run, a line that queues itself).
+ * `source` null (the folder is not known): the line is judged by its kind alone. A PowerShell
+ * line is weighed through its Bash form (`bashLineOf`); one that has none cannot be weighed, and
+ * is heavy by its kind, as it was before the judge.
+ */
+function heavyRunKind(
+  command: string,
+  kinds: Kinds,
+  source: WeightSource | null,
+  dialect: Dialect,
+): string | null {
+  const kind = classifyHeavyCommand(command, kinds, source ?? undefined, dialect);
+  if (kind === null || source === null) return kind;
+  const bash = dialect === "bash" ? command : bashLineOf(command);
+  if (bash === null) return kind;
+  return runWeight(bash, kinds, source).weight === "heavy" ? kind : null;
+}
+
+/** The disk the judge reads for a line that runs in the input's `cwd`; null when it names none. */
+function weightSourceOf(input: HookInput): WeightSource | null {
+  const cwd = stringField(input.cwd);
+  return cwd === null ? null : diskWeightSource(cwd);
 }
 
 /**
@@ -272,15 +339,16 @@ export function bashLineOf(powerShellCommand: string): null | string {
  * The refusal of a heavy PowerShell line, where heavy commands go through the queue: the queue
  * reads Bash lines only (its rewrite is a Bash line), so run raw here the command would not wait
  * for a slot. The reason names the Bash tool and, for one plain command, the exact Bash line —
- * which the Bash tool then queues. Null when the line runs nothing heavy (a print-only run such
- * as `tsc --version` is not heavy).
+ * which the Bash tool then queues. Null when the line runs nothing heavy: a print-only run
+ * (`tsc --version`), a run on files that exist (`bun test ./a.test.ts`), a watch run, or a line
+ * that queues itself (`heavyRunKind`) needs no slot, so there is nothing to refuse.
  */
 export function powerShellDenial(
   command: string,
   kinds: Kinds,
-  source?: ScriptSource,
+  source: WeightSource,
 ): HookResult | null {
-  const kind = classifyHeavyCommand(command, kinds, source, "powershell");
+  const kind = heavyRunKind(command, kinds, source, "powershell");
   if (kind === null) return null;
   const bash = bashLineOf(command);
   const queued = bash !== null && routableLine(bash, kinds, source) !== null;
@@ -369,7 +437,7 @@ export function jobRoute(
   if (verdict !== null) return judgeAnswer(verdict);
   const kinds = mergeKinds(context.project.config?.jobs?.kinds);
   // The Bash tool's shell starts in the input's `cwd`; the classifier follows a `cd`.
-  const source: ScriptSource = { folder: context.cwd, scriptsIn: packageScripts };
+  const source = diskWeightSource(context.cwd);
   if (dialect !== "bash") {
     if (!routesHeavyCommands(context)) return SILENT;
     // The Git Bash lookup reads files, so only a heavy line asks for it.
@@ -380,7 +448,9 @@ export function jobRoute(
     ? routeHeavyCommand(command, kinds, routedShell(context.env), source)
     : null;
   if (routed === null) return SILENT;
-  return REWRITE_SUPPORTED ? rewriteAnswer(fields, routed.command) : routeDenial(routed);
+  if (!REWRITE_SUPPORTED) return routeDenial(routed);
+  const timeoutMs = REWRITE_TIMEOUT_SUPPORTED ? routedTimeoutMs(context.env) : null;
+  return rewriteAnswer(fields, routed.command, timeoutMs);
 }
 
 /**
@@ -398,10 +468,11 @@ export function jobRouteConfigAnswer(
   const command = commandOf(input);
   const dialect = inputDialect(input);
   // A heavy PowerShell line is refused where the route is on, so it is asked about here too —
-  // unless there is no Bash tool to run it in, where it is left as written (`jobRoute`).
+  // unless there is no Bash tool to run it in, where it is left as written (`jobRoute`). A light
+  // run is neither routed nor refused, so it is not asked about either.
   if (
     command === null ||
-    classifyHeavyCommand(command, mergeKinds(undefined), undefined, dialect) === null ||
+    heavyRunKind(command, mergeKinds(undefined), weightSourceOf(input), dialect) === null ||
     (dialect !== "bash" && !bashToolExists(context.env))
   ) {
     return SILENT;
@@ -417,19 +488,24 @@ export function jobRouteOutsideGit(input: HookInput, context: HookEnvContext): H
   return judgeCommandAnswer(input, context) ?? SILENT;
 }
 
-/** True when a crash must ask: the line is judged, or a heavy command by the default kinds. */
+/**
+ * True when a crash must ask: the line is judged, or a heavy command by the default kinds. A
+ * light run is outside it: the route would have left it raw. A check that throws is a yes
+ * (`guardCrash`), so a line this cannot read still asks.
+ */
 export function jobRouteDomain(input: HookInput): boolean {
   const command = commandOf(input);
   if (command === null) return false;
   const dialect = inputDialect(input);
   if (judgedDomain(readBash(command, dialect))) return true;
   // A heavy line of either shell: the route rewrites a Bash one and may refuse a PowerShell one.
-  return classifyHeavyCommand(command, mergeKinds(undefined), undefined, dialect) !== null;
+  return heavyRunKind(command, mergeKinds(undefined), weightSourceOf(input), dialect) !== null;
 }
 
 /**
- * The facts for the hook log: what the judge read (its launches and decision) and
- * whether the line already runs `job run`, so `doctor --live` can prove both parts answered.
+ * The facts for the hook log: what the judge read (its launches and decision) and, for a Bash
+ * line run in a known folder, how the queue weighs it (light, heavy or none), so `doctor --live`
+ * can prove both parts answered.
  */
 export function routeFacts(input: HookInput, context: HookEnvContext): Record<string, unknown> {
   const command = commandOf(input);
@@ -441,7 +517,11 @@ export function routeFacts(input: HookInput, context: HookEnvContext): Record<st
     paths: context.paths,
     startedAtMs: context.nowMs,
   });
-  const facts: Record<string, unknown> = { job_run: runsJobRun(command) };
+  const facts: Record<string, unknown> = {};
+  const source = weightSourceOf(input);
+  if (source !== null && inputDialect(input) === "bash") {
+    facts.weight = runWeight(command, mergeKinds(undefined), source).weight;
+  }
   if (reading.launches.length > 0) facts.launches = reading.launches.map((one) => one.form);
   if (reading.workflowPropose) facts.workflow_propose = true;
   if (verdict !== null) {
