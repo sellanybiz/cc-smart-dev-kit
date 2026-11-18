@@ -447,3 +447,69 @@ test("list --branch groups the branch's task changes under their environment", a
   expect(listed.code).toBe(0);
   expect(listed.text).toBe(`staging\nadded: ${id} [after · non-blocking] Seed data\n`);
 });
+
+test("release --check judges the task files alone: 1 with a blocking task, 0 once it is closed, notes never refuse", async () => {
+  // No origin, and a detached HEAD: the check reads no git facts beyond finding the checkout.
+  const { run, add, cwd } = world({ origin: false });
+  git(cwd, "checkout", "--detach");
+  const id = await add("Migrate", "prod", "before", "blocking");
+  const note = await add("Warm cache", "prod", "before", "non-blocking");
+  const blocking = `Blocking task is open: ${id} "Migrate": do it, then close it with evidence`;
+  const noted = `Non-blocking, still open: ${note} "Warm cache": do it now, or drop it with a reason`;
+  const refused = await run(["release", "prod", "--check"]);
+  expect(refused.code).toBe(1);
+  expect(refused.error).toBe("");
+  expect(refused.text).toBe(
+    `Release check: prod\n✗ ${blocking}\n· ${noted}\n✗ Not ready: 1 reason to stop. Fix each one, then run this again.\n`,
+  );
+  expect(JSON.parse((await run(["release", "prod", "--check", "--json"])).text)).toEqual({
+    ok: false,
+    refusals: [blocking],
+    notes: [noted],
+  });
+  expect((await run(["done", id, "--evidence", "ran it: ok"])).code).toBe(0);
+  const passed = await run(["release", "prod", "--check"]);
+  expect(passed.code).toBe(0);
+  expect(passed.text).toBe(
+    `Release check: prod\n· ${noted}\n✓ Ready: prod has no open task that holds a deploy.\n`,
+  );
+  expect(JSON.parse((await run(["release", "prod", "--check", "--json"])).text)).toEqual({
+    ok: true,
+    refusals: [],
+    notes: [noted],
+  });
+  // Only the asked environment counts.
+  await add("Staging step", "staging", "before", "blocking");
+  expect((await run(["release", "prod", "--check"])).code).toBe(0);
+  expect((await run(["release", "staging", "--check"])).code).toBe(1);
+});
+
+test("release --check refuses an environment outside tasks.envs", async () => {
+  const { run, cwd } = world();
+  mkdirSync(join(cwd, ".claude"));
+  writeFileSync(
+    join(cwd, ".claude", "cc-smart-dev-kit.json"),
+    JSON.stringify({ requires: ">=5.0", tasks: { envs: ["staging"] } }),
+  );
+  const refused = await run(["release", "prod", "--check", "--json"]);
+  expect(refused.code).toBe(1);
+  expect(JSON.parse(refused.text)).toEqual({
+    ok: false,
+    refusals: ["prod is not one of this project's environments (tasks.envs: staging)"],
+    notes: [],
+  });
+});
+
+test("release --check is a usage error (2) with no environment, or with --before, --after or --ref", async () => {
+  const { run } = world();
+  const none = await run(["release", "--check"]);
+  expect(none.code).toBe(2);
+  expect(none.text).toBe("");
+  expect(none.error).toContain("--check needs an environment: release <staging|prod> --check");
+  for (const extra of [["--before"], ["--after"], ["--ref", "origin/main"]]) {
+    const answer = await run(["release", "prod", "--check", ...extra]);
+    expect(answer.code).toBe(2);
+    expect(answer.error).toContain("--check does not take --before, --after or --ref");
+  }
+  expect((await run(["release", "qa", "--check"])).code).toBe(2);
+});

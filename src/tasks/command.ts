@@ -14,7 +14,7 @@ import { branchTaskChanges, readGitFacts, refCommit, unmergedBranchTasks } from 
 import { checkDeployTasks } from "./deploy/check";
 import { scanDeployTasks } from "./deploy/files";
 import { DEPLOY_ENVS, DEPLOY_STEPS, DEPLOY_TYPES, type DeployEnv } from "./deploy/format";
-import { gateAfter, gateBefore, releaseList } from "./deploy/release";
+import { envRefusal, gateAfter, gateBefore, judgeTasks, releaseList } from "./deploy/release";
 import { createTaskOps, projectLine, type TaskOperation } from "./ops";
 import { TASK_COMMAND } from "./words";
 import { openWorkDb, workDbFile } from "./work/db";
@@ -48,6 +48,7 @@ show <ref> [--offset <n>] [--history]
 search <text> [--all]
 check [--json]
 release [${ENVS}] [--before | --after] [--ref <ref>] [--json]
+release <${ENVS}> --check [--json]
 import claude-mem [--project <name>] [--dry-run]
 delete <ref>
 mcp
@@ -58,6 +59,8 @@ commit it. --pair, with --kind staging, makes the staging task and its prod twin
 Deploy tasks close with done --evidence <text>, or drop --note <reason>; only the person drops a
 blocking one, in their own terminal. reopen puts a closed one back after a rolled-back deploy.
 release <env> --before / --after is the gate around a deploy; --ref defaults to origin/<base>.
+release <env> --check judges the task files alone, with no git rules, so a CI job can run it: exit 0
+passes, 1 refuses, 2 is a usage error; --json prints {ok, refusals, notes}.
 With no flag, release lists the open deploy tasks.
 Layers: plan › phase › task. A blocking task (the default) holds its parent; a non-blocking
 one holds nothing. A task blocked by an open task cannot start or be done.
@@ -68,6 +71,8 @@ A step of a phase closes with done --evidence <text>, or drop --note <reason>.`;
 interface ReleaseRequest {
   env: DeployEnv | undefined;
   step: "before" | "after" | null;
+  /** `--check`: the task files alone, no git facts (`judgeTasks`). */
+  check: boolean;
 }
 const bindingFlags = ["--agent", "--branch", "--worktree", "--base"];
 const definitions: Record<
@@ -115,7 +120,12 @@ const definitions: Record<
   show: { values: ["--offset"], flags: ["--history"], min: 1, max: 1 },
   search: { flags: ["--all"], min: 1 },
   check: { flags: ["--json"], min: 0, max: 0 },
-  release: { values: ["--ref"], flags: ["--json", "--before", "--after"], min: 0, max: 1 },
+  release: {
+    values: ["--ref"],
+    flags: ["--json", "--before", "--after", "--check"],
+    min: 0,
+    max: 1,
+  },
   import: { values: ["--project"], flags: ["--dry-run"], min: 1, max: 1 },
   delete: { min: 1, max: 1 },
 };
@@ -275,15 +285,20 @@ export async function runTaskCommand(argv: string[]): Promise<number> {
     function releaseRequest(): ReleaseRequest | { error: string } {
       const step = has("before") ? "before" : has("after") ? "after" : null;
       if (has("before") && has("after")) return { error: "Use --before or --after, not both" };
+      const check = has("check");
+      if (check && (step !== null || get("ref") !== undefined))
+        return { error: "--check does not take --before, --after or --ref" };
       const name = args[0];
       const env = name === undefined ? undefined : DEPLOY_ENVS.find((one) => one === name);
       if (name !== undefined && env === undefined)
         return { error: `Unknown environment: ${name} (${ENVS})` };
+      if (check && env === undefined)
+        return { error: `--check needs an environment: release <${ENVS}> --check` };
       if (step !== null && env === undefined)
         return { error: `--${step} needs an environment: release <${ENVS}> --${step}` };
       if (get("ref") !== undefined && step === null)
         return { error: "--ref needs --before or --after" };
-      return { env, step };
+      return { env, step, check };
     }
 
     function projectCommand(release?: ReleaseRequest): number {
@@ -379,7 +394,27 @@ export async function runTaskCommand(argv: string[]): Promise<number> {
             out.say(`${finding.kind}: ${finding.text} · ${finding.file}`);
         return findings.length ? 1 : 0;
       }
-      const { env, step } = release ?? { env: undefined, step: null };
+      const { env, step, check } = release ?? { env: undefined, step: null, check: false };
+      if (check && env !== undefined) {
+        // The task files alone: no git read beyond finding the checkout, so a detached or shallow
+        // CI checkout works. `judgeTasks` is the same rule set the before gate uses.
+        const judged = judgeTasks(env, scanDeployTasks(dir, { archive: true }));
+        const refusals = [...envRefusal(env, settings.envs), ...judged.refusals];
+        const ok = refusals.length === 0;
+        if (has("json")) out.json({ ok, refusals, notes: judged.notes });
+        else {
+          out.heading(`Release check: ${env}`);
+          for (const reason of refusals) out.line("fail", reason);
+          for (const note of judged.notes) out.line("info", note);
+          out.verdict(
+            ok ? "ok" : "fail",
+            ok
+              ? `Ready: ${env} has no open task that holds a deploy.`
+              : `Not ready: ${plural(refusals.length, "reason", "reasons")} to stop. Fix each one, then run this again.`,
+          );
+        }
+        return ok ? 0 : 1;
+      }
       if (step !== null && env !== undefined) {
         // The gates read the folder themselves, closed tasks too (`gateBefore`, `gateAfter`).
         const base = baseBranch(locateCheckout(cwd), process.env, root).base;

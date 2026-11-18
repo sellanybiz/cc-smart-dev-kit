@@ -139,55 +139,27 @@ function brokenRefusals(scan: TaskScan): string[] {
   ];
 }
 
-function envRefusal(env: DeployEnv, envs: readonly DeployEnv[]): string[] {
+/** The refusal when `env` is not one of the project's `tasks.envs`; none when it is. */
+export function envRefusal(env: DeployEnv, envs: readonly DeployEnv[]): string[] {
   return envs.includes(env)
     ? []
     : [`${env} is not one of this project's environments (tasks.envs: ${envs.join(", ")})`];
 }
 
 /**
- * The gate before a deploy. It refuses when:
- * - the environment is not in `tasks.envs`;
- * - HEAD is detached, or on the base branch or the ref's own branch (a run happens on a deploy branch);
- * - HEAD is not the ref's commit, unless HEAD holds every commit of the ref and differs from it
- *   only in the tasks folder (closes already made on the deploy branch are fine). A ref that has
- *   commits HEAD lacks may hold tasks this checkout cannot see, even when those commits changed
- *   task files only;
+ * What the task files alone say about a deploy to `env`: the rules `judgeBefore` shares with
+ * `task release <env> --check` and the deploy guard, which have no git facts. The environment
+ * check stays with the caller (`envRefusal`). It refuses when:
  * - a blocking `before` task of the environment is open;
  * - any task file is broken or its id is claimed twice;
- * - for prod, a task whose staging twin is still open.
- * An open non-blocking `before` task is a note: do it now, or drop it with a reason.
+ * - for prod, a task whose staging twin is still open (every open prod task counts, as in the gate).
+ * An open non-blocking `before` task is a note.
  */
-export function gateBefore(env: DeployEnv, input: GateInput): GateResult {
-  const { dir, ...rest } = input;
-  return judgeBefore(env, { ...rest, scan: scanDeployTasks(dir, { archive: true }) });
-}
-
-/** `gateBefore`'s rules over a scan that holds every task, open and closed. */
-export function judgeBefore(env: DeployEnv, input: JudgeInput): GateResult {
-  const { scan, facts, envs, now } = input;
-  const wrongBranch = notOnDeployBranch(env, input);
-  const refusals = [...envRefusal(env, envs), ...wrongBranch];
-  const foreign = facts.changedPaths.filter((path) => !underTasks(path, facts.tasksPath));
-  // The branch to cut is printed once: with a wrong-branch refusal above, these lines point to it.
-  const wrong = wrongBranch.length > 0;
-  const cutFromRef = ` The deploy branch to cut above starts from ${facts.ref}, so it holds what the ref holds.`;
-  if (facts.headCommit !== facts.refCommit) {
-    if (!facts.refIsAncestor)
-      refusals.push(
-        `HEAD ${facts.headCommit.slice(0, 12)} does not contain ${facts.ref} (${facts.refCommit.slice(0, 12)}): the ref has commits this branch has not taken in, and may hold tasks it cannot see.${
-          wrong
-            ? cutFromRef
-            : ` Run \`git fetch origin\`, then rebase or merge the deploy branch onto ${facts.ref}. ${startAgain(env, facts, now)}`
-        }`,
-      );
-    else if (foreign.length > 0)
-      refusals.push(
-        `HEAD ${facts.headCommit.slice(0, 12)} is not ${facts.ref} (${facts.refCommit.slice(0, 12)}): it differs in ${foreign.length} path(s) outside ${facts.tasksPath || "the tasks folder"}.${
-          wrong ? cutFromRef : ` ${startAgain(env, facts, now)}`
-        }`,
-      );
-  }
+export function judgeTasks(
+  env: DeployEnv,
+  scan: TaskScan,
+): { refusals: string[]; notes: string[] } {
+  const refusals: string[] = [];
   const mine = scan.tasks.filter((task) => task.env === env && open(task));
   for (const task of mine.filter((one) => one.deploy === "before" && one.type === "blocking"))
     refusals.push(`Blocking task is open: ${describe(task)}: do it, then close it with evidence`);
@@ -216,6 +188,54 @@ export function judgeBefore(env: DeployEnv, input: JudgeInput): GateResult {
     .map(
       (task) => `Non-blocking, still open: ${describe(task)}: do it now, or drop it with a reason`,
     );
+  return { refusals, notes };
+}
+
+/**
+ * The gate before a deploy. It refuses when:
+ * - the environment is not in `tasks.envs`;
+ * - HEAD is detached, or on the base branch or the ref's own branch (a run happens on a deploy branch);
+ * - HEAD is not the ref's commit, unless HEAD holds every commit of the ref and differs from it
+ *   only in the tasks folder (closes already made on the deploy branch are fine). A ref that has
+ *   commits HEAD lacks may hold tasks this checkout cannot see, even when those commits changed
+ *   task files only;
+ * - a blocking `before` task of the environment is open;
+ * - any task file is broken or its id is claimed twice;
+ * - for prod, a task whose staging twin is still open.
+ * An open non-blocking `before` task is a note: do it now, or drop it with a reason.
+ */
+export function gateBefore(env: DeployEnv, input: GateInput): GateResult {
+  const { dir, ...rest } = input;
+  return judgeBefore(env, { ...rest, scan: scanDeployTasks(dir, { archive: true }) });
+}
+
+/** `gateBefore`'s rules over a scan that holds every task, open and closed (the task rules: `judgeTasks`). */
+export function judgeBefore(env: DeployEnv, input: JudgeInput): GateResult {
+  const { scan, facts, envs, now } = input;
+  const wrongBranch = notOnDeployBranch(env, input);
+  const refusals = [...envRefusal(env, envs), ...wrongBranch];
+  const foreign = facts.changedPaths.filter((path) => !underTasks(path, facts.tasksPath));
+  // The branch to cut is printed once: with a wrong-branch refusal above, these lines point to it.
+  const wrong = wrongBranch.length > 0;
+  const cutFromRef = ` The deploy branch to cut above starts from ${facts.ref}, so it holds what the ref holds.`;
+  if (facts.headCommit !== facts.refCommit) {
+    if (!facts.refIsAncestor)
+      refusals.push(
+        `HEAD ${facts.headCommit.slice(0, 12)} does not contain ${facts.ref} (${facts.refCommit.slice(0, 12)}): the ref has commits this branch has not taken in, and may hold tasks it cannot see.${
+          wrong
+            ? cutFromRef
+            : ` Run \`git fetch origin\`, then rebase or merge the deploy branch onto ${facts.ref}. ${startAgain(env, facts, now)}`
+        }`,
+      );
+    else if (foreign.length > 0)
+      refusals.push(
+        `HEAD ${facts.headCommit.slice(0, 12)} is not ${facts.ref} (${facts.refCommit.slice(0, 12)}): it differs in ${foreign.length} path(s) outside ${facts.tasksPath || "the tasks folder"}.${
+          wrong ? cutFromRef : ` ${startAgain(env, facts, now)}`
+        }`,
+      );
+  }
+  const { refusals: taskRefusals, notes } = judgeTasks(env, scan);
+  refusals.push(...taskRefusals);
   const warnings =
     facts.uncommittedOutside.length > 0
       ? [
