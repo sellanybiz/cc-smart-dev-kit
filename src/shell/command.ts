@@ -381,6 +381,9 @@ function lex(text: string, options: LexOptions): Lexed {
       if (char === escaper && next !== "") {
         raw += char + next;
         at += 2;
+      } else if (bash && char === "$" && next === "$") {
+        raw += "$$"; // the shell's process id
+        at += 2;
       } else if (char === "$" && next === "(") {
         const end = bash ? arithmeticEnd(at + 1) : -1;
         if (end === -1) {
@@ -454,8 +457,12 @@ function lex(text: string, options: LexOptions): Lexed {
    */
   function casePattern(current: string, char: string, next: string): boolean {
     const words = current.trim();
-    // `for f in a; do case $f in …`: the keyword that opens a list stands before `case`.
-    const command = words.replace(/^(?:(?:do|then|else|elif|!)\s+)+/, "");
+    // `for f in a; do case $f in …`, `if case …`: a keyword that opens a list or times a
+    // pipeline stands before `case`.
+    const command = words.replace(
+      /^(?:(?:do|then|else|elif|if|while|until|!|time(?:\s+-p)?)\s+)+/,
+      "",
+    );
     const level = group;
     let top = cases.at(-1);
     // `esac` ends it, also with a redirection attached (`esac>log`).
@@ -533,6 +540,13 @@ function lex(text: string, options: LexOptions): Lexed {
         }
         if (oneOf(double, char)) {
           take(readDouble(true));
+          continue;
+        }
+        if (bash && char === "$" && next === "$") {
+          // `$$` is the shell's process id: the `$` after it starts nothing (`$$'x'` is the id and
+          // a plain `'x'`).
+          take("$$");
+          at += 2;
           continue;
         }
         if (bash && char === "$" && next === "'") {
@@ -907,6 +921,11 @@ export function wordsWithFill(segment: string, dialect: Dialect = "bash"): Shell
       if (!bothStreams && (quoted || !/^\d+$/.test(word))) end();
       while (oneOf("<>", segment.charAt(i))) add(segment.charAt(i++));
       if (oneOf("&|", segment.charAt(i))) add(segment.charAt(i++));
+    } else if (bash && char === "$" && next === "$") {
+      // `$$`, the shell's process id: filled, and the `$` after it starts nothing.
+      filled = true;
+      add("$$");
+      i += 2;
     } else if (bash && char === "$" && next === "'") {
       let close = i + 2;
       while (close < segment.length && segment.charAt(close) !== "'") {
@@ -943,6 +962,12 @@ export function wordsWithFill(segment: string, dialect: Dialect = "bash"): Shell
         if (oneOf(double, inside)) {
           if (bash || !oneOf(double, after)) break;
           add(inside);
+          i += 2;
+          continue;
+        }
+        if (bash && inside === "$" && after === "$") {
+          filled = true;
+          add("$$");
           i += 2;
           continue;
         }
@@ -998,8 +1023,8 @@ function parenCloses(text: string): Int32Array {
   for (let i = 0; i < text.length; i++) {
     const char = text.charAt(i);
     const next = text.charAt(i + 1);
-    if (char === "\\") {
-      i++;
+    if (char === "\\" || (char === "$" && next === "$")) {
+      i++; // an escaped character, or `$$` (the shell's process id): the second starts nothing
     } else if (char === "`") {
       i = quoteEnd("`", i + 1, true);
     } else if (open.at(-1) === -1) {

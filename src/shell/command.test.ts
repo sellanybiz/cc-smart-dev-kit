@@ -407,6 +407,13 @@ describe("wordsOf: a substitution is one word", () => {
     expect(redirectionTargets(wordsWithFill("cmd >(tee x)"))).toEqual([]);
   });
 
+  test("$$ is the shell's process id, so the $ after it starts nothing (review 4)", () => {
+    // The `'` after `$$` opens a plain quote, so the second `'` is a comment's.
+    expect(shellSteps("echo $$'\\' > P #'").map((step) => step.text)).toEqual(["echo $$'\\' > P "]);
+    expect(wordsOf("echo $$'\\' > P ")).toEqual(["echo", "$$\\", ">", "P"]);
+    expect(wordsWithFill("echo $$ x")[1]).toEqual({ filled: true, text: "$$" });
+  });
+
   test("an unclosed one, and PowerShell, split as before", () => {
     expect(wordsOf("echo $(a b")).toEqual(["echo", "$(a", "b"]);
     expect(wordsOf("echo $(a b) c", "powershell")).toEqual(["echo", "$(a", "b)", "c"]);

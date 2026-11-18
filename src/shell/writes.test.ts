@@ -32,6 +32,12 @@ describe("redirections", () => {
     expect(targets(command)).toEqual(expected);
   });
 
+  test("$$ is the shell's process id: the quote after it is a plain one (review 4)", () => {
+    expect(targets("echo $$'\\' > P #'")).toEqual(["/code/app/P"]);
+    expect(targets('echo "$$(x)" > P')).toEqual(["/code/app/P"]);
+    expect(targets("echo $$ > P")).toEqual(["/code/app/P"]);
+  });
+
   test("a file whose name starts with ( is written; a process substitution is not (review 3, L5)", () => {
     expect(targets("echo x >\\(foo")).toEqual(["/code/app/(foo"]);
     expect(targets('echo x >"(foo"')).toEqual(["/code/app/(foo"]);
@@ -81,6 +87,13 @@ describe("the programs that change files", () => {
     ["mkdir -p -m 755 x/y", ["/code/app/x/y"]],
     // `--context` takes only an attached value: the word after it is a folder.
     ["mkdir --context new", ["/code/app/new"]],
+    // Review 4: long options that take a value, so the word after them is no destination.
+    ["cp a b --sparse always", ["/code/app/b"]],
+    ["cp a b --sp always", ["/code/app/b"]],
+    ["cp a b --no-preserve mode", ["/code/app/b"]],
+    ["install a b --strip-program strip", ["/code/app/b"]],
+    // `--strip` is an option of its own and takes no value.
+    ["install --strip a b", ["/code/app/b"]],
     ["cp --t=/tmp/out a b", ["/tmp/out"]],
     ["cp --su=.b -b a b", ["/code/app/b"]],
     ["touch --d yesterday a.txt", ["/code/app/a.txt"]],
@@ -248,6 +261,14 @@ describe("git commands that change the work tree or its branch", () => {
       "/code/app/b",
     ]);
     expect(targets("(case x in esac; cd /tmp); touch b")).toEqual(["/code/app/b"]);
+    // Review 4, L1: `if`, `while`, `until` and `time` stand before a case too.
+    for (const keyword of ["if", "while", "until"]) {
+      expect(targets(`(${keyword} case a in a) cd /tmp;; esac; then :; fi); touch b`)).toEqual([
+        "/code/app/b",
+      ]);
+    }
+    expect(targets("(time case a in a) cd /tmp;; esac); touch b")).toEqual(["/code/app/b"]);
+    expect(targets("(time -p case a in a) cd /tmp;; esac); touch b")).toEqual(["/code/app/b"]);
   });
 
   test("a case pattern's ) closes no group", () => {

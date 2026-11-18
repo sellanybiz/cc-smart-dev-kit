@@ -1084,7 +1084,7 @@ function isReadOnlyFilter(step: ShellStep): boolean {
   ) {
     return false;
   }
-  if (redirectionTargets(words).some((target) => target !== "/dev/null")) return false;
+  if (redirectionTargets(filled).some((target) => target !== "/dev/null")) return false;
   return check(withoutRedirections(invocation.args));
 }
 

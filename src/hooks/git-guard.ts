@@ -117,7 +117,11 @@ const PUSH_VALUE_OPTIONS: Array<[string, number]> = [
  * domain words are in a computed command asks).
  */
 function computedForce(arg: string): boolean {
-  return /\$[({\w]|`/.test(arg) && /(?:^|[\s(`'"])(?:-[A-Za-z]*f|--force|\+[A-Za-z])/.test(arg);
+  // The spelling stands where the shell starts a word, or where `${x:-…}` gives its default; a
+  // group of short letters ends at a word's end (`cut -f2` is no `-f`).
+  const spelling =
+    /(?:^|[\s(`'"]|:[-=+])(?:-[A-Za-z]*f[A-Za-z]*(?=$|[\s)`'"}])|--force|\+[A-Za-z])/;
+  return /\$[({\w]|`/.test(arg) && spelling.test(arg);
 }
 
 /** The branch checked out in `where`, or undefined: detached, unknown, no git. Read once a run. */
@@ -246,13 +250,14 @@ function pushQuestions(
   let repo: string | null = null;
   let repoGiven = false;
   let tagsOnly = false;
+  // A computed word may become a force option or a `+` refspec, before `--` or after it.
+  if (args.some(computedForce)) force = true;
   for (let i = 0; i < args.length; i++) {
     const arg = args[i] ?? "";
     if (arg === "--") {
       positional.push(...args.slice(i + 1));
       break;
     }
-    if (computedForce(arg)) force = true;
     if (arg.startsWith("--")) {
       if (
         longOption(arg, "--force", 6) ||

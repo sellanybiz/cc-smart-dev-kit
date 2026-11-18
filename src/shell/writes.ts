@@ -127,11 +127,19 @@ function parameterValues(args: readonly string[], names: readonly string[]): str
 const NO_VALUES: OptionSpec = { short: "", long: {} };
 const COPY_OPTIONS: OptionSpec = {
   short: "tS",
-  long: { "--target-directory": 3, "--suffix": 4 },
+  long: { "--target-directory": 3, "--suffix": 4, "--sparse": 4, "--no-preserve": 6 },
 };
+// `--strip` is an option of its own, so `--strip-program` needs its dash.
 const INSTALL_OPTIONS: OptionSpec = {
   short: "mogtS",
-  long: { "--mode": 3, "--owner": 3, "--group": 3, "--target-directory": 3, "--suffix": 4 },
+  long: {
+    "--mode": 3,
+    "--owner": 3,
+    "--group": 3,
+    "--target-directory": 3,
+    "--suffix": 4,
+    "--strip-program": 8,
+  },
 };
 const SED_OPTIONS: OptionSpec = {
   short: "efl",

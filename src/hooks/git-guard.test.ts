@@ -102,16 +102,22 @@ describe("a force-push asks", () => {
     ["git push origin feat $(echo --force-with-lease)"],
     ["git push origin $(echo +feat)"],
     ["git push origin feat `echo -uf`"],
+    // Review 4, L3: after `--`, and as a `${x:-…}` default.
+    ["git push origin -- $(echo +main)"],
+    ["git push -- origin $(echo +main)"],
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: shell text, read by the guard under test.
+    ["git push origin ${B:--f}"],
   ])("bash, a computed word: %j", (command) => {
     expect(guard(command, neutral, true, "bash")).toContain("force-push");
   });
 
-  it.each([["git push origin $(git branch --show-current)"], ["git push origin feat-$(date +%s)"]])(
-    "bash, a computed word with no force spelling: %j",
-    (command) => {
-      expect(guard(command, neutral, true, "bash") ?? "").not.toContain("force-push");
-    },
-  );
+  it.each([
+    ["git push origin $(git branch --show-current)"],
+    ["git push origin feat-$(date +%s)"],
+    ["git push origin $(git branch --show-current | cut -d/ -f2)"],
+  ])("bash, a computed word with no force spelling: %j", (command) => {
+    expect(guard(command, neutral, true, "bash") ?? "").not.toContain("force-push");
+  });
 
   it.each([
     ["git push origin fix/x"],
