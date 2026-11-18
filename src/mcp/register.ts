@@ -44,7 +44,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import type { CliPaths } from "../cli/paths";
 import { tildify } from "../cli/paths";
-import { shellQuote } from "../setup/launcher";
+import { shellQuote } from "../shell/quote";
 import { parseUserJson, readUserJson } from "../setup/user-json";
 import {
   forgetMcpServer,

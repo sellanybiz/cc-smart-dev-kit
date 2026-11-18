@@ -52,7 +52,7 @@
  * Pure: no file, no environment, no process.
  */
 import { COMMAND } from "../build-info/names";
-import { shellQuote } from "../setup/launcher";
+import { shellQuote } from "./quote";
 
 /** The shell a line is written for: Claude Code's `Bash` tool, or its `PowerShell` tool. */
 export type Dialect = "bash" | "powershell";

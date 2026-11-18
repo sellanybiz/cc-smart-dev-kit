@@ -509,9 +509,8 @@ function contextFor(
   tool = "Bash",
   more: { env?: Record<string, string>; fields?: Record<string, unknown> } = {},
 ): HookContext {
-  // The Bash tool's own limits come from the session that runs the suite: a test sets them itself.
-  const { BASH_MAX_TIMEOUT_MS: _max, BASH_DEFAULT_TIMEOUT_MS: _default, ...clean } = hookEnv();
-  const env = { ...clean, SHELL, ...more.env };
+  // hookEnv drops the session's own Bash timeouts (cleanGitEnv): a test sets them itself.
+  const env = { ...hookEnv(), SHELL, ...more.env };
   return {
     cwd: repo,
     env,

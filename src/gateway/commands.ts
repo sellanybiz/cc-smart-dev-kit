@@ -24,7 +24,7 @@ import { type CliPaths, tildify } from "../cli/paths";
 import { type Mark, type Out, plural } from "../cli/ui/out";
 import { INTERRUPTED_EXIT, type Prompts } from "../cli/ui/prompt";
 import type { Terminal } from "../cli/ui/terminal";
-import { shellWord } from "../setup/launcher";
+import { shellWord } from "../shell/quote";
 import { withLock } from "../setup/lock";
 import { getKey, readJsonObject, samePath } from "../setup/managed-json";
 import { atomicWrite, backupDir, backupFile } from "../setup/write";

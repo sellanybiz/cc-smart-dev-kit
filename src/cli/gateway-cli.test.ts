@@ -24,7 +24,7 @@ import { DEFAULT_ANTHROPIC_BASE_URL } from "../gateway/config";
 import { gatewayChecks } from "../gateway/doctor";
 import type { HealthFetch, HealthProbe } from "../gateway/health";
 import { createHistoryWriter } from "../gateway/history";
-import { shellQuote } from "../setup/launcher";
+import { shellQuote } from "../shell/quote";
 import { applyManagedJson } from "../setup/managed-json";
 import { listBackups } from "../setup/write";
 import { subprocessGuard } from "../testing/port-guard";

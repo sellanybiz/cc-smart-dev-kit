@@ -14,7 +14,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { GIT_BASH_VAR } from "../cli/git-bash";
 import { cliPaths } from "../cli/paths";
-import { shellQuote } from "../setup/launcher";
+import { shellQuote } from "../shell/quote";
 import {
   commitConfig,
   hookEnv,

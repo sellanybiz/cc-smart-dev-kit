@@ -5,7 +5,8 @@
  */
 import { join } from "node:path";
 import type { CliPaths } from "../cli/paths";
-import { LAUNCHER_NAME, shellWord } from "./launcher";
+import { shellWord } from "../shell/quote";
+import { LAUNCHER_NAME } from "./launcher";
 import type { KeyPath } from "./managed-json";
 
 /** Claude Code's status line setting, an owned key when setup sets it. */

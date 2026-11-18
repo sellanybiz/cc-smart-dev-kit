@@ -27,10 +27,6 @@ const FIND_INSTALL_JS = [
   "process.stdout.write(e.installPath);",
 ].join("");
 
-// The quoting lives beside the shell reader (`src/shell/quote.ts`). The other setup, gateway and
-// update code still imports it from here.
-export { shellQuote, shellWord };
-
 /**
  * The bun path baked into a launcher script by launcherScript(), or null when the script
  * has no such line (not ours, or from another version). The reverse of shellQuote.
