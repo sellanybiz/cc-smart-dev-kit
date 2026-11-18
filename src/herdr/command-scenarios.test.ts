@@ -5,11 +5,17 @@ import { VERSION } from "../build-info";
 import { COMMAND } from "../build-info/names";
 import { cliPaths } from "../cli/paths";
 import { createOut } from "../cli/ui/out";
+import { taskContext } from "../tasks/context";
 import { createTaskOps } from "../tasks/ops";
+import { openWorkDb, workDbFile } from "../tasks/work/db";
+import { allTasks } from "../tasks/work/queries";
+import { createTask, takeTasks, updateTask } from "../tasks/work/store";
+import type { ClaimProcess, Who, WorkTask } from "../tasks/work/types";
 import { cleanGitEnv, git, tempDir } from "../testing/temp";
 import { briefPath } from "./brief";
 import { type HerdrContext, LOGIN_SHELL_SCRIPT, loginShellArgv, runHerdr } from "./command";
 import type { HcRunner } from "./hc";
+import { PLAN_POLL_MS, type PrState } from "./plans";
 
 function world() {
   const dir = tempDir(),
@@ -937,4 +943,428 @@ test("a failed state read after launch keeps the started child and its task bind
   } finally {
     ops.close();
   }
+});
+
+// ---- plan hand-outs: `herdr start --plan`, resume, `herdr plans` (D1, D5, D6, D7) ----
+
+const LEAD: Who = { sessionId: "lead", pid: 4101, procStart: "41010" };
+const CHILD: Who = { sessionId: "child", pid: 5202, procStart: "52020" };
+const UNPROVEN: ClaimProcess = { live: () => false, gone: () => false, ended: () => false };
+const ENDED: ClaimProcess = { live: () => false, gone: () => true, ended: () => true };
+const planLaunch = ["start", "--model", "sonnet", "--effort", "high", "--mode", "manual"];
+
+/** A world whose folder is a git project with a store: the lead's session is `lead`. */
+function planWorld() {
+  const w = world();
+  git(w.ctx.cwd, "init", "-q", "-b", "main");
+  git(w.ctx.cwd, "commit", "-q", "--allow-empty", "-m", "initial");
+  const context = taskContext(w.ctx.cwd, w.ctx.env);
+  if (!context.ok) throw new Error(context.why);
+  const project = context.project;
+  const db = openWorkDb(workDbFile(w.ctx.paths), { mode: "write" });
+  const prs: Record<string, PrState> = {};
+  w.ctx.caller = () => LEAD;
+  w.ctx.process = UNPROVEN;
+  w.ctx.filesCheck = () => ({ ignore: [], caseFold: false });
+  w.ctx.pr = (_repo, branch) => prs[branch] ?? "none";
+  w.rows.t1 = {
+    address: "t1",
+    name: "lead",
+    state: "live",
+    labels: {},
+    status: { app: "claude-code", state: "idle" },
+  };
+  let number = 0;
+  const plan = (slug: string, files: string[] | undefined, over: { blockedBy?: string[] } = {}) => {
+    const made = createTask(
+      db,
+      {
+        project,
+        subject: slug,
+        kind: "plan",
+        plan: slug,
+        ...(files === undefined ? {} : { files }),
+        ...(over.blockedBy ? { blockedBy: over.blockedBy } : {}),
+      },
+      LEAD,
+      ++number,
+    );
+    if (!made.ok) throw new Error(made.why);
+    return made.value;
+  };
+  const row = (slug: string): WorkTask => {
+    const found = allTasks(db, project).find((t) => t.kind === "plan" && t.plan === slug);
+    if (!found) throw new Error(`no plan ${slug}`);
+    return found;
+  };
+  const change = (slug: string, to: Parameters<typeof updateTask>[2], who: Who = LEAD) => {
+    const done = updateTask(db, row(slug).id, to, who, 50);
+    if (!done.ok) throw new Error(done.why);
+  };
+  const noRun = () => expect(w.calls.some((c) => c.args[0] === "run")).toBe(false);
+  return { ...w, db, project, prs, plan, row, change, noRun };
+}
+
+test("--plan refuses what it cannot hand out, each with its words, and launches nothing", async () => {
+  const p = planWorld();
+  p.plan("alpha", ["src/a/"]);
+  const first = p.plan("first", ["src/f/"]);
+  p.plan("blocked", ["src/b/"], { blockedBy: [first.id] });
+  p.plan("nofiles", undefined);
+  const refusals: [string[], string][] = [
+    [
+      ["--plan", "alpha", "--task", "#1"],
+      "--plan cannot be combined with --task or --independent.",
+    ],
+    [
+      ["--plan", "alpha", "--independent"],
+      "--plan cannot be combined with --task or --independent.",
+    ],
+    [["--plan", "alpha", "--on", "remote", "--asked"], "A plan cannot cross projects or machines."],
+    [["--plan", "missing"], 'Plan "missing" was not found in this project.'],
+    [["--plan", "blocked"], 'Plan "blocked" is not ready: waiting on #2 first'],
+    [["--plan", "nofiles"], "has no file list"],
+    [["--plan", "alpha", "--cwd", tempDir()], "A plan hand-out needs a git project"],
+  ];
+  for (const [extra, why] of refusals) {
+    p.lines.length = 0;
+    expect(await runHerdr([...planLaunch, ...extra, "--", "work"], p.ctx)).toBe(1);
+    expect(p.lines.join("\n")).toContain(why);
+    p.noRun();
+  }
+  // Nothing was reserved by any refusal.
+  expect(allTasks(p.db, p.project).every((t) => t.lead === null)).toBe(true);
+});
+
+test("a plan child never coordinates: --plan from a terminal that carries kit.plan is refused", async () => {
+  const p = planWorld();
+  p.plan("alpha", ["src/a/"]);
+  p.rows.t1 = { ...(p.rows.t1 as object), labels: { "kit.lead": "core/t0", "kit.plan": "other" } };
+  expect(await runHerdr([...planLaunch, "--plan", "alpha", "--", "work"], p.ctx)).toBe(1);
+  expect(p.lines.join("\n")).toContain("A plan child never coordinates");
+  expect(p.lines.join("\n")).toContain("herdr report");
+  p.noRun();
+  expect(p.row("alpha").lead).toBeNull();
+});
+
+test("a slug that does not fit a terminal name asks for --name, and --name makes it work", async () => {
+  const p = planWorld();
+  const long = "a-plan-with-a-name-that-is-much-too-long-for-kit";
+  p.plan(long, ["src/a/"]);
+  expect(await runHerdr([...planLaunch, "--plan", long, "--", "work"], p.ctx)).toBe(1);
+  expect(p.lines.join("\n")).toContain(`The plan name ${long} does not fit a terminal name`);
+  expect(p.lines.join("\n")).toContain("Give a shorter --name.");
+  p.noRun();
+  expect(p.row(long).lead).toBeNull();
+  expect(
+    await runHerdr([...planLaunch, "--plan", long, "--name", "short", "--", "work"], p.ctx),
+  ).toBe(0);
+  expect(p.calls.find((c) => c.args[0] === "run")?.args).toContain("kit-short");
+});
+
+test("the plan is reserved before the launch, bound after it, and its brief carries the plan trailer", async () => {
+  const p = planWorld();
+  p.plan("alpha", ["src/a/"]);
+  const reservedAtLaunch: unknown[] = [];
+  p.setResponse((args) => {
+    if (args[0] === "run") reservedAtLaunch.push(p.row("alpha").lead);
+    return undefined;
+  });
+  expect(await runHerdr([...planLaunch, "--plan", "alpha", "--", "Build alpha"], p.ctx)).toBe(0);
+  // At the moment hc was asked to run the child, the store already held the reservation.
+  expect(reservedAtLaunch).toHaveLength(1);
+  expect(reservedAtLaunch[0]).toMatchObject({ sessionId: "lead", holder: "child" });
+  const alpha = p.row("alpha");
+  expect(alpha.agent).toBe("herdr:core/t2");
+  expect(alpha.worktree).toBe(join(p.ctx.cwd, ".claude", "worktrees", "kit-alpha"));
+  expect(alpha.branch).toBe("worktree-kit-alpha");
+  const run = p.calls.find((c) => c.args[0] === "run")?.args ?? [];
+  expect(run).toContain("kit.plan=alpha");
+  expect(run).toContain("kit.lead=core/t1");
+  expect(run.some((a) => a.startsWith("kit.task="))).toBe(false);
+  expect(run.slice(run.indexOf("--name"), run.indexOf("--name") + 2)).toEqual([
+    "--name",
+    "kit-alpha",
+  ]);
+  expect(run.slice(run.indexOf("-w"), run.indexOf("-w") + 2)).toEqual(["-w", "kit-alpha"]);
+  const brief = readFileSync(briefPath(p.ctx.paths.stateDir, "core", "kit-alpha"), "utf8");
+  expect(brief).toContain("Build alpha");
+  expect(brief).toContain(`Your plan: alpha. You build this one plan and nothing else.`);
+  expect(brief).toContain(`task_take: task "alpha", from "${alpha.lead?.handoutId}"`);
+  expect(brief).toContain("git fetch origin main");
+  expect(brief).toContain("git reset --hard origin/main");
+  expect(brief).toContain("Never take another plan.");
+  expect(brief).not.toContain("Your task:");
+});
+
+test("two hand-outs that share files: the second is refused by the reservation, not launched", async () => {
+  const p = planWorld();
+  p.plan("alpha", ["src/shared/"]);
+  p.plan("beta", ["src/shared/inner.ts"]);
+  expect(await runHerdr([...planLaunch, "--plan", "alpha", "--", "work"], p.ctx)).toBe(0);
+  p.calls.length = 0;
+  p.lines.length = 0;
+  // The first child is reserved; the pane list has to know the first name, as hc would.
+  p.setList(["t2"]);
+  expect(await runHerdr([...planLaunch, "--plan", "beta", "--", "work"], p.ctx)).toBe(1);
+  expect(p.lines.join("\n")).toContain("overlaps #1 alpha");
+  p.noRun();
+  expect(p.row("beta").lead).toBeNull();
+});
+
+test("a failed launch gives the reservation back, whichever way it failed", async () => {
+  for (const how of ["exits", "hc refuses"] as const) {
+    const p = planWorld();
+    p.plan("alpha", ["src/a/"]);
+    if (how === "exits") {
+      p.rows.t2 = { address: "t2", state: "finished", labels: {} };
+      p.setScreen("Error creating worktree: Workspace trust not yet accepted.\n");
+    } else p.setFailure((args) => (args[0] === "run" ? "unavailable" : null));
+    expect(await runHerdr([...planLaunch, "--plan", "alpha", "--", "work"], p.ctx)).toBe(1);
+    const alpha = p.row("alpha");
+    expect(alpha.lead).toBeNull();
+    expect(alpha.agent).toBeNull();
+    expect(alpha.branch).toBeNull();
+    // The plan is free again: a retry is not refused as reserved.
+    p.setFailure(undefined);
+    p.rows.t2 = {
+      address: "t2",
+      name: "kit-alpha",
+      state: "live",
+      labels: { "kit.lead": "core/t1", "kit.plan": "alpha" },
+      status: { app: "claude-code", state: "idle" },
+    };
+    expect(await runHerdr([...planLaunch, "--plan", "alpha", "--", "work"], p.ctx)).toBe(0);
+    expect(p.row("alpha").lead).toMatchObject({ holder: "child" });
+  }
+});
+
+test("a gone child resumes in its recorded worktree; its branch and hand-out are not rewritten", async () => {
+  const p = planWorld();
+  const alpha = p.plan("alpha", ["src/a/"]);
+  expect(await runHerdr([...planLaunch, "--plan", "alpha", "--", "work"], p.ctx)).toBe(0);
+  const handout = p.row("alpha").lead?.handoutId ?? "";
+  // The child took the plan, then died with its pane. Its branch was recorded under another name.
+  const taken = takeTasks(p.db, p.project, alpha.id, CHILD, 30, {
+    from: handout,
+    isLive: () => false,
+  });
+  expect(taken.ok).toBe(true);
+  p.change("alpha", { branch: "plan-branch" });
+  mkdirSync(join(p.ctx.cwd, ".claude", "worktrees", "kit-alpha"), { recursive: true });
+  // The old pane still answers, and its session is only unproved: no second child starts.
+  p.rows.t2 = {
+    address: "t2",
+    name: "kit-alpha",
+    state: "live",
+    labels: { "kit.lead": "core/t1", "kit.plan": "alpha" },
+    status: { app: "claude-code", state: "working" },
+  };
+  p.ctx.process = UNPROVEN;
+  p.calls.length = 0;
+  p.lines.length = 0;
+  expect(await runHerdr([...planLaunch, "--plan", "alpha", "--", "work"], p.ctx)).toBe(1);
+  expect(p.lines.join("\n")).toContain('Plan "alpha" already has a child (herdr:core/t2)');
+  p.noRun();
+  // Proved gone, but the pane is still open: close it first.
+  p.ctx.process = ENDED;
+  p.lines.length = 0;
+  expect(await runHerdr([...planLaunch, "--plan", "alpha", "--", "work"], p.ctx)).toBe(1);
+  expect(p.lines.join("\n")).toContain("close that pane first: ");
+  p.noRun();
+  // Its pane is gone too: resume.
+  delete p.rows.t2;
+  p.rows.t3 = {
+    address: "t3",
+    name: "kit-alpha",
+    state: "live",
+    labels: { "kit.lead": "core/t1", "kit.plan": "alpha" },
+    status: { app: "claude-code", state: "idle" },
+  };
+  p.setResponse((args) =>
+    args[0] === "run"
+      ? { address: "t3", state: "live", first_message: "sent", labels: {} }
+      : undefined,
+  );
+  p.lines.length = 0;
+  expect(await runHerdr([...planLaunch, "--plan", "alpha", "--", "work"], p.ctx)).toBe(0);
+  const run = p.calls.find((c) => c.args[0] === "run")?.args ?? [];
+  expect(run.slice(run.indexOf("-w"), run.indexOf("-w") + 2)).toEqual(["-w", "kit-alpha"]);
+  const resumed = p.row("alpha");
+  expect(resumed.agent).toBe("herdr:core/t3");
+  expect(resumed.branch).toBe("plan-branch");
+  expect(resumed.lead?.handoutId).toBe(handout);
+  const brief = readFileSync(briefPath(p.ctx.paths.stateDir, "core", "kit-alpha"), "utf8");
+  expect(brief).toContain("This is a resume");
+  expect(brief).toContain(`from "${handout}"`);
+  expect(brief).not.toContain("git reset --hard");
+});
+
+test("a failed resume keeps the reservation: the child it replaced is still the plan's", async () => {
+  const p = planWorld();
+  const alpha = p.plan("alpha", ["src/a/"]);
+  expect(await runHerdr([...planLaunch, "--plan", "alpha", "--", "work"], p.ctx)).toBe(0);
+  const handout = p.row("alpha").lead?.handoutId ?? "";
+  takeTasks(p.db, p.project, alpha.id, CHILD, 30, { from: handout, isLive: () => false });
+  mkdirSync(join(p.ctx.cwd, ".claude", "worktrees", "kit-alpha"), { recursive: true });
+  delete p.rows.t2;
+  p.ctx.process = ENDED;
+  p.rows.t2 = { address: "t2", state: "finished", labels: {} };
+  p.setScreen("Error: could not start.\n");
+  expect(await runHerdr([...planLaunch, "--plan", "alpha", "--", "work"], p.ctx)).toBe(1);
+  expect(p.row("alpha").lead?.handoutId).toBe(handout);
+});
+
+test("a recorded worktree that is gone refuses the resume", async () => {
+  const p = planWorld();
+  const alpha = p.plan("alpha", ["src/a/"]);
+  expect(await runHerdr([...planLaunch, "--plan", "alpha", "--", "work"], p.ctx)).toBe(0);
+  const handout = p.row("alpha").lead?.handoutId ?? "";
+  takeTasks(p.db, p.project, alpha.id, CHILD, 30, { from: handout, isLive: () => false });
+  delete p.rows.t2;
+  p.ctx.process = ENDED;
+  p.calls.length = 0;
+  p.lines.length = 0;
+  expect(await runHerdr([...planLaunch, "--plan", "alpha", "--", "work"], p.ctx)).toBe(1);
+  expect(p.lines.join("\n")).toContain("The recorded worktree");
+  expect(p.lines.join("\n")).toContain("is gone");
+  p.noRun();
+});
+
+test("herdr list shows the plan of a plan child", async () => {
+  const p = planWorld();
+  p.plan("alpha", ["src/a/"]);
+  expect(await runHerdr([...planLaunch, "--plan", "alpha", "--", "work"], p.ctx)).toBe(0);
+  p.rows.t2 = {
+    address: "t2",
+    name: "kit-alpha",
+    state: "live",
+    labels: { "kit.lead": "core/t1", "kit.plan": "alpha" },
+    status: { app: "claude-code", state: "idle" },
+  };
+  p.setList(["t2"]);
+  p.lines.length = 0;
+  expect(await runHerdr(["list"], p.ctx)).toBe(0);
+  expect(p.lines.join("\n")).toContain("task or plan");
+  expect(p.lines.join("\n")).toContain("| plan alpha |");
+});
+
+test("herdr plans prints one line per plan with its state, and --json the same facts", async () => {
+  const p = planWorld();
+  const first = p.plan("first", ["src/f/"]);
+  p.plan("second", ["src/s/"], { blockedBy: [first.id] });
+  p.plan("third", ["src/t/"]);
+  p.plan("loose", undefined);
+  expect(await runHerdr([...planLaunch, "--plan", "first", "--", "work"], p.ctx)).toBe(0);
+  p.rows.t2 = {
+    address: "t2",
+    name: "kit-first",
+    state: "live",
+    labels: { "kit.lead": "core/t1", "kit.plan": "first" },
+    status: { app: "claude-code", state: "working" },
+  };
+  p.lines.length = 0;
+  expect(await runHerdr(["plans"], p.ctx)).toBe(0);
+  const text = p.lines.join("\n");
+  expect(text).toContain("Plans: 1 with children · 1 waiting · 1 need you · 1 ready");
+  expect(text).toContain("#1 first: with a child (pane t2 live, working)");
+  expect(text).toContain("#2 second: waiting on #1 first");
+  expect(text).toContain("#3 third: ready: nothing blocks it and no held plan shares its files");
+  expect(text).toContain("#4 loose: has no file list, so it is never handed out");
+  expect(text).toContain("Fix: task_update #4 with files");
+  p.lines.length = 0;
+  expect(await runHerdr(["plans", "--json"], p.ctx)).toBe(0);
+  const json = JSON.parse(p.lines.join("\n")) as { plans: { plan: string; state: string }[] };
+  expect(json.plans.map((one) => [one.plan, one.state])).toEqual([
+    ["first", "with-child"],
+    ["second", "waiting"],
+    ["third", "ready"],
+    ["loose", "no-files"],
+  ]);
+});
+
+test("herdr plans in a folder with no session or no store says why", async () => {
+  const p = planWorld();
+  p.ctx.caller = () => null;
+  expect(await runHerdr(["plans"], p.ctx)).toBe(1);
+  expect(p.lines.join("\n")).toContain("Plans belong to a session");
+  const bare = world();
+  git(bare.ctx.cwd, "init", "-q", "-b", "main");
+  bare.ctx.caller = () => LEAD;
+  expect(await runHerdr(["plans"], bare.ctx)).toBe(1);
+  expect(bare.lines.join("\n")).toContain("No task store exists yet");
+});
+
+test("plans --wait ends with what changed when a blocker's pull request merges", async () => {
+  const p = planWorld();
+  const first = p.plan("first", ["src/f/"]);
+  p.plan("second", ["src/s/"], { blockedBy: [first.id] });
+  expect(await runHerdr([...planLaunch, "--plan", "first", "--", "work"], p.ctx)).toBe(0);
+  p.rows.t2 = {
+    address: "t2",
+    name: "kit-first",
+    state: "live",
+    labels: { "kit.lead": "core/t1", "kit.plan": "first" },
+    status: { app: "claude-code", state: "working" },
+  };
+  git(p.ctx.cwd, "branch", "worktree-kit-first");
+  p.prs["worktree-kit-first"] = "open";
+  let sleeps = 0;
+  let time = 0;
+  p.ctx.now = () => time;
+  p.ctx.sleep = async (ms) => {
+    time += ms;
+    sleeps++;
+    // The child finishes its plan and the person merges its pull request.
+    if (sleeps === 2) {
+      p.change("first", { status: "done" });
+      p.prs["worktree-kit-first"] = "merged";
+    }
+  };
+  p.lines.length = 0;
+  expect(await runHerdr(["plans", "--wait"], p.ctx)).toBe(0);
+  expect(sleeps).toBe(2);
+  const text = p.lines.join("\n");
+  expect(text).toContain("A plan changed:");
+  expect(text).toContain("#1 first: finished: its pull request merged, so its files are free");
+  expect(text).toContain("#2 second: ready: nothing blocks it");
+  expect(p.row("first").lead).toBeNull();
+  expect(time).toBe(2 * PLAN_POLL_MS);
+});
+
+test("plans --wait times out with the command to continue, and ends at once when nothing can change", async () => {
+  const p = planWorld();
+  const first = p.plan("first", ["src/f/"]);
+  p.plan("second", ["src/s/"], { blockedBy: [first.id] });
+  expect(await runHerdr([...planLaunch, "--plan", "first", "--", "work"], p.ctx)).toBe(0);
+  p.rows.t2 = {
+    address: "t2",
+    name: "kit-first",
+    state: "live",
+    labels: { "kit.lead": "core/t1", "kit.plan": "first" },
+    status: { app: "claude-code", state: "working" },
+  };
+  let time = 0;
+  p.ctx.now = () => time;
+  p.ctx.sleep = async (ms) => {
+    time += ms;
+  };
+  p.lines.length = 0;
+  expect(await runHerdr(["plans", "--wait", "--timeout", "40"], p.ctx)).toBe(0);
+  expect(p.lines.join("\n")).toContain("No plan changed yet.");
+  expect(p.lines.join("\n")).toContain(`${COMMAND} herdr plans --wait --timeout 40`);
+  expect(time).toBe(40_000);
+  // A plan that is ready already, or none that can change: no waiting at all.
+  const q = planWorld();
+  q.plan("only", ["src/o/"]);
+  q.ctx.sleep = async () => {
+    throw new Error("must not wait");
+  };
+  expect(await runHerdr(["plans", "--wait"], q.ctx)).toBe(0);
+  expect(q.lines.join("\n")).toContain("A plan is ready already: nothing to wait for.");
+  const r = planWorld();
+  r.plan("loose", undefined);
+  r.ctx.sleep = q.ctx.sleep;
+  expect(await runHerdr(["plans", "--wait"], r.ctx)).toBe(0);
+  expect(r.lines.join("\n")).toContain("Nothing to wait for: no plan can change by itself.");
 });

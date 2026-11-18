@@ -35,6 +35,7 @@ export const HERDR_VERBS = [
   "list",
   "send",
   "wait",
+  "plans",
   "report",
   "adopt",
   "stop",
@@ -42,10 +43,11 @@ export const HERDR_VERBS = [
 ] as const;
 export const MACHINE_VERBS = ["list", "allow", "forget", "production"] as const;
 const USAGE_LINES = {
-  start: `start --model <${CLAUDE_FAMILIES.join("|")}> --effort <${ALLOWED_EFFORTS.join("|")}> --mode <${MODE_ORDER.join("|")}|manual> [--cwd <dir>] [--on <machine>] [--name <name>] [--task <#n>] [--independent] [--asked] -- <brief>`,
+  start: `start --model <${CLAUDE_FAMILIES.join("|")}> --effort <${ALLOWED_EFFORTS.join("|")}> --mode <${MODE_ORDER.join("|")}|manual> [--cwd <dir>] [--on <machine>] [--name <name>] [--task <#n> | --plan <slug>] [--independent] [--asked] -- <brief>`,
   list: "list [--all] [--json]",
   send: "send <terminal> <text>",
   wait: "wait [--any | --all] [--timeout <seconds>] [--seen <addr>:<turn|?>:<error|done|end>[,…]]",
+  plans: "plans [--json] [--wait] [--timeout <seconds>]",
   report: "report <text>",
   adopt: "adopt",
   stop: "stop <terminal>",
@@ -54,6 +56,18 @@ const USAGE_LINES = {
 export const HERDR_USAGE = HERDR_VERBS.map(
   (verb) => `Usage: ${COMMAND} herdr ${USAGE_LINES[verb]}`,
 ).join("\n");
+/** The options and flags of `start`, read by the parser and by `runHerdr`'s early refusals. */
+export const START_OPTIONS = [
+  "--model",
+  "--effort",
+  "--mode",
+  "--cwd",
+  "--on",
+  "--name",
+  "--task",
+  "--plan",
+];
+export const START_FLAGS = ["--independent", "--asked"];
 export type HerdrArgs =
   | {
       verb: "start";
@@ -64,6 +78,8 @@ export type HerdrArgs =
       on?: string;
       name?: string;
       task?: string;
+      /** The slug of a plan to hand to the child (`herdr start --plan`). */
+      plan?: string;
       independent: boolean;
       asked: boolean;
       brief: string;
@@ -76,11 +92,19 @@ export type HerdrArgs =
       timeoutMs?: number;
       seen?: Record<string, { turn: number | null; state: "error" | "done" | "end" }>;
     }
+  | { verb: "plans"; json: boolean; wait: boolean; timeoutMs?: number }
   | { verb: "report"; text: string }
   | { verb: "adopt" }
   | { verb: "stop"; target: string }
   | { verb: "machines"; action: "list" }
   | { verb: "machines"; action: "allow" | "forget" | "production"; name: string };
+const TIMEOUT_WORDS = "A timeout needs a positive whole number of seconds.";
+function validTimeout(timeout: string | undefined): boolean {
+  return (
+    timeout === undefined ||
+    (/^\d+$/.test(timeout) && Number.isSafeInteger(Number(timeout) * 1000) && Number(timeout) > 0)
+  );
+}
 export function parseHerdrArgs(args: string[]): HerdrArgs | { error: string } {
   const verb = HERDR_VERBS.find((v) => v === args[0]);
   const fail = (why: string) => ({
@@ -91,11 +115,7 @@ export function parseHerdrArgs(args: string[]): HerdrArgs | { error: string } {
   if (verb === "start") {
     const split = rest.indexOf("--");
     if (split < 0) return fail("Put -- before the brief.");
-    const parsed = parseOptions(
-      rest.slice(0, split),
-      ["--model", "--effort", "--mode", "--cwd", "--on", "--name", "--task"],
-      ["--independent", "--asked"],
-    );
+    const parsed = parseOptions(rest.slice(0, split), START_OPTIONS, START_FLAGS);
     if ("error" in parsed) return fail(parsed.error);
     const { options: o, flags: f, positionals: p } = parsed;
     const model = CLAUDE_FAMILIES.find((v) => v === o.get("--model")),
@@ -106,8 +126,11 @@ export function parseHerdrArgs(args: string[]): HerdrArgs | { error: string } {
       return fail("Give a valid model, effort, mode and brief.");
     const independent = f.has("--independent"),
       task = o.get("--task"),
+      plan = o.get("--plan"),
       name = o.get("--name");
     if (task && independent) return fail("An independent session cannot have a task.");
+    if (plan && (task || independent || o.has("--on")))
+      return fail("--plan cannot be combined with --task, --independent or --on.");
     if (task && !/^#[1-9]\d*$/.test(task)) return fail("Use a task reference such as #7.");
     if (name && !validChildName(name))
       return fail("A name needs 1–32 lower-case letters, digits, - or _.");
@@ -126,10 +149,18 @@ export function parseHerdrArgs(args: string[]): HerdrArgs | { error: string } {
       ...(on !== undefined ? { on } : {}),
       ...(name ? { name } : {}),
       ...(task ? { task } : {}),
+      ...(plan ? { plan } : {}),
     };
   }
-  const known = verb === "wait" ? ["--timeout", "--seen"] : [];
-  const flags = verb === "list" ? ["--all", "--json"] : verb === "wait" ? ["--any", "--all"] : [];
+  const known = verb === "wait" ? ["--timeout", "--seen"] : verb === "plans" ? ["--timeout"] : [];
+  const flags =
+    verb === "list"
+      ? ["--all", "--json"]
+      : verb === "wait"
+        ? ["--any", "--all"]
+        : verb === "plans"
+          ? ["--json", "--wait"]
+          : [];
   const parsed = parseOptions(rest, known, flags);
   if ("error" in parsed) return fail(parsed.error);
   const { options: o, flags: f, positionals: p } = parsed;
@@ -168,13 +199,7 @@ export function parseHerdrArgs(args: string[]): HerdrArgs | { error: string } {
             return fail("Unknown cursor state.");
           seen[address] = { turn: match[2] === "?" ? null : Number(match[2]), state };
         }
-      if (
-        timeout !== undefined &&
-        (!/^\d+$/.test(timeout) ||
-          !Number.isSafeInteger(Number(timeout) * 1000) ||
-          Number(timeout) <= 0)
-      )
-        return fail("A timeout needs a positive whole number of seconds.");
+      if (!validTimeout(timeout)) return fail(TIMEOUT_WORDS);
       return p.length || (f.has("--all") && f.has("--any"))
         ? fail("Choose either --any or --all.")
         : {
@@ -183,6 +208,18 @@ export function parseHerdrArgs(args: string[]): HerdrArgs | { error: string } {
             mode: f.has("--all") ? "all" : "any",
             ...(timeout === undefined ? {} : { timeoutMs: Number(timeout) * 1000 }),
           };
+    }
+    case "plans": {
+      const timeout = o.get("--timeout");
+      if (!validTimeout(timeout)) return fail(TIMEOUT_WORDS);
+      if (p.length) return fail("plans takes no arguments.");
+      if (timeout !== undefined && !f.has("--wait")) return fail("--timeout belongs to --wait.");
+      return {
+        verb,
+        json: f.has("--json"),
+        wait: f.has("--wait"),
+        ...(timeout === undefined ? {} : { timeoutMs: Number(timeout) * 1000 }),
+      };
     }
     case "adopt":
       return p.length ? fail("adopt takes no arguments.") : { verb };
