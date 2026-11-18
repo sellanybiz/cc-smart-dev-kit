@@ -24,13 +24,13 @@ Read the approved plan and its binding spec. Run `task_list` with `scope: "plan"
 `open_only: false` and `plan`: its slug (which calls name it: `/cc-smart-dev-kit:plan-task`
 § 6), then `task_get` for each relevant phase and its notes. If the tree is missing, create it as `/cc-smart-dev-kit:plan-task` describes: plan, phase tasks, steps.
 The phase description is its complete brief; never make a second brief or progress file.
-Task fields and the CLI fallback belong to `/cc-smart-dev-kit:memory-routing`.
+Task fields and the CLI fallback belong to `/cc-smart-dev-kit:tasks`.
 
 Work on the plan branch in its worktree. Read `cc-smart-dev-kit workflow show` before git
 side effects. Record the plan's starting commit on its task. Check each phase's files,
 contracts and blockers. Set `blocked_by` only for a real dependency or a shared file;
 disjoint phases run together. Noted work that holds nothing is `non-blocking`, and a
-follow-up is a project task, never a blocker. Batch small same-shape edits into one phase
+follow-up is a task in its plan or an issue (`/cc-smart-dev-kit:tasks`), never a blocker. Batch small same-shape edits into one phase
 dispatch. Scale dispatches to the work: one for a small fix, two to four for a few independent
 parts, and up to the session cap for a large plan with clearly divided files. Model and effort
 per job: `/cc-smart-dev-kit:subagent-decision` § The lead's judgment.

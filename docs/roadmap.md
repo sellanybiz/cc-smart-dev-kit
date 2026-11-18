@@ -5,6 +5,17 @@ page/API are retired. Statusline usage warnings remain. Manual setup offers the 
 Herdr GUI; see `README.md` § Herdr GUI. Older completed phases below describe their release,
 not features that still exist.
 
+## 5.0.0 — deploy tasks, a `tasks` skill, findings as issues
+
+Project tasks become **deploy tasks**: a step owed before or after a deploy to prod or staging,
+blocking or non-blocking, with date-time ids. The kinds `follow-up` and `teammate` are gone. A
+deploy runs on a deploy branch, between two gates (`task release <env> --before|--after`), and
+nothing lingers. A finding that belongs to the plan is a task in it; one outside it is a GitHub
+issue, now on by default. A new `tasks` skill is the one home of task knowledge, and `project
+init` keeps a managed section in the project's deploy skill, or creates the skill. This is a
+breaking change: the old task files are not read. [The task design](design/tasks.md) § Deploy
+tasks holds the rules.
+
 ## 2.0.0 — subagent-driven parallel development
 
 The main session orchestrates one builder per phase, disjoint phases in parallel worktrees,
@@ -50,7 +61,7 @@ holds the rules.
 ## 1.10.0 — keep going, with the kit's task list (D75)
 
 One task system for the kit. Local SQLite holds live work across worktrees; reviewed Markdown
-files hold production, database, teammate and follow-up obligations. The task tools and command
+files hold project obligations (5.0.0 narrowed them to deploy tasks). The task tools and command
 share both stores. Setup replaces Claude Code's list tools and turns off claude-mem work state;
 memory stays. Start notes, status progress, checks, imports and release lists make open work
 visible. [The task design](design/tasks.md) records the boundary; live MCP, permissions and

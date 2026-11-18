@@ -18,6 +18,7 @@ import type {
 } from "../../machine/claude-mem-choices";
 import type { FinishedSession } from "../../sessions/finished";
 import type { FlowReport } from "../../sessions/flow";
+import type { DeployEnv, DeployStep, DeployType } from "../../tasks/deploy/format";
 import type { LastCheck } from "../../update/state";
 import type { MergeDetail } from "../../workflow/merge-check";
 import type { WorkflowSource } from "../../workflow/resolve";
@@ -446,22 +447,36 @@ export interface WorkTaskNode {
   worktree: null | string;
 }
 
-/** One open project task file (`src/tasks/project/format.ts`), as the Tasks tab lists it. */
+/**
+ * The other half of a linked pair (D13): its id and its state now. `missing` when the id names
+ * no task in the folder (`task check` reports it as `twin-missing`).
+ */
+export interface ProjectTaskTwin {
+  id: string;
+  status: "done" | "dropped" | "missing" | "open";
+}
+
+/** One open deploy task (`src/tasks/deploy/format.ts`), as the Tasks tab lists it. */
 export interface ProjectTaskRow {
-  /** When it was written (`YYYY-MM-DD`). */
+  /** When it was written: ISO 8601 in UTC, ending in `Z`. */
   created: string;
-  /** Its file, relative to the main checkout. */
+  /** When it is owed: before or after the deploy. */
+  deploy: DeployStep;
+  /** The environment it is owed on: its folder and its id's first part. */
+  env: DeployEnv;
+  /** Its file, relative to the main checkout: the one key two files of one id never share. */
   file: string;
   /** What a person must take care with: `needs-yes`, `twice-safe`, `spends-money`, … */
   flags: string[];
-  /** `T-` and six letters or digits. */
+  /** `<env>-<YYYYMMDD>-<HHMMSS>` in UTC, `-2` when that second was taken. */
   id: string;
-  kind: "database" | "follow-up" | "production" | "teammate";
   /** Open past the project's `tasks.staleDays`. */
   stale: boolean;
   title: string;
-  weight: "after-deploy" | "blocks-release" | "owner" | null;
-  when: "any" | "next-release" | "now" | null;
+  /** The linked pair's other task; null when it has none. */
+  twin: null | ProjectTaskTwin;
+  /** Blocking: the deploy gate refuses while it is open. Non-blocking: done, or dropped with a reason. */
+  type: DeployType;
 }
 
 /**
@@ -493,19 +508,28 @@ export type ProjectWorkTasks =
   | { state: "none" }
   | { state: "unreadable"; why: string };
 
-/** The project's task files in its main checkout, or why they cannot be read. */
+/** The project's deploy tasks in its main checkout, or why they cannot be read. */
 export type ProjectTaskFiles =
   | {
       /** Files that do not read as a task: `task check` names each one. */
       broken: number;
-      /** Closed tasks in `archive/`. */
+      /** Closed tasks in each environment's `archive/`. */
       closed: number;
       /** The task folder, relative to the main checkout. */
       dir: string;
+      /** Ids two differently named files claim (`duplicate-id`): the gate refuses each one. */
+      duplicateIds: string[];
+      /** The environments the project deploys to (`tasks.envs`), in the order a release visits them. */
+      envs: DeployEnv[];
+      /** Files of the old layout, straight in the folder: not read, to recreate or delete. */
+      old: number;
       /** The project's `tasks.staleDays`. */
       staleDays: number;
       state: "ready";
-      /** The open ones: what blocks a release first, then by when, then the oldest. */
+      /**
+       * The open ones, every environment's (one outside `envs` too): by environment, before the
+       * deploy then after, blocking first, then the oldest.
+       */
       tasks: ProjectTaskRow[];
     }
   | { state: "unavailable"; why: string };
@@ -513,7 +537,7 @@ export type ProjectTaskFiles =
 /**
  * `GET /api/projects/<id>/tasks` (D75): one project's tasks, as the Tasks tab and its project
  * page draw them. The kit's work store for the project (every worktree shares one list) and the
- * project's own task files in its main checkout. Read-only: a task changes through the task
+ * project's deploy tasks in its main checkout. Read-only: a task changes through the task
  * tools or `cc-smart-dev-kit task`.
  */
 export interface ProjectTasksAnswer {

@@ -49,9 +49,9 @@ parts, then the part you are changing.
 
 | Page | What it holds |
 |---|---|
-| [The kit's task list](design/tasks.md) | The subagent ledger: plan, phase and step tasks; agent, branch, worktree and base; reports, rulings and dependencies. |
+| [The kit's task list](design/tasks.md) | The subagent ledger: plan, phase and step tasks; agent, branch, worktree and base; reports, rulings and dependencies. Deploy tasks for prod and staging, the release gates and the deploy-skill block. |
 | [The workflow](design/workflow.md) | What may happen by itself after a step — commit, push, a pull request, a merge — the review record, and the merge guard's one decision. |
-| [GitHub Issues](design/issues.md) | The opt-in switch (`workflow.issues`), `cc-smart-dev-kit issue file`, the hidden marker that keeps one finding to one issue, what is refused before anything is sent, the guards, the fixed-unreleased mark and the release list. |
+| [GitHub Issues](design/issues.md) | The switch (`workflow.issues`, on by default since 5.0.0), `cc-smart-dev-kit issue file`, the hidden marker that keeps one finding to one issue, what is refused before anything is sent, the guards, the fixed-unreleased mark and the release list. |
 | [The portal](design/portal.md) | What it is and is not, how it starts (D10), the door, the live stream and the JSON API, the pages' facts and actions, what it runs from, and what a page cannot know. |
 | [Herdr orchestration](design/herdr.md) | Linked children and independent sessions, identity, private briefs, remote rules, blocked children (the person's), event cursors and live proofs still owed. |
 | [Sessions and worktrees](design/sessions.md) | Saved sessions, targeted finished-session removal, safe worktree cleanup and the flow report. |

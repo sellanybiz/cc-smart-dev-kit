@@ -200,8 +200,10 @@ describe("markFixed", () => {
 });
 
 describe("the gate", () => {
-  test("the switch off: nothing is called", async () => {
-    const { gate, gh } = await gateOf({ committed: { worktrees: { base: "main" } } });
+  test("the switch set off: nothing is called", async () => {
+    const { gate, gh } = await gateOf({
+      committed: { worktrees: { base: "main" }, workflow: { issues: { enabled: false } } },
+    });
     expect(gate.kind).toBe("off");
     expect(gh.calls).toEqual([]);
   });

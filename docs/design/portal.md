@@ -652,7 +652,7 @@ API's builders (`src/portal/api/data.ts`, `work.ts`), never a second reader:
   with the same answer `projects/<id>/tasks` gives (one reading, `tasksOf`, read
   `PROJECT_GIT_AT_ONCE` projects at a time). The page reads; its one change is the take-over
   below. From top to bottom: four counts over the projects in view (open work with how much is
-  in progress, blocked, non-blocking, task files owed with how many block the release), two tabs
+  in progress, blocked, non-blocking, deploy tasks owed with how many are blocking), two tabs
   (*Work on this machine* and *Owed by the project*, each with its count), one filter bar, a key
   to the levels, then a card per project. Each part has one home: the rules in
   `portal/src/lib/tasks.ts` (filters, the address, counts) and `task-groups.ts` (sessions,
@@ -743,12 +743,15 @@ API's builders (`src/portal/api/data.ts`, `work.ts`), never a second reader:
     action runs the CLI's own take-over (`createTaskOps` › `take`), and its result shows in
     place; the panel and the tree read again. With no session to move to, the button is off and
     says why.
-  - *Owed by the project* (the files tab) lists the open task files of the main checkout by
-    kind (production, database, teammates, follow-ups), what blocks a release first, each with
-    its weight, its when, its flags in words and a mark when it is open past `tasks.staleDays`;
-    a file that does not read as a task is counted, with `task check` to name it. Its filter bar
-    keeps the project and the search only: a session, a plan or a work status means nothing for
-    a task file.
+  - *Owed by the project* (the files tab) lists the open deploy tasks of the main checkout in a
+    section per environment, in the order a release visits them (`tasks.envs`: staging, then
+    prod), each task before the deploy and then after, blocking first. A row shows its step, its
+    type with a mark on a blocking one, its linked twin, its flags in words and a mark when it is
+    open past `tasks.staleDays`. What cannot be read is counted, with `task check` to name it:
+    a file that does not parse, an id two files claim, and the old 4.x files in the folder
+    itself (not read since 5.0.0). The tab says that a task still on a branch counts once the
+    branch merges, with `task list --branches` for those. Its filter bar keeps the project and
+    the search only: a session, a plan or a work status means nothing for a deploy task.
   - *Narrow screens.* The two tabs share the whole width on a phone with short words ("Work ·
     15 open", "Owed · 50"); from the `@xl/main` width each shows its full words and is as wide
     as they are. A tab's words never wrap and its name is always the full words. A tab bar
@@ -764,13 +767,14 @@ API's builders (`src/portal/api/data.ts`, `work.ts`), never a second reader:
   - Every state has its words: loading is the page skeleton; no project at all points at
     Settings; a store with nothing yet, nothing open, nothing matching the filters (with a way to
     clear them or show all) and no task file each say what makes tasks appear (a session's
-    `task_create`, or `cc-smart-dev-kit task add`); a store or a folder that cannot be read says
+    `task_create`, or `cc-smart-dev-kit task add`, with `--kind prod` or `staging` for a deploy
+    step); a store or a folder that cannot be read says
     why. With every project in view, one with nothing to show (or, under a filter or a search,
     nothing that matches) is named in one line at the end instead of an empty card. The tab
     reads again on the `tasks` event and on a `workflow.*` or `project.*` result
     (`TASKS_REFRESH`).
 - **Project, the Tasks card** (D75, `portal/src/components/tasks-card.tsx`): one line on every
-  project's page that counts its open, in-progress and blocked work and the task files it owes
+  project's page that counts its open, in-progress and blocked work and the deploy tasks it owes
   (from `projects/<id>/tasks`), and opens the Tasks tab on that project (`/tasks?project=<id>`).
 
 Every action the server has is drawn where it belongs, asked first when it restarts or writes

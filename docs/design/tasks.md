@@ -9,10 +9,16 @@ controls such as `TaskStop` and `TaskOutput`. D68's history is in [claude-mem](c
 
 Live work changes every minute. Every worktree must see it at once, without a commit for
 every status change. Such commits would fill pull requests and invalidate review records.
-Project obligations must instead travel with a branch, pass review, and reach teammates on
-other machines. One local database cannot do that. So work tasks live locally in SQLite;
-production, database, teammate and follow-up tasks live as Markdown files in the repo.
-The task's kind selects its store, not a second set of tools.
+A step owed around a deploy must instead travel with a branch, pass review, and reach teammates
+on other machines. One local database cannot do that. So work tasks live locally in SQLite;
+deploy tasks, for prod and for staging, live as Markdown files in the repo (5.0.0 made them the
+only project tasks).
+The task's kind selects its store, not a second set of tools. What belongs where, for Claude, is
+the `tasks` skill (`plugin/skills/tasks/SKILL.md`): the one home of task knowledge.
+
+A finding that belongs to the plan is covered by the plan, as a task under the phase that owns
+it. One outside the plan is never a task: the main session files a GitHub issue (on by default),
+a subagent lists it in its report, and without GitHub it goes in the end-of-turn summary.
 
 ## The subagent ledger in 2.0
 
@@ -271,7 +277,7 @@ whose last entry holds the task as it was.
 `task_get` and `task show` print it as a timeline, oldest first, from `history.ts`, and a
 deleted task's too (`#12 "Subject" [deleted]`, then its history). A
 description is long, so its line gives the length; `history: true` (`--history`) prints every
-earlier description in full. A project task's history is its file's git log (`git log
+earlier description in full. A deploy task's history is its file's git log (`git log
 --follow`, which tracks the move into `archive/`): who committed each change, and when. Old
 code that writes to the store records no entries; 1.10.0 is the first release with the store,
 so every store has the table from its first write.
@@ -338,33 +344,37 @@ that works in two repos keeps its work in both. When the session record gives no
 time, `claimHeldBy` needs the session id too, so the `/clear` re-stamp never fires; the
 resumed-claim move still does.
 
-## Project tasks
+## Deploy tasks
 
-`src/tasks/project/` owns one `<id>-<slug>.md` file per task under `tasks.dir` (default
-`.claude/tasks`). An id is `T-` followed by six base32 characters. Closed files live in
-`archive/`. If the same id has an active and archived copy, the archived one wins, so a
-merge cannot reopen it just by bringing back the active file.
+A deploy task is a step owed **before** or **after** a deploy to one environment, `prod` or
+`staging`. `tasks.envs` lists the environments a project has (default both; `src/project/config.ts`).
+`src/tasks/deploy/` owns the files, one `<id>-<slug>.md` per task: an open task in
+`<tasks.dir>/<env>/` (default `.claude/tasks/prod/`), a closed one in `<env>/archive/`. The
+4.x layout (a `T-…` file straight in `tasks.dir`, the kinds `follow-up` and `teammate`, the fields
+`when` and `weight`) is gone: a clean break, with no migration.
 
-Front matter writes each value as JSON on its own line. This is a YAML-compatible form;
-no general YAML writer is needed. `body` and `file` are reserved keys, not metadata.
+An id is `<env>-<YYYYMMDD>-<HHMMSS>` in UTC (`prod-20261117-144503`), with `-2`, `-3` when the
+second is taken. The front matter is the only authority for an id; a file name only reserves
+one. One regex and `isDeployTaskId()` in `format.ts` hold the shape. Front matter writes each
+value as JSON on its own line (YAML-compatible; no YAML writer is needed). `body` and `file` are
+reserved keys, not metadata.
 
 ```markdown
 ---
-id: "T-abc234"
-title: "Check the database after release"
-kind: "database"
+id: "prod-20261117-144503"
+title: "Run the orders migration"
+env: "prod"
 status: "open"
-when: "next-release"
-weight: "after-deploy"
+deploy: "before"
+type: "blocking"
+twin: "staging-20261117-144503"
 flags: ["needs-yes"]
-created: "2026-11-03"
-from: "plan release-work, phase database, branch worktree-database"
+created: "2026-11-17T14:45:03Z"
+from: "plan orders, phase db, branch worktree-db"
 refs: ["docs/database.md"]
 ---
 
 ## What and why
-
-Explain the obligation, not just its title.
 
 ## Steps
 
@@ -375,40 +385,159 @@ Explain the obligation, not just its title.
 ## Log
 ```
 
-The headings are suggestions, not a required template. The body is free Markdown.
-`kind` is `production | database | teammate | follow-up`; `status` is `open | done |
-dropped`; `when` is `now | next-release | any`; `weight` is `blocks-release | after-deploy |
-owner`. Flags describe risk: `needs-yes`, `twice-safe`, `spends-money`, `real-people`,
-`destructive`. `created` and optional `closed` are calendar dates (`YYYY-MM-DD`); `from` is an optional
-origin string naming plan, phase or branch. Optional `evidence` is a string; omit unset
-fields rather than writing null. References and evidence keep the task understandable later.
+The headings are suggestions; the body is free Markdown. `status` is `open | done | dropped`.
+`deploy` is `before | after` and `type` is `blocking | non-blocking`, both required: a blocking
+task must be done, a non-blocking one is done or dropped with a reason. `env` must match the
+folder and the id's prefix, and `created` and `closed` are UTC instants that end in `Z`; a file
+that breaks either is a broken file. `twin` is the linked pair (below). Flags describe risk:
+`needs-yes`, `twice-safe`, `spends-money`, `real-people`, `destructive`. `from` is an optional
+origin string; `evidence` is set when the task closes.
 
-### The life of a project task
+### The life of a deploy task
 
-- Create writes in the session's checkout, a builder's worktree included, so the task ships in
-  that branch's commit and pull request.
-- `task list --branch [--base <branch>]` lists task files changed against the base for the
-  pull request's notes and still-owed sections. `task list --branches` finds open tasks on
-  local branches not yet merged.
-- `task release` lists production and database obligations by weight, every next-release
-  task, and tasks that already missed a release. It does not execute their steps.
-- One close call records status, date, evidence and a log entry, then archives the file.
-- Teammate tasks are acknowledged per machine. `task done` means done here;
-  `--for-everyone` closes the shared file. An acknowledgement is not evidence that another
-  machine completed the task.
-- `task check` finds stale open tasks (`tasks.staleDays`, default 30), missed releases,
-  missing reference paths, duplicate titles, broken files and new notes in
-  `tasks.legacyFolders`. Findings make the command exit 1. Doctor uses the same check.
-- `task import notes` copies old open notes into task files; `--since` limits their date.
-  It keeps the body. Removing the old files belongs to the project's own reviewed change.
+- **Create** writes in the checkout the call resolves to, so the task ships in that branch's
+  commit and pull request, and the answer names the checkout it wrote in. The `task` command
+  resolves it from the folder it runs in (a builder's worktree included, and an explicit folder
+  wins over a session record's); the task tools resolve it from the session record's folder, so a
+  builder subagent's tool calls reach the session's checkout, and a builder that must write in its
+  own worktree runs the command there. When a read shows deploy tasks from a checkout other than
+  the session's (the command run in a second folder), it says "Deploy tasks in <folder>:".
+  `kind` is `work | prod | staging` and defaults to `work`. `deploy`, `pair`, `flags`, `refs` and
+  `from` on a work task are refused, so a forgotten `kind` never silently makes a
+  machine-local task. `deploy` and `type` are required on a deploy task.
+- **A linked pair.** `kind: "staging"` with `pair: true` (CLI `--pair`) creates the staging
+  task and its prod twin in one call, each naming the other in `twin`. Refused when
+  `tasks.envs` lacks either environment. Prod's `--before` gate refuses while the staging twin
+  is open.
+- **Close** with `task_done` (`task done`): `done` needs `evidence`, `dropped` needs a `note`.
+  The file gets its `closed` date, the evidence and a log line, then moves to `archive/`; closing
+  a closed task is refused. **Only the person drops a blocking task**, in their own terminal:
+  inside Claude Code the MCP server and `task drop` refuse it (the check `workflow set` uses for
+  its outbound keys), and the answer names the command to run. `task delete` removes an
+  untracked file only; a tracked one closes. `task set <id> --type … --deploy …` changes a
+  task's type or step, but weakening a blocking task (`--type non-blocking`, or `--deploy after`
+  on a `before` one) is a drop by another name, so it is the person's too. This rule (D14)
+  covers the task tools and the CLI, not a hand edit or removal of the file: no file guard
+  stands behind it. A deploy task has no parent, `blocked_by` or builder bindings.
+- **Reopen** (`task reopen <id>`, or `task_update` with status `open`) puts a closed task back
+  from `archive/`, for a deploy that was rolled back. An open task left in `archive/` by an
+  interrupted reopen is a `task check` finding; running the reopen again finishes it.
+- `task list --branch [--base <branch>]` lists the task files this branch changed against the
+  base, grouped by environment, for the pull request's notes. `task list --branches` finds open
+  tasks on local branches not yet merged, and, for a task the base still has open, the closes
+  already made on such a branch (`closed on <branch>, not merged`). It reports a broken file on
+  one branch while it keeps listing the others. A deploy branch left unmerged is a visible run in
+  progress, and a prod gate that waits on an open staging twin points at this list: the twin's
+  close may sit on a branch not merged yet.
+- **Old ids.** An id that starts with `T-` answers "old task ids are gone in 5.0.0". The old
+  kinds answer the same on the CLI (`--kind follow-up|teammate`, exit 2). The files themselves
+  are never read; every surface counts them (`task check`, doctor, the session-start line) so
+  the person recreates each as a deploy task or deletes it.
+
+### The deploy run and the gates
+
+`cc-smart-dev-kit task release <env> --before|--after [--ref <ref>] [--json]` is the gate around a
+deploy (`release.ts`). `--ref` defaults to `origin/<worktrees.base>`; every answer prints the
+ref and the commit it read. A run happens on a **deploy branch** cut from the commit that
+ships, so the closes reach main through that branch's small pull request and nothing lingers.
+Exit codes: 0 the gate passes, 1 a refusal (also a ref git does not know, a place outside git,
+or a short ref name that matches more than one ref, such as a stray local branch `origin/main`
+beside origin's or a tag beside a branch: git would ship the first match, so both gates stop
+and name every match, `refBranchOf` in `branch.ts`), 2 a wrong command.
+
+1. Cut the branch: `git switch --no-track -c deploy/<env>-<YYYYMMDD-HHMM> origin/<base>`, in
+   the session's own checkout. `--no-track` keeps a plain `git push` from targeting the base.
+   The refusal for a wrong branch prints this command; on a deploy branch, the refusal for a HEAD
+   that is not the ref prints it instead, so an answer holds it once. The `task` command acts in
+   the folder it runs in, and every deploy-task answer names the checkout and file it wrote, so a
+   close lands where the gates read it.
+2. `--before` exits 1 when the environment is not in `tasks.envs`; HEAD is detached, or on the
+   base branch (`worktrees.base`) or the ref's own branch (the branch git resolves the ref to:
+   `origin/<x>`, `upstream/<x>` and `refs/heads/<x>` are `<x>`; a tag or a commit has none): a
+   run happens on a deploy branch, D12, and that refusal prints the branch to cut; HEAD is not
+   the ref's commit
+   (it may differ from it only under `tasks.dir`, closes already made, and it must hold every
+   commit of the ref); a blocking `before` task is open; a task file is broken or its id is
+   claimed by two file names; or, for prod, a task's staging twin is open, or names no task
+   (live or archived: a deleted twin must not pass as a finished one; `task check` names it,
+   `twin-missing`, with the same fix line). It names the open non-blocking `before` tasks as notes: do them now, or drop
+   them with a reason. It adds a `!` warning line, never a refusal, when the working tree has
+   uncommitted changes outside `tasks.dir` (`GitFacts.uncommittedOutside`): the gate judged
+   committed code only, and a local-folder deploy could still ship those edits.
+3. Claude closes each task with evidence and commits the closes on the deploy branch.
+4. The deploy itself is the project's own deploy skill.
+5. `--after` exits 1 when **any** task of that environment is open, before or after; `tasks.dir`
+   has uncommitted changes; the branch is not pushed (`git push -u origin <branch>`, or it is
+   ahead of its remote copy); HEAD is detached, or on the base branch or the ref's own branch (no
+   line ever prints a push to it); the environment is not in `tasks.envs`; or a task file is
+   broken or its id is claimed by two file names. Only `--before` reads the uncommitted
+   changes outside `tasks.dir`; `--after` reads the tasks folder alone.
+6. The branch's pull request (the task files only) merges as the workflow says.
+
+With no flag, `release [<env>]` lists the open tasks by environment, step and type, blocking
+first, and exits 0. Two files with one id **and the same file name** are a crash copy of a close:
+the archived one wins. One id under different file names is a `duplicate-id` finding, and the
+fix is to rename one id, never to delete a file.
+
+### The deploy-skill block
+
+`project init` keeps a short managed section in the project's own deploy skill, so the deploy
+steps and the gates sit together (`src/project/deploy-skill.ts`, its text in `deploy-block.ts`).
+The block's first line, `## Deploy tasks`, is the contract across versions: it is how a skill
+written by an older kit is still found and updated. It holds the two gate commands, the
+deploy-branch step, the close step and a pointer to `/cc-smart-dev-kit:tasks`.
+
+- **Find.** A deploy skill is a file under `.claude/skills/` that already holds the block, or
+  whose folder name or front matter `name` has "deploy" in it; `--deploy-skill <path>` names one.
+  With several, one question picks the file. The kit then shows the change, asks, and writes
+  it. `--no-deploy-block` takes the block out (and creates no skill).
+- **None found.** `project init` creates `.claude/skills/deploy/SKILL.md`: asked, yes by
+  default, `--yes` creates it, and not when `.claude/commands` has a `deploy*.md` (a project
+  with a `/deploy` command already). The starter says the project's deploy steps are not
+  written yet: Claude asks the person how the project deploys and writes them, and never
+  invents a deploy command.
+- **Write.** Through the managed-markdown writer with a backup and an atomic write, never
+  `changed.json`, so `restore` never touches a project file. A real path outside the checkout
+  is refused, the file is read again before the rename, and CRLF line endings are kept.
+  `--dry-run` shows the diff. The portal's init never writes a skill.
+- **`requires`.** `project init` raises `requires` to `>=5.0` when the project has deploy task
+  folders or the block, and removes `tasks.releaseBranch` and `tasks.legacyFolders`. Those two
+  fields are accepted and ignored, not retired: the retired-field pattern fails every guard
+  closed, and `project init` could not repair it. A 4.x kit then says "update" instead of
+  showing nothing.
+
+### Checks, and where they show
+
+`task check [--json]` (`check.ts`) exits 1 on any finding. Each kind has plain words in
+`doctor`, a `✗` unless marked advice:
+
+| Finding | Words |
+|---|---|
+| `broken-file` | broken task file |
+| `duplicate-id` | task id used by more than one file |
+| `twin-missing` | twin that names no task |
+| `open-in-archive` | open task left in `archive/` |
+| `broken-ref` | missing reference (a `refs` path outside the checkout, or not there) |
+| `stale` (advice, `!`) | task open for over `tasks.staleDays` days (default 30) |
+| `duplicate-title` (advice, `!`) | repeated title, within one environment |
+| `old-files` (`!`) | N old task files are not read since 5.0.0 |
+
+`doctor` prints these as "deploy tasks:" lines, each with the fix `task check`. The same group
+carries a `!` line for each `tasks` field nothing reads (fix: `project init`), a `requires`
+below `>=5.0` while deploy folders or the block exist, and a deploy-skill block that is out of
+date; a `·` line says a skills folder linked from outside the checkout is not searched.
 
 ## The server, command and guards
 
 `cc-smart-dev-kit task mcp` runs the stdio MCP server. Its official SDK is isolated in
 `plugin/dist/tasks-mcp.js`, not `cli.js`. The tools are `task_create`, `task_update`,
 `task_done`, `task_note`, `task_list`, `task_get`, `task_search`, `task_delete`, `task_take`.
-The CLI exposes the same operations, including import, branch lists, checks and release
-lists; [README](../../README.md) lists their arguments. `task_get` and `task show` cap
+The server's own instructions (`TASK_SERVER_INSTRUCTIONS`) say that a step owed around a deploy is
+a deploy task, to list them before any deploy, production or database work, and to close each with
+evidence, pointing to the `tasks` skill. The CLI exposes the same operations, including the import
+of claude-mem's lists, branch lists, checks and the release gates; [README](../../README.md) lists
+their arguments. The `acks` table stays in the work store's schema, though nothing writes it: a
+4.x server still queries it, and `min_compatible` stays 1. `task_get` and `task show` cap
 long output and accept an offset. Search uses SQL `LIKE`, not FTS5.
 
 ### The hooks and pages that read it
@@ -423,7 +552,12 @@ no writer holding it open. Three hooks read it ([hooks](hooks.md) has each one's
   claim, one its session left in a process that is gone, counts as its own), then the ones in
   progress, then the most recently touched. A task untouched for `tasks.staleDays`
   (default 30) is not listed but counted in one line, unless this process claims it. Until
-  registration exists, the hook says to run setup.
+  registration exists, the hook says to run setup. When any deploy task is open, unreadable, a
+  duplicate id or an old file, one more line follows: "Deploy tasks open: prod 2 (1 blocking
+  before the deploy), staging 0; 1 unreadable; 3 old files not read — /cc-smart-dev-kit:tasks".
+  It reads only the top of each environment folder, never `archive/`, and counts old files only
+  in a project with a `cc-smart-dev-kit.json`; an unreadable folder leaves the line out and says
+  why on stderr, never hiding the work list.
 - `keep-going` (Stop) holds the main session's turn end once per stalled state while a phase
   of its plan is in progress and nothing runs, or while the plan in flight has ready phases
   and none runs. The same reason already given, with no subagent started or resumed since,
@@ -462,7 +596,8 @@ a caller with no identity cannot take work.
 The portal shows the list read-only, on a Tasks tab of its own (`/tasks`, from `/api/tasks`):
 each project's work tree as plan › phase › task, its open work and what closed in the
 last seven days, each row with its layer, type, blockers and progress, each phase with its
-ledger, then the open task files by kind, stale ones marked. Filters narrow it to one project,
+ledger, then the open deploy tasks in a prod and a staging section, blocking ones and stale
+ones marked. Filters narrow it to one project,
 blocked work or non-blocking work, and keep each match under the tasks above it. A project's
 page keeps a one-line card that links there. Both read again on the live stream's `tasks`
 event, which fires when the store's file or its write-ahead log changes ([portal](portal.md)).
@@ -500,7 +635,7 @@ only a task whose history starts with the import counts. A list with an open tas
 made or changed under it stays open, and the run names those tasks: they may be someone's
 work. The repair runs even when claude-mem's database is gone.
 Doctor checks registration, permissions, the memory switch, work-store schema and
-integrity, and project-file findings. It does not replace the live checks in the contract.
+integrity, and the deploy task findings above. It does not replace the live checks in the contract.
 
 ## Not yet
 

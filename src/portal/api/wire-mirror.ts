@@ -116,6 +116,7 @@ export const MIRRORED = {
   ProjectTaskFiles: same<Server.ProjectTaskFiles, Wire.ProjectTaskFiles>(true),
   ProjectTaskRow: same<Server.ProjectTaskRow, Wire.ProjectTaskRow>(true),
   ProjectTasksAnswer: same<Server.ProjectTasksAnswer, Wire.ProjectTasksAnswer>(true),
+  ProjectTaskTwin: same<Server.ProjectTaskTwin, Wire.ProjectTaskTwin>(true),
   ProjectWorkTasks: same<Server.ProjectWorkTasks, Wire.ProjectWorkTasks>(true),
   ProjectsAnswer: fits<Server.ProjectsAnswer, Wire.ProjectsAnswer>(true),
   ProjectWorkflowAnswer: same<Server.ProjectWorkflowAnswer, Wire.ProjectWorkflowAnswer>(true),

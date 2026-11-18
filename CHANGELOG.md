@@ -3,6 +3,62 @@
 What each release changed, newest first. A release's **What to run** steps are the ones to do
 in your own terminal after the update; the user guide is [README.md](README.md).
 
+## 5.0.0
+
+A major version: `update` holds it until you run `cc-smart-dev-kit update` on each machine.
+
+- **Project tasks become deploy tasks.** A task file in the repo is now only a step owed around
+  a deploy, for **prod** or **staging**, each in its own folder (`.claude/tasks/prod/`,
+  `.claude/tasks/staging/`). Each one says when it runs (`--deploy before|after`) and whether it
+  holds the release (`--type blocking|non-blocking`). Ids are the creation time in UTC
+  (`prod-20261117-144503`). A step owed on both environments is a linked pair (`--pair`): prod
+  waits for its staging twin.
+- **A deploy run with two checks.** Cut a deploy branch from the commit that ships, then
+  `task release <env> --before`: it refuses while a blocking before-task is open, a staging twin
+  is open (or names no task), you are on the base branch (or detached, or the ref's own branch),
+  or the branch is not that commit. It warns, without refusing, when files outside the tasks
+  folder have uncommitted changes. Close each task with evidence and commit the closes; deploy;
+  `task release <env> --after` refuses while any task is open, the closes are not committed and
+  pushed, or you are on the base branch (or detached, or the ref's own branch). Both checks also
+  refuse an environment not in `tasks.envs`, a task file that does not read, and one id in two
+  files. The branch's small pull request carries the closes to main, so nothing lingers. The `task` command writes and reads deploy tasks in the folder it runs in; the task
+  tools use the session's checkout. `task list --branches` also shows closes made on a branch
+  that is not merged yet.
+- **Only you drop a blocking task.** Inside Claude Code, dropping, weakening (non-blocking, or
+  before to after) or deleting an open blocking task is refused; you run the command in your own
+  terminal. `task reopen` puts a task back after a rolled-back deploy.
+- **Follow-ups are no longer tasks.** A bug or gap that belongs to the plan is the plan's own work.
+  One outside it becomes a GitHub issue, filed by the main session; without GitHub, a line in the
+  summary. The `follow-up` and `teammate` kinds, `when`, `weight`, `--for-everyone` and
+  `task import notes` are gone.
+- **GitHub issues are on by default.** The kit files issues, and marks them fixed
+  (`issue mark-fixed`: a comment and a label), without an opt-in, in any repository on github.com
+  that is not public (private or internal) whose project has a kit config, when `gh` is logged
+  in. A public repository still needs `issues.allowPublic`. Where the kit cannot file, `doctor`
+  shows an information line, not a failure.
+- **A `tasks` skill.** `/cc-smart-dev-kit:tasks` is the one place that says which task to make
+  and how to use it: work tasks, plans, deploy tasks and the deploy run. `memory-routing` points
+  to it.
+- **Your deploy skill gets the steps.** `project init` finds the project's deploy skill, asks,
+  and adds a kit-managed "Deploy tasks" section to it (`--deploy-skill <path>` names one,
+  `--no-deploy-block` removes it). With no deploy skill, it offers to create
+  `.claude/skills/deploy/SKILL.md`, unless a `/deploy` command already exists. `restore` never
+  changes these project files.
+- **You see them.** Each session starts with a "Deploy tasks open: …" line when any are open.
+  `doctor` names broken task files, old task files, fields no longer read and an out-of-date
+  section, each with its fix. The portal's Tasks page shows prod and staging sections.
+- **Old files are not read.** Task files from 4.x (`.claude/tasks/T-*.md`) are ignored; `doctor`
+  counts them. `tasks.releaseBranch` and `tasks.legacyFolders` are accepted and ignored; the new
+  field is `tasks.envs`. `project init` raises `requires` to `>=5.0`, so an older plugin says
+  "update" instead of showing nothing.
+
+**What to run:**
+1. `cc-smart-dev-kit update`, then start new sessions.
+2. In each project: `cc-smart-dev-kit project init`.
+3. Delete the old task files in `.claude/tasks/` you no longer need (`doctor` lists them).
+4. To keep issues off: `cc-smart-dev-kit workflow set issues.enabled false` for every project
+   of yours, or with `--project` for one project (commit that file).
+
 ## 4.10.2
 
 - **A reopened session keeps its plan on the status line.** `claude --resume` (or

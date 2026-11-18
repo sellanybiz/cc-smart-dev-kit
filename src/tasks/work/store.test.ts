@@ -18,7 +18,6 @@ import {
 } from "./queries";
 import { hasOwnTask, startView } from "./read";
 import {
-  ack,
   addNote,
   createTask as createCurrentTask,
   deleteTask,
@@ -116,7 +115,6 @@ test("store rules, tree, dependencies, notes, and exact timestamps", () => {
   expect(addNote(db, root.id, "x".repeat(64001), who, 1).ok).toBe(false);
   expect(statSync(workDbFile(paths)).mode & 0o777).toBe(0o600);
   expect(statSync(join(paths.stateDir, "tasks")).mode & 0o777).toBe(0o700);
-  value(ack(db, "p", "T-abcd", 22));
   db.close();
 });
 test("plan upserts and process claims survive a clear", () => {
