@@ -6,19 +6,21 @@
  * `docs/claude-code-contract.md` § Hooks.
  */
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { COMMAND } from "../build-info/names";
 import { cliPaths } from "../cli/paths";
 import { projectKey } from "../tasks/context";
 import { createTaskOps } from "../tasks/ops";
 import { openWorkDb, type WorkDb, workDbFile, writeWork } from "../tasks/work/db";
 import { callerOf } from "../tasks/work/identity";
 import { allTasks } from "../tasks/work/queries";
-import { createTask, layPhase, updateTask } from "../tasks/work/store";
-import type { Who, WorkTask } from "../tasks/work/types";
+import { createTask, layPhase, reservePlan, takeTasks, updateTask } from "../tasks/work/store";
+import type { ClaimProcess, Who, WorkTask } from "../tasks/work/types";
 import { hookEnv, makeRepo, runHook, writeClaudeFile, writeSessionRecord } from "../testing/hooks";
 import { sessionProcessIdentity } from "../testing/session-record";
 import { tempDir } from "../testing/temp";
+import type { HookResult } from "./io";
 import {
   keepGoingAnswer,
   keepGoingReason,
@@ -798,6 +800,300 @@ describe("waitsOnSomething", () => {
     ["", false],
   ])("%j → %j", (said, expected) => {
     expect(waitsOnSomething(said)).toBe(expected);
+  });
+});
+
+describe("keep-going: a lead's plans", () => {
+  /** A child that runs: this test process. */
+  const LIVE: Who = {
+    sessionId: "child-live",
+    pid: process.pid,
+    procStart: sessionProcessIdentity(process.pid).procStart ?? null,
+  };
+  /** A child whose process is gone, and whose session no record shows running. */
+  const DEAD: Who = { sessionId: "child-dead", pid: 999_998, procStart: "1" };
+  const WAIT =
+    "Or record what you wait on with `task_note` and end the turn with a `Waiting for: <what>` line.";
+
+  /** A plan this session laid, with a file list. The plan task is `#<number>` in laying order. */
+  function plan(w: World, slug: string, files = [`src/${slug}/`]): WorkTask {
+    const made = createTask(
+      w.db,
+      { project: projectKey(w.repo), subject: slug, kind: "plan", plan: slug, files },
+      ME,
+      1,
+    );
+    if (!made.ok) throw new Error(made.why);
+    return made.value;
+  }
+
+  /** Reserve `slug` for this session; `child` takes it. */
+  function handOut(w: World, slug: string, child: Who | null, holder: "child" | "self" = "child") {
+    const reserved = reservePlan(w.db, {
+      project: projectKey(w.repo),
+      plan: slug,
+      who: ME,
+      holder,
+      ignore: [],
+      caseFold: false,
+      now: 5,
+    });
+    if (!reserved.ok) throw new Error(reserved.why);
+    if (child !== null) {
+      const taken = takeTasks(w.db, projectKey(w.repo), reserved.value.id, child, 6, {
+        isLive: () => false,
+        from: reserved.value.lead?.handoutId ?? "",
+      });
+      if (!taken.ok) throw new Error(taken.why);
+    }
+    return reserved.value;
+  }
+
+  const reasonOf = (stdout: string | undefined) => JSON.parse(stdout ?? "{}").reason;
+
+  test("a plan with a running child names herdr wait in the background", async () => {
+    const w = world();
+    plan(w, "alpha");
+    handOut(w, "alpha", LIVE);
+    w.db.close();
+    const answer = await runHook(keepGoingHook, stop(w.repo), w.env);
+    expect(reasonOf(answer.stdout)).toBe(
+      `Plan #1 alpha has a Herdr child at work: wait for it with \`${COMMAND} herdr wait\` in the background. ${WAIT}`,
+    );
+    expect(answer.stdout).toContain('"decision":"block"');
+  });
+
+  test("a plan handed out and not yet taken counts as with a child", async () => {
+    const w = world();
+    plan(w, "alpha");
+    handOut(w, "alpha", null);
+    w.db.close();
+    expect(reasonOf((await runHook(keepGoingHook, stop(w.repo), w.env)).stdout)).toContain(
+      `\`${COMMAND} herdr wait\``,
+    );
+  });
+
+  test("a closed plan still reserved (its pull request not merged) names herdr plans --wait", async () => {
+    const w = world();
+    const alpha = plan(w, "alpha");
+    handOut(w, "alpha", LIVE);
+    const done = updateTask(w.db, alpha.id, { status: "done" }, LIVE, 7);
+    if (!done.ok) throw new Error(done.why);
+    w.db.close();
+    const answer = await runHook(keepGoingHook, stop(w.repo), w.env);
+    expect(reasonOf(answer.stdout)).toBe(
+      `Plan #1 alpha is closed, and its pull request may not be merged yet: wait for the merge, and for what it frees, with \`${COMMAND} herdr plans --wait\` in the background. ${WAIT}`,
+    );
+  });
+
+  test("a plan whose child is gone names herdr start --plan <slug> to resume it", async () => {
+    const w = world();
+    plan(w, "alpha");
+    handOut(w, "alpha", DEAD);
+    w.db.close();
+    const answer = await runHook(keepGoingHook, stop(w.repo), w.env);
+    expect(reasonOf(answer.stdout)).toBe(
+      `The child of #1 alpha is gone: resume it with \`${COMMAND} herdr start --plan alpha\`. ${WAIT}`,
+    );
+  });
+
+  test("the reasons come in one paragraph, in the order: child, merge wait, child gone", async () => {
+    const w = world();
+    plan(w, "gone");
+    const closed = plan(w, "closed");
+    plan(w, "running");
+    handOut(w, "gone", DEAD);
+    const closer: Who = { ...LIVE, sessionId: "child-closed" };
+    handOut(w, "closed", closer);
+    handOut(w, "running", { ...LIVE, sessionId: "child-running" });
+    const done = updateTask(w.db, closed.id, { status: "done" }, closer, 7);
+    if (!done.ok) throw new Error(done.why);
+    w.db.close();
+    const text = reasonOf((await runHook(keepGoingHook, stop(w.repo), w.env)).stdout);
+    const at = (needle: string) => text.indexOf(needle);
+    expect(at(`${COMMAND} herdr wait`)).toBeGreaterThan(0);
+    expect(at(`${COMMAND} herdr plans --wait`)).toBeGreaterThan(at(`${COMMAND} herdr wait`));
+    expect(at(`${COMMAND} herdr start --plan gone`)).toBeGreaterThan(
+      at(`${COMMAND} herdr plans --wait`),
+    );
+    expect(text.endsWith(WAIT)).toBe(true);
+  });
+
+  test("the lead's own plan comes first: its phase reason alone, the children's only when it gives none", async () => {
+    const w = world();
+    busyPlan(w);
+    plan(w, "alpha");
+    handOut(w, "alpha", LIVE);
+    w.db.close();
+    // A phase of the lead's own plan is in progress: the children are not named yet.
+    expect(await runHook(keepGoingHook, stop(w.repo), w.env)).toEqual({ stdout: BLOCK_WITH_NEXT });
+    const db = openWorkDb(workDbFile(cliPaths(w.env)), { mode: "write" });
+    for (const t of allTasks(db, projectKey(w.repo)).filter((t) => t.kind === "phase")) {
+      const closed = updateTask(db, t.id, { status: "dropped" }, ME, 8);
+      if (!closed.ok) throw new Error(closed.why);
+    }
+    db.close();
+    expect(reasonOf((await runHook(keepGoingHook, stop(w.repo), w.env)).stdout)).toContain(
+      `\`${COMMAND} herdr wait\``,
+    );
+  });
+
+  test("plans that only queue, wait on an open blocker or are ready give no reason", async () => {
+    const w = world();
+    const blocker = plan(w, "blocker");
+    const waits = createTask(
+      w.db,
+      {
+        project: projectKey(w.repo),
+        subject: "waits",
+        kind: "plan",
+        plan: "waits",
+        files: ["src/waits/"],
+        blockedBy: [blocker.id],
+      },
+      ME,
+      2,
+    );
+    if (!waits.ok) throw new Error(waits.why);
+    plan(w, "bare", []);
+    plan(w, "mine");
+    handOut(w, "mine", null, "self");
+    w.db.close();
+    expect(await runHook(keepGoingHook, stop(w.repo), w.env)).toEqual({});
+  });
+
+  test("another session's plans are not this lead's to wait on", async () => {
+    const w = world();
+    const made = createTask(
+      w.db,
+      {
+        project: projectKey(w.repo),
+        subject: "theirs",
+        kind: "plan",
+        plan: "theirs",
+        files: ["src/t/"],
+      },
+      OTHER,
+      1,
+    );
+    if (!made.ok) throw new Error(made.why);
+    const reserved = reservePlan(w.db, {
+      project: projectKey(w.repo),
+      plan: "theirs",
+      who: OTHER,
+      holder: "child",
+      ignore: [],
+      caseFold: false,
+      now: 2,
+    });
+    if (!reserved.ok) throw new Error(reserved.why);
+    w.db.close();
+    expect(await runHook(keepGoingHook, stop(w.repo), w.env)).toEqual({});
+  });
+
+  test("the quiet rules hold: a background task, a Waiting for: line and the stop it caused", async () => {
+    const w = world();
+    plan(w, "alpha");
+    handOut(w, "alpha", LIVE);
+    w.db.close();
+    const running = [{ id: "a1", type: "agent", status: "running", description: "G" }];
+    expect(
+      await runHook(keepGoingHook, stop(w.repo, { background_tasks: running }), w.env),
+    ).toEqual({});
+    expect(
+      await runHook(
+        keepGoingHook,
+        stop(w.repo, { last_assistant_message: "Child out.\nWaiting for: the child's report" }),
+        w.env,
+      ),
+    ).toEqual({});
+    expect(await runHook(keepGoingHook, stop(w.repo, { stop_hook_active: true }), w.env)).toEqual(
+      {},
+    );
+  });
+
+  test("each reason once: the same reason in the session's own feedback keeps it silent", async () => {
+    const w = world();
+    plan(w, "alpha");
+    handOut(w, "alpha", LIVE);
+    w.db.close();
+    const first = await runHook(keepGoingHook, stop(w.repo), w.env);
+    const said = reasonOf(first.stdout);
+    const file = join(tempDir("keep-going-plans"), "session.jsonl");
+    const entry = {
+      type: "user",
+      isMeta: true,
+      message: { content: `Stop hook feedback:\n${said}` },
+    };
+    writeFileSync(file, `${JSON.stringify(entry)}\n`);
+    expect(await runHook(keepGoingHook, stop(w.repo, { transcript_path: file }), w.env)).toEqual(
+      {},
+    );
+  });
+
+  test("no plan reserved: the caller is never looked up", () => {
+    const w = world();
+    plan(w, "alpha");
+    w.db.close();
+    let asked = 0;
+    const findCaller: typeof callerOf = (facts) => {
+      asked += 1;
+      return callerOf(facts);
+    };
+    const project = { root: w.repo, mainCheckout: null };
+    expect(keepGoingAnswer(stop(w.repo), project, cliPaths(w.env), w.env, findCaller)).toEqual({});
+    expect(asked).toBe(0);
+  });
+
+  test("it reads no session record for a child that runs, and spawns no git, gh or hc", () => {
+    const w = world();
+    plan(w, "alpha");
+    plan(w, "beta");
+    handOut(w, "alpha", LIVE);
+    w.db.close();
+    const asked: string[] = [];
+    const machine: ClaimProcess = {
+      live: () => true,
+      gone: () => {
+        asked.push("gone");
+        return false;
+      },
+      ended: () => {
+        asked.push("ended");
+        return false;
+      },
+    };
+    const bin = tempDir("keep-going-fakes");
+    const log = join(bin, "calls.log");
+    for (const name of ["git", "gh", "hc"]) {
+      const file = join(bin, name);
+      writeFileSync(file, `#!/bin/sh\necho ${name} >> "${log}"\nsleep 30\n`);
+      chmodSync(file, 0o755);
+    }
+    const lead = { ...ME, cwd: w.repo, name: "main" };
+    // Every process spawn is recorded and refused, besides the stalled fakes on PATH.
+    const spawned: unknown[] = [];
+    const { spawn, spawnSync } = Bun;
+    const before = process.env.PATH;
+    process.env.PATH = `${bin}:${before ?? ""}`;
+    const refuse = (command: unknown): never => {
+      spawned.push(command);
+      throw new Error("keep-going must spawn nothing");
+    };
+    Object.assign(Bun, { spawn: refuse, spawnSync: refuse });
+    let answer: HookResult;
+    try {
+      const project = { root: w.repo, mainCheckout: null };
+      answer = keepGoingAnswer(stop(w.repo), project, cliPaths(w.env), w.env, () => lead, machine);
+    } finally {
+      Object.assign(Bun, { spawn, spawnSync });
+      if (before === undefined) delete process.env.PATH;
+      else process.env.PATH = before;
+    }
+    expect(reasonOf(answer.stdout)).toContain(`\`${COMMAND} herdr wait\``);
+    expect(spawned).toEqual([]);
+    expect(asked).toEqual([]);
+    expect(existsSync(log)).toBe(false);
   });
 });
 
