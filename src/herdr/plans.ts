@@ -723,7 +723,8 @@ function reserveReady(
     extraFiles: judged.extraFiles,
     now: world.now(),
   });
-  if (!reserved.ok) return refuse(reserved.why);
+  // A refusal here is a lost race: the plan moved between the gates and the transaction.
+  if (!reserved.ok) return refuse(reserved.why, `${COMMAND} herdr plans shows where it stands`);
   const lead = reserved.value.lead;
   if (lead === null)
     return refuse(`Plan "${slug}" was reserved, but the store shows no reservation.`);
@@ -762,8 +763,14 @@ export function prepareReserve(world: PlansWorld, ref: string): PlanStart {
         `Plan "${slug}" is ${plan.status}: nothing to reserve.`,
         `${COMMAND} herdr plans lists the plans this session can reserve`,
       );
+    // A plan this session started is held only while it runs; parking it (D4's pending) lets it be reserved.
+    if (ownerOf(world.who)(plan))
+      return refuse(
+        `Plan "${slug}" is running: this session started it, and only a queued plan is reserved.`,
+        `park it: task_update #${plan.number} with status pending once its phases stop, then run ${COMMAND} herdr plans --reserve ${slug}`,
+      );
     return refuse(
-      `Plan "${slug}" is not one of this session's queued plans: another session owns it, or it is running.`,
+      `Plan "${slug}" is not one of this session's queued plans: another session owns it.`,
       "a lead reserves only a plan it laid and has not started",
     );
   }
@@ -1153,7 +1160,15 @@ export async function runPlans(
 ): Promise<number> {
   const opened = openPlansWorld(ctx, r, core);
   if (!opened.ok) {
-    // No store yet is no failure: there are simply no plans.
+    // No store yet is no failure for a listing: there are simply no plans. A plan named to
+    // reserve or release is not there, so that is a refusal.
+    const named = args.reserve ?? args.release;
+    if (opened.empty && named !== undefined) {
+      ctx.out.line("fail", `Plan "${named}" was not found: no task store yet.`, {
+        fix: opened.fix,
+      });
+      return 1;
+    }
     if (opened.empty) {
       if (args.json) ctx.out.json({ plans: [], changed: [] });
       else ctx.out.say(opened.why);
