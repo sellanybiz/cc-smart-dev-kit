@@ -76,10 +76,18 @@ test("an absolute path, a .. and the root are refused, each with the fix", () =>
     ["src/../x", 'file "src/../x" goes up with "..": list the path from the repository root'],
     ["", 'file "" is the repository root: list the files or folders the plan changes'],
     [".", 'file "." is the repository root: list the files or folders the plan changes'],
-    ["/", 'file "/" is an absolute path: write it relative to the repository root'],
+    ["/", 'file "/" is the repository root: list the files or folders the plan changes'],
     ["./", 'file "./" is the repository root: list the files or folders the plan changes'],
   ];
   for (const [given, why] of refusals) expect(() => normalizePlanFile(given)).toThrow(why);
+});
+
+test("a wildcard or a control character is refused, as plans.mergeFiles refuses it", () => {
+  for (const given of ["src/*.ts", "src/?.ts", "src/[ab].ts", "plugin/dist/*", "a\nb"])
+    expect(() => normalizePlanFile(given)).toThrow(/pattern character|control character/);
+  expect(() => normalizePlanFile("src/*.ts")).toThrow(
+    'file "src/*.ts" holds a pattern character (*, ? or [): list the path itself, and a whole folder with a trailing /',
+  );
 });
 
 test("two lists overlap when a path is equal or inside the other's folder, and not on a shared prefix", () => {
@@ -322,6 +330,10 @@ test("the task tools refuse an absolute path, a .., the root, and a folder writt
     expect(refused(ops.call("update", { task: "#1", files: ["."] }))).toContain(
       "is the repository root",
     );
+    expect(refused(ops.call("update", { task: "#1", files: ["src/*.ts"] }))).toContain(
+      "holds a pattern character",
+    );
+    expect(said(ops.call("get", { task: "#1" }))).not.toContain("Files:");
     mkdirSync(join(w.repo, "src"));
     expect(refused(ops.call("update", { task: "#1", files: ["src"] }))).toBe(
       'file "src" is a folder: write it src/',

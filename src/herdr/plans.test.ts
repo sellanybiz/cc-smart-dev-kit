@@ -841,3 +841,38 @@ test("the merging line leaves the release to the person", () => {
   expect(line.fix).toContain("the person decides: ");
   expect(line.fix).toContain("herdr plans --release first");
 });
+
+test("a held plan with no file list and no branch diff is never clear: a hand-out and a reserve are refused, with the fix", () => {
+  const w = build();
+  // Another session runs a plan that lists no file and has no branch yet.
+  const solo = w.plan("solo", undefined, { who: OTHER });
+  ok(updateTask(w.db, solo.id, { status: "in_progress" }, OTHER, 5));
+  w.plan("beta", ["src/b/"]);
+  const line = w.line("beta");
+  expect(line.state).toBe("blocked");
+  expect(line.text).toContain("#1 solo is held with no file list and no branch diff");
+  expect(line.fix).toBe("task_update #1 with files: the paths and folders it changes");
+  expect(markOf("blocked")).toBe("fail");
+  for (const answer of [prepareStart(w.base, "beta"), prepareReserve(w.base, "beta")]) {
+    if (answer.ok) throw new Error("expected a refusal");
+    expect(answer.why).toContain('Plan "beta" is not ready: blocked: #1 solo is held');
+    expect(answer.fix).toBe("task_update #1 with files: the paths and folders it changes");
+  }
+  expect(taskById(w.db, allTasks(w.db, "p")[1]?.id ?? "").lead).toBeNull();
+});
+
+test("a held plan with a file list, or a branch diff, still allows a disjoint hand-out", () => {
+  const w = build();
+  const listed = w.plan("listed", ["lib/"], { who: OTHER });
+  ok(updateTask(w.db, listed.id, { status: "in_progress" }, OTHER, 5));
+  w.plan("beta", ["src/b/"]);
+  expect(w.line("beta").state).toBe("ready");
+  // No list, but its branch changed a file: that file is what it holds, and a plan elsewhere is clear.
+  const branched = w.plan("branched", undefined, { who: OTHER });
+  w.branch("branched-branch", { "docs/x.md": "x\n" });
+  ok(updateTask(w.db, branched.id, { status: "in_progress", branch: "branched-branch" }, OTHER, 6));
+  expect(w.line("beta").state).toBe("ready");
+  w.plan("gamma", ["docs/"]);
+  expect(w.line("gamma").state).toBe("overlaps");
+  expect(prepareStart(w.base, "beta").ok).toBe(true);
+});

@@ -362,7 +362,9 @@ columns on `tasks`: the lead (`lead_session`, `lead_pid`, `lead_start`), the hol
 
 **Files.** `task_create` and `task_update` take `files` for a plan task only (CLI: `--path`, repeated;
 `--no-files` clears). Each path is repo-relative with `/`, a folder ends in `/`; `./` and `\` are
-tidied, and an absolute path, `..` and the root are refused. The list replaces the stored one and
+tidied, and an absolute path, `..`, the root, a control character and `*`, `?` or `[` (a wildcard
+would overlap nothing) are refused. The rule is `normalizeRepoPath` (`src/workflow/repo-path.ts`),
+the one `plans.mergeFiles` follows too. The list replaces the stored one and
 is in the task's history (`files` and `lead` are history fields). `task_get` prints a `Files:` line
 and, for a reserved plan, `Reserved for: session … (a child builds it | the lead builds it) ·
 hand-out id …`. A folder written without its `/` is refused by the ops, which stat the working
@@ -375,11 +377,14 @@ from the committed copy only (`docs/design/workflow.md`).
 plus every open plan in flight of **any** session, so a solo session's plan counts. A held plan's
 files are its stored list plus, for a plan with a recorded branch, the branch diff the caller read
 before the transaction (`extraFiles`). `task_update` of `files` on a held plan refuses an overlap
-with another held plan, from stored lists only, in the transaction.
+with another held plan, from stored lists only, in the transaction. A held plan with no stored
+list and no branch diff holds nothing a check can find, and unknown is never clear: a reservation
+or hand-out beside it is refused, with the plan named and `task_update` with `files` as the fix.
 
 **`reservePlan`** runs inside `writeWork`. It refuses a caller that does not own the plan or has no
 session, a plan that is not pending, one that is already reserved, one with no file list, one with an
-open blocker (the store's view), and one whose files overlap a held plan. Each refusal names the
+open blocker (the store's view), one whose files overlap a held plan, and any held plan with no file
+list and no branch diff. Each refusal names the
 plan in the way and the files; an overlap with a finished, unreleased plan says so and that
 `herdr plans` releases it. On success it writes the lead, the holder kind and a new hand-out id.
 `releasePlan` clears all five columns, guards the hand-out id and `updated_at` it was given (so a
@@ -407,6 +412,16 @@ for another lead or owned by another session, with the hint to take it first wit
 brief names. The lead never starts a plan whose holder is a child, owned or not: release it first
 or let the child build it. Every existing refusal and message is unchanged.
 
+**The solo first start.** A plan going into flight (its first phase or task started, or its own
+task set to `in_progress`) is judged in the same write (`refuseFlightOverlap`, `store.ts`), over
+stored lists with the same `filesOverlap` and `plans.mergeFiles` read before the lock, against
+every held plan but its own: a plan reserved for another lead or child, or in flight in another
+session. An overlap is refused, naming the plan and the ways out (wait for its pull request, or
+change the files). A plan with no list is refused while a **reserved** plan is held, with the fix;
+beside another session's unreserved plan alone it starts as before, so a session that hands out
+no plan sees no new refusal. The plan's own reservation, as the lead's `self` or a child's take of
+its hand-out, never counts against it.
+
 **The classifier** (`classifyLeadPlans`, `src/tasks/work/lead-plans.ts`) is the store-only reader
 the status line and the keep-going hook share: no git, no gh, no hc. For the plans this caller
 leads, and the queued plans it laid, it returns `own` (holder `self`, reserved by the lead for itself), `with-child`, `child-gone`,
@@ -424,10 +439,11 @@ reservation, its drop does not release one, and its `task_*` tools do not know `
 session from before the update before plans are handed out. After a rollback the table and the
 columns stay, unread, and a handed-out plan is an ordinary owned plan a solo build can finish.
 
-**Limits, accepted.** A solo session may still start an unreserved plan that overlaps a held one:
-only a hand-out checks overlaps. A solo plan stops holding once it is done or parked, though its
-pull request may still carry the changes. A done, unreleased plan gets one history event for each
-`/clear` of its lead, because its lead identity follows the session. A `/clear` of the lead between a
+**Limits, accepted.** A plan started without a reservation stops being held once it is done or
+parked, though its pull request may still carry the changes; only a reservation holds until the
+pull request merges or closes. A done, unreleased plan gets one history event for each
+`/clear` of its lead, because its lead identity follows the session. A resumed session writes a
+"maker moved" event for every open task it made (`restampsOf`). A `/clear` of the lead between a
 reservation and the child's take is covered, because the hand-out id never moves.
 
 ## Deploy tasks

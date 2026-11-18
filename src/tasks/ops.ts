@@ -43,6 +43,7 @@ import {
   eventsOf,
   freedBy,
   getTask,
+  heldPlansIn,
   inFlightPlanOf,
   isLead,
   isOpen,
@@ -351,14 +352,26 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
         return { files, filesCheck: (options.filesCheck ?? planFilesCheck)(cwd) };
       };
       /**
+       * How a plan's start is judged against the plans held for others (the store refuses an
+       * overlap in the start's own write): the `plans.mergeFiles` and case read, taken before the
+       * lock, and only when another plan is held now. With none held it is empty, so a session
+       * that never hands out a plan runs no git here; a plan held between this read and the lock
+       * is judged with nothing ignored, which can only refuse more.
+       */
+      const startCheck = (plan: string | null): { filesCheck?: FilesCheck } =>
+        heldPlansIn(all, who).some((held) => held.plan.plan !== plan)
+          ? { filesCheck: (options.filesCheck ?? planFilesCheck)(cwd) }
+          : {};
+      /**
        * Marks the caller's own plan in flight when work in it starts: its task goes from pending
        * to `in_progress` in the same write, claimed by this process. A plan that is not the
-       * caller's, one with no task, and one already running are left as they are.
+       * caller's, one with no task, and one already running are left as they are. `check` is
+       * `startCheck`, read before the lock.
        */
-      const enterFlight = (plan: string | null) => {
+      const enterFlight = (plan: string | null, check: { filesCheck?: FilesCheck }) => {
         const row = all.find((t) => t.kind === "plan" && t.plan === plan);
         if (row === undefined || row.status !== "pending" || !owns(row)) return;
-        applyUpdate(store, row.id, { status: "in_progress" }, who, now);
+        applyUpdate(store, row.id, { status: "in_progress", ...check }, who, now);
       };
       const deployTasksOf = () => {
         const here = deployContext();
@@ -572,6 +585,7 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
         // needs no plan. It joins a plan only through its parent (a phase, or the plan's #n).
         const taskPlan = parent?.plan ?? null;
         if (input.status === "in_progress" && taskPlan !== null) refuseOther(taskPlan);
+        const flight = input.status === "in_progress" ? startCheck(taskPlan) : {};
         // The task and its blockers go in one transaction: a refused blocker leaves no task. A
         // task made in progress also puts its plan in flight, in the same write.
         const task = value(
@@ -592,7 +606,7 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
               who,
               now,
             );
-            if (input.status === "in_progress") enterFlight(taskPlan);
+            if (input.status === "in_progress") enterFlight(taskPlan, flight);
             return made;
           }),
         );
@@ -707,6 +721,8 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
         if (input.parent !== undefined) refuseStepEscape(all, task, destination);
         // This call carries no evidence or note, so a step cannot close here.
         if (status === "done" || status === "dropped") refuseBareClose(all, task, status, {});
+        // The plan that goes in flight is judged against the plans held for others (`startCheck`).
+        const flight = entering ? startCheck(task.kind === "plan" ? task.plan : landing) : {};
         // Starting work puts its plan in flight, in the same write (a plan's own start sets it).
         const updated = value(
           writeWork(store, () => {
@@ -722,6 +738,7 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
                   ? {}
                   : { parentId: input.parent === null ? null : work(input.parent).id }),
                 ...(input.type === undefined ? {} : { type: input.type }),
+                ...flight,
                 ...listed,
                 waitsFor: {
                   add: (input.blocked_by_add ?? []).map((r) => work(r).id),
@@ -731,7 +748,7 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
               who,
               now,
             );
-            if (entering && task.kind !== "plan") enterFlight(landing);
+            if (entering && task.kind !== "plan") enterFlight(landing, flight);
             return changed;
           }),
         );

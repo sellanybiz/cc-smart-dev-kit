@@ -972,3 +972,134 @@ test("the take through the task tools asks the session records of its own config
     secondOps.close();
   }
 });
+
+test("a held plan with no file list and no branch diff refuses a reservation, naming the fix", () => {
+  const { db } = setup();
+  const solo = plan(db, "solo", undefined, { who: OTHER });
+  const beta = plan(db, "beta", ["src/b/"], { now: 2 });
+  ok(updateTask(db, solo.id, { status: "in_progress" }, OTHER, 3));
+  expect(why(reserve(db, "beta"))).toBe(
+    '#1 "solo" is held with no file list: set its files first (task_update on #1 with files)',
+  );
+  expect(leadOf(db, beta.id)).toBeNull();
+  // Its branch diff is what it holds then, and a plan elsewhere is clear.
+  expect(ok(reserve(db, "beta", { extraFiles: { [solo.id]: ["lib/x.ts"] } })).lead).not.toBeNull();
+});
+
+test("a held plan with a list still allows a disjoint reservation", () => {
+  const { db } = setup();
+  const solo = plan(db, "solo", ["lib/"], { who: OTHER });
+  plan(db, "beta", ["src/b/"], { now: 2 });
+  ok(updateTask(db, solo.id, { status: "in_progress" }, OTHER, 3));
+  expect(ok(reserve(db, "beta")).lead).not.toBeNull();
+});
+
+/** A start of a phase by `who`, through the task tools: the answer. */
+function startPhase(w: ReturnType<typeof world>, who: Who, phase: string) {
+  const ops = w.ops(who);
+  try {
+    return ops.call("update", { task: phase, status: "in_progress" });
+  } finally {
+    ops.close();
+  }
+}
+function planStatus(w: ReturnType<typeof world>, slug: string) {
+  const db = w.store();
+  try {
+    return allTasks(db, w.project).find((t) => t.kind === "plan" && t.plan === slug)?.status;
+  } finally {
+    db.close();
+  }
+}
+
+test("a solo first start that overlaps a reserved plan is refused, and the plan stays queued", () => {
+  const w = world();
+  laidPlan(w, LEAD, "alpha", ["src/a/"]);
+  const beta = laidPlan(w, OTHER, "beta", ["src/a/x.ts"]);
+  expect(ok(reserveIn(w, "alpha", LEAD)).lead).not.toBeNull();
+  const words = refused(startPhase(w, OTHER, beta.phase));
+  expect(words).toContain('"beta" cannot start, since it overlaps #1 "alpha": src/a/x.ts (src/a/)');
+  expect(words).toContain("Two plans that share a file never run at once");
+  expect(words).toContain("wait until that plan's pull request merges or closes");
+  expect(words).toContain("task_update with files");
+  expect(planStatus(w, "beta")).toBe("pending");
+});
+
+test("a solo first start that overlaps another session's plan in flight is refused", () => {
+  const w = world();
+  const solo = laidPlan(w, LEAD, "solo", ["src/s/"]);
+  const beta = laidPlan(w, OTHER, "beta", ["src/s/inner/"]);
+  said(startPhase(w, LEAD, solo.phase));
+  expect(planStatus(w, "solo")).toBe("in_progress");
+  expect(refused(startPhase(w, OTHER, beta.phase))).toContain('overlaps #1 "solo"');
+  expect(planStatus(w, "beta")).toBe("pending");
+});
+
+test("a start of a plan with no file list is refused while a reserved plan is held, with the fix", () => {
+  const w = world();
+  laidPlan(w, LEAD, "alpha", ["src/a/"]);
+  const beta = laidPlan(w, OTHER, "beta", []);
+  expect(ok(reserveIn(w, "alpha", LEAD)).lead).not.toBeNull();
+  expect(refused(startPhase(w, OTHER, beta.phase))).toContain(
+    'has no file list, so it cannot be shown clear of #1 "alpha": set its files first (task_update with files)',
+  );
+  expect(planStatus(w, "beta")).toBe("pending");
+});
+
+test("a solo user who never hands out a plan sees no new refusal", () => {
+  const w = world();
+  const solo = laidPlan(w, LEAD, "solo", []);
+  said(startPhase(w, LEAD, solo.phase));
+  expect(planStatus(w, "solo")).toBe("in_progress");
+  // Another session's plan in flight is not a reserved plan: with no list, no refusal.
+  const second = laidPlan(w, OTHER, "second", []);
+  said(startPhase(w, OTHER, second.phase));
+  expect(planStatus(w, "second")).toBe("in_progress");
+});
+
+test("the caller's own reserved plan is never refused by itself, a child's take included", () => {
+  const w = world();
+  const alpha = laidPlan(w, LEAD, "alpha", ["src/a/"]);
+  const beta = laidPlan(w, LEAD, "beta", ["src/b/"]);
+  expect(ok(reserveIn(w, "alpha", LEAD, { holder: "self" })).lead).not.toBeNull();
+  said(startPhase(w, LEAD, alpha.phase));
+  expect(planStatus(w, "alpha")).toBe("in_progress");
+  // A hand-out: the child takes it, then starts it.
+  expect(ok(reserveIn(w, "beta", LEAD)).lead).not.toBeNull();
+  const child = w.ops(CHILD);
+  try {
+    said(child.call("take", { task: "beta", from: "lead" }));
+    said(child.call("update", { task: beta.phase, status: "in_progress" }));
+  } finally {
+    child.close();
+  }
+  expect(planStatus(w, "beta")).toBe("in_progress");
+});
+
+test("a start disjoint from every held plan is allowed", () => {
+  const w = world();
+  laidPlan(w, LEAD, "alpha", ["src/a/"]);
+  const beta = laidPlan(w, OTHER, "beta", ["lib/b/"]);
+  expect(ok(reserveIn(w, "alpha", LEAD)).lead).not.toBeNull();
+  said(startPhase(w, OTHER, beta.phase));
+  expect(planStatus(w, "beta")).toBe("in_progress");
+});
+
+test("a plan task started directly, and a task made in progress, are judged the same way", () => {
+  const w = world();
+  laidPlan(w, LEAD, "alpha", ["src/a/"]);
+  laidPlan(w, OTHER, "beta", ["src/a/"]);
+  expect(ok(reserveIn(w, "alpha", LEAD)).lead).not.toBeNull();
+  const other = w.ops(OTHER);
+  try {
+    expect(refused(other.call("update", { task: "#4", status: "in_progress" }))).toContain(
+      'overlaps #1 "alpha"',
+    );
+    expect(
+      refused(other.call("create", { subject: "Work", parent: "#5", status: "in_progress" })),
+    ).toContain('overlaps #1 "alpha"');
+  } finally {
+    other.close();
+  }
+  expect(planStatus(w, "beta")).toBe("pending");
+});

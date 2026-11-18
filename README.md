@@ -494,9 +494,12 @@ and hands each other ready plan to a linked session) or **coordinator** (it buil
 ready plan goes to a session of its own). Each child is a full session, so it spends more of your
 usage: with `ask`, the default, Claude asks once and states each cost. Both child modes need a
 Herdr terminal. Each plan keeps a file list (`task_update` with `files`, or `task add --plan ...
---path`), and the store reserves a plan in one step before its child starts, so two plans that
-share a file never run at once. A plan is also held back until the pull request of every plan it
-waits on has merged. `herdr plans` shows where each stands. A child takes its plan, builds it with
+--path`), and the store reserves a plan in one step before its child starts. Two plans that share a
+file never run at once: that holds for a plan handed to a child or reserved by the lead, and for a
+solo start beside one, which is refused until the other plan's pull request merges or closes (or you
+change the files). A reserved plan stays held until its pull request merges or closes; a plan you
+start yourself and never reserve stops being held once it is done or parked. A plan is also held
+back until the pull request of every plan it waits on has merged. `herdr plans` shows where each stands. A child takes its plan, builds it with
 `/cc-smart-dev-kit:build`, opens its own pull request and reports. `herdr start --plan <slug>`
 resumes a child that is gone, in its own worktree. Needs a git project whose default branch is
 known (`git remote set-head origin --auto`). Paths every plan touches and each merge settles go in

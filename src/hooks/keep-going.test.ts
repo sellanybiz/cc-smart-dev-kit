@@ -922,6 +922,12 @@ describe("keep-going: a lead's plans", () => {
   test("the lead's own plan comes first: its phase reason alone, the children's only when it gives none", async () => {
     const w = world();
     busyPlan(w);
+    // The lead's own plan is in flight, so it is held: it lists the files it changes, or nothing
+    // can be shown clear of it (a hand-out beside a held plan with no list is refused).
+    const own = allTasks(w.db, projectKey(w.repo)).find((t) => t.kind === "plan");
+    if (own === undefined) throw new Error("no plan");
+    const listed = updateTask(w.db, own.id, { files: ["src/plan-a/"] }, ME, 3);
+    if (!listed.ok) throw new Error(listed.why);
     plan(w, "alpha");
     handOut(w, "alpha", LIVE);
     w.db.close();

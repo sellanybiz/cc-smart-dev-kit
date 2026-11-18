@@ -141,7 +141,8 @@ read first, outside any store write (`git diff --name-only --no-renames
 origin/<default>...<branch>` lists both sides of a rename), so no git runs under the write lock.
 
 **The reservation.** `reservePlan` takes the plan in one transaction. It refuses a plan with an
-open blocker, no file list, an existing reservation or files that overlap a **held** plan. A held
+open blocker, no file list, an existing reservation or files that overlap a **held** plan, and any
+held plan with no file list and no branch diff (the rule is in `docs/design/tasks.md`, under "Held"). A held
 plan is any reserved plan until it is released, and any session's own plan in flight.
 `plans.mergeFiles` never counts, and case folds when `core.ignorecase` is on. Both come from
 `planFilesCheck`: the committed copy on `origin/<default>`, never the working copy. The reservation
@@ -204,7 +205,7 @@ has words of its own (`docs/design/tasks.md`).
 |---|---|
 | `ready` | Every blocker is clear and the files overlap no held plan. |
 | `waiting` | A blocker is open, or its pull request is open or not yet on the default branch. |
-| `blocked` | A blocker cannot clear by itself: no branch recorded, no start commit to prove a merge from, an empty branch, a branch not in this repository, or a pull request closed unmerged. The line carries its fix. |
+| `blocked` | A blocker cannot clear by itself: no branch recorded, no start commit to prove a merge from, an empty branch, a branch not in this repository, or a pull request closed unmerged; or a held plan has no file list and no branch diff, so no overlap can be ruled out. The line carries its fix. |
 | `overlaps` | Files shared with a held plan; the line names both. |
 | `no-files` | No file list yet (the line says "has no file list"; the status line says "needs files"): `task_update` with `files`. |
 | `own` | Reserved for this session itself with `plans --reserve`: it builds the plan. |

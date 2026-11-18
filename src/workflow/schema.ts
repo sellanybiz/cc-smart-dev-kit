@@ -28,6 +28,7 @@
  * and its fields are named with a dot (`alerts.usagePercent`).
  */
 import { z } from "zod";
+import { normalizeRepoPath, type RepoPathProblem } from "./repo-path";
 
 /**
  * What a number setting takes: a whole number from `min` (up to `max`, when there is one), or
@@ -127,36 +128,24 @@ export type MergeFilePath = { ok: true; path: string } | { ok: false; why: strin
 
 /**
  * One path of `plans.mergeFiles` (the paths every plan touches and each merge settles: a version
- * manifest, a changelog, a lockfile, build output), normalised: `/` as the separator, no `./`
- * segments, a folder written with a trailing `/`. Refuses what is not a path inside the
- * checkout: an absolute path, a `..` segment, the root (`""`, `.`, `/`), a control character and a
- * pattern character (`*`, `?`, `[`: the list names paths, and a folder is named with a trailing `/`).
+ * manifest, a changelog, a lockfile, build output), normalised by the one path rule
+ * (`normalizeRepoPath`, which a plan's file list uses too) and worded for a person who typed it.
  * Pure: whether a path without a trailing `/` names a folder needs the repository, so
  * `resolveMergeFiles` (`resolve.ts`) checks that, on the committed tree. One home: the schema
  * checks a file with it, and `parseWorkflowValue` a value a person types.
  */
 export function normalizeMergeFile(raw: string): MergeFilePath {
-  const text = raw.trim().replaceAll("\\", "/");
+  const parsed = normalizeRepoPath(raw);
+  if (parsed.ok) return parsed;
   const shown = JSON.stringify(raw);
-  if (/\p{Cc}/u.test(text)) return { ok: false, why: `${shown} holds a control character` };
-  if (/[*?[]/.test(text)) {
-    return {
-      ok: false,
-      why: `${shown} holds a pattern character (*, ? or [): name the path itself, and a whole folder with a trailing / (like plugin/dist/)`,
-    };
-  }
-  const kept = text.split("/").filter((segment) => segment !== "" && segment !== ".");
-  if (kept.length === 0) {
-    return { ok: false, why: `${shown} is the root: name the files or folders under it` };
-  }
-  if (text.startsWith("/") || /^[A-Za-z]:/.test(text)) {
-    return { ok: false, why: `${shown} is absolute: write it relative to the repository root` };
-  }
-  if (kept.includes("..")) {
-    return { ok: false, why: `${shown} leaves the repository: no .. segments` };
-  }
-  const folder = text.endsWith("/") || text.endsWith("/.");
-  return { ok: true, path: `${kept.join("/")}${folder ? "/" : ""}` };
+  const why: Record<RepoPathProblem, string> = {
+    control: `${shown} holds a control character`,
+    pattern: `${shown} holds a pattern character (*, ? or [): name the path itself, and a whole folder with a trailing / (like plugin/dist/)`,
+    root: `${shown} is the root: name the files or folders under it`,
+    absolute: `${shown} is absolute: write it relative to the repository root`,
+    up: `${shown} leaves the repository: no .. segments`,
+  };
+  return { ok: false, why: why[parsed.problem] };
 }
 
 /** The words of the one rule behind `normalizeMergeFile`, for a value a person types. */

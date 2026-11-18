@@ -340,6 +340,25 @@ function overlapsWith(
 }
 
 /**
+ * A held plan that lists no file and whose branch changed none holds nothing a check can find, so
+ * nothing can be shown clear of it: unknown is never clear (D5). Throws, naming the plan and the fix.
+ */
+function refuseUnlisted(held: readonly HeldPlan[]): void {
+  const unlisted = held.filter((h) => h.files.length === 0);
+  if (unlisted.length > 0) throw new Error(unlistedWords(unlisted.map((h) => h.plan)));
+}
+
+/** The refusal's words for held plans with no file list: each is named with the call that fixes it. */
+function unlistedWords(plans: readonly WorkTask[]): string {
+  return plans
+    .map(
+      (plan) =>
+        `${label(plan)} is held with no file list: set its files first (${TASK_TOOL.update} on #${plan.number} with files)`,
+    )
+    .join("; ");
+}
+
+/**
  * A held plan's new list may not reach another held plan (D4): the same definition
  * `reservePlan` uses, over stored lists only, in the caller's transaction. A plan that is not
  * held takes any list: `reservePlan` judges it when it is reserved.
@@ -355,6 +374,34 @@ function refuseHeldOverlap(db: WorkDb, task: WorkTask, who: Who, check: FilesChe
   if (clashes.length > 0)
     throw new Error(
       `${label(task)} is held, so its files may not overlap another held plan: overlaps ${clashes.map((c) => overlapText(c.plan, c.overlaps)).join("; ")}${mergeFilesNote(check)}`,
+    );
+}
+
+/**
+ * A plan going into flight may not reach a plan held for someone else (D4, the solo first start):
+ * `reservePlan` judges a plan when it is reserved, and a session that starts a plan without
+ * reserving it would otherwise slip past. Runs in the start's own transaction, after the status
+ * and any new file list are written, over stored lists. With no other plan held nothing changes,
+ * so a session that never hands out a plan sees no refusal. A plan with no list is refused while a
+ * *reserved* plan is held (it cannot be shown clear of it); beside another session's plan in
+ * flight alone it starts as before. The plan's own reservation never counts against it.
+ */
+function refuseFlightOverlap(db: WorkDb, task: WorkTask, who: Who, check: FilesCheck): void {
+  const others = heldPlansIn(allTasks(db, task.project), who).filter((h) => h.plan.id !== task.id);
+  if (others.length === 0) return;
+  const files = taskById(db, task.id).files;
+  if (files.length === 0) {
+    const reserved = others.filter((h) => h.why === "reserved");
+    if (reserved.length > 0)
+      throw new Error(
+        `${label(task)} has no file list, so it cannot be shown clear of ${reserved.map((h) => label(h.plan)).join(", ")}: set its files first (${TASK_TOOL.update} with files)`,
+      );
+    return;
+  }
+  const clashes = overlapsWith(others, files, check);
+  if (clashes.length > 0)
+    throw new Error(
+      `${label(task)} cannot start, since it overlaps ${clashes.map((c) => overlapText(c.plan, c.overlaps)).join("; ")}. Two plans that share a file never run at once: wait until that plan's pull request merges or closes, or change this plan's files (${TASK_TOOL.update} with files)${mergeFilesNote(check)}`,
     );
 }
 
@@ -515,10 +562,14 @@ export function applyUpdate(
     );
   // A plan that is dropped is released: a drop frees what it held (D4).
   if (status === "dropped" && task.kind === "plan") clearLead(db, id);
+  const check = change.filesCheck ?? { ignore: [], caseFold: false };
   if (change.files !== undefined) {
     storeFiles(db, task, change.files);
-    refuseHeldOverlap(db, task, who, change.filesCheck ?? { ignore: [], caseFold: false });
+    refuseHeldOverlap(db, task, who, check);
   }
+  // A plan entering flight (a first start, or a reopen) is judged by its list as stored just now.
+  if (task.kind === "plan" && status === "in_progress" && task.status !== "in_progress")
+    refuseFlightOverlap(db, task, who, check);
   const changed = taskById(db, id);
   recordChange(db, before, changed, who, now, null);
   return changed;
@@ -929,11 +980,9 @@ export function reservePlan(db: WorkDb, input: ReservePlan): Result<WorkTask> {
       throw new Error(
         `${label(plan)} waits for ${open.map((t) => `${label(t)} (${t.status.replaceAll("_", " ")})`).join(", ")}`,
       );
-    const clashes = overlapsWith(
-      heldPlansIn(all, who, input.extraFiles).filter((h) => h.plan.id !== plan.id),
-      plan.files,
-      input,
-    );
+    const others = heldPlansIn(all, who, input.extraFiles).filter((h) => h.plan.id !== plan.id);
+    refuseUnlisted(others);
+    const clashes = overlapsWith(others, plan.files, input);
     if (clashes.length > 0)
       throw new Error(
         `${label(plan)} overlaps ${clashes.map((c) => overlapText(c.plan, c.overlaps)).join("; ")}${mergeFilesNote(input)}`,

@@ -228,6 +228,13 @@ test("task command sets a plan's files with --path, replaces them on set, and cl
     'file "../out" goes up with "..": list the path from the repository root\n',
   );
   expect((await run("set", "#1", "--path", "x", "--no-files")).code).toBe(2);
+  // A wildcard overlaps nothing, so it is refused as in plans.mergeFiles, on a set and on an add.
+  expect((await run("set", "#1", "--path", "src/*.ts")).error).toContain(
+    "holds a pattern character",
+  );
+  expect((await run("add", "Wild plan", "--plan", "w", "--path", "src/[ab].ts")).error).toContain(
+    "holds a pattern character",
+  );
   // A task is no plan: it holds no file list.
   expect((await run("add", "Loose task")).code).toBe(0);
   expect((await run("set", "#2", "--path", "x")).error).toContain(

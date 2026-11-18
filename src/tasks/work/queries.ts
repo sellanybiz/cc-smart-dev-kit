@@ -1,3 +1,4 @@
+import { normalizeRepoPath, type RepoPathProblem } from "../../workflow/repo-path";
 import type { WorkDb } from "./db";
 import type {
   ClaimProcess,
@@ -305,27 +306,23 @@ export function leadProcess(lead: WorkLead): WorkClaim | null {
 
 /**
  * One entry of a plan's file list, as stored: repo-relative, `/`-separated, a folder ending in
- * `/`. A leading `./`, a doubled or inner `/./` and a Windows `\` are tidied. Throws, naming the
- * fix, for an absolute path, a `..` segment and the repository root (`""`, `.`, `/`): a plan
- * that lists the root would overlap every other plan.
+ * `/`. The path rule is `normalizeRepoPath`, the one `plans.mergeFiles` follows too. Throws,
+ * naming the fix, for what it refuses: a control character, a pattern character (`*`, `?`, `[`: a
+ * wildcard would overlap nothing, so it would let two plans share files unseen), an absolute
+ * path, a `..` segment and the repository root (a plan that lists the root would overlap every
+ * other plan).
  */
 export function normalizePlanFile(raw: string): string {
-  const text = raw.trim().replaceAll("\\", "/");
-  if (text.startsWith("/") || /^[A-Za-z]:/.test(text))
-    throw new Error(`file "${raw}" is an absolute path: write it relative to the repository root`);
-  const segments = text.split("/");
-  const parts: string[] = [];
-  for (const part of segments) {
-    if (part === "..")
-      throw new Error(`file "${raw}" goes up with "..": list the path from the repository root`);
-    if (part !== "" && part !== ".") parts.push(part);
-  }
-  if (parts.length === 0)
-    throw new Error(
-      `file "${raw}" is the repository root: list the files or folders the plan changes`,
-    );
-  const last = segments.at(-1);
-  return parts.join("/") + (last === "" || last === "." ? "/" : "");
+  const parsed = normalizeRepoPath(raw);
+  if (parsed.ok) return parsed.path;
+  const why: Record<RepoPathProblem, string> = {
+    control: `file ${JSON.stringify(raw)} holds a control character: write the path itself`,
+    pattern: `file ${JSON.stringify(raw)} holds a pattern character (*, ? or [): list the path itself, and a whole folder with a trailing /`,
+    root: `file "${raw}" is the repository root: list the files or folders the plan changes`,
+    absolute: `file "${raw}" is an absolute path: write it relative to the repository root`,
+    up: `file "${raw}" goes up with "..": list the path from the repository root`,
+  };
+  throw new Error(why[parsed.problem]);
 }
 
 /** A plan's file list as given: each entry normalised (`normalizePlanFile`), once each, in path order. */

@@ -616,6 +616,19 @@ function readiness(
     waiting.push(verdict.text);
   }
   if (waiting.length) return line("waiting", `waiting on ${waiting.join(", ")}`);
+  // Unknown is never clear (D5): a held plan with no list and no branch diff shares nothing a check can find.
+  const unlisted = held.filter((other) => other.plan.id !== plan.id && other.files.length === 0);
+  if (unlisted.length > 0)
+    return line(
+      "blocked",
+      `blocked: ${unlisted.map((other) => label(other.plan)).join(", ")} ${unlisted.length > 1 ? "are" : "is"} held with no file list and no branch diff, so no overlap can be ruled out`,
+      unlisted
+        .map(
+          (other) =>
+            `task_update #${other.plan.number} with files: the paths and folders it changes`,
+        )
+        .join("; "),
+    );
   const clashes: string[] = [];
   for (const other of held) {
     if (other.plan.id === plan.id) continue;
