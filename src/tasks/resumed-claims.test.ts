@@ -74,9 +74,9 @@ test("claimState: mine for the resumed caller, free for another session id, and 
     expect(claimState(task, CLAIM_PROCESS, OTHER)).toBe("free");
     expect(claimState(task, CLAIM_PROCESS, undefined)).toBe("free");
     // The same session id in a second, live process: it is that process's work, never the caller's.
-    expect(claimState(task, { live: () => true, gone: () => false }, RESUMED)).toBe(
-      "another session",
-    );
+    expect(
+      claimState(task, { live: () => true, gone: () => false, ended: () => false }, RESUMED),
+    ).toBe("another session");
     expect(resumedClaim(task.claim, RESUMED, () => false)).toBe(false);
     // A caller with no process or no session id has no resumed claim either.
     expect(resumedClaim(task.claim, { ...RESUMED, pid: null }, claimGone)).toBe(false);
@@ -98,7 +98,8 @@ test("reclaimResumed moves the dead process's claims to the caller and records i
       ),
     );
     ok(updateTask(db, step.id, { status: "in_progress" }, OLD, 5));
-    expect(ok(reclaimResumed(db, RESUMED, 10, claimGone))).toBe(2);
+    // The phase and its step (claims), and the plan row (its maker process moved too: three tasks).
+    expect(ok(reclaimResumed(db, RESUMED, 10, claimGone))).toBe(3);
     for (const id of [phase.id, step.id]) {
       const task = allTasks(db, PROJECT).find((t) => t.id === id);
       expect(task?.claim).toEqual({

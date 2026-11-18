@@ -53,7 +53,7 @@ import {
 } from "../project/resolve";
 import { GH_TIMEOUT_MS, type GhRunner, ghMissing, spawnGh } from "./merge-check";
 import { type ResolvedWorkflow, resolvedValueOf, resolveWorkflow } from "./resolve";
-import { isProjectKey, showValue, type WorkflowKey } from "./schema";
+import { isProjectKey, PERSONAL_ONLY_REASONS, showValue, type WorkflowKey } from "./schema";
 import { writeProjectSetting } from "./write";
 
 type Env = Record<string, string | undefined>;
@@ -399,7 +399,7 @@ export async function proposeWorkflow(
   // it only after a fetch, a `gh` call, a branch and a worktree.
   if (!isProjectKey(key)) {
     return fail(
-      `${key} is your own setting, not the project's, so there is nothing to propose: it is per person, per machine — change it with \`${COMMAND} workflow set ${key} <value>\`.`,
+      `${key} is your own setting, not the project's, so there is nothing to propose: ${PERSONAL_ONLY_REASONS[key]} — change it with \`${COMMAND} workflow set ${key} <value>\`.`,
     );
   }
 

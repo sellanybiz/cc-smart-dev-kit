@@ -4,14 +4,15 @@ import { MARKETPLACE_SOURCE, VERSION } from "../build-info";
 import { COMMAND } from "../build-info/names";
 import { isOlder } from "../build-info/semver";
 import { parseOptions } from "../cli/args";
-import { type CliPaths, cliPaths } from "../cli/paths";
-import type { Out } from "../cli/ui/out";
+import { cliPaths } from "../cli/paths";
 import { runGit } from "../hooks/git";
-import type { Env } from "../hooks/run";
 import { taskContext } from "../tasks/context";
 import { createTaskOps } from "../tasks/ops";
 import { openWorkDb, workDbFile } from "../tasks/work/db";
-import { getTask, isOpen } from "../tasks/work/queries";
+import { CLAIM_PROCESS, callerOf } from "../tasks/work/identity";
+import { getTask, isOpen, planByRef } from "../tasks/work/queries";
+import { adoptLeadPlans, releasePlan, swapPlanAgent } from "../tasks/work/store";
+import type { Who } from "../tasks/work/types";
 import { briefPath, reportPath, writeBrief, writePrivate } from "./brief";
 import {
   coreId,
@@ -43,6 +44,7 @@ import {
   herdrAgent,
   KIT_INDEPENDENT,
   KIT_LEAD,
+  KIT_PLAN,
   KIT_REPO,
   KIT_STARTED_BY,
   KIT_TASK,
@@ -51,7 +53,23 @@ import {
   validChildName,
 } from "./labels";
 import { MachinesFileError, machineRule, readMachines, writeMachines } from "./machines";
-import { cliModeFlag, type HerdrArgs, parseHerdrArgs } from "./words";
+import {
+  confirmClaim,
+  openPlansWorld,
+  type PlanStart,
+  type PlansEnv,
+  type PlansWorld,
+  prepareStart,
+  runPlans,
+} from "./plans";
+import {
+  cliModeFlag,
+  type HerdrArgs,
+  PLAN_EXCLUSION,
+  parseHerdrArgs,
+  START_FLAGS,
+  START_OPTIONS,
+} from "./words";
 
 export const WAIT_TIMEOUT_MS = 180_000;
 export const LAUNCH_CHECK_MS = 20_000;
@@ -324,14 +342,8 @@ export async function followEvents(
       : {}),
   };
 }
-export interface HerdrContext {
-  paths: CliPaths;
-  cwd: string;
-  env: Env;
+export interface HerdrContext extends PlansEnv {
   nowMs: number;
-  now(): number;
-  sleep(ms: number): Promise<void>;
-  out: Out;
   runner?: HcRunner;
   identity?: () => Identity | { why: string };
   /** Stream adapter is injected in tests; no shell ever reads the event command. */
@@ -350,6 +362,20 @@ function identity(ctx: HerdrContext, r: HcRunner): Identity {
   const me = ctx.identity?.() ?? checkedIdentity(ctx.env, r);
   if ("why" in me) throw new Error(me.why);
   return me;
+}
+/** A plan child builds its one plan and never coordinates (D1): a refusal, or null when this terminal is no plan child. */
+function refusePlanChild(
+  ctx: HerdrContext,
+  r: HcRunner,
+  me: Identity,
+  doing: string,
+): number | null {
+  if (hcGet(r, me.address).labels[KIT_PLAN] === undefined) return null;
+  return refuse(
+    ctx,
+    `A plan child never coordinates: it builds its own plan only, so it cannot ${doing}.`,
+    `Report to your lead with ${COMMAND} herdr report; the lead hands plans out.`,
+  );
 }
 function own(r: HcRunner, target: string, me: Identity): Terminal {
   const child = hcGet(r, target);
@@ -376,14 +402,14 @@ function count(ctx: HerdrContext, rows: Terminal[]): void {
 function show(ctx: HerdrContext, rows: Terminal[]): void {
   count(ctx, rows);
   ctx.out.say(
-    "address | name | kind | repo | machine | model | task | state | blocked kind | message | worktree",
+    "address | name | kind | repo | machine | model | task or plan | state | blocked kind | message | worktree",
   );
   for (const t of rows) {
     const argv = t.foreground?.argv ?? t.argv ?? [];
     const modelIndex = argv.indexOf("--model");
     const machine = t.address.includes("/") ? t.address.split("/")[0] : "local";
     ctx.out.say(
-      `${t.address} | ${t.name ?? "-"} | ${t.labels[KIT_INDEPENDENT] ? "independent" : "linked child"} | ${t.labels[KIT_REPO] ?? "-"} | ${machine} | ${modelIndex >= 0 ? (argv[modelIndex + 1] ?? "-") : "-"} | ${t.labels[KIT_TASK] ?? "-"} | ${t.status?.state ?? t.state} | ${t.status?.kind ?? "-"} | ${t.status?.msg ?? "-"} | ${t.cwd ?? "-"}`,
+      `${t.address} | ${t.name ?? "-"} | ${t.labels[KIT_INDEPENDENT] ? "independent" : "linked child"} | ${t.labels[KIT_REPO] ?? "-"} | ${machine} | ${modelIndex >= 0 ? (argv[modelIndex + 1] ?? "-") : "-"} | ${t.labels[KIT_TASK] ?? (t.labels[KIT_PLAN] ? `plan ${t.labels[KIT_PLAN]}` : "-")} | ${t.status?.state ?? t.state} | ${t.status?.kind ?? "-"} | ${t.status?.msg ?? "-"} | ${t.cwd ?? "-"}`,
     );
   }
 }
@@ -516,7 +542,123 @@ async function remoteBrief(
   execRemote(r, machine, ["chmod", "600", answer.path]);
   return answer.path;
 }
+/**
+ * What a start tells its wrapper: the plan it reserved (to give back when the launch fails), and
+ * whether the child has started. A failed launch must release the reservation (D6).
+ */
+interface StartState {
+  /** Gives the reservation back; set once this start has reserved a plan. */
+  giveBack: (() => void) | null;
+  /** Closes the store a plan start opened. */
+  close: (() => void) | null;
+  launched: boolean;
+}
 async function start(a: Start, ctx: HerdrContext, r: HcRunner): Promise<number> {
+  const run: StartState = { giveBack: null, close: null, launched: false };
+  try {
+    return await startChild(a, ctx, r, run);
+  } finally {
+    if (run.giveBack !== null && !run.launched) run.giveBack();
+    run.close?.();
+  }
+}
+/**
+ * The plans a dead lead left reserved move to this session: its children's takes keep working,
+ * since only the lead's identity moves (`adoptLeadPlans`). "Dead" is `ended`, a whole session
+ * over, never a dead pid alone (a reopened session keeps its id in a new process).
+ */
+function adoptPlans(ctx: HerdrContext, project: string): void {
+  if (!existsSync(workDbFile(ctx.paths))) return;
+  const who = ctx.caller ? ctx.caller() : callerOf({ env: ctx.env });
+  if (who === null || !who.sessionId) {
+    ctx.out.line("warn", "Plans were not adopted: this session cannot be resolved.");
+    return;
+  }
+  const db = openWorkDb(workDbFile(ctx.paths), { mode: "write" });
+  try {
+    const liveness = ctx.process ?? CLAIM_PROCESS;
+    const moved = adoptLeadPlans(db, {
+      project,
+      who,
+      isDead: (claim) => liveness.ended(claim),
+      now: ctx.now(),
+    });
+    if (!moved.ok) {
+      ctx.out.line("warn", `Plans were not adopted: ${moved.why}`);
+      return;
+    }
+    for (const plan of moved.value)
+      ctx.out.line(
+        "changed",
+        `Adopted plan #${plan.number} ${plan.plan ?? plan.subject}: its lead had ended, so ${plan.lead?.holder === "child" ? "its child's" : "its"} reservation is yours now${plan.lead?.holder === "self" ? `; take it first (task_take ${plan.plan ?? plan.subject}) before you start its next phase` : ""}`,
+      );
+  } finally {
+    db.close();
+  }
+}
+/** Releases a plan this start reserved: its launch failed, so no child holds it. */
+function releaseAfterFailedStart(
+  ctx: HerdrContext,
+  project: string,
+  plan: string,
+  who: Who,
+  handoutId: string,
+): () => void {
+  return () => {
+    const db = openWorkDb(workDbFile(ctx.paths), { mode: "write" });
+    try {
+      const released = releasePlan(db, {
+        project,
+        plan,
+        who,
+        now: ctx.now(),
+        reason: "launch failed",
+        handoutId,
+      });
+      if (!released.ok)
+        ctx.out.line("warn", `Plan ${plan} stays reserved: ${released.why}`, {
+          fix: `${COMMAND} herdr plans releases a hand-out that never started`,
+        });
+    } finally {
+      db.close();
+    }
+  };
+}
+/** Gives a resume's claim back: the launch failed, so the plan's agent is what it was. */
+function restoreAfterFailedStart(
+  ctx: HerdrContext,
+  project: string,
+  plan: string,
+  who: Who,
+  claim: { marker: string; previous: string | null },
+): () => void {
+  return () => {
+    const db = openWorkDb(workDbFile(ctx.paths), { mode: "write" });
+    try {
+      const restored = swapPlanAgent(db, {
+        project,
+        plan,
+        who,
+        from: claim.marker,
+        to: claim.previous,
+        now: ctx.now(),
+        reason: "launch failed",
+      });
+      if (!restored.ok)
+        ctx.out.line("warn", `Plan ${plan}'s launch claim stays: ${restored.why}`, {
+          fix: `it reads as a dead start after a few minutes: ${COMMAND} herdr plans shows it`,
+        });
+    } finally {
+      db.close();
+    }
+  };
+}
+async function startChild(
+  a: Start,
+  ctx: HerdrContext,
+  r: HcRunner,
+  run: StartState,
+): Promise<number> {
   const me = a.independent ? (ctx.env.HC_TERMINAL_ID ? identity(ctx, r) : null) : identity(ctx, r);
   if (!a.asked && (a.model === "fable" || (a.model === "opus" && a.effort === "max")))
     return refuse(ctx, "This model and effort need the person's approval (--asked).");
@@ -546,6 +688,25 @@ async function start(a: Start, ctx: HerdrContext, r: HcRunner): Promise<number> 
     } finally {
       db.close();
     }
+  }
+  // A plan child builds one plan and never coordinates (D1): its own terminal carries `kit.plan`.
+  let planWorld: PlansWorld | null = null;
+  let slug: string | null = null;
+  if (a.plan) {
+    if (!me || !caller.ok || project.project !== caller.project || project.repo === null)
+      return refuse(
+        ctx,
+        "A plan hand-out needs a git project, and the plan must be this session's own.",
+      );
+    const child = refusePlanChild(ctx, r, me, "hand out plans");
+    if (child !== null) return child;
+    const opened = openPlansWorld(ctx, r, me.core, cwd);
+    if (!opened.ok) return refuse(ctx, opened.why, opened.fix);
+    run.close = opened.close;
+    planWorld = opened.world;
+    const row = planByRef(opened.world.db, opened.world.project, a.plan);
+    if (row === null) return refuse(ctx, `Plan "${a.plan}" was not found in this project.`);
+    slug = row.plan ?? a.plan;
   }
   if (a.on) {
     if (!a.asked && machineRule(readMachines(ctx.paths.machinesFile), a.on) !== "free")
@@ -579,23 +740,65 @@ async function start(a: Start, ctx: HerdrContext, r: HcRunner): Promise<number> 
   }
   const core = me?.core ?? coreId(r);
   const all = terminals(r, {}, true);
-  const name = a.name ?? String(ctx.nowMs);
-  const terminalName = childTerminalName(name),
-    worktreeName = childWorktreeName(name);
+  const name = a.name ?? slug ?? String(ctx.nowMs);
+  const terminalName = childTerminalName(name);
   if (!validChildName(terminalName))
-    return refuse(ctx, "The full kit-prefixed terminal name must fit 32 characters.");
+    return refuse(
+      ctx,
+      slug !== null && a.name === undefined
+        ? `The plan name ${slug} does not fit a terminal name: kit-<name> takes 1 to 32 lower-case letters, digits, - or _.`
+        : "The full kit-prefixed terminal name must fit 32 characters.",
+      slug !== null && a.name === undefined ? "Give a shorter --name." : undefined,
+    );
+  // The gates, the diffs and the reservation (D6): after every cheap refusal above, before the launch.
+  let handout: Extract<PlanStart, { ok: true }> | null = null;
+  if (planWorld !== null && slug !== null) {
+    const prepared = prepareStart(planWorld, slug);
+    if (!prepared.ok) return refuse(ctx, prepared.why, prepared.fix);
+    handout = prepared;
+    if (prepared.reserved)
+      run.giveBack = releaseAfterFailedStart(
+        ctx,
+        planWorld.project,
+        slug,
+        planWorld.who,
+        prepared.handoutId,
+      );
+    else if (prepared.claim)
+      run.giveBack = restoreAfterFailedStart(
+        ctx,
+        planWorld.project,
+        slug,
+        planWorld.who,
+        prepared.claim,
+      );
+  }
+  // A resume or a relaunch continues the recorded worktree and branch: it is the one reuse allowed.
+  const reuse = handout?.recorded ?? null;
+  const worktreeName = reuse ? basename(reuse.worktree) : childWorktreeName(name);
   const gitRoot = a.on ? remoteRepo(r, a.on, cwd) : project.repo;
   const repo = gitRoot ?? cwd;
-  const worktree = gitRoot ? join(repo, ".claude", "worktrees", worktreeName) : cwd;
-  const branch = `worktree-${worktreeName}`;
-  const branchExists = gitRoot
-    ? a.on
-      ? remoteCollision(r, a.on, cwd, worktree, branch)
-      : runGit(cwd, ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`], ctx.env).ok
-    : false;
+  const worktree = reuse
+    ? reuse.worktree
+    : gitRoot
+      ? join(repo, ".claude", "worktrees", worktreeName)
+      : cwd;
+  const branch = reuse ? reuse.branch : `worktree-${worktreeName}`;
+  if (reuse && !existsSync(worktree))
+    return refuse(
+      ctx,
+      `The recorded worktree ${worktree} is gone.`,
+      `Restore it, or record where the work is: task_update #${handout?.plan.number} with worktree and branch.`,
+    );
+  const branchExists =
+    gitRoot && !reuse
+      ? a.on
+        ? remoteCollision(r, a.on, cwd, worktree, branch)
+        : runGit(cwd, ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`], ctx.env).ok
+      : false;
   if (
-    all.some((t) => t.name === terminalName) ||
-    (!a.on && gitRoot && existsSync(worktree)) ||
+    all.some((t) => t.name === terminalName && (!reuse || t.state === "live")) ||
+    (!reuse && !a.on && gitRoot && existsSync(worktree)) ||
     branchExists
   )
     return refuse(
@@ -611,6 +814,9 @@ async function start(a: Start, ctx: HerdrContext, r: HcRunner): Promise<number> 
       : a.brief,
     !a.independent,
     a.task,
+    handout && planWorld && slug !== null
+      ? { slug, handoutId: handout.handoutId, base: planWorld.base, resume: handout.resume }
+      : undefined,
   );
   const path = a.on ? await remoteBrief(r, ctx, a.on, file) : file;
   const first = escapeReport(`Read your brief at ${path} and do it.`, "lead");
@@ -631,6 +837,7 @@ async function start(a: Start, ctx: HerdrContext, r: HcRunner): Promise<number> 
     if (me) labels[KIT_STARTED_BY] = me.leadId;
   } else if (me) labels[KIT_LEAD] = me.leadId;
   if (a.task) labels[KIT_TASK] = a.task;
+  if (slug !== null) labels[KIT_PLAN] = slug;
   // Only an independent session gets its own space: a linked child, local or remote, nests
   // under its lead through hc's parent (proved live for a remote child in 4.3.1).
   if (a.independent) {
@@ -654,7 +861,15 @@ async function start(a: Start, ctx: HerdrContext, r: HcRunner): Promise<number> 
   if (gitRoot) programArgs.push("-w", worktreeName);
   programArgs.push(first);
   args.push("--", ...loginShellArgv("claude", ...programArgs));
+  // A start that stalled past the grace may have lost its claim to another start: check once more.
+  if (handout?.claim && planWorld !== null && slug !== null) {
+    const kept = confirmClaim(planWorld, slug, handout.claim);
+    if (!kept.ok) return refuse(ctx, kept.why, kept.fix);
+  }
   const child = hcRun(r, args);
+  // From here a child exists: a throw below must not give its reservation back. Only a launch
+  // proved finished (below) does.
+  run.launched = true;
   const deadline = ctx.now() + LAUNCH_CHECK_MS;
   for (let poll = 0; poll < LAUNCH_POLL_LIMIT; poll++) {
     let state: Terminal;
@@ -673,6 +888,7 @@ async function start(a: Start, ctx: HerdrContext, r: HcRunner): Promise<number> 
     }
     if (state.status?.app === CLAUDE_CODE_APP && state.state !== "finished") break;
     if (state.state === "finished" || ctx.now() >= deadline || poll === LAUNCH_POLL_LIMIT - 1) {
+      if (state.state === "finished") run.launched = false;
       try {
         const screen = hcRead(r, child.address, SCREEN_LINES);
         ctx.out.say(`The child's screen (${child.address}):`);
@@ -687,6 +903,8 @@ async function start(a: Start, ctx: HerdrContext, r: HcRunner): Promise<number> 
         state = { ...state, state: "finished" };
       }
       if (state.state === "finished") {
+        // Proved ended, whether hc said so first or on the screen read above: nothing runs.
+        run.launched = false;
         try {
           hcRm(r, child.address);
         } catch (error) {
@@ -727,7 +945,7 @@ async function start(a: Start, ctx: HerdrContext, r: HcRunner): Promise<number> 
     }
     await ctx.sleep(Math.min(LAUNCH_POLL_MS, Math.max(0, deadline - ctx.now())));
   }
-  if (a.task) {
+  if (a.task || handout) {
     const ops = createTaskOps({
       stateDir: ctx.paths.stateDir,
       env: ctx.env,
@@ -735,14 +953,19 @@ async function start(a: Start, ctx: HerdrContext, r: HcRunner): Promise<number> 
       now: () => ctx.nowMs,
     });
     try {
+      // A plan's branch and worktree are written once: a resume or a relaunch binds the new pane
+      // only, and a plan that already records them keeps them.
       const answer = ops.call("update", {
-        task: a.task,
+        task: handout ? `#${handout.plan.number}` : (a.task ?? ""),
         agent: herdrAgent(core, child.address),
-        worktree,
-        branch,
+        ...(handout && (handout.plan.worktree !== null || reuse) ? {} : { worktree }),
+        ...(handout && (handout.plan.branch !== null || reuse) ? {} : { branch }),
       });
       if (!answer.ok) {
-        ctx.out.line("warn", `The child started, but its task binding failed: ${answer.why}`);
+        ctx.out.line(
+          "warn",
+          `The child started, but its ${handout ? "plan" : "task"} binding failed: ${answer.why}`,
+        );
         return 1;
       }
     } finally {
@@ -808,8 +1031,8 @@ export async function runHerdr(args: string[], ctx: HerdrContext): Promise<numbe
     const split = args.indexOf("--");
     const options = parseOptions(
       args.slice(1, split < 0 ? args.length : split),
-      ["--model", "--effort", "--mode", "--cwd", "--on", "--name", "--task"],
-      ["--independent", "--asked"],
+      START_OPTIONS,
+      START_FLAGS,
     );
     if (!("error" in options)) {
       if (["--model", "--effort", "--mode"].some((key) => !options.options.has(key)))
@@ -818,6 +1041,13 @@ export async function runHerdr(args: string[], ctx: HerdrContext): Promise<numbe
         return refuse(ctx, "bypassPermissions is never allowed.");
       if (options.flags.has("--independent") && options.options.has("--task"))
         return refuse(ctx, "An independent session cannot have a task.");
+      if (
+        options.options.has("--plan") &&
+        (options.flags.has("--independent") ||
+          options.options.has("--task") ||
+          options.options.has("--on"))
+      )
+        return refuse(ctx, PLAN_EXCLUSION);
     }
   }
   const parsed = parseHerdrArgs(args);
@@ -886,6 +1116,8 @@ export async function runHerdr(args: string[], ctx: HerdrContext): Promise<numbe
         return 0;
       }
       case "adopt": {
+        const child = refusePlanChild(ctx, r, me, "adopt another lead's plans");
+        if (child !== null) return child;
         const project = taskContext(ctx.cwd, ctx.env);
         if (!project.ok) return refuse(ctx, project.why);
         const rows = terminals(r, { [KIT_REPO]: project.repo ?? ctx.cwd }, true);
@@ -934,7 +1166,16 @@ export async function runHerdr(args: string[], ctx: HerdrContext): Promise<numbe
           }
         }
         show(ctx, adopted);
+        adoptPlans(ctx, project.project);
         return 0;
+      }
+      case "plans": {
+        // A plan child builds its one plan and never reserves another (D1).
+        if (parsed.reserve !== undefined) {
+          const child = refusePlanChild(ctx, r, me, "reserve plans");
+          if (child !== null) return child;
+        }
+        return await runPlans(parsed, ctx, r, me.core, WAIT_TIMEOUT_MS);
       }
       case "wait": {
         const before = terminals(r, { [KIT_LEAD]: me.leadId }, true);

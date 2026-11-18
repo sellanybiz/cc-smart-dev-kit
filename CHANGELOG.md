@@ -3,6 +3,66 @@
 What each release changed, newest first. A release's **What to run** steps are the ones to do
 in your own terminal after the update; the user guide is [README.md](README.md).
 
+## 5.2.0
+
+- **Queued plans can run in parallel, in child sessions.** With two or more plans laid, the
+  new personal setting `plans.runMode` says how they run:
+  - `solo`: one session builds them one after another, as before;
+  - `lead-children`: this session builds one plan and hands each other ready plan to a
+    linked Herdr session;
+  - `coordinator`: this session builds nothing and every ready plan goes to a child.
+
+  With `ask`, the default, Claude asks once and states what each mode costs. Each child is a
+  full session, so it spends more of your usage. Set it with
+  `cc-smart-dev-kit workflow set plans.runMode <mode>`; it is yours alone, never the project's.
+- **Two plans that share a file do not run at once** (on 5.2.0 sessions; an older session
+  checks nothing).
+  - Each plan keeps its file list in the task store (`task_update` with `files`, or
+    `task add --plan ... --path`). A path is a file, or a folder ending in `/`. `*` and `?`
+    are refused; `[` and `]` are plain characters, so `app/[id]/page.tsx` can be listed.
+  - A plan is held while it is reserved or while any task in it runs. A reserved plan stays
+    held until its pull request merges or closes; a plan nobody reserved stops being held once
+    it is done or parked.
+  - The store reserves a plan in one step before its child starts. It refuses a plan whose
+    files overlap a held plan, and refuses while a held plan has neither a file list nor a
+    branch diff (set its files, or finish, park or drop it).
+  - Any start that puts a plan in flight is checked the same way, by any session: a phase or
+    step start, a task created already running, a running task moved into the plan, a resume
+    after a park, a reopen. So two solo sessions whose plans share a file are refused too,
+    even with no child. A plan with no file list cannot start while a reserved plan is held.
+  - Each refusal names the way out for each plan in the way: for a reserved plan, wait for its
+    pull request; for a running one, wait until it is done or parked, or take, park or drop it
+    if its session is gone.
+  - A plan also waits until the pull request of every plan it is blocked by has merged.
+  - Paths every plan touches and each merge settles (a version file, a changelog, build
+    output) go in the project's `plans.mergeFiles`. The kit reads it only as committed on the
+    base branch, and a project that sets it needs `"requires": ">=5.2"`.
+- **New `herdr` commands for plans.**
+  - `herdr start --plan <slug>` hands a plan to a child, which takes it, builds it with
+    `/cc-smart-dev-kit:build`, opens its own pull request and reports. The same command
+    resumes a child that is gone, in its own worktree.
+  - `herdr plans` shows where each plan stands and frees a finished plan's files once its pull
+    request merged or closed. `--wait` waits for the next change.
+  - `herdr plans --reserve <slug>` reserves the lead's own plan in lead + children mode.
+  - `herdr plans --release <slug>` frees a finished plan that nothing can prove merged. It is
+    your call, so the Bash judge asks you first.
+  - `herdr adopt` also moves a dead lead's plans to the new lead.
+  - `--plan` refuses a project whose default branch is only a guess. The fix is
+    `git remote set-head origin --auto`.
+- **The status line and the Stop guard know the children.** A `Plans · …` row counts the plans
+  with a child, a child gone, a pull request to merge, waiting, needing files, and ready.
+  keep-going names the next step: wait for the children, wait for a merge, or resume a gone
+  child.
+- **The task store moves to schema 6:** a table of plan files and the reservation columns.
+  An older kit still reads the store.
+
+**What to run:** after the update, restart every Claude Code session that was open before it.
+An older session does not know `files` and ignores reservations. A plan already running when
+5.2.0 arrives has no file list, so hand-outs and `--reserve` are refused until you set its
+files (`task_update` with `files`) or it is done or parked. Going back to an older kit:
+first run `cc-smart-dev-kit workflow unset plans.runMode`, and unset `plans.mergeFiles` with
+`--project` and commit that. An older kit refuses a workflow key it does not know.
+
 ## 5.1.0
 
 - **The heavy-job queue sees more of the real heavy work.** `bun test` joins `vitest` and `jest`

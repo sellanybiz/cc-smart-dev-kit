@@ -451,3 +451,47 @@ test("raw remote reads obey machine rules and fail closed", () => {
   writeFileSync(ctx.paths.machinesFile, "broken");
   expect(judgeBash(readBash("hc read free/t1"), ctx)?.decision).toBe("ask");
 });
+
+test("herdr plans --release asks, and every other plans form stays silent", () => {
+  for (const line of [
+    `${COMMAND} herdr plans --release alpha`,
+    `${COMMAND} herdr plans --json --release alpha`,
+    `${COMMAND} herdr plans --release=alpha`,
+    `${COMMAND} herdr plans --release`,
+  ]) {
+    const verdict = judgeBash(readBash(line), world());
+    expect(verdict?.decision).toBe("ask");
+    expect(verdict?.reason).toContain("Approve releasing a finished plan's files");
+  }
+  for (const args of [
+    "plans",
+    "plans --json",
+    "plans --wait",
+    "plans --wait --timeout 30",
+    // It reserves the caller's own plan: a bookkeeping write, not a release of anything.
+    "plans --reserve alpha",
+    "plans --reserve=alpha",
+    "plans --help",
+  ])
+    expect(judgeBash(readBash(`${COMMAND} herdr ${args}`), world())).toBeNull();
+});
+
+test("the frame denies and parks herdr plans --release while the person is away", async () => {
+  const env = hookEnv();
+  const paths = cliPaths(env);
+  await setUnavailable(paths.stateDir, Date.now(), null);
+  const command = `${COMMAND} herdr plans --release alpha`;
+  const result = await runHook(
+    jobRouteHook,
+    {
+      hook_event_name: "PreToolUse",
+      tool_name: "Bash",
+      session_id: "test-session",
+      cwd: makeRepo(),
+      tool_input: { command },
+    },
+    env,
+  );
+  expect(JSON.parse(result.stdout ?? "{}").hookSpecificOutput.permissionDecision).toBe("deny");
+  expect(readAway(paths.stateDir).items[0]?.command).toBe(command);
+});

@@ -15,7 +15,8 @@ own pane, and the lead never relays it (4.10.1). The user workflow is
 | `labels.ts` | Label names, core/address identities, child names, report escaping and agent prefix. |
 | `machines.ts` | The remote approval rules, validated reads and managed writes. |
 | `identity.ts` | Live terminal and process-ancestry checks. |
-| `brief.ts` | Private brief files and unique report files. |
+| `brief.ts` | Private brief files and unique report files, and the plan trailer a plan child gets. |
+| `plans.ts` | The live side of plan hand-outs: the gates only git, gh and hc can answer, the start's reservation, and `herdr plans` (§ Handing out plans). |
 | `command.ts` | All nine verbs, dialog parsing and the event-stream barrier. |
 | `doctor.ts` | Optional hc discovery and conservative diagnostics. |
 
@@ -36,6 +37,7 @@ address forms the lead id: two cores can have the same short terminal address.
 | `kit.lead` | Linked child's current lead, `<core>/<address>`. |
 | `kit.repo` | Repository root, or directory outside git. |
 | `kit.task` | Optional same-project task reference. |
+| `kit.plan` | A plan child's plan slug (`herdr start --plan`); a terminal that carries it never coordinates. |
 | `kit.independent` | `1` for a session without a lead link. |
 | `kit.started-by` | Independent session's initiating identity, when available. |
 
@@ -51,7 +53,8 @@ and removes only an owned linked terminal, leaving its worktree. `adopt` takes o
 same-repository, same-core linked children whose previous lead no longer runs a live Claude.
 A live terminal with only a shell counts as gone; a blocked Claude still owns its children.
 A foreground `claude` program also counts as live before its first status arrives.
-Adopt lists each child's saved report files. It skips independent sessions.
+Adopt lists each child's saved report files. It skips independent sessions. It also moves the
+plans of a lead that ended (§ Handing out plans).
 Identity belongs to the terminal: a new Claude in the old lead terminal receives reports
 without adoption. Adopt changes kit labels, not hc's immutable parent, so the child can
 remain under the old lead's tab in Herdr's panel.
@@ -111,6 +114,131 @@ receive it, including a race to blocked status, a unique timestamp-and-UUID repo
 is saved as `report-<UTC>-<uuid>.md` in that child’s brief folder for local children. Remote reports use the file fallback on
 their own machine, in a folder keyed by their own core, not the lead core used by the brief.
 Reports are child evidence, never the person's approval.
+
+## Handing out plans
+
+A lead with queued plans can give each ready plan to a linked child (5.2.0). The modes and what the
+lead does in each are `plugin/skills/build/SKILL.md` § Lead + children and coordinator modes, chosen
+by `plans.runMode` (`docs/design/workflow.md`). The store's part (file lists, the reservation, the
+take) is `docs/design/tasks.md` § Plans handed to children.
+
+**`start --plan <slug>`** takes the checks of any linked start, and more:
+
+- It excludes `--task`, `--independent` and `--on` (one text, `PLAN_EXCLUSION`): a plan child is
+  local and linked.
+- It refuses when the caller's own terminal carries `kit.plan`: a plan child never coordinates.
+  `adopt` refuses there too.
+- The slug resolves with the take path's resolver (`planByRef`), so `#n` works as well. The
+  plan must be one this session laid and not started.
+- It refuses when the default branch is only a guess (no `origin/HEAD`, no `worktrees.base`),
+  with the fix `git remote set-head origin --auto`: the child resets onto that branch.
+- The child's name is the slug. When `kit-<slug>` is not a valid child name, `--name` is the fix.
+
+**The order** is: those refusals, then the name check (`kit-<slug>` must be a valid child name),
+then the live gates (below) and each held plan's branch diff, then the reservation, and only then
+the worktree and terminal collision checks, the brief, the launch and the binding. The diffs are
+read first, outside any store write (`git diff --name-only --no-renames
+origin/<default>...<branch>` lists both sides of a rename), so no git runs under the write lock.
+
+**The reservation.** `reservePlan` takes the plan in one transaction. It refuses a plan with an
+open blocker, no file list, an existing reservation or files that overlap a **held** plan, and any
+held plan with no file list and no branch diff (the rule is in `docs/design/tasks.md`, under "Held"). A held
+plan is any reserved plan until it is released, and any session's own plan in flight.
+`plans.mergeFiles` never counts, and case folds when `core.ignorecase` is on. Both come from
+`planFilesCheck`: the committed copy on `origin/<default>`, never the working copy. The reservation
+records the lead (session and process), a holder kind (`child`, or `self` for the lead's own plan)
+and a **hand-out id**, the key a child takes the plan with. A launch proved failed releases the
+reservation. A child that started but cannot be read does not.
+
+The binding writes `agent` (`herdr:<core>/<address>`) and the label `kit.plan=<slug>`; `worktree`
+and `branch` go in once, on a first start.
+
+**`plans --reserve <plan>`** is the lead's own hand-out, for lead + children mode. The plan
+resolves with `planByRef`, then it runs the same live gates and held-plan diffs as `start --plan`
+and `reservePlan` with holder `self`, with `ignore` and `caseFold` from `planFilesCheck`, read
+before the write lock. It prints one line naming the plan and the next step: start its first phase
+as usual. It refuses from a plan child (the terminal carries `kit.plan`), when the default branch
+is only a guess, and for a plan that is not pending (one already started: park it first, then reserve it), not the
+caller's own or already reserved, each with its fix. It stands alone: `--wait`, `--json` and `--release` cannot join it. The Bash judge
+stays silent, since it reserves the caller's own plan and frees nothing. The plan stays held until
+its pull request merges or closes (or the settle proof below holds): the classifier reads it as `own`, then `merging` once it is closed, and a
+`herdr plans` pass releases it like any other.
+
+**The plan trailer** (`planTrailer` in `brief.ts`) replaces the task trailer:
+
+1. Take the plan with `task_take`, `from` set to the hand-out id.
+2. Fetch `origin/<default>` (once more on failure, then stop and report), `git reset --hard` onto
+   it, and save `HEAD` as the plan's `base`. A resume skips all of this.
+3. Run `/cc-smart-dev-kit:build` on this plan only; builder subagents are allowed, other
+   sessions are not.
+4. Push, pull request and merge follow `workflow show`; where they are off, ask the person in
+   that terminal.
+5. `herdr report` with the pull request link, what shipped and what failed. Then stop.
+
+**Resume.** A plan whose child is gone comes back with `start --plan <slug>`. "Gone" needs two
+proofs. The store's classifier reads `child-gone`: the child's process is gone and no running
+session carries its id (`sessionEnded`), so a reopened child that has made no task call yet still
+counts as alive. And hc shows its pane gone.
+
+The new child starts in the **recorded** worktree (`claude -w <name>`). That worktree may be reused
+once, and only when it sits under `<repo>/.claude/worktrees/`. The hand-out id is the same, the
+brief skips the reset, and an `in_progress` plan is allowed on this path only. A hand-out its child
+never took, with the pane gone, relaunches the same way; with no worktree recorded, `herdr plans`
+releases it.
+
+Two starts must not launch into one worktree. Before a resume or a relaunch launches, the start
+claims the plan's `agent` with a `pending:<clock>` marker by compare-and-set (`swapPlanAgent`): a
+write that succeeds only if the value is still the one just read, so the second of two starts is
+refused. The marker reads as a live child for `HANDOUT_GRACE_MS` (120 s). A live terminal labelled
+`kit.plan=<slug>` also stops a start.
+
+**`herdr plans [--json] [--wait] [--timeout <seconds>]`** is the lead's view, with every gate the
+status line and the Stop hook may not run. It starts from the store's classifier and adds git,
+gh and hc: a blocker's pull request (one reader, `pullRequestState` in `src/worktrees/scan.ts`,
+which counts a merge only at exactly this head, so a squash merge is safe), the branch diffs and
+each pane. It prints a summary (`Plans: 2 with children · 1 built here · 1 child gone · 1 closing ·
+1 waiting · 1 need you · 1 ready`), then one line per plan with its mark, its reason in words and
+its fix. In the table, the first column is the `state` of that line in `--json`; the status line
+has words of its own (`docs/design/tasks.md`).
+
+| `--json` state | Meaning |
+|---|---|
+| `ready` | Every blocker is clear and the files overlap no held plan. |
+| `waiting` | A blocker is open, or its pull request is open or not yet on the default branch. |
+| `blocked` | A blocker cannot clear by itself: no branch recorded, no start commit to prove a merge from, an empty branch, a branch not in this repository, or a pull request closed unmerged; or a held plan has no file list and no branch diff, so no overlap can be ruled out. The line carries its fix. |
+| `overlaps` | Files shared with a held plan; the line names both. |
+| `no-files` | No file list yet (the line says "has no file list"; the status line says "needs files"): `task_update` with `files`. |
+| `own` | Reserved for this session itself with `plans --reserve`: it builds the plan. |
+| `with-child` | A child holds it. Drift shows here: its branch reached another held plan's files. |
+| `child-gone` | The child's session ended: resume it. |
+| `stale` | A hand-out no child took, its pane gone. |
+| `merging` | Finished, files still held until its pull request settles. |
+| `released` | This pass released a reservation. |
+
+A blocker clears when its pull request merged; or, with no pull request or no answer from gh, when
+its branch holds commits past its recorded `base` and is on `origin/<default>` (`onDefaultBranch`,
+the one proof). A dropped blocker is clear, and so is a closed task or phase that is no plan.
+
+The pass **settles** first, so later lines see the files free. A `merging` plan is released when
+its pull request merged or closed, or when that proof holds with no pull request. A hand-out that
+never started, with no pane and no labelled terminal, is released. A done plan never releases
+itself, and a dropped plan always does. A plan whose pull request was merged by hand stays
+`merging` until a pass runs. `plans --release <slug>` is the person's way out when nothing can
+prove a closed plan merged: it refuses an open plan, and the Bash judge asks before it runs
+(`docs/design/hooks.md` § Herdr commands in the Bash judge).
+
+`--wait` returns at once when a plan is ready already or none can change by itself. Otherwise it
+looks again every `PLAN_POLL_MS` (15 s) until a plan turns ready, a reservation is released or a
+reserved plan's pull request merges, prints the change and exits. At the timeout
+(`WAIT_TIMEOUT_MS`) it prints its own command to run again, as `wait` does. With no store, or no
+plan led, it says so and exits 0.
+
+**`adopt`** also moves the lead identity of every plan whose lead ended, by the same proof as
+`child-gone`, whether or not the plan has a live child: its children's plans, the hand-outs no
+child took, and a plan the old lead built itself. The holder kind and the hand-out id stay. A
+plan whose maker is the dead lead moves its maker too, so it does not read as `child-gone`. The
+new lead takes a plan the old lead built itself with `task_take` before its next phase. A lead
+with no recorded process is never adopted: its death cannot be proved.
 
 ## Remote machines
 
@@ -202,7 +330,10 @@ fragments. These are policy checks, not a sandbox; keep that limit explicit.
 | Trust screen, booting child or unknown status | No text send; person uses the pane. |
 | Child blocked on a question or permission | The person answers in its pane; `wait` keeps waiting. |
 | Lead has become a shell or is blocked | Report falls back to a unique file. |
-| Old terminal name still has worktree/branch | Refuse reuse rather than resume old work. |
+| Old terminal name still has worktree/branch | Refuse reuse rather than resume old work. A plan's own child is the one exception (§ Handing out plans). |
+| Two plan hand-outs share a file | The second `start --plan` is refused by the reservation and names the plan in its way. |
+| A plan child's pane closes | `child-gone`: `start --plan <slug>` resumes it in its recorded worktree. |
+| A session from before 5.2.0 | It ignores reservations: its take and start do not check them and its drop does not release. Restart it before plans are handed out. |
 | New hc fields | Tolerant schemas keep them; unknown dialog kinds stay pane-only. |
 | Independent session blocks unseen | Its own Herdr space is visible and Herdr marks it as needing you (proved live, local and remote). |
 | No hc installed | Doctor reports optional orchestration, not failure. |

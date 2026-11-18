@@ -127,12 +127,22 @@ test("plan upserts and process claims survive a clear", () => {
     createTask(db, { project: "p", subject: "Work", status: "in_progress" }, who, 3),
   );
   expect(
-    claimState(own, { live: () => true, gone: () => false }, { ...who, sessionId: "clear" }),
+    claimState(
+      own,
+      { live: () => true, gone: () => false, ended: () => false },
+      { ...who, sessionId: "clear" },
+    ),
   ).toBe("mine");
-  expect(claimState(own, { live: () => true, gone: () => false }, { ...who, pid: 99 })).toBe(
-    "another session",
+  expect(
+    claimState(
+      own,
+      { live: () => true, gone: () => false, ended: () => false },
+      { ...who, pid: 99 },
+    ),
+  ).toBe("another session");
+  expect(claimState(own, { live: () => false, gone: () => true, ended: () => true }, who)).toBe(
+    "free",
   );
-  expect(claimState(own, { live: () => false, gone: () => true }, who)).toBe("free");
   db.close();
   expect(hasOwnTask(paths, "p", { sessionId: "session", pid: null, procStart: null })).toEqual({
     state: "ready",
@@ -163,7 +173,11 @@ test("one claim match: the start time names the process; without one the session
   db.close();
   const other = { sessionId: "other", pid: 12, procStart: null };
   expect(
-    claimState({ ...task, claim: elsewhere }, { live: () => true, gone: () => false }, other),
+    claimState(
+      { ...task, claim: elsewhere },
+      { live: () => true, gone: () => false, ended: () => false },
+      other,
+    ),
   ).toBe("another session");
 });
 test("fresh, reopened, newer, missing, broken and locked databases", () => {
@@ -172,7 +186,7 @@ test("fresh, reopened, newer, missing, broken and locked databases", () => {
   db.close();
   const reopened = openWorkDb(workDbFile(paths), { mode: "write" });
   expect(getTask(reopened, "p", "1")?.subject).toBe("x");
-  reopened.sqlite.run("UPDATE meta SET value='6' WHERE key='min_compatible'");
+  reopened.sqlite.run("UPDATE meta SET value='7' WHERE key='min_compatible'");
   reopened.close();
   const newer = openWorkDb(workDbFile(paths), { mode: "write" });
   expect(getTask(newer, "p", "1")?.subject).toBe("x");

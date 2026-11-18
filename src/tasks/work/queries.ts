@@ -1,3 +1,4 @@
+import { normalizeRepoPath, type RepoPathProblem } from "../../workflow/repo-path";
 import type { WorkDb } from "./db";
 import type {
   ClaimProcess,
@@ -7,6 +8,7 @@ import type {
   WorkEventAction,
   WorkKind,
   WorkLayer,
+  WorkLead,
   WorkNote,
   WorkStatus,
   WorkTask,
@@ -40,6 +42,35 @@ interface TaskRow {
   closed_at: number | null;
   /** Absent in a store a hook reads before a writer moved it to schema 2. */
   blocking?: number;
+  /** Absent in a store a hook reads before a writer moved it to schema 6. */
+  lead_session?: string | null;
+  lead_pid?: number | null;
+  lead_start?: string | null;
+  lead_child?: number;
+  lead_handout?: string | null;
+}
+/** False in a store a hook reads before a writer moved it to schema 6: no file list is stored yet. */
+function hasFilesTable(db: WorkDb): boolean {
+  return (
+    db.sqlite
+      .query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='task_files'")
+      .get() !== null
+  );
+}
+/** A project's stored file lists by plan task id. */
+function storedFiles(db: WorkDb, project: string): Map<string, string[]> {
+  const files = new Map<string, string[]>();
+  if (!hasFilesTable(db)) return files;
+  for (const row of db.sqlite
+    .query<{ task_id: string; path: string }, [string]>(
+      "SELECT f.task_id,f.path FROM task_files f JOIN tasks t ON t.id=f.task_id WHERE t.project=? ORDER BY f.path",
+    )
+    .all(project)) {
+    const paths = files.get(row.task_id) ?? [];
+    paths.push(row.path);
+    files.set(row.task_id, paths);
+  }
+  return files;
 }
 export function allTasks(db: WorkDb, project: string): WorkTask[] {
   const dependencies = new Map<string, string[]>();
@@ -52,6 +83,7 @@ export function allTasks(db: WorkDb, project: string): WorkTask[] {
     refs.push(row.waits_for);
     dependencies.set(row.task_id, refs);
   }
+  const files = storedFiles(db, project);
   return db.sqlite
     .query<TaskRow, [string]>("SELECT * FROM tasks WHERE project=? ORDER BY number")
     .all(project)
@@ -88,6 +120,17 @@ export function allTasks(db: WorkDb, project: string): WorkTask[] {
       closedAt: row.closed_at,
       waitsFor: dependencies.get(row.id) ?? [],
       type: row.blocking === 0 ? "non-blocking" : "blocking",
+      files: files.get(row.id) ?? [],
+      lead:
+        row.lead_handout == null
+          ? null
+          : {
+              sessionId: row.lead_session ?? null,
+              pid: row.lead_pid ?? null,
+              procStart: row.lead_start ?? null,
+              holder: row.lead_child === 1 ? "child" : "self",
+              handoutId: row.lead_handout,
+            },
     }));
 }
 export function getTask(db: WorkDb, project: string, ref: string): WorkTask | null {
@@ -96,6 +139,15 @@ export function getTask(db: WorkDb, project: string, ref: string): WorkTask | nu
     allTasks(db, project).find((t) => (number === null ? t.id === ref : t.number === number)) ??
     null
   );
+}
+/**
+ * The task a plan reference names, the way the take names it: a plan's slug first, then `#n` or
+ * an id (`getTask`). The one resolver for `task_take` and `herdr start --plan`: a slug is not
+ * a task reference, so `getTask` alone would never find it.
+ */
+export function planByRef(db: WorkDb, project: string, ref: string): WorkTask | null {
+  const bySlug = allTasks(db, project).find((t) => t.kind === "plan" && t.plan === ref);
+  return bySlug ?? getTask(db, project, ref);
 }
 export function taskById(db: WorkDb, id: string): WorkTask {
   const row = db.sqlite
@@ -155,28 +207,50 @@ export function livePhaseCount(all: readonly WorkTask[], plan: string): number {
   return all.filter((t) => t.kind === "phase" && t.plan === plan && t.status !== "dropped").length;
 }
 
-/** Whether a phase of the plan is `in_progress`: work running now, whatever the plan task says. */
-function hasRunningPhase(all: readonly WorkTask[], plan: WorkTask): boolean {
-  return all.some((p) => p.kind === "phase" && p.plan === plan.plan && p.status === "in_progress");
+/** The phases and steps of `plan` that are `in_progress`, whoever runs them, in number order. */
+export function runningTasksOf(all: readonly WorkTask[], plan: string | null): WorkTask[] {
+  if (plan === null) return [];
+  return all.filter((t) => t.kind !== "plan" && t.plan === plan && t.status === "in_progress");
+}
+
+/**
+ * Whether a task is some session's work: a session made it (`createdBy`, or its process,
+ * `creator`) or a process claims it. A session's own start always stores one of them: a task it
+ * makes keeps its session id, and a start by a process claims the task. A task with none is no
+ * session's (`ownerOf` gives it to none): an imported claude-mem item, or one a terminal with no
+ * Claude identity made and started.
+ */
+function isSessionWork(task: WorkTask): boolean {
+  return task.createdBy !== null || task.creator !== null || task.claim !== null;
+}
+
+/**
+ * Whether a phase or a step of the plan is `in_progress` as a session's work: work running now,
+ * whatever the plan task says. A step counts like a phase: work in the plan is work in the plan,
+ * and a plan that runs holds its files (`heldPlansIn`) whichever task of it was started. A task
+ * no session runs (`isSessionWork`) holds nothing: an import must not hold a plan no one builds.
+ */
+function hasRunningTask(all: readonly WorkTask[], plan: WorkTask): boolean {
+  return runningTasksOf(all, plan.plan).some(isSessionWork);
 }
 
 /**
  * Whether a plan is in flight: it is open, and its task is `in_progress` (the store sets that
  * when the plan's first phase or task starts) or, for a plan started under 4.8.0 that never set
- * its task, one of its phases is `in_progress`.
+ * its task, or one whose work another session started, a phase or a step of it is `in_progress`.
  */
 export function isInFlight(all: readonly WorkTask[], plan: WorkTask): boolean {
   return (
     plan.kind === "plan" &&
     isOpen(plan) &&
-    (plan.status === "in_progress" || hasRunningPhase(all, plan))
+    (plan.status === "in_progress" || hasRunningTask(all, plan))
   );
 }
 
 /**
  * The plan a caller has in flight: one of its own plans (`owns` holds the plan's task) that
  * `isInFlight`. A session runs one plan at a time, so there is normally one. When two qualify (a
- * take-over made the second), the one with a phase in progress, else the first by number.
+ * take-over made the second), the one with work in progress, else the first by number.
  * Another session's plan never counts. Null when the caller runs none.
  */
 export function inFlightPlanOf(
@@ -186,7 +260,7 @@ export function inFlightPlanOf(
   const candidates = all.filter(
     (t) => t.kind === "plan" && t.plan !== null && owns(t) && isInFlight(all, t),
   );
-  return candidates.find((t) => hasRunningPhase(all, t)) ?? candidates[0] ?? null;
+  return candidates.find((t) => hasRunningTask(all, t)) ?? candidates[0] ?? null;
 }
 
 /**
@@ -233,6 +307,139 @@ export function ownerOf(who: Who): (task: WorkTask) => boolean {
     (who.sessionId !== null && t.createdBy === who.sessionId) ||
     claimHeldBy(t.claim, who) ||
     claimHeldBy(t.creator, who);
+}
+
+/**
+ * True when `who` is the lead a plan is reserved for: the same rule as an owner (`ownerOf`), so a
+ * `/clear` keeps the lead. The session id matches, or the process does (`claimHeldBy`).
+ */
+export function isLead(lead: WorkLead | null, who: Who | null | undefined): boolean {
+  if (lead === null || !who) return false;
+  if (who.sessionId !== null && lead.sessionId === who.sessionId) return true;
+  return claimHeldBy(leadProcess(lead), who);
+}
+
+/** The lead's process in the shape of a claim (`claimHeldBy`, `claimGone` judge both); null without a process. */
+export function leadProcess(lead: WorkLead): WorkClaim | null {
+  return lead.pid === null
+    ? null
+    : { pid: lead.pid, procStart: lead.procStart, sessionId: lead.sessionId };
+}
+
+/**
+ * One entry of a plan's file list, as stored: repo-relative, `/`-separated, a folder ending in
+ * `/`. The path rule is `normalizeRepoPath`, the one `plans.mergeFiles` follows too. Throws,
+ * naming the fix, for what it refuses: a control character, a pattern character (`*` or `?`: a
+ * wildcard would overlap nothing, so it would let two plans share files unseen), an absolute
+ * path, a `..` segment and the repository root (a plan that lists the root would overlap every
+ * other plan). `[` and `]` are plain characters of a name.
+ */
+export function normalizePlanFile(raw: string): string {
+  const parsed = normalizeRepoPath(raw);
+  if (parsed.ok) return parsed.path;
+  const why: Record<RepoPathProblem, string> = {
+    control: `file ${JSON.stringify(raw)} holds a control character: write the path itself`,
+    pattern: `file ${JSON.stringify(raw)} holds a pattern character (* or ?): list the path itself, and a whole folder with a trailing /`,
+    root: `file "${raw}" is the repository root: list the files or folders the plan changes`,
+    absolute: `file "${raw}" is an absolute path: write it relative to the repository root`,
+    up: `file "${raw}" goes up with "..": list the path from the repository root`,
+  };
+  throw new Error(why[parsed.problem]);
+}
+
+/** A plan's file list as given: each entry normalised (`normalizePlanFile`), once each, in path order. */
+export function normalizePlanFiles(raw: readonly string[]): string[] {
+  return [...new Set(raw.map(normalizePlanFile))].sort();
+}
+
+/** Two paths of two plans' file lists that touch: `path` from the first list, `other` from the second. */
+export interface FileOverlap {
+  path: string;
+  other: string;
+}
+
+/**
+ * Where two plans' file lists touch (D2): two paths touch when they are equal, or one is a
+ * folder (ends in `/`) that holds the other. `ignore` is `plans.mergeFiles`: a path equal to an
+ * ignored entry, or inside an ignored folder, takes no part. `caseFold` compares without case
+ * (`core.ignorecase`), the ignore list included. Lists are as stored (`normalizePlanFile`).
+ */
+export function filesOverlap(
+  a: readonly string[],
+  b: readonly string[],
+  options: { ignore?: readonly string[]; caseFold?: boolean } = {},
+): FileOverlap[] {
+  const fold = (path: string) => (options.caseFold ? path.toLowerCase() : path);
+  const holds = (folder: string, path: string) => folder.endsWith("/") && path.startsWith(folder);
+  const ignore = (options.ignore ?? []).map(fold);
+  const taken = (path: string) => ignore.some((one) => one === path || holds(one, path));
+  const found: FileOverlap[] = [];
+  for (const path of a) {
+    const x = fold(path);
+    if (taken(x)) continue;
+    for (const other of b) {
+      const y = fold(other);
+      if (taken(y)) continue;
+      if (x === y || holds(x, y) || holds(y, x)) found.push({ path, other });
+    }
+  }
+  return found;
+}
+
+/** One plan's stored file list, in path order; empty before schema 6 (no table yet). */
+export function planFiles(db: WorkDb, plan: string | WorkTask): string[] {
+  if (!hasFilesTable(db)) return [];
+  return db.sqlite
+    .query<{ path: string }, [string]>("SELECT path FROM task_files WHERE task_id=? ORDER BY path")
+    .all(typeof plan === "string" ? plan : plan.id)
+    .map((row) => row.path);
+}
+
+/** A plan nothing else may overlap (D4): why it is held, whose it is, and the files it holds. */
+export interface HeldPlan {
+  plan: WorkTask;
+  /**
+   * `reserved`: a lead holds it and has not released it (a closed plan too, until its pull
+   * request settles). `in-flight`: a session runs it without a reservation.
+   */
+  why: "reserved" | "in-flight";
+  /** The caller leads it or owns it. */
+  mine: boolean;
+  /** Its stored list plus what the caller read of its branch (`extraFiles`), each once. */
+  files: string[];
+}
+
+/** `heldPlans`, over a project's tasks already read. */
+export function heldPlansIn(
+  all: readonly WorkTask[],
+  who: Who,
+  extraFiles: Readonly<Record<string, readonly string[]>> = {},
+): HeldPlan[] {
+  const owns = ownerOf(who);
+  return all
+    .filter((t) => t.kind === "plan" && (t.lead !== null || isInFlight(all, t)))
+    .map((plan) => ({
+      plan,
+      why: plan.lead !== null ? ("reserved" as const) : ("in-flight" as const),
+      mine: isLead(plan.lead, who) || owns(plan),
+      files: [...new Set([...plan.files, ...(extraFiles[plan.id] ?? [])])],
+    }));
+}
+
+/**
+ * The held plans of a project (D4): every plan with a lead whose release has not happened (a
+ * child's, or a lead's own), and every open plan in flight, any session's: that covers a solo
+ * session that started a plan without reserving it. A held plan's files are its stored list plus
+ * `extraFiles[plan task id]`, the branch diff the caller read before the transaction (so no git
+ * runs under the write lock). `who` says which of them are the caller's.
+ */
+export function heldPlans(
+  db: WorkDb,
+  project: string,
+  who: Who,
+  extraFiles: Readonly<Record<string, readonly string[]>> = {},
+): HeldPlan[] {
+  return heldPlansIn(allTasks(db, project), who, extraFiles);
 }
 
 /**

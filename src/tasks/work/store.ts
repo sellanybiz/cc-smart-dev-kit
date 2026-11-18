@@ -6,11 +6,20 @@ import {
   allTasks,
   claimHeldBy,
   descendants,
+  type FileOverlap,
+  filesOverlap,
+  type HeldPlan,
+  heldPlansIn,
   holdingUnder,
+  isInFlight,
+  isLead,
   isOpen,
+  leadProcess,
   livePhaseCount,
+  normalizePlanFiles,
   openBlockers,
   openChildren,
+  ownerOf,
   planIsOpen,
   resumedClaim,
   taskById,
@@ -25,6 +34,7 @@ import {
   type WorkClaim,
   type WorkEventAction,
   type WorkKind,
+  type WorkLead,
   type WorkStatus,
   type WorkTask,
   type WorkType,
@@ -49,6 +59,11 @@ function shape(db: WorkDb, task: WorkTask): Record<string, unknown> {
     base: task.base,
     claim: task.claim === null ? null : (task.claim.sessionId ?? `process ${task.claim.pid}`),
     waitsFor: task.waitsFor.map(numberOf).sort(),
+    files: task.files,
+    lead:
+      task.lead === null
+        ? null
+        : `${task.lead.sessionId ?? `process ${task.lead.pid}`} (${task.lead.holder})`,
   };
 }
 
@@ -142,6 +157,23 @@ export interface CreateTask {
   type?: WorkType;
   /** The ids of the tasks it is blocked by. */
   blockedBy?: string[];
+  /** A plan's file list (D2); only a plan has one. */
+  files?: readonly string[];
+  /** What a start into flight is judged by (`refuseFlightOverlap`); see `NO_FILES_CHECK`. */
+  filesCheck?: FilesCheck;
+}
+/**
+ * What a change to a plan's files is judged by when the plan is held (`refuseHeldOverlap`): the
+ * `plans.mergeFiles` list that takes no part in an overlap, and whether paths compare without case.
+ */
+export interface FilesCheck {
+  ignore: readonly string[];
+  caseFold: boolean;
+  /**
+   * Why `ignore` may be short (`resolveMergeFiles`): a refusal for an overlap says it, since a
+   * merge file that could not be read may be what the overlap is about.
+   */
+  reason?: string | null;
 }
 export interface UpdateTask {
   agent?: string | undefined;
@@ -157,6 +189,10 @@ export interface UpdateTask {
   /** The tasks it is blocked by (`task_deps`), by id. */
   waitsFor?: { add?: string[]; remove?: string[] };
   claim?: boolean;
+  /** The plan's whole file list (D2): it replaces the stored one, and an empty list clears it. */
+  files?: readonly string[];
+  /** How a new list on a held plan is judged; without it nothing is ignored and case counts. */
+  filesCheck?: FilesCheck;
 }
 function label(task: WorkTask): string {
   return `#${task.number} "${task.subject}"`;
@@ -172,9 +208,9 @@ function descriptionOf(text: string): string {
     throw new Error(`description must be at most ${DESCRIPTION_LIMIT} characters`);
   return text;
 }
-function newId(): string {
+function newId(prefix = "w"): string {
   const alphabet = "abcdefghijklmnopqrstuvwxyz234567";
-  return `w${Array.from(crypto.getRandomValues(new Uint8Array(10)), (v) => alphabet[v & 31]).join("")}`;
+  return `${prefix}${Array.from(crypto.getRandomValues(new Uint8Array(10)), (v) => alphabet[v & 31]).join("")}`;
 }
 /** Validate a new placement. Legacy tasks left where they sit remain editable. */
 function placeValid(
@@ -265,9 +301,164 @@ function openPlanValid(tasks: readonly WorkTask[], plan: string): void {
       `Plan "${plan}" is closed: reopen it with task_update, or create a loose task (no plan).`,
     );
 }
+/** Replaces a plan's stored file list with `files`, each entry normalised (D2). Only a plan has one. */
+function storeFiles(db: WorkDb, task: WorkTask, files: readonly string[]): void {
+  if (task.kind !== "plan")
+    throw new Error(`${label(task)} is a ${task.kind}: only a plan has a file list`);
+  const list = normalizePlanFiles(files);
+  db.sqlite.query("DELETE FROM task_files WHERE task_id=?").run(task.id);
+  for (const path of list)
+    db.sqlite.query("INSERT INTO task_files(task_id,path) VALUES (?,?)").run(task.id, path);
+}
+
+/** One plan's overlaps in words, as every refusal says them: `#3 "Plan": src/a.ts, src/b/ (src/b/x.ts)`. */
+function overlapText(held: WorkTask, overlaps: readonly FileOverlap[]): string {
+  const shown = [
+    ...new Set(overlaps.map((o) => (o.path === o.other ? o.path : `${o.path} (${o.other})`))),
+  ];
+  // A plan closed but still reserved holds its files until its pull request settles.
+  const settling =
+    held.status === "done"
+      ? ` (done, not released: \`${COMMAND} herdr plans\` releases it when its pull request merges)`
+      : "";
+  return `${label(held)}${settling}: ${shown.join(", ")}`;
+}
+
+/** The refusal's last words when the merge file list could not be read in full (`FilesCheck.reason`). */
+function mergeFilesNote(check: FilesCheck): string {
+  return check.reason
+    ? `. plans.mergeFiles was not read in full, so a merge file may count: ${check.reason}`
+    : "";
+}
+
+/** The held plans among `held` that `files` overlaps, each with where; empty when none does. */
+function overlapsWith(
+  held: readonly HeldPlan[],
+  files: readonly string[],
+  check: FilesCheck,
+): { plan: WorkTask; why: HeldPlan["why"]; overlaps: FileOverlap[] }[] {
+  return held
+    .map(({ plan, why, files: theirs }) => ({
+      plan,
+      why,
+      overlaps: filesOverlap(files, theirs, check),
+    }))
+    .filter((one) => one.overlaps.length > 0);
+}
+
+/**
+ * A held plan that lists no file and whose branch changed none holds nothing a check can find, so
+ * nothing can be shown clear of it: unknown is never clear (D5). Throws, naming the plan and the fix.
+ */
+function refuseUnlisted(held: readonly HeldPlan[]): void {
+  const unlisted = held.filter((h) => h.files.length === 0);
+  if (unlisted.length > 0) throw new Error(unlistedWords(unlisted.map((h) => h.plan)));
+}
+
+/** The refusal's words for held plans with no file list: each is named with the call that fixes it. */
+function unlistedWords(plans: readonly WorkTask[]): string {
+  return plans
+    .map(
+      (plan) =>
+        `${label(plan)} is held with no file list: set its files first (${TASK_TOOL.update} on #${plan.number} with files), or finish, park or drop it`,
+    )
+    .join("; ");
+}
+
+/**
+ * A held plan's new list may not reach another held plan (D4): the same definition
+ * `reservePlan` uses, over stored lists only, in the caller's transaction. A plan that is not
+ * held takes any list: `reservePlan` judges it when it is reserved.
+ */
+function refuseHeldOverlap(db: WorkDb, task: WorkTask, who: Who, check: FilesCheck): void {
+  const held = heldPlansIn(allTasks(db, task.project), who);
+  if (!held.some((h) => h.plan.id === task.id)) return;
+  const clashes = overlapsWith(
+    held.filter((h) => h.plan.id !== task.id),
+    taskById(db, task.id).files,
+    check,
+  );
+  if (clashes.length > 0)
+    throw new Error(
+      `${label(task)} is held, so its files may not overlap another held plan: overlaps ${clashes.map((c) => overlapText(c.plan, c.overlaps)).join("; ")}${mergeFilesNote(check)}`,
+    );
+}
+
+/**
+ * The check a caller that read none is judged by: nothing ignored, case compared. A caller that
+ * has the checkout reads the real one before the lock (`planFilesCheck`) and passes it in.
+ */
+const NO_FILES_CHECK: FilesCheck = { ignore: [], caseFold: false };
+
+/**
+ * The way out of an overlap with a held plan, by why it is held: a reserved plan holds its files
+ * until its pull request merges or closes; a plan in flight holds them until it is done or parked,
+ * and one whose session is gone is taken, parked or dropped.
+ */
+function wayOut(held: { plan: WorkTask; why: HeldPlan["why"] }): string {
+  return held.why === "reserved"
+    ? `${label(held.plan)} is reserved: wait until its pull request merges or closes`
+    : `${label(held.plan)} is running: wait until it is done or parked; if its session is gone, take it (${TASK_TOOL.take}), or park or drop it`;
+}
+
+/**
+ * A plan going into flight may not reach a plan held for someone else (D4, the solo first start):
+ * `reservePlan` judges a plan when it is reserved, and a session that starts a plan without
+ * reserving it would otherwise slip past. `plan` is the plan row that goes into flight, whichever
+ * task of it started (`enteringPlan`). Runs in the start's own transaction, after the status and
+ * any new file list are written, over stored lists. With no other plan held nothing changes, so a
+ * session that never hands out a plan sees no refusal. A plan with no list is refused while a
+ * *reserved* plan is held (it cannot be shown clear of it); beside another session's plan in
+ * flight alone it starts as before. The plan's own reservation never counts against it.
+ */
+function refuseFlightOverlap(db: WorkDb, plan: WorkTask, who: Who, check: FilesCheck): void {
+  const others = heldPlansIn(allTasks(db, plan.project), who).filter((h) => h.plan.id !== plan.id);
+  if (others.length === 0) return;
+  const files = taskById(db, plan.id).files;
+  if (files.length === 0) {
+    const reserved = others.filter((h) => h.why === "reserved");
+    if (reserved.length > 0)
+      throw new Error(
+        `${label(plan)} has no file list, so it cannot be shown clear of ${reserved.map((h) => label(h.plan)).join(", ")}: set its files first (${TASK_TOOL.update} with files)`,
+      );
+    return;
+  }
+  const clashes = overlapsWith(others, files, check);
+  if (clashes.length > 0)
+    throw new Error(
+      `${label(plan)} cannot start, since it overlaps ${clashes.map((c) => overlapText(c.plan, c.overlaps)).join("; ")}. Two plans that share a file never run at once: ${clashes.map(wayOut).join("; ")}; or change this plan's files (${TASK_TOOL.update} with files)${mergeFilesNote(check)}`,
+    );
+}
+
+/**
+ * The plan row that this update puts into flight, or null. Any task of plan P that starts (the
+ * plan's own task, a phase, a step, or a running task moved into P) puts P into flight, held from
+ * then on whoever owns P (`isInFlight` counts a running phase or step), so the start is judged the same
+ * way for each. Null when P is already in flight, has no plan row (an older plan) or the task
+ * does not start. Read before the UPDATE, so the answer is P as it was.
+ */
+function enteringPlan(
+  db: WorkDb,
+  task: WorkTask,
+  status: WorkTask["status"],
+  plan: string | null,
+): WorkTask | null {
+  if (status !== "in_progress" || plan === null) return null;
+  if (task.status === "in_progress" && task.plan === plan) return null;
+  return planNotInFlight(db, task.project, plan);
+}
+
+/** The plan row of `plan` when it is not in flight yet; null when it is, or has no plan row. */
+function planNotInFlight(db: WorkDb, project: string, plan: string): WorkTask | null {
+  const all = allTasks(db, project);
+  const row = all.find((t) => t.kind === "plan" && t.plan === plan);
+  return row === undefined || isInFlight(all, row) ? null : row;
+}
+
 /**
  * Internal operations run only within writeWork, also used by the atomic importer. `reason`
- * says why the kit made the task itself (an import), for its history.
+ * says why the kit made the task itself (an import), for its history; such a write is never
+ * judged as a plan's start (`refuseFlightOverlap`).
  */
 export function insertTask(
   db: WorkDb,
@@ -294,6 +485,15 @@ export function insertTask(
       .get(input.project, input.project)?.n ?? 1;
   const status = input.status ?? "pending";
   const claimed = status === "in_progress" && who.pid !== null;
+  // A task made already running puts its plan into flight like one started later (`enteringPlan`).
+  // Read before the INSERT, so the plan is as it was; a plan task made running is its own plan.
+  // A write the kit makes itself (`reason`: an import) starts no session's work, so it is no
+  // start: the rows it stores running have no maker and no claim, and hold no plan (`isInFlight`).
+  const starts = status === "in_progress" && reason === null;
+  const entering =
+    starts && plan !== null && (input.kind ?? "task") !== "plan"
+      ? planNotInFlight(db, input.project, plan)
+      : null;
   db.sqlite
     .query(
       "INSERT INTO tasks(id,project,number,parent_id,kind,subject,description,status,plan,phase,agent,branch,worktree,base,created_by,created_pid,created_start,claim_pid,claim_start,claim_session,created_at,updated_at,closed_at,blocking) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -325,8 +525,11 @@ export function insertTask(
       input.type === "non-blocking" ? 0 : 1,
     );
   addBlockers(db, taskById(db, id), input.blockedBy ?? []);
+  if (input.files !== undefined) storeFiles(db, taskById(db, id), input.files);
   const task = taskById(db, id);
   if (status === "in_progress") unblockedValid(db, task);
+  const joining = starts && task.kind === "plan" ? task : entering;
+  if (joining !== null) refuseFlightOverlap(db, joining, who, input.filesCheck ?? NO_FILES_CHECK);
   const initial: Record<string, unknown> = {
     kind: task.kind,
     plan: task.plan,
@@ -397,6 +600,7 @@ export function applyUpdate(
           ? null
           : { pid: who.pid, procStart: who.procStart, sessionId: who.sessionId }
         : task.claim;
+  const entering = enteringPlan(db, task, status, plan);
   db.sqlite
     .query(
       "UPDATE tasks SET subject=?,description=?,status=?,parent_id=?,plan=?,claim_pid=?,claim_start=?,claim_session=?,updated_at=?,closed_at=?,blocking=?,agent=?,branch=?,worktree=?,base=? WHERE id=?",
@@ -419,6 +623,15 @@ export function applyUpdate(
       change.base ?? task.base,
       id,
     );
+  // A plan that is dropped is released: a drop frees what it held (D4).
+  if (status === "dropped" && task.kind === "plan") clearLead(db, id);
+  const check = change.filesCheck ?? NO_FILES_CHECK;
+  if (change.files !== undefined) {
+    storeFiles(db, task, change.files);
+    refuseHeldOverlap(db, task, who, check);
+  }
+  // A plan entering flight (a first start, or a reopen) is judged by its list as stored just now.
+  if (entering !== null) refuseFlightOverlap(db, entering, who, check);
   const changed = taskById(db, id);
   recordChange(db, before, changed, who, now, null);
   return changed;
@@ -513,6 +726,7 @@ export function applySystemClose(
       "UPDATE tasks SET status=?,closed_at=?,updated_at=?,claim_pid=NULL,claim_start=NULL,claim_session=NULL WHERE id=?",
     )
     .run(status, now, now, task.id);
+  if (status === "dropped" && task.kind === "plan") clearLead(db, id);
   recordChange(db, before, taskById(db, id), who, now, reason);
   insertNote(db, id, `Automatically ${status}: ${reason}`, who, now, reason);
   return taskById(db, id);
@@ -616,6 +830,36 @@ export function layPhase(
 export function ensurePlanTask(db: WorkDb, input: PlanTask, who: Who, now: number) {
   return writeWork(db, () => planTask(db, input, who, now));
 }
+/**
+ * A reserved plan (D4) is taken only by the one it was handed to: `from` names the reservation
+ * (its hand-out id, which the child's brief carries, or the lead's current session), or the taker
+ * already owns the plan (the lead itself, or a child taking again). Another take of a reserved
+ * plan is refused, whoever asks: without a `from` that names it, `force` is the person's. A plan
+ * that is not reserved is judged as before. `target` may be the plan or one of its tasks.
+ * Returns the reservation `from` names, or null when the take rests on ownership or `force`.
+ */
+function reservationNamed(
+  db: WorkDb,
+  target: WorkTask,
+  who: Who,
+  options: { from?: string | undefined; force?: boolean | undefined },
+): WorkLead | null {
+  const plan =
+    target.kind === "plan"
+      ? target
+      : target.plan === null
+        ? undefined
+        : allTasks(db, target.project).find((t) => t.kind === "plan" && t.plan === target.plan);
+  if (plan === undefined || plan.lead === null) return null;
+  const { from } = options;
+  if (from !== undefined && (from === plan.lead.handoutId || from === plan.lead.sessionId))
+    return plan.lead;
+  if (options.force || ownerOf(who)(plan)) return null;
+  throw new Error(
+    `${label(plan)} is reserved for session ${plan.lead.sessionId ?? `process ${plan.lead.pid}`}: take it with from set to the hand-out id its brief names`,
+  );
+}
+
 /** One transaction checks and transfers the complete selection, including detached plan tasks. */
 export function takeTasks(
   db: WorkDb,
@@ -627,6 +871,13 @@ export function takeTasks(
     from?: string;
     force?: boolean;
     isLive: (claim: WorkClaim) => boolean;
+    /**
+     * Whether a claim's whole session is over (`sessionEnded`: its process gone and no running
+     * session carrying its id). On a reserved plan a row whose maker session ended may be taken: a
+     * child that died, or the lead's own process that a resumed session replaced. A child that
+     * was reopened and has made no task call yet is not ended. Left out, nothing counts as ended.
+     */
+    isEnded?: (claim: WorkClaim) => boolean;
   },
 ) {
   return writeWork(db, () => {
@@ -638,13 +889,32 @@ export function takeTasks(
       target.kind === "plan"
         ? allTasks(db, project).filter((t) => t.plan === target.plan)
         : [target];
+    const reservation = reservationNamed(db, target, who, options);
+    const lead: Who | null =
+      reservation === null
+        ? null
+        : {
+            sessionId: reservation.sessionId,
+            pid: reservation.pid,
+            procStart: reservation.procStart,
+          };
+    const isEnded = options.isEnded ?? (() => false);
+    // On a reserved plan the maker may also be the lead itself (its session id moved by a `/clear`
+    // since the hand-out, or its process replaced by a resume), or a maker proved gone. Never
+    // anyone else: a plan the child already took stays refused.
+    const leadsOwn = (task: WorkTask) =>
+      lead !== null &&
+      (task.createdBy === lead.sessionId ||
+        claimHeldBy(task.creator, lead) ||
+        (task.creator !== null && isEnded(task.creator)));
     for (const task of rows) {
       if (
         options.from !== undefined &&
         (task.status === "pending" || task.status === "in_progress") &&
         task.createdBy !== null &&
         task.createdBy !== who.sessionId &&
-        task.createdBy !== options.from
+        task.createdBy !== options.from &&
+        !leadsOwn(task)
       )
         throw new Error(
           `${label(task)} belongs to session ${task.createdBy ?? "unknown"}, not ${options.from}`,
@@ -705,6 +975,253 @@ export function takeTasks(
   });
 }
 
+/** Clears a plan's reservation (the `lead_*` columns); the caller records the change. */
+function clearLead(db: WorkDb, id: string): void {
+  db.sqlite
+    .query(
+      "UPDATE tasks SET lead_session=NULL,lead_pid=NULL,lead_start=NULL,lead_child=0,lead_handout=NULL WHERE id=?",
+    )
+    .run(id);
+}
+
+/** What `reservePlan` is given: the plan's slug, the caller who will lead it, and what the caller read first. */
+export interface ReservePlan {
+  project: string;
+  /** The plan's slug. */
+  plan: string;
+  /** The lead. Needs a session id, and must own the plan. */
+  who: Who;
+  /**
+   * Who builds the plan: `self` (the lead, in lead + children mode) or `child` (a hand-out).
+   * Recorded once: the classifier reads `own` only for `self`, and the lead may not start a
+   * `child` plan.
+   */
+  holder: "self" | "child";
+  /** Why `ignore` may be short (`planFilesCheck().reason`); an overlap refusal says it. */
+  reason?: string | null;
+  /** `plans.mergeFiles` as committed (`resolveMergeFiles`): paths every plan touches, left out of the overlap check. */
+  ignore: readonly string[];
+  /** `core.ignorecase`: compare paths without case, the ignore list too. */
+  caseFold: boolean;
+  /** Each held plan's branch diff by its plan task's id, read before the transaction (no git runs under the lock). */
+  extraFiles?: Readonly<Record<string, readonly string[]>>;
+  now: number;
+}
+
+/**
+ * Reserves a plan for the caller as its lead (D4), atomically: one `writeWork` transaction reads
+ * the store again, refuses, or writes the `lead_*` columns. It refuses unless the plan is the
+ * caller's own, open and pending, unreserved, has a file list, has no open blocker, and its files
+ * (without `ignore`) overlap no held plan (`heldPlansIn`). Each refusal names its reason, and the
+ * plan in the way: `overlaps #3 "Plan": src/a.ts`. Two reservations at once cannot both pass:
+ * the second reads the first's write. The lead reserves its own plan the same way, then starts it.
+ */
+export function reservePlan(db: WorkDb, input: ReservePlan): Result<WorkTask> {
+  return writeWork(db, () => {
+    const { who } = input;
+    if (!who.sessionId) throw new Error("reserve needs a resolvable calling session");
+    const all = allTasks(db, input.project);
+    const plan = all.find((t) => t.kind === "plan" && t.plan === input.plan);
+    if (plan === undefined) throw new Error(`Plan "${input.plan}" not found`);
+    if (!ownerOf(who)(plan))
+      throw new Error(`${label(plan)} belongs to another session: only its owner reserves it`);
+    if (plan.status !== "pending")
+      throw new Error(
+        `${label(plan)} is ${plan.status.replaceAll("_", " ")}: only an open, pending plan is reserved`,
+      );
+    if (plan.lead !== null)
+      throw new Error(
+        `${label(plan)} is already reserved for session ${plan.lead.sessionId ?? `process ${plan.lead.pid}`}`,
+      );
+    if (plan.files.length === 0)
+      throw new Error(
+        `${label(plan)} has no file list: set it first (${TASK_TOOL.update} with files), so overlaps can be checked`,
+      );
+    const open = openBlockers(plan, new Map(all.map((t) => [t.id, t])));
+    if (open.length > 0)
+      throw new Error(
+        `${label(plan)} waits for ${open.map((t) => `${label(t)} (${t.status.replaceAll("_", " ")})`).join(", ")}`,
+      );
+    const others = heldPlansIn(all, who, input.extraFiles).filter((h) => h.plan.id !== plan.id);
+    refuseUnlisted(others);
+    const clashes = overlapsWith(others, plan.files, input);
+    if (clashes.length > 0)
+      throw new Error(
+        `${label(plan)} overlaps ${clashes.map((c) => overlapText(c.plan, c.overlaps)).join("; ")}${mergeFilesNote(input)}`,
+      );
+    const before = shape(db, plan);
+    db.sqlite
+      .query(
+        "UPDATE tasks SET lead_session=?,lead_pid=?,lead_start=?,lead_child=?,lead_handout=?,updated_at=? WHERE id=?",
+      )
+      .run(
+        who.sessionId,
+        who.pid,
+        who.pid === null ? null : who.procStart,
+        input.holder === "child" ? 1 : 0,
+        newId("h"),
+        input.now,
+        plan.id,
+      );
+    const reserved = taskById(db, plan.id);
+    recordChange(db, before, reserved, who, input.now, "plan reserved");
+    return reserved;
+  });
+}
+
+/**
+ * Releases a plan's reservation: the `lead_*` columns clear and the plan stops holding its files.
+ * Used when a launch fails, when the plan's pull request has merged or closed (`herdr plans`),
+ * and by a drop (which does it by itself). A plan that is not reserved is left as it is. Anyone
+ * may release: the reservation is the lead's bookkeeping, not a lock a session can be locked out by.
+ *
+ * `handoutId` guards a release decided from an earlier reading: it only releases the reservation
+ * that reading saw. If the plan was released and handed out again since (a new hand-out id), the
+ * new child's reservation is left alone and the call is refused. `updatedAt` guards the same
+ * reading against any later write to the plan (a start claiming it): if the plan moved, the
+ * release is refused rather than decided on a plan that is no longer the one that was read.
+ */
+export function releasePlan(
+  db: WorkDb,
+  input: {
+    project: string;
+    plan: string;
+    who: Who;
+    now: number;
+    reason?: string;
+    handoutId?: string;
+    updatedAt?: number;
+  },
+): Result<WorkTask> {
+  return writeWork(db, () => {
+    const plan = allTasks(db, input.project).find(
+      (t) => t.kind === "plan" && t.plan === input.plan,
+    );
+    if (plan === undefined) throw new Error(`Plan "${input.plan}" not found`);
+    if (plan.lead === null) return plan;
+    if (input.handoutId !== undefined && plan.lead.handoutId !== input.handoutId)
+      throw new Error(
+        `${label(plan)} was handed out again since it was read: its new reservation is left alone`,
+      );
+    if (input.updatedAt !== undefined && plan.updatedAt !== input.updatedAt)
+      throw new Error(`${label(plan)} changed since it was read: it is left as it is`);
+    const before = shape(db, plan);
+    clearLead(db, plan.id);
+    db.sqlite.query("UPDATE tasks SET updated_at=? WHERE id=?").run(input.now, plan.id);
+    const released = taskById(db, plan.id);
+    recordChange(db, before, released, input.who, input.now, input.reason ?? "plan released");
+    return released;
+  });
+}
+
+/**
+ * Sets a plan's `agent` only if it is still what the caller judged: the compare-and-set that
+ * claims a resume or a relaunch, so two starts that judged the same plan cannot both launch into
+ * its worktree. `from` is the agent that was read (null for none) and `fromUpdatedAt` the plan's
+ * `updated_at` at that reading; the write refuses when either has moved. Nothing but the agent
+ * and `updated_at` changes. `fromUpdatedAt` left out compares the agent alone (giving a claim back).
+ */
+export function swapPlanAgent(
+  db: WorkDb,
+  input: {
+    project: string;
+    plan: string;
+    who: Who;
+    from: string | null;
+    fromUpdatedAt?: number;
+    to: string | null;
+    now: number;
+    reason: string;
+  },
+): Result<WorkTask> {
+  return writeWork(db, () => {
+    const plan = allTasks(db, input.project).find(
+      (t) => t.kind === "plan" && t.plan === input.plan,
+    );
+    if (plan === undefined) throw new Error(`Plan "${input.plan}" not found`);
+    if (
+      plan.agent !== input.from ||
+      (input.fromUpdatedAt !== undefined && plan.updatedAt !== input.fromUpdatedAt)
+    )
+      throw new Error(
+        `${label(plan)} changed since it was read (another start got there first): nothing was launched`,
+      );
+    const before = shape(db, plan);
+    db.sqlite
+      .query("UPDATE tasks SET agent=?,updated_at=? WHERE id=?")
+      .run(input.to, input.now, plan.id);
+    const changed = taskById(db, plan.id);
+    recordChange(db, before, changed, input.who, input.now, input.reason);
+    return changed;
+  });
+}
+
+/**
+ * Moves the lead identity of every plan whose lead is proved dead to the caller (`herdr adopt`):
+ * the plans a lead left reserved, open or closed (a closed plan still reserved is `merging`: the
+ * new lead releases it after its pull request settles). One transaction. `lead_session`,
+ * `lead_pid` and `lead_start` change, and so does the plan's maker (`created_by`, `created_pid`,
+ * `created_start`) when the dead lead was the maker; a plan a child took keeps the child. The
+ * holder kind and the hand-out id stay, so a child that holds the old hand-out id still takes it. `isDead` judges the lead's process in the shape
+ * of a claim, and the caller passes `sessionEnded` (a reopened session keeps its id in a new
+ * process, so a dead pid alone is not proof). A lead with no process, a live one, one that cannot
+ * be proved dead, and the caller's own plans are never moved. Returns the plans it moved.
+ */
+export function adoptLeadPlans(
+  db: WorkDb,
+  input: { project: string; who: Who; isDead: (lead: WorkClaim) => boolean; now: number },
+): Result<WorkTask[]> {
+  return writeWork(db, () => {
+    const { who } = input;
+    if (!who.sessionId) throw new Error("adopt needs a resolvable calling session");
+    const moved: WorkTask[] = [];
+    for (const plan of allTasks(db, input.project)) {
+      if (plan.kind !== "plan" || plan.lead === null || isLead(plan.lead, who)) continue;
+      const process = leadProcess(plan.lead);
+      if (process === null || !input.isDead(process)) continue;
+      const before = shape(db, plan);
+      const procStart = who.pid === null ? null : who.procStart;
+      db.sqlite
+        .query("UPDATE tasks SET lead_session=?,lead_pid=?,lead_start=?,updated_at=? WHERE id=?")
+        .run(who.sessionId, who.pid, procStart, input.now, plan.id);
+      // A plan the dead lead made and nobody took is the adopter's to hand out or build now: its
+      // maker moves too, or it would read as a child's plan whose child is gone. A plan a child
+      // took has the child as its maker, and the child keeps it.
+      const lead: Who = { ...plan.lead };
+      const leadMadeIt =
+        (lead.sessionId !== null && plan.createdBy === lead.sessionId) ||
+        claimHeldBy(plan.creator, lead);
+      if (leadMadeIt)
+        db.sqlite
+          .query("UPDATE tasks SET created_by=?,created_pid=?,created_start=? WHERE id=?")
+          .run(who.sessionId, who.pid, procStart, plan.id);
+      const adopted = taskById(db, plan.id);
+      recordEvent(
+        db,
+        adopted,
+        "changed",
+        {
+          ...diff(before, shape(db, adopted)),
+          ...(leadMadeIt
+            ? {
+                createdBy: [plan.createdBy, who.sessionId],
+                creator: [
+                  plan.creator === null ? null : `process ${plan.creator.pid}`,
+                  who.pid === null ? null : `process ${who.pid}`,
+                ],
+              }
+            : {}),
+        },
+        who,
+        input.now,
+        "lead adopted",
+      );
+      moved.push(adopted);
+    }
+    return moved;
+  });
+}
+
 /** One task's changes when the caller's session or process is its own again (`reclaimResumed`). */
 interface Restamp {
   task: WorkTask;
@@ -712,6 +1229,10 @@ interface Restamp {
   claim?: "moved" | "session";
   /** The session id the task was made under changes to the caller's. */
   createdBy: boolean;
+  /** The process that made the task (a resumed session's old one, proved gone) moves to the caller's. */
+  creator: boolean;
+  /** The plan's lead identity follows the caller: its process moves (resumed), or only its session id. */
+  lead?: "moved" | "session";
 }
 
 /**
@@ -721,8 +1242,12 @@ interface Restamp {
  * - a claim the caller's process holds under an older session id (`/clear` keeps the process and
  *   gives the session a new id) takes the new id, so a later resume under it finds the claim;
  * - an open task the caller's process made under an older session id takes the new id too, so
- *   `ownerOf` survives a `/clear`, a restart and a resume.
- * Off Linux `claimHeldBy` also needs the session id, so the last two never differ there.
+ *   `ownerOf` survives a `/clear`, a restart and a resume;
+ * - an open task the caller's session made in a process that is proved gone (a resume) takes the
+ *   caller's process as its maker, so the maker's liveness answers for the process that runs;
+ * - a plan's lead identity (a reservation, closed plans too) follows the caller by the same two
+ *   rules as the claim: its process moves on a resume, its session id on a `/clear`.
+ * Off Linux `claimHeldBy` also needs the session id, so the session cases never differ there.
  */
 function restampsOf(
   all: readonly WorkTask[],
@@ -741,8 +1266,22 @@ function restampsOf(
     // Only open work: a closed task needs no owner to carry on, and each `/clear` would add history.
     const createdBy =
       isOpen(task) && claimHeldBy(task.creator, who) && task.createdBy !== who.sessionId;
-    if (claim !== undefined || createdBy)
-      found.push({ task, ...(claim === undefined ? {} : { claim }), createdBy });
+    const creator = isOpen(task) && resumedClaim(task.creator, who, isGone);
+    let lead: Restamp["lead"];
+    const leadClaim = task.lead === null ? null : leadProcess(task.lead);
+    if (task.lead !== null && leadClaim !== null) {
+      if (resumedClaim(leadClaim, who, isGone)) lead = "moved";
+      else if (claimHeldBy(leadClaim, who) && task.lead.sessionId !== who.sessionId)
+        lead = "session";
+    }
+    if (claim !== undefined || createdBy || creator || lead !== undefined)
+      found.push({
+        task,
+        ...(claim === undefined ? {} : { claim }),
+        createdBy,
+        creator,
+        ...(lead === undefined ? {} : { lead }),
+      });
   }
   return found;
 }
@@ -759,10 +1298,10 @@ function restampsEverywhere(
 ): Restamp[] {
   if (who.pid === null || who.sessionId === null) return [];
   const projects = db.sqlite
-    .query<{ project: string }, [number, string, number]>(
-      "SELECT DISTINCT project FROM tasks WHERE status IN ('pending','in_progress') AND (claim_pid=? OR claim_session=? OR created_pid=?) ORDER BY project",
+    .query<{ project: string }, [number, string, number, string, number, string]>(
+      "SELECT DISTINCT project FROM tasks WHERE (status IN ('pending','in_progress') AND (claim_pid=? OR claim_session=? OR created_pid=? OR created_by=?)) OR lead_pid=? OR lead_session=? ORDER BY project",
     )
-    .all(who.pid, who.sessionId, who.pid);
+    .all(who.pid, who.sessionId, who.pid, who.sessionId, who.pid, who.sessionId);
   return projects.flatMap(({ project }) => restampsOf(allTasks(db, project), who, isGone));
 }
 
@@ -791,7 +1330,21 @@ export function reclaimResumed(
   return writeWork(db, () => {
     // Read again inside the write: another process may have changed or closed one meanwhile.
     const rows = restampsEverywhere(db, who, isGone);
-    for (const { task, claim, createdBy } of rows) {
+    for (const { task, claim, createdBy, creator, lead } of rows) {
+      if (creator) {
+        db.sqlite
+          .query("UPDATE tasks SET created_pid=?,created_start=?,updated_at=? WHERE id=?")
+          .run(who.pid, who.procStart, now, task.id);
+        recordEvent(
+          db,
+          task,
+          "changed",
+          { creator: [`process ${task.creator?.pid}`, `process ${who.pid}`] },
+          who,
+          now,
+          "maker moved to the resumed session's process",
+        );
+      }
       if (claim === "moved") {
         db.sqlite
           .query(
@@ -833,6 +1386,33 @@ export function reclaimResumed(
           who,
           now,
           "made-by session follows the session id its process now runs under",
+        );
+      }
+      if (lead === "moved") {
+        db.sqlite
+          .query("UPDATE tasks SET lead_pid=?,lead_start=?,updated_at=? WHERE id=?")
+          .run(who.pid, who.procStart, now, task.id);
+        recordEvent(
+          db,
+          task,
+          "changed",
+          { lead: [`process ${task.lead?.pid}`, `process ${who.pid}`] },
+          who,
+          now,
+          "lead moved to the resumed session's process",
+        );
+      } else if (lead === "session") {
+        db.sqlite
+          .query("UPDATE tasks SET lead_session=?,updated_at=? WHERE id=?")
+          .run(who.sessionId, now, task.id);
+        recordEvent(
+          db,
+          task,
+          "changed",
+          { lead: [task.lead?.sessionId ?? `process ${task.lead?.pid}`, who.sessionId] },
+          who,
+          now,
+          "lead follows the session id its process now runs under",
         );
       }
     }

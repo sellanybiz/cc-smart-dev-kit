@@ -206,6 +206,10 @@ test("every write open lifts old nested tasks, preserves holds and takes a WAL b
   db.sqlite.query("UPDATE tasks SET parent_id=? WHERE id=?").run(child.id, grandchild.id);
   // The store as schema 3 left it: no creator columns, no notes index (schema 5 adds them).
   db.sqlite.run("DROP INDEX task_note_task");
+  // Schema 6 added the file list and the lead columns: the older store has neither.
+  db.sqlite.run("DROP TABLE task_files");
+  for (const column of ["lead_session", "lead_pid", "lead_start", "lead_child", "lead_handout"])
+    db.sqlite.run(`ALTER TABLE tasks DROP COLUMN ${column}`);
   for (const column of ["created_pid", "created_start"])
     db.sqlite.run(`ALTER TABLE tasks DROP COLUMN ${column}`);
   db.sqlite.run("PRAGMA user_version=3");

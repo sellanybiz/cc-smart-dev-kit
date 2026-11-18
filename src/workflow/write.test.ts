@@ -118,6 +118,24 @@ describe("workflow set / unset --project", () => {
     expect(readFileSync(file, "utf8")).toBe(`{\n  "workflow": {\n    "autoCommit": true\n  }\n}\n`);
   });
 
+  test("a key only the person holds is refused for the project, in the key's own words, and the file stays", () => {
+    const { repo, file, env } = projectWith(BIOME_PROJECT);
+    const reasons: Record<string, string> = {
+      "plans.runMode": "a committed value would spend every teammate's usage",
+      "switches.statusLine": "the status line is per person, per machine",
+      "switches.updateHold": "the update hold is per person, per machine",
+      "switches.leadHint": "the lead-model hint is per person, per machine",
+    };
+    for (const [key, reason] of Object.entries(reasons)) {
+      for (const value of [true, "solo", undefined]) {
+        expect(() => writeProjectSetting(repo, key, value, env)).toThrow(
+          `${key} is your own setting, not the project's: run it without --project (${reason})`,
+        );
+      }
+    }
+    expect(readFileSync(file, "utf8")).toBe(BIOME_PROJECT);
+  });
+
   test("a file that is not valid JSON is refused, and left as it was", () => {
     const { repo, file, env } = projectWith('{ "worktrees": { "base": "main" ,, }\n');
     expect(() => writeProjectSetting(repo, "autoCommit", true, env)).toThrow("not valid JSON");

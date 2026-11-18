@@ -350,11 +350,11 @@ function liveSessions(claudeConfigDir, facts = {}) {
 }
 
 // src/project/resolve.ts
-import { existsSync as existsSync3, realpathSync as realpathSync2, statSync as statSync2 } from "fs";
-import { join as join5 } from "path";
+import { existsSync as existsSync4, realpathSync as realpathSync3, statSync as statSync3 } from "fs";
+import { join as join6 } from "path";
 
 // src/project/config.ts
-import { existsSync as existsSync2, readFileSync as readFileSync4 } from "fs";
+import { existsSync as existsSync3, readFileSync as readFileSync5 } from "fs";
 import { posix, win32 } from "path";
 
 // node_modules/zod/v4/core/util.js
@@ -914,6 +914,9 @@ function constantCatch(value) {
 
 // node_modules/zod/v4/core/core.js
 var _a;
+var NEVER = /* @__PURE__ */ Object.freeze({
+  status: "aborted"
+});
 var _zodDesc = { value: undefined, enumerable: false };
 var _E = "captureStackTrace" in Error ? Error : null;
 function newError(Definition) {
@@ -6077,7 +6080,7 @@ function superRefine(fn, params) {
 }
 // src/build-info/index.ts
 var info = {
-  version: "5.1.0",
+  version: "5.2.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -6136,6 +6139,80 @@ function parseUserJson(text) {
   return JSON.parse(withoutBom(text));
 }
 
+// src/setup/write.ts
+import {
+  closeSync,
+  existsSync as existsSync2,
+  fsyncSync,
+  lstatSync,
+  mkdirSync,
+  openSync,
+  readdirSync as readdirSync2,
+  readFileSync as readFileSync4,
+  readlinkSync,
+  realpathSync as realpathSync2,
+  renameSync,
+  statSync as statSync2,
+  unlinkSync,
+  writeFileSync
+} from "fs";
+import { basename as basename2, dirname as dirname3, join as join5, resolve as resolve3 } from "path";
+
+// src/setup/file-mode.ts
+import { chmodSync, fchmodSync } from "fs";
+function failureIsFatal(platform) {
+  return platform !== "win32";
+}
+function setFileMode(fileOrFd, mode, platform = hostPlatform()) {
+  try {
+    if (typeof fileOrFd === "number")
+      fchmodSync(fileOrFd, mode);
+    else
+      chmodSync(fileOrFd, mode);
+  } catch (error) {
+    if (failureIsFatal(platform))
+      throw error;
+  }
+}
+
+// src/setup/write.ts
+function writeTemp(file, content, mode) {
+  const dir = dirname3(file);
+  mkdirSync(dir, { recursive: true });
+  const temp = join5(dir, `.${basename2(file)}.cc-smart-dev-kit-tmp-${process.pid}-${crypto.randomUUID()}`);
+  try {
+    const fd = openSync(temp, "wx", mode);
+    try {
+      writeFileSync(fd, content);
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+    setFileMode(temp, mode);
+  } catch (error) {
+    if (existsSync2(temp))
+      unlinkSync(temp);
+    throw error;
+  }
+  return temp;
+}
+function atomicWrite(file, content, mode, beforeRename) {
+  const temp = writeTemp(file, content, mode);
+  try {
+    beforeRename?.();
+    renameSync(temp, file);
+  } catch (error) {
+    if (existsSync2(temp))
+      unlinkSync(temp);
+    throw error;
+  }
+}
+
+// src/setup/managed-json.ts
+function isObject2(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 // src/tasks/deploy/format.ts
 var DEPLOY_ENVS = ["staging", "prod"];
 var DEPLOY_ENVS_RISK_FIRST = [...DEPLOY_ENVS].reverse();
@@ -6168,6 +6245,24 @@ var deployTaskSchema = object({
   refs: array(string2()).optional(),
   evidence: string2().optional()
 }).passthrough();
+
+// src/workflow/repo-path.ts
+function normalizeRepoPath(raw) {
+  const text = raw.trim().replaceAll("\\", "/");
+  if (/\p{Cc}/u.test(text))
+    return { ok: false, problem: "control" };
+  if (/[*?]/.test(text))
+    return { ok: false, problem: "pattern" };
+  const kept = text.split("/").filter((segment) => segment !== "" && segment !== ".");
+  if (kept.length === 0)
+    return { ok: false, problem: "root" };
+  if (text.startsWith("/") || /^[A-Za-z]:/.test(text))
+    return { ok: false, problem: "absolute" };
+  if (kept.includes(".."))
+    return { ok: false, problem: "up" };
+  const folder = text.endsWith("/") || text.endsWith("/.");
+  return { ok: true, path: `${kept.join("/")}${folder ? "/" : ""}` };
+}
 
 // src/workflow/schema.ts
 var PERCENT = { kind: "whole", max: 100, min: 1 };
@@ -6205,6 +6300,34 @@ function labelsClash(labels) {
   }
   return null;
 }
+var RUN_MODES = ["ask", "solo", "lead-children", "coordinator"];
+function normalizeMergeFile(raw) {
+  const parsed = normalizeRepoPath(raw);
+  if (parsed.ok)
+    return parsed;
+  const shown = JSON.stringify(raw);
+  const why = {
+    control: `${shown} holds a control character`,
+    pattern: `${shown} holds a pattern character (* or ?): name the path itself, and a whole folder with a trailing / (like plugin/dist/)`,
+    root: `${shown} is the root: name the files or folders under it`,
+    absolute: `${shown} is absolute: write it relative to the repository root`,
+    up: `${shown} leaves the repository: no .. segments`
+  };
+  return { ok: false, why: why[parsed.problem] };
+}
+var mergeFilesSchema = array(string2()).transform((paths, context) => {
+  const normalised = [];
+  for (const [index, raw] of paths.entries()) {
+    const parsed = normalizeMergeFile(raw);
+    if (!parsed.ok) {
+      context.issues.push({ code: "custom", input: raw, message: parsed.why, path: [index] });
+      return NEVER;
+    }
+    if (!normalised.includes(parsed.path))
+      normalised.push(parsed.path);
+  }
+  return normalised;
+});
 var workflowSchema = strictObject({
   autoCommit: boolean2().optional(),
   autoPush: boolean2().optional(),
@@ -6221,7 +6344,8 @@ var workflowSchema = strictObject({
   }).optional(),
   clearWorktreeAfterMerge: boolean2().optional(),
   plans: strictObject({
-    maxPhases: numberField("plans.maxPhases")
+    maxPhases: numberField("plans.maxPhases"),
+    mergeFiles: mergeFilesSchema.optional()
   }).optional(),
   issues: strictObject({
     enabled: boolean2().optional(),
@@ -6248,6 +6372,10 @@ var workflowSchema = strictObject({
   crew: unknown().optional()
 });
 var personalWorkflowSchema = workflowSchema.extend({
+  plans: strictObject({
+    maxPhases: numberField("plans.maxPhases"),
+    runMode: _enum(RUN_MODES).optional()
+  }).optional(),
   switches: strictObject({ jobRoute: boolean2().optional(), leadHint: boolean2().optional() }).optional()
 });
 var workflowDefaults = {
@@ -6276,7 +6404,9 @@ var workflowDefaults = {
     usagePercent: 85
   },
   plans: {
-    maxPhases: 10
+    maxPhases: 10,
+    mergeFiles: [],
+    runMode: "ask"
   }
 };
 var SWITCH_NAMES = [
@@ -6305,10 +6435,19 @@ var POLICY_KEYS = [
   "issues.fixedLabel",
   "issues.readyLabel",
   "alerts.usagePercent",
-  "plans.maxPhases"
+  "plans.maxPhases",
+  "plans.runMode",
+  "plans.mergeFiles"
 ];
+var PERSONAL_ONLY_KEYS = ["plans.runMode"];
 var SWITCH_KEYS = SWITCH_NAMES.map((name) => `switches.${name}`);
 var WORKFLOW_KEYS = [...POLICY_KEYS, ...SWITCH_KEYS];
+var PERSONAL_ONLY_REASONS = {
+  "plans.runMode": "a committed value would spend every teammate's usage",
+  "switches.statusLine": "the status line is per person, per machine",
+  "switches.updateHold": "the update hold is per person, per machine",
+  "switches.leadHint": "the lead-model hint is per person, per machine"
+};
 
 // src/project/version-range.ts
 var NUMBER = "(?:x|X|\\*|0|[1-9]\\d*)";
@@ -6479,10 +6618,20 @@ function checkRetiredFields(where, raw) {
     return;
   throw new CcSmartDevKitRetiredFieldError(`Invalid ${where}: ${found.map(retiredFieldMessage).join(" ")}`);
 }
+function checkPersonalOnlyFields(where, raw) {
+  const workflow = isObject2(raw) ? raw.workflow : undefined;
+  for (const key of PERSONAL_ONLY_KEYS) {
+    const [group, field] = key.split(".");
+    const settings = isObject2(workflow) ? workflow[group ?? ""] : undefined;
+    if (!isObject2(settings) || !Object.hasOwn(settings, field ?? ""))
+      continue;
+    throw new CcSmartDevKitConfigError(`Invalid ${where}: workflow.${key} is your own setting, not the project's, because ${PERSONAL_ONLY_REASONS[key]}: remove it from this file and run \`${COMMAND} workflow set ${key} <value>\` in your own terminal.`);
+  }
+}
 function loadCcSmartDevKitConfig(file, pluginVersion = VERSION) {
-  if (!existsSync2(file))
+  if (!existsSync3(file))
     return null;
-  return parseCcSmartDevKitConfig(readFileSync4(file, "utf8"), file, pluginVersion);
+  return parseCcSmartDevKitConfig(readFileSync5(file, "utf8"), file, pluginVersion);
 }
 function parseCcSmartDevKitConfig(text, where, pluginVersion = VERSION) {
   let raw;
@@ -6497,6 +6646,7 @@ function parseCcSmartDevKitConfig(text, where, pluginVersion = VERSION) {
 function checkCcSmartDevKitConfig(raw, where, pluginVersion = VERSION) {
   checkRequires(where, raw, pluginVersion);
   checkRetiredFields(where, raw);
+  checkPersonalOnlyFields(where, raw);
   const parsed = ccSmartDevKitConfigSchema.safeParse(raw);
   if (!parsed.success) {
     const issues = parsed.error.issues.map(describeIssue).join("; ");
@@ -6585,10 +6735,10 @@ function mainCheckoutFrom(list, cwd) {
   if (!pathLine)
     return null;
   const path = pathLine.slice("worktree ".length);
-  if (!existsSync3(path) || lines.some((line) => line.startsWith("prunable"))) {
+  if (!existsSync4(path) || lines.some((line) => line.startsWith("prunable"))) {
     throw new Error(`The main checkout of the repo at ${cwd} is missing: ${path} was moved or deleted. ` + 'If you moved it, run "git worktree repair" in its new folder.');
   }
-  return realpathSync2(path);
+  return realpathSync3(path);
 }
 function findMainCheckout(git, cwd) {
   return mainCheckoutFrom(git(["worktree", "list", "--porcelain"]), cwd);
@@ -6603,12 +6753,12 @@ function revParseParts(revParse) {
   return { common, gitDir, top };
 }
 function checkoutRoots(parts) {
-  const root = realpathSync2(parts.top);
-  const commonDir = realpathSync2(parts.common);
-  return { commonDir, isWorktree: realpathSync2(parts.gitDir) !== commonDir, root };
+  const root = realpathSync3(parts.top);
+  const commonDir = realpathSync3(parts.common);
+  return { commonDir, isWorktree: realpathSync3(parts.gitDir) !== commonDir, root };
 }
 function locateCheckout(cwd, options = {}) {
-  if (!existsSync3(cwd) || !statSync2(cwd).isDirectory()) {
+  if (!existsSync4(cwd) || !statSync3(cwd).isDirectory()) {
     throw new Error(`resolveProject: ${cwd} is not a folder`);
   }
   const git = gitIn(cwd, gitEnv(options.env ?? process.env), undefined, options.timeFor);
@@ -6639,11 +6789,11 @@ function locateCheckout(cwd, options = {}) {
 }
 function loadProjectConfig(checkout, pluginVersion) {
   const { root, mainCheckout } = checkout;
-  const own = join5(root, ".claude", "cc-smart-dev-kit.json");
+  const own = join6(root, ".claude", "cc-smart-dev-kit.json");
   let config = loadCcSmartDevKitConfig(own, pluginVersion);
   let configFile = config === null ? null : own;
   if (config === null && mainCheckout !== null && mainCheckout !== root) {
-    const main = join5(mainCheckout, ".claude", "cc-smart-dev-kit.json");
+    const main = join6(mainCheckout, ".claude", "cc-smart-dev-kit.json");
     config = loadCcSmartDevKitConfig(main, pluginVersion);
     configFile = config === null ? null : main;
   }
@@ -6666,38 +6816,19 @@ import { join as join7 } from "path";
 
 // src/setup/lock.ts
 import {
-  closeSync,
-  mkdirSync,
-  openSync,
-  readFileSync as readFileSync5,
-  readlinkSync,
-  statSync as statSync3,
-  unlinkSync,
+  closeSync as closeSync2,
+  mkdirSync as mkdirSync2,
+  openSync as openSync2,
+  readFileSync as readFileSync6,
+  readlinkSync as readlinkSync2,
+  statSync as statSync4,
+  unlinkSync as unlinkSync2,
   writeSync
 } from "fs";
-
-// src/setup/file-mode.ts
-import { chmodSync, fchmodSync } from "fs";
-function failureIsFatal(platform) {
-  return platform !== "win32";
-}
-function setFileMode(fileOrFd, mode, platform = hostPlatform()) {
-  try {
-    if (typeof fileOrFd === "number")
-      fchmodSync(fileOrFd, mode);
-    else
-      chmodSync(fileOrFd, mode);
-  } catch (error) {
-    if (failureIsFatal(platform))
-      throw error;
-  }
-}
-
-// src/setup/lock.ts
 var FALLBACK_STALE_MS = 10 * 60 * 1000;
 function procStartTime(pid) {
   try {
-    const stat = readFileSync5(`/proc/${pid}/stat`, "utf8");
+    const stat = readFileSync6(`/proc/${pid}/stat`, "utf8");
     const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
     const start = fields[22 - 3];
     return start && /^\d+$/.test(start) ? start : null;
@@ -6733,59 +6864,9 @@ function processStartTime(pid, like) {
 }
 function ownPidNamespace() {
   try {
-    return readlinkSync("/proc/self/ns/pid");
+    return readlinkSync2("/proc/self/ns/pid");
   } catch {
     return null;
-  }
-}
-
-// src/setup/write.ts
-import {
-  closeSync as closeSync2,
-  existsSync as existsSync4,
-  fsyncSync,
-  lstatSync,
-  mkdirSync as mkdirSync2,
-  openSync as openSync2,
-  readdirSync as readdirSync2,
-  readFileSync as readFileSync6,
-  readlinkSync as readlinkSync2,
-  realpathSync as realpathSync3,
-  renameSync,
-  statSync as statSync4,
-  unlinkSync as unlinkSync2,
-  writeFileSync
-} from "fs";
-import { basename as basename2, dirname as dirname3, join as join6, resolve as resolve3 } from "path";
-function writeTemp(file, content, mode) {
-  const dir = dirname3(file);
-  mkdirSync2(dir, { recursive: true });
-  const temp = join6(dir, `.${basename2(file)}.cc-smart-dev-kit-tmp-${process.pid}-${crypto.randomUUID()}`);
-  try {
-    const fd = openSync2(temp, "wx", mode);
-    try {
-      writeFileSync(fd, content);
-      fsyncSync(fd);
-    } finally {
-      closeSync2(fd);
-    }
-    setFileMode(temp, mode);
-  } catch (error) {
-    if (existsSync4(temp))
-      unlinkSync2(temp);
-    throw error;
-  }
-  return temp;
-}
-function atomicWrite(file, content, mode, beforeRename) {
-  const temp = writeTemp(file, content, mode);
-  try {
-    beforeRename?.();
-    renameSync(temp, file);
-  } catch (error) {
-    if (existsSync4(temp))
-      unlinkSync2(temp);
-    throw error;
   }
 }
 
@@ -8172,10 +8253,11 @@ function cherryOnBase(repo, baseRef, head, env) {
 `).filter((line) => line.trim() !== "");
   return lines.length > 0 && lines.every((line) => line.startsWith("-"));
 }
-function pullRequestMerged(repo, branch, head, env) {
+var GH_PR_LIMIT = "30";
+function pullRequestState(repo, branch, head, env) {
   try {
     if (Bun.which("gh", { PATH: env.PATH ?? "" }) === null)
-      return false;
+      return "unknown";
     const run = Bun.spawnSync([
       "gh",
       "pr",
@@ -8183,20 +8265,30 @@ function pullRequestMerged(repo, branch, head, env) {
       "--head",
       branch,
       "--state",
-      "merged",
+      "all",
       "--json",
-      "number,headRefOid",
+      "state,headRefOid",
       "--limit",
-      "1"
+      GH_PR_LIMIT
     ], { cwd: repo, env, stdin: "ignore", stderr: "pipe", stdout: "pipe", timeout: GH_TIMEOUT_MS });
+    if (run.exitCode !== 0)
+      return "unknown";
     const parsed = JSON.parse(run.stdout.toString() || "null");
-    if (!Array.isArray(parsed) || parsed.length === 0)
-      return false;
-    const first = parsed[0];
-    return typeof first.headRefOid === "string" && first.headRefOid === head;
+    if (!Array.isArray(parsed))
+      return "unknown";
+    const rows = parsed.filter((row) => row !== null && typeof row === "object");
+    const at = (state) => rows.some((row) => row.state === state && row.headRefOid === head);
+    if (at("MERGED"))
+      return "merged";
+    if (rows.some((row) => row.state === "OPEN"))
+      return "open";
+    return at("CLOSED") ? "closed" : "none";
   } catch {
-    return false;
+    return "unknown";
   }
+}
+function pullRequestMerged(repo, branch, head, env) {
+  return pullRequestState(repo, branch, head, env) === "merged";
 }
 function objectFolder(repo, env) {
   const common = runGit(repo, ["rev-parse", "--path-format=absolute", "--git-common-dir"], env);

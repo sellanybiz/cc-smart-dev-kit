@@ -543,6 +543,25 @@ describe("requiresFloor", () => {
     });
   });
 
+  test("workflow.plans asks for 4.8, and plans.mergeFiles for 5.2 on its own: a cap alone keeps 4.8", () => {
+    expect(requiresFloor({ workflow: { plans: { maxPhases: 5 } } })).toEqual({
+      floor: ">=4.8",
+      version: "4.8.0",
+    });
+    expect(requiresFloor({ workflow: { plans: {} } })).toEqual({
+      floor: ">=4.8",
+      version: "4.8.0",
+    });
+    expect(requiresFloor({ workflow: { plans: { maxPhases: 5, mergeFiles: ["a/"] } } })).toEqual({
+      floor: ">=5.2",
+      version: "5.2.0",
+    });
+    expect(requiresFloor({ workflow: { plans: { mergeFiles: [] } } })).toEqual({
+      floor: ">=5.2",
+      version: "5.2.0",
+    });
+  });
+
   test("the plan keeps an ownHooks name of a later release, and asks for that release", () => {
     const root = tempDir("project-init");
     const existing = JSON.stringify(

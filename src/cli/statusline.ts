@@ -34,7 +34,8 @@
  *   - `5h 23% · 7d 41%`, and from the warning share a warning with the reset time;
  *   - `cache miss: tools_changed`, for a minute after a prompt-cache miss (`cache-miss.ts`:
  *     `prompt_cache.last_miss_at` and `last_miss_cause`, `CACHE_MISS_SHOW_MS`, no state), before
- *     the current work on rows of its own (`taskSegment`: the plan, its phases, the tasks).
+ *     the current work on rows of its own (`taskSegment`: the plan, its phases, the tasks, then
+ *     a lead's `Plans · 2 with children · 1 waiting · 1 ready` row from the store's classifier alone).
  *
  * It reads the router's state file and the gateway's config (the config to tell a profile's
  * address from the machine's, `sessionGatewayOf`, and for a slot target's pinned effort) and
@@ -76,9 +77,10 @@ import { type SessionGateway, sessionGatewayOf } from "../hooks/agent-guard";
 import type { Env } from "../hooks/run";
 import { compactWindowsOf, mainCheckoutOfFolder } from "../machine/claude-settings";
 import { taskContext } from "../tasks/context";
-import { callerOf } from "../tasks/work/identity";
-import { planProgress } from "../tasks/work/read";
-import type { Who } from "../tasks/work/types";
+import { CLAIM_PROCESS, callerOf } from "../tasks/work/identity";
+import { classifyLeadPlans, type LeadPlanState } from "../tasks/work/lead-plans";
+import { planProgress, readWorkStore } from "../tasks/work/read";
+import type { ClaimProcess, Who } from "../tasks/work/types";
 import type { AlertsHere } from "../workflow/alerts";
 
 /** ` · 2 queued, 1 parked` for the plans that wait behind the current one; nothing when none. */
@@ -91,14 +93,71 @@ function waitingWords(waiting: { queued: number; parked: number } | null): strin
   return parts.length ? ` · ${parts.join(", ")}` : "";
 }
 
+/** Each plan state the row counts, in the order the row shows them, with its words (`own` is the `Plan` row's). */
+const PLAN_STATE_WORDS: readonly (readonly [LeadPlanState, (count: number) => string])[] = [
+  ["with-child", (n) => `${n} with ${n === 1 ? "child" : "children"}`],
+  ["child-gone", (n) => `${n} ${n === 1 ? "child" : "children"} gone`],
+  ["merging", (n) => `${n} merging`],
+  ["waiting", (n) => `${n} waiting`],
+  ["no-files", (n) => `${n} ${n === 1 ? "needs" : "need"} files`],
+  ["ready", (n) => `${n} ready`],
+];
+
+/** The states that mean a plan is reserved for this lead: a session with none of them is no lead. */
+const RESERVED_STATES: readonly LeadPlanState[] = ["own", "with-child", "child-gone", "merging"];
+
+/**
+ * The lead's plans in one row: `Plans · 2 with children · 1 waiting · 1 ready`, zero counts left
+ * out; null when nothing is counted. It reads the store's classifier alone (`classifyLeadPlans`):
+ * no git, no gh, no hc, and no session record while a child's process runs, so it stays cheap
+ * enough for every status line.
+ *
+ * With `claimsWork` (the own rows are shown), the row appears only when a plan is reserved for
+ * this lead, itself or a child: a session that only has queued plans keeps its `· 2 queued`
+ * words on the `Plan` row and gains nothing.
+ */
+function plansRow(
+  paths: { stateDir: string },
+  project: string,
+  who: Who,
+  claimsWork: boolean,
+  claimProcess: ClaimProcess,
+): string | null {
+  const read = readWorkStore(paths, (db) => classifyLeadPlans(db, project, who, claimProcess));
+  if (read.state !== "ready") return null;
+  const led = read.value;
+  if (claimsWork && !led.some((plan) => RESERVED_STATES.includes(plan.state))) return null;
+  const parts = PLAN_STATE_WORDS.flatMap(([state, words]) => {
+    const count = led.filter((plan) => plan.state === state).length;
+    return count > 0 ? [words(count)] : [];
+  });
+  return parts.length > 0 ? `Plans · ${parts.join(" · ")}` : null;
+}
+
 /**
  * The current work, a row per layer: `Plan · <title>` (with `· 2 queued, 1 parked` when the
  * session's other open plans wait behind it), then `Phases 5/25 · <current phase>` when
  * the plan has phases, then `Tasks 1/3` with the current task's title when it is one. A task of
  * a phased plan under no phase has no `Tasks` row: its title is the last row. A loose task is its
  * title alone. Each title is whole.
+ *
+ * A lead's plans add one row (`plansRow`): below those rows, or alone when this process claims
+ * no work (a coordinator).
  */
-export function taskSegment(paths: { stateDir: string }, project: string, who: Who): string | null {
+export function taskSegment(
+  paths: { stateDir: string },
+  project: string,
+  who: Who,
+  /** The machine's answers about a child's process; the real ones by default. */
+  claimProcess: ClaimProcess = CLAIM_PROCESS,
+): string | null {
+  const claimed = claimedRows(paths, project, who);
+  const plans = plansRow(paths, project, who, claimed !== null, claimProcess);
+  return [claimed, plans].filter((row) => row !== null).join("\n") || null;
+}
+
+/** The rows of the work this process claims; null when it claims none. */
+function claimedRows(paths: { stateDir: string }, project: string, who: Who): string | null {
   const read = planProgress(paths, project, who);
   if (read.state !== "ready" || read.value === null) return null;
   const { task, plan, phase, phases, tasks, waiting } = read.value;

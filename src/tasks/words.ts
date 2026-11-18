@@ -52,3 +52,10 @@ export const TASK_TOOLS_ALLOW_RULE = `mcp__${TASKS_SERVER_NAME}__*`;
 
 /** The command a person or a session without the tools runs: `cc-smart-dev-kit task`. */
 export const TASK_COMMAND = `${COMMAND} task`;
+
+/**
+ * What a plan's file list is, said once for the tool schemas, the command's help and the
+ * server's instructions: the list the store checks before it reserves a plan for a child.
+ */
+export const PLAN_FILES_WORDS =
+  "Plan task only: the repo-relative paths the plan changes, with / separators; a folder ends in /. Two plans overlap when a path is equal or inside the other's folder; a plan that overlaps a reserved or running plan is not handed out. The list replaces the stored one; an empty list clears it.";

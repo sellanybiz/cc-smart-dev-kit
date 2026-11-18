@@ -5,6 +5,19 @@ page/API are retired. Statusline usage warnings remain. Manual setup offers the 
 Herdr GUI; see `README.md` § Herdr GUI. Older completed phases below describe their release,
 not features that still exist.
 
+## 5.2.0 — queued plans run solo, with children or through a coordinator
+
+Queued plans can run in three modes, chosen by `plans.runMode`: **solo** (as before), **lead +
+children** (the lead builds one plan and hands each other ready plan to a linked Herdr session)
+or **coordinator** (the lead builds nothing). A plan stores its file list, and the store reserves
+a plan in one step before its child starts, so two plans that share a file never run at once. A
+plan waits until the pull request of every plan it depends on has merged. `herdr start --plan`
+hands a plan out and resumes a gone child, `herdr plans [--wait]` shows where each plan stands,
+and the status line and the Stop hook name the next step. `plans.mergeFiles` lists the paths
+every plan touches. Built in five phases: workflow settings, the store, herdr, the status line
+and Stop hook, and these docs (all done; the release itself is the main session's). The design:
+[tasks](design/tasks.md) § Plans handed to children, [Herdr](design/herdr.md) § Handing out plans.
+
 ## 5.0.0 — deploy tasks, a `tasks` skill, findings as issues
 
 Project tasks become **deploy tasks**: a step owed before or after a deploy to prod or staging,

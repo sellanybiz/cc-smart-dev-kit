@@ -46,7 +46,7 @@ export function defaultResolved(): ResolvedWorkflow {
     },
     mergeMethod: at("merge"),
     openPr: at("off"),
-    plans: { maxPhases: at(10) },
+    plans: { maxPhases: at(10), mergeFiles: at([]), runMode: at("ask") },
     reviewBeforePush: at(true),
     reviewAgents: at(["cc-smart-dev-kit:senior-engineer"]),
     switches: {

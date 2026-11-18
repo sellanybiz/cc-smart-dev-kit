@@ -38,6 +38,7 @@ import {
   isParkedWorktree,
   parkedOriginal,
   pullRequestMerged,
+  pullRequestState,
   removeWorktree,
   replayOntoBase,
   scanWorktrees,
@@ -84,14 +85,15 @@ const clean = { localFiles: [], uncommitted: false };
 
 /**
  * The environment with a fake `gh` first on PATH: it answers the one call the scan makes
- * (`gh pr list --head <branch> --state merged --json number,headRefOid --limit 1`) with a
- * merged pull request for `branch` whose head is `head`, and refuses every other call, so
- * the argv is checked too.
+ * (`gh pr list --head <branch> --state all --json state,headRefOid --limit 30`) with one pull
+ * request of `branch` at `head` in `state` (or the raw JSON `rows`), and refuses every other
+ * call, so the argv is checked too.
  */
 function withFakeGh(
   env: Record<string, string>,
   branch = "fix/login",
   head = "0000000000000000000000000000000000000000",
+  rows = `[{"number":7,"state":"MERGED","headRefOid":"${head}"}]`,
 ): Record<string, string> {
   const dir = tempDir("fake-gh");
   writeFileSync(
@@ -99,13 +101,15 @@ function withFakeGh(
     `#!/bin/sh
 echo "$*" >> '${join(dir, "gh.log")}'
 if [ "$1" != "pr" ] || [ "$2" != "list" ]; then echo "fake gh: unknown call: $*" >&2; exit 1; fi
+case " $* " in *" --state all "*) ;; *) echo "fake gh: needs --state all: $*" >&2; exit 1;; esac
+case " $* " in *" --json state,headRefOid "*) ;; *) echo "fake gh: needs --json state,headRefOid: $*" >&2; exit 1;; esac
 head=
 while [ $# -gt 0 ]; do
   if [ "$1" = "--head" ]; then shift; head="$1"; fi
   shift
 done
 if [ "$head" != '${branch}' ]; then echo "fake gh: no merged pull request for $head" >&2; exit 1; fi
-echo '[{"number":7,"headRefOid":"${head}"}]'
+echo '${rows}'
 `,
     { mode: 0o755 },
   );
@@ -623,6 +627,43 @@ describe("scanning and removing, against a real repo", () => {
     // No `gh` at all: not known merged, and nothing was asked of the network.
     expect(pullRequestMerged(main, "fix/login", head, { ...env, PATH: tempDir("no-gh") })).toBe(
       false,
+    );
+  });
+
+  test("the pull request state of a branch at its head: merged, open, closed, none or unknown", () => {
+    const { main, worktree } = repo();
+    writeFileSync(join(worktree, "feature.ts"), "export const feature = 1;\n");
+    git(worktree, "add", ".");
+    git(worktree, "commit", "-m", "the feature");
+    const head = git(worktree, "rev-parse", "HEAD").trim();
+    const older = "0".repeat(40);
+    const state = (rows: string) =>
+      pullRequestState(main, "fix/login", head, withFakeGh(env, "fix/login", head, rows));
+    expect(state(`[{"state":"MERGED","headRefOid":"${head}"}]`)).toBe("merged");
+    // A merge of an older head says nothing about the commits after it.
+    expect(state(`[{"state":"MERGED","headRefOid":"${older}"}]`)).toBe("none");
+    expect(state(`[{"state":"OPEN","headRefOid":"${head}"}]`)).toBe("open");
+    // An open pull request counts at any head: the branch has one.
+    expect(state(`[{"state":"OPEN","headRefOid":"${older}"}]`)).toBe("open");
+    expect(state(`[{"state":"CLOSED","headRefOid":"${head}"}]`)).toBe("closed");
+    expect(state(`[{"state":"CLOSED","headRefOid":"${older}"}]`)).toBe("none");
+    // Closed, then reopened as a new pull request: open wins; merged at this head wins over all.
+    expect(
+      state(`[{"state":"CLOSED","headRefOid":"${head}"},{"state":"OPEN","headRefOid":"${head}"}]`),
+    ).toBe("open");
+    expect(
+      state(`[{"state":"OPEN","headRefOid":"${head}"},{"state":"MERGED","headRefOid":"${head}"}]`),
+    ).toBe("merged");
+    expect(state("[]")).toBe("none");
+    // gh answers with something that is not a list, or not JSON: no evidence either way.
+    expect(state("{}")).toBe("unknown");
+    expect(state("not json")).toBe("unknown");
+    // gh fails (another branch in the fake), or is not there at all.
+    expect(pullRequestState(main, "other/branch", head, withFakeGh(env, "fix/login", head))).toBe(
+      "unknown",
+    );
+    expect(pullRequestState(main, "fix/login", head, { ...env, PATH: tempDir("no-gh") })).toBe(
+      "unknown",
     );
   });
 

@@ -23,6 +23,8 @@ const FIELDS: readonly [key: string, label: string][] = [
   ["creator", "made by"],
   ["claim", "claimed by"],
   ["waitsFor", "blocked by"],
+  ["files", "files"],
+  ["lead", "reserved for"],
   ["description", "description"],
   ["note", "note"],
 ];
