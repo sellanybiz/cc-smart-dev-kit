@@ -114,3 +114,5 @@ export const taskSchemas = {
   delete: z.object({ task: ref }).strict(),
 };
 export type TaskOperation = keyof typeof taskSchemas;
+/** The operations that change nothing: the MCP read-only hint, and a read answers even when the caller's claims cannot be moved (`ops.ts`). */
+export const READ_ONLY_OPERATIONS: ReadonlySet<TaskOperation> = new Set(["list", "get", "search"]);

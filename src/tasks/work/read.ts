@@ -1,10 +1,10 @@
 import { existsSync } from "node:fs";
 import { openWorkDb, type WorkDb, workDbFile } from "./db";
 import { historyChanges } from "./history";
-import { claimLive } from "./identity";
+import { CLAIM_PROCESS, claimGone } from "./identity";
 import {
   allTasks,
-  claimHeldBy,
+  claimIsMine,
   claimState,
   eventsOf,
   getTask,
@@ -52,7 +52,7 @@ export function startView(
     const byId = new Map(all.map((t) => [t.id, t]));
     const open = all
       .filter((t) => isOpen(t))
-      .map((t) => ({ task: t, claim: claimState(t, claimLive, who) }));
+      .map((t) => ({ task: t, claim: claimState(t, CLAIM_PROCESS, who) }));
     const shown = open.filter(
       ({ task, claim }) =>
         claim === "mine" ||
@@ -121,14 +121,15 @@ export function planProgress(paths: Paths, project: string, who: Who) {
         .at(-1)?.at ??
       all.find((t) => t.id === id)?.createdAt ??
       0;
-    // The current work is what this process has claimed, not everything it owns (`ownerOf`): a
-    // task it made that another process runs is not its work now. A caller with no process
+    // The current work is what this process has claimed, or its session left claimed in a process
+    // that is gone (`resumedClaim`), not everything it owns (`ownerOf`): a task it made that
+    // another process runs is not its work now. A caller with no process
     // (`who.pid` null) holds no claim, so its own running tasks stand in.
     const task = all
       .filter(
         (t) =>
           t.status === "in_progress" &&
-          (claimHeldBy(t.claim, who) ||
+          (claimIsMine(t.claim, who, claimGone) ||
             (who.pid === null && who.sessionId !== null && t.createdBy === who.sessionId)),
       )
       .sort((a, b) => started(b.id) - started(a.id) || b.number - a.number)[0];

@@ -7,18 +7,22 @@ import {
   claimHeldBy,
   descendants,
   holdingUnder,
+  isOpen,
   livePhaseCount,
   openBlockers,
   openChildren,
   planIsOpen,
+  resumedClaim,
   taskById,
   waitsForTask,
 } from "./queries";
 import {
   DESCRIPTION_LIMIT,
   NOTE_LIMIT,
+  type Result,
   SUBJECT_LIMIT,
   type Who,
+  type WorkClaim,
   type WorkEventAction,
   type WorkKind,
   type WorkStatus,
@@ -633,7 +637,7 @@ export function takeTasks(
   options: {
     from?: string;
     force?: boolean;
-    isLive: (claim: import("./types").WorkClaim) => boolean;
+    isLive: (claim: WorkClaim) => boolean;
   },
 ) {
   return writeWork(db, () => {
@@ -709,5 +713,140 @@ export function takeTasks(
       );
     }
     return rows.map((t) => taskById(db, t.id));
+  });
+}
+
+/** One task's changes when the caller's session or process is its own again (`reclaimResumed`). */
+interface Restamp {
+  task: WorkTask;
+  /** The claim moves to the caller's process (a resumed claim), or only its session id changes. */
+  claim?: "moved" | "session";
+  /** The session id the task was made under changes to the caller's. */
+  createdBy: boolean;
+}
+
+/**
+ * What `reclaimResumed` changes for this caller, by the rules the readers use:
+ * - a resumed claim (`resumedClaim`: a dead process's claim under the caller's session id) moves
+ *   to the caller's process;
+ * - a claim the caller's process holds under an older session id (`/clear` keeps the process and
+ *   gives the session a new id) takes the new id, so a later resume under it finds the claim;
+ * - an open task the caller's process made under an older session id takes the new id too, so
+ *   `ownerOf` survives a `/clear`, a restart and a resume.
+ * Off Linux `claimHeldBy` also needs the session id, so the last two never differ there.
+ */
+function restampsOf(
+  all: readonly WorkTask[],
+  who: Who,
+  isGone: (claim: WorkClaim) => boolean,
+): Restamp[] {
+  if (who.pid === null || who.sessionId === null) return [];
+  const found: Restamp[] = [];
+  for (const task of all) {
+    let claim: Restamp["claim"];
+    if (task.status === "in_progress" && task.claim !== null) {
+      if (resumedClaim(task.claim, who, isGone)) claim = "moved";
+      else if (claimHeldBy(task.claim, who) && task.claim.sessionId !== who.sessionId)
+        claim = "session";
+    }
+    // Only open work: a closed task needs no owner to carry on, and each `/clear` would add history.
+    const createdBy =
+      isOpen(task) && claimHeldBy(task.creator, who) && task.createdBy !== who.sessionId;
+    if (claim !== undefined || createdBy)
+      found.push({ task, ...(claim === undefined ? {} : { claim }), createdBy });
+  }
+  return found;
+}
+
+/**
+ * The caller's `restampsOf` cases in every project of the store. A process and its session work
+ * in more than one repo, and a call in one must keep the work in the others. Only projects with
+ * an open row that names the caller's process or session are read.
+ */
+function restampsEverywhere(
+  db: WorkDb,
+  who: Who,
+  isGone: (claim: WorkClaim) => boolean,
+): Restamp[] {
+  if (who.pid === null || who.sessionId === null) return [];
+  const projects = db.sqlite
+    .query<{ project: string }, [number, string, number]>(
+      "SELECT DISTINCT project FROM tasks WHERE status IN ('pending','in_progress') AND (claim_pid=? OR claim_session=? OR created_pid=?) ORDER BY project",
+    )
+    .all(who.pid, who.sessionId, who.pid);
+  return projects.flatMap(({ project }) => restampsOf(allTasks(db, project), who, isGone));
+}
+
+/**
+ * Makes the caller's own work its own again after its session or process changed, in every
+ * project: the three cases of `restampsOf`, each task with a history entry, all in one write. A
+ * live claim of another process is never moved, and a caller with no process or session changes
+ * nothing. Nothing to change takes no write lock, so the check can run before every task call.
+ * Returns how many tasks changed.
+ */
+export function reclaimResumed(
+  db: WorkDb,
+  who: Who,
+  now: number,
+  isGone: (claim: WorkClaim) => boolean,
+): Result<number> {
+  // The first look is outside the write lock: a read error there fails like a busy lock, never
+  // throws, so a read operation still answers (`createTaskOps`).
+  let found: Restamp[];
+  try {
+    found = restampsEverywhere(db, who, isGone);
+  } catch (error) {
+    return { ok: false, why: error instanceof Error ? error.message : String(error) };
+  }
+  if (found.length === 0) return { ok: true, value: 0 };
+  return writeWork(db, () => {
+    // Read again inside the write: another process may have changed or closed one meanwhile.
+    const rows = restampsEverywhere(db, who, isGone);
+    for (const { task, claim, createdBy } of rows) {
+      if (claim === "moved") {
+        db.sqlite
+          .query(
+            "UPDATE tasks SET claim_pid=?,claim_start=?,claim_session=?,updated_at=? WHERE id=?",
+          )
+          .run(who.pid, who.procStart, who.sessionId, now, task.id);
+        recordEvent(
+          db,
+          task,
+          "changed",
+          { claim: [`process ${task.claim?.pid}`, `process ${who.pid}`] },
+          who,
+          now,
+          "claim moved to the resumed session's process",
+        );
+      } else if (claim === "session") {
+        db.sqlite
+          .query("UPDATE tasks SET claim_session=?,updated_at=? WHERE id=?")
+          .run(who.sessionId, now, task.id);
+        recordEvent(
+          db,
+          task,
+          "changed",
+          { claim: [task.claim?.sessionId ?? `process ${task.claim?.pid}`, who.sessionId] },
+          who,
+          now,
+          "claim follows the session id its process now runs under",
+        );
+      }
+      if (createdBy) {
+        db.sqlite
+          .query("UPDATE tasks SET created_by=?,updated_at=? WHERE id=?")
+          .run(who.sessionId, now, task.id);
+        recordEvent(
+          db,
+          task,
+          "changed",
+          { createdBy: [task.createdBy, who.sessionId] },
+          who,
+          now,
+          "made-by session follows the session id its process now runs under",
+        );
+      }
+    }
+    return rows.length;
   });
 }

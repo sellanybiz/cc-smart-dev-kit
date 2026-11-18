@@ -21525,7 +21525,7 @@ var COMMAND = "cc-smart-dev-kit";
 
 // src/build-info/index.ts
 var info = {
-  version: "4.10.1",
+  version: "4.10.2",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -21689,6 +21689,7 @@ var taskSchemas = {
   search: object({ text: string2().min(1), include_closed: boolean2().default(false) }).strict(),
   delete: object({ task: ref }).strict()
 };
+var READ_ONLY_OPERATIONS = new Set(["list", "get", "search"]);
 
 // src/cli/paths.ts
 import { join as join2, sep } from "path";
@@ -23007,9 +23008,14 @@ function claimHeldBy(claim, who) {
     return claim.procStart === who.procStart;
   return who.sessionId !== null && claim.sessionId === who.sessionId;
 }
-function claimState(task, isLive, who) {
-  if (!task.claim || !isLive(task.claim))
+function resumedClaim(claim, who, isGone) {
+  return claim !== null && who !== null && who !== undefined && who.pid !== null && who.sessionId !== null && claim.sessionId === who.sessionId && !claimHeldBy(claim, who) && isGone(claim);
+}
+function claimState(task, process2, who) {
+  if (!task.claim)
     return "free";
+  if (!process2.live(task.claim))
+    return resumedClaim(task.claim, who, process2.gone) ? "mine" : "free";
   return claimHeldBy(task.claim, who) ? "mine" : "another session";
 }
 function waitsForTask(tasks, start, target) {
@@ -23475,38 +23481,32 @@ function isRunning(pid) {
     return error.code === "EPERM";
   }
 }
-function liveSessions(claudeConfigDir, facts = {}) {
+function sessionRecordOf(claudeConfigDir, pid, facts = {}) {
+  if (!(facts.running ?? isRunning)(pid))
+    return null;
   const dir = join7(claudeConfigDir, "sessions");
-  if (!existsSync7(dir))
-    return [];
+  const file = join7(dir, `${pid}.json`);
   const bootedAt = Date.now() - uptime() * 1000;
-  const live = [];
-  for (const file of readdirSync3(dir)) {
-    const pid = Number(file.replace(/\.json$/, ""));
-    if (!file.endsWith(".json") || !Number.isInteger(pid) || !(facts.running ?? isRunning)(pid))
-      continue;
-    let text;
-    try {
-      if (statSync3(join7(dir, file)).mtimeMs < bootedAt)
-        continue;
-      text = readFileSync6(join7(dir, file), "utf8");
-    } catch (error) {
-      if (error.code === "ENOENT")
-        continue;
-      throw new Error(`the record of running session ${pid} cannot be read; retry`);
-    }
-    const record = parseSessionRecord(text);
-    if (record === null) {
-      throw new Error(`the record of running session ${pid} in ${dir} cannot be read, so it is unknown where it works`);
-    }
-    if ((facts.platform ?? process.platform) === "linux" && record.procStart !== undefined) {
-      const start = processStart(pid, facts);
-      if (start !== undefined && record.procStart !== start)
-        continue;
-    }
-    live.push(record);
+  let text;
+  try {
+    if (statSync3(file).mtimeMs < bootedAt)
+      return null;
+    text = readFileSync6(file, "utf8");
+  } catch (error) {
+    if (error.code === "ENOENT")
+      return null;
+    throw new Error(`the record of running session ${pid} cannot be read; retry`);
   }
-  return live;
+  const record = parseSessionRecord(text);
+  if (record === null) {
+    throw new Error(`the record of running session ${pid} in ${dir} cannot be read, so it is unknown where it works`);
+  }
+  if ((facts.platform ?? process.platform) === "linux" && record.procStart !== undefined) {
+    const start = processStart(pid, facts);
+    if (start !== undefined && record.procStart !== start)
+      return null;
+  }
+  return record;
 }
 
 // src/worktrees/machine-facts.ts
@@ -23643,6 +23643,22 @@ function claimLive(claim, facts = {}) {
     name: ""
   }, { platform, ...facts.readStat ? { readStat: facts.readStat } : {} });
 }
+function claimGone(claim, facts = {}) {
+  if (!(facts.running ?? isRunning)(claim.pid))
+    return true;
+  const platform = facts.platform ?? process.platform;
+  if (platform !== "linux" || claim.procStart === null)
+    return false;
+  const start = processStart(claim.pid, {
+    platform,
+    ...facts.readStat ? { readStat: facts.readStat } : {}
+  });
+  return start !== undefined && start !== claim.procStart;
+}
+var CLAIM_PROCESS = {
+  live: (claim) => claimLive(claim),
+  gone: (claim) => claimGone(claim)
+};
 var cached2 = new Map;
 function callerOf(facts = {}) {
   const env = facts.env ?? process.env;
@@ -23651,19 +23667,23 @@ function callerOf(facts = {}) {
   const readStat = facts.readStat ?? readProcStat;
   const config = facts.claudeConfigDir ?? cliPaths(env).claudeConfigDir;
   const cacheKey = `${config}:${pid}:${platform}`;
-  const records = liveSessions(config, {
+  const recordOf = (p) => sessionRecordOf(config, p, {
     readStat,
     platform,
     ...facts.running ? { running: facts.running } : {}
   });
   const previous = cached2.get(cacheKey);
-  const live = previous ? records.find((r) => r.pid === previous.pid && (r.procStart ?? null) === previous.procStart) : null;
-  let record = live;
+  const remembered = previous ? recordOf(previous.pid) : null;
+  let record = remembered !== null && (remembered.procStart ?? null) === previous?.procStart ? remembered : null;
   if (!record) {
     const parent = facts.ppid ?? process.ppid;
     const grandparent = platform === "linux" ? null : (facts.parentOf ?? listedParentOf(platform))(parent);
     const pids = platform === "linux" ? ancestorPids(pid, readStat) : [parent, ...grandparent ? [grandparent] : []];
-    record = pids.map((p) => records.find((r) => r.pid === p)).find((r) => r !== undefined);
+    for (const p of pids) {
+      record = recordOf(p);
+      if (record !== null)
+        break;
+    }
   }
   if (record) {
     cached2.set(cacheKey, { pid: record.pid, procStart: record.procStart ?? null });
@@ -23988,6 +24008,57 @@ function takeTasks(db, project, id, who, now, options) {
     return rows.map((t) => taskById(db, t.id));
   });
 }
+function restampsOf(all, who, isGone) {
+  if (who.pid === null || who.sessionId === null)
+    return [];
+  const found = [];
+  for (const task of all) {
+    let claim;
+    if (task.status === "in_progress" && task.claim !== null) {
+      if (resumedClaim(task.claim, who, isGone))
+        claim = "moved";
+      else if (claimHeldBy(task.claim, who) && task.claim.sessionId !== who.sessionId)
+        claim = "session";
+    }
+    const createdBy = isOpen(task) && claimHeldBy(task.creator, who) && task.createdBy !== who.sessionId;
+    if (claim !== undefined || createdBy)
+      found.push({ task, ...claim === undefined ? {} : { claim }, createdBy });
+  }
+  return found;
+}
+function restampsEverywhere(db, who, isGone) {
+  if (who.pid === null || who.sessionId === null)
+    return [];
+  const projects = db.sqlite.query("SELECT DISTINCT project FROM tasks WHERE status IN ('pending','in_progress') AND (claim_pid=? OR claim_session=? OR created_pid=?) ORDER BY project").all(who.pid, who.sessionId, who.pid);
+  return projects.flatMap(({ project }) => restampsOf(allTasks(db, project), who, isGone));
+}
+function reclaimResumed(db, who, now, isGone) {
+  let found;
+  try {
+    found = restampsEverywhere(db, who, isGone);
+  } catch (error) {
+    return { ok: false, why: error instanceof Error ? error.message : String(error) };
+  }
+  if (found.length === 0)
+    return { ok: true, value: 0 };
+  return writeWork(db, () => {
+    const rows = restampsEverywhere(db, who, isGone);
+    for (const { task, claim, createdBy } of rows) {
+      if (claim === "moved") {
+        db.sqlite.query("UPDATE tasks SET claim_pid=?,claim_start=?,claim_session=?,updated_at=? WHERE id=?").run(who.pid, who.procStart, who.sessionId, now, task.id);
+        recordEvent(db, task, "changed", { claim: [`process ${task.claim?.pid}`, `process ${who.pid}`] }, who, now, "claim moved to the resumed session's process");
+      } else if (claim === "session") {
+        db.sqlite.query("UPDATE tasks SET claim_session=?,updated_at=? WHERE id=?").run(who.sessionId, now, task.id);
+        recordEvent(db, task, "changed", { claim: [task.claim?.sessionId ?? `process ${task.claim?.pid}`, who.sessionId] }, who, now, "claim follows the session id its process now runs under");
+      }
+      if (createdBy) {
+        db.sqlite.query("UPDATE tasks SET created_by=?,updated_at=? WHERE id=?").run(who.sessionId, now, task.id);
+        recordEvent(db, task, "changed", { createdBy: [task.createdBy, who.sessionId] }, who, now, "made-by session follows the session id its process now runs under");
+      }
+    }
+    return rows.length;
+  });
+}
 
 // src/tasks/ops.ts
 var MAX_PHASE = 8;
@@ -24066,7 +24137,7 @@ function createTaskOps(options = {}) {
       db = openWorkDb(workDbFile({ stateDir }), { mode: "write" });
     return db;
   };
-  function call(operation, raw) {
+  function run(operation, raw, notes) {
     try {
       const caller = options.caller ? options.caller() : callerOf({ env });
       const who = caller ?? { sessionId: null, pid: null, procStart: null };
@@ -24076,6 +24147,15 @@ function createTaskOps(options = {}) {
         throw new Error(ctx.why);
       const now = options.now?.() ?? Date.now();
       const store = database();
+      if (store.writable) {
+        const reclaimed = reclaimResumed(store, who, now, claimGone);
+        if (!reclaimed.ok) {
+          const why = `claims of this session not moved: ${reclaimed.why}`;
+          if (!READ_ONLY_OPERATIONS.has(operation))
+            throw new Error(why);
+          notes.push(`${why}; the next call retries`);
+        }
+      }
       const all = allTasks(store, ctx.project);
       const owns = ownerOf(who);
       const ownPlan = [...all].reverse().find((t) => t.plan !== null && owns(t) && ownsPlan(all, owns, t.plan))?.plan ?? null;
@@ -24087,7 +24167,7 @@ function createTaskOps(options = {}) {
         const { value, source } = resolvePlans(paths, ctx.projectConfig.config).maxPhases;
         return { max: value, source };
       };
-      const claimedElsewhere = (t) => claimState(t, claimLive, who) === "another session";
+      const claimedElsewhere = (t) => claimState(t, CLAIM_PROCESS, who) === "another session";
       const refuseOther = (plan) => refuseOtherPlan({ all, inFlight, plan, claimedElsewhere });
       const freedAfter = (after, closed) => freedText(after, closed, owns, (plan) => planInTheWay({
         all: after,
@@ -24452,7 +24532,7 @@ ${t.body}`.toLowerCase().includes(input.text.toLowerCase()));
         const count = subtreeProgress(all, task.id);
         const progress = (count.total || task.kind === "phase" ? ` \xB7 ${count.closed}/${count.total}` : "") + (task.kind === "plan" && (cap !== null || capWhy !== null) ? ` \xB7 ${planNote(all, task, cap)}` : "");
         const binding = task.kind === "phase" ? ` \xB7 agent ${task.agent ?? "none"} \xB7 branch ${task.branch ?? "none"}` : "";
-        const state = claimState(task, claimLive, who);
+        const state = claimState(task, CLAIM_PROCESS, who);
         const queue = planLedger && task.kind === "plan" && isOpen(task) ? planQueueState(all, task, notesOf(store, task).some((n) => n.text.startsWith(PARK_NOTE_PREFIX))) : undefined;
         lines.push(`${"  ".repeat(depth)}#${task.number} [${stateWords(task, byId, false, queue)}] ${task.subject}${progress}${binding}${state === "another session" ? " (another session)" : ""}`);
         for (const child of selected.filter((t) => t.parentId === task.id))
@@ -24470,6 +24550,12 @@ ${t.body}`.toLowerCase().includes(input.text.toLowerCase()));
         why: (error instanceof Error ? error.message : String(error)).replace(/\s*\n\s*/g, " ")
       };
     }
+  }
+  function call(operation, raw) {
+    const notes = [];
+    const answer = run(operation, raw, notes);
+    return answer.ok && notes.length > 0 ? { ...answer, text: [answer.text, ...notes].join(`
+`) } : answer;
   }
   return {
     call,
@@ -24502,7 +24588,6 @@ var descriptions = {
   search: "Search work and project tasks.",
   delete: "Delete a mistaken task with no notes or tasks, or an untracked project task file."
 };
-var READ_ONLY = new Set(["list", "get", "search"]);
 function createTaskServer(options = {}) {
   const ops = createTaskOps(options);
   const server = new McpServer({ name: TASKS_SERVER_NAME, version: VERSION }, { instructions: TASK_SERVER_INSTRUCTIONS });
@@ -24511,7 +24596,7 @@ function createTaskServer(options = {}) {
       description: descriptions[operation],
       inputSchema: taskSchemas[operation],
       annotations: {
-        readOnlyHint: READ_ONLY.has(operation),
+        readOnlyHint: READ_ONLY_OPERATIONS.has(operation),
         destructiveHint: operation === "delete",
         openWorldHint: false
       }

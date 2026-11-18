@@ -305,6 +305,39 @@ call. The record supplies the session id and cwd, including a move into a worktr
 work is marked as belonging to another session. Live proof of these Claude Code behaviours
 is still owed in [the contract](../claude-code-contract.md).
 
+A reopened session (`claude --resume`, `cc-smart-dev-kit sessions --open`) keeps its session id
+in a new process, so its in-progress claims name a process that is gone. A claim like that is a
+**resumed claim** (`resumedClaim` in `queries.ts`): the caller has a process and a session id,
+the claim carries that session id, the caller's process does not hold it, and the claim's
+process is proved gone (`claimGone` in `identity.ts`: its pid no longer runs, or on Linux the pid
+now has another start time). A claim whose process may still run is never the caller's, even
+when its liveness cannot be proved (a record with no start time): two processes that opened one
+conversation never pass a claim between them. The price: where there is no start time to compare
+(off Linux, or a record without one), a dead claim whose pid an unrelated program now runs stays
+put until that program ends; `task_take` moves it sooner. Every read that asks "is this my running work" counts a
+resumed claim as the caller's (`claimIsMine`: the status line's rows, `claimState`, the keep-going
+guard's phases); a question about who holds a claim now (a take's refusal, a claim's liveness)
+keeps `claimHeldBy` alone. The next task call from the resumed session also moves the claims
+(`reclaimResumed`, run by `createTaskOps` before the operation, any operation): each goes to the
+caller's pid, start time and session in one write, and its history says the claim moved to the
+resumed session's process. A dead claim of another session id stays free. `callerOf` reads only
+its own ancestors' session records (`sessionRecordOf`), so another session's record that cannot
+be read never blanks the caller's rows; the caller's own unreadable record still fails. A read
+operation whose move fails still answers, with one line saying the claims were not moved and the
+next call retries; a write fails loudly.
+
+Two live processes of one conversation both count a dead claim as theirs until one of them makes a
+task call, which moves it. A `/clear` keeps the process and gives the session a new id, so the
+same step also re-stamps the claims the caller's process holds, and the open tasks it made, to
+the new session id (with a history entry each). A later resume under that id then finds the
+work. The re-stamp needs a task call under the new id: a `/clear` followed by an exit, with no
+task call between them, leaves the claims under the old id, and a resume under the new one does
+not find them (nothing links the two ids once the process is gone). The step covers every
+project in the store, not only the one the call is in: a session
+that works in two repos keeps its work in both. When the session record gives no process start
+time, `claimHeldBy` needs the session id too, so the `/clear` re-stamp never fires; the
+resumed-claim move still does.
+
 ## Project tasks
 
 `src/tasks/project/` owns one `<id>-<slug>.md` file per task under `tasks.dir` (default
@@ -386,8 +419,9 @@ no writer holding it open. Three hooks read it ([hooks](hooks.md) has each one's
 
 - `task-start` (SessionStart) is machine-wide. At every start, clear and compaction it adds one
   block of the project's open work tasks, without descriptions, at most eight lines
-  (`START_TASK_LIMIT`) and "+n more". This process's own claimed tasks come first, then the
-  ones in progress, then the most recently touched. A task untouched for `tasks.staleDays`
+  (`START_TASK_LIMIT`) and "+n more". This process's own claimed tasks come first (a resumed
+  claim, one its session left in a process that is gone, counts as its own), then the ones in
+  progress, then the most recently touched. A task untouched for `tasks.staleDays`
   (default 30) is not listed but counted in one line, unless this process claims it. Until
   registration exists, the hook says to run setup.
 - `keep-going` (Stop) holds the main session's turn end once per stalled state while a phase
