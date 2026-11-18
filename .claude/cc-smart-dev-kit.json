@@ -1,5 +1,5 @@
 {
-  "requires": ">=1.0",
+  "requires": ">=5.2",
   "worktrees": {
     "base": "main",
     "guardMainFolder": true,
@@ -27,6 +27,17 @@
     "autoMerge": false,
     "crew": {
       "enabled": true
+    },
+    "plans": {
+      "mergeFiles": [
+        "plugin/.claude-plugin/plugin.json",
+        "install.sh",
+        "install.ps1",
+        "CHANGELOG.md",
+        "plugin/dist/",
+        "plugin/portal-ui/",
+        "bun.lock"
+      ]
     }
   }
 }
