@@ -1,6 +1,6 @@
 import { readFileSync, rmSync } from "node:fs";
 import { relative } from "node:path";
-import { type TaskOperation, taskSchemas } from "./schemas";
+import { READ_ONLY_OPERATIONS, type TaskOperation, taskSchemas } from "./schemas";
 
 export type { TaskOperation } from "./schemas";
 
@@ -93,9 +93,6 @@ function bindings(input: {
     ...(input.base === undefined ? {} : { base: input.base }),
   };
 }
-
-/** The operations that change nothing: they answer even when the caller's claims cannot be moved. */
-const READ_ONLY: ReadonlySet<TaskOperation> = new Set(["list", "get", "search"]);
 
 export const TASK_LINE_CAP = 200;
 export const TASK_TEXT_CAP = 20_000;
@@ -203,13 +200,12 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
       // A reopened session keeps its session id in a new process: its running claims move to this
       // process before anything reads them, so every reader (the status line too) finds them.
       if (store.writable) {
-        const reclaimed = reclaimResumed(store, ctx.project, who, now, claimLive);
+        const reclaimed = reclaimResumed(store, who, now, claimLive);
         if (!reclaimed.ok) {
           // A read still answers, with the failure on a line of its own; a write fails loudly.
-          if (!READ_ONLY.has(operation)) throw new Error(reclaimed.why);
-          notes.push(
-            `claims of the resumed session not moved: ${reclaimed.why}; the next call retries`,
-          );
+          const why = `claims of this session not moved: ${reclaimed.why}`;
+          if (!READ_ONLY_OPERATIONS.has(operation)) throw new Error(why);
+          notes.push(`${why}; the next call retries`);
         }
       }
       const all = allTasks(store, ctx.project);

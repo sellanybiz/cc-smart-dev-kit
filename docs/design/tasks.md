@@ -324,9 +324,12 @@ next call retries; a write fails loudly.
 
 Two live processes of one conversation both count a dead claim as theirs until one of them makes a
 task call, which moves it. A `/clear` keeps the process and gives the session a new id, so the
-same step also re-stamps the claims the caller's process holds, and the open tasks it made, to the new
-session id (with a history entry each). A later resume under that id then finds the work. Off
-Linux, `claimHeldBy` needs the session id, so this re-stamp never fires there.
+same step also re-stamps the claims the caller's process holds, and the open tasks it made, to
+the new session id (with a history entry each). A later resume under that id then finds the
+work. The step covers every project in the store, not only the one the call is in: a session
+that works in two repos keeps its work in both. When the session record gives no process start
+time, `claimHeldBy` needs the session id too, so the `/clear` re-stamp never fires; the
+resumed-claim move still does.
 
 ## Project tasks
 

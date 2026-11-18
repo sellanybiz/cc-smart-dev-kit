@@ -96,7 +96,7 @@ test("reclaimResumed moves the dead process's claims to the caller and records i
       ),
     );
     ok(updateTask(db, step.id, { status: "in_progress" }, OLD, 5));
-    expect(ok(reclaimResumed(db, PROJECT, RESUMED, 10, claimLive))).toBe(2);
+    expect(ok(reclaimResumed(db, RESUMED, 10, claimLive))).toBe(2);
     for (const id of [phase.id, step.id]) {
       const task = allTasks(db, PROJECT).find((t) => t.id === id);
       expect(task?.claim).toEqual({
@@ -114,7 +114,7 @@ test("reclaimResumed moves the dead process's claims to the caller and records i
     }
     // Nothing is left to move: the second call writes no history.
     const events = eventsOf(db, phase.id).length;
-    expect(ok(reclaimResumed(db, PROJECT, RESUMED, 11, claimLive))).toBe(0);
+    expect(ok(reclaimResumed(db, RESUMED, 11, claimLive))).toBe(0);
     expect(eventsOf(db, phase.id).length).toBe(events);
   } finally {
     db.close();
@@ -126,10 +126,10 @@ test("reclaimResumed never takes a live claim, another session's claim, or a pro
   try {
     const claimOf = () => allTasks(db, PROJECT).find((t) => t.id === phase.id)?.claim;
     const before = claimOf();
-    expect(ok(reclaimResumed(db, PROJECT, RESUMED, 10, () => true))).toBe(0);
-    expect(ok(reclaimResumed(db, PROJECT, OTHER, 10, claimLive))).toBe(0);
-    expect(ok(reclaimResumed(db, PROJECT, { ...RESUMED, pid: null }, 10, claimLive))).toBe(0);
-    expect(ok(reclaimResumed(db, PROJECT, { ...RESUMED, sessionId: null }, 10, claimLive))).toBe(0);
+    expect(ok(reclaimResumed(db, RESUMED, 10, () => true))).toBe(0);
+    expect(ok(reclaimResumed(db, OTHER, 10, claimLive))).toBe(0);
+    expect(ok(reclaimResumed(db, { ...RESUMED, pid: null }, 10, claimLive))).toBe(0);
+    expect(ok(reclaimResumed(db, { ...RESUMED, sessionId: null }, 10, claimLive))).toBe(0);
     expect(claimOf()).toEqual(before);
     expect(
       eventsOf(db, phase.id).every(
@@ -287,11 +287,12 @@ test("a read answers when the claims cannot be moved, with one line saying so; a
     const lines = read.text.split("\n");
     expect(lines[0]).toContain("#1");
     expect(lines.at(-1)).toMatch(
-      /^claims of the resumed session not moved: .*locked.*; the next call retries$/,
+      /^claims of this session not moved: .*locked.*; the next call retries$/,
     );
     const write = resumed.call("note", { task: "#2", text: "a note" });
     expect(write.ok).toBe(false);
-    if (!write.ok) expect(write.why).toContain("locked");
+    // The move's own failure, not the note's later write: the write stops before it changes anything.
+    if (!write.ok) expect(write.why).toMatch(/^claims of this session not moved: .*locked/);
     // The lock is gone: the next call moves the claim and prints no line.
     holder.run("ROLLBACK");
     const retried = resumed.call("list", { scope: "project" });
@@ -302,3 +303,26 @@ test("a read answers when the claims cannot be moved, with one line saying so; a
     resumed.close();
   }
 }, 20_000);
+
+test("reclaimResumed re-stamps the caller's work in every project, not only the one it calls in", () => {
+  const db = openWorkDb(workDbFile({ stateDir: tempDir() }), { mode: "write" });
+  try {
+    // Process P claims one task in each of two repos, then a `/clear` gives it a new session id.
+    const ids = ["p", "q"].map((project) => {
+      const task = ok(createTask(db, { project, subject: `Work in ${project}` }, P, 1));
+      ok(updateTask(db, task.id, { status: "in_progress" }, P, 2));
+      return { project, id: task.id };
+    });
+    // Another session's open task in a third repo is never read or changed.
+    const other = ok(createTask(db, { project: "r", subject: "Not ours" }, OTHER, 3));
+    expect(ok(reclaimResumed(db, AFTER_CLEAR, 10, claimLive))).toBe(2);
+    for (const { project, id } of ids) {
+      const task = allTasks(db, project).find((t) => t.id === id);
+      expect(task?.claim?.sessionId).toBe("after-clear");
+      expect(task?.createdBy).toBe("after-clear");
+    }
+    expect(allTasks(db, "r").find((t) => t.id === other.id)?.createdBy).toBe("someone-else");
+  } finally {
+    db.close();
+  }
+});

@@ -759,23 +759,41 @@ function restampsOf(
 }
 
 /**
- * Makes the caller's own work its own again after its session or process changed: the three
- * cases of `restampsOf`, each task with a history entry, all in one write. A live claim of
- * another process is never moved, and a caller with no process or session changes nothing.
- * Nothing to change takes no write lock, so the check can run before every task call. Returns
- * how many tasks changed.
+ * The caller's `restampsOf` cases in every project of the store. A process and its session work
+ * in more than one repo, and a call in one must keep the work in the others. Only projects with
+ * an open row that names the caller's process or session are read.
+ */
+function restampsEverywhere(
+  db: WorkDb,
+  who: Who,
+  isLive: (claim: WorkClaim) => boolean,
+): Restamp[] {
+  if (who.pid === null || who.sessionId === null) return [];
+  const projects = db.sqlite
+    .query<{ project: string }, [number, string, number]>(
+      "SELECT DISTINCT project FROM tasks WHERE status IN ('pending','in_progress') AND (claim_pid=? OR claim_session=? OR created_pid=?) ORDER BY project",
+    )
+    .all(who.pid, who.sessionId, who.pid);
+  return projects.flatMap(({ project }) => restampsOf(allTasks(db, project), who, isLive));
+}
+
+/**
+ * Makes the caller's own work its own again after its session or process changed, in every
+ * project: the three cases of `restampsOf`, each task with a history entry, all in one write. A
+ * live claim of another process is never moved, and a caller with no process or session changes
+ * nothing. Nothing to change takes no write lock, so the check can run before every task call.
+ * Returns how many tasks changed.
  */
 export function reclaimResumed(
   db: WorkDb,
-  project: string,
   who: Who,
   now: number,
   isLive: (claim: WorkClaim) => boolean,
 ): Result<number> {
-  if (restampsOf(allTasks(db, project), who, isLive).length === 0) return { ok: true, value: 0 };
+  if (restampsEverywhere(db, who, isLive).length === 0) return { ok: true, value: 0 };
   return writeWork(db, () => {
     // Read again inside the write: another process may have changed or closed one meanwhile.
-    const rows = restampsOf(allTasks(db, project), who, isLive);
+    const rows = restampsEverywhere(db, who, isLive);
     for (const { task, claim, createdBy } of rows) {
       if (claim === "moved") {
         db.sqlite
