@@ -84,7 +84,7 @@ const FIRST_ACCEPTED_IN: Record<string, string> = {
   "workflow.fixesAfterReview.percent": "1.0.0",
   "workflow.plans": "4.8.0",
   "workflow.plans.maxPhases": "4.8.0",
-  "workflow.plans.mergeFiles": "5.1.0",
+  "workflow.plans.mergeFiles": "5.2.0",
   // 2.0 removed the crew; the key stays in the schema so an old file's `crew` loads and is ignored.
   "workflow.crew": "0.5.2",
   checks: "1.1.0",
@@ -373,7 +373,7 @@ describe("the person's own workflow settings in a project file", () => {
     const text = JSON.stringify({
       workflow: { plans: { maxPhases: 5, mergeFiles: ["./plugin/dist\\", "CHANGELOG.md"] } },
     });
-    expect(parseCcSmartDevKitConfig(text, where, "5.1.0").workflow?.plans).toEqual({
+    expect(parseCcSmartDevKitConfig(text, where, "5.2.0").workflow?.plans).toEqual({
       maxPhases: 5,
       mergeFiles: ["plugin/dist/", "CHANGELOG.md"],
     });
@@ -384,6 +384,6 @@ describe("the person's own workflow settings in a project file", () => {
       requires: ">=9.0",
       workflow: { plans: { runMode: "solo" } },
     });
-    expect(() => parseCcSmartDevKitConfig(text, where, "5.1.0")).toThrow(CcSmartDevKitVersionError);
+    expect(() => parseCcSmartDevKitConfig(text, where, "5.2.0")).toThrow(CcSmartDevKitVersionError);
   });
 });

@@ -271,6 +271,9 @@ describe("the exact merge (D31)", () => {
     "CI=1 gh pr merge 7",
     "gh pr merge 5 && gh pr merge 6",
     "gh pr merge 7 > merge.log",
+    // A file whose name starts with `(` is still a file (review 4, L2).
+    'gh pr merge 7 >"(x"',
+    "gh pr merge 7 >\\(x",
     'bash -c "gh pr merge 7"',
     "gh m 7",
     // Not the exact form: a branch, a URL, an unknown flag, `--admin`, `--disable-auto`, and

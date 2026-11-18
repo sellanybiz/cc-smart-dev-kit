@@ -5,7 +5,7 @@ page/API are retired. Statusline usage warnings remain. Manual setup offers the 
 Herdr GUI; see `README.md` § Herdr GUI. Older completed phases below describe their release,
 not features that still exist.
 
-## 5.1.0 — queued plans run solo, with children or through a coordinator
+## 5.2.0 — queued plans run solo, with children or through a coordinator
 
 Queued plans can run in three modes, chosen by `plans.runMode`: **solo** (as before), **lead +
 children** (the lead builds one plan and hands each other ready plan to a linked Herdr session)

@@ -247,7 +247,7 @@ async function parkCall(
  * True when a shell call is nothing but the kit's own `user available`, `user status` or
  * `user list`: every command of the line, read with the one shell reader (`shellSteps`,
  * `invocationOf`), and the program is the kit's own command by name. **Not `kitArguments`**
- * (`kit-invocation.ts`): it leans toward yes on purpose, for guards that ask or deny, and reads
+ * (`src/shell/kit-invocation.ts`): it leans toward yes on purpose, for guards that ask or deny, and reads
  * the words after a kit word in *any* program's arguments (`bash -c '…' cc-smart-dev-kit user
  * available`) as the kit's. An allow-list needs the opposite lean. A second command, a
  * substitution, a redirection, a prefix (`FOO=1`, `sudo`), a computed program, another

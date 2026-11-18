@@ -1455,10 +1455,10 @@ describe("plans.runMode and plans.mergeFiles", () => {
     expect(readFileSync(file, "utf8")).toBe(before);
   });
 
-  // `--project` raises `requires` to the 5.1 floor, and the write checks the file it is about to
-  // write against the running version. So this build either meets the floor (5.1.0 and later:
+  // `--project` raises `requires` to the 5.2 floor, and the write checks the file it is about to
+  // write against the running version. So this build either meets the floor (5.2.0 and later:
   // the list is written) or tells the person to update and writes nothing. One test, both cases.
-  test("mergeFiles: --project writes the normalised list and raises requires to 5.1, or on an older build says to update", async () => {
+  test("mergeFiles: --project writes the normalised list and raises requires to 5.2, or on an older build says to update", async () => {
     const env = hookEnv();
     const repo = makeRepo();
     const file = writeClaudeFile(repo, "cc-smart-dev-kit.json", SETTINGS);
@@ -1468,11 +1468,11 @@ describe("plans.runMode and plans.mergeFiles", () => {
       ["set", "plans.mergeFiles", "./plugin/dist\\, CHANGELOG.md", "--project"],
       run.context,
     );
-    if (Bun.semver.order(VERSION, "5.1.0") < 0) {
+    if (Bun.semver.order(VERSION, "5.2.0") < 0) {
       expect(code).toBe(1);
       expect(run.lines).toEqual([]);
       expect(run.errors).toEqual([
-        `${file}: this project needs cc-smart-dev-kit >=5.1; you have ${VERSION}; run ${PLUGIN_UPDATE_COMMAND}`,
+        `${file}: this project needs cc-smart-dev-kit >=5.2; you have ${VERSION}; run ${PLUGIN_UPDATE_COMMAND}`,
       ]);
       expect(readFileSync(file, "utf8")).toBe(before);
       return;
@@ -1480,7 +1480,7 @@ describe("plans.runMode and plans.mergeFiles", () => {
     expect(code).toBe(0);
     expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({
       ...SETTINGS,
-      requires: ">=5.1",
+      requires: ">=5.2",
       workflow: { plans: { mergeFiles: ["plugin/dist/", "CHANGELOG.md"] } },
     });
     const off = context(repo, env);

@@ -67,13 +67,13 @@ import {
   withoutRedirections,
   wordsOf,
 } from "../shell/command";
+import { kitArguments, namesKit } from "../shell/kit-invocation";
 import { resolveGate, sourceLabel } from "../workflow/resolve";
 import { HERDR_START, judgeLaunch, PRINT_RUN, readGuardContext } from "./agent-guard";
 import { isAttended } from "./attended";
 import { SHORT_GUARD_BUDGET_MS, startBudget } from "./budget";
 import { GUARD_GIT_TIMEOUT_MS } from "./git";
 import { type HookInput, type HookResult, stringField, toolDecision } from "./io";
-import { kitArguments, namesKit } from "./kit-invocation";
 import type { Env } from "./run";
 
 /** One command a line runs: its program, its arguments, and its own words. */
@@ -215,7 +215,7 @@ function claudeLaunch(step: Step): ClaudeLaunch | null {
  * The words that name what the kit's own command runs, or null when the step runs none of it.
  *
  * A named program is read by the argv the command itself gets: `kitArguments`
- * (`./kit-invocation`, the one recogniser `session-escape-guard` uses too) knows the kit by its
+ * (`../shell/kit-invocation`, the one recogniser `session-escape-guard` uses too) knows the kit by its
  * name, by a path to the launcher, and by its bundle behind another program — `bun
  * …/dist/cli.js workflow …, `find . -exec cc-smart-dev-kit … \;`, `watch -n 5 cc-smart-dev-kit …`
  * — and never a program that only reads its arguments. Redirections are dropped: the command
@@ -311,14 +311,6 @@ function proposalOf(step: Step, moved: boolean): Proposal {
     return { unread: "the line changes its folder before it" };
   }
   return { folder };
-}
-
-/**
- * `cc-smart-dev-kit job run …`, whatever path the launcher is named by: the queue must not
- * nest.
- */
-export function isJobRun(program: string, args: string[]): boolean {
-  return program === COMMAND && args[0] === "job" && args[1] === "run";
 }
 
 /**

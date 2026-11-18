@@ -26,27 +26,20 @@ How the parts fit: `docs/design/setup.md` § How `setup` changes user files.
 | Exact lines in a text file the person owns (`~/.tmux.conf`) | `applyManagedLine` / `removeManagedLines` (`managed-line.ts`) | the exact lines it added, listed as `lines` in `changed.json` (`file-line`) |
 | A file it owns whole (the launcher) | `writeManagedFile` | the whole file |
 | A folder it owns whole (the portal's export) | `writeManagedFolder` (`managed-folder.ts`) | the whole folder, listed in `owned-folders.json` |
+| A folder something else reads while it is rewritten (the git hooks folder) | `writeManagedFiles` (same file) | the folder, rewritten in place, file by file |
 
 Each of them:
 
 - **Writes only on a real change.** The same content again means no write, no backup,
   no new file. A second `setup` prints "Nothing to change."
-- **Writes in this order** (`writeManagedFile`):
-  1. makes the backup;
-  2. records the change in `changed.json` (the file, and the kind: `json-keys`,
-     `json-entries`, `markdown-block`, `file-line` or `whole-file`), so `restore` knows
-     what to undo. The first time, that backup becomes the file's baseline. The record
-     needs the backup's path,
-     so the backup comes first. The record comes before the write, so a crash right
-     after the rename never leaves a change that `restore` cannot see;
-  3. writes a temp file in the same folder, and fsyncs it;
-  4. compares the file on disk with the text it read earlier;
-  5. renames the temp file over the file. A reader sees the old file or the new one,
-     never half of one.
-
-  A cheap compare also runs before step 1, so a file that changed already gets no
-  backup and no temp file. When a try fails after step 1, its backup is removed, unless
-  it became the baseline.
+- **Writes in this order** (`writeManagedFile`; the reasons: `docs/design/setup.md`):
+  backup, then the record in `changed.json` (the file and its kind: `json-keys`,
+  `json-entries`, `markdown-block`, `file-line` or `whole-file`; the first backup becomes the
+  baseline; the record needs the backup's path and comes before the write, so a crash never
+  leaves a change `restore` cannot see), then a temp file in the same folder (fsynced), a
+  compare of the file with the text read earlier, and a rename over the file. A cheap compare
+  also runs before the backup, so a changed file gets no backup and no temp file. A failed try
+  removes its backup, unless it became the baseline.
 - **Starts again when the compare fails:** it reads the file again and redoes the step,
   up to 3 times. An ownership claim (a key added to `owned.json`) made in the failed try
   is undone first. The compare narrows the window for a race with another program
@@ -112,7 +105,13 @@ Each of them:
   swap, then renames the new one into place and removes the old one. The record is its own
   file, not a `changed.json` kind, because a running older CLI refuses a kind it does not
   know (the same rule as the managed hook entries). `restore` removes the folder whole; the
-  next portal start writes it again. Today that is one folder: `~/.local/share/cc-smart-dev-kit/portal-ui/`.
+  next start writes it again. **Two folders today:** `~/.local/share/cc-smart-dev-kit/portal-ui/`
+  (swapped) and `~/.local/share/cc-smart-dev-kit/git-hooks/` (updated in place). Git reads the
+  hooks folder while a commit runs, so it is never renamed away: `writeManagedFiles` keeps the
+  record, the mark and the "ours" check, but rewrites each script by a temp file and a rename,
+  and a name no longer wanted goes last. Its scripts keep mode 755 (`fileMode`). A folder at the
+  path without the mark is the person's and is never touched. A session start of a new version
+  refreshes it only when setup wrote it (`refreshGitHooksFolder`, `session-start.md`).
 - **`gateway.json` backs itself up, in the state folder, beside the other backups.** A key that
   really replaces one already there makes `backupFile(stateDir, gatewayConfigFile)` run first —
   the one backup helper, `<stateDir>/backups/<the path, encoded>/`, never a copy beside a file

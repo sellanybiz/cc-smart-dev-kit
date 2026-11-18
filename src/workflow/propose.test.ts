@@ -254,18 +254,18 @@ It counts once this pull request is merged into main: the merge guard reads the 
     expect(git(w.repo, "worktree", "list", "--porcelain")).toContain(branch);
   });
 
-  // `plans.mergeFiles` raises `requires` to the 5.1 floor, and the writer checks the file it is
+  // `plans.mergeFiles` raises `requires` to the 5.2 floor, and the writer checks the file it is
   // about to write against the running version. So this build either meets the floor (the list is
   // proposed, normalised) or says to update and makes nothing. One test, both cases.
   test("plans.mergeFiles: proposed with its paths normalised, or on an older build refused with the fix and nothing made", async () => {
     const w = world();
     const run = await w.run(["propose", "plans.mergeFiles", "./plugin/dist\\, CHANGELOG.md"]);
-    if (Bun.semver.order(VERSION, "5.1.0") < 0) {
+    if (Bun.semver.order(VERSION, "5.2.0") < 0) {
       expect(run.status).toBe(1);
       expect(run.lines).toEqual([]);
       expect(run.errors).toHaveLength(1);
       expect(run.errors[0]).toContain(
-        `this project needs cc-smart-dev-kit >=5.1; you have ${VERSION}; run ${PLUGIN_UPDATE_COMMAND}`,
+        `this project needs cc-smart-dev-kit >=5.2; you have ${VERSION}; run ${PLUGIN_UPDATE_COMMAND}`,
       );
       expect(branchesIn(w.repo, "worktree-workflow-*")).toEqual([]);
       expect(w.ghLog().filter((call) => call.startsWith("pr create"))).toEqual([]);
@@ -277,7 +277,7 @@ It counts once this pull request is merged into main: the merge guard reads the 
     expect(fileOn(w.repo, branch).workflow).toEqual({
       plans: { mergeFiles: ["plugin/dist/", "CHANGELOG.md"] },
     });
-    expect(fileOn(w.repo, branch).requires).toBe(">=5.1");
+    expect(fileOn(w.repo, branch).requires).toBe(">=5.2");
     expect(fileOn(w.repo, "main").workflow).toBeUndefined();
   });
 

@@ -263,8 +263,9 @@ esac
   test("the main-folder-guard matcher is exactly the tools the guard judges", () => {
     const matcher = wired.find(({ handler }) => bundleOf(handler) === "main-folder-guard")?.matcher;
     // Claude Code matches the tool name against the matcher as a regular expression: the
-    // three edit tools that name their file by an absolute path, and nothing else.
-    expect(matcher).toBe("Edit|Write|NotebookEdit");
+    // three edit tools that name their file by an absolute path, and Bash, whose command names
+    // the files it writes; nothing else.
+    expect(matcher).toBe("Edit|Write|NotebookEdit|Bash");
   });
 
   test("the job-route matcher is exactly the shell tools its judge reads", () => {

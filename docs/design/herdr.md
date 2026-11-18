@@ -117,7 +117,7 @@ Reports are child evidence, never the person's approval.
 
 ## Handing out plans
 
-A lead with queued plans can give each ready plan to a linked child (5.1.0). The modes and what the
+A lead with queued plans can give each ready plan to a linked child (5.2.0). The modes and what the
 lead does in each are `plugin/skills/build/SKILL.md` § Lead + children and coordinator modes, chosen
 by `plans.runMode` (`docs/design/workflow.md`). The store's part (file lists, the reservation, the
 take) is `docs/design/tasks.md` § Plans handed to children.
@@ -333,7 +333,7 @@ fragments. These are policy checks, not a sandbox; keep that limit explicit.
 | Old terminal name still has worktree/branch | Refuse reuse rather than resume old work. A plan's own child is the one exception (§ Handing out plans). |
 | Two plan hand-outs share a file | The second `start --plan` is refused by the reservation and names the plan in its way. |
 | A plan child's pane closes | `child-gone`: `start --plan <slug>` resumes it in its recorded worktree. |
-| A session from before 5.1.0 | It ignores reservations: its take and start do not check them and its drop does not release. Restart it before plans are handed out. |
+| A session from before 5.2.0 | It ignores reservations: its take and start do not check them and its drop does not release. Restart it before plans are handed out. |
 | New hc fields | Tolerant schemas keep them; unknown dialog kinds stay pane-only. |
 | Independent session blocks unseen | Its own Herdr space is visible and Herdr marks it as needing you (proved live, local and remote). |
 | No hc installed | Doctor reports optional orchestration, not failure. |

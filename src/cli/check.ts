@@ -11,8 +11,13 @@
  * Types only, and a small table: nothing here prints. How a check is printed is `out.ts`'s.
  */
 
+import { COMMAND } from "../build-info/names";
+
 /** The word before a fix, wherever one is shown: `doctor`, the portal, the installers. */
 export const FIX_LABEL = "Fix:";
+
+/** The fix most checks name: setup puts the plugin's files back in place. */
+export const SETUP_FIX = `${COMMAND} setup`;
 
 /** What a check says, and the mark it is printed with (`out.ts`'s `Mark`). */
 interface CheckWords {

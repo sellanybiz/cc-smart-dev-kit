@@ -26,6 +26,7 @@ import {
   type StoreLineEntry,
   type StoreTicket,
   type StoreUnits,
+  type StoreWaiting,
   slotOfWire,
   slotsUsed,
   wireOfSlot,
@@ -193,8 +194,8 @@ export interface LeaseStoreOptions {
 /** A lease store, with what `job status` also shows. */
 export interface LeaseStore extends Store {
   readonly dir: string;
-  /** The jobs waiting in the line: what each needs, and its record. */
-  waiting(): Promise<readonly StoreHeld[]>;
+  /** The jobs waiting in the line: what each needs, its record and its ticket's token. */
+  waiting(): Promise<readonly StoreWaiting[]>;
 }
 
 /**
@@ -368,7 +369,9 @@ export function leaseStore(options: LeaseStoreOptions): LeaseStore {
 
     waiting: () =>
       Promise.resolve().then(() =>
-        readLive(tickets).map(({ file }): StoreHeld => ({ slot: file.slot, text: file.record })),
+        readLive(tickets).map(
+          ({ file, token }): StoreWaiting => ({ slot: file.slot, text: file.record, tie: token }),
+        ),
       ),
 
     enqueue: (recordText) =>

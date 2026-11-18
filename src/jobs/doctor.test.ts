@@ -1,21 +1,22 @@
-import { expect, test } from "bun:test";
-import { mkdirSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { describe, expect, test } from "bun:test";
+import { chmodSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { cliPaths } from "../cli/paths";
 import { tempDir } from "../testing/temp";
 import { jobsPaths, setHeavyLimit } from "./config";
-import { heavyJobChecks } from "./doctor";
+import { gitHooksCheck, heavyJobChecks } from "./doctor";
+import { installGitHooksFolder } from "./hook-folder";
 
 test("doctor reports default, chosen source and ignored legacy maxJobs with a fix", async () => {
   const paths = cliPaths({ HOME: tempDir("jobs-doctor") });
-  expect(heavyJobChecks(paths)).toEqual([
-    { ok: true, info: true, text: "Heavy-job limit: 1 (default)" },
-  ]);
+  // The git hooks folder has its own line (below); this test reads the queue's own lines.
+  const queueChecks = () => heavyJobChecks(paths, "linux").slice(0, -1);
+  expect(queueChecks()).toEqual([{ ok: true, info: true, text: "Heavy-job limit: 1 (default)" }]);
   const files = jobsPaths(paths.home);
   mkdirSync(dirname(files.legacyFile), { recursive: true });
   writeFileSync(files.legacyFile, '﻿{"maxJobs":3}');
   await setHeavyLimit(paths, 2);
-  expect(heavyJobChecks(paths)).toEqual([
+  expect(queueChecks()).toEqual([
     { ok: true, info: true, text: `Heavy-job limit: 2 (${files.configFile})` },
     {
       ok: true,
@@ -25,8 +26,78 @@ test("doctor reports default, chosen source and ignored legacy maxJobs with a fi
     },
   ]);
   writeFileSync(files.configFile, '{"maxConcurrent":0}');
-  expect(heavyJobChecks(paths)[0]).toMatchObject({
+  expect(queueChecks()[0]).toMatchObject({
     ok: false,
     fix: "Run cc-smart-dev-kit job set max <n> with a valid limit, or remove maxConcurrent from the new file",
+  });
+});
+
+describe("the git hooks folder's line", () => {
+  test("a machine that never ran setup: a warning that names the fix, never a failure", () => {
+    const paths = cliPaths({ HOME: tempDir("jobs-doctor-hooks") });
+    // `update` does not run setup, and the route adds nothing without the folder: nothing is broken.
+    expect(gitHooksCheck(paths, "linux")).toEqual({
+      ok: true,
+      warn: true,
+      text: "Git hooks folder is missing (~/.local/share/cc-smart-dev-kit/git-hooks): a commit or push whose hook runs heavy work does not wait for a slot",
+      fix: "cc-smart-dev-kit setup",
+    });
+    // It is the last line of the queue's group, so a person sees it with the others.
+    expect(heavyJobChecks(paths, "linux").at(-1)).toEqual(gitHooksCheck(paths, "linux"));
+  });
+
+  test("a folder as this version writes it passes", () => {
+    const paths = cliPaths({ HOME: tempDir("jobs-doctor-hooks") });
+    installGitHooksFolder(paths);
+    expect(gitHooksCheck(paths, "linux")).toEqual({
+      ok: true,
+      text: "Git hooks folder: 26 hook scripts, executable and up to date",
+    });
+  });
+
+  test("a missing, stale or non-executable script is named, with the fix; the list is cut at three", () => {
+    const paths = cliPaths({ HOME: tempDir("jobs-doctor-hooks") });
+    installGitHooksFolder(paths);
+    const folder = paths.gitHooksFolder;
+    chmodSync(join(folder, "pre-commit"), 0o644);
+    expect(gitHooksCheck(paths, "linux")).toEqual({
+      ok: false,
+      text: "Git hooks folder ~/.local/share/cc-smart-dev-kit/git-hooks: pre-commit is not executable",
+      fix: "cc-smart-dev-kit setup",
+    });
+    writeFileSync(join(folder, "pre-push"), "#!/bin/sh\n# an older version\n");
+    chmodSync(join(folder, "pre-push"), 0o755);
+    rmSync(join(folder, "commit-msg"));
+    rmSync(join(folder, "post-merge"));
+    expect(gitHooksCheck(paths, "linux")).toEqual({
+      ok: false,
+      text: "Git hooks folder ~/.local/share/cc-smart-dev-kit/git-hooks: pre-commit is not executable, commit-msg is missing, post-merge is missing and 1 more",
+      fix: "cc-smart-dev-kit setup",
+    });
+  });
+
+  test("a folder at that path the kit did not make: the fix that works, not setup alone", () => {
+    const paths = cliPaths({ HOME: tempDir("jobs-doctor-hooks") });
+    mkdirSync(paths.gitHooksFolder, { recursive: true });
+    writeFileSync(join(paths.gitHooksFolder, "pre-commit"), "#!/bin/sh\nmine\n");
+    // Setup refuses it ("move it away"), so the fix names that step first.
+    expect(gitHooksCheck(paths, "linux")).toEqual({
+      ok: false,
+      text: "Git hooks folder ~/.local/share/cc-smart-dev-kit/git-hooks was not made by cc-smart-dev-kit, so setup leaves it alone",
+      fix: "move that folder away by hand, then run: cc-smart-dev-kit setup",
+    });
+    // Once it is moved away, setup writes the kit's own folder and the line passes.
+    rmSync(paths.gitHooksFolder, { recursive: true });
+    installGitHooksFolder(paths);
+    expect(gitHooksCheck(paths, "linux").ok).toBe(true);
+  });
+
+  test("native Windows: one plain line, never a failure", () => {
+    const paths = cliPaths({ HOME: tempDir("jobs-doctor-hooks") });
+    expect(gitHooksCheck(paths, "win32")).toEqual({
+      ok: true,
+      info: true,
+      text: "Git hook queue: not set up on Windows yet; commit and push hooks run as they are",
+    });
   });
 });

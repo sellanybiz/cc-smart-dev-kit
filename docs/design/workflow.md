@@ -77,7 +77,7 @@ the status line and the update hold. The resolver (`leadHintFrom`) reads the per
 (`personal`), else on (`default`); the hook reads it through `resolveLeadHint`, which never
 throws, so a broken file keeps the hint on.
 
-**`plans.runMode` lives in the person's file alone** (5.1.0), like `switches.leadHint`. It says how
+**`plans.runMode` lives in the person's file alone** (5.2.0), like `switches.leadHint`. It says how
 queued plans run when two or more are laid: `ask` (the default), `solo`, `lead-children` or
 `coordinator` (`RUN_MODES` in `schema.ts`). Each extra session spends the person's usage, so a
 committed value would spend every teammate's: only `personalWorkflowSchema` has the field, and a
@@ -105,7 +105,7 @@ open); the person's file refuses it (`PROJECT_ONLY_KEYS`) and `set` needs `--pro
 characters `*` and `?` are refused (`[` and `]` stay: no list reaches git as a pathspec, `docs/design/tasks.md`). A folder ends in `/`, and a bare name that is a folder in
 the committed tree is left out of the list, with that in the reason. `workflow show` prints the
 list as written in the working copy, and a second line with the list the plan tools read from the
-base. A project that sets it needs `requires` `>=5.1` (`WORKFLOW_MERGE_FILES_SINCE`), per key: the
+base. A project that sets it needs `requires` `>=5.2` (`WORKFLOW_MERGE_FILES_SINCE`), per key: the
 `plans` object alone still needs `>=4.8`.
 
 **The auto-merge rule** (`auto-merge.ts`, `autoMergeAllowed`) is a pure function with its own

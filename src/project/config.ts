@@ -126,7 +126,7 @@ export const WORKFLOW_PLANS_SINCE = "4.8.0";
  * floor makes it say "update". Setting `plans.runMode` in a project file is refused outright
  * (`checkPersonalOnlyFields`), so it has no floor.
  */
-export const WORKFLOW_MERGE_FILES_SINCE = "5.1.0";
+export const WORKFLOW_MERGE_FILES_SINCE = "5.2.0";
 
 /**
  * The fields of a heavy-job kind (`jobs.kinds.<name>`) that came after 0.5.2, with the release

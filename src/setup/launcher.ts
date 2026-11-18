@@ -1,5 +1,6 @@
 import { join } from "node:path";
 import { PLUGIN_ID } from "../build-info";
+import { shellQuote } from "../shell/quote";
 import { type WriteOutcome, writeManagedFile } from "./write";
 
 export const LAUNCHER_NAME = "cc-smart-dev-kit";
@@ -25,16 +26,6 @@ const FIND_INSTALL_JS = [
   "if(!e)process.exit(1);",
   "process.stdout.write(e.installPath);",
 ].join("");
-
-/** Quotes a value for sh: single quotes, with each ' written as '\''. */
-export function shellQuote(value: string): string {
-  return `'${value.replaceAll("'", "'\\''")}'`;
-}
-
-/** A path as one word for sh: as it is when it needs no quotes, else `shellQuote`d. */
-export function shellWord(path: string): string {
-  return /^[\w./-]+$/.test(path) ? path : shellQuote(path);
-}
 
 /**
  * The bun path baked into a launcher script by launcherScript(), or null when the script

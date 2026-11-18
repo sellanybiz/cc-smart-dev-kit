@@ -51,7 +51,7 @@ its secret screen knows only common shapes.
   replaces the list (`[]` or `--no-files` clears it). Two plans overlap when a path is equal or
   sits inside the other's folder, except paths the project lists in `plans.mergeFiles`. A plan
   with no list is never handed to a child. `task_get` prints the list. A session opened before
-  5.1.0 does not know `files` or reservations: restart it first.
+  5.2.0 does not know `files` or reservations: restart it first.
 - A **deploy task** also needs `deploy` (`before` or `after` the deploy) and `type`: a
   **blocking** one must be done before the gate passes; a **non-blocking** one is done, or
   dropped with a reason. Optional: `flags` (`needs-yes`, `twice-safe`, `spends-money`,

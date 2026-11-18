@@ -350,7 +350,7 @@ resumed-claim move still does.
 
 ## Plans handed to children
 
-A lead can give a queued plan to a linked Herdr child session (5.1.0). The store holds what makes
+A lead can give a queued plan to a linked Herdr child session (5.2.0). The store holds what makes
 that safe: the plan's files, an atomic reservation, and the refusals that keep a second session out.
 The commands and the live gates are `docs/design/herdr.md` § Handing out plans; the modes are
 `plugin/skills/build/SKILL.md` § Lead + children and coordinator modes.
@@ -383,7 +383,7 @@ before the transaction (`extraFiles`). `task_update` of `files` on a held plan r
 with another held plan, from stored lists only, in the transaction. A held plan with no stored
 list and no branch diff holds nothing a check can find, and unknown is never clear: a reservation
 or hand-out beside it is refused, with the plan named and the fix: set its files, or finish, park
-or drop it. A plan already in flight when 5.1.0 is installed has no list, so it reads this way.
+or drop it. A plan already in flight when 5.2.0 is installed has no list, so it reads this way.
 
 **`reservePlan`** runs inside `writeWork`. It refuses a caller that does not own the plan or has no
 session, a plan that is not pending, one that is already reserved, one with no file list, one with an
