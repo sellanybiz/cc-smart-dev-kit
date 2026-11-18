@@ -192,23 +192,39 @@ function isAncestor(repo: string, ancestor: string, commit: string, env: Env): b
 }
 
 /**
- * The branch `ref` names, read by git (`rev-parse --symbolic-full-name`): `refs/remotes/<remote>/<x>`
- * and `refs/heads/<x>` give `<x>`; a commit, a tag, or HEAD (which is the current branch, not a
- * ship branch) give null. No `--end-of-options` here: with `--symbolic-full-name`, git prints that
- * word back as a line of output. A ref name never starts with `-` (git check-ref-format), so such
- * text is refused before git sees it, and nothing can read it as an option.
+ * The branch `ref` names, read by git (`rev-parse --symbolic-full-name`): `refs/heads/<x>` gives
+ * `<x>`, and `refs/remotes/<remote>/<x>` gives `<x>` for the remote whose name fits (a remote may
+ * be named `my/fork`). A commit, a tag, or HEAD (the current branch, not a ship branch) give
+ * null. A failed read throws, as every read in `readGitFacts` does: a null would let a run on the
+ * ref's own branch through. So does a name that is both a tag and a branch (git then prints
+ * nothing): the gate cannot tell which one ships.
+ *
+ * No `--end-of-options` here: with `--symbolic-full-name`, git prints that word back as a line of
+ * output. A ref name never starts with `-` (git check-ref-format), so such text is refused before
+ * git sees it, and nothing can read it as an option.
  */
 function refBranchOf(repo: string, ref: string, env: Env): string | null {
   if (ref === "HEAD" || ref === "@" || ref.startsWith("-")) return null;
-  const named = runGit(
-    repo,
-    ["rev-parse", "--symbolic-full-name", ref],
-    env,
-    RESOLVE_GIT_TIMEOUT_MS,
-  );
-  if (!named.ok) return null;
-  const match = /^refs\/(?:remotes\/[^/]+|heads)\/(.+)$/.exec(named.out);
-  return match?.[1] ?? null;
+  const named = taskGit(repo, ["rev-parse", "--symbolic-full-name", ref], env);
+  if (named === "") {
+    const branch = runGit(
+      repo,
+      ["show-ref", "--verify", "--quiet", `refs/heads/${ref}`],
+      env,
+      RESOLVE_GIT_TIMEOUT_MS,
+    );
+    if (branch.ok)
+      throw new Error(
+        `${ref} names both a tag and a branch: name it in full (refs/tags/${ref} or refs/heads/${ref})`,
+      );
+    return null;
+  }
+  if (named.startsWith("refs/heads/")) return named.slice("refs/heads/".length);
+  if (!named.startsWith("refs/remotes/")) return null;
+  const remotes = taskGit(repo, ["remote"], env).split("\n").filter(Boolean);
+  // Git refuses a remote name inside another (`my` beside `my/fork`), so one remote fits at most.
+  const remote = remotes.find((name) => named.startsWith(`refs/remotes/${name}/`));
+  return remote === undefined ? null : named.slice(`refs/remotes/${remote}/`.length);
 }
 
 /**

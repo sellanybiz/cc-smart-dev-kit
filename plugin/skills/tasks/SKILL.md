@@ -110,20 +110,23 @@ Before any deploy, production or database work, list the deploy tasks (`task_lis
    `git switch --no-track -c deploy/<env>-<YYYYMMDD-HHMM> origin/<base>`, in the checkout you work
    in. The `task` command writes and reads deploy tasks in the folder it runs in; the task tools
    use the session's checkout. `--no-track` stops a plain `git push` from targeting the base.
-2. **`cc-smart-dev-kit task release <env> --before`.** Exit 1 while a blocking `before` task is
-   open, a task file is broken or its id repeats, prod waits on an open staging twin (or names a
-   twin that is no task: `task check` shows it), the branch is the base itself (or detached, or
-   the ref's own branch), or HEAD is not the ref (default `origin/<worktrees.base>`) apart from task files. It names the open
-   non-blocking `before` tasks: do them, or drop them with a reason. It also warns (`!`, no
+2. **`cc-smart-dev-kit task release <env> --before`.** Exit 1 while the environment is not in
+   `tasks.envs`, a blocking `before` task is open, a task file is broken or its id repeats, prod
+   waits on an open staging twin (or names a twin that is no task: `task check` shows it), the
+   branch is the base itself (or detached, or the ref's own branch), or HEAD is not the ref
+   (default `origin/<worktrees.base>`): it must hold every commit of the ref and differ from it
+   only in task files. A ref that names both a tag and a branch exits 1 too: give it in full
+   (`refs/heads/<x>`). It names the open non-blocking `before` tasks: do them, or drop them with
+   a reason. It also warns (`!`, no
    refusal) when files outside the tasks folder have uncommitted changes: the gate judged
    committed code only.
 3. **Do each task and close it** with evidence; commit the closes on the deploy branch.
 4. **Deploy**, with the project's own deploy skill.
-5. **`git push -u origin <branch>`**, then **`task release <env> --after`.** Exit 1 while any
-   task of that environment is open (before or after), a close is uncommitted, a task file is
-   broken, the branch is not pushed, or the branch is the base, detached or the ref's own branch (a close is never pushed
-   there). With no flag, `release`
-   lists the open tasks and exits 0.
+5. **`git push -u origin <branch>`**, then **`task release <env> --after`.** Exit 1 while the
+   environment is not in `tasks.envs`, any task of that environment is open (before or after), a
+   close is uncommitted, a task file is broken or its id repeats, the branch is not pushed, or
+   the branch is the base, detached or the ref's own branch (a close is never pushed there). With
+   no flag, `release` lists the open tasks and exits 0.
 6. **The branch's pull request** (the task files only) merges as the workflow says
    (`/cc-smart-dev-kit:commit`, `/cc-smart-dev-kit:pull-request`).
 

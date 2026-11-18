@@ -417,8 +417,10 @@ git), 2 a wrong command.
    runs in, and every deploy-task answer names the checkout and file it wrote, so a close lands
    where the gates read it.
 2. `--before` exits 1 when the environment is not in `tasks.envs`; HEAD is detached, or on the
-   base branch (`worktrees.base`) or the ref's own branch (`origin/<x>` is `<x>`): a run happens on
-   a deploy branch, D12, and that refusal alone prints the branch to cut; HEAD is not the ref's commit
+   base branch (`worktrees.base`) or the ref's own branch (the branch git resolves the ref to:
+   `origin/<x>`, `upstream/<x>` and `refs/heads/<x>` are `<x>`; a tag or a commit has none; a name
+   that is both a tag and a branch exits 1 and asks for the full name): a run happens on a deploy
+   branch, D12, and that refusal prints the branch to cut; HEAD is not the ref's commit
    (it may differ from it only under `tasks.dir`, closes already made, and it must hold every
    commit of the ref); a blocking `before` task is open; a task file is broken or its id is
    claimed by two file names; or, for prod, a task's staging twin is open, or names no task
@@ -432,7 +434,8 @@ git), 2 a wrong command.
 5. `--after` exits 1 when **any** task of that environment is open, before or after; `tasks.dir`
    has uncommitted changes; the branch is not pushed (`git push -u origin <branch>`, or it is
    ahead of its remote copy); HEAD is detached, or on the base branch or the ref's own branch (no
-   line ever prints a push to it); or a task file is broken. Only `--before` reads the uncommitted
+   line ever prints a push to it); the environment is not in `tasks.envs`; or a task file is
+   broken or its id is claimed by two file names. Only `--before` reads the uncommitted
    changes outside `tasks.dir`; `--after` reads the tasks folder alone.
 6. The branch's pull request (the task files only) merges as the workflow says.
 

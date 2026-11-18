@@ -893,6 +893,19 @@ test("both gates refuse a detached HEAD and the ref's own branch, each with the 
   expect(before("prod", [], { ...onTrunk, push: { ...onTrunk.push, branch: "deploy/x" } }).ok).toBe(
     true,
   );
+  // The gate compares git's answer, never the ref's text: `upstream/trunk` is the branch `trunk`.
+  const onUpstreamTrunk = { ...onTrunk, ref: "upstream/trunk" };
+  const upstreamRefusal = `HEAD is on trunk, the branch this run ships from (upstream/trunk): the closes must reach it through a deploy branch's pull request, never by a push to it. ${CUT.replace("origin/main", "upstream/trunk")}`;
+  expect(before("prod", [], onUpstreamTrunk).refusals).toEqual([upstreamRefusal]);
+  expect(after("prod", [], onUpstreamTrunk).refusals).toEqual([upstreamRefusal]);
+  // A ref git names no branch for (a tag, a commit) refuses no branch by its text.
+  const onTag = {
+    ...cleanFacts,
+    ref: "v1",
+    refBranch: null,
+    push: { ...onTrunk.push, branch: "v1" },
+  };
+  expect(before("prod", [], onTag).ok).toBe(true);
 });
 
 test("the branch to cut is printed once: a wrong branch leaves it out of the HEAD refusal", () => {
@@ -916,6 +929,22 @@ test("the branch to cut is printed once: a wrong branch leaves it out of the HEA
   expect(before("prod", [], detachedBehind).refusals[1]).toContain(
     "The deploy branch to cut above starts from origin/main",
   );
+  // A HEAD that holds the ref but differs outside the tasks folder: the same pointer, once.
+  const onMainChanged = {
+    ...onMainBehind,
+    refIsAncestor: true,
+    changedPaths: ["src/app.ts"],
+  };
+  const changed = before("prod", [], onMainChanged).refusals;
+  expect(changed).toHaveLength(2);
+  expect(changed.join("\n").split("git switch --no-track").length - 1).toBe(1);
+  expect(changed[1]).toBe(
+    "HEAD bbbbbbbbbbbb is not origin/main (aaaaaaaaaaaa): it differs in 1 path(s) outside .claude/tasks. The deploy branch to cut above starts from origin/main, so it holds what the ref holds.",
+  );
+  // On a deploy branch that line keeps its own fix.
+  expect(before("prod", [], { ...onMainChanged, push: cleanFacts.push }).refusals).toEqual([
+    `HEAD bbbbbbbbbbbb is not origin/main (aaaaaaaaaaaa): it differs in 1 path(s) outside .claude/tasks. ${CUT}`,
+  ]);
 });
 
 test("git facts: the ref's branch is read by git, never cut from the text", () => {
@@ -933,6 +962,19 @@ test("git facts: the ref's branch is read by git, never cut from the text", () =
   expect(branchOf("v1")).toBeNull();
   expect(branchOf(sha)).toBeNull();
   expect(branchOf("HEAD")).toBeNull();
+  expect(branchOf("@")).toBeNull();
+  // A remote whose name holds "/" (git refuses a second remote inside it, such as `my`).
+  git(repo, "remote", "add", "my/fork", remote);
+  git(repo, "fetch", "-q", "my/fork");
+  expect(branchOf("my/fork/main")).toBe("main");
+  // A name that is both a tag and a branch: the gate cannot tell which ships, so it stops.
+  git(repo, "branch", "rel2");
+  git(repo, "tag", "rel2");
+  expect(() => branchOf("rel2")).toThrow(
+    "rel2 names both a tag and a branch: name it in full (refs/tags/rel2 or refs/heads/rel2)",
+  );
+  expect(branchOf("refs/heads/rel2")).toBe("rel2");
+  expect(branchOf("refs/tags/rel2")).toBeNull();
 });
 
 test("the gates read the base branch from the input, never a fixed name", () => {

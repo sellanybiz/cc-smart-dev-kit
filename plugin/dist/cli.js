@@ -31371,11 +31371,21 @@ function isAncestor2(repo, ancestor, commit, env) {
 function refBranchOf(repo, ref, env) {
   if (ref === "HEAD" || ref === "@" || ref.startsWith("-"))
     return null;
-  const named = runGit(repo, ["rev-parse", "--symbolic-full-name", ref], env, RESOLVE_GIT_TIMEOUT_MS);
-  if (!named.ok)
+  const named = taskGit(repo, ["rev-parse", "--symbolic-full-name", ref], env);
+  if (named === "") {
+    const branch = runGit(repo, ["show-ref", "--verify", "--quiet", `refs/heads/${ref}`], env, RESOLVE_GIT_TIMEOUT_MS);
+    if (branch.ok)
+      throw new Error(`${ref} names both a tag and a branch: name it in full (refs/tags/${ref} or refs/heads/${ref})`);
     return null;
-  const match = /^refs\/(?:remotes\/[^/]+|heads)\/(.+)$/.exec(named.out);
-  return match?.[1] ?? null;
+  }
+  if (named.startsWith("refs/heads/"))
+    return named.slice("refs/heads/".length);
+  if (!named.startsWith("refs/remotes/"))
+    return null;
+  const remotes = taskGit(repo, ["remote"], env).split(`
+`).filter(Boolean);
+  const remote = remotes.find((name) => named.startsWith(`refs/remotes/${name}/`));
+  return remote === undefined ? null : named.slice(`refs/remotes/${remote}/`.length);
 }
 function readGitFacts(repo, dir, ref, env = process.env, options = {}) {
   const tasksPath = taskRepoPath(repo, dir);

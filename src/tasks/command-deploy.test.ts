@@ -426,6 +426,17 @@ test("release reports a ref git cannot resolve, and any other git failure as it 
   expect(unborn.code).toBe(1);
   expect(unborn.error).toContain("git rev-parse failed");
   expect(unborn.error).not.toContain("Cannot read");
+  // A name that is both a tag and a branch: the gate cannot tell which ships, so it stops.
+  const both = world();
+  git(both.cwd, "branch", "rel2");
+  git(both.cwd, "tag", "rel2");
+  const ambiguous = await both.run(["release", "prod", "--before", "--ref", "rel2"]);
+  expect(ambiguous).toEqual({
+    code: 1,
+    text: "",
+    error:
+      "rel2 names both a tag and a branch: name it in full (refs/tags/rel2 or refs/heads/rel2)\n",
+  });
 });
 
 test("list --branch groups the branch's task changes under their environment", async () => {

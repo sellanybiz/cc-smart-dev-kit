@@ -15,12 +15,13 @@ A major version: `update` holds it until you run `cc-smart-dev-kit update` on ea
   waits for its staging twin.
 - **A deploy run with two checks.** Cut a deploy branch from the commit that ships, then
   `task release <env> --before`: it refuses while a blocking before-task is open, a staging twin
-  is open (or names no task), you are on the base branch (or detached, or the ref's own branch), or
-  the branch is not that commit. It warns, without refusing, when files outside the tasks folder have uncommitted
-  changes. Close each task with evidence and commit the closes; deploy; `task release <env>
-  --after` refuses while any task is open, the closes are not committed and pushed, or you are on
-  the base branch (or detached, or the ref's own branch). The branch's small pull request carries the closes to main, so nothing
-  lingers. The `task` command writes and reads deploy tasks in the folder it runs in; the task
+  is open (or names no task), you are on the base branch (or detached, or the ref's own branch),
+  or the branch is not that commit. It warns, without refusing, when files outside the tasks
+  folder have uncommitted changes. Close each task with evidence and commit the closes; deploy;
+  `task release <env> --after` refuses while any task is open, the closes are not committed and
+  pushed, or you are on the base branch (or detached, or the ref's own branch). Both checks also
+  refuse an environment not in `tasks.envs`, a task file that does not read, and one id in two
+  files. The branch's small pull request carries the closes to main, so nothing lingers. The `task` command writes and reads deploy tasks in the folder it runs in; the task
   tools use the session's checkout. `task list --branches` also shows closes made on a branch
   that is not merged yet.
 - **Only you drop a blocking task.** Inside Claude Code, dropping, weakening (non-blocking, or
