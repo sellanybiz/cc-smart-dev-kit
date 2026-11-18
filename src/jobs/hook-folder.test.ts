@@ -510,6 +510,24 @@ describe("the script takes its own pair out of the environment", () => {
     });
   }
 
+  // A repo git reads only because a pair of the person's trusts it (safe.directory): asked with
+  // every pair thrown away, git saw no repo, so the script ended with 0 and the failing hook
+  // never ran.
+  test("a repo trusted only by the person's own pair still runs its hook", () => {
+    const world = installed("direct");
+    const marker = join(world.repo, "marker");
+    writeFileIn(
+      join(world.repo, ".git", "hooks", "pre-commit"),
+      `#!/bin/sh\necho ran > ${marker}\nexit 1\n`,
+      0o755,
+    );
+    stageFile(world.repo);
+    const env = pairsEnv(world, [["safe.directory", "*"]]);
+    env.GIT_TEST_ASSUME_DIFFERENT_OWNER = "1";
+    expect(world.run(world.repo, ["commit", "-q", "-m", "two"], env).code).toBe(1);
+    expect(readFileSync(marker, "utf8")).toBe("ran\n");
+  });
+
   test("the key is read in any case", () => {
     const world = installed("direct");
     const { seen } = seeingHook(world);

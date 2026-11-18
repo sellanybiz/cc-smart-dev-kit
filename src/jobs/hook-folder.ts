@@ -49,7 +49,10 @@ export function hookLauncher(paths: CliPaths): string {
  *    goes down by one), so the hook and everything it runs see the person's own git setup. The
  *    only `eval` is given a number it checked itself.
  * 1. Finds the person's real hooks folder and the real file of that name, with git's own switch
- *    for it (`GIT_CONFIG_COUNT=0` throws away the `GIT_CONFIG_*` pair that brought git here).
+ *    for it. When step 0 took the kit's pair out, git reads the person's own pairs too (a
+ *    `safe.directory` pair may be what lets git read this repo at all); else
+ *    `GIT_CONFIG_COUNT=0` throws away every `GIT_CONFIG_*` pair, the one that brought git here
+ *    included.
  *    No file: `exit 0`, as git does for a hook that is not there. husky v9's folder
  *    (`.husky/_`) holds a stub for every name: a stub whose `.husky/<name>` is missing is no
  *    hook either, and it ends here without starting the command. A file git itself would skip
@@ -88,12 +91,19 @@ case $count in
         if [ "$value" = "\${0%/*}" ]; then
           unset "GIT_CONFIG_KEY_$top" "GIT_CONFIG_VALUE_$top"
           if [ "$top" = 0 ]; then unset GIT_CONFIG_COUNT; else GIT_CONFIG_COUNT=$top; fi
+          own_pair_gone=1
         fi
         ;;
     esac
     ;;
 esac
-real_dir=$(GIT_CONFIG_COUNT=0 git rev-parse --path-format=absolute --git-path hooks 2>/dev/null) || exit 0
+# With the kit's pair gone, git reads the person's own pairs too (a safe.directory that trusts
+# this repo); else GIT_CONFIG_COUNT=0 is the only sure way past the pair that brought git here.
+if [ -n "\${own_pair_gone-}" ]; then
+  real_dir=$(git rev-parse --path-format=absolute --git-path hooks 2>/dev/null) || exit 0
+else
+  real_dir=$(GIT_CONFIG_COUNT=0 git rev-parse --path-format=absolute --git-path hooks 2>/dev/null) || exit 0
+fi
 [ -n "$real_dir" ] || exit 0
 real=$real_dir/$name
 [ -f "$real" ] || exit 0
