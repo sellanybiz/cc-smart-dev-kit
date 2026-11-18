@@ -312,7 +312,9 @@ the claim carries that session id, the caller's process does not hold it, and th
 process is proved gone (`claimGone` in `identity.ts`: its pid no longer runs, or on Linux the pid
 now has another start time). A claim whose process may still run is never the caller's, even
 when its liveness cannot be proved (a record with no start time): two processes that opened one
-conversation never pass a claim between them. Every read that asks "is this my running work" counts a
+conversation never pass a claim between them. The price: where there is no start time to compare
+(off Linux, or a record without one), a dead claim whose pid an unrelated program now runs stays
+put until that program ends; `task_take` moves it sooner. Every read that asks "is this my running work" counts a
 resumed claim as the caller's (`claimIsMine`: the status line's rows, `claimState`, the keep-going
 guard's phases); a question about who holds a claim now (a take's refusal, a claim's liveness)
 keeps `claimHeldBy` alone. The next task call from the resumed session also moves the claims

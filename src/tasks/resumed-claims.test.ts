@@ -332,8 +332,9 @@ test("reclaimResumed re-stamps the caller's work in every project, not only the 
 test("two live processes of one conversation never pass a claim between them, even with no start time", () => {
   const db = openWorkDb(workDbFile({ stateDir: tempDir() }), { mode: "write" });
   try {
-    // Two running processes (this test's own and its parent) under one session id, and records
-    // with no start time, so neither can be proved live or gone.
+    // The claim's process (this test's own) runs, and has no start time, so it cannot be proved
+    // live or gone; a second caller pid sits under the same session id. This guards the Linux
+    // path (CI's main runner): off Linux a running pid was never moved, before the fix or after.
     const a: Who = { sessionId: "resumed", pid: process.pid, procStart: null };
     const b: Who = { sessionId: "resumed", pid: process.ppid, procStart: null };
     const task = ok(createTask(db, { project: PROJECT, subject: "Work" }, a, 1));
