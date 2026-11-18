@@ -112,8 +112,12 @@ diagram or a mockup — rather than only describing it.
 Then ask for approval. In plan mode that is `ExitPlanMode`: it shows the plan, and the person
 approves it there or keeps planning — never a second "Start building?" with
 `AskUserQuestion`. Without plan mode, ask with `AskUserQuestion`. After an explicit yes,
-move a plan kept outside its home there, and commit the plan file on the current branch as the
-workflow allows. Move full research to
+move a plan kept outside its home there. **In a project that guards its main folder**
+(`worktrees.guardMainFolder`) and a session in the main checkout, plan mode wrote the plan in
+the main checkout's plans folder: call `EnterWorktree` first (the plan's slug as its `name`),
+then move the approved plan file from the main checkout's plans folder into the worktree's, so
+the plan, its research and the build are all on the worktree's branch. Commit the plan file on
+the current branch as the workflow allows. Move full research to
 `.claude/research/archive/<YYYY-MM-DD>-<slug>.md` (or the add-on's home), linked from the plan.
 Changes wanted: revise and ask again; never build without approval.
 

@@ -36,9 +36,12 @@ never runs in `claude -p`, never on a `clear` or a `compact`, and its lines go t
 SessionStart runs the worktree-leftovers and session-name notes, the Fable-session note,
 the task note, the portal starter and the background update. The leftovers note reads the
 main checkout without fetching. In a guarded main checkout it names the person's command,
-not a step for the session. The update hook refreshes an outdated managed instructions copy
-under the state lock; it never changes the user's `CLAUDE.md` block or asks a question.
-A refresh failure is one stderr line.
+not a step for the session, and adds one last line that this session is in the main checkout
+and its first change goes into a worktree (`mainCheckoutNudge`: no git call, none in
+`claude -p`). The update hook refreshes an outdated managed instructions copy and an outdated
+git hooks folder (`refreshGitHooksFolder`, only one setup wrote, only from the installed
+version's session) under the state lock; it never creates the folder, changes the user's
+`CLAUDE.md` block or asks a question. A refresh failure is one stderr line.
 
 ## The background self-update
 
