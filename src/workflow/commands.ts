@@ -49,6 +49,7 @@ import {
   type ResolvedWorkflow,
   resolvedValueOf,
   resolveGate,
+  resolveMergeFiles,
   resolveWorkflow,
   sourceLabel,
 } from "./resolve";
@@ -64,9 +65,12 @@ import type { WorkflowKey } from "./schema";
 import {
   INBOUND_KEYS,
   OUTBOUND_KEYS,
+  PERSONAL_ONLY_KEYS,
   PLAN_KEYS,
+  PROJECT_ONLY_KEYS,
   parseWorkflowValue,
   REVIEW_GATE_KEYS,
+  RUN_MODES,
   showValue,
   WORKFLOW_KEYS,
 } from "./schema";
@@ -111,7 +115,12 @@ pull request's review, are the gate).
 ${OUTBOUND_KEYS.join(" and ")} let text leave this machine for GitHub (${COMMAND} issue file), and
 ${INBOUND_KEYS.join(" and ")} decides which issues are ready: set and unset refuse these inside
 Claude Code too; propose does not, since a person reviews its pull request. So does
-${PLAN_KEYS.join(" and ")}, the most phases a plan may hold: a session never lifts its own limit.
+${PLAN_KEYS.join(", ")} bound a session's own work, so they refuse there as well: a session never lifts its own limit.
+plans.maxPhases is the most phases a plan may hold. plans.runMode (${RUN_MODES.join(" | ")}; default ask) is how
+queued plans run when two or more are laid: it is yours alone, in your file, and a project's
+file that sets it is refused. plans.mergeFiles (a comma-separated list; a folder ends in /) names
+the paths every plan touches and each merge settles; it is the project's, needs --project, and
+counts only as committed on origin/<base>.
 review-done records that the change set up to a commit (default: HEAD, or --sha <commit>)
 had its one premium review and its fixes. The merge guard reads it before a merge it
 would make by itself, while reviewBeforePush is on. Inside Claude Code the review-record
@@ -245,6 +254,27 @@ function gateLines(
 }
 
 /**
+ * The line `show` prints for `plans.mergeFiles` as the plan store and herdr read it: the list
+ * committed on `origin/<worktrees.base>` (`resolveMergeFiles`), never this checkout's own copy,
+ * with why it is empty or short when that is so. Null for a folder with no project file or no base
+ * (`gateLines` says so already).
+ */
+function mergeFilesLine(
+  checkout: Checkout | null,
+  config: CcSmartDevKitConfig | null,
+  env: Env,
+): string | null {
+  const base = config?.worktrees?.base;
+  if (checkout === null || base === undefined) return null;
+  const { files, reason } = resolveMergeFiles(checkout, base, {
+    env,
+    timeoutMs: WORKFLOW_GIT_TIMEOUT_MS,
+  });
+  const value = showValue("plans.mergeFiles", files);
+  return `plans.mergeFiles as the plan tools read it, from origin/${base}:${CONFIG_PATH} = ${value}${reason === null ? "" : ` (${reason})`}`;
+}
+
+/**
  * The D17 limits as one sentence: what a fix after a review may reach. `0`/`0`/`0` is the
  * exact reviewed commit only.
  */
@@ -276,6 +306,8 @@ function show(context: WorkflowContext): number {
     print(`${key} = ${showValue(key, value)} (${source})`);
   }
   for (const line of gate.lines) print(line);
+  const mergeFiles = mergeFilesLine(here.checkout, here.config, env);
+  if (mergeFiles !== null) print(mergeFiles);
   for (const line of clashLines(clashesOf(resolved, here.config?.worktrees?.base ?? null))) {
     print(line);
   }
@@ -329,12 +361,39 @@ function issueKeyRefusal(sub: "set" | "unset", key: WorkflowKey): string {
 }
 
 /**
- * The refusal of a plan key (`PLAN_KEYS`) in `set` and `unset` inside a Claude Code session: the
- * task store holds the session to the cap, so the person raises it. The cap is read from the
- * checkout's working copy, so the words do not name a committed file. `propose` stays open.
+ * The refusal of a plan key (`PLAN_KEYS`) in `set` and `unset` inside a Claude Code session, in the
+ * words of each key's own reason. The cap: the task store holds the session to it, so the person
+ * raises it (read from the working copy, so the words name no committed file). The run mode: the
+ * person's alone, so the words are the command to run. The merge files: read only as committed on
+ * the base. `propose` stays open for the two project settings.
  */
 function planKeyRefusal(sub: "set" | "unset", key: WorkflowKey): string {
-  return `${COMMAND} workflow ${sub} ${key} cannot run inside a Claude Code session: ${key} is the limit the task tools hold this session to, so only you change it. Run it in your own terminal. \`workflow propose\` opens a pull request you review instead.`;
+  const head = `${COMMAND} workflow ${sub} ${key} cannot run inside a Claude Code session: ${key}`;
+  if (key === "plans.runMode") {
+    // The person's own setting, so there is no pull request: the command is the whole fix.
+    const value = sub === "set" ? ` <${RUN_MODES.join("|")}>` : "";
+    return `${head} decides how many sessions spend your usage on queued plans, so only you choose it. Run this in your own terminal: ${COMMAND} workflow ${sub} ${key}${value}`;
+  }
+  if (key === "plans.mergeFiles") {
+    return `${head} names the paths the plans' overlap check leaves out, so a session that could widen it would lift its own check; the kit reads only the copy committed on origin/<worktrees.base>. Run it in your own terminal with --project and commit it to the base. \`workflow propose\` opens a pull request you review instead.`;
+  }
+  return `${head} is the limit the task tools hold this session to, so only you change it. Run it in your own terminal. \`workflow propose\` opens a pull request you review instead.`;
+}
+
+/**
+ * The refusal of a key written to the wrong file, or null when the file fits: a personal-only key
+ * (`PERSONAL_ONLY_KEYS`) with `--project`, a project-only key (`PROJECT_ONLY_KEYS`) without it.
+ * Said here, before the writer, so the words fit the key (the writer's own list names the
+ * switches).
+ */
+function wrongFileRefusal(key: WorkflowKey, projectFlag: boolean): string | null {
+  if (projectFlag && PERSONAL_ONLY_KEYS.includes(key)) {
+    return `${key} is your own setting, not the project's: run it without --project (a committed value would spend every teammate's usage)`;
+  }
+  if (!projectFlag && PROJECT_ONLY_KEYS.includes(key)) {
+    return `${key} is the project's setting, not yours: run it with --project inside the project, and commit it to the base (it counts only as committed on origin/<worktrees.base>)`;
+  }
+  return null;
 }
 
 /**
@@ -531,6 +590,11 @@ function setOrUnset(context: WorkflowContext, sub: string, argv: string[]): numb
   }
   if (PLAN_KEYS.includes(wanted) && insideClaudeCode(context.env)) {
     context.error(planKeyRefusal(sub === "set" ? "set" : "unset", wanted));
+    return 1;
+  }
+  const wrongFile = wrongFileRefusal(wanted, projectFlag);
+  if (wrongFile !== null) {
+    context.error(wrongFile);
     return 1;
   }
   let value: unknown;

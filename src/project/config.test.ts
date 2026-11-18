@@ -14,11 +14,14 @@ import { describe, expect, test } from "bun:test";
 import { z } from "zod";
 import { VERSION } from "../build-info";
 import {
+  CcSmartDevKitConfigError,
+  CcSmartDevKitVersionError,
   ccSmartDevKitConfigSchema,
   IGNORED_TASK_FIELDS,
   JOB_KIND_KEYS_SINCE,
   OWN_HOOK_NAMES_SINCE,
   PLUGIN_HOOK_NAMES,
+  parseCcSmartDevKitConfig,
   RETIRED_HOOK_NAMES,
   UNSWITCHABLE_HOOK_NAMES,
   WORKTREE_PREFIX_OPTIONAL_SINCE,
@@ -81,6 +84,7 @@ const FIRST_ACCEPTED_IN: Record<string, string> = {
   "workflow.fixesAfterReview.percent": "1.0.0",
   "workflow.plans": "4.8.0",
   "workflow.plans.maxPhases": "4.8.0",
+  "workflow.plans.mergeFiles": "5.1.0",
   // 2.0 removed the crew; the key stays in the schema so an old file's `crew` loads and is ignored.
   "workflow.crew": "0.5.2",
   checks: "1.1.0",
@@ -344,5 +348,42 @@ describe("the since-tables", () => {
       expect(since).toMatch(/^\d+\.\d+\.\d+$/);
       expect(Bun.semver.order(since, VERSION)).toBeLessThanOrEqual(0);
     }
+  });
+});
+
+describe("the person's own workflow settings in a project file", () => {
+  const where = ".claude/cc-smart-dev-kit.json";
+
+  test("plans.runMode is refused with the key, the reason and the command, not 'unknown field'", () => {
+    const text = JSON.stringify({ workflow: { plans: { runMode: "solo" } } });
+    expect(() => parseCcSmartDevKitConfig(text, where)).toThrow(CcSmartDevKitConfigError);
+    expect(() => parseCcSmartDevKitConfig(text, where)).toThrow(
+      `Invalid ${where}: workflow.plans.runMode is your own setting, not the project's, because a committed value would spend every teammate's usage: remove it from this file and run \`cc-smart-dev-kit workflow set plans.runMode <value>\` in your own terminal.`,
+    );
+  });
+
+  test("it is refused whatever the value, and next to a valid cap", () => {
+    for (const runMode of ["ask", 3, null, false]) {
+      const text = JSON.stringify({ workflow: { plans: { maxPhases: 5, runMode } } });
+      expect(() => parseCcSmartDevKitConfig(text, where)).toThrow("workflow.plans.runMode is your");
+    }
+  });
+
+  test("a file with the cap and the merge files, and no run mode, loads", () => {
+    const text = JSON.stringify({
+      workflow: { plans: { maxPhases: 5, mergeFiles: ["./plugin/dist\\", "CHANGELOG.md"] } },
+    });
+    expect(parseCcSmartDevKitConfig(text, where, "5.1.0").workflow?.plans).toEqual({
+      maxPhases: 5,
+      mergeFiles: ["plugin/dist/", "CHANGELOG.md"],
+    });
+  });
+
+  test("a project that needs a newer plugin still hears 'update' first", () => {
+    const text = JSON.stringify({
+      requires: ">=9.0",
+      workflow: { plans: { runMode: "solo" } },
+    });
+    expect(() => parseCcSmartDevKitConfig(text, where, "5.1.0")).toThrow(CcSmartDevKitVersionError);
   });
 });

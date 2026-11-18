@@ -11,6 +11,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
+import { VERSION } from "../build-info";
 import { COMMAND } from "../build-info/names";
 import { cliPaths, tildify } from "../cli/paths";
 import { hookEnv, makeClone, makeRepo, writeClaudeFile } from "../testing/hooks";
@@ -19,7 +20,7 @@ import { git, tempDir } from "../testing/temp";
 import { PROCESS_TEST_TIMEOUT_MS } from "../testing/timeouts";
 import { runWorkflow, type WorkflowContext } from "./commands";
 import { personalWorkflowFile } from "./resolve";
-import { WORKFLOW_KEYS } from "./schema";
+import { MERGE_FILES_RULE, WORKFLOW_KEYS } from "./schema";
 import { writePersonalSetting, writeProjectSetting } from "./write";
 
 // This file starts the CLI as a real process: its own speed limit (src/testing/timeouts.ts).
@@ -83,6 +84,8 @@ describe("workflow show", () => {
       "issues.readyLabel = kit:ready (default)",
       "alerts.usagePercent = 85 (default)",
       "plans.maxPhases = 10 (default)",
+      "plans.runMode = ask (default)",
+      "plans.mergeFiles = (nothing) (default)",
       "switches.statusLine = false (default)",
       "switches.sessionNames = false (default)",
       "switches.jobRoute = false (default)",
@@ -1006,7 +1009,7 @@ describe("the review gate (CM-1)", () => {
         expect(await runWorkflow([sub, key, ...value], run.context)).toBe(2);
         expect(run.lines).toEqual([]);
         expect(run.errors).toEqual([
-          `Unknown setting: ${key}. The settings are: autoCommit, autoPush, openPr, autoMerge, mergeMethod, deleteBranch, reviewBeforePush, reviewAgents, fixesAfterReview.lines, fixesAfterReview.files, fixesAfterReview.percent, clearWorktreeAfterMerge, issues.enabled, issues.allowPublic, issues.foundLabel, issues.fixedLabel, issues.readyLabel, alerts.usagePercent, plans.maxPhases, switches.statusLine, switches.sessionNames, switches.jobRoute, switches.updateHold, switches.leadHint`,
+          `Unknown setting: ${key}. The settings are: autoCommit, autoPush, openPr, autoMerge, mergeMethod, deleteBranch, reviewBeforePush, reviewAgents, fixesAfterReview.lines, fixesAfterReview.files, fixesAfterReview.percent, clearWorktreeAfterMerge, issues.enabled, issues.allowPublic, issues.foundLabel, issues.fixedLabel, issues.readyLabel, alerts.usagePercent, plans.maxPhases, plans.runMode, plans.mergeFiles, switches.statusLine, switches.sessionNames, switches.jobRoute, switches.updateHold, switches.leadHint`,
         ]);
       }
       expect(existsSync(cliPaths(env).workflowConfigFile)).toBe(false);
@@ -1318,5 +1321,213 @@ describe("workflow propose: the arguments", () => {
       `cc-smart-dev-kit workflow propose autoMerge cannot run inside a Claude Code session: autoMerge is part of the merge guard's review gate, which only you change. Run it in your own terminal (\`${COMMAND} workflow propose autoMerge <value>\`): the pull request is the gate.`,
     ]);
     expect(run.lines).toEqual([]);
+  });
+});
+
+describe("plans.runMode and plans.mergeFiles", () => {
+  test("runMode: set writes the person's file, show says personal, unset brings ask back", async () => {
+    const env = hookEnv();
+    const run = context(tempDir("not-git"), env);
+    expect(await runWorkflow(["set", "plans.runMode", "lead-children"], run.context)).toBe(0);
+    expect(run.lines).toEqual([
+      "+ ~/.config/cc-smart-dev-kit/workflow.json: plans.runMode = lead-children",
+    ]);
+    expect(readFileSync(cliPaths(env).workflowConfigFile, "utf8")).toBe(
+      `${JSON.stringify({ plans: { runMode: "lead-children" } }, null, 2)}\n`,
+    );
+    const shown = context(tempDir("not-git"), env);
+    await runWorkflow(["show"], shown.context);
+    expect(shown.lines).toContain("plans.runMode = lead-children (personal)");
+    const off = context(tempDir("not-git"), env);
+    expect(await runWorkflow(["unset", "plans.runMode"], off.context)).toBe(0);
+    const back = context(tempDir("not-git"), env);
+    await runWorkflow(["show"], back.context);
+    expect(back.lines).toContain("plans.runMode = ask (default)");
+  });
+
+  test("runMode: another word is refused with the four, and nothing is written", async () => {
+    const env = hookEnv();
+    const run = context(tempDir("not-git"), env);
+    expect(await runWorkflow(["set", "plans.runMode", "children"], run.context)).toBe(2);
+    expect(run.errors[0]).toStartWith(
+      "plans.runMode is one of ask, solo, lead-children, coordinator\n\n",
+    );
+    expect(existsSync(cliPaths(env).workflowConfigFile)).toBe(false);
+  });
+
+  test("runMode with --project is refused: it is the person's own, and the project file stays", async () => {
+    const env = hookEnv();
+    const repo = makeRepo();
+    const file = writeClaudeFile(repo, "cc-smart-dev-kit.json", SETTINGS);
+    const before = readFileSync(file, "utf8");
+    for (const [sub, value] of [
+      ["set", ["solo"]],
+      ["unset", []],
+    ] as const) {
+      const run = context(repo, env);
+      expect(await runWorkflow([sub, "plans.runMode", ...value, "--project"], run.context)).toBe(1);
+      expect(run.lines).toEqual([]);
+      expect(run.errors).toEqual([
+        "plans.runMode is your own setting, not the project's: run it without --project (a committed value would spend every teammate's usage)",
+      ]);
+    }
+    expect(readFileSync(file, "utf8")).toBe(before);
+  });
+
+  test("runMode: propose has nothing to propose, and names the command that sets it", async () => {
+    const repo = makeRepo();
+    const run = context(repo, hookEnv());
+    expect(await runWorkflow(["propose", "plans.runMode", "solo"], run.context)).toBe(1);
+    expect(run.errors).toEqual([
+      `plans.runMode is your own setting, not the project's, so there is nothing to propose: it is per person, per machine — change it with \`${COMMAND} workflow set plans.runMode <value>\`.`,
+    ]);
+  });
+
+  test.each([
+    [
+      "set",
+      "plans.runMode",
+      ["solo"],
+      `${COMMAND} workflow set plans.runMode cannot run inside a Claude Code session: plans.runMode decides how many sessions spend your usage on queued plans, so only you choose it. Run this in your own terminal: ${COMMAND} workflow set plans.runMode <ask|solo|lead-children|coordinator>`,
+    ],
+    [
+      "unset",
+      "plans.runMode",
+      [],
+      `${COMMAND} workflow unset plans.runMode cannot run inside a Claude Code session: plans.runMode decides how many sessions spend your usage on queued plans, so only you choose it. Run this in your own terminal: ${COMMAND} workflow unset plans.runMode`,
+    ],
+    [
+      "set",
+      "plans.mergeFiles",
+      ["CHANGELOG.md"],
+      `${COMMAND} workflow set plans.mergeFiles cannot run inside a Claude Code session: plans.mergeFiles names the paths the plans' overlap check leaves out, so a session that could widen it would lift its own check; the kit reads only the copy committed on origin/<worktrees.base>. Run it in your own terminal with --project and commit it to the base. \`workflow propose\` opens a pull request you review instead.`,
+    ],
+    [
+      "unset",
+      "plans.mergeFiles",
+      [],
+      `${COMMAND} workflow unset plans.mergeFiles cannot run inside a Claude Code session: plans.mergeFiles names the paths the plans' overlap check leaves out, so a session that could widen it would lift its own check; the kit reads only the copy committed on origin/<worktrees.base>. Run it in your own terminal with --project and commit it to the base. \`workflow propose\` opens a pull request you review instead.`,
+    ],
+  ] as const)(
+    "workflow %s %s refuses inside Claude Code, in both files, and writes nothing",
+    async (sub, key, value, message) => {
+      const env = hookEnv();
+      const repo = makeRepo();
+      const file = writeClaudeFile(repo, "cc-smart-dev-kit.json", SETTINGS);
+      const before = readFileSync(file, "utf8");
+      for (const where of [[], ["--project"]]) {
+        const run = context(repo, { ...env, CLAUDECODE: "1" });
+        expect(await runWorkflow([sub, key, ...value, ...where], run.context)).toBe(1);
+        expect(run.lines).toEqual([]);
+        expect(run.errors).toEqual([message]);
+      }
+      expect(existsSync(cliPaths(env).workflowConfigFile)).toBe(false);
+      expect(readFileSync(file, "utf8")).toBe(before);
+    },
+  );
+
+  test("mergeFiles without --project is refused: it is the project's, read as committed", async () => {
+    const env = hookEnv();
+    for (const [sub, value] of [
+      ["set", ["CHANGELOG.md"]],
+      ["unset", []],
+    ] as const) {
+      const run = context(tempDir("not-git"), env);
+      expect(await runWorkflow([sub, "plans.mergeFiles", ...value], run.context)).toBe(1);
+      expect(run.lines).toEqual([]);
+      expect(run.errors).toEqual([
+        "plans.mergeFiles is the project's setting, not yours: run it with --project inside the project, and commit it to the base (it counts only as committed on origin/<worktrees.base>)",
+      ]);
+    }
+    expect(existsSync(cliPaths(env).workflowConfigFile)).toBe(false);
+  });
+
+  test("mergeFiles: a bad path is refused with the rule, nothing written", async () => {
+    const repo = makeRepo();
+    const file = writeClaudeFile(repo, "cc-smart-dev-kit.json", SETTINGS);
+    const before = readFileSync(file, "utf8");
+    for (const bad of ["../x", "/abs", ".", "a, .."]) {
+      const run = context(repo, hookEnv());
+      expect(await runWorkflow(["set", "plans.mergeFiles", bad, "--project"], run.context)).toBe(2);
+      expect(run.errors[0]).toStartWith(`${MERGE_FILES_RULE}; `);
+      expect(run.lines).toEqual([]);
+    }
+    expect(readFileSync(file, "utf8")).toBe(before);
+  });
+
+  // `--project` raises `requires` to the 5.1 floor, which a build before 5.1.0 does not meet:
+  // the write checks the file it is about to write against the running version. The test runs
+  // from the release that brought the key.
+  test.skipIf(Bun.semver.order(VERSION, "5.1.0") < 0)(
+    "mergeFiles: --project writes the normalised list and raises requires to 5.1; unset removes it",
+    async () => {
+      const env = hookEnv();
+      const repo = makeRepo();
+      const file = writeClaudeFile(repo, "cc-smart-dev-kit.json", SETTINGS);
+      const run = context(repo, env);
+      expect(
+        await runWorkflow(
+          ["set", "plans.mergeFiles", "./plugin/dist\\, CHANGELOG.md", "--project"],
+          run.context,
+        ),
+      ).toBe(0);
+      expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({
+        ...SETTINGS,
+        requires: ">=5.1",
+        workflow: { plans: { mergeFiles: ["plugin/dist/", "CHANGELOG.md"] } },
+      });
+      const off = context(repo, env);
+      expect(await runWorkflow(["unset", "plans.mergeFiles", "--project"], off.context)).toBe(0);
+      expect(JSON.parse(readFileSync(file, "utf8")).workflow).toBeUndefined();
+    },
+  );
+
+  test("show: the working copy's list and the committed one it counts, side by side", async () => {
+    const { repo } = makeClone();
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", {
+      ...SETTINGS,
+      workflow: { plans: { mergeFiles: ["CHANGELOG.md"] } },
+    });
+    git(repo, "add", "-A");
+    git(repo, "commit", "-q", "-m", "policy");
+    git(repo, "update-ref", "refs/remotes/origin/main", "HEAD");
+    // A session widens its own copy; only the committed list counts.
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", {
+      ...SETTINGS,
+      workflow: { plans: { mergeFiles: ["src/", "plugin/"] } },
+    });
+    const run = context(repo, hookEnv());
+    expect(await runWorkflow(["show"], run.context)).toBe(0);
+    expect(run.lines).toContain("plans.mergeFiles = src/, plugin/ (project)");
+    expect(run.lines).toContain(
+      "plans.mergeFiles as the plan tools read it, from origin/main:.claude/cc-smart-dev-kit.json = CHANGELOG.md",
+    );
+  });
+
+  test("show: with no origin/<base> the plan tools see nothing, and the line says why", async () => {
+    const repo = makeRepo();
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", {
+      ...SETTINGS,
+      workflow: { plans: { mergeFiles: ["CHANGELOG.md"] } },
+    });
+    const run = context(repo, hookEnv());
+    expect(await runWorkflow(["show"], run.context)).toBe(0);
+    expect(run.lines).toContain(
+      "plans.mergeFiles as the plan tools read it, from origin/main:.claude/cc-smart-dev-kit.json = (nothing) (origin/main is not known in this repository (no origin, or the branch was never fetched))",
+    );
+  });
+
+  test("a project file that sets runMode makes show say so instead of using it", async () => {
+    const repo = makeRepo();
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", {
+      ...SETTINGS,
+      workflow: { plans: { runMode: "coordinator" } },
+    });
+    const run = context(repo, hookEnv());
+    expect(await runWorkflow(["show"], run.context)).toBe(0);
+    expect(run.lines).toContain("plans.runMode = ask (default)");
+    expect(run.lines.at(-1)).toContain(
+      "workflow.plans.runMode is your own setting, not the project's",
+    );
   });
 });

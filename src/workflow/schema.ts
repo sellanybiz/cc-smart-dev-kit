@@ -118,6 +118,61 @@ export function labelsClash(labels: IssueLabels): string | null {
   return null;
 }
 
+/** What `plans.runMode` takes: how queued plans are run when two or more are laid. */
+export const RUN_MODES = ["ask", "solo", "lead-children", "coordinator"] as const;
+export type RunMode = (typeof RUN_MODES)[number];
+
+/** A merge file as written, normalised, or why it cannot stand. */
+export type MergeFilePath = { ok: true; path: string } | { ok: false; why: string };
+
+/**
+ * One path of `plans.mergeFiles` (the paths every plan touches and each merge settles: a version
+ * manifest, a changelog, a lockfile, build output), normalised: `/` as the separator, no `./`
+ * segments, a folder written with a trailing `/`. Refuses what is not a path inside the
+ * checkout: an absolute path, a `..` segment, the root (`""`, `.`, `/`) and a control character.
+ * Pure: whether a path without a trailing `/` names a folder needs the repository, so
+ * `resolveMergeFiles` (`resolve.ts`) checks that, on the committed tree. One home: the schema
+ * checks a file with it, and `parseWorkflowValue` a value a person types.
+ */
+export function normalizeMergeFile(raw: string): MergeFilePath {
+  const text = raw.trim().replaceAll("\\", "/");
+  const shown = JSON.stringify(raw);
+  if (/\p{Cc}/u.test(text)) return { ok: false, why: `${shown} holds a control character` };
+  const kept = text.split("/").filter((segment) => segment !== "" && segment !== ".");
+  if (kept.length === 0) {
+    return { ok: false, why: `${shown} is the root: name the files or folders under it` };
+  }
+  if (text.startsWith("/") || /^[A-Za-z]:/.test(text)) {
+    return { ok: false, why: `${shown} is absolute: write it relative to the repository root` };
+  }
+  if (kept.includes("..")) {
+    return { ok: false, why: `${shown} leaves the repository: no .. segments` };
+  }
+  const folder = text.endsWith("/") || text.endsWith("/.");
+  return { ok: true, path: `${kept.join("/")}${folder ? "/" : ""}` };
+}
+
+/** The words of the one rule behind `normalizeMergeFile`, for a value a person types. */
+export const MERGE_FILES_RULE =
+  "plans.mergeFiles is a list of paths inside the repository, written with / (a folder ends in /), with no absolute path, no .. and not the root";
+
+/**
+ * The list in a file: each path normalised (`normalizeMergeFile`), a path named twice kept once.
+ * A bad entry is an issue that names it, so the file is refused with the entry in the message.
+ */
+const mergeFilesSchema = z.array(z.string()).transform((paths, context) => {
+  const normalised: string[] = [];
+  for (const [index, raw] of paths.entries()) {
+    const parsed = normalizeMergeFile(raw);
+    if (!parsed.ok) {
+      context.issues.push({ code: "custom", input: raw, message: parsed.why, path: [index] });
+      return z.NEVER;
+    }
+    if (!normalised.includes(parsed.path)) normalised.push(parsed.path);
+  }
+  return normalised;
+});
+
 export const workflowSchema = z.strictObject({
   /** Commit each finished, reviewed step without asking. */
   autoCommit: z.boolean().optional(),
@@ -163,11 +218,21 @@ export const workflowSchema = z.strictObject({
     .optional(),
   /** Clear the worktree once its pull request merged. */
   clearWorktreeAfterMerge: z.boolean().optional(),
-  /** How the kit's plans are shaped (`docs/design/tasks.md`). */
+  /**
+   * How the kit's plans are shaped (`docs/design/tasks.md`). `runMode` is the person's own, so
+   * it lives in `personalWorkflowSchema` alone, and a project file that sets it is refused
+   * (`checkPersonalOnlyFields` in `src/project/config.ts`).
+   */
   plans: z
     .strictObject({
       /** The most phases one plan may hold. Default: 10. */
       maxPhases: numberField("plans.maxPhases"),
+      /**
+       * Paths every plan touches and each merge settles, which the plans' overlap check leaves
+       * out. A project fact, so it lives in the project's file alone, and it counts only as
+       * **committed on `origin/<base>`** (`resolveMergeFiles`), never a working copy. Default: none.
+       */
+      mergeFiles: mergeFilesSchema.optional(),
     })
     .optional(),
   /**
@@ -240,6 +305,17 @@ export const PERSONAL_FILE_SWITCH_NAMES = [
  * Claude Opus (default: on); a person who leads on a backend on purpose turns it off.
  */
 export const personalWorkflowSchema = workflowSchema.extend({
+  /**
+   * The person's `plans`: the cap, and `runMode`, how queued plans run (`ask` by default: one
+   * question when two or more are laid). Never `mergeFiles`, which is a project fact. `runMode`
+   * is the person's alone: a committed value would spend every teammate's usage.
+   */
+  plans: z
+    .strictObject({
+      maxPhases: numberField("plans.maxPhases"),
+      runMode: z.enum(RUN_MODES).optional(),
+    })
+    .optional(),
   switches: z
     .strictObject({ jobRoute: z.boolean().optional(), leadHint: z.boolean().optional() })
     .optional(),
@@ -279,6 +355,8 @@ export const workflowDefaults = {
   },
   plans: {
     maxPhases: 10,
+    mergeFiles: [],
+    runMode: "ask",
   },
 } as const;
 
@@ -316,6 +394,8 @@ export type WorkflowKey =
   | "issues.readyLabel"
   | "alerts.usagePercent"
   | "plans.maxPhases"
+  | "plans.runMode"
+  | "plans.mergeFiles"
   | `switches.${SwitchName}`;
 
 /** Every policy key, in the order `workflow show` and `--help` print them. */
@@ -339,6 +419,8 @@ export const POLICY_KEYS: readonly WorkflowKey[] = [
   "issues.readyLabel",
   "alerts.usagePercent",
   "plans.maxPhases",
+  "plans.runMode",
+  "plans.mergeFiles",
 ];
 
 /**
@@ -375,13 +457,35 @@ export const OUTBOUND_KEYS: readonly WorkflowKey[] = ["issues.enabled", "issues.
 export const INBOUND_KEYS: readonly WorkflowKey[] = ["issues.readyLabel"];
 
 /**
- * The settings that cap a session's own work (`plans.maxPhases`). `workflow set` and `unset`
- * refuse them inside Claude Code, like `OUTBOUND_KEYS`: the task store holds a session to the
- * cap, so a session that could raise it would lift its own limit. Only the person raises it.
- * `propose` stays open: a person reviews its pull request. Unlike the keys above, the cap is
- * read from the checkout's working copy, so the refusal does not claim a committed file.
+ * The settings that bound a session's own work (`plans.maxPhases`, `plans.runMode`,
+ * `plans.mergeFiles`). `workflow set` and `unset` refuse them inside Claude Code, like
+ * `OUTBOUND_KEYS`, each for its own reason (`planKeyReason` in `commands.ts`): the task store
+ * holds a session to the cap, so a session that could raise it would lift its own limit; the run
+ * mode decides how many sessions spend the person's usage; and the merge files are what the plans'
+ * overlap check leaves out, so a session that could widen them would lift its own check. Only the
+ * person changes them. `propose` stays open for the two project settings: a person reviews its
+ * pull request. The cap and the run mode are read from the working copy and the person's file;
+ * `plans.mergeFiles` only as committed on `origin/<base>` (`resolveMergeFiles`).
  */
-export const PLAN_KEYS: readonly WorkflowKey[] = ["plans.maxPhases"];
+export const PLAN_KEYS: readonly WorkflowKey[] = [
+  "plans.maxPhases",
+  "plans.runMode",
+  "plans.mergeFiles",
+];
+
+/**
+ * The settings only the person's own file holds. A project's file refuses them: `plans.runMode`
+ * would spend every teammate's usage. One home for the names behind `isProjectKey`, the project
+ * file's refusal (`checkPersonalOnlyFields` in `src/project/config.ts`) and `workflow set
+ * --project`'s.
+ */
+export const PERSONAL_ONLY_KEYS: readonly WorkflowKey[] = ["plans.runMode"];
+
+/**
+ * The settings only the project's file holds. `plans.mergeFiles` is a project fact, read as
+ * committed on `origin/<base>`: a value in the person's own file would never count.
+ */
+export const PROJECT_ONLY_KEYS: readonly WorkflowKey[] = ["plans.mergeFiles"];
 
 /** Every switch key, in the order `workflow show` prints them. */
 export const SWITCH_KEYS: readonly WorkflowKey[] = SWITCH_NAMES.map(
@@ -405,11 +509,13 @@ export function isSwitchKey(key: string): key is `switches.${SwitchName}` {
 export const PROJECT_SWITCH_NAMES: readonly SwitchName[] = ["sessionNames", "jobRoute"];
 
 /**
- * True when the project's own file can hold the key: every policy key, and the project's two switches. The one answer behind
+ * True when the project's own file can hold the key: every policy key but the person's own
+ * (`PERSONAL_ONLY_KEYS`), and the project's two switches. The one answer behind
  * `workflow set --project`'s and `workflow propose`'s refusals and the portal's list of what a
  * project's card may change; `propose.test.ts` holds it equal to what the writer accepts.
  */
 export function isProjectKey(key: WorkflowKey): boolean {
+  if (PERSONAL_ONLY_KEYS.includes(key)) return false;
   return !isSwitchKey(key) || PROJECT_SWITCH_NAMES.includes(switchOf(key));
 }
 
@@ -489,6 +595,22 @@ function parseNumber(key: NumberKey, value: string): ParsedValue {
     : { ok: false, why: numberRuleText(key) };
 }
 
+/** `plans.mergeFiles` as a person typed it: paths split at commas and line breaks, each normalised. */
+function parseMergeFiles(value: string): ParsedValue {
+  const named = value
+    .split(/[,\n]/)
+    .map((word) => word.trim())
+    .filter((word) => word !== "");
+  if (named.length === 0) return { ok: false, why: MERGE_FILES_RULE };
+  const paths: string[] = [];
+  for (const raw of named) {
+    const parsed = normalizeMergeFile(raw);
+    if (!parsed.ok) return { ok: false, why: `${MERGE_FILES_RULE}; ${parsed.why}` };
+    if (!paths.includes(parsed.path)) paths.push(parsed.path);
+  }
+  return { ok: true, value: paths };
+}
+
 /**
  * One value as a person typed it, for the key it belongs to. Refuses anything else with the
  * reason, so a typo never writes a value of the wrong kind.
@@ -506,6 +628,12 @@ export function parseWorkflowValue(key: WorkflowKey, text: string): ParsedValue 
   if (key === "issues.foundLabel" || key === "issues.fixedLabel" || key === "issues.readyLabel") {
     return isLabelName(value) ? { ok: true, value } : { ok: false, why: `${key} is ${LABEL_RULE}` };
   }
+  if (key === "plans.runMode") {
+    return (RUN_MODES as readonly string[]).includes(value)
+      ? { ok: true, value }
+      : { ok: false, why: `${key} is one of ${RUN_MODES.join(", ")}` };
+  }
+  if (key === "plans.mergeFiles") return parseMergeFiles(value);
   if (key === "reviewAgents") {
     const named = value
       .split(/[,\s]+/)

@@ -452,6 +452,8 @@ export type WorkflowKey =
   | "issues.readyLabel"
   | "alerts.usagePercent"
   | "plans.maxPhases"
+  | "plans.runMode"
+  | "plans.mergeFiles"
   | "switches.statusLine"
   | "switches.sessionNames"
   | "switches.jobRoute"

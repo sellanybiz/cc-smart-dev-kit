@@ -1,25 +1,35 @@
 /** The workflow settings: the schema, the resolution order, the switches, and the auto-merge rule. */
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 import { cliPaths } from "../cli/paths";
-import { ccSmartDevKitConfigSchema } from "../project/config";
+import { ccSmartDevKitConfigSchema, parseCcSmartDevKitConfig } from "../project/config";
+import { type Checkout, locateCheckout } from "../project/resolve";
 import { statuslineSetting } from "../setup/statusline";
-import { hookEnv } from "../testing/hooks";
+import { hookEnv, makeClone, makeRepo, writeClaudeFile } from "../testing/hooks";
+import { git } from "../testing/temp";
 import { hold, updateFiles } from "../update/state";
+import { describeIssues } from "../zod-issues";
 import { autoMergeAllowed } from "./auto-merge";
 import {
   jobRouteFrom,
   leadHintFrom,
   resolveJobRoute,
   resolveLeadHint,
+  resolveMergeFiles,
   resolveWorkflow,
 } from "./resolve";
 import {
   isPersonalFileSwitch,
+  isProjectKey,
+  MERGE_FILES_RULE,
+  normalizeMergeFile,
   PERSONAL_FILE_SWITCH_NAMES,
+  PERSONAL_ONLY_KEYS,
+  PROJECT_ONLY_KEYS,
   parseWorkflowValue,
   personalWorkflowSchema,
+  RUN_MODES,
   setWorkflowValue,
   unsetWorkflowValue,
   workflowSchema,
@@ -600,5 +610,294 @@ describe("autoMergeAllowed", () => {
       protectedBranches: ["main", "dev"],
     });
     expect(autoMergeAllowed(resolved, withProtection, "dev", "main")).toBe(true);
+  });
+});
+
+describe("plans.runMode: the person's own, never the project's", () => {
+  test("ask is the default; the person's value is personal; the four words are the whole list", () => {
+    const env = hookEnv();
+    expect(resolveWorkflow(pathsFor(env), null).plans.runMode).toEqual({
+      value: "ask",
+      source: "default",
+    });
+    writePersonal(env, { plans: { runMode: "lead-children" } });
+    expect(resolveWorkflow(pathsFor(env), null).plans.runMode).toEqual({
+      value: "lead-children",
+      source: "personal",
+    });
+    expect([...RUN_MODES]).toEqual(["ask", "solo", "lead-children", "coordinator"]);
+  });
+
+  test("a project value resolves as nothing: the person's value and the default stand", () => {
+    const env = hookEnv();
+    writePersonal(env, { plans: { runMode: "solo" } });
+    // A project's plans group, even one that names the cap, never touches the run mode.
+    const config = ccSmartDevKitConfigSchema.parse({ workflow: { plans: { maxPhases: 4 } } });
+    expect(resolveWorkflow(pathsFor(env), config).plans.runMode).toEqual({
+      value: "solo",
+      source: "personal",
+    });
+  });
+
+  test("the person's file takes the four words and refuses another one", () => {
+    for (const runMode of RUN_MODES) {
+      expect(personalWorkflowSchema.safeParse({ plans: { runMode } }).success).toBe(true);
+    }
+    expect(personalWorkflowSchema.safeParse({ plans: { runMode: "children" } }).success).toBe(
+      false,
+    );
+    const env = hookEnv();
+    const file = writePersonal(env, { plans: { runMode: "children" } });
+    expect(() => resolveWorkflow(pathsFor(env), null)).toThrow(`Invalid ${file}: plans.runMode:`);
+  });
+
+  test("a project's workflow object has no runMode: the schema refuses it", () => {
+    expect(workflowSchema.safeParse({ plans: { runMode: "solo" } }).success).toBe(false);
+    expect(
+      ccSmartDevKitConfigSchema.safeParse({ workflow: { plans: { runMode: "solo" } } }).success,
+    ).toBe(false);
+  });
+
+  test("a project file that sets it is refused with a message that names the key and the command", () => {
+    const text = JSON.stringify({ workflow: { plans: { runMode: "coordinator" } } });
+    expect(() =>
+      parseCcSmartDevKitConfig(text, "origin/main:.claude/cc-smart-dev-kit.json"),
+    ).toThrow(
+      `Invalid origin/main:.claude/cc-smart-dev-kit.json: workflow.plans.runMode is your own setting, not the project's, because a committed value would spend every teammate's usage: remove it from this file and run \`cc-smart-dev-kit workflow set plans.runMode <value>\` in your own terminal.`,
+    );
+  });
+
+  test("the key is the person's: no project file, a switch-free value of the four words", () => {
+    expect(isProjectKey("plans.runMode")).toBe(false);
+    expect(isProjectKey("plans.maxPhases")).toBe(true);
+    expect(isProjectKey("plans.mergeFiles")).toBe(true);
+    expect(PERSONAL_ONLY_KEYS).toEqual(["plans.runMode"]);
+    expect(parseWorkflowValue("plans.runMode", " solo ")).toEqual({ ok: true, value: "solo" });
+    expect(parseWorkflowValue("plans.runMode", "alone")).toEqual({
+      ok: false,
+      why: "plans.runMode is one of ask, solo, lead-children, coordinator",
+    });
+  });
+});
+
+describe("plans.mergeFiles: parsing", () => {
+  test.each([
+    ["plugin/dist/", "plugin/dist/"],
+    ["./plugin/dist/", "plugin/dist/"],
+    ["plugin\\dist\\", "plugin/dist/"],
+    [".\\plugin\\dist\\", "plugin/dist/"],
+    ["plugin//dist/./", "plugin/dist/"],
+    ["plugin/dist/.", "plugin/dist/"],
+    ["  CHANGELOG.md ", "CHANGELOG.md"],
+    ["./bun.lock", "bun.lock"],
+  ])("%j is normalised to %j", (raw, path) => {
+    expect(normalizeMergeFile(raw)).toEqual({ ok: true, path });
+  });
+
+  test.each([
+    ["", "is the root"],
+    ["  ", "is the root"],
+    [".", "is the root"],
+    ["./", "is the root"],
+    ["/", "is the root"],
+    [".\\", "is the root"],
+    ["/etc/passwd", "is absolute"],
+    ["\\windows\\x", "is absolute"],
+    ["C:\\repo\\x", "is absolute"],
+    ["c:/repo/x", "is absolute"],
+    ["..", "leaves the repository"],
+    ["../x", "leaves the repository"],
+    ["a/../../x", "leaves the repository"],
+    ["a/..", "leaves the repository"],
+    ["a\\..\\b", "leaves the repository"],
+    ["a\nb", "holds a control character"],
+  ])("%j is refused (%s)", (raw, why) => {
+    const parsed = normalizeMergeFile(raw);
+    expect(parsed.ok).toBe(false);
+    expect(parsed.ok ? "" : parsed.why).toContain(why);
+  });
+
+  test("a typed value is a comma or line list, each path normalised, a repeat kept once", () => {
+    expect(
+      parseWorkflowValue("plans.mergeFiles", "./plugin/dist/, CHANGELOG.md,plugin\\dist\\"),
+    ).toEqual({
+      ok: true,
+      value: ["plugin/dist/", "CHANGELOG.md"],
+    });
+    expect(parseWorkflowValue("plans.mergeFiles", "a.txt\nb/")).toEqual({
+      ok: true,
+      value: ["a.txt", "b/"],
+    });
+  });
+
+  test("a typed value with a bad path, or none, is refused and names the rule", () => {
+    for (const bad of ["../x", "/abs", ".", "ok.txt, ..", "", " , "]) {
+      const parsed = parseWorkflowValue("plans.mergeFiles", bad);
+      expect(parsed.ok).toBe(false);
+      expect(parsed.ok ? "" : parsed.why).toStartWith(MERGE_FILES_RULE);
+    }
+  });
+
+  test("a file's list is normalised on read, and one bad entry refuses the file, naming it", () => {
+    expect(
+      workflowSchema.parse({ plans: { mergeFiles: ["./a/", "a\\", "b.txt"] } }).plans?.mergeFiles,
+    ).toEqual(["a/", "b.txt"]);
+    const bad = workflowSchema.safeParse({ plans: { mergeFiles: ["ok.txt", "../x"] } });
+    expect(bad.success).toBe(false);
+    expect(bad.success ? "" : describeIssues(bad.error.issues)).toBe(
+      'plans.mergeFiles.1: "../x" leaves the repository: no .. segments',
+    );
+    expect(workflowSchema.safeParse({ plans: { mergeFiles: "a.txt" } }).success).toBe(false);
+    expect(workflowSchema.safeParse({ plans: { mergeFiles: [] } }).success).toBe(true);
+  });
+
+  test("the person's file refuses it: it is a project fact, so it would never count there", () => {
+    expect(personalWorkflowSchema.safeParse({ plans: { mergeFiles: ["a"] } }).success).toBe(false);
+    expect(PROJECT_ONLY_KEYS).toEqual(["plans.mergeFiles"]);
+  });
+
+  test("it resolves as the project's file says, else nothing, and never as the person's", () => {
+    const env = hookEnv();
+    expect(resolveWorkflow(pathsFor(env), null).plans.mergeFiles).toEqual({
+      value: [],
+      source: "default",
+    });
+    const config = ccSmartDevKitConfigSchema.parse({
+      workflow: { plans: { mergeFiles: ["CHANGELOG.md"] } },
+    });
+    expect(resolveWorkflow(pathsFor(env), config).plans.mergeFiles).toEqual({
+      value: ["CHANGELOG.md"],
+      source: "project",
+    });
+  });
+});
+
+/** A clone whose `origin/main` carries `workflow.plans.mergeFiles = listed`, and the files `tree` adds. */
+function mergeFilesWorld(
+  listed: unknown,
+  tree: Record<string, string> = {},
+): { checkout: Checkout; repo: string } {
+  const { repo } = makeClone();
+  writeClaudeFile(repo, "cc-smart-dev-kit.json", {
+    requires: ">=0.1",
+    worktrees: { base: "main" },
+    workflow: { plans: { mergeFiles: listed } },
+  });
+  for (const [path, text] of Object.entries(tree)) {
+    mkdirSync(dirname(join(repo, path)), { recursive: true });
+    writeFileSync(join(repo, path), text);
+  }
+  git(repo, "add", "-A");
+  git(repo, "commit", "-q", "-m", "the project's policy");
+  git(repo, "update-ref", "refs/remotes/origin/main", "HEAD");
+  const checkout = locateCheckout(repo, { env: hookEnv() });
+  if (checkout === null) throw new Error("the test clone is a checkout");
+  return { checkout, repo };
+}
+
+describe("plans.mergeFiles: read as committed on origin/<base>", () => {
+  test("the committed list comes back normalised, with no reason", () => {
+    const { checkout } = mergeFilesWorld(["./plugin/dist\\", "CHANGELOG.md"]);
+    expect(resolveMergeFiles(checkout, "main", { env: hookEnv() })).toEqual({
+      files: ["plugin/dist/", "CHANGELOG.md"],
+      reason: null,
+    });
+  });
+
+  test("an edit of the working copy, even a commit not on origin/main, is ignored", () => {
+    const { checkout, repo } = mergeFilesWorld(["CHANGELOG.md"]);
+    // A session widens its own copy to the whole tree, uncommitted and then committed locally.
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", {
+      requires: ">=0.1",
+      worktrees: { base: "main" },
+      workflow: { plans: { mergeFiles: ["src/", "plugin/"] } },
+    });
+    expect(resolveMergeFiles(checkout, "main", { env: hookEnv() }).files).toEqual(["CHANGELOG.md"]);
+    git(repo, "commit", "-q", "-am", "widen it here");
+    expect(resolveMergeFiles(checkout, "main", { env: hookEnv() }).files).toEqual(["CHANGELOG.md"]);
+  });
+
+  test("a committed file with no mergeFiles is an empty list with no reason", () => {
+    const { repo } = makeClone();
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", {
+      requires: ">=0.1",
+      worktrees: { base: "main" },
+    });
+    git(repo, "add", "-A");
+    git(repo, "commit", "-q", "-m", "policy");
+    git(repo, "update-ref", "refs/remotes/origin/main", "HEAD");
+    const checkout = locateCheckout(repo, { env: hookEnv() });
+    if (checkout === null) throw new Error("a checkout");
+    expect(resolveMergeFiles(checkout, "main", { env: hookEnv() })).toEqual({
+      files: [],
+      reason: null,
+    });
+  });
+
+  test("no origin/<base> (offline, never fetched): an empty list and the reason, never the working copy", () => {
+    const repo = makeRepo();
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", {
+      requires: ">=0.1",
+      worktrees: { base: "main" },
+      workflow: { plans: { mergeFiles: ["CHANGELOG.md"] } },
+    });
+    const checkout = locateCheckout(repo, { env: hookEnv() });
+    if (checkout === null) throw new Error("a checkout");
+    expect(resolveMergeFiles(checkout, "main", { env: hookEnv() })).toEqual({
+      files: [],
+      reason:
+        "origin/main is not known in this repository (no origin, or the branch was never fetched)",
+    });
+  });
+
+  test("a base that has no project file committed is an empty list and says so", () => {
+    const { repo } = makeClone();
+    const checkout = locateCheckout(repo, { env: hookEnv() });
+    if (checkout === null) throw new Error("a checkout");
+    git(repo, "update-ref", "refs/remotes/origin/main", "HEAD");
+    expect(resolveMergeFiles(checkout, "main", { env: hookEnv() })).toEqual({
+      files: [],
+      reason: "origin/main has no .claude/cc-smart-dev-kit.json committed",
+    });
+  });
+
+  test("no worktrees.base: an empty list and the reason", () => {
+    const { checkout } = mergeFilesWorld(["CHANGELOG.md"]);
+    const read = resolveMergeFiles(checkout, null, { env: hookEnv() });
+    expect(read.files).toEqual([]);
+    expect(read.reason).toBe(
+      "this project names no worktrees.base, so there is no committed copy of plans.mergeFiles to read",
+    );
+  });
+
+  test("a committed file that cannot be read gives an empty list and its own error", () => {
+    const { checkout } = mergeFilesWorld(["../outside"]);
+    const read = resolveMergeFiles(checkout, "main", { env: hookEnv() });
+    expect(read.files).toEqual([]);
+    expect(read.reason).toBe(
+      'Invalid origin/main:.claude/cc-smart-dev-kit.json: workflow.plans.mergeFiles.0: "../outside" leaves the repository: no .. segments',
+    );
+  });
+
+  test("a bare folder is left out with the fix; a bare file, and a path not committed yet, stay", () => {
+    const { checkout } = mergeFilesWorld(["docs", "plugin/dist/", "CHANGELOG.md", "build/out.js"], {
+      "docs/guide.md": "x\n",
+      "CHANGELOG.md": "x\n",
+    });
+    expect(resolveMergeFiles(checkout, "main", { env: hookEnv() })).toEqual({
+      files: ["plugin/dist/", "CHANGELOG.md", "build/out.js"],
+      reason:
+        "plans.mergeFiles on origin/main leaves out docs until fixed (docs is a folder: write it docs/)",
+    });
+  });
+
+  test("a folder is judged on the committed tree: one only in the working copy does not count", () => {
+    const { checkout, repo } = mergeFilesWorld(["gen"]);
+    mkdirSync(join(repo, "gen"));
+    writeFileSync(join(repo, "gen", "a.txt"), "x\n");
+    expect(resolveMergeFiles(checkout, "main", { env: hookEnv() })).toEqual({
+      files: ["gen"],
+      reason: null,
+    });
   });
 });
