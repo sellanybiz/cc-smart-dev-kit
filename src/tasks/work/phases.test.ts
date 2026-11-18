@@ -365,3 +365,30 @@ test("another session's plan in flight offers this process no ready phase", () =
     value: { inProgress: [], ready: [] },
   });
 });
+
+test("a step the caller's session claimed in a process that ended keeps another session's phase in progress for it", () => {
+  const { paths, db } = setup();
+  // The same session as `me`, in a process that no machine runs: `me` is that session reopened.
+  const before: Who = { sessionId: "main", pid: 999999981, procStart: "1" };
+  const g1 = phase(db, "plan-b", "G1", "Their guard", [], other);
+  start(db, g1, other);
+  const step = ok(
+    createTask(db, { project: "p", subject: "Step", parentId: g1.id, plan: "plan-b" }, before, 3),
+  );
+  start(db, step, before);
+  db.close();
+  expect(openPhasesOf(paths, "p", () => me)).toEqual({
+    state: "ready",
+    value: {
+      inProgress: [{ number: g1.number, subject: "Their guard", plan: "plan-b", agent: null }],
+      ready: [],
+    },
+  });
+  // A third session, which neither made the plan nor claims a step, finds none of it.
+  expect(
+    openPhasesOf(paths, "p", () => ({ sessionId: "third", pid: 63, procStart: "6300" })),
+  ).toEqual({
+    state: "ready",
+    value: { inProgress: [], ready: [] },
+  });
+});

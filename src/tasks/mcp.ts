@@ -4,7 +4,7 @@ import { VERSION } from "../build-info";
 import { PLUGIN } from "../build-info/names";
 import { TASKS_SERVER_NAME } from "../mcp/task-server-name";
 import { createTaskOps, type TaskOpsOptions } from "./ops";
-import { type TaskOperation, taskSchemas } from "./schemas";
+import { READ_ONLY_OPERATIONS, type TaskOperation, taskSchemas } from "./schemas";
 import { TASK_TOOL } from "./words";
 
 export const TASK_SERVER_INSTRUCTIONS = `These tools are your session's task list. Work tasks stay on this machine.
@@ -29,7 +29,6 @@ const descriptions: Record<TaskOperation, string> = {
   search: "Search work tasks and deploy tasks.",
   delete: "Delete a mistaken task with no notes or tasks, or an untracked deploy task file.",
 };
-const READ_ONLY: ReadonlySet<TaskOperation> = new Set(["list", "get", "search"]);
 
 export function createTaskServer(options: TaskOpsOptions = {}) {
   // The server never drops a blocking deploy task: that is the person's, in their own terminal.
@@ -47,7 +46,7 @@ export function createTaskServer(options: TaskOpsOptions = {}) {
         description: descriptions[operation],
         inputSchema: taskSchemas[operation],
         annotations: {
-          readOnlyHint: READ_ONLY.has(operation),
+          readOnlyHint: READ_ONLY_OPERATIONS.has(operation),
           destructiveHint: operation === "delete",
           openWorldHint: false,
         },

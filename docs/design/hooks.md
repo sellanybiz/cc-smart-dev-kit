@@ -607,10 +607,12 @@ It blocks the stop **once per stalled state** when all of these hold, cheapest f
    also where it claims the phase or one of its steps (work it took in another session's plan);
    ready phases are only those of its own plans, so a step claimed in another session's plan
    never makes that plan's next phase this guard's to start. The claim is the Claude process
-   from `callerOf` (`claimHeldBy`): on Linux its pid and start time, so a `/clear` keeps the
-   plan; off Linux, with no start time, the session id too, so a reused pid never inherits a
-   dead process's plan. No write ever stamps another session's plan on a task. A parked plan
-   (its plan task `pending`) is not in flight, so it never blocks.
+   from `callerOf` (`claimIsMine`: `claimHeldBy`, or a resumed claim): on Linux its pid and
+   start time, so a `/clear` keeps the plan; off Linux, with no start time, the session id too,
+   so a reused pid never inherits a dead process's plan. A claim its session left in a process
+   that is gone (a reopened session, `resumedClaim`) counts too, until the next task call moves
+   it. No write ever stamps another session's plan on a task. A parked plan (its plan task
+   `pending`) is not in flight, so it never blocks.
 5. This reason was not already given (`stopFeedbackGiven`, `src/hooks/transcript.ts`). Only
    after the store finds a phase in progress does it read the transcript's tail (`tailLines`,
    default `TRANSCRIPT_TAIL_BYTES`). The reason counts as given when a `user` entry of the

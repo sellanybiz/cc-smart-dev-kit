@@ -1,6 +1,6 @@
 import { readFileSync, rmSync } from "node:fs";
 import { relative } from "node:path";
-import { type TaskOperation, taskSchemas } from "./schemas";
+import { READ_ONLY_OPERATIONS, type TaskOperation, taskSchemas } from "./schemas";
 
 export type { TaskOperation } from "./schemas";
 
@@ -33,7 +33,7 @@ import {
 import { TASK_COMMAND, TASK_TOOL } from "./words";
 import { openWorkDb, type WorkDb, workDbFile, writeWork } from "./work/db";
 import { historyText } from "./work/history";
-import { callerOf, claimLive } from "./work/identity";
+import { CLAIM_PROCESS, callerOf, claimGone, claimLive } from "./work/identity";
 import {
   allTasks,
   claimState,
@@ -62,6 +62,7 @@ import {
   layPhase,
   type PhaseCap,
   planTask,
+  reclaimResumed,
   refuseOverCap,
   takeTasks,
 } from "./work/store";
@@ -246,7 +247,8 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
     if (db === undefined) db = openWorkDb(workDbFile({ stateDir }), { mode: "write" });
     return db;
   };
-  function call(operation: TaskOperation, raw: unknown): TaskAnswer {
+  /** `notes` collects lines the answer carries after its own text (`call`). */
+  function run(operation: TaskOperation, raw: unknown, notes: string[]): TaskAnswer {
     try {
       const caller = options.caller ? options.caller() : callerOf({ env });
       const who: Who = caller ?? { sessionId: null, pid: null, procStart: null };
@@ -265,6 +267,17 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
       };
       const now = options.now?.() ?? Date.now();
       const store = database();
+      // A reopened session keeps its session id in a new process: its running claims move to this
+      // process before anything reads them, so every reader (the status line too) finds them.
+      if (store.writable) {
+        const reclaimed = reclaimResumed(store, who, now, claimGone);
+        if (!reclaimed.ok) {
+          // A read still answers, with the failure on a line of its own; a write fails loudly.
+          const why = `claims of this session not moved: ${reclaimed.why}`;
+          if (!READ_ONLY_OPERATIONS.has(operation)) throw new Error(why);
+          notes.push(`${why}; the next call retries`);
+        }
+      }
       const all = allTasks(store, ctx.project);
       // The caller's own task (`ownerOf`: made under its session id, claimed by its process, or
       // made by its process under an earlier session id, as before a `/clear`).
@@ -285,7 +298,8 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
         return { max: value, source };
       };
       // A plan another process holds live is that session's work, not a queued plan to refuse.
-      const claimedElsewhere = (t: WorkTask) => claimState(t, claimLive, who) === "another session";
+      const claimedElsewhere = (t: WorkTask) =>
+        claimState(t, CLAIM_PROCESS, who) === "another session";
       const refuseOther = (plan: string) =>
         refuseOtherPlan({ all, inFlight, plan, claimedElsewhere });
       /** What a close freed, judged on the list read after it: the plan in flight may have closed. */
@@ -925,7 +939,7 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
           task.kind === "phase"
             ? ` · agent ${task.agent ?? "none"} · branch ${task.branch ?? "none"}`
             : "";
-        const state = claimState(task, claimLive, who);
+        const state = claimState(task, CLAIM_PROCESS, who);
         // On the plan ledger an open plan says where it stands in the queue; a plan with a
         // `parked:` note counts as parked only once it is not running (`planQueueState`).
         const queue =
@@ -954,6 +968,13 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
         why: (error instanceof Error ? error.message : String(error)).replace(/\s*\n\s*/g, " "),
       };
     }
+  }
+  function call(operation: TaskOperation, raw: unknown): TaskAnswer {
+    const notes: string[] = [];
+    const answer = run(operation, raw, notes);
+    return answer.ok && notes.length > 0
+      ? { ...answer, text: [answer.text, ...notes].join("\n") }
+      : answer;
   }
   return {
     call,

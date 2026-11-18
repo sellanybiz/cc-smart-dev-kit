@@ -1,5 +1,10 @@
 import { cliPaths } from "../../cli/paths";
-import { isRunning, liveSessions, sessionIdentityProved } from "../../hooks/sessions";
+import {
+  isRunning,
+  processStart,
+  sessionIdentityProved,
+  sessionRecordOf,
+} from "../../hooks/sessions";
 import {
   ancestorPids,
   type ParentReader,
@@ -7,7 +12,7 @@ import {
   type StatReader,
 } from "../../jobs/ancestry";
 import { type RunningProgram, runningPrograms } from "../../worktrees/machine-facts";
-import type { Who, WorkClaim } from "./types";
+import type { ClaimProcess, Who, WorkClaim } from "./types";
 
 /**
  * The parent of a process off Linux, from one listing of the running processes, made on the
@@ -53,6 +58,28 @@ export function claimLive(claim: WorkClaim, facts: ClaimFacts = {}): boolean {
     )
   );
 }
+/**
+ * Whether a claim's Claude process is proved to have ended: its pid no longer runs, or on Linux
+ * the pid now has another start time (a reused pid). A running pid whose start time cannot be
+ * compared (none on the claim, or `/proc` unreadable) is not gone: only a proved end lets a
+ * resumed session move the claim (`resumedClaim`), so two live processes of one conversation
+ * never pass a claim back and forth.
+ */
+export function claimGone(claim: WorkClaim, facts: ClaimFacts = {}): boolean {
+  if (!(facts.running ?? isRunning)(claim.pid)) return true;
+  const platform = facts.platform ?? process.platform;
+  if (platform !== "linux" || claim.procStart === null) return false;
+  const start = processStart(claim.pid, {
+    platform,
+    ...(facts.readStat ? { readStat: facts.readStat } : {}),
+  });
+  return start !== undefined && start !== claim.procStart;
+}
+/** The machine's own answers to both questions about a claim's process. */
+export const CLAIM_PROCESS: ClaimProcess = {
+  live: (claim) => claimLive(claim),
+  gone: (claim) => claimGone(claim),
+};
 export interface CallerFacts {
   claudeConfigDir?: string;
   env?: Record<string, string | undefined>;
@@ -75,16 +102,21 @@ export function callerOf(
   const readStat = facts.readStat ?? readProcStat;
   const config = facts.claudeConfigDir ?? cliPaths(env).claudeConfigDir;
   const cacheKey = `${config}:${pid}:${platform}`;
-  const records = liveSessions(config, {
-    readStat,
-    platform,
-    ...(facts.running ? { running: facts.running } : {}),
-  });
+  // Only the caller's own record is read, never every running session's: an unrelated session's
+  // record, unreadable at this moment, must not blank the caller's rows. The caller's own
+  // unreadable record still throws.
+  const recordOf = (p: number) =>
+    sessionRecordOf(config, p, {
+      readStat,
+      platform,
+      ...(facts.running ? { running: facts.running } : {}),
+    });
   const previous = cached.get(cacheKey);
-  const live = previous
-    ? records.find((r) => r.pid === previous.pid && (r.procStart ?? null) === previous.procStart)
-    : null;
-  let record = live;
+  const remembered = previous ? recordOf(previous.pid) : null;
+  let record =
+    remembered !== null && (remembered.procStart ?? null) === previous?.procStart
+      ? remembered
+      : null;
   if (!record) {
     const parent = facts.ppid ?? process.ppid;
     const grandparent =
@@ -93,7 +125,10 @@ export function callerOf(
       platform === "linux"
         ? ancestorPids(pid, readStat)
         : [parent, ...(grandparent ? [grandparent] : [])];
-    record = pids.map((p) => records.find((r) => r.pid === p)).find((r) => r !== undefined);
+    for (const p of pids) {
+      record = recordOf(p);
+      if (record !== null) break;
+    }
   }
   if (record) {
     cached.set(cacheKey, { pid: record.pid, procStart: record.procStart ?? null });
