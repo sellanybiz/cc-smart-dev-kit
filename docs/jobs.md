@@ -390,8 +390,16 @@ function, and inside it runs `lefthook -h` and `lefthook "$@"`: `lefthook run` i
 command of the file. So the kind `{ "tool": "lefthook" }`, with no `sub`, queues it (proved
 against lefthook's own template, `src/jobs/git-hooks.test.ts`), and `{ "tool": "lefthook",
 "sub": ["run"] }` does not; it only matches a hook you wrote that calls `lefthook run …`
-directly. The kind then queues every lefthook hook of the project, whatever its YAML runs. The
-managers' own files (lefthook's and pre-commit's YAML) are not read, and no kind is proved for
+directly. The kind then queues every lefthook hook of the project, whatever its YAML runs. It
+also matches every `lefthook …` line typed in a session, so `lefthook install` would wait for the
+slot too: give the kind `"printOnly": ["-h", "--help", "install"]`, which keeps those light and
+still queues the hook:
+
+```json
+"lefthook": { "match": [{ "tool": "lefthook" }], "printOnly": ["-h", "--help", "install"] }
+```
+
+The managers' own files (lefthook's and pre-commit's YAML) are not read, and no kind is proved for
 the pre-commit framework's generated hook. A binary file, or a file over 256 KB, is run as it
 is.
 
@@ -567,8 +575,8 @@ only the heavy-job count. The queue never changes process priority. An old
   `nx`): the line runs raw, or takes the slot of the kind you gave it.
 - **lefthook's and pre-commit's YAML files are not read.** What their hooks run is invisible: a
   generated lefthook hook is queued only by a kind with `{ "tool": "lefthook" }` (every
-  lefthook hook then waits), not by `lefthook run`; the pre-commit framework's has no proved kind
-  (§ Git hooks).
+  lefthook hook then waits, and so does a typed `lefthook …` line its `printOnly` does not name),
+  not by `lefthook run`; the pre-commit framework's has no proved kind (§ Git hooks).
 - **`tsc` on named files ignores `tsconfig.json`** and may pull in the whole import graph of
   those files, so a "light" run can still be large. Name few, narrow files.
 - **vitest and `bun test` file arguments are filters**, not exact files. A named file that exists

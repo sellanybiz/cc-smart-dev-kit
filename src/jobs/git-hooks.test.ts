@@ -7,9 +7,11 @@ import { existsSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { gitHookWorld, writeFileIn } from "../testing/git-hook-world";
 import { cleanGitEnv, git, tempDir } from "../testing/temp";
+import { runWeight } from "./classify";
 import { HOOK_NAMES, hookDecision, MAX_HOOK_BYTES, realHooksFolder, TIMED_OUT } from "./git-hooks";
 import { DEFAULT_KINDS } from "./kinds";
 import { packageScripts } from "./package-scripts";
+import { diskWeightSource } from "./weight-source";
 
 const ENV = cleanGitEnv();
 
@@ -279,5 +281,22 @@ describe("hookDecision", () => {
     // `lefthook run` never appears as a command of that file, so this kind does not match it.
     expect(ask(named({ tool: "lefthook", sub: ["run"] }))).toBe("direct");
     expect(ask(DEFAULT_KINDS as ReturnType<typeof named>)).toBe("direct");
+  });
+
+  // docs/jobs.md § Git hooks: the kind it shows, word for word.
+  test("the documented lefthook kind queues the hook and leaves a typed install or help light", () => {
+    const world = gitHookWorld();
+    writeFileIn(join(world.repo, ".git", "hooks", "pre-push"), LEFTHOOK_HOOK, 0o755);
+    const kinds = {
+      ...DEFAULT_KINDS,
+      lefthook: { match: [{ tool: "lefthook" }], printOnly: ["-h", "--help", "install"] },
+    };
+    expect(hookDecision("pre-push", world.repo, kinds, sourceFor(world.repo), ENV)).toEqual({
+      queue: "lefthook",
+    });
+    const weigh = (line: string) => runWeight(line, kinds, diskWeightSource(world.repo));
+    expect(weigh("lefthook install")).toEqual({ weight: "light" });
+    expect(weigh("lefthook -h")).toEqual({ weight: "light" });
+    expect(weigh("lefthook run pre-push")).toEqual({ weight: "heavy", kind: "lefthook" });
   });
 });
