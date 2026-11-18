@@ -605,6 +605,7 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
                 parentId: parent?.id ?? null,
                 plan: taskPlan,
                 blockedBy,
+                ...flight,
               },
               who,
               now,

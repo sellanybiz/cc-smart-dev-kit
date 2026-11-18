@@ -179,10 +179,11 @@ checkout's working copy through the normal workflow resolver:
   `in_progress`: the store sets that itself, in the same write, when the plan's first phase or
   task starts (`task_update` or `task_create` with `in_progress`; the plan task is claimed by
   the starting process, as any started task). A plan started under 4.8.0, which never set its
-  task, is in flight too while one of its phases is `in_progress` (`isInFlight` in
-  `queries.ts`). A caller's plan in flight (`inFlightPlanOf`: an own plan, judged on the plan's
-  own task `owns`) is normally one. After a `task_take` it may hold two: the one with a phase
-  in progress counts first, else the lower number. Another session's plan never counts.
+  task, is in flight too while one of its phases is `in_progress`, and so is a plan whose work
+  another session started (`isInFlight` in `queries.ts`: a phase or a step of it is `in_progress`,
+  whatever its own task says). A caller's plan in flight (`inFlightPlanOf`: an own plan, judged on
+  the plan's own task `owns`) is normally one. After a `task_take` it may hold two: the one with
+  work in progress counts first, else the lower number. Another session's plan never counts.
   A plan stays in flight until its own `task_done`, so its final review and fix pass belong to
   it, and the next plan cannot start before it closes.
 - **The start refusal.** Starting a phase or task of a plan other than the one in flight
@@ -417,7 +418,8 @@ or let the child build it. Every existing refusal and message is unchanged.
 (`refuseFlightOverlap`, `store.ts`), over stored lists with the same `filesOverlap`, against every
 held plan but its own: a plan reserved for another lead or child, or in flight in another session.
 Any task of the plan that starts puts it into flight, so any of them is judged (`enteringPlan`): its
-own task, a phase, a step, and a running task moved into it, whoever owns the plan. A plan already
+own task, a phase, a step, a task created already running, and a running task moved into it,
+whoever owns the plan (`insertTask` and `applyUpdate` share the one check). A plan already
 in flight is not judged again. The `plans.mergeFiles` and case read (`planFilesCheck`) is taken
 before the lock, once for each such start and never for a step in a running plan. An overlap is
 refused, naming the plan and the way out for each plan in the way: a reserved plan holds its files

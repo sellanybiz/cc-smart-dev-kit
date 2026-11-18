@@ -207,28 +207,32 @@ export function livePhaseCount(all: readonly WorkTask[], plan: string): number {
   return all.filter((t) => t.kind === "phase" && t.plan === plan && t.status !== "dropped").length;
 }
 
-/** Whether a phase of the plan is `in_progress`: work running now, whatever the plan task says. */
-function hasRunningPhase(all: readonly WorkTask[], plan: WorkTask): boolean {
-  return all.some((p) => p.kind === "phase" && p.plan === plan.plan && p.status === "in_progress");
+/**
+ * Whether a phase or a step of the plan is `in_progress`: work running now, whatever the plan task
+ * says. A step counts like a phase: work in the plan is work in the plan, and a plan that runs
+ * holds its files (`heldPlansIn`) whichever task of it was started.
+ */
+function hasRunningTask(all: readonly WorkTask[], plan: WorkTask): boolean {
+  return all.some((p) => p.kind !== "plan" && p.plan === plan.plan && p.status === "in_progress");
 }
 
 /**
  * Whether a plan is in flight: it is open, and its task is `in_progress` (the store sets that
  * when the plan's first phase or task starts) or, for a plan started under 4.8.0 that never set
- * its task, one of its phases is `in_progress`.
+ * its task, or one whose work another session started, a phase or a step of it is `in_progress`.
  */
 export function isInFlight(all: readonly WorkTask[], plan: WorkTask): boolean {
   return (
     plan.kind === "plan" &&
     isOpen(plan) &&
-    (plan.status === "in_progress" || hasRunningPhase(all, plan))
+    (plan.status === "in_progress" || hasRunningTask(all, plan))
   );
 }
 
 /**
  * The plan a caller has in flight: one of its own plans (`owns` holds the plan's task) that
  * `isInFlight`. A session runs one plan at a time, so there is normally one. When two qualify (a
- * take-over made the second), the one with a phase in progress, else the first by number.
+ * take-over made the second), the one with work in progress, else the first by number.
  * Another session's plan never counts. Null when the caller runs none.
  */
 export function inFlightPlanOf(
@@ -238,7 +242,7 @@ export function inFlightPlanOf(
   const candidates = all.filter(
     (t) => t.kind === "plan" && t.plan !== null && owns(t) && isInFlight(all, t),
   );
-  return candidates.find((t) => hasRunningPhase(all, t)) ?? candidates[0] ?? null;
+  return candidates.find((t) => hasRunningTask(all, t)) ?? candidates[0] ?? null;
 }
 
 /**

@@ -494,7 +494,16 @@ describe("keep-going: ready phases", () => {
 
   test("ready phases of a plan that is not in flight: no block", async () => {
     const w = world();
-    // A queued plan this process holds a claim in (a step started), its plan task never started.
+    // A queued plan: laid out, nothing in it running, its plan task never started.
+    const first = phase(w, "plan-a", "Q1", "Queued one");
+    phase(w, "plan-a", "Q2", "Queued two");
+    addStep(w, first);
+    w.db.close();
+    expect(await runHook(keepGoingHook, stop(w.repo), w.env)).toEqual({});
+  });
+
+  test("a step running in a queued plan puts the plan in flight: its ready phases block", async () => {
+    const w = world();
     const first = phase(w, "plan-a", "Q1", "Queued one");
     phase(w, "plan-a", "Q2", "Queued two");
     addStep(w, first);
@@ -507,7 +516,12 @@ describe("keep-going: ready phases", () => {
     if (!step.ok) throw new Error(step.why);
     start(w, step.value, ME);
     w.db.close();
-    expect(await runHook(keepGoingHook, stop(w.repo), w.env)).toEqual({});
+    expect(await runHook(keepGoingHook, stop(w.repo), w.env)).toEqual({
+      stdout: JSON.stringify({
+        decision: "block",
+        reason: `Phase #2 Queued one is ready to start, and no subagent runs. Start it now (dispatch its builder), or record why it waits with \`task_note\` and ${READY_TAIL}`,
+      }),
+    });
   });
 
   test("another session's plan in flight: no block", async () => {
@@ -642,7 +656,6 @@ describe("keep-going: silent", () => {
       3,
     );
     if (!step.ok) throw new Error(step.why);
-    start(w, step.value, ME);
     w.db.close();
     expect(await runHook(keepGoingHook, stop(w.repo), w.env)).toEqual({});
   });

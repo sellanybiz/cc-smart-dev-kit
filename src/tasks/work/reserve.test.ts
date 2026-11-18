@@ -1232,3 +1232,78 @@ test("a start is judged with the files check the caller read: plans.mergeFiles a
     folding.ops.close();
   }
 });
+
+test("a task created already running puts its plan into flight, and is judged like a start", () => {
+  const w = world();
+  laidPlan(w, LEAD, "alpha", ["src/a/"]);
+  const beta = laidPlan(w, OTHER, "beta", ["src/a/x.ts"]);
+  expect(ok(reserveIn(w, "alpha", LEAD)).lead).not.toBeNull();
+  const third = w.ops(THIRD);
+  try {
+    // A third session creates a running task under OTHER's phase, beside the reserved plan.
+    expect(
+      refused(
+        third.call("create", { subject: "sneak", parent: beta.phase, status: "in_progress" }),
+      ),
+    ).toContain('cannot start, since it overlaps #1 "alpha": src/a/x.ts (src/a/)');
+  } finally {
+    third.close();
+  }
+  // Nothing was stored: no task, and the plan holds nothing.
+  const db = w.store();
+  try {
+    expect(allTasks(db, w.project).some((t) => t.subject === "sneak")).toBe(false);
+    expect(heldPlans(db, w.project, THIRD).map((h) => h.plan.plan)).toEqual(["alpha"]);
+  } finally {
+    db.close();
+  }
+  expect(planStatus(w, "beta")).toBe("pending");
+});
+
+test("a task created running in a plan clear of every held plan is allowed, and holds the plan", () => {
+  const w = world();
+  laidPlan(w, LEAD, "alpha", ["src/a/"]);
+  const gamma = laidPlan(w, OTHER, "gamma", ["lib/g/"]);
+  expect(ok(reserveIn(w, "alpha", LEAD)).lead).not.toBeNull();
+  const third = w.ops(THIRD);
+  try {
+    said(third.call("create", { subject: "fine", parent: gamma.phase, status: "in_progress" }));
+  } finally {
+    third.close();
+  }
+  const db = w.store();
+  try {
+    expect(heldPlans(db, w.project, THIRD).map((h) => [h.plan.plan, h.why])).toEqual([
+      ["alpha", "reserved"],
+      ["gamma", "in-flight"],
+    ]);
+  } finally {
+    db.close();
+  }
+});
+
+test("a step started in a plan holds the plan, so a later reservation that overlaps is refused", () => {
+  const w = world();
+  laidPlan(w, OTHER, "beta", ["src/b/"]);
+  laidPlan(w, LEAD, "alpha", ["src/b/inner/"]);
+  const step = numberOf(w, "beta step");
+  const third = w.ops(THIRD);
+  try {
+    said(third.call("update", { task: step, status: "in_progress" }));
+  } finally {
+    third.close();
+  }
+  const db = w.store();
+  try {
+    // The plan row never started, the step did: the plan runs all the same.
+    expect(planStatus(w, "beta")).toBe("pending");
+    expect(heldPlans(db, w.project, LEAD).map((h) => [h.plan.plan, h.why])).toEqual([
+      ["beta", "in-flight"],
+    ]);
+  } finally {
+    db.close();
+  }
+  expect(why(reserveIn(w, "alpha", LEAD))).toBe(
+    '#4 "alpha" overlaps #1 "beta": src/b/inner/ (src/b/)',
+  );
+});

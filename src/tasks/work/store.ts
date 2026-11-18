@@ -159,6 +159,8 @@ export interface CreateTask {
   blockedBy?: string[];
   /** A plan's file list (D2); only a plan has one. */
   files?: readonly string[];
+  /** What a start into flight is judged by (`refuseFlightOverlap`); see `NO_FILES_CHECK`. */
+  filesCheck?: FilesCheck;
 }
 /**
  * What a change to a plan's files is judged by when the plan is held (`refuseHeldOverlap`): the
@@ -383,6 +385,12 @@ function refuseHeldOverlap(db: WorkDb, task: WorkTask, who: Who, check: FilesChe
 }
 
 /**
+ * The check a caller that read none is judged by: nothing ignored, case compared. A caller that
+ * has the checkout reads the real one before the lock (`planFilesCheck`) and passes it in.
+ */
+const NO_FILES_CHECK: FilesCheck = { ignore: [], caseFold: false };
+
+/**
  * The way out of an overlap with a held plan, by why it is held: a reserved plan holds its files
  * until its pull request merges or closes; a plan in flight holds them until it is done or parked,
  * and one whose session is gone is taken, parked or dropped.
@@ -425,7 +433,7 @@ function refuseFlightOverlap(db: WorkDb, plan: WorkTask, who: Who, check: FilesC
 /**
  * The plan row that this update puts into flight, or null. Any task of plan P that starts (the
  * plan's own task, a phase, a step, or a running task moved into P) puts P into flight, held from
- * then on whoever owns P (`isInFlight` counts a running phase), so the start is judged the same
+ * then on whoever owns P (`isInFlight` counts a running phase or step), so the start is judged the same
  * way for each. Null when P is already in flight, has no plan row (an older plan) or the task
  * does not start. Read before the UPDATE, so the answer is P as it was.
  */
@@ -437,7 +445,12 @@ function enteringPlan(
 ): WorkTask | null {
   if (status !== "in_progress" || plan === null) return null;
   if (task.status === "in_progress" && task.plan === plan) return null;
-  const all = allTasks(db, task.project);
+  return planNotInFlight(db, task.project, plan);
+}
+
+/** The plan row of `plan` when it is not in flight yet; null when it is, or has no plan row. */
+function planNotInFlight(db: WorkDb, project: string, plan: string): WorkTask | null {
+  const all = allTasks(db, project);
   const row = all.find((t) => t.kind === "plan" && t.plan === plan);
   return row === undefined || isInFlight(all, row) ? null : row;
 }
@@ -471,6 +484,12 @@ export function insertTask(
       .get(input.project, input.project)?.n ?? 1;
   const status = input.status ?? "pending";
   const claimed = status === "in_progress" && who.pid !== null;
+  // A task made already running puts its plan into flight like one started later (`enteringPlan`).
+  // Read before the INSERT, so the plan is as it was; a plan task made running is its own plan.
+  const entering =
+    status === "in_progress" && plan !== null && (input.kind ?? "task") !== "plan"
+      ? planNotInFlight(db, input.project, plan)
+      : null;
   db.sqlite
     .query(
       "INSERT INTO tasks(id,project,number,parent_id,kind,subject,description,status,plan,phase,agent,branch,worktree,base,created_by,created_pid,created_start,claim_pid,claim_start,claim_session,created_at,updated_at,closed_at,blocking) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -505,6 +524,8 @@ export function insertTask(
   if (input.files !== undefined) storeFiles(db, taskById(db, id), input.files);
   const task = taskById(db, id);
   if (status === "in_progress") unblockedValid(db, task);
+  const joining = task.kind === "plan" && status === "in_progress" ? task : entering;
+  if (joining !== null) refuseFlightOverlap(db, joining, who, input.filesCheck ?? NO_FILES_CHECK);
   const initial: Record<string, unknown> = {
     kind: task.kind,
     plan: task.plan,
@@ -600,7 +621,7 @@ export function applyUpdate(
     );
   // A plan that is dropped is released: a drop frees what it held (D4).
   if (status === "dropped" && task.kind === "plan") clearLead(db, id);
-  const check = change.filesCheck ?? { ignore: [], caseFold: false };
+  const check = change.filesCheck ?? NO_FILES_CHECK;
   if (change.files !== undefined) {
     storeFiles(db, task, change.files);
     refuseHeldOverlap(db, task, who, check);
