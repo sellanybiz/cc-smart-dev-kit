@@ -226,4 +226,58 @@ describe("hookDecision", () => {
       "direct",
     );
   });
+
+  // The hook lefthook writes (`lefthook install`), cut to the lines that matter and rendered for
+  // `pre-push` with no rc file, no `LefthookPath` and no extension. Template:
+  // https://raw.githubusercontent.com/evilmartians/lefthook/master/internal/templates/hook.tmpl
+  // (fetched 2026-11-18). The word `run` is not the program's argument anywhere but in the
+  // last line, where the program is the function `call_lefthook`: lefthook itself is only ever
+  // run as `lefthook -h` and `lefthook "$@"`.
+  const LEFTHOOK_HOOK = [
+    "#!/bin/sh",
+    "",
+    'if [ "$LEFTHOOK" = "0" ]; then',
+    "  exit 0",
+    "fi",
+    "",
+    "call_lefthook()",
+    "{",
+    '  if test -n "$LEFTHOOK_BIN"',
+    "  then",
+    '    "$LEFTHOOK_BIN" "$@"',
+    "  elif lefthook -h >/dev/null 2>&1",
+    "  then",
+    '    lefthook "$@"',
+    "  else",
+    '    dir="$(git rev-parse --show-toplevel)"',
+    '    if test -f "$dir/node_modules/lefthook/bin/index.js"',
+    "    then",
+    '      "$dir/node_modules/lefthook/bin/index.js" "$@"',
+    "    elif pnpm lefthook -h >/dev/null 2>&1",
+    "    then",
+    '      pnpm lefthook "$@"',
+    "    else",
+    '      echo "Can\'t find lefthook in PATH"',
+    "    fi",
+    "  fi",
+    "}",
+    "",
+    'call_lefthook run "pre-push" "$@"',
+    "",
+  ].join("\n");
+
+  test("lefthook's generated hook is queued by a kind that names the tool, not `lefthook run`", () => {
+    const world = gitHookWorld();
+    writeFileIn(join(world.repo, ".git", "hooks", "pre-push"), LEFTHOOK_HOOK, 0o755);
+    const named = (match: { tool: string; sub?: string[] }) => ({
+      ...DEFAULT_KINDS,
+      checks: { match: [match] },
+    });
+    const ask = (kinds: ReturnType<typeof named>) =>
+      hookDecision("pre-push", world.repo, kinds, sourceFor(world.repo), ENV);
+    expect(ask(named({ tool: "lefthook" }))).toEqual({ queue: "checks" });
+    // `lefthook run` never appears as a command of that file, so this kind does not match it.
+    expect(ask(named({ tool: "lefthook", sub: ["run"] }))).toBe("direct");
+    expect(ask(DEFAULT_KINDS as ReturnType<typeof named>)).toBe("direct");
+  });
 });

@@ -9,7 +9,15 @@
   in `owned-entries.json`): the auto-mode block;
 - in a Markdown file, one block between `<!-- cc-smart-dev-kit:begin -->` and
   `<!-- cc-smart-dev-kit:end -->`;
-- whole files it creates itself (the launcher, the copy of the instructions).
+- whole files it creates itself (the launcher, the copy of the instructions);
+- folders it owns whole, each marked (`.cc-smart-dev-kit-owned`) and listed in
+  `owned-folders.json`, with no backup (build output): the portal's export, which an update
+  swaps for a new folder, and the git hooks folder (`~/.local/share/cc-smart-dev-kit/git-hooks/`,
+  `src/jobs/hook-folder.ts`), one `sh` script per hook name with mode 755. Git reads the hooks
+  folder while a commit runs, so it is never swapped or renamed away: `writeManagedFiles` rewrites each
+  script in place (temp file, rename) and removes a name that left the list. A folder at that
+  path without the mark is the person's: setup never replaces it, and `doctor` says to move it
+  away. `restore` removes both folders.
 
 The guarantees:
 
@@ -89,7 +97,7 @@ The guarantees:
   restart. A restore with nothing left changes nothing.
 
 Its state (`<stateDir>`) lives in `$CLAUDE_CONFIG_DIR/cc-smart-dev-kit/` (by default
-`~/.claude/cc-smart-dev-kit/`): `owned.json`, `owned-entries.json`, `owned-hooks.json`, `changed.json`, the lock and `backups/`. The
+`~/.claude/cc-smart-dev-kit/`): `owned.json`, `owned-entries.json`, `owned-hooks.json`, `owned-folders.json`, `changed.json`, the lock and `backups/`. The
 state is per config folder, but the launcher in `~/.local/bin` is shared by all of
 them. So a restore under one config folder can remove a launcher another one relies
 on. A launcher started without `CLAUDE_CONFIG_DIR` looks in `~/.claude`.
@@ -110,10 +118,14 @@ Claude Code's default when no string is set, and says that project settings may 
 No second plan-folder resolver is added: verify-gate already reads the user, project and
 project-local settings and excludes both the configured folder and `.claude/plans`.
 
-The exact root Claude Code uses for a relative folder in a worktree session is
-[to prove live](../claude-code-contract.md#relied-on-not-proved-yet), not a tested claim.
-A home-root project or a Windows path with a backslash may fall back to the config folder's
-`plans` directory; include both cases in that live check.
+Claude Code resolves a relative folder against the session's own project root (proved on
+2.1.326, `claude-code-contract.md` § Worktrees): a session started in the main checkout writes
+its plan in the main checkout's `.claude/plans/`, and one started in a linked worktree writes it
+in that worktree's. So a plan approved in plan mode from the main checkout of a project that
+guards its main folder lands there, and the `plan-task` skill copies it into the worktree
+(`main-folder-guard` lets that one write through, `docs/design/hooks.md`). A home-root project
+or a Windows path with a backslash may fall back to the config folder's `plans` directory, and
+is [still to prove](../claude-code-contract.md#relied-on-not-proved-yet).
 
 ## The task system (D75)
 
@@ -139,9 +151,11 @@ commands and guards. The status line adds rows for current work: the plan, its p
 ### Who changes what, and when
 
 - **A SessionStart hook** adds a note to the session (§ The hooks) or starts the background
-  self-update (§ Updates). It writes no user file, and never restarts or stops anything.
-  (Refreshing managed files from it is not built yet; when it is, it goes through
-  `src/setup/` under its lock, and `cc-smart-dev-kit setup` does that by hand today.)
+  self-update (§ Updates). It writes no user file, and never restarts or stops anything. It may
+  refresh two managed copies that a plugin update leaves behind, through `src/setup/` under its
+  lock: the instructions copy, and the git hooks folder, the first session start of a new
+  version (`refreshGitHooksFolder`). It never creates the folder: only `setup` does, after it
+  shows the change.
 - **The background self-update** installs a newer plugin version with Claude Code's own
   `claude plugin` commands. It writes no user file and restarts nothing.
 - **The move to the Claude defaults (D66) is `setup`'s alone.** Once per machine, in its own
