@@ -993,6 +993,11 @@ test("git facts: a stray local branch or a tag named like origin's branch stops 
   expect(readGitFacts(stray.repo, stray.dir, "refs/remotes/origin/main", env).refBranch).toBe(
     "main",
   );
+  // The same with git's warning off: git then takes the first match and prints it.
+  git(stray.repo, "config", "core.warnAmbiguousRefs", "false");
+  expect(() => readGitFacts(stray.repo, stray.dir, "origin/main", env)).toThrow(
+    "origin/main names more than one ref (refs/heads/origin/main, refs/remotes/origin/main)",
+  );
   // A tag `origin/main` beside origin's branch, no local branch: git would ship the tag.
   const tagged = repoWithRemote();
   git(tagged.repo, "tag", "origin/main");

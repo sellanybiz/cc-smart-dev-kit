@@ -224,8 +224,8 @@ function refCandidates(ref: string): string[] {
  * remote may be named `my/fork`). A commit, a tag, or HEAD (the current branch, not a ship branch)
  * give null. A failed read throws, as every read in `readGitFacts` does: a null would let a run on
  * the ref's own branch through. So does a short name that matches more than one ref (a stray local
- * branch `origin/main` beside origin's, a tag beside a branch): git then prints nothing and ships
- * the first match, which may not be the one meant, so the gate stops and names them all.
+ * branch `origin/main` beside origin's, a tag beside a branch): git ships the first match, which
+ * may not be the one meant, so the gate stops and names them all.
  *
  * No `--end-of-options` here: with `--symbolic-full-name`, git prints that word back as a line of
  * output. A ref name never starts with `-` (git check-ref-format), so such text is refused before
@@ -233,15 +233,17 @@ function refCandidates(ref: string): string[] {
  */
 function refBranchOf(repo: string, ref: string, env: Env): string | null {
   if (ref === "HEAD" || ref === "@" || ref.startsWith("-")) return null;
-  const named = taskGit(repo, ["rev-parse", "--symbolic-full-name", ref], env);
-  if (named === "") {
+  // Counted for every short name, never only when git prints nothing: with
+  // `core.warnAmbiguousRefs` off, git takes the first match and says nothing.
+  if (!ref.startsWith("refs/")) {
     const found = refCandidates(ref).filter((name) => refExists(repo, name, env));
     if (found.length > 1)
       throw new Error(
         `${ref} names more than one ref (${found.join(", ")}): name the one that ships in full with --ref, or delete the one that should not be there`,
       );
-    return null;
   }
+  const named = taskGit(repo, ["rev-parse", "--symbolic-full-name", ref], env);
+  if (named === "") return null;
   if (named.startsWith("refs/heads/")) return named.slice("refs/heads/".length);
   if (!named.startsWith("refs/remotes/")) return null;
   // `git remote add` refuses a name inside another (`my` beside `my/fork`), but a config edit

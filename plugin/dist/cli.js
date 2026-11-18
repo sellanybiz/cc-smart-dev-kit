@@ -31388,13 +31388,14 @@ function refCandidates(ref) {
 function refBranchOf(repo, ref, env) {
   if (ref === "HEAD" || ref === "@" || ref.startsWith("-"))
     return null;
-  const named = taskGit(repo, ["rev-parse", "--symbolic-full-name", ref], env);
-  if (named === "") {
+  if (!ref.startsWith("refs/")) {
     const found = refCandidates(ref).filter((name) => refExists(repo, name, env));
     if (found.length > 1)
       throw new Error(`${ref} names more than one ref (${found.join(", ")}): name the one that ships in full with --ref, or delete the one that should not be there`);
-    return null;
   }
+  const named = taskGit(repo, ["rev-parse", "--symbolic-full-name", ref], env);
+  if (named === "")
+    return null;
   if (named.startsWith("refs/heads/"))
     return named.slice("refs/heads/".length);
   if (!named.startsWith("refs/remotes/"))
