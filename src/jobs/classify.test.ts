@@ -1028,7 +1028,7 @@ describe("runWeight: light, heavy or none", () => {
     expect(weight("cd app && bunx vitest run a.test.ts")).toEqual(LIGHT);
     expect(weight("cd app && cd .. && bunx vitest run a.test.ts")).toEqual(LIGHT);
     // A `cd` inside a nested shell stays inside it: `b.test.ts` is in `/repo` only.
-    expect(weight("bash -c 'cd app && true'; bunx vitest run b.test.ts")).toEqual(LIGHT);
+    expect(weight("bash -c 'cd app'; bunx vitest run b.test.ts")).toEqual(LIGHT);
     expect(weight("bash -c 'cd app && true' && cd app && bunx vitest run b.test.ts")).toEqual(
       heavy("test:run"),
     );
@@ -1100,7 +1100,38 @@ describe("runWeight: light, heavy or none", () => {
     expect(weight("tsc --noEmit src/a.ts && tsc --noEmit")).toEqual(heavy("tsc"));
     expect(weight("tsc --noEmit src/a.ts && next build")).toEqual(heavy("build"));
     expect(weight("tsc --version && bunx vitest run")).toEqual(heavy("test:run"));
-    expect(weight("bunx vitest run a.test.ts && rm -f x")).toEqual(LIGHT);
+    // Light needs every command of the line understood: one the reader does not know may be
+    // the heavy work (a build script, `make`), so the line keeps its slot.
+    expect(weight("bunx vitest run a.test.ts && rm -f x")).toEqual(heavy("test:run"));
+  });
+
+  // Vitest's docs call `--ui` a watch-mode feature, but the route only sees the Bash tool's
+  // calls, whose stdin is no terminal, and there Vitest falls back to a single run: run on
+  // Vitest 3.2.7 (stdin from /dev/null), `vitest --ui`, `vitest run --ui` and `vitest --ui --run`
+  // each print the report and exit 0. So `--ui` is no watch flag for Vitest, and it keeps a slot.
+  test("vitest --ui ends when it has no terminal: it is a full run, not a watch run", () => {
+    expect(weight("bunx vitest --ui")).toEqual(heavy("test:run"));
+    expect(weight("bunx vitest run --ui")).toEqual(heavy("test:run"));
+    expect(weight("bunx vitest --watch")).toEqual(NONE);
+  });
+
+  test("a line is light only when every command in it is understood", () => {
+    // The finding: a shell string with a light run and an unknown command.
+    expect(weight("sh -c 'bunx vitest run a.test.ts && make all'")).toEqual(heavy("test:run"));
+    expect(weight("bunx vitest run a.test.ts && make all")).toEqual(heavy("test:run"));
+    expect(weight("bunx vitest run a.test.ts && ./build.sh")).toEqual(heavy("test:run"));
+    expect(weight("node scripts/heavy.js && bunx vitest run a.test.ts")).toEqual(heavy("test:run"));
+    expect(weight("bunx tsc --noEmit src/a.ts; node scripts/heavy.js")).toEqual(heavy("tsc"));
+    // What it understands: a cd, an assignment, a print-only run, a read-only filter, and a
+    // script followed into its body.
+    expect(weight("cd app && bunx vitest run a.test.ts")).toEqual(LIGHT);
+    expect(weight("CI=1 bunx vitest run a.test.ts")).toEqual(LIGHT);
+    expect(weight("bun test ./a.test.ts 2>&1 | tail -20")).toEqual(LIGHT);
+    expect(weight("tsc --version && bunx vitest run a.test.ts")).toEqual(LIGHT);
+    expect(weight("sh -c 'cd app && bunx vitest run a.test.ts'")).toEqual(LIGHT);
+    expect(weight("bun run test a.test.ts", { "/repo": { test: "vitest run" } })).toEqual(LIGHT);
+    // A filter that is not read-only is no filter.
+    expect(weight("bun test ./a.test.ts | tee out.txt")).toEqual(heavy("test:run"));
   });
 
   test("several heavy runs sent to the background are heavy; one is not", () => {
@@ -1114,7 +1145,11 @@ describe("runWeight: light, heavy or none", () => {
     expect(weight("tsc --noEmit src/a.ts 2>&1 && tsc --noEmit src/a.ts >/dev/null 2>&1")).toEqual(
       LIGHT,
     );
-    expect(weight("tsc --noEmit src/a.ts |& tail -3 && tsc --noEmit src/a.ts")).toEqual(LIGHT);
+    // `|&` is a pipe, not a background: the filter after it is no command the route accepts,
+    // so the line keeps its slot for that reason, not for a background run.
+    expect(weight("tsc --noEmit src/a.ts |& tail -3 && tsc --noEmit src/a.ts")).toEqual(
+      heavy("tsc"),
+    );
   });
 
   test("a kind's tool decides the options: vitest, jest, tsc and bun each read their own", () => {
@@ -1167,12 +1202,12 @@ describe("runWeight: light, heavy or none", () => {
     expect(weight("bun run lint", { "/repo": { lint: "biome check ." } })).toEqual(NONE);
   });
 
-  // A package runner takes a `--` for itself and hands the script what follows it: npm's
-  // documented `npm run <command> [-- <args>]`; Bun drops a `--` that comes first (checked on
-  // Bun 1.4.4: `bun run s -- --ui` gives the script `--ui`, `bun run s a -- --ui` gives it
-  // `a -- --ui`); Yarn 1 (classic) prints "scripts don't require `--` for options to be
-  // forwarded" and drops it. pnpm (since 7, "run scripts without `--`") and Yarn 2+ (no `--`
-  // of their own) pass it on, so for them it is the script's own end of options.
+  // A package runner takes a `--` for itself and hands the script what follows it. Run for real
+  // (a script that prints its argv): Bun 1.4.4 and Yarn 2+ (3.8.7, 4.9.2) drop a `--` that comes
+  // first (`s -- --ui` gives `--ui`, `s a -- --ui` gives `a -- --ui`); Yarn 1.22.22 drops the
+  // first one anywhere (`s a -- --ui` gives `a --ui`); pnpm 7 to 10 keep it (`s -- --ui` gives
+  // `-- --ui`). npm: its docs, `npm run <command> [-- <args>]`, and a flag before the `--` is
+  // npm's own.
   test("the `--` a package runner drops is not the script's: a watch flag behind it is seen", () => {
     const e2e = { "/repo": { e2e: "playwright test", test: "vitest run" } };
     expect(weight("bun run e2e -- --ui", e2e)).toEqual(NONE);
@@ -1183,12 +1218,19 @@ describe("runWeight: light, heavy or none", () => {
     // npm's `--` ends its own options wherever it stands; Bun's only when it comes first.
     expect(weight("npm run e2e a.test.ts -- --ui", e2e)).toEqual(NONE);
     expect(weight("bun run e2e a.test.ts -- --ui", e2e)).toEqual(heavy("e2e"));
+    // Yarn 1 drops it anywhere, Yarn 2+ only first.
     expect(weight("yarn run e2e -- --ui", e2e)).toEqual(NONE);
-    // The same script, run by a runner that passes `--` on: the flag is behind the script's
-    // own `--`, a positional word to it, so the run is a full one.
-    expect(weight("pnpm run e2e -- --ui", e2e)).toEqual(heavy("e2e"));
+    expect(weight("yarn run e2e a.test.ts -- --ui", e2e)).toEqual(NONE);
     const berry = weightSourceOf(e2e, FILES, { yarnBerry: true });
-    expect(runWeight("yarn run e2e -- --ui", DEFAULT_KINDS, berry)).toEqual(heavy("e2e"));
+    expect(runWeight("yarn run e2e -- --ui", DEFAULT_KINDS, berry)).toEqual(NONE);
+    expect(runWeight("yarn run e2e a.test.ts -- --ui", DEFAULT_KINDS, berry)).toEqual(heavy("e2e"));
+    // pnpm passes it on: the flag is behind the script's own `--`, a positional word to it,
+    // so the run is a full one.
+    expect(weight("pnpm run e2e -- --ui", e2e)).toEqual(heavy("e2e"));
+    // npm keeps a flag written before the `--` for itself: the plain script runs.
+    expect(weight("npm run e2e --ui", e2e)).toEqual(heavy("e2e"));
+    expect(weight("npm test --watch", e2e)).toEqual(heavy("test:run"));
+    expect(weight("npm run test --silent a.test.ts", e2e)).toEqual(LIGHT);
     // Without a flag after it, a `--` changes nothing.
     expect(weight("bun run e2e --", e2e)).toEqual(heavy("e2e"));
     expect(weight("bun run test -- ./a.test.ts", e2e)).toEqual(LIGHT);

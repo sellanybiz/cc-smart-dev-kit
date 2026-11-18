@@ -11,7 +11,7 @@
  */
 import { describe, expect, test } from "bun:test";
 import { routeHeavyCommand } from "../hooks/job-route";
-import { shellWord } from "../setup/launcher";
+import { shellWord } from "../shell/quote";
 import { classifyHeavyCommand, runWeight, type WeightSource } from "./classify";
 import { DEFAULT_KINDS } from "./kinds";
 import { type JobDeps, runJob } from "./run";

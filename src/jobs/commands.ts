@@ -3,7 +3,7 @@ import { readdirSync } from "node:fs";
 import { hostname } from "node:os";
 import { COMMAND } from "../build-info";
 import { resolveProject } from "../project/resolve";
-import { shellWord } from "../setup/launcher";
+import { shellWord } from "../shell/quote";
 import { isInsideHeavyJob, readProcStat } from "./ancestry";
 import { runWeight } from "./classify";
 import {

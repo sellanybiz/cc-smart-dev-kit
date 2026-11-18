@@ -115,6 +115,12 @@ interface Run {
   compound: boolean;
   /** The (folder, script) pairs being read, so a script that calls itself ends. */
   reading: readonly string[];
+  /**
+   * With `all`: a run that only prints counts as understood. The route's own walk refuses it (a
+   * print-only run is not heavy, so it is never queued); the weight's walk accepts it, since
+   * such a run is light and so is a line made of it.
+   */
+  printOk: boolean;
 }
 
 /** The state a top-level classification starts with. */
@@ -127,6 +133,7 @@ function runOf(source: ScriptSource | undefined): Run {
     extra: undefined,
     compound: false,
     reading: [],
+    printOk: false,
   };
 }
 
@@ -604,17 +611,31 @@ function expandScript(
  * The arguments a package runner hands to the script, from those written after its name. A
  * runner takes a `--` for itself and drops it, so what follows is the script's own words and
  * the watch rule must see them (`bun run e2e -- --ui` runs `playwright test --ui`):
- * - npm: the first `--`, wherever it stands (`npm run <command> [-- <args>]`);
- * - Bun: a `--` that comes first (checked on Bun 1.4.4: `bun run s a -- --ui` keeps it);
- * - Yarn 1 (classic): a `--` that comes first, with its warning "scripts don't require `--`".
- * pnpm (since 7) and Yarn 2+ pass the `--` on to the script, so it stays.
+ * - npm: the first `--`, wherever it stands (`npm run <command> [-- <args>]`, its docs: not
+ *   run here). A flag written before it is npm's own, and goes (see below);
+ * - Bun: a `--` that comes first (run on Bun 1.4.4: `s -- --ui` gives `--ui`, `s a -- --ui` gives
+ *   `a -- --ui`);
+ * - Yarn 1 (classic): the first `--`, wherever it stands (run on 1.22.22: `run p a -- --ui` gives
+ *   `a --ui`, with the warning "scripts don't require `--`");
+ * - Yarn 2+ (berry): a `--` that comes first (run on 3.8.7 and 4.9.2, same as Bun).
+ * pnpm passes the `--` on to the script (run on 7, 8, 9 and 10: `run p -- --ui` gives
+ * `-- --ui`), so it stays.
  */
 function scriptArgs(args: string[], runner: string, bodies: ScriptBodies): string[] {
   const at = args.indexOf("--");
+  if (runner === "npm") {
+    // npm keeps a flag written before the `--` for itself (`npm run e2e --ui` runs the plain
+    // script: "Use `--` to pass `-`-prefixed flags and options which would otherwise be parsed
+    // by npm"). Its valued options are not guessed: a value left in is a plain word, and a
+    // plain word only makes a run light when it names a file that exists.
+    const own = at === -1 ? args : args.slice(0, at);
+    const after = at === -1 ? [] : args.slice(at + 1);
+    return [...own.filter((word) => word === "-" || !word.startsWith("-")), ...after];
+  }
   if (at === -1) return args;
-  const drops =
-    runner === "npm" ||
-    (at === 0 && (runner === "bun" || (runner === "yarn" && bodies.yarnBerry !== true)));
+  const anywhere = runner === "yarn" && bodies.yarnBerry !== true;
+  const leading = runner === "bun" || (runner === "yarn" && bodies.yarnBerry === true);
+  const drops = anywhere || (leading && at === 0);
   return drops ? [...args.slice(0, at), ...args.slice(at + 1)] : args;
 }
 
@@ -642,7 +663,8 @@ function matchCall(
   // A name the project defines as a script is never a tool: only a script rule can match it.
   const hit = matchOfCall(call, kinds, isScript);
   if (hit !== null) {
-    if (all && hit.printOnly) return false; // a run that only prints is not heavy
+    // A run that only prints is not heavy (the weight's walk still understands it: `printOk`).
+    if (all && hit.printOnly && !run.printOk) return false;
     // The command runs in the folder the runner was told to use (`pnpm -C app vitest …`); a
     // script rule's arguments go to a script that runs in its package.json's folder.
     const folder = hit.tool === undefined ? (bodies?.folder ?? lookedUpIn) : lookedUpIn;
@@ -765,7 +787,8 @@ function isLight(one: Found, kinds: Kinds, source: WeightSource): boolean {
  */
 export function runWeight(line: string, kinds: Kinds, source: WeightSource): Weight {
   const out = newScan();
-  scan(line, kinds, "bash", 0, runOf(source), false, out);
+  const run = runOf(source);
+  scan(line, kinds, "bash", 0, run, false, out);
   const { found } = out;
   const first = found[0];
   // A line that runs `job run` (itself, or through a script's body) is queued already: a second
@@ -776,9 +799,30 @@ export function runWeight(line: string, kinds: Kinds, source: WeightSource): Wei
   }
   const heavy = found.find((one) => !isLight(one, kinds, source));
   if (heavy !== undefined) return { weight: "heavy", kind: heavy.kind };
+  // Every heavy run is light, but a line is light only when it is nothing else: a command the
+  // reader does not know (`make all`, `./build.sh`) may be the heavy work.
+  if (!everyCommandUnderstood(line, kinds, source, run.cache)) {
+    return { weight: "heavy", kind: first.kind };
+  }
   return found.length > 1 && out.background
     ? { weight: "heavy", kind: first.kind }
     : { weight: "light" };
+}
+
+/**
+ * True when every command of the line is one the reader understands: a `cd`, an assignment, a
+ * heavy-kind command (a run that only prints too), a script followed into its body, or, at the
+ * end, the read-only filters a routed line may pipe into. The same every-command walk the route
+ * uses (`routableKinds`), in its mode that accepts print-only runs.
+ */
+function everyCommandUnderstood(
+  line: string,
+  kinds: Kinds,
+  source: WeightSource,
+  cache: Run["cache"],
+): boolean {
+  const run: Run = { ...runOf(source), cache, printOk: true };
+  return scan(cutAtFilters(line).heavy, kinds, "bash", 0, run, true, newScan());
 }
 
 /** Reads a filter's own arguments: true when that run of it only reads and prints. */
@@ -1139,6 +1183,16 @@ function feedsFiltersAlone(heavy: string): boolean {
 }
 
 /**
+ * The line cut before its trailing read-only filters (`tsc 2>&1 | tail -20` gives `tsc 2>&1`
+ * and `| tail -20`), or the whole line with no filters when it has none to cut. The route queues
+ * the first part; the weight understands it, and the filters are read-only by their own list.
+ */
+function cutAtFilters(line: string): { heavy: string; filters: string } {
+  const split = splitAtFilters(line.trim());
+  return split !== null && feedsFiltersAlone(split.heavy) ? split : { heavy: line, filters: "" };
+}
+
+/**
  * The kinds a line runs, when every command in it is heavy, a `cd`, or an assignment: null
  * as soon as one is anything else. The inner command of a shell (`bash -c "…"`) is read the
  * same way, so `bash -c "tsc && rm x"` is no pure line.
@@ -1180,13 +1234,9 @@ export function routableLine(
   kinds: Kinds,
   source?: ScriptSource,
 ): RoutableLine | null {
-  const split = splitAtFilters(bashCommand.trim());
-  if (split !== null && feedsFiltersAlone(split.heavy)) {
-    const kind = routableKinds(split.heavy, kinds, source)?.[0];
-    return kind === undefined ? null : { filters: split.filters, heavy: split.heavy, kind };
-  }
-  const kind = routableKinds(bashCommand, kinds, source)?.[0];
-  return kind === undefined ? null : { filters: "", heavy: bashCommand, kind };
+  const { heavy, filters } = cutAtFilters(bashCommand);
+  const kind = routableKinds(heavy, kinds, source)?.[0];
+  return kind === undefined ? null : { filters, heavy, kind };
 }
 
 /** `routableLine`'s kind alone: the heavy-job kind to queue a Bash line under, or null. */

@@ -66,7 +66,7 @@ import { findGitBash, type GitBashFacts } from "../cli/git-bash";
 import { classifyHeavyCommand, routableLine, runWeight, type WeightSource } from "../jobs/classify";
 import { type Kinds, mergeKinds } from "../jobs/kinds";
 import { diskWeightSource } from "../jobs/weight-source";
-import { LAUNCHER_IN_SHELL, shellQuote } from "../setup/launcher";
+import { LAUNCHER_IN_SHELL } from "../setup/launcher";
 import {
   type Dialect,
   dialectOfTool,
@@ -77,6 +77,7 @@ import {
   wordsOf,
   wordsWithFill,
 } from "../shell/command";
+import { shellQuote, shellWord } from "../shell/quote";
 import { resolveJobRoute } from "../workflow/resolve";
 import {
   type BashVerdict,
@@ -96,9 +97,6 @@ import {
 } from "./io";
 import type { Env, HookContext, HookEnvContext } from "./run";
 
-/** A word that needs no quoting for a shell to keep it as it is. */
-const PLAIN_WORD = /^[A-Za-z0-9_@%+=:,./-]+$/;
-
 /**
  * A character whose shell meaning quoting would change (an expansion, a glob, a redirect, a
  * separator, an escape): the word must go through the shell, not around it.
@@ -117,11 +115,6 @@ function plainWords(command: string): null | string[] {
   if (words.length === 0 || !words.every((word) => !SHELL_MEANING.test(word))) return null;
   const invocation = invocationOf(words);
   return invocation === undefined || invocation.program !== words[0] ? null : words;
-}
-
-/** One word for the shell: bare when it is plain, quoted otherwise. */
-function shellWord(word: string): string {
-  return PLAIN_WORD.test(word) ? word : shellQuote(word);
 }
 
 /**
@@ -218,24 +211,52 @@ export const REWRITE_SUPPORTED = true;
  */
 export const REWRITE_TIMEOUT_SUPPORTED = true;
 
-/** The longest timeout the Bash tool takes, in milliseconds (ten minutes). */
-export const ROUTED_TIMEOUT_MS = 600_000;
+/**
+ * The Bash tool's own limits, from Claude Code's docs (https://code.claude.com/docs/en/env-vars):
+ * `BASH_MAX_TIMEOUT_MS` is the longest timeout the model can set for a foreground command
+ * (default 600000, ten minutes) and `BASH_DEFAULT_TIMEOUT_MS` the timeout a call gets when it
+ * sets none (default 120000, two minutes). "The effective ceiling is the larger of" the two.
+ */
+export const DEFAULT_BASH_MAX_TIMEOUT_MS = 600_000;
+export const DEFAULT_BASH_TIMEOUT_MS = 120_000;
+
+/** A limit from the environment: a positive whole number of milliseconds, else the default. */
+function limitFromEnv(value: string | undefined, fallback: number): number {
+  if (value === undefined || !/^[1-9]\d*$/.test(value)) return fallback;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) ? parsed : fallback;
+}
+
+/**
+ * The timeout a routed call gets when it set none: the Bash tool's effective ceiling in this
+ * environment (`context.env`, which holds the variables Claude Code runs with). Never shorter
+ * than the call would have had on its own.
+ */
+export function routedTimeoutMs(env: Env): number {
+  return Math.max(
+    limitFromEnv(env.BASH_MAX_TIMEOUT_MS, DEFAULT_BASH_MAX_TIMEOUT_MS),
+    limitFromEnv(env.BASH_DEFAULT_TIMEOUT_MS, DEFAULT_BASH_TIMEOUT_MS),
+  );
+}
 
 /**
  * The answer that makes the call run `command` instead: the same tool input, its `command`
- * replaced, and (where `timeoutSupported`) its `timeout` raised to `ROUTED_TIMEOUT_MS` when the
- * call set none: a timeout the call chose is kept. **No `permissionDecision`**: the hook
- * replaces the input and the permission system still decides about the rewritten command, so a
- * person's own deny or ask rule for Bash is not overridden by the rewrite (proved live on
- * 2.1.301: without a decision Claude Code ran the rewritten command).
+ * replaced, and, given a `timeoutMs` ceiling, its `timeout` raised to it when the call set none.
+ * A timeout the call chose is kept, and a call sent to the background (`run_in_background`) is
+ * left alone: it has its own limit. **No `permissionDecision`**: the hook replaces the input
+ * and the permission system still decides about the rewritten command, so a person's own deny
+ * or ask rule for Bash is not overridden by the rewrite (proved live on 2.1.301: without a
+ * decision Claude Code ran the rewritten command).
  */
 export function rewriteAnswer(
   fields: Record<string, unknown>,
   command: string,
-  timeoutSupported: boolean = REWRITE_TIMEOUT_SUPPORTED,
+  timeoutMs: number | null = null,
 ): HookResult {
   const timeout =
-    timeoutSupported && fields.timeout === undefined ? { timeout: ROUTED_TIMEOUT_MS } : {};
+    timeoutMs !== null && fields.timeout === undefined && fields.run_in_background !== true
+      ? { timeout: timeoutMs }
+      : {};
   return {
     stdout: JSON.stringify({
       hookSpecificOutput: {
@@ -427,7 +448,9 @@ export function jobRoute(
     ? routeHeavyCommand(command, kinds, routedShell(context.env), source)
     : null;
   if (routed === null) return SILENT;
-  return REWRITE_SUPPORTED ? rewriteAnswer(fields, routed.command) : routeDenial(routed);
+  if (!REWRITE_SUPPORTED) return routeDenial(routed);
+  const timeoutMs = REWRITE_TIMEOUT_SUPPORTED ? routedTimeoutMs(context.env) : null;
+  return rewriteAnswer(fields, routed.command, timeoutMs);
 }
 
 /**

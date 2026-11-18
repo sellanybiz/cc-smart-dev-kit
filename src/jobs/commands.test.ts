@@ -59,6 +59,16 @@ test("named files in a shell string, after a cd, skip the queue", async () => {
   expect(await runJobCommand(["run", "--kind", "test:run", "--", "sh", "-c", line], ctx)).toBe(0);
   expect(existsSync(stateDirOf(ctx))).toBe(false);
 });
+// A light run beside a command the judge does not know: that command may be the heavy work, so
+// the line keeps its slot (it took one before the judge, and must still).
+test("a light run beside an unknown command in a shell string takes a slot", async () => {
+  const { ctx } = world();
+  const vitest = fakeTool(ctx.cwd, "vitest");
+  writeFileSync(join(ctx.cwd, "a.test.ts"), "");
+  const line = `${vitest} run a.test.ts && true`;
+  expect(await runJobCommand(["run", "--kind", "build", "--", "sh", "-c", line], ctx)).toBe(0);
+  expect(existsSync(stateDirOf(ctx))).toBe(true);
+});
 test("a run on a file that is not there is a full run and takes a slot", async () => {
   const { ctx } = world();
   const vitest = fakeTool(ctx.cwd, "vitest");

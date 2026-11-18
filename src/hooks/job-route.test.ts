@@ -19,6 +19,8 @@ import type { HookInput, HookResult } from "./io";
 import {
   bashLineOf,
   bashToolExists,
+  DEFAULT_BASH_MAX_TIMEOUT_MS,
+  DEFAULT_BASH_TIMEOUT_MS,
   jobRoute,
   jobRouteConfigAnswer,
   jobRouteDomain,
@@ -26,10 +28,10 @@ import {
   judgeCommandAnswer,
   powerShellDenial,
   REWRITE_TIMEOUT_SUPPORTED,
-  ROUTED_TIMEOUT_MS,
   rewriteAnswer,
   routeDenial,
   routedShell,
+  routedTimeoutMs,
   routeHeavyCommand,
 } from "./job-route";
 import type { HookContext, HookEnvContext } from "./run";
@@ -501,15 +503,22 @@ function repoWith(files: Record<string, string>): string {
 }
 
 /** The hook's context for one line the Bash (or PowerShell) tool is about to run in `repo`. */
-function contextFor(repo: string, command: string, tool = "Bash"): HookContext {
-  const env = { ...hookEnv(), SHELL };
+function contextFor(
+  repo: string,
+  command: string,
+  tool = "Bash",
+  more: { env?: Record<string, string>; fields?: Record<string, unknown> } = {},
+): HookContext {
+  // The Bash tool's own limits come from the session that runs the suite: a test sets them itself.
+  const { BASH_MAX_TIMEOUT_MS: _max, BASH_DEFAULT_TIMEOUT_MS: _default, ...clean } = hookEnv();
+  const env = { ...clean, SHELL, ...more.env };
   return {
     cwd: repo,
     env,
     event: "PreToolUse",
     input: {
       hook_event_name: "PreToolUse",
-      tool_input: { command },
+      tool_input: { command, ...more.fields },
       tool_name: tool,
     },
     nowMs: 0,
@@ -605,6 +614,14 @@ describe("a light line stays raw, a heavy one is routed", () => {
     }
     // The same script without the flag is a heavy e2e run.
     expect(rewrittenTo(repo, "bun run e2e")).toBe(`${LAUNCHER} job run --kind e2e -- bun run e2e`);
+    // npm keeps a flag written before its `--` for itself: the plain script runs, a full run.
+    expect(rewrittenTo(repo, "npm run e2e --ui")).toBe(
+      `${LAUNCHER} job run --kind e2e -- npm run e2e --ui`,
+    );
+    const tests = repoWith({ "package.json": JSON.stringify({ scripts: { test: "vitest run" } }) });
+    expect(rewrittenTo(tests, "npm test --watch")).toBe(
+      `${LAUNCHER} job run --kind test:run -- npm test --watch`,
+    );
   });
 
   it("a script whose body already queues itself is not queued again", () => {
@@ -701,37 +718,77 @@ describe("a project file that cannot be read: a light line is not asked about", 
   });
 });
 
+// Claude Code's docs (https://code.claude.com/docs/en/env-vars): BASH_MAX_TIMEOUT_MS is the
+// longest timeout the model can set (default 600000), BASH_DEFAULT_TIMEOUT_MS the default one
+// (default 120000), and "the effective ceiling is the larger of" the two. A routed call that
+// set no timeout gets that ceiling: never a shorter one than the call would have had.
 describe("a routed call gets the Bash tool's longest timeout", () => {
   const fields = { command: "bunx tsc --noEmit", description: "check types" };
   const updated = (answer: HookResult) => JSON.parse(answer.stdout ?? "{}").hookSpecificOutput;
 
-  it("the constant is the maximum the Bash tool takes, and the switch is on", () => {
-    expect(ROUTED_TIMEOUT_MS).toBe(600_000);
+  it("the defaults are the docs' ones, and the switch is on", () => {
+    expect(DEFAULT_BASH_MAX_TIMEOUT_MS).toBe(600_000);
+    expect(DEFAULT_BASH_TIMEOUT_MS).toBe(120_000);
     expect(REWRITE_TIMEOUT_SUPPORTED).toBe(true);
   });
 
-  it("supported: a call with no timeout gets the maximum; one that set a timeout keeps it", () => {
-    expect(updated(rewriteAnswer(fields, "queued", true))).toEqual({
+  it("with a ceiling: a call with no timeout gets it; one that set a timeout keeps it", () => {
+    expect(updated(rewriteAnswer(fields, "queued", 600_000))).toEqual({
       hookEventName: "PreToolUse",
       updatedInput: { ...fields, command: "queued", timeout: 600_000 },
     });
     expect(
-      updated(rewriteAnswer({ ...fields, timeout: 120_000 }, "queued", true)).updatedInput,
+      updated(rewriteAnswer({ ...fields, timeout: 120_000 }, "queued", 600_000)).updatedInput,
     ).toEqual({ ...fields, command: "queued", timeout: 120_000 });
   });
 
-  it("not supported: the answer carries no timeout of its own", () => {
-    expect(updated(rewriteAnswer(fields, "queued", false)).updatedInput).toEqual({
+  it("a background call is not given one: it has its own limit", () => {
+    const background = { ...fields, run_in_background: true };
+    expect(updated(rewriteAnswer(background, "queued", 600_000)).updatedInput).toEqual({
+      ...background,
+      command: "queued",
+    });
+    // Only `true` is background.
+    expect(
+      updated(rewriteAnswer({ ...fields, run_in_background: false }, "queued", 600_000))
+        .updatedInput.timeout,
+    ).toBe(600_000);
+  });
+
+  it("no ceiling (not supported): the answer carries no timeout of its own", () => {
+    expect(updated(rewriteAnswer(fields, "queued", null)).updatedInput).toEqual({
       ...fields,
       command: "queued",
     });
     expect(
-      updated(rewriteAnswer({ ...fields, timeout: 120_000 }, "queued", false)).updatedInput,
+      updated(rewriteAnswer({ ...fields, timeout: 120_000 }, "queued", null)).updatedInput,
     ).toEqual({ ...fields, command: "queued", timeout: 120_000 });
   });
 
-  it("the hook's own rewrite carries it when the call set none", () => {
-    const answer = updated(jobRoute(contextFor(repoWith({}), "bun test")));
-    expect(answer.updatedInput.timeout).toBe(600_000);
+  it("the ceiling is the larger of the Bash tool's max and default, read from the env", () => {
+    expect(routedTimeoutMs({})).toBe(600_000);
+    expect(routedTimeoutMs({ BASH_DEFAULT_TIMEOUT_MS: "1800000" })).toBe(1_800_000);
+    expect(routedTimeoutMs({ BASH_MAX_TIMEOUT_MS: "900000" })).toBe(900_000);
+    // A default below the max changes nothing; a max below the default does not shorten it.
+    expect(routedTimeoutMs({ BASH_DEFAULT_TIMEOUT_MS: "300000" })).toBe(600_000);
+    expect(routedTimeoutMs({ BASH_MAX_TIMEOUT_MS: "60000" })).toBe(120_000);
+    // A value that is no positive whole number takes the default.
+    for (const garbage of ["", "abc", "-5", "0", "1.5", "10m", "NaN"]) {
+      expect(
+        routedTimeoutMs({ BASH_MAX_TIMEOUT_MS: garbage, BASH_DEFAULT_TIMEOUT_MS: garbage }),
+      ).toBe(600_000);
+    }
+  });
+
+  it("the hook's own rewrite carries the ceiling of its env when the call set none", () => {
+    const repo = repoWith({});
+    const timeoutOf = (more: Parameters<typeof contextFor>[3]) =>
+      updated(jobRoute(contextFor(repo, "bun test", "Bash", more))).updatedInput.timeout;
+    expect(timeoutOf({})).toBe(600_000);
+    expect(timeoutOf({ env: { BASH_DEFAULT_TIMEOUT_MS: "1800000" } })).toBe(1_800_000);
+    expect(timeoutOf({ env: { BASH_MAX_TIMEOUT_MS: "900000" } })).toBe(900_000);
+    expect(timeoutOf({ env: { BASH_MAX_TIMEOUT_MS: "garbage" } })).toBe(600_000);
+    expect(timeoutOf({ fields: { timeout: 5000 } })).toBe(5000);
+    expect(timeoutOf({ fields: { run_in_background: true } })).toBeUndefined();
   });
 });
