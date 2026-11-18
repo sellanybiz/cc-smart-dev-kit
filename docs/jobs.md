@@ -390,7 +390,11 @@ the repo, else `<git dir>/hooks`. For husky v9, whose folder (`.husky/_`) holds 
 name, it reads the person's commands in `.husky/<name>`, and a stub with none behind it is no hook.
 The text is classified **any-heavy**: one heavy command anywhere in it makes the hook heavy,
 because nothing is hidden (the git line is still visible to the person's rules). A package script
-in it is followed into its body (`bun run typecheck` reads as `tsc`). A hook that only starts a
+in it is followed into its body (`bun run typecheck` reads as `tsc`), from the `package.json` at
+the top of the work tree, where git runs the hook, whatever folder the commit was typed in. A
+hook that already queues itself (it runs `cc-smart-dev-kit job run …`, directly or through a
+script it calls) runs as it is: queued again, it would wait for the slot its own job holds. A
+hook that only starts a
 manager is queued only when a kind of the project matches a command in that hook's text. The
 hook lefthook writes (`lefthook install`) ends with `call_lefthook run "pre-push" "$@"`, a shell
 function, and inside it runs `lefthook -h` and `lefthook "$@"`: `lefthook run` is never a
