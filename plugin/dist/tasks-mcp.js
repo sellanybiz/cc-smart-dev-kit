@@ -21525,7 +21525,7 @@ var COMMAND = "cc-smart-dev-kit";
 
 // src/build-info/index.ts
 var info = {
-  version: "5.0.0",
+  version: "5.1.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -21809,6 +21809,7 @@ function cliPaths(env = process.env) {
     routerTaskFile: join2(router.home, ".local", "share", "cc-smart-dev-kit", "router-task.xml"),
     portalCopy: join2(router.home, ".local", "share", "cc-smart-dev-kit", "portal.js"),
     portalUiFolder: join2(router.home, ".local", "share", "cc-smart-dev-kit", "portal-ui"),
+    gitHooksFolder: join2(router.home, ".local", "share", "cc-smart-dev-kit", "git-hooks"),
     portalProjectsFile: join2(claudeConfigDir, "cc-smart-dev-kit", "portal-projects.json"),
     portalLogFile: join2(claudeConfigDir, "cc-smart-dev-kit", "portal.log"),
     portalHeldFile: join2(claudeConfigDir, "cc-smart-dev-kit", "portal-held.json"),
@@ -21863,7 +21864,9 @@ function gitEnv(base) {
   }
   return env;
 }
+
 // src/hooks/git.ts
+var GIT_TIMED_OUT = "timed out";
 function runGit(cwd, args, env, timeoutMs = 15000, own = {}) {
   return spawnGit(cwd, args, env, timeoutMs, own, true);
 }
@@ -21878,7 +21881,7 @@ function spawnGit(cwd, args, env, timeoutMs, own, trim) {
       timeout: timeoutMs,
       windowsHide: true
     });
-    const err = result.signalCode ? "timed out" : result.stderr.toString().trim();
+    const err = result.signalCode ? GIT_TIMED_OUT : result.stderr.toString().trim();
     const code = result.signalCode ? null : result.exitCode;
     const out = result.stdout.toString();
     return { ok: result.exitCode === 0, out: trim ? out.trim() : out, err, code };
@@ -22289,18 +22292,18 @@ function gitNotFound(error) {
   const why = error instanceof Error ? error.message : String(error);
   return /not found in \$PATH|ENOENT/.test(why) ? new Error(GIT_NOT_FOUND) : error;
 }
-var GIT_TIMED_OUT = "git did not answer in time";
+var GIT_TIMED_OUT2 = "git did not answer in time";
 var GIT_TIMED_OUT_FIX = "run `git status` in this folder; if that hangs too, fix git first, then run this again";
 
 class GitTimedOutError extends Error {
   constructor() {
-    super(`${GIT_TIMED_OUT}: ${GIT_TIMED_OUT_FIX}`);
+    super(`${GIT_TIMED_OUT2}: ${GIT_TIMED_OUT_FIX}`);
     this.name = "GitTimedOutError";
   }
 }
 function checkoutFailure(error) {
   if (error instanceof GitTimedOutError)
-    return GIT_TIMED_OUT;
+    return GIT_TIMED_OUT2;
   return error instanceof Error ? error.message : String(error);
 }
 var NO_TIME_LEFT = {

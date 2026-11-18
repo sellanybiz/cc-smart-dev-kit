@@ -3,9 +3,7 @@
 What each release changed, newest first. A release's **What to run** steps are the ones to do
 in your own terminal after the update; the user guide is [README.md](README.md).
 
-## Unreleased
-
-The release step sets the number.
+## 5.1.0
 
 - **The heavy-job queue sees more of the real heavy work.** `bun test` joins `vitest` and `jest`
   (and `bun test --coverage` is a coverage run). A run on named files skips the queue: `bun test`

@@ -71,6 +71,7 @@ function cliPaths(env = process.env) {
     routerTaskFile: join2(router.home, ".local", "share", "cc-smart-dev-kit", "router-task.xml"),
     portalCopy: join2(router.home, ".local", "share", "cc-smart-dev-kit", "portal.js"),
     portalUiFolder: join2(router.home, ".local", "share", "cc-smart-dev-kit", "portal-ui"),
+    gitHooksFolder: join2(router.home, ".local", "share", "cc-smart-dev-kit", "git-hooks"),
     portalProjectsFile: join2(claudeConfigDir, "cc-smart-dev-kit", "portal-projects.json"),
     portalLogFile: join2(claudeConfigDir, "cc-smart-dev-kit", "portal.log"),
     portalHeldFile: join2(claudeConfigDir, "cc-smart-dev-kit", "portal-held.json"),
@@ -139,6 +140,7 @@ function gitEnv(base) {
 }
 
 // src/hooks/git.ts
+var GIT_TIMED_OUT = "timed out";
 var GUARD_GIT_TIMEOUT_MS = 5000;
 function runGit(cwd, args, env, timeoutMs = 15000, own = {}) {
   return spawnGit(cwd, args, env, timeoutMs, own, true);
@@ -157,7 +159,7 @@ function spawnGit(cwd, args, env, timeoutMs, own, trim) {
       timeout: timeoutMs,
       windowsHide: true
     });
-    const err = result.signalCode ? "timed out" : result.stderr.toString().trim();
+    const err = result.signalCode ? GIT_TIMED_OUT : result.stderr.toString().trim();
     const code = result.signalCode ? null : result.exitCode;
     const out = result.stdout.toString();
     return { ok: result.exitCode === 0, out: trim ? out.trim() : out, err, code };
@@ -6075,7 +6077,7 @@ function superRefine(fn, params) {
 }
 // src/build-info/index.ts
 var info = {
-  version: "5.0.0",
+  version: "5.1.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -6511,12 +6513,12 @@ function gitNotFound(error) {
   const why = error instanceof Error ? error.message : String(error);
   return /not found in \$PATH|ENOENT/.test(why) ? new Error(GIT_NOT_FOUND) : error;
 }
-var GIT_TIMED_OUT = "git did not answer in time";
+var GIT_TIMED_OUT2 = "git did not answer in time";
 var GIT_TIMED_OUT_FIX = "run `git status` in this folder; if that hangs too, fix git first, then run this again";
 
 class GitTimedOutError extends Error {
   constructor() {
-    super(`${GIT_TIMED_OUT}: ${GIT_TIMED_OUT_FIX}`);
+    super(`${GIT_TIMED_OUT2}: ${GIT_TIMED_OUT_FIX}`);
     this.name = "GitTimedOutError";
   }
 }
@@ -7298,6 +7300,263 @@ function chunks(paths) {
 // src/hooks/worktree-leftovers.ts
 import { closeSync as closeSync4, existsSync as existsSync6, fstatSync, openSync as openSync4, readSync as readSync2, statSync as statSync6 } from "fs";
 import { basename as basename3, join as join11, resolve as resolve4 } from "path";
+
+// src/shell/command.ts
+var SEPARATORS = new Set([`
+`, "\r", "&", "(", ")", ";", "|"]);
+var KEYWORDS = new Set(["!", "do", "done", "elif", "else", "fi", "if", "then", "until", "while"]);
+var CHANGE_DIR = new Set([
+  "cd",
+  "chdir",
+  "popd",
+  "pushd",
+  "set-location",
+  "sl"
+]);
+var SHELLS = new Set(["bash", "dash", "fish", "ksh", "mksh", "sh", "zsh"]);
+var PACKAGE_RUNNERS = new Set(["bunx", "npx", "pnpx"]);
+var START_PROCESS_PARAMETERS = new Map([
+  ["argumentlist", true],
+  ["credential", true],
+  ["erroraction", true],
+  ["errorvariable", true],
+  ["filepath", true],
+  ["informationaction", true],
+  ["informationvariable", true],
+  ["loaduserprofile", false],
+  ["nonewwindow", false],
+  ["outbuffer", true],
+  ["outvariable", true],
+  ["passthru", false],
+  ["pipelinevariable", true],
+  ["redirectstandarderror", true],
+  ["redirectstandardinput", true],
+  ["redirectstandardoutput", true],
+  ["usenewenvironment", false],
+  ["verb", true],
+  ["wait", false],
+  ["warningaction", true],
+  ["warningvariable", true],
+  ["windowstyle", true],
+  ["workingdirectory", true]
+]);
+var WRITING_REDIRECTIONS = new Set([">", ">>", ">|", "&>", "&>>", "<>"]);
+var FIND_EXEC = new Set(["-exec", "-execdir", "-ok", "-okdir"]);
+var FIND_VALUED = new Set([
+  "-amin",
+  "-anewer",
+  "-atime",
+  "-cmin",
+  "-cnewer",
+  "-context",
+  "-ctime",
+  "-fls",
+  "-fprint",
+  "-fprint0",
+  "-fprintf",
+  "-fstype",
+  "-gid",
+  "-group",
+  "-iname",
+  "-inum",
+  "-ipath",
+  "-iregex",
+  "-iwholename",
+  "-links",
+  "-lname",
+  "-maxdepth",
+  "-mindepth",
+  "-mmin",
+  "-mtime",
+  "-name",
+  "-newer",
+  "-path",
+  "-perm",
+  "-printf",
+  "-regex",
+  "-regextype",
+  "-samefile",
+  "-size",
+  "-type",
+  "-uid",
+  "-used",
+  "-user",
+  "-wholename",
+  "-xtype"
+]);
+var WATCH_VALUED = new Set(["--equexit", "--interval"]);
+var SU_VALUED = new Set([
+  "--command",
+  "--group",
+  "--session-command",
+  "--shell",
+  "--supp-group",
+  "--whitelist-environment"
+]);
+var PARALLEL_VALUED = new Set([
+  "--arg-file",
+  "--arg-file-sep",
+  "--arg-sep",
+  "--block",
+  "--colsep",
+  "--delay",
+  "--delimiter",
+  "--env",
+  "--eof",
+  "--halt",
+  "--header",
+  "--jobs",
+  "--joblog",
+  "--load",
+  "--max-args",
+  "--max-lines",
+  "--max-procs",
+  "--memfree",
+  "--nice",
+  "--profile",
+  "--recend",
+  "--recstart",
+  "--results",
+  "--retries",
+  "--rpl",
+  "--sshlogin",
+  "--sshloginfile",
+  "--tagstring",
+  "--timeout",
+  "--workdir",
+  "--basefile",
+  "--bf",
+  "--block-size",
+  "--bt",
+  "--ctagstring",
+  "--filter",
+  "--group-by",
+  "--id",
+  "--jl",
+  "--limit",
+  "--max-chars",
+  "--memsuspend",
+  "--res",
+  "--return",
+  "--ssh",
+  "--ssh-delay",
+  "--term-seq",
+  "--tf",
+  "--tmpdir",
+  "--tmpl",
+  "--trc",
+  "--wd"
+]);
+var PARALLEL_SWITCHES = new Set([
+  "--bar",
+  "--dry-run",
+  "--eta",
+  "--group",
+  "--keep-order",
+  "--line-buffer",
+  "--pipe",
+  "--progress",
+  "--quote",
+  "--shebang",
+  "--tag",
+  "--ungroup",
+  "--verbose",
+  "--will-cite",
+  "--xargs"
+]);
+var PARALLEL_SOURCES = new Set([":::", "::::", ":::+", "::::+"]);
+var PARALLEL_LONG = [...PARALLEL_VALUED, ...PARALLEL_SWITCHES];
+
+// src/shell/change-dir.ts
+var CHANGES_FOLDER = new Set([...CHANGE_DIR, "push-location"]);
+
+// src/shell/git-calls.ts
+var GIT_VALUE_OPTIONS = new Set([
+  "-C",
+  "-c",
+  "--attr-source",
+  "--config-env",
+  "--git-dir",
+  "--namespace",
+  "--super-prefix",
+  "--work-tree"
+]);
+var GIT_FLAGS = new Set([
+  "-P",
+  "-p",
+  "--bare",
+  "--glob-pathspecs",
+  "--icase-pathspecs",
+  "--literal-pathspecs",
+  "--no-advice",
+  "--no-lazy-fetch",
+  "--no-optional-locks",
+  "--no-pager",
+  "--no-replace-objects",
+  "--noglob-pathspecs",
+  "--paginate"
+]);
+var GIT_PRINTS = new Set([
+  "-h",
+  "-v",
+  "--exec-path",
+  "--help",
+  "--html-path",
+  "--info-path",
+  "--man-path",
+  "--version"
+]);
+
+// src/shell/writes.ts
+var NO_VALUES = { short: "", long: {} };
+var CHANGES_OPERANDS = new Map([
+  ["mkdir", { short: "m", long: { "--mode": 3 } }],
+  ["rm", NO_VALUES],
+  ["rmdir", NO_VALUES],
+  ["tee", NO_VALUES],
+  ["touch", { short: "dtr", long: { "--date": 3, "--reference": 3, "--time": 3 } }]
+]);
+var WRITES_ITS_FILES = new Set([
+  "ac",
+  "add-content",
+  "out-file",
+  "sc",
+  "set-content",
+  "tee-object"
+]);
+var COPIES = new Set([
+  "copy",
+  "copy-item",
+  "cp",
+  "cpi",
+  "install",
+  "ln",
+  "mi",
+  "move",
+  "move-item",
+  "mv"
+]);
+var MOVES = new Set(["mi", "move", "move-item", "mv"]);
+var GIT_CHANGES_CHECKOUT = new Set([
+  "am",
+  "apply",
+  "checkout",
+  "cherry-pick",
+  "clean",
+  "commit",
+  "merge",
+  "mv",
+  "pull",
+  "rebase",
+  "reset",
+  "restore",
+  "revert",
+  "rm",
+  "stash",
+  "switch"
+]);
+
+// src/hooks/worktree-leftovers.ts
 var REFLOG_TAIL_BYTES = 8 * 1024;
 function lastReflogTime(file, now) {
   try {

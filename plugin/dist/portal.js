@@ -28,7 +28,7 @@ __export(exports_iso, {
 });
 
 // src/entries/portal.ts
-import { join as join80 } from "path";
+import { join as join83 } from "path";
 
 // src/browser/doctor.ts
 import { readdirSync as readdirSync4, readFileSync as readFileSync5 } from "fs";
@@ -47,7 +47,7 @@ function bunTooOld(version, path) {
 
 // src/build-info/index.ts
 var info = {
-  version: "5.0.0",
+  version: "5.1.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -428,6 +428,7 @@ function cliPaths(env = process.env) {
     routerTaskFile: join3(router.home, ".local", "share", "cc-smart-dev-kit", "router-task.xml"),
     portalCopy: join3(router.home, ".local", "share", "cc-smart-dev-kit", "portal.js"),
     portalUiFolder: join3(router.home, ".local", "share", "cc-smart-dev-kit", "portal-ui"),
+    gitHooksFolder: join3(router.home, ".local", "share", "cc-smart-dev-kit", "git-hooks"),
     portalProjectsFile: join3(claudeConfigDir, "cc-smart-dev-kit", "portal-projects.json"),
     portalLogFile: join3(claudeConfigDir, "cc-smart-dev-kit", "portal.log"),
     portalHeldFile: join3(claudeConfigDir, "cc-smart-dev-kit", "portal-held.json"),
@@ -11950,70 +11951,6 @@ function readMcpRecords(stateDir, file = mcpRecordsFile(stateDir)) {
 import { existsSync as existsSync7, readFileSync as readFileSync12 } from "fs";
 import { dirname as dirname6, join as join8, resolve as resolve2 } from "path";
 
-// src/setup/launcher.ts
-var LAUNCHER_NAME = "cc-smart-dev-kit";
-var LAUNCHER_IN_SHELL = `"$HOME/.local/bin/${LAUNCHER_NAME}"`;
-var FIND_INSTALL_JS = [
-  "const f=process.argv[process.argv.length-1];",
-  'const j=JSON.parse(require("fs").readFileSync(f,"utf8"));',
-  `const e=((j&&j.plugins&&j.plugins["${PLUGIN_ID}"])||[]).find(x=>x&&x.scope==="user"&&typeof x.installPath==="string");`,
-  "if(!e)process.exit(1);",
-  "process.stdout.write(e.installPath);"
-].join("");
-function shellQuote(value) {
-  return `'${value.replaceAll("'", "'\\''")}'`;
-}
-function shellWord(path) {
-  return /^[\w./-]+$/.test(path) ? path : shellQuote(path);
-}
-function bakedBunPath(script) {
-  const match = /^baked_bun=('(?:[^']|'\\'')*')$/m.exec(script);
-  if (!match?.[1])
-    return null;
-  return match[1].slice(1, -1).replaceAll("'\\''", "'");
-}
-function launcherScript(bunPath) {
-  return `#!/bin/sh
-# cc-smart-dev-kit launcher. Written by "cc-smart-dev-kit setup"; setup rewrites it, so do not edit it.
-# It runs the cc-smart-dev-kit command from the installed version of the cc-smart-dev-kit plugin.
-fail() {
-  echo "cc-smart-dev-kit: $1 Run: claude plugin install ${PLUGIN_ID}" >&2
-  exit 1
-}
-baked_bun=${shellQuote(bunPath)}
-if [ -x "$baked_bun" ]; then
-  bun="$baked_bun"
-elif command -v bun >/dev/null 2>&1; then
-  bun=$(command -v bun)
-else
-  echo "cc-smart-dev-kit: bun not found (not at $baked_bun, not on PATH). Install bun, then run: cc-smart-dev-kit setup" >&2
-  exit 1
-fi
-config_dir="\${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
-installed="$config_dir/plugins/installed_plugins.json"
-[ -f "$installed" ] || fail "the cc-smart-dev-kit plugin is not installed."
-# The lookup runs in this launcher's own folder (never the person's working folder): bun reads
-# the working folder's bunfig.toml, and a project's preload could print another path \u2014 this
-# very path decides which CLI runs. The plugin's own empty config cannot be used here: it sits
-# in the folder this lookup has yet to find.
-launcher_dir=$HOME/.local/bin
-case $0 in */*) launcher_dir=\${0%/*} ;; esac
-install_path=$(cd "$launcher_dir" && "$bun" -e '${FIND_INSTALL_JS}' -- "$installed" 2>/dev/null) || fail "the cc-smart-dev-kit plugin is not installed."
-[ -n "$install_path" ] || fail "the cc-smart-dev-kit plugin is not installed."
-[ -f "$install_path/dist/cli.js" ] || fail "the cc-smart-dev-kit plugin folder is missing: $install_path."
-# --no-env-file: "cc-smart-dev-kit job run" hands its job exactly the environment it was given.
-# --config: the plugin's own empty config, beside the CLI in the same version folder, so the
-# working folder's bunfig.toml (a project's preload) never runs inside the command. An
-# installed version older than that file (0.2.x, until migrate replaces it) has none: bun
-# refuses a config path that does not exist, so the flag is left out then.
-set -- "$install_path/dist/cli.js" "$@"
-if [ -f "$install_path/bunfig.toml" ]; then
-  set -- "--config=$install_path/bunfig.toml" "$@"
-fi
-exec "$bun" --no-env-file "$@"
-`;
-}
-
 // src/setup/user-json.ts
 import { readFileSync as readFileSync11 } from "fs";
 var BOM = "\uFEFF";
@@ -12025,6 +11962,14 @@ function parseUserJson(text) {
 }
 function readUserJson(file) {
   return parseUserJson(readFileSync11(file, "utf8"));
+}
+
+// src/shell/quote.ts
+function shellQuote(value) {
+  return `'${value.replaceAll("'", "'\\''")}'`;
+}
+function shellWord(value) {
+  return /^[\w./-]+$/.test(value) ? value : shellQuote(value);
 }
 
 // src/mcp/register.ts
@@ -13277,6 +13222,7 @@ function gitEnv(base) {
 }
 
 // src/hooks/git.ts
+var GIT_TIMED_OUT = "timed out";
 var GUARD_GIT_TIMEOUT_MS = 5000;
 function runGit(cwd, args, env, timeoutMs = 15000, own = {}) {
   return spawnGit(cwd, args, env, timeoutMs, own, true);
@@ -13292,7 +13238,7 @@ function spawnGit(cwd, args, env, timeoutMs, own, trim) {
       timeout: timeoutMs,
       windowsHide: true
     });
-    const err = result.signalCode ? "timed out" : result.stderr.toString().trim();
+    const err = result.signalCode ? GIT_TIMED_OUT : result.stderr.toString().trim();
     const code = result.signalCode ? null : result.exitCode;
     const out = result.stdout.toString();
     return { ok: result.exitCode === 0, out: trim ? out.trim() : out, err, code };
@@ -13321,7 +13267,7 @@ async function runGitAsync(cwd, args, env, timeoutMs = 15000, own = {}) {
     return {
       ok: code === 0,
       out: stdout.trim(),
-      err: signaled ? "timed out" : stderr.trim(),
+      err: signaled ? GIT_TIMED_OUT : stderr.trim(),
       code: signaled ? null : code
     };
   } catch (error) {
@@ -13421,6 +13367,7 @@ var matchRuleSchema = union([
     script: string2().min(1)
   })
 ]);
+var LIGHT_FILE_LIMIT = 10;
 var kindSpecSchema = strictObject({
   printOnly: array(string2().min(1)).optional(),
   noSlotForFiles: boolean2().optional(),
@@ -13478,10 +13425,386 @@ var TEST_VALUED_FLAGS = [
   "-t",
   "-w"
 ];
+var TEST_BARE_FLAGS = [
+  "--ci",
+  "--detectOpenHandles",
+  "--forceExit",
+  "--no-cache",
+  "--no-color",
+  "--passWithNoTests",
+  "--run",
+  "--runInBand",
+  "--updateSnapshot",
+  "--verbose",
+  "-i"
+];
+var TSC_OPTIONS = {
+  valued: [
+    "--baseUrl",
+    "--charset",
+    "--checkers",
+    "--customConditions",
+    "--declarationDir",
+    "--excludeDirectories",
+    "--excludeFiles",
+    "--fallbackPolling",
+    "--generateCpuProfile",
+    "--generateTrace",
+    "--ignoreDeprecations",
+    "--jsx",
+    "--jsxFactory",
+    "--jsxFragmentFactory",
+    "--jsxImportSource",
+    "--lib",
+    "--locale",
+    "--mapRoot",
+    "--maxNodeModuleJsDepth",
+    "--module",
+    "--moduleDetection",
+    "--moduleResolution",
+    "--moduleSuffixes",
+    "--newLine",
+    "--outDir",
+    "--outFile",
+    "--plugins",
+    "--pprofDir",
+    "--reactNamespace",
+    "--rootDir",
+    "--rootDirs",
+    "--sourceRoot",
+    "--target",
+    "--tsBuildInfoFile",
+    "--typeRoots",
+    "--types",
+    "--watchDirectory",
+    "--watchFile",
+    "--watchInterval",
+    "-m",
+    "-t"
+  ],
+  bare: [
+    "--allowArbitraryExtensions",
+    "--allowImportingTsExtensions",
+    "--allowJs",
+    "--allowSyntheticDefaultImports",
+    "--allowUmdGlobalAccess",
+    "--allowUnreachableCode",
+    "--allowUnusedLabels",
+    "--alwaysStrict",
+    "--checkJs",
+    "--composite",
+    "--declaration",
+    "--declarationMap",
+    "--deduplicatePackages",
+    "--diagnostics",
+    "--disableSizeLimit",
+    "--downlevelIteration",
+    "--emitBOM",
+    "--emitDeclarationOnly",
+    "--emitDecoratorMetadata",
+    "--erasableSyntaxOnly",
+    "--esModuleInterop",
+    "--exactOptionalPropertyTypes",
+    "--experimentalDecorators",
+    "--explainFiles",
+    "--extendedDiagnostics",
+    "--forceConsistentCasingInFileNames",
+    "--ignoreConfig",
+    "--importHelpers",
+    "--incremental",
+    "--inlineSourceMap",
+    "--inlineSources",
+    "--isolatedDeclarations",
+    "--isolatedModules",
+    "--libReplacement",
+    "--listEmittedFiles",
+    "--listFiles",
+    "--noCheck",
+    "--noEmit",
+    "--noEmitHelpers",
+    "--noEmitOnError",
+    "--noErrorTruncation",
+    "--noFallthroughCasesInSwitch",
+    "--noImplicitAny",
+    "--noImplicitOverride",
+    "--noImplicitReturns",
+    "--noImplicitThis",
+    "--noLib",
+    "--noPropertyAccessFromIndexSignature",
+    "--noResolve",
+    "--noUncheckedIndexedAccess",
+    "--noUncheckedSideEffectImports",
+    "--noUnusedLocals",
+    "--noUnusedParameters",
+    "--preserveConstEnums",
+    "--preserveSymlinks",
+    "--preserveWatchOutput",
+    "--pretty",
+    "--quiet",
+    "--removeComments",
+    "--resolveJsonModule",
+    "--resolvePackageJsonExports",
+    "--resolvePackageJsonImports",
+    "--rewriteRelativeImportExtensions",
+    "--singleThreaded",
+    "--skipDefaultLibCheck",
+    "--skipLibCheck",
+    "--sourceMap",
+    "--stableTypeOrdering",
+    "--strict",
+    "--strictBindCallApply",
+    "--strictBuiltinIteratorReturn",
+    "--strictFunctionTypes",
+    "--strictNullChecks",
+    "--strictPropertyInitialization",
+    "--stripInternal",
+    "--traceResolution",
+    "--useDefineForClassFields",
+    "--useUnknownInCatchVariables",
+    "--verbatimModuleSyntax",
+    "-d",
+    "-i",
+    "-q"
+  ],
+  watch: { flags: ["--watch", "-w"], ignoreCase: true }
+};
+var VITEST_OPTIONS = {
+  valued: [
+    "--attachmentsDir",
+    "--config",
+    "--configLoader",
+    "--dir",
+    "--environment",
+    "--exclude",
+    "--execArgv",
+    "--hookTimeout",
+    "--maxConcurrency",
+    "--maxWorkers",
+    "--minWorkers",
+    "--mode",
+    "--outputFile",
+    "--pool",
+    "--project",
+    "--reporter",
+    "--repeats",
+    "--retry",
+    "--retry.count",
+    "--root",
+    "--sequence.hooks",
+    "--sequence.seed",
+    "--sequence.setupFiles",
+    "--shard",
+    "--slowTestThreshold",
+    "--tagsFilter",
+    "--teardownTimeout",
+    "--testNamePattern",
+    "--testTimeout",
+    "--vmMemoryLimit",
+    "-c",
+    "-p",
+    "-r",
+    "-t"
+  ],
+  bare: [
+    "--allowOnly",
+    "--cache",
+    "--clearScreen",
+    "--detectAsyncLeaks",
+    "--disableConsoleIntercept",
+    "--expandSnapshotDiff",
+    "--fileParallelism",
+    "--globals",
+    "--hideSkippedTests",
+    "--includeTaskLocation",
+    "--isolate",
+    "--last-failed",
+    "--lastFailed",
+    "--logHeapUsage",
+    "--no-cache",
+    "--no-color",
+    "--no-file-parallelism",
+    "--no-isolate",
+    "--passWithNoTests",
+    "--printConsoleTrace",
+    "--run",
+    "--sequence.concurrent",
+    "--sequence.shuffle.files",
+    "--sequence.shuffle.tests"
+  ],
+  skip: ["run"],
+  watch: { flags: ["--watch", "-w"], commands: ["watch", "dev"] }
+};
+var JEST_OPTIONS = {
+  valued: [
+    "--changedSince",
+    "--collectCoverageFrom",
+    "--config",
+    "--coverageDirectory",
+    "--coverageProvider",
+    "--env",
+    "--filter",
+    "--maxConcurrency",
+    "--maxWorkers",
+    "--openHandlesTimeout",
+    "--outputFile",
+    "--rootDir",
+    "--seed",
+    "--shard",
+    "--testEnvironment",
+    "--testEnvironmentOptions",
+    "--testNamePattern",
+    "--testRunner",
+    "--testSequencer",
+    "--testTimeout",
+    "--workerGracefulExitTimeout",
+    "-c",
+    "-t",
+    "-w"
+  ],
+  bare: [
+    "--cache",
+    "--changedFilesWithAncestor",
+    "--ci",
+    "--clearMocks",
+    "--colors",
+    "--debug",
+    "--detectOpenHandles",
+    "--errorOnDeprecated",
+    "--expand",
+    "--forceExit",
+    "--injectGlobals",
+    "--json",
+    "--lastCommit",
+    "--listTests",
+    "--logHeapUsage",
+    "--no-cache",
+    "--no-watchman",
+    "--noStackTrace",
+    "--notify",
+    "--onlyChanged",
+    "--onlyFailures",
+    "--passWithNoTests",
+    "--randomize",
+    "--resetMocks",
+    "--restoreMocks",
+    "--runInBand",
+    "--runTestsByPath",
+    "--showSeed",
+    "--silent",
+    "--testLocationInResults",
+    "--updateSnapshot",
+    "--useStderr",
+    "--verbose",
+    "--waitForUnhandledRejections",
+    "--watchman",
+    "--workerThreads",
+    "-e",
+    "-f",
+    "-i",
+    "-o",
+    "-u"
+  ],
+  watch: { flags: ["--watch", "--watchAll"] }
+};
+var BUN_TEST_OPTIONS = {
+  valued: [
+    "--coverage-dir",
+    "--coverage-reporter",
+    "--max-concurrency",
+    "--parallel-delay",
+    "--path-ignore-patterns",
+    "--rerun-each",
+    "--reporter",
+    "--reporter-outfile",
+    "--retry",
+    "--seed",
+    "--shard",
+    "--test-name-pattern",
+    "--timeout",
+    "--timings",
+    "-t"
+  ],
+  bare: [
+    "--check",
+    "--concurrent",
+    "--dots",
+    "--isolate",
+    "--no-isolate",
+    "--no-orphans",
+    "--only",
+    "--only-failures",
+    "--pass-with-no-tests",
+    "--randomize",
+    "--todo",
+    "--update-snapshots",
+    "--update-timings",
+    "-u"
+  ],
+  skip: ["test"],
+  isOperand: (word) => word.startsWith("./") || word.startsWith("/"),
+  watch: { flags: ["--watch"] }
+};
+var PLAYWRIGHT_OPTIONS = {
+  valued: [
+    "--add-reporter",
+    "--browser",
+    "--config",
+    "--global-timeout",
+    "--grep",
+    "--grep-invert",
+    "--last-failed-file",
+    "--max-failures",
+    "--output",
+    "--project",
+    "--repeat-each",
+    "--reporter",
+    "--retries",
+    "--run-agents",
+    "--shard",
+    "--test-list",
+    "--test-list-invert",
+    "--timeout",
+    "--trace",
+    "--tsconfig",
+    "--ui-host",
+    "--ui-port",
+    "--update-source-method",
+    "--workers",
+    "-c",
+    "-G",
+    "-g",
+    "-j"
+  ],
+  bare: [
+    "--fail-on-flaky-tests",
+    "--forbid-only",
+    "--fully-parallel",
+    "--headed",
+    "--ignore-snapshots",
+    "--last-failed",
+    "--no-deps",
+    "--pass-with-no-tests",
+    "--quiet",
+    "--ui",
+    "-x"
+  ],
+  skip: ["test"],
+  watch: { flags: ["--debug", "--ui", "--ui-host", "--ui-port"] }
+};
+var TOOL_OPTIONS = {
+  bun: BUN_TEST_OPTIONS,
+  jest: JEST_OPTIONS,
+  playwright: PLAYWRIGHT_OPTIONS,
+  tsc: TSC_OPTIONS,
+  tsgo: TSC_OPTIONS,
+  vitest: VITEST_OPTIONS,
+  "vue-tsc": TSC_OPTIONS
+};
 var DEFAULT_KINDS = {
   tsc: {
-    about: "A TypeScript type check (tsc, tsgo, vue-tsc).",
+    about: "A TypeScript type check (tsc, tsgo, vue-tsc). A run on named files runs at once, with no slot.",
     printOnly: TSC_PRINT_ONLY,
+    noSlotForFiles: true,
     match: [{ tool: "tsc" }, { tool: "tsgo" }, { tool: "vue-tsc" }]
   },
   "lint:typed": {
@@ -13494,20 +13817,24 @@ var DEFAULT_KINDS = {
     ]
   },
   "test:coverage": {
-    about: "A test run with coverage (vitest or jest with --coverage).",
+    about: "A test run with coverage (vitest, jest or bun test with --coverage).",
     printOnly: TEST_PRINT_ONLY,
     match: [
       { tool: "vitest", argIncludes: "--coverage" },
-      { tool: "jest", argIncludes: "--coverage" }
+      { tool: "jest", argIncludes: "--coverage" },
+      { tool: "bun", sub: ["test"], argIncludes: "--coverage" }
     ]
   },
   "test:run": {
-    about: "A test run (vitest, jest). A run on named test files runs at once, with no slot.",
+    about: "A test run (vitest, jest, bun test). A run on named test files runs at once, with no slot.",
     printOnly: TEST_PRINT_ONLY,
     noSlotForFiles: true,
-    skipWords: ["run"],
-    valuedFlags: TEST_VALUED_FLAGS,
-    match: [{ tool: "vitest" }, { tool: "jest" }]
+    match: [{ tool: "vitest" }, { tool: "jest" }, { tool: "bun", sub: ["test"] }]
+  },
+  e2e: {
+    about: "An end-to-end test run (playwright test). Every run takes a slot, one spec file too: it starts the app and its browsers.",
+    printOnly: ["--list", "--help", "-h"],
+    match: [{ tool: "playwright", sub: ["test"] }]
   },
   build: {
     about: "A framework production build (next build).",
@@ -13538,6 +13865,62 @@ var DEFAULT_KINDS = {
 };
 function mergeKinds(projectKinds) {
   return { ...DEFAULT_KINDS, ...projectKinds ?? {} };
+}
+function isPrintOnly(kind, args) {
+  const printOnly = new Set((kind.printOnly ?? []).map((flag) => flag.toLowerCase()));
+  return args.some((arg) => printOnly.has(arg.toLowerCase()));
+}
+function namesOnlyFiles(kind, args, isFile, tool) {
+  if (kind.noSlotForFiles !== true)
+    return false;
+  const table = tool === undefined ? undefined : TOOL_OPTIONS[tool];
+  const skip = new Set([...kind.skipWords ?? [], ...table?.skip ?? []]);
+  const valued = new Set([...table?.valued ?? TEST_VALUED_FLAGS, ...kind.valuedFlags ?? []]);
+  const bare = new Set(table?.bare ?? TEST_BARE_FLAGS);
+  let index = 0;
+  while (index < args.length && skip.has(args[index] ?? ""))
+    index++;
+  const operands = [];
+  let optionsEnded = false;
+  for (;index < args.length; index++) {
+    const arg = args[index] ?? "";
+    if (!optionsEnded && arg === "--")
+      optionsEnded = true;
+    else if (!optionsEnded && arg.startsWith("-")) {
+      if (arg.includes("=") || bare.has(arg))
+        continue;
+      if (!valued.has(arg))
+        return false;
+      index++;
+    } else
+      operands.push(arg);
+  }
+  const names = table?.isOperand;
+  return operands.length > 0 && operands.length <= LIGHT_FILE_LIMIT && operands.every((word) => (names === undefined || names(word)) && isFile(word));
+}
+function isWatchRun(tool, args) {
+  const watch = TOOL_OPTIONS[tool]?.watch;
+  if (watch === undefined)
+    return false;
+  const fold = (word) => watch.ignoreCase === true ? word.toLowerCase() : word;
+  for (const arg of args) {
+    if (arg === "--")
+      break;
+    const [flag = "", value] = arg.split("=", 2);
+    if (watch.flags.includes(fold(flag)) && value !== "false" && value !== "0")
+      return true;
+  }
+  if (watch.commands === undefined)
+    return false;
+  const valued = new Set(TOOL_OPTIONS[tool]?.valued);
+  for (let index = 0;index < args.length; index++) {
+    const arg = args[index] ?? "";
+    if (!arg.startsWith("-"))
+      return watch.commands.includes(arg);
+    if (valued.has(arg))
+      index++;
+  }
+  return false;
 }
 function ignoredFieldsOf(kind) {
   return IGNORED_KIND_FIELDS.filter((field) => kind[field] !== undefined);
@@ -14133,18 +14516,18 @@ function gitNotFound(error) {
   const why = error instanceof Error ? error.message : String(error);
   return /not found in \$PATH|ENOENT/.test(why) ? new Error(GIT_NOT_FOUND) : error;
 }
-var GIT_TIMED_OUT = "git did not answer in time";
+var GIT_TIMED_OUT2 = "git did not answer in time";
 var GIT_TIMED_OUT_FIX = "run `git status` in this folder; if that hangs too, fix git first, then run this again";
 
 class GitTimedOutError extends Error {
   constructor() {
-    super(`${GIT_TIMED_OUT}: ${GIT_TIMED_OUT_FIX}`);
+    super(`${GIT_TIMED_OUT2}: ${GIT_TIMED_OUT_FIX}`);
     this.name = "GitTimedOutError";
   }
 }
 function checkoutFailure(error) {
   if (error instanceof GitTimedOutError)
-    return GIT_TIMED_OUT;
+    return GIT_TIMED_OUT2;
   return error instanceof Error ? error.message : String(error);
 }
 var NO_TIME_LEFT = {
@@ -14338,7 +14721,7 @@ function loadProjectConfig(checkout, pluginVersion) {
 }
 var CONFIG_PATH = ".claude/cc-smart-dev-kit.json";
 function gitTimedOut(where) {
-  return { found: false, where, why: GIT_TIMED_OUT };
+  return { found: false, where, why: GIT_TIMED_OUT2 };
 }
 function refNotKnown(where, ref, read) {
   if (read.timedOut === true)
@@ -14425,6 +14808,7 @@ import { dirname as dirname9, join as join18, resolve as resolve5 } from "path";
 
 // src/cli/check.ts
 var FIX_LABEL = "Fix:";
+var SETUP_FIX = `${COMMAND} setup`;
 function checkStatus(check) {
   if (!check.ok)
     return "fail";
@@ -15481,6 +15865,66 @@ import { existsSync as existsSync19, readFileSync as readFileSync27 } from "fs";
 
 // src/setup/statusline.ts
 import { join as join22 } from "path";
+
+// src/setup/launcher.ts
+var LAUNCHER_NAME = "cc-smart-dev-kit";
+var LAUNCHER_IN_SHELL = `"$HOME/.local/bin/${LAUNCHER_NAME}"`;
+var FIND_INSTALL_JS = [
+  "const f=process.argv[process.argv.length-1];",
+  'const j=JSON.parse(require("fs").readFileSync(f,"utf8"));',
+  `const e=((j&&j.plugins&&j.plugins["${PLUGIN_ID}"])||[]).find(x=>x&&x.scope==="user"&&typeof x.installPath==="string");`,
+  "if(!e)process.exit(1);",
+  "process.stdout.write(e.installPath);"
+].join("");
+function bakedBunPath(script) {
+  const match = /^baked_bun=('(?:[^']|'\\'')*')$/m.exec(script);
+  if (!match?.[1])
+    return null;
+  return match[1].slice(1, -1).replaceAll("'\\''", "'");
+}
+function launcherScript(bunPath) {
+  return `#!/bin/sh
+# cc-smart-dev-kit launcher. Written by "cc-smart-dev-kit setup"; setup rewrites it, so do not edit it.
+# It runs the cc-smart-dev-kit command from the installed version of the cc-smart-dev-kit plugin.
+fail() {
+  echo "cc-smart-dev-kit: $1 Run: claude plugin install ${PLUGIN_ID}" >&2
+  exit 1
+}
+baked_bun=${shellQuote(bunPath)}
+if [ -x "$baked_bun" ]; then
+  bun="$baked_bun"
+elif command -v bun >/dev/null 2>&1; then
+  bun=$(command -v bun)
+else
+  echo "cc-smart-dev-kit: bun not found (not at $baked_bun, not on PATH). Install bun, then run: cc-smart-dev-kit setup" >&2
+  exit 1
+fi
+config_dir="\${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+installed="$config_dir/plugins/installed_plugins.json"
+[ -f "$installed" ] || fail "the cc-smart-dev-kit plugin is not installed."
+# The lookup runs in this launcher's own folder (never the person's working folder): bun reads
+# the working folder's bunfig.toml, and a project's preload could print another path \u2014 this
+# very path decides which CLI runs. The plugin's own empty config cannot be used here: it sits
+# in the folder this lookup has yet to find.
+launcher_dir=$HOME/.local/bin
+case $0 in */*) launcher_dir=\${0%/*} ;; esac
+install_path=$(cd "$launcher_dir" && "$bun" -e '${FIND_INSTALL_JS}' -- "$installed" 2>/dev/null) || fail "the cc-smart-dev-kit plugin is not installed."
+[ -n "$install_path" ] || fail "the cc-smart-dev-kit plugin is not installed."
+[ -f "$install_path/dist/cli.js" ] || fail "the cc-smart-dev-kit plugin folder is missing: $install_path."
+# --no-env-file: "cc-smart-dev-kit job run" hands its job exactly the environment it was given.
+# --config: the plugin's own empty config, beside the CLI in the same version folder, so the
+# working folder's bunfig.toml (a project's preload) never runs inside the command. An
+# installed version older than that file (0.2.x, until migrate replaces it) has none: bun
+# refuses a config path that does not exist, so the flag is left out then.
+set -- "$install_path/dist/cli.js" "$@"
+if [ -f "$install_path/bunfig.toml" ]; then
+  set -- "--config=$install_path/bunfig.toml" "$@"
+fi
+exec "$bun" --no-env-file "$@"
+`;
+}
+
+// src/setup/statusline.ts
 var STATUSLINE_KEY = ["statusLine"];
 function statuslineSetting(paths) {
   return { command: `${shellWord(join22(paths.binDir, LAUNCHER_NAME))} statusline`, type: "command" };
@@ -16172,7 +16616,7 @@ async function measure(checkout, { head, branch, base }, candidates, limits, git
     if (left <= 0)
       throw new Uncovered("the time to measure the change after the review ran out");
     const result = await (git.run ?? runGitAsync)(checkout.root, args, git.env, left, own);
-    if (result.code === null && result.err === "timed out") {
+    if (result.code === null && result.err === GIT_TIMED_OUT) {
       throw new Uncovered("the time to measure the change after the review ran out");
     }
     return result;
@@ -18088,6 +18532,7 @@ var CONTINUATION = {
 var SEPARATORS = new Set([`
 `, "\r", "&", "(", ")", ";", "|"]);
 var HERE_STRING = /@(["'])\r?\n([\s\S]*?)\r?\n\1@/y;
+var ARRAY_ASSIGNMENT = /(?:^|\s)[A-Za-z_][A-Za-z0-9_]*\+?=$/;
 function readingsOf(command, dialect) {
   const readings = [];
   for (const one of dialect === undefined ? DIALECTS : [dialect]) {
@@ -18109,6 +18554,17 @@ function lex(text, options) {
   const segments = [];
   const piped = [];
   const expanded = [];
+  const groups = [];
+  const starts = [];
+  let group = options.outer ?? null;
+  const enterGroup = (array = false) => {
+    group = { depth: (group?.depth ?? 0) + 1, outer: group, ...array ? { array } : {} };
+  };
+  const leaveGroup = () => {
+    if (group !== (options.outer ?? null))
+      group = group?.outer ?? null;
+  };
+  const cases = [];
   const owed = [];
   let open = false;
   let unparsable = false;
@@ -18116,10 +18572,12 @@ function lex(text, options) {
   let afterPipe = false;
   let matching = null;
   let semicolons = null;
-  const push = (piece, from, filledIn = false) => {
+  const push = (piece, from, filledIn = false, inner = group, start = null) => {
     segments.push(piece);
     piped.push(from);
     expanded.push(filledIn);
+    groups.push(inner);
+    starts.push(start);
   };
   function addInner(inner, body, filledIn = false) {
     const depth = (options.depth ?? 0) + 1;
@@ -18127,13 +18585,14 @@ function lex(text, options) {
       open = true;
       return;
     }
-    const read = lex(inner, { blind, dialect, join, body: body && !blind, depth });
+    const outer = { depth: (group?.depth ?? 0) + 1, outer: group };
+    const read = lex(inner, { blind, dialect, join, body: body && !blind, depth, outer });
     if (read.open)
       open = true;
     if (read.unparsable)
       unparsable = true;
     for (let i = 0;i < read.segments.length; i++) {
-      push(read.segments[i] ?? "", read.piped[i] ?? null, filledIn || read.expanded[i] === true);
+      push(read.segments[i] ?? "", read.piped[i] ?? null, filledIn || read.expanded[i] === true, read.groups[i] ?? outer);
     }
   }
   function skipBodies() {
@@ -18261,11 +18720,16 @@ function lex(text, options) {
       if (char === escaper && next !== "") {
         raw += char + next;
         at += 2;
+      } else if (bash && char === "$" && next === "$") {
+        raw += "$$";
+        at += 2;
       } else if (char === "$" && next === "(") {
         const end = bash ? arithmeticEnd(at + 1) : -1;
         if (end === -1) {
           at += 2;
+          enterGroup();
           raw += `$(${read(true).raw}`;
+          leaveGroup();
         } else {
           raw += readArithmetic(end);
         }
@@ -18282,6 +18746,8 @@ function lex(text, options) {
     segments.length = mark;
     piped.length = mark;
     expanded.length = mark;
+    groups.length = mark;
+    starts.length = mark;
     return raw;
   }
   function hereDocOpener() {
@@ -18323,9 +18789,36 @@ function lex(text, options) {
     const after = text.charAt(at + 1);
     return wordStart && (after === "" || /\s/.test(after) || char === "}" && /[;&|)]/.test(after));
   }
+  function casePattern(current, char, next) {
+    const words = current.trim();
+    const command = words.replace(/^(?:(?:do|then|else|elif|if|while|until|!|time(?:\s+-p)?)\s+)+/, "");
+    const level = group;
+    let top = cases.at(-1);
+    if (top?.level === level && /^esac(?![\w-])/.test(command)) {
+      cases.pop();
+      top = cases.at(-1);
+    }
+    const starts = /^case\s[\s\S]*\sin(?:\s|$)/.test(command) && !/\sin\s+esac(?![\w-])/.test(command);
+    if (starts) {
+      top = { level, pattern: true };
+      cases.push(top);
+    }
+    if (top?.level !== level)
+      return false;
+    if (char === ";" && (next === ";" || next === "&"))
+      top.pattern = true;
+    if (!top.pattern)
+      return false;
+    if (char === ")") {
+      top.pattern = false;
+      return true;
+    }
+    return char === "(" && (words === "" || starts && /\sin$/.test(command));
+  }
   function read(nested, substitutions = 0) {
     let raw = "";
     let current = "";
+    let currentStart = at;
     let depth = 0;
     let wordStart = true;
     let afterClose = false;
@@ -18363,6 +18856,11 @@ function lex(text, options) {
           take(readDouble(true));
           continue;
         }
+        if (bash && char === "$" && next === "$") {
+          take("$$");
+          at += 2;
+          continue;
+        }
         if (bash && char === "$" && next === "'") {
           at++;
           take(`$${readSingle(true)}`);
@@ -18377,12 +18875,15 @@ function lex(text, options) {
           take(readArithmetic(arithmetic));
           continue;
         }
-        if (char === "$" && next === "(" && substitutions < MAX_INNER) {
+        const processSubstitution = bash && (char === "<" || char === ">") && wordStart;
+        if (next === "(" && (char === "$" || processSubstitution) && substitutions < MAX_INNER) {
           at += 2;
+          enterGroup();
           const substitution = read(true, substitutions + 1);
+          leaveGroup();
           if (!substitution.closed)
             open = true;
-          take(`$(${substitution.raw}`);
+          take(`${char}(${substitution.raw}`);
           continue;
         }
         if (char === "#" && wordStart && !afterClose) {
@@ -18451,16 +18952,21 @@ function lex(text, options) {
         continue;
       }
       if (SEPARATORS.has(char) || isGroupBrace(char, wordStart) || blind && bash && char === "`") {
-        push(current, afterPipe ? segments[segments.length - 1] ?? null : null);
+        const pattern = !blind && bash ? casePattern(current, char, next) : false;
+        push(current, afterPipe ? segments[segments.length - 1] ?? null : null, false, group, currentStart);
         afterPipe = char === "|";
-        if (nested && char === ")" && depth === 0) {
+        if (!pattern && nested && char === ")" && depth === 0) {
           at++;
           return { closed: true, raw: `${raw})` };
         }
-        if (nested && char === "(")
+        if (!pattern && nested && char === "(")
           depth++;
-        if (nested && char === ")")
+        if (!pattern && nested && char === ")")
           depth--;
+        if (!pattern && char === "(")
+          enterGroup(bash && ARRAY_ASSIGNMENT.test(current));
+        else if (!pattern && char === ")")
+          leaveGroup();
         current = "";
         stdinShell = null;
         raw += char;
@@ -18470,30 +18976,36 @@ function lex(text, options) {
         if (char === `
 `)
           skipBodies();
+        currentStart = at;
         continue;
       }
       take(char, isBlank(char));
       at++;
     }
-    push(current, afterPipe ? segments[segments.length - 1] ?? null : null);
+    push(current, afterPipe ? segments[segments.length - 1] ?? null : null, false, group, currentStart);
     return { closed: false, raw };
   }
   if (options.body === true)
     readDouble(false);
   else
     read(false);
-  return { expanded, open, piped, segments, unparsable };
+  return { expanded, groups, open, piped, segments, starts, unparsable };
 }
 function shellSteps(command, { blindWhenOpen = false, dialect = "bash", joinLines = false } = {}) {
   const read = lex(command, { blind: false, dialect, join: joinLines });
   if (read.unparsable)
     return [];
   const chosen = read.open && blindWhenOpen ? lex(command, { blind: true, dialect, join: joinLines }) : read;
-  return chosen.segments.map((text, index) => ({
-    expanded: chosen.expanded[index] === true,
-    pipedFrom: chosen.piped[index] ?? null,
-    text
-  }));
+  return chosen.segments.map((text, index) => {
+    const start = chosen.starts[index];
+    return {
+      expanded: chosen.expanded[index] === true,
+      pipedFrom: chosen.piped[index] ?? null,
+      ...chosen.groups[index] ? { subshell: chosen.groups[index] } : {},
+      ...typeof start === "number" && !joinLines ? { start } : {},
+      text
+    };
+  });
 }
 function shellSegments(command, options = {}) {
   return shellSteps(command, options).map((step) => step.text);
@@ -18571,6 +19083,11 @@ function wordsWithFill(segment, dialect = "bash") {
       filled = true;
     add(char);
   };
+  let closes = null;
+  const closeOf = (open) => {
+    closes ??= parenCloses(segment);
+    return closes[open] ?? -1;
+  };
   let i = 0;
   while (i < segment.length) {
     const char = segment.charAt(i);
@@ -18585,13 +19102,27 @@ function wordsWithFill(segment, dialect = "bash") {
       quoted = true;
       add(next === "" ? char : bash ? next : POWERSHELL_ESCAPES[next] ?? next);
       i += 2;
+    } else if (bash && (char === "$" || !inWord && (char === "<" || char === ">")) && next === "(" && closeOf(i + 1) !== -1) {
+      const close = closeOf(i + 1);
+      add(segment.slice(i, close));
+      filled = true;
+      i = close;
+    } else if (bash && char === "&" && next === ">") {
+      end();
+      add(char);
+      i++;
     } else if (char === "<" || char === ">") {
-      if (quoted || !/^\d+$/.test(word))
+      const bothStreams = bash && !quoted && char === ">" && word === "&";
+      if (!bothStreams && (quoted || !/^\d+$/.test(word)))
         end();
       while (oneOf("<>", segment.charAt(i)))
         add(segment.charAt(i++));
       if (oneOf("&|", segment.charAt(i)))
         add(segment.charAt(i++));
+    } else if (bash && char === "$" && next === "$") {
+      filled = true;
+      add("$$");
+      i += 2;
     } else if (bash && char === "$" && next === "'") {
       let close = i + 2;
       while (close < segment.length && segment.charAt(close) !== "'") {
@@ -18633,6 +19164,19 @@ function wordsWithFill(segment, dialect = "bash") {
           i += 2;
           continue;
         }
+        if (bash && inside === "$" && after === "$") {
+          filled = true;
+          add("$$");
+          i += 2;
+          continue;
+        }
+        const substitution = bash && inside === "$" && after === "(" ? closeOf(i + 1) : -1;
+        if (substitution !== -1) {
+          add(segment.slice(i, substitution));
+          filled = true;
+          i = substitution;
+          continue;
+        }
         if (inside === escaper && after !== "") {
           if (!bash)
             add(POWERSHELL_ESCAPES[after] ?? after);
@@ -18656,6 +19200,49 @@ function wordsWithFill(segment, dialect = "bash") {
   end();
   return words;
 }
+function parenCloses(text) {
+  const closes = new Int32Array(text.length).fill(-1);
+  const open = [];
+  const quoteEnd = (quote, from, escapes) => {
+    for (let at = from;at < text.length; at++) {
+      const char = text.charAt(at);
+      if (escapes && char === "\\")
+        at++;
+      else if (char === quote)
+        return at;
+    }
+    return -1;
+  };
+  for (let i = 0;i < text.length; i++) {
+    const char = text.charAt(i);
+    const next = text.charAt(i + 1);
+    if (char === "\\" || char === "$" && next === "$") {
+      i++;
+    } else if (char === "`") {
+      i = quoteEnd("`", i + 1, true);
+    } else if (open.at(-1) === -1) {
+      if (char === '"')
+        open.pop();
+      else if (char === "$" && next === "(")
+        open.push(++i);
+    } else if (char === "'") {
+      i = quoteEnd("'", i + 1, false);
+    } else if (char === "$" && next === "'") {
+      i = quoteEnd("'", i + 2, true);
+    } else if (char === '"') {
+      open.push(-1);
+    } else if (char === "(") {
+      open.push(i);
+    } else if (char === ")") {
+      const at = open.pop();
+      if (at !== undefined && at >= 0)
+        closes[at] = i + 1;
+    }
+    if (i === -1)
+      break;
+  }
+  return closes;
+}
 var KEYWORDS = new Set(["!", "do", "done", "elif", "else", "fi", "if", "then", "until", "while"]);
 var ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*\+?=/;
 function isAssignmentOnly(words) {
@@ -18669,7 +19256,12 @@ var CHANGE_DIR = new Set([
   "set-location",
   "sl"
 ]);
-var REDIRECTION = /^\d*(<<<|<<|<>|<|>>|>\||>|>&|&>)(.*)$/s;
+var REDIRECTION = /^\d*(<<<|<<|<>|<|>>|>\||>|&>>|&>)(?!\()(.*)$/s;
+var ANY_REDIRECTION = /^\d*(<<<|<<|<>|<|>>|>\||>|&>>|&>)(.*)$/s;
+var textOf = (word) => typeof word === "string" ? word : word.text;
+function isProcessSubstitution(word) {
+  return /^[<>]\(/.test(textOf(word)) && (typeof word === "string" || word.filled);
+}
 var DURATION = (word) => /^\d+(?:\.\d+)?[smhd]?$/.test(word);
 var CPU_MASK = (word) => /^(?:0x)?[0-9a-f]+(?:[,-][0-9a-f]+)*$/i.test(word);
 var WRAPPERS = {
@@ -18687,6 +19279,7 @@ var WRAPPERS = {
     skip: (word) => /^-?\d+$/.test(word)
   },
   command: { inert: ["-v", "-V"], long: [], short: "" },
+  "cross-env": { long: [], short: "" },
   doas: { long: [], short: "uC" },
   env: {
     long: ["--unset", "--chdir", "--split-string"],
@@ -19004,21 +19597,23 @@ function withoutRedirections(args) {
   }
   return kept;
 }
-var WRITING_REDIRECTIONS = new Set([">", ">>", ">|", "&>", "<>"]);
+var WRITING_REDIRECTIONS = new Set([">", ">>", ">|", "&>", "&>>", "<>"]);
 function redirectionTargets(words) {
   const targets = [];
   for (let index = 0;index < words.length; index++) {
-    const redirection = REDIRECTION.exec(words[index] ?? "");
+    const word = words[index] ?? "";
+    const known = typeof word !== "string" && !word.filled;
+    const redirection = (known ? ANY_REDIRECTION : REDIRECTION).exec(textOf(word));
     if (redirection === null)
       continue;
     let target = redirection[2] ?? "";
-    if (target === "")
-      target = words[++index] ?? "";
+    if (target === "") {
+      const next = words[++index] ?? "";
+      if (isProcessSubstitution(next))
+        continue;
+      target = textOf(next);
+    }
     const operator = redirection[1] ?? "";
-    if (operator === ">&")
-      continue;
-    if (operator === "&>" && target.startsWith(">"))
-      target = target.slice(1);
     if (operator === ">" && target.startsWith("&")) {
       target = /^&(\d+|-)$/.test(target) ? "" : target.slice(1);
     }
@@ -19424,6 +20019,9 @@ function parallelCommand(args) {
   const lines = [...new Set(parallelLines(args))];
   return lines.length === 0 ? undefined : lines.join(" ; ");
 }
+function isJobRun(program, args) {
+  return program === COMMAND && args[0] === "job" && args[1] === "run";
+}
 function nestedCommand(program, args, pipedFrom = null) {
   if (SHELLS.has(program)) {
     const script = shellCommandString(args);
@@ -19438,7 +20036,7 @@ function nestedCommand(program, args, pipedFrom = null) {
     }
     return pipedFrom === null ? undefined : writtenText(pipedFrom) ?? undefined;
   }
-  if (program === COMMAND && args[0] === "job" && args[1] === "run") {
+  if (isJobRun(program, args)) {
     const dashes = args.indexOf("--");
     return dashes === -1 || dashes === args.length - 1 ? undefined : args.slice(dashes + 1).map(shellQuote).join(" ");
   }
@@ -29555,7 +30153,6 @@ import { existsSync as existsSync45, readFileSync as readFileSync56, rmSync as r
 import { join as join51 } from "path";
 
 // src/setup/managed-folder.ts
-import { createHash as createHash7 } from "crypto";
 import {
   existsSync as existsSync44,
   mkdirSync as mkdirSync19,
@@ -29563,6 +30160,7 @@ import {
   readFileSync as readFileSync55,
   renameSync as renameSync2,
   rmSync as rmSync9,
+  statSync as statSync18,
   writeFileSync as writeFileSync6
 } from "fs";
 import { basename as basename11, dirname as dirname22, join as join50, relative as relative6, sep as sep4 } from "path";
@@ -29570,24 +30168,36 @@ var OWNED_FOLDERS_FILE = "owned-folders.json";
 var FILE_MODE = 420;
 var DIR_MODE = 493;
 var OWNED_FOLDER_MARK = ".cc-smart-dev-kit-owned";
-var OWNED_FOLDER_MARK_TEXT = "cc-smart-dev-kit made this folder and replaces it whole; `cc-smart-dev-kit restore` removes it.\n";
+var OWNED_FOLDER_MARK_TEXT = "cc-smart-dev-kit made this folder and writes every file in it; `cc-smart-dev-kit restore` removes it.\n";
 function markedOwned(folder) {
   return existsSync44(join50(folder, OWNED_FOLDER_MARK));
 }
 function listFiles(folder) {
   return readdirSync14(folder, { recursive: true, withFileTypes: true }).filter((entry) => entry.isFile()).map((entry) => relative6(folder, join50(entry.parentPath, entry.name)).split(sep4).join("/")).sort();
 }
-function hashFile(file) {
-  return createHash7("sha256").update(readFileSync55(file)).digest("base64");
+function contentOfFolder(source) {
+  return {
+    names: listFiles(source),
+    read: (name) => readFileSync55(join50(source, ...name.split("/")))
+  };
 }
-function sameFolder(target, source, files) {
+function sameFile(file, bytes, mode) {
+  if (!existsSync44(file))
+    return false;
+  if (mode !== undefined && hostPlatform() !== "win32" && (statSync18(file).mode & 511) !== mode) {
+    return false;
+  }
+  return readFileSync55(file).equals(bytes);
+}
+function sameFolder(target, content, mode) {
+  const files = content.names;
   if (!existsSync44(target) || !markedOwned(target))
     return false;
   const have = listFiles(target).filter((file) => file !== OWNED_FOLDER_MARK);
   if (have.length !== files.length || have.some((file, index) => file !== files[index])) {
     return false;
   }
-  return files.every((file) => hashFile(join50(target, file)) === hashFile(join50(source, file)));
+  return files.every((file) => sameFile(join50(target, file), content.read(file), mode));
 }
 function ownedFoldersFile(stateDir) {
   return join50(stateDir, OWNED_FOLDERS_FILE);
@@ -29621,38 +30231,43 @@ function forgetOwnedFolder(stateDir, folder) {
     return;
   writeOwnedFolders(stateDir, folders.filter((one) => one !== folder));
 }
-function copyFolder(source, into, files) {
-  for (const file of files) {
+function copyFolder(content, into, mode) {
+  for (const file of content.names) {
     const to = join50(into, ...file.split("/"));
     mkdirSync19(dirname22(to), { recursive: true, mode: DIR_MODE });
-    writeFileSync6(to, readFileSync55(join50(source, ...file.split("/"))), { mode: FILE_MODE });
-    setFileMode(to, FILE_MODE);
+    writeFileSync6(to, content.read(file), { mode });
+    setFileMode(to, mode);
   }
   mkdirSync19(into, { recursive: true, mode: DIR_MODE });
   writeFileSync6(join50(into, OWNED_FOLDER_MARK), OWNED_FOLDER_MARK_TEXT, { mode: FILE_MODE });
   setFileMode(join50(into, OWNED_FOLDER_MARK), FILE_MODE);
 }
-function writeManagedFolder(target, source, options) {
+function writeFolder(target, content, options, update) {
   const real = realTarget(target);
-  const files = listFiles(source);
-  if (sameFolder(real, source, files)) {
+  const mode = options.fileMode ?? FILE_MODE;
+  const count = content.names.length;
+  if (sameFolder(real, content, options.fileMode)) {
     if (!options.dryRun)
       recordOwnedFolder(options.stateDir, real);
-    return { files: files.length, outcome: "unchanged" };
+    return { files: count, outcome: "unchanged" };
   }
-  const outcome = existsSync44(real) ? "updated" : "created";
-  if (outcome === "updated" && !markedOwned(real)) {
+  const hadOld = existsSync44(real);
+  const outcome = hadOld ? "updated" : "created";
+  if (hadOld && !markedOwned(real)) {
     throw new Error(`${real} is not a folder cc-smart-dev-kit made (it has no ${OWNED_FOLDER_MARK}): move it away, then run this again`);
   }
   if (options.dryRun)
-    return { files: files.length, outcome };
+    return { files: count, outcome };
   recordOwnedFolder(options.stateDir, real);
+  if (hadOld && update === "in-place") {
+    rewriteFiles(real, content, options.fileMode);
+    return { files: count, outcome };
+  }
   const token = `${process.pid}-${crypto.randomUUID()}`;
   const temp = join50(dirname22(real), `.${basename11(real)}.cc-smart-dev-kit-tmp-${token}`);
   const old = join50(dirname22(real), `.${basename11(real)}.cc-smart-dev-kit-old-${token}`);
   try {
-    copyFolder(source, temp, files);
-    const hadOld = existsSync44(real);
+    copyFolder(content, temp, mode);
     if (hadOld)
       renameSync2(real, old);
     try {
@@ -29669,7 +30284,26 @@ function writeManagedFolder(target, source, options) {
     rmSync9(old, { force: true, recursive: true });
     throw error;
   }
-  return { files: files.length, outcome };
+  return { files: count, outcome };
+}
+function rewriteFiles(real, content, mode) {
+  for (const name of content.names) {
+    const file = join50(real, ...name.split("/"));
+    const bytes = content.read(name);
+    if (sameFile(file, bytes, mode))
+      continue;
+    const keep = existsSync44(file) ? statSync18(file).mode & 511 : FILE_MODE;
+    atomicWrite(file, bytes.toString("utf8"), mode ?? keep);
+  }
+  const wanted = new Set(content.names.map((name) => name.split("/")[0]));
+  for (const entry of readdirSync14(real)) {
+    if (entry !== OWNED_FOLDER_MARK && !wanted.has(entry)) {
+      rmSync9(join50(real, entry), { force: true, recursive: true });
+    }
+  }
+}
+function writeManagedFolder(target, source, options) {
+  return writeFolder(target, contentOfFolder(source), options, "swap");
 }
 function removeManagedFolder(target, stateDir) {
   const real = realTarget(target);
@@ -29894,11 +30528,11 @@ function resolvePluginFolder(installedPluginsFile, fallback) {
 }
 
 // src/portal/server.ts
-import { dirname as dirname31, extname as extname3, join as join79 } from "path";
+import { dirname as dirname34, extname as extname3, join as join82 } from "path";
 
 // src/cli/doctor.ts
-import { accessSync as accessSync2, constants as constants3, existsSync as existsSync62, readFileSync as readFileSync73 } from "fs";
-import { dirname as dirname30, join as join72 } from "path";
+import { accessSync as accessSync3, constants as constants4, existsSync as existsSync64, readFileSync as readFileSync74 } from "fs";
+import { dirname as dirname33, join as join75 } from "path";
 
 // src/herdr/hc.ts
 var HC_TIMEOUT_MS = 15000;
@@ -30122,7 +30756,7 @@ function herdrChecks(r = defaultHcRunner) {
 }
 
 // src/jobs/doctor.ts
-import { readFileSync as readFileSync58 } from "fs";
+import { readFileSync as readFileSync59 } from "fs";
 
 // src/jobs/config.ts
 import { readFileSync as readFileSync57 } from "fs";
@@ -30158,8 +30792,1014 @@ function heavyLimitLine(limit) {
   return `Heavy-job limit: ${limit.slots} (${limit.source})`;
 }
 
+// src/jobs/git-hooks.ts
+import { closeSync as closeSync9, openSync as openSync9, readSync as readSync5, statSync as statSync19 } from "fs";
+import { basename as basename12, dirname as dirname23, join as join55 } from "path";
+
+// src/jobs/classify.ts
+import { isAbsolute as isAbsolute4, join as join54, normalize } from "path";
+function runOf(source) {
+  return {
+    source,
+    folder: source?.folder ?? null,
+    cache: new Map,
+    runner: undefined,
+    extra: undefined,
+    compound: false,
+    reading: [],
+    printOk: false
+  };
+}
+function scriptsAt(run, folder) {
+  if (run.source === undefined || folder === null)
+    return null;
+  if (!run.cache.has(folder)) {
+    let found = null;
+    try {
+      found = run.source.scriptsIn(folder);
+    } catch {
+      found = null;
+    }
+    run.cache.set(folder, found);
+  }
+  return run.cache.get(folder) ?? null;
+}
+var CD_OPTIONS = new Set(["-L", "-P", "-e", "-@", "--"]);
+var COMPUTED_FOLDER = /[$`*?[\]{}~]/;
+function folderWord(args) {
+  let index = 0;
+  while (CD_OPTIONS.has(args[index] ?? ""))
+    index++;
+  return args[index];
+}
+function resolveFolder(folder, target) {
+  if (target === undefined || target === "-" || COMPUTED_FOLDER.test(target))
+    return null;
+  if (isAbsolute4(target))
+    return normalize(target);
+  return folder === null ? null : normalize(join54(folder, target));
+}
+function folderAfter(program, args, folder) {
+  if (folder === null)
+    return null;
+  if (program !== "cd" && program !== "chdir" && program !== "pushd")
+    return null;
+  return resolveFolder(folder, folderWord(args));
+}
+var BUN_VALUED = ["--config", "--cwd", "--env-file", "--filter", "--preload", "-c", "-F", "-r"];
+var NPX_VALUED = ["--package", "-p", "--call", "-c", "--workspace", "-w"];
+var NPM_VALUED = ["--prefix", "-C"];
+var PNPM_VALUED = ["--filter", "-F", "--dir", "-C", "--workspace-root"];
+var YARN_VALUED = [...PNPM_VALUED, "--cwd"];
+var RUNNER_VALUED = {
+  bun: BUN_VALUED,
+  npm: NPM_VALUED,
+  pnpm: PNPM_VALUED,
+  yarn: YARN_VALUED
+};
+var RUNNER_FOLDER_OPTIONS = {
+  bun: ["--cwd"],
+  npm: ["--prefix", "-C"],
+  pnpm: ["-C", "--dir"],
+  yarn: ["--cwd"]
+};
+function runnerFolder(program, head) {
+  const names = RUNNER_FOLDER_OPTIONS[program] ?? [];
+  for (let index = 0;index < head.length; index++) {
+    const word = head[index] ?? "";
+    const equals = word.indexOf("=");
+    if (!names.includes(equals === -1 ? word : word.slice(0, equals)))
+      continue;
+    return equals === -1 ? head[index + 1] : word.slice(equals + 1);
+  }
+  return;
+}
+function inFolder(call, program, head) {
+  const dir = runnerFolder(program, head);
+  return dir === undefined ? call : { ...call, dir };
+}
+var NODE_VALUED = [
+  "--conditions",
+  "--eval",
+  "--import",
+  "--input-type",
+  "--loader",
+  "--print",
+  "--require",
+  "-C",
+  "-e",
+  "-p",
+  "-r"
+];
+var TOOL_VALUED = {
+  docker: [
+    "--config",
+    "--context",
+    "--host",
+    "--log-level",
+    "--tlscacert",
+    "--tlscert",
+    "--tlskey",
+    "-c",
+    "-H",
+    "-l",
+    "--builder",
+    "--ansi",
+    "--env-file",
+    "--file",
+    "--parallel",
+    "--profile",
+    "--progress",
+    "--project-directory",
+    "--project-name",
+    "-f",
+    "-p"
+  ],
+  "docker-compose": [
+    "--ansi",
+    "--env-file",
+    "--file",
+    "--parallel",
+    "--profile",
+    "--progress",
+    "--project-directory",
+    "--project-name",
+    "-f",
+    "-p"
+  ],
+  podman: ["--connection", "--url", "--root", "--runroot", "--log-level"]
+};
+var BUN_COMMANDS = new Set([
+  "add",
+  "build",
+  "create",
+  "exec",
+  "i",
+  "init",
+  "install",
+  "link",
+  "outdated",
+  "patch",
+  "pm",
+  "publish",
+  "remove",
+  "repl",
+  "rm",
+  "unlink",
+  "update",
+  "upgrade"
+]);
+function firstWord(args, from, valued) {
+  let index = from;
+  while (index < args.length && (args[index] ?? "").startsWith("-")) {
+    index += valued.includes(args[index] ?? "") ? 2 : 1;
+  }
+  return Math.min(index, args.length);
+}
+function toolName(word) {
+  const isPath = /[\\/]/.test(word) && !/^@[^\\/]+\/[^\\/]+$/.test(word);
+  const base = (word.split(/[\\/]/).pop() ?? word).toLowerCase().replace(/\.(cmd|exe|ps1|bat)$/, "");
+  return (isPath ? base.replace(/\.(mjs|cjs|js)$/, "") : base).replace(/(?<=.)@.*$/, "");
+}
+function scriptOrTool(word, args) {
+  return /[\\/]/.test(word) ? { name: toolName(word), args } : { name: toolName(word), args, script: word };
+}
+function toolOf(program, args, depth = 0) {
+  if (depth > 4)
+    return;
+  const at = (valued, from = 0) => firstWord(args, from, valued);
+  if (["bun", "npm", "pnpm", "yarn"].includes(program)) {
+    const index = at(RUNNER_VALUED[program] ?? []);
+    const sub = args[index];
+    if (program === "yarn" && sub === undefined || sub !== undefined && ["install", "i", "add", ...program === "npm" ? ["ci"] : []].includes(sub)) {
+      return { name: program, args: sub === undefined ? ["install", ...args] : args.slice(index) };
+    }
+  }
+  switch (program) {
+    case "bunx":
+    case "npx": {
+      const index = at(program === "npx" ? NPX_VALUED : NPX_VALUED.slice(0, 2));
+      const name = args[index];
+      return name === undefined ? undefined : { name: toolName(name), args: args.slice(index + 1) };
+    }
+    case "bun": {
+      const index = at(BUN_VALUED);
+      const sub = args[index];
+      if (sub === undefined)
+        return;
+      if (sub === "x")
+        return toolOf("bunx", args.slice(index + 1), depth + 1);
+      if (sub === "run") {
+        const nameAt = firstWord(args, index + 1, BUN_VALUED);
+        const name = args[nameAt];
+        if (name === undefined)
+          return;
+        return inFolder(scriptOrTool(name, args.slice(nameAt + 1)), program, args.slice(0, nameAt));
+      }
+      if (sub === "test") {
+        return { name: "bun", args: ["test", ...args.slice(0, index), ...args.slice(index + 1)] };
+      }
+      if (BUN_COMMANDS.has(sub))
+        return;
+      return inFolder(scriptOrTool(sub, args.slice(index + 1)), program, args.slice(0, index));
+    }
+    case "npm": {
+      const index = at(NPM_VALUED);
+      const sub = args[index];
+      const rest = args.slice(index + 1);
+      if (sub === "exec" || sub === "x")
+        return toolOf("npx", rest, depth + 1);
+      if (sub === "test" || sub === "t") {
+        return inFolder({ name: "", args: rest, script: "test" }, program, args.slice(0, index));
+      }
+      if (sub === "run" || sub === "run-script") {
+        const nameAt = firstWord(rest, 0, NPM_VALUED);
+        const name = rest[nameAt];
+        if (name === undefined)
+          return;
+        const call = { name: "", args: rest.slice(nameAt + 1), script: name };
+        return inFolder(call, program, args.slice(0, index + 1 + nameAt));
+      }
+      return;
+    }
+    case "pnpm":
+    case "yarn": {
+      const index = at(RUNNER_VALUED[program] ?? []);
+      const sub = args[index];
+      if (sub === undefined)
+        return;
+      const rest = args.slice(index + 1);
+      if (sub === "exec" || sub === "dlx")
+        return toolOf("npx", rest, depth + 1);
+      if (sub === "test" || sub === "t") {
+        return inFolder({ name: "", args: rest, script: "test" }, program, args.slice(0, index));
+      }
+      if (sub === "run" || sub === "run-script") {
+        const nameAt = firstWord(rest, 0, []);
+        const name = rest[nameAt];
+        if (name === undefined)
+          return;
+        const call = scriptOrTool(name, rest.slice(nameAt + 1));
+        return inFolder(call, program, args.slice(0, index + 1 + nameAt));
+      }
+      return inFolder(scriptOrTool(sub, rest), program, args.slice(0, index));
+    }
+    case "node": {
+      const index = at(NODE_VALUED);
+      const script = args[index];
+      if (script !== undefined && /[\\/]/.test(script)) {
+        return { name: toolName(script), args: args.slice(index + 1) };
+      }
+      return;
+    }
+    default:
+      return { name: program, args };
+  }
+}
+function hasFlag(args, flag) {
+  return args.some((arg) => arg === flag || arg.startsWith(`${flag}=`));
+}
+function startsWithSub(args, sub, valued) {
+  let from = 0;
+  for (const word of sub) {
+    const index = firstWord(args, from, valued);
+    if (args[index] !== word)
+      return false;
+    from = index + 1;
+  }
+  return true;
+}
+function ruleMatches(rule, call, scriptOnly = false) {
+  if ("script" in rule)
+    return call.script === rule.script;
+  if (scriptOnly)
+    return false;
+  if (call.name !== rule.tool)
+    return false;
+  const valued = [...TOOL_VALUED[rule.tool] ?? [], ...rule.valued ?? []];
+  if (rule.sub !== undefined && !startsWithSub(call.args, rule.sub, valued))
+    return false;
+  if (rule.flags !== undefined && !rule.flags.every((flag) => hasFlag(call.args, flag))) {
+    return false;
+  }
+  const text = rule.argIncludes?.toLowerCase();
+  return text === undefined || call.args.some((arg) => arg.toLowerCase().includes(text));
+}
+function matchOfCall(call, kinds, scriptOnly) {
+  let printing = null;
+  for (const [name, kind] of Object.entries(kinds)) {
+    const rules = (kind.match ?? []).filter((rule) => ruleMatches(rule, call, scriptOnly));
+    if (rules.length === 0)
+      continue;
+    if (rules.some((rule) => ("script" in rule))) {
+      return { kind: name, tool: undefined, printOnly: false };
+    }
+    const hit = { kind: name, tool: call.name, printOnly: isPrintOnly(kind, call.args) };
+    if (!hit.printOnly)
+      return hit;
+    printing ??= hit;
+  }
+  return printing;
+}
+var newScan = () => ({ found: [], background: false, queued: false });
+var LONE_AMPERSAND = /(?<![&|>])&(?![&>])/;
+function sendsToBackground(command, steps) {
+  let at = 0;
+  for (const step of steps) {
+    if (step.text === "")
+      continue;
+    const start = command.indexOf(step.text, at);
+    if (start === -1 || LONE_AMPERSAND.test(command.slice(at, start)))
+      return true;
+    at = start + step.text.length;
+  }
+  return LONE_AMPERSAND.test(command.slice(at));
+}
+var NPM_EXECPATH = /^\$\{?npm_execpath\}?$/;
+function isOneCommand(body) {
+  const steps = shellSteps(body, { blindWhenOpen: true, dialect: "bash", joinLines: true });
+  return steps.map((step) => wordsOf(step.text)).filter((words) => words.length > 0 && !isAssignmentOnly(words)).length === 1;
+}
+function expandScript(call, runner, bodies, lookedUpIn, kinds, depth, run, all, out) {
+  if (depth >= MAX_NESTING)
+    return false;
+  const name = call.script ?? "";
+  const folder = bodies.folder ?? lookedUpIn;
+  const hooks = !(runner === "yarn" && bodies.yarnBerry === true);
+  const parts = [hooks ? `pre${name}` : "", name, hooks ? `post${name}` : ""].filter((part) => bodies.has(part));
+  const main = bodies.get(name) ?? "";
+  const one = parts.length === 1 && isOneCommand(main);
+  for (const part of parts) {
+    const key = JSON.stringify([folder, part]);
+    if (run.reading.includes(key)) {
+      if (all)
+        return false;
+      continue;
+    }
+    const inside = {
+      ...run,
+      folder,
+      runner,
+      extra: one && part === name ? call.args : undefined,
+      compound: run.compound || !one,
+      reading: [...run.reading, key]
+    };
+    if (!scan(bodies.get(part) ?? "", kinds, "bash", depth + 1, inside, all, out) && all) {
+      return false;
+    }
+  }
+  return true;
+}
+function scriptArgs(args, runner, bodies) {
+  const at = args.indexOf("--");
+  if (runner === "npm") {
+    const own = at === -1 ? args : args.slice(0, at);
+    const after = at === -1 ? [] : args.slice(at + 1);
+    return [...own.filter((word) => word === "-" || !word.startsWith("-")), ...after];
+  }
+  if (at === -1)
+    return args;
+  const anywhere = runner === "yarn" && bodies.yarnBerry !== true;
+  const leading = runner === "bun" || runner === "yarn" && bodies.yarnBerry === true;
+  const drops = anywhere || leading && at === 0;
+  return drops ? [...args.slice(0, at), ...args.slice(at + 1)] : args;
+}
+function matchCall(asked, runner, kinds, depth, run, all, out) {
+  const lookedUpIn = asked.dir === undefined ? run.folder : resolveFolder(run.folder, asked.dir);
+  const bodies = asked.script === undefined ? null : scriptsAt(run, lookedUpIn);
+  const isScript = asked.script !== undefined && bodies?.has(asked.script) === true;
+  const call = isScript && bodies !== null ? { ...asked, args: scriptArgs(asked.args, runner, bodies) } : asked;
+  const hit = matchOfCall(call, kinds, isScript);
+  if (hit !== null) {
+    if (all && hit.printOnly && !run.printOk)
+      return false;
+    const folder = hit.tool === undefined ? bodies?.folder ?? lookedUpIn : lookedUpIn;
+    out.found.push({ ...hit, call, folder, compound: run.compound });
+    return true;
+  }
+  if (!isScript || bodies === null)
+    return false;
+  return expandScript(call, runner, bodies, lookedUpIn, kinds, depth, run, all, out);
+}
+function scan(command, kinds, dialect, depth, run, all, out) {
+  const steps = shellSteps(command, { blindWhenOpen: true, dialect, joinLines: true });
+  if (sendsToBackground(command, steps))
+    out.background = true;
+  for (const step of steps) {
+    const words = wordsOf(step.text, dialect);
+    if (all && (words.length === 0 || isAssignmentOnly(words)))
+      continue;
+    const invocation = invocationOf(words);
+    if (invocation === undefined) {
+      if (all)
+        return false;
+      continue;
+    }
+    const { args } = invocation;
+    const program = run.runner !== undefined && NPM_EXECPATH.test(invocation.program) ? run.runner : invocation.program;
+    const plain = withoutRedirections(args);
+    if (CHANGE_DIR.has(program)) {
+      run.folder = folderAfter(program, plain, run.folder);
+      continue;
+    }
+    if (all && isRunnerProgram(program))
+      return false;
+    if (isJobRun(program, args))
+      out.queued = true;
+    const inner = nestedCommand(program, args, step.pipedFrom);
+    const readInner = (line) => depth < MAX_NESTING && scan(line, kinds, nestedDialect(program), depth + 1, { ...run, extra: undefined }, all, out);
+    if (all && inner !== undefined) {
+      if (!readInner(inner))
+        return false;
+      continue;
+    }
+    const call = toolOf(program, run.extra === undefined ? plain : [...plain, ...run.extra]);
+    const heavy = call !== undefined && matchCall(call, program, kinds, depth, run, all, out);
+    if (all && !heavy)
+      return false;
+    if (inner !== undefined)
+      readInner(inner);
+  }
+  return true;
+}
+function classifyHeavyCommand(command, kinds, source, dialect = "bash") {
+  const out = newScan();
+  scan(command, kinds, dialect, 0, runOf(source), false, out);
+  return out.found.find((one) => !one.printOnly)?.kind ?? null;
+}
+function isLight(one, kinds, source) {
+  if (one.printOnly)
+    return true;
+  const spec = kinds[one.kind];
+  const { folder } = one;
+  if (spec === undefined || folder === null || one.compound)
+    return false;
+  return namesOnlyFiles(spec, one.call.args, (word) => source.isFile(folder, word), one.tool);
+}
+function runWeight(line, kinds, source) {
+  const out = newScan();
+  const run = runOf(source);
+  scan(line, kinds, "bash", 0, run, false, out);
+  const { found } = out;
+  const first = found[0];
+  if (first === undefined || out.queued)
+    return { weight: "none" };
+  if (found.some((one) => one.tool !== undefined && isWatchRun(one.tool, one.call.args))) {
+    return { weight: "none" };
+  }
+  const heavy = found.find((one) => !isLight(one, kinds, source));
+  if (heavy !== undefined)
+    return { weight: "heavy", kind: heavy.kind };
+  if (!everyCommandUnderstood(line, kinds, source, run.cache)) {
+    return { weight: "heavy", kind: first.kind };
+  }
+  return found.length > 1 && out.background ? { weight: "heavy", kind: first.kind } : { weight: "light" };
+}
+function everyCommandUnderstood(line, kinds, source, cache) {
+  const run = { ...runOf(source), cache, printOk: true };
+  return scan(cutAtFilters(line).heavy, kinds, "bash", 0, run, true, newScan());
+}
+var READS_ONLY = () => true;
+var isOption = (arg) => arg.startsWith("-") && arg !== "-";
+var isShortCluster = (arg) => /^-[^-]/.test(arg);
+function catReadsStdin(args) {
+  return args.every((arg) => arg === "-" || isOption(arg));
+}
+function teeWritesNoFile(args) {
+  return args.every((arg) => isOption(arg) || arg === "/dev/null");
+}
+function sortReadsOnly(args) {
+  return !args.some((arg) => arg.startsWith("--o") || arg.startsWith("--co") || isShortCluster(arg) && arg.includes("o"));
+}
+function uniqReadsOnly(args) {
+  let files = 0;
+  for (let index = 0;index < args.length; index++) {
+    const arg = args[index] ?? "";
+    if (arg === "-f" || arg === "-s" || arg === "-w")
+      index++;
+    else if (!isOption(arg))
+      files++;
+  }
+  return files <= 1;
+}
+function rgReadsOnly(args) {
+  return !args.some((arg) => arg.startsWith("--pre") || arg.startsWith("--hostname-bin") || arg === "--search-zip" || isShortCluster(arg) && arg.includes("z"));
+}
+var SED_SHORT = /^-[nErsuz]+$/;
+var SED_LONG = new Set([
+  "--debug",
+  "--null-data",
+  "--posix",
+  "--quiet",
+  "--regexp-extended",
+  "--sandbox",
+  "--separate",
+  "--silent",
+  "--unbuffered"
+]);
+var SED_PLAIN_COMMANDS = "=DdGgHhNnPpQqxz}";
+function sedPartEnd(script, from, delimiter) {
+  let at = from;
+  while (at < script.length) {
+    const char = script.charAt(at);
+    if (char === "\\")
+      at += 2;
+    else if (char === delimiter)
+      return at;
+    else if (char === `
+`)
+      return -1;
+    else
+      at++;
+  }
+  return -1;
+}
+function sedBracketsPlain(part, delimiter) {
+  let at = 0;
+  while (at < part.length) {
+    const char = part.charAt(at);
+    if (char === "\\") {
+      at += 2;
+      continue;
+    }
+    if (char !== "[") {
+      at++;
+      continue;
+    }
+    let inside = at + 1;
+    if (part.charAt(inside) === "^")
+      inside++;
+    const first = inside;
+    while (inside < part.length && part.charAt(inside) !== "]") {
+      const one = part.charAt(inside);
+      if (one === "[" || one === "\\" || one === `
+` || one === delimiter)
+        return false;
+      inside++;
+    }
+    if (inside === first || inside >= part.length)
+      return false;
+    at = inside + 1;
+  }
+  return true;
+}
+function sedAddressEnd(script, at) {
+  const number = /^(?:\d+(?:~\d+)?|\$|[+~]\d+)/.exec(script.slice(at));
+  if (number !== null)
+    return at + number[0].length;
+  if (script.charAt(at) !== "/")
+    return at;
+  const end = sedPartEnd(script, at + 1, "/");
+  if (end === -1 || !sedBracketsPlain(script.slice(at + 1, end), "/"))
+    return -1;
+  return end + 1;
+}
+function sedScriptReadsOnly(script) {
+  let at = 0;
+  const skip = (chars) => {
+    while (at < script.length && chars.test(script.charAt(at)))
+      at++;
+  };
+  while (true) {
+    skip(/[\s;]/);
+    if (at >= script.length)
+      return true;
+    at = sedAddressEnd(script, at);
+    if (at === -1)
+      return false;
+    if (script.charAt(at) === ",") {
+      const end = sedAddressEnd(script, at + 1);
+      if (end === -1 || end === at + 1)
+        return false;
+      at = end;
+    }
+    skip(/[ \t]/);
+    if (script.charAt(at) === "!")
+      at++;
+    skip(/[ \t]/);
+    const command = script.charAt(at);
+    at++;
+    if (command === "s" || command === "y") {
+      const delimiter = script.charAt(at);
+      if (delimiter === "" || /[\s\\]/.test(delimiter))
+        return false;
+      const middle = sedPartEnd(script, at + 1, delimiter);
+      if (middle === -1)
+        return false;
+      if (!sedBracketsPlain(script.slice(at + 1, middle), delimiter))
+        return false;
+      const end = sedPartEnd(script, middle + 1, delimiter);
+      if (end === -1)
+        return false;
+      at = end + 1;
+      if (command === "s") {
+        const flags = /^[gpiImM0-9]*/.exec(script.slice(at))?.[0] ?? "";
+        at += flags.length;
+      }
+    } else if (command === "{") {
+      continue;
+    } else if (command !== "" && SED_PLAIN_COMMANDS.includes(command)) {
+      if (command === "q" || command === "Q")
+        skip(/\d/);
+    } else {
+      return false;
+    }
+    skip(/[ \t]/);
+    const next = script.charAt(at);
+    if (next !== "" && next !== ";" && next !== `
+` && next !== "}")
+      return false;
+  }
+}
+function sedReadsOnly(args) {
+  const scripts = [];
+  const operands = [];
+  for (let index = 0;index < args.length; index++) {
+    const arg = args[index] ?? "";
+    const expression = /^-[nErsuz]*e(.*)$/s.exec(arg);
+    if (expression !== null) {
+      const value = expression[1] === "" ? args[++index] : expression[1];
+      if (value === undefined)
+        return false;
+      scripts.push(value);
+    } else if (arg === "--expression") {
+      const value = args[++index];
+      if (value === undefined)
+        return false;
+      scripts.push(value);
+    } else if (arg.startsWith("--expression=")) {
+      scripts.push(arg.slice("--expression=".length));
+    } else if (/^--line-length=\d+$/.test(arg)) {} else if (arg === "-l" && /^\d+$/.test(args[index + 1] ?? "")) {
+      index++;
+    } else if (SED_SHORT.test(arg) || SED_LONG.has(arg)) {} else if (isOption(arg)) {
+      return false;
+    } else {
+      operands.push(arg);
+    }
+  }
+  if (scripts.length === 0) {
+    const script = operands.shift();
+    if (script === undefined)
+      return false;
+    scripts.push(script);
+  }
+  return scripts.every(sedScriptReadsOnly);
+}
+function awkReadsOnly(args) {
+  let program;
+  for (let index = 0;index < args.length; index++) {
+    const arg = args[index] ?? "";
+    if (arg === "--") {
+      program = args[index + 1];
+      break;
+    }
+    if (arg === "-F" || arg === "-v")
+      index++;
+    else if (/^-[Fv]./s.test(arg))
+      continue;
+    else if (isOption(arg))
+      return false;
+    else {
+      program = arg;
+      break;
+    }
+  }
+  return program !== undefined && !/[>|@]|system/.test(program);
+}
+var READ_ONLY_FILTERS = {
+  awk: awkReadsOnly,
+  cat: catReadsStdin,
+  cut: READS_ONLY,
+  egrep: READS_ONLY,
+  fgrep: READS_ONLY,
+  gawk: awkReadsOnly,
+  grep: READS_ONLY,
+  head: READS_ONLY,
+  mawk: awkReadsOnly,
+  nawk: awkReadsOnly,
+  rg: rgReadsOnly,
+  sed: sedReadsOnly,
+  sort: sortReadsOnly,
+  tail: READS_ONLY,
+  tee: teeWritesNoFile,
+  tr: READS_ONLY,
+  uniq: uniqReadsOnly,
+  wc: READS_ONLY
+};
+function isReadOnlyFilter(step) {
+  if (step.pipedFrom === null || step.pipedFrom.trim() === "" || step.expanded)
+    return false;
+  const filled = wordsWithFill(step.text, "bash");
+  if (filled.length === 0 || filled.some((word) => word.filled))
+    return false;
+  const words = filled.map((word) => word.text);
+  const program = programName(words[0] ?? "");
+  const check = READ_ONLY_FILTERS[program];
+  if (check === undefined)
+    return false;
+  const invocation = invocationOf(words);
+  if (invocation === undefined || invocation.computed || invocation.prefix.length > 0 || invocation.program !== program) {
+    return false;
+  }
+  if (redirectionTargets(filled).some((target) => target !== "/dev/null"))
+    return false;
+  return check(withoutRedirections(invocation.args));
+}
+function splitAtFilters(line) {
+  const steps = shellSteps(line, { blindWhenOpen: true, dialect: "bash", joinLines: true });
+  let end = line.length;
+  let found = 0;
+  for (let index = steps.length - 1;index > 0; index--) {
+    const step = steps[index];
+    if (step === undefined || !isReadOnlyFilter(step))
+      break;
+    const start = end - step.text.length;
+    if (start < 1 || line.slice(start, end) !== step.text)
+      return null;
+    const before = line.charAt(start - 2);
+    if (line.charAt(start - 1) !== "|" || before === "|" || before === ">")
+      return null;
+    end = start - 1;
+    found++;
+  }
+  return found === 0 ? null : { heavy: line.slice(0, end).trimEnd(), filters: line.slice(end) };
+}
+function feedsFiltersAlone(heavy) {
+  const commands = shellSteps(heavy, { blindWhenOpen: true, dialect: "bash", joinLines: true }).map((step) => wordsOf(step.text)).filter((words) => words.length > 0 && !isAssignmentOnly(words));
+  const last = commands.at(-1);
+  if (last === undefined || last[0] === "!")
+    return false;
+  const changesDir = (words) => {
+    const invocation = invocationOf(words);
+    return invocation !== undefined && CHANGE_DIR.has(invocation.program);
+  };
+  return !changesDir(last) && commands.slice(0, -1).every(changesDir);
+}
+function cutAtFilters(line) {
+  const split = splitAtFilters(line.trim());
+  return split !== null && feedsFiltersAlone(split.heavy) ? split : { heavy: line, filters: "" };
+}
+function routableKinds(command, kinds, source) {
+  const out = newScan();
+  if (!scan(command, kinds, "bash", 0, runOf(source), true, out) || out.queued)
+    return null;
+  return out.found.map((one) => one.kind);
+}
+function routableLine(bashCommand, kinds, source) {
+  const { heavy, filters } = cutAtFilters(bashCommand);
+  const kind = routableKinds(heavy, kinds, source)?.[0];
+  return kind === undefined ? null : { filters, heavy, kind };
+}
+
+// src/jobs/git-hooks.ts
+var HOOK_NAMES = [
+  "applypatch-msg",
+  "pre-applypatch",
+  "post-applypatch",
+  "pre-commit",
+  "pre-merge-commit",
+  "prepare-commit-msg",
+  "commit-msg",
+  "post-commit",
+  "pre-rebase",
+  "post-checkout",
+  "post-merge",
+  "pre-push",
+  "pre-receive",
+  "update",
+  "post-receive",
+  "post-update",
+  "reference-transaction",
+  "pre-auto-gc",
+  "post-rewrite",
+  "sendemail-validate",
+  "fsmonitor-watchman",
+  "p4-changelist",
+  "p4-prepare-changelist",
+  "p4-post-changelist",
+  "p4-pre-submit",
+  "post-index-change"
+];
+var TIMED_OUT = "timed-out";
+var MAX_HOOK_BYTES = 256 * 1024;
+var HOOKS_PATH_ARGS = ["rev-parse", "--path-format=absolute", "--git-path", "hooks"];
+function realHooksFolder(cwd, env = process.env, timeoutMs = GUARD_GIT_TIMEOUT_MS) {
+  if (timeoutMs <= 0)
+    return TIMED_OUT;
+  const run = runGit(cwd, HOOKS_PATH_ARGS, env, timeoutMs, { GIT_CONFIG_COUNT: "0" });
+  if (run.code === null && run.err === GIT_TIMED_OUT)
+    return TIMED_OUT;
+  return run.ok && run.out !== "" ? run.out : null;
+}
+function isHuskyStubFolder(folder) {
+  return basename12(folder) === "_" && basename12(dirname23(folder)) === ".husky";
+}
+function isFile3(file) {
+  try {
+    return statSync19(file).isFile();
+  } catch {
+    return false;
+  }
+}
+function hookText(file) {
+  let fd = null;
+  try {
+    fd = openSync9(file, "r");
+    const size = statSync19(file).size;
+    if (size > MAX_HOOK_BYTES)
+      return null;
+    const buffer = Buffer.alloc(size);
+    const read = readSync5(fd, buffer, 0, size, 0);
+    const bytes = buffer.subarray(0, read);
+    return bytes.includes(0) ? null : bytes.toString("utf8");
+  } catch {
+    return null;
+  } finally {
+    if (fd !== null)
+      closeSync9(fd);
+  }
+}
+function hookDecision(name, cwd, kinds, source, env = process.env, gitTimeoutMs = GUARD_GIT_TIMEOUT_MS) {
+  const folder = realHooksFolder(cwd, env, gitTimeoutMs);
+  if (folder === TIMED_OUT)
+    return "timed-out";
+  if (folder === null || !isFile3(join55(folder, name)))
+    return "none";
+  const file = isHuskyStubFolder(folder) ? join55(dirname23(folder), name) : join55(folder, name);
+  if (!isFile3(file))
+    return "none";
+  const text = hookText(file);
+  if (text === null)
+    return "direct";
+  const kind = classifyHeavyCommand(text, kinds, source);
+  return kind === null ? "direct" : { queue: kind };
+}
+
+// src/jobs/hook-folder.ts
+import { accessSync as accessSync2, constants as constants2, existsSync as existsSync48, readdirSync as readdirSync15, readFileSync as readFileSync58, statSync as statSync20 } from "fs";
+import { join as join56 } from "path";
+function hookLauncher(paths) {
+  return join56(paths.binDir, LAUNCHER_NAME);
+}
+function hookScript(launcher) {
+  return `#!/bin/sh
+# ${PLUGIN} git hook. Written by "${COMMAND} setup"; setup rewrites it, so do not edit it.
+# A git command that the kit routes uses this folder for that one command. This script runs the
+# repo's own hook of the same name: as it is, or inside the heavy-job queue when that hook runs
+# heavy work. Every doubt runs the hook as it is, so a broken kit never blocks a commit.
+name=\${0##*/}
+launcher=${shellQuote(launcher)}
+# Take the kit's own pair out of the environment, so nothing the hook runs (a staged-files linter,
+# a test suite that commits in temp repos) sends its own git calls through this folder. Only the
+# top pair, and only when it sets core.hooksPath to this very folder: a pair below it stays.
+count=\${GIT_CONFIG_COUNT-}
+case $count in
+  '' | 0* | *[!0-9]* | [0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]*) ;;
+  *)
+    top=$((count - 1))
+    eval "key=\\\${GIT_CONFIG_KEY_$top-} value=\\\${GIT_CONFIG_VALUE_$top-}"
+    case $key in
+      [Cc][Oo][Rr][Ee].[Hh][Oo][Oo][Kk][Ss][Pp][Aa][Tt][Hh])
+        if [ "$value" = "\${0%/*}" ]; then
+          unset "GIT_CONFIG_KEY_$top" "GIT_CONFIG_VALUE_$top"
+          if [ "$top" = 0 ]; then unset GIT_CONFIG_COUNT; else GIT_CONFIG_COUNT=$top; fi
+          own_pair_gone=1
+        fi
+        ;;
+    esac
+    ;;
+esac
+# With the kit's pair gone, git reads the person's own pairs too (a safe.directory that trusts
+# this repo); else GIT_CONFIG_COUNT=0 is the only sure way past the pair that brought git here.
+if [ -n "\${own_pair_gone-}" ]; then
+  real_dir=$(git rev-parse --path-format=absolute --git-path hooks 2>/dev/null) || exit 0
+else
+  real_dir=$(GIT_CONFIG_COUNT=0 git rev-parse --path-format=absolute --git-path hooks 2>/dev/null) || exit 0
+fi
+[ -n "$real_dir" ] || exit 0
+real=$real_dir/$name
+[ -f "$real" ] || exit 0
+case $real_dir in
+  */.husky/_)
+    [ -f "$real_dir/../$name" ] || exit 0
+    # HUSKY=0 turns husky's hooks off: its stub ends at once, so it never waits for a slot.
+    if [ "\${HUSKY:-}" = 0 ]; then launcher=; fi
+    ;;
+esac
+if [ ! -x "$real" ]; then
+  # Git's own hint, unless the person turned it off (advice.ignoredHook=false, or GIT_ADVICE read
+  # as git reads a boolean: set and empty, false, no, off or 0, in any case, is off).
+  hint=1
+  if [ "\${GIT_ADVICE+set}" = set ]; then
+    case $GIT_ADVICE in
+      '' | [Ff][Aa][Ll][Ss][Ee] | [Nn][Oo] | [Oo][Ff][Ff] | 0) hint= ;;
+    esac
+  fi
+  if [ -n "$hint" ] && [ "$(git config --type=bool advice.ignoredHook 2>/dev/null)" = false ]; then hint=; fi
+  if [ -n "$hint" ]; then
+    echo "hint: The '$real' hook was ignored because it's not set as executable." >&2
+  fi
+  exit 0
+fi
+answer=direct
+if [ -x "$launcher" ]; then
+  answer=$("$launcher" job hook "$name" </dev/null) || answer=direct
+fi
+case $answer in
+  "queue "*)
+    kind=\${answer#queue }
+    case $kind in
+      '' | *[!A-Za-z0-9:._-]*) ;;
+      *)
+        # A hook with no #! line: git and sh run it through sh, but the queue starts it itself.
+        first=
+        IFS= read -r first < "$real"
+        case $first in
+          '#!'*) exec "$launcher" job run --hook --kind "$kind" -- "$real" "$@" ;;
+          *) exec "$launcher" job run --hook --kind "$kind" -- /bin/sh "$real" "$@" ;;
+        esac
+        ;;
+    esac
+    ;;
+esac
+exec "$real" "$@"
+`;
+}
+function isExecutable(file) {
+  try {
+    accessSync2(file, constants2.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+function gitHooksState(paths) {
+  const folder = paths.gitHooksFolder;
+  if (!existsSync48(folder))
+    return { kind: "missing" };
+  if (!existsSync48(join56(folder, OWNED_FOLDER_MARK)))
+    return { kind: "not-ours" };
+  const wanted = hookScript(hookLauncher(paths));
+  const problems = [];
+  for (const name of HOOK_NAMES) {
+    const file = join56(folder, name);
+    if (!existsSync48(file) || !statSync20(file).isFile())
+      problems.push(`${name} is missing`);
+    else if (!isExecutable(file))
+      problems.push(`${name} is not executable`);
+    else if (readFileSync58(file, "utf8") !== wanted)
+      problems.push(`${name} is from another version`);
+  }
+  for (const entry of readdirSync15(folder)) {
+    if (entry !== OWNED_FOLDER_MARK && !HOOK_NAMES.includes(entry)) {
+      problems.push(`${entry} should not be there`);
+    }
+  }
+  return problems.length === 0 ? { kind: "ok" } : { kind: "problems", problems };
+}
+
 // src/jobs/doctor.ts
-function heavyJobChecks(paths) {
+var PROBLEMS_SHOWN = 3;
+function gitHooksCheck(paths, platform = hostPlatform()) {
+  if (platform === "win32") {
+    return {
+      ok: true,
+      info: true,
+      text: "Git hook queue: not set up on Windows yet; commit and push hooks run as they are"
+    };
+  }
+  const where = tildify(paths.gitHooksFolder, paths.home);
+  const state = gitHooksState(paths);
+  if (state.kind === "missing") {
+    return {
+      ok: true,
+      warn: true,
+      text: `Git hooks folder is missing (${where}): a commit or push whose hook runs heavy work does not wait for a slot`,
+      fix: SETUP_FIX
+    };
+  }
+  if (state.kind === "not-ours") {
+    return {
+      ok: false,
+      text: `Git hooks folder ${where} was not made by ${COMMAND}, so setup leaves it alone`,
+      fix: `move that folder away by hand, then run: ${SETUP_FIX}`
+    };
+  }
+  if (state.kind === "problems") {
+    const shown = state.problems.slice(0, PROBLEMS_SHOWN).join(", ");
+    const more = state.problems.length - PROBLEMS_SHOWN;
+    return {
+      ok: false,
+      text: `Git hooks folder ${where}: ${shown}${more > 0 ? ` and ${more} more` : ""}`,
+      fix: SETUP_FIX
+    };
+  }
+  return {
+    ok: true,
+    text: `Git hooks folder: ${HOOK_NAMES.length} hook scripts, executable and up to date`
+  };
+}
+function heavyJobChecks(paths, platform = hostPlatform()) {
   const checks = [];
   try {
     checks.push({ ok: true, info: true, text: heavyLimitLine(readHeavyLimit(paths.home)) });
@@ -30172,7 +31812,7 @@ function heavyJobChecks(paths) {
   }
   const file = jobsPaths(paths.home).legacyFile;
   try {
-    const old = parseUserJson(readFileSync58(file, "utf8"));
+    const old = parseUserJson(readFileSync59(file, "utf8"));
     if (typeof old === "object" && old !== null && "maxJobs" in old)
       checks.push({
         ok: true,
@@ -30189,12 +31829,13 @@ function heavyJobChecks(paths) {
         fix: "Remove the old file if it is no longer needed"
       });
   }
+  checks.push(gitHooksCheck(paths, platform));
   return checks;
 }
 
 // src/machine/claude-mem.ts
-import { existsSync as existsSync48, readFileSync as readFileSync59, rmSync as rmSync11 } from "fs";
-import { join as join54 } from "path";
+import { existsSync as existsSync49, readFileSync as readFileSync60, rmSync as rmSync11 } from "fs";
+import { join as join57 } from "path";
 var CLAUDE_MEM_ID = "claude-mem@thedotmack";
 var CLAUDE_MEM_MIN_VERSION = "13.29.0";
 var FALLBACK_PROVIDER = "CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER";
@@ -30251,7 +31892,7 @@ function gatewayAffordableTarget(gatewayConfigFile, after) {
   if (after !== undefined) {
     config = after;
   } else {
-    if (!existsSync48(gatewayConfigFile))
+    if (!existsSync49(gatewayConfigFile))
       return { reason: "the gateway is not set up" };
     try {
       config = loadConfigFile(gatewayConfigFile);
@@ -30286,7 +31927,7 @@ function gatewayAffordableTarget(gatewayConfigFile, after) {
 var CHOICES_FILE = "claude-mem-choices.json";
 function readChoicesFile(stateDir) {
   try {
-    const parsed = JSON.parse(readFileSync59(join54(stateDir, CHOICES_FILE), "utf8"));
+    const parsed = JSON.parse(readFileSync60(join57(stateDir, CHOICES_FILE), "utf8"));
     return isObject2(parsed) ? parsed : {};
   } catch {
     return {};
@@ -30302,7 +31943,7 @@ function writeChoices(stateDir, file, records) {
     delete all[file];
   else
     all[file] = records;
-  atomicWrite(join54(stateDir, CHOICES_FILE), `${JSON.stringify(all, null, 2)}
+  atomicWrite(join57(stateDir, CHOICES_FILE), `${JSON.stringify(all, null, 2)}
 `, 384);
 }
 function readClaudeMemSettings(paths) {
@@ -30342,7 +31983,7 @@ function hasValue(record) {
 }
 function readStartBlocks(paths) {
   const install = findUserInstall(paths.installedPluginsFile, CLAUDE_MEM_ID);
-  if (install === null || !existsSync48(install.installPath))
+  if (install === null || !existsSync49(install.installPath))
     return null;
   const read = readClaudeMemSettings(paths);
   if ("problem" in read)
@@ -30478,7 +32119,7 @@ function isOldNestedForm(data) {
 }
 function claudeMemPlan(paths, gatewayAfter) {
   const install = findUserInstall(paths.installedPluginsFile, CLAUDE_MEM_ID);
-  if (install === null || !existsSync48(install.installPath))
+  if (install === null || !existsSync49(install.installPath))
     return { notInstalled: true };
   const read = readClaudeMemSettings(paths);
   if ("problem" in read)
@@ -30586,12 +32227,12 @@ function autoUpdateState(paths) {
 }
 
 // src/setup/instructions.ts
-import { existsSync as existsSync50, readdirSync as readdirSync15, readFileSync as readFileSync61, rmSync as rmSync12 } from "fs";
-import { join as join56, relative as relative7, sep as sep5 } from "path";
+import { existsSync as existsSync51, readdirSync as readdirSync16, readFileSync as readFileSync62, rmSync as rmSync12 } from "fs";
+import { join as join59, relative as relative7, sep as sep5 } from "path";
 
 // src/setup/managed-entries.ts
-import { existsSync as existsSync49, readFileSync as readFileSync60 } from "fs";
-import { join as join55 } from "path";
+import { existsSync as existsSync50, readFileSync as readFileSync61 } from "fs";
+import { join as join58 } from "path";
 var OWNED_ENTRIES_FILE = "owned-entries.json";
 var ANCHOR_SOURCE = "";
 function pathKey(path) {
@@ -30601,10 +32242,10 @@ function isOwnedEntry(value) {
   return isObject2(value) && typeof value.entry === "string" && typeof value.source === "string";
 }
 function readOwnedEntries(stateDir) {
-  const file = join55(stateDir, OWNED_ENTRIES_FILE);
-  if (!existsSync49(file))
+  const file = join58(stateDir, OWNED_ENTRIES_FILE);
+  if (!existsSync50(file))
     return {};
-  const parsed = JSON.parse(readFileSync60(file, "utf8"));
+  const parsed = JSON.parse(readFileSync61(file, "utf8"));
   const valid = isObject2(parsed) && Object.values(parsed).every((lists) => isObject2(lists) && Object.values(lists).every((list) => Array.isArray(list) && list.every(isOwnedEntry)));
   if (!valid) {
     throw new Error(`Invalid ${file}: expected { <file>: { <key path>: [{ "entry", "source" }] } }`);
@@ -30612,7 +32253,7 @@ function readOwnedEntries(stateDir) {
   return parsed;
 }
 function writeOwnedEntries(stateDir, state) {
-  atomicWrite(join55(stateDir, OWNED_ENTRIES_FILE), `${JSON.stringify(state, null, 2)}
+  atomicWrite(join58(stateDir, OWNED_ENTRIES_FILE), `${JSON.stringify(state, null, 2)}
 `, 384);
 }
 function withRecords(state, file, key, records) {
@@ -30763,35 +32404,35 @@ var PLUGIN_CACHE = `plugins/cache/${MARKETPLACE}/${PLUGIN}/`;
 // src/setup/instructions.ts
 var ALWAYS_ON_FILE = "core.md";
 function optOutFile(stateDir) {
-  return join56(stateDir, "no-instructions");
+  return join59(stateDir, "no-instructions");
 }
 function versionStampFile(stateDir) {
-  return join56(stateDir, "instructions-version");
+  return join59(stateDir, "instructions-version");
 }
 function instructionsOptedOut(stateDir) {
-  return existsSync50(optOutFile(stateDir));
+  return existsSync51(optOutFile(stateDir));
 }
 function readVersionStamp(stateDir) {
   const file = versionStampFile(stateDir);
-  if (!existsSync50(file))
+  if (!existsSync51(file))
     return null;
-  const version = readFileSync61(file, "utf8").trim();
+  const version = readFileSync62(file, "utf8").trim();
   return version === "" ? null : version;
 }
 function instructionsPaths(paths, source) {
-  const target = join56(paths.stateDir, "instructions");
+  const target = join59(paths.stateDir, "instructions");
   return {
     source,
     target,
-    claudeMd: join56(paths.claudeConfigDir, "CLAUDE.md"),
+    claudeMd: join59(paths.claudeConfigDir, "CLAUDE.md"),
     stateDir: paths.stateDir,
-    importPath: claudeImportPath(join56(target, ALWAYS_ON_FILE), paths.home),
+    importPath: claudeImportPath(join59(target, ALWAYS_ON_FILE), paths.home),
     installedPluginsFile: paths.installedPluginsFile
   };
 }
 function instructionsFolder(bundleDir) {
-  const beside = join56(bundleDir, "..", "instructions");
-  return existsSync50(beside) ? beside : join56(bundleDir, "..", "..", "plugin", "instructions");
+  const beside = join59(bundleDir, "..", "instructions");
+  return existsSync51(beside) ? beside : join59(bundleDir, "..", "..", "plugin", "instructions");
 }
 function claudeImportPath(path, home) {
   const rest = path.slice(home.length);
@@ -30806,10 +32447,10 @@ function instructionsBlockBody(importPath) {
 `);
 }
 function listInstructionFiles(source) {
-  if (!existsSync50(source)) {
+  if (!existsSync51(source)) {
     throw new Error(`The plugin's instructions folder is missing: ${source}. Reinstall the plugin.`);
   }
-  const files = readdirSync15(source, { recursive: true, withFileTypes: true }).filter((entry) => entry.isFile() && entry.name.endsWith(".md")).map((entry) => relative7(source, join56(entry.parentPath, entry.name)).split(sep5).join("/")).sort();
+  const files = readdirSync16(source, { recursive: true, withFileTypes: true }).filter((entry) => entry.isFile() && entry.name.endsWith(".md")).map((entry) => relative7(source, join59(entry.parentPath, entry.name)).split(sep5).join("/")).sort();
   if (!files.includes(ALWAYS_ON_FILE)) {
     throw new Error(`The plugin's instructions folder has no ${ALWAYS_ON_FILE}: ${source}. Reinstall the plugin.`);
   }
@@ -30835,17 +32476,17 @@ function copyDifferences(paths) {
   const files = listInstructionFiles(paths.source);
   const out = [];
   for (const name of files) {
-    const copy = join56(paths.target, name);
-    if (!existsSync50(copy))
+    const copy = join59(paths.target, name);
+    if (!existsSync51(copy))
       out.push(`${name} is missing`);
-    else if (readFileSync61(copy, "utf8") !== readFileSync61(join56(paths.source, name), "utf8")) {
+    else if (readFileSync62(copy, "utf8") !== readFileSync62(join59(paths.source, name), "utf8")) {
       out.push(`${name} differs`);
     }
   }
   const root = realTarget(paths.target);
-  const wanted = new Set(files.map((name) => realTarget(join56(paths.target, name))));
+  const wanted = new Set(files.map((name) => realTarget(join59(paths.target, name))));
   for (const file of trackedCopies(paths.target, paths.stateDir)) {
-    if (!wanted.has(file) && existsSync50(file)) {
+    if (!wanted.has(file) && existsSync51(file)) {
       out.push(`${relative7(root, file).split(sep5).join("/")} is not shipped any more`);
     }
   }
@@ -31020,8 +32661,8 @@ var TASK_DENY_PATH = ["permissions", "deny"];
 
 // src/tasks/work/db.ts
 import { Database as Database3 } from "bun:sqlite";
-import { chmodSync as chmodSync2, existsSync as existsSync51, mkdirSync as mkdirSync20, renameSync as renameSync3, rmSync as rmSync13, writeFileSync as writeFileSync7 } from "fs";
-import { dirname as dirname23, join as join57 } from "path";
+import { chmodSync as chmodSync2, existsSync as existsSync52, mkdirSync as mkdirSync20, renameSync as renameSync3, rmSync as rmSync13, writeFileSync as writeFileSync7 } from "fs";
+import { dirname as dirname24, join as join60 } from "path";
 
 // src/tasks/work/queries.ts
 function allTasks(db, project) {
@@ -31303,7 +32944,7 @@ var WRITE_TIMEOUT_MS = 3000;
 var HOOK_TIMEOUT_MS = 200;
 var NEWER_STORE = `the task store was made by a newer kit version: update the kit (${COMMAND} update)`;
 function workDbFile(paths) {
-  return join57(paths.stateDir, "tasks", "work.db");
+  return join60(paths.stateDir, "tasks", "work.db");
 }
 var SCHEMA = `
 CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -31357,7 +32998,7 @@ function repairTaskLayers(sqlite, file) {
   let backed = false;
   const move = (row, parent, above) => {
     if (!backed) {
-      if (!existsSync51(`${file}.v4.bak`)) {
+      if (!existsSync52(`${file}.v4.bak`)) {
         try {
           writeFileSync7(`${file}.v4.bak.tmp`, sqlite.serialize(), { mode: 384 });
           renameSync3(`${file}.v4.bak.tmp`, `${file}.v4.bak`);
@@ -31368,7 +33009,7 @@ function repairTaskLayers(sqlite, file) {
           } catch (cleanupError) {
             cleanup = ` Temporary backup cleanup also failed: ${String(cleanupError)}.`;
           }
-          throw new BackupFailure(`task lift needs a backup: ${error instanceof Error ? error.message : String(error)}. Fix: free disk space and check folder rights for ${dirname23(file)}. The next task call tries again.${cleanup}`);
+          throw new BackupFailure(`task lift needs a backup: ${error instanceof Error ? error.message : String(error)}. Fix: free disk space and check folder rights for ${dirname24(file)}. The next task call tries again.${cleanup}`);
         }
       }
       backed = true;
@@ -31424,18 +33065,18 @@ function repairTaskLayers(sqlite, file) {
 }
 function openWorkDb(file, options) {
   const hook = options.mode === "hook";
-  const fresh = !existsSync51(file);
+  const fresh = !existsSync52(file);
   if (hook && fresh)
     throw new Error("task store does not exist");
   if (!hook)
-    mkdirSync20(dirname23(file), { recursive: true, mode: 448 });
+    mkdirSync20(dirname24(file), { recursive: true, mode: 448 });
   const sqlite = new Database3(file, { create: !hook, readwrite: true });
   let writeRefusal;
   try {
     sqlite.run(`PRAGMA busy_timeout = ${hook ? HOOK_TIMEOUT_MS : WRITE_TIMEOUT_MS}`);
     sqlite.run("PRAGMA foreign_keys = ON");
     if (!hook) {
-      chmodSync2(dirname23(file), 448);
+      chmodSync2(dirname24(file), 448);
       chmodSync2(file, 384);
       if (fresh)
         sqlite.run("PRAGMA journal_mode = WAL");
@@ -31582,200 +33223,29 @@ function checkGitBash(platform, env, facts) {
 
 // src/cli/project-checks.ts
 import {
-  closeSync as closeSync11,
-  constants as constants2,
-  existsSync as existsSync61,
+  closeSync as closeSync12,
+  constants as constants3,
+  existsSync as existsSync63,
   fstatSync as fstatSync4,
-  openSync as openSync11,
-  readdirSync as readdirSync20,
-  readFileSync as readFileSync72,
-  readSync as readSync7,
-  realpathSync as realpathSync10,
-  statSync as statSync21
+  openSync as openSync12,
+  readdirSync as readdirSync21,
+  readFileSync as readFileSync73,
+  readSync as readSync8,
+  realpathSync as realpathSync11,
+  statSync as statSync25
 } from "fs";
-import { isAbsolute as isAbsolute12, join as join71, relative as relative10, resolve as resolve20, sep as sep8 } from "path";
+import { isAbsolute as isAbsolute12, join as join74, relative as relative10, resolve as resolve22, sep as sep8 } from "path";
 
 // src/hooks/after-merge.ts
-import { createHash as createHash9 } from "crypto";
-import { existsSync as existsSync52, mkdirSync as mkdirSync22, writeFileSync as writeFileSync8 } from "fs";
-import { tmpdir as tmpdir4 } from "os";
-import { join as join60 } from "path";
-
-// src/worktrees/auto-start.ts
-import { basename as basename12, join as join59 } from "path";
-
-// src/hooks/attended.ts
-function isAttended(env) {
-  return env.CLAUDE_CODE_SESSION_ATTENDED !== "0";
-}
-
-// src/worktrees/auto-state.ts
 import { createHash as createHash8 } from "crypto";
-import { mkdirSync as mkdirSync21, readFileSync as readFileSync62 } from "fs";
-import { dirname as dirname24, join as join58 } from "path";
-var AUTO_CLEAN_INTERVAL_MS = 60 * 60 * 1000;
-var TOLD_NAMES_MAX = 8;
-var removedSchema = object({
-  branch: string2().nullable(),
-  name: string2(),
-  path: string2(),
-  why: string2()
-});
-var keptSchema = object({ name: string2(), path: string2(), why: string2() });
-var recordSchema2 = object({
-  base: string2(),
-  kept: array(keptSchema),
-  lastRunAt: number2(),
-  removed: array(removedSchema),
-  repo: string2(),
-  seq: number2()
-});
-var toldSchema = object({ seq: number2() });
-function autoCleanLog(stateDir) {
-  return join58(stateDir, "worktrees-auto-clean.log");
-}
-function autoCleanFiles(stateDir, repo) {
-  const key = createHash8("sha256").update(pathForm(repo)).digest("hex").slice(0, 16);
-  const dir = join58(stateDir, "worktrees-auto-clean");
-  return {
-    log: autoCleanLog(stateDir),
-    result: join58(dir, `${key}.json`),
-    told: join58(dir, `${key}.told.json`)
-  };
-}
-function readJson2(file, schema) {
-  try {
-    const parsed = schema.safeParse(JSON.parse(readFileSync62(file, "utf8")));
-    return parsed.success ? parsed.data : null;
-  } catch {
-    return null;
-  }
-}
-function writeJson(file, value) {
-  mkdirSync21(dirname24(file), { recursive: true, mode: 448 });
-  atomicWrite(file, `${JSON.stringify(value, null, 2)}
-`, 384);
-}
-function readRepoRecord(files) {
-  return readJson2(files.result, recordSchema2);
-}
-function readTold(files) {
-  return readJson2(files.told, toldSchema)?.seq ?? 0;
-}
-function hourlyDue(record, nowMs) {
-  if (record === null)
-    return true;
-  return nowMs - record.lastRunAt >= AUTO_CLEAN_INTERVAL_MS || record.lastRunAt > nowMs + 60000;
-}
-function markTold(files, seq) {
-  if (readTold(files) >= seq)
-    return;
-  writeJson(files.told, { seq });
-}
-function untold(record, told) {
-  return record !== null && record.seq > told && record.removed.length > 0 ? record : null;
-}
-function toldLine(record) {
-  const count = record.removed.length;
-  const shown = record.removed.slice(0, TOLD_NAMES_MAX).map((one) => one.name);
-  const names = count > TOLD_NAMES_MAX ? `${shown.join(", ")} and ${String(count - TOLD_NAMES_MAX)} more` : shown.join(", ");
-  const noun = count === 1 ? "1 finished worktree" : `${String(count)} finished worktrees`;
-  return `${COMMAND} removed ${noun}: ${names} (work on ${record.base})`;
-}
+import { existsSync as existsSync53, mkdirSync as mkdirSync22, writeFileSync as writeFileSync8 } from "fs";
+import { tmpdir as tmpdir4 } from "os";
+import { join as join63 } from "path";
 
-// src/worktrees/auto-start.ts
-var AUTO_CLEAN_BUNDLE = "worktrees-clean";
-function autoCleanOn(context) {
-  return context.project.config?.worktrees?.autoClean !== false;
-}
-function autoCleanEntry(importDir) {
-  return basename12(importDir) === "dist" ? join59(importDir, `${AUTO_CLEAN_BUNDLE}.js`) : join59(importDir, "..", "entries", `${AUTO_CLEAN_BUNDLE}.ts`);
-}
-function autoCleanArgv(bun, entry, pluginDir, repo, trigger, keep) {
-  return [bun, "--no-env-file", bunConfigArg(pluginDir), entry, repo, trigger, keep];
-}
-function startAutoClean(context, repo, trigger, importDir = import.meta.dir) {
-  if (!autoCleanOn(context))
-    return false;
-  if (trigger === "session") {
-    if (!isAttended(context.env))
-      return false;
-    const record = readRepoRecord(autoCleanFiles(context.paths.stateDir, repo));
-    if (!hourlyDue(record, Date.now()))
-      return false;
-  }
-  const argv = autoCleanArgv(process.execPath, autoCleanEntry(importDir), pluginFolderBeside(importDir), repo, trigger, context.cwd);
-  const env = gitEnv(context.env);
-  (context.start ?? startDetached)(process.platform, argv, {
-    cwd: context.paths.home,
-    env,
-    onError: (message) => console.error(`${COMMAND} worktrees clean: ${message}`)
-  });
-  return true;
-}
-function takeToldLine(context, repo) {
-  if (!isAttended(context.env))
-    return null;
-  const files = autoCleanFiles(context.paths.stateDir, repo);
-  const record = untold(readRepoRecord(files), readTold(files));
-  if (record === null)
-    return null;
-  try {
-    markTold(files, record.seq);
-  } catch (error) {
-    console.error(`${COMMAND} worktrees clean: could not mark the removals as told: ${error instanceof Error ? error.message : String(error)}`);
-    return null;
-  }
-  return toldLine(record);
-}
-
-// src/hooks/git-guard.ts
-import { isAbsolute as isAbsolute4, resolve as resolve12 } from "path";
-var DEFAULT_PROTECTED_BRANCHES = ["main"];
-var PUSH_VALUE_OPTIONS = [
-  ["--exec", 4],
-  ["--push-option", 4],
-  ["--receive-pack", 5],
-  ["--repo", 6]
-];
+// src/shell/git-calls.ts
 function longOption2(arg, full, min) {
   const name = arg.split("=")[0] ?? arg;
   return name.length >= min && name.length <= full.length && full.startsWith(name);
-}
-function movedTo(program, folder, args) {
-  if (program === "popd")
-    return null;
-  const target = args.find((arg) => !arg.startsWith("-") && arg.toLowerCase() !== "/d");
-  if (target === undefined || /^[~%]|[$`]/.test(target))
-    return null;
-  const path = process.platform === "win32" ? target.replace(/^\/([A-Za-z])(?=\/|$)/, "$1:") : target;
-  if (isAbsolute4(path))
-    return resolve12(path);
-  return folder === null ? null : resolve12(folder, path);
-}
-function currentBranch(where, run) {
-  if (!run.branches.has(where)) {
-    const read = runGit(where, ["symbolic-ref", "--short", "-q", "HEAD"], run.options.env, GUARD_GIT_TIMEOUT_MS);
-    run.branches.set(where, read.ok && read.out !== "" ? read.out : undefined);
-  }
-  return run.branches.get(where);
-}
-var PUSH_CONFIG_KEYS = "^(push\\.default|remote\\.pushdefault|branch\\..*\\.(remote|pushremote|merge)|remote\\..*\\.push)$";
-function pushConfig(where, run) {
-  const cached = run.pushConfigs.get(where);
-  if (cached !== undefined)
-    return cached;
-  const read = runGit(where, ["config", "--get-regexp", PUSH_CONFIG_KEYS], run.options.env, GUARD_GIT_TIMEOUT_MS);
-  const config = new Map;
-  for (const line of read.ok ? read.out.split(`
-`) : []) {
-    const space = line.indexOf(" ");
-    const key = space === -1 ? line : line.slice(0, space);
-    if (key !== "")
-      config.set(key, [...config.get(key) ?? [], space === -1 ? "" : line.slice(space + 1)]);
-  }
-  run.pushConfigs.set(where, config);
-  return config;
 }
 function configKey(raw) {
   const parts = raw.split(".");
@@ -31784,175 +33254,6 @@ function configKey(raw) {
   const first = (parts[0] ?? "").toLowerCase();
   const last = (parts[parts.length - 1] ?? "").toLowerCase();
   return [first, ...parts.slice(1, -1), last].join(".");
-}
-function bareRefspecs(remote, branch, config, onLine) {
-  let unknown = false;
-  const values = (key) => {
-    if (!onLine.has(key))
-      return config.get(key) ?? [];
-    const value = onLine.get(key);
-    if (value === null || value === undefined)
-      unknown = true;
-    return value === null || value === undefined ? [] : [value];
-  };
-  const one = (key) => values(key)[0];
-  const target = remote ?? one(`branch.${branch}.pushremote`) ?? one("remote.pushdefault") ?? one(`branch.${branch}.remote`) ?? "origin";
-  const configured = values(`remote.${target}.push`);
-  const mode = (one("push.default") ?? "simple").toLowerCase();
-  const merge = one(`branch.${branch}.merge`);
-  if (unknown)
-    return [":"];
-  if (configured.length > 0)
-    return configured;
-  if (mode === "nothing")
-    return [];
-  if (mode === "matching")
-    return [":"];
-  if (mode === "upstream" || mode === "tracking") {
-    return merge === undefined ? [] : [`${branch}:${merge}`];
-  }
-  return [branch];
-}
-function protectedMatch(destination, protectedBranches) {
-  const name = destination.replace(/^refs\/heads\//, "");
-  if (!destination.includes("*"))
-    return protectedBranches.find((branch) => branch === name);
-  const glob = (pattern) => new RegExp(`^${pattern.split("*").map((part) => part.replace(/[.+?^${}()|[\]\\]/g, "\\$&")).join(".*")}$`);
-  const asRef = glob(destination);
-  const asName = glob(name);
-  return protectedBranches.find((branch) => asRef.test(`refs/heads/${branch}`) || asName.test(branch));
-}
-function pushQuestions(args, place, protectedBranches, autoPushAsk) {
-  const found = [];
-  const positional = [];
-  let dryRun = false;
-  let force = false;
-  let deleting = false;
-  let everyBranch = false;
-  let repo = null;
-  let repoGiven = false;
-  let tagsOnly = false;
-  for (let i = 0;i < args.length; i++) {
-    const arg = args[i] ?? "";
-    if (arg === "--") {
-      positional.push(...args.slice(i + 1));
-      break;
-    }
-    if (arg.startsWith("--")) {
-      if (longOption2(arg, "--force", 6) || longOption2(arg, "--force-if-includes", 9) || longOption2(arg, "--force-with-lease", 9)) {
-        force = true;
-      }
-      if (longOption2(arg, "--all", 4) || longOption2(arg, "--mirror", 6))
-        everyBranch = true;
-      if (longOption2(arg, "--dry-run", 4))
-        dryRun = true;
-      if (longOption2(arg, "--tags", 4))
-        tagsOnly = true;
-      if (longOption2(arg, "--delete", 5))
-        deleting = true;
-      if (longOption2(arg, "--repo", 6)) {
-        repoGiven = true;
-        repo = arg.includes("=") ? arg.slice(arg.indexOf("=") + 1) : args[i + 1] ?? null;
-      }
-      if (!arg.includes("=") && PUSH_VALUE_OPTIONS.some(([full, min]) => longOption2(arg, full, min)))
-        i++;
-    } else if (isShort(arg)) {
-      const { flags, wantsNext } = shortFlags(arg, "o");
-      if (flags.includes("f"))
-        force = true;
-      if (flags.includes("n"))
-        dryRun = true;
-      if (flags.includes("d"))
-        deleting = true;
-      if (wantsNext)
-        i++;
-    } else {
-      positional.push(arg);
-    }
-  }
-  if (dryRun)
-    return found;
-  const autoPush = autoPushAsk();
-  if (autoPush !== null)
-    found.push(autoPush);
-  const given = repoGiven ? positional : positional.slice(1);
-  const remote = repoGiven ? repo : positional[0] ?? null;
-  const refspecs = given.length === 0 && !tagsOnly && !everyBranch ? place.bare(remote) : given;
-  if (force || refspecs.some((refspec) => refspec.startsWith("+"))) {
-    found.push("This is a force-push: it can overwrite commits that other people or other sessions " + "already pushed, and those commits can be lost. Approve only if you meant it.");
-  }
-  if (everyBranch) {
-    found.push(`\`git push --all\` / \`--mirror\` pushes every branch, ${protectedBranches.map((b) => `\`${b}\``).join(", ")} included.`);
-  }
-  const deleted = (deleting ? given : refspecs).map((refspec) => refspec.replace(/^\+/, "")).map((spec) => deleting ? spec : spec.startsWith(":") && spec.length > 1 ? spec.slice(1) : "").filter((name) => name !== "").map((name) => name.replace(/^refs\/heads\//, ""));
-  if (deleted.length > 0) {
-    found.push(`This deletes ${deleted.map((name) => `\`${name}\``).join(", ")} on the remote: the ` + "commits on it are gone for everyone, and a teammate may still be working on it. " + "Approve only if you meant to delete it.");
-  }
-  const targets = [];
-  for (const refspec of refspecs) {
-    const spec = refspec.replace(/^\+/, "");
-    const colon = spec.indexOf(":");
-    const destination = colon === -1 ? spec : spec.slice(colon + 1);
-    if (spec === ":") {
-      targets.push(...protectedBranches);
-    } else if (colon === -1 && (spec === "HEAD" || spec === "@")) {
-      const here = place.branch();
-      if (here !== undefined)
-        targets.push(here);
-    } else {
-      targets.push(destination);
-    }
-  }
-  const protectedTarget = targets.map((target) => protectedMatch(target, protectedBranches)).find((match) => match !== undefined);
-  if (protectedTarget !== undefined) {
-    found.push(`This pushes straight to \`${protectedTarget}\`, a protected branch: work usually reaches ` + "it through a pull request. Approve only if you meant to push there.");
-  }
-  return found;
-}
-function discardAsk(sub) {
-  return `\`git ${sub}\` here overwrites files in this folder with another version, and any ` + "uncommitted change in them is lost for good. Approve only if you want them gone; a " + "WIP commit keeps the work first. Switching branch, and `git restore --staged`, do not ask.";
-}
-var WORKTREE_REMOVE_ASK = "`git worktree remove --force` deletes a worktree even when it holds uncommitted or " + "untracked work, and git cannot bring that back. Look in it first.";
-var BRANCH_DELETE_ASK = "`git branch -D` deletes a branch even if it was never merged: its commits are then " + "only in the reflog. `git branch -d` deletes a merged branch, and does not ask.";
-var RESET_HARD_ASK = "`git reset --hard` throws away every uncommitted change in this folder, for good. " + "Approve only if you want them gone; a WIP commit keeps the work first.";
-var RESET_MERGE_ASK = "`git reset --merge` throws away changes that are staged but not committed: a staged " + "change to a tracked file goes back to the target version, and a staged new file is " + "deleted from the folder (measured). Your working files are kept: it refuses rather than " + "overwrite one whose working copy differs from the target, including a file with both " + "staged and unstaged changes (measured on git 2.53). Approve only if you want the " + "staged work gone; a WIP commit keeps it first.";
-var CLEAN_FORCE_ASK = "`git clean -f` deletes untracked files for good: git cannot bring them back. " + "`git clean -n` shows what it would delete, without deleting.";
-var STASH_CLEAR_ASK = "`git stash clear` throws away every stash for good: git cannot bring them back. " + "`git stash list` shows what they hold, `git stash show -p` one of them.";
-var STASH_DROP_ASK = "`git stash drop` with no stash named drops the newest one, whoever made it. " + "`git stash list` shows them; `git stash drop stash@{n}` drops the one you mean.";
-var STASH_SHARED_ASK = "The git stash is shared by every worktree of this repo, so a bare `git stash` or " + "`git stash pop` can take or restore another session's work. A WIP commit is safer; " + "or `git stash push -u -m <tag>`, then `git stash apply <its sha>`.";
-function stashAsk(args, sharedStash) {
-  const sub = args[0];
-  const named = args.slice(1).some((arg) => !arg.startsWith("-"));
-  if (sub === "clear")
-    return STASH_CLEAR_ASK;
-  if (sub === "drop" && !named)
-    return STASH_DROP_ASK;
-  if (!sharedStash)
-    return null;
-  const tagged = args.some((arg) => longOption2(arg, "--message", 6) || isShort(arg) && shortFlags(arg, "m").flags.includes("m"));
-  const untaggedPush = (sub === undefined || sub.startsWith("-") || sub === "push") && !tagged;
-  const saveWithoutMessage = sub === "save" && !named;
-  if (sub !== "pop" && !untaggedPush && !saveWithoutMessage)
-    return null;
-  return STASH_SHARED_ASK;
-}
-function discardsChanges(sub, rest) {
-  if (sub === "switch") {
-    return rest.some((arg) => longOption2(arg, "--force", 6) || longOption2(arg, "--discard-changes", 8) || isShort(arg) && shortFlags(arg, "cC").flags.includes("f"));
-  }
-  if (sub === "checkout") {
-    const dashes = rest.indexOf("--");
-    const pathsGiven = dashes !== -1 && dashes < rest.length - 1;
-    const force = rest.some((arg) => longOption2(arg, "--force", 6) || isShort(arg) && shortFlags(arg, "bB").flags.includes("f"));
-    return pathsGiven || force || rest.slice(0, dashes === -1 ? undefined : dashes).includes(".");
-  }
-  const staged = rest.some((arg) => longOption2(arg, "--staged", 6) || isShort(arg) && shortFlags(arg, "s").flags.includes("S"));
-  const worktree = rest.some((arg) => longOption2(arg, "--worktree", 6) || isShort(arg) && shortFlags(arg, "s").flags.includes("W"));
-  return !staged || worktree;
-}
-function forceDeletesBranch(rest) {
-  const has = (long, min, short) => rest.some((arg) => long !== undefined && longOption2(arg, long, min) || isShort(arg) && shortFlags(arg, "").flags.includes(short));
-  return has(undefined, 0, "D") || has("--delete", 5, "d") && has("--force", 6, "f");
 }
 var GIT_VALUE_OPTIONS = new Set([
   "-C",
@@ -31992,6 +33293,7 @@ var GIT_PRINTS = new Set([
 function gitCalls(args) {
   const dirs = [];
   const config = new Map;
+  let workTree = null;
   for (let index = 0;index < args.length; index++) {
     const arg = args[index] ?? "";
     const name = arg.startsWith("--") ? arg.split("=")[0] ?? arg : arg;
@@ -32005,123 +33307,148 @@ function gitCalls(args) {
       const equals = setting.indexOf("=");
       const key = configKey(equals === -1 ? setting : setting.slice(0, equals));
       config.set(key, arg === "-c" ? equals === -1 ? "true" : setting.slice(equals + 1) : null);
+    } else if (name === "--work-tree") {
+      workTree = (attached ? arg.slice(name.length + 1) : args[++index]) ?? workTree;
     } else if (GIT_VALUE_OPTIONS.has(arg)) {
       index++;
     } else if (GIT_PRINTS.has(arg) || name === "--list-cmds") {
       return [];
     } else if (attached && GIT_VALUE_OPTIONS.has(name) || name === "--exec-path") {} else if (!GIT_FLAGS.has(arg) && arg.startsWith("-")) {
       const later = args.slice(index + 1);
-      return later.flatMap((word, at) => word.startsWith("-") ? [] : [{ config, dirs: [...dirs], rest: later.slice(at + 1), sub: word }]);
+      return later.flatMap((word, at) => word.startsWith("-") ? [] : [{ config, dirs: [...dirs], rest: later.slice(at + 1), sub: word, workTree }]);
     } else if (!arg.startsWith("-")) {
-      return [{ config, dirs, rest: args.slice(index + 1), sub: arg }];
+      return [{ config, dirs, rest: args.slice(index + 1), sub: arg, workTree }];
     }
   }
   return [];
 }
-var COMPUTED_PUSH_ASK = "This command runs a program it works out when it runs, and its words name a push, so this guard cannot tell whether it pushes. Write the command out in full (for example `git push \u2026`) if you meant it.";
-function namesPush(words) {
-  return words.some((word) => word === "push" || word === "send-pack");
+
+// src/worktrees/auto-start.ts
+import { basename as basename13, join as join62 } from "path";
+
+// src/hooks/attended.ts
+function isAttended(env) {
+  return env.CLAUDE_CODE_SESSION_ATTENDED !== "0";
 }
-function computedPushIn(command, dialect) {
-  return readingsOf(command, dialect).some((reading) => shellSteps(command, {
-    blindWhenOpen: true,
-    dialect: reading.dialect,
-    joinLines: reading.joinLines
-  }).some((step) => {
-    const words = wordsOf(step.text, reading.dialect);
-    const invocation = invocationOf(words);
-    return invocation?.computed === true && namesPush(words);
-  }));
+
+// src/worktrees/auto-state.ts
+import { createHash as createHash7 } from "crypto";
+import { mkdirSync as mkdirSync21, readFileSync as readFileSync63 } from "fs";
+import { dirname as dirname25, join as join61 } from "path";
+var AUTO_CLEAN_INTERVAL_MS = 60 * 60 * 1000;
+var TOLD_NAMES_MAX = 8;
+var removedSchema = object({
+  branch: string2().nullable(),
+  name: string2(),
+  path: string2(),
+  why: string2()
+});
+var keptSchema = object({ name: string2(), path: string2(), why: string2() });
+var recordSchema2 = object({
+  base: string2(),
+  kept: array(keptSchema),
+  lastRunAt: number2(),
+  removed: array(removedSchema),
+  repo: string2(),
+  seq: number2()
+});
+var toldSchema = object({ seq: number2() });
+function autoCleanLog(stateDir) {
+  return join61(stateDir, "worktrees-auto-clean.log");
 }
-function gitQuestions(args, folder, run) {
-  return gitCalls(args).flatMap((call) => callQuestions(call, folder, run));
+function autoCleanFiles(stateDir, repo) {
+  const key = createHash7("sha256").update(pathForm(repo)).digest("hex").slice(0, 16);
+  const dir = join61(stateDir, "worktrees-auto-clean");
+  return {
+    log: autoCleanLog(stateDir),
+    result: join61(dir, `${key}.json`),
+    told: join61(dir, `${key}.told.json`)
+  };
 }
-function pushAlias(call) {
-  const value = call.config.get(`alias.${call.sub.toLowerCase()}`);
-  if (value === null || value === undefined)
+function readJson2(file, schema) {
+  try {
+    const parsed = schema.safeParse(JSON.parse(readFileSync63(file, "utf8")));
+    return parsed.success ? parsed.data : null;
+  } catch {
     return null;
-  const words = wordsOf(value);
-  const first = words[0] ?? "";
-  return first === "push" || first === "send-pack" ? words.slice(1) : null;
+  }
 }
-function callQuestions(call, folder, run) {
-  const { options } = run;
-  const { rest, sub } = call;
-  const alias = pushAlias(call);
-  if (sub === "push" || sub === "send-pack" || alias !== null) {
-    const where = folder === null ? null : resolve12(folder, ...call.dirs);
-    const place = {
-      branch: () => where === null ? undefined : currentBranch(where, run),
-      bare: (remote) => {
-        const branch = where === null ? undefined : currentBranch(where, run);
-        if (where === null || branch === undefined)
-          return [];
-        return bareRefspecs(remote, branch, pushConfig(where, run), call.config);
-      }
-    };
-    return pushQuestions(alias === null ? rest : [...alias, ...rest], place, options.protectedBranches, options.autoPushAsk);
-  }
-  if (sub === "stash") {
-    const ask = stashAsk(rest, options.sharedStash);
-    return ask === null ? [] : [ask];
-  }
-  if (sub === "worktree" && rest[0] === "remove") {
-    const force = rest.slice(1).some((arg) => longOption2(arg, "--force", 6) || isShort(arg) && shortFlags(arg, "").flags.includes("f"));
-    if (force)
-      return [WORKTREE_REMOVE_ASK];
-  }
-  if ((sub === "checkout" || sub === "restore" || sub === "switch") && discardsChanges(sub, rest)) {
-    return [discardAsk(sub)];
-  }
-  if (sub === "branch" && forceDeletesBranch(rest))
-    return [BRANCH_DELETE_ASK];
-  if (sub === "reset" && rest.some((arg) => longOption2(arg, "--hard", 4))) {
-    return [RESET_HARD_ASK];
-  }
-  if (sub === "reset" && rest.some((arg) => longOption2(arg, "--merge", 4))) {
-    return [RESET_MERGE_ASK];
-  }
-  if (sub === "clean") {
-    const force = rest.some((arg) => longOption2(arg, "--force", 6) || isShort(arg) && shortFlags(arg, "e").flags.includes("f"));
-    const dryRun = rest.some((arg) => longOption2(arg, "--dry-run", 4) || isShort(arg) && shortFlags(arg, "e").flags.includes("n"));
-    if (force && !dryRun)
-      return [CLEAN_FORCE_ASK];
-  }
-  return [];
+function writeJson(file, value) {
+  mkdirSync21(dirname25(file), { recursive: true, mode: 448 });
+  atomicWrite(file, `${JSON.stringify(value, null, 2)}
+`, 384);
 }
-function inspect(command, cwd, reading, run, depth = 0) {
-  const found = [];
-  let folder = cwd;
-  const { dialect, joinLines } = reading;
-  for (const step of shellSteps(command, { blindWhenOpen: true, dialect, joinLines })) {
-    const words = wordsOf(step.text, dialect);
-    const invocation = invocationOf(words);
-    if (invocation === undefined)
-      continue;
-    const { args, program } = invocation;
-    const operands = withoutRedirections(args);
-    if (program === "git")
-      found.push(...gitQuestions(operands, folder, run));
-    if (invocation.computed && namesPush(words))
-      found.push(COMPUTED_PUSH_ASK);
-    if (CHANGE_DIR.has(program))
-      folder = movedTo(program, folder, operands);
-    const inner = nestedCommand(program, args, step.pipedFrom);
-    if (inner !== undefined && depth < MAX_NESTING) {
-      for (const nested of readingsOf(inner, nestedDialect(program))) {
-        found.push(...inspect(inner, folder, nested, run, depth + 1));
-      }
-    }
+function readRepoRecord(files) {
+  return readJson2(files.result, recordSchema2);
+}
+function readTold(files) {
+  return readJson2(files.told, toldSchema)?.seq ?? 0;
+}
+function hourlyDue(record, nowMs) {
+  if (record === null)
+    return true;
+  return nowMs - record.lastRunAt >= AUTO_CLEAN_INTERVAL_MS || record.lastRunAt > nowMs + 60000;
+}
+function markTold(files, seq) {
+  if (readTold(files) >= seq)
+    return;
+  writeJson(files.told, { seq });
+}
+function untold(record, told) {
+  return record !== null && record.seq > told && record.removed.length > 0 ? record : null;
+}
+function toldLine(record) {
+  const count = record.removed.length;
+  const shown = record.removed.slice(0, TOLD_NAMES_MAX).map((one) => one.name);
+  const names = count > TOLD_NAMES_MAX ? `${shown.join(", ")} and ${String(count - TOLD_NAMES_MAX)} more` : shown.join(", ");
+  const noun = count === 1 ? "1 finished worktree" : `${String(count)} finished worktrees`;
+  return `${COMMAND} removed ${noun}: ${names} (work on ${record.base})`;
+}
+
+// src/worktrees/auto-start.ts
+var AUTO_CLEAN_BUNDLE = "worktrees-clean";
+function autoCleanOn(context) {
+  return context.project.config?.worktrees?.autoClean !== false;
+}
+function autoCleanEntry(importDir) {
+  return basename13(importDir) === "dist" ? join62(importDir, `${AUTO_CLEAN_BUNDLE}.js`) : join62(importDir, "..", "entries", `${AUTO_CLEAN_BUNDLE}.ts`);
+}
+function autoCleanArgv(bun, entry, pluginDir, repo, trigger, keep) {
+  return [bun, "--no-env-file", bunConfigArg(pluginDir), entry, repo, trigger, keep];
+}
+function startAutoClean(context, repo, trigger, importDir = import.meta.dir) {
+  if (!autoCleanOn(context))
+    return false;
+  if (trigger === "session") {
+    if (!isAttended(context.env))
+      return false;
+    const record = readRepoRecord(autoCleanFiles(context.paths.stateDir, repo));
+    if (!hourlyDue(record, Date.now()))
+      return false;
   }
-  return found;
+  const argv = autoCleanArgv(process.execPath, autoCleanEntry(importDir), pluginFolderBeside(importDir), repo, trigger, context.cwd);
+  const env = gitEnv(context.env);
+  (context.start ?? startDetached)(process.platform, argv, {
+    cwd: context.paths.home,
+    env,
+    onError: (message) => console.error(`${COMMAND} worktrees clean: ${message}`)
+  });
+  return true;
 }
-function guardQuestions(command, cwd, options) {
-  const run = { options, branches: new Map, pushConfigs: new Map };
-  const found = readingsOf(command, options.dialect).flatMap((reading) => inspect(command, cwd, reading, run));
-  return [...new Set(found)];
-}
-function runsGit(command, dialect) {
-  return programsOf(command, dialect).includes("git") || computedPushIn(command, dialect);
+function takeToldLine(context, repo) {
+  if (!isAttended(context.env))
+    return null;
+  const files = autoCleanFiles(context.paths.stateDir, repo);
+  const record = untold(readRepoRecord(files), readTold(files));
+  if (record === null)
+    return null;
+  try {
+    markTold(files, record.seq);
+  } catch (error) {
+    console.error(`${COMMAND} worktrees clean: could not mark the removals as told: ${error instanceof Error ? error.message : String(error)}`);
+    return null;
+  }
+  return toldLine(record);
 }
 
 // src/hooks/after-merge.ts
@@ -32954,9 +34281,10 @@ function exactMergeOf(command, dialect) {
   const step = steps[0];
   if (steps.length !== 1 || step === undefined || step.pipedFrom !== null)
     return null;
-  const words = wordsOf(step.text, reading.dialect);
-  if (redirectionTargets(words).length > 0)
+  const filled = wordsWithFill(step.text, reading.dialect);
+  if (redirectionTargets(filled).length > 0)
     return null;
+  const words = filled.map((word) => word.text);
   const invocation = invocationOf(words);
   if (invocation === undefined || invocation.program !== "gh")
     return null;
@@ -33077,8 +34405,8 @@ function viewPullRequest2(ref, repo, folder, env, timeoutMs) {
   }
 }
 function seenFile(repo, number, env) {
-  const key = createHash9("sha256").update(repo).digest("hex").slice(0, 16);
-  return join60(env.TMPDIR || tmpdir4(), "cc-smart-dev-kit-merges", `${key}-${number}`);
+  const key = createHash8("sha256").update(repo).digest("hex").slice(0, 16);
+  return join63(env.TMPDIR || tmpdir4(), "cc-smart-dev-kit-merges", `${key}-${number}`);
 }
 async function afterMerge(context) {
   const { project, input, event, env, cwd } = context;
@@ -33122,12 +34450,12 @@ async function afterMerge(context) {
     now: Date.now(),
     pr,
     sameRepo: pr !== null && origin.ok && sameRepository(pr.url, origin.out),
-    seen: record !== null && existsSync52(record),
+    seen: record !== null && existsSync53(record),
     target,
     worktree
   });
   if (outcome.intoBase !== null && record !== null) {
-    mkdirSync22(join60(record, ".."), { recursive: true });
+    mkdirSync22(join63(record, ".."), { recursive: true });
     writeFileSync8(record, "");
     startAutoClean(context, repo, "merge");
   }
@@ -33137,8 +34465,8 @@ async function afterMerge(context) {
 }
 
 // src/models/agent-definition.ts
-import { existsSync as existsSync53, readdirSync as readdirSync16, readFileSync as readFileSync63, realpathSync as realpathSync9, statSync as statSync18 } from "fs";
-import { dirname as dirname25, isAbsolute as isAbsolute5, join as join61, relative as relative8, resolve as resolve13, sep as sep6 } from "path";
+import { existsSync as existsSync54, readdirSync as readdirSync17, readFileSync as readFileSync64, realpathSync as realpathSync9, statSync as statSync21 } from "fs";
+import { dirname as dirname26, isAbsolute as isAbsolute5, join as join64, relative as relative8, resolve as resolve12, sep as sep6 } from "path";
 var AGENT_SCAN_MAX_DEPTH = 8;
 var AGENT_SCAN_MAX_ENTRIES = 2000;
 
@@ -33153,7 +34481,7 @@ var BUILT_INS = {
   "general-purpose": null
 };
 function files(path, budget, depth = 0, visited = new Set) {
-  const found = readable(() => ({ real: realpathSync9(path), stat: statSync18(path) }));
+  const found = readable(() => ({ real: realpathSync9(path), stat: statSync21(path) }));
   if (found === null || visited.has(found.real))
     return [];
   visited.add(found.real);
@@ -33166,8 +34494,8 @@ function files(path, budget, depth = 0, visited = new Set) {
     return [];
   if (depth > AGENT_SCAN_MAX_DEPTH)
     throw new ScanTooLarge;
-  const entries = readable(() => readdirSync16(path).sort()) ?? [];
-  return entries.flatMap((entry) => files(join61(path, entry), budget, depth + 1, visited));
+  const entries = readable(() => readdirSync17(path).sort()) ?? [];
+  return entries.flatMap((entry) => files(join64(path, entry), budget, depth + 1, visited));
 }
 function readable(read) {
   try {
@@ -33200,24 +34528,24 @@ function claiming(paths, name, local = true) {
   return null;
 }
 function inside2(checkout, project) {
-  const path = relative8(resolve13(project), resolve13(checkout));
+  const path = relative8(resolve12(project), resolve12(checkout));
   return path === "" || path !== ".." && !path.startsWith(`..${sep6}`) && !isAbsolute5(path);
 }
 function topFiles(folder, budget) {
-  const entries = readable(() => readdirSync16(folder).sort()) ?? [];
+  const entries = readable(() => readdirSync17(folder).sort()) ?? [];
   return entries.flatMap((entry) => {
     budget.entries += 1;
     if (budget.entries > AGENT_SCAN_MAX_ENTRIES)
       throw new ScanTooLarge;
-    const file = join61(folder, entry);
-    return file.endsWith(".md") && readable(() => statSync18(file).isFile()) === true ? [file] : [];
+    const file = join64(folder, entry);
+    return file.endsWith(".md") && readable(() => statSync21(file).isFile()) === true ? [file] : [];
   });
 }
 function pluginFiles(root, budget) {
-  const defaults = topFiles(join61(root, "agents"), budget);
+  const defaults = topFiles(join64(root, "agents"), budget);
   let listed;
   try {
-    listed = JSON.parse(readFileSync63(join61(root, ".claude-plugin", "plugin.json"), "utf8"))?.agents;
+    listed = JSON.parse(readFileSync64(join64(root, ".claude-plugin", "plugin.json"), "utf8"))?.agents;
   } catch {
     return defaults;
   }
@@ -33227,11 +34555,11 @@ function pluginFiles(root, budget) {
   return paths.flatMap((path) => {
     if (typeof path !== "string" || !path.startsWith("./"))
       return [];
-    const file = resolve13(root, path);
+    const file = resolve12(root, path);
     if (!inside2(file, root))
       return [];
     try {
-      return statSync18(file).isFile() && file.endsWith(".md") ? [file] : [];
+      return statSync21(file).isFile() && file.endsWith(".md") ? [file] : [];
     } catch {
       return [];
     }
@@ -33243,8 +34571,8 @@ function projectFolders(checkout, cwd) {
   const folders = [];
   let at = isInsideOnDisk(start, root) ? start : root;
   for (;; ) {
-    folders.push(join61(at, ".claude", "agents"));
-    const up = dirname25(at);
+    folders.push(join64(at, ".claude", "agents"));
+    const up = dirname26(at);
     if (sameFolderOnDisk(at, root) || up === at)
       return folders;
     at = up;
@@ -33267,7 +34595,7 @@ function lookup(name, place, budget) {
     const folders = [
       place.paths.managedAgentsDir,
       ...place.checkout === null ? [] : projectFolders(place.checkout, place.cwd),
-      join61(place.paths.claudeConfigDir, "agents")
+      join64(place.paths.claudeConfigDir, "agents")
     ];
     for (const folder of folders) {
       const found = claiming(files(folder, budget), name);
@@ -33281,15 +34609,15 @@ function lookup(name, place, budget) {
     const real = given == null ? null : readable(() => realpathSync9(given));
     const cwds = [given, real].filter((one) => one != null);
     const project = installs.filter((one) => one.scope !== "user" && one.projectPath !== null && cwds.some((cwd) => isInsideOnDisk(cwd, one.projectPath ?? ""))).sort((a, b) => (b.projectPath?.length ?? 0) - (a.projectPath?.length ?? 0));
-    const root = [...project, ...installs.filter((one) => one.scope === "user")].find((one) => existsSync53(one.installPath))?.installPath;
+    const root = [...project, ...installs.filter((one) => one.scope === "user")].find((one) => existsSync54(one.installPath))?.installPath;
     return root === undefined ? null : claiming(pluginFiles(root, budget), name.slice(colon + 1), false);
   }
   return Object.hasOwn(BUILT_INS, name) ? { model: BUILT_INS[name] ?? null, effort: null, builtIn: true } : null;
 }
 
 // src/hooks/agent-guard-workflows.ts
-import { existsSync as existsSync54, readdirSync as readdirSync17, readFileSync as readFileSync64, statSync as statSync19 } from "fs";
-import { dirname as dirname26, isAbsolute as isAbsolute6, join as join62, resolve as resolve14, sep as sep7 } from "path";
+import { existsSync as existsSync55, readdirSync as readdirSync18, readFileSync as readFileSync65, statSync as statSync22 } from "fs";
+import { dirname as dirname27, isAbsolute as isAbsolute6, join as join65, resolve as resolve13, sep as sep7 } from "path";
 var WORKFLOW_SCRIPT_MAX_BYTES = 524288;
 function stringAt(text, from) {
   const quote = text[from];
@@ -33457,10 +34785,10 @@ function scriptAtPath(path, cwd) {
       unreadable: `The workflow script \`${path}\` is a relative path, and the hook input names no folder it is relative to.`
     };
   }
-  const file = resolve14(cwd, path);
+  const file = resolve13(cwd, path);
   let size;
   try {
-    const stat = statSync19(file);
+    const stat = statSync22(file);
     if (!stat.isFile())
       return { unreadable: `The workflow script \`${file}\` is not a file.` };
     size = stat.size;
@@ -33473,7 +34801,7 @@ function scriptAtPath(path, cwd) {
     };
   }
   try {
-    return { file, script: normalized(readFileSync64(file, "utf8")) };
+    return { file, script: normalized(readFileSync65(file, "utf8")) };
   } catch {
     return { unreadable: `The workflow script \`${file}\` cannot be read.` };
   }
@@ -33481,20 +34809,20 @@ function scriptAtPath(path, cwd) {
 function workflowFiles(folder) {
   let names;
   try {
-    names = readdirSync17(folder).filter((name) => name.endsWith(".js"));
+    names = readdirSync18(folder).filter((name) => name.endsWith(".js"));
   } catch {
     return [];
   }
-  return names.sort().map((name) => join62(folder, name));
+  return names.sort().map((name) => join65(folder, name));
 }
 function claiming2(files, name) {
   const found = [];
   for (const file of files) {
     try {
-      const stat = statSync19(file);
+      const stat = statSync22(file);
       if (!stat.isFile() || stat.size > WORKFLOW_SCRIPT_MAX_BYTES)
         continue;
-      const script = normalized(readFileSync64(file, "utf8"));
+      const script = normalized(readFileSync65(file, "utf8"));
       if (workflowMetaName(script) === name)
         found.push({ file, script });
     } catch {}
@@ -33514,18 +34842,18 @@ function oneOf2(found, name) {
 }
 function savedFolders(place) {
   const folders = [];
-  let at = resolve14(place.cwd);
-  const home = resolve14(place.home);
+  let at = resolve13(place.cwd);
+  const home = resolve13(place.home);
   while (place.cwd !== "" && at !== home) {
-    folders.push(join62(at, ".claude", "workflows"));
-    if (existsSync54(join62(at, ".git")))
+    folders.push(join65(at, ".claude", "workflows"));
+    if (existsSync55(join65(at, ".git")))
       break;
-    const up = dirname26(at);
+    const up = dirname27(at);
     if (up === at)
       break;
     at = up;
   }
-  folders.push(join62(place.claudeConfigDir, "workflows"));
+  folders.push(join65(place.claudeConfigDir, "workflows"));
   return folders;
 }
 function noFile(name) {
@@ -33534,8 +34862,8 @@ function noFile(name) {
   };
 }
 function within(folder, inside) {
-  const root = resolve14(inside);
-  const path = resolve14(folder);
+  const root = resolve13(inside);
+  const path = resolve13(folder);
   return path === root || path.startsWith(root.endsWith(sep7) ? root : `${root}${sep7}`);
 }
 function pluginFolder(plugin, place) {
@@ -33544,23 +34872,23 @@ function pluginFolder(plugin, place) {
   const installs = installsOfPlugin(place.installedPluginsFile, plugin);
   const project = installs.filter((one) => one.scope !== "user" && one.projectPath !== null && place.cwd !== "" && within(place.cwd, one.projectPath)).sort((a, b) => b.projectPath.length - a.projectPath.length);
   const user = installs.filter((one) => one.scope === "user");
-  return [...project, ...user].find((one) => existsSync54(one.installPath))?.installPath ?? null;
+  return [...project, ...user].find((one) => existsSync55(one.installPath))?.installPath ?? null;
 }
 function pluginWorkflowFiles(root) {
   let listed;
   try {
-    const manifest = JSON.parse(readFileSync64(join62(root, ".claude-plugin", "plugin.json"), "utf8"));
+    const manifest = JSON.parse(readFileSync65(join65(root, ".claude-plugin", "plugin.json"), "utf8"));
     listed = manifest?.workflows ?? manifest?.experimental?.workflows;
   } catch {
     listed = undefined;
   }
   const paths = typeof listed === "string" ? [listed] : Array.isArray(listed) ? listed : null;
   if (paths === null)
-    return workflowFiles(join62(root, "workflows"));
+    return workflowFiles(join65(root, "workflows"));
   return paths.filter((one) => typeof one === "string").flatMap((one) => {
-    const path = resolve14(root, one);
+    const path = resolve13(root, one);
     try {
-      if (statSync19(path).isDirectory())
+      if (statSync22(path).isDirectory())
         return workflowFiles(path);
     } catch {
       return [];
@@ -34178,18 +35506,18 @@ function reasonLine(prompt2, label) {
   return null;
 }
 function reasonWord(text, allowed) {
-  const word = firstWord(text) ?? "";
+  const word = firstWord2(text) ?? "";
   return allowed.includes(word) ? word : null;
 }
 var REASON_WORD_MAX = 40;
-function firstWord(text) {
+function firstWord2(text) {
   const found = /^[^a-z0-9]*([a-z0-9]+(?:-[a-z0-9]+)*)/.exec(text?.toLowerCase() ?? "");
   return found?.[1]?.slice(0, REASON_WORD_MAX) ?? null;
 }
 function uiDeclaration(prompt2) {
   for (const label of ["Opus reason", "Fable reason"]) {
     const said = reasonLine(prompt2, label);
-    const word = firstWord(said);
+    const word = firstWord2(said);
     if (word !== null && UI_REASON_WORDS.includes(word)) {
       return `${label}: ${said}`;
     }
@@ -34411,7 +35739,7 @@ function judgeModel(launch, real, ctx, env) {
         why: "opus:unreadable"
       };
     }
-    const why = opusWhy(effort, firstWord(said));
+    const why = opusWhy(effort, firstWord2(said));
     if (effort !== OPUS_ASK_EFFORT)
       return allow(real, why);
     if (nobodyWatches(env)) {
@@ -34627,7 +35955,7 @@ function agentGuard(input, env, paths, cwd, nowMs = Date.now()) {
 }
 
 // src/tasks/work/read.ts
-import { existsSync as existsSync55 } from "fs";
+import { existsSync as existsSync56 } from "fs";
 
 // src/tasks/work/history.ts
 var FIELDS = [
@@ -34724,7 +36052,7 @@ function indent(text) {
 }
 
 // src/worktrees/machine-facts.ts
-import { readdirSync as readdirSync18, readFileSync as readFileSync65, readlinkSync as readlinkSync4 } from "fs";
+import { readdirSync as readdirSync19, readFileSync as readFileSync66, readlinkSync as readlinkSync4 } from "fs";
 import { platform } from "os";
 var PROGRAMS_TIMEOUT_MS = 15000;
 var PS_PROGRAMS_ARGV = ["ps", "-ww", "-axo", "pid=,ppid=,args="];
@@ -34790,7 +36118,7 @@ function cwdOf(pid) {
 }
 function procPids() {
   try {
-    return readdirSync18("/proc").filter((name) => /^\d+$/.test(name)).map(Number);
+    return readdirSync19("/proc").filter((name) => /^\d+$/.test(name)).map(Number);
   } catch {
     return [];
   }
@@ -34925,7 +36253,7 @@ function readWorkStore(paths, body) {
   let db;
   try {
     const file = workDbFile(paths);
-    if (!existsSync55(file))
+    if (!existsSync56(file))
       return { state: "none" };
     db = openWorkDb(file, { mode: "hook" });
     return { state: "ready", value: body(db) };
@@ -35129,14 +36457,14 @@ function builderFinishAnswer(input, event, project, paths) {
 }
 
 // src/hooks/fable-session.ts
-import { createHash as createHash10 } from "crypto";
-import { existsSync as existsSync57, mkdirSync as mkdirSync24, writeFileSync as writeFileSync10 } from "fs";
-import { dirname as dirname27, join as join64 } from "path";
+import { createHash as createHash9 } from "crypto";
+import { existsSync as existsSync58, mkdirSync as mkdirSync24, writeFileSync as writeFileSync10 } from "fs";
+import { dirname as dirname28, join as join67 } from "path";
 
 // src/hooks/session-name.ts
-import { existsSync as existsSync56, mkdirSync as mkdirSync23, readFileSync as readFileSync66, renameSync as renameSync4, rmSync as rmSync14, writeFileSync as writeFileSync9 } from "fs";
+import { existsSync as existsSync57, mkdirSync as mkdirSync23, readFileSync as readFileSync67, renameSync as renameSync4, rmSync as rmSync14, writeFileSync as writeFileSync9 } from "fs";
 import { tmpdir as tmpdir5 } from "os";
-import { join as join63 } from "path";
+import { join as join66 } from "path";
 var MAX_SESSION_NAME = 60;
 function cleanSessionName(raw) {
   const firstLine = raw.split(/\r?\n|\r/)[0] ?? "";
@@ -35149,11 +36477,11 @@ function isSessionId2(value) {
   return typeof value === "string" && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(value);
 }
 function namesDir(env) {
-  return join63(env.TMPDIR || tmpdir5(), "cc-smart-dev-kit-session-names");
+  return join66(env.TMPDIR || tmpdir5(), "cc-smart-dev-kit-session-names");
 }
 function readName(file) {
   try {
-    return existsSync56(file) ? cleanSessionName(readFileSync66(file, "utf8")) : null;
+    return existsSync57(file) ? cleanSessionName(readFileSync67(file, "utf8")) : null;
   } catch {
     return null;
   }
@@ -35164,7 +36492,7 @@ function writeAtomic(file, text) {
   renameSync4(partial, file);
 }
 function appliedFile(env, sessionId) {
-  return join63(namesDir(env), sessionId);
+  return join66(namesDir(env), sessionId);
 }
 function readAppliedName(env, sessionId) {
   return readName(appliedFile(env, sessionId));
@@ -35190,15 +36518,15 @@ function sessionName(context) {
   const sessionId = input.session_id;
   if (!isSessionId2(sessionId))
     return SILENT;
-  const wanted = readName(join63(namesDir(env), `${sessionId}.name`));
+  const wanted = readName(join66(namesDir(env), `${sessionId}.name`));
   const note = namingNote(sessionId, wanted);
-  const reminded = join63(namesDir(env), `${sessionId}.reminded`);
+  const reminded = join66(namesDir(env), `${sessionId}.reminded`);
   if (event === "SessionStart") {
     rmSync14(reminded, { force: true });
     return addContext(event, note);
   }
   if (wanted === null) {
-    if (existsSync56(reminded))
+    if (existsSync57(reminded))
       return SILENT;
     mkdirSync23(namesDir(env), { recursive: true });
     writeAtomic(reminded, "reminded");
@@ -35225,16 +36553,16 @@ function sessionModelName(real) {
   return tier === null ? real.model : `the \`${tier}\` model, ${real.model}`;
 }
 function sessionMark(env, sessionId, kind) {
-  return join64(namesDir(env), `${sessionId}.${kind}`);
+  return join67(namesDir(env), `${sessionId}.${kind}`);
 }
 function judgedMark(env, sessionId, model, served = false) {
   const key = served ? `served:${model}` : model;
-  const hash = createHash10("sha256").update(key).digest("hex").slice(0, 16);
-  return join64(namesDir(env), `${sessionId}.judged-${hash}`);
+  const hash = createHash9("sha256").update(key).digest("hex").slice(0, 16);
+  return join67(namesDir(env), `${sessionId}.judged-${hash}`);
 }
 function firstTime(mark) {
   try {
-    mkdirSync24(dirname27(mark), { recursive: true });
+    mkdirSync24(dirname28(mark), { recursive: true });
     writeFileSync10(mark, "", { flag: "wx" });
     return true;
   } catch {
@@ -35269,13 +36597,13 @@ function fableSession(input, env, paths) {
     return SILENT;
   const fableMark = sessionMark(env, sessionId, "fable");
   const leadMark = sessionMark(env, sessionId, "lead");
-  if (existsSync57(fableMark) && existsSync57(leadMark))
+  if (existsSync58(fableMark) && existsSync58(leadMark))
     return SILENT;
   const session = currentModel(event, input, env);
   if (session === null)
     return SILENT;
   const judged = judgedMark(env, sessionId, session.model, session.served);
-  if (existsSync57(judged))
+  if (existsSync58(judged))
     return SILENT;
   const real = resolveSessionModel(session, sessionGatewayOf(paths, env), env);
   const verdict = leadVerdict(real);
@@ -35288,6 +36616,386 @@ function fableSession(input, env, paths) {
   }
   firstTime(judged);
   return said;
+}
+
+// src/hooks/git-guard.ts
+import { resolve as resolve14 } from "path";
+
+// src/shell/change-dir.ts
+import { posix as posix3, win32 as win324 } from "path";
+var CHANGES_FOLDER = new Set([...CHANGE_DIR, "push-location"]);
+function pathRules(platform) {
+  return platform === "win32" ? win324 : posix3;
+}
+function shellTargetPath(path, platform = process.platform, dialect = "bash") {
+  if (platform !== "win32" || dialect !== "bash")
+    return path;
+  const drive = /^\/+([A-Za-z])(?:\/+|$)/.exec(path);
+  return drive === null ? path : `${drive[1]?.toUpperCase()}:/${path.slice(drive[0].length)}`;
+}
+var COMPUTED_PATH = /[$`*?[\]]|%\w+%/;
+function movedTo(program, folder, args, options = {}) {
+  const { dialect = "bash", home, platform = process.platform } = options;
+  if (program === "popd")
+    return null;
+  const target = args.find((arg) => !arg.startsWith("-") && arg.toLowerCase() !== "/d");
+  if (target === undefined)
+    return home === undefined ? null : program === "cd" ? home : folder;
+  const named = home !== undefined && /^~(?=$|[\\/])/.test(target) ? home + target.slice(1) : target;
+  if (/^[~%]/.test(named) || COMPUTED_PATH.test(named))
+    return null;
+  const path = shellTargetPath(named, platform, dialect);
+  const rules = pathRules(platform);
+  if (rules.isAbsolute(path))
+    return rules.resolve(path);
+  return folder === null ? null : rules.resolve(folder, path);
+}
+
+class FolderTracker {
+  folder;
+  outer = [];
+  constructor(start) {
+    this.folder = start;
+  }
+  enter(subshell = null) {
+    const entering = [];
+    let at = subshell;
+    while (at !== null && at.depth > this.outer.length) {
+      entering.push(at);
+      at = at.outer;
+    }
+    while (this.outer.length > (at?.depth ?? 0))
+      this.leave();
+    while (at !== null && this.outer.at(-1)?.group !== at) {
+      entering.push(at);
+      at = at.outer;
+      this.leave();
+    }
+    for (const group of entering.reverse())
+      this.outer.push({ from: this.folder, group });
+    return this.folder;
+  }
+  moveTo(folder) {
+    this.folder = folder;
+  }
+  leave() {
+    const left = this.outer.pop();
+    if (left !== undefined)
+      this.folder = left.from;
+  }
+}
+
+// src/hooks/git-guard.ts
+var DEFAULT_PROTECTED_BRANCHES = ["main"];
+var PUSH_VALUE_OPTIONS = [
+  ["--exec", 4],
+  ["--push-option", 4],
+  ["--receive-pack", 5],
+  ["--repo", 6]
+];
+function computedForce(arg) {
+  const spelling = /(?:^|[\s(`'"]|:[-=+])(?:-[A-Za-z]*f[A-Za-z]*(?=$|[\s)`'"}])|--force|\+[A-Za-z])/;
+  return /\$[({\w]|`/.test(arg) && spelling.test(arg);
+}
+function currentBranch(where, run) {
+  if (!run.branches.has(where)) {
+    const read = runGit(where, ["symbolic-ref", "--short", "-q", "HEAD"], run.options.env, GUARD_GIT_TIMEOUT_MS);
+    run.branches.set(where, read.ok && read.out !== "" ? read.out : undefined);
+  }
+  return run.branches.get(where);
+}
+var PUSH_CONFIG_KEYS = "^(push\\.default|remote\\.pushdefault|branch\\..*\\.(remote|pushremote|merge)|remote\\..*\\.push)$";
+function pushConfig(where, run) {
+  const cached = run.pushConfigs.get(where);
+  if (cached !== undefined)
+    return cached;
+  const read = runGit(where, ["config", "--get-regexp", PUSH_CONFIG_KEYS], run.options.env, GUARD_GIT_TIMEOUT_MS);
+  const config = new Map;
+  for (const line of read.ok ? read.out.split(`
+`) : []) {
+    const space = line.indexOf(" ");
+    const key = space === -1 ? line : line.slice(0, space);
+    if (key !== "")
+      config.set(key, [...config.get(key) ?? [], space === -1 ? "" : line.slice(space + 1)]);
+  }
+  run.pushConfigs.set(where, config);
+  return config;
+}
+function bareRefspecs(remote, branch, config, onLine) {
+  let unknown = false;
+  const values = (key) => {
+    if (!onLine.has(key))
+      return config.get(key) ?? [];
+    const value = onLine.get(key);
+    if (value === null || value === undefined)
+      unknown = true;
+    return value === null || value === undefined ? [] : [value];
+  };
+  const one = (key) => values(key)[0];
+  const target = remote ?? one(`branch.${branch}.pushremote`) ?? one("remote.pushdefault") ?? one(`branch.${branch}.remote`) ?? "origin";
+  const configured = values(`remote.${target}.push`);
+  const mode = (one("push.default") ?? "simple").toLowerCase();
+  const merge = one(`branch.${branch}.merge`);
+  if (unknown)
+    return [":"];
+  if (configured.length > 0)
+    return configured;
+  if (mode === "nothing")
+    return [];
+  if (mode === "matching")
+    return [":"];
+  if (mode === "upstream" || mode === "tracking") {
+    return merge === undefined ? [] : [`${branch}:${merge}`];
+  }
+  return [branch];
+}
+function protectedMatch(destination, protectedBranches) {
+  const name = destination.replace(/^refs\/heads\//, "");
+  if (!destination.includes("*"))
+    return protectedBranches.find((branch) => branch === name);
+  const glob = (pattern) => new RegExp(`^${pattern.split("*").map((part) => part.replace(/[.+?^${}()|[\]\\]/g, "\\$&")).join(".*")}$`);
+  const asRef = glob(destination);
+  const asName = glob(name);
+  return protectedBranches.find((branch) => asRef.test(`refs/heads/${branch}`) || asName.test(branch));
+}
+function pushQuestions(args, place, protectedBranches, autoPushAsk) {
+  const found = [];
+  const positional = [];
+  let dryRun = false;
+  let force = false;
+  let deleting = false;
+  let everyBranch = false;
+  let repo = null;
+  let repoGiven = false;
+  let tagsOnly = false;
+  if (args.some(computedForce))
+    force = true;
+  for (let i = 0;i < args.length; i++) {
+    const arg = args[i] ?? "";
+    if (arg === "--") {
+      positional.push(...args.slice(i + 1));
+      break;
+    }
+    if (arg.startsWith("--")) {
+      if (longOption2(arg, "--force", 6) || longOption2(arg, "--force-if-includes", 9) || longOption2(arg, "--force-with-lease", 9)) {
+        force = true;
+      }
+      if (longOption2(arg, "--all", 4) || longOption2(arg, "--mirror", 6))
+        everyBranch = true;
+      if (longOption2(arg, "--dry-run", 4))
+        dryRun = true;
+      if (longOption2(arg, "--tags", 4))
+        tagsOnly = true;
+      if (longOption2(arg, "--delete", 5))
+        deleting = true;
+      if (longOption2(arg, "--repo", 6)) {
+        repoGiven = true;
+        repo = arg.includes("=") ? arg.slice(arg.indexOf("=") + 1) : args[i + 1] ?? null;
+      }
+      if (!arg.includes("=") && PUSH_VALUE_OPTIONS.some(([full, min]) => longOption2(arg, full, min)))
+        i++;
+    } else if (isShort(arg)) {
+      const { flags, wantsNext } = shortFlags(arg, "o");
+      if (flags.includes("f"))
+        force = true;
+      if (flags.includes("n"))
+        dryRun = true;
+      if (flags.includes("d"))
+        deleting = true;
+      if (wantsNext)
+        i++;
+    } else {
+      positional.push(arg);
+    }
+  }
+  if (dryRun)
+    return found;
+  const autoPush = autoPushAsk();
+  if (autoPush !== null)
+    found.push(autoPush);
+  const given = repoGiven ? positional : positional.slice(1);
+  const remote = repoGiven ? repo : positional[0] ?? null;
+  const refspecs = given.length === 0 && !tagsOnly && !everyBranch ? place.bare(remote) : given;
+  if (force || refspecs.some((refspec) => refspec.startsWith("+"))) {
+    found.push("This is a force-push: it can overwrite commits that other people or other sessions " + "already pushed, and those commits can be lost. Approve only if you meant it.");
+  }
+  if (everyBranch) {
+    found.push(`\`git push --all\` / \`--mirror\` pushes every branch, ${protectedBranches.map((b) => `\`${b}\``).join(", ")} included.`);
+  }
+  const deleted = (deleting ? given : refspecs).map((refspec) => refspec.replace(/^\+/, "")).map((spec) => deleting ? spec : spec.startsWith(":") && spec.length > 1 ? spec.slice(1) : "").filter((name) => name !== "").map((name) => name.replace(/^refs\/heads\//, ""));
+  if (deleted.length > 0) {
+    found.push(`This deletes ${deleted.map((name) => `\`${name}\``).join(", ")} on the remote: the ` + "commits on it are gone for everyone, and a teammate may still be working on it. " + "Approve only if you meant to delete it.");
+  }
+  const targets = [];
+  for (const refspec of refspecs) {
+    const spec = refspec.replace(/^\+/, "");
+    const colon = spec.indexOf(":");
+    const destination = colon === -1 ? spec : spec.slice(colon + 1);
+    if (spec === ":") {
+      targets.push(...protectedBranches);
+    } else if (colon === -1 && (spec === "HEAD" || spec === "@")) {
+      const here = place.branch();
+      if (here !== undefined)
+        targets.push(here);
+    } else {
+      targets.push(destination);
+    }
+  }
+  const protectedTarget = targets.map((target) => protectedMatch(target, protectedBranches)).find((match) => match !== undefined);
+  if (protectedTarget !== undefined) {
+    found.push(`This pushes straight to \`${protectedTarget}\`, a protected branch: work usually reaches ` + "it through a pull request. Approve only if you meant to push there.");
+  }
+  return found;
+}
+function discardAsk(sub) {
+  return `\`git ${sub}\` here overwrites files in this folder with another version, and any ` + "uncommitted change in them is lost for good. Approve only if you want them gone; a " + "WIP commit keeps the work first. Switching branch, and `git restore --staged`, do not ask.";
+}
+var WORKTREE_REMOVE_ASK = "`git worktree remove --force` deletes a worktree even when it holds uncommitted or " + "untracked work, and git cannot bring that back. Look in it first.";
+var BRANCH_DELETE_ASK = "`git branch -D` deletes a branch even if it was never merged: its commits are then " + "only in the reflog. `git branch -d` deletes a merged branch, and does not ask.";
+var RESET_HARD_ASK = "`git reset --hard` throws away every uncommitted change in this folder, for good. " + "Approve only if you want them gone; a WIP commit keeps the work first.";
+var RESET_MERGE_ASK = "`git reset --merge` throws away changes that are staged but not committed: a staged " + "change to a tracked file goes back to the target version, and a staged new file is " + "deleted from the folder (measured). Your working files are kept: it refuses rather than " + "overwrite one whose working copy differs from the target, including a file with both " + "staged and unstaged changes (measured on git 2.53). Approve only if you want the " + "staged work gone; a WIP commit keeps it first.";
+var CLEAN_FORCE_ASK = "`git clean -f` deletes untracked files for good: git cannot bring them back. " + "`git clean -n` shows what it would delete, without deleting.";
+var STASH_CLEAR_ASK = "`git stash clear` throws away every stash for good: git cannot bring them back. " + "`git stash list` shows what they hold, `git stash show -p` one of them.";
+var STASH_DROP_ASK = "`git stash drop` with no stash named drops the newest one, whoever made it. " + "`git stash list` shows them; `git stash drop stash@{n}` drops the one you mean.";
+var STASH_SHARED_ASK = "The git stash is shared by every worktree of this repo, so a bare `git stash` or " + "`git stash pop` can take or restore another session's work. A WIP commit is safer; " + "or `git stash push -u -m <tag>`, then `git stash apply <its sha>`.";
+function stashAsk(args, sharedStash) {
+  const sub = args[0];
+  const named = args.slice(1).some((arg) => !arg.startsWith("-"));
+  if (sub === "clear")
+    return STASH_CLEAR_ASK;
+  if (sub === "drop" && !named)
+    return STASH_DROP_ASK;
+  if (!sharedStash)
+    return null;
+  const tagged = args.some((arg) => longOption2(arg, "--message", 6) || isShort(arg) && shortFlags(arg, "m").flags.includes("m"));
+  const untaggedPush = (sub === undefined || sub.startsWith("-") || sub === "push") && !tagged;
+  const saveWithoutMessage = sub === "save" && !named;
+  if (sub !== "pop" && !untaggedPush && !saveWithoutMessage)
+    return null;
+  return STASH_SHARED_ASK;
+}
+function discardsChanges(sub, rest) {
+  if (sub === "switch") {
+    return rest.some((arg) => longOption2(arg, "--force", 6) || longOption2(arg, "--discard-changes", 8) || isShort(arg) && shortFlags(arg, "cC").flags.includes("f"));
+  }
+  if (sub === "checkout") {
+    const dashes = rest.indexOf("--");
+    const pathsGiven = dashes !== -1 && dashes < rest.length - 1;
+    const force = rest.some((arg) => longOption2(arg, "--force", 6) || isShort(arg) && shortFlags(arg, "bB").flags.includes("f"));
+    return pathsGiven || force || rest.slice(0, dashes === -1 ? undefined : dashes).includes(".");
+  }
+  const staged = rest.some((arg) => longOption2(arg, "--staged", 6) || isShort(arg) && shortFlags(arg, "s").flags.includes("S"));
+  const worktree = rest.some((arg) => longOption2(arg, "--worktree", 6) || isShort(arg) && shortFlags(arg, "s").flags.includes("W"));
+  return !staged || worktree;
+}
+function forceDeletesBranch(rest) {
+  const has = (long, min, short) => rest.some((arg) => long !== undefined && longOption2(arg, long, min) || isShort(arg) && shortFlags(arg, "").flags.includes(short));
+  return has(undefined, 0, "D") || has("--delete", 5, "d") && has("--force", 6, "f");
+}
+var COMPUTED_PUSH_ASK = "This command runs a program it works out when it runs, and its words name a push, so this guard cannot tell whether it pushes. Write the command out in full (for example `git push \u2026`) if you meant it.";
+function namesPush(words) {
+  return words.some((word) => word === "push" || word === "send-pack");
+}
+function computedPushIn(command, dialect) {
+  return readingsOf(command, dialect).some((reading) => shellSteps(command, {
+    blindWhenOpen: true,
+    dialect: reading.dialect,
+    joinLines: reading.joinLines
+  }).some((step) => {
+    const words = wordsOf(step.text, reading.dialect);
+    const invocation = invocationOf(words);
+    return invocation?.computed === true && namesPush(words);
+  }));
+}
+function gitQuestions(args, folder, run) {
+  return gitCalls(args).flatMap((call) => callQuestions(call, folder, run));
+}
+function pushAlias(call) {
+  const value = call.config.get(`alias.${call.sub.toLowerCase()}`);
+  if (value === null || value === undefined)
+    return null;
+  const words = wordsOf(value);
+  const first = words[0] ?? "";
+  return first === "push" || first === "send-pack" ? words.slice(1) : null;
+}
+function callQuestions(call, folder, run) {
+  const { options } = run;
+  const { rest, sub } = call;
+  const alias = pushAlias(call);
+  if (sub === "push" || sub === "send-pack" || alias !== null) {
+    const where = folder === null ? null : resolve14(folder, ...call.dirs);
+    const place = {
+      branch: () => where === null ? undefined : currentBranch(where, run),
+      bare: (remote) => {
+        const branch = where === null ? undefined : currentBranch(where, run);
+        if (where === null || branch === undefined)
+          return [];
+        return bareRefspecs(remote, branch, pushConfig(where, run), call.config);
+      }
+    };
+    return pushQuestions(alias === null ? rest : [...alias, ...rest], place, options.protectedBranches, options.autoPushAsk);
+  }
+  if (sub === "stash") {
+    const ask = stashAsk(rest, options.sharedStash);
+    return ask === null ? [] : [ask];
+  }
+  if (sub === "worktree" && rest[0] === "remove") {
+    const force = rest.slice(1).some((arg) => longOption2(arg, "--force", 6) || isShort(arg) && shortFlags(arg, "").flags.includes("f"));
+    if (force)
+      return [WORKTREE_REMOVE_ASK];
+  }
+  if ((sub === "checkout" || sub === "restore" || sub === "switch") && discardsChanges(sub, rest)) {
+    return [discardAsk(sub)];
+  }
+  if (sub === "branch" && forceDeletesBranch(rest))
+    return [BRANCH_DELETE_ASK];
+  if (sub === "reset" && rest.some((arg) => longOption2(arg, "--hard", 4))) {
+    return [RESET_HARD_ASK];
+  }
+  if (sub === "reset" && rest.some((arg) => longOption2(arg, "--merge", 4))) {
+    return [RESET_MERGE_ASK];
+  }
+  if (sub === "clean") {
+    const force = rest.some((arg) => longOption2(arg, "--force", 6) || isShort(arg) && shortFlags(arg, "e").flags.includes("f"));
+    const dryRun = rest.some((arg) => longOption2(arg, "--dry-run", 4) || isShort(arg) && shortFlags(arg, "e").flags.includes("n"));
+    if (force && !dryRun)
+      return [CLEAN_FORCE_ASK];
+  }
+  return [];
+}
+function inspect(command, cwd, reading, run, depth = 0) {
+  const found = [];
+  let folder = cwd;
+  const { dialect, joinLines } = reading;
+  for (const step of shellSteps(command, { blindWhenOpen: true, dialect, joinLines })) {
+    const words = wordsOf(step.text, dialect);
+    const invocation = invocationOf(words);
+    if (invocation === undefined)
+      continue;
+    const { args, program } = invocation;
+    const operands = withoutRedirections(args);
+    if (program === "git")
+      found.push(...gitQuestions(operands, folder, run));
+    if (invocation.computed && namesPush(words))
+      found.push(COMPUTED_PUSH_ASK);
+    if (CHANGE_DIR.has(program))
+      folder = movedTo(program, folder, operands);
+    const inner = nestedCommand(program, args, step.pipedFrom);
+    if (inner !== undefined && depth < MAX_NESTING) {
+      for (const nested of readingsOf(inner, nestedDialect(program))) {
+        found.push(...inspect(inner, folder, nested, run, depth + 1));
+      }
+    }
+  }
+  return found;
+}
+function guardQuestions(command, cwd, options) {
+  const run = { options, branches: new Map, pushConfigs: new Map };
+  const found = readingsOf(command, options.dialect).flatMap((reading) => inspect(command, cwd, reading, run));
+  return [...new Set(found)];
+}
+function runsGit(command, dialect) {
+  return programsOf(command, dialect).includes("git") || computedPushIn(command, dialect);
 }
 
 // src/hooks/issue-writes.ts
@@ -35497,626 +37205,37 @@ function requestsIssueWrite(command, dialect) {
 }
 
 // src/hooks/job-route.ts
-import { existsSync as existsSync58 } from "fs";
+import { existsSync as existsSync60 } from "fs";
 
-// src/jobs/classify.ts
-import { isAbsolute as isAbsolute7, join as join65, normalize } from "path";
-function runOf(source) {
-  return { source, folder: source?.folder ?? null, cache: new Map };
+// src/jobs/package-scripts.ts
+import { existsSync as existsSync59, readFileSync as readFileSync68, statSync as statSync23 } from "fs";
+import { dirname as dirname29, join as join68, resolve as resolve15 } from "path";
+var NO_FILE_HERE = new Set(["ENOENT", "ENOTDIR", "EISDIR"]);
+function foldersToCheckoutRoot(start) {
+  const chain = [];
+  for (let dir = start;; dir = dirname29(dir)) {
+    chain.push(dir);
+    if (existsSync59(join68(dir, ".git")))
+      return chain;
+    if (dirname29(dir) === dir)
+      return [start];
+  }
 }
-function scriptsAt(run) {
-  if (run.source === undefined || run.folder === null)
-    return null;
-  const folder = run.folder;
-  if (!run.cache.has(folder)) {
-    let found = null;
+function packageScripts(folder) {
+  for (const dir of foldersToCheckoutRoot(resolve15(folder))) {
+    let text;
     try {
-      found = run.source.scriptsIn(folder);
-    } catch {
-      found = null;
+      text = readFileSync68(join68(dir, "package.json"), "utf8");
+    } catch (error) {
+      if (NO_FILE_HERE.has(error.code ?? ""))
+        continue;
+      return null;
     }
-    run.cache.set(folder, found);
-  }
-  return run.cache.get(folder) ?? null;
-}
-function scriptOnly(call, run) {
-  if (call.script === undefined || call.name === "")
-    return;
-  const scripts = scriptsAt(run);
-  return scripts === null ? undefined : scripts.has(call.script);
-}
-var CD_OPTIONS = new Set(["-L", "-P", "-e", "-@", "--"]);
-var COMPUTED_FOLDER = /[$`*?[\]{}~]/;
-function folderWord(args) {
-  let index = 0;
-  while (CD_OPTIONS.has(args[index] ?? ""))
-    index++;
-  return args[index];
-}
-function folderAfter(program, args, folder) {
-  if (folder === null)
-    return null;
-  if (program !== "cd" && program !== "chdir" && program !== "pushd")
-    return null;
-  const target = folderWord(args);
-  if (target === undefined || target === "-" || COMPUTED_FOLDER.test(target))
-    return null;
-  return isAbsolute7(target) ? normalize(target) : normalize(join65(folder, target));
-}
-var BUN_VALUED = ["--config", "--cwd", "--env-file", "--filter", "--preload", "-c", "-F", "-r"];
-var NPX_VALUED = ["--package", "-p", "--call", "-c", "--workspace", "-w"];
-var PNPM_VALUED = ["--filter", "-F", "--dir", "-C", "--workspace-root"];
-var NODE_VALUED = [
-  "--conditions",
-  "--eval",
-  "--import",
-  "--input-type",
-  "--loader",
-  "--print",
-  "--require",
-  "-C",
-  "-e",
-  "-p",
-  "-r"
-];
-var TOOL_VALUED = {
-  docker: [
-    "--config",
-    "--context",
-    "--host",
-    "--log-level",
-    "--tlscacert",
-    "--tlscert",
-    "--tlskey",
-    "-c",
-    "-H",
-    "-l",
-    "--builder",
-    "--ansi",
-    "--env-file",
-    "--file",
-    "--parallel",
-    "--profile",
-    "--progress",
-    "--project-directory",
-    "--project-name",
-    "-f",
-    "-p"
-  ],
-  "docker-compose": [
-    "--ansi",
-    "--env-file",
-    "--file",
-    "--parallel",
-    "--profile",
-    "--progress",
-    "--project-directory",
-    "--project-name",
-    "-f",
-    "-p"
-  ],
-  podman: ["--connection", "--url", "--root", "--runroot", "--log-level"]
-};
-var BUN_COMMANDS = new Set([
-  "add",
-  "build",
-  "create",
-  "exec",
-  "i",
-  "init",
-  "install",
-  "link",
-  "outdated",
-  "patch",
-  "pm",
-  "publish",
-  "remove",
-  "repl",
-  "rm",
-  "test",
-  "unlink",
-  "update",
-  "upgrade"
-]);
-function firstWord2(args, from, valued) {
-  let index = from;
-  while (index < args.length && (args[index] ?? "").startsWith("-")) {
-    index += valued.includes(args[index] ?? "") ? 2 : 1;
-  }
-  return Math.min(index, args.length);
-}
-function toolName(word) {
-  const isPath = /[\\/]/.test(word) && !/^@[^\\/]+\/[^\\/]+$/.test(word);
-  const base = (word.split(/[\\/]/).pop() ?? word).toLowerCase().replace(/\.(cmd|exe|ps1|bat)$/, "");
-  return (isPath ? base.replace(/\.(mjs|cjs|js)$/, "") : base).replace(/(?<=.)@.*$/, "");
-}
-function scriptOrTool(word, args) {
-  return /[\\/]/.test(word) ? { name: toolName(word), args } : { name: toolName(word), args, script: word };
-}
-function toolOf(program, args, depth = 0) {
-  if (depth > 4)
-    return;
-  const at = (valued, from = 0) => firstWord2(args, from, valued);
-  if (["bun", "npm", "pnpm", "yarn"].includes(program)) {
-    const index = at(program === "bun" ? BUN_VALUED : program === "pnpm" || program === "yarn" ? PNPM_VALUED : []);
-    const sub = args[index];
-    if (program === "yarn" && sub === undefined || sub !== undefined && ["install", "i", "add", ...program === "npm" ? ["ci"] : []].includes(sub)) {
-      return { name: program, args: sub === undefined ? ["install", ...args] : args.slice(index) };
-    }
-  }
-  switch (program) {
-    case "bunx":
-    case "npx": {
-      const index = at(program === "npx" ? NPX_VALUED : NPX_VALUED.slice(0, 2));
-      const name = args[index];
-      return name === undefined ? undefined : { name: toolName(name), args: args.slice(index + 1) };
-    }
-    case "bun": {
-      const index = at(BUN_VALUED);
-      const sub = args[index];
-      if (sub === undefined)
-        return;
-      if (sub === "x")
-        return toolOf("bunx", args.slice(index + 1), depth + 1);
-      if (sub === "run") {
-        const nameAt = firstWord2(args, index + 1, BUN_VALUED);
-        const name = args[nameAt];
-        return name === undefined ? undefined : scriptOrTool(name, args.slice(nameAt + 1));
-      }
-      if (BUN_COMMANDS.has(sub))
-        return;
-      return scriptOrTool(sub, args.slice(index + 1));
-    }
-    case "npm": {
-      const index = at([]);
-      const sub = args[index];
-      const rest = args.slice(index + 1);
-      if (sub === "exec" || sub === "x")
-        return toolOf("npx", rest, depth + 1);
-      if (sub === "test" || sub === "t")
-        return { name: "", args: rest, script: "test" };
-      if (sub === "run" || sub === "run-script") {
-        const nameAt = firstWord2(rest, 0, []);
-        const name = rest[nameAt];
-        if (name === undefined)
-          return;
-        return { name: "", args: rest.slice(nameAt + 1), script: name };
-      }
-      return;
-    }
-    case "pnpm":
-    case "yarn": {
-      const index = at(PNPM_VALUED);
-      const sub = args[index];
-      if (sub === undefined)
-        return;
-      const rest = args.slice(index + 1);
-      if (sub === "exec" || sub === "dlx")
-        return toolOf("npx", rest, depth + 1);
-      if (sub === "test" || sub === "t")
-        return { name: "", args: rest, script: "test" };
-      if (sub === "run" || sub === "run-script") {
-        const nameAt = firstWord2(rest, 0, []);
-        const name = rest[nameAt];
-        return name === undefined ? undefined : scriptOrTool(name, rest.slice(nameAt + 1));
-      }
-      return scriptOrTool(sub, rest);
-    }
-    case "node": {
-      const index = at(NODE_VALUED);
-      const script = args[index];
-      if (script !== undefined && /[\\/]/.test(script)) {
-        return { name: toolName(script), args: args.slice(index + 1) };
-      }
-      return;
-    }
-    default:
-      return { name: program, args };
-  }
-}
-function hasFlag(args, flag) {
-  return args.some((arg) => arg === flag || arg.startsWith(`${flag}=`));
-}
-function startsWithSub(args, sub, valued) {
-  let from = 0;
-  for (const word of sub) {
-    const index = firstWord2(args, from, valued);
-    if (args[index] !== word)
-      return false;
-    from = index + 1;
-  }
-  return true;
-}
-function printsOnly(kind, args) {
-  const printOnly = new Set((kind.printOnly ?? []).map((flag) => flag.toLowerCase()));
-  return printOnly.size > 0 && args.length > 0 && args.every((arg) => printOnly.has(arg.toLowerCase()));
-}
-function ruleMatches(rule, call, scriptOnly = false) {
-  if ("script" in rule)
-    return call.script === rule.script;
-  if (scriptOnly)
-    return false;
-  if (call.name !== rule.tool)
-    return false;
-  const valued = [...TOOL_VALUED[rule.tool] ?? [], ...rule.valued ?? []];
-  if (rule.sub !== undefined && !startsWithSub(call.args, rule.sub, valued))
-    return false;
-  if (rule.flags !== undefined && !rule.flags.every((flag) => hasFlag(call.args, flag))) {
-    return false;
-  }
-  const text = rule.argIncludes?.toLowerCase();
-  return text === undefined || call.args.some((arg) => arg.toLowerCase().includes(text));
-}
-function kindOfCall(call, kinds, scriptOnly = false) {
-  for (const [name, kind] of Object.entries(kinds)) {
-    const heavy = (kind.match ?? []).some((rule) => ruleMatches(rule, call, scriptOnly) && (("script" in rule) || !printsOnly(kind, call.args)));
-    if (heavy)
-      return name;
+    return scriptsOf(text, dir);
   }
   return null;
 }
-function inspect2(command, kinds, dialect, depth, run) {
-  const found = [];
-  const steps = shellSteps(command, { blindWhenOpen: true, dialect, joinLines: true });
-  for (const step of steps) {
-    const invocation = invocationOf(wordsOf(step.text, dialect));
-    if (invocation === undefined)
-      continue;
-    const { program, args } = invocation;
-    const plain = withoutRedirections(args);
-    if (CHANGE_DIR.has(program)) {
-      run.folder = folderAfter(program, plain, run.folder);
-      continue;
-    }
-    const call = toolOf(program, plain);
-    const kind = call === undefined ? null : kindOfCall(call, kinds, scriptOnly(call, run) === true);
-    if (kind !== null)
-      found.push(kind);
-    const inner = nestedCommand(program, args, step.pipedFrom);
-    if (inner !== undefined && depth < MAX_NESTING) {
-      found.push(...inspect2(inner, kinds, nestedDialect(program), depth + 1, { ...run }));
-    }
-  }
-  return found;
-}
-function classifyHeavyCommand(command, kinds, source, dialect = "bash") {
-  const found = inspect2(command, kinds, dialect, 0, runOf(source));
-  return found[0] ?? null;
-}
-var READS_ONLY = () => true;
-var isOption = (arg) => arg.startsWith("-") && arg !== "-";
-var isShortCluster = (arg) => /^-[^-]/.test(arg);
-function catReadsStdin(args) {
-  return args.every((arg) => arg === "-" || isOption(arg));
-}
-function teeWritesNoFile(args) {
-  return args.every((arg) => isOption(arg) || arg === "/dev/null");
-}
-function sortReadsOnly(args) {
-  return !args.some((arg) => arg.startsWith("--o") || arg.startsWith("--co") || isShortCluster(arg) && arg.includes("o"));
-}
-function uniqReadsOnly(args) {
-  let files = 0;
-  for (let index = 0;index < args.length; index++) {
-    const arg = args[index] ?? "";
-    if (arg === "-f" || arg === "-s" || arg === "-w")
-      index++;
-    else if (!isOption(arg))
-      files++;
-  }
-  return files <= 1;
-}
-function rgReadsOnly(args) {
-  return !args.some((arg) => arg.startsWith("--pre") || arg.startsWith("--hostname-bin") || arg === "--search-zip" || isShortCluster(arg) && arg.includes("z"));
-}
-var SED_SHORT = /^-[nErsuz]+$/;
-var SED_LONG = new Set([
-  "--debug",
-  "--null-data",
-  "--posix",
-  "--quiet",
-  "--regexp-extended",
-  "--sandbox",
-  "--separate",
-  "--silent",
-  "--unbuffered"
-]);
-var SED_PLAIN_COMMANDS = "=DdGgHhNnPpQqxz}";
-function sedPartEnd(script, from, delimiter) {
-  let at = from;
-  while (at < script.length) {
-    const char = script.charAt(at);
-    if (char === "\\")
-      at += 2;
-    else if (char === delimiter)
-      return at;
-    else if (char === `
-`)
-      return -1;
-    else
-      at++;
-  }
-  return -1;
-}
-function sedBracketsPlain(part, delimiter) {
-  let at = 0;
-  while (at < part.length) {
-    const char = part.charAt(at);
-    if (char === "\\") {
-      at += 2;
-      continue;
-    }
-    if (char !== "[") {
-      at++;
-      continue;
-    }
-    let inside = at + 1;
-    if (part.charAt(inside) === "^")
-      inside++;
-    const first = inside;
-    while (inside < part.length && part.charAt(inside) !== "]") {
-      const one = part.charAt(inside);
-      if (one === "[" || one === "\\" || one === `
-` || one === delimiter)
-        return false;
-      inside++;
-    }
-    if (inside === first || inside >= part.length)
-      return false;
-    at = inside + 1;
-  }
-  return true;
-}
-function sedAddressEnd(script, at) {
-  const number = /^(?:\d+(?:~\d+)?|\$|[+~]\d+)/.exec(script.slice(at));
-  if (number !== null)
-    return at + number[0].length;
-  if (script.charAt(at) !== "/")
-    return at;
-  const end = sedPartEnd(script, at + 1, "/");
-  if (end === -1 || !sedBracketsPlain(script.slice(at + 1, end), "/"))
-    return -1;
-  return end + 1;
-}
-function sedScriptReadsOnly(script) {
-  let at = 0;
-  const skip = (chars) => {
-    while (at < script.length && chars.test(script.charAt(at)))
-      at++;
-  };
-  while (true) {
-    skip(/[\s;]/);
-    if (at >= script.length)
-      return true;
-    at = sedAddressEnd(script, at);
-    if (at === -1)
-      return false;
-    if (script.charAt(at) === ",") {
-      const end = sedAddressEnd(script, at + 1);
-      if (end === -1 || end === at + 1)
-        return false;
-      at = end;
-    }
-    skip(/[ \t]/);
-    if (script.charAt(at) === "!")
-      at++;
-    skip(/[ \t]/);
-    const command = script.charAt(at);
-    at++;
-    if (command === "s" || command === "y") {
-      const delimiter = script.charAt(at);
-      if (delimiter === "" || /[\s\\]/.test(delimiter))
-        return false;
-      const middle = sedPartEnd(script, at + 1, delimiter);
-      if (middle === -1)
-        return false;
-      if (!sedBracketsPlain(script.slice(at + 1, middle), delimiter))
-        return false;
-      const end = sedPartEnd(script, middle + 1, delimiter);
-      if (end === -1)
-        return false;
-      at = end + 1;
-      if (command === "s") {
-        const flags = /^[gpiImM0-9]*/.exec(script.slice(at))?.[0] ?? "";
-        at += flags.length;
-      }
-    } else if (command === "{") {
-      continue;
-    } else if (command !== "" && SED_PLAIN_COMMANDS.includes(command)) {
-      if (command === "q" || command === "Q")
-        skip(/\d/);
-    } else {
-      return false;
-    }
-    skip(/[ \t]/);
-    const next = script.charAt(at);
-    if (next !== "" && next !== ";" && next !== `
-` && next !== "}")
-      return false;
-  }
-}
-function sedReadsOnly(args) {
-  const scripts = [];
-  const operands = [];
-  for (let index = 0;index < args.length; index++) {
-    const arg = args[index] ?? "";
-    const expression = /^-[nErsuz]*e(.*)$/s.exec(arg);
-    if (expression !== null) {
-      const value = expression[1] === "" ? args[++index] : expression[1];
-      if (value === undefined)
-        return false;
-      scripts.push(value);
-    } else if (arg === "--expression") {
-      const value = args[++index];
-      if (value === undefined)
-        return false;
-      scripts.push(value);
-    } else if (arg.startsWith("--expression=")) {
-      scripts.push(arg.slice("--expression=".length));
-    } else if (/^--line-length=\d+$/.test(arg)) {} else if (arg === "-l" && /^\d+$/.test(args[index + 1] ?? "")) {
-      index++;
-    } else if (SED_SHORT.test(arg) || SED_LONG.has(arg)) {} else if (isOption(arg)) {
-      return false;
-    } else {
-      operands.push(arg);
-    }
-  }
-  if (scripts.length === 0) {
-    const script = operands.shift();
-    if (script === undefined)
-      return false;
-    scripts.push(script);
-  }
-  return scripts.every(sedScriptReadsOnly);
-}
-function awkReadsOnly(args) {
-  let program;
-  for (let index = 0;index < args.length; index++) {
-    const arg = args[index] ?? "";
-    if (arg === "--") {
-      program = args[index + 1];
-      break;
-    }
-    if (arg === "-F" || arg === "-v")
-      index++;
-    else if (/^-[Fv]./s.test(arg))
-      continue;
-    else if (isOption(arg))
-      return false;
-    else {
-      program = arg;
-      break;
-    }
-  }
-  return program !== undefined && !/[>|@]|system/.test(program);
-}
-var READ_ONLY_FILTERS = {
-  awk: awkReadsOnly,
-  cat: catReadsStdin,
-  cut: READS_ONLY,
-  egrep: READS_ONLY,
-  fgrep: READS_ONLY,
-  gawk: awkReadsOnly,
-  grep: READS_ONLY,
-  head: READS_ONLY,
-  mawk: awkReadsOnly,
-  nawk: awkReadsOnly,
-  rg: rgReadsOnly,
-  sed: sedReadsOnly,
-  sort: sortReadsOnly,
-  tail: READS_ONLY,
-  tee: teeWritesNoFile,
-  tr: READS_ONLY,
-  uniq: uniqReadsOnly,
-  wc: READS_ONLY
-};
-function isReadOnlyFilter(step) {
-  if (step.pipedFrom === null || step.pipedFrom.trim() === "" || step.expanded)
-    return false;
-  const filled = wordsWithFill(step.text, "bash");
-  if (filled.length === 0 || filled.some((word) => word.filled))
-    return false;
-  const words = filled.map((word) => word.text);
-  const program = programName(words[0] ?? "");
-  const check = READ_ONLY_FILTERS[program];
-  if (check === undefined)
-    return false;
-  const invocation = invocationOf(words);
-  if (invocation === undefined || invocation.computed || invocation.prefix.length > 0 || invocation.program !== program) {
-    return false;
-  }
-  if (redirectionTargets(words).some((target) => target !== "/dev/null"))
-    return false;
-  return check(withoutRedirections(invocation.args));
-}
-function splitAtFilters(line) {
-  const steps = shellSteps(line, { blindWhenOpen: true, dialect: "bash", joinLines: true });
-  let end = line.length;
-  let found = 0;
-  for (let index = steps.length - 1;index > 0; index--) {
-    const step = steps[index];
-    if (step === undefined || !isReadOnlyFilter(step))
-      break;
-    const start = end - step.text.length;
-    if (start < 1 || line.slice(start, end) !== step.text)
-      return null;
-    const before = line.charAt(start - 2);
-    if (line.charAt(start - 1) !== "|" || before === "|" || before === ">")
-      return null;
-    end = start - 1;
-    found++;
-  }
-  return found === 0 ? null : { heavy: line.slice(0, end).trimEnd(), filters: line.slice(end) };
-}
-function feedsFiltersAlone(heavy) {
-  const commands = shellSteps(heavy, { blindWhenOpen: true, dialect: "bash", joinLines: true }).map((step) => wordsOf(step.text)).filter((words) => words.length > 0 && !isAssignmentOnly(words));
-  const last = commands.at(-1);
-  if (last === undefined || last[0] === "!")
-    return false;
-  const changesDir = (words) => {
-    const invocation = invocationOf(words);
-    return invocation !== undefined && CHANGE_DIR.has(invocation.program);
-  };
-  return !changesDir(last) && commands.slice(0, -1).every(changesDir);
-}
-function routableKinds(command, kinds, dialect, depth, run) {
-  const found = [];
-  const steps = shellSteps(command, { blindWhenOpen: true, dialect, joinLines: true });
-  for (const step of steps) {
-    const words = wordsOf(step.text, dialect);
-    if (words.length === 0 || isAssignmentOnly(words))
-      continue;
-    const invocation = invocationOf(words);
-    if (invocation === undefined)
-      return null;
-    const { program, args } = invocation;
-    const plain = withoutRedirections(args);
-    if (CHANGE_DIR.has(program)) {
-      run.folder = folderAfter(program, plain, run.folder);
-      continue;
-    }
-    if (isRunnerProgram(program))
-      return null;
-    const inner = nestedCommand(program, args, step.pipedFrom);
-    if (inner !== undefined) {
-      if (depth >= MAX_NESTING)
-        return null;
-      const nested = routableKinds(inner, kinds, nestedDialect(program), depth + 1, {
-        ...run
-      });
-      if (nested === null)
-        return null;
-      found.push(...nested);
-      continue;
-    }
-    const call = toolOf(program, plain);
-    const kind = call === undefined ? null : kindOfCall(call, kinds, scriptOnly(call, run) === true);
-    if (kind === null)
-      return null;
-    found.push(kind);
-  }
-  return found;
-}
-function routableLine(bashCommand, kinds, source) {
-  const split = splitAtFilters(bashCommand.trim());
-  if (split !== null && feedsFiltersAlone(split.heavy)) {
-    const kind = routableKinds(split.heavy, kinds, "bash", 0, runOf(source))?.[0];
-    return kind === undefined ? null : { filters: split.filters, heavy: split.heavy, kind };
-  }
-  const kind = routableKinds(bashCommand, kinds, "bash", 0, runOf(source))?.[0];
-  return kind === undefined ? null : { filters: "", heavy: bashCommand, kind };
-}
-
-// src/jobs/package-scripts.ts
-import { readFileSync as readFileSync67 } from "fs";
-import { join as join66 } from "path";
-function packageScripts(folder) {
-  let text;
-  try {
-    text = readFileSync67(join66(folder, "package.json"), "utf8");
-  } catch {
-    return null;
-  }
+function scriptsOf(text, folder) {
   let parsed;
   try {
     parsed = JSON.parse(text);
@@ -36126,18 +37245,56 @@ function packageScripts(folder) {
   if (parsed === null || typeof parsed !== "object")
     return null;
   const scripts = parsed.scripts;
-  if (scripts === undefined)
-    return new Set;
-  if (scripts === null || typeof scripts !== "object" || Array.isArray(scripts))
+  const bodies = new Map;
+  if (scripts !== undefined) {
+    if (scripts === null || typeof scripts !== "object" || Array.isArray(scripts))
+      return null;
+    for (const [name, body] of Object.entries(scripts)) {
+      if (typeof body === "string")
+        bodies.set(name, body);
+    }
+  }
+  return Object.assign(bodies, { folder, yarnBerry: usesYarnBerry(parsed, folder) });
+}
+function usesYarnBerry(packageJson, folder) {
+  let json = packageJson;
+  for (const dir of foldersToCheckoutRoot(folder)) {
+    if (existsSync59(join68(dir, ".yarnrc.yml")))
+      return true;
+    json ??= packageJsonAt(dir);
+    const manager = json?.packageManager;
+    if (typeof manager === "string")
+      return Number(/^yarn@(\d+)/.exec(manager)?.[1] ?? 0) >= 2;
+    json = null;
+  }
+  return false;
+}
+function packageJsonAt(dir) {
+  try {
+    const parsed = JSON.parse(readFileSync68(join68(dir, "package.json"), "utf8"));
+    return parsed !== null && typeof parsed === "object" ? parsed : null;
+  } catch {
     return null;
-  return new Set(Object.keys(scripts));
+  }
+}
+function fileExistsIn(folder, word) {
+  try {
+    return statSync23(resolve15(folder, word)).isFile();
+  } catch {
+    return false;
+  }
+}
+
+// src/jobs/weight-source.ts
+function diskWeightSource(folder) {
+  return { folder, isFile: fileExistsIn, scriptsIn: packageScripts };
 }
 
 // src/hooks/bash-judge.ts
-import { isAbsolute as isAbsolute8, resolve as resolve15 } from "path";
+import { isAbsolute as isAbsolute7, resolve as resolve16 } from "path";
 
 // src/herdr/machines.ts
-import { readFileSync as readFileSync68 } from "fs";
+import { readFileSync as readFileSync69 } from "fs";
 var MachinesSchema = object({
   version: literal(1),
   machines: record(string2(), object({ allow: literal(true).optional(), production: literal(true).optional() }).strict())
@@ -36148,7 +37305,7 @@ class MachinesFileError extends Error {
 function readMachines(file) {
   let text;
   try {
-    text = readFileSync68(file, "utf8");
+    text = readFileSync69(file, "utf8");
   } catch (error) {
     if (error.code === "ENOENT")
       return { version: 1, machines: {} };
@@ -36559,13 +37716,10 @@ function proposalOf(step, moved) {
   if (folder !== null && (folder === "" || isComputedWord(folder))) {
     return { unread: "its --folder is worked out when the line runs" };
   }
-  if (moved && (folder === null || !isAbsolute8(folder))) {
+  if (moved && (folder === null || !isAbsolute7(folder))) {
     return { unread: "the line changes its folder before it" };
   }
   return { folder };
-}
-function isJobRun(program, args) {
-  return program === COMMAND && args[0] === "job" && args[1] === "run";
 }
 function walk(line, dialect, depth, all) {
   for (const step of shellSteps(line, { blindWhenOpen: true, dialect, joinLines: true })) {
@@ -36693,7 +37847,7 @@ function judgeProposals(proposals, context) {
     } else if (cwd === null) {
       question = cannotTellProject("the call names no folder");
     } else {
-      question = proposeQuestion(proposal.folder === null ? cwd : resolve15(cwd, proposal.folder), context, timeFor);
+      question = proposeQuestion(proposal.folder === null ? cwd : resolve16(cwd, proposal.folder), context, timeFor);
     }
     if (question !== null)
       break;
@@ -36945,7 +38099,6 @@ function judgedDomain(reading) {
 }
 
 // src/hooks/job-route.ts
-var PLAIN_WORD = /^[A-Za-z0-9_@%+=:,./-]+$/;
 var SHELL_MEANING = /[$`*?[\]{}~<>|&;\n\\]/;
 function plainWords(command) {
   const segments = shellSegments(command);
@@ -36957,9 +38110,6 @@ function plainWords(command) {
   const invocation = invocationOf(words);
   return invocation === undefined || invocation.program !== words[0] ? null : words;
 }
-function shellWord2(word) {
-  return PLAIN_WORD.test(word) ? word : shellQuote(word);
-}
 function routedShell(env, which = (command) => Bun.which(command, { PATH: env.PATH ?? "" })) {
   const shell = env.SHELL ?? "";
   const name = shell.split("/").pop() ?? "";
@@ -36969,29 +38119,12 @@ function routedShell(env, which = (command) => Bun.which(command, { PATH: env.PA
 }
 function jobRunCommand(kind, command, shell) {
   const words = plainWords(command);
-  const inner = words === null ? `${shellWord2(shell)} -c ${shellQuote(command)}` : words.map(shellWord2).join(" ");
+  const inner = words === null ? `${shellWord(shell)} -c ${shellQuote(command)}` : words.map(shellWord).join(" ");
   return `${LAUNCHER_IN_SHELL} job run --kind ${kind} -- ${inner}`;
 }
-function runsJobRun(command) {
-  return shellSegments(command).some((segment) => {
-    const words = wordsOf(segment);
-    const inner = invocationOf(words);
-    if (inner === undefined)
-      return false;
-    if (isJobRun(inner.program, inner.args))
-      return true;
-    const nested = nestedCommand(inner.program, inner.args);
-    if (nested === undefined)
-      return false;
-    const deeper = invocationOf(wordsOf(nested));
-    return deeper !== undefined && isJobRun(deeper.program, deeper.args);
-  });
-}
 function routeHeavyCommand(command, kinds, shell, source) {
-  if (runsJobRun(command))
-    return null;
   const line = routableLine(command, kinds, source);
-  if (line === null)
+  if (line === null || runWeight(line.heavy, kinds, source).weight !== "heavy")
     return null;
   const queued = jobRunCommand(line.kind, line.heavy, shell);
   return {
@@ -36999,16 +38132,161 @@ function routeHeavyCommand(command, kinds, shell, source) {
     kind: line.kind
   };
 }
+var GIT_COMMAND_HOOKS = {
+  commit: ["pre-commit", "commit-msg"],
+  merge: ["pre-merge-commit", "commit-msg"],
+  push: ["pre-push"]
+};
+var COMMIT_VALUED_SHORT = "cCFmtuS";
+function skipsHooks(sub, rest) {
+  for (const arg of rest) {
+    if (arg === "--")
+      return false;
+    if (longOption2(arg, "--no-verify", 8))
+      return true;
+    if (sub === "commit" && isShort(arg) && shortFlags(arg, COMMIT_VALUED_SHORT).flags.includes("n"))
+      return true;
+  }
+  return false;
+}
+function gitHookSteps(command, cwd) {
+  const found = [];
+  const tracker = new FolderTracker(cwd);
+  for (const step of shellSteps(command)) {
+    const folder = tracker.enter(step.subshell);
+    const words = wordsWithFill(step.text);
+    const invocation = invocationOf(words.map((word) => word.text));
+    if (invocation === undefined)
+      continue;
+    const { args, computed, prefix, program } = invocation;
+    if (CHANGES_FOLDER.has(program)) {
+      tracker.moveTo(movedTo(program, folder, withoutRedirections(args)));
+    }
+    if (program !== "git" || computed || step.start === undefined || folder === null)
+      continue;
+    if (step.subshell?.array === true)
+      continue;
+    if (prefix.length > 0 && !isAssignmentOnly(prefix))
+      continue;
+    const calls = gitCalls(withoutRedirections(args));
+    const call = calls.length === 1 ? calls[0] : undefined;
+    if (call === undefined || GIT_COMMAND_HOOKS[call.sub] === undefined)
+      continue;
+    if (call.config.has("core.hookspath") || skipsHooks(call.sub, call.rest))
+      continue;
+    if (words.slice(0, words.length - call.rest.length).some((word) => word.filled))
+      continue;
+    let runsIn = folder;
+    for (const dir of call.dirs)
+      runsIn = runsIn === null ? null : movedTo("cd", runsIn, [dir]);
+    if (runsIn === null)
+      continue;
+    const lead = step.text.split(`
+`)[0] ?? "";
+    if (!command.startsWith(lead, step.start))
+      continue;
+    const blanks = /^[ \t]*/.exec(step.text)?.[0].length ?? 0;
+    found.push({ at: step.start + blanks, folder: runsIn, sub: call.sub });
+  }
+  return found;
+}
+function hooksPairNumber(env) {
+  const given = env.GIT_CONFIG_COUNT;
+  if (given === undefined)
+    return 0;
+  if (!/^(0|[1-9]\d*)$/.test(given) || !Number.isSafeInteger(Number(given) + 1))
+    return null;
+  const count = Number(given);
+  for (const [name, value] of Object.entries(env)) {
+    const number = /^GIT_CONFIG_KEY_(\d+)$/.exec(name)?.[1];
+    if (number !== undefined && Number(number) < count && value?.toLowerCase() === "core.hookspath") {
+      return null;
+    }
+  }
+  return count;
+}
+function routeGitHooks(command, context, kinds, platform = process.platform) {
+  if (platform === "win32" || command.includes("GIT_CONFIG_"))
+    return null;
+  if (readingsOf(command, "bash").length > 1)
+    return null;
+  const pair = hooksPairNumber(context.env);
+  if (pair === null)
+    return null;
+  const steps = gitHookSteps(command, context.cwd);
+  const folder = context.paths.gitHooksFolder;
+  if (steps.length === 0 || gitHooksState(context.paths).kind !== "ok")
+    return null;
+  const { timeFor } = startBudget(context.env, Date.now, SHORT_GUARD_BUDGET_MS, context.nowMs);
+  const answers = new Map;
+  const queued = [];
+  for (const step of steps) {
+    for (const name of GIT_COMMAND_HOOKS[step.sub] ?? []) {
+      const key = `${step.folder}\x00${name}`;
+      let answer = answers.get(key);
+      if (answer === undefined) {
+        answer = hookDecision(name, step.folder, kinds, diskWeightSource(step.folder), context.env, timeFor(GUARD_GIT_TIMEOUT_MS));
+        answers.set(key, answer);
+      }
+      if (typeof answer === "object") {
+        queued.push({ at: step.at, kind: answer.queue });
+        break;
+      }
+    }
+  }
+  const first = queued[0];
+  if (first === undefined)
+    return null;
+  const prefix = [
+    `GIT_CONFIG_COUNT=${pair + 1}`,
+    `GIT_CONFIG_KEY_${pair}=core.hooksPath`,
+    `GIT_CONFIG_VALUE_${pair}=${shellWord(folder)}`
+  ].join(" ");
+  let routed = command;
+  for (const { at } of queued.toSorted((one, other) => other.at - one.at)) {
+    routed = `${routed.slice(0, at)}${prefix} ${routed.slice(at)}`;
+  }
+  return { command: routed, kind: first.kind };
+}
 var REWRITE_SUPPORTED = true;
-function rewriteAnswer(fields, command) {
+var REWRITE_TIMEOUT_SUPPORTED = true;
+var DEFAULT_BASH_MAX_TIMEOUT_MS = 600000;
+var DEFAULT_BASH_TIMEOUT_MS = 120000;
+function limitFromEnv(value, fallback) {
+  if (value === undefined || !/^[1-9]\d*$/.test(value))
+    return fallback;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) ? parsed : fallback;
+}
+function routedTimeoutMs(env) {
+  return Math.max(limitFromEnv(env.BASH_MAX_TIMEOUT_MS, DEFAULT_BASH_MAX_TIMEOUT_MS), limitFromEnv(env.BASH_DEFAULT_TIMEOUT_MS, DEFAULT_BASH_TIMEOUT_MS));
+}
+function rewriteAnswer(fields, command, timeoutMs = null) {
+  const timeout = timeoutMs !== null && fields.timeout === undefined && fields.run_in_background !== true ? { timeout: timeoutMs } : {};
   return {
     stdout: JSON.stringify({
-      hookSpecificOutput: { hookEventName: "PreToolUse", updatedInput: { ...fields, command } }
+      hookSpecificOutput: {
+        hookEventName: "PreToolUse",
+        updatedInput: { ...fields, command, ...timeout }
+      }
     })
   };
 }
+function heavyRunKind(command, kinds, source, dialect) {
+  const kind = classifyHeavyCommand(command, kinds, source ?? undefined, dialect);
+  if (kind === null || source === null)
+    return kind;
+  const bash = dialect === "bash" ? command : bashLineOf(command);
+  if (bash === null)
+    return kind;
+  return runWeight(bash, kinds, source).weight === "heavy" ? kind : null;
+}
+function weightSourceOf(input) {
+  const cwd = stringField(input.cwd);
+  return cwd === null ? null : diskWeightSource(cwd);
+}
 function bashToolExists(env, platform = process.platform, facts = {
-  exists: existsSync58,
+  exists: existsSync60,
   which: (command) => Bun.which(command, { PATH: env.PATH ?? env.Path ?? "" })
 }) {
   return platform !== "win32" || findGitBash(env, facts).path !== null;
@@ -37027,10 +38305,10 @@ function bashLineOf(powerShellCommand) {
   if (invocation === undefined || invocation.computed || invocation.prefix.length > 0 || invocation.program !== programName(words[0] ?? "")) {
     return null;
   }
-  return words.map(shellWord2).join(" ");
+  return words.map(shellWord).join(" ");
 }
 function powerShellDenial(command, kinds, source) {
-  const kind = classifyHeavyCommand(command, kinds, source, "powershell");
+  const kind = heavyRunKind(command, kinds, source, "powershell");
   if (kind === null)
     return null;
   const bash = bashLineOf(command);
@@ -37070,7 +38348,7 @@ function judgeCommandAnswer(input, context) {
 function inputDialect(input) {
   return dialectOfTool(input.tool_name) ?? "bash";
 }
-function jobRoute(context, bashTool = bashToolExists) {
+function jobRoute(context, bashTool = bashToolExists, platform = process.platform) {
   const fields = toolInput(context.input);
   const command = stringField(fields.command);
   if (command === null)
@@ -37085,17 +38363,20 @@ function jobRoute(context, bashTool = bashToolExists) {
   if (verdict !== null)
     return judgeAnswer(verdict);
   const kinds = mergeKinds(context.project.config?.jobs?.kinds);
-  const source = { folder: context.cwd, scriptsIn: packageScripts };
+  const source = diskWeightSource(context.cwd);
   if (dialect !== "bash") {
     if (!routesHeavyCommands(context))
       return SILENT;
     const refused = powerShellDenial(command, kinds, source);
     return refused !== null && bashTool(context.env) ? refused : SILENT;
   }
-  const routed = routesHeavyCommands(context) ? routeHeavyCommand(command, kinds, routedShell(context.env), source) : null;
+  const routed = routesHeavyCommands(context) ? routeHeavyCommand(command, kinds, routedShell(context.env), source) ?? routeGitHooks(command, context, kinds, platform) : null;
   if (routed === null)
     return SILENT;
-  return REWRITE_SUPPORTED ? rewriteAnswer(fields, routed.command) : routeDenial(routed);
+  if (!REWRITE_SUPPORTED)
+    return routeDenial(routed);
+  const timeoutMs = REWRITE_TIMEOUT_SUPPORTED ? routedTimeoutMs(context.env) : null;
+  return rewriteAnswer(fields, routed.command, timeoutMs);
 }
 function jobRouteConfigAnswer(message, input, context) {
   const judged = judgeCommandAnswer(input, context);
@@ -37103,7 +38384,7 @@ function jobRouteConfigAnswer(message, input, context) {
     return judged;
   const command = commandOf(input);
   const dialect = inputDialect(input);
-  if (command === null || classifyHeavyCommand(command, mergeKinds(undefined), undefined, dialect) === null || dialect !== "bash" && !bashToolExists(context.env)) {
+  if (command === null || heavyRunKind(command, mergeKinds(undefined), weightSourceOf(input), dialect) === null || dialect !== "bash" && !bashToolExists(context.env)) {
     return SILENT;
   }
   return toolDecision("ask", `cc-smart-dev-kit cannot check whether this project routes heavy commands through its job queue: ${message}`);
@@ -37118,7 +38399,7 @@ function jobRouteDomain(input) {
   const dialect = inputDialect(input);
   if (judgedDomain(readBash(command, dialect)))
     return true;
-  return classifyHeavyCommand(command, mergeKinds(undefined), undefined, dialect) !== null;
+  return heavyRunKind(command, mergeKinds(undefined), weightSourceOf(input), dialect) !== null;
 }
 function routeFacts(input, context) {
   const command = commandOf(input);
@@ -37131,7 +38412,11 @@ function routeFacts(input, context) {
     paths: context.paths,
     startedAtMs: context.nowMs
   });
-  const facts = { job_run: runsJobRun(command) };
+  const facts = {};
+  const source = weightSourceOf(input);
+  if (source !== null && inputDialect(input) === "bash") {
+    facts.weight = runWeight(command, mergeKinds(undefined), source).weight;
+  }
   if (reading.launches.length > 0)
     facts.launches = reading.launches.map((one) => one.form);
   if (reading.workflowPropose)
@@ -37271,24 +38556,367 @@ function keepGoing(context) {
 }
 
 // src/hooks/main-folder-guard.ts
-import { isAbsolute as isAbsolute9, resolve as resolve16 } from "path";
-function editedFile(input, cwd) {
+import { realpathSync as realpathSync10 } from "fs";
+import { tmpdir as tmpdir6 } from "os";
+import { basename as basename15, dirname as dirname30, isAbsolute as isAbsolute9, join as join70, resolve as resolve19 } from "path";
+
+// src/shell/writes.ts
+import { basename as basename14, isAbsolute as isAbsolute8, resolve as resolve17 } from "path";
+function scan2(args, spec, named = false) {
+  const scanned = { operands: [], targetDirectory: null, letters: "", longs: [] };
+  let optionsEnded = false;
+  for (let index = 0;index < args.length; index++) {
+    const arg = args[index] ?? "";
+    if (optionsEnded || !arg.startsWith("-") || arg === "-") {
+      scanned.operands.push(arg);
+    } else if (arg === "--") {
+      optionsEnded = true;
+    } else if (named && /^-[A-Za-z]+(?::|$)/.test(arg)) {
+      scanned.longs.push(arg.split(":")[0] ?? arg);
+    } else if (arg.startsWith("--")) {
+      const name = arg.split("=")[0] ?? arg;
+      const full = Object.entries(spec.long).find(([long, min]) => longOption2(name, long, min))?.[0];
+      scanned.longs.push(full ?? name);
+      if (full === undefined)
+        continue;
+      const value = arg.includes("=") ? arg.slice(name.length + 1) : args[++index];
+      if (full === "--target-directory" && value !== undefined)
+        scanned.targetDirectory = value;
+    } else {
+      for (let at = 1;at < arg.length; at++) {
+        const letter = arg.charAt(at);
+        scanned.letters += letter;
+        if (spec.suffix?.includes(letter))
+          break;
+        if (!spec.short.includes(letter))
+          continue;
+        const value = at === arg.length - 1 ? args[++index] : arg.slice(at + 1);
+        if (letter === "t" && value !== undefined)
+          scanned.targetDirectory = value;
+        break;
+      }
+    }
+  }
+  return scanned;
+}
+function parameterValues(args, names) {
+  const values = [];
+  for (let index = 0;index < args.length; index++) {
+    const parameter = /^-([a-z]+)(?::(.*))?$/i.exec(args[index] ?? "");
+    const given = parameter?.[1]?.toLowerCase() ?? "";
+    if (given.length < 2 || !names.some((name) => name.startsWith(given)))
+      continue;
+    const value = parameter?.[2] ?? args[++index];
+    if (value !== undefined)
+      values.push(value);
+  }
+  return values;
+}
+var NO_VALUES = { short: "", long: {} };
+var COPY_OPTIONS = {
+  short: "tS",
+  long: { "--target-directory": 3, "--suffix": 4, "--sparse": 4, "--no-preserve": 6 }
+};
+var INSTALL_OPTIONS = {
+  short: "mogtS",
+  long: {
+    "--mode": 3,
+    "--owner": 3,
+    "--group": 3,
+    "--target-directory": 3,
+    "--suffix": 4,
+    "--strip-program": 8
+  }
+};
+var SED_OPTIONS = {
+  short: "efl",
+  long: { "--expression": 3, "--file": 4, "--line-length": 3 },
+  suffix: "i"
+};
+var PERL_OPTIONS = { short: "eEIMm", long: {}, suffix: "iCDdFVx" };
+var CHANGES_OPERANDS = new Map([
+  ["mkdir", { short: "m", long: { "--mode": 3 } }],
+  ["rm", NO_VALUES],
+  ["rmdir", NO_VALUES],
+  ["tee", NO_VALUES],
+  ["touch", { short: "dtr", long: { "--date": 3, "--reference": 3, "--time": 3 } }]
+]);
+var WRITES_ITS_FILES = new Set([
+  "ac",
+  "add-content",
+  "out-file",
+  "sc",
+  "set-content",
+  "tee-object"
+]);
+var COPIES = new Set([
+  "copy",
+  "copy-item",
+  "cp",
+  "cpi",
+  "install",
+  "ln",
+  "mi",
+  "move",
+  "move-item",
+  "mv"
+]);
+var MOVES = new Set(["mi", "move", "move-item", "mv"]);
+function copyWords(program, args, dialect) {
+  const spec = program === "install" ? INSTALL_OPTIONS : COPY_OPTIONS;
+  const { operands, targetDirectory, letters } = scan2(args, spec, dialect === "powershell");
+  if (program === "install" && letters.includes("d"))
+    return operands;
+  const given = [
+    ...parameterValues(args, ["destination"]),
+    ...targetDirectory === null ? [] : [targetDirectory]
+  ];
+  const sources = given.length > 0 ? operands : operands.slice(0, -1);
+  let destination = given;
+  if (given.length === 0) {
+    const last = program === "ln" && operands.length === 1 ? basename14(operands[0] ?? "") : operands.at(-1);
+    destination = last === undefined || last === "" ? [] : [last];
+  }
+  return MOVES.has(program) ? [...destination, ...sources] : destination;
+}
+function inPlaceWords(program, args) {
+  const { operands, letters, longs } = scan2(args, program === "sed" ? SED_OPTIONS : PERL_OPTIONS);
+  const inPlace = letters.includes("i") || program === "sed" && longs.some((name) => name.length >= 3 && "--in-place".startsWith(name));
+  if (!inPlace)
+    return [];
+  const words = operands.filter((word) => word !== "");
+  const scripted = program === "sed" ? /[ef]/.test(letters) || longs.some((name) => ["--expression", "--file"].includes(name)) : /[eE]/.test(letters);
+  return scripted ? words : words.slice(1);
+}
+function writtenWords(words, invocation, dialect = "bash") {
+  const written = redirectionTargets(words);
+  if (invocation === undefined)
+    return written;
+  const { program } = invocation;
+  const args = withoutRedirections(invocation.args);
+  const operandSpec = CHANGES_OPERANDS.get(program);
+  if (operandSpec !== undefined)
+    written.push(...scan2(args, operandSpec).operands);
+  else if (WRITES_ITS_FILES.has(program))
+    written.push(...args.filter((arg) => !arg.startsWith("-")));
+  else if (program === "dd")
+    written.push(...args.filter((arg) => arg.startsWith("of=")).map((arg) => arg.slice(3)));
+  else if (program === "sed" || program === "perl")
+    written.push(...inPlaceWords(program, args));
+  else if (COPIES.has(program))
+    written.push(...copyWords(program, args, dialect));
+  return written;
+}
+var GIT_CHANGES_CHECKOUT = new Set([
+  "am",
+  "apply",
+  "checkout",
+  "cherry-pick",
+  "clean",
+  "commit",
+  "merge",
+  "mv",
+  "pull",
+  "rebase",
+  "reset",
+  "restore",
+  "revert",
+  "rm",
+  "stash",
+  "switch"
+]);
+function optionsOf(rest) {
+  const dashes = rest.indexOf("--");
+  return dashes === -1 ? rest : rest.slice(0, dashes);
+}
+function hasLong(rest, name, min) {
+  return optionsOf(rest).some((arg) => arg.startsWith("--") && longOption2(arg, name, min));
+}
+function hasShort(rest, letter) {
+  return optionsOf(rest).some((arg) => isShort(arg) && shortFlags(arg, "").flags.includes(letter));
+}
+function changesCheckout(call) {
+  const { rest, sub } = call;
+  if (!GIT_CHANGES_CHECKOUT.has(sub))
+    return false;
+  switch (sub) {
+    case "stash": {
+      const action = rest.find((arg) => !arg.startsWith("-"));
+      return action !== "list" && action !== "show";
+    }
+    case "clean":
+      return !(hasLong(rest, "--dry-run", 4) || hasShort(rest, "n"));
+    case "apply":
+      return !["--check", "--stat", "--numstat", "--summary"].some((name) => hasLong(rest, name, 4));
+    case "commit":
+    case "pull":
+      return !hasLong(rest, "--dry-run", 4);
+    case "checkout":
+      return rest.length > 0;
+    default:
+      return true;
+  }
+}
+function gitFolder(call, folder) {
+  let at = folder;
+  for (const dir of call.dirs)
+    at = movedTo("cd", at, [dir]);
+  return call.workTree === null || at === null ? at : movedTo("cd", at, [call.workTree]);
+}
+function inFolder2(folder, words) {
+  return words.flatMap((word) => {
+    if (word === "" || /^[~%]|[$`]/.test(word))
+      return [];
+    if (isAbsolute8(word))
+      return [resolve17(word)];
+    return folder === null ? [] : [resolve17(folder, word)];
+  });
+}
+function stepWrites(words, invocation, folder, dialect) {
+  const { computed, program } = invocation;
+  const operands = withoutRedirections(invocation.args);
+  const redirected = redirectionTargets(words);
+  const files = inFolder2(folder, redirected);
+  if (program === "git" || computed) {
+    const folders = gitCalls(operands).filter(changesCheckout).flatMap((call) => gitFolder(call, folder) ?? []);
+    if (computed && folders.length === 0 && folder !== null && operands.some((word) => GIT_CHANGES_CHECKOUT.has(word))) {
+      folders.push(folder);
+    }
+    return [
+      ...files.map((path) => ({ computed: false, path })),
+      ...folders.map((path) => ({ computed: program !== "git", path }))
+    ];
+  }
+  return inFolder2(folder, writtenWords(words, invocation, dialect)).map((path) => ({
+    computed: false,
+    path
+  }));
+}
+function inspect2(command, cwd, reading, depth = 0) {
+  const found = [];
+  const tracker = new FolderTracker(cwd);
+  const { dialect, joinLines } = reading;
+  for (const step of shellSteps(command, { blindWhenOpen: true, dialect, joinLines })) {
+    const folder = tracker.enter(step.subshell);
+    const words = wordsWithFill(step.text, dialect);
+    const invocation = invocationOf(words.map((word) => word.text));
+    if (invocation === undefined) {
+      found.push(...inFolder2(folder, redirectionTargets(words)).map((path) => ({ computed: false, path })));
+      continue;
+    }
+    const { args, program } = invocation;
+    found.push(...stepWrites(words, invocation, folder, dialect));
+    if (CHANGES_FOLDER.has(program)) {
+      tracker.moveTo(movedTo(program, folder, withoutRedirections(args), { dialect }));
+    }
+    const inner = nestedCommand(program, args, step.pipedFrom);
+    if (inner !== undefined && depth < MAX_NESTING) {
+      for (const nested of readingsOf(inner, nestedDialect(program))) {
+        found.push(...inspect2(inner, folder, nested, depth + 1));
+      }
+    }
+  }
+  return found;
+}
+function writeTargets(command, cwd, dialect) {
+  const seen = new Set;
+  return readingsOf(command, dialect).flatMap((reading) => inspect2(command, cwd, reading)).filter((target) => {
+    const key = `${target.computed ? "?" : "="}${target.path}`;
+    if (seen.has(key))
+      return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+// src/hooks/plans-folders.ts
+import { join as join69, resolve as resolve18 } from "path";
+function plansDirectory(root, env) {
+  const paths = cliPaths(env);
+  let plans = join69(paths.claudeConfigDir, "plans");
+  for (const settings of [
+    paths.settingsFile,
+    join69(root, ".claude/settings.json"),
+    join69(root, ".claude/settings.local.json")
+  ]) {
+    const configured = stringField(readJsonObject(settings).data.plansDirectory);
+    if (configured !== null)
+      plans = configured.startsWith("~/") ? join69(paths.home, configured.slice(2)) : resolve18(root, configured);
+  }
+  return realPath(plans);
+}
+function plansFolders(root, env) {
+  return [plansDirectory(root, env), realPath(join69(root, ".claude/plans"))];
+}
+
+// src/hooks/main-folder-guard.ts
+function memoizedRealPath() {
+  const known = new Map;
+  const real = (path) => {
+    const hit = known.get(path);
+    if (hit !== undefined)
+      return hit;
+    let answer;
+    try {
+      answer = realpathSync10(path);
+    } catch {
+      const parent = dirname30(path);
+      answer = parent === path ? path : join70(real(parent), basename15(path));
+    }
+    known.set(path, answer);
+    return answer;
+  };
+  return real;
+}
+function editedFile(input, cwd, real = realPath) {
   const fields = toolInput(input);
   const path = stringField(fields.file_path) ?? stringField(fields.notebook_path);
   if (path === null)
     return null;
-  return realPath(isAbsolute9(path) ? resolve16(path) : resolve16(cwd, path));
+  return real(isAbsolute9(path) ? resolve19(path) : resolve19(cwd, path));
+}
+function writtenPaths(input, cwd, real = realPath) {
+  const file = editedFile(input, cwd, real);
+  if (file !== null)
+    return { targets: [{ computed: false, path: file }], byCommand: false };
+  const command = stringField(toolInput(input).command);
+  const dialect = dialectOfTool(input.tool_name);
+  if (command === null || dialect === undefined)
+    return { targets: [], byCommand: true };
+  const targets = writeTargets(command, cwd, dialect).map(({ computed, path }) => ({
+    computed,
+    path: real(path)
+  }));
+  return { targets, byCommand: true };
+}
+function mayWriteInRepo(input, cwd) {
+  if (cwd === null)
+    return true;
+  const { targets, byCommand } = writtenPaths(input, cwd);
+  if (!byCommand)
+    return targets.length > 0;
+  const temp = realPath(tmpdir6());
+  const inTemp = isInside(realPath(cwd), temp);
+  return targets.some(({ path }) => !isInside(path, "/dev") && (inTemp || !isInside(path, temp)));
 }
 function editsMainFolder(file, mainCheckout, worktrees) {
   if (!isInside(file, mainCheckout))
     return false;
   return innermostWorktree(file, [mainCheckout, ...worktrees]) === mainCheckout;
 }
-function mainFolderRefusal(mainCheckout) {
+var ENTER_WORKTREE_PHRASE = "`EnterWorktree` with the task's name as its `name` (dashes, not `/`)";
+function mainFolderRefusal(mainCheckout, byCommand = false) {
   return [
-    `This file is in the main checkout (${mainCheckout}). This project makes every change in a worktree (cc-smart-dev-kit.json \`worktrees.guardMainFolder\`).`,
-    "Already working in a worktree? Edit the same file under that worktree's folder.",
-    "Not in one yet: `EnterWorktree` with the task name as its `name` makes one, or resumes an existing one \u2014 use dashes, since a `/` becomes `+`."
+    byCommand ? `This command writes in the main checkout (${mainCheckout}). This project makes every change in a worktree (cc-smart-dev-kit.json \`worktrees.guardMainFolder\`).` : `This file is in the main checkout (${mainCheckout}). This project makes every change in a worktree (cc-smart-dev-kit.json \`worktrees.guardMainFolder\`).`,
+    byCommand ? "Already working in a worktree? Run the command in that worktree's folder: `cd` into it first, or give `git -C <worktree>` to a git command." : "Already working in a worktree? Edit the same file under that worktree's folder.",
+    `Not in one yet: ${ENTER_WORKTREE_PHRASE} makes one, or resumes an existing one.`
+  ].join(`
+`);
+}
+function computedGitQuestion(mainCheckout) {
+  return [
+    `This command runs a program it works out when it runs, and its words name a git command that changes the checkout, in the main checkout (${mainCheckout}). The guard cannot tell what it runs. This project makes every change in a worktree (cc-smart-dev-kit.json \`worktrees.guardMainFolder\`).`,
+    "Write the command out in full (for example `git commit \u2026`), in a worktree's folder, if you meant it."
   ].join(`
 `);
 }
@@ -37297,15 +38925,25 @@ function mainFolderGuard(context) {
   if (project.config?.worktrees?.guardMainFolder !== true || project.mainCheckout === null) {
     return SILENT;
   }
-  const file = editedFile(input, cwd);
-  if (file === null)
+  const real = memoizedRealPath();
+  const { targets, byCommand } = writtenPaths(input, cwd, real);
+  const main = real(project.mainCheckout);
+  const inRepo = targets.filter(({ path }) => isInside(path, main));
+  if (inRepo.length === 0)
     return SILENT;
-  const main = realPath(project.mainCheckout);
   const [, ...worktrees] = listWorktrees(main, env, GUARD_GIT_TIMEOUT_MS);
-  if (!editsMainFolder(file, main, worktrees.map((worktree) => realPath(worktree.path)))) {
+  const linked = worktrees.map((worktree) => real(worktree.path));
+  const inMain = inRepo.filter(({ path }) => editsMainFolder(path, main, linked));
+  if (inMain.length === 0)
     return SILENT;
+  const plans = plansDirectory(project.root, env);
+  const refused = inMain.filter(({ path }) => !isInside(path, plans));
+  if (refused.length === 0)
+    return SILENT;
+  if (refused.some(({ computed }) => !computed)) {
+    return toolDecision("deny", mainFolderRefusal(main, byCommand));
   }
-  return toolDecision("deny", mainFolderRefusal(main));
+  return toolDecision("ask", computedGitQuestion(main));
 }
 
 // src/workflow/pr-switches.ts
@@ -37641,7 +39279,7 @@ function autoPushQuestion(context) {
 }
 
 // src/hooks/session-escape-guard.ts
-import { dirname as dirname28, isAbsolute as isAbsolute10, posix as posix3, relative as relative9, resolve as resolve17, win32 as win324 } from "path";
+import { dirname as dirname31, isAbsolute as isAbsolute10, relative as relative9, resolve as resolve20 } from "path";
 var ESCAPE_SHELL_TOOLS = ["Bash", "PowerShell"];
 var ESCAPE_EDIT_TOOLS = ["Edit", "Write", "NotebookEdit"];
 var CLAUDECODE = "CLAUDECODE";
@@ -37737,15 +39375,6 @@ function persistentDrop(words, program, args) {
   }
   return null;
 }
-function pathRules(platform) {
-  return platform === "win32" ? win324 : posix3;
-}
-function shellTargetPath(path, platform = process.platform, dialect = "bash") {
-  if (platform !== "win32" || dialect !== "bash")
-    return path;
-  const drive = /^\/+([A-Za-z])\//.exec(path);
-  return drive === null ? path : `${drive[1]?.toUpperCase()}:/${path.slice(drive[0].length)}`;
-}
 var REVIEW_DONE_DENIAL = `\`${COMMAND} workflow review-done\` records a review by hand, for the person in their own terminal. A session never records its own review: the review-record hook records it when a review agent (the \`reviewAgents\` setting) returns. Run the review agent on the change instead; if it did and nothing was recorded, tell the person.`;
 function droppedDenial(why) {
   return `This runs a ${COMMAND} command with CLAUDECODE removed: it ${why}. Claude Code sets CLAUDECODE for the commands it runs, and the commands that change this machine's settings (the workflow gate, the portal, updates) refuse to run while it is set, because they are for the person in their own terminal. Dropping it to get past that is not allowed. If the person wants the command run, they run it themselves.`;
@@ -37758,102 +39387,11 @@ function judgeKitCommand(kitArgs, dropped, found) {
   if (dropped !== null)
     found.denials.add(droppedDenial(dropped));
 }
-var WRITES_ITS_FILES = new Set([
-  "ac",
-  "add-content",
-  "out-file",
-  "sc",
-  "set-content",
-  "tee",
-  "tee-object"
-]);
-var COPIES = new Set([
-  "copy",
-  "copy-item",
-  "cp",
-  "cpi",
-  "install",
-  "ln",
-  "mi",
-  "move",
-  "move-item",
-  "mv"
-]);
-var MOVES = new Set(["mi", "move", "move-item", "mv"]);
-var CHANGES_FOLDER = new Set([
-  "cd",
-  "chdir",
-  "popd",
-  "push-location",
-  "pushd",
-  "set-location",
-  "sl"
-]);
 function isString(value) {
   return typeof value === "string";
 }
-var COMPUTED_PATH = /[$`*?[\]]|%\w+%/;
-function parameterValues(args, names) {
-  const values = [];
-  for (let index = 0;index < args.length; index++) {
-    const parameter = /^-([a-z]+)(?::(.*))?$/i.exec(args[index] ?? "");
-    const given = parameter?.[1]?.toLowerCase() ?? "";
-    if (given.length < 2 || !names.some((name) => name.startsWith(given)))
-      continue;
-    const value = parameter?.[2] ?? args[++index];
-    if (value !== undefined)
-      values.push(value);
-  }
-  return values;
-}
-function targetDirectories(args) {
-  const found = [];
-  for (let index = 0;index < args.length; index++) {
-    const arg = args[index] ?? "";
-    if (arg === "-t" || arg === "--target-directory")
-      found.push(args[++index] ?? "");
-    else if (arg.startsWith("--target-directory="))
-      found.push(arg.slice(19));
-    else if (/^-t./.test(arg) && !arg.startsWith("--"))
-      found.push(arg.slice(2));
-  }
-  return found.filter((one) => one !== "");
-}
-function writtenPaths(words, invocation) {
-  const written = redirectionTargets(words);
-  if (invocation === undefined)
-    return written;
-  const { program } = invocation;
-  const args = withoutRedirections(invocation.args);
-  const operands = args.filter((arg) => !arg.startsWith("-"));
-  if (WRITES_ITS_FILES.has(program))
-    written.push(...operands);
-  else if (program === "dd")
-    written.push(...args.filter((arg) => arg.startsWith("of=")).map((arg) => arg.slice(3)));
-  else if (program === "sed" || program === "perl") {
-    if (args.some((arg) => arg.startsWith("--in-place") || /^-[a-z]*i/.test(arg))) {
-      written.push(...operands);
-    }
-  } else if (COPIES.has(program)) {
-    const given = [...parameterValues(args, ["destination"]), ...targetDirectories(args)];
-    written.push(...given.length > 0 ? given : operands.slice(-1));
-    if (MOVES.has(program))
-      written.push(...operands);
-  }
-  return written;
-}
-function movedTo2(invocation, folder, ctx, dialect) {
-  const to = withoutRedirections(invocation.args).find((arg) => !arg.startsWith("-"));
-  if (to === undefined)
-    return invocation.program === "cd" ? ctx.paths.home : folder;
-  const path = shellTargetPath(expanded(to, ctx.paths.home), ctx.platform, dialect);
-  if (COMPUTED_PATH.test(path) || path === "-")
-    return null;
-  const rules = pathRules(ctx.platform);
-  return rules.isAbsolute(path) ? rules.resolve(path) : folder === null ? null : rules.resolve(folder, path);
-}
 function protectedNeedles(paths) {
-  const settings = dirname28(paths.workflowConfigFile);
+  const settings = dirname31(paths.workflowConfigFile);
   const needles = [PROJECT_FILE, settings, paths.stateDir, paths.pluginCacheDir];
   for (const folder of [settings, paths.stateDir, paths.pluginCacheDir]) {
     const underHome = relative9(paths.home, folder);
@@ -37915,13 +39453,18 @@ function readLine2(line, reading, start, folder, depth, found, ctx) {
   let where = folder;
   let ranKit = false;
   for (const step of shellSteps(line, { blindWhenOpen: true, dialect, joinLines })) {
-    const words = wordsOf(step.text, dialect);
+    const filled = wordsWithFill(step.text, dialect);
+    const words = filled.map((word) => word.text);
     const invocation = invocationOf(words);
-    const writes = writtenPaths(words, invocation);
+    const writes = writtenWords(filled, invocation, dialect);
     if (writes.length > 0)
       judgeWrites(writes, where, ctx, found, dialect);
     if (invocation !== undefined && CHANGES_FOLDER.has(invocation.program)) {
-      where = invocation.program === "popd" ? null : movedTo2(invocation, where, ctx, dialect);
+      where = movedTo(invocation.program, where, withoutRedirections(invocation.args), {
+        dialect,
+        home: ctx.paths.home,
+        platform: ctx.platform
+      });
     }
     const later = persistentDrop(words, invocation?.program, invocation === undefined ? [] : withoutRedirections(invocation.args));
     if (invocation !== undefined) {
@@ -38005,7 +39548,7 @@ function kitFileKind(path, paths) {
   if (name.toLowerCase() === PROJECT_FILE.toLowerCase() && (parts.at(-2) ?? "").toLowerCase() === PROJECT_FOLDER) {
     return PROJECT_FILE_WHAT;
   }
-  const settingsFolders = [paths.workflowConfigFile, paths.gatewayConfigFile].map(dirname28);
+  const settingsFolders = [paths.workflowConfigFile, paths.gatewayConfigFile].map(dirname31);
   const inside = (folder) => folderForms(folder).some((form) => isInside(path, form, true));
   if (settingsFolders.some(inside))
     return SETTINGS_WHAT;
@@ -38019,7 +39562,7 @@ function editedPaths(input, cwd, home) {
   if (given === null)
     return [];
   const path = expanded(given, home);
-  const written = isAbsolute10(path) ? resolve17(path) : resolve17(cwd ?? "/", path);
+  const written = isAbsolute10(path) ? resolve20(path) : resolve20(cwd ?? "/", path);
   return [...new Set([written, realPath(written)])];
 }
 function judgeEdit(input, paths) {
@@ -38047,7 +39590,7 @@ function inEscapeDomain(input) {
 }
 
 // src/hooks/subagent-background.ts
-import { readFileSync as readFileSync69 } from "fs";
+import { readFileSync as readFileSync70 } from "fs";
 var HAND_BACK_REASON = "Your background work is still running: wait for it or stop it, then report.";
 var BACKGROUND_ID = /Command running in background with ID: ([A-Za-z0-9_-]+)/;
 var AGENT_ID = /agentId: ([A-Za-z0-9_-]+)/;
@@ -38145,7 +39688,7 @@ function subagentBackground(context) {
     return SILENT;
   let text;
   try {
-    text = readFileSync69(transcript, "utf8");
+    text = readFileSync70(transcript, "utf8");
   } catch {
     return SILENT;
   }
@@ -38236,8 +39779,8 @@ function taskStart(input, paths, env, now = Date.now) {
 }
 
 // src/hooks/tier-view.ts
-import { existsSync as existsSync59, mkdirSync as mkdirSync25, readFileSync as readFileSync70, writeFileSync as writeFileSync11 } from "fs";
-import { dirname as dirname29, join as join67 } from "path";
+import { existsSync as existsSync61, mkdirSync as mkdirSync25, readFileSync as readFileSync71, writeFileSync as writeFileSync11 } from "fs";
+import { dirname as dirname32, join as join71 } from "path";
 
 // src/models/tier-view.ts
 var TIERS = ["haiku", "sonnet", "opus", "fable"];
@@ -38267,11 +39810,11 @@ function tierNoteUnknown() {
   return `Subagent tiers now: not known \u2014 the gateway config cannot be read (\`${COMMAND} doctor\` says why). The Agent guard judges each launch and names the effort it needs.`;
 }
 function tierViewMark(env, sessionId) {
-  return join67(namesDir(env), `${sessionId}.tiers`);
+  return join71(namesDir(env), `${sessionId}.tiers`);
 }
 function currentNote(paths, env) {
   const gateway = sessionGatewayOf(paths, env);
-  if (gateway.gatewayOn && gateway.config === null && existsSync59(paths.gatewayConfigFile)) {
+  if (gateway.gatewayOn && gateway.config === null && existsSync61(paths.gatewayConfigFile)) {
     return tierNoteUnknown();
   }
   return tierNote(gateway, env);
@@ -38285,14 +39828,14 @@ function checksNote(paths, env, nowMs) {
 }
 function lastSaid2(mark) {
   try {
-    return readFileSync70(mark, "utf8");
+    return readFileSync71(mark, "utf8");
   } catch {
     return null;
   }
 }
 function keep(mark, note) {
   try {
-    mkdirSync25(dirname29(mark), { recursive: true });
+    mkdirSync25(dirname32(mark), { recursive: true });
     writeFileSync11(mark, note);
     return true;
   } catch {
@@ -38320,7 +39863,7 @@ function tierView(input, env, paths, nowMs = Date.now()) {
 }
 
 // src/hooks/verify-gate.ts
-import { extname, isAbsolute as isAbsolute11, join as join68, resolve as resolve18 } from "path";
+import { extname, isAbsolute as isAbsolute11 } from "path";
 var VERIFY_GATE_TAIL_BYTES = 4 * 1024 * 1024;
 var CHANGE_TOOLS = ["Edit", "Write", "NotebookEdit"];
 var REMINDER_MARK = "has not run the project's fast check since";
@@ -38470,18 +40013,7 @@ function verifyGateWouldBlock(input, config, env) {
   if (checkout === null)
     return false;
   const root = realPath(checkout.root);
-  const paths = cliPaths(env);
-  let plans = join68(paths.claudeConfigDir, "plans");
-  for (const settings of [
-    paths.settingsFile,
-    join68(root, ".claude/settings.json"),
-    join68(root, ".claude/settings.local.json")
-  ]) {
-    const configured = stringField(readJsonObject(settings).data.plansDirectory);
-    if (configured !== null)
-      plans = configured.startsWith("~/") ? join68(paths.home, configured.slice(2)) : resolve18(root, configured);
-  }
-  const excluded = [realPath(plans), realPath(join68(root, ".claude/plans"))];
+  const excluded = plansFolders(root, env);
   const seen = seenIn(lines, check, (block, editCwd) => {
     const fields = objectOf(block.input);
     const path = stringField(block.name === "NotebookEdit" ? fields?.notebook_path : fields?.file_path);
@@ -38504,20 +40036,20 @@ function verifyGate(context) {
 }
 
 // src/hooks/worktree-leftovers.ts
-import { closeSync as closeSync10, existsSync as existsSync60, fstatSync as fstatSync3, openSync as openSync10, readSync as readSync6, statSync as statSync20 } from "fs";
-import { basename as basename13, join as join70, resolve as resolve19 } from "path";
+import { closeSync as closeSync11, existsSync as existsSync62, fstatSync as fstatSync3, openSync as openSync11, readSync as readSync7, statSync as statSync24 } from "fs";
+import { basename as basename16, join as join73, resolve as resolve21 } from "path";
 
 // src/hooks/local-files.ts
 import {
-  closeSync as closeSync9,
+  closeSync as closeSync10,
   lstatSync as lstatSync4,
-  openSync as openSync9,
-  readdirSync as readdirSync19,
-  readFileSync as readFileSync71,
+  openSync as openSync10,
+  readdirSync as readdirSync20,
+  readFileSync as readFileSync72,
   readlinkSync as readlinkSync5,
-  readSync as readSync5
+  readSync as readSync6
 } from "fs";
-import { join as join69 } from "path";
+import { join as join72 } from "path";
 var REBUILDABLE = [
   /(?:^|\/)(?:node_modules|bower_components|jspm_packages|\.venv|venv|\.tox|\.nox|\.bundle|\.gradle|\.pnpm-store|\.yarn\/cache)\/$/,
   /(?:^|\/)(?:dist|build|out|target|coverage|\.next|\.nuxt|\.output|\.svelte-kit|\.turbo|\.vercel|\.parcel-cache|\.angular|storybook-static|test-results|playwright-report|htmlcov|\.nyc_output)\/$/,
@@ -38539,15 +40071,15 @@ function setupTime(worktree) {
     return null;
   const times = [];
   try {
-    const time = lstatSync4(join69(admin, "commondir")).mtimeMs;
+    const time = lstatSync4(join72(admin, "commondir")).mtimeMs;
     if (Number.isFinite(time))
       times.push(time);
   } catch {}
   try {
-    const fd = openSync9(join69(admin, "logs", "HEAD"), "r");
+    const fd = openSync10(join72(admin, "logs", "HEAD"), "r");
     try {
       const buffer = Buffer.alloc(FIRST_REFLOG_BYTES);
-      const size = readSync5(fd, buffer, 0, buffer.length, 0);
+      const size = readSync6(fd, buffer, 0, buffer.length, 0);
       const text = buffer.toString("utf8", 0, size);
       const end = text.indexOf(`
 `);
@@ -38557,15 +40089,15 @@ function setupTime(worktree) {
           times.push(time);
       }
     } finally {
-      closeSync9(fd);
+      closeSync10(fd);
     }
   } catch {}
   return times.length === 0 ? null : Math.min(...times);
 }
 function untouchedCopy(worktree, mainCheckout, entry) {
   try {
-    const here = lstatSync4(join69(worktree, entry));
-    if (!here.isFile() || !lstatSync4(join69(mainCheckout, entry)).isFile())
+    const here = lstatSync4(join72(worktree, entry));
+    if (!here.isFile() || !lstatSync4(join72(mainCheckout, entry)).isFile())
       return false;
     const setup = setupTime(worktree);
     return setup !== null && here.mtimeMs <= setup + INCLUDE_COPY_SLACK_MS;
@@ -38581,8 +40113,8 @@ function sameAsMain(worktree, mainCheckout, path) {
   const same = (relative) => {
     if (--budget < 0)
       return false;
-    const here = join69(worktree, relative);
-    const there = join69(mainCheckout, relative);
+    const here = join72(worktree, relative);
+    const there = join72(mainCheckout, relative);
     try {
       const a = lstatSync4(here);
       const b = lstatSync4(there);
@@ -38590,9 +40122,9 @@ function sameAsMain(worktree, mainCheckout, path) {
         return a.isSymbolicLink() && b.isSymbolicLink() && readlinkSync5(here) === readlinkSync5(there);
       }
       if (a.isDirectory()) {
-        return b.isDirectory() && readdirSync19(here).every((entry) => same(join69(relative, entry)));
+        return b.isDirectory() && readdirSync20(here).every((entry) => same(join72(relative, entry)));
       }
-      return a.isFile() && b.isFile() && a.size === b.size && readFileSync71(here).equals(readFileSync71(there));
+      return a.isFile() && b.isFile() && a.size === b.size && readFileSync72(here).equals(readFileSync72(there));
     } catch {
       return false;
     }
@@ -38603,7 +40135,7 @@ function projectRebuildable(mainCheckout) {
   if (mainCheckout === null)
     return [];
   try {
-    const patterns = loadCcSmartDevKitConfig(join69(mainCheckout, CONFIG_PATH))?.worktrees?.rebuildable ?? [];
+    const patterns = loadCcSmartDevKitConfig(join72(mainCheckout, CONFIG_PATH))?.worktrees?.rebuildable ?? [];
     return patterns.map((pattern) => new Bun.Glob(`**/${pattern}`));
   } catch {
     return [];
@@ -38616,7 +40148,7 @@ function safeEntry(worktree, mainCheckout, entry, patterns) {
     if (!entry.endsWith("/cli-latest"))
       return true;
     try {
-      if (lstatSync4(join69(worktree, entry)).isFile())
+      if (lstatSync4(join72(worktree, entry)).isFile())
         return true;
     } catch {
       return false;
@@ -38644,10 +40176,10 @@ function localFiles(worktree, mainCheckout, env, patterns = projectRebuildable(m
       if (--budget < 0)
         return false;
       try {
-        if (!lstatSync4(join69(worktree, path)).isDirectory())
+        if (!lstatSync4(join72(worktree, path)).isDirectory())
           return safe(path);
         const folder = `${path.replace(/\/$/, "")}/`;
-        return safe(folder) || readdirSync19(join69(worktree, path)).every((name) => visit(`${folder}${name}`));
+        return safe(folder) || readdirSync20(join72(worktree, path)).every((name) => visit(`${folder}${name}`));
       } catch {
         return false;
       }
@@ -38662,12 +40194,12 @@ var IDLE_MINUTES = 60;
 var REFLOG_TAIL_BYTES = 8 * 1024;
 function lastReflogTime(file, now) {
   try {
-    const fd = openSync10(file, "r");
+    const fd = openSync11(file, "r");
     try {
       const size = fstatSync3(fd).size;
       const start = Math.max(0, size - REFLOG_TAIL_BYTES);
       const buffer = Buffer.alloc(Math.min(size, REFLOG_TAIL_BYTES));
-      const length = readSync6(fd, buffer, 0, buffer.length, start);
+      const length = readSync7(fd, buffer, 0, buffer.length, start);
       const tail = buffer.toString("utf8", 0, length);
       const end = tail.lastIndexOf(`
 `);
@@ -38680,7 +40212,7 @@ function lastReflogTime(file, now) {
       const time = reflogEntryTime(tail.slice(previous + 1, end));
       return time !== null && time <= now ? time : null;
     } finally {
-      closeSync10(fd);
+      closeSync11(fd);
     }
   } catch {
     return null;
@@ -38690,10 +40222,10 @@ function idleMinutesOrNull(worktree, now) {
   const admin = worktreeAdminDir(worktree);
   if (admin === null)
     return null;
-  let last = lastReflogTime(join70(admin, "logs", "HEAD"), now) ?? 0;
+  let last = lastReflogTime(join73(admin, "logs", "HEAD"), now) ?? 0;
   for (const file of ["index", "HEAD"]) {
     try {
-      last = Math.max(last, statSync20(join70(admin, file)).mtimeMs);
+      last = Math.max(last, statSync24(join73(admin, file)).mtimeMs);
     } catch {}
   }
   return last === 0 ? null : (now - last) / 60000;
@@ -38707,7 +40239,7 @@ function judgeWorktree(repo, listed, base, sessions, env, now) {
   if (listed.prunable)
     return "gone";
   try {
-    statSync20(listed.path);
+    statSync24(listed.path);
   } catch {
     return "gone";
   }
@@ -38727,7 +40259,7 @@ function leftoversNote(base, finished, gone, keptBy = new Map) {
   if (finished.length > 0) {
     const names = cappedHookList(finished, (worktree) => {
       const why = keptBy.get(worktree.path);
-      return why === undefined ? basename13(worktree.path) : `${basename13(worktree.path)} (kept by the last clean: ${why})`;
+      return why === undefined ? basename16(worktree.path) : `${basename16(worktree.path)} (kept by the last clean: ${why})`;
     }, "git worktree list --porcelain");
     const count = finished.length === 1 ? "1 finished worktree is" : `${finished.length} finished worktrees are`;
     parts.push(`${count} left in this repo: ${names}. Each has every commit on origin/${base}, nothing uncommitted, no running session, and no git use for an hour. ` + "Tell the user, and when they agree, clear them in the main checkout with `cc-smart-dev-kit worktrees --clean` \u2014 it judges each one again, Docker containers and running programs included, before it removes anything.");
@@ -38753,7 +40285,7 @@ function operationInProgress(repo, env) {
   if (!paths.ok)
     return null;
   const [merge, rebaseMerge, rebaseApply, cherryPick] = paths.out.split(/\r?\n/);
-  const held = (path) => path !== undefined && path !== "" && existsSync60(resolve19(repo, path));
+  const held = (path) => path !== undefined && path !== "" && existsSync62(resolve21(repo, path));
   if (held(merge))
     return "merge";
   if (held(rebaseMerge) || held(rebaseApply))
@@ -38785,6 +40317,13 @@ function mainFolderNotes(repo, main, base, env, guarded) {
   }
   return notes;
 }
+function mainCheckoutNudge(project, env) {
+  if (project.config?.worktrees?.guardMainFolder !== true)
+    return null;
+  if (project.isWorktree || project.mainCheckout === null || !isAttended(env))
+    return null;
+  return `This session is in the main checkout. Make the first change in a worktree: ${ENTER_WORKTREE_PHRASE}, or \`claude -w <name>\` from a terminal.`;
+}
 function worktreeLeftovers(context) {
   const { project, env, paths, event } = context;
   const base = project.config?.worktrees?.base;
@@ -38794,7 +40333,11 @@ function worktreeLeftovers(context) {
   const told = takeToldLine(context, repo);
   const [main, ...linked] = listWorktrees(repo, env);
   const guarded = project.config?.worktrees?.guardMainFolder === true;
-  const mainNotes = main === undefined ? [] : mainFolderNotes(repo, main, base, env, guarded);
+  const nudge = mainCheckoutNudge(project, env);
+  const mainNotes = [
+    ...main === undefined ? [] : mainFolderNotes(repo, main, base, env, guarded),
+    ...nudge === null ? [] : [nudge]
+  ];
   const answer = (note) => {
     const lines = [...mainNotes, ...note === null ? [] : [note]];
     if (lines.length === 0)
@@ -38914,11 +40457,11 @@ var mainFolderGuardHook = {
   name: "main-folder-guard",
   events: ["PreToolUse"],
   onConfigProblem: (message, input, _event, checkout) => {
-    const file = typeof input.cwd === "string" ? editedFile(input, input.cwd) : null;
+    const cwd = stringField(input.cwd);
     const repo = checkout.mainCheckout ?? checkout.root;
-    return file !== null && isInside(file, repo) ? toolDecision("ask", cannotCheck("whether this edit belongs in a worktree", message)) : SILENT;
+    return cwd !== null && writtenPaths(input, cwd).targets.some(({ path }) => isInside(path, repo)) ? toolDecision("ask", cannotCheck("whether this edit belongs in a worktree", message)) : SILENT;
   },
-  onCrash: guardCrash("whether this edit belongs in a worktree", (input) => ["Edit", "Write", "NotebookEdit"].includes(toolOf2(input))),
+  onCrash: guardCrash("whether this edit belongs in a worktree", (input) => ["Edit", "Write", "NotebookEdit"].includes(toolOf2(input)) ? true : mayWriteInRepo(input, stringField(input.cwd))),
   run: mainFolderGuard
 };
 var afterMergeHook = {
@@ -39241,7 +40784,7 @@ var OLD_REVIEW_AGENT = `${PLUGIN}:reviewer`;
 var NEW_REVIEW_AGENT = workflowDefaults.reviewAgents[0];
 var REPLACE_REVIEW_AGENT = `replace the old id ${OLD_REVIEW_AGENT} with the new one ${NEW_REVIEW_AGENT}`;
 function retiredReviewAgentCheck(file, label, personal = false) {
-  if (!existsSync61(file))
+  if (!existsSync63(file))
     return null;
   let parsed;
   try {
@@ -39271,24 +40814,24 @@ function readableMatches(pattern, folder) {
   } catch {}
   return found;
 }
-var PROJECT_MEMORY_FILES = ["CLAUDE.md", join71(".claude", "CLAUDE.md"), "CLAUDE.local.md"];
+var PROJECT_MEMORY_FILES = ["CLAUDE.md", join74(".claude", "CLAUDE.md"), "CLAUDE.local.md"];
 function retiredReviewMentions(projectDir) {
-  const folder = join71(projectDir, ".claude");
-  const inClaude = existsSync61(folder) ? [
+  const folder = join74(projectDir, ".claude");
+  const inClaude = existsSync63(folder) ? [
     `${PLUGIN}/**/*.md`,
     "rules/**/*.md",
     "agents/**/*.md",
     "skills/**/*.md",
     "commands/**/*.md",
     "output-styles/**/*.md"
-  ].flatMap((pattern) => readableMatches(pattern, folder)).map((file) => join71(".claude", file)) : [];
+  ].flatMap((pattern) => readableMatches(pattern, folder)).map((file) => join74(".claude", file)) : [];
   const files = [
-    ...PROJECT_MEMORY_FILES.filter((name) => existsSync61(join71(projectDir, name))),
+    ...PROJECT_MEMORY_FILES.filter((name) => existsSync63(join74(projectDir, name))),
     ...inClaude
   ].sort();
   return files.filter((file) => {
     try {
-      return readFileSync72(join71(projectDir, file), "utf8").includes(OLD_REVIEW_AGENT);
+      return readFileSync73(join74(projectDir, file), "utf8").includes(OLD_REVIEW_AGENT);
     } catch {
       return false;
     }
@@ -39306,16 +40849,16 @@ function renamedCommand(command) {
 }
 function oldNameLines(projectDir, sources, home) {
   const lines = [];
-  const config = join71(projectDir, ".claude", `${OLD_NAME}.json`);
-  if (existsSync61(config)) {
+  const config = join74(projectDir, ".claude", `${OLD_NAME}.json`);
+  if (existsSync63(config)) {
     lines.push({
       ok: true,
       warn: true,
       text: `project: ${shown3(config, projectDir, home)} is the old name of .claude/cc-smart-dev-kit.json, which the plugin reads now: rename it (merge the two when both are there)`
     });
   }
-  const addons = join71(projectDir, ".claude", OLD_NAME);
-  if (existsSync61(addons)) {
+  const addons = join74(projectDir, ".claude", OLD_NAME);
+  if (existsSync63(addons)) {
     lines.push({
       ok: true,
       warn: true,
@@ -39378,10 +40921,10 @@ async function worktreeLines(config, sources, checkout, env) {
 function baseRefOf(sources) {
   let baseRef = null;
   for (const file of sources) {
-    if (!existsSync61(file))
+    if (!existsSync63(file))
       continue;
     try {
-      const parsed = JSON.parse(readFileSync72(file, "utf8"));
+      const parsed = JSON.parse(readFileSync73(file, "utf8"));
       if (typeof parsed !== "object" || parsed === null)
         continue;
       const worktree = parsed.worktree;
@@ -39395,7 +40938,7 @@ function baseRefOf(sources) {
   return baseRef;
 }
 function readPluginHooks(file) {
-  const parsed = JSON.parse(readFileSync72(file, "utf8"));
+  const parsed = JSON.parse(readFileSync73(file, "utf8"));
   return Object.entries(parsed.hooks ?? {}).flatMap(([event, groups]) => groups.flatMap((group) => (group.hooks ?? []).flatMap((handler) => {
     const bundle = /\/dist\/([a-z-]+)\.js(?:["'\s]|$)/.exec(handler.command ?? "")?.[1];
     if (bundle === undefined)
@@ -39572,7 +41115,7 @@ function parseLintJson(text) {
 }
 var MAX_LINT_CONFIG_BYTES = 1024 * 1024;
 function readLintConfig(file) {
-  const fd = openSync11(file, constants2.O_RDONLY | (constants2.O_NONBLOCK ?? 0));
+  const fd = openSync12(file, constants3.O_RDONLY | (constants3.O_NONBLOCK ?? 0));
   try {
     const stat = fstatSync4(fd);
     if (!stat.isFile() || stat.size > MAX_LINT_CONFIG_BYTES) {
@@ -39581,7 +41124,7 @@ function readLintConfig(file) {
     const bytes = Buffer.alloc(MAX_LINT_CONFIG_BYTES + 1);
     let length = 0;
     while (length < bytes.length) {
-      const count = readSync7(fd, bytes, length, bytes.length - length, null);
+      const count = readSync8(fd, bytes, length, bytes.length - length, null);
       if (count === 0)
         break;
       length += count;
@@ -39590,7 +41133,7 @@ function readLintConfig(file) {
       throw new Error("config exceeds the size limit");
     return bytes.toString("utf8", 0, length);
   } finally {
-    closeSync11(fd);
+    closeSync12(fd);
   }
 }
 function overrideMatches(patterns, path) {
@@ -39648,7 +41191,7 @@ function lintRestriction(folder, projectFolder) {
   const result = { restricted: false, unreadable: [] };
   let files;
   try {
-    files = readdirSync20(folder);
+    files = readdirSync21(folder);
   } catch {
     return { restricted: false, unreadable: ["linter configs"] };
   }
@@ -39659,7 +41202,7 @@ function lintRestriction(folder, projectFolder) {
     if (!biome && !eslint && !packageConfig)
       continue;
     try {
-      const text = readLintConfig(join71(folder, file));
+      const text = readLintConfig(join74(folder, file));
       if (packageConfig) {
         const pkg = parseUserJson(text);
         result.restricted ||= isObject2(pkg) && eslintRestriction(JSON.stringify(pkg.eslintConfig) ?? "");
@@ -39674,20 +41217,20 @@ function lintRestriction(folder, projectFolder) {
   return result;
 }
 function shadcnFolders(root) {
-  const folders = new Map([[realpathSync10(root), root]]);
+  const folders = new Map([[realpathSync11(root), root]]);
   const lines = [];
   const addFolder = (folder) => {
     try {
-      const target = realpathSync10(folder);
-      const rel = relative10(realpathSync10(root), target);
+      const target = realpathSync11(folder);
+      const rel = relative10(realpathSync11(root), target);
       if (rel === ".." || rel.startsWith(`..${sep8}`) || isAbsolute12(rel))
         return;
-      if (statSync21(folder).isDirectory() && !folders.has(target))
+      if (statSync25(folder).isDirectory() && !folders.has(target))
         folders.set(target, folder);
     } catch {}
   };
-  const packageFile = join71(root, "package.json");
-  if (existsSync61(packageFile)) {
+  const packageFile = join74(root, "package.json");
+  if (existsSync63(packageFile)) {
     try {
       const pkg = parseUserJson(readLintConfig(packageFile));
       const workspaces = isObject2(pkg) ? pkg.workspaces : null;
@@ -39695,19 +41238,19 @@ function shadcnFolders(root) {
       for (const entry of entries) {
         if (typeof entry !== "string" || isAbsolute12(entry))
           continue;
-        const folder = resolve20(root, entry.replace(/\/\*$/, ""));
+        const folder = resolve22(root, entry.replace(/\/\*$/, ""));
         const rel = relative10(root, folder);
         if (rel === ".." || rel.startsWith(`..${sep8}`) || isAbsolute12(rel))
           continue;
         if (entry.endsWith("/*") && !entry.slice(0, -2).includes("*")) {
-          if (!existsSync61(folder))
+          if (!existsSync63(folder))
             continue;
-          const realFolder = realpathSync10(folder);
-          const realRel = relative10(realpathSync10(root), realFolder);
+          const realFolder = realpathSync11(folder);
+          const realRel = relative10(realpathSync11(root), realFolder);
           if (realRel === ".." || realRel.startsWith(`..${sep8}`) || isAbsolute12(realRel))
             continue;
-          for (const child of readdirSync20(folder).sort())
-            addFolder(join71(folder, child));
+          for (const child of readdirSync21(folder).sort())
+            addFolder(join74(folder, child));
         } else if (!entry.includes("*"))
           addFolder(folder);
       }
@@ -39720,7 +41263,7 @@ function shadcnFolders(root) {
     }
   }
   return {
-    folders: [...folders.values()].filter((folder) => existsSync61(join71(folder, "components.json"))).sort(),
+    folders: [...folders.values()].filter((folder) => existsSync63(join74(folder, "components.json"))).sort(),
     lines
   };
 }
@@ -39758,7 +41301,7 @@ async function projectChecks2(cwd, env, paths, pluginHooksFile, gh = runGh) {
   }
   let checkout;
   try {
-    checkout = existsSync61(cwd) ? await locateCheckoutAsync(cwd, { env }) : null;
+    checkout = existsSync63(cwd) ? await locateCheckoutAsync(cwd, { env }) : null;
   } catch (error) {
     return [{ ok: false, text: `project: ${checkoutFailure(error)}`, fix: GIT_FIX }];
   }
@@ -39866,7 +41409,7 @@ async function projectTaskChecks(cwd, env) {
     return [
       { ok: false, text: `deploy tasks: ${tasks.why}`, fix: `run \`${COMMAND} task check\`` }
     ];
-  if (!existsSync61(tasks.dir))
+  if (!existsSync63(tasks.dir))
     return [];
   const lines = [];
   try {
@@ -39923,10 +41466,9 @@ async function coverGitLines(checkout, env) {
 function checkReviewAgent(paths) {
   return retiredReviewAgentCheck(paths.workflowConfigFile, tildify(paths.workflowConfigFile, paths.home), true);
 }
-var SETUP_FIX = `${COMMAND} setup`;
 var MARKETPLACE_UPDATE_COMMAND = `claude plugin marketplace update ${MARKETPLACE}`;
 function readSettings2(file) {
-  if (!existsSync62(file))
+  if (!existsSync64(file))
     return null;
   try {
     const parsed = readUserJson(file);
@@ -39954,7 +41496,7 @@ function checkPlugin(paths) {
     };
   }
   const where = tildify(install.installPath, paths.home);
-  if (!existsSync62(install.installPath)) {
+  if (!existsSync64(install.installPath)) {
     return {
       ok: false,
       text: `the plugin folder is missing: ${where}`,
@@ -39973,24 +41515,24 @@ function checkPlugin(paths) {
     text: `${PLUGIN_ID} ${install.version ?? "(no version)"} is installed at ${where}`
   };
 }
-function isExecutable(file) {
+function isExecutable2(file) {
   try {
-    accessSync2(file, constants3.X_OK);
+    accessSync3(file, constants4.X_OK);
     return true;
   } catch {
     return false;
   }
 }
 function isUsableBun(bun, platform) {
-  return platform === "win32" ? existsSync62(bun) : isExecutable(bun);
+  return platform === "win32" ? existsSync64(bun) : isExecutable2(bun);
 }
 async function checkLauncher(paths, platform, read) {
   const win = platform === "win32";
-  const launcher = join72(paths.binDir, LAUNCHER_NAME);
+  const launcher = join75(paths.binDir, LAUNCHER_NAME);
   const where = tildify(launcher, paths.home);
-  if (!existsSync62(launcher))
+  if (!existsSync64(launcher))
     return [{ ok: false, text: `no launcher at ${where}`, fix: SETUP_FIX }];
-  if (!win && !isExecutable(launcher)) {
+  if (!win && !isExecutable2(launcher)) {
     return [
       {
         ok: false,
@@ -39999,7 +41541,7 @@ async function checkLauncher(paths, platform, read) {
       }
     ];
   }
-  const script = readFileSync73(launcher, "utf8");
+  const script = readFileSync74(launcher, "utf8");
   const bun = bakedBunPath(script);
   if (bun === null || script !== launcherScript(bun)) {
     return [{ ok: false, text: `the launcher ${where} is out of date`, fix: SETUP_FIX }];
@@ -40026,16 +41568,16 @@ async function checkLauncher(paths, platform, read) {
   return [{ ok: true, text: `the launcher ${where} runs ${result.output}` }];
 }
 async function checkLauncherCmd(paths, shLauncher, read) {
-  const cmd = join72(paths.binDir, LAUNCHER_CMD_NAME);
+  const cmd = join75(paths.binDir, LAUNCHER_CMD_NAME);
   const where = tildify(cmd, paths.home);
-  if (!existsSync62(cmd)) {
+  if (!existsSync64(cmd)) {
     return {
       ok: false,
       text: `no Windows launcher at ${where}, so cmd and PowerShell cannot run ${COMMAND} (Git Bash runs ${shLauncher})`,
       fix: SETUP_FIX
     };
   }
-  const script = readFileSync73(cmd, "utf8");
+  const script = readFileSync74(cmd, "utf8");
   const bun = cmdBakedBunPath(script);
   if (bun === null || script !== launcherCmdScript(bun)) {
     return {
@@ -40076,7 +41618,7 @@ async function checkMarketplaceAccess(paths, env) {
         fix: `remove the marketplace (claude plugin marketplace remove ${MARKETPLACE}), then add it again: ${MARKETPLACE_ADD_COMMAND}`
       };
     case "local":
-      return existsSync62(source.path) ? { ok: true, text: `the marketplace folder ${tildify(source.path, paths.home)} exists` } : {
+      return existsSync64(source.path) ? { ok: true, text: `the marketplace folder ${tildify(source.path, paths.home)} exists` } : {
         ok: false,
         text: `the marketplace folder is missing: ${source.path}`,
         fix: `put the folder back, or remove the marketplace (claude plugin marketplace remove ${MARKETPLACE}) and add it again: ${MARKETPLACE_ADD_COMMAND}`
@@ -40353,7 +41895,7 @@ function hasEntry(data, field, key) {
 async function checkOldPlugin(settings, paths, read) {
   const plugins = settings?.enabledPlugins;
   const enabled = isJsonObject14(plugins) && plugins[OLD_PLUGIN_ID] === true;
-  if (!existsSync62(join72(paths.claudeConfigDir, OLD_NAME2))) {
+  if (!existsSync64(join75(paths.claudeConfigDir, OLD_NAME2))) {
     if (!enabled)
       return null;
     return {
@@ -40363,18 +41905,18 @@ async function checkOldPlugin(settings, paths, read) {
     };
   }
   const short = (path) => tildify(path, paths.home);
-  const launcher = join72(paths.binDir, OLD_NAME2);
+  const launcher = join75(paths.binDir, OLD_NAME2);
   const left = [
     enabled ? "the plugin enabled" : null,
     hasEntry(readSettings2(paths.installedPluginsFile), "plugins", OLD_PLUGIN_ID) ? "the plugin installed" : null,
-    existsSync62(launcher) ? `its launcher ${short(launcher)}` : null,
+    existsSync64(launcher) ? `its launcher ${short(launcher)}` : null,
     hasEntry(settings, "extraKnownMarketplaces", OLD_NAME2) ? `extraKnownMarketplaces.${OLD_NAME2} in ${short(paths.settingsFile)}` : null,
     hasEntry(readSettings2(paths.knownMarketplacesFile), null, OLD_NAME2) ? `the ${OLD_NAME2} marketplace` : null
   ].filter((thing) => thing !== null);
   if (left.length === 0)
     return null;
   const then = `claude plugin uninstall ${OLD_PLUGIN_ID}\`, then \`claude plugin marketplace remove ${OLD_NAME2}\``;
-  const canRun = existsSync62(launcher) && isExecutable(launcher) && (await read([launcher, "version"])).exitCode === 0;
+  const canRun = existsSync64(launcher) && isExecutable2(launcher) && (await read([launcher, "version"])).exitCode === 0;
   return {
     ok: false,
     text: `the old plugin ${OLD_PLUGIN_ID} (before 0.2.0) left ${left.join(", ")}`,
@@ -40411,7 +41953,7 @@ function checkInstructions(paths, source) {
       fix: SETUP_FIX
     };
   }
-  const text = existsSync62(where.claudeMd) ? readFileSync73(where.claudeMd, "utf8") : "";
+  const text = existsSync64(where.claudeMd) ? readFileSync74(where.claudeMd, "utf8") : "";
   if (!text.includes(instructionsBlockBody(where.importPath))) {
     return {
       ok: false,
@@ -40466,28 +42008,28 @@ function ccSmartDevKitImports(text) {
 function checkProjectImports(paths, cwd) {
   const short = (path) => tildify(path, paths.home);
   const imports = [];
-  for (let dir = cwd;; dir = dirname30(dir)) {
+  for (let dir = cwd;; dir = dirname33(dir)) {
     for (const name of PROJECT_MEMORY_FILES) {
-      const from = join72(dir, name);
-      if (from === join72(paths.claudeConfigDir, "CLAUDE.md") || !existsSync62(from))
+      const from = join75(dir, name);
+      if (from === join75(paths.claudeConfigDir, "CLAUDE.md") || !existsSync64(from))
         continue;
       let text;
       try {
-        text = readFileSync73(from, "utf8");
+        text = readFileSync74(from, "utf8");
       } catch {
         continue;
       }
       for (const path of ccSmartDevKitImports(text)) {
-        const file = path.startsWith("~/") ? join72(paths.home, path.slice(2)) : path;
+        const file = path.startsWith("~/") ? join75(paths.home, path.slice(2)) : path;
         imports.push({ from, path, file });
       }
     }
-    if (dirname30(dir) === dir)
+    if (dirname33(dir) === dir)
       break;
   }
   if (imports.length === 0)
     return null;
-  const missing = imports.filter((entry) => !existsSync62(entry.file));
+  const missing = imports.filter((entry) => !existsSync64(entry.file));
   if (missing.length === 0) {
     const names = imports.map((entry) => entry.path).join(", ");
     return { ok: true, text: `the project's CLAUDE.md imports ${names}, and it is there` };
@@ -40563,7 +42105,7 @@ function plansDirectoryCheck(paths) {
   return {
     ok: true,
     info: true,
-    text: folder === null ? `plan folder: ${tildify(join72(paths.claudeConfigDir, "plans"), paths.home)} (Claude Code default)` : `plan folder: ${folder} (user setting; project settings may override it)`
+    text: folder === null ? `plan folder: ${tildify(join75(paths.claudeConfigDir, "plans"), paths.home)} (Claude Code default)` : `plan folder: ${folder} (user setting; project settings may override it)`
   };
 }
 function oldTodoToolsKeyCheck(paths) {
@@ -40578,7 +42120,7 @@ function oldTodoToolsKeyCheck(paths) {
 }
 function taskStoreChecks(paths) {
   const file = workDbFile(paths);
-  if (!existsSync62(file))
+  if (!existsSync64(file))
     return [{ ok: true, info: true, text: "task work store: not made yet" }];
   const brokenFix = `move ${tildify(file, paths.home)} aside, with its -wal and -shm files; the next task call starts an empty store (deploy task files are in git and stay)`;
   try {
@@ -40804,8 +42346,8 @@ function checkLine(check) {
 }
 
 // src/jobs/status.ts
-import { mkdirSync as mkdirSync27, readdirSync as readdirSync22, readFileSync as readFileSync75, statSync as statSync23 } from "fs";
-import { join as join74 } from "path";
+import { mkdirSync as mkdirSync27, readdirSync as readdirSync23, readFileSync as readFileSync76, statSync as statSync27 } from "fs";
+import { join as join77 } from "path";
 
 // src/jobs/queue.ts
 function wireOfSlot(slot) {
@@ -40856,6 +42398,24 @@ function describeHolder(record) {
   ];
   return [...labels, `${record.what} in ${record.checkout}`].join(", ");
 }
+function parseEntry(entry) {
+  const record = parseHolder(entry.text);
+  return {
+    exclusive: record?.exclusive ?? null,
+    mine: entry.mine,
+    person: record?.person ?? null,
+    slot: record?.slot ?? false,
+    since: record?.since ?? Number.POSITIVE_INFINITY,
+    tie: entry.tie
+  };
+}
+function inLineOrder(a, b) {
+  if (a.since !== b.since)
+    return a.since < b.since ? -1 : 1;
+  if (a.tie === b.tie)
+    return 0;
+  return a.tie < b.tie ? -1 : 1;
+}
 function slotsUsed(held) {
   return held.filter((unit) => unit.slot).length;
 }
@@ -40877,15 +42437,15 @@ function holderLines(held, store, now) {
 import {
   chmodSync as chmodSync3,
   mkdirSync as mkdirSync26,
-  readdirSync as readdirSync21,
-  readFileSync as readFileSync74,
+  readdirSync as readdirSync22,
+  readFileSync as readFileSync75,
   renameSync as renameSync5,
-  statSync as statSync22,
+  statSync as statSync26,
   unlinkSync as unlinkSync5,
   utimesSync,
   writeFileSync as writeFileSync12
 } from "fs";
-import { join as join73, posix as posix4, win32 as win325 } from "path";
+import { join as join76, posix as posix4, win32 as win325 } from "path";
 
 // src/jobs/windows.ts
 import { spawnSync } from "child_process";
@@ -41002,8 +42562,8 @@ function leaseStore(options) {
     return holderIsGone(visible ? holder : null, lastSeenMs, UNSEEN_STALE_MS, startTimeOf);
   });
   const readStartTime = options.startTimeOf ?? startTimeReader(process.platform);
-  const leases = join73(options.dir, "leases");
-  const tickets = join73(options.dir, "tickets");
+  const leases = join76(options.dir, "leases");
+  const tickets = join76(options.dir, "tickets");
   const mine = new Map;
   const noted = new Set;
   let timer = null;
@@ -41045,14 +42605,14 @@ function leaseStore(options) {
   };
   const removeLeftover = (path) => {
     try {
-      if (Date.now() - statSync22(path).mtimeMs > LEFTOVER_MS)
+      if (Date.now() - statSync26(path).mtimeMs > LEFTOVER_MS)
         removeQuietly(path);
     } catch {}
   };
   const readLive = (folder) => {
     let names;
     try {
-      names = readdirSync21(folder);
+      names = readdirSync22(folder);
     } catch (error) {
       if (errorCode(error) === "ENOENT")
         return [];
@@ -41067,7 +42627,7 @@ function leaseStore(options) {
     };
     const live = [];
     for (const name of names) {
-      const path = join73(folder, name);
+      const path = join76(folder, name);
       if (name.startsWith(".")) {
         if (name.endsWith(".tmp") || name.startsWith(".probe-"))
           removeLeftover(path);
@@ -41078,7 +42638,7 @@ function leaseStore(options) {
       let text;
       let mtimeMs;
       try {
-        mtimeMs = statSync22(path).mtimeMs;
+        mtimeMs = statSync26(path).mtimeMs;
       } catch (error) {
         if (errorCode(error) === "ENOENT")
           continue;
@@ -41086,7 +42646,7 @@ function leaseStore(options) {
       }
       let unreadable = null;
       try {
-        text = readFileSync74(path, "utf8");
+        text = readFileSync75(path, "utf8");
       } catch (error) {
         const code = errorCode(error);
         if (code === "ENOENT")
@@ -41116,7 +42676,7 @@ function leaseStore(options) {
   };
   const write = (folder, slot, record, exclusive) => {
     const token = crypto.randomUUID();
-    const path = join73(folder, `${token}.json`);
+    const path = join76(folder, `${token}.json`);
     const text = JSON.stringify({
       store: 1,
       gb: wireOfSlot(slot),
@@ -41134,7 +42694,7 @@ function leaseStore(options) {
     label: options.label,
     capacity: options.capacity ?? (() => HEAVY_SLOTS),
     held: () => Promise.resolve().then(() => readLive(leases).map(({ file }) => ({ slot: file.slot, text: file.record }))),
-    waiting: () => Promise.resolve().then(() => readLive(tickets).map(({ file }) => ({ slot: file.slot, text: file.record }))),
+    waiting: () => Promise.resolve().then(() => readLive(tickets).map(({ file, token }) => ({ slot: file.slot, text: file.record, tie: token }))),
     enqueue: (recordText) => Promise.resolve().then(() => {
       const slot = parseHolder(recordText)?.slot ?? false;
       const { path, token } = write(tickets, slot, recordText);
@@ -41180,6 +42740,9 @@ function openStores(ctx) {
     })
   };
 }
+function inLine(units) {
+  return units.map((unit) => ({ entry: parseEntry({ mine: false, ...unit }), unit })).sort((a, b) => inLineOrder(a.entry, b.entry)).map(({ unit }) => ({ holder: parseHolder(unit.text), slot: unit.slot }));
+}
 async function readJobs(ctx) {
   const notes = [];
   let project = null;
@@ -41202,7 +42765,7 @@ async function readJobs(ctx) {
   };
   try {
     store.held = parsed(await machine.held());
-    store.waiting = parsed(await machine.waiting());
+    store.waiting = inLine(await machine.waiting());
   } catch (error) {
     store.note = error instanceof Error ? error.message : String(error);
   }
@@ -41269,22 +42832,22 @@ function jobsFingerprint(home) {
   const dir = jobsPaths(home).stateDir;
   const parts = [];
   try {
-    parts.push(readFileSync75(jobsPaths(home).configFile, "utf8"));
+    parts.push(readFileSync76(jobsPaths(home).configFile, "utf8"));
   } catch (error) {
     parts.push(`config:${error.code}`);
   }
   for (const sub of ["leases", "tickets"]) {
-    const folder = join74(dir, sub);
+    const folder = join77(dir, sub);
     let names;
     try {
-      names = readdirSync22(folder).sort();
+      names = readdirSync23(folder).sort();
     } catch {
       parts.push(`${folder}:-`);
       continue;
     }
     for (const name of names) {
       try {
-        const stat = statSync23(join74(folder, name));
+        const stat = statSync27(join77(folder, name));
         parts.push(`${folder}/${name}:${stat.size}:${stat.mtimeMs}`);
       } catch {
         parts.push(`${folder}/${name}:gone`);
@@ -41295,14 +42858,14 @@ function jobsFingerprint(home) {
 }
 
 // src/portal/actions.ts
-import { createHash as createHash11 } from "crypto";
-import { existsSync as existsSync64, statSync as statSync24 } from "fs";
-import { isAbsolute as isAbsolute14, join as join77 } from "path";
+import { createHash as createHash10 } from "crypto";
+import { existsSync as existsSync66, statSync as statSync28 } from "fs";
+import { isAbsolute as isAbsolute14, join as join80 } from "path";
 
 // src/update/check.ts
 import { mkdtempSync as mkdtempSync4, rmSync as rmSync15 } from "fs";
-import { tmpdir as tmpdir6 } from "os";
-import { join as join75 } from "path";
+import { tmpdir as tmpdir7 } from "os";
+import { join as join78 } from "path";
 var GIT_TIMEOUT_MS2 = 20000;
 function localHead(folder, env) {
   try {
@@ -41366,7 +42929,7 @@ function checkForUpdate(paths, env) {
 }
 function remotePluginVersion(url, ref, baseEnv) {
   const env = gitAccessEnv(gitEnv(baseEnv));
-  const dir = mkdtempSync4(join75(tmpdir6(), "cc-smart-dev-kit-update-check-"));
+  const dir = mkdtempSync4(join78(tmpdir7(), "cc-smart-dev-kit-update-check-"));
   const git = (args) => {
     const result = Bun.spawnSync(["git", ...args], {
       env,
@@ -41581,11 +43144,11 @@ ${UPDATE_USAGE}`);
 }
 
 // src/machine/claude-mem-choices.ts
-import { existsSync as existsSync63 } from "fs";
+import { existsSync as existsSync65 } from "fs";
 var KEY_MAX = 512;
 function readReady(paths) {
   const install = findUserInstall(paths.installedPluginsFile, CLAUDE_MEM_ID);
-  if (install === null || !existsSync63(install.installPath)) {
+  if (install === null || !existsSync65(install.installPath)) {
     return {
       blocked: {
         fix: `claude plugin install ${CLAUDE_MEM_ID}`,
@@ -41619,7 +43182,7 @@ function readReady(paths) {
   return { read, version };
 }
 function gatewayConfig(paths) {
-  if (!existsSync63(paths.gatewayConfigFile))
+  if (!existsSync65(paths.gatewayConfigFile))
     return null;
   try {
     return loadConfigFile(paths.gatewayConfigFile);
@@ -41627,7 +43190,7 @@ function gatewayConfig(paths) {
     return null;
   }
 }
-function textOf(read, key) {
+function textOf2(read, key) {
   const current = getKey(read.data, read.at(key));
   return typeof current.value === "string" ? current.value : "";
 }
@@ -41656,13 +43219,13 @@ function backendAt(config, baseUrl) {
   return null;
 }
 function fallbackProvider(read, version) {
-  const value = textOf(read, FALLBACK_PROVIDER);
+  const value = textOf2(read, FALLBACK_PROVIDER);
   if (value !== "")
     return value;
   return Bun.semver.order(version, CLAUDE_FALLBACK_SINCE) >= 0 ? CLAUDE_PROVIDER : FALLBACK_OFF;
 }
 function routeProvider(read) {
-  return textOf(read, PROVIDER) || CLAUDE_PROVIDER;
+  return textOf2(read, PROVIDER) || CLAUDE_PROVIDER;
 }
 function fallbackProviderFor(route) {
   return route === OPENAI_COMPATIBLE ? OPENROUTER : OPENAI_COMPATIBLE;
@@ -41698,16 +43261,16 @@ function readClaudeMemFacts(paths) {
   const { read, version } = ready;
   const provider = routeProvider(read);
   const kind = provider === CLAUDE_PROVIDER ? "claude" : provider === OPENAI_COMPATIBLE ? "backend" : "other";
-  const baseUrl = textOf(read, BASE_URL);
+  const baseUrl = textOf2(read, BASE_URL);
   const backend = backendAt(config, baseUrl);
-  const compatModel = textOf(read, MODEL);
-  const key = textOf(read, API_KEY);
+  const compatModel = textOf2(read, MODEL);
+  const key = textOf2(read, API_KEY);
   const fallback = fallbackProvider(read, version);
-  const fallbackModel = textOf(read, FALLBACK_MODEL);
-  const claudeModel = textOf(read, CLAUDE_MODEL);
+  const fallbackModel = textOf2(read, FALLBACK_MODEL);
+  const claudeModel = textOf2(read, CLAUDE_MODEL);
   const compatTarget = backend !== null && compatModel !== "" ? `${backend.name}:${compatModel}` : null;
-  const openRouterBackend = backendAt(config, textOf(read, OPENROUTER_BASE_URL));
-  const openRouterModel = textOf(read, OPENROUTER_MODEL);
+  const openRouterBackend = backendAt(config, textOf2(read, OPENROUTER_BASE_URL));
+  const openRouterModel = textOf2(read, OPENROUTER_MODEL);
   const openRouterTarget = openRouterBackend !== null && openRouterModel !== "" ? `${openRouterBackend.name}:${openRouterModel}` : null;
   const refused = keysPerChoice(provider);
   const handKeys = handSetKeys(read);
@@ -41726,7 +43289,7 @@ function readClaudeMemFacts(paths) {
         target: fallback === OPENAI_COMPATIBLE ? compatTarget : fallback === OPENROUTER ? openRouterTarget : null
       },
       key: {
-        pool: textOf(read, API_KEY_POOL).trim() !== "",
+        pool: textOf2(read, API_KEY_POOL).trim() !== "",
         refusedByHand: refusedByHand(refused.key),
         source: sourceOf2(read, API_KEY),
         state: key === "" ? "none" : backend !== null && backend.apiKey === key ? "gateway" : "other"
@@ -41746,11 +43309,11 @@ function readClaudeMemFacts(paths) {
   };
 }
 function keyFor(read, keyName, gatewayKey, gatewayKeys, backendBaseUrl) {
-  const current = textOf(read, keyName);
+  const current = textOf2(read, keyName);
   const source = sourceOf2(read, keyName);
   const taken = read.records.some((record) => record.taken === true && samePath(record.path, read.at(keyName)));
   if (current !== "" && !gatewayKeys.includes(current) && (taken || source === "portal" || source === "hand")) {
-    if (!taken || textOf(read, pairedAddress(keyName)) === compatBaseUrl(backendBaseUrl)) {
+    if (!taken || textOf2(read, pairedAddress(keyName)) === compatBaseUrl(backendBaseUrl)) {
       return { key: current, set: false };
     }
   }
@@ -41920,8 +43483,8 @@ async function chooseKey(paths, choice, check = checkAffordableTarget) {
   if ("blocked" in ready)
     return { lines: [ready.blocked.text], ok: false };
   const { read } = ready;
-  const baseUrl = textOf(read, BASE_URL);
-  const model = textOf(read, MODEL);
+  const baseUrl = textOf2(read, BASE_URL);
+  const model = textOf2(read, MODEL);
   if (baseUrl === "" || model === "") {
     return {
       lines: ["claude-mem has no backend model yet, so a key has nothing to open: pick one first."],
@@ -42090,7 +43653,7 @@ async function takeOver(paths) {
 }
 
 // src/setup/auto-mode.ts
-import { join as join76 } from "path";
+import { join as join79 } from "path";
 var AUTO_MODE_PATH = ["autoMode", "environment"];
 var AUTO_MODE_DEFAULTS = "$defaults";
 function autoModeSource(dir, which) {
@@ -42102,9 +43665,9 @@ function autoModeSource(dir, which) {
   const entries = project.config?.autoMode ?? [];
   let differsFrom = null;
   const main = project.mainCheckout;
-  const own = join76(project.root, ".claude", "cc-smart-dev-kit.json");
+  const own = join79(project.root, ".claude", "cc-smart-dev-kit.json");
   if (project.isWorktree && main !== null && project.configFile === own) {
-    const mainFile = join76(main, ".claude", "cc-smart-dev-kit.json");
+    const mainFile = join79(main, ".claude", "cc-smart-dev-kit.json");
     let mainEntries;
     try {
       mainEntries = loadCcSmartDevKitConfig(mainFile)?.autoMode ?? [];
@@ -42129,7 +43692,7 @@ function applyAutoMode(settingsFile, stateDir, wanted, dryRun) {
 }
 
 // src/tasks/ops.ts
-import { readFileSync as readFileSync76, rmSync as rmSync16 } from "fs";
+import { readFileSync as readFileSync77, rmSync as rmSync16 } from "fs";
 import { relative as relative11 } from "path";
 
 // src/tasks/schemas.ts
@@ -43063,7 +44626,7 @@ function createTaskOps(options = {}) {
         const input = taskSchemas.get.parse(raw);
         const text = isDeployTaskId(input.task) ? (() => {
           const file = project(input.task).file;
-          const text = readFileSync76(file, "utf8");
+          const text = readFileSync77(file, "utf8");
           const here = deployContext();
           const root = here.ok ? here.checkoutRoot : null;
           if (root === null)
@@ -43283,7 +44846,7 @@ function gatewayContext(action, print) {
     ctx: {
       bunPath: process.execPath,
       bunVersion: portal.bunVersion,
-      bundle: join77(folder.folder, "dist", "router.js"),
+      bundle: join80(folder.folder, "dist", "router.js"),
       confirm: null,
       error: print,
       paths: portal.paths,
@@ -43601,7 +45164,7 @@ function autoModeChange(action) {
     added: diff.added,
     differsFrom: wanted.differsFrom,
     from,
-    hash: createHash11("sha256").update(JSON.stringify(shown)).digest("hex").slice(0, 32),
+    hash: createHash10("sha256").update(JSON.stringify(shown)).digest("hex").slice(0, 32),
     removed: diff.removed,
     settings: paths.settingsFile,
     wanted
@@ -44014,7 +45577,7 @@ async function projectAdd(action, body) {
   }
   let isFolder = false;
   try {
-    isFolder = existsSync64(folder) && statSync24(folder).isDirectory();
+    isFolder = existsSync66(folder) && statSync28(folder).isDirectory();
   } catch {
     isFolder = false;
   }
@@ -44086,7 +45649,7 @@ function browserTokenAction(action, body) {
   }
 }
 async function claudeMemTarget(action, text) {
-  if (!existsSync64(action.portal.paths.gatewayConfigFile) && !text.startsWith("claude-")) {
+  if (!existsSync66(action.portal.paths.gatewayConfigFile) && !text.startsWith("claude-")) {
     return { why: "The gateway is not set up, so it has no backend for claude-mem to use." };
   }
   const parsed = parseTarget(text);
@@ -46746,7 +48309,7 @@ class LiveHub {
 }
 
 // src/portal/live/sources.ts
-import { readFileSync as readFileSync77, statSync as statSync25 } from "fs";
+import { readFileSync as readFileSync78, statSync as statSync29 } from "fs";
 var LIVE_POLL_MS = 2000;
 function fingerprintOf(entry) {
   return [entry.at, entry.slot, entry.status, entry.target, entry.ms].join("\x00");
@@ -46783,7 +48346,7 @@ function createLiveSources(deps) {
   let guardSeeded = false;
   function textOf(file) {
     try {
-      return readFileSync77(file, "utf8");
+      return readFileSync78(file, "utf8");
     } catch {
       return null;
     }
@@ -46830,7 +48393,7 @@ function createLiveSources(deps) {
     const file = askLogFile(deps.paths.stateDir);
     let bytes;
     try {
-      bytes = readFileSync77(file);
+      bytes = readFileSync78(file);
     } catch {
       if (!guardSeeded) {
         guardSeeded = true;
@@ -46883,7 +48446,7 @@ function createLiveSources(deps) {
     const file = workDbFile(deps.paths);
     return [file, `${file}-wal`].map((one) => {
       try {
-        const stat = statSync25(one);
+        const stat = statSync29(one);
         return `${stat.size}:${stat.mtimeMs}`;
       } catch {
         return "-";
@@ -46935,8 +48498,8 @@ function createLiveSources(deps) {
 }
 
 // src/portal/static.ts
-import { existsSync as existsSync65, readFileSync as readFileSync78, statSync as statSync26 } from "fs";
-import { extname as extname2, join as join78, resolve as resolve21, sep as sep9 } from "path";
+import { existsSync as existsSync67, readFileSync as readFileSync79, statSync as statSync30 } from "fs";
+import { extname as extname2, join as join81, resolve as resolve23, sep as sep9 } from "path";
 var TYPES = {
   ".css": "text/css; charset=utf-8",
   ".html": "text/html; charset=utf-8",
@@ -46965,11 +48528,11 @@ function fileInside(folder, pathname) {
   }
   if (decoded.includes("\x00") || decoded.includes("\\"))
     return null;
-  const file = resolve21(join78(folder, decoded));
+  const file = resolve23(join81(folder, decoded));
   if (file !== folder && !file.startsWith(`${folder}${sep9}`))
     return null;
   try {
-    return statSync26(file).isFile() ? file : null;
+    return statSync30(file).isFile() ? file : null;
   } catch {
     return null;
   }
@@ -46987,7 +48550,7 @@ function pageFile(folder, pathname) {
 function readCsp(folder) {
   let parsed;
   try {
-    parsed = JSON.parse(readFileSync78(join78(folder, "csp.json"), "utf8"));
+    parsed = JSON.parse(readFileSync79(join81(folder, "csp.json"), "utf8"));
   } catch {
     return { styleAttr: [], styleElem: [] };
   }
@@ -47001,8 +48564,8 @@ function readCsp(folder) {
 function readExport(folder) {
   if (folder === null)
     return null;
-  const absolute = resolve21(folder);
-  if (!existsSync65(join78(absolute, "index.html")))
+  const absolute = resolve23(folder);
+  if (!existsSync67(join81(absolute, "index.html")))
     return null;
   return { csp: readCsp(absolute), folder: absolute };
 }
@@ -47034,7 +48597,7 @@ function exportServer(source) {
       if (kept !== undefined)
         return kept;
       try {
-        const bytes = readFileSync78(file);
+        const bytes = readFileSync79(file);
         if (cache.size >= CACHE_MAX)
           cache.clear();
         cache.set(file, bytes);
@@ -47049,7 +48612,7 @@ function exportServer(source) {
       if (!pathname.startsWith("/_next/static/"))
         return null;
       const file = fileInside(source.folder, pathname.slice(1));
-      const build = resolve21(source.folder, "_next", "static");
+      const build = resolve23(source.folder, "_next", "static");
       return file?.startsWith(`${build}${sep9}`) === true ? file : null;
     }
   };
@@ -47939,7 +49502,7 @@ var EXPORT_PAGES = new Set([
   "/settings/project"
 ]);
 function defaultExportFolder() {
-  return join79(dirname31(import.meta.path), "portal-ui");
+  return join82(dirname34(import.meta.path), "portal-ui");
 }
 function respond(body, headers, status) {
   return new Response(body, { headers: { ...securityHeaders(), ...headers }, status });
@@ -48270,7 +49833,7 @@ async function runEnsure(paths, pluginDir) {
   }
   if (newerInstalled) {
     log(`handed over: this starter is ${VERSION}, the installed version is ${installed.version}`);
-    startDetached(process.platform, portalStarterArgv(process.execPath, join80(installed.folder, "dist", "portal.js"), installed.folder), {
+    startDetached(process.platform, portalStarterArgv(process.execPath, join83(installed.folder, "dist", "portal.js"), installed.folder), {
       cwd: paths.home,
       env: startEnv(process.env),
       onError: (message) => log(`failed: ${message}`)
@@ -48323,7 +49886,7 @@ async function runServer(paths, options) {
       browser: { ...realBrowserDoctorDeps(machine, ctx.paths.home), processes: () => processes },
       bun: { path: process.execPath, version: Bun.version },
       gateway: {
-        bundle: join80(folder, "dist", "router.js"),
+        bundle: join83(folder, "dist", "router.js"),
         machine,
         read: runRead,
         runner,
@@ -48339,10 +49902,10 @@ async function runServer(paths, options) {
         }
       },
       live: null,
-      local: { cwd: process.cwd(), instructionsSource: instructionsFolder(join80(folder, "dist")) },
+      local: { cwd: process.cwd(), instructionsSource: instructionsFolder(join83(folder, "dist")) },
       mcp: realMcpDoctorDeps(runRead),
       portal: () => probePortal(DEFAULT_PORTAL_PORT, realPortalProbe()),
-      project: { cwd: process.cwd(), pluginHooksFile: join80(folder, "hooks", "hooks.json") },
+      project: { cwd: process.cwd(), pluginHooksFile: join83(folder, "hooks", "hooks.json") },
       read: runRead
     };
   };
