@@ -94,8 +94,8 @@ person asked for three things:
 1. **Start** on a deploy branch from the commit that ships. `--before` refuses unless HEAD
    equals `--ref`, or differs from it only under `tasks.dir` (closes already made). The refusal
    prints the commands: `git fetch origin`, then
-   `git switch -c deploy/<env>-<YYYYMMDD-HHMM> origin/<base>`, or a worktree in
-   worktree-per-session projects.
+   `git switch --no-track -c deploy/<env>-<YYYYMMDD-HHMM> origin/<base>`, in the session's own
+   checkout (`--no-track` keeps a plain `git push` from targeting the base).
 2. `--before` exits 1 in four cases:
    - a blocking `before` task is open;
    - a broken or `duplicate-id` file;
