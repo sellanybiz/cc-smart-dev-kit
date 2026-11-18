@@ -7,6 +7,7 @@ import type {
   WorkEventAction,
   WorkKind,
   WorkLayer,
+  WorkLead,
   WorkNote,
   WorkStatus,
   WorkTask,
@@ -40,6 +41,33 @@ interface TaskRow {
   closed_at: number | null;
   /** Absent in a store a hook reads before a writer moved it to schema 2. */
   blocking?: number;
+  /** Absent in a store a hook reads before a writer moved it to schema 6. */
+  lead_session?: string | null;
+  lead_pid?: number | null;
+  lead_start?: string | null;
+}
+/** False in a store a hook reads before a writer moved it to schema 6: no file list is stored yet. */
+function hasFilesTable(db: WorkDb): boolean {
+  return (
+    db.sqlite
+      .query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='task_files'")
+      .get() !== null
+  );
+}
+/** A project's stored file lists by plan task id. */
+function storedFiles(db: WorkDb, project: string): Map<string, string[]> {
+  const files = new Map<string, string[]>();
+  if (!hasFilesTable(db)) return files;
+  for (const row of db.sqlite
+    .query<{ task_id: string; path: string }, [string]>(
+      "SELECT f.task_id,f.path FROM task_files f JOIN tasks t ON t.id=f.task_id WHERE t.project=? ORDER BY f.path",
+    )
+    .all(project)) {
+    const paths = files.get(row.task_id) ?? [];
+    paths.push(row.path);
+    files.set(row.task_id, paths);
+  }
+  return files;
 }
 export function allTasks(db: WorkDb, project: string): WorkTask[] {
   const dependencies = new Map<string, string[]>();
@@ -52,6 +80,7 @@ export function allTasks(db: WorkDb, project: string): WorkTask[] {
     refs.push(row.waits_for);
     dependencies.set(row.task_id, refs);
   }
+  const files = storedFiles(db, project);
   return db.sqlite
     .query<TaskRow, [string]>("SELECT * FROM tasks WHERE project=? ORDER BY number")
     .all(project)
@@ -88,6 +117,15 @@ export function allTasks(db: WorkDb, project: string): WorkTask[] {
       closedAt: row.closed_at,
       waitsFor: dependencies.get(row.id) ?? [],
       type: row.blocking === 0 ? "non-blocking" : "blocking",
+      files: files.get(row.id) ?? [],
+      lead:
+        row.lead_session == null && row.lead_pid == null
+          ? null
+          : {
+              sessionId: row.lead_session ?? null,
+              pid: row.lead_pid ?? null,
+              procStart: row.lead_start ?? null,
+            },
     }));
 }
 export function getTask(db: WorkDb, project: string, ref: string): WorkTask | null {
@@ -233,6 +271,139 @@ export function ownerOf(who: Who): (task: WorkTask) => boolean {
     (who.sessionId !== null && t.createdBy === who.sessionId) ||
     claimHeldBy(t.claim, who) ||
     claimHeldBy(t.creator, who);
+}
+
+/**
+ * True when `who` is the lead a plan is reserved for: the same rule as an owner (`ownerOf`), so a
+ * `/clear` keeps the lead. The session id matches, or the process does (`claimHeldBy`).
+ */
+export function isLead(lead: WorkLead | null, who: Who | null | undefined): boolean {
+  if (lead === null || !who) return false;
+  if (who.sessionId !== null && lead.sessionId === who.sessionId) return true;
+  return (
+    lead.pid !== null &&
+    claimHeldBy({ pid: lead.pid, procStart: lead.procStart, sessionId: lead.sessionId }, who)
+  );
+}
+
+/**
+ * One entry of a plan's file list, as stored: repo-relative, `/`-separated, a folder ending in
+ * `/`. A leading `./`, a doubled or inner `/./` and a Windows `\` are tidied. Throws, naming the
+ * fix, for an absolute path, a `..` segment and the repository root (`""`, `.`, `/`): a plan
+ * that lists the root would overlap every other plan.
+ */
+export function normalizePlanFile(raw: string): string {
+  const text = raw.trim().replaceAll("\\", "/");
+  if (text.startsWith("/") || /^[A-Za-z]:/.test(text))
+    throw new Error(`file "${raw}" is an absolute path: write it relative to the repository root`);
+  const segments = text.split("/");
+  const parts: string[] = [];
+  for (const part of segments) {
+    if (part === "..")
+      throw new Error(`file "${raw}" goes up with "..": list the path from the repository root`);
+    if (part !== "" && part !== ".") parts.push(part);
+  }
+  if (parts.length === 0)
+    throw new Error(
+      `file "${raw}" is the repository root: list the files or folders the plan changes`,
+    );
+  const last = segments.at(-1);
+  return parts.join("/") + (last === "" || last === "." ? "/" : "");
+}
+
+/** A plan's file list as given: each entry normalised (`normalizePlanFile`), once each, in path order. */
+export function normalizePlanFiles(raw: readonly string[]): string[] {
+  return [...new Set(raw.map(normalizePlanFile))].sort();
+}
+
+/** Two paths of two plans' file lists that touch: `path` from the first list, `other` from the second. */
+export interface FileOverlap {
+  path: string;
+  other: string;
+}
+
+/**
+ * Where two plans' file lists touch (D2): two paths touch when they are equal, or one is a
+ * folder (ends in `/`) that holds the other. `ignore` is `plans.mergeFiles`: a path equal to an
+ * ignored entry, or inside an ignored folder, takes no part. `caseFold` compares without case
+ * (`core.ignorecase`), the ignore list included. Lists are as stored (`normalizePlanFile`).
+ */
+export function filesOverlap(
+  a: readonly string[],
+  b: readonly string[],
+  options: { ignore?: readonly string[]; caseFold?: boolean } = {},
+): FileOverlap[] {
+  const fold = (path: string) => (options.caseFold ? path.toLowerCase() : path);
+  const holds = (folder: string, path: string) => folder.endsWith("/") && path.startsWith(folder);
+  const ignore = (options.ignore ?? []).map(fold);
+  const taken = (path: string) => ignore.some((one) => one === path || holds(one, path));
+  const found: FileOverlap[] = [];
+  for (const path of a) {
+    const x = fold(path);
+    if (taken(x)) continue;
+    for (const other of b) {
+      const y = fold(other);
+      if (taken(y)) continue;
+      if (x === y || holds(x, y) || holds(y, x)) found.push({ path, other });
+    }
+  }
+  return found;
+}
+
+/** One plan's stored file list, in path order; empty before schema 6 (no table yet). */
+export function planFiles(db: WorkDb, plan: string | WorkTask): string[] {
+  if (!hasFilesTable(db)) return [];
+  return db.sqlite
+    .query<{ path: string }, [string]>("SELECT path FROM task_files WHERE task_id=? ORDER BY path")
+    .all(typeof plan === "string" ? plan : plan.id)
+    .map((row) => row.path);
+}
+
+/** A plan nothing else may overlap (D4): why it is held, whose it is, and the files it holds. */
+export interface HeldPlan {
+  plan: WorkTask;
+  /**
+   * `reserved`: a lead holds it and has not released it (a closed plan too, until its pull
+   * request settles). `in-flight`: a session runs it without a reservation.
+   */
+  why: "reserved" | "in-flight";
+  /** The caller leads it or owns it. */
+  mine: boolean;
+  /** Its stored list plus what the caller read of its branch (`extraFiles`), each once. */
+  files: string[];
+}
+
+/** `heldPlans`, over a project's tasks already read. */
+export function heldPlansIn(
+  all: readonly WorkTask[],
+  who: Who,
+  extraFiles: Readonly<Record<string, readonly string[]>> = {},
+): HeldPlan[] {
+  const owns = ownerOf(who);
+  return all
+    .filter((t) => t.kind === "plan" && (t.lead !== null || isInFlight(all, t)))
+    .map((plan) => ({
+      plan,
+      why: plan.lead !== null ? ("reserved" as const) : ("in-flight" as const),
+      mine: isLead(plan.lead, who) || owns(plan),
+      files: [...new Set([...plan.files, ...(extraFiles[plan.id] ?? [])])],
+    }));
+}
+
+/**
+ * The held plans of a project (D4): every plan with a lead whose release has not happened (a
+ * child's, or a lead's own), and every open plan in flight, any session's: that covers a solo
+ * session that started a plan without reserving it. A held plan's files are its stored list plus
+ * `extraFiles[plan task id]`, the branch diff the caller read before the transaction (so no git
+ * runs under the write lock). `who` says which of them are the caller's.
+ */
+export function heldPlans(
+  db: WorkDb,
+  project: string,
+  who: Who,
+  extraFiles: Readonly<Record<string, readonly string[]>> = {},
+): HeldPlan[] {
+  return heldPlansIn(allTasks(db, project), who, extraFiles);
 }
 
 /**

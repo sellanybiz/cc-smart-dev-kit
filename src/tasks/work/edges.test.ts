@@ -272,7 +272,7 @@ test("hook failures return unreadable, query-only blocks writes, schema versions
   writeFileSync(workDbFile(paths), "garbage");
   expect(startView(paths, "p", who, { limit: 8 }).state).toBe("unreadable");
   const fresh = setup();
-  expect(fresh.db.sqlite.query("PRAGMA user_version").get()).toEqual({ user_version: 5 });
+  expect(fresh.db.sqlite.query("PRAGMA user_version").get()).toEqual({ user_version: 6 });
   expect(fresh.db.sqlite.query("PRAGMA journal_mode").get()).toEqual({ journal_mode: "wal" });
   fresh.db.close();
   const hook = openWorkDb(workDbFile(fresh.paths), { mode: "hook" });

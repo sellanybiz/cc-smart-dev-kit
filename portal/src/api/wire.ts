@@ -1195,6 +1195,12 @@ interface WorkClaim {
   procStart: string | null;
   sessionId: string | null;
 }
+/** The lead a plan is reserved for; null while it is unreserved. */
+interface WorkLead {
+  sessionId: string | null;
+  pid: number | null;
+  procStart: string | null;
+}
 interface WorkTask {
   id: string;
   number: number;
@@ -1221,6 +1227,10 @@ interface WorkTask {
   waitsFor: string[];
   /** `WorkType`; a store from before schema 2 reads as blocking. */
   type: WorkType;
+  /** A plan's file list (`task_files`), in path order; empty for any other task. */
+  files: string[];
+  /** The lead the plan is reserved for; null while it is unreserved. */
+  lead: WorkLead | null;
 }
 interface WorkNote {
   id: number;

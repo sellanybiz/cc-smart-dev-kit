@@ -154,6 +154,10 @@ test("schema 4 moves to 5: the columns and the notes index appear, an old row ke
   const made = value(createTask(db, { project: "p", subject: "Before" }, OLD, 1));
   // The store as 4.8.0 left it: no creator columns, no notes index, schema 4.
   db.sqlite.run("DROP INDEX task_note_task");
+  // Schema 6 added the file list and the lead columns: the older store has neither.
+  db.sqlite.run("DROP TABLE task_files");
+  for (const column of ["lead_session", "lead_pid", "lead_start"])
+    db.sqlite.run(`ALTER TABLE tasks DROP COLUMN ${column}`);
   for (const column of ["created_pid", "created_start"])
     db.sqlite.run(`ALTER TABLE tasks DROP COLUMN ${column}`);
   db.sqlite.run("PRAGMA user_version = 4");
@@ -167,7 +171,7 @@ test("schema 4 moves to 5: the columns and the notes index appear, an old row ke
   });
   const moved = openWorkDb(workDbFile(paths), { mode: "write" });
   try {
-    expect(moved.sqlite.query("PRAGMA user_version").get()).toEqual({ user_version: 5 });
+    expect(moved.sqlite.query("PRAGMA user_version").get()).toEqual({ user_version: 6 });
     expect(
       moved.sqlite
         .query<{ name: string }, []>("PRAGMA table_info(tasks)")

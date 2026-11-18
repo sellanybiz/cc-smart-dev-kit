@@ -189,6 +189,52 @@ test("task command holds the plan shape: a phase starts with tasks, a step close
   expect((await run("done", "#1")).error).toBe("open tasks: #4 A later ask\n");
 });
 
+test("task command sets a plan's files with --path, replaces them on set, and clears them with --no-files", async () => {
+  const home = tempDir();
+  const cwd = tempDir();
+  git(cwd, "init", "-b", "main");
+  git(cwd, "commit", "--allow-empty", "-m", "initial");
+  const guard = subprocessGuard();
+  const env = {
+    ...cleanGitEnv(),
+    ...guard.env,
+    HOME: home,
+    CLAUDE_CONFIG_DIR: join(home, ".claude"),
+    PATH: `${dirname(process.execPath)}:${dirname(Bun.which("git") ?? "/usr/bin/git")}`,
+  };
+  async function run(...args: string[]) {
+    const process = Bun.spawn([Bun.which("bun") ?? "bun", ...guard.args, CLI, "task", ...args], {
+      cwd,
+      env,
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    return {
+      code: await process.exited,
+      text: await new Response(process.stdout).text(),
+      error: await new Response(process.stderr).text(),
+    };
+  }
+  expect(
+    (await run("add", "The plan", "--plan", "p", "--path", "src/a/", "--path", "./docs/x.md")).code,
+  ).toBe(0);
+  expect((await run("show", "#1")).text).toContain("Files: docs/x.md, src/a/");
+  expect((await run("set", "#1", "--path", "lib/")).code).toBe(0);
+  expect((await run("show", "#1")).text).toContain("Files: lib/\n");
+  expect((await run("set", "#1", "--no-files")).code).toBe(0);
+  expect((await run("show", "#1")).text).not.toContain("Files:");
+  // A refusal comes back as the command's failure, with the fix.
+  expect((await run("set", "#1", "--path", "../out")).error).toBe(
+    'file "../out" goes up with "..": list the path from the repository root\n',
+  );
+  expect((await run("set", "#1", "--path", "x", "--no-files")).code).toBe(2);
+  // A task is no plan: it holds no file list.
+  expect((await run("add", "Loose task")).code).toBe(0);
+  expect((await run("set", "#2", "--path", "x")).error).toContain(
+    "only a plan task has a file list",
+  );
+});
+
 test("task import claude-mem leaves claude-mem's own lists out, and drops what an earlier import took", async () => {
   const home = tempDir();
   const cwd = tempDir();

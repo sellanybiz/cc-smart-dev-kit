@@ -1,6 +1,7 @@
 import { isAbsolute } from "node:path";
 import { z } from "zod";
 import { DEPLOY_ENVS, DEPLOY_TYPES, deployTaskSchema } from "./deploy/format";
+import { PLAN_FILES_WORDS } from "./words";
 import { DESCRIPTION_LIMIT, NOTE_LIMIT, SUBJECT_LIMIT } from "./work/types";
 
 const fields = deployTaskSchema.shape;
@@ -16,6 +17,7 @@ const type = z
 const blockedBy = z
   .array(ref)
   .describe("Tasks (#n) it waits for: it cannot start or be done while one of them is open.");
+const files = z.array(z.string().min(1)).describe(PLAN_FILES_WORDS);
 const bindings = {
   agent: z.string().describe("The builder subagent's name or id.").optional(),
   branch: z.string().describe("The builder's git branch.").optional(),
@@ -63,6 +65,7 @@ export const taskSchemas = {
       status: z.enum(["pending", "in_progress"]).optional(),
       type: type.optional(),
       blocked_by: blockedBy.optional(),
+      files: files.optional(),
       phase: z.string().trim().min(1).optional().describe("Create the plan phase once, by its id."),
       plan: z
         .string()
@@ -98,6 +101,7 @@ export const taskSchemas = {
       type: type.optional(),
       blocked_by_add: blockedBy.optional(),
       blocked_by_remove: z.array(ref).optional(),
+      files: files.optional(),
       ...deployFields,
     })
     .strict(),

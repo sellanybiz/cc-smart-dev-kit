@@ -172,7 +172,7 @@ test("fresh, reopened, newer, missing, broken and locked databases", () => {
   db.close();
   const reopened = openWorkDb(workDbFile(paths), { mode: "write" });
   expect(getTask(reopened, "p", "1")?.subject).toBe("x");
-  reopened.sqlite.run("UPDATE meta SET value='6' WHERE key='min_compatible'");
+  reopened.sqlite.run("UPDATE meta SET value='7' WHERE key='min_compatible'");
   reopened.close();
   const newer = openWorkDb(workDbFile(paths), { mode: "write" });
   expect(getTask(newer, "p", "1")?.subject).toBe("x");

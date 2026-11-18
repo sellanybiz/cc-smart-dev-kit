@@ -52,6 +52,16 @@ export interface ClaimProcess {
   live(claim: WorkClaim): boolean;
   gone(claim: WorkClaim): boolean;
 }
+/**
+ * The lead a plan is reserved for (`reservePlan`): the session and process that handed the plan
+ * out, or that builds it itself. Judged by the same rule as an owner (`isLead`): its session id,
+ * or the same process, so a `/clear` keeps it.
+ */
+export interface WorkLead {
+  sessionId: string | null;
+  pid: number | null;
+  procStart: string | null;
+}
 export interface WorkTask {
   id: string;
   number: number;
@@ -82,6 +92,13 @@ export interface WorkTask {
   waitsFor: string[];
   /** `WorkType`; a store from before schema 2 reads as blocking. */
   type: WorkType;
+  /**
+   * A plan's file list (`task_files`): repo-relative, `/`-separated, a folder ending in `/`, in
+   * path order. Empty for a plan with none, for any other task, and in a store from before schema 6.
+   */
+  files: string[];
+  /** The lead the plan is reserved for; null while it is unreserved, and for any other task. */
+  lead: WorkLead | null;
 }
 export interface WorkTree extends WorkTask {
   children: WorkTree[];

@@ -16,15 +16,40 @@ interface OtherPlanCheck {
   inFlight: WorkTask | null;
   plan: string;
   claimedElsewhere: (task: WorkTask) => boolean;
+  /**
+   * Who is asking, for a reserved plan (D4): `owns` is the caller's ownership test (`ownerOf`)
+   * and `isLead` whether a plan's reservation is the caller's (`isLead`). Left out, a reserved
+   * plan is judged like any other: only a caller that passes it gets the reservation refusal.
+   */
+  caller?: { owns: (task: WorkTask) => boolean; isLead: (task: WorkTask) => boolean };
 }
 
 /**
- * The plan in flight that stops work from starting in `plan`, or null when nothing does: no
- * plan in flight, the work is in that plan, the plan is a legacy one with no task, or another
- * process holds it live. The one rule `refuseOtherPlan` refuses by and the close answer's
- * "now ready" list leaves work out by.
+ * The reserved plan work may not start in: `plan` has a reservation (a lead holds it, D4) and
+ * the caller does not own it. A lead that handed the plan to a child no longer owns it, and a
+ * session that is not its lead never did. Closes the gap that a pending plan has no claim, so a
+ * handed-out plan would read as free. Null for an unreserved plan, a legacy plan with no task, a
+ * plan the caller owns, and a caller that gave no `caller`.
+ */
+function reservedAgainstCaller(options: OtherPlanCheck): WorkTask | null {
+  const { all, plan, caller } = options;
+  if (caller === undefined) return null;
+  const row = all.find((t) => t.kind === "plan" && t.plan === plan);
+  if (row === undefined || row.lead === null || caller.owns(row)) return null;
+  return row;
+}
+
+/**
+ * The plan that stops work from starting in `plan`, or null when nothing does: the plan is
+ * reserved for another lead, or handed to a child that owns it (`reservedAgainstCaller`: the
+ * plan itself is returned); or the caller has another plan in flight. Null when no plan is in
+ * flight, the work is in that plan, the plan is a legacy one with no task, or another process
+ * holds it live. The one rule `refuseOtherPlan` refuses by and the close answer's "now ready"
+ * list leaves work out by.
  */
 export function planInTheWay(options: OtherPlanCheck): WorkTask | null {
+  const reserved = reservedAgainstCaller(options);
+  if (reserved !== null) return reserved;
   const { all, inFlight, plan, claimedElsewhere } = options;
   if (inFlight === null || inFlight.plan === plan) return null;
   const row = all.find((t) => t.kind === "plan" && t.plan === plan);
@@ -46,7 +71,17 @@ export function planInTheWay(options: OtherPlanCheck): WorkTask | null {
 export function refuseOtherPlan(options: OtherPlanCheck): void {
   const inFlight = planInTheWay(options);
   if (inFlight === null) return;
-  const { plan } = options;
+  const { plan, caller } = options;
+  if (inFlight.plan === plan) {
+    // The plan itself is in the way: it is reserved and the caller does not own it.
+    const mine = caller?.isLead(inFlight) === true;
+    const holder = inFlight.lead?.sessionId ?? `process ${inFlight.lead?.pid}`;
+    throw new Error(
+      mine
+        ? `Plan "${plan}" (#${inFlight.number}) was handed to another session: it owns the plan now. Do not start work in it; its report arrives when it finishes.`
+        : `Plan "${plan}" (#${inFlight.number}) is reserved for session ${holder}: it is that lead's, or its child's. Do not start work in it.`,
+    );
+  }
   const n = inFlight.number;
   const finish = `Finish "${inFlight.plan}" (${TASK_TOOL.done} on its #${n} once its phases are closed)`;
   // A plan started under 4.8.0 never set its task, so there is nothing to set back: it is in
