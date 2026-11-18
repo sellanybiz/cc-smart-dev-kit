@@ -1715,7 +1715,7 @@ test("plans --reserve refuses a plan that is not the lead's to reserve now, each
   expect(await runHerdr([...planLaunch, "--plan", "handed", "--", "work"], p.ctx)).toBe(0);
   const refusals: [string, string][] = [
     ["foreign", "is not one of this session's queued plans"],
-    ["running", "is not one of this session's queued plans"],
+    ["running", 'Plan "running" is running: this session started it'],
     ["finished", 'Plan "finished" is done: nothing to reserve.'],
     ["again", 'Plan "again" is already reserved (own).'],
     ["handed", 'Plan "handed" is already reserved (with-child).'],
@@ -1729,6 +1729,42 @@ test("plans --reserve refuses a plan that is not the lead's to reserve now, each
   expect(p.row("foreign").lead).toBeNull();
   expect(p.row("running").lead).toBeNull();
   expect(p.row("handed").lead).toMatchObject({ holder: "child" });
+});
+
+test("a running plan of this session is refused with the way out: park it, then reserve it", async () => {
+  const p = planWorld();
+  p.plan("alpha", ["src/a/"]);
+  p.change("alpha", { status: "in_progress" });
+  expect(await runHerdr([...RESERVE, "alpha"], p.ctx)).toBe(1);
+  const text = p.lines.join("\n");
+  expect(text).toContain('Plan "alpha" is running: this session started it');
+  expect(text).toContain(
+    "Fix: park it: task_update #1 with status pending once its phases stop, then run",
+  );
+  expect(text).toContain("herdr plans --reserve alpha");
+  expect(p.row("alpha").lead).toBeNull();
+  // The fix works: parked, the plan is queued again and reserves.
+  p.change("alpha", { status: "pending" });
+  p.lines.length = 0;
+  expect(await runHerdr([...RESERVE, "alpha"], p.ctx)).toBe(0);
+  expect(p.row("alpha").lead).toMatchObject({ sessionId: "lead", holder: "self" });
+});
+
+test("plans --reserve and --release in a project with no store refuse, and a plain listing does not", async () => {
+  for (const flag of ["--reserve", "--release"]) {
+    const w = world();
+    git(w.ctx.cwd, "init", "-q", "-b", "main");
+    w.ctx.caller = () => LEAD;
+    expect(await runHerdr(["plans", flag, "alpha"], w.ctx)).toBe(1);
+    const text = w.lines.join("\n");
+    expect(text).toContain('Plan "alpha" was not found: no task store yet.');
+    expect(text).toContain("Fix: Lay a plan first");
+  }
+  const bare = world();
+  git(bare.ctx.cwd, "init", "-q", "-b", "main");
+  bare.ctx.caller = () => LEAD;
+  expect(await runHerdr(["plans"], bare.ctx)).toBe(0);
+  expect(bare.lines.join("\n")).toContain("No task store exists yet");
 });
 
 test("plans --reserve reads the same gates as a hand-out: a blocked, a file-less or an overlapping plan is not reserved", async () => {

@@ -22,6 +22,7 @@ import {
   type PlanLine,
   type PlansWorld,
   type PrState,
+  prepareReserve,
   prepareStart,
   releaseByHand,
 } from "./plans";
@@ -634,6 +635,32 @@ test("--release lets the person release a closed plan, and only that", () => {
   expect(done).toEqual({ ok: true, text: "Released plan #2 closed: its files are free." });
   expect(taskById(w.db, closed.id).lead).toBeNull();
   expect(eventsOf(w.db, closed).at(-1)?.reason).toBe("released by hand");
+});
+
+test("a reservation lost to a race is refused with the way to see where the plan stands", () => {
+  const w = build();
+  w.plan("alpha", ["src/a/"]);
+  let lost = false;
+  // The gates have passed when `reservePlan`'s arguments are read: another start reserves it now.
+  const check = {
+    ignore: [] as string[],
+    get caseFold() {
+      if (!lost) {
+        lost = true;
+        w.reserve("alpha");
+      }
+      return false;
+    },
+  };
+  for (const prepare of [prepareStart, prepareReserve]) {
+    const answer = prepare({ ...w.base, check }, "alpha");
+    if (answer.ok) throw new Error("expected a refusal");
+    expect(answer.why).toContain("is already reserved for session lead");
+    expect(answer.fix).toContain("herdr plans shows where it stands");
+    // Reset: free the plan for the next kind of caller.
+    ok(releasePlan(w.db, { project: "p", plan: "alpha", who: LEAD, now: 20 }));
+    lost = false;
+  }
 });
 
 test("a start is refused when the default branch can only be guessed", () => {
