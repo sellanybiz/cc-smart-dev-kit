@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tempDir } from "../../testing/temp";
-import { callerOf, claimGone } from "./identity";
+import { callerOf, claimGone, sessionEnded } from "./identity";
 
 test("identity re-reads a live record after clear and worktree move", () => {
   const dir = tempDir();
@@ -116,4 +116,51 @@ test("claimGone: only a proved end; a running process that cannot be proved eith
   );
   // Off Linux a running pid is never proved gone.
   expect(claimGone(claim, { running: () => true, platform: "darwin" })).toBe(false);
+});
+
+/** A Claude config folder with one session record per `[pid, sessionId]`, and the pids that run. */
+function sessionsFolder(records: [number, string][], running: number[]) {
+  const dir = tempDir();
+  mkdirSync(join(dir, "sessions"));
+  for (const [pid, sessionId] of records)
+    writeFileSync(
+      join(dir, "sessions", `${pid}.json`),
+      JSON.stringify({ pid, sessionId, cwd: "/x", name: "n" }),
+    );
+  return {
+    claudeConfigDir: dir,
+    platform: "darwin" as const,
+    running: (pid: number) => running.includes(pid),
+  };
+}
+
+test("sessionEnded: the process is gone and no running session carries the id", () => {
+  const claim = { pid: 5, procStart: null, sessionId: "child" };
+  // Nothing runs: the session is over.
+  expect(sessionEnded(claim, sessionsFolder([], []))).toBe(true);
+  // Another session runs: not the claim's.
+  expect(sessionEnded(claim, sessionsFolder([[9, "other"]], [9]))).toBe(true);
+  // The same session id in a new process (a reopened session): the process is gone, the session is not.
+  expect(sessionEnded(claim, sessionsFolder([[77, "child"]], [77]))).toBe(false);
+  // A record of a process that no longer runs counts for nothing.
+  expect(sessionEnded(claim, sessionsFolder([[77, "child"]], []))).toBe(true);
+  // A claim whose process still runs is not ended at all.
+  expect(sessionEnded(claim, sessionsFolder([], [5]))).toBe(false);
+});
+
+test("sessionEnded: a record that cannot be read is not an end, and no session id means the process alone", () => {
+  const claim = { pid: 5, procStart: null, sessionId: "child" };
+  const folder = sessionsFolder([], [77]);
+  // A running process whose record is not valid JSON: its session id cannot be known.
+  writeFileSync(join(folder.claudeConfigDir, "sessions", "77.json"), "{ not json");
+  expect(sessionEnded(claim, folder)).toBe(false);
+  // The records are read only after the process is proved gone, and never for a null session id.
+  const reads: string[] = [];
+  const sessions = (dir: string) => {
+    reads.push(dir);
+    throw new Error("must not be read");
+  };
+  expect(sessionEnded({ ...claim, sessionId: null }, { ...folder, sessions })).toBe(true);
+  expect(sessionEnded(claim, { ...folder, running: () => true, sessions })).toBe(false);
+  expect(reads).toEqual([]);
 });

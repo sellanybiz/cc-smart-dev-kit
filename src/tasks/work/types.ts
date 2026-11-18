@@ -46,11 +46,14 @@ export interface WorkClaim {
  * The two questions about a claim's process. `live`: does it run, proved (a claim not proved
  * live is free to take). `gone`: is it proved to have ended (only then may the caller's own
  * session move the claim to itself). A process that runs but cannot be proved either way is
- * neither.
+ * neither. `ended`: the whole session is over, its process gone and no running session carrying
+ * its id (`sessionEnded`): what a second child waits for before it starts or takes a plan. Left
+ * out, `gone` answers for it.
  */
 export interface ClaimProcess {
   live(claim: WorkClaim): boolean;
   gone(claim: WorkClaim): boolean;
+  ended?(claim: WorkClaim): boolean;
 }
 /**
  * The lead a plan is reserved for (`reservePlan`): the session and process that handed the plan

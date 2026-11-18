@@ -1,7 +1,9 @@
 import { cliPaths } from "../../cli/paths";
 import {
   isRunning,
+  liveSessions,
   processStart,
+  type SessionRecord,
   sessionIdentityProved,
   sessionRecordOf,
 } from "../../hooks/sessions";
@@ -75,10 +77,48 @@ export function claimGone(claim: WorkClaim, facts: ClaimFacts = {}): boolean {
   });
   return start !== undefined && start !== claim.procStart;
 }
-/** The machine's own answers to both questions about a claim's process. */
+export interface SessionEndFacts extends ClaimFacts {
+  claudeConfigDir?: string;
+  env?: Record<string, string | undefined>;
+  /** The records of the running sessions in a Claude config folder (`liveSessions`; faked in tests). */
+  sessions?: (claudeConfigDir: string) => SessionRecord[];
+}
+/**
+ * Whether a claim's whole session is over: its process is proved gone (`claimGone`) **and** no
+ * running Claude session carries its session id. A reopened session (`claude --resume`) keeps its
+ * id in a new process that has made no task call yet, so nothing in the store names it: the dead
+ * process alone would read as a child that is gone while the child runs. Only the question of
+ * "may a second one start or take over" uses this; the caller's own resume (`resumedClaim`,
+ * `restampsOf`) keeps `claimGone`, since it carries the same id by definition.
+ *
+ * The session records are read only after `claimGone` holds, so the common case reads none. A
+ * record that cannot be read (`liveSessions` throws) is not proof of an end: the answer is false,
+ * so a second child never starts on a failed read. A claim with no session id has nothing to
+ * look for: `claimGone` alone.
+ */
+export function sessionEnded(claim: WorkClaim, facts: SessionEndFacts = {}): boolean {
+  if (!claimGone(claim, facts)) return false;
+  if (claim.sessionId === null) return true;
+  try {
+    const dir = facts.claudeConfigDir ?? cliPaths(facts.env ?? process.env).claudeConfigDir;
+    const records = facts.sessions
+      ? facts.sessions(dir)
+      : liveSessions(dir, {
+          ...(facts.platform ? { platform: facts.platform } : {}),
+          ...(facts.readStat ? { readStat: facts.readStat } : {}),
+          ...(facts.running ? { running: facts.running } : {}),
+        });
+    return !records.some((record) => record.sessionId === claim.sessionId);
+  } catch {
+    // An unreadable record may be the running session's own: not ended.
+    return false;
+  }
+}
+/** The machine's own answers about a claim's process and its session. */
 export const CLAIM_PROCESS: ClaimProcess = {
   live: (claim) => claimLive(claim),
   gone: (claim) => claimGone(claim),
+  ended: (claim) => sessionEnded(claim),
 };
 export interface CallerFacts {
   claudeConfigDir?: string;

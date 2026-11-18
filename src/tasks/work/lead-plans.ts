@@ -12,8 +12,9 @@ import type { ClaimProcess, Who, WorkTask } from "./types";
  * - `own`: reserved for this lead itself (lead + children mode, holder `self`): it builds the plan.
  * - `with-child`: reserved as a hand-out (holder `child`). Its child has not taken it yet, or it
  *   runs, or it cannot be proved gone: a resume must never start a second child beside a live one.
- * - `child-gone`: a hand-out whose child took it and is proved gone: its maker and its claim, if
- *   it has one, both ended.
+ * - `child-gone`: a hand-out whose child took it and whose session is over: its maker and its
+ *   claim, if it has one, are gone, and no running session carries its id (a reopened child that
+ *   has made no task call yet is still `with-child`).
  * - `merging`: the plan is closed but still reserved for this lead: its pull request has not
  *   settled (`herdr plans` releases it).
  * - `waiting`: not reserved, and a blocker is still open in the store.
@@ -51,8 +52,11 @@ function reservedState(
   if (owns(plan)) return plan.lead?.holder === "self" ? "own" : "with-child";
   const child = plan.creator;
   if (child === null || process.live(child)) return "with-child";
-  const claimEnded = plan.claim === null || process.gone(plan.claim);
-  return process.gone(child) && claimEnded ? "child-gone" : "with-child";
+  // "Gone" is not enough: a reopened child session runs in a new process before it has made one
+  // task call, so the store still names the dead one. Its session must be over too (`ended`).
+  const ended = process.ended ?? process.gone;
+  const claimEnded = plan.claim === null || ended(plan.claim);
+  return ended(child) && claimEnded ? "child-gone" : "with-child";
 }
 
 /**

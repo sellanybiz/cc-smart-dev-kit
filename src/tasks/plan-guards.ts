@@ -87,7 +87,7 @@ export function refuseOtherPlan(options: OtherPlanCheck): void {
           : `${first} was handed to another session: it owns the plan now. Do not start work in it; its report arrives when it finishes.`,
       );
     throw new Error(
-      `${first} is reserved for session ${holder}: it is that lead's, or its child's. Do not start work in it. If it was handed to you, take it first with from: ${inFlight.lead?.handoutId}`,
+      `${first} is reserved for session ${holder}: it is that lead's, or its child's. Do not start work in it. If it was handed to you, take it first with the hand-out id your brief names.`,
     );
   }
   const n = inFlight.number;

@@ -34,7 +34,7 @@ import {
 import { TASK_COMMAND, TASK_TOOL } from "./words";
 import { openWorkDb, type WorkDb, workDbFile, writeWork } from "./work/db";
 import { historyText } from "./work/history";
-import { CLAIM_PROCESS, callerOf, claimGone, claimLive } from "./work/identity";
+import { CLAIM_PROCESS, callerOf, claimGone, claimLive, sessionEnded } from "./work/identity";
 import {
   allTasks,
   claimState,
@@ -409,7 +409,7 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
             ...(input.from === undefined ? {} : { from: input.from }),
             force: input.force,
             isLive: claimLive,
-            isGone: claimGone,
+            isEnded: sessionEnded,
           }),
         );
         return {

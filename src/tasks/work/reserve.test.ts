@@ -10,6 +10,7 @@ import { tempDir } from "../../testing/temp";
 import { folderProject } from "../context";
 import { createTaskOps, type TaskAnswer } from "../ops";
 import { openWorkDb, workDbFile } from "./db";
+import { sessionEnded } from "./identity";
 import { classifyLeadPlans, type LeadPlanState } from "./lead-plans";
 import { allTasks, eventsOf, heldPlans, isLead, taskById } from "./queries";
 import {
@@ -21,7 +22,7 @@ import {
   takeTasks,
   updateTask,
 } from "./store";
-import type { ClaimProcess, Result, Who, WorkTask } from "./types";
+import type { ClaimProcess, Result, Who, WorkClaim, WorkTask } from "./types";
 
 const LEAD: Who = { sessionId: "lead", pid: 4101, procStart: "41010" };
 const CHILD: Who = { sessionId: "child", pid: 5202, procStart: "52020" };
@@ -495,7 +496,7 @@ test("only the owner of a reserved plan starts work in it", () => {
     const handout = ok(reserveIn(w, "alpha", LEAD)).lead?.handoutId;
     // Another session may not start it, and says whose it is.
     expect(refused(other.call("update", { task: alpha.phase, status: "in_progress" }))).toBe(
-      `Plan "alpha" (#1) is reserved for session lead: it is that lead's, or its child's. Do not start work in it. If it was handed to you, take it first with from: ${handout}`,
+      `Plan "alpha" (#1) is reserved for session lead: it is that lead's, or its child's. Do not start work in it. If it was handed to you, take it first with the hand-out id your brief names.`,
     );
     // A hand-out is never the lead's to build, even before its child takes it.
     expect(refused(lead.call("update", { task: alpha.phase, status: "in_progress" }))).toBe(
@@ -661,6 +662,62 @@ test("H1: a resumed child reads with-child while it runs, and child-gone only wh
   expect(states(db, LEAD, running())).toEqual({ alpha: "child-gone" });
 });
 
+/**
+ * The machine's answers for a fake machine: only `pids` run, and `sessions` is what the Claude
+ * config folder's records say (a function, so a test can make it throw).
+ */
+function machine(pids: number[], sessions: () => { pid: number; sessionId: string }[]) {
+  const facts = {
+    platform: "darwin" as const,
+    running: (pid: number) => pids.includes(pid),
+    sessions: () => sessions().map((s) => ({ ...s, cwd: "/x", name: "n" })),
+  };
+  const process: ClaimProcess = {
+    live: (c) => pids.includes(c.pid),
+    gone: (c) => !pids.includes(c.pid),
+    ended: (c) => sessionEnded(c, facts),
+  };
+  return { process, isEnded: process.ended as (c: WorkClaim) => boolean };
+}
+
+/** A plan taken and started by CHILD, whose session is then reopened in a new process that made no task call. */
+function reopenedChild() {
+  const { db } = setup();
+  const alpha = plan(db, "alpha", ["src/a/"]);
+  const handout = ok(reserve(db, "alpha")).lead?.handoutId ?? "";
+  ok(takeTasks(db, "p", alpha.id, CHILD, 20, { isLive: () => false, from: handout }));
+  ok(updateTask(db, alpha.id, { status: "in_progress" }, CHILD, 21));
+  const second: Who = { sessionId: "child-2", pid: 6000, procStart: "60000" };
+  const take = (isEnded: (c: WorkClaim) => boolean) =>
+    takeTasks(db, "p", alpha.id, second, 25, { isLive: () => false, isEnded, from: handout });
+  return { db, alpha, handout, take };
+}
+
+test("Q1: a reopened child with a live session and no task call yet reads with-child, and a second child may not take its plan", () => {
+  const { db, take } = reopenedChild();
+  // The old process is gone; the reopened one (pid 5303) runs the same session id.
+  const m = machine([5303], () => [{ pid: 5303, sessionId: "child" }]);
+  expect(states(db, LEAD, m.process)).toEqual({ alpha: "with-child" });
+  expect(why(take(m.isEnded))).toContain("belongs to session child");
+});
+
+test("Q1: a child that died, with no running session of its id, reads child-gone and its plan can be taken", () => {
+  const { db, alpha, take } = reopenedChild();
+  const m = machine([], () => [{ pid: 9, sessionId: "somebody-else" }]);
+  expect(states(db, LEAD, m.process)).toEqual({ alpha: "child-gone" });
+  ok(take(m.isEnded));
+  expect(taskById(db, alpha.id).createdBy).toBe("child-2");
+});
+
+test("Q1: session records that cannot be read are not an end: with-child, and no second take", () => {
+  const { db, take } = reopenedChild();
+  const m = machine([], () => {
+    throw new Error("a running session's record is unreadable");
+  });
+  expect(states(db, LEAD, m.process)).toEqual({ alpha: "with-child" });
+  expect(why(take(m.isEnded))).toContain("belongs to session child");
+});
+
 test("H1: a child whose maker is gone but whose claim still runs is with-child", () => {
   const { db } = setup();
   const alpha = plan(db, "alpha", ["src/a/"]);
@@ -717,10 +774,10 @@ test("M2: a take of a reserved plan passes a maker proved gone, and refuses one 
   // The child died; herdr starts a new child session. Its maker is gone: the take passes.
   const second: Who = { sessionId: "child-2", pid: 5404, procStart: "54040" };
   const options = { isLive: () => false, from: handout ?? "" };
-  expect(why(takeTasks(db, "p", alpha.id, second, 30, { ...options, isGone: () => false }))).toBe(
+  expect(why(takeTasks(db, "p", alpha.id, second, 30, { ...options, isEnded: () => false }))).toBe(
     `#1 "alpha" belongs to session child, not ${handout}`,
   );
-  ok(takeTasks(db, "p", alpha.id, second, 31, { ...options, isGone: (c) => c.pid === CHILD.pid }));
+  ok(takeTasks(db, "p", alpha.id, second, 31, { ...options, isEnded: (c) => c.pid === CHILD.pid }));
   expect(taskById(db, alpha.id).createdBy).toBe("child-2");
   // The live-claim check stays: a claim that runs is never taken without force.
   ok(updateTask(db, alpha.id, { status: "in_progress" }, second, 32));
@@ -730,7 +787,7 @@ test("M2: a take of a reserved plan passes a maker proved gone, and refuses one 
       takeTasks(db, "p", alpha.id, third, 33, {
         from: handout ?? "",
         isLive: () => true,
-        isGone: () => true,
+        isEnded: () => true,
       }),
     ),
   ).toContain("is live in session child-2; use force to take it");

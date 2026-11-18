@@ -758,11 +758,12 @@ export function takeTasks(
     force?: boolean;
     isLive: (claim: WorkClaim) => boolean;
     /**
-     * Whether a claim's process is proved to have ended (`claimGone`). On a reserved plan a row
-     * whose maker is gone may be taken: a child that died, or the lead's own process that a
-     * resumed session replaced. Left out, no process counts as gone.
+     * Whether a claim's whole session is over (`sessionEnded`: its process gone and no running
+     * session carrying its id). On a reserved plan a row whose maker session ended may be taken: a
+     * child that died, or the lead's own process that a resumed session replaced. A child that
+     * was reopened and has made no task call yet is not ended. Left out, nothing counts as ended.
      */
-    isGone?: (claim: WorkClaim) => boolean;
+    isEnded?: (claim: WorkClaim) => boolean;
   },
 ) {
   return writeWork(db, () => {
@@ -783,7 +784,7 @@ export function takeTasks(
             pid: reservation.pid,
             procStart: reservation.procStart,
           };
-    const isGone = options.isGone ?? (() => false);
+    const isEnded = options.isEnded ?? (() => false);
     // On a reserved plan the maker may also be the lead itself (its session id moved by a `/clear`
     // since the hand-out, or its process replaced by a resume), or a maker proved gone. Never
     // anyone else: a plan the child already took stays refused.
@@ -791,7 +792,7 @@ export function takeTasks(
       lead !== null &&
       (task.createdBy === lead.sessionId ||
         claimHeldBy(task.creator, lead) ||
-        (task.creator !== null && isGone(task.creator)));
+        (task.creator !== null && isEnded(task.creator)));
     for (const task of rows) {
       if (
         options.from !== undefined &&
