@@ -130,6 +130,12 @@ interface Lexed {
   expanded: boolean[];
   /** For each segment: the innermost `( … )` group or substitution it is inside, else null. */
   groups: (Subshell | null)[];
+  /**
+   * For each segment: where its text starts in the text that was lexed, or null when the segment
+   * is read out of another text (a here-doc body, a backtick, an arithmetic expansion), whose
+   * offsets are not this text's.
+   */
+  starts: (number | null)[];
 }
 
 interface LexOptions {
@@ -180,6 +186,7 @@ function lex(text: string, options: LexOptions): Lexed {
   const piped: (string | null)[] = [];
   const expanded: boolean[] = [];
   const groups: (Subshell | null)[] = [];
+  const starts: (number | null)[] = [];
   /** The innermost `( … )` or `$( … )` the text being read is inside. */
   let group: Subshell | null = options.outer ?? null;
   const enterGroup = () => {
@@ -210,11 +217,13 @@ function lex(text: string, options: LexOptions): Lexed {
     from: string | null,
     filledIn = false,
     inner: Subshell | null = group,
+    start: number | null = null,
   ): void => {
     segments.push(piece);
     piped.push(from);
     expanded.push(filledIn);
     groups.push(inner);
+    starts.push(start);
   };
 
   /** Reads `inner` as text of its own and adds the commands it runs (a substitution, a script). */
@@ -408,6 +417,7 @@ function lex(text: string, options: LexOptions): Lexed {
     piped.length = mark;
     expanded.length = mark;
     groups.length = mark;
+    starts.length = mark;
     return raw;
   }
 
@@ -499,6 +509,8 @@ function lex(text: string, options: LexOptions): Lexed {
   function read(nested: boolean, substitutions = 0): { closed: boolean; raw: string } {
     let raw = "";
     let current = "";
+    /** Where `current` starts in `text`: the character after the separator that ended the last one. */
+    let currentStart = at;
     let depth = 0;
     /** No character of a word yet: a `#` here starts a comment, a lone `{` a group. */
     let wordStart = true;
@@ -659,7 +671,13 @@ function lex(text: string, options: LexOptions): Lexed {
         (blind && bash && char === "`")
       ) {
         const pattern = !blind && bash ? casePattern(current, char, next) : false;
-        push(current, afterPipe ? (segments[segments.length - 1] ?? null) : null);
+        push(
+          current,
+          afterPipe ? (segments[segments.length - 1] ?? null) : null,
+          false,
+          group,
+          currentStart,
+        );
         afterPipe = char === "|";
         if (!pattern && nested && char === ")" && depth === 0) {
           at++;
@@ -676,19 +694,26 @@ function lex(text: string, options: LexOptions): Lexed {
         wordStart = true;
         afterClose = char === ")";
         if (char === "\n") skipBodies();
+        currentStart = at;
         continue;
       }
       take(char, isBlank(char));
       at++;
     }
     // The end of the text. A `$(` that never closed: `readDouble` marks its quote open.
-    push(current, afterPipe ? (segments[segments.length - 1] ?? null) : null);
+    push(
+      current,
+      afterPipe ? (segments[segments.length - 1] ?? null) : null,
+      false,
+      group,
+      currentStart,
+    );
     return { closed: false, raw };
   }
 
   if (options.body === true) readDouble(false);
   else read(false);
-  return { expanded, groups, open, piped, segments, unparsable };
+  return { expanded, groups, open, piped, segments, starts, unparsable };
 }
 
 /** How a caller reads a line: its dialect (Bash by default), and the two switches below. */
@@ -732,6 +757,15 @@ export interface ShellStep {
    * does not run where the first went.
    */
   subshell?: Subshell;
+  /**
+   * Where `text` starts in the line this step was read from: set when the command stands in the
+   * line itself, left out when it was read out of a here-doc body, a backtick or an arithmetic
+   * expansion (their offsets belong to another text). Text before the first line break of `text`
+   * is the line's own text at this offset, so a caller that edits the line at the command's first
+   * word checks that against the line and leaves a line it cannot place exactly as it is: a here-doc
+   * body inside a `$( … )` is cut out of `text`, and a comment skipped inside it is gone too.
+   */
+  start?: number;
 }
 
 /**
@@ -747,12 +781,16 @@ export function shellSteps(
   if (read.unparsable) return [];
   const chosen =
     read.open && blindWhenOpen ? lex(command, { blind: true, dialect, join: joinLines }) : read;
-  return chosen.segments.map((text, index) => ({
-    expanded: chosen.expanded[index] === true,
-    pipedFrom: chosen.piped[index] ?? null,
-    ...(chosen.groups[index] ? { subshell: chosen.groups[index] } : {}),
-    text,
-  }));
+  return chosen.segments.map((text, index) => {
+    const start = chosen.starts[index];
+    return {
+      expanded: chosen.expanded[index] === true,
+      pipedFrom: chosen.piped[index] ?? null,
+      ...(chosen.groups[index] ? { subshell: chosen.groups[index] } : {}),
+      ...(typeof start === "number" ? { start } : {}),
+      text,
+    };
+  });
 }
 
 /** `shellSteps`, the text of each command only. */
