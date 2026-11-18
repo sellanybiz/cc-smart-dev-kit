@@ -139,6 +139,15 @@ export function getTask(db: WorkDb, project: string, ref: string): WorkTask | nu
     null
   );
 }
+/**
+ * The task a plan reference names, the way the take names it: a plan's slug first, then `#n` or
+ * an id (`getTask`). The one resolver for `task_take` and `herdr start --plan`: a slug is not
+ * a task reference, so `getTask` alone would never find it.
+ */
+export function planByRef(db: WorkDb, project: string, ref: string): WorkTask | null {
+  const bySlug = allTasks(db, project).find((t) => t.kind === "plan" && t.plan === ref);
+  return bySlug ?? getTask(db, project, ref);
+}
 export function taskById(db: WorkDb, id: string): WorkTask {
   const row = db.sqlite
     .query<{ project: string }, [string]>("SELECT project FROM tasks WHERE id=?")

@@ -2,9 +2,11 @@ import { expect, test } from "bun:test";
 import {
   childModeAllowed,
   cliModeFlag,
+  HERDR_USAGE,
   MODE_ORDER,
   modeWiderThan,
   normalizeMode,
+  PLAN_EXCLUSION,
   parseHerdrArgs,
 } from "./words";
 
@@ -177,4 +179,87 @@ test("errors carry usage", () => {
     expect(r).toHaveProperty("error");
     if ("error" in r) expect(r.error).toContain("Usage:");
   }
+});
+
+test("start --plan: the slug is kept, and it excludes --task, --independent and --on", () => {
+  const start = ["start", "--model", "sonnet", "--effort", "high", "--mode", "manual"];
+  expect(parseHerdrArgs([...start, "--plan", "alpha", "--", "go"])).toEqual({
+    verb: "start",
+    model: "sonnet",
+    effort: "high",
+    mode: "default",
+    independent: false,
+    asked: false,
+    brief: "go",
+    plan: "alpha",
+  });
+  for (const extra of [["--task", "#7"], ["--independent"], ["--on", "remote"]]) {
+    const parsed = parseHerdrArgs([...start, "--plan", "alpha", ...extra, "--", "go"]);
+    expect(parsed).toHaveProperty("error");
+    if ("error" in parsed)
+      expect(parsed.error).toStartWith(
+        "--plan cannot be combined with --task, --independent or --on.",
+      );
+  }
+  expect(parseHerdrArgs([...start, "--plan", " ", "--", "go"])).toHaveProperty("error");
+});
+
+test("plans takes --json, --wait and a --timeout that belongs to --wait", () => {
+  expect(parseHerdrArgs(["plans"])).toEqual({ verb: "plans", json: false, wait: false });
+  expect(parseHerdrArgs(["plans", "--json", "--wait", "--timeout", "30"])).toEqual({
+    verb: "plans",
+    json: true,
+    wait: true,
+    timeoutMs: 30_000,
+  });
+  for (const bad of [
+    ["--timeout", "30"],
+    ["--wait", "--timeout", "0"],
+    ["--wait", "--timeout", "x"],
+    ["extra"],
+  ])
+    expect(parseHerdrArgs(["plans", ...bad])).toHaveProperty("error");
+});
+
+test("the usage names --plan and plans", () => {
+  const parsed = parseHerdrArgs(["plans", "extra"]);
+  if (!("error" in parsed)) throw new Error("expected an error");
+  expect(parsed.error).toContain("herdr plans [--json] [--wait] [--timeout <seconds>]");
+  expect(HERDR_USAGE).toContain("[--task <#n> | --plan <slug>]");
+});
+
+test("plans --release names one plan and stands alone", () => {
+  expect(parseHerdrArgs(["plans", "--release", "alpha"])).toEqual({
+    verb: "plans",
+    json: false,
+    wait: false,
+    release: "alpha",
+  });
+  for (const bad of [
+    ["--release"],
+    ["--release", " "],
+    ["--release", "alpha", "--wait"],
+    ["--release", "alpha", "--json"],
+  ])
+    expect(parseHerdrArgs(["plans", ...bad])).toHaveProperty("error");
+});
+
+test("the --plan exclusion has one text, in the parser and in the early refusal", () => {
+  const parsed = parseHerdrArgs([
+    "start",
+    "--model",
+    "sonnet",
+    "--effort",
+    "high",
+    "--mode",
+    "manual",
+    "--plan",
+    "alpha",
+    "--task",
+    "#7",
+    "--",
+    "go",
+  ]);
+  if (!("error" in parsed)) throw new Error("expected an error");
+  expect(parsed.error).toStartWith(PLAN_EXCLUSION);
 });

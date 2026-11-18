@@ -207,18 +207,31 @@ export function cherryOnBase(repo: string, baseRef: string, head: string, env: E
   return lines.length > 0 && lines.every((line) => line.startsWith("-"));
 }
 
+/** What gh says of a branch's pull requests at one head. */
+export type PullRequestState = "merged" | "closed" | "open" | "none" | "unknown";
+
+/** How many pull requests of one branch gh lists: more than any branch has in practice. */
+const GH_PR_LIMIT = "30";
+
 /**
- * Is this branch's pull request merged, and is the branch's head the commit that pull request
- * merged? A merged pull request says its own commits are on the base; a branch with commits
- * after it says something else — work nobody merged, which a removal would lose. So the head
- * is compared too, and only a pull request that merged exactly this head proves anything.
- *
- * False whenever `gh` is not there, is not logged in, or gives no answer — this is evidence of
- * a merge, and its absence proves nothing either way.
+ * The state of a branch's pull request, read from one `gh pr list --head <branch> --state all`.
+ * - `merged`: a MERGED pull request whose head is exactly `head`. A merged pull request says its
+ *   own commits are on the base; a branch with commits after it says something else (work
+ *   nobody merged, which a removal would lose), so only this head proves anything.
+ * - `open`: any pull request of the branch is open, at any head.
+ * - `closed`: a CLOSED (unmerged) pull request at exactly this head, and none open.
+ * - `none`: gh answered and lists nothing that fits.
+ * - `unknown`: `gh` is not there, not logged in, timed out or gave no JSON. This is no evidence
+ *   either way: callers never read it as a merge.
  */
-export function pullRequestMerged(repo: string, branch: string, head: string, env: Env): boolean {
+export function pullRequestState(
+  repo: string,
+  branch: string,
+  head: string,
+  env: Env,
+): PullRequestState {
   try {
-    if (Bun.which("gh", { PATH: env.PATH ?? "" }) === null) return false;
+    if (Bun.which("gh", { PATH: env.PATH ?? "" }) === null) return "unknown";
     const run = Bun.spawnSync(
       [
         "gh",
@@ -227,22 +240,35 @@ export function pullRequestMerged(repo: string, branch: string, head: string, en
         "--head",
         branch,
         "--state",
-        "merged",
+        "all",
         "--json",
-        "number,headRefOid",
+        "state,headRefOid",
         "--limit",
-        "1",
+        GH_PR_LIMIT,
       ],
       { cwd: repo, env, stdin: "ignore", stderr: "pipe", stdout: "pipe", timeout: GH_TIMEOUT_MS },
     );
+    if (run.exitCode !== 0) return "unknown";
     const parsed: unknown = JSON.parse(run.stdout.toString() || "null");
-    if (!Array.isArray(parsed) || parsed.length === 0) return false;
-    const first = parsed[0] as { headRefOid?: unknown };
-    return typeof first.headRefOid === "string" && first.headRefOid === head;
+    if (!Array.isArray(parsed)) return "unknown";
+    const rows = parsed.filter(
+      (row): row is { state?: unknown; headRefOid?: unknown } =>
+        row !== null && typeof row === "object",
+    );
+    const at = (state: string) =>
+      rows.some((row) => row.state === state && row.headRefOid === head);
+    if (at("MERGED")) return "merged";
+    if (rows.some((row) => row.state === "OPEN")) return "open";
+    return at("CLOSED") ? "closed" : "none";
   } catch {
-    // No gh on PATH, a call that timed out, or an answer that is not JSON: not known merged.
-    return false;
+    // A call that timed out, or an answer that is not JSON: not known either way.
+    return "unknown";
   }
+}
+
+/** Is this branch's pull request merged at exactly this head? False when gh cannot say. */
+export function pullRequestMerged(repo: string, branch: string, head: string, env: Env): boolean {
+  return pullRequestState(repo, branch, head, env) === "merged";
 }
 
 /** What merging a branch into the base would change. */
