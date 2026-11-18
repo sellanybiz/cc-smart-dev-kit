@@ -48,6 +48,7 @@ import { type Workflow, workflowDefaults } from "../workflow/schema";
 import {
   CHECKS_SINCE,
   ccSmartDevKitConfigSchema,
+  DEPLOY_GUARD_SINCE,
   DEPLOY_TASKS_SINCE,
   IGNORED_TASK_FIELDS,
   JOB_KIND_KEYS_SINCE,
@@ -249,6 +250,8 @@ export function requiresFloor(
   if (Object.hasOwn(file, "checks")) needs.push(CHECKS_SINCE);
   if (Object.hasOwn(file, "tasks")) needs.push(TASKS_SINCE);
   if (isObject(file.tasks) && Object.hasOwn(file.tasks, "envs")) needs.push(DEPLOY_TASKS_SINCE);
+  if (isObject(file.tasks) && Object.hasOwn(file.tasks, "deployCommands"))
+    needs.push(DEPLOY_GUARD_SINCE);
   // A project that uses deploy tasks (their folders, or the deploy skill's block) needs the
   // plugin that reads them: a 4.x plugin shows nothing of them, and the floor makes it say
   // "update" instead.

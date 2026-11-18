@@ -2,8 +2,9 @@ import { existsSync, readFileSync } from "node:fs";
 import { posix, win32 } from "node:path";
 import { z } from "zod";
 import { COMMAND, PLUGIN_UPDATE_COMMAND, VERSION } from "../build-info";
-import { type KindSpec, kindsSchema } from "../jobs/kinds";
+import { type KindSpec, kindsSchema, type MatchRule, matchRuleSchema } from "../jobs/kinds";
 import { parseUserJson, readUserJson } from "../setup/user-json";
+import { shellSteps } from "../shell/command";
 import { DEPLOY_ENVS } from "../tasks/deploy/format";
 import { workflowSchema } from "../workflow/schema";
 import { allowsNewer, isValidRange, lowestAllowed, satisfiesRange } from "./version-range";
@@ -31,6 +32,7 @@ export const PLUGIN_HOOK_NAMES = [
   "worktree-leftovers",
   "session-name",
   "task-start",
+  "deploy-guard",
 ] as const;
 
 /** One name from `PLUGIN_HOOK_NAMES`. */
@@ -132,6 +134,14 @@ export const JOB_KIND_KEYS_SINCE: Readonly<Partial<Record<keyof KindSpec, string
 };
 
 /**
+ * The release that brought `tasks.deployCommands` and the `deploy-guard` hook: the commands a
+ * project deploys with, and the guard that asks before one runs while a blocking deploy task is
+ * open. A project file that sets the field, or lists the hook in `ownHooks`, needs that plugin
+ * version or newer, for the same reason as `DEPLOY_TASKS_SINCE`.
+ */
+export const DEPLOY_GUARD_SINCE = "5.1.0";
+
+/**
  * The plugin hooks `ownHooks` may list that came after `ownHooks` itself (0.3.0), with the
  * release that brought each. Older plugins validate the names as an enum, so one they do not
  * know makes them refuse the whole file, and every guard in that project fails closed. A
@@ -154,6 +164,7 @@ export const OWN_HOOK_NAMES_SINCE: Readonly<
   "task-start": "1.10.0",
   "keep-going": "2.0.0",
   "builder-finish": "2.0.0",
+  "deploy-guard": DEPLOY_GUARD_SINCE,
 };
 
 /**
@@ -168,6 +179,45 @@ export const TASKS_SINCE = "1.10.0";
  * does not know `envs` and refuses the whole file, so the floor makes it say "update".
  */
 export const DEPLOY_TASKS_SINCE = "5.0.0";
+
+/** One deploy command: the command as typed, or a rule of the jobs grammar (`matchRuleSchema`). */
+export type DeployCommandEntry = string | MatchRule;
+
+/**
+ * One entry of `tasks.deployCommands`. A string is ONE command as typed (`"vercel --prod"`): the
+ * shell reader counts its commands, and a string with a separator outside quotes (`;`, `&&`,
+ * `||`, `|`) holds more than one, so it is refused with the fix. A rule is checked by the jobs
+ * grammar. Kept as written: the guard turns a string into a rule when it loads. The error's
+ * field path (`tasks.deployCommands.prod.0`) names the entry; each message also quotes it.
+ */
+const deployCommandEntry = z.custom<DeployCommandEntry>().superRefine((entry, ctx) => {
+  if (typeof entry !== "string") {
+    const rule = matchRuleSchema.safeParse(entry);
+    if (!rule.success)
+      for (const issue of rule.error.issues)
+        ctx.addIssue({
+          code: "custom",
+          message: `is not a command or a match rule (${issue.path.join(".") || "rule"}: ${issue.message})`,
+        });
+    return;
+  }
+  // A separator makes more than one step even when a side is empty (`vercel --prod;`).
+  const steps = shellSteps(entry);
+  if (steps.every((step) => step.text.trim() === ""))
+    ctx.addIssue({
+      code: "custom",
+      message: `${JSON.stringify(entry)} holds no command: write one command, such as \`vercel --prod\``,
+    });
+  else if (steps.length > 1)
+    ctx.addIssue({
+      code: "custom",
+      message: `${JSON.stringify(entry)} holds more than one command (a ;, &&, || or | outside quotes, or a substitution): list each command as its own entry`,
+    });
+});
+
+const deployCommandList = z
+  .array(deployCommandEntry)
+  .min(1, "is an empty list: list at least one command, or remove the key");
 
 /** A path inside the checkout, written with `/`: never absolute, never `.` or `..` segments. */
 const inCheckout = z
@@ -297,6 +347,10 @@ export const ccSmartDevKitConfigSchema = z.strictObject({
    * - `staleDays`: when an open task counts as stale for `task check` (default 30).
    * - `envs`: the environments the project deploys to, from `staging` and `prod`, no repeats
    *   (default both). A project with only prod lists `["prod"]`. A field of 5.0.0.
+   * - `deployCommands`: the commands this project deploys with, for each environment
+   *   (`{ "prod": ["vercel --prod"] }`): a string, or a match rule as in `jobs.kinds`. The deploy
+   *   guard asks before one runs while a blocking task is open. Only keys of `envs` (both when
+   *   `envs` is unset), no empty list, one command to a string. A field of `DEPLOY_GUARD_SINCE`.
    * - `releaseBranch`, `legacyFolders`: read by nothing since 5.0.0 (`IGNORED_TASK_FIELDS`).
    * A field of 1.10.0: a project that sets it raises `requires` to `>=1.10`.
    */
@@ -309,7 +363,20 @@ export const ccSmartDevKitConfigSchema = z.strictObject({
         .min(1)
         .refine((envs) => new Set(envs).size === envs.length, "Each environment once")
         .optional(),
+      deployCommands: z
+        .strictObject({ prod: deployCommandList.optional(), staging: deployCommandList.optional() })
+        .optional(),
       ...IGNORED_TASK_SCHEMAS,
+    })
+    .superRefine((tasks, ctx) => {
+      const envs: readonly string[] = tasks.envs ?? DEPLOY_ENVS;
+      for (const env of Object.keys(tasks.deployCommands ?? {}))
+        if (!envs.includes(env))
+          ctx.addIssue({
+            code: "custom",
+            path: ["deployCommands", env],
+            message: `is not one of tasks.envs (${envs.join(", ")}): remove it, or add ${env} to tasks.envs`,
+          });
     })
     .optional(),
   /**

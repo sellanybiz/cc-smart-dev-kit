@@ -106,6 +106,10 @@ const FIRST_ACCEPTED_IN: Record<string, string> = {
   "tasks.legacyFolders": "1.10.0",
   // 5.0.0 made the task files deploy tasks: the environments a project deploys to.
   "tasks.envs": "5.0.0",
+  // 5.1.0: the commands a project deploys with, for the deploy guard.
+  "tasks.deployCommands": "5.1.0",
+  "tasks.deployCommands.prod": "5.1.0",
+  "tasks.deployCommands.staging": "5.1.0",
 };
 
 /** The `ownHooks` names the 0.5.2 plugin accepted, the retired and the unswitchable ones too. */
@@ -135,6 +139,7 @@ const HOOK_NAME_FIRST_ACCEPTED_IN: Record<string, string> = {
   "task-start": "1.10.0",
   "keep-going": "2.0.0",
   "builder-finish": "2.0.0",
+  "deploy-guard": "5.1.0",
 };
 
 /** Every key of a schema, by dotted path. A record's keys are a person's, so they show as `*`. */
@@ -331,6 +336,88 @@ describe("tasks", () => {
   test("a file that sets it needs 1.10.0, and one that sets envs needs 5.0.0", () => {
     expect(requiresFloor({ tasks: { dir: ".claude/tasks" } }).version).toBe("1.10.0");
     expect(requiresFloor({ tasks: { envs: ["prod"] } }).version).toBe("5.0.0");
+  });
+});
+
+describe("tasks.deployCommands", () => {
+  /** The message the strict parse gives for these tasks, or null when they parse. */
+  function refusal(tasks: unknown): string | null {
+    const parsed = ccSmartDevKitConfigSchema.safeParse({ tasks });
+    return parsed.success
+      ? null
+      : parsed.error.issues.map((issue) => `${issue.path.join(".")}: ${issue.message}`).join("; ");
+  }
+
+  test("accepts strings and match rules for both environments, kept as written", () => {
+    const deployCommands = {
+      prod: [
+        "vercel --prod",
+        "npm run deploy:prod",
+        "./scripts/deploy.sh prod",
+        "fly deploy --config 'a;b && c'",
+        { tool: "vercel", flags: ["--prod"] },
+        { script: "deploy:prod" },
+      ],
+      staging: ["vercel"],
+    };
+    expect(
+      ccSmartDevKitConfigSchema.parse({ tasks: { deployCommands } }).tasks?.deployCommands,
+    ).toEqual(deployCommands);
+    expect(
+      ccSmartDevKitConfigSchema.parse({
+        tasks: { envs: ["prod"], deployCommands: { prod: ["x"] } },
+      }).tasks?.deployCommands,
+    ).toEqual({ prod: ["x"] });
+  });
+
+  test("an empty list is refused, naming the key", () => {
+    expect(refusal({ deployCommands: { prod: [] } })).toBe(
+      "tasks.deployCommands.prod: is an empty list: list at least one command, or remove the key",
+    );
+  });
+
+  test.each([
+    "vercel --prod; echo done",
+    "cd app && vercel --prod",
+    "vercel --prod || exit 1",
+    "vercel --prod | tee log",
+    "a; b && c",
+    "vercel --prod;",
+  ])("a string with a separator is refused, naming the entry: %j", (entry) => {
+    expect(refusal({ deployCommands: { prod: ["fly deploy", entry] } })).toBe(
+      `tasks.deployCommands.prod.1: ${JSON.stringify(entry)} holds more than one command (a ;, &&, || or | outside quotes, or a substitution): list each command as its own entry`,
+    );
+  });
+
+  test("an empty string and a comment hold no command", () => {
+    expect(refusal({ deployCommands: { prod: ["  "] } })).toBe(
+      'tasks.deployCommands.prod.0: "  " holds no command: write one command, such as `vercel --prod`',
+    );
+    expect(refusal({ deployCommands: { prod: ["# vercel --prod"] } })).toBe(
+      'tasks.deployCommands.prod.0: "# vercel --prod" holds no command: write one command, such as `vercel --prod`',
+    );
+  });
+
+  test("a rule that is not in the jobs grammar is refused", () => {
+    expect(refusal({ deployCommands: { prod: [{ tool: "vercel", nope: 1 }] } })).toContain(
+      "tasks.deployCommands.prod.0: is not a command or a match rule (",
+    );
+    expect(refusal({ deployCommands: { prod: [7] } })).toContain(
+      "tasks.deployCommands.prod.0: is not a command or a match rule (",
+    );
+  });
+
+  test("a key outside tasks.envs is refused, and an unset envs means both", () => {
+    expect(refusal({ envs: ["staging"], deployCommands: { prod: ["vercel --prod"] } })).toBe(
+      "tasks.deployCommands.prod: is not one of tasks.envs (staging): remove it, or add prod to tasks.envs",
+    );
+    expect(refusal({ deployCommands: { prod: ["a"], staging: ["b"] } })).toBeNull();
+    expect(refusal({ deployCommands: { production: ["a"] } })).toContain("production");
+  });
+
+  test("a file that sets it needs 5.1.0, and the hook name needs the same", () => {
+    expect(requiresFloor({ tasks: { deployCommands: { prod: ["x"] } } }).version).toBe("5.1.0");
+    expect(requiresFloor({ ownHooks: ["deploy-guard"] }).version).toBe("5.1.0");
   });
 });
 
