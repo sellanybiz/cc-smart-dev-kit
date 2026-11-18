@@ -17,8 +17,15 @@
  * `.claude/settings.json` and `.claude/settings.local.json`, shown as `-` lines before
  * anything is written. Every other key, hook and handler stays exactly as it is.
  *
- * `planProjectInit` is pure: the files as text (null: not there) and the answers go in; the
- * text each file will hold and the changes to show come back. The command asks its questions
+ * **It removes the `tasks` fields nothing reads since 5.0.0** (`IGNORED_TASK_FIELDS`), shown
+ * as `-` lines, and raises `requires` to `>=5.0` when the project keeps deploy tasks (a `prod/`
+ * or `staging/` folder under `tasks.dir`) or has the deploy skill's block (`extras.deployBlock`;
+ * the block itself is `deploy-skill.ts`'s, never this plan's, so the portal never writes it).
+ *
+ * `planProjectInit` writes nothing and reads nothing but one thing: it looks whether a `prod/`
+ * or `staging/` folder is under `tasks.dir` in `root`. Otherwise the files as text (null: not
+ * there) and the answers go in; the text each file will hold and the changes to show come
+ * back. The command asks its questions
  * first, prints the plan, and writes it with `applyProjectInit`. Nothing here commits: the
  * files belong to the project, and the person commits them.
  *
@@ -34,11 +41,15 @@ import { jsonTextFor } from "../setup/json-edit";
 import { detectIndent, isObject } from "../setup/managed-json";
 import { parseUserJson } from "../setup/user-json";
 import { atomicWrite, backupFile, fileMode, realTarget } from "../setup/write";
+import { deployTasksDir, envFolder } from "../tasks/deploy/files";
+import { DEPLOY_ENVS } from "../tasks/deploy/format";
 import { clashNote, workflowClashes } from "../workflow/clashes";
 import { type Workflow, workflowDefaults } from "../workflow/schema";
 import {
   CHECKS_SINCE,
   ccSmartDevKitConfigSchema,
+  DEPLOY_TASKS_SINCE,
+  IGNORED_TASK_FIELDS,
   JOB_KIND_KEYS_SINCE,
   OWN_HOOK_NAMES_SINCE,
   RETIRED_WORKTREE_FIELDS,
@@ -225,7 +236,10 @@ export function requiresTooLow(existing: unknown, floorVersion: string): boolean
  * the file — so every guard in that project fails closed until the plugin is updated; the
  * floor makes it say "update" instead.
  */
-export function requiresFloor(file: Record<string, unknown>): {
+export function requiresFloor(
+  file: Record<string, unknown>,
+  options: { deployTasks?: boolean } = {},
+): {
   floor: string;
   version: string;
 } {
@@ -234,6 +248,11 @@ export function requiresFloor(file: Record<string, unknown>): {
   const needs: string[] = [];
   if (Object.hasOwn(file, "checks")) needs.push(CHECKS_SINCE);
   if (Object.hasOwn(file, "tasks")) needs.push(TASKS_SINCE);
+  if (isObject(file.tasks) && Object.hasOwn(file.tasks, "envs")) needs.push(DEPLOY_TASKS_SINCE);
+  // A project that uses deploy tasks (their folders, or the deploy skill's block) needs the
+  // plugin that reads them: a 4.x plugin shows nothing of them, and the floor makes it say
+  // "update" instead.
+  if (options.deployTasks === true) needs.push(DEPLOY_TASKS_SINCE);
   if (Object.hasOwn(workflow, "issues")) needs.push(WORKFLOW_ISSUES_SINCE);
   const ownHooks = Array.isArray(file.ownHooks) ? file.ownHooks : [];
   for (const [name, since] of Object.entries(OWN_HOOK_NAMES_SINCE)) {
@@ -387,8 +406,37 @@ function settingsPlan(file: string, existing: string | null, head: boolean): Set
   };
 }
 
+/**
+ * True when the project already keeps deploy tasks: a `prod/` or `staging/` folder under its
+ * task folder (`tasks.dir`, default `.claude/tasks`). A `tasks.dir` that leaves the checkout
+ * has none here: the schema check in `planProjectInit` refuses the file and names the field.
+ */
+export function hasDeployTaskFolders(root: string, tasks: Record<string, unknown>): boolean {
+  const settings = typeof tasks.dir === "string" ? { dir: tasks.dir } : {};
+  let dir: string;
+  try {
+    dir = deployTasksDir(root, settings);
+  } catch {
+    return false;
+  }
+  return DEPLOY_ENVS.some((env) => existsSync(envFolder(dir, env)));
+}
+
+/** What the second argument of `planProjectInit` says about files `project init` writes elsewhere. */
+export interface ProjectInitExtras {
+  /**
+   * True when the project's deploy skill holds, or is about to hold, the kit's deploy block
+   * (`deploy-skill.ts`): the block needs the plugin that reads deploy tasks, so `requires`
+   * is raised to it. The portal never writes a skill and never sets it.
+   */
+  deployBlock?: boolean;
+}
+
 /** The project's files, as the answers would leave them. */
-export function planProjectInit(input: ProjectInitInput): ProjectInitPlan {
+export function planProjectInit(
+  input: ProjectInitInput,
+  extras: ProjectInitExtras = {},
+): ProjectInitPlan {
   const { root, existing, existingSettings, existingLocalSettings, defaultBranch, answers } = input;
   const file = join(root, ".claude", "cc-smart-dev-kit.json");
   const before = parseObject(existing, file);
@@ -405,6 +453,18 @@ export function planProjectInit(input: ProjectInitInput): ProjectInitPlan {
   else delete worktrees.bases;
 
   const next: Record<string, unknown> = { ...before };
+  // The `tasks` fields nothing reads since 5.0.0 go, so doctor stops naming them. A `tasks`
+  // object they leave empty goes with them; one the project wrote empty stays as it is.
+  const beforeTasks = isObject(before.tasks) ? before.tasks : null;
+  const ignoredTaskFields = IGNORED_TASK_FIELDS.filter(
+    (field) => beforeTasks !== null && Object.hasOwn(beforeTasks, field),
+  );
+  if (beforeTasks !== null && ignoredTaskFields.length > 0) {
+    const tasks: Record<string, unknown> = { ...beforeTasks };
+    for (const field of ignoredTaskFields) delete tasks[field];
+    if (Object.keys(tasks).length > 0) next.tasks = tasks;
+    else delete next.tasks;
+  }
   next.worktrees = orderKeys(worktrees, WORKTREE_ORDER);
   if (answers.protectedBranches.length > 0) next.protectedBranches = answers.protectedBranches;
   else delete next.protectedBranches;
@@ -437,7 +497,11 @@ export function planProjectInit(input: ProjectInitInput): ProjectInitPlan {
   // The floor depends on the fields the file ends up with: a file that sets
   // a newer setting needs the plugin that brought it, or every older plugin refuses the
   // whole file (it does not know the field) and every guard in that project fails closed.
-  const floor = requiresFloor(next);
+  const floor = requiresFloor(next, {
+    deployTasks:
+      extras.deployBlock === true ||
+      hasDeployTaskFolders(root, isObject(next.tasks) ? next.tasks : {}),
+  });
   next.requires = raisedRequires(before.requires, floor.floor, floor.version);
   const after = orderKeys(next, FILE_ORDER);
   // The file the plan would write is checked against the plugin's own schema BEFORE anything
@@ -471,6 +535,12 @@ export function planProjectInit(input: ProjectInitInput): ProjectInitPlan {
   if (answers.base !== defaultBranch) {
     notes.push(
       `base ${answers.base} is not the repo's default branch ${defaultBranch}: .claude/settings.json gets "worktree": {"baseRef": "head"}, so a new worktree starts from the branch the session is on`,
+    );
+  }
+  if (ignoredTaskFields.length > 0) {
+    const plural = ignoredTaskFields.length > 1;
+    notes.push(
+      `${ignoredTaskFields.map((field) => `tasks.${field}`).join(", ")} ${plural ? "are" : "is"} read by nothing since ${DEPLOY_TASKS_SINCE}, so ${plural ? "they go" : "it goes"}`,
     );
   }
   const retired = retiredFieldsOf(before);

@@ -56,7 +56,7 @@ the first time you use it.
 |---|---|
 | `src/entries/*.ts` | One file per bundle. Each becomes `plugin/dist/<name>.js`. |
 | `src/build-info/` | The version and the marketplace source, baked in from `plugin.json` at build time; the fixed names, without the version, in `names.ts` (the router bundle uses those). |
-| `src/project/` | Finds the git project from a folder and reads its `.claude/cc-smart-dev-kit.json`; `init.ts` plans and writes the two files `project init` makes. |
+| `src/project/` | Finds the git project from a folder and reads its `.claude/cc-smart-dev-kit.json`; `init.ts` plans and writes the two files `project init` makes; `deploy-skill.ts` and `deploy-block.ts` keep the managed block in the project's deploy skill. |
 | `src/workflow/` | The workflow: the settings it holds (`schema.ts`), the resolution order and the switches (`resolve.ts`), the one auto-merge decision (`auto-merge.ts`, whose refusal is the merge guard's reason), the writers (`write.ts`), the review record (`reviews.ts`), the statusline's usage warning setting (`alerts.ts`), and the command (`commands.ts`). |
 | `src/setup/` | Safe changes to user files: managed keys, list entries and blocks, backups, atomic writes, the lock, the launcher, restore, marketplace access, the auto-mode block. |
 | `src/cli/` | The CLI's own parts: the paths (`paths.ts`, from `cliPaths()`), the commands that live here — `setup`, `doctor` (its `--live` proof in `live-check.ts`; the current folder's project checks in `project-checks.ts`), `project init` (the two files a project opts in with, `project-init.ts`), `migrate`, `restore`, `update`, `statusline`, `subagent-statusline`, `usage` — and their helpers (`secret-line.ts`, `git-bash.ts`, `bun-check.ts`). |
@@ -71,10 +71,10 @@ the first time you use it.
 | `src/mcp/` | The MCP servers `setup` registers at user scope: the registrations (`servers.ts`; the servers' names alone in `names.ts`, which the router bundle reads), Claude Code's own `claude mcp` commands around them (`register.ts`), the record of what it registered (`records.ts`), the Tavily key (`tavily.ts`), what `mcp status` reports (`status.ts`), `doctor`'s lines (`doctor.ts`), and what setup takes back of a server it retired — Serena's registration, context file and records (`retired.ts`). |
 | `src/herdr/` | Herdr session orchestration: the checked identity, shared hc contract and grammar, labels, private briefs and reports, remote machine rules, command and doctor group (`docs/design/herdr.md`). |
 | `src/sessions/` | The `cc-smart-dev-kit sessions` command: reading Claude Code's saved sessions, and reopening the ones a restart or a closed window stopped. |
-| `src/issues/` | Opt-in GitHub Issues: filing, fixed marks and the release list (`docs/design/issues.md`). |
+| `src/issues/` | GitHub Issues, on by default: filing, fixed marks and the release list (`docs/design/issues.md`). |
 | `src/models/` | Subagent launch policy, UI policy and premium-model judgment. |
 | `src/worktrees/` | Worktree scanning, safe removal and included local files. |
-| `src/tasks/` | The kit's task system (D75, `docs/design/tasks.md`): `work/` the local store, `project/` the repo files, `context.ts` the resolver, `guard-view.ts` the guards' join, `words.ts` the shared tool names and steps, the MCP server and command. |
+| `src/tasks/` | The kit's task system (D75, `docs/design/tasks.md`): `work/` the local store, `deploy/` the repo files (deploy tasks, the release gates), `context.ts` the resolver, `guard-view.ts` the guards' join, `words.ts` the shared tool names and steps, the MCP server and command. |
 | `src/user-away/` | The `cc-smart-dev-kit user` command (`unavailable`, `available`, `status`, `park`, `list`, `clear`): whether the person can answer, and the list of what waits for them (`state.ts`); the user-away hook reads the same state. |
 | `src/workflows/` | The test side of the workflow scripts in `plugin/workflows/`: the runner that executes a script with fakes for `agent`, `parallel` and the rest (`script-runner.ts`), and a test file for each script. The scripts themselves ship in `plugin/`. |
 | `src/ports.ts` | The local ports cc-smart-dev-kit holds as locks, and why they stay below 32768. |
@@ -153,7 +153,7 @@ Repo skills are below; shipped skills, including `herdr`, are indexed in `README
 - `docs/migrate.md` — moving a machine from the old `anymodel` names, and what a project
   still carries from them.
 - `docs/roadmap.md` — the phases, done and ahead.
-- `docs/design/tasks.md` — local work, project task files, guards and the move from older lists (D75).
+- `docs/design/tasks.md` — local work, deploy tasks (prod and staging), the release gates, guards and the move from older lists (D75).
 - `.claude/plans/` and `.claude/research/` — the plan being built and the research behind it; each moves to its `archive/` folder when it is decided or done.
 - `docs/claude-code-contract.md` — every Claude Code behaviour the plugin relies on, the
   version it was last proved on, and how.

@@ -4,7 +4,7 @@
  * How the tree is grouped, folded and paged is `task-groups.ts`.
  */
 
-import type { ProjectTaskFiles, ProjectWorkTasks, WorkTaskNode } from "@/api/types";
+import type { ProjectTaskFiles, ProjectTaskRow, ProjectWorkTasks, WorkTaskNode } from "@/api/types";
 
 /**
  * Which tasks by their state: open (the default), in progress, blocked (open and waiting for
@@ -296,16 +296,36 @@ export function workCountsOf(work: ProjectWorkTasks): WorkCounts {
   return work.state === "ready" ? countTasks(work.tasks) : NO_WORK;
 }
 
-/** A project's open task files, and how many of them block the release. */
-export function fileCountsOf(files: ProjectTaskFiles): { open: number; blocksRelease: number } {
-  if (files.state !== "ready") return { open: 0, blocksRelease: 0 };
+/** A project's open deploy tasks, and how many of them are blocking. */
+export function fileCountsOf(files: ProjectTaskFiles): { open: number; blocking: number } {
+  if (files.state !== "ready") return { open: 0, blocking: 0 };
   return {
     open: files.tasks.length,
-    blocksRelease: files.tasks.filter((task) => task.weight === "blocks-release").length,
+    blocking: files.tasks.filter((task) => task.type === "blocking").length,
   };
 }
 
-/** The open project files whose title or id holds the words, any case. */
+/** One environment's open deploy tasks, as the Files tab draws them under one heading. */
+export interface DeploySection<T> {
+  env: ProjectTaskRow["env"];
+  tasks: T[];
+}
+
+/**
+ * The deploy tasks by environment: the project's own (`envs`, in the server's order, empty ones
+ * too), then any other environment a task is in, so a task outside `tasks.envs` is never hidden.
+ * The tasks keep the server's order inside each.
+ */
+export function deploySectionsOf<T extends Pick<ProjectTaskRow, "env">>(
+  envs: readonly ProjectTaskRow["env"][],
+  tasks: readonly T[],
+): DeploySection<T>[] {
+  const order = [...envs];
+  for (const task of tasks) if (!order.includes(task.env)) order.push(task.env);
+  return order.map((env) => ({ env, tasks: tasks.filter((task) => task.env === env) }));
+}
+
+/** The open deploy tasks whose title or id holds the words, any case. */
 export function filesMatching<T extends { id: string; title: string }>(
   tasks: readonly T[],
   q: string,

@@ -231,7 +231,7 @@ that, so the plugin ships no worktree hook at all.
 | `worktree-leftovers` | SessionStart (startup, resume) | `worktrees` | Names at most eight finished worktrees and eight missing folders, keeping each total; `+N more: git worktree list --porcelain` lists the rest. Finished worktrees have every commit on `origin/<base>`, nothing uncommitted, no session in them, an idle hour, and no ignored file that cannot come back; locked ones are kept by `worktrees --clean`. The hook says once what the background clean removed, and starts that clean (at most once an hour per repo, never in `claude -p`). At an attended start it also adds up to three short lines about the main checkout — on another branch than `base`, behind `origin/<base>` as git already knows it, or in the middle of a merge, a rebase or a cherry-pick — read-only and with no fetch. With `worktrees.guardMainFolder` on, each such line names the command for the person to run in the main checkout, never a step for the session; a fast-forward is always `git merge --ff-only`. It removes nothing itself (§ Finished worktrees clean themselves). |
 | `session-name` | SessionStart (startup, resume, compact, clear), UserPromptSubmit | `sessionNames` | Tells the session to name itself after its task (`cc-smart-dev-kit session-name`) at start and once per context at an unnamed prompt. A `.reminded` mark beside the temp name files suppresses repeat prompts; every SessionStart resets it, including compact and clear. Then sets that as its title at the next prompt (`sessionTitle`); a name the person gives with `/rename` stays until the session names itself again. |
 | `user-away` | PreToolUse (AskUserQuestion, ExitPlanMode), PermissionRequest, UserPromptSubmit, Stop | **machine-wide**, and `ownHooks` cannot switch it off; silent unless the person is marked unavailable | While the person cannot answer: denies the two tools that ask them, with the step that parks the question; denies Claude Code's own permission prompt and parks the call as an `action`; one note per change at the prompt, and one **block** at the stop of a session that has not heard this away period. The frame's step 5 turns every other hook's ask into a deny the same way (§ While the person is away). |
-| `task-start` | SessionStart (every source) | **machine-wide** | One block of the project's open work tasks at a start, a resume, a clear and a compaction: at most eight lines, then `+n more`, with no descriptions; a task untouched for `tasks.staleDays` (default 30) is counted in one line instead; and one line to run setup while the task server is not registered. `tasks.md` § The hooks and pages that read it. |
+| `task-start` | SessionStart (every source) | **machine-wide** | One block of the project's open work tasks at a start, a resume, a clear and a compaction: at most eight lines, then `+n more`, with no descriptions; a task untouched for `tasks.staleDays` (default 30) is counted in one line instead; one line about the deploy tasks (open, unreadable, a repeated id or old files; `Deploy tasks open: …`); and one line to run setup while the task server is not registered. `tasks.md` § The hooks and pages that read it. |
 
 Without `cc-smart-dev-kit.json` every one of them is silent — except the machine-wide
 ones: `agent-guard` (§ The Agent guard), `job-route` (§ The Bash judge and the job route),
@@ -607,10 +607,12 @@ It blocks the stop **once per stalled state** when all of these hold, cheapest f
    also where it claims the phase or one of its steps (work it took in another session's plan);
    ready phases are only those of its own plans, so a step claimed in another session's plan
    never makes that plan's next phase this guard's to start. The claim is the Claude process
-   from `callerOf` (`claimHeldBy`): on Linux its pid and start time, so a `/clear` keeps the
-   plan; off Linux, with no start time, the session id too, so a reused pid never inherits a
-   dead process's plan. No write ever stamps another session's plan on a task. A parked plan
-   (its plan task `pending`) is not in flight, so it never blocks.
+   from `callerOf` (`claimIsMine`: `claimHeldBy`, or a resumed claim): on Linux its pid and
+   start time, so a `/clear` keeps the plan; off Linux, with no start time, the session id too,
+   so a reused pid never inherits a dead process's plan. A claim its session left in a process
+   that is gone (a reopened session, `resumedClaim`) counts too, until the next task call moves
+   it. No write ever stamps another session's plan on a task. A parked plan (its plan task
+   `pending`) is not in flight, so it never blocks.
 5. This reason was not already given (`stopFeedbackGiven`, `src/hooks/transcript.ts`). Only
    after the store finds a phase in progress does it read the transcript's tail (`tailLines`,
    default `TRANSCRIPT_TAIL_BYTES`). The reason counts as given when a `user` entry of the

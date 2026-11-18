@@ -3,17 +3,22 @@
  * with every field written out, one project's full answer, and the words a person reads in the
  * markup. Test data only: no page imports this module.
  */
-import type { ProjectTasksData, WorkTaskNode } from "@/api/types";
+import type { ProjectTaskFiles, ProjectTaskRow, ProjectTasksData, WorkTaskNode } from "@/api/types";
 
 /** The words a person reads: the tags gone, the entities React writes turned back. */
 export function words(html: string): string {
-  return html
-    .replace(/<[^>]+>/g, " ")
-    .replace(/&#x27;/g, "'")
-    .replace(/&quot;/g, '"')
-    .replace(/&amp;/g, "&")
-    .replace(/\s+/g, " ")
-    .trim();
+  return (
+    html
+      .replace(/<[^>]+>/g, " ")
+      .replace(/&#x27;/g, "'")
+      .replace(/&quot;/g, '"')
+      .replace(/&lt;/g, "<")
+      .replace(/&gt;/g, ">")
+      // Last, so a written `&amp;lt;` stays `&lt;` and is not read twice.
+      .replace(/&amp;/g, "&")
+      .replace(/\s+/g, " ")
+      .trim()
+  );
 }
 
 export function task(
@@ -102,39 +107,65 @@ export const PHASE = task(
   },
 );
 
-/** A full project: the plan with its phase, a done task with work left open, and files. */
-export const FULL: ProjectTasksData = {
-  files: {
-    broken: 1,
-    closed: 4,
+/** One open deploy task, the server's order and shape; `more` sets the rest. */
+export function deployTask(
+  id: string,
+  title: string,
+  more: Partial<ProjectTaskRow> = {},
+): ProjectTaskRow {
+  const env = id.startsWith("prod-") ? "prod" : "staging";
+  return {
+    created: "2026-10-30T09:15:00Z",
+    deploy: "before",
+    env,
+    file: `.claude/tasks/${env}/${id}-task.md`,
+    flags: [],
+    id,
+    stale: false,
+    title,
+    twin: null,
+    type: "blocking",
+    ...more,
+  };
+}
+
+/** The deploy tasks of a project with nothing left over: no broken, duplicate or old file. */
+export function deployFiles(
+  tasks: ProjectTaskRow[],
+  more: Partial<Extract<ProjectTaskFiles, { state: "ready" }>> = {},
+): ProjectTaskFiles {
+  return {
+    broken: 0,
+    closed: 0,
     dir: ".claude/tasks",
+    duplicateIds: [],
+    envs: ["staging", "prod"],
+    old: 0,
     staleDays: 30,
     state: "ready",
-    tasks: [
-      {
-        created: "2026-10-30",
-        file: ".claude/tasks/T-7k2m4q-live-key.md",
-        flags: ["needs-yes", "a-flag-of-its-own"],
-        id: "T-7k2m4q",
-        kind: "production",
-        stale: false,
-        title: "Set the live key",
-        weight: "blocks-release",
-        when: "next-release",
-      },
-      {
-        created: "2026-09-01",
-        file: ".claude/tasks/T-z5h8ks-retire.md",
-        flags: [],
-        id: "T-z5h8ks",
-        kind: "follow-up",
+    tasks,
+    ...more,
+  };
+}
+
+/** A full project: the plan with its phase, a done task with work left open, and deploy tasks. */
+export const FULL: ProjectTasksData = {
+  files: deployFiles(
+    [
+      deployTask("staging-20260901-080000", "Retire the old service", {
+        created: "2026-09-01T08:00:00Z",
+        deploy: "after",
+        file: ".claude/tasks/staging/staging-20260901-080000-retire.md",
         stale: true,
-        title: "Retire the old service",
-        weight: null,
-        when: null,
-      },
+        type: "non-blocking",
+      }),
+      deployTask("prod-20261030-091500", "Set the live key", {
+        flags: ["needs-yes", "a-flag-of-its-own"],
+        twin: { id: "staging-20261030-091500", status: "done" },
+      }),
     ],
-  },
+    { broken: 1, closed: 4 },
+  ),
   work: {
     more: 2,
     recentDays: 7,

@@ -16,6 +16,14 @@
  * lines first (`src/project/init.ts`). Its old flags (`--prefix`, `--setup`, `--no-setup`,
  * `--engine`) are refused, exit 2.
  *
+ * **The deploy skill** (D8, `src/project/deploy-skill.ts`): the plan also shows the kit's
+ * managed block in the project's deploy skill and writes it with the project's files, the
+ * text around it untouched. `--deploy-skill <path>` names the file, `--no-deploy-block` takes
+ * the block out. A project with no deploy skill at all is asked once, yes by default, whether to
+ * create `.claude/skills/deploy/SKILL.md` (the starter text, `deploySkillStarter`); `--yes` says
+ * yes, `--no-deploy-block` no file, and a path already there is never overwritten. The portal's
+ * Project card never writes it: it plans through `planProjectInit` alone.
+ *
  * **Every question has a flag**, so a run with no terminal and `--yes` writes the whole file
  * from the flags and the defaults. With no terminal and no `--yes`, nothing is written: the
  * plan is printed and the line to run is named. Nothing is ever committed.
@@ -23,12 +31,21 @@
  * Nothing here touches a network: `gh api` is read-only, runs only when `gh` is on PATH, and
  * quietly says nothing when it fails.
  */
-import { existsSync, readFileSync } from "node:fs";
-import { join, relative } from "node:path";
+import { existsSync, readFileSync, statSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { VERSION } from "../build-info";
 import { COMMAND } from "../build-info/names";
 import { runGit, runGitAsync } from "../hooks/git";
 import { WORKTREE_ENGINE_RETIRED_IN } from "../project/config";
+import {
+  applyDeploySkill,
+  type DeploySkillPlan,
+  findDeploySkills,
+  planDeploySkill,
+  planNewDeploySkill,
+  shownPath,
+  skillsFolderLink,
+} from "../project/deploy-skill";
 import {
   applyProjectInit,
   type ProjectInitAnswers,
@@ -38,6 +55,7 @@ import {
 } from "../project/init";
 import { isObject } from "../setup/managed-json";
 import { parseUserJson } from "../setup/user-json";
+import { realTarget } from "../setup/write";
 import { personalWorkflowOrDefault } from "../workflow/resolve";
 import {
   isSwitchKey,
@@ -55,6 +73,8 @@ type Env = Record<string, string | undefined>;
 export interface ProjectInitContext {
   /** The repo root to write into: `<root>/.claude/`. */
   root: string;
+  /** The folder a relative `--deploy-skill` path is typed from; the process's own when left out. */
+  cwd?: string;
   env: Env;
   stateDir: string;
   home: string;
@@ -308,6 +328,10 @@ export interface ProjectInitFlags {
   jobRoute?: boolean;
   /** The workflow policy, as the `key=value` words `--workflow` was given. */
   workflow?: string[];
+  /** The deploy skill to put the block in (or take it out of), from `--deploy-skill`. */
+  deploySkill?: string;
+  /** `--no-deploy-block`: take the deploy block out instead of putting it in. */
+  noDeployBlock?: boolean;
 }
 
 /** The flags, or one line saying which one is wrong. */
@@ -379,6 +403,13 @@ export function parseFlags(argv: string[]): { flags: ProjectInitFlags } | { erro
         case "--job-route":
         case "--no-job-route":
           flags.jobRoute = arg === "--job-route";
+          break;
+        case "--deploy-skill":
+          flags.deploySkill = words(arg, argv[index + 1]);
+          index += 1;
+          break;
+        case "--no-deploy-block":
+          flags.noDeployBlock = true;
           break;
         case "--workflow": {
           // One word, comma separated: `--workflow openPr=draft,alerts.usagePercent=90`.
@@ -690,11 +721,17 @@ function planLine(line: string): { mark: Mark; text: string } {
  * change one line with its mark, and what to know (`plan.notes`) as `!` lines under the
  * project's file, whose policy they are about. Returns how many files the plan writes.
  */
-function printPlan(plan: ProjectInitPlan, context: ProjectInitContext): number {
-  const shown = (file: string) => relative(context.root, file);
+function printPlan(
+  plan: ProjectInitPlan,
+  context: ProjectInitContext,
+  skills: DeploySkillChoice,
+): number {
+  const shown = (file: string) => shownPath(context.root, file);
   const settings = [plan.settings, plan.localSettings].filter((one) => one.changed);
   const titleWidth = Math.max(
-    ...[plan.file, ...settings.map((one) => one.file)].map((file) => shown(file).length),
+    ...[plan.file, ...settings.map((one) => one.file), ...skills.plans.map((one) => one.file)].map(
+      (file) => shown(file).length,
+    ),
   );
   const notes = plan.notes.map((note) => ({ mark: "warn" as const, text: note }));
   context.out.group(
@@ -720,7 +757,31 @@ function printPlan(plan: ProjectInitPlan, context: ProjectInitContext): number {
       one.lines.map(planLine),
     );
   }
-  return (plan.changed ? 1 : 0) + settings.length;
+  // The deploy skill's block: its own group, the lines of the block only (never the text
+  // around it), and a refusal named with its reason.
+  for (const one of skills.plans) {
+    const problem = one.problem;
+    context.out.group(
+      {
+        mark: problem === null ? "info" : "warn",
+        summary:
+          problem !== null
+            ? "not changed"
+            : one.action === "create"
+              ? `new file, ${plural(one.text.trimEnd().split("\n").length, "line", "lines")}`
+              : one.changed
+                ? `${one.diff.length} to change in its deploy block`
+                : "no change",
+        title: shown(one.file),
+        titleWidth,
+      },
+      problem === null ? one.diff.map(planLine) : [{ mark: "warn", text: problem }],
+    );
+  }
+  for (const note of skills.notes) context.out.line("info", note);
+  return (
+    (plan.changed ? 1 : 0) + settings.length + skills.plans.filter((one) => one.changed).length
+  );
 }
 
 /** The files' text, or null when a file is not there. */
@@ -754,6 +815,121 @@ function personalWorkflow(env: Env): Workflow {
   return personalWorkflowOrDefault(cliPaths(env));
 }
 
+/** What `project init` does about the deploy skill (D8; `src/project/deploy-skill.ts`). */
+interface DeploySkillChoice {
+  /** One plan for each file the block goes into, or comes out of. */
+  plans: DeploySkillPlan[];
+  /** What to know, printed as `·` lines under the plan. */
+  notes: string[];
+  /** True when a plan puts the block in or keeps it: `requires` follows (`ProjectInitExtras`). */
+  keepsBlock: boolean;
+}
+
+/** The place of an answer in `shown`: a number from 1, or a path from the list; `none` is null; else undefined. */
+function pickedSkill(answer: string, shown: string[]): number | null | undefined {
+  const word = answer.trim();
+  if (word.toLowerCase() === NONE) return null;
+  const byNumber = /^\d+$/.test(word) ? Number(word) - 1 : -1;
+  const index = byNumber >= 0 ? byNumber : shown.indexOf(word);
+  return index >= 0 && index < shown.length ? index : undefined;
+}
+
+/** The one question about the deploy skill, asked when several files name one. */
+function askedDeploySkill(prompts: Prompts, shown: string[]): number | null {
+  const listing = shown.map((path, index) => `${index + 1}) ${path}`).join("  ");
+  const answer = prompts.ask(
+    `Deploy skill: which file gets the deploy block? ${listing} ("${NONE}" to skip)`,
+    {
+      default: NONE,
+      check: (typed) =>
+        pickedSkill(typed, shown) === undefined
+          ? `a number from 1 to ${shown.length}, a path from the list, or "${NONE}"`
+          : null,
+    },
+  );
+  return pickedSkill(answer, shown) ?? null;
+}
+
+/**
+ * The deploy skill files for this run, planned. `--deploy-skill` names one file. Otherwise
+ * the files that already hold the block are the ones (kept current, or taken out with
+ * `--no-deploy-block`); with none, the one skill that names a deploy; with several, one
+ * question, asked with the others, or a note when nobody can be asked. A block that would be
+ * added to a file that has none is asked once more (yes by default): `--yes`,
+ * `--deploy-skill` and a pick from the list already say yes, `--no-deploy-block` is a no.
+ */
+function chosenDeploySkills(
+  context: ProjectInitContext,
+  flags: ProjectInitFlags,
+  prompts: Prompts | null,
+): DeploySkillChoice {
+  const root = context.root;
+  const mode = flags.noDeployBlock === true ? "remove" : "write";
+  const notes: string[] = [];
+  let files: string[] = [];
+  let askBeforeAdding = false;
+  // A new file when the project has no deploy skill at all (D8): planned below, asked like an add.
+  let fresh: DeploySkillPlan | null = null;
+  const found = findDeploySkills(root);
+  if (flags.deploySkill !== undefined) {
+    const file = resolve(context.cwd ?? process.cwd(), flags.deploySkill);
+    files = [file];
+    const others = found.holders.filter((holder) => realTarget(holder) !== realTarget(file));
+    if (others.length > 0) {
+      notes.push(
+        `the deploy block is also in ${others.map((other) => shownPath(root, other)).join(", ")}: left as it is`,
+      );
+    }
+  } else if (mode === "remove") {
+    files = found.holders;
+    if (files.length === 0) {
+      notes.push(
+        skillsFolderLink(root) ?? "no deploy block found in .claude/skills: nothing to remove",
+      );
+    }
+  } else if (found.holders.length > 0) {
+    files = found.holders;
+  } else if (found.named.length === 0) {
+    const made = planNewDeploySkill(root);
+    if ("plan" in made) {
+      fresh = made.plan;
+      notes.push(...made.notes);
+    } else {
+      notes.push(made.note);
+    }
+  } else if (found.named.length === 1) {
+    files = found.named;
+    askBeforeAdding = true;
+  } else {
+    const shown = found.named.map((file) => shownPath(root, file));
+    if (prompts === null) {
+      notes.push(
+        `several deploy skills found (${shown.join(", ")}); --deploy-skill <path> names one`,
+      );
+    } else {
+      const picked = askedDeploySkill(prompts, shown);
+      const file = picked === null ? undefined : found.named[picked];
+      if (file !== undefined) files = [file];
+    }
+  }
+  let plans = fresh !== null ? [fresh] : files.map((file) => planDeploySkill(root, file, mode));
+  const adding = plans.find((plan) => plan.action === "add");
+  const question =
+    fresh !== null
+      ? `Create a deploy skill at ${fresh.shown}, with the kit's deploy-task section?`
+      : askBeforeAdding && adding !== undefined
+        ? `Add the kit's deploy-task section to ${adding.shown}?`
+        : null;
+  if (question !== null && prompts !== null && !prompts.confirm(question, true)) {
+    plans = [];
+  }
+  return {
+    plans,
+    notes,
+    keepsBlock: mode === "write" && plans.some((plan) => plan.action !== "refused"),
+  };
+}
+
 export const PROJECT_INIT_USAGE = `Usage: ${COMMAND} project init [--dry-run] [--yes] [flags]
 
 Writes this project's .claude/cc-smart-dev-kit.json, and, when the base branch is not the
@@ -780,6 +956,12 @@ the project.
   --[no-]session-names   each session names itself after its task (or not)
   --[no-]job-route       send heavy commands through the job queue (or not)
   --workflow <k=v,k=v>   the workflow policy, over your own defaults
+  --deploy-skill <path>  the deploy skill that gets the kit's deploy block (a managed section,
+                         the text around it untouched). Default: the skill that already holds
+                         it, else the one .claude/skills/*/SKILL.md that names a deploy; with
+                         several, one question (with --yes, a note and no write); with none,
+                         a new .claude/skills/deploy/SKILL.md (asked, yes by default)
+  --no-deploy-block      take the deploy block out of the deploy skill (and create no skill)
   --dry-run              print the plan of the flags and the defaults (no questions), and
                          write nothing
   --yes                  no questions: write the flags and the defaults
@@ -808,6 +990,15 @@ export async function runProjectInit(
     return 2;
   }
   const flags = parsed.flags;
+  if (
+    flags.deploySkill !== undefined &&
+    statSync(resolve(context.cwd ?? process.cwd(), flags.deploySkill), {
+      throwIfNoEntry: false,
+    })?.isFile() !== true
+  ) {
+    context.error(`--deploy-skill: ${flags.deploySkill} is not a file\n\n${PROJECT_INIT_USAGE}`);
+    return 2;
+  }
   const file = join(context.root, ".claude", "cc-smart-dev-kit.json");
   const existing = readText(file);
   const facts = await detectFacts(runner, context.root);
@@ -819,30 +1010,37 @@ export async function runProjectInit(
   out.blank();
   let answers: ProjectInitAnswers;
   let plan: ProjectInitPlan;
+  let skills: DeploySkillChoice;
   try {
     answers = defaultAnswers(readExisting(file), facts, flags);
     if (prompts !== null) {
       out.say(QUESTIONS_INTRO);
       answers = askedAnswers(prompts, answers);
-      out.blank();
     }
-    plan = planProjectInit({
-      root: context.root,
-      existing,
-      existingSettings: readText(join(context.root, ".claude", "settings.json")),
-      existingLocalSettings: readText(join(context.root, ".claude", "settings.local.json")),
-      defaultBranch: facts.defaultBranch,
-      answers,
-      // D16's clash warning judges the policy the guards will see, so the person's own file
-      // comes with it. A file that cannot be read is no policy here (the guards ask about it
-      // themselves); the plan must still run.
-      personalWorkflow: personalWorkflow(context.env),
-    });
+    // The deploy skill's question, when several files name one, comes with the others: nothing
+    // is written before every question is answered.
+    skills = chosenDeploySkills(context, flags, prompts);
+    if (prompts !== null) out.blank();
+    plan = planProjectInit(
+      {
+        root: context.root,
+        existing,
+        existingSettings: readText(join(context.root, ".claude", "settings.json")),
+        existingLocalSettings: readText(join(context.root, ".claude", "settings.local.json")),
+        defaultBranch: facts.defaultBranch,
+        answers,
+        // D16's clash warning judges the policy the guards will see, so the person's own file
+        // comes with it. A file that cannot be read is no policy here (the guards ask about it
+        // themselves); the plan must still run.
+        personalWorkflow: personalWorkflow(context.env),
+      },
+      { deployBlock: skills.keepsBlock },
+    );
   } catch (error) {
     context.error(error instanceof Error ? error.message : String(error));
     return 1;
   }
-  const files = printPlan(plan, context);
+  const files = printPlan(plan, context, skills);
   out.blank();
   if (files === 0) {
     out.verdict("ok", "Nothing to change.");
@@ -872,15 +1070,34 @@ export async function runProjectInit(
     context.error(error instanceof Error ? error.message : String(error));
     return 1;
   }
+  // A deploy skill that changed since the plan, or cannot be written, stops only its own
+  // write: the project's files are already down, and the rest of the run goes on.
+  let skillFailures = 0;
+  for (const one of skills.plans) {
+    try {
+      const write = applyDeploySkill(context.root, one, { stateDir: context.stateDir });
+      if (write !== null) writes.push(write);
+    } catch (error) {
+      skillFailures += 1;
+      context.error(error instanceof Error ? error.message : String(error));
+    }
+  }
   for (const write of writes) {
-    const shown = relative(context.root, write.file);
+    const shown = shownPath(context.root, write.file);
     out.line(
       write.created ? "created" : "changed",
       `${shown}: ${write.created ? "created" : "changed"}`,
     );
   }
   out.blank();
-  out.verdict("ok", `Done: ${plural(writes.length, "file", "files")} written.`);
+  if (skillFailures > 0) {
+    out.verdict(
+      "fail",
+      `${plural(writes.length, "file", "files")} written, ${plural(skillFailures, "deploy skill", "deploy skills")} not written.`,
+    );
+  } else {
+    out.verdict("ok", `Done: ${plural(writes.length, "file", "files")} written.`);
+  }
   // The plan's text is JSON this command wrote; the one user-JSON reader keeps the read
   // here the same one every reader of the file uses.
   const requires =
@@ -888,8 +1105,8 @@ export async function runProjectInit(
   // `.claude/settings.local.json` is each person's own (Claude Code keeps it out of git): it is
   // never one of the files to commit.
   const shared = writes
-    .map((write) => relative(context.root, write.file))
-    .filter((shown) => shown !== relative(context.root, plan.localSettings.file));
+    .map((write) => shownPath(context.root, write.file))
+    .filter((shown) => shown !== shownPath(context.root, plan.localSettings.file));
   out.blank();
   out.next([
     ...(shared.length === 0
@@ -902,5 +1119,5 @@ export async function runProjectInit(
         ]),
     `Tell your teammates: the file asks for ${COMMAND} ${requires}, so each of them needs that plugin version or newer.`,
   ]);
-  return 0;
+  return skillFailures > 0 ? 1 : 0;
 }

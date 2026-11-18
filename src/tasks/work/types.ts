@@ -42,6 +42,16 @@ export interface WorkClaim {
   procStart: string | null;
   sessionId: string | null;
 }
+/**
+ * The two questions about a claim's process. `live`: does it run, proved (a claim not proved
+ * live is free to take). `gone`: is it proved to have ended (only then may the caller's own
+ * session move the claim to itself). A process that runs but cannot be proved either way is
+ * neither.
+ */
+export interface ClaimProcess {
+  live(claim: WorkClaim): boolean;
+  gone(claim: WorkClaim): boolean;
+}
 export interface WorkTask {
   id: string;
   number: number;

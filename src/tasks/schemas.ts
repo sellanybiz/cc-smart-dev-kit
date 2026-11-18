@@ -1,17 +1,17 @@
 import { isAbsolute } from "node:path";
 import { z } from "zod";
-import { projectTaskSchema } from "./project/format";
+import { DEPLOY_ENVS, DEPLOY_TYPES, deployTaskSchema } from "./deploy/format";
 import { DESCRIPTION_LIMIT, NOTE_LIMIT, SUBJECT_LIMIT } from "./work/types";
 
-const fields = projectTaskSchema.shape;
+const fields = deployTaskSchema.shape;
 const subject = z.string().trim().min(1).max(SUBJECT_LIMIT);
 const description = z.string().max(DESCRIPTION_LIMIT);
 const note = z.string().trim().min(1).max(NOTE_LIMIT);
 const ref = z.string().min(1);
 const type = z
-  .enum(["blocking", "non-blocking"])
+  .enum(DEPLOY_TYPES)
   .describe(
-    "blocking (the default): its parent cannot be done, while it is open. non-blocking: noted work that holds nothing.",
+    "blocking or non-blocking. A work task: blocking (the default) holds its parent while it is open; non-blocking holds nothing. A prod or staging deploy task: required; blocking holds the release gate until it is done, non-blocking is done or dropped with a reason.",
   );
 const blockedBy = z
   .array(ref)
@@ -26,9 +26,13 @@ const bindings = {
     .optional(),
   base: z.string().describe("The commit sha the builder started from.").optional(),
 };
-const projectFields = {
-  when: fields.when,
-  weight: fields.weight,
+/** The fields only a deploy task (kind prod or staging) has; a work task refuses each of them. */
+const deployFields = {
+  deploy: fields.deploy
+    .optional()
+    .describe(
+      "Deploy task only, required there: when the step is owed, before or after the deploy.",
+    ),
   flags: fields.flags,
   refs: fields.refs,
   from: fields.from,
@@ -39,7 +43,18 @@ export const taskSchemas = {
       subject,
       ...bindings,
       description: description.optional(),
-      kind: z.enum(["work", ...fields.kind.options]).default("work"),
+      kind: z
+        .enum(["work", ...DEPLOY_ENVS])
+        .default("work")
+        .describe(
+          "work (the default): a task on this machine. prod or staging: a deploy task, a step owed around a deploy, written as a file to commit with your branch (deploy and type are then required).",
+        ),
+      pair: z
+        .boolean()
+        .optional()
+        .describe(
+          "Deploy task only, with kind staging: also create the prod task, each naming the other as its twin.",
+        ),
       parent: ref
         .optional()
         .describe(
@@ -57,7 +72,7 @@ export const taskSchemas = {
         .describe(
           "The plan's slug. For a phase it defaults to the caller's plan in flight, else the plan being finished, else the next queued plan (the lowest-numbered own open plan with an open phase), else its latest own open plan, never an older one; with no open default a phase needs plan. With no phase or parent, it makes the plan task. A task with neither plan nor parent is loose, whatever plans are open; to add a task to a plan, name its phase, or its plan, as parent.",
         ),
-      ...projectFields,
+      ...deployFields,
     })
     .strict(),
   take: z
@@ -73,12 +88,17 @@ export const taskSchemas = {
       ...bindings,
       subject: subject.optional(),
       description: description.optional(),
-      status: z.enum(["pending", "in_progress", "done", "dropped"]).optional(),
+      status: z
+        .enum(["pending", "in_progress", "done", "dropped", "open"])
+        .optional()
+        .describe(
+          "open reopens a closed deploy task (a deploy that was rolled back); a work task has pending and in_progress. Close a task with task_done.",
+        ),
       parent: ref.nullable().optional(),
       type: type.optional(),
       blocked_by_add: blockedBy.optional(),
       blocked_by_remove: z.array(ref).optional(),
-      ...projectFields,
+      ...deployFields,
     })
     .strict(),
   done: z
@@ -87,7 +107,6 @@ export const taskSchemas = {
       outcome: z.enum(["done", "dropped"]).default("done"),
       evidence: note.optional(),
       note: note.optional(),
-      for_everyone: z.boolean().optional(),
     })
     .strict(),
   note: z.object({ task: ref, text: note }).strict(),
@@ -114,3 +133,5 @@ export const taskSchemas = {
   delete: z.object({ task: ref }).strict(),
 };
 export type TaskOperation = keyof typeof taskSchemas;
+/** The operations that change nothing: the MCP read-only hint, and a read answers even when the caller's claims cannot be moved (`ops.ts`). */
+export const READ_ONLY_OPERATIONS: ReadonlySet<TaskOperation> = new Set(["list", "get", "search"]);

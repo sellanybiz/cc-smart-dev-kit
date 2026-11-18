@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdirSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { cleanGitEnv, git, tempDir } from "../testing/temp";
-import { DEFAULT_RELEASE_BRANCH, taskContext, taskContextAsync } from "./context";
+import { taskContext, taskContextAsync } from "./context";
 
 function repoWith(config: unknown | null): string {
   const dir = realpathSync(tempDir());
@@ -28,40 +28,38 @@ test("a worktree and its main checkout share one project; files go in the worktr
   expect(work.repo).toBe(dir);
   expect(work.checkoutRoot).toBe(wt);
   if (!work.projectTasks.ok) throw new Error("expected project tasks");
-  const { releaseBranch: _lookup, ...settings } = work.projectTasks;
-  expect(settings).toEqual({
+  expect(work.projectTasks).toEqual({
     ok: true,
     dir: join(wt, ".claude", "tasks"),
     staleDays: 30,
-    legacyFolders: [],
+    envs: ["staging", "prod"],
   });
 });
 
-test("the project's tasks settings, and the release branch from the project, origin/HEAD, or main", () => {
+test("the project's tasks settings: folder, stale age and environments", () => {
+  const dir = repoWith({ tasks: { dir: "docs/tasks", staleDays: 7, envs: ["prod"] } });
+  const context = taskContext(dir, cleanGitEnv());
+  if (!context.ok || !context.projectTasks.ok) throw new Error("expected project tasks");
+  expect(context.projectTasks).toEqual({
+    ok: true,
+    dir: join(dir, "docs", "tasks"),
+    staleDays: 7,
+    envs: ["prod"],
+  });
+});
+
+test("the release branch and old notes folders still load, and nothing reads them", () => {
   const dir = repoWith({
-    tasks: { dir: "docs/tasks", staleDays: 7, legacyFolders: [".claude/db-notes"] },
+    tasks: { releaseBranch: "release", legacyFolders: [".claude/db-notes"] },
   });
   const context = taskContext(dir, cleanGitEnv());
   if (!context.ok || !context.projectTasks.ok) throw new Error("expected project tasks");
-  expect(context.projectTasks.dir).toBe(join(dir, "docs", "tasks"));
-  expect(context.projectTasks.staleDays).toBe(7);
-  expect(context.projectTasks.legacyFolders).toEqual([".claude/db-notes"]);
-  expect(context.projectTasks.releaseBranch()).toBe(DEFAULT_RELEASE_BRANCH);
-  expect(DEFAULT_RELEASE_BRANCH).toBe("main");
-
-  const remote = repoWith(null);
-  git(remote, "branch", "stable");
-  const clone = join(realpathSync(tempDir()), "clone");
-  git(dir, "clone", "--quiet", remote, clone);
-  git(clone, "remote", "set-head", "origin", "stable");
-  const cloned = taskContext(clone, cleanGitEnv());
-  if (!cloned.ok || !cloned.projectTasks.ok) throw new Error("expected project tasks");
-  expect(cloned.projectTasks.releaseBranch()).toBe("stable");
-
-  const named = repoWith({ tasks: { releaseBranch: "release" } });
-  const own = taskContext(named, cleanGitEnv());
-  if (!own.ok || !own.projectTasks.ok) throw new Error("expected project tasks");
-  expect(own.projectTasks.releaseBranch()).toBe("release");
+  expect(context.projectTasks).toEqual({
+    ok: true,
+    dir: join(dir, ".claude", "tasks"),
+    staleDays: 30,
+    envs: ["staging", "prod"],
+  });
 });
 
 test("a broken project file leaves the work store usable and says why project tasks are not", () => {
@@ -83,7 +81,7 @@ test("outside git: the folder is its own project, with no project tasks", () => 
   expect(context.project).toMatch(/^[0-9a-f]{16}$/);
   expect(context.projectTasks).toEqual({
     ok: false,
-    why: "not in a git checkout: project tasks live in a repository",
+    why: "not in a git checkout: deploy tasks live in a repository",
   });
 });
 

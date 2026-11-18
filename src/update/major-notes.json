@@ -2,5 +2,6 @@
   "1.0.0": "it refuses old project fields",
   "2.0.0": "it removes the crew: finish crew work first",
   "3.0.0": "it removes Warp support, custom notifications and Needs you; manual setup offers the Herdr GUI",
-  "4.0.0": "tasks drop subtasks (the task store moves them up, after a backup), and the task tools take a plan's name"
+  "4.0.0": "tasks drop subtasks (the task store moves them up, after a backup), and the task tools take a plan's name",
+  "5.0.0": "project tasks become prod and staging deploy tasks (old task files are no longer read), follow-ups become GitHub issues, and issues are on by default"
 }

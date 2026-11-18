@@ -110,8 +110,8 @@ React Compiler memoizes components and hooks at build time, so hand-written `use
   bundler's config.
 - **A new app** turns it on in its first setup.
 - **An existing app with it off:** turning it on is its own change, never a side step inside
-  another task. Say so in one line and offer to do it now or file it as a follow-up project
-  task (the core instructions' one-plan rule).
+  another task. Say so in one line and offer to do it now or file it as an issue
+  (the core instructions' one-plan rule).
 - **The setup** comes from the official pages for the project's build tool and React version:
   [react.dev/learn/react-compiler/installation](https://react.dev/learn/react-compiler/installation),
   and for Next.js its
@@ -125,7 +125,7 @@ React Compiler memoizes components and hooks at build time, so hand-written `use
   2. Fix what the lint finds in a small app. In a large one, roll out in parts, as
      [react.dev/learn/react-compiler/incremental-adoption](https://react.dev/learn/react-compiler/incremental-adoption)
      shows (by folder, or `compilationMode: 'annotation'` with `"use memo"`), and file the
-     rest as a follow-up project task.
+     rest as an issue (`/cc-smart-dev-kit:tasks`).
   3. Turn it on, run the full tests and the build, and check the main screens
      (`/cc-smart-dev-kit:ui-verify`).
 - **Keep the memoization already there.** The React docs warn that removing it can change the

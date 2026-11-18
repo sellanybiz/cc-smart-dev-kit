@@ -68,8 +68,9 @@ export function openPrRefusal(
 }
 
 /**
- * Why `issue file` refuses, or null when `issues.enabled` is on. An issue is text that leaves
- * the machine for GitHub, so the kit files none until the person says so (D67).
+ * Why `issue file` refuses, or null when `issues.enabled` is on. The switch is on by default
+ * (the owner's choice, 5.0.0), so this refuses only where a person or project set it off. An
+ * issue is text that leaves the machine for GitHub (D67).
  */
 export function issuesOff(resolved: ResolvedWorkflow, base: string | null): string | null {
   if (resolved.issues.enabled.value) return null;

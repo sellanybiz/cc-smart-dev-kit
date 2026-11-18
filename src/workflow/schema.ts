@@ -171,15 +171,16 @@ export const workflowSchema = z.strictObject({
     })
     .optional(),
   /**
-   * GitHub Issues, opt-in (decision D67): the kit files follow-ups and findings as issues in the
-   * project's own repository (`cc-smart-dev-kit issue file`, `src/issues/`). Off by default, like
-   * `autoPush` and `openPr`: an issue leaves the machine. Read as the other outward switches are,
-   * from the person's file and the project's file **as committed on `origin/<base>`**
-   * (`resolveGate`), never a working copy a session can edit.
+   * GitHub Issues (decision D67): the kit files follow-ups and findings as issues in the
+   * project's own repository (`cc-smart-dev-kit issue file`, `src/issues/`). On by default since
+   * 5.0.0 (D7 of the deploy-tasks plan): the owner chose it, for projects that have a kit config.
+   * `allowPublic` stays off, so a public repository still needs its own yes. Read as the other
+   * outward switches are, from the person's file and the project's file **as committed on
+   * `origin/<base>`** (`resolveGate`), never a working copy a session can edit.
    */
   issues: z
     .strictObject({
-      /** The kit may file issues here. Default: false. */
+      /** The kit may file issues here. Default: true. */
       enabled: z.boolean().optional(),
       /** It may file them in a public repository, where everyone reads them. Default: false. */
       allowPublic: z.boolean().optional(),
@@ -264,9 +265,10 @@ export const workflowDefaults = {
     percent: 20,
   },
   clearWorktreeAfterMerge: true,
-  // Off by default (D67): an issue is public text in a repository, so each switch is the person's.
+  // The switch is on by default, the owner's choice (D7 of the deploy-tasks plan); a public
+  // repository stays behind its own yes, so `allowPublic` is off (D67).
   issues: {
-    enabled: false,
+    enabled: true,
     allowPublic: false,
     foundLabel: "kit:found",
     fixedLabel: "fixed-unreleased",
@@ -356,8 +358,9 @@ export const REVIEW_GATE_KEYS: readonly WorkflowKey[] = [
 
 /**
  * The settings that let text leave the machine for GitHub (`issues.enabled`, `issues.allowPublic`).
- * `workflow set` and `unset` refuse them inside Claude Code (`commands.ts`), as they do a
- * review-gate key: a session must not turn on its own way out. `propose` stays open: its pull
+ * `issues.enabled` is on by default, the owner's choice; these keys are still the person's to
+ * change. `workflow set` and `unset` refuse them inside Claude Code (`commands.ts`), as they do a
+ * review-gate key: a session must not change its own way out. `propose` stays open: its pull
  * request is reviewed and merged by a person.
  */
 export const OUTBOUND_KEYS: readonly WorkflowKey[] = ["issues.enabled", "issues.allowPublic"];

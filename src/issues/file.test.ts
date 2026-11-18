@@ -33,16 +33,24 @@ function refusal(outcome: IssueOutcome): string {
 }
 
 describe("the switch", () => {
-  test("off by default: refused, with how to turn it on, and gh is never called", async () => {
-    const { gh, world: w } = world({ committed: { worktrees: { base: "main" } } });
+  const OFF = { worktrees: { base: "main" }, workflow: { issues: { enabled: false } } };
+
+  test("on by default: a project with a config files, with no setting at all", async () => {
+    const { world: w } = world({ committed: { worktrees: { base: "main" } } });
+    expect((await fileIssue(w, REQUEST)).kind).toBe("filed");
+  });
+
+  test("set off in the project's file: refused, with how to turn it on, and gh is never called", async () => {
+    const { gh, world: w } = world({ committed: OFF });
     const why = refusal(await fileIssue(w, REQUEST));
-    expect(why).toContain("issues.enabled is off (default)");
+    expect(why).toContain("issues.enabled is off (");
+    expect(why).not.toContain("(default)");
     expect(why).toContain("workflow set issues.enabled true");
     expect(why).toContain(`"workflow": {"issues": {"enabled": true}}`);
     expect(gh.calls).toEqual([]);
   });
 
-  test("on from the person's own file", async () => {
+  test("on from the person's own file, set explicitly", async () => {
     const { world: w } = world({
       committed: { worktrees: { base: "main" } },
       personal: { issues: { enabled: true } },
@@ -57,10 +65,10 @@ describe("the switch", () => {
 
   test("a working-copy edit does not count: the committed file says off", async () => {
     const { gh, world: w } = world({
-      committed: { worktrees: { base: "main" } },
+      committed: OFF,
       workingCopy: { worktrees: { base: "main" }, workflow: { issues: { enabled: true } } },
     });
-    expect(refusal(await fileIssue(w, REQUEST))).toContain("issues.enabled is off (default)");
+    expect(refusal(await fileIssue(w, REQUEST))).toContain("issues.enabled is off (");
     expect(gh.calls).toEqual([]);
   });
 

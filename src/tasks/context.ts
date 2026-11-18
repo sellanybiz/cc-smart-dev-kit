@@ -1,20 +1,19 @@
 /**
  * Where a folder's tasks live (D75, `docs/design/tasks.md`): the one place that turns a working
- * folder into the work store's project key, the checkout new project task files are written in,
+ * folder into the work store's project key, the checkout new deploy task files are written in,
  * and the project's `tasks` settings. The server, the `task` command, the hooks and `doctor`
  * all read it, so a session, its worktrees and the person's own terminal agree on one
  * project.
  *
  * - **The project key** is the main checkout's `repoKey`, so every worktree of a
  *   repo shares one list. A folder outside git is its own project, by its real path.
- * - **Project task files** go into the checkout the folder is in (a worktree's own root), so a
+ * - **Deploy task files** go into the checkout the folder is in (a worktree's own root), so a
  *   task ships in that branch's commit and pull request.
- * - **A broken or too-new project file** leaves the work store usable: only the project tasks
+ * - **A broken or too-new project file** leaves the work store usable: only the deploy tasks
  *   are unavailable, with the reason. Git that cannot answer is an error: a guessed key would
  *   split one project's tasks in two.
  */
 import { realpathSync } from "node:fs";
-import { runGit } from "../hooks/git";
 import type { Env } from "../hooks/run";
 import type { CcSmartDevKitConfig } from "../project/config";
 import {
@@ -26,14 +25,9 @@ import {
   type ResolveOptions,
 } from "../project/resolve";
 import { repoKey } from "../workflow/reviews";
-import { DEFAULT_STALE_DAYS } from "./project/check";
-import { projectTasksDir } from "./project/files";
-
-/** The branch a release ships from when neither the project nor `origin/HEAD` names one. */
-export const DEFAULT_RELEASE_BRANCH = "main";
-
-/** How long the `origin/HEAD` lookup may take. */
-const RELEASE_BRANCH_GIT_TIMEOUT_MS = 5_000;
+import { DEFAULT_STALE_DAYS } from "./deploy/check";
+import { deployTasksDir } from "./deploy/files";
+import { DEPLOY_ENVS, type DeployEnv } from "./deploy/format";
 
 export type ProjectTasks =
   | {
@@ -42,10 +36,8 @@ export type ProjectTasks =
       dir: string;
       /** When an open task counts as stale (`tasks.staleDays`, default 30). */
       staleDays: number;
-      /** The old notes folders `task check` watches for new files (`tasks.legacyFolders`). */
-      legacyFolders: string[];
-      /** The branch a release ships from: the project's, else `origin/HEAD`, else `main`. Asks git. */
-      releaseBranch: () => string;
+      /** The environments the project deploys to (`tasks.envs`, default both). */
+      envs: readonly DeployEnv[];
     }
   | { ok: false; why: string };
 
@@ -84,13 +76,12 @@ export function taskContext(cwd: string, env: Env = process.env): TaskContext {
   } catch (error) {
     return { ok: false, why: checkoutFailure(error) };
   }
-  return contextOf(checkout, cwd, env);
+  return contextOf(checkout, cwd);
 }
 
 /**
  * `taskContext`, without blocking: the same answer, with git read through `Bun.spawn`, for the
- * portal's server, where a blocking spawn freezes every page (`.claude/rules/portal.md`). Its
- * `releaseBranch()` still asks git directly: the portal never calls it.
+ * portal's server, where a blocking spawn freezes every page (`.claude/rules/portal.md`).
  */
 export async function taskContextAsync(cwd: string, env: Env = process.env): Promise<TaskContext> {
   let checkout: Checkout | null;
@@ -99,7 +90,7 @@ export async function taskContextAsync(cwd: string, env: Env = process.env): Pro
   } catch (error) {
     return { ok: false, why: checkoutFailure(error) };
   }
-  return contextOf(checkout, cwd, env);
+  return contextOf(checkout, cwd);
 }
 
 /** The project key of a checkout already found; outside git (null), the folder's own real path. */
@@ -122,14 +113,14 @@ export function folderProject(
 }
 
 /** The answer for a checkout already found (null: the folder is not in git). */
-function contextOf(checkout: Checkout | null, cwd: string, env: Env): TaskContext {
+function contextOf(checkout: Checkout | null, cwd: string): TaskContext {
   if (checkout === null) {
     return {
       ok: true,
       project: keyOf(null, cwd),
       repo: null,
       checkoutRoot: null,
-      projectTasks: { ok: false, why: "not in a git checkout: project tasks live in a repository" },
+      projectTasks: { ok: false, why: "not in a git checkout: deploy tasks live in a repository" },
       projectConfig: { ok: true, config: null },
     };
   }
@@ -154,20 +145,9 @@ function contextOf(checkout: Checkout | null, cwd: string, env: Env): TaskContex
     projectConfig: { ok: true, config },
     projectTasks: {
       ok: true,
-      dir: projectTasksDir(root, settings?.dir === undefined ? {} : { dir: settings.dir }),
+      dir: deployTasksDir(root, settings?.dir === undefined ? {} : { dir: settings.dir }),
       staleDays: settings?.staleDays ?? DEFAULT_STALE_DAYS,
-      legacyFolders: settings?.legacyFolders ?? [],
-      releaseBranch: () => {
-        if (settings?.releaseBranch !== undefined) return settings.releaseBranch;
-        const head = runGit(
-          root,
-          ["rev-parse", "--abbrev-ref", "origin/HEAD"],
-          env,
-          RELEASE_BRANCH_GIT_TIMEOUT_MS,
-        );
-        const name = head.ok ? head.out.replace(/^origin\//, "") : "";
-        return name === "" ? DEFAULT_RELEASE_BRANCH : name;
-      },
+      envs: settings?.envs ?? DEPLOY_ENVS,
     },
   };
 }

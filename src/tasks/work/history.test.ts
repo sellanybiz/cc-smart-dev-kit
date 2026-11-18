@@ -3,8 +3,8 @@ import { join } from "node:path";
 import { legacyCreateTask as createTask } from "../../testing/claude-mem-db";
 import { hookEnv } from "../../testing/hooks";
 import { git, tempDir } from "../../testing/temp";
+import { scanDeployTasks } from "../deploy/files";
 import { createTaskOps } from "../ops";
-import { scanProjectTasks } from "../project/files";
 import { openWorkDb, workDbFile } from "./db";
 import { historyText } from "./history";
 import { eventsOf } from "./queries";
@@ -228,8 +228,15 @@ test("a project task's history is its file's git log, across its move into the a
     env,
   });
   try {
-    expect(ops.call("create", { subject: "Migrate the table", kind: "database" }).ok).toBe(true);
-    const task = scanProjectTasks(join(cwd, ".claude/tasks"), { archive: false }).tasks[0];
+    expect(
+      ops.call("create", {
+        subject: "Migrate the table",
+        kind: "prod",
+        deploy: "before",
+        type: "blocking",
+      }).ok,
+    ).toBe(true);
+    const task = scanDeployTasks(join(cwd, ".claude/tasks"), { archive: false }).tasks[0];
     if (!task) throw new Error("missing task");
     const before = ops.call("get", { task: task.id });
     expect(before.ok && before.text.endsWith("\n\nHistory: not committed yet.")).toBe(true);

@@ -1,5 +1,6 @@
 import type { WorkDb } from "./db";
 import type {
+  ClaimProcess,
   Who,
   WorkClaim,
   WorkEvent,
@@ -537,12 +538,49 @@ export function claimHeldBy(claim: WorkClaim | null, who: Who | null | undefined
   if (claim.procStart !== null && who.procStart !== null) return claim.procStart === who.procStart;
   return who.sessionId !== null && claim.sessionId === who.sessionId;
 }
+/**
+ * True when the claim is a dead process's claim that the caller's own session left behind: a
+ * reopened session (`claude --resume`) keeps its session id in a new process, so its running
+ * work names a process that is gone (`docs/claude-code-contract.md`). All must hold: the caller
+ * has a process and a session id, the claim carries that session id, the caller's process does
+ * not hold it (`claimHeldBy`) and its process is proved gone (`isGone`: `claimGone`). A claim of
+ * a process that may still run (two processes opened the same conversation) is never the
+ * caller's.
+ */
+export function resumedClaim(
+  claim: WorkClaim | null,
+  who: Who | null | undefined,
+  isGone: (claim: WorkClaim) => boolean,
+): boolean {
+  return (
+    claim !== null &&
+    who !== null &&
+    who !== undefined &&
+    who.pid !== null &&
+    who.sessionId !== null &&
+    claim.sessionId === who.sessionId &&
+    !claimHeldBy(claim, who) &&
+    isGone(claim)
+  );
+}
+
+/** Whether the claim is the caller's running work: its process holds it, or it is a resumed claim. */
+export function claimIsMine(
+  claim: WorkClaim | null,
+  who: Who | null | undefined,
+  isGone: (claim: WorkClaim) => boolean,
+): boolean {
+  return claimHeldBy(claim, who) || resumedClaim(claim, who, isGone);
+}
+
 export function claimState(
   task: WorkTask,
-  isLive: (claim: WorkClaim) => boolean,
+  process: ClaimProcess,
   who?: Who,
 ): "mine" | "another session" | "free" {
-  if (!task.claim || !isLive(task.claim)) return "free";
+  if (!task.claim) return "free";
+  if (!process.live(task.claim))
+    return resumedClaim(task.claim, who, process.gone) ? "mine" : "free";
   return claimHeldBy(task.claim, who) ? "mine" : "another session";
 }
 

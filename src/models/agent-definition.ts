@@ -1,17 +1,9 @@
-import {
-  closeSync,
-  existsSync,
-  openSync,
-  readdirSync,
-  readFileSync,
-  readSync,
-  realpathSync,
-  statSync,
-} from "node:fs";
+import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { CliPaths } from "../cli/paths";
 import { stringField } from "../hooks/io";
 import { isInsideOnDisk, sameFolderOnDisk } from "../path-compare";
+import { readFrontmatterHeader } from "../project/frontmatter";
 import { installsOfPlugin } from "../setup/installed-plugins";
 
 /** The fields a definition supplies to the launch policy. `inherit` supplies no model. */
@@ -81,42 +73,10 @@ function readable<T>(read: () => T): null | T {
   }
 }
 
-/** Read through the frontmatter closing line, never the agent's body. */
-function frontmatter(file: string): string | null {
-  const fd = openSync(file, "r");
-  try {
-    const byte = Buffer.alloc(1);
-    const lines: string[] = [];
-    let line = "";
-    let opened = false;
-    while (readSync(fd, byte, 0, 1, null) !== 0) {
-      if (byte[0] !== 10) {
-        line += byte.toString("latin1");
-        continue;
-      }
-      const normalized = line.endsWith("\r") ? line.slice(0, -1) : line;
-      if (!opened) {
-        if (normalized !== "---") return null;
-        opened = true;
-      } else if (normalized === "---") {
-        return Buffer.from(lines.join("\n"), "latin1").toString("utf8");
-      } else {
-        lines.push(normalized);
-      }
-      line = "";
-    }
-    return opened && line === "---"
-      ? Buffer.from(lines.join("\n"), "latin1").toString("utf8")
-      : null;
-  } finally {
-    closeSync(fd);
-  }
-}
-
 function claiming(paths: string[], name: string, local = true): AgentDefinition | null {
   for (const file of paths) {
     try {
-      const header = frontmatter(file);
+      const header = readFrontmatterHeader(file);
       if (header === null) continue;
       const raw: unknown = Bun.YAML.parse(header);
       if (raw === null || typeof raw !== "object" || Array.isArray(raw)) continue;

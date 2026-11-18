@@ -7,7 +7,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import type { ProjectListRow, TasksData, TasksProjectData } from "@/api/types";
 import { NAV_GROUPS, navItemFor } from "@/components/nav-items";
 import { TasksCard } from "@/components/tasks-card";
-import { FULL, task, words } from "@/components/tasks-fixtures";
+import { deployFiles, FULL, task, words } from "@/components/tasks-fixtures";
 import { DEFAULT_VIEW, type TaskView } from "@/lib/tasks";
 import { TasksPage } from "@/views/tasks";
 
@@ -25,14 +25,7 @@ function row(id: string, name: string): ProjectListRow {
   };
 }
 
-const EMPTY_FILES: TasksProjectData["tasks"]["files"] = {
-  broken: 0,
-  closed: 0,
-  dir: ".claude/tasks",
-  staleDays: 30,
-  state: "ready",
-  tasks: [],
-};
+const EMPTY_FILES: TasksProjectData["tasks"]["files"] = deployFiles([]);
 
 const DATA: TasksData = {
   note: null,
@@ -87,7 +80,8 @@ describe("the Tasks tab", () => {
     expect(text).toContain("Open work 7 4 in progress");
     expect(text).toContain("Blocked 1 ! waiting");
     expect(text).toContain("Non-blocking 2");
-    expect(text).toContain("Owed by the projects 2 ✗ 1 block the release");
+    expect(text).toContain("Owed by the projects 2 ✗ 1 blocking");
+    expect(text).toContain("Open deploy tasks in the repositories");
     // The project with no store has nothing to show; the unreadable one says why.
     expect(cards(html)).toEqual(["my-app", "docs-site", "loose-folder"]);
     expect(text).toContain("The task list cannot be read");
@@ -199,6 +193,36 @@ describe("the Tasks tab", () => {
     const searched = words(page({ tab: "files", q: "retire" }));
     expect(searched).toContain("Retire the old service");
     expect(searched).not.toContain("Set the live key");
+  });
+
+  test("the files tab shows a project with only old files or a claimed id, and says when none owes", () => {
+    const leftOver: TasksData = {
+      note: null,
+      projects: [
+        {
+          project: row("p5", "old-layout"),
+          tasks: { files: deployFiles([], { old: 2 }), work: { state: "none" } },
+        },
+        {
+          project: row("p6", "two-branches"),
+          tasks: {
+            files: deployFiles([], { duplicateIds: ["prod-20261101-100000"] }),
+            work: { state: "none" },
+          },
+        },
+        { project: row("p7", "clean"), tasks: { files: EMPTY_FILES, work: { state: "none" } } },
+      ],
+    };
+    const html = page({ tab: "files" }, leftOver);
+    expect(cards(html)).toEqual(["old-layout", "two-branches"]);
+    expect(words(html)).toContain("2 old task files are not read");
+    const none = words(
+      page({ tab: "files" }, { note: null, projects: leftOver.projects.slice(2) }),
+    );
+    expect(none).toContain("Nothing owed in any project");
+    expect(none).toContain(
+      'task add "<subject>" --kind prod --deploy before --type blocking ; a step owed on both environments is --kind staging --pair',
+    );
   });
 
   test("the session and plan pickers list what the projects hold", () => {

@@ -4,8 +4,8 @@ import { join } from "node:path";
 import { hookEnv } from "../testing/hooks";
 import { git, tempDir } from "../testing/temp";
 import { folderProject } from "./context";
+import { scanDeployTasks } from "./deploy/files";
 import { createTaskOps } from "./ops";
-import { scanProjectTasks } from "./project/files";
 import { openWorkDb, workDbFile } from "./work/db";
 import { openPhasesOf } from "./work/phases";
 
@@ -282,7 +282,7 @@ test("work hierarchy, dependencies, notes, claims and paging", () => {
   }
 });
 
-test("project tasks update, log, ack locally, archive, search and protect tracked files", () => {
+test("deploy tasks update, log, archive, search and protect tracked files", () => {
   const cwd = tempDir();
   git(cwd, "init", "-b", "main");
   const ops = createTaskOps({
@@ -295,13 +295,13 @@ test("project tasks update, log, ack locally, archive, search and protect tracke
   try {
     const created = ops.call("create", {
       subject: "Prepare database",
-      kind: "database",
+      kind: "prod",
       description: "Apply carefully",
-      when: "next-release",
-      weight: "blocks-release",
+      deploy: "before",
+      type: "blocking",
     });
     expect(created.ok && created.text.includes('"Prepare database"')).toBe(true);
-    const task = scanProjectTasks(dir, { archive: false }).tasks[0];
+    const task = scanDeployTasks(dir, { archive: false }).tasks[0];
     if (!task) throw new Error("missing task");
     expect(task.from).toBe("branch main");
     expect(ops.call("update", { task: task.id, description: "Changed body" }).ok).toBe(true);
@@ -310,29 +310,29 @@ test("project tasks update, log, ack locally, archive, search and protect tracke
     expect(ops.call("get", { task: task.id })).toMatchObject({ ok: true });
     expect(ops.call("search", { text: "changed BODY" })).toMatchObject({
       ok: true,
-      text: `${task.id} [database · next-release · blocks-release] Prepare database`,
+      text: `${task.id} [before · blocking] Prepare database`,
     });
     git(cwd, "add", ".claude/tasks");
     expect(ops.call("delete", { task: task.id })).toEqual({
       ok: false,
-      why: "Tracked project task: drop it with task_done outcome dropped",
+      why: "Tracked deploy task: it is part of a commit, so close it with task_done instead",
     });
+    expect(ops.call("done", { task: task.id })).toMatchObject({ ok: false });
     expect(ops.call("done", { task: task.id, evidence: "Applied" }).ok).toBe(true);
-    expect(scanProjectTasks(dir, { archive: true }).tasks[0]?.status).toBe("done");
-    expect(ops.call("create", { subject: "Set up locally", kind: "teammate" }).ok).toBe(true);
-    const teammate = scanProjectTasks(dir, { archive: false }).tasks[0];
-    if (!teammate) throw new Error("missing teammate task");
-    expect(ops.call("done", { task: teammate.id })).toEqual({
-      ok: true,
-      text: `${teammate.id} "Set up locally" · done on this machine`,
-    });
-    expect(ops.call("list", { scope: "project" })).toMatchObject({ ok: true, text: "No tasks." });
-    expect(scanProjectTasks(dir, { archive: false }).tasks[0]?.status).toBe("open");
-    expect(ops.call("done", { task: teammate.id, for_everyone: true }).ok).toBe(true);
-    expect(ops.call("create", { subject: "Mistake", kind: "follow-up" }).ok).toBe(true);
-    const mistake = scanProjectTasks(dir, { archive: false }).tasks[0];
+    expect(scanDeployTasks(dir, { archive: true }).tasks[0]?.status).toBe("done");
+    expect(
+      ops.call("create", {
+        subject: "Mistake",
+        kind: "staging",
+        deploy: "after",
+        type: "non-blocking",
+      }).ok,
+    ).toBe(true);
+    const mistake = scanDeployTasks(dir, { archive: false }).tasks[0];
     if (!mistake) throw new Error("missing mistake");
     expect(ops.call("delete", { task: mistake.id }).ok).toBe(true);
+    // A deploy task needs its deploy step and its type.
+    expect(ops.call("create", { subject: "No step", kind: "prod" })).toMatchObject({ ok: false });
   } finally {
     ops.close();
   }

@@ -52,21 +52,3 @@ export const TASK_TOOLS_ALLOW_RULE = `mcp__${TASKS_SERVER_NAME}__*`;
 
 /** The command a person or a session without the tools runs: `cc-smart-dev-kit task`. */
 export const TASK_COMMAND = `${COMMAND} task`;
-
-/**
- * How a session closes the task a Stop block names, spelled out so any model can follow it:
- * a kit task (`#12`) by `task_done` or the command, a task on Claude Code's own list (read only
- * before setup denies its tools) by `TaskUpdate`.
- */
-export function taskCloseStep(ref: string): string {
-  return ref.startsWith("#")
-    ? `\`${TASK_TOOL.done}\` with task "${ref}" and evidence (what you ran or checked, and its result), or \`${TASK_COMMAND} done ${ref} --evidence <text>\``
-    : `\`${RETIRED_TASK_CLOSER}\` with status "completed"`;
-}
-
-/** How a session drops a task that no longer applies, by `taskCloseStep`'s two lists. */
-export function taskDropStep(ref: string): string {
-  return ref.startsWith("#")
-    ? `\`${TASK_TOOL.done}\` with task "${ref}", outcome "dropped" and a note that gives the reason, or \`${TASK_COMMAND} drop ${ref} --note <reason>\``
-    : `\`${RETIRED_TASK_CLOSER}\` with status "deleted"`;
-}

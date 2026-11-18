@@ -1,7 +1,7 @@
 /**
  * `GET /api/tasks` and `GET /api/projects/<id>/tasks` (D75, D76): the Tasks tab — the kit's
  * work store for each project as a tree with each task's layer, type and blockers, and its open
- * task files, what blocks a release first, stale marked.
+ * deploy tasks, by environment, before then after, blocking first, stale marked.
  * Every file is in `tempDir()`, git runs in a clean environment, the store is a temp home's.
  */
 import { beforeEach, describe, expect, test } from "bun:test";
@@ -143,7 +143,7 @@ beforeEach(() => {
 });
 
 describe("a project's tasks answer (D75)", () => {
-  test("the work tree and the open task files, what blocks a release first, stale marked", async () => {
+  test("the work tree and the open deploy tasks, by environment, blocking first, stale marked", async () => {
     const root = repo();
     const { deps, paths } = await world(root);
     const db = openWorkDb(workDbFile(paths), { mode: "write" });
@@ -165,30 +165,33 @@ describe("a project's tasks answer (D75)", () => {
     db.close();
 
     const tasks = join(root, ".claude", "tasks");
-    taskFile(tasks, "T-aaaaaa", {
+    taskFile(join(tasks, "staging"), "staging-20260225-100000", {
       title: "Tell the team",
-      kind: "teammate",
+      env: "staging",
       status: "open",
-      when: "any",
-      created: "2026-02-25",
+      deploy: "after",
+      type: "non-blocking",
+      created: "2026-02-25T10:00:00Z",
     });
-    taskFile(tasks, "T-bbbbbb", {
+    taskFile(join(tasks, "prod"), "prod-20260102-100000", {
       title: "Run the backfill",
-      kind: "database",
+      env: "prod",
       status: "open",
-      when: "next-release",
-      weight: "blocks-release",
+      deploy: "before",
+      type: "blocking",
       flags: ["twice-safe"],
-      created: "2026-01-02",
+      created: "2026-01-02T10:00:00Z",
     });
-    taskFile(join(tasks, "archive"), "T-cccccc", {
+    taskFile(join(tasks, "prod", "archive"), "prod-20251201-100000", {
       title: "Old one",
-      kind: "production",
+      env: "prod",
       status: "done",
-      created: "2025-12-01",
-      closed: "2026-01-01",
+      deploy: "after",
+      type: "blocking",
+      created: "2025-12-01T10:00:00Z",
+      closed: "2026-01-01T10:00:00Z",
     });
-    writeFileSync(join(tasks, "T-dddddd-broken.md"), "no front matter\n");
+    writeFileSync(join(tasks, "prod", "prod-20260301-000000-broken.md"), "no front matter\n");
 
     const answer = await answerOf(deps, idOf(root));
     expect(answer?.status).toBe(200);
@@ -286,30 +289,36 @@ describe("a project's tasks answer (D75)", () => {
       broken: 1,
       closed: 1,
       dir: ".claude/tasks",
+      duplicateIds: [],
+      envs: ["staging", "prod"],
+      old: 0,
       staleDays: 30,
       state: "ready",
       tasks: [
+        // Staging first, the order a release visits them.
         {
-          created: "2026-01-02",
-          file: ".claude/tasks/T-bbbbbb-task.md",
-          flags: ["twice-safe"],
-          id: "T-bbbbbb",
-          kind: "database",
-          stale: true,
-          title: "Run the backfill",
-          weight: "blocks-release",
-          when: "next-release",
-        },
-        {
-          created: "2026-02-25",
-          file: ".claude/tasks/T-aaaaaa-task.md",
+          created: "2026-02-25T10:00:00Z",
+          deploy: "after",
+          env: "staging",
+          file: ".claude/tasks/staging/staging-20260225-100000-task.md",
           flags: [],
-          id: "T-aaaaaa",
-          kind: "teammate",
+          id: "staging-20260225-100000",
           stale: false,
           title: "Tell the team",
-          weight: null,
-          when: "any",
+          twin: null,
+          type: "non-blocking",
+        },
+        {
+          created: "2026-01-02T10:00:00Z",
+          deploy: "before",
+          env: "prod",
+          file: ".claude/tasks/prod/prod-20260102-100000-task.md",
+          flags: ["twice-safe"],
+          id: "prod-20260102-100000",
+          stale: true,
+          title: "Run the backfill",
+          twin: null,
+          type: "blocking",
         },
       ],
     });
@@ -324,12 +333,169 @@ describe("a project's tasks answer (D75)", () => {
         broken: 0,
         closed: 0,
         dir: ".claude/tasks",
+        duplicateIds: [],
+        envs: ["staging", "prod"],
+        old: 0,
         staleDays: 30,
         state: "ready",
         tasks: [],
       },
       work: { state: "none" },
     });
+  });
+
+  test("deploy rows: by env, before then after, blocking first, then the oldest; twins, copies and old files", async () => {
+    const root = repo();
+    // A project that deploys to prod alone still lists a staging task it holds: none is hidden.
+    mkdirSync(join(root, ".claude"), { recursive: true });
+    writeFileSync(
+      join(root, ".claude", "cc-smart-dev-kit.json"),
+      JSON.stringify({ tasks: { envs: ["prod"] } }),
+    );
+    git(root, "add", ".");
+    git(root, "commit", "-q", "-m", "config");
+    const { deps } = await world(root);
+    const tasks = join(root, ".claude", "tasks");
+    const prod = join(tasks, "prod");
+    const staging = join(tasks, "staging");
+    const base = { status: "open" };
+    taskFile(prod, "prod-20260210-100000", {
+      ...base,
+      title: "Check the dashboards",
+      env: "prod",
+      deploy: "after",
+      type: "blocking",
+      created: "2026-02-10T10:00:00Z",
+    });
+    taskFile(prod, "prod-20260220-100000", {
+      ...base,
+      title: "Set the live key",
+      env: "prod",
+      deploy: "before",
+      type: "blocking",
+      created: "2026-02-20T10:00:00Z",
+    });
+    taskFile(prod, "prod-20260205-100000", {
+      ...base,
+      title: "Run the migration",
+      env: "prod",
+      deploy: "before",
+      type: "non-blocking",
+      twin: "staging-20260205-100000",
+      created: "2026-02-05T10:00:00Z",
+    });
+    taskFile(prod, "prod-20260201-100000", {
+      ...base,
+      title: "Warm the cache",
+      env: "prod",
+      deploy: "before",
+      type: "blocking",
+      twin: "staging-20260201-090000",
+      created: "2026-02-01T10:00:00Z",
+    });
+    taskFile(staging, "staging-20260205-100000", {
+      ...base,
+      title: "Run the migration",
+      env: "staging",
+      deploy: "before",
+      type: "non-blocking",
+      twin: "prod-20260205-100000",
+      created: "2026-02-05T10:00:00Z",
+    });
+    taskFile(staging, "staging-20260101-100000", {
+      ...base,
+      title: "Rotate the token",
+      env: "staging",
+      deploy: "after",
+      type: "blocking",
+      twin: "prod-20251201-100000",
+      created: "2026-01-01T10:00:00Z",
+    });
+    taskFile(join(prod, "archive"), "prod-20251201-100000", {
+      status: "done",
+      title: "Rotate the token",
+      env: "prod",
+      deploy: "after",
+      type: "blocking",
+      twin: "staging-20260101-100000",
+      created: "2025-12-01T10:00:00Z",
+      closed: "2025-12-02T10:00:00Z",
+    });
+    // One id under two file names, from two branches: both stay listed, keyed by file.
+    const copy = (name: string, title: string) =>
+      writeFileSync(
+        join(staging, name),
+        `---\nid: "staging-20260115-100000"\ntitle: "${title}"\nenv: "staging"\nstatus: "open"\ndeploy: "before"\ntype: "blocking"\ncreated: "2026-01-15T10:00:00Z"\n---\n`,
+      );
+    copy("staging-20260115-100000-one.md", "One branch's");
+    copy("staging-20260115-100000-two.md", "The other's");
+    // The 4.x layout: a file straight in the folder, never read.
+    writeFileSync(join(tasks, "T-abc123-old.md"), "---\nid: T-abc123\n---\n");
+
+    const body = (await answerOf(deps, idOf(root)))?.body as ProjectTasksAnswer;
+    if (body.files.state !== "ready") throw new Error("the files should read");
+    expect(body.files.envs).toEqual(["prod"]);
+    expect(body.files.old).toBe(1);
+    expect(body.files.broken).toBe(0);
+    expect(body.files.closed).toBe(1);
+    expect(body.files.duplicateIds).toEqual(["staging-20260115-100000"]);
+    expect(
+      body.files.tasks.map((row) => [row.file.split("/").pop(), row.deploy, row.type, row.twin]),
+    ).toEqual([
+      // Staging: before (blocking, then the oldest file name first), then after.
+      ["staging-20260115-100000-one.md", "before", "blocking", null],
+      ["staging-20260115-100000-two.md", "before", "blocking", null],
+      [
+        "staging-20260205-100000-task.md",
+        "before",
+        "non-blocking",
+        { id: "prod-20260205-100000", status: "open" },
+      ],
+      [
+        "staging-20260101-100000-task.md",
+        "after",
+        "blocking",
+        { id: "prod-20251201-100000", status: "done" },
+      ],
+      // Prod: before, blocking first and the oldest of those first, then after.
+      [
+        "prod-20260201-100000-task.md",
+        "before",
+        "blocking",
+        { id: "staging-20260201-090000", status: "missing" },
+      ],
+      ["prod-20260220-100000-task.md", "before", "blocking", null],
+      [
+        "prod-20260205-100000-task.md",
+        "before",
+        "non-blocking",
+        { id: "staging-20260205-100000", status: "open" },
+      ],
+      ["prod-20260210-100000-task.md", "after", "blocking", null],
+    ]);
+  });
+
+  test("an id two files claim: only the file open past staleDays is stale", async () => {
+    const root = repo();
+    const { deps } = await world(root);
+    const staging = join(root, ".claude", "tasks", "staging");
+    mkdirSync(staging, { recursive: true });
+    const copy = (name: string, created: string) =>
+      writeFileSync(
+        join(staging, name),
+        `---\nid: "staging-20260115-100000"\ntitle: "${name}"\nenv: "staging"\nstatus: "open"\ndeploy: "before"\ntype: "blocking"\ncreated: "${created}"\n---\n`,
+      );
+    // 45 days before NOW on one branch, 4 days on the other: one id, two ages.
+    copy("staging-20260115-100000-old.md", "2026-01-15T10:00:00Z");
+    copy("staging-20260115-100000-new.md", "2026-02-25T10:00:00Z");
+
+    const body = (await answerOf(deps, idOf(root)))?.body as ProjectTasksAnswer;
+    if (body.files.state !== "ready") throw new Error("the files should read");
+    expect(body.files.duplicateIds).toEqual(["staging-20260115-100000"]);
+    expect(body.files.tasks.map((row) => [row.file.split("/").pop(), row.stale])).toEqual([
+      ["staging-20260115-100000-old.md", true],
+      ["staging-20260115-100000-new.md", false],
+    ]);
   });
 
   test("the Tasks tab's answer: every project, each task's layer, type and blockers (D76)", async () => {

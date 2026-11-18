@@ -41,7 +41,8 @@ export function parseSessionRecord(json: string): SessionRecord | null {
 
 type SessionIdentityFacts = { readStat?: StatReader; platform?: NodeJS.Platform };
 
-function processStart(pid: number, facts: SessionIdentityFacts): string | undefined {
+/** A process's start time from `/proc` on Linux; undefined elsewhere, or when it cannot be read. */
+export function processStart(pid: number, facts: SessionIdentityFacts): string | undefined {
   if ((facts.platform ?? process.platform) !== "linux") return undefined;
   const stat = (facts.readStat ?? readProcStat)(pid);
   const end = stat?.lastIndexOf(")") ?? -1;
@@ -74,52 +75,65 @@ export function isRunning(pid: number): boolean {
   }
 }
 
+type LiveFacts = {
+  running?: (pid: number) => boolean;
+  readStat?: StatReader;
+  platform?: NodeJS.Platform;
+};
+
 /**
- * The records of the running sessions. A record whose process is gone, or that was written
- * before the machine started (its pid may now be another program's), is skipped.
- *
- * On Linux, only a proved process-start mismatch skips a running record. An unproved
- * identity stays live: absence needs proof before adoption or cleanup.
+ * The record of one running session, or null when that pid has none that counts: no file, a
+ * process that is gone, a record written before the machine started (its pid may now be another
+ * program's), or, on Linux, a proved process-start mismatch. An unproved identity stays live:
+ * absence needs proof before adoption or cleanup.
  *
  * Throws when a RUNNING process's record cannot be read: then nobody can say where that
  * session works, and a caller that needs to know must not guess.
  */
-export function liveSessions(
+export function sessionRecordOf(
   claudeConfigDir: string,
-  facts: {
-    running?: (pid: number) => boolean;
-    readStat?: StatReader;
-    platform?: NodeJS.Platform;
-  } = {},
-): SessionRecord[] {
+  pid: number,
+  facts: LiveFacts = {},
+): SessionRecord | null {
+  if (!(facts.running ?? isRunning)(pid)) return null;
+  const dir = join(claudeConfigDir, "sessions");
+  const file = join(dir, `${pid}.json`);
+  const bootedAt = Date.now() - uptime() * 1000;
+  let text: string;
+  try {
+    if (statSync(file).mtimeMs < bootedAt) return null;
+    text = readFileSync(file, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw new Error(`the record of running session ${pid} cannot be read; retry`);
+  }
+  const record = parseSessionRecord(text);
+  if (record === null) {
+    throw new Error(
+      `the record of running session ${pid} in ${dir} cannot be read, so it is unknown where it works`,
+    );
+  }
+  if ((facts.platform ?? process.platform) === "linux" && record.procStart !== undefined) {
+    const start = processStart(pid, facts);
+    // Only a proved mismatch establishes pid reuse. An unproved identity stays live.
+    if (start !== undefined && record.procStart !== start) return null;
+  }
+  return record;
+}
+
+/**
+ * The records of the running sessions (`sessionRecordOf`, for each record file). Throws when a
+ * running process's record cannot be read.
+ */
+export function liveSessions(claudeConfigDir: string, facts: LiveFacts = {}): SessionRecord[] {
   const dir = join(claudeConfigDir, "sessions");
   if (!existsSync(dir)) return [];
-  const bootedAt = Date.now() - uptime() * 1000;
   const live: SessionRecord[] = [];
   for (const file of readdirSync(dir)) {
     const pid = Number(file.replace(/\.json$/, ""));
-    if (!file.endsWith(".json") || !Number.isInteger(pid) || !(facts.running ?? isRunning)(pid))
-      continue;
-    let text: string;
-    try {
-      if (statSync(join(dir, file)).mtimeMs < bootedAt) continue;
-      text = readFileSync(join(dir, file), "utf8");
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
-      throw new Error(`the record of running session ${pid} cannot be read; retry`);
-    }
-    const record = parseSessionRecord(text);
-    if (record === null) {
-      throw new Error(
-        `the record of running session ${pid} in ${dir} cannot be read, so it is unknown where it works`,
-      );
-    }
-    if ((facts.platform ?? process.platform) === "linux" && record.procStart !== undefined) {
-      const start = processStart(pid, facts);
-      // Only a proved mismatch establishes pid reuse. An unproved identity stays live.
-      if (start !== undefined && record.procStart !== start) continue;
-    }
-    live.push(record);
+    if (!file.endsWith(".json") || !Number.isInteger(pid)) continue;
+    const record = sessionRecordOf(claudeConfigDir, pid, facts);
+    if (record !== null) live.push(record);
   }
   return live;
 }
