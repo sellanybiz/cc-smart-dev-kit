@@ -409,7 +409,8 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
             ...(input.from === undefined ? {} : { from: input.from }),
             force: input.force,
             isLive: claimLive,
-            isEnded: sessionEnded,
+            // The session records of this caller's config folder (`env`), never another one's.
+            isEnded: (claim) => sessionEnded(claim, { env }),
           }),
         );
         return {

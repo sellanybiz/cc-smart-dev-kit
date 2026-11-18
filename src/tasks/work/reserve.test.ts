@@ -3,6 +3,8 @@
  * reserved plan, who may start work in it, and the store-only classifier the status line reads.
  */
 import { expect, test } from "bun:test";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { COMMAND } from "../../build-info/names";
 import { cliPaths } from "../../cli/paths";
 import { hookEnv, makeRepo } from "../../testing/hooks";
@@ -315,7 +317,7 @@ function world() {
       filesCheck: () => ({ ignore: [], caseFold: false }),
     });
   const store = () => openWorkDb(workDbFile(paths), { mode: "write" });
-  return { repo, paths, project, ops, store };
+  return { repo, env, paths, project, ops, store };
 }
 
 /** A plan with one phase holding one task, made through the task tools by `who`. */
@@ -938,4 +940,35 @@ test("L3: an overlap with a done plan that is not released says so, and what rel
   expect(why(reserve(db, "beta"))).toBe(
     `#2 "beta" overlaps #1 "alpha" (done, not released: \`${COMMAND} herdr plans\` releases it when its pull request merges): src/a/x.ts (src/a/)`,
   );
+});
+
+test("the take through the task tools asks the session records of its own config folder", () => {
+  const w = world();
+  laidPlan(w, LEAD, "alpha", ["src/a/"]);
+  const handout = ok(reserveIn(w, "alpha", LEAD)).lead?.handoutId;
+  // The first child took the plan from a process that has ended.
+  const first: Who = { sessionId: "child", pid: 999999971, procStart: "1" };
+  const firstOps = w.ops(first);
+  try {
+    said(firstOps.call("take", { task: "alpha", from: handout }));
+  } finally {
+    firstOps.close();
+  }
+  // Its session is reopened in this test's own process, before any task call.
+  const sessions = join(w.env.CLAUDE_CONFIG_DIR as string, "sessions");
+  mkdirSync(sessions, { recursive: true });
+  const record = join(sessions, `${process.pid}.json`);
+  writeFileSync(record, JSON.stringify({ pid: process.pid, sessionId: "child", cwd: w.repo }));
+  const second: Who = { sessionId: "child-2", pid: 999999972, procStart: "2" };
+  const secondOps = w.ops(second);
+  try {
+    expect(refused(secondOps.call("take", { task: "alpha", from: handout }))).toContain(
+      "belongs to session child",
+    );
+    // Once that session is over too, the plan is free to resume in a new child.
+    rmSync(record);
+    said(secondOps.call("take", { task: "alpha", from: handout }));
+  } finally {
+    secondOps.close();
+  }
 });
