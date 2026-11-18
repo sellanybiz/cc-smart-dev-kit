@@ -54,6 +54,7 @@ import {
 } from "./labels";
 import { MachinesFileError, machineRule, readMachines, writeMachines } from "./machines";
 import {
+  confirmClaim,
   openPlansWorld,
   type PlanStart,
   type PlansEnv,
@@ -589,7 +590,7 @@ function adoptPlans(ctx: HerdrContext, project: string): void {
     for (const plan of moved.value)
       ctx.out.line(
         "changed",
-        `Adopted plan #${plan.number} ${plan.plan ?? plan.subject}: its lead had ended, so ${plan.lead?.holder === "child" ? "its child's" : "its"} reservation is yours now`,
+        `Adopted plan #${plan.number} ${plan.plan ?? plan.subject}: its lead had ended, so ${plan.lead?.holder === "child" ? "its child's" : "its"} reservation is yours now${plan.lead?.holder === "self" ? `; take it first (task_take ${plan.plan ?? plan.subject}) before you start its next phase` : ""}`,
       );
   } finally {
     db.close();
@@ -860,6 +861,11 @@ async function startChild(
   if (gitRoot) programArgs.push("-w", worktreeName);
   programArgs.push(first);
   args.push("--", ...loginShellArgv("claude", ...programArgs));
+  // A start that stalled past the grace may have lost its claim to another start: check once more.
+  if (handout?.claim && planWorld !== null && slug !== null) {
+    const kept = confirmClaim(planWorld, slug, handout.claim);
+    if (!kept.ok) return refuse(ctx, kept.why, kept.fix);
+  }
   const child = hcRun(r, args);
   // From here a child exists: a throw below must not give its reservation back. Only a launch
   // proved finished (below) does.
@@ -897,6 +903,8 @@ async function startChild(
         state = { ...state, state: "finished" };
       }
       if (state.state === "finished") {
+        // Proved ended, whether hc said so first or on the screen read above: nothing runs.
+        run.launched = false;
         try {
           hcRm(r, child.address);
         } catch (error) {

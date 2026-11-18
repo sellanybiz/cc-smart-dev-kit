@@ -966,7 +966,9 @@ export function reservePlan(db: WorkDb, input: ReservePlan): Result<WorkTask> {
  *
  * `handoutId` guards a release decided from an earlier reading: it only releases the reservation
  * that reading saw. If the plan was released and handed out again since (a new hand-out id), the
- * new child's reservation is left alone and the call is refused.
+ * new child's reservation is left alone and the call is refused. `updatedAt` guards the same
+ * reading against any later write to the plan (a start claiming it): if the plan moved, the
+ * release is refused rather than decided on a plan that is no longer the one that was read.
  */
 export function releasePlan(
   db: WorkDb,
@@ -977,6 +979,7 @@ export function releasePlan(
     now: number;
     reason?: string;
     handoutId?: string;
+    updatedAt?: number;
   },
 ): Result<WorkTask> {
   return writeWork(db, () => {
@@ -989,6 +992,8 @@ export function releasePlan(
       throw new Error(
         `${label(plan)} was handed out again since it was read: its new reservation is left alone`,
       );
+    if (input.updatedAt !== undefined && plan.updatedAt !== input.updatedAt)
+      throw new Error(`${label(plan)} changed since it was read: it is left as it is`);
     const before = shape(db, plan);
     clearLead(db, plan.id);
     db.sqlite.query("UPDATE tasks SET updated_at=? WHERE id=?").run(input.now, plan.id);

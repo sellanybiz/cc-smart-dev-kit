@@ -9,7 +9,7 @@ import { taskContext } from "../tasks/context";
 import { createTaskOps } from "../tasks/ops";
 import { openWorkDb, workDbFile } from "../tasks/work/db";
 import { allTasks } from "../tasks/work/queries";
-import { createTask, takeTasks, updateTask } from "../tasks/work/store";
+import { createTask, reservePlan, takeTasks, updateTask } from "../tasks/work/store";
 import type { ClaimProcess, Who, WorkTask } from "../tasks/work/types";
 import { cleanGitEnv, git, tempDir } from "../testing/temp";
 import { briefPath } from "./brief";
@@ -1571,4 +1571,67 @@ test("herdr plans with nothing led says so and exits 0", async () => {
   const p = planWorld();
   expect(await runHerdr(["plans"], p.ctx)).toBe(0);
   expect(p.lines.join("\n")).toContain("No plans led by this session.");
+});
+
+// ---- fix round 2: the five Lows ----
+
+test("a launch proved ended by the screen read gives the plan back", async () => {
+  const p = planWorld();
+  p.plan("alpha", ["src/a/"]);
+  // The child is up but silent, so the launch polls to its deadline; then hc says its terminal is gone.
+  p.rows.t2 = { address: "t2", name: "kit-alpha", state: "live", labels: {}, status: null };
+  p.setFailure((args) => (args[0] === "read" ? "not_found" : null));
+  expect(await runHerdr([...planLaunch, "--plan", "alpha", "--", "work"], p.ctx)).toBe(1);
+  expect(p.calls.some((c) => c.args[0] === "run")).toBe(true);
+  expect(p.row("alpha").lead).toBeNull();
+  expect(p.row("alpha").agent).toBeNull();
+});
+
+test("a start that lost its claim while it waited launches nothing", async () => {
+  const p = planWorld();
+  await deadChild(p);
+  const id = p.row("alpha").id;
+  // The start's clock is read three times before the check (marker, claim, check): the third read
+  // is where another start takes the plan over, as after a stall past the grace.
+  let reads = 0;
+  p.ctx.now = () => {
+    reads++;
+    if (reads === 3) updateTask(p.db, id, { agent: "herdr:core/other" }, LEAD, 99);
+    return 0;
+  };
+  expect(await runHerdr([...planLaunch, "--plan", "alpha", "--", "work"], p.ctx)).toBe(1);
+  expect(p.lines.join("\n")).toContain("its claim was taken over while this start waited");
+  expect(p.lines.join("\n")).toContain("Fix: run ");
+  p.noRun();
+  expect(p.row("alpha").agent).toBe("herdr:core/other");
+});
+
+test("adopt tells the new lead to take a self plan it was handed, and says nothing of a child's", async () => {
+  const p = planWorld();
+  p.plan("mine", ["src/m/"]);
+  p.plan("theirs", ["src/t/"]);
+  for (const [slug, holder] of [
+    ["mine", "self"],
+    ["theirs", "child"],
+  ] as const) {
+    const reserved = reservePlan(p.db, {
+      project: p.project,
+      plan: slug,
+      who: LEAD,
+      holder,
+      ignore: [],
+      caseFold: false,
+      now: 5,
+    });
+    expect(reserved.ok).toBe(true);
+  }
+  p.ctx.caller = () => ({ sessionId: "me", pid: 4303, procStart: "43030" });
+  p.ctx.process = ENDED;
+  expect(await runHerdr(["adopt"], p.ctx)).toBe(0);
+  const lines = p.lines.filter((line) => line.includes("Adopted plan"));
+  expect(lines).toHaveLength(2);
+  expect(lines.find((line) => line.includes("mine"))).toContain(
+    "take it first (task_take mine) before you start its next phase",
+  );
+  expect(lines.find((line) => line.includes("theirs"))).not.toContain("take it first");
 });

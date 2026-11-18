@@ -361,6 +361,7 @@ function settle(world: PlansWorld, owns: (task: WorkTask) => boolean): PlanLine[
       now: world.now(),
       reason,
       handoutId: plan.lead.handoutId,
+      updatedAt: plan.updatedAt,
     });
     if (done.ok) released.push(lineOf(base, "released", text, null, { pr }));
   }
@@ -423,7 +424,7 @@ export function judgePlans(input: PlansWorld, only?: string): Judgment {
             ),
           );
         else {
-          const out = `if its work is merged or given up, release its files: ${COMMAND} herdr plans --release ${slug}`;
+          const out = `the person decides: if its work is merged or given up, release its files with ${COMMAND} herdr plans --release ${slug}`;
           lines.push(
             lineOf(
               base,
@@ -823,6 +824,35 @@ export function prepareStart(world: PlansWorld, ref: string): PlanStart {
     recorded: null,
     claim: null,
   };
+}
+
+/**
+ * Confirms a start's claim just before it launches: the plan's agent must still be the marker
+ * this start wrote (`prepareStart`). A start that stalled past the grace may have been taken for a
+ * dead one, and another start claimed the plan; this refuses then, and nothing launches. A
+ * success writes the marker again, so the grace runs from the launch.
+ */
+export function confirmClaim(
+  world: PlansWorld,
+  plan: string,
+  claim: { marker: string },
+): { ok: true } | { ok: false; why: string; fix: string } {
+  const again = swapPlanAgent(world.db, {
+    project: world.project,
+    plan,
+    who: world.who,
+    from: claim.marker,
+    to: claim.marker,
+    now: world.now(),
+    reason: "child launching",
+  });
+  return again.ok
+    ? { ok: true }
+    : {
+        ok: false,
+        why: `${again.why}: its claim was taken over while this start waited`,
+        fix: `run ${COMMAND} herdr plans, and start again only if the plan still has no child`,
+      };
 }
 
 /**

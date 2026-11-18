@@ -101,6 +101,8 @@ function withFakeGh(
     `#!/bin/sh
 echo "$*" >> '${join(dir, "gh.log")}'
 if [ "$1" != "pr" ] || [ "$2" != "list" ]; then echo "fake gh: unknown call: $*" >&2; exit 1; fi
+case " $* " in *" --state all "*) ;; *) echo "fake gh: needs --state all: $*" >&2; exit 1;; esac
+case " $* " in *" --json state,headRefOid "*) ;; *) echo "fake gh: needs --json state,headRefOid: $*" >&2; exit 1;; esac
 head=
 while [ $# -gt 0 ]; do
   if [ "$1" = "--head" ]; then shift; head="$1"; fi

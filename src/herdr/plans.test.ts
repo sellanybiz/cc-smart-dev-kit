@@ -13,6 +13,7 @@ import { makeClone } from "../testing/hooks";
 import { cleanGitEnv, git, tempDir } from "../testing/temp";
 import {
   changesBetween,
+  confirmClaim,
   HANDOUT_GRACE_MS,
   judgePlans,
   markOf,
@@ -759,4 +760,57 @@ test("plans.ts holds no gh code of its own: pullRequestState is the one home", (
   expect(source).not.toContain("Bun.spawn");
   expect(source).not.toContain('"gh"');
   expect(source).toContain("pullRequestState");
+});
+
+test("a release decided on an old reading leaves a plan a start has claimed since", () => {
+  const w = build();
+  const first = w.plan("first", ["src/one/"]);
+  w.reserve("first");
+  // While the lead reads the pane, a start claims the plan: the reading is no longer the plan.
+  const late = {
+    ...w.base,
+    now: () => 10 + HANDOUT_GRACE_MS + 1,
+    pane: () => {
+      ok(updateTask(w.db, first.id, { agent: "pending:1" }, LEAD, 10 + HANDOUT_GRACE_MS));
+      return NONE;
+    },
+  };
+  judgePlans(late);
+  expect(taskById(w.db, first.id).lead).not.toBeNull();
+  expect(taskById(w.db, first.id).agent).toBe("pending:1");
+});
+
+test("a start confirms its claim just before it launches, and is refused when the claim was taken", () => {
+  const w = build();
+  const first = w.plan("first", ["src/one/"]);
+  const handout = w.reserve("first").lead?.handoutId ?? "";
+  ok(takeTasks(w.db, "p", first.id, CHILD, 20, { from: handout, isLive: () => false }));
+  w.change(first, {
+    agent: "herdr:core/t2",
+    worktree: join(w.repo, ".claude", "worktrees", "kit-first"),
+    branch: "b",
+  });
+  const world = { ...w.base, process: ENDED, now: () => 5000 };
+  const claimed = prepareStart(world, "first");
+  if (!claimed.ok || !claimed.claim) throw new Error("expected a claim");
+  expect(confirmClaim(world, "first", claimed.claim)).toEqual({ ok: true });
+  // Another start took the plan over meanwhile.
+  w.change(first, { agent: "herdr:core/t9" });
+  const lost = confirmClaim(world, "first", claimed.claim);
+  if (lost.ok) throw new Error("expected a refusal");
+  expect(lost.why).toContain("its claim was taken over while this start waited");
+  expect(lost.fix).toContain("herdr plans");
+  expect(taskById(w.db, first.id).agent).toBe("herdr:core/t9");
+});
+
+test("the merging line leaves the release to the person", () => {
+  const w = build();
+  const first = w.plan("first", ["src/one/"]);
+  w.reserve("first");
+  w.change(first, { status: "done" });
+  w.change(first, { branch: "no-pr" });
+  w.git("branch", "no-pr", "main");
+  const line = w.line("first");
+  expect(line.fix).toContain("the person decides: ");
+  expect(line.fix).toContain("herdr plans --release first");
 });
