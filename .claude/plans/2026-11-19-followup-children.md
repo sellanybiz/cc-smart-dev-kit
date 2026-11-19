@@ -40,8 +40,9 @@ and fixes after a PR opens are batched, checked locally and pushed once.
    the cost). Options, recommended first:
    - **Send to the follow-up child** — when this lead's follow-up child for this repository is in a
      state `send` accepts (idle, working or done).
-   - **Send to the plan child that holds it** — when the finding's files are in a live plan child's
-     plan: it is inside that plan; the message asks the plan child to make it a task in its plan.
+   - (A finding whose files a held plan holds is inside that plan: a task in it, with no question —
+     sent to its live plan child, else made under that plan by the lead. Ruling from the rules
+     review, F7.)
    - **Start a follow-up child** — when none is live; says it costs one full session.
    - **File it only** — as today.
 3. **On a yes.** File the issue first when issues work (`issue file`, its fingerprint), then start
