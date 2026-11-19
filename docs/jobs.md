@@ -281,13 +281,13 @@ the first kind it runs: one slot for the whole line. What counts as glue (`isGlu
   take no `-v` or `-R` (the same subscript) and no word the shell fills in. A glue word holds no
   arithmetic, indirect or prompt expansion (`$(( … ))`, `$[ … ]`, `${x[ … ]}`, `${x:n}`,
   `${!x}`, `${x@P}`): bash reads a variable's value there as code.
-- **A reader of a pipe**: a program of `READ_ONLY_FILTERS` that has a shape there (`awk`, `cat`,
-  `cut`, `egrep`, `fgrep`, `gawk`, `grep`, `head`, `mawk`, `nawk`, `sed`, `sort`, `tail`, `tee`,
-  `tr`, `uniq`, `wc`), only when it reads the pipe and nothing else: piped from the command
-  before it, written bare (no path), with plain words (no `$VAR` or `$(…)`), no file word, no
-  file it writes to (`tee` only with none, or `/dev/null`) and no input redirection from a file
-  (`bun test; tail -5 out.log` and `cat < .env` are no glue). `rg` has no shape, so it is never
-  glue: with nothing piped it searches the folder.
+- **A reader of a pipe**: a program of `READ_ONLY_FILTERS` that has a shape there (every one but
+  `rg`; the filters are named below, § One heavy command piped into read-only filters), only
+  when it reads the pipe and nothing else: piped from the command before it, written bare (no
+  path), with plain words (no `$VAR` or `$(…)`), no file word, no file it writes to (`tee` only
+  with no argument at all) and no input redirection from a file (`bun test; tail -5 out.log` and
+  `cat < .env` are no glue). `rg` has no shape, so it is never glue: with nothing piped it
+  searches the folder.
 - **The structure of a group**: the `{ … }` or `( … )` around commands, and the redirections of
   the group itself (`{ echo a; bun test; } > out.log 2>&1`). An input from a file other than
   `/dev/null` is no structure (`$(< .env)`, `{ bun test; } < .env`): it would print the file
@@ -298,7 +298,8 @@ Every command of a glue word's own substitution is judged on its own, and a pipe
 is refused. A command with a path (`/bin/echo`), a wrapper (`env echo`), an assignment before it
 or a computed name is no glue either.
 
-**A line that mixes heavy work with anything else is refused, not left raw.** Run raw, the heavy
+**A line that mixes heavy work with a command that is not heavy or glue is refused, not left
+raw.** Run raw, the heavy
 part would not wait for a slot, and many heavy runs at once have run machines out of memory; run
 queued, the other command would hide from the person's rules. So when a line runs heavy work
 that takes a slot beside a command that is neither heavy nor glue (`bun test; git status`,

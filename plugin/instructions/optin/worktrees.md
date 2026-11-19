@@ -70,7 +70,7 @@ worktree.
 | Dev servers | Each worktree runs its own, often on another port. Use the address yours printed; never assume the default port, which may be another branch's server. Stop yours when you are done. |
 | The browser (one Chrome, one profile, for the machine) | One login for every session (`/cc-smart-dev-kit:ui-verify` § 4). Each session sees only the windows it opened, so two checks can run at once — but a check that needs two accounts at once does not fit. |
 | The git stash | Never a bare `git stash` or `stash pop`: you may pop another session's work. Use a WIP commit, or `stash push -u -m <tag>`, then `stash apply <sha>`. |
-| Heavy commands | Project `jobs.kinds` identify heavy runs. With the job route on (`jobs.route`), the job queue allows one full run per machine at a time; checks on named files skip it. Where the route is off, two heavy jobs at once can stall every session: never start two at once yourself. Prefer targeted checks while building. Keep a heavy command on its own Bash line: the queue refuses heavy work mixed with other commands (`core.md`, § Your role). |
+| Heavy commands | Project `jobs.kinds` identify heavy runs. With the job route on (`jobs.route`), the job queue allows one full run per machine at a time; checks on named files skip it. Where the route is off, two heavy jobs at once can stall every session: never start two at once yourself. Prefer targeted checks while building. Keep a heavy command on its own Bash line (`core.md`, § Your role). |
 
 ## Waiting on long work
 
