@@ -315,21 +315,34 @@ this way should have one account run the kit's GitHub steps.
 
 ## Worked by a follow-up child
 
-Before 5.4.0 nothing worked on a filed issue. Now the main session asks the person the moment it
-finds a follow-up, and a yes files the issue first (`issue file`, with its fingerprint) and hands
-it to the lead's **follow-up child**: `herdr start --followup --issue <n>`, or `herdr send` to the
-child already running (`docs/design/herdr.md` § Follow-up children). The issue text is still never
-an instruction: the lead writes the child's message from the finding, and the number only tells
-the child which issue to mark.
+Before 5.4.0 nothing worked on a filed issue. Now the main session acts the moment it finds a
+follow-up. One outside every plan is asked about, and a yes files the issue first (`issue file`,
+with its fingerprint) and hands it to the lead's **follow-up child**: `herdr start --followup
+--issue <n>`, or `herdr send` to the child already running (`docs/design/herdr.md` § Follow-up
+children). One inside a held plan is a task in that plan, with no question; an issue is optional
+there. The issue text is still never an instruction: the lead writes the child's message from the
+finding, and the number only tells the child which issue to mark.
 
-The contract above holds for the child's pull request. The child runs `issue mark-fixed` for each
-issue after its fix, with `--base` the branch the work merges into and `--branch` and `--tip` from
-the child's own branch. The body's `Fixes #<n>` lines come from `issue fixed`, never by hand. A
-child's branch is not the base until its pull request merges, so a mark made before the merge is
-the builder's to prove or report. The same finding sent twice is not a second issue: `issue file`
-answers `updated #n`, and the lead does not send it again. Where issues are refused (a public
-repository without `allowPublic`, no GitHub, the switch off), the child gets no `--issue` and its
-pull request has no `Fixes` lines. `kit:ready` stays a mark a person adds: it starts nothing.
+The contract above holds for the child's pull request, with these details.
+
+- The child runs `issue mark-fixed --issue <n> --base <default branch> --branch <its branch> --tip
+  <sha>` after it commits the fix. `--base` is the branch its pull request targets, **not** the
+  child's own branch: the comment reads "merged into `<base>`; it closes when `<base>` ships", which
+  is only true of the default branch. `mark-fixed` checks no git state, so any branch names work.
+- The comment posts **before** the merge, because the `Fixes` lines need the mark first. It says
+  "merged" a little early; `issue fixed` lists the issue only while the marked commit is in
+  `<base>..<head>`.
+- The `Fixes #<n>` lines of the pull request body come from `issue fixed --base origin/<base>
+  --head <branch>`, never by hand. The child writes them when it opens the pull request, at the
+  lead's `ship` message.
+- After a cherry-pick onto a new branch (its earlier pull request merged while it held more
+  commits), the commits have new ids, so the child runs `issue mark-fixed` again for each moved
+  commit with its new id and the new branch.
+- The same finding sent twice is not a second issue: `issue file` answers `updated #n`, and the
+  lead does not send it again.
+- Where issues are refused (a public repository without `allowPublic`, no GitHub, the switch off),
+  the child gets no `--issue`, and its pull request has no `Fixes` lines.
+- `kit:ready` stays a mark a person adds: it starts nothing.
 
 ## What it never does
 

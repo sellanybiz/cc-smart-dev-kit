@@ -438,16 +438,22 @@ fix, and fix rounds pushed one at a time after the pull request opened.
 
 - **The plan archive rides in the plan's own pull request.** After the final review and the full
   check, the plan file (and its research) moves to `archive/` as the last commit on the plan
-  branch, and then the pull request opens. The plan task still closes after the merge, with its
-  evidence. A plan whose pull request is abandoned has its file moved back in the next one.
-- **Small fixes: one pull request per session.** The small fixes a session makes outside a plan
-  collect on one branch (its worktree branch). One pull request opens when that work ends, or at
-  once when the person says it must ship now. The follow-up child already works this way
-  (`docs/design/herdr.md` § Follow-up children).
+  branch, and then the pull request opens. In that same turn the plan task closes with its
+  evidence, as it did before: a plan child stops before its merge, and the plan's files stay held
+  until its pull request merges or closes. A plan whose pull request is abandoned has its file
+  moved back in the next one.
+- **Small fixes: one pull request per session, at one ship point.** The small fixes a session
+  makes outside a plan collect on the session's own branch, and its follow-up child's work
+  (`docs/design/herdr.md` § Follow-up children) ships with them. When that branch is a plan branch,
+  or already carries a reviewed change set, the small fixes get a new branch from the default
+  branch. The ship point is the end of the turn that finishes the person's request, or the moment
+  the person says to ship now. One pull request opens there, and the lead sends the follow-up
+  child `ship`. Until then the child commits each finding and may push its branch while no pull
+  request is open.
 - **After a pull request opens: batch, check, push once.** A push before the pull request opens
-  is a free backup. Once it is open, a round of fixes (review findings, a CI failure) is
-  collected, the full check runs locally, and one push follows. Never push one fix at a time, and
-  never use CI to find what the local check finds.
+  is a free backup. Once it is open, a round of fixes (review findings, a CI failure, a late fix
+  from a follow-up) is collected, the full check runs locally, and one push follows. Never push
+  one fix at a time, and never use CI to find what the local check finds.
 
 **What stays as it was.** One pull request per plan, as before. A deploy run's small pull request
 of task closes also stays: those closes must reach the base before the next deploy's

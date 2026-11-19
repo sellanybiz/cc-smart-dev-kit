@@ -5,31 +5,43 @@ in your own terminal after the update; the user guide is [README.md](README.md).
 
 ## 5.4.0
 
-- **A finding outside the plan is asked about at once, and a child works on it.** When Claude
-  meets a finding outside its plan (its own, or one in a builder's report or a review), it now
-  asks you right then. A yes files the issue and hands the finding to a **follow-up child**: one
-  linked session for each lead and repository that collects all of its follow-ups into one pull
+- **A finding outside the plan is acted on at once, and a child works on it.** When Claude meets a
+  finding outside its plan (its own, or one in a builder's report or a review): inside a plan that
+  is held, it becomes a task in that plan and nobody asks you (a finished held plan offers two
+  options: a late fix on its pull request, or file it for after the merge). Outside every plan,
+  Claude asks you right then. A yes files the issue and hands the finding to a **follow-up child**:
+  one linked session for each lead and repository that collects all of its follow-ups into one pull
   request at a time. Before, a filed issue sat until you built it yourself.
 - **`herdr start --followup [--issue <n>]…`** starts that child. `--issue` repeats and names the
   filed issues it fixes. The command refuses with `--plan`, `--task`, `--independent` or `--on`;
   inside any child (a child lists its findings in `herdr report` and never starts one); while this
-  lead's follow-up child for the repository is live (the error names its terminal; use `herdr
-  send`); when an ended one left commits that reached no merged pull request (the error names its
-  worktree and branch); and when the default branch is only a guess. The child resets onto the
-  base once, at the start; checks its pull request before each finding (add to it when open, reset
-  and open a new one when merged or closed); never edits a file a held plan holds; makes one commit
-  per finding; marks the issue fixed (`issue mark-fixed`, and the pull request's `Fixes` lines
-  from `issue fixed`); pushes once after the pull request opens; reports after each finding; and
-  stops only on `herdr stop`. It has the label `kit.followup`, and `herdr list` shows it as
-  follow-up. `herdr wait --all` leaves it out, since it never settles. A plan child's brief gains
-  one line: its own findings go in `herdr report`; it never asks, files or starts. The held-plan
-  list in the child's brief is a snapshot taken at the start, and this flow is not yet proved live.
+  lead's follow-up child for the repository lives (the error names it: use `herdr send`; a child of
+  a lead that ended is taken over with `herdr adopt`); when an ended one left commits that reached
+  no merged pull request (the error names its worktree and branch); and when the default branch is
+  only a guess. The child resets onto the base once, at the start, only when it holds no commits
+  of its own and the tree is clean. Before each finding it reads its pull request's state: when
+  the pull request is merged it starts a new branch from the base (moving unmerged commits onto it
+  with a cherry-pick, a conflict aborted and reported); a closed one is never reset. It never edits
+  a file a held plan holds, makes one commit per finding and marks the issue fixed
+  (`issue mark-fixed`), and reports after each finding. It pushes its branch only while no pull
+  request is open. It opens or updates its pull request only when the lead sends `ship`, at the
+  session's ship point: it runs the full check, pushes once, and takes the `Fixes` lines from
+  `issue fixed`. It stops only on `herdr stop`; the last-check gate cannot see the work of a child
+  that Herdr no longer lists, so ship before you stop it. The label is `kit.followup`, and
+  `herdr list` shows "follow-up" (the column is now "task, plan or follow-up").
+  `herdr wait --all` leaves it out, since it never settles. A plan child's brief gains one line: its
+  own findings go in `herdr report`; it never asks, files or starts. A start line with a parse
+  error is shown by the Bash judge alone when `--model`, `--effort` and `--mode` are all given. The
+  held-plan list in the child's brief is a snapshot taken at the start, and this flow is not yet
+  proved live.
 - **Fewer pull requests and CI runs.** CI runs on a pull request and on a push to the default
   branch; a branch push with no pull request is free. The skills now keep each plan's archive in
-  the plan's own pull request (its last commit), put the small fixes of one session in one pull
-  request, and, once a pull request is open, collect a round of fixes, run the full check locally
-  and push once. One pull request per plan, and a deploy run's small pull request of task closes,
-  stay. These are instructions in the skills, not a hook.
+  the plan's own pull request (its last commit, with the plan task closed in that same turn), put
+  the small fixes of one session on one branch with one pull request at one ship point (the end of
+  the turn that finishes your request, or when you say ship now), and, once a pull request is open,
+  collect a round of fixes, run the full check locally and push once. One pull request per plan, and
+  a deploy run's small pull request of task closes, stay. These are instructions in the skills, not
+  a hook.
 
 **What to run:** `cc-smart-dev-kit update`, then start new sessions. Nothing per project.
 
