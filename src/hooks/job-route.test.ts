@@ -190,9 +190,9 @@ describe("which commands are routed", () => {
   // HK hunch 1, proved live on Claude Code 2.1.308 (`docs/claude-code-contract.md`): a person's
   // own `Bash(rm:*)` deny rule is matched against the rewritten line, which starts with the
   // launcher and holds the person's line as one quoted word, so a routed `echo start && rm -f x`
-  // ran the `rm`. So a line is routed only when every command in it is heavy, a `cd` or an
-  // assignment; any other line stays raw, as the person's rules see it.
-  it("HK hunch 1: a line with a command that is not heavy, a `cd` or an assignment stays raw", () => {
+  // ran the `rm`. So the rewrite never hides a command that is not heavy, a `cd`, an assignment
+  // or harmless glue; `jobRoute` refuses such a mixed line instead (§ a mixed line, below).
+  it("HK hunch 1: a line with a command that is not heavy, a `cd` or glue is never rewritten", () => {
     const raw = [
       "bunx tsc --noEmit && rm -f marker.txt",
       "rm -f marker.txt && bunx tsc --noEmit",
