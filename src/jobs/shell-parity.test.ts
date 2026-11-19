@@ -61,9 +61,10 @@ const ROWS: Row[] = [
   ["/usr/bin/env bunx tsc --noEmit", "tsc", viaShell("tsc", "/usr/bin/env bunx tsc --noEmit")],
   // was: not routed.
   ["env -u HOME bunx tsc --noEmit", "tsc", viaShell("tsc", "env -u HOME bunx tsc --noEmit")],
-  ["sudo bunx tsc --noEmit", "tsc", viaShell("tsc", "sudo bunx tsc --noEmit")],
-  // was: not routed (CM-9).
-  ["sudo -u x bunx tsc --noEmit", "tsc", viaShell("tsc", "sudo -u x bunx tsc --noEmit")],
+  // Heavy work as another user is not routed: the rewrite would hide the `sudo` from the
+  // person's rules (the owner, 2026-11-20; it was routed since CM-9). The kind is still read.
+  ["sudo bunx tsc --noEmit", "tsc", null],
+  ["sudo -u x bunx tsc --noEmit", "tsc", null],
   ["nohup bunx tsc --noEmit", "tsc", viaShell("tsc", "nohup bunx tsc --noEmit")],
   ["exec bunx tsc --noEmit", "tsc", viaShell("tsc", "exec bunx tsc --noEmit")],
   ["command bunx tsc --noEmit", "tsc", viaShell("tsc", "command bunx tsc --noEmit")],

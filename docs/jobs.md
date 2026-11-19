@@ -329,6 +329,11 @@ fix and retries, so nothing is parked. These lines are no mix, and stay as they 
   because they take no slot;
 - a line whose only non-glue command sits in a **package script's body**, or in shells nested
   too deep: the person cannot split it off their own line, so the hook does not blame them;
+- heavy work **as another user** (`sudo bun test`, `doas …`, `su -c '…'`, `pkexec …`;
+  `AS_ANOTHER_USER_NAMES` in `src/shell/command.ts`): queued, the line would start with the
+  queue's command, so the person's `sudo` rules would never see it; refused, no split would
+  help. It runs raw, as written, without a slot. A command as another user that runs no heavy
+  work is blamed like any other (`bun test; sudo echo hi` is refused);
 - every line when the **route is off** and every line **outside git**; a **PowerShell** line,
   which has its own refusal (below); and a line with a `git` command and no heavy run of its
   own, which gets the hooks prefix (`routeGitHooks`, § Git hooks).

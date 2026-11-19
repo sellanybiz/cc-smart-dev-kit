@@ -1777,6 +1777,32 @@ describe("routableLine: harmless glue rides in the queued line", () => {
     }
   });
 
+  // Queued, `sudo bun test` became `cc-smart-dev-kit job run … -- sudo bun test`: a person's
+  // `Bash(sudo:*)` rule never saw the sudo. Refused, it could not be split any further.
+  test("heavy work as another user is neither queued nor refused: it runs raw", () => {
+    const source = weightSourceOf({ "/repo": null });
+    for (const asUser of [
+      "sudo bun test",
+      "sudo -u me bunx tsc --noEmit",
+      "doas bun test",
+      "env sudo bun test",
+      "su -c 'bun test'",
+      "su me -c 'bun test'",
+      "sudo bun test 2>&1 | tail -5",
+      "bun test; sudo bun test",
+      "bash -c 'sudo bun test'",
+    ]) {
+      expect([asUser, line(asUser)]).toEqual([asUser, null]);
+      expect([asUser, mixedHeavyLine(asUser, DEFAULT_KINDS, source)]).toEqual([asUser, null]);
+    }
+    // A command as another user that runs no heavy work is blamed like any other.
+    expect(mixedHeavyLine("bun test; sudo echo hi", DEFAULT_KINDS, source)?.other).toBe(
+      "sudo echo hi",
+    );
+    // A wrapper that keeps the user is still read through.
+    queuedWhole("timeout 600 bun test", "test:run");
+  });
+
   test("exit keeps a piped run's code with a literal subscript", () => {
     queuedWhole(`bun test 2>&1 | tail -20; exit ${BRACE}PIPESTATUS[0]}`, "test:run");
     expect(line(`bun test; exit ${BRACE}PIPESTATUS[X]}`)).toBeNull();

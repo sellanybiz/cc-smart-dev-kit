@@ -1767,6 +1767,20 @@ export function isRunnerProgram(program: string): boolean {
   return RUNNER_PROGRAM_NAMES.includes(program);
 }
 
+/** The programs that run a command as another user: a person's rules for them must see it. */
+export const AS_ANOTHER_USER_NAMES: readonly string[] = ["doas", "pkexec", "su", "sudo"];
+
+/**
+ * True when the command runs as another user: its program is one of `AS_ANOTHER_USER_NAMES`
+ * (`su -c …`), or one of them stands among the words before it (`sudo -u me git …`,
+ * `env sudo …`).
+ */
+export function runsAsAnotherUser(invocation: Invocation): boolean {
+  return [invocation.program, ...invocation.prefix].some((word) =>
+    AS_ANOTHER_USER_NAMES.includes(programName(word)),
+  );
+}
+
 /** `find`'s actions that run a command, up to a `;` or a `{} +`. */
 const FIND_EXEC: ReadonlySet<string> = new Set(["-exec", "-execdir", "-ok", "-okdir"]);
 

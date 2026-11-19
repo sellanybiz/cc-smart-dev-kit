@@ -51,6 +51,7 @@ import {
   nestedCommand,
   nestedDialect,
   redirectionTargets,
+  runsAsAnotherUser,
   type ShellStep,
   type ShellWord,
   shellSteps,
@@ -491,6 +492,14 @@ function scan(
     if (CHANGE_DIR.has(program)) {
       run.folder = folderAfter(program, plain, run.folder);
       continue;
+    }
+    // Heavy work as another user (`sudo bun test`, `su -c 'bun test'`) is never queued: the
+    // rewrite would start with the queue's command, out of sight of the person's `sudo` rules.
+    // It is not refused either, since no split would help: the line runs raw, as written.
+    if (all && runsAsAnotherUser(invocation)) {
+      const asked = newScan();
+      scan(step.text, kinds, dialect, depth + 1, { ...run }, false, asked);
+      return asked.found.length > 0 ? opaque(out) : refuse(run, out, step);
     }
     if (all && isRunnerProgram(program)) return refuse(run, out, step);
     // The queue's own command: whatever it runs is queued already, and must not nest.
