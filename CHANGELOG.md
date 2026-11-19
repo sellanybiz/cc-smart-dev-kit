@@ -3,6 +3,35 @@
 What each release changed, newest first. A release's **What to run** steps are the ones to do
 in your own terminal after the update; the user guide is [README.md](README.md).
 
+## 5.5.0
+
+- **Heavy work in a mixed Bash line no longer runs past the queue.** With the job route on,
+  a line that ran a heavy command beside anything else (`bun run check; echo "exit $?"`,
+  `bun test; git status`, a `{ …; bun run check; … } > log` block) used to run raw and silent:
+  no slot, no warning, and several at once could run a machine out of memory. Now:
+  - **Harmless glue rides in the queued line.** A line whose other commands are only glue is
+    queued whole. Glue is a `cd`, an assignment, `echo`, `printf`, `true`, `false`, `:`, `pwd`,
+    `test`/`[`, `set` turning on only `-e`, `-u` or `pipefail` (or turning any option off),
+    `exit`/`return` with a plain code, `export NAME=value`, a reader on a pipe (`tail`, `head`,
+    `grep`, `wc` and the like, reading only the pipe), and a group's own redirections. Each has
+    argument checks, so nothing can run code out of sight of your permission rules.
+  - **Any other mix with heavy work is refused**, with the fix: run the heavy command on its own
+    line. Queued whole, the other command would hide from your `Bash(...)` and `Read(...)` rules;
+    run raw, the heavy part would skip the queue. The refusal also names the one-line way to
+    keep an exit code: `{ cmd; echo "exit $?"; } 2>&1 | tail -20`.
+  - **Not refused:** a light run (named files, print-only), a watch run, a line that queues
+    itself, a package script whose own body mixes heavy work with other commands (it runs raw
+    inside, as before), PowerShell, and lines outside git or with the route off.
+- **Heavy work as another user runs raw.** `sudo bun test`, `doas …`, `su -c '…'` and `pkexec`
+  were queued, so the rewritten line started with the queue's command and your `sudo` rules
+  never saw it. Now such a line runs as written, without a slot.
+- **The shell reader sees `>& file` as a write** (`echo x >& out.txt`). Every guard reads lines
+  through it, and each is now as strict or stricter.
+- **Claude's instructions teach the rule:** run a heavy command alone on its Bash line. The
+  refusal names what may join it.
+
+**What to run:** nothing. Projects with `jobs.route` on get the new behaviour with the update.
+
 ## 5.4.0
 
 - **A finding outside the plan is acted on at once, and a child works on it.** When Claude meets a

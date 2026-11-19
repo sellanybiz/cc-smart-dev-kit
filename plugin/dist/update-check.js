@@ -7,7 +7,7 @@ var COMMAND = "cc-smart-dev-kit";
 
 // src/build-info/index.ts
 var info = {
-  version: "5.4.0",
+  version: "5.5.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -7061,6 +7061,14 @@ var kindsSchema = record(string2().regex(KIND_NAME, "a kind's name is lower-case
 
 // src/jobs/classify.ts
 var CD_OPTIONS = new Set(["-L", "-P", "-e", "-@", "--"]);
+var SED_SCRIPT = { short: "e", long: "--expression" };
+var SED_LENGTH = { short: "l", long: "--line-length" };
+var SED_SHAPE = {
+  operands: 1,
+  valued: SED_SCRIPT.short + SED_LENGTH.short,
+  longValued: [SED_SCRIPT.long, SED_LENGTH.long],
+  script: SED_SCRIPT
+};
 var SED_LONG = new Set([
   "--debug",
   "--null-data",
@@ -7072,6 +7080,23 @@ var SED_LONG = new Set([
   "--silent",
   "--unbuffered"
 ]);
+var GLUE_COMMANDS = new Set([
+  ":",
+  "[",
+  "echo",
+  "exit",
+  "export",
+  "false",
+  "printf",
+  "pwd",
+  "return",
+  "set",
+  "test",
+  "true"
+]);
+var LITERAL_SUBSCRIPT = /\$\{#?[A-Za-z_]\w*\[(?:\d+|@|\*)\]\}/g;
+var EXIT_CODE = new RegExp(`^(?:\\d+|\\$\\?|${LITERAL_SUBSCRIPT.source})$`);
+var SAFE_SET_NAMES = new Set(["errexit", "nounset", "pipefail"]);
 
 // src/jobs/git-hooks.ts
 var HOOK_NAMES = [
