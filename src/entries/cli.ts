@@ -48,6 +48,7 @@ import { recordSessionName } from "../hooks/session-name";
 import { RETIRED_ENGINE_HOOKS } from "../hooks/settings-hooks";
 import { runIssue } from "../issues/command";
 import { runJobCommand } from "../jobs/commands";
+import { realLimitFacts } from "../jobs/limits";
 import { NO_HERDR_FLAG } from "../machine/herdr";
 import { realMachine } from "../machine/machine";
 import { realMcpDoctorDeps } from "../mcp/doctor";
@@ -381,6 +382,7 @@ async function main(argv: string[]): Promise<number> {
             machine: realMachine(process.env, null),
             projects: projectsReader(paths),
           },
+          limits: realLimitFacts(),
           local: { instructionsSource: instructionsFolder(import.meta.dir), cwd: process.cwd() },
           mcp: realMcpDoctorDeps(),
           portal: () =>
@@ -893,6 +895,7 @@ async function main(argv: string[]): Promise<number> {
         paths,
         cwd: process.cwd(),
         execArgv: process.execArgv,
+        limits: realLimitFacts(),
         say: (line) => console.error(line),
         print: (line) => console.log(line),
       });

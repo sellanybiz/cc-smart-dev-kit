@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { EventEmitter } from "node:events";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tempDir } from "../testing/temp";
 import {
@@ -11,6 +11,7 @@ import {
   type StatReader,
 } from "./ancestry";
 import { type SignalSource, spawnAndWait } from "./launch";
+import type { ScopeHandle, SystemdResult } from "./limits";
 import type { WindowsFacts } from "./windows";
 
 describe("ancestry: is this job inside another one?", () => {
@@ -188,6 +189,155 @@ describe("spawnAndWait: real children", () => {
     expect(said).toEqual(["the job left processes running: stopping them, so its memory is free"]);
   });
 });
+
+/**
+ * A job in a systemd scope (`limits.ts`): the signals go to the process group AND through the
+ * scope, and the job is over only once the scope is empty too. The scope here is a fake that
+ * records its signals; the real one is proved by `live-systemd.test.ts`.
+ */
+describe("spawnAndWait in a scope", () => {
+  /** A fake scope: `empty` says what `isEmpty` answers; `alsoStops` runs on each kill. */
+  function fakeScope(
+    options: {
+      empty?: () => boolean;
+      alsoStops?: (s: NodeJS.Signals) => void;
+      /** What the kill answers: systemd's own result (the default: it did it). */
+      answer?: SystemdResult;
+    } = {},
+  ) {
+    const kills: NodeJS.Signals[] = [];
+    const scope: ScopeHandle = {
+      kill: (signal) => {
+        kills.push(signal);
+        options.alsoStops?.(signal);
+        return options.answer ?? "ok";
+      },
+      isEmpty: options.empty ?? (() => true),
+    };
+    return { kills, scope };
+  }
+
+  test("an exit code passes through, and a scope that is empty is never signalled", async () => {
+    for (const code of [0, 1, 130]) {
+      const { kills, scope } = fakeScope();
+      const end = await spawnAndWait(["sh", "-c", `exit ${code}`], new EventEmitter(), undefined, {
+        scope,
+      });
+      expect(end).toEqual({ code, leftovers: false, sentOn: false, signal: null });
+      expect(kills).toEqual([]);
+    }
+  });
+
+  test("a job the kernel killed ends with 137 and its signal, with nobody's stop claimed", async () => {
+    const { scope } = fakeScope();
+    const end = await spawnAndWait(["sh", "-c", "kill -KILL $$"], new EventEmitter(), undefined, {
+      scope,
+    });
+    expect(end).toEqual({ code: 137, leftovers: false, sentOn: false, signal: "SIGKILL" });
+  });
+
+  // Every member of the job's group is in its scope: signalling both would run a tool's INT
+  // handler twice, and a tool that reads a second Ctrl+C as "force quit" would quit. The fake
+  // scope reaches the job the way the real one does, and the group is not signalled as well.
+  test("one forwarded signal reaches the job once: through the scope, not the group as well", async () => {
+    const dir = tempDir("scope-once");
+    const [pidFile, counted, stop] = ["pid", "count", "stop"].map((name) => join(dir, name));
+    const { kills, scope } = fakeScope({
+      // `systemctl kill` is a call of its own: the signal lands some milliseconds later, as it
+      // did live. A shell merges two signals that arrive together into one trap run; these do
+      // not, so a second delivery would count.
+      alsoStops: (signal) => {
+        setTimeout(
+          () => process.kill(Number(readFileSync(pidFile as string, "utf8")), signal),
+          150,
+        );
+      },
+    });
+    const signals = new EventEmitter();
+    const running = spawnAndWait(
+      [
+        "sh",
+        "-c",
+        `trap 'echo x >> "${counted}"' INT; echo $$ > "${pidFile}"; while [ ! -e "${stop}" ]; do sleep 0.05; done`,
+      ],
+      signals,
+      undefined,
+      { scope },
+    );
+    await waitForPid(pidFile as string);
+    signals.emit("SIGINT");
+    await Bun.sleep(400); // a second delivery, if there were one, has long arrived
+    writeFileSync(stop as string, "");
+    expect(await running).toMatchObject({ code: 0, leftovers: false });
+    expect(kills).toEqual(["SIGINT"]);
+    expect(readFileSync(counted as string, "utf8")).toBe("x\n");
+  });
+
+  test("a scope that did not answer: the group is signalled instead", async () => {
+    for (const answer of ["failed", "timeout"] as const) {
+      const { kills, scope } = fakeScope({ answer });
+      const signals = new EventEmitter();
+      const running = spawnAndWait(["sleep", "30"], signals, undefined, { scope });
+      signals.emit("SIGINT");
+      expect(await running).toEqual({
+        code: 130,
+        leftovers: false,
+        sentOn: true,
+        signal: "SIGINT",
+      });
+      expect(kills).toEqual(["SIGINT"]);
+    }
+  });
+
+  test("a process that left the group is stopped through the scope, and the job waits for it", async () => {
+    // `setsid` puts the worker in a session of its own: no signal to the job's group reaches it.
+    const dir = tempDir("scope-leftover");
+    const pidFile = join(dir, "worker");
+    const worker = () => Number(readFileSync(pidFile, "utf8"));
+    const { kills, scope } = fakeScope({
+      empty: () => existsSync(pidFile) && !isRunning(worker()),
+      alsoStops: (signal) => {
+        if (existsSync(pidFile)) process.kill(worker(), signal);
+      },
+    });
+    const said: string[] = [];
+    const end = await spawnAndWait(
+      ["sh", "-c", `setsid sleep 30 & echo $! > "${pidFile}"`],
+      new EventEmitter(),
+      (line) => said.push(line),
+      { scope, leftoverGraceMs: 100, killWaitMs: 2_000 },
+    );
+    expect(end).toEqual({ code: 0, leftovers: true, sentOn: false, signal: null });
+    expect(kills[0]).toBe("SIGTERM");
+    expect(isRunning(worker())).toBe(false);
+    expect(said).toEqual(["the job left processes running: stopping them, so its memory is free"]);
+  });
+
+  test("a scope that never empties: SIGTERM, then SIGKILL, then it gives up with a line", async () => {
+    const { kills, scope } = fakeScope({ empty: () => false });
+    const said: string[] = [];
+    const end = await spawnAndWait(
+      ["sh", "-c", "exit 0"],
+      new EventEmitter(),
+      (line) => said.push(line),
+      { scope, leftoverGraceMs: 50, killWaitMs: 100 },
+    );
+    expect(end).toEqual({ code: 0, leftovers: true, sentOn: false, signal: null });
+    expect(kills).toEqual(["SIGTERM", "SIGKILL"]);
+    expect(said).toEqual([
+      "the job left processes running: stopping them, so its memory is free",
+      "some of the job's processes still run: its memory is given back anyway",
+    ]);
+  });
+
+  test("no scope: the group alone, as before", async () => {
+    const end = await spawnAndWait(["sh", "-c", "exit 4"], new EventEmitter(), undefined, {
+      scope: null,
+    });
+    expect(end.code).toBe(4);
+  });
+});
+
 /** Waits for a pid file a child writes, and returns the pid. */
 async function waitForPid(file: string): Promise<number> {
   for (let i = 0; i < 200; i++) {

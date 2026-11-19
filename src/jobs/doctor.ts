@@ -4,9 +4,17 @@ import { type Check, SETUP_FIX } from "../cli/check";
 import { type CliPaths, tildify } from "../cli/paths";
 import { hostPlatform } from "../machine/host";
 import { parseUserJson } from "../setup/user-json";
-import { heavyLimitLine, jobsPaths, readHeavyLimit } from "./config";
+import { heavyLimitLine, jobsPaths, readHeavyLimit, readLimitSettings } from "./config";
 import { HOOK_NAMES } from "./git-hooks";
 import { gitHooksState } from "./hook-folder";
+import {
+  JOBS_SLICE,
+  type LimitFacts,
+  limitKeysFix,
+  limitsBlocker,
+  liveSlice,
+  machineCpus,
+} from "./limits";
 
 /** How many problems of the git hooks folder one doctor line names. */
 const PROBLEMS_SHOWN = 3;
@@ -58,8 +66,91 @@ export function gitHooksCheck(paths: CliPaths, platform: NodeJS.Platform = hostP
   };
 }
 
+/**
+ * The lines for the heavy jobs' CPU and memory caps (`limits.ts`): the settings, why they cannot
+ * apply here, what the jobs' slice carries now (read from its cgroup files before any claim),
+ * and whether the watchdog (systemd-oomd) runs. A line about a cap is information or a warning,
+ * never a failure: the jobs run without a cap that cannot apply. It reads files and the process
+ * list only, never systemd, so the portal can show the same lines.
+ */
+export function limitsChecks(paths: CliPaths, facts: LimitFacts): Check[] {
+  if (facts.platform !== "linux") {
+    return [
+      {
+        ok: true,
+        info: true,
+        text: `Heavy-job CPU and memory caps: not applied on ${facts.platform}; heavy jobs run as they are`,
+      },
+    ];
+  }
+  const read = readLimitSettings(paths.home);
+  if (!read.ok) {
+    return [
+      {
+        ok: true,
+        warn: true,
+        text: `Heavy-job caps are off: ${read.message}`,
+        fix:
+          read.keys.length > 0
+            ? limitKeysFix(read.keys)
+            : "make the file valid JSON holding an object, or remove it",
+      },
+    ];
+  }
+  const blocker = limitsBlocker(facts);
+  if (blocker !== null) {
+    return [
+      {
+        ok: true,
+        warn: true,
+        text: `Heavy-job caps cannot apply here: ${blocker}; heavy jobs run without them`,
+        fix: "see docs/jobs.md § Limits in the plugin's repo for what the caps need",
+      },
+    ];
+  }
+  const { cpuPercent, memoryPercent } = read.settings;
+  const wanted = `CPU ${cpuPercent}%, memory ${memoryPercent}%`;
+  const live = liveSlice(facts, read.settings);
+  const checks: Check[] = [];
+  if (live.state === "applied") {
+    checks.push({
+      ok: true,
+      text: `Heavy-job caps applied on ${JOBS_SLICE}: ${wanted} (${machineCpus(facts)} CPUs); the jobs yield to your apps`,
+    });
+  } else if (live.state === "absent") {
+    checks.push({
+      ok: true,
+      info: true,
+      text: `Heavy-job caps: ${wanted}; written to ${JOBS_SLICE} when the next heavy job starts`,
+    });
+  } else {
+    checks.push({
+      ok: true,
+      warn: true,
+      text: `${JOBS_SLICE} carries cpu.max "${live.cpuMax}" and memory.max "${live.memoryMax}", not the caps set (${wanted})`,
+      fix:
+        "the next heavy job writes the caps again; check them with: systemctl --user show " +
+        JOBS_SLICE,
+    });
+  }
+  if (!facts.oomdRunning()) {
+    checks.push({
+      ok: true,
+      warn: true,
+      text: "systemd-oomd is not running: the caps hold, but nothing stops a heavy job that stalls on memory",
+      fix: "start it (as root): systemctl enable --now systemd-oomd",
+    });
+  }
+  return checks;
+}
+
+/**
+ * `limits`: this machine's facts for the caps' lines (`limitsChecks`); null leaves those lines
+ * out (a caller that is not about the caps, such as a test of another part of `doctor`).
+ */
 export function heavyJobChecks(
   paths: CliPaths,
+  limits: LimitFacts | null,
   platform: NodeJS.Platform = hostPlatform(),
 ): Check[] {
   const checks: Check[] = [];
@@ -72,6 +163,7 @@ export function heavyJobChecks(
       fix: `Run ${COMMAND} job set max <n> with a valid limit, or remove maxConcurrent from the new file`,
     });
   }
+  if (limits !== null) checks.push(...limitsChecks(paths, limits));
   const file = jobsPaths(paths.home).legacyFile;
   try {
     const old: unknown = parseUserJson(readFileSync(file, "utf8"));
