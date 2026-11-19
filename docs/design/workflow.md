@@ -443,7 +443,7 @@ fix, and fix rounds pushed one at a time after the pull request opened.
   plan task closes with its evidence, as it did before: a plan child stops before its merge. A
   reserved plan's files stay held until its pull request merges or closes; an unreserved plan's
   files are free once its task closes. A plan whose pull request is abandoned has its file moved
-  back in the next one.
+  back in the next one, and so does a plan the final review leaves open.
 - **Small fixes: one pull request per session, at one ship point.** The small fixes a session
   makes outside a plan collect on the session's own branch, and its follow-up child's work
   (`docs/design/herdr.md` § Follow-up children) ships with them. When that branch is a plan branch,

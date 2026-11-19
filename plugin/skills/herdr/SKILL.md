@@ -138,18 +138,21 @@ cc-smart-dev-kit herdr send <terminal> "Follow-up [#n]: <finding> [files now hel
   conflict is aborted and reported. A pull request closed without a merge never resets: the child keeps its
   branch and opens a new pull request from it at the next `ship`. It never edits a file a held plan holds; it reports that
   finding instead, and the lead treats it as inside that plan. A small fix is fixed, checked and
-  reviewed. Beyond a small fix (`/cc-smart-dev-kit:review` defines it) it gets one second opinion
-  from `cc-smart-dev-kit:senior-engineer` before the commit: its brief allows that agent and no
-  other. Work that needs a kit plan goes back to you in its report (it never runs plan-task or
+  reviewed. Work that needs a kit plan goes back to you in its report (it never runs plan-task or
   build); other bigger work goes to plan mode, approved by the person in its pane. It makes one
-  commit for each finding and reports after each finding. It never pushes before `ship`: its
+  commit for each finding, with the issue in the subject as `(#n)` (no closing keyword). Beyond a
+  small fix (`/cc-smart-dev-kit:review` defines it) it then starts one second opinion on that
+  commit from `cc-smart-dev-kit:senior-engineer`, and the `cc-smart-dev-kit:edge-case-hunter` on a
+  risky change as that skill says; its brief allows no other agent. It commits nothing while the
+  review runs; the confirmed fixes go in one more commit. It reports after each finding. It never pushes before `ship`: its
   commits stay in its worktree. Its own findings go in its report: every linked child's brief
   says it never asks, files or starts.
 - **Ship.** At the session's ship point (`/cc-smart-dev-kit:commit` § Pushing) the lead sends
   `herdr send <terminal> "ship"`. Only then does the child run the full check, mark each fixed
-  issue (`issue mark-fixed`, with each commit's id on the shipping branch), then open its pull
-  request or push to its open one, once, as `workflow show` says (the `Fixes` lines from
-  `issue fixed`). A `ship` with nothing to ship is answered "nothing to ship" in its report; one
+  issue (`issue mark-fixed`, for each commit whose subject names one, with its id on the shipping
+  branch), then open its pull request or push to its open one, once, as `workflow show` says (the
+  `Fixes` lines from `issue fixed`; on an open pull request it replaces the body's `Fixes` lines
+  with what `issue fixed` prints now). A `ship` with nothing to ship is answered "nothing to ship" in its report; one
   that arrives mid-finding is done after that finding.
   - **A blocked child** cannot take it: tell the person where it waits (`hc attach <terminal>`)
     and save a task note on your work (or a loose task) "send ship to <terminal>". The next time

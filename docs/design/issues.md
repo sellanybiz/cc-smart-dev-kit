@@ -327,10 +327,12 @@ The contract above holds for the child's pull request, with these details.
 
 - At the lead's `ship` message, after the full check and before the push, the child runs
   `issue mark-fixed --issue <n> --base <default branch> --branch <shipping branch> --tip <id>` for
-  each of its commits that is not yet on `origin/<default branch>` and has an issue. `<id>` is the
-  commit's current id on the shipping branch. The mark comes at the ship, not after each commit:
-  a commit that never ships (a closed pull request, an aborted cherry-pick) then leaves no mark
-  that names a branch which does not carry it. `--base` is the branch its pull request targets, **not** the
+  each of its commits that is not yet on `origin/<default branch>` and whose subject names an
+  issue as `(#n)` (the child writes it there, with no closing keyword). `<id>` is the commit's
+  current id on the shipping branch. The mark comes at the ship, not after each commit: a commit
+  that never ships (an aborted cherry-pick) then leaves no mark that names a branch which does not
+  carry it. A commit whose pull request was closed was marked at the ship that opened it; the mark
+  stays and becomes true when the branch ships again. `--base` is the branch its pull request targets, **not** the
   child's own branch: the comment reads "merged into `<base>`; it closes when `<base>` ships", which
   is only true of the default branch. `mark-fixed` checks no git state, so any branch names work.
 - The comment posts **before** the merge, because the `Fixes` lines need the mark first. It says
@@ -338,7 +340,9 @@ The contract above holds for the child's pull request, with these details.
   `<base>..<head>`.
 - The `Fixes #<n>` lines of the pull request body come from `issue fixed --base origin/<base>
   --head <branch>`, never by hand. The child writes them when it opens the pull request, at the
-  lead's `ship` message.
+  lead's `ship` message. When it pushes to an open pull request instead, it replaces the body's
+  `Fixes` lines with what `issue fixed` prints now (`gh pr edit <n> --body-file -`), so an issue
+  marked at this ship is closed by the merge.
 - After a cherry-pick onto a new branch (its earlier pull request merged while it held more
   commits), the commits have new ids. The mark at the ship reads each commit's id then, so no
   second mark is needed.

@@ -27,12 +27,14 @@ in your own terminal after the update; the user guide is [README.md](README.md).
     branch from the base, with unmerged commits moved onto it by a cherry-pick (a conflict is
     aborted and reported). A closed one is never reset.
   - **For each finding,** it never edits a file a held plan holds, makes one commit and reports.
-    Beyond a small fix it gets one second opinion from `senior-engineer` before the commit (its
-    brief allows that agent and no other); work that needs a kit plan goes back to the lead. It
-    never pushes before `ship`.
+    The commit names the issue as `(#n)`. Beyond a small fix it then gets one second opinion on
+    that commit from `senior-engineer` (and the `edge-case-hunter` on a risky change); its brief
+    allows no other agent, and work that needs a kit plan goes back to the lead. It never pushes
+    before `ship`.
   - **At the ship point,** the lead sends `ship`. Only then does the child run the full check, mark
     each fixed issue (`issue mark-fixed`, with each commit's id on the shipping branch), push once,
-    and open or update its pull request, taking the `Fixes` lines from `issue fixed`.
+    and open or update its pull request, taking the `Fixes` lines from `issue fixed` (on an open
+    pull request it replaces them).
   - **It stops** only on `herdr stop`. The start's check for an ended child's unmerged work cannot
     see a child that Herdr no longer lists, so ship before you stop it.
   - **Elsewhere:** the label is `kit.followup`, and `herdr list` shows "follow-up" (the column is

@@ -266,7 +266,7 @@ that move on the plan branch, as the workflow allows: the final review then cove
 In the turn it opens, close the plan task with verification and the commits that shipped it: a
 reserved plan's files stay held until its pull request merges or closes, and an unreserved plan's
 files are free once its task closes. If that pull request is abandoned, its archived file moves
-back in the next pull request.
+back in the next pull request. If the final review leaves the plan open, move the file back.
 Keep the outcome on its task, not in a status history appended to the design.
 
 A parked plan stays open and `pending` with its work intact (§ 6), and a note on the plan task

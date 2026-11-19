@@ -178,7 +178,8 @@ including integration work and the archive commit.
 Review cross-phase behavior, spec compliance and quality. Do one fix pass for confirmed findings
 (track each as a task with `parent` set to the plan's `#n`; with no parent it is loose), then run the full
 check once in the main session (`/cc-smart-dev-kit:verify-change` § 4). Do not declare
-success while a material defect remains; record the blocker and remaining work.
+success while a material defect remains; record the blocker and remaining work. If the review
+leaves the plan open, move the plan file back out of `archive/`.
 
 Once the review and the full check pass, the one pull request of the plan opens, as `openPr` and the person's permissions allow
 (`/cc-smart-dev-kit:commit`, `/cc-smart-dev-kit:pull-request`). Include phase verdicts, final
