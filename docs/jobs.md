@@ -29,8 +29,12 @@ heavy jobs **across** sessions, agents and people. So each heavy job runs throug
 `cc-smart-dev-kit job run`, and the next one waits for the slot. A hook that git itself runs on
 `git commit` or `git push` goes through it too (§ Git hooks).
 
+On Linux with a systemd user manager, a queued job also runs under a CPU cap and a memory cap
+(90% each by default), so one job cannot hang the machine: § CPU and memory limits. Choose the
+caps with `cc-smart-dev-kit job set cpu <n>` and `cc-smart-dev-kit job set memory <n>`.
+
 The same queue runs on native Windows, where a lease's start time and how a job's tree is
-ended differ: [Windows](windows-jobs.md).
+ended differ, and where jobs have no CPU or memory limits: [Windows](windows-jobs.md).
 
 ## Commands
 
@@ -46,7 +50,9 @@ cc-smart-dev-kit job hook pre-commit
 |---|---|
 | `job run [--kind <kind>] [--exclusive <name>] [--hook] -- <command…>` | Waits for a free machine slot, runs the command, and gives the slot back when it ends. The command keeps its stdin, stdout, stderr and exit code, and signals reach its child processes too. `--kind`, `--exclusive`, or both. `--hook` is for the kit's git hooks (§ Git hooks): the slot is taken without reading the command's words, and when the queue cannot be used the command runs at once, so a broken kit never blocks a commit. |
 | `job set max <n>` | Sets the machine limit (1–8); default 1. No running job is stopped. |
-| `job status` | The limit, its source, who holds slots and who waits (the waiting jobs in the order the queue serves them, the same order the waiting line's place counts), and the job route for the folder it runs in: on or off, and whether the project, your own `switches.jobRoute` or the default decided. Stale files it finds are removed. Its lines and the portal's `/api/jobs` come from one reader (`src/jobs/status.ts`), so the queue has one shape and no printed line is parsed again. |
+| `job set cpu <n>` | Caps the CPU of all heavy jobs together at `<n>`% of the machine's CPUs (10–100); default 90. Linux with a systemd user manager (§ CPU and memory limits). |
+| `job set memory <n>` | Caps the memory of all heavy jobs together at `<n>`% of the machine's memory (10–100); default 90. Linux with a systemd user manager. A lower cap reaches the running jobs at the next launch, which with the default of one slot comes after the running job ends (§ A lower limit while a job runs). |
+| `job status` | The limit, its source, the CPU and memory caps (on Linux), who holds slots and who waits (the waiting jobs in the order the queue serves them, the same order the waiting line's place counts), and the job route for the folder it runs in: on or off, and whether the project, your own `switches.jobRoute` or the default decided. Stale files it finds are removed. Its lines and the portal's `/api/jobs` come from one reader (`src/jobs/status.ts`), so the queue has one shape and no printed line is parsed again. |
 | `job kinds` | Every kind: where it comes from (`default` or `project`) and its `about` line. Not its match rules: those are in `cc-smart-dev-kit.json` and § Kinds. |
 | `job hook <name>` | For the kit's git hook scripts, not for you: prints `direct` or `queue <kind>` for git hook `<name>` in the repo of the folder it runs in (§ Git hooks). It always ends with 0. |
 
@@ -64,12 +70,19 @@ cc-smart-dev-kit job hook pre-commit
    unless an ancestor holds that name already (§ One job per name).
 3. **Take the slot.** A job with a kind takes one slot, and waits until it is free
    (§ Waiting). A job with a name only (`--exclusive` without `--kind`) takes no slot.
-4. **Run.** The job starts in a process group of its own (§ The job's own process group).
-5. **End.** `job run` ends with the job's exit code: the code itself, 128 + n for a job killed
+4. **Get the limits ready.** A job that holds a slot gets the slice's limits written, and starts
+   in a scope of its own inside that slice (§ CPU and memory limits). This happens with the
+   slot held, never while the job waits. A nested job, a run with a name only and a print-only
+   run take no scope: they run as before. When the limits cannot apply, the job runs as before
+   too, and on Linux `job run` says why in one line.
+5. **Run.** The job starts in a process group of its own, inside its scope (§ The job's own
+   process group).
+6. **End.** `job run` ends with the job's exit code: the code itself, 128 + n for a job killed
    by signal n, 127 when the command cannot start, 2 for a wrong `job run` command line or a
    config it cannot use (`cc-smart-dev-kit.json`, a state folder it cannot make): then the job
    never starts. The slot is given back however the job ends, once no process of the job is
-   left.
+   left. When a memory limit stopped the job, `job run` says so before the end line, and the
+   job's scope is cleared (§ CPU and memory limits).
 
 ## What a job prints
 
@@ -562,9 +575,225 @@ the same files, so:
   themselves, then SIGTERM, then (5 seconds later) SIGKILL, and `job run` says so. It never
   hangs on them: when some still run 5 seconds after SIGKILL, it says so, and the slot is given
   back anyway.
+- **The scope.** With the limits on, the job's processes are also in a systemd scope (§ CPU and
+  memory limits). A signal then goes through the scope, with `systemctl --user kill
+  --signal=<signal> <unit>`, which reaches a worker that left the group. Every member of the
+  group is in the scope, so the signal goes to the group only when systemd did not answer: the
+  job gets each signal once. The leftover stop (above) signals both. The job is over only when
+  the group and the scope are both empty. The scope is empty when its `cgroup.events` says
+  `populated 0`, or when its folder is gone. The queue never stops a running job with
+  `systemctl stop`, which waits up to 90 seconds for the unit: it signals the job.
+  (`release()` uses `stop --no-block` only on a scope that is already empty.)
 - **Windows** has no signals and no process groups to signal, so stopping a job (Ctrl+C at
   `job run`, or `job run` ended) ends its whole process tree with `taskkill /PID <pid> /T /F`
   (`windows-jobs.md`).
+
+## CPU and memory limits
+
+A type check or a test run can use every core and all the memory. The machine then swaps until
+it stops answering. A memory cap alone does not stop that: a job that cannot swap makes the
+kernel swap out the desktop and the sessions instead, before the job reaches its cap. So the
+**caps bound the jobs, and the watchdog and the kill mark are what stop the hang.** The code is
+`src/jobs/limits.ts`.
+
+Four words first. **cgroup** is the Linux kernel feature that enforces the limits. A **slice** is
+a systemd group of processes that share them. A **scope** is one job's own group inside the
+slice. **OOM** means out of memory, and an OOM kill is a process stopped for it.
+
+**Where it applies.** A queued job (one that holds a slot) on Linux with a systemd user manager
+and cgroup v2. A nested job, a run with a name only and a print-only run take no scope. A hook
+that `job run --hook` queues is limited like any queued job.
+
+### What a job gets
+
+Every queued job runs in a scope of its own inside one slice, `cc-smart-dev-kit-jobs.slice`
+(systemd reads a dash in a slice name as nesting). All heavy jobs share that slice, so the caps
+hold for them together, also with `job set max 3`. Before each launch the slice gets the
+properties below, written with `systemctl --user set-property --runtime`. A runtime property
+lives under `/run/user/<uid>/systemd/user.control/` and is gone at reboot. No file in your home
+changes.
+
+| Property | Value | Why |
+|---|---|---|
+| `CPUQuota` | the CPU percent times the machine's CPUs; empty at 100, which removes it | Caps the jobs' CPU. The CPU count comes from the user manager's `cpuset.cpus.effective`, or else `os.cpus().length`. It is never `availableParallelism()`: a `job run` started under `taskset` must not shrink every job's quota. |
+| `CPUWeight` | `20` (systemd's default is 100) | The jobs yield to your apps when the CPU is busy, and never starve. An idle machine runs a job at full speed, up to the cap. |
+| `MemoryMax` | the memory percent, as `<n>%` | Caps the jobs' memory. systemd reads the percent as a share of the physical memory. |
+| `MemorySwapMax` | `0` | The jobs never swap, so they cannot push the desktop out of memory. |
+| `MemoryHigh` | `infinity`, written on purpose | A `MemoryHigh` below `MemoryMax` made a job hang for good with no swap (proved live). It is never set lower. |
+| `ManagedOOMMemoryPressure`, `ManagedOOMMemoryPressureLimit` | `kill`, `40%` | The watchdog: systemd-oomd stops a job when the slice stalls on memory. |
+| `ManagedOOMMemoryPressureDurationSec` | `10s`, in a call of its own | It needs systemd 257. On an older systemd only that call fails, and oomd's own default duration stays. |
+
+A runtime property outlives a job, so every launch writes every property it owns, with the
+reset value where a cap is off. Two `job run`s that write the same values at once do no harm.
+
+**The scope** starts with `systemd-run --user --scope --quiet --slice=<slice> -p OOMPolicy=kill
+--unit=<unique name> -- choom -n 900 -- <the job>`:
+
+- **`OOMPolicy=kill`** ends the whole job when one of its processes is OOM-killed, so the exit
+  code is 137. Without it the user manager's default (`stop`) gave 143.
+- **`choom -n 900`** is the kill mark: when the whole machine runs out of memory, the kernel
+  kills the job before your desktop. A machine without `choom` runs the job without the mark,
+  and the limits still apply.
+- **The unit name** holds the slice's name, the kind, the pid of `job run` and its start time
+  (base 36). A scope that a SIGKILLed `job run` left behind never clashes with a new one.
+
+### The job's words are never changed
+
+From systemd 258 on, `systemd-run --scope` expands `$HOME`, `${HOME}` and `$$` in the command.
+Before 258 it never does (proved live on 259). A `bun -e` script with a template literal, or
+`sh -c 'kill $$'`, would reach the job changed. So the switches carry `--expand-environment=no`
+where the systemd has it (254 and later), and the job's words reach it as written. The queue
+never rewrites them.
+
+### The probe
+
+`systemd-run` exits with 1 when it cannot make a scope, the same code as a type check that
+found errors. So the same switches first run `-- true` (about 30 ms), and only then does the
+job start in a scope. The probe tries three sets of switches, and the first that works is the
+one the job uses:
+
+1. `OOMPolicy` with `--expand-environment=no` (systemd 254 and later);
+2. `OOMPolicy` alone (systemd 253);
+3. neither (an older systemd, where there is nothing to switch off).
+
+A timeout stops the probing: another probe would wait as long again. Once the job has started,
+its exit code is the answer, and the job is never started a second time.
+
+### When the limits cannot apply, the job still runs
+
+A broken kit never blocks a build, a test or a commit. The checks come in a fixed order, and
+the first that fails names the reason: Linux, the settings, the user manager's delegated `cpu`
+and `memory` controllers (its `cgroup.controllers` file), `systemd-run`, a command that is found,
+the probe, then `set-property`. On Linux `job run` prints the reason as one line on stderr:
+
+```text
+[cc-smart-dev-kit job] this job runs without CPU and memory limits: no systemd user manager with cgroup v2 here (its controllers file is missing)
+[cc-smart-dev-kit job] this job runs without CPU and memory limits: systemd could not start a scope here (no user session bus?)
+[cc-smart-dev-kit job] this job runs without CPU and memory limits: systemd did not answer within 10 s
+```
+
+On macOS and Windows it prints nothing (every hook would repeat it), and `doctor` covers it.
+Every systemd call has one timeout, 10 seconds, so a hung user bus never hangs a job or a commit
+hook. It costs one 10-second wait at the start, and the job then runs without limits. At the
+end it costs at most one more: `release()` skips its second call after a timeout, and the
+watchdog read only follows a SIGKILL the wrapper did not send.
+
+- **A command that is not on the PATH** runs plain, so its exit code stays 127 and its message
+  stays the one `job run` always gave ("could not start"). `systemd-run` would end with 1 and a
+  different message. This case prints no line.
+- **A bad `cpuPercent` or `memoryPercent`** runs the job without limits, with one line that
+  names the key, its range and the fix:
+
+  ```text
+  [cc-smart-dev-kit job] this job runs without CPU and memory limits: /home/user/.config/cc-smart-dev-kit/heavy-jobs.json: cpuPercent must be an integer from 10 to 100 (fix: correct it in that file (a whole number from 10 to 100), or remove it and run cc-smart-dev-kit job set cpu <n>)
+  ```
+
+  A typo never blocks the queue: `maxConcurrent` is read apart, and a bad `maxConcurrent` still
+  fails closed, as before. `job set` never overwrites a value you wrote by hand (the managed
+  file's rule), which is why the fix says to correct or remove it first.
+
+### A job stopped for memory says why
+
+A job that a memory limit stopped gets one line before its end line. It never prints after exit
+0, and it never reads an exit code (a killed worker makes its parent exit 1). Three killers can
+stop a job, and each has its own line:
+
+- **The cap.** The jobs reached `MemoryMax`: the slice's `oom` count rose.
+
+  ```text
+  [cc-smart-dev-kit job] killed for memory: this job reached the memory cap (27.3 GB, 90% of this machine's memory). Run it again when fewer heavy jobs run, or raise the cap with: cc-smart-dev-kit job set memory <n> (exit code 137)
+  ```
+
+- **The watchdog.** The jobs stalled on memory below the cap, and systemd-oomd stopped the job.
+  oomd leaves no count. It fails the job's scope with `Result=oom-kill`, and `job run` reads
+  that with `systemctl --user show` (only for a SIGKILL it did not send itself, and never after
+  exit 0). The line says "after 10s" only when this launch's duration call succeeded. Before
+  systemd 257 it says "stops a stalled job" with no number.
+
+  ```text
+  [cc-smart-dev-kit job] stopped for memory: this job stalled on memory below the cap (27.3 GB, 90% of this machine's memory), and the watchdog (systemd-oomd) stops a stalled job after 10s. Run it again when fewer heavy jobs run, or lower the cap so the jobs leave more for the machine, with: cc-smart-dev-kit job set memory <n> (exit code 137)
+  ```
+
+- **The machine.** Only the kernel's `oom_kill` count rose: the whole machine ran out of memory,
+  and the kernel picked this job first, because of its kill mark. The line says so, and
+  suggests a lower cap, so the jobs leave more for the machine. When `oom_kill` rose and the
+  `oom` count cannot be read, the line names both the cap and the machine.
+
+The scope's own `oom_kill` count says whether the kernel killed this job. A killed scope's
+folder is usually gone by then (seen live), so then the slice's counts answer. **With `job set
+max` above 1, a kernel kill is read from the shared slice, so two jobs that end at once can
+share one "killed for memory" line.** With `max` above 1 the cap line and the watchdog line
+also say "the heavy jobs together" in place of "this job", because the cap is theirs together.
+The watchdog's `Result` is read from the job's own scope, so it is never shared.
+
+### `release()`: each job's scope is cleared
+
+When a job ends, whatever its exit code, its scope is stopped and reset: `systemctl --user stop
+--no-block <unit>`, then `reset-failed <unit>`. A scope that systemd failed stays failed until
+it is reset (proved live), and a scope whose "empty" notification systemd missed stays `active`
+(seen live, under load). Without this step a job would leave a unit behind. The stop does not
+wait: the scope is empty already. When the stop times out, the second call is left out, because
+a hung bus would only add another 10 seconds to the job's end. This runs after the memory line,
+which needs the scope's state.
+
+### A lower limit while a job runs
+
+`job set cpu` and `job set memory` write the settings file and nothing else. The slice gets the
+new values at the **next launch**, which writes every property again. A lower limit set while a
+job runs reaches the running slice when the next job starts: a lower CPU cap slows the jobs in
+it, and a lower memory cap makes the kernel reclaim memory. With no swap, a job that is still
+above the new cap is then OOM-killed. With `job set max 1` the next launch comes after the
+running job ends, so the new cap meets a running job only when `max` is above 1.
+
+`job set cpu 100` writes an empty `CPUQuota=`, which removes the cap. `job set memory 100`
+writes `MemoryMax=100%`, and swap stays 0. To remove all of the slice's drop-ins at once, run
+`systemctl --user revert` on the slice.
+
+### Settings, and where to see them
+
+The settings are `cpuPercent` and `memoryPercent` in the machine file named at the top of this
+page, beside `maxConcurrent`: each a whole number from 10 to 100, and 90 when the key is missing.
+`job set` writes them with the same managed writer and the same locks as `job set max`, and
+prints the setting as the status says it:
+
+```text
+Heavy-job caps: CPU 70%, memory 90% (/home/user/.config/cc-smart-dev-kit/heavy-jobs.json)
+```
+
+- **`job status`**, `/api/jobs` and the portal's Machine page carry the caps in the status note,
+  on Linux: `Heavy-job limit: 1 (default). Heavy-job caps: CPU 90%, memory 90% (default)`. A bad
+  key reads `Heavy-job caps: off, <file>: cpuPercent must be an integer from 10 to 100`. They
+  read the settings file only and never start systemd, because the portal polls them.
+- **`doctor`** has lines for the caps, and none of them is a failure. It reads cgroup files and
+  the process list only, never systemd:
+  - `Heavy-job caps applied on <the slice>: CPU 90%, memory 90% (12 CPUs); the jobs yield to your apps`
+    when the slice's `cpu.max` and `memory.max` match the settings (it never claims a cap it
+    has not read);
+  - an information line, "written to <the slice> when the next heavy job starts", when no job has run since boot and the slice does not exist yet;
+  - a warning when the slice carries other values than the settings;
+  - a warning with the reason when the caps cannot apply here, and one when the settings are
+    bad, each with its fix;
+  - a warning when **systemd-oomd** does not run: the caps hold, but nothing stops a heavy job
+    that stalls on memory. The fix is `systemctl enable --now systemd-oomd`, as root.
+
+### How it is tested
+
+Every test fakes the system's facts (`LimitFacts`), so a test never touches the host's systemd.
+One test file is opt-in and does touch it: `src/jobs/live-systemd.test.ts` runs only with
+`CC_SMART_DEV_KIT_LIVE_SYSTEMD=1`.
+
+```sh
+CC_SMART_DEV_KIT_LIVE_SYSTEMD=1 bun test src/jobs/live-systemd.test.ts
+```
+
+It starts throwaway units in a throwaway slice (never the real one), and the run fails when it
+leaves anything behind. It proves that the properties reach the kernel's files, that a CPU
+burner is held to its quota, that a job over the cap ends with exit 137 and its line, that exit
+codes pass through, and that one SIGINT reaches the job once. Its **stall case** sets a
+test-only `MemoryHigh` below `MemoryMax` on the throwaway slice, because a job under the real
+limits is killed at the cap and never stalls. It needs `python3`, and it is skipped without it:
+systemd-oomd picks its victim by page-scanning activity, so the eater must keep touching its
+pages, as a Python `bytearray` does. A Bun `Buffer` is never picked.
 
 ## The environment
 
@@ -626,19 +855,59 @@ hook, in `src/hooks/bash-judge.test.ts`.
 
 ## What 2.0 took out
 
-There are no memory checks, CPU or I/O weights, systemd slices, `choom`, shared folders,
-fair-share rules, light lane or old resource-setting commands. Since 2.1, `job set max` chooses
-only the heavy-job count. The queue never changes process priority. An old
-`jobs` setting or machine `jobs.json` file is ignored since 2.0; no file is cleaned up.
+2.0 took out the memory checks, CPU and I/O weights, systemd slices, `choom`, shared folders,
+fair-share rules, the light lane and the old resource-setting commands. An old `jobs` setting or
+machine `jobs.json` file is ignored since 2.0; no file is cleaned up.
+
+**What came back** (§ CPU and memory limits), because one job could hang the machine:
+
+- the slice, with a CPU quota and a memory ceiling for all heavy jobs together;
+- the kill mark (`choom -n 900`) and `OOMPolicy=kill`;
+- the probe: an empty scope tried before the job;
+- the scope's kill and its emptiness check, and the memory line that names the killer.
+
+**What did not come back:**
+
+- **A memory gate before a start.** A job never waits for free memory. The slot and the caps
+  bound it, and a job that reaches the cap is stopped and named.
+- **I/O weights.** The jobs get no disk priority.
+- **Shared folders, the fair-share rules and the light lane.** The slot count is still the
+  only queue setting beside the two caps.
+- **A change of `nice`.** The queue never changes a job's process priority. The kill mark is
+  the one change to the job's own process, and only where `choom` exists.
+
+Since 2.1, `job set max` chooses the heavy-job count, and since the limits, `job set cpu` and
+`job set memory` choose the two caps.
 
 ## Limits
 
-- **The limit caps concurrent full heavy runs (one by default).** It does not cap the memory or CPU
-  one run uses: one job alone may use all the machine's memory and every core.
+- **The limit caps concurrent full heavy runs (one by default).** It does not cap the memory or
+  CPU one run uses. Where the caps apply (§ CPU and memory limits), the heavy jobs together stay
+  under them: 90% of the CPUs and of the memory by default. Where they do not apply, one job
+  alone may use all the machine's memory and every core.
+- **The caps need Linux with a systemd user manager and cgroup v2.** The user manager must have
+  the `cpu` and `memory` controllers; `doctor` names a missing one. On macOS, Windows, cgroup v1,
+  a container without the controllers file, or a machine with no user session bus, the jobs run
+  without limits. `doctor` reads cgroup files and the process list only, so it names a missing
+  user manager or controller; a missing session bus shows only in the job's own line, because
+  only a job's start probes systemd. The caps hold queued jobs only: a command you start
+  without `job run` has no cap.
+- **A container's own caps are not read.** The percentages are shares of the physical memory and
+  of the CPUs the user manager sees, not of a container's memory limit or CPU quota. A container
+  with a smaller cap than the machine has may be stopped by its own cap first.
+- **The watchdog needs systemd-oomd running.** Without it the caps and the kill mark still
+  apply, but nothing stops a job that stalls on memory below the cap. `doctor` warns.
+- **A job may be stopped below the memory cap.** When the jobs' slice stalls on memory, the
+  watchdog stops a job, even though the cap is not reached. That is the price of a machine that
+  does not hang.
+- **A kernel kill is read from the shared slice** when the job's scope is already gone, so with
+  `job set max` above 1 two jobs that end at once can share one memory line.
+- **The live stall test needs a page-scanning eater** (`python3`), because systemd-oomd picks
+  its victim by page-scanning activity. A job that only holds memory is never picked.
 - **It is machine-local**, not a distributed lock.
 - **A `job run` killed with SIGKILL** frees its lease at the next look, but its job keeps
-  running, unaccounted. In its own process group, a kill of `job run`'s group does not reach it
-  either.
+  running, unaccounted, in its scope with the limits still on it. In its own process group, a kill
+  of `job run`'s group does not reach it either.
 - **The job has no controlling terminal** (its own session): a job that asks a question on
   `/dev/tty` cannot, and Ctrl+Z stops `job run` only, not the job. Heavy jobs are builds and
   checks that ask nothing.

@@ -1,8 +1,12 @@
 # Heavy jobs on Windows
 
-Windows uses the same fixed machine-wide limit: one heavy run at a time. A run on named
-files skips the queue. There is no memory reading, CPU or I/O weight, systemd slice, shared
-folder, light lane or machine queue setting. `job run`, `job status` and `job kinds` work as on
+Windows uses the same machine-wide limit as every platform: as many heavy runs at once as
+`job set max` allows (1 to 8, default 1; the setting is read the same way on every platform). A
+run on named files skips the queue. There is no memory reading, CPU or I/O weight, systemd slice,
+shared folder or light lane. **There are no CPU or memory limits on Windows**: the caps
+(`job set cpu`, `job set memory`) need Linux with a systemd user manager (`jobs.md` § CPU and
+memory limits). A Windows job runs without them and prints no line about it; `doctor` has one
+information line. `job run`, `job status` and `job kinds` work as on
 Linux (`jobs.md`). Two things work differently, because Windows has no `/proc` and no signals:
 who holds a lease, and how a job's tree is ended. This page is those two things, what they
 cost, and the live checks still owed on a Windows machine.
