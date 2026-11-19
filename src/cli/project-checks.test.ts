@@ -1437,6 +1437,9 @@ describe("deploy tasks in doctor's project group", () => {
 });
 
 describe("the deploy-skill block in doctor", () => {
+  /** The `·` line a project with a deploy skill and no deploy commands gets. */
+  const NO_COMMANDS =
+    "· project: the project has a deploy skill but lists no deploy commands in tasks.deployCommands, so the deploy guard never asks before a deploy Fix: cc-smart-dev-kit project init asks for the commands";
   const OLD = `${BLOCK_BEGIN}\n## Deploy tasks\nold text\n${BLOCK_END}\n`;
   const CURRENT = `${BLOCK_BEGIN}\n${deployBlockBody()}\n${BLOCK_END}\n`;
 
@@ -1456,6 +1459,7 @@ describe("the deploy-skill block in doctor", () => {
     skill(repo, "deploy", `# Deploy\n${OLD}`);
     expect(await check(repo)).toEqual([
       "! project: the deploy-skill block in .claude/skills/deploy/SKILL.md is out of date Fix: cc-smart-dev-kit project init rewrites it",
+      NO_COMMANDS,
     ]);
   });
 
@@ -1465,6 +1469,7 @@ describe("the deploy-skill block in doctor", () => {
     writeClaudeFile(repo, "cc-smart-dev-kit.json", { requires: ">=1.0" });
     expect(await check(repo)).toEqual([
       '! project: .claude/cc-smart-dev-kit.json says requires ">=1.0", but its fields and its deploy tasks need ">=5.0": a teammate on an older plugin gets the whole file refused instead of "update" Fix: cc-smart-dev-kit project init raises it to ">=5.0"',
+      NO_COMMANDS,
     ]);
   });
 
@@ -1484,6 +1489,31 @@ describe("the deploy-skill block in doctor", () => {
     const repo = project();
     skill(repo, "deploy", `# Deploy\n${CURRENT}`);
     skill(repo, "deploy-other", "no block here");
+    expect(await check(repo)).toEqual([NO_COMMANDS]);
+  });
+
+  test("a deploy skill and no deployCommands: one · line; with the field, a project without a skill, or without a file: nothing", async () => {
+    const repo = project();
+    expect(await check(repo)).toEqual([]);
+    skill(repo, "deploy", `# Deploy\n${CURRENT}`);
+    expect(await check(repo)).toEqual([NO_COMMANDS]);
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", {
+      requires: ">=5.2",
+      tasks: { deployCommands: { prod: ["vercel --prod"] } },
+    });
+    expect(await check(repo)).toEqual([]);
+  });
+
+  test("a skill that only names a deploy (no block yet) counts as a deploy skill", async () => {
+    const repo = project();
+    skill(repo, "deploy-prod", "Use when you deploy this project to prod.");
+    expect(await check(repo)).toEqual([NO_COMMANDS]);
+  });
+
+  test("a project without cc-smart-dev-kit.json: no line", async () => {
+    const repo = makeRepo();
+    ignoreWorktrees(repo);
+    skill(repo, "deploy", `# Deploy\n${CURRENT}`);
     expect(await check(repo)).toEqual([]);
   });
 

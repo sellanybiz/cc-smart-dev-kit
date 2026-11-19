@@ -22,6 +22,8 @@ export function deployBlockBody(): string {
   return [
     "## Deploy tasks",
     "",
+    "When `tasks.deployCommands` lists this project's deploy commands, the deploy guard asks before one runs while a blocking task is open.",
+    "",
     "Steps owed around a deploy are deploy tasks; each one belongs to prod or staging. Run these steps in the checkout you work in:",
     "",
     "1. Cut a deploy branch from the commit that ships: `git fetch origin`, then `git switch --no-track -c deploy/<env>-<date> origin/<base>` (--no-track keeps `git push` from targeting `<base>`).",

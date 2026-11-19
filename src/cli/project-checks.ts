@@ -567,6 +567,30 @@ function requiresLines(
 }
 
 /**
+ * One `·` line when the project has a deploy skill (the one `project init` finds: a file that
+ * holds the kit's block, or a top skill that names a deploy) but lists no `tasks.deployCommands`:
+ * the deploy guard has nothing to ask about, which is no failure, only a gap a person may want
+ * to close. A skill folder that cannot be read says nothing here: `deployBlockLines` names it.
+ */
+function deployCommandsLines(config: CcSmartDevKitConfig | null, root: string): ProjectLine[] {
+  if (config === null || config.tasks?.deployCommands !== undefined) return [];
+  try {
+    const found = findDeploySkills(root);
+    if (found.holders.length === 0 && found.named.length === 0) return [];
+  } catch {
+    return [];
+  }
+  return [
+    {
+      ok: true,
+      info: true,
+      text: "project: the project has a deploy skill but lists no deploy commands in tasks.deployCommands, so the deploy guard never asks before a deploy",
+      fix: `${COMMAND} project init asks for the commands`,
+    },
+  ];
+}
+
+/**
  * One `!` line for each `tasks` field the file still sets that nothing reads since
  * `DEPLOY_TASKS_SINCE` (`IGNORED_TASK_FIELDS`): the file loads, so nothing fails, and
  * `project init` takes them out.
@@ -944,6 +968,7 @@ export async function projectChecks(
   lines.push(...(await issuesChecks({ cwd: checkout.root, env, gh, paths })));
   lines.push(...(await projectTaskChecks(checkout.root, env)));
   lines.push(...deployBlockLines(checkout.root, usesDeployTasks));
+  lines.push(...deployCommandsLines(config, checkout.root));
   lines.push(...planCapChecks(checkout.root, env, paths, config));
   return lines;
 }
