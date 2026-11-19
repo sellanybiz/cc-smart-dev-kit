@@ -639,7 +639,8 @@ against every rule, and on a match runs `envRefusal` and `judgeTasks` over the t
 hook's `cwd` checkout. Refusals give one `ask` that names each problem and the way out: close the
 task with evidence, or drop it yourself in your own terminal. Notes alone never ask; no refusal
 means no answer. The guard is a rail, not a lock: it does not see a command that is not listed or
-is spelled another way, `xargs` feeding the words, a deploy by an MCP tool, a platform's deploy on
+is spelled another way (a tool's other name, `flyctl` for `fly`), a run on another machine
+(`ssh host …`, `docker run …`), `xargs` feeding the words, a deploy by an MCP tool, a platform's deploy on
 push, a branch cut before main gained a blocking task, a `cd` into another checkout, or a hand
 edit of the config or of a task file.
 

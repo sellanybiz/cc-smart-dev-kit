@@ -292,7 +292,8 @@ them while that environment has an open blocking problem in its deploy tasks
   `--missing=ask`. Timeout 10 s. `logFacts` holds the environment and the entry's place in its
   list, never the command text (an entry may hold a token).
 - **Not seen**, and the README says so (§ Deploy tasks in CI): a command not listed or spelled
-  another way, `xargs` feeding the words, a deploy through an MCP tool, a platform's deploy on
+  another way (`flyctl` for `fly`), a run on another machine (`ssh`, `docker run`), `xargs`
+  feeding the words, a deploy through an MCP tool, a platform's deploy on
   push, and a hand edit of the config or a task file.
 
 ### The Agent guard

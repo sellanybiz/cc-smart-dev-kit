@@ -619,6 +619,12 @@ PowerShell.
   job's user does not own the folder. Run `git config --global --add safe.directory "$PWD"` before
   the step. The job also needs git 2.31 or newer: the command refuses an older git with "git 2.31
   or newer is needed".
+- **A private copy of the kit.** If you install the kit from a private repository, the raw URL
+  answers 404: the job's `GITHUB_TOKEN` reads only its own repository. Store a token that can
+  read the kit's repository (Contents: read) as a secret, and fetch through the contents API with
+  the raw media type (the file is over 1 MB, so the raw type is required):
+  `curl -fsSL -H "Authorization: Bearer $KIT_TOKEN" -H "Accept: application/vnd.github.raw" "https://api.github.com/repos/<owner>/cc-smart-dev-kit/contents/plugin/dist/cli.js?ref=<commit>" -o "$RUNNER_TEMP/kit.js"`,
+  with `env: KIT_TOKEN: ${{ secrets.<name> }}` on the step.
 - **Other CI systems.** Run the same three commands (fetch the file, make an empty config file,
   run `bun` with those two options) wherever your pipeline runs before the deploy.
 - **A hosting platform that deploys on push** (its own Git integration, with no CI job of yours)
@@ -628,7 +634,9 @@ PowerShell.
 **What neither rail sees.** Both are a rail against a skipped step, not a lock. The guard asks
 only about a command the project lists, spelled the way a run spells it (see [the
 hooks](#the-hooks)). Not seen: a command that is not listed, or is spelled another way (a
-`--target=production` where the list has `--prod`); words fed through `xargs`; a deploy made by
+`--target=production` where the list has `--prod`, or `flyctl` where it has `fly`); a command
+run on another machine or in a container (`ssh host vercel --prod`, `docker run …`); words fed
+through `xargs`; a deploy made by
 an MCP tool; a platform's deploy on push without the CI step; a branch cut before main gained a
 blocking task (the guard judges the tasks of the folder the call runs in, with no git, and so
 does `cd ../other` into another checkout); and a hand edit of the config or of a task file.
