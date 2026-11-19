@@ -606,9 +606,14 @@ that `job run --hook` queues is limited like any queued job.
 
 ### What a job gets
 
-Every queued job runs in a scope of its own inside one slice, `cc-smart-dev-kit-jobs.slice`
-(systemd reads a dash in a slice name as nesting). All heavy jobs share that slice, so the caps
-hold for them together, also with `job set max 3`. Before each launch the slice gets the
+Every queued job runs in a scope of its own inside one slice, `cc_smart_dev_kit_jobs.slice`: the
+command's name with each dash an underscore. The name has no dash on purpose. systemd reads a
+dash in a slice name as nesting (`foo-bar.slice` is located within `foo.slice`), and a CPU weight
+only counts against the siblings in the same parent. A dashed name would sit five levels deep
+with no sibling, and the weight would do nothing (proved live: 2001 ms against 2002 ms for the
+same burner). Without a dash the slice sits directly under your user manager, beside `app.slice`,
+where the weight works (proved live: two burners on one CPU shared it 1 to 5). All heavy jobs
+share that slice, so the caps hold for them together, also with `job set max 3`. Before each launch the slice gets the
 properties below, written with `systemctl --user set-property --runtime`. A runtime property
 lives under `/run/user/<uid>/systemd/user.control/` and is gone at reboot. No file in your home
 changes.
@@ -616,7 +621,7 @@ changes.
 | Property | Value | Why |
 |---|---|---|
 | `CPUQuota` | the CPU percent times the machine's CPUs; empty at 100, which removes it | Caps the jobs' CPU. The CPU count comes from the user manager's `cpuset.cpus.effective`, or else `os.cpus().length`. It is never `availableParallelism()`: a `job run` started under `taskset` must not shrink every job's quota. |
-| `CPUWeight` | `20` (systemd's default is 100) | The jobs yield to your apps when the CPU is busy, and never starve. An idle machine runs a job at full speed, up to the cap. |
+| `CPUWeight` | `20` (systemd's default is 100) | The jobs yield to your apps when the CPU is busy, and never starve. It works because the slice is top level, beside `app.slice`, whose weight is the default 100. An idle machine runs a job at full speed, up to the cap. |
 | `MemoryMax` | the memory percent, as `<n>%` | Caps the jobs' memory. systemd reads the percent as a share of the physical memory. |
 | `MemorySwapMax` | `0` | The jobs never swap, so they cannot push the desktop out of memory. |
 | `MemoryHigh` | `infinity`, written on purpose | A `MemoryHigh` below `MemoryMax` made a job hang for good with no swap (proved live). It is never set lower. |
@@ -626,8 +631,10 @@ changes.
 A runtime property outlives a job, so every launch writes every property it owns, with the
 reset value where a cap is off. Two `job run`s that write the same values at once do no harm.
 
-**The scope** starts with `systemd-run --user --scope --quiet --slice=<slice> -p OOMPolicy=kill
---unit=<unique name> -- choom -n 900 -- <the job>`:
+**The scope** starts with `systemd-run --user --scope --quiet --slice=<slice>
+--expand-environment=no (254 and later) -p OOMPolicy=kill --unit=<unique name> -- choom -n 900 --
+<the job>`. The scope is not `--collect`ed: a scope that systemd failed keeps its result, which
+the watchdog's line reads. Then:
 
 - **`OOMPolicy=kill`** ends the whole job when one of its processes is OOM-killed, so the exit
   code is 137. Without it the user manager's default (`stop`) gave 143.
@@ -636,6 +643,12 @@ reset value where a cap is off. Two `job run`s that write the same values at onc
   and the limits still apply.
 - **The unit name** holds the slice's name, the kind, the pid of `job run` and its start time
   (base 36). A scope that a SIGKILLed `job run` left behind never clashes with a new one.
+- **Stale failed scopes** are cleared at each launch, after the probe and the properties: one
+  `systemctl --user reset-failed 'cc_smart_dev_kit_jobs-*.scope'`. A `job run` killed with
+  SIGKILL never releases its scope, and one that later ends by an OOM kill would stay failed until
+  the machine restarts. `reset-failed` touches failed units only: a running scope is left alone
+  (checked live), and a pattern that matches nothing is no error. Its answer is ignored, because
+  nothing here may stop a job.
 
 ### The job's words are never changed
 
@@ -764,8 +777,12 @@ Heavy-job caps: CPU 70%, memory 90% (/home/user/.config/cc-smart-dev-kit/heavy-j
 
 - **`job status`**, `/api/jobs` and the portal's Machine page carry the caps in the status note,
   on Linux: `Heavy-job limit: 1 (default). Heavy-job caps: CPU 90%, memory 90% (default)`. A bad
-  key reads `Heavy-job caps: off, <file>: cpuPercent must be an integer from 10 to 100`. They
-  read the settings file only and never start systemd, because the portal polls them.
+  key reads `Heavy-job caps: off, <file>: cpuPercent must be an integer from 10 to 100`. Where
+  the caps cannot apply (a container, WSL without systemd, a controller that is not delegated, no
+  `systemd-run`), the note adds the reason: `... memory 90% (default) (not applied here: no systemd
+  user manager with cgroup v2 here (its controllers file is missing))`. They read the settings
+  file, one cgroup file and the PATH only, and never start a program or systemd, because the
+  portal polls them.
 - **`doctor`** has lines for the caps, and none of them is a failure. It reads cgroup files and
   the process list only, never systemd:
   - `Heavy-job caps applied on <the slice>: CPU 90%, memory 90% (12 CPUs); the jobs yield to your apps`

@@ -5,8 +5,8 @@
  * reach the kernel's files, that a scope's kill and its `cgroup.events` work, that a CPU burner
  * is held to its quota, and that a job over the memory cap is killed and named.
  *
- * They start throwaway units in a throwaway slice (`amlive<random>-jobs.slice`), never the real
- * `<command>-jobs.slice`, and stop and revert every one of them at the end (`afterAll` fails the
+ * They start throwaway units in a throwaway slice (`amlive<random>_jobs.slice`), never the real
+ * `<command>_jobs.slice`, and stop and revert every one of them at the end (`afterAll` fails the
  * run when anything is left behind). Run it once, on a machine you can spare a minute on:
  *
  *   CC_SMART_DEV_KIT_LIVE_SYSTEMD=1 bun test src/jobs/live-systemd.test.ts
@@ -27,14 +27,16 @@ import {
   machineCpus,
   realLimitFacts,
   startLimits,
+  userManagerCgroup,
   userSliceCgroup,
 } from "./limits";
 
 const LIVE = process.env.CC_SMART_DEV_KIT_LIVE_SYSTEMD === "1";
 const uid = process.getuid?.() ?? -1;
 const prefix = `amlive${crypto.randomUUID().slice(0, 6)}`;
-const SLICE = `${prefix}-jobs.slice`;
-const PARENT = `${prefix}.slice`;
+const SLICE = `${prefix}_jobs.slice`;
+// A top-level sibling with the default weight, for the yield test: it has no dash either.
+const SIBLING = `${prefix}_sibling.slice`;
 const facts = realLimitFacts();
 const sliceDir = `/sys/fs/cgroup${userSliceCgroup(uid, SLICE)}`;
 
@@ -128,11 +130,11 @@ afterAll(() => {
     .map((line) => line.trim().split(/\s+/)[0] ?? "")
     .filter((name) => name.endsWith(".scope"));
   for (const scope of scopes) systemctl("kill", "--signal=SIGKILL", scope);
-  systemctl("stop", SLICE, PARENT);
-  systemctl("revert", SLICE, PARENT);
+  systemctl("stop", SLICE, SIBLING);
+  systemctl("revert", SLICE, SIBLING);
   const left = systemctl("list-units", "--all", "--plain", "--no-legend", `${prefix}*`).out;
   if (left !== "") throw new Error(`live test units left behind: ${left}`);
-  for (const unit of [SLICE, PARENT]) {
+  for (const unit of [SLICE, SIBLING]) {
     const dropIns = `/run/user/${String(uid)}/systemd/user.control/${unit}.d`;
     if (existsSync(dropIns)) throw new Error(`live test drop-ins left behind: ${dropIns}`);
   }
@@ -164,7 +166,7 @@ describe.if(LIVE)("the real systemd user manager (CC_SMART_DEV_KIT_LIVE_SYSTEMD=
       state: "applied",
     });
     expect(read(markFile)).toBe("900");
-    expect(read(cgroupFile)).toContain(`${userSliceCgroup(uid, SLICE)}/${prefix}-jobs-live-`);
+    expect(read(cgroupFile)).toContain(`${userSliceCgroup(uid, SLICE)}/${prefix}_jobs-live-`);
     expect((await running).end).toMatchObject({ code: 0, leftovers: false, signal: null });
     // A lower limit at the next launch is written at once (a runtime property outlives a job).
     limited(settings(100, 100), ["true"]);
@@ -250,6 +252,44 @@ describe.if(LIVE)("the real systemd user manager (CC_SMART_DEV_KIT_LIVE_SYSTEMD=
     expect(start.scope?.isEmpty()).toBe(true);
   }, 30_000);
 
+  // `CPUWeight` only counts against siblings in the same parent. The jobs' slice has no dash in
+  // its name, so it sits directly under the user manager beside every other top-level slice; a
+  // dashed name nested it five levels deep with no sibling, and the weight did nothing (2001 ms
+  // against 2002 ms). Two burners are pinned to one CPU: one in the jobs' slice (weight 20), one
+  // in a top-level sibling with the default weight (100). The jobs get about 20/120.
+  test("the jobs yield the CPU to a sibling slice with the default weight", async () => {
+    expect(sliceDir).toBe(`/sys/fs/cgroup${userManagerCgroup(uid)}/${SLICE}`);
+    const seconds = 4;
+    const burn = [
+      "taskset",
+      "-c",
+      "0",
+      "timeout",
+      String(seconds),
+      "sh",
+      "-c",
+      "while :; do :; done",
+    ];
+    const start = limited(settings(100, 90), burn as [string, ...string[]]);
+    const usage = (dir: string) => Number(/^usage_usec (\d+)/m.exec(read(`${dir}/cpu.stat`))?.[1]);
+    const siblingDir = `/sys/fs/cgroup${userManagerCgroup(uid)}/${SIBLING}`;
+    const sibling = Bun.spawn(
+      ["systemd-run", "--user", "--scope", "--quiet", `--slice=${SIBLING}`, "--", ...burn],
+      { stdout: "ignore", stderr: "inherit" },
+    );
+    const jobsBefore = usage(sliceDir);
+    await ran(start);
+    await sibling.exited;
+    const jobs = usage(sliceDir) - jobsBefore;
+    const others = usage(siblingDir);
+    const share = jobs / (jobs + others);
+    console.log(
+      `live: jobs slice share ${share.toFixed(2)} (jobs ${jobs} us, sibling ${others} us)`,
+    );
+    expect(others).toBeGreaterThan(0);
+    expect(share).toBeLessThan(0.3);
+  }, 60_000);
+
   test("a CPU burner is held to its quota", async () => {
     // 10% of the machine's CPUs; four busy loops would take four CPUs without the quota.
     const quotaCpus = (10 * machineCpus(facts)) / 100;
@@ -311,6 +351,53 @@ describe.if(LIVE)("the real systemd user manager (CC_SMART_DEV_KIT_LIVE_SYSTEMD=
       expect(line).toContain("the watchdog (systemd-oomd) stops a stalled job after 10s");
     },
     120_000,
+  );
+
+  // A `job run` killed with SIGKILL never releases its scope. A failed scope it left is cleared by
+  // the next launch, and a scope that is running is not touched.
+  test.if(Bun.which("python3") !== null)(
+    "the next launch clears a failed scope a killed job run left, and not a running one",
+    async () => {
+      const stale = `${prefix}_jobs-stale-1.scope`;
+      const running = `${prefix}_jobs-running-1.scope`;
+      const run = (unit: string, ...extra: string[]) =>
+        Bun.spawn(
+          [
+            "systemd-run",
+            "--user",
+            "--scope",
+            "--quiet",
+            `--slice=${SLICE}`,
+            `--unit=${unit}`,
+            ...extra,
+          ],
+          { stdout: "ignore", stderr: "ignore" },
+        );
+      const alive = run(running, "--", "sleep", "60");
+      const failing = run(
+        stale,
+        "-p",
+        "MemoryMax=50M",
+        "-p",
+        "MemorySwapMax=0",
+        "-p",
+        "OOMPolicy=kill",
+        "--",
+        "python3",
+        "-c",
+        'b = bytearray(b"x" * (300 * 1024 * 1024))',
+      );
+      await failing.exited;
+      const state = (unit: string) => systemctl("show", "-p", "ActiveState", "--value", unit).out;
+      expect(await until(() => state(stale) === "failed", 5_000)).toBe(true);
+      const start = limited(settings(90, 90), ["true"]);
+      start.release();
+      expect(await until(() => state(stale) !== "failed", 5_000)).toBe(true);
+      expect(state(running)).toBe("active");
+      systemctl("kill", "--signal=SIGKILL", running);
+      await alive.exited;
+    },
+    30_000,
   );
 
   // The last test: every job above released its scope, so none is left in the user manager.

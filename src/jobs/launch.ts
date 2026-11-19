@@ -115,17 +115,18 @@ export function spawnAndWait(
     /** The signals this wrapper sent on while the job still ran: its own stops. */
     const sentSignals = new Set<NodeJS.Signals>();
     /**
-     * Forwards one signal the wrapper caught. Every member of the job's group is in its scope,
-     * so signalling both would deliver the signal twice, and a tool that reads a second Ctrl+C
-     * as "force quit" would quit. The scope is signalled (it reaches a worker that left the
-     * group too), and the group only when the scope did not answer.
+     * Forwards one signal the wrapper caught: to the job's process group only. Not through the
+     * scope as well: the scope holds every process of the group, and a nested `job run` sits in
+     * it with a group of its own that its own wrapper forwards to, so a scope kill would deliver
+     * the signal twice to a nested job, and a tool that reads a second Ctrl+C as "force quit"
+     * would quit.
      */
     const forward = (signal: NodeJS.Signals) => {
       if (pgid === undefined) return;
       if (windows) endJobTree(pgid, windowsFacts);
-      else if (scope?.kill(signal) !== "ok") signalGroup(pgid, signal);
+      else signalGroup(pgid, signal);
     };
-    /** The leftover stop: the group and the scope both, so nothing is missed. */
+    /** The leftover stop: the group and the scope both, so a worker that left the group is reached. */
     const sendAll = (signal: NodeJS.Signals) => {
       if (pgid !== undefined) {
         if (windows) endJobTree(pgid, windowsFacts);

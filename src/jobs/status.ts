@@ -11,7 +11,7 @@ import {
   readHeavyLimit,
   readLimitSettings,
 } from "./config";
-import type { LimitFacts } from "./limits";
+import { type LimitFacts, limitsBlocker } from "./limits";
 import {
   formatSince,
   holderLines,
@@ -104,14 +104,18 @@ function inLine(units: readonly StoreWaiting[]): ParsedHeld[] {
 }
 
 /**
- * The queue's limit and, on Linux, the CPU and memory caps, as one note. It reads the settings
- * only: the portal polls it, so it never probes systemd (`doctor` reads what the slice carries).
+ * The queue's limit and, on Linux, the CPU and memory caps, as one note; where the caps cannot
+ * apply (a container, WSL without systemd, a controller not delegated) it says why. It reads one
+ * file and the PATH only (`limitsBlocker`): the portal polls it, so it never probes systemd and
+ * never spawns (`doctor` reads what the slice carries).
  */
 function limitNote(limit: HeavyLimit, ctx: JobContext): string {
   const queue = heavyLimitLine(limit);
-  return ctx.limits.platform === "linux"
-    ? `${queue}. ${limitsLine(readLimitSettings(ctx.paths.home))}`
-    : queue;
+  if (ctx.limits.platform !== "linux") return queue;
+  const caps = readLimitSettings(ctx.paths.home);
+  const blocker = caps.ok ? limitsBlocker(ctx.limits) : null;
+  const where = blocker === null ? "" : ` (not applied here: ${blocker})`;
+  return `${queue}. ${limitsLine(caps)}${where}`;
 }
 
 export async function readJobs(ctx: JobContext): Promise<JobsRead> {

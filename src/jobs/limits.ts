@@ -8,9 +8,9 @@
  *   watchdog and the kill mark are what stop the hang (`.claude/plans/2026-11-20-job-limits.md`).
  *
  * WHAT A QUEUED JOB GETS (Linux with a systemd user manager)
- *   Every queued job runs in its own scope inside ONE slice, `<COMMAND>-jobs.slice` (a dash
- *   nests it: it sits inside `<COMMAND>.slice`, and so on), so the limits hold for all heavy
- *   jobs together, even with `job set max 3`. Before each launch the slice gets, with
+ *   Every queued job runs in its own scope inside ONE slice, `<command>_jobs.slice` (each dash
+ *   of the command's name is an underscore: a dash would nest the slice, see JOBS_SLICE), so
+ *   the limits hold for all heavy jobs together, even with `job set max 3`. Before each launch the slice gets, with
  *   `systemctl --user set-property --runtime` (gone at reboot, no file in the home changes):
  *   - `CPUQuota` (the percent times the machine's CPUs; empty at 100) and `CPUWeight=20`: the
  *     jobs yield to the person's apps, and never starve behind steady background work.
@@ -59,7 +59,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { cpus } from "node:os";
 import { COMMAND } from "../build-info/names";
 import { TEST_HOST_VAR } from "../machine/host";
-import { hostFacts } from "../machine/machine";
+import { type HostFacts, hostFacts } from "../machine/machine";
 import {
   LIMIT_PERCENT_MAX,
   LIMIT_PERCENT_MIN,
@@ -81,8 +81,14 @@ export const HEAVY_CPU_WEIGHT = 20;
 export const WATCHDOG_PRESSURE_PERCENT = 40;
 export const WATCHDOG_DURATION = "10s";
 
-/** The one slice of all heavy jobs. Built from the command's name: a dash nests it. */
-export const JOBS_SLICE = `${COMMAND}-jobs.slice`;
+/**
+ * The one slice of all heavy jobs, built from the command's name with each dash an underscore.
+ * systemd reads a dash in a slice name as nesting (`foo-bar.slice` is located within
+ * `foo.slice`), so `cc-smart-dev-kit-jobs.slice` would sit five levels deep with no sibling, and
+ * `CPUWeight` only counts against siblings (proved live: weight 20 changed nothing there). A name
+ * with no dash sits directly under the user manager, beside `app.slice`, where the weight yields.
+ */
+export const JOBS_SLICE = `${COMMAND.replaceAll("-", "_")}_jobs.slice`;
 
 /** Reads one file as text, or null when it is not there or cannot be read. */
 export type ReadText = (path: string) => string | null;
@@ -167,8 +173,10 @@ function oomdProcessRuns(): boolean {
  * and sees only the files in its `existing` list, and no `systemd-oomd`, so it never reads the
  * machine it runs on. Unset — every real run — these are this machine's.
  */
-export function realLimitFacts(env: Record<string, string | undefined> = process.env): LimitFacts {
-  const host = hostFacts(env);
+export function realLimitFacts(
+  env: Record<string, string | undefined> = process.env,
+  host: HostFacts = hostFacts(env),
+): LimitFacts {
   const faked = Boolean(env[TEST_HOST_VAR]);
   return {
     platform: host.platform,
@@ -184,7 +192,7 @@ export function realLimitFacts(env: Record<string, string | undefined> = process
 }
 
 // ---------------------------------------------------------------------------------------
-// Where a slice lives: systemd reads every dash in a slice name as nesting.
+// Where a slice lives: systemd reads every dash in a slice name as nesting (the jobs' slice has none).
 // ---------------------------------------------------------------------------------------
 
 /**
@@ -337,6 +345,11 @@ export function probeArgv(slice: string, features: ScopeFeatures): string[] {
   return ["systemd-run", ...scopeSwitches(slice, features, true), "--", "true"];
 }
 
+/** `reset-failed` on every scope with the jobs' unit prefix: failed ones only, never a running one. */
+export function resetStaleArgv(slice: string): string[] {
+  return ["systemctl", "--user", "reset-failed", `${slice.replace(/\.slice$/, "")}-*.scope`];
+}
+
 /**
  * A unit name says what runs and which `job run` started it. The start time (base 36) makes it
  * unique: a `job run` killed with SIGKILL leaves its scope running, and a new one with the
@@ -355,13 +368,8 @@ export function unitName(slice: string, kind: string, pid: number, startedAt: nu
 
 /** A job's systemd scope: signalled, and waited for, with the job's process group. */
 export interface ScopeHandle {
-  /**
-   * `systemctl --user kill --signal=<signal> <unit>`: every process in the scope, at once. The
-   * answer says whether systemd did it: a caller that forwards a signal falls back to the
-   * process group only when it did not (every group member is in the scope: signalling both
-   * would deliver the signal twice).
-   */
-  kill: (signal: NodeJS.Signals) => SystemdResult;
+  /** `systemctl --user kill --signal=<signal> <unit>`: every process in the scope, at once. */
+  kill: (signal: NodeJS.Signals) => void;
   /** True when no process is left in the scope (or it is gone). */
   isEmpty: () => boolean;
 }
@@ -384,7 +392,9 @@ export function scopeHandle(
   if (facts.uid === null) return null;
   const events = `/sys/fs/cgroup${userSliceCgroup(facts.uid, slice)}/${unit}/cgroup.events`;
   return {
-    kill: (signal) => facts.systemd(scopeKillArgv(unit, signal)),
+    kill: (signal) => {
+      facts.systemd(scopeKillArgv(unit, signal));
+    },
     isEmpty: () => {
       const text = facts.read(events);
       return text === null || /^populated 0$/m.test(text);
@@ -635,6 +645,11 @@ function start(
   }
   // Only this call fails on a systemd older than 257: oomd's own default duration stays.
   const stallAfter = facts.systemd(duration) === "ok" ? WATCHDOG_DURATION : null;
+  // A `job run` killed with SIGKILL never releases its scope, and one that later ends by an OOM
+  // kill stays failed until the machine restarts. One cheap call clears every failed scope of the
+  // jobs' slice (`reset-failed` never touches a unit that is running: checked live). Its answer
+  // does not matter: nothing here may stop a job.
+  facts.systemd(resetStaleArgv(slice));
 
   const marked = facts.hasProgram("choom");
   const unit = unitName(slice, job.kind, job.pid, job.startedAt);
