@@ -36329,7 +36329,7 @@ function deployBlockBody() {
   return [
     "## Deploy tasks",
     "",
-    "When `tasks.deployCommands` lists this project's deploy commands, the deploy guard asks before one runs while a blocking task is open.",
+    "When `tasks.deployCommands` lists this project's deploy commands, the deploy guard asks before one runs while that environment has work that holds a deploy (a blocking before-deploy task, a broken task file; `task release <env> --check` shows it).",
     "",
     "Steps owed around a deploy are deploy tasks; each one belongs to prod or staging. Run these steps in the checkout you work in:",
     "",
@@ -37488,7 +37488,8 @@ the project.
                          a command that deploys to <env> (staging or prod, one of tasks.envs);
                          repeat it for more. It replaces that environment's list in
                          tasks.deployCommands, so the same flags give the same file; the deploy
-                         guard asks before one runs while a blocking task is open.
+                         guard asks before one runs while that environment has work that holds
+                         a deploy (\`task release <env> --check\` shows it).
                          <env>= alone clears the list. Without the flag, the lists stay as they
                          are; split at the first "="
   --deploy-skill <path>  the deploy skill that gets the kit's deploy block (a managed section,

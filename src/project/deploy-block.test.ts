@@ -65,7 +65,7 @@ test("the line after the heading says what the deploy guard does, with or withou
   expect(deployBlockBody().split("\n").slice(0, 4)).toEqual([
     "## Deploy tasks",
     "",
-    "When `tasks.deployCommands` lists this project's deploy commands, the deploy guard asks before one runs while a blocking task is open.",
+    "When `tasks.deployCommands` lists this project's deploy commands, the deploy guard asks before one runs while that environment has work that holds a deploy (a blocking before-deploy task, a broken task file; `task release <env> --check` shows it).",
     "",
   ]);
 });

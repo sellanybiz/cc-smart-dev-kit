@@ -345,7 +345,8 @@ export const ccSmartDevKitConfigSchema = z.strictObject({
    *   (default both). A project with only prod lists `["prod"]`. A field of 5.0.0.
    * - `deployCommands`: the commands this project deploys with, for each environment
    *   (`{ "prod": ["vercel --prod"] }`): a string, or a match rule as in `jobs.kinds`. The deploy
-   *   guard asks before one runs while a blocking task is open. Only keys of `envs` (both when
+   *   guard asks before one runs while that environment has work that holds a deploy
+   *   (`judgeTasks`). Only keys of `envs` (both when
    *   `envs` is unset), no empty list, one command to a string. A field of `DEPLOY_GUARD_SINCE`.
    * - `releaseBranch`, `legacyFolders`: read by nothing since 5.0.0 (`IGNORED_TASK_FIELDS`).
    * A field of 1.10.0: a project that sets it raises `requires` to `>=1.10`.
