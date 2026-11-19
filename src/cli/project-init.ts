@@ -629,7 +629,8 @@ function deployCommandsOf(
   const given = new Map<DeployEnv, DeployCommandEntry[]>();
   for (const { env, command } of flags.deployCommand ?? []) {
     const list = given.get(env) ?? [];
-    if (command !== "") list.push(command);
+    if (command === "") list.length = 0;
+    else list.push(command);
     given.set(env, list);
   }
   for (const [env, list] of given) lists[env] = list;
@@ -743,7 +744,7 @@ function askedDeployCommands(
   for (let first = true; ; first = false) {
     const keeps = first && current.length > 0;
     const hint = keeps
-      ? `Enter keeps ${current.map(shownDeployCommand).join(", ")}; ${CLEAR_DEPLOY_COMMANDS} clears the list; a command starts a new list`
+      ? `Enter keeps: ${current.map(shownDeployCommand).join(", ")}; ${CLEAR_DEPLOY_COMMANDS} clears the list; a command starts a new list`
       : "Enter when done";
     const answer = prompts.ask(
       numbered("deployCommands", `A command that deploys to ${env} (${hint})`),
@@ -773,7 +774,7 @@ export const QUESTIONS_INTRO = `${QUESTIONS.length} questions. Enter keeps the a
 export function askedAnswers(
   prompts: Prompts,
   answers: ProjectInitAnswers,
-  envs: readonly DeployEnv[] = DEPLOY_ENVS,
+  envs: readonly DeployEnv[],
 ): ProjectInitAnswers {
   const base = prompts.ask(numbered("base"), { default: answers.base });
   const basesText = listAnswer(
