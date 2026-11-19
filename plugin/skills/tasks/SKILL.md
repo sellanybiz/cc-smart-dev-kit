@@ -129,6 +129,15 @@ Before any deploy, production or database work, list the deploy tasks (`task_lis
 6. **The branch's pull request** (the task files only) merges as the workflow says
    (`/cc-smart-dev-kit:commit`, `/cc-smart-dev-kit:pull-request`).
 
+**The deploy guard.** A project lists the commands it deploys with in `tasks.deployCommands`
+(`project init` asks for them). While the environment has a blocking problem (the same rules as
+`--before`, minus the git ones), the guard asks the person before Claude runs a listed command.
+It names each problem. Do the task and close it with evidence; never drop a blocking one
+yourself. A command that is not listed, or is spelled another way, is not seen: the guard is
+a rail against a skipped step, not a lock, so run the gates above either way.
+`task release <env> --check` judges the task files alone, with no git, so a CI job can run it
+before its deploy step (README § Deploy tasks in CI).
+
 A wrong command exits 2; a refusal, an unknown ref, a ref name that matches more than one ref
 (the answer names them: pick the one that ships) or a place outside git exits 1. `--json`
 prints the answer as data. A deploy branch left unmerged shows in `task list --branches`: its
