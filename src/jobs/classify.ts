@@ -22,15 +22,18 @@
  * learns the scripts and the files through injected readers (`ScriptSource`, `WeightSource`,
  * `package-scripts.ts`); it reads no file itself.
  *
- * Four questions, one walk of the line (`scan`):
+ * Five questions, one walk of the line (`scan`):
  * - `classifyHeavyCommand`: the first heavy kind the line runs (any command of it), also inside
  *   a `job run` it already holds.
  * - `classifyUnqueuedHeavy`: the same, but none for a line that already runs `job run`: what
  *   the git hook's question reads.
- * - `routableLine`: the line the route may queue, when **every** command in it is heavy and
- *   none of them is `job run`.
+ * - `routableLine`: the line the route may queue, when **every** command in it is heavy, a
+ *   `cd`, an assignment or harmless glue (`isGlueCommand`), at least one is heavy and none of
+ *   them is `job run`.
  * - `runWeight`: whether a run is light (it names only existing files, or only prints), heavy
  *   (with its kind) or none (nothing heavy, a watch run that never ends, or already queued).
+ * - `mixedHeavyLine`: heavy work that takes a slot beside a command that is not glue: the line
+ *   the route cannot queue and refuses.
  *
  * Pure: no file, no environment — the readers are the caller's, and the script reader is asked
  * at most once per folder in a run.
@@ -49,6 +52,7 @@ import {
   nestedDialect,
   redirectionTargets,
   type ShellStep,
+  type ShellWord,
   shellSteps,
   withoutRedirections,
   wordsOf,
@@ -112,6 +116,14 @@ interface Run {
    * such a run is light and so is a line made of it.
    */
   printOk: boolean;
+  /**
+   * The text of the command of the line (not of a script's body) being read: what a refusal
+   * quotes. Null inside a shell fed by a pipe: its script is the reader's guess at what the
+   * command before it writes, not text of the line.
+   */
+  step: string | null;
+  /** Inside a shell that takes its script from a pipe (`printf … | sh`). */
+  pipeFed: boolean;
 }
 
 /** The state a top-level classification starts with. */
@@ -125,6 +137,8 @@ function runOf(source: ScriptSource | undefined): Run {
     compound: false,
     reading: [],
     printOk: false,
+    step: "",
+    pipeFed: false,
   };
 }
 
@@ -225,6 +239,8 @@ interface Found extends Hit {
   folder: string | null;
   /** The command is one of several in a script's body: its arguments are not all it is given. */
   compound: boolean;
+  /** The command of the line that runs it, as the line wrote it (`Run.step`). */
+  text: string | null;
 }
 
 /** What one walk of a line finds: its heavy commands, and what else the weight depends on. */
@@ -234,9 +250,25 @@ interface Scan {
   background: boolean;
   /** The line (or a script it runs) already runs `job run`: it is queued, and must not nest. */
   queued: boolean;
+  /**
+   * With `all`: the text of the first command of the line itself that the route's rule refused
+   * (not heavy, not glue), or null. A person can split such a command off the line.
+   */
+  stray: string | null;
+  /**
+   * With `all`: the walk failed inside a script's body, or too deep in shells, where the line's
+   * own text cannot be split: no command of the line is to blame.
+   */
+  opaque: boolean;
 }
 
-const newScan = (): Scan => ({ found: [], background: false, queued: false });
+const newScan = (): Scan => ({
+  found: [],
+  background: false,
+  queued: false,
+  stray: null,
+  opaque: false,
+});
 
 /** A lone `&` (a command sent to the background): not `&&`, `2>&1`, `&>file` or `|&`. */
 const LONE_AMPERSAND = /(?<![&|>])&(?![&>])/;
@@ -289,7 +321,7 @@ function expandScript(
   all: boolean,
   out: Scan,
 ): boolean {
-  if (depth >= MAX_NESTING) return false;
+  if (depth >= MAX_NESTING) return opaque(out);
   const name = call.script ?? "";
   const folder = bodies.folder ?? lookedUpIn;
   const hooks = !(runner === "yarn" && bodies.yarnBerry === true);
@@ -302,7 +334,7 @@ function expandScript(
   for (const part of parts) {
     const key = JSON.stringify([folder, part]);
     if (run.reading.includes(key)) {
-      if (all) return false;
+      if (all) return opaque(out);
       continue;
     }
     const inside: Run = {
@@ -314,10 +346,26 @@ function expandScript(
       reading: [...run.reading, key],
     };
     if (!scan(bodies.get(part) ?? "", kinds, "bash", depth + 1, inside, all, out) && all) {
-      return false;
+      return opaque(out);
     }
   }
   return true;
+}
+
+/** The walk failed where the line's own text cannot be split (`Scan.opaque`); always false. */
+function opaque(out: Scan): false {
+  out.opaque = true;
+  return false;
+}
+
+/**
+ * The walk failed at a command of the line itself: remembers the first one (`Scan.stray`).
+ * Inside a script's body the person cannot split the command off, so nothing is blamed there.
+ */
+function refuse(run: Run, out: Scan, step: ShellStep): false {
+  if (run.reading.length > 0) return opaque(out);
+  out.stray ??= step.text.trim();
+  return false;
 }
 
 /**
@@ -381,7 +429,7 @@ function matchCall(
     // The command runs in the folder the runner was told to use (`pnpm -C app vitest …`); a
     // script rule's arguments go to a script that runs in its package.json's folder.
     const folder = hit.tool === undefined ? (bodies?.folder ?? lookedUpIn) : lookedUpIn;
-    out.found.push({ ...hit, call, folder, compound: run.compound });
+    out.found.push({ ...hit, call, folder, compound: run.compound, text: run.step });
     return true;
   }
   if (!isScript || bodies === null) return false;
@@ -393,12 +441,14 @@ function matchCall(
  * body of a package script, three levels deep (`MAX_NESTING`). Records the heavy commands it
  * finds in `out`, in order.
  *
- * `all` is the route's rule: **every** command must be heavy, a `cd` or an assignment, and the
- * walk returns false at the first that is not (a print-only run is not heavy, and neither is a
- * runner such as `find` or `watch`: it does work of its own beside the command it runs, and the
- * person's `Bash(find:*)` rules only see the words of the line). Without `all`, anything else is
- * skipped: the walk finds the heavy commands wherever they are. A `cd` moves the rest of the
- * line; a shell of its own starts in this folder and its own `cd` stays inside it.
+ * `all` is the route's rule: **every** command must be heavy, a `cd`, an assignment or glue
+ * (`isGlueStep`: an `echo`, a read-only reader, the empty and redirection-only steps of a
+ * `{ … }` group), and the walk returns false at the first that is not (a print-only run is not
+ * heavy, and neither is a runner such as `find` or `watch`: it does work of its own beside the
+ * command it runs, and the person's `Bash(find:*)` rules only see the words of the line). Without
+ * `all`, anything else is skipped: the walk finds the heavy commands wherever they are. A `cd`
+ * moves the rest of the line; a shell of its own starts in this folder and its own `cd` stays
+ * inside it.
  */
 function scan(
   command: string,
@@ -415,10 +465,14 @@ function scan(
   for (const step of steps) {
     const words = wordsOf(step.text, dialect);
     if (all && (words.length === 0 || isAssignmentOnly(words))) continue;
+    // Where the line's own text is read, this is what a refusal quotes (not a script's body).
+    if (run.reading.length === 0 && !run.pipeFed) run.step = step.text.trim();
     const invocation = invocationOf(words);
     if (invocation === undefined) {
-      if (all) return false;
-      continue;
+      if (!all) continue;
+      // `} > out.log 2>&1`: the redirections of a group, which holds the commands.
+      if (dialect === "bash" && withoutRedirections(words).length === 0) continue;
+      return refuse(run, out, step);
     }
     const { args } = invocation;
     // In a script's body, `$npm_execpath` is the package manager that ran the script.
@@ -433,22 +487,46 @@ function scan(
       run.folder = folderAfter(program, plain, run.folder);
       continue;
     }
-    if (all && isRunnerProgram(program)) return false;
+    if (all && isRunnerProgram(program)) return refuse(run, out, step);
     // The queue's own command: whatever it runs is queued already, and must not nest.
     if (isJobRun(program, args)) out.queued = true;
     const inner = nestedCommand(program, args, step.pipedFrom);
+    // A shell whose script comes only from the pipe: the reader's text of what the command
+    // before it writes is no promise (`printf 'tsc\nrm x' | sh`: `\n` is a line break the reader
+    // reads as a space), so the script is not known.
+    const pipeFed =
+      inner !== undefined && step.pipedFrom !== null && nestedCommand(program, args) === undefined;
     // The line a shell runs starts in this folder, and gets none of a script's extra arguments.
     const readInner = (line: string) =>
-      depth < MAX_NESTING &&
-      scan(line, kinds, nestedDialect(program), depth + 1, { ...run, extra: undefined }, all, out);
+      depth < MAX_NESTING
+        ? scan(
+            line,
+            kinds,
+            nestedDialect(program),
+            depth + 1,
+            {
+              ...run,
+              extra: undefined,
+              pipeFed: run.pipeFed || pipeFed,
+              step: pipeFed ? null : run.step,
+            },
+            all,
+            out,
+          )
+        : opaque(out);
     if (all && inner !== undefined) {
+      // Such a shell is never pure.
+      if (pipeFed) return refuse(run, out, step);
       // A shell or wrapper that runs a line: that line must be pure too.
       if (!readInner(inner)) return false;
       continue;
     }
     const call = toolOf(program, run.extra === undefined ? plain : [...plain, ...run.extra]);
     const heavy = call !== undefined && matchCall(call, program, kinds, depth, run, all, out);
-    if (all && !heavy) return false;
+    if (all && !heavy && !(dialect === "bash" && isGlueCommand(step))) {
+      // A script whose body fails the rule has marked itself opaque: it is no command to blame.
+      return out.opaque ? false : refuse(run, out, step);
+    }
     if (inner !== undefined) readInner(inner);
   }
   return true;
@@ -531,14 +609,9 @@ export function runWeight(line: string, kinds: Kinds, source: WeightSource): Wei
   scan(line, kinds, "bash", 0, run, false, out);
   const { found } = out;
   const first = found[0];
-  // A line that runs `job run` (itself, or through a script's body) is queued already: a second
-  // queue around it would nest, and the inner job would wait for its own parent's slot.
-  if (first === undefined || out.queued) return { weight: "none" };
-  if (found.some((one) => one.tool !== undefined && isWatchRun(one.tool, one.call.args))) {
-    return { weight: "none" };
-  }
-  const heavy = found.find((one) => !isLight(one, kinds, source));
-  if (heavy !== undefined) return { weight: "heavy", kind: heavy.kind };
+  const slot = slotRun(out, kinds, source);
+  if (first === undefined || slot === "none") return { weight: "none" };
+  if (slot !== "light") return { weight: "heavy", kind: slot.kind };
   // Every heavy run is light, but a line is light only when it is nothing else: a command the
   // reader does not know (`make all`, `./build.sh`) may be the heavy work.
   if (!everyCommandUnderstood(line, kinds, source, run.cache)) {
@@ -547,6 +620,22 @@ export function runWeight(line: string, kinds: Kinds, source: WeightSource): Wei
   return found.length > 1 && out.background
     ? { weight: "heavy", kind: first.kind }
     : { weight: "light" };
+}
+
+/**
+ * What the heavy runs a walk found ask of the queue, before the other commands of the line are
+ * asked about: `none` (no heavy run, a watch run that never ends, or a line that queues itself),
+ * `light` (every run is light), or the first run that takes a slot.
+ */
+function slotRun(out: Scan, kinds: Kinds, source: WeightSource): Found | "light" | "none" {
+  const { found } = out;
+  // A line that runs `job run` (itself, or through a script's body) is queued already: a second
+  // queue around it would nest, and the inner job would wait for its own parent's slot.
+  if (found[0] === undefined || out.queued) return "none";
+  if (found.some((one) => one.tool !== undefined && isWatchRun(one.tool, one.call.args))) {
+    return "none";
+  }
+  return found.find((one) => !isLight(one, kinds, source)) ?? "light";
 }
 
 /**
@@ -568,6 +657,13 @@ function everyCommandUnderstood(
 /** Reads a filter's own arguments: true when that run of it only reads and prints. */
 type FilterCheck = (args: readonly string[]) => boolean;
 
+/** One entry of `READ_ONLY_FILTERS`: the check of a reader's arguments, and the shape of its words. */
+interface FilterReader {
+  check: FilterCheck;
+  /** Null: the reader is never glue (see `READ_ONLY_FILTERS`). */
+  shape: StdinShape | null;
+}
+
 /** A filter with no form that writes a file or runs a program. */
 const READS_ONLY: FilterCheck = () => true;
 
@@ -576,6 +672,135 @@ const isOption = (arg: string) => arg.startsWith("-") && arg !== "-";
 
 /** A cluster of short options (`-uo`), not a long one (`--output`). */
 const isShortCluster = (arg: string) => /^-[^-]/.test(arg);
+
+/**
+ * What a reader's words may be for it to read the pipe and nothing else: how many words that are
+ * no option it takes (a file, or its pattern, script or character set), which options take a
+ * value, and which options make it read a file. The one home of that knowledge: the checks of
+ * `uniq`, `sed` and `awk` read their value-taking options from the shape beside them.
+ */
+interface StdinShape {
+  /** The most words that are no option: its pattern, its script, or a character set. */
+  operands: number;
+  /** Short options that take a value, attached or as the next word. */
+  valued: string;
+  /** Long options that take the next word as their value (`--lines 5`; `--lines=5` always). */
+  longValued?: readonly string[];
+  /** The short and long option that gives the pattern or script itself, leaving no operand for it. */
+  script?: { short: string; long: string };
+  /** Short options that make it read a file (a pattern file, a recursive search). */
+  readsShort?: string;
+  /**
+   * Long options that make it read a file (a pattern file, a recursive search, a list of files).
+   * GNU takes a long option by any start (`--rec`), so every start of one counts.
+   */
+  readsLong?: readonly string[];
+}
+
+/** True when `arg` (an option) is a long option that makes the reader read a file, abbreviated or not. */
+function readsFileByOption(shape: StdinShape, arg: string): boolean {
+  if (arg.startsWith("--")) {
+    const name = arg.split("=")[0] ?? arg;
+    return name.length >= 3 && shape.readsLong?.some((long) => long.startsWith(name)) === true;
+  }
+  return [...arg.slice(1)].some((letter) => shape.readsShort?.includes(letter) === true);
+}
+
+/**
+ * How many words of a reader are no option, not counting the values of the options that take
+ * one, and whether an option gave its script; null when an option makes it read a file. A value
+ * counted as a word only refuses more; a word skipped as a value would be a file, so `valued`
+ * lists only options that take a value.
+ */
+function readerWords(
+  shape: StdinShape,
+  args: readonly string[],
+): { words: number; scripted: boolean } | null {
+  let words = 0;
+  let scripted = false;
+  let optionsEnded = false;
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index] ?? "";
+    if (arg === "-") continue; // standard input itself
+    if (optionsEnded || !isOption(arg)) {
+      words++;
+      continue;
+    }
+    if (arg === "--") {
+      optionsEnded = true;
+      continue;
+    }
+    if (readsFileByOption(shape, arg)) return null;
+    if (arg.startsWith("--")) {
+      const name = arg.split("=")[0] ?? arg;
+      if (name === shape.script?.long) scripted = true;
+      if (!arg.includes("=") && shape.longValued?.includes(name) === true) index++;
+      continue;
+    }
+    // A cluster of short options: the first one that takes a value ends it.
+    for (let at = 1; at < arg.length; at++) {
+      const letter = arg.charAt(at);
+      if (letter === shape.script?.short) scripted = true;
+      if (!shape.valued.includes(letter)) continue;
+      if (at === arg.length - 1) index++; // its value is the next word
+      break;
+    }
+  }
+  return { scripted, words };
+}
+
+/** True when a reader's words name no file: nothing but the pattern or script it is given. */
+function readsStdinOnly(shape: StdinShape, args: readonly string[]): boolean {
+  const found = readerWords(shape, args);
+  return found !== null && found.words <= (found.scripted ? 0 : shape.operands);
+}
+
+const NO_WORDS: StdinShape = { operands: 0, valued: "" };
+const HEAD_TAIL_SHAPE: StdinShape = {
+  operands: 0,
+  valued: "nc",
+  longValued: ["--lines", "--bytes"],
+};
+const CUT_SHAPE: StdinShape = {
+  operands: 0,
+  valued: "bcdf",
+  longValued: ["--bytes", "--characters", "--delimiter", "--fields", "--output-delimiter"],
+};
+const FILES0_LIST = ["--files0-from"];
+const SORT_SHAPE: StdinShape = {
+  operands: 0,
+  valued: "kStT",
+  longValued: ["--key", "--field-separator", "--buffer-size", "--temporary-directory"],
+  readsLong: FILES0_LIST,
+};
+const UNIQ_SHAPE: StdinShape = {
+  operands: 0,
+  valued: "fsw",
+  longValued: ["--skip-fields", "--skip-chars", "--check-chars"],
+};
+const GREP_SHAPE: StdinShape = {
+  operands: 1,
+  valued: "emABCD",
+  longValued: ["--regexp", "--max-count", "--after-context", "--before-context", "--context"],
+  script: { short: "e", long: "--regexp" },
+  readsShort: "rRfd",
+  readsLong: [
+    "--recursive",
+    "--dereference-recursive",
+    "--file",
+    "--exclude-from",
+    "--directories",
+  ],
+};
+const AWK_SHAPE: StdinShape = { operands: 1, valued: "Fv" };
+const SED_SCRIPT = { short: "e", long: "--expression" };
+const SED_LENGTH = { short: "l", long: "--line-length" };
+const SED_SHAPE: StdinShape = {
+  operands: 1,
+  valued: SED_SCRIPT.short + SED_LENGTH.short,
+  longValued: [SED_SCRIPT.long, SED_LENGTH.long],
+  script: SED_SCRIPT,
+};
 
 /** `cat` with no file: it only passes the pipe on. */
 function catReadsStdin(args: readonly string[]): boolean {
@@ -600,14 +825,8 @@ function sortReadsOnly(args: readonly string[]): boolean {
 
 /** `uniq` with one input file at most: a second file is where it writes. */
 function uniqReadsOnly(args: readonly string[]): boolean {
-  let files = 0;
-  for (let index = 0; index < args.length; index++) {
-    const arg = args[index] ?? "";
-    if (arg === "-f" || arg === "-s" || arg === "-w")
-      index++; // the value is a number
-    else if (!isOption(arg)) files++;
-  }
-  return files <= 1;
+  // `-f`, `-s` and `-w` take a number: the words that are left are files.
+  return (readerWords(UNIQ_SHAPE, args)?.words ?? Number.POSITIVE_INFINITY) <= 1;
 }
 
 /**
@@ -762,20 +981,23 @@ function sedReadsOnly(args: readonly string[]): boolean {
   const operands: string[] = [];
   for (let index = 0; index < args.length; index++) {
     const arg = args[index] ?? "";
-    const expression = /^-[nErsuz]*e(.*)$/s.exec(arg);
+    const expression = new RegExp(`^-[nErsuz]*${SED_SCRIPT.short}(.*)$`, "s").exec(arg);
     if (expression !== null) {
       const value = expression[1] === "" ? args[++index] : expression[1];
       if (value === undefined) return false;
       scripts.push(value);
-    } else if (arg === "--expression") {
+    } else if (arg === SED_SCRIPT.long) {
       const value = args[++index];
       if (value === undefined) return false;
       scripts.push(value);
-    } else if (arg.startsWith("--expression=")) {
-      scripts.push(arg.slice("--expression=".length));
-    } else if (/^--line-length=\d+$/.test(arg)) {
+    } else if (arg.startsWith(`${SED_SCRIPT.long}=`)) {
+      scripts.push(arg.slice(SED_SCRIPT.long.length + 1));
+    } else if (
+      arg.startsWith(`${SED_LENGTH.long}=`) &&
+      /^\d+$/.test(arg.slice(SED_LENGTH.long.length + 1))
+    ) {
       // How long an `l` line may be: it changes no file.
-    } else if (arg === "-l" && /^\d+$/.test(args[index + 1] ?? "")) {
+    } else if (arg === `-${SED_LENGTH.short}` && /^\d+$/.test(args[index + 1] ?? "")) {
       index++;
     } else if (SED_SHORT.test(arg) || SED_LONG.has(arg)) {
       // An option that only changes how it reads and prints.
@@ -806,8 +1028,10 @@ function awkReadsOnly(args: readonly string[]): boolean {
       program = args[index + 1];
       break;
     }
-    if (arg === "-F" || arg === "-v") index++;
-    else if (/^-[Fv]./s.test(arg)) continue;
+    const takesValue =
+      isOption(arg) && !arg.startsWith("--") && AWK_SHAPE.valued.includes(arg.charAt(1));
+    if (takesValue && arg.length === 2) index++;
+    else if (takesValue && arg.length > 2) continue;
     else if (isOption(arg)) return false;
     else {
       program = arg;
@@ -830,26 +1054,31 @@ function awkReadsOnly(args: readonly string[]): boolean {
  *   anything (`sedScriptReadsOnly`, `awkReadsOnly`); `sort` without `-o` or
  *   `--compress-program`; `uniq` with no output file; `rg` without `--pre`, `-z` or
  *   `--hostname-bin`; `cat` with no file.
+ *
+ * Each entry holds both the check of its arguments (`check`) and the shape of its words
+ * (`shape`), which says whether it reads the pipe only: a reader with a shape may be glue in a
+ * queued line (`isGlueReader`), one with none (`rg`: it searches the folder when nothing is
+ * piped, and its value-taking options are not listed) never is.
  */
-export const READ_ONLY_FILTERS: Readonly<Record<string, FilterCheck>> = {
-  awk: awkReadsOnly,
-  cat: catReadsStdin,
-  cut: READS_ONLY,
-  egrep: READS_ONLY,
-  fgrep: READS_ONLY,
-  gawk: awkReadsOnly,
-  grep: READS_ONLY,
-  head: READS_ONLY,
-  mawk: awkReadsOnly,
-  nawk: awkReadsOnly,
-  rg: rgReadsOnly,
-  sed: sedReadsOnly,
-  sort: sortReadsOnly,
-  tail: READS_ONLY,
-  tee: teeWritesNoFile,
-  tr: READS_ONLY,
-  uniq: uniqReadsOnly,
-  wc: READS_ONLY,
+export const READ_ONLY_FILTERS: Readonly<Record<string, FilterReader>> = {
+  awk: { check: awkReadsOnly, shape: AWK_SHAPE },
+  cat: { check: catReadsStdin, shape: NO_WORDS },
+  cut: { check: READS_ONLY, shape: CUT_SHAPE },
+  egrep: { check: READS_ONLY, shape: GREP_SHAPE },
+  fgrep: { check: READS_ONLY, shape: GREP_SHAPE },
+  gawk: { check: awkReadsOnly, shape: AWK_SHAPE },
+  grep: { check: READS_ONLY, shape: GREP_SHAPE },
+  head: { check: READS_ONLY, shape: HEAD_TAIL_SHAPE },
+  mawk: { check: awkReadsOnly, shape: AWK_SHAPE },
+  nawk: { check: awkReadsOnly, shape: AWK_SHAPE },
+  rg: { check: rgReadsOnly, shape: null },
+  sed: { check: sedReadsOnly, shape: SED_SHAPE },
+  sort: { check: sortReadsOnly, shape: SORT_SHAPE },
+  tail: { check: READS_ONLY, shape: HEAD_TAIL_SHAPE },
+  tee: { check: teeWritesNoFile, shape: NO_WORDS },
+  tr: { check: READS_ONLY, shape: { operands: 2, valued: "" } },
+  uniq: { check: uniqReadsOnly, shape: UNIQ_SHAPE },
+  wc: { check: READS_ONLY, shape: { operands: 0, valued: "", readsLong: FILES0_LIST } },
 };
 
 /**
@@ -864,7 +1093,7 @@ function isReadOnlyFilter(step: ShellStep): boolean {
   if (filled.length === 0 || filled.some((word) => word.filled)) return false;
   const words = filled.map((word) => word.text);
   const program = programName(words[0] ?? "");
-  const check = READ_ONLY_FILTERS[program];
+  const check = READ_ONLY_FILTERS[program]?.check;
   if (check === undefined) return false;
   const invocation = invocationOf(words);
   if (
@@ -877,6 +1106,112 @@ function isReadOnlyFilter(step: ShellStep): boolean {
   }
   if (redirectionTargets(filled).some((target) => target !== "/dev/null")) return false;
   return check(withoutRedirections(invocation.args));
+}
+
+/**
+ * The commands a queued line may hold beside its heavy ones, because nobody writes a permission
+ * rule against them and none can write a file or run another program. Their words may hold
+ * expansions (`echo "exit $?"`): a substitution's inner command is its own step, and is judged
+ * on its own. The readers of `READ_ONLY_FILTERS` that read a pipe only are glue too
+ * (`isGlueReader`). Each entry says why it is safe, and under which arguments (`glueArguments`):
+ *
+ * - `echo`: prints its words.
+ * - `printf`: prints its words, when its first word is the format and not an option: `-v` sets
+ *   a variable, and bash runs a command inside the subscript of its name (`-v 'a[$(rm x)]'`).
+ * - `true`, `false`, `:`: do nothing, and give an exit code.
+ * - `pwd`: prints the folder.
+ * - `test`, `[`: read file and string facts, and give an exit code, when no word is filled in
+ *   by the shell and none is `-v` or `-R`, which run the subscript of a variable name.
+ *
+ * No glue word may hold an arithmetic expansion (`$(( … ))`, `$[ … ]`, a `${x[ … ]}` subscript,
+ * a `${x:offset}`): bash reads a variable's value there as an expression, and an expression can
+ * run a command (`X='a[$(rm x)]'; echo $((X))`).
+ */
+export const GLUE_COMMANDS: ReadonlySet<string> = new Set([
+  ":",
+  "[",
+  "echo",
+  "false",
+  "printf",
+  "pwd",
+  "test",
+  "true",
+]);
+
+/** A word an input redirection starts: `< file`, `<file`, `0<file`, `<>file` (a here-doc is not). */
+const INPUT_REDIRECTION = /^\d*<(?![<(])/;
+
+/**
+ * True when one step is a reader that reads the pipe only: a read-only filter by the pipe's
+ * own rule (`isReadOnlyFilter`: piped from the command before it, nothing the shell fills in,
+ * `READ_ONLY_FILTERS`' check of its words, no file it writes to), written bare (no path), with
+ * no file word (`readsStdinOnly`) and no input redirection (`cat < .env`).
+ */
+function isGlueReader(step: ShellStep): boolean {
+  if (!isReadOnlyFilter(step)) return false;
+  const words = wordsOf(step.text, "bash");
+  const invocation = invocationOf(words);
+  const shape = invocation === undefined ? null : READ_ONLY_FILTERS[invocation.program]?.shape;
+  if (invocation === undefined || !shape || invocation.program !== words[0]) return false;
+  if (words.some((word) => INPUT_REDIRECTION.test(word))) return false;
+  return readsStdinOnly(shape, withoutRedirections(invocation.args));
+}
+
+/**
+ * A word that holds an expansion bash reads a variable's value in as code: an arithmetic
+ * expansion (`$(( … ))`, `$[ … ]`), a subscript or an offset (`${x[ … ]}`, `${x:offset}`), an
+ * indirect expansion (`${!x}`), or any `${x@…}` operator (`@P` expands the value as a prompt,
+ * which runs a substitution in it).
+ */
+const ARITHMETIC_WORD = /\$\(\(|\$\[|\$\{(?:!|[^}]*(?:\[|:[^-=?+]|@))/;
+
+/**
+ * The arguments each `GLUE_COMMANDS` entry is glue under, beyond the checks of every glue word.
+ * `words` are the program's words with their fill, after the program; `plain` are the same
+ * words without redirections.
+ */
+function glueArguments(
+  program: string,
+  words: readonly ShellWord[],
+  plain: readonly string[],
+): boolean {
+  if (program === "printf") {
+    const format = plain[0];
+    if (format === undefined) return true;
+    return !format.startsWith("-") && words.every((word) => word.text !== format || !word.filled);
+  }
+  if (program === "test" || program === "[") {
+    return !words.some((word) => word.filled) && !plain.some((arg) => arg === "-v" || arg === "-R");
+  }
+  return true;
+}
+
+/**
+ * True when one step of a line is glue: a command of `GLUE_COMMANDS` under its argument rule, or
+ * a reader that reads the pipe only (`isGlueReader`). Both are the program first (no wrapper, no
+ * assignment, no path, no `!`), not computed, with no file it writes to (a redirection to
+ * `/dev/null` is fine), and no arithmetic expansion in a word (`ARITHMETIC_WORD`).
+ */
+function isGlueCommand(step: ShellStep): boolean {
+  if (step.expanded) return false;
+  const filled = wordsWithFill(step.text, "bash");
+  const words = filled.map((word) => word.text);
+  const invocation = invocationOf(words);
+  if (
+    invocation === undefined ||
+    invocation.computed ||
+    invocation.prefix.length > 0 ||
+    invocation.program !== words[0]
+  ) {
+    return false;
+  }
+  if (redirectionTargets(filled).some((target) => target !== "/dev/null")) return false;
+  if (words.some((word) => ARITHMETIC_WORD.test(word))) return false;
+  const { program } = invocation;
+  if (GLUE_COMMANDS.has(program)) {
+    return glueArguments(program, filled.slice(1), withoutRedirections(invocation.args));
+  }
+  return isGlueReader(step);
 }
 
 /**
@@ -933,7 +1268,7 @@ function cutAtFilters(line: string): { heavy: string; filters: string } {
 }
 
 /**
- * The kinds a line runs, when every command in it is heavy, a `cd`, or an assignment: null
+ * The kinds a line runs, when every command in it is heavy, a `cd`, an assignment or glue: null
  * as soon as one is anything else. The inner command of a shell (`bash -c "…"`) is read the
  * same way, so `bash -c "tsc && rm x"` is no pure line.
  */
@@ -955,10 +1290,12 @@ export interface RoutableLine {
 
 /**
  * The Bash line to queue, cut where it must be, or null when the line must run raw. A line
- * is queued only when every command in it is heavy, a `cd`, or an assignment: Claude Code
- * matches a person's own Bash rules (`deny`, `ask`) against the words of the command it runs
- * and does not look inside `bash -c '…'`, so wrapping a line that also runs `rm` would hide
- * that `rm` from a `Bash(rm:*)` deny rule (proved on 2.1.308, `docs/claude-code-contract.md`).
+ * is queued only when every command in it is heavy, a `cd`, an assignment or glue
+ * (`GLUE_COMMANDS`, the readers of a pipe that name no file, the structure of a `{ … }` group), and at least one
+ * is heavy: Claude Code matches a person's own Bash rules (`deny`, `ask`) against the words of
+ * the command it runs and does not look inside `bash -c '…'`, so wrapping a line that also runs
+ * `rm` would hide that `rm` from a `Bash(rm:*)` deny rule (proved on 2.1.308,
+ * `docs/claude-code-contract.md`). Glue is what no such rule is written against.
  *
  * The one exception is a pipe into read-only filters at the end (`READ_ONLY_FILTERS`):
  * `tsc --noEmit 2>&1 | tail -20` is queued as `tsc --noEmit 2>&1`, and `| tail -20` stays
@@ -977,6 +1314,38 @@ export function routableLine(
   const { heavy, filters } = cutAtFilters(bashCommand);
   const kind = routableKinds(heavy, kinds, source)?.[0];
   return kind === undefined ? null : { filters, heavy, kind };
+}
+
+/** A heavy run beside a command the queue cannot take with it: what the route refuses. */
+export interface MixedLine {
+  /** The kind of the run that takes a slot. */
+  kind: string;
+  /**
+   * The command of the line that runs it, as the line wrote it; null when it sits in a shell
+   * fed by a pipe (`printf … | sh`), whose script is only the reader's guess.
+   */
+  run: string | null;
+  /** The first command of the line that is not heavy, a `cd`, an assignment or glue. */
+  other: string;
+}
+
+/**
+ * The mix the route refuses, or null: a line that runs heavy work that takes a slot (`kind`,
+ * weighed as `runWeight` does, so a light run, a watch run and a line that queues itself have
+ * none), is no `routableLine`, and holds a command of its own that is not glue (`other`), which
+ * the person can split off. Null when there is nothing to split: a line the queue takes whole,
+ * and a line whose failing command sits in a package script's body, or in shells nested too
+ * deep, where the person's own line is not to blame.
+ */
+export function mixedHeavyLine(line: string, kinds: Kinds, source: WeightSource): MixedLine | null {
+  if (routableLine(line, kinds, source) !== null) return null;
+  const heavy = newScan();
+  scan(line, kinds, "bash", 0, runOf(source), false, heavy);
+  const slot = slotRun(heavy, kinds, source);
+  if (slot === "none" || slot === "light") return null;
+  const rule = newScan();
+  scan(line, kinds, "bash", 0, runOf(source), true, rule);
+  return rule.stray === null ? null : { kind: slot.kind, other: rule.stray, run: slot.text };
 }
 
 /** `routableLine`'s kind alone: the heavy-job kind to queue a Bash line under, or null. */
