@@ -460,7 +460,7 @@ installed command's full usage. A usage mistake exits 2; a refusal or failure ex
 | `list [--all] [--json]` | Owned children (a follow-up child shows as "follow-up" in the task, plan or follow-up column), or all kit sessions including independent ones; includes counts and blocked status (a blocked child waits for you, in its pane). |
 | `send <terminal> <text>` | Tagged lead text to an owned linked child. A done child gets a plain send, never force; a blocked child is yours to answer in its pane. The follow-up child is sent each new finding this way, and `ship` at the session's ship point. |
 | `wait [--any \| --all] [--timeout <seconds>] [--seen <addr>:<turn\|?>:<error\|done\|end>[,…]]` | Waits for news (default/any) or each child in the initial barrier (all), up to the timeout. A blocked child is not news: it waits for you, so the lead keeps waiting. Run in a background Bash call. Copy its exact next command, whose percent-encoded address/turn/state cursor covers news already printed. `--all` leaves a follow-up child out, since it never settles. No live children returns immediately; timeout does not mean done. |
-| `plans [--json] [--wait] [--timeout <seconds>] \| plans --reserve <plan> \| plans --release <plan>` | A summary (`Plans: 2 with children · 1 waiting · 1 ready`), then one line per plan this session leads: what it waits for, which files it shares with a held plan, whether a child works on it or is gone, each with its fix (`--json` gives each plan's `state`). It also releases a finished plan's files once its pull request merged or closed. `--wait`, in a background Bash call, returns when a plan turns ready or a pull request merges, and prints the command to run again on timeout. `--reserve <plan>` reserves one of this session's own plans for itself, with the checks a hand-out runs, so it can build it in lead + children mode; the plan stays held until its pull request merges or closes. It stands alone and is refused from a plan child. `--release <plan>` frees a finished plan nothing can prove merged: your call, so Claude's Bash judge asks you first. |
+| `plans [--json] [--wait] [--timeout <seconds>] \| plans --reserve <plan> \| plans --release <plan>` | A summary (`Plans: 2 with children · 1 waiting · 1 ready`), then one line per plan this session leads: what it waits for, which files it shares with a held plan, whether a child works on it or is gone, each with its fix (`--json` gives each plan's `state`). It also releases a finished plan's files once its pull request merged or closed. `--wait`, in a background Bash call, returns when a plan turns ready or a pull request merges, and prints the command to run again on timeout. `--reserve <plan>` reserves one of this session's own plans for itself, with the checks a hand-out runs, so it can build it in lead + children mode; the plan stays held until its pull request merges or closes. It stands alone and is refused from a plan child or a follow-up child. `--release <plan>` frees a finished plan nothing can prove merged: your call, so Claude's Bash judge asks you first. |
 | `report <text>` | Child reports to a live Claude lead, or saves a unique private file when it cannot. A report is never your consent. |
 | `adopt` | Recovers this repo's same-core linked children after their lead disappears: a lead terminal with no live Claude in it counts as gone. Lists each adopted child's saved report files. A new Claude in the old lead's own terminal is that lead already and needs no adopt. It also moves the plans of an ended lead to the new one. |
 | `stop <terminal>` | Stops and removes an owned linked terminal; leaves the worktree for separate cleanup. |
@@ -535,18 +535,24 @@ or reviewer reports. Claude acts the moment it finds one.
 
 One follow-up child serves every follow-up of a lead and repository: one worktree, one branch, one
 pull request at a time. It never edits a file a held plan holds, and it never stops on its own.
-For each finding it makes one commit and runs `issue mark-fixed`; it may push its branch while no
-pull request is open, but it opens or updates its pull request only when the lead sends `ship`: it
-then runs the full check, pushes once and writes the body's `Fixes` lines from `issue fixed`. The
-lead sends `ship` at the session's ship point, the end of the turn that finishes your request, or
-when you say ship now. When its earlier pull request has merged, the child starts a new branch from
-the base at its next finding and moves any unmerged commits onto it. A start is refused while a
-child of this lead and repository lives (the refusal names it), and after one ended with unmerged
-commits (it names the worktree and branch). Where Herdr no longer lists a stopped child, that last
-check cannot see its work, so ship before `herdr stop`. The child asks you, like any child, in its
-own pane. Outside Herdr, in plan mode or while you are away, no child starts: Claude files the
-finding (or parks a question) and waits for your yes. It is **not yet proved live**. The design:
-[Herdr](docs/design/herdr.md) and [issues](docs/design/issues.md).
+
+For each finding it makes one commit and runs `issue mark-fixed`. It may push its branch while no
+pull request is open. It opens or updates its pull request only when the lead sends `ship`. Then
+it runs the full check, pushes once and writes the body's `Fixes` lines from `issue fixed`.
+
+The lead sends `ship` at the session's ship point: the end of the turn that finishes your request,
+or when you say ship now. When the child's earlier pull request has merged, it starts a new branch
+from the base at its next finding and moves any unmerged commits onto it.
+
+A start is refused while a child of this lead and repository lives; the refusal names it. A start
+is also refused after a child ended with unmerged commits; the refusal names its worktree and
+branch. Herdr no longer lists a stopped child, so the start's check for an ended child's unmerged
+work cannot see it: ship before `herdr stop`.
+
+The child asks you, like any child, in its own pane. Outside Herdr, in plan mode or while you are
+away, no child starts: Claude files the finding (or parks a question) and waits for your yes. It
+is **not yet proved live**. The design: [Herdr](docs/design/herdr.md) and
+[issues](docs/design/issues.md).
 
 ### Tasks (1.10.0)
 
@@ -2880,8 +2886,9 @@ itself only when the pull request's base **is** the project's integration base
 CI is green and the review is done is the caller's check (the merge guard hook), and
 `mergeMethod` and `deleteBranch` say how the merge is made, not that it skips a question.
 
-**Fewer pull requests and CI runs (5.4.0).** CI runs on a pull request and on a push to the
-default branch, so a branch push with no pull request costs nothing. The skills keep the count low.
+**Fewer pull requests and CI runs (5.4.0).** In a project whose CI runs on pull requests and on
+pushes to the default branch (check yours), a branch push with no pull request costs nothing.
+The skills keep the count low.
 A plan's archive moves in the plan's own pull request (its last commit), and the plan task closes in
 that same turn. The small fixes of one session go on one branch and share one pull request at one
 ship point: the end of the turn that finishes your request, or when you say ship now (a plan branch,

@@ -238,7 +238,7 @@ release. The code is `src/issues/fixed.ts`.
 cc-smart-dev-kit issue mark-fixed --issue <number> --base <branch> --branch <branch> --tip <sha> [--merge <sha>]
 ```
 
-The main session runs it after it merges a fix, once per issue the fix closes. `--base` is the
+The main session runs it after it merges a fix, once per issue the fix closes (a follow-up child runs it before the merge; § Worked by a follow-up child). `--base` is the
 branch the work merged into, `--branch` the fix's branch, `--tip` that branch's tip at the merge,
 and `--merge` the commit the base got (a merge or a squash commit; leave it out when it is not
 known). `--tip` and `--merge` are full 40-character commit ids. A line that is not one (no

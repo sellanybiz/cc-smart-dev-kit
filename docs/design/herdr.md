@@ -38,7 +38,7 @@ address forms the lead id: two cores can have the same short terminal address.
 | `kit.repo` | Repository root, or directory outside git. |
 | `kit.task` | Optional same-project task reference. |
 | `kit.plan` | A plan child's plan slug (`herdr start --plan`); a terminal that carries it never coordinates. |
-| `kit.followup` | `1` for a lead's follow-up child (`herdr start --followup`, § Follow-up children); a terminal that carries it never coordinates (it also carries `kit.lead`). |
+| `kit.followup` | `1` for a lead's follow-up child (`herdr start --followup`, § Follow-up children). A terminal that carries it never coordinates: `start --plan`, `plans --reserve` and `adopt` refuse it, as they refuse a plan child. It also carries `kit.lead`, so `start --followup` is refused in it. |
 | `kit.independent` | `1` for a session without a lead link. |
 | `kit.started-by` | Independent session's initiating identity, when available. |
 
@@ -127,7 +127,7 @@ take) is `docs/design/tasks.md` § Plans handed to children.
 
 - It excludes `--task`, `--independent` and `--on` (one text, `PLAN_EXCLUSION`): a plan child is
   local and linked.
-- It refuses when the caller's own terminal carries `kit.plan`: a plan child never coordinates.
+- It refuses when the caller's own terminal carries `kit.plan` or `kit.followup`: a plan child or a follow-up child never coordinates.
   `adopt` refuses there too.
 - The slug resolves with the take path's resolver (`planByRef`), so `#n` works as well. The
   plan must be one this session laid and not started.
@@ -158,7 +158,7 @@ and `branch` go in once, on a first start.
 resolves with `planByRef`, then it runs the same live gates and held-plan diffs as `start --plan`
 and `reservePlan` with holder `self`, with `ignore` and `caseFold` from `planFilesCheck`, read
 before the write lock. It prints one line naming the plan and the next step: start its first phase
-as usual. It refuses from a plan child (the terminal carries `kit.plan`), when the default branch
+as usual. It refuses from a plan child or a follow-up child (the terminal carries `kit.plan` or `kit.followup`), when the default branch
 is only a guess, and for a plan that is not pending (one already started: park it first, then reserve it), not the
 caller's own or already reserved, each with its fix. It stands alone: `--wait`, `--json` and `--release` cannot join it. The Bash judge
 stays silent, since it reserves the caller's own plan and frees nothing. The plan stays held until
@@ -272,22 +272,39 @@ of any linked start (model, effort and mode, names, brief, binding) and adds the
 repeat (repeats are dropped, the order kept), takes a positive whole number and needs `--followup`.
 The refusals, in the command's words:
 
-| Refused when | The command says |
+| Refused when | The command says (and the fix) |
 |---|---|
-| `--plan`, `--task`, `--independent` or `--on` is also given | "--followup cannot be combined with --plan, --task, --independent or --on." (the parser, the one `PLAN_EXCLUSION` text); "--issue belongs to --followup."; "Use an issue number such as 12." |
+| `--plan`, `--task`, `--independent` or `--on` is also given | "--followup cannot be combined with --plan, --task, --independent or --on." |
+| `--issue` is used wrongly | "--issue belongs to --followup." or "Use an issue number such as 12." |
 | Not in a git project, or no lead terminal | "A follow-up child needs a git project and the lead's own terminal." Fix: run it in the project's folder, or give `--cwd`, from the lead's terminal. |
 | The caller's terminal carries `kit.lead` (any child) | "A child never starts a follow-up child: only a lead does." Fix: put the finding in `cc-smart-dev-kit herdr report`. |
-| The default branch is only a guess (no `origin/HEAD`, no `worktrees.base`) | The same words as `start --plan` (one shared text, `UNKNOWN_BASE`): "… so a child would reset to a guess." Fix: `git remote set-head origin --auto`, or set `worktrees.base`. |
-| This lead (its lead id, not only the core) already has a follow-up child in this repository | "This lead already has a follow-up child for this repository: `<addr>`." Fix by state: idle, working or done, `herdr send <addr> "<finding>"`; blocked or no status yet, "It waits for the person in its pane: hc attach `<addr>`. Send the finding once it is free."; any other (error), look at the pane. |
-| A follow-up child of a lead that has **ended** is still live here | "A follow-up child of a lead that has ended is still live in this repository: `<addr>`." Fix: take it over with `cc-smart-dev-kit herdr adopt`, then send the finding. |
-| An ended follow-up child here left commits on its branch that are not on `origin/<base>`, with no merged pull request | "A follow-up child in this repository ended (`<addr>`) and left commits on `<branch>` that are not on origin/`<base>`, with no merged pull request. Its worktree is `<path>`." Fix: push and merge that work, or remove the worktree and branch once checked (`cc-smart-dev-kit worktrees --clean`), then start again. |
+| The default branch is only a guess | The text `start --plan` uses (`UNKNOWN_BASE`): "… so a child would reset to a guess." Fix: `git remote set-head origin --auto`, or set `worktrees.base`. |
+| This lead already has a live follow-up child in this repository | "This lead already has a follow-up child for this repository: `<addr>`." The fix depends on its state (below). |
+| A live follow-up child of a lead that has **ended** is here | "A follow-up child of a lead that has ended is still live in this repository: `<addr>`." Fix: take it over with `cc-smart-dev-kit herdr adopt`, then send the finding. |
+| An ended follow-up child left unmerged commits | "A follow-up child in this repository ended (`<addr>`) and left commits on `<branch>` that are not on origin/`<base>`, with no merged pull request. Its worktree is `<path>`." Fix: push and merge that work, or remove the worktree and branch once checked (`cc-smart-dev-kit worktrees --clean`), then start again. |
 
-The base is `baseBranch()` in `plans.ts`, so `worktrees.base` counts. The gate is per repository
-and per lead: another repository gets its own child through `--cwd` there, and a second start made
-right after the first meets the one-per-lead refusal. The orphan gate reads the branch the ended
-child's worktree has checked out (`worktree-<name>` when the worktree is gone). It counts a branch
-as unmerged when its commit count past `origin/<base>` is not 0 or cannot be read, and a pull
-request state other than merged (open, closed, none or unknown) does not clear it.
+The fix for the live-child refusal depends on the child's state:
+
+- Idle, working or done: `herdr send <addr> "<finding>"`.
+- Blocked, or no status yet: "It waits for the person in its pane: hc attach `<addr>`. Send the
+  finding once it is free."
+- Any other state (error): look at its pane.
+
+A plan child and a follow-up child cannot hand out, reserve or adopt plans either:
+`refusePlanChild` (shared with the plan child's refusals) says "A follow-up child never
+coordinates: it works its lead's findings only, so it cannot hand out plans | reserve plans |
+adopt another lead's plans." Fix: "Report to your lead with cc-smart-dev-kit herdr report; the
+lead hands plans out."
+
+The base is `baseBranch()` in `plans.ts`, so `worktrees.base` counts. The live-child gate is per
+lead and repository: another repository gets its own child through `--cwd` there, and a second
+start made right after the first meets the refusal. The ended-child gate is wider: it covers every
+lead of this core in the repository.
+
+The ended-child gate reads the branch the child's worktree has checked out (`worktree-<name>` when
+the worktree is gone). It counts a branch as unmerged when its commit count past `origin/<base>`
+is not 0 or cannot be read. A pull request state other than merged (open, closed, none or unknown)
+does not clear it.
 
 **The follow-up trailer** (`followupTrailer` in `brief.ts`, beside `planTrailer`) tells the child.
 It never stops on its own: after each report it waits for the next message, and ends only on
@@ -306,7 +323,8 @@ It never stops on its own: after each report it waits for the next message, and 
    - OPEN: add the commit to the branch; it joins that pull request at the next ship.
    - MERGED and `HEAD` equals the pull request's head commit: the branch is fully merged. It
      fetches and runs `git switch -c followup-<name>-<n> origin/<base>` (`<n>` the first number
-     from 2 that `git branch --list` does not show). No reset.
+     from 2 that `git branch --list` does not show). No reset. The switch carries uncommitted
+     changes, or refuses: then it reports and waits.
    - MERGED and `HEAD` is past that commit: it makes the new branch the same way and
      cherry-picks the commits past the pull request's head onto it, so a squash merge loses
      nothing. A conflict is aborted (`git cherry-pick --abort`), the old branch restored, the new
@@ -330,7 +348,8 @@ It never stops on its own: after each report it waits for the next message, and 
 6. **No push per finding.** It may push its branch while it has no open pull request (a free
    backup); with one open, it pushes only at the ship.
 7. **Ship only when a message from the lead says `ship`.** Then: the project's full check, then
-   one push, then open the pull request or push to the open one, as `workflow show` says. The body's
+   one push, then open the pull request or push to the open one, as `workflow show` says (where it
+   is off, ask the person in this terminal). The body's
    `Fixes` lines come from `issue fixed --base origin/<base> --head <branch>`, never by hand. A
    `ship` mid-finding waits until that finding is done. A `ship` with nothing to ship is answered
    "nothing to ship" in the report.
@@ -374,8 +393,8 @@ comes first.
   terminal, so after a stop the gate cannot see that child's unshipped work: ship first. The
   worktree and branch stay, and `worktrees --clean` may hold an old branch whose commits were
   cherry-picked elsewhere.
-- A detached-HEAD corner with `baseRef: head` is a known limit: the own-commit count can then
-  include the lead's commits, and the guard does not reset.
+- A corner with `baseRef: head`: when the lead's own HEAD is detached, its commits are on no
+  branch, so the child's own-commit count includes them and the guard does not reset.
 - The child follows its trailer in prose; nothing enforces the steps.
 - A merged or closed pull request (by the person or `autoMerge`) is noticed only at the child's
   next finding.
