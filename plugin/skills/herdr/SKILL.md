@@ -129,11 +129,12 @@ cc-smart-dev-kit herdr send <terminal> "Follow-up [#n]: <finding> [files now hel
   status before the first send: a null status is refused as blocked.
 - **What the child does** (its brief holds the steps): it resets its worktree to the default
   branch only when that branch has no commits of its own and the tree is clean. Before each
-  finding it reads its pull request's state: open, add to it; merged or closed, it compares HEAD
-  with the pull request's head commit (`gh pr view --json headRefOid`). Equal: it resets to the
-  default branch. Different: it makes a new branch from the default branch and moves the
-  unshipped commits onto it (`git cherry-pick <pr head>..HEAD`), never dropping them; this also
-  holds after a squash merge. It never edits a file a held plan holds; it reports that
+  finding it reads its pull request's state: open, add to it; merged, it compares HEAD with the
+  pull request's head commit (`gh pr view --json headRefOid`). Equal: it resets to the default
+  branch. Different: it makes a new branch from the default branch and moves the unshipped
+  commits onto it (`git cherry-pick <pr head>..HEAD`), never dropping them; this also holds
+  after a squash merge. A pull request closed without a merge never resets: the child keeps its
+  branch and opens a new pull request from it at the next `ship`. It never edits a file a held plan holds; it reports that
   finding instead, and the lead treats it as inside that plan. A small fix is fixed, checked and
   reviewed; a bigger one goes to plan mode, approved by the person in its pane. It makes one
   commit for each finding, marks its issue fixed and reports after each finding. It may push its
@@ -150,7 +151,9 @@ cc-smart-dev-kit herdr send <terminal> "Follow-up [#n]: <finding> [files now hel
     to look at its pane.
   - **Away:** park the send as an `action` with its exact command
     (`/cc-smart-dev-kit:user-unavailable`).
-- **It never stops on its own.** `herdr stop <terminal>` ends it. `herdr wait --all` does not wait
+- **It never stops on its own.** `herdr stop <terminal>` ends it. The start's orphaned-branch
+  refusal sees only ended children Herdr still lists; after `herdr stop` it cannot see that
+  child's unshipped work, so ship before you stop it. `herdr wait --all` does not wait
   for it, and `herdr list` shows it as a follow-up.
 - **A plan child and a follow-up child never start one.** The start is refused in any child
   terminal.
