@@ -118,7 +118,8 @@ cc-smart-dev-kit herdr send <terminal> "Follow-up [#n]: <finding> [files now hel
 ```
 
 - **One for each lead and repository.** The start is refused while one is live; the refusal names
-  its terminal, so use `send`. In the error state it says to look at the pane. It is also refused
+  its terminal, so use `send`. In the error state it says to look at the pane. A live follow-up
+  child whose lead has ended is refused too: take it over with `herdr adopt`. It is also refused
   when an ended follow-up child left a branch with commits that are neither on the default branch
   nor in a merged pull request: the refusal names its worktree and branch. It needs a known
   default branch (fix: `git remote set-head origin --auto`). `--issue` repeats and works only with
@@ -129,11 +130,12 @@ cc-smart-dev-kit herdr send <terminal> "Follow-up [#n]: <finding> [files now hel
   status before the first send: a null status is refused as blocked.
 - **What the child does** (its brief holds the steps): it resets its worktree to the default
   branch only when that branch has no commits of its own and the tree is clean. Before each
-  finding it reads its pull request's state: open, add to it; merged, it compares HEAD with the
-  pull request's head commit (`gh pr view --json headRefOid`). Equal: it resets to the default
-  branch. Different: it makes a new branch from the default branch and moves the unshipped
-  commits onto it (`git cherry-pick <pr head>..HEAD`), never dropping them; this also holds
-  after a squash merge. A pull request closed without a merge never resets: the child keeps its
+  finding it reads its pull request's state (`gh pr list --head <branch> --state all`; a failed
+  call is reported, never read as "none"): open, add to it; merged, it compares HEAD with the
+  pull request's head commit. Equal: it makes a new branch from the default branch
+  (`git switch -c`); it never resets. Past it: it makes that new branch and moves the unshipped
+  commits onto it (`git cherry-pick`), never dropping them, also after a squash merge; a
+  conflict is aborted and reported. A pull request closed without a merge never resets: the child keeps its
   branch and opens a new pull request from it at the next `ship`. It never edits a file a held plan holds; it reports that
   finding instead, and the lead treats it as inside that plan. A small fix is fixed, checked and
   reviewed; a bigger one goes to plan mode, approved by the person in its pane. It makes one
@@ -153,7 +155,8 @@ cc-smart-dev-kit herdr send <terminal> "Follow-up [#n]: <finding> [files now hel
     (`/cc-smart-dev-kit:user-unavailable`).
 - **It never stops on its own.** `herdr stop <terminal>` ends it. The start's orphaned-branch
   refusal sees only ended children Herdr still lists; after `herdr stop` it cannot see that
-  child's unshipped work, so ship before you stop it. `herdr wait --all` does not wait
+  child's unshipped work, so ship before you stop it (its worktree and branch stay: ship from
+  them by hand if you must). `herdr wait --all` does not wait
   for it, and `herdr list` shows it as a follow-up.
 - **A plan child and a follow-up child never start one.** The start is refused in any child
   terminal.
