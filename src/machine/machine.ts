@@ -59,7 +59,7 @@ const RUN_TIMEOUT_MS = 300_000;
  * test about a program the plugin looks for — the browser's Chrome — the same on
  * every machine, including one where the real Chrome sits in a standard place.
  */
-interface HostFacts {
+export interface HostFacts {
   nativeAppleSilicon: boolean;
   userId: number | undefined;
   platform: NodeJS.Platform;
@@ -89,7 +89,7 @@ function nativeAppleSilicon(env: Record<string, string | undefined>): boolean {
   });
 }
 
-function hostFacts(env: Record<string, string | undefined>): HostFacts {
+export function hostFacts(env: Record<string, string | undefined>): HostFacts {
   const real: HostFacts = {
     nativeAppleSilicon: false,
     userId: process.getuid?.(),

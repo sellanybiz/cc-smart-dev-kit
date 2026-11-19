@@ -34,8 +34,19 @@
  *   Once the job started, its exit code is the answer: it is never started a second time.
  *
  * THE JOB'S WORDS REACH IT AS WRITTEN
- *   `systemd-run --scope` reads the command with systemd's rules: `$HOME`, `${HOME}` and `$$`
- *   are changed. Every `$` of the job's own words is doubled (`systemdWord`), proved live.
+ *   From systemd 258 on, `systemd-run --scope` expands `$HOME`, `${HOME}` and `$$` in the
+ *   command; before 258 it never does (proved live on 259). So the switches carry
+ *   `--expand-environment=no` (systemd 254 and later), and the probe tries three sets: with
+ *   `OOMPolicy` and that switch, with `OOMPolicy` alone (253), then with neither. Below 254 there
+ *   is nothing to switch off. The job's words are never changed.
+ *
+ * A STOP FOR MEMORY IS READ PER SCOPE
+ *   The kernel's OOM killer is read from the scope's own `oom_kill` count (the slice's count when
+ *   the scope's cgroup is gone): a rise of the slice's `oom` count is the cap, none the machine.
+ *   systemd-oomd leaves no count; it fails the scope with `Result=oom-kill`, which the job's
+ *   scope keeps because it is not `--collect`ed. Every started job's scope is then cleared
+ *   (`release`): a failed scope stays failed until reset (proved live), and a scope whose empty
+ *   notification systemd missed stays `active` (seen live under load).
  *
  * Every systemd call has one timeout (`SYSTEMD_TIMEOUT_MS`): a hung user bus must never hang a
  * job or a commit hook. Every fact comes in through `LimitFacts`, so a test never touches the
@@ -45,6 +56,8 @@ import { spawnSync } from "node:child_process";
 import { readdirSync, readFileSync } from "node:fs";
 import { cpus } from "node:os";
 import { COMMAND } from "../build-info/names";
+import { TEST_HOST_VAR } from "../machine/host";
+import { hostFacts } from "../machine/machine";
 import {
   LIMIT_PERCENT_MAX,
   LIMIT_PERCENT_MIN,
@@ -83,15 +96,19 @@ export interface LimitFacts {
   read: ReadText;
   /** How many CPUs the machine has: `os.cpus().length`, never `availableParallelism()`. */
   cpuCount: () => number;
-  /** Is the program on the PATH? Nothing is started. */
+  /** Is the program (a name, or a path) found as a job would find it? Nothing is started. */
   hasProgram: (name: string) => boolean;
   /** Does a `systemd-oomd` process run? Reads files only: `doctor` and the portal call it. */
   oomdRunning: () => boolean;
   /**
-   * One call to systemd, with `SYSTEMD_TIMEOUT_MS`. Only a job's start calls it: never
+   * One call to systemd, with `SYSTEMD_TIMEOUT_MS`. Only a job's start and end call it: never
    * `doctor`, never the status the portal polls.
    */
   systemd: (argv: readonly string[]) => SystemdResult;
+  /** The same call, and what it printed; null when it did not end with 0 in time. */
+  systemdText: (argv: readonly string[]) => string | null;
+  /** Waits `ms` (the job's end is read after it, never while it runs). */
+  pause: (ms: number) => void;
 }
 
 const realReadText: ReadText = (path) => {
@@ -116,6 +133,21 @@ export function runSystemd(
   return result.status === 0 ? "ok" : "failed";
 }
 
+/** Runs one systemd call and returns what it printed, or null (same timeout, same rules). */
+export function runSystemdText(
+  argv: readonly string[],
+  spawn: typeof spawnSync = spawnSync,
+): string | null {
+  const [program, ...args] = argv;
+  if (program === undefined) return null;
+  const result = spawn(program, args, {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"],
+    timeout: SYSTEMD_TIMEOUT_MS,
+  });
+  return result.error === undefined && result.status === 0 ? String(result.stdout) : null;
+}
+
 /** True when a `systemd-oomd` process runs (any pid's `comm`); files only. */
 function oomdProcessRuns(): boolean {
   let pids: string[];
@@ -128,22 +160,24 @@ function oomdProcessRuns(): boolean {
 }
 
 /**
- * Tests only: a platform name in this variable makes the real facts say they run there, so a test
- * that runs the CLI as its own process never reads the machine's cgroups or PATH. `darwin` is
- * the quiet answer: the caps are not applied and nothing else is read. The same pattern as
- * `CC_SMART_DEV_KIT_TEST_HOST` (`src/machine/host.ts`); unset, the real values are used.
+ * The real facts. The host's own are read as `Machine` reads them (`CC_SMART_DEV_KIT_TEST_HOST`,
+ * `machine.ts`): a test that runs the CLI as its own process names the platform and the user id,
+ * and sees only the files in its `existing` list, and no `systemd-oomd`, so it never reads the
+ * machine it runs on. Unset — every real run — these are this machine's.
  */
-export const TEST_LIMITS_VAR = "CC_SMART_DEV_KIT_TEST_LIMITS";
-
 export function realLimitFacts(env: Record<string, string | undefined> = process.env): LimitFacts {
+  const host = hostFacts(env);
+  const faked = Boolean(env[TEST_HOST_VAR]);
   return {
-    platform: (env[TEST_LIMITS_VAR] as NodeJS.Platform | undefined) ?? process.platform,
-    uid: process.getuid?.() ?? null,
-    read: realReadText,
+    platform: host.platform,
+    uid: host.userId ?? null,
+    read: faked ? (path) => (host.exists(path) ? realReadText(path) : null) : realReadText,
     cpuCount: () => cpus().length,
-    hasProgram: (name) => Bun.which(name) !== null,
-    oomdRunning: oomdProcessRuns,
+    hasProgram: (name) => Bun.which(name, { PATH: env.PATH ?? "" }) !== null,
+    oomdRunning: faked ? () => false : oomdProcessRuns,
     systemd: (argv) => runSystemd(argv),
+    systemdText: (argv) => runSystemdText(argv),
+    pause: (ms) => Bun.sleepSync(ms),
   };
 }
 
@@ -265,30 +299,40 @@ export function slicePropertyArgvs(
 }
 
 /**
- * A word of the job's command, as `systemd-run` must be given it for the job to get it as
- * written. `systemd-run --scope` reads the command line with systemd's own rules (proved live):
- * `$HOME` and `${HOME}` become the variable's value (or nothing), and `$$` becomes `$`. So a
- * `bun -e` script with a template literal, or a `$$` in a shell string, would reach the job
- * changed. `$$` is systemd's escape for one `$`: every `$` is doubled.
+ * The switches a systemd may know, newest first. `oomPolicy`: `OOMPolicy` on a scope (253).
+ * `noExpand`: `--expand-environment=no` (254; from 258 `--scope` expands `$VAR` and `$$` by
+ * default, and the job's words would change). The probe tries them in this order, so each
+ * systemd gets the most it knows, and a systemd below 254 never needs the switch.
  */
-export function systemdWord(word: string): string {
-  return word.replaceAll("$", "$$$$");
+export interface ScopeFeatures {
+  oomPolicy: boolean;
+  noExpand: boolean;
 }
+export const SCOPE_FEATURES: readonly ScopeFeatures[] = [
+  { oomPolicy: true, noExpand: true },
+  { oomPolicy: true, noExpand: false },
+  { oomPolicy: false, noExpand: false },
+];
 
-/** The scope switches shared by the probe and the launch, so the probe tests what runs. */
-function scopeSwitches(slice: string, oomPolicy: boolean): string[] {
+/**
+ * The scope switches shared by the probe and the launch, so the probe tests what runs. Only the
+ * probe is `--collect`ed: the job's scope keeps its `Result` when systemd fails it (see
+ * `start`), and `reset-failed` clears it.
+ */
+function scopeSwitches(slice: string, features: ScopeFeatures, collect: boolean): string[] {
   return [
     "--user",
     "--scope",
     "--quiet",
-    "--collect",
+    ...(collect ? ["--collect"] : []),
     `--slice=${slice}`,
-    ...(oomPolicy ? ["-p", "OOMPolicy=kill"] : []),
+    ...(features.noExpand ? ["--expand-environment=no"] : []),
+    ...(features.oomPolicy ? ["-p", "OOMPolicy=kill"] : []),
   ];
 }
 
-export function probeArgv(slice: string, oomPolicy: boolean): string[] {
-  return ["systemd-run", ...scopeSwitches(slice, oomPolicy), "--", "true"];
+export function probeArgv(slice: string, features: ScopeFeatures): string[] {
+  return ["systemd-run", ...scopeSwitches(slice, features, true), "--", "true"];
 }
 
 /**
@@ -309,8 +353,13 @@ export function unitName(slice: string, kind: string, pid: number, startedAt: nu
 
 /** A job's systemd scope: signalled, and waited for, with the job's process group. */
 export interface ScopeHandle {
-  /** `systemctl --user kill --signal=<signal> <unit>`: every process in the scope, at once. */
-  kill: (signal: NodeJS.Signals) => void;
+  /**
+   * `systemctl --user kill --signal=<signal> <unit>`: every process in the scope, at once. The
+   * answer says whether systemd did it: a caller that forwards a signal falls back to the
+   * process group only when it did not (every group member is in the scope: signalling both
+   * would deliver the signal twice).
+   */
+  kill: (signal: NodeJS.Signals) => SystemdResult;
   /** True when no process is left in the scope (or it is gone). */
   isEmpty: () => boolean;
 }
@@ -322,8 +371,8 @@ export function scopeKillArgv(unit: string, signal: NodeJS.Signals): string[] {
 
 /**
  * The scope `unit` of a slice: killed through systemd, and empty when its cgroup's
- * `cgroup.events` says `populated 0` (or the cgroup is gone: `--collect` removes an empty
- * scope). A scope sits in its slice's folder; only slices nest by their dashes.
+ * `cgroup.events` says `populated 0` (or the cgroup is gone: systemd removes an empty scope).
+ * A scope sits in its slice's folder; only slices nest by their dashes.
  */
 export function scopeHandle(
   facts: LimitFacts,
@@ -333,9 +382,7 @@ export function scopeHandle(
   if (facts.uid === null) return null;
   const events = `/sys/fs/cgroup${userSliceCgroup(facts.uid, slice)}/${unit}/cgroup.events`;
   return {
-    kill: (signal) => {
-      facts.systemd(scopeKillArgv(unit, signal));
-    },
+    kill: (signal) => facts.systemd(scopeKillArgv(unit, signal)),
     isEmpty: () => {
       const text = facts.read(events);
       return text === null || /^populated 0$/m.test(text);
@@ -373,12 +420,6 @@ export function oomKiller(before: string | null, after: string | null): OomKille
   return hitsAfter > hitsBefore ? "cap" : "machine";
 }
 
-/** The slice's `some avg10` memory pressure (percent), or null when it cannot be read. */
-function memoryPressure(text: string | null): number | null {
-  const match = text === null ? null : /^some avg10=([\d.]+)/m.exec(text);
-  return match?.[1] === undefined ? null : Number(match[1]);
-}
-
 /** What a memory line needs to know about how the job ended: `JobEnd` fits. */
 export interface MemoryEnd {
   code: number;
@@ -396,6 +437,11 @@ interface MemoryWords {
   shared: boolean;
   /** The job carried the kill mark (`choom`). */
   marked: boolean;
+  /**
+   * How long the watchdog waits before it stops a stalled job, as text: the duration this launch
+   * wrote, or null when systemd refused it (before 257) and oomd's own default stands.
+   */
+  stallAfter: string | null;
   code: number;
 }
 
@@ -415,8 +461,10 @@ export function killedForMemoryLine(killer: OomKiller | "stalled", words: Memory
       return `killed for memory: the whole machine ran out of memory, and the kernel's OOM killer stopped this job${words.marked ? " first (its kill mark)" : ""}. ${RUN_AGAIN}, or lower the cap so the jobs leave more for the machine, with: ${SET_MEMORY} ${exit}`;
     case "unknown":
       return `killed for memory (the jobs' cap of ${cap}, or the machine's OOM killer). ${RUN_AGAIN} ${exit}`;
-    case "stalled":
-      return `stopped for memory: ${who} stalled on memory below the cap (${cap}), and the watchdog (systemd-oomd) stops a stalled job after ${WATCHDOG_DURATION}. ${RUN_AGAIN}, or lower the cap so the jobs leave more for the machine, with: ${SET_MEMORY} ${exit}`;
+    case "stalled": {
+      const after = words.stallAfter === null ? "" : ` after ${words.stallAfter}`;
+      return `stopped for memory: ${who} stalled on memory below the cap (${cap}), and the watchdog (systemd-oomd) stops a stalled job${after}. ${RUN_AGAIN}, or lower the cap so the jobs leave more for the machine, with: ${SET_MEMORY} ${exit}`;
+    }
   }
 }
 
@@ -459,8 +507,10 @@ export type LimitedStart =
       /** The command, wrapped to start in its scope. */
       argv: [string, ...string[]];
       scope: ScopeHandle | null;
-      /** The line for a job stopped for memory, or null. Never after exit 0. */
+      /** The line for a job stopped for memory, or null. Never after exit 0. Read before `release`. */
       memoryLine: (end: MemoryEnd) => string | null;
+      /** Clears the job's scope once it has ended; every started job calls it, and only once. */
+      release: () => void;
     };
 
 /**
@@ -481,6 +531,38 @@ const off = (reason: string, keys: readonly LimitKey[] = []): LimitedStart => ({
   on: false,
   line: `this job runs without CPU and memory limits: ${reason}${fixFor(keys)}`,
 });
+
+/** How often and how long to wait for systemd to settle a scope whose last process just ended. */
+const SETTLE_POLLS = 20;
+const SETTLE_MS = 50;
+
+/**
+ * A scope's own `Result` (`oom-kill`, `success`, ...), or null when systemd cannot say. The job's
+ * processes are gone before systemd has marked the scope: read at once, `Result` is still
+ * `success` (proved live), so this asks again until the scope is `failed` or `inactive` — a few
+ * milliseconds in practice, one second at most.
+ */
+function scopeResult(facts: LimitFacts, unit: string): string | null {
+  let result: string | null = null;
+  for (let poll = 0; poll < SETTLE_POLLS; poll++) {
+    const text = facts.systemdText([
+      "systemctl",
+      "--user",
+      "show",
+      "-p",
+      "ActiveState",
+      "-p",
+      "Result",
+      unit,
+    ]);
+    if (text === null) return null;
+    result = /^Result=(.*)$/m.exec(text)?.[1]?.trim() ?? null;
+    const state = /^ActiveState=(.*)$/m.exec(text)?.[1]?.trim();
+    if (state === "failed" || state === "inactive") return result;
+    facts.pause(SETTLE_MS);
+  }
+  return result;
+}
 
 /**
  * Gets the limits ready for one queued job and returns how to start it. It never throws and
@@ -516,21 +598,28 @@ function start(
   if (blocker !== null) return off(blocker);
   // `limitsBlocker` proved a user id.
   const uid = facts.uid as number;
+  // A command that is not there runs plain, so the plain path answers as it always did (127,
+  // "could not start"): `systemd-run` would end with 1 and a different message.
+  if (!facts.hasProgram(job.command[0])) return { on: false, line: null };
 
-  const withPolicy = facts.systemd(probeArgv(slice, true));
-  let oomPolicy = true;
-  if (withPolicy !== "ok") {
-    // A timeout means no answer at all: a second probe would wait as long again.
-    const withoutPolicy =
-      withPolicy === "timeout" ? withPolicy : facts.systemd(probeArgv(slice, false));
-    if (withoutPolicy !== "ok") {
-      return off(
-        withoutPolicy === "timeout"
-          ? `systemd did not answer within ${String(SYSTEMD_TIMEOUT_MS / 1000)} s`
-          : "systemd could not start a scope here (no user session bus?)",
-      );
+  // The most each systemd knows (`SCOPE_FEATURES`). A timeout is no answer at all: another
+  // probe would wait as long again.
+  let features: ScopeFeatures | null = null;
+  let probed: SystemdResult = "failed";
+  for (const candidate of SCOPE_FEATURES) {
+    probed = facts.systemd(probeArgv(slice, candidate));
+    if (probed === "ok") {
+      features = candidate;
+      break;
     }
-    oomPolicy = false;
+    if (probed === "timeout") break;
+  }
+  if (features === null) {
+    return off(
+      probed === "timeout"
+        ? `systemd did not answer within ${String(SYSTEMD_TIMEOUT_MS / 1000)} s`
+        : "systemd could not start a scope here (no user session bus?)",
+    );
   }
 
   const { main, duration } = slicePropertyArgvs(slice, settings.settings, machineCpus(facts));
@@ -542,37 +631,50 @@ function start(
         : `systemd refused to set the limits on ${slice}`,
     );
   }
-  // Only this call fails on a systemd older than 257: the default duration stays.
-  facts.systemd(duration);
+  // Only this call fails on a systemd older than 257: oomd's own default duration stays.
+  const stallAfter = facts.systemd(duration) === "ok" ? WATCHDOG_DURATION : null;
 
   const marked = facts.hasProgram("choom");
   const unit = unitName(slice, job.kind, job.pid, job.startedAt);
   const sliceDir = `/sys/fs/cgroup${userSliceCgroup(uid, slice)}`;
   const eventsBefore = facts.read(`${sliceDir}/memory.events`);
+  const scopeDir = `${sliceDir}/${unit}`;
   return {
     on: true,
     argv: [
       "systemd-run",
-      ...scopeSwitches(slice, oomPolicy),
+      ...scopeSwitches(slice, features, false),
       `--unit=${unit}`,
       "--",
       ...(marked ? ["choom", "-n", String(HEAVY_OOM_SCORE_ADJ), "--"] : []),
-      ...job.command.map(systemdWord),
+      ...job.command,
     ] as [string, ...string[]],
     scope: scopeHandle(facts, unit, slice),
+    release: () => {
+      // A failed scope stays failed until it is reset (it is not `--collect`ed), and an emptied
+      // scope whose notification systemd missed stays `active` (both seen live): without this a
+      // job leaves a unit behind. `--no-block`: the scope is empty, and a stop that waited could
+      // hold a job for the unit's timeout. On a scope that is already gone both calls just fail.
+      facts.systemd(["systemctl", "--user", "stop", "--no-block", unit]);
+      facts.systemd(["systemctl", "--user", "reset-failed", unit]);
+    },
     memoryLine: (end) => {
       if (end.code === 0) return null;
-      const eventsAfter = facts.read(`${sliceDir}/memory.events`);
-      const killer: OomKiller | "stalled" | null =
-        oomKiller(eventsBefore, eventsAfter) ??
-        // An oomd kill leaves no event: the job was ended by a SIGKILL that was not this
-        // wrapper's own, while the jobs' slice stood above the watchdog's pressure.
-        (end.signal === "SIGKILL" &&
-        !end.sentOn &&
-        (memoryPressure(facts.read(`${sliceDir}/memory.pressure`)) ?? 0) >=
-          WATCHDOG_PRESSURE_PERCENT
-          ? "stalled"
-          : null);
+      const rise = oomKiller(eventsBefore, facts.read(`${sliceDir}/memory.events`));
+      const sigkilled = end.signal === "SIGKILL" && !end.sentOn;
+      // Nothing points at memory: no systemd call.
+      if (rise === null && !sigkilled) return null;
+      // The kernel's OOM killer, for THIS job: the scope's own `oom_kill` count when its cgroup
+      // can still be read (the slice's counts also move for another job's kill); else the
+      // slice's rise. It needs no word from systemd, which does not always mark a scope the
+      // kernel killed (proved live: the scope sometimes stays `active` with `Result=success`).
+      const ownKills = memoryEvent(facts.read(`${scopeDir}/memory.events`), "oom_kill");
+      const byKernel = ownKills === null ? rise !== null : ownKills > 0;
+      let killer: OomKiller | "stalled" | null = null;
+      if (byKernel) killer = rise ?? "unknown";
+      // Otherwise only a SIGKILL could have stopped it: systemd-oomd leaves no event, but it
+      // fails the scope with `Result=oom-kill` (proved live).
+      else if (sigkilled && scopeResult(facts, unit) === "oom-kill") killer = "stalled";
       if (killer === null) return null;
       const total = meminfoBytes(facts.read("/proc/meminfo"), "MemTotal");
       const percent = settings.settings.memoryPercent;
@@ -581,6 +683,7 @@ function start(
         capPercent: percent,
         shared: slots > 1,
         marked,
+        stallAfter,
         code: end.code,
       });
     },

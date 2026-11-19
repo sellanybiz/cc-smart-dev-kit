@@ -15,7 +15,6 @@ import { COMMAND, MARKETPLACE_SOURCE, VERSION } from "../build-info";
 import { claudeDefaultsMarkerFile } from "../gateway/claude-defaults";
 import { USAGE as GATEWAY_USAGE } from "../gateway/commands";
 import { localDay } from "../gateway/safety-checks";
-import { TEST_LIMITS_VAR } from "../jobs/limits";
 import { type Machine, TEST_HOST_VAR } from "../machine/machine";
 import { recordMcpServer } from "../mcp/records";
 import { serenaLeftoverPaths } from "../mcp/retired";
@@ -271,8 +270,6 @@ function setup(options: SetupOptions = {}) {
     PATH: `${fakeBin}:${join(home, ".local", "bin")}:${bunBin}`,
     // The portal's own line, without a port: no test may read a real portal on the machine.
     [TEST_PORTAL_VAR]: "free",
-    // The heavy jobs' caps, as on a machine they do not apply to: no test reads real cgroups.
-    [TEST_LIMITS_VAR]: "darwin",
     [TEST_HOST_VAR]: JSON.stringify({
       existing: [...(options.existing ?? []), ...browserFiles],
       platform: "linux",
@@ -1195,19 +1192,23 @@ describe("cc-smart-dev-kit doctor", () => {
         "✓ Browser            6 passed, 1 note",
         // Chrome closed is the state a restart leaves: the first browser call starts it.
         '  · Google Chrome is not running: the first browser call starts it in the "claude-code" profile',
-        "✓ Alerts and limits  1 passed, 4 notes",
+        "! Alerts and limits  1 warning, 1 passed, 3 notes",
         "  · retry watchdog: on (set by cc-smart-dev-kit): a session waits and retries at a limit; turn it off with: cc-smart-dev-kit setup --no-retry-watchdog",
         "  · max subagents: 10 at once (set by cc-smart-dev-kit); to change it, run: cc-smart-dev-kit setup --max-subagents <n> (1–100)",
         "  · Heavy-job limit: 1 (default)",
-        "  · Heavy-job CPU and memory caps: not applied on darwin; heavy jobs run as they are",
+        // The test's host (CC_SMART_DEV_KIT_TEST_HOST) is Linux with none of the cgroup files:
+        // a warning that names the reason, never a failure.
+        "  ! Heavy-job caps cannot apply here: no systemd user manager with cgroup v2 here (its controllers file is missing); heavy jobs run without them",
+        "    Fix: see docs/jobs.md § Limits in the plugin's repo for what the caps need",
+        "  ✓ Git hooks folder: 26 hook scripts, executable and up to date",
         // The gateway is optional: never set up is information, not a failure.
         "· Gateway            1 note",
         "  · gateway: not set up (optional). To use it: cc-smart-dev-kit gateway setup",
         "· Herdr sessions     1 note",
         "  · Herdr: hc is not installed; session orchestration is optional.",
         "",
-        "✓ Everything works: 24 checks passed.",
-        "To see the 24 lines that passed too: cc-smart-dev-kit doctor --verbose",
+        "! Nothing to fix: 24 passed, and 1 warning to read above.",
+        "To see the 23 lines that passed too: cc-smart-dev-kit doctor --verbose",
         "",
       ].join("\n"),
     );
@@ -1245,7 +1246,7 @@ describe("cc-smart-dev-kit doctor", () => {
       expect(verbose).toContain(`\n  ${line}\n`);
     }
     expect(verbose).not.toContain("--verbose");
-    expect(verbose).toEndWith("\n✓ Everything works: 24 checks passed.\n");
+    expect(verbose).toEndWith("\n! Nothing to fix: 24 passed, and 1 warning to read above.\n");
     // git is asked for the user's own ssh command, then told never to ask for a password.
     // Then which project the folder is in (this fake git says: none) — once for the project
     // group, once by the gateway's project list (the portal's own reader, GP4a: the doctor

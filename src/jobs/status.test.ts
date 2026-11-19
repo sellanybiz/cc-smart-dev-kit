@@ -85,6 +85,7 @@ test("reading the jobs never probes systemd", async () => {
     hasProgram: refuse("hasProgram"),
     oomdRunning: refuse("oomdRunning"),
     systemd: refuse("systemd"),
+    systemdText: refuse("systemdText"),
   });
   await readJobs(ctx);
   expect(await readJobs(ctx)).toBeDefined();

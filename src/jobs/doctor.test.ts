@@ -54,6 +54,9 @@ describe("the CPU and memory caps' lines", () => {
       systemd: () => {
         throw new Error("doctor must not call systemd");
       },
+      systemdText: () => {
+        throw new Error("doctor must not call systemd");
+      },
     });
     return { facts, files };
   };

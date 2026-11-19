@@ -9,7 +9,7 @@ const request: JobRequest = {
   pid: 1,
   slot: true,
 };
-const scope: ScopeHandle = { kill: () => undefined, isEmpty: () => true };
+const scope: ScopeHandle = { kill: () => "ok", isEmpty: () => true };
 function world(overrides: Partial<JobDeps> = {}) {
   const events: string[] = [];
   const deps: JobDeps = {
@@ -84,11 +84,15 @@ test("a job that waited reports its own exit status", async () => {
 });
 
 // The limits (`limits.ts`): a queued job starts in its scope, when the limits can apply.
-const limited = (memoryLine: Extract<LimitedStart, { on: true }>["memoryLine"]): LimitedStart => ({
+const limited = (
+  memoryLine: Extract<LimitedStart, { on: true }>["memoryLine"],
+  release: () => void = () => undefined,
+): LimitedStart => ({
   on: true,
   argv: ["systemd-run", "--scope", "--", "build"],
   scope,
   memoryLine,
+  release,
 });
 
 test("with the limits on, the job starts in its scope, and the scope is handed to the launcher", async () => {
@@ -165,4 +169,45 @@ test("no memory line: nothing is said", async () => {
   const { events, deps } = world({ limits: () => limited(() => null) });
   await runJob(request, deps);
   expect(events).toEqual(["acquire", "systemd-run --scope -- build [scope]", "release"]);
+});
+
+// A scope that is not cleared is a unit left behind (a failed one until it is reset: proved live), so a started
+// job clears its scope once, after the memory line has read it, however the job ended.
+test("the scope is released once, after the memory line read it and before the slot is given back", async () => {
+  const { events, deps } = world({
+    limits: () =>
+      limited(
+        () => {
+          events.push("memory line read");
+          return null;
+        },
+        () => events.push("scope released"),
+      ),
+  });
+  await runJob(request, deps);
+  expect(events).toEqual([
+    "acquire",
+    "systemd-run --scope -- build [scope]",
+    "memory line read",
+    "scope released",
+    "release",
+  ]);
+});
+
+test("the scope is released when the launcher throws, and not when the limits are off", async () => {
+  const { events, deps } = world({
+    limits: () =>
+      limited(
+        () => null,
+        () => events.push("scope released"),
+      ),
+    run: async () => {
+      throw new Error("spawn failed");
+    },
+  });
+  await expect(runJob(request, deps)).rejects.toThrow("spawn failed");
+  expect(events).toEqual(["acquire", "scope released", "release"]);
+  const off = world();
+  await runJob(request, off.deps);
+  expect(off.events).not.toContain("scope released");
 });

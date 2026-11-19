@@ -187,10 +187,16 @@ export async function runJob(request: JobRequest, deps: JobDeps): Promise<number
       waitedSince: reservation.waitedSince,
       what: describeCommand(request.command),
     };
-    const ran = await runTimed(running, deps);
-    // The memory line comes before the end line, which says the job's own status last.
-    const memoryLine = limits?.on ? limits.memoryLine(ran.end) : null;
-    if (memoryLine !== null) deps.say(memoryLine);
+    let ran: Ran;
+    try {
+      ran = await runTimed(running, deps);
+      // The memory line comes before the end line, which says the job's own status last.
+      const memoryLine = limits?.on ? limits.memoryLine(ran.end) : null;
+      if (memoryLine !== null) deps.say(memoryLine);
+    } finally {
+      // The scope is cleared however the job ended, once the memory line has read it.
+      if (limits?.on) limits.release();
+    }
     sayEnded(running, ran, deps);
     return ran.end.code;
   } finally {

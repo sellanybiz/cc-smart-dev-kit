@@ -11,12 +11,12 @@
  *
  *   CC_SMART_DEV_KIT_LIVE_SYSTEMD=1 bun test src/jobs/live-systemd.test.ts
  *
- * Not covered here, because it cannot be made on demand: a job that stalls below the cap and is
- * stopped by systemd-oomd. That is proved by hand (docs/jobs.md § Limits).
+ * The stall case sets a `MemoryHigh` below `MemoryMax` on the throwaway slice itself (the limits
+ * never write one), because a job under the real limits is killed at the cap, never stalled.
  */
 import { afterAll, describe, expect, test } from "bun:test";
 import { EventEmitter } from "node:events";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tempDir } from "../testing/temp";
 import type { LimitRead } from "./config";
@@ -92,6 +92,27 @@ function limited(
   return start;
 }
 
+/**
+ * Runs a started job the way `runJob` does: the memory line is read first, then the job's scope
+ * is released (a failed scope stays until it is reset; `release` clears it).
+ */
+async function ran(
+  start: ReturnType<typeof limited>,
+  options: {
+    signals?: EventEmitter;
+    say?: (line: string) => void;
+    spawn?: { leftoverGraceMs?: number; killWaitMs?: number };
+  } = {},
+) {
+  const end = await spawnAndWait(start.argv, options.signals ?? new EventEmitter(), options.say, {
+    scope: start.scope,
+    ...options.spawn,
+  });
+  const line = start.memoryLine(end);
+  start.release();
+  return { end, line };
+}
+
 afterAll(() => {
   if (!LIVE) return;
   // Stop what is left (a failed test may leave a scope), then drop every runtime property.
@@ -133,7 +154,7 @@ describe.if(LIVE)("the real systemd user manager (CC_SMART_DEV_KIT_LIVE_SYSTEMD=
       "-c",
       `cat /proc/self/oom_score_adj > "${markFile}"; cat /proc/self/cgroup > "${cgroupFile}"; sleep 4`,
     ]);
-    const running = spawnAndWait(start.argv, new EventEmitter(), undefined, { scope: start.scope });
+    const running = ran(start);
     expect(await until(() => existsSync(markFile) && existsSync(cgroupFile), 10_000)).toBe(true);
     expect(read(`${sliceDir}/cpu.max`)).toBe(`${50 * machineCpus(facts) * 1000} 100000`);
     expect(read(`${sliceDir}/cpu.weight`)).toBe("20");
@@ -144,7 +165,7 @@ describe.if(LIVE)("the real systemd user manager (CC_SMART_DEV_KIT_LIVE_SYSTEMD=
     });
     expect(read(markFile)).toBe("900");
     expect(read(cgroupFile)).toContain(`${userSliceCgroup(uid, SLICE)}/${prefix}-jobs-live-`);
-    expect(await running).toMatchObject({ code: 0, leftovers: false, signal: null });
+    expect((await running).end).toMatchObject({ code: 0, leftovers: false, signal: null });
     // A lower limit at the next launch is written at once (a runtime property outlives a job).
     limited(settings(100, 100), ["true"]);
     expect(read(`${sliceDir}/cpu.max`)).toBe("max 100000");
@@ -153,16 +174,14 @@ describe.if(LIVE)("the real systemd user manager (CC_SMART_DEV_KIT_LIVE_SYSTEMD=
   test("exit codes 0, 1 and 130 pass through, and a kill ends with 137", async () => {
     for (const code of [0, 1, 130]) {
       const start = limited(settings(90, 90), ["sh", "-c", `exit ${code}`]);
-      const end = await spawnAndWait(start.argv, new EventEmitter(), undefined, {
-        scope: start.scope,
-      });
+      const { end } = await ran(start);
       expect(end).toEqual({ code, leftovers: false, sentOn: false, signal: null });
     }
     const start = limited(settings(90, 90), ["sh", "-c", "kill -KILL $$"]);
-    const end = await spawnAndWait(start.argv, new EventEmitter(), undefined, {
-      scope: start.scope,
-    });
+    const { end, line } = await ran(start);
     expect(end).toMatchObject({ code: 137, signal: "SIGKILL", sentOn: false });
+    // Not a stop for memory: a plain kill -9 says nothing.
+    expect(line).toBeNull();
   }, 60_000);
 
   test("the job's words reach it as written: systemd-run reads $VAR and $$, so each $ is escaped", async () => {
@@ -177,18 +196,38 @@ describe.if(LIVE)("the real systemd user manager (CC_SMART_DEV_KIT_LIVE_SYSTEMD=
       out,
       ...words,
     ]);
-    await spawnAndWait(start.argv, new EventEmitter(), undefined, { scope: start.scope });
+    await ran(start);
     expect(read(out)).toBe(`${words.join("|")}|`);
   }, 30_000);
 
   test("a signal reaches the job through its group and its scope, and the scope ends empty", async () => {
     const start = limited(settings(90, 90), ["sleep", "30"]);
     const signals = new EventEmitter();
-    const running = spawnAndWait(start.argv, signals, undefined, { scope: start.scope });
+    const running = ran(start, { signals });
     await Bun.sleep(500);
     signals.emit("SIGTERM");
-    expect(await running).toMatchObject({ code: 143, sentOn: true, signal: "SIGTERM" });
+    expect((await running).end).toMatchObject({ code: 143, sentOn: true, signal: "SIGTERM" });
     expect(start.scope?.isEmpty()).toBe(true);
+  }, 30_000);
+
+  // Every member of the job's group is in its scope, so a signal sent to both would reach the job
+  // twice, and a tool that reads a second Ctrl+C as "force quit" would quit. Counted live.
+  test("one forwarded SIGINT reaches the job exactly once", async () => {
+    const dir = tempDir("live-once");
+    const [ready, counted, stop] = ["ready", "count", "stop"].map((name) => join(dir, name));
+    const start = limited(settings(90, 90), [
+      "sh",
+      "-c",
+      `trap 'echo x >> "${counted}"' INT; echo up > "${ready}"; while [ ! -e "${stop}" ]; do sleep 0.1; done`,
+    ]);
+    const signals = new EventEmitter();
+    const running = ran(start, { signals });
+    expect(await until(() => existsSync(ready as string), 10_000)).toBe(true);
+    signals.emit("SIGINT");
+    await Bun.sleep(1_000);
+    writeFileSync(stop as string, "");
+    expect((await running).end).toMatchObject({ code: 0, leftovers: false });
+    expect(read(counted as string)).toBe("x");
   }, 30_000);
 
   test("a process that left the job's group is stopped through the scope", async () => {
@@ -199,10 +238,9 @@ describe.if(LIVE)("the real systemd user manager (CC_SMART_DEV_KIT_LIVE_SYSTEMD=
       `setsid sleep 60 & echo $! > "${pidFile}"`,
     ]);
     const said: string[] = [];
-    const end = await spawnAndWait(start.argv, new EventEmitter(), (line) => said.push(line), {
-      scope: start.scope,
-      leftoverGraceMs: 300,
-      killWaitMs: 5_000,
+    const { end } = await ran(start, {
+      say: (line) => said.push(line),
+      spawn: { leftoverGraceMs: 300, killWaitMs: 5_000 },
     });
     expect(end).toMatchObject({ code: 0, leftovers: true });
     const worker = Number(read(pidFile));
@@ -223,7 +261,7 @@ describe.if(LIVE)("the real systemd user manager (CC_SMART_DEV_KIT_LIVE_SYSTEMD=
     const usage = () => Number(/^usage_usec (\d+)/m.exec(read(`${sliceDir}/cpu.stat`))?.[1]);
     const before = usage();
     const began = Date.now();
-    await spawnAndWait(start.argv, new EventEmitter(), undefined, { scope: start.scope });
+    await ran(start);
     const cpuSeconds = (usage() - before) / 1_000_000;
     const used = cpuSeconds / ((Date.now() - began) / 1000);
     console.log(`live: quota ${quotaCpus} CPUs, used ${used.toFixed(2)} CPUs`);
@@ -239,14 +277,46 @@ describe.if(LIVE)("the real systemd user manager (CC_SMART_DEV_KIT_LIVE_SYSTEMD=
       // About 16 MB more each round, touched so it is really used.
       "const a = []; for (;;) a.push(Buffer.alloc(16 * 1024 * 1024, 1));",
     ]);
-    const said: string[] = [];
-    const end = await spawnAndWait(start.argv, new EventEmitter(), (line) => said.push(line), {
-      scope: start.scope,
-    });
-    const line = start.memoryLine(end);
+    const { end, line } = await ran(start);
     console.log(`live: exit ${String(end.code)}; line: ${String(line)}`);
     expect(end.code).toBe(137);
     expect(line).toStartWith("killed for memory: this job reached the memory cap (");
     expect(line).toEndWith("(exit code 137)");
   }, 60_000);
+
+  // The watchdog. The limits write `MemoryHigh=infinity`, which kills at the cap and never
+  // stalls; to make a job stall on demand this test, and only this test, sets a `MemoryHigh`
+  // below `MemoryMax` on the throwaway slice after the launch wrote its own. The eater then
+  // sticks below the cap, `memory.pressure` stays high, and systemd-oomd stops its scope. oomd
+  // picks its victim by page-scan activity: a Python `bytearray` has some, a Bun `Buffer` of the
+  // same size has none (tried live: never killed), so the eater is Python.
+  test.if(Bun.which("python3") !== null)(
+    "a job that stalls on memory is stopped by systemd-oomd, and the line says the watchdog did it",
+    async () => {
+      const start = limited(settings(90, 90), [
+        "python3",
+        "-c",
+        'import time; b = bytearray(b"x" * (400 * 1024 * 1024)); time.sleep(600)',
+      ]);
+      expect(
+        systemctl("set-property", "--runtime", SLICE, "MemoryHigh=200M", "MemoryMax=300M").code,
+      ).toBe(0);
+      const began = Date.now();
+      const { end, line } = await ran(start);
+      console.log(
+        `live: stalled job stopped after ${Math.round((Date.now() - began) / 1000)} s; exit ${String(end.code)}; line: ${String(line)}`,
+      );
+      expect(end).toMatchObject({ code: 137, signal: "SIGKILL", sentOn: false });
+      expect(line).toStartWith("stopped for memory: this job stalled on memory below the cap (");
+      expect(line).toContain("the watchdog (systemd-oomd) stops a stalled job after 10s");
+    },
+    120_000,
+  );
+
+  // The last test: every job above released its scope, so none is left in the user manager.
+  test("no unit of a finished job is left in the user manager", async () => {
+    const scopes = () =>
+      systemctl("list-units", "--all", "--plain", "--no-legend", "--type=scope", `${prefix}*`).out;
+    expect(await until(() => scopes() === "", 10_000)).toBe(true);
+  }, 30_000);
 });

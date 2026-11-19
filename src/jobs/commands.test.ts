@@ -315,13 +315,13 @@ test("a bad cpuPercent runs the job without limits, names the key, and never sto
   expect(await runJobCommand(["set", "max", "4"], ctx)).toBe(0);
 });
 
-test("a probe that fails runs the job plain, with one line, and the probe was the only call", async () => {
+test("a probe that fails runs the job plain, with one line, and only the probes were asked", async () => {
   const { ctx, lines, calls } = world({ platform: "linux", systemd: () => "failed" });
   expect(await runJobCommand(["run", "--kind", "tsc", "--", "sh", "-c", "exit 5"], ctx)).toBe(5);
   expect(lines).toEqual([
     `${PREFIX}this job runs without CPU and memory limits: systemd could not start a scope here (no user session bus?)`,
   ]);
-  expect(calls.map((call) => call[0])).toEqual(["systemd-run", "systemd-run"]);
+  expect(calls.map((call) => call[0])).toEqual(["systemd-run", "systemd-run", "systemd-run"]);
 });
 
 test("not Linux: the job runs, nothing is said, systemd is never asked", async () => {
@@ -379,7 +379,10 @@ describe("the limits a queued job gets", () => {
       [1, "this job reached"],
       [3, "the heavy jobs together reached"],
     ] as const) {
-      const world1 = fakeLimitFacts({ files: { [eventsFile]: "oom 0\noom_kill 0\n" } });
+      const world1 = fakeLimitFacts({
+        files: { [eventsFile]: "oom 0\noom_kill 0\n" },
+        systemdText: () => "ActiveState=failed\nResult=oom-kill\n",
+      });
       const ctx = { ...world().ctx, limits: world1.facts };
       await runJobCommand(["set", "max", String(slots)], ctx);
       const start = limitsFor(ctx)(job);
