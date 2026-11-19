@@ -1691,6 +1691,125 @@ describe("routableLine: harmless glue rides in the queued line", () => {
     queuedWhole("bun test; [ -f out.log ] && echo yes", "test:run");
   });
 
+  // A literal subscript reads no variable and runs no code: `${PIPESTATUS[0]}` is how a line keeps
+  // the exit code of the command before a pipe. Any other subscript or offset is still code.
+  test("a literal array subscript is glue, any other subscript or offset is not", () => {
+    queuedWhole(`bun test 2>&1 | tail -20; echo "exit=${BRACE}PIPESTATUS[0]}"`, "test:run");
+    queuedWhole(`bun test; echo "${BRACE}arr[@]}"`, "test:run");
+    queuedWhole(`bun test; echo ${BRACE}arr[*]}`, "test:run");
+    queuedWhole(`bun test; echo ${BRACE}#X[@]} ${BRACE}#X[1]}`, "test:run");
+    for (const code of [
+      `echo ${BRACE}a[0]:X}`,
+      `echo ${BRACE}a[X]}`,
+      `echo ${BRACE}a[$(rm x)]}`,
+      `echo ${BRACE}a[1+1]}`,
+      // A subscript inside a subscript stays a subscript once the literal one is gone.
+      `echo ${BRACE}a[${BRACE}b[0]}]}`,
+    ]) {
+      expect([code, line(`bun test; ${code}`)]).toEqual([code, null]);
+    }
+  });
+
+  // `getline < file` reads a file awk names itself, and `ARGV` or `ARGC` make it open one: the
+  // file word is then in no part of the line a Read rule can see.
+  test("an awk that reads a file of its own, or sets its files, is no glue and no filter", () => {
+    for (const program of [
+      `'{getline l < ".env"; print l}'`,
+      `'BEGIN{getline l < ".env"; print l}'`,
+      `'BEGIN{while ((getline l < ".env") > 0) print l}'`,
+      `'{getline; print}'`,
+      `'BEGIN{ARGV[1]=".env"; ARGC=2} {print}'`,
+      `'BEGIN{ARGV[ARGC++]=".env"} {print}'`,
+      `'BEGIN{ARGC=2; ARGV[1]=".env"} {print}'`,
+    ]) {
+      expect([program, line(`bun test; echo x | awk ${program}`)]).toEqual([program, null]);
+      expect([program, line(`bun test | awk ${program}; echo done`)]).toEqual([program, null]);
+      // As a trailing filter it is no filter either: nothing is cut off the queued part.
+      expect([program, line(`bun test | awk ${program}`)]).toEqual([program, null]);
+    }
+    // An awk that only prints is still a filter.
+    expect(line("bun test | awk '{print $1}'")?.filters).toBe("| awk '{print $1}'");
+    expect(line("bun test | awk -F: '$2 ~ /x/ {print $1}'")?.filters).toBe(
+      "| awk -F: '$2 ~ /x/ {print $1}'",
+    );
+  });
+
+  // The refusal's advice (run the others in a separate call) cannot work for the commands that
+  // set the shell up: an option or an export does not carry over to another Bash call.
+  test("shell-state commands are glue: set options, exit, return, export", () => {
+    for (const state of [
+      "set -e",
+      "set -u",
+      "set -x",
+      "set +e",
+      "set -o pipefail",
+      "set +o pipefail",
+      "set -euo pipefail",
+      "set -eu",
+      "exit",
+      "exit 0",
+      "exit 1",
+      "exit $?",
+      "return",
+      "return 2",
+      "return $?",
+      "export X=1",
+      "export NAME=value OTHER=two",
+      'export MSG="a b"',
+      "export HOME_COPY=$HOME",
+      "export PATH=$PATH:/opt/bin",
+    ]) {
+      queuedWhole(`${state}; bun test`, "test:run");
+      queuedWhole(`bun test; ${state}`, "test:run");
+    }
+    queuedWhole("set -o pipefail; bun test 2>&1 | tail -20", "test:run");
+    queuedWhole("bun test || exit 1", "test:run");
+    queuedWhole("bun test || exit $?", "test:run");
+    queuedWhole("{ set -e; bun test; } > out.log 2>&1", "test:run");
+  });
+
+  test("a set, exit, return or export that runs code or changes the words is no glue", () => {
+    for (const near of [
+      "set -- x",
+      "set --",
+      "set",
+      "set x",
+      "set -e x",
+      "set -o",
+      'set "$OPTS"',
+      "set -$X",
+      "set -e$X",
+      "set -o $X",
+      "exit $(rm x)",
+      "exit `rm x`",
+      "exit x",
+      "exit 1 2",
+      "exit $((1))",
+      'exit "$X"',
+      "return $(rm x)",
+      "return x",
+      "export X=$(rm x)",
+      "export X=$(pwd)",
+      "export X=`pwd`",
+      "export X='$(rm x)'",
+      "export $NAME=x",
+      "export -n X",
+      "export -f x",
+      "export X",
+      "export",
+      "export X=1 Y",
+      "export 'a[$(rm x)]=1'",
+      "export X=$((1))",
+      `export X=${BRACE}a[X]}`,
+      "export X=1 > out.txt",
+      "FOO=1 set -e",
+      "/bin/exit 1",
+    ]) {
+      expect([near, line(`bun test; ${near}`)]).toEqual([near, null]);
+      expect([near, line(`${near}; bun test`)]).toEqual([near, null]);
+    }
+  });
+
   test("a shell that takes its script from the pipe is never pure: the text is no promise", () => {
     // The reader gives `\\n` as a space, and `sh` runs two commands.
     for (const piped of [
@@ -1903,5 +2022,30 @@ describe("mixedHeavyLine: heavy work beside commands that are not glue", () => {
     const mixedBody = source({ "/repo": { check: "tsc --noEmit && rm -rf dist" } });
     expect(mixed("bun run check", mixedBody)).toBeNull();
     expect(mixed("bun run check && git status", mixedBody)).toBeNull();
+  });
+
+  // A script that runs no heavy work (`lint: biome check .`) is a command of the line: the
+  // person can run it in its own call. It is not "a script that cannot be split".
+  test("a script whose body runs no heavy work is the command to split off, in either order", () => {
+    const lint = source({
+      "/repo": { lint: "biome check .", test: "vitest run", typecheck: "tsc --noEmit" },
+    });
+    expect(mixed("bun run lint && bun test", lint)).toEqual({
+      kind: "test:run",
+      other: "bun run lint",
+      run: "bun test",
+    });
+    expect(mixed("bun test && bun run lint", lint)?.other).toBe("bun run lint");
+    expect(mixed("npm run lint && npm test", lint)?.other).toBe("npm run lint");
+    expect(mixed("pnpm lint && pnpm test", lint)?.other).toBe("pnpm lint");
+    const format = source({ "/repo": { format: "biome format .", typecheck: "tsc --noEmit" } });
+    expect(mixed("bun run format; bun run typecheck; git diff --stat", format)).toEqual({
+      kind: "tsc",
+      other: "bun run format",
+      run: "bun run typecheck",
+    });
+    // Alone, it holds no heavy work: nothing to refuse.
+    expect(mixed("bun run lint", lint)).toBeNull();
+    expect(mixed("bun run lint && git status", lint)).toBeNull();
   });
 });
