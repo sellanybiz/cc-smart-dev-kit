@@ -495,7 +495,7 @@ exact-array test (`deploy.test.ts`) pins the refusals and their order, so the ex
 
 **`task release <env> --check [--json]`** is `envRefusal` plus `judgeTasks` over
 `scanDeployTasks(dir, { archive: true })` in the folder the command runs in. The checkout is
-found with `git rev-parse` and nothing else, so a detached or shallow CI checkout works.
+found by `locateCheckout`, which reads no history and no refs, so a detached or shallow CI checkout works.
 `--check` with no environment, or with `--before`, `--after` or `--ref`, is a usage error (2).
 It prints `Release check: <env>`, a `fail` line for each refusal, an `info` line for each note,
 then `Ready: <env> has no open task that holds a deploy.` (0) or `Not ready: N reasons to stop. Fix
@@ -537,7 +537,8 @@ steps and the gates sit together (`src/project/deploy-skill.ts`, its text in `de
 The block's first line, `## Deploy tasks`, is the contract across versions: it is how a skill
 written by an older kit is still found and updated. It holds the two gate commands, the
 deploy-branch step, the close step, a line that says the deploy guard asks before a listed
-deploy command while a blocking task is open (true with or without `tasks.deployCommands`), and a
+deploy command while that environment has work that holds a deploy (true with or without
+`tasks.deployCommands`), and a
 pointer to `/cc-smart-dev-kit:tasks`. Adding that line made every older block out of date:
 `doctor` flags it until `project init` runs.
 

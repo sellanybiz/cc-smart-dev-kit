@@ -271,7 +271,7 @@ them while that environment has an open blocking problem in its deploy tasks
   `bun <subcommand>`). A script file keeps its extension. A listed string becomes a rule
   once (`rulesOfCommand`, read in both dialects so a Windows path keeps its folder and name);
   an entry may also be a match rule (`matchRuleSchema`, the jobs grammar). `ruleMatches` tests
-  each run; the words a rule requires are whole words, in order, and extra words are allowed
+  each run; the words a rule requires are whole words (its non-option words come first after the tool, in order; its options may be anywhere), and extra words are allowed
   (`--prod` is not `--production`; `vercel --prod --help` over-matches, which is accepted: the
   guard only speaks while a blocking problem exists). An option's value is a required word
   (`sub`), so `fly deploy --app web` is not found by `fly deploy --app=web`, `fly deploy -a web`

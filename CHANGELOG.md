@@ -30,7 +30,7 @@ in your own terminal after the update; the user guide is [README.md](README.md).
 
 **What to run:**
 1. `cc-smart-dev-kit update`, then start new sessions.
-2. In each project: `cc-smart-dev-kit project init`. It asks for the deploy commands and
+2. In each project that deploys: `cc-smart-dev-kit project init`. It asks for the deploy commands and
    refreshes the block in the deploy skill, which `doctor` flags until then. Commit the files.
 3. For a project that deploys from CI: add the step from the README's Deploy tasks in CI before
    the deploy step.
