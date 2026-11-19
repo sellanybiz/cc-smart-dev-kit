@@ -1607,6 +1607,22 @@ describe("a mixed line: what is not refused", () => {
     expect(jobRoute(contextFor(repo, "bun run check && git status"))).toEqual({});
   });
 
+  // The rule's walk stops at a body's first failing command, so a heavy command after it
+  // (`biome check . && tsc --noEmit`) must still keep the call exempt: run alone, it could never
+  // meet a refusal.
+  it("a heavy script whose body starts with a command that is not heavy", () => {
+    const repo = repoWith({
+      "package.json": JSON.stringify({
+        scripts: { check: "biome check . && tsc --noEmit", lint: "biome check ." },
+      }),
+    });
+    expect(jobRoute(contextFor(repo, "bun run check"))).toEqual({});
+    expect(jobRoute(contextFor(repo, "npm run check"))).toEqual({});
+    expect(jobRoute(contextFor(repo, "bun run check; git status"))).toEqual({});
+    // A script call whose body runs no heavy work is still a command of its own.
+    expect(denialOf(repo, "bun run lint && bun test")).toContain("beside other commands");
+  });
+
   it("the route off, and outside git", () => {
     const repo = repoWith({});
     const off = {

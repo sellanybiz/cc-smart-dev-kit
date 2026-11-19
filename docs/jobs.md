@@ -286,10 +286,13 @@ the first kind it runs: one slot for the whole line. What counts as glue (`isGlu
   `${x[ … ]}`, `${x:n}`, `${!x}`, `${x@P}`): bash reads a variable's value there as code. A
   whole expansion with a literal subscript runs no code and stays fine (`${PIPESTATUS[0]}`,
   `${arr[@]}`, `${#arr[*]}`).
-- **Shell state**: `set` with option words only (`-e`, `-u`, `+e`, `-o pipefail`,
-  `-euo pipefail`; never `--`, never a word the shell fills in, and never tracing turned on:
-  `-x` or `-o xtrace` expands `PS4` before each command, which can run code); `exit` and `return` with no
-  word, a number or `$?`; `export` with `NAME=value` words only, no value holding `$(` or a
+- **Shell state**: `set` with option words only, never `--` and never a word the shell fills
+  in. It may turn on only the options that make the shell stop sooner (`-e`, `-u`, `-o errexit`,
+  `-o nounset`, `-o pipefail`, as in `set -euo pipefail`); it may turn any option off (`+x`,
+  `+o history`). Others can run code no reader saw: `-x` expands `PS4` before each command,
+  `-H` turns `!!` history into new commands, `-k` makes a later word an environment variable.
+  `exit` and `return` take no word, a number, `$?` or a literal-subscript read such as
+  `${PIPESTATUS[0]}`. `export` takes `NAME=value` words only, with no value holding `$(` or a
   backtick. These are glue because the refusal's advice (run the rest in another call) cannot
   work for them: an option or an export does not carry over to the next Bash call.
 - **A reader of a pipe**: a program of `READ_ONLY_FILTERS` that has a shape there (every one but

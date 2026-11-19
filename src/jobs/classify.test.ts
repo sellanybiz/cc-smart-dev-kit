@@ -1745,6 +1745,44 @@ describe("routableLine: harmless glue rides in the queued line", () => {
     expect(line("PS4='$(rm x)'; set -x; bun test")).toBeNull();
   });
 
+  // `set -H` expands `!!` history into commands no reader saw (proved live: `echo !!:1:t:r`
+  // built and ran an `rm`); `-k` turns a reader's `NAME=value` word into the environment. Only
+  // the options that make the shell stop sooner are glue when turned on.
+  test("set turns on only the options that stop the shell sooner", () => {
+    for (const unsafe of [
+      "set -H",
+      "set -o history",
+      "set -o histexpand",
+      "set -k",
+      "set -T",
+      "set -E",
+      "set -a",
+      "set -n",
+      "set -o posix",
+      "set -o functrace",
+      "set -eH",
+      "set -o pipefail -o history",
+    ]) {
+      expect([unsafe, line(`${unsafe}; bun test`)]).toEqual([unsafe, null]);
+    }
+    for (const safe of [
+      "set -o errexit",
+      "set -o nounset",
+      "set -eu -o pipefail",
+      "set +H",
+      "set +o history",
+      "set +k",
+    ]) {
+      queuedWhole(`${safe}; bun test`, "test:run");
+    }
+  });
+
+  test("exit keeps a piped run's code with a literal subscript", () => {
+    queuedWhole(`bun test 2>&1 | tail -20; exit ${BRACE}PIPESTATUS[0]}`, "test:run");
+    expect(line(`bun test; exit ${BRACE}PIPESTATUS[X]}`)).toBeNull();
+    expect(line(`bun test; exit ${BRACE}a[0]:X}`)).toBeNull();
+  });
+
   test("shell-state commands are glue: set options, exit, return, export", () => {
     for (const state of [
       "set -e",

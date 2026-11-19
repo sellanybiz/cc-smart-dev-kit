@@ -533,8 +533,12 @@ function scan(
       // A script whose body fails the rule has marked itself opaque. When the body also runs
       // heavy work, the person cannot split it, so it is no command to blame. When it runs none
       // (`lint: biome check .`), the script call is a command of its own that can be split off.
+      // The rule's walk stops at the body's first failing command, so it may never reach the
+      // heavy one after it (`biome check . && tsc --noEmit`): ask the call's whole body instead.
       if (out.opaque && out.found.length === before && run.reading.length === 0) {
-        out.opaque = false;
+        const body = newScan();
+        if (call !== undefined) matchCall(call, program, kinds, depth, { ...run }, false, body);
+        if (body.found.length === 0) out.opaque = false;
       }
       return out.opaque ? false : refuse(run, out, step);
     }
@@ -1237,12 +1241,25 @@ const SET_OPTIONS = /^[-+][A-Za-z]+$/;
 /** An option's name, the word after a letter cluster ending in `o`: `pipefail`, `errexit`. */
 const SET_OPTION_NAME = /^[A-Za-z][A-Za-z-]*$/;
 
-/** A number or `$?`: the one word `exit` and `return` may take. */
-const EXIT_CODE = /^(?:\d+|\$\?)$/;
+/**
+ * A number, `$?` or a literal-subscript read (`${PIPESTATUS[0]}`, which keeps a piped run's
+ * code): the one word `exit` and `return` may take.
+ */
+const EXIT_CODE = new RegExp(`^(?:\\d+|\\$\\?|${LITERAL_SUBSCRIPT.source})$`);
+
+/**
+ * The options `set` may turn on as glue: they only make the shell stop sooner (`-e`, `-u`,
+ * `pipefail`). Any other may change what the line runs out of the readers' sight: `-x` expands
+ * `PS4` before each command, `-H` expands `!!` history into new commands, `-k` makes a word after
+ * the program an environment variable. Turning an option off is always glue.
+ */
+const SAFE_SET_LETTERS = /^-[euo]+$/;
+const SAFE_SET_NAMES: ReadonlySet<string> = new Set(["errexit", "nounset", "pipefail"]);
 
 /**
  * `set` with option words only; an option letter `o` takes the word after it as its name. A word
- * the shell fills in holds a `$` or a backtick, so it matches neither pattern and is refused.
+ * the shell fills in holds a `$` or a backtick, so it matches neither pattern and is refused. An
+ * option turned on must be one of the safe ones (`SAFE_SET_LETTERS`, `SAFE_SET_NAMES`).
  */
 function setsOptionsOnly(args: readonly string[]): boolean {
   let wantsName = false;
@@ -1250,13 +1267,11 @@ function setsOptionsOnly(args: readonly string[]): boolean {
   for (const arg of args) {
     if (wantsName) {
       if (!SET_OPTION_NAME.test(arg)) return false;
-      // Tracing expands `PS4` before each command, and an earlier `PS4='$(…)'` on the line
-      // would run inside the queue: turning it on is no glue (turning it off is).
-      if (turnsOn && arg === "xtrace") return false;
+      if (turnsOn && !SAFE_SET_NAMES.has(arg)) return false;
       wantsName = false;
     } else if (SET_OPTIONS.test(arg)) {
       turnsOn = arg.startsWith("-");
-      if (turnsOn && arg.includes("x")) return false;
+      if (turnsOn && !SAFE_SET_LETTERS.test(arg)) return false;
       wantsName = arg.endsWith("o");
     } else {
       return false;
