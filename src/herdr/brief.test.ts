@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { readFileSync, statSync } from "node:fs";
 import { dirname } from "node:path";
 import { COMMAND, PLUGIN } from "../build-info/names";
-import { tempDir } from "../testing/temp";
+import { git, tempDir } from "../testing/temp";
 import { followupTrailer, writeBrief } from "./brief";
 
 test("brief is private, carries task and linked reporting only", async () => {
@@ -58,9 +58,9 @@ test("a plan brief carries the plan trailer in place of the task trailer", async
 const FOLLOWUP_HEAD = `You are your lead's follow-up child for this repository. The brief above is the first finding. Later findings arrive as messages that start with "Follow-up". You never stop on your own: after each report, wait for the next message. You end only when the lead runs \`${COMMAND} herdr stop\`.`;
 const FOLLOWUP_STEPS = [
   "Once, before the first finding:",
-  "1. Run `git fetch origin trunk`. If it fails, run it once more; if it fails again, report the error and stop. Then run `git rev-list --count origin/trunk..HEAD` and `git status --porcelain`. Only when the count is 0 and the status is empty, run `git reset --hard origin/trunk`. Otherwise never reset: this worktree may hold work. (Your worktree may start from the lead's branch or an old default branch.)",
+  "1. Run `git fetch origin trunk`. If it fails, run it once more; if it fails again, report the error and stop. Then run `git branch --show-current` for your branch name, `git rev-list --count HEAD --not --exclude=<your branch> --branches --exclude=origin/<your branch> --remotes` (your own commits: those on no other branch) and `git status --porcelain`. Only when the count is 0 and the status is empty, run `git reset --hard origin/trunk`. Otherwise never reset: this worktree may hold work. (Your worktree may start from the lead's branch or an old default branch.)",
   "For each finding:",
-  "2. Run `gh pr view --json state,headRefOid` on your branch. OPEN: add your commit to this branch; it joins that pull request when you ship (step 7). MERGED: if `git rev-parse HEAD` equals the pull request's headRefOid, run `git fetch origin trunk` and `git reset --hard origin/trunk` (that work is merged), then work on a new branch for a new pull request. If HEAD is past it, you hold commits that were not merged: run `git fetch origin trunk`, note the old branch name and `git rev-parse HEAD`, run `git switch -c <a new branch name> origin/trunk`, then `git cherry-pick <headRefOid>..<the old HEAD>`. Never drop those commits. Run step 5 again for each moved commit, with its new id and the new branch. CLOSED without a merge: never reset. Keep the branch; the next ship opens a new pull request from it. No pull request: go on.",
+  '2. Run `gh pr list --head <your branch> --state all --json state,headRefOid`. If it fails (not logged in, no network), report the error and wait: never read a failure as "no pull request". An empty list means none: go on. If several are listed, an OPEN one wins; otherwise read the first. OPEN: add your commit to this branch; it joins that pull request when you ship (step 7). CLOSED without a merge: never reset. Keep the branch; the next ship opens a new pull request from it. MERGED, and `git rev-parse HEAD` equals the headRefOid: the branch is fully merged. Run `git fetch origin trunk`, then `git switch -c <new branch> origin/trunk`. The switch carries uncommitted changes, or refuses: then report and wait. MERGED, and `git merge-base --is-ancestor <headRefOid> HEAD` succeeds with HEAD not equal to the headRefOid: you hold commits that were not merged. Run `git fetch origin trunk`, `git switch -c <new branch> origin/trunk`, then `git cherry-pick <headRefOid>..<old branch>`. Never drop those commits. If the cherry-pick stops on a conflict, run `git cherry-pick --abort`, `git switch <old branch>` and `git branch -D <new branch>`, then report and wait. After a good cherry-pick, run step 5 again for each moved commit, with its new id and the new branch. MERGED, and HEAD is neither the headRefOid nor past it: report and wait. After a switch the check reads the new branch, which has no pull request. Name a new branch `followup-kit-fu-<n>`, with <n> the first number from 2 up that `git branch --list` does not show.',
   "3. A small fix: fix it, run the checks that cover it, and review your diff. Bigger work: use plan mode; the person approves the plan in this terminal.",
   "4. Make one commit for the finding.",
   `5. When the finding has an issue number, run \`${COMMAND} issue mark-fixed --issue <n> --base trunk --branch <your branch> --tip <the full id of that commit>\`. Use \`trunk\` as the base: it is the branch your pull request targets, not your own branch. If it says issues are off, skip it.`,
@@ -75,6 +75,7 @@ test("a follow-up brief carries the follow-up trailer, with its issues and held 
   const state = tempDir();
   const full = await writeBrief(state, "core", "kit-fu", "Fix the thing.", true, "#7", undefined, {
     base: "trunk",
+    name: "kit-fu",
     issues: ["12", "7"],
     held: [
       { slug: "alpha", files: ["src/a/", "src/b.ts"] },
@@ -102,6 +103,7 @@ test("a follow-up brief carries the follow-up trailer, with its issues and held 
   );
   const bare = await writeBrief(state, "core", "kit-fu2", "Fix it.", true, undefined, undefined, {
     base: "trunk",
+    name: "kit-fu",
     issues: [],
     held: [],
   });
@@ -111,26 +113,78 @@ test("a follow-up brief carries the follow-up trailer, with its issues and held 
 });
 
 test("the follow-up trailer says what to do in each pull request state, and when to ship", () => {
-  const text = followupTrailer({ base: "trunk", issues: [], held: [] });
+  const text = followupTrailer({ base: "trunk", name: "kit-fu", issues: [], held: [] });
   // Open: the commit joins the branch; nothing is pushed to an open pull request before a ship.
   expect(text).toContain(
     "OPEN: add your commit to this branch; it joins that pull request when you ship",
   );
   expect(text).toContain("While one is open, push only when you ship.");
-  // Merged, head equals the pull request's head: reset. Past it: cherry-pick onto a new branch.
+  // Merged, head equals the pull request's head: a new branch from the base, never a reset.
   expect(text).toContain(
-    "MERGED: if `git rev-parse HEAD` equals the pull request's headRefOid, run `git fetch origin trunk` and `git reset --hard origin/trunk`",
+    "MERGED, and `git rev-parse HEAD` equals the headRefOid: the branch is fully merged. Run `git fetch origin trunk`, then `git switch -c <new branch> origin/trunk`.",
+  );
+  // Past it: the commands in full, a conflict is aborted, a branch that is neither is reported.
+  expect(text).toContain(
+    "MERGED, and `git merge-base --is-ancestor <headRefOid> HEAD` succeeds with HEAD not equal to the headRefOid: you hold commits that were not merged. Run `git fetch origin trunk`, `git switch -c <new branch> origin/trunk`, then `git cherry-pick <headRefOid>..<old branch>`. Never drop those commits.",
   );
   expect(text).toContain(
-    "`git switch -c <a new branch name> origin/trunk`, then `git cherry-pick <headRefOid>..<the old HEAD>`. Never drop those commits.",
+    "If the cherry-pick stops on a conflict, run `git cherry-pick --abort`, `git switch <old branch>` and `git branch -D <new branch>`, then report and wait.",
   );
-  // Closed without a merge: no reset at all.
+  expect(text).toContain(
+    "MERGED, and HEAD is neither the headRefOid nor past it: report and wait.",
+  );
+  // Closed without a merge: no reset at all. The only reset is step 1's, at the start.
   expect(text).toContain(
     "CLOSED without a merge: never reset. Keep the branch; the next ship opens a new pull request from it.",
   );
-  expect(text.match(/git reset --hard/g)).toHaveLength(2);
+  expect(text.match(/git reset --hard/g)).toHaveLength(1);
+  // A failed gh call is no pull request; a new branch is named after the child.
+  expect(text).toContain('never read a failure as "no pull request"');
+  expect(text).toContain("Name a new branch `followup-kit-fu-<n>`");
+  // The reset check counts the child's own commits, not those past the base.
+  expect(text).toContain(
+    "`git rev-list --count HEAD --not --exclude=<your branch> --branches --exclude=origin/<your branch> --remotes`",
+  );
+  expect(text).not.toContain("rev-list --count origin/trunk..HEAD");
   // Ship: only on a lead message, mid-finding waits, nothing to ship is said.
   expect(text).toContain("Ship only when a message from the lead says `ship`.");
   expect(text).toContain("arrives while you work on a finding waits until that finding is done");
   expect(text).toContain('A `ship` with nothing to ship: say "nothing to ship" in your report.');
+});
+
+test("the reset check of step 1 counts only the child's own commits, in real git", () => {
+  const dir = tempDir();
+  git(dir, "init", "-q", "-b", "main", "origin.git", "--bare");
+  const work = tempDir();
+  git(work, "init", "-q", "-b", "main");
+  git(work, "remote", "add", "origin", `${dir}/origin.git`);
+  git(work, "commit", "-q", "--allow-empty", "-m", "base");
+  git(work, "push", "-q", "origin", "main");
+  // The lead's plan branch holds a commit the base lacks; the child's worktree is cut from it.
+  git(work, "switch", "-q", "-c", "lead-plan");
+  git(work, "commit", "-q", "--allow-empty", "-m", "lead work");
+  git(work, "switch", "-q", "-c", "worktree-kit-fu");
+  // The args are step 1's, as the trailer words them.
+  const own = (branch: string) =>
+    Number(
+      git(
+        work,
+        "rev-list",
+        "--count",
+        "HEAD",
+        "--not",
+        `--exclude=${branch}`,
+        "--branches",
+        `--exclude=origin/${branch}`,
+        "--remotes",
+      ),
+    );
+  // Past the base by the lead's commit, but none of it is the child's: it may reset.
+  expect(own("worktree-kit-fu")).toBe(0);
+  git(work, "commit", "-q", "--allow-empty", "-m", "child work");
+  expect(own("worktree-kit-fu")).toBe(1);
+  // Pushed, the commit is still its own: a relaunched child must not reset it away.
+  git(work, "push", "-q", "origin", "worktree-kit-fu");
+  git(work, "fetch", "-q", "origin");
+  expect(own("worktree-kit-fu")).toBe(1);
 });

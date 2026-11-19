@@ -1255,7 +1255,7 @@ test("herdr list shows the plan of a plan child", async () => {
   p.setList(["t2"]);
   p.lines.length = 0;
   expect(await runHerdr(["list"], p.ctx)).toBe(0);
-  expect(p.lines.join("\n")).toContain("task or plan");
+  expect(p.lines.join("\n")).toContain("task, plan or follow-up");
   expect(p.lines.join("\n")).toContain("| plan alpha |");
 });
 
@@ -1982,7 +1982,7 @@ test("a gone follow-up child that left commits with no merged pull request block
     expect([pr, await runHerdr([...followLaunch, "--", "work"], p.ctx)]).toEqual([pr, 1]);
     const text = p.lines.join("\n");
     expect(text).toContain(
-      "A follow-up child of this lead ended (t3) and left commits on worktree-kit-fu that are not on origin/main, with no merged pull request.",
+      "A follow-up child in this repository ended (t3) and left commits on worktree-kit-fu that are not on origin/main, with no merged pull request.",
     );
     expect(text).toContain(`Its worktree is ${join(repoOf(p), ".claude", "worktrees", "kit-fu")}.`);
     p.noRun();
@@ -2004,6 +2004,61 @@ test("a gone follow-up child that left commits with no merged pull request block
   absent.setList(["t3"]);
   absent.ctx.pr = () => "none";
   expect(await runHerdr([...followLaunch, "--", "work"], absent.ctx)).toBe(0);
+});
+
+test("the orphan gate reads the worktree's checked-out branch, not only worktree-<name>", async () => {
+  const p = planWorld();
+  const worktree = join(repoOf(p), ".claude", "worktrees", "kit-fu");
+  // The child moved to a new branch after its first pull request merged.
+  git(p.ctx.cwd, "worktree", "add", "-q", "-b", "followup-kit-fu-2", worktree, "main");
+  git(worktree, "commit", "-q", "--allow-empty", "-m", "later finding");
+  p.rows.t3 = followRow(repoOf(p), { state: "finished", status: null });
+  p.setList(["t3"]);
+  const asked: string[] = [];
+  p.ctx.pr = (_repo, branch) => {
+    asked.push(branch);
+    return "none";
+  };
+  expect(await runHerdr([...followLaunch, "--", "work"], p.ctx)).toBe(1);
+  expect(asked).toEqual(["followup-kit-fu-2"]);
+  expect(p.lines.join("\n")).toContain(
+    "A follow-up child in this repository ended (t3) and left commits on followup-kit-fu-2 that are not on origin/main, with no merged pull request.",
+  );
+  expect(p.lines.join("\n")).toContain(`Its worktree is ${worktree}.`);
+  p.noRun();
+});
+
+test("the one-per-lead gate matches the lead itself: another live lead's child does not block, an ended lead's does", async () => {
+  const p = planWorld();
+  const repo = repoOf(p);
+  const labels = { "kit.lead": "core/t9", "kit.followup": "1", "kit.repo": repo };
+  p.rows.t3 = followRow(repo, { labels });
+  p.setList(["t3"]);
+  // Its lead t9 is another live Claude session on this core: that lead's child, no refusal.
+  p.rows.t9 = {
+    address: "t9",
+    name: "other-lead",
+    state: "live",
+    labels: {},
+    status: { app: "claude-code", state: "idle" },
+  };
+  expect(await runHerdr([...followLaunch, "--", "work"], p.ctx)).toBe(0);
+  // Its lead has ended: the child is still live, so a second one waits for `herdr adopt`.
+  for (const lead of [undefined, { ...(p.rows.t9 as object), state: "finished" }]) {
+    const w = planWorld();
+    w.rows.t3 = followRow(repoOf(w), { labels: { ...labels, "kit.repo": repoOf(w) } });
+    if (lead) w.rows.t9 = lead;
+    w.setList(["t3"]);
+    expect(await runHerdr([...followLaunch, "--", "work"], w.ctx)).toBe(1);
+    const text = w.lines.join("\n");
+    expect(text).toContain(
+      "A follow-up child of a lead that has ended is still live in this repository: t3.",
+    );
+    expect(text).toContain(
+      `Fix: Take it over with ${COMMAND} herdr adopt, then send the finding to it.`,
+    );
+    w.noRun();
+  }
 });
 
 test("the states send accepts are one list, which send and the follow-up gate share", () => {
@@ -2030,7 +2085,7 @@ test("wait --all leaves a follow-up child out of the barrier; --any does not", a
   };
   // Only a follow-up child is live: nothing to wait for, and no event stream is opened.
   expect(await runHerdr(["wait", "--all"], p.ctx)).toBe(0);
-  expect(p.lines).toEqual(["No live kit children."]);
+  expect(p.lines).toEqual(["No live kit children to wait for (a follow-up child never settles)."]);
   expect(asked).toEqual([]);
   p.lines.length = 0;
   expect(await runHerdr(["wait", "--any"], p.ctx)).toBe(0);

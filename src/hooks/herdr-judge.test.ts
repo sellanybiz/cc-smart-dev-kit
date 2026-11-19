@@ -347,6 +347,23 @@ test.each([
 ] as const)("computed kit verb %s", (line, expected) => {
   expect(judgeBash(readBash(line), world())?.decision).toBe(expected);
 });
+test("a start parse error with all three flags given shows the parse error alone", () => {
+  const given = `${COMMAND} herdr start --model sonnet --effort high --mode manual`;
+  for (const [line, first] of [
+    [`${given} --followup --plan alpha -- work`, "--followup cannot be combined"],
+    [`${given} --plan alpha --task '#1' -- work`, "--plan cannot be combined"],
+    [`${given} --issue 3 -- work`, "--issue belongs to --followup."],
+  ] as const) {
+    const verdict = judgeBash(readBash(line), world());
+    expect(verdict?.decision).toBe("deny");
+    expect(verdict?.reason).toStartWith(first);
+  }
+  // With a flag missing, the reminder still comes first.
+  const missing = judgeBash(readBash(`${COMMAND} herdr start --model sonnet -- work`), world());
+  expect(missing?.reason).toStartWith(
+    "Pass both --model and --effort, plus --mode, to herdr start.\n",
+  );
+});
 test.each([
   "for HC_TERMINAL_ID in x; do hc ls; done",
   "select HC_TERMINAL_ID in x; do hc ls; done",
