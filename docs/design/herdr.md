@@ -371,7 +371,7 @@ It never stops on its own: after each report it waits for the next message, and 
    `workflow show` says (where it is off, ask the person in this terminal). The body's `Fixes`
    lines come from `issue fixed --base origin/<base> --head <branch>`, never by hand. When it
    pushes to an open pull request, it replaces the body's `Fixes` lines with what that command
-   prints now (`gh pr view <n> --json body`, then `gh pr edit <n> --body-file -`), so an issue
+   prints now (`gh pr view <branch> --json body --jq .body`, then `gh pr edit <branch> --body-file -`; a failed read edits nothing), so an issue
    marked at this ship is closed by the merge. A `ship` mid-finding waits until that finding is done. A `ship` with
    nothing to ship is answered "nothing to ship" in the report.
 7. `herdr report` after each finding and after each ship.
@@ -418,6 +418,9 @@ comes first.
 - A corner with `baseRef: head`: when the lead's own HEAD is detached, its commits are on no
   branch, so the child's own-commit count includes them and the guard does not reset.
 - The child follows its trailer in prose; nothing enforces the steps.
+- A review covers only its own branch (`review-cover.ts`). After a cherry-pick onto a new branch,
+  the moved commits' reviews do not cover the new head, so the merge guard asks the person at
+  that pull request's merge. Nothing is lost.
 - A merged or closed pull request (by the person or `autoMerge`) is noticed only at the child's
   next finding.
 - No `--issue` and no `Fixes` line when issues are refused (a public repository without

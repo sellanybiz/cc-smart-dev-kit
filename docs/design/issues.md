@@ -341,7 +341,7 @@ The contract above holds for the child's pull request, with these details.
 - The `Fixes #<n>` lines of the pull request body come from `issue fixed --base origin/<base>
   --head <branch>`, never by hand. The child writes them when it opens the pull request, at the
   lead's `ship` message. When it pushes to an open pull request instead, it replaces the body's
-  `Fixes` lines with what `issue fixed` prints now (`gh pr edit <n> --body-file -`), so an issue
+  `Fixes` lines with what `issue fixed` prints now (`gh pr edit <branch> --body-file -`, changing only those lines), so an issue
   marked at this ship is closed by the merge.
 - After a cherry-pick onto a new branch (its earlier pull request merged while it held more
   commits), the commits have new ids. The mark at the ship reads each commit's id then, so no
