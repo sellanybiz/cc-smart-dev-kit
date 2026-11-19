@@ -22,15 +22,18 @@
  * learns the scripts and the files through injected readers (`ScriptSource`, `WeightSource`,
  * `package-scripts.ts`); it reads no file itself.
  *
- * Four questions, one walk of the line (`scan`):
+ * Five questions, one walk of the line (`scan`):
  * - `classifyHeavyCommand`: the first heavy kind the line runs (any command of it), also inside
  *   a `job run` it already holds.
  * - `classifyUnqueuedHeavy`: the same, but none for a line that already runs `job run`: what
  *   the git hook's question reads.
- * - `routableLine`: the line the route may queue, when **every** command in it is heavy and
- *   none of them is `job run`.
+ * - `routableLine`: the line the route may queue, when **every** command in it is heavy, a
+ *   `cd`, an assignment or harmless glue (`isGlueCommand`), at least one is heavy and none of
+ *   them is `job run`.
  * - `runWeight`: whether a run is light (it names only existing files, or only prints), heavy
  *   (with its kind) or none (nothing heavy, a watch run that never ends, or already queued).
+ * - `mixedHeavyLine`: heavy work that takes a slot beside a command that is not glue: the line
+ *   the route cannot queue and refuses.
  *
  * Pure: no file, no environment — the readers are the caller's, and the script reader is asked
  * at most once per folder in a run.
@@ -112,6 +115,8 @@ interface Run {
    * such a run is light and so is a line made of it.
    */
   printOk: boolean;
+  /** The text of the command of the line (not of a script's body) being read: what a refusal quotes. */
+  step: string;
 }
 
 /** The state a top-level classification starts with. */
@@ -125,6 +130,7 @@ function runOf(source: ScriptSource | undefined): Run {
     compound: false,
     reading: [],
     printOk: false,
+    step: "",
   };
 }
 
@@ -225,6 +231,8 @@ interface Found extends Hit {
   folder: string | null;
   /** The command is one of several in a script's body: its arguments are not all it is given. */
   compound: boolean;
+  /** The command of the line that runs it, as the line wrote it (`Run.step`). */
+  text: string;
 }
 
 /** What one walk of a line finds: its heavy commands, and what else the weight depends on. */
@@ -234,9 +242,25 @@ interface Scan {
   background: boolean;
   /** The line (or a script it runs) already runs `job run`: it is queued, and must not nest. */
   queued: boolean;
+  /**
+   * With `all`: the text of the first command of the line itself that the route's rule refused
+   * (not heavy, not glue), or null. A person can split such a command off the line.
+   */
+  stray: string | null;
+  /**
+   * With `all`: the walk failed inside a script's body, or too deep in shells, where the line's
+   * own text cannot be split: no command of the line is to blame.
+   */
+  opaque: boolean;
 }
 
-const newScan = (): Scan => ({ found: [], background: false, queued: false });
+const newScan = (): Scan => ({
+  found: [],
+  background: false,
+  queued: false,
+  stray: null,
+  opaque: false,
+});
 
 /** A lone `&` (a command sent to the background): not `&&`, `2>&1`, `&>file` or `|&`. */
 const LONE_AMPERSAND = /(?<![&|>])&(?![&>])/;
@@ -289,7 +313,7 @@ function expandScript(
   all: boolean,
   out: Scan,
 ): boolean {
-  if (depth >= MAX_NESTING) return false;
+  if (depth >= MAX_NESTING) return opaque(out);
   const name = call.script ?? "";
   const folder = bodies.folder ?? lookedUpIn;
   const hooks = !(runner === "yarn" && bodies.yarnBerry === true);
@@ -302,7 +326,7 @@ function expandScript(
   for (const part of parts) {
     const key = JSON.stringify([folder, part]);
     if (run.reading.includes(key)) {
-      if (all) return false;
+      if (all) return opaque(out);
       continue;
     }
     const inside: Run = {
@@ -314,10 +338,26 @@ function expandScript(
       reading: [...run.reading, key],
     };
     if (!scan(bodies.get(part) ?? "", kinds, "bash", depth + 1, inside, all, out) && all) {
-      return false;
+      return opaque(out);
     }
   }
   return true;
+}
+
+/** The walk failed where the line's own text cannot be split (`Scan.opaque`); always false. */
+function opaque(out: Scan): false {
+  out.opaque = true;
+  return false;
+}
+
+/**
+ * The walk failed at a command of the line itself: remembers the first one (`Scan.stray`).
+ * Inside a script's body the person cannot split the command off, so nothing is blamed there.
+ */
+function refuse(run: Run, out: Scan, step: ShellStep): false {
+  if (run.reading.length > 0) return opaque(out);
+  out.stray ??= step.text.trim();
+  return false;
 }
 
 /**
@@ -381,7 +421,7 @@ function matchCall(
     // The command runs in the folder the runner was told to use (`pnpm -C app vitest …`); a
     // script rule's arguments go to a script that runs in its package.json's folder.
     const folder = hit.tool === undefined ? (bodies?.folder ?? lookedUpIn) : lookedUpIn;
-    out.found.push({ ...hit, call, folder, compound: run.compound });
+    out.found.push({ ...hit, call, folder, compound: run.compound, text: run.step });
     return true;
   }
   if (!isScript || bodies === null) return false;
@@ -393,12 +433,14 @@ function matchCall(
  * body of a package script, three levels deep (`MAX_NESTING`). Records the heavy commands it
  * finds in `out`, in order.
  *
- * `all` is the route's rule: **every** command must be heavy, a `cd` or an assignment, and the
- * walk returns false at the first that is not (a print-only run is not heavy, and neither is a
- * runner such as `find` or `watch`: it does work of its own beside the command it runs, and the
- * person's `Bash(find:*)` rules only see the words of the line). Without `all`, anything else is
- * skipped: the walk finds the heavy commands wherever they are. A `cd` moves the rest of the
- * line; a shell of its own starts in this folder and its own `cd` stays inside it.
+ * `all` is the route's rule: **every** command must be heavy, a `cd`, an assignment or glue
+ * (`isGlueStep`: an `echo`, a read-only reader, the empty and redirection-only steps of a
+ * `{ … }` group), and the walk returns false at the first that is not (a print-only run is not
+ * heavy, and neither is a runner such as `find` or `watch`: it does work of its own beside the
+ * command it runs, and the person's `Bash(find:*)` rules only see the words of the line). Without
+ * `all`, anything else is skipped: the walk finds the heavy commands wherever they are. A `cd`
+ * moves the rest of the line; a shell of its own starts in this folder and its own `cd` stays
+ * inside it.
  */
 function scan(
   command: string,
@@ -415,10 +457,14 @@ function scan(
   for (const step of steps) {
     const words = wordsOf(step.text, dialect);
     if (all && (words.length === 0 || isAssignmentOnly(words))) continue;
+    // Where the line's own text is read, this is what a refusal quotes (not a script's body).
+    if (run.reading.length === 0) run.step = step.text.trim();
     const invocation = invocationOf(words);
     if (invocation === undefined) {
-      if (all) return false;
-      continue;
+      if (!all) continue;
+      // `} > out.log 2>&1`: the redirections of a group, which holds the commands.
+      if (dialect === "bash" && withoutRedirections(words).length === 0) continue;
+      return refuse(run, out, step);
     }
     const { args } = invocation;
     // In a script's body, `$npm_execpath` is the package manager that ran the script.
@@ -433,14 +479,23 @@ function scan(
       run.folder = folderAfter(program, plain, run.folder);
       continue;
     }
-    if (all && isRunnerProgram(program)) return false;
+    if (all && isRunnerProgram(program)) return refuse(run, out, step);
     // The queue's own command: whatever it runs is queued already, and must not nest.
     if (isJobRun(program, args)) out.queued = true;
     const inner = nestedCommand(program, args, step.pipedFrom);
     // The line a shell runs starts in this folder, and gets none of a script's extra arguments.
     const readInner = (line: string) =>
-      depth < MAX_NESTING &&
-      scan(line, kinds, nestedDialect(program), depth + 1, { ...run, extra: undefined }, all, out);
+      depth < MAX_NESTING
+        ? scan(
+            line,
+            kinds,
+            nestedDialect(program),
+            depth + 1,
+            { ...run, extra: undefined },
+            all,
+            out,
+          )
+        : opaque(out);
     if (all && inner !== undefined) {
       // A shell or wrapper that runs a line: that line must be pure too.
       if (!readInner(inner)) return false;
@@ -448,7 +503,10 @@ function scan(
     }
     const call = toolOf(program, run.extra === undefined ? plain : [...plain, ...run.extra]);
     const heavy = call !== undefined && matchCall(call, program, kinds, depth, run, all, out);
-    if (all && !heavy) return false;
+    if (all && !heavy && !(dialect === "bash" && isGlueCommand(step))) {
+      // A script whose body fails the rule has marked itself opaque: it is no command to blame.
+      return out.opaque ? false : refuse(run, out, step);
+    }
     if (inner !== undefined) readInner(inner);
   }
   return true;
@@ -531,14 +589,9 @@ export function runWeight(line: string, kinds: Kinds, source: WeightSource): Wei
   scan(line, kinds, "bash", 0, run, false, out);
   const { found } = out;
   const first = found[0];
-  // A line that runs `job run` (itself, or through a script's body) is queued already: a second
-  // queue around it would nest, and the inner job would wait for its own parent's slot.
-  if (first === undefined || out.queued) return { weight: "none" };
-  if (found.some((one) => one.tool !== undefined && isWatchRun(one.tool, one.call.args))) {
-    return { weight: "none" };
-  }
-  const heavy = found.find((one) => !isLight(one, kinds, source));
-  if (heavy !== undefined) return { weight: "heavy", kind: heavy.kind };
+  const slot = slotRun(out, kinds, source);
+  if (first === undefined || slot === "none") return { weight: "none" };
+  if (slot !== "light") return { weight: "heavy", kind: slot.kind };
   // Every heavy run is light, but a line is light only when it is nothing else: a command the
   // reader does not know (`make all`, `./build.sh`) may be the heavy work.
   if (!everyCommandUnderstood(line, kinds, source, run.cache)) {
@@ -547,6 +600,22 @@ export function runWeight(line: string, kinds: Kinds, source: WeightSource): Wei
   return found.length > 1 && out.background
     ? { weight: "heavy", kind: first.kind }
     : { weight: "light" };
+}
+
+/**
+ * What the heavy runs a walk found ask of the queue, before the other commands of the line are
+ * asked about: `none` (no heavy run, a watch run that never ends, or a line that queues itself),
+ * `light` (every run is light), or the first run that takes a slot.
+ */
+function slotRun(out: Scan, kinds: Kinds, source: WeightSource): Found | "light" | "none" {
+  const { found } = out;
+  // A line that runs `job run` (itself, or through a script's body) is queued already: a second
+  // queue around it would nest, and the inner job would wait for its own parent's slot.
+  if (found[0] === undefined || out.queued) return "none";
+  if (found.some((one) => one.tool !== undefined && isWatchRun(one.tool, one.call.args))) {
+    return "none";
+  }
+  return found.find((one) => !isLight(one, kinds, source)) ?? "light";
 }
 
 /**
@@ -880,6 +949,65 @@ function isReadOnlyFilter(step: ShellStep): boolean {
 }
 
 /**
+ * The commands a queued line may hold beside its heavy ones, because nobody writes a permission
+ * rule against them and none can write a file or run another program. Their words may hold
+ * expansions (`echo "exit $?"`): a substitution's inner command is its own step, and is judged
+ * on its own. The readers of `READ_ONLY_FILTERS` are glue too (`isGlueCommand`).
+ *
+ * - `echo`, `printf`: print their words (`printf -v` only sets a variable).
+ * - `true`, `false`, `:`: do nothing, and give an exit code.
+ * - `pwd`: prints the folder.
+ * - `test`, `[`: read file and string facts, and give an exit code.
+ */
+export const GLUE_COMMANDS: ReadonlySet<string> = new Set([
+  ":",
+  "[",
+  "echo",
+  "false",
+  "printf",
+  "pwd",
+  "test",
+  "true",
+]);
+
+/**
+ * The readers whose check in `READ_ONLY_FILTERS` accepts no file only because a pipe feeds
+ * them. As glue they may name files, which they only read: `cat out.log`.
+ */
+const FILE_READING_GLUE: Readonly<Record<string, FilterCheck>> = { cat: READS_ONLY };
+
+/**
+ * True when one step of a line is glue (`GLUE_COMMANDS`, or a reader of `READ_ONLY_FILTERS` with
+ * that table's own check of its arguments, files allowed): the program first (no wrapper, no
+ * assignment, no path, no `!`), no file it writes to (a redirection to `/dev/null` is fine), and
+ * not computed. A reader whose check reads its script or options (`sed`, `awk`, `sort`, `uniq`,
+ * `rg`, `tee`: every check but `READS_ONLY`) sees the real words only: a word the shell fills in
+ * could be a script, an option or a file, so it is no glue. `tee` is glue with no file.
+ */
+function isGlueCommand(step: ShellStep): boolean {
+  if (step.expanded) return false;
+  const filled = wordsWithFill(step.text, "bash");
+  const words = filled.map((word) => word.text);
+  const invocation = invocationOf(words);
+  if (
+    invocation === undefined ||
+    invocation.computed ||
+    invocation.prefix.length > 0 ||
+    invocation.program !== words[0]
+  ) {
+    return false;
+  }
+  if (redirectionTargets(filled).some((target) => target !== "/dev/null")) return false;
+  const { program } = invocation;
+  if (GLUE_COMMANDS.has(program)) return true;
+  const piped = READ_ONLY_FILTERS[program];
+  if (piped === undefined) return false;
+  const check = FILE_READING_GLUE[program] ?? piped;
+  if (check !== READS_ONLY && filled.some((word) => word.filled)) return false;
+  return check(withoutRedirections(invocation.args));
+}
+
+/**
  * The line cut where its trailing read-only filters start: `tsc 2>&1 | tail -20` gives
  * `tsc 2>&1` and `| tail -20`. Null when the line ends in no filter, or when the cut cannot be
  * found in the text exactly as the reader split it (a comment, a joined line, a substitution):
@@ -933,7 +1061,7 @@ function cutAtFilters(line: string): { heavy: string; filters: string } {
 }
 
 /**
- * The kinds a line runs, when every command in it is heavy, a `cd`, or an assignment: null
+ * The kinds a line runs, when every command in it is heavy, a `cd`, an assignment or glue: null
  * as soon as one is anything else. The inner command of a shell (`bash -c "…"`) is read the
  * same way, so `bash -c "tsc && rm x"` is no pure line.
  */
@@ -955,10 +1083,12 @@ export interface RoutableLine {
 
 /**
  * The Bash line to queue, cut where it must be, or null when the line must run raw. A line
- * is queued only when every command in it is heavy, a `cd`, or an assignment: Claude Code
- * matches a person's own Bash rules (`deny`, `ask`) against the words of the command it runs
- * and does not look inside `bash -c '…'`, so wrapping a line that also runs `rm` would hide
- * that `rm` from a `Bash(rm:*)` deny rule (proved on 2.1.308, `docs/claude-code-contract.md`).
+ * is queued only when every command in it is heavy, a `cd`, an assignment or glue
+ * (`GLUE_COMMANDS`, the read-only readers, the structure of a `{ … }` group), and at least one
+ * is heavy: Claude Code matches a person's own Bash rules (`deny`, `ask`) against the words of
+ * the command it runs and does not look inside `bash -c '…'`, so wrapping a line that also runs
+ * `rm` would hide that `rm` from a `Bash(rm:*)` deny rule (proved on 2.1.308,
+ * `docs/claude-code-contract.md`). Glue is what no such rule is written against.
  *
  * The one exception is a pipe into read-only filters at the end (`READ_ONLY_FILTERS`):
  * `tsc --noEmit 2>&1 | tail -20` is queued as `tsc --noEmit 2>&1`, and `| tail -20` stays
@@ -977,6 +1107,35 @@ export function routableLine(
   const { heavy, filters } = cutAtFilters(bashCommand);
   const kind = routableKinds(heavy, kinds, source)?.[0];
   return kind === undefined ? null : { filters, heavy, kind };
+}
+
+/** A heavy run beside a command the queue cannot take with it: what the route refuses. */
+export interface MixedLine {
+  /** The kind of the run that takes a slot. */
+  kind: string;
+  /** The command of the line that runs it, as the line wrote it. */
+  run: string;
+  /** The first command of the line that is not heavy, a `cd`, an assignment or glue. */
+  other: string;
+}
+
+/**
+ * The mix the route refuses, or null: a line that runs heavy work that takes a slot (`kind`,
+ * weighed as `runWeight` does, so a light run, a watch run and a line that queues itself have
+ * none), is no `routableLine`, and holds a command of its own that is not glue (`other`), which
+ * the person can split off. Null when there is nothing to split: a line the queue takes whole,
+ * and a line whose failing command sits in a package script's body, or in shells nested too
+ * deep, where the person's own line is not to blame.
+ */
+export function mixedHeavyLine(line: string, kinds: Kinds, source: WeightSource): MixedLine | null {
+  if (routableLine(line, kinds, source) !== null) return null;
+  const heavy = newScan();
+  scan(line, kinds, "bash", 0, runOf(source), false, heavy);
+  const slot = slotRun(heavy, kinds, source);
+  if (slot === "none" || slot === "light") return null;
+  const rule = newScan();
+  scan(line, kinds, "bash", 0, runOf(source), true, rule);
+  return rule.stray === null ? null : { kind: slot.kind, other: rule.stray, run: slot.text };
 }
 
 /** `routableLine`'s kind alone: the heavy-job kind to queue a Bash line under, or null. */
