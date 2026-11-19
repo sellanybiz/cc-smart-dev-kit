@@ -82,6 +82,10 @@ describe("a shell or an interpreter given a script file runs that file", () => {
       ["pwsh -NoProfile -NoLogo x.ps1", { name: "x", args: [] }],
       ["powershell -ExecutionPolicy Bypass -File x.ps1", { name: "x", args: [] }],
       ["pwsh -ex Bypass -wor app x.ps1 -Yes", { name: "x", args: ["-Yes"] }],
+      ["pwsh -ep Bypass -wd app x.ps1", { name: "x", args: [] }],
+      ["pwsh -w Hidden -o XML -of Text -if Text x.ps1", { name: "x", args: [] }],
+      ["pwsh -ConfigurationFile c.pssc x.ps1", { name: "x", args: [] }],
+      ["pwsh -cwa 'x.ps1 a'", { name: "pwsh", args: ["-cwa", "x.ps1 a"] }],
       // no file: a command (read by nestedCommand), standard input, no value
       ["pwsh -c 'ls'", { name: "pwsh", args: ["-c", "ls"] }],
       ["pwsh -Command ls", { name: "pwsh", args: ["-Command", "ls"] }],

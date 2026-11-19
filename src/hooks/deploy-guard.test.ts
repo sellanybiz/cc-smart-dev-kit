@@ -191,6 +191,11 @@ describe("spellings that run a listed command match", () => {
       "powershell -ExecutionPolicy Bypass -File .\\scripts\\deploy.ps1 prod",
       "powershell.exe -ex Bypass -NoLogo .\\scripts\\deploy.ps1 prod",
       "pwsh -WorkingDirectory app -ConfigurationName x -File .\\scripts\\deploy.ps1 prod -Yes",
+      // the short names pwsh documents that are no prefix of the full name
+      "pwsh -ep Bypass -File .\\scripts\\deploy.ps1 prod",
+      "pwsh -wd app -File .\\scripts\\deploy.ps1 prod",
+      "pwsh -w Hidden -o XML -of Text -if Text -File .\\scripts\\deploy.ps1 prod",
+      "pwsh -ConfigurationFile c.pssc -File .\\scripts\\deploy.ps1 prod",
     ]) {
       expect({ command, hits: hits(command, lists, "powershell") }).toEqual({
         command,
@@ -211,6 +216,9 @@ describe("spellings that run a listed command match", () => {
       "pwsh -ExecutionPolicy .\\scripts\\deploy.ps1 prod",
       "pwsh -ec AAAA",
       "pwsh -EncodedCommand AAAA",
+      // Not seen, and the docs say so: `nestedCommand` does not read -CommandWithArgs.
+      "pwsh -cwa '.\\scripts\\deploy.ps1 prod'",
+      "pwsh -CommandWithArgs '.\\scripts\\deploy.ps1 prod'",
       "pwsh -File",
       "pwsh -",
       "pwsh",

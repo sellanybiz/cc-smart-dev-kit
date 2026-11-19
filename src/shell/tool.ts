@@ -365,6 +365,7 @@ function fileRunOf(program: string, args: readonly string[]): ToolCall | undefin
 
 /** PowerShell's own parameters that take the next word, lower case (any prefix names one). */
 const POWERSHELL_VALUED = [
+  "-configurationfile",
   "-configurationname",
   "-custompipename",
   "-executionpolicy",
@@ -376,6 +377,16 @@ const POWERSHELL_VALUED = [
   "-workingdirectory",
 ];
 
+/** The short names pwsh documents for them that are no prefix of the full name. */
+const POWERSHELL_VALUED_ALIASES: ReadonlySet<string> = new Set([
+  "-ep",
+  "-if",
+  "-o",
+  "-of",
+  "-w",
+  "-wd",
+]);
+
 /** True when `word` is a prefix, of at least `least` characters, of the parameter `name`. */
 const namesParameter = (word: string, name: string, least: number): boolean =>
   word.length >= least && name.startsWith(word);
@@ -384,7 +395,8 @@ const namesParameter = (word: string, name: string, least: number): boolean =>
  * `pwsh -NoProfile -File .\deploy.ps1 prod` and `pwsh .\deploy.ps1 prod` run the file. PowerShell
  * takes any prefix of a parameter name, in any case: `-File` is `-f`, a value-taking option
  * (`-ExecutionPolicy Bypass`) is stepped over with its value. Undefined when it runs no file:
- * `-Command` and `-EncodedCommand` (`nestedCommand` reads the first), a `-File` with no value,
+ * `-Command`, `-CommandWithArgs` and `-EncodedCommand` (`nestedCommand` reads only the first), a
+ * `-File` with no value,
  * or standard input (`-`).
  */
 function powershellFileRun(args: readonly string[]): ToolCall | undefined {
@@ -395,7 +407,9 @@ function powershellFileRun(args: readonly string[]): ToolCall | undefined {
     if (!word.startsWith("-")) return fileRun(word, args.slice(index + 1));
     if (
       namesParameter(name, "-command", 2) ||
+      namesParameter(name, "-commandwithargs", 2) ||
       namesParameter(name, "-encodedcommand", 2) ||
+      name === "-cwa" ||
       name === "-ec"
     ) {
       return undefined;
@@ -404,7 +418,10 @@ function powershellFileRun(args: readonly string[]): ToolCall | undefined {
       const file = args[index + 1];
       return file === undefined ? undefined : fileRun(file, args.slice(index + 2));
     }
-    index += POWERSHELL_VALUED.some((valued) => namesParameter(name, valued, 3)) ? 1 : 0;
+    const valued =
+      POWERSHELL_VALUED_ALIASES.has(name) ||
+      POWERSHELL_VALUED.some((parameter) => namesParameter(name, parameter, 3));
+    index += valued ? 1 : 0;
   }
   return undefined;
 }
