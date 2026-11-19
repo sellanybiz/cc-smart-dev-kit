@@ -18,7 +18,8 @@ The default stays 1: competing full suites starved each other, timed out, then p
 causing false failures. The upper bound limits accidental fan-out; the CPU and memory caps (below) bound what the jobs use.
 
 `job run` waits in ticket order, acquires the slot, starts the command and returns its exit
-code. The lease covers the child process group until the run ends. Signals reach the
+code. The lease covers the child process group (and, where the limits apply, its scope:
+`docs/jobs.md` § The job's own process group) until the run ends. Signals reach the
 children. Stale owners can be recovered after a crash; an owner that cannot be proved gone
 keeps its lease. The hook only rewrites the call through this API, never runs a heavy job.
 
@@ -67,9 +68,9 @@ cgroup v2, a queued job runs in its own scope in one shared slice with a CPU quo
 weight, a memory ceiling, no swap and a memory-pressure watchdog (systemd-oomd), and carries a
 kill mark (`choom`). The caps are the settings `cpuPercent` and `memoryPercent` (90% by default),
 written as runtime properties before each launch, so nothing in the home changes. Where the
-limits cannot apply, the job runs as before and says why: a broken kit never blocks a build. The
-caps bound the jobs; the watchdog and the kill mark are what stop the hang. The detail, what it
-needs and what it cannot do: `docs/jobs.md` § CPU and memory limits.
+limits cannot apply, the job runs as before and says why: a broken kit never blocks a build. Why
+the caps alone do not stop a hang, the detail, what it needs and what it cannot do:
+`docs/jobs.md` § CPU and memory limits.
 
 The queue still has no memory gate before a start, no I/O weights, no shared folders and no
 light lane. Where the limits cannot apply (macOS, Windows, no user manager), one job may still

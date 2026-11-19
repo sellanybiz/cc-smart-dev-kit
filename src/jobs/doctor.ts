@@ -104,7 +104,7 @@ export function limitsChecks(paths: CliPaths, facts: LimitFacts): Check[] {
         ok: true,
         warn: true,
         text: `Heavy-job caps cannot apply here: ${blocker}; heavy jobs run without them`,
-        fix: "see docs/jobs.md § Limits in the plugin's repo for what the caps need",
+        fix: "see docs/jobs.md § CPU and memory limits in the plugin's repo for what the caps need",
       },
     ];
   }

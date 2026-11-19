@@ -1199,7 +1199,7 @@ describe("cc-smart-dev-kit doctor", () => {
         // The test's host (CC_SMART_DEV_KIT_TEST_HOST) is Linux with none of the cgroup files:
         // a warning that names the reason, never a failure.
         "  ! Heavy-job caps cannot apply here: no systemd user manager with cgroup v2 here (its controllers file is missing); heavy jobs run without them",
-        "    Fix: see docs/jobs.md § Limits in the plugin's repo for what the caps need",
+        "    Fix: see docs/jobs.md § CPU and memory limits in the plugin's repo for what the caps need",
         "  ✓ Git hooks folder: 26 hook scripts, executable and up to date",
         // The gateway is optional: never set up is information, not a failure.
         "· Gateway            1 note",

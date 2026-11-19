@@ -2128,17 +2128,16 @@ commands are heavy, and the defaults know `bun test` too: `bun test ./src/a.test
 | `cc-smart-dev-kit job run [--kind <kind>] [--exclusive <name>] [--hook] -- <command…>` | Waits until the heavy slot is free, then runs the command. Its stdin, stdout, stderr and exit code pass through; SIGINT, SIGTERM and SIGHUP are sent on to the whole job. `--exclusive <name>`: at most one job with that name at a time, in order (with a kind, or alone, when it takes no slot). A job inside a job that already holds the slot does not wait again. `--hook` is for the kit's git hooks: the slot is taken without reading the command's words, and when the queue cannot be used the command runs at once. |
 | `cc-smart-dev-kit job set max <n>` | Sets your machine limit (1–8, default 1) in the new `~/.config/cc-smart-dev-kit/heavy-jobs.json` as `maxConcurrent`. Backed up and written atomically under setup's lock; `restore` takes back the kit's value. Lowering it never stops running jobs; waiting jobs see changes without a restart. |
 | `cc-smart-dev-kit job set cpu <n>` | Caps the CPU of all heavy jobs together at `<n>`% of the machine's CPUs (10–100, default 90), as `cpuPercent` in the same `heavy-jobs.json`, under the same lock and managed writer as `job set max`. Linux with a systemd user manager; elsewhere the jobs run without a cap. The jobs also yield to your apps (CPU weight 20). It reaches the jobs' slice when the next heavy job starts. |
-| `cc-smart-dev-kit job set memory <n>` | Caps the memory of all heavy jobs together at `<n>`% of the machine's memory (10–100, default 90), as `memoryPercent`. The jobs never swap, a watchdog (systemd-oomd) stops a job that stalls on memory, and a job it stopped for memory says why and how to change the cap. A job above a lowered cap is stopped when the next heavy job starts. |
+| `cc-smart-dev-kit job set memory <n>` | Caps the memory of all heavy jobs together at `<n>`% of the machine's memory (10–100, default 90), as `memoryPercent`. The jobs never swap, a watchdog (systemd-oomd) stops a job that stalls on memory, and a job it stopped for memory says why and how to change the cap. A lowered cap reaches the running jobs when the next heavy job starts, which with the default of one slot is after the running job ends ([how](docs/jobs.md#a-lower-limit-while-a-job-runs)). |
 | `cc-smart-dev-kit job status` | The limit and its source (default or new file), the CPU and memory caps (Linux), slots in use, who holds them and who waits, and whether the job route is on for the folder it runs in, and who decided (the project, your own `switches.jobRoute`, or the default). |
 | `cc-smart-dev-kit job kinds` | The kinds, the defaults and the project's own, each with its one-line description. |
 | `cc-smart-dev-kit job hook <name>` | For the kit's git hook scripts, not for you: prints `direct` or `queue <kind>` for git hook `<name>` in this repo, and always ends with 0. See [Git hooks](docs/jobs.md#git-hooks). |
 
 **CPU and memory caps.** On Linux with a systemd user manager and cgroup v2, a queued job runs
-in its own scope inside one slice, `cc-smart-dev-kit-jobs.slice`, so all heavy jobs together stay
-under a CPU cap and a memory cap (90% each by default). The slice has no swap, and systemd-oomd
-stops the jobs when they stall on memory below the cap. The caps bound the jobs, and the
-watchdog and the kill mark (`choom`) stop the hang. The limits are runtime properties: they are
-gone at reboot, and no file in your home changes. Where they cannot apply (macOS, Windows, no user
+in its own scope inside one shared systemd slice, so all heavy jobs together stay under a CPU cap
+and a memory cap (90% each by default). The slice has no swap, and systemd-oomd stops the jobs
+when they stall on memory below the cap. The limits are runtime properties: they are gone at
+reboot, and no file in your home changes. Where they cannot apply (macOS, Windows, no user
 manager, a bad `cpuPercent` or `memoryPercent`), the job runs as before, and on Linux `job run`
 says why in one line. How it works, what it needs and what it cannot do:
 [docs/jobs.md](docs/jobs.md) § CPU and memory limits.
