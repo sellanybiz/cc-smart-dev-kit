@@ -373,19 +373,33 @@ function identity(ctx: HerdrContext, r: HcRunner): Identity {
   if ("why" in me) throw new Error(me.why);
   return me;
 }
-/** A plan child builds its one plan and never coordinates (D1): a refusal, or null when this terminal is no plan child. */
+/**
+ * A plan child builds its one plan, and a follow-up child works its lead's findings: neither
+ * coordinates (D1). A refusal, or null when this terminal is neither.
+ */
 function refusePlanChild(
   ctx: HerdrContext,
   r: HcRunner,
   me: Identity,
   doing: string,
 ): number | null {
-  if (hcGet(r, me.address).labels[KIT_PLAN] === undefined) return null;
-  return refuse(
-    ctx,
-    `A plan child never coordinates: it builds its own plan only, so it cannot ${doing}.`,
-    `Report to your lead with ${COMMAND} herdr report; the lead hands plans out.`,
-  );
+  const labels = hcGet(r, me.address).labels;
+  const fix = `Report to your lead with ${COMMAND} herdr report; the lead hands plans out.`;
+  if (labels[KIT_PLAN] !== undefined) {
+    return refuse(
+      ctx,
+      `A plan child never coordinates: it builds its own plan only, so it cannot ${doing}.`,
+      fix,
+    );
+  }
+  if (labels[KIT_FOLLOWUP] !== undefined) {
+    return refuse(
+      ctx,
+      `A follow-up child never coordinates: it works its lead's findings only, so it cannot ${doing}.`,
+      fix,
+    );
+  }
+  return null;
 }
 /** A child of any kind (it carries `kit.lead`) never starts a follow-up child: it reports a finding to its lead. */
 function refuseLinkedChild(ctx: HerdrContext, r: HcRunner, me: Identity): number | null {
