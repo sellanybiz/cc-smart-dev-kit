@@ -282,8 +282,8 @@ the first kind it runs: one slot for the whole line. What counts as glue (`isGlu
   arithmetic, indirect or prompt expansion (`$(( … ))`, `$[ … ]`, `${x[ … ]}`, `${x:n}`,
   `${!x}`, `${x@P}`): bash reads a variable's value there as code.
 - **A reader of a pipe**: a program of `READ_ONLY_FILTERS` that has a shape there (every one but
-  `rg`; the filters are named below, § One heavy command piped into read-only filters), only
-  when it reads the pipe and nothing else: piped from the command before it, written bare (no
+  `rg`; the filters are named below, under "One heavy command piped into read-only filters"),
+  only when it reads the pipe and nothing else: piped from the command before it, written bare (no
   path), with plain words (no `$VAR` or `$(…)`), no file word, no file it writes to (`tee` only
   with no argument at all) and no input redirection from a file (`bun test; tail -5 out.log` and
   `cat < .env` are no glue). `rg` has no shape, so it is never glue: with nothing piped it
