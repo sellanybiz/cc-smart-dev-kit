@@ -41,6 +41,7 @@ import {
   jobRoute,
   jobRouteConfigAnswer,
   jobRouteDomain,
+  jobRouteOutsideGit,
   jobRunCommand,
   judgeCommandAnswer,
   powerShellDenial,
@@ -189,9 +190,9 @@ describe("which commands are routed", () => {
   // HK hunch 1, proved live on Claude Code 2.1.308 (`docs/claude-code-contract.md`): a person's
   // own `Bash(rm:*)` deny rule is matched against the rewritten line, which starts with the
   // launcher and holds the person's line as one quoted word, so a routed `echo start && rm -f x`
-  // ran the `rm`. So a line is routed only when every command in it is heavy, a `cd` or an
-  // assignment; any other line stays raw, as the person's rules see it.
-  it("HK hunch 1: a line with a command that is not heavy, a `cd` or an assignment stays raw", () => {
+  // ran the `rm`. So the rewrite never hides a command that is not heavy, a `cd`, an assignment
+  // or harmless glue; `jobRoute` refuses such a mixed line instead (§ a mixed line, below).
+  it("HK hunch 1: a line with a command that is not heavy, a `cd` or glue is never rewritten", () => {
     const raw = [
       "bunx tsc --noEmit && rm -f marker.txt",
       "rm -f marker.txt && bunx tsc --noEmit",
@@ -203,7 +204,7 @@ describe("which commands are routed", () => {
       "bunx tsc --noEmit && $(rm -f marker.txt)",
       "bunx tsc --noEmit && echo `rm -f marker.txt`",
       "bash -c 'rm -f marker.txt'",
-      "export FOO=1 && bunx tsc --noEmit",
+      "export FOO=$(rm -f marker.txt) && bunx tsc --noEmit",
     ];
     for (const line of raw) {
       expect([line, routeHeavyCommand(line, KINDS, SHELL, SOURCE)]).toEqual([line, null]);
@@ -216,6 +217,8 @@ describe("which commands are routed", () => {
       ["cd app && bunx tsc --noEmit", "tsc"],
       ["FOO=1 bunx tsc --noEmit", "tsc"],
       ["FOO=1 && bunx tsc --noEmit", "tsc"],
+      // `export` is harmless glue: it sets the shell up, and cannot be run in another call.
+      ["export FOO=1 && bunx tsc --noEmit", "tsc"],
       ["bash -c 'bunx tsc --noEmit && bunx vitest run'", "tsc"],
     ];
     for (const [line, kind] of routed) {
@@ -378,8 +381,16 @@ describe("a heavy command piped into read-only filters", () => {
     );
   });
 
-  it("filter before heavy refused: the line stays raw", () => {
+  it("filter before heavy refused: it names a file, and the line stays raw", () => {
     expect(routed("cat tsconfig.json | bunx tsc --noEmit")).toBeNull();
+  });
+
+  it("a reader with no file word before the heavy command is glue: the whole line is queued", () => {
+    expect(routed("echo x | cat | bunx tsc --noEmit")).toBe(
+      `${LAUNCHER} job run --kind tsc -- /bin/bash -c 'echo x | cat | bunx tsc --noEmit'`,
+    );
+    // A command that is no reader keeps the line raw.
+    expect(routed("xargs rm -f | bunx tsc --noEmit")).toBeNull();
   });
 
   it("two heavy steps piped: the whole line goes through the person's shell, as before", () => {
@@ -1171,10 +1182,40 @@ describe.skipIf(NATIVE_WINDOWS)("a line with a git command is never queued whole
     }
   });
 
-  it("a heavy command next to a git command: the git command still gets its prefix", () => {
+  it("a script that runs no heavy work, a heavy run and git: refused, never the hooks prefix", () => {
+    const world = worldWithHooks({ "pre-commit": HEAVY_HOOK });
+    writeFileIn(
+      join(world.repo, "package.json"),
+      JSON.stringify({ scripts: { lint: "biome check ." } }),
+    );
+    // The lint script runs raw beside the full test run, which needs its slot: the person splits
+    // the script off. The hooks prefix would leave the test run raw, so it must not answer first.
+    const line = "bun run lint && bun test && git commit -m x";
+    const refused = jobRoute(
+      contextFor(world.repo, line, "Bash", { env: { HOME: world.home } }),
+      () => true,
+    );
+    const answer = JSON.parse(refused.stdout ?? "{}").hookSpecificOutput;
+    expect(answer.permissionDecision).toBe("deny");
+    expect(answer.permissionDecisionReason).toContain("beside other commands (bun run lint)");
+    expect(answer.updatedInput).toBeUndefined();
+  });
+
+  it("a full heavy run next to a git command is refused: the prefix would leave it raw", () => {
     const world = worldWithHooks({ "pre-push": HEAVY_HOOK });
-    expect(gitRewrite(world, "bun test && git push")).toBe(
-      `bun test && ${prefixOf(world)} git push`,
+    // With the world's HOME the hooks prefix is available: only the order of the two answers
+    // keeps this line from getting it (the same context gives `git push` its prefix below).
+    const refused = jobRoute(
+      contextFor(world.repo, "bun test && git push", "Bash", { env: { HOME: world.home } }),
+      () => true,
+    );
+    expect(JSON.parse(refused.stdout ?? "{}").hookSpecificOutput.permissionDecision).toBe("deny");
+    // The git command alone still gets its prefix, and so does one beside a light run, which
+    // takes no slot and is no mix.
+    expect(gitRewrite(world, "git push")).toBe(`${prefixOf(world)} git push`);
+    writeFileSync(join(world.repo, "a.test.ts"), "");
+    expect(gitRewrite(world, "bun test ./a.test.ts && git push")).toBe(
+      `bun test ./a.test.ts && ${prefixOf(world)} git push`,
     );
     expect(routeGitHooks("git status", contextFor(world.repo, "git status"), KINDS)).toBeNull();
   });
@@ -1373,5 +1414,230 @@ describe("the tool reader reads a script file: the route's answers are the same 
   it("PowerShell: npx tsc is read as the same tsc run", () => {
     expect(classifyHeavyCommand("npx tsc", KINDS, SOURCE, "powershell")).toBe("tsc");
     expect(runWeight("npx tsc", KINDS, SOURCE)).toEqual({ weight: "heavy", kind: "tsc" });
+  });
+});
+
+// ---------------------------------------------------------------------------------------
+// A mixed Bash line. Glue beside the heavy commands (`echo`, a read-only reader, a `{ … }`
+// group) is queued whole; any other command beside heavy work is refused, with the fix.
+// ---------------------------------------------------------------------------------------
+
+/** The reason of the deny the hook gives a Bash line, or null when it answers anything else. */
+function denialOf(repo: string, command: string): null | string {
+  const result = jobRoute(contextFor(repo, command));
+  if (result.stdout === undefined) return null;
+  const answer = JSON.parse(result.stdout).hookSpecificOutput;
+  return answer.permissionDecision === "deny" ? String(answer.permissionDecisionReason) : null;
+}
+
+/** The session's own line: a group of runs and a command that is no glue, sent to one file. */
+const SESSION_LINE =
+  'OUT=/tmp/check.log; { echo "start"; bun run check; claude plugin validate plugin --strict; ( cd portal && bun run test ); echo "end"; } > $OUT 2>&1';
+
+describe("a mixed line: glue rides in the queue", () => {
+  const repo = () =>
+    repoWith({
+      "package.json": JSON.stringify({ scripts: { check: "tsc --noEmit && bun test" } }),
+      "portal/package.json": JSON.stringify({ scripts: { test: "vitest run" } }),
+    });
+
+  it("an echo after or before the run: the whole line goes through the person's shell", () => {
+    expect(rewrittenTo(repo(), 'bun run check; echo "exit $?"')).toBe(
+      `${LAUNCHER} job run --kind tsc -- /bin/bash -c 'bun run check; echo "exit $?"'`,
+    );
+    expect(rewrittenTo(repo(), "echo start && bun test")).toBe(
+      `${LAUNCHER} job run --kind test:run -- /bin/bash -c 'echo start && bun test'`,
+    );
+  });
+
+  it("a group sent to a file, a subshell with a cd, a reader of the log", () => {
+    expect(rewrittenTo(repo(), "{ echo a; bun test; } > out.log 2>&1")).toBe(
+      `${LAUNCHER} job run --kind test:run -- /bin/bash -c '{ echo a; bun test; } > out.log 2>&1'`,
+    );
+    expect(rewrittenTo(repo(), "( cd portal && bun run test )")).toBe(
+      `${LAUNCHER} job run --kind test:run -- /bin/bash -c '( cd portal && bun run test )'`,
+    );
+    expect(rewrittenTo(repo(), "bun test 2>&1 | tail -5; echo done")).toBe(
+      `${LAUNCHER} job run --kind test:run -- /bin/bash -c 'bun test 2>&1 | tail -5; echo done'`,
+    );
+    expect(rewrittenTo(repo(), "bun test | grep -E fail; echo done")).toBe(
+      `${LAUNCHER} job run --kind test:run -- /bin/bash -c 'bun test | grep -E fail; echo done'`,
+    );
+  });
+
+  it("a reader that names a file is refused: a Read deny rule must see that word", () => {
+    for (const line of [
+      "bun test; tail -5 out.log",
+      "bun test; cat .env",
+      "bun test | cat < .env; echo done",
+    ]) {
+      expect([line, denialOf(repo(), line)?.includes("beside other commands")]).toEqual([
+        line,
+        true,
+      ]);
+    }
+  });
+
+  it("a trailing tee with no file is still cut off, as before", () => {
+    expect(rewrittenTo(repo(), "bun test 2>&1 | tee")).toBe(
+      `${LAUNCHER} job run --kind test:run -- /bin/bash -c 'bun test 2>&1' | tee`,
+    );
+  });
+});
+
+describe("a mixed line: heavy work beside anything else is refused", () => {
+  const repo = () =>
+    repoWith({
+      "package.json": JSON.stringify({ scripts: { check: "tsc --noEmit" } }),
+      "portal/package.json": JSON.stringify({ scripts: { test: "vitest run" } }),
+    });
+
+  it("the reason names the heavy run, the other command and the fix", () => {
+    const reason = denialOf(repo(), "bun test; git status --short") ?? "";
+    expect(reason).toContain("heavy work (test:run: bun test)");
+    expect(reason).toContain("beside other commands (git status --short)");
+    expect(reason).toContain("hiding those commands from your permission rules");
+    expect(reason).toContain("would not wait for a free slot");
+    expect(reason).toContain("Run the heavy command on its own line");
+    expect(reason).toContain("echo or printf around it");
+    // The plain-words rule is the readers' alone: `cd "$D"` and `> $OUT` are queued.
+    expect(reason).toContain("a pipe into tail, head or grep with plain words");
+    expect(reason).not.toContain("all with plain words");
+    expect(reason).toContain("in a separate call");
+    // To keep an exit code, the one-line form is named.
+    expect(reason).toContain('{ cmd; echo "exit $?"; } 2>&1 | tail -20');
+  });
+
+  it("the one-line form for an exit code is queued, not refused again (no refusal loop)", () => {
+    expect(denialOf(repo(), 'bun test; echo "exit $?"')).toBeNull();
+    const line = '{ bun test; echo "exit $?"; } 2>&1 | tail -20';
+    expect(denialOf(repo(), line)).toBeNull();
+    expect(rewrittenTo(repo(), line)).toContain("job run --kind test:run");
+  });
+
+  it("a heavy run in a shell fed by a pipe is named by its kind, not quoted", () => {
+    const reason = denialOf(repo(), "printf 'bunx tsc --noEmit\\nrm -rf x' | sh") ?? "";
+    expect(reason).toContain("heavy work (tsc) beside other commands (sh)");
+    expect(reason).not.toContain("bunx tsc --noEmit");
+  });
+
+  it("a heavy run and a command that is not glue, in either order", () => {
+    const refused: Array<[string, string]> = [
+      ["bun test; git status --short", "git status --short"],
+      ["bun run check && claude plugin validate plugin --strict", "claude plugin validate"],
+      ["claude plugin validate plugin --strict && bun run check", "claude plugin validate"],
+      ["echo $(rm -rf x) && bun test", "rm -rf x"],
+      ["bun test | tee out.log; echo done", "tee out.log"],
+      ["[ -d node_modules ] || bun install && bun test", "bun install"],
+      ["bun test && git commit -m x", "git commit -m x"],
+      ["bun test; echo done > status.txt", "echo done > status.txt"],
+      ["bash -c 'bun test && rm -f x'", "rm -f x"],
+      // Glue that runs code, a read that names a file, a shell fed by a pipe.
+      ["bun test; test -v 'a[$(rm -rf x)]'", "test -v"],
+      ["bun test; printf -v 'a[$(rm -rf x)]' y", "printf -v"],
+      ["bun test; cat .env", "cat .env"],
+      ["printf 'bunx tsc --noEmit\\nrm -rf x' | sh", "sh"],
+    ];
+    for (const [line, other] of refused) {
+      expect([line, denialOf(repo(), line)?.includes(`(${other}`) ?? false]).toEqual([line, true]);
+    }
+  });
+
+  it("the session's own line is refused, at the command that is no glue", () => {
+    const reason = denialOf(repo(), SESSION_LINE) ?? "";
+    expect(reason).toContain("heavy work (tsc: bun run check)");
+    expect(reason).toContain("(claude plugin validate plugin --strict)");
+  });
+
+  it("a deny stays a deny: the answer has no rewrite", () => {
+    const result = jobRoute(contextFor(repo(), "bun test; git status"));
+    const answer = JSON.parse(result.stdout ?? "{}").hookSpecificOutput;
+    expect(answer.permissionDecision).toBe("deny");
+    expect(answer.updatedInput).toBeUndefined();
+  });
+
+  it("a long command is quoted shortened", () => {
+    const reason = denialOf(repo(), `bun test; git log --grep=${"x".repeat(400)}`) ?? "";
+    expect(reason).toContain("…");
+    expect(reason.length).toBeLessThan(900);
+  });
+
+  it("the split line the reason suggests is queued, not refused again (no refusal loop)", () => {
+    const line = "bun run check; git status --short";
+    expect(denialOf(repo(), line)).not.toBeNull();
+    expect(rewrittenTo(repo(), "bun run check > log 2>&1")).toBe(
+      `${LAUNCHER} job run --kind tsc -- /bin/bash -c 'bun run check > log 2>&1'`,
+    );
+    expect(rewrittenTo(repo(), "bun run check 2>&1 | tail -20")).toBe(
+      `${LAUNCHER} job run --kind tsc -- /bin/bash -c 'bun run check 2>&1' | tail -20`,
+    );
+    expect(denialOf(repo(), "git status --short")).toBeNull();
+  });
+});
+
+describe("a mixed line: what is not refused", () => {
+  it("a run that takes no slot, beside any command", () => {
+    const repo = repoWith(TEST_FILE);
+    // A run on a file that exists is light: it starts at once, raw.
+    expect(denialOf(repo, "bun test ./a.test.ts; git status")).toBeNull();
+    expect(rewrittenTo(repo, "bun test ./a.test.ts; git status")).toBeNull();
+    // A watch run never ends, so it must never hold a slot.
+    expect(denialOf(repo, "bun test --watch; echo x")).toBeNull();
+    expect(denialOf(repo, "bunx vitest --watch && git status")).toBeNull();
+  });
+
+  it("a line that already queues itself", () => {
+    const repo = repoWith({});
+    for (const line of [
+      "cc-smart-dev-kit job run --kind test:run -- bun test; echo done",
+      "cc-smart-dev-kit job run --kind test:run -- bun test; git status",
+    ]) {
+      expect([line, jobRoute(contextFor(repo, line))]).toEqual([line, {}]);
+    }
+  });
+
+  it("no heavy run in the line, and a heavy script whose own body cannot be split", () => {
+    const repo = repoWith({
+      "package.json": JSON.stringify({ scripts: { check: "tsc --noEmit && rm -rf dist" } }),
+    });
+    expect(jobRoute(contextFor(repo, "git status && ls"))).toEqual({});
+    expect(jobRoute(contextFor(repo, "bun install && git status"))).toEqual({});
+    // The person cannot split a script's body: the line runs raw, as it did.
+    expect(jobRoute(contextFor(repo, "bun run check"))).toEqual({});
+    expect(jobRoute(contextFor(repo, "bun run check && git status"))).toEqual({});
+  });
+
+  // The rule's walk stops at a body's first failing command, so a heavy command after it
+  // (`biome check . && tsc --noEmit`) must still keep the call exempt: run alone, it could never
+  // meet a refusal.
+  it("a heavy script whose body starts with a command that is not heavy", () => {
+    const repo = repoWith({
+      "package.json": JSON.stringify({
+        scripts: { check: "biome check . && tsc --noEmit", lint: "biome check ." },
+      }),
+    });
+    expect(jobRoute(contextFor(repo, "bun run check"))).toEqual({});
+    expect(jobRoute(contextFor(repo, "npm run check"))).toEqual({});
+    expect(jobRoute(contextFor(repo, "bun run check; git status"))).toEqual({});
+    // A script call whose body runs no heavy work is still a command of its own.
+    expect(denialOf(repo, "bun run lint && bun test")).toContain("beside other commands");
+  });
+
+  it("the route off, and outside git", () => {
+    const repo = repoWith({});
+    const off = {
+      ...contextFor(repo, "bun test; git status"),
+      project: { config: { jobs: { route: false } }, mainCheckout: null, root: repo },
+    } as unknown as HookContext;
+    expect(jobRoute(off)).toEqual({});
+    const outside = contextFor(repo, "bun test; git status");
+    expect(jobRouteOutsideGit(outside.input, outside as unknown as HookEnvContext)).toEqual({});
+  });
+
+  it("a PowerShell line keeps its own refusal, a git-only line keeps the hooks prefix", () => {
+    const repo = repoWith(TEST_FILE);
+    const refused = powerShellDecision(repo, "bun test; git status");
+    expect(String(refused?.permissionDecisionReason)).toContain("the job queue takes Bash lines");
+    expect(denialOf(repo, "git status && ls")).toBeNull();
   });
 });

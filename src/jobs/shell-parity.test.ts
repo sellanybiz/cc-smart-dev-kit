@@ -61,9 +61,10 @@ const ROWS: Row[] = [
   ["/usr/bin/env bunx tsc --noEmit", "tsc", viaShell("tsc", "/usr/bin/env bunx tsc --noEmit")],
   // was: not routed.
   ["env -u HOME bunx tsc --noEmit", "tsc", viaShell("tsc", "env -u HOME bunx tsc --noEmit")],
-  ["sudo bunx tsc --noEmit", "tsc", viaShell("tsc", "sudo bunx tsc --noEmit")],
-  // was: not routed (CM-9).
-  ["sudo -u x bunx tsc --noEmit", "tsc", viaShell("tsc", "sudo -u x bunx tsc --noEmit")],
+  // Heavy work as another user is not routed: the rewrite would hide the `sudo` from the
+  // person's rules (the owner, 2026-11-20; it was routed since CM-9). The kind is still read.
+  ["sudo bunx tsc --noEmit", "tsc", null],
+  ["sudo -u x bunx tsc --noEmit", "tsc", null],
   ["nohup bunx tsc --noEmit", "tsc", viaShell("tsc", "nohup bunx tsc --noEmit")],
   ["exec bunx tsc --noEmit", "tsc", viaShell("tsc", "exec bunx tsc --noEmit")],
   ["command bunx tsc --noEmit", "tsc", viaShell("tsc", "command bunx tsc --noEmit")],
@@ -97,20 +98,25 @@ const ROWS: Row[] = [
     // was: not routed (HK-9).
     queued("tsc", `${SHELL} -c 'env -S '\\''bunx tsc --noEmit'\\'''`),
   ],
-  // was: through the person's shell; now raw (HK hunch 1): the line runs a command that is not heavy, a `cd` or an assignment.
+  // was: through the person's shell; now raw (HK hunch 1): the line runs a command that is not
+  // heavy, a `cd`, an assignment or glue. `cat` is glue only as a reader fed by a pipe.
   ["cat <<EOF\n$(bunx tsc --noEmit)\nEOF", "tsc", null],
   ["cat <<'EOF'\nbunx tsc --noEmit\nEOF", null, null],
   // was: through the person's shell; now raw (HK hunch 1): a shell that reads a here-doc is no
   // heavy command (the classifier still finds the kind for `job run`'s reservation).
   ["sh <<'EOF'\nbunx tsc --noEmit\nEOF", "tsc", null],
-  // was: through the person's shell; now raw (HK hunch 1): the line runs a command that is not heavy, a `cd` or an assignment.
+  // was: through the person's shell; now raw (HK hunch 1): a shell whose script comes only from
+  // the pipe is never pure. The text the reader gives for what `echo` writes is no promise
+  // (`printf 'tsc\nrm x' | sh` runs two commands), so the line is not queued.
   ["echo 'bunx tsc --noEmit' | sh", "tsc", null],
-  // was: through the person's shell; now raw (HK hunch 1): the line runs a command that is not heavy, a `cd` or an assignment.
-  ["echo `bunx tsc --noEmit`", "tsc", null],
-  // was: through the person's shell; now raw (HK hunch 1): the line runs a command that is not heavy, a `cd` or an assignment.
+  // was: raw (HK hunch 1). Now queued whole: its only commands are `echo` (glue) and the heavy
+  // run in the backticks.
+  ["echo `bunx tsc --noEmit`", "tsc", viaShell("tsc", "echo `bunx tsc --noEmit`")],
+  // was: through the person's shell; now raw (HK hunch 1): an arithmetic expansion is no glue,
+  // because bash reads a variable's value there as an expression, and that can run a command.
   ["echo $(( $(bunx tsc --noEmit) ))", "tsc", null],
-  // was: through the person's shell; now raw (HK hunch 1): the line runs a command that is not heavy, a `cd` or an assignment.
-  ["echo \\ #; bunx tsc --noEmit", "tsc", null],
+  // was: raw (HK hunch 1). Now queued whole: `echo` (glue), then the heavy run.
+  ["echo \\ #; bunx tsc --noEmit", "tsc", viaShell("tsc", "echo \\ #; bunx tsc --noEmit")],
   // was: routed: bash reads `\;` as a `;` character, so the line is one `cd` and runs no tsc.
   ["cd D:\\; bunx tsc --noEmit", null, null],
   [

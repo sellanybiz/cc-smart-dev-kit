@@ -10,6 +10,7 @@ import {
   classifyHeavyCommand,
   classifyRoutableLine,
   classifyUnqueuedHeavy,
+  mixedHeavyLine,
   routableLine,
   runWeight,
   type ScriptBodies,
@@ -695,9 +696,10 @@ describe("routableLine: a heavy command piped into read-only filters", () => {
       "sort --output=out.txt",
       "sort --compress-program=gzip",
       "uniq in.txt out.txt",
+      // `-` is the input, and the word after it the file uniq writes.
+      "uniq - out.txt",
       "rg --pre ./run.sh FAIL",
       "rg -z FAIL",
-      "cat other.txt",
       "tail -5 > out.txt",
       "tail -5 >> out.txt",
       "grep FAIL $(rm -f x)",
@@ -745,9 +747,19 @@ describe("routableLine: a heavy command piped into read-only filters", () => {
     expect(line("tsc | sed 's/[0-9]//g'")?.filters).toBe("| sed 's/[0-9]//g'");
   });
 
-  test("filter before heavy refused: the filter would not be fed by the heavy command", () => {
+  test("filter before heavy refused: it names a file, and a Read rule must see that", () => {
     expect(line("cat tsconfig.json | bunx tsc --noEmit")).toBeNull();
     expect(line("tail -5 log.txt | bunx vitest run")).toBeNull();
+    expect(line("bunx tsc --noEmit | cat other.txt")).toBeNull();
+  });
+
+  test("a reader piped into the heavy command, with no file word, is glue: no cut", () => {
+    // `echo x | grep x | bunx tsc`: nothing names a file, so the whole line is queued.
+    expect(line("echo x | cat | bunx tsc --noEmit")).toEqual({
+      filters: "",
+      heavy: "echo x | cat | bunx tsc --noEmit",
+      kind: "tsc",
+    });
   });
 
   test("two heavy steps piped: the whole line is queued, as before", () => {
@@ -758,17 +770,26 @@ describe("routableLine: a heavy command piped into read-only filters", () => {
     });
   });
 
-  test("a pipe whose meaning the cut would change stays raw", () => {
-    // The filter read only the test run's output: queueing both would filter tsc's too.
-    expect(line("bunx tsc --noEmit && bunx vitest run | tail -5")).toBeNull();
-    // `!` turns the whole pipeline's exit code around, not the heavy command's.
-    expect(line("! bunx tsc --noEmit | tail -5")).toBeNull();
-    // `||` is no pipe, and a filter inside a shell string would be hidden in the queue's line.
-    expect(line("bunx tsc --noEmit || tail -5 log.txt")).toBeNull();
-    expect(line("bash -c 'bunx tsc --noEmit | tail -5'")).toBeNull();
-    // A command after the filter, and a comment the cut cannot place, keep the line raw.
+  test("a pipe whose meaning the cut would change is not cut: the whole line is queued", () => {
+    // The reader is glue, so nothing hides from the person's rules; and since the whole line
+    // goes through the shell as written, its pipes and its exit code mean what they meant.
+    for (const [command, kind] of [
+      // The filter read only the test run's output: a cut would filter tsc's too.
+      ["bunx tsc --noEmit && bunx vitest run | tail -5", "tsc"],
+      // `!` turns the whole pipeline's exit code around, not the heavy command's.
+      ["! bunx tsc --noEmit | tail -5", "tsc"],
+      // A filter inside a shell string is part of the shell string.
+      ["bash -c 'bunx tsc --noEmit | tail -5'", "tsc"],
+      // A command after the filter, and a comment the cut cannot place.
+      ["bunx tsc --noEmit | tail -5; echo done", "tsc"],
+      ["bunx tsc --noEmit | tail -5 # last lines", "tsc"],
+    ] as const) {
+      expect([command, line(command)]).toEqual([command, { filters: "", heavy: command, kind }]);
+    }
+    // A command that is not glue after the filter keeps the line raw, and so does a reader that
+    // is no pipe's (`||`) or names a file.
     expect(line("bunx tsc --noEmit | tail -5; rm -f x")).toBeNull();
-    expect(line("bunx tsc --noEmit | tail -5 # last lines")).toBeNull();
+    expect(line("bunx tsc --noEmit || tail -5 log.txt")).toBeNull();
   });
 
   test("classifyRoutableLine names the kind of such a line", () => {
@@ -874,7 +895,9 @@ describe("a package script is classified by its body", () => {
   test("pre and post scripts run with the script, and count in its body", () => {
     // Every runner here runs them: bun, npm, pnpm and yarn classic (their docs).
     expect(anyHeavy("bun run build", { prebuild: "tsc --noEmit", build: "echo hi" })).toBe("tsc");
-    expect(routed("bun run build", { prebuild: "tsc --noEmit", build: "echo hi" })).toBeNull();
+    // `echo hi` is glue, so the script is queued whole; a body command that is not glue is not.
+    expect(routed("bun run build", { prebuild: "tsc --noEmit", build: "echo hi" })).toBe("tsc");
+    expect(routed("bun run build", { prebuild: "tsc --noEmit", build: "rm -rf dist" })).toBeNull();
     expect(routed("npm run build", { prebuild: "tsc --noEmit", build: "next build" })).toBe("tsc");
     expect(routed("pnpm build", { build: "next build", postbuild: "vitest run" })).toBe("build");
     expect(anyHeavy("yarn build", { build: "echo hi", postbuild: "docker build ." })).toBe(
@@ -1267,11 +1290,14 @@ describe("runWeight: light, heavy or none", () => {
     expect(weight("tsc --noEmit src/a.ts 2>&1 && tsc --noEmit src/a.ts >/dev/null 2>&1")).toEqual(
       LIGHT,
     );
-    // `|&` is a pipe, not a background: the filter after it is no command the route accepts,
-    // so the line keeps its slot for that reason, not for a background run.
+    // `|&` is a pipe, not a background: the filter after it is no command the route accepts
+    // (the reader does not call it a pipe), so the line keeps its slot for that reason, not for
+    // a background run.
     expect(weight("tsc --noEmit src/a.ts |& tail -3 && tsc --noEmit src/a.ts")).toEqual(
       heavy("tsc"),
     );
+    // A piped reader with no file word is glue, so the line stays light.
+    expect(weight("tsc --noEmit src/a.ts | tail -3 && tsc --noEmit src/a.ts")).toEqual(LIGHT);
   });
 
   test("a kind's tool decides the options: vitest, jest, tsc and bun each read their own", () => {
@@ -1473,5 +1499,644 @@ describe("sedScriptReadsOnly", () => {
     ]) {
       expect([script, sedScriptReadsOnly(script)]).toEqual([script, false]);
     }
+  });
+});
+
+// A mixed line (`bun run check; echo "exit $?"`) is queued whole when everything beside the
+// heavy commands is harmless glue (`GLUE_COMMANDS`, the readers of `READ_ONLY_FILTERS`, the
+// structure of `{ … }` and `( … )`). Any other mix is no routable line (`mixedHeavyLine` then
+// says what to refuse). Every expected value here is written by hand.
+describe("routableLine: harmless glue rides in the queued line", () => {
+  const SCRIPTS = {
+    "/repo": { check: "tsc --noEmit", test: "vitest run" },
+    "/repo/portal": { test: "vitest run" },
+  };
+  /** The start of a `${…}` parameter expansion, so a test string holds no template placeholder. */
+  const BRACE = "${";
+  const line = (command: string) => routableLine(command, DEFAULT_KINDS, weightSourceOf(SCRIPTS));
+  const queuedWhole = (command: string, kind: string) =>
+    expect(line(command)).toEqual({ filters: "", heavy: command, kind });
+
+  test("an echo after a script: the exit code line a builder adds", () => {
+    queuedWhole('bun run check; echo "exit $?"', "tsc");
+  });
+
+  test("an echo before a test run, and a group whose output goes to a file", () => {
+    queuedWhole("echo start && bun test", "test:run");
+    queuedWhole("{ echo a; bun test; } > out.log 2>&1", "test:run");
+    queuedWhole("{ bunx tsc --noEmit; } > out.log 2>&1", "tsc");
+  });
+
+  test("a subshell with a cd, read in the folder it moves to", () => {
+    queuedWhole("( cd portal && bun run test )", "test:run");
+  });
+
+  // A redirection-only step is the structure of a group, but `$(< .env)` reads and prints the
+  // file: inside the queue's shell string Claude Code's Read rules would not see the `<` target.
+  test("a substitution that reads a file is no structure: the line is not queued", () => {
+    expect(line('bun test; echo "$(< .env)"')).toBeNull();
+    expect(line('bun test; X=$(< .env); echo "$X"')).toBeNull();
+    expect(line("bun test; echo `< .env`")).toBeNull();
+    expect(line("{ bun test; } 0<.env")).toBeNull();
+    expect(line("{ bun test; } <> .env")).toBeNull();
+  });
+
+  test("a group whose input is /dev/null is still structure: it reads nothing", () => {
+    queuedWhole("{ bun test; } < /dev/null", "test:run");
+    queuedWhole("( bunx tsc --noEmit ) </dev/null", "tsc");
+    queuedWhole("{ bun test; } 0</dev/null > out.log 2>&1", "test:run");
+  });
+
+  test("a reader that reads the pipe: no file word, so no Read rule is hidden", () => {
+    queuedWhole("bun test 2>&1 | tail -5; echo done", "test:run");
+    queuedWhole("bun test 2>&1 | head -20; echo done", "test:run");
+    queuedWhole("bun test | wc -l; echo done", "test:run");
+    queuedWhole("bun test | cat; echo done", "test:run");
+    queuedWhole("bun test | grep -E 'fail|error'; echo done", "test:run");
+    queuedWhole("bun test | cut -d: -f1; echo done", "test:run");
+    queuedWhole("bun test | tr -d '\\r'; echo done", "test:run");
+    queuedWhole("bun test | grep -e a -e b; echo done", "test:run");
+    queuedWhole("bun test | tail -n 5; echo done", "test:run");
+  });
+
+  test("a reader that names a file is no glue: a Read deny rule looks at that word", () => {
+    for (const reader of [
+      "tail -5 out.log",
+      "cat out.log",
+      "cat .env",
+      "wc -l out.log",
+      'grep -E x "$OUT"',
+      "head -3 $OUT",
+      "grep x out.log",
+      "grep -e x out.log",
+      "sed -n 1p out.log",
+      "sort out.log",
+      "uniq in out",
+      "awk '{print $1}' out.log",
+    ]) {
+      // Beside the heavy run with no pipe, and fed by a pipe with the file word in it.
+      expect([reader, line(`bun test; ${reader}`)]).toEqual([reader, null]);
+      expect([reader, line(`bun test | ${reader}; echo done`)]).toEqual([reader, null]);
+    }
+  });
+
+  test("an option that makes a reader read a file counts by any start, as GNU takes it", () => {
+    for (const reader of [
+      "sort --files0-from=-",
+      "sort --files0=-",
+      "sort --files0 -",
+      "sort --file=-",
+      "wc --files0-f=-",
+      "grep --rec x",
+      "grep --recursive x",
+      "grep --dereference-recursive x",
+      "grep --dereference-rec x",
+      "grep --file=patterns x",
+      "grep --fil patterns x",
+      "grep --exclude-from=list x",
+      "grep --exclude-f=list x",
+      "grep --direct=recurse x",
+    ]) {
+      expect([reader, line(`bun test | ${reader}; echo done`)]).toEqual([reader, null]);
+    }
+    // Options that only look alike stay glue.
+    queuedWhole("bun test | grep --files-with-matches x; echo done", "test:run");
+    queuedWhole("bun test | grep --include=x y; echo done", "test:run");
+    queuedWhole("bun test | sort --reverse; echo done", "test:run");
+  });
+
+  test("a reader with no pipe, an input redirection, or a search of the folder is no glue", () => {
+    for (const reader of [
+      "tail -5",
+      "cat",
+      "cat < .env",
+      "grep x < .env",
+      "grep -r x",
+      "grep -rn x",
+      "grep -f patterns x",
+      "grep --recursive x",
+      "wc --files0-from=list",
+      "sort --files0-from=list",
+      "rg x",
+      "sed -f script",
+      "/usr/bin/tail -5",
+    ]) {
+      expect([reader, line(`bun test; ${reader}`)]).toEqual([reader, null]);
+    }
+    expect(line("bun test | cat < .env; echo done")).toBeNull();
+    expect(line("bun test | cat <.env; echo done")).toBeNull();
+    expect(line("bun test | grep -r x; echo done")).toBeNull();
+    // A here-doc or here-string is no file.
+    queuedWhole("bun test | cat <<< hi; echo done", "test:run");
+  });
+
+  test("the readers that read their own script or options need the real words", () => {
+    queuedWhole("bun test | sed -n '1,5p'; echo done", "test:run");
+    queuedWhole("bun test | sed -n -e '/x/p' -e '$p'; echo done", "test:run");
+    queuedWhole("bun test | awk '{print $1}'; echo done", "test:run");
+    queuedWhole("bun test | awk -F: -v n=2 'NR<n {print}'; echo done", "test:run");
+    queuedWhole("bun test | sort -u; echo done", "test:run");
+    queuedWhole("bun test | uniq -c; echo done", "test:run");
+    // A word the shell fills in could be a script, an option or a file.
+    for (const reader of [
+      'sed -n "$P"',
+      'awk "$P"',
+      'sort "$F"',
+      'uniq "$F"',
+      'tee "$F"',
+      'grep "$P"',
+    ]) {
+      expect([reader, line(`bun test | ${reader}; echo done`)]).toEqual([reader, null]);
+    }
+    // `rg` searches the folder when nothing is piped, and has no listed shape.
+    expect(line("bun test | rg x; echo done")).toBeNull();
+  });
+
+  test("tee is glue only with no file, as in the filter rule", () => {
+    queuedWhole("bun test | tee; echo done", "test:run");
+    expect(line("bun test | tee out.log; echo x")).toBeNull();
+    expect(line("bun test | tee /dev/null; echo x")).toBeNull();
+    expect(line("bun test; tee")).toBeNull();
+  });
+
+  test("glue that runs code: a subscript or an arithmetic expansion", () => {
+    for (const code of [
+      "test -v 'a[$(rm -rf x)]'",
+      "[ -v 'a[$(rm -rf x)]' ]",
+      "[ -R x ]",
+      "test -R 'a[$(rm -rf x)]'",
+      "printf -v 'a[$(rm -rf x)]' y",
+      "printf -- '%s' x",
+      'printf "$F" x',
+      "echo $((X))",
+      "echo $[X]",
+      `echo ${BRACE}a[X]}`,
+      `echo ${BRACE}X:1}`,
+      // An indirect expansion and a prompt expansion run the value as code.
+      `echo ${BRACE}!X}`,
+      `echo ${BRACE}X@P}`,
+      `echo ${BRACE}X@Q}`,
+      "echo $(( $(pwd) ))",
+      "echo $((1+1))",
+    ]) {
+      expect([code, line(`bun test; ${code}`)]).toEqual([code, null]);
+    }
+    // A test with a word the shell fills in can be `-v` itself.
+    expect(line('bun test; [ -d "$DIR" ]')).toBeNull();
+    expect(line("bun test; test $? -eq 0")).toBeNull();
+    // The harmless forms stay glue.
+    queuedWhole("bun test; printf '%s\\n' x $HOME", "test:run");
+    queuedWhole(`bun test; echo ${BRACE}X:-default}`, "test:run");
+    queuedWhole(`bun test; echo $HOME ${BRACE}#X}`, "test:run");
+    queuedWhole("bun test; [ -f out.log ] && echo yes", "test:run");
+  });
+
+  // A literal subscript reads no variable and runs no code: `${PIPESTATUS[0]}` is how a line keeps
+  // the exit code of the command before a pipe. Any other subscript or offset is still code.
+  test("a literal array subscript is glue, any other subscript or offset is not", () => {
+    queuedWhole(`bun test 2>&1 | tail -20; echo "exit=${BRACE}PIPESTATUS[0]}"`, "test:run");
+    queuedWhole(`bun test; echo "${BRACE}arr[@]}"`, "test:run");
+    queuedWhole(`bun test; echo ${BRACE}arr[*]}`, "test:run");
+    queuedWhole(`bun test; echo ${BRACE}#X[@]} ${BRACE}#X[1]}`, "test:run");
+    for (const code of [
+      `echo ${BRACE}a[0]:X}`,
+      `echo ${BRACE}a[X]}`,
+      `echo ${BRACE}a[$(rm x)]}`,
+      `echo ${BRACE}a[1+1]}`,
+      // A subscript inside a subscript stays a subscript once the literal one is gone.
+      `echo ${BRACE}a[${BRACE}b[0]}]}`,
+    ]) {
+      expect([code, line(`bun test; ${code}`)]).toEqual([code, null]);
+    }
+  });
+
+  // `getline < file` reads a file awk names itself, and `ARGV` or `ARGC` make it open one: the
+  // file word is then in no part of the line a Read rule can see.
+  test("an awk that reads a file of its own, or sets its files, is no glue and no filter", () => {
+    for (const program of [
+      `'{getline l < ".env"; print l}'`,
+      `'BEGIN{getline l < ".env"; print l}'`,
+      `'BEGIN{while ((getline l < ".env") > 0) print l}'`,
+      `'{getline; print}'`,
+      `'BEGIN{ARGV[1]=".env"; ARGC=2} {print}'`,
+      `'BEGIN{ARGV[ARGC++]=".env"} {print}'`,
+      `'BEGIN{ARGC=2; ARGV[1]=".env"} {print}'`,
+    ]) {
+      expect([program, line(`bun test; echo x | awk ${program}`)]).toEqual([program, null]);
+      expect([program, line(`bun test | awk ${program}; echo done`)]).toEqual([program, null]);
+      // As a trailing filter it is no filter either: nothing is cut off the queued part.
+      expect([program, line(`bun test | awk ${program}`)]).toEqual([program, null]);
+    }
+    // An awk that only prints is still a filter.
+    expect(line("bun test | awk '{print $1}'")?.filters).toBe("| awk '{print $1}'");
+    expect(line("bun test | awk -F: '$2 ~ /x/ {print $1}'")?.filters).toBe(
+      "| awk -F: '$2 ~ /x/ {print $1}'",
+    );
+  });
+
+  // The refusal's advice (run the others in a separate call) cannot work for the commands that
+  // set the shell up: an option or an export does not carry over to another Bash call.
+  // `set -x` expands `PS4` before each command: `PS4='$(rm x)'; set -x; bun test` would run the
+  // `rm` inside the queue, out of the person's rules' sight.
+  test("turning tracing on is no glue: it expands PS4", () => {
+    for (const trace of ["set -x", "set -ex", "set -euxo pipefail", "set -o xtrace"]) {
+      expect([trace, line(`${trace}; bun test`)]).toEqual([trace, null]);
+    }
+    expect(line("PS4='$(rm x)'; set -x; bun test")).toBeNull();
+  });
+
+  // `set -H` expands `!!` history into commands no reader saw (proved live: `echo !!:1:t:r`
+  // built and ran an `rm`); `-k` turns a reader's `NAME=value` word into the environment. Only
+  // the options that make the shell stop sooner are glue when turned on.
+  test("set turns on only the options that stop the shell sooner", () => {
+    for (const unsafe of [
+      "set -H",
+      "set -o history",
+      "set -o histexpand",
+      "set -k",
+      "set -T",
+      "set -E",
+      "set -a",
+      "set -n",
+      "set -o posix",
+      "set -o functrace",
+      "set -eH",
+      "set -o pipefail -o history",
+    ]) {
+      expect([unsafe, line(`${unsafe}; bun test`)]).toEqual([unsafe, null]);
+    }
+    for (const safe of [
+      "set -o errexit",
+      "set -o nounset",
+      "set -eu -o pipefail",
+      "set +H",
+      "set +o history",
+      "set +k",
+    ]) {
+      queuedWhole(`${safe}; bun test`, "test:run");
+    }
+  });
+
+  // Queued, `sudo bun test` became `cc-smart-dev-kit job run … -- sudo bun test`: a person's
+  // `Bash(sudo:*)` rule never saw the sudo. Refused, it could not be split any further.
+  test("heavy work as another user is neither queued nor refused: it runs raw", () => {
+    const source = weightSourceOf({ "/repo": null });
+    for (const asUser of [
+      "sudo bun test",
+      "sudo -u me bunx tsc --noEmit",
+      "doas bun test",
+      "env sudo bun test",
+      "su -c 'bun test'",
+      "su me -c 'bun test'",
+      "sudo bun test 2>&1 | tail -5",
+      "bun test; sudo bun test",
+      "bash -c 'sudo bun test'",
+    ]) {
+      expect([asUser, line(asUser)]).toEqual([asUser, null]);
+      expect([asUser, mixedHeavyLine(asUser, DEFAULT_KINDS, source)]).toEqual([asUser, null]);
+    }
+    // A command as another user that runs no heavy work is blamed like any other.
+    expect(mixedHeavyLine("bun test; sudo echo hi", DEFAULT_KINDS, source)?.other).toBe(
+      "sudo echo hi",
+    );
+    // A wrapper that keeps the user is still read through.
+    queuedWhole("timeout 600 bun test", "test:run");
+    // A run as another user that takes no slot (it only prints) exempts nothing: the heavy run
+    // beside it would skip the queue.
+    expect(
+      mixedHeavyLine("sudo -n bunx tsc --version; bun test; rm -rf x", DEFAULT_KINDS, source)
+        ?.other,
+    ).toBe("sudo -n bunx tsc --version");
+  });
+
+  test("a script whose body only prints a heavy tool is a command to split off", () => {
+    const source = weightSourceOf({
+      "/repo": { lintv: "biome check . && tsc --version", check: "biome check . && tsc --noEmit" },
+    });
+    expect(mixedHeavyLine("bun run lintv && bun test", DEFAULT_KINDS, source)?.other).toBe(
+      "bun run lintv",
+    );
+    expect(mixedHeavyLine("bun run lintv", DEFAULT_KINDS, source)).toBeNull();
+    expect(mixedHeavyLine("bun run check", DEFAULT_KINDS, source)).toBeNull();
+  });
+
+  test("exit keeps a piped run's code with a literal subscript", () => {
+    queuedWhole(`bun test 2>&1 | tail -20; exit ${BRACE}PIPESTATUS[0]}`, "test:run");
+    expect(line(`bun test; exit ${BRACE}PIPESTATUS[X]}`)).toBeNull();
+    expect(line(`bun test; exit ${BRACE}a[0]:X}`)).toBeNull();
+  });
+
+  test("shell-state commands are glue: set options, exit, return, export", () => {
+    for (const state of [
+      "set -e",
+      "set -u",
+      "set +x",
+      "set +o xtrace",
+      "set +e",
+      "set -o pipefail",
+      "set +o pipefail",
+      "set -euo pipefail",
+      "set -eu",
+      "exit",
+      "exit 0",
+      "exit 1",
+      "exit $?",
+      "return",
+      "return 2",
+      "return $?",
+      "export X=1",
+      "export NAME=value OTHER=two",
+      'export MSG="a b"',
+      "export HOME_COPY=$HOME",
+      "export PATH=$PATH:/opt/bin",
+    ]) {
+      queuedWhole(`${state}; bun test`, "test:run");
+      queuedWhole(`bun test; ${state}`, "test:run");
+    }
+    queuedWhole("set -o pipefail; bun test 2>&1 | tail -20", "test:run");
+    queuedWhole("bun test || exit 1", "test:run");
+    queuedWhole("bun test || exit $?", "test:run");
+    queuedWhole("{ set -e; bun test; } > out.log 2>&1", "test:run");
+  });
+
+  test("a set, exit, return or export that runs code or changes the words is no glue", () => {
+    for (const near of [
+      "set -- x",
+      "set --",
+      "set",
+      "set x",
+      "set -e x",
+      "set -o",
+      'set "$OPTS"',
+      "set -$X",
+      "set -e$X",
+      "set -o $X",
+      "exit $(rm x)",
+      "exit `rm x`",
+      "exit x",
+      "exit 1 2",
+      "exit $((1))",
+      'exit "$X"',
+      "return $(rm x)",
+      "return x",
+      "export X=$(rm x)",
+      "export X=$(pwd)",
+      "export X=`pwd`",
+      "export X='$(rm x)'",
+      "export $NAME=x",
+      "export -n X",
+      "export -f x",
+      "export X",
+      "export",
+      "export X=1 Y",
+      "export 'a[$(rm x)]=1'",
+      "export X=$((1))",
+      `export X=${BRACE}a[X]}`,
+      "export X=1 > out.txt",
+      "FOO=1 set -e",
+      "/bin/exit 1",
+    ]) {
+      expect([near, line(`bun test; ${near}`)]).toEqual([near, null]);
+      expect([near, line(`${near}; bun test`)]).toEqual([near, null]);
+    }
+  });
+
+  test("a shell that takes its script from the pipe is never pure: the text is no promise", () => {
+    // The reader gives `\\n` as a space, and `sh` runs two commands.
+    for (const piped of [
+      "printf 'bunx tsc --noEmit\\nrm -rf x' | sh",
+      "printf 'bunx tsc --noEmit\\012rm -rf x' | sh",
+      "printf '%b' 'bunx tsc --noEmit\\nrm -rf x' | sh",
+      "echo 'bunx tsc --noEmit\\nrm -rf x' | sh",
+      "echo 'bunx tsc --noEmit' | sh",
+      "echo 'bunx tsc --noEmit' | bash",
+    ]) {
+      expect([piped, line(piped)]).toEqual([piped, null]);
+      expect([piped, line(`bun test; ${piped}`)]).toEqual([piped, null]);
+    }
+    // A shell with its script in `-c` is still read.
+    queuedWhole("echo go | bash -c 'bunx tsc --noEmit'", "tsc");
+  });
+
+  test("glue that writes a file with >&, attached or apart, is no glue", () => {
+    expect(line("bun test; echo x >& out.txt")).toBeNull();
+    expect(line("bun test; echo x >&out.txt")).toBeNull();
+    expect(line("bun test; echo x &> out.txt")).toBeNull();
+    queuedWhole("bun test; echo x >&2", "test:run");
+    queuedWhole("bun test; echo x 2>&1", "test:run");
+    queuedWhole("bun test; echo x >& /dev/null", "test:run");
+  });
+
+  test("a trailing filter is still cut off the queued part", () => {
+    expect(line("bun test 2>&1 | tee")).toEqual({
+      filters: "| tee",
+      heavy: "bun test 2>&1",
+      kind: "test:run",
+    });
+  });
+
+  test("every command of the glue table, with expansions in its words", () => {
+    for (const glue of [
+      "echo hi",
+      'echo "exit $?"',
+      "printf '%s\\n' $HOME",
+      "true",
+      "false",
+      ":",
+      "pwd",
+      "test -d node_modules",
+      "[ -d node_modules ]",
+    ]) {
+      queuedWhole(`bun test; ${glue}`, "test:run");
+    }
+  });
+
+  test("glue alone is not a line to queue: there must be a heavy command", () => {
+    for (const only of ["echo hi", "cat out.log", "[ -d x ] && echo y", "{ echo a; } > out.log"]) {
+      expect([only, line(only)]).toEqual([only, null]);
+    }
+  });
+
+  test("a command that is not glue keeps the line raw, with the heavy command beside it", () => {
+    for (const other of [
+      "git status --short",
+      "rm -f out.log",
+      "bun install",
+      "claude plugin validate plugin --strict",
+      "ls",
+      "sudo echo x",
+      "FOO=1 echo x",
+      "/bin/echo x",
+      "echo x | xargs rm",
+      "watch echo x",
+      "bunx tsc --version",
+    ]) {
+      expect([other, line(`bun test; ${other}`)]).toEqual([other, null]);
+    }
+  });
+
+  test("a substitution in glue is its own command, judged on its own", () => {
+    expect(line("echo $(rm -rf x) && bun test")).toBeNull();
+    expect(line("bun test; echo `rm -f x`")).toBeNull();
+    expect(line("bun test; grep x $(rm -f x)")).toBeNull();
+    // Harmless inside: still glue.
+    queuedWhole("bun test; echo $(pwd)", "test:run");
+  });
+
+  test("glue that writes a file, or a group that holds a command that is not glue", () => {
+    expect(line("bun test; echo done > status.txt")).toBeNull();
+    expect(line("bun test; echo done >> status.txt")).toBeNull();
+    expect(line("bun test; tail -5 out.log > last.txt")).toBeNull();
+    queuedWhole("bun test; echo done > /dev/null", "test:run");
+    expect(line("{ bun test; git status; } > out.log 2>&1")).toBeNull();
+    expect(line("( cd portal && bun run test; claude plugin validate x )")).toBeNull();
+  });
+
+  test("the test for a missing directory, then an install: the install is not glue", () => {
+    expect(line("[ -d node_modules ] || bun install && bun test")).toBeNull();
+    queuedWhole("[ -d node_modules ] || echo missing; bun test", "test:run");
+  });
+
+  test("a script whose own body holds glue is read the same way", () => {
+    const source = weightSourceOf({ "/repo": { build: "echo building && tsc --noEmit" } });
+    expect(routableLine("bun run build", DEFAULT_KINDS, source)?.kind).toBe("tsc");
+  });
+
+  test("the split line a refusal suggests is routable (no refusal loop)", () => {
+    queuedWhole("bun run check > log 2>&1", "tsc");
+    queuedWhole("bun test 2>&1", "test:run");
+    expect(line("bun run check 2>&1 | tail -20")).toEqual({
+      filters: "| tail -20",
+      heavy: "bun run check 2>&1",
+      kind: "tsc",
+    });
+  });
+});
+
+describe("runWeight: glue beside a light run keeps it light", () => {
+  const source = (files: readonly string[] = ["/repo/a.test.ts"]) => weightSourceOf({}, files);
+  test("a run on a file that exists, then an echo or a reader: light", () => {
+    for (const line of [
+      "bun test ./a.test.ts; echo done",
+      "echo start && bun test ./a.test.ts",
+      "bun test ./a.test.ts 2>&1 | tail -5; echo done",
+      "{ bun test ./a.test.ts; } > out.log 2>&1",
+    ]) {
+      expect([line, runWeight(line, DEFAULT_KINDS, source())]).toEqual([line, { weight: "light" }]);
+    }
+  });
+
+  test("a command that is not glue still makes the line heavy, and a full run is heavy", () => {
+    expect(runWeight("bun test ./a.test.ts; git status", DEFAULT_KINDS, source())).toEqual({
+      kind: "test:run",
+      weight: "heavy",
+    });
+    expect(runWeight("bun test; echo done", DEFAULT_KINDS, source())).toEqual({
+      kind: "test:run",
+      weight: "heavy",
+    });
+  });
+});
+
+describe("mixedHeavyLine: heavy work beside commands that are not glue", () => {
+  const source = (
+    packages: Record<string, Record<string, string>> = {},
+    files: readonly string[] = [],
+  ) => weightSourceOf({ "/repo": {}, ...packages }, files);
+  const mixed = (command: string, s: WeightSource = source()) =>
+    mixedHeavyLine(command, DEFAULT_KINDS, s);
+
+  test("names the heavy kind, the heavy step and the first command that is not glue", () => {
+    expect(mixed("bun test; git status --short")).toEqual({
+      kind: "test:run",
+      other: "git status --short",
+      run: "bun test",
+    });
+    expect(mixed("echo start; bunx tsc --noEmit && git commit -m x")).toEqual({
+      kind: "tsc",
+      other: "git commit -m x",
+      run: "bunx tsc --noEmit",
+    });
+  });
+
+  test("a script is the heavy step, as the line wrote it", () => {
+    const check = source({ "/repo": { check: "tsc --noEmit" } });
+    expect(mixed("bun run check && claude plugin validate plugin --strict", check)).toEqual({
+      kind: "tsc",
+      other: "claude plugin validate plugin --strict",
+      run: "bun run check",
+    });
+  });
+
+  test("a substitution in glue, a tee with a file, an install, a print-only run", () => {
+    expect(mixed("echo $(rm -rf x) && bun test")?.other).toBe("rm -rf x");
+    expect(mixed("bun test | tee out.log && ls")?.other).toBe("tee out.log");
+    expect(mixed("[ -d node_modules ] || bun install && bun test")?.other).toBe("bun install");
+    expect(mixed("bun test; bunx tsc --version")?.other).toBe("bunx tsc --version");
+  });
+
+  test("a heavy run in a shell fed by a pipe is named by its kind only", () => {
+    // The text the reader gives for the pipe's input is a guess, so it is never quoted.
+    expect(mixed("printf 'bunx tsc --noEmit\\nrm -rf x' | sh")).toEqual({
+      kind: "tsc",
+      other: "sh",
+      run: null,
+    });
+    expect(mixed("bun test; printf 'bunx tsc --noEmit' | sh")?.run).toBe("bun test");
+  });
+
+  test("a shell string is read too: its inner commands can be split by the person", () => {
+    expect(mixed("bash -c 'bunx tsc --noEmit && rm -f x'")?.other).toBe("rm -f x");
+  });
+
+  test("nothing to refuse: a line the route queues, a heavy command alone, no heavy command", () => {
+    for (const line of [
+      "bun test",
+      'bun test; echo "exit $?"',
+      "bun test 2>&1 | tail -20",
+      "git status && ls",
+      "echo hi",
+    ]) {
+      expect([line, mixed(line)]).toEqual([line, null]);
+    }
+  });
+
+  test("a run that takes no slot is not refused: a light run, a watch run, a queued line", () => {
+    const files = source({}, ["/repo/a.test.ts"]);
+    expect(mixed("bun test ./a.test.ts; git status", files)).toBeNull();
+    expect(mixed("bun test --watch; git status")).toBeNull();
+    expect(mixed("bunx vitest --watch && rm x")).toBeNull();
+    expect(mixed("cc-smart-dev-kit job run --kind test:run -- bun test; git status")).toBeNull();
+  });
+
+  test("a script whose own body cannot be split is not refused: the person cannot fix it", () => {
+    const mixedBody = source({ "/repo": { check: "tsc --noEmit && rm -rf dist" } });
+    expect(mixed("bun run check", mixedBody)).toBeNull();
+    expect(mixed("bun run check && git status", mixedBody)).toBeNull();
+  });
+
+  // A script that runs no heavy work (`lint: biome check .`) is a command of the line: the
+  // person can run it in its own call. It is not "a script that cannot be split".
+  test("a script whose body runs no heavy work is the command to split off, in either order", () => {
+    const lint = source({
+      "/repo": { lint: "biome check .", test: "vitest run", typecheck: "tsc --noEmit" },
+    });
+    expect(mixed("bun run lint && bun test", lint)).toEqual({
+      kind: "test:run",
+      other: "bun run lint",
+      run: "bun test",
+    });
+    expect(mixed("bun test && bun run lint", lint)?.other).toBe("bun run lint");
+    expect(mixed("npm run lint && npm test", lint)?.other).toBe("npm run lint");
+    expect(mixed("pnpm lint && pnpm test", lint)?.other).toBe("pnpm lint");
+    const format = source({ "/repo": { format: "biome format .", typecheck: "tsc --noEmit" } });
+    expect(mixed("bun run format; bun run typecheck; git diff --stat", format)).toEqual({
+      kind: "tsc",
+      other: "bun run format",
+      run: "bun run typecheck",
+    });
+    // Alone, it holds no heavy work: nothing to refuse.
+    expect(mixed("bun run lint", lint)).toBeNull();
+    expect(mixed("bun run lint && git status", lint)).toBeNull();
   });
 });

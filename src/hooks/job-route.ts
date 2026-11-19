@@ -41,6 +41,15 @@
  * (`tsc --noEmit 2>&1 | tail -20`, the list is `READ_ONLY_FILTERS`) is queued without them: the
  * filters stay after the queue's command, where the person's own Bash rules see them.
  *
+ * **A mixed line** holds heavy work beside other commands, and the queue takes it whole only
+ * when everything beside the heavy commands is harmless glue (`echo`, `printf`, a reader that
+ * reads the pipe and names no file, the `{ … }` and `( … )` of a group; `GLUE_COMMANDS` and `isGlueCommand`):
+ * `bun run check; echo "exit $?"` is queued as one line. Any other command beside heavy work
+ * (`bun test; git status`) would be hidden from the person's `Bash(...)` rules inside the queue's
+ * shell string, and run raw the heavy part would not wait for a slot: so the line is **refused**,
+ * and the reason says to run the heavy command on its own line (`mixedLineDenial`). A run that
+ * takes no slot (a light run, a watch run, a line that queues itself) is no mix.
+ *
  * Two ways to send it, and the hook uses the first its Claude Code supports:
  *   - **rewrite** (`updatedInput`, proved live on 2.1.301): the call runs
  *     `cc-smart-dev-kit job run --kind <kind> -- <command>` instead, byte for byte the same command.
@@ -87,12 +96,20 @@
  * With `git --git-dir` or `--work-tree`, `job hook` cannot find the repo (it asks git without
  * the `GIT_DIR` variable) and answers direct: the hook then runs as it is, unqueued, which is
  * safe. A line is never both routable and a git command: git is not a heavy kind, so a line
- * with a git command in it is never queued whole.
+ * with a git command in it is never queued whole. A line that runs heavy work (that takes a
+ * slot) beside a git command is refused as a mixed line, before the prefix is asked: the prefix
+ * would leave that heavy run raw.
  */
 
 import { existsSync } from "node:fs";
 import { findGitBash, type GitBashFacts } from "../cli/git-bash";
-import { classifyHeavyCommand, routableLine, runWeight, type WeightSource } from "../jobs/classify";
+import {
+  classifyHeavyCommand,
+  mixedHeavyLine,
+  routableLine,
+  runWeight,
+  type WeightSource,
+} from "../jobs/classify";
 import { hookDecision } from "../jobs/git-hooks";
 import { gitHooksState } from "../jobs/hook-folder";
 import { type Kinds, mergeKinds } from "../jobs/kinds";
@@ -205,7 +222,8 @@ export interface Routed {
  * on named files from a full run, without reading a file themselves.
  *
  * Two questions, and both must say yes. `routableLine` says the line may be queued (every
- * command in it is heavy) and names its kind; `runWeight` says it is heavy. A light run (it
+ * command in it is heavy, a `cd`, an assignment or glue, and one is heavy) and names its kind;
+ * `runWeight` says it is heavy. A light run (it
  * names only files that exist, or only prints) starts at once, so it is never wrapped; a watch
  * run, a `--ui` run, or a line that queues itself (`weight: none`) must never hold a slot, so it
  * is never wrapped either. The kind is `routableLine`'s.
@@ -577,6 +595,45 @@ export function powerShellDenial(
   );
 }
 
+/** The longest piece of the person's line a refusal quotes. */
+const QUOTED_MAX = 120;
+
+/** A command's text for a reason: on one line, and cut with `…` when it is long. */
+function quoted(text: string): string {
+  const line = text.replace(/\s+/g, " ");
+  return line.length <= QUOTED_MAX ? line : `${line.slice(0, QUOTED_MAX)}…`;
+}
+
+/**
+ * The refusal of a Bash line that runs heavy work beside commands that are not glue
+ * (`mixedHeavyLine`, `src/jobs/classify.ts`), or null when the line is no such mix. The queue
+ * takes a line whole only when every command in it is heavy or harmless glue, so that the
+ * person's own `Bash(...)` deny and ask rules, matched against the words of the command Claude
+ * Code runs, are never hidden inside the queue's shell string. Run raw, the heavy part would
+ * not wait for a slot. So the line is refused, and the reason says how to split it: the heavy
+ * command alone (it may keep a `cd`, a redirection, a pipe into a read-only filter, and glue
+ * around it) is queued, and the rest goes in a separate call.
+ *
+ * A light run, a watch run, a line that queues itself, and a line whose failing command sits in
+ * a package script's body (which a person cannot split) are no mix: null, and the line runs as
+ * it did. The caller asks this only when the route gave no queue command for the line.
+ */
+export function mixedLineDenial(
+  command: string,
+  kinds: Kinds,
+  source: WeightSource,
+): HookResult | null {
+  const mixed = mixedHeavyLine(command, kinds, source);
+  if (mixed === null) return null;
+  return toolDecision(
+    "deny",
+    [
+      `This line runs heavy work (${mixed.run === null ? mixed.kind : `${mixed.kind}: ${quoted(mixed.run)}`}) beside other commands (${quoted(mixed.other)}). The job queue cannot take the whole line without hiding those commands from your permission rules, and run raw the heavy part would not wait for a free slot; many heavy runs at once have run machines out of memory.`,
+      'Run the heavy command on its own line, where it waits for a slot in the queue: it may keep a cd before it, a redirection, echo or printf around it, and a pipe into tail, head or grep with plain words (no $VAR or $(…) in the reader\'s words, and no file for it to read). Then run the other commands in a separate call. To keep the exit code on one line, write { cmd; echo "exit $?"; } 2>&1 | tail -20.',
+    ].join("\n"),
+  );
+}
+
 /** The answer that refuses the raw call and names the command to run instead. */
 export function routeDenial(routed: Routed): HookResult {
   return toolDecision(
@@ -626,6 +683,11 @@ function inputDialect(input: HookInput): Dialect {
  * A judged line answers the judge and goes no further: an ask or a denial is never combined
  * with a rewrite.
  *
+ * **A Bash line** is, in this order: queued whole (`routeHeavyCommand`), refused when it mixes
+ * heavy work with commands that are not glue (`mixedLineDenial`), or given the hooks prefix for
+ * a git command whose hook is heavy (`routeGitHooks`). A refusal is a deny whoever is away: the
+ * session reads the fix and retries, so nothing is parked.
+ *
  * **The rewrite is Bash only.** Their rewritten line is a Bash command
  * (`routedShell`), and the PowerShell tool cannot run one. So where the route is on, a heavy
  * PowerShell line is refused instead, naming the Bash tool (`powerShellDenial`) — but only where
@@ -657,12 +719,18 @@ export function jobRoute(
     const refused = powerShellDenial(command, kinds, source);
     return refused !== null && bashTool(context.env) ? refused : SILENT;
   }
-  // A line is queued whole (every command heavy) or has a git command whose hook is heavy; never
-  // both, because git is no heavy kind. So the second is asked only when the first has no route.
-  const routed = routesHeavyCommands(context)
-    ? (routeHeavyCommand(command, kinds, routedShell(context.env), source) ??
-      routeGitHooks(command, context, kinds, platform))
-    : null;
+  if (!routesHeavyCommands(context)) return SILENT;
+  // A line is queued whole (every command heavy or glue) or refused (heavy work beside any other
+  // command, `mixedLineDenial`) or has a git command whose hook is heavy; never two of them,
+  // because git is no heavy kind and a line with one is no queued line. So each is asked only
+  // when the one before it gave nothing: the refusal before the hooks prefix, which would
+  // otherwise leave a raw heavy run beside the git command.
+  let routed = routeHeavyCommand(command, kinds, routedShell(context.env), source);
+  if (routed === null) {
+    const refused = mixedLineDenial(command, kinds, source);
+    if (refused !== null) return refused;
+    routed = routeGitHooks(command, context, kinds, platform);
+  }
   if (routed === null) return SILENT;
   if (!REWRITE_SUPPORTED) return routeDenial(routed);
   const timeoutMs = REWRITE_TIMEOUT_SUPPORTED ? routedTimeoutMs(context.env) : null;

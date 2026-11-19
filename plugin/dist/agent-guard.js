@@ -5996,7 +5996,7 @@ function superRefine(fn, params) {
 }
 // src/build-info/index.ts
 var info = {
-  version: "5.4.0",
+  version: "5.5.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -7860,14 +7860,15 @@ function redirectionTargets(words) {
     const redirection = (known ? ANY_REDIRECTION : REDIRECTION).exec(textOf(word));
     if (redirection === null)
       continue;
+    const operator = redirection[1] ?? "";
     let target = redirection[2] ?? "";
-    if (target === "") {
+    const apart = operator === ">" && target === "&";
+    if (target === "" || apart) {
       const next = words[++index] ?? "";
       if (isProcessSubstitution(next))
         continue;
-      target = textOf(next);
+      target = apart ? `&${textOf(next)}` : textOf(next);
     }
-    const operator = redirection[1] ?? "";
     if (operator === ">" && target.startsWith("&")) {
       target = /^&(\d+|-)$/.test(target) ? "" : target.slice(1);
     }
@@ -7955,6 +7956,10 @@ function writtenText(segment) {
 var RUNNER_PROGRAM_NAMES = ["find", "parallel", "su", "watch"];
 function isRunnerProgram(program) {
   return RUNNER_PROGRAM_NAMES.includes(program);
+}
+var AS_ANOTHER_USER_NAMES = ["doas", "pkexec", "su", "sudo"];
+function runsAsAnotherUser(invocation) {
+  return [invocation.program, ...invocation.prefix].some((word) => AS_ANOTHER_USER_NAMES.includes(programName(word)));
 }
 var FIND_EXEC = new Set(["-exec", "-execdir", "-ok", "-okdir"]);
 var FIND_VALUED = new Set([
@@ -22936,7 +22941,9 @@ function runOf(source) {
     extra: undefined,
     compound: false,
     reading: [],
-    printOk: false
+    printOk: false,
+    step: "",
+    pipeFed: false
   };
 }
 function scriptsAt(run, folder) {
@@ -22991,7 +22998,13 @@ function matchOfCall(call, kinds, scriptOnly) {
   }
   return printing;
 }
-var newScan = () => ({ found: [], background: false, queued: false });
+var newScan = () => ({
+  found: [],
+  background: false,
+  queued: false,
+  stray: null,
+  opaque: false
+});
 var LONE_AMPERSAND = /(?<![&|>])&(?![&>])/;
 function sendsToBackground(command, steps) {
   let at = 0;
@@ -23012,7 +23025,7 @@ function isOneCommand(body) {
 }
 function expandScript(call, runner, bodies, lookedUpIn, kinds, depth, run, all, out) {
   if (depth >= MAX_NESTING)
-    return false;
+    return opaque(out);
   const name = call.script ?? "";
   const folder = bodies.folder ?? lookedUpIn;
   const hooks = !(runner === "yarn" && bodies.yarnBerry === true);
@@ -23023,7 +23036,7 @@ function expandScript(call, runner, bodies, lookedUpIn, kinds, depth, run, all, 
     const key = JSON.stringify([folder, part]);
     if (run.reading.includes(key)) {
       if (all)
-        return false;
+        return opaque(out);
       continue;
     }
     const inside = {
@@ -23035,10 +23048,20 @@ function expandScript(call, runner, bodies, lookedUpIn, kinds, depth, run, all, 
       reading: [...run.reading, key]
     };
     if (!scan(bodies.get(part) ?? "", kinds, "bash", depth + 1, inside, all, out) && all) {
-      return false;
+      return opaque(out);
     }
   }
   return true;
+}
+function opaque(out) {
+  out.opaque = true;
+  return false;
+}
+function refuse(run, out, step) {
+  if (run.reading.length > 0)
+    return opaque(out);
+  out.stray ??= step.text.trim();
+  return false;
 }
 function scriptArgs(args, runner, bodies) {
   const at = args.indexOf("--");
@@ -23064,7 +23087,7 @@ function matchCall(asked, runner, kinds, depth, run, all, out) {
     if (all && hit.printOnly && !run.printOk)
       return false;
     const folder = hit.tool === undefined ? bodies?.folder ?? lookedUpIn : lookedUpIn;
-    out.found.push({ ...hit, call, folder, compound: run.compound });
+    out.found.push({ ...hit, call, folder, compound: run.compound, text: run.step });
     return true;
   }
   if (!isScript || bodies === null)
@@ -23079,11 +23102,16 @@ function scan(command, kinds, dialect, depth, run, all, out) {
     const words = wordsOf(step.text, dialect);
     if (all && (words.length === 0 || isAssignmentOnly(words)))
       continue;
+    if (run.reading.length === 0 && !run.pipeFed)
+      run.step = step.text.trim();
     const invocation = invocationOf(words);
     if (invocation === undefined) {
-      if (all)
-        return false;
-      continue;
+      if (!all)
+        continue;
+      if (dialect === "bash" && withoutRedirections(words).length === 0 && !readsAFile(words)) {
+        continue;
+      }
+      return refuse(run, out, step);
     }
     const { args } = invocation;
     const program = run.runner !== undefined && NPM_EXECPATH.test(invocation.program) ? run.runner : invocation.program;
@@ -23092,21 +23120,43 @@ function scan(command, kinds, dialect, depth, run, all, out) {
       run.folder = folderAfter(program, plain, run.folder);
       continue;
     }
+    if (all && runsAsAnotherUser(invocation)) {
+      const asked = newScan();
+      scan(step.text, kinds, dialect, depth + 1, { ...run }, false, asked);
+      return takesSlot(asked, kinds, run.source) ? opaque(out) : refuse(run, out, step);
+    }
     if (all && isRunnerProgram(program))
-      return false;
+      return refuse(run, out, step);
     if (isJobRun(program, args))
       out.queued = true;
     const inner = nestedCommand(program, args, step.pipedFrom);
-    const readInner = (line) => depth < MAX_NESTING && scan(line, kinds, nestedDialect(program), depth + 1, { ...run, extra: undefined }, all, out);
+    const pipeFed = inner !== undefined && step.pipedFrom !== null && nestedCommand(program, args) === undefined;
+    const readInner = (line) => depth < MAX_NESTING ? scan(line, kinds, nestedDialect(program), depth + 1, {
+      ...run,
+      extra: undefined,
+      pipeFed: run.pipeFed || pipeFed,
+      step: pipeFed ? null : run.step
+    }, all, out) : opaque(out);
     if (all && inner !== undefined) {
+      if (pipeFed)
+        return refuse(run, out, step);
       if (!readInner(inner))
         return false;
       continue;
     }
     const call = toolOf(program, run.extra === undefined ? plain : [...plain, ...run.extra]);
+    const before = out.found.length;
     const heavy = call !== undefined && matchCall(call, program, kinds, depth, run, all, out);
-    if (all && !heavy)
-      return false;
+    if (all && !heavy && !(dialect === "bash" && isGlueCommand(step))) {
+      if (out.opaque && out.found.length === before && run.reading.length === 0) {
+        const body = newScan();
+        if (call !== undefined)
+          matchCall(call, program, kinds, depth, { ...run }, false, body);
+        if (!takesSlot(body, kinds, run.source))
+          out.opaque = false;
+      }
+      return out.opaque ? false : refuse(run, out, step);
+    }
     if (inner !== undefined)
       readInner(inner);
   }
@@ -23139,18 +23189,32 @@ function runWeight(line, kinds, source) {
   scan(line, kinds, "bash", 0, run, false, out);
   const { found } = out;
   const first = found[0];
-  if (first === undefined || out.queued)
+  const slot = slotRun(out, kinds, source);
+  if (first === undefined || slot === "none")
     return { weight: "none" };
-  if (found.some((one) => one.tool !== undefined && isWatchRun(one.tool, one.call.args))) {
-    return { weight: "none" };
-  }
-  const heavy = found.find((one) => !isLight(one, kinds, source));
-  if (heavy !== undefined)
-    return { weight: "heavy", kind: heavy.kind };
+  if (slot !== "light")
+    return { weight: "heavy", kind: slot.kind };
   if (!everyCommandUnderstood(line, kinds, source, run.cache)) {
     return { weight: "heavy", kind: first.kind };
   }
   return found.length > 1 && out.background ? { weight: "heavy", kind: first.kind } : { weight: "light" };
+}
+function canWeigh(source) {
+  return source !== undefined && "isFile" in source;
+}
+function takesSlot(out, kinds, source) {
+  if (canWeigh(source))
+    return typeof slotRun(out, kinds, source) === "object";
+  return out.found.some((one) => !one.printOnly);
+}
+function slotRun(out, kinds, source) {
+  const { found } = out;
+  if (found[0] === undefined || out.queued)
+    return "none";
+  if (found.some((one) => one.tool !== undefined && isWatchRun(one.tool, one.call.args))) {
+    return "none";
+  }
+  return found.find((one) => !isLight(one, kinds, source)) ?? "light";
 }
 function everyCommandUnderstood(line, kinds, source, cache) {
   const run = { ...runOf(source), cache, printOk: true };
@@ -23159,6 +23223,102 @@ function everyCommandUnderstood(line, kinds, source, cache) {
 var READS_ONLY = () => true;
 var isOption = (arg) => arg.startsWith("-") && arg !== "-";
 var isShortCluster = (arg) => /^-[^-]/.test(arg);
+function readsFileByOption(shape, arg) {
+  if (arg.startsWith("--")) {
+    const name = arg.split("=")[0] ?? arg;
+    return name.length >= 3 && shape.readsLong?.some((long) => long.startsWith(name)) === true;
+  }
+  return [...arg.slice(1)].some((letter) => shape.readsShort?.includes(letter) === true);
+}
+function readerWords(shape, args) {
+  let words = 0;
+  let scripted = false;
+  let optionsEnded = false;
+  for (let index = 0;index < args.length; index++) {
+    const arg = args[index] ?? "";
+    if (arg === "-")
+      continue;
+    if (optionsEnded || !isOption(arg)) {
+      words++;
+      continue;
+    }
+    if (arg === "--") {
+      optionsEnded = true;
+      continue;
+    }
+    if (readsFileByOption(shape, arg))
+      return null;
+    if (arg.startsWith("--")) {
+      const name = arg.split("=")[0] ?? arg;
+      if (name === shape.script?.long)
+        scripted = true;
+      if (!arg.includes("=") && shape.longValued?.includes(name) === true)
+        index++;
+      continue;
+    }
+    for (let at = 1;at < arg.length; at++) {
+      const letter = arg.charAt(at);
+      if (letter === shape.script?.short)
+        scripted = true;
+      if (!shape.valued.includes(letter))
+        continue;
+      if (at === arg.length - 1)
+        index++;
+      break;
+    }
+  }
+  return { scripted, words };
+}
+function readsStdinOnly(shape, args) {
+  const found = readerWords(shape, args);
+  return found !== null && found.words <= (found.scripted ? 0 : shape.operands);
+}
+var NO_WORDS = { operands: 0, valued: "" };
+var HEAD_TAIL_SHAPE = {
+  operands: 0,
+  valued: "nc",
+  longValued: ["--lines", "--bytes"]
+};
+var CUT_SHAPE = {
+  operands: 0,
+  valued: "bcdf",
+  longValued: ["--bytes", "--characters", "--delimiter", "--fields", "--output-delimiter"]
+};
+var FILES0_LIST = ["--files0-from"];
+var SORT_SHAPE = {
+  operands: 0,
+  valued: "kStT",
+  longValued: ["--key", "--field-separator", "--buffer-size", "--temporary-directory"],
+  readsLong: FILES0_LIST
+};
+var UNIQ_SHAPE = {
+  operands: 0,
+  valued: "fsw",
+  longValued: ["--skip-fields", "--skip-chars", "--check-chars"]
+};
+var GREP_SHAPE = {
+  operands: 1,
+  valued: "emABCD",
+  longValued: ["--regexp", "--max-count", "--after-context", "--before-context", "--context"],
+  script: { short: "e", long: "--regexp" },
+  readsShort: "rRfd",
+  readsLong: [
+    "--recursive",
+    "--dereference-recursive",
+    "--file",
+    "--exclude-from",
+    "--directories"
+  ]
+};
+var AWK_SHAPE = { operands: 1, valued: "Fv" };
+var SED_SCRIPT = { short: "e", long: "--expression" };
+var SED_LENGTH = { short: "l", long: "--line-length" };
+var SED_SHAPE = {
+  operands: 1,
+  valued: SED_SCRIPT.short + SED_LENGTH.short,
+  longValued: [SED_SCRIPT.long, SED_LENGTH.long],
+  script: SED_SCRIPT
+};
 function catReadsStdin(args) {
   return args.every((arg) => arg === "-" || isOption(arg));
 }
@@ -23169,15 +23329,10 @@ function sortReadsOnly(args) {
   return !args.some((arg) => arg.startsWith("--o") || arg.startsWith("--co") || isShortCluster(arg) && arg.includes("o"));
 }
 function uniqReadsOnly(args) {
-  let files = 0;
-  for (let index = 0;index < args.length; index++) {
-    const arg = args[index] ?? "";
-    if (arg === "-f" || arg === "-s" || arg === "-w")
-      index++;
-    else if (!isOption(arg))
-      files++;
-  }
-  return files <= 1;
+  const read = readerWords(UNIQ_SHAPE, args);
+  if (read === null)
+    return false;
+  return read.words + args.filter((arg) => arg === "-").length <= 1;
 }
 function rgReadsOnly(args) {
   return !args.some((arg) => arg.startsWith("--pre") || arg.startsWith("--hostname-bin") || arg === "--search-zip" || isShortCluster(arg) && arg.includes("z"));
@@ -23313,20 +23468,20 @@ function sedReadsOnly(args) {
   const operands = [];
   for (let index = 0;index < args.length; index++) {
     const arg = args[index] ?? "";
-    const expression = /^-[nErsuz]*e(.*)$/s.exec(arg);
+    const expression = new RegExp(`^-[nErsuz]*${SED_SCRIPT.short}(.*)$`, "s").exec(arg);
     if (expression !== null) {
       const value = expression[1] === "" ? args[++index] : expression[1];
       if (value === undefined)
         return false;
       scripts.push(value);
-    } else if (arg === "--expression") {
+    } else if (arg === SED_SCRIPT.long) {
       const value = args[++index];
       if (value === undefined)
         return false;
       scripts.push(value);
-    } else if (arg.startsWith("--expression=")) {
-      scripts.push(arg.slice("--expression=".length));
-    } else if (/^--line-length=\d+$/.test(arg)) {} else if (arg === "-l" && /^\d+$/.test(args[index + 1] ?? "")) {
+    } else if (arg.startsWith(`${SED_SCRIPT.long}=`)) {
+      scripts.push(arg.slice(SED_SCRIPT.long.length + 1));
+    } else if (arg.startsWith(`${SED_LENGTH.long}=`) && /^\d+$/.test(arg.slice(SED_LENGTH.long.length + 1))) {} else if (arg === `-${SED_LENGTH.short}` && /^\d+$/.test(args[index + 1] ?? "")) {
       index++;
     } else if (SED_SHORT.test(arg) || SED_LONG.has(arg)) {} else if (isOption(arg)) {
       return false;
@@ -23342,6 +23497,7 @@ function sedReadsOnly(args) {
   }
   return scripts.every(sedScriptReadsOnly);
 }
+var AWK_OPENS_FILES = /getline|ARG[CV]/;
 function awkReadsOnly(args) {
   let program;
   for (let index = 0;index < args.length; index++) {
@@ -23350,9 +23506,10 @@ function awkReadsOnly(args) {
       program = args[index + 1];
       break;
     }
-    if (arg === "-F" || arg === "-v")
+    const takesValue = isOption(arg) && !arg.startsWith("--") && AWK_SHAPE.valued.includes(arg.charAt(1));
+    if (takesValue && arg.length === 2)
       index++;
-    else if (/^-[Fv]./s.test(arg))
+    else if (takesValue && arg.length > 2)
       continue;
     else if (isOption(arg))
       return false;
@@ -23361,27 +23518,27 @@ function awkReadsOnly(args) {
       break;
     }
   }
-  return program !== undefined && !/[>|@]|system/.test(program);
+  return program !== undefined && !/[>|@]|system/.test(program) && !AWK_OPENS_FILES.test(program);
 }
 var READ_ONLY_FILTERS = {
-  awk: awkReadsOnly,
-  cat: catReadsStdin,
-  cut: READS_ONLY,
-  egrep: READS_ONLY,
-  fgrep: READS_ONLY,
-  gawk: awkReadsOnly,
-  grep: READS_ONLY,
-  head: READS_ONLY,
-  mawk: awkReadsOnly,
-  nawk: awkReadsOnly,
-  rg: rgReadsOnly,
-  sed: sedReadsOnly,
-  sort: sortReadsOnly,
-  tail: READS_ONLY,
-  tee: teeWritesNoFile,
-  tr: READS_ONLY,
-  uniq: uniqReadsOnly,
-  wc: READS_ONLY
+  awk: { check: awkReadsOnly, shape: AWK_SHAPE },
+  cat: { check: catReadsStdin, shape: NO_WORDS },
+  cut: { check: READS_ONLY, shape: CUT_SHAPE },
+  egrep: { check: READS_ONLY, shape: GREP_SHAPE },
+  fgrep: { check: READS_ONLY, shape: GREP_SHAPE },
+  gawk: { check: awkReadsOnly, shape: AWK_SHAPE },
+  grep: { check: READS_ONLY, shape: GREP_SHAPE },
+  head: { check: READS_ONLY, shape: HEAD_TAIL_SHAPE },
+  mawk: { check: awkReadsOnly, shape: AWK_SHAPE },
+  nawk: { check: awkReadsOnly, shape: AWK_SHAPE },
+  rg: { check: rgReadsOnly, shape: null },
+  sed: { check: sedReadsOnly, shape: SED_SHAPE },
+  sort: { check: sortReadsOnly, shape: SORT_SHAPE },
+  tail: { check: READS_ONLY, shape: HEAD_TAIL_SHAPE },
+  tee: { check: teeWritesNoFile, shape: NO_WORDS },
+  tr: { check: READS_ONLY, shape: { operands: 2, valued: "" } },
+  uniq: { check: uniqReadsOnly, shape: UNIQ_SHAPE },
+  wc: { check: READS_ONLY, shape: { operands: 0, valued: "", readsLong: FILES0_LIST } }
 };
 function isReadOnlyFilter(step) {
   if (step.pipedFrom === null || step.pipedFrom.trim() === "" || step.expanded)
@@ -23391,7 +23548,7 @@ function isReadOnlyFilter(step) {
     return false;
   const words = filled.map((word) => word.text);
   const program = programName(words[0] ?? "");
-  const check = READ_ONLY_FILTERS[program];
+  const check = READ_ONLY_FILTERS[program]?.check;
   if (check === undefined)
     return false;
   const invocation = invocationOf(words);
@@ -23401,6 +23558,115 @@ function isReadOnlyFilter(step) {
   if (redirectionTargets(filled).some((target) => target !== "/dev/null"))
     return false;
   return check(withoutRedirections(invocation.args));
+}
+var GLUE_COMMANDS = new Set([
+  ":",
+  "[",
+  "echo",
+  "exit",
+  "export",
+  "false",
+  "printf",
+  "pwd",
+  "return",
+  "set",
+  "test",
+  "true"
+]);
+var INPUT_REDIRECTION = /^\d*<(?![<(])/;
+function readsAFile(words) {
+  for (let index = 0;index < words.length; index++) {
+    const word = words[index] ?? "";
+    if (!INPUT_REDIRECTION.test(word))
+      continue;
+    const attached = word.replace(/^\d*<>?/, "");
+    const target = attached === "" ? words[++index] ?? "" : attached;
+    if (target !== "/dev/null")
+      return true;
+  }
+  return false;
+}
+function isGlueReader(step) {
+  if (!isReadOnlyFilter(step))
+    return false;
+  const words = wordsOf(step.text, "bash");
+  const invocation = invocationOf(words);
+  const shape = invocation === undefined ? null : READ_ONLY_FILTERS[invocation.program]?.shape;
+  if (invocation === undefined || !shape || invocation.program !== words[0])
+    return false;
+  if (words.some((word) => INPUT_REDIRECTION.test(word)))
+    return false;
+  return readsStdinOnly(shape, withoutRedirections(invocation.args));
+}
+var ARITHMETIC_WORD = /\$\(\(|\$\[|\$\{(?:!|[^}]*(?:\[|:[^-=?+]|@))/;
+var LITERAL_SUBSCRIPT = /\$\{#?[A-Za-z_]\w*\[(?:\d+|@|\*)\]\}/g;
+function runsAsArithmetic(word) {
+  return ARITHMETIC_WORD.test(word.replace(LITERAL_SUBSCRIPT, "V"));
+}
+var SET_OPTIONS = /^[-+][A-Za-z]+$/;
+var SET_OPTION_NAME = /^[A-Za-z][A-Za-z-]*$/;
+var EXIT_CODE = new RegExp(`^(?:\\d+|\\$\\?|${LITERAL_SUBSCRIPT.source})$`);
+var SAFE_SET_LETTERS = /^-[euo]+$/;
+var SAFE_SET_NAMES = new Set(["errexit", "nounset", "pipefail"]);
+function setsOptionsOnly(args) {
+  let wantsName = false;
+  let turnsOn = false;
+  for (const arg of args) {
+    if (wantsName) {
+      if (!SET_OPTION_NAME.test(arg))
+        return false;
+      if (turnsOn && !SAFE_SET_NAMES.has(arg))
+        return false;
+      wantsName = false;
+    } else if (SET_OPTIONS.test(arg)) {
+      turnsOn = arg.startsWith("-");
+      if (turnsOn && !SAFE_SET_LETTERS.test(arg))
+        return false;
+      wantsName = arg.endsWith("o");
+    } else {
+      return false;
+    }
+  }
+  return args.length > 0 && !wantsName;
+}
+function glueArguments(program, words, plain) {
+  if (program === "printf") {
+    const format = plain[0];
+    if (format === undefined)
+      return true;
+    return !format.startsWith("-") && words.every((word) => word.text !== format || !word.filled);
+  }
+  if (program === "test" || program === "[") {
+    return !words.some((word) => word.filled) && !plain.some((arg) => arg === "-v" || arg === "-R");
+  }
+  if (program === "set")
+    return setsOptionsOnly(plain);
+  if (program === "exit" || program === "return") {
+    return plain.length === 0 || plain.length === 1 && EXIT_CODE.test(plain[0] ?? "");
+  }
+  if (program === "export") {
+    return isAssignmentOnly(plain) && !plain.some((word) => /\$\(|`/.test(word));
+  }
+  return true;
+}
+function isGlueCommand(step) {
+  if (step.expanded)
+    return false;
+  const filled = wordsWithFill(step.text, "bash");
+  const words = filled.map((word) => word.text);
+  const invocation = invocationOf(words);
+  if (invocation === undefined || invocation.computed || invocation.prefix.length > 0 || invocation.program !== words[0]) {
+    return false;
+  }
+  if (redirectionTargets(filled).some((target) => target !== "/dev/null"))
+    return false;
+  if (words.some(runsAsArithmetic))
+    return false;
+  const { program } = invocation;
+  if (GLUE_COMMANDS.has(program)) {
+    return glueArguments(program, filled.slice(1), withoutRedirections(invocation.args));
+  }
+  return isGlueReader(step);
 }
 function splitAtFilters(line) {
   const steps = shellSteps(line, { blindWhenOpen: true, dialect: "bash", joinLines: true });
@@ -23446,6 +23712,18 @@ function routableLine(bashCommand, kinds, source) {
   const { heavy, filters } = cutAtFilters(bashCommand);
   const kind = routableKinds(heavy, kinds, source)?.[0];
   return kind === undefined ? null : { filters, heavy, kind };
+}
+function mixedHeavyLine(line, kinds, source) {
+  if (routableLine(line, kinds, source) !== null)
+    return null;
+  const heavy = newScan();
+  scan(line, kinds, "bash", 0, runOf(source), false, heavy);
+  const slot = slotRun(heavy, kinds, source);
+  if (slot === "none" || slot === "light")
+    return null;
+  const rule = newScan();
+  scan(line, kinds, "bash", 0, runOf(source), true, rule);
+  return rule.stray === null ? null : { kind: slot.kind, other: rule.stray, run: slot.text };
 }
 
 // src/jobs/git-hooks.ts
@@ -24812,6 +25090,21 @@ function powerShellDenial(command, kinds, source) {
 `) : `${why}
 Run it with the Bash tool instead, written for Bash: there a heavy command alone (or after a cd, or piped into a filter such as tail) waits for a slot in the queue.`);
 }
+var QUOTED_MAX = 120;
+function quoted(text) {
+  const line = text.replace(/\s+/g, " ");
+  return line.length <= QUOTED_MAX ? line : `${line.slice(0, QUOTED_MAX)}\u2026`;
+}
+function mixedLineDenial(command, kinds, source) {
+  const mixed = mixedHeavyLine(command, kinds, source);
+  if (mixed === null)
+    return null;
+  return toolDecision("deny", [
+    `This line runs heavy work (${mixed.run === null ? mixed.kind : `${mixed.kind}: ${quoted(mixed.run)}`}) beside other commands (${quoted(mixed.other)}). The job queue cannot take the whole line without hiding those commands from your permission rules, and run raw the heavy part would not wait for a free slot; many heavy runs at once have run machines out of memory.`,
+    `Run the heavy command on its own line, where it waits for a slot in the queue: it may keep a cd before it, a redirection, echo or printf around it, and a pipe into tail, head or grep with plain words (no $VAR or $(\u2026) in the reader's words, and no file for it to read). Then run the other commands in a separate call. To keep the exit code on one line, write { cmd; echo "exit $?"; } 2>&1 | tail -20.`
+  ].join(`
+`));
+}
 function routeDenial(routed) {
   return toolDecision("deny", [
     `This is a heavy command (${routed.kind}): running it raw does not wait for a free slot, and many heavy runs at once have run machines out of memory.`,
@@ -24860,7 +25153,15 @@ function jobRoute(context, bashTool = bashToolExists, platform = process.platfor
     const refused = powerShellDenial(command, kinds, source);
     return refused !== null && bashTool(context.env) ? refused : SILENT;
   }
-  const routed = routesHeavyCommands(context) ? routeHeavyCommand(command, kinds, routedShell(context.env), source) ?? routeGitHooks(command, context, kinds, platform) : null;
+  if (!routesHeavyCommands(context))
+    return SILENT;
+  let routed = routeHeavyCommand(command, kinds, routedShell(context.env), source);
+  if (routed === null) {
+    const refused = mixedLineDenial(command, kinds, source);
+    if (refused !== null)
+      return refused;
+    routed = routeGitHooks(command, context, kinds, platform);
+  }
   if (routed === null)
     return SILENT;
   if (!REWRITE_SUPPORTED)

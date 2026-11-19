@@ -1645,14 +1645,16 @@ export function redirectionTargets(words: readonly (string | ShellWord)[]): stri
     const known = typeof word !== "string" && !word.filled;
     const redirection = (known ? ANY_REDIRECTION : REDIRECTION).exec(textOf(word));
     if (redirection === null) continue;
+    const operator = redirection[1] ?? "";
     let target = redirection[2] ?? "";
-    if (target === "") {
+    // `>& out.txt`: the `&` is the operator's, so the file is the next word, as after a bare `>`.
+    const apart = operator === ">" && target === "&";
+    if (target === "" || apart) {
       // The target is the next word.
       const next = words[++index] ?? "";
       if (isProcessSubstitution(next)) continue;
-      target = textOf(next);
+      target = apart ? `&${textOf(next)}` : textOf(next);
     }
-    const operator = redirection[1] ?? "";
     if (operator === ">" && target.startsWith("&")) {
       // `>&2` and `>&-` name a descriptor; `>&log` sends both streams to the file.
       target = /^&(\d+|-)$/.test(target) ? "" : target.slice(1);
@@ -1763,6 +1765,20 @@ export const RUNNER_PROGRAM_NAMES: readonly string[] = ["find", "parallel", "su"
 /** True when `program` is a runner (`RUNNER_PROGRAM_NAMES`). */
 export function isRunnerProgram(program: string): boolean {
   return RUNNER_PROGRAM_NAMES.includes(program);
+}
+
+/** The programs that run a command as another user: a person's rules for them must see it. */
+export const AS_ANOTHER_USER_NAMES: readonly string[] = ["doas", "pkexec", "su", "sudo"];
+
+/**
+ * True when the command runs as another user: its program is one of `AS_ANOTHER_USER_NAMES`
+ * (`su -c …`), or one of them stands among the words before it (`sudo -u me git …`,
+ * `env sudo …`).
+ */
+export function runsAsAnotherUser(invocation: Invocation): boolean {
+  return [invocation.program, ...invocation.prefix].some((word) =>
+    AS_ANOTHER_USER_NAMES.includes(programName(word)),
+  );
 }
 
 /** `find`'s actions that run a command, up to a `;` or a `{} +`. */
