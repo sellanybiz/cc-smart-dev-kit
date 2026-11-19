@@ -129,17 +129,27 @@ cc-smart-dev-kit herdr send <terminal> "Follow-up [#n]: <finding> [files now hel
   status before the first send: a null status is refused as blocked.
 - **What the child does** (its brief holds the steps): it resets its worktree to the default
   branch only when that branch has no commits of its own and the tree is clean. Before each
-  finding it reads its pull request's state: open, add to it; merged or closed, reset to the
-  default branch and open a new one. It never edits a file a held plan holds; it reports that
+  finding it reads its pull request's state: open, add to it; merged or closed, it compares HEAD
+  with the pull request's head commit (`gh pr view --json headRefOid`). Equal: it resets to the
+  default branch. Different: it makes a new branch from the default branch and moves the
+  unshipped commits onto it (`git cherry-pick <pr head>..HEAD`), never dropping them; this also
+  holds after a squash merge. It never edits a file a held plan holds; it reports that
   finding instead, and the lead treats it as inside that plan. A small fix is fixed, checked and
   reviewed; a bigger one goes to plan mode, approved by the person in its pane. It makes one
-  commit for each finding, marks its issue fixed, may push its branch (a free backup) and reports
-  after each finding. Its own findings go in its report: it never asks, files or starts.
+  commit for each finding, marks its issue fixed and reports after each finding. It may push its
+  branch only while it has no open pull request (a free backup); with one open it pushes only on
+  `ship`. Its own findings go in its report: it never asks, files or starts.
 - **Ship.** At the session's ship point (`/cc-smart-dev-kit:commit` § Pushing) the lead sends
   `herdr send <terminal> "ship"`. Only then does the child run the full check, then open its pull
   request or push to its open one, once, as `workflow show` says (the `Fixes` lines from
-  `issue fixed`). A blocked child gets the `ship` the next time the lead sees it idle, working or
-  done.
+  `issue fixed`). A `ship` with nothing to ship is answered "nothing to ship" in its report; one
+  that arrives mid-finding is done after that finding.
+  - **A blocked child** cannot take it: tell the person where it waits (`hc attach <terminal>`)
+    and save a task note on your work (or a loose task) "send ship to <terminal>". The next time
+    you see the child idle, working or done, send it. A child in the error state: tell the person
+    to look at its pane.
+  - **Away:** park the send as an `action` with its exact command
+    (`/cc-smart-dev-kit:user-unavailable`).
 - **It never stops on its own.** `herdr stop <terminal>` ends it. `herdr wait --all` does not wait
   for it, and `herdr list` shows it as a follow-up.
 - **A plan child and a follow-up child never start one.** The start is refused in any child
