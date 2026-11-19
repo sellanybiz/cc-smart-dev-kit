@@ -536,11 +536,12 @@ or reviewer reports. Claude acts the moment it finds one.
 One follow-up child serves every follow-up of a lead and repository: one worktree, one branch, one
 pull request at a time. It never edits a file a held plan holds, and it never stops on its own.
 
-For each finding it makes one commit. Beyond a small fix it gets one second opinion from
-`senior-engineer` first (its brief allows that agent and no other); work that needs a kit plan goes
-back to the lead. It never pushes before `ship`. It opens or updates its pull request only when the
-lead sends `ship`. Then it runs the full check, marks each fixed issue with `issue mark-fixed`,
-pushes once and writes the body's `Fixes` lines from `issue fixed`.
+For each finding it makes one commit, with the issue in the subject as `(#n)`. Beyond a small fix it
+then gets one second opinion on that commit from `senior-engineer` (and the `edge-case-hunter` on a
+risky change); its brief allows no other agent, and work that needs a kit plan goes back to the
+lead. It never pushes before `ship`. It opens or updates its pull request only when the lead sends
+`ship`. Then it runs the full check, marks each fixed issue with `issue mark-fixed`, pushes once and
+writes the body's `Fixes` lines from `issue fixed` (on an open pull request it replaces them).
 
 The lead sends `ship` at the session's ship point: the end of the turn that finishes your request,
 or when you say ship now. When the child's earlier pull request has merged, it starts a new branch

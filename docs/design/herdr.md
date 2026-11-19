@@ -341,29 +341,38 @@ It never stops on its own: after each report it waits for the next message, and 
 3. Never edit a file a held plan holds. The trailer lists each held plan's slug and files, a
    snapshot taken at the start (`heldPlans`, stored file lists only). The lead names the files of
    a plan held later in its `send` text. A finding in those files goes in the report.
-4. A small fix: fix, check, review the diff. Beyond a small fix (`/cc-smart-dev-kit:review`
-   defines it): one second opinion from `cc-smart-dev-kit:senior-engineer` before the commit. The
-   brief allows that agent and no other, because the general instructions require the second
-   opinion and a linked child's brief otherwise forbids every agent. Work that needs a kit plan
-   goes back to the lead in the report: the child never runs plan-task or build. Other bigger
-   work: plan mode, approved by the person in the child's pane.
-5. One commit per finding. **It never pushes before `ship`:** its commits stay in its worktree.
+4. A small fix: fix, check, review the diff. Work that needs a kit plan goes back to the lead in
+   the report: the child never runs plan-task or build. Other bigger work: plan mode, approved by
+   the person in the child's pane.
+5. One commit per finding, with its issue in the subject as `(#n)` and no closing keyword, so the
+   ship step reads the issue back from `git log`. Beyond a small fix (`/cc-smart-dev-kit:review`
+   defines it) the child then starts one second opinion on that commit from
+   `cc-smart-dev-kit:senior-engineer`, and the `cc-smart-dev-kit:edge-case-hunter` on a risky
+   change as that skill says. The brief allows those agents and no other, because the general
+   instructions require the second opinion and a linked child's brief otherwise forbids every
+   agent. The review runs on the commit because the review record counts the commit the folder is
+   on when the reviewer starts; the child commits nothing while it runs, and its confirmed fixes
+   go in one more commit. **It never pushes before `ship`:** its commits stay in its worktree.
    (A push before the pull request opens costs no CI only where CI runs on pull requests and the
    default branch alone; the child cannot know the project's triggers, so it never counts on
    that.)
 6. **Ship only when a message from the lead says `ship`.** Then: the project's full check; then,
    before the push, `issue mark-fixed --issue <n> --base <base> --branch <shipping branch> --tip
-   <id>` for every commit of its own that is not yet on `origin/<base>` and has an issue, with
+   <id>` for every commit of its own that is not yet on `origin/<base>` and whose subject names an issue, with
    `<id>` the commit's current id on the shipping branch (a cherry-pick or a new branch gives new
    ids, and `issue fixed` finds an issue by its marker commit). `<base>` is the branch the pull
    request targets, not the child's own branch: the comment would read "merged into" the wrong
    branch. The comment posts before the merge, because the `Fixes` lines need the mark first, so
    it says "merged" a little early. Skipped when issues are off. Marking at the ship, not after
-   each commit, means a commit that never ships (a closed pull request, a conflict) never leaves
-   a mark that names a branch which does not carry it. Then one push, then open the pull request
-   or push to the open one, as `workflow show` says (where it is off, ask the person in this
-   terminal). The body's `Fixes` lines come from `issue fixed --base origin/<base> --head
-   <branch>`, never by hand. A `ship` mid-finding waits until that finding is done. A `ship` with
+   each commit, means a commit that never ships (an aborted cherry-pick, a finding dropped before
+   the ship) never leaves a mark that names a branch which does not carry it. (A commit whose pull
+   request was closed was marked at the ship that opened it; the mark stays, and becomes true when
+   the branch ships again.) Then one push, then open the pull request or push to the open one, as
+   `workflow show` says (where it is off, ask the person in this terminal). The body's `Fixes`
+   lines come from `issue fixed --base origin/<base> --head <branch>`, never by hand. When it
+   pushes to an open pull request, it replaces the body's `Fixes` lines with what that command
+   prints now (`gh pr view <n> --json body`, then `gh pr edit <n> --body-file -`), so an issue
+   marked at this ship is closed by the merge. A `ship` mid-finding waits until that finding is done. A `ship` with
    nothing to ship is answered "nothing to ship" in the report.
 7. `herdr report` after each finding and after each ship.
 
