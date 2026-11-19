@@ -22,6 +22,7 @@ import type { RouterServiceKind, Runner } from "../gateway/service";
 import { herdrChecks } from "../herdr/doctor";
 import type { HcRunner } from "../herdr/hc";
 import { heavyJobChecks } from "../jobs/doctor";
+import type { LimitFacts } from "../jobs/limits";
 import {
   MEMORY_USE_KEY,
   readClaudeMemSettings,
@@ -1191,6 +1192,12 @@ export interface DoctorOptions {
   gateway: DoctorGateway;
   /** Optional orchestration checks: the command injects its runner; absent means not checked. */
   herdr?: HcRunner;
+  /**
+   * What the heavy jobs' CPU and memory caps need from this machine (`jobs/limits.ts`): the
+   * caps' lines read files and the process list only, so the portal passes the same facts. Null
+   * or left out: no caps lines (a test about another part).
+   */
+  limits?: LimitFacts | null;
   /** Where the plugin's instructions are, and the folder doctor was started in. */
   local: DoctorLocal;
   /** Check the MCP servers setup registers (`mcp/doctor.ts`); null or left out: no MCP checks. */
@@ -1230,7 +1237,7 @@ interface GroupRun {
 function doctorGroups(
   paths: CliPaths,
   env: Env,
-  { browser, bun, gateway, herdr, local, mcp, portal, project, read, live }: DoctorOptions,
+  { browser, bun, gateway, herdr, limits, local, mcp, portal, project, read, live }: DoctorOptions,
 ): GroupRun[] {
   const settings = readSettings(paths.settingsFile);
   const runtime = checkBun(bun, paths);
@@ -1283,7 +1290,7 @@ function doctorGroups(
       run: async () => [
         checkRetryWatchdog(paths),
         checkMaxSubagents(paths),
-        ...heavyJobChecks(paths),
+        ...heavyJobChecks(paths, limits ?? null),
       ],
     },
     {

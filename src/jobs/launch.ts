@@ -1,6 +1,7 @@
 /** Launch a plain child and forward its signals and exit code. */
 import { spawn } from "node:child_process";
 import { constants } from "node:os";
+import type { ScopeHandle } from "./limits";
 import { endJobTree, processIsGone, realWindowsFacts, type WindowsFacts } from "./windows";
 
 export function exitCodeOf(code: number | null, signal: NodeJS.Signals | null): number {
@@ -42,6 +43,12 @@ export interface SignalSource {
 }
 
 export interface SpawnOptions {
+  /**
+   * The job's systemd scope (`limits.ts`), or null. A signal goes to the process group and also
+   * through the scope, which reaches a worker that left the group; the job is over only once the
+   * scope is empty too.
+   */
+  scope?: ScopeHandle | null;
   /** How long leftovers get to end by themselves after the job's first process ended. */
   leftoverGraceMs?: number;
   /** How long after SIGTERM before SIGKILL, and after SIGKILL before giving up. */
@@ -97,6 +104,7 @@ export function spawnAndWait(
   options: SpawnOptions = {},
 ): Promise<JobEnd> {
   const [program, ...args] = argv;
+  const scope = options.scope ?? null;
   const pollMs = options.pollMs ?? GROUP_POLL_MS;
   // Windows has no signals and no process groups to signal (`windows.ts`).
   const windows = (options.platform ?? process.platform) === "win32";
@@ -111,9 +119,11 @@ export function spawnAndWait(
         if (windows) endJobTree(pgid, windowsFacts);
         else signalGroup(pgid, signal);
       }
+      scope?.kill(signal);
     };
     const isEmpty = () =>
-      pgid === undefined || (windows ? processIsGone(pgid) : groupIsEmpty(pgid));
+      (pgid === undefined || (windows ? processIsGone(pgid) : groupIsEmpty(pgid))) &&
+      (scope?.isEmpty() ?? true);
     /** Waits up to `ms` for the group and the scope to empty; true when they did. */
     const emptyWithin = async (ms: number): Promise<boolean> => {
       const end = Date.now() + ms;

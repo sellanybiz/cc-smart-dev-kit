@@ -5,6 +5,7 @@
  */
 
 import type { JobEnd } from "./launch";
+import type { LimitedStart, LimitJob, ScopeHandle } from "./limits";
 import { durationText, ENDED_LINE_LEAD, type QueuedJob, type Reservation } from "./queue";
 
 export interface JobRequest {
@@ -31,8 +32,13 @@ export interface JobDeps {
   acquire: (job: QueuedJob, onWaiting: (line: string) => void) => Promise<Reservation>;
   /** How this machine's clock reads: the two lines that say how long something took. */
   now: () => number;
-  /** Starts the command and waits for it. */
-  run: (argv: readonly [string, ...string[]]) => Promise<JobEnd>;
+  /**
+   * Gets the CPU and memory limits ready for a queued job (`startLimits`), and says how to start
+   * it. Never throws: when the limits cannot apply, the job runs as it would have.
+   */
+  limits: (job: LimitJob) => LimitedStart;
+  /** Starts the command and waits for it; `scope` is the systemd scope it runs in, or null. */
+  run: (argv: readonly [string, ...string[]], scope: ScopeHandle | null) => Promise<JobEnd>;
   say: (line: string) => void;
   /** True once a signal asked `job run` to stop: nothing new starts after it. */
   stopped?: () => boolean;
@@ -65,6 +71,8 @@ function endedLine(what: string, end: JobEnd, ranMs: number): string {
 interface Running {
   /** The argv `job run` starts. */
   argv: readonly [string, ...string[]];
+  /** The systemd scope the job runs in, or null. */
+  scope: ScopeHandle | null;
   /** When the job's first waiting line was printed, or null when it never waited. */
   waitedSince: number | null;
   /** What the lines call the job (`describeCommand`). */
@@ -89,7 +97,7 @@ async function runTimed(running: Running, deps: JobDeps): Promise<Ran> {
     deps.say(startedLine(running.what, deps.now() - waitedSince));
   }
   const beganAt = deps.now();
-  const end = await deps.run(running.argv);
+  const end = await deps.run(running.argv, running.scope);
   return { end, ranMs: deps.now() - beganAt };
 }
 
@@ -112,7 +120,7 @@ async function runNested(request: JobRequest, deps: JobDeps): Promise<number> {
   const { exclusive } = request;
   const what = describeCommand(request.command);
   if (exclusive === undefined || (await deps.ancestorHoldsName(exclusive))) {
-    return (await deps.run(request.command)).code;
+    return (await deps.run(request.command, null)).code;
   }
   const reservation = await deps.acquire(
     {
@@ -130,6 +138,7 @@ async function runNested(request: JobRequest, deps: JobDeps): Promise<number> {
     if (deps.stopped?.() === true) return 1;
     const running: Running = {
       argv: request.command,
+      scope: null,
       waitedSince: reservation.waitedSince,
       what,
     };
@@ -145,7 +154,7 @@ async function runNested(request: JobRequest, deps: JobDeps): Promise<number> {
 export async function runJob(request: JobRequest, deps: JobDeps): Promise<number> {
   if (deps.stopped?.()) return 1;
   if (!request.slot && request.exclusive === undefined)
-    return (await deps.run(request.command)).code;
+    return (await deps.run(request.command, null)).code;
   if (await deps.isNested()) return runNested(request, deps);
   const reservation = await deps.acquire(
     {
@@ -160,12 +169,28 @@ export async function runJob(request: JobRequest, deps: JobDeps): Promise<number
   );
   try {
     if (deps.stopped?.()) return 1;
+    // Only a job that holds a slot runs in the limited scope: a name-only run (`--exclusive`)
+    // and a print-only run are not heavy jobs, and the slice's limits are for heavy ones. The
+    // limits are got ready now, with the slot held, never while the job waits.
+    const limits = request.slot
+      ? deps.limits({
+          command: request.command,
+          kind: request.kind,
+          pid: request.pid,
+          startedAt: deps.now(),
+        })
+      : null;
+    if (limits !== null && !limits.on && limits.line !== null) deps.say(limits.line);
     const running: Running = {
-      argv: request.command,
+      argv: limits?.on ? limits.argv : request.command,
+      scope: limits?.on ? limits.scope : null,
       waitedSince: reservation.waitedSince,
       what: describeCommand(request.command),
     };
     const ran = await runTimed(running, deps);
+    // The memory line comes before the end line, which says the job's own status last.
+    const memoryLine = limits?.on ? limits.memoryLine(ran.end) : null;
+    if (memoryLine !== null) deps.say(memoryLine);
     sayEnded(running, ran, deps);
     return ran.end.code;
   } finally {

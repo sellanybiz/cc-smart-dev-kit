@@ -2,7 +2,10 @@ import { expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { cliPaths } from "../cli/paths";
+import { fakeLimitFacts } from "../testing/limit-facts";
 import { tempDir } from "../testing/temp";
+import { jobsPaths } from "./config";
+import type { LimitFacts } from "./limits";
 import { holderText } from "./queue";
 import {
   type JobContext,
@@ -13,12 +16,13 @@ import {
   statusLines,
 } from "./status";
 
-function world(): JobContext {
+function world(limits: LimitFacts = fakeLimitFacts().facts): JobContext {
   const home = tempDir("jobs-status");
   return {
     paths: cliPaths({ HOME: home, CLAUDE_CONFIG_DIR: join(home, ".claude") }),
     cwd: home,
     execArgv: [],
+    limits,
     say: () => {},
     print: () => {},
   };
@@ -37,10 +41,53 @@ test("status ignores even a malformed old jobs.json", async () => {
         used: 0,
         held: [],
         waiting: [],
-        note: "Heavy-job limit: 1 (default)",
+        note: "Heavy-job limit: 1 (default). Heavy-job caps: CPU 90%, memory 90% (default)",
       },
     ],
   });
+});
+
+// The CPU and memory caps are in the status note, which `job status`, `/api/jobs` and the
+// Machine page all read: no new field.
+test("the note carries the caps on Linux, and nothing about them elsewhere", async () => {
+  const file = (ctx: JobContext) => jobsPaths(ctx.paths.home).configFile;
+  const linux = world();
+  mkdirSync(join(file(linux), ".."), { recursive: true });
+  writeFileSync(file(linux), '{"cpuPercent":50}');
+  expect(jobsAnswer(await readJobs(linux)).stores[0]?.note).toBe(
+    `Heavy-job limit: 1 (default). Heavy-job caps: CPU 50%, memory 90% (${file(linux)})`,
+  );
+  const mac = world(fakeLimitFacts({ platform: "darwin" }).facts);
+  expect(jobsAnswer(await readJobs(mac)).stores[0]?.note).toBe("Heavy-job limit: 1 (default)");
+});
+
+test("a bad cap shows as off, with its key, and never stops the status", async () => {
+  const ctx = world();
+  const file = jobsPaths(ctx.paths.home).configFile;
+  mkdirSync(join(file, ".."), { recursive: true });
+  writeFileSync(file, '{"memoryPercent":7}');
+  const [store] = jobsAnswer(await readJobs(ctx)).stores;
+  expect(store?.slots).toBe(1);
+  expect(store?.note).toBe(
+    `Heavy-job limit: 1 (default). Heavy-job caps: off, ${file}: memoryPercent must be an integer from 10 to 100`,
+  );
+});
+
+// The portal polls `readJobs`: it must never start a program or ask systemd.
+test("reading the jobs never probes systemd", async () => {
+  const { facts } = fakeLimitFacts();
+  const refuse = (name: string) => () => {
+    throw new Error(`${name} must not be called`);
+  };
+  const ctx = world({
+    ...facts,
+    cpuCount: refuse("cpuCount"),
+    hasProgram: refuse("hasProgram"),
+    oomdRunning: refuse("oomdRunning"),
+    systemd: refuse("systemd"),
+  });
+  await readJobs(ctx);
+  expect(await readJobs(ctx)).toBeDefined();
 });
 /** A waiting job's record: `what` tells the jobs apart in the status lines. */
 const waitingRecord = (what: string, since: number) =>

@@ -15,6 +15,7 @@ import { COMMAND, MARKETPLACE_SOURCE, VERSION } from "../build-info";
 import { claudeDefaultsMarkerFile } from "../gateway/claude-defaults";
 import { USAGE as GATEWAY_USAGE } from "../gateway/commands";
 import { localDay } from "../gateway/safety-checks";
+import { TEST_LIMITS_VAR } from "../jobs/limits";
 import { type Machine, TEST_HOST_VAR } from "../machine/machine";
 import { recordMcpServer } from "../mcp/records";
 import { serenaLeftoverPaths } from "../mcp/retired";
@@ -270,6 +271,8 @@ function setup(options: SetupOptions = {}) {
     PATH: `${fakeBin}:${join(home, ".local", "bin")}:${bunBin}`,
     // The portal's own line, without a port: no test may read a real portal on the machine.
     [TEST_PORTAL_VAR]: "free",
+    // The heavy jobs' caps, as on a machine they do not apply to: no test reads real cgroups.
+    [TEST_LIMITS_VAR]: "darwin",
     [TEST_HOST_VAR]: JSON.stringify({
       existing: [...(options.existing ?? []), ...browserFiles],
       platform: "linux",
@@ -1192,10 +1195,11 @@ describe("cc-smart-dev-kit doctor", () => {
         "✓ Browser            6 passed, 1 note",
         // Chrome closed is the state a restart leaves: the first browser call starts it.
         '  · Google Chrome is not running: the first browser call starts it in the "claude-code" profile',
-        "✓ Alerts and limits  1 passed, 3 notes",
+        "✓ Alerts and limits  1 passed, 4 notes",
         "  · retry watchdog: on (set by cc-smart-dev-kit): a session waits and retries at a limit; turn it off with: cc-smart-dev-kit setup --no-retry-watchdog",
         "  · max subagents: 10 at once (set by cc-smart-dev-kit); to change it, run: cc-smart-dev-kit setup --max-subagents <n> (1–100)",
         "  · Heavy-job limit: 1 (default)",
+        "  · Heavy-job CPU and memory caps: not applied on darwin; heavy jobs run as they are",
         // The gateway is optional: never set up is information, not a failure.
         "· Gateway            1 note",
         "  · gateway: not set up (optional). To use it: cc-smart-dev-kit gateway setup",

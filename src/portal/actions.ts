@@ -38,6 +38,7 @@ import {
   slotKeyFromArg,
 } from "../gateway/targets";
 import { liveSessions } from "../hooks/sessions";
+import { realLimitFacts } from "../jobs/limits";
 import { type JobContext, readJobs, statusLines } from "../jobs/status";
 import { CLAUDE_PROVIDER, FALLBACK_OFF } from "../machine/claude-mem";
 import {
@@ -1960,6 +1961,9 @@ export function jobContext(action: ActionContext): JobContext {
   return {
     cwd: action.cwd,
     execArgv: process.execArgv,
+    // Reading the jobs never starts a program or asks systemd (`readJobs`), so the real facts
+    // are safe for the page the portal polls.
+    limits: realLimitFacts(),
     paths: action.portal.paths,
     print: () => undefined,
     say: () => undefined,

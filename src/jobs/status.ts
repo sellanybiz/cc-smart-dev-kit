@@ -3,7 +3,15 @@ import { join } from "node:path";
 import type { CliPaths } from "../cli/paths";
 import { resolveProject } from "../project/resolve";
 import { resolveJobRoute, type WorkflowSource } from "../workflow/resolve";
-import { heavyLimitLine, jobsPaths, readHeavyLimit } from "./config";
+import {
+  type HeavyLimit,
+  heavyLimitLine,
+  jobsPaths,
+  limitsLine,
+  readHeavyLimit,
+  readLimitSettings,
+} from "./config";
+import type { LimitFacts } from "./limits";
 import {
   formatSince,
   holderLines,
@@ -21,6 +29,11 @@ export interface JobContext {
   paths: CliPaths;
   cwd: string;
   execArgv: readonly string[];
+  /**
+   * What the CPU and memory limits need from this machine (`limits.ts`). The real facts come from
+   * the CLI entry and the portal; every test passes a fake. Reading a status never calls systemd.
+   */
+  limits: LimitFacts;
   say: (line: string) => void;
   print: (line: string) => void;
   now?: () => number;
@@ -90,6 +103,17 @@ function inLine(units: readonly StoreWaiting[]): ParsedHeld[] {
     .map(({ unit }) => ({ holder: parseHolder(unit.text), slot: unit.slot }));
 }
 
+/**
+ * The queue's limit and, on Linux, the CPU and memory caps, as one note. It reads the settings
+ * only: the portal polls it, so it never probes systemd (`doctor` reads what the slice carries).
+ */
+function limitNote(limit: HeavyLimit, ctx: JobContext): string {
+  const queue = heavyLimitLine(limit);
+  return ctx.limits.platform === "linux"
+    ? `${queue}. ${limitsLine(readLimitSettings(ctx.paths.home))}`
+    : queue;
+}
+
 export async function readJobs(ctx: JobContext): Promise<JobsRead> {
   const notes: string[] = [];
   let project: ReturnType<typeof resolveProject> = null;
@@ -111,7 +135,7 @@ export async function readJobs(ctx: JobContext): Promise<JobsRead> {
     dir: machine.dir,
     label: machine.label,
     slots: limit.slots,
-    note: heavyLimitLine(limit),
+    note: limitNote(limit, ctx),
     held: [],
     waiting: [],
   };
