@@ -39,7 +39,15 @@ import {
   withoutRedirections,
   wordsOf,
 } from "../shell/command";
-import { callOf, ruleMatches, ruleOfCommand, type ToolCall } from "../shell/tool";
+import {
+  argsHold,
+  type CommandRule,
+  callOf,
+  ruleMatches,
+  rulesOfCommand,
+  scriptToolName,
+  type ToolCall,
+} from "../shell/tool";
 import { deployTasksDir, scanDeployTasks } from "../tasks/deploy/files";
 import { DEPLOY_ENVS, type DeployEnv } from "../tasks/deploy/format";
 import { envRefusal, judgeTasks } from "../tasks/deploy/release";
@@ -59,24 +67,47 @@ export interface DeployRule {
   /** The entry's place in its environment's list: all the log says of it. */
   index: number;
   rule: MatchRule;
+  /** A script rule's own words (`npm run deploy -- prod`): the run's arguments must hold them. */
+  words?: CommandRule["words"];
 }
 
 /** The lists as `tasks.deployCommands` holds them: any value, so a raw file can be read too. */
 export type DeployLists = Readonly<Partial<Record<DeployEnv, readonly unknown[] | undefined>>>;
 
 /**
- * The rules of the lists, in order. A string is read by `ruleOfCommand`; anything else must be
+ * The rules a string entry gives: its text read as Bash and as PowerShell, so a Windows path
+ * (`.\scripts\deploy.ps1 prod`) keeps its folder and name in the second reading. Each distinct
+ * rule is kept.
+ */
+function rulesOfEntry(text: string): CommandRule[] {
+  const found = new Map<string, CommandRule>();
+  for (const dialect of ["bash", "powershell"] as const) {
+    for (const one of rulesOfCommand(text, dialect)) found.set(JSON.stringify(one), one);
+  }
+  return [...found.values()];
+}
+
+/**
+ * The rules of the lists, in order. A string is read by `rulesOfCommand`; anything else must be
  * a match rule. What neither can be (a number, a rule with an unknown key, a command that runs
  * nothing) is left out: the strict parse refuses such a file, and the lenient read keeps what
- * it can use.
+ * it can use. A rule's tool loses a script's extension, as a run's does (`scriptToolName`).
  */
 export function deployRulesOf(lists: DeployLists): DeployRule[] {
   const rules: DeployRule[] = [];
   for (const env of DEPLOY_ENVS) {
     (lists[env] ?? []).forEach((entry, index) => {
-      const rule =
-        typeof entry === "string" ? ruleOfCommand(entry) : matchRuleSchema.safeParse(entry).data;
-      if (rule !== undefined) rules.push({ env, index, rule });
+      if (typeof entry === "string") {
+        for (const one of rulesOfEntry(entry)) rules.push({ env, index, ...one });
+        return;
+      }
+      const rule = matchRuleSchema.safeParse(entry).data;
+      if (rule === undefined) return;
+      rules.push({
+        env,
+        index,
+        rule: "tool" in rule ? { ...rule, tool: scriptToolName(rule.tool) } : rule,
+      });
     });
   }
   return rules;
@@ -117,15 +148,18 @@ function runsIn(command: string, dialect: Dialect, joinLines: boolean, depth = 0
  * rule requires can match it, and only when it requires some: a rule of a tool alone, or of a
  * script, would match every `$X`.
  */
-function ruleHits(rule: MatchRule, run: Run): boolean {
-  if (!run.computed) return ruleMatches(rule, run.call);
+function ruleHits({ rule, words }: DeployRule, run: Run): boolean {
+  if (!run.computed) {
+    return ruleMatches(rule, run.call) && (words === undefined || argsHold(run.call.args, words));
+  }
   if ("script" in rule) return false;
   if ((rule.sub?.length ?? 0) === 0 && (rule.flags?.length ?? 0) === 0) return false;
   return ruleMatches(rule, { name: rule.tool, args: run.args });
 }
 
 /**
- * The listed deploy commands `command` runs, each once, in the order of the lists. `dialect`:
+ * The listed deploy commands `command` runs, each entry once (it may give two rules), in the
+ * order of the lists. `dialect`:
  * the tool's; not told, the line is read both ways.
  */
 export function deploysOf(
@@ -137,7 +171,13 @@ export function deploysOf(
   const runs = readingsOf(command, dialect).flatMap((reading) =>
     runsIn(command, reading.dialect, reading.joinLines),
   );
-  return rules.filter((one) => runs.some((run) => ruleHits(one.rule, run)));
+  const seen = new Set<string>();
+  return rules.filter((one) => {
+    const key = `${one.env}:${one.index}`;
+    if (seen.has(key) || !runs.some((run) => ruleHits(one, run))) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 /** The command of the call, or "" when the input names none. */

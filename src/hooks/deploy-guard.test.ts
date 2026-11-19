@@ -11,8 +11,8 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { renderDeployTask } from "../tasks/deploy/format";
-import { hookEnv, makeRepo, runEntry, runHook, writeClaudeFile } from "../testing/hooks";
-import { tempDir } from "../testing/temp";
+import { hookEnv, makeClone, makeRepo, runEntry, runHook, writeClaudeFile } from "../testing/hooks";
+import { git, tempDir } from "../testing/temp";
 import { type DeployLists, deployRulesOf, deploysOf } from "./deploy-guard";
 import type { HookResult } from "./io";
 import { HOOK_LOG_ENV, handleHook } from "./run";
@@ -141,6 +141,120 @@ describe("spellings that run a listed command match", () => {
     expect(hits("node scripts/deploy.js prod --yes", lists)).toEqual(["prod:0"]);
     expect(hits("python3 deploy.py", lists)).toEqual(["prod:1"]);
     expect(hits("python3 -u deploy.py now", lists)).toEqual(["prod:1"]);
+  });
+
+  test("a script file is the same tool by its own name and given to node, whatever its extension", () => {
+    const lists: DeployLists = { prod: ["./scripts/deploy.mjs prod"] };
+    for (const command of [
+      "./scripts/deploy.mjs prod",
+      "node scripts/deploy.mjs prod",
+      "node deploy.mjs prod",
+      "npx ./scripts/deploy.mjs prod",
+      "node ./a/b/deploy.mjs prod --yes",
+      "bash -c 'node scripts/deploy.mjs prod'",
+    ]) {
+      expect({ command, hits: hits(command, lists) }).toEqual({ command, hits: ["prod:0"] });
+    }
+    for (const command of ["node scripts/deploy.mjs staging", "node scripts/other.mjs prod"]) {
+      expect({ command, hits: hits(command, lists) }).toEqual({ command, hits: [] });
+    }
+    // The extension is dropped on the rule side too, for each of the three.
+    expect(hits("node deploy.js prod", { prod: ["node scripts/deploy.js prod"] })).toEqual([
+      "prod:0",
+    ]);
+    expect(hits("node deploy.cjs prod", { prod: ["./deploy.cjs prod"] })).toEqual(["prod:0"]);
+    expect(
+      hits("node scripts/deploy.mjs prod", { prod: [{ tool: "deploy.mjs", sub: ["prod"] }] }),
+    ).toEqual(["prod:0"]);
+  });
+
+  test("a listed Windows path matches under PowerShell", () => {
+    const lists: DeployLists = {
+      prod: [
+        ".\\scripts\\deploy.ps1 prod",
+        "scripts\\release.cmd prod",
+        "C:\\tools\\ship.exe --prod",
+      ],
+    };
+    for (const [command, expected] of [
+      [".\\scripts\\deploy.ps1 prod", "prod:0"],
+      ["& .\\scripts\\deploy.ps1 prod", "prod:0"],
+      ["pwsh -File .\\scripts\\deploy.ps1 prod", undefined],
+      ["scripts\\release.cmd prod", "prod:1"],
+      ["scripts\\release.cmd prod > out.txt", "prod:1"],
+      ["C:\\tools\\ship.exe --prod", "prod:2"],
+      ["& 'C:\\tools\\ship.exe' --prod", "prod:2"],
+      ["ship.exe --prod", "prod:2"],
+      [".\\scripts\\deploy.ps1 staging", undefined],
+      ["scripts\\release.cmd staging", undefined],
+      ["C:\\tools\\ship.exe --preview", undefined],
+    ] as const) {
+      expect({ command, hits: hits(command, lists, "powershell") }).toEqual({
+        command,
+        hits: expected === undefined ? [] : [expected],
+      });
+    }
+  });
+
+  test("the words after a script's name are part of its rule: staging is not prod", () => {
+    const lists: DeployLists = {
+      prod: ["npm run deploy -- prod"],
+      staging: ["npm run deploy -- staging"],
+    };
+    for (const [command, expected] of [
+      ["npm run deploy -- prod", ["prod:0"]],
+      ["npm run deploy -- staging", ["staging:0"]],
+      ["npm run-script deploy -- staging", ["staging:0"]],
+      ["npm --prefix app run deploy -- prod --yes", ["prod:0"]],
+      ["pnpm deploy prod", ["prod:0"]],
+      ["pnpm run deploy staging", ["staging:0"]],
+      ["yarn deploy staging", ["staging:0"]],
+      ["bun run deploy prod", ["prod:0"]],
+      ["cd app && npm run deploy -- staging", ["staging:0"]],
+      ["npm run deploy", []],
+      ["npm run deploy -- production", []],
+      ["npm run deploy -- dev", []],
+      ["npm run other -- prod", []],
+    ] as const) {
+      expect({ command, hits: hits(command, lists) }).toEqual({ command, hits: [...expected] });
+    }
+  });
+
+  test("a script's option words are held too", () => {
+    const lists: DeployLists = { prod: ["npm run deploy -- --target prod --yes"] };
+    expect(hits("npm run deploy -- --target prod --yes", lists)).toEqual(["prod:0"]);
+    expect(hits("npm run deploy -- --yes --target prod", lists)).toEqual(["prod:0"]);
+    expect(hits("npm run deploy -- --target prod", lists)).toEqual([]);
+    expect(hits("npm run deploy -- --target staging --yes", lists)).toEqual([]);
+  });
+
+  test("pnpm, yarn or bun with a bare word is a script or a tool: either spelling matches", () => {
+    const lists: DeployLists = { prod: ["pnpm vercel --prod"] };
+    for (const command of [
+      "pnpm vercel --prod",
+      "yarn vercel --prod",
+      "bun vercel --prod",
+      "pnpm run vercel --prod",
+      "npx vercel --prod",
+      "pnpm dlx vercel --prod",
+      "vercel --prod",
+      "vercel --prod --yes",
+    ]) {
+      expect({ command, hits: hits(command, lists) }).toEqual({ command, hits: ["prod:0"] });
+    }
+    for (const command of [
+      "pnpm vercel dev",
+      "pnpm vercel",
+      "pnpm vercel --preview",
+      "pnpm vercel --production",
+      "npx vercel dev",
+      "vercel",
+    ]) {
+      expect({ command, hits: hits(command, lists) }).toEqual({ command, hits: [] });
+    }
+    // The entry is one entry: a run both rules match is reported once.
+    expect(deploysOf("pnpm vercel --prod", "bash", deployRulesOf(lists))).toHaveLength(1);
+    expect(deployRulesOf(lists)).toHaveLength(2);
   });
 
   test("a match rule of the jobs grammar", () => {
@@ -624,6 +738,42 @@ describe("a project file that cannot be used", () => {
     const result = await runHook(deployGuardHook, callOf(repo, "vercel --prod"), env);
     expect(result.stdout).toBeUndefined();
     expect(result.stderr).toStartWith("cc-smart-dev-kit deploy-guard: ");
+  });
+});
+
+describe("a worktree with no project file of its own", () => {
+  // The project's file is not committed here, so a linked worktree has none: the frame (and the
+  // lenient read) use the main checkout's. The tasks judged are the worktree's own, the
+  // checkout the call runs in.
+  function worktreeOf(config: unknown): {
+    main: string;
+    worktree: string;
+    env: Record<string, string>;
+  } {
+    const { repo: main } = makeClone();
+    writeClaudeFile(main, "cc-smart-dev-kit.json", config);
+    const worktree = join(main, ".claude", "worktrees", "wt");
+    git(main, "worktree", "add", "-q", "-b", "worktree-wt", worktree);
+    expect(existsSync(join(worktree, ".claude", "cc-smart-dev-kit.json"))).toBe(false);
+    return { main, worktree, env: hookEnv() };
+  }
+
+  test("the main checkout's list is used, and the worktree's tasks are judged", async () => {
+    const { main, worktree, env } = worktreeOf(LISTED);
+    expect(await ask(worktree, env, "vercel --prod")).toBeNull();
+    writeTask(worktree, BLOCKING);
+    expect(await ask(worktree, env, "vercel --prod")).toContain("prod-20260101-000000");
+    // The main checkout's own folder holds no task: the guard judges the checkout it runs in.
+    expect(await ask(main, env, "vercel --prod")).toBeNull();
+  });
+
+  test("a file that cannot be used is read leniently from the main checkout's", async () => {
+    const { worktree, env } = worktreeOf({ requires: ">=99", ...LISTED });
+    const reason = await ask(worktree, env, "npx vercel --prod");
+    expect(reason).toStartWith(
+      "cc-smart-dev-kit cannot check whether this deploy to prod is held by open tasks: ",
+    );
+    expect(await ask(worktree, env, "ls")).toBeNull();
   });
 });
 

@@ -12,6 +12,7 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { cliPaths } from "../cli/paths";
+import { renderDeployTask } from "../tasks/deploy/format";
 import { hookEnv, makeRepo, runHook, writeClaudeFile } from "../testing/hooks";
 import { agentLaunchesFile, readAgentLaunches } from "./agent-launches";
 import { ASK_LOG_FILE, askLogFile } from "./ask-log";
@@ -19,6 +20,7 @@ import { toolDecision } from "./io";
 import { type HookSpec, handleHook } from "./run";
 import {
   agentGuardHook,
+  deployGuardHook,
   gitGuardHook,
   guardCrash,
   jobRouteHook,
@@ -31,12 +33,49 @@ import {
 const SESSION = "11111111-2222-3333-4444-555555555555";
 const NOW = 1_700_000_000_000;
 
-/** The guards, with a call each of them judges. */
-const GUARD_CASES: { spec: HookSpec; what: string; input: Record<string, unknown> }[] = [
+/** The deploy guard's project: it lists `vercel --prod`, and a blocking prod task is open. */
+const DEPLOY_CONFIG = { tasks: { deployCommands: { prod: ["vercel --prod"] } } };
+function openBlockingProdTask(repo: string): void {
+  const folder = join(repo, ".claude", "tasks", "prod");
+  mkdirSync(folder, { recursive: true });
+  writeFileSync(
+    join(folder, "prod-20260101-000000-seed.md"),
+    renderDeployTask({
+      id: "prod-20260101-000000",
+      title: "Seed the data",
+      env: "prod",
+      status: "open",
+      deploy: "before",
+      type: "blocking",
+      created: "2026-01-01T00:00:00Z",
+      body: "Do it.\n",
+      file: "prod-20260101-000000-seed.md",
+    }),
+  );
+}
+
+/**
+ * The guards, with a call each of them judges. `config` is the project's file (default: empty),
+ * `setup` makes what the guard reads in the repo.
+ */
+const GUARD_CASES: {
+  spec: HookSpec;
+  what: string;
+  input: Record<string, unknown>;
+  config?: unknown;
+  setup?: (repo: string) => void;
+}[] = [
   {
     spec: gitGuardHook,
     what: "this git command",
     input: { tool_name: "Bash", tool_input: { command: "git push --force" } },
+  },
+  {
+    spec: deployGuardHook,
+    what: "whether this deploy may run while a task is open",
+    input: { tool_name: "Bash", tool_input: { command: "npx vercel --prod" } },
+    config: DEPLOY_CONFIG,
+    setup: openBlockingProdTask,
   },
   {
     spec: mergeGuardHook,
@@ -95,7 +134,8 @@ function crashing(spec: HookSpec): HookSpec {
 describe("a guard's own crash", () => {
   test.each(GUARD_CASES)("$spec.name asks about the call in its own domain", async (one) => {
     const repo = makeRepo();
-    writeClaudeFile(repo, "cc-smart-dev-kit.json", {});
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", one.config ?? {});
+    one.setup?.(repo);
     const result = await runHook(
       crashing(one.spec),
       {

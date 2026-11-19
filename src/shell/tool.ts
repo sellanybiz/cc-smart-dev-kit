@@ -1,16 +1,17 @@
 /**
  * What a command really runs: the one tool reader. `toolOf` finds the program behind the usual
  * runners (`npx`, `bunx`, `bun x`, `npm exec`, `pnpm|yarn exec|dlx`, a package manager's script
- * words, `node <script path>`, a shell or interpreter given a script file), `toolName` names a
+ * words, `node <script path>`), `callOf` adds a shell or interpreter given a script file (the deploy guard's reading), `toolName` names a
  * program word, `ruleMatches` tests a match rule (`matchRuleSchema`, `src/jobs/kinds.ts`) against
- * what it found, and `ruleOfCommand` turns one command typed as text into such a rule.
+ * what it found, and `rulesOfCommand` turns one command typed as text into such rules.
  *
  * Pure: no file, no environment. The job classifier (`src/jobs/classify.ts`) and the deploy
  * guard (`src/hooks/deploy-guard.ts`) read a command through it, so both see the same tool.
  */
 
 import type { MatchRule } from "../jobs/kinds";
-import { invocationOf, shellSteps, withoutRedirections, wordsOf } from "./command";
+import { type Dialect, invocationOf, shellSteps, withoutRedirections, wordsOf } from "./command";
+import { programName } from "./program-name";
 
 /** What a command really runs: a program (by name) and its arguments. */
 export interface ToolCall {
@@ -259,28 +260,26 @@ export function toolOf(program: string, args: string[], depth = 0): ToolCall | u
       return inFolder(scriptOrTool(sub, rest), program, args.slice(0, index));
     }
     case "node": {
-      // `node node_modules/vitest/vitest.mjs run` and `node deploy.js` run the file as the tool.
+      // `node node_modules/vitest/vitest.mjs run` runs the tool through its script path.
       const index = at(NODE_VALUED);
       const script = args[index];
-      return script === undefined ? undefined : fileRun(script, args.slice(index + 1));
-    }
-    case "source":
-    case ".": {
-      // `source deploy.sh prod` and `. deploy.sh prod` run the file in this shell.
-      const file = args[0];
-      return file === undefined ? { name: program, args } : fileRun(file, args.slice(1));
+      if (script !== undefined && /[\\/]/.test(script)) {
+        return { name: toolName(script), args: args.slice(index + 1) };
+      }
+      return undefined;
     }
     default:
-      return (
-        (SHELLS_WITH_FILES.has(program) ? shellFileRun(args) : undefined) ??
-        (PYTHON.test(program) ? pythonFileRun(args) : undefined) ?? { name: program, args }
-      );
+      return { name: program, args };
   }
 }
 
-/** What a script file given to a shell or an interpreter runs: the file's tool, the words after it. */
+/**
+ * What a script file given to a shell or an interpreter runs: the file's name as the tool (the
+ * program word's own rules: no folder, no `.exe`), the words after it. Not `toolOf`'s: the job
+ * classifier reads `bash scripts/e2e.sh` as `bash`, and its project kinds name it so.
+ */
 function fileRun(file: string, rest: string[]): ToolCall {
-  return { name: toolName(file), args: rest };
+  return { name: programName(file), args: rest };
 }
 
 /** The shells that run a script file they are given (`bash deploy.sh`). */
@@ -342,6 +341,27 @@ function pythonFileRun(args: readonly string[]): ToolCall | undefined {
   return undefined;
 }
 
+/**
+ * The file a shell or an interpreter is given to run, as a tool call: `bash -o pipefail deploy.sh
+ * prod`, `source deploy.sh prod`, `. deploy.sh prod`, `node deploy.js`, `python3 deploy.py`.
+ * Undefined for any other program, and for one that runs no file (`bash -c …`, `python -m x`).
+ * The deploy guard's reader only (`callOf`): `toolOf` keeps the job classifier's own answers.
+ */
+function fileRunOf(program: string, args: readonly string[]): ToolCall | undefined {
+  if (SHELLS_WITH_FILES.has(program)) return shellFileRun(args);
+  if (PYTHON.test(program)) return pythonFileRun(args);
+  if (program === "node") {
+    const index = firstWord(args, 0, NODE_VALUED);
+    const file = args[index];
+    return file === undefined ? undefined : fileRun(file, args.slice(index + 1));
+  }
+  if (program === "source" || program === ".") {
+    const file = args[0];
+    return file === undefined ? undefined : fileRun(file, args.slice(1));
+  }
+  return undefined;
+}
+
 function hasFlag(args: readonly string[], flag: string): boolean {
   return args.some((arg) => arg === flag || arg.startsWith(`${flag}=`));
 }
@@ -357,6 +377,23 @@ function startsWithSub(args: readonly string[], sub: readonly string[], valued: 
   return true;
 }
 
+/** The words a run's arguments must hold: the one test of a rule's `sub` and `flags`. */
+export interface RequiredWords {
+  /** The first words that are no option, in order; options before and between are skipped. */
+  sub?: readonly string[] | undefined;
+  /** Options that must all be there, each as a whole word (`--prod`, or `--prod=…`). */
+  flags?: readonly string[] | undefined;
+  /** Options of the program whose value is the next word, so the value is not a `sub`. */
+  valued?: readonly string[] | undefined;
+}
+
+/** Do `args` hold the required words? Each is a whole word: `--prod` is not `--production`. */
+export function argsHold(args: readonly string[], required: RequiredWords): boolean {
+  if (required.sub !== undefined && !startsWithSub(args, required.sub, required.valued ?? []))
+    return false;
+  return required.flags === undefined || required.flags.every((flag) => hasFlag(args, flag));
+}
+
 /**
  * Does `rule` match what the command runs? `scriptOnly`: the word is a `package.json` script
  * of its folder, so a tool rule never matches it — only a script rule can.
@@ -366,54 +403,90 @@ export function ruleMatches(rule: MatchRule, call: ToolCall, scriptOnly = false)
   if (scriptOnly) return false;
   if (call.name !== rule.tool) return false;
   const valued = [...(TOOL_VALUED[rule.tool] ?? []), ...(rule.valued ?? [])];
-  if (rule.sub !== undefined && !startsWithSub(call.args, rule.sub, valued)) return false;
-  if (rule.flags !== undefined && !rule.flags.every((flag) => hasFlag(call.args, flag))) {
-    return false;
-  }
+  if (!argsHold(call.args, { flags: rule.flags, sub: rule.sub, valued })) return false;
   const text = rule.argIncludes?.toLowerCase();
   return text === undefined || call.args.some((arg) => arg.toLowerCase().includes(text));
 }
 
 /**
- * What the program and arguments of one command run, redirections left out (`> log.txt` is the
- * shell's, never the tool's argument). A program `toolOf` cannot see behind is itself, so a
- * rule made from a command's text and the same command run later give the same tool.
+ * The name of a tool without a script's extension (`deploy.mjs` is `deploy`): a script file is
+ * the same tool whether it is run by its own name (`./scripts/deploy.mjs`) or given to `node`.
+ */
+export function scriptToolName(name: string): string {
+  return name.replace(/(?<=.)\.(mjs|cjs|js)$/, "");
+}
+
+/**
+ * What one command runs, as the deploy guard reads it: the arguments without their redirections
+ * (`> log.txt` is the shell's, never the tool's argument), and the tool found by `fileRunOf` (a
+ * shell or an interpreter given a script file), else `toolOf`, else the program itself. A rule
+ * made from a command's text and the same command run later give the same tool.
  */
 export function callOf(program: string, args: readonly string[]): ToolCall {
   const plain = withoutRedirections(args);
-  return toolOf(program, plain) ?? { name: program, args: plain };
+  const call = fileRunOf(program, plain) ??
+    toolOf(program, plain) ?? { name: program, args: plain };
+  return { ...call, name: scriptToolName(call.name) };
 }
 
 /** An option word: `--prod`, `-f`; a lone `-` is a word (standard input). */
 const isOptionWord = (word: string): boolean => word.startsWith("-") && word !== "-";
 
+/** What a command's arguments require of a run: the words that are no option, and the options. */
+function wordsOfArgs(args: readonly string[]): { sub?: string[]; flags?: string[] } {
+  const sub = args.filter((word) => !isOptionWord(word));
+  const flags = args.filter(isOptionWord);
+  return { ...(sub.length > 0 ? { sub } : {}), ...(flags.length > 0 ? { flags } : {}) };
+}
+
 /**
- * One command typed as text (`vercel --prod`, `npm run deploy:prod`), as a rule of the jobs
- * grammar. The command is read as a run of it would be: the shell reader's first command, with
- * a quote that never closes read blind, assignments and wrappers stepped over (`invocationOf`),
- * its redirections dropped, the tool found by `callOf`. So the rule never asks for a word a run
- * would not hold (`vercel --prod > log.txt` is `vercel --prod`).
+ * A rule made from a command's text: a rule of the jobs grammar, and, for a package script, the
+ * words written after the script's name (`npm run deploy -- prod`), which the grammar's script
+ * rule has no place for.
+ */
+export interface CommandRule {
+  rule: MatchRule;
+  /** A script rule's own words: the run's arguments must hold them (`argsHold`). */
+  words?: { sub?: string[]; flags?: string[] };
+}
+
+/** True when the words say `run` or `run-script`: the word after them is a script, never a tool. */
+function saysRun(program: string, args: readonly string[]): boolean {
+  const word = args[firstWord(args, 0, RUNNER_VALUED[program] ?? [])];
+  return word === "run" || word === "run-script";
+}
+
+/**
+ * One command typed as text (`vercel --prod`, `npm run deploy:prod`), as rules. The command is
+ * read as a run of it would be: the shell reader's first command in `dialect`, with a quote that
+ * never closes read blind, assignments and wrappers stepped over (`invocationOf`), its
+ * redirections dropped, the tool found by `callOf`. So a rule never asks for a word a run would
+ * not hold (`vercel --prod > log.txt` is `vercel --prod`).
  *
- * - A package manager's script (`npm run x`, `pnpm x`, `bun run x`) gives `{ script }`, which
- *   every spelling of that script matches.
+ * - A package script (`npm run x`, `pnpm run x`, `bun run x`) gives `{ script }` with the words
+ *   after the name (a lone `--` dropped): `npm run deploy -- prod` is not `npm run deploy`.
+ * - `pnpm x`, `yarn x` and `bun x` are a script or a tool of that name: both rules, the run
+ *   matches either (`pnpm vercel --prod`, `npx vercel --prod`, `vercel --prod`).
  * - Anything else gives the tool, its words that are no option, in order (`sub`), and its option
  *   words (`flags`). Each must be in the run, as a whole word.
  *
- * Undefined when the text runs nothing (an assignment alone, `command -v x`).
+ * Empty when the text runs nothing (an assignment alone, `command -v x`).
  */
-export function ruleOfCommand(text: string): MatchRule | undefined {
-  for (const step of shellSteps(text, { blindWhenOpen: true, dialect: "bash", joinLines: true })) {
-    const invocation = invocationOf(wordsOf(step.text, "bash"));
+export function rulesOfCommand(text: string, dialect: Dialect = "bash"): CommandRule[] {
+  for (const step of shellSteps(text, { blindWhenOpen: true, dialect, joinLines: true })) {
+    const invocation = invocationOf(wordsOf(step.text, dialect));
     if (invocation === undefined) continue;
-    const call = callOf(invocation.program, invocation.args);
-    if (call.script !== undefined) return { script: call.script };
-    const sub = call.args.filter((word) => !isOptionWord(word));
-    const flags = call.args.filter(isOptionWord);
-    return {
-      tool: call.name,
-      ...(sub.length > 0 ? { sub } : {}),
-      ...(flags.length > 0 ? { flags } : {}),
+    const { program } = invocation;
+    const call = callOf(program, invocation.args);
+    const tool: CommandRule[] =
+      call.name === "" ? [] : [{ rule: { tool: call.name, ...wordsOfArgs(call.args) } }];
+    if (call.script === undefined) return tool;
+    const words = wordsOfArgs(call.args.filter((word) => word !== "--"));
+    const script: CommandRule = {
+      rule: { script: call.script },
+      ...(words.sub === undefined && words.flags === undefined ? {} : { words }),
     };
+    return saysRun(program, invocation.args) ? [script] : [script, ...tool];
   }
-  return undefined;
+  return [];
 }

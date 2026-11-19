@@ -521,6 +521,45 @@ describe("the tool reader reads a script file: the classifier's answers are the 
   test("a shell that runs a command string still runs what it holds", () => {
     expect(classifyHeavyCommand('bash -c "npx tsc --noEmit"', DEFAULT_KINDS)).toBe("tsc");
   });
+
+  // The deploy guard reads a script file a shell is given (`callOf`); the classifier does not:
+  // a project names `bash`, `python` or `source` as the tool of a kind, and a file a shell or
+  // `node` is given is not the tool of the same name. Each answer below is what the classifier
+  // gave before the tool reader moved.
+  const PROJECT_KINDS = mergeKinds({
+    django: { match: [{ tool: "python", sub: ["manage.py", "test"] }] },
+    e2e: { match: [{ tool: "bash", sub: ["scripts/e2e.sh"] }, { tool: "source" }] },
+  });
+
+  test.each([
+    ["bash scripts/e2e.sh", "e2e"],
+    ["python manage.py test", "django"],
+    ["source env.sh", "e2e"],
+    ["source env.sh && vitest", "e2e"],
+    ["bash scripts/other.sh", null],
+    ["python manage.py runserver", null],
+  ])("a project kind that names a shell or an interpreter: %s is %s", (command, kind) => {
+    expect(classifyHeavyCommand(command, PROJECT_KINDS)).toBe(kind);
+  });
+
+  test.each([
+    ["sh node_modules/.bin/vitest run"],
+    ["zsh -o pipefail ./node_modules/.bin/jest"],
+    [". ./node_modules/.bin/tsc"],
+    ["bash ./tsc"],
+    ["node tsc --noEmit"],
+    ["node vitest"],
+    ["node scripts/build.js"],
+  ])("%s runs no heavy kind: the file is not the tool of its name", (command) => {
+    expect(classifyHeavyCommand(command, PROJECT_KINDS)).toBeNull();
+    expect(classifyHeavyCommand(command, DEFAULT_KINDS)).toBeNull();
+  });
+
+  test("node with a script path is still the tool the path names", () => {
+    expect(classifyHeavyCommand("node node_modules/vitest/vitest.mjs run", DEFAULT_KINDS)).toBe(
+      "test:run",
+    );
+  });
 });
 
 describe("a runner's line is never routed (the review of the runner follow-up)", () => {
