@@ -40,11 +40,13 @@
  *   `OOMPolicy` and that switch, with `OOMPolicy` alone (253), then with neither. Below 254 there
  *   is nothing to switch off. The job's words are never changed.
  *
- * A STOP FOR MEMORY IS READ PER SCOPE
- *   The kernel's OOM killer is read from the scope's own `oom_kill` count (the slice's count when
- *   the scope's cgroup is gone): a rise of the slice's `oom` count is the cap, none the machine.
+ * A STOP FOR MEMORY: PER SCOPE FOR THE WATCHDOG, PER SLICE FOR THE KERNEL
  *   systemd-oomd leaves no count; it fails the scope with `Result=oom-kill`, which the job's
- *   scope keeps because it is not `--collect`ed. Every started job's scope is then cleared
+ *   scope keeps because it is not `--collect`ed: that reading belongs to this job alone. The
+ *   kernel's OOM killer is read from the scope's own `oom_kill` count, but a killed scope's
+ *   cgroup is usually gone by then (seen live), so the slice's count answers: a rise of its
+ *   `oom` count is the cap, none the machine. With `max` above 1, two jobs ending at once can
+ *   then share one "killed for memory" line. Every started job's scope is then cleared
  *   (`release`): a failed scope stays failed until reset (proved live), and a scope whose empty
  *   notification systemd missed stays `active` (seen live under load).
  *
@@ -655,7 +657,9 @@ function start(
       // scope whose notification systemd missed stays `active` (both seen live): without this a
       // job leaves a unit behind. `--no-block`: the scope is empty, and a stop that waited could
       // hold a job for the unit's timeout. On a scope that is already gone both calls just fail.
-      facts.systemd(["systemctl", "--user", "stop", "--no-block", unit]);
+      // A stop that timed out means the user bus hangs: a second call would only add another
+      // `SYSTEMD_TIMEOUT_MS` to the job's end (a commit hook waits on it).
+      if (facts.systemd(["systemctl", "--user", "stop", "--no-block", unit]) === "timeout") return;
       facts.systemd(["systemctl", "--user", "reset-failed", unit]);
     },
     memoryLine: (end) => {

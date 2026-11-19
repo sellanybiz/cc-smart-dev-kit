@@ -184,7 +184,7 @@ describe.if(LIVE)("the real systemd user manager (CC_SMART_DEV_KIT_LIVE_SYSTEMD=
     expect(line).toBeNull();
   }, 60_000);
 
-  test("the job's words reach it as written: systemd-run reads $VAR and $$, so each $ is escaped", async () => {
+  test("the job's words reach it as written (--expand-environment=no)", async () => {
     const out = join(tempDir("live-words"), "words");
     // Written in parts: a placeholder in a plain string would look like a mistake to a linter.
     const placeholder = ["$", "{HOME}"].join("");

@@ -471,15 +471,17 @@ describe("a job stopped for memory says why, and never after exit 0", () => {
       result?: string | null;
       /** Refuse the watchdog's duration (a systemd older than 257). */
       refuse?: string;
+      /** Time out every call that holds this word (a hung user bus). */
+      hang?: string;
     } = {},
   ) {
+    const holds = (argv: readonly string[], word: string | undefined) =>
+      word !== undefined && argv.some((one) => one.includes(word));
     const world = fakeLimitFacts({
       programs: options.programs ?? ["systemd-run", "choom"],
       files: { [eventsFile]: events(0, 0), "/proc/meminfo": MEMINFO, ...options.files },
       systemd: (argv) =>
-        options.refuse !== undefined && argv.some((word) => word.includes(options.refuse as string))
-          ? "failed"
-          : "ok",
+        holds(argv, options.hang) ? "timeout" : holds(argv, options.refuse) ? "failed" : "ok",
       systemdText: () =>
         options.result === null
           ? null
@@ -642,6 +644,13 @@ describe("a job stopped for memory says why, and never after exit 0", () => {
     const { start, after } = run();
     start.release();
     expect(after()).toEqual([STOP, RESET]);
+  });
+
+  // A hung user bus: the stop's timeout already cost the job's end one wait; never a second.
+  test("release makes no second call when the stop timed out", () => {
+    const { start, after } = run({ hang: "stop" });
+    start.release();
+    expect(after()).toEqual([STOP]);
   });
 });
 
