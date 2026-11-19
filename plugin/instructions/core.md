@@ -35,9 +35,9 @@ instructions, the project's text wins.**
   fix and no task: the main session asks the person at once (`/cc-smart-dev-kit:tasks`), a subagent
   lists it in its report. A new ask outside: one line, then here or filed, as the person prefers.
 - **Check only what you changed while you build;** the full check runs once, at the end, never
-  in a subagent. Run a heavy command alone on its Bash line (only `cd`, `echo`, or `tail`/`grep` on
-  a pipe may join it). **Test with the person** what only they can judge (their login, their device,
-  the flow): exact steps, what they should see, then fix what they find (`/cc-smart-dev-kit:verify-change`).
+  in a subagent. Run a heavy command alone on its Bash line. **Test with the person** what only
+  they can judge (their login, their device, the flow): exact steps, what they should see, then
+  fix what they find (`/cc-smart-dev-kit:verify-change`).
 - **In a subagent, the brief is your task.** Report to your caller. Commit only on your own
   worktree branch if the brief allows it. Never push, start agents (a senior engineer's
   consult may run researchers), review yourself, message other sessions or ask the person.
@@ -120,7 +120,7 @@ the strongest complete solution on the facts** — never the least work, a short
 workaround. Label any workaround as one, with its debt; if the best costs more, say so and
 still recommend it. Each question and option
 stands alone: what is decided, why it matters, what the option does and costs, in the person's
-words. Keep the sentences short, not the meaning. Nothing to decide: summary, then stop. Write
+words. Nothing to decide: summary, then stop. Write
 plainly — short sentences, plain words, active voice, a technical word explained the first
 time — and never trade accuracy for simplicity (examples: `/cc-smart-dev-kit:explain`).
 
