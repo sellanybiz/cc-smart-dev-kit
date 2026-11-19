@@ -1801,6 +1801,23 @@ describe("routableLine: harmless glue rides in the queued line", () => {
     );
     // A wrapper that keeps the user is still read through.
     queuedWhole("timeout 600 bun test", "test:run");
+    // A run as another user that takes no slot (it only prints) exempts nothing: the heavy run
+    // beside it would skip the queue.
+    expect(
+      mixedHeavyLine("sudo -n bunx tsc --version; bun test; rm -rf x", DEFAULT_KINDS, source)
+        ?.other,
+    ).toBe("sudo -n bunx tsc --version");
+  });
+
+  test("a script whose body only prints a heavy tool is a command to split off", () => {
+    const source = weightSourceOf({
+      "/repo": { lintv: "biome check . && tsc --version", check: "biome check . && tsc --noEmit" },
+    });
+    expect(mixedHeavyLine("bun run lintv && bun test", DEFAULT_KINDS, source)?.other).toBe(
+      "bun run lintv",
+    );
+    expect(mixedHeavyLine("bun run lintv", DEFAULT_KINDS, source)).toBeNull();
+    expect(mixedHeavyLine("bun run check", DEFAULT_KINDS, source)).toBeNull();
   });
 
   test("exit keeps a piped run's code with a literal subscript", () => {

@@ -499,7 +499,7 @@ function scan(
     if (all && runsAsAnotherUser(invocation)) {
       const asked = newScan();
       scan(step.text, kinds, dialect, depth + 1, { ...run }, false, asked);
-      return asked.found.length > 0 ? opaque(out) : refuse(run, out, step);
+      return takesSlot(asked, kinds, run.source) ? opaque(out) : refuse(run, out, step);
     }
     if (all && isRunnerProgram(program)) return refuse(run, out, step);
     // The queue's own command: whatever it runs is queued already, and must not nest.
@@ -547,7 +547,7 @@ function scan(
       if (out.opaque && out.found.length === before && run.reading.length === 0) {
         const body = newScan();
         if (call !== undefined) matchCall(call, program, kinds, depth, { ...run }, false, body);
-        if (body.found.length === 0) out.opaque = false;
+        if (!takesSlot(body, kinds, run.source)) out.opaque = false;
       }
       return out.opaque ? false : refuse(run, out, step);
     }
@@ -651,6 +651,20 @@ export function runWeight(line: string, kinds: Kinds, source: WeightSource): Wei
  * asked about: `none` (no heavy run, a watch run that never ends, or a line that queues itself),
  * `light` (every run is light), or the first run that takes a slot.
  */
+/** True when a reader can also say whether a word names a file (`WeightSource`). */
+function canWeigh(source: ScriptSource | undefined): source is WeightSource {
+  return source !== undefined && "isFile" in source;
+}
+
+/**
+ * True when a walk found heavy work that takes a slot, as `slotRun` weighs it: a run that only
+ * prints, a watch run, or (when the reader can tell) a run on named files does not count.
+ */
+function takesSlot(out: Scan, kinds: Kinds, source: ScriptSource | undefined): boolean {
+  if (canWeigh(source)) return typeof slotRun(out, kinds, source) === "object";
+  return out.found.some((one) => !one.printOnly);
+}
+
 function slotRun(out: Scan, kinds: Kinds, source: WeightSource): Found | "light" | "none" {
   const { found } = out;
   // A line that runs `job run` (itself, or through a script's body) is queued already: a second
