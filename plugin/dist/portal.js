@@ -19608,6 +19608,19 @@ function planProjectInit(input, extras = {}) {
     else
       next.checks = { fast: answers.checks.fast };
   }
+  if (answers.deployCommands !== undefined) {
+    const tasks = isObject2(next.tasks) ? { ...next.tasks } : {};
+    const had = Object.hasOwn(tasks, "deployCommands");
+    const lists = Object.fromEntries(Object.entries(answers.deployCommands).filter(([, list]) => list.length > 0));
+    if (Object.keys(lists).length > 0)
+      tasks.deployCommands = lists;
+    else
+      delete tasks.deployCommands;
+    if (Object.keys(tasks).length > 0)
+      next.tasks = tasks;
+    else if (had)
+      delete next.tasks;
+  }
   if (answers.guards.sessionNames)
     next.sessionNames = true;
   else
@@ -27356,6 +27369,8 @@ function deployBlockBody() {
   return [
     "## Deploy tasks",
     "",
+    "When `tasks.deployCommands` lists this project's deploy commands, the deploy guard asks before one runs while a blocking task is open.",
+    "",
     "Steps owed around a deploy are deploy tasks; each one belongs to prod or staging. Run these steps in the checkout you work in:",
     "",
     "1. Cut a deploy branch from the commit that ships: `git fetch origin`, then `git switch --no-track -c deploy/<env>-<date> origin/<base>` (--no-track keeps `git push` from targeting `<base>`).",
@@ -27699,6 +27714,9 @@ async function detectFacts(runner, root) {
     fastCheck: defaultFastCheck(root)
   };
 }
+function isDeployEnv(word) {
+  return DEPLOY_ENVS.includes(word);
+}
 function workflowFromFlags(words) {
   const workflow = {};
   for (const word of words) {
@@ -27747,10 +27765,12 @@ function defaultAnswers(existing, facts, flags) {
   const bases = flags.bases ?? (isObject2(worktrees.bases) ? worktrees.bases : defaultBases(facts));
   const protectedBranches = flags.protectedBranches ?? (Array.isArray(existing?.protectedBranches) && existing.protectedBranches.every((name) => typeof name === "string") ? existing.protectedBranches : [...new Set([facts.defaultBranch, base, ...facts.protectedFromGithub])].filter((name) => name !== ""));
   const existingChecks = existing !== null && isObject2(existing.checks) && typeof existing.checks.fast === "string" ? { fast: existing.checks.fast } : null;
+  const deployCommands = deployCommandsOf(existing, flags);
   return {
     base,
     bases,
     protectedBranches,
+    ...deployCommands === undefined ? {} : { deployCommands },
     checks: flags.check !== undefined ? checkAnswer(listAnswer(flags.check)) : existingChecks ?? (facts.fastCheck === null ? null : { fast: facts.fastCheck }),
     guards: {
       guardMainFolder: flags.guardMainFolder ?? (typeof worktrees.guardMainFolder === "boolean" ? worktrees.guardMainFolder : true),
@@ -27759,6 +27779,29 @@ function defaultAnswers(existing, facts, flags) {
     },
     workflow: flags.workflow !== undefined ? mergeWorkflow(existingWorkflow, workflowFromFlags(flags.workflow)) : existingWorkflow
   };
+}
+function deployCommandsOf(existing, flags) {
+  const tasks = existing !== null && isObject2(existing.tasks) ? existing.tasks : {};
+  const own = isObject2(tasks.deployCommands) ? tasks.deployCommands : null;
+  if (own === null && flags.deployCommand === undefined)
+    return;
+  const lists = {};
+  for (const [env, list] of Object.entries(own ?? {})) {
+    if (isDeployEnv(env) && Array.isArray(list))
+      lists[env] = list;
+  }
+  const given = new Map;
+  for (const { env, command } of flags.deployCommand ?? []) {
+    const list = given.get(env) ?? [];
+    if (command === "")
+      list.length = 0;
+    else
+      list.push(command);
+    given.set(env, list);
+  }
+  for (const [env, list] of given)
+    lists[env] = list;
+  return lists;
 }
 function defaultBases(facts) {
   return { "hotfix/": facts.defaultBranch, "release/": facts.defaultBranch };
@@ -27792,7 +27835,8 @@ var QUESTIONS = [
   [
     "jobRoute",
     "Send heavy commands (type checks, test runs, builds) through the machine's job queue, so they take turns?"
-  ]
+  ],
+  ["deployCommands", "A command that deploys to an environment (Enter when done)"]
 ];
 var QUESTIONS_INTRO = `${QUESTIONS.length} questions. Enter keeps the answer in [brackets].`;
 function readText(file) {
@@ -27835,6 +27879,13 @@ the project.
   --[no-]session-names   each session names itself after its task (or not)
   --[no-]job-route       send heavy commands through the job queue (or not)
   --workflow <k=v,k=v>   the workflow policy, over your own defaults
+  --deploy-command <env>=<command>
+                         a command that deploys to <env> (staging or prod, one of tasks.envs);
+                         repeat it for more. It replaces that environment's list in
+                         tasks.deployCommands, so the same flags give the same file; the deploy
+                         guard asks before one runs while a blocking task is open.
+                         <env>= alone clears the list. Without the flag, the lists stay as they
+                         are; split at the first "="
   --deploy-skill <path>  the deploy skill that gets the kit's deploy block (a managed section,
                          the text around it untouched). Default: the skill that already holds
                          it, else the one .claude/skills/*/SKILL.md that names a deploy; with
@@ -41135,6 +41186,25 @@ function requiresLines(configFile, projectDir, home, usesDeployTasks) {
     }
   ];
 }
+function deployCommandsLines(config, root) {
+  if (config === null || config.tasks?.deployCommands !== undefined)
+    return [];
+  try {
+    const found = findDeploySkills(root);
+    if (found.holders.length === 0 && found.named.length === 0)
+      return [];
+  } catch {
+    return [];
+  }
+  return [
+    {
+      ok: true,
+      info: true,
+      text: "project: the project has a deploy skill but lists no deploy commands in tasks.deployCommands, so the deploy guard never asks before a deploy",
+      fix: `${COMMAND} project init asks for the commands`
+    }
+  ];
+}
 function ignoredTaskFieldLines(config, configFile, projectDir, home) {
   if (config === null || configFile === null)
     return [];
@@ -41429,6 +41499,7 @@ async function projectChecks2(cwd, env, paths, pluginHooksFile, gh = runGh) {
   lines.push(...await issuesChecks({ cwd: checkout.root, env, gh, paths }));
   lines.push(...await projectTaskChecks(checkout.root, env));
   lines.push(...deployBlockLines(checkout.root, usesDeployTasks));
+  lines.push(...deployCommandsLines(config, checkout.root));
   lines.push(...planCapChecks(checkout.root, env, paths, config));
   return lines;
 }
