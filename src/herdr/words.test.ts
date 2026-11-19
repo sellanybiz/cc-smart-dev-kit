@@ -204,6 +204,58 @@ test("start --plan: the slug is kept, and it excludes --task, --independent and 
   expect(parseHerdrArgs([...start, "--plan", " ", "--", "go"])).toHaveProperty("error");
 });
 
+test("start --followup: repeated --issue is kept in order, and every exclusion is refused", () => {
+  const start = ["start", "--model", "sonnet", "--effort", "high", "--mode", "manual"];
+  expect(parseHerdrArgs([...start, "--followup", "--", "fix it"])).toEqual({
+    verb: "start",
+    model: "sonnet",
+    effort: "high",
+    mode: "default",
+    independent: false,
+    asked: false,
+    brief: "fix it",
+    followup: true,
+    issues: [],
+  });
+  expect(
+    parseHerdrArgs([
+      ...start,
+      "--followup",
+      "--issue",
+      "12",
+      "--issue=7",
+      "--issue",
+      "12",
+      "--",
+      "x",
+    ]),
+  ).toMatchObject({ followup: true, issues: ["12", "7"] });
+  for (const extra of [
+    ["--plan", "alpha"],
+    ["--task", "#7"],
+    ["--independent"],
+    ["--on", "remote"],
+  ]) {
+    const parsed = parseHerdrArgs([...start, "--followup", ...extra, "--", "go"]);
+    expect(parsed).toHaveProperty("error");
+    if ("error" in parsed)
+      expect(parsed.error).toStartWith(
+        "--followup cannot be combined with --plan, --task, --independent or --on.",
+      );
+  }
+  for (const bad of ["0", "-1", "07", "1.5", "abc", "#3"]) {
+    const parsed = parseHerdrArgs([...start, "--followup", "--issue", bad, "--", "go"]);
+    expect(parsed).toHaveProperty("error");
+    if ("error" in parsed) expect(parsed.error).toStartWith("Use an issue number such as 12.");
+  }
+  const lone = parseHerdrArgs([...start, "--issue", "3", "--", "go"]);
+  expect(lone).toHaveProperty("error");
+  if ("error" in lone) expect(lone.error).toStartWith("--issue belongs to --followup.");
+  expect(parseHerdrArgs([...start, "--followup", "--followup", "--", "go"])).toHaveProperty(
+    "error",
+  );
+});
+
 test("plans takes --json, --wait and a --timeout that belongs to --wait", () => {
   expect(parseHerdrArgs(["plans"])).toEqual({ verb: "plans", json: false, wait: false });
   expect(parseHerdrArgs(["plans", "--json", "--wait", "--timeout", "30"])).toEqual({
@@ -225,7 +277,7 @@ test("the usage names --plan and plans", () => {
   const parsed = parseHerdrArgs(["plans", "extra"]);
   if (!("error" in parsed)) throw new Error("expected an error");
   expect(parsed.error).toContain("herdr plans [--json] [--wait] [--timeout <seconds>]");
-  expect(HERDR_USAGE).toContain("[--task <#n> | --plan <slug>]");
+  expect(HERDR_USAGE).toContain("[--task <#n> | --plan <slug> | --followup [--issue <n>]…]");
 });
 
 test("plans --release names one plan and stands alone", () => {

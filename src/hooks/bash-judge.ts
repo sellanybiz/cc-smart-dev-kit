@@ -785,11 +785,18 @@ function judgeHerdr(reading: BashReading, context: JudgeContext): BashVerdict | 
     if (optionValue(flags, "--mode") === "bypassPermissions")
       return verdict("deny", "bypassPermissions is never allowed.");
     const parsed = parseHerdrArgs(herdr);
-    if ("error" in parsed)
+    if ("error" in parsed) {
+      // The reminder helps only when a flag is missing; with all three given, the parse error is the cause.
+      const named = ["--model", "--effort", "--mode"].every(
+        (key) => optionValue(flags, key) !== null,
+      );
       return verdict(
         "deny",
-        `Pass both --model and --effort, plus --mode, to herdr start.\n${parsed.error}`,
+        named
+          ? parsed.error
+          : `Pass both --model and --effort, plus --mode, to herdr start.\n${parsed.error}`,
       );
+    }
     if (parsed.verb !== "start") continue;
     const lead = stringField(context.input.permission_mode) ?? "";
     if (lead === "bypassPermissions")
