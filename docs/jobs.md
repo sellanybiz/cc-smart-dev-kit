@@ -674,9 +674,11 @@ the probe, then `set-property`. On Linux `job run` prints the reason as one line
 
 On macOS and Windows it prints nothing (every hook would repeat it), and `doctor` covers it.
 Every systemd call has one timeout, 10 seconds, so a hung user bus never hangs a job or a commit
-hook. It costs one 10-second wait at the start, and the job then runs without limits. At the
-end it costs at most one more: `release()` skips its second call after a timeout, and the
-watchdog read only follows a SIGKILL the wrapper did not send.
+hook. A hung bus costs up to 10 seconds for each systemd call that meets it. When it hangs at
+the start, the probe times out and the job runs without limits, so nothing more is called at
+the end. When it hangs after the start, the end can wait twice: once for the watchdog read
+(only after a SIGKILL the wrapper did not send), once for `release()`'s stop, whose timeout
+skips the second call.
 
 - **A command that is not on the PATH** runs plain, so its exit code stays 127 and its message
   stays the one `job run` always gave ("could not start"). `systemd-run` would end with 1 and a
