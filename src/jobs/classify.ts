@@ -52,6 +52,7 @@ import {
   nestedDialect,
   redirectionTargets,
   type ShellStep,
+  type ShellWord,
   shellSteps,
   withoutRedirections,
   wordsOf,
@@ -497,6 +498,12 @@ function scan(
           )
         : opaque(out);
     if (all && inner !== undefined) {
+      // A shell whose script comes only from the pipe is never pure: the reader's text of what
+      // the command before it writes is no promise (`printf 'tsc\nrm x' | sh`: `\n` is a line
+      // break the reader reads as a space), so the script is not known.
+      if (step.pipedFrom !== null && nestedCommand(program, args) === undefined) {
+        return refuse(run, out, step);
+      }
       // A shell or wrapper that runs a line: that line must be pure too.
       if (!readInner(inner)) return false;
       continue;
@@ -952,12 +959,20 @@ function isReadOnlyFilter(step: ShellStep): boolean {
  * The commands a queued line may hold beside its heavy ones, because nobody writes a permission
  * rule against them and none can write a file or run another program. Their words may hold
  * expansions (`echo "exit $?"`): a substitution's inner command is its own step, and is judged
- * on its own. The readers of `READ_ONLY_FILTERS` are glue too (`isGlueCommand`).
+ * on its own. The readers of `READ_ONLY_FILTERS` that read a pipe only are glue too
+ * (`isGlueReader`). Each entry says why it is safe, and under which arguments (`glueArguments`):
  *
- * - `echo`, `printf`: print their words (`printf -v` only sets a variable).
+ * - `echo`: prints its words.
+ * - `printf`: prints its words, when its first word is the format and not an option: `-v` sets
+ *   a variable, and bash runs a command inside the subscript of its name (`-v 'a[$(rm x)]'`).
  * - `true`, `false`, `:`: do nothing, and give an exit code.
  * - `pwd`: prints the folder.
- * - `test`, `[`: read file and string facts, and give an exit code.
+ * - `test`, `[`: read file and string facts, and give an exit code, when no word is filled in
+ *   by the shell and none is `-v` or `-R`, which run the subscript of a variable name.
+ *
+ * No glue word may hold an arithmetic expansion (`$(( … ))`, `$[ … ]`, a `${x[ … ]}` subscript,
+ * a `${x:offset}`): bash reads a variable's value there as an expression, and an expression can
+ * run a command (`X='a[$(rm x)]'; echo $((X))`).
  */
 export const GLUE_COMMANDS: ReadonlySet<string> = new Set([
   ":",
@@ -971,18 +986,167 @@ export const GLUE_COMMANDS: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * The readers whose check in `READ_ONLY_FILTERS` accepts no file only because a pipe feeds
- * them. As glue they may name files, which they only read: `cat out.log`.
+ * What a reader's words may be for it to read the pipe and nothing else: how many words that are
+ * no option it may take (a file, or the pattern or script it is given), which short options take
+ * a value (`head -n 5`), and which long ones. A reader that names a file is no glue: Claude
+ * Code's Read deny rules look at the file words of `cat`, `head`, `tail`, `sed` and the rest, and
+ * inside the queue's shell string they would not see them.
  */
-const FILE_READING_GLUE: Readonly<Record<string, FilterCheck>> = { cat: READS_ONLY };
+interface StdinShape {
+  /** The most words that are no option: its pattern, its script, or a character set. */
+  operands: number;
+  /** Short options that take a value, attached or as the next word. */
+  valued: string;
+  /** Long options that take the next word as their value (`--lines 5`; `--lines=5` always). */
+  longValued?: readonly string[];
+  /** The short and long option that gives the pattern or script itself, leaving no operand for it. */
+  script?: { short: string; long: string };
+  /** Options that make it read files (a pattern file, a recursive search, a list of files). */
+  reads?: RegExp;
+}
+
+const GREP_SHAPE: StdinShape = {
+  operands: 1,
+  valued: "emABCD",
+  longValued: ["--regexp", "--max-count", "--after-context", "--before-context", "--context"],
+  script: { short: "e", long: "--regexp" },
+  reads: /^-(?:[^-]*[rRfd]|-(?:recursive|dereference-recursive|file|directories|exclude-from))/,
+};
+const AWK_SHAPE: StdinShape = { operands: 1, valued: "Fv" };
 
 /**
- * True when one step of a line is glue (`GLUE_COMMANDS`, or a reader of `READ_ONLY_FILTERS` with
- * that table's own check of its arguments, files allowed): the program first (no wrapper, no
- * assignment, no path, no `!`), no file it writes to (a redirection to `/dev/null` is fine), and
- * not computed. A reader whose check reads its script or options (`sed`, `awk`, `sort`, `uniq`,
- * `rg`, `tee`: every check but `READS_ONLY`) sees the real words only: a word the shell fills in
- * could be a script, an option or a file, so it is no glue. `tee` is glue with no file.
+ * The readers of `READ_ONLY_FILTERS` that may be glue, each with the shape of the words that
+ * keep it on the pipe. A reader of that table with no entry here is no glue: `rg` searches the
+ * folder when nothing is piped, and nobody has listed which of its many options take a value.
+ */
+const STDIN_READERS: Readonly<Record<string, StdinShape>> = {
+  awk: AWK_SHAPE,
+  cat: { operands: 0, valued: "" },
+  cut: {
+    operands: 0,
+    valued: "bcdf",
+    longValued: ["--bytes", "--characters", "--delimiter", "--fields", "--output-delimiter"],
+  },
+  egrep: GREP_SHAPE,
+  fgrep: GREP_SHAPE,
+  gawk: AWK_SHAPE,
+  grep: GREP_SHAPE,
+  head: { operands: 0, valued: "nc", longValued: ["--lines", "--bytes"] },
+  mawk: AWK_SHAPE,
+  nawk: AWK_SHAPE,
+  sed: {
+    operands: 1,
+    valued: "el",
+    longValued: ["--expression", "--line-length"],
+    script: { short: "e", long: "--expression" },
+  },
+  sort: {
+    operands: 0,
+    valued: "kStT",
+    longValued: ["--key", "--field-separator", "--buffer-size", "--temporary-directory"],
+    reads: /^--files0-from/,
+  },
+  tail: { operands: 0, valued: "nc", longValued: ["--lines", "--bytes"] },
+  tee: { operands: 0, valued: "" },
+  tr: { operands: 2, valued: "" },
+  uniq: {
+    operands: 0,
+    valued: "fsw",
+    longValued: ["--skip-fields", "--skip-chars", "--check-chars"],
+  },
+  wc: { operands: 0, valued: "", reads: /^--files0-from/ },
+};
+
+/**
+ * True when a reader's words name no file: at most `shape.operands` words that are no option,
+ * not counting the values of the options that take one. A value that is miscounted as a word
+ * only refuses more; a word that is skipped as a value would be a file, so `valued` lists only
+ * options that take a value.
+ */
+function readsStdinOnly(shape: StdinShape, args: readonly string[]): boolean {
+  let words = 0;
+  let scripted = false;
+  let optionsEnded = false;
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index] ?? "";
+    if (arg === "-") continue; // standard input itself
+    if (optionsEnded || !isOption(arg)) {
+      words++;
+      continue;
+    }
+    if (arg === "--") {
+      optionsEnded = true;
+      continue;
+    }
+    if (shape.reads?.test(arg) === true) return false;
+    if (arg.startsWith("--")) {
+      const name = arg.split("=")[0] ?? arg;
+      if (name === shape.script?.long) scripted = true;
+      if (!arg.includes("=") && shape.longValued?.includes(name) === true) index++;
+      continue;
+    }
+    // A cluster of short options: the first one that takes a value ends it.
+    for (let at = 1; at < arg.length; at++) {
+      const letter = arg.charAt(at);
+      if (letter === shape.script?.short) scripted = true;
+      if (!shape.valued.includes(letter)) continue;
+      if (at === arg.length - 1) index++; // its value is the next word
+      break;
+    }
+  }
+  return words <= (scripted ? 0 : shape.operands);
+}
+
+/** A word an input redirection starts: `< file`, `<file`, `0<file`, `<>file` (a here-doc is not). */
+const INPUT_REDIRECTION = /^\d*<(?![<(])/;
+
+/**
+ * True when one step is a reader that reads the pipe only: a read-only filter by the pipe's
+ * own rule (`isReadOnlyFilter`: piped from the command before it, nothing the shell fills in,
+ * `READ_ONLY_FILTERS`' check of its words, no file it writes to), written bare (no path), with
+ * no file word (`readsStdinOnly`) and no input redirection (`cat < .env`).
+ */
+function isGlueReader(step: ShellStep): boolean {
+  if (!isReadOnlyFilter(step)) return false;
+  const words = wordsOf(step.text, "bash");
+  const invocation = invocationOf(words);
+  const shape = invocation === undefined ? undefined : STDIN_READERS[invocation.program];
+  if (invocation === undefined || shape === undefined || invocation.program !== words[0]) {
+    return false;
+  }
+  if (words.some((word) => INPUT_REDIRECTION.test(word))) return false;
+  return readsStdinOnly(shape, withoutRedirections(invocation.args));
+}
+
+/** A word that holds an arithmetic expansion, a subscript, or an offset: bash may run code in it. */
+const ARITHMETIC_WORD = /\$\(\(|\$\[|\$\{[^}]*(?:\[|:[^-=?+])/;
+
+/**
+ * The arguments each `GLUE_COMMANDS` entry is glue under, beyond the checks of every glue word.
+ * `words` are the program's words with their fill, after the program; `plain` are the same
+ * words without redirections.
+ */
+function glueArguments(
+  program: string,
+  words: readonly ShellWord[],
+  plain: readonly string[],
+): boolean {
+  if (program === "printf") {
+    const format = plain[0];
+    if (format === undefined) return true;
+    return !format.startsWith("-") && words.every((word) => word.text !== format || !word.filled);
+  }
+  if (program === "test" || program === "[") {
+    return !words.some((word) => word.filled) && !plain.some((arg) => arg === "-v" || arg === "-R");
+  }
+  return true;
+}
+
+/**
+ * True when one step of a line is glue: a command of `GLUE_COMMANDS` under its argument rule, or
+ * a reader that reads the pipe only (`isGlueReader`). Both are the program first (no wrapper, no
+ * assignment, no path, no `!`), not computed, with no file it writes to (a redirection to
+ * `/dev/null` is fine), and no arithmetic expansion in a word (`ARITHMETIC_WORD`).
  */
 function isGlueCommand(step: ShellStep): boolean {
   if (step.expanded) return false;
@@ -998,13 +1162,12 @@ function isGlueCommand(step: ShellStep): boolean {
     return false;
   }
   if (redirectionTargets(filled).some((target) => target !== "/dev/null")) return false;
+  if (words.some((word) => ARITHMETIC_WORD.test(word))) return false;
   const { program } = invocation;
-  if (GLUE_COMMANDS.has(program)) return true;
-  const piped = READ_ONLY_FILTERS[program];
-  if (piped === undefined) return false;
-  const check = FILE_READING_GLUE[program] ?? piped;
-  if (check !== READS_ONLY && filled.some((word) => word.filled)) return false;
-  return check(withoutRedirections(invocation.args));
+  if (GLUE_COMMANDS.has(program)) {
+    return glueArguments(program, filled.slice(1), withoutRedirections(invocation.args));
+  }
+  return isGlueReader(step);
 }
 
 /**
@@ -1084,7 +1247,7 @@ export interface RoutableLine {
 /**
  * The Bash line to queue, cut where it must be, or null when the line must run raw. A line
  * is queued only when every command in it is heavy, a `cd`, an assignment or glue
- * (`GLUE_COMMANDS`, the read-only readers, the structure of a `{ … }` group), and at least one
+ * (`GLUE_COMMANDS`, the readers of a pipe that name no file, the structure of a `{ … }` group), and at least one
  * is heavy: Claude Code matches a person's own Bash rules (`deny`, `ask`) against the words of
  * the command it runs and does not look inside `bash -c '…'`, so wrapping a line that also runs
  * `rm` would hide that `rm` from a `Bash(rm:*)` deny rule (proved on 2.1.308,

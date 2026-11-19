@@ -1622,7 +1622,9 @@ export function withoutRedirections(args: readonly string[]): string[] {
   for (let index = 0; index < args.length; index++) {
     const redirection = REDIRECTION.exec(args[index] ?? "");
     if (redirection === null) kept.push(args[index] ?? "");
-    else if ((redirection[2] ?? "") === "") index++; // its target is the next word
+    else if ((redirection[2] ?? "") === "" || (redirection[1] === ">" && redirection[2] === "&")) {
+      index++; // its target is the next word (`>& out.txt` too)
+    }
   }
   return kept;
 }
@@ -1645,14 +1647,16 @@ export function redirectionTargets(words: readonly (string | ShellWord)[]): stri
     const known = typeof word !== "string" && !word.filled;
     const redirection = (known ? ANY_REDIRECTION : REDIRECTION).exec(textOf(word));
     if (redirection === null) continue;
+    const operator = redirection[1] ?? "";
     let target = redirection[2] ?? "";
-    if (target === "") {
+    // `>& out.txt`: the `&` is the operator's, so the file is the next word, as after a bare `>`.
+    const apart = operator === ">" && target === "&";
+    if (target === "" || apart) {
       // The target is the next word.
       const next = words[++index] ?? "";
       if (isProcessSubstitution(next)) continue;
-      target = textOf(next);
+      target = apart ? `&${textOf(next)}` : textOf(next);
     }
-    const operator = redirection[1] ?? "";
     if (operator === ">" && target.startsWith("&")) {
       // `>&2` and `>&-` name a descriptor; `>&log` sends both streams to the file.
       target = /^&(\d+|-)$/.test(target) ? "" : target.slice(1);

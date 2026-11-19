@@ -447,6 +447,21 @@ describe("wordsOf: bash's `&>file` and `&>>file` are one redirection", () => {
   });
 });
 
+describe("redirectionTargets: `>&` followed by a word is a write", () => {
+  test("a file after `>&`, attached or apart, is a target; a descriptor is not", () => {
+    expect(redirectionTargets(wordsOf("echo x >&out.txt"))).toEqual(["out.txt"]);
+    expect(redirectionTargets(wordsOf("echo x >& out.txt"))).toEqual(["out.txt"]);
+    expect(redirectionTargets(wordsOf("echo x 2>& out.txt"))).toEqual(["out.txt"]);
+    expect(redirectionTargets(wordsOf("echo x >&2"))).toEqual([]);
+    expect(redirectionTargets(wordsOf("echo x >& 2"))).toEqual([]);
+    expect(redirectionTargets(wordsOf("echo x 2>&1"))).toEqual([]);
+    expect(redirectionTargets(wordsOf("echo x >&-"))).toEqual([]);
+    expect(redirectionTargets(wordsOf("echo x >& -"))).toEqual([]);
+    expect(redirectionTargets(wordsOf("echo x >& /dev/null"))).toEqual(["/dev/null"]);
+    expect(withoutRedirections(wordsOf("echo x >& out.txt").slice(1))).toEqual(["x"]);
+  });
+});
+
 describe("wordsOf: a substitution is one word", () => {
   test("$( … ) keeps its spaces and redirections, outside quotes and inside them", () => {
     expect(wordsOf("out=$(bun test 2>&1)")).toEqual(["out=$(bun test 2>&1)"]);

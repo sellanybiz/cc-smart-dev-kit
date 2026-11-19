@@ -379,9 +379,13 @@ describe("a heavy command piped into read-only filters", () => {
     );
   });
 
-  it("a reader before the heavy command is glue: no cut, the whole line is queued", () => {
-    expect(routed("cat tsconfig.json | bunx tsc --noEmit")).toBe(
-      `${LAUNCHER} job run --kind tsc -- /bin/bash -c 'cat tsconfig.json | bunx tsc --noEmit'`,
+  it("filter before heavy refused: it names a file, and the line stays raw", () => {
+    expect(routed("cat tsconfig.json | bunx tsc --noEmit")).toBeNull();
+  });
+
+  it("a reader with no file word before the heavy command is glue: the whole line is queued", () => {
+    expect(routed("echo x | cat | bunx tsc --noEmit")).toBe(
+      `${LAUNCHER} job run --kind tsc -- /bin/bash -c 'echo x | cat | bunx tsc --noEmit'`,
     );
     // A command that is no reader keeps the line raw.
     expect(routed("xargs rm -f | bunx tsc --noEmit")).toBeNull();
@@ -1178,7 +1182,12 @@ describe.skipIf(NATIVE_WINDOWS)("a line with a git command is never queued whole
 
   it("a full heavy run next to a git command is refused: the prefix would leave it raw", () => {
     const world = worldWithHooks({ "pre-push": HEAVY_HOOK });
-    const refused = jobRoute(contextFor(world.repo, "bun test && git push"), () => true);
+    // With the world's HOME the hooks prefix is available: only the order of the two answers
+    // keeps this line from getting it (the same context gives `git push` its prefix below).
+    const refused = jobRoute(
+      contextFor(world.repo, "bun test && git push", "Bash", { env: { HOME: world.home } }),
+      () => true,
+    );
     expect(JSON.parse(refused.stdout ?? "{}").hookSpecificOutput.permissionDecision).toBe("deny");
     // The git command alone still gets its prefix, and so does one beside a light run, which
     // takes no slot and is no mix.
@@ -1427,12 +1436,25 @@ describe("a mixed line: glue rides in the queue", () => {
     expect(rewrittenTo(repo(), "( cd portal && bun run test )")).toBe(
       `${LAUNCHER} job run --kind test:run -- /bin/bash -c '( cd portal && bun run test )'`,
     );
-    expect(rewrittenTo(repo(), "bun test; tail -5 out.log")).toBe(
-      `${LAUNCHER} job run --kind test:run -- /bin/bash -c 'bun test; tail -5 out.log'`,
+    expect(rewrittenTo(repo(), "bun test 2>&1 | tail -5; echo done")).toBe(
+      `${LAUNCHER} job run --kind test:run -- /bin/bash -c 'bun test 2>&1 | tail -5; echo done'`,
     );
-    expect(rewrittenTo(repo(), 'bun test; grep -E x "$OUT"')).toBe(
-      `${LAUNCHER} job run --kind test:run -- /bin/bash -c 'bun test; grep -E x "$OUT"'`,
+    expect(rewrittenTo(repo(), "bun test | grep -E fail; echo done")).toBe(
+      `${LAUNCHER} job run --kind test:run -- /bin/bash -c 'bun test | grep -E fail; echo done'`,
     );
+  });
+
+  it("a reader that names a file is refused: a Read deny rule must see that word", () => {
+    for (const line of [
+      "bun test; tail -5 out.log",
+      "bun test; cat .env",
+      "bun test | cat < .env; echo done",
+    ]) {
+      expect([line, denialOf(repo(), line)?.includes("beside other commands")]).toEqual([
+        line,
+        true,
+      ]);
+    }
   });
 
   it("a trailing tee with no file is still cut off, as before", () => {
@@ -1471,6 +1493,11 @@ describe("a mixed line: heavy work beside anything else is refused", () => {
       ["bun test && git commit -m x", "git commit -m x"],
       ["bun test; echo done > status.txt", "echo done > status.txt"],
       ["bash -c 'bun test && rm -f x'", "rm -f x"],
+      // Glue that runs code, a read that names a file, a shell fed by a pipe.
+      ["bun test; test -v 'a[$(rm -rf x)]'", "test -v"],
+      ["bun test; printf -v 'a[$(rm -rf x)]' y", "printf -v"],
+      ["bun test; cat .env", "cat .env"],
+      ["printf 'bunx tsc --noEmit\\nrm -rf x' | sh", "sh"],
     ];
     for (const [line, other] of refused) {
       expect([line, denialOf(repo(), line)?.includes(`(${other}`) ?? false]).toEqual([line, true]);

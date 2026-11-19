@@ -65,8 +65,9 @@ test("a light run beside an unknown command in a shell string takes a slot", asy
   const { ctx } = world();
   const vitest = fakeTool(ctx.cwd, "vitest");
   writeFileSync(join(ctx.cwd, "a.test.ts"), "");
-  // `git status` is no glue and not a heavy kind: the reader does not know it. (`true` is glue.)
-  const line = `${vitest} run a.test.ts && git status`;
+  // `ls` is no glue and not a heavy kind: the reader does not know it, and it ends with 0 in any
+  // folder (`git status` fails outside a repository). `true` is glue.
+  const line = `${vitest} run a.test.ts && ls`;
   expect(await runJobCommand(["run", "--kind", "build", "--", "sh", "-c", line], ctx)).toBe(0);
   expect(existsSync(stateDirOf(ctx))).toBe(true);
 });

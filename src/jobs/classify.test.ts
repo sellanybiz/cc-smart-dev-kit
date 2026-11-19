@@ -745,16 +745,19 @@ describe("routableLine: a heavy command piped into read-only filters", () => {
     expect(line("tsc | sed 's/[0-9]//g'")?.filters).toBe("| sed 's/[0-9]//g'");
   });
 
-  test("a reader before or beside the heavy command is glue: no cut, the whole line is queued", () => {
-    // The reader is not fed by the heavy command, so it is no filter to keep outside: it rides
-    // in the queued line (`isGlueCommand`).
-    for (const [command, kind] of [
-      ["cat tsconfig.json | bunx tsc --noEmit", "tsc"],
-      ["tail -5 log.txt | bunx vitest run", "test:run"],
-      ["bunx tsc --noEmit | cat other.txt", "tsc"],
-    ] as const) {
-      expect([command, line(command)]).toEqual([command, { filters: "", heavy: command, kind }]);
-    }
+  test("filter before heavy refused: it names a file, and a Read rule must see that", () => {
+    expect(line("cat tsconfig.json | bunx tsc --noEmit")).toBeNull();
+    expect(line("tail -5 log.txt | bunx vitest run")).toBeNull();
+    expect(line("bunx tsc --noEmit | cat other.txt")).toBeNull();
+  });
+
+  test("a reader piped into the heavy command, with no file word, is glue: no cut", () => {
+    // `echo x | grep x | bunx tsc`: nothing names a file, so the whole line is queued.
+    expect(line("echo x | cat | bunx tsc --noEmit")).toEqual({
+      filters: "",
+      heavy: "echo x | cat | bunx tsc --noEmit",
+      kind: "tsc",
+    });
   });
 
   test("two heavy steps piped: the whole line is queued, as before", () => {
@@ -773,8 +776,7 @@ describe("routableLine: a heavy command piped into read-only filters", () => {
       ["bunx tsc --noEmit && bunx vitest run | tail -5", "tsc"],
       // `!` turns the whole pipeline's exit code around, not the heavy command's.
       ["! bunx tsc --noEmit | tail -5", "tsc"],
-      // `||` is no pipe; a filter inside a shell string is part of the shell string.
-      ["bunx tsc --noEmit || tail -5 log.txt", "tsc"],
+      // A filter inside a shell string is part of the shell string.
       ["bash -c 'bunx tsc --noEmit | tail -5'", "tsc"],
       // A command after the filter, and a comment the cut cannot place.
       ["bunx tsc --noEmit | tail -5; echo done", "tsc"],
@@ -782,8 +784,10 @@ describe("routableLine: a heavy command piped into read-only filters", () => {
     ] as const) {
       expect([command, line(command)]).toEqual([command, { filters: "", heavy: command, kind }]);
     }
-    // A command that is not glue after the filter keeps the line raw.
+    // A command that is not glue after the filter keeps the line raw, and so does a reader that
+    // is no pipe's (`||`) or names a file.
     expect(line("bunx tsc --noEmit | tail -5; rm -f x")).toBeNull();
+    expect(line("bunx tsc --noEmit || tail -5 log.txt")).toBeNull();
   });
 
   test("classifyRoutableLine names the kind of such a line", () => {
@@ -1284,11 +1288,14 @@ describe("runWeight: light, heavy or none", () => {
     expect(weight("tsc --noEmit src/a.ts 2>&1 && tsc --noEmit src/a.ts >/dev/null 2>&1")).toEqual(
       LIGHT,
     );
-    // `|&` is a pipe, not a background. A reader after it is glue, so the line stays light; a
-    // command the route does not accept (`less` waits for a person) keeps the slot, for that
-    // reason and not for a background run.
-    expect(weight("tsc --noEmit src/a.ts |& tail -3 && tsc --noEmit src/a.ts")).toEqual(LIGHT);
-    expect(weight("tsc --noEmit src/a.ts |& less && tsc --noEmit src/a.ts")).toEqual(heavy("tsc"));
+    // `|&` is a pipe, not a background: the filter after it is no command the route accepts
+    // (the reader does not call it a pipe), so the line keeps its slot for that reason, not for
+    // a background run.
+    expect(weight("tsc --noEmit src/a.ts |& tail -3 && tsc --noEmit src/a.ts")).toEqual(
+      heavy("tsc"),
+    );
+    // A piped reader with no file word is glue, so the line stays light.
+    expect(weight("tsc --noEmit src/a.ts | tail -3 && tsc --noEmit src/a.ts")).toEqual(LIGHT);
   });
 
   test("a kind's tool decides the options: vitest, jest, tsc and bun each read their own", () => {
@@ -1502,6 +1509,8 @@ describe("routableLine: harmless glue rides in the queued line", () => {
     "/repo": { check: "tsc --noEmit", test: "vitest run" },
     "/repo/portal": { test: "vitest run" },
   };
+  /** The start of a `${…}` parameter expansion, so a test string holds no template placeholder. */
+  const BRACE = "${";
   const line = (command: string) => routableLine(command, DEFAULT_KINDS, weightSourceOf(SCRIPTS));
   const queuedWhole = (command: string, kind: string) =>
     expect(line(command)).toEqual({ filters: "", heavy: command, kind });
@@ -1520,37 +1529,145 @@ describe("routableLine: harmless glue rides in the queued line", () => {
     queuedWhole("( cd portal && bun run test )", "test:run");
   });
 
-  test("a reader after the run: it may name files, and a word the shell fills in", () => {
-    queuedWhole("bun test; tail -5 out.log", "test:run");
-    queuedWhole("bun test; cat out.log", "test:run");
-    queuedWhole("bun test; wc -l out.log", "test:run");
-    queuedWhole('bun test; grep -E x "$OUT"', "test:run");
-    queuedWhole("OUT=out.log; bun test > $OUT 2>&1; head -3 $OUT", "test:run");
+  test("a reader that reads the pipe: no file word, so no Read rule is hidden", () => {
+    queuedWhole("bun test 2>&1 | tail -5; echo done", "test:run");
+    queuedWhole("bun test 2>&1 | head -20; echo done", "test:run");
+    queuedWhole("bun test | wc -l; echo done", "test:run");
+    queuedWhole("bun test | cat; echo done", "test:run");
+    queuedWhole("bun test | grep -E 'fail|error'; echo done", "test:run");
+    queuedWhole("bun test | cut -d: -f1; echo done", "test:run");
+    queuedWhole("bun test | tr -d '\\r'; echo done", "test:run");
+    queuedWhole("bun test | grep -e a -e b; echo done", "test:run");
+    queuedWhole("bun test | tail -n 5; echo done", "test:run");
   });
 
-  test("the readers that read their own script or options need the real words", () => {
-    queuedWhole("bun test; sed -n '1,5p' out.log", "test:run");
-    queuedWhole("bun test; awk '{print $1}' out.log", "test:run");
-    queuedWhole("bun test; sort -u out.log", "test:run");
-    queuedWhole("bun test; uniq out.log", "test:run");
-    queuedWhole("bun test; rg -n FAIL out.log", "test:run");
-    // A word the shell fills in could be a script, an option or a file to write.
+  test("a reader that names a file is no glue: a Read deny rule looks at that word", () => {
     for (const reader of [
-      'sed -n "$P" out.log',
-      'awk "$P" out.log',
-      'sort "$F"',
-      'uniq "$F"',
-      'rg "$F"',
-      'tee "$F"',
+      "tail -5 out.log",
+      "cat out.log",
+      "cat .env",
+      "wc -l out.log",
+      'grep -E x "$OUT"',
+      "head -3 $OUT",
+      "grep x out.log",
+      "grep -e x out.log",
+      "sed -n 1p out.log",
+      "sort out.log",
+      "uniq in out",
+      "awk '{print $1}' out.log",
     ]) {
+      // Beside the heavy run with no pipe, and fed by a pipe with the file word in it.
       expect([reader, line(`bun test; ${reader}`)]).toEqual([reader, null]);
+      expect([reader, line(`bun test | ${reader}; echo done`)]).toEqual([reader, null]);
     }
   });
 
+  test("a reader with no pipe, an input redirection, or a search of the folder is no glue", () => {
+    for (const reader of [
+      "tail -5",
+      "cat",
+      "cat < .env",
+      "grep x < .env",
+      "grep -r x",
+      "grep -rn x",
+      "grep -f patterns x",
+      "grep --recursive x",
+      "wc --files0-from=list",
+      "sort --files0-from=list",
+      "rg x",
+      "sed -f script",
+      "/usr/bin/tail -5",
+    ]) {
+      expect([reader, line(`bun test; ${reader}`)]).toEqual([reader, null]);
+    }
+    expect(line("bun test | cat < .env; echo done")).toBeNull();
+    expect(line("bun test | cat <.env; echo done")).toBeNull();
+    expect(line("bun test | grep -r x; echo done")).toBeNull();
+    // A here-doc or here-string is no file.
+    queuedWhole("bun test | cat <<< hi; echo done", "test:run");
+  });
+
+  test("the readers that read their own script or options need the real words", () => {
+    queuedWhole("bun test | sed -n '1,5p'; echo done", "test:run");
+    queuedWhole("bun test | sed -n -e '/x/p' -e '$p'; echo done", "test:run");
+    queuedWhole("bun test | awk '{print $1}'; echo done", "test:run");
+    queuedWhole("bun test | awk -F: -v n=2 'NR<n {print}'; echo done", "test:run");
+    queuedWhole("bun test | sort -u; echo done", "test:run");
+    queuedWhole("bun test | uniq -c; echo done", "test:run");
+    // A word the shell fills in could be a script, an option or a file.
+    for (const reader of [
+      'sed -n "$P"',
+      'awk "$P"',
+      'sort "$F"',
+      'uniq "$F"',
+      'tee "$F"',
+      'grep "$P"',
+    ]) {
+      expect([reader, line(`bun test | ${reader}; echo done`)]).toEqual([reader, null]);
+    }
+    // `rg` searches the folder when nothing is piped, and has no listed shape.
+    expect(line("bun test | rg x; echo done")).toBeNull();
+  });
+
   test("tee is glue only with no file, as in the filter rule", () => {
-    queuedWhole("bun test; tee", "test:run");
-    expect(line("bun test; tee out.log")).toBeNull();
+    queuedWhole("bun test | tee; echo done", "test:run");
     expect(line("bun test | tee out.log; echo x")).toBeNull();
+    expect(line("bun test | tee /dev/null; echo x")).toBeNull();
+    expect(line("bun test; tee")).toBeNull();
+  });
+
+  test("glue that runs code: a subscript or an arithmetic expansion", () => {
+    for (const code of [
+      "test -v 'a[$(rm -rf x)]'",
+      "[ -v 'a[$(rm -rf x)]' ]",
+      "[ -R x ]",
+      "test -R 'a[$(rm -rf x)]'",
+      "printf -v 'a[$(rm -rf x)]' y",
+      "printf -- '%s' x",
+      'printf "$F" x',
+      "echo $((X))",
+      "echo $[X]",
+      `echo ${BRACE}a[X]}`,
+      `echo ${BRACE}X:1}`,
+      "echo $(( $(pwd) ))",
+      "echo $((1+1))",
+    ]) {
+      expect([code, line(`bun test; ${code}`)]).toEqual([code, null]);
+    }
+    // A test with a word the shell fills in can be `-v` itself.
+    expect(line('bun test; [ -d "$DIR" ]')).toBeNull();
+    expect(line("bun test; test $? -eq 0")).toBeNull();
+    // The harmless forms stay glue.
+    queuedWhole("bun test; printf '%s\\n' x $HOME", "test:run");
+    queuedWhole(`bun test; echo ${BRACE}X:-default}`, "test:run");
+    queuedWhole(`bun test; echo $HOME ${BRACE}#X}`, "test:run");
+    queuedWhole("bun test; [ -f out.log ] && echo yes", "test:run");
+  });
+
+  test("a shell that takes its script from the pipe is never pure: the text is no promise", () => {
+    // The reader gives `\\n` as a space, and `sh` runs two commands.
+    for (const piped of [
+      "printf 'bunx tsc --noEmit\\nrm -rf x' | sh",
+      "printf 'bunx tsc --noEmit\\012rm -rf x' | sh",
+      "printf '%b' 'bunx tsc --noEmit\\nrm -rf x' | sh",
+      "echo 'bunx tsc --noEmit\\nrm -rf x' | sh",
+      "echo 'bunx tsc --noEmit' | sh",
+      "echo 'bunx tsc --noEmit' | bash",
+    ]) {
+      expect([piped, line(piped)]).toEqual([piped, null]);
+      expect([piped, line(`bun test; ${piped}`)]).toEqual([piped, null]);
+    }
+    // A shell with its script in `-c` is still read.
+    queuedWhole("echo go | bash -c 'bunx tsc --noEmit'", "tsc");
+  });
+
+  test("glue that writes a file with >&, attached or apart, is no glue", () => {
+    expect(line("bun test; echo x >& out.txt")).toBeNull();
+    expect(line("bun test; echo x >&out.txt")).toBeNull();
+    expect(line("bun test; echo x &> out.txt")).toBeNull();
+    queuedWhole("bun test; echo x >&2", "test:run");
+    queuedWhole("bun test; echo x 2>&1", "test:run");
+    queuedWhole("bun test; echo x >& /dev/null", "test:run");
   });
 
   test("a trailing filter is still cut off the queued part", () => {
@@ -1645,7 +1762,7 @@ describe("runWeight: glue beside a light run keeps it light", () => {
     for (const line of [
       "bun test ./a.test.ts; echo done",
       "echo start && bun test ./a.test.ts",
-      "bun test ./a.test.ts; tail -5 out.log",
+      "bun test ./a.test.ts 2>&1 | tail -5; echo done",
       "{ bun test ./a.test.ts; } > out.log 2>&1",
     ]) {
       expect([line, runWeight(line, DEFAULT_KINDS, source())]).toEqual([line, { weight: "light" }]);

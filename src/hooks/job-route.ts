@@ -42,8 +42,8 @@
  * filters stay after the queue's command, where the person's own Bash rules see them.
  *
  * **A mixed line** holds heavy work beside other commands, and the queue takes it whole only
- * when everything beside the heavy commands is harmless glue (`echo`, `printf`, a read-only
- * reader, the `{ … }` and `( … )` of a group; `GLUE_COMMANDS` and `isGlueCommand`):
+ * when everything beside the heavy commands is harmless glue (`echo`, `printf`, a reader that
+ * reads the pipe and names no file, the `{ … }` and `( … )` of a group; `GLUE_COMMANDS` and `isGlueCommand`):
  * `bun run check; echo "exit $?"` is queued as one line. Any other command beside heavy work
  * (`bun test; git status`) would be hidden from the person's `Bash(...)` rules inside the queue's
  * shell string, and run raw the heavy part would not wait for a slot: so the line is **refused**,
