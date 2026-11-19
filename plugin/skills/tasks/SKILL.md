@@ -35,14 +35,15 @@ Only a finding **outside** the plan leaves it, and it follows these steps.
 
 1. **Found.** The main session meets it: its own, or one in a builder's `Report:`, a reviewer's
    "Outside this change" or a rules-maintainer's "Follow-ups for the caller". A subagent, and any
-   Herdr child (plan or follow-up), never asks, files or starts anything: it lists the finding in
+   Herdr child, never asks, files or starts anything: it lists the finding in
    its report (`herdr report` for a child). The lead asks when it reads that report.
 2. **Inside a held plan?** When the finding's files are in a plan that is held (the lead's own,
    or one handed to a plan child, live or gone), it is inside that plan and no follow-up: it
    becomes a task there, and nobody is asked. With a live plan child, send it the finding so it
    makes the task; otherwise create the task yourself (`task_create`, `parent` the plan's `#n`).
-   The task is the record; an issue is optional. A held plan that is finished (its plan task
-   closed, its pull request open) takes no task: the store refuses it, and the follow-up child may
+   The task is the record; an issue is optional. A held plan that is finished (a reserved plan:
+   its plan task closed, its pull request open; an unreserved plan's files are free once its task
+   closes) takes no task: the store refuses it, and the follow-up child may
    not edit its files. Ask it with two options: **fix it on that pull request** (only when the
    pull request is this session's: a late fix on its branch, pushed once by the batch rule,
    `/cc-smart-dev-kit:commit` § Pushing), or **file it for after the merge**. Filed: save a task

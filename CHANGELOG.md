@@ -26,22 +26,26 @@ in your own terminal after the update; the user guide is [README.md](README.md).
   - **Before each finding,** it reads its pull request's state. A merged pull request means a new
     branch from the base, with unmerged commits moved onto it by a cherry-pick (a conflict is
     aborted and reported). A closed one is never reset.
-  - **For each finding,** it never edits a file a held plan holds, makes one commit, marks the issue
-    fixed (`issue mark-fixed`) and reports. It pushes its branch only while no pull request is open.
-  - **At the ship point,** the lead sends `ship`. Only then does the child open or update its pull
-    request: it runs the full check, pushes once, and takes the `Fixes` lines from `issue fixed`.
+  - **For each finding,** it never edits a file a held plan holds, makes one commit and reports.
+    Beyond a small fix it gets one second opinion from `senior-engineer` before the commit (its
+    brief allows that agent and no other); work that needs a kit plan goes back to the lead. It
+    never pushes before `ship`.
+  - **At the ship point,** the lead sends `ship`. Only then does the child run the full check, mark
+    each fixed issue (`issue mark-fixed`, with each commit's id on the shipping branch), push once,
+    and open or update its pull request, taking the `Fixes` lines from `issue fixed`.
   - **It stops** only on `herdr stop`. The start's check for an ended child's unmerged work cannot
     see a child that Herdr no longer lists, so ship before you stop it.
   - **Elsewhere:** the label is `kit.followup`, and `herdr list` shows "follow-up" (the column is
     now "task, plan or follow-up"). `herdr wait --all` leaves it out, since it never settles. A
-    plan child's brief gains one line: its own findings go in `herdr report`; it never asks, files
-    or starts. A follow-up child never hands out, reserves or adopts plans. The Bash judge shows a
+    linked child's brief gains one line: its own findings go in `herdr report`; it never asks,
+    files or starts. A follow-up child never hands out, reserves or adopts plans. The Bash judge shows a
     start line's parse error alone when `--model`, `--effort` and `--mode` are all given. The
     held-plan list in the child's brief is a snapshot taken at the start, and this flow is not yet
     proved live.
-- **Fewer pull requests and CI runs.** In a project whose CI runs on pull requests and on
-  pushes to the default branch (check yours), a branch push with no pull request is free. The skills now keep each plan's archive in
-  the plan's own pull request (its last commit, with the plan task closed in that same turn), put
+- **Fewer pull requests and CI runs.** Before a pull request opens, a push costs no CI only where
+  CI runs on pull requests and the default branch alone: read your CI triggers before you treat it
+  as free. The skills now keep each plan's archive in the plan's own pull request (its commit comes
+  before the final review, and the plan task closes in the turn the pull request opens), put
   the small fixes of one session on one branch with one pull request at one ship point (the end of
   the turn that finishes your request, or when you say ship now), and, once a pull request is open,
   collect a round of fixes, run the full check locally and push once. One pull request per plan, and

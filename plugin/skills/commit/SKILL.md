@@ -104,7 +104,8 @@ for the push hook: `/cc-smart-dev-kit:verify-change` § 4 says when it may be sk
 
 **Pushes cost CI, so time them.** This is the one home for the rule.
 
-- **Before the pull request opens,** a push is a free backup: make it as often as you like.
+- **Before the pull request opens,** a push costs no CI only where CI runs on pull requests and
+  the default branch alone: read the project's CI triggers before you treat it as free.
 - **After it opens,** a push can start a CI run. Collect every fix of a round (review findings, a
   CI failure), run the full check locally (`/cc-smart-dev-kit:verify-change` § 4), then push once.
   Never push one fix at a time, and never use CI to find what the local check finds.
@@ -113,6 +114,7 @@ for the push hook: `/cc-smart-dev-kit:verify-change` § 4 says when it may be sk
   (`/cc-smart-dev-kit:herdr` § Follow-up child) ship together: at the end of the turn that
   finishes the person's request, or at once when the person says to ship now. The small fixes
   ride on the session's own branch; when that is a plan branch, or already carries a reviewed
-  change set, they get a new branch from the default branch. One pull request opens there
+  change set, they get a new branch from the default branch, in a worktree of its own
+  (`/cc-smart-dev-kit:worktree`). One pull request opens there
   at the ship point. At that same moment the lead sends the follow-up child `ship`. Until then the
-  child commits each finding and may push its branch while it has no open pull request.
+  child commits each finding and never pushes.

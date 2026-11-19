@@ -256,15 +256,17 @@ Run `/cc-smart-dev-kit:build` after approval. Its task gates close phases with e
 start the next ready work. Do not ask whether to continue half-built work.
 At plan end, give a short summary of what shipped, failed and remains.
 
-## 8. Archive it — the last commit of the plan's own pull request
+## 8. Archive it — a commit of the plan's own pull request
 
 A finished plan leaves the live folder before its pull request opens, never in a pull request of
-its own. After the final review and the full check pass (`/cc-smart-dev-kit:build` § 6), move the
-plan file, and any research file still in the live folder, to `<plans dir>/archive/`. Commit that
-move last on the plan branch, as the workflow allows, then open the pull request. In the same
-turn, close the plan task with verification and the commits that shipped it: its files stay held
-until the pull request merges or closes. If that pull request is abandoned, its archived file
-moves back in the next pull request.
+its own. When the phases are built and before the final review (`/cc-smart-dev-kit:build` § 6), move
+the plan file, and any research file still in the live folder, to `<plans dir>/archive/`. Commit
+that move on the plan branch, as the workflow allows: the final review then covers it, in any
+`fixesAfterReview` setting. After the review, its fixes and the full check, open the pull request.
+In the turn it opens, close the plan task with verification and the commits that shipped it: a
+reserved plan's files stay held until its pull request merges or closes, and an unreserved plan's
+files are free once its task closes. If that pull request is abandoned, its archived file moves
+back in the next pull request.
 Keep the outcome on its task, not in a status history appended to the design.
 
 A parked plan stays open and `pending` with its work intact (§ 6), and a note on the plan task
