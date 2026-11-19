@@ -77,6 +77,37 @@ the status line and the update hold. The resolver (`leadHintFrom`) reads the per
 (`personal`), else on (`default`); the hook reads it through `resolveLeadHint`, which never
 throws, so a broken file keeps the hint on.
 
+**`plans.runMode` lives in the person's file alone** (5.2.0), like `switches.leadHint`. It says how
+queued plans run when two or more are laid: `ask` (the default), `solo`, `lead-children` or
+`coordinator` (`RUN_MODES` in `schema.ts`). Each extra session spends the person's usage, so a
+committed value would spend every teammate's: only `personalWorkflowSchema` has the field, and a
+project file that sets it is refused (`checkPersonalOnlyFields` in `src/project/config.ts`, with the
+command to run in the person's own terminal). `workflow set` and `unset` of it refuse inside Claude
+Code (`PLAN_KEYS`) and print that command, and `set --project` writes nothing. The refusal words
+come from one table, `PERSONAL_ONLY_REASONS`, which the writer and the project check share. The
+resolver reads the person's value, else `ask`, and `workflow show` names the source. Nothing in the
+code starts a mode: `/cc-smart-dev-kit:plan-task` § 6 asks under `ask`, and
+`/cc-smart-dev-kit:build` § Lead + children and coordinator modes follows the answer.
+
+**`plans.mergeFiles` lives in the project's file alone and counts only as committed.** It is a list
+of paths every plan touches and each merge settles (a version manifest, a changelog, a lockfile,
+build output); the plans' overlap check (`docs/design/tasks.md` § Plans handed to children) leaves
+them out. A session that could widen it would lift its own check, so the store and herdr never use
+the working copy. `resolveMergeFiles` (`src/workflow/resolve.ts`) reads the copy on
+`origin/<worktrees.base>` through the review gate's own committed read (`readCommittedConfig`),
+and `planFilesCheck` (`src/tasks/files-check.ts`) calls it before any write lock. With no base, no
+remote ref, no committed file or a bad entry, the list is empty or short and comes back with a
+reason, so more paths count as overlaps, never fewer. `ResolvedWorkflow.plans.mergeFiles` is only
+the project config passed in, so no caller reads it for a decision. It is in `PLAN_KEYS`, so
+`workflow set` refuses it inside Claude Code and the person commits it themselves (`propose` stays
+open); the person's file refuses it (`PROJECT_ONLY_KEYS`) and `set` needs `--project`. Entries are
+`/`-separated and tidied (`./`, `\`); an absolute path, `..`, the root and the pattern
+characters `*` and `?` are refused (`[` and `]` stay: no list reaches git as a pathspec, `docs/design/tasks.md`). A folder ends in `/`, and a bare name that is a folder in
+the committed tree is left out of the list, with that in the reason. `workflow show` prints the
+list as written in the working copy, and a second line with the list the plan tools read from the
+base. A project that sets it needs `requires` `>=5.2` (`WORKFLOW_MERGE_FILES_SINCE`), per key: the
+`plans` object alone still needs `>=4.8`.
+
 **The auto-merge rule** (`auto-merge.ts`, `autoMergeAllowed`) is a pure function with its own
 tests, because it decides whether a command may run without a person:
 
@@ -111,6 +142,7 @@ place (`auto-merge.ts`).
 | `alerts.events`, `alerts.sound` | Retired load-only keys: ignored, omitted by `workflow show`, and refused by `workflow set`. Existing values survive unrelated writes. |
 | `alerts.usagePercent` | the status line (`src/cli/statusline.ts`), whose warning share it is. |
 | `plans.maxPhases` | the kit's task store (`docs/design/tasks.md`): the most phases one plan may hold, a whole number 1-50, default 10. Like every number setting it has one rule (`NUMBER_RULES` in `schema.ts`) that the file check and `workflow set` share, and a file that holds another value is refused with the field named. The project's file wins over the person's, and the cap is read from the checkout's working copy, not the committed file. The task tools hold a session to it, so `workflow set` and `unset` of it refuse inside Claude Code (`PLAN_KEYS` in `schema.ts`): only the person raises it, and the cap refusal says to ask them. `propose` stays open, since a person reviews its pull request. A project that sets it needs `requires` `>=4.8` (`WORKFLOW_PLANS_SINCE`). |
+| `plans.runMode`, `plans.mergeFiles` | the plan tools and herdr's plan hand-outs, and the skills that ask for the mode: see the two paragraphs above, and `docs/design/herdr.md` § Handing out plans. Both are in `PLAN_KEYS` and refuse `set`/`unset` inside Claude Code. |
 | `fixesAfterReview.*` | `readCover` (`src/workflow/review-cover.ts`, § The review record): the limits a change after a review may reach and still be covered. Resolved, shown by `workflow show` with their source (and as one `in force` line), and written by `workflow set`; the merge guard judges with them, through `merge-check.ts`. |
 
 **The merge guard** asks the person before a merge its rules do not allow, and lets one through

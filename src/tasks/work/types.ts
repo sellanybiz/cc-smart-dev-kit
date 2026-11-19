@@ -46,11 +46,33 @@ export interface WorkClaim {
  * The two questions about a claim's process. `live`: does it run, proved (a claim not proved
  * live is free to take). `gone`: is it proved to have ended (only then may the caller's own
  * session move the claim to itself). A process that runs but cannot be proved either way is
- * neither.
+ * neither. `ended`: the whole session is over, its process gone and no running session carrying
+ * its id (`sessionEnded`): what a second child waits for before it starts or takes a plan. All
+ * three are required, so no caller can quietly answer `ended` with `gone`.
  */
 export interface ClaimProcess {
   live(claim: WorkClaim): boolean;
   gone(claim: WorkClaim): boolean;
+  ended(claim: WorkClaim): boolean;
+}
+/**
+ * The lead a plan is reserved for (`reservePlan`): the session and process that handed the plan
+ * out, or that builds it itself. Judged by the same rule as an owner (`isLead`): its session id,
+ * or the same process, so a `/clear` and a resume keep it: its session and process move with the
+ * caller's (`reclaimResumed`), like `createdBy`.
+ */
+export interface WorkLead {
+  sessionId: string | null;
+  pid: number | null;
+  procStart: string | null;
+  /** Who builds the plan: the lead itself, or a child it hands the plan to. Set once, at the reservation. */
+  holder: "self" | "child";
+  /**
+   * The hand-out id: written by the reservation, cleared by the release, never moved. A child
+   * takes the plan with `from` set to it (or to the lead's current session), so a `/clear` of the
+   * lead after the hand-out never strands the child's brief.
+   */
+  handoutId: string;
 }
 export interface WorkTask {
   id: string;
@@ -82,6 +104,13 @@ export interface WorkTask {
   waitsFor: string[];
   /** `WorkType`; a store from before schema 2 reads as blocking. */
   type: WorkType;
+  /**
+   * A plan's file list (`task_files`): repo-relative, `/`-separated, a folder ending in `/`, in
+   * path order. Empty for a plan with none, for any other task, and in a store from before schema 6.
+   */
+  files: string[];
+  /** The lead the plan is reserved for; null while it is unreserved, and for any other task. */
+  lead: WorkLead | null;
 }
 export interface WorkTree extends WorkTask {
   children: WorkTree[];

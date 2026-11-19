@@ -393,6 +393,24 @@ test("a plan started under 4.8.0 is in flight while a phase runs, so the refusal
   }
 });
 
+test("a plan in flight because a step of it runs names that step, never a phase from 4.8.0", () => {
+  const w = world();
+  const lead = w.ops();
+  const other = w.ops(OTHER);
+  try {
+    queue(lead, ["a", "b"]);
+    // Another session starts a step of the lead's plan: the plan task stays pending, the plan runs.
+    said(other.call("update", { task: "#3", status: "in_progress" }));
+    expect(taskNumbered(w, 1).status).toBe("pending");
+    expect(refused(lead.call("update", { task: "#5", status: "in_progress" }))).toBe(
+      'Plan "a" (#1) is in flight: your session runs one plan at a time. Do not start work in plan "b" yet. Finish "a" (task_done on its #1 once its phases are closed), or stop the work running in "a" (#3): finish it (task_done), or set it back to pending (task_update with status "pending").',
+    );
+  } finally {
+    lead.close();
+    other.close();
+  }
+});
+
 test("task_list on the plan ledger marks each plan in flight, queued, parked or finishing, in number order", () => {
   const w = world();
   const lead = w.ops();

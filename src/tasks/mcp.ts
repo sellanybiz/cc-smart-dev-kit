@@ -16,6 +16,7 @@ Finish or drop every blocking task before marking its parent done.
 Three layers: plan › phase › task. A non-blocking task holds nothing; a task blocked by an open task waits for it.
 A plan holds at most plans.maxPhases phases, and a phase starts only once it holds tasks. Lay phases in any of your plans, up front; run one plan at a time: starting work in a plan puts it in flight, and a start in another plan is refused until the first is finished or parked (park = its plan task to pending, once its phases stop; resume = start a phase again). A later ask waits as a task under its plan (parent = the plan's #n). A task made with no plan and no parent is loose: a small fix needs no plan, and it never joins or starts one.
 A step of a phase closes done with evidence, or dropped with a note that gives the reason.
+A plan task holds its file list (files on task_create or task_update): repo-relative paths, a folder ends in /; a plan is handed to a child only when no held plan's files overlap.
 Save notes as you go with ${TASK_TOOL.note}.`;
 const descriptions: Record<TaskOperation, string> = {
   take: "Take a plan or task into the calling session. Live claims need force; a refusal changes nothing.",

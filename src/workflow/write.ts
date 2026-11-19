@@ -39,6 +39,7 @@ import {
   isPersonalFileSwitch,
   isProjectKey,
   isSwitchKey,
+  PERSONAL_ONLY_REASONS,
   personalWorkflowSchema,
   type SwitchName,
   switchOf,
@@ -152,14 +153,8 @@ export function writeProjectSetting(
 ): string {
   const wanted = requireKey(key);
   if (!isProjectKey(wanted)) {
-    const reason =
-      wanted === "switches.statusLine"
-        ? "the status line is"
-        : wanted === "switches.leadHint"
-          ? "the lead-model hint is"
-          : "the update hold is";
     throw new Error(
-      `${wanted} is your own setting, not the project's: run it without --project (${reason} per person, per machine)`,
+      `${wanted} is your own setting, not the project's: run it without --project (${PERSONAL_ONLY_REASONS[wanted]})`,
     );
   }
   if (isSwitchKey(wanted)) return writeProjectSwitch(cwd, wanted, value, env);

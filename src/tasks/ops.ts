@@ -1,5 +1,5 @@
-import { readFileSync, rmSync } from "node:fs";
-import { relative } from "node:path";
+import { existsSync, readFileSync, rmSync, statSync } from "node:fs";
+import { join, relative } from "node:path";
 import { READ_ONLY_OPERATIONS, type TaskOperation, taskSchemas } from "./schemas";
 
 export type { TaskOperation } from "./schemas";
@@ -21,6 +21,7 @@ import {
   updateDeployTask,
 } from "./deploy/files";
 import { type DeployTask, isDeployTaskId } from "./deploy/format";
+import { planFilesCheck } from "./files-check";
 import {
   planInTheWay,
   planNote,
@@ -33,7 +34,7 @@ import {
 import { TASK_COMMAND, TASK_TOOL } from "./words";
 import { openWorkDb, type WorkDb, workDbFile, writeWork } from "./work/db";
 import { historyText } from "./work/history";
-import { CLAIM_PROCESS, callerOf, claimGone, claimLive } from "./work/identity";
+import { CLAIM_PROCESS, callerOf, claimGone, claimLive, sessionEnded } from "./work/identity";
 import {
   allTasks,
   claimState,
@@ -43,13 +44,17 @@ import {
   freedBy,
   getTask,
   inFlightPlanOf,
+  isInFlight,
+  isLead,
   isOpen,
   layerOf,
+  normalizePlanFile,
   notesOf,
   openBlockers,
   ownerOf,
   ownsPlan,
   PARK_NOTE_PREFIX,
+  planByRef,
   planQueueState,
   searchTasks,
   subtreeProgress,
@@ -57,6 +62,7 @@ import {
 import {
   applyUpdate,
   deleteTask,
+  type FilesCheck,
   insertNote,
   insertTask,
   layPhase,
@@ -146,6 +152,12 @@ function deployTasksIn(root: string): string {
   return `Deploy tasks in ${root}:`;
 }
 
+/** True when `path` (repo-relative) is a folder in the working copy: a list entry for it needs its `/`. */
+function isFolderOnDisk(root: string, path: string): boolean {
+  const full = join(root, path);
+  return existsSync(full) && statSync(full).isDirectory();
+}
+
 const DELETE_TRACKED =
   "Tracked deploy task: it is part of a commit, so close it with task_done instead";
 
@@ -163,6 +175,11 @@ export interface TaskOpsOptions {
    * it always; the command sets it inside Claude Code.
    */
   refuseBlockingDrop?: boolean;
+  /**
+   * How a new file list on a held plan is compared (`plans.mergeFiles` and case). Read from git
+   * before the write lock; tests pass their own. Default: `planFilesCheck` of the caller's folder.
+   */
+  filesCheck?: (cwd: string) => FilesCheck;
 }
 function value<T>(result: Result<T>): T {
   if (!result.ok) throw new Error(result.why);
@@ -300,8 +317,10 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
       // A plan another process holds live is that session's work, not a queued plan to refuse.
       const claimedElsewhere = (t: WorkTask) =>
         claimState(t, CLAIM_PROCESS, who) === "another session";
+      // A reserved plan is refused by who owns it (D4): the reservation says who it was handed to.
+      const guardCaller = { owns, isLead: (t: WorkTask) => isLead(t.lead, who) };
       const refuseOther = (plan: string) =>
-        refuseOtherPlan({ all, inFlight, plan, claimedElsewhere });
+        refuseOtherPlan({ all, inFlight, plan, claimedElsewhere, caller: guardCaller });
       /** What a close freed, judged on the list read after it: the plan in flight may have closed. */
       const freedAfter = (after: readonly WorkTask[], closed: WorkTask) =>
         freedText(
@@ -314,17 +333,50 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
               inFlight: inFlightPlanOf(after, owns),
               plan,
               claimedElsewhere,
+              caller: guardCaller,
             }) === null,
         );
       /**
+       * A plan's new file list, checked before the write lock: each entry is normalised (D2) and
+       * a folder written without its `/` is refused with the fix. It always reads `plans.mergeFiles`
+       * and case from git here (whether the plan is held is only known inside the transaction), so
+       * no git runs under the lock; the store then judges an overlap there.
+       */
+      const filesWrite = (files: readonly string[]) => {
+        for (const raw of files) {
+          const path = normalizePlanFile(raw);
+          if (ctx.checkoutRoot === null || path.endsWith("/")) continue;
+          if (isFolderOnDisk(ctx.checkoutRoot, path))
+            throw new Error(`file "${raw}" is a folder: write it ${path}/`);
+        }
+        return { files, filesCheck: (options.filesCheck ?? planFilesCheck)(cwd) };
+      };
+      /**
+       * How a plan's start is judged against the plans held for others (the store refuses an
+       * overlap in the start's own write): the real `plans.mergeFiles` and case read, taken before
+       * the lock, whenever this start puts a plan into flight (it has a plan row that is not in
+       * flight yet). A step in a plan that already runs reads nothing, so git runs once per plan
+       * start, never once per step. The store's own default (nothing ignored, case compared) is
+       * for a caller with no read. It judges this path in one race: the read here sees the plan
+       * in flight, then its last running task closes before the lock, so the start is judged with
+       * that default.
+       */
+      const startCheck = (plan: string | null): { filesCheck?: FilesCheck } => {
+        const row = all.find((t) => t.kind === "plan" && t.plan === plan);
+        return row === undefined || isInFlight(all, row)
+          ? {}
+          : { filesCheck: (options.filesCheck ?? planFilesCheck)(cwd) };
+      };
+      /**
        * Marks the caller's own plan in flight when work in it starts: its task goes from pending
        * to `in_progress` in the same write, claimed by this process. A plan that is not the
-       * caller's, one with no task, and one already running are left as they are.
+       * caller's, one with no task, and one already running are left as they are. `check` is
+       * `startCheck`, read before the lock.
        */
-      const enterFlight = (plan: string | null) => {
+      const enterFlight = (plan: string | null, check: { filesCheck?: FilesCheck }) => {
         const row = all.find((t) => t.kind === "plan" && t.plan === plan);
         if (row === undefined || row.status !== "pending" || !owns(row)) return;
-        applyUpdate(store, row.id, { status: "in_progress" }, who, now);
+        applyUpdate(store, row.id, { status: "in_progress", ...check }, who, now);
       };
       const deployTasksOf = () => {
         const here = deployContext();
@@ -369,13 +421,14 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
       if (operation === "take") {
         const input = taskSchemas.take.parse(raw);
         if (!caller?.sessionId) throw new Error("take needs a resolvable calling session");
-        const target =
-          all.find((t) => t.kind === "plan" && t.plan === input.task) ?? work(input.task);
+        const target = planByRef(store, ctx.project, input.task) ?? work(input.task);
         const moved = value(
           takeTasks(store, ctx.project, target.id, who, now, {
             ...(input.from === undefined ? {} : { from: input.from }),
             force: input.force,
             isLive: claimLive,
+            // The session records of this caller's config folder (`env`), never another one's.
+            isEnded: (claim) => sessionEnded(claim, { env }),
           }),
         );
         return {
@@ -392,9 +445,12 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
             input.blocked_by?.length ||
             input.status ||
             input.phase ||
-            input.plan
+            input.plan ||
+            input.files !== undefined
           )
-            throw new Error("Deploy tasks have no parent, blocked-by, work status, phase or plan");
+            throw new Error(
+              "Deploy tasks have no parent, blocked-by, work status, phase, plan or files",
+            );
           if (input.deploy === undefined)
             throw new Error("A deploy task needs deploy (before or after)");
           if (input.type === undefined)
@@ -438,6 +494,14 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
         });
         // Every blocker is found before anything is written: a wrong one leaves no task behind.
         const blockedBy = input.blocked_by?.map((r) => work(r).id) ?? [];
+        // Only the plan task itself carries a file list: a plan made without a phase or a parent.
+        if (
+          input.files !== undefined &&
+          (input.phase !== undefined || input.plan === undefined || input.parent !== undefined)
+        )
+          throw new Error(
+            "files belong to a plan task: create the plan with plan and a subject (no phase, no parent), or set files on it with task_update",
+          );
         if (input.phase !== undefined || (input.plan !== undefined && input.parent === undefined)) {
           if (input.parent !== undefined)
             throw new Error("A plan stays at the top and a phase under its plan: leave out parent");
@@ -456,18 +520,20 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
           const slug = input.plan ?? writePlan;
           if (slug === null) throw new Error("A phase belongs to a plan: give plan (its slug)");
           if (input.phase === undefined) {
-            const there = allTasks(store, ctx.project).some(
-              (t) => t.kind === "plan" && t.plan === slug,
-            );
+            const existing = all.find((t) => t.kind === "plan" && t.plan === slug);
+            const there = existing !== undefined;
+            // A plan that is there takes the list as an update, held or not (`applyUpdate`).
+            const listed = input.files === undefined ? undefined : filesWrite(input.files);
             const made = value(
-              writeWork(store, () =>
-                planTask(
+              writeWork(store, () => {
+                const row = planTask(
                   store,
                   { project: ctx.project, plan: slug, subject: input.subject },
                   who,
                   now,
-                ),
-              ),
+                );
+                return listed === undefined ? row : applyUpdate(store, row.id, listed, who, now);
+              }),
             );
             return {
               ok: true,
@@ -524,6 +590,7 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
         // needs no plan. It joins a plan only through its parent (a phase, or the plan's #n).
         const taskPlan = parent?.plan ?? null;
         if (input.status === "in_progress" && taskPlan !== null) refuseOther(taskPlan);
+        const flight = input.status === "in_progress" ? startCheck(taskPlan) : {};
         // The task and its blockers go in one transaction: a refused blocker leaves no task. A
         // task made in progress also puts its plan in flight, in the same write.
         const task = value(
@@ -540,11 +607,12 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
                 parentId: parent?.id ?? null,
                 plan: taskPlan,
                 blockedBy,
+                ...flight,
               },
               who,
               now,
             );
-            if (input.status === "in_progress") enterFlight(taskPlan);
+            if (input.status === "in_progress") enterFlight(taskPlan, flight);
             return made;
           }),
         );
@@ -564,9 +632,10 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
             Object.keys(bindings(input)).length ||
             input.parent !== undefined ||
             input.blocked_by_add !== undefined ||
-            input.blocked_by_remove !== undefined
+            input.blocked_by_remove !== undefined ||
+            input.files !== undefined
           )
-            throw new Error("Deploy tasks have no parent, blocked-by or builder bindings");
+            throw new Error("Deploy tasks have no parent, blocked-by, files or builder bindings");
           if (input.status !== undefined && input.status !== "open")
             throw new Error(
               `A deploy task closes through ${TASK_TOOL.done} (done with evidence, dropped with a note); status open reopens a closed one`,
@@ -629,6 +698,11 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
             "status open reopens a closed deploy task; a work task is pending or in_progress",
           );
         const task = work(input.task);
+        if (input.files !== undefined && task.kind !== "plan")
+          throw new Error(
+            `${label(task)} is a ${task.kind}: only a plan task has a file list (set files on the plan's own #n)`,
+          );
+        const listed = input.files === undefined ? undefined : filesWrite(input.files);
         // A dropped phase coming back is a phase laid again: the cap judges it.
         if (
           task.kind === "phase" &&
@@ -653,6 +727,8 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
         if (input.parent !== undefined) refuseStepEscape(all, task, destination);
         // This call carries no evidence or note, so a step cannot close here.
         if (status === "done" || status === "dropped") refuseBareClose(all, task, status, {});
+        // The plan that goes in flight is judged against the plans held for others (`startCheck`).
+        const flight = entering ? startCheck(task.kind === "plan" ? task.plan : landing) : {};
         // Starting work puts its plan in flight, in the same write (a plan's own start sets it).
         const updated = value(
           writeWork(store, () => {
@@ -668,6 +744,8 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
                   ? {}
                   : { parentId: input.parent === null ? null : work(input.parent).id }),
                 ...(input.type === undefined ? {} : { type: input.type }),
+                ...flight,
+                ...listed,
                 waitsFor: {
                   add: (input.blocked_by_add ?? []).map((r) => work(r).id),
                   remove: (input.blocked_by_remove ?? []).map((r) => work(r).id),
@@ -676,7 +754,7 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
               who,
               now,
             );
-            if (entering && task.kind !== "plan") enterFlight(landing);
+            if (entering && task.kind !== "plan") enterFlight(landing, flight);
             return changed;
           }),
         );
@@ -814,6 +892,12 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
                       : [`${key[0]?.toUpperCase()}${key.slice(1)}: ${task[key]}`],
                   ),
                   ...(blockers.length ? [`Blocked by: ${blockers.join(", ")}`] : []),
+                  ...(task.files.length ? [`Files: ${task.files.join(", ")}`] : []),
+                  ...(task.lead === null
+                    ? []
+                    : [
+                        `Reserved for: session ${task.lead.sessionId ?? `process ${task.lead.pid}`} (${task.lead.holder === "child" ? "a child builds it" : "the lead builds it"}) · hand-out id ${task.lead.handoutId}`,
+                      ]),
                 ].join("\n"),
                 task.description,
                 notes,

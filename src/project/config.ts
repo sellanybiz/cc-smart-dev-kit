@@ -3,10 +3,11 @@ import { posix, win32 } from "node:path";
 import { z } from "zod";
 import { COMMAND, PLUGIN_UPDATE_COMMAND, VERSION } from "../build-info";
 import { type KindSpec, kindsSchema, type MatchRule, matchRuleSchema } from "../jobs/kinds";
+import { isObject } from "../setup/managed-json";
 import { parseUserJson, readUserJson } from "../setup/user-json";
 import { shellSteps } from "../shell/command";
 import { DEPLOY_ENVS } from "../tasks/deploy/format";
-import { workflowSchema } from "../workflow/schema";
+import { PERSONAL_ONLY_KEYS, PERSONAL_ONLY_REASONS, workflowSchema } from "../workflow/schema";
 import { allowsNewer, isValidRange, lowestAllowed, satisfiesRange } from "./version-range";
 
 /**
@@ -120,6 +121,16 @@ export const WORKFLOW_ISSUES_SINCE = "1.4.0";
 export const WORKFLOW_PLANS_SINCE = "4.8.0";
 
 /**
+ * The release that brought `workflow.plans.mergeFiles` (the paths every plan touches, which the
+ * plans' overlap check leaves out). Gated per key: `workflow.plans` alone stays at
+ * `WORKFLOW_PLANS_SINCE`, so a project that only caps its phases keeps its floor. A plugin
+ * before this one reads `plans` strictly and refuses a file that names `mergeFiles`, so the
+ * floor makes it say "update". Setting `plans.runMode` in a project file is refused outright
+ * (`checkPersonalOnlyFields`), so it has no floor.
+ */
+export const WORKFLOW_MERGE_FILES_SINCE = "5.2.0";
+
+/**
  * The fields of a heavy-job kind (`jobs.kinds.<name>`) that came after 0.5.2, with the release
  * that brought them: `noSlotForFiles` (a run on named files goes at once) in 1.5.0. A project
  * file whose kind sets one needs that plugin version or newer, for the same reason as
@@ -139,7 +150,7 @@ export const JOB_KIND_KEYS_SINCE: Readonly<Partial<Record<keyof KindSpec, string
  * open. A project file that sets the field, or lists the hook in `ownHooks`, needs that plugin
  * version or newer, for the same reason as `DEPLOY_TASKS_SINCE`.
  */
-export const DEPLOY_GUARD_SINCE = "5.2.0";
+export const DEPLOY_GUARD_SINCE = "5.3.0";
 
 /**
  * The plugin hooks `ownHooks` may list that came after `ownHooks` itself (0.3.0), with the
@@ -506,6 +517,24 @@ function checkRetiredFields(where: string, raw: unknown): void {
 }
 
 /**
+ * Refuses a file that sets a workflow setting only the person's own file may hold
+ * (`PERSONAL_ONLY_KEYS`: `plans.runMode`, which would spend every teammate's usage). It names the
+ * key and the command to run instead, never "unknown field (a newer cc-smart-dev-kit may be
+ * needed)", which would send the person to update. It runs after `requires` and before the strict parse.
+ */
+function checkPersonalOnlyFields(where: string, raw: unknown): void {
+  const workflow = isObject(raw) ? raw.workflow : undefined;
+  for (const key of PERSONAL_ONLY_KEYS) {
+    const [group, field] = key.split(".");
+    const settings = isObject(workflow) ? workflow[group ?? ""] : undefined;
+    if (!isObject(settings) || !Object.hasOwn(settings, field ?? "")) continue;
+    throw new CcSmartDevKitConfigError(
+      `Invalid ${where}: workflow.${key} is your own setting, not the project's, because ${PERSONAL_ONLY_REASONS[key]}: remove it from this file and run \`${COMMAND} workflow set ${key} <value>\` in your own terminal.`,
+    );
+  }
+}
+
+/**
  * The names `ownHooks` lists in one cc-smart-dev-kit.json, read on their own, the way `requires` is:
  * a hook the project runs as its own copy stays silent even when the rest of the file needs
  * a newer plugin or is broken, so the person never gets two questions for one command.
@@ -566,7 +595,7 @@ export function parseCcSmartDevKitConfig(
 
 /**
  * Every check on a cc-smart-dev-kit.json already read as JSON, in its one order: `requires`
- * first, then the retired engine fields, then the strict parse. `parseCcSmartDevKitConfig` runs
+ * first, then the retired engine fields, then the person's own settings, then the strict parse. `parseCcSmartDevKitConfig` runs
  * it on a file's text; `writeProjectSetting` (`src/workflow/write.ts`) on the object it is about
  * to write, so nothing writes a file this would refuse. Throws as `parseCcSmartDevKitConfig` does.
  */
@@ -577,6 +606,7 @@ export function checkCcSmartDevKitConfig(
 ): CcSmartDevKitConfig {
   checkRequires(where, raw, pluginVersion);
   checkRetiredFields(where, raw);
+  checkPersonalOnlyFields(where, raw);
   const parsed = ccSmartDevKitConfigSchema.safeParse(raw);
   if (!parsed.success) {
     const issues = parsed.error.issues.map(describeIssue).join("; ");

@@ -45,6 +45,13 @@ its secret screen knows only common shapes.
   open) or `non-blocking` (holds nothing). `blocked_by` names the tasks it waits for: it cannot
   start or be done while one is open. Layers, phase fields and the plan cap:
   `/cc-smart-dev-kit:plan-task` § 4 and § 5.
+- **`files`** (CLI: `--path`, repeated) is the file list of a **plan task**; any other kind
+  refuses it. Each path is repo-relative with `/` separators, and a folder ends in `/`. The call
+  tidies `./` and `\`, and refuses an absolute path, `..`, the root, `*` and `?`. A set
+  replaces the list (`[]` or `--no-files` clears it). Two plans overlap when a path is equal or
+  sits inside the other's folder, except paths the project lists in `plans.mergeFiles`. A plan
+  with no list is never handed to a child. `task_get` prints the list. A session opened before
+  5.2.0 does not know `files` or reservations: restart it first.
 - A **deploy task** also needs `deploy` (`before` or `after` the deploy) and `type`: a
   **blocking** one must be done before the gate passes; a **non-blocking** one is done, or
   dropped with a reason. Optional: `flags` (`needs-yes`, `twice-safe`, `spends-money`,
@@ -75,6 +82,12 @@ its secret screen knows only common shapes.
   or `task reopen <id>`.
 - `task_take` takes a plan or task into this session (live claims need `force`). Park and
   resume a plan: `/cc-smart-dev-kit:plan-task` § 6.
+- A plan **reserved** for a child (`task_get` shows `Reserved for:` and a hand-out id) is taken
+  only with `from` set to the hand-out id (which the child's brief names) or to the lead's
+  current session, or by its owner; `force` is the person's. Another session's start in it is refused, and so is the lead's. Its files stay held
+  until `herdr plans` releases them (`/cc-smart-dev-kit:build` § Lead + children and coordinator
+  modes, `/cc-smart-dev-kit:herdr`); dropping the plan releases them at once.
+  A start of a plan that shares a file with a held plan is refused too, with the plan and the way out.
 - `task_list` reads `mine` (the default), `plan`, `project` (also the open deploy tasks) or
   `all`; ids look like `#12` or `prod-20261117-144503`. An old `T-…` id answers "old task ids
   are gone": the 4.x files are not read; recreate each as a deploy task or delete it.
@@ -93,7 +106,8 @@ its secret screen knows only common shapes.
 ```
 add <subject> [--kind work|staging|prod] [--deploy before|after] [--type blocking|non-blocking]
     [--pair] [--parent <ref>] [--blocked-by <ref>]... [--flag <flag>]... [--ref <path>]...
-set <ref> [--type …] [--deploy …]    done <ref> --evidence <text>    drop <ref> --note <text>
+    [--plan <slug> [--path <file-or-folder/>]...]
+set <ref> [--type …] [--deploy …] [--path <p>... | --no-files]    done <ref> --evidence <text>    drop <ref> --note <text>
 reopen <id>    note <ref> <text>    list [--scope …]    show <ref>    search <text>    delete <ref>
 ```
 

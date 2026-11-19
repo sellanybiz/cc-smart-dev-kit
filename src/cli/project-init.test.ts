@@ -1742,7 +1742,7 @@ describe("the deploy commands (tasks.deployCommands)", () => {
         staging: ["./scripts/deploy.sh staging"],
       },
     });
-    expect(written(repo).requires).toBe(">=5.2");
+    expect(written(repo).requires).toBe(">=5.3");
     const before = readFileSync(join(repo, ".claude", "cc-smart-dev-kit.json"), "utf8");
     const again = await runFlags(repo, flags);
     expect(again.lines).toContain("✓ Nothing to change.");
@@ -1751,7 +1751,7 @@ describe("the deploy commands (tasks.deployCommands)", () => {
 
   test("a flag replaces that environment's list only; without the flag the lists stay", async () => {
     const repo = seeded({
-      requires: ">=5.2",
+      requires: ">=5.3",
       worktrees: { base: "main" },
       tasks: { deployCommands: { prod: ["old --prod", "older --prod"], staging: ["stage it"] } },
     });
@@ -1769,7 +1769,7 @@ describe("the deploy commands (tasks.deployCommands)", () => {
 
   test("<env>= clears that list; clearing the last one takes tasks out", async () => {
     const repo = seeded({
-      requires: ">=5.2",
+      requires: ">=5.3",
       worktrees: { base: "main" },
       tasks: { deployCommands: { prod: ["a --prod"], staging: ["b --stage"] } },
     });
@@ -1938,7 +1938,7 @@ describe("the deploy commands (tasks.deployCommands)", () => {
         envs: ["prod"],
         deployCommands: { prod: ["vercel --prod"] },
       });
-      expect(written(repo).requires).toBe(">=5.2");
+      expect(written(repo).requires).toBe(">=5.3");
     });
 
     test("flags together with a terminal: the flag's list is the current list the question shows", async () => {
@@ -1993,7 +1993,7 @@ describe("the deploy commands (tasks.deployCommands)", () => {
       ),
     ).toBe(0);
     expect(run.lines).toContain('  + tasks.deployCommands.prod: ["vercel --prod"]');
-    expect(run.lines).toContain('  + requires: ">=5.2"');
+    expect(run.lines).toContain('  + requires: ">=5.3"');
     expect(existsSync(join(repo, ".claude", "cc-smart-dev-kit.json"))).toBe(false);
   });
 
@@ -2028,7 +2028,7 @@ describe("the deploy commands (tasks.deployCommands)", () => {
 
   test("the same two orders on the command line, with a list already in the file", async () => {
     const repo = seeded({
-      requires: ">=5.2",
+      requires: ">=5.3",
       worktrees: { base: "main" },
       tasks: { deployCommands: { prod: ["old --prod"] } },
     });

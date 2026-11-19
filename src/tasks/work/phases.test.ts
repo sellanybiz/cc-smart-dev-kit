@@ -192,10 +192,8 @@ test("a caller with no process has no claims: nothing is its own", () => {
 test("no phase in progress: the caller is never looked up", () => {
   const { paths, db } = setup();
   const g1 = phase(db, "plan-a", "G1", "Guard");
-  const step = ok(
-    createTask(db, { project: "p", subject: "Step", parentId: g1.id, plan: "plan-a" }, me, 3),
-  );
-  start(db, step, me);
+  // A queued plan with a step laid and nothing running: no phase, and no step, is in progress.
+  ok(createTask(db, { project: "p", subject: "Step", parentId: g1.id, plan: "plan-a" }, me, 3));
   db.close();
   let asked = 0;
   const caller = () => {

@@ -339,7 +339,11 @@ export const verifyGateHook: HookSpec = {
  * already given, with no subagent started or resumed since, keeps it silent
  * (`stopFeedbackGiven`). It names the builder to resume with `SendMessage` (or a phase needing a
  * fresh builder), the next ready phase, and how to close or record a blocker, and warns against
- * moving a phase back to pending to end the turn. It reads no setting
+ * moving a phase back to pending to end the turn. When the own plan gives no reason, it also
+ * names what a lead's plans wait on (`leadPlansReason`), from the store's classifier alone:
+ * `herdr wait` for plans with a running child, `herdr plans --wait` for closed plans whose pull
+ * request is not merged yet, `herdr start --plan <slug>` for a child that is gone. It runs no
+ * git, gh or hc. It reads no setting
  * and needs no cc-smart-dev-kit.json: the task store is the person's own, so it runs in a project
  * with no file and honors `ownHooks` where there is one. Silent outside git (the frame's
  * default), on the stop its own block caused (`stop_hook_active`), or with no readable task

@@ -63,7 +63,8 @@ and a busy timeout. `PRAGMA user_version` holds the schema version; `min_compati
 the oldest compatible reader. Migrations only add to the schema, because an older plugin
 folder can still have a running server. Schema 5 adds the process that made a task
 (`created_pid`, `created_start`; null on a row made before) and an index on `task_notes(task_id)`:
-a task stays its maker's across a `/clear` (below, Who a call belongs to).
+a task stays its maker's across a `/clear` (below, Who a call belongs to). Schema 6 adds a plan's
+file list and its reservation (below, Plans handed to children).
 
 The store enforces these rules, not the caller:
 
@@ -178,19 +179,22 @@ checkout's working copy through the normal workflow resolver:
   `in_progress`: the store sets that itself, in the same write, when the plan's first phase or
   task starts (`task_update` or `task_create` with `in_progress`; the plan task is claimed by
   the starting process, as any started task). A plan started under 4.8.0, which never set its
-  task, is in flight too while one of its phases is `in_progress` (`isInFlight` in
-  `queries.ts`). A caller's plan in flight (`inFlightPlanOf`: an own plan, judged on the plan's
-  own task `owns`) is normally one. After a `task_take` it may hold two: the one with a phase
-  in progress counts first, else the lower number. Another session's plan never counts.
+  task, is in flight too while one of its phases is `in_progress`, and so is a plan whose work
+  another session started (`isInFlight` in `queries.ts`: a phase or a step of it is `in_progress`,
+  whatever its own task says). Only a session's work counts: a running task no session made and
+  no process claims, such as an imported item, puts no plan in flight (§ Setup and the move from
+  older lists). A caller's plan in flight (`inFlightPlanOf`: an own plan, judged on
+  the plan's own task `owns`) is normally one. After a `task_take` it may hold two: the one with
+  work in progress counts first, else the lower number. Another session's plan never counts.
   A plan stays in flight until its own `task_done`, so its final review and fix pass belong to
   it, and the next plan cannot start before it closes.
 - **The start refusal.** Starting a phase or task of a plan other than the one in flight
   (`task_update` or `task_create` with `in_progress`, the plan task's own start too) is
   refused while the caller has a plan in flight (`refuseOtherPlan`); the refusal names that
   plan and the ways forward: finish it (`task_done` on its `#n`), or park it in two calls
-  (the plan task to `pending`, then a `parked:` note). For a plan started under 4.8.0, whose
-  task never ran, it says to stop the running phase instead, since there is no status to set
-  back. The refusal does not depend on owning the target: a queued plan the caller's process
+  (the plan task to `pending`, then a `parked:` note). For a plan whose task never ran, there is
+  no status to set back, so it says to stop the work running in it instead: the running phase of
+  a plan started under 4.8.0, or else each running task by `#n` (`stopOrPark`). The refusal does not depend on owning the target: a queued plan the caller's process
   made under an earlier session id (`/clear`), or another session laid but never started, is
   judged too. Only a plan another process holds a live claim in (`claimState`: another
   session's running work), and a plan with no task, are left alone.
@@ -343,6 +347,115 @@ project in the store, not only the one the call is in: a session
 that works in two repos keeps its work in both. When the session record gives no process start
 time, `claimHeldBy` needs the session id too, so the `/clear` re-stamp never fires; the
 resumed-claim move still does.
+
+## Plans handed to children
+
+A lead can give a queued plan to a linked Herdr child session (5.2.0). The store holds what makes
+that safe: the plan's files, an atomic reservation, and the refusals that keep a second session out.
+The commands and the live gates are `docs/design/herdr.md` § Handing out plans; the modes are
+`plugin/skills/build/SKILL.md` § Lead + children and coordinator modes.
+
+**Schema 6** adds the table `task_files(task_id, path)`, which deletes with its plan
+(`ON DELETE CASCADE`, so an older kit's plain `DELETE` of a plan takes the rows with it), and five
+columns on `tasks`: the lead (`lead_session`, `lead_pid`, `lead_start`), the holder kind
+(`lead_child`: 1 when a child builds the plan, 0 when the lead does) and the hand-out id
+(`lead_handout`). A plan is reserved when `lead_handout` is set. The step is additive:
+`min_compatible` stays 1. The lead moves like the maker (`created_by`): to the new session on a
+`/clear`, to the new process on a resume, on a closed plan too. The hand-out id never moves.
+
+**Files.** `task_create` and `task_update` take `files` for a plan task only (CLI: `--path`, repeated;
+`--no-files` clears). Each path is repo-relative with `/`, a folder ends in `/`; `./` and `\` are
+tidied, and an absolute path, `..`, the root, a control character and `*` or `?` (a wildcard
+would overlap nothing; `[` and `]` are plain characters of a name, as in `app/[id]/page.tsx`) are refused. The rule is `normalizeRepoPath` (`src/workflow/repo-path.ts`),
+the one `plans.mergeFiles` follows too. The list replaces the stored one and
+is in the task's history (`files` and `lead` are history fields). `task_get` prints a `Files:` line
+and, for a reserved plan, `Reserved for: session … (a child builds it | the lead builds it) ·
+hand-out id …`. A folder written without its `/` is refused by the ops, which stat the working
+copy. `filesOverlap` (`queries.ts`, the one home) says two paths overlap when they are equal or
+one is a folder holding the other. Paths in `plans.mergeFiles` take no part, and case folds when
+`core.ignorecase` is on, both read by `planFilesCheck` (`files-check.ts`) before any write lock,
+from the committed copy only (`docs/design/workflow.md`).
+
+**Held.** `heldPlans` is every plan with a reservation, whatever its status, until it is released,
+plus every open plan in flight of **any** session, so a solo session's plan counts. A held plan's
+files are its stored list plus, for a plan with a recorded branch, the branch diff the caller read
+before the transaction (`extraFiles`). `task_update` of `files` on a held plan refuses an overlap
+with another held plan, from stored lists only, in the transaction. A held plan with no stored
+list and no branch diff holds nothing a check can find, and unknown is never clear: a reservation
+or hand-out beside it is refused, with the plan named and the fix: set its files, or finish, park
+or drop it. A plan already in flight when 5.2.0 is installed has no list, so it reads this way.
+
+**`reservePlan`** runs inside `writeWork`. It refuses a caller that does not own the plan or has no
+session, a plan that is not pending, one that is already reserved, one with no file list, one with an
+open blocker (the store's view), one whose files overlap a held plan, and any held plan with no file
+list and no branch diff. Each refusal names the
+plan in the way and the files; an overlap with a finished, unreleased plan says so and that
+`herdr plans` releases it. On success it writes the lead, the holder kind and a new hand-out id.
+`releasePlan` clears all five columns, guards the hand-out id and `updated_at` it was given (so a
+plan handed out again meanwhile is left alone) and is idempotent: releasing a plan that is not
+reserved changes nothing and adds no history. A **drop releases by itself; a done plan does
+not**: it keeps holding until `herdr plans` releases it once its pull request merged or closed.
+`swapPlanAgent` is a compare-and-set, a write that succeeds only if the value is still the one the
+caller read. It lets one start claim a plan's `agent` (herdr's resume). `adoptLeadPlans` moves the
+leads of plans whose lead has ended.
+
+**The lead's own plan.** In lead + children mode the lead reserves its own plan with holder `self`,
+through the same `reservePlan` and the same gates as a hand-out (`herdr plans --reserve <plan>`,
+`docs/design/herdr.md` § Handing out plans), and then starts it as usual. Unlike a plan held only
+by being in flight, it stays held after it is done, until its pull request merges or closes
+(`docs/design/herdr.md` says when a pass releases it with no pull request).
+
+**The take.** A reserved plan is taken only when `from` names the hand-out id or the current lead
+session, when the taker already owns the plan, or when the person passes `force`. Then each row
+must have been made by the taker, by `from`, by the lead's process, or by a maker proved ended
+(`sessionEnded`), so a dead child's plan can be resumed, and a taken, unstarted plan with a live
+maker is still refused for a second taker. An unreserved plan takes as before.
+
+**The start.** `refuseOtherPlan` and `planInTheWay` also refuse starting work in a plan reserved
+for another lead or owned by another session, with the hint to take it first with the hand-out id the
+brief names. The lead never starts a plan whose holder is a child, owned or not: release it first
+or let the child build it. Every existing refusal and message is unchanged.
+
+**The solo first start.** A plan going into flight is judged in the same write
+(`refuseFlightOverlap`, `store.ts`), over stored lists with the same `filesOverlap`, against every
+held plan but its own: a plan reserved for another lead or child, or in flight in another session.
+Any task of the plan that starts puts it into flight, so any of them is judged (`enteringPlan`): its
+own task, a phase, a step, a task created already running, and a running task moved into it,
+whoever owns the plan (`insertTask` and `applyUpdate` share the one check). A plan already
+in flight is not judged again. The `plans.mergeFiles` and case read (`planFilesCheck`) is taken
+before the lock, once for each such start and never for a step in a running plan. An overlap is
+refused, naming the plan and the way out for each plan in the way: a reserved plan holds its files
+until its pull request merges or closes; a plan in flight, until it is done or parked, and if its
+session is gone, take it (`task_take`), or park or drop it. Changing this plan's files is the other
+way out. A plan with no list is refused while a **reserved** plan is held, with the fix. Beside
+another session's unreserved plan alone it starts as before, and a plan whose list overlaps that
+plan is refused: only a list can show it. A session that hands out no plan, and has no other
+session's plan in flight, sees no new refusal. The plan's own reservation, as the lead's `self` or
+a child's take of its hand-out, never counts against it.
+
+**The classifier** (`classifyLeadPlans`, `src/tasks/work/lead-plans.ts`) is the store-only reader
+the status line and the keep-going hook share: no git, no gh, no hc. For the plans this caller
+leads, and the queued plans it laid, it returns `own` (holder `self`, reserved by the lead for itself), `with-child`, `child-gone`,
+`merging` (closed, still reserved), `waiting` (an open blocker), `no-files` and `ready`. `ready`
+means ready by the store: overlaps need the branch diffs, which `reservePlan` and `herdr plans`
+read. A hand-out the lead still owns reads `with-child`. After a take, `child-gone` needs the
+child's session over (`sessionEnded`: its process gone **and** no running session carries its id)
+for its maker and for its claim, if it has one. A reopened child that has not yet made a task call
+reads `with-child`, and a child that cannot be proved either way does too: a resume must never
+start a second child beside a live one. Session records are read only for a child already proved
+gone, so a live child costs the status line no read.
+
+**Older kits.** A 5.0.x session knows none of this. Its take and start do not check a
+reservation, its drop does not release one, and its `task_*` tools do not know `files`. Restart a
+session from before the update before plans are handed out. After a rollback the table and the
+columns stay, unread, and a handed-out plan is an ordinary owned plan a solo build can finish.
+
+**Limits, accepted.** A plan started without a reservation stops being held once it is done or
+parked, though its pull request may still carry the changes; only a reservation holds until the
+pull request merges or closes. A done, unreleased plan gets one history event for each
+`/clear` of its lead, because its lead identity follows the session. A resumed session writes a
+"maker moved" event for every open task it made (`restampsOf`). A `/clear` of the lead between a
+reservation and the child's take is covered, because the hand-out id never moves.
 
 ## Deploy tasks
 
@@ -509,7 +622,7 @@ would read as broken. A test copies the built `cli.js` alone to a temp folder an
 way, with a temp `HOME`, in a detached, shallow clone. In a container job git may refuse the
 checkout ("dubious ownership"): the fix is `git config --global --add safe.directory "$PWD"`.
 
-**`tasks.deployCommands`** (5.2.0) says which commands deploy. It is `{ "prod"?: Entry[],
+**`tasks.deployCommands`** (5.3.0) says which commands deploy. It is `{ "prod"?: Entry[],
 "staging"?: Entry[] }`; an entry is a string (one command as typed) or a `MatchRule` of the jobs
 grammar (`matchRuleSchema`). The schema refuses a string that holds more than one command (a
 separator or a shell construct, read by `shellSteps`), a string that holds none, an empty
@@ -651,6 +764,16 @@ Linux checks both pid and start time; elsewhere a reused live pid needs force. E
 keeps both session ids. A caller with only a session id gets ownership but no process claim;
 a caller with no identity cannot take work.
 
+When this process leads plans, the status line adds one `Plans · …` row from the store's
+classifier (below): `Plans · 2 with children · 1 child gone · 1 merging · 1 waiting · 1 needs files
+· 2 ready`, with `1 with child` for one. It counts `with-child`, `child-gone`, `merging`,
+`waiting`, `no-files` and `ready`, leaves out any zero count and never counts `own`, since the own
+plan shows in the `Plan` row. With claimed work it sits below the own rows and shows only when a
+plan is reserved for this lead; with none it is the whole segment. So a solo session that laid
+queued plans and claims nothing sees `Plans · N ready`: the store cannot tell it from a
+coordinator before its first hand-out, and this is accepted. The row costs a second open of the
+store per render, and reads no git, gh or hc.
+
 The portal shows the list read-only, on a Tasks tab of its own (`/tasks`, from `/api/tasks`):
 each project's work tree as plan › phase › task, its open work and what closed in the
 last seven days, each row with its layer, type, blockers and progress, each phase with its
@@ -681,6 +804,13 @@ name matched in any case, an entry with an empty item name as the list's own rec
 `done`, `dropped`, `completed` and `failed` as closed. Each task keeps claude-mem's first and
 last entry times, so `tasks.staleDays` hides an old one; its history says when the kit
 imported it. A name longer than a subject may be is cut, and kept whole in the description.
+An item claude-mem marks `doing` is stored `in_progress`, with no maker and no claim. It is no
+session's work: the import is the kit's own write, so it is never judged as a plan's start
+(`insertTask` with a `reason`), and the item holds no plan (`isInFlight`). A start by a
+Claude process claims the task, and a task a session makes keeps its session id, so a session's
+work counts. Two starts store neither, and hold no plan: a start of a task no session made, by
+a terminal with no Claude identity or by a session known only by its id (no Claude process
+found).
 `--dry-run` makes every write and rolls them all back (`writeWork`'s `rehearse`), so it
 refuses what the real run refuses.
 

@@ -766,6 +766,15 @@ function judgeHerdr(reading: BashReading, context: JudgeContext): BashVerdict | 
       remember(`Approve this Herdr machine rule change: ${herdr.slice(1).join(" ")}.`);
       continue;
     }
+    if (herdr[0] === "plans") {
+      // `plans --release` frees a finished plan's files with no proof that its work merged: a
+      // write the person approves, as a machine rule change is. The other `plans` forms read.
+      if (herdr.some((arg) => arg === "--release" || arg.startsWith("--release=")))
+        remember(
+          `Approve releasing a finished plan's files, with no proof its work merged: ${herdr.slice(1).join(" ")}.`,
+        );
+      continue;
+    }
     if (herdr[0] !== "start") continue;
     if (!isAttended(context.env))
       return verdict(

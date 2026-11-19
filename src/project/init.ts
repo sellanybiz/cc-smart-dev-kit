@@ -59,6 +59,7 @@ import {
   TASKS_SINCE,
   WORKFLOW_FIXES_SINCE,
   WORKFLOW_ISSUES_SINCE,
+  WORKFLOW_MERGE_FILES_SINCE,
   WORKFLOW_PLANS_SINCE,
   WORKTREE_AUTO_CLEAN_SINCE,
   WORKTREE_ENGINE_RETIRED_IN,
@@ -275,6 +276,10 @@ export function requiresFloor(
     needs.push(WORKFLOW_FIXES_SINCE);
   }
   if (Object.hasOwn(workflow, "plans")) needs.push(WORKFLOW_PLANS_SINCE);
+  // `plans.mergeFiles` is gated on its own: a file that only caps its phases keeps 4.8.
+  if (isObject(workflow.plans) && Object.hasOwn(workflow.plans, "mergeFiles")) {
+    needs.push(WORKFLOW_MERGE_FILES_SINCE);
+  }
   if (Object.hasOwn(worktrees, "autoClean")) needs.push(WORKTREE_AUTO_CLEAN_SINCE);
   if (Object.hasOwn(worktrees, "rebuildable")) needs.push(WORKTREE_REBUILDABLE_SINCE);
   const jobs = isObject(file.jobs) ? file.jobs : {};

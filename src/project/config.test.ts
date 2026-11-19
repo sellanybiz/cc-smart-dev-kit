@@ -14,11 +14,14 @@ import { describe, expect, test } from "bun:test";
 import { z } from "zod";
 import { VERSION } from "../build-info";
 import {
+  CcSmartDevKitConfigError,
+  CcSmartDevKitVersionError,
   ccSmartDevKitConfigSchema,
   IGNORED_TASK_FIELDS,
   JOB_KIND_KEYS_SINCE,
   OWN_HOOK_NAMES_SINCE,
   PLUGIN_HOOK_NAMES,
+  parseCcSmartDevKitConfig,
   RETIRED_HOOK_NAMES,
   UNSWITCHABLE_HOOK_NAMES,
   WORKTREE_PREFIX_OPTIONAL_SINCE,
@@ -81,6 +84,7 @@ const FIRST_ACCEPTED_IN: Record<string, string> = {
   "workflow.fixesAfterReview.percent": "1.0.0",
   "workflow.plans": "4.8.0",
   "workflow.plans.maxPhases": "4.8.0",
+  "workflow.plans.mergeFiles": "5.2.0",
   // 2.0 removed the crew; the key stays in the schema so an old file's `crew` loads and is ignored.
   "workflow.crew": "0.5.2",
   checks: "1.1.0",
@@ -106,23 +110,23 @@ const FIRST_ACCEPTED_IN: Record<string, string> = {
   "tasks.legacyFolders": "1.10.0",
   // 5.0.0 made the task files deploy tasks: the environments a project deploys to.
   "tasks.envs": "5.0.0",
-  // 5.2.0: the commands a project deploys with, for the deploy guard.
-  "tasks.deployCommands": "5.2.0",
-  "tasks.deployCommands.prod": "5.2.0",
-  "tasks.deployCommands.staging": "5.2.0",
+  // 5.3.0: the commands a project deploys with, for the deploy guard.
+  "tasks.deployCommands": "5.3.0",
+  "tasks.deployCommands.prod": "5.3.0",
+  "tasks.deployCommands.staging": "5.3.0",
   // The entries are a string or a match rule (`jobs.kinds.*.match`): each rule key is a key.
-  "tasks.deployCommands.prod.tool": "5.2.0",
-  "tasks.deployCommands.prod.sub": "5.2.0",
-  "tasks.deployCommands.prod.flags": "5.2.0",
-  "tasks.deployCommands.prod.argIncludes": "5.2.0",
-  "tasks.deployCommands.prod.valued": "5.2.0",
-  "tasks.deployCommands.prod.script": "5.2.0",
-  "tasks.deployCommands.staging.tool": "5.2.0",
-  "tasks.deployCommands.staging.sub": "5.2.0",
-  "tasks.deployCommands.staging.flags": "5.2.0",
-  "tasks.deployCommands.staging.argIncludes": "5.2.0",
-  "tasks.deployCommands.staging.valued": "5.2.0",
-  "tasks.deployCommands.staging.script": "5.2.0",
+  "tasks.deployCommands.prod.tool": "5.3.0",
+  "tasks.deployCommands.prod.sub": "5.3.0",
+  "tasks.deployCommands.prod.flags": "5.3.0",
+  "tasks.deployCommands.prod.argIncludes": "5.3.0",
+  "tasks.deployCommands.prod.valued": "5.3.0",
+  "tasks.deployCommands.prod.script": "5.3.0",
+  "tasks.deployCommands.staging.tool": "5.3.0",
+  "tasks.deployCommands.staging.sub": "5.3.0",
+  "tasks.deployCommands.staging.flags": "5.3.0",
+  "tasks.deployCommands.staging.argIncludes": "5.3.0",
+  "tasks.deployCommands.staging.valued": "5.3.0",
+  "tasks.deployCommands.staging.script": "5.3.0",
 };
 
 /** The `ownHooks` names the 0.5.2 plugin accepted, the retired and the unswitchable ones too. */
@@ -152,7 +156,7 @@ const HOOK_NAME_FIRST_ACCEPTED_IN: Record<string, string> = {
   "task-start": "1.10.0",
   "keep-going": "2.0.0",
   "builder-finish": "2.0.0",
-  "deploy-guard": "5.2.0",
+  "deploy-guard": "5.3.0",
 };
 
 /** Every key of a schema, by dotted path. A record's keys are a person's, so they show as `*`. */
@@ -451,9 +455,9 @@ describe("tasks.deployCommands", () => {
     );
   });
 
-  test("a file that sets it needs 5.2.0, and the hook name needs the same", () => {
-    expect(requiresFloor({ tasks: { deployCommands: { prod: ["x"] } } }).version).toBe("5.2.0");
-    expect(requiresFloor({ ownHooks: ["deploy-guard"] }).version).toBe("5.2.0");
+  test("a file that sets it needs 5.3.0, and the hook name needs the same", () => {
+    expect(requiresFloor({ tasks: { deployCommands: { prod: ["x"] } } }).version).toBe("5.3.0");
+    expect(requiresFloor({ ownHooks: ["deploy-guard"] }).version).toBe("5.3.0");
   });
 });
 
@@ -467,5 +471,42 @@ describe("the since-tables", () => {
       expect(since).toMatch(/^\d+\.\d+\.\d+$/);
       expect(Bun.semver.order(since, VERSION)).toBeLessThanOrEqual(0);
     }
+  });
+});
+
+describe("the person's own workflow settings in a project file", () => {
+  const where = ".claude/cc-smart-dev-kit.json";
+
+  test("plans.runMode is refused with the key, the reason and the command, not 'unknown field'", () => {
+    const text = JSON.stringify({ workflow: { plans: { runMode: "solo" } } });
+    expect(() => parseCcSmartDevKitConfig(text, where)).toThrow(CcSmartDevKitConfigError);
+    expect(() => parseCcSmartDevKitConfig(text, where)).toThrow(
+      `Invalid ${where}: workflow.plans.runMode is your own setting, not the project's, because a committed value would spend every teammate's usage: remove it from this file and run \`cc-smart-dev-kit workflow set plans.runMode <value>\` in your own terminal.`,
+    );
+  });
+
+  test("it is refused whatever the value, and next to a valid cap", () => {
+    for (const runMode of ["ask", 3, null, false]) {
+      const text = JSON.stringify({ workflow: { plans: { maxPhases: 5, runMode } } });
+      expect(() => parseCcSmartDevKitConfig(text, where)).toThrow("workflow.plans.runMode is your");
+    }
+  });
+
+  test("a file with the cap and the merge files, and no run mode, loads", () => {
+    const text = JSON.stringify({
+      workflow: { plans: { maxPhases: 5, mergeFiles: ["./plugin/dist\\", "CHANGELOG.md"] } },
+    });
+    expect(parseCcSmartDevKitConfig(text, where, "5.2.0").workflow?.plans).toEqual({
+      maxPhases: 5,
+      mergeFiles: ["plugin/dist/", "CHANGELOG.md"],
+    });
+  });
+
+  test("a project that needs a newer plugin still hears 'update' first", () => {
+    const text = JSON.stringify({
+      requires: ">=9.0",
+      workflow: { plans: { runMode: "solo" } },
+    });
+    expect(() => parseCcSmartDevKitConfig(text, where, "5.2.0")).toThrow(CcSmartDevKitVersionError);
   });
 });

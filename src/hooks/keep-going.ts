@@ -24,6 +24,12 @@
  *    live task each). The store is read first; the caller is looked up only when some phase is
  *    in progress or a plan in flight has a startable phase, since off Linux that lists the
  *    running processes. A parked plan and another session's plan are not this one's business.
+ *    **Then the lead's plans** (`leadPlansReason`), only when the own plan gives no reason: a
+ *    plan with a running Herdr child names `herdr wait`; a plan closed and still reserved for
+ *    this lead (its pull request not merged, and what waits behind it) names `herdr plans --wait`;
+ *    a plan whose child is gone names `herdr start --plan <slug>`. They come from the store's
+ *    classifier alone (`classifyLeadPlans`): no git, no gh, no hc, and no session record read for
+ *    a child that runs. The caller is looked up only when some plan is reserved.
  * 5. **This reason not already given** (`stopFeedbackGiven`): read only after a phase in
  *    progress or a ready phase is found, from the transcript's default tail (`TRANSCRIPT_TAIL_BYTES`). The same
  *    reason in the session's own Stop feedback, with no subagent started or resumed since
@@ -47,8 +53,12 @@ import { isHerdrAgent } from "../herdr/labels";
 import { locateCheckout, ownHooksOf, type Project } from "../project/resolve";
 import { projectKey } from "../tasks/context";
 import { TASK_TOOL } from "../tasks/words";
-import { callerOf } from "../tasks/work/identity";
+import { CLAIM_PROCESS, callerOf } from "../tasks/work/identity";
+import { classifyLeadPlans, type LeadPlan, type LeadPlanState } from "../tasks/work/lead-plans";
 import { openPhasesOf, type PhaseRef } from "../tasks/work/phases";
+import { allTasks } from "../tasks/work/queries";
+import { type ReadState, readWorkStore } from "../tasks/work/read";
+import type { ClaimProcess, Who } from "../tasks/work/types";
 import { AGENT_TOOLS, WORKFLOW_TOOLS } from "./agent-guard";
 import { cappedHookList, HOOK_LIST_LIMIT } from "./capped-list";
 import { type HookInput, type HookResult, SILENT, stringField } from "./io";
@@ -164,6 +174,65 @@ export function keepGoingReason(
   return `${head} ${recovery.charAt(0).toUpperCase()}${recovery.slice(1)}. Never move a phase back to pending only to end the turn.`;
 }
 
+/** A plan the lead's reason names: `#<number> <subject>`, with the slug the commands take. */
+function planNamed(entry: LeadPlan): string {
+  return `#${entry.plan.number} ${entry.plan.subject}`;
+}
+
+/**
+ * The reason when the lead's own plan gives none but its plans wait on others, in this order and
+ * each only when it applies: plans with a running child (`herdr wait`), plans closed and still
+ * reserved, whose pull request has not merged (`herdr plans --wait`: the signal that a blocker
+ * merged), and plans whose child is gone (`herdr start --plan` resumes in the recorded worktree).
+ * Null when nothing of these holds. Plans that only queue, or are ready by the store, give none:
+ * the lead hands those out at its own pace.
+ */
+export function leadPlansReason(led: readonly LeadPlan[]): string | null {
+  const ofState = (state: LeadPlanState) => led.filter((entry) => entry.state === state);
+  const withChild = ofState("with-child");
+  const merging = ofState("merging");
+  const gone = ofState("child-gone");
+  const names = (entries: readonly LeadPlan[]) =>
+    cappedHookList(entries, planNamed, TASK_TOOL.list);
+  const parts: string[] = [];
+  if (withChild.length > 0)
+    parts.push(
+      `${withChild.length === 1 ? "Plan" : "Plans"} ${names(withChild)} ${withChild.length === 1 ? "has" : "have"} a Herdr child at work: wait for it with \`${COMMAND} herdr wait\` in the background`,
+    );
+  if (merging.length > 0)
+    parts.push(
+      `${merging.length === 1 ? "Plan" : "Plans"} ${names(merging)} ${merging.length === 1 ? "is" : "are"} closed, and ${merging.length === 1 ? "its" : "their"} pull request may not be merged yet: wait for the merge, and for what it frees, with \`${COMMAND} herdr plans --wait\` in the background`,
+    );
+  if (gone.length > 0)
+    parts.push(
+      `The child of ${names(gone)} is gone: resume ${gone.length === 1 ? "it" : "each"} with ${gone
+        .slice(0, HOOK_LIST_LIMIT)
+        .map((entry) => `\`${COMMAND} herdr start --plan ${entry.plan.plan}\``)
+        .join(", ")}`,
+    );
+  if (parts.length === 0) return null;
+  return `${parts.join(". ")}. Or record what you wait on with \`${TASK_TOOL.note}\` and end the turn with a \`${WAIT_MARK} <what>\` line.`;
+}
+
+/**
+ * The lead's plans, when some plan of the project is reserved at all: a plan with no lead needs
+ * no caller, so the caller (which may list processes off Linux) is looked up only then. Read from
+ * the store alone, like `openPhasesOf`.
+ */
+function leadPlansOf(
+  paths: CliPaths,
+  project: string,
+  caller: () => Who | null,
+  claimProcess: ClaimProcess,
+): ReadState<LeadPlan[]> {
+  return readWorkStore(paths, (db) => {
+    if (!allTasks(db, project).some((task) => task.kind === "plan" && task.lead !== null))
+      return [];
+    const who = caller();
+    return who === null ? [] : classifyLeadPlans(db, project, who, claimProcess);
+  });
+}
+
 /**
  * The answer at a Stop of the project found (`root`, `mainCheckout`): the block, one stderr
  * line for a store it cannot read, or silence.
@@ -174,6 +243,8 @@ export function keepGoingAnswer(
   paths: CliPaths,
   env: Env,
   findCaller: typeof callerOf = callerOf,
+  /** The machine's answers about a child's process; the real ones by default. */
+  claimProcess: ClaimProcess = CLAIM_PROCESS,
 ): HookResult {
   if (input.stop_hook_active === true) return SILENT;
   if (Array.isArray(input.background_tasks) && input.background_tasks.length > 0) return SILENT;
@@ -181,15 +252,28 @@ export function keepGoingAnswer(
   if (said === null || waitsOnSomething(said)) return SILENT;
   const cwd = stringField(input.cwd);
   if (cwd === null) return SILENT;
+  const key = projectKey(project.mainCheckout ?? project.root);
+  // Asked once for both reads: the plans' read may follow the phases'.
+  let found: { who: Who | null } | undefined;
+  const caller = (): Who | null => {
+    found ??= { who: findCaller({ env, cwd, claudeConfigDir: paths.claudeConfigDir }) };
+    return found.who;
+  };
   // The caller is looked up only once the store has a phase in progress or a startable phase (`openPhasesOf`).
-  const view = openPhasesOf(paths, projectKey(project.mainCheckout ?? project.root), () =>
-    findCaller({ env, cwd, claudeConfigDir: paths.claudeConfigDir }),
-  );
+  const view = openPhasesOf(paths, key, caller);
   if (view.state === "unreadable") return { stderr: `${COMMAND} ${KEEP_GOING}: ${view.why}` };
   if (view.state === "none") return SILENT;
-  // Nothing runs and nothing is ready to start: nothing to keep going on.
-  if (view.value.inProgress.length === 0 && view.value.ready.length === 0) return SILENT;
-  const reason = keepGoingReason(view.value.inProgress, view.value.ready);
+  let reason: string | null = null;
+  if (view.value.inProgress.length > 0 || view.value.ready.length > 0) {
+    // The caller's own plan first: the children and the merge wait come only when it gives no reason.
+    reason = keepGoingReason(view.value.inProgress, view.value.ready);
+  } else {
+    const plans = leadPlansOf(paths, key, caller, claimProcess);
+    if (plans.state === "unreadable") return { stderr: `${COMMAND} ${KEEP_GOING}: ${plans.why}` };
+    if (plans.state === "ready") reason = leadPlansReason(plans.value);
+  }
+  // Nothing runs, nothing is ready to start and no child or merge is awaited: nothing to keep going on.
+  if (reason === null) return SILENT;
   // Once per stalled state: the same reason, given with no subagent work since, stays given.
   const transcript = stringField(input.transcript_path);
   if (transcript !== null && stopFeedbackGiven(transcript, reason, SUBAGENT_WORK)) return SILENT;

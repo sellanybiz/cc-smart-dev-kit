@@ -9,7 +9,7 @@ import type { Result } from "./types";
  * code from an older version folder still reads and writes the store, and a column it does not
  * know takes its default.
  */
-export const WORK_SCHEMA_VERSION = 5;
+export const WORK_SCHEMA_VERSION = 6;
 export const LEGACY_LIFT_REASON = "lift legacy nested task";
 export const WRITE_TIMEOUT_MS = 3000;
 export const HOOK_TIMEOUT_MS = 200;
@@ -54,7 +54,13 @@ CREATE INDEX task_event_number ON task_events(project,number);
  * The steps after schema 1, in order: step n moves a store at n to n + 1. Never edit a step that
  * shipped; add one. Schema 2 (D76): a task's type, blocking unless set. Schema 5: the process
  * that made a task (`created_pid`, `created_start`; null on a row made before), so a task stays
- * its maker's across a `/clear`, and an index for a task's notes.
+ * its maker's across a `/clear`, and an index for a task's notes. Schema 6: a plan's file list
+ * (`task_files`, which goes with its plan through the cascade, so an older kit's plain `DELETE
+ * FROM tasks` still works) and the reservation of a plan for a lead: the lead's identity
+ * (`lead_session`, `lead_pid`, `lead_start`, moved like `created_by` when its session or
+ * process changes), the holder kind (`lead_child`: 0 the lead builds it itself, 1 a child does),
+ * and the hand-out id (`lead_handout`, written once, the `from` a child takes the plan with).
+ * All null while the plan is unreserved.
  */
 const MIGRATIONS: (string | ((sqlite: Database, file: string) => void))[] = [
   "ALTER TABLE tasks ADD COLUMN blocking INTEGER NOT NULL DEFAULT 1 CHECK(blocking IN (0,1))",
@@ -66,6 +72,12 @@ const MIGRATIONS: (string | ((sqlite: Database, file: string) => void))[] = [
   `ALTER TABLE tasks ADD COLUMN created_pid INTEGER;
    ALTER TABLE tasks ADD COLUMN created_start TEXT;
    CREATE INDEX IF NOT EXISTS task_note_task ON task_notes(task_id);`,
+  `CREATE TABLE IF NOT EXISTS task_files(task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE, path TEXT NOT NULL, PRIMARY KEY(task_id,path));
+   ALTER TABLE tasks ADD COLUMN lead_session TEXT;
+   ALTER TABLE tasks ADD COLUMN lead_pid INTEGER;
+   ALTER TABLE tasks ADD COLUMN lead_start TEXT;
+   ALTER TABLE tasks ADD COLUMN lead_child INTEGER NOT NULL DEFAULT 0 CHECK(lead_child IN (0,1));
+   ALTER TABLE tasks ADD COLUMN lead_handout TEXT;`,
 ];
 class BackupFailure extends Error {}
 /** Lift legacy tasks under the write lock. A failed snapshot leaves the store readable. */

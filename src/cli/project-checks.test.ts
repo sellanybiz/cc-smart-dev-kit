@@ -1517,7 +1517,7 @@ describe("the deploy-skill block in doctor", () => {
     skill(repo, "deploy", `# Deploy\n${CURRENT}`);
     expect(await check(repo)).toEqual([NO_COMMANDS]);
     writeClaudeFile(repo, "cc-smart-dev-kit.json", {
-      requires: ">=5.2",
+      requires: ">=5.3",
       tasks: { deployCommands: { prod: ["vercel --prod"] } },
     });
     expect(await check(repo)).toEqual([]);

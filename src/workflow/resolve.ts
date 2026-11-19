@@ -31,17 +31,24 @@
  * (`personal`), else on (`default`). The `fable-session` hook reads it through
  * `resolveLeadHint`, which never throws.
  *
+ * **Two plan settings have one home each.** `plans.runMode` lives in the person's file alone
+ * (`personal`, else `default`). `plans.mergeFiles` lives in the project's file alone, and what the
+ * task store and herdr act on is read as committed on `origin/<base>` (`resolveMergeFiles`),
+ * never from a working copy.
+ *
  * A broken personal file throws `WorkflowConfigError` (the message names the file and the
  * field): the person must hear that their file is wrong. A caller that must not fail — a
  * hook — catches it and uses the project's values and the defaults.
  */
 import { existsSync, readFileSync } from "node:fs";
 import type { CliPaths } from "../cli/paths";
+import { runGit } from "../hooks/git";
 import type { CcSmartDevKitConfig } from "../project/config";
 import {
   type Checkout,
   type CommittedConfig,
   type CommittedOptions,
+  RESOLVE_GIT_TIMEOUT_MS,
   readCommittedConfig,
   readCommittedConfigAsync,
 } from "../project/resolve";
@@ -51,6 +58,7 @@ import { describeIssues } from "../zod-issues";
 import {
   type PersonalWorkflow,
   personalWorkflowSchema,
+  type RunMode,
   type Workflow,
   type WorkflowKey,
   workflowDefaults,
@@ -91,9 +99,17 @@ export interface ResolvedWorkflow {
   alerts: {
     usagePercent: ResolvedValue<number>;
   };
-  /** How the kit's plans are shaped: the most phases one plan may hold. */
+  /**
+   * How the kit's plans are shaped: the most phases one plan may hold, how queued plans run
+   * (`runMode`, the person's alone) and the paths the plans' overlap check leaves out.
+   * **`mergeFiles` here is whatever project file was passed in, the working copy for a caller
+   * that passed one.** What the store and herdr act on is `resolveMergeFiles`: the list as
+   * committed on `origin/<base>`.
+   */
   plans: {
     maxPhases: ResolvedValue<number>;
+    mergeFiles: ResolvedValue<string[]>;
+    runMode: ResolvedValue<RunMode>;
   };
   switches: {
     statusLine: ResolvedValue<boolean>;
@@ -197,14 +213,29 @@ export function alertsFrom(personal: Workflow, project: Workflow): ResolvedWorkf
   };
 }
 
-/** The plan settings of two workflow objects: the project's over the person's, over the default. */
-function plansFrom(personal: Workflow, project: Workflow): ResolvedWorkflow["plans"] {
+/**
+ * The plan settings of two workflow objects. The cap: the project's over the person's, over the
+ * default. `runMode` is the person's alone (`personal`, else `default`), and `mergeFiles` the
+ * project's alone (`project`, else `default`): a project file cannot hold the first
+ * (`checkPersonalOnlyFields`), and the person's file cannot hold the second (`schema.ts`).
+ */
+function plansFrom(personal: PersonalWorkflow, project: Workflow): ResolvedWorkflow["plans"] {
   const plans = mergeWorkflows(personal, project).plans ?? {};
+  const mergeFiles = project.plans?.mergeFiles;
+  const runMode = personal.plans?.runMode;
   return {
     maxPhases: {
       value: plans.maxPhases ?? workflowDefaults.plans.maxPhases,
       source: sourceOf(personal, project, "plans.maxPhases"),
     },
+    mergeFiles:
+      mergeFiles === undefined
+        ? current([...workflowDefaults.plans.mergeFiles], "default")
+        : current(mergeFiles, "project"),
+    runMode:
+      runMode === undefined
+        ? current(workflowDefaults.plans.runMode, "default")
+        : current(runMode, "personal"),
   };
 }
 
@@ -402,6 +433,99 @@ function gateOfCommitted(
   return { ok: true, gate: { branch, config: committed.config, resolved } };
 }
 
+/** The merge files the store and herdr act on, and why a list may be empty or cut. */
+export interface MergeFiles {
+  /** Normalised, `/`-separated, a folder ending in `/`. Empty when none could be read. */
+  files: string[];
+  /** Why the list is empty or short of an entry, for the caller to show; null when it is whole. */
+  reason: string | null;
+}
+
+/**
+ * `plans.mergeFiles` **as committed on `origin/<base>`**: the one list the plans' overlap check
+ * leaves out. Read as the review gate is (`readCommittedConfig`), never from a working copy a
+ * session can edit, so a session cannot widen it. It needs no person's file: the key is a
+ * project fact, so unlike `resolveGate` this does not read the person's workflow file.
+ *
+ * `base` is the project's integration base (`worktrees.base`). With none, or when the ref, the
+ * file or git cannot be read, the list is empty and `reason` says why, and the caller shows it.
+ * Nothing falls back to the working copy.
+ *
+ * An entry written without a trailing `/` that names a folder in the committed tree is left out
+ * and named in `reason`, with the fix: `docs` would match only a file called `docs`, so the check
+ * would quietly leave out nothing. The tree is asked with git, so parsing stays pure
+ * (`normalizeMergeFile`). A path that is not in the tree stays: a build output may not be committed.
+ */
+export function resolveMergeFiles(
+  checkout: Checkout,
+  base: string | null,
+  options: CommittedOptions = {},
+): MergeFiles {
+  if (base === null) {
+    return {
+      files: [],
+      reason:
+        "this project names no worktrees.base, so there is no committed copy of plans.mergeFiles to read",
+    };
+  }
+  let committed: CommittedConfig;
+  try {
+    committed = readCommittedConfig(checkout, base, options);
+  } catch (error) {
+    return { files: [], reason: error instanceof Error ? error.message : String(error) };
+  }
+  if (!committed.found) return { files: [], reason: committed.why };
+  return settleMergeFiles(
+    checkout,
+    base,
+    committed.config.workflow?.plans?.mergeFiles ?? [],
+    options,
+  );
+}
+
+/**
+ * The list `listed` (already read from the committed file on `origin/<base>`) as the plan tools
+ * use it: a bare entry that names a folder on the committed tree is left out, named in `reason`.
+ * The second half of `resolveMergeFiles`, apart so that a caller that has the committed file
+ * already (`workflow show`, through the gate's read) asks git about the tree only and never reads
+ * the file a second time.
+ */
+export function settleMergeFiles(
+  checkout: Checkout,
+  base: string,
+  listed: readonly string[],
+  options: CommittedOptions = {},
+): MergeFiles {
+  const files: string[] = [];
+  const folders: string[] = [];
+  for (const path of listed) {
+    if (!path.endsWith("/") && isFolderOnBase(checkout, base, path, options)) folders.push(path);
+    else files.push(path);
+  }
+  if (folders.length === 0) return { files, reason: null };
+  const hints = folders.map((path) => `${path} is a folder: write it ${path}/`);
+  return {
+    files,
+    reason: `plans.mergeFiles on origin/${base} leaves out ${folders.join(", ")} until fixed (${hints.join("; ")})`,
+  };
+}
+
+/** True when `path` is a folder (a tree) in the commit `origin/<base>` points at. */
+function isFolderOnBase(
+  checkout: Checkout,
+  base: string,
+  path: string,
+  options: CommittedOptions,
+): boolean {
+  const kind = runGit(
+    checkout.root,
+    ["cat-file", "-t", `refs/remotes/origin/${base}:${path}`],
+    options.env ?? process.env,
+    options.timeoutMs ?? RESOLVE_GIT_TIMEOUT_MS,
+  );
+  return kind.ok && kind.out === "tree";
+}
+
 /** Where each key's value sits in a resolved workflow: one entry per key, so none is missed. */
 const RESOLVED: {
   readonly [K in WorkflowKey]: (resolved: ResolvedWorkflow) => ResolvedValue<unknown>;
@@ -425,6 +549,8 @@ const RESOLVED: {
   "issues.readyLabel": (r) => r.issues.readyLabel,
   "alerts.usagePercent": (r) => r.alerts.usagePercent,
   "plans.maxPhases": (r) => r.plans.maxPhases,
+  "plans.runMode": (r) => r.plans.runMode,
+  "plans.mergeFiles": (r) => r.plans.mergeFiles,
   "switches.statusLine": (r) => r.switches.statusLine,
   "switches.sessionNames": (r) => r.switches.sessionNames,
   "switches.jobRoute": (r) => r.switches.jobRoute,

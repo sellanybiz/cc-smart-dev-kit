@@ -543,6 +543,25 @@ describe("requiresFloor", () => {
     });
   });
 
+  test("workflow.plans asks for 4.8, and plans.mergeFiles for 5.2 on its own: a cap alone keeps 4.8", () => {
+    expect(requiresFloor({ workflow: { plans: { maxPhases: 5 } } })).toEqual({
+      floor: ">=4.8",
+      version: "4.8.0",
+    });
+    expect(requiresFloor({ workflow: { plans: {} } })).toEqual({
+      floor: ">=4.8",
+      version: "4.8.0",
+    });
+    expect(requiresFloor({ workflow: { plans: { maxPhases: 5, mergeFiles: ["a/"] } } })).toEqual({
+      floor: ">=5.2",
+      version: "5.2.0",
+    });
+    expect(requiresFloor({ workflow: { plans: { mergeFiles: [] } } })).toEqual({
+      floor: ">=5.2",
+      version: "5.2.0",
+    });
+  });
+
   test("the plan keeps an ownHooks name of a later release, and asks for that release", () => {
     const root = tempDir("project-init");
     const existing = JSON.stringify(
@@ -614,7 +633,7 @@ describe("requiresFloor", () => {
       }),
     );
     expect(JSON.parse(plan.text)).toMatchObject({
-      requires: ">=5.2",
+      requires: ">=5.3",
       tasks: { deployCommands: { prod: ["vercel --prod", { script: "ship" }] } },
     });
     expect(plan.diff).toContain('+ tasks.deployCommands.prod: ["vercel --prod",{"script":"ship"}]');
@@ -623,7 +642,7 @@ describe("requiresFloor", () => {
   test("deploy commands: no list takes the field out, and a tasks object it empties; undefined leaves the file's own", () => {
     const root = tempDir("project-init");
     const own = { prod: ["vercel --prod"] };
-    const existing = `${JSON.stringify({ requires: ">=5.2", tasks: { deployCommands: own }, worktrees: { base: "dev" } })}\n`;
+    const existing = `${JSON.stringify({ requires: ">=5.3", tasks: { deployCommands: own }, worktrees: { base: "dev" } })}\n`;
     const kept = planProjectInit(input({ root, existing, answers: ANSWERS }));
     expect(JSON.parse(kept.text).tasks).toEqual({ deployCommands: own });
     for (const none of [{}, { prod: [] }]) {

@@ -1,12 +1,15 @@
 export const KIT_LEAD = "kit.lead";
 export const KIT_REPO = "kit.repo";
 export const KIT_TASK = "kit.task";
+/** A plan child carries the plan's slug: it builds that plan only and never coordinates (D1). */
+export const KIT_PLAN = "kit.plan";
 export const KIT_INDEPENDENT = "kit.independent";
 export const KIT_STARTED_BY = "kit.started-by";
 export const KIT_LABELS = {
   lead: KIT_LEAD,
   repo: KIT_REPO,
   task: KIT_TASK,
+  plan: KIT_PLAN,
   independent: KIT_INDEPENDENT,
   startedBy: KIT_STARTED_BY,
 } as const;
