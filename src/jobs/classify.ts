@@ -470,8 +470,16 @@ function scan(
     const invocation = invocationOf(words);
     if (invocation === undefined) {
       if (!all) continue;
-      // `} > out.log 2>&1`: the redirections of a group, which holds the commands.
-      if (dialect === "bash" && withoutRedirections(words).length === 0) continue;
+      // `} > out.log 2>&1`: the redirections of a group, which holds the commands. Never one that
+      // reads a file: `$(< .env)` prints it, and inside the queue's shell string Claude Code's
+      // Read rules no longer see the `<` target.
+      if (
+        dialect === "bash" &&
+        withoutRedirections(words).length === 0 &&
+        !words.some((word) => INPUT_REDIRECTION.test(word))
+      ) {
+        continue;
+      }
       return refuse(run, out, step);
     }
     const { args } = invocation;
@@ -825,8 +833,11 @@ function sortReadsOnly(args: readonly string[]): boolean {
 
 /** `uniq` with one input file at most: a second file is where it writes. */
 function uniqReadsOnly(args: readonly string[]): boolean {
-  // `-f`, `-s` and `-w` take a number: the words that are left are files.
-  return (readerWords(UNIQ_SHAPE, args)?.words ?? Number.POSITIVE_INFINITY) <= 1;
+  // `-f`, `-s` and `-w` take a number: the words that are left are files. A `-` is an operand
+  // too (standard input as the input), so `uniq - out.txt` names a second one, which it writes.
+  const read = readerWords(UNIQ_SHAPE, args);
+  if (read === null) return false;
+  return read.words + args.filter((arg) => arg === "-").length <= 1;
 }
 
 /**

@@ -629,7 +629,7 @@ export function mixedLineDenial(
     "deny",
     [
       `This line runs heavy work (${mixed.run === null ? mixed.kind : `${mixed.kind}: ${quoted(mixed.run)}`}) beside other commands (${quoted(mixed.other)}). The job queue cannot take the whole line without hiding those commands from your permission rules, and run raw the heavy part would not wait for a free slot; many heavy runs at once have run machines out of memory.`,
-      "Run the heavy command on its own line, where it waits for a slot in the queue: it may keep a cd before it, a redirection, a pipe into tail, head or grep, and echo or printf around it, all with plain words (a word the shell fills in, such as $VAR or $(…), is refused). Then run the other commands in a separate call.",
+      "Run the heavy command on its own line, where it waits for a slot in the queue: it may keep a cd before it, a redirection, echo or printf around it, and a pipe into tail, head or grep with plain words (no $VAR or $(…) in the reader's words, and no file for it to read). Then run the other commands in a separate call.",
     ].join("\n"),
   );
 }

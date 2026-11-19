@@ -696,6 +696,8 @@ describe("routableLine: a heavy command piped into read-only filters", () => {
       "sort --output=out.txt",
       "sort --compress-program=gzip",
       "uniq in.txt out.txt",
+      // `-` is the input, and the word after it the file uniq writes.
+      "uniq - out.txt",
       "rg --pre ./run.sh FAIL",
       "rg -z FAIL",
       "tail -5 > out.txt",
@@ -1527,6 +1529,14 @@ describe("routableLine: harmless glue rides in the queued line", () => {
 
   test("a subshell with a cd, read in the folder it moves to", () => {
     queuedWhole("( cd portal && bun run test )", "test:run");
+  });
+
+  // A redirection-only step is the structure of a group, but `$(< .env)` reads and prints the
+  // file: inside the queue's shell string Claude Code's Read rules would not see the `<` target.
+  test("a substitution that reads a file is no structure: the line is not queued", () => {
+    expect(line('bun test; echo "$(< .env)"')).toBeNull();
+    expect(line('bun test; X=$(< .env); echo "$X"')).toBeNull();
+    expect(line("bun test; echo `< .env`")).toBeNull();
   });
 
   test("a reader that reads the pipe: no file word, so no Read rule is hidden", () => {

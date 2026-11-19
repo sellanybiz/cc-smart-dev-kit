@@ -1479,7 +1479,9 @@ describe("a mixed line: heavy work beside anything else is refused", () => {
     expect(reason).toContain("would not wait for a free slot");
     expect(reason).toContain("Run the heavy command on its own line");
     expect(reason).toContain("echo or printf around it");
-    expect(reason).toContain("all with plain words (a word the shell fills in");
+    // The plain-words rule is the readers' alone: `cd "$D"` and `> $OUT` are queued.
+    expect(reason).toContain("a pipe into tail, head or grep with plain words");
+    expect(reason).not.toContain("all with plain words");
     expect(reason).toContain("in a separate call");
   });
 
