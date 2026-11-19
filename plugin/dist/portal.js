@@ -38220,7 +38220,7 @@ var HERDR_VERBS = [
   "machines"
 ];
 var USAGE_LINES = {
-  start: `start --model <${CLAUDE_FAMILIES.join("|")}> --effort <${ALLOWED_EFFORTS.join("|")}> --mode <${MODE_ORDER.join("|")}|manual> [--cwd <dir>] [--on <machine>] [--name <name>] [--task <#n> | --plan <slug>] [--independent] [--asked] -- <brief>`,
+  start: `start --model <${CLAUDE_FAMILIES.join("|")}> --effort <${ALLOWED_EFFORTS.join("|")}> --mode <${MODE_ORDER.join("|")}|manual> [--cwd <dir>] [--on <machine>] [--name <name>] [--task <#n> | --plan <slug> | --followup [--issue <n>]\u2026] [--independent] [--asked] -- <brief>`,
   list: "list [--all] [--json]",
   send: "send <terminal> <text>",
   wait: "wait [--any | --all] [--timeout <seconds>] [--seen <addr>:<turn|?>:<error|done|end>[,\u2026]]",
@@ -38240,10 +38240,14 @@ var START_OPTIONS = [
   "--on",
   "--name",
   "--task",
-  "--plan"
+  "--plan",
+  "--issue"
 ];
-var START_FLAGS = ["--independent", "--asked"];
+var START_FLAGS = ["--independent", "--asked", "--followup"];
+var START_REPEATABLE = ["--issue"];
 var PLAN_EXCLUSION = "--plan cannot be combined with --task, --independent or --on.";
+var FOLLOWUP_EXCLUSION = "--followup cannot be combined with --plan, --task, --independent or --on.";
+var ISSUE_NUMBER = /^[1-9]\d*$/;
 var TIMEOUT_WORDS = "A timeout needs a positive whole number of seconds.";
 function validTimeout(timeout) {
   return timeout === undefined || /^\d+$/.test(timeout) && Number.isSafeInteger(Number(timeout) * 1000) && Number(timeout) > 0;
@@ -38261,10 +38265,10 @@ ${verb ? `Usage: ${COMMAND} herdr ${USAGE_LINES[verb]}` : HERDR_USAGE}`
     const split = rest.indexOf("--");
     if (split < 0)
       return fail("Put -- before the brief.");
-    const parsed = parseOptions(rest.slice(0, split), START_OPTIONS, START_FLAGS);
+    const parsed = parseOptions(rest.slice(0, split), START_OPTIONS, START_FLAGS, START_REPEATABLE);
     if ("error" in parsed)
       return fail(parsed.error);
-    const { options: o, flags: f, positionals: p } = parsed;
+    const { options: o, flags: f, lists, positionals: p } = parsed;
     const model = CLAUDE_FAMILIES.find((v) => v === o.get("--model")), effort = ALLOWED_EFFORTS.find((v) => v === o.get("--effort")), mode = normalizeMode(o.get("--mode") ?? "");
     const brief = rest.slice(split + 1).join(" ");
     if (!model || !effort || !mode || p.length || !brief.trim())
@@ -38274,6 +38278,13 @@ ${verb ? `Usage: ${COMMAND} herdr ${USAGE_LINES[verb]}` : HERDR_USAGE}`
       return fail("An independent session cannot have a task.");
     if (plan && (task || independent || o.has("--on")))
       return fail(PLAN_EXCLUSION);
+    const followup = f.has("--followup"), issues = [...new Set(lists.get("--issue") ?? [])];
+    if (followup && (plan || task || independent || o.has("--on")))
+      return fail(FOLLOWUP_EXCLUSION);
+    if (issues.length && !followup)
+      return fail("--issue belongs to --followup.");
+    if (issues.some((issue) => !ISSUE_NUMBER.test(issue)))
+      return fail("Use an issue number such as 12.");
     if (task && !/^#[1-9]\d*$/.test(task))
       return fail("Use a task reference such as #7.");
     if (name && !validChildName(name))
@@ -38294,7 +38305,8 @@ ${verb ? `Usage: ${COMMAND} herdr ${USAGE_LINES[verb]}` : HERDR_USAGE}`
       ...on !== undefined ? { on } : {},
       ...name ? { name } : {},
       ...task ? { task } : {},
-      ...plan ? { plan } : {}
+      ...plan ? { plan } : {},
+      ...followup ? { followup: true, issues } : {}
     };
   }
   const known = verb === "wait" ? ["--timeout", "--seen"] : verb === "plans" ? ["--timeout", "--release", "--reserve"] : [];
@@ -38828,9 +38840,11 @@ Nobody answers a question in \`claude -p\`; run this in an interactive session.`
     if (optionValue(flags, "--mode") === "bypassPermissions")
       return verdict("deny", "bypassPermissions is never allowed.");
     const parsed = parseHerdrArgs(herdr);
-    if ("error" in parsed)
-      return verdict("deny", `Pass both --model and --effort, plus --mode, to herdr start.
+    if ("error" in parsed) {
+      const named = ["--model", "--effort", "--mode"].every((key) => optionValue(flags, key) !== null);
+      return verdict("deny", named ? parsed.error : `Pass both --model and --effort, plus --mode, to herdr start.
 ${parsed.error}`);
+    }
     if (parsed.verb !== "start")
       continue;
     const lead = stringField(context.input.permission_mode) ?? "";

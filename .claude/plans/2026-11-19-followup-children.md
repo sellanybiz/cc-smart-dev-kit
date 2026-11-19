@@ -40,8 +40,9 @@ and fixes after a PR opens are batched, checked locally and pushed once.
    the cost). Options, recommended first:
    - **Send to the follow-up child** — when this lead's follow-up child for this repository is in a
      state `send` accepts (idle, working or done).
-   - **Send to the plan child that holds it** — when the finding's files are in a live plan child's
-     plan: it is inside that plan; the message asks the plan child to make it a task in its plan.
+   - (A finding whose files a held plan holds is inside that plan: a task in it, with no question —
+     sent to its live plan child, else made under that plan by the lead. Ruling from the rules
+     review, F7.)
    - **Start a follow-up child** — when none is live; says it costs one full session.
    - **File it only** — as today.
 3. **On a yes.** File the issue first when issues work (`issue file`, its fingerprint), then start
@@ -60,12 +61,16 @@ and fixes after a PR opens are batched, checked locally and pushed once.
      it instead — the lead treats it as inside that plan.
    - **Per finding:** small fix → fix, check, review; bigger → plan mode, approved by the person in
      the child's pane. One commit per finding; `issue mark-fixed` for its issue (as a merged phase
-     is marked); push and PR as `workflow show` says, the body's `Fixes` lines from `issue fixed`
-     (never by hand); batch and push once (Part B); `herdr report` after each finding.
+     is marked); it may push its branch (free while no PR is open); it opens its PR, or pushes to
+     an open one, only when the lead sends `ship` — full check first, then one push — as
+     `workflow show` says, the body's `Fixes` lines from `issue fixed` (never by hand);
+     `herdr report` after each finding. The lead sends `ship` at the ship point (Part B).
    - Its own findings go in its report: never ask, file or start.
    - It ends only on `herdr stop`.
-5. **Blocked child** (waiting in its pane): `send` is refused; the issue stays filed; tell the person
-   it waits in its pane (`hc attach <terminal>`); send once it is free. Never relay its question.
+5. **Blocked child** (waiting in its pane): no send option; offer "file it only" and say where it
+   waits (`hc attach <terminal>`); the lead sends it the next time it sees the child idle, working
+   or done. Never relay its question. A finding inside a held plan is a task in that plan (the task
+   is the record; the issue is optional).
    **Error state:** neither send nor start; tell the person to look at the pane.
 6. **No child possible** (not in a Herdr terminal, a plan-mode lead, the judge refuses, a child
    lead): file it (or the summary), say why. **Away:** `AskUserQuestion` is denied — park one
@@ -116,12 +121,13 @@ and fixes after a PR opens are batched, checked locally and pushed once.
 
 - **The plan archive rides in the plan's PR.** `plan-task` § 8 and `build` (final steps): after the
   final review and full check, move the plan file (and its research) to `archive/` as the last
-  commit on the plan branch, then open the PR. The plan task still closes after the merge with its
-  evidence. A plan whose PR is abandoned is moved back in its next PR.
+  commit on the plan branch, then open the PR and close the plan task in the same turn, as before
+  (ruling from the rules review: closing after the merge would stall the plan queue; the plan's
+  files stay held until its PR settles). A plan whose PR is abandoned is moved back in its next PR.
 - **Small fixes: one PR per session.** `commit`, `review` (small fix): a session's small fixes
-  outside a plan collect on one branch (its worktree branch) and open one PR when the session's
-  work ends, or at once when the person says it must ship now. The follow-up child already works
-  this way.
+  outside a plan collect on a branch of their own (never a plan branch) and open one PR at the
+  **ship point**: the end of the turn that finishes the person's request, or at once when the
+  person says ship now. The lead sends its follow-up child `ship` at the same point.
 - **After a PR opens: batch, check, push once.** `commit`, `build` (fix pass, CI failure),
   `pull-request`: pushes before the PR opens are free backups; once it is open, collect every fix
   of a round (review findings, a CI failure), run the full check locally, then push once. Never
