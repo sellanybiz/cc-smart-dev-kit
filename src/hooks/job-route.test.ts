@@ -204,7 +204,7 @@ describe("which commands are routed", () => {
       "bunx tsc --noEmit && $(rm -f marker.txt)",
       "bunx tsc --noEmit && echo `rm -f marker.txt`",
       "bash -c 'rm -f marker.txt'",
-      "export FOO=1 && bunx tsc --noEmit",
+      "export FOO=$(rm -f marker.txt) && bunx tsc --noEmit",
     ];
     for (const line of raw) {
       expect([line, routeHeavyCommand(line, KINDS, SHELL, SOURCE)]).toEqual([line, null]);
@@ -217,6 +217,8 @@ describe("which commands are routed", () => {
       ["cd app && bunx tsc --noEmit", "tsc"],
       ["FOO=1 bunx tsc --noEmit", "tsc"],
       ["FOO=1 && bunx tsc --noEmit", "tsc"],
+      // `export` is harmless glue: it sets the shell up, and cannot be run in another call.
+      ["export FOO=1 && bunx tsc --noEmit", "tsc"],
       ["bash -c 'bunx tsc --noEmit && bunx vitest run'", "tsc"],
     ];
     for (const [line, kind] of routed) {
@@ -1180,6 +1182,25 @@ describe.skipIf(NATIVE_WINDOWS)("a line with a git command is never queued whole
     }
   });
 
+  it("a script that runs no heavy work, a heavy run and git: refused, never the hooks prefix", () => {
+    const world = worldWithHooks({ "pre-commit": HEAVY_HOOK });
+    writeFileIn(
+      join(world.repo, "package.json"),
+      JSON.stringify({ scripts: { lint: "biome check ." } }),
+    );
+    // The lint script runs raw beside the full test run, which needs its slot: the person splits
+    // the script off. The hooks prefix would leave the test run raw, so it must not answer first.
+    const line = "bun run lint && bun test && git commit -m x";
+    const refused = jobRoute(
+      contextFor(world.repo, line, "Bash", { env: { HOME: world.home } }),
+      () => true,
+    );
+    const answer = JSON.parse(refused.stdout ?? "{}").hookSpecificOutput;
+    expect(answer.permissionDecision).toBe("deny");
+    expect(answer.permissionDecisionReason).toContain("beside other commands (bun run lint)");
+    expect(answer.updatedInput).toBeUndefined();
+  });
+
   it("a full heavy run next to a git command is refused: the prefix would leave it raw", () => {
     const world = worldWithHooks({ "pre-push": HEAVY_HOOK });
     // With the world's HOME the hooks prefix is available: only the order of the two answers
@@ -1483,6 +1504,15 @@ describe("a mixed line: heavy work beside anything else is refused", () => {
     expect(reason).toContain("a pipe into tail, head or grep with plain words");
     expect(reason).not.toContain("all with plain words");
     expect(reason).toContain("in a separate call");
+    // To keep an exit code, the one-line form is named.
+    expect(reason).toContain('{ cmd; echo "exit $?"; } 2>&1 | tail -20');
+  });
+
+  it("the one-line form for an exit code is queued, not refused again (no refusal loop)", () => {
+    expect(denialOf(repo(), 'bun test; echo "exit $?"')).toBeNull();
+    const line = '{ bun test; echo "exit $?"; } 2>&1 | tail -20';
+    expect(denialOf(repo(), line)).toBeNull();
+    expect(rewrittenTo(repo(), line)).toContain("job run --kind test:run");
   });
 
   it("a heavy run in a shell fed by a pipe is named by its kind, not quoted", () => {

@@ -212,8 +212,11 @@ classifier reads what a script runs:
   glue such as `echo`, or another such script are fine; § The route). A **mixed** script —
   `biome check . && tsc --noEmit` — is never routed, because the queue would also hold the lint.
   The line that calls it is not refused either, because the other command sits in the script's
-  body, which the person cannot split off their own line. To queue it, give the project a kind
-  with `{ "script": "check" }`: the whole script then waits for one slot.
+  body, which the person cannot split off their own line. This exemption is only for the body
+  of a script that **also runs the heavy work**. A script whose body runs no heavy work
+  (`lint: "biome check ."`) is an ordinary command of the line: `bun run lint && bun test` is
+  refused at `bun run lint`, like `bun test; git status`. To queue a mixed script, give the
+  project a kind with `{ "script": "check" }`: the whole script then waits for one slot.
 - **`pre<name>` and `post<name>`** are read where the runner runs them: Bun, npm, pnpm and Yarn
   classic. Yarn Berry (a `packageManager` of `yarn@2` or newer, or a `.yarnrc.yml`) runs
   none, so none is read.
@@ -275,12 +278,19 @@ cannot write a file or run another program. A line of heavy commands and glue �
 tsc --noEmit && bunx vitest run`, or `bun run check; echo "exit $?"` — is queued as one job under
 the first kind it runs: one slot for the whole line. What counts as glue (`isGlueCommand`):
 
-- **The commands of `GLUE_COMMANDS`**: `:`, `[`, `echo`, `false`, `printf`, `pwd`, `test` and
-  `true`, each only under its argument rule. `printf` needs a plain format that is no option
-  (`-v` sets a variable, and bash runs a command in the subscript of its name). `test` and `[`
-  take no `-v` or `-R` (the same subscript) and no word the shell fills in. A glue word holds no
-  arithmetic, indirect or prompt expansion (`$(( … ))`, `$[ … ]`, `${x[ … ]}`, `${x:n}`,
-  `${!x}`, `${x@P}`): bash reads a variable's value there as code.
+- **The commands of `GLUE_COMMANDS`**: `:`, `[`, `echo`, `exit`, `export`, `false`, `printf`,
+  `pwd`, `return`, `set`, `test` and `true`, each only under its argument rule. `printf` needs a
+  plain format that is no option (`-v` sets a variable, and bash runs a command in the subscript
+  of its name). `test` and `[` take no `-v` or `-R` (the same subscript) and no word the shell
+  fills in. A glue word holds no arithmetic, indirect or prompt expansion (`$(( … ))`, `$[ … ]`,
+  `${x[ … ]}`, `${x:n}`, `${!x}`, `${x@P}`): bash reads a variable's value there as code. A
+  whole expansion with a literal subscript runs no code and stays fine (`${PIPESTATUS[0]}`,
+  `${arr[@]}`, `${#arr[*]}`).
+- **Shell state**: `set` with option words only (`-e`, `-u`, `-x`, `+e`, `-o pipefail`,
+  `-euo pipefail`; never `--`, never a word the shell fills in); `exit` and `return` with no
+  word, a number or `$?`; `export` with `NAME=value` words only, no value holding `$(` or a
+  backtick. These are glue because the refusal's advice (run the rest in another call) cannot
+  work for them: an option or an export does not carry over to the next Bash call.
 - **A reader of a pipe**: a program of `READ_ONLY_FILTERS` that has a shape there (every one but
   `rg`; the filters are named below, under "One heavy command piped into read-only filters"),
   only when it reads the pipe and nothing else: piped from the command before it, written bare (no
@@ -307,7 +317,8 @@ that takes a slot beside a command that is neither heavy nor glue (`bun test; gi
 the other command, and says how to fix it: run the heavy command on its own line, where it waits
 for a slot (it may keep a `cd` before it, a redirection, `echo` or `printf` around it, and a
 pipe into `tail`, `head` or `grep` with plain words and no file for the reader), then run the
-other commands in a separate call. A refusal is a deny whoever is away: the session reads the
+other commands in a separate call. To keep an exit code on one line, the reason names the form
+`{ cmd; echo "exit $?"; } 2>&1 | tail -20`, which is queued. A refusal is a deny whoever is away: the session reads the
 fix and retries, so nothing is parked. These lines are no mix, and stay as they were:
 
 - a **light run** (named files, print-only), a **watch run**, and a line that **queues itself**,

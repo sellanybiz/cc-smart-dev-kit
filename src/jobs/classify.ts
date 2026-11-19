@@ -256,8 +256,9 @@ interface Scan {
    */
   stray: string | null;
   /**
-   * With `all`: the walk failed inside a script's body, or too deep in shells, where the line's
-   * own text cannot be split: no command of the line is to blame.
+   * With `all`: the walk failed inside the body of a script that also runs heavy work, or too
+   * deep in shells, where the line's own text cannot be split: no command of the line is to
+   * blame. A script whose body runs no heavy work is no such case: its call is the `stray`.
    */
   opaque: boolean;
 }
@@ -526,9 +527,15 @@ function scan(
       continue;
     }
     const call = toolOf(program, run.extra === undefined ? plain : [...plain, ...run.extra]);
+    const before = out.found.length;
     const heavy = call !== undefined && matchCall(call, program, kinds, depth, run, all, out);
     if (all && !heavy && !(dialect === "bash" && isGlueCommand(step))) {
-      // A script whose body fails the rule has marked itself opaque: it is no command to blame.
+      // A script whose body fails the rule has marked itself opaque. When the body also runs
+      // heavy work, the person cannot split it, so it is no command to blame. When it runs none
+      // (`lint: biome check .`), the script call is a command of its own that can be split off.
+      if (out.opaque && out.found.length === before && run.reading.length === 0) {
+        out.opaque = false;
+      }
       return out.opaque ? false : refuse(run, out, step);
     }
     if (inner !== undefined) readInner(inner);
@@ -1023,9 +1030,17 @@ function sedReadsOnly(args: readonly string[]): boolean {
 }
 
 /**
+ * What a program may not hold to read no file of its own: `getline` (`getline l < ".env"` reads
+ * a file the line never names) and `ARGV` or `ARGC` (an assignment makes awk open a file as one
+ * of its operands). Any mention counts: a program that only prints them is no filter worth the
+ * doubt.
+ */
+const AWK_OPENS_FILES = /getline|ARG[CV]/;
+
+/**
  * `awk` whose program has no `>` (a file it writes, or a comparison: both refused), no `|` (a
- * program it runs), no `system` and no `@` (gawk's includes and indirect calls); with no `-f`
- * (a program in a file) and no option but `-F` and `-v`.
+ * program it runs), no `system` and no `@` (gawk's includes and indirect calls), and no
+ * `AWK_OPENS_FILES`; with no `-f` (a program in a file) and no option but `-F` and `-v`.
  */
 function awkReadsOnly(args: readonly string[]): boolean {
   let program: string | undefined;
@@ -1045,7 +1060,7 @@ function awkReadsOnly(args: readonly string[]): boolean {
       break;
     }
   }
-  return program !== undefined && !/[>|@]|system/.test(program);
+  return program !== undefined && !/[>|@]|system/.test(program) && !AWK_OPENS_FILES.test(program);
 }
 
 /**
@@ -1129,6 +1144,14 @@ function isReadOnlyFilter(step: ShellStep): boolean {
  * - `pwd`: prints the folder.
  * - `test`, `[`: read file and string facts, and give an exit code, when no word is filled in
  *   by the shell and none is `-v` or `-R`, which run the subscript of a variable name.
+ * - `set`: only option words (`-e`, `-o pipefail`, `-euo pipefail`, `+e`), never `--` and never a
+ *   word the shell fills in, so no positional parameter and no variable listing. An option does
+ *   not carry over to another Bash call, so the advice "run the rest in a separate call" cannot
+ *   work for it.
+ * - `exit`, `return`: no word, a number or `$?`; they end the shell and give an exit code.
+ * - `export`: only `NAME=value` words, as an assignment on the line is. The value holds no
+ *   substitution (`$(`, a backtick): that inner command would be its own step to judge, and a
+ *   value with one is never glue.
  *
  * No glue word may hold an arithmetic expansion (`$(( … ))`, `$[ … ]`, a `${x[ … ]}` subscript,
  * a `${x:offset}`): bash reads a variable's value there as an expression, and an expression can
@@ -1138,9 +1161,13 @@ export const GLUE_COMMANDS: ReadonlySet<string> = new Set([
   ":",
   "[",
   "echo",
+  "exit",
+  "export",
   "false",
   "printf",
   "pwd",
+  "return",
+  "set",
   "test",
   "true",
 ]);
@@ -1189,6 +1216,51 @@ function isGlueReader(step: ShellStep): boolean {
 const ARITHMETIC_WORD = /\$\(\(|\$\[|\$\{(?:!|[^}]*(?:\[|:[^-=?+]|@))/;
 
 /**
+ * A whole expansion with a literal subscript: `${PIPESTATUS[0]}`, `${arr[@]}`, `${#arr[*]}`. The
+ * subscript is a number, `@` or `*`: it reads no variable, so no code runs. Anything else in a
+ * subscript (`${a[X]}`, `${a[1+1]}`) is arithmetic, and `${a[0]:X}` still has an offset.
+ */
+const LITERAL_SUBSCRIPT = /\$\{#?[A-Za-z_]\w*\[(?:\d+|@|\*)\]\}/g;
+
+/**
+ * True when a word holds an expansion bash reads as code (`ARITHMETIC_WORD`), after the literal
+ * subscripts are taken out (`LITERAL_SUBSCRIPT`). Each one is replaced by a plain letter, so the
+ * text around it cannot join into an expansion that was not there.
+ */
+function runsAsArithmetic(word: string): boolean {
+  return ARITHMETIC_WORD.test(word.replace(LITERAL_SUBSCRIPT, "V"));
+}
+
+/** A word made only of option letters: `-e`, `+e`, `-euo`. Never `--`, and never a filled word. */
+const SET_OPTIONS = /^[-+][A-Za-z]+$/;
+
+/** An option's name, the word after a letter cluster ending in `o`: `pipefail`, `errexit`. */
+const SET_OPTION_NAME = /^[A-Za-z][A-Za-z-]*$/;
+
+/** A number or `$?`: the one word `exit` and `return` may take. */
+const EXIT_CODE = /^(?:\d+|\$\?)$/;
+
+/**
+ * `set` with option words only; an option letter `o` takes the word after it as its name. A word
+ * the shell fills in holds a `$` or a backtick, so it matches neither pattern and is refused.
+ */
+function setsOptionsOnly(args: readonly string[]): boolean {
+  let wantsName = false;
+  for (const arg of args) {
+    if (wantsName) {
+      if (!SET_OPTION_NAME.test(arg)) return false;
+      wantsName = false;
+    } else if (SET_OPTIONS.test(arg)) {
+      wantsName = arg.endsWith("o");
+    } else {
+      return false;
+    }
+  }
+  // A bare `set` lists every variable: that is no option change.
+  return args.length > 0 && !wantsName;
+}
+
+/**
  * The arguments each `GLUE_COMMANDS` entry is glue under, beyond the checks of every glue word.
  * `words` are the program's words with their fill, after the program; `plain` are the same
  * words without redirections.
@@ -1205,6 +1277,14 @@ function glueArguments(
   }
   if (program === "test" || program === "[") {
     return !words.some((word) => word.filled) && !plain.some((arg) => arg === "-v" || arg === "-R");
+  }
+  if (program === "set") return setsOptionsOnly(plain);
+  if (program === "exit" || program === "return") {
+    return plain.length === 0 || (plain.length === 1 && EXIT_CODE.test(plain[0] ?? ""));
+  }
+  if (program === "export") {
+    // A value holding a substitution is never glue (the text check also covers single quotes).
+    return isAssignmentOnly(plain) && !plain.some((word) => /\$\(|`/.test(word));
   }
   return true;
 }
@@ -1229,7 +1309,7 @@ function isGlueCommand(step: ShellStep): boolean {
     return false;
   }
   if (redirectionTargets(filled).some((target) => target !== "/dev/null")) return false;
-  if (words.some((word) => ARITHMETIC_WORD.test(word))) return false;
+  if (words.some(runsAsArithmetic)) return false;
   const { program } = invocation;
   if (GLUE_COMMANDS.has(program)) {
     return glueArguments(program, filled.slice(1), withoutRedirections(invocation.args));
@@ -1357,8 +1437,8 @@ export interface MixedLine {
  * weighed as `runWeight` does, so a light run, a watch run and a line that queues itself have
  * none), is no `routableLine`, and holds a command of its own that is not glue (`other`), which
  * the person can split off. Null when there is nothing to split: a line the queue takes whole,
- * and a line whose failing command sits in a package script's body, or in shells nested too
- * deep, where the person's own line is not to blame.
+ * and a line whose failing command sits in the body of a package script that also runs the
+ * heavy work, or in shells nested too deep, where the person's own line is not to blame.
  */
 export function mixedHeavyLine(line: string, kinds: Kinds, source: WeightSource): MixedLine | null {
   if (routableLine(line, kinds, source) !== null) return null;
