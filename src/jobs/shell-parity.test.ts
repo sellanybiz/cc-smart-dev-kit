@@ -97,20 +97,31 @@ const ROWS: Row[] = [
     // was: not routed (HK-9).
     queued("tsc", `${SHELL} -c 'env -S '\\''bunx tsc --noEmit'\\'''`),
   ],
-  // was: through the person's shell; now raw (HK hunch 1): the line runs a command that is not heavy, a `cd` or an assignment.
-  ["cat <<EOF\n$(bunx tsc --noEmit)\nEOF", "tsc", null],
+  // was: raw (HK hunch 1: `cat` was no heavy command). Now through the person's shell again: its
+  // only commands are a heavy one (in the substitution) and glue (`cat` of a here-doc).
+  [
+    "cat <<EOF\n$(bunx tsc --noEmit)\nEOF",
+    "tsc",
+    viaShell("tsc", "cat <<EOF\n$(bunx tsc --noEmit)\nEOF"),
+  ],
   ["cat <<'EOF'\nbunx tsc --noEmit\nEOF", null, null],
   // was: through the person's shell; now raw (HK hunch 1): a shell that reads a here-doc is no
   // heavy command (the classifier still finds the kind for `job run`'s reservation).
   ["sh <<'EOF'\nbunx tsc --noEmit\nEOF", "tsc", null],
-  // was: through the person's shell; now raw (HK hunch 1): the line runs a command that is not heavy, a `cd` or an assignment.
-  ["echo 'bunx tsc --noEmit' | sh", "tsc", null],
-  // was: through the person's shell; now raw (HK hunch 1): the line runs a command that is not heavy, a `cd` or an assignment.
-  ["echo `bunx tsc --noEmit`", "tsc", null],
-  // was: through the person's shell; now raw (HK hunch 1): the line runs a command that is not heavy, a `cd` or an assignment.
-  ["echo $(( $(bunx tsc --noEmit) ))", "tsc", null],
-  // was: through the person's shell; now raw (HK hunch 1): the line runs a command that is not heavy, a `cd` or an assignment.
-  ["echo \\ #; bunx tsc --noEmit", "tsc", null],
+  // was: raw (HK hunch 1: `echo` was no heavy command). Now through the person's shell again: its
+  // only commands are `echo` (glue) and a shell that runs the one heavy line it is piped.
+  [
+    "echo 'bunx tsc --noEmit' | sh",
+    "tsc",
+    queued("tsc", `${SHELL} -c 'echo '\\''bunx tsc --noEmit'\\'' | sh'`),
+  ],
+  // was: raw (HK hunch 1). Now queued whole: its only commands are `echo` (glue) and the heavy
+  // run in the backticks.
+  ["echo `bunx tsc --noEmit`", "tsc", viaShell("tsc", "echo `bunx tsc --noEmit`")],
+  // was: raw (HK hunch 1). Now queued whole: `echo` (glue) and the heavy run in the substitution.
+  ["echo $(( $(bunx tsc --noEmit) ))", "tsc", viaShell("tsc", "echo $(( $(bunx tsc --noEmit) ))")],
+  // was: raw (HK hunch 1). Now queued whole: `echo` (glue), then the heavy run.
+  ["echo \\ #; bunx tsc --noEmit", "tsc", viaShell("tsc", "echo \\ #; bunx tsc --noEmit")],
   // was: routed: bash reads `\;` as a `;` character, so the line is one `cd` and runs no tsc.
   ["cd D:\\; bunx tsc --noEmit", null, null],
   [
