@@ -604,6 +604,56 @@ describe("requiresFloor", () => {
     expect(removed.text).not.toContain('"checks"');
     expect(removed.diff).toContain('- checks.fast: "bun run check"');
   });
+
+  test("deploy commands: written under tasks.deployCommands, and requires rises to the guard's release", () => {
+    const root = tempDir("project-init");
+    const plan = planProjectInit(
+      input({
+        root,
+        answers: { ...ANSWERS, deployCommands: { prod: ["vercel --prod", { script: "ship" }] } },
+      }),
+    );
+    expect(JSON.parse(plan.text)).toMatchObject({
+      requires: ">=5.2",
+      tasks: { deployCommands: { prod: ["vercel --prod", { script: "ship" }] } },
+    });
+    expect(plan.diff).toContain('+ tasks.deployCommands.prod: ["vercel --prod",{"script":"ship"}]');
+  });
+
+  test("deploy commands: no list takes the field out, and a tasks object it empties; undefined leaves the file's own", () => {
+    const root = tempDir("project-init");
+    const own = { prod: ["vercel --prod"] };
+    const existing = `${JSON.stringify({ requires: ">=5.2", tasks: { deployCommands: own }, worktrees: { base: "dev" } })}\n`;
+    const kept = planProjectInit(input({ root, existing, answers: ANSWERS }));
+    expect(JSON.parse(kept.text).tasks).toEqual({ deployCommands: own });
+    for (const none of [{}, { prod: [] }]) {
+      const removed = planProjectInit(
+        input({ root, existing, answers: { ...ANSWERS, deployCommands: none } }),
+      );
+      expect(JSON.parse(removed.text)).not.toHaveProperty("tasks");
+      expect(removed.diff).toContain('- tasks.deployCommands.prod: ["vercel --prod"]');
+    }
+    // Another tasks field stays when only the commands go.
+    const withStale = `${JSON.stringify({ tasks: { staleDays: 7, deployCommands: own }, worktrees: { base: "dev" } })}\n`;
+    const trimmed = planProjectInit(
+      input({ root, existing: withStale, answers: { ...ANSWERS, deployCommands: {} } }),
+    );
+    expect(JSON.parse(trimmed.text).tasks).toEqual({ staleDays: 7 });
+  });
+
+  test("deploy commands: no answer and none in the file leaves tasks out", () => {
+    const plan = planProjectInit(input({ answers: { ...ANSWERS, deployCommands: {} } }));
+    expect(JSON.parse(plan.text)).not.toHaveProperty("tasks");
+  });
+
+  test("deploy commands: an environment outside tasks.envs is refused, naming the field", () => {
+    const existing = `${JSON.stringify({ tasks: { envs: ["prod"] }, worktrees: { base: "dev" } })}\n`;
+    expect(() =>
+      planProjectInit(
+        input({ existing, answers: { ...ANSWERS, deployCommands: { staging: ["x --stage"] } } }),
+      ),
+    ).toThrow("tasks.envs");
+  });
 });
 
 describe("applyProjectInit", () => {

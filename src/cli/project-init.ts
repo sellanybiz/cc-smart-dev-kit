@@ -24,6 +24,12 @@
  * yes, `--no-deploy-block` no file, and a path already there is never overwritten. The portal's
  * Project card never writes it: it plans through `planProjectInit` alone.
  *
+ * **The deploy commands** (`tasks.deployCommands`, which the deploy guard reads): for each
+ * environment of `tasks.envs`, a question asked until an empty answer; Enter on the first
+ * keeps the file's list, `-` clears it. `--deploy-command <env>=<command>` replaces an
+ * environment's list (`<env>=` clears it), so the same flags give the same file. Each answer is
+ * checked with the file's own schema before anything is written.
+ *
  * **Every question has a flag**, so a run with no terminal and `--yes` writes the whole file
  * from the flags and the defaults. With no terminal and no `--yes`, nothing is written: the
  * plan is printed and the line to run is named. Nothing is ever committed.
@@ -36,7 +42,11 @@ import { join, resolve } from "node:path";
 import { VERSION } from "../build-info";
 import { COMMAND } from "../build-info/names";
 import { runGit, runGitAsync } from "../hooks/git";
-import { WORKTREE_ENGINE_RETIRED_IN } from "../project/config";
+import {
+  ccSmartDevKitConfigSchema,
+  type DeployCommandEntry,
+  WORKTREE_ENGINE_RETIRED_IN,
+} from "../project/config";
 import {
   applyDeploySkill,
   type DeploySkillPlan,
@@ -48,6 +58,7 @@ import {
 } from "../project/deploy-skill";
 import {
   applyProjectInit,
+  type DeployCommandLists,
   type ProjectInitAnswers,
   type ProjectInitPlan,
   planProjectInit,
@@ -56,6 +67,7 @@ import {
 import { isObject } from "../setup/managed-json";
 import { parseUserJson } from "../setup/user-json";
 import { realTarget } from "../setup/write";
+import { DEPLOY_ENVS, type DeployEnv } from "../tasks/deploy/format";
 import { personalWorkflowOrDefault } from "../workflow/resolve";
 import {
   isSwitchKey,
@@ -328,10 +340,43 @@ export interface ProjectInitFlags {
   jobRoute?: boolean;
   /** The workflow policy, as the `key=value` words `--workflow` was given. */
   workflow?: string[];
+  /**
+   * The `--deploy-command <env>=<command>` words, in the order given. A command that is empty
+   * clears that environment's list (`--deploy-command prod=`).
+   */
+  deployCommand?: Array<{ env: DeployEnv; command: string }>;
   /** The deploy skill to put the block in (or take it out of), from `--deploy-skill`. */
   deploySkill?: string;
   /** `--no-deploy-block`: take the deploy block out instead of putting it in. */
   noDeployBlock?: boolean;
+}
+
+/** True when `word` names an environment a project may deploy to. */
+function isDeployEnv(word: string): word is DeployEnv {
+  return (DEPLOY_ENVS as readonly string[]).includes(word);
+}
+
+/**
+ * The environments this project deploys to: `tasks.envs` of its file, both when it is not set.
+ * A name the file's list holds that is not an environment is the plan's refusal, not ours.
+ */
+function projectEnvs(file: Record<string, unknown> | null): DeployEnv[] {
+  const tasks = file !== null && isObject(file.tasks) ? file.tasks : {};
+  const listed = Array.isArray(tasks.envs) ? tasks.envs.filter(isDeployEnv) : [];
+  return DEPLOY_ENVS.filter((env) => listed.length === 0 || listed.includes(env));
+}
+
+/**
+ * Why `tasks.deployCommands` would refuse `command` for `env`, in the schema's own words, or
+ * null when it takes it: one check for the question and for the flag, the one the file is read
+ * with. A separator and an empty command are its refusals; an environment outside the file's
+ * own `envs` is `projectEnvs`'s.
+ */
+function deployCommandProblem(env: DeployEnv, command: string): string | null {
+  const checked = ccSmartDevKitConfigSchema.safeParse({
+    tasks: { deployCommands: { [env]: [command] } },
+  });
+  return checked.success ? null : checked.error.issues.map((issue) => issue.message).join("; ");
 }
 
 /** The flags, or one line saying which one is wrong. */
@@ -404,6 +449,23 @@ export function parseFlags(argv: string[]): { flags: ProjectInitFlags } | { erro
         case "--no-job-route":
           flags.jobRoute = arg === "--job-route";
           break;
+        case "--deploy-command": {
+          const given = value(arg, argv[index + 1]);
+          index += 1;
+          // Split at the FIRST `=`: a command may hold `=` itself (`FOO=1 ./deploy.sh`).
+          const at = given.indexOf("=");
+          const env = at < 0 ? "" : given.slice(0, at);
+          if (!isDeployEnv(env)) {
+            throw new Error(
+              `${arg}: "${given}" is not <env>=<command>, with <env> one of ${DEPLOY_ENVS.join(", ")}`,
+            );
+          }
+          flags.deployCommand = [
+            ...(flags.deployCommand ?? []),
+            { env, command: given.slice(at + 1).trim() },
+          ];
+          break;
+        }
         case "--deploy-skill":
           flags.deploySkill = words(arg, argv[index + 1]);
           index += 1;
@@ -518,10 +580,12 @@ export function defaultAnswers(
     existing !== null && isObject(existing.checks) && typeof existing.checks.fast === "string"
       ? { fast: existing.checks.fast }
       : null;
+  const deployCommands = deployCommandsOf(existing, flags);
   return {
     base,
     bases,
     protectedBranches,
+    ...(deployCommands === undefined ? {} : { deployCommands }),
     checks:
       flags.check !== undefined
         ? checkAnswer(listAnswer(flags.check))
@@ -543,6 +607,34 @@ export function defaultAnswers(
         ? mergeWorkflow(existingWorkflow, workflowFromFlags(flags.workflow))
         : existingWorkflow,
   };
+}
+
+/**
+ * The deploy commands the run starts from: the file's own lists, then every environment a
+ * `--deploy-command` flag names replaced by the flags' commands for it (`prod=` alone leaves it
+ * empty). Left out (`undefined`) when the file has none and no flag was given, so the file is
+ * left as it is.
+ */
+function deployCommandsOf(
+  existing: Record<string, unknown> | null,
+  flags: ProjectInitFlags,
+): DeployCommandLists | undefined {
+  const tasks = existing !== null && isObject(existing.tasks) ? existing.tasks : {};
+  const own = isObject(tasks.deployCommands) ? tasks.deployCommands : null;
+  if (own === null && flags.deployCommand === undefined) return undefined;
+  const lists: DeployCommandLists = {};
+  for (const [env, list] of Object.entries(own ?? {})) {
+    if (isDeployEnv(env) && Array.isArray(list)) lists[env] = list as DeployCommandEntry[];
+  }
+  const given = new Map<DeployEnv, DeployCommandEntry[]>();
+  for (const { env, command } of flags.deployCommand ?? []) {
+    const list = given.get(env) ?? [];
+    if (command === "") list.length = 0;
+    else list.push(command);
+    given.set(env, list);
+  }
+  for (const [env, list] of given) lists[env] = list;
+  return lists;
 }
 
 /** The bases offered for the two branch families that usually go somewhere else. */
@@ -617,14 +709,59 @@ const QUESTIONS = [
     "jobRoute",
     "Send heavy commands (type checks, test runs, builds) through the machine's job queue, so they take turns?",
   ],
+  // Asked once for each environment, and again until an empty answer: `askedDeployCommands`.
+  ["deployCommands", "A command that deploys to an environment (Enter when done)"],
 ] as const;
 
 type QuestionKey = (typeof QUESTIONS)[number][0];
 
-/** A question with its counter: `[2/7] Bases for …`. */
-function numbered(key: QuestionKey): string {
+/** A question with its counter: `[2/7] Bases for …`. `text` words it for this ask. */
+function numbered(key: QuestionKey, text?: string): string {
   const index = QUESTIONS.findIndex(([name]) => name === key);
-  return `[${index + 1}/${QUESTIONS.length}] ${QUESTIONS[index]?.[1] ?? key}`;
+  return `[${index + 1}/${QUESTIONS.length}] ${text ?? QUESTIONS[index]?.[1] ?? key}`;
+}
+
+/** The answer on the first deploy-command question that empties the environment's list. */
+const CLEAR_DEPLOY_COMMANDS = "-";
+
+/** A deploy command as the question shows the current list: a rule keeps its JSON. */
+function shownDeployCommand(entry: DeployCommandEntry): string {
+  return JSON.stringify(entry);
+}
+
+/**
+ * One environment's deploy commands, asked until an empty answer. On the first question Enter
+ * keeps the file's list (shown) and `-` clears it; a command starts a new list, so the flags
+ * and the question mean the same. Each answer is checked with the file's own schema
+ * (`deployCommandProblem`): one it refuses is said and asked once more (`Prompts.ask`).
+ */
+function askedDeployCommands(
+  prompts: Prompts,
+  env: DeployEnv,
+  current: DeployCommandEntry[],
+): DeployCommandEntry[] {
+  const list: DeployCommandEntry[] = [];
+  for (let first = true; ; first = false) {
+    const keeps = first && current.length > 0;
+    const hint = keeps
+      ? `Enter keeps: ${current.map(shownDeployCommand).join(", ")}; ${CLEAR_DEPLOY_COMMANDS} clears the list; a command starts a new list`
+      : "Enter when done";
+    const answer = prompts.ask(
+      numbered("deployCommands", `A command that deploys to ${env} (${hint})`),
+      {
+        default: "",
+        check: (typed) => {
+          if (typed !== CLEAR_DEPLOY_COMMANDS) return deployCommandProblem(env, typed);
+          return first
+            ? null
+            : `${CLEAR_DEPLOY_COMMANDS} clears the list only on the first question`;
+        },
+      },
+    );
+    if (answer === "") return keeps ? current : list;
+    if (answer === CLEAR_DEPLOY_COMMANDS) return [];
+    list.push(answer);
+  }
 }
 
 /** The line before the questions: how many, and what Enter does. */
@@ -634,7 +771,11 @@ export const QUESTIONS_INTRO = `${QUESTIONS.length} questions. Enter keeps the a
  * The answers a person gives on a terminal: every question offered with its default, counted.
  * A list answer that is not understood is asked again (`Prompts.ask`), with the reason.
  */
-export function askedAnswers(prompts: Prompts, answers: ProjectInitAnswers): ProjectInitAnswers {
+export function askedAnswers(
+  prompts: Prompts,
+  answers: ProjectInitAnswers,
+  envs: readonly DeployEnv[],
+): ProjectInitAnswers {
   const base = prompts.ask(numbered("base"), { default: answers.base });
   const basesText = listAnswer(
     prompts.ask(numbered("bases"), {
@@ -661,11 +802,19 @@ export function askedAnswers(prompts: Prompts, answers: ProjectInitAnswers): Pro
     sessionNames: prompts.confirm(numbered("sessionNames"), answers.guards.sessionNames),
     jobRoute: prompts.confirm(numbered("jobRoute"), answers.guards.jobRoute),
   };
+  // An assignment keeps a key where the file has it, so a re-run with Enter changes no byte.
+  const deployCommands: DeployCommandLists = { ...answers.deployCommands };
+  for (const env of envs) {
+    const list = askedDeployCommands(prompts, env, answers.deployCommands?.[env] ?? []);
+    if (list.length > 0) deployCommands[env] = list;
+    else delete deployCommands[env];
+  }
   return {
     base: base === "" ? answers.base : base,
     bases: parseBases(basesText),
     protectedBranches: listOf(protectedText),
     checks: checkAnswer(checksText),
+    deployCommands,
     guards,
     workflow: workflowFromFlags(listOf(workflowText)),
   };
@@ -956,6 +1105,13 @@ the project.
   --[no-]session-names   each session names itself after its task (or not)
   --[no-]job-route       send heavy commands through the job queue (or not)
   --workflow <k=v,k=v>   the workflow policy, over your own defaults
+  --deploy-command <env>=<command>
+                         a command that deploys to <env> (staging or prod, one of tasks.envs);
+                         repeat it for more. It replaces that environment's list in
+                         tasks.deployCommands, so the same flags give the same file; the deploy
+                         guard asks before one runs while a blocking task is open.
+                         <env>= alone clears the list. Without the flag, the lists stay as they
+                         are; split at the first "="
   --deploy-skill <path>  the deploy skill that gets the kit's deploy block (a managed section,
                          the text around it untouched). Default: the skill that already holds
                          it, else the one .claude/skills/*/SKILL.md that names a deploy; with
@@ -1000,6 +1156,18 @@ export async function runProjectInit(
     return 2;
   }
   const file = join(context.root, ".claude", "cc-smart-dev-kit.json");
+  const envs = projectEnvs(readExisting(file));
+  for (const { env, command } of flags.deployCommand ?? []) {
+    const problem = !envs.includes(env)
+      ? `${env} is not one of tasks.envs (${envs.join(", ")})`
+      : command === ""
+        ? null
+        : deployCommandProblem(env, command);
+    if (problem !== null) {
+      context.error(`--deploy-command ${env}=${command}: ${problem}\n\n${PROJECT_INIT_USAGE}`);
+      return 2;
+    }
+  }
   const existing = readText(file);
   const facts = await detectFacts(runner, context.root);
   // A dry run asks nothing: it shows what the flags and the defaults would write (UX-12).
@@ -1015,7 +1183,7 @@ export async function runProjectInit(
     answers = defaultAnswers(readExisting(file), facts, flags);
     if (prompts !== null) {
       out.say(QUESTIONS_INTRO);
-      answers = askedAnswers(prompts, answers);
+      answers = askedAnswers(prompts, answers, envs);
     }
     // The deploy skill's question, when several files name one, comes with the others: nothing
     // is written before every question is answered.
