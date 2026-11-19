@@ -646,11 +646,6 @@ export function runWeight(line: string, kinds: Kinds, source: WeightSource): Wei
     : { weight: "light" };
 }
 
-/**
- * What the heavy runs a walk found ask of the queue, before the other commands of the line are
- * asked about: `none` (no heavy run, a watch run that never ends, or a line that queues itself),
- * `light` (every run is light), or the first run that takes a slot.
- */
 /** True when a reader can also say whether a word names a file (`WeightSource`). */
 function canWeigh(source: ScriptSource | undefined): source is WeightSource {
   return source !== undefined && "isFile" in source;
@@ -665,6 +660,11 @@ function takesSlot(out: Scan, kinds: Kinds, source: ScriptSource | undefined): b
   return out.found.some((one) => !one.printOnly);
 }
 
+/**
+ * What the heavy runs a walk found ask of the queue, before the other commands of the line are
+ * asked about: `none` (no heavy run, a watch run that never ends, or a line that queues itself),
+ * `light` (every run is light), or the first run that takes a slot.
+ */
 function slotRun(out: Scan, kinds: Kinds, source: WeightSource): Found | "light" | "none" {
   const { found } = out;
   // A line that runs `job run` (itself, or through a script's body) is queued already: a second
