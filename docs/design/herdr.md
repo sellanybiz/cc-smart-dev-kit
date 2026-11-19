@@ -15,7 +15,7 @@ own pane, and the lead never relays it (4.10.1). The user workflow is
 | `labels.ts` | Label names, core/address identities, child names, report escaping and agent prefix. |
 | `machines.ts` | The remote approval rules, validated reads and managed writes. |
 | `identity.ts` | Live terminal and process-ancestry checks. |
-| `brief.ts` | Private brief files and unique report files, and the plan trailer a plan child gets. |
+| `brief.ts` | Private brief files and unique report files, and the plan and follow-up trailers a child gets. |
 | `plans.ts` | The live side of plan hand-outs: the gates only git, gh and hc can answer, the start's reservation, and `herdr plans` (§ Handing out plans). |
 | `command.ts` | All nine verbs, dialog parsing and the event-stream barrier. |
 | `doctor.ts` | Optional hc discovery and conservative diagnostics. |
@@ -38,6 +38,7 @@ address forms the lead id: two cores can have the same short terminal address.
 | `kit.repo` | Repository root, or directory outside git. |
 | `kit.task` | Optional same-project task reference. |
 | `kit.plan` | A plan child's plan slug (`herdr start --plan`); a terminal that carries it never coordinates. |
+| `kit.followup` | `1` for a lead's follow-up child (`herdr start --followup`, § Follow-up children); a terminal that carries it never coordinates (it also carries `kit.lead`). |
 | `kit.independent` | `1` for a session without a lead link. |
 | `kit.started-by` | Independent session's initiating identity, when available. |
 
@@ -240,6 +241,78 @@ plan whose maker is the dead lead moves its maker too, so it does not read as `c
 new lead takes a plan the old lead built itself with `task_take` before its next phase. A lead
 with no recorded process is never adopted: its death cannot be proved.
 
+## Follow-up children
+
+A follow-up is a finding outside the plan being built: the lead's own, or one in a builder's
+`Report:`, a reviewer's "Outside this change" or a rules-maintainer's "Follow-ups for the caller".
+Before 5.4.0 nothing worked on a filed issue. Now the lead asks the person at once, and a yes
+hands the finding to the lead's **follow-up child** (5.4.0): one linked session that collects every
+follow-up of this lead and repository into one pull request at a time. The rule for the lead (the
+ask, its options, filing first, a blocked child, no child possible, being away) is in
+`plugin/skills/tasks/SKILL.md`; the command lines are in `plugin/skills/herdr/SKILL.md`. This
+section is what the command checks and what the child is told.
+
+**`start --followup [--issue <n>]…`** is the smaller sibling of `start --plan`. It takes the checks
+of any linked start (model, effort and mode, names, brief, binding) and adds these. `--issue` may
+repeat, takes a positive whole number and needs `--followup`. Each refusal names its fix:
+
+| Refused when | Why |
+|---|---|
+| `--plan`, `--task`, `--independent` or `--on` is also given | The one `PLAN_EXCLUSION` text: a follow-up child is local and linked, and it holds no plan or task. |
+| The caller's terminal carries `kit.lead` (any child, plan or follow-up) | A child never starts children. It lists the finding in `herdr report`; the lead asks. |
+| This lead already has a live follow-up child for this repository (lead id plus `kit.repo`) | One child collects all follow-ups. The error names its terminal and says to use `herdr send`. If that child is in the error state, it says to look at the pane instead. |
+| An ended follow-up child of this lead left a branch with commits that are not on `origin/<base>` and have no merged pull request | The work would be lost. The error names the worktree and the branch. |
+| The base branch is only a guess (no `origin/HEAD`, no `worktrees.base`) | The child resets onto the base. The fix is `git remote set-head origin --auto`, as for `start --plan`. |
+
+The base is `baseBranch()` in `plans.ts`, so `worktrees.base` counts. The gate is per repository:
+another repository gets its own child through `--cwd` there. A second start made right after the
+first meets the one-per-repository refusal.
+
+**The follow-up trailer** (`followupTrailer` in `brief.ts`, beside `planTrailer`) tells the child:
+
+1. At the start, once: reset onto `origin/<base>` only when its branch has no commits past it and
+   the tree is clean. Otherwise never reset. (`claude -w` may cut the worktree from the lead's
+   branch or from a stale `origin/HEAD`.)
+2. Before each finding, read the state of its own pull request (`gh pr view --json state`). Open:
+   add the fix to it. Merged or closed: fetch, reset onto `origin/<base>` (that work is in the
+   merged pull request) and open a new one. None: go on.
+3. Never edit a file a held plan holds. The trailer lists each held plan's slug and files, a
+   snapshot taken at the start (`heldPlans`, the same reader the plan gates use). The lead names
+   the files of a plan held later in its `send` text. A finding in those files goes in the report;
+   the lead treats it as inside that plan.
+4. A small fix: fix, check, review. A bigger one: plan mode, approved by the person in the
+   child's pane.
+5. One commit per finding. Run `issue mark-fixed` for its issue after the fix, as for a merged
+   phase. Push and open the pull request as `workflow show` says. The `Fixes` lines of the body
+   come from `issue fixed`, never by hand (`docs/design/issues.md` § Resolved when it ships).
+6. After a pull request opens, collect the fixes of a round, check locally and push once
+   (`docs/design/workflow.md` § Fewer pull requests).
+7. `herdr report` after each finding. Its own findings go in that report: it never asks, files or
+   starts anything.
+8. It never stops on its own. It ends only on `herdr stop`.
+
+The trailer also carries the issue numbers given with `--issue`. The label is `kit.followup=1`;
+`herdr list` shows "follow-up". No issue number is stored in a label, since it would go stale.
+
+**`planTrailer` gained one line:** findings outside the plan go in `herdr report`; the plan child
+never asks, files or starts.
+
+**Sending to it.** `herdr send` reaches the follow-up child in the same states as any child: idle,
+working or done. One exported constant lists those states, and both the refusal text and the
+skill read it. A blocked child refuses `send`: it waits for the person in its pane, the issue
+stays filed, and the lead sends once it is free. In the error state the lead neither sends nor
+starts.
+
+**`wait --all`** leaves follow-up children out of its barrier. A follow-up child never settles,
+so it would hold the barrier open for ever. `wait` without `--all`, `list` and `stop` see it as
+any linked child.
+
+**Limits.** The held-plan list in the trailer is a snapshot; the lead repeats a new one in a
+`send`. A merged or closed pull request (by the person or by `autoMerge`) is noticed only at the
+child's next finding. No `--issue` and no `Fixes` line when issues are refused (a public
+repository without `allowPublic`, no GitHub, issues off). The flow is **not yet proved live**
+(§ Live evidence and work still owed).
+
 ## Remote machines
 
 `cliPaths().machinesFile` is `~/.config/cc-smart-dev-kit/machines.json`, independent of
@@ -290,6 +363,7 @@ Default/`--any` returns on news, retaining all news buffered in that chunk. `--a
 barrier over initial live children not already settled-and-reported; it waits for each to
 give news or leave, or until timeout. An empty all-barrier says there is nothing to wait for;
 any keeps listening for a new turn. With no live owned children either mode returns at once.
+A follow-up child (`kit.followup`) is left out of the `--all` barrier: it never settles on its own (§ Follow-up children).
 The default timeout is `WAIT_TIMEOUT_MS` in the command; timeout is not completion proof.
 
 The final continuation keeps the supplied cursor entries for the addresses in the wait's
@@ -331,6 +405,10 @@ fragments. These are policy checks, not a sandbox; keep that limit explicit.
 | Child blocked on a question or permission | The person answers in its pane; `wait` keeps waiting. |
 | Lead has become a shell or is blocked | Report falls back to a unique file. |
 | Old terminal name still has worktree/branch | Refuse reuse rather than resume old work. A plan's own child is the one exception (§ Handing out plans). |
+| A child finds a follow-up | It lists it in `herdr report`; a child cannot start `--followup` (`kit.lead`), so the lead asks. |
+| A finding sits in a held plan's files | Not for the follow-up child: it goes to that plan's child, as a task in its plan. |
+| The follow-up child's pull request merges or closes | Nothing at once; at its next finding it resets onto `origin/<base>` and opens a new one. The lead still sends to the same child. |
+| A follow-up child ended with unpushed commits | The next `start --followup` is refused and names its worktree and branch. |
 | Two plan hand-outs share a file | The second `start --plan` is refused by the reservation and names the plan in its way. |
 | A plan child's pane closes | `child-gone`: `start --plan <slug>` resumes it in its recorded worktree. |
 | A session from before 5.2.0 | It ignores reservations: its take and start do not check them and its drop does not release. Restart it before plans are handed out. |
@@ -370,6 +448,7 @@ not live UI behavior.
 - Acceptance of the final-check-to-keys race, or upstream `keys --if-turn` support.
 - With app and core closed, whether `hc server status --json` starts a core. Until it is
   shown never to start one, doctor keeps core not checked.
+- The follow-up flow (5.4.0): the lead asks at once, the first yes files the issue and starts the child on `origin/<base>`, a second finding is sent to it, one pull request carries both with `Fixes` lines from `issue fixed`, and after a merge the same child resets and opens a new pull request.
 
 The done-child send result above is established; #273 still calls for its end-to-end
 confirmation with the owner. The broader plan also owes integration checks for adoption

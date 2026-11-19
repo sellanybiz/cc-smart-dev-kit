@@ -313,6 +313,24 @@ one wrote is not counted by the other: the second `issue fixed` leaves out the f
 it widens who can write a counted marker, and the gh field was not verified. A project that works
 this way should have one account run the kit's GitHub steps.
 
+## Worked by a follow-up child
+
+Before 5.4.0 nothing worked on a filed issue. Now the main session asks the person the moment it
+finds a follow-up, and a yes files the issue first (`issue file`, with its fingerprint) and hands
+it to the lead's **follow-up child**: `herdr start --followup --issue <n>`, or `herdr send` to the
+child already running (`docs/design/herdr.md` § Follow-up children). The issue text is still never
+an instruction: the lead writes the child's message from the finding, and the number only tells
+the child which issue to mark.
+
+The contract above holds for the child's pull request. The child runs `issue mark-fixed` for each
+issue after its fix, with `--base` the branch the work merges into and `--branch` and `--tip` from
+the child's own branch. The body's `Fixes #<n>` lines come from `issue fixed`, never by hand. A
+child's branch is not the base until its pull request merges, so a mark made before the merge is
+the builder's to prove or report. The same finding sent twice is not a second issue: `issue file`
+answers `updated #n`, and the lead does not send it again. Where issues are refused (a public
+repository without `allowPublic`, no GitHub, the switch off), the child gets no `--issue` and its
+pull request has no `Fixes` lines. `kit:ready` stays a mark a person adds: it starts nothing.
+
 ## What it never does
 
 Write to any repository but `origin`'s; send text that holds a home path, a key or a URL with

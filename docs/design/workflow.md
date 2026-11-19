@@ -420,3 +420,38 @@ the person's over the built-in default. An unreadable project or personal settin
 drops only that file, keeps every value it can read, and returns one line for stderr.
 A folder outside a project, or no `cwd`, is not a problem. Retired `alerts.events` and
 `alerts.sound` values load but are discarded by the schema, not used by the status line.
+
+## Fewer pull requests
+
+The settings above decide what the kit may open and merge by itself. Since 5.4.0 the skills also
+keep the number of pull requests, and of CI runs, small. The wording is in the `plan-task`,
+`build`, `commit`, `review` and `pull-request` skills; this is why.
+
+**Why.** CI runs on `pull_request` and on `push` to the default branch only
+(`.github/workflows/ci.yml`, `windows.yml`; a newer push cancels the run before it). A push to a
+branch with no pull request costs nothing. Each pull request costs one run for every push to it,
+and one more run on the default branch when it merges. The waste came from three habits: a pull
+request made only for bookkeeping (a plan's archive, a workflow file), one pull request per small
+fix, and fix rounds pushed one at a time after the pull request opened.
+
+**The rules.**
+
+- **The plan archive rides in the plan's own pull request.** After the final review and the full
+  check, the plan file (and its research) moves to `archive/` as the last commit on the plan
+  branch, and then the pull request opens. The plan task still closes after the merge, with its
+  evidence. A plan whose pull request is abandoned has its file moved back in the next one.
+- **Small fixes: one pull request per session.** The small fixes a session makes outside a plan
+  collect on one branch (its worktree branch). One pull request opens when that work ends, or at
+  once when the person says it must ship now. The follow-up child already works this way
+  (`docs/design/herdr.md` § Follow-up children).
+- **After a pull request opens: batch, check, push once.** A push before the pull request opens
+  is a free backup. Once it is open, a round of fixes (review findings, a CI failure) is
+  collected, the full check runs locally, and one push follows. Never push one fix at a time, and
+  never use CI to find what the local check finds.
+
+**What stays as it was.** One pull request per plan, as before. A deploy run's small pull request
+of task closes also stays: those closes must reach the base before the next deploy's
+`task release` reads it (`docs/design/tasks.md` § The deploy run and the gates).
+
+These are habits in skills, not a hook: nothing blocks a push or a pull request. A session that
+ignores them still works, and only spends more CI.

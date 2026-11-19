@@ -3,6 +3,36 @@
 What each release changed, newest first. A release's **What to run** steps are the ones to do
 in your own terminal after the update; the user guide is [README.md](README.md).
 
+## 5.4.0
+
+- **A finding outside the plan is asked about at once, and a child works on it.** When Claude
+  meets a finding outside its plan (its own, or one in a builder's report or a review), it now
+  asks you right then. A yes files the issue and hands the finding to a **follow-up child**: one
+  linked session for each lead and repository that collects all of its follow-ups into one pull
+  request at a time. Before, a filed issue sat until you built it yourself.
+- **`herdr start --followup [--issue <n>]…`** starts that child. `--issue` repeats and names the
+  filed issues it fixes. The command refuses with `--plan`, `--task`, `--independent` or `--on`;
+  inside any child (a child lists its findings in `herdr report` and never starts one); while this
+  lead's follow-up child for the repository is live (the error names its terminal; use `herdr
+  send`); when an ended one left commits that reached no merged pull request (the error names its
+  worktree and branch); and when the default branch is only a guess. The child resets onto the
+  base once, at the start; checks its pull request before each finding (add to it when open, reset
+  and open a new one when merged or closed); never edits a file a held plan holds; makes one commit
+  per finding; marks the issue fixed (`issue mark-fixed`, and the pull request's `Fixes` lines
+  from `issue fixed`); pushes once after the pull request opens; reports after each finding; and
+  stops only on `herdr stop`. It has the label `kit.followup`, and `herdr list` shows it as
+  follow-up. `herdr wait --all` leaves it out, since it never settles. A plan child's brief gains
+  one line: its own findings go in `herdr report`; it never asks, files or starts. The held-plan
+  list in the child's brief is a snapshot taken at the start, and this flow is not yet proved live.
+- **Fewer pull requests and CI runs.** CI runs on a pull request and on a push to the default
+  branch; a branch push with no pull request is free. The skills now keep each plan's archive in
+  the plan's own pull request (its last commit), put the small fixes of one session in one pull
+  request, and, once a pull request is open, collect a round of fixes, run the full check locally
+  and push once. One pull request per plan, and a deploy run's small pull request of task closes,
+  stay. These are instructions in the skills, not a hook.
+
+**What to run:** `cc-smart-dev-kit update`, then start new sessions. Nothing per project.
+
 ## 5.3.0
 
 - **A guard asks before a deploy that open tasks hold.** A new hook, `deploy-guard`, asks you
