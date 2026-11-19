@@ -208,10 +208,12 @@ classifier reads what a script runs:
   script, so `"$npm_execpath" test` under `bun run test` is `bun test`. A script that calls
   another script is followed, three levels deep (`MAX_NESTING`); a script that calls itself,
   or goes deeper, is not read.
-- **The route needs every command of the body to be heavy** (a `cd`, an assignment or another
-  such script are fine; § The route). A **mixed** script — `biome check . && tsc --noEmit` — is
-  never routed, because the queue would also hold the lint. To queue it, give the project a
-  kind with `{ "script": "check" }`: the whole script then waits for one slot.
+- **The route needs every command of the body to be heavy or glue** (a `cd`, an assignment,
+  glue such as `echo`, or another such script are fine; § The route). A **mixed** script —
+  `biome check . && tsc --noEmit` — is never routed, because the queue would also hold the lint.
+  The line that calls it is not refused either, because the other command sits in the script's
+  body, which the person cannot split off their own line. To queue it, give the project a kind
+  with `{ "script": "check" }`: the whole script then waits for one slot.
 - **`pre<name>` and `post<name>`** are read where the runner runs them: Bun, npm, pnpm and Yarn
   classic. Yarn Berry (a `packageManager` of `yarn@2` or newer, or a `.yarnrc.yml`) runs
   none, so none is read.
@@ -263,16 +265,58 @@ command already inside `cc-smart-dev-kit job run` is left alone, also when it is
 script's body. Outside git there is no project, so a heavy command there runs raw. The hook's other part, the launch judge, is always on:
 `docs/design/hooks.md` § The Bash judge and the job route.
 
-**Only a line whose every command is heavy, a `cd` or an assignment is queued**
-(`classifyRoutableLine` in `src/jobs/classify.ts`); any other line runs raw. Claude Code
-matches a person's own Bash rules (`deny`, `ask`) against the words of the command it is about
-to run and does not look inside `bash -c '…'`, so a rewritten `tsc && rm -f x` would hide its
-`rm` from a `Bash(rm:*)` rule (proved on 2.1.308, `claude-code-contract.md`). So a line that runs
-anything else (`echo`, `rm`, a shell keyword with a non-heavy body, a substitution, or a runner —
-`find`, `watch`, `su`, `parallel`, which do work of their own beside the command they run)
-stays as written, and the person's rules see it. A line of heavy commands only — `cd app &&
-bunx tsc --noEmit && bunx vitest run` — is queued as one job under the first kind it runs: one
-slot for the whole line.
+**A line is queued whole only when every command in it is heavy, a `cd`, an assignment or
+glue** (`routableLine` in `src/jobs/classify.ts`; `classifyRoutableLine` gives its kind), and at
+least one is heavy. Claude Code matches a person's own Bash rules (`deny`, `ask`) against the
+words of the command it is about to run and does not look inside `bash -c '…'`, so a rewritten
+`tsc && rm -f x` would hide its `rm` from a `Bash(rm:*)` rule (proved on 2.1.308,
+`claude-code-contract.md`). **Glue** is a command nobody writes such a rule against, because it
+cannot write a file or run another program. A line of heavy commands and glue — `cd app && bunx
+tsc --noEmit && bunx vitest run`, or `bun run check; echo "exit $?"` — is queued as one job under
+the first kind it runs: one slot for the whole line. What counts as glue (`isGlueCommand`):
+
+- **The commands of `GLUE_COMMANDS`**: `:`, `[`, `echo`, `false`, `printf`, `pwd`, `test` and
+  `true`, each only under its argument rule. `printf` needs a plain format that is no option
+  (`-v` sets a variable, and bash runs a command in the subscript of its name). `test` and `[`
+  take no `-v` or `-R` (the same subscript) and no word the shell fills in. A glue word holds no
+  arithmetic, indirect or prompt expansion (`$(( … ))`, `$[ … ]`, `${x[ … ]}`, `${x:n}`,
+  `${!x}`, `${x@P}`): bash reads a variable's value there as code.
+- **A reader of a pipe**: a program of `READ_ONLY_FILTERS` that has a shape there (every one but
+  `rg`; the filters are named below, § One heavy command piped into read-only filters), only
+  when it reads the pipe and nothing else: piped from the command before it, written bare (no
+  path), with plain words (no `$VAR` or `$(…)`), no file word, no file it writes to (`tee` only
+  with no argument at all) and no input redirection from a file (`bun test; tail -5 out.log` and
+  `cat < .env` are no glue). `rg` has no shape, so it is never glue: with nothing piped it
+  searches the folder.
+- **The structure of a group**: the `{ … }` or `( … )` around commands, and the redirections of
+  the group itself (`{ echo a; bun test; } > out.log 2>&1`). An input from a file other than
+  `/dev/null` is no structure (`$(< .env)`, `{ bun test; } < .env`): it would print the file
+  inside the queue's shell string, where Claude Code's own read rules no longer see it.
+
+Every command of a glue word's own substitution is judged on its own, and a pipe into a shell
+(`… | sh`) is never glue: the script is the reader's guess, so a line with one beside heavy work
+is refused. A command with a path (`/bin/echo`), a wrapper (`env echo`), an assignment before it
+or a computed name is no glue either.
+
+**A line that mixes heavy work with a command that is not heavy or glue is refused, not left
+raw.** Run raw, the heavy part would not wait for a slot, and many heavy runs at once have run
+machines out of memory; run queued, the other command would hide from the person's rules. So when a line runs heavy work
+that takes a slot beside a command that is neither heavy nor glue (`bun test; git status`,
+`tsc && rm -f x`, `bun test; tail -5 out.log`), the hook denies the call (`mixedLineDenial`,
+`src/hooks/job-route.ts`; the finder is `mixedHeavyLine`). The reason names the heavy run and
+the other command, and says how to fix it: run the heavy command on its own line, where it waits
+for a slot (it may keep a `cd` before it, a redirection, `echo` or `printf` around it, and a
+pipe into `tail`, `head` or `grep` with plain words and no file for the reader), then run the
+other commands in a separate call. A refusal is a deny whoever is away: the session reads the
+fix and retries, so nothing is parked. These lines are no mix, and stay as they were:
+
+- a **light run** (named files, print-only), a **watch run**, and a line that **queues itself**,
+  because they take no slot;
+- a line whose only non-glue command sits in a **package script's body**, or in shells nested
+  too deep: the person cannot split it off their own line, so the hook does not blame them;
+- every line when the **route is off** and every line **outside git**; a **PowerShell** line,
+  which has its own refusal (below); and a line with a `git` command and no heavy run of its
+  own, which gets the hooks prefix (`routeGitHooks`, § Git hooks).
 
 **One heavy command piped into read-only filters is queued too** (`routableLine`): `bunx tsc
 --noEmit 2>&1 | tail -20` becomes `… job run --kind tsc -- <shell> -c 'bunx tsc --noEmit 2>&1'
@@ -281,15 +325,15 @@ person's own Bash rules still see every one of them. A filter is one of `tail`, 
 (`egrep`, `fgrep`), `rg`, `wc`, `cut`, `tr`, `uniq`, `sort`, `cat` (with no file), `tee` (with no
 file but `/dev/null`), and `sed` or `awk` with a script that only prints. Anything else after
 the pipe — a filter with an option that writes, a second heavy command, a filter **before** the
-heavy one (`cat x | tsc`), `|&`, a group in parentheses — keeps the whole line raw. The exit
-code is the pipeline's own, exactly as without the queue.
+heavy one (`cat x | tsc`), `|&`, a group in parentheses — is no filter, and the line is judged
+as a mixed line (above). The exit code is the pipeline's own, exactly as without the queue.
 
 **A light line stays raw.** A line is queued only when the judge (`runWeight`) also says it is
 heavy. A run on named files, or one that only prints, starts at once, so wrapping it would only
 add the launcher's start. A watch run, and a line that already queues itself, answer `none`:
 they must never hold a slot, so they are left raw too (the route never wraps `tsc && vitest
 --watch`). The judge calls a line light only when it understands **every** command in it — a
-`cd`, an assignment, a heavy-kind command, a script it followed into its body, a read-only
+`cd`, an assignment, glue, a heavy-kind command, a script it followed into its body, a read-only
 filter: in `tsc --noEmit a.ts && ./build.sh` the unknown `./build.sh` may be the heavy work, so
 the line is not light. Several heavy runs sent to the background with `&` are not light.
 
@@ -512,15 +556,21 @@ working folder into a script's environment by itself, so the launchers start the
 ## The classifier
 
 `classifyHeavyCommand(bashCommand, kinds)` (`src/jobs/classify.ts`) says which kind a Bash
-command runs, or null. The route and the hook's questions ask it, and it asks three things of
+command runs, or null. The route and the hook's questions ask it, and it asks four things of
 one walk of the line:
 
 - **`classifyHeavyCommand`**: the first heavy kind the line runs, anywhere in it (any-heavy). A
   run that only prints is no heavy run.
 - **`routableLine`** (`classifyRoutableLine` gives its kind): may the route queue the line? Only
-  when every command in it is heavy, a `cd` or an assignment, or when one heavy command is
-  piped into read-only filters (§ The route). A script is followed into its body by the same
+  when every command in it is heavy, a `cd`, an assignment or glue (`GLUE_COMMANDS`, the readers
+  of a pipe, the structure of a group; § The route), and at least one is heavy, or when one
+  heavy command is piped into read-only filters. A script is followed into its body by the same
   rule (§ Scripts are read by their body).
+- **`mixedHeavyLine`**: the other side of that question. It finds a line that runs heavy work
+  which takes a slot (weighed as `runWeight` does) beside a command that is neither heavy nor
+  glue, and names both, for the route's refusal (`mixedLineDenial`; § The route). It gives null
+  for a line the queue takes whole, for a run that takes no slot, and for a line whose non-glue
+  command sits in a package script's body or in shells nested too deep.
 - **`runWeight(line, kinds, source)`**: how heavy is the run? `{ weight: "light" }` (it only
   prints, or names only existing files), `{ weight: "heavy", kind }` (it waits for a slot), or
   `{ weight: "none" }` (no heavy command in the line, a watch run, or a line that queues
@@ -528,7 +578,8 @@ one walk of the line:
   and where it runs. It unwraps `bash -c '…'` and `zsh -c '…'`, and reads each command's files
   in the folder it runs in (after a `cd`). **Light needs a positive finding**: every heavy
   command only prints or names existing files, and every other command of the line is one the
-  reader understands. Anything else is heavy.
+  reader understands: a `cd`, an assignment, glue (the same `GLUE_COMMANDS` and readers the
+  route uses, § The route) or a script it followed. Anything else is heavy.
 
 The classifier reads the line with the one shell reader the guards use too
 (`src/shell/command.ts`), so the queue and the guards see the same commands: a tool inside
@@ -582,6 +633,10 @@ only the heavy-job count. The queue never changes process priority. An old
 - **The classifier's `typed.` rule for ESLint** can match a file whose name holds that text.
 - **Watch runs are never queued by the route**, and a run the judge cannot read is never
   called light: it keeps its slot. A `job run` you type holds a slot for a watch run too.
+- **A package script's own body can still mix.** The route refuses a mixed line the person
+  wrote, never one inside a script's body. A script such as `biome check . && tsc --noEmit`
+  runs raw, so its heavy part waits for no slot. Give the script a kind (`{ "script": "<name>" }`)
+  to queue it whole, or split it into scripts of one job each.
 - **Multi-package script forms are not read** (`--filter`, `-r`, `--workspaces`, `turbo`,
   `nx`): the line runs raw, or takes the slot of the kind you gave it.
 - **lefthook's and pre-commit's YAML files are not read.** What their hooks run is invisible: a
