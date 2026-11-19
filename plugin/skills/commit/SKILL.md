@@ -41,7 +41,7 @@ and the merge order.
   a push, a pull request or a merge into a shared branch. In a planned build a phase branch
   stays local; the plan branch is pushed and has the one pull request (`/cc-smart-dev-kit:build` §§ 5 and 6).
 - **Push and open the pull request** when the change set is complete and the second opinion
-  has read it, or it is a small fix that skips it. Not after each commit. In a planned build
+  has read it, or it is a small fix that skips it (§ Pushing says when). Not after each commit. In a planned build
   the plan branch is pushed after each merged phase, and the pull request waits for the
   final review.
 - **Always the person's word, every time:** anything into the main branch or production, a
@@ -99,6 +99,20 @@ Push when the change set is complete and the second opinion has read it — as `
 or when the person asks. Run the push (its hooks may be slow) and any CI watch in the
 background; write the pull request body while it runs (`/cc-smart-dev-kit:pull-request`). Open the
 pull request only after the push succeeded, and as `openPr` says: a draft a person marks ready,
-ready for review, or none at all. Then watch CI in the background. A re-push after a hook, CI
-or review fix needs nothing more. When the machine is too busy for the push hook:
-`/cc-smart-dev-kit:verify-change` § 4 says when it may be skipped.
+ready for review, or none at all. Then watch CI in the background. When the machine is too busy
+for the push hook: `/cc-smart-dev-kit:verify-change` § 4 says when it may be skipped.
+
+**Pushes cost CI, so time them.** This is the one home for the rule.
+
+- **Before the pull request opens,** a push is a free backup: make it as often as you like.
+- **After it opens,** a push can start a CI run. Collect every fix of a round (review findings, a
+  CI failure), run the full check locally (`/cc-smart-dev-kit:verify-change` § 4), then push once.
+  Never push one fix at a time, and never use CI to find what the local check finds.
+- **One ship point for the session.** Its small fixes outside a plan
+  (`/cc-smart-dev-kit:review` defines them) and its follow-up child's work
+  (`/cc-smart-dev-kit:herdr` § Follow-up child) ship together: at the end of the turn that
+  finishes the person's request, or at once when the person says to ship now. The small fixes
+  ride on the session's own branch, never a plan branch; they get a second branch only when
+  the session's own branch already carries a reviewed change set. One pull request opens there
+  at the ship point. At that same moment the lead sends the follow-up child `ship`. Until then the
+  child commits each finding and may push its branch, a free backup.

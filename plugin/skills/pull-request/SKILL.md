@@ -12,7 +12,9 @@ release process names them there.
 **Whether one is opened, and how, comes from the workflow.** `cc-smart-dev-kit workflow show`
 prints `openPr`: `"off"` means open one only when the person asks, `"draft"` opens it as a
 draft, `"ready"` opens it ready for review. The body below is the same in every case, and one
-skill owns the rest of that policy (`/cc-smart-dev-kit:commit` § what happens by itself).
+skill owns the rest of that policy (`/cc-smart-dev-kit:commit` § what happens by itself). That
+includes the push rhythm: once the pull request is open, fixes are batched, checked locally and
+pushed once (`/cc-smart-dev-kit:commit` § Pushing).
 
 ## Three readers
 

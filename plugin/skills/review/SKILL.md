@@ -33,7 +33,8 @@ merge guard asks the person about a merge whose head commit has no record.
 **A small fix** skips the second opinion: a typo, wording, a comment, docs only (not
 instruction files: rules, skills, agents, settings, hooks), or a one-line fix inside a
 pattern already in use. This is the one definition; other skills point here. Say the
-exemption in one line.
+exemption in one line. Small fixes outside a plan wait for the session's ship point
+(`/cc-smart-dev-kit:commit` § Pushing).
 
 ## How
 
@@ -107,7 +108,8 @@ asked>`, and `agent-guard` asks the person.
   existed)? Use `general-purpose`, paste the senior engineer's instructions (the cc-smart-dev-kit
   plugin's `agents/senior-engineer.md`) into the brief, and say so.
 - **Its findings:** apply the evidence bar to each in the code. Fix only the confirmed ones
-  inside the change set; your own pass then checks the fixes. What it lists under "Not
+  inside the change set; your own pass then checks the fixes. A confirmed "Outside this change"
+  finding goes to the person at once (`/cc-smart-dev-kit:tasks` § 1). What it lists under "Not
   reached", read yourself, or write it down as not verified in the pull request.
 - When it returns, run `git status --short` and revert anything it changed (it has edit tools,
   and so does a stand-in), and say so.

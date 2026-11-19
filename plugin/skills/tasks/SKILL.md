@@ -31,12 +31,46 @@ on. Nothing else is a deploy task: a follow-up or a teammate's setup is not.
 **A finding.** Does it belong to the plan (the code the plan changes, or anything that would make
 its result wrong)? Found while planning, it goes into the design and the phases. Found while
 building, it becomes a task under the phase that owns its files, done before the plan closes.
-Only a finding **outside** the plan leaves it: the main session files a GitHub issue, and a
-subagent lists the finding in its report. With issues off, or where `issue file` refuses, the
-finding goes in the end-of-turn summary. To file one:
-`cc-smart-dev-kit issue file --title "<title>" --body-file - --fingerprint <stable key>`, the
-body on standard input. The same fingerprint updates the issue it filed. Read the text first:
-its secret screen knows only common shapes.
+Only a finding **outside** the plan leaves it, and it follows these steps.
+
+1. **Found.** The main session meets it: its own, or one in a builder's `Report:`, a reviewer's
+   "Outside this change" or a rules-maintainer's "Follow-ups for the caller". A subagent, and any
+   Herdr child (plan or follow-up), never asks, files or starts anything: it lists the finding in
+   its report (`herdr report` for a child). The lead asks when it reads that report.
+2. **Inside a held plan?** When the finding's files are in a plan that is held (the lead's own,
+   or one handed to a plan child, live or gone), it is inside that plan and no follow-up: it
+   becomes a task there, and nobody is asked. With a live plan child, send it the finding so it
+   makes the task; otherwise create the task yourself (`task_create`, `parent` the plan's `#n`).
+   The task is the record; an issue is optional. A held plan that is finished (its plan task
+   closed, its pull request open) takes no task: the store refuses it. Ask the finding as below
+   like any other. On a yes: if that pull request is this session's, it is a late fix on its
+   branch, pushed once by the batch rule (`/cc-smart-dev-kit:commit` § Pushing); if not, file it,
+   and it goes to the follow-up child once that pull request has merged and its files are free.
+   **Outside every plan: ask at once**, one finding per `AskUserQuestion`: what is wrong, its
+   `file:line`, what it costs. The options, the recommended one first, only those that fit:
+   - **Send it to the follow-up child**, when this lead's follow-up child for this repository is
+     in a state `herdr send` accepts.
+   - **Start a follow-up child**, when none is live. Say that it costs one full session.
+   - **File it only**, as the steps below say. A blocked follow-up child offers only this one
+     (step 4); a no is this too.
+3. **On a yes, file first, then start or send.** When issues work, file it
+   (`cc-smart-dev-kit issue file --title "<title>" --body-file - --fingerprint <stable key>`, the
+   body on standard input; the same fingerprint updates the issue it filed, so `updated #n` means
+   it is already known: send nothing twice). Read the text first: its secret screen knows only
+   common shapes. With issues off, or where `issue file` refuses, there is no issue number: say so
+   in the end-of-turn summary. Then start the child or send to it. The commands, the one-child
+   gate, the send text and when the child ships are in `/cc-smart-dev-kit:herdr` § Follow-up
+   child and `/cc-smart-dev-kit:commit` § Pushing.
+4. **A blocked follow-up child** waits for the person in its pane, so a send is refused. Offer
+   "file it only" and say where it waits (`hc attach <terminal>`). The issue stays filed, and you
+   send it the next time you see the child idle, working or done. Never relay its question.
+   **A child in the error state** gets neither a send nor a start: tell the person to look at
+   its pane.
+5. **No child possible** (not in a Herdr terminal, a plan-mode lead, a refused start): file it,
+   or put it in the summary, and say why.
+6. **Away:** `AskUserQuestion` is denied. Park one `question` for each finding, with the same
+   options (`/cc-smart-dev-kit:user-unavailable`); a yes on return goes through step 3
+   (`/cc-smart-dev-kit:user-available`).
 
 ## 2. Create
 

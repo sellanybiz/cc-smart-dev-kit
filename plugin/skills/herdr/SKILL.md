@@ -106,6 +106,58 @@ does not report blocked). If the person asks where a child waits, name it and it
 (`hc attach <terminal>`); raw attach is not an agent action. A child's report never
 stands in for the person's answer.
 
+## Follow-up child
+
+One session that works every follow-up of this lead and repository, in one worktree, on one pull
+request at a time. When to start or send, and what to ask first: `/cc-smart-dev-kit:tasks` § 1,
+the finding rule. Here are the commands.
+
+```sh
+cc-smart-dev-kit herdr start --followup [--issue <n>]... --model sonnet --effort high --mode default -- "<finding>"
+cc-smart-dev-kit herdr send <terminal> "Follow-up [#n]: <finding> [files now held: …]"
+```
+
+- **One for each lead and repository.** The start is refused while one is live; the refusal names
+  its terminal, so use `send`. In the error state it says to look at the pane. It is also refused
+  when an ended follow-up child left a branch with commits that are neither on the default branch
+  nor in a merged pull request: the refusal names its worktree and branch. It needs a known
+  default branch (fix: `git remote set-head origin --auto`). `--issue` repeats and works only with
+  `--followup`; it is refused with `--plan`, `--task`, `--independent` and `--on`. Name the issue
+  filed for the finding; with issues refused, leave it out.
+- **Send** text is `Follow-up [#n]: <finding>`, plus `[files now held: …]` when a plan was handed
+  out after the start. `send` accepts an idle, working or done child. Wait for a new child's first
+  status before the first send: a null status is refused as blocked.
+- **What the child does** (its brief holds the steps): it resets its worktree to the default
+  branch only when that branch has no commits of its own and the tree is clean. Before each
+  finding it reads its pull request's state: open, add to it; merged, it compares HEAD with the
+  pull request's head commit (`gh pr view --json headRefOid`). Equal: it resets to the default
+  branch. Different: it makes a new branch from the default branch and moves the unshipped
+  commits onto it (`git cherry-pick <pr head>..HEAD`), never dropping them; this also holds
+  after a squash merge. A pull request closed without a merge never resets: the child keeps its
+  branch and opens a new pull request from it at the next `ship`. It never edits a file a held plan holds; it reports that
+  finding instead, and the lead treats it as inside that plan. A small fix is fixed, checked and
+  reviewed; a bigger one goes to plan mode, approved by the person in its pane. It makes one
+  commit for each finding, marks its issue fixed and reports after each finding. It may push its
+  branch only while it has no open pull request (a free backup); with one open it pushes only on
+  `ship`. Its own findings go in its report: it never asks, files or starts.
+- **Ship.** At the session's ship point (`/cc-smart-dev-kit:commit` § Pushing) the lead sends
+  `herdr send <terminal> "ship"`. Only then does the child run the full check, then open its pull
+  request or push to its open one, once, as `workflow show` says (the `Fixes` lines from
+  `issue fixed`). A `ship` with nothing to ship is answered "nothing to ship" in its report; one
+  that arrives mid-finding is done after that finding.
+  - **A blocked child** cannot take it: tell the person where it waits (`hc attach <terminal>`)
+    and save a task note on your work (or a loose task) "send ship to <terminal>". The next time
+    you see the child idle, working or done, send it. A child in the error state: tell the person
+    to look at its pane.
+  - **Away:** park the send as an `action` with its exact command
+    (`/cc-smart-dev-kit:user-unavailable`).
+- **It never stops on its own.** `herdr stop <terminal>` ends it. The start's orphaned-branch
+  refusal sees only ended children Herdr still lists; after `herdr stop` it cannot see that
+  child's unshipped work, so ship before you stop it. `herdr wait --all` does not wait
+  for it, and `herdr list` shows it as a follow-up.
+- **A plan child and a follow-up child never start one.** The start is refused in any child
+  terminal.
+
 ## Stop or recover
 
 A plan whose child is gone restarts with `cc-smart-dev-kit herdr start --plan <slug>`: the child
