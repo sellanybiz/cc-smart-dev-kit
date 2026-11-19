@@ -31,7 +31,7 @@ side effects. Record the plan's starting commit (`base`) and its `branch` on its
 blocker's merge and a held plan's files from them. Check each phase's files,
 contracts and blockers. Set `blocked_by` only for a real dependency or a shared file;
 disjoint phases run together. Noted work that holds nothing is `non-blocking`, and a
-follow-up is a task in its plan or an issue (`/cc-smart-dev-kit:tasks`), never a blocker. Batch small same-shape edits into one phase
+follow-up inside the plan is a task in it, never a blocker (one outside it: `/cc-smart-dev-kit:tasks` § 1). Batch small same-shape edits into one phase
 dispatch. Scale dispatches to the work: one for a small fix, two to four for a few independent
 parts, and up to the session cap for a large plan with clearly divided files. Model and effort
 per job: `/cc-smart-dev-kit:subagent-decision` § The lead's judgment.
@@ -122,7 +122,8 @@ review. Keep the reviewed head unchanged until it returns.
 
 Verify findings against the code; a design finding meets the evidence bar as
 `../review/references/axes.md` § Design findings says. Record both verdicts and evidence on the task. Missing
-verdicts or unresolved material findings do not pass the gate.
+verdicts or unresolved material findings do not pass the gate. A finding outside the plan, in a
+report or a review, goes to the person at once (`/cc-smart-dev-kit:tasks` § 1).
 
 ## 4. Fix with the same builder, then escalate
 
@@ -176,10 +177,13 @@ Review cross-phase behavior, spec compliance and quality. Do one fix pass for co
 check once in the main session (`/cc-smart-dev-kit:verify-change` § 4). Do not declare
 success while a material defect remains; record the blocker and remaining work.
 
-The one pull request of the plan opens after this review passes, as `openPr` and the
-person's permissions allow (`/cc-smart-dev-kit:commit`, `/cc-smart-dev-kit:pull-request`).
-Include phase verdicts, final review and real checks. Close the plan with evidence and archive its
-design as the plan skill describes. Remove only merged, finished worktrees and branches.
+Once the review and the full check pass, the plan's archive is the last commit on the plan
+branch: the plan file and its research move to `archive/` (`/cc-smart-dev-kit:plan-task` § 8).
+Then the one pull request of the plan opens, as `openPr` and the person's permissions allow
+(`/cc-smart-dev-kit:commit`, `/cc-smart-dev-kit:pull-request`). Include phase verdicts, final
+review and real checks. A fix after it opens (a late review finding, a CI failure) follows the
+batch rule in `/cc-smart-dev-kit:commit` § Pushing. Close the plan task with evidence after the
+merge. Remove only merged, finished worktrees and branches.
 After that `task_done`, start the next queued plan yourself (a plan child never does: § Lead +
 children and coordinator modes); until then it stays queued, with its phases already laid. A plan nobody laid is a fresh plan task from
 `/cc-smart-dev-kit:plan-task`, never more phases on the closed one.

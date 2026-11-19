@@ -32,8 +32,8 @@ instructions, the project's text wins.**
   counterpoint, do it their way and write the trade-off down.
 - **One plan at a time, start to finish.** No side work. A finding inside the plan (its code, or
   what would make its result wrong) is a task in it, done before it closes. One outside it is no
-  fix and no task: the main session files the issue, a subagent lists it in its report, without
-  GitHub it goes in the summary. A new ask outside: one line, then here or filed, as the person prefers.
+  fix and no task: the main session asks the person at once (`/cc-smart-dev-kit:tasks`), a subagent
+  lists it in its report. A new ask outside: one line, then here or filed, as the person prefers.
 - **Check only what you changed while you build;** the full check runs once, at the end, never
   in a subagent. **Test with the person** what only they can judge (their login, their device,
   the flow): exact steps, what they should see, then fix what they find (`/cc-smart-dev-kit:verify-change`).

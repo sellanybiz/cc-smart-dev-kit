@@ -54,6 +54,9 @@ cc-smart-dev-kit user park --kind question "Which …?" --option "A" --option "B
 cc-smart-dev-kit user park --kind action "Push the branch" --command "<the exact command>"
 ```
 
+A finding outside the plan, found while away, is a parked `question` too: its options are the
+ones the finding rule lists (`/cc-smart-dev-kit:tasks` § 1).
+
 When unsure whether a choice is easy to undo, it is the person's: park a `question`.
 
 ## 3. The hooks hold the line
