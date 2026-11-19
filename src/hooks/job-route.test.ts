@@ -17,7 +17,7 @@ import {
 import { dirname, join } from "node:path";
 import { findGitBash, GIT_BASH_INSTALLS, GIT_BASH_VAR } from "../cli/git-bash";
 import { cliPaths } from "../cli/paths";
-import { runWeight, type WeightSource } from "../jobs/classify";
+import { classifyHeavyCommand, runWeight, type WeightSource } from "../jobs/classify";
 import { HOOK_NAMES } from "../jobs/git-hooks";
 import { mergeKinds } from "../jobs/kinds";
 import { OWNED_FOLDER_MARK } from "../setup/managed-folder";
@@ -1342,5 +1342,36 @@ describe.skipIf(!NATIVE_WINDOWS)("on native Windows, the real platform", () => {
     const world = worldWithHooks({ "pre-push": HEAVY_HOOK, "pre-commit": HEAVY_HOOK });
     expect(gitRewrite(world, "git push")).toBeNull();
     expect(gitRewrite(world, 'git add -A && git commit -m "x"')).toBeNull();
+  });
+});
+
+describe("the tool reader reads a script file: the route's answers are the same as before", () => {
+  // `bash x.sh "…"` runs a script file: it is no heavy command and no routed line, as before
+  // the tool reader learned to follow a shell to the file it is given (`src/shell/tool.ts`).
+  it("npx tsc --noEmit is routed as a tsc run, exactly", () => {
+    expect(routeHeavyCommand("npx tsc --noEmit", KINDS, SHELL, SOURCE)).toEqual({
+      command: `${LAUNCHER} job run --kind tsc -- npx tsc --noEmit`,
+      kind: "tsc",
+    });
+  });
+
+  it("a shell given a script file is never routed, whatever its words say", () => {
+    for (const line of [
+      'bash x.sh "a; git push -f"',
+      'bash x.sh "npx tsc --noEmit"',
+      "bash -o pipefail x.sh 'bunx vitest run'",
+      "source x.sh 'bunx tsc'",
+      "node deploy.js 'bunx tsc'",
+    ]) {
+      expect({ line, routed: routeHeavyCommand(line, KINDS, SHELL, SOURCE) }).toEqual({
+        line,
+        routed: null,
+      });
+    }
+  });
+
+  it("PowerShell: npx tsc is read as the same tsc run", () => {
+    expect(classifyHeavyCommand("npx tsc", KINDS, SOURCE, "powershell")).toBe("tsc");
+    expect(runWeight("npx tsc", KINDS, SOURCE)).toEqual({ weight: "heavy", kind: "tsc" });
   });
 });

@@ -42,13 +42,15 @@ import { detectIndent, isObject } from "../setup/managed-json";
 import { parseUserJson } from "../setup/user-json";
 import { atomicWrite, backupFile, fileMode, realTarget } from "../setup/write";
 import { deployTasksDir, envFolder } from "../tasks/deploy/files";
-import { DEPLOY_ENVS } from "../tasks/deploy/format";
+import { DEPLOY_ENVS, type DeployEnv } from "../tasks/deploy/format";
 import { clashNote, workflowClashes } from "../workflow/clashes";
 import { type Workflow, workflowDefaults } from "../workflow/schema";
 import {
   CHECKS_SINCE,
   ccSmartDevKitConfigSchema,
+  DEPLOY_GUARD_SINCE,
   DEPLOY_TASKS_SINCE,
+  type DeployCommandEntry,
   IGNORED_TASK_FIELDS,
   JOB_KIND_KEYS_SINCE,
   OWN_HOOK_NAMES_SINCE,
@@ -66,6 +68,9 @@ import {
 } from "./config";
 import { lowestAllowed } from "./version-range";
 
+/** `tasks.deployCommands`: the commands that deploy to each environment. */
+export type DeployCommandLists = Partial<Record<DeployEnv, DeployCommandEntry[]>>;
+
 /** One question's answer, as the flags and the terminal gave it. */
 export interface ProjectInitAnswers {
   /** The branch a new worktree starts from when no prefix of `bases` matches. */
@@ -80,6 +85,12 @@ export interface ProjectInitAnswers {
    * form does not show the field yet.
    */
   checks?: { fast: string } | null;
+  /**
+   * The project's deploy commands, as `tasks.deployCommands`; `{}` (or only empty lists) for
+   * none, and the field goes; left out (`undefined`) to leave the file's own value exactly as
+   * it is — the portal's form does not show the field.
+   */
+  deployCommands?: DeployCommandLists;
   guards: {
     /** Refuse an edit in the main checkout itself. */
     guardMainFolder: boolean;
@@ -250,6 +261,8 @@ export function requiresFloor(
   if (Object.hasOwn(file, "checks")) needs.push(CHECKS_SINCE);
   if (Object.hasOwn(file, "tasks")) needs.push(TASKS_SINCE);
   if (isObject(file.tasks) && Object.hasOwn(file.tasks, "envs")) needs.push(DEPLOY_TASKS_SINCE);
+  if (isObject(file.tasks) && Object.hasOwn(file.tasks, "deployCommands"))
+    needs.push(DEPLOY_GUARD_SINCE);
   // A project that uses deploy tasks (their folders, or the deploy skill's block) needs the
   // plugin that reads them: a 4.x plugin shows nothing of them, and the floor makes it say
   // "update" instead.
@@ -478,6 +491,19 @@ export function planProjectInit(
   if (answers.checks !== undefined) {
     if (answers.checks === null) delete next.checks;
     else next.checks = { fast: answers.checks.fast };
+  }
+  // The same rule as `checks`: `undefined` leaves the file's own lists, no list takes the field
+  // out, and a `tasks` object that held only that field goes with it.
+  if (answers.deployCommands !== undefined) {
+    const tasks: Record<string, unknown> = isObject(next.tasks) ? { ...next.tasks } : {};
+    const had = Object.hasOwn(tasks, "deployCommands");
+    const lists = Object.fromEntries(
+      Object.entries(answers.deployCommands).filter(([, list]) => list.length > 0),
+    );
+    if (Object.keys(lists).length > 0) tasks.deployCommands = lists;
+    else delete tasks.deployCommands;
+    if (Object.keys(tasks).length > 0) next.tasks = tasks;
+    else if (had) delete next.tasks;
   }
   if (answers.guards.sessionNames) next.sessionNames = true;
   else delete next.sessionNames;

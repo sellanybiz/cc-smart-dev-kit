@@ -412,10 +412,11 @@ function onEvent(event: string, subjects: Array<string | null>): string {
 /**
  * A plugin hook that only answers when the project sets one of its fields: while that field
  * is unset the hook is silent, so a project hook on its event is no second copy of it.
- * `verify-gate` answers only with `checks.fast`.
+ * `verify-gate` answers only with `checks.fast`; `deploy-guard` only with `tasks.deployCommands`.
  */
 const OPT_IN_HOOKS: Record<string, (config: CcSmartDevKitConfig) => boolean> = {
   "verify-gate": (config) => config.checks !== undefined,
+  "deploy-guard": (config) => config.tasks?.deployCommands !== undefined,
 };
 
 /**
@@ -562,6 +563,30 @@ function requiresLines(
       fix: byDeploy
         ? `${COMMAND} project init raises it to "${needed.floor}"`
         : `${COMMAND} project init (or any ${COMMAND} workflow set … --project) raises it to "${needed.floor}"`,
+    },
+  ];
+}
+
+/**
+ * One `·` line when the project has a deploy skill (the one `project init` finds: a file that
+ * holds the kit's block, or a top skill that names a deploy) but lists no `tasks.deployCommands`:
+ * the deploy guard has nothing to ask about, which is no failure, only a gap a person may want
+ * to close. A skill folder that cannot be read says nothing here: `deployBlockLines` names it.
+ */
+function deployCommandsLines(config: CcSmartDevKitConfig | null, root: string): ProjectLine[] {
+  if (config === null || config.tasks?.deployCommands !== undefined) return [];
+  try {
+    const found = findDeploySkills(root);
+    if (found.holders.length === 0 && found.named.length === 0) return [];
+  } catch {
+    return [];
+  }
+  return [
+    {
+      ok: true,
+      info: true,
+      text: "project: the project has a deploy skill but lists no deploy commands in tasks.deployCommands, so the deploy guard never asks before a deploy",
+      fix: `${COMMAND} project init asks for the commands`,
     },
   ];
 }
@@ -944,6 +969,7 @@ export async function projectChecks(
   lines.push(...(await issuesChecks({ cwd: checkout.root, env, gh, paths })));
   lines.push(...(await projectTaskChecks(checkout.root, env)));
   lines.push(...deployBlockLines(checkout.root, usesDeployTasks));
+  lines.push(...deployCommandsLines(config, checkout.root));
   lines.push(...planCapChecks(checkout.root, env, paths, config));
   return lines;
 }

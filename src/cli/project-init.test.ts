@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import { COMMAND } from "../build-info/names";
 import { parseCcSmartDevKitConfig } from "../project/config";
 import { staleBlocks } from "../project/deploy-skill";
+import type { DeployEnv } from "../tasks/deploy/format";
 import { hookEnv, makeRepo } from "../testing/hooks";
 import { subprocessGuard } from "../testing/port-guard";
 import { cleanGitEnv, git, tempDir } from "../testing/temp";
@@ -29,6 +30,9 @@ import {
 import { createOut, type Sink } from "./ui/out";
 import { createPrompts, type Prompts } from "./ui/prompt";
 import { detectTerminal, type Terminal } from "./ui/terminal";
+
+/** Both environments: a project with no tasks.envs. */
+const BOTH_ENVS: DeployEnv[] = ["staging", "prod"];
 
 const PLAIN: Terminal = detectTerminal({ env: {}, isTTY: false, platform: "linux" });
 const RICH: Terminal = detectTerminal({ columns: 100, env: {}, isTTY: true, platform: "linux" });
@@ -456,16 +460,18 @@ describe("the questions on a terminal", () => {
 
   test("UX-12: Enter on every question keeps every default; each question is counted, with its default", async () => {
     const { prompts, shown } = scripted([]);
-    expect(askedAnswers(prompts, DEFAULTS)).toEqual(DEFAULTS);
+    expect(askedAnswers(prompts, DEFAULTS, BOTH_ENVS)).toEqual({ ...DEFAULTS, deployCommands: {} });
     expect(shown).toEqual([
-      "[1/8] Base branch: the branch a new worktree starts from [main] ",
-      '[2/8] Bases for other branch prefixes, as prefix=base,prefix=base ("none" for none) [hotfix/=main,release/=main] ',
-      '[3/8] Protected branches: the git guard asks before a push to these, comma separated ("none" for none) [main] ',
-      '[4/8] The fast check a session runs before it stops: one command ("none" for none) [none] ',
-      '[5/8] Workflow policy: what happens by itself after a step, as openPr=draft,autoCommit=true,alerts.usagePercent=90 ("none" for none) ',
-      "[6/8] Refuse edits in the main checkout itself, so every change goes in a worktree? [Y/n] ",
-      "[7/8] Name each session after its task? [Y/n] ",
-      "[8/8] Send heavy commands (type checks, test runs, builds) through the machine's job queue, so they take turns? [y/N] ",
+      "[1/9] Base branch: the branch a new worktree starts from [main] ",
+      '[2/9] Bases for other branch prefixes, as prefix=base,prefix=base ("none" for none) [hotfix/=main,release/=main] ',
+      '[3/9] Protected branches: the git guard asks before a push to these, comma separated ("none" for none) [main] ',
+      '[4/9] The fast check a session runs before it stops: one command ("none" for none) [none] ',
+      '[5/9] Workflow policy: what happens by itself after a step, as openPr=draft,autoCommit=true,alerts.usagePercent=90 ("none" for none) ',
+      "[6/9] Refuse edits in the main checkout itself, so every change goes in a worktree? [Y/n] ",
+      "[7/9] Name each session after its task? [Y/n] ",
+      "[8/9] Send heavy commands (type checks, test runs, builds) through the machine's job queue, so they take turns? [y/N] ",
+      "[9/9] A command that deploys to staging (Enter when done) ",
+      "[9/9] A command that deploys to prod (Enter when done) ",
     ]);
   });
 
@@ -480,7 +486,7 @@ describe("the questions on a terminal", () => {
       "no",
       "yes",
     ]);
-    const after = askedAnswers(prompts, DEFAULTS);
+    const after = askedAnswers(prompts, DEFAULTS, BOTH_ENVS);
     expect(after.base).toBe("dev");
     expect(after.bases).toEqual({ "release/": "main" });
     expect(after.protectedBranches).toEqual([]);
@@ -491,18 +497,18 @@ describe("the questions on a terminal", () => {
 
   test('"none" on the fast check writes none: the field goes', () => {
     const { prompts } = scripted(["main", null, null, "none"]);
-    expect(askedAnswers(prompts, { ...DEFAULTS, checks: { fast: "bun run check" } }).checks).toBe(
-      null,
-    );
+    expect(
+      askedAnswers(prompts, { ...DEFAULTS, checks: { fast: "bun run check" } }, BOTH_ENVS).checks,
+    ).toBe(null);
   });
 
   test("an answer that is not understood is asked again once, with the reason", async () => {
     const { prompts, shown } = scripted([null, "release=dev", "release/=dev"]);
-    expect(askedAnswers(prompts, DEFAULTS).bases).toEqual({ "release/": "dev" });
+    expect(askedAnswers(prompts, DEFAULTS, BOTH_ENVS).bases).toEqual({ "release/": "dev" });
     expect(shown.slice(1, 4)).toEqual([
-      '[2/8] Bases for other branch prefixes, as prefix=base,prefix=base ("none" for none) [hotfix/=main,release/=main] ',
+      '[2/9] Bases for other branch prefixes, as prefix=base,prefix=base ("none" for none) [hotfix/=main,release/=main] ',
       '! Not understood: "release=dev" is not prefix=base (the prefix ends with "/").\n',
-      '[2/8] Bases for other branch prefixes, as prefix=base,prefix=base ("none" for none) [hotfix/=main,release/=main] ',
+      '[2/9] Bases for other branch prefixes, as prefix=base,prefix=base ("none" for none) [hotfix/=main,release/=main] ',
     ]);
   });
 });
@@ -820,9 +826,12 @@ describe("the run", () => {
 
   test("the questions, answered on a terminal, are what gets written", async () => {
     const repo = makeRepo();
-    // The base, Enter on the seven others, then a yes to the write.
+    // The base, Enter on the seven others and on the two deploy-command questions, then a yes
+    // to the write.
     const { prompts, shown } = scripted([
       "integration",
+      null,
+      null,
       null,
       null,
       null,
@@ -834,7 +843,7 @@ describe("the run", () => {
     ]);
     const run = context(repo, { prompts });
     expect(await runProjectInit(["--no-deploy-block"], run.context, runner({}))).toBe(0);
-    expect(run.lines[2]).toBe("8 questions. Enter keeps the answer in [brackets].");
+    expect(run.lines[2]).toBe("9 questions. Enter keeps the answer in [brackets].");
     expect(
       (
         JSON.parse(readFileSync(join(repo, ".claude", "cc-smart-dev-kit.json"), "utf8")) as {
@@ -1162,7 +1171,7 @@ describe("the deploy skill", () => {
     const config = JSON.parse(readFileSync(join(repo, ".claude", "cc-smart-dev-kit.json"), "utf8"));
     expect(config.requires).toBe(">=5.0");
     expect(run.lines).toContain(
-      "· .claude/skills/deploy/SKILL.md  9 to change in its deploy block",
+      "· .claude/skills/deploy/SKILL.md  10 to change in its deploy block",
     );
     expect(run.lines).toContain("~ .claude/skills/deploy/SKILL.md: changed");
     expect(run.lines).toContain("✓ Done: 2 files written.");
@@ -1188,7 +1197,7 @@ describe("the deploy skill", () => {
   test("several deploy skills: one question, asked with the others; the answer picks one", async () => {
     const repo = repoWith({ "deploy-api/SKILL.md": OWN_TEXT, "deploy-web/SKILL.md": OWN_TEXT });
     // Eight Enter answers for the numbered questions, then the skill, then the final yes.
-    const { prompts, shown } = scripted([...Array(8).fill(null), "2", "y"]);
+    const { prompts, shown } = scripted([...Array(10).fill(null), "2", "y"]);
     const run = context(repo, { prompts });
     expect(await runProjectInit([], run.context, runner({}))).toBe(0);
     expect(shown.join("")).toContain(
@@ -1200,7 +1209,7 @@ describe("the deploy skill", () => {
 
   test("several deploy skills, answered none: no block is written anywhere", async () => {
     const repo = repoWith({ "deploy-api/SKILL.md": OWN_TEXT, "deploy-web/SKILL.md": OWN_TEXT });
-    const { prompts } = scripted([...Array(8).fill(null), null, "y"]);
+    const { prompts } = scripted([...Array(10).fill(null), null, "y"]);
     const run = context(repo, { prompts });
     expect(await runProjectInit([], run.context, runner({}))).toBe(0);
     expect(skillText(repo, "deploy-api/SKILL.md")).toBe(OWN_TEXT);
@@ -1305,7 +1314,9 @@ describe("the deploy skill", () => {
       ),
     ).toBe(0);
     expect(run.lines.join("\n")).not.toContain("is also in");
-    expect(skillText(repo, "ops/SKILL.md")).toContain("## Deploy tasks\n\nSteps owed");
+    expect(skillText(repo, "ops/SKILL.md")).toContain(
+      "## Deploy tasks\n\nWhen `tasks.deployCommands`",
+    );
   });
 
   test("a skills folder linked in from outside the checkout is named, not reported as missing", async () => {
@@ -1332,7 +1343,7 @@ describe("the deploy skill", () => {
   test("one named skill, on a terminal: asked once, yes by default; a no drops only the skill write", async () => {
     const yes = repoWith({ "deploy/SKILL.md": OWN_TEXT });
     // Eight Enter answers, the skill question (Enter: yes), then the final yes.
-    const asked = scripted([...Array(8).fill(null), null, "y"]);
+    const asked = scripted([...Array(10).fill(null), null, "y"]);
     expect(
       await runProjectInit([], context(yes, { prompts: asked.prompts }).context, runner({})),
     ).toBe(0);
@@ -1342,7 +1353,7 @@ describe("the deploy skill", () => {
     expect(skillText(yes, "deploy/SKILL.md")).toContain("<!-- cc-smart-dev-kit:begin -->");
 
     const no = repoWith({ "deploy/SKILL.md": OWN_TEXT });
-    const declined = scripted([...Array(8).fill(null), "n", "y"]);
+    const declined = scripted([...Array(10).fill(null), "n", "y"]);
     const run = context(no, { prompts: declined.prompts });
     expect(await runProjectInit([], run.context, runner({}))).toBe(0);
     expect(skillText(no, "deploy/SKILL.md")).toBe(OWN_TEXT);
@@ -1355,7 +1366,7 @@ describe("the deploy skill", () => {
   test("an update of a block already there asks nothing about the skill", async () => {
     const old = `<!-- cc-smart-dev-kit:begin -->\n## Deploy tasks\nold\n<!-- cc-smart-dev-kit:end -->\n`;
     const repo = repoWith({ "deploy/SKILL.md": old });
-    const { prompts, shown } = scripted([...Array(8).fill(null), "y"]);
+    const { prompts, shown } = scripted([...Array(10).fill(null), "y"]);
     expect(await runProjectInit([], context(repo, { prompts }).context, runner({}))).toBe(0);
     expect(shown.join("")).not.toContain("Add the kit's deploy-task section");
     expect(skillText(repo, "deploy/SKILL.md")).not.toContain("\nold\n");
@@ -1473,7 +1484,7 @@ describe("a project with no deploy skill gets one (D8)", () => {
   test("on a terminal: asked once with the other questions, yes by default; the file is created", async () => {
     const repo = makeRepo();
     // Eight Enter answers, the skill question (Enter: yes), then the final yes.
-    const asked = scripted([...Array(8).fill(null), null, "y"]);
+    const asked = scripted([...Array(10).fill(null), null, "y"]);
     const run = context(repo, { prompts: asked.prompts });
     expect(await runProjectInit([], run.context, runner({}))).toBe(0);
     const shown = asked.shown.join("");
@@ -1499,7 +1510,7 @@ describe("a project with no deploy skill gets one (D8)", () => {
 
   test("a no to the question drops only the skill: no file, requires stays low, the rest is written", async () => {
     const repo = makeRepo();
-    const asked = scripted([...Array(8).fill(null), "n", "y"]);
+    const asked = scripted([...Array(10).fill(null), "n", "y"]);
     const run = context(repo, { prompts: asked.prompts });
     expect(await runProjectInit([], run.context, runner({}))).toBe(0);
     expect(existsSync(join(repo, ".claude", "skills"))).toBe(false);
@@ -1513,7 +1524,7 @@ describe("a project with no deploy skill gets one (D8)", () => {
     expect(await runProjectInit(["--yes"], run.context, runner({}))).toBe(0);
     expect(readFileSync(newSkill(repo), "utf8")).toContain("name: deploy\n");
     expect(configOf(repo).requires).toBe(">=5.0");
-    expect(run.lines).toContain(`· ${NEW}  new file, 25 lines`);
+    expect(run.lines).toContain(`· ${NEW}  new file, 27 lines`);
     expect(run.lines).toContain("  + name: deploy");
     expect(run.lines).toContain("  + ## This project's deploy steps");
     expect(run.lines).toContain(`+ ${NEW}: created`);
@@ -1524,7 +1535,7 @@ describe("a project with no deploy skill gets one (D8)", () => {
     const repo = makeRepo();
     const run = context(repo);
     expect(await runProjectInit(["--dry-run"], run.context, runner({}))).toBe(0);
-    expect(run.lines).toContain(`· ${NEW}  new file, 25 lines`);
+    expect(run.lines).toContain(`· ${NEW}  new file, 27 lines`);
     expect(run.lines).toContain("  + ## Deploy tasks");
     expect(run.lines).toContain("· A real run writes 2 files.");
     expect(existsSync(join(repo, ".claude", "skills"))).toBe(false);
@@ -1535,7 +1546,7 @@ describe("a project with no deploy skill gets one (D8)", () => {
     const repo = makeRepo();
     const run = context(repo);
     expect(await runProjectInit([], run.context, runner({}))).toBe(0);
-    expect(run.lines).toContain(`· ${NEW}  new file, 25 lines`);
+    expect(run.lines).toContain(`· ${NEW}  new file, 27 lines`);
     expect(run.lines).toContain("· Nothing was written: run this on a terminal, or add --yes.");
     expect(existsSync(join(repo, ".claude"))).toBe(false);
   });
@@ -1651,5 +1662,383 @@ describe("a project with no deploy skill gets one (D8)", () => {
     const again = context(repo);
     expect(await runProjectInit(["--yes"], again.context, runner({}))).toBe(0);
     expect(again.lines).toContain("✓ Nothing to change.");
+  });
+});
+
+describe("the deploy commands (tasks.deployCommands)", () => {
+  const written = (repo: string) =>
+    JSON.parse(readFileSync(join(repo, ".claude", "cc-smart-dev-kit.json"), "utf8")) as {
+      requires: string;
+      tasks?: { envs?: string[]; deployCommands?: Record<string, unknown[]> };
+    };
+  /** One run of the flags, `--yes` and no deploy skill; the exit code and what it said. */
+  async function runFlags(repo: string, flags: string[]) {
+    const run = context(repo);
+    const code = await runProjectInit(
+      ["--yes", "--no-deploy-block", ...flags],
+      run.context,
+      runner({}),
+    );
+    return { code, lines: run.lines, errors: run.errors };
+  }
+  function seeded(file: unknown): string {
+    const repo = makeRepo();
+    mkdirSync(join(repo, ".claude"), { recursive: true });
+    writeFileSync(
+      join(repo, ".claude", "cc-smart-dev-kit.json"),
+      `${JSON.stringify(file, null, 2)}\n`,
+    );
+    return repo;
+  }
+
+  test("the flag: repeatable, split at the first =, an empty command clears; the last word of a kind is kept in order", () => {
+    expect(
+      parseFlags([
+        "--deploy-command",
+        "prod=vercel --prod",
+        "--deploy-command",
+        "staging=FOO=1 ./deploy.sh staging",
+        "--deploy-command",
+        "prod=",
+      ]),
+    ).toEqual({
+      flags: {
+        dryRun: false,
+        yes: false,
+        deployCommand: [
+          { env: "prod", command: "vercel --prod" },
+          { env: "staging", command: "FOO=1 ./deploy.sh staging" },
+          { env: "prod", command: "" },
+        ],
+      },
+    });
+  });
+
+  test("the flag: an environment that is not staging or prod, a word with no =, and no value are usage mistakes", () => {
+    expect(parseFlags(["--deploy-command", "dev=x --go"])).toEqual({
+      error:
+        '--deploy-command: "dev=x --go" is not <env>=<command>, with <env> one of staging, prod',
+    });
+    expect(parseFlags(["--deploy-command", "prod"])).toEqual({
+      error: '--deploy-command: "prod" is not <env>=<command>, with <env> one of staging, prod',
+    });
+    expect(parseFlags(["--deploy-command"])).toEqual({ error: "--deploy-command needs a value" });
+  });
+
+  test("flags write the exact field and raise requires; the same flags again change nothing", async () => {
+    const repo = makeRepo();
+    const flags = [
+      "--deploy-command",
+      "prod=vercel --prod",
+      "--deploy-command",
+      "prod=npm run deploy:prod",
+      "--deploy-command",
+      "staging=./scripts/deploy.sh staging",
+    ];
+    expect((await runFlags(repo, flags)).code).toBe(0);
+    expect(written(repo).tasks).toEqual({
+      deployCommands: {
+        prod: ["vercel --prod", "npm run deploy:prod"],
+        staging: ["./scripts/deploy.sh staging"],
+      },
+    });
+    expect(written(repo).requires).toBe(">=5.3");
+    const before = readFileSync(join(repo, ".claude", "cc-smart-dev-kit.json"), "utf8");
+    const again = await runFlags(repo, flags);
+    expect(again.lines).toContain("✓ Nothing to change.");
+    expect(readFileSync(join(repo, ".claude", "cc-smart-dev-kit.json"), "utf8")).toBe(before);
+  });
+
+  test("a flag replaces that environment's list only; without the flag the lists stay", async () => {
+    const repo = seeded({
+      requires: ">=5.3",
+      worktrees: { base: "main" },
+      tasks: { deployCommands: { prod: ["old --prod", "older --prod"], staging: ["stage it"] } },
+    });
+    expect((await runFlags(repo, ["--deploy-command", "prod=new --prod"])).code).toBe(0);
+    expect(written(repo).tasks?.deployCommands).toEqual({
+      prod: ["new --prod"],
+      staging: ["stage it"],
+    });
+    expect((await runFlags(repo, [])).code).toBe(0);
+    expect(written(repo).tasks?.deployCommands).toEqual({
+      prod: ["new --prod"],
+      staging: ["stage it"],
+    });
+  });
+
+  test("<env>= clears that list; clearing the last one takes tasks out", async () => {
+    const repo = seeded({
+      requires: ">=5.3",
+      worktrees: { base: "main" },
+      tasks: { deployCommands: { prod: ["a --prod"], staging: ["b --stage"] } },
+    });
+    expect((await runFlags(repo, ["--deploy-command", "prod="])).code).toBe(0);
+    expect(written(repo).tasks).toEqual({ deployCommands: { staging: ["b --stage"] } });
+    expect((await runFlags(repo, ["--deploy-command", "staging="])).code).toBe(0);
+    expect(written(repo)).not.toHaveProperty("tasks");
+  });
+
+  test("an environment outside tasks.envs: exit 2 with the usage, and nothing is written", async () => {
+    const repo = seeded({ worktrees: { base: "main" }, tasks: { envs: ["prod"] } });
+    const before = readFileSync(join(repo, ".claude", "cc-smart-dev-kit.json"), "utf8");
+    const run = await runFlags(repo, ["--deploy-command", "staging=./d.sh"]);
+    expect(run.code).toBe(2);
+    expect(run.errors).toHaveLength(1);
+    expect(run.errors[0]).toStartWith(
+      "--deploy-command staging=./d.sh: staging is not one of tasks.envs (prod)\n\nUsage: ",
+    );
+    expect(readFileSync(join(repo, ".claude", "cc-smart-dev-kit.json"), "utf8")).toBe(before);
+    // The environment the project does deploy to is accepted.
+    expect((await runFlags(repo, ["--deploy-command", "prod=./d.sh"])).code).toBe(0);
+  });
+
+  test("a command the schema refuses (a separator): exit 2, with the schema's own words", async () => {
+    const repo = makeRepo();
+    const run = await runFlags(repo, ["--deploy-command", "prod=npm test && vercel --prod"]);
+    expect(run.code).toBe(2);
+    expect(run.errors[0]).toStartWith(
+      '--deploy-command prod=npm test && vercel --prod: "npm test && vercel --prod" holds more than one command',
+    );
+    expect(existsSync(join(repo, ".claude", "cc-smart-dev-kit.json"))).toBe(false);
+  });
+
+  test("--help names the flag", async () => {
+    const run = context(makeRepo());
+    expect(await runProjectInit(["--help"], run.context, runner({}))).toBe(0);
+    expect(run.lines.join("\n")).toContain("--deploy-command <env>=<command>");
+  });
+
+  describe("on a terminal", () => {
+    const DEFAULTS = defaultAnswers(
+      null,
+      { defaultBranch: "main", protectedFromGithub: [], fastCheck: null },
+      { dryRun: false, yes: false },
+    );
+    /** Enter on the eight questions before the deploy ones. */
+    const EIGHT: null[] = Array(8).fill(null);
+    const STAGING = "[9/9] A command that deploys to staging (Enter when done) ";
+    const PROD = "[9/9] A command that deploys to prod (Enter when done) ";
+
+    test("each environment is asked until an empty answer; the answers are the lists", () => {
+      const { prompts, shown } = scripted([
+        ...EIGHT,
+        "./deploy.sh staging",
+        null,
+        "vercel --prod",
+        "npm run deploy:prod",
+        null,
+      ]);
+      expect(askedAnswers(prompts, DEFAULTS, BOTH_ENVS).deployCommands).toEqual({
+        staging: ["./deploy.sh staging"],
+        prod: ["vercel --prod", "npm run deploy:prod"],
+      });
+      expect(shown.slice(8)).toEqual([STAGING, STAGING, PROD, PROD, PROD]);
+    });
+
+    test("a run with tasks.envs of prod alone asks about prod alone", () => {
+      const { prompts, shown } = scripted([...EIGHT, "vercel --prod", null]);
+      expect(askedAnswers(prompts, DEFAULTS, ["prod"]).deployCommands).toEqual({
+        prod: ["vercel --prod"],
+      });
+      expect(shown.slice(8)).toEqual([PROD, PROD]);
+    });
+
+    test("the first question shows the current list: Enter keeps it and asks no more", () => {
+      const current = {
+        ...DEFAULTS,
+        deployCommands: { prod: ["vercel --prod", { script: "ship" }] },
+      };
+      const { prompts, shown } = scripted([...EIGHT]);
+      expect(askedAnswers(prompts, current, BOTH_ENVS).deployCommands).toEqual({
+        prod: ["vercel --prod", { script: "ship" }],
+      });
+      expect(shown.slice(8)).toEqual([
+        STAGING,
+        '[9/9] A command that deploys to prod (Enter keeps: "vercel --prod", {"script":"ship"}; - clears the list; a command starts a new list) ',
+      ]);
+    });
+
+    test("- on the first question clears the list; a command starts a new one", () => {
+      const current = {
+        ...DEFAULTS,
+        deployCommands: { prod: ["a --prod"], staging: ["b --stage"] },
+      };
+      const cleared = scripted([...EIGHT, null, "-"]);
+      expect(askedAnswers(cleared.prompts, current, BOTH_ENVS).deployCommands).toEqual({
+        staging: ["b --stage"],
+      });
+      const replaced = scripted([...EIGHT, "c --stage", null, null]);
+      expect(askedAnswers(replaced.prompts, current, BOTH_ENVS).deployCommands).toEqual({
+        staging: ["c --stage"],
+        prod: ["a --prod"],
+      });
+    });
+
+    test("- is a command's end only on the first question: later it is refused", () => {
+      const { prompts, shown } = scripted([...EIGHT, "tool --go", "-", null, null]);
+      expect(askedAnswers(prompts, DEFAULTS, BOTH_ENVS).deployCommands).toEqual({
+        staging: ["tool --go"],
+      });
+      expect(shown.slice(9, 12)).toEqual([
+        STAGING,
+        "! Not understood: - clears the list only on the first question.\n",
+        STAGING,
+      ]);
+    });
+
+    test("an answer the schema refuses is said, and asked once more", () => {
+      const { prompts, shown } = scripted([
+        ...EIGHT,
+        "npm test && vercel --prod",
+        "vercel --prod",
+        null,
+        null,
+      ]);
+      expect(askedAnswers(prompts, DEFAULTS, BOTH_ENVS).deployCommands).toEqual({
+        staging: ["vercel --prod"],
+      });
+      expect(shown[9]).toStartWith(
+        '! Not understood: "npm test && vercel --prod" holds more than one command or a shell construct',
+      );
+      expect(shown[10]).toBe(STAGING);
+    });
+
+    test("an answer refused twice: the question's own words said what Enter does, and the list is kept", () => {
+      const current = { ...DEFAULTS, deployCommands: { prod: ["keep --prod"] } };
+      const { prompts, shown } = scripted([...EIGHT, null, "a && b", "c && d"]);
+      expect(askedAnswers(prompts, current, BOTH_ENVS).deployCommands).toEqual({
+        prod: ["keep --prod"],
+      });
+      const KEEPS =
+        '[9/9] A command that deploys to prod (Enter keeps: "keep --prod"; - clears the list; a command starts a new list) ';
+      expect(shown.slice(9)).toEqual([
+        KEEPS,
+        '! Not understood: "a && b" holds more than one command or a shell construct (;, &&, ||, |, &, a new line, $(…), a here-doc or a group): write one plain command, such as `vercel --prod`; extra words in a run still match.\n',
+        KEEPS,
+        '! Not understood again ("c && d" holds more than one command or a shell construct (;, &&, ||, |, &, a new line, $(…), a here-doc or a group): write one plain command, such as `vercel --prod`; extra words in a run still match): none, the default.\n',
+      ]);
+    });
+
+    test("a later question refused twice ends the list with the commands so far", () => {
+      const { prompts } = scripted([...EIGHT, "ok --a", "x && y", "x && y", null]);
+      expect(askedAnswers(prompts, DEFAULTS, BOTH_ENVS).deployCommands).toEqual({
+        staging: ["ok --a"],
+      });
+    });
+
+    test("the run asks only the project's own environments (tasks.envs), and writes the exact file", async () => {
+      const repo = seeded({ worktrees: { base: "main" }, tasks: { envs: ["prod"] } });
+      const { prompts, shown } = scripted([...EIGHT, "vercel --prod", null, "y"]);
+      const run = context(repo, { prompts });
+      expect(await runProjectInit(["--no-deploy-block"], run.context, runner({}))).toBe(0);
+      expect(shown.filter((text) => text.startsWith("[9/9]"))).toEqual([PROD, PROD]);
+      expect(shown.join("")).not.toContain("staging");
+      expect(written(repo).tasks).toEqual({
+        envs: ["prod"],
+        deployCommands: { prod: ["vercel --prod"] },
+      });
+      expect(written(repo).requires).toBe(">=5.3");
+    });
+
+    test("flags together with a terminal: the flag's list is the current list the question shows", async () => {
+      const repo = makeRepo();
+      const { prompts, shown } = scripted([...EIGHT, null, null, "y"]);
+      const run = context(repo, { prompts });
+      expect(
+        await runProjectInit(
+          ["--no-deploy-block", "--deploy-command", "prod=vercel --prod"],
+          run.context,
+          runner({}),
+        ),
+      ).toBe(0);
+      expect(shown).toContain(
+        '[9/9] A command that deploys to prod (Enter keeps: "vercel --prod"; - clears the list; a command starts a new list) ',
+      );
+      expect(written(repo).tasks).toEqual({ deployCommands: { prod: ["vercel --prod"] } });
+    });
+
+    test("the run: the answers are what gets written, in the exact field", async () => {
+      const repo = makeRepo();
+      const { prompts } = scripted([
+        ...EIGHT,
+        "./deploy.sh staging",
+        null,
+        "vercel --prod",
+        null,
+        "y",
+      ]);
+      const run = context(repo, { prompts });
+      expect(await runProjectInit(["--no-deploy-block"], run.context, runner({}))).toBe(0);
+      expect(run.lines).toContain('  + tasks.deployCommands.prod: ["vercel --prod"]');
+      expect(written(repo).tasks).toEqual({
+        deployCommands: { staging: ["./deploy.sh staging"], prod: ["vercel --prod"] },
+      });
+      // Enter on everything again keeps every byte.
+      const again = scripted([...EIGHT, null, null, "y"]);
+      const second = context(repo, { prompts: again.prompts });
+      expect(await runProjectInit(["--no-deploy-block"], second.context, runner({}))).toBe(0);
+      expect(second.lines).toContain("✓ Nothing to change.");
+    });
+  });
+
+  test("--dry-run with the flag: the plan shows the field, and nothing is written", async () => {
+    const repo = makeRepo();
+    const run = context(repo);
+    expect(
+      await runProjectInit(
+        ["--dry-run", "--no-deploy-block", "--deploy-command", "prod=vercel --prod"],
+        run.context,
+        runner({}),
+      ),
+    ).toBe(0);
+    expect(run.lines).toContain('  + tasks.deployCommands.prod: ["vercel --prod"]');
+    expect(run.lines).toContain('  + requires: ">=5.3"');
+    expect(existsSync(join(repo, ".claude", "cc-smart-dev-kit.json"))).toBe(false);
+  });
+
+  test("an empty value resets the list built so far, whatever its place", () => {
+    const facts = { defaultBranch: "main", protectedFromGithub: [], fastCheck: null };
+    const answersFor = (deployCommand: { env: "prod"; command: string }[]) =>
+      defaultAnswers(null, facts, { dryRun: false, yes: true, deployCommand }).deployCommands;
+    expect(
+      answersFor([
+        { env: "prod", command: "a --x" },
+        { env: "prod", command: "" },
+      ]),
+    ).toEqual({
+      prod: [],
+    });
+    expect(
+      answersFor([
+        { env: "prod", command: "" },
+        { env: "prod", command: "a --x" },
+      ]),
+    ).toEqual({
+      prod: ["a --x"],
+    });
+    expect(
+      answersFor([
+        { env: "prod", command: "a --x" },
+        { env: "prod", command: "" },
+        { env: "prod", command: "b --y" },
+      ]),
+    ).toEqual({ prod: ["b --y"] });
+  });
+
+  test("the same two orders on the command line, with a list already in the file", async () => {
+    const repo = seeded({
+      requires: ">=5.3",
+      worktrees: { base: "main" },
+      tasks: { deployCommands: { prod: ["old --prod"] } },
+    });
+    expect(
+      (await runFlags(repo, ["--deploy-command", "prod=a --x", "--deploy-command", "prod="])).code,
+    ).toBe(0);
+    expect(written(repo)).not.toHaveProperty("tasks");
+    expect(
+      (await runFlags(repo, ["--deploy-command", "prod=", "--deploy-command", "prod=a --x"])).code,
+    ).toBe(0);
+    expect(written(repo).tasks).toEqual({ deployCommands: { prod: ["a --x"] } });
   });
 });

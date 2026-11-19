@@ -592,13 +592,69 @@ first, and exits 0. Two files with one id **and the same file name** are a crash
 the archived one wins. One id under different file names is a `duplicate-id` finding, and the
 fix is to rename one id, never to delete a file.
 
+### The deploy guard and the CI check
+
+Nothing makes a person or Claude run the gates: a deploy command typed directly, or a CI deploy on
+merge, ignores open tasks. Two rails close that, both over one pure check of the task files.
+
+**`judgeTasks`** (`release.ts`): `judgeTasks(env, scan)` returns `{ refusals, notes }` from the
+task files alone, with no git. The refusals: a blocking `before` task of `env` is open; a task
+file is broken or an id is claimed twice (`brokenRefusals`); and, for prod, the twin rules as the
+gate always had them (every open prod task is checked: a twin that names no task, or a staging
+twin still open). The notes are the open non-blocking `before` tasks. The environment refusal
+(`envRefusal`: `env` is not in `tasks.envs`) stays outside it, with the caller. `judgeBefore` is
+the environment refusal, the wrong-branch and HEAD refusals (git facts), then `judgeTasks`; an
+exact-array test (`deploy.test.ts`) pins the refusals and their order, so the extraction changed no gate.
+
+**`task release <env> --check [--json]`** is `envRefusal` plus `judgeTasks` over
+`scanDeployTasks(dir, { archive: true })` in the folder the command runs in. The checkout is
+found by `locateCheckout`, which reads no history and no refs, so a detached or shallow CI checkout works.
+`--check` with no environment, or with `--before`, `--after` or `--ref`, is a usage error (2).
+It prints `Release check: <env>`, a `fail` line for each refusal, an `info` line for each note,
+then `Ready: <env> has no open task that holds a deploy.` (0) or `Not ready: N reasons to stop. Fix
+each one, then run this again.` (1). `--json` prints `{ ok, refusals, notes }`. A project file the
+command cannot read, or a place outside git, is one line on stderr and exit 1 even with `--json`:
+a script reads the exit code. The CI step is the README's (§ Deploy tasks in CI): the kit's
+`plugin/dist/cli.js` at a pinned commit, run with `bun --no-env-file` and an empty `--config`,
+so the project's own `bunfig.toml` preload and `.env` files cannot run. It needs Bun: the task
+files are parsed with `Bun.YAML` and the version check is `Bun.semver`, so on Node every file
+would read as broken. A test copies the built `cli.js` alone to a temp folder and runs it that
+way, with a temp `HOME`, in a detached, shallow clone. In a container job git may refuse the
+checkout ("dubious ownership"): the fix is `git config --global --add safe.directory "$PWD"`.
+
+**`tasks.deployCommands`** (5.3.0) says which commands deploy. It is `{ "prod"?: Entry[],
+"staging"?: Entry[] }`; an entry is a string (one command as typed) or a `MatchRule` of the jobs
+grammar (`matchRuleSchema`). The schema refuses a string that holds more than one command (a
+separator or a shell construct, read by `shellSteps`), a string that holds none, an empty
+list or object, and a key outside `tasks.envs` (both when unset); the error path names the entry
+(`tasks.deployCommands.prod.0`). The guard turns a string into a rule when it loads
+(`rulesOfCommand`, `src/shell/tool.ts`): a package script becomes `{ script }`, a runner gives its
+tool, leading assignments and wrappers are stepped over, and the rest are the rule's tool and its
+required words. Setting the field, or listing `deploy-guard` in `ownHooks`, raises `requires` to
+`DEPLOY_GUARD_SINCE`.
+
+**The guard** (`deploy-guard`, `src/hooks/deploy-guard.ts`; the hook design is
+`docs/design/hooks.md` § The deploy guard) reads the line the classifier's way, tests each run
+against every rule, and on a match runs `envRefusal` and `judgeTasks` over the task files of the
+hook's `cwd` checkout. Refusals give one `ask` that names each problem and the way out: close the
+task with evidence, or drop it yourself in your own terminal. Notes alone never ask; no refusal
+means no answer. The guard is a rail, not a lock: it does not see a command that is not listed or
+is spelled another way (a tool's other name, `flyctl` for `fly`), a run on another machine
+(`ssh host …`, `docker run …`), `xargs` feeding the words, a deploy by an MCP tool, a platform's deploy on
+push, a branch cut before main gained a blocking task, a `cd` into another checkout, or a hand
+edit of the config or of a task file.
+
 ### The deploy-skill block
 
 `project init` keeps a short managed section in the project's own deploy skill, so the deploy
 steps and the gates sit together (`src/project/deploy-skill.ts`, its text in `deploy-block.ts`).
 The block's first line, `## Deploy tasks`, is the contract across versions: it is how a skill
 written by an older kit is still found and updated. It holds the two gate commands, the
-deploy-branch step, the close step and a pointer to `/cc-smart-dev-kit:tasks`.
+deploy-branch step, the close step, a line that says the deploy guard asks before a listed
+deploy command while that environment has work that holds a deploy (true with or without
+`tasks.deployCommands`), and a
+pointer to `/cc-smart-dev-kit:tasks`. Adding that line made every older block out of date:
+`doctor` flags it until `project init` runs.
 
 - **Find.** A deploy skill is a file under `.claude/skills/` that already holds the block, or
   whose folder name or front matter `name` has "deploy" in it; `--deploy-skill <path>` names one.
@@ -638,7 +694,10 @@ deploy-branch step, the close step and a pointer to `/cc-smart-dev-kit:tasks`.
 `doctor` prints these as "deploy tasks:" lines, each with the fix `task check`. The same group
 carries a `!` line for each `tasks` field nothing reads (fix: `project init`), a `requires`
 below `>=5.0` while deploy folders or the block exist, and a deploy-skill block that is out of
-date; a `·` line says a skills folder linked from outside the checkout is not searched.
+date; a `·` line says a skills folder linked from outside the checkout is not searched, and
+another says the project has a deploy skill but lists no `tasks.deployCommands`, so the deploy
+guard never asks (fix: `project init`, which asks for the commands: one question for each
+environment, until an empty answer, or `--deploy-command <env>=<command>`).
 
 ## The server, command and guards
 

@@ -383,6 +383,7 @@ describe("the entries, run as Claude Code runs them", () => {
   // judge a call asks (written by hand, one per guard in `GUARD_BUNDLES`).
   const CANNOT_CHECK: Record<string, string> = {
     "agent-guard": "the model this launch runs on",
+    "deploy-guard": "whether this deploy may run while a task is open",
     "git-guard": "this git command",
     "job-route": "whether this launch or heavy command may run",
     "main-folder-guard": "whether this edit belongs in a worktree",

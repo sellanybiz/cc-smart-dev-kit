@@ -7,7 +7,7 @@ var COMMAND = "cc-smart-dev-kit";
 
 // src/build-info/index.ts
 var info = {
-  version: "5.2.0",
+  version: "5.3.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -1185,6 +1185,39 @@ var PARALLEL_SWITCHES = new Set([
 ]);
 var PARALLEL_SOURCES = new Set([":::", "::::", ":::+", "::::+"]);
 var PARALLEL_LONG = [...PARALLEL_VALUED, ...PARALLEL_SWITCHES];
+
+// src/shell/tool.ts
+var PNPM_VALUED = ["--filter", "-F", "--dir", "-C", "--workspace-root"];
+var YARN_VALUED = [...PNPM_VALUED, "--cwd"];
+var BUN_COMMANDS = new Set([
+  "add",
+  "build",
+  "create",
+  "exec",
+  "i",
+  "init",
+  "install",
+  "link",
+  "outdated",
+  "patch",
+  "pm",
+  "publish",
+  "remove",
+  "repl",
+  "rm",
+  "unlink",
+  "update",
+  "upgrade"
+]);
+var SHELLS_WITH_FILES = new Set(["bash", "dash", "ksh", "sh", "zsh"]);
+var POWERSHELL_VALUED_ALIASES = new Set([
+  "-ep",
+  "-if",
+  "-o",
+  "-of",
+  "-w",
+  "-wd"
+]);
 
 // node_modules/zod/v4/core/util.js
 function getEnumValues(entries) {
@@ -7028,28 +7061,6 @@ var kindsSchema = record(string2().regex(KIND_NAME, "a kind's name is lower-case
 
 // src/jobs/classify.ts
 var CD_OPTIONS = new Set(["-L", "-P", "-e", "-@", "--"]);
-var PNPM_VALUED = ["--filter", "-F", "--dir", "-C", "--workspace-root"];
-var YARN_VALUED = [...PNPM_VALUED, "--cwd"];
-var BUN_COMMANDS = new Set([
-  "add",
-  "build",
-  "create",
-  "exec",
-  "i",
-  "init",
-  "install",
-  "link",
-  "outdated",
-  "patch",
-  "pm",
-  "publish",
-  "remove",
-  "repl",
-  "rm",
-  "unlink",
-  "update",
-  "upgrade"
-]);
 var SED_LONG = new Set([
   "--debug",
   "--null-data",

@@ -1333,3 +1333,28 @@ describe("the hook asks before a command that destroys work", () => {
     });
   });
 });
+
+describe("the tool reader reads a script file: the git guard's answers are the same as before", () => {
+  // `bash x.sh "…"` runs a script file: the guard never read its quoted word as a command, and
+  // a runner or a script file is no git. These answers were the guard's before the tool reader
+  // learned to follow a shell to the file it is given (`src/shell/tool.ts`).
+  it.each([
+    ["npx tsc --noEmit"],
+    ['bash x.sh "a; git push -f"'],
+    ["bash -o pipefail x.sh 'git push -f'"],
+    ["source x.sh 'git reset --hard'"],
+    ["node deploy.js 'git push -f'"],
+    ["python3 deploy.py 'git push -f'"],
+  ])("%s asks nothing", (command) => {
+    expect(guard(command, onFeature)).toBeUndefined();
+    expect(guard(command, onFeature, true, "bash")).toBeUndefined();
+  });
+
+  it("PowerShell: npx tsc asks nothing", () => {
+    expect(guard("npx tsc", onFeature, true, "powershell")).toBeUndefined();
+  });
+
+  it("a git command inside -c is still read, as before", () => {
+    expect(guard('bash -c "git push -f"', onFeature, true, "bash")).toBeDefined();
+  });
+});

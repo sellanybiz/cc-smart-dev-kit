@@ -8,18 +8,18 @@
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { buildEntry, ENTRIES_DIR } from "./build-entry";
 
 const repoRoot = join(import.meta.dir, "..");
-const entriesDir = join(repoRoot, "src", "entries");
 const distDir = join(repoRoot, "plugin", "dist");
 // The bundles carry source-path comments relative to the working folder: pin it.
 process.chdir(repoRoot);
 
 function entryPoints(): string[] {
-  return readdirSync(entriesDir)
+  return readdirSync(ENTRIES_DIR)
     .filter((name) => name.endsWith(".ts") && !name.endsWith(".test.ts"))
     .sort()
-    .map((name) => join(entriesDir, name));
+    .map((name) => join(ENTRIES_DIR, name));
 }
 
 /**
@@ -33,21 +33,7 @@ function entryPoints(): string[] {
  */
 async function buildInto(outdir: string): Promise<void> {
   rmSync(outdir, { recursive: true, force: true });
-  for (const entry of entryPoints()) {
-    const result = await Bun.build({
-      entrypoints: [entry],
-      outdir,
-      root: entriesDir,
-      target: "bun",
-      format: "esm",
-      minify: false,
-      naming: "[name].js",
-    });
-    if (!result.success) {
-      for (const log of result.logs) console.error(log);
-      throw new Error(`The build of ${entry} failed.`);
-    }
-  }
+  for (const entry of entryPoints()) await buildEntry(entry, outdir);
 }
 
 function listFiles(dir: string): string[] {

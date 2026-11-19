@@ -34,6 +34,7 @@ import {
   gateBefore,
   judgeAfter,
   judgeBefore,
+  judgeTasks,
   releaseList,
 } from "./release";
 
@@ -734,6 +735,127 @@ test("gate before: a broken file or a duplicate id refuses", () => {
   expect(duplicate.ok).toBe(false);
   expect(duplicate.refusals[0]).toBe(
     "Task id prod-1 is claimed by /t/a.md and /t/b.md: rename the id inside one of them",
+  );
+});
+
+test("gate before: every kind of refusal at once, in the gate's order, with the notes", () => {
+  const staging = mk({
+    id: "staging-20261117-100001",
+    env: "staging",
+    title: "Staging half",
+    deploy: "after",
+    twin: "prod-20261117-100001",
+  });
+  const prodHalf = mk({
+    id: "prod-20261117-100001",
+    title: "Prod half",
+    deploy: "after",
+    type: "non-blocking",
+    twin: "staging-20261117-100001",
+  });
+  const scan = {
+    tasks: [
+      mk({ id: "prod-20261117-100000", title: "Migrate" }),
+      prodHalf,
+      staging,
+      mk({ id: "prod-20261117-100002", title: "Warm cache", type: "non-blocking" }),
+    ],
+    broken: [{ file: "/t/prod/bad.md", why: "bad.md: invalid YAML: x" }],
+    duplicates: [{ id: "prod-1", files: ["/t/a.md", "/t/b.md"] }],
+  };
+  const facts: GitFacts = {
+    ...cleanFacts,
+    headCommit: "b".repeat(40),
+    refIsAncestor: false,
+    push: { ...cleanFacts.push, branch: "main" },
+  };
+  const result = judgeBefore("prod", { scan, facts, envs: ["staging"], baseBranch: "main", now });
+  const start =
+    "Start the run on a deploy branch cut from the commit that ships: `git fetch origin`, then `git switch --no-track -c deploy/prod-20261117-1445 origin/main` in this checkout";
+  expect(result.refusals).toEqual([
+    "prod is not one of this project's environments (tasks.envs: staging)",
+    `HEAD is on main, the branch deploys ship to: the closes must reach it through a deploy branch's pull request, never by a push to it. ${start}`,
+    "HEAD bbbbbbbbbbbb does not contain origin/main (aaaaaaaaaaaa): the ref has commits this branch has not taken in, and may hold tasks it cannot see. The deploy branch to cut above starts from origin/main, so it holds what the ref holds.",
+    'Blocking task is open: prod-20261117-100000 "Migrate": do it, then close it with evidence',
+    "/t/prod/bad.md cannot be read (bad.md: invalid YAML: x): fix or delete it, then run again",
+    "Task id prod-1 is claimed by /t/a.md and /t/b.md: rename the id inside one of them",
+    'prod-20261117-100001 "Prod half" waits for its staging twin staging-20261117-100001, which is still open: finish staging first, or its close waits on an unmerged branch: `task list --branches`',
+  ]);
+  expect(result.notes).toEqual([
+    'Non-blocking, still open: prod-20261117-100002 "Warm cache": do it now, or drop it with a reason',
+  ]);
+  expect(result.ok).toBe(false);
+});
+
+test("judgeTasks: judges one environment's task files alone, with no git facts", () => {
+  expect(judgeTasks("prod", scanOf([]))).toEqual({ refusals: [], notes: [] });
+  const tasks = [
+    mk({ id: "prod-20261117-100000", title: "Migrate" }),
+    mk({ id: "prod-20261117-100001", title: "Warm cache", type: "non-blocking" }),
+    mk({ id: "prod-20261117-100002", title: "Cleanup", deploy: "after" }),
+    mk({ id: "prod-20261117-100003", title: "Done one", status: "done" }),
+    mk({ id: "staging-20261117-100004", env: "staging", title: "Seed" }),
+  ];
+  expect(judgeTasks("prod", scanOf(tasks))).toEqual({
+    refusals: [
+      'Blocking task is open: prod-20261117-100000 "Migrate": do it, then close it with evidence',
+    ],
+    notes: [
+      'Non-blocking, still open: prod-20261117-100001 "Warm cache": do it now, or drop it with a reason',
+    ],
+  });
+  expect(judgeTasks("staging", scanOf(tasks))).toEqual({
+    refusals: [
+      'Blocking task is open: staging-20261117-100004 "Seed": do it, then close it with evidence',
+    ],
+    notes: [],
+  });
+  // A broken file and a repeated id hold every environment, tasks or not.
+  const damaged = {
+    tasks: [],
+    broken: [{ file: "/t/prod/bad.md", why: "bad.md: invalid YAML: x" }],
+    duplicates: [{ id: "prod-1", files: ["/t/a.md", "/t/b.md"] }],
+  };
+  for (const env of ["prod", "staging"] as const)
+    expect(judgeTasks(env, damaged)).toEqual({
+      refusals: [
+        "/t/prod/bad.md cannot be read (bad.md: invalid YAML: x): fix or delete it, then run again",
+        "Task id prod-1 is claimed by /t/a.md and /t/b.md: rename the id inside one of them",
+      ],
+      notes: [],
+    });
+});
+
+test("judgeTasks: the twin rules hold prod only, and a task naming no twin task refuses", () => {
+  const staging = mk({
+    id: "staging-20261117-100000",
+    env: "staging",
+    title: "Staging half",
+    deploy: "after",
+    twin: "prod-20261117-100000",
+  });
+  const prod = mk({
+    id: "prod-20261117-100000",
+    title: "Prod half",
+    deploy: "after",
+    type: "non-blocking",
+    twin: "staging-20261117-100000",
+  });
+  expect(judgeTasks("prod", scanOf([staging, prod])).refusals).toEqual([
+    'prod-20261117-100000 "Prod half" waits for its staging twin staging-20261117-100000, which is still open: finish staging first, or its close waits on an unmerged branch: `task list --branches`',
+  ]);
+  expect(judgeTasks("staging", scanOf([staging, prod])).refusals).toEqual([]);
+  expect(judgeTasks("prod", scanOf([{ ...staging, status: "done" }, prod])).refusals).toEqual([]);
+  const lost = mk({
+    id: "prod-20261117-100005",
+    title: "Lost twin",
+    deploy: "after",
+    twin: "staging-20261117-999999",
+  });
+  const refusals = judgeTasks("prod", scanOf([lost])).refusals;
+  expect(refusals).toHaveLength(1);
+  expect(refusals[0]).toStartWith(
+    'prod-20261117-100005 "Lost twin" names its staging twin staging-20261117-999999, but no task has that id: ',
   );
 });
 

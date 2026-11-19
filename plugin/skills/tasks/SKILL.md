@@ -148,3 +148,12 @@ A wrong command exits 2; a refusal, an unknown ref, a ref name that matches more
 prints the answer as data. A deploy branch left unmerged shows in `task list --branches`: its
 open tasks, and its closes of tasks the base still has open ("closed on <branch>, not merged").
 A prod refusal for an open staging twin may mean that close waits there.
+
+**The deploy guard.** A project lists the commands it deploys with in `tasks.deployCommands`
+(`project init` asks for them). While the environment has a blocking problem (the same rules as
+`--before`, minus the git ones), the guard asks the person before Claude runs a listed command.
+It names each problem. Do the task and close it with evidence; never drop a blocking one
+yourself. A command that is not listed, or is spelled another way, is not seen: the guard is
+a rail against a skipped step, not a lock, so run the gates above either way.
+`task release <env> --check` judges the task files alone, with no git, so a CI job can run it
+before its deploy step (README § Deploy tasks in CI).

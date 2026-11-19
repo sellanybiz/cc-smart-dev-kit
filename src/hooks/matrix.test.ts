@@ -17,6 +17,7 @@ import { dirname, join } from "node:path";
 import { cliPaths } from "../cli/paths";
 import { PLUGIN_HOOK_NAMES, RETIRED_HOOK_NAMES, UNSWITCHABLE_HOOK_NAMES } from "../project/config";
 import { projectKey, taskContext } from "../tasks/context";
+import { renderDeployTask } from "../tasks/deploy/format";
 import { openWorkDb, workDbFile, writeWork } from "../tasks/work/db";
 import { createTask, ensurePlanTask, layPhase, updateTask } from "../tasks/work/store";
 import {
@@ -37,6 +38,7 @@ import {
   agentGuardHook,
   agentUsageHook,
   builderFinishHook,
+  deployGuardHook,
   fableSessionHook,
   gitGuardHook,
   HOOKS,
@@ -232,6 +234,36 @@ const contextLine = (result: HookResult) => {
   expect(text).not.toContain("\n");
 };
 
+/**
+ * A project file that lists `vercel --prod` as its prod deploy, whatever else the config holds
+ * (nothing when there is no file), and one open blocking prod task in the checkout: what makes
+ * `deploy-guard` speak.
+ */
+function deployProject(config: unknown): string {
+  const repo = project(
+    config === undefined
+      ? undefined
+      : { ...(config as object), tasks: { deployCommands: { prod: ["vercel --prod"] } } },
+  );
+  const folder = join(repo, ".claude", "tasks", "prod");
+  mkdirSync(folder, { recursive: true });
+  writeFileSync(
+    join(folder, "prod-20260101-000000-seed.md"),
+    renderDeployTask({
+      id: "prod-20260101-000000",
+      title: "Seed the data",
+      env: "prod",
+      status: "open",
+      deploy: "before",
+      type: "blocking",
+      created: "2026-01-01T00:00:00Z",
+      body: "Do it.\n",
+      file: "prod-20260101-000000-seed.md",
+    }),
+  );
+  return repo;
+}
+
 const CASES: Case[] = [
   {
     spec: taskStartHook,
@@ -267,6 +299,28 @@ const CASES: Case[] = [
       env: hookEnv(),
     }),
     failsClosed: askLine,
+  },
+  {
+    spec: deployGuardHook,
+    own: { event: "PreToolUse", matcher: "Bash|PowerShell" },
+    setup: (config) => ({
+      input: {
+        hook_event_name: "PreToolUse",
+        session_id: SESSION,
+        cwd: deployProject(config),
+        tool_name: "Bash",
+        tool_input: { command: "vercel --prod" },
+      },
+      env: hookEnv(),
+    }),
+    failsClosed: (result) => {
+      askLine(result);
+      expect(
+        JSON.parse(result.stdout ?? "{}").hookSpecificOutput.permissionDecisionReason,
+      ).toStartWith(
+        "cc-smart-dev-kit cannot check whether this deploy to prod is held by open tasks: ",
+      );
+    },
   },
   {
     spec: mergeGuardHook,

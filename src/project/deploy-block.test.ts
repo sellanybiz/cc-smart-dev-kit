@@ -59,3 +59,13 @@ test("the starter skill: front matter, the steps section that says none are writ
   // Neutral: no package manager or project command in the text that is not the block.
   expect(starter.split(BLOCK_BEGIN)[0]).not.toMatch(/\b(bun|npm|pnpm|yarn)\b/);
 });
+
+test("the line after the heading says what the deploy guard does, with or without the field", () => {
+  // Written by hand: the plan's wording, and the heading stays the first line.
+  expect(deployBlockBody().split("\n").slice(0, 4)).toEqual([
+    "## Deploy tasks",
+    "",
+    "When `tasks.deployCommands` lists this project's deploy commands, the deploy guard asks before one runs while that environment has work that holds a deploy (a blocking before-deploy task, a broken task file; `task release <env> --check` shows it).",
+    "",
+  ]);
+});
