@@ -1,6 +1,6 @@
 # Research: heavy-queue coverage and worktree-first (2026-11-18)
 
-Plan: `.claude/plans/2026-11-18-heavy-queue-coverage.md`.
+Plan: `.claude/plans/archive/2026-11-18-heavy-queue-coverage.md`.
 
 ## What the queue misses (probed with the real classifier)
 
