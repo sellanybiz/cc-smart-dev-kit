@@ -42,10 +42,12 @@ Only a finding **outside** the plan leaves it, and it follows these steps.
    becomes a task there, and nobody is asked. With a live plan child, send it the finding so it
    makes the task; otherwise create the task yourself (`task_create`, `parent` the plan's `#n`).
    The task is the record; an issue is optional. A held plan that is finished (its plan task
-   closed, its pull request open) takes no task: the store refuses it. Ask the finding as below
-   like any other. On a yes: if that pull request is this session's, it is a late fix on its
-   branch, pushed once by the batch rule (`/cc-smart-dev-kit:commit` § Pushing); if not, file it,
-   and it goes to the follow-up child once that pull request has merged and its files are free.
+   closed, its pull request open) takes no task: the store refuses it, and the follow-up child may
+   not edit its files. Ask it with two options: **fix it on that pull request** (only when the
+   pull request is this session's: a late fix on its branch, pushed once by the batch rule,
+   `/cc-smart-dev-kit:commit` § Pushing), or **file it for after the merge**. Filed: save a task
+   note "send #n to the follow-up child after <plan> merges"; `herdr plans --wait` says when its
+   files are free.
    **Outside every plan: ask at once**, one finding per `AskUserQuestion`: what is wrong, its
    `file:line`, what it costs. The options, the recommended one first, only those that fit:
    - **Send it to the follow-up child**, when this lead's follow-up child for this repository is

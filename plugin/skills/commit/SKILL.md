@@ -112,7 +112,7 @@ for the push hook: `/cc-smart-dev-kit:verify-change` § 4 says when it may be sk
   (`/cc-smart-dev-kit:review` defines them) and its follow-up child's work
   (`/cc-smart-dev-kit:herdr` § Follow-up child) ship together: at the end of the turn that
   finishes the person's request, or at once when the person says to ship now. The small fixes
-  ride on the session's own branch, never a plan branch; they get a second branch only when
-  the session's own branch already carries a reviewed change set. One pull request opens there
+  ride on the session's own branch; when that is a plan branch, or already carries a reviewed
+  change set, they get a new branch from the default branch. One pull request opens there
   at the ship point. At that same moment the lead sends the follow-up child `ship`. Until then the
-  child commits each finding and may push its branch, a free backup.
+  child commits each finding and may push its branch while it has no open pull request.
