@@ -63,7 +63,7 @@ Worked examples — judge new cases the same way:
   and you wait only for a result the next step needs. One thing runs alone: a browser check
   (`/cc-smart-dev-kit:ui-verify` § 2).
 - **Task types.** `blocked_by` only for a real dependency or a shared file; `non-blocking` for
-  noted work that holds nothing. A follow-up is a task in its plan or an issue (`/cc-smart-dev-kit:tasks`), never a blocker.
+  noted work that holds nothing. A follow-up inside the plan is a task in it, never a blocker (one outside it: `/cc-smart-dev-kit:tasks` § 1).
 
 ## Which agent
 

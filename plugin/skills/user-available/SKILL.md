@@ -59,7 +59,10 @@ This session's items, in three kinds, in this order:
    as the question and its `options` in order, **the recommended one first and marked**. The tool
    takes two to four options a question: with more, keep the recommended one and the likeliest,
    and say the rest in the question; with none or one, put it as the plain question it is. Act on
-   each answer where it belongs (`/cc-smart-dev-kit:memory-routing`).
+   each answer where it belongs (`/cc-smart-dev-kit:memory-routing`). For a parked finding, check
+   the follow-up child's state first (`herdr list`): if it changed since the park, take the
+   option that fits now. A yes goes through the tasks rule: file it, then start the child or send
+   to it (`/cc-smart-dev-kit:tasks` § 1).
 3. **Actions:** show each with its `text`, its `cwd` and its exact `command`, and ask yes or no. A
    yes runs that command, as it is, in its `cwd` (a push or a delete in another folder is another
    action); it is that action's yes and no other's. Check first that it still makes sense (the

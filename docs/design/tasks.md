@@ -17,8 +17,10 @@ The task's kind selects its store, not a second set of tools. What belongs where
 the `tasks` skill (`plugin/skills/tasks/SKILL.md`): the one home of task knowledge.
 
 A finding that belongs to the plan is covered by the plan, as a task under the phase that owns
-it. One outside the plan is never a task: the main session files a GitHub issue (on by default),
-a subagent lists it in its report, and without GitHub it goes in the end-of-turn summary.
+it. One outside every plan is never a task. The main session asks the person at once; a yes files
+a GitHub issue (on by default) and hands it to the lead's follow-up child. A subagent, or any
+Herdr child, lists it in its report instead. Without GitHub the finding goes in the end-of-turn
+summary. See `docs/design/herdr.md` § Follow-up children.
 
 ## The subagent ledger in 2.0
 

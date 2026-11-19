@@ -43,7 +43,7 @@ export const HERDR_VERBS = [
 ] as const;
 export const MACHINE_VERBS = ["list", "allow", "forget", "production"] as const;
 const USAGE_LINES = {
-  start: `start --model <${CLAUDE_FAMILIES.join("|")}> --effort <${ALLOWED_EFFORTS.join("|")}> --mode <${MODE_ORDER.join("|")}|manual> [--cwd <dir>] [--on <machine>] [--name <name>] [--task <#n> | --plan <slug>] [--independent] [--asked] -- <brief>`,
+  start: `start --model <${CLAUDE_FAMILIES.join("|")}> --effort <${ALLOWED_EFFORTS.join("|")}> --mode <${MODE_ORDER.join("|")}|manual> [--cwd <dir>] [--on <machine>] [--name <name>] [--task <#n> | --plan <slug> | --followup [--issue <n>]…] [--independent] [--asked] -- <brief>`,
   list: "list [--all] [--json]",
   send: "send <terminal> <text>",
   wait: "wait [--any | --all] [--timeout <seconds>] [--seen <addr>:<turn|?>:<error|done|end>[,…]]",
@@ -67,10 +67,18 @@ export const START_OPTIONS = [
   "--name",
   "--task",
   "--plan",
+  "--issue",
 ];
-export const START_FLAGS = ["--independent", "--asked"];
+export const START_FLAGS = ["--independent", "--asked", "--followup"];
+/** The options of `start` that may be given more than once: each issue a follow-up child fixes. */
+export const START_REPEATABLE = ["--issue"];
 /** The one refusal for `--plan` beside an option it cannot share a start with. */
 export const PLAN_EXCLUSION = "--plan cannot be combined with --task, --independent or --on.";
+/** The one refusal for `--followup` beside an option it cannot share a start with. */
+export const FOLLOWUP_EXCLUSION =
+  "--followup cannot be combined with --plan, --task, --independent or --on.";
+/** An issue number as `--issue` takes it: a positive whole number, no sign and no leading zero. */
+const ISSUE_NUMBER = /^[1-9]\d*$/;
 export type HerdrArgs =
   | {
       verb: "start";
@@ -83,6 +91,10 @@ export type HerdrArgs =
       task?: string;
       /** The slug of a plan to hand to the child (`herdr start --plan`). */
       plan?: string;
+      /** The lead's one follow-up child (`herdr start --followup`): it fixes findings, one after another. */
+      followup?: true;
+      /** The issues the first findings were filed as (`--issue`), in the order given. */
+      issues?: string[];
       independent: boolean;
       asked: boolean;
       brief: string;
@@ -125,9 +137,9 @@ export function parseHerdrArgs(args: string[]): HerdrArgs | { error: string } {
   if (verb === "start") {
     const split = rest.indexOf("--");
     if (split < 0) return fail("Put -- before the brief.");
-    const parsed = parseOptions(rest.slice(0, split), START_OPTIONS, START_FLAGS);
+    const parsed = parseOptions(rest.slice(0, split), START_OPTIONS, START_FLAGS, START_REPEATABLE);
     if ("error" in parsed) return fail(parsed.error);
-    const { options: o, flags: f, positionals: p } = parsed;
+    const { options: o, flags: f, lists, positionals: p } = parsed;
     const model = CLAUDE_FAMILIES.find((v) => v === o.get("--model")),
       effort = ALLOWED_EFFORTS.find((v) => v === o.get("--effort")),
       mode = normalizeMode(o.get("--mode") ?? "");
@@ -140,6 +152,12 @@ export function parseHerdrArgs(args: string[]): HerdrArgs | { error: string } {
       name = o.get("--name");
     if (task && independent) return fail("An independent session cannot have a task.");
     if (plan && (task || independent || o.has("--on"))) return fail(PLAN_EXCLUSION);
+    const followup = f.has("--followup"),
+      issues = [...new Set(lists.get("--issue") ?? [])];
+    if (followup && (plan || task || independent || o.has("--on"))) return fail(FOLLOWUP_EXCLUSION);
+    if (issues.length && !followup) return fail("--issue belongs to --followup.");
+    if (issues.some((issue) => !ISSUE_NUMBER.test(issue)))
+      return fail("Use an issue number such as 12.");
     if (task && !/^#[1-9]\d*$/.test(task)) return fail("Use a task reference such as #7.");
     if (name && !validChildName(name))
       return fail("A name needs 1–32 lower-case letters, digits, - or _.");
@@ -159,6 +177,7 @@ export function parseHerdrArgs(args: string[]): HerdrArgs | { error: string } {
       ...(name ? { name } : {}),
       ...(task ? { task } : {}),
       ...(plan ? { plan } : {}),
+      ...(followup ? { followup: true as const, issues } : {}),
     };
   }
   const known =

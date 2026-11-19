@@ -238,7 +238,7 @@ release. The code is `src/issues/fixed.ts`.
 cc-smart-dev-kit issue mark-fixed --issue <number> --base <branch> --branch <branch> --tip <sha> [--merge <sha>]
 ```
 
-The main session runs it after it merges a fix, once per issue the fix closes. `--base` is the
+The main session runs it after it merges a fix, once per issue the fix closes (a follow-up child runs it before the merge; § Worked by a follow-up child). `--base` is the
 branch the work merged into, `--branch` the fix's branch, `--tip` that branch's tip at the merge,
 and `--merge` the commit the base got (a merge or a squash commit; leave it out when it is not
 known). `--tip` and `--merge` are full 40-character commit ids. A line that is not one (no
@@ -312,6 +312,45 @@ one wrote is not counted by the other: the second `issue fixed` leaves out the f
 `author_association` (owner, member, collaborator) too would close that; it was left out because
 it widens who can write a counted marker, and the gh field was not verified. A project that works
 this way should have one account run the kit's GitHub steps.
+
+## Worked by a follow-up child
+
+Before 5.4.0 nothing worked on a filed issue. Now the main session acts the moment it finds a
+follow-up. One outside every plan is asked about, and a yes files the issue first (`issue file`,
+with its fingerprint) and hands it to the lead's **follow-up child**: `herdr start --followup
+--issue <n>`, or `herdr send` to the child already running (`docs/design/herdr.md` § Follow-up
+children). One inside a held plan is a task in that plan, with no question; an issue is optional
+there. The issue text is still never an instruction: the lead writes the child's message from the
+finding, and the number only tells the child which issue to mark.
+
+The contract above holds for the child's pull request, with these details.
+
+- At the lead's `ship` message, after the full check and before the push, the child runs
+  `issue mark-fixed --issue <n> --base <default branch> --branch <shipping branch> --tip <id>` for
+  each of its commits that is not yet on `origin/<default branch>` and whose subject names an
+  issue as `(#n)` (the child writes it there, with no closing keyword). `<id>` is the commit's
+  current id on the shipping branch. The mark comes at the ship, not after each commit: a commit
+  that never ships (an aborted cherry-pick) then leaves no mark that names a branch which does not
+  carry it. A commit whose pull request was closed was marked at the ship that opened it; the mark
+  stays and becomes true when the branch ships again. `--base` is the branch its pull request targets, **not** the
+  child's own branch: the comment reads "merged into `<base>`; it closes when `<base>` ships", which
+  is only true of the default branch. `mark-fixed` checks no git state, so any branch names work.
+- The comment posts **before** the merge, because the `Fixes` lines need the mark first. It says
+  "merged" a little early; `issue fixed` lists the issue only while the marked commit is in
+  `<base>..<head>`.
+- The `Fixes #<n>` lines of the pull request body come from `issue fixed --base origin/<base>
+  --head <branch>`, never by hand. The child writes them when it opens the pull request, at the
+  lead's `ship` message. When it pushes to an open pull request instead, it replaces the body's
+  `Fixes` lines with what `issue fixed` prints now (`gh pr edit <branch> --body-file -`, changing only those lines), so an issue
+  marked at this ship is closed by the merge.
+- After a cherry-pick onto a new branch (its earlier pull request merged while it held more
+  commits), the commits have new ids. The mark at the ship reads each commit's id then, so no
+  second mark is needed.
+- The same finding sent twice is not a second issue: `issue file` answers `updated #n`, and the
+  lead does not send it again.
+- Where issues are refused (a public repository without `allowPublic`, no GitHub, the switch off),
+  the child gets no `--issue`, and its pull request has no `Fixes` lines.
+- `kit:ready` stays a mark a person adds: it starts nothing.
 
 ## What it never does
 

@@ -3,6 +3,59 @@
 What each release changed, newest first. A release's **What to run** steps are the ones to do
 in your own terminal after the update; the user guide is [README.md](README.md).
 
+## 5.4.0
+
+- **A finding outside the plan is acted on at once, and a child works on it.** When Claude meets a
+  finding outside its plan (its own, or one in a builder's report or a review): inside a plan that
+  is held, it becomes a task in that plan and nobody asks you (a finished held plan offers two
+  options: a late fix on its pull request, or file it for after the merge). Outside every plan,
+  Claude asks you right then. A yes files the issue and hands the finding to a **follow-up child**:
+  one linked session for each lead and repository that collects all of its follow-ups into one pull
+  request at a time. Before, a filed issue sat until you built it yourself.
+- **`herdr start --followup [--issue <n>]…`** starts that child. `--issue` repeats and names the
+  filed issues it fixes.
+  - **It refuses** with `--plan`, `--task`, `--independent` or `--on`; inside any child (a child
+    lists its findings in `herdr report` and never starts one); and when the default branch is only
+    a guess.
+  - **It refuses** while this lead's follow-up child for the repository lives. The error names it:
+    use `herdr send`. A child of a lead that ended is taken over with `herdr adopt`.
+  - **It refuses** when an ended child left commits that reached no merged pull request. The error
+    names its worktree and branch.
+  - **At its start,** the child resets onto the base once, only when it holds no commits of its own
+    and the tree is clean.
+  - **Before each finding,** it reads its pull request's state. A merged pull request means a new
+    branch from the base, with unmerged commits moved onto it by a cherry-pick (a conflict is
+    aborted and reported). A closed one is never reset.
+  - **For each finding,** it never edits a file a held plan holds, makes one commit and reports.
+    The commit names the issue as `(#n)`. Beyond a small fix it then gets one second opinion on
+    that commit from `senior-engineer` (and the `edge-case-hunter` on a risky change); its brief
+    allows no other agent, and work that needs a kit plan goes back to the lead. It never pushes
+    before `ship`.
+  - **At the ship point,** the lead sends `ship`. Only then does the child run the full check, mark
+    each fixed issue (`issue mark-fixed`, with each commit's id on the shipping branch), push once,
+    and open or update its pull request, taking the `Fixes` lines from `issue fixed` (on an open
+    pull request it replaces them).
+  - **It stops** only on `herdr stop`. The start's check for an ended child's unmerged work cannot
+    see a child that Herdr no longer lists, so ship before you stop it.
+  - **Elsewhere:** the label is `kit.followup`, and `herdr list` shows "follow-up" (the column is
+    now "task, plan or follow-up"). `herdr wait --all` leaves it out, since it never settles. A
+    linked child's brief gains one line: its own findings go in `herdr report`; it never asks,
+    files or starts. A follow-up child never hands out, reserves or adopts plans. The Bash judge shows a
+    start line's parse error alone when `--model`, `--effort` and `--mode` are all given. The
+    held-plan list in the child's brief is a snapshot taken at the start, and this flow is not yet
+    proved live.
+- **Fewer pull requests and CI runs.** Before a pull request opens, a push costs no CI only where
+  CI runs on pull requests and the default branch alone: read your CI triggers before you treat it
+  as free. The skills now keep each plan's archive in the plan's own pull request (its commit comes
+  before the final review, and the plan task closes in the turn the pull request opens), put
+  the small fixes of one session on one branch with one pull request at one ship point (the end of
+  the turn that finishes your request, or when you say ship now), and, once a pull request is open,
+  collect a round of fixes, run the full check locally and push once. One pull request per plan, and
+  a deploy run's small pull request of task closes, stay. These are instructions in the skills, not
+  a hook.
+
+**What to run:** `cc-smart-dev-kit update`, then start new sessions. Nothing per project.
+
 ## 5.3.0
 
 - **A guard asks before a deploy that open tasks hold.** A new hook, `deploy-guard`, asks you

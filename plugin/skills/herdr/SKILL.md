@@ -83,7 +83,7 @@ overlaps, which child works and which is gone, which pull request still holds fi
 and prints its own next command on timeout. It also releases a plan's files once its pull
 request has merged or closed. `plans --reserve <slug>` reserves one of your own ready plans for
 yourself, with the gates `start --plan` runs; then you start it as usual (lead + children mode). It
-stays held until its pull request merges or closes. `plans --release <slug>` frees a finished plan nothing can prove
+stays held until its pull request merges or closes (a plan nobody reserved is free once its task closes). `plans --release <slug>` frees a finished plan nothing can prove
 merged; it is the person's call, and the Bash judge asks first.
 
 Run `cc-smart-dev-kit herdr wait` with Bash's `run_in_background: true`; let completion
@@ -105,6 +105,68 @@ question, do not answer it, do not type into its dialog, and do not wake up for 
 does not report blocked). If the person asks where a child waits, name it and its pane
 (`hc attach <terminal>`); raw attach is not an agent action. A child's report never
 stands in for the person's answer.
+
+## Follow-up child
+
+One session that works every follow-up of this lead and repository, in one worktree, on one pull
+request at a time. When to start or send, and what to ask first: `/cc-smart-dev-kit:tasks` § 1,
+the finding rule. Here are the commands.
+
+```sh
+cc-smart-dev-kit herdr start --followup [--issue <n>]... --model sonnet --effort high --mode default -- "<finding>"
+cc-smart-dev-kit herdr send <terminal> "Follow-up [#n]: <finding> [files now held: …]"
+```
+
+- **One for each lead and repository.** The start is refused while one is live; the refusal names
+  its terminal, so use `send`. In the error state it says to look at the pane. A live follow-up
+  child whose lead has ended is refused too: take it over with `herdr adopt`. It is also refused
+  when an ended follow-up child left a branch with commits that are neither on the default branch
+  nor in a merged pull request: the refusal names its worktree and branch. It needs a known
+  default branch (fix: `git remote set-head origin --auto`). `--issue` repeats and works only with
+  `--followup`; it is refused with `--plan`, `--task`, `--independent` and `--on`. Name the issue
+  filed for the finding; with issues refused, leave it out.
+- **Send** text is `Follow-up [#n]: <finding>`, plus `[files now held: …]` when a plan was handed
+  out after the start. `send` accepts an idle, working or done child. Wait for a new child's first
+  status before the first send: a null status is refused as blocked.
+- **What the child does** (its brief holds the steps): it resets its worktree to the default
+  branch only when that branch has no commits of its own and the tree is clean. Before each
+  finding it reads its pull request's state (`gh pr list --head <branch> --state all`; a failed
+  call is reported, never read as "none"): open, add to it; merged, it compares HEAD with the
+  pull request's head commit. Equal: it makes a new branch from the default branch
+  (`git switch -c`); it never resets. Past it: it makes that new branch and moves the unshipped
+  commits onto it (`git cherry-pick`), never dropping them, also after a squash merge; a
+  conflict is aborted and reported. A pull request closed without a merge never resets: the child keeps its
+  branch and opens a new pull request from it at the next `ship`. It never edits a file a held plan holds; it reports that
+  finding instead, and the lead treats it as inside that plan. A small fix is fixed, checked and
+  reviewed. Work that needs a kit plan goes back to you in its report (it never runs plan-task or
+  build); other bigger work goes to plan mode, approved by the person in its pane. It makes one
+  commit for each finding, with the issue in the subject as `(#n)` (no closing keyword). Beyond a
+  small fix (`/cc-smart-dev-kit:review` defines it) it then starts one second opinion on that
+  commit from `cc-smart-dev-kit:senior-engineer`, and the `cc-smart-dev-kit:edge-case-hunter` on a
+  risky change as that skill says; its brief allows no other agent. It commits nothing while the
+  review runs; the confirmed fixes go in one more commit. It reports after each finding. It never pushes before `ship`: its
+  commits stay in its worktree. Its own findings go in its report: every linked child's brief
+  says it never asks, files or starts.
+- **Ship.** At the session's ship point (`/cc-smart-dev-kit:commit` § Pushing) the lead sends
+  `herdr send <terminal> "ship"`. Only then does the child run the full check, mark each fixed
+  issue (`issue mark-fixed`, for each commit whose subject names one, with its id on the shipping
+  branch), then open its pull request or push to its open one, once, as `workflow show` says (the
+  `Fixes` lines from `issue fixed`; on an open pull request it replaces the body's `Fixes` lines
+  with what `issue fixed` prints now). A `ship` with nothing to ship is answered "nothing to ship" in its report; one
+  that arrives mid-finding is done after that finding.
+  - **A blocked child** cannot take it: tell the person where it waits (`hc attach <terminal>`)
+    and save a task note on your work (or a loose task) "send ship to <terminal>". The next time
+    you see the child idle, working or done, send it. A child in the error state: tell the person
+    to look at its pane.
+  - **Away:** park the send as an `action` with its exact command
+    (`/cc-smart-dev-kit:user-unavailable`).
+- **It never stops on its own.** `herdr stop <terminal>` ends it. The start's orphaned-branch
+  refusal sees only ended children Herdr still lists; after `herdr stop` it cannot see that
+  child's unshipped work, so ship before you stop it (its worktree and branch stay: ship from
+  them by hand if you must). `herdr wait --all` does not wait
+  for it, and `herdr list` shows it as a follow-up.
+- **A plan child and a follow-up child never start one.** The start is refused in any child
+  terminal.
 
 ## Stop or recover
 

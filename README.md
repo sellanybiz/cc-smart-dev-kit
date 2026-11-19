@@ -395,7 +395,7 @@ Removes what setup added (its settings keys, the auto-mode entries it copied, an
 | `cc-smart-dev-kit workflow [show] \| set <setting> <value> [--project] \| unset <setting> [--project] \| propose <setting> <value> [--unset] [--folder <project>] [--json] \| review-done [--sha <commit>] \| merge-check [<pr>… \| --branch <b> --base <base>]` | What cc-smart-dev-kit may do by itself here — commit, push, open a pull request, merge — and the switches that map onto settings which already exist ([The workflow](#the-workflow)). `show` (the default) prints each value and where it came from: the project's file, your own defaults, or the built-in default, whether the commit here has a recorded review, and the `fixesAfterReview` limits in force. `set` and `unset` write one value; `--project` writes the project's committed file. `propose` changes one of the project's own settings **through a pull request**: a branch and a worktree cut from `origin/<worktrees.base>`, the same writer, the commit, the push and `gh pr create` — never a write in the main checkout, and it counts once merged. Run by a Claude Code session, the shell judge **asks you first** whenever `autoPush` is off or `openPr` is short of `ready` (the gate the git and merge guards read), naming the push and the pull request; in `claude -p` that is a refusal. `review-done` records that a commit had its one premium review, for your own terminal: it refuses inside Claude Code, where the [review-record hook](#the-workflow) writes the record when a review agent returns. `merge-check` judges a merge **without making it**, with the merge guard's own judgment: each pull request number, or a local branch against a base, one line per verdict (`allowed`, or the reason it asks); exit 0 when every one is allowed, 1 when any asks. The main session uses `--branch` before a local merge (§ [The workflow](#the-workflow)). |
 | `cc-smart-dev-kit issue file --title <t> --body-file <file\|-> --fingerprint <key> [--label <l>…]` | Files one finding as a GitHub issue in **this project's own repository** (the one `origin` names, on github.com) and prints one line: `filed #<n> <url>`, `updated #<n> <url>` or `refused: <why>` (exit 0, 0, 1). The same `--fingerprint` again updates the issue it filed and never opens a second: the key is hashed into a hidden comment at the end of the body. It **files nothing while `workflow.issues.enabled` is off** (on by default since 5.0.0; § [The workflow](#the-workflow)) and only in a project with a `.claude/cc-smart-dev-kit.json`, and a public repository needs `issues.allowPublic` too (the line says `public` when it posts there). A title or body with a home path (in each spelling a session writes it: `$HOME`, and for a Windows home `C:\Users\x`, Git Bash's `/c/Users/x` and WSL's `/mnt/c/Users/x`), a key or token of a known shape (`sk-`, `ghp_`, `AKIA…`, `gsk_`, `tvly-`, a JWT, a private key block, a Slack or Discord webhook URL, and a value after `key`, `token`, `secret` or `password` and `:` or `=`, with or without letters before the word) or a URL with credentials is refused with its line and column, never the value, and nothing is sent; the screen knows those shapes only, so read a text before you file it. It also refuses an account with **read access only** to the repository (GitHub drops labels from such an account), and updates only an issue the kit's own account wrote. A session's raw `gh issue create`, `gh label create` or `gh api … /issues` write still asks you (§ The hooks, `merge-guard`). Design: [docs/design/issues.md](docs/design/issues.md). |
 | `cc-smart-dev-kit issue fixed --base <branch> --head <branch>` | Prints one `Fixes #<n>` line for each **open** issue the kit marked `fixed-unreleased` (`issues.fixedLabel`, with `issue mark-fixed` below) whose fix is in `<base>..<head>`: the lines a release's pull request body carries. GitHub closes an issue only when a pull request that names it merges into the **default** branch, so a fix merged into a release branch closes nothing until then. It prints nothing when the switch is off or no issue waits (exit 0), and exits 1 with the reason on standard error when GitHub or a branch cannot be read: an empty list from a failed call would look complete. Design: [docs/design/issues.md](docs/design/issues.md). |
-| `cc-smart-dev-kit issue mark-fixed --issue <number> --base <branch> --branch <branch> --tip <sha> [--merge <sha>]` | Marks one issue fixed. The main session runs it after it merges a fix: `--branch` is the branch that held the fix, `--tip` its last commit, `--base` the branch it merged into, and `--merge` the merge commit (leave it out when it is not known; both are full 40-character commit ids). It comments "Fixed on `<branch>` at `<commit>`, merged into `<base>`; it closes when `<base>` ships." and adds the fixed label (`issues.fixedLabel`), which it creates when the repository lacks it. It **never closes the issue**: the release's `Fixes #<n>` line does (`issue fixed`). Each step looks at the issue first, so a second run adds no second comment or label; only a comment by the account `gh` is logged in as counts. It needs `workflow.issues.enabled`, as `issue file` does. It prints `marked #<n> fixed`, or `#<n> is already closed` (exit 0); the reason on standard error when the switch is off, GitHub cannot be read or the issue does not exist (exit 1); and the usage for a command line that is not one (exit 2). |
+| `cc-smart-dev-kit issue mark-fixed --issue <number> --base <branch> --branch <branch> --tip <sha> [--merge <sha>]` | Marks one issue fixed. The main session runs it after it merges a fix, and a follow-up child (§ [Follow-up children](#follow-up-children-540)) runs it at its `ship`, before the push, with `--base` the branch its pull request targets (the comment is posted before that merge): `--branch` is the branch that held the fix, `--tip` its last commit, `--base` the branch it merged into, and `--merge` the merge commit (leave it out when it is not known; both are full 40-character commit ids). It comments "Fixed on `<branch>` at `<commit>`, merged into `<base>`; it closes when `<base>` ships." and adds the fixed label (`issues.fixedLabel`), which it creates when the repository lacks it. It **never closes the issue**: the release's `Fixes #<n>` line does (`issue fixed`). Each step looks at the issue first, so a second run adds no second comment or label; only a comment by the account `gh` is logged in as counts. It needs `workflow.issues.enabled`, as `issue file` does. It prints `marked #<n> fixed`, or `#<n> is already closed` (exit 0); the reason on standard error when the switch is off, GitHub cannot be read or the issue does not exist (exit 1); and the usage for a command line that is not one (exit 2). |
 | `cc-smart-dev-kit session-name <session id> <name>` | Names a Claude session after its task. A session runs it itself when the project turns on `sessionNames` (below). |
 
 ### The gateway and OmniRoute
@@ -456,11 +456,11 @@ installed command's full usage. A usage mistake exits 2; a refusal or failure ex
 
 | After `cc-smart-dev-kit herdr` | What it does |
 |---|---|
-| `start --model <model> --effort <effort> --mode <mode> [--cwd <dir>] [--on <machine>] [--name <name>] [--task <#n> \| --plan <slug>] [--independent] [--asked] -- <brief>` | Starts a session with a private brief file. `--task` is only for an existing open task in the same project and machine. `--plan` hands one queued plan of this project to a child that builds it end to end (§ [Plans for children](#plans-for-children-520)); it cannot be combined with `--task`, `--independent` or `--on`. In git, Claude creates a worktree; existing terminal, folder or branch names are refused. Every session starts through your login shell, so it gets your own PATH. Independent sessions, local or remote, get their own space in Herdr's window; a linked child, local or remote, nests under its lead. Start waits until the child comes up: a child that exits at launch (for example, an untrusted folder) shows its error, is removed, and start fails with no task binding. |
-| `list [--all] [--json]` | Owned children, or all kit sessions including independent ones; includes counts and blocked status (a blocked child waits for you, in its pane). |
-| `send <terminal> <text>` | Tagged lead text to an owned linked child. A done child gets a plain send, never force; a blocked child is yours to answer in its pane. |
-| `wait [--any \| --all] [--timeout <seconds>] [--seen <addr>:<turn\|?>:<error\|done\|end>[,…]]` | Waits for news (default/any) or each child in the initial barrier (all), up to the timeout. A blocked child is not news: it waits for you, so the lead keeps waiting. Run in a background Bash call. Copy its exact next command, whose percent-encoded address/turn/state cursor covers news already printed. No live children returns immediately; timeout does not mean done. |
-| `plans [--json] [--wait] [--timeout <seconds>] \| plans --reserve <plan> \| plans --release <plan>` | A summary (`Plans: 2 with children · 1 waiting · 1 ready`), then one line per plan this session leads: what it waits for, which files it shares with a held plan, whether a child works on it or is gone, each with its fix (`--json` gives each plan's `state`). It also releases a finished plan's files once its pull request merged or closed. `--wait`, in a background Bash call, returns when a plan turns ready or a pull request merges, and prints the command to run again on timeout. `--reserve <plan>` reserves one of this session's own plans for itself, with the checks a hand-out runs, so it can build it in lead + children mode; the plan stays held until its pull request merges or closes. It stands alone and is refused from a plan child. `--release <plan>` frees a finished plan nothing can prove merged: your call, so Claude's Bash judge asks you first. |
+| `start --model <model> --effort <effort> --mode <mode> [--cwd <dir>] [--on <machine>] [--name <name>] [--task <#n> \| --plan <slug> \| --followup [--issue <n>]…] [--independent] [--asked] -- <brief>` | Starts a session with a private brief file. `--task` is only for an existing open task in the same project and machine. `--plan` hands one queued plan of this project to a child that builds it end to end (§ [Plans for children](#plans-for-children-520)); it cannot be combined with `--task`, `--independent` or `--on`. `--followup` starts this lead's one follow-up child, which collects findings outside the plan into one pull request (§ [Follow-up children](#follow-up-children-540)); `--issue <n>` (repeat it) names the filed issues it fixes and needs `--followup`; it is refused with `--plan`, `--task`, `--independent` or `--on`, inside any child, while this lead's follow-up child for the repository is live, and when an ended one left unmerged commits. In git, Claude creates a worktree; existing terminal, folder or branch names are refused. Every session starts through your login shell, so it gets your own PATH. Independent sessions, local or remote, get their own space in Herdr's window; a linked child, local or remote, nests under its lead. Start waits until the child comes up: a child that exits at launch (for example, an untrusted folder) shows its error, is removed, and start fails with no task binding. |
+| `list [--all] [--json]` | Owned children (a follow-up child shows as "follow-up" in the task, plan or follow-up column), or all kit sessions including independent ones; includes counts and blocked status (a blocked child waits for you, in its pane). |
+| `send <terminal> <text>` | Tagged lead text to an owned linked child. A done child gets a plain send, never force; a blocked child is yours to answer in its pane. The follow-up child is sent each new finding this way, and `ship` at the session's ship point. |
+| `wait [--any \| --all] [--timeout <seconds>] [--seen <addr>:<turn\|?>:<error\|done\|end>[,…]]` | Waits for news (default/any) or each child in the initial barrier (all), up to the timeout. A blocked child is not news: it waits for you, so the lead keeps waiting. Run in a background Bash call. Copy its exact next command, whose percent-encoded address/turn/state cursor covers news already printed. `--all` leaves a follow-up child out, since it never settles. No live children returns immediately; timeout does not mean done. |
+| `plans [--json] [--wait] [--timeout <seconds>] \| plans --reserve <plan> \| plans --release <plan>` | A summary (`Plans: 2 with children · 1 waiting · 1 ready`), then one line per plan this session leads: what it waits for, which files it shares with a held plan, whether a child works on it or is gone, each with its fix (`--json` gives each plan's `state`). It also releases a finished plan's files once its pull request merged or closed. `--wait`, in a background Bash call, returns when a plan turns ready or a pull request merges, and prints the command to run again on timeout. `--reserve <plan>` reserves one of this session's own plans for itself, with the checks a hand-out runs, so it can build it in lead + children mode; the plan stays held until its pull request merges or closes. It stands alone and is refused from a plan child or a follow-up child. `--release <plan>` frees a finished plan nothing can prove merged: your call, so Claude's Bash judge asks you first. |
 | `report <text>` | Child reports to a live Claude lead, or saves a unique private file when it cannot. A report is never your consent. |
 | `adopt` | Recovers this repo's same-core linked children after their lead disappears: a lead terminal with no live Claude in it counts as gone. Lists each adopted child's saved report files. A new Claude in the old lead's own terminal is that lead already and needs no adopt. It also moves the plans of an ended lead to the new one. |
 | `stop <terminal>` | Stops and removes an owned linked terminal; leaves the worktree for separate cleanup. |
@@ -503,7 +503,7 @@ file never run at once: that holds for a plan handed to a child or reserved by t
 solo start beside one, which is refused until the other plan's pull request merges or closes (or you
 change the files). A plan whose list overlaps another session's running plan is refused too,
 until that plan is done or parked. A reserved plan stays held until its pull request merges or closes; a plan you
-start yourself and never reserve stops being held once it is done or parked. A plan is also held
+start yourself and never reserve stops being held once its task closes or it is parked. A plan is also held
 back until the pull request of every plan it waits on has merged. `herdr plans` shows where each stands. A child takes its plan, builds it with
 `/cc-smart-dev-kit:build`, opens its own pull request and reports. `herdr start --plan <slug>`
 resumes a child that is gone, in its own worktree. Needs a git project whose default branch is
@@ -517,6 +517,45 @@ not check them and its drop does not free them. **Going back to an older kit:** 
 `plans.mergeFiles` (`workflow unset plans.mergeFiles --project`, then commit it) first. An older
 kit's workflow schema is strict and refuses a key it does not know. The task store needs nothing:
 its new table and columns stay, unread, and a plan handed to a child is an ordinary plan again.
+
+#### Follow-up children (5.4.0)
+
+A **follow-up** is a finding outside the plan Claude is building: a bug it meets, or one a builder
+or reviewer reports. Claude acts the moment it finds one.
+
+- **Inside a plan that is held** (Claude's own, or one a plan child builds): it becomes a task in
+  that plan, and nobody asks you. A held plan that is already finished takes no task, so Claude asks
+  you with two options: a late fix on that plan's pull request (when it is this session's), or file
+  it for after the merge.
+- **Outside every plan:** Claude asks you at once, one question per finding: what is wrong, where,
+  what it costs. The options, with the best first: send it to the follow-up child that already runs,
+  start a follow-up child, or file it only. A child that waits for you in its pane offers file only.
+  On a yes Claude files the issue first (when issues work), then starts the child with
+  `herdr start --followup [--issue <n>]…`, or sends the text to the one that runs.
+
+One follow-up child serves every follow-up of a lead and repository: one worktree, one branch, one
+pull request at a time. It never edits a file a held plan holds, and it never stops on its own.
+
+For each finding it makes one commit, with the issue in the subject as `(#n)`. Beyond a small fix it
+then gets one second opinion on that commit from `senior-engineer` (and the `edge-case-hunter` on a
+risky change); its brief allows no other agent, and work that needs a kit plan goes back to the
+lead. It never pushes before `ship`. It opens or updates its pull request only when the lead sends
+`ship`. Then it runs the full check, marks each fixed issue with `issue mark-fixed`, pushes once and
+writes the body's `Fixes` lines from `issue fixed` (on an open pull request it replaces them).
+
+The lead sends `ship` at the session's ship point: the end of the turn that finishes your request,
+or when you say ship now. When the child's earlier pull request has merged, it starts a new branch
+from the base at its next finding and moves any unmerged commits onto it.
+
+A start is refused while a child of this lead and repository lives; the refusal names it. A start
+is also refused after a child ended with unmerged commits; the refusal names its worktree and
+branch. Herdr no longer lists a stopped child, so the start's check for an ended child's unmerged
+work cannot see it: ship before `herdr stop`.
+
+The child asks you, like any child, in its own pane. Outside Herdr, in plan mode or while you are
+away, no child starts: Claude files the finding (or parks a question) and waits for your yes. It
+is **not yet proved live**. The design: [Herdr](docs/design/herdr.md) and
+[issues](docs/design/issues.md).
 
 ### Tasks (1.10.0)
 
@@ -2849,6 +2888,18 @@ itself only when the pull request's base **is** the project's integration base
 `autoMerge` says only that a merge **may** happen by itself once the branches are right. That
 CI is green and the review is done is the caller's check (the merge guard hook), and
 `mergeMethod` and `deleteBranch` say how the merge is made, not that it skips a question.
+
+**Fewer pull requests and CI runs (5.4.0).** A push before a pull request opens costs no CI only
+where CI runs on pull requests and the default branch alone: read your CI triggers before you treat
+it as free. The skills keep the count low.
+A plan's archive moves in the plan's own pull request (a commit before the final review, so the
+review covers it), and the plan task closes in the turn the pull request opens. The small fixes of one session go on one branch and share one pull request at one
+ship point: the end of the turn that finishes your request, or when you say ship now (a plan branch,
+or one that carries a reviewed change set, gets a new branch from the default branch for them). The
+follow-up child ships at the same point. Once a pull request is open, a round of fixes is collected,
+checked locally and pushed once. One pull request per plan stays, and so does a deploy run's small
+pull request of task closes. Nothing blocks a push: these are instructions, not a hook
+([design](docs/design/workflow.md#fewer-pull-requests)).
 
 **Two things follow a setting: a hook, or the instructions.**
 

@@ -15,7 +15,7 @@ own pane, and the lead never relays it (4.10.1). The user workflow is
 | `labels.ts` | Label names, core/address identities, child names, report escaping and agent prefix. |
 | `machines.ts` | The remote approval rules, validated reads and managed writes. |
 | `identity.ts` | Live terminal and process-ancestry checks. |
-| `brief.ts` | Private brief files and unique report files, and the plan trailer a plan child gets. |
+| `brief.ts` | Private brief files and unique report files, and the plan and follow-up trailers a child gets. |
 | `plans.ts` | The live side of plan hand-outs: the gates only git, gh and hc can answer, the start's reservation, and `herdr plans` (§ Handing out plans). |
 | `command.ts` | All nine verbs, dialog parsing and the event-stream barrier. |
 | `doctor.ts` | Optional hc discovery and conservative diagnostics. |
@@ -38,6 +38,7 @@ address forms the lead id: two cores can have the same short terminal address.
 | `kit.repo` | Repository root, or directory outside git. |
 | `kit.task` | Optional same-project task reference. |
 | `kit.plan` | A plan child's plan slug (`herdr start --plan`); a terminal that carries it never coordinates. |
+| `kit.followup` | `1` for a lead's follow-up child (`herdr start --followup`, § Follow-up children). A terminal that carries it never coordinates: `start --plan`, `plans --reserve` and `adopt` refuse it, as they refuse a plan child. It also carries `kit.lead`, so `start --followup` is refused in it. |
 | `kit.independent` | `1` for a session without a lead link. |
 | `kit.started-by` | Independent session's initiating identity, when available. |
 
@@ -126,8 +127,12 @@ take) is `docs/design/tasks.md` § Plans handed to children.
 
 - It excludes `--task`, `--independent` and `--on` (one text, `PLAN_EXCLUSION`): a plan child is
   local and linked.
-- It refuses when the caller's own terminal carries `kit.plan`: a plan child never coordinates.
-  `adopt` refuses there too.
+- It refuses when the caller's own terminal carries `kit.plan` or `kit.followup`: a plan child or
+  a follow-up child never coordinates. `plans --reserve` and `adopt` refuse there too. The words:
+  "A plan child never coordinates: it builds its own plan only, so it cannot <hand out plans |
+  reserve plans | adopt another lead's plans>." and "A follow-up child never coordinates: it works
+  its lead's findings only, so it cannot …", each with the fix "Report to your lead with
+  cc-smart-dev-kit herdr report; the lead hands plans out." (`refusePlanChild`, `command.ts`).
 - The slug resolves with the take path's resolver (`planByRef`), so `#n` works as well. The
   plan must be one this session laid and not started.
 - It refuses when the default branch is only a guess (no `origin/HEAD`, no `worktrees.base`),
@@ -157,11 +162,11 @@ and `branch` go in once, on a first start.
 resolves with `planByRef`, then it runs the same live gates and held-plan diffs as `start --plan`
 and `reservePlan` with holder `self`, with `ignore` and `caseFold` from `planFilesCheck`, read
 before the write lock. It prints one line naming the plan and the next step: start its first phase
-as usual. It refuses from a plan child (the terminal carries `kit.plan`), when the default branch
+as usual. It refuses from a plan child or a follow-up child (the terminal carries `kit.plan` or `kit.followup`), when the default branch
 is only a guess, and for a plan that is not pending (one already started: park it first, then reserve it), not the
 caller's own or already reserved, each with its fix. It stands alone: `--wait`, `--json` and `--release` cannot join it. The Bash judge
-stays silent, since it reserves the caller's own plan and frees nothing. The plan stays held until
-its pull request merges or closes (or the settle proof below holds): the classifier reads it as `own`, then `merging` once it is closed, and a
+stays silent, since it reserves the caller's own plan and frees nothing. A reserved plan stays held until
+its pull request merges or closes (or the settle proof below holds; an unreserved plan's files are free once its task closes): the classifier reads it as `own`, then `merging` once it is closed, and a
 `herdr plans` pass releases it like any other.
 
 **The plan trailer** (`planTrailer` in `brief.ts`) replaces the task trailer:
@@ -240,6 +245,188 @@ plan whose maker is the dead lead moves its maker too, so it does not read as `c
 new lead takes a plan the old lead built itself with `task_take` before its next phase. A lead
 with no recorded process is never adopted: its death cannot be proved.
 
+## Follow-up children
+
+A follow-up is a finding outside the plan being built: the lead's own, or one in a builder's
+`Report:`, a reviewer's "Outside this change" or a rules-maintainer's "Follow-ups for the caller".
+Before 5.4.0 nothing worked on a filed issue. Now the lead acts at once, and a yes hands a finding
+that is outside every plan to the lead's **follow-up child** (5.4.0): one linked session that
+collects every such follow-up of this lead and repository into one pull request at a time. The
+rule for the lead is `plugin/skills/tasks/SKILL.md` § 1; the command lines and the ship message
+are `plugin/skills/herdr/SKILL.md` § Follow-up child. This section is what the command checks and
+what the child is told.
+
+**Who gets which finding.**
+
+- **Inside a held plan** (the lead's own plan, or one handed to a plan child, live or gone): it is
+  a task in that plan, and nobody is asked. With a live plan child the lead sends it the finding so
+  it makes the task; otherwise the lead creates the task. The follow-up child never edits those
+  files.
+- **Inside a finished held plan** (its plan task closed, its pull request open): the store takes
+  no task. The lead asks with two options: a late fix on that pull request (only when it is this
+  session's) or filing it for after the merge, with a task note to send it to the follow-up child
+  then.
+- **Outside every plan:** the lead asks at once, one finding per question. The options: send it to
+  the follow-up child, start one, or file only. A blocked follow-up child offers file only.
+- **A child that finds one** lists it in `herdr report`; every linked child's brief says it never
+  asks, files or starts: the lead decides when it reads the report.
+
+**`start --followup [--issue <n>]…`** is the smaller sibling of `start --plan`. It takes the checks
+of any linked start (model, effort and mode, names, brief, binding) and adds these. `--issue` may
+repeat (repeats are dropped, the order kept), takes a positive whole number and needs `--followup`.
+The refusals, in the command's words:
+
+| Refused when | The command says (and the fix) |
+|---|---|
+| `--plan`, `--task`, `--independent` or `--on` is also given | "--followup cannot be combined with --plan, --task, --independent or --on." |
+| `--issue` is used wrongly | "--issue belongs to --followup." or "Use an issue number such as 12." |
+| Not in a git project, or no lead terminal | "A follow-up child needs a git project and the lead's own terminal." Fix: run it in the project's folder, or give `--cwd`, from the lead's terminal. |
+| The caller's terminal carries `kit.lead` (any child) | "A child never starts a follow-up child: only a lead does." Fix: put the finding in `cc-smart-dev-kit herdr report`. |
+| The default branch is only a guess | The text `start --plan` uses (`UNKNOWN_BASE`): "… so a child would reset to a guess." Fix: `git remote set-head origin --auto`, or set `worktrees.base`. |
+| This lead already has a live follow-up child in this repository | "This lead already has a follow-up child for this repository: `<addr>`." The fix depends on its state (below). |
+| A live follow-up child of a lead that has **ended** is here | "A follow-up child of a lead that has ended is still live in this repository: `<addr>`." Fix: take it over with `cc-smart-dev-kit herdr adopt`, then send the finding. |
+| An ended follow-up child left unmerged commits | "A follow-up child in this repository ended (`<addr>`) and left commits on `<branch>` that are not on origin/`<base>`, with no merged pull request. Its worktree is `<path>`." Fix: push and merge that work, or remove the worktree and branch once checked (`cc-smart-dev-kit worktrees --clean`), then start again. |
+
+The fix for the live-child refusal depends on the child's state:
+
+- Idle, working or done: `herdr send <addr> "<finding>"`.
+- Blocked, or no status yet: "It waits for the person in its pane: hc attach `<addr>`. Send the
+  finding once it is free."
+- Any other state (error): look at its pane.
+
+A plan child and a follow-up child cannot hand out, reserve or adopt plans either:
+`refusePlanChild` (shared with the plan child's refusals) says "A follow-up child never
+coordinates: it works its lead's findings only, so it cannot hand out plans | reserve plans |
+adopt another lead's plans." Fix: "Report to your lead with cc-smart-dev-kit herdr report; the
+lead hands plans out."
+
+The base is `baseBranch()` in `plans.ts`, so `worktrees.base` counts. The live-child gate is per
+lead and repository: another repository gets its own child through `--cwd` there, and a second
+start made right after the first meets the refusal. The ended-child gate is wider: it covers every
+lead of this core in the repository.
+
+The ended-child gate reads the branch the child's worktree has checked out (`worktree-<name>` when
+the worktree is gone). It counts a branch as unmerged when its commit count past `origin/<base>`
+is not 0 or cannot be read. A pull request state other than merged (open, closed, none or unknown)
+does not clear it.
+
+**The follow-up trailer** (`followupTrailer` in `brief.ts`, beside `planTrailer`) tells the child.
+It never stops on its own: after each report it waits for the next message, and ends only on
+`herdr stop`.
+
+1. **Once, before the first finding:** fetch `origin/<base>` (one retry; a second failure is reported, and no finding is taken until step 1 has run).
+   Reset onto it only when its **own** commit count is 0 and the tree is clean. The count is
+   `git rev-list --count HEAD --not --exclude=<branch> --branches --exclude=origin/<branch>
+   --remotes`: the commits on no other branch, local or remote. (`--exclude` applies only to the
+   next `--branches` or `--remotes`, so both are written. A bare count past `origin/<base>` would
+   treat the lead's plan branch as the child's work when `claude -w` cuts the worktree from it.)
+   Otherwise it never resets: the worktree may hold work.
+2. **Before each finding, its pull request's state:** `gh pr list --head <branch> --state all`.
+   A failure is reported and the child waits: never read as "none". An empty list is none; with
+   several, an OPEN one wins, else the newest by `createdAt`.
+   - OPEN: add the commit to the branch; it joins that pull request at the next ship.
+   - MERGED and `HEAD` equals the pull request's head commit: the branch is fully merged. It
+     fetches and runs `git switch -c followup-<name>-<n> origin/<base>` (`<n>` the first number
+     from 2 that `git branch --list` does not show). No reset. The switch carries uncommitted
+     changes, or refuses: then it reports and waits.
+   - MERGED and `HEAD` is past that commit: it makes the new branch the same way and
+     cherry-picks the commits past the pull request's head onto it, so a squash merge loses
+     nothing. A conflict is aborted (`git cherry-pick --abort`), the old branch restored, the new
+     one deleted, and the conflict reported. The marks come at the ship (step 6), with each
+     commit's id on the shipping branch, so a cherry-pick's new ids need no second mark.
+   - MERGED and `HEAD` neither equal nor past it: report and wait.
+   - CLOSED without a merge: never reset. It keeps its branch, and the next ship opens a new
+     pull request from it. It says so in its report.
+   - none: go on.
+3. Never edit a file a held plan holds. The trailer lists each held plan's slug and files, a
+   snapshot taken at the start (`heldPlans`, stored file lists only). The lead names the files of
+   a plan held later in its `send` text. A finding in those files goes in the report.
+4. A small fix: fix, check, review the diff. Work that needs a kit plan goes back to the lead in
+   the report: the child never runs plan-task or build. Other bigger work: plan mode, approved by
+   the person in the child's pane.
+5. One commit per finding, with its issue in the subject as `(#n)` and no closing keyword, so the
+   ship step reads the issue back from `git log`. Beyond a small fix (`/cc-smart-dev-kit:review`
+   defines it) the child then starts one second opinion on that commit from
+   `cc-smart-dev-kit:senior-engineer`, and the `cc-smart-dev-kit:edge-case-hunter` on a risky
+   change as that skill says. The brief allows those agents and no other, because the general
+   instructions require the second opinion and a linked child's brief otherwise forbids every
+   agent. The review runs on the commit because the review record counts the commit the folder is
+   on when the reviewer starts; the child commits nothing while it runs, and its confirmed fixes
+   go in one more commit. **It never pushes before `ship`:** its commits stay in its worktree.
+   (A push before the pull request opens costs no CI only where CI runs on pull requests and the
+   default branch alone; the child cannot know the project's triggers, so it never counts on
+   that.)
+6. **Ship only when a message from the lead says `ship`.** Then: the project's full check; then,
+   before the push, `issue mark-fixed --issue <n> --base <base> --branch <shipping branch> --tip
+   <id>` for every commit of its own that is not yet on `origin/<base>` and whose subject names an issue, with
+   `<id>` the commit's current id on the shipping branch (a cherry-pick or a new branch gives new
+   ids, and `issue fixed` finds an issue by its marker commit). `<base>` is the branch the pull
+   request targets, not the child's own branch: the comment would read "merged into" the wrong
+   branch. The comment posts before the merge, because the `Fixes` lines need the mark first, so
+   it says "merged" a little early. Skipped when issues are off. Marking at the ship, not after
+   each commit, means a commit that never ships (an aborted cherry-pick, a finding dropped before
+   the ship) never leaves a mark that names a branch which does not carry it. (A commit whose pull
+   request was closed was marked at the ship that opened it; the mark stays, and becomes true when
+   the branch ships again.) Then one push, then open the pull request or push to the open one, as
+   `workflow show` says (where it is off, ask the person in this terminal). The body's `Fixes`
+   lines come from `issue fixed --base origin/<base> --head <branch>`, never by hand. When it
+   pushes to an open pull request, it replaces the body's `Fixes` lines with what that command
+   prints now (`gh pr view <branch> --json body --jq .body`, then `gh pr edit <branch> --body-file -`; a failed read edits nothing), so an issue
+   marked at this ship is closed by the merge. A `ship` mid-finding waits until that finding is done. A `ship` with
+   nothing to ship is answered "nothing to ship" in the report.
+7. `herdr report` after each finding and after each ship.
+
+The trailer also carries the issue numbers given with `--issue`. The label is `kit.followup=1`;
+`herdr list` shows "follow-up" in a column now headed "task, plan or follow-up". No issue number is
+stored in a label, since it would go stale.
+
+**One home for "never ask, file or start".** `writeBrief` adds it to the linked text every linked
+child gets, after "Start no sessions or agents of your own unless this brief says so": "A finding
+outside your work goes in your report: never ask the person, file an issue or start a session for
+it." `planTrailer` and `followupTrailer` carry no copy of it.
+
+**The ship point.** The lead sends `herdr send <terminal> "ship"` at the session's one ship point
+(`docs/design/workflow.md` § Fewer pull requests): the end of the turn that finishes the person's
+request, or when the person says to ship now. A blocked child cannot take it: the lead tells the
+person where it waits (`hc attach`), saves a task note "send ship to `<terminal>`" and sends it
+the next time the child is idle, working or done. A child in the error state: the lead tells the
+person to look at its pane. While the person is away, the send is parked as an action.
+
+**Sending to it.** `herdr send` reaches the follow-up child in the states `SEND_STATES` lists
+(idle, working, done), one constant read by `send`, `report` and the gate. A blocked child, or
+one with no status yet, refuses `send`: it waits for the person in its pane, and the issue stays
+filed. In the error state the lead neither sends nor starts. After a new start the lead waits for
+the child's first status before the first send.
+
+**`wait --all`** leaves follow-up children out of its barrier, since one never settles. With only
+follow-up children live it prints "No live kit children to wait for (a follow-up child never
+settles)." (no live child at all keeps "No live kit children."). `wait` without `--all`, `list`
+and `stop` see it as any linked child.
+
+**The judge** reuses the command's parser. A `herdr start` line with a parse error (a bad
+`--issue`, a refused pair of flags) shows that error alone when `--model`, `--effort` and `--mode`
+are all given. With one missing, the old "Pass both --model and --effort, plus --mode" line still
+comes first.
+
+**Limits.**
+
+- The held-plan list in the trailer is a snapshot; the lead repeats a new one in a `send`.
+- The orphan gate sees only terminals `hc` still lists. `herdr stop` kills and removes the
+  terminal, so after a stop the gate cannot see that child's unshipped work: ship first. The
+  worktree and branch stay, and `worktrees --clean` may hold an old branch whose commits were
+  cherry-picked elsewhere.
+- A corner with `baseRef: head`: when the lead's own HEAD is detached, its commits are on no
+  branch, so the child's own-commit count includes them and the guard does not reset.
+- The child follows its trailer in prose; nothing enforces the steps.
+- A review covers only its own branch (`review-cover.ts`). After a cherry-pick onto a new branch,
+  the moved commits' reviews do not cover the new head, so the merge guard asks the person at
+  that pull request's merge. Nothing is lost.
+- A merged or closed pull request (by the person or `autoMerge`) is noticed only at the child's
+  next finding.
+- No `--issue` and no `Fixes` line when issues are refused (a public repository without
+  `allowPublic`, no GitHub, issues off).
+- The flow is **not yet proved live** (§ Live evidence and work still owed).
+
 ## Remote machines
 
 `cliPaths().machinesFile` is `~/.config/cc-smart-dev-kit/machines.json`, independent of
@@ -290,6 +477,7 @@ Default/`--any` returns on news, retaining all news buffered in that chunk. `--a
 barrier over initial live children not already settled-and-reported; it waits for each to
 give news or leave, or until timeout. An empty all-barrier says there is nothing to wait for;
 any keeps listening for a new turn. With no live owned children either mode returns at once.
+A follow-up child (`kit.followup`) is left out of the `--all` barrier: it never settles on its own (§ Follow-up children).
 The default timeout is `WAIT_TIMEOUT_MS` in the command; timeout is not completion proof.
 
 The final continuation keeps the supplied cursor entries for the addresses in the wait's
@@ -331,6 +519,13 @@ fragments. These are policy checks, not a sandbox; keep that limit explicit.
 | Child blocked on a question or permission | The person answers in its pane; `wait` keeps waiting. |
 | Lead has become a shell or is blocked | Report falls back to a unique file. |
 | Old terminal name still has worktree/branch | Refuse reuse rather than resume old work. A plan's own child is the one exception (§ Handing out plans). |
+| A child finds a follow-up | It lists it in `herdr report`; a child cannot start `--followup` (`kit.lead`), so the lead decides. |
+| A finding sits in a held plan's files | A task in that plan, no question; never for the follow-up child. A finished held plan: late fix on its pull request, or filed for after its merge. |
+| The follow-up child's pull request merges | At its next finding it fetches and switches to a new branch from `origin/<base>` (a cherry-pick when it holds unmerged commits). No reset. The lead still sends to the same child. |
+| The follow-up child's pull request is closed unmerged | It never resets: it keeps its branch and the next ship opens a new pull request from it. |
+| A follow-up child ended with unmerged commits | The next `start --followup` is refused and names its worktree and branch, if `hc` still lists the terminal; after `herdr stop` it cannot be seen. |
+| A follow-up child is live under a lead that ended | The start is refused; `herdr adopt` takes the child over. |
+| `ship` arrives at a blocked child | The lead tells the person, notes "send ship to <terminal>" and sends it when the child is free. |
 | Two plan hand-outs share a file | The second `start --plan` is refused by the reservation and names the plan in its way. |
 | A plan child's pane closes | `child-gone`: `start --plan <slug>` resumes it in its recorded worktree. |
 | A session from before 5.2.0 | It ignores reservations: its take and start do not check them and its drop does not release. Restart it before plans are handed out. |
@@ -370,6 +565,7 @@ not live UI behavior.
 - Acceptance of the final-check-to-keys race, or upstream `keys --if-turn` support.
 - With app and core closed, whether `hc server status --json` starts a core. Until it is
   shown never to start one, doctor keeps core not checked.
+- The follow-up flow (5.4.0): the lead acts at once, the first yes files the issue and starts the child on `origin/<base>`, a second finding is sent to it, and at the ship point `ship` makes it open one pull request that carries both with `Fixes` lines from `issue fixed`; after a merge the same child switches to a new branch at the next finding. The orphan gate, the cherry-pick path and the closed-pull-request path have fake-runner tests only.
 
 The done-child send result above is established; #273 still calls for its end-to-end
 confirmation with the owner. The broader plan also owes integration checks for adoption

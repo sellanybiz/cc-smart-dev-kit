@@ -14,10 +14,17 @@ import { createTask, reservePlan, takeTasks, updateTask } from "../tasks/work/st
 import type { ClaimProcess, Who, WorkTask } from "../tasks/work/types";
 import { cleanGitEnv, git, tempDir } from "../testing/temp";
 import { briefPath } from "./brief";
-import { type HerdrContext, LOGIN_SHELL_SCRIPT, loginShellArgv, runHerdr } from "./command";
+import {
+  type HerdrContext,
+  LOGIN_SHELL_SCRIPT,
+  loginShellArgv,
+  runHerdr,
+  SEND_STATES,
+  WaitBarrier,
+} from "./command";
 import type { HcRunner } from "./hc";
 import { PLAN_POLL_MS, type PrState } from "./plans";
-import { PLAN_EXCLUSION } from "./words";
+import { FOLLOWUP_EXCLUSION, PLAN_EXCLUSION } from "./words";
 
 function world() {
   const dir = tempDir(),
@@ -1248,7 +1255,7 @@ test("herdr list shows the plan of a plan child", async () => {
   p.setList(["t2"]);
   p.lines.length = 0;
   expect(await runHerdr(["list"], p.ctx)).toBe(0);
-  expect(p.lines.join("\n")).toContain("task or plan");
+  expect(p.lines.join("\n")).toContain("task, plan or follow-up");
   expect(p.lines.join("\n")).toContain("| plan alpha |");
 });
 
@@ -1525,6 +1532,28 @@ test("a start in a project with no store says so, with its fix", async () => {
   expect(w.calls.some((c) => c.args[0] === "run")).toBe(false);
 });
 
+test("a follow-up child never coordinates: start --plan, plans --reserve and adopt are refused", async () => {
+  const p = planWorld();
+  p.plan("alpha", ["src/a/"]);
+  p.rows.t1 = { ...(p.rows.t1 as object), labels: { "kit.lead": "core/t0", "kit.followup": "1" } };
+  const cases: [string[], string][] = [
+    [[...planLaunch, "--plan", "alpha", "--", "work"], "cannot hand out plans"],
+    [[...RESERVE, "alpha"], "cannot reserve plans"],
+    [["adopt"], "cannot adopt another lead's plans"],
+  ];
+  for (const [args, doing] of cases) {
+    p.lines.length = 0;
+    expect(await runHerdr(args, p.ctx)).toBe(1);
+    const text = p.lines.join("\n");
+    expect(text).toContain(
+      `A follow-up child never coordinates: it works its lead's findings only, so it ${doing}.`,
+    );
+    expect(text).toContain("herdr report");
+    p.noRun();
+  }
+  expect(p.row("alpha").lead).toBeNull();
+});
+
 test("a plan child cannot adopt: D1 holds for every verb that coordinates", async () => {
   const p = planWorld();
   p.rows.t1 = { ...(p.rows.t1 as object), labels: { "kit.lead": "core/t0", "kit.plan": "other" } };
@@ -1785,4 +1814,323 @@ test("plans --reserve reads the same gates as a hand-out: a blocked, a file-less
     expect(p.lines.join("\n")).toContain(why);
     expect(p.row(slug).lead).toBeNull();
   }
+});
+
+const followLaunch = [...planLaunch, "--followup"];
+/** The follow-up child of this lead, as `hc get` shows it; `over` changes what a case needs. */
+function followRow(repo: string, over: Record<string, unknown> = {}) {
+  return {
+    address: "t3",
+    name: "kit-fu",
+    state: "live",
+    labels: { "kit.lead": "core/t1", "kit.followup": "1", "kit.repo": repo },
+    status: { app: "claude-code", state: "idle" },
+    ...over,
+  };
+}
+function repoOf(p: ReturnType<typeof planWorld>): string {
+  const context = taskContext(p.ctx.cwd, p.ctx.env);
+  if (!context.ok || context.repo === null) throw new Error("no repo");
+  return context.repo;
+}
+
+test("--followup launches the lead's one follow-up child: label, brief, base and held plans", async () => {
+  const p = planWorld();
+  p.plan("alpha", ["src/a/"]);
+  expect(await runHerdr([...planLaunch, "--plan", "alpha", "--", "Build alpha"], p.ctx)).toBe(0);
+  p.calls.length = 0;
+  p.lines.length = 0;
+  expect(
+    await runHerdr([...followLaunch, "--issue", "12", "--issue", "7", "--", "Fix the typo"], p.ctx),
+  ).toBe(0);
+  const run = p.calls.find((c) => c.args[0] === "run")?.args ?? [];
+  expect(run.filter((a) => a.startsWith("kit."))).toEqual([
+    `kit.repo=${repoOf(p)}`,
+    "kit.lead=core/t1",
+    "kit.followup=1",
+  ]);
+  expect(run.slice(run.indexOf("--name"), run.indexOf("--name") + 2)).toEqual([
+    "--name",
+    "kit-123",
+  ]);
+  expect(run.slice(run.indexOf("-w"), run.indexOf("-w") + 2)).toEqual(["-w", "kit-123"]);
+  const brief = readFileSync(briefPath(p.ctx.paths.stateDir, "core", "kit-123"), "utf8");
+  expect(brief).toContain("Fix the typo");
+  expect(brief).toContain("The first findings are filed as #12, #7.");
+  expect(brief).toContain("- alpha: src/a/\n");
+  expect(brief).toContain("git reset --hard origin/main");
+  expect(brief).not.toContain("Your plan:");
+  // No task or plan is bound: the store keeps its one reservation, the plan child's.
+  expect(p.row("alpha").agent).toBe("herdr:core/t2");
+  expect(p.lines.join("\n")).toContain("linked child: t2; name kit-123");
+});
+
+test("--followup without a held plan or an issue leaves both lines out of the brief", async () => {
+  const p = planWorld();
+  expect(await runHerdr([...followLaunch, "--", "Fix it"], p.ctx)).toBe(0);
+  const brief = readFileSync(briefPath(p.ctx.paths.stateDir, "core", "kit-123"), "utf8");
+  expect(brief).not.toContain("are filed as");
+  expect(brief).not.toContain("hold files now");
+  // A project with no store at all is no refusal: no plan is held.
+  const w = world();
+  git(w.ctx.cwd, "init", "-q", "-b", "main");
+  expect(await runHerdr([...followLaunch, "--", "Fix it"], w.ctx)).toBe(1);
+  expect(w.lines.join("\n")).toContain("The default branch cannot be found");
+});
+
+test("--followup refuses every option it cannot share a start with, and --issue alone", async () => {
+  const p = planWorld();
+  for (const extra of [
+    ["--plan", "alpha"],
+    ["--task", "#1"],
+    ["--independent"],
+    ["--on", "remote", "--asked"],
+  ]) {
+    p.lines.length = 0;
+    expect(await runHerdr([...followLaunch, ...extra, "--", "work"], p.ctx)).toBe(1);
+    expect(p.lines.join("\n")).toContain(FOLLOWUP_EXCLUSION);
+    p.noRun();
+  }
+  p.lines.length = 0;
+  expect(await runHerdr([...planLaunch, "--issue", "3", "--", "work"], p.ctx)).toBe(2);
+  expect(p.lines.join("\n")).toContain("--issue belongs to --followup.");
+  p.noRun();
+});
+
+test("a child of any kind never starts a follow-up child", async () => {
+  for (const labels of [{ "kit.lead": "core/t0" }, { "kit.lead": "core/t0", "kit.plan": "x" }]) {
+    const p = planWorld();
+    p.rows.t1 = { ...(p.rows.t1 as object), labels };
+    expect(await runHerdr([...followLaunch, "--", "work"], p.ctx)).toBe(1);
+    expect(p.lines.join("\n")).toContain("A child never starts a follow-up child");
+    expect(p.lines.join("\n")).toContain("herdr report");
+    p.noRun();
+  }
+});
+
+test("a start outside a git project, or with a default branch that can only be guessed, is refused", async () => {
+  const w = world();
+  expect(await runHerdr([...followLaunch, "--", "work"], w.ctx)).toBe(1);
+  expect(w.lines.join("\n")).toContain("A follow-up child needs a git project");
+  expect(w.calls.some((c) => c.args[0] === "run")).toBe(false);
+  const p = planWorld();
+  git(p.ctx.cwd, "remote", "remove", "origin");
+  expect(await runHerdr([...followLaunch, "--", "work"], p.ctx)).toBe(1);
+  const text = p.lines.join("\n");
+  expect(text).toContain("The default branch cannot be found");
+  expect(text).toContain("Fix: run `git remote set-head origin --auto`");
+  p.noRun();
+});
+
+test("a plan hand-out and a follow-up start refuse an unknown default branch in the same words", async () => {
+  const p = planWorld();
+  p.plan("alpha", ["src/a/"]);
+  git(p.ctx.cwd, "remote", "remove", "origin");
+  const said: string[] = [];
+  for (const extra of [["--plan", "alpha"], ["--followup"]]) {
+    p.lines.length = 0;
+    expect(await runHerdr([...planLaunch, ...extra, "--", "work"], p.ctx)).toBe(1);
+    said.push(p.lines.join("\n"));
+  }
+  const sentence =
+    "The default branch cannot be found: origin/HEAD is not set and no worktrees.base is configured, so a child would reset to a guess.";
+  const fix =
+    "Fix: run `git remote set-head origin --auto`, or set worktrees.base in .claude/cc-smart-dev-kit.json";
+  expect(said).toEqual([`✗ ${sentence}\n  ${fix}`, `✗ ${sentence}\n  ${fix}`]);
+});
+
+test("one live follow-up child per lead and repository: the refusal names it and says what to do", async () => {
+  const cases: [string, Record<string, unknown>, string][] = [
+    ["idle", {}, 'Fix: Send the finding to it: cc-smart-dev-kit herdr send t3 "<finding>"'],
+    ["working", { status: { app: "claude-code", state: "working" } }, 'herdr send t3 "<finding>"'],
+    ["done", { status: { app: "claude-code", state: "done" } }, 'herdr send t3 "<finding>"'],
+    [
+      "blocked",
+      { status: { app: "claude-code", state: "blocked" } },
+      "It waits for the person in its pane: hc attach t3",
+    ],
+    ["no status", { status: null }, "It waits for the person in its pane: hc attach t3"],
+    [
+      "error",
+      { status: { app: "claude-code", state: "error" } },
+      "It is in the error state: look at its pane: hc attach t3",
+    ],
+  ];
+  for (const [state, over, fix] of cases) {
+    const p = planWorld();
+    p.rows.t3 = followRow(repoOf(p), over);
+    p.setList(["t3"]);
+    expect([state, await runHerdr([...followLaunch, "--", "work"], p.ctx)]).toEqual([state, 1]);
+    const text = p.lines.join("\n");
+    expect(text).toContain("This lead already has a follow-up child for this repository: t3.");
+    expect(text).toContain(fix);
+    p.noRun();
+  }
+});
+
+test("a follow-up child of another repository, another lead core, or a finished one with nothing to lose does not block", async () => {
+  const p = planWorld();
+  const repo = repoOf(p);
+  p.rows.t3 = followRow(repo, {
+    labels: { "kit.lead": "core/t1", "kit.followup": "1", "kit.repo": "/elsewhere" },
+  });
+  p.rows.t4 = followRow(repo, {
+    address: "t4",
+    name: "kit-other",
+    labels: { "kit.lead": "other/t1", "kit.followup": "1", "kit.repo": repo },
+  });
+  p.rows.t5 = followRow(repo, {
+    address: "t5",
+    name: "kit-plain",
+    labels: { "kit.lead": "core/t1", "kit.repo": repo },
+  });
+  p.rows.t6 = followRow(repo, { address: "t6", name: "kit-gone", state: "finished" });
+  p.setList(["t3", "t4", "t5", "t6"]);
+  expect(await runHerdr([...followLaunch, "--", "work"], p.ctx)).toBe(0);
+});
+
+test("a gone follow-up child that left commits with no merged pull request blocks a new one", async () => {
+  const unmerged = (p: ReturnType<typeof planWorld>) => {
+    git(p.ctx.cwd, "checkout", "-q", "-b", "worktree-kit-fu");
+    git(p.ctx.cwd, "commit", "-q", "--allow-empty", "-m", "left behind");
+    git(p.ctx.cwd, "checkout", "-q", "main");
+    p.rows.t3 = followRow(repoOf(p), { state: "finished", status: null });
+    p.setList(["t3"]);
+  };
+  for (const pr of ["none", "open", "closed", "unknown"] as const) {
+    const p = planWorld();
+    unmerged(p);
+    p.ctx.pr = () => pr;
+    expect([pr, await runHerdr([...followLaunch, "--", "work"], p.ctx)]).toEqual([pr, 1]);
+    const text = p.lines.join("\n");
+    expect(text).toContain(
+      "A follow-up child in this repository ended (t3) and left commits on worktree-kit-fu that are not on origin/main, with no merged pull request.",
+    );
+    expect(text).toContain(`Its worktree is ${join(repoOf(p), ".claude", "worktrees", "kit-fu")}.`);
+    p.noRun();
+  }
+  // Its pull request merged: the work is on the base.
+  const merged = planWorld();
+  unmerged(merged);
+  merged.ctx.pr = () => "merged";
+  expect(await runHerdr([...followLaunch, "--", "work"], merged.ctx)).toBe(0);
+  // The branch holds nothing the base lacks, or no longer exists.
+  const empty = planWorld();
+  git(empty.ctx.cwd, "branch", "worktree-kit-fu");
+  empty.rows.t3 = followRow(repoOf(empty), { state: "finished", status: null });
+  empty.setList(["t3"]);
+  empty.ctx.pr = () => "none";
+  expect(await runHerdr([...followLaunch, "--", "work"], empty.ctx)).toBe(0);
+  const absent = planWorld();
+  absent.rows.t3 = followRow(repoOf(absent), { state: "finished", status: null });
+  absent.setList(["t3"]);
+  absent.ctx.pr = () => "none";
+  expect(await runHerdr([...followLaunch, "--", "work"], absent.ctx)).toBe(0);
+});
+
+test("the orphan gate reads the worktree's checked-out branch, not only worktree-<name>", async () => {
+  const p = planWorld();
+  const worktree = join(repoOf(p), ".claude", "worktrees", "kit-fu");
+  // The child moved to a new branch after its first pull request merged.
+  git(p.ctx.cwd, "worktree", "add", "-q", "-b", "followup-kit-fu-2", worktree, "main");
+  git(worktree, "commit", "-q", "--allow-empty", "-m", "later finding");
+  p.rows.t3 = followRow(repoOf(p), { state: "finished", status: null });
+  p.setList(["t3"]);
+  const asked: string[] = [];
+  p.ctx.pr = (_repo, branch) => {
+    asked.push(branch);
+    return "none";
+  };
+  expect(await runHerdr([...followLaunch, "--", "work"], p.ctx)).toBe(1);
+  expect(asked).toEqual(["followup-kit-fu-2"]);
+  expect(p.lines.join("\n")).toContain(
+    "A follow-up child in this repository ended (t3) and left commits on followup-kit-fu-2 that are not on origin/main, with no merged pull request.",
+  );
+  expect(p.lines.join("\n")).toContain(`Its worktree is ${worktree}.`);
+  p.noRun();
+});
+
+test("the one-per-lead gate matches the lead itself: another live lead's child does not block, an ended lead's does", async () => {
+  const p = planWorld();
+  const repo = repoOf(p);
+  const labels = { "kit.lead": "core/t9", "kit.followup": "1", "kit.repo": repo };
+  p.rows.t3 = followRow(repo, { labels });
+  p.setList(["t3"]);
+  // Its lead t9 is another live Claude session on this core: that lead's child, no refusal.
+  p.rows.t9 = {
+    address: "t9",
+    name: "other-lead",
+    state: "live",
+    labels: {},
+    status: { app: "claude-code", state: "idle" },
+  };
+  expect(await runHerdr([...followLaunch, "--", "work"], p.ctx)).toBe(0);
+  // Its lead has ended: the child is still live, so a second one waits for `herdr adopt`.
+  for (const lead of [undefined, { ...(p.rows.t9 as object), state: "finished" }]) {
+    const w = planWorld();
+    w.rows.t3 = followRow(repoOf(w), { labels: { ...labels, "kit.repo": repoOf(w) } });
+    if (lead) w.rows.t9 = lead;
+    w.setList(["t3"]);
+    expect(await runHerdr([...followLaunch, "--", "work"], w.ctx)).toBe(1);
+    const text = w.lines.join("\n");
+    expect(text).toContain(
+      "A follow-up child of a lead that has ended is still live in this repository: t3.",
+    );
+    expect(text).toContain(
+      `Fix: Take it over with ${COMMAND} herdr adopt, then send the finding to it.`,
+    );
+    w.noRun();
+  }
+});
+
+test("the states send accepts are one list, which send and the follow-up gate share", () => {
+  expect([...SEND_STATES]).toEqual(["idle", "working", "done"]);
+});
+
+test("herdr list shows a follow-up child as follow-up", async () => {
+  const p = planWorld();
+  p.rows.t3 = followRow(repoOf(p));
+  p.setList(["t3"]);
+  expect(await runHerdr(["list"], p.ctx)).toBe(0);
+  expect(p.lines.join("\n")).toContain("| kit-fu | linked child | ");
+  expect(p.lines.join("\n")).toContain("| follow-up | idle |");
+});
+
+test("wait --all leaves a follow-up child out of the barrier; --any does not", async () => {
+  const p = planWorld();
+  p.rows.t3 = followRow(repoOf(p));
+  p.setList(["t3"]);
+  const asked: unknown[] = [];
+  p.ctx.events = async (_labels, _timeout, options) => {
+    asked.push(options);
+    return { news: [], pending: [], timeout: false };
+  };
+  // Only a follow-up child is live: nothing to wait for, and no event stream is opened.
+  expect(await runHerdr(["wait", "--all"], p.ctx)).toBe(0);
+  expect(p.lines).toEqual(["No live kit children to wait for (a follow-up child never settles)."]);
+  expect(asked).toEqual([]);
+  p.lines.length = 0;
+  expect(await runHerdr(["wait", "--any"], p.ctx)).toBe(0);
+  expect(asked).toEqual([{ mode: "any" }]);
+  // Beside a plain child the barrier is told to skip the follow-up child's address.
+  p.rows.t2 = { ...(p.rows.t2 as object), labels: { "kit.lead": "core/t1" } };
+  p.setList(["t2", "t3"]);
+  asked.length = 0;
+  expect(await runHerdr(["wait", "--all"], p.ctx)).toBe(0);
+  expect(asked).toEqual([{ mode: "all", skip: new Set(["t3"]) }]);
+});
+
+test("the all barrier completes while a skipped follow-up child is still working", () => {
+  const rows = (second: string) => ({
+    terminals: [
+      { address: "t2", state: "live", status: { state: "done" }, turn: 1 },
+      { address: "t3", state: "live", status: { state: second }, turn: 1 },
+    ],
+  });
+  const skipping = new WaitBarrier("all", {}, undefined, new Set(["t3"]));
+  expect(skipping.consume(rows("working"))).toBe(true);
+  expect(skipping.pending()).toEqual([]);
+  const waiting = new WaitBarrier("all");
+  expect(waiting.consume(rows("working"))).toBe(false);
+  expect(waiting.pending()).toEqual(["t3"]);
 });

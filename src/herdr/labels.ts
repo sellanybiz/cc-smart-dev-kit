@@ -3,6 +3,8 @@ export const KIT_REPO = "kit.repo";
 export const KIT_TASK = "kit.task";
 /** A plan child carries the plan's slug: it builds that plan only and never coordinates (D1). */
 export const KIT_PLAN = "kit.plan";
+/** The lead's follow-up child (`herdr start --followup`): value `1`. It never settles, and `wait --all` leaves it out. */
+export const KIT_FOLLOWUP = "kit.followup";
 export const KIT_INDEPENDENT = "kit.independent";
 export const KIT_STARTED_BY = "kit.started-by";
 export const KIT_LABELS = {
@@ -10,6 +12,7 @@ export const KIT_LABELS = {
   repo: KIT_REPO,
   task: KIT_TASK,
   plan: KIT_PLAN,
+  followup: KIT_FOLLOWUP,
   independent: KIT_INDEPENDENT,
   startedBy: KIT_STARTED_BY,
 } as const;

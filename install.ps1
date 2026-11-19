@@ -79,7 +79,7 @@ $MinBun = "1.4.3"
 # (step 5): a CLI older than this script would refuse the options this script passes it, and
 # that is exactly what happened on the first real run (2026-10-17: the installed CLI was 0.4.1,
 # it had no `--tavily-key-stdin`, and the run died at the Tavily step).
-$InstallerVersion = "5.3.0"
+$InstallerVersion = "5.4.0"
 
 # The names this repository declares: the marketplace in .claude-plugin/marketplace.json
 # and the plugin id in plugin/.claude-plugin/plugin.json. `claude plugin install` needs
