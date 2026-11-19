@@ -473,11 +473,7 @@ function scan(
       // `} > out.log 2>&1`: the redirections of a group, which holds the commands. Never one that
       // reads a file: `$(< .env)` prints it, and inside the queue's shell string Claude Code's
       // Read rules no longer see the `<` target.
-      if (
-        dialect === "bash" &&
-        withoutRedirections(words).length === 0 &&
-        !words.some((word) => INPUT_REDIRECTION.test(word))
-      ) {
+      if (dialect === "bash" && withoutRedirections(words).length === 0 && !readsAFile(words)) {
         continue;
       }
       return refuse(run, out, step);
@@ -1151,6 +1147,22 @@ export const GLUE_COMMANDS: ReadonlySet<string> = new Set([
 
 /** A word an input redirection starts: `< file`, `<file`, `0<file`, `<>file` (a here-doc is not). */
 const INPUT_REDIRECTION = /^\d*<(?![<(])/;
+
+/**
+ * True when the words redirect input from a file other than `/dev/null` (`< .env`, `0<.env`,
+ * `<> .env`): reading `/dev/null` shows nothing, as writing to it keeps nothing.
+ */
+function readsAFile(words: readonly string[]): boolean {
+  for (let index = 0; index < words.length; index++) {
+    const word = words[index] ?? "";
+    if (!INPUT_REDIRECTION.test(word)) continue;
+    // The target is the rest of the word, or the next word when the operator stands alone.
+    const attached = word.replace(/^\d*<>?/, "");
+    const target = attached === "" ? (words[++index] ?? "") : attached;
+    if (target !== "/dev/null") return true;
+  }
+  return false;
+}
 
 /**
  * True when one step is a reader that reads the pipe only: a read-only filter by the pipe's

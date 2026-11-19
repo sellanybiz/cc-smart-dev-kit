@@ -1537,6 +1537,14 @@ describe("routableLine: harmless glue rides in the queued line", () => {
     expect(line('bun test; echo "$(< .env)"')).toBeNull();
     expect(line('bun test; X=$(< .env); echo "$X"')).toBeNull();
     expect(line("bun test; echo `< .env`")).toBeNull();
+    expect(line("{ bun test; } 0<.env")).toBeNull();
+    expect(line("{ bun test; } <> .env")).toBeNull();
+  });
+
+  test("a group whose input is /dev/null is still structure: it reads nothing", () => {
+    queuedWhole("{ bun test; } < /dev/null", "test:run");
+    queuedWhole("( bunx tsc --noEmit ) </dev/null", "tsc");
+    queuedWhole("{ bun test; } 0</dev/null > out.log 2>&1", "test:run");
   });
 
   test("a reader that reads the pipe: no file word, so no Read rule is hidden", () => {
