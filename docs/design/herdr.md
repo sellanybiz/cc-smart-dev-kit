@@ -127,8 +127,12 @@ take) is `docs/design/tasks.md` § Plans handed to children.
 
 - It excludes `--task`, `--independent` and `--on` (one text, `PLAN_EXCLUSION`): a plan child is
   local and linked.
-- It refuses when the caller's own terminal carries `kit.plan` or `kit.followup`: a plan child or a follow-up child never coordinates.
-  `adopt` refuses there too.
+- It refuses when the caller's own terminal carries `kit.plan` or `kit.followup`: a plan child or
+  a follow-up child never coordinates. `plans --reserve` and `adopt` refuse there too. The words:
+  "A plan child never coordinates: it builds its own plan only, so it cannot <hand out plans |
+  reserve plans | adopt another lead's plans>." and "A follow-up child never coordinates: it works
+  its lead's findings only, so it cannot …", each with the fix "Report to your lead with
+  cc-smart-dev-kit herdr report; the lead hands plans out." (`refusePlanChild`, `command.ts`).
 - The slug resolves with the take path's resolver (`planByRef`), so `#n` works as well. The
   plan must be one this session laid and not started.
 - It refuses when the default branch is only a guess (no `origin/HEAD`, no `worktrees.base`),
