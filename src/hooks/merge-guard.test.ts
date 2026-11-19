@@ -2259,3 +2259,19 @@ describe("IX1: gh aliases and unreadable gh words in the issue part of the guard
     expect((await decide(env, repo, "gh api repos/o/r/labels -f name=x"))?.decision).toBe("ask");
   });
 });
+
+describe("the tool reader reads a script file: the merge guard's answers are the same as before", () => {
+  // `bash x.sh "…"` runs a script file, and a runner or a script file is no merge: the answers
+  // were silence before the tool reader learned to follow a shell to the file it is given.
+  test.each([
+    ["npx tsc --noEmit", "Bash"],
+    ['bash x.sh "gh pr merge 7"', "Bash"],
+    ["bash -o pipefail x.sh 'gh pr merge 7'", "Bash"],
+    ["source x.sh 'gh pr merge 7'", "Bash"],
+    ["npx tsc", "PowerShell"],
+  ])("%j (%s): silent, and gh is not called", async (command, tool) => {
+    const { env, gh, repo } = ready();
+    expect(await runHook(mergeGuardHook, input(repo, command, tool), env)).toEqual({});
+    expect(ghCalls(gh)).toEqual([]);
+  });
+});
