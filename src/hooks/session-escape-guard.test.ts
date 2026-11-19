@@ -1409,3 +1409,24 @@ describe("the direct call", () => {
     expect(decisionOf(result)?.decision).toBe("deny");
   });
 });
+
+describe("the tool reader reads a script file: the escape guard's answers are the same as before", () => {
+  // `bash x.sh "…"` runs a script file: the quoted word is the file's argument, not a command
+  // of this line. These answers were silence before the tool reader learned to follow a shell
+  // to the file it is given (`src/shell/tool.ts`).
+  const { repo } = makeClone();
+  test.each([
+    ["npx tsc --noEmit", "Bash"],
+    ['bash x.sh "a; git push -f"', "Bash"],
+    [`bash x.sh "${KIT} workflow review-done"`, "Bash"],
+    [`bash -o pipefail x.sh "env -u CLAUDECODE ${KIT} doctor"`, "Bash"],
+    ["npx tsc", "PowerShell"],
+  ])("%j (%s): silent", async (command, tool) => {
+    expect(await run(shellInput(command, repo, tool))).toBeNull();
+  });
+
+  test("a shell that runs a command string is still read", async () => {
+    const answer = await run(shellInput(`bash -c "${KIT} workflow review-done"`, repo));
+    expect(answer?.decision).toBe("deny");
+  });
+});

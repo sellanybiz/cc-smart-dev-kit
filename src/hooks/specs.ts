@@ -7,6 +7,7 @@
  * | Hook | Event (matcher) | Fails closed by |
  * |---|---|---|
  * | git-guard | PreToolUse (Bash, PowerShell) | asking before every command that runs git |
+ * | deploy-guard | PreToolUse (Bash, PowerShell) | project-scoped: a project's file that cannot be read asks only when its raw `tasks.deployCommands` lists the command the call runs (`deploy-guard.ts`) |
  * | main-folder-guard | PreToolUse (Edit, Write, NotebookEdit, Bash) | asking before every edit, and every shell command that writes, in the repo |
  * | agent-guard | PreToolUse (Agent, Task, Workflow) | machine-wide: it judges the same way without cc-smart-dev-kit.json (`agent-guard.ts`) |
  * | fable-session | SessionStart, PostModelSwitch, Stop | machine-wide: it says the same line without cc-smart-dev-kit.json (`fable-session.ts`) |
@@ -41,6 +42,7 @@ import { afterMerge, mergesPullRequest, requestsPullRequestChange } from "./afte
 import { AGENT_TOOLS, agentGuard, guardFacts, WORKFLOW_TOOLS } from "./agent-guard";
 import { recordAgentUsage } from "./agent-usage";
 import { builderFinish, builderFinishAnswer } from "./builder-finish";
+import { deployConfigProblem, deployCrashDomain, deployFacts, deployGuard } from "./deploy-guard";
 import { fableSession } from "./fable-session";
 import { isInside } from "./git";
 import { DEFAULT_PROTECTED_BRANCHES, guardQuestions, runsGit } from "./git-guard";
@@ -163,6 +165,23 @@ export const gitGuardHook: HookSpec = {
     });
     return questions.length === 0 ? SILENT : toolDecision("ask", questions.join("\n"));
   },
+};
+
+/**
+ * The deploy guard: PreToolUse on Bash and PowerShell, before a command the project lists as
+ * a deploy while that environment has open work that holds a deploy. Project-scoped: silent
+ * with no project file or no `tasks.deployCommands`. It only asks (`deploy-guard.ts`).
+ */
+export const deployGuardHook: HookSpec = {
+  name: "deploy-guard",
+  events: ["PreToolUse"],
+  onConfigProblem: (message, input, _event, checkout) =>
+    deployConfigProblem(message, input, checkout),
+  // A crash must not let a deploy through: it asks about a call that runs a listed command.
+  onCrash: guardCrash("whether this deploy may run while a task is open", deployCrashDomain),
+  // For the hook log: the environment and the list place of the command, never its text.
+  logFacts: (input, context) => deployFacts(input, context.env),
+  run: deployGuard,
 };
 
 /**
@@ -552,6 +571,7 @@ export const HOOKS: readonly HookSpec[] = [
   taskStartHook,
   gitGuardHook,
   mergeGuardHook,
+  deployGuardHook,
   mainFolderGuardHook,
   agentGuardHook,
   sessionEscapeGuardHook,

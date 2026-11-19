@@ -5,6 +5,7 @@
  */
 import { describe, expect, test } from "bun:test";
 import { resolve } from "node:path";
+import { toolName, toolOf } from "../shell/tool";
 import {
   classifyHeavyCommand,
   classifyRoutableLine,
@@ -14,8 +15,6 @@ import {
   type ScriptBodies,
   type ScriptSource,
   sedScriptReadsOnly,
-  toolName,
-  toolOf,
   type WeightSource,
 } from "./classify";
 import { DEFAULT_KINDS, mergeKinds } from "./kinds";
@@ -494,6 +493,72 @@ describe("toolName and toolOf", () => {
     });
     // `node` with no script path runs no tool the reader knows.
     expect(toolOf("node", ["--version"])).toBeUndefined();
+  });
+});
+
+describe("the tool reader reads a script file: the classifier's answers are the same as before", () => {
+  // `bash x.sh "…"` runs a script file (`src/shell/tool.ts`): its quoted word is the file's
+  // argument, no command of the line, and the file is no heavy kind. These answers were the
+  // classifier's before the reader learned to follow a shell to the file it is given.
+  test("npx tsc --noEmit is a tsc run, and PowerShell reads npx tsc alike", () => {
+    expect(classifyHeavyCommand("npx tsc --noEmit", DEFAULT_KINDS)).toBe("tsc");
+    expect(classifyHeavyCommand("npx tsc", DEFAULT_KINDS, undefined, "powershell")).toBe("tsc");
+  });
+
+  test.each([
+    ['bash x.sh "a; git push -f"'],
+    ['bash x.sh "npx tsc --noEmit"'],
+    ["bash -o pipefail x.sh 'bunx vitest run'"],
+    ["source x.sh 'bunx tsc'"],
+    [". x.sh 'bunx tsc'"],
+    ["node deploy.js 'bunx tsc'"],
+    ["python3 deploy.py 'bunx tsc'"],
+  ])("%s runs no heavy kind", (command) => {
+    expect(classifyHeavyCommand(command, DEFAULT_KINDS)).toBeNull();
+    expect(classifyHeavyCommand(command, DEFAULT_KINDS, undefined, "powershell")).toBeNull();
+  });
+
+  test("a shell that runs a command string still runs what it holds", () => {
+    expect(classifyHeavyCommand('bash -c "npx tsc --noEmit"', DEFAULT_KINDS)).toBe("tsc");
+  });
+
+  // The deploy guard reads a script file a shell is given (`callOf`); the classifier does not:
+  // a project names `bash`, `python` or `source` as the tool of a kind, and a file a shell or
+  // `node` is given is not the tool of the same name. Each answer below is what the classifier
+  // gave before the tool reader moved.
+  const PROJECT_KINDS = mergeKinds({
+    django: { match: [{ tool: "python", sub: ["manage.py", "test"] }] },
+    e2e: { match: [{ tool: "bash", sub: ["scripts/e2e.sh"] }, { tool: "source" }] },
+  });
+
+  test.each([
+    ["bash scripts/e2e.sh", "e2e"],
+    ["python manage.py test", "django"],
+    ["source env.sh", "e2e"],
+    ["source env.sh && vitest", "e2e"],
+    ["bash scripts/other.sh", null],
+    ["python manage.py runserver", null],
+  ])("a project kind that names a shell or an interpreter: %s is %s", (command, kind) => {
+    expect(classifyHeavyCommand(command, PROJECT_KINDS)).toBe(kind);
+  });
+
+  test.each([
+    ["sh node_modules/.bin/vitest run"],
+    ["zsh -o pipefail ./node_modules/.bin/jest"],
+    [". ./node_modules/.bin/tsc"],
+    ["bash ./tsc"],
+    ["node tsc --noEmit"],
+    ["node vitest"],
+    ["node scripts/build.js"],
+  ])("%s runs no heavy kind: the file is not the tool of its name", (command) => {
+    expect(classifyHeavyCommand(command, PROJECT_KINDS)).toBeNull();
+    expect(classifyHeavyCommand(command, DEFAULT_KINDS)).toBeNull();
+  });
+
+  test("node with a script path is still the tool the path names", () => {
+    expect(classifyHeavyCommand("node node_modules/vitest/vitest.mjs run", DEFAULT_KINDS)).toBe(
+      "test:run",
+    );
   });
 });
 
