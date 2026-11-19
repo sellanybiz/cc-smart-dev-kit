@@ -429,29 +429,31 @@ keep the number of pull requests, and of CI runs, small. The wording is in the `
 
 **Why.** CI runs on `pull_request` and on `push` to the default branch only
 (`.github/workflows/ci.yml`, `windows.yml`; a newer push cancels the run before it). A push to a
-branch with no pull request costs nothing. Each pull request costs one run for every push to it,
+branch with no pull request costs nothing here, but another project's triggers may differ. Each pull request costs one run for every push to it,
 and one more run on the default branch when it merges. The waste came from three habits: a pull
 request made only for bookkeeping (a plan's archive, a workflow file), one pull request per small
 fix, and fix rounds pushed one at a time after the pull request opened.
 
 **The rules.**
 
-- **The plan archive rides in the plan's own pull request.** After the final review and the full
-  check, the plan file (and its research) moves to `archive/` as the last commit on the plan
-  branch, and then the pull request opens. In that same turn the plan task closes with its
-  evidence, as it did before: a plan child stops before its merge, and the plan's files stay held
-  until its pull request merges or closes. A plan whose pull request is abandoned has its file
-  moved back in the next one.
+- **The plan archive rides in the plan's own pull request.** Before the final review, the plan file
+  (and its research) moves to `archive/` in a commit on the plan branch. The review covers that
+  commit, which a commit after the review would not in a `fixesAfterReview` setting of 0 lines, 0
+  files and 0 percent. The pull request opens after the review and the full check. In that turn the
+  plan task closes with its evidence, as it did before: a plan child stops before its merge. A
+  reserved plan's files stay held until its pull request merges or closes; an unreserved plan's
+  files are free once its task closes. A plan whose pull request is abandoned has its file moved
+  back in the next one.
 - **Small fixes: one pull request per session, at one ship point.** The small fixes a session
   makes outside a plan collect on the session's own branch, and its follow-up child's work
   (`docs/design/herdr.md` § Follow-up children) ships with them. When that branch is a plan branch,
   or already carries a reviewed change set, the small fixes get a new branch from the default
   branch. The ship point is the end of the turn that finishes the person's request, or the moment
   the person says to ship now. One pull request opens there, and the lead sends the follow-up
-  child `ship`. Until then the child commits each finding and may push its branch while no pull
-  request is open.
+  child `ship`. Until then the child commits each finding and never pushes.
 - **After a pull request opens: batch, check, push once.** A push before the pull request opens
-  is a free backup. Once it is open, a round of fixes (review findings, a CI failure, a late fix
+  costs no CI only where CI runs on pull requests and the default branch alone; read the
+  project's triggers before you treat it as free. Once it is open, a round of fixes (review findings, a CI failure, a late fix
   from a follow-up) is collected, the full check runs locally, and one push follows. Never push
   one fix at a time, and never use CI to find what the local check finds.
 

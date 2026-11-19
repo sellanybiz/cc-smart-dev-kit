@@ -165,8 +165,8 @@ before the write lock. It prints one line naming the plan and the next step: sta
 as usual. It refuses from a plan child or a follow-up child (the terminal carries `kit.plan` or `kit.followup`), when the default branch
 is only a guess, and for a plan that is not pending (one already started: park it first, then reserve it), not the
 caller's own or already reserved, each with its fix. It stands alone: `--wait`, `--json` and `--release` cannot join it. The Bash judge
-stays silent, since it reserves the caller's own plan and frees nothing. The plan stays held until
-its pull request merges or closes (or the settle proof below holds): the classifier reads it as `own`, then `merging` once it is closed, and a
+stays silent, since it reserves the caller's own plan and frees nothing. A reserved plan stays held until
+its pull request merges or closes (or the settle proof below holds; an unreserved plan's files are free once its task closes): the classifier reads it as `own`, then `merging` once it is closed, and a
 `herdr plans` pass releases it like any other.
 
 **The plan trailer** (`planTrailer` in `brief.ts`) replaces the task trailer:
@@ -268,8 +268,8 @@ what the child is told.
   then.
 - **Outside every plan:** the lead asks at once, one finding per question. The options: send it to
   the follow-up child, start one, or file only. A blocked follow-up child offers file only.
-- **A child that finds one** lists it in `herdr report` and never asks, files or starts: the lead
-  decides when it reads the report.
+- **A child that finds one** lists it in `herdr report`; every linked child's brief says it never
+  asks, files or starts: the lead decides when it reads the report.
 
 **`start --followup [--issue <n>]…`** is the smaller sibling of `start --plan`. It takes the checks
 of any linked start (model, effort and mode, names, brief, binding) and adds these. `--issue` may
@@ -314,7 +314,7 @@ does not clear it.
 It never stops on its own: after each report it waits for the next message, and ends only on
 `herdr stop`.
 
-1. **Once, before the first finding:** fetch `origin/<base>` (one retry, then report and stop).
+1. **Once, before the first finding:** fetch `origin/<base>` (one retry; a second failure is reported, and no finding is taken until step 1 has run).
    Reset onto it only when its **own** commit count is 0 and the tree is clean. The count is
    `git rev-list --count HEAD --not --exclude=<branch> --branches --exclude=origin/<branch>
    --remotes`: the commits on no other branch, local or remote. (`--exclude` applies only to the
@@ -332,40 +332,49 @@ It never stops on its own: after each report it waits for the next message, and 
    - MERGED and `HEAD` is past that commit: it makes the new branch the same way and
      cherry-picks the commits past the pull request's head onto it, so a squash merge loses
      nothing. A conflict is aborted (`git cherry-pick --abort`), the old branch restored, the new
-     one deleted, and the conflict reported. After a good pick it runs `issue mark-fixed` again for
-     each moved commit with its new id and the new branch, because `issue fixed` finds an issue
-     by its marker commit and a cherry-pick has new ids.
+     one deleted, and the conflict reported. The marks come at the ship (step 6), with each
+     commit's id on the shipping branch, so a cherry-pick's new ids need no second mark.
    - MERGED and `HEAD` neither equal nor past it: report and wait.
    - CLOSED without a merge: never reset. It keeps its branch, and the next ship opens a new
-     pull request from it.
+     pull request from it. It says so in its report.
    - none: go on.
 3. Never edit a file a held plan holds. The trailer lists each held plan's slug and files, a
    snapshot taken at the start (`heldPlans`, stored file lists only). The lead names the files of
    a plan held later in its `send` text. A finding in those files goes in the report.
-4. A small fix: fix, check, review. A bigger one: plan mode, approved by the person in the
-   child's pane.
-5. One commit per finding. Then `issue mark-fixed --issue <n> --base <base> --branch <branch>
-   --tip <sha>`, with `<base>` the branch the pull request targets (not the child's own branch:
-   the comment would read "merged into" the wrong branch). The comment posts before the merge,
-   because the `Fixes` lines need the mark first, so it says "merged" a little early. Skipped when
-   issues are off.
-6. **No push per finding.** It may push its branch while it has no open pull request (a free
-   backup); with one open, it pushes only at the ship.
-7. **Ship only when a message from the lead says `ship`.** Then: the project's full check, then
-   one push, then open the pull request or push to the open one, as `workflow show` says (where it
-   is off, ask the person in this terminal). The body's
-   `Fixes` lines come from `issue fixed --base origin/<base> --head <branch>`, never by hand. A
-   `ship` mid-finding waits until that finding is done. A `ship` with nothing to ship is answered
-   "nothing to ship" in the report.
-8. `herdr report` after each finding and after each ship. Its own findings go in that report: it
-   never asks, files or starts anything.
+4. A small fix: fix, check, review the diff. Beyond a small fix (`/cc-smart-dev-kit:review`
+   defines it): one second opinion from `cc-smart-dev-kit:senior-engineer` before the commit. The
+   brief allows that agent and no other, because the general instructions require the second
+   opinion and a linked child's brief otherwise forbids every agent. Work that needs a kit plan
+   goes back to the lead in the report: the child never runs plan-task or build. Other bigger
+   work: plan mode, approved by the person in the child's pane.
+5. One commit per finding. **It never pushes before `ship`:** its commits stay in its worktree.
+   (A push before the pull request opens costs no CI only where CI runs on pull requests and the
+   default branch alone; the child cannot know the project's triggers, so it never counts on
+   that.)
+6. **Ship only when a message from the lead says `ship`.** Then: the project's full check; then,
+   before the push, `issue mark-fixed --issue <n> --base <base> --branch <shipping branch> --tip
+   <id>` for every commit of its own that is not yet on `origin/<base>` and has an issue, with
+   `<id>` the commit's current id on the shipping branch (a cherry-pick or a new branch gives new
+   ids, and `issue fixed` finds an issue by its marker commit). `<base>` is the branch the pull
+   request targets, not the child's own branch: the comment would read "merged into" the wrong
+   branch. The comment posts before the merge, because the `Fixes` lines need the mark first, so
+   it says "merged" a little early. Skipped when issues are off. Marking at the ship, not after
+   each commit, means a commit that never ships (a closed pull request, a conflict) never leaves
+   a mark that names a branch which does not carry it. Then one push, then open the pull request
+   or push to the open one, as `workflow show` says (where it is off, ask the person in this
+   terminal). The body's `Fixes` lines come from `issue fixed --base origin/<base> --head
+   <branch>`, never by hand. A `ship` mid-finding waits until that finding is done. A `ship` with
+   nothing to ship is answered "nothing to ship" in the report.
+7. `herdr report` after each finding and after each ship.
 
 The trailer also carries the issue numbers given with `--issue`. The label is `kit.followup=1`;
 `herdr list` shows "follow-up" in a column now headed "task, plan or follow-up". No issue number is
 stored in a label, since it would go stale.
 
-**`planTrailer` gained one line:** "A finding outside your plan goes in `cc-smart-dev-kit herdr
-report`. Never ask the person, file an issue or start a session for it."
+**One home for "never ask, file or start".** `writeBrief` adds it to the linked text every linked
+child gets, after "Start no sessions or agents of your own unless this brief says so": "A finding
+outside your work goes in your report: never ask the person, file an issue or start a session for
+it." `planTrailer` and `followupTrailer` carry no copy of it.
 
 **The ship point.** The lead sends `herdr send <terminal> "ship"` at the session's one ship point
 (`docs/design/workflow.md` § Fewer pull requests): the end of the turn that finishes the person's

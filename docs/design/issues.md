@@ -325,8 +325,12 @@ finding, and the number only tells the child which issue to mark.
 
 The contract above holds for the child's pull request, with these details.
 
-- The child runs `issue mark-fixed --issue <n> --base <default branch> --branch <its branch> --tip
-  <sha>` after it commits the fix. `--base` is the branch its pull request targets, **not** the
+- At the lead's `ship` message, after the full check and before the push, the child runs
+  `issue mark-fixed --issue <n> --base <default branch> --branch <shipping branch> --tip <id>` for
+  each of its commits that is not yet on `origin/<default branch>` and has an issue. `<id>` is the
+  commit's current id on the shipping branch. The mark comes at the ship, not after each commit:
+  a commit that never ships (a closed pull request, an aborted cherry-pick) then leaves no mark
+  that names a branch which does not carry it. `--base` is the branch its pull request targets, **not** the
   child's own branch: the comment reads "merged into `<base>`; it closes when `<base>` ships", which
   is only true of the default branch. `mark-fixed` checks no git state, so any branch names work.
 - The comment posts **before** the merge, because the `Fixes` lines need the mark first. It says
@@ -336,8 +340,8 @@ The contract above holds for the child's pull request, with these details.
   --head <branch>`, never by hand. The child writes them when it opens the pull request, at the
   lead's `ship` message.
 - After a cherry-pick onto a new branch (its earlier pull request merged while it held more
-  commits), the commits have new ids, so the child runs `issue mark-fixed` again for each moved
-  commit with its new id and the new branch.
+  commits), the commits have new ids. The mark at the ship reads each commit's id then, so no
+  second mark is needed.
 - The same finding sent twice is not a second issue: `issue file` answers `updated #n`, and the
   lead does not send it again.
 - Where issues are refused (a public repository without `allowPublic`, no GitHub, the switch off),

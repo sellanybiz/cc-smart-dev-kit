@@ -170,20 +170,22 @@ task's checkout or an unmerged branch. Repeat until all phases close.
 
 ## 6. Finish the whole branch once
 
-Start one final `cc-smart-dev-kit:senior-engineer` on `opus`, effort `xhigh`, with the
-`Mode: review` line, over the plan's complete base-to-head range, including integration work.
+First make the plan's archive commit: the plan file and its research move to `archive/`
+(`/cc-smart-dev-kit:plan-task` § 8). It goes before the final review, so the review covers it in
+any `fixesAfterReview` setting. Then start one final `cc-smart-dev-kit:senior-engineer` on `opus`,
+effort `xhigh`, with the `Mode: review` line, over the plan's complete base-to-head range,
+including integration work and the archive commit.
 Review cross-phase behavior, spec compliance and quality. Do one fix pass for confirmed findings
 (track each as a task with `parent` set to the plan's `#n`; with no parent it is loose), then run the full
 check once in the main session (`/cc-smart-dev-kit:verify-change` § 4). Do not declare
 success while a material defect remains; record the blocker and remaining work.
 
-Once the review and the full check pass, the plan's archive is the last commit on the plan
-branch: the plan file and its research move to `archive/` (`/cc-smart-dev-kit:plan-task` § 8).
-Then the one pull request of the plan opens, as `openPr` and the person's permissions allow
+Once the review and the full check pass, the one pull request of the plan opens, as `openPr` and the person's permissions allow
 (`/cc-smart-dev-kit:commit`, `/cc-smart-dev-kit:pull-request`). Include phase verdicts, final
 review and real checks. A fix after it opens (a late review finding, a CI failure) follows the
 batch rule in `/cc-smart-dev-kit:commit` § Pushing. Close the plan task with evidence in that
-same turn; its files stay held until the pull request merges or closes. Remove only merged,
+same turn. A reserved plan's files stay held until its pull request merges or closes; an
+unreserved plan's files are free once its task closes. Remove only merged,
 finished worktrees and branches.
 After that `task_done`, start the next queued plan yourself (a plan child never does: § Lead +
 children and coordinator modes); until then it stays queued, with its phases already laid. A plan nobody laid is a fresh plan task from
