@@ -45,7 +45,6 @@ import {
   callOf,
   ruleMatches,
   rulesOfCommand,
-  scriptToolName,
   type ToolCall,
 } from "../shell/tool";
 import { deployTasksDir, scanDeployTasks } from "../tasks/deploy/files";
@@ -91,7 +90,7 @@ function rulesOfEntry(text: string): CommandRule[] {
  * The rules of the lists, in order. A string is read by `rulesOfCommand`; anything else must be
  * a match rule. What neither can be (a number, a rule with an unknown key, a command that runs
  * nothing) is left out: the strict parse refuses such a file, and the lenient read keeps what
- * it can use. A rule's tool loses a script's extension, as a run's does (`scriptToolName`).
+ * it can use.
  */
 export function deployRulesOf(lists: DeployLists): DeployRule[] {
   const rules: DeployRule[] = [];
@@ -103,11 +102,7 @@ export function deployRulesOf(lists: DeployLists): DeployRule[] {
       }
       const rule = matchRuleSchema.safeParse(entry).data;
       if (rule === undefined) return;
-      rules.push({
-        env,
-        index,
-        rule: "tool" in rule ? { ...rule, tool: scriptToolName(rule.tool) } : rule,
-      });
+      rules.push({ env, index, rule });
     });
   }
   return rules;

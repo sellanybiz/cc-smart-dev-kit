@@ -33,11 +33,11 @@ describe("a shell or an interpreter given a script file runs that file", () => {
     ["source scripts/deploy.sh prod", { name: "deploy.sh", args: ["prod"] }],
     [". scripts/deploy.sh prod", { name: "deploy.sh", args: ["prod"] }],
     // interpreters
-    ["node scripts/deploy.js prod", { name: "deploy", args: ["prod"] }],
-    ["node deploy.js prod", { name: "deploy", args: ["prod"] }],
-    ["./scripts/deploy.mjs prod", { name: "deploy", args: ["prod"] }],
-    ["node deploy.mjs prod", { name: "deploy", args: ["prod"] }],
-    ["node --require ./x.js scripts/deploy.mjs", { name: "deploy", args: [] }],
+    ["node scripts/deploy.js prod", { name: "deploy.js", args: ["prod"] }],
+    ["node deploy.js prod", { name: "deploy.js", args: ["prod"] }],
+    ["./scripts/deploy.mjs prod", { name: "deploy.mjs", args: ["prod"] }],
+    ["node deploy.mjs prod", { name: "deploy.mjs", args: ["prod"] }],
+    ["node --require ./x.js scripts/deploy.mjs", { name: "deploy.mjs", args: [] }],
     ["python deploy.py prod", { name: "deploy.py", args: ["prod"] }],
     ["python3 scripts/deploy.py", { name: "deploy.py", args: [] }],
     ["python3.12 -u -W ignore deploy.py prod", { name: "deploy.py", args: ["prod"] }],
@@ -68,6 +68,30 @@ describe("a shell or an interpreter given a script file runs that file", () => {
     ["pythonista deploy.py", { name: "pythonista", args: ["deploy.py"] }],
   ])("%s runs no file", (line, expected) => {
     expect(toolOfLine(line)).toEqual(expected);
+  });
+
+  test("PowerShell given a script file: its options are stepped over, -File names it", () => {
+    const callOfPwsh = (line: string) => {
+      const invocation = invocationOf(wordsOf(line, "powershell"));
+      return callOf(invocation?.program ?? "", invocation?.args ?? []);
+    };
+    const cases: [string, ToolCall][] = [
+      ["pwsh ./scripts/deploy.ps1 prod", { name: "deploy", args: ["prod"] }],
+      ["pwsh -File .\\scripts\\deploy.ps1 prod", { name: "deploy", args: ["prod"] }],
+      ["pwsh -f x.ps1 a", { name: "x", args: ["a"] }],
+      ["pwsh -NoProfile -NoLogo x.ps1", { name: "x", args: [] }],
+      ["powershell -ExecutionPolicy Bypass -File x.ps1", { name: "x", args: [] }],
+      ["pwsh -ex Bypass -wor app x.ps1 -Yes", { name: "x", args: ["-Yes"] }],
+      // no file: a command (read by nestedCommand), standard input, no value
+      ["pwsh -c 'ls'", { name: "pwsh", args: ["-c", "ls"] }],
+      ["pwsh -Command ls", { name: "pwsh", args: ["-Command", "ls"] }],
+      ["pwsh -ec AAAA", { name: "pwsh", args: ["-ec", "AAAA"] }],
+      ["pwsh -File", { name: "pwsh", args: ["-File"] }],
+      ["pwsh -", { name: "pwsh", args: ["-"] }],
+    ];
+    for (const [line, expected] of cases) {
+      expect({ line, tool: callOfPwsh(line) }).toEqual({ line, tool: expected });
+    }
   });
 
   test("PowerShell dot-sources a script file with a Windows path", () => {
@@ -135,9 +159,9 @@ describe("a command typed as text becomes rules", () => {
     // a script file is the tool; the shell that runs it does not matter
     ["bash -o pipefail scripts/deploy.sh prod", { tool: "deploy.sh", sub: ["prod"] }],
     [". scripts/deploy.sh prod", { tool: "deploy.sh", sub: ["prod"] }],
-    // a script file loses its JavaScript extension, as a run's tool does
-    ["./scripts/deploy.mjs prod", { tool: "deploy", sub: ["prod"] }],
-    ["node scripts/deploy.cjs prod", { tool: "deploy", sub: ["prod"] }],
+    // a script file keeps its extension
+    ["./scripts/deploy.mjs prod", { tool: "deploy.mjs", sub: ["prod"] }],
+    ["node scripts/deploy.cjs prod", { tool: "deploy.cjs", sub: ["prod"] }],
     // words that are no option are the subcommands, in order; options are the flags
     ["vercel deploy --prod --yes", { tool: "vercel", sub: ["deploy"], flags: ["--prod", "--yes"] }],
     ["vercel", { tool: "vercel" }],

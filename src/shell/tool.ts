@@ -359,6 +359,53 @@ function fileRunOf(program: string, args: readonly string[]): ToolCall | undefin
     const file = args[0];
     return file === undefined ? undefined : fileRun(file, args.slice(1));
   }
+  if (program === "pwsh" || program === "powershell") return powershellFileRun(args);
+  return undefined;
+}
+
+/** PowerShell's own parameters that take the next word, lower case (any prefix names one). */
+const POWERSHELL_VALUED = [
+  "-configurationname",
+  "-custompipename",
+  "-executionpolicy",
+  "-inputformat",
+  "-outputformat",
+  "-settingsfile",
+  "-version",
+  "-windowstyle",
+  "-workingdirectory",
+];
+
+/** True when `word` is a prefix, of at least `least` characters, of the parameter `name`. */
+const namesParameter = (word: string, name: string, least: number): boolean =>
+  word.length >= least && name.startsWith(word);
+
+/**
+ * `pwsh -NoProfile -File .\deploy.ps1 prod` and `pwsh .\deploy.ps1 prod` run the file. PowerShell
+ * takes any prefix of a parameter name, in any case: `-File` is `-f`, a value-taking option
+ * (`-ExecutionPolicy Bypass`) is stepped over with its value. Undefined when it runs no file:
+ * `-Command` and `-EncodedCommand` (`nestedCommand` reads the first), a `-File` with no value,
+ * or standard input (`-`).
+ */
+function powershellFileRun(args: readonly string[]): ToolCall | undefined {
+  for (let index = 0; index < args.length; index++) {
+    const word = args[index] ?? "";
+    const name = word.toLowerCase();
+    if (word === "-") return undefined;
+    if (!word.startsWith("-")) return fileRun(word, args.slice(index + 1));
+    if (
+      namesParameter(name, "-command", 2) ||
+      namesParameter(name, "-encodedcommand", 2) ||
+      name === "-ec"
+    ) {
+      return undefined;
+    }
+    if (namesParameter(name, "-file", 2)) {
+      const file = args[index + 1];
+      return file === undefined ? undefined : fileRun(file, args.slice(index + 2));
+    }
+    index += POWERSHELL_VALUED.some((valued) => namesParameter(name, valued, 3)) ? 1 : 0;
+  }
   return undefined;
 }
 
@@ -409,24 +456,19 @@ export function ruleMatches(rule: MatchRule, call: ToolCall, scriptOnly = false)
 }
 
 /**
- * The name of a tool without a script's extension (`deploy.mjs` is `deploy`): a script file is
- * the same tool whether it is run by its own name (`./scripts/deploy.mjs`) or given to `node`.
- */
-export function scriptToolName(name: string): string {
-  return name.replace(/(?<=.)\.(mjs|cjs|js)$/, "");
-}
-
-/**
  * What one command runs, as the deploy guard reads it: the arguments without their redirections
  * (`> log.txt` is the shell's, never the tool's argument), and the tool found by `fileRunOf` (a
  * shell or an interpreter given a script file), else `toolOf`, else the program itself. A rule
  * made from a command's text and the same command run later give the same tool.
+ *
+ * A script file keeps its extension (`deploy.mjs`): it is a file's name, and a package script
+ * of the same base name (`pnpm deploy`) is another command. `./scripts/deploy.mjs` and `node
+ * scripts/deploy.mjs` agree through `programName`; `npx ./scripts/deploy.mjs` is `toolOf`'s,
+ * which drops a path's `.js`, `.mjs` and `.cjs`, and is not seen.
  */
 export function callOf(program: string, args: readonly string[]): ToolCall {
   const plain = withoutRedirections(args);
-  const call = fileRunOf(program, plain) ??
-    toolOf(program, plain) ?? { name: program, args: plain };
-  return { ...call, name: scriptToolName(call.name) };
+  return fileRunOf(program, plain) ?? toolOf(program, plain) ?? { name: program, args: plain };
 }
 
 /** An option word: `--prod`, `-f`; a lone `-` is a word (standard input). */

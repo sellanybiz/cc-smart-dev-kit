@@ -143,13 +143,12 @@ describe("spellings that run a listed command match", () => {
     expect(hits("python3 -u deploy.py now", lists)).toEqual(["prod:1"]);
   });
 
-  test("a script file is the same tool by its own name and given to node, whatever its extension", () => {
+  test("a script file is the same tool by its own name and given to node: its extension stays", () => {
     const lists: DeployLists = { prod: ["./scripts/deploy.mjs prod"] };
     for (const command of [
       "./scripts/deploy.mjs prod",
       "node scripts/deploy.mjs prod",
       "node deploy.mjs prod",
-      "npx ./scripts/deploy.mjs prod",
       "node ./a/b/deploy.mjs prod --yes",
       "bash -c 'node scripts/deploy.mjs prod'",
     ]) {
@@ -158,7 +157,9 @@ describe("spellings that run a listed command match", () => {
     for (const command of ["node scripts/deploy.mjs staging", "node scripts/other.mjs prod"]) {
       expect({ command, hits: hits(command, lists) }).toEqual({ command, hits: [] });
     }
-    // The extension is dropped on the rule side too, for each of the three.
+    // Not seen, and the docs say so: `npx` reads a path as the package runner's tool name, which
+    // drops `.js`, `.mjs` and `.cjs`.
+    expect(hits("npx ./scripts/deploy.mjs prod", lists)).toEqual([]);
     expect(hits("node deploy.js prod", { prod: ["node scripts/deploy.js prod"] })).toEqual([
       "prod:0",
     ]);
@@ -166,6 +167,56 @@ describe("spellings that run a listed command match", () => {
     expect(
       hits("node scripts/deploy.mjs prod", { prod: [{ tool: "deploy.mjs", sub: ["prod"] }] }),
     ).toEqual(["prod:0"]);
+  });
+
+  test("a package script and a script file of the same base name are different commands", () => {
+    const lists: DeployLists = { prod: ["./deploy.js"], staging: ["pnpm deploy"] };
+    expect(hits("pnpm deploy", lists)).toEqual(["staging:0"]);
+    expect(hits("yarn deploy", lists)).toEqual(["staging:0"]);
+    expect(hits("./deploy.js", lists)).toEqual(["prod:0"]);
+    expect(hits("node deploy.js", lists)).toEqual(["prod:0"]);
+    expect(hits("node scripts/deploy.js", lists)).toEqual(["prod:0"]);
+    expect(hits("bash -c 'pnpm deploy'", lists)).toEqual(["staging:0"]);
+  });
+
+  test("PowerShell given a script file runs that file", () => {
+    const lists: DeployLists = { prod: [".\\scripts\\deploy.ps1 prod"] };
+    for (const command of [
+      "pwsh ./scripts/deploy.ps1 prod",
+      "pwsh .\\scripts\\deploy.ps1 prod",
+      "pwsh -File .\\scripts\\deploy.ps1 prod",
+      "pwsh -file .\\scripts\\deploy.ps1 prod",
+      "pwsh -f .\\scripts\\deploy.ps1 prod",
+      "pwsh -NoProfile -NonInteractive -File .\\scripts\\deploy.ps1 prod",
+      "powershell -ExecutionPolicy Bypass -File .\\scripts\\deploy.ps1 prod",
+      "powershell.exe -ex Bypass -NoLogo .\\scripts\\deploy.ps1 prod",
+      "pwsh -WorkingDirectory app -ConfigurationName x -File .\\scripts\\deploy.ps1 prod -Yes",
+    ]) {
+      expect({ command, hits: hits(command, lists, "powershell") }).toEqual({
+        command,
+        hits: ["prod:0"],
+      });
+    }
+    // -Command and -EncodedCommand run no file: the command string is `nestedCommand`'s, and the
+    // line it holds is read as a line (it runs the file, by its own name).
+    expect(hits("pwsh -Command .\\scripts\\deploy.ps1 prod", lists, "powershell")).toEqual([
+      "prod:0",
+    ]);
+    expect(hits('pwsh -NoProfile -Command "vercel --prod"', PROD_VERCEL, "powershell")).toEqual([
+      "prod:0",
+    ]);
+    expect(hits("pwsh -c 'npx vercel --prod'", PROD_VERCEL, "powershell")).toEqual(["prod:0"]);
+    for (const command of [
+      "pwsh -File .\\scripts\\deploy.ps1 staging",
+      "pwsh -ExecutionPolicy .\\scripts\\deploy.ps1 prod",
+      "pwsh -ec AAAA",
+      "pwsh -EncodedCommand AAAA",
+      "pwsh -File",
+      "pwsh -",
+      "pwsh",
+    ]) {
+      expect({ command, hits: hits(command, lists, "powershell") }).toEqual({ command, hits: [] });
+    }
   });
 
   test("a listed Windows path matches under PowerShell", () => {
@@ -179,7 +230,7 @@ describe("spellings that run a listed command match", () => {
     for (const [command, expected] of [
       [".\\scripts\\deploy.ps1 prod", "prod:0"],
       ["& .\\scripts\\deploy.ps1 prod", "prod:0"],
-      ["pwsh -File .\\scripts\\deploy.ps1 prod", undefined],
+      ["pwsh -File .\\scripts\\deploy.ps1 prod", "prod:0"],
       ["scripts\\release.cmd prod", "prod:1"],
       ["scripts\\release.cmd prod > out.txt", "prod:1"],
       ["C:\\tools\\ship.exe --prod", "prod:2"],
