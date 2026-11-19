@@ -1246,11 +1246,17 @@ const EXIT_CODE = /^(?:\d+|\$\?)$/;
  */
 function setsOptionsOnly(args: readonly string[]): boolean {
   let wantsName = false;
+  let turnsOn = false;
   for (const arg of args) {
     if (wantsName) {
       if (!SET_OPTION_NAME.test(arg)) return false;
+      // Tracing expands `PS4` before each command, and an earlier `PS4='$(…)'` on the line
+      // would run inside the queue: turning it on is no glue (turning it off is).
+      if (turnsOn && arg === "xtrace") return false;
       wantsName = false;
     } else if (SET_OPTIONS.test(arg)) {
+      turnsOn = arg.startsWith("-");
+      if (turnsOn && arg.includes("x")) return false;
       wantsName = arg.endsWith("o");
     } else {
       return false;

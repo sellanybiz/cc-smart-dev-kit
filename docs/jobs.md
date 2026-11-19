@@ -286,8 +286,9 @@ the first kind it runs: one slot for the whole line. What counts as glue (`isGlu
   `${x[ … ]}`, `${x:n}`, `${!x}`, `${x@P}`): bash reads a variable's value there as code. A
   whole expansion with a literal subscript runs no code and stays fine (`${PIPESTATUS[0]}`,
   `${arr[@]}`, `${#arr[*]}`).
-- **Shell state**: `set` with option words only (`-e`, `-u`, `-x`, `+e`, `-o pipefail`,
-  `-euo pipefail`; never `--`, never a word the shell fills in); `exit` and `return` with no
+- **Shell state**: `set` with option words only (`-e`, `-u`, `+e`, `-o pipefail`,
+  `-euo pipefail`; never `--`, never a word the shell fills in, and never tracing turned on:
+  `-x` or `-o xtrace` expands `PS4` before each command, which can run code); `exit` and `return` with no
   word, a number or `$?`; `export` with `NAME=value` words only, no value holding `$(` or a
   backtick. These are glue because the refusal's advice (run the rest in another call) cannot
   work for them: an option or an export does not carry over to the next Bash call.

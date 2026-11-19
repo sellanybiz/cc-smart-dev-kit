@@ -1736,11 +1736,21 @@ describe("routableLine: harmless glue rides in the queued line", () => {
 
   // The refusal's advice (run the others in a separate call) cannot work for the commands that
   // set the shell up: an option or an export does not carry over to another Bash call.
+  // `set -x` expands `PS4` before each command: `PS4='$(rm x)'; set -x; bun test` would run the
+  // `rm` inside the queue, out of the person's rules' sight.
+  test("turning tracing on is no glue: it expands PS4", () => {
+    for (const trace of ["set -x", "set -ex", "set -euxo pipefail", "set -o xtrace"]) {
+      expect([trace, line(`${trace}; bun test`)]).toEqual([trace, null]);
+    }
+    expect(line("PS4='$(rm x)'; set -x; bun test")).toBeNull();
+  });
+
   test("shell-state commands are glue: set options, exit, return, export", () => {
     for (const state of [
       "set -e",
       "set -u",
-      "set -x",
+      "set +x",
+      "set +o xtrace",
       "set +e",
       "set -o pipefail",
       "set +o pipefail",
