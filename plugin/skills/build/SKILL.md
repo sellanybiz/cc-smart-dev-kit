@@ -182,8 +182,9 @@ branch: the plan file and its research move to `archive/` (`/cc-smart-dev-kit:pl
 Then the one pull request of the plan opens, as `openPr` and the person's permissions allow
 (`/cc-smart-dev-kit:commit`, `/cc-smart-dev-kit:pull-request`). Include phase verdicts, final
 review and real checks. A fix after it opens (a late review finding, a CI failure) follows the
-batch rule in `/cc-smart-dev-kit:commit` § Pushing. Close the plan task with evidence after the
-merge. Remove only merged, finished worktrees and branches.
+batch rule in `/cc-smart-dev-kit:commit` § Pushing. Close the plan task with evidence in that
+same turn; its files stay held until the pull request merges or closes. Remove only merged,
+finished worktrees and branches.
 After that `task_done`, start the next queued plan yourself (a plan child never does: § Lead +
 children and coordinator modes); until then it stays queued, with its phases already laid. A plan nobody laid is a fresh plan task from
 `/cc-smart-dev-kit:plan-task`, never more phases on the closed one.

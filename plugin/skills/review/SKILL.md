@@ -33,7 +33,7 @@ merge guard asks the person about a merge whose head commit has no record.
 **A small fix** skips the second opinion: a typo, wording, a comment, docs only (not
 instruction files: rules, skills, agents, settings, hooks), or a one-line fix inside a
 pattern already in use. This is the one definition; other skills point here. Say the
-exemption in one line. Small fixes outside a plan share one pull request for the session
+exemption in one line. Small fixes outside a plan wait for the session's ship point
 (`/cc-smart-dev-kit:commit` § Pushing).
 
 ## How

@@ -261,9 +261,10 @@ At plan end, give a short summary of what shipped, failed and remains.
 A finished plan leaves the live folder before its pull request opens, never in a pull request of
 its own. After the final review and the full check pass (`/cc-smart-dev-kit:build` § 6), move the
 plan file, and any research file still in the live folder, to `<plans dir>/archive/`. Commit that
-move last on the plan branch, as the workflow allows, then open the pull request. Close the plan
-task with verification and the commits that shipped it once the pull request has merged. If that
-pull request is abandoned, its archived file moves back in the next pull request.
+move last on the plan branch, as the workflow allows, then open the pull request. In the same
+turn, close the plan task with verification and the commits that shipped it: its files stay held
+until the pull request merges or closes. If that pull request is abandoned, its archived file
+moves back in the next pull request.
 Keep the outcome on its task, not in a status history appended to the design.
 
 A parked plan stays open and `pending` with its work intact (§ 6), and a note on the plan task

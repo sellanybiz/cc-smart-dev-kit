@@ -108,6 +108,10 @@ for the push hook: `/cc-smart-dev-kit:verify-change` § 4 says when it may be sk
 - **After it opens,** a push can start a CI run. Collect every fix of a round (review findings, a
   CI failure), run the full check locally (`/cc-smart-dev-kit:verify-change` § 4), then push once.
   Never push one fix at a time, and never use CI to find what the local check finds.
-- **Small fixes outside a plan** (`/cc-smart-dev-kit:review` defines them) pile up on the
-  session's own branch, and one pull request opens when the session's work ends, or at once when
-  the person says the fix must ship now.
+- **One ship point for the session.** Its small fixes outside a plan
+  (`/cc-smart-dev-kit:review` defines them) and its follow-up child's work
+  (`/cc-smart-dev-kit:herdr` § Follow-up child) ship together: at the end of the turn that
+  finishes the person's request, or at once when the person says to ship now. The small fixes
+  collect on a branch of their own, never a plan branch, and one pull request opens there at
+  the ship point. At that same moment the lead sends the follow-up child `ship`. Until then the
+  child commits each finding and may push its branch, a free backup.

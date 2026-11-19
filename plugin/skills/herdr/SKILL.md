@@ -133,9 +133,13 @@ cc-smart-dev-kit herdr send <terminal> "Follow-up [#n]: <finding> [files now hel
   default branch and open a new one. It never edits a file a held plan holds; it reports that
   finding instead, and the lead treats it as inside that plan. A small fix is fixed, checked and
   reviewed; a bigger one goes to plan mode, approved by the person in its pane. It makes one
-  commit for each finding, marks its issue fixed, pushes and opens the pull request as the
-  workflow says (the `Fixes` lines from `issue fixed`) and reports after each finding. Its own
-  findings go in its report: it never asks, files or starts.
+  commit for each finding, marks its issue fixed, may push its branch (a free backup) and reports
+  after each finding. Its own findings go in its report: it never asks, files or starts.
+- **Ship.** At the session's ship point (`/cc-smart-dev-kit:commit` § Pushing) the lead sends
+  `herdr send <terminal> "ship"`. Only then does the child run the full check, then open its pull
+  request or push to its open one, once, as `workflow show` says (the `Fixes` lines from
+  `issue fixed`). A blocked child gets the `ship` the next time the lead sees it idle, working or
+  done.
 - **It never stops on its own.** `herdr stop <terminal>` ends it. `herdr wait --all` does not wait
   for it, and `herdr list` shows it as a follow-up.
 - **A plan child and a follow-up child never start one.** The start is refused in any child

@@ -37,29 +37,33 @@ Only a finding **outside** the plan leaves it, and it follows these steps.
    "Outside this change" or a rules-maintainer's "Follow-ups for the caller". A subagent, and any
    Herdr child (plan or follow-up), never asks, files or starts anything: it lists the finding in
    its report (`herdr report` for a child). The lead asks when it reads that report.
-2. **Ask at once**, one finding per `AskUserQuestion`: what is wrong, its `file:line`, what it
-   costs. The options, the recommended one first, only those that fit:
+2. **Inside a held plan?** When the finding's files are in a plan that is held (the lead's own,
+   or one handed to a plan child, live or gone), it is inside that plan and no follow-up: it
+   becomes a task there, and nobody is asked. With a live plan child, send it the finding so it
+   makes the task; otherwise create the task yourself (`task_create`, `parent` the plan's `#n`).
+   The task is the record; an issue is optional.
+   **Outside every plan: ask at once**, one finding per `AskUserQuestion`: what is wrong, its
+   `file:line`, what it costs. The options, the recommended one first, only those that fit:
    - **Send it to the follow-up child**, when this lead's follow-up child for this repository is
      in a state `herdr send` accepts.
-   - **Send it to the plan child that holds it**, when the finding's files are in a live plan
-     child's plan. It is then inside that plan: the message asks the child to make it a task there.
    - **Start a follow-up child**, when none is live. Say that it costs one full session.
-   - **File it only**, as the steps below say.
-
-   A no is "file it only".
+   - **File it only**, as the steps below say. A blocked follow-up child offers only this one
+     (step 4); a no is this too.
 3. **On a yes, file first, then start or send.** When issues work, file it
    (`cc-smart-dev-kit issue file --title "<title>" --body-file - --fingerprint <stable key>`, the
    body on standard input; the same fingerprint updates the issue it filed, so `updated #n` means
    it is already known: send nothing twice). Read the text first: its secret screen knows only
    common shapes. With issues off, or where `issue file` refuses, there is no issue number: say so
    in the end-of-turn summary. Then start the child or send to it. The commands, the one-child
-   gate and the send text are in `/cc-smart-dev-kit:herdr` § Follow-up child.
-4. **A blocked child** waits for the person in its pane. The send is refused: the issue stays
-   filed, tell the person where the child waits, and send once it is free. Never relay its
-   question. **A child in the error state** gets neither a send nor a start: tell the person to
-   look at its pane.
-5. **No child possible** (not in a Herdr terminal, a plan-mode lead, a refused start, or you are
-   a child yourself): file it, or put it in the summary, and say why.
+   gate, the send text and when the child ships are in `/cc-smart-dev-kit:herdr` § Follow-up
+   child and `/cc-smart-dev-kit:commit` § Pushing.
+4. **A blocked follow-up child** waits for the person in its pane, so a send is refused. Offer
+   "file it only" and say where it waits (`hc attach <terminal>`). The issue stays filed, and you
+   send it the next time you see the child idle, working or done. Never relay its question.
+   **A child in the error state** gets neither a send nor a start: tell the person to look at
+   its pane.
+5. **No child possible** (not in a Herdr terminal, a plan-mode lead, a refused start): file it,
+   or put it in the summary, and say why.
 6. **Away:** `AskUserQuestion` is denied. Park one `question` for each finding, with the same
    options (`/cc-smart-dev-kit:user-unavailable`); a yes on return goes through step 3
    (`/cc-smart-dev-kit:user-available`).
