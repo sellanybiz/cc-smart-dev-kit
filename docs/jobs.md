@@ -299,9 +299,8 @@ is refused. A command with a path (`/bin/echo`), a wrapper (`env echo`), an assi
 or a computed name is no glue either.
 
 **A line that mixes heavy work with a command that is not heavy or glue is refused, not left
-raw.** Run raw, the heavy
-part would not wait for a slot, and many heavy runs at once have run machines out of memory; run
-queued, the other command would hide from the person's rules. So when a line runs heavy work
+raw.** Run raw, the heavy part would not wait for a slot, and many heavy runs at once have run
+machines out of memory; run queued, the other command would hide from the person's rules. So when a line runs heavy work
 that takes a slot beside a command that is neither heavy nor glue (`bun test; git status`,
 `tsc && rm -f x`, `bun test; tail -5 out.log`), the hook denies the call (`mixedLineDenial`,
 `src/hooks/job-route.ts`; the finder is `mixedHeavyLine`). The reason names the heavy run and
