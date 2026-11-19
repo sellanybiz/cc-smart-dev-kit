@@ -3,7 +3,7 @@ import { readFileSync, statSync } from "node:fs";
 import { dirname } from "node:path";
 import { COMMAND, PLUGIN } from "../build-info/names";
 import { tempDir } from "../testing/temp";
-import { writeBrief } from "./brief";
+import { followupTrailer, writeBrief } from "./brief";
 
 test("brief is private, carries task and linked reporting only", async () => {
   const state = tempDir();
@@ -60,12 +60,13 @@ const FOLLOWUP_STEPS = [
   "Once, before the first finding:",
   "1. Run `git fetch origin trunk`. If it fails, run it once more; if it fails again, report the error and stop. Then run `git rev-list --count origin/trunk..HEAD` and `git status --porcelain`. Only when the count is 0 and the status is empty, run `git reset --hard origin/trunk`. Otherwise never reset: this worktree may hold work. (Your worktree may start from the lead's branch or an old default branch.)",
   "For each finding:",
-  "2. Run `gh pr view --json state` on your branch. OPEN: add your commit to that pull request. MERGED or CLOSED: run `git fetch origin trunk` and `git reset --hard origin/trunk` (that work is in the merged pull request), then open a new one. No pull request: go on.",
+  "2. Run `gh pr view --json state,headRefOid` on your branch. OPEN: add your commit to this branch; it joins that pull request when you ship (step 7). MERGED: if `git rev-parse HEAD` equals the pull request's headRefOid, run `git fetch origin trunk` and `git reset --hard origin/trunk` (that work is merged), then work on a new branch for a new pull request. If HEAD is past it, you hold commits that were not merged: run `git fetch origin trunk`, note the old branch name and `git rev-parse HEAD`, run `git switch -c <a new branch name> origin/trunk`, then `git cherry-pick <headRefOid>..<the old HEAD>`. Never drop those commits. Run step 5 again for each moved commit, with its new id and the new branch. CLOSED without a merge: never reset. Keep the branch; the next ship opens a new pull request from it. No pull request: go on.",
   "3. A small fix: fix it, run the checks that cover it, and review your diff. Bigger work: use plan mode; the person approves the plan in this terminal.",
   "4. Make one commit for the finding.",
-  `5. When the finding has an issue number, run \`${COMMAND} issue mark-fixed --issue <n> --base trunk --branch <your branch> --tip <the full id of that commit>\`. If it says issues are off, skip it.`,
-  `6. Push and pull request follow \`workflow show\`. Where they are off, ask the person in this terminal. The pull request body's Fixes lines come from \`${COMMAND} issue fixed --base origin/trunk --head <your branch>\`: never write one by hand. Before the pull request opens, a push is a free backup. After it opens, collect the fixes of a round, run the full check locally, then push once; never push one fix at a time.`,
-  `7. Report with \`${COMMAND} herdr report "<the finding, its commit, the pull request link, what failed>"\`.`,
+  `5. When the finding has an issue number, run \`${COMMAND} issue mark-fixed --issue <n> --base trunk --branch <your branch> --tip <the full id of that commit>\`. Use \`trunk\` as the base: it is the branch your pull request targets, not your own branch. If it says issues are off, skip it.`,
+  "6. You may push your branch while it has no open pull request: that is a free backup. While one is open, push only when you ship.",
+  `7. Ship only when a message from the lead says \`ship\`. Then run the project's full check locally, then push once, and open your pull request (or push to your open one) as \`workflow show\` says. Where that is off, ask the person in this terminal. The pull request body's Fixes lines come from \`${COMMAND} issue fixed --base origin/trunk --head <your branch>\`: never write one by hand. A \`ship\` that arrives while you work on a finding waits until that finding is done. A \`ship\` with nothing to ship: say "nothing to ship" in your report.`,
+  `8. Report with \`${COMMAND} herdr report "<the finding, its commit, the pull request link, what failed>"\` after each finding and after each ship.`,
   "A finding of your own goes in your report. Never ask the person, file an issue or start a session for it.",
 ];
 const LINKED_TAIL = `When done or stuck, report with: \`${COMMAND} herdr report "<one paragraph>"\`; write long results to a file and report its path. Start no sessions or agents of your own unless this brief says so.`;
@@ -107,4 +108,29 @@ test("a follow-up brief carries the follow-up trailer, with its issues and held 
   expect(readFileSync(bare, "utf8")).toBe(
     ["Fix it.", "", FOLLOWUP_HEAD, "", ...FOLLOWUP_STEPS, "", LINKED_TAIL, ""].join("\n"),
   );
+});
+
+test("the follow-up trailer says what to do in each pull request state, and when to ship", () => {
+  const text = followupTrailer({ base: "trunk", issues: [], held: [] });
+  // Open: the commit joins the branch; nothing is pushed to an open pull request before a ship.
+  expect(text).toContain(
+    "OPEN: add your commit to this branch; it joins that pull request when you ship",
+  );
+  expect(text).toContain("While one is open, push only when you ship.");
+  // Merged, head equals the pull request's head: reset. Past it: cherry-pick onto a new branch.
+  expect(text).toContain(
+    "MERGED: if `git rev-parse HEAD` equals the pull request's headRefOid, run `git fetch origin trunk` and `git reset --hard origin/trunk`",
+  );
+  expect(text).toContain(
+    "`git switch -c <a new branch name> origin/trunk`, then `git cherry-pick <headRefOid>..<the old HEAD>`. Never drop those commits.",
+  );
+  // Closed without a merge: no reset at all.
+  expect(text).toContain(
+    "CLOSED without a merge: never reset. Keep the branch; the next ship opens a new pull request from it.",
+  );
+  expect(text.match(/git reset --hard/g)).toHaveLength(2);
+  // Ship: only on a lead message, mid-finding waits, nothing to ship is said.
+  expect(text).toContain("Ship only when a message from the lead says `ship`.");
+  expect(text).toContain("arrives while you work on a finding waits until that finding is done");
+  expect(text).toContain('A `ship` with nothing to ship: say "nothing to ship" in your report.');
 });

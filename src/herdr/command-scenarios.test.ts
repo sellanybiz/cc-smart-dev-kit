@@ -1900,6 +1900,23 @@ test("a start outside a git project, or with a default branch that can only be g
   p.noRun();
 });
 
+test("a plan hand-out and a follow-up start refuse an unknown default branch in the same words", async () => {
+  const p = planWorld();
+  p.plan("alpha", ["src/a/"]);
+  git(p.ctx.cwd, "remote", "remove", "origin");
+  const said: string[] = [];
+  for (const extra of [["--plan", "alpha"], ["--followup"]]) {
+    p.lines.length = 0;
+    expect(await runHerdr([...planLaunch, ...extra, "--", "work"], p.ctx)).toBe(1);
+    said.push(p.lines.join("\n"));
+  }
+  const sentence =
+    "The default branch cannot be found: origin/HEAD is not set and no worktrees.base is configured, so a child would reset to a guess.";
+  const fix =
+    "Fix: run `git remote set-head origin --auto`, or set worktrees.base in .claude/cc-smart-dev-kit.json";
+  expect(said).toEqual([`✗ ${sentence}\n  ${fix}`, `✗ ${sentence}\n  ${fix}`]);
+});
+
 test("one live follow-up child per lead and repository: the refusal names it and says what to do", async () => {
   const cases: [string, Record<string, unknown>, string][] = [
     ["idle", {}, 'Fix: Send the finding to it: cc-smart-dev-kit herdr send t3 "<finding>"'],

@@ -65,6 +65,7 @@ import {
   type PlansWorld,
   prepareStart,
   runPlans,
+  UNKNOWN_BASE,
 } from "./plans";
 import {
   cliModeFlag,
@@ -400,8 +401,9 @@ type FollowupRefusal = { why: string; fix?: string } | null;
 /**
  * The one follow-up child per lead core and repository: a live one is the place to send the finding
  * (`herdr send`), and a gone one that left commits with no merged pull request blocks a new one,
- * so that work is not lost. The record of a gone child is what `hc ls --all` still lists: a child
- * stopped with `herdr stop` was removed, so it leaves none.
+ * so that work is not lost. A known limit: the gate sees only the terminals `hc ls --all` still
+ * lists. `herdr stop` removes the terminal (`hcRm`), so the unmerged branch of a stopped child
+ * leaves no record here; it stays in its worktree for `worktrees --clean` to report.
  */
 function followupGate(
   ctx: HerdrContext,
@@ -850,12 +852,7 @@ async function startChild(
     if (child !== null) return child;
     // The child resets to the default branch: a guess would build it on the wrong branch.
     const chosen = baseBranch(locateCheckout(cwd, { env: ctx.env }), ctx.env, project.repo);
-    if (chosen.from === "default")
-      return refuse(
-        ctx,
-        "The default branch cannot be found: origin/HEAD is not set and no worktrees.base is configured, so a follow-up child would reset to a guess.",
-        "run `git remote set-head origin --auto`, or set worktrees.base in .claude/cc-smart-dev-kit.json",
-      );
+    if (chosen.from === "default") return refuse(ctx, UNKNOWN_BASE.why, UNKNOWN_BASE.fix);
     const blocked = followupGate(ctx, me, project.repo, chosen.base, all);
     if (blocked !== null) return refuse(ctx, blocked.why, blocked.fix);
     followup = {
