@@ -684,17 +684,22 @@ type Refusal = Extract<PlanStart, { ok: false }>;
 const refuse = (why: string, fix?: string): Refusal =>
   fix === undefined ? { ok: false, why } : { ok: false, why, fix };
 
+/**
+ * The refusal for a start whose child would reset to the default branch while that branch is only
+ * a guess (`baseBranch` said `default`). One home: a plan hand-out and a follow-up child both read it.
+ */
+export const UNKNOWN_BASE = {
+  why: "The default branch cannot be found: origin/HEAD is not set and no worktrees.base is configured, so a child would reset to a guess.",
+  fix: "run `git remote set-head origin --auto`, or set worktrees.base in .claude/cc-smart-dev-kit.json",
+} as const;
+
 /** The plan a ref names, after the checks every plan command shares: a session, a real default branch, a plan. */
 type Located = { ok: true; plan: WorkTask; slug: string } | Refusal;
 
 function locatePlan(world: PlansWorld, ref: string): Located {
   if (!world.who.sessionId) return refuse("A plan hand-out needs a resolvable calling session.");
   // `main` is a guess when nothing says otherwise: a child built and reset from the wrong branch.
-  if (world.baseFrom === "default")
-    return refuse(
-      "The default branch cannot be found: origin/HEAD is not set and no worktrees.base is configured, so a child would reset to a guess.",
-      "run `git remote set-head origin --auto`, or set worktrees.base in .claude/cc-smart-dev-kit.json",
-    );
+  if (world.baseFrom === "default") return refuse(UNKNOWN_BASE.why, UNKNOWN_BASE.fix);
   const plan = planByRef(world.db, world.project, ref);
   if (plan === null) return refuse(`Plan "${ref}" was not found in this project.`);
   if (plan.kind !== "plan")

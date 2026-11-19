@@ -363,7 +363,7 @@ or merged.
 **Plans live in the project, one at a time (4.0).** Setup sets Claude Code's `plansDirectory`
 to `.claude/plans` at user scope ([setup](setup.md)), so plan mode writes the plan file into the
 project instead of `~/.claude/plans`. `plan-task` commits it with its branch after the yes (in a
-worktree, on that worktree's branch) and moves it to `archive/` when the plan finishes. A
+worktree, on that worktree's branch) and moves it to `archive/` in a commit of its own pull request, before the final review, when the plan finishes. A
 session may run several plans one after another: `core.md`'s "One plan at a time" forbids side
 work, not a second plan. `plan-task` gives each plan its own plan task, and the session names
 the slug with `plan` on `task_list` and on each work-task `task_create`, never on a project

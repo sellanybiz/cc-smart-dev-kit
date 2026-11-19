@@ -6,14 +6,17 @@ import { isOlder } from "../build-info/semver";
 import { parseOptions } from "../cli/args";
 import { cliPaths } from "../cli/paths";
 import { runGit } from "../hooks/git";
+import { locateCheckout } from "../project/resolve";
 import { taskContext } from "../tasks/context";
 import { createTaskOps } from "../tasks/ops";
 import { openWorkDb, workDbFile } from "../tasks/work/db";
 import { CLAIM_PROCESS, callerOf } from "../tasks/work/identity";
-import { getTask, isOpen, planByRef } from "../tasks/work/queries";
+import { getTask, heldPlans, isOpen, planByRef } from "../tasks/work/queries";
 import { adoptLeadPlans, releasePlan, swapPlanAgent } from "../tasks/work/store";
 import type { Who } from "../tasks/work/types";
-import { briefPath, reportPath, writeBrief, writePrivate } from "./brief";
+import { baseBranch } from "../worktrees/command";
+import { pullRequestState } from "../worktrees/scan";
+import { briefPath, type FollowupTrailer, reportPath, writeBrief, writePrivate } from "./brief";
 import {
   coreId,
   defaultHcRunner,
@@ -42,6 +45,7 @@ import {
   HERDR_SPACE,
   HERDR_TAB,
   herdrAgent,
+  KIT_FOLLOWUP,
   KIT_INDEPENDENT,
   KIT_LEAD,
   KIT_PLAN,
@@ -61,14 +65,17 @@ import {
   type PlansWorld,
   prepareStart,
   runPlans,
+  UNKNOWN_BASE,
 } from "./plans";
 import {
   cliModeFlag,
+  FOLLOWUP_EXCLUSION,
   type HerdrArgs,
   PLAN_EXCLUSION,
   parseHerdrArgs,
   START_FLAGS,
   START_OPTIONS,
+  START_REPEATABLE,
 } from "./words";
 
 export const WAIT_TIMEOUT_MS = 180_000;
@@ -168,6 +175,8 @@ export class WaitBarrier {
     private mode: "any" | "all",
     private seen: Seen = {},
     private lead?: string,
+    /** Terminals the `--all` barrier leaves out: a follow-up child never settles. */
+    private skip: ReadonlySet<string> = new Set(),
   ) {}
   consume(value: unknown): boolean {
     const rows = snapshot(value);
@@ -188,6 +197,7 @@ export class WaitBarrier {
           rows.flatMap((row) => {
             const t = object(row);
             if (!t || typeof t.address !== "string" || t.state !== "live") return [];
+            if (this.skip.has(t.address)) return [];
             const state = String(object(t.status)?.state ?? "");
             const fact = {
               terminal: t.address,
@@ -236,14 +246,14 @@ export interface WaitResult {
 export async function followEvents(
   labels: Record<string, string>,
   timeoutMs: number,
-  options: { mode: "any" | "all"; seen?: Seen } = { mode: "any" },
+  options: { mode: "any" | "all"; seen?: Seen; skip?: ReadonlySet<string> } = { mode: "any" },
 ): Promise<WaitResult | "ended"> {
   const args = ["hc", "events", "--json"];
   for (const [k, v] of Object.entries(labels)) args.push("--label", `${k}=${v}`);
   const child = Bun.spawn(args, { env: process.env, stdout: "pipe", stderr: "pipe" });
   const stderr = new Response(child.stderr).text();
   const reader = child.stdout.getReader();
-  const barrier = new WaitBarrier(options.mode, options.seen, labels[KIT_LEAD]);
+  const barrier = new WaitBarrier(options.mode, options.seen, labels[KIT_LEAD], options.skip);
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<"timeout">((resolve) => {
     timer = setTimeout(() => resolve("timeout"), timeoutMs);
@@ -350,7 +360,7 @@ export interface HerdrContext extends PlansEnv {
   events?: (
     labels: Record<string, string>,
     timeoutMs: number,
-    options?: { mode: "any" | "all"; seen?: Seen },
+    options?: { mode: "any" | "all"; seen?: Seen; skip?: ReadonlySet<string> },
   ) => Promise<"timeout" | "ended" | Record<string, unknown> | WaitResult>;
 }
 type Start = Extract<HerdrArgs, { verb: "start" }>;
@@ -363,19 +373,162 @@ function identity(ctx: HerdrContext, r: HcRunner): Identity {
   if ("why" in me) throw new Error(me.why);
   return me;
 }
-/** A plan child builds its one plan and never coordinates (D1): a refusal, or null when this terminal is no plan child. */
+/**
+ * A plan child builds its one plan, and a follow-up child works its lead's findings: neither
+ * coordinates (D1). A refusal, or null when this terminal is neither.
+ */
 function refusePlanChild(
   ctx: HerdrContext,
   r: HcRunner,
   me: Identity,
   doing: string,
 ): number | null {
-  if (hcGet(r, me.address).labels[KIT_PLAN] === undefined) return null;
+  const labels = hcGet(r, me.address).labels;
+  const fix = `Report to your lead with ${COMMAND} herdr report; the lead hands plans out.`;
+  if (labels[KIT_PLAN] !== undefined) {
+    return refuse(
+      ctx,
+      `A plan child never coordinates: it builds its own plan only, so it cannot ${doing}.`,
+      fix,
+    );
+  }
+  if (labels[KIT_FOLLOWUP] !== undefined) {
+    return refuse(
+      ctx,
+      `A follow-up child never coordinates: it works its lead's findings only, so it cannot ${doing}.`,
+      fix,
+    );
+  }
+  return null;
+}
+/** A child of any kind (it carries `kit.lead`) never starts a follow-up child: it reports a finding to its lead. */
+function refuseLinkedChild(ctx: HerdrContext, r: HcRunner, me: Identity): number | null {
+  if (hcGet(r, me.address).labels[KIT_LEAD] === undefined) return null;
   return refuse(
     ctx,
-    `A plan child never coordinates: it builds its own plan only, so it cannot ${doing}.`,
-    `Report to your lead with ${COMMAND} herdr report; the lead hands plans out.`,
+    "A child never starts a follow-up child: only a lead does.",
+    `Put the finding in ${COMMAND} herdr report; your lead decides what to do with it.`,
   );
+}
+/** Why a start of the lead's follow-up child is refused, or null when it may go on. */
+type FollowupRefusal = { why: string; fix?: string } | null;
+/** Whether the lead a terminal names is no live Claude session any more (its pane ended, or is gone). */
+function leadEnded(r: HcRunner, leadLabel: string | undefined): boolean {
+  const lead = parseLeadId(leadLabel ?? "");
+  if (lead === null) return true;
+  try {
+    return !isLiveClaude(hcGet(r, lead.address));
+  } catch (error) {
+    if (terminalEnded(error)) return true;
+    throw error;
+  }
+}
+/**
+ * The branch and commit a gone follow-up child left in its worktree. The child moves to new
+ * branches (the trailer's step 2), so a worktree that still exists says what is checked out; only
+ * a worktree that is gone falls back to the branch a start of this name made (`worktree-<name>`).
+ */
+function leftBehind(
+  ctx: HerdrContext,
+  repo: string,
+  worktree: string,
+  name: string,
+): { branch: string; tip: string } | null {
+  let branch = `worktree-${name}`;
+  let tip: string | undefined;
+  if (existsSync(worktree)) {
+    const head = runGit(worktree, ["symbolic-ref", "--short", "HEAD"], ctx.env);
+    if (head.ok && head.out !== "") branch = head.out;
+    const commit = runGit(worktree, ["rev-parse", "--verify", "--quiet", "HEAD^{commit}"], ctx.env);
+    if (commit.ok && commit.out !== "") tip = commit.out;
+  }
+  tip ??= [`refs/heads/${branch}`, `refs/remotes/origin/${branch}`]
+    .map((ref) => runGit(repo, ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], ctx.env))
+    .find((run) => run.ok && run.out !== "")?.out;
+  return tip === undefined ? null : { branch, tip };
+}
+/**
+ * The one follow-up child per lead and repository: a live one is the place to send the finding
+ * (`herdr send`), and a gone one that left commits with no merged pull request blocks a new one,
+ * so that work is not lost. A known limit: the gate sees only the terminals `hc ls --all` still
+ * lists. `herdr stop` removes the terminal (`hcRm`), so the unmerged branch of a stopped child
+ * leaves no record here; it stays in its worktree for `worktrees --clean` to report.
+ */
+function followupGate(
+  ctx: HerdrContext,
+  r: HcRunner,
+  me: Identity,
+  repo: string,
+  base: string,
+  all: readonly Terminal[],
+): FollowupRefusal {
+  const inRepo = all.filter(
+    (t) =>
+      t.labels[KIT_FOLLOWUP] === "1" &&
+      t.labels[KIT_REPO] === repo &&
+      parseLeadId(t.labels[KIT_LEAD] ?? "")?.core === me.core,
+  );
+  // A live child of another lead on this core is that lead's, unless its lead has ended.
+  const orphaned = inRepo.find(
+    (t) =>
+      t.state === "live" && t.labels[KIT_LEAD] !== me.leadId && leadEnded(r, t.labels[KIT_LEAD]),
+  );
+  const live = inRepo.find((t) => t.state === "live" && t.labels[KIT_LEAD] === me.leadId);
+  if (!live && orphaned)
+    return {
+      why: `A follow-up child of a lead that has ended is still live in this repository: ${orphaned.address}.`,
+      fix: `Take it over with ${COMMAND} herdr adopt, then send the finding to it.`,
+    };
+  if (live) {
+    const why = `This lead already has a follow-up child for this repository: ${live.address}.`;
+    const state = live.status?.state;
+    if (acceptsSend(state))
+      return {
+        why,
+        fix: `Send the finding to it: ${COMMAND} herdr send ${live.address} "<finding>"`,
+      };
+    if (state === undefined || state === "blocked")
+      return {
+        why,
+        fix: `It waits for the person in its pane: hc attach ${live.address}. Send the finding once it is free.`,
+      };
+    return { why, fix: `It is in the ${state} state: look at its pane: hc attach ${live.address}` };
+  }
+  // An ended child of any lead of this core: its work is not lost when its lead is another.
+  for (const gone of inRepo.filter((t) => t.state !== "live")) {
+    if (!gone.name) continue;
+    const worktree = join(repo, ".claude", "worktrees", gone.name);
+    const left = leftBehind(ctx, repo, worktree, gone.name);
+    if (left === null) continue;
+    const { branch, tip } = left;
+    const ahead = runGit(repo, ["rev-list", "--count", `origin/${base}..${tip}`], ctx.env);
+    // A count that cannot be read is no proof that the work is on the base.
+    if (ahead.ok && ahead.out === "0") continue;
+    if ((ctx.pr ?? pullRequestState)(repo, branch, tip, ctx.env) === "merged") continue;
+    return {
+      why: `A follow-up child in this repository ended (${gone.address}) and left commits on ${branch} that are not on origin/${base}, with no merged pull request. Its worktree is ${worktree}.`,
+      fix: `Push and merge that work, or remove the worktree and branch once you have checked them (${COMMAND} worktrees --clean), then start again.`,
+    };
+  }
+  return null;
+}
+/** The plans held now, with their files: what a follow-up child must never edit (a snapshot). */
+function heldPlanFiles(ctx: HerdrContext, project: string): FollowupTrailer["held"] {
+  if (!existsSync(workDbFile(ctx.paths))) return [];
+  const who = (ctx.caller ? ctx.caller() : callerOf({ env: ctx.env })) ?? {
+    sessionId: null,
+    pid: null,
+    procStart: null,
+  };
+  const db = openWorkDb(workDbFile(ctx.paths), { mode: "hook" });
+  try {
+    return heldPlans(db, project, who).map(({ plan, files }) => ({
+      slug: plan.plan ?? plan.subject,
+      files,
+    }));
+  } finally {
+    db.close();
+  }
 }
 function own(r: HcRunner, target: string, me: Identity): Terminal {
   const child = hcGet(r, target);
@@ -402,14 +555,14 @@ function count(ctx: HerdrContext, rows: Terminal[]): void {
 function show(ctx: HerdrContext, rows: Terminal[]): void {
   count(ctx, rows);
   ctx.out.say(
-    "address | name | kind | repo | machine | model | task or plan | state | blocked kind | message | worktree",
+    "address | name | kind | repo | machine | model | task, plan or follow-up | state | blocked kind | message | worktree",
   );
   for (const t of rows) {
     const argv = t.foreground?.argv ?? t.argv ?? [];
     const modelIndex = argv.indexOf("--model");
     const machine = t.address.includes("/") ? t.address.split("/")[0] : "local";
     ctx.out.say(
-      `${t.address} | ${t.name ?? "-"} | ${t.labels[KIT_INDEPENDENT] ? "independent" : "linked child"} | ${t.labels[KIT_REPO] ?? "-"} | ${machine} | ${modelIndex >= 0 ? (argv[modelIndex + 1] ?? "-") : "-"} | ${t.labels[KIT_TASK] ?? (t.labels[KIT_PLAN] ? `plan ${t.labels[KIT_PLAN]}` : "-")} | ${t.status?.state ?? t.state} | ${t.status?.kind ?? "-"} | ${t.status?.msg ?? "-"} | ${t.cwd ?? "-"}`,
+      `${t.address} | ${t.name ?? "-"} | ${t.labels[KIT_INDEPENDENT] ? "independent" : "linked child"} | ${t.labels[KIT_REPO] ?? "-"} | ${machine} | ${modelIndex >= 0 ? (argv[modelIndex + 1] ?? "-") : "-"} | ${t.labels[KIT_TASK] ?? (t.labels[KIT_PLAN] ? `plan ${t.labels[KIT_PLAN]}` : t.labels[KIT_FOLLOWUP] ? "follow-up" : "-")} | ${t.status?.state ?? t.state} | ${t.status?.kind ?? "-"} | ${t.status?.msg ?? "-"} | ${t.cwd ?? "-"}`,
     );
   }
 }
@@ -421,10 +574,15 @@ function isLiveClaude(t: Terminal | undefined): t is Terminal {
       basename(t.foreground?.argv?.[0] ?? "") === "claude")
   );
 }
+/** The states of a Claude terminal that `send` accepts; a blocked or errored one is the person's. */
+export const SEND_STATES = ["idle", "working", "done"] as const;
+function acceptsSend(state: string | undefined): boolean {
+  return SEND_STATES.some((accepted) => accepted === state);
+}
 function send(r: HcRunner, target: string, text: string): void {
   const t = hcGet(r, target);
   const state = t.status?.state;
-  if (!isLiveClaude(t) || !state || !["idle", "working", "done"].includes(state))
+  if (!isLiveClaude(t) || !state || !acceptsSend(state))
     throw new HcError(
       "blocked",
       `This terminal cannot receive a message; the person answers it in its pane: hc attach ${target}`,
@@ -740,6 +898,27 @@ async function startChild(
   }
   const core = me?.core ?? coreId(r);
   const all = terminals(r, {}, true);
+  let followup: Omit<FollowupTrailer, "name"> | null = null;
+  if (a.followup) {
+    if (!me || project.repo === null)
+      return refuse(
+        ctx,
+        "A follow-up child needs a git project and the lead's own terminal.",
+        "Run it in the project's folder, or give --cwd, from the lead's terminal.",
+      );
+    const child = refuseLinkedChild(ctx, r, me);
+    if (child !== null) return child;
+    // The child resets to the default branch: a guess would build it on the wrong branch.
+    const chosen = baseBranch(locateCheckout(cwd, { env: ctx.env }), ctx.env, project.repo);
+    if (chosen.from === "default") return refuse(ctx, UNKNOWN_BASE.why, UNKNOWN_BASE.fix);
+    const blocked = followupGate(ctx, r, me, project.repo, chosen.base, all);
+    if (blocked !== null) return refuse(ctx, blocked.why, blocked.fix);
+    followup = {
+      base: chosen.base,
+      issues: a.issues ?? [],
+      held: heldPlanFiles(ctx, project.project),
+    };
+  }
   const name = a.name ?? slug ?? String(ctx.nowMs);
   const terminalName = childTerminalName(name);
   if (!validChildName(terminalName))
@@ -817,6 +996,7 @@ async function startChild(
     handout && planWorld && slug !== null
       ? { slug, handoutId: handout.handoutId, base: planWorld.base, resume: handout.resume }
       : undefined,
+    followup ? { ...followup, name: terminalName } : undefined,
   );
   const path = a.on ? await remoteBrief(r, ctx, a.on, file) : file;
   const first = escapeReport(`Read your brief at ${path} and do it.`, "lead");
@@ -838,6 +1018,7 @@ async function startChild(
   } else if (me) labels[KIT_LEAD] = me.leadId;
   if (a.task) labels[KIT_TASK] = a.task;
   if (slug !== null) labels[KIT_PLAN] = slug;
+  if (followup !== null) labels[KIT_FOLLOWUP] = "1";
   // Only an independent session gets its own space: a linked child, local or remote, nests
   // under its lead through hc's parent (proved live for a remote child in 4.3.1).
   if (a.independent) {
@@ -1005,10 +1186,7 @@ async function report(text: string, ctx: HerdrContext, r: HcRunner): Promise<num
       }
     }
   }
-  if (
-    isLiveClaude(destination) &&
-    ["idle", "working", "done"].includes(destination.status?.state ?? "")
-  ) {
+  if (isLiveClaude(destination) && acceptsSend(destination.status?.state)) {
     try {
       send(r, destination.address, escapeReport(text, me.leadId));
       ctx.out.line("ok", "Report sent to the lead.");
@@ -1033,6 +1211,7 @@ export async function runHerdr(args: string[], ctx: HerdrContext): Promise<numbe
       args.slice(1, split < 0 ? args.length : split),
       START_OPTIONS,
       START_FLAGS,
+      START_REPEATABLE,
     );
     if (!("error" in options)) {
       if (["--model", "--effort", "--mode"].some((key) => !options.options.has(key)))
@@ -1048,6 +1227,14 @@ export async function runHerdr(args: string[], ctx: HerdrContext): Promise<numbe
           options.options.has("--on"))
       )
         return refuse(ctx, PLAN_EXCLUSION);
+      if (
+        options.flags.has("--followup") &&
+        (options.flags.has("--independent") ||
+          options.options.has("--task") ||
+          options.options.has("--plan") ||
+          options.options.has("--on"))
+      )
+        return refuse(ctx, FOLLOWUP_EXCLUSION);
     }
   }
   const parsed = parseHerdrArgs(args);
@@ -1179,14 +1366,28 @@ export async function runHerdr(args: string[], ctx: HerdrContext): Promise<numbe
       }
       case "wait": {
         const before = terminals(r, { [KIT_LEAD]: me.leadId }, true);
-        if (!before.some((t) => t.state === "live")) {
-          ctx.out.say("No live kit children.");
+        // A follow-up child never settles, so `--all` must not wait for it.
+        const skip = new Set(
+          parsed.mode === "all"
+            ? before.filter((t) => t.labels[KIT_FOLLOWUP] === "1").map((t) => t.address)
+            : [],
+        );
+        if (!before.some((t) => t.state === "live" && !skip.has(t.address))) {
+          ctx.out.say(
+            before.some((t) => t.state === "live")
+              ? "No live kit children to wait for (a follow-up child never settles)."
+              : "No live kit children.",
+          );
           return 0;
         }
         const news = await (ctx.events ?? followEvents)(
           { [KIT_LEAD]: me.leadId },
           parsed.timeoutMs ?? WAIT_TIMEOUT_MS,
-          { mode: parsed.mode, ...(parsed.seen ? { seen: parsed.seen } : {}) },
+          {
+            mode: parsed.mode,
+            ...(parsed.seen ? { seen: parsed.seen } : {}),
+            ...(skip.size ? { skip } : {}),
+          },
         );
         if (news === "ended")
           return refuse(ctx, "The event stream ended; nothing is known about the children.");

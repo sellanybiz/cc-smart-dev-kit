@@ -39,7 +39,7 @@ var MIN_BUN = "1.4.3";
 
 // src/build-info/index.ts
 var info = {
-  version: "5.3.0",
+  version: "5.4.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -21513,7 +21513,7 @@ function newHerdrSpace() {
     tab: `tb${crypto.randomUUID().replaceAll("-", "")}`
   };
 }
-var KIT_LEAD = "kit.lead", KIT_REPO = "kit.repo", KIT_TASK = "kit.task", KIT_PLAN = "kit.plan", KIT_INDEPENDENT = "kit.independent", KIT_STARTED_BY = "kit.started-by", HERDR_AGENT_PREFIX = "herdr:", REPORT_TAG = "kit-report", CHILD_NAME_PATTERN, CLAUDE_CODE_APP = "claude-code", HERDR_SPACE = "herdr.space", HERDR_TAB = "herdr.tab";
+var KIT_LEAD = "kit.lead", KIT_REPO = "kit.repo", KIT_TASK = "kit.task", KIT_PLAN = "kit.plan", KIT_FOLLOWUP = "kit.followup", KIT_INDEPENDENT = "kit.independent", KIT_STARTED_BY = "kit.started-by", HERDR_AGENT_PREFIX = "herdr:", REPORT_TAG = "kit-report", CHILD_NAME_PATTERN, CLAUDE_CODE_APP = "claude-code", HERDR_SPACE = "herdr.space", HERDR_TAB = "herdr.tab";
 var init_labels = __esm(() => {
   CHILD_NAME_PATTERN = /^[a-z0-9_-]{1,32}$/;
 });
@@ -21559,10 +21559,10 @@ ${verb ? `Usage: ${COMMAND} herdr ${USAGE_LINES[verb]}` : HERDR_USAGE}`
     const split = rest.indexOf("--");
     if (split < 0)
       return fail("Put -- before the brief.");
-    const parsed = parseOptions(rest.slice(0, split), START_OPTIONS, START_FLAGS);
+    const parsed = parseOptions(rest.slice(0, split), START_OPTIONS, START_FLAGS, START_REPEATABLE);
     if ("error" in parsed)
       return fail(parsed.error);
-    const { options: o, flags: f, positionals: p } = parsed;
+    const { options: o, flags: f, lists, positionals: p } = parsed;
     const model = CLAUDE_FAMILIES.find((v) => v === o.get("--model")), effort = ALLOWED_EFFORTS.find((v) => v === o.get("--effort")), mode = normalizeMode(o.get("--mode") ?? "");
     const brief = rest.slice(split + 1).join(" ");
     if (!model || !effort || !mode || p.length || !brief.trim())
@@ -21572,6 +21572,13 @@ ${verb ? `Usage: ${COMMAND} herdr ${USAGE_LINES[verb]}` : HERDR_USAGE}`
       return fail("An independent session cannot have a task.");
     if (plan && (task || independent || o.has("--on")))
       return fail(PLAN_EXCLUSION);
+    const followup = f.has("--followup"), issues = [...new Set(lists.get("--issue") ?? [])];
+    if (followup && (plan || task || independent || o.has("--on")))
+      return fail(FOLLOWUP_EXCLUSION);
+    if (issues.length && !followup)
+      return fail("--issue belongs to --followup.");
+    if (issues.some((issue) => !ISSUE_NUMBER.test(issue)))
+      return fail("Use an issue number such as 12.");
     if (task && !/^#[1-9]\d*$/.test(task))
       return fail("Use a task reference such as #7.");
     if (name && !validChildName(name))
@@ -21592,7 +21599,8 @@ ${verb ? `Usage: ${COMMAND} herdr ${USAGE_LINES[verb]}` : HERDR_USAGE}`
       ...on !== undefined ? { on } : {},
       ...name ? { name } : {},
       ...task ? { task } : {},
-      ...plan ? { plan } : {}
+      ...plan ? { plan } : {},
+      ...followup ? { followup: true, issues } : {}
     };
   }
   const known = verb === "wait" ? ["--timeout", "--seen"] : verb === "plans" ? ["--timeout", "--release", "--reserve"] : [];
@@ -21683,7 +21691,7 @@ ${verb ? `Usage: ${COMMAND} herdr ${USAGE_LINES[verb]}` : HERDR_USAGE}`
     }
   }
 }
-var MODE_ORDER, HERDR_VERBS, USAGE_LINES, HERDR_USAGE, START_OPTIONS, START_FLAGS, PLAN_EXCLUSION = "--plan cannot be combined with --task, --independent or --on.", TIMEOUT_WORDS = "A timeout needs a positive whole number of seconds.";
+var MODE_ORDER, HERDR_VERBS, USAGE_LINES, HERDR_USAGE, START_OPTIONS, START_FLAGS, START_REPEATABLE, PLAN_EXCLUSION = "--plan cannot be combined with --task, --independent or --on.", FOLLOWUP_EXCLUSION = "--followup cannot be combined with --plan, --task, --independent or --on.", ISSUE_NUMBER, TIMEOUT_WORDS = "A timeout needs a positive whole number of seconds.";
 var init_words = __esm(() => {
   init_names();
   init_targets();
@@ -21702,7 +21710,7 @@ var init_words = __esm(() => {
     "machines"
   ];
   USAGE_LINES = {
-    start: `start --model <${CLAUDE_FAMILIES.join("|")}> --effort <${ALLOWED_EFFORTS.join("|")}> --mode <${MODE_ORDER.join("|")}|manual> [--cwd <dir>] [--on <machine>] [--name <name>] [--task <#n> | --plan <slug>] [--independent] [--asked] -- <brief>`,
+    start: `start --model <${CLAUDE_FAMILIES.join("|")}> --effort <${ALLOWED_EFFORTS.join("|")}> --mode <${MODE_ORDER.join("|")}|manual> [--cwd <dir>] [--on <machine>] [--name <name>] [--task <#n> | --plan <slug> | --followup [--issue <n>]\u2026] [--independent] [--asked] -- <brief>`,
     list: "list [--all] [--json]",
     send: "send <terminal> <text>",
     wait: "wait [--any | --all] [--timeout <seconds>] [--seen <addr>:<turn|?>:<error|done|end>[,\u2026]]",
@@ -21722,9 +21730,12 @@ var init_words = __esm(() => {
     "--on",
     "--name",
     "--task",
-    "--plan"
+    "--plan",
+    "--issue"
   ];
-  START_FLAGS = ["--independent", "--asked"];
+  START_FLAGS = ["--independent", "--asked", "--followup"];
+  START_REPEATABLE = ["--issue"];
+  ISSUE_NUMBER = /^[1-9]\d*$/;
 });
 
 // src/path-compare.ts
@@ -33901,6 +33912,9 @@ function heldPlansIn(all, who, extraFiles = {}) {
     mine: isLead(plan.lead, who) || owns(plan),
     files: [...new Set([...plan.files, ...extraFiles[plan.id] ?? []])]
   }));
+}
+function heldPlans(db, project, who, extraFiles = {}) {
+  return heldPlansIn(allTasks(db, project), who, extraFiles);
 }
 function ownsPlan(all, owns, plan) {
   const row = all.find((t) => t.kind === "plan" && t.plan === plan);
@@ -52405,9 +52419,11 @@ Nobody answers a question in \`claude -p\`; run this in an interactive session.`
     if (optionValue(flags, "--mode") === "bypassPermissions")
       return verdict("deny", "bypassPermissions is never allowed.");
     const parsed = parseHerdrArgs(herdr);
-    if ("error" in parsed)
-      return verdict("deny", `Pass both --model and --effort, plus --mode, to herdr start.
+    if ("error" in parsed) {
+      const named = ["--model", "--effort", "--mode"].every((key) => optionValue(flags, key) !== null);
+      return verdict("deny", named ? parsed.error : `Pass both --model and --effort, plus --mode, to herdr start.
 ${parsed.error}`);
+    }
     if (parsed.verb !== "start")
       continue;
     const lead = stringField(context.input.permission_mode) ?? "";
@@ -58895,12 +58911,15 @@ init_build_info();
 init_names();
 init_paths2();
 init_git();
+init_resolve();
 init_context();
 init_ops();
 init_db();
 init_identity();
 init_queries();
 init_store2();
+init_command4();
+init_scan();
 import { existsSync as existsSync82, readdirSync as readdirSync33, readFileSync as readFileSync89 } from "fs";
 import { basename as basename25, dirname as dirname42, isAbsolute as isAbsolute16, join as join100, relative as relative15, resolve as resolve30 } from "path";
 
@@ -58924,15 +58943,40 @@ ${sync}
 5. Report with \`${COMMAND} herdr report "<the pull request link, what shipped, what failed>"\`. Then stop. Never take another plan.
 `;
 }
-async function writeBrief(stateDir, core, name, text, linked, task, plan) {
+function followupTrailer(followup) {
+  const { base } = followup;
+  const issues = followup.issues.length ? `
+The first findings are filed as ${followup.issues.map((n) => `#${n}`).join(", ")}. A later message names its own issue as "Follow-up [#n]".
+` : "";
+  const held = followup.held.length ? `
+These plans hold files now (a snapshot; a later message names new ones):
+${followup.held.map((plan) => `- ${plan.slug}: ${plan.files.length ? plan.files.join(", ") : "no file list"}`).join(`
+`)}
+Never edit a file a plan holds. Report the finding instead: the lead treats it as part of that plan.
+` : "";
+  return `
+You are your lead's follow-up child for this repository. The brief above is the first finding. Later findings arrive as messages that start with "Follow-up". You never stop on your own: after each report, wait for the next message. You end only when the lead runs \`${COMMAND} herdr stop\`.
+${issues}${held}
+Once, before the first finding:
+1. Run \`git fetch origin ${base}\`. If it fails, run it once more; if it fails again, report the error and take no finding until step 1 has run. Then run \`git branch --show-current\` for your branch name, \`git rev-list --count HEAD --not --exclude=<your branch> --branches --exclude=origin/<your branch> --remotes\` (your own commits: those on no other branch) and \`git status --porcelain\`. Only when the count is 0 and the status is empty, run \`git reset --hard origin/${base}\`. Otherwise never reset: this worktree may hold work. (Your worktree may start from the lead's branch or an old default branch.)
+For each finding:
+2. Run \`gh pr list --head <your branch> --state all --json state,headRefOid,createdAt\`. If it fails (not logged in, no network), report the error and wait: never read a failure as "no pull request". An empty list means none: go on. If several are listed, an OPEN one wins; otherwise read the newest (\`createdAt\`). OPEN: add your commit to this branch; it joins that pull request when you ship (step 6). CLOSED without a merge: never reset. Keep the branch; the next ship opens a new pull request from it; say so in your report. MERGED, and \`git rev-parse HEAD\` equals the headRefOid: the branch is fully merged. Run \`git fetch origin ${base}\`, then \`git switch -c <new branch> origin/${base}\`. The switch carries uncommitted changes, or refuses: then report and wait. MERGED, and \`git merge-base --is-ancestor <headRefOid> HEAD\` succeeds with HEAD not equal to the headRefOid: you hold commits that were not merged. Run \`git fetch origin ${base}\`, \`git switch -c <new branch> origin/${base}\`, then \`git cherry-pick <headRefOid>..<old branch>\`. Never drop those commits. If the cherry-pick stops on a conflict, run \`git cherry-pick --abort\`, \`git switch <old branch>\` and \`git branch -D <new branch>\`, then report and wait. MERGED, and HEAD is neither the headRefOid nor past it: report and wait. After a switch the check reads the new branch, which has no pull request. Name a new branch \`followup-${followup.name}-<n>\`, with <n> the first number from 2 up that \`git branch --list\` does not show.
+3. Fix it, run the checks that cover it, and review your diff. Work that needs a kit plan: report it to your lead instead; never run plan-task or build. Other bigger work: use plan mode; the person approves the plan in this terminal.
+4. Make one commit for the finding. When it has an issue, name it in the commit subject as \`(#n)\`, with no closing keyword such as Fixes or Closes: step 6 reads it back from \`git log\`. Beyond a small fix (\`/${PLUGIN}:review\` defines it), then start one second opinion on that commit from \`${PLUGIN}:senior-engineer\`, and the \`${PLUGIN}:edge-case-hunter\` on a risky change as \`/${PLUGIN}:review\` says; this brief allows no other agent. Commit nothing while it runs; its confirmed fixes go in one more commit.
+5. Never push before \`ship\`: your commits stay in this worktree.
+6. Ship only when a message from the lead says \`ship\`. Then run the project's full check locally. Before the push, mark each fixed issue: for every commit of yours that is not yet on \`origin/${base}\` and whose subject names an issue as \`(#n)\`, run \`${COMMAND} issue mark-fixed --issue <n> --base ${base} --branch <your branch> --tip <the full id the commit has on your branch now>\`. Use \`${base}\` as the base: it is the branch your pull request targets, not your own branch. If it says issues are off, skip it. Then push once, and open your pull request (or push to your open one) as \`workflow show\` says. Where that is off, ask the person in this terminal. The pull request body's Fixes lines come from \`${COMMAND} issue fixed --base origin/${base} --head <your branch>\`: never write one by hand. When you push to an open pull request, replace the Fixes lines of its body with what that command prints now: read the body with \`gh pr view <your branch> --json body --jq .body\`, change only those lines, and write it back with \`gh pr edit <your branch> --body-file -\`. If that read fails, report and do not edit. A \`ship\` that arrives while you work on a finding waits until that finding is done. A \`ship\` with nothing to ship: say "nothing to ship" in your report.
+7. Report with \`${COMMAND} herdr report "<the finding, its commit, the pull request link, what failed>"\` after each finding and after each ship.
+`;
+}
+async function writeBrief(stateDir, core, name, text, linked, task, plan, followup) {
   const file = briefPath(stateDir, core, name);
-  const trailer = plan ? planTrailer(plan) : task ? `
+  const trailer = plan ? planTrailer(plan) : followup ? followupTrailer(followup) : task ? `
 Your task: ${task}
 save a \`Report:\` note with task_note; never take, update or close the task.
 ` : "";
   await writePrivate(file, `${text}
 ${trailer}${linked ? `
-When done or stuck, report with: \`${COMMAND} herdr report "<one paragraph>"\`; write long results to a file and report its path. Start no sessions or agents of your own unless this brief says so.
+When done or stuck, report with: \`${COMMAND} herdr report "<one paragraph>"\`; write long results to a file and report its path. Start no sessions or agents of your own unless this brief says so. A finding outside your work goes in your report: never ask the person, file an issue or start a session for it.
 ` : ""}`);
   return file;
 }
@@ -59356,11 +59400,15 @@ function summary(lines) {
   return shown.length ? shown.join(" \xB7 ") : "nothing to hand out";
 }
 var refuse2 = (why, fix) => fix === undefined ? { ok: false, why } : { ok: false, why, fix };
+var UNKNOWN_BASE = {
+  why: "The default branch cannot be found: origin/HEAD is not set and no worktrees.base is configured, so a child would reset to a guess.",
+  fix: "run `git remote set-head origin --auto`, or set worktrees.base in .claude/cc-smart-dev-kit.json"
+};
 function locatePlan(world, ref) {
   if (!world.who.sessionId)
     return refuse2("A plan hand-out needs a resolvable calling session.");
   if (world.baseFrom === "default")
-    return refuse2("The default branch cannot be found: origin/HEAD is not set and no worktrees.base is configured, so a child would reset to a guess.", "run `git remote set-head origin --auto`, or set worktrees.base in .claude/cc-smart-dev-kit.json");
+    return refuse2(UNKNOWN_BASE.why, UNKNOWN_BASE.fix);
   const plan = planByRef(world.db, world.project, ref);
   if (plan === null)
     return refuse2(`Plan "${ref}" was not found in this project.`);
@@ -59826,13 +59874,15 @@ class WaitBarrier {
   mode;
   seen;
   lead;
+  skip;
   news = [];
   initial = null;
   addresses = null;
-  constructor(mode, seen = {}, lead) {
+  constructor(mode, seen = {}, lead, skip = new Set) {
     this.mode = mode;
     this.seen = seen;
     this.lead = lead;
+    this.skip = skip;
   }
   consume(value) {
     const rows = snapshot(value);
@@ -59853,6 +59903,8 @@ class WaitBarrier {
         this.initial = new Set(rows.flatMap((row) => {
           const t = object2(row);
           if (!t || typeof t.address !== "string" || t.state !== "live")
+            return [];
+          if (this.skip.has(t.address))
             return [];
           const state = String(object2(t.status)?.state ?? "");
           const fact = {
@@ -59890,7 +59942,7 @@ async function followEvents(labels, timeoutMs, options = { mode: "any" }) {
   const child = Bun.spawn(args, { env: process.env, stdout: "pipe", stderr: "pipe" });
   const stderr = new Response(child.stderr).text();
   const reader = child.stdout.getReader();
-  const barrier = new WaitBarrier(options.mode, options.seen, labels[KIT_LEAD]);
+  const barrier = new WaitBarrier(options.mode, options.seen, labels[KIT_LEAD], options.skip);
   let timer;
   const timeout = new Promise((resolve) => {
     timer = setTimeout(() => resolve("timeout"), timeoutMs);
@@ -59991,9 +60043,108 @@ function identity(ctx, r) {
   return me;
 }
 function refusePlanChild(ctx, r, me, doing) {
-  if (hcGet(r, me.address).labels[KIT_PLAN] === undefined)
+  const labels = hcGet(r, me.address).labels;
+  const fix = `Report to your lead with ${COMMAND} herdr report; the lead hands plans out.`;
+  if (labels[KIT_PLAN] !== undefined) {
+    return refuse3(ctx, `A plan child never coordinates: it builds its own plan only, so it cannot ${doing}.`, fix);
+  }
+  if (labels[KIT_FOLLOWUP] !== undefined) {
+    return refuse3(ctx, `A follow-up child never coordinates: it works its lead's findings only, so it cannot ${doing}.`, fix);
+  }
+  return null;
+}
+function refuseLinkedChild(ctx, r, me) {
+  if (hcGet(r, me.address).labels[KIT_LEAD] === undefined)
     return null;
-  return refuse3(ctx, `A plan child never coordinates: it builds its own plan only, so it cannot ${doing}.`, `Report to your lead with ${COMMAND} herdr report; the lead hands plans out.`);
+  return refuse3(ctx, "A child never starts a follow-up child: only a lead does.", `Put the finding in ${COMMAND} herdr report; your lead decides what to do with it.`);
+}
+function leadEnded(r, leadLabel) {
+  const lead = parseLeadId(leadLabel ?? "");
+  if (lead === null)
+    return true;
+  try {
+    return !isLiveClaude(hcGet(r, lead.address));
+  } catch (error) {
+    if (terminalEnded(error))
+      return true;
+    throw error;
+  }
+}
+function leftBehind(ctx, repo, worktree, name) {
+  let branch = `worktree-${name}`;
+  let tip;
+  if (existsSync82(worktree)) {
+    const head = runGit(worktree, ["symbolic-ref", "--short", "HEAD"], ctx.env);
+    if (head.ok && head.out !== "")
+      branch = head.out;
+    const commit = runGit(worktree, ["rev-parse", "--verify", "--quiet", "HEAD^{commit}"], ctx.env);
+    if (commit.ok && commit.out !== "")
+      tip = commit.out;
+  }
+  tip ??= [`refs/heads/${branch}`, `refs/remotes/origin/${branch}`].map((ref) => runGit(repo, ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], ctx.env)).find((run) => run.ok && run.out !== "")?.out;
+  return tip === undefined ? null : { branch, tip };
+}
+function followupGate(ctx, r, me, repo, base, all) {
+  const inRepo = all.filter((t) => t.labels[KIT_FOLLOWUP] === "1" && t.labels[KIT_REPO] === repo && parseLeadId(t.labels[KIT_LEAD] ?? "")?.core === me.core);
+  const orphaned = inRepo.find((t) => t.state === "live" && t.labels[KIT_LEAD] !== me.leadId && leadEnded(r, t.labels[KIT_LEAD]));
+  const live = inRepo.find((t) => t.state === "live" && t.labels[KIT_LEAD] === me.leadId);
+  if (!live && orphaned)
+    return {
+      why: `A follow-up child of a lead that has ended is still live in this repository: ${orphaned.address}.`,
+      fix: `Take it over with ${COMMAND} herdr adopt, then send the finding to it.`
+    };
+  if (live) {
+    const why = `This lead already has a follow-up child for this repository: ${live.address}.`;
+    const state = live.status?.state;
+    if (acceptsSend(state))
+      return {
+        why,
+        fix: `Send the finding to it: ${COMMAND} herdr send ${live.address} "<finding>"`
+      };
+    if (state === undefined || state === "blocked")
+      return {
+        why,
+        fix: `It waits for the person in its pane: hc attach ${live.address}. Send the finding once it is free.`
+      };
+    return { why, fix: `It is in the ${state} state: look at its pane: hc attach ${live.address}` };
+  }
+  for (const gone of inRepo.filter((t) => t.state !== "live")) {
+    if (!gone.name)
+      continue;
+    const worktree = join100(repo, ".claude", "worktrees", gone.name);
+    const left = leftBehind(ctx, repo, worktree, gone.name);
+    if (left === null)
+      continue;
+    const { branch, tip } = left;
+    const ahead = runGit(repo, ["rev-list", "--count", `origin/${base}..${tip}`], ctx.env);
+    if (ahead.ok && ahead.out === "0")
+      continue;
+    if ((ctx.pr ?? pullRequestState)(repo, branch, tip, ctx.env) === "merged")
+      continue;
+    return {
+      why: `A follow-up child in this repository ended (${gone.address}) and left commits on ${branch} that are not on origin/${base}, with no merged pull request. Its worktree is ${worktree}.`,
+      fix: `Push and merge that work, or remove the worktree and branch once you have checked them (${COMMAND} worktrees --clean), then start again.`
+    };
+  }
+  return null;
+}
+function heldPlanFiles(ctx, project) {
+  if (!existsSync82(workDbFile(ctx.paths)))
+    return [];
+  const who = (ctx.caller ? ctx.caller() : callerOf({ env: ctx.env })) ?? {
+    sessionId: null,
+    pid: null,
+    procStart: null
+  };
+  const db = openWorkDb(workDbFile(ctx.paths), { mode: "hook" });
+  try {
+    return heldPlans(db, project, who).map(({ plan, files }) => ({
+      slug: plan.plan ?? plan.subject,
+      files
+    }));
+  } finally {
+    db.close();
+  }
 }
 function own2(r, target, me) {
   const child = hcGet(r, target);
@@ -60013,21 +60164,25 @@ function count4(ctx, rows) {
 }
 function show7(ctx, rows) {
   count4(ctx, rows);
-  ctx.out.say("address | name | kind | repo | machine | model | task or plan | state | blocked kind | message | worktree");
+  ctx.out.say("address | name | kind | repo | machine | model | task, plan or follow-up | state | blocked kind | message | worktree");
   for (const t of rows) {
     const argv = t.foreground?.argv ?? t.argv ?? [];
     const modelIndex = argv.indexOf("--model");
     const machine = t.address.includes("/") ? t.address.split("/")[0] : "local";
-    ctx.out.say(`${t.address} | ${t.name ?? "-"} | ${t.labels[KIT_INDEPENDENT] ? "independent" : "linked child"} | ${t.labels[KIT_REPO] ?? "-"} | ${machine} | ${modelIndex >= 0 ? argv[modelIndex + 1] ?? "-" : "-"} | ${t.labels[KIT_TASK] ?? (t.labels[KIT_PLAN] ? `plan ${t.labels[KIT_PLAN]}` : "-")} | ${t.status?.state ?? t.state} | ${t.status?.kind ?? "-"} | ${t.status?.msg ?? "-"} | ${t.cwd ?? "-"}`);
+    ctx.out.say(`${t.address} | ${t.name ?? "-"} | ${t.labels[KIT_INDEPENDENT] ? "independent" : "linked child"} | ${t.labels[KIT_REPO] ?? "-"} | ${machine} | ${modelIndex >= 0 ? argv[modelIndex + 1] ?? "-" : "-"} | ${t.labels[KIT_TASK] ?? (t.labels[KIT_PLAN] ? `plan ${t.labels[KIT_PLAN]}` : t.labels[KIT_FOLLOWUP] ? "follow-up" : "-")} | ${t.status?.state ?? t.state} | ${t.status?.kind ?? "-"} | ${t.status?.msg ?? "-"} | ${t.cwd ?? "-"}`);
   }
 }
 function isLiveClaude(t) {
   return t?.state === "live" && (t.status?.app === CLAUDE_CODE_APP || t.foreground?.name === "claude" || basename25(t.foreground?.argv?.[0] ?? "") === "claude");
 }
+var SEND_STATES = ["idle", "working", "done"];
+function acceptsSend(state) {
+  return SEND_STATES.some((accepted) => accepted === state);
+}
 function send(r, target, text) {
   const t = hcGet(r, target);
   const state = t.status?.state;
-  if (!isLiveClaude(t) || !state || !["idle", "working", "done"].includes(state))
+  if (!isLiveClaude(t) || !state || !acceptsSend(state))
     throw new HcError("blocked", `This terminal cannot receive a message; the person answers it in its pane: hc attach ${target}`);
   hcSend(r, target, text, state === "done" ? {} : { ifStatus: state === "idle" ? "idle" : "working" });
 }
@@ -60236,6 +60391,25 @@ async function startChild(a, ctx, r, run) {
   }
   const core = me?.core ?? coreId(r);
   const all = terminals(r, {}, true);
+  let followup = null;
+  if (a.followup) {
+    if (!me || project.repo === null)
+      return refuse3(ctx, "A follow-up child needs a git project and the lead's own terminal.", "Run it in the project's folder, or give --cwd, from the lead's terminal.");
+    const child = refuseLinkedChild(ctx, r, me);
+    if (child !== null)
+      return child;
+    const chosen = baseBranch(locateCheckout(cwd, { env: ctx.env }), ctx.env, project.repo);
+    if (chosen.from === "default")
+      return refuse3(ctx, UNKNOWN_BASE.why, UNKNOWN_BASE.fix);
+    const blocked = followupGate(ctx, r, me, project.repo, chosen.base, all);
+    if (blocked !== null)
+      return refuse3(ctx, blocked.why, blocked.fix);
+    followup = {
+      base: chosen.base,
+      issues: a.issues ?? [],
+      held: heldPlanFiles(ctx, project.project)
+    };
+  }
   const name = a.name ?? slug ?? String(ctx.nowMs);
   const terminalName = childTerminalName(name);
   if (!validChildName(terminalName))
@@ -60263,7 +60437,7 @@ async function startChild(a, ctx, r, run) {
   if (all.some((t) => t.name === terminalName && (!reuse || t.state === "live")) || !reuse && !a.on && gitRoot && existsSync82(worktree) || branchExists)
     return refuse3(ctx, `The name ${name} already has a terminal, worktree or branch. Try --name ${name}-2.`);
   const file = await writeBrief(ctx.paths.stateDir, core, terminalName, a.on && !a.independent ? `${a.brief}
-Your lead is on another core. Reports stay on this machine in ${remoteReportFolder(ctx)}. Run ${COMMAND} herdr report to save each report there.` : a.brief, !a.independent, a.task, handout && planWorld && slug !== null ? { slug, handoutId: handout.handoutId, base: planWorld.base, resume: handout.resume } : undefined);
+Your lead is on another core. Reports stay on this machine in ${remoteReportFolder(ctx)}. Run ${COMMAND} herdr report to save each report there.` : a.brief, !a.independent, a.task, handout && planWorld && slug !== null ? { slug, handoutId: handout.handoutId, base: planWorld.base, resume: handout.resume } : undefined, followup ? { ...followup, name: terminalName } : undefined);
   const path = a.on ? await remoteBrief(r, ctx, a.on, file) : file;
   const first = escapeReport(`Read your brief at ${path} and do it.`, "lead");
   const args = [
@@ -60288,6 +60462,8 @@ Your lead is on another core. Reports stay on this machine in ${remoteReportFold
     labels[KIT_TASK] = a.task;
   if (slug !== null)
     labels[KIT_PLAN] = slug;
+  if (followup !== null)
+    labels[KIT_FOLLOWUP] = "1";
   if (a.independent) {
     const { space, tab } = newHerdrSpace();
     labels[HERDR_SPACE] = space;
@@ -60413,7 +60589,7 @@ async function report(text, ctx, r) {
       }
     }
   }
-  if (isLiveClaude(destination) && ["idle", "working", "done"].includes(destination.status?.state ?? "")) {
+  if (isLiveClaude(destination) && acceptsSend(destination.status?.state)) {
     try {
       send(r, destination.address, escapeReport(text, me.leadId));
       ctx.out.line("ok", "Report sent to the lead.");
@@ -60432,7 +60608,7 @@ async function report(text, ctx, r) {
 async function runHerdr(args, ctx) {
   if (args[0] === "start") {
     const split = args.indexOf("--");
-    const options = parseOptions(args.slice(1, split < 0 ? args.length : split), START_OPTIONS, START_FLAGS);
+    const options = parseOptions(args.slice(1, split < 0 ? args.length : split), START_OPTIONS, START_FLAGS, START_REPEATABLE);
     if (!("error" in options)) {
       if (["--model", "--effort", "--mode"].some((key) => !options.options.has(key)))
         return refuse3(ctx, "A start needs --model, --effort and --mode.");
@@ -60442,6 +60618,8 @@ async function runHerdr(args, ctx) {
         return refuse3(ctx, "An independent session cannot have a task.");
       if (options.options.has("--plan") && (options.flags.has("--independent") || options.options.has("--task") || options.options.has("--on")))
         return refuse3(ctx, PLAN_EXCLUSION);
+      if (options.flags.has("--followup") && (options.flags.has("--independent") || options.options.has("--task") || options.options.has("--plan") || options.options.has("--on")))
+        return refuse3(ctx, FOLLOWUP_EXCLUSION);
     }
   }
   const parsed = parseHerdrArgs(args);
@@ -60552,11 +60730,16 @@ async function runHerdr(args, ctx) {
       }
       case "wait": {
         const before = terminals(r, { [KIT_LEAD]: me.leadId }, true);
-        if (!before.some((t) => t.state === "live")) {
-          ctx.out.say("No live kit children.");
+        const skip = new Set(parsed.mode === "all" ? before.filter((t) => t.labels[KIT_FOLLOWUP] === "1").map((t) => t.address) : []);
+        if (!before.some((t) => t.state === "live" && !skip.has(t.address))) {
+          ctx.out.say(before.some((t) => t.state === "live") ? "No live kit children to wait for (a follow-up child never settles)." : "No live kit children.");
           return 0;
         }
-        const news = await (ctx.events ?? followEvents)({ [KIT_LEAD]: me.leadId }, parsed.timeoutMs ?? WAIT_TIMEOUT_MS, { mode: parsed.mode, ...parsed.seen ? { seen: parsed.seen } : {} });
+        const news = await (ctx.events ?? followEvents)({ [KIT_LEAD]: me.leadId }, parsed.timeoutMs ?? WAIT_TIMEOUT_MS, {
+          mode: parsed.mode,
+          ...parsed.seen ? { seen: parsed.seen } : {},
+          ...skip.size ? { skip } : {}
+        });
         if (news === "ended")
           return refuse3(ctx, "The event stream ended; nothing is known about the children.");
         if (typeof news !== "string" && news.nothing === true) {

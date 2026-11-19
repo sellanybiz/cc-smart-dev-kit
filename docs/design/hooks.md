@@ -1386,6 +1386,10 @@ production always asks. A machine-file read error asks too. The hook ignores `--
 command still requires it, but only the person approving the exact line in Claude Code records
 approval. It never skips a hook question or a mode failure.
 
+A `herdr start` line with a parse error (a bad `--issue`, a refused pair such as `--followup` with
+`--plan`) shows that error alone when `--model`, `--effort` and `--mode` are all given. With one
+of them missing, the "Pass both --model and --effort, plus --mode" line still comes first.
+
 `cc-smart-dev-kit herdr plans --release` asks too: it frees a finished plan's files with no proof
 that its work merged, a write the person approves the way they approve a machine-rule change. The
 judge asks for any `plans` line that holds `--release` or `--release=`, even a malformed one

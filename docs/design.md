@@ -53,7 +53,7 @@ parts, then the part you are changing.
 | [The workflow](design/workflow.md) | What may happen by itself after a step — commit, push, a pull request, a merge — the review record, the merge guard's one decision, and the plan settings `plans.runMode` and `plans.mergeFiles`. |
 | [GitHub Issues](design/issues.md) | The switch (`workflow.issues`, on by default since 5.0.0), `cc-smart-dev-kit issue file`, the hidden marker that keeps one finding to one issue, what is refused before anything is sent, the guards, the fixed-unreleased mark and the release list. |
 | [The portal](design/portal.md) | What it is and is not, how it starts (D10), the door, the live stream and the JSON API, the pages' facts and actions, what it runs from, and what a page cannot know. |
-| [Herdr orchestration](design/herdr.md) | Linked children and independent sessions, identity, private briefs, remote rules, blocked children (the person's), handing out plans (`start --plan`, `herdr plans`, resume), event cursors and live proofs still owed. |
+| [Herdr orchestration](design/herdr.md) | Linked children and independent sessions, identity, private briefs, remote rules, blocked children (the person's), handing out plans (`start --plan`, `herdr plans`, resume), follow-up children (`start --followup`), event cursors and live proofs still owed. |
 | [Sessions and worktrees](design/sessions.md) | Saved sessions, targeted finished-session removal, safe worktree cleanup and the flow report. |
 | [Moving a machine from the old names](design/migrate.md) | What 0.2.x left, what `migrate` moves, and the order it moves it in. |
 
