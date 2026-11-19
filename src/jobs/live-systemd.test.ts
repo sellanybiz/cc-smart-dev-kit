@@ -356,9 +356,13 @@ describe.if(LIVE)("the real systemd user manager (CC_SMART_DEV_KIT_LIVE_SYSTEMD=
   // A `job run` killed with SIGKILL never releases its scope. A failed scope it left is cleared by
   // the next launch, and a scope that is running is not touched.
   test.if(Bun.which("python3") !== null)(
-    "the next launch clears a failed scope a killed job run left, and not a running one",
+    "the next launch clears a failed scope a killed job run left, and not a live wrapper one, nor a running scope",
     async () => {
-      const stale = `${prefix}_jobs-stale-1.scope`;
+      // Named as `unitName` names a scope: the wrapper's pid is the second field from the end. One
+      // wrapper is gone (a pid that ended a moment ago), one is alive (this process).
+      const gonePid = Bun.spawnSync(["true"]).pid;
+      const stale = `${prefix}_jobs-stale-${gonePid}-1.scope`;
+      const kept = `${prefix}_jobs-kept-${process.pid}-1.scope`;
       const running = `${prefix}_jobs-running-1.scope`;
       const run = (unit: string, ...extra: string[]) =>
         Bun.spawn(
@@ -374,26 +378,32 @@ describe.if(LIVE)("the real systemd user manager (CC_SMART_DEV_KIT_LIVE_SYSTEMD=
           { stdout: "ignore", stderr: "ignore" },
         );
       const alive = run(running, "--", "sleep", "60");
-      const failing = run(
-        stale,
-        "-p",
-        "MemoryMax=50M",
-        "-p",
-        "MemorySwapMax=0",
-        "-p",
-        "OOMPolicy=kill",
-        "--",
-        "python3",
-        "-c",
-        'b = bytearray(b"x" * (300 * 1024 * 1024))',
-      );
-      await failing.exited;
+      const failing = (unit: string) =>
+        run(
+          unit,
+          "-p",
+          "MemoryMax=50M",
+          "-p",
+          "MemorySwapMax=0",
+          "-p",
+          "OOMPolicy=kill",
+          "--",
+          "python3",
+          "-c",
+          'b = bytearray(b"x" * (300 * 1024 * 1024))',
+        );
+      await Promise.all([failing(stale).exited, failing(kept).exited]);
       const state = (unit: string) => systemctl("show", "-p", "ActiveState", "--value", unit).out;
-      expect(await until(() => state(stale) === "failed", 5_000)).toBe(true);
+      expect(await until(() => state(stale) === "failed" && state(kept) === "failed", 5_000)).toBe(
+        true,
+      );
       const start = limited(settings(90, 90), ["true"]);
       start.release();
       expect(await until(() => state(stale) !== "failed", 5_000)).toBe(true);
+      // A failed scope whose wrapper is alive survives the sweep: it may still be read.
+      expect(state(kept)).toBe("failed");
       expect(state(running)).toBe("active");
+      systemctl("reset-failed", kept);
       systemctl("kill", "--signal=SIGKILL", running);
       await alive.exited;
     },

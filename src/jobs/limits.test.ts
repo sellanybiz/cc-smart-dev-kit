@@ -30,6 +30,7 @@ import {
   slicePropertyArgvs,
   startLimits,
   unitName,
+  unitPid,
   userManagerCgroup,
   userSliceCgroup,
 } from "./limits";
@@ -184,17 +185,20 @@ describe("a limited start", () => {
       "systemd-run --user --scope",
       "systemctl --user set-property",
       "systemctl --user set-property",
-      "systemctl --user reset-failed",
+      "systemctl --user list-units",
     ]);
     expect(calls[0]).toEqual(probeArgv(JOBS_SLICE, NEWEST));
     expect(calls[1]).toContain("CPUQuota=1080%");
     expect(calls[2]).toContain("ManagedOOMMemoryPressureDurationSec=10s");
-    // A `job run` killed with SIGKILL never released its scope: failed scopes of the jobs' unit
-    // prefix are cleared at the next launch, and only failed ones (a running unit is untouched).
+    // A `job run` killed with SIGKILL never released its scope: the failed scopes of the jobs' unit
+    // prefix are listed (one call), and only those whose wrapper is gone are reset.
     expect(calls[3]).toEqual([
       "systemctl",
       "--user",
-      "reset-failed",
+      "list-units",
+      "--state=failed",
+      "--plain",
+      "--no-legend",
       "cc_smart_dev_kit_jobs-*.scope",
     ]);
     // The job's scope is not `--collect`ed: a scope systemd failed keeps its Result.
@@ -284,13 +288,80 @@ describe("a limited start", () => {
     expect(startLimits(facts, good(), { ...job, command: ["./here", "x"] }, 1).on).toBe(true);
   });
 
-  test("the stale reset never stops a job: refused or timed out, the job still starts", () => {
-    for (const answer of ["failed", "timeout"] as const) {
-      const { facts } = fakeLimitFacts({
-        systemd: (argv) => (argv[2] === "reset-failed" ? answer : "ok"),
+  // The sweep of stale failed scopes (a `job run` killed with SIGKILL never released its own). With
+  // `max` above 1 another job's scope may have failed just now, and its wrapper still has to read
+  // `Result=oom-kill` from it: only the scopes whose wrapper process is gone are reset.
+  describe("the stale-scope sweep", () => {
+    const sweepWorld = (failed: string[], alive: number[] = [], options = {}) => {
+      const world = fakeLimitFacts({
+        files: Object.fromEntries(alive.map((pid) => [`/proc/${pid}/stat`, `${pid} (sh) S 1`])),
+        // The list prints the name first, then the columns systemd adds (seen live).
+        systemdText: (argv) =>
+          argv[2] === "list-units"
+            ? failed
+                .map((name) => `${name} loaded failed failed [systemd-run] /usr/bin/x`)
+                .join("\n")
+            : null,
+        ...options,
       });
-      expect(startLimits(facts, good(), job, 1).on).toBe(true);
-    }
+      startLimits(world.facts, good(), job, 2);
+      return world;
+    };
+    const resets = (calls: string[][]) => calls.filter((call) => call[2] === "reset-failed");
+    const dead = unitName(JOBS_SLICE, "tsc", 7001, 36);
+    const live = unitName(JOBS_SLICE, "tsc", 7002, 36);
+
+    test("a failed scope whose wrapper is gone is reset, by name, in one call", () => {
+      const other = unitName(JOBS_SLICE, "test:run", 7003, 72);
+      expect(resets(sweepWorld([dead, other]).calls)).toEqual([
+        ["systemctl", "--user", "reset-failed", dead, other],
+      ]);
+    });
+
+    test("a failed scope whose wrapper is alive is kept: it still has to be read", () => {
+      const { calls } = sweepWorld([dead, live], [7002]);
+      expect(resets(calls)).toEqual([["systemctl", "--user", "reset-failed", dead]]);
+      expect(resets(calls).flat()).not.toContain(live);
+    });
+
+    test("nothing failed, or only live wrappers: no reset call", () => {
+      expect(resets(sweepWorld([]).calls)).toEqual([]);
+      expect(resets(sweepWorld([live], [7002]).calls)).toEqual([]);
+    });
+
+    test("a list that did not answer skips the reset, and the job still starts", () => {
+      const world = fakeLimitFacts({ systemdText: () => null });
+      expect(startLimits(world.facts, good(), job, 1).on).toBe(true);
+      expect(resets(world.calls)).toEqual([]);
+    });
+
+    test("lines that are not this slice's scopes are never reset", () => {
+      const { calls } = sweepWorld(["something.service", "x.scope-not"].concat([dead]));
+      expect(resets(calls)).toEqual([["systemctl", "--user", "reset-failed", dead]]);
+    });
+
+    test("a refused reset never stops the job", () => {
+      for (const answer of ["failed", "timeout"] as const) {
+        const { facts } = fakeLimitFacts({
+          systemd: (argv) => (argv[2] === "reset-failed" ? answer : "ok"),
+          systemdText: (argv) =>
+            argv[2] === "list-units" ? `${dead} loaded failed failed x` : null,
+        });
+        expect(startLimits(facts, good(), job, 1).on).toBe(true);
+      }
+    });
+  });
+
+  test("the pid in a unit name is read back from the same format that writes it", () => {
+    expect(unitName(JOBS_SLICE, "tsc", 4242, 36 * 36)).toBe(
+      "cc_smart_dev_kit_jobs-tsc-4242-100.scope",
+    );
+    expect(unitPid("cc_smart_dev_kit_jobs-tsc-4242-100.scope")).toBe(4242);
+    // A kind with dashes and digits, an empty kind, and a base 36 time of letters.
+    expect(unitPid(unitName(JOBS_SLICE, "test:run-2", 31337, 1_700_000_000_000))).toBe(31337);
+    expect(unitPid(unitName(JOBS_SLICE, "", 9, 0))).toBe(9);
+    expect(unitPid("cc_smart_dev_kit_jobs-nonsense.scope")).toBeNull();
+    expect(unitPid("other.service")).toBeNull();
   });
 
   test("a systemd older than 257 refuses the duration: the job still runs with the rest", () => {
@@ -627,10 +698,12 @@ describe("a job stopped for memory says why, and never after exit 0", () => {
     let asked = 0;
     const world = fakeLimitFacts({
       files: { [eventsFile]: events(0, 0), "/proc/meminfo": MEMINFO },
-      systemdText: () =>
-        ++asked < 3
-          ? "ActiveState=deactivating\nResult=success\n"
-          : "ActiveState=failed\nResult=oom-kill\n",
+      systemdText: (argv) =>
+        argv[2] === "list-units"
+          ? ""
+          : ++asked < 3
+            ? "ActiveState=deactivating\nResult=success\n"
+            : "ActiveState=failed\nResult=oom-kill\n",
     });
     const start = on(startLimits(world.facts, good(), job, 1));
     expect(start.memoryLine(killed)).toStartWith("stopped for memory: this job stalled");

@@ -345,9 +345,17 @@ export function probeArgv(slice: string, features: ScopeFeatures): string[] {
   return ["systemd-run", ...scopeSwitches(slice, features, true), "--", "true"];
 }
 
-/** `reset-failed` on every scope with the jobs' unit prefix: failed ones only, never a running one. */
-export function resetStaleArgv(slice: string): string[] {
-  return ["systemctl", "--user", "reset-failed", `${slice.replace(/\.slice$/, "")}-*.scope`];
+/** Lists the failed scopes with the jobs' unit prefix (the name is the first column). */
+export function listFailedArgv(slice: string): string[] {
+  return [
+    "systemctl",
+    "--user",
+    "list-units",
+    "--state=failed",
+    "--plain",
+    "--no-legend",
+    `${slice.replace(/\.slice$/, "")}-*.scope`,
+  ];
 }
 
 /**
@@ -360,6 +368,38 @@ export function unitName(slice: string, kind: string, pid: number, startedAt: nu
   // A job with a name only (`--exclusive`) has no kind.
   const safeKind = kind === "" ? "job" : kind.replace(/[^A-Za-z0-9_-]/g, "-");
   return `${prefix}-${safeKind}-${String(pid)}-${startedAt.toString(36)}.scope`;
+}
+
+/**
+ * The pid of the `job run` that a unit name carries (`unitName`: the second field from the end),
+ * or null for a name that is not one of ours. The name format has this one home.
+ */
+export function unitPid(unit: string): number | null {
+  const match = /-(\d+)-[0-9a-z]+\.scope$/.exec(unit);
+  return match?.[1] === undefined ? null : Number(match[1]);
+}
+
+/**
+ * Clears the failed scopes of jobs that are gone: a `job run` killed with SIGKILL never releases
+ * its scope, and one that later ends by an OOM kill would stay failed until the machine restarts.
+ * A failed scope whose wrapper is still alive is kept: with `maxConcurrent` above 1 that wrapper
+ * may not have read its `Result` yet (it says why the job was stopped). One call lists, one call
+ * resets by name, and only when something is left; a list that does not answer skips the reset.
+ * Nothing here may stop a job, so the answers are never needed.
+ */
+function resetStaleScopes(facts: LimitFacts, slice: string): void {
+  const listed = facts.systemdText(listFailedArgv(slice));
+  if (listed === null) return;
+  const prefix = `${slice.replace(/\.slice$/, "")}-`;
+  const stale = listed
+    .split("\n")
+    .map((line) => line.trim().split(/\s+/)[0] ?? "")
+    .filter((name) => name.startsWith(prefix) && name.endsWith(".scope"))
+    .filter((name) => {
+      const pid = unitPid(name);
+      return pid === null || facts.read(`/proc/${String(pid)}/stat`) === null;
+    });
+  if (stale.length > 0) facts.systemd(["systemctl", "--user", "reset-failed", ...stale]);
 }
 
 // ---------------------------------------------------------------------------------------
@@ -646,10 +686,8 @@ function start(
   // Only this call fails on a systemd older than 257: oomd's own default duration stays.
   const stallAfter = facts.systemd(duration) === "ok" ? WATCHDOG_DURATION : null;
   // A `job run` killed with SIGKILL never releases its scope, and one that later ends by an OOM
-  // kill stays failed until the machine restarts. One cheap call clears every failed scope of the
-  // jobs' slice (`reset-failed` never touches a unit that is running: checked live). Its answer
-  // does not matter: nothing here may stop a job.
-  facts.systemd(resetStaleArgv(slice));
+  // kill stays failed until the machine restarts (`resetStaleScopes`).
+  resetStaleScopes(facts, slice);
 
   const marked = facts.hasProgram("choom");
   const unit = unitName(slice, job.kind, job.pid, job.startedAt);

@@ -643,12 +643,16 @@ the watchdog's line reads. Then:
   and the limits still apply.
 - **The unit name** holds the slice's name, the kind, the pid of `job run` and its start time
   (base 36). A scope that a SIGKILLed `job run` left behind never clashes with a new one.
-- **Stale failed scopes** are cleared at each launch, after the probe and the properties: one
-  `systemctl --user reset-failed 'cc_smart_dev_kit_jobs-*.scope'`. A `job run` killed with
-  SIGKILL never releases its scope, and one that later ends by an OOM kill would stay failed until
-  the machine restarts. `reset-failed` touches failed units only: a running scope is left alone
-  (checked live), and a pattern that matches nothing is no error. Its answer is ignored, because
-  nothing here may stop a job.
+- **Stale failed scopes** are cleared at each launch, after the probe and the properties. A `job
+  run` killed with SIGKILL never releases its scope, and one that later ends by an OOM kill would
+  stay failed until the machine restarts. One call lists the failed scopes of the jobs' unit prefix
+  (`systemctl --user list-units --state=failed --plain --no-legend 'cc_smart_dev_kit_jobs-*.scope'`).
+  The pid of the `job run` that made each scope is read back from its name, and a scope whose
+  wrapper process still exists is **kept**: with `job set max` above 1 another job's scope may have
+  failed a moment ago, and its wrapper has yet to read the scope's result (`oom-kill` is how the
+  watchdog line is known). The rest are reset by name in one `reset-failed` call, and only when
+  any are left. A list that times out skips the reset. Nothing here may stop a job, so no answer is
+  needed.
 
 ### The job's words are never changed
 
