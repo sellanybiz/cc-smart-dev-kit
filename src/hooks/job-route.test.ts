@@ -1479,7 +1479,14 @@ describe("a mixed line: heavy work beside anything else is refused", () => {
     expect(reason).toContain("would not wait for a free slot");
     expect(reason).toContain("Run the heavy command on its own line");
     expect(reason).toContain("echo or printf around it");
+    expect(reason).toContain("all with plain words (a word the shell fills in");
     expect(reason).toContain("in a separate call");
+  });
+
+  it("a heavy run in a shell fed by a pipe is named by its kind, not quoted", () => {
+    const reason = denialOf(repo(), "printf 'bunx tsc --noEmit\\nrm -rf x' | sh") ?? "";
+    expect(reason).toContain("heavy work (tsc) beside other commands (sh)");
+    expect(reason).not.toContain("bunx tsc --noEmit");
   });
 
   it("a heavy run and a command that is not glue, in either order", () => {

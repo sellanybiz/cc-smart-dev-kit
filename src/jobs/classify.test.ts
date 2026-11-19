@@ -1562,6 +1562,31 @@ describe("routableLine: harmless glue rides in the queued line", () => {
     }
   });
 
+  test("an option that makes a reader read a file counts by any start, as GNU takes it", () => {
+    for (const reader of [
+      "sort --files0-from=-",
+      "sort --files0=-",
+      "sort --files0 -",
+      "sort --file=-",
+      "wc --files0-f=-",
+      "grep --rec x",
+      "grep --recursive x",
+      "grep --dereference-recursive x",
+      "grep --dereference-rec x",
+      "grep --file=patterns x",
+      "grep --fil patterns x",
+      "grep --exclude-from=list x",
+      "grep --exclude-f=list x",
+      "grep --direct=recurse x",
+    ]) {
+      expect([reader, line(`bun test | ${reader}; echo done`)]).toEqual([reader, null]);
+    }
+    // Options that only look alike stay glue.
+    queuedWhole("bun test | grep --files-with-matches x; echo done", "test:run");
+    queuedWhole("bun test | grep --include=x y; echo done", "test:run");
+    queuedWhole("bun test | sort --reverse; echo done", "test:run");
+  });
+
   test("a reader with no pipe, an input redirection, or a search of the folder is no glue", () => {
     for (const reader of [
       "tail -5",
@@ -1629,6 +1654,10 @@ describe("routableLine: harmless glue rides in the queued line", () => {
       "echo $[X]",
       `echo ${BRACE}a[X]}`,
       `echo ${BRACE}X:1}`,
+      // An indirect expansion and a prompt expansion run the value as code.
+      `echo ${BRACE}!X}`,
+      `echo ${BRACE}X@P}`,
+      `echo ${BRACE}X@Q}`,
       "echo $(( $(pwd) ))",
       "echo $((1+1))",
     ]) {
@@ -1816,6 +1845,16 @@ describe("mixedHeavyLine: heavy work beside commands that are not glue", () => {
     expect(mixed("bun test | tee out.log && ls")?.other).toBe("tee out.log");
     expect(mixed("[ -d node_modules ] || bun install && bun test")?.other).toBe("bun install");
     expect(mixed("bun test; bunx tsc --version")?.other).toBe("bunx tsc --version");
+  });
+
+  test("a heavy run in a shell fed by a pipe is named by its kind only", () => {
+    // The text the reader gives for the pipe's input is a guess, so it is never quoted.
+    expect(mixed("printf 'bunx tsc --noEmit\\nrm -rf x' | sh")).toEqual({
+      kind: "tsc",
+      other: "sh",
+      run: null,
+    });
+    expect(mixed("bun test; printf 'bunx tsc --noEmit' | sh")?.run).toBe("bun test");
   });
 
   test("a shell string is read too: its inner commands can be split by the person", () => {

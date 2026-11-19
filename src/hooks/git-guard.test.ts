@@ -271,6 +271,7 @@ describe("git reset --hard asks", () => {
     ["git reset --hard"],
     ["git reset --hard origin/dev"],
     ["git fetch; git reset --hard origin/dev"],
+    ["git reset '>&' --hard"],
   ])("%j", (command) => {
     expect(guard(command)).toContain("`git reset --hard`");
   });
@@ -298,6 +299,8 @@ describe("git clean -f asks", () => {
     ["git clean -xfd"],
     ["git clean --force -d"],
     ["git clean -d -f"],
+    // A quoted `>&` is a word, not a redirection: it must not hide the word after it.
+    ["git clean '>&' -fdx ."],
   ])("%j", (command) => {
     expect(guard(command)).toContain("`git clean -f`");
   });

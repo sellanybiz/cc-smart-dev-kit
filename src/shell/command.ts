@@ -1622,9 +1622,7 @@ export function withoutRedirections(args: readonly string[]): string[] {
   for (let index = 0; index < args.length; index++) {
     const redirection = REDIRECTION.exec(args[index] ?? "");
     if (redirection === null) kept.push(args[index] ?? "");
-    else if ((redirection[2] ?? "") === "" || (redirection[1] === ">" && redirection[2] === "&")) {
-      index++; // its target is the next word (`>& out.txt` too)
-    }
+    else if ((redirection[2] ?? "") === "") index++; // its target is the next word
   }
   return kept;
 }

@@ -458,7 +458,6 @@ describe("redirectionTargets: `>&` followed by a word is a write", () => {
     expect(redirectionTargets(wordsOf("echo x >&-"))).toEqual([]);
     expect(redirectionTargets(wordsOf("echo x >& -"))).toEqual([]);
     expect(redirectionTargets(wordsOf("echo x >& /dev/null"))).toEqual(["/dev/null"]);
-    expect(withoutRedirections(wordsOf("echo x >& out.txt").slice(1))).toEqual(["x"]);
   });
 });
 

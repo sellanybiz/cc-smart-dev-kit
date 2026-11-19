@@ -116,8 +116,14 @@ interface Run {
    * such a run is light and so is a line made of it.
    */
   printOk: boolean;
-  /** The text of the command of the line (not of a script's body) being read: what a refusal quotes. */
-  step: string;
+  /**
+   * The text of the command of the line (not of a script's body) being read: what a refusal
+   * quotes. Null inside a shell fed by a pipe: its script is the reader's guess at what the
+   * command before it writes, not text of the line.
+   */
+  step: string | null;
+  /** Inside a shell that takes its script from a pipe (`printf … | sh`). */
+  pipeFed: boolean;
 }
 
 /** The state a top-level classification starts with. */
@@ -132,6 +138,7 @@ function runOf(source: ScriptSource | undefined): Run {
     reading: [],
     printOk: false,
     step: "",
+    pipeFed: false,
   };
 }
 
@@ -233,7 +240,7 @@ interface Found extends Hit {
   /** The command is one of several in a script's body: its arguments are not all it is given. */
   compound: boolean;
   /** The command of the line that runs it, as the line wrote it (`Run.step`). */
-  text: string;
+  text: string | null;
 }
 
 /** What one walk of a line finds: its heavy commands, and what else the weight depends on. */
@@ -459,7 +466,7 @@ function scan(
     const words = wordsOf(step.text, dialect);
     if (all && (words.length === 0 || isAssignmentOnly(words))) continue;
     // Where the line's own text is read, this is what a refusal quotes (not a script's body).
-    if (run.reading.length === 0) run.step = step.text.trim();
+    if (run.reading.length === 0 && !run.pipeFed) run.step = step.text.trim();
     const invocation = invocationOf(words);
     if (invocation === undefined) {
       if (!all) continue;
@@ -484,6 +491,11 @@ function scan(
     // The queue's own command: whatever it runs is queued already, and must not nest.
     if (isJobRun(program, args)) out.queued = true;
     const inner = nestedCommand(program, args, step.pipedFrom);
+    // A shell whose script comes only from the pipe: the reader's text of what the command
+    // before it writes is no promise (`printf 'tsc\nrm x' | sh`: `\n` is a line break the reader
+    // reads as a space), so the script is not known.
+    const pipeFed =
+      inner !== undefined && step.pipedFrom !== null && nestedCommand(program, args) === undefined;
     // The line a shell runs starts in this folder, and gets none of a script's extra arguments.
     const readInner = (line: string) =>
       depth < MAX_NESTING
@@ -492,18 +504,19 @@ function scan(
             kinds,
             nestedDialect(program),
             depth + 1,
-            { ...run, extra: undefined },
+            {
+              ...run,
+              extra: undefined,
+              pipeFed: run.pipeFed || pipeFed,
+              step: pipeFed ? null : run.step,
+            },
             all,
             out,
           )
         : opaque(out);
     if (all && inner !== undefined) {
-      // A shell whose script comes only from the pipe is never pure: the reader's text of what
-      // the command before it writes is no promise (`printf 'tsc\nrm x' | sh`: `\n` is a line
-      // break the reader reads as a space), so the script is not known.
-      if (step.pipedFrom !== null && nestedCommand(program, args) === undefined) {
-        return refuse(run, out, step);
-      }
+      // Such a shell is never pure.
+      if (pipeFed) return refuse(run, out, step);
       // A shell or wrapper that runs a line: that line must be pure too.
       if (!readInner(inner)) return false;
       continue;
@@ -644,6 +657,13 @@ function everyCommandUnderstood(
 /** Reads a filter's own arguments: true when that run of it only reads and prints. */
 type FilterCheck = (args: readonly string[]) => boolean;
 
+/** One entry of `READ_ONLY_FILTERS`: the check of a reader's arguments, and the shape of its words. */
+interface FilterReader {
+  check: FilterCheck;
+  /** Null: the reader is never glue (see `READ_ONLY_FILTERS`). */
+  shape: StdinShape | null;
+}
+
 /** A filter with no form that writes a file or runs a program. */
 const READS_ONLY: FilterCheck = () => true;
 
@@ -652,6 +672,135 @@ const isOption = (arg: string) => arg.startsWith("-") && arg !== "-";
 
 /** A cluster of short options (`-uo`), not a long one (`--output`). */
 const isShortCluster = (arg: string) => /^-[^-]/.test(arg);
+
+/**
+ * What a reader's words may be for it to read the pipe and nothing else: how many words that are
+ * no option it takes (a file, or its pattern, script or character set), which options take a
+ * value, and which options make it read a file. The one home of that knowledge: the checks of
+ * `uniq`, `sed` and `awk` read their value-taking options from the shape beside them.
+ */
+interface StdinShape {
+  /** The most words that are no option: its pattern, its script, or a character set. */
+  operands: number;
+  /** Short options that take a value, attached or as the next word. */
+  valued: string;
+  /** Long options that take the next word as their value (`--lines 5`; `--lines=5` always). */
+  longValued?: readonly string[];
+  /** The short and long option that gives the pattern or script itself, leaving no operand for it. */
+  script?: { short: string; long: string };
+  /** Short options that make it read a file (a pattern file, a recursive search). */
+  readsShort?: string;
+  /**
+   * Long options that make it read a file (a pattern file, a recursive search, a list of files).
+   * GNU takes a long option by any start (`--rec`), so every start of one counts.
+   */
+  readsLong?: readonly string[];
+}
+
+/** True when `arg` (an option) is a long option that makes the reader read a file, abbreviated or not. */
+function readsFileByOption(shape: StdinShape, arg: string): boolean {
+  if (arg.startsWith("--")) {
+    const name = arg.split("=")[0] ?? arg;
+    return name.length >= 3 && shape.readsLong?.some((long) => long.startsWith(name)) === true;
+  }
+  return [...arg.slice(1)].some((letter) => shape.readsShort?.includes(letter) === true);
+}
+
+/**
+ * How many words of a reader are no option, not counting the values of the options that take
+ * one, and whether an option gave its script; null when an option makes it read a file. A value
+ * counted as a word only refuses more; a word skipped as a value would be a file, so `valued`
+ * lists only options that take a value.
+ */
+function readerWords(
+  shape: StdinShape,
+  args: readonly string[],
+): { words: number; scripted: boolean } | null {
+  let words = 0;
+  let scripted = false;
+  let optionsEnded = false;
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index] ?? "";
+    if (arg === "-") continue; // standard input itself
+    if (optionsEnded || !isOption(arg)) {
+      words++;
+      continue;
+    }
+    if (arg === "--") {
+      optionsEnded = true;
+      continue;
+    }
+    if (readsFileByOption(shape, arg)) return null;
+    if (arg.startsWith("--")) {
+      const name = arg.split("=")[0] ?? arg;
+      if (name === shape.script?.long) scripted = true;
+      if (!arg.includes("=") && shape.longValued?.includes(name) === true) index++;
+      continue;
+    }
+    // A cluster of short options: the first one that takes a value ends it.
+    for (let at = 1; at < arg.length; at++) {
+      const letter = arg.charAt(at);
+      if (letter === shape.script?.short) scripted = true;
+      if (!shape.valued.includes(letter)) continue;
+      if (at === arg.length - 1) index++; // its value is the next word
+      break;
+    }
+  }
+  return { scripted, words };
+}
+
+/** True when a reader's words name no file: nothing but the pattern or script it is given. */
+function readsStdinOnly(shape: StdinShape, args: readonly string[]): boolean {
+  const found = readerWords(shape, args);
+  return found !== null && found.words <= (found.scripted ? 0 : shape.operands);
+}
+
+const NO_WORDS: StdinShape = { operands: 0, valued: "" };
+const HEAD_TAIL_SHAPE: StdinShape = {
+  operands: 0,
+  valued: "nc",
+  longValued: ["--lines", "--bytes"],
+};
+const CUT_SHAPE: StdinShape = {
+  operands: 0,
+  valued: "bcdf",
+  longValued: ["--bytes", "--characters", "--delimiter", "--fields", "--output-delimiter"],
+};
+const FILES0_LIST = ["--files0-from"];
+const SORT_SHAPE: StdinShape = {
+  operands: 0,
+  valued: "kStT",
+  longValued: ["--key", "--field-separator", "--buffer-size", "--temporary-directory"],
+  readsLong: FILES0_LIST,
+};
+const UNIQ_SHAPE: StdinShape = {
+  operands: 0,
+  valued: "fsw",
+  longValued: ["--skip-fields", "--skip-chars", "--check-chars"],
+};
+const GREP_SHAPE: StdinShape = {
+  operands: 1,
+  valued: "emABCD",
+  longValued: ["--regexp", "--max-count", "--after-context", "--before-context", "--context"],
+  script: { short: "e", long: "--regexp" },
+  readsShort: "rRfd",
+  readsLong: [
+    "--recursive",
+    "--dereference-recursive",
+    "--file",
+    "--exclude-from",
+    "--directories",
+  ],
+};
+const AWK_SHAPE: StdinShape = { operands: 1, valued: "Fv" };
+const SED_SCRIPT = { short: "e", long: "--expression" };
+const SED_LENGTH = { short: "l", long: "--line-length" };
+const SED_SHAPE: StdinShape = {
+  operands: 1,
+  valued: SED_SCRIPT.short + SED_LENGTH.short,
+  longValued: [SED_SCRIPT.long, SED_LENGTH.long],
+  script: SED_SCRIPT,
+};
 
 /** `cat` with no file: it only passes the pipe on. */
 function catReadsStdin(args: readonly string[]): boolean {
@@ -676,14 +825,8 @@ function sortReadsOnly(args: readonly string[]): boolean {
 
 /** `uniq` with one input file at most: a second file is where it writes. */
 function uniqReadsOnly(args: readonly string[]): boolean {
-  let files = 0;
-  for (let index = 0; index < args.length; index++) {
-    const arg = args[index] ?? "";
-    if (arg === "-f" || arg === "-s" || arg === "-w")
-      index++; // the value is a number
-    else if (!isOption(arg)) files++;
-  }
-  return files <= 1;
+  // `-f`, `-s` and `-w` take a number: the words that are left are files.
+  return (readerWords(UNIQ_SHAPE, args)?.words ?? Number.POSITIVE_INFINITY) <= 1;
 }
 
 /**
@@ -838,20 +981,23 @@ function sedReadsOnly(args: readonly string[]): boolean {
   const operands: string[] = [];
   for (let index = 0; index < args.length; index++) {
     const arg = args[index] ?? "";
-    const expression = /^-[nErsuz]*e(.*)$/s.exec(arg);
+    const expression = new RegExp(`^-[nErsuz]*${SED_SCRIPT.short}(.*)$`, "s").exec(arg);
     if (expression !== null) {
       const value = expression[1] === "" ? args[++index] : expression[1];
       if (value === undefined) return false;
       scripts.push(value);
-    } else if (arg === "--expression") {
+    } else if (arg === SED_SCRIPT.long) {
       const value = args[++index];
       if (value === undefined) return false;
       scripts.push(value);
-    } else if (arg.startsWith("--expression=")) {
-      scripts.push(arg.slice("--expression=".length));
-    } else if (/^--line-length=\d+$/.test(arg)) {
+    } else if (arg.startsWith(`${SED_SCRIPT.long}=`)) {
+      scripts.push(arg.slice(SED_SCRIPT.long.length + 1));
+    } else if (
+      arg.startsWith(`${SED_LENGTH.long}=`) &&
+      /^\d+$/.test(arg.slice(SED_LENGTH.long.length + 1))
+    ) {
       // How long an `l` line may be: it changes no file.
-    } else if (arg === "-l" && /^\d+$/.test(args[index + 1] ?? "")) {
+    } else if (arg === `-${SED_LENGTH.short}` && /^\d+$/.test(args[index + 1] ?? "")) {
       index++;
     } else if (SED_SHORT.test(arg) || SED_LONG.has(arg)) {
       // An option that only changes how it reads and prints.
@@ -882,8 +1028,10 @@ function awkReadsOnly(args: readonly string[]): boolean {
       program = args[index + 1];
       break;
     }
-    if (arg === "-F" || arg === "-v") index++;
-    else if (/^-[Fv]./s.test(arg)) continue;
+    const takesValue =
+      isOption(arg) && !arg.startsWith("--") && AWK_SHAPE.valued.includes(arg.charAt(1));
+    if (takesValue && arg.length === 2) index++;
+    else if (takesValue && arg.length > 2) continue;
     else if (isOption(arg)) return false;
     else {
       program = arg;
@@ -906,26 +1054,31 @@ function awkReadsOnly(args: readonly string[]): boolean {
  *   anything (`sedScriptReadsOnly`, `awkReadsOnly`); `sort` without `-o` or
  *   `--compress-program`; `uniq` with no output file; `rg` without `--pre`, `-z` or
  *   `--hostname-bin`; `cat` with no file.
+ *
+ * Each entry holds both the check of its arguments (`check`) and the shape of its words
+ * (`shape`), which says whether it reads the pipe only: a reader with a shape may be glue in a
+ * queued line (`isGlueReader`), one with none (`rg`: it searches the folder when nothing is
+ * piped, and its value-taking options are not listed) never is.
  */
-export const READ_ONLY_FILTERS: Readonly<Record<string, FilterCheck>> = {
-  awk: awkReadsOnly,
-  cat: catReadsStdin,
-  cut: READS_ONLY,
-  egrep: READS_ONLY,
-  fgrep: READS_ONLY,
-  gawk: awkReadsOnly,
-  grep: READS_ONLY,
-  head: READS_ONLY,
-  mawk: awkReadsOnly,
-  nawk: awkReadsOnly,
-  rg: rgReadsOnly,
-  sed: sedReadsOnly,
-  sort: sortReadsOnly,
-  tail: READS_ONLY,
-  tee: teeWritesNoFile,
-  tr: READS_ONLY,
-  uniq: uniqReadsOnly,
-  wc: READS_ONLY,
+export const READ_ONLY_FILTERS: Readonly<Record<string, FilterReader>> = {
+  awk: { check: awkReadsOnly, shape: AWK_SHAPE },
+  cat: { check: catReadsStdin, shape: NO_WORDS },
+  cut: { check: READS_ONLY, shape: CUT_SHAPE },
+  egrep: { check: READS_ONLY, shape: GREP_SHAPE },
+  fgrep: { check: READS_ONLY, shape: GREP_SHAPE },
+  gawk: { check: awkReadsOnly, shape: AWK_SHAPE },
+  grep: { check: READS_ONLY, shape: GREP_SHAPE },
+  head: { check: READS_ONLY, shape: HEAD_TAIL_SHAPE },
+  mawk: { check: awkReadsOnly, shape: AWK_SHAPE },
+  nawk: { check: awkReadsOnly, shape: AWK_SHAPE },
+  rg: { check: rgReadsOnly, shape: null },
+  sed: { check: sedReadsOnly, shape: SED_SHAPE },
+  sort: { check: sortReadsOnly, shape: SORT_SHAPE },
+  tail: { check: READS_ONLY, shape: HEAD_TAIL_SHAPE },
+  tee: { check: teeWritesNoFile, shape: NO_WORDS },
+  tr: { check: READS_ONLY, shape: { operands: 2, valued: "" } },
+  uniq: { check: uniqReadsOnly, shape: UNIQ_SHAPE },
+  wc: { check: READS_ONLY, shape: { operands: 0, valued: "", readsLong: FILES0_LIST } },
 };
 
 /**
@@ -940,7 +1093,7 @@ function isReadOnlyFilter(step: ShellStep): boolean {
   if (filled.length === 0 || filled.some((word) => word.filled)) return false;
   const words = filled.map((word) => word.text);
   const program = programName(words[0] ?? "");
-  const check = READ_ONLY_FILTERS[program];
+  const check = READ_ONLY_FILTERS[program]?.check;
   if (check === undefined) return false;
   const invocation = invocationOf(words);
   if (
@@ -985,118 +1138,6 @@ export const GLUE_COMMANDS: ReadonlySet<string> = new Set([
   "true",
 ]);
 
-/**
- * What a reader's words may be for it to read the pipe and nothing else: how many words that are
- * no option it may take (a file, or the pattern or script it is given), which short options take
- * a value (`head -n 5`), and which long ones. A reader that names a file is no glue: Claude
- * Code's Read deny rules look at the file words of `cat`, `head`, `tail`, `sed` and the rest, and
- * inside the queue's shell string they would not see them.
- */
-interface StdinShape {
-  /** The most words that are no option: its pattern, its script, or a character set. */
-  operands: number;
-  /** Short options that take a value, attached or as the next word. */
-  valued: string;
-  /** Long options that take the next word as their value (`--lines 5`; `--lines=5` always). */
-  longValued?: readonly string[];
-  /** The short and long option that gives the pattern or script itself, leaving no operand for it. */
-  script?: { short: string; long: string };
-  /** Options that make it read files (a pattern file, a recursive search, a list of files). */
-  reads?: RegExp;
-}
-
-const GREP_SHAPE: StdinShape = {
-  operands: 1,
-  valued: "emABCD",
-  longValued: ["--regexp", "--max-count", "--after-context", "--before-context", "--context"],
-  script: { short: "e", long: "--regexp" },
-  reads: /^-(?:[^-]*[rRfd]|-(?:recursive|dereference-recursive|file|directories|exclude-from))/,
-};
-const AWK_SHAPE: StdinShape = { operands: 1, valued: "Fv" };
-
-/**
- * The readers of `READ_ONLY_FILTERS` that may be glue, each with the shape of the words that
- * keep it on the pipe. A reader of that table with no entry here is no glue: `rg` searches the
- * folder when nothing is piped, and nobody has listed which of its many options take a value.
- */
-const STDIN_READERS: Readonly<Record<string, StdinShape>> = {
-  awk: AWK_SHAPE,
-  cat: { operands: 0, valued: "" },
-  cut: {
-    operands: 0,
-    valued: "bcdf",
-    longValued: ["--bytes", "--characters", "--delimiter", "--fields", "--output-delimiter"],
-  },
-  egrep: GREP_SHAPE,
-  fgrep: GREP_SHAPE,
-  gawk: AWK_SHAPE,
-  grep: GREP_SHAPE,
-  head: { operands: 0, valued: "nc", longValued: ["--lines", "--bytes"] },
-  mawk: AWK_SHAPE,
-  nawk: AWK_SHAPE,
-  sed: {
-    operands: 1,
-    valued: "el",
-    longValued: ["--expression", "--line-length"],
-    script: { short: "e", long: "--expression" },
-  },
-  sort: {
-    operands: 0,
-    valued: "kStT",
-    longValued: ["--key", "--field-separator", "--buffer-size", "--temporary-directory"],
-    reads: /^--files0-from/,
-  },
-  tail: { operands: 0, valued: "nc", longValued: ["--lines", "--bytes"] },
-  tee: { operands: 0, valued: "" },
-  tr: { operands: 2, valued: "" },
-  uniq: {
-    operands: 0,
-    valued: "fsw",
-    longValued: ["--skip-fields", "--skip-chars", "--check-chars"],
-  },
-  wc: { operands: 0, valued: "", reads: /^--files0-from/ },
-};
-
-/**
- * True when a reader's words name no file: at most `shape.operands` words that are no option,
- * not counting the values of the options that take one. A value that is miscounted as a word
- * only refuses more; a word that is skipped as a value would be a file, so `valued` lists only
- * options that take a value.
- */
-function readsStdinOnly(shape: StdinShape, args: readonly string[]): boolean {
-  let words = 0;
-  let scripted = false;
-  let optionsEnded = false;
-  for (let index = 0; index < args.length; index++) {
-    const arg = args[index] ?? "";
-    if (arg === "-") continue; // standard input itself
-    if (optionsEnded || !isOption(arg)) {
-      words++;
-      continue;
-    }
-    if (arg === "--") {
-      optionsEnded = true;
-      continue;
-    }
-    if (shape.reads?.test(arg) === true) return false;
-    if (arg.startsWith("--")) {
-      const name = arg.split("=")[0] ?? arg;
-      if (name === shape.script?.long) scripted = true;
-      if (!arg.includes("=") && shape.longValued?.includes(name) === true) index++;
-      continue;
-    }
-    // A cluster of short options: the first one that takes a value ends it.
-    for (let at = 1; at < arg.length; at++) {
-      const letter = arg.charAt(at);
-      if (letter === shape.script?.short) scripted = true;
-      if (!shape.valued.includes(letter)) continue;
-      if (at === arg.length - 1) index++; // its value is the next word
-      break;
-    }
-  }
-  return words <= (scripted ? 0 : shape.operands);
-}
-
 /** A word an input redirection starts: `< file`, `<file`, `0<file`, `<>file` (a here-doc is not). */
 const INPUT_REDIRECTION = /^\d*<(?![<(])/;
 
@@ -1110,16 +1151,19 @@ function isGlueReader(step: ShellStep): boolean {
   if (!isReadOnlyFilter(step)) return false;
   const words = wordsOf(step.text, "bash");
   const invocation = invocationOf(words);
-  const shape = invocation === undefined ? undefined : STDIN_READERS[invocation.program];
-  if (invocation === undefined || shape === undefined || invocation.program !== words[0]) {
-    return false;
-  }
+  const shape = invocation === undefined ? null : READ_ONLY_FILTERS[invocation.program]?.shape;
+  if (invocation === undefined || !shape || invocation.program !== words[0]) return false;
   if (words.some((word) => INPUT_REDIRECTION.test(word))) return false;
   return readsStdinOnly(shape, withoutRedirections(invocation.args));
 }
 
-/** A word that holds an arithmetic expansion, a subscript, or an offset: bash may run code in it. */
-const ARITHMETIC_WORD = /\$\(\(|\$\[|\$\{[^}]*(?:\[|:[^-=?+])/;
+/**
+ * A word that holds an expansion bash reads a variable's value in as code: an arithmetic
+ * expansion (`$(( … ))`, `$[ … ]`), a subscript or an offset (`${x[ … ]}`, `${x:offset}`), an
+ * indirect expansion (`${!x}`), or any `${x@…}` operator (`@P` expands the value as a prompt,
+ * which runs a substitution in it).
+ */
+const ARITHMETIC_WORD = /\$\(\(|\$\[|\$\{(?:!|[^}]*(?:\[|:[^-=?+]|@))/;
 
 /**
  * The arguments each `GLUE_COMMANDS` entry is glue under, beyond the checks of every glue word.
@@ -1276,8 +1320,11 @@ export function routableLine(
 export interface MixedLine {
   /** The kind of the run that takes a slot. */
   kind: string;
-  /** The command of the line that runs it, as the line wrote it. */
-  run: string;
+  /**
+   * The command of the line that runs it, as the line wrote it; null when it sits in a shell
+   * fed by a pipe (`printf … | sh`), whose script is only the reader's guess.
+   */
+  run: string | null;
   /** The first command of the line that is not heavy, a `cd`, an assignment or glue. */
   other: string;
 }
