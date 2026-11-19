@@ -864,6 +864,25 @@ describe("Claude Code's own worktrees, and the retired engine", () => {
     ]);
   });
 
+  test("a project Bash hook beside deploy-guard: a warning only when the project sets tasks.deployCommands", async () => {
+    const repo = makeRepo();
+    writeClaudeFile(repo, "settings.json", {
+      hooks: {
+        PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: "./guard.sh" }] }],
+      },
+    });
+    const deployGuardLines = async () =>
+      (await check(repo)).filter((line) => line.includes("plugin's deploy-guard"));
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", { worktrees: { base: "main" } });
+    expect(await deployGuardLines()).toEqual([]);
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", {
+      tasks: { deployCommands: { prod: ["vercel --prod"] } },
+    });
+    expect(await deployGuardLines()).toEqual([
+      "! project: the plugin's deploy-guard and the project's ./guard.sh (.claude/settings.json) both run on PreToolUse (Bash), so both may answer. If that is the project's own copy of deploy-guard, list \"deploy-guard\" in ownHooks in .claude/cc-smart-dev-kit.json until the copy is removed",
+    ]);
+  });
+
   test("D20: engine lines with no cc-smart-dev-kit.json at all: still named, each fails", async () => {
     const repo = makeRepo();
     wireOnly(repo, ["WorktreeCreate", "WorktreeRemove"]);

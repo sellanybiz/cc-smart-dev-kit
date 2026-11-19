@@ -412,10 +412,11 @@ function onEvent(event: string, subjects: Array<string | null>): string {
 /**
  * A plugin hook that only answers when the project sets one of its fields: while that field
  * is unset the hook is silent, so a project hook on its event is no second copy of it.
- * `verify-gate` answers only with `checks.fast`.
+ * `verify-gate` answers only with `checks.fast`; `deploy-guard` only with `tasks.deployCommands`.
  */
 const OPT_IN_HOOKS: Record<string, (config: CcSmartDevKitConfig) => boolean> = {
   "verify-gate": (config) => config.checks !== undefined,
+  "deploy-guard": (config) => config.tasks?.deployCommands !== undefined,
 };
 
 /**
