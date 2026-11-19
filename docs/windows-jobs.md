@@ -2,7 +2,10 @@
 
 Windows uses the same fixed machine-wide limit: one heavy run at a time. A run on named
 files skips the queue. There is no memory reading, CPU or I/O weight, systemd slice, shared
-folder, light lane or machine queue setting. `job run`, `job status` and `job kinds` work as on
+folder, light lane or machine queue setting. **There are no CPU or memory limits on Windows**:
+the caps (`job set cpu`, `job set memory`) need Linux with a systemd user manager (`jobs.md`
+§ CPU and memory limits), and a Windows job runs without them, with no line and no `doctor`
+warning, only an information line. `job run`, `job status` and `job kinds` work as on
 Linux (`jobs.md`). Two things work differently, because Windows has no `/proc` and no signals:
 who holds a lease, and how a job's tree is ended. This page is those two things, what they
 cost, and the live checks still owed on a Windows machine.
