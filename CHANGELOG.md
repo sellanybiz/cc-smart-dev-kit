@@ -3,6 +3,38 @@
 What each release changed, newest first. A release's **What to run** steps are the ones to do
 in your own terminal after the update; the user guide is [README.md](README.md).
 
+## 5.2.0
+
+- **A guard asks before a deploy that open tasks hold.** A new hook, `deploy-guard`, asks you
+  (it never allows or denies) before Claude runs one of the commands a project lists in the new
+  field `tasks.deployCommands`, while that environment has an open blocking problem in its deploy
+  tasks: a blocking `before` task is open, a task file is broken or its id repeats, or prod's
+  staging twin is open. The question names each problem. It reads the task files alone, with no
+  git, and it is silent with no list. A command spelled another way is not seen, and an option's
+  value counts, so list each spelling (`fly deploy --app web` is not `fly deploy --app=web`). It is
+  a rail against a skipped step, not a lock. While you are away, the question becomes a
+  denial and the call is parked on your list.
+- **`task release <env> --check`.** It judges the task files alone, with the rules of `--before`
+  that need no git, so a CI job can run it: exit 0 passes, 1 refuses, 2 is a usage error. It
+  works in a detached or shallow checkout. The README's new section, Deploy tasks in CI, shows
+  the GitHub Actions step that runs the kit's `plugin/dist/cli.js` at a pinned commit with Bun,
+  and what the guard and the step do not see.
+- **`project init` asks for the deploy commands.** It now asks 9 questions: the last asks, for
+  each environment, a command that deploys to it, until you press Enter on an empty answer.
+  `--deploy-command <env>=<command>` does the same without a terminal (`<env>=` clears the list).
+  The managed block in your deploy skill gains one line about the guard, so `doctor` flags every
+  existing block as out of date until `project init` runs. `doctor` also shows a `·` line when a
+  project has a deploy skill but no `tasks.deployCommands`.
+- A project that sets `tasks.deployCommands`, or lists `deploy-guard` in `ownHooks`, needs
+  `requires: ">=5.2"`; `project init` writes it.
+
+**What to run:**
+1. `cc-smart-dev-kit update`, then start new sessions.
+2. In each project that deploys: `cc-smart-dev-kit project init`. It asks for the deploy commands and
+   refreshes the block in the deploy skill, which `doctor` flags until then. Commit the files.
+3. For a project that deploys from CI: add the step from the README's Deploy tasks in CI before
+   the deploy step.
+
 ## 5.1.0
 
 - **The heavy-job queue sees more of the real heavy work.** `bun test` joins `vitest` and `jest`

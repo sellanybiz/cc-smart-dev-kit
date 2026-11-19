@@ -216,6 +216,7 @@ that, so the plugin ships no worktree hook at all.
 | `main-folder-guard` | PreToolUse (Edit, Write, NotebookEdit, Bash) | `worktrees.guardMainFolder` | Denies a change to a file in the main checkout itself, with the way into a worktree (`EnterWorktree`). **Bash too:** it reads the line with the shell reader (`src/shell/writes.ts`, the one write reader the session-escape guard shares) for what it writes — a redirection, `tee`, `sed -i`, `cp`, `mv`, `rm`, `touch`, `mkdir`, `ln`, and a git command that changes the work tree or its branch (`checkout`, `switch`, `reset`, `restore`, `stash`, `commit`, `merge`, `rebase`, `pull`, `cherry-pick`, `revert`, `apply`, `am`, `clean`; `git -C` and `--work-tree` followed) — in the folder each step runs in, after a `cd`. Read-only git, `git worktree add`, `/dev/null`, the temp folder and paths outside the repo pass; a word the shell fills in when the line runs lets the call through (a program built at run time that names a checkout-changing git word asks). **The plans folder passes**, so plan mode can write its plan: the session's own resolved `plansDirectory` (`src/hooks/plans-folders.ts`, which `verify-gate` reads too, the one home); nothing else under `.claude/` is exempt. A worktree inside the main checkout is no main-checkout path. (Until 0.6.0 it also placed Serena's edits, with the `serena-root` hook's record; both went with Serena.) |
 | `playwright-output` | PreToolUse (`mcp__playwright__.*`) | always (a `USER_HOOKS` bundle: it reads no cc-smart-dev-kit.json) | Rewrites a relative `filename` to an absolute path in the browser's output folder, with `updatedInput` and no permission decision; a relative name with a `..` segment is DENIED (the launcher's `--allow-unrestricted-file-access` means the server takes that path as it is). Answers only while the live `playwright` registration is the one setup recorded — a server of the person's own is left alone entirely. |
 | `merge-guard` | PreToolUse (Bash, PowerShell) | `cc-smart-dev-kit.json` exists | Asks the person before a command that merges a pull request, or opens or readies one (`openPr`, D16: `off` asks before any of them, `draft` lets a draft create through and asks for a ready one and for `gh pr ready`, `ready` asks for neither). Every merge of the line is judged (`gh pr merge`, `gh pr -R owner/repo merge 5`, an alias from `gh alias list`, `--auto` included), and the first the policy does not allow asks, naming that pull request: `autoMerge` on, the base is the integration base (`autoMergeAllowed`), the merge names THIS project's repository (its `origin`), every required check `gh pr checks --required` reports green, and (with `reviewBeforePush`) the head commit's review is recorded. `--admin` always asks. The forms it does not judge ask with the reason — a `gh api` merge, a GraphQL query it cannot read, a shell alias, an extension whose words name a merge — as does a step that moves the merge's folder, branch or repository (`cd`, `git switch`, `GH_REPO=…`, `env`), and a `gh` that is missing or does not answer. A `gh pr create` outside the base its head branch belongs to (`worktrees.base`, or `worktrees.bases` for that branch; with no `--base`, the repository's default branch) asks, naming both branches, and never denies (WA1). **A raw write to GitHub's issues is the person's yes too** (D67, `issue-writes.ts`): `gh issue create`, `edit`, `comment`, `close`, `reopen`, `delete` and every other `gh issue` subcommand that is not a read, `gh label create`, `edit`, `delete` and `clone`, a `gh api` POST, PATCH, PUT or DELETE to a repository's `issues` or `labels` endpoints, and any GraphQL mutation that is not a pull request one this guard judges, ask (the project's file must exist, like every project part); text the reader cannot read whole (an endpoint or query the shell fills in — a `$` expansion or a backtick outside single quotes; `--input`, `query=@file`) counts as a write, and `gh -X=POST` is `POST`; `gh issue list`/`view`/`status`, a GET and `--help` pass, and so does the kit's own `cc-smart-dev-kit issue file`, which is no `gh` command. The question names the kit's way. A pull request answer on the same line wins. A `gh` alias is read for what it expands to (a shell alias, or a list that cannot be read, counts as a write); a program worked out when the line runs whose words name an issue or a label is asked about. Read-only `gh`, 10 s a call of the hook's 30 s. § The workflow › The merge guard. |
+| `deploy-guard` | PreToolUse (Bash, PowerShell) | `tasks.deployCommands` | Asks the person (never allows or denies) before a command the project lists as a deploy to `prod` or `staging` runs while that environment's deploy tasks hold a deploy: `judgeTasks` over the task files alone, no git (§ The deploy guard). Silent with no project file, no list, or `deploy-guard` in `ownHooks`; a project file it cannot read asks only when its raw list names the command the call runs. |
 | `agent-guard` | PreToolUse (Agent, Task, Workflow), and PostToolUse for the record | **machine-wide** | The model a launch really runs on, and the model rules: no readable `model`/`effort` in the call or agent definition → deny (the call's, else the agent definition's choice); `low` effort → deny on every model (`medium` for searches and reads, `high` for building and reviews, `xhigh` for the hardest judgment, `max` on `haiku` or `sonnet` when the task wants it, with no restriction, whatever model answers them (the owner, 2026-10-25 and 2026-10-26: no level is forced on an affordable backend; a person who wants a backend at one level pins it in the router, D64) — D13); the **`opus` tier** — whatever answers behind the name, Claude Fable included (a premium name keeps its own tier, the owner, 2026-11-11), and a name with no premium tier whose override or slot answers with a premium Claude model counts as that tier — is allowed at `medium`/`high`/`xhigh` for any agent and any purpose, and an **ask** at `max` (the owner's decision D11; in `claude -p` a deny); a launch that declares UI/UX work — `Opus reason: ui`, or `Fable reason: ui-design` — runs only on `opus` or `fable`, at `high` or above (`UI_POLICY`, D50), and is **denied** on Sonnet, Haiku or an affordable slot, or below `high`; the **`fable` tier** is a read-only agent with a `Fable reason:` word, and an agent that can change files (a fork included) only with `build`, as an **ask**. A fork is judged on the session's model, never on the `model` it names. A premium launch is recorded once it is known to run: an allowed one on PreToolUse, an asked one on PostToolUse. § The Agent guard. |
 | `session-escape-guard` | PreToolUse (Bash, PowerShell, Edit, Write, NotebookEdit) | **machine-wide**, and `ownHooks` cannot switch it off | Denies `workflow review-done` and any kit command run with `CLAUDECODE` removed; asks before a command that reaches the portal's port, before an edit or write of the kit's own settings, state or installed plugin folder, and before a computed program whose line names the kit command. § The session-escape guard. |
 | `fable-session` | SessionStart, PostModelSwitch, Stop | **machine-wide** | One `systemMessage` to the person, once a session, when the session's own model is the **`fable` tier**; nothing to Claude, never an error and never a block — the line itself was seen live (2026-10-17), but not on `PostModelSwitch` or `Stop` yet. The model: at a start, the `model` the input names (no fallback); at a switch, `to_model` — the model the session moved TO; at a stop, the one that answered in the transcript, then `ANTHROPIC_MODEL` — the guard's own reading of the tier. Not `UserPromptSubmit`: it judged the PREVIOUS answer's model, so it missed the switch and warned after a switch back (the live bug of 2026-10-17). § The Fable-session note. |
@@ -244,6 +245,55 @@ and the limits a session may not get around. `job-route` and `session-escape-gua
 `alwaysOn`: `ownHooks` cannot switch them off, because they limit what the session itself may
 do. `user-away` is the third `alwaysOn` hook, for another reason: the switch is the person's
 (§ While the person is away). The former notification hooks are retired (§ The notifier).
+
+### The deploy guard
+
+`deploy-guard` (5.2.0, `src/hooks/deploy-guard.ts`) is a rail against a skipped deploy step, not
+a lock. A project lists the commands it deploys with in `tasks.deployCommands`
+(`.claude/rules/cc-smart-dev-kit-json.md`); the guard asks the person before Claude runs one of
+them while that environment has an open blocking problem in its deploy tasks
+(`docs/design/tasks.md` § The deploy guard and the CI check).
+
+- **Answer.** `ask`, never `allow` or `deny`; only the merge guard may allow. A question names the
+  environment and each refusal of `judgeTasks`, and the way out. While the person is away the
+  frame turns the ask into a deny and parks the call (§ While the person is away), so the
+  guard has no code for it. A note (an open non-blocking task) alone asks nothing.
+- **What it reads.** The task files of the hook's `cwd` checkout (`scanDeployTasks` with
+  `archive`), with no git call: a branch cut before main gained a blocking task, or a `cd` into
+  another checkout, is not seen. Project-scoped: silent with no project file, no list, or when
+  `ownHooks` lists it.
+- **Which commands match.** Every command of the line is read with the shell reader of the tool's
+  dialect (`readingsOf`: both when unknown), nested shells and the kit's `job run --` included,
+  and its tool is found by the one tool reader, `src/shell/tool.ts` (`callOf`): `npx`, `bunx`,
+  `bun x`, `npm exec`, `pnpm|yarn exec|dlx`, a package script's spellings, `node <file>`, and
+  `fileRunOf`: a shell or interpreter given a script file runs that file (`bash x.sh`,
+  `bash -o pipefail x.sh`, `source x.sh`, `. x.sh`, `node|python x`, `bun x.ts` against a
+  `bun <subcommand>`). A script file keeps its extension. A listed string becomes a rule
+  once (`rulesOfCommand`, read in both dialects so a Windows path keeps its folder and name);
+  an entry may also be a match rule (`matchRuleSchema`, the jobs grammar). `ruleMatches` tests
+  each run; the words a rule requires are whole words (its non-option words come first after the tool, in order; its options may be anywhere), and extra words are allowed
+  (`--prod` is not `--production`; `vercel --prod --help` over-matches, which is accepted: the
+  guard only speaks while a blocking problem exists). An option's value is a required word
+  (`sub`), so `fly deploy --app web` is not found by `fly deploy --app=web`, `fly deploy -a web`
+  or `fly --app web deploy`: a project lists each spelling. A string that runs nothing
+  (`FOO=1`) gives no rule; a quote left open is read blind, as a run reads it; redirections are
+  dropped from the entry and from the line.
+- **A program named at run time** (`$DEPLOY --prod`, `computed`) matches only a rule with at least
+  one required word (a `sub` or a `flags` entry) that the run's arguments hold: a rule of a tool or
+  a script alone would match every `$X`.
+- **A project file that cannot be used** (broken, or newer than this plugin) does not mean no
+  file (`.claude/rules/hooks-guards.md`). `deployConfigProblem` reads `tasks.deployCommands`
+  leniently from the raw JSON (the checkout's own file, else the main checkout's): when a listed
+  command runs, it asks and names the problem and the environment; when no list can be read it
+  prints one line on stderr and judges nothing (`doctor` fails on the file). It never asks on
+  every `ls`.
+- **Failures.** A crash asks (`onCrash`) only for a call that runs a listed command
+  (`deployCrashDomain`); a timeout or a missing bun is the frame's `onFailure: "block"` and
+  `--missing=ask`. Timeout 10 s. `logFacts` holds the environment and the entry's place in its
+  list, never the command text (an entry may hold a token).
+- **Not seen**, and the README says so (§ Deploy tasks in CI): a command not listed or spelled
+  another way, `xargs` feeding the words, a deploy through an MCP tool, a platform's deploy on
+  push, and a hand edit of the config or a task file.
 
 ### The Agent guard
 
