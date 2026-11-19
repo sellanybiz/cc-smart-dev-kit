@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { cliPaths } from "../cli/paths";
-import { fakeLimitFacts } from "../testing/limit-facts";
+import { fakeControllersFile, fakeLimitFacts } from "../testing/limit-facts";
 import { tempDir } from "../testing/temp";
 import { jobsPaths } from "./config";
 import type { LimitFacts } from "./limits";
@@ -61,6 +61,24 @@ test("the note carries the caps on Linux, and nothing about them elsewhere", asy
   expect(jobsAnswer(await readJobs(mac)).stores[0]?.note).toBe("Heavy-job limit: 1 (default)");
 });
 
+// A container, WSL without systemd or a controller that is not delegated: the caps are set but
+// cannot apply, and the status says so instead of claiming them.
+test("the note says why the caps are not applied here", async () => {
+  const note = async (options: Parameters<typeof fakeLimitFacts>[0]) =>
+    jobsAnswer(await readJobs(world(fakeLimitFacts(options).facts))).stores[0]?.note;
+  expect(await note({ files: { [fakeControllersFile()]: null } })).toBe(
+    "Heavy-job limit: 1 (default). Heavy-job caps: CPU 90%, memory 90% (default) (not applied here: no systemd user manager with cgroup v2 here (its controllers file is missing))",
+  );
+  expect(await note({ files: { [fakeControllersFile()]: "memory pids" } })).toBe(
+    'Heavy-job limit: 1 (default). Heavy-job caps: CPU 90%, memory 90% (default) (not applied here: the systemd user manager has no delegated "cpu" controller)',
+  );
+  expect(await note({ programs: ["choom"] })).toBe(
+    "Heavy-job limit: 1 (default). Heavy-job caps: CPU 90%, memory 90% (default) (not applied here: systemd-run is not installed)",
+  );
+  // Where they can apply, no such words.
+  expect(await note({})).not.toContain("not applied");
+});
+
 test("a bad cap shows as off, with its key, and never stops the status", async () => {
   const ctx = world();
   const file = jobsPaths(ctx.paths.home).configFile;
@@ -82,10 +100,10 @@ test("reading the jobs never probes systemd", async () => {
   const ctx = world({
     ...facts,
     cpuCount: refuse("cpuCount"),
-    hasProgram: refuse("hasProgram"),
     oomdRunning: refuse("oomdRunning"),
     systemd: refuse("systemd"),
     systemdText: refuse("systemdText"),
+    pause: refuse("pause"),
   });
   await readJobs(ctx);
   expect(await readJobs(ctx)).toBeDefined();

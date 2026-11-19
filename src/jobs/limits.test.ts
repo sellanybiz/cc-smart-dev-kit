@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { spawnSync } from "node:child_process";
 import { TEST_HOST_VAR } from "../machine/host";
+import { hostFacts } from "../machine/machine";
 import {
   FAKE_UID,
   fakeControllersFile,
@@ -29,6 +30,7 @@ import {
   slicePropertyArgvs,
   startLimits,
   unitName,
+  unitPid,
   userManagerCgroup,
   userSliceCgroup,
 } from "./limits";
@@ -68,8 +70,17 @@ describe("where a slice lives", () => {
     );
   });
 
-  test("the jobs' slice is built from the command's name", () => {
-    expect(JOBS_SLICE).toBe("cc-smart-dev-kit-jobs.slice");
+  // A weight only counts against siblings in the same parent, and a dash nests a slice: the
+  // dashed name would sit five levels deep with no sibling and CPUWeight=20 would do nothing
+  // (proved live: 2001 ms against 2002 ms). The jobs' slice has no dash, so it sits directly
+  // under the user manager, beside app.slice.
+  test("the jobs' slice is the command's name with underscores, and sits at the top level", () => {
+    expect(JOBS_SLICE).toBe("cc_smart_dev_kit_jobs.slice");
+    expect(sliceChain(JOBS_SLICE)).toEqual(["cc_smart_dev_kit_jobs.slice"]);
+    expect(userSliceCgroup(1000, JOBS_SLICE)).toBe(
+      "/user.slice/user-1000.slice/user@1000.service/cc_smart_dev_kit_jobs.slice",
+    );
+    expect(JOBS_SLICE).not.toContain("-");
   });
 });
 
@@ -107,7 +118,7 @@ describe("the slice's properties", () => {
         "--user",
         "set-property",
         "--runtime",
-        "cc-smart-dev-kit-jobs.slice",
+        "cc_smart_dev_kit_jobs.slice",
         "CPUQuota=1080%",
         "CPUWeight=20",
         "MemoryMax=90%",
@@ -121,7 +132,7 @@ describe("the slice's properties", () => {
         "--user",
         "set-property",
         "--runtime",
-        "cc-smart-dev-kit-jobs.slice",
+        "cc_smart_dev_kit_jobs.slice",
         "ManagedOOMMemoryPressureDurationSec=10s",
       ],
     });
@@ -144,7 +155,7 @@ describe("the slice's properties", () => {
       "--scope",
       "--quiet",
       "--collect",
-      "--slice=cc-smart-dev-kit-jobs.slice",
+      "--slice=cc_smart_dev_kit_jobs.slice",
       "--expand-environment=no",
       "-p",
       "OOMPolicy=kill",
@@ -160,31 +171,43 @@ describe("the slice's properties", () => {
 
   test("a unit name carries the slice, the kind, the pid and the start time", () => {
     expect(unitName(JOBS_SLICE, "test:run", 42, 36 * 36)).toBe(
-      "cc-smart-dev-kit-jobs-test-run-42-100.scope",
+      "cc_smart_dev_kit_jobs-test-run-42-100.scope",
     );
-    expect(unitName(JOBS_SLICE, "", 7, 0)).toBe("cc-smart-dev-kit-jobs-job-7-0.scope");
+    expect(unitName(JOBS_SLICE, "", 7, 0)).toBe("cc_smart_dev_kit_jobs-job-7-0.scope");
   });
 });
 
 describe("a limited start", () => {
-  test("probe, then both set-property calls, then the job in its own scope with the kill mark", () => {
+  test("probe, both set-property calls, the stale reset, then the job in its own scope with the kill mark", () => {
     const { facts, calls } = fakeLimitFacts();
     const start = on(startLimits(facts, good(), job, 1));
     expect(calls.map((call) => `${call[0]} ${call[1]} ${call[2]}`)).toEqual([
       "systemd-run --user --scope",
       "systemctl --user set-property",
       "systemctl --user set-property",
+      "systemctl --user list-units",
     ]);
     expect(calls[0]).toEqual(probeArgv(JOBS_SLICE, NEWEST));
     expect(calls[1]).toContain("CPUQuota=1080%");
     expect(calls[2]).toContain("ManagedOOMMemoryPressureDurationSec=10s");
+    // A `job run` killed with SIGKILL never released its scope: the failed scopes of the jobs' unit
+    // prefix are listed (one call), and only those whose wrapper is gone are reset.
+    expect(calls[3]).toEqual([
+      "systemctl",
+      "--user",
+      "list-units",
+      "--state=failed",
+      "--plain",
+      "--no-legend",
+      "cc_smart_dev_kit_jobs-*.scope",
+    ]);
     // The job's scope is not `--collect`ed: a scope systemd failed keeps its Result.
     expect(start.argv).toEqual([
       "systemd-run",
       "--user",
       "--scope",
       "--quiet",
-      "--slice=cc-smart-dev-kit-jobs.slice",
+      "--slice=cc_smart_dev_kit_jobs.slice",
       "--expand-environment=no",
       "-p",
       "OOMPolicy=kill",
@@ -263,6 +286,82 @@ describe("a limited start", () => {
       line: null,
     });
     expect(startLimits(facts, good(), { ...job, command: ["./here", "x"] }, 1).on).toBe(true);
+  });
+
+  // The sweep of stale failed scopes (a `job run` killed with SIGKILL never released its own). With
+  // `max` above 1 another job's scope may have failed just now, and its wrapper still has to read
+  // `Result=oom-kill` from it: only the scopes whose wrapper process is gone are reset.
+  describe("the stale-scope sweep", () => {
+    const sweepWorld = (failed: string[], alive: number[] = [], options = {}) => {
+      const world = fakeLimitFacts({
+        files: Object.fromEntries(alive.map((pid) => [`/proc/${pid}/stat`, `${pid} (sh) S 1`])),
+        // The list prints the name first, then the columns systemd adds (seen live).
+        systemdText: (argv) =>
+          argv[2] === "list-units"
+            ? failed
+                .map((name) => `${name} loaded failed failed [systemd-run] /usr/bin/x`)
+                .join("\n")
+            : null,
+        ...options,
+      });
+      startLimits(world.facts, good(), job, 2);
+      return world;
+    };
+    const resets = (calls: string[][]) => calls.filter((call) => call[2] === "reset-failed");
+    const dead = unitName(JOBS_SLICE, "tsc", 7001, 36);
+    const live = unitName(JOBS_SLICE, "tsc", 7002, 36);
+
+    test("a failed scope whose wrapper is gone is reset, by name, in one call", () => {
+      const other = unitName(JOBS_SLICE, "test:run", 7003, 72);
+      expect(resets(sweepWorld([dead, other]).calls)).toEqual([
+        ["systemctl", "--user", "reset-failed", dead, other],
+      ]);
+    });
+
+    test("a failed scope whose wrapper is alive is kept: it still has to be read", () => {
+      const { calls } = sweepWorld([dead, live], [7002]);
+      expect(resets(calls)).toEqual([["systemctl", "--user", "reset-failed", dead]]);
+      expect(resets(calls).flat()).not.toContain(live);
+    });
+
+    test("nothing failed, or only live wrappers: no reset call", () => {
+      expect(resets(sweepWorld([]).calls)).toEqual([]);
+      expect(resets(sweepWorld([live], [7002]).calls)).toEqual([]);
+    });
+
+    test("a list that did not answer skips the reset, and the job still starts", () => {
+      const world = fakeLimitFacts({ systemdText: () => null });
+      expect(startLimits(world.facts, good(), job, 1).on).toBe(true);
+      expect(resets(world.calls)).toEqual([]);
+    });
+
+    test("lines that are not this slice's scopes are never reset", () => {
+      const { calls } = sweepWorld(["something.service", "x.scope-not"].concat([dead]));
+      expect(resets(calls)).toEqual([["systemctl", "--user", "reset-failed", dead]]);
+    });
+
+    test("a refused reset never stops the job", () => {
+      for (const answer of ["failed", "timeout"] as const) {
+        const { facts } = fakeLimitFacts({
+          systemd: (argv) => (argv[2] === "reset-failed" ? answer : "ok"),
+          systemdText: (argv) =>
+            argv[2] === "list-units" ? `${dead} loaded failed failed x` : null,
+        });
+        expect(startLimits(facts, good(), job, 1).on).toBe(true);
+      }
+    });
+  });
+
+  test("the pid in a unit name is read back from the same format that writes it", () => {
+    expect(unitName(JOBS_SLICE, "tsc", 4242, 36 * 36)).toBe(
+      "cc_smart_dev_kit_jobs-tsc-4242-100.scope",
+    );
+    expect(unitPid("cc_smart_dev_kit_jobs-tsc-4242-100.scope")).toBe(4242);
+    // A kind with dashes and digits, an empty kind, and a base 36 time of letters.
+    expect(unitPid(unitName(JOBS_SLICE, "test:run-2", 31337, 1_700_000_000_000))).toBe(31337);
+    expect(unitPid(unitName(JOBS_SLICE, "", 9, 0))).toBe(9);
+    expect(unitPid("cc_smart_dev_kit_jobs-nonsense.scope")).toBeNull();
+    expect(unitPid("other.service")).toBeNull();
   });
 
   test("a systemd older than 257 refuses the duration: the job still runs with the rest", () => {
@@ -384,7 +483,7 @@ describe("when the limits cannot apply, the job still runs, and the first failin
       systemd: (argv) => (argv[1] === "--user" && argv[2] === "set-property" ? "failed" : "ok"),
     });
     expect(offLine(startLimits(refused.facts, good(), job, 1))).toBe(
-      "this job runs without CPU and memory limits: systemd refused to set the limits on cc-smart-dev-kit-jobs.slice",
+      "this job runs without CPU and memory limits: systemd refused to set the limits on cc_smart_dev_kit_jobs.slice",
     );
     const hung = fakeLimitFacts({
       systemd: (argv) => (argv[2] === "set-property" ? "timeout" : "ok"),
@@ -418,13 +517,8 @@ describe("the job's scope", () => {
   test("a signal goes through systemctl kill, never stop", () => {
     const { facts, calls } = fakeLimitFacts();
     const scope = scopeHandle(facts, UNIT);
-    expect(scope?.kill("SIGTERM")).toBe("ok");
+    scope?.kill("SIGTERM");
     expect(calls).toEqual([["systemctl", "--user", "kill", "--signal=SIGTERM", UNIT]]);
-    // The answer is systemd's own: a caller that forwards a signal falls back on anything but ok.
-    for (const answer of ["failed", "timeout"] as const) {
-      const refused = fakeLimitFacts({ systemd: () => answer });
-      expect(scopeHandle(refused.facts, UNIT)?.kill("SIGINT")).toBe(answer);
-    }
     expect(scopeKillArgv(UNIT, "SIGKILL")).toEqual([
       "systemctl",
       "--user",
@@ -604,10 +698,12 @@ describe("a job stopped for memory says why, and never after exit 0", () => {
     let asked = 0;
     const world = fakeLimitFacts({
       files: { [eventsFile]: events(0, 0), "/proc/meminfo": MEMINFO },
-      systemdText: () =>
-        ++asked < 3
-          ? "ActiveState=deactivating\nResult=success\n"
-          : "ActiveState=failed\nResult=oom-kill\n",
+      systemdText: (argv) =>
+        argv[2] === "list-units"
+          ? ""
+          : ++asked < 3
+            ? "ActiveState=deactivating\nResult=success\n"
+            : "ActiveState=failed\nResult=oom-kill\n",
     });
     const start = on(startLimits(world.facts, good(), job, 1));
     expect(start.memoryLine(killed)).toStartWith("stopped for memory: this job stalled");
@@ -749,6 +845,24 @@ describe("the real facts under a test host", () => {
     expect(facts.read("/proc/meminfo")).toBeNull(); // exists on a real Linux, not in `existing`
     expect(facts.oomdRunning()).toBe(false);
     expect(facts.hasProgram("sh")).toBe(false); // the test's PATH, not the machine's
+  });
+
+  // `nativeAppleSilicon` runs `sysctl` on an Intel Mac. The limits are read by every job and every
+  // portal poll (which never spawns synchronously), and need only the platform, the user id and
+  // `exists`: the sysctl probe must never be reached.
+  test("building and using the facts never reaches the sysctl probe", () => {
+    const probe = () => {
+      throw new Error("the sysctl probe must not run");
+    };
+    for (const env of [{ PATH: "/nowhere" }, host({ platform: "darwin", arch: "x64" })]) {
+      const facts = realLimitFacts(env, hostFacts(env, probe));
+      expect(facts.platform).toBeDefined();
+      facts.read("/proc/meminfo");
+      facts.hasProgram("sh");
+      facts.oomdRunning();
+    }
+    // The lazy read still works for who asks: `Machine`.
+    expect(() => hostFacts({}, probe).nativeAppleSilicon).toThrow("the sysctl probe must not run");
   });
 
   test("another platform, and no test host at all", () => {

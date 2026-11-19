@@ -11,7 +11,7 @@ import {
   type StatReader,
 } from "./ancestry";
 import { type SignalSource, spawnAndWait } from "./launch";
-import type { ScopeHandle, SystemdResult } from "./limits";
+import type { ScopeHandle } from "./limits";
 import type { WindowsFacts } from "./windows";
 
 describe("ancestry: is this job inside another one?", () => {
@@ -198,19 +198,13 @@ describe("spawnAndWait: real children", () => {
 describe("spawnAndWait in a scope", () => {
   /** A fake scope: `empty` says what `isEmpty` answers; `alsoStops` runs on each kill. */
   function fakeScope(
-    options: {
-      empty?: () => boolean;
-      alsoStops?: (s: NodeJS.Signals) => void;
-      /** What the kill answers: systemd's own result (the default: it did it). */
-      answer?: SystemdResult;
-    } = {},
+    options: { empty?: () => boolean; alsoStops?: (s: NodeJS.Signals) => void } = {},
   ) {
     const kills: NodeJS.Signals[] = [];
     const scope: ScopeHandle = {
       kill: (signal) => {
         kills.push(signal);
         options.alsoStops?.(signal);
-        return options.answer ?? "ok";
       },
       isEmpty: options.empty ?? (() => true),
     };
@@ -236,57 +230,79 @@ describe("spawnAndWait in a scope", () => {
     expect(end).toEqual({ code: 137, leftovers: false, sentOn: false, signal: "SIGKILL" });
   });
 
-  // Every member of the job's group is in its scope: signalling both would run a tool's INT
-  // handler twice, and a tool that reads a second Ctrl+C as "force quit" would quit. The fake
-  // scope reaches the job the way the real one does, and the group is not signalled as well.
-  test("one forwarded signal reaches the job once: through the scope, not the group as well", async () => {
-    const dir = tempDir("scope-once");
-    const [pidFile, counted, stop] = ["pid", "count", "stop"].map((name) => join(dir, name));
-    const { kills, scope } = fakeScope({
-      // `systemctl kill` is a call of its own: the signal lands some milliseconds later, as it
-      // did live. A shell merges two signals that arrive together into one trap run; these do
-      // not, so a second delivery would count.
+  /** The job: counts each INT it gets, and ends when `stop` appears. */
+  const counting = (pidFile: string, counted: string, stop: string) =>
+    `trap 'echo x >> "${counted}"' INT; echo $$ > "${pidFile}"; while [ ! -e "${stop}" ]; do sleep 0.05; done`;
+  /** A scope whose kill reaches `pidFile`'s process some milliseconds later, as `systemctl kill` did live. */
+  const deliveringScope = (pidFile: string) =>
+    fakeScope({
+      // A shell merges two signals that arrive together into one trap run; these do not, so a
+      // second delivery would count.
       alsoStops: (signal) => {
-        setTimeout(
-          () => process.kill(Number(readFileSync(pidFile as string, "utf8")), signal),
-          150,
-        );
+        setTimeout(() => process.kill(Number(readFileSync(pidFile, "utf8")), signal), 150);
       },
     });
+
+  // A signal sent to both the group and the scope would run a tool's INT handler twice, and a
+  // tool that reads a second Ctrl+C as "force quit" would quit. The wrapper forwards to the
+  // process group only.
+  test("one forwarded signal reaches the job once, and the scope is not signalled", async () => {
+    const dir = tempDir("scope-once");
+    const [pidFile, counted, stop] = ["pid", "count", "stop"].map((name) => join(dir, name)) as [
+      string,
+      string,
+      string,
+    ];
+    const { kills, scope } = deliveringScope(pidFile);
     const signals = new EventEmitter();
     const running = spawnAndWait(
-      [
-        "sh",
-        "-c",
-        `trap 'echo x >> "${counted}"' INT; echo $$ > "${pidFile}"; while [ ! -e "${stop}" ]; do sleep 0.05; done`,
-      ],
+      ["sh", "-c", counting(pidFile, counted, stop)],
       signals,
+      undefined,
+      {
+        scope,
+      },
+    );
+    await waitForPid(pidFile);
+    signals.emit("SIGINT");
+    await Bun.sleep(400); // a second delivery, if there were one, has long arrived
+    writeFileSync(stop, "");
+    expect(await running).toMatchObject({ code: 0, leftovers: false });
+    expect(kills).toEqual([]);
+    expect(readFileSync(counted, "utf8")).toBe("x\n");
+  });
+
+  // A nested `job run` runs inside the outer job, so the outer scope holds its processes too, and
+  // its own wrapper forwards to its own group. A scope kill from the outer wrapper would reach
+  // the nested job a second time.
+  test("a nested job run gets one forwarded signal once: the outer wrapper has a scope", async () => {
+    const dir = tempDir("scope-nested");
+    const [pidFile, counted, stop, relay] = ["pid", "count", "stop", "relay"].map((name) =>
+      join(dir, name),
+    ) as [string, string, string, string];
+    // The outer scope holds the nested job: its kill reaches it.
+    const { kills, scope } = deliveringScope(pidFile);
+    const outerSignals = new EventEmitter();
+    const nestedSignals = new EventEmitter();
+    // The nested wrapper (no scope) runs the counting job in a group of its own.
+    const nested = spawnAndWait(["sh", "-c", counting(pidFile, counted, stop)], nestedSignals);
+    // The outer job holds the nested wrapper: it gets the group's INT and the wrapper catches it.
+    const outer = spawnAndWait(
+      ["sh", "-c", `trap 'touch "${relay}"' INT; while [ ! -e "${stop}" ]; do sleep 0.05; done`],
+      outerSignals,
       undefined,
       { scope },
     );
-    await waitForPid(pidFile as string);
-    signals.emit("SIGINT");
-    await Bun.sleep(400); // a second delivery, if there were one, has long arrived
-    writeFileSync(stop as string, "");
-    expect(await running).toMatchObject({ code: 0, leftovers: false });
-    expect(kills).toEqual(["SIGINT"]);
-    expect(readFileSync(counted as string, "utf8")).toBe("x\n");
-  });
-
-  test("a scope that did not answer: the group is signalled instead", async () => {
-    for (const answer of ["failed", "timeout"] as const) {
-      const { kills, scope } = fakeScope({ answer });
-      const signals = new EventEmitter();
-      const running = spawnAndWait(["sleep", "30"], signals, undefined, { scope });
-      signals.emit("SIGINT");
-      expect(await running).toEqual({
-        code: 130,
-        leftovers: false,
-        sentOn: true,
-        signal: "SIGINT",
-      });
-      expect(kills).toEqual(["SIGINT"]);
-    }
+    await waitForPid(pidFile);
+    outerSignals.emit("SIGINT");
+    // The INT the outer wrapper sent to its group reaches the nested wrapper, which forwards it.
+    expect(await until(() => existsSync(relay), 5_000)).toBe(true);
+    nestedSignals.emit("SIGINT");
+    await Bun.sleep(400);
+    writeFileSync(stop, "");
+    await Promise.all([outer, nested]);
+    expect(kills).toEqual([]);
+    expect(readFileSync(counted, "utf8")).toBe("x\n");
   });
 
   test("a process that left the group is stopped through the scope, and the job waits for it", async () => {
@@ -337,6 +353,16 @@ describe("spawnAndWait in a scope", () => {
     expect(end.code).toBe(4);
   });
 });
+
+/** Polls `check` until it holds or `ms` pass. */
+async function until(check: () => boolean, ms: number): Promise<boolean> {
+  const end = Date.now() + ms;
+  while (Date.now() < end) {
+    if (check()) return true;
+    await Bun.sleep(20);
+  }
+  return check();
+}
 
 /** Waits for a pid file a child writes, and returns the pid. */
 async function waitForPid(file: string): Promise<number> {

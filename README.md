@@ -2134,8 +2134,8 @@ commands are heavy, and the defaults know `bun test` too: `bun test ./src/a.test
 | `cc-smart-dev-kit job hook <name>` | For the kit's git hook scripts, not for you: prints `direct` or `queue <kind>` for git hook `<name>` in this repo, and always ends with 0. See [Git hooks](docs/jobs.md#git-hooks). |
 
 **CPU and memory caps.** On Linux with a systemd user manager and cgroup v2, a queued job runs
-in its own scope inside one shared systemd slice, so all heavy jobs together stay under a CPU cap
-and a memory cap (90% each by default). The slice has no swap, and systemd-oomd stops the jobs
+in its own scope inside one shared top-level systemd slice, so all heavy jobs together stay under
+a CPU cap and a memory cap (90% each by default), and yield the CPU to your apps. The slice has no swap, and systemd-oomd stops the jobs
 when they stall on memory below the cap. The limits are runtime properties: they are gone at
 reboot, and no file in your home changes. Where they cannot apply (macOS, Windows, no user
 manager, a bad `cpuPercent` or `memoryPercent`), the job runs as before, and on Linux `job run`

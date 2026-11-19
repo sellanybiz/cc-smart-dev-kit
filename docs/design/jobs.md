@@ -66,7 +66,9 @@ state, not project settings. Old machine `jobs.json` settings are ignored since 
 uses, and a heavy machine hung because of that. So, on Linux with a systemd user manager and
 cgroup v2, a queued job runs in its own scope in one shared slice with a CPU quota, a low CPU
 weight, a memory ceiling, no swap and a memory-pressure watchdog (systemd-oomd), and carries a
-kill mark (`choom`). The caps are the settings `cpuPercent` and `memoryPercent` (90% by default),
+kill mark (`choom`). The slice's name has no dash (`cc_smart_dev_kit_jobs.slice`): a dash nests a
+slice, and a CPU weight only counts against siblings, so a nested slice would never yield. The
+caps are the settings `cpuPercent` and `memoryPercent` (90% by default),
 written as runtime properties before each launch, so nothing in the home changes. Where the
 limits cannot apply, the job runs as before and says why: a broken kit never blocks a build. Why
 the caps alone do not stop a hang, the detail, what it needs and what it cannot do:

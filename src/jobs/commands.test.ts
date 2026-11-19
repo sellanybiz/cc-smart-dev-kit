@@ -362,7 +362,7 @@ describe("the limits a queued job gets", () => {
   test("on a working machine: the probe, the slice's properties, then the job's scope", () => {
     const { ctx, calls } = world({ platform: "linux", cpus: 4 });
     expect(limitsFor(ctx)(job).on).toBe(true);
-    expect(calls).toHaveLength(3);
+    expect(calls).toHaveLength(4);
     expect(calls[1]).toContain("CPUQuota=360%");
   });
 
@@ -374,7 +374,7 @@ describe("the limits a queued job gets", () => {
   });
 
   test("the memory line knows whether the heavy jobs share the cap", async () => {
-    const eventsFile = `/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/cc.slice/cc-smart.slice/cc-smart-dev.slice/cc-smart-dev-kit.slice/cc-smart-dev-kit-jobs.slice/memory.events`;
+    const eventsFile = `/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/cc_smart_dev_kit_jobs.slice/memory.events`;
     for (const [slots, words] of [
       [1, "this job reached"],
       [3, "the heavy jobs together reached"],

@@ -70,7 +70,7 @@ describe("the CPU and memory caps' lines", () => {
     expect(checks(facts)).toEqual([
       {
         ok: true,
-        text: "Heavy-job caps applied on cc-smart-dev-kit-jobs.slice: CPU 90%, memory 90% (12 CPUs); the jobs yield to your apps",
+        text: "Heavy-job caps applied on cc_smart_dev_kit_jobs.slice: CPU 90%, memory 90% (12 CPUs); the jobs yield to your apps",
       },
     ]);
   });
@@ -80,7 +80,7 @@ describe("the CPU and memory caps' lines", () => {
       {
         ok: true,
         info: true,
-        text: "Heavy-job caps: CPU 90%, memory 90%; written to cc-smart-dev-kit-jobs.slice when the next heavy job starts",
+        text: "Heavy-job caps: CPU 90%, memory 90%; written to cc_smart_dev_kit_jobs.slice when the next heavy job starts",
       },
     ]);
   });
@@ -93,8 +93,8 @@ describe("the CPU and memory caps' lines", () => {
       {
         ok: true,
         warn: true,
-        text: 'cc-smart-dev-kit-jobs.slice carries cpu.max "max 100000" and memory.max "max", not the caps set (CPU 90%, memory 90%)',
-        fix: "the next heavy job writes the caps again; check them with: systemctl --user show cc-smart-dev-kit-jobs.slice",
+        text: 'cc_smart_dev_kit_jobs.slice carries cpu.max "max 100000" and memory.max "max", not the caps set (CPU 90%, memory 90%)',
+        fix: "the next heavy job writes the caps again; check them with: systemctl --user show cc_smart_dev_kit_jobs.slice",
       },
     ]);
   });
