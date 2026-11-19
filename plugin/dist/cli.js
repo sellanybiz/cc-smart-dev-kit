@@ -60046,9 +60046,15 @@ function identity(ctx, r) {
   return me;
 }
 function refusePlanChild(ctx, r, me, doing) {
-  if (hcGet(r, me.address).labels[KIT_PLAN] === undefined)
-    return null;
-  return refuse3(ctx, `A plan child never coordinates: it builds its own plan only, so it cannot ${doing}.`, `Report to your lead with ${COMMAND} herdr report; the lead hands plans out.`);
+  const labels = hcGet(r, me.address).labels;
+  const fix = `Report to your lead with ${COMMAND} herdr report; the lead hands plans out.`;
+  if (labels[KIT_PLAN] !== undefined) {
+    return refuse3(ctx, `A plan child never coordinates: it builds its own plan only, so it cannot ${doing}.`, fix);
+  }
+  if (labels[KIT_FOLLOWUP] !== undefined) {
+    return refuse3(ctx, `A follow-up child never coordinates: it works its lead's findings only, so it cannot ${doing}.`, fix);
+  }
+  return null;
 }
 function refuseLinkedChild(ctx, r, me) {
   if (hcGet(r, me.address).labels[KIT_LEAD] === undefined)

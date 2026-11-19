@@ -1532,6 +1532,28 @@ test("a start in a project with no store says so, with its fix", async () => {
   expect(w.calls.some((c) => c.args[0] === "run")).toBe(false);
 });
 
+test("a follow-up child never coordinates: start --plan, plans --reserve and adopt are refused", async () => {
+  const p = planWorld();
+  p.plan("alpha", ["src/a/"]);
+  p.rows.t1 = { ...(p.rows.t1 as object), labels: { "kit.lead": "core/t0", "kit.followup": "1" } };
+  const cases: [string[], string][] = [
+    [[...planLaunch, "--plan", "alpha", "--", "work"], "cannot hand out plans"],
+    [[...RESERVE, "alpha"], "cannot reserve plans"],
+    [["adopt"], "cannot adopt another lead's plans"],
+  ];
+  for (const [args, doing] of cases) {
+    p.lines.length = 0;
+    expect(await runHerdr(args, p.ctx)).toBe(1);
+    const text = p.lines.join("\n");
+    expect(text).toContain(
+      `A follow-up child never coordinates: it works its lead's findings only, so it ${doing}.`,
+    );
+    expect(text).toContain("herdr report");
+    p.noRun();
+  }
+  expect(p.row("alpha").lead).toBeNull();
+});
+
 test("a plan child cannot adopt: D1 holds for every verb that coordinates", async () => {
   const p = planWorld();
   p.rows.t1 = { ...(p.rows.t1 as object), labels: { "kit.lead": "core/t0", "kit.plan": "other" } };
