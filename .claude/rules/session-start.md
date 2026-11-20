@@ -67,6 +67,8 @@ piece, so it has no `cc-smart-dev-kit.json` and no `ownHooks` step. Its rules:
   `update-major.json` until the person's `cc-smart-dev-kit update`. An installed version
   that cannot be read (no `version` in `installed_plugins.json`, or not a version) is no
   major step: the check installs the newer one, as before the rule (`src/update/major.ts`).
+  6.0.0 is a major version on purpose: it removes features (the guards), so the background
+  check holds it until each machine's owner runs `cc-smart-dev-kit update`.
 - **Claude Code's own plugin auto-update stays off** (D39): it knows nothing of the hold.
   Each check first turns setup's own leftover `autoUpdate: true` to `false`
   (`turnOffLeftoverAutoUpdate`, `src/setup/auto-update.ts`): through `applyManagedJson`,

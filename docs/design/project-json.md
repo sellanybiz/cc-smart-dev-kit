@@ -50,12 +50,12 @@ and `project init` and `workflow set --project` write it as `requires`. Each ver
 home in `src/project/config.ts`: `WORKTREE_PREFIX_OPTIONAL_SINCE` (0.5.2, the floor of every
 file), `WORKFLOW_FIXES_SINCE` and `WORKTREE_AUTO_CLEAN_SINCE` (1.0.0), `CHECKS_SINCE` (1.1.0),
 `WORKFLOW_ISSUES_SINCE` (1.4.0), `WORKTREE_REBUILDABLE_SINCE` (1.9.0), `TASKS_SINCE` (1.10.0),
-`DEPLOY_TASKS_SINCE` (5.0.0, `tasks.envs`) and `DEPLOY_GUARD_SINCE` (5.3.0, `tasks.deployCommands` and the `deploy-guard` name, retired in 5.7.0 but kept as a floor),
+`DEPLOY_TASKS_SINCE` (5.0.0, `tasks.envs`) and `DEPLOY_GUARD_SINCE` (5.3.0, `tasks.deployCommands` and the `deploy-guard` name, retired in 6.0.0 but kept as a floor),
 `JOB_KIND_KEYS_SINCE` (a kind's `noSlotForFiles` in 1.5.0; `light`, ignored since 2.0 like the
 old size fields and `workflow.crew`, raises no floor, and `doctor` says it can go) and
 `OWN_HOOK_NAMES_SINCE` (the `ownHooks` names: `subagent-background` in 1.0.0, `verify-gate` and
 `agent-usage` in 1.1.0, `tier-view` in 1.3.0, `task-start` in 1.10.0, `keep-going` and
-`builder-finish` in 2.0.0, `deploy-guard` in 5.3.0 (retired in 5.7.0: it still parses); the retired `crew-role` and `lead-notes` keep their 1.0.0). The
+`builder-finish` in 2.0.0, `deploy-guard` in 5.3.0 (retired in 6.0.0: it still parses); the retired `crew-role` and `lead-notes` keep their 1.0.0). The
 older retired and unswitchable names (`serena-root`, `message-guard`, `job-route`) are older than 0.5.2, so they
 raise nothing. A drift guard, `src/project/config.test.ts`, holds a hand-written list of what
 the 0.5.2 plugin accepted and of each later key and name with its release; it fails when the

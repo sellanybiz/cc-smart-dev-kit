@@ -598,7 +598,7 @@ fix is to rename one id, never to delete a file.
 
 Nothing makes a person or Claude run the gates: a deploy command typed directly, or a CI deploy on
 merge, ignores open tasks. No hook stands in front of a deploy command any more (the `deploy-guard`
-hook is retired, `docs/design/hooks.md` § Retired in 5.7.0): the session runs the gates itself
+hook is retired, `docs/design/hooks.md` § Retired in 6.0.0): the session runs the gates itself
 (`/cc-smart-dev-kit:tasks` § 5), and CI runs one pure check of the task files.
 
 **`judgeTasks`** (`release.ts`): `judgeTasks(env, scan)` returns `{ refusals, notes }` from the

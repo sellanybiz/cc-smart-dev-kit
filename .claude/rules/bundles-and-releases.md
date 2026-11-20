@@ -111,7 +111,7 @@ you touch a check that names a plugin, a launcher or a folder.
 - Runtime dependencies: `zod`, official MCP SDK (`@modelcontextprotocol/server` and
   `@modelcontextprotocol/core` 2.4.0; approved 2026-11-03). Ask the owner before adding another.
 - SDK only in `plugin/dist/tasks-mcp.js`, never `cli.js`. Use `bun add`; commit `bun.lock`.
-- `acorn` left in 5.7.0 with the `agent-guard` it served: no bundle carries a JavaScript
+- `acorn` left in 6.0.0 with the `agent-guard` it served: no bundle carries a JavaScript
   parser now. Ask the owner before adding one; check `git diff --stat plugin/dist` after the build.
 
 ## Releasing

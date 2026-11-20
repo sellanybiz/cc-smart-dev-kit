@@ -191,6 +191,6 @@ no session, takes no other plan and stops after its report. Its terminal carries
 start.
 
 Use the kit commands for writes, never raw `hc` writes or `herdr-app do` (no hook stops them
-since 5.7.0; the kit's commands keep the identity and ownership checks). Local read-only
+since 6.0.0; the kit's commands keep the identity and ownership checks). Local read-only
 inspection is fine (`hc events` only in the background). A printed remote `hc exec … find`
 line is for the person's terminal.

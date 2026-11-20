@@ -26,7 +26,7 @@ together is `docs/design/hooks.md` § The hooks. The Claude Code behaviour behin
 the version it was proved on: `docs/claude-code-contract.md`. The `paths:` list names the
 hook entries only: `cli.ts`, `router.ts` and `portal.ts` are other bundles.
 
-The one guard (`job-route`), answers and failures: `hooks-guards.md`. Retired notifications and guards: `docs/design/hooks.md` § The notifier and § Retired in 5.7.0.
+The one guard (`job-route`), answers and failures: `hooks-guards.md`. Retired notifications and guards: `docs/design/hooks.md` § The notifier and § Retired in 6.0.0.
 Session-start behavior and self-update: `session-start.md`.
 
 ## Who wires it

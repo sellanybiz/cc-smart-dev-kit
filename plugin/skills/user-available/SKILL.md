@@ -45,9 +45,9 @@ the command:
 - `no session`: its session ended, in another project. Name its folder in one line and ask once
   whether to show those here; a yes makes them this session's.
 
-Show this session's decisions, the `Summary:` ones first, in the sessions' own words: what was
+Show this session's decisions, the end-of-stretch `Summary:` ones first and the `Decision:` ones after, in the sessions' own words: what was
 chosen, why, and how to undo it. They need no answer. When the person dislikes one, undo it as
-its own words say. An old `question` or `action` item, parked before 5.7.0, is shown too: ask
+its own words say. An old `question` or `action` item, parked before 6.0.0, is shown too: ask
 a question with `AskUserQuestion` (the recommended option first); show an action's `text`, `cwd`
 and exact `command` and run it only on a yes, as it is, in its `cwd`.
 

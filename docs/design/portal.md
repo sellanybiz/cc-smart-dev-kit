@@ -105,7 +105,7 @@ not a network read.
 - **There is no sign-in (D9).** The portal starts with Claude Code and stays up; a page load
   from this machine is served, so any program and any user account on this machine — a Claude
   session using `curl` included — can read and change what it shows. The owner chose that
-  trade-off against pairing the browser once. What replaces the refusal: the door below. Since 5.7.0 no hook asks before a session's shell
+  trade-off against pairing the browser once. What replaces the refusal: the door below. Since 6.0.0 no hook asks before a session's shell
   command reaches the portal's port (the `session-escape-guard` is retired); Claude Code's own
   permission mode is the stop left.
 

@@ -224,8 +224,8 @@ project file at all. So a project that never opted in sees only Claude Code's ow
 and the one limit a session may not get around. `job-route` is `alwaysOn`: `ownHooks` cannot
 switch it off, because it limits what the session itself may launch. `user-away` is the second
 `alwaysOn` hook, for another reason: the switch is the person's (§ While the person is away).
-The former notification hooks are retired (§ The notifier), and so are seven guards
-(§ Retired in 5.7.0).
+The former notification hooks are retired (§ The notifier), and so are six guard hooks, `user-away`'s blocking and `job-route`'s launch judge
+(§ Retired in 6.0.0).
 
 **`job-route` is the kit's only guard.** Every other hook here informs Claude, records, or stops
 a turn that would end with work undone (`keep-going`, `verify-gate`, `builder-finish`,
@@ -428,10 +428,10 @@ stops to ask only stops: nobody reads the question for hours, and waiting leaves
 unstarted. So while the person is away a session **decides**: it takes the recommended option,
 records the choice as a decision, and goes on (`/cc-smart-dev-kit:user-unavailable`).
 Nothing is parked to wait for an answer, and no hook parks anything for it. `/cc-smart-dev-kit:user-available`
-shows the decisions when the person is back. Since 5.7.0 (the owner, 2026-11-21: "full auto")
+shows the decisions when the person is back. Since 6.0.0 (the owner, 2026-11-21: "full auto")
 the hook only refuses the two question tools and says that the person is away; it never
 answers a permission dialog, and no guard's ask is turned into a parked action (§ Retired in
-5.7.0).
+6.0.0).
 
 **The state, one home** (`src/user-away/state.ts`). One file, `<stateDir>/user-away/state.json`
 (the kit's state folder: the machine's `~/.claude/cc-smart-dev-kit/` unless Claude Code runs on
@@ -442,7 +442,7 @@ their item; a reader takes no lock. It holds `unavailable`, `since`, `until`, th
 `nextId` (an id is never reused), `said` (the note each session heard at a prompt, or by
 `user unavailable` itself) and `stopSaid` (the note it heard by the Stop block). `until` is a note
 only: it shows in the notes and never switches back. An item is a `decision` (what was chosen,
-why, how to undo it; its text starts `Summary:`), the session that recorded it, its folder and
+why, how to undo it; its text starts `Decision:`), the session that recorded it, its folder and
 the time. The kinds `question` and `action` stay in the store so a list written by 5.6.x can be
 read: nothing writes them now. The same kind with the same words **in the same folder** records
 once, so a retry from one session is one item. The list holds 500 items and `said` 100
@@ -475,11 +475,11 @@ project decide there.
 
 - **PreToolUse on `AskUserQuestion` and `ExitPlanMode`:** refused, with the step to take: "the
   person is away: take the recommended option yourself, keep working, and record it with
-  `cc-smart-dev-kit user park --kind decision` ('Summary: …')". A plan waiting for approval is
+  `cc-smart-dev-kit user park --kind decision` ('Decision: …')". A plan waiting for approval is
   the same wait as a question.
-- **Claude Code's own permission dialog (`PermissionRequest`):** since 5.7.0 no kit hook is wired
+- **Claude Code's own permission dialog (`PermissionRequest`):** since 6.0.0 no kit hook is wired
   to it, so Claude Code shows its dialog. A hook never approves for the person, and it no longer
-  denies and parks either. `docs/claude-code-contract.md` § Retired in 5.7.0 keeps the retired row. In Claude
+  denies and parks either. `docs/claude-code-contract.md` § Retired in 6.0.0 keeps the retired row. In Claude
   Code's default permission mode a session's own `user park` call is such a dialog, so the
   `user-unavailable` skill tells the person once to allow `Bash(cc-smart-dev-kit user park:*)`.
 - **`UserPromptSubmit`, the note:** one short line to Claude — "the person is unavailable since
@@ -687,7 +687,7 @@ still reads `alerts.usagePercent` and shows usage, limits and reset information.
 guard. It keeps its public name: `hooks.json`, project files and `ownHooks` values stay valid. It
 is **machine-wide** and **`alwaysOn`** — the frame skips the `ownHooks` step and `ownHooks`
 cannot switch it off. It does one job: it sends a heavy command through the machine's queue, or
-refuses a heavy run mixed with other commands. **It never asks the person anything** (5.7.0 took
+refuses a heavy run mixed with other commands. **It never asks the person anything** (6.0.0 took
 out its launch judge: a raw `claude --bg`, `claude -p` on `fable` or `opus` at `max`, `workflow
 propose` and the Herdr rules no longer ask or refuse; `src/hooks/bash-judge.ts` and
 `launch-judge.ts` are gone). Its `hooks.json` entry passes `--missing=quiet` and has no
@@ -779,7 +779,7 @@ asks (the WorktreeRemove hook) or by `cc-smart-dev-kit worktrees --clean`, and i
 folder before it deletes it, so a program still using it makes the removal fail and touch
 nothing (`docs/windows-setup.md`). Custom notification behaviour is retired (§ The notifier).
 
-Herdr commands are no longer judged by a hook (5.7.0): `cc-smart-dev-kit herdr` refuses what it
+Herdr commands are no longer judged by a hook (6.0.0): `cc-smart-dev-kit herdr` refuses what it
 must in its own code (`--asked` for Fable, Opus at `max` and a non-free remote machine, the explicit model,
 effort and mode), and no hook judges them. Turns starting with `<hc `
 or the kit report tag are not the person's words (`prompt-source.ts`). A phase whose agent is
@@ -842,7 +842,7 @@ The retired worktree engine is not part of the switch: a project that still has 
 its fields fixes both with one run of `cc-smart-dev-kit project init` (README § Worktrees), in
 one commit. `cc-smart-dev-kit doctor` names what is left.
 
-## Retired in 5.7.0
+## Retired in 6.0.0
 
 The owner, 2026-11-21: "the only guard our kit will support will be the heavy-job guard.
 Everything will run in full auto." These hooks are gone, with their bundles and tests. Each name

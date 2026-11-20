@@ -16,11 +16,11 @@ paths:
 
 # The One Guard: `job-route`, And The Question Tools
 
-Since 5.7.0 (the owner: "the only guard our kit will support will be the heavy-job guard") the
+Since 6.0.0 (the owner: "the only guard our kit will support will be the heavy-job guard") the
 kit has **one guard, `job-route`**, the heavy-job queue's door, and it **never asks the person**:
 it queues a heavy command or refuses a heavy run mixed with other commands, and judges nothing
-else (no launch, push, merge or deploy). Seven guards and its launch judge were retired
-(`docs/design/hooks.md` § Retired in 5.7.0): never add a hook that asks the person, approves a
+else (no launch, push, merge or deploy). The six guard hooks, `user-away`'s blocking and its launch judge were retired
+(`docs/design/hooks.md` § Retired in 6.0.0): never add a hook that asks the person, approves a
 permission dialog or blocks a call for a policy; a rule for Claude is an instruction in
 `plugin/`, not a hook. The hook frame and shell reader: `hooks.md`. Event contracts and
 evidence: `docs/claude-code-contract.md`. Detailed behavior: `docs/design/hooks.md`.
@@ -32,9 +32,9 @@ evidence: `docs/claude-code-contract.md`. Detailed behavior: `docs/design/hooks.
   too, because the switch is the person's. Other machine-wide hooks can honor `ownHooks`.
 - Rewrite a heavy Bash call through the jobs API with PreToolUse `updatedInput`, never run
   the command in the hook. Keep the Bash tool's working folder.
-- **The kit's own command is recognised in one place** (`kitArguments`, `namesKit`,
+- **The kit's own command is recognised in one place** (`kitArguments`,
   `src/shell/kit-invocation.ts`): its name, a path to the launcher, its bundle behind another
-  program, a program that runs its arguments. A spelling that gets past it is fixed there.
+  program. A spelling that gets past it is fixed there.
 
 ## While the person is away
 
@@ -82,10 +82,8 @@ evidence: `docs/claude-code-contract.md`. Detailed behavior: `docs/design/hooks.
 - `subagent-background` blocks only for background work found in the agent's own tool
   results, never an id from its brief or a file. A failed read never blocks its stop.
 - `agent-usage` only appends its record; failures are stderr lines, never blocks.
-- Record every ask through the frame's masked ask log. Failed logging never changes the
-  answer.
-- Ask when a person may mean a dangerous step; deny a mechanical violation with its fix.
-  A hook ask cannot be silenced by "don't ask again", so reserve it for real judgment.
+- The frame's masked ask log (`ask-log.ts`) records any answer that asks the person. Failed
+  logging never changes the answer.
 - Hooks may start a detached cleanup, never wait for it or remove work themselves. The
   cleanup takes its own machine lock, keeps live or unprovable work and logs its failures.
   Held git locks defer a cleanup round without sleeping or retrying until success.

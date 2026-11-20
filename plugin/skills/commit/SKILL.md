@@ -27,16 +27,19 @@ of the four happens until the person asks (or the add-on says otherwise).
 | `mergeMethod` | `merge`, `squash` or `rebase`: how a merge is made. |
 | `deleteBranch` | Whether the branch goes once its pull request merged. |
 
-**A merge follows the workflow, not a hook.** No hook stops one: you check. With `autoMerge` on
-(`workflow show`), merge your own pull request into its base, the main branch included, with no
-question, once every required check is green and its head commit has a recorded review
-(`/cc-smart-dev-kit:review` § Second opinion). Fixes after the review within `fixesAfterReview`
-need no new review; when they are over it, say so in the pull request body and leave it unmerged.
-**Wait for CI yourself:** run `gh pr checks <pr> --watch` in the background, then a plain
-`gh pr merge <pr>`; never GitHub's `--auto`. `cc-smart-dev-kit workflow merge-check <pr>` judges
-the policy in one run (exit 0: allowed). `mergeMethod` and `deleteBranch` say how. With
-`autoMerge` off, open the pull request and leave the merge to the person; move on, and with the
-whole plan done say so once, listing every open pull request with its checks and the merge order.
+**A merge follows the workflow, not a hook.** No hook stops one: you check, and the check is
+`cc-smart-dev-kit workflow merge-check <pr>` (exit 0: merge; any other exit: do not). Its rule,
+exactly: `autoMerge` is on (`workflow show`); the pull request's base is the project's integration
+base (`worktrees.base`) or the repository's default branch, the main branch included, and any
+other base is refused (that merge is the person's); every required check is green; the head
+commit has a recorded review (`/cc-smart-dev-kit:review` § Second opinion); and the fixes after
+that review are within `fixesAfterReview` (when they are over it, say so in the pull request body
+and leave it unmerged). **Wait for CI yourself:** run `gh pr checks <pr> --watch` in the
+background, run `merge-check`, and on exit 0 a plain `gh pr merge <pr>`; never GitHub's `--auto`.
+With `autoMerge` on and the check passing there is no question to the person. `mergeMethod` and
+`deleteBranch` say how. With `autoMerge` off, open the pull request and leave the merge to the
+person; move on, and with the whole plan done say so once, listing every open pull request with
+its checks and the merge order.
 
 - **Commit and push only your own branch**, never the base or main branch directly.
 - **Builder commits:** a brief may allow commits on that builder's own isolated branch.
@@ -48,7 +51,7 @@ whole plan done say so once, listing every open pull request with its checks and
   the plan branch is pushed after each merged phase, and the pull request waits for the
   plan's review (two rounds, and a final review when its fixes are big).
 - **The person's word, every time** (no hook checks it; you do): a direct push to the main
-  branch (not through a pull request), production, a force-push or any rewrite of pushed history, `reset --hard`, `clean
+  branch (not through a pull request), a deploy to production (staging is Claude's own to run), a force-push or any rewrite of pushed history, `reset --hard`, `clean
   -f`, deleting or renaming a branch that is not merged, and shipping a Warning without its
   fix. The person is available: ask first. They are away (`/cc-smart-dev-kit:user-unavailable`):
   take the safe option, do not run it, and record the decision. The one exception: a builder's

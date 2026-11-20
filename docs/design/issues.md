@@ -52,7 +52,7 @@ file as committed on the base (`resolveSwitch`), never a working copy. `workflow
 open, because a person reviews and merges its pull request. The refusal is a courtesy that a
 command can drop (`env -u CLAUDECODE`); nothing stops a session from dropping it, or from
 writing the person's `workflow.json` directly (the `session-escape-guard` is retired,
-`docs/design/hooks.md` § Retired in 5.7.0); what keeps a session's own edit of the project's file
+`docs/design/hooks.md` § Retired in 6.0.0); what keeps a session's own edit of the project's file
 out is the committed-file rule.
 
 **Only a project that opted in.** `issue file` and `doctor` need a `.claude/cc-smart-dev-kit.json`
@@ -161,7 +161,7 @@ A write to GitHub leaves the machine. Until 5.6.x the `merge-guard` hook asked t
 a session's raw `gh issue create`, `edit`, `comment`, `close`, `reopen` or `delete`, a `gh label`
 write, a `gh api` write to a repository's `issues` or `labels` endpoints, or a GraphQL mutation
 (the reader was `src/hooks/issue-writes.ts`). That hook is retired (`docs/design/hooks.md` §
-Retired in 5.7.0), so **no hook asks any more**: the instructions say to file through
+Retired in 6.0.0), so **no hook asks any more**: the instructions say to file through
 `issue file`, and Claude Code's own permission mode is the stop left for a raw `gh` write.
 
 `issue file` is the sanctioned path: with the switch on it files without a question, and every
