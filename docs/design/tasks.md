@@ -48,7 +48,7 @@ shows each phase's agent, branch, state and completed steps, such as `3/5`.
 A builder writes a `Report:` note with its result and checks. The main session records
 small decisions in `Ruling:` notes, checks each hand-back against the branch (no reviewer
 reads a phase), merges it into the plan branch (phase branches stay local), closes its task
-and starts what it unblocked. One review runs per plan, in two rounds on `opus`; then the
+and starts what it unblocked. One review runs per plan, in two rounds on `opus`, plus a final review when round 2's fixes are big; then the
 plan's one pull request opens.
 After compaction, this ledger and git history prevent repeating finished work.
 
@@ -188,7 +188,7 @@ checkout's working copy through the normal workflow resolver:
   older lists). A caller's plan in flight (`inFlightPlanOf`: an own plan, judged on
   the plan's own task `owns`) is normally one. After a `task_take` it may hold two: the one with
   work in progress counts first, else the lower number. Another session's plan never counts.
-  A plan stays in flight until its own `task_done`, so its two review rounds and their fixes belong to
+  A plan stays in flight until its own `task_done`, so its review rounds, any final review and their fixes belong to
   it, and the next plan cannot start before it closes.
 - **The start refusal.** Starting a phase or task of a plan other than the one in flight
   (`task_update` or `task_create` with `in_progress`, the plan task's own start too) is

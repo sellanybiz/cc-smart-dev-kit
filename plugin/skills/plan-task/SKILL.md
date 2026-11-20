@@ -92,7 +92,8 @@ Answer eight questions; they are the plan's sections:
 8. **How we prove it** — the checks that show it works: the tests (for a bug, the test that
    fails first), the checks the push and CI run, and what only the person can judge
    (`/cc-smart-dev-kit:verify-change` § 6). Each phase's done-check (§ 5) comes from here. Name
-   the plan's two review runs (`/cc-smart-dev-kit:build` § 6): approving the plan approves them.
+   the plan's two review runs and its final review (`/cc-smart-dev-kit:build` § 6, which says when
+   the final one runs): approving the plan approves them.
 
 Put a three-line **Summary** at the top. Keep approval and build status out of the design.
 Write it so a fresh session can build from the file alone: the approval screen may offer to
@@ -212,7 +213,7 @@ CLI fallback: `/cc-smart-dev-kit:tasks`.
   `pending` and may hold phases and tasks with briefs (§ 4). The store sets the plan task
   `in_progress` when work in it starts, and refuses to start work in another plan while one is
   in flight. The refusal names that plan and the two ways forward: finish it (§ 8) or park it.
-  A plan stays in flight until its `task_done`, so its two review rounds and their fixes belong to it.
+  A plan stays in flight until its `task_done`, so its review rounds, any final review and their fixes belong to it.
   Take plans in plan-number order, unless the person says otherwise: with none in flight,
   start the lowest-numbered queued plan.
   **To park** a plan, stop or finish its running work, `task_update` the plan task to

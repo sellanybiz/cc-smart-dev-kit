@@ -23,7 +23,7 @@ filler.
 The brief says which. A brief with the line `Mode: review` alone on a line asks for the second
 opinion on a change set; one with `Mode: plan-review` alone on a line asks for the second read
 of a plan before it is built (the plan's review rounds after the build are `Mode: review` runs,
-one track each); any other brief is a consult. Never add, remove or change that line: the plugin's
+one track each, and so is its final review); any other brief is a consult. Never add, remove or change that line: the plugin's
 review-record hook records a review only for `Mode: review`, and the merge guard trusts that
 record. A plan is not code, so its read records nothing.
 

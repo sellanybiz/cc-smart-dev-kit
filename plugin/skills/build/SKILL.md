@@ -95,7 +95,7 @@ record the real blocker.
 
 ## 3. Handle each hand-back with a quick check
 
-No reviewer reads a phase: the plan gets one review, in two rounds (§ 6). At a hand-back you
+No reviewer reads a phase: the plan gets one review, in two rounds and, when round 2's fixes are big, a final review (§ 6). At a hand-back you
 check it yourself. Read its `Report:` note and check its claims against the actual branch.
 Record `agent`, `branch`, `worktree` and `base` on the phase task with `task_update`. Check
 its full `base..branch` diff and file list, and the tests it ran; a report is not proof.
@@ -156,8 +156,9 @@ task's checkout or an unmerged branch. Repeat until all phases close.
 
 The plan gets one review, run as the `cc-smart-dev-kit:review-split` Workflow twice. Its
 args are in `/cc-smart-dev-kit:review` § A big change set. The plan's approval covers both
-runs, since the plan file names them (`/cc-smart-dev-kit:plan-task` § 3): call the Workflow
-with no second ask. When the plan file does not name them, ask the person once before round 1.
+runs and the final review (step 6), since the plan file names them
+(`/cc-smart-dev-kit:plan-task` § 3): call the Workflow with no second ask. When the plan file
+does not name them, ask the person once before round 1.
 Run the review from the session in the plan worktree, because the review record takes the head
 of the session's own folder. In order:
 
@@ -186,13 +187,22 @@ of the session's own folder. In order:
 5. **Save and fix round 2:** save its report as `Review round 2:`. Fix it the same way: its
    confirmed findings, and every round 1 finding the report marks NOT FIXED or WORSE; check
    each NOT JUDGED one yourself against the code first.
-6. **The full check,** once, in the main session (`/cc-smart-dev-kit:verify-change` § 4).
-7. **The pull request,** below.
+6. **The final review, only when round 2's fixes are big:** bigger than the project's
+   `fixesAfterReview` allowance (`cc-smart-dev-kit workflow show`), or touching a guard,
+   security, money, permissions or data. Launch one `cc-smart-dev-kit:senior-engineer` on `opus`
+   at `xhigh`, its brief with the line `Mode: review` alone on its line (so the review record
+   takes the head it reads). It reads only the diff of round 2's fixes, from the head round 2
+   reviewed to the plan head, with the whole `Review round 2:` note as its context, never a
+   condensed list. Save its report on the plan task as `Final review:`. Fix its confirmed
+   findings the same way; nothing reviews those fixes. When round 2's fixes are small and
+   touch none of those areas, there is no final review.
+7. **The full check,** once, in the main session (`/cc-smart-dev-kit:verify-change` § 4).
+8. **The pull request,** below.
 
 `risky: true` makes every agent of a round the senior engineer on `opus` at `xhigh`; pass no
-model. Round 2 is the last review: nothing reviews its fixes. When they are larger than
-`fixesAfterReview`, the merge guard asks the person at merge, and the pull request says how
-much changed after round 2. The head never moves while a round runs: the review is recorded at
+model. Nothing reviews the fixes after round 2, or after the final review. When they are
+larger than `fixesAfterReview`, the merge guard asks the person at merge, and the pull request
+says which reviews ran and how much changed after the last one. The head never moves while a round runs: the review is recorded at
 the head the plan worktree is on. Verify each finding against the code (a design finding meets
 the evidence bar as `../review/references/axes.md` § Design findings says). Read the report's
 **Unchecked** section and any "no evidence of coverage" line under **Coverage**, and act on
@@ -203,7 +213,7 @@ material defect remains; record the blocker and remaining work. If the review le
 open, move the plan file back out of `archive/`.
 
 Once the review and the full check pass, the one pull request of the plan opens, as `openPr` and the person's permissions allow
-(`/cc-smart-dev-kit:commit`, `/cc-smart-dev-kit:pull-request`). Include both review rounds and real checks. A fix after it opens (a late review finding, a CI failure) follows the
+(`/cc-smart-dev-kit:commit`, `/cc-smart-dev-kit:pull-request`). Include the reviews that ran (both rounds, and the final review when it ran) and real checks. A fix after it opens (a late review finding, a CI failure) follows the
 batch rule in `/cc-smart-dev-kit:commit` § Pushing. Close the plan task with evidence in that
 same turn. A reserved plan's files stay held until its pull request merges or closes; an
 unreserved plan's files are free once its task closes. Remove only merged,

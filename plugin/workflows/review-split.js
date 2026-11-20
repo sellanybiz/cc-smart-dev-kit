@@ -446,8 +446,8 @@ const priorLines = priorEntries
   .map((one) => `- [${String(one.status).replace('_', ' ').toUpperCase()}] ${one.text}`)
 
 // What is still open, said in the headline: a round 1 finding that is worse, not fixed or not judged
-// is no clean result, and neither is a track that returned no answer. Round 2 is the last review,
-// so a report that opened "No finding survived refutation" over these would send the lead on.
+// is no clean result, and neither is a track that returned no answer. Round 2 is the last
+// review-split run (a big fix pass after it gets one senior engineer review, build § 6), so a report that opened "No finding survived refutation" over these would send the lead on.
 const openPrior = DISPLAY_ORDER.slice(0, 3)
   .map((status) => ({ status, count: priorEntries.filter((one) => one.status === status).length }))
   .filter((one) => one.count > 0)
