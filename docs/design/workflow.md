@@ -359,8 +359,14 @@ agent, and a task notification, as an attachment alone (`type: "attachment"`,
 attachment of that type, or any attachment with an `origin` or a string `prompt`, is a prompt
 too. Tool results are no prompt, nor are the meta entries Claude Code writes itself for a skill
 it loads or a system reminder: an allowlist of their text's start (`HARMLESS_META_PREFIXES` in
-`src/hooks/transcript.ts`), where a reminder must also end at its closing tag. Any other entry,
-an unknown meta entry included, is a prompt. The reader (`runPrompts`) reads the whole
+`src/hooks/transcript.ts`), where a reminder must also end at its closing tag. Nor is the
+notice that a command the agent itself started in the background has ended (`isCommandNotice`):
+a reviewer that runs its tests that way gets one for each, in either form, and it gives the
+agent no task. It counts only when Claude Code's own origin (`kind: "task-notification"`) is on
+the entry and the text is exactly the five tags of such a notice with `Background command "…"`
+in the summary; a child agent's completion (it carries a result), a Monitor event, any text
+around the tags and a notice with another origin stay prompts. Any other entry, an unknown
+meta entry included, is a prompt. The reader (`runPrompts`) reads the whole
 transcript forward, up to 16 MB, so a prompt far from both ends still counts. A consult, a
 review agent resumed for a question, a review a Stop hook sent back to work, a review that
 compacted (the summary counts as a prompt: a known limit, on the safe side), and a missing,
@@ -368,7 +374,7 @@ unreadable or larger transcript record nothing: the safe side, where the merge g
 A plan's second read records nothing by design: its brief carries `Mode: plan-review`, which the
 whole-line match does not take, because a record of a plan read would name the lead's head
 commit as reviewed code and cover later heads with it. And a review starts no agents: a child's
-completion notice is a `queued_command` attachment, a prompt without the marker, so a review that
+completion notice carries a result and is a prompt without the marker, so a review that
 started one would record nothing (`plugin/agents/senior-engineer.md`).
 The same module reads the brief alone, from the file's head, for the builder hand-back hook.
 
