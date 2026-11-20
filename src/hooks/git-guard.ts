@@ -35,16 +35,27 @@
  *   or `git stash pop`, because every worktree shares one stash.
  *
  * A subagent undoing its own work is not asked: a working-folder discard (the `checkout`,
- * `restore` and `switch` forms, `reset --hard`, `reset --merge`, `clean -f`) that runs inside
- * the worktree of the subagent that runs it, `<main checkout>/.claude/worktrees/agent-<agent_id>`,
- * proved by the hook input's `agent_id`, asks nothing: a hook's question cannot be remembered,
- * so each one only interrupts the person. Every other kind still asks there, and so does a
- * discard with no `agent_id`, in another worktree or a sibling folder, behind `-C`,
- * `--work-tree`, `--git-dir`, `-c core.worktree` or a wrapper (`insideOwnWorktree`,
- * `discardFolder`), and whenever git's location may come from the environment: a word of the
- * line, at any depth, that names `GIT_DIR`, `GIT_WORK_TREE`, `GIT_COMMON_DIR` or
- * `GIT_INDEX_FILE` (an `export`, a `$env:` assignment, a prefix, a use), or one of them set in
- * the guard's own environment (`GIT_LOCATION_VARIABLES`).
+ * `restore` and `switch` forms, `reset --hard`, `reset --merge`, `clean -f`) asks nothing when
+ * every folder the line can run it in is provably inside the worktree of the subagent that
+ * runs it, `<root>/.claude/worktrees/agent-<agent_id>`: a hook's question cannot be remembered,
+ * so each one only interrupts the person. The proof (`ownWorktreeProof`), all of it or the
+ * question stays:
+ * - the hook input's `agent_id` is the id in the folder's name, and the session's own folder
+ *   (the input's `cwd`) is that worktree or inside it;
+ * - real paths, never text: a link or a missing folder asks;
+ * - every folder change on the line, at any depth (`cd`, `pushd`, `Set-Location`,
+ *   `Push-Location`, an `eval`), names a folder the guard can follow and that is inside it,
+ *   and every `-C` too; `cd -`, `popd`, `Pop-Location`, `source`, `.`, a runner (`find`,
+ *   `parallel`, `su`, `watch`), an `eval` it cannot read
+ *   and a `..` in a relative `cd` ask, because where a `cd` really lands (a subshell, a pipe, a
+ *   failed `cd`, a loop) is not known, so each folder is judged wherever the line could be;
+ * - git itself says the folder's repository starts at that worktree
+ *   (`git rev-parse --show-toplevel`): a repository inside it asks;
+ * - git's location is not set another way: `--work-tree`, `--git-dir`, `-c core.worktree`, a
+ *   wrapper (`env -C x git …`), or a word of the line that names `GIT_DIR`, `GIT_WORK_TREE`,
+ *   `GIT_COMMON_DIR`, `GIT_INDEX_FILE` or `GIT_CONFIG_*`, in any case (`GIT_LOCATION`), or one of
+ *   them in the guard's own environment.
+ * Every other kind (a push, `branch -D`, the stash, `worktree remove -f`) still asks there.
  *
  * "ask", never "deny": the person may mean it, and a hook cannot tell. Every command of a
  * line is read on its own, through the one shell reader (`src/shell/command.ts`), in the
@@ -65,12 +76,14 @@
  * (`cd -`, `cd ~/x`, `cd $DIR`) and a branch it cannot read are not asked about; `git
  * checkout <name>` cannot tell a file from a branch, so it stays silent.
  */
+import { existsSync } from "node:fs";
 import { resolve } from "node:path";
-import { type Folder, movedTo } from "../shell/change-dir";
+import { isInside } from "../path-compare";
+import { CHANGES_FOLDER, type Folder, movedTo } from "../shell/change-dir";
 import {
-  CHANGE_DIR,
   type Dialect,
   invocationOf,
+  isRunnerProgram,
   isShort,
   isWrapper,
   MAX_NESTING,
@@ -86,6 +99,7 @@ import {
 } from "../shell/command";
 import { type GitCall, gitCalls, longOption } from "../shell/git-calls";
 import { GUARD_GIT_TIMEOUT_MS, runGit } from "./git";
+import { memoizedRealPath, type RealPath } from "./real-path";
 import type { Env } from "./run";
 import { subagentWorktreeOf } from "./subagent-worktree";
 
@@ -115,33 +129,66 @@ export interface GuardOptions {
   agentId?: string | null | undefined;
 }
 
+/**
+ * A discard that would be silent in the subagent's own worktree, kept until the whole line is
+ * read: whether it is silent depends on every folder change and every word of the line, before
+ * and after it (`ownWorktreeProof`).
+ */
+interface OwnDiscard {
+  /** The question it asks when the proof fails. */
+  ask: string;
+  /** The folders git's `-C` options move to, in order. */
+  dirs: string[];
+  dialect: Dialect;
+}
+
+/** A command that changes the folder the shell is in (`CHANGES_FOLDER`), as the line wrote it. */
+interface FolderChange {
+  program: string;
+  operands: string[];
+  dialect: Dialect;
+}
+
 /** One guard run: its options, and what it read from git once (a line may push many times). */
 interface GuardRun {
   options: GuardOptions;
   branches: Map<string, string | undefined>;
   pushConfigs: Map<string, Map<string, string[]>>;
-  /**
-   * The questions a discard inside the subagent's own worktree did not ask. They are asked after
-   * all (`guardQuestions`) when a word of the line names where git works
-   * (`namesGitLocation`): such a word may come before or after the discard, in another step or
-   * inside a `bash -c`, so only the whole line can tell.
-   */
-  silenced: string[];
-  /** A word of the line, at any depth, named one of `GIT_LOCATION_VARIABLES`. */
+  /** The discards `callQuestions` left to `ownWorktreeProof`. */
+  discards: OwnDiscard[];
+  /** Every folder change of the line, at any depth. */
+  folderChanges: FolderChange[];
+  /** A word of the line, at any depth, names where git works (`GIT_LOCATION`). */
   locationNamed: boolean;
+  /** The line changes the shell's folder or state in a way the guard cannot read. */
+  unreadable: boolean;
+  /** Real paths, remembered for this run. */
+  real: RealPath;
+  /** Whether git says a real folder's repository starts at the own worktree, per folder. */
+  startsAtRoot: Map<string, boolean>;
 }
 
 /**
- * The environment variables that move where git reads and writes (git(1), Environment
- * Variables): the repository, the working folder, the shared repository, the index. A line or a
- * guard environment that sets one makes the folder git works in unknowable from the line's own
- * `cd` and `-C`.
+ * The environment variables that move where git reads and writes, or what it reads from its
+ * config (git(1), Environment Variables): the repository, the working folder, the shared
+ * repository, the index, and the config git takes from the environment (`core.worktree` can
+ * be one of its keys). Any case: PowerShell on Windows reads names without case. A line or a
+ * guard environment that names one makes the folder git works in unknowable from the line's
+ * own `cd` and `-C`.
  */
-const GIT_LOCATION_VARIABLES = ["GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE"];
+const GIT_LOCATION =
+  /GIT_(?:DIR|WORK_TREE|COMMON_DIR|INDEX_FILE|CONFIG_(?:COUNT|KEY_|VALUE_|PARAMETERS))/i;
 
-/** True when a word of the line names a variable of `GIT_LOCATION_VARIABLES`, however it uses it. */
+/** True when a word of the line names a variable of `GIT_LOCATION`, however it uses it. */
 function namesGitLocation(words: readonly string[]): boolean {
-  return words.some((word) => GIT_LOCATION_VARIABLES.some((name) => word.includes(name)));
+  return words.some((word) => GIT_LOCATION.test(word));
+}
+
+/** True when the guard's own environment sets a variable of `GIT_LOCATION`. */
+function envMovesGit(env: Env): boolean {
+  return Object.entries(env).some(
+    ([name, value]) => value !== undefined && GIT_LOCATION.test(name),
+  );
 }
 
 /** `git push` options that take the next word as their value, and the shortest prefix git accepts. */
@@ -538,44 +585,25 @@ function computedPushIn(command: string, dialect?: Dialect): boolean {
 }
 
 /**
- * The folder a working-folder discard acts in, or null when the line's folder is not where git
- * writes: a wrapper before git (`env -C x git …`, `sudo`) or an option on the prefix
- * (`Start-Process -WorkingDirectory x`). A shell keyword, a redirection and a variable
- * (`LANG=C`) move nothing. git's own `--work-tree`, `--git-dir` and `-c core.worktree` are read
- * from the call itself, and a variable that names git's location from the whole line
- * (`insideOwnWorktree`, `namesGitLocation`).
+ * True when nothing before `git` can move where it works: a wrapper (`env -C x git …`, `sudo`)
+ * or an option on the prefix (`Start-Process -WorkingDirectory x`) can. A shell keyword, a
+ * redirection and a variable (`LANG=C`) move nothing. git's own `--work-tree`, `--git-dir` and
+ * `-c core.worktree` are read from the call itself, and a variable that names git's location
+ * from the whole line (`namesGitLocation`).
  */
-function discardFolder(prefix: readonly string[], folder: Folder): Folder {
-  return prefix.some((word) => isWrapper(word) || word.startsWith("-")) ? null : folder;
+function plainPrefix(prefix: readonly string[]): boolean {
+  return !prefix.some((word) => isWrapper(word) || word.startsWith("-"));
 }
 
 function gitQuestions(
   args: string[],
   folder: Folder,
   prefix: readonly string[],
+  dialect: Dialect,
   run: GuardRun,
 ): string[] {
-  const writesIn = discardFolder(prefix, folder);
-  return gitCalls(args).flatMap((call) => callQuestions(call, folder, writesIn, run));
-}
-
-/**
- * True when a working-folder discard in `writesIn` (`discardFolder`) reaches only the files of
- * the subagent's own worktree, `<main checkout>/.claude/worktrees/agent-<agent_id>`: it is the
- * subagent's own work to undo, in a copy no one else uses, so a question each time only
- * interrupts the person. Anything it cannot prove asks: no agent id (the main session), a
- * folder it cannot follow, another worktree or a sibling folder, a `-C`, `--work-tree`,
- * `--git-dir` or `-c core.worktree` that moves git elsewhere, and a variable of the guard's own
- * environment that does. A variable the line names is judged on the whole line, at its end.
- */
-function insideOwnWorktree(call: GitCall, writesIn: Folder, run: GuardRun): boolean {
-  const { agentId = null, env } = run.options;
-  if (writesIn === null || agentId === null) return false;
-  if (GIT_LOCATION_VARIABLES.some((name) => env[name] !== undefined)) return false;
-  if (call.workTree !== null || call.gitDir !== null || call.config.has("core.worktree")) {
-    return false;
-  }
-  return subagentWorktreeOf(resolve(writesIn, ...call.dirs), agentId) !== null;
+  const plain = plainPrefix(prefix);
+  return gitCalls(args).flatMap((call) => callQuestions(call, folder, plain, dialect, run));
 }
 
 /**
@@ -590,7 +618,13 @@ function pushAlias(call: GitCall): string[] | null {
   return first === "push" || first === "send-pack" ? words.slice(1) : null;
 }
 
-function callQuestions(call: GitCall, folder: Folder, writesIn: Folder, run: GuardRun): string[] {
+function callQuestions(
+  call: GitCall,
+  folder: Folder,
+  plain: boolean,
+  dialect: Dialect,
+  run: GuardRun,
+): string[] {
   const { options } = run;
   const { rest, sub } = call;
   const alias = pushAlias(call);
@@ -626,11 +660,18 @@ function callQuestions(call: GitCall, folder: Folder, writesIn: Folder, run: Gua
       );
     if (force) return [WORKTREE_REMOVE_ASK];
   }
-  // The working-folder discards below ask nothing inside the subagent's own worktree; every
-  // other kind of this function reaches outside it (a remote, the branch list, the shared stash).
+  // The working-folder discards below ask nothing inside the subagent's own worktree, when the
+  // whole line proves it (`ownWorktreeProof`); every other kind of this function reaches
+  // outside it (a remote, the branch list, the shared stash).
   const unlessOwn = (ask: string): string[] => {
-    if (!insideOwnWorktree(call, writesIn, run)) return [ask];
-    run.silenced.push(ask);
+    const own =
+      plain &&
+      (options.agentId ?? null) !== null &&
+      call.workTree === null &&
+      call.gitDir === null &&
+      !call.config.has("core.worktree");
+    if (!own) return [ask];
+    run.discards.push({ ask, dialect, dirs: call.dirs });
     return [];
   };
   if ((sub === "checkout" || sub === "restore" || sub === "switch") && discardsChanges(sub, rest)) {
@@ -661,6 +702,125 @@ function callQuestions(call: GitCall, folder: Folder, writesIn: Folder, run: Gua
 }
 
 /**
+ * Programs that change the shell's folder or state where the guard cannot follow: `source` and
+ * `.` run a script in this shell, and `Pop-Location` goes back to a folder the line never named.
+ * The runners (`find`, `parallel`, `su`, `watch`) run git where their own arguments say
+ * (`find /x -execdir git reset --hard ;`), so a line with one asks too (`isRunnerProgram`).
+ */
+const UNFOLLOWED: ReadonlySet<string> = new Set([".", "pop-location", "source"]);
+
+/** Programs that run the text they are given in this shell (a `cd` in it is a folder change). */
+const EVALUATES: ReadonlySet<string> = new Set(["eval", "iex", "invoke-expression"]);
+
+/** A brace pair (`{a,b}`, `{1..3}`): the shell turns one word into several, which the guard cannot name. */
+const BRACE_PAIR = /\{[^}]*(?:,|\.\.)[^}]*\}/;
+
+/** The most folder changes, and the most folders they may reach, a proof will follow. */
+const MAX_FOLDER_CHANGES = 64;
+const MAX_FOLDERS = 32;
+
+/** Where a relative path starts: no drive, no root, no `~`. */
+const isRelativePath = (path: string): boolean => !/^(?:[\\/]|[A-Za-z]:|~)/.test(path);
+
+/**
+ * The folders each of `folders` can be in after `change`, or null when the guard cannot name
+ * them: no target, two targets (zsh's `cd old new`), a `cd -` or `popd`, a `~`, a `$`, a glob
+ * or a brace pair (`movedTo`, `BRACE_PAIR`), and a `..` in a relative target. The last one is
+ * why a `cd` that may not take effect, or may take effect again in a loop, cannot walk out of the
+ * worktree: a relative target only goes down.
+ */
+function followed(change: FolderChange, folders: readonly string[]): string[] | null {
+  const named = change.operands.filter((arg) => !arg.startsWith("-") && arg.toLowerCase() !== "/d");
+  const target = named[0];
+  if (named.length !== 1 || target === undefined || BRACE_PAIR.test(target)) return null;
+  if (isRelativePath(target) && target.split(/[\\/]/).includes("..")) return null;
+  const moved = folders.map((folder) =>
+    movedTo(change.program, folder, change.operands, { dialect: change.dialect }),
+  );
+  return moved.every((folder) => folder !== null) ? (moved as string[]) : null;
+}
+
+/**
+ * The test a discard must pass to stay silent in the subagent's own worktree, or null when no
+ * discard of this line can (`GuardRun.discards`). The line's folder is not tracked: where a
+ * `cd` really lands (in a subshell, a pipe, a background job, after a failed `cd`) does not
+ * matter when the session folder and every folder the line names are all inside the worktree.
+ * Real paths decide it (`RealPath`), a missing folder is not inside, and git itself must say the
+ * folder's repository starts at the worktree: a link, a missing folder and a repository of its
+ * own inside it all ask.
+ */
+function ownWorktreeProof(run: GuardRun, cwd: string): ((discard: OwnDiscard) => boolean) | null {
+  const { options, real } = run;
+  if (run.locationNamed || run.unreadable || envMovesGit(options.env)) return null;
+  if (run.folderChanges.length > MAX_FOLDER_CHANGES) return null;
+  const start = resolve(cwd);
+  const root = subagentWorktreeOf(start, options.agentId ?? null);
+  if (root === null || !existsSync(root)) return null;
+  const realRoot = real(root);
+  const within = (folder: string): boolean =>
+    existsSync(folder) && isInside(real(folder), realRoot);
+  const startsAtRoot = (folder: string): boolean => {
+    const key = real(folder);
+    let known = run.startsAtRoot.get(key);
+    if (known === undefined) {
+      const top = runGit(
+        folder,
+        ["rev-parse", "--show-toplevel"],
+        options.env,
+        GUARD_GIT_TIMEOUT_MS,
+      );
+      known =
+        top.ok &&
+        top.out !== "" &&
+        isInside(real(top.out), realRoot) &&
+        isInside(realRoot, real(top.out));
+      run.startsAtRoot.set(key, known);
+    }
+    return known;
+  };
+
+  // The same folder change is met once for every way the line is read (both dialects when the
+  // tool is not known, a nested text read again): the readings are alternatives, not a
+  // sequence. So each distinct change is followed once, from the folders before it, in every
+  // dialect it was read in. A repeated `cd src; cd src` counts once too: a relative target only
+  // goes down, so a second step stays inside or fails where it stands.
+  const changes = new Map<string, Map<Dialect, FolderChange>>();
+  for (const change of run.folderChanges) {
+    const key = [change.program, ...change.operands].join("\0");
+    changes.set(key, (changes.get(key) ?? new Map()).set(change.dialect, change));
+  }
+  const folders = new Set([start]);
+  for (const variants of changes.values()) {
+    const before = [...folders];
+    for (const change of variants.values()) {
+      const reached = followed(change, before);
+      if (reached === null) return null;
+      for (const folder of reached) folders.add(folder);
+    }
+    if (folders.size > MAX_FOLDERS) return null;
+  }
+  if (![...folders].every(within)) return null;
+
+  return (discard) =>
+    [...folders].every((folder) => {
+      let at: string | null = folder;
+      for (const dir of discard.dirs) {
+        if (BRACE_PAIR.test(dir)) return false;
+        at = movedTo("cd", at, [dir], { dialect: discard.dialect });
+        if (at === null) return false;
+      }
+      return within(at) && startsAtRoot(at);
+    });
+}
+
+/** The questions the discards that looked silent still owe, once the whole line is read. */
+function ownDiscardAsks(run: GuardRun, cwd: string): string[] {
+  if (run.discards.length === 0) return [];
+  const proof = ownWorktreeProof(run, cwd);
+  return run.discards.filter((discard) => proof === null || !proof(discard)).map((d) => d.ask);
+}
+
+/**
  * Every question about a command line read one way (`reading`), each command of it read on
  * its own, in order, so a `cd` changes the folder the later commands run in.
  */
@@ -684,15 +844,24 @@ function inspect(
     const { args, program } = invocation;
     // A redirection (`>log`, `2>&1`) is the shell's: git never sees it as a refspec.
     const operands = withoutRedirections(args);
-    if (program === "git") found.push(...gitQuestions(operands, folder, invocation.prefix, run));
+    if (UNFOLLOWED.has(program) || isRunnerProgram(program)) run.unreadable = true;
+    if (CHANGES_FOLDER.has(program)) run.folderChanges.push({ dialect, operands, program });
+    if (program === "git") {
+      found.push(...gitQuestions(operands, folder, invocation.prefix, dialect, run));
+    }
     // The program is worked out when the line runs (`$GIT push`, `$(which git) push`): the
     // guard cannot name it, so a line whose words name a push asks, never stays silent.
     if (invocation.computed && namesPush(words)) found.push(COMPUTED_PUSH_ASK);
-    if (CHANGE_DIR.has(program)) folder = movedTo(program, folder, operands);
+    if (CHANGES_FOLDER.has(program)) folder = movedTo(program, folder, operands);
     const inner = nestedCommand(program, args, step.pipedFrom);
-    if (inner !== undefined && depth < MAX_NESTING) {
-      for (const nested of readingsOf(inner, nestedDialect(program))) {
-        found.push(...inspect(inner, folder, nested, run, depth + 1));
+    if (inner !== undefined) {
+      // A folder change below the nesting limit, or in text the shell works out, is not read.
+      if (depth >= MAX_NESTING || (EVALUATES.has(program) && /[$`]/.test(inner))) {
+        run.unreadable = true;
+      } else {
+        for (const nested of readingsOf(inner, nestedDialect(program))) {
+          found.push(...inspect(inner, folder, nested, run, depth + 1));
+        }
       }
     }
   }
@@ -710,14 +879,18 @@ export function guardQuestions(command: string, cwd: string, options: GuardOptio
     options,
     branches: new Map(),
     pushConfigs: new Map(),
-    silenced: [],
+    discards: [],
+    folderChanges: [],
     locationNamed: false,
+    unreadable: false,
+    real: memoizedRealPath(),
+    startsAtRoot: new Map(),
   };
   const found = readingsOf(command, options.dialect).flatMap((reading) =>
     inspect(command, cwd, reading, run),
   );
-  // A variable on the line may move git out of the worktree for a discard before or after it.
-  if (run.locationNamed) found.push(...run.silenced);
+  // The discards that look like a subagent's own are judged on the whole line, at its end.
+  found.push(...ownDiscardAsks(run, cwd));
   return [...new Set(found)];
 }
 

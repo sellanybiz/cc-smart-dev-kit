@@ -7,14 +7,18 @@ in your own terminal after the update; the user guide is [README.md](README.md).
 
 - **A builder undoing its own edits no longer asks you.** The git guard asks before a command
   that throws away uncommitted changes (`git checkout -- <file>`, `git restore`, `reset --hard`,
-  `clean -f`). It now stays silent when a subagent runs one inside its own worktree, which
-  Claude Code proves with the subagent's id. A hook's question cannot be remembered, so each
-  builder discard used to interrupt you.
+  `clean -f`). It now stays silent when a subagent runs one inside its own worktree, and only
+  when it can prove that: the subagent's id, a real folder inside that worktree (a link out
+  of it, or a repository inside it, still asks), and git's own answer that the folder belongs
+  to it. A hook's question cannot be remembered, so each builder discard used to interrupt you.
 - **Everything else still asks:** a push, `branch -D`, the shared stash, `worktree remove -f`,
   any discard by the main session, in another agent's worktree or your own checkout, and any
-  line that points git elsewhere (`-C`, `--work-tree`, `--git-dir`, `GIT_DIR` and its kin).
+  line that may point git elsewhere: a `cd` it cannot follow, `-C`, `--work-tree`, `--git-dir`,
+  a wrapper, `source`, `find -exec`, and `GIT_DIR` and the other `GIT_*` variables that move
+  git, in any case.
 
-**What to run:** nothing.
+**What to run:** restart open Claude Code sessions. A session that was open before the update
+keeps the old guard.
 
 ## 5.6.0
 

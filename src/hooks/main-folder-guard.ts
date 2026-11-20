@@ -21,9 +21,8 @@
  * own bug would stop every call. One thing it asks about instead: a program the line works out
  * when it runs (`$GIT commit`) whose words name a git command that changes the checkout.
  */
-import { realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import { isAbsolute, resolve } from "node:path";
 import { dialectOfTool } from "../shell/command";
 import { type WriteTarget, writeTargets } from "../shell/writes";
 import { GUARD_GIT_TIMEOUT_MS, innermostWorktree, isInside, listWorktrees, realPath } from "./git";
@@ -36,29 +35,8 @@ import {
   toolInput,
 } from "./io";
 import { plansDirectory } from "./plans-folders";
+import { memoizedRealPath, type RealPath } from "./real-path";
 import type { HookContext } from "./run";
-
-/** `realPath`, remembering each path it answered: a long line names the same folders again and again. */
-type RealPath = (path: string) => string;
-
-function memoizedRealPath(): RealPath {
-  const known = new Map<string, string>();
-  const real: RealPath = (path) => {
-    const hit = known.get(path);
-    if (hit !== undefined) return hit;
-    let answer: string;
-    try {
-      answer = realpathSync(path);
-    } catch {
-      // Not there yet (or too long): the real path of its folder, and its own name.
-      const parent = dirname(path);
-      answer = parent === path ? path : join(real(parent), basename(path));
-    }
-    known.set(path, answer);
-    return answer;
-  };
-  return real;
-}
 
 /**
  * The file an edit is about, as an absolute real path (`realPath`: a link on the way to it
