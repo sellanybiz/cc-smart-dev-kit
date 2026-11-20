@@ -46,8 +46,9 @@ and the merge order.
   plan's two review rounds.
 - **Always the person's word, every time:** anything into the main branch or production, a
   force-push or any rewrite of pushed history, `reset --hard`, `clean -f`, deleting or
-  renaming a branch that is not merged, and shipping a Warning without its fix. A yes covers
-  exactly what it names. If the person says wait, wait.
+  renaming a branch that is not merged, and shipping a Warning without its fix. The one
+  exception: a builder undoing its own uncommitted work inside its own worktree, which the
+  git guard lets through. A yes covers exactly what it names. If the person says wait, wait.
 
 ## Steps
 
