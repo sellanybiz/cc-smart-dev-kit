@@ -10,7 +10,7 @@
  * 3. **the built-in default** — the safe one (nothing is committed, pushed or merged by
  *    itself), from `schema.ts`.
  *
- * **The review gate** (`REVIEW_GATE_KEYS`, what the merge guard judges with) resolves the same
+ * **The review gate** (`REVIEW_GATE_KEYS`, what merge-check judges with) resolves the same
  * way, with one change of source: the project's part is the file as committed on a branch
  * (`resolveGate`), never a checkout's working copy, which a session can edit.
  *
@@ -356,7 +356,7 @@ export function sourceLabel(value: ResolvedValue<unknown>, branch: string | null
 }
 
 /**
- * The review gate (`REVIEW_GATE_KEYS`) as the merge guard reads it: the built-in default, the
+ * The review gate (`REVIEW_GATE_KEYS`) as merge-check reads it: the built-in default, the
  * person's own file, and the project's file **as committed on `origin/<branch>`**, never the
  * working copy of a checkout. A session can edit its own worktree's file; it cannot change
  * what a branch it has not pushed to says.

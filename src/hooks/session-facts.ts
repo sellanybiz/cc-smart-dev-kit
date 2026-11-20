@@ -2,7 +2,7 @@
  * What a hook or a status line reads about the session it runs in: the tools that launch an
  * agent, the model the session itself runs on (`sessionModelOf`), and the gateway it runs
  * behind (`sessionGatewayOf`). Machine facts, never the project's file. The launch judge that
- * used these (the `agent-guard` hook, and the Bash judge in `job-route`) is gone (5.7.0); the
+ * used these (the `agent-guard` hook, and the Bash judge in `job-route`) is gone (6.0.0); the
  * session-start notes (`fable-session`, `tier-view`), `keep-going` and the status lines still
  * read them.
  */

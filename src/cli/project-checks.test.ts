@@ -674,7 +674,7 @@ describe("the retired review agent", () => {
       workflow: { reviewAgents: ["cc-smart-dev-kit:reviewer"] },
     });
     expect(await check(repo)).toContain(
-      "✗ project: .claude/cc-smart-dev-kit.json names the retired cc-smart-dev-kit:reviewer in workflow.reviewAgents Fix: replace the old id cc-smart-dev-kit:reviewer with the new one cc-smart-dev-kit:senior-engineer, then merge that change by hand or run cc-smart-dev-kit workflow review-done, because the merge guard judges with the base branch's list",
+      "✗ project: .claude/cc-smart-dev-kit.json names the retired cc-smart-dev-kit:reviewer in workflow.reviewAgents Fix: replace the old id cc-smart-dev-kit:reviewer with the new one cc-smart-dev-kit:senior-engineer, then merge that change by hand or run cc-smart-dev-kit workflow review-done, because merge-check judges with the base branch's list",
     );
   });
   test("warns for add-ons, agents and nested skills, not unrelated files", async () => {
@@ -949,7 +949,7 @@ describe("a project that used the old anymodel name", () => {
     });
     expect(await check(repo)).toEqual([
       engineLine(".claude/settings.json", ["worktree-create", "worktree-remove", "subagent-stop"]),
-      "! project: the plugin's job-route and the project's ./note-anymodel.sh (.claude/settings.json) both run on PreToolUse (Bash), so both may answer. The plugin's job-route cannot be switched off (it judges every launch): remove the project's copy, or keep it knowing both answer",
+      "! project: the plugin's job-route and the project's ./note-anymodel.sh (.claude/settings.json) both run on PreToolUse (Bash), so both may answer. The plugin's job-route cannot be switched off (it queues heavy commands): remove the project's copy, or keep it knowing both answer",
     ]);
   });
 
@@ -982,7 +982,7 @@ describe("the project's own copies of plugin hooks (ownHooks)", () => {
     `! project: the plugin's ${plugin} and the project's ${command} (.claude/settings.json) both run on ${on}, so both may answer. If that is the project's own copy of ${plugin}, list "${plugin}" in ownHooks in .claude/cc-smart-dev-kit.json until the copy is removed`;
   /** `job-route` is `alwaysOn` since 1.0.0: no project can switch it off, so the warning says so. */
   const bothJobRoute = (command: string, on: string) =>
-    `! project: the plugin's job-route and the project's ${command} (.claude/settings.json) both run on ${on}, so both may answer. The plugin's job-route cannot be switched off (it judges every launch): remove the project's copy, or keep it knowing both answer`;
+    `! project: the plugin's job-route and the project's ${command} (.claude/settings.json) both run on ${on}, so both may answer. The plugin's job-route cannot be switched off (it queues heavy commands): remove the project's copy, or keep it knowing both answer`;
 
   test("a project hook next to a plugin hook it does not list: one ! warning each, not a failure", async () => {
     const repo = makeRepo();
@@ -1048,7 +1048,7 @@ describe("the project's own copies of plugin hooks (ownHooks)", () => {
     ).toBe(true);
   });
 
-  test("the six guards of 5.7.0 in ownHooks still parse, and doctor names each as retired", async () => {
+  test("the six guards of 6.0.0 in ownHooks still parse, and doctor names each as retired", async () => {
     const guards = [
       "git-guard",
       "merge-guard",

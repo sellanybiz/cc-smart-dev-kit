@@ -66,7 +66,7 @@ const bundleOf = (handler: Handler): string =>
  */
 const SHELL = process.platform === "win32" ? (Bun.which("bash") ?? "bash") : "/bin/sh";
 
-/** The guards the kit no longer has (5.7.0): its only guard is the heavy-job queue. */
+/** The guards the kit no longer has (6.0.0): its only guard is the heavy-job queue. */
 const REMOVED_GUARDS = [
   "git-guard",
   "merge-guard",

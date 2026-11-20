@@ -110,7 +110,7 @@ export function toolInput(input: HookInput): Record<string, unknown> {
  * A PreToolUse decision. "deny": the reason goes to Claude. "ask": the person is asked, and
  * the reason is shown to them (Claude Code labels it `[plugin:cc-smart-dev-kit]`). "allow":
  * the call runs with no question — and with no auto-mode classification either, which is why
- * only the merge guard's exact `gh pr merge <n>` uses it after its whole policy passed (D31).
+ * only merge-check's exact `gh pr merge <n>` uses it after its whole policy passed (D31).
  */
 export function toolDecision(decision: "allow" | "ask" | "deny", reason: string): HookResult {
   return {

@@ -467,7 +467,7 @@ describe("the questions on a terminal", () => {
       '[3/9] Protected branches, comma separated ("none" for none) [main] ',
       '[4/9] The fast check a session runs before it stops: one command ("none" for none) [none] ',
       '[5/9] Workflow policy: what happens by itself after a step, as openPr=draft,autoCommit=true,alerts.usagePercent=90 ("none" for none) ',
-      "[6/9] Refuse edits in the main checkout itself, so every change goes in a worktree? [Y/n] ",
+      "[6/9] Tell sessions in the main checkout to use a worktree? [Y/n] ",
       "[7/9] Name each session after its task? [Y/n] ",
       "[8/9] Send heavy commands (type checks, test runs, builds) through the machine's job queue, so they take turns? [y/N] ",
       "[9/9] A command that deploys to staging (Enter when done) ",

@@ -523,7 +523,7 @@ describe("the tool reader reads a script file: the classifier's answers are the 
     expect(classifyHeavyCommand('bash -c "npx tsc --noEmit"', DEFAULT_KINDS)).toBe("tsc");
   });
 
-  // The deploy guard reads a script file a shell is given (`callOf`); the classifier does not:
+  // The classifier reads the tool a command runs, never a script file a shell is given:
   // a project names `bash`, `python` or `source` as the tool of a kind, and a file a shell or
   // `node` is given is not the tool of the same name. Each answer below is what the classifier
   // gave before the tool reader moved.

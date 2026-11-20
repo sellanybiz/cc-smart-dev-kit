@@ -64,7 +64,7 @@ describe("the router bundle", () => {
 
 describe("the Workflow script parser", () => {
   test("acorn is in no bundle: nothing reads a Workflow script any more", () => {
-    // The agent guard that parsed a script with acorn is gone (5.7.0). The marker is one of
+    // The agent guard that parsed a script with acorn is gone (6.0.0). The marker is one of
     // acorn's own error messages. It reads the committed bundles, which `bun run build:check`
     // keeps up to date.
     const ACORN_ONLY = "Unterminated string constant";

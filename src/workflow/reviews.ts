@@ -4,7 +4,7 @@
  *
  * Two writers fill it: the `review-record` hook, when a review agent stops on the same commit
  * it started on (`src/hooks/review-record.ts`), and `cc-smart-dev-kit workflow review-done`,
- * which the person runs by hand in their own terminal (`BY_HAND`). The merge guard reads it
+ * which the person runs by hand in their own terminal (`BY_HAND`). merge-check reads it
  * before a merge it would make without a person: with `reviewBeforePush` on, the pull
  * request's head commit must be there, recorded by an agent the `reviewAgents` list it judges
  * with names, or by hand (`src/hooks/merge-guard.ts`).

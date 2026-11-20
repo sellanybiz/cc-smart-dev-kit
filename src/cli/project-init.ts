@@ -697,10 +697,7 @@ const QUESTIONS = [
     "workflow",
     `Workflow policy: what happens by itself after a step, as ${POLICY_EXAMPLE} ("${NONE}" for none)`,
   ],
-  [
-    "guardMainFolder",
-    "Refuse edits in the main checkout itself, so every change goes in a worktree?",
-  ],
+  ["guardMainFolder", "Tell sessions in the main checkout to use a worktree?"],
   ["sessionNames", "Name each session after its task?"],
   [
     "jobRoute",
@@ -1098,16 +1095,15 @@ the project.
                          manager; "none" for no check)
   --no-check             no fast check
   --[no-]guard-main-folder
-                         refuse edits in the main checkout itself (or not)
+                         tell sessions in the main checkout to use a worktree (or not)
   --[no-]session-names   each session names itself after its task (or not)
   --[no-]job-route       send heavy commands through the job queue (or not)
   --workflow <k=v,k=v>   the workflow policy, over your own defaults
   --deploy-command <env>=<command>
                          a command that deploys to <env> (staging or prod, one of tasks.envs);
                          repeat it for more. It replaces that environment's list in
-                         tasks.deployCommands, so the same flags give the same file; the deploy
-                         guard asks before one runs while that environment has work that holds
-                         a deploy (\`task release <env> --check\` shows it).
+                         tasks.deployCommands, so the same flags give the same file; \`task release
+                         <env> --check\` shows the work that holds a deploy.
                          <env>= alone clears the list. Without the flag, the lists stay as they
                          are; split at the first "="
   --deploy-skill <path>  the deploy skill that gets the kit's deploy block (a managed section,

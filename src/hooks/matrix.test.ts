@@ -700,12 +700,20 @@ describe("job-route: the one guard, the heavy-job queue; it never asks", () => {
     }
   });
 
-  test("a file that needs a newer plugin, a broken file, or no file: the line runs as written", async () => {
+  test("a file that needs a newer plugin, a broken file or no file: the person's own default decides", async () => {
+    const env = hookEnv();
+    const file = cliPaths(env).workflowConfigFile;
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, `${JSON.stringify({ switches: { jobRoute: true } })}\n`);
     for (const config of [
       { requires: ">=99", fieldFromTheFuture: true },
       { worktree: {} },
       undefined,
     ]) {
+      expect(routed(await runHook(jobRouteHook, heavy(config), env))).toContain(
+        "job run --kind tsc -- bunx tsc --noEmit",
+      );
+      // Their default off: the line runs as written.
       expect(await runHook(jobRouteHook, heavy(config), hookEnv())).toEqual({});
     }
   });
@@ -773,7 +781,7 @@ describe.each(CASES.map((c) => [c.spec.name, c] as const))("%s", (_name, c) => {
     else expect(result).toEqual({});
   });
 
-  test("the retired names in ownHooks (serena-root, crew-role, lead-notes, message-guard, and the six guards of 5.7.0): the file still reads, and this hook still speaks", async () => {
+  test("the retired names in ownHooks (serena-root, crew-role, lead-notes, message-guard, and the six guards of 6.0.0): the file still reads, and this hook still speaks", async () => {
     // A project file written for an older plugin may still list one. Refused, the strict parse
     // would fail and every guard would ask about every call; accepted, it silences nothing.
     expect([...RETIRED_HOOK_NAMES]).toEqual([

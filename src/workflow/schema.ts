@@ -200,7 +200,7 @@ export const workflowSchema = z.strictObject({
    * lines stay within `lines` or `percent`% of the reviewed change's lines, whichever is more,
    * and its files within `files` or `percent`% of the reviewed files, whichever is more.
    * `0`/`0`/`0` means the exact reviewed commit only. A review-gate group: read from the base's
-   * committed file. `readCover` (`review-cover.ts`) judges with it; the merge guard from D17b.
+   * committed file. `readCover` (`review-cover.ts`) judges with it; merge-check from D17b.
    */
   fixesAfterReview: z
     .strictObject({
@@ -420,7 +420,7 @@ export const POLICY_KEYS: readonly WorkflowKey[] = [
 ];
 
 /**
- * The settings the merge guard judges a merge with: the **review gate**. The guard reads them
+ * The settings merge-check judges a merge with: the **review gate**. The guard reads them
  * from the person's own file and from the project's file as committed on the pull request's
  * base, never a checkout's working copy (`resolveGate` in `resolve.ts`), and `workflow set`
  * and `unset` refuse them inside Claude Code (`commands.ts`): only the person changes the gate.

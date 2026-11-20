@@ -66,8 +66,8 @@ function AnswersList({ answers }: { answers: ProjectInitAnswers }) {
         <li>
           <StatusMark tone={answers.guards.guardMainFolder ? "ok" : "info"}>
             {answers.guards.guardMainFolder
-              ? "Edits in the main checkout are refused"
-              : "Edits in the main checkout are allowed"}
+              ? "Sessions in the main checkout are told to use a worktree"
+              : "Sessions in the main checkout are not told to use a worktree"}
           </StatusMark>
         </li>
         <li>

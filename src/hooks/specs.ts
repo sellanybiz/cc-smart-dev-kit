@@ -111,7 +111,7 @@ export const afterMergeHook: HookSpec = {
 /**
  * The review record: SubagentStart notes the commit a review agent (`workflow.reviewAgents`,
  * default: the plugin's own reviewer) starts on, and SubagentStop records it when the agent
- * stops on that same commit — what the merge guard reads before a merge it would make with
+ * stops on that same commit — what merge-check reads before a merge it would make with
  * no person watching (`src/hooks/review-record.ts`, the whole story).
  *
  * A plugin-wired SubagentStop is safe for THIS hook because it never touches a worktree
@@ -331,15 +331,26 @@ export const tierViewHook: HookSpec = {
  * commands is refused, and a heavy PowerShell line is refused, naming the Bash tool, where Git
  * Bash lets that tool run. Off, a heavy command runs raw.
  *
- * It never asks the person. With a broken or too new `cc-smart-dev-kit.json`, outside git, or
- * after a crash, there is nothing to route: the line runs as written, and a crash is one line on
- * stderr.
+ * It never asks the person. With a broken or too new `cc-smart-dev-kit.json` it routes by the
+ * person's own default, as if the project's file were absent. Outside git there is no project to
+ * route for, and after a crash there is nothing to answer: the line runs as written, and a crash
+ * is one line on stderr.
  */
 export const jobRouteHook: HookSpec = {
   name: "job-route",
   events: ["PreToolUse"],
   alwaysOn: true,
-  onConfigProblem: () => SILENT,
+  // The file cannot be read, so its `jobs` part is unknown: the person's own default decides.
+  onConfigProblem: (_message, input, event, checkout, context) =>
+    jobRoute({
+      input,
+      event,
+      cwd: stringField(input.cwd) ?? checkout.root,
+      project: { ...checkout, config: null, configFile: null },
+      env: context.env,
+      paths: context.paths,
+      nowMs: context.nowMs,
+    }),
   logFacts: routeFacts,
   run: jobRoute,
 };

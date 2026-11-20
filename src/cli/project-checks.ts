@@ -152,8 +152,8 @@ export function retiredReviewAgentCheck(
     ok: false,
     text: `${label} names the retired ${OLD_REVIEW_AGENT} in ${personal ? "reviewAgents" : "workflow.reviewAgents"}`,
     fix: personal
-      ? `${REPLACE_REVIEW_AGENT}: in your own terminal, not inside Claude Code (it refuses the gate's keys there), run ${COMMAND} workflow set reviewAgents ${NEW_REVIEW_AGENT}, or ${COMMAND} workflow unset reviewAgents to use the default; personal changes count at once`
-      : `${REPLACE_REVIEW_AGENT}, then merge that change by hand or run ${COMMAND} workflow review-done, because the merge guard judges with the base branch's list`,
+      ? `${REPLACE_REVIEW_AGENT}: run ${COMMAND} workflow set reviewAgents ${NEW_REVIEW_AGENT}, or ${COMMAND} workflow unset reviewAgents to use the default; personal changes count at once`
+      : `${REPLACE_REVIEW_AGENT}, then merge that change by hand or run ${COMMAND} workflow review-done, because merge-check judges with the base branch's list`,
   };
 }
 
@@ -518,7 +518,7 @@ function ownCopyLines(
   }
   for (const { hook, handler, subjects } of found.values()) {
     const advice = (UNSWITCHABLE_HOOK_NAMES as readonly string[]).includes(hook.name)
-      ? `The plugin's ${hook.name} cannot be switched off (it judges every launch): remove the project's copy, or keep it knowing both answer`
+      ? `The plugin's ${hook.name} cannot be switched off (it queues heavy commands): remove the project's copy, or keep it knowing both answer`
       : `If that is the project's own copy of ${hook.name}, list "${hook.name}" in ownHooks in .claude/cc-smart-dev-kit.json until the copy is removed`;
     lines.push({
       ok: true,

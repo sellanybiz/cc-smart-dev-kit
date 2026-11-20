@@ -16,11 +16,6 @@
  * subagents launched, how, their replies by model, and the share of those on an Opus model.
  * A file last changed before the window holds nothing in it, and is not read.
  *
- * Beside the transcripts it lists the Opus and Fable launches the Agent guard allowed
- * (`src/hooks/agent-launches.ts`), counted by the effort each ran at and by why (its reason
- * word): an Opus or Fable agent spends the person's own plan usage, and the reason the guard
- * accepted is the one thing the transcripts cannot say.
- *
  * And each subagent's own record (`src/hooks/agent-usage.ts`, `agent-usage.jsonl`): at every
  * subagent's stop the hook writes the agent's type, the models that answered it, the four
  * token sums and an estimated cost. The transcripts already give the models; the record adds
@@ -42,12 +37,6 @@ import {
   type SafetyCheckState,
 } from "../gateway/safety-checks";
 import { readSafetyChecks } from "../gateway/safety-checks-read";
-import {
-  type AgentLaunch,
-  agentLaunchesFile,
-  formatAgentLaunches,
-  readAgentLaunches,
-} from "../hooks/agent-launches";
 import {
   type AgentModelUsage,
   type AgentUsage,
@@ -450,7 +439,6 @@ export function formatUsage(
   hours: number,
   projectsDir: string,
   home: string,
-  launches: AgentLaunch[] = [],
   agents: AgentUsage[] = [],
 ): string {
   const lines = [
@@ -458,7 +446,7 @@ export function formatUsage(
   ];
   if (sessions.length === 0) {
     lines.push("", "No session answered in that time.");
-    lines.push(...formatAgentLaunches(launches), ...formatAgentRecord(agents));
+    lines.push(...formatAgentRecord(agents));
     return lines.join("\n");
   }
   const recorded = agentsBySession(agents);
@@ -502,7 +490,6 @@ export function formatUsage(
     `Main sessions: ${plural(mainSessions, "session")}; replies by model: ${counts(main) || "none"}`,
     `Subagents: ${subagents} in ${plural(withSubagents, "session")}; replies by model: ${counts(replies) || "none"}; on Opus: ${opus} of ${total} replies (${percent(opus, total)})`,
     ...formatAgentRecord(agents),
-    ...formatAgentLaunches(launches),
   );
   return lines.join("\n");
 }
@@ -561,14 +548,7 @@ export function runUsage(paths: CliPaths, args: string[], nowMs: number): number
   }
   console.log(
     [
-      formatUsage(
-        sessions,
-        options.hours,
-        projectsDir,
-        paths.home,
-        readAgentLaunches(agentLaunchesFile(paths.stateDir), sinceMs),
-        agents,
-      ),
+      formatUsage(sessions, options.hours, projectsDir, paths.home, agents),
       ...formatSafetyChecks(readSafetyChecks(paths.safetyChecksFile), nowMs),
     ].join("\n"),
   );

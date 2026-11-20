@@ -1,7 +1,7 @@
 /**
  * Reads a shell command line as the commands it RUNS. This is the one reader of a shell line
  * in the plugin: the git guard (`src/hooks/git-guard.ts`), the merge reader
- * (`src/hooks/after-merge.ts`, which the merge guard reads through), job-route
+ * (`src/hooks/after-merge.ts`, which merge-check reads through), job-route
  * (`src/hooks/job-route.ts`), the job classifier (`src/jobs/classify.ts`) and `job run`
  * (`src/jobs/run.ts`) all read a line here, so a line means the same to each of them.
  *

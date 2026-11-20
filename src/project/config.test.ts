@@ -157,8 +157,8 @@ const HOOK_NAME_FIRST_ACCEPTED_IN: Record<string, string> = {
   "keep-going": "2.0.0",
   "builder-finish": "2.0.0",
   "deploy-guard": "5.3.0",
-  // Never listable before 5.7.0: it was an `alwaysOn` guard whose name the parse refused.
-  "session-escape-guard": "5.7.0",
+  // Never listable before 6.0.0: it was an `alwaysOn` guard whose name the parse refused.
+  "session-escape-guard": "6.0.0",
 };
 
 /** Every key of a schema, by dotted path. A record's keys are a person's, so they show as `*`. */

@@ -12,7 +12,13 @@ import { cliPaths } from "../cli/paths";
 import { locateCheckout } from "../project/resolve";
 import { hookEnv, makeClone, writeClaudeFile } from "../testing/hooks";
 import { git } from "../testing/temp";
-import { checkBranch, type MergeWorld, policyUnread } from "./merge-check";
+import {
+  checkBranch,
+  checkPullRequest,
+  type GhRunner,
+  type MergeWorld,
+  policyUnread,
+} from "./merge-check";
 import { reviewsFile } from "./reviews";
 
 test("a missing origin base names the first push and repeat check", () => {
@@ -193,5 +199,142 @@ describe("checkBranch's review detail", () => {
       number: null,
       reason: "branch nowhere is not in this checkout",
     });
+  });
+});
+
+/**
+ * `checkPullRequest`: the whole policy of a merge nobody watches. `merge-check` is the one gate
+ * before such a merge into the integration base or the default branch, so each condition has
+ * its own case: autoMerge, the base, the required checks, the recorded review of the head, and
+ * the fixes after it.
+ */
+describe("checkPullRequest: every condition of an unattended merge", () => {
+  /** gh as a pull request into `base` meets it: the view, the default branch, the checks. */
+  function ghFor(base: string, head: string, checks: string | null): GhRunner {
+    return async (args) => {
+      if (args[0] === "pr" && args[1] === "view") {
+        return JSON.stringify({
+          baseRefName: base,
+          headRefName: "feat",
+          headRefOid: head,
+          number: 7,
+        });
+      }
+      if (args[0] === "repo" && args[1] === "view") {
+        return JSON.stringify({ defaultBranchRef: { name: "main" } });
+      }
+      if (args[0] === "pr" && args[1] === "checks") return checks;
+      return null;
+    };
+  }
+  const GREEN = JSON.stringify([{ bucket: "pass", name: "ci" }]);
+  const ON = { workflow: { autoMerge: true } };
+
+  /** The world of `branchWorld`, with a gh runner and `origin/<base>` pointing at the policy. */
+  function prWorld(
+    policy: Record<string, unknown>,
+    base: string,
+    head: (built: ReturnType<typeof branchWorld>) => string,
+    checks: string | null,
+    review: boolean,
+  ) {
+    const built = branchWorld(policy);
+    if (base !== "main") git(built.repo, "update-ref", `refs/remotes/origin/${base}`, "main");
+    if (review) recordReview(built.env, built.repo, built.reviewed, "feat");
+    const sha = head(built);
+    const world: MergeWorld = {
+      ...worldOf(built.repo, built.env),
+      gh: ghFor(base, sha, checks),
+    };
+    return { ...built, world };
+  }
+  const check = (world: MergeWorld) => checkPullRequest(world, { ref: "7", repo: null }, new Map());
+  const reasonOf = (verdict: Awaited<ReturnType<typeof check>>) =>
+    "reason" in verdict ? verdict.reason : "what" in verdict ? verdict.what : "";
+
+  test("all conditions met: autoMerge on, green required checks, the head's review recorded: allowed", async () => {
+    const { world } = prWorld(ON, "main", (built) => built.reviewed, GREEN, true);
+    const verdict = await check(world);
+    expect(verdict.kind).toBe("allowed");
+    expect(reasonOf(verdict)).toContain("its required checks are green");
+  });
+
+  test.each([
+    ["pending", JSON.stringify([{ bucket: "pending", name: "ci" }]), "ci (pending)"],
+    ["failed", JSON.stringify([{ bucket: "fail", name: "ci" }]), "ci (fail)"],
+    [
+      "one of several failed",
+      JSON.stringify([
+        { bucket: "pass", name: "lint" },
+        { bucket: "fail", name: "ci" },
+      ]),
+      "ci (fail)",
+    ],
+    ["missing: gh lists none", "[]", "gh reports no required checks"],
+  ])("a required check that is %s refuses, with its reason", async (_what, checks, reason) => {
+    const { world } = prWorld(ON, "main", (built) => built.reviewed, checks, true);
+    const verdict = await check(world);
+    expect(verdict.kind).toBe("refused");
+    expect(reasonOf(verdict)).toContain(reason);
+  });
+
+  test("checks gh cannot read: not read, never allowed", async () => {
+    const { world } = prWorld(ON, "main", (built) => built.reviewed, null, true);
+    const verdict = await check(world);
+    expect(verdict.kind).toBe("unread");
+    expect(reasonOf(verdict)).toContain("required checks");
+  });
+
+  test("no recorded review of the head: refused, and the detail has no review", async () => {
+    const { world } = prWorld(ON, "main", (built) => built.reviewed, GREEN, false);
+    expect(await check(world)).toMatchObject({ detail: { review: null }, kind: "refused" });
+  });
+
+  test("fixes after the review within fixesAfterReview: allowed; over the limit: refused", async () => {
+    const small = prWorld(
+      ON,
+      "main",
+      (built) => commitFiles(built.repo, { "src/a.txt": numbered(65, "a") }, "fix"),
+      GREEN,
+      true,
+    );
+    expect((await check(small.world)).kind).toBe("allowed");
+    const big = prWorld(
+      ON,
+      "main",
+      (built) => {
+        rmSync(join(built.repo, "src/a.txt"));
+        rmSync(join(built.repo, "src/b.txt"));
+        return commitFiles(built.repo, { "src/c.txt": numbered(500, "c") }, "rewrite");
+      },
+      GREEN,
+      true,
+    );
+    expect(await check(big.world)).toMatchObject({
+      detail: { delta: { files: 3, lines: 600 }, limits: LIMITS },
+      kind: "refused",
+    });
+  });
+
+  test("a base that is neither the integration base nor the default branch: refused", async () => {
+    const { world } = prWorld(ON, "release/1", (built) => built.reviewed, GREEN, true);
+    const verdict = await check(world);
+    expect(verdict.kind).toBe("refused");
+    expect(reasonOf(verdict)).toContain(
+      "not the project's integration base main or the repository's default branch main",
+    );
+  });
+
+  test("autoMerge off: refused, naming the setting", async () => {
+    const { world } = prWorld(
+      { workflow: { autoMerge: false } },
+      "main",
+      (built) => built.reviewed,
+      GREEN,
+      true,
+    );
+    const verdict = await check(world);
+    expect(verdict.kind).toBe("refused");
+    expect(reasonOf(verdict)).toContain("autoMerge is off");
   });
 });

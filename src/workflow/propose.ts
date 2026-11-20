@@ -1,7 +1,7 @@
 /**
  * `workflow propose`: one workflow setting of a project, changed through a pull request (D57).
  *
- * The project's `.claude/cc-smart-dev-kit.json` is committed and shared, and the merge guard
+ * The project's `.claude/cc-smart-dev-kit.json` is committed and shared, and merge-check
  * reads the review gate from the file committed on the base (`origin/<base>`): a change to it
  * counts once it is merged, never from a session's own checkout. So a change is never a write
  * in the project's main checkout. It is a small pull request:

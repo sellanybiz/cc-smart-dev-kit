@@ -219,6 +219,6 @@ test("doctor checks the project of the folder it runs in, against the plugin's o
     `! project: .claude/worktrees/ is not git-ignored here, so Claude Code's own worktrees show up in git status: add ".claude/worktrees/" to the repo's .gitignore and commit it\n`,
   );
   expect(run.stdout).toContain(
-    `! project: the plugin's job-route and the project's ./g.sh (.claude/settings.json) both run on PreToolUse (Bash), so both may answer. The plugin's job-route cannot be switched off (it judges every launch): remove the project's copy, or keep it knowing both answer\n`,
+    `! project: the plugin's job-route and the project's ./g.sh (.claude/settings.json) both run on PreToolUse (Bash), so both may answer. The plugin's job-route cannot be switched off (it queues heavy commands): remove the project's copy, or keep it knowing both answer\n`,
   );
 });
