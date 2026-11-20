@@ -205,7 +205,7 @@ describe("checkBranch's review detail", () => {
 /**
  * `checkPullRequest`: the whole policy of a merge nobody watches. `merge-check` is the one gate
  * before such a merge into the integration base or the default branch, so each condition has
- * its own case: autoMerge, the base, the required checks, the recorded review of the head, and
+ * its own case: allowMerge, the base, the required checks, the recorded review of the head, and
  * the fixes after it.
  */
 describe("checkPullRequest: every condition of an unattended merge", () => {
@@ -228,7 +228,7 @@ describe("checkPullRequest: every condition of an unattended merge", () => {
     };
   }
   const GREEN = JSON.stringify([{ bucket: "pass", name: "ci" }]);
-  const ON = { workflow: { autoMerge: true } };
+  const ON = { workflow: { allowMerge: true } };
 
   /** The world of `branchWorld`, with a gh runner and `origin/<base>` pointing at the policy. */
   function prWorld(
@@ -252,7 +252,7 @@ describe("checkPullRequest: every condition of an unattended merge", () => {
   const reasonOf = (verdict: Awaited<ReturnType<typeof check>>) =>
     "reason" in verdict ? verdict.reason : "what" in verdict ? verdict.what : "";
 
-  test("all conditions met: autoMerge on, green required checks, the head's review recorded: allowed", async () => {
+  test("all conditions met: allowMerge on, green required checks, the head's review recorded: allowed", async () => {
     const { world } = prWorld(ON, "main", (built) => built.reviewed, GREEN, true);
     const verdict = await check(world);
     expect(verdict.kind).toBe("allowed");
@@ -325,9 +325,9 @@ describe("checkPullRequest: every condition of an unattended merge", () => {
     );
   });
 
-  test("autoMerge off: refused, naming the setting", async () => {
+  test("allowMerge off: refused, naming the setting", async () => {
     const { world } = prWorld(
-      { workflow: { autoMerge: false } },
+      { workflow: { allowMerge: false } },
       "main",
       (built) => built.reviewed,
       GREEN,
@@ -335,6 +335,6 @@ describe("checkPullRequest: every condition of an unattended merge", () => {
     );
     const verdict = await check(world);
     expect(verdict.kind).toBe("refused");
-    expect(reasonOf(verdict)).toContain("autoMerge is off");
+    expect(reasonOf(verdict)).toContain("allowMerge is off");
   });
 });

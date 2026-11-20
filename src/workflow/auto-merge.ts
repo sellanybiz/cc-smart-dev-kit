@@ -1,21 +1,21 @@
 /**
  * May cc-smart-dev-kit merge a pull request by itself?
  *
- * With `autoMerge` on (and the checks green and the review recorded, which `merge-check.ts`
+ * With `allowMerge` on (and the checks green and the review recorded, which `merge-check.ts`
  * reads), a pull request may be merged into two bases and no other:
  *
  * - the project's **integration base**, `worktrees.base`: the branch every session's work
  *   comes together on;
  * - the repository's **default branch** (`main`): the person's ruling (2026-11-21) is that
- *   `autoMerge` on means a merge into `main` too, with no question.
+ *   `allowMerge` on means a merge into `main` too, with no question.
  *
  * A project that names no integration base may merge into the default branch alone. A pull
  * request into any other branch (a release branch, a protected one) is not covered: that merge
  * stays the person's own. The old rule that a target of `worktrees.bases` is no plain base is
- * gone with the guard it fed: a merge into the PR's base is the merge `autoMerge` asked for.
+ * gone with the guard it fed: a merge into the PR's base is the merge `allowMerge` asked for.
  *
  * Who calls this: `workflow merge-check` and the portal's branch verdicts, after the checks that
- * are not branch policy (CI green, the review done) and after `resolved.autoMerge` is on.
+ * are not branch policy (CI green, the review done) and after `resolved.allowMerge` is on.
  * Nothing here runs a command; it is a decision, so it is a pure function with its own tests.
  */
 
@@ -32,9 +32,9 @@ import { type ResolvedWorkflow, sourceLabel } from "./resolve";
  * message names the file to change.
  */
 export function autoMergeOff(resolved: ResolvedWorkflow, base: string | null): string | null {
-  if (resolved.autoMerge.value) return null;
+  if (resolved.allowMerge.value) return null;
   const where = base ?? "the integration base (worktrees.base)";
-  return `autoMerge is off (${sourceLabel(resolved.autoMerge, base)}): turn it on in ${CONFIG_PATH} ("workflow": {"autoMerge": true}), commit it to ${where} and push`;
+  return `allowMerge is off (${sourceLabel(resolved.allowMerge, base)}): turn it on in ${CONFIG_PATH} ("workflow": {"allowMerge": true}), commit it to ${where} and push`;
 }
 
 /**

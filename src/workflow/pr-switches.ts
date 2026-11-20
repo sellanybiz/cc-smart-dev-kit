@@ -15,7 +15,7 @@ import { type ResolvedWorkflow, sourceLabel } from "./resolve";
  * refusals (one home). A dotted key (`issues.enabled`) is written nested in the project's file.
  */
 export function turnOn(
-  key: "autoPush" | "issues.allowPublic" | "issues.enabled" | "openPr",
+  key: "allowPush" | "issues.allowPublic" | "issues.enabled" | "openPr",
   value: string,
   base: string | null,
 ): string {

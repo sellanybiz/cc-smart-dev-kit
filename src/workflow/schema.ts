@@ -169,15 +169,82 @@ const mergeFilesSchema = z.array(z.string()).transform((paths, context) => {
   return normalised;
 });
 
-export const workflowSchema = z.strictObject({
-  /** Commit each finished, reviewed step without asking. */
-  autoCommit: z.boolean().optional(),
-  /** Push the session's own branch (never a protected one: the git guard still asks there). */
-  autoPush: z.boolean().optional(),
+/**
+ * The names 6.1.0 replaced: each old workflow key and the key that says what it does (a setting
+ * that lets a step happen without a question, not one that makes it happen). One home. Both files
+ * read an old name as its new one (`withCurrentNames`), `workflow set`, `unset` and `propose`
+ * take either (`currentKeyName`), and every write uses the new one. `doctor` names a file that
+ * still holds an old key (`oldNamesIn`). `openPr` keeps its name: it is a choice of three.
+ */
+export const WORKFLOW_KEY_ALIASES = {
+  autoCommit: "allowCommit",
+  autoPush: "allowPush",
+  autoMerge: "allowMerge",
+} as const;
+
+type OldWorkflowKey = keyof typeof WORKFLOW_KEY_ALIASES;
+
+/** True when `name` is one of the old names (`WORKFLOW_KEY_ALIASES`). */
+function isOldKeyName(name: string): name is OldWorkflowKey {
+  return Object.hasOwn(WORKFLOW_KEY_ALIASES, name);
+}
+
+/** A setting name as a person typed it, as the current one: `autoPush` is `allowPush`. */
+export function currentKeyName(name: string): string {
+  return isOldKeyName(name) ? WORKFLOW_KEY_ALIASES[name] : name;
+}
+
+/** The old names a current key goes by (`allowPush`: `autoPush`); none for most keys. */
+export function oldNamesOf(key: string): OldWorkflowKey[] {
+  return (Object.keys(WORKFLOW_KEY_ALIASES) as OldWorkflowKey[]).filter(
+    (old) => WORKFLOW_KEY_ALIASES[old] === key,
+  );
+}
+
+/**
+ * The old names a raw workflow object still holds, each with the key that replaced it and whether
+ * the object holds that new key too (then the new one wins and the old one only needs removing).
+ * What `doctor` says about a file.
+ */
+export function oldNamesIn(
+  raw: Record<string, unknown>,
+): { old: OldWorkflowKey; current: string; both: boolean }[] {
+  return (Object.keys(WORKFLOW_KEY_ALIASES) as OldWorkflowKey[])
+    .filter((old) => Object.hasOwn(raw, old))
+    .map((old) => ({
+      old,
+      current: WORKFLOW_KEY_ALIASES[old],
+      both: Object.hasOwn(raw, WORKFLOW_KEY_ALIASES[old]),
+    }));
+}
+
+/**
+ * A raw workflow object with each old key moved to its new name, so the strict schema below
+ * reads a file written before 6.1.0 as it reads a new one. When the object holds both names the
+ * new one wins and the old one is dropped. Anything that is not a plain object passes through
+ * for the schema to refuse in its own words.
+ */
+function withCurrentNames(raw: unknown): unknown {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return raw;
+  const moved: Record<string, unknown> = { ...raw };
+  for (const old of Object.keys(WORKFLOW_KEY_ALIASES) as OldWorkflowKey[]) {
+    if (!Object.hasOwn(moved, old)) continue;
+    const current = WORKFLOW_KEY_ALIASES[old];
+    if (!Object.hasOwn(moved, current)) moved[current] = moved[old];
+    delete moved[old];
+  }
+  return moved;
+}
+
+const workflowObjectSchema = z.strictObject({
+  /** Let a finished, reviewed step be committed without asking. */
+  allowCommit: z.boolean().optional(),
+  /** Let the session push its own branch (never a protected one: the git guard still asks there). */
+  allowPush: z.boolean().optional(),
   /** Open a pull request for the branch: `"off"`, `"draft"` or `"ready"`. */
   openPr: z.enum(["off", "draft", "ready"]).optional(),
-  /** Merge into the project's integration base, after CI is green and the review is done. */
-  autoMerge: z.boolean().optional(),
+  /** Let a session merge into the project's integration base, after CI is green and the review is done. */
+  allowMerge: z.boolean().optional(),
   /** How a merge is made. */
   mergeMethod: z.enum(["merge", "squash", "rebase"]).optional(),
   /** Delete the branch after its merge. */
@@ -281,6 +348,12 @@ export const workflowSchema = z.strictObject({
   crew: z.unknown().optional(),
 });
 
+/**
+ * The `workflow` object of a project's file, and the base of the person's: the strict object
+ * above, read after `withCurrentNames`, so an old key name loads as its new one in both files.
+ */
+export const workflowSchema = z.preprocess(withCurrentNames, workflowObjectSchema);
+
 export type Workflow = z.infer<typeof workflowSchema>;
 
 /**
@@ -300,32 +373,35 @@ export const PERSONAL_FILE_SWITCH_NAMES = [
  * `leadHint`: the `fable-session` hook tells the person once a session when the lead is not
  * Claude Opus (default: on); a person who leads on a backend on purpose turns it off.
  */
-export const personalWorkflowSchema = workflowSchema.extend({
-  /**
-   * The person's `plans`: the cap, and `runMode`, how queued plans run (`ask` by default: one
-   * question when two or more are laid). Never `mergeFiles`, which is a project fact. `runMode`
-   * is the person's alone: a committed value would spend every teammate's usage.
-   */
-  plans: z
-    .strictObject({
-      maxPhases: numberField("plans.maxPhases"),
-      runMode: z.enum(RUN_MODES).optional(),
-    })
-    .optional(),
-  switches: z
-    .strictObject({ jobRoute: z.boolean().optional(), leadHint: z.boolean().optional() })
-    .optional(),
-});
+export const personalWorkflowSchema = z.preprocess(
+  withCurrentNames,
+  workflowObjectSchema.extend({
+    /**
+     * The person's `plans`: the cap, and `runMode`, how queued plans run (`ask` by default: one
+     * question when two or more are laid). Never `mergeFiles`, which is a project fact. `runMode`
+     * is the person's alone: a committed value would spend every teammate's usage.
+     */
+    plans: z
+      .strictObject({
+        maxPhases: numberField("plans.maxPhases"),
+        runMode: z.enum(RUN_MODES).optional(),
+      })
+      .optional(),
+    switches: z
+      .strictObject({ jobRoute: z.boolean().optional(), leadHint: z.boolean().optional() })
+      .optional(),
+  }),
+);
 
 /** The person's own workflow file, read: a `Workflow` and the `switches` group. */
 export type PersonalWorkflow = z.infer<typeof personalWorkflowSchema>;
 
 /** Every value a setting falls back to when neither the project nor the person sets it. */
 export const workflowDefaults = {
-  autoCommit: false,
-  autoPush: false,
+  allowCommit: false,
+  allowPush: false,
   openPr: "off",
-  autoMerge: false,
+  allowMerge: false,
   mergeMethod: "merge",
   deleteBranch: false,
   reviewBeforePush: true,
@@ -371,10 +447,10 @@ export type SwitchName = (typeof SWITCH_NAMES)[number];
 
 /** One setting a person may name on the command line. */
 export type WorkflowKey =
-  | "autoCommit"
-  | "autoPush"
+  | "allowCommit"
+  | "allowPush"
   | "openPr"
-  | "autoMerge"
+  | "allowMerge"
   | "mergeMethod"
   | "deleteBranch"
   | "reviewBeforePush"
@@ -396,10 +472,10 @@ export type WorkflowKey =
 
 /** Every policy key, in the order `workflow show` and `--help` print them. */
 export const POLICY_KEYS: readonly WorkflowKey[] = [
-  "autoCommit",
-  "autoPush",
+  "allowCommit",
+  "allowPush",
   "openPr",
-  "autoMerge",
+  "allowMerge",
   "mergeMethod",
   "deleteBranch",
   "reviewBeforePush",
@@ -426,7 +502,7 @@ export const POLICY_KEYS: readonly WorkflowKey[] = [
  * and `unset` refuse them inside Claude Code (`commands.ts`): only the person changes the gate.
  */
 export const REVIEW_GATE_KEYS: readonly WorkflowKey[] = [
-  "autoMerge",
+  "allowMerge",
   "reviewBeforePush",
   "reviewAgents",
   "fixesAfterReview.lines",

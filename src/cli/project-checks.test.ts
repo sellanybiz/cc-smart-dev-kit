@@ -624,6 +624,38 @@ describe("shadcn lint restrictions", () => {
   });
 });
 
+describe("the old workflow setting names in the project's file", () => {
+  test("a project file with an old name gets one warning with the rename and its cost", async () => {
+    const repo = makeRepo();
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", { workflow: { autoPush: true } });
+    const lines = await check(repo);
+    expect(lines.filter((line) => line.includes("old setting name"))).toEqual([
+      '! project: .claude/cc-smart-dev-kit.json uses the old setting name autoPush (now allowPush) Fix: rename autoPush to allowPush in this file, or run cc-smart-dev-kit workflow set allowPush true --project (a file with the new name needs requires ">=6.1"); the old name keeps working until then',
+    ]);
+    expect(lines.some((line) => line.startsWith("✗"))).toBe(false);
+  });
+
+  test("both names in the project's file: remove the old one", async () => {
+    const repo = makeRepo();
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", {
+      requires: ">=6.1",
+      workflow: { autoMerge: true, allowMerge: false },
+    });
+    expect((await check(repo)).filter((line) => line.includes("old setting name"))).toEqual([
+      "! project: .claude/cc-smart-dev-kit.json uses the old setting name autoMerge (now allowMerge) Fix: remove autoMerge from this file: allowMerge is set there and wins",
+    ]);
+  });
+
+  test("the new names alone say nothing", async () => {
+    const repo = makeRepo();
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", {
+      requires: ">=6.1",
+      workflow: { allowCommit: true },
+    });
+    expect((await check(repo)).filter((line) => line.includes("old setting name"))).toEqual([]);
+  });
+});
+
 describe("the retired review agent", () => {
   // Root reads a mode-000 file or folder all the same, so these two prove nothing as root.
   test.skipIf(process.getuid?.() === 0)(

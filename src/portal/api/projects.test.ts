@@ -190,7 +190,7 @@ function mergeableRepo(name: string): string {
   commitConfig(
     repo,
     {
-      workflow: { autoMerge: true, reviewBeforePush: false },
+      workflow: { allowMerge: true, reviewBeforePush: false },
       worktrees: { base: "integration" },
     },
     ["main", "integration"],
@@ -486,7 +486,7 @@ describe("the projects list folds one repository (B8)", () => {
 
     writeFileSync(
       join(repo, ".claude", "cc-smart-dev-kit.json"),
-      '{"workflow":{"autoMerge":true}}\n',
+      '{"workflow":{"allowMerge":true}}\n',
     );
     // Past the list's own keep, so the page reads the working copy again.
     clock += 11_000;
@@ -828,7 +828,7 @@ describe("a project's workflow settings (D57)", () => {
     // proposal would change the base — so the card must not show it as the project's policy.
     writeClaudeFile(repo, "cc-smart-dev-kit.json", {
       requires: ">=0.1",
-      workflow: { autoCommit: true },
+      workflow: { allowCommit: true },
       worktrees: { base: "main" },
     });
     forgetGhLogin();
@@ -837,8 +837,8 @@ describe("a project's workflow settings (D57)", () => {
     const answer = await workflowAnswer(w, repo);
     if ("error" in answer) throw new Error(answer.error);
     expect(answer.note).toBeNull();
-    expect(answer.settings.find((one) => one.key === "autoCommit")).toEqual({
-      key: "autoCommit",
+    expect(answer.settings.find((one) => one.key === "allowCommit")).toEqual({
+      key: "allowCommit",
       source: "default",
       value: false,
     });
@@ -959,7 +959,7 @@ test("an open pull request with the merge guard's own verdict", async () => {
   commitConfig(
     repo,
     {
-      workflow: { autoMerge: true, reviewBeforePush: false },
+      workflow: { allowMerge: true, reviewBeforePush: false },
       worktrees: { base: "integration" },
     },
     ["main", "integration"],

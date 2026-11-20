@@ -75,10 +75,11 @@ import {
   IGNORED_TASK_FIELDS,
   RETIRED_HOOK_NAMES,
   UNSWITCHABLE_HOOK_NAMES,
+  WORKFLOW_ALLOW_KEYS_SINCE,
   WORKTREE_ENGINE_RETIRED_IN,
 } from "../project/config";
 import { findDeploySkills, skillsFolderLink, staleBlocks } from "../project/deploy-skill";
-import { hasDeployTaskFolders, requiresFloor, requiresTooLow } from "../project/init";
+import { hasDeployTaskFolders, requiresFloor, requiresFor, requiresTooLow } from "../project/init";
 import {
   type Checkout,
   checkoutFailure,
@@ -95,7 +96,7 @@ import { readWorkStore } from "../tasks/work/read";
 import { type GhExec, runGh } from "../workflow/merge-check";
 import { resolvePlans } from "../workflow/resolve";
 import { parseGitVersion, tooOldToCover } from "../workflow/review-cover";
-import { workflowDefaults } from "../workflow/schema";
+import { oldNamesIn, workflowDefaults } from "../workflow/schema";
 import type { Check } from "./check";
 import { type CliPaths, tildify } from "./paths";
 import { defaultBranchOf, realRunnerAsync } from "./project-init";
@@ -154,6 +155,47 @@ export function retiredReviewAgentCheck(
     fix: personal
       ? `${REPLACE_REVIEW_AGENT}: run ${COMMAND} workflow set reviewAgents ${NEW_REVIEW_AGENT}, or ${COMMAND} workflow unset reviewAgents to use the default; personal changes count at once`
       : `${REPLACE_REVIEW_AGENT}, then merge that change by hand or run ${COMMAND} workflow review-done, because merge-check judges with the base branch's list`,
+  };
+}
+
+/**
+ * One line for a workflow file that still holds an old setting name (`autoPush`, now `allowPush`;
+ * `WORKFLOW_KEY_ALIASES`), or null. The old name keeps working, so it is a warning with the
+ * rename, never a failure. A file that holds both names says to remove the old one: the new one
+ * wins already. A project's file also gets the cost of the new name: `requires` rises to
+ * 6.1 (`WORKFLOW_ALLOW_KEYS_SINCE`), which a teammate on an older plugin hears as "update". A file
+ * that is missing or cannot be read is the other checks' to say, so it gives null here.
+ */
+export function oldWorkflowNamesCheck(file: string, label: string, personal = false): Check | null {
+  let parsed: unknown;
+  try {
+    parsed = existsSync(file) ? readUserJson(file) : null;
+  } catch {
+    return null;
+  }
+  const workflow = personal || !isObject(parsed) ? parsed : parsed.workflow;
+  if (!isObject(workflow)) return null;
+  const found = oldNamesIn(workflow);
+  if (found.length === 0) return null;
+  const typedValue = (old: string) =>
+    typeof workflow[old] === "boolean" ? String(workflow[old]) : "<true|false>";
+  const steps = found.map(({ old, current, both }) => {
+    if (both) return `remove ${old} from this file: ${current} is set there and wins`;
+    const command = `${COMMAND} workflow set ${current} ${typedValue(old)}`;
+    return personal
+      ? `run ${command}`
+      : `rename ${old} to ${current} in this file, or run ${command} --project (a file with the new name needs requires "${requiresFor(WORKFLOW_ALLOW_KEYS_SINCE)}")`;
+  });
+  const waiting = found.filter(({ both }) => !both).length;
+  if (waiting > 0) {
+    steps.push(`the old name${waiting === 1 ? " keeps" : "s keep"} working until then`);
+  }
+  const names = found.map(({ old, current }) => `${old} (now ${current})`).join(", ");
+  return {
+    ok: true,
+    warn: true,
+    text: `${label} uses the old setting name${found.length === 1 ? "" : "s"} ${names}`,
+    fix: steps.join("; "),
   };
 }
 
@@ -922,8 +964,13 @@ export async function projectChecks(
           configFile,
           `project: ${shown(configFile, projectDir, paths.home)}`,
         );
+  const oldNames =
+    configFile === null
+      ? null
+      : oldWorkflowNamesCheck(configFile, `project: ${shown(configFile, projectDir, paths.home)}`);
   const lines = [
     ...(retired === null ? [] : [retired]),
+    ...(oldNames === null ? [] : [oldNames]),
     ...retiredReviewMentions(projectDir),
     ...oldNameLines(projectDir, sources, paths.home),
     ...engine,

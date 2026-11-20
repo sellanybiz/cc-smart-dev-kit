@@ -138,6 +138,15 @@ export const WORKFLOW_PLANS_SINCE = "4.8.0";
 export const WORKFLOW_MERGE_FILES_SINCE = "5.2.0";
 
 /**
+ * The release that renamed `workflow.autoCommit`, `autoPush` and `autoMerge` to `allowCommit`,
+ * `allowPush` and `allowMerge` (`WORKFLOW_KEY_ALIASES`, `src/workflow/schema.ts`). A project file
+ * that holds a new name needs that plugin version or newer, for the same reason as
+ * `WORKFLOW_FIXES_SINCE`: an older plugin reads the object strictly and refuses a name it does
+ * not know. A file that keeps the old names loads on every plugin, so they raise no floor.
+ */
+export const WORKFLOW_ALLOW_KEYS_SINCE = "6.1.0";
+
+/**
  * The fields of a heavy-job kind (`jobs.kinds.<name>`) that came after 0.5.2, with the release
  * that brought them: `noSlotForFiles` (a run on named files goes at once) in 1.5.0. A project
  * file whose kind sets one needs that plugin version or newer, for the same reason as

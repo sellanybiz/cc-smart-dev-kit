@@ -53,10 +53,10 @@ const SETTINGS = {
 };
 
 /**
- * The `!` line `openPr draft` gets while `autoPush` is off (D16): the clash every `set` of
+ * The `!` line `openPr draft` gets while `allowPush` is off (D16): the clash every `set` of
  * `openPr` prints after the write, in these tests' default settings.
  */
-const OPEN_PR_DRAFT_CLASH = `! openPr opens a pull request, but autoPush is off: a session does not push, and that pull request needs the push, so it waits for you every time. Fix: turn autoPush on (\`${COMMAND} workflow set autoPush true\`), or set openPr off (\`${COMMAND} workflow set openPr off\`).`;
+const OPEN_PR_DRAFT_CLASH = `! openPr opens a pull request, but allowPush is off: a session does not push, and that pull request needs the push, so it waits for you every time. Fix: turn allowPush on (\`${COMMAND} workflow set allowPush true\`), or set openPr off (\`${COMMAND} workflow set openPr off\`).`;
 
 describe("workflow show", () => {
   test("nothing set: every value with the built-in default as where it came from", async () => {
@@ -65,10 +65,10 @@ describe("workflow show", () => {
     expect(run.errors).toEqual([]);
     expect(run.lines).toEqual([
       "your own defaults: ~/.config/cc-smart-dev-kit/workflow.json; a project's .claude/cc-smart-dev-kit.json wins field by field",
-      "autoCommit = false (default)",
-      "autoPush = false (default)",
+      "allowCommit = false (default)",
+      "allowPush = false (default)",
       "openPr = off (default)",
-      "autoMerge = false (default)",
+      "allowMerge = false (default)",
       "mergeMethod = merge (default)",
       "deleteBranch = false (default)",
       "reviewBeforePush = true (default)",
@@ -102,7 +102,7 @@ describe("workflow show", () => {
     writeClaudeFile(repo, "cc-smart-dev-kit.json", {
       ...SETTINGS,
       jobs: { route: true },
-      workflow: { autoMerge: true, openPr: "draft" },
+      workflow: { allowMerge: true, openPr: "draft" },
     });
     mkdirSync(dirname(personalWorkflowFile(cliPaths(env))), { recursive: true });
     writeFileSync(
@@ -113,7 +113,7 @@ describe("workflow show", () => {
     expect(await runWorkflow([], run.context)).toBe(0);
     expect(run.lines).toContain("openPr = draft (project)");
     expect(run.lines.join("\n")).not.toContain("alerts.sound");
-    expect(run.lines).toContain("autoMerge = true (project)");
+    expect(run.lines).toContain("allowMerge = true (project)");
     expect(run.lines).toContain("switches.sessionNames = true (project)");
     expect(run.lines).toContain("switches.jobRoute = true (project)");
     expect(run.lines).not.toContain(
@@ -147,14 +147,14 @@ describe("workflow show", () => {
     const repo = makeRepo();
     writeClaudeFile(repo, "cc-smart-dev-kit.json", {
       ...SETTINGS,
-      workflow: { autoMerge: true, openPr: "draft" },
+      workflow: { allowMerge: true, openPr: "draft" },
     });
     const run = context(repo, env);
     expect(await runWorkflow(["show"], run.context)).toBe(0);
     const clashes = run.lines.filter((line) => line.startsWith("! "));
     expect(clashes).toEqual([
       OPEN_PR_DRAFT_CLASH,
-      `! openPr is draft and autoMerge is on: a draft pull request is never merged, so autoMerge never acts on the pull request a session opens. Fix: set openPr ready (\`${COMMAND} workflow set openPr ready\`) so the pull request can merge, or turn autoMerge off (\`${COMMAND} workflow set autoMerge false\`).`,
+      `! openPr is draft and allowMerge is on: a draft pull request is never merged, so allowMerge never acts on the pull request a session opens. Fix: set openPr ready (\`${COMMAND} workflow set openPr ready\`) so the pull request can merge, or turn allowMerge off (\`${COMMAND} workflow set allowMerge false\`).`,
     ]);
   });
 
@@ -162,12 +162,12 @@ describe("workflow show", () => {
     const env = hookEnv();
     const paths = cliPaths(env);
     mkdirSync(dirname(paths.workflowConfigFile), { recursive: true });
-    writeFileSync(paths.workflowConfigFile, `${JSON.stringify({ autoCommit: "yes" }, null, 2)}\n`);
+    writeFileSync(paths.workflowConfigFile, `${JSON.stringify({ allowCommit: "yes" }, null, 2)}\n`);
     const run = context(tempDir("not-git"), env);
     expect(await runWorkflow(["show"], run.context)).toBe(1);
     expect(run.lines).toEqual([]);
     expect(run.errors).toEqual([
-      `Invalid ${paths.workflowConfigFile}: autoCommit: Invalid input: expected boolean, received string`,
+      `Invalid ${paths.workflowConfigFile}: allowCommit: Invalid input: expected boolean, received string`,
     ]);
   });
 });
@@ -176,10 +176,10 @@ describe("workflow set and unset", () => {
   test("a policy value goes into the person's own file, 0600", async () => {
     const env = hookEnv();
     const run = context(tempDir("not-git"), env);
-    expect(await runWorkflow(["set", "autoCommit", "true"], run.context)).toBe(0);
+    expect(await runWorkflow(["set", "allowCommit", "true"], run.context)).toBe(0);
     const file = cliPaths(env).workflowConfigFile;
-    expect(run.lines).toEqual([`+ ~/.config/cc-smart-dev-kit/workflow.json: autoCommit = true`]);
-    expect(readFileSync(file, "utf8")).toBe(`${JSON.stringify({ autoCommit: true }, null, 2)}\n`);
+    expect(run.lines).toEqual([`+ ~/.config/cc-smart-dev-kit/workflow.json: allowCommit = true`]);
+    expect(readFileSync(file, "utf8")).toBe(`${JSON.stringify({ allowCommit: true }, null, 2)}\n`);
     expect(statSync(file).mode & 0o777).toBe(0o600);
   });
 
@@ -187,16 +187,16 @@ describe("workflow set and unset", () => {
     const env = hookEnv();
     const file = cliPaths(env).workflowConfigFile;
     mkdirSync(dirname(file), { recursive: true });
-    writeFileSync(file, `${JSON.stringify({ autoPush: true }, null, 2)}\n`);
+    writeFileSync(file, `${JSON.stringify({ allowPush: true }, null, 2)}\n`);
     // A setting that works with the others names no clash.
     const fine = context(tempDir("not-git"), env);
     expect(await runWorkflow(["set", "openPr", "ready"], fine.context)).toBe(0);
     expect(fine.lines).toEqual(["~ ~/.config/cc-smart-dev-kit/workflow.json: openPr = ready"]);
-    // Taking autoPush away leaves openPr waiting for a person: the clash comes with the write.
+    // Taking allowPush away leaves openPr waiting for a person: the clash comes with the write.
     const off = context(tempDir("not-git"), env);
-    expect(await runWorkflow(["set", "autoPush", "false"], off.context)).toBe(0);
+    expect(await runWorkflow(["set", "allowPush", "false"], off.context)).toBe(0);
     expect(off.lines).toEqual([
-      "~ ~/.config/cc-smart-dev-kit/workflow.json: autoPush = false",
+      "~ ~/.config/cc-smart-dev-kit/workflow.json: allowPush = false",
       OPEN_PR_DRAFT_CLASH,
     ]);
   });
@@ -205,11 +205,11 @@ describe("workflow set and unset", () => {
     const env = hookEnv();
     const file = cliPaths(env).workflowConfigFile;
     mkdirSync(dirname(file), { recursive: true });
-    writeFileSync(file, `{\n    "autoCommit": true\n}\n`);
+    writeFileSync(file, `{\n    "allowCommit": true\n}\n`);
     const run = context(tempDir("not-git"), env);
     expect(await runWorkflow(["set", "alerts.usagePercent", "70"], run.context)).toBe(0);
     expect(readFileSync(file, "utf8")).toBe(
-      `{\n    "autoCommit": true,\n    "alerts": {\n        "usagePercent": 70\n    }\n}\n`,
+      `{\n    "allowCommit": true,\n    "alerts": {\n        "usagePercent": 70\n    }\n}\n`,
     );
     expect(run.lines).toEqual([
       "~ ~/.config/cc-smart-dev-kit/workflow.json: alerts.usagePercent = 70",
@@ -308,8 +308,8 @@ describe("workflow set and unset", () => {
       `{\n    "worktrees": { "base": "main", "guardMainFolder": true },\n    "autoMode": ["one rule"]\n}\n`,
     );
     const run = context(repo, env);
-    expect(await runWorkflow(["set", "autoCommit", "true", "--project"], run.context)).toBe(0);
-    expect(run.lines).toEqual([`~ ${file}: autoCommit = true`]);
+    expect(await runWorkflow(["set", "deleteBranch", "true", "--project"], run.context)).toBe(0);
+    expect(run.lines).toEqual([`~ ${file}: deleteBranch = true`]);
     // The indent (four spaces here) stays, and so does every line the change does not touch: the
     // one-line object and the one-line array stay as they were.
     expect(readFileSync(file, "utf8")).toBe(
@@ -318,7 +318,7 @@ describe("workflow set and unset", () => {
         '    "worktrees": { "base": "main", "guardMainFolder": true },',
         '    "autoMode": ["one rule"],',
         '    "workflow": {',
-        '        "autoCommit": true',
+        '        "deleteBranch": true',
         "    }",
         "}",
         "",
@@ -334,7 +334,7 @@ describe("workflow set and unset", () => {
     });
     const before = readFileSync(file, "utf8");
     const run = context(repo, env);
-    expect(await runWorkflow(["set", "autoCommit", "true", "--project"], run.context)).toBe(1);
+    expect(await runWorkflow(["set", "allowCommit", "true", "--project"], run.context)).toBe(1);
     expect(run.errors).toEqual([
       `Invalid ${file}: worktrees.setup is no longer supported: remove it — Claude Code's own worktrees need none. \`cc-smart-dev-kit project init\` removes it (README § Worktrees).`,
     ]);
@@ -451,7 +451,7 @@ describe("workflow set and unset", () => {
     const paths = cliPaths(env);
     const outside = tempDir("not-git");
     await runWorkflow(["set", "switches.jobRoute", "true"], context(outside, env).context);
-    await runWorkflow(["set", "autoCommit", "true"], context(outside, env).context);
+    await runWorkflow(["set", "allowCommit", "true"], context(outside, env).context);
     const run = context(outside, env);
     expect(await runWorkflow(["unset", "switches.jobRoute"], run.context)).toBe(0);
     expect(run.lines).toEqual([
@@ -459,7 +459,7 @@ describe("workflow set and unset", () => {
     ]);
     // The empty group goes with it; the other setting stays.
     expect(JSON.parse(readFileSync(personalWorkflowFile(paths), "utf8"))).toEqual({
-      autoCommit: true,
+      allowCommit: true,
     });
     const show = context(outside, env);
     await runWorkflow(["show"], show.context);
@@ -534,7 +534,7 @@ describe("workflow set and unset", () => {
     const env = hookEnv();
     const repo = makeRepo();
     const run = context(repo, env);
-    expect(await runWorkflow(["set", "autoCommit", "true", "--project"], run.context)).toBe(1);
+    expect(await runWorkflow(["set", "allowCommit", "true", "--project"], run.context)).toBe(1);
     expect(run.errors).toEqual([
       `${repo} has no .claude/cc-smart-dev-kit.json: run \`cc-smart-dev-kit project init\` there first, or set this in your own defaults (without --project)`,
     ]);
@@ -620,13 +620,13 @@ describe("workflow set and unset", () => {
     expect(await runWorkflow(["set", "alerts.usagePercent", "70", "failed"], run.context)).toBe(2);
     expect(run.errors[0]).toContain("set needs one value");
     const none = context(tempDir("not-git"), env);
-    expect(await runWorkflow(["set", "autoCommit"], none.context)).toBe(2);
+    expect(await runWorkflow(["set", "allowCommit"], none.context)).toBe(2);
     expect(none.errors[0]).toContain("set needs one value");
   });
 
   test("an unknown workflow command: exit 2", async () => {
     const run = context(tempDir("not-git"));
-    expect(await runWorkflow(["write", "autoCommit", "true"], run.context)).toBe(2);
+    expect(await runWorkflow(["write", "allowCommit", "true"], run.context)).toBe(2);
     expect(run.errors[0]).toContain("Unknown workflow command: write");
   });
 });
@@ -758,12 +758,12 @@ describe("the writers, called directly (the portal does this)", () => {
   test("writePersonalSetting writes one field and keeps the rest", () => {
     const env = hookEnv();
     const paths = cliPaths(env);
-    writePersonalSetting(paths, "autoPush", true);
+    writePersonalSetting(paths, "allowPush", true);
     expect(writePersonalSetting(paths, "openPr", "ready")).toBe(
       "~ ~/.config/cc-smart-dev-kit/workflow.json: openPr = ready",
     );
     expect(JSON.parse(readFileSync(paths.workflowConfigFile, "utf8"))).toEqual({
-      autoPush: true,
+      allowPush: true,
       openPr: "ready",
     });
   });
@@ -771,11 +771,11 @@ describe("the writers, called directly (the portal does this)", () => {
   test("writing a value the schema refuses leaves the file alone", () => {
     const env = hookEnv();
     const paths = cliPaths(env);
-    writePersonalSetting(paths, "autoPush", true);
+    writePersonalSetting(paths, "allowPush", true);
     expect(() => writePersonalSetting(paths, "alerts.usagePercent", 0)).toThrow(
       `Invalid ${paths.workflowConfigFile}: alerts.usagePercent:`,
     );
-    expect(JSON.parse(readFileSync(paths.workflowConfigFile, "utf8"))).toEqual({ autoPush: true });
+    expect(JSON.parse(readFileSync(paths.workflowConfigFile, "utf8"))).toEqual({ allowPush: true });
   });
 
   test("writeProjectSetting keeps the file valid: a broken value writes nothing", () => {
@@ -803,8 +803,8 @@ describe("the writers, called directly (the portal does this)", () => {
   test("unsetting a key that was never set says so", () => {
     const env = hookEnv();
     const paths = cliPaths(env);
-    expect(writePersonalSetting(paths, "autoCommit", undefined)).toBe(
-      "= ~/.config/cc-smart-dev-kit/workflow.json: autoCommit was not set",
+    expect(writePersonalSetting(paths, "allowCommit", undefined)).toBe(
+      "= ~/.config/cc-smart-dev-kit/workflow.json: allowCommit was not set",
     );
   });
 });
@@ -855,7 +855,7 @@ describe("the review gate (CM-1)", () => {
   }
 
   test.each([
-    ["autoMerge", "true"],
+    ["allowMerge", "true"],
     ["reviewBeforePush", "false"],
     ["reviewAgents", "general-purpose"],
     ["fixesAfterReview.lines", "0"],
@@ -1004,7 +1004,7 @@ describe("the review gate (CM-1)", () => {
         expect(await runWorkflow([sub, key, ...value], run.context)).toBe(2);
         expect(run.lines).toEqual([]);
         expect(run.errors).toEqual([
-          `Unknown setting: ${key}. The settings are: autoCommit, autoPush, openPr, autoMerge, mergeMethod, deleteBranch, reviewBeforePush, reviewAgents, fixesAfterReview.lines, fixesAfterReview.files, fixesAfterReview.percent, clearWorktreeAfterMerge, issues.enabled, issues.allowPublic, issues.foundLabel, issues.fixedLabel, issues.readyLabel, alerts.usagePercent, plans.maxPhases, plans.runMode, plans.mergeFiles, switches.statusLine, switches.sessionNames, switches.jobRoute, switches.updateHold, switches.leadHint`,
+          `Unknown setting: ${key}. The settings are: allowCommit, allowPush, openPr, allowMerge, mergeMethod, deleteBranch, reviewBeforePush, reviewAgents, fixesAfterReview.lines, fixesAfterReview.files, fixesAfterReview.percent, clearWorktreeAfterMerge, issues.enabled, issues.allowPublic, issues.foundLabel, issues.fixedLabel, issues.readyLabel, alerts.usagePercent, plans.maxPhases, plans.runMode, plans.mergeFiles, switches.statusLine, switches.sessionNames, switches.jobRoute, switches.updateHold, switches.leadHint`,
         ]);
       }
       expect(existsSync(cliPaths(env).workflowConfigFile)).toBe(false);
@@ -1035,21 +1035,21 @@ describe("the review gate (CM-1)", () => {
     const repo = makeRepo();
     committed(repo, {
       ...SETTINGS,
-      workflow: { autoMerge: true, fixesAfterReview: { lines: 50 } },
+      workflow: { allowMerge: true, fixesAfterReview: { lines: 50 } },
     });
     // This checkout's own copy says otherwise: the guard does not read it.
     writeClaudeFile(repo, "cc-smart-dev-kit.json", {
       ...SETTINGS,
-      workflow: { autoMerge: false, fixesAfterReview: { lines: 0 }, reviewBeforePush: false },
+      workflow: { allowMerge: false, fixesAfterReview: { lines: 0 }, reviewBeforePush: false },
     });
     const run = context(repo, env);
     expect(await runWorkflow(["show"], run.context)).toBe(0);
-    expect(run.lines).toContain("autoMerge = false (project)");
+    expect(run.lines).toContain("allowMerge = false (project)");
     expect(run.lines).toContain("fixesAfterReview.lines = 0 (project)");
     const gate = run.lines.filter((line) => line.startsWith("gate"));
     expect(gate).toEqual([
       "gate: what merge-check judges with, from origin/main:.claude/cc-smart-dev-kit.json as committed (this checkout's own copy does not count)",
-      "gate autoMerge = true (project, committed on origin/main)",
+      "gate allowMerge = true (project, committed on origin/main)",
       "gate reviewBeforePush = true (default)",
       "gate reviewAgents = cc-smart-dev-kit:senior-engineer (default)",
       "gate fixesAfterReview.lines = 50 (project, committed on origin/main)",
@@ -1290,15 +1290,18 @@ describe("workflow propose: the arguments", () => {
         ["propose", "worktree.base", "main"],
         `Unknown setting: worktree.base. The settings are: ${WORKFLOW_KEYS.join(", ")}`,
       ],
-      [["propose", "autoCommit"], "propose needs one value, or --unset"],
+      [["propose", "allowCommit"], "propose needs one value, or --unset"],
       [
         ["propose", "openPr", "draft", "ready"],
         'propose needs one value (quote a list, like "needs-you, question"), or --unset',
       ],
-      [["propose", "autoCommit", "true", "--unset"], "propose takes a value, or --unset, not both"],
-      [["propose", "autoCommit", "true", "--folder"], "--folder needs the project's folder"],
-      [["propose", "autoCommit", "true", "--yes"], "Unknown option: --yes"],
-      [["propose", "autoCommit", "yes"], "autoCommit is true or false"],
+      [
+        ["propose", "allowCommit", "true", "--unset"],
+        "propose takes a value, or --unset, not both",
+      ],
+      [["propose", "allowCommit", "true", "--folder"], "--folder needs the project's folder"],
+      [["propose", "allowCommit", "true", "--yes"], "Unknown option: --yes"],
+      [["propose", "allowCommit", "yes"], "allowCommit is true or false"],
     ] as [string[], string][]) {
       const run = context(repo, env);
       expect(await runWorkflow(argv, run.context)).toBe(2);

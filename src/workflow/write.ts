@@ -1,7 +1,7 @@
 /**
  * Writing one workflow setting, in the place that setting really lives.
  *
- * - **The policy** — `autoCommit`, `openPr`, `alerts.usagePercent`, … — goes into the person's own
+ * - **The policy** — `allowCommit`, `openPr`, `alerts.usagePercent`, … — goes into the person's own
  *   file, `~/.config/cc-smart-dev-kit/workflow.json` (folder 0700, file 0600, written atomically,
  *   the way the other config files are), or into the project's `workflow` object with
  *   `writeProjectSetting`. Every other field and the file's own indentation stay as they are.
@@ -36,9 +36,11 @@ import { heldSince, hold, resume, updateFiles } from "../update/state";
 import { describeIssues } from "../zod-issues";
 import { personalWorkflowFile, WorkflowConfigError } from "./resolve";
 import {
+  currentKeyName,
   isPersonalFileSwitch,
   isProjectKey,
   isSwitchKey,
+  oldNamesOf,
   PERSONAL_ONLY_REASONS,
   personalWorkflowSchema,
   type SwitchName,
@@ -54,10 +56,24 @@ function unknownKey(key: string): Error {
   return new Error(`Unknown setting: ${key}. The settings are: ${WORKFLOW_KEYS.join(", ")}`);
 }
 
-/** The key, as one of the settings there are; a typo is refused before anything is read. */
+/**
+ * The key, as one of the settings there are; a typo is refused before anything is read. An old
+ * name (`autoPush`) is taken as its new one (`allowPush`): every write uses the new name.
+ */
 function requireKey(key: string): WorkflowKey {
-  if (!WORKFLOW_KEYS.includes(key as WorkflowKey)) throw unknownKey(key);
-  return key as WorkflowKey;
+  const current = currentKeyName(key);
+  if (!WORKFLOW_KEYS.includes(current as WorkflowKey)) throw unknownKey(key);
+  return current as WorkflowKey;
+}
+
+/**
+ * `data` without the old names of `path`'s key, next to it. A write moves a setting to its new
+ * name: a file that kept the old one beside it would, on an unset, bring the old value back.
+ */
+function removeOldNames(data: Record<string, unknown>, path: string[]): void {
+  const leaf = path.at(-1);
+  if (leaf === undefined) return;
+  for (const old of oldNamesOf(leaf)) removeLeaf(data, [...path.slice(0, -1), old]);
 }
 
 /** `data` with `path` set to `value`; the objects along the way are made when missing. */
@@ -128,6 +144,7 @@ export function writePersonalSetting(paths: CliPaths, key: string, value: unknow
   const before = structuredClone(data);
   if (value === undefined) removeLeaf(data, wanted.split("."));
   else setLeaf(data, wanted.split("."), value);
+  removeOldNames(data, wanted.split("."));
   const checked = personalWorkflowSchema.safeParse(data);
   if (!checked.success) {
     throw new WorkflowConfigError(`Invalid ${file}: ${describeIssues(checked.error.issues)}`);
@@ -189,6 +206,7 @@ function writeProjectFile(
   const before = structuredClone(data);
   if (value === undefined) removeLeaf(data, path);
   else setLeaf(data, path, value);
+  removeOldNames(data, path);
   // A write that brings a field a newer plugin added raises `requires` (never lowers it), as
   // `project init` does: a teammate on an older plugin then hears "update", not every guard
   // asking. Only then: a write the file's old floor already covers leaves `requires` alone.

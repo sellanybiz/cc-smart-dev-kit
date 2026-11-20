@@ -544,15 +544,15 @@ function clashNote(data: SettingsData, key: string | undefined): string {
 
 /** The auto-merge row's own rule box: the design's words, with the project's base named. */
 function autoMergeBox(data: SettingsData): string {
-  const base = data.autoMerge?.base;
+  const base = data.allowMerge?.base;
   const inside = base === null || base === undefined ? "" : ` (${escapeHtml(base)} here)`;
   // The rule is the design's sentence, word for word; the line under it is what the module's
   // own `autoMergeAllowed` answers for this project right now, on its own line.
   const decided =
-    data.autoMerge === null
+    data.allowMerge === null
       ? ""
       : `<span class="small rulemore">${
-          data.autoMerge.allowed
+          data.allowMerge.allowed
             ? `On this project, a pull request into ${escapeHtml(base ?? "")} may be merged by itself, once CI is green and the review is done.`
             : "On this project it will not merge by itself: only a plain integration branch is ever merged into without asking you."
         }</span>`;
@@ -577,7 +577,7 @@ export function settingsPage(shell: Shell, data: SettingsData): string {
 <h2 id="${card}-h">${escapeHtml(title)}</h2>
 <div class="card list" data-scope>
 ${rows
-  .map((row) => settingRow(row, row.key === "autoMerge" ? autoMergeBox(data) : ""))
+  .map((row) => settingRow(row, row.key === "allowMerge" ? autoMergeBox(data) : ""))
   .map((html, index) => html + clashNote(data, rows[index]?.key))
   .join("")}
 <div class="foot" data-out-for="workflow.set" role="status"></div>

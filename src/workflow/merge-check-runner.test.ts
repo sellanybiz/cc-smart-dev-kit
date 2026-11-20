@@ -97,7 +97,7 @@ describe("the merge check never blocks its caller (B8)", () => {
         commitConfig(
           repo,
           {
-            workflow: { autoMerge: true, reviewBeforePush: false },
+            workflow: { allowMerge: true, reviewBeforePush: false },
             worktrees: { base: "integration" },
           },
           ["main", "integration"],
@@ -154,32 +154,32 @@ describe("the merge check never blocks its caller (B8)", () => {
       new Map(),
     );
 
-  test("autoMerge on, a pull request into the default branch (main), green checks, no review gate: allowed", async () => {
-    const verdict = await checkInto("main", "pass", { autoMerge: true, reviewBeforePush: false });
+  test("allowMerge on, a pull request into the default branch (main), green checks, no review gate: allowed", async () => {
+    const verdict = await checkInto("main", "pass", { allowMerge: true, reviewBeforePush: false });
     expect(verdict.kind).toBe("allowed");
     expect(verdict).toMatchObject({
       reason: "its required checks are green, and reviewBeforePush is off",
     });
   });
 
-  test("into main it explains why not: autoMerge off, a red check, or no recorded review", async () => {
-    const off = await checkInto("main", "pass", { autoMerge: false, reviewBeforePush: false });
+  test("into main it explains why not: allowMerge off, a red check, or no recorded review", async () => {
+    const off = await checkInto("main", "pass", { allowMerge: false, reviewBeforePush: false });
     expect(off).toMatchObject({ kind: "refused" });
-    expect(JSON.stringify(off)).toContain("autoMerge is off");
-    const red = await checkInto("main", "fail", { autoMerge: true, reviewBeforePush: false });
+    expect(JSON.stringify(off)).toContain("allowMerge is off");
+    const red = await checkInto("main", "fail", { allowMerge: true, reviewBeforePush: false });
     expect(red).toMatchObject({
       kind: "refused",
       reason: "its required checks are not all green: ci (fail)",
     });
     // The review gate stays on: no review is recorded for the head, so it is refused.
-    const unreviewed = await checkInto("main", "pass", { autoMerge: true });
+    const unreviewed = await checkInto("main", "pass", { allowMerge: true });
     expect(unreviewed).toMatchObject({ kind: "refused" });
     expect(JSON.stringify(unreviewed)).toContain("review");
   });
 
   test("a pull request into a branch that is neither the integration base nor main is refused", async () => {
     const verdict = await checkInto("release/1.0", "pass", {
-      autoMerge: true,
+      allowMerge: true,
       reviewBeforePush: false,
     });
     expect(verdict).toMatchObject({ kind: "refused" });

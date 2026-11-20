@@ -31,9 +31,9 @@ export function defaultResolved(): ResolvedWorkflow {
     alerts: {
       usagePercent: at(85),
     },
-    autoCommit: at(false),
-    autoMerge: at(false),
-    autoPush: at(false),
+    allowCommit: at(false),
+    allowMerge: at(false),
+    allowPush: at(false),
     clearWorktreeAfterMerge: at(true),
     deleteBranch: at(false),
     fixesAfterReview: { files: at(10), lines: at(200), percent: at(20) },
@@ -62,7 +62,7 @@ export function defaultResolved(): ResolvedWorkflow {
 /** What a test may set on the fake; everything else is the safe default. */
 export interface FakeWorkflowOptions {
   /** `autoMergeAllowed`'s answer, and the calls it was asked about. */
-  autoMerge?: boolean;
+  allowMerge?: boolean;
   /** The repository's default branch, from `repositoryDefaultBranch`. */
   defaultBranch?: string;
   /** The answers a fresh form starts with; the built-in ones are a plain, real-looking set. */
@@ -192,7 +192,7 @@ export function fakeWorkflow(options: FakeWorkflowOptions = {}): FakeWorkflow {
     },
     autoMergeAllowed(_resolved, _projectConfig, prBase, defaultBranch): boolean {
       calls.autoMergeAllowed.push({ defaultBranch, prBase });
-      return options.unwired === true ? unwired() : options.autoMerge === true;
+      return options.unwired === true ? unwired() : options.allowMerge === true;
     },
     planProjectInit(input): ProjectInitPlan {
       calls.planProjectInit.push(input);

@@ -39,7 +39,7 @@ const CARD: ProjectCardData = {
     bases: { "feature/": "release" },
     guards: { guardMainFolder: true, jobRoute: false, sessionNames: true },
     protectedBranches: ["main"],
-    workflow: { autoMerge: false },
+    workflow: { allowMerge: false },
   },
   error: null,
   filesHash: "f00d",
@@ -516,11 +516,11 @@ describe("a project's Workflow card (D57)", () => {
   const SPECS: SettingsRow[] = [
     {
       card: "flow",
-      help: "Commit each finished, reviewed step without asking.",
+      help: "Let a session commit each finished, reviewed step without asking.",
       id: "set-commit",
-      key: "autoCommit",
+      key: "allowCommit",
       kind: "boolean",
-      label: "Auto commit",
+      label: "Allow commit",
       readOnly: false,
       source: "personal",
       value: false,
@@ -560,7 +560,7 @@ describe("a project's Workflow card (D57)", () => {
     note: null,
     settings: [
       { key: "switches.sessionNames", source: "project", value: true },
-      { key: "autoCommit", source: "project", value: true },
+      { key: "allowCommit", source: "project", value: true },
     ],
   };
 
@@ -577,7 +577,7 @@ describe("a project's Workflow card (D57)", () => {
 
   test("the live client reads both answers, and fails when the rows' words cannot be read", async () => {
     const stream = { connection: () => () => {}, on: () => () => {}, stop: () => {} };
-    const settings = { autoMerge: null, clashes: [], error: null, projectNote: null, rows: SPECS };
+    const settings = { allowMerge: null, clashes: [], error: null, projectNote: null, rows: SPECS };
     const asked: string[] = [];
     const world = (settingsStatus: number) => ({
       fetch: async (path: string) => {
@@ -596,7 +596,7 @@ describe("a project's Workflow card (D57)", () => {
     });
     const data = await liveClient(world(200)).projectWorkflow("a1/f0");
     expect(asked.sort()).toEqual(["/api/projects/a1%2Ff0/workflow", "/api/settings"]);
-    expect(data.rows.map((row) => row.key)).toEqual(["autoCommit", "switches.sessionNames"]);
+    expect(data.rows.map((row) => row.key)).toEqual(["allowCommit", "switches.sessionNames"]);
     await expect(liveClient(world(500)).projectWorkflow("a1f0")).rejects.toThrow("boom");
   });
 
