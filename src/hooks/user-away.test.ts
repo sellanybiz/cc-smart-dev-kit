@@ -2,11 +2,9 @@ import { describe, expect, test } from "bun:test";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { cliPaths } from "../cli/paths";
-import { withLock } from "../setup/lock";
 import { hookEnv, makeClone, runHook, writeClaudeFile } from "../testing/hooks";
 import { git, tempDir } from "../testing/temp";
 import {
-  awayDir,
   awayStateFile,
   clearItems,
   type ParkDraft,
@@ -19,11 +17,10 @@ import {
 } from "../user-away/state";
 import type { OwnerSources } from "../user-away/whose";
 import { askLogFile } from "./ask-log";
-import { BUDGET_MARGIN_MS } from "./budget";
 import { toolDecision } from "./io";
 import type { HookSpec } from "./run";
 import { sessionNameHook, userAwayHook } from "./specs";
-import { askedWhileAway, userAwayAnswer } from "./user-away";
+import { userAwayAnswer } from "./user-away";
 import { awayStopBlock, awayStopWouldBlock } from "./user-away-stop";
 
 const SESSION = "11111111-2222-3333-4444-555555555555";
@@ -36,6 +33,10 @@ const NO_OWNERS: OwnerSources = {
 };
 const OPTIONS = { timeZone: "UTC", owners: NO_OWNERS };
 const SKILL = "/cc-smart-dev-kit:user-unavailable";
+/** The one command a session records a choice with: written by hand, so a changed word is seen here. */
+const RECORD = `cc-smart-dev-kit user park --kind decision "Summary: <what you chose, why, how to undo>"`;
+/** What the standing note tells a session to do while the person is away. */
+const DECIDE = `take the recommended option of every question, record each choice with \`${RECORD}\`, and keep working.`;
 
 /** A machine with the person away since `T0` (back about 07:00), and the paths a hook reads. */
 async function away(until: null | string = UNTIL) {
@@ -82,7 +83,7 @@ const ASKING: HookSpec = {
 };
 
 describe("AskUserQuestion and ExitPlanMode", () => {
-  test("denied while the person is away, with the step that parks the question", async () => {
+  test("denied while the person is away: take the recommended option, record a decision, park nothing", async () => {
     const { env, paths } = await away();
     const result = await userAwayAnswer(
       preToolUse("AskUserQuestion", { questions: [{ question: "Which name?" }] }),
@@ -95,12 +96,13 @@ describe("AskUserQuestion and ExitPlanMode", () => {
     expect(result).toEqual(
       toolDecision(
         "deny",
-        `The person is unavailable since 01:00, back about 07:00: do not wait for an answer. Park the question with \`cc-smart-dev-kit user park --kind question "<the question>" --option "<choice>" --option "<choice>" --recommend <n>\` and go on with whatever it does not block. A choice that is easy to undo, with a recommended option in the plan, you take yourself and park as \`--kind decision\`. The rules: ${SKILL}.`,
+        `The person is unavailable since 01:00, back about 07:00: do not wait for an answer. Take the recommended option yourself, keep working, and record the choice with \`${RECORD}\`. Never park a question or an action. The rules: ${SKILL}.`,
       ),
     );
+    expect(readAway(paths.stateDir).items).toEqual([]);
   });
 
-  test("a plan waiting for approval is parked the same way", async () => {
+  test("a plan waiting for approval is refused the same way, and parks nothing", async () => {
     const { env, paths } = await away(null);
     const result = await userAwayAnswer(
       preToolUse("ExitPlanMode", { plan: "..." }),
@@ -113,9 +115,10 @@ describe("AskUserQuestion and ExitPlanMode", () => {
     expect(result).toEqual(
       toolDecision(
         "deny",
-        `The person is unavailable since 01:00: the plan cannot be approved now. Park it with \`cc-smart-dev-kit user park --kind question "Approve the plan: <where it is, in one line>" --option "approve" --option "change it" --recommend 1\`, and go on with what needs no approval: reading, research, notes. The rules: ${SKILL}.`,
+        `The person is unavailable since 01:00: the plan cannot be approved now. Take the recommended option yourself, keep working, and record the choice with \`${RECORD}\`. Never park a question or an action. The rules: ${SKILL}.`,
       ),
     );
+    expect(readAway(paths.stateDir).items).toEqual([]);
   });
 
   test("allowed (silent) once the person is available again, and when nothing was ever said", async () => {
@@ -164,178 +167,55 @@ describe("AskUserQuestion and ExitPlanMode", () => {
 });
 
 describe("Claude Code's own permission prompt (PermissionRequest)", () => {
-  function permissionRequest(tool: string, toolInput: Record<string, unknown>) {
-    return {
-      hook_event_name: "PermissionRequest",
-      session_id: SESSION,
-      cwd: "/work/app",
-      tool_name: tool,
-      tool_input: toolInput,
-    };
-  }
+  const permissionRequest = (tool: string, toolInput: Record<string, unknown>) => ({
+    hook_event_name: "PermissionRequest",
+    session_id: SESSION,
+    cwd: "/work/app",
+    tool_name: tool,
+    tool_input: toolInput,
+  });
+  const CALLS: [string, Record<string, unknown>][] = [
+    ["Bash", { command: "make deploy" }],
+    ["Edit", { file_path: "/work/app/f.ts", old_string: "one", new_string: "two" }],
+    ["WebFetch", { url: "https://example.com/a", prompt: "x" }],
+    ["AskUserQuestion", { questions: [{ question: "Which name?" }] }],
+  ];
 
-  test("while away: denied with a message, and the command parked as an action", async () => {
+  test("while away: no answer at all, and nothing parked: Claude Code shows its own dialog", async () => {
     const { env, paths } = await away();
-    const result = await userAwayAnswer(
-      permissionRequest("Bash", { command: "rm -rf build" }),
-      "PermissionRequest",
-      env,
-      paths,
-      T0 + 5_000,
-      OPTIONS,
-    );
-    expect(JSON.parse(result.stdout ?? "{}")).toEqual({
-      hookSpecificOutput: {
-        hookEventName: "PermissionRequest",
-        decision: {
-          behavior: "deny",
-          message: `The person is unavailable since 01:00, back about 07:00, so this was not asked: it is parked as #1, an action that waits for their yes. Do not run it another way; go on with work that does not need it. The rules: ${SKILL}.`,
-        },
-      },
-    });
-    expect(readAway(paths.stateDir).items).toEqual([
-      {
-        id: 1,
-        kind: "action",
-        text: "Claude Code's own permission prompt: Bash",
-        command: "rm -rf build",
-        tool: "Bash",
-        options: [],
-        recommend: null,
-        session: SESSION,
-        cwd: "/work/app",
-        at: "2026-10-25T01:00:05.000Z",
-      },
-    ]);
+    for (const [tool, toolInput] of CALLS) {
+      const result = await userAwayAnswer(
+        permissionRequest(tool, toolInput),
+        "PermissionRequest",
+        env,
+        paths,
+        T0,
+        OPTIONS,
+      );
+      expect(result).toEqual({});
+    }
+    expect(readAway(paths.stateDir).items).toEqual([]);
   });
 
-  test("a call that is no shell command is parked by its tool and file", async () => {
-    const { env, paths } = await away();
-    await userAwayAnswer(
-      permissionRequest("Write", { file_path: "/etc/hosts", content: "x" }),
-      "PermissionRequest",
-      env,
-      paths,
-      T0,
-      OPTIONS,
-    );
-    const item = readAway(paths.stateDir).items[0];
-    expect(item?.command).toBeNull();
-    expect(item?.text).toBe(
-      `Claude Code's own permission prompt: Write /etc/hosts {"content":"x"}`,
-    );
-  });
-
-  test("the same prompt asked again is the same parked item", async () => {
-    const { env, paths } = await away();
+  test("through the spec the plugin wires: no output while away, none when available", async () => {
+    const { repo } = makeClone();
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", {});
+    const env = hookEnv();
     const input = permissionRequest("Bash", { command: "make deploy" });
-    await userAwayAnswer(input, "PermissionRequest", env, paths, T0, OPTIONS);
-    const again = await userAwayAnswer(input, "PermissionRequest", env, paths, T0 + 9, OPTIONS);
-    expect(readAway(paths.stateDir).items).toHaveLength(1);
-    expect(JSON.parse(again.stdout ?? "{}").hookSpecificOutput.decision.message).toContain(
-      "parked as #1",
-    );
-  });
-
-  test("a question tool is denied with the same step as before, parking nothing", async () => {
-    const { env, paths } = await away();
-    const result = await userAwayAnswer(
-      permissionRequest("AskUserQuestion", {}),
-      "PermissionRequest",
-      env,
-      paths,
-      T0,
-      OPTIONS,
-    );
-    const decision = decisionOf(result.stdout).decision;
-    expect(decision.behavior).toBe("deny");
-    expect(decision.message).toContain("Park the question with");
-    expect(readAway(paths.stateDir).items).toEqual([]);
-  });
-
-  test("available: silent, so Claude Code asks the person as it always did", async () => {
-    const { env, paths } = await away();
-    await setAvailable(paths.stateDir);
-    expect(
-      await userAwayAnswer(
-        permissionRequest("Bash", { command: "ls" }),
-        "PermissionRequest",
-        env,
-        paths,
-        T0,
-        OPTIONS,
-      ),
-    ).toEqual({});
-  });
-
-  test("the kit's own `user available`, `user status` and `user list` are silent: the person who is back answers Claude Code's prompt", async () => {
-    const { env, paths } = await away();
-    for (const command of [
-      "cc-smart-dev-kit user available",
-      "cc-smart-dev-kit user status --json",
-      "cc-smart-dev-kit user list --json",
-      "cc-smart-dev-kit user list",
-      "/home/user/.local/bin/cc-smart-dev-kit user status",
-    ]) {
-      const result = await userAwayAnswer(
-        permissionRequest("Bash", { command }),
-        "PermissionRequest",
-        env,
-        paths,
-        T0,
-        OPTIONS,
-      );
-      expect({ command, result }).toEqual({ command, result: {} });
+    input.cwd = repo;
+    await setUnavailable(cliPaths(env).stateDir, Date.now(), null);
+    for (const state of ["away", "available"]) {
+      if (state === "available") await setAvailable(cliPaths(env).stateDir);
+      const result = await runHook(userAwayHook, input, env);
+      expect(result.stdout ?? "").toBe("");
+      expect(result.stderr ?? "").toBe("");
     }
-    expect(readAway(paths.stateDir).items).toEqual([]);
+    expect(readAway(cliPaths(env).stateDir).items).toEqual([]);
   });
 
-  test("nothing gets looser: a line that holds more than the three reads is still parked", async () => {
+  test("a state file it cannot read changes nothing: still no answer, no line", async () => {
     const { env, paths } = await away();
-    for (const command of [
-      "cc-smart-dev-kit user available; rm -rf build",
-      "cc-smart-dev-kit user available && make deploy",
-      "cc-smart-dev-kit user list --json > /etc/hosts",
-      "cc-smart-dev-kit user list $(rm -rf build)",
-      "cc-smart-dev-kit user clear --all",
-      "cc-smart-dev-kit user park --kind action x --command y",
-      "cc-smart-dev-kit user unavailable",
-      "cc-smart-dev-kit doctor",
-      "echo cc-smart-dev-kit user available",
-      "FOO=1 cc-smart-dev-kit user available",
-      // Another program that holds the kit's name among its arguments runs that program, not the kit.
-      "bash -c 'rm -rf build' cc-smart-dev-kit user available",
-      "sh ./deploy.sh cc-smart-dev-kit user status",
-      "make deploy cc-smart-dev-kit user list --json",
-      "ssh prod.example.com cc-smart-dev-kit user available",
-      "node evil.js /opt/x/dist/cli.js user available",
-      "bun x.ts /opt/x/dist/cli.js user available",
-      "docker run --rm -v /:/h alpine cc-smart-dev-kit user status",
-    ]) {
-      const result = await userAwayAnswer(
-        permissionRequest("Bash", { command }),
-        "PermissionRequest",
-        env,
-        paths,
-        T0,
-        OPTIONS,
-      );
-      expect({ command, behavior: decisionOf(result.stdout)?.decision?.behavior }).toEqual({
-        command,
-        behavior: "deny",
-      });
-    }
-  });
-
-  test("a lock held too long still denies, inside the margin a guard keeps for its answer", async () => {
-    const { env, paths } = await away();
-    let release: () => void = () => {};
-    const held = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    const holding = withLock(awayDir(paths.stateDir), () => held);
-    await Bun.sleep(50);
-    const started = Date.now();
+    writeFileSync(awayStateFile(paths.stateDir), "{ nope");
     const result = await userAwayAnswer(
       permissionRequest("Bash", { command: "make deploy" }),
       "PermissionRequest",
@@ -344,165 +224,35 @@ describe("Claude Code's own permission prompt (PermissionRequest)", () => {
       T0,
       OPTIONS,
     );
-    const waitedMs = Date.now() - started;
-    release();
-    await holding;
-    expect(decisionOf(result.stdout).decision.message).toContain("could not be parked");
-    // A guard that kept its own budget (8 s of 10, 25 of 30) has BUDGET_MARGIN_MS left, and the
-    // park must fit in it: a hook the host kills answers nothing, and `onFailure: block` then
-    // blocks the call with no word to the session.
-    expect(waitedMs).toBeLessThan(BUDGET_MARGIN_MS);
-  });
-
-  test("a list that is full still denies, and says to park it by hand", async () => {
-    const { env, paths } = await away();
-    // The list at its cap, written once: 500 locked, fsynced parks one after the other would
-    // test how fast the disk is (they ran past the test timeout on a busy machine), not the cap.
-    const full = readAway(paths.stateDir);
-    full.items = Array.from({ length: 500 }, (_, index) => ({
-      ...draft({ text: `q${index}` }),
-      id: index + 1,
-      at: "2026-10-25T01:00:00.000Z",
-    }));
-    full.nextId = 501;
-    writeFileSync(awayStateFile(paths.stateDir), JSON.stringify(full));
-    const result = await userAwayAnswer(
-      permissionRequest("Bash", { command: "ls -la" }),
-      "PermissionRequest",
-      env,
-      paths,
-      T0,
-      OPTIONS,
-    );
-    const decision = decisionOf(result.stdout).decision;
-    expect(decision.behavior).toBe("deny");
-    expect(decision.message).toContain("could not be parked");
-    expect(result.stderr).toStartWith("cc-smart-dev-kit user-away: ");
+    expect(result).toEqual({});
   });
 });
 
-describe("a guard that would ask: the frame turns it into a deny and parks the command", () => {
-  const ASK = toolDecision("ask", "`git push --force` rewrites the remote's history.");
+describe("the frame no longer turns a guard's ask into a deny", () => {
+  const ASK = toolDecision("ask", "Approve this call.");
 
-  test("away: a deny with the guard's own words and the parked item's number", async () => {
-    const { env, paths } = await away();
-    const result = await askedWhileAway(
-      preToolUse("Bash", { command: "git push --force" }),
-      ASK,
-      env,
-      paths,
-      T0 + 1_000,
-      OPTIONS,
-    );
-    expect(result).toEqual(
-      toolDecision(
-        "deny",
-        `\`git push --force\` rewrites the remote's history.\n\nThe person is unavailable since 01:00, back about 07:00, so this was not asked: it is parked as #1, an action that waits for their yes. Do not run it another way; go on with work that does not need it. The rules: ${SKILL}.`,
-      ),
-    );
-    expect(readAway(paths.stateDir).items).toEqual([
-      {
-        id: 1,
-        kind: "action",
-        text: "Bash: `git push --force` rewrites the remote's history.",
-        command: "git push --force",
-        tool: "Bash",
-        options: [],
-        recommend: null,
-        session: SESSION,
-        cwd: "/work/app",
-        at: "2026-10-25T01:00:01.000Z",
-      },
-    ]);
-  });
-
-  test("never looser: a deny stays a deny, an allow stays an allow, silence stays silence", async () => {
-    const { env, paths } = await away();
-    const input = preToolUse("Bash", { command: "git push" });
-    for (const result of [
-      toolDecision("deny", "no"),
-      toolDecision("allow", "fine"),
-      {},
-      { stdout: "not json" },
-    ]) {
-      expect(await askedWhileAway(input, result, env, paths, T0, OPTIONS)).toEqual(result);
-    }
-    expect(readAway(paths.stateDir).items).toEqual([]);
-  });
-
-  test("available: the ask stays an ask", async () => {
-    const { env, paths } = await away();
-    await setAvailable(paths.stateDir);
-    expect(
-      await askedWhileAway(
-        preToolUse("Bash", { command: "git push" }),
-        ASK,
-        env,
-        paths,
-        T0,
-        OPTIONS,
-      ),
-    ).toEqual(ASK);
-    expect(readAway(paths.stateDir).items).toEqual([]);
-  });
-
-  test("a state file it cannot read keeps the ask, with one line why", async () => {
-    const { env, paths } = await away();
-    writeFileSync(awayStateFile(paths.stateDir), "{ nope");
-    const result = await askedWhileAway(
-      preToolUse("Bash", { command: "git push" }),
-      ASK,
-      env,
-      paths,
-      T0,
-      OPTIONS,
-    );
-    expect(result.stdout).toBe(ASK.stdout);
-    expect(result.stderr).toStartWith("cc-smart-dev-kit user-away: ");
-  });
-
-  test("a call that is no shell command (an edit) is parked by its tool and file", async () => {
-    const { env, paths } = await away();
-    const result = await askedWhileAway(
-      preToolUse("Edit", { file_path: "/repo/main/src/a.ts" }),
-      toolDecision("ask", "This edit is in the main checkout."),
-      env,
-      paths,
-      T0,
-      OPTIONS,
-    );
-    expect(decisionOf(result.stdout).permissionDecision).toBe("deny");
-    const item = readAway(paths.stateDir).items[0];
-    expect(item?.command).toBeNull();
-    expect(item?.tool).toBe("Edit");
-    expect(item?.text).toBe("Edit /repo/main/src/a.ts: This edit is in the main checkout.");
-  });
-
-  test("a command too long to keep whole is cut, and the item says so", async () => {
-    const { env, paths } = await away();
-    const long = `echo ${"x".repeat(20_000)}`;
-    await askedWhileAway(preToolUse("Bash", { command: long }), ASK, env, paths, T0, OPTIONS);
-    const item = readAway(paths.stateDir).items[0];
-    expect(item?.command?.length).toBe(16_000);
-    expect(item?.text).toContain("The command was cut at 16000 characters.");
-  });
-
-  test("through a hook that asks: the call asks when available, denies and parks while away", async () => {
+  test("away or available, an asking hook asks, and nothing is parked", async () => {
     const { repo } = makeClone();
     writeClaudeFile(repo, "cc-smart-dev-kit.json", {});
     const env = hookEnv();
+    const paths = cliPaths(env);
     const input = preToolUse("Bash", { command: "ls -la; true" });
     input.cwd = repo;
+    const log = askLogFile(paths.stateDir);
+    const lines = () =>
+      existsSync(log) ? readFileSync(log, "utf8").split("\n").filter(Boolean) : [];
 
-    const asked = await runHook(ASKING, input, env);
-    expect(decisionOf(asked.stdout).permissionDecision).toBe("ask");
+    const available = await runHook(ASKING, input, env);
+    expect(available.stdout).toBe(ASK.stdout);
+    expect(lines()).toHaveLength(1);
 
-    await setUnavailable(cliPaths(env).stateDir, Date.now(), null);
-    const denied = await runHook(ASKING, input, env);
-    const output = decisionOf(denied.stdout);
-    expect(output.permissionDecision).toBe("deny");
-    expect(output.permissionDecisionReason).toContain("parked as #1");
-    expect(readAway(cliPaths(env).stateDir).items[0]?.command).toBe("ls -la; true");
+    await setUnavailable(paths.stateDir, Date.now(), null);
+    const whileAway = await runHook(ASKING, input, env);
+    expect(whileAway.stdout).toBe(ASK.stdout);
+    expect(whileAway.stderr ?? "").toBe("");
+    // The ask is an ask, so the frame records it, away or not.
+    expect(lines()).toHaveLength(2);
+    expect(readAway(paths.stateDir).items).toEqual([]);
   });
 });
 
@@ -537,21 +287,21 @@ describe("the note at each prompt", () => {
     // A turn that is not the person's (a monitor's line): the standing note, once.
     const turn = "<task-notification><task-id>x</task-id></task-notification>";
     expect(await note(turn, state)).toBe(
-      `The person is unavailable since 01:00, back about 07:00. Follow ${SKILL}: park what needs them, go on with the rest. Nothing is parked yet.`,
+      `The person is unavailable since 01:00, back about 07:00. Follow ${SKILL}: ${DECIDE} Nothing is recorded yet.`,
     );
     expect(await note(turn, state)).toBeNull();
     expect(await note(turn, state)).toBeNull();
 
     await parkItem(state.paths.stateDir, draft(), T0);
     expect(await note(turn, state)).toBe(
-      `The person is unavailable since 01:00, back about 07:00. Follow ${SKILL}: park what needs them, go on with the rest. 1 item is parked.`,
+      `The person is unavailable since 01:00, back about 07:00. Follow ${SKILL}: ${DECIDE} 1 item is on the list.`,
     );
     expect(await note(turn, state)).toBeNull();
 
     await parkItem(state.paths.stateDir, draft({ text: "another" }), T0);
-    expect(await note(turn, state)).toContain("2 items are parked.");
+    expect(await note(turn, state)).toContain("2 items are on the list.");
     await clearItems(state.paths.stateDir, [1]);
-    expect(await note(turn, state)).toContain("1 item is parked.");
+    expect(await note(turn, state)).toContain("1 item is on the list.");
   });
 
   test("every session hears it once, in its own context", async () => {
@@ -706,7 +456,7 @@ describe("the note at each prompt", () => {
 
 describe("the note at turn end (Stop): a session the person never prompts hears the switch", () => {
   const PERIOD = "[away period 2026-10-25T01:00:00.000Z|2026-10-25T07:00:00.000Z]";
-  const BLOCK_REASON = `The person is unavailable since 01:00, back about 07:00. Follow ${SKILL}: park what needs them, go on with the rest. Nothing is parked yet. Do not end the turn on a question for them: park it with \`cc-smart-dev-kit user park\` and go on with the work it does not block. If nothing is left to do, end the turn. ${PERIOD}`;
+  const BLOCK_REASON = `The person is unavailable since 01:00, back about 07:00. Follow ${SKILL}: ${DECIDE} Nothing is recorded yet. Do not end the turn on a question for them: take the recommended option, record it, and go on. If nothing is left to do, end the turn. ${PERIOD}`;
   const turn = "<task-notification><task-id>x</task-id></task-notification>";
   type State = { env: Record<string, string>; paths: ReturnType<typeof cliPaths> };
 
@@ -883,11 +633,11 @@ describe("the note at turn end (Stop): a session the person never prompts hears 
     expect(await atPrompt(turn, state)).toBeNull();
     await parkItem(state.paths.stateDir, draft(), T0);
     expect(await atPrompt(turn, state)).toBe(
-      `The person is unavailable since 01:00, back about 07:00. Follow ${SKILL}: park what needs them, go on with the rest. 1 item is parked.`,
+      `The person is unavailable since 01:00, back about 07:00. Follow ${SKILL}: ${DECIDE} 1 item is on the list.`,
     );
     await clearItems(state.paths.stateDir, "all");
     expect(await atPrompt(turn, state)).toBe(
-      `The person is unavailable since 01:00, back about 07:00. Follow ${SKILL}: park what needs them, go on with the rest. Nothing is parked yet.`,
+      `The person is unavailable since 01:00, back about 07:00. Follow ${SKILL}: ${DECIDE} Nothing is recorded yet.`,
     );
   });
 
@@ -914,7 +664,7 @@ describe("the note at turn end (Stop): a session the person never prompts hears 
     await parkItem(state.paths.stateDir, draft(), T0);
     expect(await atStop(state, transcript)).toEqual({});
     expect(await atPrompt(turn, state)).toBe(
-      `The person is unavailable since 01:00, back about 07:00. Follow ${SKILL}: park what needs them, go on with the rest. 1 item is parked.`,
+      `The person is unavailable since 01:00, back about 07:00. Follow ${SKILL}: ${DECIDE} 1 item is on the list.`,
     );
   });
 
@@ -925,7 +675,7 @@ describe("the note at turn end (Stop): a session the person never prompts hears 
     await setAvailable(state.paths.stateDir);
     await setUnavailable(state.paths.stateDir, T0, null);
     expect(reasonOf(await atStop(state, transcript))).toBe(
-      `The person is unavailable since 01:00. Follow ${SKILL}: park what needs them, go on with the rest. Nothing is parked yet. Do not end the turn on a question for them: park it with \`cc-smart-dev-kit user park\` and go on with the work it does not block. If nothing is left to do, end the turn. [away period 2026-10-25T01:00:00.000Z|null]`,
+      `The person is unavailable since 01:00. Follow ${SKILL}: ${DECIDE} Nothing is recorded yet. Do not end the turn on a question for them: take the recommended option, record it, and go on. If nothing is left to do, end the turn. [away period 2026-10-25T01:00:00.000Z|null]`,
     );
   });
 
@@ -982,62 +732,14 @@ describe("the hook as the frame runs it", () => {
     await setAvailable(paths.stateDir);
     expect(await runHook(userAwayHook, input, env)).toEqual({});
   });
-
-  test("the file the park wrote is plain JSON", async () => {
-    const { env, paths } = await away();
-    await userAwayAnswer(
-      { ...preToolUse("Bash", { command: "x" }), hook_event_name: "PermissionRequest" },
-      "PermissionRequest",
-      env,
-      paths,
-      T0,
-      OPTIONS,
-    );
-    expect(JSON.parse(readFileSync(awayStateFile(paths.stateDir), "utf8")).items).toHaveLength(1);
-  });
 });
 
 describe("what the review found", () => {
-  const permissionRequest = (tool: string, toolInput: Record<string, unknown>) => ({
-    hook_event_name: "PermissionRequest",
-    session_id: SESSION,
-    cwd: "/work/app",
-    tool_name: tool,
-    tool_input: toolInput,
-  });
-
-  test("two prompts of one tool for different targets are two items, each naming its target", async () => {
-    const { env, paths } = await away();
-    const ask = (tool: string, toolInput: Record<string, unknown>) =>
-      userAwayAnswer(
-        permissionRequest(tool, toolInput),
-        "PermissionRequest",
-        env,
-        paths,
-        T0,
-        OPTIONS,
-      );
-    await ask("WebFetch", { url: "https://example.com/a", prompt: "x" });
-    await ask("WebFetch", { url: "https://example.com/b", prompt: "x" });
-    await ask("Edit", { file_path: "/work/app/f.ts", old_string: "one", new_string: "two" });
-    await ask("Edit", { file_path: "/work/app/f.ts", old_string: "three", new_string: "four" });
-    const items = readAway(paths.stateDir).items;
-    expect(items).toHaveLength(4);
-    expect(items[0]?.text).toContain("https://example.com/a");
-    expect(items[1]?.text).toContain("https://example.com/b");
-    expect(items[2]?.text).toContain("/work/app/f.ts");
-    expect(items[2]?.text).toContain("two");
-    expect(items[3]?.text).toContain("four");
-    // The same call twice is still one item.
-    await ask("WebFetch", { url: "https://example.com/a", prompt: "x" });
-    expect(readAway(paths.stateDir).items).toHaveLength(4);
-  });
-
   test("a crash on the events that ask nobody is one line on stderr, and on the question tools an ask", async () => {
     const { env, paths } = await away();
     const context = { env, paths, nowMs: T0 };
-    for (const event of ["PermissionRequest", "UserPromptSubmit", "Stop"]) {
-      const result = userAwayHook.onCrash?.("boom", permissionRequest("Bash", {}), event, context);
+    for (const event of ["UserPromptSubmit", "Stop"]) {
+      const result = userAwayHook.onCrash?.("boom", preToolUse("Bash"), event, context);
       expect(result?.stderr).toBe("cc-smart-dev-kit user-away: boom");
       expect(result?.stdout).toBeUndefined();
     }
@@ -1048,39 +750,5 @@ describe("what the review found", () => {
       context,
     );
     expect(decisionOf(asked?.stdout).permissionDecision).toBe("ask");
-  });
-
-  test("a permission prompt with a state file it cannot read: no answer, one line why", async () => {
-    const { env, paths } = await away();
-    writeFileSync(awayStateFile(paths.stateDir), "{ nope");
-    const result = await userAwayAnswer(
-      permissionRequest("Bash", { command: "make deploy" }),
-      "PermissionRequest",
-      env,
-      paths,
-      T0,
-      OPTIONS,
-    );
-    expect(result.stdout).toBeUndefined();
-    expect(result.stderr).toStartWith("cc-smart-dev-kit user-away: ");
-  });
-
-  test("an ask that became a deny is on the person's list and not in the record of asks", async () => {
-    const { repo } = makeClone();
-    writeClaudeFile(repo, "cc-smart-dev-kit.json", {});
-    const env = hookEnv();
-    const input = preToolUse("Bash", { command: "ls -la; true" });
-    input.cwd = repo;
-    const log = askLogFile(cliPaths(env).stateDir);
-    const lines = () =>
-      existsSync(log) ? readFileSync(log, "utf8").split("\n").filter(Boolean) : [];
-
-    await runHook(ASKING, input, env);
-    expect(lines()).toHaveLength(1);
-
-    await setUnavailable(cliPaths(env).stateDir, Date.now(), null);
-    const denied = await runHook(ASKING, input, env);
-    expect(decisionOf(denied.stdout).permissionDecision).toBe("deny");
-    expect(lines()).toHaveLength(1);
   });
 });

@@ -243,7 +243,6 @@ esac
     // (each subagent's cost on record). SubagentStart is `review-record`'s own start (it notes the commit a
     // review agent starts on) and nothing else.
     expect(Object.keys(hooksJson.hooks).sort()).toEqual([
-      "PermissionRequest",
       "PostModelSwitch",
       "PostToolUse",
       "PostToolUseFailure",
@@ -283,28 +282,26 @@ esac
     expect(matcher).toBe("Bash|PowerShell");
   });
 
-  test("the user-away hook: the two tools that ask the person on PreToolUse, a permission prompt, each prompt and each stop", () => {
+  test("the user-away hook: the two tools that ask the person on PreToolUse, each prompt and each stop; no permission prompt", () => {
     const entries = wired.filter(({ handler }) => bundleOf(handler) === "user-away");
     // Written by hand, so a changed list is seen here and not only in the constant.
     expect(entries.map(({ event, matcher }) => [event, matcher])).toEqual([
       ["PreToolUse", "AskUserQuestion|ExitPlanMode"],
       ["Stop", null],
       ["UserPromptSubmit", null],
-      ["PermissionRequest", null],
     ]);
     expect(entries.map(({ event }) => event).sort()).toEqual([...userAwayHook.events].sort());
     expect(AWAY_ASK_TOOLS.join("|")).toBe("AskUserQuestion|ExitPlanMode");
-    // Only its PreToolUse entry fails closed; the other three never stop a prompt, a permission
+    // Only its PreToolUse entry fails closed; the other two never stop a prompt
     // or a turn's end (`onFailure: block` never goes on a Stop entry).
     expect(entries.map(({ handler }) => handler.onFailure)).toEqual([
       "block",
       undefined,
       undefined,
-      undefined,
     ]);
-    // `PermissionRequest` is a hook event Claude Code runs before its own permission prompt: the
-    // one place a plugin can answer it (`docs/claude-code-contract.md`).
-    expect(hooksJson.hooks.PermissionRequest).toHaveLength(1);
+    // A hook never approves for the person, and no hook answers Claude Code's own permission
+    // prompt either: `PermissionRequest` is not wired at all.
+    expect(hooksJson.hooks).not.toHaveProperty("PermissionRequest");
   });
 
   test("the timeouts: short for a guard", () => {

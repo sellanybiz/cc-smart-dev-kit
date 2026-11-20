@@ -188,12 +188,15 @@ async function runUnavailable(args: string[], ctx: UserContext): Promise<number>
   await markSwitchingSession(ctx, state);
   const waiting =
     state.items.length === 0
-      ? "Nothing is parked yet."
-      : `${plural(state.items.length, "item is", "items are")} parked already.`;
-  ctx.out.line("info", `Sessions park what needs the person instead of asking. ${waiting}`);
+      ? "Nothing is recorded yet."
+      : `${plural(state.items.length, "item is", "items are")} on the list already.`;
+  ctx.out.line(
+    "info",
+    `Sessions take the recommended option and record a decision instead of asking. ${waiting}`,
+  );
   ctx.out.blank();
   ctx.out.next([
-    { text: "When the person is back, go through what waited:", command: AVAILABLE_SKILL },
+    { text: "When the person is back, go through what was decided:", command: AVAILABLE_SKILL },
   ]);
   return 0;
 }
