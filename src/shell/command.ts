@@ -1683,14 +1683,17 @@ export function invocationOf(words: readonly string[]): Invocation | undefined {
 }
 
 /**
- * True when a word is a program the shell works out when the line runs (`$GIT`,
- * `$(which git)`, a backtick). A path whose name is plain is not one: `$HOME/.local/bin/cc-smart-dev-kit`
- * names the command `cc-smart-dev-kit`, whatever folder it is in.
+ * True when a word is a program the shell works out when the line runs: it holds a `$` or a
+ * backtick anywhere in its name, not only at its start (`$GIT`, `$(which git)`, `g$(echo i)t`,
+ * `gi${T}`, `/usr/bin/gi$X`, `push$X`). A path whose name is plain is not one:
+ * `$HOME/.local/bin/cc-smart-dev-kit` names the command `cc-smart-dev-kit`, whatever folder it
+ * is in. The text is the word as `wordsOf` gives it, its quotes gone, so a quoted `'$x'` counts
+ * too, which is safe.
  */
 export function isComputedWord(word: string): boolean {
   // `{}` is the file `find -exec` and `xargs -I{}` put in its place: whatever it names runs.
   if (word === "{}") return true;
-  if (!word.startsWith("$") && !word.startsWith("`")) return false;
+  if (!/[$`]/.test(word)) return false;
   return /[$`(){}[\]\s]/.test(programName(word));
 }
 

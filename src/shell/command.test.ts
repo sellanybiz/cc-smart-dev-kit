@@ -10,6 +10,7 @@ import {
   dialectOfTool,
   invocationOf,
   invocationsOf,
+  isComputedWord,
   nestedCommand,
   nestedDialect,
   programsOf,
@@ -731,6 +732,27 @@ describe("invocationOf", () => {
     expect(invocationOf(wordsOf(`\${GIT} push`))?.computed).toBe(true);
     expect(invocationOf(wordsOf("`which git` push"))?.computed).toBe(true);
     expect(invocationOf(wordsOf("echo $(which git)"))?.computed).toBe(false);
+  });
+
+  // The final review's W2: only a word that started with the expansion counted.
+  test.each([
+    ["a substitution inside", "g$(echo i)t reset --hard"],
+    ["a braced variable at the end", `gi\${T} reset --hard`],
+    ["a variable in the program's name, after its path", "/usr/bin/gi$X reset --hard"],
+    ["a backtick inside", "g`echo i`t reset --hard"],
+    ["a quoted variable inside", 'gi"$T" reset --hard'],
+  ])("W2, a program holding an expansion anywhere is computed (%s): %j", (_name, line) => {
+    expect(invocationOf(wordsOf(line))?.computed).toBe(true);
+    expect(isComputedWord(wordsOf(line)[0] ?? "")).toBe(true);
+  });
+
+  test("W2, a word holding an expansion anywhere is computed; a plain name after a path is not", () => {
+    expect(isComputedWord("push$X")).toBe(true);
+    expect(isComputedWord("--har$D")).toBe(true);
+    expect(isComputedWord("-$F")).toBe(true);
+    expect(isComputedWord("$HOME/.local/bin/cc-smart-dev-kit")).toBe(false);
+    expect(isComputedWord("git")).toBe(false);
+    expect(isComputedWord("a.txt")).toBe(false);
   });
 
   test("F2a-3: Start-Process runs what -FilePath and -ArgumentList name", () => {
