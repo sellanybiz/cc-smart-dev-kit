@@ -27,6 +27,16 @@ in your own terminal after the update; the user guide is [README.md](README.md).
   Linux, one line names the reason. A command not on the PATH runs plain, so it still exits
   127.
 - Details, and the limits' own limits: [docs/jobs.md](docs/jobs.md) § CPU and memory limits.
+- **A plan gets one strict review, in two rounds, not a review per phase.**
+  - **The order:** round 1 → fixes → round 2 → fixes → the full check → the pull request.
+  - **The workflow:** each round is the `review-split` workflow, and every agent in it is the senior engineer on `opus` at `xhigh`.
+  - **The plan goes in:** every reviewer reads the plan, and a spec track checks each decision, edge case and step's done-check against the code.
+  - **Round 2:** it gets round 1's report, and marks each finding fixed, not fixed or made worse.
+  - **Two strict rules:** reviewers prove claims by running things where they can, and a track with no findings must say what it read and ran.
+  - **At a phase's hand-back:** the lead checks the builder's report against its branch, with no reviewer.
+  - **Fewer review runs:** this cuts the review runs per plan from one per phase plus re-reviews to two (`/cc-smart-dev-kit:build` § 6).
+- **`review-split` takes `spec`** (the plan file) **and `prior`** (round 1's report). Old calls run unchanged.
+- **A review that ran its own background commands is recorded again.** A reviewer's notice that its own background `bun test` ended counted as a message without the review marker. So the merge guard saw no review: the final review of job limits was never recorded. The record now treats that one notice as harmless.
 
 **What to run:** nothing. Run `cc-smart-dev-kit doctor` to see the limits on this machine.
 
