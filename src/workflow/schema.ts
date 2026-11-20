@@ -239,11 +239,11 @@ function withCurrentNames(raw: unknown): unknown {
 const workflowObjectSchema = z.strictObject({
   /** Let a finished, reviewed step be committed without asking. */
   allowCommit: z.boolean().optional(),
-  /** Let the session push its own branch (never a protected one: the git guard still asks there). */
+  /** Let the session push its own branch without asking. */
   allowPush: z.boolean().optional(),
   /** Open a pull request for the branch: `"off"`, `"draft"` or `"ready"`. */
   openPr: z.enum(["off", "draft", "ready"]).optional(),
-  /** Let a session merge into the project's integration base, after CI is green and the review is done. */
+  /** Let a session merge into the integration base or the default branch, after CI is green and the review is recorded (`workflow merge-check`). */
   allowMerge: z.boolean().optional(),
   /** How a merge is made. */
   mergeMethod: z.enum(["merge", "squash", "rebase"]).optional(),

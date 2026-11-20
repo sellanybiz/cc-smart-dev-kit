@@ -21525,7 +21525,7 @@ var COMMAND = "cc-smart-dev-kit";
 
 // src/build-info/index.ts
 var info = {
-  version: "6.0.0",
+  version: "6.1.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -23486,11 +23486,30 @@ var mergeFilesSchema = array(string2()).transform((paths, context) => {
   }
   return normalised;
 });
-var workflowSchema = strictObject({
-  autoCommit: boolean2().optional(),
-  autoPush: boolean2().optional(),
+var WORKFLOW_KEY_ALIASES = {
+  autoCommit: "allowCommit",
+  autoPush: "allowPush",
+  autoMerge: "allowMerge"
+};
+function withCurrentNames(raw) {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw))
+    return raw;
+  const moved = { ...raw };
+  for (const old of Object.keys(WORKFLOW_KEY_ALIASES)) {
+    if (!Object.hasOwn(moved, old))
+      continue;
+    const current = WORKFLOW_KEY_ALIASES[old];
+    if (!Object.hasOwn(moved, current))
+      moved[current] = moved[old];
+    delete moved[old];
+  }
+  return moved;
+}
+var workflowObjectSchema = strictObject({
+  allowCommit: boolean2().optional(),
+  allowPush: boolean2().optional(),
   openPr: _enum(["off", "draft", "ready"]).optional(),
-  autoMerge: boolean2().optional(),
+  allowMerge: boolean2().optional(),
   mergeMethod: _enum(["merge", "squash", "rebase"]).optional(),
   deleteBranch: boolean2().optional(),
   reviewBeforePush: boolean2().optional(),
@@ -23529,18 +23548,19 @@ var workflowSchema = strictObject({
   }).transform(({ events: _events, sound: _sound, ...usage }) => usage).optional(),
   crew: unknown().optional()
 });
-var personalWorkflowSchema = workflowSchema.extend({
+var workflowSchema = preprocess(withCurrentNames, workflowObjectSchema);
+var personalWorkflowSchema = preprocess(withCurrentNames, workflowObjectSchema.extend({
   plans: strictObject({
     maxPhases: numberField("plans.maxPhases"),
     runMode: _enum(RUN_MODES).optional()
   }).optional(),
   switches: strictObject({ jobRoute: boolean2().optional(), leadHint: boolean2().optional() }).optional()
-});
+}));
 var workflowDefaults = {
-  autoCommit: false,
-  autoPush: false,
+  allowCommit: false,
+  allowPush: false,
   openPr: "off",
-  autoMerge: false,
+  allowMerge: false,
   mergeMethod: "merge",
   deleteBranch: false,
   reviewBeforePush: true,
@@ -23575,10 +23595,10 @@ var SWITCH_NAMES = [
   "leadHint"
 ];
 var POLICY_KEYS = [
-  "autoCommit",
-  "autoPush",
+  "allowCommit",
+  "allowPush",
   "openPr",
-  "autoMerge",
+  "allowMerge",
   "mergeMethod",
   "deleteBranch",
   "reviewBeforePush",
@@ -25207,6 +25227,31 @@ function refuseBareClose(all, task, outcome, given) {
   if (outcome === "dropped" && !given.note?.trim())
     throw new Error(`${step}: a step is dropped with a note that gives the reason (${TASK_TOOL.done} with task "#${task.number}", outcome "dropped" and note)`);
 }
+function refuseEmptyHandBack(all, phase, outcome, git) {
+  const { branch, base } = phase;
+  if (phase.kind !== "phase" || outcome !== "done" || phase.status === "done")
+    return;
+  if (!branch || !base)
+    return;
+  const what = `#${phase.number} "${phase.subject}" records its builder's branch "${branch}" and base ${base}`;
+  const planBranch = all.find((t) => t.kind === "plan" && t.plan === phase.plan)?.branch ?? null;
+  for (const name of [branch, base, planBranch])
+    if (name?.startsWith("-"))
+      throw new Error(`${what}, and "${name}" is not a branch or commit name: fix the phase's binding`);
+  const counted = git(["rev-list", "--count", `${base}..${branch}`]);
+  if (!counted.ok)
+    throw new Error(`${what}: git could not count its commits (${counted.err || "no reason given"}), so the hand-back is not proved. Fix the binding or the repo, then close the phase`);
+  if (counted.out === "0")
+    throw new Error(`${what}, but "${branch}" has no commit past its base: the builder handed back nothing. Get its work committed on "${branch}" and merged into ${planBranch === null ? "the plan branch" : `"${planBranch}"`}, then close the phase`);
+  if (planBranch === null)
+    return;
+  const held = git(["merge-base", "--is-ancestor", branch, planBranch]);
+  if (held.ok)
+    return;
+  if (held.code === 1)
+    throw new Error(`${what}, but "${branch}" is not in the plan branch "${planBranch}": merge the builder's commit into "${planBranch}", then close the phase`);
+  throw new Error(`${what}: git could not check that "${branch}" is in the plan branch "${planBranch}" (${held.err || "no reason given"}), so the hand-back is not proved. Fix the binding or the repo, then close the phase`);
+}
 function refuseStepEscape(all, task, to) {
   const from = task.parentId === null ? undefined : all.find((t) => t.id === task.parentId);
   if (task.kind !== "task" || from?.kind !== "phase" || !isOpen(task))
@@ -26256,6 +26301,7 @@ function createTaskOps(options = {}) {
       };
       const claimedElsewhere = (t) => claimState(t, CLAIM_PROCESS, who) === "another session";
       const guardCaller = { owns, isLead: (t) => isLead(t.lead, who) };
+      const handBackGit = (args) => ctx.checkoutRoot === null ? { ok: false, out: "", err: "this folder is not in a git checkout", code: null } : runGit(ctx.checkoutRoot, args, env);
       const refuseOther = (plan) => refuseOtherPlan({ all, inFlight, plan, claimedElsewhere, caller: guardCaller });
       const freedAfter = (after, closed) => freedText(after, closed, owns, (plan) => planInTheWay({
         all: after,
@@ -26523,8 +26569,10 @@ function createTaskOps(options = {}) {
         refuseParkWhileBusy(all, task, status);
         if (input.parent !== undefined)
           refuseStepEscape(all, task, destination);
-        if (status === "done" || status === "dropped")
+        if (status === "done" || status === "dropped") {
           refuseBareClose(all, task, status, {});
+          refuseEmptyHandBack(all, task, status, handBackGit);
+        }
         const flight = entering ? startCheck(task.kind === "plan" ? task.plan : landing) : {};
         const updated = value(writeWork(store, () => {
           const changed = applyUpdate(store, task.id, {
@@ -26571,6 +26619,7 @@ function createTaskOps(options = {}) {
         }
         const task = work(input.task);
         refuseBareClose(all, task, input.outcome, { evidence: input.evidence, note: input.note });
+        refuseEmptyHandBack(all, task, input.outcome, handBackGit);
         const changed = value(writeWork(store, () => {
           for (const text of [input.note, input.evidence])
             if (text)

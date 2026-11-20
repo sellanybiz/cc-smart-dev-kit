@@ -39,7 +39,7 @@ var MIN_BUN = "1.4.3";
 
 // src/build-info/index.ts
 var info = {
-  version: "6.0.0",
+  version: "6.1.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -3518,7 +3518,7 @@ function handleRefineResult(result, payload, input, inst) {
     payload.issues.push(issue(_iss));
   }
 }
-var $ZodType, toStandardResult = (r, ctx) => r.issues.length ? { issues: r.issues.map((iss) => finalizeIssue(iss, ctx, config())) } : { value: r.value }, $ZodString, $ZodStringFormat, $ZodGUID, $ZodUUID, $ZodEmail, URL_BAD_FORMAT = 1, URL_UNPARSEABLE = 2, asciiTabOrNewline, $ZodURL, $ZodEmoji, $ZodNanoID, $ZodCUID, $ZodCUID2, $ZodULID, $ZodXID, $ZodKSUID, $ZodISODateTime, $ZodISODate, $ZodISOTime, $ZodISODuration, $ZodIPv4, ipv6Alphabet, $ZodIPv6, $ZodCIDRv4, $ZodCIDRv6, base64Charset, $ZodBase64, base64urlCharset, $ZodBase64URL, $ZodE164, $ZodJWT, $ZodNumber, $ZodNumberFormat, $ZodBoolean, $ZodUnknown, $ZodNever, arraySize = (input) => Array.isArray(input) ? input.length : -1, $ZodArray, NO_SYMBOL_KEYS, $ZodObject, $ZodObjectJIT, $ZodUnion, $ZodIntersection, $ZodRecord, $ZodEnum, $ZodLiteral, $ZodTransform, $ZodOptional, $ZodExactOptional, $ZodNullable, $ZodDefault, $ZodPrefault, $ZodNonOptional, $ZodCatch, $ZodPipe, $ZodReadonly, $ZodCustom;
+var $ZodType, toStandardResult = (r, ctx) => r.issues.length ? { issues: r.issues.map((iss) => finalizeIssue(iss, ctx, config())) } : { value: r.value }, $ZodString, $ZodStringFormat, $ZodGUID, $ZodUUID, $ZodEmail, URL_BAD_FORMAT = 1, URL_UNPARSEABLE = 2, asciiTabOrNewline, $ZodURL, $ZodEmoji, $ZodNanoID, $ZodCUID, $ZodCUID2, $ZodULID, $ZodXID, $ZodKSUID, $ZodISODateTime, $ZodISODate, $ZodISOTime, $ZodISODuration, $ZodIPv4, ipv6Alphabet, $ZodIPv6, $ZodCIDRv4, $ZodCIDRv6, base64Charset, $ZodBase64, base64urlCharset, $ZodBase64URL, $ZodE164, $ZodJWT, $ZodNumber, $ZodNumberFormat, $ZodBoolean, $ZodUnknown, $ZodNever, arraySize = (input) => Array.isArray(input) ? input.length : -1, $ZodArray, NO_SYMBOL_KEYS, $ZodObject, $ZodObjectJIT, $ZodUnion, $ZodIntersection, $ZodRecord, $ZodEnum, $ZodLiteral, $ZodTransform, $ZodOptional, $ZodExactOptional, $ZodNullable, $ZodDefault, $ZodPrefault, $ZodNonOptional, $ZodCatch, $ZodPipe, $ZodPreprocess, $ZodReadonly, $ZodCustom;
 var init_schemas = __esm(() => {
   init_checks();
   init_core();
@@ -4610,6 +4610,9 @@ var init_schemas = __esm(() => {
       }
       return handlePipeResult(left, def.out, ctx);
     };
+  });
+  $ZodPreprocess = /* @__PURE__ */ $constructor("$ZodPreprocess", (inst, def) => {
+    $ZodPipe.init(inst, def);
   });
   $ZodReadonly = /* @__PURE__ */ $constructor("$ZodReadonly", (inst, def) => {
     $ZodType.init(inst, def);
@@ -6889,7 +6892,14 @@ function refine(fn, _params = {}) {
 function superRefine(fn, params) {
   return _superRefine(fn, params);
 }
-var ZodType, _ZodString, ZodString, ZodStringFormat, ZodISODateTime, ZodISODate, ZodISOTime, ZodISODuration, ZodEmail, ZodGUID, ZodUUID, ZodURL, ZodEmoji, ZodNanoID, ZodCUID, ZodCUID2, ZodULID, ZodXID, ZodKSUID, ZodIPv4, ZodIPv6, ZodCIDRv4, ZodCIDRv6, ZodBase64, ZodBase64URL, ZodE164, ZodJWT, ZodNumber, ZodNumberFormat, ZodBoolean, ZodUnknown, ZodNever, ZodArray, ZodObject, ZodUnion, ZodIntersection, ZodRecord, ZodEnum, ZodLiteral, ZodTransform, ZodOptional, ZodExactOptional, ZodNullable, ZodDefault, ZodPrefault, ZodNonOptional, ZodCatch, ZodPipe, ZodReadonly, ZodCustom;
+function preprocess(fn, schema) {
+  return new ZodPreprocess({
+    type: "pipe",
+    in: transform(fn),
+    out: schema
+  });
+}
+var ZodType, _ZodString, ZodString, ZodStringFormat, ZodISODateTime, ZodISODate, ZodISOTime, ZodISODuration, ZodEmail, ZodGUID, ZodUUID, ZodURL, ZodEmoji, ZodNanoID, ZodCUID, ZodCUID2, ZodULID, ZodXID, ZodKSUID, ZodIPv4, ZodIPv6, ZodCIDRv4, ZodCIDRv6, ZodBase64, ZodBase64URL, ZodE164, ZodJWT, ZodNumber, ZodNumberFormat, ZodBoolean, ZodUnknown, ZodNever, ZodArray, ZodObject, ZodUnion, ZodIntersection, ZodRecord, ZodEnum, ZodLiteral, ZodTransform, ZodOptional, ZodExactOptional, ZodNullable, ZodDefault, ZodPrefault, ZodNonOptional, ZodCatch, ZodPipe, ZodPreprocess, ZodReadonly, ZodCustom;
 var init_schemas2 = __esm(() => {
   init_core2();
   init_core2();
@@ -7616,6 +7626,10 @@ var init_schemas2 = __esm(() => {
     inst._zod.processJSONSchema = (ctx, json, params) => pipeProcessor(inst, ctx, json, params);
     inst.in = def.in;
     inst.out = def.out;
+  });
+  ZodPreprocess = /* @__PURE__ */ $constructor("ZodPreprocess", (inst, def) => {
+    ZodPipe.init(inst, def);
+    $ZodPreprocess.init(inst, def);
   });
   ZodReadonly = /* @__PURE__ */ $constructor("ZodReadonly", (inst, def) => {
     $ZodReadonly.init(inst, def);
@@ -17003,6 +17017,36 @@ function normalizeMergeFile(raw) {
   };
   return { ok: false, why: why[parsed.problem] };
 }
+function isOldKeyName(name) {
+  return Object.hasOwn(WORKFLOW_KEY_ALIASES, name);
+}
+function currentKeyName(name) {
+  return isOldKeyName(name) ? WORKFLOW_KEY_ALIASES[name] : name;
+}
+function oldNamesOf(key) {
+  return Object.keys(WORKFLOW_KEY_ALIASES).filter((old) => WORKFLOW_KEY_ALIASES[old] === key);
+}
+function oldNamesIn(raw) {
+  return Object.keys(WORKFLOW_KEY_ALIASES).filter((old) => Object.hasOwn(raw, old)).map((old) => ({
+    old,
+    current: WORKFLOW_KEY_ALIASES[old],
+    both: Object.hasOwn(raw, WORKFLOW_KEY_ALIASES[old])
+  }));
+}
+function withCurrentNames(raw) {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw))
+    return raw;
+  const moved = { ...raw };
+  for (const old of Object.keys(WORKFLOW_KEY_ALIASES)) {
+    if (!Object.hasOwn(moved, old))
+      continue;
+    const current = WORKFLOW_KEY_ALIASES[old];
+    if (!Object.hasOwn(moved, current))
+      moved[current] = moved[old];
+    delete moved[old];
+  }
+  return moved;
+}
 function isSwitchKey(key) {
   return SWITCH_KEYS.includes(key);
 }
@@ -17088,7 +17132,7 @@ function showValue(_key, value) {
     return value.length === 0 ? "(nothing)" : value.join(", ");
   return String(value);
 }
-var PERCENT, AT_LEAST_ZERO, PHASE_COUNT, NUMBER_RULES, LABEL_RULE = "a label name of 1-50 characters on one line, with no comma, not starting with -", labelSchema, RUN_MODES, MERGE_FILES_RULE = "plans.mergeFiles is a list of paths inside the repository, written with / (a folder ends in /), with no absolute path, no .. and not the root", mergeFilesSchema, workflowSchema, PERSONAL_FILE_SWITCH_NAMES, personalWorkflowSchema, workflowDefaults, SWITCH_NAMES, POLICY_KEYS, REVIEW_GATE_KEYS, OUTBOUND_KEYS, INBOUND_KEYS, PLAN_KEYS, PERSONAL_ONLY_KEYS, PROJECT_ONLY_KEYS, SWITCH_KEYS, WORKFLOW_KEYS, PROJECT_SWITCH_NAMES, PERSONAL_ONLY_REASONS;
+var PERCENT, AT_LEAST_ZERO, PHASE_COUNT, NUMBER_RULES, LABEL_RULE = "a label name of 1-50 characters on one line, with no comma, not starting with -", labelSchema, RUN_MODES, MERGE_FILES_RULE = "plans.mergeFiles is a list of paths inside the repository, written with / (a folder ends in /), with no absolute path, no .. and not the root", mergeFilesSchema, WORKFLOW_KEY_ALIASES, workflowObjectSchema, workflowSchema, PERSONAL_FILE_SWITCH_NAMES, personalWorkflowSchema, workflowDefaults, SWITCH_NAMES, POLICY_KEYS, REVIEW_GATE_KEYS, OUTBOUND_KEYS, INBOUND_KEYS, PLAN_KEYS, PERSONAL_ONLY_KEYS, PROJECT_ONLY_KEYS, SWITCH_KEYS, WORKFLOW_KEYS, PROJECT_SWITCH_NAMES, PERSONAL_ONLY_REASONS;
 var init_schema = __esm(() => {
   init_zod();
   PERCENT = { kind: "whole", max: 100, min: 1 };
@@ -17116,11 +17160,16 @@ var init_schema = __esm(() => {
     }
     return normalised;
   });
-  workflowSchema = strictObject({
-    autoCommit: boolean2().optional(),
-    autoPush: boolean2().optional(),
+  WORKFLOW_KEY_ALIASES = {
+    autoCommit: "allowCommit",
+    autoPush: "allowPush",
+    autoMerge: "allowMerge"
+  };
+  workflowObjectSchema = strictObject({
+    allowCommit: boolean2().optional(),
+    allowPush: boolean2().optional(),
     openPr: _enum(["off", "draft", "ready"]).optional(),
-    autoMerge: boolean2().optional(),
+    allowMerge: boolean2().optional(),
     mergeMethod: _enum(["merge", "squash", "rebase"]).optional(),
     deleteBranch: boolean2().optional(),
     reviewBeforePush: boolean2().optional(),
@@ -17159,22 +17208,23 @@ var init_schema = __esm(() => {
     }).transform(({ events: _events, sound: _sound, ...usage }) => usage).optional(),
     crew: unknown().optional()
   });
+  workflowSchema = preprocess(withCurrentNames, workflowObjectSchema);
   PERSONAL_FILE_SWITCH_NAMES = [
     "jobRoute",
     "leadHint"
   ];
-  personalWorkflowSchema = workflowSchema.extend({
+  personalWorkflowSchema = preprocess(withCurrentNames, workflowObjectSchema.extend({
     plans: strictObject({
       maxPhases: numberField("plans.maxPhases"),
       runMode: _enum(RUN_MODES).optional()
     }).optional(),
     switches: strictObject({ jobRoute: boolean2().optional(), leadHint: boolean2().optional() }).optional()
-  });
+  }));
   workflowDefaults = {
-    autoCommit: false,
-    autoPush: false,
+    allowCommit: false,
+    allowPush: false,
     openPr: "off",
-    autoMerge: false,
+    allowMerge: false,
     mergeMethod: "merge",
     deleteBranch: false,
     reviewBeforePush: true,
@@ -17209,10 +17259,10 @@ var init_schema = __esm(() => {
     "leadHint"
   ];
   POLICY_KEYS = [
-    "autoCommit",
-    "autoPush",
+    "allowCommit",
+    "allowPush",
     "openPr",
-    "autoMerge",
+    "allowMerge",
     "mergeMethod",
     "deleteBranch",
     "reviewBeforePush",
@@ -17232,7 +17282,7 @@ var init_schema = __esm(() => {
     "plans.mergeFiles"
   ];
   REVIEW_GATE_KEYS = [
-    "autoMerge",
+    "allowMerge",
     "reviewBeforePush",
     "reviewAgents",
     "fixesAfterReview.lines",
@@ -17339,7 +17389,7 @@ function checkCcSmartDevKitConfig(raw, where, pluginVersion = VERSION) {
   }
   return parsed.data;
 }
-var PLUGIN_HOOK_NAMES, RETIRED_HOOK_NAMES, UNSWITCHABLE_HOOK_NAMES, WORKTREE_PREFIX_OPTIONAL_SINCE = "0.5.2", WORKTREE_ENGINE_RETIRED_IN = "1.0.0", RETIRED_WORKTREE_FIELDS, WORKFLOW_FIXES_SINCE = "1.0.0", WORKTREE_AUTO_CLEAN_SINCE = "1.0.0", WORKTREE_REBUILDABLE_SINCE = "1.9.0", CHECKS_SINCE = "1.1.0", WORKFLOW_ISSUES_SINCE = "1.4.0", WORKFLOW_PLANS_SINCE = "4.8.0", WORKFLOW_MERGE_FILES_SINCE = "5.2.0", JOB_KIND_KEYS_SINCE, DEPLOY_GUARD_SINCE = "5.3.0", OWN_HOOK_NAMES_SINCE, TASKS_SINCE = "1.10.0", DEPLOY_TASKS_SINCE = "5.0.0", deployCommandEntry, deployCommandList, inCheckout, IGNORED_TASK_SCHEMAS, IGNORED_TASK_FIELDS, ccSmartDevKitConfigSchema, CcSmartDevKitConfigError, CcSmartDevKitVersionError, CcSmartDevKitRetiredFieldError;
+var PLUGIN_HOOK_NAMES, RETIRED_HOOK_NAMES, UNSWITCHABLE_HOOK_NAMES, WORKTREE_PREFIX_OPTIONAL_SINCE = "0.5.2", WORKTREE_ENGINE_RETIRED_IN = "1.0.0", RETIRED_WORKTREE_FIELDS, WORKFLOW_FIXES_SINCE = "1.0.0", WORKTREE_AUTO_CLEAN_SINCE = "1.0.0", WORKTREE_REBUILDABLE_SINCE = "1.9.0", CHECKS_SINCE = "1.1.0", WORKFLOW_ISSUES_SINCE = "1.4.0", WORKFLOW_PLANS_SINCE = "4.8.0", WORKFLOW_MERGE_FILES_SINCE = "5.2.0", WORKFLOW_ALLOW_KEYS_SINCE = "6.1.0", JOB_KIND_KEYS_SINCE, DEPLOY_GUARD_SINCE = "5.3.0", OWN_HOOK_NAMES_SINCE, TASKS_SINCE = "1.10.0", DEPLOY_TASKS_SINCE = "5.0.0", deployCommandEntry, deployCommandList, inCheckout, IGNORED_TASK_SCHEMAS, IGNORED_TASK_FIELDS, ccSmartDevKitConfigSchema, CcSmartDevKitConfigError, CcSmartDevKitVersionError, CcSmartDevKitRetiredFieldError;
 var init_config2 = __esm(() => {
   init_zod();
   init_build_info();
@@ -22312,10 +22362,10 @@ function resolveWorkflow(paths, projectConfig) {
   const fixes = merged.fixesAfterReview ?? {};
   const issues = merged.issues ?? {};
   return {
-    autoCommit: of("autoCommit", merged.autoCommit ?? workflowDefaults.autoCommit),
-    autoPush: of("autoPush", merged.autoPush ?? workflowDefaults.autoPush),
+    allowCommit: of("allowCommit", merged.allowCommit ?? workflowDefaults.allowCommit),
+    allowPush: of("allowPush", merged.allowPush ?? workflowDefaults.allowPush),
     openPr: of("openPr", merged.openPr ?? workflowDefaults.openPr),
-    autoMerge: of("autoMerge", merged.autoMerge ?? workflowDefaults.autoMerge),
+    allowMerge: of("allowMerge", merged.allowMerge ?? workflowDefaults.allowMerge),
     mergeMethod: of("mergeMethod", merged.mergeMethod ?? workflowDefaults.mergeMethod),
     deleteBranch: of("deleteBranch", merged.deleteBranch ?? workflowDefaults.deleteBranch),
     reviewBeforePush: of("reviewBeforePush", merged.reviewBeforePush ?? workflowDefaults.reviewBeforePush),
@@ -22355,10 +22405,10 @@ var init_resolve2 = __esm(() => {
     name = "WorkflowConfigError";
   };
   RESOLVED = {
-    autoCommit: (r) => r.autoCommit,
-    autoPush: (r) => r.autoPush,
+    allowCommit: (r) => r.allowCommit,
+    allowPush: (r) => r.allowPush,
     openPr: (r) => r.openPr,
-    autoMerge: (r) => r.autoMerge,
+    allowMerge: (r) => r.allowMerge,
     mergeMethod: (r) => r.mergeMethod,
     deleteBranch: (r) => r.deleteBranch,
     reviewBeforePush: (r) => r.reviewBeforePush,
@@ -22386,10 +22436,10 @@ var init_resolve2 = __esm(() => {
 
 // src/workflow/auto-merge.ts
 function autoMergeOff(resolved, base) {
-  if (resolved.autoMerge.value)
+  if (resolved.allowMerge.value)
     return null;
   const where = base ?? "the integration base (worktrees.base)";
-  return `autoMerge is off (${sourceLabel(resolved.autoMerge, base)}): turn it on in ${CONFIG_PATH} ("workflow": {"autoMerge": true}), commit it to ${where} and push`;
+  return `allowMerge is off (${sourceLabel(resolved.allowMerge, base)}): turn it on in ${CONFIG_PATH} ("workflow": {"allowMerge": true}), commit it to ${where} and push`;
 }
 function autoMergeRefusal(resolved, projectConfig, prBase, defaultBranch) {
   const off = autoMergeOff(resolved, prBase);
@@ -24502,7 +24552,7 @@ function isOneCommand(body) {
 }
 function expandScript(call, runner, bodies, lookedUpIn, kinds, depth, run, all, out) {
   if (depth >= MAX_NESTING)
-    return opaque(out);
+    return opaque(out, "unreadable");
   const name = call.script ?? "";
   const folder = bodies.folder ?? lookedUpIn;
   const hooks = !(runner === "yarn" && bodies.yarnBerry === true);
@@ -24513,7 +24563,8 @@ function expandScript(call, runner, bodies, lookedUpIn, kinds, depth, run, all, 
     const key = JSON.stringify([folder, part]);
     if (run.reading.includes(key)) {
       if (all)
-        return opaque(out);
+        return opaque(out, "unreadable");
+      out.unread ??= "unreadable";
       continue;
     }
     const inside = {
@@ -24525,18 +24576,19 @@ function expandScript(call, runner, bodies, lookedUpIn, kinds, depth, run, all, 
       reading: [...run.reading, key]
     };
     if (!scan(bodies.get(part) ?? "", kinds, "bash", depth + 1, inside, all, out) && all) {
-      return opaque(out);
+      return opaque(out, "unreadable");
     }
   }
   return true;
 }
-function opaque(out) {
+function opaque(out, why) {
   out.opaque = true;
+  out.unread ??= why;
   return false;
 }
 function refuse2(run, out, step) {
   if (run.reading.length > 0)
-    return opaque(out);
+    return opaque(out, "not-heavy");
   out.stray ??= step.text.trim();
   return false;
 }
@@ -24600,10 +24652,12 @@ function scan(command, kinds, dialect, depth, run, all, out) {
     if (all && runsAsAnotherUser(invocation)) {
       const asked = newScan();
       scan(step.text, kinds, dialect, depth + 1, { ...run }, false, asked);
-      return takesSlot(asked, kinds, run.source) ? opaque(out) : refuse2(run, out, step);
+      return takesSlot(asked, kinds, run.source) ? opaque(out, "other-user") : refuse2(run, out, step);
     }
     if (all && isRunnerProgram(program))
       return refuse2(run, out, step);
+    if (!all && runsAsAnotherUser(invocation))
+      out.unread ??= "other-user";
     if (isJobRun(program, args))
       out.queued = true;
     const inner = nestedCommand(program, args, step.pipedFrom);
@@ -24613,7 +24667,7 @@ function scan(command, kinds, dialect, depth, run, all, out) {
       extra: undefined,
       pipeFed: run.pipeFed || pipeFed,
       step: pipeFed ? null : run.step
-    }, all, out) : opaque(out);
+    }, all, out) : opaque(out, "unreadable");
     if (all && inner !== undefined) {
       if (pipeFed)
         return refuse2(run, out, step);
@@ -24625,12 +24679,22 @@ function scan(command, kinds, dialect, depth, run, all, out) {
     const before = out.found.length;
     const heavy = call !== undefined && matchCall(call, program, kinds, depth, run, all, out);
     if (all && !heavy && !(dialect === "bash" && isGlueCommand(step))) {
-      if (out.opaque && out.found.length === before && run.reading.length === 0) {
+      if (out.opaque && run.reading.length === 0) {
         const body = newScan();
         if (call !== undefined)
           matchCall(call, program, kinds, depth, { ...run }, false, body);
-        if (!takesSlot(body, kinds, run.source))
+        if (!takesSlot(body, kinds, run.source)) {
+          if (out.found.length === before)
+            out.opaque = false;
+        } else if (out.unread === "not-heavy" && body.unread === null) {
+          out.found.length = before;
+          out.found.push(...body.found);
+          out.background ||= body.background;
+          out.queued ||= body.queued;
           out.opaque = false;
+          out.unread = null;
+          continue;
+        }
       }
       return out.opaque ? false : refuse2(run, out, step);
     }
@@ -25102,7 +25166,8 @@ var CD_OPTIONS, COMPUTED_FOLDER, newScan = () => ({
   background: false,
   queued: false,
   stray: null,
-  opaque: false
+  opaque: false,
+  unread: null
 }), LONE_AMPERSAND, NPM_EXECPATH, READS_ONLY = () => true, isOption = (arg) => arg.startsWith("-") && arg !== "-", isShortCluster = (arg) => /^-[^-]/.test(arg), NO_WORDS, HEAD_TAIL_SHAPE, CUT_SHAPE, FILES0_LIST, SORT_SHAPE, UNIQ_SHAPE, GREP_SHAPE, AWK_SHAPE, SED_SCRIPT, SED_LENGTH, SED_SHAPE, SED_SHORT, SED_LONG, SED_PLAIN_COMMANDS = "=DdGgHhNnPpQqxz}", AWK_OPENS_FILES, READ_ONLY_FILTERS, GLUE_COMMANDS, INPUT_REDIRECTION, ARITHMETIC_WORD, LITERAL_SUBSCRIPT, SET_OPTIONS, SET_OPTION_NAME, EXIT_CODE, SAFE_SET_LETTERS, SAFE_SET_NAMES;
 var init_classify = __esm(() => {
   init_command();
@@ -28842,17 +28907,17 @@ var init_retry_watchdog = __esm(() => {
 // src/workflow/clashes.ts
 function workflowClashes(input) {
   const clashes = [];
-  if (input.openPr !== "off" && !input.autoPush) {
+  if (input.openPr !== "off" && !input.allowPush) {
     clashes.push({
-      fix: `turn autoPush on (\`${COMMAND} workflow set autoPush true\`), or set openPr off (\`${COMMAND} workflow set openPr off\`)`,
-      line: "openPr opens a pull request, but autoPush is off: a session does not push, and that pull request needs the push, so it waits for you every time",
+      fix: `turn allowPush on (\`${COMMAND} workflow set allowPush true\`), or set openPr off (\`${COMMAND} workflow set openPr off\`)`,
+      line: "openPr opens a pull request, but allowPush is off: a session does not push, and that pull request needs the push, so it waits for you every time",
       setting: "openPr"
     });
   }
-  if (input.autoMerge && input.openPr === "draft") {
+  if (input.allowMerge && input.openPr === "draft") {
     clashes.push({
-      fix: `set openPr ready (\`${COMMAND} workflow set openPr ready\`) so the pull request can merge, or turn autoMerge off (\`${COMMAND} workflow set autoMerge false\`)`,
-      line: "openPr is draft and autoMerge is on: a draft pull request is never merged, so autoMerge never acts on the pull request a session opens",
+      fix: `set openPr ready (\`${COMMAND} workflow set openPr ready\`) so the pull request can merge, or turn allowMerge off (\`${COMMAND} workflow set allowMerge false\`)`,
+      line: "openPr is draft and allowMerge is on: a draft pull request is never merged, so allowMerge never acts on the pull request a session opens",
       setting: "openPr"
     });
   }
@@ -28860,8 +28925,8 @@ function workflowClashes(input) {
 }
 function clashesOf(resolved) {
   return workflowClashes({
-    autoMerge: resolved.autoMerge.value,
-    autoPush: resolved.autoPush.value,
+    allowMerge: resolved.allowMerge.value,
+    allowPush: resolved.allowPush.value,
     openPr: resolved.openPr.value
   });
 }
@@ -29511,6 +29576,9 @@ function requiresFloor(file, options = {}) {
   if (Object.hasOwn(workflow, "fixesAfterReview")) {
     needs.push(WORKFLOW_FIXES_SINCE);
   }
+  if (Object.values(WORKFLOW_KEY_ALIASES).some((name) => Object.hasOwn(workflow, name))) {
+    needs.push(WORKFLOW_ALLOW_KEYS_SINCE);
+  }
   if (Object.hasOwn(workflow, "plans"))
     needs.push(WORKFLOW_PLANS_SINCE);
   if (isObject(workflow.plans) && Object.hasOwn(workflow.plans, "mergeFiles")) {
@@ -29761,8 +29829,8 @@ function planProjectInit(input, extras = {}) {
   }
   const personal = input.personalWorkflow ?? {};
   for (const clash of workflowClashes({
-    autoMerge: answers.workflow.autoMerge ?? personal.autoMerge ?? workflowDefaults.autoMerge,
-    autoPush: answers.workflow.autoPush ?? personal.autoPush ?? workflowDefaults.autoPush,
+    allowMerge: answers.workflow.allowMerge ?? personal.allowMerge ?? workflowDefaults.allowMerge,
+    allowPush: answers.workflow.allowPush ?? personal.allowPush ?? workflowDefaults.allowPush,
     openPr: answers.workflow.openPr ?? personal.openPr ?? workflowDefaults.openPr
   })) {
     notes.push(clashNote(clash));
@@ -29830,9 +29898,17 @@ function unknownKey(key) {
   return new Error(`Unknown setting: ${key}. The settings are: ${WORKFLOW_KEYS.join(", ")}`);
 }
 function requireKey(key) {
-  if (!WORKFLOW_KEYS.includes(key))
+  const current = currentKeyName(key);
+  if (!WORKFLOW_KEYS.includes(current))
     throw unknownKey(key);
-  return key;
+  return current;
+}
+function removeOldNames(data, path) {
+  const leaf = path.at(-1);
+  if (leaf === undefined)
+    return;
+  for (const old of oldNamesOf(leaf))
+    removeLeaf(data, [...path.slice(0, -1), old]);
 }
 function setLeaf(data, path, value) {
   let node = data;
@@ -29896,6 +29972,7 @@ function writePersonalSetting(paths, key, value) {
     removeLeaf(data, wanted.split("."));
   else
     setLeaf(data, wanted.split("."), value);
+  removeOldNames(data, wanted.split("."));
   const checked = personalWorkflowSchema.safeParse(data);
   if (!checked.success) {
     throw new WorkflowConfigError(`Invalid ${file}: ${describeIssues(checked.error.issues)}`);
@@ -29935,6 +30012,7 @@ function writeProjectFile(cwd, path, key, value, env) {
     removeLeaf(data, path);
   else
     setLeaf(data, path, value);
+  removeOldNames(data, path);
   const needed = requiresFloor(data);
   if (Bun.semver.order(needed.version, requiresFloor(before).version) > 0 || requiresTooLow(data.requires, needed.version)) {
     data.requires = raisedRequires(data.requires, needed.floor, needed.version);
@@ -30326,6 +30404,9 @@ var init_propose = __esm(() => {
 
 // src/workflow/commands.ts
 import { resolve as resolve10 } from "path";
+function renamedLine(typed, current) {
+  return typed === current ? null : `${typed} is now called ${current}: using ${current} (the old name still works in a file)`;
+}
 function project(cwd, env) {
   try {
     const checkout = locateCheckout(cwd, { env });
@@ -30621,13 +30702,14 @@ function setOrUnset(context, sub, argv) {
 ${WORKFLOW_USAGE}`);
     return 2;
   }
-  if (key === undefined || !WORKFLOW_KEYS.includes(key)) {
+  const current = key === undefined ? undefined : currentKeyName(key);
+  if (key === undefined || current === undefined || !WORKFLOW_KEYS.includes(current)) {
     context.error(key === undefined ? `${sub} needs a setting
 
 ${WORKFLOW_USAGE}` : `Unknown setting: ${key}. The settings are: ${WORKFLOW_KEYS.join(", ")}`);
     return 2;
   }
-  const wanted = key;
+  const wanted = current;
   if ((OUTBOUND_KEYS.includes(wanted) || INBOUND_KEYS.includes(wanted)) && insideClaudeCode(context.env)) {
     context.error(issueKeyRefusal(sub === "set" ? "set" : "unset", wanted));
     return 1;
@@ -30665,7 +30747,10 @@ ${WORKFLOW_USAGE}`);
     return 2;
   }
   try {
-    const line = projectFlag ? writeProjectSetting(context.cwd, key, value, context.env) : writePersonalSetting(context.paths, key, value);
+    const line = projectFlag ? writeProjectSetting(context.cwd, wanted, value, context.env) : writePersonalSetting(context.paths, wanted, value);
+    const renamed = renamedLine(key, wanted);
+    if (renamed !== null)
+      context.print(renamed);
     context.print(line);
     const here = project(context.cwd, context.env);
     for (const clash of clashLines(clashesOf(resolveWorkflow(context.paths, here.config)))) {
@@ -30706,15 +30791,16 @@ function proposeArgs(argv) {
     words.push(arg);
   }
   const [key, ...rest] = words;
-  if (key === undefined || !WORKFLOW_KEYS.includes(key)) {
+  const current = key === undefined ? undefined : currentKeyName(key);
+  if (key === undefined || current === undefined || !WORKFLOW_KEYS.includes(current)) {
     return {
       ok: false,
       why: key === undefined ? "propose needs a setting" : `Unknown setting: ${key}. The settings are: ${WORKFLOW_KEYS.join(", ")}`
     };
   }
-  const wanted = key;
+  const wanted = current;
   if (unset) {
-    return rest.length > 0 ? { ok: false, why: "propose takes a value, or --unset, not both" } : { folder, json, ok: true, setting: wanted, value: undefined };
+    return rest.length > 0 ? { ok: false, why: "propose takes a value, or --unset, not both" } : { folder, json, ok: true, setting: wanted, typed: key, value: undefined };
   }
   const text = rest[0];
   if (rest.length !== 1 || text === undefined) {
@@ -30724,7 +30810,7 @@ function proposeArgs(argv) {
     };
   }
   const parsed = parseWorkflowValue(wanted, text);
-  return parsed.ok ? { folder, json, ok: true, setting: wanted, value: parsed.value } : { ok: false, why: parsed.why };
+  return parsed.ok ? { folder, json, ok: true, setting: wanted, typed: key, value: parsed.value } : { ok: false, why: parsed.why };
 }
 async function propose(context, argv) {
   const parsed = proposeArgs(argv);
@@ -30734,6 +30820,9 @@ async function propose(context, argv) {
 ${WORKFLOW_USAGE}`);
     return 2;
   }
+  const renamed = parsed.json ? null : renamedLine(parsed.typed, parsed.setting);
+  if (renamed !== null)
+    context.print(renamed);
   return await proposeWorkflow({
     env: context.env,
     folder: parsed.folder === null ? context.cwd : resolve10(context.cwd, parsed.folder),
@@ -30760,7 +30849,7 @@ async function runWorkflow(argv, context) {
 ${WORKFLOW_USAGE}`);
   return 2;
 }
-var WORKFLOW_USAGE, WORKFLOW_GIT_TIMEOUT_MS = 5000, MERGE_CHECK_TIMEOUT_MS = 30000;
+var OLD_NAMES_TEXT, WORKFLOW_USAGE, WORKFLOW_GIT_TIMEOUT_MS = 5000, MERGE_CHECK_TIMEOUT_MS = 30000;
 var init_commands4 = __esm(() => {
   init_names();
   init_paths2();
@@ -30773,9 +30862,11 @@ var init_commands4 = __esm(() => {
   init_reviews();
   init_schema();
   init_write2();
+  OLD_NAMES_TEXT = `${Object.keys(WORKFLOW_KEY_ALIASES).join(", ")} are the old names of ${Object.values(WORKFLOW_KEY_ALIASES).join(", ")} (6.1.0): a file and this command still take them, and every write uses the new name`;
   WORKFLOW_USAGE = `Usage: ${COMMAND} workflow [show] | set <setting> <value> [--project] | unset <setting> [--project] | propose <setting> <value> [--unset] [--folder <project>] [--json] | review-done [--sha <commit>] | merge-check [<pr>\u2026 | --branch <b> --base <base>]
 
 The settings are: ${WORKFLOW_KEYS.join(", ")}
+${OLD_NAMES_TEXT}.
 show (the default) prints each value and where it came from: the project's
 .claude/cc-smart-dev-kit.json, your own ~/.config/cc-smart-dev-kit/workflow.json, or the
 built-in default, and whether the commit this checkout is on has a recorded review. set
@@ -30807,12 +30898,12 @@ the paths every plan touches and each merge settles; it is the project's, needs 
 counts only as committed on origin/<base>.
 review-done records that the change set up to a commit (default: HEAD, or --sha <commit>)
 had its one premium review and its fixes. merge-check reads it before a merge that
-autoMerge would make by itself, while reviewBeforePush is on. Inside Claude Code the review-record
+allowMerge would make by itself, while reviewBeforePush is on. Inside Claude Code the review-record
 hook writes it, when a review agent (the reviewAgents setting) returns, so review-done
 refuses there: it is for your own terminal.
 merge-check judges a merge without making it: each
 pull request number, or a local branch against a base (--branch <b> --base <base>). A pull
-request is allowed when the committed policy passes: autoMerge on, its base the project's
+request is allowed when the committed policy passes: allowMerge on, its base the project's
 integration base or the repository's default branch, every required check green, and a review covering its head under
 fixesAfterReview. A branch is allowed when the review record covers its head. One line per
 verdict; exit 0 when every merge is allowed, 1 when any asks.`;
@@ -34205,6 +34296,31 @@ function refuseBareClose(all, task, outcome, given) {
   if (outcome === "dropped" && !given.note?.trim())
     throw new Error(`${step}: a step is dropped with a note that gives the reason (${TASK_TOOL.done} with task "#${task.number}", outcome "dropped" and note)`);
 }
+function refuseEmptyHandBack(all, phase, outcome, git) {
+  const { branch, base } = phase;
+  if (phase.kind !== "phase" || outcome !== "done" || phase.status === "done")
+    return;
+  if (!branch || !base)
+    return;
+  const what = `#${phase.number} "${phase.subject}" records its builder's branch "${branch}" and base ${base}`;
+  const planBranch = all.find((t) => t.kind === "plan" && t.plan === phase.plan)?.branch ?? null;
+  for (const name of [branch, base, planBranch])
+    if (name?.startsWith("-"))
+      throw new Error(`${what}, and "${name}" is not a branch or commit name: fix the phase's binding`);
+  const counted = git(["rev-list", "--count", `${base}..${branch}`]);
+  if (!counted.ok)
+    throw new Error(`${what}: git could not count its commits (${counted.err || "no reason given"}), so the hand-back is not proved. Fix the binding or the repo, then close the phase`);
+  if (counted.out === "0")
+    throw new Error(`${what}, but "${branch}" has no commit past its base: the builder handed back nothing. Get its work committed on "${branch}" and merged into ${planBranch === null ? "the plan branch" : `"${planBranch}"`}, then close the phase`);
+  if (planBranch === null)
+    return;
+  const held = git(["merge-base", "--is-ancestor", branch, planBranch]);
+  if (held.ok)
+    return;
+  if (held.code === 1)
+    throw new Error(`${what}, but "${branch}" is not in the plan branch "${planBranch}": merge the builder's commit into "${planBranch}", then close the phase`);
+  throw new Error(`${what}: git could not check that "${branch}" is in the plan branch "${planBranch}" (${held.err || "no reason given"}), so the hand-back is not proved. Fix the binding or the repo, then close the phase`);
+}
 function refuseStepEscape(all, task, to) {
   const from = task.parentId === null ? undefined : all.find((t) => t.id === task.parentId);
   if (task.kind !== "task" || from?.kind !== "phase" || !isOpen(task))
@@ -35393,6 +35509,7 @@ function createTaskOps(options = {}) {
       };
       const claimedElsewhere = (t) => claimState(t, CLAIM_PROCESS, who) === "another session";
       const guardCaller = { owns, isLead: (t) => isLead(t.lead, who) };
+      const handBackGit = (args) => ctx.checkoutRoot === null ? { ok: false, out: "", err: "this folder is not in a git checkout", code: null } : runGit(ctx.checkoutRoot, args, env);
       const refuseOther = (plan) => refuseOtherPlan({ all, inFlight, plan, claimedElsewhere, caller: guardCaller });
       const freedAfter = (after, closed) => freedText(after, closed, owns, (plan) => planInTheWay({
         all: after,
@@ -35660,8 +35777,10 @@ function createTaskOps(options = {}) {
         refuseParkWhileBusy(all, task, status);
         if (input.parent !== undefined)
           refuseStepEscape(all, task, destination);
-        if (status === "done" || status === "dropped")
+        if (status === "done" || status === "dropped") {
           refuseBareClose(all, task, status, {});
+          refuseEmptyHandBack(all, task, status, handBackGit);
+        }
         const flight = entering ? startCheck(task.kind === "plan" ? task.plan : landing) : {};
         const updated = value(writeWork(store, () => {
           const changed = applyUpdate(store, task.id, {
@@ -35708,6 +35827,7 @@ function createTaskOps(options = {}) {
         }
         const task = work(input.task);
         refuseBareClose(all, task, input.outcome, { evidence: input.evidence, note: input.note });
+        refuseEmptyHandBack(all, task, input.outcome, handBackGit);
         const changed = value(writeWork(store, () => {
           for (const text of [input.note, input.evidence])
             if (text)
@@ -37731,11 +37851,12 @@ function parseFlags(argv) {
 function workflowFromFlags(words) {
   const workflow = {};
   for (const word of words) {
-    const [key, ...rest] = word.split("=");
-    if (key === undefined || rest.length === 0)
+    const [typed, ...rest] = word.split("=");
+    if (typed === undefined || rest.length === 0)
       throw new Error(`--workflow: "${word}" is not key=value`);
+    const key = currentKeyName(typed);
     if (!WORKFLOW_KEYS.includes(key) || isSwitchKey(key)) {
-      throw new Error(`--workflow: unknown setting ${key} (a switch is set with \`${COMMAND} workflow set\`)`);
+      throw new Error(`--workflow: unknown setting ${typed} (a switch is set with \`${COMMAND} workflow set\`)`);
     }
     const parsed = parseWorkflowValue(key, rest.join("="));
     if (!parsed.ok)
@@ -37763,6 +37884,8 @@ function setLeaf2(data, path, value) {
 function mergeWorkflow(base, overrides) {
   const merged = { ...base };
   for (const [key, value] of Object.entries(overrides)) {
+    for (const old of oldNamesOf(key))
+      delete merged[old];
     const before = merged[key];
     merged[key] = isObject(before) && isObject(value) ? mergeWorkflow(before, value) : value;
   }
@@ -38183,7 +38306,7 @@ ${PROJECT_INIT_USAGE}`);
   ]);
   return skillFailures > 0 ? 1 : 0;
 }
-var RUN_TIMEOUT_MS2 = 1e4, FAST_CHECK_SCRIPTS, POLICY_EXAMPLE = "openPr=draft,autoCommit=true,alerts.usagePercent=90", NONE2 = "none", QUESTIONS, CLEAR_DEPLOY_COMMANDS = "-", QUESTIONS_INTRO, PROJECT_INIT_USAGE;
+var RUN_TIMEOUT_MS2 = 1e4, FAST_CHECK_SCRIPTS, POLICY_EXAMPLE = "openPr=draft,allowCommit=true,alerts.usagePercent=90", NONE2 = "none", QUESTIONS, CLEAR_DEPLOY_COMMANDS = "-", QUESTIONS_INTRO, PROJECT_INIT_USAGE;
 var init_project_init = __esm(() => {
   init_build_info();
   init_names();
@@ -51082,6 +51205,38 @@ function retiredReviewAgentCheck(file, label, personal = false) {
     fix: personal ? `${REPLACE_REVIEW_AGENT}: run ${COMMAND} workflow set reviewAgents ${NEW_REVIEW_AGENT}, or ${COMMAND} workflow unset reviewAgents to use the default; personal changes count at once` : `${REPLACE_REVIEW_AGENT}, then merge that change by hand or run ${COMMAND} workflow review-done, because merge-check judges with the base branch's list`
   };
 }
+function oldWorkflowNamesCheck(file, label, personal = false) {
+  let parsed;
+  try {
+    parsed = existsSync72(file) ? readUserJson(file) : null;
+  } catch {
+    return null;
+  }
+  const workflow = personal || !isObject(parsed) ? parsed : parsed.workflow;
+  if (!isObject(workflow))
+    return null;
+  const found = oldNamesIn(workflow);
+  if (found.length === 0)
+    return null;
+  const typedValue = (old) => typeof workflow[old] === "boolean" ? String(workflow[old]) : "<true|false>";
+  const steps = found.map(({ old, current, both }) => {
+    if (both)
+      return `remove ${old} from this file: ${current} is set there and wins`;
+    const command = `${COMMAND} workflow set ${current} ${typedValue(old)}`;
+    return personal ? `run ${command}` : `rename ${old} to ${current} in this file, or run ${command} --project (a file with the new name needs requires "${requiresFor(WORKFLOW_ALLOW_KEYS_SINCE)}")`;
+  });
+  const waiting = found.filter(({ both }) => !both).length;
+  if (waiting > 0) {
+    steps.push(`the old name${waiting === 1 ? " keeps" : "s keep"} working until then`);
+  }
+  const names = found.map(({ old, current }) => `${old} (now ${current})`).join(", ");
+  return {
+    ok: true,
+    warn: true,
+    text: `${label} uses the old setting name${found.length === 1 ? "" : "s"} ${names}`,
+    fix: steps.join("; ")
+  };
+}
 function readableMatches(pattern, folder) {
   const found = [];
   try {
@@ -51605,8 +51760,10 @@ async function projectChecks2(cwd, env, paths, pluginHooksFile, gh = runGh) {
   }
   const usesDeployTasks = usesDeployTasksOf(checkout.root, config);
   const retired = configFile === null ? null : retiredReviewAgentCheck(configFile, `project: ${shown3(configFile, projectDir, paths.home)}`);
+  const oldNames = configFile === null ? null : oldWorkflowNamesCheck(configFile, `project: ${shown3(configFile, projectDir, paths.home)}`);
   const lines = [
     ...retired === null ? [] : [retired],
+    ...oldNames === null ? [] : [oldNames],
     ...retiredReviewMentions(projectDir),
     ...oldNameLines(projectDir, sources, paths.home),
     ...engine,
@@ -51743,6 +51900,9 @@ async function coverGitLines(checkout, env) {
 init_out();
 function checkReviewAgent(paths) {
   return retiredReviewAgentCheck(paths.workflowConfigFile, tildify(paths.workflowConfigFile, paths.home), true);
+}
+function checkWorkflowNames(paths) {
+  return oldWorkflowNamesCheck(paths.workflowConfigFile, tildify(paths.workflowConfigFile, paths.home), true);
 }
 var MARKETPLACE_UPDATE_COMMAND = `claude plugin marketplace update ${MARKETPLACE}`;
 function readSettings2(file) {
@@ -52537,6 +52697,7 @@ function doctorGroups(paths, env, { browser, bun, gateway, herdr, limits, local,
         plansDirectoryCheck(paths),
         checkNameClash(settings),
         checkReviewAgent(paths),
+        checkWorkflowNames(paths),
         await checkOldPlugin(settings, paths, readCommand)
       ])
     },
