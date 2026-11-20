@@ -130,7 +130,7 @@ senior engineer, whose read is cheaper.
 Workflow({ name: "cc-smart-dev-kit:review-split",
   args: { base: "main", head: "HEAD", folder: "<the checkout's path, a worktree only>",
           intent: "what this change does", tracks: ["state and timing", "access and money"],
-          risky: false, budget: 12 } })
+          risky: false, budget: 12, spec: "<plan file>", prior: "<round 1 report>" } })
 ```
 
 - `args` is one object, as shown — never a string of JSON. The run refuses a string, an unknown
@@ -145,6 +145,9 @@ Workflow({ name: "cc-smart-dev-kit:review-split",
   again with a larger budget.
 - `tracks` are two to four review dimensions or edge-case axes from `references/axes.md` that
   this diff touches.
+- `spec` is a plan file's path: every track reads it, and one more track checks the plan's
+  compliance. Leave the key out for a change with no plan.
+- `prior` is round 1's report: it makes the run round 2. Leave the key out for a first run.
 - `risky: true` only for a change set the core instructions' Review calls risky; the run holds
   their model rule for it, on every launch. The reviewers are the type the review-record hook
   knows, so the run records the review as the single senior engineer does: commit first, and
