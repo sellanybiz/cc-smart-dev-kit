@@ -682,6 +682,70 @@ describe("a discard that is not the subagent's own worktree still asks", () => {
     expect(guardAs(command, OWN_WORKTREE, BUILDER)).toBeDefined();
   });
 
+  it.each([
+    ["GIT_DIR", `export GIT_DIR=${MAIN_FOLDER}/.git; git reset --hard`],
+    ["GIT_WORK_TREE", `export GIT_WORK_TREE=${MAIN_FOLDER}; git checkout -- a.ts`],
+    ["GIT_COMMON_DIR", `export GIT_COMMON_DIR=${MAIN_FOLDER}/.git && git clean -f`],
+    ["GIT_INDEX_FILE", `export GIT_INDEX_FILE=/tmp/index; git restore .`],
+    ["an export after the discard", `git checkout -- a.ts; export GIT_WORK_TREE=${MAIN_FOLDER}`],
+    ["a plain assignment", `GIT_WORK_TREE=${MAIN_FOLDER}; git checkout -- a.ts`],
+    ["declare -x", `declare -x GIT_WORK_TREE=${MAIN_FOLDER}; git checkout -- a.ts`],
+    ["env X=", `env GIT_WORK_TREE=${MAIN_FOLDER} git checkout -- a.ts`],
+    ["a quoted word", `echo "GIT_WORK_TREE is set"; git checkout -- a.ts`],
+    ["a use of the variable", "git -C $GIT_WORK_TREE checkout -- a.ts"],
+    [
+      "a bash -c holding an export",
+      `bash -c 'export GIT_WORK_TREE=${MAIN_FOLDER}; git checkout -- a.ts'`,
+    ],
+    [
+      "an export a nested shell runs first",
+      `bash -c "bash -c 'export GIT_DIR=x'"; git reset --hard`,
+    ],
+    ["an export piped into a shell", `echo "export GIT_DIR=x; git reset --hard" | sh`],
+    ["an export before a bash -c that discards", `export GIT_DIR=x; bash -c "git reset --hard"`],
+  ])("an environment variable that names git's location (%s) asks", (_name, command) => {
+    expect(guardAs(command, OWN_WORKTREE, BUILDER)).toBeDefined();
+  });
+
+  it("PowerShell: $env: assigning git's location asks", () => {
+    const line = `$env:GIT_WORK_TREE = '${MAIN_FOLDER}'; git checkout -- a.ts`;
+    expect(guardAs(line, OWN_WORKTREE, BUILDER, "powershell")).toContain(
+      "overwrites files in this folder",
+    );
+    expect(
+      guardAs(
+        `$env:GIT_DIR='${MAIN_FOLDER}/.git'; git reset --hard`,
+        OWN_WORKTREE,
+        BUILDER,
+        "powershell",
+      ),
+    ).toContain("`git reset --hard` throws away");
+  });
+
+  it.each(["GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE"])(
+    "the guard's own environment having %s set asks",
+    (name) => {
+      const questions = (env: Record<string, string>) =>
+        guardQuestions("git checkout -- a.ts; git reset --hard; git clean -f", OWN_WORKTREE, {
+          ...OPTIONS,
+          agentId: BUILDER,
+          env,
+        });
+      expect(questions({ ...cleanGitEnv(), [name]: MAIN_FOLDER })).toHaveLength(3);
+      expect(questions(cleanGitEnv())).toEqual([]);
+    },
+  );
+
+  it("an unrelated GIT_ variable does not stop the exemption", () => {
+    expect(
+      guardAs(
+        "GIT_AUTHOR_NAME=x git checkout -- a.ts; export GIT_PAGER=cat",
+        OWN_WORKTREE,
+        BUILDER,
+      ),
+    ).toBeUndefined();
+  });
+
   it("a push on the same line still asks, and only about the push", () => {
     const answer = guardAs("git checkout -- a.ts; git push --force", OWN_WORKTREE, BUILDER);
     expect(answer).toContain("This is a force-push");

@@ -70,6 +70,8 @@ export interface GitCall {
   dirs: string[];
   /** `--work-tree`'s value (the last one given), else null. */
   workTree: string | null;
+  /** `--git-dir`'s value (the last one given), else null. */
+  gitDir: string | null;
   sub: string;
   rest: string[];
   /** `-c key=value` on the line, key → value; a `--config-env` value (read from the environment) is null. */
@@ -87,6 +89,7 @@ export function gitCalls(args: readonly string[]): GitCall[] {
   const dirs: string[] = [];
   const config = new Map<string, string | null>();
   let workTree: string | null = null;
+  let gitDir: string | null = null;
   for (let index = 0; index < args.length; index++) {
     const arg = args[index] ?? "";
     const name = arg.startsWith("--") ? (arg.split("=")[0] ?? arg) : arg;
@@ -101,6 +104,8 @@ export function gitCalls(args: readonly string[]): GitCall[] {
       config.set(key, arg === "-c" ? (equals === -1 ? "true" : setting.slice(equals + 1)) : null);
     } else if (name === "--work-tree") {
       workTree = (attached ? arg.slice(name.length + 1) : args[++index]) ?? workTree;
+    } else if (name === "--git-dir") {
+      gitDir = (attached ? arg.slice(name.length + 1) : args[++index]) ?? gitDir;
     } else if (GIT_VALUE_OPTIONS.has(arg)) {
       index++;
     } else if (GIT_PRINTS.has(arg) || name === "--list-cmds") {
@@ -112,10 +117,10 @@ export function gitCalls(args: readonly string[]): GitCall[] {
       return later.flatMap((word, at) =>
         word.startsWith("-")
           ? []
-          : [{ config, dirs: [...dirs], rest: later.slice(at + 1), sub: word, workTree }],
+          : [{ config, dirs: [...dirs], gitDir, rest: later.slice(at + 1), sub: word, workTree }],
       );
     } else if (!arg.startsWith("-")) {
-      return [{ config, dirs, rest: args.slice(index + 1), sub: arg, workTree }];
+      return [{ config, dirs, gitDir, rest: args.slice(index + 1), sub: arg, workTree }];
     }
   }
   return [];
