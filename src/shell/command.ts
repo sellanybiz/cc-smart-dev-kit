@@ -22,6 +22,10 @@
  *   - a command even inside text: `$( … )` and `` `…` `` in a double-quoted string, in the
  *     body of a here-doc whose word is not quoted (`<<EOF`), and in `$(( … ))`: bash runs
  *     them all (the `git commit -m "$(cat <<'EOF' … EOF)"` idiom is read this way);
+ *   - bash 5.3's `${ … }` (a blank, a line break or `|` after `${`) runs its commands in the
+ *     current shell, bare and in a double-quoted string: they are read like `$( … )`'s, up to
+ *     the `}` that stands where a command would, but in the line's own shell, so a `cd` inside
+ *     moves the commands after it; `${x}` and `${x:-y}` stay parameter expansions;
  *   - outside quotes a backslash escapes the character after it (`\;` is no separator, and
  *     `g\it` is `git`); inside double quotes only `$`, a backtick, `"`, `\` and a line break;
  *   - `{` and `}` group commands only as words of their own (`{ a; }`): `HEAD@{0}` is one word.
@@ -143,6 +147,8 @@ interface Lexed {
    * offsets are not this text's.
    */
   starts: (number | null)[];
+  /** Where the reading stopped: the text's end, or just past a `substitution`'s `}`. */
+  end: number;
 }
 
 interface LexOptions {
@@ -160,6 +166,8 @@ interface LexOptions {
   depth?: number;
   /** The group the text runs in (a substitution's, a script's): its commands are inside it. */
   outer?: Subshell | null;
+  /** The text starts with a bash 5.3 `${ … }`: read it alone, and stop past its `}`. */
+  substitution?: boolean;
 }
 
 /**
@@ -181,6 +189,30 @@ interface OwedBody {
 
 /** True for a character that ends a word (outside quotes). */
 const isBlank = (char: string) => char === " " || char === "\t";
+
+/**
+ * True when bash 5.3's `${ … }` starts at `at` in `text`: `${` and then a blank, a line break or
+ * `|` (the manual's `${c command; }`), whose commands run in the current shell. Anything else
+ * after `${` is a parameter expansion (`${x}`, `${x:-y}`).
+ */
+function opensBraceSubstitution(text: string, at: number): boolean {
+  return text.startsWith("${", at) && /^[ \t\n|]$/.test(text.charAt(at + 2));
+}
+
+/**
+ * The index after the `}` that closes the bash 5.3 `${ … }` starting at `from`
+ * (`opensBraceSubstitution`), else -1 when it never closes. The line reader finds it, so a word
+ * keeps the substitution whole exactly where the line reader closed it.
+ */
+function braceSubstitutionClose(text: string, from: number): number {
+  const read = lex(text.slice(from), {
+    blind: false,
+    dialect: "bash",
+    join: false,
+    substitution: true,
+  });
+  return read.open ? -1 : from + read.end;
+}
 
 /** One pass over `text`, cutting it into the commands it runs. */
 function lex(text: string, options: LexOptions): Lexed {
@@ -373,8 +405,11 @@ function lex(text: string, options: LexOptions): Lexed {
   /**
    * `"…"` at `at`, the commands of its substitutions pushed as segments of their own. With
    * `closes` false the whole text is a body (an unquoted here-doc's): a quote is a character.
+   * `substitutions` counts the substitutions it is inside, as `read`'s does: past `MAX_INNER` a
+   * substitution in it is not opened, and the line counts as open, so a guard reads it blind
+   * (each level of `"$("$(…` is a call, and 64 KB of them once ran out of stack).
    */
-  function readDouble(closes: boolean): string {
+  function readDouble(closes: boolean, substitutions = 0): string {
     const mark = segments.length;
     let raw = "";
     if (closes) {
@@ -400,18 +435,28 @@ function lex(text: string, options: LexOptions): Lexed {
       } else if (bash && char === "$" && next === "$") {
         raw += "$$"; // the shell's process id
         at += 2;
+      } else if (
+        char === "$" &&
+        (next === "(" || braceSubstitution()) &&
+        substitutions >= MAX_INNER
+      ) {
+        open = true;
+        raw += char;
+        at++;
       } else if (char === "$" && next === "(") {
         const end = bash ? arithmeticEnd(at + 1) : -1;
         if (end === -1) {
           at += 2;
           enterGroup();
-          raw += `$(${read(true).raw}`;
+          raw += `$(${read(")", substitutions + 1).raw}`;
           leaveGroup();
         } else {
           raw += readArithmetic(end);
         }
       } else if (bash && char === "`") {
         raw += readBacktick();
+      } else if (braceSubstitution()) {
+        raw += readBraceSubstitution(substitutions);
       } else {
         raw += char;
         at++;
@@ -455,6 +500,23 @@ function lex(text: string, options: LexOptions): Lexed {
       }
     }
     return word === "" ? null : { end: pos, quoted, script: false, stripTabs, word };
+  }
+
+  /** True at a bash 5.3 `${ … }` (`opensBraceSubstitution`), read as bash. */
+  const braceSubstitution = () => bash && opensBraceSubstitution(text, at);
+
+  /**
+   * The `${ … }` at `at` (`opensBraceSubstitution`): its commands are added, and its text is
+   * returned for the word that holds it. It runs in the current shell, so no group is entered:
+   * a `cd` inside it moves the commands after it. One that never closes runs nothing, and the
+   * line is read blind.
+   */
+  function readBraceSubstitution(substitutions: number): string {
+    const pipe = text.charAt(at + 2) === "|" ? "|" : "";
+    at += 2 + pipe.length;
+    const substitution = read("}", substitutions + 1);
+    if (!substitution.closed) open = true;
+    return `\${${pipe}${substitution.raw}`;
   }
 
   /** True when the character at `at` is a brace that groups commands, not part of a word. */
@@ -506,19 +568,23 @@ function lex(text: string, options: LexOptions): Lexed {
   }
 
   /**
-   * Reads commands to the end of the text, or (`nested`) to the `)` that closes a `$(`.
-   * Returns the text read, bodies cut, and whether that `)` closed it: what the enclosing
+   * Reads commands to the end of the text, or to the `closer` that ends a substitution: the `)`
+   * of a `$(`, or the `}` of a `${ ` that stands where a command would (`${ a; }`, `${ a;}`).
+   * Returns the text read, bodies cut, and whether that closer closed it: what the enclosing
    * quoted word holds, and whether the substitution it was reading is whole. `substitutions`
-   * counts the `$(` this text is inside: past `MAX_INNER` its parentheses split as plain
-   * separators, so a line of 10,000 nested ones is still read in linear time (its commands
-   * are still read, one level at a time).
+   * counts the substitutions this text is inside: past `MAX_INNER` their parentheses split as
+   * plain separators, so a line of 10,000 nested ones is still read in linear time (its
+   * commands are still read, one level at a time).
    */
-  function read(nested: boolean, substitutions = 0): { closed: boolean; raw: string } {
+  function read(closer: ")" | "}" | null, substitutions = 0): { closed: boolean; raw: string } {
+    const nested = closer !== null;
     let raw = "";
     let current = "";
     /** Where `current` starts in `text`: the character after the separator that ended the last one. */
     let currentStart = at;
     let depth = 0;
+    /** In a `${ … }`: the `{ … }` groups open inside it, each of which owns the next `}`. */
+    let braces = 0;
     /** No character of a word yet: a `#` here starts a comment, a lone `{` a group. */
     let wordStart = true;
     /**
@@ -558,7 +624,7 @@ function lex(text: string, options: LexOptions): Lexed {
           continue;
         }
         if (oneOf(double, char)) {
-          take(readDouble(true));
+          take(readDouble(true, substitutions));
           continue;
         }
         if (bash && char === "$" && next === "$") {
@@ -601,11 +667,40 @@ function lex(text: string, options: LexOptions): Lexed {
         ) {
           at += 2;
           enterGroup();
-          const substitution = read(true, substitutions + 1);
+          const substitution = read(")", substitutions + 1);
           leaveGroup();
           if (!substitution.closed) open = true;
           take(`${char}(${substitution.raw}`);
           continue;
+        }
+        // Bash 5.3's `${ … }` is part of its word too, but runs in the current shell. Past
+        // `MAX_INNER` it is not opened, and the line counts as open: read blind, it splits.
+        if (braceSubstitution()) {
+          if (substitutions < MAX_INNER) {
+            take(readBraceSubstitution(substitutions));
+            continue;
+          }
+          open = true;
+        }
+        // Its `}` stands where a command would, after a separator: `}x` closes it too, and `x`
+        // goes on in the word, as bash reads it.
+        if (
+          closer === "}" &&
+          char === "}" &&
+          depth === 0 &&
+          braces === 0 &&
+          current.trim() === ""
+        ) {
+          push(
+            current,
+            afterPipe ? (segments[segments.length - 1] ?? null) : null,
+            false,
+            group,
+            currentStart,
+          );
+          afterPipe = false;
+          at++;
+          return { closed: true, raw: `${raw}}` };
         }
         if (char === "#" && wordStart && !afterClose) {
           const end = text.indexOf("\n", at);
@@ -678,11 +773,13 @@ function lex(text: string, options: LexOptions): Lexed {
         at++;
         continue;
       }
-      // Read blind, a bash backtick ends a command: what it holds may run.
+      // Read blind, a bash backtick ends a command: what it holds may run. So does the `$` of a
+      // `${ … }`, whose `{` then groups.
       if (
         SEPARATORS.has(char) ||
         isGroupBrace(char, wordStart) ||
-        (blind && bash && char === "`")
+        (blind && bash && char === "`") ||
+        (blind && braceSubstitution())
       ) {
         const pattern = !blind && bash ? casePattern(current, char, next) : false;
         push(
@@ -693,12 +790,19 @@ function lex(text: string, options: LexOptions): Lexed {
           currentStart,
         );
         afterPipe = char === "|";
-        if (!pattern && nested && char === ")" && depth === 0) {
+        if (!pattern && closer === ")" && char === ")" && depth === 0) {
           at++;
           return { closed: true, raw: `${raw})` };
         }
+        // A `)` that closes nothing inside a `${ … }` belongs to the `$(` around it: the `${`
+        // never closed (bash stops on it), and the reader around it reads on.
+        if (!pattern && closer === "}" && char === ")" && depth === 0) {
+          return { closed: false, raw };
+        }
         if (!pattern && nested && char === "(") depth++;
         if (!pattern && nested && char === ")") depth--;
+        if (closer === "}" && char === "{" && current.trim() === "") braces++;
+        if (closer === "}" && char === "}" && braces > 0) braces--;
         // Bash's array assignment `name=( … )`, `name+=( … )`, `declare -a name=( … )`: what is
         // inside is a list of words, not commands.
         if (!pattern && char === "(") enterGroup(bash && ARRAY_ASSIGNMENT.test(current));
@@ -728,8 +832,9 @@ function lex(text: string, options: LexOptions): Lexed {
   }
 
   if (options.body === true) readDouble(false);
-  else read(false);
-  return { expanded, groups, open, piped, segments, starts, unparsable };
+  else if (options.substitution === true) readBraceSubstitution(0);
+  else read(null);
+  return { end: at, expanded, groups, open, piped, segments, starts, unparsable };
 }
 
 /** How a caller reads a line: its dialect (Bash by default), and the two switches below. */
@@ -943,6 +1048,27 @@ export function wordsWithFill(segment: string, dialect: Dialect = "bash"): Shell
     closes ??= parenCloses(segment);
     return closes[open] ?? -1;
   };
+  /**
+   * Once a bash 5.3 `${ … }` never closes, no later one is tried: each try reads to the end of
+   * the segment, so a line of them stays linear. Its `$` is then a lone, filled `$`.
+   */
+  let braceOpen = false;
+  /** The last `${ … }` tried, and its close: the branch that tests it then takes it. */
+  let braceTried = { from: -1, close: -1 };
+  const braceCloseOf = (from: number) => {
+    if (!bash || braceOpen || !opensBraceSubstitution(segment, from)) return -1;
+    if (braceTried.from !== from) {
+      braceTried = { from, close: braceSubstitutionClose(segment, from) };
+      if (braceTried.close === -1) braceOpen = true;
+    }
+    return braceTried.close;
+  };
+  /** Adds the substitution from `from` to `close` (`$( … )`, `${ … }`) to the word, whole. */
+  const addSubstitution = (from: number, close: number) => {
+    add(segment.slice(from, close));
+    filled = true;
+    i = close;
+  };
   let i = 0;
   while (i < segment.length) {
     const char = segment.charAt(i);
@@ -965,10 +1091,10 @@ export function wordsWithFill(segment: string, dialect: Dialect = "bash"): Shell
       // `$( … )`, and `<( … )` / `>( … )` at the start of a word: the shell fills in its answer (a
       // file name for the last two), so the whole substitution stays in its word, as the line
       // reader keeps it (`out=$(bun test 2>&1)` is one word, never `2>&1)`).
-      const close = closeOf(i + 1);
-      add(segment.slice(i, close));
-      filled = true;
-      i = close;
+      addSubstitution(i, closeOf(i + 1));
+    } else if (braceCloseOf(i) !== -1) {
+      // Bash 5.3's `${ … }`: the same, up to the `}` the line reader closes it at.
+      addSubstitution(i, braceCloseOf(i));
     } else if (
       !bash &&
       !inWord &&
@@ -1044,12 +1170,11 @@ export function wordsWithFill(segment: string, dialect: Dialect = "bash"): Shell
           i += 2;
           continue;
         }
-        const substitution = bash && inside === "$" && after === "(" ? closeOf(i + 1) : -1;
+        const substitution =
+          bash && inside === "$" && after === "(" ? closeOf(i + 1) : braceCloseOf(i);
         if (substitution !== -1) {
-          // `"$(a "b c")"`: inside a substitution the quotes start again.
-          add(segment.slice(i, substitution));
-          filled = true;
-          i = substitution;
+          // `"$(a "b c")"`, `"${ a "b c"; }"`: inside a substitution the quotes start again.
+          addSubstitution(i, substitution);
           continue;
         }
         if (inside === escaper && after !== "") {

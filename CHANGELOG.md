@@ -29,6 +29,12 @@ in your own terminal after the update; the user guide is [README.md](README.md).
   `@('-c', 'x')`), and an `@( … )` array runs its commands. Before, only the word right after
   `-ArgumentList` was read, so `Start-Process pwsh -ArgumentList '-c', 'git reset --hard'`
   asked nothing in any session. Every guard that reads a shell line gains.
+- **Bash 5.3's `${ cmd; }` is read as commands.** Bash 5.3 runs the commands inside
+  `${ … }` (a space, tab, line break or `|` after `${`) in the current shell, bare and inside
+  double quotes. The shell reader took it for a variable, so `echo ${ git reset --hard; }` and
+  `echo "${ git push --force; }"` asked nothing, the main session included. Now every guard
+  sees those commands, and a `cd` inside moves the commands after it. `${x}` and `${x:-y}` are
+  still variables.
 
 **What to run:** restart open Claude Code sessions. A session that was open before the update
 keeps the old guard.
