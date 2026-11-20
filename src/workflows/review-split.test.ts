@@ -13,6 +13,7 @@ import type { GatewayConfig } from "../gateway/config";
 import { type GuardContext, judgeWorkflow } from "../hooks/agent-guard";
 import { REVIEW_MODE_MARKER } from "../hooks/review-record";
 import { loadScriptParser } from "../hooks/script-parser";
+import { TASK_TOOL, taskToolId } from "../tasks/words";
 import { recordsReview } from "../workflow/reviews";
 import { workflowDefaults } from "../workflow/schema";
 import type { AgentCall } from "./script-runner";
@@ -24,11 +25,20 @@ loadScriptParser();
 const REVIEW_SPLIT = join(import.meta.dir, "..", "..", "plugin", "workflows", "review-split.js");
 const NO_ENV = {} as Record<string, string | undefined>;
 const REVIEWER = "cc-smart-dev-kit:senior-engineer";
+/** The kit's task tools that write: a reviewer reports, it never changes the task ledger. */
+const TASK_WRITES = ["create", "update", "done", "note", "delete", "take"] as const;
 /**
- * The tools each launch takes away: the tracks share one checkout, and an agent a track started
- * would send it a notice the review record counts as a later prompt.
+ * The tools each launch takes away: the tracks share one checkout, so none edits a file; an agent
+ * a track started would send it a notice the review record counts as a later prompt; and none
+ * writes the task ledger, which the lead owns.
  */
-const NO_EDITS = ["Edit", "Write", "NotebookEdit", "Agent"];
+const NO_EDITS = [
+  "Edit",
+  "Write",
+  "NotebookEdit",
+  "Agent",
+  ...TASK_WRITES.map((operation) => taskToolId(TASK_TOOL[operation])),
+];
 
 /** A finding, as a reviewer's schema returns it. */
 function finding(title: string, severity = "warning", file = "src/a.ts", line = 1) {
@@ -476,7 +486,8 @@ describe("the review-split workflow", () => {
 /** The lines a round-2 prompt carries. */
 const ROUND_TWO_LINES = [
   "This is round 2.",
-  "Check that each finding it lists is really fixed, at its file:line",
+  "Report each round 1 finding in `priorStatus` as fixed, not_fixed or worse, with the evidence",
+  "copying its title and its file and line exactly as the report gives them",
   "Check that the fixes broke nothing around them.",
   "Report what round 1 missed in the change set, at the same evidence bar.",
 ];
@@ -490,6 +501,7 @@ const PLAN_LINES = [
 const SPEC_LINES = [
   "each Decision and each Edge case",
   "met, or failed with file:line",
+  "task_list",
   "task_get",
   "A step done only in name is a spec failure",
 ];
@@ -497,7 +509,7 @@ const SPEC_LINES = [
 const SOLID_COVERAGE = "read src/a.ts and src/b.ts; ran bun test src/a.test.ts: 4 pass, 0 fail";
 
 describe("the review-split spec track and round-2 mode", () => {
-  test("spec adds exactly one spec track, after the given tracks, and only that track reads the plan", async () => {
+  test("spec adds exactly one spec track, after the given tracks, and only that track gets the point-by-point check", async () => {
     const run = await runScript(REVIEW_SPLIT, {
       answer: answers([]),
       args: {
@@ -570,6 +582,46 @@ describe("the review-split spec track and round-2 mode", () => {
     for (const line of SPEC_LINES) {
       expect(spec?.prompt).toContain(line);
       expect(craft?.prompt).not.toContain(line);
+    }
+  });
+
+  test("the spec track is the one the script adds, wherever a named track sits or what it is called", async () => {
+    // Claude Code calls a stage as (prevResult, originalItem, index): a script that reads the
+    // index from the second argument never marks the spec track. Position and name must not matter.
+    const run = await runScript(REVIEW_SPLIT, {
+      answer: answers([]),
+      args: { base: "main", spec: ".claude/plans/the-plan.md", tracks: [SPEC_TRACK, "craft"] },
+    });
+    const reviews = run.calls.filter(isReview);
+    expect(reviews.map(labelOf)).toEqual([
+      `review: ${SPEC_TRACK}`,
+      "review: craft",
+      `review: ${SPEC_TRACK}`,
+    ]);
+    const hasSpecLines = reviews.map((call) =>
+      SPEC_LINES.every((line) => call.prompt.includes(line)),
+    );
+    expect(hasSpecLines).toEqual([false, false, true]);
+  });
+
+  test("the spec track finds the plan's tasks by the slug in the plan file's name", async () => {
+    const cases: Array<[string, string]> = [
+      [".claude/plans/archive/2026-11-20-plan-review-rounds.md", "plan-review-rounds"],
+      [".claude/plans/2026-01-02-fix-the-thing.md", "fix-the-thing"],
+      [".claude/plans/no-date-plan.md", "no-date-plan"],
+      [".claude\\plans\\2026-03-04-win-plan.md", "win-plan"],
+    ];
+    for (const [spec, slug] of cases) {
+      const run = await runScript(REVIEW_SPLIT, {
+        answer: answers([]),
+        args: { base: "main", spec, tracks: ["craft"] },
+      });
+      const [craft, specTrack] = run.calls.filter(isReview);
+      expect(specTrack?.prompt).toContain(
+        `call task_list with scope "plan" and plan "${slug}", then task_get on each phase and step it lists`,
+      );
+      expect(specTrack?.prompt).toContain("The plan file lists no task ids");
+      expect(craft?.prompt).not.toContain("task_list");
     }
   });
 
@@ -673,6 +725,149 @@ describe("the review-split spec track and round-2 mode", () => {
     );
   });
 
+  test("round 2 makes the spec track answerable for every round 1 finding and the others judge their own area", async () => {
+    const withSpec = await runScript(REVIEW_SPLIT, {
+      answer: answers([]),
+      args: { base: "main", prior: "round 1 report", spec: "plan.md", tracks: ["craft", "access"] },
+    });
+    const [craft, access, spec] = withSpec.calls.filter(isReview);
+    expect(spec?.prompt).toContain("You judge every finding in the report");
+    for (const call of [craft, access]) {
+      expect(call?.prompt).not.toContain("You judge every finding in the report");
+      expect(call?.prompt).toContain(
+        `Judge the findings that lie in your own track's area; the ${SPEC_TRACK} track judges every finding in the report.`,
+      );
+    }
+    // With no spec, the first named track is the one.
+    const noSpec = await runScript(REVIEW_SPLIT, {
+      answer: answers([]),
+      args: { base: "main", prior: "round 1 report", tracks: ["craft", "access"] },
+    });
+    const [first, second] = noSpec.calls.filter(isReview);
+    expect(first?.prompt).toContain("You judge every finding in the report");
+    expect(second?.prompt).toContain("the craft track judges every finding in the report");
+    // A lone track judges everything and names no other.
+    const alone = await runScript(REVIEW_SPLIT, {
+      answer: answers([]),
+      args: { base: "main", prior: "round 1 report", tracks: ["craft"] },
+    });
+    const only = alone.calls.find(isReview);
+    expect(only?.prompt).toContain("You judge every finding in the report");
+    expect(only?.prompt).not.toContain("track judges every finding");
+  });
+
+  test("round 1 statuses merge by title and file:line: one finding is one line, the worst status winning", async () => {
+    const prior = [
+      "## Findings (2, most severe first)",
+      "",
+      "1. [CRITICAL] The spec track never gets its spec instructions — plugin/workflows/review-split.js:177",
+      "   trigger: a call",
+      "2. [WARNING] Stale key — src/a.ts:5",
+      "",
+      "## Unchecked (1, not refuted: check them or run again)",
+      "",
+      "- [SUGGESTION] Stale key — src/b.ts:9",
+    ].join("\n");
+    const status = (
+      title: string,
+      file: string,
+      line: number,
+      state: string,
+      evidence: string,
+    ) => ({
+      evidence,
+      file,
+      line,
+      status: state,
+      title,
+    });
+    const run = await runScript(REVIEW_SPLIT, {
+      answer: (call) => {
+        if (!isReview(call)) return null;
+        // Two tracks word the same finding differently: its place, not its wording, is the key.
+        if (labelOf(call) === "review: craft") {
+          return {
+            coverage: SOLID_COVERAGE,
+            findings: [],
+            priorStatus: [
+              status(
+                "The spec track never gets spec instructions",
+                "plugin/workflows/review-split.js",
+                177,
+                "fixed",
+                "the stage reads the item",
+              ),
+              status("Stale key", "src/a.ts", 5, "fixed", "src/a.ts:5 checks it"),
+            ],
+          };
+        }
+        return {
+          coverage: SOLID_COVERAGE,
+          findings: [],
+          priorStatus: [
+            status(
+              "The spec track never gets its spec instructions",
+              "plugin/workflows/review-split.js",
+              177,
+              "worse",
+              "it still reads the index",
+            ),
+          ],
+        };
+      },
+      args: { base: "main", prior, tracks: ["craft", "access"] },
+    });
+    const report = String(run.result);
+    const section = report.slice(report.indexOf("## Round 1 findings"));
+    // One finding, judged fixed by one track and worse by another: one line, the worse.
+    expect(section).toContain(
+      "- [WORSE] The spec track never gets its spec instructions — it still reads the index",
+    );
+    expect(section.match(/spec instructions/g)?.length).toBe(1);
+    expect(section).toContain("- [FIXED] Stale key — src/a.ts:5 checks it");
+    // The same title at another place is another finding, and no track judged it.
+    expect(section).toContain("- [NOT JUDGED] Stale key — src/b.ts:9");
+    expect(section.match(/Stale key/g)?.length).toBe(2);
+  });
+
+  test("a round 1 finding no track judged is listed as not judged, not dropped", async () => {
+    const prior = "1. [WARNING] Empty tenant — src/b.ts:9\n2. [SUGGESTION] Old name — docs/x.md";
+    const run = await runScript(REVIEW_SPLIT, {
+      answer: answers([]),
+      args: { base: "main", prior, tracks: ["craft"] },
+    });
+    const report = String(run.result);
+    const section = report.slice(report.indexOf("## Round 1 findings"));
+    expect(section).toContain("- [NOT JUDGED] Empty tenant — src/b.ts:9");
+    expect(section).toContain("- [NOT JUDGED] Old name — docs/x.md");
+    expect(section).not.toContain("No track reported a status");
+  });
+
+  test("a status that matches no listed round 1 finding is still shown", async () => {
+    const run = await runScript(REVIEW_SPLIT, {
+      answer: (call) =>
+        isReview(call)
+          ? {
+              coverage: SOLID_COVERAGE,
+              findings: [],
+              priorStatus: [
+                {
+                  evidence: "src/z.ts:3 gone",
+                  file: "src/z.ts",
+                  line: 3,
+                  status: "fixed",
+                  title: "Odd one",
+                },
+              ],
+            }
+          : null,
+      args: { base: "main", prior: "1. [WARNING] Listed — src/a.ts:1", tracks: ["craft"] },
+    });
+    const report = String(run.result);
+    expect(report).toContain("- [NOT JUDGED] Listed — src/a.ts:1");
+    expect(report).toContain("- [FIXED] Odd one — src/z.ts:3 gone");
+  });
+
   test("a non-string spec or prior is refused, and no agent starts", async () => {
     const calls: unknown[] = [];
     const bad: Array<[string, unknown]> = [
@@ -733,6 +928,65 @@ describe("the review-split strict rules", () => {
     }
   });
 
+  test("every track prompt tells the reviewer to run every command in the foreground", async () => {
+    for (const extra of [{}, { prior: "round 1 report", spec: ".claude/plans/the-plan.md" }]) {
+      const run = await runScript(REVIEW_SPLIT, {
+        answer: answers([]),
+        args: { base: "main", tracks: ["craft", "access"], ...extra },
+      });
+      for (const call of run.calls.filter(isReview)) {
+        expect(call.prompt).toContain(
+          "Run every command in the foreground: no run_in_background, no Monitor",
+        );
+      }
+    }
+  });
+
+  test("the task ledger's write tools are denied in every launch, the reads are not", async () => {
+    // Everything the task server writes comes from its own list: a new write tool fails here.
+    const reads = ["list", "get", "search"];
+    const writes = Object.keys(TASK_TOOL).filter((operation) => !reads.includes(operation));
+    expect([...writes].sort()).toEqual([...TASK_WRITES].sort());
+    for (const risky of [false, true]) {
+      const run = await runScript(REVIEW_SPLIT, {
+        answer: answers([finding("A")]),
+        args: { base: "main", risky, tracks: ["craft"] },
+      });
+      expect(run.calls.length).toBe(2);
+      for (const call of run.calls) {
+        const denied = call.options.disallowedTools as string[];
+        expect(denied).toEqual(NO_EDITS);
+        for (const operation of reads) {
+          expect(denied).not.toContain(taskToolId(TASK_TOOL[operation as keyof typeof TASK_TOOL]));
+        }
+      }
+    }
+  });
+
+  test("a track that returned no answer says so, and the report does not read as clean", async () => {
+    const run = await runScript(REVIEW_SPLIT, {
+      answer: (call) =>
+        isReview(call) && labelOf(call) === "review: craft"
+          ? null
+          : { coverage: SOLID_COVERAGE, findings: [] },
+      args: { base: "main", tracks: ["craft", "access"] },
+    });
+    const report = String(run.result);
+    expect(report).toContain("track 1 (craft) returned no answer");
+    expect(report).toContain("Incomplete review: 1 of 2 track(s) returned no answer (craft)");
+    expect(report).not.toContain("No finding survived refutation.");
+    expect(report).toContain("No finding survived refutation in the tracks that answered.");
+  });
+
+  test("every track answering leaves no incomplete line", async () => {
+    const run = await runScript(REVIEW_SPLIT, {
+      answer: (call) => (isReview(call) ? { coverage: SOLID_COVERAGE, findings: [] } : null),
+      args: { base: "main", tracks: ["craft"] },
+    });
+    expect(String(run.result)).not.toContain("Incomplete review");
+    expect(String(run.result)).toContain("No finding survived refutation.");
+  });
+
   test("coverage is a required field of a reviewer's answer", async () => {
     const run = await runScript(REVIEW_SPLIT, { answer: answers([]), args: { base: "main" } });
     const schema = run.calls.find(isReview)?.options.schema as { required: string[] };
@@ -755,7 +1009,8 @@ describe("the review-split strict rules", () => {
     const report = String(run.result);
     expect(report).toContain("track 1 (vague) gave no evidence of coverage");
     expect(report).toContain("track 2 (empty) gave no evidence of coverage");
-    expect(report).toContain("track 3 (silent) gave no evidence of coverage");
+    expect(report).toContain("track 3 (silent) returned no answer");
+    expect(report).not.toContain("track 3 (silent) gave no evidence");
     expect(report).not.toContain("track 4 (busy) gave no evidence");
     expect(report).not.toContain("track 5 (solid) gave no evidence");
     expect(report).toContain("track 5 (solid): read src/a.ts and src/b.ts; ran bun test");

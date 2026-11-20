@@ -64,10 +64,20 @@ export async function runScript(file: string, fakes: ScriptFakes = {}): Promise<
     return answer(call, calls.length - 1);
   };
   const parallel = async (tasks: Array<() => unknown>) => Promise.all(tasks.map((task) => task()));
+  // Claude Code calls every stage as `stage(prevResult, originalItem, index)`: the first stage's
+  // `prevResult` is the item itself, each later stage's is the answer of the stage before it. A
+  // fake that passed `(item, index)` hid a script that read the index from the wrong place.
   const pipeline = async (
     items: readonly unknown[],
-    fn: (item: unknown, index: number) => unknown,
-  ) => Promise.all(items.map((item, index) => fn(item, index)));
+    ...stages: Array<(prev: unknown, item: unknown, index: number) => unknown>
+  ) =>
+    Promise.all(
+      items.map(async (item, index) => {
+        let prev: unknown = item;
+        for (const stage of stages) prev = await stage(prev, item, index);
+        return prev;
+      }),
+    );
   const phase = (title: string) => {
     phases.push(title);
   };
