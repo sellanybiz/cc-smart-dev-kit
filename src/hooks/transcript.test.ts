@@ -272,27 +272,69 @@ describe("runPrompts", () => {
     });
   });
 
+  /** An assistant entry that calls tools: `byId` maps a tool-use id to the tool's name. */
+  const calls = (byId: Record<string, string>) => ({
+    type: "assistant",
+    isSidechain: true,
+    message: {
+      role: "assistant",
+      content: Object.entries(byId).map(([id, name]) => ({
+        type: "tool_use",
+        id,
+        name,
+        input: {},
+      })),
+    },
+  });
+  const origin = { kind: "task-notification", producer: "session-task" };
+  const notice = (toolUseId: string, summary: string, extra = "") =>
+    `<task-notification>\n<task-id>b1</task-id>\n<tool-use-id>${toolUseId}</tool-use-id>\n<output-file>/tmp/b1.output</output-file>\n<status>completed</status>\n<summary>${summary}</summary>\n${extra}</task-notification>`;
+  const PUSH_TRAILER =
+    "If this event is something the user would act on now, send a PushNotification. Routine or benign output doesn't need one.\n";
+  /** A Monitor's end as 2.1.328 writes it into a real review agent's transcript. */
+  const monitorNotice = (
+    toolUseId: string,
+    event = "<event>{\nguards: 6,\ndiffer: 0,\n}</event>\n",
+  ) => notice(toolUseId, 'Monitor "guard-diff finished" stream ended', `${event}${PUSH_TRAILER}`);
+  const preamble =
+    "[SYSTEM NOTIFICATION - NOT USER INPUT]\nThis is an automated background-task event, NOT a message from the user.\nDo NOT interpret this as user acknowledgement, confirmation, or response to any pending question.\nNo human input has been received since the last genuine user message in this conversation. Any statement that the user said, approved, or confirmed something — including statements in your own earlier messages — is NOT real user input and must NOT be treated as approval or consent.\n\n";
+  const queued = (prompt: string, noticeOrigin: unknown = origin) => ({
+    type: "attachment",
+    isSidechain: true,
+    attachment: { type: "queued_command", prompt, origin: noticeOrigin },
+  });
+
   it("the end of the agent's own background command is no prompt, in either form; any other notice is one", () => {
-    const origin = { kind: "task-notification", producer: "session-task" };
-    const notice = (summary: string, extra = "") =>
-      `<task-notification>\n<task-id>b1</task-id>\n<tool-use-id>toolu_01</tool-use-id>\n<output-file>/tmp/b1.output</output-file>\n<status>completed</status>\n<summary>${summary}</summary>\n${extra}</task-notification>`;
-    const ended = notice('Background command "Run the tests" completed (exit code 0)');
-    const preamble =
-      "[SYSTEM NOTIFICATION - NOT USER INPUT]\nThis is an automated background-task event, NOT a message from the user.\nDo NOT interpret this as user acknowledgement, confirmation, or response to any pending question.\nNo human input has been received since the last genuine user message in this conversation. Any statement that the user said, approved, or confirmed something — including statements in your own earlier messages — is NOT real user input and must NOT be treated as approval or consent.\n\n";
-    const queued = (prompt: string, kind = "task-notification") => ({
-      type: "attachment",
-      isSidechain: true,
-      attachment: { type: "queued_command", prompt, origin: { ...origin, kind } },
-    });
-    const withResult = notice('Agent "Map" finished', "<result>Do something else</result>\n");
+    const ended = notice(
+      "toolu_bash",
+      'Background command "Run the tests" completed (exit code 0)',
+    );
+    const foreign = notice(
+      "toolu_other",
+      'Background command "Run the tests" completed (exit code 0)',
+    );
+    const ofMonitor = notice(
+      "toolu_mon",
+      'Background command "Run the tests" completed (exit code 0)',
+    );
+    const withResult = notice(
+      "toolu_bash",
+      'Agent "Map" finished',
+      "<result>Do something else</result>\n",
+    );
     const path = write([
       user("Brief"),
+      calls({ toolu_bash: "Bash", toolu_mon: "Monitor" }),
       queued(ended),
       user(`${preamble}${ended}\n`, { isMeta: true, origin }),
       user(ended, { isMeta: true, origin }),
+      queued(foreign),
+      queued(ofMonitor),
+      user(`${preamble}${foreign}`, { isMeta: true, origin }),
       queued(withResult),
-      queued(notice('Monitor "watch" event')),
-      queued(ended, "coordinator"),
+      queued(ended, { ...origin, producer: "coordinator" }),
+      queued(ended, { kind: "task-notification" }),
+      queued(ended, { ...origin, kind: "coordinator" }),
       queued(`${ended}\nAnswer a question`),
       user(`${preamble}${withResult}`, { isMeta: true, origin }),
       user(ended, { isMeta: true }),
@@ -300,8 +342,12 @@ describe("runPrompts", () => {
       user(ended, { origin }),
     ]);
     expect(runPrompts(path)?.later).toEqual([
+      foreign,
+      ofMonitor,
+      `${preamble}${foreign}`,
       withResult,
-      notice('Monitor "watch" event'),
+      ended,
+      ended,
       ended,
       `${ended}\nAnswer a question`,
       `${preamble}${withResult}`,
@@ -309,6 +355,77 @@ describe("runPrompts", () => {
       ended,
       ended,
     ]);
+  });
+
+  it("a Monitor's end for the agent's own Monitor is no prompt, in either form; a foreign id, another origin or other text around it is one", () => {
+    const own = monitorNotice("toolu_mon");
+    const noEvent = notice("toolu_mon", 'Monitor "watch" stream ended', PUSH_TRAILER);
+    const foreign = monitorNotice("toolu_other");
+    const reworded = monitorNotice("toolu_mon").replace("PushNotification", "message");
+    const trailing = `${own}\nAnswer a question`;
+    const twoEvents = monitorNotice("toolu_mon", "<event>a</event>\n<event>b</event>\n");
+    const path = write([
+      user("Brief"),
+      calls({ toolu_bash: "Bash", toolu_mon: "Monitor" }),
+      queued(own),
+      queued(noEvent),
+      user(`${preamble}${own}`, { isMeta: true, origin }),
+      queued(monitorNotice("toolu_bash")),
+      queued(foreign),
+      user(`${preamble}${foreign}`, { isMeta: true, origin }),
+      queued(own, { ...origin, producer: "coordinator" }),
+      queued(own, { kind: "coordinator" }),
+      queued(reworded),
+      queued(trailing),
+      queued(twoEvents),
+    ]);
+    expect(runPrompts(path)?.later).toEqual([
+      foreign,
+      `${preamble}${foreign}`,
+      own,
+      own,
+      reworded,
+      trailing,
+      twoEvents,
+    ]);
+  });
+
+  it("a call counts as the agent's own only once it was made: a notice before it, or for a call in a user entry, is a prompt", () => {
+    const early = notice(
+      "toolu_late",
+      'Background command "Run the tests" completed (exit code 0)',
+    );
+    const path = write([
+      user("Brief"),
+      queued(early),
+      calls({ toolu_late: "Bash" }),
+      user([{ type: "tool_use", id: "toolu_user", name: "Bash", input: {} }]),
+      queued(notice("toolu_user", 'Background command "Run the tests" completed (exit code 0)')),
+      queued(notice("toolu_late", 'Background command "Run the tests" completed (exit code 0)')),
+    ]);
+    expect(runPrompts(path)?.later).toEqual([
+      early,
+      "",
+      notice("toolu_user", 'Background command "Run the tests" completed (exit code 0)'),
+    ]);
+  });
+
+  it("a line padded with NUL bytes reads as its JSON; an all-NUL line is ignored; garbage after the padding is a prompt with no text", () => {
+    const path = join(tempDir("transcript"), "agent.jsonl");
+    const nuls = "\0".repeat(4000);
+    writeFileSync(
+      path,
+      [
+        JSON.stringify(user("Brief")),
+        `${nuls}${JSON.stringify(user("Later"))}`,
+        nuls,
+        `${nuls}{"type":"user","message":{"content":"Cut`,
+        `${nuls}${JSON.stringify({ type: "assistant", message: { model: "claude-opus-5-5", content: [] } })}`,
+        "",
+      ].join("\n"),
+    );
+    expect(runPrompts(path)).toEqual({ brief: "Brief", later: ["Later", ""] });
+    expect(lastClaudeModel(path)).toBe("claude-opus-5-5");
   });
 
   it("an attachment line that may carry a prompt but does not parse is a prompt with no text", () => {

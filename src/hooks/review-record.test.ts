@@ -154,21 +154,59 @@ function queued(text: string, kind = "coordinator"): Record<string, unknown> {
   };
 }
 
+/** The tool-use ids of the reviewer's own Bash and Monitor calls in these transcripts. */
+const OWN_BASH_ID = "toolu_01CpoYE9WxrtFt9jp6td9eje";
+const OWN_MONITOR_ID = "toolu_01EnUagZMf3nZrkD5BU8LavG";
+
+/** The reviewer's assistant entry that started a background command and a Monitor. */
+const OWN_CALLS = {
+  type: "assistant",
+  isSidechain: true,
+  message: {
+    role: "assistant",
+    model: "claude-opus-5-5",
+    content: [
+      { type: "tool_use", id: OWN_BASH_ID, name: "Bash", input: { run_in_background: true } },
+      { type: "tool_use", id: OWN_MONITOR_ID, name: "Monitor", input: { description: "wait" } },
+    ],
+  },
+};
+
 /**
  * The notice Claude Code gives an agent when a command it started in the background ends, as
  * 2.1.328 wrote it into a real review agent's transcript (`summary` is the command's
- * description and its end).
+ * description and its end; `toolUseId` the call that started it).
  */
 function commandNotice(
   summary = 'Background command "Run the whole test suite" completed',
+  toolUseId = OWN_BASH_ID,
 ): string {
   return [
     "<task-notification>",
     "<task-id>bu8ixgojq</task-id>",
-    "<tool-use-id>toolu_01CpoYE9WxrtFt9jp6td9eje</tool-use-id>",
+    `<tool-use-id>${toolUseId}</tool-use-id>`,
     "<output-file>/tmp/tasks/bu8ixgojq.output</output-file>",
     "<status>completed</status>",
     `<summary>${summary} (exit code 0)</summary>`,
+    "</task-notification>",
+  ].join("\n");
+}
+
+/**
+ * The notice for a Monitor the reviewer started, as 2.1.328 wrote it into the same real
+ * transcript: the event is the monitored command's last output, and Claude Code's own line
+ * about PushNotification ends it.
+ */
+function monitorNotice(toolUseId = OWN_MONITOR_ID): string {
+  return [
+    "<task-notification>",
+    "<task-id>b4urmwt0b</task-id>",
+    `<tool-use-id>${toolUseId}</tool-use-id>`,
+    "<output-file>/tmp/tasks/b4urmwt0b.output</output-file>",
+    "<status>completed</status>",
+    '<summary>Monitor "guard-diff finished" stream ended</summary>',
+    "<event>{\nguards: 6,\ndiffer: 0,\n}</event>",
+    "If this event is something the user would act on now, send a PushNotification. Routine or benign output doesn't need one.",
     "</task-notification>",
   ].join("\n");
 }
@@ -212,10 +250,18 @@ async function runWith(entries: Array<Record<string, unknown>>): Promise<{
   head: string;
   record: Record<string, string[]>;
 }> {
+  return runWithTranscript(transcriptOf(entries));
+}
+
+/** The same, for a transcript file already written (one that holds a line that is not plain JSON). */
+async function runWithTranscript(transcript: string): Promise<{
+  head: string;
+  record: Record<string, string[]>;
+}> {
   const env = hookEnv();
   const repo = makeRepo();
   writeClaudeFile(repo, "cc-smart-dev-kit.json", CONFIG);
-  await review(env, repo, { agent_type: REVIEWER, agent_transcript_path: transcriptOf(entries) });
+  await review(env, repo, { agent_type: REVIEWER, agent_transcript_path: transcript });
   return { head: git(repo, "rev-parse", "HEAD").trim(), record: recorded(env, repo) };
 }
 
@@ -315,6 +361,22 @@ describe("the review brief marker", () => {
     ]);
     expect(record).toEqual({ [head]: [REVIEWER] });
   });
+  test("a message line padded with NUL bytes reads as the message: a marked one keeps the run a review, an all-NUL line is ignored, garbage is a prompt", async () => {
+    const nuls = "\0".repeat(4000);
+    const lines = (...extra: string[]) => {
+      const path = join(tempDir("review-brief"), "agent.jsonl");
+      const entries = [userEntry(REVIEW_BRIEF), ANSWER].map((entry) => JSON.stringify(entry));
+      writeFileSync(path, `${[...entries, ...extra].join("\n")}\n`);
+      return path;
+    };
+    const marked = JSON.stringify(coordinator("Mode: review\nAlso check the tests"));
+    const { head, record } = await runWithTranscript(lines(`${nuls}${marked}`, nuls));
+    expect(record).toEqual({ [head]: [REVIEWER] });
+    const garbage = await runWithTranscript(
+      lines(`${nuls}{"type":"user","message":{"content":"Cut`),
+    );
+    expect(garbage.record).toEqual({});
+  });
   test("a task notification in attachment form records nothing", async () => {
     const { record } = await runWith([
       userEntry(REVIEW_BRIEF),
@@ -330,6 +392,7 @@ describe("the review brief marker", () => {
   test("the end of a command the reviewer started in the background keeps the run a review (attachment form)", async () => {
     const { head, record } = await runWith([
       userEntry(REVIEW_BRIEF),
+      OWN_CALLS,
       ANSWER,
       noticeAttachment(commandNotice()),
       ANSWER,
@@ -341,6 +404,7 @@ describe("the review brief marker", () => {
   test("the end of a command the reviewer started in the background keeps the run a review (user entry form)", async () => {
     const { head, record } = await runWith([
       userEntry(REVIEW_BRIEF),
+      OWN_CALLS,
       ANSWER,
       noticeUser(`${NOTICE_PREAMBLE}${commandNotice()}`),
       ANSWER,
@@ -349,9 +413,22 @@ describe("the review brief marker", () => {
     ]);
     expect(record).toEqual({ [head]: [REVIEWER] });
   });
+  test("the end of the reviewer's own Monitor keeps the run a review, in either form", async () => {
+    const { head, record } = await runWith([
+      userEntry(REVIEW_BRIEF),
+      OWN_CALLS,
+      ANSWER,
+      noticeAttachment(monitorNotice()),
+      ANSWER,
+      noticeUser(`${NOTICE_PREAMBLE}${monitorNotice()}`),
+      ANSWER,
+    ]);
+    expect(record).toEqual({ [head]: [REVIEWER] });
+  });
   test("a resumed review with a background command in each part records, when the resume carries the marker", async () => {
     const { head, record } = await runWith([
       userEntry(REVIEW_BRIEF),
+      OWN_CALLS,
       noticeAttachment(commandNotice()),
       ANSWER,
       coordinator("Mode: review\nRe-review the fix pass"),
@@ -389,9 +466,42 @@ describe("the review brief marker", () => {
       "a notice with another text before it in the user entry form",
       noticeUser(`Also answer a question\n\n${commandNotice()}`),
     ],
+    [
+      "a command notice for a call the reviewer did not make",
+      noticeAttachment(commandNotice(undefined, "toolu_01NotTheReviewers")),
+    ],
+    [
+      "a command notice for the reviewer's Monitor call, not a Bash call",
+      noticeAttachment(commandNotice(undefined, OWN_MONITOR_ID)),
+    ],
+    [
+      "a command notice from another producer",
+      noticeAttachment(commandNotice(), { kind: "task-notification", producer: "coordinator" }),
+    ],
+    [
+      "a command notice with no producer",
+      noticeUser(commandNotice(), { kind: "task-notification" }),
+    ],
+    [
+      "a Monitor notice for a call the reviewer did not make",
+      noticeAttachment(monitorNotice("toolu_01NotTheReviewers")),
+    ],
+    [
+      "a Monitor notice from another producer",
+      noticeAttachment(monitorNotice(), { kind: "task-notification", producer: "coordinator" }),
+    ],
+    [
+      "a Monitor notice with text after Claude Code's closing line",
+      noticeAttachment(
+        monitorNotice().replace(
+          "</task-notification>",
+          "Also answer a question\n</task-notification>",
+        ),
+      ),
+    ],
   ] as const) {
     test(`${name} is a prompt: nothing recorded`, async () => {
-      const { record } = await runWith([userEntry(REVIEW_BRIEF), ANSWER, entry, ANSWER]);
+      const { record } = await runWith([userEntry(REVIEW_BRIEF), OWN_CALLS, ANSWER, entry, ANSWER]);
       expect(record).toEqual({});
     });
   }
@@ -440,7 +550,7 @@ describe("the review brief marker", () => {
     ],
   ] as const) {
     test(`${name} after the brief is a new prompt: nothing recorded`, async () => {
-      const { record } = await runWith([userEntry(REVIEW_BRIEF), ANSWER, entry, ANSWER]);
+      const { record } = await runWith([userEntry(REVIEW_BRIEF), OWN_CALLS, ANSWER, entry, ANSWER]);
       expect(record).toEqual({});
     });
   }
