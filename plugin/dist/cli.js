@@ -25588,7 +25588,7 @@ function startBudget(env, now = Date.now, ceilingMs = GUARD_BUDGET_MS, startedAt
   const budgetAt = (startedAtMs ?? now()) + budgetMs(env, ceilingMs);
   return { timeFor: (limitMs) => Math.min(limitMs, budgetAt - now() - BUDGET_MARGIN_MS) };
 }
-var GUARD_BUDGET_MS = 25000, SHORT_GUARD_BUDGET_MS = 8000, BUDGET_MARGIN_MS = 2000, GUARD_BUDGET_ENV = "CC_SMART_DEV_KIT_GUARD_BUDGET_MS";
+var GUARD_BUDGET_MS = 25000, SHORT_GUARD_BUDGET_MS = 8000, BUDGET_MARGIN_MS = 2000, OWN_WORKTREE_PROOF_BUDGET_MS = 6000, GUARD_BUDGET_ENV = "CC_SMART_DEV_KIT_GUARD_BUDGET_MS";
 
 // src/jobs/git-hooks.ts
 import { closeSync as closeSync6, openSync as openSync6, readSync as readSync2, realpathSync as realpathSync5, statSync as statSync11 } from "fs";
@@ -52675,12 +52675,8 @@ function computedPushIn(command, dialect) {
     return invocation?.computed === true && namesPush(words);
   }));
 }
-function plainPrefix(prefix) {
-  return !prefix.some((word) => isWrapper(word) || word.startsWith("-"));
-}
-function gitQuestions(args, folder, prefix, dialect, run) {
-  const plain = plainPrefix(prefix);
-  return gitCalls(args).flatMap((call) => callQuestions(call, folder, plain, dialect, run));
+function gitQuestions(args, folder, dialect, run) {
+  return gitCalls(args).flatMap((call) => callQuestions(call, folder, dialect, run));
 }
 function pushAlias(call) {
   const value = call.config.get(`alias.${call.sub.toLowerCase()}`);
@@ -52690,7 +52686,7 @@ function pushAlias(call) {
   const first = words[0] ?? "";
   return first === "push" || first === "send-pack" ? words.slice(1) : null;
 }
-function callQuestions(call, folder, plain, dialect, run) {
+function callQuestions(call, folder, dialect, run) {
   const { options } = run;
   const { rest, sub } = call;
   const alias = pushAlias(call);
@@ -52717,7 +52713,7 @@ function callQuestions(call, folder, plain, dialect, run) {
       return [WORKTREE_REMOVE_ASK];
   }
   const unlessOwn = (ask) => {
-    const own = plain && (options.agentId ?? null) !== null && call.workTree === null && call.gitDir === null && !call.config.has("core.worktree");
+    const own = (options.agentId ?? null) !== null && call.workTree === null && call.gitDir === null && call.config.size === 0;
     if (!own)
       return [ask];
     run.discards.push({ ask, dialect, dirs: call.dirs });
@@ -52742,68 +52738,179 @@ function callQuestions(call, folder, plain, dialect, run) {
   }
   return [];
 }
-var UNFOLLOWED = new Set([".", "pop-location", "source"]);
-var EVALUATES = new Set(["eval", "iex", "invoke-expression"]);
+var INERT_PROGRAMS = new Set([
+  "[",
+  "cat",
+  "cp",
+  "diff",
+  "echo",
+  "false",
+  "grep",
+  "head",
+  "ls",
+  "mkdir",
+  "mv",
+  "printf",
+  "pwd",
+  "rm",
+  "rmdir",
+  "tail",
+  "tee",
+  "test",
+  "touch",
+  "true",
+  "uniq",
+  "wc",
+  "copy-item",
+  "get-childitem",
+  "get-content",
+  "move-item",
+  "new-item",
+  "remove-item",
+  "test-path",
+  "write-host",
+  "write-output"
+]);
+var FOLLOWED_FOLDER_CHANGES = new Set([
+  "cd",
+  "chdir",
+  "pushd",
+  "push-location",
+  "set-location",
+  "sl"
+]);
+var FUNCTION_DEFINITION = /\(\s*\)/;
+var SHELL_STATE_DRIVE = /(?:^|[^a-z])(?:alias|env|function|variable):/i;
+var VARIABLE_PARAMETERS = [
+  "errorvariable",
+  "informationvariable",
+  "outvariable",
+  "pipelinevariable",
+  "variable",
+  "warningvariable"
+];
+var VARIABLE_PARAMETER_ALIASES = new Set(["ev", "iv", "ov", "pv", "wv"]);
+function plainPowerShellWords(words) {
+  return words.every((word) => {
+    if (SHELL_STATE_DRIVE.test(word))
+      return false;
+    if (!word.startsWith("-"))
+      return true;
+    const name = (word.slice(1).split(":")[0] ?? "").toLowerCase();
+    if (name.length < 2)
+      return true;
+    return !VARIABLE_PARAMETER_ALIASES.has(name) && !VARIABLE_PARAMETERS.some((parameter) => parameter.startsWith(name));
+  });
+}
+function plainFolderChange(operands, dialect) {
+  const [first = "", second = ""] = operands;
+  if (operands.length === 1)
+    return !first.startsWith("-");
+  return dialect === "powershell" && operands.length === 2 && /^-(?:literalpath|path)$/i.test(first) && !second.startsWith("-");
+}
+function plainStep(words, invocation, nested, dialect) {
+  if (words.length === 0)
+    return true;
+  if (invocation === undefined || nested !== undefined)
+    return false;
+  if (invocation.computed || invocation.prefix.length > 0)
+    return false;
+  const first = (words[0] ?? "").toLowerCase();
+  if (first !== invocation.program)
+    return false;
+  const operands = withoutRedirections(invocation.args);
+  if (dialect === "powershell" && !plainPowerShellWords(operands))
+    return false;
+  if (first === "git")
+    return true;
+  if (FOLLOWED_FOLDER_CHANGES.has(first))
+    return plainFolderChange(operands, dialect);
+  if (first === "printf")
+    return !(operands[0] ?? "").startsWith("-");
+  return INERT_PROGRAMS.has(first);
+}
 var BRACE_PAIR = /\{[^}]*(?:,|\.\.)[^}]*\}/;
 var MAX_FOLDER_CHANGES = 64;
 var MAX_FOLDERS = 32;
 var isRelativePath = (path) => !/^(?:[\\/]|[A-Za-z]:|~)/.test(path);
-function followed(change, folders) {
-  const named = change.operands.filter((arg) => !arg.startsWith("-") && arg.toLowerCase() !== "/d");
+function followable(path) {
+  return !BRACE_PAIR.test(path) && !path.split(/[\\/]/).includes("..") && !/^[A-Za-z]:(?![\\/])/.test(path);
+}
+function setsCdpath(env) {
+  return Object.entries(env).some(([name, value]) => value !== undefined && name.toUpperCase() === "CDPATH");
+}
+function followed(change, folders, cdpath) {
+  const named = change.operands.filter((arg) => !arg.startsWith("-"));
   const target = named[0];
-  if (named.length !== 1 || target === undefined || BRACE_PAIR.test(target))
+  if (named.length !== 1 || target === undefined || !followable(target))
     return null;
-  if (isRelativePath(target) && target.split(/[\\/]/).includes(".."))
+  if (cdpath && isRelativePath(target))
     return null;
   const moved = folders.map((folder) => movedTo(change.program, folder, change.operands, { dialect: change.dialect }));
   return moved.every((folder) => folder !== null) ? moved : null;
 }
+function reachedFolders(readings, start, cdpath) {
+  const folders = new Set([start]);
+  for (const reading of readings) {
+    const reached = new Set([start]);
+    for (const change of reading.folderChanges) {
+      const moved = followed(change, [...reached], cdpath);
+      if (moved === null)
+        return null;
+      for (const folder of moved)
+        reached.add(folder);
+      if (reached.size > MAX_FOLDERS)
+        return null;
+    }
+    for (const folder of reached)
+      folders.add(folder);
+    if (folders.size > MAX_FOLDERS)
+      return null;
+  }
+  return folders;
+}
 function ownWorktreeProof(run, cwd) {
   const { options, real } = run;
-  if (run.locationNamed || run.unreadable || envMovesGit(options.env))
+  const judged = run.readings.filter((reading) => options.toolDialect === undefined || reading.dialect === options.toolDialect);
+  if (judged.length === 0 || judged.some((reading) => !reading.plain))
     return null;
-  if (run.folderChanges.length > MAX_FOLDER_CHANGES)
+  if (run.locationNamed || envMovesGit(options.env))
+    return null;
+  const changes = judged.reduce((count, reading) => count + reading.folderChanges.length, 0);
+  if (changes > MAX_FOLDER_CHANGES)
     return null;
   const start = resolve25(cwd);
   const root = subagentWorktreeOf(start, options.agentId ?? null);
   if (root === null || !existsSync72(root))
     return null;
   const realRoot = real(root);
+  if (!samePath3(root, realRoot))
+    return null;
+  const gitIn = (folder, args) => {
+    const timeoutMs = run.budget.timeFor(GUARD_GIT_TIMEOUT_MS);
+    return timeoutMs <= 0 ? null : runGit(folder, args, options.env, timeoutMs);
+  };
+  if (!isLinkedWorktree(root, realRoot, real, gitIn))
+    return null;
+  run.startsAtRoot.set(realRoot, true);
   const within = (folder) => existsSync72(folder) && isInside(real(folder), realRoot);
   const startsAtRoot = (folder) => {
     const key = real(folder);
     let known = run.startsAtRoot.get(key);
     if (known === undefined) {
-      const top = runGit(folder, ["rev-parse", "--show-toplevel"], options.env, GUARD_GIT_TIMEOUT_MS);
-      known = top.ok && top.out !== "" && isInside(real(top.out), realRoot) && isInside(realRoot, real(top.out));
+      const top = gitIn(folder, ["rev-parse", "--show-toplevel"]);
+      known = top?.ok === true && top.out !== "" && samePath3(real(top.out), realRoot);
       run.startsAtRoot.set(key, known);
     }
     return known;
   };
-  const changes = new Map;
-  for (const change of run.folderChanges) {
-    const key = [change.program, ...change.operands].join("\x00");
-    changes.set(key, (changes.get(key) ?? new Map).set(change.dialect, change));
-  }
-  const folders = new Set([start]);
-  for (const variants of changes.values()) {
-    const before = [...folders];
-    for (const change of variants.values()) {
-      const reached = followed(change, before);
-      if (reached === null)
-        return null;
-      for (const folder of reached)
-        folders.add(folder);
-    }
-    if (folders.size > MAX_FOLDERS)
-      return null;
-  }
-  if (![...folders].every(within))
+  const folders = reachedFolders(judged, start, setsCdpath(options.env));
+  if (folders === null || ![...folders].every(within))
     return null;
   return (discard) => [...folders].every((folder) => {
     let at = folder;
     for (const dir of discard.dirs) {
-      if (BRACE_PAIR.test(dir))
+      if (!followable(dir))
         return false;
       at = movedTo("cd", at, [dir], { dialect: discard.dialect });
       if (at === null)
@@ -52812,44 +52919,52 @@ function ownWorktreeProof(run, cwd) {
     return within(at) && startsAtRoot(at);
   });
 }
+function isLinkedWorktree(root, realRoot, real, gitIn) {
+  const read = gitIn(root, ["rev-parse", "--show-toplevel", "--git-dir", "--git-common-dir"]);
+  if (read === null || !read.ok)
+    return false;
+  const [top, gitDir, commonDir] = read.out.split(/\r?\n/);
+  if (top === undefined || gitDir === undefined || commonDir === undefined)
+    return false;
+  if (top === "" || gitDir === "" || commonDir === "")
+    return false;
+  return samePath3(real(top), realRoot) && !samePath3(real(resolve25(root, gitDir)), real(resolve25(root, commonDir)));
+}
 function ownDiscardAsks(run, cwd) {
   if (run.discards.length === 0)
     return [];
   const proof = ownWorktreeProof(run, cwd);
   return run.discards.filter((discard) => proof === null || !proof(discard)).map((d) => d.ask);
 }
-function inspect2(command, cwd, reading, run, depth = 0) {
+function inspect2(command, cwd, reading, run, proof, depth = 0) {
   const found = [];
   let folder = cwd;
   const { dialect, joinLines } = reading;
+  if (dialect === "powershell" && /[{}]/.test(command))
+    proof.plain = false;
   for (const step of shellSteps(command, { blindWhenOpen: true, dialect, joinLines })) {
     const words = wordsOf(step.text, dialect);
     if (namesGitLocation(words))
       run.locationNamed = true;
     const invocation = invocationOf(words);
+    const inner = invocation === undefined ? undefined : nestedCommand(invocation.program, invocation.args, step.pipedFrom);
+    if (!plainStep(words, invocation, inner, dialect))
+      proof.plain = false;
     if (invocation === undefined)
       continue;
     const { args, program } = invocation;
     const operands = withoutRedirections(args);
-    if (UNFOLLOWED.has(program) || isRunnerProgram(program))
-      run.unreadable = true;
     if (CHANGES_FOLDER.has(program))
-      run.folderChanges.push({ dialect, operands, program });
-    if (program === "git") {
-      found.push(...gitQuestions(operands, folder, invocation.prefix, dialect, run));
-    }
+      proof.folderChanges.push({ dialect, operands, program });
+    if (program === "git")
+      found.push(...gitQuestions(operands, folder, dialect, run));
     if (invocation.computed && namesPush(words))
       found.push(COMPUTED_PUSH_ASK);
     if (CHANGES_FOLDER.has(program))
       folder = movedTo(program, folder, operands);
-    const inner = nestedCommand(program, args, step.pipedFrom);
-    if (inner !== undefined) {
-      if (depth >= MAX_NESTING || EVALUATES.has(program) && /[$`]/.test(inner)) {
-        run.unreadable = true;
-      } else {
-        for (const nested of readingsOf(inner, nestedDialect(program))) {
-          found.push(...inspect2(inner, folder, nested, run, depth + 1));
-        }
+    if (inner !== undefined && depth < MAX_NESTING) {
+      for (const nested of readingsOf(inner, nestedDialect(program))) {
+        found.push(...inspect2(inner, folder, nested, run, proof, depth + 1));
       }
     }
   }
@@ -52861,13 +52976,22 @@ function guardQuestions(command, cwd, options) {
     branches: new Map,
     pushConfigs: new Map,
     discards: [],
-    folderChanges: [],
+    readings: [],
     locationNamed: false,
-    unreadable: false,
     real: memoizedRealPath(),
-    startsAtRoot: new Map
+    startsAtRoot: new Map,
+    budget: startBudget(options.env, Date.now, OWN_WORKTREE_PROOF_BUDGET_MS, options.startedAtMs)
   };
-  const found = readingsOf(command, options.dialect).flatMap((reading) => inspect2(command, cwd, reading, run));
+  const definesFunction = FUNCTION_DEFINITION.test(command);
+  const found = readingsOf(command, options.dialect).flatMap((reading) => {
+    const proof = {
+      dialect: reading.dialect,
+      plain: !definesFunction,
+      folderChanges: []
+    };
+    run.readings.push(proof);
+    return inspect2(command, cwd, reading, run, proof);
+  });
   found.push(...ownDiscardAsks(run, cwd));
   return [...new Set(found)];
 }
@@ -55406,12 +55530,15 @@ var gitGuardHook = {
     const command = stringField(toolInput(input).command);
     if (command === null)
       return SILENT;
+    const agentId = stringField(input.agent_id);
     const questions = guardQuestions(command, cwd, {
       protectedBranches: config.protectedBranches ?? DEFAULT_PROTECTED_BRANCHES,
       autoPushAsk: () => autoPushQuestion(context),
       sharedStash: config.worktrees !== undefined || project.isWorktree,
       env,
-      agentId: stringField(input.agent_id)
+      agentId: agentId === null ? null : agentIdKey(agentId),
+      toolDialect: dialectOfTool(input.tool_name),
+      startedAtMs: context.nowMs
     });
     return questions.length === 0 ? SILENT : toolDecision("ask", questions.join(`
 `));
