@@ -23,6 +23,14 @@ export const SHORT_GUARD_BUDGET_MS = 8_000;
 export const BUDGET_MARGIN_MS = 2_000;
 
 /**
+ * The budget of the git guard's proof that a subagent's discard stays in its own worktree
+ * (`git-guard.ts`, a 10 s hook): less the margin, every git call of the proof ends 4 s after the
+ * hook started, however many folders the line names. The rest of the hook's time is left for
+ * the guard's other git reads and its answer. A proof that runs out of time asks.
+ */
+export const OWN_WORKTREE_PROOF_BUDGET_MS = 6_000;
+
+/**
  * Where a test sets the budget: `CC_SMART_DEV_KIT_GUARD_BUDGET_MS`, in milliseconds, so the
  * deadline can be proved to bite without waiting 25 s. A hook never sets it; a value that is
  * not a positive number leaves the default, and a larger one is cut to the hook's own budget — the

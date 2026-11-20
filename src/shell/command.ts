@@ -22,6 +22,10 @@
  *   - a command even inside text: `$( … )` and `` `…` `` in a double-quoted string, in the
  *     body of a here-doc whose word is not quoted (`<<EOF`), and in `$(( … ))`: bash runs
  *     them all (the `git commit -m "$(cat <<'EOF' … EOF)"` idiom is read this way);
+ *   - bash 5.3's `${ … }` (a blank, a line break or `|` after `${`) runs its commands in the
+ *     current shell, bare and in a double-quoted string: they are read like `$( … )`'s, up to
+ *     the `}` that stands where a command would, but in the line's own shell, so a `cd` inside
+ *     moves the commands after it; `${x}` and `${x:-y}` stay parameter expansions;
  *   - outside quotes a backslash escapes the character after it (`\;` is no separator, and
  *     `g\it` is `git`); inside double quotes only `$`, a backtick, `"`, `\` and a line break;
  *   - `{` and `}` group commands only as words of their own (`{ a; }`): `HEAD@{0}` is one word.
@@ -30,6 +34,8 @@
  *     a `<# … #>` block comment; the typographic quotes (`‘ ’ ‚ ‛`, `“ ” „`) quote like `'`
  *     and `"`, as PowerShell reads them;
  *   - a command even inside text: `$( … )` in `"…"` and in `@"…"@`;
+ *   - `@( … )` at the start of a word (an array subexpression) runs its commands, and the word
+ *     keeps it whole, as one value;
  *   - the backtick escapes the character after it, and a backslash is a plain character:
  *     `"C:\repo\"` ends at its last quote;
  *   - every brace ends a command: `{ … }` is a script block, which `&`, `.` or `%` runs;
@@ -141,6 +147,8 @@ interface Lexed {
    * offsets are not this text's.
    */
   starts: (number | null)[];
+  /** Where the reading stopped: the text's end, or just past a `substitution`'s `}`. */
+  end: number;
 }
 
 interface LexOptions {
@@ -158,6 +166,8 @@ interface LexOptions {
   depth?: number;
   /** The group the text runs in (a substitution's, a script's): its commands are inside it. */
   outer?: Subshell | null;
+  /** The text starts with a bash 5.3 `${ … }`: read it alone, and stop past its `}`. */
+  substitution?: boolean;
 }
 
 /**
@@ -179,6 +189,30 @@ interface OwedBody {
 
 /** True for a character that ends a word (outside quotes). */
 const isBlank = (char: string) => char === " " || char === "\t";
+
+/**
+ * True when bash 5.3's `${ … }` starts at `at` in `text`: `${` and then a blank, a line break or
+ * `|` (the manual's `${c command; }`), whose commands run in the current shell. Anything else
+ * after `${` is a parameter expansion (`${x}`, `${x:-y}`).
+ */
+function opensBraceSubstitution(text: string, at: number): boolean {
+  return text.startsWith("${", at) && /^[ \t\n|]$/.test(text.charAt(at + 2));
+}
+
+/**
+ * The index after the `}` that closes the bash 5.3 `${ … }` starting at `from`
+ * (`opensBraceSubstitution`), else -1 when it never closes. The line reader finds it, so a word
+ * keeps the substitution whole exactly where the line reader closed it.
+ */
+function braceSubstitutionClose(text: string, from: number): number {
+  const read = lex(text.slice(from), {
+    blind: false,
+    dialect: "bash",
+    join: false,
+    substitution: true,
+  });
+  return read.open ? -1 : from + read.end;
+}
 
 /** One pass over `text`, cutting it into the commands it runs. */
 function lex(text: string, options: LexOptions): Lexed {
@@ -371,8 +405,11 @@ function lex(text: string, options: LexOptions): Lexed {
   /**
    * `"…"` at `at`, the commands of its substitutions pushed as segments of their own. With
    * `closes` false the whole text is a body (an unquoted here-doc's): a quote is a character.
+   * `substitutions` counts the substitutions it is inside, as `read`'s does: past `MAX_INNER` a
+   * substitution in it is not opened, and the line counts as open, so a guard reads it blind
+   * (each level of `"$("$(…` is a call, and 64 KB of them once ran out of stack).
    */
-  function readDouble(closes: boolean): string {
+  function readDouble(closes: boolean, substitutions = 0): string {
     const mark = segments.length;
     let raw = "";
     if (closes) {
@@ -398,18 +435,28 @@ function lex(text: string, options: LexOptions): Lexed {
       } else if (bash && char === "$" && next === "$") {
         raw += "$$"; // the shell's process id
         at += 2;
+      } else if (
+        char === "$" &&
+        (next === "(" || braceSubstitution()) &&
+        substitutions >= MAX_INNER
+      ) {
+        open = true;
+        raw += char;
+        at++;
       } else if (char === "$" && next === "(") {
         const end = bash ? arithmeticEnd(at + 1) : -1;
         if (end === -1) {
           at += 2;
           enterGroup();
-          raw += `$(${read(true).raw}`;
+          raw += `$(${read(")", substitutions + 1).raw}`;
           leaveGroup();
         } else {
           raw += readArithmetic(end);
         }
       } else if (bash && char === "`") {
         raw += readBacktick();
+      } else if (braceSubstitution()) {
+        raw += readBraceSubstitution(substitutions);
       } else {
         raw += char;
         at++;
@@ -453,6 +500,23 @@ function lex(text: string, options: LexOptions): Lexed {
       }
     }
     return word === "" ? null : { end: pos, quoted, script: false, stripTabs, word };
+  }
+
+  /** True at a bash 5.3 `${ … }` (`opensBraceSubstitution`), read as bash. */
+  const braceSubstitution = () => bash && opensBraceSubstitution(text, at);
+
+  /**
+   * The `${ … }` at `at` (`opensBraceSubstitution`): its commands are added, and its text is
+   * returned for the word that holds it. It runs in the current shell, so no group is entered:
+   * a `cd` inside it moves the commands after it. One that never closes runs nothing, and the
+   * line is read blind.
+   */
+  function readBraceSubstitution(substitutions: number): string {
+    const pipe = text.charAt(at + 2) === "|" ? "|" : "";
+    at += 2 + pipe.length;
+    const substitution = read("}", substitutions + 1);
+    if (!substitution.closed) open = true;
+    return `\${${pipe}${substitution.raw}`;
   }
 
   /** True when the character at `at` is a brace that groups commands, not part of a word. */
@@ -504,19 +568,23 @@ function lex(text: string, options: LexOptions): Lexed {
   }
 
   /**
-   * Reads commands to the end of the text, or (`nested`) to the `)` that closes a `$(`.
-   * Returns the text read, bodies cut, and whether that `)` closed it: what the enclosing
+   * Reads commands to the end of the text, or to the `closer` that ends a substitution: the `)`
+   * of a `$(`, or the `}` of a `${ ` that stands where a command would (`${ a; }`, `${ a;}`).
+   * Returns the text read, bodies cut, and whether that closer closed it: what the enclosing
    * quoted word holds, and whether the substitution it was reading is whole. `substitutions`
-   * counts the `$(` this text is inside: past `MAX_INNER` its parentheses split as plain
-   * separators, so a line of 10,000 nested ones is still read in linear time (its commands
-   * are still read, one level at a time).
+   * counts the substitutions this text is inside: past `MAX_INNER` their parentheses split as
+   * plain separators, so a line of 10,000 nested ones is still read in linear time (its
+   * commands are still read, one level at a time).
    */
-  function read(nested: boolean, substitutions = 0): { closed: boolean; raw: string } {
+  function read(closer: ")" | "}" | null, substitutions = 0): { closed: boolean; raw: string } {
+    const nested = closer !== null;
     let raw = "";
     let current = "";
     /** Where `current` starts in `text`: the character after the separator that ended the last one. */
     let currentStart = at;
     let depth = 0;
+    /** In a `${ … }`: the `{ … }` groups open inside it, each of which owns the next `}`. */
+    let braces = 0;
     /** No character of a word yet: a `#` here starts a comment, a lone `{` a group. */
     let wordStart = true;
     /**
@@ -556,7 +624,7 @@ function lex(text: string, options: LexOptions): Lexed {
           continue;
         }
         if (oneOf(double, char)) {
-          take(readDouble(true));
+          take(readDouble(true, substitutions));
           continue;
         }
         if (bash && char === "$" && next === "$") {
@@ -588,15 +656,51 @@ function lex(text: string, options: LexOptions): Lexed {
         // commands inside are still read.
         // Bash's process substitution, `<( … )` or `>( … )` at the start of a word, is one word
         // too (the shell fills in a file name), and its commands run in a shell of their own.
+        // PowerShell's array subexpression, `@( … )` at the start of a word, runs its commands and
+        // is one value too (`Start-Process pwsh -ArgumentList @('-c', 'x')`).
         const processSubstitution = bash && (char === "<" || char === ">") && wordStart;
-        if (next === "(" && (char === "$" || processSubstitution) && substitutions < MAX_INNER) {
+        const arraySubexpression = !bash && char === "@" && wordStart;
+        if (
+          next === "(" &&
+          (char === "$" || processSubstitution || arraySubexpression) &&
+          substitutions < MAX_INNER
+        ) {
           at += 2;
           enterGroup();
-          const substitution = read(true, substitutions + 1);
+          const substitution = read(")", substitutions + 1);
           leaveGroup();
           if (!substitution.closed) open = true;
           take(`${char}(${substitution.raw}`);
           continue;
+        }
+        // Bash 5.3's `${ … }` is part of its word too, but runs in the current shell. Past
+        // `MAX_INNER` it is not opened, and the line counts as open: read blind, it splits.
+        if (braceSubstitution()) {
+          if (substitutions < MAX_INNER) {
+            take(readBraceSubstitution(substitutions));
+            continue;
+          }
+          open = true;
+        }
+        // Its `}` stands where a command would, after a separator: `}x` closes it too, and `x`
+        // goes on in the word, as bash reads it.
+        if (
+          closer === "}" &&
+          char === "}" &&
+          depth === 0 &&
+          braces === 0 &&
+          current.trim() === ""
+        ) {
+          push(
+            current,
+            afterPipe ? (segments[segments.length - 1] ?? null) : null,
+            false,
+            group,
+            currentStart,
+          );
+          afterPipe = false;
+          at++;
+          return { closed: true, raw: `${raw}}` };
         }
         if (char === "#" && wordStart && !afterClose) {
           const end = text.indexOf("\n", at);
@@ -669,11 +773,13 @@ function lex(text: string, options: LexOptions): Lexed {
         at++;
         continue;
       }
-      // Read blind, a bash backtick ends a command: what it holds may run.
+      // Read blind, a bash backtick ends a command: what it holds may run. So does the `$` of a
+      // `${ … }`, whose `{` then groups.
       if (
         SEPARATORS.has(char) ||
         isGroupBrace(char, wordStart) ||
-        (blind && bash && char === "`")
+        (blind && bash && char === "`") ||
+        (blind && braceSubstitution())
       ) {
         const pattern = !blind && bash ? casePattern(current, char, next) : false;
         push(
@@ -684,12 +790,19 @@ function lex(text: string, options: LexOptions): Lexed {
           currentStart,
         );
         afterPipe = char === "|";
-        if (!pattern && nested && char === ")" && depth === 0) {
+        if (!pattern && closer === ")" && char === ")" && depth === 0) {
           at++;
           return { closed: true, raw: `${raw})` };
         }
+        // A `)` that closes nothing inside a `${ … }` belongs to the `$(` around it: the `${`
+        // never closed (bash stops on it), and the reader around it reads on.
+        if (!pattern && closer === "}" && char === ")" && depth === 0) {
+          return { closed: false, raw };
+        }
         if (!pattern && nested && char === "(") depth++;
         if (!pattern && nested && char === ")") depth--;
+        if (closer === "}" && char === "{" && current.trim() === "") braces++;
+        if (closer === "}" && char === "}" && braces > 0) braces--;
         // Bash's array assignment `name=( … )`, `name+=( … )`, `declare -a name=( … )`: what is
         // inside is a list of words, not commands.
         if (!pattern && char === "(") enterGroup(bash && ARRAY_ASSIGNMENT.test(current));
@@ -719,8 +832,9 @@ function lex(text: string, options: LexOptions): Lexed {
   }
 
   if (options.body === true) readDouble(false);
-  else read(false);
-  return { expanded, groups, open, piped, segments, starts, unparsable };
+  else if (options.substitution === true) readBraceSubstitution(0);
+  else read(null);
+  return { end: at, expanded, groups, open, piped, segments, starts, unparsable };
 }
 
 /** How a caller reads a line: its dialect (Bash by default), and the two switches below. */
@@ -934,6 +1048,27 @@ export function wordsWithFill(segment: string, dialect: Dialect = "bash"): Shell
     closes ??= parenCloses(segment);
     return closes[open] ?? -1;
   };
+  /**
+   * Once a bash 5.3 `${ … }` never closes, no later one is tried: each try reads to the end of
+   * the segment, so a line of them stays linear. Its `$` is then a lone, filled `$`.
+   */
+  let braceOpen = false;
+  /** The last `${ … }` tried, and its close: the branch that tests it then takes it. */
+  let braceTried = { from: -1, close: -1 };
+  const braceCloseOf = (from: number) => {
+    if (!bash || braceOpen || !opensBraceSubstitution(segment, from)) return -1;
+    if (braceTried.from !== from) {
+      braceTried = { from, close: braceSubstitutionClose(segment, from) };
+      if (braceTried.close === -1) braceOpen = true;
+    }
+    return braceTried.close;
+  };
+  /** Adds the substitution from `from` to `close` (`$( … )`, `${ … }`) to the word, whole. */
+  const addSubstitution = (from: number, close: number) => {
+    add(segment.slice(from, close));
+    filled = true;
+    i = close;
+  };
   let i = 0;
   while (i < segment.length) {
     const char = segment.charAt(i);
@@ -956,7 +1091,20 @@ export function wordsWithFill(segment: string, dialect: Dialect = "bash"): Shell
       // `$( … )`, and `<( … )` / `>( … )` at the start of a word: the shell fills in its answer (a
       // file name for the last two), so the whole substitution stays in its word, as the line
       // reader keeps it (`out=$(bun test 2>&1)` is one word, never `2>&1)`).
-      const close = closeOf(i + 1);
+      addSubstitution(i, closeOf(i + 1));
+    } else if (braceCloseOf(i) !== -1) {
+      // Bash 5.3's `${ … }`: the same, up to the `}` the line reader closes it at.
+      addSubstitution(i, braceCloseOf(i));
+    } else if (
+      !bash &&
+      !inWord &&
+      char === "@" &&
+      next === "(" &&
+      powershellParenClose(segment, i + 1) !== -1
+    ) {
+      // PowerShell's `@( … )`: one value, kept whole as the line reader keeps it, so a reader of
+      // an array value (`Start-Process -ArgumentList @('-c', 'x')`) can take its elements.
+      const close = powershellParenClose(segment, i + 1);
       add(segment.slice(i, close));
       filled = true;
       i = close;
@@ -1022,12 +1170,11 @@ export function wordsWithFill(segment: string, dialect: Dialect = "bash"): Shell
           i += 2;
           continue;
         }
-        const substitution = bash && inside === "$" && after === "(" ? closeOf(i + 1) : -1;
+        const substitution =
+          bash && inside === "$" && after === "(" ? closeOf(i + 1) : braceCloseOf(i);
         if (substitution !== -1) {
-          // `"$(a "b c")"`: inside a substitution the quotes start again.
-          add(segment.slice(i, substitution));
-          filled = true;
-          i = substitution;
+          // `"$(a "b c")"`, `"${ a "b c"; }"`: inside a substitution the quotes start again.
+          addSubstitution(i, substitution);
           continue;
         }
         if (inside === escaper && after !== "") {
@@ -1096,6 +1243,40 @@ function parenCloses(text: string): Int32Array {
     if (i === -1) break; // a quote that never closes: nothing after it is read
   }
   return closes;
+}
+
+/**
+ * The index after the `)` that closes the PowerShell `(` at `open`, or -1 when none does. Quoted
+ * text is skipped as PowerShell reads it: `'…'` (where `''` is a quote) and `"…"` (where a
+ * backtick escapes and `""` is a quote), with the typographic quotes too; outside quotes a
+ * backtick escapes the character after it.
+ */
+function powershellParenClose(text: string, open: number): number {
+  const single = SINGLE.powershell;
+  const double = DOUBLE.powershell;
+  /** The index of the quote that ends text read from `from`, or -1. */
+  const quoteEnd = (quotes: string, from: number, escapes: boolean): number => {
+    for (let at = from; at < text.length; at++) {
+      const char = text.charAt(at);
+      if (escapes && char === "`") at++;
+      else if (oneOf(quotes, char)) {
+        if (!oneOf(quotes, text.charAt(at + 1))) return at;
+        at++;
+      }
+    }
+    return -1;
+  };
+  let depth = 0;
+  for (let i = open; i < text.length; i++) {
+    const char = text.charAt(i);
+    if (char === "`") i++;
+    else if (oneOf(single, char)) i = quoteEnd(single, i + 1, false);
+    else if (oneOf(double, char)) i = quoteEnd(double, i + 1, true);
+    else if (char === "(") depth++;
+    else if (char === ")" && --depth === 0) return i + 1;
+    if (i === -1) return -1; // a quote that never closes
+  }
+  return -1;
 }
 
 /** Text that is data, not a command: skipped over when a segment is read for its program. */
@@ -1502,14 +1683,17 @@ export function invocationOf(words: readonly string[]): Invocation | undefined {
 }
 
 /**
- * True when a word is a program the shell works out when the line runs (`$GIT`,
- * `$(which git)`, a backtick). A path whose name is plain is not one: `$HOME/.local/bin/cc-smart-dev-kit`
- * names the command `cc-smart-dev-kit`, whatever folder it is in.
+ * True when a word is a program the shell works out when the line runs: it holds a `$` or a
+ * backtick anywhere in its name, not only at its start (`$GIT`, `$(which git)`, `g$(echo i)t`,
+ * `gi${T}`, `/usr/bin/gi$X`, `push$X`). A path whose name is plain is not one:
+ * `$HOME/.local/bin/cc-smart-dev-kit` names the command `cc-smart-dev-kit`, whatever folder it
+ * is in. The text is the word as `wordsOf` gives it, its quotes gone, so a quoted `'$x'` counts
+ * too, which is safe.
  */
 export function isComputedWord(word: string): boolean {
   // `{}` is the file `find -exec` and `xargs -I{}` put in its place: whatever it names runs.
   if (word === "{}") return true;
-  if (!word.startsWith("$") && !word.startsWith("`")) return false;
+  if (!/[$`]/.test(word)) return false;
   return /[$`(){}[\]\s]/.test(programName(word));
 }
 
@@ -1557,11 +1741,55 @@ function startProcessParameter(
   return { name, takesValue: START_PROCESS_PARAMETERS.get(name) === true, value: match?.[2] };
 }
 
+/** True when the word at `index` opens a PowerShell array: it ends in a comma, or the next word starts with one. */
+function continuesArray(args: readonly string[], index: number): boolean {
+  return (args[index] ?? "").endsWith(",") || (args[index + 1] ?? "").startsWith(",");
+}
+
+/**
+ * The words of the one PowerShell array value that starts at `from` (its first word `first`),
+ * and the index after it: the reader keeps a comma on the word it touches, so `'-c', 'x'` is
+ * `-c,` and `x`, and `'-c' , 'x'` is `-c`, `,` and `x`. A word that ends in a comma, or a next
+ * word that starts with one, goes on.
+ */
+function arrayAt(
+  args: readonly string[],
+  from: number,
+  first: string,
+): { words: string[]; next: number } {
+  const words = [first];
+  let next = from + 1;
+  while (next < args.length && continuesArray([words.at(-1) ?? "", args[next] ?? ""], 0)) {
+    words.push(args[next] ?? "");
+    next++;
+  }
+  return { words, next };
+}
+
+/**
+ * The arguments an array value gives the program, as PowerShell joins its elements with spaces:
+ * each element split into words. `@( … )` (an array subexpression the reader keeps as one word)
+ * is read for its elements. An element worked out when the line runs (`$cmd`) stays as it is,
+ * so a command built from it is one the guards cannot name.
+ */
+function arrayElements(words: readonly string[]): string[] {
+  return words
+    .flatMap((word) => {
+      const inner = /^@\(([\s\S]*)\)$/.exec(word)?.[1];
+      return inner === undefined ? [word] : wordsOf(inner, "powershell");
+    })
+    .join(" ")
+    .split(",")
+    .flatMap((part) => wordsOf(part))
+    .filter((one) => one !== "");
+}
+
 /**
  * The command `Start-Process` runs: its `-FilePath` (`-F`, or any prefix PowerShell accepts)
  * or the first positional word names the program, and `-ArgumentList` (`-A`) or the second
- * positional word its arguments (`Start-Process -FilePath git -ArgumentList 'push -f'`).
- * Null for anything else (no program named).
+ * positional value its arguments (`Start-Process -FilePath git -ArgumentList 'push -f'`). That
+ * value is one array, however it is written: `'a b'`, `a,b`, `'-c', 'x'`, `'-c' , 'x'` or
+ * `@('-c', 'x')` (`arrayAt`, `arrayElements`). Null for anything else (no program named).
  *
  * `-UseNewEnvironment` starts the command with a fresh environment. The prefix then carries
  * `Start-Process` and the flag, where the escape guard reads them like `sudo` (`prefixDrop`).
@@ -1572,36 +1800,45 @@ function startProcess(
   let file: string | null = null;
   let list: string[] | null = null;
   let fresh: string | null = null;
-  const positional: string[] = [];
+  /** The positional values, each one PowerShell array (`'-c', 'x'` is one value). */
+  const positional: string[][] = [];
   for (let index = 0; index < args.length; index++) {
     const arg = args[index] ?? "";
     if (arg === "--") {
-      positional.push(...args.slice(index + 1));
+      positional.push(...args.slice(index + 1).map((word) => [word]));
       break;
     }
     const parameter = startProcessParameter(arg);
     if (parameter === null) {
-      if (!arg.startsWith("-")) positional.push(arg);
+      // A word that starts with `-` is a parameter this reader does not know, unless it opens
+      // an array (`'-c', 'x'` reads as `-c,` and `x`).
+      if (!arg.startsWith("-") || continuesArray(args, index)) {
+        const array = arrayAt(args, index, arg);
+        positional.push(array.words);
+        index = array.next - 1;
+      }
       continue;
     }
     const { name, takesValue } = parameter;
-    let value = parameter.value;
-    if (takesValue && value === undefined) {
-      value = args[index + 1];
-      index++;
+    let value: string[] | undefined;
+    if (takesValue) {
+      // The value is one array, however its commas are spaced: `-ArgumentList '-c', 'x'` reads
+      // as `-c,` and `x`, `'-c' , 'x'` as `-c`, `,` and `x`. A value after a colon
+      // (`-ArgumentList:'-c', 'x'`) is the array's first word.
+      const inline = parameter.value;
+      const from = inline === undefined ? index + 1 : index;
+      if (from < args.length) {
+        const array = arrayAt(args, from, inline ?? args[from] ?? "");
+        value = array.words;
+        index = array.next - 1;
+      }
     }
-    if (name === "filepath" && value !== undefined) file = value;
-    else if (name === "argumentlist" && value !== undefined) {
-      // `-ArgumentList 'a b'` is one command line; `-ArgumentList a,b` is the array
-      // PowerShell joins with spaces for the program.
-      list = value
-        .split(",")
-        .flatMap((part) => wordsOf(part))
-        .filter((one) => one !== "");
-    } else if (name === "usenewenvironment") fresh = arg;
+    if (name === "filepath" && value !== undefined) file = value[0] ?? null;
+    else if (name === "argumentlist" && value !== undefined) list = arrayElements(value);
+    else if (name === "usenewenvironment") fresh = arg;
   }
-  file ??= positional[0] ?? null;
-  list ??= positional.length > 1 ? wordsOf(positional.slice(1).join(" ")) : [];
+  file ??= positional[0]?.[0] ?? null;
+  list ??= arrayElements(positional.slice(1).flat());
   if (file === null) return null;
   return {
     args: list,

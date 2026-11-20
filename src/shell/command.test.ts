@@ -10,6 +10,7 @@ import {
   dialectOfTool,
   invocationOf,
   invocationsOf,
+  isComputedWord,
   nestedCommand,
   nestedDialect,
   programsOf,
@@ -733,6 +734,27 @@ describe("invocationOf", () => {
     expect(invocationOf(wordsOf("echo $(which git)"))?.computed).toBe(false);
   });
 
+  // The final review's W2: only a word that started with the expansion counted.
+  test.each([
+    ["a substitution inside", "g$(echo i)t reset --hard"],
+    ["a braced variable at the end", `gi\${T} reset --hard`],
+    ["a variable in the program's name, after its path", "/usr/bin/gi$X reset --hard"],
+    ["a backtick inside", "g`echo i`t reset --hard"],
+    ["a quoted variable inside", 'gi"$T" reset --hard'],
+  ])("W2, a program holding an expansion anywhere is computed (%s): %j", (_name, line) => {
+    expect(invocationOf(wordsOf(line))?.computed).toBe(true);
+    expect(isComputedWord(wordsOf(line)[0] ?? "")).toBe(true);
+  });
+
+  test("W2, a word holding an expansion anywhere is computed; a plain name after a path is not", () => {
+    expect(isComputedWord("push$X")).toBe(true);
+    expect(isComputedWord("--har$D")).toBe(true);
+    expect(isComputedWord("-$F")).toBe(true);
+    expect(isComputedWord("$HOME/.local/bin/cc-smart-dev-kit")).toBe(false);
+    expect(isComputedWord("git")).toBe(false);
+    expect(isComputedWord("a.txt")).toBe(false);
+  });
+
   test("F2a-3: Start-Process runs what -FilePath and -ArgumentList name", () => {
     const one = (line: string) => invocationOf(wordsOf(line, "powershell"));
     expect(one("Start-Process -FilePath git -ArgumentList 'push -f origin main'")).toEqual({
@@ -753,6 +775,175 @@ describe("invocationOf", () => {
       prefix: ["start-process", "-UseNewEnvironment"],
       program: "cc-smart-dev-kit",
     });
+  });
+});
+
+// Round 2's reader finding: `-ArgumentList '-c', 'git reset --hard'` (a space after the comma)
+// was read as `-c` alone, so the command pwsh runs was never read, for any guard.
+describe("Start-Process -ArgumentList is the whole comma-separated array, however it is spaced", () => {
+  /** What the `pwsh` that Start-Process starts runs, read from the line's PowerShell steps. */
+  function startedCommand(line: string): string | undefined {
+    for (const step of shellSteps(line, ps)) {
+      const invocation = invocationOf(wordsOf(step.text, "powershell"));
+      if (invocation?.program === "pwsh") {
+        return nestedCommand(invocation.program, invocation.args, step.pipedFrom);
+      }
+    }
+    return undefined;
+  }
+
+  test.each([
+    ["no space", "Start-Process pwsh -ArgumentList '-c','git reset --hard'"],
+    ["a space after the comma", "Start-Process pwsh -ArgumentList '-c', 'git reset --hard'"],
+    ["a space on both sides", "Start-Process pwsh -ArgumentList '-c' , 'git reset --hard'"],
+    ["a space before the comma", "Start-Process pwsh -ArgumentList '-c' ,'git reset --hard'"],
+    ["the -Args abbreviation", "Start-Process pwsh -Args '-c', 'git reset --hard'"],
+    ["-ArgumentList:", "Start-Process pwsh -ArgumentList:'-c', 'git reset --hard'"],
+    [
+      "between other parameters",
+      "Start-Process pwsh -WorkingDirectory C:/x -ArgumentList '-c', 'git reset --hard' -Wait",
+    ],
+    ["the positional array", "Start-Process pwsh '-c', 'git reset --hard'"],
+    ["@( … )", "Start-Process pwsh -ArgumentList @('-c', 'git reset --hard')"],
+    ["@( … ) with no spaces", "Start-Process pwsh -ArgumentList @('-c','git reset --hard')"],
+    [
+      "@( … ) with spaces inside",
+      "Start-Process pwsh -ArgumentList @( '-c' , 'git reset --hard' )",
+    ],
+  ])("%s: the command pwsh runs is read", (_name, line) => {
+    expect(startedCommand(line)).toBe("git reset --hard");
+    expect(programsOf(line, "powershell")).toContain("git");
+  });
+
+  test("an element worked out when the line runs keeps the nested command unreadable", () => {
+    const inner = startedCommand("Start-Process pwsh -ArgumentList '-c', $cmd");
+    expect(inner).toBe("$cmd");
+    expect(invocationOf(wordsOf(inner ?? "", "powershell"))?.computed).toBe(true);
+  });
+
+  test("the words after the array are Start-Process's own again", () => {
+    expect(
+      invocationOf(
+        wordsOf(
+          "Start-Process git -ArgumentList 'push', 'origin' -UseNewEnvironment",
+          "powershell",
+        ),
+      ),
+    ).toEqual({
+      args: ["push", "origin"],
+      computed: false,
+      prefix: ["start-process", "-UseNewEnvironment"],
+      program: "git",
+    });
+  });
+});
+
+// Round 3's reader finding: bash 5.3 runs `${ cmd; }` (a blank, a newline or `|` after `${`) in
+// the current shell, and the reader took it for a parameter expansion, so no guard saw `cmd`.
+describe("bash 5.3's brace command substitution is read as commands", () => {
+  /** The steps' texts, trimmed, with the empty ones left out. */
+  const texts = (line: string) =>
+    shellSteps(line)
+      .map((step) => step.text.trim())
+      .filter((text) => text !== "");
+
+  test.each([
+    ["bare", `echo \${ git reset --hard; }`],
+    ["in double quotes", `echo "\${ git reset --hard; }"`],
+    [`a tab after \${`, `echo \${\tgit reset --hard; }`],
+    [`a newline after \${`, `echo \${\ngit reset --hard\n}`],
+    ["no blank before the }", `echo \${ git reset --hard;}`],
+    ["a & before the }", `echo \${ git reset --hard & }`],
+    ["inside a word", `echo a\${ git reset --hard; }b`],
+    ["the | form", `echo \${| git reset --hard; }`],
+    ["nested inside $( … )", `echo $(echo \${ git reset --hard; })`],
+    ["nested inside $( … ) in double quotes", `echo "$(echo "\${ git reset --hard; }")"`],
+    ["inside an unquoted here-doc", `cat <<EOF\n\${ git reset --hard; }\nEOF`],
+  ])("%s: the command inside runs", (_name, line) => {
+    expect(programsOf(line, "bash")).toContain("git");
+    expect(texts(line)).toContain("git reset --hard");
+  });
+
+  test("its commands run before the command that holds it, which stays whole", () => {
+    expect(texts(`echo \${ git status; } done; ls`)).toEqual([
+      "git status",
+      `echo \${ git status; } done`,
+      "ls",
+    ]);
+  });
+
+  test("a } that is no command's first word does not close it", () => {
+    expect(texts(`echo \${ echo a }x; git reset --hard; }`)).toEqual([
+      "echo a }x",
+      "git reset --hard",
+      `echo \${ echo a }x; git reset --hard; }`,
+    ]);
+    // `}x` in a command's place closes it, and `x` goes on in the word, as bash reads it.
+    expect(texts(`echo \${ git status; }x`)).toEqual(["git status", `echo \${ git status; }x`]);
+  });
+
+  test("a { … } group inside it keeps its own }", () => {
+    expect(texts(`echo \${ { git status; }; git reset --hard; }; ls`)).toEqual([
+      "git status",
+      "git reset --hard",
+      `echo \${ { git status; }; git reset --hard; }`,
+      "ls",
+    ]);
+  });
+
+  test("a } inside quotes or a $( … ) inside it closes nothing", () => {
+    expect(texts(`echo \${ echo "}"; git reset --hard; }`)).toContain("git reset --hard");
+    expect(texts(`echo \${ echo $(echo }); git reset --hard; }`)).toContain("git reset --hard");
+  });
+
+  test("its word keeps it whole and filled, as a $( … ) word is", () => {
+    expect(wordsOf(`git push \${ echo --force; } origin x`)).toEqual([
+      "git",
+      "push",
+      `\${ echo --force; }`,
+      "origin",
+      "x",
+    ]);
+    expect(wordsWithFill(`a\${ echo b; }c d`)).toEqual([
+      { text: `a\${ echo b; }c`, filled: true },
+      { text: "d", filled: false },
+    ]);
+    expect(wordsOf(`echo \${ { echo a; }; }x y`)).toEqual(["echo", `\${ { echo a; }; }x`, "y"]);
+    // Inside double quotes the quotes start again within it, as in `"$( … )"`.
+    expect(wordsWithFill(`git push "\${ echo "a b"; }" x`)).toEqual([
+      { text: "git", filled: false },
+      { text: "push", filled: false },
+      { text: `\${ echo "a b"; }`, filled: true },
+      { text: "x", filled: false },
+    ]);
+    // Never closed: the `$` stays a lone filled `$`, as before.
+    expect(wordsOf(`echo \${ a`)).toEqual(["echo", `\${`, "a"]);
+  });
+
+  test("it runs in the current shell: a cd inside it moves the commands after it", () => {
+    const steps = shellSteps(`echo \${ cd /x; }; git reset --hard`);
+    expect(steps.find((step) => step.text.trim() === "cd /x")?.subshell).toBeUndefined();
+    // `$( … )` runs in a shell of its own, as before.
+    const sub = shellSteps("echo $( cd /x; ); git reset --hard");
+    expect(sub.find((step) => step.text.trim() === "cd /x")?.subshell?.depth).toBe(1);
+  });
+
+  test("never closed, it runs nothing, and a guard reads the line blind", () => {
+    // Bash: `unexpected EOF while looking for matching }`. Read blind, its `${` splits too.
+    expect(programsOf(`echo \${ git reset --hard }`, "bash")).toContain("git");
+    expect(programsOf(`echo \${ git reset --hard }; echo \${ ls; }`, "bash")).toContain("git");
+  });
+
+  test.each([
+    `echo \${X}`,
+    `echo \${X:-y}`,
+    `echo \${X:-a b}`,
+    `echo \${#X}`,
+    `echo "\${X:-y}"`,
+    `echo \${X/ /_}`,
+  ])("a parameter expansion stays one: %j", (line) => {
+    expect(shellSegments(line)).toEqual([line]);
+    expect(programsOf(line, "bash")).toEqual(["echo"]);
   });
 });
 

@@ -3,6 +3,63 @@
 What each release changed, newest first. A release's **What to run** steps are the ones to do
 in your own terminal after the update; the user guide is [README.md](README.md).
 
+## 5.6.1
+
+- **A builder undoing its own edits no longer asks you.** The git guard asks before a command
+  that throws away uncommitted changes (`git checkout -- <file>`, `git restore`, `reset --hard`,
+  `clean -f`). It now stays silent when a subagent runs one on a plain line inside its own
+  worktree, and only when it can prove that: the subagent's id, a real linked worktree with no
+  link on its path, every folder the line can reach (`cd` and `git -C` included) a real folder
+  inside it, and git's own answer that the folder belongs to it. A plain line holds only
+  listed `git` commands with nothing in front of them and plain `cd`s to one folder: no other
+  program at all, since an `rm`, `mv` or `cp` can rebuild the worktree after the guard checked
+  it. So a builder puts a discard on a line of its own: `git checkout -- a; rm c` asks, while
+  `rm c` alone never asks. The words of a plain line matter too: no `$` or backtick anywhere
+  (an expansion such as `${CDPATH:=…}` can move a later `cd`), only everyday git subcommands
+  (`git config` and `git worktree` ask), no word that names a `.git` path or holds a brace
+  pair (`.gi{t,}` becomes `.git`), no redirection to a file (`2>&1` is fine), no pipe or
+  background job, and no `cd` or `-C` after a git command that may write files.
+  A hook's question cannot be remembered, so each builder discard used to interrupt you.
+- **Everything else still asks:** any discard by the main session, in another agent's worktree
+  or your own checkout, and any line that is not plain or may point git elsewhere: a `cd` or a
+  `-C` that leaves the worktree or that the guard cannot follow (`..`, `~`, `$VAR`), an inner
+  command (`bash -c "…"`, `eval`), a wrapper (`env -C`, `sudo`), any other program, a variable
+  set on the line, `--work-tree`, `--git-dir`, and `GIT_DIR` and the other `GIT_*` variables
+  that move git, in any case. A push, `branch -D`, the stash and `worktree remove -f` are judged
+  in a builder's own worktree exactly as anywhere else.
+- **PowerShell's `Start-Process` is read whole.** Its `-ArgumentList`, and its positional
+  argument list, is one array however the commas are spaced (`'-c', 'x'`, `'-c' , 'x'`,
+  `@('-c', 'x')`), and an `@( … )` array runs its commands. Before, only the word right after
+  `-ArgumentList` was read, so `Start-Process pwsh -ArgumentList '-c', 'git reset --hard'`
+  asked nothing in any session. Every guard that reads a shell line gains.
+- **Bash 5.3's `${ cmd; }` is read as commands.** Bash 5.3 runs the commands inside
+  `${ … }` (a space, tab, line break or `|` after `${`) in the current shell, bare and inside
+  double quotes. The shell reader took it for a variable, so `echo ${ git reset --hard; }` and
+  `echo "${ git push --force; }"` asked nothing, the main session included. Now every guard
+  sees those commands, and a `cd` inside moves the commands after it. `${x}` and `${x:-y}` are
+  still variables.
+- **A git named at run time beside a dangerous word now asks, in any session.** Before,
+  `$GIT reset --hard`, `$(echo git) reset --hard`, `git $(echo push) --force origin main`,
+  `git push$X --force origin main` and `gi${T} reset --hard` asked nothing. A word now counts
+  as worked out at run time when it holds a `$` or a backtick anywhere, not only at its start.
+  A program worked out at run time asks when its words would make git ask, or when another of
+  its words is worked out too beside a danger option (`$GIT $SUB --hard`). A git subcommand
+  worked out at run time always asks. A git command the guard judges asks when one of its
+  words is worked out at run time (`git reset $MODE`, `git checkout -$F main`), since the shell
+  may fill in the dangerous option. So some ordinary lines now ask: `git push origin $BRANCH`,
+  `git checkout $BRANCH`, `git branch $NAME`, `git stash push -m "$MSG"`, and `$DOTNET restore`
+  (its `restore` may be git's). `$EDITOR file`, `$EDITOR $FILE`, `git commit -m "$MSG"`,
+  `git add $FILE` and `git log $(cat range)` stay silent.
+- **A plan may get one final review after round 2.** A plan's review is still two rounds. When
+  round 2's fixes are bigger than the project's `fixesAfterReview` allowance, or touch a guard,
+  security, money, permissions or data, one senior engineer on `opus` at `xhigh` reads only
+  those fixes, with round 2's whole report. Its findings are fixed, and nothing reviews those
+  fixes. Small, safe round 2 fixes get no final review. The pull request says which reviews
+  ran (the build skill § 6).
+
+**What to run:** restart open Claude Code sessions. A session that was open before the update
+keeps the old guard.
+
 ## 5.6.0
 
 - **Queued heavy jobs can no longer hang the machine (Linux).** Every queued job now runs in

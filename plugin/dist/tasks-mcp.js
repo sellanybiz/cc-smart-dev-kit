@@ -21525,7 +21525,7 @@ var COMMAND = "cc-smart-dev-kit";
 
 // src/build-info/index.ts
 var info = {
-  version: "5.6.0",
+  version: "5.6.1",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -22088,6 +22088,18 @@ var HERE_STRING = /@(["'])\r?\n([\s\S]*?)\r?\n\1@/y;
 var ARRAY_ASSIGNMENT = /(?:^|\s)[A-Za-z_][A-Za-z0-9_]*\+?=$/;
 var MAX_INNER = 8;
 var isBlank = (char) => char === " " || char === "\t";
+function opensBraceSubstitution(text, at) {
+  return text.startsWith("${", at) && /^[ \t\n|]$/.test(text.charAt(at + 2));
+}
+function braceSubstitutionClose(text, from) {
+  const read = lex(text.slice(from), {
+    blind: false,
+    dialect: "bash",
+    join: false,
+    substitution: true
+  });
+  return read.open ? -1 : from + read.end;
+}
 function lex(text, options) {
   const { blind, dialect, join } = options;
   const bash = dialect === "bash";
@@ -22241,7 +22253,7 @@ function lex(text, options) {
     at = end + 1;
     return piece;
   }
-  function readDouble(closes) {
+  function readDouble(closes, substitutions = 0) {
     const mark = segments.length;
     let raw = "";
     if (closes) {
@@ -22266,18 +22278,24 @@ function lex(text, options) {
       } else if (bash && char === "$" && next === "$") {
         raw += "$$";
         at += 2;
+      } else if (char === "$" && (next === "(" || braceSubstitution()) && substitutions >= MAX_INNER) {
+        open = true;
+        raw += char;
+        at++;
       } else if (char === "$" && next === "(") {
         const end = bash ? arithmeticEnd(at + 1) : -1;
         if (end === -1) {
           at += 2;
           enterGroup();
-          raw += `$(${read(true).raw}`;
+          raw += `$(${read(")", substitutions + 1).raw}`;
           leaveGroup();
         } else {
           raw += readArithmetic(end);
         }
       } else if (bash && char === "`") {
         raw += readBacktick();
+      } else if (braceSubstitution()) {
+        raw += readBraceSubstitution(substitutions);
       } else {
         raw += char;
         at++;
@@ -22324,6 +22342,15 @@ function lex(text, options) {
     }
     return word === "" ? null : { end: pos, quoted, script: false, stripTabs, word };
   }
+  const braceSubstitution = () => bash && opensBraceSubstitution(text, at);
+  function readBraceSubstitution(substitutions) {
+    const pipe = text.charAt(at + 2) === "|" ? "|" : "";
+    at += 2 + pipe.length;
+    const substitution = read("}", substitutions + 1);
+    if (!substitution.closed)
+      open = true;
+    return `\${${pipe}${substitution.raw}`;
+  }
   function isGroupBrace(char, wordStart) {
     if (char !== "{" && char !== "}")
       return false;
@@ -22358,11 +22385,13 @@ function lex(text, options) {
     }
     return char === "(" && (words === "" || starts && /\sin$/.test(command));
   }
-  function read(nested, substitutions = 0) {
+  function read(closer, substitutions = 0) {
+    const nested = closer !== null;
     let raw = "";
     let current = "";
     let currentStart = at;
     let depth = 0;
+    let braces = 0;
     let wordStart = true;
     let afterClose = false;
     let stdinShell = null;
@@ -22396,7 +22425,7 @@ function lex(text, options) {
           continue;
         }
         if (oneOf(double, char)) {
-          take(readDouble(true));
+          take(readDouble(true, substitutions));
           continue;
         }
         if (bash && char === "$" && next === "$") {
@@ -22419,15 +22448,29 @@ function lex(text, options) {
           continue;
         }
         const processSubstitution = bash && (char === "<" || char === ">") && wordStart;
-        if (next === "(" && (char === "$" || processSubstitution) && substitutions < MAX_INNER) {
+        const arraySubexpression = !bash && char === "@" && wordStart;
+        if (next === "(" && (char === "$" || processSubstitution || arraySubexpression) && substitutions < MAX_INNER) {
           at += 2;
           enterGroup();
-          const substitution = read(true, substitutions + 1);
+          const substitution = read(")", substitutions + 1);
           leaveGroup();
           if (!substitution.closed)
             open = true;
           take(`${char}(${substitution.raw}`);
           continue;
+        }
+        if (braceSubstitution()) {
+          if (substitutions < MAX_INNER) {
+            take(readBraceSubstitution(substitutions));
+            continue;
+          }
+          open = true;
+        }
+        if (closer === "}" && char === "}" && depth === 0 && braces === 0 && current.trim() === "") {
+          push(current, afterPipe ? segments[segments.length - 1] ?? null : null, false, group, currentStart);
+          afterPipe = false;
+          at++;
+          return { closed: true, raw: `${raw}}` };
         }
         if (char === "#" && wordStart && !afterClose) {
           const end = text.indexOf(`
@@ -22494,18 +22537,25 @@ function lex(text, options) {
         at++;
         continue;
       }
-      if (SEPARATORS.has(char) || isGroupBrace(char, wordStart) || blind && bash && char === "`") {
+      if (SEPARATORS.has(char) || isGroupBrace(char, wordStart) || blind && bash && char === "`" || blind && braceSubstitution()) {
         const pattern = !blind && bash ? casePattern(current, char, next) : false;
         push(current, afterPipe ? segments[segments.length - 1] ?? null : null, false, group, currentStart);
         afterPipe = char === "|";
-        if (!pattern && nested && char === ")" && depth === 0) {
+        if (!pattern && closer === ")" && char === ")" && depth === 0) {
           at++;
           return { closed: true, raw: `${raw})` };
+        }
+        if (!pattern && closer === "}" && char === ")" && depth === 0) {
+          return { closed: false, raw };
         }
         if (!pattern && nested && char === "(")
           depth++;
         if (!pattern && nested && char === ")")
           depth--;
+        if (closer === "}" && char === "{" && current.trim() === "")
+          braces++;
+        if (closer === "}" && char === "}" && braces > 0)
+          braces--;
         if (!pattern && char === "(")
           enterGroup(bash && ARRAY_ASSIGNMENT.test(current));
         else if (!pattern && char === ")")
@@ -22530,9 +22580,11 @@ function lex(text, options) {
   }
   if (options.body === true)
     readDouble(false);
+  else if (options.substitution === true)
+    readBraceSubstitution(0);
   else
-    read(false);
-  return { expanded, groups, open, piped, segments, starts, unparsable };
+    read(null);
+  return { end: at, expanded, groups, open, piped, segments, starts, unparsable };
 }
 function shellSteps(command, { blindWhenOpen = false, dialect = "bash", joinLines = false } = {}) {
   const read = lex(command, { blind: false, dialect, join: joinLines });
@@ -22628,6 +22680,23 @@ function wordsWithFill(segment, dialect = "bash") {
     closes ??= parenCloses(segment);
     return closes[open] ?? -1;
   };
+  let braceOpen = false;
+  let braceTried = { from: -1, close: -1 };
+  const braceCloseOf = (from) => {
+    if (!bash || braceOpen || !opensBraceSubstitution(segment, from))
+      return -1;
+    if (braceTried.from !== from) {
+      braceTried = { from, close: braceSubstitutionClose(segment, from) };
+      if (braceTried.close === -1)
+        braceOpen = true;
+    }
+    return braceTried.close;
+  };
+  const addSubstitution = (from, close) => {
+    add(segment.slice(from, close));
+    filled = true;
+    i = close;
+  };
   let i = 0;
   while (i < segment.length) {
     const char = segment.charAt(i);
@@ -22643,7 +22712,11 @@ function wordsWithFill(segment, dialect = "bash") {
       add(next === "" ? char : bash ? next : POWERSHELL_ESCAPES[next] ?? next);
       i += 2;
     } else if (bash && (char === "$" || !inWord && (char === "<" || char === ">")) && next === "(" && closeOf(i + 1) !== -1) {
-      const close = closeOf(i + 1);
+      addSubstitution(i, closeOf(i + 1));
+    } else if (braceCloseOf(i) !== -1) {
+      addSubstitution(i, braceCloseOf(i));
+    } else if (!bash && !inWord && char === "@" && next === "(" && powershellParenClose(segment, i + 1) !== -1) {
+      const close = powershellParenClose(segment, i + 1);
       add(segment.slice(i, close));
       filled = true;
       i = close;
@@ -22710,11 +22783,9 @@ function wordsWithFill(segment, dialect = "bash") {
           i += 2;
           continue;
         }
-        const substitution = bash && inside === "$" && after === "(" ? closeOf(i + 1) : -1;
+        const substitution = bash && inside === "$" && after === "(" ? closeOf(i + 1) : braceCloseOf(i);
         if (substitution !== -1) {
-          add(segment.slice(i, substitution));
-          filled = true;
-          i = substitution;
+          addSubstitution(i, substitution);
           continue;
         }
         if (inside === escaper && after !== "") {
@@ -22782,6 +22853,40 @@ function parenCloses(text) {
       break;
   }
   return closes;
+}
+function powershellParenClose(text, open) {
+  const single = SINGLE.powershell;
+  const double = DOUBLE.powershell;
+  const quoteEnd = (quotes, from, escapes) => {
+    for (let at = from;at < text.length; at++) {
+      const char = text.charAt(at);
+      if (escapes && char === "`")
+        at++;
+      else if (oneOf(quotes, char)) {
+        if (!oneOf(quotes, text.charAt(at + 1)))
+          return at;
+        at++;
+      }
+    }
+    return -1;
+  };
+  let depth = 0;
+  for (let i = open;i < text.length; i++) {
+    const char = text.charAt(i);
+    if (char === "`")
+      i++;
+    else if (oneOf(single, char))
+      i = quoteEnd(single, i + 1, false);
+    else if (oneOf(double, char))
+      i = quoteEnd(double, i + 1, true);
+    else if (char === "(")
+      depth++;
+    else if (char === ")" && --depth === 0)
+      return i + 1;
+    if (i === -1)
+      return -1;
+  }
+  return -1;
 }
 var KEYWORDS = new Set(["!", "do", "done", "elif", "else", "fi", "if", "then", "until", "while"]);
 var ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*\+?=/;
@@ -23031,7 +23136,7 @@ function invocationOf(words) {
 function isComputedWord(word) {
   if (word === "{}")
     return true;
-  if (!word.startsWith("$") && !word.startsWith("`"))
+  if (!/[$`]/.test(word))
     return false;
   return /[$`(){}[\]\s]/.test(programName(word));
 }
@@ -23071,6 +23176,24 @@ function startProcessParameter(word) {
     return null;
   return { name, takesValue: START_PROCESS_PARAMETERS.get(name) === true, value: match?.[2] };
 }
+function continuesArray(args, index) {
+  return (args[index] ?? "").endsWith(",") || (args[index + 1] ?? "").startsWith(",");
+}
+function arrayAt(args, from, first) {
+  const words = [first];
+  let next = from + 1;
+  while (next < args.length && continuesArray([words.at(-1) ?? "", args[next] ?? ""], 0)) {
+    words.push(args[next] ?? "");
+    next++;
+  }
+  return { words, next };
+}
+function arrayElements(words) {
+  return words.flatMap((word) => {
+    const inner = /^@\(([\s\S]*)\)$/.exec(word)?.[1];
+    return inner === undefined ? [word] : wordsOf(inner, "powershell");
+  }).join(" ").split(",").flatMap((part) => wordsOf(part)).filter((one) => one !== "");
+}
 function startProcess(args) {
   let file = null;
   let list = null;
@@ -23079,30 +23202,38 @@ function startProcess(args) {
   for (let index = 0;index < args.length; index++) {
     const arg = args[index] ?? "";
     if (arg === "--") {
-      positional.push(...args.slice(index + 1));
+      positional.push(...args.slice(index + 1).map((word) => [word]));
       break;
     }
     const parameter = startProcessParameter(arg);
     if (parameter === null) {
-      if (!arg.startsWith("-"))
-        positional.push(arg);
+      if (!arg.startsWith("-") || continuesArray(args, index)) {
+        const array = arrayAt(args, index, arg);
+        positional.push(array.words);
+        index = array.next - 1;
+      }
       continue;
     }
     const { name, takesValue } = parameter;
-    let value = parameter.value;
-    if (takesValue && value === undefined) {
-      value = args[index + 1];
-      index++;
+    let value;
+    if (takesValue) {
+      const inline = parameter.value;
+      const from = inline === undefined ? index + 1 : index;
+      if (from < args.length) {
+        const array = arrayAt(args, from, inline ?? args[from] ?? "");
+        value = array.words;
+        index = array.next - 1;
+      }
     }
     if (name === "filepath" && value !== undefined)
-      file = value;
-    else if (name === "argumentlist" && value !== undefined) {
-      list = value.split(",").flatMap((part) => wordsOf(part)).filter((one) => one !== "");
-    } else if (name === "usenewenvironment")
+      file = value[0] ?? null;
+    else if (name === "argumentlist" && value !== undefined)
+      list = arrayElements(value);
+    else if (name === "usenewenvironment")
       fresh = arg;
   }
-  file ??= positional[0] ?? null;
-  list ??= positional.length > 1 ? wordsOf(positional.slice(1).join(" ")) : [];
+  file ??= positional[0]?.[0] ?? null;
+  list ??= arrayElements(positional.slice(1).flat());
   if (file === null)
     return null;
   return {
