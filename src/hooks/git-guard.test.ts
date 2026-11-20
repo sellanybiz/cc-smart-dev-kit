@@ -203,6 +203,25 @@ describe("F2a-3: PowerShell Start-Process runs what it is given", () => {
   });
 });
 
+// Round 3's reader finding: bash 5.3 runs `${ cmd; }` in the current shell, and the reader took
+// it for a parameter expansion, so no guard saw the command, the main session included.
+describe("bash 5.3's brace command substitution is read as a command", () => {
+  it("bare: the main session's reset asks", () => {
+    expect(guard(`echo \${ git reset --hard; }`, neutral, true, "bash")).toContain(
+      "`git reset --hard`",
+    );
+  });
+
+  it("inside double quotes: the main session's force-push asks", () => {
+    expect(guard(`echo "\${ git push --force; }"`, neutral, true, "bash")).toContain(FORCE);
+  });
+
+  it("a push option it fills in asks, as one from $( … ) does", () => {
+    expect(guard("git push $(echo --force) origin x", neutral, true, "bash")).toContain(FORCE);
+    expect(guard(`git push \${ echo --force; } origin x`, neutral, true, "bash")).toContain(FORCE);
+  });
+});
+
 describe("a push to a protected branch asks", () => {
   it.each([
     ["git push origin dev", "dev"],
@@ -1800,6 +1819,14 @@ describe("a 64 KB command line is read within the guard's time", () => {
     ["unclosed substitutions", `echo ${fill("$(a ")}`],
     ["many PowerShell comments", fill("<# x #> ")],
     ["an unclosed quote", `echo "${fill("a; b ")}`],
+    // Bash 5.3's `${ … }`: the word reader finds each close with the line reader.
+    ["many brace substitutions", `echo ${fill(`\${ a; }`)}`],
+    ["brace substitutions in one quoted word", `echo "${fill(`\${ a; }`)}"`],
+    ["brace substitutions that never close", `echo ${fill(`\${ a `)}`],
+    ["deep brace substitutions", `echo ${`\${ `.repeat(SIZE / 6)}a;${" }".repeat(SIZE / 6)}`],
+    // Each level of a quoted substitution was a call with no ceiling: the stack ran out.
+    ["deep quoted substitutions", `echo ${fill('"$(')}`],
+    ["deep quoted brace substitutions", `echo ${fill(`"\${ `)}`],
   ])("%s", (_name, command) => {
     const started = Date.now();
     guard(command);
