@@ -188,7 +188,7 @@ of the session's own folder. In order:
    confirmed findings, and every round 1 finding the report marks NOT FIXED or WORSE; check
    each NOT JUDGED one yourself against the code first.
 6. **The final review, only when round 2's fixes are big:** bigger than the project's
-   `fixesAfterReview` allowance (`cc-smart-dev-kit workflow show`), or touching a guard,
+   `fixesAfterReview` allowance (`cc-smart-dev-kit workflow show`), or touching an access check,
    security, money, permissions or data. Launch one `cc-smart-dev-kit:senior-engineer` on `opus`
    at `xhigh`, its brief with the line `Mode: review` alone on its line (so the review record
    takes the head it reads). It reads only the diff of round 2's fixes, from the head round 2
@@ -201,8 +201,8 @@ of the session's own folder. In order:
 
 `risky: true` makes every agent of a round the senior engineer on `opus` at `xhigh`; pass no
 model. Nothing reviews the fixes after round 2, or after the final review. When they are
-larger than `fixesAfterReview`, the merge guard asks the person at merge, and the pull request
-says which reviews ran and how much changed after the last one. The head never moves while a round runs: the review is recorded at
+larger than `fixesAfterReview`, the pull request says so: which reviews ran and how much changed
+after the last one. The head never moves while a round runs: the review is recorded at
 the head the plan worktree is on. Verify each finding against the code (a design finding meets
 the evidence bar as `../review/references/axes.md` § Design findings says). Read the report's
 **Unchecked** section and any "no evidence of coverage" line under **Coverage**, and act on
@@ -274,14 +274,14 @@ Decide ordinary ambiguities in the main session. Save each as a `task_note` star
 
 - a destructive or irreversible step;
 - a security-sensitive step;
-- an outside-worktree side effect that needs a yes, such as push, shared merge or publish;
+- an outside-worktree side effect `workflow show` does not allow (push, shared merge, publish);
 - a choice that is the person's (architecture, scope, UX, a trade-off the plan names as
   theirs; the full list is `/cc-smart-dev-kit:user-unavailable` § 2): ask it with
   `AskUserQuestion`, the recommended option first, and never decide it for them;
 - a plan so broken that every path is a guess.
 
-A stop holds only work that depends on it. If the person is away, park the required yes
-with `/cc-smart-dev-kit:user-unavailable`; never bypass a permission refusal.
+A stop holds only work that depends on it. Away: never stop; decide and record it
+(`/cc-smart-dev-kit:user-unavailable`). Never bypass a permission refusal.
 
 ## After compaction
 

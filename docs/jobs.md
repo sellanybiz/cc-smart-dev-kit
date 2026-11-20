@@ -447,7 +447,7 @@ hook is ever skipped:
   bash array's list). `git --git-dir` and `--work-tree` also leave the hook unqueued: `job hook`
   cannot find the repo, answers `direct`, and the hook runs as it is;
 - none when the hook is not heavy, or git does not answer in time (the questions share the
-  guards' short time budget, 8 s of the hook's 10).
+  hook's short time budget, 8 s of the hook's 10).
 
 The prefixed call gets the same longest timeout as a wrapped one (§ The route).
 
@@ -853,8 +853,8 @@ one walk of the line:
   reader understands: a `cd`, an assignment, glue (the same `GLUE_COMMANDS` and readers the
   route uses, § The route) or a script it followed. Anything else is heavy.
 
-The classifier reads the line with the one shell reader the guards use too
-(`src/shell/command.ts`), so the queue and the guards see the same commands: a tool inside
+The classifier reads the line with the one shell reader the kit's hooks use
+(`src/shell/command.ts`), so the queue and the other hooks see the same commands: a tool inside
 quotes, an `echo`, a quoted here-doc, a comment or a commit message is text, not a run; a
 substitution (`$( … )`, a backtick, the body of an unquoted here-doc) is a run. It finds the
 tool behind `bunx`, `bun x`, `bun run`, `bun test`, `bun <name>`, `npx`, `npm exec`, `npm run`,

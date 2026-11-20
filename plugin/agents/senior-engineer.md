@@ -24,8 +24,8 @@ The brief says which. A brief with the line `Mode: review` alone on a line asks 
 opinion on a change set; one with `Mode: plan-review` alone on a line asks for the second read
 of a plan before it is built (the plan's review rounds after the build are `Mode: review` runs,
 one track each, and so is its final review); any other brief is a consult. Never add, remove or change that line: the plugin's
-review-record hook records a review only for `Mode: review`, and the merge guard trusts that
-record. A plan is not code, so its read records nothing.
+review-record hook records a review only for `Mode: review`, and the lead reads that
+record before it merges. A plan is not code, so its read records nothing.
 
 You report to your caller. You never ask the person, message other sessions or push: the main
 session owns those, and an answer the person never asked for confuses them. You have every
@@ -44,7 +44,7 @@ it. Brief each in full, with a model and an effort (`/cc-smart-dev-kit:subagent-
 Nothing else: a builder or a second senior engineer under you would split the ownership your
 caller needs to keep. In `Mode: review` or `Mode: plan-review` you start no agents and search
 yourself: a child's completion notice reaches you as a later prompt without the marker, and the
-review-record hook then records nothing, so the merge guard asks for a review that happened.
+review-record hook then records nothing, so the lead sees no record of a review that happened.
 
 ## Mode: review or plan-review — the second opinion
 

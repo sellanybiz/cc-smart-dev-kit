@@ -54,11 +54,11 @@ Call `Workflow` with the plugin's own script:
 Workflow({
   name: "cc-smart-dev-kit:audit-run",
   args: {
-    target: "src/hooks (the guards and their entries)",
-    question: "a branch or condition the guard lets through",
+    target: "src/api (the routes and their access checks)",
+    question: "a branch or condition the access check lets through",
     tracks: ["data and input", "state and timing", "access and money"],
     budget: 12,
-    findingsPath: ".claude/audits/2026-10-22-guards.md",
+    findingsPath: ".claude/audits/2026-10-22-access.md",
   },
 })
 ```

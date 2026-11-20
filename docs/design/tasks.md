@@ -241,7 +241,7 @@ checkout's working copy through the normal workflow resolver:
   waves. `doctor`'s project checks print one `!` line for each open plan over the cap, with its
   fix. Readers that look at a plan task's status (`planCounted`, `layerProgress`, the portal's
   tree, `openPhasesOf`) read an `in_progress` plan the same way as a pending one: they count its
-  phases and tasks, and the keep-going guard names the ready phases of the plan in flight and of
+  phases and tasks, and the keep-going stop names the ready phases of the plan in flight and of
   plans that have a phase running.
 
 **The store** keeps the type in `tasks.blocking` (1 or 0, default 1). Schema 2 adds the column
@@ -265,8 +265,8 @@ is the caller's own (`ownerOf`: another session's task is never named). It is re
 close, in number order, capped like the hooks' lists (`cappedHookList`, eight, then
 `+N more: task_list`). A task already started or closed is not named, and neither is work in a
 plan the store would refuse to start while another plan is in flight (`planInTheWay`, the rule
-`refuseOtherPlan` refuses by); a loose task is always named. The keep-going guard
-names the same work from the other side: `docs/design/hooks.md` § The keep-going guard.
+`refuseOtherPlan` refuses by); a loose task is always named. The keep-going stop
+names the same work from the other side: `docs/design/hooks.md` § The keep-going stop.
 
 ### A task's history
 
@@ -594,10 +594,12 @@ first, and exits 0. Two files with one id **and the same file name** are a crash
 the archived one wins. One id under different file names is a `duplicate-id` finding, and the
 fix is to rename one id, never to delete a file.
 
-### The deploy guard and the CI check
+### The CI check
 
 Nothing makes a person or Claude run the gates: a deploy command typed directly, or a CI deploy on
-merge, ignores open tasks. Two rails close that, both over one pure check of the task files.
+merge, ignores open tasks. No hook stands in front of a deploy command any more (the `deploy-guard`
+hook is retired, `docs/design/hooks.md` § Retired in 5.7.0): the session runs the gates itself
+(`/cc-smart-dev-kit:tasks` § 5), and CI runs one pure check of the task files.
 
 **`judgeTasks`** (`release.ts`): `judgeTasks(env, scan)` returns `{ refusals, notes }` from the
 task files alone, with no git. The refusals: a blocking `before` task of `env` is open; a task
@@ -624,27 +626,11 @@ would read as broken. A test copies the built `cli.js` alone to a temp folder an
 way, with a temp `HOME`, in a detached, shallow clone. In a container job git may refuse the
 checkout ("dubious ownership"): the fix is `git config --global --add safe.directory "$PWD"`.
 
-**`tasks.deployCommands`** (5.3.0) says which commands deploy. It is `{ "prod"?: Entry[],
-"staging"?: Entry[] }`; an entry is a string (one command as typed) or a `MatchRule` of the jobs
-grammar (`matchRuleSchema`). The schema refuses a string that holds more than one command (a
-separator or a shell construct, read by `shellSteps`), a string that holds none, an empty
-list or object, and a key outside `tasks.envs` (both when unset); the error path names the entry
-(`tasks.deployCommands.prod.0`). The guard turns a string into a rule when it loads
-(`rulesOfCommand`, `src/shell/tool.ts`): a package script becomes `{ script }`, a runner gives its
-tool, leading assignments and wrappers are stepped over, and the rest are the rule's tool and its
-required words. Setting the field, or listing `deploy-guard` in `ownHooks`, raises `requires` to
-`DEPLOY_GUARD_SINCE`.
-
-**The guard** (`deploy-guard`, `src/hooks/deploy-guard.ts`; the hook design is
-`docs/design/hooks.md` § The deploy guard) reads the line the classifier's way, tests each run
-against every rule, and on a match runs `envRefusal` and `judgeTasks` over the task files of the
-hook's `cwd` checkout. Refusals give one `ask` that names each problem and the way out: close the
-task with evidence, or drop it yourself in your own terminal. Notes alone never ask; no refusal
-means no answer. The guard is a rail, not a lock: it does not see a command that is not listed or
-is spelled another way (a tool's other name, `flyctl` for `fly`), a run on another machine
-(`ssh host …`, `docker run …`), `xargs` feeding the words, a deploy by an MCP tool, a platform's deploy on
-push, a branch cut before main gained a blocking task, a `cd` into another checkout, or a hand
-edit of the config or of a task file.
+**`tasks.deployCommands`** (5.3.0) said which commands deploy, for the retired `deploy-guard`.
+It is `{ "prod"?: Entry[], "staging"?: Entry[] }`; an entry is a string (one command as typed)
+or a `MatchRule` of the jobs grammar (`matchRuleSchema`). The schema still refuses a string that
+holds more than one command, a string that holds none, an empty list or object, and a key outside
+`tasks.envs`, so a file written for 5.3 to 5.6 still parses. No hook reads it now.
 
 ### The deploy-skill block
 
@@ -652,10 +638,8 @@ edit of the config or of a task file.
 steps and the gates sit together (`src/project/deploy-skill.ts`, its text in `deploy-block.ts`).
 The block's first line, `## Deploy tasks`, is the contract across versions: it is how a skill
 written by an older kit is still found and updated. It holds the two gate commands, the
-deploy-branch step, the close step, a line that says the deploy guard asks before a listed
-deploy command while that environment has work that holds a deploy (true with or without
-`tasks.deployCommands`), and a
-pointer to `/cc-smart-dev-kit:tasks`. Adding that line made every older block out of date:
+deploy-branch step, the close step, a line that says the session runs the gates before a deploy,
+and a pointer to `/cc-smart-dev-kit:tasks`. Adding that line made every older block out of date:
 `doctor` flags it until `project init` runs.
 
 - **Find.** A deploy skill is a file under `.claude/skills/` that already holds the block, or
@@ -697,9 +681,7 @@ pointer to `/cc-smart-dev-kit:tasks`. Adding that line made every older block ou
 carries a `!` line for each `tasks` field nothing reads (fix: `project init`), a `requires`
 below `>=5.0` while deploy folders or the block exist, and a deploy-skill block that is out of
 date; a `·` line says a skills folder linked from outside the checkout is not searched, and
-another says the project has a deploy skill but lists no `tasks.deployCommands`, so the deploy
-guard never asks (fix: `project init`, which asks for the commands: one question for each
-environment, until an empty answer, or `--deploy-command <env>=<command>`).
+another says the project has a deploy skill but lists no `tasks.deployCommands`.
 
 ## The server, command and guards
 
@@ -738,7 +720,7 @@ no writer holding it open. Three hooks read it ([hooks](hooks.md) has each one's
   keeps it silent. It names the agent to resume with `SendMessage`,
   or says to start a fresh builder, then every ready phase to start together, closing with `task_done`, or
   recording a blocker with `task_note` and a `Waiting for:` line, and warns against moving a
-  phase back to pending to end the turn (`docs/design/hooks.md` § The keep-going guard).
+  phase back to pending to end the turn (`docs/design/hooks.md` § The keep-going stop).
 - `builder-finish` (SubagentStop) holds a builder's hand-back once while its phase task still
   has open blocking steps (`holdingUnder`).
 

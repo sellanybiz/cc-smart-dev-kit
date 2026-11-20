@@ -19,7 +19,7 @@ of the four happens until the person asks (or the add-on says otherwise).
 | `autoCommit = false` | Commit when the person asks. At the end of a finished phase, say in one line that it is ready, and carry on. |
 | `autoCommit = true` | Commit each finished phase with no question. Never commit half-built work. |
 | `autoPush = false` | Push when the person asks. |
-| `autoPush = true` | Push your own branch once the change set is complete (a planned build pushes the plan branch after each merged phase: `/cc-smart-dev-kit:build` § 5). **Never straight to the base or main branch:** the git guard asks there, and work reaches them through a pull request. |
+| `autoPush = true` | Push your own branch once the change set is complete (a planned build pushes the plan branch after each merged phase: `/cc-smart-dev-kit:build` § 5). **Never straight to the base or main branch:** work reaches them through a pull request. |
 | `openPr = "off"` | Open a pull request only when the person asks. |
 | `openPr = "draft"` | Open it as a draft; a person marks it ready. |
 | `openPr = "ready"` | Open it ready for review. |
@@ -27,12 +27,16 @@ of the four happens until the person asks (or the add-on says otherwise).
 | `mergeMethod` | `merge`, `squash` or `rebase`: how a merge is made. |
 | `deleteBranch` | Whether the branch goes once its pull request merged. |
 
-**A merge is the one step a hook guards.** With `autoMerge` off, or a pull request whose base
-is not the project's integration base, or a check not green, or no recorded review of its head
-commit, the merge guard asks the person before `gh pr merge` runs. Where `autoMerge` is on and
-everything is in place, it lets the merge through with no question — and `mergeMethod` and
-`deleteBranch` still say how. **Either way, never wait for a merge:** open the pull request and
-move on; with the whole plan done, ask once, listing every open pull request with its checks
+**A merge follows the workflow, not a hook.** No hook stops one: you check. Merge your own
+pull request with `gh pr merge` only when `autoMerge` is on, its base is the project's
+integration base (`worktrees.base`, never the repository's default branch: that merge is a
+release, the person's word), every check is green, and its head commit has a recorded review
+(`/cc-smart-dev-kit:review` § Second opinion). Fixes after the review within `fixesAfterReview`
+(`workflow show`) need no new review; when they are over it, say so in the pull request body.
+`cc-smart-dev-kit workflow merge-check <pr>` judges all of it in one run (exit 0: allowed).
+`mergeMethod` and `deleteBranch` say how. With `autoMerge` off, or any of that missing, open
+the pull request and leave the merge to the person. **Either way, never wait for a merge:**
+move on; with the whole plan done, say so once, listing every open pull request with its checks
 and the merge order.
 
 - **Commit and push only your own branch**, never the base or main branch directly.
@@ -44,13 +48,14 @@ and the merge order.
   has read it, or it is a small fix that skips it (§ Pushing says when). Not after each commit. In a planned build
   the plan branch is pushed after each merged phase, and the pull request waits for the
   plan's review (two rounds, and a final review when its fixes are big).
-- **Always the person's word, every time:** anything into the main branch or production, a
-  force-push or any rewrite of pushed history, `reset --hard`, `clean -f`, deleting or
-  renaming a branch that is not merged, and shipping a Warning without its fix. The one
-  exception: a builder's discards inside its own worktree, on a line of only `git` commands
-  and `cd`s to one folder, which the git guard lets through: a checkout or
-  restore that drops changes, `switch -f`, `clean -f`, and `reset --hard`, which also drops
-  the builder's own commits. A yes covers exactly what it names. If the person says wait, wait.
+- **The person's word, every time** (no hook checks it; you do): anything into the main
+  branch or production, a force-push or any rewrite of pushed history, `reset --hard`, `clean
+  -f`, deleting or renaming a branch that is not merged, and shipping a Warning without its
+  fix. The person is available: ask first. They are away (`/cc-smart-dev-kit:user-unavailable`):
+  take the safe option, do not run it, and record the decision. The one exception: a builder's
+  discards inside its own worktree (a checkout or restore that drops changes, `switch -f`,
+  `clean -f`, and `reset --hard`, which also drops the builder's own commits). A yes covers
+  exactly what it names. If the person says wait, wait.
 
 ## Steps
 

@@ -81,11 +81,13 @@ every turn and points to the skill that holds each procedure: the research steps
 `research-first`, the model and effort detail in `subagent-decision`, the gateway's slots in
 `gateway`. `bun run check:core-lines` holds it to a line budget (`scripts/check-core-lines.ts`;
 1.1.0 cut it from 190 lines to 128), and `check:context-budget` estimates its tokens. It and
-the skills say which model and effort fit which job, never what the agent guard blocks or asks
-or which line a launch needs: the guard's own message says that, at the launch it judges (the
-owner's D12). The launch lines the skills do teach are the senior engineer's two markers:
+the skills say which model and effort fit which job. Since 5.7.0 no hook judges a launch (the
+`agent-guard` is retired), so the model rules are instructions only: ask the person before a
+`fable` or `opus`-at-`max` launch when they are available, use `opus` at `xhigh` when they are
+away, and run every planning agent on `opus` at `xhigh` (`core.md` § Subagents,
+`subagent-decision`). The launch lines the skills do teach are the senior engineer's two markers:
 `Mode: review` in a review brief (`build`, `review`, `subagent-decision`) and `Mode: plan-review` in a
-plan's second read (`plan-task`, `subagent-decision`). They are not the guard's, but the
+plan's second read (`plan-task`, `subagent-decision`). They are the
 review-record hook's, which records a review only with the first. They tie no effort to the backend that answers a tier: the backend behind a slot
 never changes the choice, and a backend's effort is the person's pin at the router
 (`docs/gateway.md` § A backend target's effort pin).
@@ -154,13 +156,13 @@ after the last change of a turn that edited files (`hooks.md` § The plugin's ho
 **The skill pair for the person's availability.** `user-unavailable` and `user-available` are the
 two skills of `cc-smart-dev-kit user …` (the owner's pair of words, 2026-10-25: the person may be
 asleep, or just away). `user-unavailable` is the rules while the person cannot answer: never stop
-to ask; an easy-to-undo choice with a recommended option is taken and parked as a `decision`; the
-person's own choice is parked as a `question` with its options; an action that needs their yes is
-parked as an `action` with its exact command and never tried; each stretch ends with a `Summary:`
-decision. `user-available` switches the state back, shows what was done, then goes through the
-list: decisions to keep or undo, the questions in one call, each action run on the person's yes.
-Neither skill duplicates the hooks (`hooks.md` § While the person is away): the hooks deny and
-park, the skills say how to work in that state. The pointer to them is in the hooks' notes, not
+to ask and never park a question or an action; take the recommended option, record it as a
+`decision` whose text starts `Summary:` (what, why, how to undo it), and keep going; an action
+that needed their yes runs when the work calls for it (the few steps that are always the
+person's word are not run, and the safe option is recorded). `user-available` switches the
+state back, shows what was done, then shows the decisions; nothing is parked to answer.
+Neither skill duplicates the hooks (`hooks.md` § While the person is away): the hook refuses the
+two question tools and says the person is away, the skills say how to work in that state. The pointer to them is in the hooks' notes, not
 in `core.md`, which stays inside its line budget. A skill's name and description are carried by
 every session, used or not, so both descriptions stay to one short sentence or two
 (`check:context-budget`).
@@ -217,15 +219,14 @@ fix (the audit's writer gets the trigger and the missing guard), never only coun
 finding confirmed, the headline points to the Hunches. A refuted one is counted and left out.
 The reviewers carry `cc-smart-dev-kit:senior-engineer`, the type `reviewAgents` lists by default,
 and each track's brief holds the line `Mode: review` alone and asks for the StructuredOutput
-call, so the run's return records the review for the merge guard (Claude Code's nudge to make
+call, so the run's return records the review (Claude Code's nudge to make
 that call, `[structured-output-enforce] …`, matched as its whole text, is no new prompt:
 `src/hooks/transcript.ts`); a
 refuter's brief has no marker, because it checks one finding, not the whole change
 (`src/workflows/review-split.test.ts` fails when either link breaks). Claude Code loads a
-plugin's `workflows/` folder as `<plugin>:<meta.name>`, and the agent guard judges every
-`agent(...)` launch in the script before the run starts (§ The agent guard); so every launch
-names a literal `model`, `effort` and `agentType`, and `src/workflows/scripts.test.ts` runs each
-shipped script against fakes and checks the guard the plugin ships allows every launch. Biome
+plugin's `workflows/` folder as `<plugin>:<meta.name>`; every launch in a script names a
+literal `model`, `effort` and `agentType` (the `agent-guard` that once judged them before the run
+started is retired), and `src/workflows/scripts.test.ts` runs each shipped script against fakes. Biome
 skips `plugin/workflows`: a script body has a top-level `return`, which the linter's parser
 refuses.
 
@@ -289,7 +290,7 @@ except the senior engineer in a consult, which may start read-only research agen
 `researcher` for a question outside the repo, `Explore` for a search inside it. Its two review
 modes start none (above). A plan's second read carries
 `Mode: plan-review`, not `Mode: review`: the hook matches `Mode: review` as the whole line, so a
-plan read records nothing, and no plan read can cover code the merge guard later checks.
+plan read records nothing, and no plan read can cover code a merge later checks.
 
 `researcher` (2.2.0) is the read-only R&D agent: one question, answered from current primary
 sources (docs, changelogs, release notes, source code, specs), each claim cited with its URL and
@@ -344,7 +345,7 @@ them back only to an agent that lists them without `Bash` (code.claude.com/docs/
 § Glob tool behavior, read 2026-10-22). Every agent inherits the session's set, `Bash` in it, so
 there every agent searches with `grep` and `find` through Bash — Claude Code's shell runs fast
 built-in versions of both. The cost: each search is a Bash call, so it reaches the Bash hooks
-(claude-mem's file-context hook, the plugin's guards) and the Bash permission rules, and its
+(claude-mem's file-context hook, the plugin's `job-route`) and the Bash permission rules, and its
 output is plain text rather than the tools' structured results. On Windows Grep and Glob are in
 the default set and the agents use them. The `cc-smart-dev-kit:impact-analysis` skill says what
 to use when they are missing.
@@ -358,7 +359,7 @@ to use when they are missing.
 phase, parallel worktrees for disjoint files, and a quick check of each hand-back against the
 branch (no reviewer reads a phase). The plan gets one review, in two rounds of the `review-split`
 workflow with `risky: true`, so every agent is the senior engineer on `opus` at `xhigh`; both
-rounds get the plan file as `spec`, and round 2 also gets round 1's whole report as `prior`. When round 2's fixes are bigger than `fixesAfterReview` or touch a guard, security, money, permissions or data, one final review follows: a senior engineer on `opus` at `xhigh` reads only those fixes, with round 2's whole report as context. Each reviewer's
+rounds get the plan file as `spec`, and round 2 also gets round 1's whole report as `prior`. When round 2's fixes are bigger than `fixesAfterReview` or touch an access check, security, money, permissions or data, one final review follows: a senior engineer on `opus` at `xhigh` reads only those fixes, with round 2's whole report as context. Each reviewer's
 brief carries the line `Mode: review` alone on its line; the review-record hook records a review
 only with it, so a consult of the same agent records nothing. Agents run in the background (Claude Code's default), `Monitor` watches CI and
 logs, and the lead waits only for what the next step needs. `blocked_by` marks only a real

@@ -19,7 +19,7 @@ So every hook in `plugin/hooks/hooks.json` is now shell form:
 ```json
 {
   "type": "command",
-  "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/cc-smart-dev-kit-bun.sh\" --missing=ask \"${CLAUDE_PLUGIN_ROOT}/dist/git-guard.js\"",
+  "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/cc-smart-dev-kit-bun.sh\" --missing=ask \"${CLAUDE_PLUGIN_ROOT}/dist/job-route.js\"",
   "timeout": 10
 }
 ```
@@ -37,7 +37,7 @@ Each piece of that string is doing work:
   plugin folder with a space in it one word. Claude Code hands a shell-form hook that
   variable in the forward-slash Win32 form (`C:/Users/…`), which Git Bash, MSYS tools and
   `bun.exe` all accept.
-- **`--missing=ask` / `--missing=quiet`**, unchanged: a guard still fails closed when bun is
+- **`--missing=ask` / `--missing=quiet`**, unchanged: the guard (`job-route`) still fails closed when bun is
   missing, and every other hook still says one line and exits 0.
 
 The same form works unchanged on macOS and Linux: there the shell is `sh`, the shim keeps
@@ -71,7 +71,7 @@ never report success when it did not run. The Windows CI job runs that mode too.
 
 Claude Code has a PowerShell tool beside Bash on native Windows (`docs/claude-code-contract.md`
 § Windows). The plugin's shell judge, `job-route`, is therefore wired on `Bash|PowerShell`, and
-it reads each line in the dialect of the tool that runs it — the one shell reader every guard
+it reads each line in the dialect of the tool that runs it — the one shell reader every hook
 uses (`src/shell/command.ts`). A raw `claude --bg`, a `claude -p` launch and `workflow propose`
 are judged the same in PowerShell; only the queue rewrite stays Bash-only, because the
 rewritten line is a `sh` line the PowerShell tool cannot run. `src/hooks/entries.test.ts` pins

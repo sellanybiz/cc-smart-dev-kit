@@ -71,9 +71,9 @@ Only a finding **outside** the plan leaves it, and it follows these steps.
    its pane.
 5. **No child possible** (not in a Herdr terminal, a plan-mode lead, a refused start): file it,
    or put it in the summary, and say why.
-6. **Away:** `AskUserQuestion` is denied. Park one `question` for each finding, with the same
-   options (`/cc-smart-dev-kit:user-unavailable`); a yes on return goes through step 3
-   (`/cc-smart-dev-kit:user-available`).
+6. **Away:** `AskUserQuestion` is refused. Take the recommended option yourself: file it only
+   when issues work, or start or send to the child as step 3 says, and record the choice as a
+   decision (`/cc-smart-dev-kit:user-unavailable`).
 
 ## 2. Create
 
@@ -186,11 +186,9 @@ prints the answer as data. A deploy branch left unmerged shows in `task list --b
 open tasks, and its closes of tasks the base still has open ("closed on <branch>, not merged").
 A prod refusal for an open staging twin may mean that close waits there.
 
-**The deploy guard.** A project lists the commands it deploys with in `tasks.deployCommands`
-(`project init` asks for them). While the environment has a blocking problem (the same rules as
-`--before`, minus the git ones), the guard asks the person before Claude runs a listed command.
-It names each problem. Do the task and close it with evidence; never drop a blocking one
-yourself. A command that is not listed, or is spelled another way, is not seen: the guard is
-a rail against a skipped step, not a lock, so run the gates above either way.
+**No hook guards a deploy.** The gates above are yours to run: before a deploy run `task release
+<env> --before`, after it `--after`, and do not run the deploy command while a blocking `before`
+task is open. Never drop a blocking task yourself. A project's `tasks.deployCommands` still
+parses; no hook reads it now.
 `task release <env> --check` judges the task files alone, with no git, so a CI job can run it
 before its deploy step (README § Deploy tasks in CI).
