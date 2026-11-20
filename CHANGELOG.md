@@ -38,7 +38,8 @@ in your own terminal after the update; the user guide is [README.md](README.md).
 - **A git named at run time beside a dangerous word now asks, in any session.** Before,
   `$GIT reset --hard`, `$(echo git) reset --hard` and `git $(echo push) --force origin main`
   asked nothing. Now a program worked out at run time asks when its words would make git ask,
-  and a git subcommand worked out at run time always asks. `$EDITOR file` and
+  or when another of its words is worked out too beside a danger option (`$GIT $SUB --hard`).
+  A git subcommand worked out at run time always asks. `$EDITOR file`, `$EDITOR $FILE` and
   `git log $(cat range)` stay silent.
 
 **What to run:** restart open Claude Code sessions. A session that was open before the update

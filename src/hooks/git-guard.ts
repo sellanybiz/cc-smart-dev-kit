@@ -101,7 +101,9 @@
  * subcommand worked out when the line runs (`git $(echo push) --force`) whenever any subcommand
  * the guard judges would ask with the words after it (`SUBCOMMAND_JUDGES`, the one list): since
  * even a bare `git restore` asks, every such call asks. A program and a subcommand both worked
- * out (`$GIT $SUB --hard`) are not read.
+ * out ask beside a danger option, one that makes some judged subcommand ask more than it does
+ * alone (`$GIT $SUB --hard`, `-D`, `--force`, `--`); `$EDITOR $FILE` holds none and stays silent.
+ * A danger option worked out too (`$GIT $SUB $OPT`) is not read.
  *
  * Known limits: a git alias from the person's own config (one set with `-c` on the line is
  * read), a `branch -f`, a `checkout -B` and a `switch -C` (they move a branch), brace
@@ -662,10 +664,13 @@ function gitQuestions(args: string[], folder: Folder, dialect: Dialect, run: Gua
 }
 
 /**
- * True when a program worked out when the line runs may be git asking: a word of `operands`
- * names a subcommand the guard judges, and that subcommand, with the words after it, asks
- * (`$GIT reset --hard`, `$GIT -C sub checkout -- .`). Every word is tried, since the computed
- * word may carry git's own options (`X='git -C'; $X sub reset --hard`).
+ * True when a program worked out when the line runs may be git asking. Either a word of
+ * `operands` names a subcommand the guard judges, and that subcommand, with the words after it,
+ * asks (`$GIT reset --hard`, `$GIT -C sub checkout -- .`; every word is tried, since the
+ * computed word may carry git's own options: `X='git -C'; $X sub reset --hard`). Or a word is
+ * worked out too, so it may be any subcommand, and a plain word beside it is a danger option
+ * (`dangerOption`: `$GIT $SUB --hard`, `$(echo git) $(echo branch) -D x`). `$EDITOR $FILE` holds
+ * no danger option, so it stays silent.
  */
 function computedProgramAsks(
   operands: readonly string[],
@@ -673,19 +678,37 @@ function computedProgramAsks(
   dialect: Dialect,
   run: GuardRun,
 ): boolean {
-  return operands.some((sub, at) => {
+  const asMain = asMainSession(run);
+  const named = operands.some((sub, at) => {
     const judge = SUBCOMMAND_JUDGES.get(sub);
-    if (judge === undefined) return false;
-    const call: GitCall = {
-      config: new Map(),
-      dirs: [],
-      gitDir: null,
-      rest: operands.slice(at + 1),
-      sub,
-      workTree: null,
-    };
-    return judge(call, folder, dialect, asMainSession(run)).length > 0;
+    return (
+      judge !== undefined &&
+      judge(bareCall(sub, operands.slice(at + 1)), folder, dialect, asMain).length > 0
+    );
   });
+  if (named) return true;
+  if (!operands.some(isComputedWord)) return false;
+  const plain = new Set(operands.filter((word) => !isComputedWord(word)));
+  return [...plain].some((word) => dangerOption(word, folder, dialect, asMain));
+}
+
+/**
+ * True when `word` is a danger option of some subcommand the guard judges: with `word` after
+ * it, that subcommand asks a question it does not ask with nothing after it (`--hard`,
+ * `--force`, `-f`, `-D`, `--`, `--force-with-lease`). Read from the judges themselves
+ * (`SUBCOMMAND_JUDGES`), so the set has one home. A word that asks nothing new (`notes.txt`,
+ * which a bare `git restore` asks about anyway) is none.
+ */
+function dangerOption(word: string, folder: Folder, dialect: Dialect, run: GuardRun): boolean {
+  return [...SUBCOMMAND_JUDGES].some(([sub, judge]) => {
+    const alone = judge(bareCall(sub, []), folder, dialect, run);
+    return judge(bareCall(sub, [word]), folder, dialect, run).some((ask) => !alone.includes(ask));
+  });
+}
+
+/** A git call of `sub` with the words `rest` and none of git's own options. */
+function bareCall(sub: string, rest: string[]): GitCall {
+  return { config: new Map(), dirs: [], gitDir: null, rest, sub, workTree: null };
 }
 
 /**

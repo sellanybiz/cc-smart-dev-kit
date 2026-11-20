@@ -247,6 +247,12 @@ describe("a git or a git subcommand named at run time, beside a word the guard j
     ["the subcommand from a variable", "git $SUB --hard"],
     ["the subcommand behind git options", "git -C sub $SUB --hard"],
     ["a push from a computed program", "$(which git) push --force origin main"],
+    // Fix round 1: the program and the subcommand both worked out, beside a danger option.
+    ["both computed, beside --hard", "$GIT $SUB --hard"],
+    ["both computed, beside --force", "$GIT $SUB --force origin main"],
+    ["both computed, beside -D", "$(echo git) $(echo branch) -D x"],
+    ["both computed, beside --", "$GIT $SUB -- ."],
+    ["both computed, beside --force-with-lease", "$GIT $SUB --force-with-lease origin x"],
   ])("%s: %j asks the main session", (_name, command) => {
     expect(guard(command, neutral, true, "bash")).toContain(CANNOT_TELL);
   });
@@ -257,6 +263,8 @@ describe("a git or a git subcommand named at run time, beside a word the guard j
     ["a computed argument of a reading subcommand", "git log $(cat range)"],
     ["a computed program whose git words discard nothing", "$GIT checkout main"],
     ["a computed program that only reads", "$GIT status"],
+    ["a computed program and a computed word, no danger option", "$EDITOR $FILE"],
+    ["a computed program, a computed word and a plain one", "$EDITOR $FILE notes.txt"],
   ])("%s: %j stays silent", (_name, command) => {
     expect(guard(command, neutral, true, "bash")).toBeUndefined();
   });
@@ -1888,6 +1896,11 @@ describe("a 64 KB command line is read within the guard's time", () => {
     // Each level of a quoted substitution was a call with no ceiling: the stack ran out.
     ["deep quoted substitutions", `echo ${fill('"$(')}`],
     ["deep quoted brace substitutions", `echo ${fill(`"\${ `)}`],
+    // Each plain word beside a computed program and word is tried as a danger option.
+    [
+      "many words beside a computed program and word",
+      `$X $Y ${Array.from({ length: SIZE / 8 }, (_, n) => `w${n}`).join(" ")}`,
+    ],
   ])("%s", (_name, command) => {
     const started = Date.now();
     guard(command);
