@@ -895,6 +895,11 @@ describe("a discard that is not provably in the subagent's own worktree still as
     ["-c core.worktree=", `git -c core.worktree=${MAIN_FOLDER} checkout -- a.ts`],
     ["env -C", `env -C ${MAIN_FOLDER} git checkout -- a.ts`],
     ["a wrapper", "sudo git reset --hard"],
+    ["a wrapper that runs git as an argument", "xargs git restore ."],
+    ["find -exec", "find . -exec git restore . ;"],
+    ["find -execdir over another folder", `find ${MAIN_FOLDER} -execdir git reset --hard ;`],
+    ["watch", "watch git clean -f"],
+    ["parallel", "parallel git reset --hard ::: a b"],
   ])("a git call with %s asks", (_name, command) => {
     expect(guardAs(command, OWN_WORKTREE, BUILDER)).toBeDefined();
   });

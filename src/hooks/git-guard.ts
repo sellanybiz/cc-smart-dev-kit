@@ -45,7 +45,8 @@
  * - real paths, never text: a link or a missing folder asks;
  * - every folder change on the line, at any depth (`cd`, `pushd`, `Set-Location`,
  *   `Push-Location`, an `eval`), names a folder the guard can follow and that is inside it,
- *   and every `-C` too; `cd -`, `popd`, `Pop-Location`, `source`, `.`, an `eval` it cannot read
+ *   and every `-C` too; `cd -`, `popd`, `Pop-Location`, `source`, `.`, a runner (`find`,
+ *   `parallel`, `su`, `watch`), an `eval` it cannot read
  *   and a `..` in a relative `cd` ask, because where a `cd` really lands (a subshell, a pipe, a
  *   failed `cd`, a loop) is not known, so each folder is judged wherever the line could be;
  * - git itself says the folder's repository starts at that worktree
@@ -82,6 +83,7 @@ import { CHANGES_FOLDER, type Folder, movedTo } from "../shell/change-dir";
 import {
   type Dialect,
   invocationOf,
+  isRunnerProgram,
   isShort,
   isWrapper,
   MAX_NESTING,
@@ -702,6 +704,8 @@ function callQuestions(
 /**
  * Programs that change the shell's folder or state where the guard cannot follow: `source` and
  * `.` run a script in this shell, and `Pop-Location` goes back to a folder the line never named.
+ * The runners (`find`, `parallel`, `su`, `watch`) run git where their own arguments say
+ * (`find /x -execdir git reset --hard ;`), so a line with one asks too (`isRunnerProgram`).
  */
 const UNFOLLOWED: ReadonlySet<string> = new Set([".", "pop-location", "source"]);
 
@@ -840,7 +844,7 @@ function inspect(
     const { args, program } = invocation;
     // A redirection (`>log`, `2>&1`) is the shell's: git never sees it as a refspec.
     const operands = withoutRedirections(args);
-    if (UNFOLLOWED.has(program)) run.unreadable = true;
+    if (UNFOLLOWED.has(program) || isRunnerProgram(program)) run.unreadable = true;
     if (CHANGES_FOLDER.has(program)) run.folderChanges.push({ dialect, operands, program });
     if (program === "git") {
       found.push(...gitQuestions(operands, folder, invocation.prefix, dialect, run));
