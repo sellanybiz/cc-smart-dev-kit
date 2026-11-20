@@ -46,10 +46,10 @@ Work tasks add four optional fields, set through `task_create` / `task_update` o
 shows each phase's agent, branch, state and completed steps, such as `3/5`.
 
 A builder writes a `Report:` note with its result and checks. The main session records
-small decisions in `Ruling:` notes, asks a fresh reviewer to review each phase, merges it
-into the plan branch (phase branches stay local), closes its task and starts what it
-unblocked. One final whole-branch review runs on `opus`; then the plan's one pull request
-opens.
+small decisions in `Ruling:` notes, checks each hand-back against the branch (no reviewer
+reads a phase), merges it into the plan branch (phase branches stay local), closes its task
+and starts what it unblocked. One review runs per plan, in two rounds on `opus`; then the
+plan's one pull request opens.
 After compaction, this ledger and git history prevent repeating finished work.
 
 ## The work store
@@ -188,7 +188,7 @@ checkout's working copy through the normal workflow resolver:
   older lists). A caller's plan in flight (`inFlightPlanOf`: an own plan, judged on
   the plan's own task `owns`) is normally one. After a `task_take` it may hold two: the one with
   work in progress counts first, else the lower number. Another session's plan never counts.
-  A plan stays in flight until its own `task_done`, so its final review and fix pass belong to
+  A plan stays in flight until its own `task_done`, so its two review rounds and their fixes belong to
   it, and the next plan cannot start before it closes.
 - **The start refusal.** Starting a phase or task of a plan other than the one in flight
   (`task_update` or `task_create` with `in_progress`, the plan task's own start too) is
@@ -209,8 +209,8 @@ checkout's working copy through the normal workflow resolver:
   them in plan-number order, the store does not force it.
 - **The default plan** (`defaultPlanOf` in `queries.ts`). A phase laid with no plan, and a
   `task_list` that names none, go, in order, to the plan in flight; else to the plan being
-  finished (an own open plan whose phases are all closed, at least one done: its final review
-  and fix pass; the newest such plan; this is how a plan started under 4.8.0 is read); else to
+  finished (an own open plan whose phases are all closed, at least one done: its review
+  rounds and fixes; the newest such plan; this is how a plan started under 4.8.0 is read); else to
   the next plan in the queue, the lowest-numbered own open plan with an open phase; else to the
   plan of the caller's latest own task while that plan is open. Only the first counts for the
   start refusal. A plain task never takes it: with neither `plan` nor `parent` it is loose.
@@ -233,7 +233,7 @@ checkout's working copy through the normal workflow resolver:
 - **Where it shows.** `task_list` with `scope: "plan"` lists the plans in number order and
   puts each open plan's place in the queue in its brackets in place of the status: `in flight`
   (`isInFlight`), `finishing` (pending, every phase closed and one done: a plan started under
-  4.8.0 at its final review), `parked` (pending, with an open phase and work started earlier:
+  4.8.0 at its review), `parked` (pending, with an open phase and work started earlier:
   a phase done, or a note on its task that starts `parked:`), or `queued` (laid out, never
   started) (`planQueueState`). It also prints `Phases n/cap` on each plan, marks one over the cap as
   frozen, and adds `waiting n` for the open tasks directly under it. The status line shows the

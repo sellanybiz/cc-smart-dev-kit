@@ -92,7 +92,7 @@ never changes the choice, and a backend's effort is the person's pin at the rout
 
 **The model and effort policy: the lead's judgment (owner, 2026-11-05).** For each launch the
 lead weighs three things: how hard the job is, what a miss costs, and whether it is the last
-check before it is too late (a plan's second read, the final review). It spends effort where
+check before it is too late (a plan's second read, its two-round review). It spends effort where
 those are high and saves it elsewhere. Why: in Claude Code, Opus, Sonnet and Haiku 5.5 default
 to `medium`, and Opus 5.5 at `medium` already matches Opus 5 at `high`
 (code.claude.com/docs/en/model-config); on the owner's Opus 5.5 benchmarks `high` gives most of
@@ -346,10 +346,12 @@ to use when they are missing.
 ## Building a plan in 2.0
 
 `build` runs the subagent-driven workflow. The main session orchestrates one builder per
-phase, parallel worktrees for disjoint files, a fresh senior engineer for each phase's review and
-a final review on `opus` at `xhigh`. Each review brief carries the line `Mode: review` alone on
-its line; the review-record hook records a review only with it, so a consult of the same agent
-records nothing. Agents run in the background (Claude Code's default), `Monitor` watches CI and
+phase, parallel worktrees for disjoint files, and a quick check of each hand-back against the
+branch (no reviewer reads a phase). The plan gets one review, in two rounds of the `review-split`
+workflow with `risky: true`, so every agent is the senior engineer on `opus` at `xhigh`; round 1
+gets the plan file as `spec`, and round 2 gets round 1's report as `prior`. Each reviewer's
+brief carries the line `Mode: review` alone on its line; the review-record hook records a review
+only with it, so a consult of the same agent records nothing. Agents run in the background (Claude Code's default), `Monitor` watches CI and
 logs, and the lead waits only for what the next step needs. `blocked_by` marks only a real
 dependency or a shared file; noted work is `non-blocking`. The task system holds briefs, reports
 and rulings; see [tasks](tasks.md).
@@ -363,7 +365,7 @@ or merged.
 **Plans live in the project, one at a time (4.0).** Setup sets Claude Code's `plansDirectory`
 to `.claude/plans` at user scope ([setup](setup.md)), so plan mode writes the plan file into the
 project instead of `~/.claude/plans`. `plan-task` commits it with its branch after the yes (in a
-worktree, on that worktree's branch) and moves it to `archive/` in a commit of its own pull request, before the final review, when the plan finishes. A
+worktree, on that worktree's branch) and moves it to `archive/` in a commit of its own pull request, before the plan's review, when the plan finishes. A
 session may run several plans one after another: `core.md`'s "One plan at a time" forbids side
 work, not a second plan. `plan-task` gives each plan its own plan task, and the session names
 the slug with `plan` on `task_list` and on each work-task `task_create`, never on a project

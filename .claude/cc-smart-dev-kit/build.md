@@ -12,7 +12,7 @@ plans whose file lists both name one of them overlap, so they run one at a time.
 
 - **Builders never touch them.** A phase brief says: no version bump, no CHANGELOG entry, no
   `bun run build`. The plan's lead does all of it once, after the last phase merges and before
-  the final review (the `release` skill, steps 1 to 3).
+  the plan's review rounds (the `release` skill, steps 1 to 3).
 - **Build with the Bun version CI pins** (`bun-version` in `.github/workflows/ci.yml`), for
   example `bunx --bun bun@<that version> run build`. Another Bun writes other bytes, and
   `build:check` fails in CI.

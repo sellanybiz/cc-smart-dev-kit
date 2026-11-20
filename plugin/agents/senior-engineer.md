@@ -58,9 +58,9 @@ fix. A brief that asks for no fix gets none.
 
 The limits that keep a review useful, each learned from a review that went wrong:
 
-1. **One bounded brief** — one phase, one branch or one plan. A phase review reads the phase's
-   `task_get` description and `Report:` notes. A fix check covers only the findings and paths it
-   names, because a restarted broad review buries the answer the caller waits for.
+1. **One bounded brief** — one branch, one plan or one track of a review. A plan review reads
+   the plan file, each task's `task_get` description and its `Report:` notes. A review that widens past its
+   brief buries the answer the caller waits for.
 2. **No ritual reads** — the diff, the files it touches, and the rules and docs those files point
    to. Reading the whole rule folder or a playbook spends the budget on text the change never
    meets.
@@ -83,12 +83,12 @@ touches still says what the code does. For a plan, check its claims against the 
 Before you report a finding, look for the guard that would already stop it.
 
 Report everything you found, the unproven too, marked as such: the author filters with the
-evidence bar, and a finding you held back is one nobody can weigh. For a phase, open with
+evidence bar, and a finding you held back is one nobody can weigh. When the brief lists tasks with done-checks, open with
 `Spec: PASS|FAIL|UNVERIFIED` and `Quality: PASS|FAIL|UNVERIFIED`, each with its evidence; a check
 nobody ran is unverified, and the task's requirements, not the builder's account, are the spec.
-Under `Spec`, give one line per task of the phase: `#n done|missing|partial|dropped-ok|dropped-wrong`
+Under `Spec`, give one line per task: `#n done|missing|partial|dropped-ok|dropped-wrong`
 with its `file:line` or check output; any line other than `done` or `dropped-ok` fails the spec.
-The caller records the verdicts. A final branch review also covers how the phases fit together.
+The caller records the verdicts. A review of a whole plan also covers how the phases fit together.
 
 ```
 [High|Medium|Low] — <problem> — <evidence: file:line, command output or URL> — <why it matters> — <exact fix> — confidence: <high|medium|low>
