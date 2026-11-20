@@ -1,7 +1,7 @@
 export const meta = {
   name: 'review-split',
   description:
-    'Review and refute a change set by track. Pass args: { base?: string, head?: string, intent?: string, folder?: string, tracks?: string[], risky?: boolean, budget?: number } as an object, not JSON text; see /cc-smart-dev-kit:review.',
+    'Review and refute a change set by track. Pass args: { base?: string, head?: string, intent?: string, folder?: string, tracks?: string[], risky?: boolean, budget?: number, spec?: string, prior?: string } as an object, not JSON text; see /cc-smart-dev-kit:review.',
 }
 
 // The input is the Workflow tool's `args`, passed verbatim: one object, which the review skill
@@ -11,7 +11,7 @@ export const meta = {
 // the workflow by hand. `audit-run.js` carries the same check: a workflow script cannot import
 // another file, so each one holds its own.
 const USAGE =
-  'Pass one object: { base?: string, head?: string, intent?: string, folder?: string, tracks?: string[], risky?: boolean, budget?: number }.'
+  'Pass one object: { base?: string, head?: string, intent?: string, folder?: string, tracks?: string[], risky?: boolean, budget?: number, spec?: string, prior?: string }.'
 const refuse = (problem) => {
   throw new Error(`review-split refused its arguments (${problem}). ${USAGE}`)
 }
@@ -24,6 +24,8 @@ const CHECKS = {
   tracks: [(value) => Array.isArray(value) && value.every(isText), 'an array of strings'],
   risky: [(value) => typeof value === 'boolean', 'true or false'],
   budget: [(value) => Number.isInteger(value) && value > 0, 'a whole number above 0'],
+  spec: [isText, 'a string'],
+  prior: [isText, 'a string'],
 }
 if (args !== undefined) {
   if (args === null || typeof args !== 'object' || Array.isArray(args)) {
@@ -39,12 +41,20 @@ const base = given.base || ''
 const head = given.head || 'HEAD'
 const intent = given.intent || 'what its commits and the diff say it does'
 const folder = given.folder || ''
-const tracks =
+const named =
   given.tracks && given.tracks.length > 0
     ? given.tracks
     : ['every review dimension and edge-case axis that applies to this change']
 const maxFindings = given.budget || 12
 const risky = given.risky === true
+
+// A plan's review runs this script twice (`plugin/skills/build/SKILL.md` § 6). `spec` is the
+// plan file: it adds one last track, the spec compliance of the plan. `prior` is round 1's
+// report: it makes this run round 2. An empty string for either is the same as leaving it out.
+const spec = given.spec || ''
+const prior = given.prior || ''
+const SPEC_TRACK = 'spec compliance'
+const tracks = spec === '' ? named : named.concat([SPEC_TRACK])
 
 // The change set as the reviewers read it. With no base, the branch works it out from its own
 // merge base: a base typed here would be one project's branch name in every project.
@@ -58,7 +68,7 @@ const checkout = folder === '' ? '' : '. The checkout is at `' + folder + '`'
 // the script reads it, so a prose answer never reaches the refuter.
 const FINDINGS = {
   type: 'object',
-  required: ['findings'],
+  required: ['findings', 'coverage'],
   properties: {
     findings: {
       type: 'array',
@@ -89,6 +99,19 @@ const FINDINGS = {
     },
     hunches: { type: 'array', items: { type: 'string' } },
     coverage: { type: 'string' },
+    // Round 2 only: where each finding of round 1's report stands now.
+    priorStatus: {
+      type: 'array',
+      items: {
+        type: 'object',
+        required: ['title', 'status', 'evidence'],
+        properties: {
+          title: { type: 'string' },
+          status: { type: 'string', enum: ['fixed', 'not_fixed', 'worse'] },
+          evidence: { type: 'string' },
+        },
+      },
+    },
   },
 }
 
@@ -125,8 +148,34 @@ log(
 // review record counts as a later prompt, and the run would record no review. The prompt also
 // asks for the StructuredOutput call, so Claude Code's nudge to make it is rarely needed (the
 // record reads that nudge as harmless, `src/hooks/transcript.ts`).
-const reviews = await pipeline(tracks, (track) => {
-  const prompt = `Mode: review\n\nOne track of the second opinion on one change set. The change set: ${change}${checkout}. What it is meant to do: ${intent}.\n\nYour track: ${track}. Other reviewers take the other tracks; stay on yours. Judge the project by its own rules, skills and docs, and read the code the diff touches, not the diff alone. Change no file: report only.\n\nAnswer in the schema: a finding needs the trigger, the path as file:line, the outcome, the missing guard and the fix. A design finding's missing guard is the rule it breaks. What you cannot prove goes in \`hunches\`. In \`coverage\`, name what you read and where you stopped.\n\nEnd by calling the StructuredOutput tool; never end with plain text.`
+// One template for every track, and the optional parts added to it: the plan every track reads when
+// `spec` is set, the point-by-point check the spec track alone does, and the round-2 lines every
+// track gets when `prior` is set. The strict rules close every prompt, in both rounds: a claim is
+// proved by running when it can be, and a track that finds nothing still shows what it read and ran.
+const planPart = `Read the plan file \`${spec}\` first. Judge your track against the plan's decisions and edge cases as well as against the code.`
+const specPart =
+  'For each Decision and each Edge case in the plan, say met, or failed with file:line; a failure is a finding. Then read the plan\'s tasks: call task_get on the phases and steps it lists. Check each step\'s done-check against its closing evidence and against the code. A step done only in name is a spec failure: report it as a finding.'
+const roundTwoPart = `This is round 2. Round 1's report follows. Check that each finding it lists is really fixed, at its file:line, and report each one in \`priorStatus\` as fixed, not_fixed or worse, with the evidence. Check that the fixes broke nothing around them. Report what round 1 missed in the change set, at the same evidence bar.\n\nRound 1's report:\n\n${prior}`
+const runPart =
+  'Where a claim can be proved by running something, run it and quote the command and its output in the finding\'s `trigger` or `outcome`: a test, a small probe script in your scratchpad, or the real command. Reading the code is not enough. Change no file of the project: report only; scratch files go in your scratchpad.'
+const answerPart =
+  'Answer in the schema: a finding needs the trigger, the path as file:line, the outcome, the missing guard and the fix. A design finding\'s missing guard is the rule it breaks. What you cannot prove goes in `hunches`. In `coverage`, name the files you read, the commands you ran with their results, and where you stopped. A track with no findings still fills `coverage` this way: a bare "clean" is not evidence.'
+const trackPrompt = (track, isSpecTrack) =>
+  [
+    `Mode: review\n\nOne track of the second opinion on one change set. The change set: ${change}${checkout}. What it is meant to do: ${intent}.`,
+    `Your track: ${track}. Other reviewers take the other tracks; stay on yours. Judge the project by its own rules, skills and docs, and read the code the diff touches, not the diff alone.`,
+    spec === '' ? '' : planPart,
+    isSpecTrack ? specPart : '',
+    prior === '' ? '' : roundTwoPart,
+    runPart,
+    answerPart,
+    'End by calling the StructuredOutput tool; never end with plain text.',
+  ]
+    .filter((part) => part !== '')
+    .join('\n\n')
+
+const reviews = await pipeline(tracks, (track, index) => {
+  const prompt = trackPrompt(track, spec !== '' && index === tracks.length - 1)
   return risky
     ? agent(prompt, {
         label: `review: ${track}`,
@@ -237,13 +286,44 @@ const unprovenHunches = judged
 const hunches = unprovenHunches.concat(
   reviews.flatMap((report) => (report && Array.isArray(report.hunches) ? report.hunches : [])),
 )
+
+// A track that found nothing must still show its work. A bare "clean", an empty coverage or no
+// answer at all is not evidence of a review: the report says so, so the lead sees it.
+const MIN_COVERAGE_CHARS = 40
 const coverage = reviews
-  .map((report, index) =>
-    report && typeof report.coverage === 'string' && report.coverage !== ''
-      ? `track ${index + 1} (${tracks[index]}): ${report.coverage}`
-      : null,
-  )
+  .map((report, index) => {
+    const text = report && typeof report.coverage === 'string' ? report.coverage.trim() : ''
+    const found = report && Array.isArray(report.findings) && report.findings.length > 0
+    const label = `track ${index + 1} (${tracks[index]})`
+    if (!found && text.length < MIN_COVERAGE_CHARS) {
+      return `${label} gave no evidence of coverage${text === '' ? '' : `: "${text}"`}`
+    }
+    return text === '' ? null : `${label}: ${text}`
+  })
   .filter((one) => one !== null)
+
+// Round 2 only: where each finding of round 1 stands, one line each. Several tracks may judge the
+// same finding; the worst status stands, so a fix one track calls good and another calls broken
+// is listed as broken.
+const STATUSES = ['worse', 'not_fixed', 'fixed']
+const statusRank = (status) => {
+  const at = STATUSES.indexOf(status)
+  return at === -1 ? STATUSES.length : at
+}
+const standing = new Map()
+for (const report of reviews) {
+  if (!report || !Array.isArray(report.priorStatus)) continue
+  for (const one of report.priorStatus) {
+    const key = String(one.title).trim().toLowerCase()
+    const before = standing.get(key)
+    if (before === undefined || statusRank(one.status) < statusRank(before.status)) {
+      standing.set(key, one)
+    }
+  }
+}
+const priorLines = Array.from(standing.values())
+  .sort((a, b) => statusRank(a.status) - statusRank(b.status))
+  .map((one) => `- [${String(one.status).replace('_', ' ').toUpperCase()}] ${one.title} — ${one.evidence}`)
 
 const lines = verified.map(
   (one, index) =>
@@ -273,6 +353,10 @@ return [
   verified.length === 0 || unprovenHunches.length === 0
     ? ''
     : `${unprovenHunches.length} of ${checked.length} checked finding(s) were left unproven: they are listed under Hunches.`,
+  '',
+  prior === ''
+    ? ''
+    : `## Round 1 findings\n\n${priorLines.length === 0 ? 'No track reported a status for a round 1 finding.' : priorLines.join('\n')}`,
   '',
   unchecked.length === 0
     ? ''

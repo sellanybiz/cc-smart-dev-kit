@@ -472,3 +472,292 @@ describe("the review-split workflow", () => {
     ]);
   });
 });
+
+/** The lines a round-2 prompt carries. */
+const ROUND_TWO_LINES = [
+  "This is round 2.",
+  "Check that each finding it lists is really fixed, at its file:line",
+  "Check that the fixes broke nothing around them.",
+  "Report what round 1 missed in the change set, at the same evidence bar.",
+];
+const SPEC_TRACK = "spec compliance";
+/** What every track reads when the run has a plan. */
+const PLAN_LINES = [
+  "Read the plan file `.claude/plans/the-plan.md` first.",
+  "Judge your track against the plan's decisions and edge cases as well as against the code.",
+];
+/** What only the spec track does: the point-by-point check. */
+const SPEC_LINES = [
+  "each Decision and each Edge case",
+  "met, or failed with file:line",
+  "task_get",
+  "A step done only in name is a spec failure",
+];
+/** A coverage long enough to count as evidence. */
+const SOLID_COVERAGE = "read src/a.ts and src/b.ts; ran bun test src/a.test.ts: 4 pass, 0 fail";
+
+describe("the review-split spec track and round-2 mode", () => {
+  test("spec adds exactly one spec track, after the given tracks, and only that track reads the plan", async () => {
+    const run = await runScript(REVIEW_SPLIT, {
+      answer: answers([]),
+      args: {
+        base: "main",
+        spec: ".claude/plans/the-plan.md",
+        tracks: ["state and timing", "access and money"],
+      },
+    });
+    const reviews = run.calls.filter(isReview);
+    expect(reviews.map(labelOf)).toEqual([
+      "review: state and timing",
+      "review: access and money",
+      `review: ${SPEC_TRACK}`,
+    ]);
+    for (const call of reviews.slice(0, 2)) {
+      for (const line of SPEC_LINES) expect(call.prompt).not.toContain(line);
+    }
+    const spec = reviews[2];
+    expect(spec?.prompt).toContain(`Your track: ${SPEC_TRACK}`);
+    for (const line of SPEC_LINES) expect(spec?.prompt).toContain(line);
+    expect(spec?.options).toMatchObject({
+      agentType: REVIEWER,
+      disallowedTools: NO_EDITS,
+      effort: "high",
+      model: "sonnet",
+    });
+    expect(String(run.result)).toContain("tracks: 3");
+  });
+
+  test("with spec, every track prompt names the plan file and judges against its decisions; without it none does", async () => {
+    const withSpec = await runScript(REVIEW_SPLIT, {
+      answer: answers([]),
+      args: {
+        base: "main",
+        spec: ".claude/plans/the-plan.md",
+        tracks: ["state and timing", "access and money"],
+      },
+    });
+    const planned = withSpec.calls.filter(isReview);
+    expect(planned.length).toBe(3);
+    for (const call of planned) {
+      for (const line of PLAN_LINES) expect(call.prompt).toContain(line);
+    }
+    const without = await runScript(REVIEW_SPLIT, {
+      answer: answers([]),
+      args: { base: "main", tracks: ["state and timing"] },
+    });
+    for (const call of without.calls.filter(isReview)) {
+      expect(call.prompt).not.toContain("the plan's decisions");
+      expect(call.prompt).not.toContain("plan file");
+    }
+  });
+
+  test("with spec and prior together, the spec track has both parts and the others have the plan and round-2 parts", async () => {
+    const run = await runScript(REVIEW_SPLIT, {
+      answer: answers([]),
+      args: {
+        base: "main",
+        prior: "round 1 report",
+        spec: ".claude/plans/the-plan.md",
+        tracks: ["craft"],
+      },
+    });
+    const [craft, spec] = run.calls.filter(isReview);
+    for (const call of [craft, spec]) {
+      for (const line of [...PLAN_LINES, ...ROUND_TWO_LINES]) {
+        expect(call?.prompt).toContain(line);
+      }
+    }
+    for (const line of SPEC_LINES) {
+      expect(spec?.prompt).toContain(line);
+      expect(craft?.prompt).not.toContain(line);
+    }
+  });
+
+  test("spec alone, with no given tracks, runs the default track and the spec track on the risky tier", async () => {
+    const run = await runScript(REVIEW_SPLIT, {
+      answer: answers([]),
+      args: { base: "main", risky: true, spec: ".claude/plans/the-plan.md" },
+    });
+    const reviews = run.calls.filter(isReview);
+    expect(reviews.length).toBe(2);
+    expect(labelOf(reviews[1] as AgentCall)).toBe(`review: ${SPEC_TRACK}`);
+    for (const call of reviews) {
+      expect(call.options).toMatchObject({ effort: "xhigh", model: "opus" });
+    }
+  });
+
+  test("a spec failure is a finding with the same schema, and it is refuted like any other", async () => {
+    const run = await runScript(REVIEW_SPLIT, {
+      answer: (call) =>
+        isReview(call)
+          ? {
+              coverage: SOLID_COVERAGE,
+              findings: labelOf(call).endsWith(SPEC_TRACK) ? [finding("Decision 2 not met")] : [],
+            }
+          : { reason: "checked", verdict: "confirmed" },
+      args: { base: "main", spec: ".claude/plans/the-plan.md", tracks: ["craft"] },
+    });
+    expect(run.calls.filter(isRefute).length).toBe(1);
+    expect(String(run.result)).toContain("[WARNING] Decision 2 not met — src/a.ts:1");
+  });
+
+  test("prior makes it round 2: every track prompt carries the round-2 lines and the report", async () => {
+    const prior = "## Findings (1)\n\n1. [WARNING] Stale key — src/a.ts:1";
+    const run = await runScript(REVIEW_SPLIT, {
+      answer: answers([]),
+      args: {
+        base: "main",
+        prior,
+        spec: ".claude/plans/the-plan.md",
+        tracks: ["state and timing", "access and money"],
+      },
+    });
+    const reviews = run.calls.filter(isReview);
+    expect(reviews.length).toBe(3);
+    for (const call of reviews) {
+      for (const line of ROUND_TWO_LINES) expect(call.prompt).toContain(line);
+      expect(call.prompt).toContain("`priorStatus`");
+      expect(call.prompt).toContain(prior);
+    }
+  });
+
+  test("without prior no prompt carries a round-2 line, and the report has no Round 1 section", async () => {
+    const run = await runScript(REVIEW_SPLIT, {
+      answer: (call) => (isReview(call) ? { coverage: SOLID_COVERAGE, findings: [] } : null),
+      args: { base: "main", tracks: ["craft"] },
+    });
+    for (const call of run.calls.filter(isReview)) {
+      for (const line of ROUND_TWO_LINES) expect(call.prompt).not.toContain(line);
+      expect(call.prompt).not.toContain("priorStatus");
+    }
+    expect(String(run.result)).not.toContain("Round 1 findings");
+  });
+
+  test("the report lists each round 1 finding with its status and evidence, the worst status winning", async () => {
+    const run = await runScript(REVIEW_SPLIT, {
+      answer: (call) => {
+        if (!isReview(call)) return { reason: "checked", verdict: "confirmed" };
+        return labelOf(call) === "review: state"
+          ? {
+              coverage: SOLID_COVERAGE,
+              findings: [],
+              priorStatus: [
+                { evidence: "src/a.ts:5 now checks it", status: "fixed", title: "Stale key" },
+                { evidence: "src/b.ts:9 still throws", status: "not_fixed", title: "Empty tenant" },
+              ],
+            }
+          : {
+              coverage: SOLID_COVERAGE,
+              findings: [],
+              priorStatus: [
+                { evidence: "src/a.ts:5 breaks src/c.ts:2", status: "worse", title: "stale key" },
+              ],
+            };
+      },
+      args: { base: "main", prior: "round 1 report", tracks: ["state", "access"] },
+    });
+    const report = String(run.result);
+    expect(report).toContain("## Round 1 findings");
+    expect(report).toContain("- [WORSE] stale key — src/a.ts:5 breaks src/c.ts:2");
+    expect(report).toContain("- [NOT FIXED] Empty tenant — src/b.ts:9 still throws");
+    expect(report).not.toContain("[FIXED]");
+  });
+
+  test("prior with no status returned says so, so a silent round 2 is visible", async () => {
+    const run = await runScript(REVIEW_SPLIT, {
+      answer: answers([]),
+      args: { base: "main", prior: "no findings", tracks: ["craft"] },
+    });
+    expect(String(run.result)).toContain(
+      "## Round 1 findings\n\nNo track reported a status for a round 1 finding.",
+    );
+  });
+
+  test("a non-string spec or prior is refused, and no agent starts", async () => {
+    const calls: unknown[] = [];
+    const bad: Array<[string, unknown]> = [
+      ["spec", 5],
+      ["spec", ["plan.md"]],
+      ["prior", { findings: [] }],
+      ["prior", true],
+    ];
+    for (const [key, value] of bad) {
+      await expect(
+        runScript(REVIEW_SPLIT, {
+          answer: (call) => {
+            calls.push(call);
+            return null;
+          },
+          args: { base: "main", [key]: value },
+        }),
+      ).rejects.toThrow(new RegExp(`"${key}" must be a string`));
+    }
+    expect(calls).toEqual([]);
+  });
+
+  test("an old call gets no spec track and no round-2 text, and the usage line names the new keys", async () => {
+    const run = await runScript(REVIEW_SPLIT, {
+      answer: answers([]),
+      args: { base: "main", tracks: ["craft"] },
+    });
+    const reviews = run.calls.filter(isReview);
+    expect(reviews.map(labelOf)).toEqual(["review: craft"]);
+    const prompt = reviews[0]?.prompt ?? "";
+    expect(prompt).not.toContain("plan file");
+    expect(prompt).not.toContain("round 2");
+    await expect(runScript(REVIEW_SPLIT, { args: { risk: true } })).rejects.toThrow(
+      /spec\?: string, prior\?: string/,
+    );
+  });
+});
+
+describe("the review-split strict rules", () => {
+  test("every track prompt, in both rounds, tells the reviewer to prove by running and to fill coverage", async () => {
+    for (const extra of [{}, { prior: "round 1 report", spec: ".claude/plans/the-plan.md" }]) {
+      const run = await runScript(REVIEW_SPLIT, {
+        answer: answers([]),
+        args: { base: "main", tracks: ["craft", "access"], ...extra },
+      });
+      const reviews = run.calls.filter(isReview);
+      expect(reviews.length).toBeGreaterThanOrEqual(2);
+      for (const call of reviews) {
+        expect(call.prompt).toContain(
+          "Where a claim can be proved by running something, run it and quote the command and its output in the finding's `trigger` or `outcome`",
+        );
+        expect(call.prompt).toContain("Reading the code is not enough.");
+        expect(call.prompt).toContain("scratch files go in your scratchpad");
+        expect(call.prompt).toContain("Change no file of the project");
+        expect(call.prompt).toContain("A track with no findings still fills `coverage`");
+        expect(call.prompt).toContain('a bare "clean" is not evidence');
+      }
+    }
+  });
+
+  test("coverage is a required field of a reviewer's answer", async () => {
+    const run = await runScript(REVIEW_SPLIT, { answer: answers([]), args: { base: "main" } });
+    const schema = run.calls.find(isReview)?.options.schema as { required: string[] };
+    expect(schema.required).toEqual(["findings", "coverage"]);
+  });
+
+  test("a track with no findings and a vague or empty coverage is shown as giving no evidence", async () => {
+    const run = await runScript(REVIEW_SPLIT, {
+      answer: (call) => {
+        if (!isReview(call)) return null;
+        const label = labelOf(call);
+        if (label === "review: vague") return { coverage: "clean", findings: [] };
+        if (label === "review: empty") return { coverage: "", findings: [] };
+        if (label === "review: silent") return null;
+        if (label === "review: busy") return { coverage: "ok", findings: [finding("A")] };
+        return { coverage: SOLID_COVERAGE, findings: [] };
+      },
+      args: { base: "main", tracks: ["vague", "empty", "silent", "busy", "solid"] },
+    });
+    const report = String(run.result);
+    expect(report).toContain("track 1 (vague) gave no evidence of coverage");
+    expect(report).toContain("track 2 (empty) gave no evidence of coverage");
+    expect(report).toContain("track 3 (silent) gave no evidence of coverage");
+    expect(report).not.toContain("track 4 (busy) gave no evidence");
+    expect(report).not.toContain("track 5 (solid) gave no evidence");
+    expect(report).toContain("track 5 (solid): read src/a.ts and src/b.ts; ran bun test");
+  });
+});
