@@ -7,15 +7,7 @@
  * `ownHooks` and cc-smart-dev-kit.json, is tested at the end and in `matrix.test.ts`.
  */
 import { afterAll, beforeAll, describe, expect, test as it } from "bun:test";
-import {
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  realpathSync,
-  rmSync,
-  symlinkSync,
-  writeFileSync,
-} from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { cliPaths } from "../cli/paths";
@@ -31,7 +23,7 @@ import {
 } from "../testing/hooks";
 import { cleanGitEnv, git, tempDir } from "../testing/temp";
 import { OWN_WORKTREE_PROOF_BUDGET_MS } from "./budget";
-import { DEFAULT_PROTECTED_BRANCHES, guardQuestions, INERT_PROGRAMS, runsGit } from "./git-guard";
+import { DEFAULT_PROTECTED_BRANCHES, guardQuestions, runsGit } from "./git-guard";
 import { gitGuardHook } from "./specs";
 
 // Folders made once for this file (the preload removes only tempDir() folders after each test).
@@ -743,10 +735,18 @@ describe("a subagent's discard inside its own worktree is silent", () => {
     expect(guardAs(`cd ${OWN_WORKTREE} && ${command}`, OWN_WORKTREE, BUILDER)).toBeUndefined();
   });
 
-  it("the two live shapes: a discard, an rm and a status, with and without a cd", () => {
-    const line =
-      "git checkout -- db/migrations/a.sql db/migrations/b.sql; rm db/migrations/c.sql; git status --short";
+  it("the two live shapes: a discard and a status, with and without a cd", () => {
+    const line = "git checkout -- db/migrations/a.sql db/migrations/b.sql; git status --short";
     expect(guardAs(line, OWN_WORKTREE, BUILDER)).toBeUndefined();
+    // The final review's ruling: an `rm` on the line is no git call, so the incident's own line
+    // asks; a builder puts the discard on a line of its own.
+    expect(
+      guardAs(
+        "git checkout -- db/migrations/a.sql; rm db/migrations/c.sql; git status --short",
+        OWN_WORKTREE,
+        BUILDER,
+      ),
+    ).toBeDefined();
     expect(
       guardAs(
         `cd ${OWN_WORKTREE}; git checkout HEAD -- src; git status --short`,
@@ -767,8 +767,7 @@ describe("a subagent's discard inside its own worktree is silent", () => {
     ["with a relative -C into a subfolder", "git -C src reset --hard", OWN_WORKTREE],
     ["after an absolute cd, a checkout", `cd ${OWN_WORKTREE}/src; git checkout -- .`, OWN_WORKTREE],
     ["in a subshell that stays inside", "(cd src; git restore .)", OWN_WORKTREE],
-    ["with inert programs around it", "mkdir -p tmp; git clean -f; ls; echo done", OWN_WORKTREE],
-    ["piped into an inert program", "git checkout -- a.ts | tee log.txt", OWN_WORKTREE],
+    ["after a git call that only reads, a -C", "git status; git -C src restore .", OWN_WORKTREE],
   ])("%s: %j", (_name, command, cwd) => {
     expect(guardAs(command, cwd, BUILDER)).toBeUndefined();
   });
@@ -1019,7 +1018,13 @@ describe("a discard that is not provably in the subagent's own worktree still as
   it("an unrelated GIT_ variable does not stop the exemption, on the line or in the environment", () => {
     const env = { ...cleanGitEnv(), GIT_PAGER: "cat" };
     expect(
-      guardAs("git checkout -- a.ts; echo GIT_PAGER", OWN_WORKTREE, BUILDER, undefined, env),
+      guardAs(
+        "git checkout -- a.ts; git log --grep GIT_PAGER",
+        OWN_WORKTREE,
+        BUILDER,
+        undefined,
+        env,
+      ),
     ).toBeUndefined();
   });
 
@@ -1158,7 +1163,7 @@ describe("round 2's findings: a line that is not plain, or leaves the worktree, 
   });
 });
 
-describe("the allowlist: any shape but git, one folder change or an inert program asks", () => {
+describe("the allowlist: any shape but git or one folder change asks", () => {
   it.each([
     ["a shell keyword", "if true; then git checkout -- a.ts; fi"],
     ["an assignment before git", "LANG=C git checkout -- a.ts"],
@@ -1201,15 +1206,6 @@ describe("the allowlist: any shape but git, one folder change or an inert progra
     ["Invoke-Command", "Invoke-Command -ScriptBlock { git reset --hard }"],
   ])("PowerShell: %s asks: %j", (_name, command) => {
     expect(guardAs(command, OWN_WORKTREE, BUILDER, "powershell")).toBeDefined();
-  });
-
-  it("INERT_PROGRAMS: every word is named in hooks.md's git-guard row", () => {
-    const row = readFileSync(join(import.meta.dir, "../../docs/design/hooks.md"), "utf8")
-      .split("\n")
-      .find((line) => line.includes("INERT_PROGRAMS"));
-    expect(row).toBeDefined();
-    const missing = [...INERT_PROGRAMS].filter((word) => !row?.includes(`\`${word}\``));
-    expect(missing).toEqual([]);
   });
 });
 
@@ -1288,13 +1284,134 @@ describe("round 3's findings: a plain line's words cannot move the shell or git"
   });
 
   it.each([
-    ["the incident line", "git checkout -- a b; rm c; git status --short"],
     ["a cd into a subfolder", "cd src; git restore ."],
     ["add, commit, then a discard", "git add -A; git commit -m x; git checkout -- a.ts"],
-    ["a .gitignore is no .git path", "cat .gitignore; git restore ."],
+    ["a .gitignore is no .git path", "git log -- .gitignore; git restore ."],
   ])("still silent: %s: %j", (_name, command) => {
     expect(asBash(command)).toBeUndefined();
   });
+});
+
+// The final review found the allowed file programs could still undo the proof: a brace pair
+// builds a `.git` word no rule sees (C1), and `rm`, `mv` or `cp` rebuild the worktree after the
+// proof read the disk (C2). The person ruled: a subagent's discard line holds only listed git
+// calls and plain folder changes. Run as the Bash tool runs it, unless a row says PowerShell.
+describe("the final review's findings: a subagent's discard line holds only git calls and plain cds", () => {
+  /** The question string for a line a subagent runs in the Bash tool, or undefined when silent. */
+  const asBash = (command: string, cwd = OWN_WORKTREE): string | undefined => {
+    const questions = guardQuestions(command, cwd, {
+      ...OPTIONS,
+      agentId: BUILDER,
+      env: cleanGitEnv(),
+      toolDialect: "bash",
+    });
+    return questions.length === 0 ? undefined : questions.join("\n");
+  };
+  const OWN = OWN_WORKTREE;
+  const LEAD = LEAD_WORKTREE;
+
+  it.each([
+    ["rm with a brace list", "rm -f .gi{t,}; git reset --hard"],
+    ["mv with a brace list", "mv .gi{t,x}; git reset --hard"],
+    ["rm with a brace list around the dot name", "rm -f .{git,x}; git reset --hard"],
+    ["rm with a brace range", "rm -f .gi{t..t}; git reset --hard"],
+    ["tee with a brace list", "echo x | tee .gi{t,x}; git reset --hard"],
+    ["a redirection to a brace range", "git reset --hard > .gi{t..t}"],
+  ])("C1, a brace pair builds a .git word (%s) asks: %j", (_name, command) => {
+    expect(asBash(command)).toBeDefined();
+  });
+
+  it.each([
+    ["rm, mkdir and cd", `rm -rf ${OWN}; mkdir ${OWN}; cd ${OWN}; git reset --hard`],
+    ["rm, mkdir and cd .", `rm -rf ${OWN} && mkdir ${OWN} && cd . && git reset --hard`],
+    ["mv, mkdir and cd", `mv ${OWN} ${OWN}.old; mkdir ${OWN}; cd ${OWN}; git reset --hard`],
+    [
+      "rm through the parent, mkdir and cd",
+      `rm -rf ../agent-${BUILDER}; mkdir ${OWN}; cd ${OWN}; git reset --hard`,
+    ],
+    ["cp the lead's files in", `cp -r ${LEAD}/. src/; cd src; git reset --hard`],
+    ["cp -T the lead in", `cp -rT ${LEAD} src; cd src; git reset --hard`],
+  ])("C2, a file program rebuilds the worktree (%s) asks: %j", (_name, command) => {
+    expect(asBash(command)).toBeDefined();
+  });
+
+  it("C2, PowerShell: Remove-Item over the worktree asks", () => {
+    const line = "Get-ChildItem -Force | Remove-Item -Recurse -Force; git reset --hard";
+    expect(guardAs(line, OWN, BUILDER, "powershell")).toBeDefined();
+  });
+
+  it.each([
+    ["a redirection to a file", "git checkout -- a.ts > out.txt"],
+    ["an append", "git reset --hard >> log.txt"],
+    ["stderr to a file", "git reset --hard 2> err.txt"],
+    ["stderr to /dev/null", "git checkout -- a.ts 2>/dev/null"],
+    ["both streams to a file", "git restore . &> log.txt"],
+    ["a file read in", "git checkout -- a.ts < list.txt"],
+    ["a here-string", "git restore . <<< x"],
+    ["a here-doc", "git restore . <<EOF\nx\nEOF"],
+    ["a brace pair in a git word", "git restore {a,b}.ts"],
+    ["a brace range in a git word", "git checkout -- src/{1..3}.ts"],
+    ["a background job", "git status & cd src; git reset --hard"],
+    ["a pipe between git calls", "git status | git reset --hard"],
+  ])(
+    "a redirection, a brace pair, a pipe or a background job on the line (%s) asks: %j",
+    (_name, command) => {
+      expect(asBash(command)).toBeDefined();
+    },
+  );
+
+  it.each([
+    ["the incident line: its rm is no git call", "git checkout -- a b; rm c; git status --short"],
+    ["cat is no git call", "cat .gitignore; git restore ."],
+    ["ls and echo are no git calls", "mkdir -p tmp; git clean -f; ls; echo done"],
+    ["tee is no git call", "git checkout -- a.ts | tee log.txt"],
+  ])("now asks: %s: %j", (_name, command) => {
+    expect(asBash(command)).toBeDefined();
+  });
+
+  it.each([
+    ["a discard alone", "git checkout -- a.txt"],
+    ["a cd into a subfolder", "cd src; git reset --hard"],
+    ["add, commit, then a discard", "git add -A; git commit -m x; git checkout -- a.txt"],
+    ["-C into a subfolder", "git -C src reset --hard"],
+    ["a duplicated stream names no file", "git checkout -- a.txt 2>&1"],
+    ["one call after another with &&", "git reset --hard && git status"],
+  ])("still silent: %s: %j", (_name, command) => {
+    expect(asBash(command)).toBeUndefined();
+  });
+
+  it("still silent: PowerShell Push-Location into a subfolder", () => {
+    expect(guardAs("Push-Location src; git restore .", OWN, BUILDER, "powershell")).toBeUndefined();
+  });
+
+  it("an rm alone never asks", () => {
+    expect(asBash("rm c")).toBeUndefined();
+  });
+});
+
+// The final review's W2: a word that holds an expansion anywhere, not only at its start, is
+// worked out when the line runs. The main session, where nothing else makes these lines ask.
+describe("the final review's W2: a word holding an expansion is worked out when the line runs", () => {
+  const CANNOT_TELL = "cannot tell";
+  it.each([
+    ["a computed mode", "git reset $MODE"],
+    ["a computed short option", "git checkout -$F main"],
+    ["a computed end of an option", "git reset --har$D"],
+    ["a computed end of the subcommand", "git push$X --force origin main"],
+    ["a computed middle of the subcommand", "git re$X --hard"],
+    ["a substitution inside the program", "g$(echo i)t reset --hard"],
+    ["a variable inside the program", `gi\${T} reset --hard`],
+    ["a variable in the program's path", "/usr/bin/gi$X reset --hard"],
+  ])("%s asks the main session: %j", (_name, command) => {
+    expect(guard(command, neutral, true, "bash")).toContain(CANNOT_TELL);
+  });
+
+  it.each(["git log $(cat range)", "echo $(git rev-parse HEAD)", "$EDITOR $FILE", "$GIT status"])(
+    "still silent: %j",
+    (command) => {
+      expect(guard(command, neutral, true, "bash")).toBeUndefined();
+    },
+  );
 });
 
 describe("the proof's git calls share one deadline", () => {
@@ -1331,22 +1448,31 @@ describe("the proof's git calls share one deadline", () => {
 });
 
 describe("the proof's cost has a ceiling", () => {
-  it("a 64 KB line of discards over many distinct folders asks in time", () => {
-    const steps = Array.from(
-      { length: 4000 },
-      (_, index) => `git -C many/d${index % MANY_FOLDERS} restore .`,
-    );
-    const line = steps.join("; ").slice(0, 64 * 1024);
+  /** A line that may be in each of `count` distinct folders when its discard runs. */
+  const cdsThenDiscard = (count: number) =>
+    `${Array.from({ length: count }, (_, index) => `cd ${OWN_WORKTREE}/many/d${index}; `).join("")}git restore .`;
+
+  it("a discard that may run in more distinct folders than the proof asks git about asks in time", () => {
     const started = Date.now();
-    // More distinct folders than the proof asks git about: it asks rather than run them all.
-    expect(guardAs(line.slice(0, line.lastIndexOf(";")), OWN_WORKTREE, BUILDER)).toBeDefined();
+    // More folders than `MAX_PROOF_GIT_CALLS`, fewer than `MAX_FOLDERS`: it asks rather than run
+    // git in them all.
+    expect(guardAs(cdsThenDiscard(20), OWN_WORKTREE, BUILDER)).toBeDefined();
+    expect(guardAs(cdsThenDiscard(MANY_FOLDERS), OWN_WORKTREE, BUILDER)).toBeDefined();
     expect(Date.now() - started).toBeLessThan(GUARD_TIME_LIMIT_MS);
   });
 
   it("a few distinct folders stay silent", () => {
-    expect(
-      guardAs("git -C many/d0 restore .; git -C many/d1 restore .", OWN_WORKTREE, BUILDER),
-    ).toBeUndefined();
+    expect(guardAs(cdsThenDiscard(2), OWN_WORKTREE, BUILDER)).toBeUndefined();
+  });
+
+  // The proof read each folder before the line runs; a git call that writes files could make a
+  // later folder a link (a checkout of a branch where that path is one).
+  it.each([
+    ["a -C after a discard", "git -C many/d0 restore .; git -C many/d1 restore ."],
+    ["a cd after a discard", "git restore .; cd src; git restore ."],
+    ["a cd after a commit, which runs hooks", "git commit -m x; cd src; git restore ."],
+  ])("a folder entered after a git call that writes files asks (%s): %j", (_name, command) => {
+    expect(guardAs(command, OWN_WORKTREE, BUILDER)).toBeDefined();
   });
 });
 
@@ -1896,6 +2022,12 @@ describe("a 64 KB command line is read within the guard's time", () => {
     // Each level of a quoted substitution was a call with no ceiling: the stack ran out.
     ["deep quoted substitutions", `echo ${fill('"$(')}`],
     ["deep quoted brace substitutions", `echo ${fill(`"\${ `)}`],
+    // The final review's W1: each judged word, each computed word and each word after an
+    // option git does not know is judged once, not once for every word after it.
+    ["W1, many judged words beside a computed program", `$X ${fill("reset ")}`],
+    ["W1, many clean words beside a computed program", `$X ${fill("clean ")}`],
+    ["W1, many computed words after an unknown git option", `git --foo ${fill("$X ")}`],
+    ["W1, many subcommand words after an unknown git option", `git --foo ${fill("reset ")}`],
     // Each plain word beside a computed program and word is tried as a danger option.
     [
       "many words beside a computed program and word",
@@ -2235,7 +2367,7 @@ describe("the hook reads the subagent's agent_id from its input", () => {
     const { env, own } = builderRepo();
     for (const command of [
       "git checkout -- README.md",
-      "git checkout -- README.md; rm other.txt; git status --short",
+      "git checkout -- README.md; git status --short",
       "git reset --hard",
       "git clean -fd",
     ]) {

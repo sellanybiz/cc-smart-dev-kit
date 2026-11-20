@@ -64,9 +64,40 @@ describe("gitCalls", () => {
     expect(gitCalls(["checkout", "--", "f"])[0]?.gitDir).toBeNull();
   });
 
-  test("git only prints: no call; an option it does not know: every later word may be the subcommand", () => {
+  test("git only prints: no call; an option it does not know takes no value, or the next word", () => {
     expect(gitCalls(["--version"])).toEqual([]);
     expect(gitCalls([])).toEqual([]);
     expect(gitCalls(["--newer", "x", "push"]).map((call) => call.sub)).toEqual(["x", "push"]);
+    // No git option takes two values, so a third word is never the subcommand.
+    expect(gitCalls(["--newer", "x", "y", "push"]).map((call) => call.sub)).toEqual(["x", "y"]);
+    // An attached value is its own; options after it are read as git reads them.
+    expect(gitCalls(["--newer=x", "push"]).map((call) => call.sub)).toEqual(["push"]);
+    expect(gitCalls(["--newer", "v", "-C", "d", "reset"])).toEqual([
+      {
+        config: new Map(),
+        dirs: [],
+        gitDir: null,
+        rest: ["-C", "d", "reset"],
+        sub: "v",
+        workTree: null,
+      },
+      { config: new Map(), dirs: ["d"], gitDir: null, rest: [], sub: "reset", workTree: null },
+    ]);
+    expect(gitCalls(["--a", "--b", "push"]).map((call) => call.sub)).toEqual(["push", "push"]);
+  });
+
+  // The final review's W1: one reading per later word made a long line cost its square.
+  test("W1, a long line after an option it does not know gives two readings, not one a word", () => {
+    const words = ["--foo", ...Array.from({ length: 20_000 }, () => "reset")];
+    const started = Date.now();
+    expect(gitCalls(words)).toHaveLength(2);
+    expect(Date.now() - started).toBeLessThan(500);
+  });
+
+  test("W1, many options it does not know stop branching at MAX_READINGS", () => {
+    const words = [...Array.from({ length: 20_000 }, () => "--foo"), "reset"];
+    const started = Date.now();
+    expect(gitCalls(words).length).toBeLessThanOrEqual(16);
+    expect(Date.now() - started).toBeLessThan(500);
   });
 });
