@@ -748,7 +748,11 @@ other command and says to run the heavy command on its own line. The refusal is 
 route gave no queue command, and before the git prefix, so a heavy run never sits raw beside a git
 command. It is a deny whoever is away: the session reads the fix and retries, and nothing is
 parked. A light run, a watch run, a line that queues itself, and a line whose other command sits in
-a package script's body are no mix and run as written.
+a package script's body are no mix. A `<pm> run <script>` that is the line's own command, whose
+body runs heavy work, is queued whole even when a light command comes first in the body
+(`next typegen && tsc --noEmit`); a script that calls itself or nests too deep, and a line the
+person mixed themselves (`bun run tsc && rm x`), are not (`docs/jobs.md` § Scripts are read by
+their body).
 
 Two more rules sit on the route. **A line is wrapped only when it is also heavy:**
 `routableLine` says the line may be queued, and `runWeight` (the one judge, `src/jobs/classify.ts`)
@@ -852,7 +856,7 @@ is in `RETIRED_HOOK_NAMES`, so an `ownHooks` that still lists one parses, silenc
 | Hook | What it did | Why it went |
 |---|---|---|
 | `git-guard` | Asked before a push, a force-push, a reset, a clean, a discarding checkout and the like | A question for the person on every such call |
-| `merge-guard` | Asked before a merge, a pull request open, an issue write; judged `autoMerge`, CI, the review record | Same. `autoMerge`, CI and the review record are now the session's own instruction (`/cc-smart-dev-kit:commit`) |
+| `merge-guard` | Asked before a merge, a pull request open, an issue write; judged `allowMerge`, CI, the review record | Same. `allowMerge`, CI and the review record are now the session's own instruction (`/cc-smart-dev-kit:commit`) |
 | `deploy-guard` | Asked before a listed deploy command while a blocking deploy task was open | Same. `task release <env> --before` stays the session's own gate (`/cc-smart-dev-kit:tasks`) |
 | `main-folder-guard` | Denied an edit or a write in the main checkout | The rule stays in `optin/worktrees.md`, as an instruction |
 | `agent-guard` | Judged every Agent, Task and Workflow launch: model, effort, the Fable gate, the UI rule | The model rules are instructions (`core.md` § Subagents, `/cc-smart-dev-kit:subagent-decision`) |

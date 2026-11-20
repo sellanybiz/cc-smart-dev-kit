@@ -1,7 +1,7 @@
 # GitHub Issues
 
 The kit files its follow-ups and its findings as GitHub issues, one switch (decision D67, the
-owner, 2026-10-25). The switch began opt-in, off by default, like `autoPush` and `openPr`. Since
+owner, 2026-10-25). The switch began opt-in, off by default, like `allowPush` and `openPr`. Since
 5.0.0 it is **on by default** (D7 of the deploy-tasks plan, the owner's choice), in a project that
 has a kit config; `allowPublic` stays off, so a public repository still needs its own yes. Before
 the kit filed issues, a follow-up outside a plan, a review finding left open or a hunch ended as a
@@ -37,7 +37,7 @@ The defaults live in `workflowDefaults.issues`, one place. A flat set of keys
 (`issues.enabled`, …) because `workflow show`, `set` and the portal name a setting by a key of at
 most two parts.
 
-**Where it is read.** Like `autoPush`: the built-in default, the person's file, and the project's
+**Where it is read.** Like `allowPush`: the built-in default, the person's file, and the project's
 file **as committed on `origin/<worktrees.base>`** (`resolveGate`), never a working copy a session
 can edit. A project that names no `worktrees.base` has the default and the person's file only.
 A policy that cannot be read (no `origin/<base>`, a committed file that is broken or newer than

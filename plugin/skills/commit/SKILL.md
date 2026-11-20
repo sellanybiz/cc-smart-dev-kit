@@ -14,12 +14,18 @@ first of them — `cc-smart-dev-kit workflow show` prints every value, with wher
 and follow it for the branch you are on. Nothing in it set: the safe default holds, and none
 of the four happens until the person asks (or the add-on says otherwise).
 
+The three yes-or-no settings are `allowCommit`, `allowPush` and `allowMerge`: each says
+whether Claude may do that step without asking. The older names `autoCommit`, `autoPush` and
+`autoMerge` in a settings file still work, and `workflow set` accepts them too.
+`cc-smart-dev-kit workflow set allowPush true` writes the new name, and `doctor` names a file's
+old key.
+
 | `workflow show` | What you do |
 |---|---|
-| `autoCommit = false` | Commit when the person asks. At the end of a finished phase, say in one line that it is ready, and carry on. |
-| `autoCommit = true` | Commit each finished phase with no question. Never commit half-built work. |
-| `autoPush = false` | Push when the person asks. |
-| `autoPush = true` | Push your own branch once the change set is complete (a planned build pushes the plan branch after each merged phase: `/cc-smart-dev-kit:build` § 5). **Never straight to the base or main branch:** work reaches them through a pull request. |
+| `allowCommit = false` | Commit when the person asks. At the end of a finished phase, say in one line that it is ready, and carry on. |
+| `allowCommit = true` | Commit each finished phase with no question. Never commit half-built work. |
+| `allowPush = false` | Push when the person asks. |
+| `allowPush = true` | Push your own branch once the change set is complete (a planned build pushes the plan branch after each merged phase: `/cc-smart-dev-kit:build` § 5). **Never straight to the base or main branch:** work reaches them through a pull request. |
 | `openPr = "off"` | Open a pull request only when the person asks. |
 | `openPr = "draft"` | Open it as a draft; a person marks it ready. |
 | `openPr = "ready"` | Open it ready for review. |
@@ -29,15 +35,15 @@ of the four happens until the person asks (or the add-on says otherwise).
 
 **A merge follows the workflow, not a hook.** No hook stops one: you check, and the check is
 `cc-smart-dev-kit workflow merge-check <pr>` (exit 0: merge; any other exit: do not). Its rule,
-exactly: `autoMerge` is on (`workflow show`); the pull request's base is the project's integration
+exactly: `allowMerge` is on (`workflow show`); the pull request's base is the project's integration
 base (`worktrees.base`) or the repository's default branch, the main branch included, and any
 other base is refused (that merge is the person's); every required check is green; the head
 commit has a recorded review (`/cc-smart-dev-kit:review` § Second opinion); and the fixes after
 that review are within `fixesAfterReview` (when they are over it, say so in the pull request body
 and leave it unmerged). **Wait for CI yourself:** run `gh pr checks <pr> --watch` in the
 background, run `merge-check`, and on exit 0 a plain `gh pr merge <pr>`; never GitHub's `--auto`.
-With `autoMerge` on and the check passing there is no question to the person. `mergeMethod` and
-`deleteBranch` say how. With `autoMerge` off, open the pull request and leave the merge to the
+With `allowMerge` on and the check passing there is no question to the person. `mergeMethod` and
+`deleteBranch` say how. With `allowMerge` off, open the pull request and leave the merge to the
 person; move on, and with the whole plan done say so once, listing every open pull request with
 its checks and the merge order.
 
@@ -105,7 +111,7 @@ land together?
 
 ## Pushing
 
-Push when the change set is complete and the second opinion has read it — as `autoPush` says,
+Push when the change set is complete and the second opinion has read it — as `allowPush` says,
 or when the person asks. Run the push (its hooks may be slow) and any CI watch in the
 background; write the pull request body while it runs (`/cc-smart-dev-kit:pull-request`). Open the
 pull request only after the push succeeded, and as `openPr` says: a draft a person marks ready,

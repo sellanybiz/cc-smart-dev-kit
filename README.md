@@ -1581,7 +1581,7 @@ The pages, each following the design the owner approved (2026-10-16):
 | **Health** | The router's counters, what holds its port across restarts (the socket unit, or the Windows task) in `doctor`'s own words with its fix, each backend and whether it answers, the targets resting, latency and errors over time, and its journal. When the router does not answer: why, the commands that show its state and its log, and **Restart the router** (`gateway setup --yes`), asked first. |
 | **Guard log** | What each guard asked you or refused, newest first and paged by the server: pick a range, a guard or a session; the asks per guard over the range are charted, and the two menus offer what the range holds. |
 | **Machine** | The kit's version; Claude Code's (`claude --version`) and whether `doctor --live` proved it; the Bun the portal runs on against the one the kit needs; `doctor` with each failure's fix and **Run doctor**; the **Heavy jobs** card (the one slot and whether it is in use; the run that holds it and the runs waiting, in queue order, each with its kind, command, folder, who started it and for how long; and whether a heavy command here goes through the queue, and whose setting decided); Updates (installed, newest, last check, **Check now**, a held major); the companion plugins (**Turn it on** for one turned off); the MCP servers setup registers; the **Browser card** (**Set up the browser**, the steps, and a masked field that saves the extension's token: the stored value is never on the page); OmniRoute (**Update** and **Roll back**, each saying what the restart costs, and [the gateway's key](#the-gateways-key-from-the-portal): paste one, or make one with your OmniRoute password); the [claude-mem card](#claude-mem-from-the-portal) (where its summaries go, its key, its fallback, and who set each); the project's auto-mode trust rules with **Write them**; and the worktrees with **Clean finished now**. |
-| **Settings** | Every workflow setting, one row each: what Claude does after a finished step (auto commit, auto push, the pull request, the auto-merge rule, the merge method, the branch, the review before the first push, and the worktree), the usage-warning percentage, and the switches (the status line, the session names, the heavy-job queue, the update hold). Each row says where its value comes from — `Your default`, `This project` or `Built-in default` — and a row the project sets is read-only here: a project's own value is changed on its page. Its **Projects** tab lists every project you work in, with each one's page (below). |
+| **Settings** | Every workflow setting, one row each: what Claude does after a finished step (allow commit, allow push, the pull request, the allow-merge rule, the merge method, the branch, the review before the first push, and the worktree), the usage-warning percentage, and the switches (the status line, the session names, the heavy-job queue, the update hold). Each row says where its value comes from — `Your default`, `This project` or `Built-in default` — and a row the project sets is read-only here: a project's own value is changed on its page. Its **Projects** tab lists every project you work in, with each one's page (below). |
 | **How this page stays private** | The security design in plain words, linked from the footer. |
 
 **The Settings page writes one value at a time**, through the same functions the command
@@ -2804,7 +2804,7 @@ with no terminal can answer either way. With no terminal it writes nothing unles
 given: it prints the plan and the line to run instead. `--dry-run` prints the plan of the flags
 and the defaults, asks nothing (on a terminal too), and writes nothing at all. Run it again on a
 project that has a file: it shows the diff and asks, and `--yes` keeps every field the flags do
-not set. A `--workflow` word changes only the setting it names — `--workflow autoPush=true`
+not set. A `--workflow` word changes only the setting it names — `--workflow allowPush=true`
 keeps `fixesAfterReview.*` and every other workflow field the file holds; a dotted key
 (`alerts.usagePercent=90`) changes only its own field. A `requires` the file already has is never
 lowered (a project needing a newer plugin keeps its range); an older one is raised to the oldest
@@ -2830,13 +2830,13 @@ the project's wins field by field:
 
 ```
 your own defaults: ~/.config/cc-smart-dev-kit/workflow.json; a project's .claude/cc-smart-dev-kit.json wins field by field
-autoCommit = false (default)
+allowCommit = false (default)
 openPr = draft (project)
 alerts.usagePercent = 85 (default)
 plans.maxPhases = 10 (default)
 switches.sessionNames = true (project)
 gate: what the merge guard judges with, from origin/dev:.claude/cc-smart-dev-kit.json as committed (this checkout's own copy does not count)
-gate autoMerge = true (project, committed on origin/dev)
+gate allowMerge = true (project, committed on origin/dev)
 gate reviewBeforePush = true (default)
 gate reviewAgents = cc-smart-dev-kit:senior-engineer (default)
 gate fixesAfterReview.lines = 200 (default)
@@ -2851,14 +2851,14 @@ its fix — `workflow show` and `workflow set` print it, and so do `project init
 portal's Settings page:
 
 ```
-! openPr is draft and autoMerge is on: a draft pull request is never merged, so autoMerge never acts on the pull request a session opens. Fix: set openPr ready (`cc-smart-dev-kit workflow set openPr ready`) so the pull request can merge, or turn autoMerge off (`cc-smart-dev-kit workflow set autoMerge false`).
+! openPr is draft and allowMerge is on: a draft pull request is never merged, so allowMerge never acts on the pull request a session opens. Fix: set openPr ready (`cc-smart-dev-kit workflow set openPr ready`) so the pull request can merge, or turn allowMerge off (`cc-smart-dev-kit workflow set allowMerge false`).
 ```
 
-The pairs are: `openPr` on with `autoPush` off (a session does not push, so the pull request
-waits for you), and `autoMerge` on with `openPr: draft` (a draft is never merged). `src/workflow/clashes.ts`
+The pairs are: `openPr` on with `allowPush` off (a session does not push, so the pull request
+waits for you), and `allowMerge` on with `openPr: draft` (a draft is never merged). `src/workflow/clashes.ts`
 holds the rules, once, for all four places.
 
-The `gate` lines are **the review gate**: `autoMerge`, `reviewBeforePush`, `reviewAgents` and
+The `gate` lines are **the review gate**: `allowMerge`, `reviewBeforePush`, `reviewAgents` and
 `fixesAfterReview.*` as `merge-check` reads them. It reads the project's part from the file **as committed
 on the pull request's base** (`origin/<base>`, as last fetched; nothing is fetched for it),
 never from a checkout's working copy — so a change to the gate counts once you commit it to
@@ -2866,12 +2866,20 @@ the base, push it, and the checkout has fetched it. The other rows show this che
 which the skills follow. When the committed file cannot be read (no `origin/<base>`, no file
 there, or one this plugin cannot use), the line says so, and `merge-check` allows no merge.
 
+**The names.** The three yes-or-no settings are `allowCommit`, `allowPush` and `allowMerge`: each
+says whether Claude may do that step without asking you. Until 6.1.0 they were `autoCommit`,
+`autoPush` and `autoMerge`. The old names still work in either file and in `workflow set`,
+`unset` and `propose`; a project file that names a new key needs `"requires": ">=6.1"`.
+`cc-smart-dev-kit workflow set allowPush true` writes the new name, and `doctor` names a file's
+old key (never as a failure). A file that holds both names uses the new one. `openPr` keeps its
+name: it is a choice of three, not a yes.
+
 | Setting | Default | What it means |
 |---|---|---|
-| `autoCommit` | `false` | Commit each finished, reviewed step without asking. |
-| `autoPush` | `false` | Push the session's own branch once the change set is complete. Off: only when you ask. Never straight to a protected, base or main branch. |
+| `allowCommit` | `false` | Commit each finished, reviewed step without asking. |
+| `allowPush` | `false` | Push the session's own branch once the change set is complete. Off: only when you ask. Never straight to a protected, base or main branch. |
 | `openPr` | `"off"` | Open a pull request for the branch: `"off"` (only when you ask), `"draft"` or `"ready"`. |
-| `autoMerge` | `false` | Merge the pull request into its base, the main branch included, after CI is green and the review is done. |
+| `allowMerge` | `false` | Merge the pull request into its base, the main branch included, after CI is green and the review is done. |
 | `mergeMethod` | `"merge"` | `"merge"`, `"squash"` or `"rebase"`. |
 | `deleteBranch` | `false` | Delete the branch after its merge. |
 | `reviewBeforePush` | `true` | Run the review before a push. |
@@ -2880,7 +2888,7 @@ there, or one this plugin cannot use), the line says so, and `merge-check` allow
 | `fixesAfterReview.files` | `10` | The same for the files changed after the review: both limits must hold. |
 | `fixesAfterReview.percent` | `20` | The share, in percent of the reviewed change, a fix round may reach in lines and in files, when that is more than `lines` and `files`. `0` for all three: only the exact reviewed commit counts. |
 | `clearWorktreeAfterMerge` | `true` | Clear the worktree once its pull request merged: `ExitWorktree` keep, then `worktrees --remove`. |
-| `issues.enabled` | `true` | GitHub Issues (D67; on by default since 5.0.0): the kit may file findings outside a plan as issues in the project's own repository with `cc-smart-dev-kit issue file`. Set `false` to stop: the command then refuses and says how to turn it on. An issue leaves the machine, so, like `autoPush`, it is read from your own file and the project's file **as committed on the base**, and `workflow set`/`unset` of it refuse inside Claude Code. |
+| `issues.enabled` | `true` | GitHub Issues (D67; on by default since 5.0.0): the kit may file findings outside a plan as issues in the project's own repository with `cc-smart-dev-kit issue file`. Set `false` to stop: the command then refuses and says how to turn it on. An issue leaves the machine, so, like `allowPush`, it is read from your own file and the project's file **as committed on the base**, and `workflow set`/`unset` of it refuse inside Claude Code. |
 | `issues.allowPublic` | `false` | Also file in a **public** repository, where everyone reads the issue. Off, `issue file` refuses a public `origin` and names the command that turns this on. Read and protected like `issues.enabled`. |
 | `issues.foundLabel` | `"kit:found"` | The label on every issue the kit files; how it finds the one a fingerprint already filed. A label the repository lacks is created. 1-50 characters, no comma, not starting with `-`. |
 | `issues.fixedLabel` | `"fixed-unreleased"` | The label `issue mark-fixed` adds, with a comment, to an issue whose fix was merged; `issue fixed` lists the open ones for the release's `Fixes #<n>` lines. |
@@ -2894,7 +2902,7 @@ there, or one this plugin cannot use), the line says so, and `merge-check` allow
 | `plans.runMode` | `ask` | How queued plans run when two or more are laid (§ [Plans for children](#plans-for-children-520)): `ask`, `solo`, `lead-children` or `coordinator`. With `ask` Claude asks once and states each mode's cost. Yours alone: a project file that sets it is refused, because a committed value would spend every teammate's usage. `workflow set` and `unset` of it refuse inside Claude Code and print the command to run in your own terminal. |
 | `plans.mergeFiles` | `[]` | Paths every plan touches and each merge settles (a version manifest, a changelog, a lockfile, build output): the overlap check between plans leaves them out. Repo-relative, a folder ends in `/` (`plugin/dist/`); no `..`, no root, no `*` or `?`. The project's, with `--project` (`workflow set plans.mergeFiles CHANGELOG.md,plugin/dist/ --project`), and read **only as committed on the base branch**, so a session cannot widen it by editing its own copy; `workflow set` and `unset` of it refuse inside Claude Code (`propose` stays open). A project that sets it needs `"requires": ">=5.2"`. |
 
-**Auto-merge.** With `autoMerge` on, Claude merges its own pull request into the project's
+**Merging by itself.** With `allowMerge` on, Claude merges its own pull request into the project's
 integration base (`worktrees.base`) or the main branch, with no question, once every required check is
 green, the head commit's review is recorded, and the fixes after the review are within
 `fixesAfterReview` (over them, it says so in the pull request and leaves it unmerged). It waits
@@ -2902,7 +2910,7 @@ for CI itself (`gh pr checks <pr> --watch` in the background, then a plain `gh p
 never uses GitHub's `--auto`. A direct push to the main branch, not through a pull request,
 stays yours.
 
-`autoMerge` says only that a merge **may** happen by itself. That
+`allowMerge` says only that a merge **may** happen by itself. That
 CI is green and the review is done is the session's own check (`workflow merge-check` prints
 it; no hook runs it since 6.0.0), and
 `mergeMethod` and `deleteBranch` say how the merge is made, not that it skips a check.
@@ -2923,10 +2931,10 @@ pull request of task closes. Nothing blocks a push: these are instructions, not 
 
 | Setting | What follows it |
 |---|---|
-| `autoCommit`, `clearWorktreeAfterMerge` | the instructions: the `commit` and `worktree` skills read `cc-smart-dev-kit workflow show` and follow it. The after-merge note also reads `clearWorktreeAfterMerge`: on, it gives the steps that clear the worktree; off, it says the worktree looks finished and leaves the choice to the person. No hook commits or removes anything itself: a commit and a folder are the session's own doing. |
-| `autoPush` | the instructions (`commit`): on, the session pushes its own branch once the change set is complete; off, only when you ask. No hook stands in front of a push since 6.0.0. |
+| `allowCommit`, `clearWorktreeAfterMerge` | the instructions: the `commit` and `worktree` skills read `cc-smart-dev-kit workflow show` and follow it. The after-merge note also reads `clearWorktreeAfterMerge`: on, it gives the steps that clear the worktree; off, it says the worktree looks finished and leaves the choice to the person. No hook commits or removes anything itself: a commit and a folder are the session's own doing. |
+| `allowPush` | the instructions (`commit`): on, the session pushes its own branch once the change set is complete; off, only when you ask. No hook stands in front of a push since 6.0.0. |
 | `openPr` | the instructions (`commit`, `pull-request`): `off` opens a pull request only when you ask, `draft` as a draft, `ready` ready for review. |
-| `autoMerge` | the instructions (`commit`): on, the session merges its own pull request into its base, the main branch included, once CI is green (it waits with `gh pr checks --watch`, never `--auto`), the head commit's review is recorded and the fixes after it are within `fixesAfterReview` (over them, it says so in the pull request); off, the merge is yours. |
+| `allowMerge` | the instructions (`commit`): on, the session merges its own pull request into its base, the main branch included, once CI is green (it waits with `gh pr checks --watch`, never `--auto`), the head commit's review is recorded and the fixes after it are within `fixesAfterReview` (over them, it says so in the pull request); off, the merge is yours. |
 | `mergeMethod`, `deleteBranch` | the instructions: they say how a merge is made, and whether its branch goes afterwards. No hook reads them. |
 | `reviewBeforePush` | both: the **review-record hook** writes the record when the review agent finishes (§ below), and the session reads it before it merges (§ The review record). |
 | `reviewAgents` | the **review-record hook** records only an agent listed there; a merge judgment trusts a record only when the list committed on the base names the agent that wrote it. |
@@ -2989,7 +2997,7 @@ the session reads the record for the pull request's head commit before it merges
 agent the committed `reviewAgents` names (or by you), and the merge is not allowed. A record an
 older plugin wrote names no agent, so its commit has no review.
 
-**`workflow set` and `unset` of a gate setting** (`autoMerge`, `reviewBeforePush`,
+**`workflow set` and `unset` of a gate setting** (`allowMerge`, `reviewBeforePush`,
 `reviewAgents`, `fixesAfterReview.*`) work inside Claude Code like any other setting (6.0.0:
 "full auto"). The project's part counts only as committed on the base: commit
 `.claude/cc-smart-dev-kit.json` there and push it.
@@ -3025,7 +3033,7 @@ lives in your own file alone.
 `set` and `unset` write one value, and say where:
 
 ```sh
-cc-smart-dev-kit workflow set autoCommit true                 # your own defaults
+cc-smart-dev-kit workflow set allowCommit true                 # your own defaults
 cc-smart-dev-kit workflow set openPr draft --project          # the project's committed file
 cc-smart-dev-kit workflow unset alerts.usagePercent           # back to the default
 cc-smart-dev-kit workflow set switches.sessionNames true --project
@@ -3051,8 +3059,8 @@ setting there with the same writer `set --project` uses — so the value is vali
 request with `gh`:
 
 ```sh
-cc-smart-dev-kit workflow propose autoCommit true
-cc-smart-dev-kit workflow propose autoMerge --unset
+cc-smart-dev-kit workflow propose allowCommit true
+cc-smart-dev-kit workflow propose allowMerge --unset
 cc-smart-dev-kit workflow propose openPr draft --folder ~/code/my-app --json
 ```
 
@@ -3098,7 +3106,7 @@ every question it holds.
     },
     "route": true
   },
-  "workflow": { "openPr": "draft", "autoMerge": true }
+  "workflow": { "openPr": "draft", "allowMerge": true }
 }
 ```
 
@@ -3124,7 +3132,7 @@ tells a session in the main checkout to move into a worktree.
 | `worktrees.guardMainFolder` | `true`: tells a session that starts in the main checkout to use a worktree (the leftovers note); nothing refuses an edit there since 6.0.0 (the `main-folder-guard` is retired): never editing there is an instruction. Off when left out. |
 | `worktrees.rebuildable` | Optional list of the project's own ignored paths that come back by themselves, such as `[".tool-cache/", "*.cache"]`. Removing a worktree may lose them. Patterns use `/` and match at any depth, not only at the root: `.tool-cache/` matches `.tool-cache/` and `pkg/.tool-cache/`; a folder ends in `/`. No empty or absolute paths, backslashes, `.` or `..` segments, or patterns with only glob characters and dots (`*`, `.*`); name a folder or file. Never list a file that holds settings or secrets, such as `.env.local`. Only widens the ignored-file safety rule; other removal checks still apply. Read from the main checkout; a missing, broken or too-new file adds nothing. Since 1.9.0: needs `"requires": ">=1.9"`. |
 | `worktrees.autoClean` | `false`: the finished worktrees do not clean themselves. On when left out: after a merge into the base, and at an attended session start (at most once an hour), the plugin runs the same safe clean as `cc-smart-dev-kit worktrees --clean` in the background (§ Worktrees). A field of 1.0.0: a project that sets it needs `"requires": ">=1.0"`. |
-| `worktrees.bases` | A branch-name prefix (ending in `/`) to the base that branch family's pull requests go into (`{"hotfix/": "main", "release/": "main"}`). The longest prefix that matches wins; every other branch's requests go into `base`. Auto-merge reads it; to start a task from another base, switch the main checkout to it first with `baseRef: "head"`, or `git worktree add` it as Claude Code's docs say. |
+| `worktrees.bases` | A branch-name prefix (ending in `/`) to the base that branch family's pull requests go into (`{"hotfix/": "main", "release/": "main"}`). The longest prefix that matches wins; every other branch's requests go into `base`. The merge rule reads it; to start a task from another base, switch the main checkout to it first with `baseRef: "head"`, or `git worktree add` it as Claude Code's docs say. |
 | `worktrees.engine` | **Retired in 1.0.0, and refused**: it said who made the project's worktrees. Every project uses Claude Code's own; `cc-smart-dev-kit project init` removes the field. |
 | `protectedBranches` | The branches a push by hand is the person's: Claude never pushes straight to one (the instructions; no hook asks since 6.0.0). Default `["main"]`. |
 | `checks.fast` | The fast check a session runs before it stops: one command, as you would type it (`"bun run typecheck && bun test src/changed"`). The `verify-gate` hook blocks a stop **once per change** when the session changed files and no Bash or PowerShell call ran this command after the last change (§ The hooks). A field of 1.1.0: a project that sets it needs `"requires": ">=1.1"`. |

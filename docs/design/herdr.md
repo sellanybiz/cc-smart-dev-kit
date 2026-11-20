@@ -414,7 +414,7 @@ and `stop` see it as any linked child.
 - A review covers only its own branch (`review-cover.ts`). After a cherry-pick onto a new branch,
   the moved commits' reviews do not cover the new head, so the lead sees no review of the new head at
   that pull request's merge, and says so in the pull request. Nothing is lost.
-- A merged or closed pull request (by the person or `autoMerge`) is noticed only at the child's
+- A merged or closed pull request (by the person or `allowMerge`) is noticed only at the child's
   next finding.
 - No `--issue` and no `Fixes` line when issues are refused (a public repository without
   `allowPublic`, no GitHub, issues off).
