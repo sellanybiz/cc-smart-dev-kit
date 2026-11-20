@@ -2,11 +2,11 @@
  * The merge check: may this merge happen by itself? One judgment, made for a pull request and
  * for a local branch against a base (D22, the check before a phase's branch merges locally).
  * `cc-smart-dev-kit workflow merge-check` prints its verdicts and the portal shows them; no hook
- * calls it. It is what a session reads before it merges with `autoMerge` on, so it is the one
+ * calls it. It is what a session reads before it merges with `allowMerge` on, so it is the one
  * gate before an unattended merge: its checks below are the whole policy.
  *
  * **A pull request** is judged with the policy committed on its base (`resolveGate`), never a
- * checkout's working copy: `autoMerge` on, its base the project's integration base or the
+ * checkout's working copy: `allowMerge` on, its base the project's integration base or the
  * repository's default branch, every required check green, and — with `reviewBeforePush` on —
  * the head covered by a review under D17 (`readCover`: a review of an earlier commit of the
  * head's branch counts while the fixes after it stay within `workflow.fixesAfterReview`). Only
@@ -430,7 +430,7 @@ export function policyUnread(branch: string | null, why: string, policy = "merge
 
 /** Why the guard cannot judge when the person's own workflow file cannot be read. */
 export function workflowUnread(error: unknown): string {
-  // The person's own workflow file cannot be read, so whether autoMerge is on is unknown.
+  // The person's own workflow file cannot be read, so whether allowMerge is on is unknown.
   return `the workflow settings cannot be read (${error instanceof Error ? error.message : String(error)})`;
 }
 
@@ -686,7 +686,7 @@ async function commitOf(world: MergeWorld, rev: string): Promise<string | null> 
 /**
  * The verdict for a local branch against a base (D22): whether the review gate's record
  * covers the branch's head under D17. A local merge asks no pull request question — no
- * `autoMerge`, no checks — so those are not read.
+ * `allowMerge`, no checks — so those are not read.
  */
 export async function checkBranch(
   world: MergeWorld,

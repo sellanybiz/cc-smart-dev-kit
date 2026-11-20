@@ -2811,7 +2811,7 @@ describe("the settings page", () => {
       projectFiles: { config: PROJECT_CONFIG },
       workflow: fakeWorkflow({
         resolved: {
-          autoCommit: { source: "personal", value: true },
+          allowCommit: { source: "personal", value: true },
           deleteBranch: { source: "project", value: true },
           openPr: { source: "personal", value: "ready" },
         },
@@ -2826,8 +2826,10 @@ describe("the settings page", () => {
       expect(page.body).toContain('<h2 id="alerts-h">Status line</h2>');
       expect(page.body).toContain('<h2 id="switches-h">Switches</h2>');
       // Rows: the label and its own help line, word for word.
-      expect(page.body).toContain(">Auto commit<");
-      expect(page.body).toContain("Commit each finished, reviewed step without asking.");
+      expect(page.body).toContain(">Allow commit<");
+      expect(page.body).toContain(
+        "Let a session commit each finished, reviewed step without asking.",
+      );
       expect(page.body).toContain("Off: never. Draft: open it as a draft the team can look at.");
       expect(page.body).toContain(
         "A second read of the whole change before it leaves this computer: one premium second opinion.",
@@ -2842,7 +2844,7 @@ describe("the settings page", () => {
       // The footer rule, once.
       expect(page.body).toContain("Your choices are saved on this computer for every project.");
       // Every row carries a control the page can send: the keys are the module's own.
-      expect(page.body).toContain("&quot;key&quot;:&quot;autoCommit&quot;");
+      expect(page.body).toContain("&quot;key&quot;:&quot;allowCommit&quot;");
       expect(page.body).not.toContain('data-events="alerts.events"');
       expect(page.body).toContain('data-setting="alerts.usagePercent"');
     } finally {
@@ -2869,7 +2871,7 @@ describe("the settings page", () => {
       // No action anywhere carries a project row's key: the page cannot send one.
       expect(page.body).not.toContain("&quot;key&quot;:&quot;deleteBranch&quot;");
       // A row nobody sets stays changeable, right beside it.
-      expect(page.body).toContain("&quot;key&quot;:&quot;autoCommit&quot;");
+      expect(page.body).toContain("&quot;key&quot;:&quot;allowCommit&quot;");
     } finally {
       world.portal.stop();
       backend.stop();
@@ -2909,7 +2911,7 @@ describe("the settings page", () => {
         ["alerts.usagePercent", "85", "alerts.usagePercent is a whole number 1-100"],
         ["alerts.events", [], '"alerts.events" is not a setting this page shows.'],
         ["alerts.sound", true, '"alerts.sound" is not a setting this page shows.'],
-        ["autoCommit", "yes", "autoCommit is true or false"],
+        ["allowCommit", "yes", "allowCommit is true or false"],
         ["switches.statusLine", 1, "switches.statusLine is true or false"],
         ["not-a-setting", true, '"not-a-setting" is not a setting this page shows.'],
       ];
@@ -3016,7 +3018,7 @@ describe("the settings page", () => {
 
   test("D16: a setting that cannot work with another is a ! line under its row, with the fix", async () => {
     const backend = fakeBackend(["glm-5.3-flash"]);
-    // `openPr: draft` with `autoPush` off (the default): the pull request waits for the push.
+    // `openPr: draft` with `allowPush` off (the default): the pull request waits for the push.
     const workflow = fakeWorkflow({ resolved: { openPr: { source: "personal", value: "draft" } } });
     const world = await open({
       backendPort: backend.port,
@@ -3027,7 +3029,7 @@ describe("the settings page", () => {
       const page = await world.call("/settings");
       expect(page.status).toBe(200);
       expect(page.body).toContain(
-        "! openPr opens a pull request, but autoPush is off: a session does not push, and that pull request needs the push, so it waits for you every time. Fix: turn autoPush on (`cc-smart-dev-kit workflow set autoPush true`), or set openPr off (`cc-smart-dev-kit workflow set openPr off`).",
+        "! openPr opens a pull request, but allowPush is off: a session does not push, and that pull request needs the push, so it waits for you every time. Fix: turn allowPush on (`cc-smart-dev-kit workflow set allowPush true`), or set openPr off (`cc-smart-dev-kit workflow set openPr off`).",
       );
     } finally {
       world.portal.stop();
@@ -3038,8 +3040,8 @@ describe("the settings page", () => {
   test("the auto-merge row carries the rule box, word for word, with the project's base", async () => {
     const backend = fakeBackend(["glm-5.3-flash"]);
     const workflow = fakeWorkflow({
-      autoMerge: true,
-      resolved: { autoMerge: { source: "personal", value: true } },
+      allowMerge: true,
+      resolved: { allowMerge: { source: "personal", value: true } },
     });
     const world = await open({
       backendPort: backend.port,
@@ -3086,7 +3088,7 @@ describe("the settings page", () => {
       expect(page.body).toContain("The workflow settings cannot be read:");
       expect(page.body).toContain("workflow.json: openPr: Invalid option");
       // Not one row: a value it cannot read is never shown as a default.
-      expect(page.body).not.toContain(">Auto commit<");
+      expect(page.body).not.toContain(">Allow commit<");
     } finally {
       world.portal.stop();
       backend.stop();
@@ -3107,7 +3109,7 @@ describe("the settings page", () => {
       // The rows draw from the person's own defaults — with the reason said out loud, so no
       // row claims `default` for a value the project really sets.
       expect(page.body).toContain("No project&#39;s own values here: Invalid");
-      expect(page.body).toContain(">Auto commit<");
+      expect(page.body).toContain(">Allow commit<");
     } finally {
       world.portal.stop();
       backend.stop();
@@ -3604,7 +3606,7 @@ const FULL_PROJECT_CONFIG = `${JSON.stringify(
     protectedBranches: ["main", "integration"],
     sessionNames: true,
     jobs: { route: true },
-    workflow: { autoCommit: true, openPr: "draft", alerts: { sound: true } },
+    workflow: { allowCommit: true, openPr: "draft", alerts: { sound: true } },
   },
   null,
   2,
@@ -3629,7 +3631,7 @@ describe("the real workflow module", () => {
       // The project's file parsed, so there is no "no project's own values" line.
       expect(settings.body).not.toContain("No project&#39;s own values here");
       // Every row the file sets is the project's, read-only here, with the file's own value:
-      // `autoCommit: true`, `openPr: "draft"`, `sessionNames: true` and
+      // `allowCommit: true`, `openPr: "draft"`, `sessionNames: true` and
       // `jobs.route: true`.
       expect(settings.body).toContain('<span class="src project">this project</span>');
       expect(settings.body).not.toContain('id="set-sound"');

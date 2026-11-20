@@ -68,11 +68,11 @@ test("init preserves retired raw alert keys when active workflow answers change"
   const plan = planProjectInit(
     input({
       existing: JSON.stringify({ workflow: { alerts } }),
-      answers: { ...ANSWERS, workflow: { autoCommit: true, alerts: { usagePercent: 92 } } },
+      answers: { ...ANSWERS, workflow: { allowCommit: true, alerts: { usagePercent: 92 } } },
     }),
   );
   expect(JSON.parse(plan.text).workflow).toEqual({
-    autoCommit: true,
+    allowCommit: true,
     alerts: { events: ["finished"], sound: true, usagePercent: 92 },
   });
   const unset = planProjectInit(
@@ -560,6 +560,18 @@ describe("requiresFloor", () => {
       floor: ">=5.2",
       version: "5.2.0",
     });
+  });
+
+  test("allowCommit, allowPush and allowMerge ask for 6.1.0; the old names ask for nothing more", () => {
+    for (const key of ["allowCommit", "allowPush", "allowMerge"]) {
+      expect(requiresFloor({ workflow: { [key]: true } })).toEqual({
+        floor: ">=6.1",
+        version: "6.1.0",
+      });
+    }
+    for (const key of ["autoCommit", "autoPush", "autoMerge", "openPr"]) {
+      expect(requiresFloor({ workflow: { [key]: true } }).version).toBe("0.5.2");
+    }
   });
 
   test("the plan keeps an ownHooks name of a later release, and asks for that release", () => {

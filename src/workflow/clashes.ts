@@ -14,13 +14,13 @@ import type { ResolvedWorkflow } from "./resolve";
 /** The settings the rules below read. */
 export interface ClashInput {
   openPr: "off" | "draft" | "ready";
-  autoPush: boolean;
-  autoMerge: boolean;
+  allowPush: boolean;
+  allowMerge: boolean;
 }
 
 /** One conflict: the setting it is about, the `!` line a screen shows, and the fix. */
 export interface Clash {
-  setting: "autoMerge" | "autoPush" | "openPr";
+  setting: "allowMerge" | "allowPush" | "openPr";
   /** What cannot work, and why. */
   line: string;
   /** What to change, as the person would. */
@@ -33,20 +33,20 @@ export interface Clash {
  */
 export function workflowClashes(input: ClashInput): Clash[] {
   const clashes: Clash[] = [];
-  // A pull request needs the branch pushed. With autoPush off a session does not push, so the
+  // A pull request needs the branch pushed. With allowPush off a session does not push, so the
   // pull request waits for a person who was not expecting to be asked.
-  if (input.openPr !== "off" && !input.autoPush) {
+  if (input.openPr !== "off" && !input.allowPush) {
     clashes.push({
-      fix: `turn autoPush on (\`${COMMAND} workflow set autoPush true\`), or set openPr off (\`${COMMAND} workflow set openPr off\`)`,
-      line: "openPr opens a pull request, but autoPush is off: a session does not push, and that pull request needs the push, so it waits for you every time",
+      fix: `turn allowPush on (\`${COMMAND} workflow set allowPush true\`), or set openPr off (\`${COMMAND} workflow set openPr off\`)`,
+      line: "openPr opens a pull request, but allowPush is off: a session does not push, and that pull request needs the push, so it waits for you every time",
       setting: "openPr",
     });
   }
-  // A draft pull request is never merged, so autoMerge can never act on the one a session opens.
-  if (input.autoMerge && input.openPr === "draft") {
+  // A draft pull request is never merged, so allowMerge can never act on the one a session opens.
+  if (input.allowMerge && input.openPr === "draft") {
     clashes.push({
-      fix: `set openPr ready (\`${COMMAND} workflow set openPr ready\`) so the pull request can merge, or turn autoMerge off (\`${COMMAND} workflow set autoMerge false\`)`,
-      line: "openPr is draft and autoMerge is on: a draft pull request is never merged, so autoMerge never acts on the pull request a session opens",
+      fix: `set openPr ready (\`${COMMAND} workflow set openPr ready\`) so the pull request can merge, or turn allowMerge off (\`${COMMAND} workflow set allowMerge false\`)`,
+      line: "openPr is draft and allowMerge is on: a draft pull request is never merged, so allowMerge never acts on the pull request a session opens",
       setting: "openPr",
     });
   }
@@ -56,8 +56,8 @@ export function workflowClashes(input: ClashInput): Clash[] {
 /** The conflicts of a resolved policy. */
 export function clashesOf(resolved: ResolvedWorkflow): Clash[] {
   return workflowClashes({
-    autoMerge: resolved.autoMerge.value,
-    autoPush: resolved.autoPush.value,
+    allowMerge: resolved.allowMerge.value,
+    allowPush: resolved.allowPush.value,
     openPr: resolved.openPr.value,
   });
 }

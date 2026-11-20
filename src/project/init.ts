@@ -44,7 +44,7 @@ import { atomicWrite, backupFile, fileMode, realTarget } from "../setup/write";
 import { deployTasksDir, envFolder } from "../tasks/deploy/files";
 import { DEPLOY_ENVS, type DeployEnv } from "../tasks/deploy/format";
 import { clashNote, workflowClashes } from "../workflow/clashes";
-import { type Workflow, workflowDefaults } from "../workflow/schema";
+import { WORKFLOW_KEY_ALIASES, type Workflow, workflowDefaults } from "../workflow/schema";
 import {
   CHECKS_SINCE,
   ccSmartDevKitConfigSchema,
@@ -57,6 +57,7 @@ import {
   RETIRED_WORKTREE_FIELDS,
   retiredFieldsOf,
   TASKS_SINCE,
+  WORKFLOW_ALLOW_KEYS_SINCE,
   WORKFLOW_FIXES_SINCE,
   WORKFLOW_ISSUES_SINCE,
   WORKFLOW_MERGE_FILES_SINCE,
@@ -274,6 +275,9 @@ export function requiresFloor(
   }
   if (Object.hasOwn(workflow, "fixesAfterReview")) {
     needs.push(WORKFLOW_FIXES_SINCE);
+  }
+  if (Object.values(WORKFLOW_KEY_ALIASES).some((name) => Object.hasOwn(workflow, name))) {
+    needs.push(WORKFLOW_ALLOW_KEYS_SINCE);
   }
   if (Object.hasOwn(workflow, "plans")) needs.push(WORKFLOW_PLANS_SINCE);
   // `plans.mergeFiles` is gated on its own: a file that only caps its phases keeps 4.8.
@@ -591,8 +595,8 @@ export function planProjectInit(
   // both — the same order `resolveWorkflow` merges them in.
   const personal = input.personalWorkflow ?? {};
   for (const clash of workflowClashes({
-    autoMerge: answers.workflow.autoMerge ?? personal.autoMerge ?? workflowDefaults.autoMerge,
-    autoPush: answers.workflow.autoPush ?? personal.autoPush ?? workflowDefaults.autoPush,
+    allowMerge: answers.workflow.allowMerge ?? personal.allowMerge ?? workflowDefaults.allowMerge,
+    allowPush: answers.workflow.allowPush ?? personal.allowPush ?? workflowDefaults.allowPush,
     openPr: answers.workflow.openPr ?? personal.openPr ?? workflowDefaults.openPr,
   })) {
     notes.push(clashNote(clash));

@@ -508,7 +508,7 @@ export type ProjectGatewayData = ProjectGatewayAnswer;
 
 /** `src/portal/facts.ts` › `SettingsData`. */
 export interface SettingsData {
-  autoMerge: null | { allowed: boolean; base: null | string };
+  allowMerge: null | { allowed: boolean; base: null | string };
   error: null | string;
   projectNote: null | string;
   rows: SettingsRow[];

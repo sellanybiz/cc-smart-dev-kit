@@ -99,13 +99,27 @@ import {
 import { checkGitBash } from "./git-bash";
 import { type LiveDeps, parseClaudeVersion, readLiveRecord, runLiveCheck } from "./live-check";
 import { type CliPaths, tildify } from "./paths";
-import { PROJECT_MEMORY_FILES, projectChecks, retiredReviewAgentCheck } from "./project-checks";
+import {
+  oldWorkflowNamesCheck,
+  PROJECT_MEMORY_FILES,
+  projectChecks,
+  retiredReviewAgentCheck,
+} from "./project-checks";
 import { type Mark, markText, type Out, plural } from "./ui/out";
 import type { Terminal } from "./ui/terminal";
 
 /** The personal workflow file must name an agent this release still ships. */
 export function checkReviewAgent(paths: CliPaths): Check | null {
   return retiredReviewAgentCheck(
+    paths.workflowConfigFile,
+    tildify(paths.workflowConfigFile, paths.home),
+    true,
+  );
+}
+
+/** The person's workflow file may still name a setting the way 6.0 did: one warning, never a failure. */
+export function checkWorkflowNames(paths: CliPaths): Check | null {
+  return oldWorkflowNamesCheck(
     paths.workflowConfigFile,
     tildify(paths.workflowConfigFile, paths.home),
     true,
@@ -1264,6 +1278,7 @@ function doctorGroups(
           plansDirectoryCheck(paths),
           checkNameClash(settings),
           checkReviewAgent(paths),
+          checkWorkflowNames(paths),
           await checkOldPlugin(settings, paths, readCommand),
         ]),
     },
