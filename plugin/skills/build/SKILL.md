@@ -276,7 +276,8 @@ with `/cc-smart-dev-kit:user-unavailable`; never bypass a permission refusal.
 ## After compaction
 
 Run `task_list` with `scope: "plan"`, `open_only: false` (without `plan` it lists every plan
-this session owns), and read `git log`. Use task fields, `Report:` and `Ruling:` notes to
+this session owns), and read `git log`. That view lists phases only: run `task_list` with
+`scope: "mine"`, `open_only: false` too, for the review's fix tasks set under the plan. Use task fields, `Report:` and `Ruling:` notes to
 recover the exact branches and review state (the `Review round` notes on the plan task). Read the plan for design, not progress. Never
 rerun a completed phase from memory.
 
