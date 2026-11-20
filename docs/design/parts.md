@@ -87,7 +87,7 @@ Where it is checked, each time against the Bun running the code (`Bun.version`):
   bundle has no check of its own, and an older Bun is not visibly broken: it drops
   `--no-env-file` without a word (measured on 1.2.23 and 1.3.0: the working folder's `.env`
   values reached the program), so the hook would run on guarantees the plugin does not have.
-  The shim asks `bun --version` and fails closed exactly like the no-bun case: `job-route` (the one guard) asks
+  The shim asks `bun --version` and fails closed exactly like the no-bun case: `user-away`'s question-tool entry asks
   the person, any other hook writes one line and exits 0. It asks only a bun that is **not**
   the one setup baked into the launcher (setup refuses to run on a Bun below `MIN_BUN`, so
   that one is already proved) and that has not been replaced since (its file newer than the

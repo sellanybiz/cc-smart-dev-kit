@@ -72,13 +72,13 @@ the first time you use it.
 | `src/herdr/` | Herdr session orchestration: the checked identity, shared hc contract and grammar, labels, private briefs and reports, remote machine rules, command and doctor group (`docs/design/herdr.md`). |
 | `src/sessions/` | The `cc-smart-dev-kit sessions` command: reading Claude Code's saved sessions, and reopening the ones a restart or a closed window stopped. |
 | `src/issues/` | GitHub Issues, on by default: filing, fixed marks and the release list (`docs/design/issues.md`). |
-| `src/models/` | Subagent launch policy, UI policy and premium-model judgment. |
+| `src/models/` | Subagent launch policy, UI policy and premium-model judgment: facts the tier note and the status line read; no hook enforces them since 5.7.0. |
 | `src/worktrees/` | Worktree scanning, safe removal and included local files. |
 | `src/tasks/` | The kit's task system (D75, `docs/design/tasks.md`): `work/` the local store, `deploy/` the repo files (deploy tasks, the release gates), `context.ts` the resolver, `guard-view.ts` the hooks' join, `words.ts` the shared tool names and steps, the MCP server and command. |
 | `src/user-away/` | The `cc-smart-dev-kit user` command (`unavailable`, `available`, `status`, `park`, `list`, `clear`): whether the person can answer, and the list of what waits for them (`state.ts`); the user-away hook reads the same state. |
 | `src/workflows/` | The test side of the workflow scripts in `plugin/workflows/`: the runner that executes a script with fakes for `agent`, `parallel` and the rest (`script-runner.ts`), and a test file for each script. The scripts themselves ship in `plugin/`. |
 | `src/ports.ts` | The local ports cc-smart-dev-kit holds as locks, and why they stay below 32768. |
-| `src/hooks/` | The hooks: the frame every one runs in (`run.ts`), the one guard (`job-route`), the notes and stops, the project's own copies (`ownHooks`, `settings-hooks.ts`), and the shape of a subagent's worktree (`subagent-worktree.ts`); `specs.ts` lists them all. Each hook's entry is in `src/entries/`. |
+| `src/hooks/` | The hooks: the frame every one runs in (`run.ts`), the one guard (`job-route`, which only queues heavy work and never asks), the session facts (`session-facts.ts`), the notes and stops, the project's own copies (`ownHooks`, `settings-hooks.ts`), and the shape of a subagent's worktree (`subagent-worktree.ts`); `specs.ts` lists them all. Each hook's entry is in `src/entries/`. |
 | `src/jobs/` | The heavy-job queue: kinds, the one-slot lease store, the queue, the launch, `job <command>`, the classifier, and the queue as data (`status.ts`: one reader for `job status`, `/api/jobs` and the Machine page). |
 | `src/shell/` | The shell text: the lexer that reads a Bash line as the commands it runs (quotes, here-docs, `bash -c`), the PowerShell single-quoted literal, and the one tool reader (`tool.ts`: what a command really runs, and a match rule against it; the job classifier uses it). |
 | `src/testing/` | Test helpers: temp folders, a clean git environment, a fake machine for setup, the guard that fails any test reaching the live router's port 20100. |

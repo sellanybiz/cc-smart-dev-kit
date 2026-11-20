@@ -19,7 +19,7 @@ So every hook in `plugin/hooks/hooks.json` is now shell form:
 ```json
 {
   "type": "command",
-  "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/cc-smart-dev-kit-bun.sh\" --missing=ask \"${CLAUDE_PLUGIN_ROOT}/dist/job-route.js\"",
+  "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/cc-smart-dev-kit-bun.sh\" --missing=quiet \"${CLAUDE_PLUGIN_ROOT}/dist/job-route.js\"",
   "timeout": 10
 }
 ```
@@ -37,7 +37,7 @@ Each piece of that string is doing work:
   plugin folder with a space in it one word. Claude Code hands a shell-form hook that
   variable in the forward-slash Win32 form (`C:/Users/…`), which Git Bash, MSYS tools and
   `bun.exe` all accept.
-- **`--missing=ask` / `--missing=quiet`**, unchanged: the guard (`job-route`) still fails closed when bun is
+- **`--missing=ask` / `--missing=quiet`**, unchanged: `user-away`'s question-tool entry still fails closed when bun is
   missing, and every other hook still says one line and exits 0.
 
 The same form works unchanged on macOS and Linux: there the shell is `sh`, the shim keeps
@@ -62,20 +62,19 @@ On Windows it runs under Git Bash, where
   run can prove that last point: [claude-code-contract.md](claude-code-contract.md) §
   Windows, the live tests.)
 
-A hook still never needs bun: with none found, `--missing=ask` prints the PreToolUse ask and
-`--missing=quiet` writes one line, both exit 0. The command (`plugin/bin/cc-smart-dev-kit`)
+A hook still never needs bun: with none found, `--missing=ask` (only `user-away`'s question-tool
+entry) prints the PreToolUse ask and `--missing=quiet` writes one line, both exit 0. The command (`plugin/bin/cc-smart-dev-kit`)
 passes `--missing=fail` instead: one line on stderr and **exit 1**, because a command must
 never report success when it did not run. The Windows CI job runs that mode too.
 
 ## The PowerShell tool is judged too
 
 Claude Code has a PowerShell tool beside Bash on native Windows (`docs/claude-code-contract.md`
-§ Windows). The plugin's shell judge, `job-route`, is therefore wired on `Bash|PowerShell`, and
+§ Windows). The plugin's heavy-job hook, `job-route`, is therefore wired on `Bash|PowerShell`, and
 it reads each line in the dialect of the tool that runs it — the one shell reader every hook
-uses (`src/shell/command.ts`). A raw `claude --bg`, a `claude -p` launch and `workflow propose`
-are judged the same in PowerShell; only the queue rewrite stays Bash-only, because the
+uses (`src/shell/command.ts`). A heavy run is read the same in PowerShell; only the queue rewrite stays Bash-only, because the
 rewritten line is a `sh` line the PowerShell tool cannot run. `src/hooks/entries.test.ts` pins
-the matcher, and `src/hooks/bash-judge.test.ts` has the PowerShell cases, both run by the
+the matcher, and `src/hooks/job-route.test.ts` has the PowerShell cases, both run by the
 Windows CI job.
 
 ## The user's own hook line

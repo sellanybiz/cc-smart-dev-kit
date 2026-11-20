@@ -71,7 +71,7 @@ message of its own per field ("`worktrees.prefix` is no longer supported: remove
 Code's own worktrees need none. `cc-smart-dev-kit project init` removes it"), never the strict
 parse's "unknown field (a newer cc-smart-dev-kit may be needed)", which would send the person to
 update instead. Its error class, `CcSmartDevKitRetiredFieldError`, is a config error like any
-other to every reader — `job-route` asks, `doctor` fails, the committed read of `merge-check` names
+other to every reader — `user-away` asks, `doctor` fails, the committed read of `merge-check` names
 it — and exists only so the portal's Project card still offers its write, which is the fix.
 Every reader goes through it: a file on disk (`loadCcSmartDevKitConfig`), the file as
 committed on a branch (`readCommittedConfig`), and the object `workflow set --project` is about

@@ -62,8 +62,9 @@ The first message is wrapped as lead evidence, never the person’s approval.
   The remote user’s login shell must find Claude Code and the kit, with the kit at least as new as this one. Remote reports stay there as files;
   keep the report-list and file-read commands printed by start and wait.
 - Fable, Opus at max effort, and a remote machine not allowed for free use require `--asked`.
-  This records the command's approval prerequisite; it never suppresses the judge's question.
-  Run the complete line through the normal permission prompt. Never add it to evade a denial.
+  Ask the person first when they are available (`core.md` § Subagents); away, use `opus` at
+  `xhigh` instead. Pass `--asked` only after that: no hook checks it, the command alone refuses
+  without it. Never add it to get past a refusal.
 
 A name collision refuses the launch; choose the suggested fresh name, not the old worktree.
 If identity is refused, do not set `HC_TERMINAL_ID`: the lead must actually run inside Herdr.
@@ -84,7 +85,7 @@ and prints its own next command on timeout. It also releases a plan's files once
 request has merged or closed. `plans --reserve <slug>` reserves one of your own ready plans for
 yourself, with the gates `start --plan` runs; then you start it as usual (lead + children mode). It
 stays held until its pull request merges or closes (a plan nobody reserved is free once its task closes). `plans --release <slug>` frees a finished plan nothing can prove
-merged; it is the person's call, and the Bash judge asks first.
+merged; it is the person's call: ask the person first.
 
 Run `cc-smart-dev-kit herdr wait` with Bash's `run_in_background: true`; let completion
 notify you, rather than polling. Default/`--any` waits for news (done, error, ended);
@@ -189,7 +190,7 @@ no session, takes no other plan and stops after its report. Its terminal carries
 `start --plan`, `adopt` and `plans --reserve` refuse there, and its brief forbids any other
 start.
 
-Use the kit commands for writes. The Bash judge rejects raw `hc` writes and `herdr-app do`;
-local read-only inspection is allowed (`hc events` only in the background). Remote reads
-ask for production or unallowlisted machines; an unreadable machine-rule file also asks. A printed remote
-`hc exec … find` line is for the person's terminal, not permission to bypass that guard.
+Use the kit commands for writes, never raw `hc` writes or `herdr-app do` (no hook stops them
+since 5.7.0; the kit's commands keep the identity and ownership checks). Local read-only
+inspection is fine (`hc events` only in the background). A printed remote `hc exec … find`
+line is for the person's terminal.

@@ -115,8 +115,10 @@ tests, because it decides whether the session may merge by itself:
 autoMergeAllowed(resolved, projectConfig, prBase, defaultBranch)
 ```
 
-True when `autoMerge` is on; the pull request's base may be any branch, the main branch
-included (the owner, 2026-11-21: "autoMerge on" merges with no question). A direct push to the
+True when `autoMerge` is on and the pull request's base is the project's integration base
+(`worktrees.base`) or the repository's default branch, the main branch included (the owner,
+2026-11-21: "autoMerge on" merges with no question); a pull request into another branch, such as a
+release branch, is the person's own merge. A direct push to the
 main branch, not through a pull request, stays the person's. CI green and the review done are the
 caller's checks (`merge-check.ts`, and the session's own instruction), not this one's: this
 function answers about branches only. `autoMergeRefusal` is the same rule in words — the
@@ -180,8 +182,8 @@ repository, a fork, a branch never fetched), no file there, or a file this plugi
 policy change counts once it is committed, pushed and fetched. `cc-smart-dev-kit workflow
 show` prints the gate's own lines (`gate autoMerge = …`) from the same read, so it never
 disagrees with `merge-check`, even while the checkout's file says something else; `workflow
-set|unset` of a gate key (`REVIEW_GATE_KEYS` in `schema.ts`) refuses inside Claude Code, and
-the "autoMerge is off" answer says to commit the change to the base and push it.
+set|unset` of a gate key (`REVIEW_GATE_KEYS` in `schema.ts`) works inside Claude Code since
+5.7.0, and the "autoMerge is off" answer says to commit the change to the base and push it.
 
 **A project's policy changes through a pull request** (D57, `src/workflow/propose.ts`).
 Because the gate is read from the base's committed file, a change that counts must be merged,
@@ -216,13 +218,10 @@ branch back, and the line says what is left if any of that fails. Two exceptions
 avoid destroying what may be another run's: a `gh pr create` that does not answer in time
 leaves the pushed branch and the pull request it may have made, and a name another proposal
 took between the check and the add is skipped for the next free one rather than reused. The
-command pushes a branch and opens a pull request in children no hook sees, so **the shell judge
-asks the person first** (RF1-4, `src/hooks/bash-judge.ts`) whenever the workflow
-gate has `autoPush` off or `openPr` short of `ready`: the question names the push, the
-pull request and the switch that says no; a gate or a project it cannot read is a question with
-its reason; in `claude -p`, where nobody answers, it is a denial. Inside Claude Code a gate key
-refuses, as `set` does; outside it — a terminal, the portal — every key is allowed: the pull
-request's review is the gate.
+command pushes a branch and opens a pull request in a child no hook sees. Until 5.6.x the shell
+judge asked the person first when `autoPush` was off or `openPr` short of `ready`; that judge is
+gone (§ Retired in 5.7.0 in `docs/design/hooks.md`). Every key may be proposed, inside Claude Code
+or outside it: the pull request's review is the gate.
 
 ## The review record
 

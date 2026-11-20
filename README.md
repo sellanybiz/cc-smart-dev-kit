@@ -299,7 +299,7 @@ differs:
 | Every path | The same layout as Linux and macOS, under `%USERPROFILE%` (`%USERPROFILE%\.claude`, `…\.local\share\cc-smart-dev-kit`, `…\.config\cc-smart-dev-kit`). |
 | The gateway | A per-user **Scheduled Task** instead of the systemd units. A restart refuses requests for a moment (Claude Code retries them), and a stop cuts the answers in flight. |
 | The heavy-job queue | Works: each job runs as a plain child process, and the machine limit keeps full runs within your chosen concurrency (default 1). Nothing caps a job's CPU or memory on Windows: the [caps](#heavy-jobs-one-queue-for-the-machine) need Linux with a systemd user manager. |
-| The guards | Work through Git Bash. The shell judge (`job-route`) is wired on **Bash and PowerShell** and reads each in its own dialect; its queue rewrite stays Bash-only, so with the job route on a heavy PowerShell line is refused with the Bash line to run instead (only where Git Bash is found). |
+| The guard | Works through Git Bash. `job-route`, the heavy-job queue's door, is wired on **Bash and PowerShell** and reads each in its own dialect; its queue rewrite stays Bash-only, so with the job route on a heavy PowerShell line is refused with the Bash line to run instead (only where Git Bash is found). |
 | The background clean | Works: the detached clean goes through `cmd /c start` so it outlives the hook, with no console window. |
 | Notifications | No custom kit notifications; Claude Code and other plugins keep their own behaviour. |
 | `sessions --open` | A terminal window per session: XFCE Terminal on Linux or Windows Terminal on Windows. |
@@ -396,7 +396,7 @@ Removes what setup added (its settings keys, the auto-mode entries it copied, an
 | `cc-smart-dev-kit statusline` | The status line itself: the session's context use and effort, plan usage, a warning from 85 %, any gateway fallback in use, a slot whose every target is limited or down (the breaker), and auto mode's safety checks failing with nothing to stand in (since when, why, and the fix). Reads the JSON Claude Code passes on stdin, and records the 5-hour window it read for the portal's Overview. |
 
 | `cc-smart-dev-kit project init [--dry-run] [--yes] [flags]` | Sets a project up ([`project init`](#project-init)): it writes the project's `.claude/cc-smart-dev-kit.json` (the worktrees, the protected branches, the switches, and optionally the [workflow](#the-workflow) policy) and, when the base branch is not the repo's default branch, `"worktree": {"baseRef": "head"}` in `.claude/settings.json`. It asks first, showing each default, which comes from the repo (the base from `origin/HEAD`, the protected branches from git and, when `gh` is installed and answers, GitHub); every question has a flag, so a run with no terminal writes nothing unless `--yes` is given. It never commits. `cc-smart-dev-kit project init --help` lists the flags. |
-| `cc-smart-dev-kit workflow [show] \| set <setting> <value> [--project] \| unset <setting> [--project] \| propose <setting> <value> [--unset] [--folder <project>] [--json] \| review-done [--sha <commit>] \| merge-check [<pr>… \| --branch <b> --base <base>]` | What cc-smart-dev-kit may do by itself here — commit, push, open a pull request, merge — and the switches that map onto settings which already exist ([The workflow](#the-workflow)). `show` (the default) prints each value and where it came from: the project's file, your own defaults, or the built-in default, whether the commit here has a recorded review, and the `fixesAfterReview` limits in force. `set` and `unset` write one value; `--project` writes the project's committed file. `propose` changes one of the project's own settings **through a pull request**: a branch and a worktree cut from `origin/<worktrees.base>`, the same writer, the commit, the push and `gh pr create` — never a write in the main checkout, and it counts once merged. Run by a Claude Code session, the shell judge **asks you first** whenever `autoPush` is off or `openPr` is short of `ready` (the workflow gate), naming the push and the pull request; in `claude -p` that is a refusal. `review-done` records that a commit had its one premium review, for your own terminal: it refuses inside Claude Code, where the [review-record hook](#the-workflow) writes the record when a review agent returns. `merge-check` judges a merge **without making it**, with the judgment a session follows before it merges (no hook runs it any more): each pull request number, or a local branch against a base, one line per verdict (`allowed`, or the reason it is not); exit 0 when every one is allowed, 1 when any asks. The main session uses `--branch` before a local merge (§ [The workflow](#the-workflow)). |
+| `cc-smart-dev-kit workflow [show] \| set <setting> <value> [--project] \| unset <setting> [--project] \| propose <setting> <value> [--unset] [--folder <project>] [--json] \| review-done [--sha <commit>] \| merge-check [<pr>… \| --branch <b> --base <base>]` | What cc-smart-dev-kit may do by itself here — commit, push, open a pull request, merge — and the switches that map onto settings which already exist ([The workflow](#the-workflow)). `show` (the default) prints each value and where it came from: the project's file, your own defaults, or the built-in default, whether the commit here has a recorded review, and the `fixesAfterReview` limits in force. `set` and `unset` write one value; `--project` writes the project's committed file. `propose` changes one of the project's own settings **through a pull request**: a branch and a worktree cut from `origin/<worktrees.base>`, the same writer, the commit, the push and `gh pr create` — never a write in the main checkout, and it counts once merged. No hook asks before a session runs it (5.7.0). `review-done` records that a commit had its one premium review, for your own terminal: it refuses inside Claude Code, where the [review-record hook](#the-workflow) writes the record when a review agent returns. `merge-check` judges a merge **without making it**, with the judgment a session follows before it merges (no hook runs it any more): each pull request number, or a local branch against a base, one line per verdict (`allowed`, or the reason it is not); exit 0 when every one is allowed, 1 when any asks. The main session uses `--branch` before a local merge (§ [The workflow](#the-workflow)). |
 | `cc-smart-dev-kit issue file --title <t> --body-file <file\|-> --fingerprint <key> [--label <l>…]` | Files one finding as a GitHub issue in **this project's own repository** (the one `origin` names, on github.com) and prints one line: `filed #<n> <url>`, `updated #<n> <url>` or `refused: <why>` (exit 0, 0, 1). The same `--fingerprint` again updates the issue it filed and never opens a second: the key is hashed into a hidden comment at the end of the body. It **files nothing while `workflow.issues.enabled` is off** (on by default since 5.0.0; § [The workflow](#the-workflow)) and only in a project with a `.claude/cc-smart-dev-kit.json`, and a public repository needs `issues.allowPublic` too (the line says `public` when it posts there). A title or body with a home path (in each spelling a session writes it: `$HOME`, and for a Windows home `C:\Users\x`, Git Bash's `/c/Users/x` and WSL's `/mnt/c/Users/x`), a key or token of a known shape (`sk-`, `ghp_`, `AKIA…`, `gsk_`, `tvly-`, a JWT, a private key block, a Slack or Discord webhook URL, and a value after `key`, `token`, `secret` or `password` and `:` or `=`, with or without letters before the word) or a URL with credentials is refused with its line and column, never the value, and nothing is sent; the screen knows those shapes only, so read a text before you file it. It also refuses an account with **read access only** to the repository (GitHub drops labels from such an account), and updates only an issue the kit's own account wrote. No hook asks about a session's raw `gh issue create`, `gh label create` or `gh api … /issues` write any more (§ Retired in 5.7.0): the instructions say to file through `issue file`. Design: [docs/design/issues.md](docs/design/issues.md). |
 | `cc-smart-dev-kit issue fixed --base <branch> --head <branch>` | Prints one `Fixes #<n>` line for each **open** issue the kit marked `fixed-unreleased` (`issues.fixedLabel`, with `issue mark-fixed` below) whose fix is in `<base>..<head>`: the lines a release's pull request body carries. GitHub closes an issue only when a pull request that names it merges into the **default** branch, so a fix merged into a release branch closes nothing until then. It prints nothing when the switch is off or no issue waits (exit 0), and exits 1 with the reason on standard error when GitHub or a branch cannot be read: an empty list from a failed call would look complete. Design: [docs/design/issues.md](docs/design/issues.md). |
 | `cc-smart-dev-kit issue mark-fixed --issue <number> --base <branch> --branch <branch> --tip <sha> [--merge <sha>]` | Marks one issue fixed. The main session runs it after it merges a fix, and a follow-up child (§ [Follow-up children](#follow-up-children-540)) runs it at its `ship`, before the push, with `--base` the branch its pull request targets (the comment is posted before that merge): `--branch` is the branch that held the fix, `--tip` its last commit, `--base` the branch it merged into, and `--merge` the merge commit (leave it out when it is not known; both are full 40-character commit ids). It comments "Fixed on `<branch>` at `<commit>`, merged into `<base>`; it closes when `<base>` ships." and adds the fixed label (`issues.fixedLabel`), which it creates when the repository lacks it. It **never closes the issue**: the release's `Fixes #<n>` line does (`issue fixed`). Each step looks at the issue first, so a second run adds no second comment or label; only a comment by the account `gh` is logged in as counts. It needs `workflow.issues.enabled`, as `issue file` does. It prints `marked #<n> fixed`, or `#<n> is already closed` (exit 0); the reason on standard error when the switch is off, GitHub cannot be read or the issue does not exist (exit 1); and the usage for a command line that is not one (exit 2). |
@@ -451,7 +451,8 @@ cc-smart-dev-kit herdr start --model sonnet --effort high --mode default --cwd /
 
 Model, effort and mode are required. The child's mode cannot exceed the lead's; plan mode
 must be approved first and bypass mode is refused. Fable and Opus at max effort require
-`--asked` and always raise the judge's confirmation. That flag never skips the prompt.
+`--asked`: Claude asks you first when you are available, and passes it only after your yes (no
+hook checks it since 5.7.0).
 Linked operations require a live lead inside Herdr, verified through process ancestry.
 Add `--independent` for a session with no lead link; it cannot use `--task`.
 
@@ -474,9 +475,8 @@ Remote starts require `--on <machine>` and `--cwd <dir>` on that machine. That m
 login shell must find `claude` and the kit. They check both, then its kit version, copy the brief with `hc file write --on`, then launch with `--add-dir` for
 the private per-child brief/report folder. A remote child saves
 reports on its own machine; start and wait print `hc exec … find` and `hc file read` lines
-for retrieval. The exec line is for your own terminal: Claude cannot run raw hc writes
-or exec through the Bash judge. Local reads are allowed; remote reads ask for production
-or unallowlisted machines, and unreadable machine rules ask too. `hc events` must run in
+for retrieval. The exec line is for your own terminal: Claude uses the kit's commands for
+writes, not raw hc writes or exec (no hook stops them since 5.7.0). `hc events` must run in
 the background.
 **A child's questions are yours.** You answer its questions, permission prompts, plan approval and login in its own pane (`hc attach <terminal>`, or its tab in Herdr). The lead never asks you for it, answers for it or types into it.
 
@@ -488,7 +488,7 @@ config, and not moved by `CLAUDE_CONFIG_DIR`):
 ```
 
 `allow` permits starts without a remote-machine question; an unknown or unallowed machine
-asks and requires `--asked`. `production` always asks, even with an allow entry. `forget`
+needs `--asked` (Claude asks you first). `production` always needs it, even with an allow entry. `forget`
 removes the entry. A missing file means no approvals; a broken file is an error, not a free
 pass. These rules do not register machines with Herdr or grant network access.
 
@@ -816,7 +816,7 @@ does (the bun `cc-smart-dev-kit setup` baked in, `$BUN_INSTALL/bin`, `~/.bun/bin
 it works when Claude Code was started with a PATH that has no bun. It starts bun with
 `--no-env-file` and the plugin's own empty config, so a hook sees the environment Claude Code
 gave it and never the working folder's `.env` files or its `bunfig.toml`. A Bun older than
-1.4.3 cannot start a hook at all: the shim stops first, and the guard (`job-route`) asks instead (see
+1.4.3 cannot start a hook at all: the shim stops first, and `user-away`'s question-tool entry asks instead (see
 [Install](#install)).
 
 ## doctor
@@ -891,7 +891,7 @@ as one JSON object instead: `format`, `version`, `ok`, `counts`, and `groups`, e
   and tells you to replace it with `cc-smart-dev-kit:senior-engineer`, then merge the change
   by hand or run `cc-smart-dev-kit workflow review-done`, because the merge judgment reads the
   base branch's list. A personal `workflow.json` list gets its own ✗ with `workflow set` or
-  `unset`, run in your own terminal (inside Claude Code they refuse the gate's keys); those
+  `unset` (they work inside Claude Code too); those
   changes count at once. A ! names each instruction file that mentions the old id: the
   project's `CLAUDE.md`, `.claude/CLAUDE.md` and `CLAUDE.local.md`, and the Markdown files, at
   any depth, in `.claude/cc-smart-dev-kit/`, `.claude/rules/`, `.claude/agents/`,
@@ -2170,8 +2170,8 @@ which finds bun even when your PATH has none: the bun `cc-smart-dev-kit setup` s
 launcher first, then `$BUN_INSTALL/bin/bun`, `~/.bun/bin/bun`, and bun on PATH. It starts bun
 with `--no-env-file` and the plugin's own empty `bunfig.toml`, so a hook never reads the
 working folder's `.env` files or its `bunfig.toml` (a project's `preload`). With no bun at all,
-or one older than 1.4.3, the guard (`job-route`) asks you before every call it covers
-(`--missing=ask`: a guard fails closed), and every other hook writes one line on stderr and the
+or one older than 1.4.3, `user-away`'s question-tool entry asks you before every call it covers
+(`--missing=ask`: it fails closed), and every other hook, `job-route` included, writes one line on stderr and the
 session goes on (`--missing=quiet`).
 
 | Hook | When | What it does |
@@ -2179,7 +2179,7 @@ session goes on (`--missing=quiet`).
 | `playwright-output` | before every `mcp__playwright__*` call | Puts a screenshot or snapshot the caller names by a relative `filename` into the browser's output folder instead of the folder the session runs in (`@playwright/mcp` resolves a caller-named file against the process's own folder). |
 | `fable-session` | a session starts; a model switch; each answer ends | **Machine-wide**: when the session's own model is the `fable` tier — Claude Fable, or a model an override points that tier at, but not Claude Fable that you put first in the `opus` slot or `ANTHROPIC_DEFAULT_OPUS_MODEL` (that is the `opus` tier; a switch to Fable outright still counts) — it shows *you* one line, once a session: the premium tier uses your plan's limits faster than Opus, so switch with `/model` if you did not mean to. **The lead hint** (2.2.0): when the session's own model is neither Claude Opus nor Claude Fable that you put first in the `opus` slot — another Claude model, a backend, or the `opus` tier answered by a backend — it shows you one other line, once a session: the kit works best with the lead on Claude Opus at high effort; switch with `/model` — or, when the `opus` tier itself is answered by a backend, put Claude Opus first in the gateway's `opus` slot (`/cc-smart-dev-kit:gateway`) or start with `launch --no-gateway`. It recommends and never switches; `switches.leadHint` false (your own `workflow.json`) turns it off. A Fable session gets the Fable line only, and a session told the hint that later moves to Fable gets the Fable line too. Each model is judged once a session. Nothing goes to Claude, never an error and never a block. A session start judges only the `model` the start names; a switch judges `to_model` — the model the session moved TO — so the line appears AT the switch; a finished answer is judged by the model that answered it, which is the catch-all for a Claude Code that fires no `PostModelSwitch`, and can never fire for a model the session has already left (the old `UserPromptSubmit` read was one turn behind: it missed the switch to Fable and warned after the switch back). The line was seen live on a real session (2026-10-17); that `systemMessage` shows on `PostModelSwitch` and `Stop` is not proved yet (the contract's § Relied on, not proved yet). |
 | `tier-view` | a session starts (any source); each prompt, only when it changed | **Machine-wide**: tells *Claude* what each subagent tier (`haiku`, `sonnet`, `opus`, `fable`) runs now — Claude or a gateway backend — and how to choose: the tier and the effort by the job (`/cc-smart-dev-kit:subagent-decision`), never by the model behind a tier. Claude asks you before a `fable` or `opus`-at-`max` launch when you are available (an instruction, `core.md` § Subagents; no hook checks it). No effort is forced on a backend (pin one with `gateway effort`). While [auto mode's safety checks are failing](#first-setup) because Claude is limited or down and nothing stood in, one more line says so, with the reason and the fix: the model cannot fix it, so it tells you once and waits instead of retrying. Said again at a later prompt only when a slot changed or that line came or went; never a question or a block. Claude is never told your plan's usage. |
-| `job-route` | before a Bash or PowerShell command | **Machine-wide**, and `ownHooks` cannot switch it off: it judges what a line does, whatever the project's file says. **Both shells**: it reads a Bash line and a PowerShell line in that tool's own dialect, so the judge is not stepped around by changing tools on Windows; the queue rewrite below stays Bash-only, because its rewritten line is a `sh` line the PowerShell tool cannot run — so while the route is on, a heavy PowerShell line is **refused**, and the reason names the Bash tool and the exact line to run there, where it waits for the slot (only where the Bash tool can exist: on Windows, where Git Bash is found; a light or print-only line runs as written). **Launches**: a raw `claude --bg` **asks you** in an attended session — and is refused in `claude -p`, where nobody answers — because such a session runs beside this one, nobody watches it and it reports to nobody: the reason says to build the work with subagents, which report back to the session that started them. `claude -p` is judged by the same launch policy as every Agent launch (its `--model` and `--effort`: no model refuses, the `fable` tier asks, the `opus` tier at `max` asks), and a `Fable reason:` line in its prompt counts as it does for an agent. `workflow propose` **asks you** first while `autoPush` is off or `openPr` is short of `ready` — it pushes a branch and opens a pull request in children no hook sees — and is refused in `claude -p`. **The route**, with `"jobs": { "route": true }` in the project or `switches.jobRoute` in your own `workflow.json` (the project's value wins; off until one says on; not outside git): a heavy command (the project's own [kinds](docs/jobs.md)) is sent through the machine's queue — rewritten to `cc-smart-dev-kit job run --kind <kind> -- <command>`, byte for byte the same command. A line is queued whole only when every command in it is heavy, a `cd`, an assignment or **glue** (`echo`, `printf`, `test`, `true`, `pwd`, shell state such as `set -e`, `exit` and `export NAME=value`, and the like, and a reader such as `tail` or `grep` that reads the pipe and names no file: `bun run check; echo "exit $?"`), and one heavy command piped into read-only filters (`bunx tsc --noEmit 2>&1 \| tail -20`: `tail`, `head`, `grep`, `wc`, `sort` and the like, kept outside the queued command so your rules still see them) is queued too. **A line that mixes heavy work with any other command is refused, and the reason says to run the heavy command on its own line** (`bun test; git status`): run raw, the heavy part would not wait for a slot, and queued, the other command would hide from your rules. Claude Code matches your own Bash rules (`deny`, `ask`) against the command it runs, and a rewritten line holds your command as one quoted word, so a queued `bunx tsc && rm -f x` would hide the `rm` from a `Bash(rm:*)` rule (proved on 2.1.308). A command already inside `cc-smart-dev-kit job run` is left as it is. A light line stays raw too: a run on named files, a run that only prints, and a watch run (`--watch`) never wait for a slot. A package script no `script` kind names is read by its body, and queued only when every command in it is heavy or glue (a script that runs a linter and `tsc` needs a `{ "script": … }` kind to be queued whole, and the line that calls it runs raw, not refused); a name the project defines as a script is never read as the tool of the same name, so a `tsc` script that already wraps the job is not wrapped again. A call with no `timeout` gets the Bash tool's longest, since a job may wait many minutes. **A `git commit`, `git merge` or `git push` whose own hook is heavy** is not wrapped, so your `Bash(git push:*)` deny and ask rules still see it (an allow rule does not match past the assignments, so an allow-listed push asks you again): three `GIT_CONFIG_*` assignments in front of the `git` word point git at the kit's [git hooks folder](docs/jobs.md#git-hooks) for that one command, and its hook script runs your hook inside the queue. With `--no-verify`, your own `core.hooksPath`, on native Windows, or whenever the kit is unsure, the line is left as written and no hook is skipped. |
+| `job-route` | before a Bash or PowerShell command | **Machine-wide**, and `ownHooks` cannot switch it off: it never asks you, and it judges nothing but heavy work, whatever the project's file says. **Both shells**: it reads a Bash line and a PowerShell line in that tool's own dialect, so a heavy run is not missed by changing tools on Windows; the queue rewrite below stays Bash-only, because its rewritten line is a `sh` line the PowerShell tool cannot run — so while the route is on, a heavy PowerShell line is **refused**, and the reason names the Bash tool and the exact line to run there, where it waits for the slot (only where the Bash tool can exist: on Windows, where Git Bash is found; a light or print-only line runs as written). **The route**, with `"jobs": { "route": true }` in the project or `switches.jobRoute` in your own `workflow.json` (the project's value wins; off until one says on; not outside git): a heavy command (the project's own [kinds](docs/jobs.md)) is sent through the machine's queue — rewritten to `cc-smart-dev-kit job run --kind <kind> -- <command>`, byte for byte the same command. A line is queued whole only when every command in it is heavy, a `cd`, an assignment or **glue** (`echo`, `printf`, `test`, `true`, `pwd`, shell state such as `set -e`, `exit` and `export NAME=value`, and the like, and a reader such as `tail` or `grep` that reads the pipe and names no file: `bun run check; echo "exit $?"`), and one heavy command piped into read-only filters (`bunx tsc --noEmit 2>&1 \| tail -20`: `tail`, `head`, `grep`, `wc`, `sort` and the like, kept outside the queued command so your rules still see them) is queued too. **A line that mixes heavy work with any other command is refused, and the reason says to run the heavy command on its own line** (`bun test; git status`): run raw, the heavy part would not wait for a slot, and queued, the other command would hide from your rules. Claude Code matches your own Bash rules (`deny`, `ask`) against the command it runs, and a rewritten line holds your command as one quoted word, so a queued `bunx tsc && rm -f x` would hide the `rm` from a `Bash(rm:*)` rule (proved on 2.1.308). A command already inside `cc-smart-dev-kit job run` is left as it is. A light line stays raw too: a run on named files, a run that only prints, and a watch run (`--watch`) never wait for a slot. A package script no `script` kind names is read by its body, and queued only when every command in it is heavy or glue (a script that runs a linter and `tsc` needs a `{ "script": … }` kind to be queued whole, and the line that calls it runs raw, not refused); a name the project defines as a script is never read as the tool of the same name, so a `tsc` script that already wraps the job is not wrapped again. A call with no `timeout` gets the Bash tool's longest, since a job may wait many minutes. **A `git commit`, `git merge` or `git push` whose own hook is heavy** is not wrapped, so your `Bash(git push:*)` deny and ask rules still see it (an allow rule does not match past the assignments, so an allow-listed push asks you again): three `GIT_CONFIG_*` assignments in front of the `git` word point git at the kit's [git hooks folder](docs/jobs.md#git-hooks) for that one command, and its hook script runs your hook inside the queue. With `--no-verify`, your own `core.hooksPath`, on native Windows, or whenever the kit is unsure, the line is left as written and no hook is skipped. |
 | `after-merge` | after a pull-request merge | With `worktrees`: the steps to clear the worktree that was merged (with `clearWorktreeAfterMerge` off: one line that it looks finished, the same steps, and the decision left to you). For a merge into `worktrees.base` it also starts the background clean of finished worktrees (once per merge, `worktrees.autoClean`). It never tells your other sessions about a merge. Noted forms: `gh pr merge`, `gh pr -R owner/repo merge 5`, a `gh api` merge whose path names the pull request, and a `gh` alias that expands to one. A form that names no pull request — a shell alias, a GraphQL merge, a runner such as `xargs` — gets no note. Its own calls (the alias list, the worktree list, `gh pr view`, the origin) share one 25 s budget inside the hook's 30 s, so they cannot add up past it: a note that would not fit is skipped. |
 | `review-record` | when a subagent starts, and when it finishes | When the agent is one `reviewAgents` lists (the plugin's reviewer by default): notes the commit the session's working folder is on at its start, and its branch, and records that start commit on that branch at its end: commits made while it read count as change after the review. It is the record a session reads before it merges ([The review record](#the-workflow)). It records only when the agent's brief and every prompt it was given after the brief each hold `Mode: review` alone on a line (trailing spaces and tabs allowed). A consult, a review agent resumed for a question (a message it is sent counts, in any form), a review that compacted, a missing or unreadable transcript, or an agent stopped inside its own worktree records nothing. |
 | `subagent-background` | when a subagent finishes | A subagent never hands back while background work it started still runs — a Bash command or a subagent it launched. It blocks the stop **once**, with one plain reason ("Your background work is still running: wait for it or stop it, then report."), and the subagent goes on with that reason; the stop the block itself caused is never blocked again, and it gives Claude no context. Only the agent's **own** work counts: the input's list is the session's (a background subagent appears in its own list, and a foreground subagent sees the main session's background commands), so the hook keeps a task whose id appears in a tool result of the subagent's own Bash call (`Command running in background with ID: …`) or Agent call (`agentId: …`) — never an id in its brief or in a file it read, which is not work it started. Nothing is blocked when it cannot read that transcript, and a project without `.claude/cc-smart-dev-kit.json` sees nothing. |
@@ -2204,8 +2204,8 @@ logger or a different check, and a hook that goes quiet for it would leave you w
 `cc-smart-dev-kit doctor`, run in the project, prints one `·` line per listed hook, and warns (`!`)
 about a listed hook with no project hook left to answer, and about a project hook running
 next to a plugin hook the list does not name. When the project's `cc-smart-dev-kit.json` needs a
-newer plugin, or is broken, the hooks fail closed: `job-route` asks before every call it
-covers, and the message names the update command — and a hook listed in `ownHooks` stays
+newer plugin, or is broken, the hooks fail closed: `user-away` asks before a question tool, `job-route` leaves the line as
+written, and the message names the update command — and a hook listed in `ownHooks` stays
 silent all the same.
 
 ### Retired in 5.7.0
@@ -2213,7 +2213,10 @@ silent all the same.
 You said: "the only guard our kit will support will be the heavy-job guard. Everything will run
 in full auto." These hooks are gone: `git-guard`, `merge-guard`, `deploy-guard`,
 `main-folder-guard`, `agent-guard` (with the Fable gate and the UI rule's deny) and
-`session-escape-guard`, and `user-away` no longer turns another hook's question into a parked
+`session-escape-guard`, and the launch judge inside `job-route` is gone too: a raw
+`claude --bg`, `claude -p` on `fable` or `opus` at `max`, `workflow propose` and `herdr` starts no
+longer ask or refuse (`job-route` never asks; the `herdr` command keeps its own `--asked`
+refusal). `user-away` no longer turns another hook's question into a parked
 action or answers Claude Code's own permission dialog. What they enforced is now an instruction
 Claude follows ([The workflow](#the-workflow), `/cc-smart-dev-kit:commit`, `/cc-smart-dev-kit:subagent-decision`).
 **The trade-off:** nothing now stops a mistaken `git reset --hard` in the main checkout, a
@@ -2588,7 +2591,7 @@ first, and writes nothing):
 
 - **Its fields are refused.** A `.claude/cc-smart-dev-kit.json` that still sets
   `worktrees.prefix`, `worktrees.setup` or `worktrees.engine` does not load: every hook that
-  reads the file fails closed (`job-route` asks before every call in its domain), and the error
+  reads the file fails closed (`user-away` asks before a question tool, the other hooks say one line), and the error
   names each field — "`worktrees.prefix` is no longer supported: remove it — Claude Code's own
   worktrees need none". `project init` removes them; `cc-smart-dev-kit doctor` names them.
 - **Its hook lines fail.** A line in `.claude/settings.json` or `.claude/settings.local.json`
@@ -2892,8 +2895,8 @@ there, or one this plugin cannot use), the line says so, and `merge-check` allow
 | `plans.runMode` | `ask` | How queued plans run when two or more are laid (§ [Plans for children](#plans-for-children-520)): `ask`, `solo`, `lead-children` or `coordinator`. With `ask` Claude asks once and states each mode's cost. Yours alone: a project file that sets it is refused, because a committed value would spend every teammate's usage. `workflow set` and `unset` of it refuse inside Claude Code and print the command to run in your own terminal. |
 | `plans.mergeFiles` | `[]` | Paths every plan touches and each merge settles (a version manifest, a changelog, a lockfile, build output): the overlap check between plans leaves them out. Repo-relative, a folder ends in `/` (`plugin/dist/`); no `..`, no root, no `*` or `?`. The project's, with `--project` (`workflow set plans.mergeFiles CHANGELOG.md,plugin/dist/ --project`), and read **only as committed on the base branch**, so a session cannot widen it by editing its own copy; `workflow set` and `unset` of it refuse inside Claude Code (`propose` stays open). A project that sets it needs `"requires": ">=5.2"`. |
 
-**Auto-merge.** With `autoMerge` on, Claude merges its own pull request into the pull
-request's base — the main branch included — with no question, once every required check is
+**Auto-merge.** With `autoMerge` on, Claude merges its own pull request into the project's
+integration base (`worktrees.base`) or the main branch, with no question, once every required check is
 green, the head commit's review is recorded, and the fixes after the review are within
 `fixesAfterReview` (over them, it says so in the pull request and leaves it unmerged). It waits
 for CI itself (`gh pr checks <pr> --watch` in the background, then a plain `gh pr merge`) and
@@ -2987,13 +2990,12 @@ the session reads the record for the pull request's head commit before it merges
 agent the committed `reviewAgents` names (or by you), and the merge is not allowed. A record an
 older plugin wrote names no agent, so its commit has no review.
 
-**Inside Claude Code, `workflow set` and `unset` of a gate setting** (`autoMerge`,
-`reviewBeforePush`, `reviewAgents`, `fixesAfterReview.*`) **refuse**, in both files: the gate
-is yours to change.
-Run them in your own terminal; for the project's part, commit `.claude/cc-smart-dev-kit.json`
-to the base and push it.
+**`workflow set` and `unset` of a gate setting** (`autoMerge`, `reviewBeforePush`,
+`reviewAgents`, `fixesAfterReview.*`) work inside Claude Code like any other setting (5.7.0:
+"full auto"). The project's part counts only as committed on the base: commit
+`.claude/cc-smart-dev-kit.json` there and push it.
 
-**What the gate is, and is not.** The committed policy, the record and these refusals stop
+**What the gate is, and is not.** The committed policy and the record stop
 mistakes: a session that switches the gate off in its own checkout, a stray `review-done`,
 another plugin's agent named `reviewer`. They are not a lock against a process set on getting
 past them: anything that runs as you can write your own files (the record, `workflow.json`),
@@ -3060,16 +3062,11 @@ checkout is not a policy); the base must carry the project's file (commit and pu
 `gh` must be installed and logged in for this repository. A failure after the branch exists
 takes the worktree and the branch back, and the pushed branch too — except a `gh pr create`
 that does not answer in time, which leaves both, since the pull request may be open.
-Inside Claude Code the review-gate keys refuse, as `set` does there; outside it — your
-terminal, the portal — every key is allowed, because the pull request's review is the gate.
-A Claude Code session that runs it is **asked first** (by `job-route`'s shell judge) whenever the workflow gate — the default, your own `workflow.json`, the project's file as committed on
-`origin/<worktrees.base>` — has `autoPush` off or `openPr` short of `ready`: the command pushes
-the branch and opens a pull request ready for review in a child no hook sees, so the
-question names both and the switch that says no. A gate it cannot read, a project it cannot name
-(`--folder` worked out when the line runs, a `cd` before it) and a computed program or subcommand
-on a line that names the kit are a question too; in `claude -p`, where nobody answers, the
-question is a refusal. The portal's Workflow card asks you on its page and runs the command
-outside any session, so it is unchanged.
+Every key may be proposed, inside Claude Code or outside it, because the pull request's review
+is the gate.
+Since 5.7.0 no hook asks before a session runs it: the command pushes a branch and opens a
+pull request, as `workflow show` allows, and the pull request's review is the gate. The portal's
+Workflow card runs the command outside any session.
 
 ## A project's `.claude/cc-smart-dev-kit.json`
 
@@ -3105,6 +3102,12 @@ every question it holds.
   "workflow": { "openPr": "draft", "autoMerge": true }
 }
 ```
+
+**Fields that enforce nothing since 5.7.0.** `protectedBranches`, `worktrees.guardMainFolder` and
+`tasks.deployCommands` stay in the schema so an older file still loads, but no hook enforces them
+any more: the guards that read them are retired ([Retired in 5.7.0](#retired-in-570)). The only
+thing left is that `worktrees.guardMainFolder` still shapes one note, the leftovers line that
+tells a session in the main checkout to move into a worktree.
 
 | Field | What it does |
 |---|---|

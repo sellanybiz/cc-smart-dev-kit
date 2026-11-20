@@ -45,7 +45,7 @@ the plugin) is a refusal, not a guess. `workflow show` prints each key with its 
 set` writes the person's own value, `--project` the project's file.
 
 **A session cannot change it.** `workflow set` and `unset` of `enabled` and `allowPublic` refuse
-inside Claude Code (`OUTBOUND_KEYS`, as a review-gate key does): a session must not open its own
+inside Claude Code (`OUTBOUND_KEYS`): a session must not open its own
 way out, nor switch off what the person left on. So does `readyLabel` (`INBOUND_KEYS`, IX2): a session must never pick which issues
 count as chosen. Each is read as `enabled` is, from the person's file and the project's
 file as committed on the base (`resolveSwitch`), never a working copy. `workflow propose` stays

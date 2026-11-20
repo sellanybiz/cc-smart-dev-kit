@@ -71,11 +71,11 @@ feeds stops mistakes, not a same-user process set on getting past it
 Every entry in `plugin/hooks/hooks.json` uses the shell form, never the exec form:
 
 ```json
-{ "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/cc-smart-dev-kit-bun.sh\" --missing=ask \"${CLAUDE_PLUGIN_ROOT}/dist/<name>.js\"", "timeout": 10 }
+{ "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/cc-smart-dev-kit-bun.sh\" --missing=quiet \"${CLAUDE_PLUGIN_ROOT}/dist/<name>.js\"", "timeout": 10 }
 ```
 
 - **Why not exec form:** on Windows exec form needs a `command` that is a real executable,
-  and a shell script is not one — such a hook never starts there, and a guard that cannot
+  and a shell script is not one — such a hook never starts there, and a hook that cannot
   start lets the call through. In shell form Claude Code gives the string to a shell: `sh -c`
   on macOS and Linux, Git Bash on Windows, where a first token ending in `.sh` is run as
   `bash <command>`, so the shim needs no execute bit. `docs/windows-hooks.md`, and
@@ -105,14 +105,14 @@ Every entry in `plugin/hooks/hooks.json` uses the shell form, never the exec for
   exits 0; `--missing=quiet` writes one line on stderr and exits 0; `--missing=fail` writes
   one line on stderr and **exits 1**, for the command (`plugin/bin/cc-smart-dev-kit`), which must
   never report success when it did not run. An informational hook never stops a session on its own.
-- **The guard also asks when its bundle file is gone** (`--missing=ask` checks the file): Claude
-  Code deletes an old plugin version folder some time after an update, and bun told to run a
-  file that is not there only prints its error and exits 1, which Claude Code reads as a failure
-  that goes on. The guard's `hooks.json` entry also says **`"onFailure": "block"`**, the
-  second belt for a hook that cannot start at all (the shim is gone too).
-- **The PreToolUse guard (`job-route`) passes `--missing=ask`** — with no bun it asks instead of letting
-  the tool run: a guard fails closed. **Every other hook passes `--missing=quiet`**, so a
-  missing bun is one stderr line and the session goes on.
+- **`user-away`'s PreToolUse entry (the two question tools) also asks when its bundle file is
+  gone** (`--missing=ask` checks the file): Claude Code deletes an old plugin version folder some
+  time after an update, and bun told to run a file that is not there only prints its error and
+  exits 1, which Claude Code reads as a failure that goes on. That entry's `hooks.json` line also
+  says **`"onFailure": "block"`**, the second belt for a hook that cannot start at all.
+- **That one entry passes `--missing=ask`**: with no bun it asks instead of letting a question
+  tool run. **Every other hook, `job-route` included, passes `--missing=quiet`**, so a missing
+  bun is one stderr line and the session goes on: the heavy-job queue never asks.
 - `<name>` is a bundle built from `src/entries/<name>.ts` (`bundles-and-releases.md`).
   The hook's logic lives in `src/hooks/`, where it can be tested; the entry is two lines:
   `runHookEntry(<its spec>)` from `src/hooks/run.ts`, with the spec from `specs.ts`.
@@ -130,7 +130,7 @@ Every entry in `plugin/hooks/hooks.json` uses the shell form, never the exec for
 1. **Read the input**; not JSON, another event, or a `cwd` outside git: nothing to do.
 2. **`ownHooks`** (`hooks-guards.md` § The project's own copy).
 3. **Read `cc-smart-dev-kit.json`**; broken or too new: fail closed (`hooks-guards.md` § Fail closed).
-4. **Run.** A guard's crash answers through `onCrash` (`hooks-guards.md` § Fail safe).
+4. **Run.** `user-away`'s question-tool crash answers through `onCrash` (`hooks-guards.md` § Fail safe).
 5. **Record an ask**: an answer that asks the person is appended to `guard-asks.jsonl`
    (`hooks-guards.md` § Fail safe).
 
@@ -172,8 +172,8 @@ second lexer or a split on `;` beside it: a guard and the queue must see the sam
 - **A guard reads every way a line may run**: both dialects when unknown, joined at a
   trailing escape and not, and blind when a quote never closes. A check for something
   that RAN (the after-merge note) reads the open quote as text.
-- **A program named at run time** (`$GIT`, `$(which git)`) comes back `computed`. The guard
-  whose domain words are in a computed command asks; it never stays silent.
+- **A program named at run time** (`$GIT`, `$(which git)`) comes back `computed`. A hook
+  whose domain words are in a computed command does not stay silent about it.
 - **A new spelling that gets past a guard is fixed in the reader**, with a test named after
   the finding, never with a special case in one guard.
 - **A 64 KB line stays well inside the guard's time** (`job-route.test.ts`): no step may cost
@@ -187,7 +187,7 @@ Wrappers, nested commands and examples: `docs/design/hooks.md`.
 - Share one deadline across children (`src/hooks/budget.ts`). Give each child the smaller
   of its own limit and the time left. At zero time, do not start it: a Bun timeout of zero
   means no timeout. If judgment cannot finish, ask; an informational note skips the work.
-- A guard gets a short timeout; a hook that waits gets a long one.
+- `job-route` and `user-away` get a short timeout; a hook that waits gets a long one.
 
 ## Tests
 
