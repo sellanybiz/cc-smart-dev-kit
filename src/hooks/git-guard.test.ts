@@ -222,6 +222,67 @@ describe("bash 5.3's brace command substitution is read as a command", () => {
   });
 });
 
+// Round 3's computed-git finding: git, or its subcommand, worked out when the line runs, beside
+// the words that make this guard ask, was silent in every session. `hooks.md`: a guard whose
+// domain words are in a computed command asks; it never stays silent.
+describe("a git or a git subcommand named at run time, beside a word the guard judges, asks", () => {
+  /** The question both computed asks share. */
+  const CANNOT_TELL = "cannot tell";
+
+  it.each([
+    ["the program from a variable", "$GIT reset --hard"],
+    ["the program from $( … )", "$(echo git) reset --hard"],
+    ["the program from a backtick", "`echo git` reset --hard"],
+    ["the program from a variable, before git options", "$GIT -C sub checkout -- ."],
+    ["a clean", "$GIT clean -fd"],
+    ["a branch delete", "$GIT branch -D old"],
+    ["a stash clear", "$GIT stash clear"],
+    ["a worktree removed by force", "$GIT worktree remove -f ../w"],
+    ["the subcommand from $( … )", "git $(echo push) --force origin main"],
+    [
+      "the subcommand from bash 5.3's brace substitution",
+      `git \${ echo push; } --force origin main`,
+    ],
+    ["the subcommand from a backtick", "git `echo push` --force origin main"],
+    ["the subcommand from a variable", "git $SUB --hard"],
+    ["the subcommand behind git options", "git -C sub $SUB --hard"],
+    ["a push from a computed program", "$(which git) push --force origin main"],
+  ])("%s: %j asks the main session", (_name, command) => {
+    expect(guard(command, neutral, true, "bash")).toContain(CANNOT_TELL);
+  });
+
+  it.each([
+    ["a computed program with no git word", "$EDITOR file"],
+    ["git inside a substitution, reading only", "echo $(git rev-parse HEAD)"],
+    ["a computed argument of a reading subcommand", "git log $(cat range)"],
+    ["a computed program whose git words discard nothing", "$GIT checkout main"],
+    ["a computed program that only reads", "$GIT status"],
+  ])("%s: %j stays silent", (_name, command) => {
+    expect(guard(command, neutral, true, "bash")).toBeUndefined();
+  });
+
+  it("a computed subcommand asks whatever follows it: `git restore` alone asks too", () => {
+    expect(guard("git restore", neutral, false, "bash")).toBeDefined();
+    expect(guard("git $(echo status)", neutral, false, "bash")).toContain(CANNOT_TELL);
+    expect(guard("git $(echo log) -1", neutral, false, "bash")).toContain(CANNOT_TELL);
+  });
+
+  it("with autoPush off, a computed subcommand asks: it may be the push that asks anyway", () => {
+    const questions = guardQuestions("git $(echo status) --short", neutral, {
+      ...OPTIONS,
+      autoPushAsk: () => "autoPush is off",
+      dialect: "bash",
+      env: cleanGitEnv(),
+    });
+    expect(questions.join("\n")).toContain(CANNOT_TELL);
+  });
+
+  it("runsGit counts a computed program beside a word the guard judges", () => {
+    expect(runsGit("$GIT reset --hard")).toBe(true);
+    expect(runsGit("$EDITOR file")).toBe(false);
+  });
+});
+
 describe("a push to a protected branch asks", () => {
   it.each([
     ["git push origin dev", "dev"],
