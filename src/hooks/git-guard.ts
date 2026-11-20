@@ -36,26 +36,47 @@
  *
  * A subagent undoing its own work is not asked: a working-folder discard (the `checkout`,
  * `restore` and `switch` forms, `reset --hard`, `reset --merge`, `clean -f`) asks nothing when
- * every folder the line can run it in is provably inside the worktree of the subagent that
- * runs it, `<root>/.claude/worktrees/agent-<agent_id>`: a hook's question cannot be remembered,
- * so each one only interrupts the person. The proof (`ownWorktreeProof`), all of it or the
- * question stays:
+ * the line is a plain one and every folder it can run the discard in is provably inside the
+ * worktree of the subagent that runs it, `<root>/.claude/worktrees/agent-<agent_id>`: a hook's
+ * question cannot be remembered, so each one only interrupts the person. The proof
+ * (`ownWorktreeProof`), all of it or the question stays:
+ * - the line is plain: every command of it, at any depth, is one of three shapes
+ *   (`plainStep`), and anything else asks — a shell trick that moves git cannot hide in a
+ *   shape the guard does not know, because no such shape is silent:
+ *   1. `git` itself, with nothing in front of it (no wrapper, no variable, no keyword);
+ *   2. a folder change (`cd`, `chdir`, `pushd`, `Set-Location`, `sl`, `Push-Location`) with one
+ *      folder and no option (PowerShell's `-Path` / `-LiteralPath` with its one value);
+ *   3. a program of `INERT_PROGRAMS`, which changes neither the shell's folder nor its state
+ *      and runs no command it is given; `printf -v` sets a variable, so `printf` with an
+ *      option is not one. Read as PowerShell, a word that names the alias, env, function or
+ *      variable drive, or a parameter that sets a variable (`-OutVariable`), is not one either;
+ *   and nothing defines a function on the line (`name()`), and, read as PowerShell, it holds
+ *   no brace (a script block). The line is judged as the tool runs it (`toolDialect`);
  * - the hook input's `agent_id` is the id in the folder's name, and the session's own folder
  *   (the input's `cwd`) is that worktree or inside it;
+ * - the worktree is real: no link on its path, and git says it is a linked worktree whose
+ *   top is that folder (`--git-dir` is not `--git-common-dir`);
  * - real paths, never text: a link or a missing folder asks;
- * - every folder change on the line, at any depth (`cd`, `pushd`, `Set-Location`,
- *   `Push-Location`, an `eval`), names a folder the guard can follow and that is inside it,
- *   and every `-C` too; `cd -`, `popd`, `Pop-Location`, `source`, `.`, a runner (`find`,
- *   `parallel`, `su`, `watch`), an `eval` it cannot read
- *   and a `..` in a relative `cd` ask, because where a `cd` really lands (a subshell, a pipe, a
- *   failed `cd`, a loop) is not known, so each folder is judged wherever the line could be;
+ * - every folder change of the line, every time it appears, is followed from every folder the
+ *   line could be in by then, and every `-C` too, and each folder they reach is inside the
+ *   worktree: where a `cd` really lands (a subshell, a pipe, a failed `cd`, a loop) is not
+ *   known, so each folder is judged wherever the line could be. A target with `..`, `~`, `$`,
+ *   a glob, a brace pair, a backtick, `%VAR%` or a bare drive (`D:`) is not followed, nor a
+ *   relative one while the guard's environment sets `CDPATH`;
  * - git itself says the folder's repository starts at that worktree
  *   (`git rev-parse --show-toplevel`): a repository inside it asks;
- * - git's location is not set another way: `--work-tree`, `--git-dir`, `-c core.worktree`, a
- *   wrapper (`env -C x git …`), or a word of the line that names `GIT_DIR`, `GIT_WORK_TREE`,
- *   `GIT_COMMON_DIR`, `GIT_INDEX_FILE` or `GIT_CONFIG_*`, in any case (`GIT_LOCATION`), or one of
- *   them in the guard's own environment.
- * Every other kind (a push, `branch -D`, the stash, `worktree remove -f`) still asks there.
+ * - git's location is not set another way: `--work-tree`, `--git-dir`, a `-c` on that call, or
+ *   a word of the line that names `GIT_DIR`, `GIT_WORK_TREE`, `GIT_COMMON_DIR`,
+ *   `GIT_INDEX_FILE`, `GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_<n>`, `GIT_CONFIG_VALUE_<n>` or
+ *   `GIT_CONFIG_PARAMETERS`, in any case (`GIT_LOCATION`), or one of them in the guard's own
+ *   environment;
+ * - every git call of the proof ends inside one deadline (`OWN_WORKTREE_PROOF_BUDGET_MS`), well
+ *   inside the hook's own timeout: a git that is slow to answer asks.
+ * Every other kind (a push, `branch -D`, the stash, `worktree remove -f`) is judged there as
+ * anywhere else. Limits of the proof: a `CDPATH`, an alias or a function that only the Bash
+ * tool's shell snapshot holds is not seen by the hook; a line that changes a folder it checked
+ * before git runs (swaps it for a link, rewrites its `.git` file) is judged as the disk was;
+ * the Windows paths are not run on Windows.
  *
  * "ask", never "deny": the person may mean it, and a hook cannot tell. Every command of a
  * line is read on its own, through the one shell reader (`src/shell/command.ts`), in the
@@ -78,14 +99,13 @@
  */
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
-import { isInside } from "../path-compare";
+import { isInside, samePath } from "../path-compare";
 import { CHANGES_FOLDER, type Folder, movedTo } from "../shell/change-dir";
 import {
   type Dialect,
+  type Invocation,
   invocationOf,
-  isRunnerProgram,
   isShort,
-  isWrapper,
   MAX_NESTING,
   nestedCommand,
   nestedDialect,
@@ -98,7 +118,8 @@ import {
   wordsOf,
 } from "../shell/command";
 import { type GitCall, gitCalls, longOption } from "../shell/git-calls";
-import { GUARD_GIT_TIMEOUT_MS, runGit } from "./git";
+import { type Budget, OWN_WORKTREE_PROOF_BUDGET_MS, startBudget } from "./budget";
+import { type GitRun, GUARD_GIT_TIMEOUT_MS, runGit } from "./git";
 import { memoizedRealPath, type RealPath } from "./real-path";
 import type { Env } from "./run";
 import { subagentWorktreeOf } from "./subagent-worktree";
@@ -122,11 +143,19 @@ export interface GuardOptions {
   /** The dialect of the tool that runs the line (`dialectOfTool`); not given, both are read. */
   dialect?: Dialect | undefined;
   /**
-   * The hook input's `agent_id`: set when a subagent runs the line, null (or not given) for the
-   * main session. With it, a working-folder discard inside that subagent's own worktree asks
-   * nothing (`insideOwnWorktree`).
+   * The hook input's `agent_id` (as `agentIdKey` gives it): set when a subagent runs the line,
+   * null (or not given) for the main session. With it, a working-folder discard inside that
+   * subagent's own worktree asks nothing (`ownWorktreeProof`).
    */
   agentId?: string | null | undefined;
+  /**
+   * The dialect the tool really runs the line in (`dialectOfTool`), for the own-worktree proof
+   * alone: the questions read the line every way (`dialect`), but whether a line is plain is
+   * judged as it will run. Not given, every reading must be plain.
+   */
+  toolDialect?: Dialect | undefined;
+  /** When the hook started (the frame's `nowMs`): the proof's deadline counts from there. */
+  startedAtMs?: number | undefined;
 }
 
 /**
@@ -149,6 +178,15 @@ interface FolderChange {
   dialect: Dialect;
 }
 
+/** One way the line was read (`readingsOf`), as the own-worktree proof needs it. */
+interface ReadingProof {
+  dialect: Dialect;
+  /** Every command of the reading, at any depth, is a plain shape (`plainStep`). */
+  plain: boolean;
+  /** Every folder change of the reading, in order, each time it appears. */
+  folderChanges: FolderChange[];
+}
+
 /** One guard run: its options, and what it read from git once (a line may push many times). */
 interface GuardRun {
   options: GuardOptions;
@@ -156,16 +194,16 @@ interface GuardRun {
   pushConfigs: Map<string, Map<string, string[]>>;
   /** The discards `callQuestions` left to `ownWorktreeProof`. */
   discards: OwnDiscard[];
-  /** Every folder change of the line, at any depth. */
-  folderChanges: FolderChange[];
+  /** Each reading of the line: whether it is plain, and its folder changes. */
+  readings: ReadingProof[];
   /** A word of the line, at any depth, names where git works (`GIT_LOCATION`). */
   locationNamed: boolean;
-  /** The line changes the shell's folder or state in a way the guard cannot read. */
-  unreadable: boolean;
   /** Real paths, remembered for this run. */
   real: RealPath;
   /** Whether git says a real folder's repository starts at the own worktree, per folder. */
   startsAtRoot: Map<string, boolean>;
+  /** The one deadline every git call of the proof shares (`OWN_WORKTREE_PROOF_BUDGET_MS`). */
+  budget: Budget;
 }
 
 /**
@@ -584,26 +622,8 @@ function computedPushIn(command: string, dialect?: Dialect): boolean {
   );
 }
 
-/**
- * True when nothing before `git` can move where it works: a wrapper (`env -C x git …`, `sudo`)
- * or an option on the prefix (`Start-Process -WorkingDirectory x`) can. A shell keyword, a
- * redirection and a variable (`LANG=C`) move nothing. git's own `--work-tree`, `--git-dir` and
- * `-c core.worktree` are read from the call itself, and a variable that names git's location
- * from the whole line (`namesGitLocation`).
- */
-function plainPrefix(prefix: readonly string[]): boolean {
-  return !prefix.some((word) => isWrapper(word) || word.startsWith("-"));
-}
-
-function gitQuestions(
-  args: string[],
-  folder: Folder,
-  prefix: readonly string[],
-  dialect: Dialect,
-  run: GuardRun,
-): string[] {
-  const plain = plainPrefix(prefix);
-  return gitCalls(args).flatMap((call) => callQuestions(call, folder, plain, dialect, run));
+function gitQuestions(args: string[], folder: Folder, dialect: Dialect, run: GuardRun): string[] {
+  return gitCalls(args).flatMap((call) => callQuestions(call, folder, dialect, run));
 }
 
 /**
@@ -618,13 +638,7 @@ function pushAlias(call: GitCall): string[] | null {
   return first === "push" || first === "send-pack" ? words.slice(1) : null;
 }
 
-function callQuestions(
-  call: GitCall,
-  folder: Folder,
-  plain: boolean,
-  dialect: Dialect,
-  run: GuardRun,
-): string[] {
+function callQuestions(call: GitCall, folder: Folder, dialect: Dialect, run: GuardRun): string[] {
   const { options } = run;
   const { rest, sub } = call;
   const alias = pushAlias(call);
@@ -662,14 +676,14 @@ function callQuestions(
   }
   // The working-folder discards below ask nothing inside the subagent's own worktree, when the
   // whole line proves it (`ownWorktreeProof`); every other kind of this function reaches
-  // outside it (a remote, the branch list, the shared stash).
+  // outside it (a remote, the branch list, the shared stash). A `-c` on the call may set where
+  // git works (`core.worktree`) or a program it runs (a filter, `core.fsmonitor`): it asks.
   const unlessOwn = (ask: string): string[] => {
     const own =
-      plain &&
       (options.agentId ?? null) !== null &&
       call.workTree === null &&
       call.gitDir === null &&
-      !call.config.has("core.worktree");
+      call.config.size === 0;
     if (!own) return [ask];
     run.discards.push({ ask, dialect, dirs: call.dirs });
     return [];
@@ -702,15 +716,139 @@ function callQuestions(
 }
 
 /**
- * Programs that change the shell's folder or state where the guard cannot follow: `source` and
- * `.` run a script in this shell, and `Pop-Location` goes back to a folder the line never named.
- * The runners (`find`, `parallel`, `su`, `watch`) run git where their own arguments say
- * (`find /x -execdir git reset --hard ;`), so a line with one asks too (`isRunnerProgram`).
+ * The programs a plain line may run besides `git` and a folder change (`plainStep`). Each one
+ * changes neither the folder the shell is in nor the shell's state (a variable, a function, an
+ * alias), and runs no command its arguments name: a program run as a child process cannot move
+ * the shell, and the shell builtins here (`echo`, `printf`, `pwd`, `test`, `[`, `true`, `false`)
+ * only print or test. `printf -v` sets a variable, so `printf` with an option is not plain. Read
+ * as PowerShell, several are aliases of the cmdlets below, which run inside the shell: the alias,
+ * env, function and variable drives and the parameters that set a variable are kept out
+ * (`plainPowerShellWords`). Left out on purpose: shells, interpreters and package runners
+ * (`bun`, `node`, `python`, `make`), the runners (`find`, `xargs`, `parallel`, `watch`, `su`,
+ * `sudo`), `env`, `eval`, `source`, every wrapper, `rg` (`--pre` runs a program) and `sort`
+ * (`--compress-program` runs one).
  */
-const UNFOLLOWED: ReadonlySet<string> = new Set([".", "pop-location", "source"]);
+export const INERT_PROGRAMS: ReadonlySet<string> = new Set([
+  "[",
+  "cat",
+  "cp",
+  "diff",
+  "echo",
+  "false",
+  "grep",
+  "head",
+  "ls",
+  "mkdir",
+  "mv",
+  "printf",
+  "pwd",
+  "rm",
+  "rmdir",
+  "tail",
+  "tee",
+  "test",
+  "touch",
+  "true",
+  "uniq",
+  "wc",
+  "copy-item",
+  "get-childitem",
+  "get-content",
+  "move-item",
+  "new-item",
+  "remove-item",
+  "test-path",
+  "write-host",
+  "write-output",
+]);
 
-/** Programs that run the text they are given in this shell (a `cd` in it is a folder change). */
-const EVALUATES: ReadonlySet<string> = new Set(["eval", "iex", "invoke-expression"]);
+/**
+ * The folder changes a plain line may make, each with one folder (`plainFolderChange`): the
+ * guard follows them (`followed`). `popd` and `Pop-Location` go back to a folder the line never
+ * named, so they are not here.
+ */
+const FOLLOWED_FOLDER_CHANGES: ReadonlySet<string> = new Set([
+  "cd",
+  "chdir",
+  "pushd",
+  "push-location",
+  "set-location",
+  "sl",
+]);
+
+/** A function defined on the line (`git() { … }`, `f ( ) ( … )`): a command may then mean anything. */
+const FUNCTION_DEFINITION = /\(\s*\)/;
+
+/** PowerShell's drives that hold the shell's own state, not files: `function:git`, `env:X`. */
+const SHELL_STATE_DRIVE = /(?:^|[^a-z])(?:alias|env|function|variable):/i;
+
+/** PowerShell's parameters that set a variable, by their full names and their aliases. */
+const VARIABLE_PARAMETERS: readonly string[] = [
+  "errorvariable",
+  "informationvariable",
+  "outvariable",
+  "pipelinevariable",
+  "variable",
+  "warningvariable",
+];
+const VARIABLE_PARAMETER_ALIASES: ReadonlySet<string> = new Set(["ev", "iv", "ov", "pv", "wv"]);
+
+/**
+ * True when no word of a PowerShell command reaches the shell's own state: a path on the alias,
+ * env, function or variable drive (`New-Item function:git`), or a parameter that sets a
+ * variable, by any prefix PowerShell accepts (`-OutVariable`, `-ov`, `-Var`).
+ */
+function plainPowerShellWords(words: readonly string[]): boolean {
+  return words.every((word) => {
+    if (SHELL_STATE_DRIVE.test(word)) return false;
+    if (!word.startsWith("-")) return true;
+    const name = (word.slice(1).split(":")[0] ?? "").toLowerCase();
+    if (name.length < 2) return true;
+    return (
+      !VARIABLE_PARAMETER_ALIASES.has(name) &&
+      !VARIABLE_PARAMETERS.some((parameter) => parameter.startsWith(name))
+    );
+  });
+}
+
+/** One folder and no option; PowerShell may name it with `-Path` / `-LiteralPath`. */
+function plainFolderChange(operands: readonly string[], dialect: Dialect): boolean {
+  const [first = "", second = ""] = operands;
+  if (operands.length === 1) return !first.startsWith("-");
+  return (
+    dialect === "powershell" &&
+    operands.length === 2 &&
+    /^-(?:literalpath|path)$/i.test(first) &&
+    !second.startsWith("-")
+  );
+}
+
+/**
+ * True when one command of a line is a shape the own-worktree proof fully understands: `git`
+ * with nothing before it, a folder change with one folder, or a program of `INERT_PROGRAMS`.
+ * Its first word must be the program itself: not a path, not a wrapper, a variable, a keyword or
+ * a redirection before it, not a program that starts another (`Start-Process git`, a package
+ * runner), and no inner command (`bash -c`, `| sh`, `eval`). A piece with no words (what a `;` or
+ * a brace leaves) runs nothing.
+ */
+function plainStep(
+  words: readonly string[],
+  invocation: Invocation | undefined,
+  nested: string | undefined,
+  dialect: Dialect,
+): boolean {
+  if (words.length === 0) return true;
+  if (invocation === undefined || nested !== undefined) return false;
+  if (invocation.computed || invocation.prefix.length > 0) return false;
+  const first = (words[0] ?? "").toLowerCase();
+  if (first !== invocation.program) return false;
+  const operands = withoutRedirections(invocation.args);
+  if (dialect === "powershell" && !plainPowerShellWords(operands)) return false;
+  if (first === "git") return true;
+  if (FOLLOWED_FOLDER_CHANGES.has(first)) return plainFolderChange(operands, dialect);
+  if (first === "printf") return !(operands[0] ?? "").startsWith("-");
+  return INERT_PROGRAMS.has(first);
+}
 
 /** A brace pair (`{a,b}`, `{1..3}`): the shell turns one word into several, which the guard cannot name. */
 const BRACE_PAIR = /\{[^}]*(?:,|\.\.)[^}]*\}/;
@@ -723,17 +861,40 @@ const MAX_FOLDERS = 32;
 const isRelativePath = (path: string): boolean => !/^(?:[\\/]|[A-Za-z]:|~)/.test(path);
 
 /**
- * The folders each of `folders` can be in after `change`, or null when the guard cannot name
- * them: no target, two targets (zsh's `cd old new`), a `cd -` or `popd`, a `~`, a `$`, a glob
- * or a brace pair (`movedTo`, `BRACE_PAIR`), and a `..` in a relative target. The last one is
- * why a `cd` that may not take effect, or may take effect again in a loop, cannot walk out of the
- * worktree: a relative target only goes down.
+ * True when the guard may follow a folder a `cd` or a `-C` names: no `..` anywhere (after a link
+ * it climbs out of the link's target, which no text can tell), no brace pair, and no bare or
+ * drive-relative drive (`D:`, `D:x`: PowerShell goes to that drive's own current folder).
+ * `movedTo` refuses the rest (`~`, `$`, a glob, a backtick, `%VAR%`).
  */
-function followed(change: FolderChange, folders: readonly string[]): string[] | null {
-  const named = change.operands.filter((arg) => !arg.startsWith("-") && arg.toLowerCase() !== "/d");
+function followable(path: string): boolean {
+  return (
+    !BRACE_PAIR.test(path) &&
+    !path.split(/[\\/]/).includes("..") &&
+    !/^[A-Za-z]:(?![\\/])/.test(path)
+  );
+}
+
+/** True when the guard's environment sets `CDPATH`: bash then looks for a relative folder there first. */
+function setsCdpath(env: Env): boolean {
+  return Object.entries(env).some(
+    ([name, value]) => value !== undefined && name.toUpperCase() === "CDPATH",
+  );
+}
+
+/**
+ * The folders each of `folders` can be in after `change`, or null when the guard cannot name
+ * them: no target, two targets (zsh's `cd old new`), a target it may not follow (`followable`,
+ * `movedTo`), or a relative one while `CDPATH` is set.
+ */
+function followed(
+  change: FolderChange,
+  folders: readonly string[],
+  cdpath: boolean,
+): string[] | null {
+  const named = change.operands.filter((arg) => !arg.startsWith("-"));
   const target = named[0];
-  if (named.length !== 1 || target === undefined || BRACE_PAIR.test(target)) return null;
-  if (isRelativePath(target) && target.split(/[\\/]/).includes("..")) return null;
+  if (named.length !== 1 || target === undefined || !followable(target)) return null;
+  if (cdpath && isRelativePath(target)) return null;
   const moved = folders.map((folder) =>
     movedTo(change.program, folder, change.operands, { dialect: change.dialect }),
   );
@@ -741,76 +902,111 @@ function followed(change: FolderChange, folders: readonly string[]): string[] | 
 }
 
 /**
+ * Every folder the readings the tool runs (`toolDialect`) can be in, or null when the guard
+ * cannot name them. Each folder change, every time it appears, goes from every folder reached
+ * before it: a `cd` that fails, runs in a subshell or runs again in a loop may start anywhere
+ * the line has been. So `cd loop; cd loop` reaches `loop/loop`, and that is checked too.
+ */
+function reachedFolders(
+  readings: readonly ReadingProof[],
+  start: string,
+  cdpath: boolean,
+): Set<string> | null {
+  const folders = new Set([start]);
+  for (const reading of readings) {
+    const reached = new Set([start]);
+    for (const change of reading.folderChanges) {
+      const moved = followed(change, [...reached], cdpath);
+      if (moved === null) return null;
+      for (const folder of moved) reached.add(folder);
+      if (reached.size > MAX_FOLDERS) return null;
+    }
+    for (const folder of reached) folders.add(folder);
+    if (folders.size > MAX_FOLDERS) return null;
+  }
+  return folders;
+}
+
+/**
  * The test a discard must pass to stay silent in the subagent's own worktree, or null when no
- * discard of this line can (`GuardRun.discards`). The line's folder is not tracked: where a
- * `cd` really lands (in a subshell, a pipe, a background job, after a failed `cd`) does not
- * matter when the session folder and every folder the line names are all inside the worktree.
- * Real paths decide it (`RealPath`), a missing folder is not inside, and git itself must say the
- * folder's repository starts at the worktree: a link, a missing folder and a repository of its
- * own inside it all ask.
+ * discard of this line can (`GuardRun.discards`). The line must be plain (`plainStep`) as the
+ * tool runs it. The line's folder is not tracked: where a `cd` really lands (in a subshell, a
+ * pipe, a background job, after a failed `cd`) does not matter when the session folder and every
+ * folder the line can reach are all inside the worktree. Real paths decide it (`RealPath`), a
+ * missing folder is not inside, the worktree must be a real linked worktree with no link on its
+ * path, and git itself must say the folder's repository starts at the worktree. Every git call
+ * here shares one deadline (`GuardRun.budget`); a call it has no time for asks.
  */
 function ownWorktreeProof(run: GuardRun, cwd: string): ((discard: OwnDiscard) => boolean) | null {
   const { options, real } = run;
-  if (run.locationNamed || run.unreadable || envMovesGit(options.env)) return null;
-  if (run.folderChanges.length > MAX_FOLDER_CHANGES) return null;
+  const judged = run.readings.filter(
+    (reading) => options.toolDialect === undefined || reading.dialect === options.toolDialect,
+  );
+  if (judged.length === 0 || judged.some((reading) => !reading.plain)) return null;
+  if (run.locationNamed || envMovesGit(options.env)) return null;
+  const changes = judged.reduce((count, reading) => count + reading.folderChanges.length, 0);
+  if (changes > MAX_FOLDER_CHANGES) return null;
   const start = resolve(cwd);
   const root = subagentWorktreeOf(start, options.agentId ?? null);
   if (root === null || !existsSync(root)) return null;
   const realRoot = real(root);
+  // No link on the worktree's own path: a link there could lead to any checkout.
+  if (!samePath(root, realRoot)) return null;
+  const gitIn = (folder: string, args: string[]): GitRun | null => {
+    const timeoutMs = run.budget.timeFor(GUARD_GIT_TIMEOUT_MS);
+    return timeoutMs <= 0 ? null : runGit(folder, args, options.env, timeoutMs);
+  };
+  if (!isLinkedWorktree(root, realRoot, real, gitIn)) return null;
+  run.startsAtRoot.set(realRoot, true);
   const within = (folder: string): boolean =>
     existsSync(folder) && isInside(real(folder), realRoot);
   const startsAtRoot = (folder: string): boolean => {
     const key = real(folder);
     let known = run.startsAtRoot.get(key);
     if (known === undefined) {
-      const top = runGit(
-        folder,
-        ["rev-parse", "--show-toplevel"],
-        options.env,
-        GUARD_GIT_TIMEOUT_MS,
-      );
-      known =
-        top.ok &&
-        top.out !== "" &&
-        isInside(real(top.out), realRoot) &&
-        isInside(realRoot, real(top.out));
+      const top = gitIn(folder, ["rev-parse", "--show-toplevel"]);
+      known = top?.ok === true && top.out !== "" && samePath(real(top.out), realRoot);
       run.startsAtRoot.set(key, known);
     }
     return known;
   };
 
-  // The same folder change is met once for every way the line is read (both dialects when the
-  // tool is not known, a nested text read again): the readings are alternatives, not a
-  // sequence. So each distinct change is followed once, from the folders before it, in every
-  // dialect it was read in. A repeated `cd src; cd src` counts once too: a relative target only
-  // goes down, so a second step stays inside or fails where it stands.
-  const changes = new Map<string, Map<Dialect, FolderChange>>();
-  for (const change of run.folderChanges) {
-    const key = [change.program, ...change.operands].join("\0");
-    changes.set(key, (changes.get(key) ?? new Map()).set(change.dialect, change));
-  }
-  const folders = new Set([start]);
-  for (const variants of changes.values()) {
-    const before = [...folders];
-    for (const change of variants.values()) {
-      const reached = followed(change, before);
-      if (reached === null) return null;
-      for (const folder of reached) folders.add(folder);
-    }
-    if (folders.size > MAX_FOLDERS) return null;
-  }
-  if (![...folders].every(within)) return null;
+  const folders = reachedFolders(judged, start, setsCdpath(options.env));
+  if (folders === null || ![...folders].every(within)) return null;
 
   return (discard) =>
     [...folders].every((folder) => {
       let at: string | null = folder;
       for (const dir of discard.dirs) {
-        if (BRACE_PAIR.test(dir)) return false;
+        if (!followable(dir)) return false;
         at = movedTo("cd", at, [dir], { dialect: discard.dialect });
         if (at === null) return false;
       }
       return within(at) && startsAtRoot(at);
     });
+}
+
+/**
+ * True when `root` is a linked worktree whose top is `root` itself: one `git rev-parse` there
+ * names its top, its own git folder and the repository's shared one, and a linked worktree's two
+ * differ. A main checkout, a plain folder with the worktree's name and a folder git cannot read
+ * all give false.
+ */
+function isLinkedWorktree(
+  root: string,
+  realRoot: string,
+  real: RealPath,
+  gitIn: (folder: string, args: string[]) => GitRun | null,
+): boolean {
+  const read = gitIn(root, ["rev-parse", "--show-toplevel", "--git-dir", "--git-common-dir"]);
+  if (read === null || !read.ok) return false;
+  const [top, gitDir, commonDir] = read.out.split(/\r?\n/);
+  if (top === undefined || gitDir === undefined || commonDir === undefined) return false;
+  if (top === "" || gitDir === "" || commonDir === "") return false;
+  return (
+    samePath(real(top), realRoot) &&
+    !samePath(real(resolve(root, gitDir)), real(resolve(root, commonDir)))
+  );
 }
 
 /** The questions the discards that looked silent still owe, once the whole line is read. */
@@ -822,46 +1018,46 @@ function ownDiscardAsks(run: GuardRun, cwd: string): string[] {
 
 /**
  * Every question about a command line read one way (`reading`), each command of it read on
- * its own, in order, so a `cd` changes the folder the later commands run in.
+ * its own, in order, so a `cd` changes the folder the later commands run in. What the
+ * own-worktree proof needs of this reading goes into `proof`.
  */
 function inspect(
   command: string,
   cwd: Folder,
   reading: Reading,
   run: GuardRun,
+  proof: ReadingProof,
   depth = 0,
 ): string[] {
   const found: string[] = [];
   let folder = cwd;
   const { dialect, joinLines } = reading;
+  // PowerShell reads every brace as a script block or a hashtable: no plain shape holds one.
+  if (dialect === "powershell" && /[{}]/.test(command)) proof.plain = false;
   // A quote left open is read blind: more pieces, so nothing hides inside it.
   for (const step of shellSteps(command, { blindWhenOpen: true, dialect, joinLines })) {
     const words = wordsOf(step.text, dialect);
     // Before the early exit: `GIT_DIR=x` alone, and `export GIT_DIR=x`, run no program of ours.
     if (namesGitLocation(words)) run.locationNamed = true;
     const invocation = invocationOf(words);
+    const inner =
+      invocation === undefined
+        ? undefined
+        : nestedCommand(invocation.program, invocation.args, step.pipedFrom);
+    if (!plainStep(words, invocation, inner, dialect)) proof.plain = false;
     if (invocation === undefined) continue;
     const { args, program } = invocation;
     // A redirection (`>log`, `2>&1`) is the shell's: git never sees it as a refspec.
     const operands = withoutRedirections(args);
-    if (UNFOLLOWED.has(program) || isRunnerProgram(program)) run.unreadable = true;
-    if (CHANGES_FOLDER.has(program)) run.folderChanges.push({ dialect, operands, program });
-    if (program === "git") {
-      found.push(...gitQuestions(operands, folder, invocation.prefix, dialect, run));
-    }
+    if (CHANGES_FOLDER.has(program)) proof.folderChanges.push({ dialect, operands, program });
+    if (program === "git") found.push(...gitQuestions(operands, folder, dialect, run));
     // The program is worked out when the line runs (`$GIT push`, `$(which git) push`): the
     // guard cannot name it, so a line whose words name a push asks, never stays silent.
     if (invocation.computed && namesPush(words)) found.push(COMPUTED_PUSH_ASK);
     if (CHANGES_FOLDER.has(program)) folder = movedTo(program, folder, operands);
-    const inner = nestedCommand(program, args, step.pipedFrom);
-    if (inner !== undefined) {
-      // A folder change below the nesting limit, or in text the shell works out, is not read.
-      if (depth >= MAX_NESTING || (EVALUATES.has(program) && /[$`]/.test(inner))) {
-        run.unreadable = true;
-      } else {
-        for (const nested of readingsOf(inner, nestedDialect(program))) {
-          found.push(...inspect(inner, folder, nested, run, depth + 1));
-        }
+    if (inner !== undefined && depth < MAX_NESTING) {
+      for (const nested of readingsOf(inner, nestedDialect(program))) {
+        found.push(...inspect(inner, folder, nested, run, proof, depth + 1));
       }
     }
   }
@@ -880,15 +1076,23 @@ export function guardQuestions(command: string, cwd: string, options: GuardOptio
     branches: new Map(),
     pushConfigs: new Map(),
     discards: [],
-    folderChanges: [],
+    readings: [],
     locationNamed: false,
-    unreadable: false,
     real: memoizedRealPath(),
     startsAtRoot: new Map(),
+    budget: startBudget(options.env, Date.now, OWN_WORKTREE_PROOF_BUDGET_MS, options.startedAtMs),
   };
-  const found = readingsOf(command, options.dialect).flatMap((reading) =>
-    inspect(command, cwd, reading, run),
-  );
+  // A function defined anywhere on the line can give any command a new meaning.
+  const definesFunction = FUNCTION_DEFINITION.test(command);
+  const found = readingsOf(command, options.dialect).flatMap((reading) => {
+    const proof: ReadingProof = {
+      dialect: reading.dialect,
+      plain: !definesFunction,
+      folderChanges: [],
+    };
+    run.readings.push(proof);
+    return inspect(command, cwd, reading, run, proof);
+  });
   // The discards that look like a subagent's own are judged on the whole line, at its end.
   found.push(...ownDiscardAsks(run, cwd));
   return [...new Set(found)];

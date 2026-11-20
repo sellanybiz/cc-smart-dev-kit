@@ -7,15 +7,20 @@ in your own terminal after the update; the user guide is [README.md](README.md).
 
 - **A builder undoing its own edits no longer asks you.** The git guard asks before a command
   that throws away uncommitted changes (`git checkout -- <file>`, `git restore`, `reset --hard`,
-  `clean -f`). It now stays silent when a subagent runs one inside its own worktree, and only
-  when it can prove that: the subagent's id, a real folder inside that worktree (a link out
-  of it, or a repository inside it, still asks), and git's own answer that the folder belongs
-  to it. A hook's question cannot be remembered, so each builder discard used to interrupt you.
-- **Everything else still asks:** a push, `branch -D`, the shared stash, `worktree remove -f`,
-  any discard by the main session, in another agent's worktree or your own checkout, and any
-  line that may point git elsewhere: a `cd` it cannot follow, `-C`, `--work-tree`, `--git-dir`,
-  a wrapper, `source`, `find -exec`, and `GIT_DIR` and the other `GIT_*` variables that move
-  git, in any case.
+  `clean -f`). It now stays silent when a subagent runs one on a plain line inside its own
+  worktree, and only when it can prove that: the subagent's id, a real linked worktree with no
+  link on its path, every folder the line can reach (`cd` and `git -C` included) a real folder
+  inside it, and git's own answer that the folder belongs to it. A plain line holds only `git`
+  with nothing in front of it, a `cd` to one folder, and simple programs that cannot move the
+  shell (`rm`, `ls`, `cat`, `echo` and a few more; the full list is in `docs/design/hooks.md`).
+  A hook's question cannot be remembered, so each builder discard used to interrupt you.
+- **Everything else still asks:** any discard by the main session, in another agent's worktree
+  or your own checkout, and any line that is not plain or may point git elsewhere: a `cd` or a
+  `-C` that leaves the worktree or that the guard cannot follow (`..`, `~`, `$VAR`), an inner
+  command (`bash -c "…"`, `eval`), a wrapper (`env -C`, `sudo`), any other program, a variable
+  set on the line, `--work-tree`, `--git-dir`, and `GIT_DIR` and the other `GIT_*` variables
+  that move git, in any case. A push, `branch -D`, the stash and `worktree remove -f` are judged
+  in a builder's own worktree exactly as anywhere else.
 
 **What to run:** restart open Claude Code sessions. A session that was open before the update
 keeps the old guard.

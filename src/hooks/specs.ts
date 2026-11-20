@@ -35,8 +35,8 @@
  * (`src/hooks/settings-hooks.ts`).
  */
 
-import { programsOf } from "../shell/command";
-import { recordsReview } from "../workflow/reviews";
+import { dialectOfTool, programsOf } from "../shell/command";
+import { agentIdKey, recordsReview } from "../workflow/reviews";
 import { workflowDefaults } from "../workflow/schema";
 import { afterMerge, mergesPullRequest, requestsPullRequestChange } from "./after-merge";
 import { AGENT_TOOLS, agentGuard, guardFacts, WORKFLOW_TOOLS } from "./agent-guard";
@@ -155,6 +155,8 @@ export const gitGuardHook: HookSpec = {
     if (config === null) return SILENT;
     const command = stringField(toolInput(input).command);
     if (command === null) return SILENT;
+    // Read as review-record reads it (`agentIdKey`), so the two hooks agree on a prefixed id.
+    const agentId = stringField(input.agent_id);
     const questions = guardQuestions(command, cwd, {
       protectedBranches: config.protectedBranches ?? DEFAULT_PROTECTED_BRANCHES,
       autoPushAsk: () => autoPushQuestion(context),
@@ -163,7 +165,9 @@ export const gitGuardHook: HookSpec = {
       sharedStash: config.worktrees !== undefined || project.isWorktree,
       env,
       // Set when a subagent runs the line: its discards in its own worktree ask nothing.
-      agentId: stringField(input.agent_id),
+      agentId: agentId === null ? null : agentIdKey(agentId),
+      toolDialect: dialectOfTool(input.tool_name),
+      startedAtMs: context.nowMs,
     });
     return questions.length === 0 ? SILENT : toolDecision("ask", questions.join("\n"));
   },
