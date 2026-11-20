@@ -259,10 +259,26 @@ interface Scan {
   /**
    * With `all`: the walk failed inside the body of a script that also runs heavy work, or too
    * deep in shells, where the line's own text cannot be split: no command of the line is to
-   * blame. A script whose body runs no heavy work is no such case: its call is the `stray`.
+   * blame. A script whose body runs no heavy work is no such case: its call is the `stray`. A
+   * body that takes a slot and fails only at commands that are no heavy work is no such case
+   * either: the call is heavy work (`unread`).
    */
   opaque: boolean;
+  /**
+   * Why a script's body could not be read whole (`Unread`), the first cause of the walk: a body
+   * the rule refused at a command that is no heavy work, or one that is too deep, loops, or
+   * runs work as another user. Set by a plain walk too, where a loop is only skipped.
+   */
+  unread: Unread | null;
 }
+
+/**
+ * Why a walk could not read a script's body whole. `not-heavy`: the rule refused a command of
+ * the body that is no heavy work (`next typegen`, `rm`), so the body may still take a slot.
+ * `unreadable`: nesting too deep, or a script that calls itself. `other-user`: work run as
+ * another user, which is never queued.
+ */
+type Unread = "not-heavy" | "unreadable" | "other-user";
 
 const newScan = (): Scan => ({
   found: [],
@@ -270,6 +286,7 @@ const newScan = (): Scan => ({
   queued: false,
   stray: null,
   opaque: false,
+  unread: null,
 });
 
 /** A lone `&` (a command sent to the background): not `&&`, `2>&1`, `&>file` or `|&`. */
@@ -323,7 +340,7 @@ function expandScript(
   all: boolean,
   out: Scan,
 ): boolean {
-  if (depth >= MAX_NESTING) return opaque(out);
+  if (depth >= MAX_NESTING) return opaque(out, "unreadable");
   const name = call.script ?? "";
   const folder = bodies.folder ?? lookedUpIn;
   const hooks = !(runner === "yarn" && bodies.yarnBerry === true);
@@ -336,7 +353,9 @@ function expandScript(
   for (const part of parts) {
     const key = JSON.stringify([folder, part]);
     if (run.reading.includes(key)) {
-      if (all) return opaque(out);
+      if (all) return opaque(out, "unreadable");
+      // A plain walk goes on past a loop, but the body is no longer read whole.
+      out.unread ??= "unreadable";
       continue;
     }
     const inside: Run = {
@@ -348,15 +367,20 @@ function expandScript(
       reading: [...run.reading, key],
     };
     if (!scan(bodies.get(part) ?? "", kinds, "bash", depth + 1, inside, all, out) && all) {
-      return opaque(out);
+      return opaque(out, "unreadable");
     }
   }
   return true;
 }
 
-/** The walk failed where the line's own text cannot be split (`Scan.opaque`); always false. */
-function opaque(out: Scan): false {
+/**
+ * The walk failed where the line's own text cannot be split (`Scan.opaque`); always false. The
+ * first cause stays: the walk of a body that failed deeper has set its own, which the callers
+ * above it do not replace.
+ */
+function opaque(out: Scan, why: Unread): false {
   out.opaque = true;
+  out.unread ??= why;
   return false;
 }
 
@@ -365,7 +389,7 @@ function opaque(out: Scan): false {
  * Inside a script's body the person cannot split the command off, so nothing is blamed there.
  */
 function refuse(run: Run, out: Scan, step: ShellStep): false {
-  if (run.reading.length > 0) return opaque(out);
+  if (run.reading.length > 0) return opaque(out, "not-heavy");
   out.stray ??= step.text.trim();
   return false;
 }
@@ -499,9 +523,13 @@ function scan(
     if (all && runsAsAnotherUser(invocation)) {
       const asked = newScan();
       scan(step.text, kinds, dialect, depth + 1, { ...run }, false, asked);
-      return takesSlot(asked, kinds, run.source) ? opaque(out) : refuse(run, out, step);
+      return takesSlot(asked, kinds, run.source)
+        ? opaque(out, "other-user")
+        : refuse(run, out, step);
     }
     if (all && isRunnerProgram(program)) return refuse(run, out, step);
+    // A plain walk goes on through it, but a script body that holds it is not read whole.
+    if (!all && runsAsAnotherUser(invocation)) out.unread ??= "other-user";
     // The queue's own command: whatever it runs is queued already, and must not nest.
     if (isJobRun(program, args)) out.queued = true;
     const inner = nestedCommand(program, args, step.pipedFrom);
@@ -527,7 +555,7 @@ function scan(
             all,
             out,
           )
-        : opaque(out);
+        : opaque(out, "unreadable");
     if (all && inner !== undefined) {
       // Such a shell is never pure.
       if (pipeFed) return refuse(run, out, step);
@@ -539,15 +567,30 @@ function scan(
     const before = out.found.length;
     const heavy = call !== undefined && matchCall(call, program, kinds, depth, run, all, out);
     if (all && !heavy && !(dialect === "bash" && isGlueCommand(step))) {
-      // A script whose body fails the rule has marked itself opaque. When the body also runs
-      // heavy work, the person cannot split it, so it is no command to blame. When it runs none
-      // (`lint: biome check .`), the script call is a command of its own that can be split off.
-      // The rule's walk stops at the body's first failing command, so it may never reach the
-      // heavy one after it (`biome check . && tsc --noEmit`): ask the call's whole body instead.
-      if (out.opaque && out.found.length === before && run.reading.length === 0) {
+      // A script whose body fails the rule has marked itself opaque. When the body runs no
+      // heavy work (`lint: biome check .`), the script call is a command of its own that can be
+      // split off. The rule's walk stops at the body's first failing command, so it may never
+      // reach the heavy one after it (`biome check . && tsc --noEmit`): ask the call's whole
+      // body instead.
+      if (out.opaque && run.reading.length === 0) {
         const body = newScan();
         if (call !== undefined) matchCall(call, program, kinds, depth, { ...run }, false, body);
-        if (!takesSlot(body, kinds, run.source)) out.opaque = false;
+        if (!takesSlot(body, kinds, run.source)) {
+          if (out.found.length === before) out.opaque = false;
+        } else if (out.unread === "not-heavy" && body.unread === null) {
+          // The call is the line's own command and its body takes a slot, but the rule refused
+          // a command of the body that is no heavy work (`SKIP_ENV_VALIDATION=1 next typegen &&
+          // tsc --noEmit`). The person's rules see only the call, never the body, so nothing
+          // hides in it: the call is heavy work, of the kinds the plain walk finds. A body that
+          // is too deep, loops or runs work as another user (`unread`) stays unread.
+          out.found.length = before;
+          out.found.push(...body.found);
+          out.background ||= body.background;
+          out.queued ||= body.queued;
+          out.opaque = false;
+          out.unread = null;
+          continue;
+        }
       }
       return out.opaque ? false : refuse(run, out, step);
     }

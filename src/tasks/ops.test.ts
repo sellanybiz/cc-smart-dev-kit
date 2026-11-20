@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite";
 import { expect, test } from "bun:test";
 import { join } from "node:path";
-import { hookEnv } from "../testing/hooks";
+import { hookEnv, makeRepo } from "../testing/hooks";
 import { git, tempDir } from "../testing/temp";
 import { folderProject } from "./context";
 import { scanDeployTasks } from "./deploy/files";
@@ -339,7 +339,12 @@ test("deploy tasks update, log, archive, search and protect tracked files", () =
 });
 
 test("subagent phase bindings survive updates and appear in the plan ledger", () => {
-  const cwd = tempDir();
+  const cwd = makeRepo();
+  // The builder's real branch: one commit past the base the phase records, so its close is a hand-back.
+  const base = git(cwd, "rev-parse", "HEAD").trim();
+  git(cwd, "switch", "-q", "-c", "task-next");
+  git(cwd, "commit", "-q", "--allow-empty", "-m", "work");
+  git(cwd, "switch", "-q", "main");
   const state = tempDir();
   const env = hookEnv();
   const ops = createTaskOps({ stateDir: state, cwd: () => cwd, caller: () => null, env });
@@ -363,12 +368,12 @@ test("subagent phase bindings survive updates and appear in the plan ledger", ()
         agent: "builder-next",
         branch: "task-next",
         worktree: "/tmp/task-next",
-        base: "def456",
+        base,
       }).ok,
     ).toBe(true);
     const got = ops.call("get", { task: "#2" });
     expect(got.ok && got.text).toContain(
-      "Agent: builder-next\nBranch: task-next\nWorktree: /tmp/task-next\nBase: def456",
+      `Agent: builder-next\nBranch: task-next\nWorktree: /tmp/task-next\nBase: ${base}`,
     );
     expect(ops.call("list", { scope: "plan" })).toMatchObject({
       ok: true,

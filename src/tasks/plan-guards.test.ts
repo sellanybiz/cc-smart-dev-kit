@@ -7,11 +7,12 @@
  */
 import { expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 import { cliPaths } from "../cli/paths";
 import { planCapChecks } from "../cli/project-checks";
 import { taskSegment } from "../cli/statusline";
 import { hookEnv, makeRepo, writeClaudeFile } from "../testing/hooks";
+import { git, tempDir } from "../testing/temp";
 import { folderProject } from "./context";
 import { createTaskOps, type TaskAnswer } from "./ops";
 import { openWorkDb, workDbFile, writeWork } from "./work/db";
@@ -1103,5 +1104,141 @@ test("a phase laid with no plan still goes to the default plan: the plan in flig
     expect(taskNumbered(w, 7).plan).toBe("b");
   } finally {
     lead.close();
+  }
+});
+
+/**
+ * The hand-back guard: a phase that records its builder's `branch` and `base` closes `done` only
+ * with a commit in `base..branch` that the plan branch holds. The repo has `main`, the plan
+ * branch `plan-br` (at `main`) and a builder branch `work` cut from the same commit.
+ */
+function handBack(options: { planBranch?: string | null } = {}) {
+  const w = world();
+  const ops = w.ops();
+  const base = git(w.repo, "rev-parse", "main").trim();
+  git(w.repo, "branch", "plan-br");
+  git(w.repo, "branch", "work");
+  const planBranch = options.planBranch === undefined ? "plan-br" : options.planBranch;
+  said(ops.call("create", { subject: "Plan", plan: "hb" }));
+  if (planBranch !== null) said(ops.call("update", { task: "#1", branch: planBranch }));
+  said(
+    ops.call("create", {
+      subject: "Area",
+      plan: "hb",
+      phase: "P1",
+      branch: "work",
+      base,
+      worktree: w.repo,
+    }),
+  );
+  said(ops.call("create", { subject: "Step", parent: "#2" }));
+  said(ops.call("done", { task: "#3", evidence: "ran it: passes" }));
+  return { ...w, ops, base };
+}
+
+/** One commit on `branch`, made in a throwaway worktree so the repo's own checkout stays put. */
+function commitOn(repo: string, branch: string, file: string) {
+  const tree = join(tempDir("hand-back-wt"), "wt");
+  git(repo, "worktree", "add", "-q", tree, branch);
+  writeFileSync(join(tree, file), "x\n");
+  git(tree, "add", file);
+  git(tree, "commit", "-q", "-m", `work ${file}`);
+  git(repo, "worktree", "remove", "--force", tree);
+}
+
+test("a hand-back: a phase with no branch recorded closes as before", () => {
+  const w = world();
+  const ops = w.ops();
+  try {
+    said(ops.call("create", { subject: "Plan", plan: "hb" }));
+    said(ops.call("update", { task: "#1", branch: "plan-br" }));
+    said(ops.call("create", { subject: "Area", plan: "hb", phase: "P1" }));
+    said(ops.call("create", { subject: "Step", parent: "#2" }));
+    said(ops.call("done", { task: "#3", evidence: "ran it: passes" }));
+    expect(said(ops.call("done", { task: "#2" }))).toContain("done");
+  } finally {
+    ops.close();
+  }
+});
+
+test("a hand-back: a branch with no commit past its base is refused, naming both", () => {
+  const w = handBack();
+  try {
+    const why = refused(w.ops.call("done", { task: "#2" }));
+    expect(why).toContain('"work"');
+    expect(why).toContain(w.base);
+    expect(why).toContain("no commit");
+    const viaUpdate = refused(w.ops.call("update", { task: "#2", status: "done" }));
+    expect(viaUpdate).toContain("no commit");
+  } finally {
+    w.ops.close();
+  }
+});
+
+test("a hand-back: a commit the plan branch does not hold is refused, naming both branches", () => {
+  const w = handBack();
+  try {
+    commitOn(w.repo, "work", "a.txt");
+    const why = refused(w.ops.call("done", { task: "#2" }));
+    expect(why).toContain('"work"');
+    expect(why).toContain('"plan-br"');
+    expect(why).toContain("not in");
+    expect(refused(w.ops.call("update", { task: "#2", status: "done" }))).toContain('"plan-br"');
+  } finally {
+    w.ops.close();
+  }
+});
+
+test("a hand-back: a commit the plan branch holds lets the phase close, by either tool", () => {
+  const w = handBack();
+  try {
+    commitOn(w.repo, "work", "a.txt");
+    git(w.repo, "branch", "-f", "plan-br", "work");
+    expect(said(w.ops.call("done", { task: "#2" }))).toContain("done");
+  } finally {
+    w.ops.close();
+  }
+  const again = handBack();
+  try {
+    commitOn(again.repo, "work", "a.txt");
+    git(again.repo, "branch", "-f", "plan-br", "work");
+    expect(said(again.ops.call("update", { task: "#2", status: "done" }))).toContain("done");
+  } finally {
+    again.ops.close();
+  }
+});
+
+test("a hand-back: with no plan branch recorded only the commit count is judged", () => {
+  const w = handBack({ planBranch: null });
+  try {
+    expect(refused(w.ops.call("done", { task: "#2" }))).toContain("no commit");
+    commitOn(w.repo, "work", "a.txt");
+    expect(said(w.ops.call("done", { task: "#2" }))).toContain("done");
+  } finally {
+    w.ops.close();
+  }
+});
+
+test("a hand-back: a branch git cannot find is refused with git's reason, never passed", () => {
+  const w = handBack();
+  try {
+    git(w.repo, "branch", "-D", "work");
+    const why = refused(w.ops.call("done", { task: "#2" }));
+    expect(why).toContain('"work"');
+    expect(why).toContain("could not");
+    expect(why.toLowerCase()).toContain("unknown revision");
+  } finally {
+    w.ops.close();
+  }
+});
+
+test("a hand-back: a dropped phase is not judged", () => {
+  const w = handBack();
+  try {
+    expect(
+      said(w.ops.call("done", { task: "#2", outcome: "dropped", note: "not needed" })),
+    ).toContain("dropped");
+  } finally {
+    w.ops.close();
   }
 });
