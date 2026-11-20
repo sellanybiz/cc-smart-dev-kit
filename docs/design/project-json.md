@@ -44,18 +44,18 @@ checks. A project that sets it raises `requires` to `>=1.9`.
 
 **The floor covers every field and hook name that came after 0.5.2.** An older plugin reads
 the file strictly: a field it does not know, or an `ownHooks` name outside its list, makes it
-refuse the whole file, and every guard in that project fails closed. `requiresFloor`
+refuse the whole file, and every hook in that project fails closed. `requiresFloor`
 (`src/project/init.ts`) picks the lowest plugin version that reads everything the file holds,
 and `project init` and `workflow set --project` write it as `requires`. Each version has one
 home in `src/project/config.ts`: `WORKTREE_PREFIX_OPTIONAL_SINCE` (0.5.2, the floor of every
 file), `WORKFLOW_FIXES_SINCE` and `WORKTREE_AUTO_CLEAN_SINCE` (1.0.0), `CHECKS_SINCE` (1.1.0),
 `WORKFLOW_ISSUES_SINCE` (1.4.0), `WORKTREE_REBUILDABLE_SINCE` (1.9.0), `TASKS_SINCE` (1.10.0),
-`DEPLOY_TASKS_SINCE` (5.0.0, `tasks.envs`) and `DEPLOY_GUARD_SINCE` (5.3.0, `tasks.deployCommands` and the `deploy-guard` name),
+`DEPLOY_TASKS_SINCE` (5.0.0, `tasks.envs`) and `DEPLOY_GUARD_SINCE` (5.3.0, `tasks.deployCommands` and the `deploy-guard` name, retired in 5.7.0 but kept as a floor),
 `JOB_KIND_KEYS_SINCE` (a kind's `noSlotForFiles` in 1.5.0; `light`, ignored since 2.0 like the
 old size fields and `workflow.crew`, raises no floor, and `doctor` says it can go) and
 `OWN_HOOK_NAMES_SINCE` (the `ownHooks` names: `subagent-background` in 1.0.0, `verify-gate` and
 `agent-usage` in 1.1.0, `tier-view` in 1.3.0, `task-start` in 1.10.0, `keep-going` and
-`builder-finish` in 2.0.0, `deploy-guard` in 5.3.0; the retired `crew-role` and `lead-notes` keep their 1.0.0). The
+`builder-finish` in 2.0.0, `deploy-guard` in 5.3.0 (retired in 5.7.0: it still parses); the retired `crew-role` and `lead-notes` keep their 1.0.0). The
 older retired and unswitchable names (`serena-root`, `message-guard`, `job-route`) are older than 0.5.2, so they
 raise nothing. A drift guard, `src/project/config.test.ts`, holds a hand-written list of what
 the 0.5.2 plugin accepted and of each later key and name with its release; it fails when the
@@ -71,7 +71,7 @@ message of its own per field ("`worktrees.prefix` is no longer supported: remove
 Code's own worktrees need none. `cc-smart-dev-kit project init` removes it"), never the strict
 parse's "unknown field (a newer cc-smart-dev-kit may be needed)", which would send the person to
 update instead. Its error class, `CcSmartDevKitRetiredFieldError`, is a config error like any
-other to every reader — the guards ask, `doctor` fails, the merge guard's committed read names
+other to every reader — `job-route` asks, `doctor` fails, the committed read of `merge-check` names
 it — and exists only so the portal's Project card still offers its write, which is the fix.
 Every reader goes through it: a file on disk (`loadCcSmartDevKitConfig`), the file as
 committed on a branch (`readCommittedConfig`), and the object `workflow set --project` is about
@@ -86,7 +86,7 @@ accepts: a project file that sets a retired field fails closed until `project in
   git says nothing about the folder. Its message is one plain line with its fix ("git did not
   answer in time: run `git status` in this folder; …"). Every command that finds the checkout
   prints it that way and no stack (`project init`, `workflow`, `worktrees`); `doctor`
-  says the reason alone and prints the fix on its own line; a guard's question names the
+  says the reason alone and prints the fix on its own line; a hook's question names the
   reason alone (`checkoutFailure`, `src/project/resolve.ts`).
 - **`requires` is checked before the strict parse.** A project may use a field newer
   than a user's plugin; that user is told to update, not that the field is unknown. A plugin
@@ -94,7 +94,7 @@ accepts: a project file that sets a retired field fails closed until `project in
   instead, since an update cannot help: `checkRequires` tells the two apart with
   `allowsNewer` (`src/project/version-range.ts`): when some version newer than the plugin is in
   the range (`^1.4 || ^2.1` on 2.0.0), an update helps; else only a wider range does.
-- **Without `cc-smart-dev-kit.json`, the plugin does Claude Code's default** and its guards stay
+- **Without `cc-smart-dev-kit.json`, the plugin does Claude Code's default** and its hooks stay
   silent. A project that never opted in does not notice the plugin.
 - **The retired engine's hook lines fail, and `project init` takes them out:** a line in the
   project's `.claude/settings.json` or `.claude/settings.local.json` that still runs

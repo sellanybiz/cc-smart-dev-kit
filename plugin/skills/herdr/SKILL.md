@@ -158,7 +158,7 @@ cc-smart-dev-kit herdr send <terminal> "Follow-up [#n]: <finding> [files now hel
     and save a task note on your work (or a loose task) "send ship to <terminal>". The next time
     you see the child idle, working or done, send it. A child in the error state: tell the person
     to look at its pane.
-  - **Away:** park the send as an `action` with its exact command
+  - **Away:** send it, and record the choice as a decision
     (`/cc-smart-dev-kit:user-unavailable`).
 - **It never stops on its own.** `herdr stop <terminal>` ends it. The start's orphaned-branch
   refusal sees only ended children Herdr still lists; after `herdr stop` it cannot see that

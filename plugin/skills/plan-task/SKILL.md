@@ -98,29 +98,30 @@ Answer eight questions; they are the plan's sections:
 Put a three-line **Summary** at the top. Keep approval and build status out of the design.
 Write it so a fresh session can build from the file alone: the approval screen may offer to
 clear the context and start from the plan (the person's `showClearContextOnPlanAccept`
-setting). The built-in `Plan` agent is read-only: it returns the text, and you write the file.
+setting). The built-in `Plan` agent is read-only: it returns the text, and you write the file. A planning
+agent runs on `opus` at `xhigh` (`/cc-smart-dev-kit:subagent-decision`).
 
 ## 4. Self-check, then approval
 
 Re-read the plan as a skeptic: a simpler path, an unverified assumption, an edge case waved
 away? For a big or risky plan, start two agents in one message: the
 `cc-smart-dev-kit:edge-case-hunter` for every scenario that can break the plan, and the
-`cc-smart-dev-kit:senior-engineer`'s second read (`opus`, `xhigh`; a read of the plan, not of a
-change set), its brief with the line `Mode: plan-review` alone on its line — never
+`cc-smart-dev-kit:senior-engineer`'s second read (both `opus` at `xhigh`; `fable` only with the
+person's yes; a read of the plan, not of a change set), its brief with the line `Mode: plan-review` alone on its line — never
 `Mode: review`, which would record the plan read as a code review. Fold what they find into
 the plan's approach and edge cases. When the plan adds UI or a new architecture, show it — a
 diagram or a mockup — rather than only describing it.
 
 Then ask for approval. In plan mode that is `ExitPlanMode`: it shows the plan, and the person
 approves it there or keeps planning — never a second "Start building?" with
-`AskUserQuestion`. Without plan mode, ask with `AskUserQuestion`. After an explicit yes,
-move a plan kept outside its home there. **In a project that guards its main folder**
-(`worktrees.guardMainFolder`) and a session in the main checkout, plan mode wrote the plan in
-the main checkout's plans folder: call `EnterWorktree` first (the plan's slug as its `name`),
-then copy the approved plan into the worktree's plans folder (`Read`, then `Write`), so the
-plan and the build are on the worktree's branch. Remove the original in the main checkout only
-if that is allowed; if it is refused, tell the person its exact path and never retry it another
-way. Commit the plan file on the current branch as the workflow allows. Move full research to
+`AskUserQuestion`. Without plan mode, ask with `AskUserQuestion`. **Away** (the person cannot
+answer): both are refused; record the plan as a decision (`Summary:` what you will build and
+why, `/cc-smart-dev-kit:user-unavailable`) and go on. After an explicit yes,
+move a plan kept outside its home there. **In a session in the main checkout,** plan mode wrote
+the plan in the main checkout's plans folder, and nothing there is for editing: call
+`EnterWorktree` first (the plan's slug as its `name`), then copy the approved plan into the
+worktree's plans folder (`Read`, then `Write`) and remove the original, so the plan and the
+build are on the worktree's branch. Commit the plan file on the current branch as the workflow allows. Move full research to
 `.claude/research/archive/<YYYY-MM-DD>-<slug>.md` (or the add-on's home), linked from the plan.
 Changes wanted: revise and ask again; never build without approval.
 

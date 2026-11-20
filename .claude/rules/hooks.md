@@ -26,7 +26,7 @@ together is `docs/design/hooks.md` § The hooks. The Claude Code behaviour behin
 the version it was proved on: `docs/claude-code-contract.md`. The `paths:` list names the
 hook entries only: `cli.ts`, `router.ts` and `portal.ts` are other bundles.
 
-Guard answers and failures: `hooks-guards.md`. Retired notifications: `docs/design/hooks.md` § The notifier.
+The one guard (`job-route`), answers and failures: `hooks-guards.md`. Retired notifications and guards: `docs/design/hooks.md` § The notifier and § Retired in 5.7.0.
 Session-start behavior and self-update: `session-start.md`.
 
 ## Who wires it
@@ -60,8 +60,7 @@ project-scoped ones can be silent for a project that never opted in, none remove
 and no two answer the same thing: `review-record` writes the review,
 `subagent-background` continues the agent for its running background work, `builder-finish`
 continues it for its open steps, and `agent-usage` only appends a line.
-`entries.test.ts` fails when `hooks.json` wires
-WorktreeCreate, WorktreeRemove, or a SubagentStart or SubagentStop entry outside the exact
+`entries.test.ts` fails when `hooks.json` wires WorktreeCreate, WorktreeRemove, or a SubagentStart or SubagentStop entry outside the exact
 list it names (`review-record` on SubagentStart; `review-record`, `subagent-background`,
 `builder-finish` and `agent-usage` on SubagentStop), so a new entry is checked before it is wired. The review gate `review-record`
 feeds stops mistakes, not a same-user process set on getting past it
@@ -106,19 +105,17 @@ Every entry in `plugin/hooks/hooks.json` uses the shell form, never the exec for
   exits 0; `--missing=quiet` writes one line on stderr and exits 0; `--missing=fail` writes
   one line on stderr and **exits 1**, for the command (`plugin/bin/cc-smart-dev-kit`), which must
   never report success when it did not run. An informational hook never stops a session on its own.
-- **A guard also asks when its bundle file is gone** (`--missing=ask` checks the file): Claude
+- **The guard also asks when its bundle file is gone** (`--missing=ask` checks the file): Claude
   Code deletes an old plugin version folder some time after an update, and bun told to run a
   file that is not there only prints its error and exits 1, which Claude Code reads as a failure
-  that goes on. Every guard's `hooks.json` entry also says **`"onFailure": "block"`**, the
+  that goes on. The guard's `hooks.json` entry also says **`"onFailure": "block"`**, the
   second belt for a hook that cannot start at all (the shim is gone too).
-- **A PreToolUse guard passes `--missing=ask`** — with no bun it asks instead of letting
+- **The PreToolUse guard (`job-route`) passes `--missing=ask`** — with no bun it asks instead of letting
   the tool run: a guard fails closed. **Every other hook passes `--missing=quiet`**, so a
   missing bun is one stderr line and the session goes on.
 - `<name>` is a bundle built from `src/entries/<name>.ts` (`bundles-and-releases.md`).
   The hook's logic lives in `src/hooks/`, where it can be tested; the entry is two lines:
-  `runHookEntry(<its spec>)` from `src/hooks/run.ts`, with the spec from `specs.ts`. One
-  exception: `agent-guard`'s entry also calls `loadScriptParser()` first, so acorn lands in
-  its bundle alone (`bundles-and-releases.md` § Dependencies).
+  `runHookEntry(<its spec>)` from `src/hooks/run.ts`, with the spec from `specs.ts`.
 - The command string is fixed: the quoted shim, the mode, the quoted bundle, nothing else.
   `entries.test.ts` asserts the whole string, so a stray quote or a bare path fails a test
   rather than a person's session.
@@ -134,14 +131,8 @@ Every entry in `plugin/hooks/hooks.json` uses the shell form, never the exec for
 2. **`ownHooks`** (`hooks-guards.md` § The project's own copy).
 3. **Read `cc-smart-dev-kit.json`**; broken or too new: fail closed (`hooks-guards.md` § Fail closed).
 4. **Run.** A guard's crash answers through `onCrash` (`hooks-guards.md` § Fail safe).
-5. **While the person is away**: an answer that asks them becomes a deny, with the call
-   parked on their list (`hooks-guards.md` § While the person is away). One step for every
-   hook; never an allow.
-6. **Record an ask**: an answer that asks the person is appended to `guard-asks.jsonl`
+5. **Record an ask**: an answer that asks the person is appended to `guard-asks.jsonl`
    (`hooks-guards.md` § Fail safe).
-
-The frame stays general: later hooks (such as the routing of heavy jobs) are new
-specs in it.
 
 ## Find the project from the input's `cwd`
 
@@ -164,14 +155,14 @@ goes into the session's context.
 - A hook that has nothing to do prints nothing.
 - `CC_SMART_DEV_KIT_HOOK_LOG`, when set, gets one JSON line per run (`run.ts`: the hook, the event,
   the input's `cwd`, the exit code, stdout, and the spec's `logFacts`): what `doctor --live`
-  reads. `logFacts` is for facts about what the hook's own parser read (the git guard logs
+  reads. `logFacts` is for facts about what the hook's own parser read (`job-route` logs
   the programs of the command line), so a live check proves a guard **answered**, not only
   that it ran. It never changes the answer, and never goes on stdout.
 
 ## Reading a shell line: one reader
 
 Every hook that asks what a Bash or PowerShell line runs reads it with `src/shell/command.ts`
-(the git guard, the merge reader in `after-merge.ts`, job-route, the classifier). Never write a
+(the merge reader in `after-merge.ts`, job-route, the classifier). Never write a
 second lexer or a split on `;` beside it: a guard and the queue must see the same commands.
 
 - **The dialect comes from the input's `tool_name`** (`dialectOfTool`): Bash and PowerShell
@@ -181,19 +172,18 @@ second lexer or a split on `;` beside it: a guard and the queue must see the sam
 - **A guard reads every way a line may run**: both dialects when unknown, joined at a
   trailing escape and not, and blind when a quote never closes. A check for something
   that RAN (the after-merge note) reads the open quote as text.
-- **A program named at run time** (`$GIT`, `$(which git)`) comes back `computed`. A guard
+- **A program named at run time** (`$GIT`, `$(which git)`) comes back `computed`. The guard
   whose domain words are in a computed command asks; it never stays silent.
 - **A new spelling that gets past a guard is fixed in the reader**, with a test named after
   the finding, never with a special case in one guard.
-- **A 64 KB line stays well inside the guard's time** (`git-guard.test.ts`): no step may cost
+- **A 64 KB line stays well inside the guard's time** (`job-route.test.ts`): no step may cost
   more than linear time, and git is asked once a folder per run.
 
-Wrappers, nested commands and the parser's examples: `docs/design/hooks.md`.
+Wrappers, nested commands and examples: `docs/design/hooks.md`.
 
 ## Timeouts
 
-- Give every hook an explicit timeout and every child a shorter one. PreToolUse stays fast;
-  only a merge judgment may make read-only network calls about that merge.
+- Give every hook an explicit timeout and every child a shorter one. PreToolUse stays fast.
 - Share one deadline across children (`src/hooks/budget.ts`). Give each child the smaller
   of its own limit and the time left. At zero time, do not start it: a Bun timeout of zero
   means no timeout. If judgment cannot finish, ask; an informational note skips the work.

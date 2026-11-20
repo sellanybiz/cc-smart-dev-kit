@@ -158,13 +158,13 @@ log(
 // The model rule is D46's: the review of a risky change set runs on `opus` at `xhigh`, every
 // other on `sonnet` at `high`, which gives most of the gain. A literal cannot depend on the
 // change set, so both fixed launch sets are written out here and the caller's `risky` picks one —
-// the simplest shape that keeps every launch a literal the agent guard reads (two scripts would
+// the simplest shape that keeps every launch's model and effort a plain literal (two scripts would
 // repeat every prompt and the orchestration, which `check:duplicates` fails). The refuters run
 // on the same tier: they make the review's judgment, so D46's rule covers them too.
 //
 // The agent type is the review-record hook's default `reviewAgents` name. A track reviewer's
-// brief carries the `Mode: review` line alone, so its return records the review for the merge
-// guard; a refuter's brief does not, because it checks one finding, not the whole change.
+// brief carries the `Mode: review` line alone, so its return records the review the lead reads
+// before it merges; a refuter's brief does not, because it checks one finding, not the whole change.
 //
 // The senior engineer has every tool. The tracks run at once on one checkout, so each launch
 // takes the editing tools away: no track changes the code another one is reading. It takes

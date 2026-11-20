@@ -22,7 +22,7 @@ own pane, and the lead never relays it (4.10.1). The user workflow is
 
 `src/entries/cli.ts` wires the command; `src/cli/help.ts` shares its grammar.
 `src/hooks/bash-judge.ts` adds hook-input checks through `job-route`; its launch kind is in
-`src/hooks/agent-guard.ts`. `prompt-source.ts` and `keep-going.ts` understand Herdr reports
+`src/hooks/launch-judge.ts`. `prompt-source.ts` and `keep-going.ts` understand Herdr reports
 and the `herdr:<core>/<address>` task-agent prefix. See `docs/design/hooks.md` § Herdr commands in the Bash judge.
 
 ## Identity and the two kinds
@@ -390,7 +390,7 @@ it." `planTrailer` and `followupTrailer` carry no copy of it.
 request, or when the person says to ship now. A blocked child cannot take it: the lead tells the
 person where it waits (`hc attach`), saves a task note "send ship to `<terminal>`" and sends it
 the next time the child is idle, working or done. A child in the error state: the lead tells the
-person to look at its pane. While the person is away, the send is parked as an action.
+person to look at its pane. While the person is away, the lead sends it and records a decision.
 
 **Sending to it.** `herdr send` reaches the follow-up child in the states `SEND_STATES` lists
 (idle, working, done), one constant read by `send`, `report` and the gate. A blocked child, or
@@ -419,8 +419,8 @@ comes first.
   branch, so the child's own-commit count includes them and the guard does not reset.
 - The child follows its trailer in prose; nothing enforces the steps.
 - A review covers only its own branch (`review-cover.ts`). After a cherry-pick onto a new branch,
-  the moved commits' reviews do not cover the new head, so the merge guard asks the person at
-  that pull request's merge. Nothing is lost.
+  the moved commits' reviews do not cover the new head, so the lead sees no review of the new head at
+  that pull request's merge, and says so in the pull request. Nothing is lost.
 - A merged or closed pull request (by the person or `autoMerge`) is noticed only at the child's
   next finding.
 - No `--issue` and no `Fixes` line when issues are refused (a public repository without
@@ -461,7 +461,7 @@ tells the lead never to ask or answer for it, and the judge refuses raw input in
 dialog, so only the person answers. Until 4.10.0 the kit had a relay (`herdr answer`, with a
 screen reader that matched the dialog and a judge question for every answer); the person
 chose to answer in the pane instead, so 4.10.1 removed it, and its guards with it.
-While away, the existing frame denies and parks the lead's own questions; a child waits in its
+While away, the lead takes the recommended option and records a decision; a child waits in its
 pane until the person comes back.
 
 ## Waiting without polling

@@ -66,10 +66,10 @@ model; the kit recommends Claude Opus at `high`. Worked examples and briefs:
 | `fable` | Claude Fable | advice on the hardest long-horizon work, a fresh attempt when the person is not satisfied; it builds only when the person asks; never the default |
 
 - **UI/UX design runs only on `opus` or `fable`, at `high` or above**; checking a UI is not
-  design. Other building starts on `sonnet`; stuck tasks escalate through the build skill.
+  design. Other building starts on `sonnet`.
 - **Effort:** `medium` for searches, reads and mechanical edits; `high` for building and
-  reviews; `xhigh` for the hardest judgment and the last check. `max` rarely pays; `opus` at
-  `max` and any `fable` launch ask the person.
+  reviews; `xhigh` for the hardest judgment and the last check. `max` rarely pays. Ask the person
+  before a `fable` or `opus`-at-`max` launch; away: `opus` at `xhigh`.
 - **Say it when you launch:** the reply that starts an agent names its slot, model and effort,
   so the person sees whose usage it spends.
 - **Your own model:** never remark on it or on a `/model` switch unasked; asked, answer plainly.

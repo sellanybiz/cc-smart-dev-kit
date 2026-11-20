@@ -5,6 +5,15 @@ page/API are retired. Statusline usage warnings remain. Manual setup offers the 
 Herdr GUI; see `README.md` § Herdr GUI. Older completed phases below describe their release,
 not features that still exist.
 
+## 5.7.0 — full auto: the kit's only guard is the heavy-job queue
+
+The owner, 2026-11-21: "the only guard our kit will support will be the heavy-job guard.
+Everything will run in full auto." Seven guards are gone (git, merge, deploy, main-folder, agent,
+session-escape, and user-away's blocking); `job-route` stays. While the person is available
+Claude asks its real questions; while they are away it takes the recommended option, records a
+decision and keeps going, and nothing is parked. The model rules, the merge rules and the deploy
+gates are instructions now. The design: [hooks](design/hooks.md) § Retired in 5.7.0.
+
 ## 5.2.0 — queued plans run solo, with children or through a coordinator
 
 Queued plans can run in three modes, chosen by `plans.runMode`: **solo** (as before), **lead +
@@ -248,7 +257,7 @@ The owner's decision D11, brought forward from 0.6.0 because a session nobody ca
 - **An `opus` launch runs with no question at `high` or `xhigh`** — any agent, any purpose,
   review or not — and needs no `Opus reason:` line; **at `max` it asks the person**, and a
   `claude -p` session refuses that one, with a message saying to run it lower or interactively.
-  Fable keeps its rules exactly (`docs/design/hooks.md` § The Agent guard).
+  Fable keeps its rules exactly (the `agent-guard` that held them is retired: `docs/design/hooks.md` § Retired in 5.7.0).
 - **The reason list, the review-agent list and `CC_SMART_DEV_KIT_AGENT_GUARD_REVIEW_AGENTS`
   are gone.** An `Opus reason:` line is optional: when a prompt has one, its first word only
   names the purpose in the record, which reads `opus:<effort>` (with the word after it when
@@ -281,7 +290,7 @@ Claude Code's, which is what every project gets now.
 
 The owner's decisions, all about which model runs what, in one patch release:
 
-- **Fable is not only an advisor** (`docs/design/hooks.md` § The Agent guard): `agent-guard` takes the new
+- **Fable is not only an advisor** (the retired `agent-guard`, `docs/design/hooks.md` § Retired in 5.7.0): it took the new
   reason `unsatisfied` — a fresh attempt after the person did not like the main session's
   answer — and an agent that can change files (a builder, or a fork) runs on Fable with the one
   word `build`, which the person approves, so a session whose own model is the `fable` tier can

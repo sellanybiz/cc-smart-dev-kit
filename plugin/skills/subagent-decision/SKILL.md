@@ -26,7 +26,7 @@ weigh three things:
 - **What does a miss cost?** Cheap and caught later, or it ships, loses data, opens a hole, or
   wastes a whole build?
 - **Is this the last check before it is too late?** A plan's second opinion, its two-round review and its final review
-  guard everything after them, so they earn more effort than a step a later review still covers.
+  cover everything after them, so they earn more effort than a step a later review still covers.
 
 Spend effort where those are high and save it everywhere else. `high` gives most of the gain;
 `xhigh` and `max` cost two to three times more again for a few points, and `max` can overthink
@@ -46,12 +46,19 @@ Worked examples — judge new cases the same way:
 | A plan's review (two `review-split` rounds, `/cc-smart-dev-kit:build` § 6) | `risky: true`: every agent is the senior engineer, `opus`, `xhigh` |
 | A plan's final review, after round 2's big fixes (`/cc-smart-dev-kit:build` § 6) | senior engineer, `opus`, `xhigh`, its brief with the line `Mode: review` |
 | **Second opinion on a plan** | senior engineer, `opus`, `xhigh`; risky, or `xhigh` already missed something → `max` (asks) |
-| Scenarios for a plan or a change | edge-case hunter, `opus`, `high`; risky (security, money, data, concurrency, the router, user settings) → `opus`, `xhigh` |
+| Scenarios for a plan | edge-case hunter, `opus`, `xhigh` |
+| Scenarios for a change | edge-case hunter, `opus`, `high`; risky (security, money, data, concurrency, the router, user settings) → `opus`, `xhigh` |
+| A `Plan` agent drafting a plan | `Plan`, `opus`, `xhigh` |
 | A release, or a change set that touches security, money, permissions, a schema, deploy or the router | senior engineer, `opus`, `xhigh` |
 | Stuck: two failed tries on the same problem | senior engineer, `opus`, `xhigh`; still stuck → `max` with the reason (asks) |
 | The person is unhappy with an answer | `fable` advice (asks) |
 
-"Asks" means you ask the person before the launch: `opus` at `max` and any `fable` launch.
+"Asks" means you ask the person before the launch: `opus` at `max` and any `fable` launch. No hook
+checks it. When the person is away, skip the ask and use `opus` at `xhigh` instead.
+
+**Planning agents run on `opus` at `xhigh`** — the plan's second read, the edge-case hunter on a
+plan, and a `Plan` agent drafting a plan: a wrong plan costs every phase built on it. `fable`
+only with the person's yes; when they are away, stay on `opus` at `xhigh`.
 
 ## Delegation and parallel work
 
@@ -122,7 +129,7 @@ who just walked in:
   hands back early is blocked once and told to wait or stop it — and Claude Code keeps such an
   agent open until the work lands.
 - **When it is blocked, it reports and stops.** It never retries in a loop, never works
-  around a guard, a hook or a permission refusal, and never widens its scope. A command
+  around a hook or a permission refusal, and never widens its scope. A command
   Claude Code's worktree check refuses as too complex is no block: the agent splits it into
   plain commands and goes on (`cc-smart-dev-kit:builder`).
 - **A done-check it can run, and a dense report:** findings with `file:line` evidence and the
@@ -184,8 +191,8 @@ builder to implement, never a build of its own.
   → Claude Sonnet, effort high)". The person sees whose usage each agent spends.
 - **Never switch or remove the folder an agent was launched from while it runs.** An agent's
   shell stays in the session's folder: move the session into another worktree, or remove the
-  worktree, and the agent's every command fails ("working directory no longer exists", or a
-  guard's refusal) and its work is lost. Wait for every agent you started from a folder before
+  worktree, and the agent's every command fails ("working directory no longer exists") and its
+  work is lost. Wait for every agent you started from a folder before
   you leave it or remove it.
 - **Check each hand-back yourself** before you build on it: its diff, its tests, its claims.
   The full check (`/cc-smart-dev-kit:verify-change` § 4) is yours, once, after every agent you

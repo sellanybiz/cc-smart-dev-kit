@@ -185,7 +185,7 @@ const coverage = audits
 phase('Report')
 // One writer, on `sonnet` at `medium`: the judgment is already made, and writing it down is not
 // a design decision. The path is a plain string: a template inside a template hides the options
-// from the guard, which reads the call's own literals.
+// from a reader of the call's own literals.
 const where =
   findingsPath === ''
     ? 'Return the whole report as your answer.'

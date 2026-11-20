@@ -19,8 +19,7 @@ more.
 **A base branch that is not the repo's default branch** sets `"worktree": {"baseRef": "head"}`
 in its committed `.claude/settings.json`: a new worktree then starts from your current branch,
 not from `origin`'s default branch. Start new work from the main checkout on the base branch
-(`git switch <base>` first if it was switched to explore; with `worktrees.guardMainFolder` on,
-the guard refuses that switch, so ask the person to run it), and a subagent's worktree gets the
+(`git switch <base>` first if it was switched to explore), and a subagent's worktree gets the
 session's commits too. Under `fresh` (Claude Code's default), a worktree and its subagents
 start from `origin`'s default branch.
 
@@ -33,7 +32,7 @@ names whatever is left.
 ## One session, one worktree, one branch
 
 **Always work in your own worktree. Sessions start in the main checkout:** never edit or
-commit there. A new task starts from there with `claude -w <task-name>` (dashes, not slashes:
+commit there (no hook stops you: this is the rule). A new task starts from there with `claude -w <task-name>` (dashes, not slashes:
 a `/` in a name becomes `+`); in a running session, `EnterWorktree` with the task name as its
 `name` makes one. An existing worktree is entered by its name with `EnterWorktree` — it
 resumes as it was left, and may carry an earlier session's commits — or by the person with
@@ -42,7 +41,7 @@ already inside one; from the main checkout it fails. A worktree outside
 `.claude/worktrees/` is entered by the person starting a session in that folder. A session
 already in a worktree that starts an **unrelated** task goes back to the main checkout first
 (`ExitWorktree`), then starts the new one from there. Every change goes: worktree → branch →
-commit → push → pull request into `base` → merge (after the person's yes) → clear the
+commit → push → pull request into `base` → merge (as `autoMerge` says: Claude's own, once CI is green and the review is recorded; else the person's) → clear the
 worktree. A merge is never announced to the other sessions.
 
 Why: in a shared folder, one session's `switch`, `stash`, `reset` or `restore` moves or hides
