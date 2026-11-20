@@ -5,10 +5,24 @@ import { gitCalls } from "./git-calls";
 describe("gitCalls", () => {
   test("the subcommand and its arguments, behind git's own options", () => {
     expect(gitCalls(["push", "origin", "main"])).toEqual([
-      { config: new Map(), dirs: [], rest: ["origin", "main"], sub: "push", workTree: null },
+      {
+        config: new Map(),
+        dirs: [],
+        gitDir: null,
+        rest: ["origin", "main"],
+        sub: "push",
+        workTree: null,
+      },
     ]);
     expect(gitCalls(["--no-pager", "-C", "a", "-C", "b", "log", "-1"])).toEqual([
-      { config: new Map(), dirs: ["a", "b"], rest: ["-1"], sub: "log", workTree: null },
+      {
+        config: new Map(),
+        dirs: ["a", "b"],
+        gitDir: null,
+        rest: ["-1"],
+        sub: "log",
+        workTree: null,
+      },
     ]);
   });
 
@@ -21,7 +35,7 @@ describe("gitCalls", () => {
     ]);
   });
 
-  test("--work-tree: both spellings, the last one wins; --git-dir is skipped", () => {
+  test("--work-tree: both spellings, the last one wins", () => {
     expect(gitCalls(["--work-tree=/w", "commit"])[0]?.workTree).toBe("/w");
     expect(gitCalls(["--git-dir", "/g", "--work-tree", "/w", "commit"])[0]).toMatchObject({
       sub: "commit",
@@ -32,6 +46,22 @@ describe("gitCalls", () => {
       sub: "commit",
       workTree: null,
     });
+  });
+
+  test("--git-dir: both spellings, the last one wins, and it is not the subcommand", () => {
+    expect(gitCalls(["--git-dir=/g", "checkout", "--", "f"])[0]).toMatchObject({
+      gitDir: "/g",
+      rest: ["--", "f"],
+      sub: "checkout",
+    });
+    expect(gitCalls(["--git-dir", "/g", "-C", "d", "reset", "--hard"])[0]).toMatchObject({
+      dirs: ["d"],
+      gitDir: "/g",
+      rest: ["--hard"],
+      sub: "reset",
+    });
+    expect(gitCalls(["--git-dir", "/a", "--git-dir=/b", "status"])[0]?.gitDir).toBe("/b");
+    expect(gitCalls(["checkout", "--", "f"])[0]?.gitDir).toBeNull();
   });
 
   test("git only prints: no call; an option it does not know: every later word may be the subcommand", () => {

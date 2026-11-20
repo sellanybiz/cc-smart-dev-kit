@@ -34,6 +34,18 @@
  * - when the project works in worktrees (`worktrees` in cc-smart-dev-kit.json): a bare `git stash`
  *   or `git stash pop`, because every worktree shares one stash.
  *
+ * A subagent undoing its own work is not asked: a working-folder discard (the `checkout`,
+ * `restore` and `switch` forms, `reset --hard`, `reset --merge`, `clean -f`) that runs inside
+ * the worktree of the subagent that runs it, `<main checkout>/.claude/worktrees/agent-<agent_id>`,
+ * proved by the hook input's `agent_id`, asks nothing: a hook's question cannot be remembered,
+ * so each one only interrupts the person. Every other kind still asks there, and so does a
+ * discard with no `agent_id`, in another worktree or a sibling folder, behind `-C`,
+ * `--work-tree`, `--git-dir`, `-c core.worktree` or a wrapper (`insideOwnWorktree`,
+ * `discardFolder`), and whenever git's location may come from the environment: a word of the
+ * line, at any depth, that names `GIT_DIR`, `GIT_WORK_TREE`, `GIT_COMMON_DIR` or
+ * `GIT_INDEX_FILE` (an `export`, a `$env:` assignment, a prefix, a use), or one of them set in
+ * the guard's own environment (`GIT_LOCATION_VARIABLES`).
+ *
  * "ask", never "deny": the person may mean it, and a hook cannot tell. Every command of a
  * line is read on its own, through the one shell reader (`src/shell/command.ts`), in the
  * dialect of the tool that runs it (Bash or PowerShell; both when it is not told): quoted
@@ -60,6 +72,7 @@ import {
   type Dialect,
   invocationOf,
   isShort,
+  isWrapper,
   MAX_NESTING,
   nestedCommand,
   nestedDialect,
@@ -74,6 +87,7 @@ import {
 import { type GitCall, gitCalls, longOption } from "../shell/git-calls";
 import { GUARD_GIT_TIMEOUT_MS, runGit } from "./git";
 import type { Env } from "./run";
+import { subagentWorktreeOf } from "./subagent-worktree";
 
 /** The branches asked about when cc-smart-dev-kit.json names none. */
 export const DEFAULT_PROTECTED_BRANCHES = ["main"];
@@ -93,6 +107,12 @@ export interface GuardOptions {
   env: Env;
   /** The dialect of the tool that runs the line (`dialectOfTool`); not given, both are read. */
   dialect?: Dialect | undefined;
+  /**
+   * The hook input's `agent_id`: set when a subagent runs the line, null (or not given) for the
+   * main session. With it, a working-folder discard inside that subagent's own worktree asks
+   * nothing (`insideOwnWorktree`).
+   */
+  agentId?: string | null | undefined;
 }
 
 /** One guard run: its options, and what it read from git once (a line may push many times). */
@@ -100,6 +120,28 @@ interface GuardRun {
   options: GuardOptions;
   branches: Map<string, string | undefined>;
   pushConfigs: Map<string, Map<string, string[]>>;
+  /**
+   * The questions a discard inside the subagent's own worktree did not ask. They are asked after
+   * all (`guardQuestions`) when a word of the line names where git works
+   * (`namesGitLocation`): such a word may come before or after the discard, in another step or
+   * inside a `bash -c`, so only the whole line can tell.
+   */
+  silenced: string[];
+  /** A word of the line, at any depth, named one of `GIT_LOCATION_VARIABLES`. */
+  locationNamed: boolean;
+}
+
+/**
+ * The environment variables that move where git reads and writes (git(1), Environment
+ * Variables): the repository, the working folder, the shared repository, the index. A line or a
+ * guard environment that sets one makes the folder git works in unknowable from the line's own
+ * `cd` and `-C`.
+ */
+const GIT_LOCATION_VARIABLES = ["GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE"];
+
+/** True when a word of the line names a variable of `GIT_LOCATION_VARIABLES`, however it uses it. */
+function namesGitLocation(words: readonly string[]): boolean {
+  return words.some((word) => GIT_LOCATION_VARIABLES.some((name) => word.includes(name)));
 }
 
 /** `git push` options that take the next word as their value, and the shortest prefix git accepts. */
@@ -495,8 +537,45 @@ function computedPushIn(command: string, dialect?: Dialect): boolean {
   );
 }
 
-function gitQuestions(args: string[], folder: Folder, run: GuardRun): string[] {
-  return gitCalls(args).flatMap((call) => callQuestions(call, folder, run));
+/**
+ * The folder a working-folder discard acts in, or null when the line's folder is not where git
+ * writes: a wrapper before git (`env -C x git …`, `sudo`) or an option on the prefix
+ * (`Start-Process -WorkingDirectory x`). A shell keyword, a redirection and a variable
+ * (`LANG=C`) move nothing. git's own `--work-tree`, `--git-dir` and `-c core.worktree` are read
+ * from the call itself, and a variable that names git's location from the whole line
+ * (`insideOwnWorktree`, `namesGitLocation`).
+ */
+function discardFolder(prefix: readonly string[], folder: Folder): Folder {
+  return prefix.some((word) => isWrapper(word) || word.startsWith("-")) ? null : folder;
+}
+
+function gitQuestions(
+  args: string[],
+  folder: Folder,
+  prefix: readonly string[],
+  run: GuardRun,
+): string[] {
+  const writesIn = discardFolder(prefix, folder);
+  return gitCalls(args).flatMap((call) => callQuestions(call, folder, writesIn, run));
+}
+
+/**
+ * True when a working-folder discard in `writesIn` (`discardFolder`) reaches only the files of
+ * the subagent's own worktree, `<main checkout>/.claude/worktrees/agent-<agent_id>`: it is the
+ * subagent's own work to undo, in a copy no one else uses, so a question each time only
+ * interrupts the person. Anything it cannot prove asks: no agent id (the main session), a
+ * folder it cannot follow, another worktree or a sibling folder, a `-C`, `--work-tree`,
+ * `--git-dir` or `-c core.worktree` that moves git elsewhere, and a variable of the guard's own
+ * environment that does. A variable the line names is judged on the whole line, at its end.
+ */
+function insideOwnWorktree(call: GitCall, writesIn: Folder, run: GuardRun): boolean {
+  const { agentId = null, env } = run.options;
+  if (writesIn === null || agentId === null) return false;
+  if (GIT_LOCATION_VARIABLES.some((name) => env[name] !== undefined)) return false;
+  if (call.workTree !== null || call.gitDir !== null || call.config.has("core.worktree")) {
+    return false;
+  }
+  return subagentWorktreeOf(resolve(writesIn, ...call.dirs), agentId) !== null;
 }
 
 /**
@@ -511,7 +590,7 @@ function pushAlias(call: GitCall): string[] | null {
   return first === "push" || first === "send-pack" ? words.slice(1) : null;
 }
 
-function callQuestions(call: GitCall, folder: Folder, run: GuardRun): string[] {
+function callQuestions(call: GitCall, folder: Folder, writesIn: Folder, run: GuardRun): string[] {
   const { options } = run;
   const { rest, sub } = call;
   const alias = pushAlias(call);
@@ -547,17 +626,24 @@ function callQuestions(call: GitCall, folder: Folder, run: GuardRun): string[] {
       );
     if (force) return [WORKTREE_REMOVE_ASK];
   }
+  // The working-folder discards below ask nothing inside the subagent's own worktree; every
+  // other kind of this function reaches outside it (a remote, the branch list, the shared stash).
+  const unlessOwn = (ask: string): string[] => {
+    if (!insideOwnWorktree(call, writesIn, run)) return [ask];
+    run.silenced.push(ask);
+    return [];
+  };
   if ((sub === "checkout" || sub === "restore" || sub === "switch") && discardsChanges(sub, rest)) {
-    return [discardAsk(sub)];
+    return unlessOwn(discardAsk(sub));
   }
   if (sub === "branch" && forceDeletesBranch(rest)) return [BRANCH_DELETE_ASK];
   if (sub === "reset" && rest.some((arg) => longOption(arg, "--hard", 4))) {
-    return [RESET_HARD_ASK];
+    return unlessOwn(RESET_HARD_ASK);
   }
   // `--merge` loses staged work too (the measurement is in the file's header); `--keep` loses
   // nothing and stays silent.
   if (sub === "reset" && rest.some((arg) => longOption(arg, "--merge", 4))) {
-    return [RESET_MERGE_ASK];
+    return unlessOwn(RESET_MERGE_ASK);
   }
   if (sub === "clean") {
     const force = rest.some(
@@ -569,7 +655,7 @@ function callQuestions(call: GitCall, folder: Folder, run: GuardRun): string[] {
         longOption(arg, "--dry-run", 4) ||
         (isShort(arg) && shortFlags(arg, "e").flags.includes("n")),
     );
-    if (force && !dryRun) return [CLEAN_FORCE_ASK];
+    if (force && !dryRun) return unlessOwn(CLEAN_FORCE_ASK);
   }
   return [];
 }
@@ -591,12 +677,14 @@ function inspect(
   // A quote left open is read blind: more pieces, so nothing hides inside it.
   for (const step of shellSteps(command, { blindWhenOpen: true, dialect, joinLines })) {
     const words = wordsOf(step.text, dialect);
+    // Before the early exit: `GIT_DIR=x` alone, and `export GIT_DIR=x`, run no program of ours.
+    if (namesGitLocation(words)) run.locationNamed = true;
     const invocation = invocationOf(words);
     if (invocation === undefined) continue;
     const { args, program } = invocation;
     // A redirection (`>log`, `2>&1`) is the shell's: git never sees it as a refspec.
     const operands = withoutRedirections(args);
-    if (program === "git") found.push(...gitQuestions(operands, folder, run));
+    if (program === "git") found.push(...gitQuestions(operands, folder, invocation.prefix, run));
     // The program is worked out when the line runs (`$GIT push`, `$(which git) push`): the
     // guard cannot name it, so a line whose words name a push asks, never stays silent.
     if (invocation.computed && namesPush(words)) found.push(COMPUTED_PUSH_ASK);
@@ -618,10 +706,18 @@ function inspect(
  * joined to the next and not, since a trailing `\` may just end a Windows path.
  */
 export function guardQuestions(command: string, cwd: string, options: GuardOptions): string[] {
-  const run: GuardRun = { options, branches: new Map(), pushConfigs: new Map() };
+  const run: GuardRun = {
+    options,
+    branches: new Map(),
+    pushConfigs: new Map(),
+    silenced: [],
+    locationNamed: false,
+  };
   const found = readingsOf(command, options.dialect).flatMap((reading) =>
     inspect(command, cwd, reading, run),
   );
+  // A variable on the line may move git out of the worktree for a discard before or after it.
+  if (run.locationNamed) found.push(...run.silenced);
   return [...new Set(found)];
 }
 

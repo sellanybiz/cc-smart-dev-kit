@@ -524,6 +524,260 @@ describe("a command that discards changes asks", () => {
   });
 });
 
+// A subagent's own worktree is `<main checkout>/.claude/worktrees/agent-<agent_id>`. These are
+// strings only: a discard is judged by the folder it names, and no file is touched.
+const BUILDER = "a1b2c3d4e5f60718a";
+const OTHER_BUILDER = "0f9e8d7c6b5a49382";
+const MAIN_FOLDER = "/work/app";
+const OWN_WORKTREE = `${MAIN_FOLDER}/.claude/worktrees/agent-${BUILDER}`;
+
+/** The question string for a command a subagent (`agentId`) runs, or undefined when silent. */
+function guardAs(
+  command: string,
+  cwd: string,
+  agentId: string | null,
+  dialect?: Dialect,
+): string | undefined {
+  const questions = guardQuestions(command, cwd, {
+    ...OPTIONS,
+    agentId,
+    dialect,
+    env: cleanGitEnv(),
+  });
+  return questions.length === 0 ? undefined : questions.join("\n");
+}
+
+/** What each discarding command is asked, word for word from the guard's own questions. */
+const OWN_DISCARDS = [
+  ["git checkout -- src/a.ts", "overwrites files in this folder"],
+  ["git checkout HEAD -- src", "overwrites files in this folder"],
+  ["git checkout .", "overwrites files in this folder"],
+  ["git checkout -f", "overwrites files in this folder"],
+  ["git switch -f fix/x", "overwrites files in this folder"],
+  ["git switch --discard-changes fix/x", "overwrites files in this folder"],
+  ["git restore src/a.ts", "overwrites files in this folder"],
+  ["git restore .", "overwrites files in this folder"],
+  ["git restore --staged --worktree src/a.ts", "overwrites files in this folder"],
+  ["git reset --hard", "`git reset --hard` throws away every uncommitted change"],
+  ["git reset --hard HEAD~1", "`git reset --hard` throws away every uncommitted change"],
+  ["git reset --merge", "`git reset --merge` throws away changes that are staged"],
+  ["git clean -f", "`git clean -f` deletes untracked files"],
+  ["git clean -fd", "`git clean -f` deletes untracked files"],
+] as const;
+
+describe("a subagent's discard inside its own worktree is silent", () => {
+  it.each(OWN_DISCARDS)("%j, run from the session folder", (command) => {
+    expect(guardAs(command, OWN_WORKTREE, BUILDER)).toBeUndefined();
+  });
+
+  it.each(OWN_DISCARDS)("%j, after a cd from the main checkout", (command) => {
+    expect(guardAs(`cd ${OWN_WORKTREE}; ${command}`, MAIN_FOLDER, BUILDER)).toBeUndefined();
+    expect(guardAs(`cd ${OWN_WORKTREE} && ${command}`, MAIN_FOLDER, BUILDER)).toBeUndefined();
+  });
+
+  it("the live case: a discard, an rm and a status, with no cd, from the session folder", () => {
+    const line =
+      "git checkout -- db/migrations/a.sql db/migrations/b.sql; rm db/migrations/c.sql; git status --short";
+    expect(guardAs(line, OWN_WORKTREE, BUILDER)).toBeUndefined();
+  });
+
+  it.each([
+    ["from a folder inside it", "git checkout -- a.ts", `${OWN_WORKTREE}/src/deep`],
+    ["after cd into a subfolder", "cd src; git restore .", OWN_WORKTREE],
+    ["after cd .. back to its root", "cd src; cd ..; git reset --hard", OWN_WORKTREE],
+    ["with -C . ", "git -C . checkout -- a.ts", OWN_WORKTREE],
+    ["with -C into a subfolder", "git -C src restore .", OWN_WORKTREE],
+    ["behind a shell keyword", "if true; then git checkout -- a.ts; fi", OWN_WORKTREE],
+    ["behind an unrelated assignment", "LANG=C git checkout -- a.ts", OWN_WORKTREE],
+    ["through bash -c", 'bash -c "git checkout -- a.ts"', OWN_WORKTREE],
+    ["through bash -c with its own cd", `bash -c "cd ${OWN_WORKTREE}; git clean -f"`, MAIN_FOLDER],
+    ["through a nested bash -c", `bash -c "bash -c 'git reset --hard'"`, OWN_WORKTREE],
+  ])("%s: %j", (_name, command, cwd) => {
+    expect(guardAs(command, cwd, BUILDER)).toBeUndefined();
+  });
+
+  it("PowerShell: Set-Location into it", () => {
+    expect(
+      guardAs(
+        `Set-Location ${OWN_WORKTREE}; git checkout -- a.ts`,
+        MAIN_FOLDER,
+        BUILDER,
+        "powershell",
+      ),
+    ).toBeUndefined();
+  });
+
+  it("a Windows-style folder, with either slash", () => {
+    const back = `C:\\work\\app\\.claude\\worktrees\\agent-${BUILDER}`;
+    const forward = `C:/work/app/.claude/worktrees/agent-${BUILDER}`;
+    for (const cwd of [back, forward, `${back}\\src`, `${forward}/src`]) {
+      expect([cwd, guardAs("git checkout -- a.ts", cwd, BUILDER)]).toEqual([cwd, undefined]);
+    }
+  });
+});
+
+describe("a discard that is not the subagent's own worktree still asks", () => {
+  const DISCARD = "overwrites files in this folder";
+
+  it.each(OWN_DISCARDS)("%j: the main session (no agent id) asks", (command, ask) => {
+    expect(guardAs(command, OWN_WORKTREE, null)).toContain(ask);
+  });
+
+  it.each(OWN_DISCARDS)("%j: another subagent's id asks", (command, ask) => {
+    expect(guardAs(command, OWN_WORKTREE, OTHER_BUILDER)).toContain(ask);
+  });
+
+  it("an id that is not hex asks, even when the folder is named for it", () => {
+    for (const id of ["xyz", "A1B2C3", ""]) {
+      const cwd = `${MAIN_FOLDER}/.claude/worktrees/agent-${id}`;
+      expect([id, guardAs("git checkout -- a.ts", cwd, id)]).toEqual([id, expect.any(String)]);
+    }
+  });
+
+  it("the main session cd-ing into a builder's worktree asks", () => {
+    expect(guardAs(`cd ${OWN_WORKTREE}; git checkout -- a.ts`, MAIN_FOLDER, null)).toContain(
+      DISCARD,
+    );
+  });
+
+  it.each([
+    ["a sibling folder that starts the same", `${OWN_WORKTREE}x`],
+    ["a sibling folder with a suffix", `${OWN_WORKTREE}-old`],
+    ["the worktrees folder", `${MAIN_FOLDER}/.claude/worktrees`],
+    ["the main checkout", MAIN_FOLDER],
+    ["a non-isolated subagent in the lead's checkout", `${MAIN_FOLDER}/src`],
+    ["a lookalike path with a plain folder name", `/tmp/agent-${BUILDER}`],
+  ])("%s asks", (_name, cwd) => {
+    expect(guardAs("git checkout -- a.ts", cwd, BUILDER)).toContain(DISCARD);
+  });
+
+  it.each([
+    ["cd ../.. out of it", "cd ../..; git checkout -- a.ts"],
+    ["cd .. out of it", "cd ..; git reset --hard"],
+    ["a cd to the main checkout", `cd ${MAIN_FOLDER}; git restore .`],
+    ["a cd it cannot follow", "cd $DIR; git checkout -- a.ts"],
+    ["cd -", "cd -; git clean -f"],
+    ["a cd home", "cd ~/x; git checkout -- a.ts"],
+    ["a cd out, then back in the wrong folder", "cd src; cd ../../..; git checkout -- a.ts"],
+    ["-C to the main checkout", `git -C ${MAIN_FOLDER} checkout -- a.ts`],
+    ["-C ../.. out of it", "git -C ../.. restore ."],
+    ["-C to another builder's worktree", `git -C ../agent-${OTHER_BUILDER} reset --hard`],
+    ["a bash -c that leaves it", 'bash -c "cd ../..; git checkout -- a.ts"'],
+    ["a nested bash -c that leaves it", `bash -c "bash -c 'cd ${MAIN_FOLDER}; git reset --hard'"`],
+  ])("%s asks: %j", (_name, command) => {
+    expect(guardAs(command, OWN_WORKTREE, BUILDER)).toBeDefined();
+  });
+
+  it.each([
+    ["--work-tree=", `git --work-tree=${MAIN_FOLDER} checkout -- a.ts`],
+    ["--work-tree with its value as the next word", `git --work-tree ${MAIN_FOLDER} restore .`],
+    ["--git-dir=", `git --git-dir=${MAIN_FOLDER}/.git checkout -- a.ts`],
+    ["--git-dir with its value as the next word", `git --git-dir ${MAIN_FOLDER}/.git reset --hard`],
+    ["-c core.worktree=", `git -c core.worktree=${MAIN_FOLDER} checkout -- a.ts`],
+    ["GIT_WORK_TREE=", `GIT_WORK_TREE=${MAIN_FOLDER} git checkout -- a.ts`],
+    ["GIT_DIR=", `GIT_DIR=${MAIN_FOLDER}/.git git clean -f`],
+    ["env -C", `env -C ${MAIN_FOLDER} git checkout -- a.ts`],
+    ["a wrapper", "sudo git reset --hard"],
+  ])("a git call with %s asks", (_name, command) => {
+    expect(guardAs(command, OWN_WORKTREE, BUILDER)).toBeDefined();
+  });
+
+  it.each([
+    ["GIT_DIR", `export GIT_DIR=${MAIN_FOLDER}/.git; git reset --hard`],
+    ["GIT_WORK_TREE", `export GIT_WORK_TREE=${MAIN_FOLDER}; git checkout -- a.ts`],
+    ["GIT_COMMON_DIR", `export GIT_COMMON_DIR=${MAIN_FOLDER}/.git && git clean -f`],
+    ["GIT_INDEX_FILE", `export GIT_INDEX_FILE=/tmp/index; git restore .`],
+    ["an export after the discard", `git checkout -- a.ts; export GIT_WORK_TREE=${MAIN_FOLDER}`],
+    ["a plain assignment", `GIT_WORK_TREE=${MAIN_FOLDER}; git checkout -- a.ts`],
+    ["declare -x", `declare -x GIT_WORK_TREE=${MAIN_FOLDER}; git checkout -- a.ts`],
+    ["env X=", `env GIT_WORK_TREE=${MAIN_FOLDER} git checkout -- a.ts`],
+    ["a quoted word", `echo "GIT_WORK_TREE is set"; git checkout -- a.ts`],
+    ["a use of the variable", "git -C $GIT_WORK_TREE checkout -- a.ts"],
+    [
+      "a bash -c holding an export",
+      `bash -c 'export GIT_WORK_TREE=${MAIN_FOLDER}; git checkout -- a.ts'`,
+    ],
+    [
+      "an export a nested shell runs first",
+      `bash -c "bash -c 'export GIT_DIR=x'"; git reset --hard`,
+    ],
+    ["an export piped into a shell", `echo "export GIT_DIR=x; git reset --hard" | sh`],
+    ["an export before a bash -c that discards", `export GIT_DIR=x; bash -c "git reset --hard"`],
+  ])("an environment variable that names git's location (%s) asks", (_name, command) => {
+    expect(guardAs(command, OWN_WORKTREE, BUILDER)).toBeDefined();
+  });
+
+  it("PowerShell: $env: assigning git's location asks", () => {
+    const line = `$env:GIT_WORK_TREE = '${MAIN_FOLDER}'; git checkout -- a.ts`;
+    expect(guardAs(line, OWN_WORKTREE, BUILDER, "powershell")).toContain(
+      "overwrites files in this folder",
+    );
+    expect(
+      guardAs(
+        `$env:GIT_DIR='${MAIN_FOLDER}/.git'; git reset --hard`,
+        OWN_WORKTREE,
+        BUILDER,
+        "powershell",
+      ),
+    ).toContain("`git reset --hard` throws away");
+  });
+
+  it.each(["GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE"])(
+    "the guard's own environment having %s set asks",
+    (name) => {
+      const questions = (env: Record<string, string>) =>
+        guardQuestions("git checkout -- a.ts; git reset --hard; git clean -f", OWN_WORKTREE, {
+          ...OPTIONS,
+          agentId: BUILDER,
+          env,
+        });
+      expect(questions({ ...cleanGitEnv(), [name]: MAIN_FOLDER })).toHaveLength(3);
+      expect(questions(cleanGitEnv())).toEqual([]);
+    },
+  );
+
+  it("an unrelated GIT_ variable does not stop the exemption", () => {
+    expect(
+      guardAs(
+        "GIT_AUTHOR_NAME=x git checkout -- a.ts; export GIT_PAGER=cat",
+        OWN_WORKTREE,
+        BUILDER,
+      ),
+    ).toBeUndefined();
+  });
+
+  it("a push on the same line still asks, and only about the push", () => {
+    const answer = guardAs("git checkout -- a.ts; git push --force", OWN_WORKTREE, BUILDER);
+    expect(answer).toContain("This is a force-push");
+    expect(answer).not.toContain(DISCARD);
+    expect(guardAs("git reset --hard && git push origin main", OWN_WORKTREE, BUILDER)).toContain(
+      "a protected branch",
+    );
+  });
+
+  it.each([
+    ["git branch -D fix/x", "`git branch -D` deletes a branch"],
+    ["git branch -d -f fix/x", "`git branch -D` deletes a branch"],
+    ["git stash", "The git stash is shared by every worktree"],
+    ["git stash pop", "The git stash is shared by every worktree"],
+    ["git stash clear", "`git stash clear` throws away every stash"],
+    ["git stash drop", "`git stash drop` with no stash named"],
+    ["git worktree remove -f ../x", "`git worktree remove --force` deletes a worktree"],
+  ])("%j in its own worktree still asks", (command, ask) => {
+    expect(guardAs(command, OWN_WORKTREE, BUILDER)).toContain(ask);
+  });
+
+  it("every push form still asks in its own worktree while autoPush is off", () => {
+    const off = guardQuestions("git push origin fix/x", OWN_WORKTREE, {
+      ...OPTIONS,
+      agentId: BUILDER,
+      autoPushAsk: () => "autoPush is off",
+      env: cleanGitEnv(),
+    });
+    expect(off).toEqual(["autoPush is off"]);
+  });
+});
+
 describe("git branch -D asks", () => {
   it.each([
     ["git branch -D fix/x"],
@@ -1334,6 +1588,72 @@ describe("the hook asks before a command that destroys work", () => {
       reason:
         "`git reset --hard` throws away every uncommitted change in this folder, for good. Approve only if you want them gone; a WIP commit keeps the work first.",
     });
+  });
+});
+
+describe("the hook reads the subagent's agent_id from its input", () => {
+  /** A repo with a linked worktree at the folder Claude Code gives subagent `BUILDER`. */
+  function builderRepo(): { env: Record<string, string>; repo: string; own: string } {
+    const { env, repo } = policyRepo();
+    const own = join(repo, ".claude", "worktrees", `agent-${BUILDER}`);
+    git(repo, "worktree", "add", "-q", "-b", "worktree-own", own);
+    return { env, repo, own };
+  }
+
+  /** The hook's decision for one command from `cwd`, with the input's `agent_id` when given. */
+  async function answerAs(
+    env: Record<string, string>,
+    cwd: string,
+    command: string,
+    agentId?: string,
+  ): Promise<string | null> {
+    const result = await runHook(
+      gitGuardHook,
+      {
+        hook_event_name: "PreToolUse",
+        session_id: "s1",
+        cwd,
+        tool_name: "Bash",
+        tool_input: { command },
+        ...(agentId === undefined
+          ? {}
+          : { agent_id: agentId, agent_type: "cc-smart-dev-kit:builder" }),
+      },
+      env,
+    );
+    return result.stdout === undefined
+      ? null
+      : JSON.parse(result.stdout).hookSpecificOutput.permissionDecision;
+  }
+
+  it("a subagent's discard in its own worktree is silent, from the input's cwd", async () => {
+    const { env, own } = builderRepo();
+    for (const command of [
+      "git checkout -- README.md",
+      "git checkout -- README.md; rm other.txt; git status --short",
+      "git reset --hard",
+      "git clean -fd",
+    ]) {
+      expect([command, await answerAs(env, own, command, BUILDER)]).toEqual([command, null]);
+    }
+  });
+
+  it("the same commands ask with no agent_id, and with another agent's", async () => {
+    const { env, own } = builderRepo();
+    for (const command of ["git checkout -- README.md", "git reset --hard", "git clean -fd"]) {
+      expect([command, await answerAs(env, own, command)]).toEqual([command, "ask"]);
+      expect([command, await answerAs(env, own, command, OTHER_BUILDER)]).toEqual([command, "ask"]);
+    }
+  });
+
+  it("a subagent's discard in the main checkout still asks", async () => {
+    const { env, repo } = builderRepo();
+    expect(await answerAs(env, repo, "git checkout -- README.md", BUILDER)).toBe("ask");
+  });
+
+  it("a subagent's branch delete in its own worktree still asks", async () => {
+    const { env, own } = builderRepo();
+    expect(await answerAs(env, own, "git branch -D worktree-own", BUILDER)).toBe("ask");
   });
 });
 
