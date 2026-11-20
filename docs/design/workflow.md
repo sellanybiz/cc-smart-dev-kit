@@ -351,7 +351,17 @@ state folder's shared lock, whose 10 s wait is as long as the hook may run.
 
 A stop records a review only for a run that was a review from start to end (`isReviewRun`).
 The agent's brief — the first user entry of its transcript — holds the line `Mode: review`
-(trailing spaces and tabs allowed), and so does every prompt it was given after the brief: a
+(trailing spaces and tabs allowed), and so does every prompt it was given after the brief.
+A workflow agent, such as a `review-split` track, gets its brief through Claude Code's workflow
+harness, which writes the computed task after an exact preamble with two spaces before every
+line (on 2.1.322 and 2.1.325 a relay of the user's request comes first, indented the same way,
+and the computed task is the next entry). So the marker is never at column zero in the raw
+entry. The reader (`harnessText` in `src/hooks/transcript.ts`) matches the preamble whole and
+reads the brief as the computed task with the indent removed, with the relay in front of it
+when there is one. It does this only when every line carries the indent: a line at column zero
+makes the frame forged, and it reads as no brief. It never widens the marker line to allow
+leading spaces, so an indented `Mode: review` in a later message still does not count. The
+prompts after the brief are: a
 resume, a message from the session that started it, a task notification, Stop hook feedback,
 anything typed. Claude Code most often writes a message from the session that started the
 agent, and a task notification, as an attachment alone (`type: "attachment"`,
@@ -359,10 +369,14 @@ agent, and a task notification, as an attachment alone (`type: "attachment"`,
 attachment of that type, or any attachment with an `origin` or a string `prompt`, is a prompt
 too. Tool results are no prompt, nor are the meta entries Claude Code writes itself for a skill
 it loads or a system reminder: an allowlist of their text's start (`HARMLESS_META_PREFIXES` in
-`src/hooks/transcript.ts`), where a reminder must also end at its closing tag. Nor is the
+`src/hooks/transcript.ts`), where a reminder must also end at its closing tag. A built-in skill
+the agent loads itself (`workflow-authoring`, say) starts with none of those words, so it is
+proved by its owner instead: the entry is `isMeta`, has no `origin`, holds text only, and its
+`sourceToolUseID` is the id of a `Skill` call the agent made earlier in the same transcript
+(`isOwnSkillText`). Nor is the
 notice that a task the agent itself started in the background has ended (`isOwnTaskNotice`):
-a reviewer that runs its tests that way, or waits on its own Monitor, gets one for each, in
-either form, and it gives the agent no task. It counts only when all of these hold: Claude
+a reviewer that runs its tests that way, or whose own Monitor's stream ended, gets one for
+each, in either form, and it gives the agent no task. It counts only when all of these hold: Claude
 Code's own origin is on the entry (`kind: "task-notification"` and `producer: "session-task"`);
 the text is exactly the five tags of a command's end (`Background command "…"` in the summary),
 or of a Monitor's end (`Monitor "…" stream ended`, at most one `<event>…</event>`, then Claude
@@ -370,7 +384,10 @@ Code's own PushNotification line); and the `<tool-use-id>` names a `Bash` call (
 `Monitor` or `Bash` call (a Monitor) that the agent itself made earlier in the same transcript,
 which the reader notes as it reads forward. A child agent's completion (it carries a result),
 any text around the tags, a notice for a call the transcript never made and a notice with
-another origin or producer stay prompts. A transcript line may start with NUL bytes before its
+another origin or producer stay prompts. So do the other Monitor notices Claude Code writes —
+a Monitor that expired (a `Monitor event` notice with no `<tool-use-id>`), a failed script, an
+end with no output — because no real shape of them was proved harmless: a reviewer whose own
+Monitor ends that way records nothing, the safe side. A transcript line may start with NUL bytes before its
 JSON; the reader drops them from every line, and a line of NULs alone is skipped. Any other entry, an unknown
 meta entry included, is a prompt. The reader (`runPrompts`) reads the whole
 transcript forward, up to 16 MB, so a prompt far from both ends still counts. A consult, a

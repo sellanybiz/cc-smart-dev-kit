@@ -2941,15 +2941,18 @@ one `reviewAgents` lists (by default the plugin's own reviewer) it notes the com
 working folder is on at the start, and its branch, and records **that start commit, on that
 branch**, at the end. A fix committed while the reviewer read is a fix it never saw: it counts
 as change after the review, like every later fix. A record also needs a run that was a review
-from start to end: the agent's brief (the first user entry of its transcript) holds the line
+from start to end: the agent's brief (the first user entry of its transcript; for a workflow
+agent, read through the workflow harness's two-space indent) holds the line
 `Mode: review` (trailing spaces and tabs allowed), and so does every prompt it was given after
 the brief — a resume, a message from the session that started it (whether Claude Code writes
 it as a user entry or as a queued-command attachment), a task notification, Stop hook
 feedback. Tool results are no prompt, nor are the entries Claude Code writes itself when the
-agent loads a skill or gets a system reminder (a reminder that ends at its closing tag), nor is
-the end of a background command or Monitor the agent itself started (Claude Code's own origin and
-producer, exact tags, and a call id the agent made earlier in its own transcript); any other
-entry is, and so is every other task notification. The hook reads the whole transcript, up to 16 MB. So a consult, a review agent
+agent loads a skill (a built-in one too, when it follows the agent's own `Skill` call) or gets a
+system reminder (a reminder that ends at its closing tag), nor is
+the end of a background command, or of a Monitor's stream, that the agent itself started (Claude
+Code's own origin and producer, exact tags, and a call id the agent made earlier in its own
+transcript); any other entry is, and so is every other task notification, a Monitor that expired
+or failed included. The hook reads the whole transcript, up to 16 MB. So a consult, a review agent
 resumed for a question, a review a Stop hook sent back to work, a review that compacted (the
 summary counts as a prompt), and a missing, unreadable or larger transcript record nothing,
 and the merge guard asks.

@@ -37,10 +37,13 @@
  * entry of its transcript — holds the line `Mode: review` (trailing spaces and tabs allowed),
  * and so does every prompt it was given after the brief: a resume, a message from the session
  * that started it (a `user` entry or a `queued_command` attachment), a task notification, Stop
- * hook feedback, a compaction summary. Tool results, the meta entries Claude Code writes
- * itself for a skill or a reminder, and the notice that a command the agent itself started in
- * the background has ended (a review that ran its tests that way is still a review), are no
- * prompt (`runPrompts`). So a consult, a review agent
+ * hook feedback, a compaction summary. A workflow agent (a review-split track) is told its brief
+ * through Claude Code's workflow harness, which indents every line two spaces: `runPrompts`
+ * reads the brief through that wrapper, so the line is at column zero again, and never accepts
+ * an indented marker as it stands. Tool results, the meta entries Claude Code writes
+ * itself for a skill (one the agent loaded itself too) or a reminder, and the notice that a
+ * command or a Monitor the agent itself started has ended (a review that ran its tests that way
+ * is still a review), are no prompt (`runPrompts`). So a consult, a review agent
  * resumed for a question, a missing, unreadable or oversized transcript, a review that
  * compacted, and a review that a Stop hook sent back to work all record nothing: the safe
  * side, where the merge guard asks.
