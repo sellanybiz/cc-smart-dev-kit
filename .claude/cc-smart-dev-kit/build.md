@@ -11,8 +11,9 @@ installers' copy of it), `CHANGELOG.md`, `plugin/dist/` and, when the portal cha
 plans whose file lists both name one of them overlap, so they run one at a time.
 
 - **Builders never touch them.** A phase brief says: no version bump, no CHANGELOG entry, no
-  `bun run build`. The plan's lead does all of it once, after the last phase merges and before
-  the plan's review rounds (the `release` skill, steps 1 to 3).
+  `bun run build`. The plan's lead does all of it after the last phase merges and before
+  the plan's review rounds (the `release` skill, steps 1 to 3), and builds again after each
+  fix round that changes `src/`.
 - **Build with the Bun version CI pins** (`bun-version` in `.github/workflows/ci.yml`), for
   example `bunx --bun bun@<that version> run build`. Another Bun writes other bytes, and
   `build:check` fails in CI.
