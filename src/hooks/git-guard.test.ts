@@ -552,6 +552,9 @@ const BUILDER = "a1b2c3d4e5f60718a";
 const OTHER_BUILDER = "0f9e8d7c6b5a49382";
 const ROOT_LINK_BUILDER = "c0ffee0123456789a";
 const PLAIN_BUILDER = "d00d0123456789abc";
+const FOREIGN_BUILDER = "e0e0e0e0e0e0e0e0e";
+/** How many distinct real folders the cost rows reach. */
+const MANY_FOLDERS = 40;
 
 /** The folders every own-worktree row uses; made once, removed after the file. */
 function makeOwnFixture() {
@@ -589,7 +592,17 @@ function makeOwnFixture() {
   symlinkSync(main, rootLink);
   const plainNamed = join(worktrees, `agent-${PLAIN_BUILDER}`);
   mkdirSync(plainNamed);
-  return { root, main, own, other, lead, nested, rootLink, plainNamed };
+  // A plain folder whose `.git` file points at the lead's admin folder: git calls it a linked
+  // worktree (its git folder is not the common one), but the admin folder points back elsewhere.
+  const foreign = join(worktrees, `agent-${FOREIGN_BUILDER}`);
+  mkdirSync(foreign);
+  const leadAdmin = git(lead, "rev-parse", "--absolute-git-dir").trim();
+  writeFileSync(join(foreign, ".git"), `gitdir: ${leadAdmin}\n`);
+  // Many real folders inside the own worktree, for the proof's cost rows.
+  for (let index = 0; index < MANY_FOLDERS; index++) {
+    mkdirSync(join(own, "many", `d${index}`), { recursive: true });
+  }
+  return { root, main, own, other, lead, nested, rootLink, plainNamed, foreign };
 }
 
 const FIXTURE = makeOwnFixture();
@@ -1112,13 +1125,105 @@ describe("the allowlist: any shape but git, one folder change or an inert progra
   });
 });
 
+// Review round 3 found these silent: the allowlist judged which program runs, not what its
+// words do. Each row is named after its finding, and run as the Bash tool runs it (the hook's
+// `toolDialect`): read both ways, the PowerShell reading's braces alone would already ask.
+describe("round 3's findings: a plain line's words cannot move the shell or git", () => {
+  /** The question string for a line a subagent runs in the Bash tool, or undefined when silent. */
+  const asBash = (command: string, cwd = OWN_WORKTREE, agentId = BUILDER): string | undefined => {
+    const questions = guardQuestions(command, cwd, {
+      ...OPTIONS,
+      agentId,
+      env: cleanGitEnv(),
+      toolDialect: "bash",
+    });
+    return questions.length === 0 ? undefined : questions.join("\n");
+  };
+
+  it.each([
+    ["echo", `echo \${CDPATH:=${MAIN_FOLDER}}; cd src; git reset --hard`],
+    ["true &&", `true \${CDPATH:=${MAIN_FOLDER}} && cd src && git checkout -- .`],
+    ["[ -n ]", `[ -n "\${CDPATH:=${MAIN_FOLDER}}" ]; cd src; git reset --hard`],
+    ["git log", `git log -1 \${CDPATH:=${MAIN_FOLDER}} >/dev/null; cd src; git reset --hard`],
+    ["zsh ::=", `echo \${CDPATH::=${MAIN_FOLDER}}; cd src; git reset --hard`],
+    ["a search list", `echo \${CDPATH:=${MAIN_FOLDER}:.}; cd src; git reset --hard`],
+  ])("finding 1, an assigning expansion sets CDPATH (%s) asks: %j", (_name, command) => {
+    expect(asBash(command)).toBeDefined();
+  });
+
+  it.each([
+    ["printf with X=", `printf %s \${CDPATH=${MAIN_FOLDER}}; cd src; git reset --hard`],
+    ["cat with X:=", `cat \${CDPATH:=${MAIN_FOLDER}} >/dev/null; cd src; git reset --hard`],
+    ["a here-doc body", `true <<EOF\n\${CDPATH:=${MAIN_FOLDER}}\nEOF\ncd src; git reset --hard`],
+    ["arithmetic", "echo $((CDPATH=1)); cd src; git reset --hard"],
+  ])("finding 3, an inert program's word expands (%s) asks: %j", (_name, command) => {
+    expect(asBash(command)).toBeDefined();
+  });
+
+  it("finding 4, bash 5.3's brace command substitution runs in this shell: asks", () => {
+    expect(asBash(`echo \${ cd ${MAIN_FOLDER}; }; git reset --hard`)).toBeDefined();
+  });
+
+  it.each([
+    ["config --worktree", `git config --worktree core.worktree ${MAIN_FOLDER}; git reset --hard`],
+    [
+      "worktreeConfig, then config --worktree",
+      `git config extensions.worktreeConfig true; git config --worktree core.worktree ${MAIN_FOLDER}; git reset --hard`,
+    ],
+    ["worktree", "git worktree list; git reset --hard"],
+    ["update-ref", "git update-ref refs/heads/x HEAD; git reset --hard"],
+    ["an alias set on the line", "git -c alias.st=status st; git reset --hard"],
+  ])("finding 5, a git subcommand off the list (%s) asks: %j", (_name, command) => {
+    expect(asBash(command)).toBeDefined();
+  });
+
+  it.each([
+    ["rm .git", "rm .git; git reset --hard"],
+    ["a redirection into .git", "echo x > .git; git reset --hard"],
+    ["an attached redirection into .git", "echo x >.git; git reset --hard"],
+    ["mv .git", "mv .git g; git checkout -- ."],
+    ["a .git path inside", "cat x > src/.GIT/config; git reset --hard"],
+    ["a glob on a dot name", "rm -rf .gi?; git reset --hard"],
+  ])("a .git path on the line (%s) asks: %j", (_name, command) => {
+    expect(asBash(command)).toBeDefined();
+  });
+
+  it("a .git path on a PowerShell line asks", () => {
+    expect(
+      guardAs("Remove-Item .\\.git; git reset --hard", OWN_WORKTREE, BUILDER, "powershell"),
+    ).toBeDefined();
+  });
+
+  it("a plain folder whose .git file points at the lead's admin folder asks", () => {
+    expect(asBash("git reset --hard", FIXTURE.foreign, FOREIGN_BUILDER)).toBeDefined();
+    expect(asBash("git checkout -- .", FIXTURE.foreign, FOREIGN_BUILDER)).toBeDefined();
+  });
+
+  it.each([
+    ["the incident line", "git checkout -- a b; rm c; git status --short"],
+    ["a cd into a subfolder", "cd src; git restore ."],
+    ["add, commit, then a discard", "git add -A; git commit -m x; git checkout -- a.ts"],
+    ["a .gitignore is no .git path", "cat .gitignore; git restore ."],
+  ])("still silent: %s: %j", (_name, command) => {
+    expect(asBash(command)).toBeUndefined();
+  });
+});
+
 describe("the proof's git calls share one deadline", () => {
   it.skipIf(process.platform === "win32")(
     "two folders whose git stalls ask within the deadline, far inside the hook's 10 s",
     () => {
-      // A git that never answers, first on PATH (the guard reads PATH from its env).
+      // A git first on PATH (the guard reads PATH from its env) that answers the proof's first
+      // call (the worktree's own check) and then never answers: each later call stalls, so only
+      // the shared deadline keeps the two folders below inside the limit.
       const bin = tempDir("stalled-git");
-      writeFileSync(join(bin, "git"), "#!/bin/sh\nexec sleep 30\n", { mode: 0o755 });
+      const mark = join(bin, "answered-once");
+      const realGit = Bun.which("git") ?? "git";
+      writeFileSync(
+        join(bin, "git"),
+        `#!/bin/sh\nif [ -e "${mark}" ]; then exec sleep 30; fi\n: > "${mark}"\nexec "${realGit}" "$@"\n`,
+        { mode: 0o755 },
+      );
       const env = { ...cleanGitEnv(), PATH: `${bin}:${process.env.PATH ?? ""}` };
       const started = Date.now();
       // Two discards, each in its own folder: each would wait for its own git without the deadline.
@@ -1135,6 +1240,26 @@ describe("the proof's git calls share one deadline", () => {
     },
     20_000,
   );
+});
+
+describe("the proof's cost has a ceiling", () => {
+  it("a 64 KB line of discards over many distinct folders asks in time", () => {
+    const steps = Array.from(
+      { length: 4000 },
+      (_, index) => `git -C many/d${index % MANY_FOLDERS} restore .`,
+    );
+    const line = steps.join("; ").slice(0, 64 * 1024);
+    const started = Date.now();
+    // More distinct folders than the proof asks git about: it asks rather than run them all.
+    expect(guardAs(line.slice(0, line.lastIndexOf(";")), OWN_WORKTREE, BUILDER)).toBeDefined();
+    expect(Date.now() - started).toBeLessThan(GUARD_TIME_LIMIT_MS);
+  });
+
+  it("a few distinct folders stay silent", () => {
+    expect(
+      guardAs("git -C many/d0 restore .; git -C many/d1 restore .", OWN_WORKTREE, BUILDER),
+    ).toBeUndefined();
+  });
 });
 
 describe("a subagent's own discards are read within the guard's time", () => {

@@ -13,6 +13,9 @@ in your own terminal after the update; the user guide is [README.md](README.md).
   inside it, and git's own answer that the folder belongs to it. A plain line holds only `git`
   with nothing in front of it, a `cd` to one folder, and simple programs that cannot move the
   shell (`rm`, `ls`, `cat`, `echo` and a few more; the full list is in `docs/design/hooks.md`).
+  The words of a plain line matter too: no `$` or backtick anywhere (an expansion such as
+  `${CDPATH:=…}` can move a later `cd`), only everyday git subcommands (`git config` and
+  `git worktree` ask), and no word that names a `.git` path.
   A hook's question cannot be remembered, so each builder discard used to interrupt you.
 - **Everything else still asks:** any discard by the main session, in another agent's worktree
   or your own checkout, and any line that is not plain or may point git elsewhere: a `cd` or a
@@ -21,6 +24,11 @@ in your own terminal after the update; the user guide is [README.md](README.md).
   set on the line, `--work-tree`, `--git-dir`, and `GIT_DIR` and the other `GIT_*` variables
   that move git, in any case. A push, `branch -D`, the stash and `worktree remove -f` are judged
   in a builder's own worktree exactly as anywhere else.
+- **PowerShell's `Start-Process` is read whole.** Its `-ArgumentList`, and its positional
+  argument list, is one array however the commas are spaced (`'-c', 'x'`, `'-c' , 'x'`,
+  `@('-c', 'x')`), and an `@( … )` array runs its commands. Before, only the word right after
+  `-ArgumentList` was read, so `Start-Process pwsh -ArgumentList '-c', 'git reset --hard'`
+  asked nothing in any session. Every guard that reads a shell line gains.
 
 **What to run:** restart open Claude Code sessions. A session that was open before the update
 keeps the old guard.

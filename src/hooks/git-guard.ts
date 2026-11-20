@@ -43,19 +43,24 @@
  * - the line is plain: every command of it, at any depth, is one of three shapes
  *   (`plainStep`), and anything else asks — a shell trick that moves git cannot hide in a
  *   shape the guard does not know, because no such shape is silent:
- *   1. `git` itself, with nothing in front of it (no wrapper, no variable, no keyword);
+ *   1. `git` itself, with nothing in front of it (no wrapper, no variable, no keyword), running
+ *      a subcommand of `PLAIN_GIT_SUBCOMMANDS` with no `-c`, `--work-tree` or `--git-dir`;
  *   2. a folder change (`cd`, `chdir`, `pushd`, `Set-Location`, `sl`, `Push-Location`) with one
  *      folder and no option (PowerShell's `-Path` / `-LiteralPath` with its one value);
  *   3. a program of `INERT_PROGRAMS`, which changes neither the shell's folder nor its state
  *      and runs no command it is given; `printf -v` sets a variable, so `printf` with an
  *      option is not one. Read as PowerShell, a word that names the alias, env, function or
  *      variable drive, or a parameter that sets a variable (`-OutVariable`), is not one either;
- *   and nothing defines a function on the line (`name()`), and, read as PowerShell, it holds
- *   no brace (a script block). The line is judged as the tool runs it (`toolDialect`);
+ *   and its words do nothing more: no `$` or backtick anywhere in the line (`EXPANSION`: an
+ *   expansion can assign, `${CDPATH:=x}`, or run a command), no word naming a `.git` path
+ *   (`DOT_GIT_PATH`) or a glob on a dot name that could (`DOT_GLOB`), nothing defines a function on the line (`name()`), and, read as
+ *   PowerShell, it holds no brace (a script block). The line is judged as the tool runs it
+ *   (`toolDialect`);
  * - the hook input's `agent_id` is the id in the folder's name, and the session's own folder
  *   (the input's `cwd`) is that worktree or inside it;
- * - the worktree is real: no link on its path, and git says it is a linked worktree whose
- *   top is that folder (`--git-dir` is not `--git-common-dir`);
+ * - the worktree is real: no link on its path, git says it is a linked worktree whose top is
+ *   that folder (`--git-dir` is not `--git-common-dir`), and its git folder's `gitdir` file
+ *   points back at its `.git`;
  * - real paths, never text: a link or a missing folder asks;
  * - every folder change of the line, every time it appears, is followed from every folder the
  *   line could be in by then, and every `-C` too, and each folder they reach is inside the
@@ -71,11 +76,13 @@
  *   `GIT_CONFIG_PARAMETERS`, in any case (`GIT_LOCATION`), or one of them in the guard's own
  *   environment;
  * - every git call of the proof ends inside one deadline (`OWN_WORKTREE_PROOF_BUDGET_MS`), well
- *   inside the hook's own timeout: a git that is slow to answer asks.
+ *   inside the hook's own timeout, and there are at most `MAX_PROOF_GIT_CALLS` of them: a git
+ *   that is slow to answer, or a line with more distinct folders, asks.
  * Every other kind (a push, `branch -D`, the stash, `worktree remove -f`) is judged there as
  * anywhere else. Limits of the proof: a `CDPATH`, an alias or a function that only the Bash
- * tool's shell snapshot holds is not seen by the hook; a line that changes a folder it checked
- * before git runs (swaps it for a link, rewrites its `.git` file) is judged as the disk was;
+ * tool's shell snapshot (or `CLAUDE_ENV_FILE`) holds is not seen by the hook, nor a shell option
+ * set only there (bash's `dotglob`, so `*` reaches `.git`); a line that
+ * changes a folder it checked before git runs (swaps it for a link) is judged as the disk was;
  * the Windows paths are not run on Windows.
  *
  * "ask", never "deny": the person may mean it, and a hook cannot tell. Every command of a
@@ -97,8 +104,8 @@
  * (`cd -`, `cd ~/x`, `cd $DIR`) and a branch it cannot read are not asked about; `git
  * checkout <name>` cannot tell a file from a branch, so it stays silent.
  */
-import { existsSync } from "node:fs";
-import { resolve } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { isInside, samePath } from "../path-compare";
 import { CHANGES_FOLDER, type Folder, movedTo } from "../shell/change-dir";
 import {
@@ -726,7 +733,9 @@ function callQuestions(call: GitCall, folder: Folder, dialect: Dialect, run: Gua
  * (`plainPowerShellWords`). Left out on purpose: shells, interpreters and package runners
  * (`bun`, `node`, `python`, `make`), the runners (`find`, `xargs`, `parallel`, `watch`, `su`,
  * `sudo`), `env`, `eval`, `source`, every wrapper, `rg` (`--pre` runs a program) and `sort`
- * (`--compress-program` runs one).
+ * (`--compress-program` runs one). The words matter too, for every program of a plain line: no
+ * expansion (`EXPANSION`: `echo ${CDPATH:=x}` sets a variable through an inert program) and no
+ * `.git` path (`DOT_GIT_PATH`: `rm .git`).
  */
 export const INERT_PROGRAMS: ReadonlySet<string> = new Set([
   "[",
@@ -779,6 +788,53 @@ const FOLLOWED_FOLDER_CHANGES: ReadonlySet<string> = new Set([
 /** A function defined on the line (`git() { … }`, `f ( ) ( … )`): a command may then mean anything. */
 const FUNCTION_DEFINITION = /\(\s*\)/;
 
+/**
+ * Text the shell works out when the line runs: any `$` (a variable, `${X:=y}` and zsh's
+ * `${X::=y}` that assign, `$((X=1))`, `$( … )`, bash 5.3's `${ cmd; }` that runs in this shell)
+ * or a backtick. A word that expands can set the shell's state (CDPATH) or run a command the
+ * reader never sees, so no plain line holds one, quoted or not, a here-doc body included. A `$`
+ * in single quotes is text: it asks anyway, which is safe.
+ */
+const EXPANSION = /[$`]/;
+
+/**
+ * The git subcommands a plain line may run: the discards the proof judges, and ones that cannot
+ * move where git works or what its config says (`push` is judged on its own, as anywhere
+ * else, and a discard beside it stays the subagent's own). Any other (`config --worktree core.worktree`,
+ * `worktree`, `init`, `submodule`, `update-ref`, an alias) makes the line ask.
+ */
+const PLAIN_GIT_SUBCOMMANDS: ReadonlySet<string> = new Set([
+  "add",
+  "branch",
+  "checkout",
+  "clean",
+  "commit",
+  "diff",
+  "log",
+  "ls-files",
+  "mv",
+  "push",
+  "reset",
+  "restore",
+  "rev-parse",
+  "rm",
+  "show",
+  "stash",
+  "status",
+  "switch",
+  "tag",
+]);
+
+/**
+ * A word that names a `.git` path (`.git`, `src/.GIT/config`, `>.git`, `--output=.git`, any case,
+ * either slash): removing or rewriting a worktree's `.git` file sends the next git call to
+ * another repository, after the proof read the disk.
+ */
+const DOT_GIT_PATH = /(?:^|[\\/<>=:])\.git(?:$|[\\/])/i;
+
+/** A glob on a dot name (`.g*`, `.gi?`): the shell may fill in `.git` itself. */
+const DOT_GLOB = /(?:^|[\\/<>=:])\.[^\\/]*[*?[]/;
+
 /** PowerShell's drives that hold the shell's own state, not files: `function:git`, `env:X`. */
 const SHELL_STATE_DRIVE = /(?:^|[^a-z])(?:alias|env|function|variable):/i;
 
@@ -824,6 +880,22 @@ function plainFolderChange(operands: readonly string[], dialect: Dialect): boole
 }
 
 /**
+ * True when a git call is plain: every way git may read it (`gitCalls`) runs a subcommand of
+ * `PLAIN_GIT_SUBCOMMANDS`, with no `-c` / `--config-env` (a config can run a program,
+ * `core.fsmonitor`, or name an alias) and no `--work-tree` / `--git-dir`. `git` alone, or one
+ * that only prints (`git --version`), runs nothing.
+ */
+function plainGit(args: readonly string[]): boolean {
+  return gitCalls(args).every(
+    (call) =>
+      PLAIN_GIT_SUBCOMMANDS.has(call.sub) &&
+      call.config.size === 0 &&
+      call.workTree === null &&
+      call.gitDir === null,
+  );
+}
+
+/**
  * True when one command of a line is a shape the own-worktree proof fully understands: `git`
  * with nothing before it, a folder change with one folder, or a program of `INERT_PROGRAMS`.
  * Its first word must be the program itself: not a path, not a wrapper, a variable, a keyword or
@@ -842,9 +914,10 @@ function plainStep(
   if (invocation.computed || invocation.prefix.length > 0) return false;
   const first = (words[0] ?? "").toLowerCase();
   if (first !== invocation.program) return false;
+  if (words.some((word) => DOT_GIT_PATH.test(word) || DOT_GLOB.test(word))) return false;
   const operands = withoutRedirections(invocation.args);
   if (dialect === "powershell" && !plainPowerShellWords(operands)) return false;
-  if (first === "git") return true;
+  if (first === "git") return plainGit(operands);
   if (FOLLOWED_FOLDER_CHANGES.has(first)) return plainFolderChange(operands, dialect);
   if (first === "printf") return !(operands[0] ?? "").startsWith("-");
   return INERT_PROGRAMS.has(first);
@@ -856,6 +929,12 @@ const BRACE_PAIR = /\{[^}]*(?:,|\.\.)[^}]*\}/;
 /** The most folder changes, and the most folders they may reach, a proof will follow. */
 const MAX_FOLDER_CHANGES = 64;
 const MAX_FOLDERS = 32;
+
+/**
+ * The most git calls one proof makes (the worktree's own check, then one per distinct folder a
+ * discard runs in): beyond it the proof asks rather than start more, whatever time is left.
+ */
+const MAX_PROOF_GIT_CALLS = 16;
 
 /** Where a relative path starts: no drive, no root, no `~`. */
 const isRelativePath = (path: string): boolean => !/^(?:[\\/]|[A-Za-z]:|~)/.test(path);
@@ -952,14 +1031,26 @@ function ownWorktreeProof(run: GuardRun, cwd: string): ((discard: OwnDiscard) =>
   const realRoot = real(root);
   // No link on the worktree's own path: a link there could lead to any checkout.
   if (!samePath(root, realRoot)) return null;
+  let gitCallsLeft = MAX_PROOF_GIT_CALLS;
   const gitIn = (folder: string, args: string[]): GitRun | null => {
     const timeoutMs = run.budget.timeFor(GUARD_GIT_TIMEOUT_MS);
-    return timeoutMs <= 0 ? null : runGit(folder, args, options.env, timeoutMs);
+    if (timeoutMs <= 0 || gitCallsLeft <= 0) return null;
+    gitCallsLeft--;
+    return runGit(folder, args, options.env, timeoutMs);
   };
   if (!isLinkedWorktree(root, realRoot, real, gitIn)) return null;
   run.startsAtRoot.set(realRoot, true);
-  const within = (folder: string): boolean =>
-    existsSync(folder) && isInside(real(folder), realRoot);
+  // Once per folder for the whole line, not once per discard. A folder whose text is outside the
+  // worktree is never read on disk (a link into it from outside asks, which is safe).
+  const inside = new Map<string, boolean>();
+  const within = (folder: string): boolean => {
+    let known = inside.get(folder);
+    if (known === undefined) {
+      known = isInside(folder, realRoot) && existsSync(folder) && isInside(real(folder), realRoot);
+      inside.set(folder, known);
+    }
+    return known;
+  };
   const startsAtRoot = (folder: string): boolean => {
     const key = real(folder);
     let known = run.startsAtRoot.get(key);
@@ -989,8 +1080,10 @@ function ownWorktreeProof(run: GuardRun, cwd: string): ((discard: OwnDiscard) =>
 /**
  * True when `root` is a linked worktree whose top is `root` itself: one `git rev-parse` there
  * names its top, its own git folder and the repository's shared one, and a linked worktree's two
- * differ. A main checkout, a plain folder with the worktree's name and a folder git cannot read
- * all give false.
+ * differ. Its git folder's own `gitdir` file must also point back at `root/.git`: a plain folder
+ * whose `.git` file points at another worktree's git folder passes git's own test, and a discard
+ * there would rewrite that worktree's index and HEAD. A main checkout, a plain folder with the
+ * worktree's name, a folder git cannot read and a `gitdir` file that cannot be read all give false.
  */
 function isLinkedWorktree(
   root: string,
@@ -1003,10 +1096,17 @@ function isLinkedWorktree(
   const [top, gitDir, commonDir] = read.out.split(/\r?\n/);
   if (top === undefined || gitDir === undefined || commonDir === undefined) return false;
   if (top === "" || gitDir === "" || commonDir === "") return false;
-  return (
-    samePath(real(top), realRoot) &&
-    !samePath(real(resolve(root, gitDir)), real(resolve(root, commonDir)))
-  );
+  const ownGitDir = resolve(root, gitDir);
+  if (!samePath(real(top), realRoot) || samePath(real(ownGitDir), real(resolve(root, commonDir)))) {
+    return false;
+  }
+  let pointsAt: string;
+  try {
+    pointsAt = readFileSync(join(ownGitDir, "gitdir"), "utf8").trim();
+  } catch {
+    return false; // no back-pointer to read: not proved, so the discard asks
+  }
+  return pointsAt !== "" && samePath(real(resolve(ownGitDir, pointsAt)), real(join(root, ".git")));
 }
 
 /** The questions the discards that looked silent still owe, once the whole line is read. */
@@ -1034,6 +1134,8 @@ function inspect(
   const { dialect, joinLines } = reading;
   // PowerShell reads every brace as a script block or a hashtable: no plain shape holds one.
   if (dialect === "powershell" && /[{}]/.test(command)) proof.plain = false;
+  // Anything the shell works out when the line runs: the whole text, so a here-doc body counts.
+  if (EXPANSION.test(command)) proof.plain = false;
   // A quote left open is read blind: more pieces, so nothing hides inside it.
   for (const step of shellSteps(command, { blindWhenOpen: true, dialect, joinLines })) {
     const words = wordsOf(step.text, dialect);
