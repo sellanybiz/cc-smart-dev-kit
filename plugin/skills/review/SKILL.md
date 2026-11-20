@@ -147,7 +147,7 @@ Workflow({ name: "cc-smart-dev-kit:review-split",
   budget; the example's two tracks, its spec track and its budget of 6 make nine. A plan's
   rounds take no extra run: the lead checks the Unchecked findings itself (build § 6).
 - `tracks` are two to four review dimensions or edge-case axes from `references/axes.md` that
-  this diff touches.
+  this diff touches. A plan's tracks are chosen by area (build § 6).
 - `spec` is a plan file's path: every track reads it, and one more track checks the plan's
   compliance. Leave the key out for a change with no plan.
 - `prior` is round 1's whole report, its Unchecked and Hunches included: it makes the run

@@ -191,8 +191,9 @@ on a big change set instead of its single reviewer: one `senior-engineer` per tr
 one to refute every finding, and the verified findings merged and ranked. Two optional args make
 it a plan's review (`build` § 6). `spec` is the plan file: every track reads it, and one added
 spec-compliance track checks each decision, edge case and step's done-check against the code.
-`prior` is round 1's whole report: it makes the run round 2, where each track marks every round 1
-finding fixed, not fixed or worse. Every call, old or new, also gets two strict rules in each
+`prior` is round 1's whole report: it makes the run round 2, where the spec track (or the first
+track) judges every round 1 finding, fixed, not fixed or worse, and each other track judges the
+findings of its own area. Every call, old or new, also gets two strict rules in each
 track's brief: prove a claim by running it where that can be done, and a track with no findings
 names what it read and ran, or the report says it gave no evidence of coverage. Its launches follow
 D46's tier for the change set the caller names with `risky` — `opus` at `xhigh` for a risky one,
@@ -203,10 +204,12 @@ the caller picks one: a second script would repeat every prompt, which `check:du
 `high` gives most of the gain of a deeper effort for a fraction of its cost (2.2.0); `max` was
 dropped from both scripts, and the writer, whose judgment is already made, runs at `medium`.
 The senior engineer has every tool, and the tracks of one run share one checkout, so each
-reviewer, auditor and refuter launch passes `disallowedTools: ['Edit', 'Write', 'NotebookEdit']`
-(Claude Code merges it with the agent's own deny list, `claude-code-contract.md` § Hooks):
-no track edits the code another is reading. Both scripts also deny `Agent`, to review and audit
-tracks alike. A child agent is a launch of its own, outside the deny list the script set, so it
+reviewer, auditor and refuter launch passes `disallowedTools`: the edit tools (`Edit`, `Write`,
+`NotebookEdit`), `Agent` and the six task write tools (`task_create`, `task_update`, `task_done`,
+`task_note`, `task_delete`, `task_take`), which a test checks against the task server's own list
+(Claude Code merges it with the agent's own deny list, `claude-code-contract.md` § Hooks): no
+track edits the code another is reading or the ledger the lead keeps. `Agent` is denied to
+review and audit tracks alike. A child agent is a launch of its own, outside the deny list the script set, so it
 could edit the shared checkout; and its completion notice would reach a review track as a later
 prompt, so the review record would record nothing. A finding its refuter leaves `unproven`, or that gets no answer, is neither
 proved nor refuted: it is listed under **Hunches** with the refuter's reason, its trigger and its

@@ -166,19 +166,26 @@ of the session's own folder. In order:
    setting.
 2. **Round 1:** `spec` is the plan file at its archived path, `risky: true`, `base` the plan's
    recorded base and `head` the plan branch's name or `HEAD`, never a commit, and `intent` the
-   plan's goal. Leave `folder` out: it is the session's own folder. `tracks` are two to four
-   from `../review/references/axes.md`; for a docs or instruction plan, from the plan's own
-   areas (accuracy against the code, one home per rule, contradictions). The run adds a
-   spec-compliance track, and with `spec` set every track reads the plan. Choose `budget` so the
-   round's agents (tracks, the spec track and the budget) stay at nine or fewer by default.
-3. **Fix round 1:** each confirmed finding becomes a task with `parent` set to the plan's `#n`
-   (with no parent it is loose). The builder that owns its files fixes it, resumed (§ 4) only
-   while its worktree remains (§ 5 removes it after the merge); otherwise a fresh builder
-   starts from the plan head.
+   plan's goal. Leave `folder` out: it is the session's own folder. `tracks` are one per area
+   the plan changes (up to three, such as the UI, the server and the migrations), each naming
+   the risks from `../review/references/axes.md` that matter there (the UI's environment cases,
+   the server's access and money, a migration's deploy order and backfill); plus one
+   cross-layer track that follows state and timing, or access and money, through every layer.
+   A docs or instruction plan's areas are its own (accuracy against the code, one home per
+   rule, contradictions). The run adds a spec-compliance track, and with `spec` set every track
+   reads the plan. Choose `budget` so the round's agents (tracks, the spec track and the
+   budget) stay within the session's workflow size guideline (default under 10 agents).
+3. **Save and fix round 1:** save the report whole on the plan task as a `task_note` that
+   starts `Review round 1:` (it fits: a note holds 64,000 characters). Then each confirmed
+   finding becomes a task with `parent` set to the plan's `#n` (with no parent it is loose).
+   The builder that owns its files fixes it, resumed (§ 4) only while its worktree remains
+   (§ 5 removes it after the merge); otherwise a fresh builder starts from the plan head.
 4. **Round 2:** the same args except `head`, which is the plan branch's head after round 1's
-   fixes, with `prior` set. `prior` is round 1's whole report, its Unchecked and Hunches
-   included, never just "no findings".
-5. **Fix round 2** the same way.
+   fixes, with `prior` set. `prior` is the whole text of the `Review round 1:` note, its
+   Unchecked and Hunches included, never a condensed list and never just "no findings".
+5. **Save and fix round 2:** save its report as `Review round 2:`. Fix it the same way: its
+   confirmed findings, and every round 1 finding the report marks NOT FIXED or WORSE; check
+   each NOT JUDGED one yourself against the code first.
 6. **The full check,** once, in the main session (`/cc-smart-dev-kit:verify-change` § 4).
 7. **The pull request,** below.
 
@@ -190,7 +197,8 @@ the head the plan worktree is on. Verify each finding against the code (a design
 the evidence bar as `../review/references/axes.md` § Design findings says). Read the report's
 **Unchecked** section and any "no evidence of coverage" line under **Coverage**, and act on
 them: check the unchecked findings and the hunches yourself, against the code, and turn each
-that holds into a fix task under the plan. No extra run. Do not declare success while a
+that holds into a fix task under the plan. An "Incomplete review" line means that track
+returned no answer: review its area yourself against the code. No extra run. Do not declare success while a
 material defect remains; record the blocker and remaining work. If the review leaves the plan
 open, move the plan file back out of `archive/`.
 
@@ -269,7 +277,7 @@ with `/cc-smart-dev-kit:user-unavailable`; never bypass a permission refusal.
 
 Run `task_list` with `scope: "plan"`, `open_only: false` (without `plan` it lists every plan
 this session owns), and read `git log`. Use task fields, `Report:` and `Ruling:` notes to
-recover the exact branches and review state. Read the plan for design, not progress. Never
+recover the exact branches and review state (the `Review round` notes on the plan task). Read the plan for design, not progress. Never
 rerun a completed phase from memory.
 
 ## Take over another session's plan
