@@ -358,7 +358,7 @@ to use when they are missing.
 phase, parallel worktrees for disjoint files, and a quick check of each hand-back against the
 branch (no reviewer reads a phase). The plan gets one review, in two rounds of the `review-split`
 workflow with `risky: true`, so every agent is the senior engineer on `opus` at `xhigh`; both
-rounds get the plan file as `spec`, and round 2 also gets round 1's whole report as `prior`. Each reviewer's
+rounds get the plan file as `spec`, and round 2 also gets round 1's whole report as `prior`. When round 2's fixes are bigger than `fixesAfterReview` or touch a guard, security, money, permissions or data, one final review follows: a senior engineer on `opus` at `xhigh` reads only those fixes, with round 2's whole report as context. Each reviewer's
 brief carries the line `Mode: review` alone on its line; the review-record hook records a review
 only with it, so a consult of the same agent records nothing. Agents run in the background (Claude Code's default), `Monitor` watches CI and
 logs, and the lead waits only for what the next step needs. `blocked_by` marks only a real

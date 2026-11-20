@@ -255,7 +255,10 @@ takes over. Builders never start agents or review themselves.
 
 The main session merges each checked phase, closes its task and starts what it unblocked.
 The plan gets one review, in two rounds of the `review-split` workflow on `opus` at `xhigh`,
-with a fix pass after each, then one full check. Round 2 is the last review.
+with a fix pass after each, then one full check. When round 2's fixes are bigger than
+`fixesAfterReview` or touch a guard, security, money, permissions or data, one final review
+by the senior engineer (`opus`, `xhigh`) reads just those fixes, before the full check; nothing
+reviews the fixes after it, and the pull request says which reviews ran.
 Commit, push and pull request steps follow the project's workflow policy.
 
 The task system is the ledger. `Ruling:` notes keep decisions; `Report:` notes keep results.
@@ -1787,7 +1790,7 @@ names such a missing import.
 | Skill | Use it for |
 |---|---|
 | `review` | Your own review before a commit, and the one second opinion per change set. |
-| `build` | Build an approved plan with parallel worktree builders, one two-round plan review and the task ledger. |
+| `build` | Build an approved plan with parallel worktree builders, one two-round plan review (plus a final review when its fixes are big) and the task ledger. |
 | `plan-task` | Planning work whose design is open, in plan mode: research, questions, the plan file, approval, phases and owners. |
 | `commit` | When to commit, push, open the pull request and ask for the merge. |
 | `pull-request` | What every pull request body carries. |

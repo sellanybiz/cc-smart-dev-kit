@@ -81,7 +81,7 @@ senior engineer can change files, so the launch carries `Fable reason: build - <
 asked>`, and `agent-guard` asks the person.
 
 - **When:** once the non-plan change is complete, before its first push. A plan's review
-  follows the build skill instead (§ 6: two `review-split` rounds).
+  follows the build skill instead (§ 6: two `review-split` rounds, and a final senior engineer review when round 2's fixes are big).
 - **One change set, one read:** phases built in parallel that ship together get one read,
   not one each. A phase stacked on another open pull request is its own change set: its own
   branch, its own read. Fixes to code the senior engineer already read are a re-push, not a
@@ -124,7 +124,7 @@ release's integration, a change across most of the tree. There the second opinio
 `review-split` Workflow: one read-only reviewer per track you name, a second reviewer to refute
 every finding, and one ranked report back. It is the same second opinion, so never run it beside
 the single senior engineer, and a small fix or an ordinary change set stays with the single
-senior engineer, whose read is cheaper. A plan's two rounds are not this section's choice: the
+senior engineer, whose read is cheaper. A plan's two rounds and its final review are not this section's choice: the
 build skill's § 6 sets their args. This section is where each arg is defined.
 
 ```

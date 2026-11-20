@@ -25,7 +25,7 @@ weigh three things:
 - **How hard is it?** Can a careful person do it straight through, or does it need deep reasoning?
 - **What does a miss cost?** Cheap and caught later, or it ships, loses data, opens a hole, or
   wastes a whole build?
-- **Is this the last check before it is too late?** A plan's second opinion and its two-round review
+- **Is this the last check before it is too late?** A plan's second opinion, its two-round review and its final review
   guard everything after them, so they earn more effort than a step a later review still covers.
 
 Spend effort where those are high and save it everywhere else. `high` gives most of the gain;
@@ -44,6 +44,7 @@ Worked examples — judge new cases the same way:
 | Build a normal phase | builder, `sonnet`, `high` |
 | UI/UX design, an architecture build | builder, `opus`, `high` (`xhigh` when hard) |
 | A plan's review (two `review-split` rounds, `/cc-smart-dev-kit:build` § 6) | `risky: true`: every agent is the senior engineer, `opus`, `xhigh` |
+| A plan's final review, after round 2's big fixes (`/cc-smart-dev-kit:build` § 6) | senior engineer, `opus`, `xhigh`, its brief with the line `Mode: review` |
 | **Second opinion on a plan** | senior engineer, `opus`, `xhigh`; risky, or `xhigh` already missed something → `max` (asks) |
 | Scenarios for a plan or a change | edge-case hunter, `opus`, `high`; risky (security, money, data, concurrency, the router, user settings) → `opus`, `xhigh` |
 | A release, or a change set that touches security, money, permissions, a schema, deploy or the router | senior engineer, `opus`, `xhigh` |
