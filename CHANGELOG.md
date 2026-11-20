@@ -3,6 +3,19 @@
 What each release changed, newest first. A release's **What to run** steps are the ones to do
 in your own terminal after the update; the user guide is [README.md](README.md).
 
+## 5.6.1
+
+- **A builder undoing its own edits no longer asks you.** The git guard asks before a command
+  that throws away uncommitted changes (`git checkout -- <file>`, `git restore`, `reset --hard`,
+  `clean -f`). It now stays silent when a subagent runs one inside its own worktree, which
+  Claude Code proves with the subagent's id. A hook's question cannot be remembered, so each
+  builder discard used to interrupt you.
+- **Everything else still asks:** a push, `branch -D`, the shared stash, `worktree remove -f`,
+  any discard by the main session, in another agent's worktree or your own checkout, and any
+  line that points git elsewhere (`-C`, `--work-tree`, `--git-dir`, `GIT_DIR` and its kin).
+
+**What to run:** nothing.
+
 ## 5.6.0
 
 - **Queued heavy jobs can no longer hang the machine (Linux).** Every queued job now runs in

@@ -39,7 +39,7 @@ var MIN_BUN = "1.4.3";
 
 // src/build-info/index.ts
 var info = {
-  version: "5.6.0",
+  version: "5.6.1",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -31824,6 +31824,7 @@ function gitCalls(args) {
   const dirs = [];
   const config = new Map;
   let workTree = null;
+  let gitDir = null;
   for (let index = 0;index < args.length; index++) {
     const arg = args[index] ?? "";
     const name = arg.startsWith("--") ? arg.split("=")[0] ?? arg : arg;
@@ -31839,15 +31840,17 @@ function gitCalls(args) {
       config.set(key, arg === "-c" ? equals === -1 ? "true" : setting.slice(equals + 1) : null);
     } else if (name === "--work-tree") {
       workTree = (attached ? arg.slice(name.length + 1) : args[++index]) ?? workTree;
+    } else if (name === "--git-dir") {
+      gitDir = (attached ? arg.slice(name.length + 1) : args[++index]) ?? gitDir;
     } else if (GIT_VALUE_OPTIONS.has(arg)) {
       index++;
     } else if (GIT_PRINTS.has(arg) || name === "--list-cmds") {
       return [];
     } else if (attached && GIT_VALUE_OPTIONS.has(name) || name === "--exec-path") {} else if (!GIT_FLAGS.has(arg) && arg.startsWith("-")) {
       const later = args.slice(index + 1);
-      return later.flatMap((word, at) => word.startsWith("-") ? [] : [{ config, dirs: [...dirs], rest: later.slice(at + 1), sub: word, workTree }]);
+      return later.flatMap((word, at) => word.startsWith("-") ? [] : [{ config, dirs: [...dirs], gitDir, rest: later.slice(at + 1), sub: word, workTree }]);
     } else if (!arg.startsWith("-")) {
-      return [{ config, dirs, rest: args.slice(index + 1), sub: arg, workTree }];
+      return [{ config, dirs, gitDir, rest: args.slice(index + 1), sub: arg, workTree }];
     }
   }
   return [];
@@ -52437,6 +52440,10 @@ init_git_calls();
 init_git();
 import { resolve as resolve25 } from "path";
 var DEFAULT_PROTECTED_BRANCHES = ["main"];
+var GIT_LOCATION_VARIABLES = ["GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE"];
+function namesGitLocation(words) {
+  return words.some((word) => GIT_LOCATION_VARIABLES.some((name) => word.includes(name)));
+}
 var PUSH_VALUE_OPTIONS = [
   ["--exec", 4],
   ["--push-option", 4],
@@ -52657,8 +52664,23 @@ function computedPushIn(command, dialect) {
     return invocation?.computed === true && namesPush(words);
   }));
 }
-function gitQuestions(args, folder, run) {
-  return gitCalls(args).flatMap((call) => callQuestions(call, folder, run));
+function discardFolder(prefix, folder) {
+  return prefix.some((word) => isWrapper(word) || word.startsWith("-")) ? null : folder;
+}
+function gitQuestions(args, folder, prefix, run) {
+  const writesIn = discardFolder(prefix, folder);
+  return gitCalls(args).flatMap((call) => callQuestions(call, folder, writesIn, run));
+}
+function insideOwnWorktree(call, writesIn, run) {
+  const { agentId = null, env } = run.options;
+  if (writesIn === null || agentId === null)
+    return false;
+  if (GIT_LOCATION_VARIABLES.some((name) => env[name] !== undefined))
+    return false;
+  if (call.workTree !== null || call.gitDir !== null || call.config.has("core.worktree")) {
+    return false;
+  }
+  return subagentWorktreeOf(resolve25(writesIn, ...call.dirs), agentId) !== null;
 }
 function pushAlias(call) {
   const value = call.config.get(`alias.${call.sub.toLowerCase()}`);
@@ -52668,7 +52690,7 @@ function pushAlias(call) {
   const first = words[0] ?? "";
   return first === "push" || first === "send-pack" ? words.slice(1) : null;
 }
-function callQuestions(call, folder, run) {
+function callQuestions(call, folder, writesIn, run) {
   const { options } = run;
   const { rest, sub } = call;
   const alias = pushAlias(call);
@@ -52694,22 +52716,28 @@ function callQuestions(call, folder, run) {
     if (force)
       return [WORKTREE_REMOVE_ASK];
   }
+  const unlessOwn = (ask) => {
+    if (!insideOwnWorktree(call, writesIn, run))
+      return [ask];
+    run.silenced.push(ask);
+    return [];
+  };
   if ((sub === "checkout" || sub === "restore" || sub === "switch") && discardsChanges(sub, rest)) {
-    return [discardAsk(sub)];
+    return unlessOwn(discardAsk(sub));
   }
   if (sub === "branch" && forceDeletesBranch(rest))
     return [BRANCH_DELETE_ASK];
   if (sub === "reset" && rest.some((arg) => longOption2(arg, "--hard", 4))) {
-    return [RESET_HARD_ASK];
+    return unlessOwn(RESET_HARD_ASK);
   }
   if (sub === "reset" && rest.some((arg) => longOption2(arg, "--merge", 4))) {
-    return [RESET_MERGE_ASK];
+    return unlessOwn(RESET_MERGE_ASK);
   }
   if (sub === "clean") {
     const force = rest.some((arg) => longOption2(arg, "--force", 6) || isShort(arg) && shortFlags(arg, "e").flags.includes("f"));
     const dryRun = rest.some((arg) => longOption2(arg, "--dry-run", 4) || isShort(arg) && shortFlags(arg, "e").flags.includes("n"));
     if (force && !dryRun)
-      return [CLEAN_FORCE_ASK];
+      return unlessOwn(CLEAN_FORCE_ASK);
   }
   return [];
 }
@@ -52719,13 +52747,15 @@ function inspect2(command, cwd, reading, run, depth = 0) {
   const { dialect, joinLines } = reading;
   for (const step of shellSteps(command, { blindWhenOpen: true, dialect, joinLines })) {
     const words = wordsOf(step.text, dialect);
+    if (namesGitLocation(words))
+      run.locationNamed = true;
     const invocation = invocationOf(words);
     if (invocation === undefined)
       continue;
     const { args, program } = invocation;
     const operands = withoutRedirections(args);
     if (program === "git")
-      found.push(...gitQuestions(operands, folder, run));
+      found.push(...gitQuestions(operands, folder, invocation.prefix, run));
     if (invocation.computed && namesPush(words))
       found.push(COMPUTED_PUSH_ASK);
     if (CHANGE_DIR.has(program))
@@ -52740,8 +52770,16 @@ function inspect2(command, cwd, reading, run, depth = 0) {
   return found;
 }
 function guardQuestions(command, cwd, options) {
-  const run = { options, branches: new Map, pushConfigs: new Map };
+  const run = {
+    options,
+    branches: new Map,
+    pushConfigs: new Map,
+    silenced: [],
+    locationNamed: false
+  };
   const found = readingsOf(command, options.dialect).flatMap((reading) => inspect2(command, cwd, reading, run));
+  if (run.locationNamed)
+    found.push(...run.silenced);
   return [...new Set(found)];
 }
 function runsGit(command, dialect) {
@@ -55283,7 +55321,8 @@ var gitGuardHook = {
       protectedBranches: config.protectedBranches ?? DEFAULT_PROTECTED_BRANCHES,
       autoPushAsk: () => autoPushQuestion(context),
       sharedStash: config.worktrees !== undefined || project.isWorktree,
-      env
+      env,
+      agentId: stringField(input.agent_id)
     });
     return questions.length === 0 ? SILENT : toolDecision("ask", questions.join(`
 `));
