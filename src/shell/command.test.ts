@@ -756,6 +756,66 @@ describe("invocationOf", () => {
   });
 });
 
+// Round 2's reader finding: `-ArgumentList '-c', 'git reset --hard'` (a space after the comma)
+// was read as `-c` alone, so the command pwsh runs was never read, for any guard.
+describe("Start-Process -ArgumentList is the whole comma-separated array, however it is spaced", () => {
+  /** What the `pwsh` that Start-Process starts runs, read from the line's PowerShell steps. */
+  function startedCommand(line: string): string | undefined {
+    for (const step of shellSteps(line, ps)) {
+      const invocation = invocationOf(wordsOf(step.text, "powershell"));
+      if (invocation?.program === "pwsh") {
+        return nestedCommand(invocation.program, invocation.args, step.pipedFrom);
+      }
+    }
+    return undefined;
+  }
+
+  test.each([
+    ["no space", "Start-Process pwsh -ArgumentList '-c','git reset --hard'"],
+    ["a space after the comma", "Start-Process pwsh -ArgumentList '-c', 'git reset --hard'"],
+    ["a space on both sides", "Start-Process pwsh -ArgumentList '-c' , 'git reset --hard'"],
+    ["a space before the comma", "Start-Process pwsh -ArgumentList '-c' ,'git reset --hard'"],
+    ["the -Args abbreviation", "Start-Process pwsh -Args '-c', 'git reset --hard'"],
+    ["-ArgumentList:", "Start-Process pwsh -ArgumentList:'-c', 'git reset --hard'"],
+    [
+      "between other parameters",
+      "Start-Process pwsh -WorkingDirectory C:/x -ArgumentList '-c', 'git reset --hard' -Wait",
+    ],
+    ["the positional array", "Start-Process pwsh '-c', 'git reset --hard'"],
+    ["@( … )", "Start-Process pwsh -ArgumentList @('-c', 'git reset --hard')"],
+    ["@( … ) with no spaces", "Start-Process pwsh -ArgumentList @('-c','git reset --hard')"],
+    [
+      "@( … ) with spaces inside",
+      "Start-Process pwsh -ArgumentList @( '-c' , 'git reset --hard' )",
+    ],
+  ])("%s: the command pwsh runs is read", (_name, line) => {
+    expect(startedCommand(line)).toBe("git reset --hard");
+    expect(programsOf(line, "powershell")).toContain("git");
+  });
+
+  test("an element worked out when the line runs keeps the nested command unreadable", () => {
+    const inner = startedCommand("Start-Process pwsh -ArgumentList '-c', $cmd");
+    expect(inner).toBe("$cmd");
+    expect(invocationOf(wordsOf(inner ?? "", "powershell"))?.computed).toBe(true);
+  });
+
+  test("the words after the array are Start-Process's own again", () => {
+    expect(
+      invocationOf(
+        wordsOf(
+          "Start-Process git -ArgumentList 'push', 'origin' -UseNewEnvironment",
+          "powershell",
+        ),
+      ),
+    ).toEqual({
+      args: ["push", "origin"],
+      computed: false,
+      prefix: ["start-process", "-UseNewEnvironment"],
+      program: "git",
+    });
+  });
+});
+
 describe("the runners: find -exec, watch, su -c and parallel run the command they name", () => {
   // The finding of the GI1 review: only the issue-write guard knew these four, so
   // `watch git push` and `find . -exec git push \;` got past the git guard. The reader knows
