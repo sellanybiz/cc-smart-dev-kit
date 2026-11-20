@@ -56,6 +56,26 @@ const prior = given.prior || ''
 const SPEC_TRACK = 'spec compliance'
 const tracks = spec === '' ? named : named.concat([SPEC_TRACK])
 
+// Each track is an object that carries what the script decides about it, so no later step reads a
+// track's position: Claude Code calls a pipeline stage as `(prevResult, originalItem, index)`, and
+// a name or a number taken from the wrong argument would silently mark no track at all.
+// In round 2 one track judges every finding of round 1's report: the spec track when there is one
+// (it reads the whole plan), else the first named track. The others judge their own area.
+const judgesAllAt = spec === '' ? 0 : tracks.length - 1
+const items = tracks.map((name, at) => ({
+  name,
+  isSpec: spec !== '' && at === tracks.length - 1,
+  judgesAll: at === judgesAllAt,
+}))
+
+// A plan file is named `<YYYY-MM-DD>-<slug>.md` (the plan-task skill's naming), and the plan's
+// tasks wait under that slug: the spec track finds them by it, since the file lists no task ids.
+const planSlug = spec
+  .split(/[\\/]/)
+  .pop()
+  .replace(/\.md$/, '')
+  .replace(/^\d{4}-\d{2}-\d{2}-/, '')
+
 // The change set as the reviewers read it. With no base, the branch works it out from its own
 // merge base: a base typed here would be one project's branch name in every project.
 const change =
@@ -99,7 +119,9 @@ const FINDINGS = {
     },
     hunches: { type: 'array', items: { type: 'string' } },
     coverage: { type: 'string' },
-    // Round 2 only: where each finding of round 1's report stands now.
+    // Round 2 only: where each finding of round 1's report stands now. The file and line are the
+    // finding's place in that report: the merge keys on them with the title, since two tracks word
+    // one finding differently. They are not required: a round 1 report may be plain text.
     priorStatus: {
       type: 'array',
       items: {
@@ -107,6 +129,8 @@ const FINDINGS = {
         required: ['title', 'status', 'evidence'],
         properties: {
           title: { type: 'string' },
+          file: { type: 'string' },
+          line: { type: 'number' },
           status: { type: 'string', enum: ['fixed', 'not_fixed', 'worse'] },
           evidence: { type: 'string' },
         },
@@ -145,28 +169,48 @@ log(
 // The senior engineer has every tool. The tracks run at once on one checkout, so each launch
 // takes the editing tools away: no track changes the code another one is reading. It takes
 // `Agent` away too: an agent a track started would send it a completion notice, which the
-// review record counts as a later prompt, and the run would record no review. The prompt also
-// asks for the StructuredOutput call, so Claude Code's nudge to make it is rarely needed (the
-// record reads that nudge as harmless, `src/hooks/transcript.ts`).
+// review record counts as a later prompt, and the run would record no review. It takes the kit's
+// task write tools away as well: a reviewer reads the ledger and reports, and the lead owns it.
+// The prompt also asks for the StructuredOutput call, so Claude Code's nudge to make it is rarely
+// needed (the record reads that nudge as harmless, `src/hooks/transcript.ts`).
+const READ_ONLY = [
+  'Edit',
+  'Write',
+  'NotebookEdit',
+  'Agent',
+  'mcp__cc-smart-dev-kit-tasks__task_create',
+  'mcp__cc-smart-dev-kit-tasks__task_update',
+  'mcp__cc-smart-dev-kit-tasks__task_done',
+  'mcp__cc-smart-dev-kit-tasks__task_note',
+  'mcp__cc-smart-dev-kit-tasks__task_delete',
+  'mcp__cc-smart-dev-kit-tasks__task_take',
+]
+
 // One template for every track, and the optional parts added to it: the plan every track reads when
 // `spec` is set, the point-by-point check the spec track alone does, and the round-2 lines every
 // track gets when `prior` is set. The strict rules close every prompt, in both rounds: a claim is
 // proved by running when it can be, and a track that finds nothing still shows what it read and ran.
 const planPart = `Read the plan file \`${spec}\` first. Judge your track against the plan's decisions and edge cases as well as against the code.`
-const specPart =
-  'For each Decision and each Edge case in the plan, say met, or failed with file:line; a failure is a finding. Then read the plan\'s tasks: call task_get on the phases and steps it lists. Check each step\'s done-check against its closing evidence and against the code. A step done only in name is a spec failure: report it as a finding.'
-const roundTwoPart = `This is round 2. Round 1's report follows. Check that each finding it lists is really fixed, at its file:line, and report each one in \`priorStatus\` as fixed, not_fixed or worse, with the evidence. Check that the fixes broke nothing around them. Report what round 1 missed in the change set, at the same evidence bar.\n\nRound 1's report:\n\n${prior}`
+const specPart = `For each Decision and each Edge case in the plan, say met, or failed with file:line; a failure is a finding. Then read the plan's tasks. The plan file lists no task ids: call task_list with scope "plan" and plan "${planSlug}", then task_get on each phase and step it lists. Check each step's done-check against its closing evidence and against the code. A step done only in name is a spec failure: report it as a finding.`
+// The track that judges every finding is named in the others' prompt, so a finding is never left to
+// "some other track". A lone track judges all of them and names no other.
+const roundTwoPart = (item) => {
+  const who = item.judgesAll
+    ? 'You judge every finding in the report, whatever its area: a finding no track judges is listed as not judged, and the lead has to check it.'
+    : `Judge the findings that lie in your own track's area; the ${tracks[judgesAllAt]} track judges every finding in the report.`
+  return `This is round 2. Round 1's report follows. Report each round 1 finding in \`priorStatus\` as fixed, not_fixed or worse, with the evidence, copying its title and its file and line exactly as the report gives them. Check each one at its file:line, in the code as it is now. ${who} Check that the fixes broke nothing around them. Report what round 1 missed in the change set, at the same evidence bar.\n\nRound 1's report:\n\n${prior}`
+}
 const runPart =
-  'Where a claim can be proved by running something, run it and quote the command and its output in the finding\'s `trigger` or `outcome`: a test, a small probe script in your scratchpad, or the real command. Reading the code is not enough. Change no file of the project: report only; scratch files go in your scratchpad.'
+  'Where a claim can be proved by running something, run it and quote the command and its output in the finding\'s `trigger` or `outcome`: a test, a small probe script in your scratchpad, or the real command. Reading the code is not enough. Run every command in the foreground: no run_in_background, no Monitor, so a notice never comes between you and your answer. Change no file of the project: report only; scratch files go in your scratchpad.'
 const answerPart =
   'Answer in the schema: a finding needs the trigger, the path as file:line, the outcome, the missing guard and the fix. A design finding\'s missing guard is the rule it breaks. What you cannot prove goes in `hunches`. In `coverage`, name the files you read, the commands you ran with their results, and where you stopped. A track with no findings still fills `coverage` this way: a bare "clean" is not evidence.'
-const trackPrompt = (track, isSpecTrack) =>
+const trackPrompt = (item) =>
   [
     `Mode: review\n\nOne track of the second opinion on one change set. The change set: ${change}${checkout}. What it is meant to do: ${intent}.`,
-    `Your track: ${track}. Other reviewers take the other tracks; stay on yours. Judge the project by its own rules, skills and docs, and read the code the diff touches, not the diff alone.`,
+    `Your track: ${item.name}. Other reviewers take the other tracks; stay on yours. Judge the project by its own rules, skills and docs, and read the code the diff touches, not the diff alone.`,
     spec === '' ? '' : planPart,
-    isSpecTrack ? specPart : '',
-    prior === '' ? '' : roundTwoPart,
+    item.isSpec ? specPart : '',
+    prior === '' ? '' : roundTwoPart(item),
     runPart,
     answerPart,
     'End by calling the StructuredOutput tool; never end with plain text.',
@@ -174,23 +218,23 @@ const trackPrompt = (track, isSpecTrack) =>
     .filter((part) => part !== '')
     .join('\n\n')
 
-const reviews = await pipeline(tracks, (track, index) => {
-  const prompt = trackPrompt(track, spec !== '' && index === tracks.length - 1)
+const reviews = await pipeline(items, (item) => {
+  const prompt = trackPrompt(item)
   return risky
     ? agent(prompt, {
-        label: `review: ${track}`,
+        label: `review: ${item.name}`,
         model: 'opus',
         effort: 'xhigh',
         agentType: 'cc-smart-dev-kit:senior-engineer',
-        disallowedTools: ['Edit', 'Write', 'NotebookEdit', 'Agent'],
+        disallowedTools: READ_ONLY,
         schema: FINDINGS,
       })
     : agent(prompt, {
-        label: `review: ${track}`,
+        label: `review: ${item.name}`,
         model: 'sonnet',
         effort: 'high',
         agentType: 'cc-smart-dev-kit:senior-engineer',
-        disallowedTools: ['Edit', 'Write', 'NotebookEdit', 'Agent'],
+        disallowedTools: READ_ONLY,
         schema: FINDINGS,
       })
 })
@@ -237,7 +281,7 @@ const verdicts = await pipeline(checked, (finding) => {
         model: 'opus',
         effort: 'xhigh',
         agentType: 'cc-smart-dev-kit:senior-engineer',
-        disallowedTools: ['Edit', 'Write', 'NotebookEdit', 'Agent'],
+        disallowedTools: READ_ONLY,
         schema: VERDICT,
       })
     : agent(prompt, {
@@ -245,7 +289,7 @@ const verdicts = await pipeline(checked, (finding) => {
         model: 'sonnet',
         effort: 'high',
         agentType: 'cc-smart-dev-kit:senior-engineer',
-        disallowedTools: ['Edit', 'Write', 'NotebookEdit', 'Agent'],
+        disallowedTools: READ_ONLY,
         schema: VERDICT,
       })
 })
@@ -287,43 +331,97 @@ const hunches = unprovenHunches.concat(
   reviews.flatMap((report) => (report && Array.isArray(report.hunches) ? report.hunches : [])),
 )
 
-// A track that found nothing must still show its work. A bare "clean", an empty coverage or no
-// answer at all is not evidence of a review: the report says so, so the lead sees it.
+// A track that returned nothing, or no list of findings, is a track that never reviewed: the report
+// names it and says the review is incomplete, so a dead track is never read as a clean one.
+const answered = (report) => Boolean(report) && Array.isArray(report.findings)
+const silent = tracks.filter((_, index) => !answered(reviews[index]))
+
+// A track that found nothing must still show its work. A bare "clean" or an empty coverage is not
+// evidence of a review: the report says so, so the lead sees it.
 const MIN_COVERAGE_CHARS = 40
 const coverage = reviews
   .map((report, index) => {
-    const text = report && typeof report.coverage === 'string' ? report.coverage.trim() : ''
-    const found = report && Array.isArray(report.findings) && report.findings.length > 0
     const label = `track ${index + 1} (${tracks[index]})`
-    if (!found && text.length < MIN_COVERAGE_CHARS) {
+    if (!answered(report)) return `${label} returned no answer`
+    const text = typeof report.coverage === 'string' ? report.coverage.trim() : ''
+    if (report.findings.length === 0 && text.length < MIN_COVERAGE_CHARS) {
       return `${label} gave no evidence of coverage${text === '' ? '' : `: "${text}"`}`
     }
     return text === '' ? null : `${label}: ${text}`
   })
   .filter((one) => one !== null)
 
-// Round 2 only: where each finding of round 1 stands, one line each. Several tracks may judge the
-// same finding; the worst status stands, so a fix one track calls good and another calls broken
-// is listed as broken.
+// Round 2 only: where each finding of round 1 stands, one line each. A finding is known by its
+// title and its file:line, never by its title alone: two tracks word one finding differently, and
+// two findings may share a title. Round 1's own report is read for its findings (the lines this
+// script writes: `N. [SEVERITY] title — file:line`, and the same without a number in Unchecked), so
+// a status finds the finding it judges, and a finding no track judged is listed as not judged
+// rather than dropped. Several tracks may judge one finding; the worst status stands.
 const STATUSES = ['worse', 'not_fixed', 'fixed']
 const statusRank = (status) => {
   const at = STATUSES.indexOf(status)
   return at === -1 ? STATUSES.length : at
 }
+const normal = (text) => (text === undefined ? '' : String(text).trim().toLowerCase())
+const placeKey = (file, line) => `${normal(file)}:${line === undefined ? '' : line}`
+const FINDING_LINE = /^\s*(?:\d+\.|-)\s+\[(?:CRITICAL|WARNING|SUGGESTION)\]\s+(.+?)\s+—\s+(\S+)\s*$/
+const roundOne = []
+for (const text of prior.split(/\r?\n/)) {
+  const found = FINDING_LINE.exec(text)
+  if (found === null) continue
+  const at = /^(.+?)(?::(\d+))?$/.exec(found[2])
+  const place = placeKey(at[1], at[2])
+  const key = `${place}:${normal(found[1])}`
+  if (roundOne.some((entry) => entry.key === key)) continue
+  roundOne.push({ title: found[1], name: normal(found[1]), shown: found[2], place, key })
+}
+// The listed finding a status judges: the same title at the same place, else the one finding at
+// that place (or with that title, when the status names no file). Anything else stands alone.
+const resolve = (one) => {
+  const exact = roundOne.find((entry) => entry.key === `${placeKey(one.file, one.line)}:${normal(one.title)}`)
+  if (exact !== undefined) return exact
+  const near = roundOne.filter((entry) =>
+    one.file === undefined || one.file === ''
+      ? entry.name === normal(one.title)
+      : entry.place === placeKey(one.file, one.line),
+  )
+  return near.length === 1 ? near[0] : undefined
+}
 const standing = new Map()
 for (const report of reviews) {
   if (!report || !Array.isArray(report.priorStatus)) continue
   for (const one of report.priorStatus) {
-    const key = String(one.title).trim().toLowerCase()
+    const entry = resolve(one)
+    const key = entry === undefined ? `${placeKey(one.file, one.line)}:${normal(one.title)}` : entry.key
     const before = standing.get(key)
     if (before === undefined || statusRank(one.status) < statusRank(before.status)) {
-      standing.set(key, one)
+      standing.set(key, {
+        title: entry === undefined ? one.title : entry.title,
+        status: one.status,
+        evidence: one.evidence,
+      })
     }
   }
 }
-const priorLines = Array.from(standing.values())
-  .sort((a, b) => statusRank(a.status) - statusRank(b.status))
-  .map((one) => `- [${String(one.status).replace('_', ' ').toUpperCase()}] ${one.title} — ${one.evidence}`)
+const NOT_JUDGED = 'not judged'
+const priorEntries = roundOne
+  .filter((entry) => !standing.has(entry.key))
+  .map((entry) => ({
+    status: NOT_JUDGED,
+    text: `${entry.title} — ${entry.shown}: no track gave a status; check it`,
+  }))
+  .concat(
+    Array.from(standing.values()).map((one) => ({ status: one.status, text: `${one.title} — ${one.evidence}` })),
+  )
+// Worst first; a finding nobody judged comes before the ones that stand fixed.
+const DISPLAY_ORDER = ['worse', 'not_fixed', NOT_JUDGED, 'fixed']
+const displayRank = (status) => {
+  const at = DISPLAY_ORDER.indexOf(status)
+  return at === -1 ? DISPLAY_ORDER.length : at
+}
+const priorLines = priorEntries
+  .sort((a, b) => displayRank(a.status) - displayRank(b.status))
+  .map((one) => `- [${String(one.status).replace('_', ' ').toUpperCase()}] ${one.text}`)
 
 const lines = verified.map(
   (one, index) =>
@@ -336,13 +434,16 @@ const uncheckedLines = unchecked.map(
 return [
   `# Second opinion - ${base === '' ? 'the change on this branch' : `${base}...${head}`}`,
   `Tier: ${risky ? 'risky (`opus` at `xhigh`)' : 'ordinary (`sonnet` at `high`)'} · tracks: ${tracks.length} · written for: ${intent}`,
+  silent.length === 0
+    ? ''
+    : `Incomplete review: ${silent.length} of ${tracks.length} track(s) returned no answer (${silent.join(', ')}). Nothing below covers ${silent.length === 1 ? 'it' : 'them'}: review ${silent.length === 1 ? 'that track' : 'those tracks'} again or by hand.`,
   '',
   verified.length > 0
     ? `## Findings (${verified.length}, most severe first)\n\n${lines.join('\n')}`
     : unprovenHunches.length > 0
       ? `No checked finding was confirmed; ${unprovenHunches.length} ${unprovenHunches.length === 1 ? 'is' : 'are'} listed under Hunches.${unchecked.length === 0 ? '' : ' The unchecked ones are listed below.'}`
       : unchecked.length === 0
-        ? 'No finding survived refutation.'
+        ? `No finding survived refutation${silent.length === 0 ? '' : ' in the tracks that answered'}.`
         : 'No checked finding survived refutation; the unchecked ones are listed below.',
   '',
   refuted === 0
