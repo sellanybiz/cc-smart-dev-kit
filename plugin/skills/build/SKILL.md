@@ -1,6 +1,6 @@
 ---
 name: build
-description: Use to execute an approved plan - parallel builders, a quick check at each hand-back, fixes, merges, one two-round plan review, with the kit's tasks as the ledger. Trigger phrases - "the plan is approved", "start building", "run the plan", "next wave", "build it".
+description: Use to execute an approved plan - parallel builders, merges, a two-round plan review, with the kit's tasks as the ledger. Trigger phrases - "the plan is approved", "start building", "run the plan", "next wave", "build it".
 ---
 
 # Build The Approved Plan
