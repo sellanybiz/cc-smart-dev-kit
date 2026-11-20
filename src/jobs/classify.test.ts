@@ -867,9 +867,9 @@ describe("a package script is classified by its body", () => {
     expect(classifyRoutableLine('"$npm_execpath" test', DEFAULT_KINDS)).toBeNull();
   });
 
-  test("a mixed script is raw for the route, and found by the any-heavy walk", () => {
+  test("a mixed script is queued whole as its heavy work, and found by the any-heavy walk", () => {
     const packages = { check: "biome check . && tsc --noEmit" };
-    expect(routed("bun run check", packages)).toBeNull();
+    expect(routed("bun run check", packages)).toBe("tsc");
     expect(anyHeavy("bun run check", packages)).toBe("tsc");
     // Every command heavy: routable, with the first kind.
     expect(
@@ -895,9 +895,9 @@ describe("a package script is classified by its body", () => {
   test("pre and post scripts run with the script, and count in its body", () => {
     // Every runner here runs them: bun, npm, pnpm and yarn classic (their docs).
     expect(anyHeavy("bun run build", { prebuild: "tsc --noEmit", build: "echo hi" })).toBe("tsc");
-    // `echo hi` is glue, so the script is queued whole; a body command that is not glue is not.
     expect(routed("bun run build", { prebuild: "tsc --noEmit", build: "echo hi" })).toBe("tsc");
-    expect(routed("bun run build", { prebuild: "tsc --noEmit", build: "rm -rf dist" })).toBeNull();
+    // A body command that is no heavy work and no glue does not stop the call: it is queued whole.
+    expect(routed("bun run build", { prebuild: "tsc --noEmit", build: "rm -rf dist" })).toBe("tsc");
     expect(routed("npm run build", { prebuild: "tsc --noEmit", build: "next build" })).toBe("tsc");
     expect(routed("pnpm build", { build: "next build", postbuild: "vitest run" })).toBe("build");
     expect(anyHeavy("yarn build", { build: "echo hi", postbuild: "docker build ." })).toBe(
@@ -1820,6 +1820,91 @@ describe("routableLine: harmless glue rides in the queued line", () => {
     expect(mixedHeavyLine("bun run check", DEFAULT_KINDS, source)).toBeNull();
   });
 
+  // A script call that is the line's own command is queued whole when its body takes a slot: the
+  // person's rules only ever see the call, never the body, so the body's other commands hide
+  // nothing. The queue refuses only what the person's own line mixes in beside the call.
+  describe("a script whose body mixes a command that is not heavy with heavy work", () => {
+    const source = weightSourceOf({
+      "/repo": {
+        tsc: "SKIP_ENV_VALIDATION=1 next typegen && tsc --noEmit",
+        check: "biome check . && tsc --noEmit",
+        clean: "tsc --noEmit && rm -rf dist",
+        selfcall: "next typegen && tsc --noEmit && bun run selfcall",
+        loop: "bun run loop",
+        s1: "next typegen && bun run s2",
+        s2: "bun run s3",
+        s3: "bun run s4",
+        s4: "tsc --noEmit",
+        sudo: "next typegen && sudo tsc --noEmit",
+      },
+    });
+    const whole = (command: string, kind: string) =>
+      expect(routableLine(command, DEFAULT_KINDS, source)).toEqual({
+        filters: "",
+        heavy: command,
+        kind,
+      });
+
+    test("the call is queued under the kind of the body's heavy work", () => {
+      whole("bun run tsc", "tsc");
+      whole("bun run check", "tsc");
+      whole("bun run clean", "tsc");
+      whole("npm run check", "tsc");
+      expect(runWeight("bun run tsc", DEFAULT_KINDS, source)).toEqual({
+        weight: "heavy",
+        kind: "tsc",
+      });
+      expect(mixedHeavyLine("bun run check", DEFAULT_KINDS, source)).toBeNull();
+    });
+
+    test("a command the person's own line adds beside the call is still refused", () => {
+      for (const [command, other] of [
+        ["bun run check; git status", "git status"],
+        ["bun run tsc && rm x", "rm x"],
+        ["rm x && bun run clean", "rm x"],
+      ] as const) {
+        expect([command, routableLine(command, DEFAULT_KINDS, source)]).toEqual([command, null]);
+        expect([command, mixedHeavyLine(command, DEFAULT_KINDS, source)?.other]).toEqual([
+          command,
+          other,
+        ]);
+      }
+      // Glue rides along, as it does beside any heavy command.
+      expect(routableLine('bun run check; echo "exit $?"', DEFAULT_KINDS, source)?.kind).toBe(
+        "tsc",
+      );
+    });
+
+    test("a script that calls itself, or nests too deep, is not routed", () => {
+      for (const command of ["bun run selfcall", "bun run loop", "bun run s1"]) {
+        expect([command, routableLine(command, DEFAULT_KINDS, source)]).toEqual([command, null]);
+      }
+    });
+
+    test("a body that runs work as another user is not routed", () => {
+      expect(routableLine("bun run sudo", DEFAULT_KINDS, source)).toBeNull();
+    });
+
+    test("a body that only prints, or a body of no heavy work, is still a command to split off", () => {
+      const light = weightSourceOf({
+        "/repo": { lintv: "next typegen && tsc --version", lint: "biome check ." },
+      });
+      expect(routableLine("bun run lintv", DEFAULT_KINDS, light)).toBeNull();
+      expect(mixedHeavyLine("bun run lint && bun test", DEFAULT_KINDS, light)?.other).toBe(
+        "bun run lint",
+      );
+    });
+
+    test("a 64 KB body stays linear", () => {
+      const body = `${"next typegen && ".repeat(4_000)}tsc --noEmit`;
+      expect(body.length).toBeGreaterThan(60_000);
+      const big = weightSourceOf({ "/repo": { big: body } });
+      const started = Date.now();
+      expect(routableLine("bun run big", DEFAULT_KINDS, big)?.kind).toBe("tsc");
+      expect(Date.now() - started).toBeLessThan(2_000);
+    });
+  });
+
   test("exit keeps a piped run's code with a literal subscript", () => {
     queuedWhole(`bun test 2>&1 | tail -20; exit ${BRACE}PIPESTATUS[0]}`, "test:run");
     expect(line(`bun test; exit ${BRACE}PIPESTATUS[X]}`)).toBeNull();
@@ -2109,10 +2194,16 @@ describe("mixedHeavyLine: heavy work beside commands that are not glue", () => {
     expect(mixed("cc-smart-dev-kit job run --kind test:run -- bun test; git status")).toBeNull();
   });
 
-  test("a script whose own body cannot be split is not refused: the person cannot fix it", () => {
+  // The call is queued whole (`routableLine`), so nothing in its body is refused; only a command
+  // the person's own line adds beside the call is.
+  test("a script whose own body has other commands is queued whole: only the line's own mix is refused", () => {
     const mixedBody = source({ "/repo": { check: "tsc --noEmit && rm -rf dist" } });
     expect(mixed("bun run check", mixedBody)).toBeNull();
-    expect(mixed("bun run check && git status", mixedBody)).toBeNull();
+    expect(mixed("bun run check && git status", mixedBody)).toEqual({
+      kind: "tsc",
+      other: "git status",
+      run: "bun run check",
+    });
   });
 
   // A script that runs no heavy work (`lint: biome check .`) is a command of the line: the

@@ -6,7 +6,7 @@ export type { TaskOperation } from "./schemas";
 
 import { cliPaths } from "../cli/paths";
 import { cappedHookList } from "../hooks/capped-list";
-import { runGit } from "../hooks/git";
+import { type GitRun, runGit } from "../hooks/git";
 import { DEPLOY_TASKS_SINCE } from "../project/config";
 import { resolvePlans } from "../workflow/resolve";
 import { type TaskContext, taskContext } from "./context";
@@ -26,6 +26,7 @@ import {
   planInTheWay,
   planNote,
   refuseBareClose,
+  refuseEmptyHandBack,
   refuseEmptyPhase,
   refuseOtherPlan,
   refuseParkWhileBusy,
@@ -319,6 +320,11 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
         claimState(t, CLAIM_PROCESS, who) === "another session";
       // A reserved plan is refused by who owns it (D4): the reservation says who it was handed to.
       const guardCaller = { owns, isLead: (t: WorkTask) => isLead(t.lead, who) };
+      // The hand-back guard's git: the session's checkout shares its refs with every worktree.
+      const handBackGit = (args: string[]): GitRun =>
+        ctx.checkoutRoot === null
+          ? { ok: false, out: "", err: "this folder is not in a git checkout", code: null }
+          : runGit(ctx.checkoutRoot, args, env);
       const refuseOther = (plan: string) =>
         refuseOtherPlan({ all, inFlight, plan, claimedElsewhere, caller: guardCaller });
       /** What a close freed, judged on the list read after it: the plan in flight may have closed. */
@@ -726,7 +732,10 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
         refuseParkWhileBusy(all, task, status);
         if (input.parent !== undefined) refuseStepEscape(all, task, destination);
         // This call carries no evidence or note, so a step cannot close here.
-        if (status === "done" || status === "dropped") refuseBareClose(all, task, status, {});
+        if (status === "done" || status === "dropped") {
+          refuseBareClose(all, task, status, {});
+          refuseEmptyHandBack(all, task, status, handBackGit);
+        }
         // The plan that goes in flight is judged against the plans held for others (`startCheck`).
         const flight = entering ? startCheck(task.kind === "plan" ? task.plan : landing) : {};
         // Starting work puts its plan in flight, in the same write (a plan's own start sets it).
@@ -803,6 +812,7 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
         }
         const task = work(input.task);
         refuseBareClose(all, task, input.outcome, { evidence: input.evidence, note: input.note });
+        refuseEmptyHandBack(all, task, input.outcome, handBackGit);
         // One transaction: a close the store refuses (an open blocking task) keeps no note either, so
         // a retry after finishing the task saves each note once.
         const changed = value(
