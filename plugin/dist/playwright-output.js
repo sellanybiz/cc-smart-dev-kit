@@ -44,10 +44,6 @@ function routerPaths(env = process.env) {
 }
 
 // src/cli/paths.ts
-function managedAgentsDir(platform = process.platform) {
-  const root = platform === "darwin" ? "/Library/Application Support/ClaudeCode" : platform === "win32" ? "C:\\Program Files\\ClaudeCode" : "/etc/claude-code";
-  return join2(root, ".claude", "agents");
-}
 function userConfigFile(env, home) {
   const dir = env.CLAUDE_CONFIG_DIR;
   return dir ? join2(dir, ".claude.json") : join2(home, ".claude.json");
@@ -84,8 +80,7 @@ function cliPaths(env = process.env) {
     workflowConfigFile: join2(router.home, ".config", "cc-smart-dev-kit", "workflow.json"),
     machinesFile: join2(router.home, ".config", "cc-smart-dev-kit", "machines.json"),
     tmuxConfFile: join2(router.home, ".tmux.conf"),
-    tavilyKeyFile: join2(claudeConfigDir, "cc-smart-dev-kit", "tavily.key"),
-    managedAgentsDir: managedAgentsDir()
+    tavilyKeyFile: join2(claudeConfigDir, "cc-smart-dev-kit", "tavily.key")
   };
 }
 function claudeMemDataDir(env, home) {

@@ -21525,7 +21525,7 @@ var COMMAND = "cc-smart-dev-kit";
 
 // src/build-info/index.ts
 var info = {
-  version: "5.6.1",
+  version: "5.7.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -21799,10 +21799,6 @@ function routerPaths(env = process.env) {
 }
 
 // src/cli/paths.ts
-function managedAgentsDir(platform = process.platform) {
-  const root = platform === "darwin" ? "/Library/Application Support/ClaudeCode" : platform === "win32" ? "C:\\Program Files\\ClaudeCode" : "/etc/claude-code";
-  return join2(root, ".claude", "agents");
-}
 function userConfigFile(env, home) {
   const dir = env.CLAUDE_CONFIG_DIR;
   return dir ? join2(dir, ".claude.json") : join2(home, ".claude.json");
@@ -21839,8 +21835,7 @@ function cliPaths(env = process.env) {
     workflowConfigFile: join2(router.home, ".config", "cc-smart-dev-kit", "workflow.json"),
     machinesFile: join2(router.home, ".config", "cc-smart-dev-kit", "machines.json"),
     tmuxConfFile: join2(router.home, ".tmux.conf"),
-    tavilyKeyFile: join2(claudeConfigDir, "cc-smart-dev-kit", "tavily.key"),
-    managedAgentsDir: managedAgentsDir()
+    tavilyKeyFile: join2(claudeConfigDir, "cc-smart-dev-kit", "tavily.key")
   };
 }
 function claudeMemDataDir(env, home) {
@@ -22070,7 +22065,6 @@ var INERT = new Set([
   "wc",
   "which"
 ]);
-var KIT_TOKEN = new RegExp(`(^|[^\\w.-])${COMMAND.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?:\\.(?:exe|cmd|ps1|bat))?(?=$|[^\\w.\\-/\\\\])`, "i");
 
 // src/shell/command.ts
 var MAX_NESTING = 3;
@@ -23678,10 +23672,6 @@ function allowsNewer(version, range) {
 
 // src/project/config.ts
 var PLUGIN_HOOK_NAMES = [
-  "git-guard",
-  "merge-guard",
-  "main-folder-guard",
-  "agent-guard",
   "fable-session",
   "tier-view",
   "after-merge",
@@ -23693,14 +23683,19 @@ var PLUGIN_HOOK_NAMES = [
   "agent-usage",
   "worktree-leftovers",
   "session-name",
-  "task-start",
-  "deploy-guard"
+  "task-start"
 ];
 var RETIRED_HOOK_NAMES = [
   "serena-root",
   "crew-role",
   "lead-notes",
-  "message-guard"
+  "message-guard",
+  "git-guard",
+  "merge-guard",
+  "deploy-guard",
+  "main-folder-guard",
+  "agent-guard",
+  "session-escape-guard"
 ];
 var UNSWITCHABLE_HOOK_NAMES = ["job-route"];
 var RETIRED_WORKTREE_FIELDS = ["prefix", "setup", "engine"];
@@ -24658,95 +24653,6 @@ function liveSessions(claudeConfigDir, facts = {}) {
 
 // src/hooks/unsaved-changes.ts
 var FILE_MODES = new Set(["100644", "100755"]);
-
-// src/shell/change-dir.ts
-var CHANGES_FOLDER = new Set([...CHANGE_DIR, "push-location"]);
-
-// src/shell/git-calls.ts
-var GIT_VALUE_OPTIONS = new Set([
-  "-C",
-  "-c",
-  "--attr-source",
-  "--config-env",
-  "--git-dir",
-  "--namespace",
-  "--super-prefix",
-  "--work-tree"
-]);
-var GIT_FLAGS = new Set([
-  "-P",
-  "-p",
-  "--bare",
-  "--glob-pathspecs",
-  "--icase-pathspecs",
-  "--literal-pathspecs",
-  "--no-advice",
-  "--no-lazy-fetch",
-  "--no-optional-locks",
-  "--no-pager",
-  "--no-replace-objects",
-  "--noglob-pathspecs",
-  "--paginate"
-]);
-var GIT_PRINTS = new Set([
-  "-h",
-  "-v",
-  "--exec-path",
-  "--help",
-  "--html-path",
-  "--info-path",
-  "--man-path",
-  "--version"
-]);
-
-// src/shell/writes.ts
-var NO_VALUES = { short: "", long: {} };
-var CHANGES_OPERANDS = new Map([
-  ["mkdir", { short: "m", long: { "--mode": 3 } }],
-  ["rm", NO_VALUES],
-  ["rmdir", NO_VALUES],
-  ["tee", NO_VALUES],
-  ["touch", { short: "dtr", long: { "--date": 3, "--reference": 3, "--time": 3 } }]
-]);
-var WRITES_ITS_FILES = new Set([
-  "ac",
-  "add-content",
-  "out-file",
-  "sc",
-  "set-content",
-  "tee-object"
-]);
-var COPIES = new Set([
-  "copy",
-  "copy-item",
-  "cp",
-  "cpi",
-  "install",
-  "ln",
-  "mi",
-  "move",
-  "move-item",
-  "mv"
-]);
-var MOVES = new Set(["mi", "move", "move-item", "mv"]);
-var GIT_CHANGES_CHECKOUT = new Set([
-  "am",
-  "apply",
-  "checkout",
-  "cherry-pick",
-  "clean",
-  "commit",
-  "merge",
-  "mv",
-  "pull",
-  "rebase",
-  "reset",
-  "restore",
-  "revert",
-  "rm",
-  "stash",
-  "switch"
-]);
 
 // src/hooks/worktree-leftovers.ts
 var REFLOG_TAIL_BYTES = 8 * 1024;
