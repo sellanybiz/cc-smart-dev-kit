@@ -67,9 +67,12 @@ The limits that keep a review useful, each learned from a review that went wrong
 3. **No side work** — a problem in code the change does not touch gets one line under "Outside
    this change", because chasing it leaves the change itself half read.
 4. **About 40 tool calls** — one focused pass, then report what you have and what you did not
-   reach. An honest gap list beats a review that never returns.
-5. **No shared state** — only the unit tests the change touches. An end-to-end run, a database
-   command, a dev server or a browser changes what other sessions on the machine rely on.
+   reach. A brief that tells you to prove claims by running them allows more calls, for those
+   runs. An honest gap list beats a review that never returns.
+5. **No shared state** — only the unit tests the change touches, and, when the brief tells you
+   to prove a claim by running it, the one command or a scratch probe in your scratchpad that
+   proves it, in the foreground. An end-to-end run, a database command, a dev server or a
+   browser changes what other sessions on the machine rely on.
 
 How to look: read the real code, not only the diff, and find the callers of each exported
 symbol the change touches, as the `cc-smart-dev-kit:impact-analysis` skill's § Before the change

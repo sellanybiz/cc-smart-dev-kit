@@ -38,8 +38,9 @@ per job: `/cc-smart-dev-kit:subagent-decision` § The lead's judgment.
 
 A plan is one pull request and holds at most `plans.maxPhases` phases; a phase is one area
 with its tasks (`/cc-smart-dev-kit:plan-task` § 5). **Add no phase while building:** new
-in-scope work becomes a task under the phase that owns its files, and a later ask waits as a
-task in the next queued plan (plan-task § 6). The store refuses a phase beyond the cap
+in-scope work becomes a task under the phase that owns its files (a review finding is the
+exception: § 6 puts it under the plan), and a later ask waits as a task in the next queued
+plan (plan-task § 6). The store refuses a phase beyond the cap
 (plan-task § 5). It refuses to start a phase with no tasks: add one with `task_create` and
 `parent` set to the phase's `#n`. It also refuses to start work in a plan while another is in
 flight: finish that plan or park it (plan-task § 6, which holds the whole model, the default
@@ -156,21 +157,27 @@ task's checkout or an unmerged branch. Repeat until all phases close.
 The plan gets one review, run as the `cc-smart-dev-kit:review-split` Workflow twice. Its
 args are in `/cc-smart-dev-kit:review` § A big change set. The plan's approval covers both
 runs, since the plan file names them (`/cc-smart-dev-kit:plan-task` § 3): call the Workflow
-with no second ask. In order:
+with no second ask. When the plan file does not name them, ask the person once before round 1.
+Run the review from the session in the plan worktree, because the review record takes the head
+of the session's own folder. In order:
 
 1. **The archive commit:** the plan file and its research move to `archive/`
    (`/cc-smart-dev-kit:plan-task` § 8), so the review covers it in any `fixesAfterReview`
    setting.
 2. **Round 1:** `spec` is the plan file at its archived path, `risky: true`, `base` the plan's
-   recorded base and `head` its branch head, `folder` the plan worktree, and `intent` the
-   plan's goal. `tracks` are two to four from `../review/references/axes.md`; the run adds a
-   spec-compliance track. With `spec` set, every track reads the plan. Choose `budget` so the
+   recorded base and `head` the plan branch's name or `HEAD`, never a commit, and `intent` the
+   plan's goal. Leave `folder` out: it is the session's own folder. `tracks` are two to four
+   from `../review/references/axes.md`; for a docs or instruction plan, from the plan's own
+   areas (accuracy against the code, one home per rule, contradictions). The run adds a
+   spec-compliance track, and with `spec` set every track reads the plan. Choose `budget` so the
    round's agents (tracks, the spec track and the budget) stay at nine or fewer by default.
 3. **Fix round 1:** each confirmed finding becomes a task with `parent` set to the plan's `#n`
-   (with no parent it is loose). The builder that owns its files fixes it, resumed (§ 4), or a
-   fresh one does.
-4. **Round 2:** the same args, with `spec` and `prior` set. `prior` is round 1's whole report,
-   or "no findings" when it had none.
+   (with no parent it is loose). The builder that owns its files fixes it, resumed (§ 4) only
+   while its worktree remains (§ 5 removes it after the merge); otherwise a fresh builder
+   starts from the plan head.
+4. **Round 2:** the same args except `head`, which is the plan branch's head after round 1's
+   fixes, with `prior` set. `prior` is round 1's whole report, its Unchecked and Hunches
+   included, never just "no findings".
 5. **Fix round 2** the same way.
 6. **The full check,** once, in the main session (`/cc-smart-dev-kit:verify-change` § 4).
 7. **The pull request,** below.
@@ -182,7 +189,8 @@ much changed after round 2. The head never moves while a round runs: the review 
 the head the plan worktree is on. Verify each finding against the code (a design finding meets
 the evidence bar as `../review/references/axes.md` § Design findings says). Read the report's
 **Unchecked** section and any "no evidence of coverage" line under **Coverage**, and act on
-them: check those yourself, or run again with a larger budget. Do not declare success while a
+them: check the unchecked findings and the hunches yourself, against the code, and turn each
+that holds into a fix task under the plan. No extra run. Do not declare success while a
 material defect remains; record the blocker and remaining work. If the review leaves the plan
 open, move the plan file back out of `archive/`.
 
