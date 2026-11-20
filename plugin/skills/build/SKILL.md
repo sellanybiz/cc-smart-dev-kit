@@ -98,7 +98,9 @@ record the real blocker.
 No reviewer reads a phase: the plan gets one review, in two rounds and, when round 2's fixes are big, a final review (§ 6). At a hand-back you
 check it yourself. Read its `Report:` note and check its claims against the actual branch.
 Record `agent`, `branch`, `worktree` and `base` on the phase task with `task_update`. Check
-its full `base..branch` diff and file list, and the tests it ran; a report is not proof.
+its full `base..branch` diff and file list, and the tests it ran; a report is not proof. The
+commit the report names is the one to merge (§ 5): a builder may have committed on another
+branch than the worktree's default one.
 Every step is done with evidence or dropped with a reason. A gap goes back to the same builder
 (§ 4), and the phase merges green. Start no `senior-engineer` and write no `Mode: review`
 line for a phase.
@@ -126,11 +128,14 @@ record a ruling; do not repeat the failed loop or silently waive a material defe
 
 ## 5. Merge, close, unblock
 
-Once the quick check is green, merge the worktree branch into the plan branch. Phase branches
+Once the quick check is green, merge the commit the report names into the plan branch (the
+branch the phase records, not the worktree's default one). Phase branches
 stay local: never push one, never open a pull request for one. Resolve only
-the integration conflicts in your scope and check affected code. Close all blocking steps
-(done with evidence, dropped with a note), then `task_done` the phase with its commits, checks
-and evidence. After each merged phase, push the plan branch when `autoPush` is on. When it is off, ask the person once for the
+the integration conflicts in your scope and check affected code. Then check that the work
+landed: `git merge-base --is-ancestor <commit> <plan branch>` must exit 0. Close all blocking
+steps (done with evidence, dropped with a note), then `task_done` the phase with its commits,
+checks and evidence. `task_done` on a phase refuses when its recorded branch has no commit past
+its base, or is not in the plan branch. After each merged phase, push the plan branch when `allowPush` is on. When it is off, ask the person once for the
 whole plan whether to push it after each merged phase, and keep the answer. In that same
 turn, start every phase this unblocked (the close answer lists it as "now ready"); do not wait for unrelated agents.
 
