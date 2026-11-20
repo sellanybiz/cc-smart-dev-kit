@@ -222,6 +222,75 @@ describe("bash 5.3's brace command substitution is read as a command", () => {
   });
 });
 
+// Round 3's computed-git finding: git, or its subcommand, worked out when the line runs, beside
+// the words that make this guard ask, was silent in every session. `hooks.md`: a guard whose
+// domain words are in a computed command asks; it never stays silent.
+describe("a git or a git subcommand named at run time, beside a word the guard judges, asks", () => {
+  /** The question both computed asks share. */
+  const CANNOT_TELL = "cannot tell";
+
+  it.each([
+    ["the program from a variable", "$GIT reset --hard"],
+    ["the program from $( … )", "$(echo git) reset --hard"],
+    ["the program from a backtick", "`echo git` reset --hard"],
+    ["the program from a variable, before git options", "$GIT -C sub checkout -- ."],
+    ["a clean", "$GIT clean -fd"],
+    ["a branch delete", "$GIT branch -D old"],
+    ["a stash clear", "$GIT stash clear"],
+    ["a worktree removed by force", "$GIT worktree remove -f ../w"],
+    ["the subcommand from $( … )", "git $(echo push) --force origin main"],
+    [
+      "the subcommand from bash 5.3's brace substitution",
+      `git \${ echo push; } --force origin main`,
+    ],
+    ["the subcommand from a backtick", "git `echo push` --force origin main"],
+    ["the subcommand from a variable", "git $SUB --hard"],
+    ["the subcommand behind git options", "git -C sub $SUB --hard"],
+    ["a push from a computed program", "$(which git) push --force origin main"],
+    // Fix round 1: the program and the subcommand both worked out, beside a danger option.
+    ["both computed, beside --hard", "$GIT $SUB --hard"],
+    ["both computed, beside --force", "$GIT $SUB --force origin main"],
+    ["both computed, beside -D", "$(echo git) $(echo branch) -D x"],
+    ["both computed, beside --", "$GIT $SUB -- ."],
+    ["both computed, beside --force-with-lease", "$GIT $SUB --force-with-lease origin x"],
+  ])("%s: %j asks the main session", (_name, command) => {
+    expect(guard(command, neutral, true, "bash")).toContain(CANNOT_TELL);
+  });
+
+  it.each([
+    ["a computed program with no git word", "$EDITOR file"],
+    ["git inside a substitution, reading only", "echo $(git rev-parse HEAD)"],
+    ["a computed argument of a reading subcommand", "git log $(cat range)"],
+    ["a computed program whose git words discard nothing", "$GIT checkout main"],
+    ["a computed program that only reads", "$GIT status"],
+    ["a computed program and a computed word, no danger option", "$EDITOR $FILE"],
+    ["a computed program, a computed word and a plain one", "$EDITOR $FILE notes.txt"],
+  ])("%s: %j stays silent", (_name, command) => {
+    expect(guard(command, neutral, true, "bash")).toBeUndefined();
+  });
+
+  it("a computed subcommand asks whatever follows it: `git restore` alone asks too", () => {
+    expect(guard("git restore", neutral, false, "bash")).toBeDefined();
+    expect(guard("git $(echo status)", neutral, false, "bash")).toContain(CANNOT_TELL);
+    expect(guard("git $(echo log) -1", neutral, false, "bash")).toContain(CANNOT_TELL);
+  });
+
+  it("with autoPush off, a computed subcommand asks: it may be the push that asks anyway", () => {
+    const questions = guardQuestions("git $(echo status) --short", neutral, {
+      ...OPTIONS,
+      autoPushAsk: () => "autoPush is off",
+      dialect: "bash",
+      env: cleanGitEnv(),
+    });
+    expect(questions.join("\n")).toContain(CANNOT_TELL);
+  });
+
+  it("runsGit counts a computed program beside a word the guard judges", () => {
+    expect(runsGit("$GIT reset --hard")).toBe(true);
+    expect(runsGit("$EDITOR file")).toBe(false);
+  });
+});
+
 describe("a push to a protected branch asks", () => {
   it.each([
     ["git push origin dev", "dev"],
@@ -1827,6 +1896,11 @@ describe("a 64 KB command line is read within the guard's time", () => {
     // Each level of a quoted substitution was a call with no ceiling: the stack ran out.
     ["deep quoted substitutions", `echo ${fill('"$(')}`],
     ["deep quoted brace substitutions", `echo ${fill(`"\${ `)}`],
+    // Each plain word beside a computed program and word is tried as a danger option.
+    [
+      "many words beside a computed program and word",
+      `$X $Y ${Array.from({ length: SIZE / 8 }, (_, n) => `w${n}`).join(" ")}`,
+    ],
   ])("%s", (_name, command) => {
     const started = Date.now();
     guard(command);

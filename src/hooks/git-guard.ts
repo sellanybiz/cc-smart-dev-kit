@@ -96,7 +96,14 @@
  * this guard does not know (a newer git's) makes every word after it a possible subcommand.
  * `git send-pack` and a `git -c alias.x=push x` on the line are pushes, and a program the
  * line works out when it runs (`$(which git) push`, `$GIT push`) asks when its words name a
- * push: the guard cannot name the program, so it never stays silent about the push.
+ * push: the guard cannot name the program, so it never stays silent about the push. Such a
+ * program asks too when its words would make git ask (`$GIT reset --hard`), and so does a git
+ * subcommand worked out when the line runs (`git $(echo push) --force`) whenever any subcommand
+ * the guard judges would ask with the words after it (`SUBCOMMAND_JUDGES`, the one list): since
+ * even a bare `git restore` asks, every such call asks. A program and a subcommand both worked
+ * out ask beside a danger option, one that makes some judged subcommand ask more than it does
+ * alone (`$GIT $SUB --hard`, `-D`, `--force`, `--`); `$EDITOR $FILE` holds none and stays silent.
+ * A danger option worked out too (`$GIT $SUB $OPT`) is not read.
  *
  * Known limits: a git alias from the person's own config (one set with `-c` on the line is
  * read), a `branch -f`, a `checkout -B` and a `switch -C` (they move a branch), brace
@@ -112,6 +119,7 @@ import {
   type Dialect,
   type Invocation,
   invocationOf,
+  isComputedWord,
   isShort,
   MAX_NESTING,
   nestedCommand,
@@ -609,13 +617,24 @@ function forceDeletesBranch(rest: string[]): boolean {
 const COMPUTED_PUSH_ASK =
   "This command runs a program it works out when it runs, and its words name a push, so this guard cannot tell whether it pushes. Write the command out in full (for example `git push …`) if you meant it.";
 
+/**
+ * The question when git, or the subcommand git runs, is worked out when the line runs (`$GIT
+ * reset --hard`, `git $(echo push) --force`) and the words beside it would make this guard ask
+ * if they followed a subcommand it judges (`SUBCOMMAND_JUDGES`).
+ */
+const COMPUTED_GIT_ASK =
+  "This command runs git, or a git subcommand, that it works out when it runs, so this guard cannot tell what it does: it may be a command this guard asks about (for example `git restore`, `git reset --hard` or `git push --force`). Write the command out in full if you meant it.";
+
 /** True when a command's words name a push, for a program the reader cannot name. */
 function namesPush(words: readonly string[]): boolean {
   return words.some((word) => word === "push" || word === "send-pack");
 }
 
-/** True when a command's program is computed and the words of that command name a push. */
-function computedPushIn(command: string, dialect?: Dialect): boolean {
+/**
+ * True when a command's program is computed and a word of that command names a subcommand the
+ * guard judges (`SUBCOMMAND_JUDGES`): the program may be git.
+ */
+function computedGitIn(command: string, dialect?: Dialect): boolean {
   return readingsOf(command, dialect).some((reading) =>
     shellSteps(command, {
       blindWhenOpen: true,
@@ -624,13 +643,80 @@ function computedPushIn(command: string, dialect?: Dialect): boolean {
     }).some((step) => {
       const words = wordsOf(step.text, reading.dialect);
       const invocation = invocationOf(words);
-      return invocation?.computed === true && namesPush(words);
+      return invocation?.computed === true && words.some((word) => SUBCOMMAND_JUDGES.has(word));
     }),
   );
 }
 
+/**
+ * The questions about git's arguments `args`. A subcommand worked out when the line runs
+ * (`git $(echo push) --force`, `git $SUB --hard`) is judged as each subcommand the guard knows:
+ * when any of them would ask with the words after it, the call asks.
+ */
 function gitQuestions(args: string[], folder: Folder, dialect: Dialect, run: GuardRun): string[] {
-  return gitCalls(args).flatMap((call) => callQuestions(call, folder, dialect, run));
+  return gitCalls(args).flatMap((call) => {
+    if (!isComputedWord(call.sub)) return callQuestions(call, folder, dialect, run);
+    const asks = [...SUBCOMMAND_JUDGES].some(
+      ([sub, judge]) => judge({ ...call, sub }, folder, dialect, asMainSession(run)).length > 0,
+    );
+    return asks ? [COMPUTED_GIT_ASK] : [];
+  });
+}
+
+/**
+ * True when a program worked out when the line runs may be git asking. Either a word of
+ * `operands` names a subcommand the guard judges, and that subcommand, with the words after it,
+ * asks (`$GIT reset --hard`, `$GIT -C sub checkout -- .`; every word is tried, since the
+ * computed word may carry git's own options: `X='git -C'; $X sub reset --hard`). Or a word is
+ * worked out too, so it may be any subcommand, and a plain word beside it is a danger option
+ * (`dangerOption`: `$GIT $SUB --hard`, `$(echo git) $(echo branch) -D x`). `$EDITOR $FILE` holds
+ * no danger option, so it stays silent.
+ */
+function computedProgramAsks(
+  operands: readonly string[],
+  folder: Folder,
+  dialect: Dialect,
+  run: GuardRun,
+): boolean {
+  const asMain = asMainSession(run);
+  const named = operands.some((sub, at) => {
+    const judge = SUBCOMMAND_JUDGES.get(sub);
+    return (
+      judge !== undefined &&
+      judge(bareCall(sub, operands.slice(at + 1)), folder, dialect, asMain).length > 0
+    );
+  });
+  if (named) return true;
+  if (!operands.some(isComputedWord)) return false;
+  const plain = new Set(operands.filter((word) => !isComputedWord(word)));
+  return [...plain].some((word) => dangerOption(word, folder, dialect, asMain));
+}
+
+/**
+ * True when `word` is a danger option of some subcommand the guard judges: with `word` after
+ * it, that subcommand asks a question it does not ask with nothing after it (`--hard`,
+ * `--force`, `-f`, `-D`, `--`, `--force-with-lease`). Read from the judges themselves
+ * (`SUBCOMMAND_JUDGES`), so the set has one home. A word that asks nothing new (`notes.txt`,
+ * which a bare `git restore` asks about anyway) is none.
+ */
+function dangerOption(word: string, folder: Folder, dialect: Dialect, run: GuardRun): boolean {
+  return [...SUBCOMMAND_JUDGES].some(([sub, judge]) => {
+    const alone = judge(bareCall(sub, []), folder, dialect, run);
+    return judge(bareCall(sub, [word]), folder, dialect, run).some((ask) => !alone.includes(ask));
+  });
+}
+
+/** A git call of `sub` with the words `rest` and none of git's own options. */
+function bareCall(sub: string, rest: string[]): GitCall {
+  return { config: new Map(), dirs: [], gitDir: null, rest, sub, workTree: null };
+}
+
+/**
+ * The run judged as the main session: a computed word is never plain, so a discard it might be
+ * asks at once instead of waiting for the own-worktree proof.
+ */
+function asMainSession(run: GuardRun): GuardRun {
+  return { ...run, options: { ...run.options, agentId: null } };
 }
 
 /**
@@ -645,82 +731,115 @@ function pushAlias(call: GitCall): string[] | null {
   return first === "push" || first === "send-pack" ? words.slice(1) : null;
 }
 
+/** The questions about one git call: a push alias pushes, else its subcommand's judge asks. */
 function callQuestions(call: GitCall, folder: Folder, dialect: Dialect, run: GuardRun): string[] {
-  const { options } = run;
-  const { rest, sub } = call;
   const alias = pushAlias(call);
-  // `git send-pack` pushes, and so does an alias a `-c` on the line expands to a push.
-  if (sub === "push" || sub === "send-pack" || alias !== null) {
-    const where = folder === null ? null : resolve(folder, ...call.dirs);
-    const place: PushPlace = {
-      branch: () => (where === null ? undefined : currentBranch(where, run)),
-      bare: (remote) => {
-        const branch = where === null ? undefined : currentBranch(where, run);
-        if (where === null || branch === undefined) return [];
-        return bareRefspecs(remote, branch, pushConfig(where, run), call.config);
-      },
-    };
-    return pushQuestions(
-      alias === null ? rest : [...alias, ...rest],
-      place,
-      options.protectedBranches,
-      options.autoPushAsk,
-    );
-  }
-  if (sub === "stash") {
-    const ask = stashAsk(rest, options.sharedStash);
-    return ask === null ? [] : [ask];
-  }
-  if (sub === "worktree" && rest[0] === "remove") {
-    const force = rest
-      .slice(1)
-      .some(
+  if (alias !== null) return pushCallQuestions(call, [...alias, ...call.rest], folder, run);
+  return SUBCOMMAND_JUDGES.get(call.sub)?.(call, folder, dialect, run) ?? [];
+}
+
+/** A push (`git push`, `git send-pack`, a push alias) with its words `args`. */
+function pushCallQuestions(call: GitCall, args: string[], folder: Folder, run: GuardRun): string[] {
+  const { options } = run;
+  const where = folder === null ? null : resolve(folder, ...call.dirs);
+  const place: PushPlace = {
+    branch: () => (where === null ? undefined : currentBranch(where, run)),
+    bare: (remote) => {
+      const branch = where === null ? undefined : currentBranch(where, run);
+      if (where === null || branch === undefined) return [];
+      return bareRefspecs(remote, branch, pushConfig(where, run), call.config);
+    },
+  };
+  return pushQuestions(args, place, options.protectedBranches, options.autoPushAsk);
+}
+
+/**
+ * A working-folder discard's question, or none when it may be the subagent's own: the proof
+ * judges those on the whole line at its end (`ownWorktreeProof`). Every other kind of question
+ * reaches outside the worktree (a remote, the branch list, the shared stash). A `-c` on the call
+ * may set where git works (`core.worktree`) or a program it runs (a filter, `core.fsmonitor`):
+ * it asks.
+ */
+function unlessOwn(ask: string, call: GitCall, dialect: Dialect, run: GuardRun): string[] {
+  const own =
+    (run.options.agentId ?? null) !== null &&
+    call.workTree === null &&
+    call.gitDir === null &&
+    call.config.size === 0;
+  if (!own) return [ask];
+  run.discards.push({ ask, dialect, dirs: call.dirs });
+  return [];
+}
+
+/** The questions about one call of a subcommand the guard judges. */
+type SubcommandJudge = (call: GitCall, folder: Folder, dialect: Dialect, run: GuardRun) => string[];
+
+/** `checkout`, `restore` and `switch`: a discard of the working folder's changes. */
+const discardJudge: SubcommandJudge = (call, _folder, dialect, run) =>
+  discardsChanges(call.sub, call.rest) ? unlessOwn(discardAsk(call.sub), call, dialect, run) : [];
+
+/**
+ * Every git subcommand the guard judges, each with its judge: the one home of that list. A
+ * subcommand that is not here never asks. A subcommand the line works out when it runs is
+ * judged as each of these (`gitQuestions`, `computedProgramAsks`).
+ */
+const SUBCOMMAND_JUDGES: ReadonlyMap<string, SubcommandJudge> = new Map<string, SubcommandJudge>([
+  ["push", (call, folder, _dialect, run) => pushCallQuestions(call, call.rest, folder, run)],
+  ["send-pack", (call, folder, _dialect, run) => pushCallQuestions(call, call.rest, folder, run)],
+  [
+    "stash",
+    (call, _folder, _dialect, run) => {
+      const ask = stashAsk(call.rest, run.options.sharedStash);
+      return ask === null ? [] : [ask];
+    },
+  ],
+  [
+    "worktree",
+    (call) => {
+      const [first, ...after] = call.rest;
+      const force = after.some(
         (arg) =>
           longOption(arg, "--force", 6) ||
           (isShort(arg) && shortFlags(arg, "").flags.includes("f")),
       );
-    if (force) return [WORKTREE_REMOVE_ASK];
-  }
-  // The working-folder discards below ask nothing inside the subagent's own worktree, when the
-  // whole line proves it (`ownWorktreeProof`); every other kind of this function reaches
-  // outside it (a remote, the branch list, the shared stash). A `-c` on the call may set where
-  // git works (`core.worktree`) or a program it runs (a filter, `core.fsmonitor`): it asks.
-  const unlessOwn = (ask: string): string[] => {
-    const own =
-      (options.agentId ?? null) !== null &&
-      call.workTree === null &&
-      call.gitDir === null &&
-      call.config.size === 0;
-    if (!own) return [ask];
-    run.discards.push({ ask, dialect, dirs: call.dirs });
-    return [];
-  };
-  if ((sub === "checkout" || sub === "restore" || sub === "switch") && discardsChanges(sub, rest)) {
-    return unlessOwn(discardAsk(sub));
-  }
-  if (sub === "branch" && forceDeletesBranch(rest)) return [BRANCH_DELETE_ASK];
-  if (sub === "reset" && rest.some((arg) => longOption(arg, "--hard", 4))) {
-    return unlessOwn(RESET_HARD_ASK);
-  }
-  // `--merge` loses staged work too (the measurement is in the file's header); `--keep` loses
-  // nothing and stays silent.
-  if (sub === "reset" && rest.some((arg) => longOption(arg, "--merge", 4))) {
-    return unlessOwn(RESET_MERGE_ASK);
-  }
-  if (sub === "clean") {
-    const force = rest.some(
-      (arg) =>
-        longOption(arg, "--force", 6) || (isShort(arg) && shortFlags(arg, "e").flags.includes("f")),
-    );
-    const dryRun = rest.some(
-      (arg) =>
-        longOption(arg, "--dry-run", 4) ||
-        (isShort(arg) && shortFlags(arg, "e").flags.includes("n")),
-    );
-    if (force && !dryRun) return unlessOwn(CLEAN_FORCE_ASK);
-  }
-  return [];
-}
+      return first === "remove" && force ? [WORKTREE_REMOVE_ASK] : [];
+    },
+  ],
+  ["checkout", discardJudge],
+  ["restore", discardJudge],
+  ["switch", discardJudge],
+  ["branch", (call) => (forceDeletesBranch(call.rest) ? [BRANCH_DELETE_ASK] : [])],
+  [
+    "reset",
+    (call, _folder, dialect, run) => {
+      if (call.rest.some((arg) => longOption(arg, "--hard", 4))) {
+        return unlessOwn(RESET_HARD_ASK, call, dialect, run);
+      }
+      // `--merge` loses staged work too (the measurement is in the file's header); `--keep`
+      // loses nothing and stays silent.
+      if (call.rest.some((arg) => longOption(arg, "--merge", 4))) {
+        return unlessOwn(RESET_MERGE_ASK, call, dialect, run);
+      }
+      return [];
+    },
+  ],
+  [
+    "clean",
+    (call, _folder, dialect, run) => {
+      const force = call.rest.some(
+        (arg) =>
+          longOption(arg, "--force", 6) ||
+          (isShort(arg) && shortFlags(arg, "e").flags.includes("f")),
+      );
+      const dryRun = call.rest.some(
+        (arg) =>
+          longOption(arg, "--dry-run", 4) ||
+          (isShort(arg) && shortFlags(arg, "e").flags.includes("n")),
+      );
+      return force && !dryRun ? unlessOwn(CLEAN_FORCE_ASK, call, dialect, run) : [];
+    },
+  ],
+]);
 
 /**
  * The programs a plain line may run besides `git` and a folder change (`plainStep`). Each one
@@ -1153,9 +1272,13 @@ function inspect(
     const operands = withoutRedirections(args);
     if (CHANGES_FOLDER.has(program)) proof.folderChanges.push({ dialect, operands, program });
     if (program === "git") found.push(...gitQuestions(operands, folder, dialect, run));
-    // The program is worked out when the line runs (`$GIT push`, `$(which git) push`): the
-    // guard cannot name it, so a line whose words name a push asks, never stays silent.
+    // The program is worked out when the line runs (`$GIT push`, `$(which git) reset --hard`):
+    // the guard cannot name it, so a line whose words name a push, or whose words would make
+    // git ask, asks, never stays silent.
     if (invocation.computed && namesPush(words)) found.push(COMPUTED_PUSH_ASK);
+    else if (invocation.computed && computedProgramAsks(operands, folder, dialect, run)) {
+      found.push(COMPUTED_GIT_ASK);
+    }
     if (CHANGES_FOLDER.has(program)) folder = movedTo(program, folder, operands);
     if (inner !== undefined && depth < MAX_NESTING) {
       for (const nested of readingsOf(inner, nestedDialect(program))) {
@@ -1202,9 +1325,9 @@ export function guardQuestions(command: string, cwd: string, options: GuardOptio
 
 /**
  * True when the command line runs git at all (what the guard asks about when it cannot read
- * its config), in the tool's dialect, or in both when it is not given. A `$GIT push` counts:
- * the guard cannot name the program, but a push's words are there.
+ * its config), in the tool's dialect, or in both when it is not given. A `$GIT push` or a
+ * `$GIT reset --hard` counts: the guard cannot name the program, but git's words are there.
  */
 export function runsGit(command: string, dialect?: Dialect): boolean {
-  return programsOf(command, dialect).includes("git") || computedPushIn(command, dialect);
+  return programsOf(command, dialect).includes("git") || computedGitIn(command, dialect);
 }
