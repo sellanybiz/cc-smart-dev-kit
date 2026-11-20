@@ -21,7 +21,8 @@ in your own terminal after the update; the user guide is [README.md](README.md).
   review record, the after-merge and leftovers notes, and the stops that keep work going
   (`keep-going`, `verify-gate`, `builder-finish`, `subagent-background`).
 - **What Claude does instead.** The rules are instructions now. A merge follows `autoMerge`: Claude
-  merges its own pull request into the integration base once CI is green, the review of its head
+  merges its own pull request into its base, the main branch included, once CI is green (it
+  waits with `gh pr checks --watch` and never uses `--auto`), the review of its head
   commit is recorded and the fixes after the review are within `fixesAfterReview` (over them, it
   says so in the pull request); `workflow merge-check` prints that judgment. Claude runs the
   deploy gates (`task release <env> --before` and `--after`) itself. It asks you before a `fable`

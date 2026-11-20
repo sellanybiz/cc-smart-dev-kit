@@ -27,17 +27,16 @@ of the four happens until the person asks (or the add-on says otherwise).
 | `mergeMethod` | `merge`, `squash` or `rebase`: how a merge is made. |
 | `deleteBranch` | Whether the branch goes once its pull request merged. |
 
-**A merge follows the workflow, not a hook.** No hook stops one: you check. Merge your own
-pull request with `gh pr merge` only when `autoMerge` is on, its base is the project's
-integration base (`worktrees.base`, never the repository's default branch: that merge is a
-release, the person's word), every check is green, and its head commit has a recorded review
+**A merge follows the workflow, not a hook.** No hook stops one: you check. With `autoMerge` on
+(`workflow show`), merge your own pull request into its base, the main branch included, with no
+question, once every required check is green and its head commit has a recorded review
 (`/cc-smart-dev-kit:review` § Second opinion). Fixes after the review within `fixesAfterReview`
-(`workflow show`) need no new review; when they are over it, say so in the pull request body.
-`cc-smart-dev-kit workflow merge-check <pr>` judges all of it in one run (exit 0: allowed).
-`mergeMethod` and `deleteBranch` say how. With `autoMerge` off, or any of that missing, open
-the pull request and leave the merge to the person. **Either way, never wait for a merge:**
-move on; with the whole plan done, say so once, listing every open pull request with its checks
-and the merge order.
+need no new review; when they are over it, say so in the pull request body and leave it unmerged.
+**Wait for CI yourself:** run `gh pr checks <pr> --watch` in the background, then a plain
+`gh pr merge <pr>`; never GitHub's `--auto`. `cc-smart-dev-kit workflow merge-check <pr>` judges
+the policy in one run (exit 0: allowed). `mergeMethod` and `deleteBranch` say how. With
+`autoMerge` off, open the pull request and leave the merge to the person; move on, and with the
+whole plan done say so once, listing every open pull request with its checks and the merge order.
 
 - **Commit and push only your own branch**, never the base or main branch directly.
 - **Builder commits:** a brief may allow commits on that builder's own isolated branch.
@@ -48,8 +47,8 @@ and the merge order.
   has read it, or it is a small fix that skips it (§ Pushing says when). Not after each commit. In a planned build
   the plan branch is pushed after each merged phase, and the pull request waits for the
   plan's review (two rounds, and a final review when its fixes are big).
-- **The person's word, every time** (no hook checks it; you do): anything into the main
-  branch or production, a force-push or any rewrite of pushed history, `reset --hard`, `clean
+- **The person's word, every time** (no hook checks it; you do): a direct push to the main
+  branch (not through a pull request), production, a force-push or any rewrite of pushed history, `reset --hard`, `clean
   -f`, deleting or renaming a branch that is not merged, and shipping a Warning without its
   fix. The person is available: ask first. They are away (`/cc-smart-dev-kit:user-unavailable`):
   take the safe option, do not run it, and record the decision. The one exception: a builder's

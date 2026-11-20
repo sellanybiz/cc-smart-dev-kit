@@ -43,7 +43,7 @@ command that asks, and nobody is there to answer. Tell the person once, in one l
 - **An action that needed their yes just runs** when the work calls for it and the instructions
   allow it (a push of your own branch, a merge as `autoMerge` says, a deploy a task owes). The
   few steps that are the person's word every time (`/cc-smart-dev-kit:commit`: a force-push,
-  `reset --hard`, anything into the default branch) you do not run: take the safe option,
+  `reset --hard`, a direct push to the main branch) you do not run: take the safe option,
   and record that you did not.
 - **Claude Code's own permission prompt** is not a hook's to answer: it waits for nobody. Prefer
   tools that never prompt, and when a call is refused by the permission system, report it as a

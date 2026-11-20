@@ -41,7 +41,7 @@ already inside one; from the main checkout it fails. A worktree outside
 `.claude/worktrees/` is entered by the person starting a session in that folder. A session
 already in a worktree that starts an **unrelated** task goes back to the main checkout first
 (`ExitWorktree`), then starts the new one from there. Every change goes: worktree → branch →
-commit → push → pull request into `base` → merge (after the person's yes) → clear the
+commit → push → pull request into `base` → merge (as `autoMerge` says: Claude's own, once CI is green and the review is recorded; else the person's) → clear the
 worktree. A merge is never announced to the other sessions.
 
 Why: in a shared folder, one session's `switch`, `stash`, `reset` or `restore` moves or hides

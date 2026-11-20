@@ -2869,7 +2869,7 @@ there, or one this plugin cannot use), the line says so, and `merge-check` allow
 | `autoCommit` | `false` | Commit each finished, reviewed step without asking. |
 | `autoPush` | `false` | Push the session's own branch once the change set is complete. Off: only when you ask. Never straight to a protected, base or main branch. |
 | `openPr` | `"off"` | Open a pull request for the branch: `"off"` (only when you ask), `"draft"` or `"ready"`. |
-| `autoMerge` | `false` | Merge into the project's integration base, after CI is green and the review is done. |
+| `autoMerge` | `false` | Merge the pull request into its base, the main branch included, after CI is green and the review is done. |
 | `mergeMethod` | `"merge"` | `"merge"`, `"squash"` or `"rebase"`. |
 | `deleteBranch` | `false` | Delete the branch after its merge. |
 | `reviewBeforePush` | `true` | Run the review before a push. |
@@ -2892,20 +2892,15 @@ there, or one this plugin cannot use), the line says so, and `merge-check` allow
 | `plans.runMode` | `ask` | How queued plans run when two or more are laid (§ [Plans for children](#plans-for-children-520)): `ask`, `solo`, `lead-children` or `coordinator`. With `ask` Claude asks once and states each mode's cost. Yours alone: a project file that sets it is refused, because a committed value would spend every teammate's usage. `workflow set` and `unset` of it refuse inside Claude Code and print the command to run in your own terminal. |
 | `plans.mergeFiles` | `[]` | Paths every plan touches and each merge settles (a version manifest, a changelog, a lockfile, build output): the overlap check between plans leaves them out. Repo-relative, a folder ends in `/` (`plugin/dist/`); no `..`, no root, no `*` or `?`. The project's, with `--project` (`workflow set plans.mergeFiles CHANGELOG.md,plugin/dist/ --project`), and read **only as committed on the base branch**, so a session cannot widen it by editing its own copy; `workflow set` and `unset` of it refuse inside Claude Code (`propose` stays open). A project that sets it needs `"requires": ">=5.2"`. |
 
-**Auto-merge is the strictest one.** Even with `autoMerge` on, cc-smart-dev-kit merges by
-itself only when the pull request's base **is** the project's integration base
-(`worktrees.base`), and that base is a plain one:
+**Auto-merge.** With `autoMerge` on, Claude merges its own pull request into the pull
+request's base — the main branch included — with no question, once every required check is
+green, the head commit's review is recorded, and the fixes after the review are within
+`fixesAfterReview` (over them, it says so in the pull request and leaves it unmerged). It waits
+for CI itself (`gh pr checks <pr> --watch` in the background, then a plain `gh pr merge`) and
+never uses GitHub's `--auto`. A direct push to the main branch, not through a pull request,
+stays yours.
 
-- never when it is the repository's default branch (`main`): merging there is a release,
-  and that is your decision;
-- never when it is a target of `worktrees.bases` (a `release/` family feeding it): then it
-  is not a plain integration base;
-- the integration base may itself be listed in `protectedBranches` — it is the one branch
-  this may write to, and a push of it by hand is yours. Every other
-  protected branch is never a target here: the pull request's base must be the integration
-  base, so those are left to you.
-
-`autoMerge` says only that a merge **may** happen by itself once the branches are right. That
+`autoMerge` says only that a merge **may** happen by itself. That
 CI is green and the review is done is the session's own check (`workflow merge-check` prints
 it; no hook runs it since 5.7.0), and
 `mergeMethod` and `deleteBranch` say how the merge is made, not that it skips a check.
@@ -2929,7 +2924,7 @@ pull request of task closes. Nothing blocks a push: these are instructions, not 
 | `autoCommit`, `clearWorktreeAfterMerge` | the instructions: the `commit` and `worktree` skills read `cc-smart-dev-kit workflow show` and follow it. The after-merge note also reads `clearWorktreeAfterMerge`: on, it gives the steps that clear the worktree; off, it says the worktree looks finished and leaves the choice to the person. No hook commits or removes anything itself: a commit and a folder are the session's own doing. |
 | `autoPush` | the instructions (`commit`): on, the session pushes its own branch once the change set is complete; off, only when you ask. No hook stands in front of a push since 5.7.0. |
 | `openPr` | the instructions (`commit`, `pull-request`): `off` opens a pull request only when you ask, `draft` as a draft, `ready` ready for review. |
-| `autoMerge` | the instructions (`commit`): on, the session merges its own pull request into the integration base once CI is green, the head commit's review is recorded and the fixes after it are within `fixesAfterReview` (over them, it says so in the pull request); off, the merge is yours. |
+| `autoMerge` | the instructions (`commit`): on, the session merges its own pull request into its base, the main branch included, once CI is green (it waits with `gh pr checks --watch`, never `--auto`), the head commit's review is recorded and the fixes after it are within `fixesAfterReview` (over them, it says so in the pull request); off, the merge is yours. |
 | `mergeMethod`, `deleteBranch` | the instructions: they say how a merge is made, and whether its branch goes afterwards. No hook reads them. |
 | `reviewBeforePush` | both: the **review-record hook** writes the record when the review agent finishes (§ below), and the session reads it before it merges (§ The review record). |
 | `reviewAgents` | the **review-record hook** records only an agent listed there; a merge judgment trusts a record only when the list committed on the base names the agent that wrote it. |
