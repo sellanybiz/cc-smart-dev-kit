@@ -162,6 +162,8 @@ export const gitGuardHook: HookSpec = {
       // any linked worktree (a builder's), can take another session's stash.
       sharedStash: config.worktrees !== undefined || project.isWorktree,
       env,
+      // Set when a subagent runs the line: its discards in its own worktree ask nothing.
+      agentId: stringField(input.agent_id),
     });
     return questions.length === 0 ? SILENT : toolDecision("ask", questions.join("\n"));
   },
