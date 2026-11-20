@@ -11,6 +11,7 @@ import { join } from "node:path";
 import type { GatewayConfig } from "../gateway/config";
 import { type GuardContext, judgeWorkflow } from "../hooks/agent-guard";
 import { loadScriptParser } from "../hooks/script-parser";
+import { TASK_TOOL, taskToolId } from "../tasks/words";
 import type { AgentCall } from "./script-runner";
 import { runScript } from "./script-runner";
 
@@ -19,11 +20,19 @@ loadScriptParser();
 
 const AUDIT_RUN = join(import.meta.dir, "..", "..", "plugin", "workflows", "audit-run.js");
 const NO_ENV = {} as Record<string, string | undefined>;
+/** The kit's task tools that write: an auditor reports, it never changes the task ledger. */
+const TASK_WRITES = ["create", "update", "done", "note", "delete", "take"] as const;
 /**
- * The tools each auditor and verifier launch takes away: the tracks share one checkout, and an
- * agent a track started would escape the run's budget.
+ * The tools each auditor and verifier launch takes away: the tracks share one checkout, an agent
+ * a track started would escape the run's budget, and the task ledger belongs to the lead.
  */
-const NO_EDITS = ["Edit", "Write", "NotebookEdit", "Agent"];
+const NO_EDITS = [
+  "Edit",
+  "Write",
+  "NotebookEdit",
+  "Agent",
+  ...TASK_WRITES.map((operation) => taskToolId(TASK_TOOL[operation])),
+];
 
 /** One finding, as an auditor's schema returns it. */
 function finding(title: string) {
@@ -48,6 +57,38 @@ const isVerify = (call: AgentCall): boolean => labelOf(call) === "verify";
 const isReport = (call: AgentCall): boolean => labelOf(call) === "report";
 
 describe("the audit-run workflow", () => {
+  test("the task ledger's write tools are denied in the auditor and verifier launches, the reads are not", async () => {
+    // Everything the task server writes comes from its own list: a new write tool fails here.
+    const reads = ["list", "get", "search"];
+    const writes = Object.keys(TASK_TOOL).filter((operation) => !reads.includes(operation));
+    expect([...writes].sort()).toEqual([...TASK_WRITES].sort());
+    const run = await runScript(AUDIT_RUN, {
+      answer: (call) => {
+        if (isAudit(call)) return { findings: [finding("A")], hunches: [], coverage: "read" };
+        if (isVerify(call)) return { reason: "checked", verdict: "confirmed" };
+        return "the report";
+      },
+      args: { question: "q", target: "src", tracks: ["one"] },
+    });
+    // The report writer may write its report, but never the ledger.
+    const reportDenied = run.calls.find(isReport)?.options.disallowedTools as string[];
+    for (const operation of writes) {
+      expect(reportDenied).toContain(taskToolId(TASK_TOOL[operation as keyof typeof TASK_TOOL]));
+    }
+    expect(reportDenied).not.toContain("Write");
+    const launches = run.calls.filter((call) => isAudit(call) || isVerify(call));
+    expect(launches.length).toBe(2);
+    for (const call of launches) {
+      const denied = call.options.disallowedTools as string[];
+      for (const operation of writes) {
+        expect(denied).toContain(taskToolId(TASK_TOOL[operation as keyof typeof TASK_TOOL]));
+      }
+      for (const operation of reads) {
+        expect(denied).not.toContain(taskToolId(TASK_TOOL[operation as keyof typeof TASK_TOOL]));
+      }
+    }
+  });
+
   test("one auditor per track, on sonnet at high, with no editing tools: then verify, then report", async () => {
     const run = await runScript(AUDIT_RUN, {
       answer: (call) => (isAudit(call) ? { findings: [], hunches: [], coverage: "read" } : null),
@@ -180,6 +221,8 @@ describe("the audit-run workflow", () => {
     const report = run.calls.find(isReport);
     expect(report?.options).toEqual({
       agentType: "cc-smart-dev-kit:builder",
+      // Its file tools stay (it writes the report); the ledger's write tools do not.
+      disallowedTools: NO_EDITS.filter((tool) => tool.startsWith("mcp__")),
       effort: "medium",
       label: "report",
       model: "sonnet",
