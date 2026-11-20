@@ -7133,7 +7133,8 @@ function lex(text, options) {
           continue;
         }
         const processSubstitution = bash && (char === "<" || char === ">") && wordStart;
-        if (next === "(" && (char === "$" || processSubstitution) && substitutions < MAX_INNER) {
+        const arraySubexpression = !bash && char === "@" && wordStart;
+        if (next === "(" && (char === "$" || processSubstitution || arraySubexpression) && substitutions < MAX_INNER) {
           at += 2;
           enterGroup();
           const substitution = read(true, substitutions + 1);
@@ -7364,6 +7365,11 @@ function wordsWithFill(segment, dialect = "bash") {
       add(segment.slice(i, close));
       filled = true;
       i = close;
+    } else if (!bash && !inWord && char === "@" && next === "(" && powershellParenClose(segment, i + 1) !== -1) {
+      const close = powershellParenClose(segment, i + 1);
+      add(segment.slice(i, close));
+      filled = true;
+      i = close;
     } else if (bash && char === "&" && next === ">") {
       end();
       add(char);
@@ -7499,6 +7505,40 @@ function parenCloses(text) {
       break;
   }
   return closes;
+}
+function powershellParenClose(text, open) {
+  const single = SINGLE.powershell;
+  const double = DOUBLE.powershell;
+  const quoteEnd = (quotes, from, escapes) => {
+    for (let at = from;at < text.length; at++) {
+      const char = text.charAt(at);
+      if (escapes && char === "`")
+        at++;
+      else if (oneOf(quotes, char)) {
+        if (!oneOf(quotes, text.charAt(at + 1)))
+          return at;
+        at++;
+      }
+    }
+    return -1;
+  };
+  let depth = 0;
+  for (let i = open;i < text.length; i++) {
+    const char = text.charAt(i);
+    if (char === "`")
+      i++;
+    else if (oneOf(single, char))
+      i = quoteEnd(single, i + 1, false);
+    else if (oneOf(double, char))
+      i = quoteEnd(double, i + 1, true);
+    else if (char === "(")
+      depth++;
+    else if (char === ")" && --depth === 0)
+      return i + 1;
+    if (i === -1)
+      return -1;
+  }
+  return -1;
 }
 var KEYWORDS = new Set(["!", "do", "done", "elif", "else", "fi", "if", "then", "until", "while"]);
 var ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*\+?=/;
@@ -7799,6 +7839,24 @@ function startProcessParameter(word) {
     return null;
   return { name, takesValue: START_PROCESS_PARAMETERS.get(name) === true, value: match?.[2] };
 }
+function continuesArray(args, index) {
+  return (args[index] ?? "").endsWith(",") || (args[index + 1] ?? "").startsWith(",");
+}
+function arrayAt(args, from, first) {
+  const words = [first];
+  let next = from + 1;
+  while (next < args.length && continuesArray([words.at(-1) ?? "", args[next] ?? ""], 0)) {
+    words.push(args[next] ?? "");
+    next++;
+  }
+  return { words, next };
+}
+function arrayElements(words) {
+  return words.flatMap((word) => {
+    const inner = /^@\(([\s\S]*)\)$/.exec(word)?.[1];
+    return inner === undefined ? [word] : wordsOf(inner, "powershell");
+  }).join(" ").split(",").flatMap((part) => wordsOf(part)).filter((one) => one !== "");
+}
 function startProcess(args) {
   let file = null;
   let list = null;
@@ -7807,30 +7865,38 @@ function startProcess(args) {
   for (let index = 0;index < args.length; index++) {
     const arg = args[index] ?? "";
     if (arg === "--") {
-      positional.push(...args.slice(index + 1));
+      positional.push(...args.slice(index + 1).map((word) => [word]));
       break;
     }
     const parameter = startProcessParameter(arg);
     if (parameter === null) {
-      if (!arg.startsWith("-"))
-        positional.push(arg);
+      if (!arg.startsWith("-") || continuesArray(args, index)) {
+        const array = arrayAt(args, index, arg);
+        positional.push(array.words);
+        index = array.next - 1;
+      }
       continue;
     }
     const { name, takesValue } = parameter;
-    let value = parameter.value;
-    if (takesValue && value === undefined) {
-      value = args[index + 1];
-      index++;
+    let value;
+    if (takesValue) {
+      const inline = parameter.value;
+      const from = inline === undefined ? index + 1 : index;
+      if (from < args.length) {
+        const array = arrayAt(args, from, inline ?? args[from] ?? "");
+        value = array.words;
+        index = array.next - 1;
+      }
     }
     if (name === "filepath" && value !== undefined)
-      file = value;
-    else if (name === "argumentlist" && value !== undefined) {
-      list = value.split(",").flatMap((part) => wordsOf(part)).filter((one) => one !== "");
-    } else if (name === "usenewenvironment")
+      file = value[0] ?? null;
+    else if (name === "argumentlist" && value !== undefined)
+      list = arrayElements(value);
+    else if (name === "usenewenvironment")
       fresh = arg;
   }
-  file ??= positional[0] ?? null;
-  list ??= positional.length > 1 ? wordsOf(positional.slice(1).join(" ")) : [];
+  file ??= positional[0]?.[0] ?? null;
+  list ??= arrayElements(positional.slice(1).flat());
   if (file === null)
     return null;
   return {
