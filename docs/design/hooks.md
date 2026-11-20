@@ -824,7 +824,8 @@ inside that runner's arguments count too** — `find … -exec env -u CLAUDECODE
 <file> env -u CLAUDECODE <kit> …` — except after programs that only read their arguments (`ls`,
 `grep`, `git`, `echo`…), so `env -u CLAUDECODE claude -p` and `env -u
 CLAUDECODE bun test` — the usual way to start a nested session — are not touched. PowerShell's
-`Start-Process` is read by its `-FilePath`/`-ArgumentList` (or the positional words), and
+`Start-Process` is read by its `-FilePath`/`-ArgumentList` (or the positional words; the
+argument list is one array however it is spaced: `'-c', 'x'`, `'-c' , 'x'`, `@('-c', 'x')`), and
 `-UseNewEnvironment` starts the command with a fresh environment, the same as `sudo`. Claude Code's
 Bash tool keeps no `export` or `unset` from one call to the next (seen live 2026-10-22: an
 `unset CLAUDECODE` in one call, `CLAUDECODE=1` again in the next), so a line is the unit. A

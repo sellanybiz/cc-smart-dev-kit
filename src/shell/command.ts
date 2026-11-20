@@ -30,6 +30,8 @@
  *     a `<# … #>` block comment; the typographic quotes (`‘ ’ ‚ ‛`, `“ ” „`) quote like `'`
  *     and `"`, as PowerShell reads them;
  *   - a command even inside text: `$( … )` in `"…"` and in `@"…"@`;
+ *   - `@( … )` at the start of a word (an array subexpression) runs its commands, and the word
+ *     keeps it whole, as one value;
  *   - the backtick escapes the character after it, and a backslash is a plain character:
  *     `"C:\repo\"` ends at its last quote;
  *   - every brace ends a command: `{ … }` is a script block, which `&`, `.` or `%` runs;
@@ -588,8 +590,15 @@ function lex(text: string, options: LexOptions): Lexed {
         // commands inside are still read.
         // Bash's process substitution, `<( … )` or `>( … )` at the start of a word, is one word
         // too (the shell fills in a file name), and its commands run in a shell of their own.
+        // PowerShell's array subexpression, `@( … )` at the start of a word, runs its commands and
+        // is one value too (`Start-Process pwsh -ArgumentList @('-c', 'x')`).
         const processSubstitution = bash && (char === "<" || char === ">") && wordStart;
-        if (next === "(" && (char === "$" || processSubstitution) && substitutions < MAX_INNER) {
+        const arraySubexpression = !bash && char === "@" && wordStart;
+        if (
+          next === "(" &&
+          (char === "$" || processSubstitution || arraySubexpression) &&
+          substitutions < MAX_INNER
+        ) {
           at += 2;
           enterGroup();
           const substitution = read(true, substitutions + 1);
@@ -960,6 +969,19 @@ export function wordsWithFill(segment: string, dialect: Dialect = "bash"): Shell
       add(segment.slice(i, close));
       filled = true;
       i = close;
+    } else if (
+      !bash &&
+      !inWord &&
+      char === "@" &&
+      next === "(" &&
+      powershellParenClose(segment, i + 1) !== -1
+    ) {
+      // PowerShell's `@( … )`: one value, kept whole as the line reader keeps it, so a reader of
+      // an array value (`Start-Process -ArgumentList @('-c', 'x')`) can take its elements.
+      const close = powershellParenClose(segment, i + 1);
+      add(segment.slice(i, close));
+      filled = true;
+      i = close;
     } else if (bash && char === "&" && next === ">") {
       // `x&>file`: the `&` starts the redirection, so the word before it ends here.
       end();
@@ -1096,6 +1118,40 @@ function parenCloses(text: string): Int32Array {
     if (i === -1) break; // a quote that never closes: nothing after it is read
   }
   return closes;
+}
+
+/**
+ * The index after the `)` that closes the PowerShell `(` at `open`, or -1 when none does. Quoted
+ * text is skipped as PowerShell reads it: `'…'` (where `''` is a quote) and `"…"` (where a
+ * backtick escapes and `""` is a quote), with the typographic quotes too; outside quotes a
+ * backtick escapes the character after it.
+ */
+function powershellParenClose(text: string, open: number): number {
+  const single = SINGLE.powershell;
+  const double = DOUBLE.powershell;
+  /** The index of the quote that ends text read from `from`, or -1. */
+  const quoteEnd = (quotes: string, from: number, escapes: boolean): number => {
+    for (let at = from; at < text.length; at++) {
+      const char = text.charAt(at);
+      if (escapes && char === "`") at++;
+      else if (oneOf(quotes, char)) {
+        if (!oneOf(quotes, text.charAt(at + 1))) return at;
+        at++;
+      }
+    }
+    return -1;
+  };
+  let depth = 0;
+  for (let i = open; i < text.length; i++) {
+    const char = text.charAt(i);
+    if (char === "`") i++;
+    else if (oneOf(single, char)) i = quoteEnd(single, i + 1, false);
+    else if (oneOf(double, char)) i = quoteEnd(double, i + 1, true);
+    else if (char === "(") depth++;
+    else if (char === ")" && --depth === 0) return i + 1;
+    if (i === -1) return -1; // a quote that never closes
+  }
+  return -1;
 }
 
 /** Text that is data, not a command: skipped over when a segment is read for its program. */
@@ -1557,11 +1613,55 @@ function startProcessParameter(
   return { name, takesValue: START_PROCESS_PARAMETERS.get(name) === true, value: match?.[2] };
 }
 
+/** True when the word at `index` opens a PowerShell array: it ends in a comma, or the next word starts with one. */
+function continuesArray(args: readonly string[], index: number): boolean {
+  return (args[index] ?? "").endsWith(",") || (args[index + 1] ?? "").startsWith(",");
+}
+
+/**
+ * The words of the one PowerShell array value that starts at `from` (its first word `first`),
+ * and the index after it: the reader keeps a comma on the word it touches, so `'-c', 'x'` is
+ * `-c,` and `x`, and `'-c' , 'x'` is `-c`, `,` and `x`. A word that ends in a comma, or a next
+ * word that starts with one, goes on.
+ */
+function arrayAt(
+  args: readonly string[],
+  from: number,
+  first: string,
+): { words: string[]; next: number } {
+  const words = [first];
+  let next = from + 1;
+  while (next < args.length && continuesArray([words.at(-1) ?? "", args[next] ?? ""], 0)) {
+    words.push(args[next] ?? "");
+    next++;
+  }
+  return { words, next };
+}
+
+/**
+ * The arguments an array value gives the program, as PowerShell joins its elements with spaces:
+ * each element split into words. `@( … )` (an array subexpression the reader keeps as one word)
+ * is read for its elements. An element worked out when the line runs (`$cmd`) stays as it is,
+ * so a command built from it is one the guards cannot name.
+ */
+function arrayElements(words: readonly string[]): string[] {
+  return words
+    .flatMap((word) => {
+      const inner = /^@\(([\s\S]*)\)$/.exec(word)?.[1];
+      return inner === undefined ? [word] : wordsOf(inner, "powershell");
+    })
+    .join(" ")
+    .split(",")
+    .flatMap((part) => wordsOf(part))
+    .filter((one) => one !== "");
+}
+
 /**
  * The command `Start-Process` runs: its `-FilePath` (`-F`, or any prefix PowerShell accepts)
  * or the first positional word names the program, and `-ArgumentList` (`-A`) or the second
- * positional word its arguments (`Start-Process -FilePath git -ArgumentList 'push -f'`).
- * Null for anything else (no program named).
+ * positional value its arguments (`Start-Process -FilePath git -ArgumentList 'push -f'`). That
+ * value is one array, however it is written: `'a b'`, `a,b`, `'-c', 'x'`, `'-c' , 'x'` or
+ * `@('-c', 'x')` (`arrayAt`, `arrayElements`). Null for anything else (no program named).
  *
  * `-UseNewEnvironment` starts the command with a fresh environment. The prefix then carries
  * `Start-Process` and the flag, where the escape guard reads them like `sudo` (`prefixDrop`).
@@ -1572,36 +1672,45 @@ function startProcess(
   let file: string | null = null;
   let list: string[] | null = null;
   let fresh: string | null = null;
-  const positional: string[] = [];
+  /** The positional values, each one PowerShell array (`'-c', 'x'` is one value). */
+  const positional: string[][] = [];
   for (let index = 0; index < args.length; index++) {
     const arg = args[index] ?? "";
     if (arg === "--") {
-      positional.push(...args.slice(index + 1));
+      positional.push(...args.slice(index + 1).map((word) => [word]));
       break;
     }
     const parameter = startProcessParameter(arg);
     if (parameter === null) {
-      if (!arg.startsWith("-")) positional.push(arg);
+      // A word that starts with `-` is a parameter this reader does not know, unless it opens
+      // an array (`'-c', 'x'` reads as `-c,` and `x`).
+      if (!arg.startsWith("-") || continuesArray(args, index)) {
+        const array = arrayAt(args, index, arg);
+        positional.push(array.words);
+        index = array.next - 1;
+      }
       continue;
     }
     const { name, takesValue } = parameter;
-    let value = parameter.value;
-    if (takesValue && value === undefined) {
-      value = args[index + 1];
-      index++;
+    let value: string[] | undefined;
+    if (takesValue) {
+      // The value is one array, however its commas are spaced: `-ArgumentList '-c', 'x'` reads
+      // as `-c,` and `x`, `'-c' , 'x'` as `-c`, `,` and `x`. A value after a colon
+      // (`-ArgumentList:'-c', 'x'`) is the array's first word.
+      const inline = parameter.value;
+      const from = inline === undefined ? index + 1 : index;
+      if (from < args.length) {
+        const array = arrayAt(args, from, inline ?? args[from] ?? "");
+        value = array.words;
+        index = array.next - 1;
+      }
     }
-    if (name === "filepath" && value !== undefined) file = value;
-    else if (name === "argumentlist" && value !== undefined) {
-      // `-ArgumentList 'a b'` is one command line; `-ArgumentList a,b` is the array
-      // PowerShell joins with spaces for the program.
-      list = value
-        .split(",")
-        .flatMap((part) => wordsOf(part))
-        .filter((one) => one !== "");
-    } else if (name === "usenewenvironment") fresh = arg;
+    if (name === "filepath" && value !== undefined) file = value[0] ?? null;
+    else if (name === "argumentlist" && value !== undefined) list = arrayElements(value);
+    else if (name === "usenewenvironment") fresh = arg;
   }
-  file ??= positional[0] ?? null;
-  list ??= positional.length > 1 ? wordsOf(positional.slice(1).join(" ")) : [];
+  file ??= positional[0]?.[0] ?? null;
+  list ??= arrayElements(positional.slice(1).flat());
   if (file === null) return null;
   return {
     args: list,

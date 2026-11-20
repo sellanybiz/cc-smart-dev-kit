@@ -190,6 +190,17 @@ describe("F2a-3: PowerShell Start-Process runs what it is given", () => {
   it("a Start-Process that runs no git passes", () => {
     expect(guard("Start-Process notepad 'notes.txt'", neutral, true, "powershell")).toBeUndefined();
   });
+
+  // Round 2's reader finding: with a space after the comma, the reader took `-c` alone and the
+  // reset pwsh runs was never read, so the main session was not asked either.
+  it.each([
+    "Start-Process pwsh -ArgumentList '-c', 'git reset --hard'",
+    "Start-Process pwsh -ArgumentList '-c' , 'git reset --hard'",
+    "Start-Process pwsh -ArgumentList @('-c', 'git reset --hard')",
+    "Start-Process pwsh '-c', 'git reset --hard'",
+  ])("the comma array however spaced: %j asks the main session", (command) => {
+    expect(guard(command, neutral, true, "powershell")).toContain("`git reset --hard`");
+  });
 });
 
 describe("a push to a protected branch asks", () => {
@@ -976,6 +987,14 @@ describe("round 2's findings: a line that is not plain, or leaves the worktree, 
     ],
   ])("F1 a folder option before a nested shell (%s) asks: %j", (_name, command) => {
     expect(guardAs(command, OWN_WORKTREE, BUILDER)).toBeDefined();
+  });
+
+  it.each([
+    `Start-Process pwsh -WorkingDirectory ${MAIN_FOLDER} -ArgumentList '-c', 'git reset --hard'`,
+    "Start-Process pwsh -ArgumentList '-c', 'git reset --hard'",
+    "Start-Process pwsh -ArgumentList @('-c', 'git reset --hard')",
+  ])("the reader's Start-Process comma array: the subagent's %j asks (not plain)", (command) => {
+    expect(guardAs(command, OWN_WORKTREE, BUILDER, "powershell")).toContain("`git reset --hard`");
   });
 
   it.each([
