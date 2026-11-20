@@ -1,28 +1,12 @@
 /**
- * The Opus and Fable launches the Agent guard allowed, one JSON line each, in
- * `<stateDir>/agent-launches.jsonl` — the record `cc-smart-dev-kit usage` lists (count, effort,
- * reasons).
- *
- * Why a file: the guard's answer reaches Claude and the hook log (`CC_SMART_DEV_KIT_HOOK_LOG`, which
- * is a check's log, not the person's), and an Opus or Fable launch spends the person's own
- * plan usage. The record is what makes "how much Opus did the agents really use, and why"
- * answerable. It holds no message text: the model, the effort, the reason line's word, the agent
- * type and the folder.
- *
- * The file is cc-smart-dev-kit's own state (`paths.stateDir`), appended by the hook with short
- * lines. A file that cannot be written or read never fails a hook: the record is information.
+ * The record of the Opus and Fable launches the Agent guard allowed, one JSON line each, in
+ * `<stateDir>/agent-launches.jsonl` — what `cc-smart-dev-kit usage` lists (count, effort,
+ * reasons). The guard is gone (5.7.0) and nothing writes the file now; an older machine's file
+ * is still read and counted.
  */
 
-import {
-  appendFileSync,
-  closeSync,
-  fstatSync,
-  mkdirSync,
-  openSync,
-  readFileSync,
-  readSync,
-} from "node:fs";
-import { dirname, join } from "node:path";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import type { ClaudeFamily } from "../gateway/targets";
 import { ALLOWED_EFFORTS, EFFORT_AUTO } from "../models/launch-policy";
 
@@ -110,79 +94,6 @@ export function reasonParts(reason: string): ReasonParts {
 /** Where the record lives. */
 export function agentLaunchesFile(stateDir: string): string {
   return join(stateDir, "agent-launches.jsonl");
-}
-
-/**
- * How far back from the end the record is read to find a launch already written (64 KiB, a few
- * hundred lines). A second run of the same call comes within seconds of the first, so its lines
- * are in that tail, and a hook never reads a record that has grown for months.
- */
-export const RECORD_TAIL_BYTES = 64 * 1024;
-
-/** The last `RECORD_TAIL_BYTES` of the file, as whole lines; empty when it cannot be read. */
-function tailLines(file: string): string[] {
-  let fd: number;
-  try {
-    fd = openSync(file, "r");
-  } catch {
-    // No record yet, or one that cannot be read: nothing was written before.
-    return [];
-  }
-  try {
-    const size = fstatSync(fd).size;
-    const from = Math.max(0, size - RECORD_TAIL_BYTES);
-    const buffer = Buffer.alloc(size - from);
-    const read = readSync(fd, buffer, 0, buffer.length, from);
-    const lines = buffer.subarray(0, read).toString("utf8").split("\n");
-    // Read from the middle of the file, the first line is only a part of one: dropped.
-    return (from > 0 ? lines.slice(1) : lines).filter((line) => line.trim() !== "");
-  } catch {
-    // A file that cannot be read now holds nothing the hook can compare with.
-    return [];
-  } finally {
-    closeSync(fd);
-  }
-}
-
-/** What makes two lines the same launch: the session, the tool call and the launch's index. */
-function launchKey(launch: AgentLaunch): string {
-  return `${launch.session}\u0000${launch.toolUseId}\u0000${launch.launchIndex}`;
-}
-
-/**
- * Appends launches, each once: a line with the same session, `tool_use_id` and launch index as
- * one already written is the same launch (see `toolUseId`), so it is skipped. A launch with no
- * `tool_use_id` is always new. All of them go in one write. Never throws (a hook must not fail
- * over its own record).
- */
-export function appendAgentLaunches(file: string, launches: readonly AgentLaunch[]): void {
-  const written = new Set(
-    tailLines(file)
-      .map(parseAgentLaunch)
-      .filter((one): one is AgentLaunch => one !== null && one.toolUseId !== "")
-      .map(launchKey),
-  );
-  const fresh = launches.filter((one) => {
-    if (one.toolUseId === "") return true;
-    const key = launchKey(one);
-    if (written.has(key)) return false;
-    written.add(key);
-    return true;
-  });
-  if (fresh.length === 0) return;
-  try {
-    // The state folder is made when it is not there yet: a launch recorded on PostToolUse (an
-    // asked one) must not be lost because nothing else has written the folder first.
-    mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
-    appendFileSync(file, fresh.map((one) => `${JSON.stringify(one)}\n`).join(""));
-  } catch {
-    // The state folder cannot be written: the launch itself is unaffected.
-  }
-}
-
-/** Appends one launch, once (`appendAgentLaunches`). */
-export function appendAgentLaunch(file: string, launch: AgentLaunch): void {
-  appendAgentLaunches(file, [launch]);
 }
 
 function isJsonObject(value: unknown): value is Record<string, unknown> {

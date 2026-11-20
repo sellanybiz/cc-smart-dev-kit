@@ -286,12 +286,6 @@ describe("the adapters", () => {
       reason: "gh is not installed",
       tone: "info",
     });
-    expect(branchVerdictOf({ kind: "silent" })).toEqual({
-      kind: "silent",
-      label: "no verdict",
-      reason: null,
-      tone: "info",
-    });
   });
 
   test("a project that is not set up has no answers of its own, but its card keeps the defaults", () => {

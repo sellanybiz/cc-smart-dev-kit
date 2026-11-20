@@ -1,7 +1,7 @@
 /**
  * The Projects tab and a project's page, in mock data (B8). Every name is a placeholder
  * (`my-app`, `/home/user/code`). The set of rows covers each state the pages draw: the
- * current project, set up, with its files not committed yet and branches the merge guard
+ * current project, set up, with its files not committed yet and branches merge-check
  * allows, refuses and ran late on; a set-up one; one not set up; and an added folder git
  * could not count.
  */

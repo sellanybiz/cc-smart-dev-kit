@@ -601,7 +601,6 @@ export interface WorkAnswer {
 export type MergeVerdict =
   | { detail: MergeDetail | null; kind: "allowed"; reason: string }
   | { detail: MergeDetail | null; kind: "refused"; number: null | number; reason: string }
-  | { kind: "silent" }
   | { kind: "unread"; number: null | number; what: string }
   | { kind: "late"; number: null | number; what: string };
 
