@@ -10,18 +10,17 @@
  *    newer plugin. Nothing else silences a plugin hook: a project hook on the same event does
  *    not (it may be a logger, and a guard must not go quiet for it).
  * 3. Read the project's cc-smart-dev-kit.json. When it is broken or needs a newer plugin, the
- *    hook **fails closed** in its own way (`onConfigProblem`): a guard asks, an informational
+ *    hook **fails closed** in its own way (`onConfigProblem`): `user-away` asks, an informational
  *    hook prints one line.
- * 4. Run the hook. A guard's own crash answers through `onCrash` (a guard asks about the
- *    call in its own domain, never a silent pass); an informational hook's crash is one line
- *    on stderr and exit 0 — a bug never stops a person's work. Claude Code holds the second
- *    belt: a guard's hooks.json entry carries `onFailure: "block"`, so a hook that cannot
- *    start, times out or answers nothing readable blocks the tool call.
+ * 4. Run the hook. A hook with an `onCrash` (`user-away`, the one hook left that asks) answers
+ *    a crash through it; every other hook's crash is one line on stderr and exit 0 — a bug
+ *    never stops a person's work. Claude Code holds a second belt for `user-away`: its
+ *    PreToolUse entry in hooks.json carries `onFailure: "block"`.
  * 5. **Record an ask.** When the answer asks the person, the frame appends one line to
  *    `guard-asks.jsonl` in the state folder (`src/hooks/ask-log.ts`); a write that fails is
  *    one line on stderr and never changes the answer.
  *
- * A **machine-wide** hook (`agent-guard`, and the notifier) answers about the machine, not a
+ * A **machine-wide** hook (`tier-view`, `fable-session`) answers about the machine, not a
  * project: it runs with or without `cc-smart-dev-kit.json`, and its answer does not depend on the
  * project's file. It gets the input and the environment (`HookEnvContext`) where the frame's
  * checkout or config step does not apply, and a project may still silence it through

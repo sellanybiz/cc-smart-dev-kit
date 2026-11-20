@@ -42,7 +42,8 @@
 #   --missing=quiet  one line on stderr, exit 0.
 #   --missing=fail   one line on stderr, exit 1: for a command that must not report success
 #                    when it did not run (`plugin/bin/cc-smart-dev-kit`, the CLI).
-# Every hook in hooks.json gives one: the PreToolUse guards ask, every other hook is quiet.
+# Every hook in hooks.json gives one: `user-away`, the one PreToolUse hook that asks, asks;
+# every other hook is quiet.
 #
 # The launcher writes its baked bun in single quotes, each ' in the path written as '\''
 # (`shellQuote` in src/setup/launcher.ts); the loop below undoes exactly that, so a bun under

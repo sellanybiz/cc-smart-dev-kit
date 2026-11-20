@@ -149,7 +149,7 @@ export interface MergeCall {
   disarms: boolean;
   /**
    * An `--admin` (any value) on the merge's own words: gh merges with administrator rights,
-   * past the repository's branch protection, so the merge guard always asks.
+   * past the repository's branch protection, so merge-check always asks.
    */
   admin: boolean;
   /** The word after `gh` that names no gh command: an alias to look up, or an extension. */

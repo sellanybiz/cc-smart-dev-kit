@@ -28,7 +28,7 @@ import {
   stageFile,
   writeFileIn,
 } from "../testing/git-hook-world";
-import { hookEnv, runHook, writeClaudeFile } from "../testing/hooks";
+import { hookEnv, makeRepo, runHook, writeClaudeFile } from "../testing/hooks";
 import { cleanGitEnv, git, tempDir } from "../testing/temp";
 import { pullRequestMerges } from "./after-merge";
 import type { HookResult } from "./io";
@@ -261,7 +261,7 @@ describe("the two answers", () => {
 
 describe("job-route answers nothing but the queue", () => {
   const input = (command: string, tool = "Bash"): Record<string, unknown> => ({
-    cwd: repoWith({}),
+    cwd: makeRepo(),
     hook_event_name: "PreToolUse",
     tool_input: { command },
     tool_name: tool,
@@ -284,16 +284,40 @@ describe("job-route answers nothing but the queue", () => {
     expect(unattended).toEqual({});
   });
 
-  it("a project file that cannot be read, a folder outside git: the line runs as written", async () => {
+  /** The person's own workflow file, with the route default on or off. */
+  const personal = (route: boolean) => {
     const env = hookEnv();
-    const broken = repoWith({});
-    writeClaudeFile(broken, "cc-smart-dev-kit.json", { requires: ">=99", future: true });
-    for (const command of ["bun test", "bunx vitest run src/a.test.ts", "claude --bg x"]) {
-      expect(await runHook(jobRouteHook, { ...input(command), cwd: broken }, env)).toEqual({});
-      expect(
-        await runHook(jobRouteHook, { ...input(command), cwd: tempDir("not-git") }, env),
-      ).toEqual({});
-    }
+    const file = cliPaths(env).workflowConfigFile;
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, `${JSON.stringify({ switches: { jobRoute: route } })}\n`);
+    return env;
+  };
+  const heavy = "bunx tsc --noEmit";
+  const queued = (result: HookResult) =>
+    JSON.parse(result.stdout ?? "{}").hookSpecificOutput?.updatedInput?.command ?? null;
+
+  it.each([
+    ["too new", { requires: ">=99", future: true }],
+    ["broken", { worktree: {} }],
+  ])(
+    "a project file that is %s: the person's own route default decides, as if it were absent",
+    async (_name, file) => {
+      const repo = makeRepo();
+      writeClaudeFile(repo, "cc-smart-dev-kit.json", file);
+      const call = { ...input(heavy), cwd: repo };
+      // Their default on: the heavy command is queued, though the project's own file says nothing.
+      expect(queued(await runHook(jobRouteHook, call, personal(true)))).toContain(
+        "job run --kind tsc -- bunx tsc --noEmit",
+      );
+      // Their default off (or none): it runs as written.
+      expect(await runHook(jobRouteHook, call, personal(false))).toEqual({});
+      expect(await runHook(jobRouteHook, call, hookEnv())).toEqual({});
+    },
+  );
+
+  it("a folder outside git has no project to route for: the line runs as written", async () => {
+    const call = { ...input(heavy), cwd: tempDir("not-git") };
+    expect(await runHook(jobRouteHook, call, personal(true))).toEqual({});
   });
 });
 

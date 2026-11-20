@@ -13,7 +13,7 @@ export const UNAVAILABLE_SKILL = `/${PLUGIN}:user-unavailable`;
 export const AVAILABLE_SKILL = `/${PLUGIN}:user-available`;
 
 /** What a session runs to record a choice it made while the person is away: the one command it writes. */
-export const DECISION_COMMAND = `${COMMAND} user park --kind decision "Summary: <what you chose, why, how to undo>"`;
+export const DECISION_COMMAND = `${COMMAND} user park --kind decision "Decision: <what you chose, why, how to undo>"`;
 
 /**
  * `1 item`, `2 items`. The command's output module has its own, which a hook bundle may not reach
@@ -42,7 +42,7 @@ Commands:
                  Whether they can answer, and how many items wait.
   park --kind <question|action|decision> "<text>" [--command "<command>"]
        [--option "<option>"]... [--recommend <n>]
-                 Put one item on the list. A session records a decision ("Summary: ..."). A
+                 Put one item on the list. A session records a decision ("Decision: ..."). A
                  question names its options and the recommended one (counted from 1), an
                  action its exact command: both are for the person's own use and old items.
   list [--json]  The items, each with who answers it and its exact command. Judged for the

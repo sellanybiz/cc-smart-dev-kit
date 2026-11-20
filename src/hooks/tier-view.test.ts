@@ -21,7 +21,7 @@ const SONNET_CLAUDE = "- sonnet → Claude Sonnet.";
 const OPUS_CLAUDE = "- opus → Claude Opus.";
 const FABLE_CLAUDE = "- fable → Claude Fable.";
 const FOOTER =
-  "Choose the tier and effort by the job (`/cc-smart-dev-kit:subagent-decision`), never by the model behind a tier. `opus` at `max` and any `fable` launch (with a `Fable reason:` line) ask the person.";
+  "Choose the tier and effort by the job (`/cc-smart-dev-kit:subagent-decision`), never by the model behind a tier.";
 
 /** The note for a view, written by hand from its four lines and the footer. */
 function note(...lines: string[]): string {

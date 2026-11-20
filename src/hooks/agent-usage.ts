@@ -6,9 +6,8 @@
  * Why a file: Claude Code's own transcripts say which model wrote each reply and what it
  * reported for tokens, but nobody keeps a per-agent total, and a transcript is gone once the
  * session's files are cleaned up. The record is the person's own spend on this machine, so
- * the hook is **machine-wide**: it records with no `cc-smart-dev-kit.json` and outside git,
- * like the launch record `usage` still reads (`agent-launches.ts`). A project that wants its own
- * agent-usage hook lists the name in `ownHooks` (`PLUGIN_HOOK_NAMES`).
+ * the hook is **machine-wide**: it records with no `cc-smart-dev-kit.json` and outside git. A
+ * project that wants its own agent-usage hook lists the name in `ownHooks` (`PLUGIN_HOOK_NAMES`).
  *
  * What a line holds: the time, the session, the agent's id and type, and per model the
  * replies, the four token counts and the estimated USD. **Never any content**: a transcript

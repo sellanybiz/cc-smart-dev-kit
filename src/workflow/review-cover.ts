@@ -82,7 +82,7 @@ export interface CoverGit {
   env: Env;
   /**
    * How long the next git call may take: the smaller of `limitMs` and the time the caller has
-   * left (the merge guard's `timeFor`). Zero or less: out of time. Left out: `limitMs`.
+   * left (merge-check's `timeFor`). Zero or less: out of time. Left out: `limitMs`.
    */
   timeFor?: (limitMs: number) => number;
   /**

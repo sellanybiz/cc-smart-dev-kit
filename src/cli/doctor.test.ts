@@ -62,7 +62,7 @@ describe("doctor: personal review agent migration", () => {
     expect(result).not.toBeNull();
     if (result === null) throw new Error("missing migration check");
     expect(checkLine(result)).toBe(
-      "✗ ~/.config/cc-smart-dev-kit/workflow.json names the retired cc-smart-dev-kit:reviewer in reviewAgents Fix: replace the old id cc-smart-dev-kit:reviewer with the new one cc-smart-dev-kit:senior-engineer: in your own terminal, not inside Claude Code (it refuses the gate's keys there), run cc-smart-dev-kit workflow set reviewAgents cc-smart-dev-kit:senior-engineer, or cc-smart-dev-kit workflow unset reviewAgents to use the default; personal changes count at once",
+      "✗ ~/.config/cc-smart-dev-kit/workflow.json names the retired cc-smart-dev-kit:reviewer in reviewAgents Fix: replace the old id cc-smart-dev-kit:reviewer with the new one cc-smart-dev-kit:senior-engineer: run cc-smart-dev-kit workflow set reviewAgents cc-smart-dev-kit:senior-engineer, or cc-smart-dev-kit workflow unset reviewAgents to use the default; personal changes count at once",
     );
   });
 });

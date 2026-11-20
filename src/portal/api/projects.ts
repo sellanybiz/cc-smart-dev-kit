@@ -672,7 +672,7 @@ function configAt(
  * request would go into and whether `gh` can open one now.
  *
  * **The values are the base's, not the checkout's.** A proposal changes the file committed on
- * `origin/<worktrees.base>` — the file the merge guard reads, and the one `workflow propose`
+ * `origin/<worktrees.base>` — the file merge-check reads, and the one `workflow propose`
  * compares against — so the answer is `resolveGateAsync` (the gate's own non-blocking reader:
  * `readCommittedConfigAsync` + `resolveWorkflow`) over that file, then `resolvedValueOf` (the
  * map `workflow show` prints through). An uncommitted edit in the person's checkout, or another

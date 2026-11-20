@@ -194,7 +194,7 @@ export interface ProjectsAnswer {
   note: null | string;
 }
 
-/** One branch on a project's page, with the merge guard's verdict on it. */
+/** One branch on a project's page, with merge-check's verdict on it. */
 export interface ProjectBranch {
   /** The branch it would merge into; null when it is not known. */
   base: null | string;

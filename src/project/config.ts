@@ -49,10 +49,12 @@ export const RETIRED_HOOK_NAMES = [
   "lead-notes",
   // 4.3.0: messages to sessions in other repos no longer ask.
   "message-guard",
-  // 5.7.0: the kit asks the person nothing through hooks; its only guard is the heavy-job
+  // 6.0.0: the kit asks the person nothing through hooks; its only guard is the heavy-job
   // queue (`job-route`). These six guards went. A project file written for an older plugin
-  // that lists one must still parse (`session-escape-guard` was never listable: its name is
-  // accepted from 5.7.0, and `OWN_HOOK_NAMES_SINCE` holds that floor).
+  // that lists one must still parse. Four of them were `ownHooks` names from 0.5.2 on (deploy-guard from 5.3.0);
+  // `session-escape-guard` never was (an `alwaysOn` hook, its name was refused in every older
+  // plugin, checked in the history of this file), so it is accepted from this release
+  // (`OWN_HOOK_NAMES_SINCE` holds that floor).
   "git-guard",
   "merge-guard",
   "deploy-guard",
@@ -182,7 +184,7 @@ export const OWN_HOOK_NAMES_SINCE: Readonly<
   "builder-finish": "2.0.0",
   "deploy-guard": DEPLOY_GUARD_SINCE,
   // Never listable before: the strict parse of an older plugin refuses the name.
-  "session-escape-guard": "5.7.0",
+  "session-escape-guard": "6.0.0",
 };
 
 /**
@@ -306,7 +308,7 @@ export const ccSmartDevKitConfigSchema = z.strictObject({
       /**
        * A branch-name prefix (ending in "/") to the base that branch family's pull requests
        * go into: `{"hotfix/": "main", "release/": "main"}`. Every other branch's requests go
-       * into `base`. The longest prefix that matches wins (`baseForBranch`). The merge guard's
+       * into `base`. The longest prefix that matches wins (`baseForBranch`). merge-check's
        * opening check, auto-merge and the after-merge note read it.
        */
       bases: z
@@ -422,7 +424,7 @@ export type CcSmartDevKitConfig = z.infer<typeof ccSmartDevKitConfigSchema>;
 /**
  * The base a branch's pull request goes into: `worktrees.base`, or the longest
  * `worktrees.bases` prefix that matches the branch's name. The one home of that rule (the
- * schema's comment, `.claude/rules/cc-smart-dev-kit-json.md`): the merge guard's opening check
+ * schema's comment, `.claude/rules/cc-smart-dev-kit-json.md`): merge-check's opening check
  * and the after-merge note name the same base.
  */
 export function baseForBranch(

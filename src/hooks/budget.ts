@@ -15,7 +15,7 @@ export const GUARD_BUDGET_MS = 25_000;
 
 /**
  * The budget of a hook that has 10 s (`job-route`'s question about `workflow propose`; every other
- * guard but the merge guard): the same share, and the same room to answer.
+ * guard but merge-check): the same share, and the same room to answer.
  */
 export const SHORT_GUARD_BUDGET_MS = 8_000;
 

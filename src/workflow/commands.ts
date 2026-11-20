@@ -6,7 +6,7 @@
  * `show` prints every value with where it came from, so a person can see whether it is the
  * project's policy, their own, or the built-in default — and, for a switch, that it is the
  * value of the setting it maps onto right now (`resolve.ts`). Its `gate` lines are the review
- * gate exactly as the merge guard reads it — the policy committed on `origin/<worktrees.base>`
+ * gate exactly as merge-check reads it — the policy committed on `origin/<worktrees.base>`
  * (`resolveGate`) — and it prints whether the commit this checkout is on has a recorded review
  * that gate trusts. Both `show` and `set` end with the settings that cannot work together
  * (`workflowClashes` in `clashes.ts`, D16): one `!` line each, with its fix. `set` and `unset` write one value where
@@ -16,12 +16,12 @@
  * project's own settings through a pull request instead (`propose.ts`, D57): a branch and a
  * worktree cut from `origin/<worktrees.base>`, the same writer, the commit, the push and
  * `gh pr create` — never a write in the main checkout. `review-done` records one commit in the
- * review record (`reviews.ts`) — default HEAD — which is what the merge guard reads before a
+ * review record (`reviews.ts`) — default HEAD — which is what merge-check reads before a
  * merge it would make without a person. It refuses inside Claude Code (`CLAUDECODE`), where
  * the `review-record` hook writes the record from the review agent's own end: a record a
  * session writes for itself is only its own word.
  *
- * `merge-check` judges a merge without making one, with the merge guard's own judgment
+ * `merge-check` judges a merge without making one, with merge-check's own judgment
  * (`merge-check.ts`): each pull request number, or a local branch against a base. It prints one
  * line per verdict and exits 0 when every merge is allowed, 1 when any asks.
  *
@@ -160,7 +160,7 @@ function project(
 /**
  * The checkout of `cwd` alone, without the project's settings. Recording a review needs the
  * repository, not the project's policy: a `cc-smart-dev-kit.json` that is broken (or too
- * new) must not stop a person from recording one — the record is what the merge guard reads,
+ * new) must not stop a person from recording one — the record is what merge-check reads,
  * and the guards that cannot read the file fail closed until it is fixed.
  */
 function checkoutOf(cwd: string, env: Env): { checkout: Checkout | null; why: string | null } {
@@ -193,7 +193,7 @@ function repoOf(checkout: Checkout): string {
 
 /**
  * The line `show` prints: whether the commit this checkout is on has a recorded review that
- * `agents` (the gate's own list, when it can be read) trusts — the merge guard's answer.
+ * `agents` (the gate's own list, when it can be read) trusts — merge-check's answer.
  */
 function reviewLine(
   paths: CliPaths,
@@ -209,7 +209,7 @@ function reviewLine(
 }
 
 /**
- * The gate's lines: the review gate exactly as the merge guard reads it — the policy committed
+ * The gate's lines: the review gate exactly as merge-check reads it — the policy committed
  * on `origin/<worktrees.base>`, the same read (`resolveGate`) — so `show` never disagrees with
  * the guard, even while this checkout's own file says something else. Nothing for a folder
  * with no project file: there the guard is silent. It ends with the `plans.mergeFiles` line, from the
@@ -493,7 +493,7 @@ function mergeCheckArgs(argv: string[]): MergeCheckArgs {
 }
 
 /**
- * `workflow merge-check [<pr>… | --branch <b> --base <base>]`: the merge guard's judgment,
+ * `workflow merge-check [<pr>… | --branch <b> --base <base>]`: merge-check's judgment,
  * printed and not made. Exit 0 when every verdict is allowed, 1 when any asks.
  */
 async function mergeCheck(context: WorkflowContext, argv: string[]): Promise<number> {

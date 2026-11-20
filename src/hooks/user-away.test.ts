@@ -34,7 +34,7 @@ const NO_OWNERS: OwnerSources = {
 const OPTIONS = { timeZone: "UTC", owners: NO_OWNERS };
 const SKILL = "/cc-smart-dev-kit:user-unavailable";
 /** The one command a session records a choice with: written by hand, so a changed word is seen here. */
-const RECORD = `cc-smart-dev-kit user park --kind decision "Summary: <what you chose, why, how to undo>"`;
+const RECORD = `cc-smart-dev-kit user park --kind decision "Decision: <what you chose, why, how to undo>"`;
 /** What the standing note tells a session to do while the person is away. */
 const DECIDE = `take the recommended option of every question, record each choice with \`${RECORD}\`, and keep working.`;
 
@@ -74,7 +74,7 @@ function decisionOf(stdout: string | undefined) {
   return JSON.parse(stdout ?? "{}").hookSpecificOutput;
 }
 
-/** A hook that asks, standing in for a guard: the kit has none left, the frame still turns its ask into a deny. */
+/** A hook that asks, standing in for one: no hook but `user-away` asks any more, and the frame still turns an ask into a deny. */
 const ASKING: HookSpec = {
   ...sessionNameHook,
   name: "asking-hook",

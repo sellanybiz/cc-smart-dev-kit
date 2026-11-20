@@ -1,7 +1,7 @@
 /**
  * The launch policy's model resolution: which model answers a name a launch (or the session)
  * carries, and the effort levels a subagent may run at. The session-start notes (`fable-session`,
- * `tier-view`) read it. The guard that judged every launch by it is gone (5.7.0), and so are
+ * `tier-view`) read it. The guard that judged every launch by it is gone (6.0.0), and so are
  * the Fable reason words, the UI/UX rule and Claude Code's overrides it carried.
  *
  * **One home, pure.** Nothing here reads a file or the machine: the caller hands in the gateway

@@ -74,24 +74,21 @@ jobs:
         # parser, as `Register-ScheduledTask -Xml` does, and registers nothing.
         run: bun test src/gateway/service-windows.test.ts
 
-      - name: The 1.0.0 parts on Windows — the claude argv, the guards' Windows paths, the clean
+      - name: The hooks on Windows — the claude argv, the job queue's door, the clean
         # What this step proves, file by file:
         # - the `claude.exe`/`claude.cmd` argv the kit runs `claude` with: a `.cmd` runs
         #   through `cmd.exe`; and a session's name holds on every platform;
-        # - the always-on guards' Windows paths: a `C:\…` state path asks, and the Bash judge
-        #   reads the PowerShell tool's dialect (the PowerShell cases run here natively);
+        # - the heavy-job queue's door (`job-route`): it reads the PowerShell tool's dialect and
+        #   refuses a heavy PowerShell line (the PowerShell cases run here natively);
         # - the background clean's argv behind the `cmd /c start` trampoline, and the detached
         #   start itself (a program that outlives the call, on the platform the trampoline is
         #   for) — the POSIX-only assertions beside them are `skipIf(NO_POSIX_MODES)`;
-        # - the one shell reader the guards share, its PowerShell dialect included.
+        # - the one shell reader the job queue shares, its PowerShell dialect included.
         # No `shell: bash`: the plugin's own tests, from the shell a person has on Windows.
         run: >
           bun test
           src/hooks/session-name.test.ts
           src/machine/claude.test.ts
-          src/hooks/session-escape-guard.test.ts
-          src/hooks/agent-guard.test.ts
-          src/hooks/bash-judge.test.ts
           src/hooks/job-route.test.ts
           src/hooks/detached.test.ts
           src/shell/command.test.ts

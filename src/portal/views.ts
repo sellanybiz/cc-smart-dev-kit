@@ -754,7 +754,7 @@ function projectForm(
   answers: ProjectInitAnswers,
   plan: ProjectInitPlan,
 ): string {
-  const baseHelp = "Edits happen in a worktree, never in the main checkout.";
+  const baseHelp = "A session that starts in the main checkout is told to work in a worktree.";
   // What the settings file changes: Claude Code's `worktree.baseRef` line, when the base
   // branch is not the repo's default branch, and any line of the retired worktree engine.
   const settingsNote = settingsLineNote(plan.settings);
@@ -790,9 +790,9 @@ function projectForm(
 </div>
 
 <div class="col g8">
-<h3>Guards</h3>
+<h3>Switches</h3>
 <div class="card list">
-${guardRow({ help: baseHelp, id: "g-main", label: "Refuse edits in the main folder", name: "guardMainFolder", on: answers.guards.guardMainFolder })}
+${guardRow({ help: baseHelp, id: "g-main", label: "Tell sessions in the main checkout to use a worktree", name: "guardMainFolder", on: answers.guards.guardMainFolder })}
 ${guardRow({ help: "Every session is named after the branch it works on.", id: "g-name", label: "Name each session", name: "sessionNames", on: answers.guards.sessionNames })}
 ${guardRow({ help: "The type check, the build, the tests and the coverage run here go through the queue.", id: "g-jobs", label: "Heavy jobs through the queue", name: "jobRoute", on: answers.guards.jobRoute })}
 </div>

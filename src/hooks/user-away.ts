@@ -125,7 +125,7 @@ function unavailableNote(when: string, count: number): string {
  * question in either order. The reason ends with the period's tag: Claude Code writes it to the
  * transcript as the block's feedback, and that is what keeps the later stops silent; the stop the
  * block caused (`stop_hook_active`) is silent anyway, a belt against a loop. A count change alone is not
- * a block — a session's own park (the skill's `Summary:`) changes it, and that turn must be able
+ * a block — a session's own park (a decision, or the skill's `Summary:` at the end of a stretch) changes it, and that turn must be able
  * to end; the next prompt says it. The block is recorded in `stopSaid`, which the decision never
  * reads, so the next prompt does not say the note again, and "available again" still reaches the
  * session. A mark that cannot be written keeps the block, with one line why: the next prompt then
