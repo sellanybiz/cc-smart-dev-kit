@@ -10,10 +10,11 @@ The hooks live in `src/hooks/`. Every one of them is wired by the plugin:
   `plugin/bin/cc-smart-dev-kit-bun.sh`, a small `sh` script that finds
   bun without PATH (Claude Code's hooks get the PATH it was started with, which may lack
   bun): the bun `cc-smart-dev-kit setup` baked into the launcher, then `$BUN_INSTALL/bin/bun`,
-  `~/.bun/bin/bun`, and PATH. With none it answers by its `--missing=` mode: `job-route`, the
-  kit's one guard, passes `--missing=ask`, so it asks the person instead of letting the tool run
-  (a guard fails closed, and it asks too when its own bundle file is gone, and its `hooks.json`
-  entry says `"onFailure": "block"`); every other hook passes `--missing=quiet`, one line on
+  `~/.bun/bin/bun`, and PATH. With none it answers by its `--missing=` mode: the one hook that
+  stands in front of a tool call, `user-away`'s PreToolUse entry for the two question tools,
+  passes `--missing=ask`, so it asks the person instead of letting the tool run (it fails
+  closed, and asks too when its own bundle file is gone, and its `hooks.json` entry says
+  `"onFailure": "block"`); every other hook, `job-route` included, passes `--missing=quiet`, one line on
   stderr and exit 0; the command `plugin/bin/cc-smart-dev-kit` passes `--missing=fail`, one
   line and exit 1. A bun older than the plugin needs counts as no bun.
   It starts bun with `--no-env-file` and the plugin's own empty config, like the launcher and
@@ -44,20 +45,20 @@ Every hook runs in the same frame (`src/hooks/run.ts`), in this order:
    project hook left to answer, or when a project hook runs next to a plugin hook the list
    does not name. A hook the project wires itself skips this step: that wiring is its
    opt-in. **Two hooks skip the step themselves:** `job-route` and `user-away` are `alwaysOn`
-   (`HookSpec.alwaysOn`), so the frame never reads `ownHooks` for them — the first limits what
-   the session itself may launch, and the switch of the second is the person's (§ The Bash judge
-   and the job route, § While the person is away). `ownHooks` does not accept `user-away`'s
+   (`HookSpec.alwaysOn`), so the frame never reads `ownHooks` for them — the first limits how much heavy work runs at once, and the switch of the second is the
+   person's (§ The job route, § While the person is away). `ownHooks` does not accept `user-away`'s
    name; it still accepts `job-route`'s,
    because a project file written before 1.0.0 may carry it, and the name silences nothing
    (`UNSWITCHABLE_HOOK_NAMES`).
 3. **Read `cc-smart-dev-kit.json`.** When it is broken or needs a newer plugin, the hook
-   **fails closed**, each in the way that suits its event: the guard (`job-route`) asks the person
-   (it cannot know whether the project turned it on), an informational hook says one line. "Closed"
+   **fails closed**, each in the way that suits its event: `user-away`'s question-tool entry asks
+   the person, `job-route` leaves the line as written (with no project there is nothing to route
+   for), an informational hook says one line. "Closed"
    never means silent: a person must hear why.
 4. **Run.** An informational hook's error is one line on stderr and exit 0: its bug never
-   stops work. A **guard's** error answers through its `onCrash` (`guardCrash` in
-   `specs.ts`): it asks about the call in its own domain, so a crash never lets a call
-   through.
+   stops work. A crash of `user-away`'s question-tool entry answers through its `onCrash`
+   (`guardCrash` in `specs.ts`): it asks about the call in its own domain, so a crash never lets
+   a question tool through; a crash of `job-route` lets the line run as written.
 5. **Record an ask.** An answer that asks the person is appended to `guard-asks.jsonl` in the
    state folder (`src/hooks/ask-log.ts`): the time, the hook, the session, the tool and a
    short reason, put through `maskedLine` so no secret reaches it. The file stays small by
@@ -66,14 +67,14 @@ Every hook runs in the same frame (`src/hooks/run.ts`), in this order:
 
 Each hook's answer when it fails (the same table is in `.claude/rules/hooks-guards.md` § Fail safe):
 
-| Failure | A guard (`job-route`, `user-away`) | Any other plugin hook |
-|---|---|---|
-| Its own code throws | `onCrash`: **ask** about the call (none outside its domain; silent on PostToolUse) | one stderr line, exit 0 |
-| The input is not JSON | **ask**, in general | one stderr line, exit 0 |
-| `cc-smart-dev-kit.json` broken or too new | **ask** (`job-route`'s judge and `user-away` judge the call anyway) | one line of context or stderr (`keep-going`, `builder-finish`, `agent-usage`, `fable-session`, `tier-view` and `task-start` judge anyway) |
-| No bun, or one too old | the shim's `--missing=ask`: **ask** | `--missing=quiet`: stderr, exit 0 |
-| The bundle file is gone | the shim **asks** | bun's error, exit 1 |
-| Cannot start, times out, fails (exit code other than 0 and 2) | `"onFailure": "block"`: the call is **blocked** | Claude Code goes on |
+| Failure | `user-away`'s question-tool entry | `job-route` | Any other plugin hook |
+|---|---|---|---|
+| Its own code throws | `onCrash`: **ask** about the call (none outside its domain) | the line runs as written | one stderr line, exit 0 |
+| The input is not JSON | **ask**, in general | nothing to route | one stderr line, exit 0 |
+| `cc-smart-dev-kit.json` broken or too new | judges anyway (its own state file) | leaves the line as written | one line of context or stderr (`keep-going`, `builder-finish`, `agent-usage`, `fable-session`, `tier-view` and `task-start` judge anyway) |
+| No bun, or one too old | the shim's `--missing=ask`: **ask** | `--missing=quiet`: stderr, exit 0 | `--missing=quiet`: stderr, exit 0 |
+| The bundle file is gone | the shim **asks** | bun's error, exit 1 | bun's error, exit 1 |
+| Cannot start, times out, fails (exit code other than 0 and 2) | `"onFailure": "block"`: the call is **blocked** | Claude Code goes on | Claude Code goes on |
 
 The command `plugin/bin/cc-smart-dev-kit` runs through the same shim with `--missing=fail`: no
 bun is one stderr line and exit 1, because a command must never report success when it did not run.
@@ -201,7 +202,7 @@ that, so the plugin ships no worktree hook at all.
 | `playwright-output` | PreToolUse (`mcp__playwright__.*`) | always (a `USER_HOOKS` bundle: it reads no cc-smart-dev-kit.json) | Rewrites a relative `filename` to an absolute path in the browser's output folder, with `updatedInput` and no permission decision; a relative name with a `..` segment is DENIED (the launcher's `--allow-unrestricted-file-access` means the server takes that path as it is). Answers only while the live `playwright` registration is the one setup recorded — a server of the person's own is left alone entirely. |
 | `fable-session` | SessionStart, PostModelSwitch, Stop | **machine-wide** | One `systemMessage` to the person, once a session, when the session's own model is the **`fable` tier**; nothing to Claude, never an error and never a block — the line itself was seen live (2026-10-17), but not on `PostModelSwitch` or `Stop` yet. The model: at a start, the `model` the input names (no fallback); at a switch, `to_model` — the model the session moved TO; at a stop, the one that answered in the transcript, then `ANTHROPIC_MODEL` — the hook's own reading of the tier. Not `UserPromptSubmit`: it judged the PREVIOUS answer's model, so it missed the switch and warned after a switch back (the live bug of 2026-10-17). § The Fable-session note. |
 | `tier-view` | SessionStart (every source), UserPromptSubmit | **machine-wide** | One note to Claude (`additionalContext`) of what each subagent tier (`haiku`, `sonnet`, `opus`, `fable`) runs now and the effort rule that follows, read through the session's own gateway view. While auto mode's safety checks fail for the session's scope, one more line says so, with what the person can do. Said at every start, and at a prompt only when it differs from the note said last in this session. § The tier note. |
-| `job-route` | PreToolUse (Bash, PowerShell) | **machine-wide**, and `ownHooks` cannot switch it off | The kit's one shell judge (`bash-judge.ts`), in two parts. Herdr rules refuse raw terminal writes and identity assignments, cap child permission modes, and ask for premium launches, non-free remote machines, machine-rule changes and `herdr plans --release` (§ Herdr commands in the Bash judge). **The judge** ignores the project's file and runs outside git: a raw `claude --bg` **asks** in an attended session (refused in `claude -p`), because such a session runs beside this one and reports to nobody; `claude -p` is judged by the launch policy (`src/models/launch-policy.ts`; its `--model`/`--effort`: no model refuses, the `fable` tier asks, the `opus` tier at `max` asks; a `Fable reason:` line in its prompt counts); `workflow propose` **asks** while the workflow gate has `autoPush` off or `openPr` short of `ready` (refused in `claude -p`), under every spelling the judge reads — the kit by name, by a path to the launcher, by its bundle behind `bun`, through a wrapper or a program that runs its arguments, a computed program or subcommand (read as the kit's when the line names it, `namesKit`), `env -u`, and with redirections dropped. It reads each line in the dialect of the tool that runs it, so the PowerShell tool is judged the same. **The route** is the `switches.jobRoute` switch — the project's `jobs.route` over the person's machine-wide default, off until one says on — Bash lines only, and not outside git: a line whose every command is heavy, a `cd`, an assignment or glue (`GLUE_COMMANDS`, the readers of a pipe, the structure of a group), or one heavy command piped into read-only filters (`tail`, `grep`, `wc`, …; the filters stay outside the wrapper as written), is rewritten to `cc-smart-dev-kit job run --kind <kind> -- <command>` through `updatedInput` (proved live on 2.1.301); a line that mixes heavy work that takes a slot with a command that is not heavy or glue is **refused**, and the reason says to run the heavy command on its own line (`mixedLineDenial`; HK hunch 1). A light line (named files, print-only) stays raw too, and so does a watch run (`runWeight`). A call that set no `timeout` gets the Bash tool's longest. **A `git commit`, `git merge` or `git push` whose own hook is heavy** gets the kit's git-hooks folder as a prefix of three `GIT_CONFIG_*` assignments (`routeGitHooks`), never a wrapper (`docs/jobs.md` § Git hooks). With the route on, a heavy PowerShell line is refused with the Bash line to run instead, where the Bash tool can exist. § The Bash judge and the job route. |
+| `job-route` | PreToolUse (Bash, PowerShell) | **machine-wide**, and `ownHooks` cannot switch it off | The heavy-job queue's door, and the kit's one guard. It never asks the person and judges nothing else: a launch, a push, a merge and a deploy are Claude's own to run. It reads each line in the dialect of the tool that runs it, so the PowerShell tool is judged the same. **The route** is the `switches.jobRoute` switch — the project's `jobs.route` over the person's machine-wide default, off until one says on — Bash lines only, and not outside git: a line whose every command is heavy, a `cd`, an assignment or glue (`GLUE_COMMANDS`, the readers of a pipe, the structure of a group), or one heavy command piped into read-only filters (`tail`, `grep`, `wc`, …; the filters stay outside the wrapper as written), is rewritten to `cc-smart-dev-kit job run --kind <kind> -- <command>` through `updatedInput` (proved live on 2.1.301); a line that mixes heavy work that takes a slot with a command that is not heavy or glue is **refused**, and the reason says to run the heavy command on its own line (`mixedLineDenial`; HK hunch 1). A light line (named files, print-only) stays raw too, and so does a watch run (`runWeight`). A call that set no `timeout` gets the Bash tool's longest. **A `git commit`, `git merge` or `git push` whose own hook is heavy** gets the kit's git-hooks folder as a prefix of three `GIT_CONFIG_*` assignments (`routeGitHooks`), never a wrapper (`docs/jobs.md` § Git hooks). With the route on, a heavy PowerShell line is refused with the Bash line to run instead, where the Bash tool can exist. § The job route. |
 | `after-merge` | PostToolUse, PostToolUseFailure (Bash, PowerShell) | `worktrees` | After a pull-request merge (`gh pr merge`, `gh pr -R owner/repo merge 5`, a readable `gh api` merge path, a `gh` alias for one): the steps that clear the merged worktree (with `clearWorktreeAfterMerge` off or unreadable, that it looks finished and the person decides), and, when it went into `worktrees.base`, it starts the background clean of finished worktrees once (§ Finished worktrees clean themselves). It never tells the other sessions about the merge: that message is gone (the owner, 2026-11-11). A form that names no pull request gets no note. |
 | `review-record` | SubagentStart, SubagentStop | `cc-smart-dev-kit.json` exists | When a review agent (`workflow.reviewAgents`) starts, notes the commit the working folder is on and its branch; when it stops, records that start commit on that branch — the record a session reads (`workflow show`, `review-done`) before it merges. Commits made during the review count as change after it. A stop records only for a run that was a review from start to end: the brief (the transcript's first user entry; for a workflow agent, read through the workflow harness's wrapper: the exact preamble, then the task with its two-space indent removed, only when every line carries it) and every prompt given after it each hold `Mode: review` alone on a line (trailing spaces and tabs allowed). Tool results and Claude Code's own skill-load and system-reminder entries (a reminder must end at its closing tag) are no prompt, and neither is the text of a skill the agent itself loaded (its `sourceToolUseID` names the agent's own earlier `Skill` call); any other later entry is — a resume, a message from the session that started the agent (a `user` entry, or a `queued_command` attachment with a `prompt` and an `origin`), a task notification, Stop hook feedback. One kind of notice is no prompt: the end of a task the agent **itself** started — a background command (the five tags alone, `Background command "…"` in the summary) or a Monitor (`Monitor "…" stream ended`, at most one event, Claude Code's PushNotification line) — when the origin is Claude Code's own (`task-notification`, producer `session-task`) and the notice's `<tool-use-id>` names a call the agent made earlier in its transcript (`isOwnTaskNotice`), so a reviewer that runs its tests in the background, or whose own Monitor's stream ended, still records (a Monitor that expired, failed or ended with no output stays a prompt). A transcript line that starts with NUL bytes is read without them. The whole transcript is read, up to 16 MB. A consult, a resumed consult, a review a Stop hook sent back, a review that compacted (the summary is a prompt), and a missing, unreadable or larger transcript record nothing. Nothing for an agent that stopped inside its own worktree. § The review record. |
 | `subagent-background` | SubagentStop | `cc-smart-dev-kit.json` exists | A subagent that ends its turn with background work **it started** still running (a Bash command, or a subagent it launched) is blocked **once**, with one plain reason: wait for the work or stop it, then report. The input's `background_tasks` is the session's list, so the hook reads the agent's own transcript (`agent_transcript_path`) as JSONL, line by line, and keeps only an id named in a **tool result of the agent's own call** — a Bash background launch (`Command running in background with ID: …`) or an Agent launch (`agentId: …`) — never one in its brief or in a file it read; the ending agent's own entry is dropped (a background subagent appears in its own list). No `additionalContext`, never a second block (`stop_hook_active`), and nothing when the transcript cannot be read. § One frame for every hook. |
@@ -215,7 +216,7 @@ that, so the plugin ships no worktree hook at all.
 | `task-start` | SessionStart (every source) | **machine-wide** | One block of the project's open work tasks at a start, a resume, a clear and a compaction: at most eight lines, then `+n more`, with no descriptions; a task untouched for `tasks.staleDays` (default 30) is counted in one line instead; one line about the deploy tasks (open, unreadable, a repeated id or old files; `Deploy tasks open: …`); and one line to run setup while the task server is not registered. `tasks.md` § The hooks and pages that read it. |
 
 Without `cc-smart-dev-kit.json` every one of them is silent — except the machine-wide
-ones: `job-route` (§ The Bash judge and the job route), `fable-session` (§ The Fable-session
+ones: `job-route` (§ The job route), `fable-session` (§ The Fable-session
 note), `tier-view` (§ The tier note), `task-start`, `keep-going` (§ The keep-going stop),
 `builder-finish` (§ A builder's hand-back), `user-away` (§ While the person is away),
 `agent-usage` (§ Each subagent's usage on record), and `playwright-output`, which reads no
@@ -680,87 +681,30 @@ running tmux server. `--dry-run` writes nothing.
 preserved on unrelated writes, and no longer shown or writable settings. The status line
 still reads `alerts.usagePercent` and shows usage, limits and reset information.
 
-### The Bash judge and the job route
+### The job route
 
-`job-route` (PreToolUse on Bash and PowerShell) is the kit's one shell judge, and it keeps its
-public name: `hooks.json`, project files and `ownHooks` values stay valid. It is **machine-wide**
-and **`alwaysOn`** — the frame skips the `ownHooks` step and `ownHooks` cannot switch it off — and
-it runs outside git, and with a broken or too new `cc-smart-dev-kit.json`: a session must not be
-able to switch off the limits on its own launches by editing a file it owns (the reason
-`user-away` is always on too). A project file that still lists `"job-route"` keeps
-parsing (`UNSWITCHABLE_HOOK_NAMES`), it silences nothing, and `doctor` prints one `·` line that
-it can go. Two parts sit in it, and only one reads the project.
+`job-route` (PreToolUse on Bash and PowerShell) is the heavy-job queue's door and the kit's one
+guard. It keeps its public name: `hooks.json`, project files and `ownHooks` values stay valid. It
+is **machine-wide** and **`alwaysOn`** — the frame skips the `ownHooks` step and `ownHooks`
+cannot switch it off. It does one job: it sends a heavy command through the machine's queue, or
+refuses a heavy run mixed with other commands. **It never asks the person anything** (5.7.0 took
+out its launch judge: a raw `claude --bg`, `claude -p` on `fable` or `opus` at `max`, `workflow
+propose` and the Herdr rules no longer ask or refuse; `src/hooks/bash-judge.ts` and
+`launch-judge.ts` are gone). Its `hooks.json` entry passes `--missing=quiet` and has no
+`onFailure`: with no bun, or after a crash, the line runs as written. Outside git, and with a
+broken or too new `cc-smart-dev-kit.json`, there is no project to route for, so it leaves the
+line as written. A project file that still lists `"job-route"` keeps parsing
+(`UNSWITCHABLE_HOOK_NAMES`), it silences nothing, and `doctor` prints one `·` line that it can go.
 
 **Both shell tools.** Claude Code has a PowerShell tool beside Bash on native Windows, so the
-judge is wired on both and reads each line in its tool's dialect (`dialectOfTool`): a limit a
-session steps around by choosing the other shell tool is not a limit. The route stays
+hook is wired on both and reads each line in its tool's dialect (`dialectOfTool`): a heavy run a
+session makes through the other shell tool is not missed. The route stays
 **Bash only**: its rewritten line names the `sh` launcher and, for
 anything but one plain command, `sh -c`, which the PowerShell tool cannot run — a wrong rewrite
 is worse than none, so a PowerShell line is never rewritten. With the route on, a heavy
 PowerShell line is refused instead, with the exact Bash line to run (only where the Bash tool
 can exist: on Windows, where Git Bash is found), because left raw it would not wait for a slot;
 a light or print-only line is left as it was written.
-
-**The judge** (`src/hooks/bash-judge.ts`, the rules; `job-route.ts`, the answer) reads the line
-with the one shell reader. Alongside the Herdr rules below, it answers these launch and proposal cases:
-
-- **a raw background session**, `claude --bg` / `--background`: an **ask** in an attended
-  session, a **denial** in `claude -p` (nobody answers there). Such a session runs beside this
-  one, nobody watches it, and it reports to nobody; the ask says to build the work with
-  subagents instead, which report back to the session that started them.
-- **a print run**, `claude -p` / `--print`: the launch policy (`src/models/launch-policy.ts`)
-  on its `--model` and `--effort`, after Claude Code's own
-  overrides; the prompt is read for a `Fable reason:` line. No model or no effort is refused, the
-  `fable` tier asks, the `opus` tier at `max` asks — and in an outer `claude -p`, every ask is a
-  refusal. A `claude` subcommand (`claude agents`, `claude stop`, …) is not a launch and is left
-  alone. The reader steps over the wrappers around a launch (`setsid claude --bg`, `flock <file>
-  claude --bg`), and reads `npx` / `bunx` / `pnpm dlx` of `@anthropic-ai/claude-code` as `claude`.
-  A program the line works out when it runs (`$(which claude) --bg`) is judged by the same
-  words: `--bg` is a background launch, and `-p` counts as one only when a word names Claude
-  Code (`cp -p` is no launch).
-- **`workflow propose`** (RF1-4): **asks** the person first whenever the
-  workflow gate has `autoPush` off or `openPr` short of `ready`, because the
-  command pushes a branch and opens a pull request ready for review in a child no hook sees. The gate is read the way `push-policy.ts` reads it (`resolveGate`: the default, the
-  person's own file, the project's file as committed on `origin/<worktrees.base>`, never a
-  checkout's working copy), for the project the line proposes into: its `--folder`, resolved
-  from the input's `cwd`, or that `cwd`. The question names the push, the pull request and each
-  switch that says no, with its source. A gate that cannot be read (no `origin/<base>`, a broken
-  file), a project it cannot name (a computed program, subcommand or `--folder`, or a `cd`
-  before a folder that is not absolute) is a question with its reason, never silence. Where
-  nobody answers (`claude -p`) the question is a denial, as for a raw `--bg`. The portal's
-  Workflow card asks on its page and runs the CLI in a child no hook sees, so it is unchanged.
-  **Its git calls share one budget** (`SHORT_GUARD_BUDGET_MS`, 8 s of `job-route`'s 10 s;
-  `src/hooks/budget.ts`): finding the project takes up to two calls and reading the committed
-  file three, each up to 5 s, so on a git that hangs they would add up past the hook, and a hook
-  Claude Code kills answers nothing. Each call gets the smaller of its own limit and the time
-  left, a call with none left is not made, and the question then says that git did not answer
-  in time (`GIT_TIMED_OUT`, `src/project/resolve.ts`: a call that was stopped or never made is
-  no answer about the repository, so it is never read as "not in git" or "the ref is not
-  known"). Every proposal on a line draws on the same budget, and it counts from the hook's
-  start (the frame's `nowMs`), so the frame's own project lookup, which runs first, is already
-  spent from it.
-  **How it finds the command.** It reads the kit's argv through one recogniser
-  (`kitArguments`, `src/shell/kit-invocation.ts`), used by `workflow propose` and the kit's other commands. It knows the kit by its name,
-  by a path to the launcher, and by its bundle behind another program (`bun …/dist/cli.js
-  workflow …`, `find . -exec cc-smart-dev-kit … \;`, `watch -n 5 cc-smart-dev-kit …`), never a
-  program that only reads its arguments (a `git commit -m "…"` names nothing); redirections are
-  dropped before anything is read, so `cc-smart-dev-kit 2>/dev/null workflow propose` is the
-  command it really runs, and a redirect's target (`… > -h`) is not a flag. A subcommand the
-  judge cannot read — a word the line works out when it runs (`workflow $SUB`), or none at all
-  (`echo propose | xargs cc-smart-dev-kit workflow`) — may be `propose`, and is judged rather
-  than let through; a computed program counts as the kit's only when the line names the kit
-  (`namesKit`), unless its words say `workflow propose`. `workflow propose --help` passes: it
-  prints the usage and proposes nothing.
-
-**What the judge cannot read**, and so does not judge: a script file's own content
-(`sh run.sh`), a command another program runs from a string of its own that the reader does not
-open (`watch -n 5 'cc-smart-dev-kit workflow propose …'`, `ssh host '…'`, `su -c '…'`), and a
-shell nested more than three deep (`bash -c "bash -c \"bash -c '…'\""` — the walk stops at
-`MAX_NESTING`). A chain of `eval`s is read at any depth: each step's own arguments carry the
-line. Every hook that reads a shell line shares these limits; the reader
-(`src/shell/command.ts`) is where one is closed, never a single hook.
-A line the judge reads is judged in the dialect of the tool that runs it — the PowerShell tool
-beside Bash on native Windows reads a launch and a `workflow propose` the same.
 
 **The route** is the heavy-job queue's door, and an opt-in with two homes (the
 `switches.jobRoute` switch): the project's `"jobs": { "route": true }` (or `false`) in its
@@ -835,54 +779,12 @@ asks (the WorktreeRemove hook) or by `cc-smart-dev-kit worktrees --clean`, and i
 folder before it deletes it, so a program still using it makes the removal fail and touch
 nothing (`docs/windows-setup.md`). Custom notification behaviour is retired (§ The notifier).
 
-#### Herdr commands in the Bash judge
-
-The judge adds Herdr rules; the Agent and `claude -p` rules above do not change. It reads
-invocations through `invocationsOf`, including wrappers and nested shells, and never runs `hc`.
-Raw `hc` writes and `herdr-app do` are refused with the guarded kit command to use instead.
-Named reads (`ls`, `get`, `read`, `wait`, `templates`, `schema`, `machine ls`, `file read`,
-`server status`, help, version and skill output) stay silent; leading global `--json` is accepted.
-A global read flag must stand alone after those leading flags. Verb help must be exactly the
-verb followed by `--help` or `-h`; a flag in a payload never grants silence. Kit Herdr verb help
-follows the same exact two-word rule. `hc events` must run in the Bash tool's background mode;
-otherwise use `herdr wait`.
-A computed program asks when the line names `hc` or `herdr-app`. A computed kit program followed
-by `herdr` and a known verb is judged as that command; a bare `herdr` still needs the kit named. This is not a sandbox: a program built entirely from unrelated fragments
-(`$(printf %s h c)`) cannot be identified without executing the line and is not caught.
-
-`cc-smart-dev-kit herdr start` must name its model, effort and mode. Its new launch kind reads
-only these explicit fields, never an agent definition or a launch environment override.
-Fable and Opus at `max` ask. The child's mode cannot exceed the hook input's `permission_mode`
-(Manual arrives as `default`); a lead in `plan` must approve the plan first, and
-`bypassPermissions` is always refused. A missing or unknown lead mode asks, for linked and
-independent children alike. A remote machine asks unless its machine rule allows it;
-production always asks. A machine-file read error asks too. The hook ignores `--asked`: the
-command still requires it, but only the person approving the exact line in Claude Code records
-approval. It never skips a hook question or a mode failure.
-
-A `herdr start` line with a parse error (a bad `--issue`, a refused pair such as `--followup` with
-`--plan`) shows that error alone when `--model`, `--effort` and `--mode` are all given. With one
-of them missing, the "Pass both --model and --effort, plus --mode" line still comes first.
-
-`cc-smart-dev-kit herdr plans --release` asks too: it frees a finished plan's files with no proof
-that its work merged, a write the person approves the way they approve a machine-rule change. The
-judge asks for any `plans` line that holds `--release` or `--release=`, even a malformed one
-(fail safe), and stays silent for the other forms: `plans`, `--json`, `--wait`, `--timeout`, `--help`, which only
-read, and `--reserve`, which reserves the caller's own plan and frees nothing. `herdr start --plan` is judged as any linked start (explicit model,
-effort and mode; the mode cap); the plan's own refusals live in the command.
-
-A child's questions are the person's, answered in its pane: there is no answer verb (the relay
-went in 4.10.1), and raw `hc keys`, `send` and `attach` stay refused. Machine rule changes (`allow`,
-`forget`, `production`) ask too; only a parsed machine-list command is silent, and malformed
-machine commands ask. Assigning `HC_TERMINAL_ID` on a line that invokes Herdr or
-`hc` is refused; Herdr supplies that identity. In an unattended `claude -p` session, an ask is a
-denial because nobody answers. The judge catches common ways to set the identity variable;
-with endless shell spellings, the command's live ancestry check is the guard.
-
-Turns starting with `<hc ` or the kit report tag are not the person's words
-(`prompt-source.ts`). A phase whose agent is `herdr:<core>/<address>` gets a keep-going
-reminder to run `cc-smart-dev-kit herdr wait` in the background or use `herdr send`, never
-`SendMessage`.
+Herdr commands are no longer judged by a hook (5.7.0): `cc-smart-dev-kit herdr` refuses what it
+must in its own code (`--asked` for Fable, Opus at `max` and a non-free remote machine, the explicit model,
+effort and mode), and no hook judges them. Turns starting with `<hc `
+or the kit report tag are not the person's words (`prompt-source.ts`). A phase whose agent is
+`herdr:<core>/<address>` gets a keep-going reminder to run `cc-smart-dev-kit herdr wait` in the
+background or use `herdr send`, never `SendMessage`.
 
 ### `doctor --live`
 
@@ -955,6 +857,7 @@ is in `RETIRED_HOOK_NAMES`, so an `ownHooks` that still lists one parses, silenc
 | `main-folder-guard` | Denied an edit or a write in the main checkout | The rule stays in `optin/worktrees.md`, as an instruction |
 | `agent-guard` | Judged every Agent, Task and Workflow launch: model, effort, the Fable gate, the UI rule | The model rules are instructions (`core.md` § Subagents, `/cc-smart-dev-kit:subagent-decision`) |
 | `session-escape-guard` | Denied or asked on a session reaching the kit's own settings, state, portal port or review record | Same |
+| launch judge in `job-route` (`bash-judge.ts`, `launch-judge.ts`) | Asked or refused a raw `claude --bg`, a `claude -p` on `fable` or `opus` at `max`, `workflow propose` and the Herdr commands (raw `hc` writes, `--asked`, machine rules) | Same. `herdr` keeps its own refusals in the command; the rest is Claude's to run |
 
 `user-away` no longer turns another hook's ask into a parked action, and no longer answers
 Claude Code's own permission dialog (§ While the person is away). **The trade-off, written down at the owner's

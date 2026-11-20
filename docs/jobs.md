@@ -278,8 +278,7 @@ it is bash or zsh, else `bash` where the machine has it, else `sh` — never `/b
 dash on Debian and Ubuntu, and cannot read bash syntax). Each word is quoted unless it holds
 only letters, digits and `_ . / -`, so one with `=`, `:`, `@`, `,`, `%` or `+` is quoted too. A
 command already inside `cc-smart-dev-kit job run` is left alone, also when it is inside a
-script's body. Outside git there is no project, so a heavy command there runs raw. The hook's other part, the launch judge, is always on:
-`docs/design/hooks.md` § The Bash judge and the job route.
+script's body. Outside git there is no project, so a heavy command there runs raw. The hook itself: `docs/design/hooks.md` § The job route.
 
 **A line is queued whole only when every command in it is heavy, a `cd`, an assignment or
 glue** (`routableLine` in `src/jobs/classify.ts`; `classifyRoutableLine` gives its kind), and at
@@ -874,7 +873,7 @@ whose `tsc` script already wraps the type check is not queued a second time. A n
 script** there is the package manager's `node_modules/.bin/<name>`, so a tool rule matches it.
 With no `package.json` there, or one the reader cannot use, the answer is the tool: a broken
 file is treated as no file. These cases are in `src/jobs/classify.test.ts` and, through the
-hook, in `src/hooks/bash-judge.test.ts`.
+hook, in `src/hooks/job-route.test.ts`.
 
 ## What 2.0 took out
 

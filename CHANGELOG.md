@@ -15,8 +15,13 @@ in your own terminal after the update; the user guide is [README.md](README.md).
   into a parked action, and no longer answers Claude Code's own permission dialog: a hook
   never approves for you. `acorn`, the JavaScript parser only `agent-guard` used, leaves the
   bundles.
-- **What stays.** `job-route`, the heavy-job queue: heavy commands still wait for a slot, and a
-  heavy line mixed with other commands is still refused. Every hook that never asks you stays:
+- **`job-route` never asks.** Its launch judge is gone: a raw `claude --bg`, `claude -p` on
+  `fable` or `opus` at `max`, `workflow propose` and the Herdr rules (raw `hc` writes, machine
+  rules, the mode cap) no longer ask or refuse. The `herdr` command keeps its own refusals, such
+  as `--asked` for Fable. `job-route`'s `hooks.json` entry is `--missing=quiet` with no
+  `onFailure`: with no bun, the line runs as written.
+- **What stays.** `job-route`, the heavy-job queue: heavy commands still wait for a slot, a
+  heavy line mixed with other commands is still refused, and so is a heavy PowerShell line. Every hook that never asks you stays:
   session names, the task list at a start, the cost record, the update check, the tier note, the
   review record, the after-merge and leftovers notes, and the stops that keep work going
   (`keep-going`, `verify-gate`, `builder-finish`, `subagent-background`).
@@ -24,7 +29,8 @@ in your own terminal after the update; the user guide is [README.md](README.md).
   merges its own pull request into its base, the main branch included, once CI is green (it
   waits with `gh pr checks --watch` and never uses `--auto`), the review of its head
   commit is recorded and the fixes after the review are within `fixesAfterReview` (over them, it
-  says so in the pull request); `workflow merge-check` prints that judgment. Claude runs the
+  says so in the pull request); `workflow merge-check` prints that judgment and allows a merge into the integration base or
+  `main`; `workflow set autoMerge` (and the other review-gate keys) now works inside a session. Claude runs the
   deploy gates (`task release <env> --before` and `--after`) itself. It asks you before a `fable`
   or `opus`-at-`max` launch when you are available, and uses `opus` at `xhigh` when you are
   away. Every planning agent (a plan's second read, the edge-case hunter on a plan, a `Plan`
@@ -40,6 +46,8 @@ in your own terminal after the update; the user guide is [README.md](README.md).
   hook still parses and silences nothing; `doctor` says the name can go. A project's own asking
   hooks and `permissions.ask` lists are its own: remove them in that project.
 - **A flaky test is fixed:** the nested job signal test no longer fails under load.
+- **Fields that enforce nothing now.** `protectedBranches`, `worktrees.guardMainFolder` and
+  `tasks.deployCommands` stay in the schema so older files load; no hook reads them.
 - **What to run:** `cc-smart-dev-kit update`, then restart open Claude Code sessions (a session
   keeps the old guards until it restarts).
 

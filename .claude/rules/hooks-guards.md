@@ -1,9 +1,6 @@
 ---
 paths:
-  - "src/hooks/agent-launches*"
-  - "src/hooks/launch-judge*"
   - "src/hooks/job-route*"
-  - "src/hooks/bash-judge*"
   - "src/shell/kit-invocation*"
   - "src/hooks/user-away*"
   - "src/hooks/prompt-source.ts"
@@ -17,10 +14,12 @@ paths:
   - "src/entries/verify-gate.ts"
 ---
 
-# The One Guard: What `job-route` Answers
+# The One Guard: `job-route`, And The Question Tools
 
 Since 5.7.0 (the owner: "the only guard our kit will support will be the heavy-job guard") the
-kit has **one guard, `job-route`**, the heavy-job queue's door. Seven guards were retired
+kit has **one guard, `job-route`**, the heavy-job queue's door, and it **never asks the person**:
+it queues a heavy command or refuses a heavy run mixed with other commands, and judges nothing
+else (no launch, push, merge or deploy). Seven guards and its launch judge were retired
 (`docs/design/hooks.md` § Retired in 5.7.0): never add a hook that asks the person, approves a
 permission dialog or blocks a call for a policy; a rule for Claude is an instruction in
 `plugin/`, not a hook. The hook frame and shell reader: `hooks.md`. Event contracts and
@@ -28,8 +27,8 @@ evidence: `docs/claude-code-contract.md`. Detailed behavior: `docs/design/hooks.
 
 ## A machine-wide hook
 
-- `job-route` judges launches and heavy commands even outside git or without a project file,
-  and is `alwaysOn`: a project cannot silence it through `ownHooks`. `user-away` is `alwaysOn`
+- `job-route` runs even outside git or without a project file (it leaves the line as written
+  there), and is `alwaysOn`: a project cannot silence it through `ownHooks`. `user-away` is `alwaysOn`
   too, because the switch is the person's. Other machine-wide hooks can honor `ownHooks`.
 - Rewrite a heavy Bash call through the jobs API with PreToolUse `updatedInput`, never run
   the command in the hook. Keep the Bash tool's working folder.
@@ -60,22 +59,23 @@ evidence: `docs/claude-code-contract.md`. Detailed behavior: `docs/design/hooks.
 
 ## Fail closed when `cc-smart-dev-kit.json` cannot be used
 
-- Never treat a broken or too-new project file as no file. The guard asks in its domain;
-  an informational hook gives one context or stderr line. A machine-wide rule that does
-  not read the broken field still judges the call.
+- Never treat a broken or too-new project file as no file. `job-route` leaves the line as
+  written (no project to route for); an informational hook gives one context or stderr line. A
+  machine-wide rule that does not read the broken field still judges the call.
 - `ownHooks` still comes first for a switchable hook.
 
 ## Fail safe
 
-| Failure | Guard (`job-route`) | Informational hook |
+| Failure | `user-away` question tools | `job-route` and informational hooks |
 |---|---|---|
-| Code throws or input is not JSON | Ask in its domain through `onCrash` | One stderr line, exit 0 |
-| Bundle or Bun missing or too old | Shim asks with `--missing=ask` | Shim reports quietly |
+| Code throws or input is not JSON | Ask in its domain through `onCrash` | One stderr line (the line runs as written), exit 0 |
+| Bundle or Bun missing or too old | Shim asks with `--missing=ask` | Shim reports quietly (`--missing=quiet`) |
 | Cannot start, timeout or failed exit | PreToolUse `onFailure: block` | Let work continue |
 
-- A guard decides with a PreToolUse answer, never exit code 2. No informational hook uses
+- A PreToolUse hook decides with its answer, never exit code 2. No informational hook uses
   a failure exit to stop work. The CLI uses `--missing=fail` and must not claim success.
-- Put `onFailure: block` only on a guard's PreToolUse entry, never Stop or SubagentStop.
+- Put `onFailure: block` only on `user-away`'s question-tool PreToolUse entry, never Stop,
+  SubagentStop or `job-route`.
 - A Stop hook blocks at most once per change, checks `stop_hook_active`, and never returns
   `additionalContext`. `verify-gate` uses its own feedback mark; a failed check cannot trap
   the turn. Test changes after a reminder as well as repeated stops.
