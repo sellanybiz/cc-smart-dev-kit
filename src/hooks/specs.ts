@@ -18,7 +18,7 @@
  * | agent-usage | SubagentStop | machine-wide: each subagent's cost on record (`agent-usage.ts`) |
  * | worktree-leftovers | SessionStart (startup, resume) | one line |
  * | session-name | SessionStart, UserPromptSubmit | nothing but a line on stderr |
- * | user-away | PreToolUse (AskUserQuestion, ExitPlanMode), PermissionRequest, UserPromptSubmit, Stop | machine-wide, and `ownHooks` cannot switch it off: while the person cannot answer, a question and Claude Code's own permission prompt are denied and parked, and a note is said once per change — at the prompt, or by one block at the stop of a session that has not heard it (`user-away.ts`) |
+ * | user-away | PreToolUse (AskUserQuestion, ExitPlanMode), UserPromptSubmit, Stop | machine-wide, and `ownHooks` cannot switch it off: while the person cannot answer, a question is refused with the step to take the recommended option and record a decision, nothing is parked, and a note is said once per change — at the prompt, or by one block at the stop of a session that has not heard it (`user-away.ts`) |
  *
  * Two more bundles are in `hooks.json` without a spec here (`USER_HOOKS`): they need no
  * project file — `update-check` (the background self-update and instructions copy) and
@@ -251,32 +251,31 @@ export const sessionNameHook: HookSpec = {
 
 /**
  * While the person cannot answer (`cc-smart-dev-kit user unavailable`): the two tools that ask
- * them are denied with the step that parks the question, Claude Code's own permission prompt is
- * denied and the call parked, and one note per change is said at the prompt — or, for a session
- * the person never prompts, by one block at its stop (`user-away.ts`). A guard's own ask is
- * turned into a deny by the frame itself (`askedWhileAway`, `run.ts`), for every hook.
+ * them are refused with the step to take the recommended option and record a decision (nothing
+ * is parked), and one note per change is said at the prompt — or, for a session the person never
+ * prompts, by one block at its stop (`user-away.ts`). Claude Code's own permission prompt is not
+ * answered: a hook never approves for the person, so the event is not wired.
  *
  * **Machine-wide**, like `job-route`: the person is one for the whole machine, so the answer
  * reads the state file and never the project's, and a broken or too new project file, and a
  * folder outside git, are judged the same way. **`alwaysOn`**: `ownHooks` cannot switch it off —
  * the switch is the person's, and a project must not be able to turn it off for a session. A
  * crash asks about the calls in its domain (the two question tools), like any guard; on the other
- * three events it says one line on stderr and the session goes on.
+ * two events it says one line on stderr and the session goes on.
  */
 export const userAwayHook: HookSpec = {
   name: "user-away",
-  events: ["PreToolUse", "PermissionRequest", "UserPromptSubmit", "Stop"],
+  events: ["PreToolUse", "UserPromptSubmit", "Stop"],
   alwaysOn: true,
   onConfigProblem: (_message, input, event, _checkout, context) =>
     userAwayAnswer(input, event, context.env, context.paths, context.nowMs),
   outsideGit: (input, event, _why, context) =>
     userAwayAnswer(input, event, context.env, context.paths, context.nowMs),
   // The two tools that ask the person are a guard's domain: a crash asks about them, as any guard
-  // does. On the other three events there is no call to ask about; the crash is one line on
-  // stderr, and Claude Code's own prompt, the prompt's text, or the stop goes on as it would
-  // without this hook.
+  // does. On the other two events there is no call to ask about; the crash is one line on
+  // stderr, and the prompt's text, or the stop goes on as it would without this hook.
   onCrash: (why, input, event, context) =>
-    event === "PermissionRequest" || event === "UserPromptSubmit" || event === "Stop"
+    event === "UserPromptSubmit" || event === "Stop"
       ? { stderr: `cc-smart-dev-kit user-away: ${why}` }
       : guardCrash("whether the person is available", inAwayDomain)(why, input, event, context),
   run: ({ input, event, env, paths, nowMs }) => userAwayAnswer(input, event, env, paths, nowMs),
