@@ -6802,6 +6802,18 @@ function readingsOf(command, dialect) {
 }
 var MAX_INNER = 8;
 var isBlank = (char) => char === " " || char === "\t";
+function opensBraceSubstitution(text, at) {
+  return text.startsWith("${", at) && /^[ \t\n|]$/.test(text.charAt(at + 2));
+}
+function braceSubstitutionClose(text, from) {
+  const read = lex(text.slice(from), {
+    blind: false,
+    dialect: "bash",
+    join: false,
+    substitution: true
+  });
+  return read.open ? -1 : from + read.end;
+}
 function lex(text, options) {
   const { blind, dialect, join } = options;
   const bash = dialect === "bash";
@@ -6955,7 +6967,7 @@ function lex(text, options) {
     at = end + 1;
     return piece;
   }
-  function readDouble(closes) {
+  function readDouble(closes, substitutions = 0) {
     const mark = segments.length;
     let raw = "";
     if (closes) {
@@ -6980,18 +6992,24 @@ function lex(text, options) {
       } else if (bash && char === "$" && next === "$") {
         raw += "$$";
         at += 2;
+      } else if (char === "$" && (next === "(" || braceSubstitution()) && substitutions >= MAX_INNER) {
+        open = true;
+        raw += char;
+        at++;
       } else if (char === "$" && next === "(") {
         const end = bash ? arithmeticEnd(at + 1) : -1;
         if (end === -1) {
           at += 2;
           enterGroup();
-          raw += `$(${read(true).raw}`;
+          raw += `$(${read(")", substitutions + 1).raw}`;
           leaveGroup();
         } else {
           raw += readArithmetic(end);
         }
       } else if (bash && char === "`") {
         raw += readBacktick();
+      } else if (braceSubstitution()) {
+        raw += readBraceSubstitution(substitutions);
       } else {
         raw += char;
         at++;
@@ -7038,6 +7056,15 @@ function lex(text, options) {
     }
     return word === "" ? null : { end: pos, quoted, script: false, stripTabs, word };
   }
+  const braceSubstitution = () => bash && opensBraceSubstitution(text, at);
+  function readBraceSubstitution(substitutions) {
+    const pipe = text.charAt(at + 2) === "|" ? "|" : "";
+    at += 2 + pipe.length;
+    const substitution = read("}", substitutions + 1);
+    if (!substitution.closed)
+      open = true;
+    return `\${${pipe}${substitution.raw}`;
+  }
   function isGroupBrace(char, wordStart) {
     if (char !== "{" && char !== "}")
       return false;
@@ -7072,11 +7099,13 @@ function lex(text, options) {
     }
     return char === "(" && (words === "" || starts && /\sin$/.test(command));
   }
-  function read(nested, substitutions = 0) {
+  function read(closer, substitutions = 0) {
+    const nested = closer !== null;
     let raw = "";
     let current = "";
     let currentStart = at;
     let depth = 0;
+    let braces = 0;
     let wordStart = true;
     let afterClose = false;
     let stdinShell = null;
@@ -7110,7 +7139,7 @@ function lex(text, options) {
           continue;
         }
         if (oneOf(double, char)) {
-          take(readDouble(true));
+          take(readDouble(true, substitutions));
           continue;
         }
         if (bash && char === "$" && next === "$") {
@@ -7137,12 +7166,25 @@ function lex(text, options) {
         if (next === "(" && (char === "$" || processSubstitution || arraySubexpression) && substitutions < MAX_INNER) {
           at += 2;
           enterGroup();
-          const substitution = read(true, substitutions + 1);
+          const substitution = read(")", substitutions + 1);
           leaveGroup();
           if (!substitution.closed)
             open = true;
           take(`${char}(${substitution.raw}`);
           continue;
+        }
+        if (braceSubstitution()) {
+          if (substitutions < MAX_INNER) {
+            take(readBraceSubstitution(substitutions));
+            continue;
+          }
+          open = true;
+        }
+        if (closer === "}" && char === "}" && depth === 0 && braces === 0 && current.trim() === "") {
+          push(current, afterPipe ? segments[segments.length - 1] ?? null : null, false, group, currentStart);
+          afterPipe = false;
+          at++;
+          return { closed: true, raw: `${raw}}` };
         }
         if (char === "#" && wordStart && !afterClose) {
           const end = text.indexOf(`
@@ -7209,18 +7251,25 @@ function lex(text, options) {
         at++;
         continue;
       }
-      if (SEPARATORS.has(char) || isGroupBrace(char, wordStart) || blind && bash && char === "`") {
+      if (SEPARATORS.has(char) || isGroupBrace(char, wordStart) || blind && bash && char === "`" || blind && braceSubstitution()) {
         const pattern = !blind && bash ? casePattern(current, char, next) : false;
         push(current, afterPipe ? segments[segments.length - 1] ?? null : null, false, group, currentStart);
         afterPipe = char === "|";
-        if (!pattern && nested && char === ")" && depth === 0) {
+        if (!pattern && closer === ")" && char === ")" && depth === 0) {
           at++;
           return { closed: true, raw: `${raw})` };
+        }
+        if (!pattern && closer === "}" && char === ")" && depth === 0) {
+          return { closed: false, raw };
         }
         if (!pattern && nested && char === "(")
           depth++;
         if (!pattern && nested && char === ")")
           depth--;
+        if (closer === "}" && char === "{" && current.trim() === "")
+          braces++;
+        if (closer === "}" && char === "}" && braces > 0)
+          braces--;
         if (!pattern && char === "(")
           enterGroup(bash && ARRAY_ASSIGNMENT.test(current));
         else if (!pattern && char === ")")
@@ -7245,9 +7294,11 @@ function lex(text, options) {
   }
   if (options.body === true)
     readDouble(false);
+  else if (options.substitution === true)
+    readBraceSubstitution(0);
   else
-    read(false);
-  return { expanded, groups, open, piped, segments, starts, unparsable };
+    read(null);
+  return { end: at, expanded, groups, open, piped, segments, starts, unparsable };
 }
 function shellSteps(command, { blindWhenOpen = false, dialect = "bash", joinLines = false } = {}) {
   const read = lex(command, { blind: false, dialect, join: joinLines });
@@ -7346,6 +7397,23 @@ function wordsWithFill(segment, dialect = "bash") {
     closes ??= parenCloses(segment);
     return closes[open] ?? -1;
   };
+  let braceOpen = false;
+  let braceTried = { from: -1, close: -1 };
+  const braceCloseOf = (from) => {
+    if (!bash || braceOpen || !opensBraceSubstitution(segment, from))
+      return -1;
+    if (braceTried.from !== from) {
+      braceTried = { from, close: braceSubstitutionClose(segment, from) };
+      if (braceTried.close === -1)
+        braceOpen = true;
+    }
+    return braceTried.close;
+  };
+  const addSubstitution = (from, close) => {
+    add(segment.slice(from, close));
+    filled = true;
+    i = close;
+  };
   let i = 0;
   while (i < segment.length) {
     const char = segment.charAt(i);
@@ -7361,10 +7429,9 @@ function wordsWithFill(segment, dialect = "bash") {
       add(next === "" ? char : bash ? next : POWERSHELL_ESCAPES[next] ?? next);
       i += 2;
     } else if (bash && (char === "$" || !inWord && (char === "<" || char === ">")) && next === "(" && closeOf(i + 1) !== -1) {
-      const close = closeOf(i + 1);
-      add(segment.slice(i, close));
-      filled = true;
-      i = close;
+      addSubstitution(i, closeOf(i + 1));
+    } else if (braceCloseOf(i) !== -1) {
+      addSubstitution(i, braceCloseOf(i));
     } else if (!bash && !inWord && char === "@" && next === "(" && powershellParenClose(segment, i + 1) !== -1) {
       const close = powershellParenClose(segment, i + 1);
       add(segment.slice(i, close));
@@ -7433,11 +7500,9 @@ function wordsWithFill(segment, dialect = "bash") {
           i += 2;
           continue;
         }
-        const substitution = bash && inside === "$" && after === "(" ? closeOf(i + 1) : -1;
+        const substitution = bash && inside === "$" && after === "(" ? closeOf(i + 1) : braceCloseOf(i);
         if (substitution !== -1) {
-          add(segment.slice(i, substitution));
-          filled = true;
-          i = substitution;
+          addSubstitution(i, substitution);
           continue;
         }
         if (inside === escaper && after !== "") {
@@ -17079,8 +17144,8 @@ function fableSession(input, env, paths) {
 }
 
 // src/hooks/git-guard.ts
-import { existsSync as existsSync18 } from "fs";
-import { resolve as resolve7 } from "path";
+import { existsSync as existsSync18, readFileSync as readFileSync25 } from "fs";
+import { join as join27, resolve as resolve7 } from "path";
 
 // src/shell/change-dir.ts
 import { posix as posix2, win32 as win322 } from "path";
@@ -17383,10 +17448,11 @@ function forceDeletesBranch(rest) {
   return has(undefined, 0, "D") || has("--delete", 5, "d") && has("--force", 6, "f");
 }
 var COMPUTED_PUSH_ASK = "This command runs a program it works out when it runs, and its words name a push, so this guard cannot tell whether it pushes. Write the command out in full (for example `git push \u2026`) if you meant it.";
+var COMPUTED_GIT_ASK = "This command runs git, or a git subcommand, that it works out when it runs, so this guard cannot tell what it does: it may be a command this guard asks about (for example `git restore`, `git reset --hard` or `git push --force`). Write the command out in full if you meant it.";
 function namesPush(words) {
   return words.some((word) => word === "push" || word === "send-pack");
 }
-function computedPushIn(command, dialect) {
+function computedGitIn(command, dialect) {
   return readingsOf(command, dialect).some((reading) => shellSteps(command, {
     blindWhenOpen: true,
     dialect: reading.dialect,
@@ -17394,11 +17460,41 @@ function computedPushIn(command, dialect) {
   }).some((step) => {
     const words = wordsOf(step.text, reading.dialect);
     const invocation = invocationOf(words);
-    return invocation?.computed === true && namesPush(words);
+    return invocation?.computed === true && words.some((word) => SUBCOMMAND_JUDGES.has(word));
   }));
 }
 function gitQuestions(args, folder, dialect, run) {
-  return gitCalls(args).flatMap((call) => callQuestions(call, folder, dialect, run));
+  return gitCalls(args).flatMap((call) => {
+    if (!isComputedWord(call.sub))
+      return callQuestions(call, folder, dialect, run);
+    const asks = [...SUBCOMMAND_JUDGES].some(([sub, judge]) => judge({ ...call, sub }, folder, dialect, asMainSession(run)).length > 0);
+    return asks ? [COMPUTED_GIT_ASK] : [];
+  });
+}
+function computedProgramAsks(operands, folder, dialect, run) {
+  const asMain = asMainSession(run);
+  const named = operands.some((sub, at) => {
+    const judge = SUBCOMMAND_JUDGES.get(sub);
+    return judge !== undefined && judge(bareCall(sub, operands.slice(at + 1)), folder, dialect, asMain).length > 0;
+  });
+  if (named)
+    return true;
+  if (!operands.some(isComputedWord))
+    return false;
+  const plain = new Set(operands.filter((word) => !isComputedWord(word)));
+  return [...plain].some((word) => dangerOption(word, folder, dialect, asMain));
+}
+function dangerOption(word, folder, dialect, run) {
+  return [...SUBCOMMAND_JUDGES].some(([sub, judge]) => {
+    const alone = judge(bareCall(sub, []), folder, dialect, run);
+    return judge(bareCall(sub, [word]), folder, dialect, run).some((ask) => !alone.includes(ask));
+  });
+}
+function bareCall(sub, rest) {
+  return { config: new Map, dirs: [], gitDir: null, rest, sub, workTree: null };
+}
+function asMainSession(run) {
+  return { ...run, options: { ...run.options, agentId: null } };
 }
 function pushAlias(call) {
   const value = call.config.get(`alias.${call.sub.toLowerCase()}`);
@@ -17409,57 +17505,76 @@ function pushAlias(call) {
   return first === "push" || first === "send-pack" ? words.slice(1) : null;
 }
 function callQuestions(call, folder, dialect, run) {
-  const { options } = run;
-  const { rest, sub } = call;
   const alias = pushAlias(call);
-  if (sub === "push" || sub === "send-pack" || alias !== null) {
-    const where = folder === null ? null : resolve7(folder, ...call.dirs);
-    const place = {
-      branch: () => where === null ? undefined : currentBranch(where, run),
-      bare: (remote) => {
-        const branch = where === null ? undefined : currentBranch(where, run);
-        if (where === null || branch === undefined)
-          return [];
-        return bareRefspecs(remote, branch, pushConfig(where, run), call.config);
-      }
-    };
-    return pushQuestions(alias === null ? rest : [...alias, ...rest], place, options.protectedBranches, options.autoPushAsk);
-  }
-  if (sub === "stash") {
-    const ask = stashAsk(rest, options.sharedStash);
-    return ask === null ? [] : [ask];
-  }
-  if (sub === "worktree" && rest[0] === "remove") {
-    const force = rest.slice(1).some((arg) => longOption2(arg, "--force", 6) || isShort(arg) && shortFlags(arg, "").flags.includes("f"));
-    if (force)
-      return [WORKTREE_REMOVE_ASK];
-  }
-  const unlessOwn = (ask) => {
-    const own = (options.agentId ?? null) !== null && call.workTree === null && call.gitDir === null && call.config.size === 0;
-    if (!own)
-      return [ask];
-    run.discards.push({ ask, dialect, dirs: call.dirs });
-    return [];
+  if (alias !== null)
+    return pushCallQuestions(call, [...alias, ...call.rest], folder, run);
+  return SUBCOMMAND_JUDGES.get(call.sub)?.(call, folder, dialect, run) ?? [];
+}
+function pushCallQuestions(call, args, folder, run) {
+  const { options } = run;
+  const where = folder === null ? null : resolve7(folder, ...call.dirs);
+  const place = {
+    branch: () => where === null ? undefined : currentBranch(where, run),
+    bare: (remote) => {
+      const branch = where === null ? undefined : currentBranch(where, run);
+      if (where === null || branch === undefined)
+        return [];
+      return bareRefspecs(remote, branch, pushConfig(where, run), call.config);
+    }
   };
-  if ((sub === "checkout" || sub === "restore" || sub === "switch") && discardsChanges(sub, rest)) {
-    return unlessOwn(discardAsk(sub));
-  }
-  if (sub === "branch" && forceDeletesBranch(rest))
-    return [BRANCH_DELETE_ASK];
-  if (sub === "reset" && rest.some((arg) => longOption2(arg, "--hard", 4))) {
-    return unlessOwn(RESET_HARD_ASK);
-  }
-  if (sub === "reset" && rest.some((arg) => longOption2(arg, "--merge", 4))) {
-    return unlessOwn(RESET_MERGE_ASK);
-  }
-  if (sub === "clean") {
-    const force = rest.some((arg) => longOption2(arg, "--force", 6) || isShort(arg) && shortFlags(arg, "e").flags.includes("f"));
-    const dryRun = rest.some((arg) => longOption2(arg, "--dry-run", 4) || isShort(arg) && shortFlags(arg, "e").flags.includes("n"));
-    if (force && !dryRun)
-      return unlessOwn(CLEAN_FORCE_ASK);
-  }
+  return pushQuestions(args, place, options.protectedBranches, options.autoPushAsk);
+}
+function unlessOwn(ask, call, dialect, run) {
+  const own = (run.options.agentId ?? null) !== null && call.workTree === null && call.gitDir === null && call.config.size === 0;
+  if (!own)
+    return [ask];
+  run.discards.push({ ask, dialect, dirs: call.dirs });
   return [];
 }
+var discardJudge = (call, _folder, dialect, run) => discardsChanges(call.sub, call.rest) ? unlessOwn(discardAsk(call.sub), call, dialect, run) : [];
+var SUBCOMMAND_JUDGES = new Map([
+  ["push", (call, folder, _dialect, run) => pushCallQuestions(call, call.rest, folder, run)],
+  ["send-pack", (call, folder, _dialect, run) => pushCallQuestions(call, call.rest, folder, run)],
+  [
+    "stash",
+    (call, _folder, _dialect, run) => {
+      const ask = stashAsk(call.rest, run.options.sharedStash);
+      return ask === null ? [] : [ask];
+    }
+  ],
+  [
+    "worktree",
+    (call) => {
+      const [first, ...after] = call.rest;
+      const force = after.some((arg) => longOption2(arg, "--force", 6) || isShort(arg) && shortFlags(arg, "").flags.includes("f"));
+      return first === "remove" && force ? [WORKTREE_REMOVE_ASK] : [];
+    }
+  ],
+  ["checkout", discardJudge],
+  ["restore", discardJudge],
+  ["switch", discardJudge],
+  ["branch", (call) => forceDeletesBranch(call.rest) ? [BRANCH_DELETE_ASK] : []],
+  [
+    "reset",
+    (call, _folder, dialect, run) => {
+      if (call.rest.some((arg) => longOption2(arg, "--hard", 4))) {
+        return unlessOwn(RESET_HARD_ASK, call, dialect, run);
+      }
+      if (call.rest.some((arg) => longOption2(arg, "--merge", 4))) {
+        return unlessOwn(RESET_MERGE_ASK, call, dialect, run);
+      }
+      return [];
+    }
+  ],
+  [
+    "clean",
+    (call, _folder, dialect, run) => {
+      const force = call.rest.some((arg) => longOption2(arg, "--force", 6) || isShort(arg) && shortFlags(arg, "e").flags.includes("f"));
+      const dryRun = call.rest.some((arg) => longOption2(arg, "--dry-run", 4) || isShort(arg) && shortFlags(arg, "e").flags.includes("n"));
+      return force && !dryRun ? unlessOwn(CLEAN_FORCE_ASK, call, dialect, run) : [];
+    }
+  ]
+]);
 var INERT_PROGRAMS = new Set([
   "[",
   "cat",
@@ -17502,6 +17617,30 @@ var FOLLOWED_FOLDER_CHANGES = new Set([
   "sl"
 ]);
 var FUNCTION_DEFINITION = /\(\s*\)/;
+var EXPANSION = /[$`]/;
+var PLAIN_GIT_SUBCOMMANDS = new Set([
+  "add",
+  "branch",
+  "checkout",
+  "clean",
+  "commit",
+  "diff",
+  "log",
+  "ls-files",
+  "mv",
+  "push",
+  "reset",
+  "restore",
+  "rev-parse",
+  "rm",
+  "show",
+  "stash",
+  "status",
+  "switch",
+  "tag"
+]);
+var DOT_GIT_PATH = /(?:^|[\\/<>=:])\.git(?:$|[\\/])/i;
+var DOT_GLOB = /(?:^|[\\/<>=:])\.[^\\/]*[*?[]/;
 var SHELL_STATE_DRIVE = /(?:^|[^a-z])(?:alias|env|function|variable):/i;
 var VARIABLE_PARAMETERS = [
   "errorvariable",
@@ -17530,6 +17669,9 @@ function plainFolderChange(operands, dialect) {
     return !first.startsWith("-");
   return dialect === "powershell" && operands.length === 2 && /^-(?:literalpath|path)$/i.test(first) && !second.startsWith("-");
 }
+function plainGit(args) {
+  return gitCalls(args).every((call) => PLAIN_GIT_SUBCOMMANDS.has(call.sub) && call.config.size === 0 && call.workTree === null && call.gitDir === null);
+}
 function plainStep(words, invocation, nested, dialect) {
   if (words.length === 0)
     return true;
@@ -17540,11 +17682,13 @@ function plainStep(words, invocation, nested, dialect) {
   const first = (words[0] ?? "").toLowerCase();
   if (first !== invocation.program)
     return false;
+  if (words.some((word) => DOT_GIT_PATH.test(word) || DOT_GLOB.test(word)))
+    return false;
   const operands = withoutRedirections(invocation.args);
   if (dialect === "powershell" && !plainPowerShellWords(operands))
     return false;
   if (first === "git")
-    return true;
+    return plainGit(operands);
   if (FOLLOWED_FOLDER_CHANGES.has(first))
     return plainFolderChange(operands, dialect);
   if (first === "printf")
@@ -17554,6 +17698,7 @@ function plainStep(words, invocation, nested, dialect) {
 var BRACE_PAIR = /\{[^}]*(?:,|\.\.)[^}]*\}/;
 var MAX_FOLDER_CHANGES = 64;
 var MAX_FOLDERS = 32;
+var MAX_PROOF_GIT_CALLS = 16;
 var isRelativePath = (path) => !/^(?:[\\/]|[A-Za-z]:|~)/.test(path);
 function followable(path) {
   return !BRACE_PAIR.test(path) && !path.split(/[\\/]/).includes("..") && !/^[A-Za-z]:(?![\\/])/.test(path);
@@ -17608,14 +17753,26 @@ function ownWorktreeProof(run, cwd) {
   const realRoot = real(root);
   if (!samePath(root, realRoot))
     return null;
+  let gitCallsLeft = MAX_PROOF_GIT_CALLS;
   const gitIn = (folder, args) => {
     const timeoutMs = run.budget.timeFor(GUARD_GIT_TIMEOUT_MS);
-    return timeoutMs <= 0 ? null : runGit(folder, args, options.env, timeoutMs);
+    if (timeoutMs <= 0 || gitCallsLeft <= 0)
+      return null;
+    gitCallsLeft--;
+    return runGit(folder, args, options.env, timeoutMs);
   };
   if (!isLinkedWorktree(root, realRoot, real, gitIn))
     return null;
   run.startsAtRoot.set(realRoot, true);
-  const within = (folder) => existsSync18(folder) && isInside(real(folder), realRoot);
+  const inside = new Map;
+  const within = (folder) => {
+    let known = inside.get(folder);
+    if (known === undefined) {
+      known = isInside(folder, realRoot) && existsSync18(folder) && isInside(real(folder), realRoot);
+      inside.set(folder, known);
+    }
+    return known;
+  };
   const startsAtRoot = (folder) => {
     const key = real(folder);
     let known = run.startsAtRoot.get(key);
@@ -17650,7 +17807,17 @@ function isLinkedWorktree(root, realRoot, real, gitIn) {
     return false;
   if (top === "" || gitDir === "" || commonDir === "")
     return false;
-  return samePath(real(top), realRoot) && !samePath(real(resolve7(root, gitDir)), real(resolve7(root, commonDir)));
+  const ownGitDir = resolve7(root, gitDir);
+  if (!samePath(real(top), realRoot) || samePath(real(ownGitDir), real(resolve7(root, commonDir)))) {
+    return false;
+  }
+  let pointsAt;
+  try {
+    pointsAt = readFileSync25(join27(ownGitDir, "gitdir"), "utf8").trim();
+  } catch {
+    return false;
+  }
+  return pointsAt !== "" && samePath(real(resolve7(ownGitDir, pointsAt)), real(join27(root, ".git")));
 }
 function ownDiscardAsks(run, cwd) {
   if (run.discards.length === 0)
@@ -17663,6 +17830,8 @@ function inspect(command, cwd, reading, run, proof, depth = 0) {
   let folder = cwd;
   const { dialect, joinLines } = reading;
   if (dialect === "powershell" && /[{}]/.test(command))
+    proof.plain = false;
+  if (EXPANSION.test(command))
     proof.plain = false;
   for (const step of shellSteps(command, { blindWhenOpen: true, dialect, joinLines })) {
     const words = wordsOf(step.text, dialect);
@@ -17682,6 +17851,9 @@ function inspect(command, cwd, reading, run, proof, depth = 0) {
       found.push(...gitQuestions(operands, folder, dialect, run));
     if (invocation.computed && namesPush(words))
       found.push(COMPUTED_PUSH_ASK);
+    else if (invocation.computed && computedProgramAsks(operands, folder, dialect, run)) {
+      found.push(COMPUTED_GIT_ASK);
+    }
     if (CHANGES_FOLDER.has(program))
       folder = movedTo(program, folder, operands);
     if (inner !== undefined && depth < MAX_NESTING) {
@@ -17718,7 +17890,7 @@ function guardQuestions(command, cwd, options) {
   return [...new Set(found)];
 }
 function runsGit(command, dialect) {
-  return programsOf(command, dialect).includes("git") || computedPushIn(command, dialect);
+  return programsOf(command, dialect).includes("git") || computedGitIn(command, dialect);
 }
 
 // src/hooks/issue-writes.ts
@@ -17964,7 +18136,7 @@ function findGitBash(env, facts) {
 }
 
 // src/jobs/classify.ts
-import { isAbsolute as isAbsolute4, join as join27, normalize } from "path";
+import { isAbsolute as isAbsolute4, join as join28, normalize } from "path";
 function runOf(source) {
   return {
     source,
@@ -18006,7 +18178,7 @@ function resolveFolder(folder, target) {
     return null;
   if (isAbsolute4(target))
     return normalize(target);
-  return folder === null ? null : normalize(join27(folder, target));
+  return folder === null ? null : normalize(join28(folder, target));
 }
 function folderAfter(program, args, folder) {
   if (folder === null)
@@ -18761,7 +18933,7 @@ function mixedHeavyLine(line, kinds, source) {
 
 // src/jobs/git-hooks.ts
 import { closeSync as closeSync6, openSync as openSync6, readSync as readSync4, realpathSync as realpathSync7, statSync as statSync11 } from "fs";
-import { basename as basename7, dirname as dirname15, join as join28, resolve as resolve8 } from "path";
+import { basename as basename7, dirname as dirname15, join as join29, resolve as resolve8 } from "path";
 var HOOK_NAMES = [
   "applypatch-msg",
   "pre-applypatch",
@@ -18860,9 +19032,9 @@ function hookDecision(name, cwd, kinds, scriptsIn, env = process.env, gitTimeout
   if (place === null)
     return "none";
   const { folder, top } = place;
-  if (!isFile(join28(folder, name)))
+  if (!isFile(join29(folder, name)))
     return "none";
-  const file = isHuskyStubFolder(folder) ? join28(dirname15(folder), name) : join28(folder, name);
+  const file = isHuskyStubFolder(folder) ? join29(dirname15(folder), name) : join29(folder, name);
   if (!isFile(file))
     return "none";
   const text = hookText(file);
@@ -18873,15 +19045,15 @@ function hookDecision(name, cwd, kinds, scriptsIn, env = process.env, gitTimeout
 }
 
 // src/jobs/hook-folder.ts
-import { accessSync, constants, existsSync as existsSync19, readdirSync as readdirSync8, readFileSync as readFileSync25, statSync as statSync12 } from "fs";
-import { join as join29 } from "path";
+import { accessSync, constants, existsSync as existsSync19, readdirSync as readdirSync8, readFileSync as readFileSync26, statSync as statSync12 } from "fs";
+import { join as join30 } from "path";
 
 // src/setup/managed-folder.ts
 var OWNED_FOLDER_MARK = ".cc-smart-dev-kit-owned";
 
 // src/jobs/hook-folder.ts
 function hookLauncher(paths) {
-  return join29(paths.binDir, LAUNCHER_NAME);
+  return join30(paths.binDir, LAUNCHER_NAME);
 }
 function hookScript(launcher) {
   return `#!/bin/sh
@@ -18979,17 +19151,17 @@ function gitHooksState(paths) {
   const folder = paths.gitHooksFolder;
   if (!existsSync19(folder))
     return { kind: "missing" };
-  if (!existsSync19(join29(folder, OWNED_FOLDER_MARK)))
+  if (!existsSync19(join30(folder, OWNED_FOLDER_MARK)))
     return { kind: "not-ours" };
   const wanted = hookScript(hookLauncher(paths));
   const problems = [];
   for (const name of HOOK_NAMES) {
-    const file = join29(folder, name);
+    const file = join30(folder, name);
     if (!existsSync19(file) || !statSync12(file).isFile())
       problems.push(`${name} is missing`);
     else if (!isExecutable(file))
       problems.push(`${name} is not executable`);
-    else if (readFileSync25(file, "utf8") !== wanted)
+    else if (readFileSync26(file, "utf8") !== wanted)
       problems.push(`${name} is from another version`);
   }
   for (const entry of readdirSync8(folder)) {
@@ -19001,14 +19173,14 @@ function gitHooksState(paths) {
 }
 
 // src/jobs/package-scripts.ts
-import { existsSync as existsSync20, readFileSync as readFileSync26, statSync as statSync13 } from "fs";
-import { dirname as dirname16, join as join30, resolve as resolve9 } from "path";
+import { existsSync as existsSync20, readFileSync as readFileSync27, statSync as statSync13 } from "fs";
+import { dirname as dirname16, join as join31, resolve as resolve9 } from "path";
 var NO_FILE_HERE = new Set(["ENOENT", "ENOTDIR", "EISDIR"]);
 function foldersToCheckoutRoot(start) {
   const chain = [];
   for (let dir = start;; dir = dirname16(dir)) {
     chain.push(dir);
-    if (existsSync20(join30(dir, ".git")))
+    if (existsSync20(join31(dir, ".git")))
       return chain;
     if (dirname16(dir) === dir)
       return [start];
@@ -19018,7 +19190,7 @@ function packageScripts(folder) {
   for (const dir of foldersToCheckoutRoot(resolve9(folder))) {
     let text;
     try {
-      text = readFileSync26(join30(dir, "package.json"), "utf8");
+      text = readFileSync27(join31(dir, "package.json"), "utf8");
     } catch (error) {
       if (NO_FILE_HERE.has(error.code ?? ""))
         continue;
@@ -19052,7 +19224,7 @@ function scriptsOf(text, folder) {
 function usesYarnBerry(packageJson, folder) {
   let json = packageJson;
   for (const dir of foldersToCheckoutRoot(folder)) {
-    if (existsSync20(join30(dir, ".yarnrc.yml")))
+    if (existsSync20(join31(dir, ".yarnrc.yml")))
       return true;
     json ??= packageJsonAt(dir);
     const manager = json?.packageManager;
@@ -19064,7 +19236,7 @@ function usesYarnBerry(packageJson, folder) {
 }
 function packageJsonAt(dir) {
   try {
-    const parsed = JSON.parse(readFileSync26(join30(dir, "package.json"), "utf8"));
+    const parsed = JSON.parse(readFileSync27(join31(dir, "package.json"), "utf8"));
     return parsed !== null && typeof parsed === "object" ? parsed : null;
   } catch {
     return null;
@@ -19087,7 +19259,7 @@ function diskWeightSource(folder) {
 import { isAbsolute as isAbsolute5, resolve as resolve10 } from "path";
 
 // src/herdr/machines.ts
-import { readFileSync as readFileSync27 } from "fs";
+import { readFileSync as readFileSync28 } from "fs";
 var MachinesSchema = object({
   version: literal(1),
   machines: record(string2(), object({ allow: literal(true).optional(), production: literal(true).optional() }).strict())
@@ -19098,7 +19270,7 @@ class MachinesFileError extends Error {
 function readMachines(file) {
   let text;
   try {
-    text = readFileSync27(file, "utf8");
+    text = readFileSync28(file, "utf8");
   } catch (error) {
     if (error.code === "ENOENT")
       return { version: 1, machines: {} };
@@ -20725,23 +20897,23 @@ function writeTargets(command, cwd, dialect) {
 }
 
 // src/hooks/plans-folders.ts
-import { join as join31, resolve as resolve12 } from "path";
+import { join as join32, resolve as resolve12 } from "path";
 function plansDirectory(root, env) {
   const paths = cliPaths(env);
-  let plans = join31(paths.claudeConfigDir, "plans");
+  let plans = join32(paths.claudeConfigDir, "plans");
   for (const settings of [
     paths.settingsFile,
-    join31(root, ".claude/settings.json"),
-    join31(root, ".claude/settings.local.json")
+    join32(root, ".claude/settings.json"),
+    join32(root, ".claude/settings.local.json")
   ]) {
     const configured = stringField(readJsonObject(settings).data.plansDirectory);
     if (configured !== null)
-      plans = configured.startsWith("~/") ? join31(paths.home, configured.slice(2)) : resolve12(root, configured);
+      plans = configured.startsWith("~/") ? join32(paths.home, configured.slice(2)) : resolve12(root, configured);
   }
   return realPath(plans);
 }
 function plansFolders(root, env) {
-  return [plansDirectory(root, env), realPath(join31(root, ".claude/plans"))];
+  return [plansDirectory(root, env), realPath(join32(root, ".claude/plans"))];
 }
 
 // src/hooks/main-folder-guard.ts
@@ -20854,7 +21026,7 @@ function autoMergeRefusal(resolved, projectConfig, prBase, defaultBranch) {
 // src/workflow/review-cover.ts
 import { mkdtempSync, rmSync as rmSync5 } from "fs";
 import { tmpdir as tmpdir4 } from "os";
-import { join as join32 } from "path";
+import { join as join33 } from "path";
 var MIN_COVER_GIT = "2.40.0";
 var PATHS_PER_CALL = 200;
 function short(sha) {
@@ -20955,7 +21127,7 @@ async function readCover(checkout, target, records, limits, git) {
   }
   let objects = null;
   try {
-    objects = mkdtempSync(join32(tmpdir4(), `${COMMAND}-cover-`));
+    objects = mkdtempSync(join33(tmpdir4(), `${COMMAND}-cover-`));
     return await measure(checkout, target, candidates, limits, git, objects);
   } catch (error) {
     if (error instanceof Uncovered)
@@ -20975,7 +21147,7 @@ async function measure(checkout, { head, branch, base }, candidates, limits, git
   const baseRef = `refs/remotes/origin/${base}`;
   const own = {
     GIT_OBJECT_DIRECTORY: objects,
-    GIT_ALTERNATE_OBJECT_DIRECTORIES: alternateEntry(join32(checkout.commonDir, "objects"))
+    GIT_ALTERNATE_OBJECT_DIRECTORIES: alternateEntry(join33(checkout.commonDir, "objects"))
   };
   const run = async (args) => {
     const left = (git.timeFor ?? ((limit) => limit))(GUARD_GIT_TIMEOUT_MS);
@@ -22085,7 +22257,7 @@ function inEscapeDomain(input) {
 }
 
 // src/hooks/subagent-background.ts
-import { readFileSync as readFileSync28 } from "fs";
+import { readFileSync as readFileSync29 } from "fs";
 var HAND_BACK_REASON = "Your background work is still running: wait for it or stop it, then report.";
 var BACKGROUND_ID = /Command running in background with ID: ([A-Za-z0-9_-]+)/;
 var AGENT_ID = /agentId: ([A-Za-z0-9_-]+)/;
@@ -22183,7 +22355,7 @@ function subagentBackground(context) {
     return SILENT;
   let text;
   try {
-    text = readFileSync28(transcript, "utf8");
+    text = readFileSync29(transcript, "utf8");
   } catch {
     return SILENT;
   }
@@ -22191,11 +22363,11 @@ function subagentBackground(context) {
 }
 
 // src/mcp/records.ts
-import { existsSync as existsSync22, readFileSync as readFileSync29 } from "fs";
-import { join as join33 } from "path";
+import { existsSync as existsSync22, readFileSync as readFileSync30 } from "fs";
+import { join as join34 } from "path";
 var RECORD_FILE = "mcp-servers.json";
 function mcpRecordsFile(stateDir) {
-  return join33(stateDir, RECORD_FILE);
+  return join34(stateDir, RECORD_FILE);
 }
 function isRecord(value) {
   if (typeof value !== "object" || value === null)
@@ -22206,7 +22378,7 @@ function isRecord(value) {
 function readMcpRecords(stateDir, file = mcpRecordsFile(stateDir)) {
   if (!existsSync22(file))
     return {};
-  const parsed = JSON.parse(readFileSync29(file, "utf8"));
+  const parsed = JSON.parse(readFileSync30(file, "utf8"));
   const servers = parsed?.servers;
   if (typeof servers !== "object" || servers === null || !Object.values(servers).every((entry) => isRecord(entry))) {
     throw new Error(`Invalid ${file}: expected { "servers": { <name>: { json, at } } }`);
@@ -22298,14 +22470,14 @@ function taskStart(input, paths, env, now = Date.now) {
 }
 
 // src/hooks/tier-view.ts
-import { existsSync as existsSync23, mkdirSync as mkdirSync15, readFileSync as readFileSync31, writeFileSync as writeFileSync8 } from "fs";
-import { dirname as dirname18, join as join34 } from "path";
+import { existsSync as existsSync23, mkdirSync as mkdirSync15, readFileSync as readFileSync32, writeFileSync as writeFileSync8 } from "fs";
+import { dirname as dirname18, join as join35 } from "path";
 
 // src/gateway/checks-down.ts
-import { readFileSync as readFileSync30 } from "fs";
+import { readFileSync as readFileSync31 } from "fs";
 function checksDownNow(statePath, nowMs) {
   try {
-    const state = parseLimitState(readFileSync30(statePath, "utf8"));
+    const state = parseLimitState(readFileSync31(statePath, "utf8"));
     return state === null ? [] : currentChecksDown(state, nowMs);
   } catch {
     return [];
@@ -22387,7 +22559,7 @@ function tierNoteUnknown() {
   return `Subagent tiers now: not known \u2014 the gateway config cannot be read (\`${COMMAND} doctor\` says why). The Agent guard judges each launch and names the effort it needs.`;
 }
 function tierViewMark(env, sessionId) {
-  return join34(namesDir(env), `${sessionId}.tiers`);
+  return join35(namesDir(env), `${sessionId}.tiers`);
 }
 function currentNote(paths, env) {
   const gateway = sessionGatewayOf(paths, env);
@@ -22405,7 +22577,7 @@ function checksNote(paths, env, nowMs) {
 }
 function lastSaid2(mark) {
   try {
-    return readFileSync31(mark, "utf8");
+    return readFileSync32(mark, "utf8");
   } catch {
     return null;
   }
@@ -22614,7 +22786,7 @@ function verifyGate(context) {
 
 // src/hooks/worktree-leftovers.ts
 import { closeSync as closeSync8, existsSync as existsSync24, fstatSync as fstatSync3, openSync as openSync8, readSync as readSync6, statSync as statSync14 } from "fs";
-import { basename as basename9, join as join36, resolve as resolve15 } from "path";
+import { basename as basename9, join as join37, resolve as resolve15 } from "path";
 
 // src/hooks/local-files.ts
 import {
@@ -22622,11 +22794,11 @@ import {
   lstatSync as lstatSync2,
   openSync as openSync7,
   readdirSync as readdirSync9,
-  readFileSync as readFileSync32,
+  readFileSync as readFileSync33,
   readlinkSync as readlinkSync4,
   readSync as readSync5
 } from "fs";
-import { join as join35 } from "path";
+import { join as join36 } from "path";
 var REBUILDABLE = [
   /(?:^|\/)(?:node_modules|bower_components|jspm_packages|\.venv|venv|\.tox|\.nox|\.bundle|\.gradle|\.pnpm-store|\.yarn\/cache)\/$/,
   /(?:^|\/)(?:dist|build|out|target|coverage|\.next|\.nuxt|\.output|\.svelte-kit|\.turbo|\.vercel|\.parcel-cache|\.angular|storybook-static|test-results|playwright-report|htmlcov|\.nyc_output)\/$/,
@@ -22648,12 +22820,12 @@ function setupTime(worktree) {
     return null;
   const times = [];
   try {
-    const time = lstatSync2(join35(admin, "commondir")).mtimeMs;
+    const time = lstatSync2(join36(admin, "commondir")).mtimeMs;
     if (Number.isFinite(time))
       times.push(time);
   } catch {}
   try {
-    const fd = openSync7(join35(admin, "logs", "HEAD"), "r");
+    const fd = openSync7(join36(admin, "logs", "HEAD"), "r");
     try {
       const buffer = Buffer.alloc(FIRST_REFLOG_BYTES);
       const size = readSync5(fd, buffer, 0, buffer.length, 0);
@@ -22673,8 +22845,8 @@ function setupTime(worktree) {
 }
 function untouchedCopy(worktree, mainCheckout, entry) {
   try {
-    const here = lstatSync2(join35(worktree, entry));
-    if (!here.isFile() || !lstatSync2(join35(mainCheckout, entry)).isFile())
+    const here = lstatSync2(join36(worktree, entry));
+    if (!here.isFile() || !lstatSync2(join36(mainCheckout, entry)).isFile())
       return false;
     const setup = setupTime(worktree);
     return setup !== null && here.mtimeMs <= setup + INCLUDE_COPY_SLACK_MS;
@@ -22690,8 +22862,8 @@ function sameAsMain(worktree, mainCheckout, path) {
   const same = (relative) => {
     if (--budget < 0)
       return false;
-    const here = join35(worktree, relative);
-    const there = join35(mainCheckout, relative);
+    const here = join36(worktree, relative);
+    const there = join36(mainCheckout, relative);
     try {
       const a = lstatSync2(here);
       const b = lstatSync2(there);
@@ -22699,9 +22871,9 @@ function sameAsMain(worktree, mainCheckout, path) {
         return a.isSymbolicLink() && b.isSymbolicLink() && readlinkSync4(here) === readlinkSync4(there);
       }
       if (a.isDirectory()) {
-        return b.isDirectory() && readdirSync9(here).every((entry) => same(join35(relative, entry)));
+        return b.isDirectory() && readdirSync9(here).every((entry) => same(join36(relative, entry)));
       }
-      return a.isFile() && b.isFile() && a.size === b.size && readFileSync32(here).equals(readFileSync32(there));
+      return a.isFile() && b.isFile() && a.size === b.size && readFileSync33(here).equals(readFileSync33(there));
     } catch {
       return false;
     }
@@ -22712,7 +22884,7 @@ function projectRebuildable(mainCheckout) {
   if (mainCheckout === null)
     return [];
   try {
-    const patterns = loadCcSmartDevKitConfig(join35(mainCheckout, CONFIG_PATH))?.worktrees?.rebuildable ?? [];
+    const patterns = loadCcSmartDevKitConfig(join36(mainCheckout, CONFIG_PATH))?.worktrees?.rebuildable ?? [];
     return patterns.map((pattern) => new Bun.Glob(`**/${pattern}`));
   } catch {
     return [];
@@ -22725,7 +22897,7 @@ function safeEntry(worktree, mainCheckout, entry, patterns) {
     if (!entry.endsWith("/cli-latest"))
       return true;
     try {
-      if (lstatSync2(join35(worktree, entry)).isFile())
+      if (lstatSync2(join36(worktree, entry)).isFile())
         return true;
     } catch {
       return false;
@@ -22753,10 +22925,10 @@ function localFiles(worktree, mainCheckout, env, patterns = projectRebuildable(m
       if (--budget < 0)
         return false;
       try {
-        if (!lstatSync2(join35(worktree, path)).isDirectory())
+        if (!lstatSync2(join36(worktree, path)).isDirectory())
           return safe(path);
         const folder = `${path.replace(/\/$/, "")}/`;
-        return safe(folder) || readdirSync9(join35(worktree, path)).every((name) => visit(`${folder}${name}`));
+        return safe(folder) || readdirSync9(join36(worktree, path)).every((name) => visit(`${folder}${name}`));
       } catch {
         return false;
       }
@@ -22799,10 +22971,10 @@ function idleMinutesOrNull(worktree, now) {
   const admin = worktreeAdminDir(worktree);
   if (admin === null)
     return null;
-  let last = lastReflogTime(join36(admin, "logs", "HEAD"), now) ?? 0;
+  let last = lastReflogTime(join37(admin, "logs", "HEAD"), now) ?? 0;
   for (const file of ["index", "HEAD"]) {
     try {
-      last = Math.max(last, statSync14(join36(admin, file)).mtimeMs);
+      last = Math.max(last, statSync14(join37(admin, file)).mtimeMs);
     } catch {}
   }
   return last === 0 ? null : (now - last) / 60000;

@@ -41,6 +41,12 @@ in your own terminal after the update; the user guide is [README.md](README.md).
   or when another of its words is worked out too beside a danger option (`$GIT $SUB --hard`).
   A git subcommand worked out at run time always asks. `$EDITOR file`, `$EDITOR $FILE` and
   `git log $(cat range)` stay silent.
+- **A plan may get one final review after round 2.** A plan's review is still two rounds. When
+  round 2's fixes are bigger than the project's `fixesAfterReview` allowance, or touch a guard,
+  security, money, permissions or data, one senior engineer on `opus` at `xhigh` reads only
+  those fixes, with round 2's whole report. Its findings are fixed, and nothing reviews those
+  fixes. Small, safe round 2 fixes get no final review. The pull request says which reviews
+  ran (the build skill § 6).
 
 **What to run:** restart open Claude Code sessions. A session that was open before the update
 keeps the old guard.
