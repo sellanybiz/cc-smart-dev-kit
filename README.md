@@ -248,12 +248,14 @@ files and limits, patterns and tools, and done-check.
 The `build` skill starts one builder per ready phase. Phases with disjoint files run at
 once in separate git worktrees; phases that share files wait through `blocked_by`.
 Each builder records a `Report:` note. The main session records its agent, branch,
-worktree and base commit on the phase task, then sends the diff to a fresh reviewer for
-spec and quality. Fix rounds resume the same builder, up to three times; after that, a
-fresh builder on a stronger model takes over. Builders never start agents or review themselves.
+worktree and base commit on the phase task, then checks the report against the branch:
+the diff, the file list and the tests the builder ran. No reviewer reads a phase. Fix rounds
+resume the same builder, up to three times; after that, a fresh builder on a stronger model
+takes over. Builders never start agents or review themselves.
 
-The main session merges each reviewed phase, closes its task and starts what it unblocked.
-One final whole-branch review runs on `opus`, followed by one fix pass and one full check.
+The main session merges each checked phase, closes its task and starts what it unblocked.
+The plan gets one review, in two rounds of the `review-split` workflow on `opus` at `xhigh`,
+with a fix pass after each, then one full check. Round 2 is the last review.
 Commit, push and pull request steps follow the project's workflow policy.
 
 The task system is the ledger. `Ruling:` notes keep decisions; `Report:` notes keep results.
@@ -600,7 +602,7 @@ tasks: it cannot start or be done while one of them is open. Lists mark both:
 | `task mcp` | Run the stdio server; setup registers it. |
 
 The server exposes nine tools: `task_create`, `task_update`, `task_done`, `task_note`,
-`task_list`, `task_get`, `task_search`, `task_delete`, `task_take`; `task_delete` removes a deploy task only while its file is untracked. `task_list` takes `plan` to select a slug; without it, scope `plan` shows all own plans when there are several, each marked in flight, queued, finishing or parked, in plan-number order (finishing: a plan started under 4.8.0, pending with every phase closed and one done, at its final review). Only one plan runs at a time; parking and resuming are in `/cc-smart-dev-kit:plan-task` § 6. The CLI is the fallback when they
+`task_list`, `task_get`, `task_search`, `task_delete`, `task_take`; `task_delete` removes a deploy task only while its file is untracked. `task_list` takes `plan` to select a slug; without it, scope `plan` shows all own plans when there are several, each marked in flight, queued, finishing or parked, in plan-number order (finishing: a plan started under 4.8.0, pending with every phase closed and one done, at its review). Only one plan runs at a time; parking and resuming are in `/cc-smart-dev-kit:plan-task` § 6. The CLI is the fallback when they
 are missing. Work references use a number such as `#12`; deploy task ids look like
 `prod-20261117-144503` (the environment, then the UTC date and time). A `T-…` id answers "old task ids
 are gone in 5.0.0". The status line shows current work on rows of its own, one per layer: `Plan · <title>` (with `· 2 queued, 1 parked` when your other plans wait), then
@@ -1732,7 +1734,7 @@ splits the work into independent phases and orchestrates; every worker is a suba
 builder, a reviewer or a scout. An approved plan runs through `/cc-smart-dev-kit:build`, with
 the kit's tasks as the ledger. Disjoint phases start at the same time in separate worktrees,
 the session never waits on a result the next work does not need, and each hand-back is
-reviewed and integrated before what it unblocked starts. Also: the role, each subagent's model
+checked and merged before what it unblocked starts. Also: the role, each subagent's model
 and effort, review, the core principles, how to end a turn, and keeping docs true.
 `cc-smart-dev-kit setup` installs them for your user, **on by default**:
 
@@ -1785,7 +1787,7 @@ names such a missing import.
 | Skill | Use it for |
 |---|---|
 | `review` | Your own review before a commit, and the one second opinion per change set. |
-| `build` | Build an approved plan with parallel worktree builders, phase reviews and the task ledger. |
+| `build` | Build an approved plan with parallel worktree builders, one two-round plan review and the task ledger. |
 | `plan-task` | Planning work whose design is open, in plan mode: research, questions, the plan file, approval, phases and owners. |
 | `commit` | When to commit, push, open the pull request and ask for the merge. |
 | `pull-request` | What every pull request body carries. |
@@ -2903,7 +2905,7 @@ CI is green and the review is done is the caller's check (the merge guard hook),
 **Fewer pull requests and CI runs (5.4.0).** A push before a pull request opens costs no CI only
 where CI runs on pull requests and the default branch alone: read your CI triggers before you treat
 it as free. The skills keep the count low.
-A plan's archive moves in the plan's own pull request (a commit before the final review, so the
+A plan's archive moves in the plan's own pull request (a commit before the plan's review, so the
 review covers it), and the plan task closes in the turn the pull request opens. The small fixes of one session go on one branch and share one pull request at one
 ship point: the end of the turn that finishes your request, or when you say ship now (a plan branch,
 or one that carries a reviewed change set, gets a new branch from the default branch for them). The

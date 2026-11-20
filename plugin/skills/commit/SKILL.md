@@ -1,6 +1,6 @@
 ---
 name: commit
-description: Use when asked to commit or after a finished, reviewed phase. Stage and commit; follow workflow settings for push, pull request and merge. Nothing happens unasked when those settings are off.
+description: Use when asked to commit or after a finished phase. Stage and commit; follow workflow settings for push, pull request and merge. Nothing happens unasked when those settings are off.
 ---
 
 # Commit, Push, Merge
@@ -16,8 +16,8 @@ of the four happens until the person asks (or the add-on says otherwise).
 
 | `workflow show` | What you do |
 |---|---|
-| `autoCommit = false` | Commit when the person asks. At the end of a finished, reviewed phase, say in one line that it is ready, and carry on. |
-| `autoCommit = true` | Commit each finished, reviewed phase with no question. Never commit half-built work. |
+| `autoCommit = false` | Commit when the person asks. At the end of a finished phase, say in one line that it is ready, and carry on. |
+| `autoCommit = true` | Commit each finished phase with no question. Never commit half-built work. |
 | `autoPush = false` | Push when the person asks. |
 | `autoPush = true` | Push your own branch once the change set is complete (a planned build pushes the plan branch after each merged phase: `/cc-smart-dev-kit:build` § 5). **Never straight to the base or main branch:** the git guard asks there, and work reaches them through a pull request. |
 | `openPr = "off"` | Open a pull request only when the person asks. |
@@ -43,7 +43,7 @@ and the merge order.
 - **Push and open the pull request** when the change set is complete and the second opinion
   has read it, or it is a small fix that skips it (§ Pushing says when). Not after each commit. In a planned build
   the plan branch is pushed after each merged phase, and the pull request waits for the
-  final review.
+  plan's two review rounds.
 - **Always the person's word, every time:** anything into the main branch or production, a
   force-push or any rewrite of pushed history, `reset --hard`, `clean -f`, deleting or
   renaming a branch that is not merged, and shipping a Warning without its fix. A yes covers

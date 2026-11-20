@@ -25,7 +25,7 @@ weigh three things:
 - **How hard is it?** Can a careful person do it straight through, or does it need deep reasoning?
 - **What does a miss cost?** Cheap and caught later, or it ships, loses data, opens a hole, or
   wastes a whole build?
-- **Is this the last check before it is too late?** A plan's second opinion and the final review
+- **Is this the last check before it is too late?** A plan's second opinion and its two-round review
   guard everything after them, so they earn more effort than a step a later review still covers.
 
 Spend effort where those are high and save it everywhere else. `high` gives most of the gain;
@@ -43,7 +43,7 @@ Worked examples — judge new cases the same way:
 | Mechanical edits, a doc update, run the tests | builder, `sonnet`, `medium` |
 | Build a normal phase | builder, `sonnet`, `high` |
 | UI/UX design, an architecture build | builder, `opus`, `high` (`xhigh` when hard) |
-| Ordinary phase review | senior engineer, `sonnet`, `high` (a phase holds several steps: never lower) |
+| A plan's review (two `review-split` rounds, `/cc-smart-dev-kit:build` § 6) | `risky: true`: every agent is the senior engineer, `opus`, `xhigh` |
 | **Second opinion on a plan** | senior engineer, `opus`, `xhigh`; risky, or `xhigh` already missed something → `max` (asks) |
 | Scenarios for a plan or a change | edge-case hunter, `opus`, `high`; risky (security, money, data, concurrency, the router, user settings) → `opus`, `xhigh` |
 | A release, or a change set that touches security, money, permissions, a schema, deploy or the router | senior engineer, `opus`, `xhigh` |
@@ -193,6 +193,6 @@ builder to implement, never a build of its own.
 ## Do not
 
 - Read ten files yourself when one `Explore` call would do it.
-- Split a small fix across several builders, or skip a planned phase's review.
+- Split a small fix across several builders, or skip a plan's two review rounds.
 - Write one-sentence briefs — they produce shallow work.
 - Delegate a search, then repeat it yourself.

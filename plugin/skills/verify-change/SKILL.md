@@ -67,7 +67,7 @@ type-aware lint rules), all the tests, the build. A commit hook that passed does
 push hook will. Find them in the project's hook configuration, its CI workflow and its package
 scripts. It runs once, when the work is complete:
 
-- **The main session:** before the push, after the final review and its fix pass.
+- **The main session:** before the push, after the plan's second review round and its fixes.
 - **A subagent never runs it** — a builder or any other. The session that launched it runs the
   full check once, after its agents hand back. A subagent runs § 2 and reports what it ran.
   Whole-project typecheck or lint is allowed when its brief names it; that does not permit

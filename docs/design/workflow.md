@@ -436,14 +436,14 @@ fix, and fix rounds pushed one at a time after the pull request opened.
 
 **The rules.**
 
-- **The plan archive rides in the plan's own pull request.** Before the final review, the plan file
+- **The plan archive rides in the plan's own pull request.** Before the plan's review, the plan file
   (and its research) moves to `archive/` in a commit on the plan branch. The review covers that
   commit, which a commit after the review would not in a `fixesAfterReview` setting of 0 lines, 0
   files and 0 percent. The pull request opens after the review and the full check. In that turn the
   plan task closes with its evidence, as it did before: a plan child stops before its merge. A
   reserved plan's files stay held until its pull request merges or closes; an unreserved plan's
   files are free once its task closes. A plan whose pull request is abandoned has its file moved
-  back in the next one, and so does a plan the final review leaves open.
+  back in the next one, and so does a plan the review leaves open.
 - **Small fixes: one pull request per session, at one ship point.** The small fixes a session
   makes outside a plan collect on the session's own branch, and its follow-up child's work
   (`docs/design/herdr.md` § Follow-up children) ships with them. When that branch is a plan branch,

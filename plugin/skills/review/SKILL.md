@@ -17,8 +17,8 @@ A builder skips this skill: its caller owns both the review pass and reviewer di
 Approved plans follow `/cc-smart-dev-kit:build`; the second-opinion section below covers
 changes outside that loop.
 
-- **Your own pass:** once per commit of finished work — each phase of a plan, or the whole
-  change when there are no phases — when your next action is the commit. The test: "if this
+- **Your own pass:** once per commit of finished work outside a plan, when your next action is
+  the commit. A plan's phases get the build skill's quick check instead (§ 3). The test: "if this
   comes back clean, do I commit right now?" No: you are still building; come back later.
 - **The second opinion outside a plan:** once per change set (§ Second opinion).
 - **On request:** "review this".
@@ -80,8 +80,8 @@ Unsure between two rows, take the higher one. `fable` only when the person asks 
 senior engineer can change files, so the launch carries `Fable reason: build - <what the person
 asked>`, and `agent-guard` asks the person.
 
-- **When:** once the non-plan change is complete, before its first push. Task-scoped reviews
-  and the final branch read for a plan follow the build skill instead.
+- **When:** once the non-plan change is complete, before its first push. A plan's review
+  follows the build skill instead (§ 6: two `review-split` rounds).
 - **One change set, one read:** phases built in parallel that ship together get one read,
   not one each. A phase stacked on another open pull request is its own change set: its own
   branch, its own read. Fixes to code the senior engineer already read are a re-push, not a
