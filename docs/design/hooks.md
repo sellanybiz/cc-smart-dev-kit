@@ -477,9 +477,9 @@ project decide there.
   person is away: take the recommended option yourself, keep working, and record it with
   `cc-smart-dev-kit user park --kind decision` ('Summary: …')". A plan waiting for approval is
   the same wait as a question.
-- **Claude Code's own permission dialog (`PermissionRequest`):** the hook answers nothing, so
-  Claude Code shows its dialog. A hook never approves for the person, and it no longer denies
-  and parks either. `docs/claude-code-contract.md` § Retired in 5.7.0 keeps the retired row. In Claude
+- **Claude Code's own permission dialog (`PermissionRequest`):** since 5.7.0 no kit hook is wired
+  to it, so Claude Code shows its dialog. A hook never approves for the person, and it no longer
+  denies and parks either. `docs/claude-code-contract.md` § Retired in 5.7.0 keeps the retired row. In Claude
   Code's default permission mode a session's own `user park` call is such a dialog, so the
   `user-unavailable` skill tells the person once to allow `Bash(cc-smart-dev-kit user park:*)`.
 - **`UserPromptSubmit`, the note:** one short line to Claude — "the person is unavailable since
