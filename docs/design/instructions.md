@@ -188,7 +188,13 @@ one read-only `auditor` per track on `sonnet` at `high`, a second auditor on `op
 refute every finding (the judgment, D46), one `builder` on `sonnet` at `medium` to write the
 findings file. `plugin/workflows/review-split.js` is the second opinion the `review` skill takes
 on a big change set instead of its single reviewer: one `senior-engineer` per track, a second
-one to refute every finding, and the verified findings merged and ranked. Its launches follow
+one to refute every finding, and the verified findings merged and ranked. Two optional args make
+it a plan's review (`build` § 6). `spec` is the plan file: every track reads it, and one added
+spec-compliance track checks each decision, edge case and step's done-check against the code.
+`prior` is round 1's whole report: it makes the run round 2, where each track marks every round 1
+finding fixed, not fixed or worse. Every call, old or new, also gets two strict rules in each
+track's brief: prove a claim by running it where that can be done, and a track with no findings
+names what it read and ran, or the report says it gave no evidence of coverage. Its launches follow
 D46's tier for the change set the caller names with `risky` — `opus` at `xhigh` for a risky one,
 `sonnet` at `high` otherwise — and the refuters run on that same tier, because they make the
 review's judgment; the audit's verifier is `opus` because the auditors are only the breadth.
@@ -348,8 +354,8 @@ to use when they are missing.
 `build` runs the subagent-driven workflow. The main session orchestrates one builder per
 phase, parallel worktrees for disjoint files, and a quick check of each hand-back against the
 branch (no reviewer reads a phase). The plan gets one review, in two rounds of the `review-split`
-workflow with `risky: true`, so every agent is the senior engineer on `opus` at `xhigh`; round 1
-gets the plan file as `spec`, and round 2 gets round 1's report as `prior`. Each reviewer's
+workflow with `risky: true`, so every agent is the senior engineer on `opus` at `xhigh`; both
+rounds get the plan file as `spec`, and round 2 also gets round 1's whole report as `prior`. Each reviewer's
 brief carries the line `Mode: review` alone on its line; the review-record hook records a review
 only with it, so a consult of the same agent records nothing. Agents run in the background (Claude Code's default), `Monitor` watches CI and
 logs, and the lead waits only for what the next step needs. `blocked_by` marks only a real

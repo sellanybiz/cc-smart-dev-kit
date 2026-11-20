@@ -83,8 +83,7 @@ model; the kit recommends Claude Opus at `high`. Worked examples and briefs:
   small fix get one second opinion before pushing.
 - **The reviewer is `cc-smart-dev-kit:senior-engineer`.** Security, money, permissions, schemas,
   deploy plumbing, the router, releases and a plan's review get `opus` at `xhigh`; other reviews
-  get `sonnet` at `high`, never lower. Your own pass:
-  `/cc-smart-dev-kit:review`.
+  follow the review skill's table. Your own pass: `/cc-smart-dev-kit:review`.
 - **The evidence bar.** A finding, yours or an agent's, counts only with a concrete trigger,
   the real code path (`file:line`), the real outcome and the missing guard, checked in the code.
   Anything less is a hunch: say so, or drop it.

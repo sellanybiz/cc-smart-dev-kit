@@ -35,7 +35,7 @@ in your own terminal after the update; the user guide is [README.md](README.md).
   - **Two strict rules:** reviewers prove claims by running things where they can, and a track with no findings must say what it read and ran.
   - **At a phase's hand-back:** the lead checks the builder's report against its branch, with no reviewer.
   - **Fewer review runs:** this cuts the review runs per plan from one per phase plus re-reviews to two (`/cc-smart-dev-kit:build` § 6).
-- **`review-split` takes `spec`** (the plan file) **and `prior`** (round 1's report). Old calls run unchanged.
+- **`review-split` takes `spec`** (the plan file) **and `prior`** (round 1's whole report). A call with neither still runs the same tracks and refuters, but every call now also gets the two strict rules (prove a claim by running it; a track with no findings says what it read and ran), and the report says when a track gave no evidence of coverage.
 - **A review that ran its own background commands is recorded again.** A reviewer's notice that its own background `bun test` ended counted as a message without the review marker. So the merge guard saw no review: the final review of job limits was never recorded. The record now treats that one notice as harmless.
 
 **What to run:** nothing. Run `cc-smart-dev-kit doctor` to see the limits on this machine.

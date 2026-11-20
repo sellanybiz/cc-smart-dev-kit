@@ -177,9 +177,10 @@ CLI fallback: `/cc-smart-dev-kit:tasks`.
   real dependency (one needs the other's merged code), never to order plans that merely share
   a file you could split.
 - **A phase is one area of the code with its own file set.** One fresh subagent builds it
-  and one review reads it. Its real steps are its tasks, usually 3 to 10, each with a
-  done-check. Size a phase by files and area, not by minutes; never make a step a phase.
-  Its upper bound: what one builder can finish and one reviewer can read line by line. Past
+  and the lead checks its hand-back (`/cc-smart-dev-kit:build` § 3). Its real steps are its
+  tasks, usually 3 to 10, each with a done-check. Size a phase by files and area, not by
+  minutes; never make a step a phase. Its upper bound: what one builder can finish and the
+  lead can check against its branch. Past
   that, split the area into two phases. Fewer phases never means fewer steps: every step
   keeps its own task and check, and merging phases carries each old brief and done-check over.
   Name its agent type, model and effort using the core instructions' table. Keep shared

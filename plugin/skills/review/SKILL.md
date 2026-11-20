@@ -124,13 +124,14 @@ release's integration, a change across most of the tree. There the second opinio
 `review-split` Workflow: one read-only reviewer per track you name, a second reviewer to refute
 every finding, and one ranked report back. It is the same second opinion, so never run it beside
 the single senior engineer, and a small fix or an ordinary change set stays with the single
-senior engineer, whose read is cheaper.
+senior engineer, whose read is cheaper. A plan's two rounds are not this section's choice: the
+build skill's § 6 sets their args. This section is where each arg is defined.
 
 ```
 Workflow({ name: "cc-smart-dev-kit:review-split",
   args: { base: "main", head: "HEAD", folder: "<the checkout's path, a worktree only>",
           intent: "what this change does", tracks: ["state and timing", "access and money"],
-          risky: false, budget: 12, spec: "<plan file>", prior: "<round 1 report>" } })
+          risky: true, budget: 6, spec: "<plan file>", prior: "<round 1 report>" } })
 ```
 
 - `args` is one object, as shown — never a string of JSON. The run refuses a string, an unknown
@@ -142,12 +143,16 @@ Workflow({ name: "cc-smart-dev-kit:review-split",
   the key out otherwise.
 - `budget` is how many findings the second reviewers refute, most severe first; the rest come
   back in an **Unchecked** section of the report. Read it: check those findings yourself, or run
-  again with a larger budget.
+  again with a larger budget. The agents of a run are the tracks (the spec track too) plus the
+  budget; the example's two tracks, its spec track and its budget of 6 make nine. A plan's
+  rounds take no extra run: the lead checks the Unchecked findings itself (build § 6).
 - `tracks` are two to four review dimensions or edge-case axes from `references/axes.md` that
   this diff touches.
 - `spec` is a plan file's path: every track reads it, and one more track checks the plan's
   compliance. Leave the key out for a change with no plan.
-- `prior` is round 1's report: it makes the run round 2. Leave the key out for a first run.
+- `prior` is round 1's whole report, its Unchecked and Hunches included: it makes the run
+  round 2. Leave the key out for a first run. The example shows every key; a real call sets
+  `spec` and `prior` only for a plan, and `prior` only in round 2.
 - `risky: true` only for a change set the core instructions' Review calls risky; the run holds
   their model rule for it, on every launch. The reviewers are the type the review-record hook
   knows, so the run records the review as the single senior engineer does: commit first, and
