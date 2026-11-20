@@ -360,12 +360,18 @@ attachment of that type, or any attachment with an `origin` or a string `prompt`
 too. Tool results are no prompt, nor are the meta entries Claude Code writes itself for a skill
 it loads or a system reminder: an allowlist of their text's start (`HARMLESS_META_PREFIXES` in
 `src/hooks/transcript.ts`), where a reminder must also end at its closing tag. Nor is the
-notice that a command the agent itself started in the background has ended (`isCommandNotice`):
-a reviewer that runs its tests that way gets one for each, in either form, and it gives the
-agent no task. It counts only when Claude Code's own origin (`kind: "task-notification"`) is on
-the entry and the text is exactly the five tags of such a notice with `Background command "…"`
-in the summary; a child agent's completion (it carries a result), a Monitor event, any text
-around the tags and a notice with another origin stay prompts. Any other entry, an unknown
+notice that a task the agent itself started in the background has ended (`isOwnTaskNotice`):
+a reviewer that runs its tests that way, or waits on its own Monitor, gets one for each, in
+either form, and it gives the agent no task. It counts only when all of these hold: Claude
+Code's own origin is on the entry (`kind: "task-notification"` and `producer: "session-task"`);
+the text is exactly the five tags of a command's end (`Background command "…"` in the summary),
+or of a Monitor's end (`Monitor "…" stream ended`, at most one `<event>…</event>`, then Claude
+Code's own PushNotification line); and the `<tool-use-id>` names a `Bash` call (a command) or a
+`Monitor` or `Bash` call (a Monitor) that the agent itself made earlier in the same transcript,
+which the reader notes as it reads forward. A child agent's completion (it carries a result),
+any text around the tags, a notice for a call the transcript never made and a notice with
+another origin or producer stay prompts. A transcript line may start with NUL bytes before its
+JSON; the reader drops them from every line, and a line of NULs alone is skipped. Any other entry, an unknown
 meta entry included, is a prompt. The reader (`runPrompts`) reads the whole
 transcript forward, up to 16 MB, so a prompt far from both ends still counts. A consult, a
 review agent resumed for a question, a review a Stop hook sent back to work, a review that

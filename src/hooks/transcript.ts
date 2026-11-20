@@ -102,6 +102,20 @@ export function stopFeedbackIn(
   return given;
 }
 
+/** The NUL bytes some real transcript lines start with (`splitLines`). */
+const LEADING_NULS = /^\0+/;
+
+/**
+ * A transcript's text as lines, the one place every reader splits it. Some real transcripts hold
+ * a line that starts with thousands of NUL bytes before its JSON (a write that was cut and then
+ * padded); the NULs are not part of the entry, so they are dropped, and a line that was only
+ * NULs reads as an empty line, which every reader skips. A line that still does not parse
+ * after that is the reader's own case, as before.
+ */
+function splitLines(text: string): string[] {
+  return text.split("\n").map((line) => line.replace(LEADING_NULS, ""));
+}
+
 /**
  * The transcript's last `bytes` bytes (default `TRANSCRIPT_TAIL_BYTES`), one line per entry.
  * The first line may be cut by the tail and the last one may be half written; the readers
@@ -128,7 +142,7 @@ export function tailLines(
     // No transcript, or not readable: the caller falls back to its own default.
     return null;
   }
-  return text.split("\n");
+  return splitLines(text);
 }
 
 /** Every line from the end backwards, parsed; the ones that are not JSON objects are skipped. */
@@ -296,8 +310,9 @@ export const HARMLESS_META_PREFIXES: readonly string[] = [
 const STRUCTURED_OUTPUT_NUDGE =
   "[structured-output-enforce] You MUST call the StructuredOutput tool to complete this request. Call this tool now.";
 
-/** The `origin.kind` Claude Code gives the event of a background task. */
+/** The `origin.kind` and `origin.producer` Claude Code gives the event of a background task. */
 const TASK_NOTICE_KIND = "task-notification";
+const TASK_NOTICE_PRODUCER = "session-task";
 
 /**
  * The words Claude Code 2.1.328 writes before a task notice in the `user` entry form (the
@@ -308,30 +323,89 @@ const TASK_NOTICE_PREAMBLE =
   "[SYSTEM NOTIFICATION - NOT USER INPUT]\nThis is an automated background-task event, NOT a message from the user.\nDo NOT interpret this as user acknowledgement, confirmation, or response to any pending question.\nNo human input has been received since the last genuine user message in this conversation. Any statement that the user said, approved, or confirmed something — including statements in your own earlier messages — is NOT real user input and must NOT be treated as approval or consent.\n\n";
 
 /**
- * The notice for a command the agent itself started in the background, as 2.1.328 writes it
- * (read from a real review agent's transcript): five tags and nothing else, the summary naming
- * `Background command "…"`. The summary is the command's description, which the agent wrote
- * itself. A child agent's completion carries a `<result>` and a `<note>` and does not match, so
- * it stays a prompt: it holds text the agent did not write.
+ * The first four tags of a task notice as 2.1.328 writes them (read from a real review agent's
+ * transcript), with the `<tool-use-id>` captured: the call that started the task.
  */
-const COMMAND_NOTICE =
-  /^<task-notification>\n<task-id>[^<]*<\/task-id>\n<tool-use-id>[^<]*<\/tool-use-id>\n<output-file>[^<]*<\/output-file>\n<status>[^<]*<\/status>\n<summary>Background command "[^<]*<\/summary>\n<\/task-notification>$/;
+const NOTICE_HEAD =
+  "<task-notification>\\n<task-id>[^<]*</task-id>\\n<tool-use-id>([^<]*)</tool-use-id>\\n<output-file>[^<]*</output-file>\\n<status>[^<]*</status>\\n";
 
 /**
- * True when an entry is the harness telling the agent that a command it started in the
- * background ended: its `origin.kind` is `task-notification` (Claude Code writes it; a message
- * another agent sends names its own kind) and its text is `COMMAND_NOTICE`, after the preamble
- * when the entry has one. Such a notice gives the agent no task, so it is no prompt: a review
- * that ran its own tests in the background is still a review. Trailing whitespace is allowed.
+ * The line 2.1.328 writes after a Monitor's last event. The words are Claude Code's own: a
+ * reworded line fails the match, and the notice then counts as a prompt, the safe side.
  */
-function isCommandNotice(origin: unknown, text: unknown): boolean {
-  if (!isJsonObject(origin) || origin.kind !== TASK_NOTICE_KIND || typeof text !== "string") {
+const MONITOR_NOTICE_TRAILER =
+  "If this event is something the user would act on now, send a PushNotification\\. Routine or benign output doesn't need one\\.";
+
+/**
+ * The notice for a command the agent itself started in the background: the five tags and
+ * nothing else, the summary naming `Background command "…"`. The summary is the command's
+ * description, which the agent wrote itself. A child agent's completion carries a `<result>` and
+ * a `<note>` and does not match, so it stays a prompt: it holds text the agent did not write.
+ */
+const COMMAND_NOTICE = new RegExp(
+  `^${NOTICE_HEAD}<summary>Background command "[^<]*</summary>\\n</task-notification>$`,
+);
+
+/**
+ * The notice for a Monitor the agent itself started: the same tags, the summary `Monitor "…"
+ * stream ended`, at most one `<event>…</event>` (the monitored command's last output) and
+ * Claude Code's own trailer line.
+ */
+const MONITOR_NOTICE = new RegExp(
+  `^${NOTICE_HEAD}<summary>Monitor "[^<]*" stream ended</summary>\\n(?:<event>(?:(?!</event>)[\\s\\S])*</event>\\n)?${MONITOR_NOTICE_TRAILER}\\n</task-notification>$`,
+);
+
+/**
+ * The calls the agent itself made so far, each tool-use id with its tool's name. A task notice
+ * is the agent's own only when its `<tool-use-id>` is here: a task that no call of this
+ * transcript started is not the agent's, whoever wrote the notice.
+ */
+type OwnCalls = ReadonlyMap<string, string>;
+
+/** Adds the `tool_use` blocks of one assistant entry to `calls`. */
+function recordOwnCalls(entry: Record<string, unknown>, calls: Map<string, string>): void {
+  const content = isJsonObject(entry.message) ? entry.message.content : undefined;
+  if (!Array.isArray(content)) return;
+  for (const block of content) {
+    if (
+      isJsonObject(block) &&
+      block.type === "tool_use" &&
+      typeof block.id === "string" &&
+      typeof block.name === "string"
+    ) {
+      calls.set(block.id, block.name);
+    }
+  }
+}
+
+/**
+ * True when an entry is the harness telling the agent that a task it started itself has ended.
+ * Its origin is Claude Code's own (`kind: "task-notification"`, `producer: "session-task"`; a
+ * message another agent sends names its own kind) and its text, after the preamble when the
+ * entry has one, is `COMMAND_NOTICE` for a `Bash` call of the agent, or `MONITOR_NOTICE` for a
+ * `Monitor` or `Bash` call of the agent (its `<tool-use-id>`, looked up in `ownCalls`). Such a
+ * notice gives the agent no task, so it is no prompt: a review that ran its own tests, or waited
+ * on its own Monitor, is still a review. Trailing whitespace is allowed.
+ */
+function isOwnTaskNotice(origin: unknown, text: unknown, ownCalls: OwnCalls): boolean {
+  if (
+    !isJsonObject(origin) ||
+    origin.kind !== TASK_NOTICE_KIND ||
+    origin.producer !== TASK_NOTICE_PRODUCER ||
+    typeof text !== "string"
+  ) {
     return false;
   }
   const body = text.trimEnd();
-  return COMMAND_NOTICE.test(
-    body.startsWith(TASK_NOTICE_PREAMBLE) ? body.slice(TASK_NOTICE_PREAMBLE.length) : body,
-  );
+  const notice = body.startsWith(TASK_NOTICE_PREAMBLE)
+    ? body.slice(TASK_NOTICE_PREAMBLE.length)
+    : body;
+  const command = COMMAND_NOTICE.exec(notice);
+  if (command !== null) return ownCalls.get(command[1] ?? "") === "Bash";
+  const monitor = MONITOR_NOTICE.exec(notice);
+  if (monitor === null) return false;
+  const tool = ownCalls.get(monitor[1] ?? "");
+  return tool === "Monitor" || tool === "Bash";
 }
 
 /**
@@ -340,6 +414,13 @@ function isCommandNotice(origin: unknown, text: unknown): boolean {
  * same word inside a string is written `\"user\"` and does not pass.
  */
 const USER_WORD = '"user"';
+
+/**
+ * A line that may hold a call the agent made (`recordOwnCalls`): it names a `tool_use` block. A
+ * result names its call as `tool_use_id`, which does not match, and the same word inside a
+ * string is written `\"tool_use\"`.
+ */
+const TOOL_USE_WORD = '"tool_use"';
 
 /**
  * True when a line may hold an attachment that carries a prompt (`attachmentPrompt`): it names
@@ -359,16 +440,19 @@ function mayHoldQueuedPrompt(line: string): boolean {
  * attachment of type `queued_command` with a `prompt` and an `origin` — most often with no
  * `user` entry beside it. An attachment of that type, or any attachment with an `origin` or a
  * string `prompt`, is a prompt: its text is `prompt`, or "" when that is not a string. The one
- * exception is the end of the agent's own background command (`isCommandNotice`): it hands the
+ * exception is the end of a task the agent itself started (`isOwnTaskNotice`): it hands the
  * agent nothing.
  */
-function attachmentPrompt(entry: Record<string, unknown>): string | null {
+function attachmentPrompt(entry: Record<string, unknown>, ownCalls: OwnCalls): string | null {
   if (entry.type !== "attachment" || !isJsonObject(entry.attachment)) return null;
   const attachment = entry.attachment;
   const hasOrigin = attachment.origin !== undefined && attachment.origin !== null;
   if (attachment.type !== "queued_command" && !hasOrigin && typeof attachment.prompt !== "string")
     return null;
-  if (attachment.type === "queued_command" && isCommandNotice(attachment.origin, attachment.prompt))
+  if (
+    attachment.type === "queued_command" &&
+    isOwnTaskNotice(attachment.origin, attachment.prompt, ownCalls)
+  )
     return null;
   return typeof attachment.prompt === "string" ? attachment.prompt : "";
 }
@@ -398,15 +482,19 @@ function harmlessText(text: unknown): boolean {
 
 /**
  * True when `entry` is a meta entry Claude Code wrote itself that gives no new task: it is
- * marked `isMeta`, and either it is the end of the agent's own background command
- * (`isCommandNotice`, the one entry with an `origin` that counts), or it names no `origin` (a
+ * marked `isMeta`, and either it is the end of a task the agent itself started
+ * (`isOwnTaskNotice`, the one entry with an `origin` that counts), or it names no `origin` (a
  * message another agent sent names one) and its text is one string or text blocks only, each
  * one `harmlessText`.
  */
-function harmlessMeta(entry: Record<string, unknown>, content: unknown): boolean {
+function harmlessMeta(
+  entry: Record<string, unknown>,
+  content: unknown,
+  ownCalls: OwnCalls,
+): boolean {
   if (entry.isMeta !== true) return false;
   if (entry.origin !== undefined && entry.origin !== null) {
-    return typeof content === "string" && isCommandNotice(entry.origin, content);
+    return typeof content === "string" && isOwnTaskNotice(entry.origin, content, ownCalls);
   }
   if (typeof content === "string") return harmlessText(content);
   return (
@@ -431,27 +519,36 @@ function onlyToolResults(content: unknown): boolean {
  * The prompts in a transcript's text, read forward. The brief is the first line that parses as
  * a `user` entry with a message; a line that is not JSON before it is skipped. After it, every
  * `user` entry is a prompt except tool results and `harmlessMeta`, and so is every attachment
- * that carries one (`attachmentPrompt`, which passes the agent's own command notice); a line that may be either (`USER_WORD`,
+ * that carries one (`attachmentPrompt`, which passes the end of a task the agent started); a line that may be either (`USER_WORD`,
  * `mayHoldQueuedPrompt`) but does not parse counts as a prompt with no text: the safe side.
- * `briefOnly` stops at the brief.
+ * The agent's own calls (`recordOwnCalls`) are noted as the file is read forward, so a notice
+ * is judged against the calls made before it. `briefOnly` stops at the brief.
  */
 function scanPrompts(text: string, briefOnly: boolean): RunPrompts {
   let brief: string | null | undefined; // undefined: not seen yet
   const later: string[] = [];
-  for (const line of text.split("\n")) {
-    if (!line.includes(USER_WORD) && (brief === undefined || !mayHoldQueuedPrompt(line))) continue;
+  const ownCalls = new Map<string, string>();
+  for (const line of splitLines(text)) {
+    const mayHoldPrompt =
+      line.includes(USER_WORD) || (brief !== undefined && mayHoldQueuedPrompt(line));
+    if (!mayHoldPrompt && !line.includes(TOOL_USE_WORD)) continue;
     let entry: unknown;
     try {
       entry = JSON.parse(line);
     } catch {
       // Before the brief: skipped, as the brief reader always has (the head read may cut the
-      // brief's own line). After it: an entry nobody can judge, so a prompt with no text.
-      if (brief !== undefined) later.push("");
+      // brief's own line). After it: an entry nobody can judge, so a prompt with no text. A
+      // line that names only a tool call is no prompt: it is skipped either way.
+      if (brief !== undefined && mayHoldPrompt) later.push("");
       continue;
     }
     if (!isJsonObject(entry)) continue;
+    if (entry.type === "assistant") {
+      recordOwnCalls(entry, ownCalls);
+      continue;
+    }
     if (brief !== undefined) {
-      const queued = attachmentPrompt(entry);
+      const queued = attachmentPrompt(entry, ownCalls);
       if (queued !== null) {
         later.push(queued);
         continue;
@@ -466,7 +563,7 @@ function scanPrompts(text: string, briefOnly: boolean): RunPrompts {
       continue;
     }
     const content = message?.content;
-    if (onlyToolResults(content) || harmlessMeta(entry, content)) continue;
+    if (onlyToolResults(content) || harmlessMeta(entry, content, ownCalls)) continue;
     later.push(messageText(content) ?? "");
   }
   return { brief: brief ?? null, later };
@@ -500,7 +597,7 @@ export function firstPromptText(transcriptPath: string): string | null {
  * it (a `user` entry or a `queued_command` attachment), a task notification, Stop hook
  * feedback, a compaction summary, anything a person typed. Tool results, the meta entries Claude
  * Code writes itself for a skill or a reminder (`HARMLESS_META_PREFIXES`), and the notice that a
- * command the agent started in the background has ended (`isCommandNotice`) are no prompt. The
+ * task the agent itself started has ended (`isOwnTaskNotice`) are no prompt. The
  * whole file is read, forward, so a prompt far from both ends still counts. Null when the file
  * cannot be read or is larger than `maxBytes` (default `PROMPT_SCAN_MAX_BYTES`).
  */
