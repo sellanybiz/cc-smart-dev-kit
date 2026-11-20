@@ -7,7 +7,7 @@ var COMMAND = "cc-smart-dev-kit";
 
 // src/build-info/index.ts
 var info = {
-  version: "5.7.0",
+  version: "6.0.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -1202,15 +1202,6 @@ var BUN_COMMANDS = new Set([
   "unlink",
   "update",
   "upgrade"
-]);
-var SHELLS_WITH_FILES = new Set(["bash", "dash", "ksh", "sh", "zsh"]);
-var POWERSHELL_VALUED_ALIASES = new Set([
-  "-ep",
-  "-if",
-  "-o",
-  "-of",
-  "-w",
-  "-wd"
 ]);
 
 // node_modules/zod/v4/core/util.js

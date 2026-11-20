@@ -5991,7 +5991,7 @@ function superRefine(fn, params) {
 }
 // src/build-info/index.ts
 var info = {
-  version: "5.7.0",
+  version: "6.0.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -13188,7 +13188,6 @@ import { existsSync as existsSync13, mkdirSync as mkdirSync12, writeFileSync as 
 import { dirname as dirname9, join as join20 } from "path";
 
 // src/models/launch-policy.ts
-var OPUS_ASK_EFFORT = "max";
 function premiumTier(family) {
   return family === "fable" || family === "opus" ? family : null;
 }
@@ -14104,15 +14103,6 @@ function toolOf(program, args, depth = 0) {
       return { name: program, args };
   }
 }
-var SHELLS_WITH_FILES = new Set(["bash", "dash", "ksh", "sh", "zsh"]);
-var POWERSHELL_VALUED_ALIASES = new Set([
-  "-ep",
-  "-if",
-  "-o",
-  "-of",
-  "-w",
-  "-wd"
-]);
 function hasFlag(args, flag) {
   return args.some((arg) => arg === flag || arg.startsWith(`${flag}=`));
 }
@@ -16218,7 +16208,7 @@ function modelName(real) {
   const family = answeringFamily(real);
   return family === null ? real.model : `Claude ${familyLabel(family)}`;
 }
-var TIER_NOTE_FOOTER = `Choose the tier and effort by the job (\`/cc-smart-dev-kit:subagent-decision\`), never by the model behind a tier. \`opus\` at \`${OPUS_ASK_EFFORT}\` and any \`fable\` launch (with a \`Fable reason:\` line) ask the person.`;
+var TIER_NOTE_FOOTER = "Choose the tier and effort by the job (`/cc-smart-dev-kit:subagent-decision`), never by the model behind a tier.";
 function tierLine(tier, gateway, env) {
   const real = resolveLaunchModel(tier, gateway, env);
   return `- ${tier} \u2192 ${modelName(real)}.`;
@@ -16416,7 +16406,7 @@ import { dirname as dirname13 } from "path";
 // src/user-away/words.ts
 var UNAVAILABLE_SKILL = `/${PLUGIN}:user-unavailable`;
 var AVAILABLE_SKILL = `/${PLUGIN}:user-available`;
-var DECISION_COMMAND = `${COMMAND} user park --kind decision "Summary: <what you chose, why, how to undo>"`;
+var DECISION_COMMAND = `${COMMAND} user park --kind decision "Decision: <what you chose, why, how to undo>"`;
 function plural2(count, one, many) {
   return `${String(count)} ${count === 1 ? one : many}`;
 }
@@ -16434,7 +16424,7 @@ Commands:
                  Whether they can answer, and how many items wait.
   park --kind <question|action|decision> "<text>" [--command "<command>"]
        [--option "<option>"]... [--recommend <n>]
-                 Put one item on the list. A session records a decision ("Summary: ..."). A
+                 Put one item on the list. A session records a decision ("Decision: ..."). A
                  question names its options and the recommended one (counted from 1), an
                  action its exact command: both are for the person's own use and old items.
   list [--json]  The items, each with who answers it and its exact command. Judged for the
@@ -17307,7 +17297,15 @@ var jobRouteHook = {
   name: "job-route",
   events: ["PreToolUse"],
   alwaysOn: true,
-  onConfigProblem: () => SILENT,
+  onConfigProblem: (_message, input, event, checkout, context) => jobRoute({
+    input,
+    event,
+    cwd: stringField(input.cwd) ?? checkout.root,
+    project: { ...checkout, config: null, configFile: null },
+    env: context.env,
+    paths: context.paths,
+    nowMs: context.nowMs
+  }),
   logFacts: routeFacts,
   run: jobRoute
 };

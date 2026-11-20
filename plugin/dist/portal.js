@@ -47,7 +47,7 @@ function bunTooOld(version, path) {
 
 // src/build-info/index.ts
 var info = {
-  version: "5.7.0",
+  version: "6.0.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -16675,7 +16675,7 @@ var OWN_HOOK_NAMES_SINCE = {
   "keep-going": "2.0.0",
   "builder-finish": "2.0.0",
   "deploy-guard": DEPLOY_GUARD_SINCE,
-  "session-escape-guard": "5.7.0"
+  "session-escape-guard": "6.0.0"
 };
 var TASKS_SINCE = "1.10.0";
 var DEPLOY_TASKS_SINCE = "5.0.0";
@@ -27207,10 +27207,7 @@ var QUESTIONS = [
     "workflow",
     `Workflow policy: what happens by itself after a step, as ${POLICY_EXAMPLE} ("${NONE2}" for none)`
   ],
-  [
-    "guardMainFolder",
-    "Refuse edits in the main checkout itself, so every change goes in a worktree?"
-  ],
+  ["guardMainFolder", "Tell sessions in the main checkout to use a worktree?"],
   ["sessionNames", "Name each session after its task?"],
   [
     "jobRoute",
@@ -27255,16 +27252,15 @@ the project.
                          manager; "none" for no check)
   --no-check             no fast check
   --[no-]guard-main-folder
-                         refuse edits in the main checkout itself (or not)
+                         tell sessions in the main checkout to use a worktree (or not)
   --[no-]session-names   each session names itself after its task (or not)
   --[no-]job-route       send heavy commands through the job queue (or not)
   --workflow <k=v,k=v>   the workflow policy, over your own defaults
   --deploy-command <env>=<command>
                          a command that deploys to <env> (staging or prod, one of tasks.envs);
                          repeat it for more. It replaces that environment's list in
-                         tasks.deployCommands, so the same flags give the same file; the deploy
-                         guard asks before one runs while that environment has work that holds
-                         a deploy (\`task release <env> --check\` shows it).
+                         tasks.deployCommands, so the same flags give the same file; \`task release
+                         <env> --check\` shows the work that holds a deploy.
                          <env>= alone clears the list. Without the flag, the lists stay as they
                          are; split at the first "="
   --deploy-skill <path>  the deploy skill that gets the kit's deploy block (a managed section,
@@ -28157,108 +28153,6 @@ function safetyCheckWindow(state, options) {
     days
   };
 }
-
-// src/models/launch-policy.ts
-var ALLOWED_EFFORTS = ["medium", "high", "xhigh", "max"];
-var OPUS_ASK_EFFORT = "max";
-function premiumTier(family) {
-  return family === "fable" || family === "opus" ? family : null;
-}
-function tierOfReading(family) {
-  return family === null ? "opus" : premiumTier(family);
-}
-function familyFirstTarget(gateway, family) {
-  if (!gateway.gatewayOn || gateway.config === null || family === null)
-    return null;
-  const slot = familySlotKey(family);
-  if (slot === null || !Object.hasOwn(gateway.config.slots, slot))
-    return null;
-  return gateway.config.slots[slot]?.[0] ?? null;
-}
-function tierOfMappedId(model, gateway, env, order) {
-  const id = withoutContextSuffix(model.trim());
-  for (const premium of order) {
-    const override = stringField(env[familyEnv(premium)]);
-    if (override !== null && withoutContextSuffix(override.trim()) === id)
-      return premium;
-    const first = familyFirstTarget(gateway, premium);
-    if (first !== null && withoutContextSuffix(first.trim()) === id)
-      return premium;
-  }
-  return null;
-}
-function answeringFamily(real) {
-  if (!real.claude)
-    return null;
-  return claudeFamily(real.model) ?? CLAUDE_FAMILIES.find((one) => one === real.model.toLowerCase()) ?? null;
-}
-function asNamed(answered, family, tier) {
-  const real = premiumTier(answeringFamily(answered) ?? answered.family);
-  return tier === null && real !== null ? { ...answered, family: real, tier: real } : { ...answered, family, tier };
-}
-function throughFamilySlot(claude, family, gateway) {
-  const tier = tierOfReading(family);
-  const first = familyFirstTarget(gateway, family);
-  if (first === null)
-    return { claude: true, family, model: claude, tier };
-  return asNamed(resolveTarget(first), family, tier);
-}
-function resolveName(text, gateway) {
-  const family = claudeFamily(text);
-  if (family !== null || text.startsWith("claude-")) {
-    return throughFamilySlot(text, family, gateway);
-  }
-  if (isSlotKey(text)) {
-    const first = gateway.config?.slots[text]?.[0];
-    const model = first === undefined ? { claude: false, family: null, model: text, tier: null } : resolveTarget(first);
-    const slotFamily = MODEL_SLOTS[text];
-    return slotFamily === "fable" || slotFamily === "opus" ? { ...model, family: slotFamily, tier: slotFamily } : model;
-  }
-  const parsed = parseTarget(text);
-  if ("target" in parsed && parsed.target.kind === "backend") {
-    return { claude: false, family: null, model: text, tier: null };
-  }
-  return { claude: true, family: null, model: text, tier: "opus" };
-}
-function resolveTarget(text) {
-  const parsed = parseTarget(text);
-  if (!("target" in parsed) || parsed.target.kind !== "anthropic") {
-    return { claude: false, family: null, model: text, tier: null };
-  }
-  const family = claudeFamily(parsed.target.model);
-  return { claude: true, family, model: parsed.target.model, tier: tierOfReading(family) };
-}
-function resolveLaunchModel(name, gateway, env) {
-  const text = withoutContextSuffix(name.trim());
-  const family = CLAUDE_FAMILIES.find((one) => one === text.toLowerCase());
-  if (family === undefined) {
-    const mapped = tierOfMappedId(text, gateway, env, ["fable", "opus"]);
-    const resolved = resolveName(text, gateway);
-    if (mapped === null || resolved.tier !== null && resolved.family !== null)
-      return resolved;
-    return { ...resolved, family: resolved.family ?? mapped, tier: mapped };
-  }
-  const tier = premiumTier(family);
-  const override = stringField(env[familyEnv(family)]);
-  if (override !== null) {
-    return asNamed(resolveName(withoutContextSuffix(override.trim()), gateway), family, tier);
-  }
-  return throughFamilySlot(text, family, gateway);
-}
-function resolveSessionModel(session, gateway, env) {
-  if (!session.served)
-    return resolveLaunchModel(session.model, gateway, env);
-  const text = withoutContextSuffix(session.model.trim());
-  const family = claudeFamily(text);
-  const own = family !== null || text.startsWith("claude-") ? { claude: true, family, model: text, tier: tierOfReading(family) } : resolveTarget(text);
-  const mapped = tierOfMappedId(text, gateway, env, ["opus", "fable"]);
-  return mapped === null ? own : { ...own, family: mapped, tier: mapped };
-}
-var EFFORT_AUTO = "auto";
-
-// src/hooks/agent-launches.ts
-var SESSION_EFFORT = "session-effort";
-var REASON_EFFORTS = [...ALLOWED_EFFORTS, EFFORT_AUTO, SESSION_EFFORT];
 
 // src/hooks/agent-usage.ts
 import { readFileSync as readFileSync52 } from "fs";
@@ -30353,15 +30247,6 @@ function toolOf(program, args, depth = 0) {
       return { name: program, args };
   }
 }
-var SHELLS_WITH_FILES = new Set(["bash", "dash", "ksh", "sh", "zsh"]);
-var POWERSHELL_VALUED_ALIASES = new Set([
-  "-ep",
-  "-if",
-  "-o",
-  "-of",
-  "-w",
-  "-wd"
-]);
 function hasFlag(args, flag) {
   return args.some((arg) => arg === flag || arg.startsWith(`${flag}=`));
 }
@@ -35304,6 +35189,101 @@ import { createHash as createHash9 } from "crypto";
 import { existsSync as existsSync55, mkdirSync as mkdirSync22, writeFileSync as writeFileSync10 } from "fs";
 import { dirname as dirname24, join as join63 } from "path";
 
+// src/models/launch-policy.ts
+function premiumTier(family) {
+  return family === "fable" || family === "opus" ? family : null;
+}
+function tierOfReading(family) {
+  return family === null ? "opus" : premiumTier(family);
+}
+function familyFirstTarget(gateway, family) {
+  if (!gateway.gatewayOn || gateway.config === null || family === null)
+    return null;
+  const slot = familySlotKey(family);
+  if (slot === null || !Object.hasOwn(gateway.config.slots, slot))
+    return null;
+  return gateway.config.slots[slot]?.[0] ?? null;
+}
+function tierOfMappedId(model, gateway, env, order) {
+  const id = withoutContextSuffix(model.trim());
+  for (const premium of order) {
+    const override = stringField(env[familyEnv(premium)]);
+    if (override !== null && withoutContextSuffix(override.trim()) === id)
+      return premium;
+    const first = familyFirstTarget(gateway, premium);
+    if (first !== null && withoutContextSuffix(first.trim()) === id)
+      return premium;
+  }
+  return null;
+}
+function answeringFamily(real) {
+  if (!real.claude)
+    return null;
+  return claudeFamily(real.model) ?? CLAUDE_FAMILIES.find((one) => one === real.model.toLowerCase()) ?? null;
+}
+function asNamed(answered, family, tier) {
+  const real = premiumTier(answeringFamily(answered) ?? answered.family);
+  return tier === null && real !== null ? { ...answered, family: real, tier: real } : { ...answered, family, tier };
+}
+function throughFamilySlot(claude, family, gateway) {
+  const tier = tierOfReading(family);
+  const first = familyFirstTarget(gateway, family);
+  if (first === null)
+    return { claude: true, family, model: claude, tier };
+  return asNamed(resolveTarget(first), family, tier);
+}
+function resolveName(text, gateway) {
+  const family = claudeFamily(text);
+  if (family !== null || text.startsWith("claude-")) {
+    return throughFamilySlot(text, family, gateway);
+  }
+  if (isSlotKey(text)) {
+    const first = gateway.config?.slots[text]?.[0];
+    const model = first === undefined ? { claude: false, family: null, model: text, tier: null } : resolveTarget(first);
+    const slotFamily = MODEL_SLOTS[text];
+    return slotFamily === "fable" || slotFamily === "opus" ? { ...model, family: slotFamily, tier: slotFamily } : model;
+  }
+  const parsed = parseTarget(text);
+  if ("target" in parsed && parsed.target.kind === "backend") {
+    return { claude: false, family: null, model: text, tier: null };
+  }
+  return { claude: true, family: null, model: text, tier: "opus" };
+}
+function resolveTarget(text) {
+  const parsed = parseTarget(text);
+  if (!("target" in parsed) || parsed.target.kind !== "anthropic") {
+    return { claude: false, family: null, model: text, tier: null };
+  }
+  const family = claudeFamily(parsed.target.model);
+  return { claude: true, family, model: parsed.target.model, tier: tierOfReading(family) };
+}
+function resolveLaunchModel(name, gateway, env) {
+  const text = withoutContextSuffix(name.trim());
+  const family = CLAUDE_FAMILIES.find((one) => one === text.toLowerCase());
+  if (family === undefined) {
+    const mapped = tierOfMappedId(text, gateway, env, ["fable", "opus"]);
+    const resolved = resolveName(text, gateway);
+    if (mapped === null || resolved.tier !== null && resolved.family !== null)
+      return resolved;
+    return { ...resolved, family: resolved.family ?? mapped, tier: mapped };
+  }
+  const tier = premiumTier(family);
+  const override = stringField(env[familyEnv(family)]);
+  if (override !== null) {
+    return asNamed(resolveName(withoutContextSuffix(override.trim()), gateway), family, tier);
+  }
+  return throughFamilySlot(text, family, gateway);
+}
+function resolveSessionModel(session, gateway, env) {
+  if (!session.served)
+    return resolveLaunchModel(session.model, gateway, env);
+  const text = withoutContextSuffix(session.model.trim());
+  const family = claudeFamily(text);
+  const own = family !== null || text.startsWith("claude-") ? { claude: true, family, model: text, tier: tierOfReading(family) } : resolveTarget(text);
+  const mapped = tierOfMappedId(text, gateway, env, ["opus", "fable"]);
+  return mapped === null ? own : { ...own, family: mapped, tier: mapped };
+}
+
 // src/hooks/session-facts.ts
 var AGENT_TOOLS = ["Agent", "Task"];
 var WORKFLOW_TOOLS = ["Workflow"];
@@ -36342,7 +36322,7 @@ function modelName(real) {
   const family = answeringFamily(real);
   return family === null ? real.model : `Claude ${familyLabel(family)}`;
 }
-var TIER_NOTE_FOOTER = `Choose the tier and effort by the job (\`/cc-smart-dev-kit:subagent-decision\`), never by the model behind a tier. \`opus\` at \`${OPUS_ASK_EFFORT}\` and any \`fable\` launch (with a \`Fable reason:\` line) ask the person.`;
+var TIER_NOTE_FOOTER = "Choose the tier and effort by the job (`/cc-smart-dev-kit:subagent-decision`), never by the model behind a tier.";
 function tierLine(tier, gateway, env) {
   const real = resolveLaunchModel(tier, gateway, env);
   return `- ${tier} \u2192 ${modelName(real)}.`;
@@ -36540,7 +36520,7 @@ import { dirname as dirname27 } from "path";
 // src/user-away/words.ts
 var UNAVAILABLE_SKILL = `/${PLUGIN}:user-unavailable`;
 var AVAILABLE_SKILL = `/${PLUGIN}:user-available`;
-var DECISION_COMMAND = `${COMMAND} user park --kind decision "Summary: <what you chose, why, how to undo>"`;
+var DECISION_COMMAND = `${COMMAND} user park --kind decision "Decision: <what you chose, why, how to undo>"`;
 function plural3(count, one, many) {
   return `${String(count)} ${count === 1 ? one : many}`;
 }
@@ -36558,7 +36538,7 @@ Commands:
                  Whether they can answer, and how many items wait.
   park --kind <question|action|decision> "<text>" [--command "<command>"]
        [--option "<option>"]... [--recommend <n>]
-                 Put one item on the list. A session records a decision ("Summary: ..."). A
+                 Put one item on the list. A session records a decision ("Decision: ..."). A
                  question names its options and the recommended one (counted from 1), an
                  action its exact command: both are for the person's own use and old items.
   list [--json]  The items, each with who answers it and its exact command. Judged for the
@@ -37431,7 +37411,15 @@ var jobRouteHook = {
   name: "job-route",
   events: ["PreToolUse"],
   alwaysOn: true,
-  onConfigProblem: () => SILENT,
+  onConfigProblem: (_message, input, event, checkout, context) => jobRoute({
+    input,
+    event,
+    cwd: stringField(input.cwd) ?? checkout.root,
+    project: { ...checkout, config: null, configFile: null },
+    env: context.env,
+    paths: context.paths,
+    nowMs: context.nowMs
+  }),
   logFacts: routeFacts,
   run: jobRoute
 };
@@ -37665,7 +37653,7 @@ function retiredReviewAgentCheck(file, label, personal = false) {
   return {
     ok: false,
     text: `${label} names the retired ${OLD_REVIEW_AGENT} in ${personal ? "reviewAgents" : "workflow.reviewAgents"}`,
-    fix: personal ? `${REPLACE_REVIEW_AGENT}: in your own terminal, not inside Claude Code (it refuses the gate's keys there), run ${COMMAND} workflow set reviewAgents ${NEW_REVIEW_AGENT}, or ${COMMAND} workflow unset reviewAgents to use the default; personal changes count at once` : `${REPLACE_REVIEW_AGENT}, then merge that change by hand or run ${COMMAND} workflow review-done, because the merge guard judges with the base branch's list`
+    fix: personal ? `${REPLACE_REVIEW_AGENT}: run ${COMMAND} workflow set reviewAgents ${NEW_REVIEW_AGENT}, or ${COMMAND} workflow unset reviewAgents to use the default; personal changes count at once` : `${REPLACE_REVIEW_AGENT}, then merge that change by hand or run ${COMMAND} workflow review-done, because merge-check judges with the base branch's list`
   };
 }
 function readableMatches(pattern, folder) {
@@ -37884,7 +37872,7 @@ function ownCopyLines(config, sources, pluginHooksFile, projectDir, home) {
     }
   }
   for (const { hook, handler, subjects } of found.values()) {
-    const advice = UNSWITCHABLE_HOOK_NAMES.includes(hook.name) ? `The plugin's ${hook.name} cannot be switched off (it judges every launch): remove the project's copy, or keep it knowing both answer` : `If that is the project's own copy of ${hook.name}, list "${hook.name}" in ownHooks in .claude/cc-smart-dev-kit.json until the copy is removed`;
+    const advice = UNSWITCHABLE_HOOK_NAMES.includes(hook.name) ? `The plugin's ${hook.name} cannot be switched off (it queues heavy commands): remove the project's copy, or keep it knowing both answer` : `If that is the project's own copy of ${hook.name}, list "${hook.name}" in ownHooks in .claude/cc-smart-dev-kit.json until the copy is removed`;
     lines.push({
       ok: true,
       warn: true,
@@ -46274,7 +46262,7 @@ function guideSteps(guide) {
   }).join("")}</ol>`;
 }
 function projectForm(data, answers, plan) {
-  const baseHelp = "Edits happen in a worktree, never in the main checkout.";
+  const baseHelp = "A session that starts in the main checkout is told to work in a worktree.";
   const settingsNote = settingsLineNote(plan.settings);
   const localHidden = plan.localSettings.changed ? "" : " hidden";
   const hash = data.filesHash === null ? "" : ` data-files-hash="${escapeHtml(data.filesHash)}"`;
@@ -46300,9 +46288,9 @@ function projectForm(data, answers, plan) {
 </div>
 
 <div class="col g8">
-<h3>Guards</h3>
+<h3>Switches</h3>
 <div class="card list">
-${guardRow({ help: baseHelp, id: "g-main", label: "Refuse edits in the main folder", name: "guardMainFolder", on: answers.guards.guardMainFolder })}
+${guardRow({ help: baseHelp, id: "g-main", label: "Tell sessions in the main checkout to use a worktree", name: "guardMainFolder", on: answers.guards.guardMainFolder })}
 ${guardRow({ help: "Every session is named after the branch it works on.", id: "g-name", label: "Name each session", name: "sessionNames", on: answers.guards.sessionNames })}
 ${guardRow({ help: "The type check, the build, the tests and the coverage run here go through the queue.", id: "g-jobs", label: "Heavy jobs through the queue", name: "jobRoute", on: answers.guards.jobRoute })}
 </div>
