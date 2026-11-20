@@ -41,10 +41,13 @@ command that asks, and nobody is there to answer. Tell the person once, in one l
   skills or the facts support. A finding outside the plan: the recommended option of the finding
   rule's list (`/cc-smart-dev-kit:tasks` § 1).
 - **An action that needed their yes just runs** when the work calls for it and the instructions
-  allow it (a push of your own branch, a merge as `autoMerge` says, a deploy a task owes). The
-  few steps that are the person's word every time (`/cc-smart-dev-kit:commit`: a force-push,
-  `reset --hard`, a direct push to the main branch) you do not run: take the safe option,
-  and record that you did not.
+  allow it (a push of your own branch, a merge as `autoMerge` says, a staging deploy a task owes).
+  The steps that are the person's word every time (`/cc-smart-dev-kit:commit`: a deploy to
+  production, a force-push, `reset --hard`, a direct push to the main branch) you do not run: take
+  the safe option, and record that you did not.
+- **Plan mode.** Never enter plan mode while away: it cannot be left without the person. A
+  session already in it writes its plan file, records a `Decision:` (what it would build, why,
+  and that it stopped there) and stops that work; it never keeps trying `ExitPlanMode`.
 - **Claude Code's own permission prompt** is not a hook's to answer: it waits for nobody. Prefer
   tools that never prompt, and when a call is refused by the permission system, report it as a
   decision and work on with what is allowed; never run it another way.
@@ -52,17 +55,17 @@ command that asks, and nobody is there to answer. Tell the person once, in one l
 ## 2. Record each decision
 
 ```sh
-cc-smart-dev-kit user park --kind decision "Summary: chose A over B because …. Undo: …"
+cc-smart-dev-kit user park --kind decision "Decision: chose A over B because …. Undo: …"
 ```
 
-The text starts `Summary:` and says what you chose, why, and how to undo it. Write it for a
+The text starts `Decision:` and says what you chose, why, and how to undo it. Write it for a
 reader without your context. Record every real choice (not a trivial one, like a variable name).
 
 ## 3. The end of a stretch
 
 At the end of each stretch (a phase done, a wave merged, the work running out) record one more
-decision, `Summary:` first: what is done, what you chose, what runs on, and what the person
-should look at first. `/cc-smart-dev-kit:user-available` reads them first.
+decision whose text starts `Summary:` (not `Decision:`): what is done, what you chose, what runs on, and what the person
+should look at first. `/cc-smart-dev-kit:user-available` shows it first.
 
 ## 4. Keep working
 

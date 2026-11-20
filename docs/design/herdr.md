@@ -21,8 +21,8 @@ own pane, and the lead never relays it (4.10.1). The user workflow is
 | `doctor.ts` | Optional hc discovery and conservative diagnostics. |
 
 `src/entries/cli.ts` wires the command; `src/cli/help.ts` shares its grammar.
-No hook judges a Herdr line since 5.7.0 (the launch judge in `job-route` is gone,
-`docs/design/hooks.md` § Retired in 5.7.0). `prompt-source.ts` and `keep-going.ts` understand
+No hook judges a Herdr line since 6.0.0 (the launch judge in `job-route` is gone,
+`docs/design/hooks.md` § Retired in 6.0.0). `prompt-source.ts` and `keep-going.ts` understand
 Herdr reports and the `herdr:<core>/<address>` task-agent prefix.
 
 ## Identity and the two kinds
@@ -228,7 +228,7 @@ its pull request merged or closed, or when that proof holds with no pull request
 never started, with no pane and no labelled terminal, is released. A done plan never releases
 itself, and a dropped plan always does. A plan whose pull request was merged by hand stays
 `merging` until a pass runs. `plans --release <slug>` is the person's way out when nothing can
-prove a closed plan merged: it refuses an open plan; since 5.7.0 no hook asks before it runs.
+prove a closed plan merged: it refuses an open plan; since 6.0.0 no hook asks before it runs.
 
 `--wait` returns at once when a plan is ready already or none can change by itself. Otherwise it
 looks again every `PLAN_POLL_MS` (15 s) until a plan turns ready, a reservation is released or a
@@ -427,7 +427,7 @@ and `stop` see it as any linked child.
 Missing file means no approvals. `allow` means free remote starts, an unknown/unallowed name
 asks, and `production` always asks even when `allow` is also true. `forget` removes the entry.
 Machine-rule changes use the managed atomic writer under the kit lock (no hook asks first
-since 5.7.0). An unreadable or invalid file fails loudly.
+since 6.0.0). An unreadable or invalid file fails loudly.
 
 Remote starts require `--cwd` on that machine. The command checks `claude --version` first,
 then the remote kit's version, through the same login-shell wrapper as launch. Both programs
@@ -442,7 +442,7 @@ mode 600 before launch. It does not use `hc put`, which would need a terminal al
 The remote brief states where reports stay. Start and wait print the actual report folder
 and the retrieval lines `hc exec --on <machine> find <folder> -type f` and
 `hc file read --on <machine> <folder>/<child>/<file>`. The exec line is for the person's shell:
-no hook stops Claude from running raw hc exec since 5.7.0. A different remote config override does
+no hook stops Claude from running raw hc exec since 6.0.0. A different remote config override does
 not alter the absolute brief path already handed to the child; report retrieval with such
 an override still needs live verification.
 
@@ -482,7 +482,7 @@ not a successful completion. Remote news also prints the report retrieval hints.
 
 The command holds ownership, identity, names, task locality, remote version, brief privacy,
 report safety and send guards. It requires `--asked` for Fable, Opus/max, and non-free remote
-starts. Since 5.7.0 no hook records or checks that approval (the launch judge that did is gone):
+starts. Since 6.0.0 no hook records or checks that approval (the launch judge that did is gone):
 the flag is the command's own refusal, and the skills tell Claude to ask the person first when
 they are available. A script calling the command directly meets the command's identity,
 ownership, name, task-locality, version, privacy and send checks, its explicit

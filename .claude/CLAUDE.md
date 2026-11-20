@@ -72,7 +72,7 @@ the first time you use it.
 | `src/herdr/` | Herdr session orchestration: the checked identity, shared hc contract and grammar, labels, private briefs and reports, remote machine rules, command and doctor group (`docs/design/herdr.md`). |
 | `src/sessions/` | The `cc-smart-dev-kit sessions` command: reading Claude Code's saved sessions, and reopening the ones a restart or a closed window stopped. |
 | `src/issues/` | GitHub Issues, on by default: filing, fixed marks and the release list (`docs/design/issues.md`). |
-| `src/models/` | Subagent launch policy, UI policy and premium-model judgment: facts the tier note and the status line read; no hook enforces them since 5.7.0. |
+| `src/models/` | Subagent launch policy, UI policy and premium-model judgment: facts the tier note and the status line read; no hook enforces them since 6.0.0. |
 | `src/worktrees/` | Worktree scanning, safe removal and included local files. |
 | `src/tasks/` | The kit's task system (D75, `docs/design/tasks.md`): `work/` the local store, `deploy/` the repo files (deploy tasks, the release gates), `context.ts` the resolver, `guard-view.ts` the hooks' join, `words.ts` the shared tool names and steps, the MCP server and command. |
 | `src/user-away/` | The `cc-smart-dev-kit user` command (`unavailable`, `available`, `status`, `park`, `list`, `clear`): whether the person can answer, and the list of what waits for them (`state.ts`); the user-away hook reads the same state. |

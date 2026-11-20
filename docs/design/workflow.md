@@ -126,7 +126,7 @@ reason a merge is not allowed — and
 `autoMergeAllowed` is `autoMergeRefusal(…) === null`, so the five conditions live in one
 place (`auto-merge.ts`).
 
-**Who follows a setting: the instructions, and a hook only where a hook records.** Since 5.7.0 no hook stands in front of a push, a pull request or a merge (`docs/design/hooks.md` § Retired in 5.7.0): the session reads `workflow show` and does what it says.
+**Who follows a setting: the instructions, and a hook only where a hook records.** Since 6.0.0 no hook stands in front of a push, a pull request or a merge (`docs/design/hooks.md` § Retired in 6.0.0): the session reads `workflow show` and does what it says.
 
 | Setting | Followed by |
 |---|---|
@@ -152,7 +152,7 @@ branch against a base (the review gate only), and
 `cc-smart-dev-kit workflow merge-check [<pr>… | --branch <b> --base <base>]` prints each verdict
 (`allowed`, or the reason it is not; exit 0 when every one is allowed, 1 when any is not).
 No hook runs it any more: it is a command the session runs, and the skill says to. The
-`merge-guard` hook that called it before every `gh pr merge` is retired (§ Retired in 5.7.0 in
+`merge-guard` hook that called it before every `gh pr merge` is retired (§ Retired in 6.0.0 in
 `docs/design/hooks.md`). Opening a pull request follows `openPr` the same way, as an
 instruction.
 
@@ -160,9 +160,9 @@ instruction.
 function, `workflowClashes` in `src/workflow/clashes.ts`, called by `workflow show`,
 `workflow set` (after the write), `project init` (in its plan, before anything is written)
 and the portal's Settings page (a `!` line under the row). The pairs: `openPr` on with
-`autoPush` off (the pull request waits for a push a person must approve every time),
-`autoMerge` on with no `worktrees.base` (there is no branch it may merge into by itself),
-and `autoMerge` on with `openPr: draft` (a draft is never merged). Each line says the fix.
+`autoPush` off (a session does not push, so the pull request waits for the person),
+and `autoMerge` on with `openPr: draft` (a draft is never merged). A project with no
+`worktrees.base` is no clash: it may merge into the default branch. Each line says the fix.
 
 **The review gate is read as committed on the pull request's base**, never from a checkout's
 working copy. Every value the judgment uses — `autoMerge`, `reviewBeforePush`,
@@ -183,7 +183,7 @@ policy change counts once it is committed, pushed and fetched. `cc-smart-dev-kit
 show` prints the gate's own lines (`gate autoMerge = …`) from the same read, so it never
 disagrees with `merge-check`, even while the checkout's file says something else; `workflow
 set|unset` of a gate key (`REVIEW_GATE_KEYS` in `schema.ts`) works inside Claude Code since
-5.7.0, and the "autoMerge is off" answer says to commit the change to the base and push it.
+6.0.0, and the "autoMerge is off" answer says to commit the change to the base and push it.
 
 **A project's policy changes through a pull request** (D57, `src/workflow/propose.ts`).
 Because the gate is read from the base's committed file, a change that counts must be merged,
@@ -220,7 +220,7 @@ leaves the pushed branch and the pull request it may have made, and a name anoth
 took between the check and the add is skipped for the next free one rather than reused. The
 command pushes a branch and opens a pull request in a child no hook sees. Until 5.6.x the shell
 judge asked the person first when `autoPush` was off or `openPr` short of `ready`; that judge is
-gone (§ Retired in 5.7.0 in `docs/design/hooks.md`). Every key may be proposed, inside Claude Code
+gone (§ Retired in 6.0.0 in `docs/design/hooks.md`). Every key may be proposed, inside Claude Code
 or outside it: the pull request's review is the gate.
 
 ## The review record

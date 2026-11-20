@@ -5,14 +5,14 @@ page/API are retired. Statusline usage warnings remain. Manual setup offers the 
 Herdr GUI; see `README.md` § Herdr GUI. Older completed phases below describe their release,
 not features that still exist.
 
-## 5.7.0 — full auto: the kit's only guard is the heavy-job queue
+## 6.0.0 — full auto: the kit's only guard is the heavy-job queue
 
 The owner, 2026-11-21: "the only guard our kit will support will be the heavy-job guard.
-Everything will run in full auto." Seven guards are gone (git, merge, deploy, main-folder, agent,
-session-escape, and user-away's blocking); `job-route` stays. While the person is available
+Everything will run in full auto." Six guard hooks are gone (git, merge, deploy, main-folder, agent,
+session-escape), with user-away's blocking and job-route's launch judge; `job-route` stays. While the person is available
 Claude asks its real questions; while they are away it takes the recommended option, records a
 decision and keeps going, and nothing is parked. The model rules, the merge rules and the deploy
-gates are instructions now. The design: [hooks](design/hooks.md) § Retired in 5.7.0.
+gates are instructions now. The design: [hooks](design/hooks.md) § Retired in 6.0.0.
 
 ## 5.2.0 — queued plans run solo, with children or through a coordinator
 
@@ -257,7 +257,7 @@ The owner's decision D11, brought forward from 0.6.0 because a session nobody ca
 - **An `opus` launch runs with no question at `high` or `xhigh`** — any agent, any purpose,
   review or not — and needs no `Opus reason:` line; **at `max` it asks the person**, and a
   `claude -p` session refuses that one, with a message saying to run it lower or interactively.
-  Fable keeps its rules exactly (the `agent-guard` that held them is retired: `docs/design/hooks.md` § Retired in 5.7.0).
+  Fable keeps its rules exactly (the `agent-guard` that held them is retired: `docs/design/hooks.md` § Retired in 6.0.0).
 - **The reason list, the review-agent list and `CC_SMART_DEV_KIT_AGENT_GUARD_REVIEW_AGENTS`
   are gone.** An `Opus reason:` line is optional: when a prompt has one, its first word only
   names the purpose in the record, which reads `opus:<effort>` (with the word after it when
@@ -290,7 +290,7 @@ Claude Code's, which is what every project gets now.
 
 The owner's decisions, all about which model runs what, in one patch release:
 
-- **Fable is not only an advisor** (the retired `agent-guard`, `docs/design/hooks.md` § Retired in 5.7.0): it took the new
+- **Fable is not only an advisor** (the retired `agent-guard`, `docs/design/hooks.md` § Retired in 6.0.0): it took the new
   reason `unsatisfied` — a fresh attempt after the person did not like the main session's
   answer — and an agent that can change files (a builder, or a fork) runs on Fable with the one
   word `build`, which the person approves, so a session whose own model is the `fable` tier can
@@ -492,27 +492,20 @@ one piece at a time, as `docs/design/hooks.md` § The safe switch describes.
 - **A finished leftover worktree on Windows and macOS.** A folder git no longer lists counts as
   finished only on Linux: `mountPoints` answers "unknown" elsewhere, so the folder stays, logged,
   for a removal by hand. Reading mount points there is a design decision.
-- **The launch judge and a wait loop that matches itself.** It let through
-  `until ! pgrep -f "bun run check"; do sleep 3; done`, whose `pgrep -f` pattern matches the
-  loop's own command line, so it never ends.
 - **The router's stream limits (SC1).** Nothing bounds the wait before a response's headers,
   keep-alive pings are never cut, and the 120 s allowed for Anthropic is not measured.
-- **The merge guard's shell reader.** It does not test an endpoint or a method the shell fills
-  in for a pull request, and it does not follow `cat <<EOF | sh` or `eval "$cmd"`.
 - **GitHub Issues limits.** The portal's settings writer has no protected-key check of its own
   (it relies on the portal's door); `issue file` needs `gh api user` to succeed (an App token may
-  get 403); the `GH_COMMANDS` list must follow gh's own commands, or the issue-write reader takes
-  a new gh command for an extension and lets it through unasked.
+  get 403).
 - **`resolveSwitch` and the base's name.** It takes the base branch's name from the working
-  copy, as the merge guard does.
+  copy, as `merge-check` does.
 - **`claudeLimitHolds` (`src/gateway/limit-holds.ts`) compares exact Claude model ids**, the
   `[1m]` suffix aside. Check whether a variant of one model's id should count as the same model.
-- **A merge-guard test left its fake `gh` running.** In one full run on a loaded machine (load
-  average about 30), "a gh call that hangs" (`src/hooks/merge-guard.test.ts`) passed but left its
-  fake `gh` alive with its parent gone. The fake's `read x < /dev/zero` spins, so it ran 12
-  minutes at 75% CPU until it was stopped by hand. It did not ignore SIGTERM, so no SIGTERM
-  reached it: find why the call's time limit (`runGh`, `src/workflow/merge-check.ts`) did not
-  stop it. A hook that exits while its `gh` still runs would leave the same orphan on a
-  person's machine.
+- **`merge-check`'s `gh` calls have no test for a hang.** In one full run (6.0.0 and before), the
+  merge guard's "a gh call that hangs" test left its fake `gh` running for 12 minutes; the guard
+  and that test are retired, but `runGh` in `src/workflow/merge-check.ts` is the same code, and
+  a session now runs it before every merge into `main`. Prove its time limit stops a hung `gh`.
 - **Windows on Claude Code 2.1.310, by a person.** `doctor --live` on a Windows machine, and a
   `PreToolUse` hook that still blocks with Git Bash absent (`docs/windows-setup.md`).
+
+_Closed in 6.0.0, as retired: the launch judge's wait-loop gap and the merge guard's shell-reader limits went with those hooks (`docs/design/hooks.md` § Retired in 6.0.0)._

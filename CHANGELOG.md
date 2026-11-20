@@ -3,11 +3,11 @@
 What each release changed, newest first. A release's **What to run** steps are the ones to do
 in your own terminal after the update; the user guide is [README.md](README.md).
 
-## 5.7.0
+## 6.0.0
 
 - **Full auto: the kit has one guard.** You said: "I am tired ... I have to wait all time in
   front of the Claude session. Please drop all the guards ... the only guard our kit will support
-  will be the heavy-job guard. Everything will run in full auto." Six hooks are removed, with
+  will be the heavy-job guard. Everything will run in full auto." Six guard hooks are removed, with
   their bundles and tests: `git-guard` (pushes, force-pushes, resets, cleans, discards),
   `merge-guard` (merges, pull-request opens and readies, raw issue writes), `deploy-guard`,
   `main-folder-guard`, `agent-guard` (the model and effort rules, the Fable gate and the UI
@@ -36,7 +36,8 @@ in your own terminal after the update; the user guide is [README.md](README.md).
   away. Every planning agent (a plan's second read, the edge-case hunter on a plan, a `Plan`
   agent) runs on `opus` at `xhigh`, and on Fable only with your yes.
 - **When you are away.** Claude takes the recommended option, records it with
-  `cc-smart-dev-kit user park --kind decision` (the text starts `Summary:`), and keeps going.
+  `cc-smart-dev-kit user park --kind decision` (the text starts `Decision:`), and keeps going; it never enters plan mode while you are away, and a
+  deploy to production waits for you (staging may run).
   Nothing is parked to wait for an answer. When you are available, it asks its real questions
   as before. `/cc-smart-dev-kit:user-available` shows the decisions when you are back.
 - **The trade-off, at your ruling.** With no guard, nothing now stops a mistaken
@@ -48,6 +49,8 @@ in your own terminal after the update; the user guide is [README.md](README.md).
 - **A flaky test is fixed:** the nested job signal test no longer fails under load.
 - **Fields that enforce nothing now.** `protectedBranches`, `worktrees.guardMainFolder` and
   `tasks.deployCommands` stay in the schema so older files load; no hook reads them.
+- **A major version.** 6.0.0 removes features, so the background self-update holds it until you
+  run `cc-smart-dev-kit update` yourself: nothing changes on a machine before that.
 - **What to run:** `cc-smart-dev-kit update`, then restart open Claude Code sessions (a session
   keeps the old guards until it restarts).
 

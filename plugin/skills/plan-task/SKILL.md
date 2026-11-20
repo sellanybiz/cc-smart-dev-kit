@@ -115,8 +115,9 @@ diagram or a mockup — rather than only describing it.
 Then ask for approval. In plan mode that is `ExitPlanMode`: it shows the plan, and the person
 approves it there or keeps planning — never a second "Start building?" with
 `AskUserQuestion`. Without plan mode, ask with `AskUserQuestion`. **Away** (the person cannot
-answer): both are refused; record the plan as a decision (`Summary:` what you will build and
-why, `/cc-smart-dev-kit:user-unavailable`) and go on. After an explicit yes,
+answer): never enter plan mode (`/cc-smart-dev-kit:user-unavailable`); a session already in it
+writes the plan file, records a `Decision:` and stops. Without plan mode, `AskUserQuestion` is
+refused: record the plan as a `Decision:` (what you will build and why) and go on. After an explicit yes,
 move a plan kept outside its home there. **In a session in the main checkout,** plan mode wrote
 the plan in the main checkout's plans folder, and nothing there is for editing: call
 `EnterWorktree` first (the plan's slug as its `name`), then copy the approved plan into the

@@ -90,7 +90,9 @@ major version by itself the day it runs.
   loaded an older version than the one installed now.
 - **A major version waits for the person (D33, since 0.7.0).** A new major one may need the
   person's own work first (1.0.0 refuses the retired worktree fields), so it must not reach a
-  machine behind their back. `applyUpdate` (`src/update/apply.ts`) refreshes the
+  machine behind their back. 6.0.0 is a major version for this reason: it removes the guards and
+  widens `autoMerge`, so the background check holds it until the owner runs
+  `cc-smart-dev-kit update` (its note is in `src/update/major-notes.json`). `applyUpdate` (`src/update/apply.ts`) refreshes the
   marketplace, and when the copy's version is a new major one (`isNewMajor` in
   `src/update/major.ts`: the first number grows, compared with `Bun.semver.order`; a
   version it cannot read is no major step) it asks its caller first (`onMajor`). The

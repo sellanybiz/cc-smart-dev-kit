@@ -43,7 +43,7 @@ parts, then the part you are changing.
 
 | Page | What it holds |
 |---|---|
-| [The hooks](design/hooks.md) | One frame for every hook, the plugin's hooks, each subagent's usage, the keep-going stop, the away state, the Fable-session note, notification retirement, the job route (the kit's one guard), `doctor --live`, the safe switch, the hooks retired in 5.7.0, and Claude Code's own worktrees (and the finished ones that clean themselves). |
+| [The hooks](design/hooks.md) | One frame for every hook, the plugin's hooks, each subagent's usage, the keep-going stop, the away state, the Fable-session note, notification retirement, the job route (the kit's one guard), `doctor --live`, the safe switch, the hooks retired in 6.0.0, and Claude Code's own worktrees (and the finished ones that clean themselves). |
 
 ## The work and its pages
 

@@ -275,8 +275,8 @@ Decide ordinary ambiguities in the main session. Save each as a `task_note` star
 - a destructive or irreversible step;
 - a security-sensitive step;
 - an outside-worktree side effect `workflow show` does not allow (push, shared merge, publish);
-- a choice that is the person's (architecture, scope, UX, a trade-off the plan names as
-  theirs; the full list is `/cc-smart-dev-kit:user-unavailable` § 2): ask it with
+- a choice that is the person's (architecture, scope, UX, money, security, a public name, a trade-off the plan names as
+  theirs, anything hard to undo): ask it with
   `AskUserQuestion`, the recommended option first, and never decide it for them;
 - a plan so broken that every path is a guess.
 

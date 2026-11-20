@@ -81,7 +81,7 @@ every turn and points to the skill that holds each procedure: the research steps
 `research-first`, the model and effort detail in `subagent-decision`, the gateway's slots in
 `gateway`. `bun run check:core-lines` holds it to a line budget (`scripts/check-core-lines.ts`;
 1.1.0 cut it from 190 lines to 128), and `check:context-budget` estimates its tokens. It and
-the skills say which model and effort fit which job. Since 5.7.0 no hook judges a launch (the
+the skills say which model and effort fit which job. Since 6.0.0 no hook judges a launch (the
 `agent-guard` is retired), so the model rules are instructions only: ask the person before a
 `fable` or `opus`-at-`max` launch when they are available, use `opus` at `xhigh` when they are
 away, and run every planning agent on `opus` at `xhigh` (`core.md` § Subagents,
@@ -157,7 +157,7 @@ after the last change of a turn that edited files (`hooks.md` § The plugin's ho
 two skills of `cc-smart-dev-kit user …` (the owner's pair of words, 2026-10-25: the person may be
 asleep, or just away). `user-unavailable` is the rules while the person cannot answer: never stop
 to ask and never park a question or an action; take the recommended option, record it as a
-`decision` whose text starts `Summary:` (what, why, how to undo it), and keep going; an action
+`decision` whose text starts `Decision:` (what, why, how to undo it), and keep going; an action
 that needed their yes runs when the work calls for it (the few steps that are always the
 person's word are not run, and the safe option is recorded). `user-available` switches the
 state back, shows what was done, then shows the decisions; nothing is parked to answer.

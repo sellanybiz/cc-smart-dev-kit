@@ -22,7 +22,7 @@ in this turn.
   program and every user account on this machine — a Claude session using `curl` included —
   can read and change the slots, the judge, the updates and the workflow settings. No hook
   asks about a session's shell command that reaches the port (the `session-escape-guard` is
-  retired in 5.7.0, the owner's "full auto"); Claude Code's own permission mode is the stop
+  retired in 6.0.0, the owner's "full auto"); Claude Code's own permission mode is the stop
   left. Never add a check back that makes a browser pairing necessary without the owner's word.
 - **`Host` exactly ours** (`127.0.0.1:<port>`, `localhost:<port>`), or 403. That is where DNS
   rebinding stops.
