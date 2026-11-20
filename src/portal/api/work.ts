@@ -150,8 +150,6 @@ export function mergeVerdictOf(verdict: CheckVerdict): MergeVerdict {
         number: verdict.number,
         reason: verdict.reason,
       };
-    case "silent":
-      return { kind: "silent" };
     case "unread":
       return { kind: "unread", number: verdict.number, what: verdict.what };
     case "late":

@@ -56,7 +56,7 @@ const SETTINGS = {
  * The `!` line `openPr draft` gets while `autoPush` is off (D16): the clash every `set` of
  * `openPr` prints after the write, in these tests' default settings.
  */
-const OPEN_PR_DRAFT_CLASH = `! openPr opens a pull request, but autoPush is off: the git guard asks before the push that pull request needs, so it waits for you every time. Fix: turn autoPush on (\`${COMMAND} workflow set autoPush true\`), or set openPr off (\`${COMMAND} workflow set openPr off\`).`;
+const OPEN_PR_DRAFT_CLASH = `! openPr opens a pull request, but autoPush is off: a session does not push, and that pull request needs the push, so it waits for you every time. Fix: turn autoPush on (\`${COMMAND} workflow set autoPush true\`), or set openPr off (\`${COMMAND} workflow set openPr off\`).`;
 
 describe("workflow show", () => {
   test("nothing set: every value with the built-in default as where it came from", async () => {
@@ -855,30 +855,25 @@ describe("the review gate (CM-1)", () => {
   }
 
   test.each([
-    ["set", "autoMerge", ["true"]],
-    ["set", "reviewBeforePush", ["false"]],
-    ["set", "reviewAgents", ["general-purpose"]],
-    ["unset", "reviewBeforePush", []],
-    ["set", "fixesAfterReview.lines", ["0"]],
-    ["set", "fixesAfterReview.files", ["50"]],
-    ["unset", "fixesAfterReview.percent", []],
+    ["autoMerge", "true"],
+    ["reviewBeforePush", "false"],
+    ["reviewAgents", "general-purpose"],
+    ["fixesAfterReview.lines", "0"],
+    ["fixesAfterReview.files", "50"],
   ] as const)(
-    "CM-1: workflow %s %s refuses inside Claude Code, in both files",
-    async (sub, key, value) => {
+    "workflow set %s works inside Claude Code: it writes the person's own file, and unset removes it",
+    async (key, value) => {
       const env = hookEnv();
       const repo = makeRepo();
-      const file = writeClaudeFile(repo, "cc-smart-dev-kit.json", SETTINGS);
-      const before = readFileSync(file, "utf8");
-      for (const where of [[], ["--project"]]) {
-        const run = context(repo, { ...env, CLAUDECODE: "1" });
-        expect(await runWorkflow([sub, key, ...value, ...where], run.context)).toBe(1);
-        expect(run.lines).toEqual([]);
-        expect(run.errors).toEqual([
-          `cc-smart-dev-kit workflow ${sub} ${key} cannot run inside a Claude Code session: ${key} is part of the merge guard's review gate, which only you change. Run it in your own terminal; for the project's policy, change .claude/cc-smart-dev-kit.json there, commit it to the base and push it — the merge guard reads only the committed file.`,
-        ]);
-      }
-      expect(existsSync(cliPaths(env).workflowConfigFile)).toBe(false);
-      expect(readFileSync(file, "utf8")).toBe(before);
+      writeClaudeFile(repo, "cc-smart-dev-kit.json", SETTINGS);
+      const inside = { ...env, CLAUDECODE: "1" };
+      const run = context(repo, inside);
+      expect(await runWorkflow(["set", key, value], run.context)).toBe(0);
+      expect(run.errors).toEqual([]);
+      expect(existsSync(cliPaths(env).workflowConfigFile)).toBe(true);
+      const removed = context(repo, inside);
+      expect(await runWorkflow(["unset", key], removed.context)).toBe(0);
+      expect(removed.errors).toEqual([]);
     },
   );
 
@@ -1035,7 +1030,7 @@ describe("the review gate (CM-1)", () => {
     ]);
   });
 
-  test("CM-1: show prints the gate as the merge guard reads it, from the committed file", async () => {
+  test("CM-1: show prints the gate as merge-check reads it, from the committed file", async () => {
     const env = hookEnv();
     const repo = makeRepo();
     committed(repo, {
@@ -1053,7 +1048,7 @@ describe("the review gate (CM-1)", () => {
     expect(run.lines).toContain("fixesAfterReview.lines = 0 (project)");
     const gate = run.lines.filter((line) => line.startsWith("gate"));
     expect(gate).toEqual([
-      "gate: what the merge guard judges with, from origin/main:.claude/cc-smart-dev-kit.json as committed (this checkout's own copy does not count)",
+      "gate: what merge-check judges with, from origin/main:.claude/cc-smart-dev-kit.json as committed (this checkout's own copy does not count)",
       "gate autoMerge = true (project, committed on origin/main)",
       "gate reviewBeforePush = true (default)",
       "gate reviewAgents = cc-smart-dev-kit:senior-engineer (default)",
@@ -1071,7 +1066,7 @@ describe("the review gate (CM-1)", () => {
     const run = context(repo, env);
     expect(await runWorkflow(["show"], run.context)).toBe(0);
     expect(run.lines.filter((line) => line.startsWith("gate"))).toEqual([
-      "gate: the merge guard cannot read the policy committed on main (origin/main is not known in this repository (no origin, or the branch was never fetched)), so it asks before every merge",
+      "gate: merge-check cannot read the policy committed on main (origin/main is not known in this repository (no origin, or the branch was never fetched)), so it allows no merge",
     ]);
   });
 
@@ -1082,7 +1077,7 @@ describe("the review gate (CM-1)", () => {
     const run = context(repo, env);
     expect(await runWorkflow(["show"], run.context)).toBe(0);
     expect(run.lines.filter((line) => line.startsWith("gate"))).toEqual([
-      "gate: this project names no worktrees.base, so the merge guard reads the policy committed on each pull request's base",
+      "gate: this project names no worktrees.base, so merge-check reads the policy committed on each pull request's base",
     ]);
   });
 
@@ -1310,17 +1305,6 @@ describe("workflow propose: the arguments", () => {
       expect(run.errors[0]).toStartWith(`${why}\n\n`);
       expect(run.lines).toEqual([]);
     }
-  });
-
-  test("inside Claude Code a review-gate key refuses with the pull request as its fix", async () => {
-    const repo = makeRepo();
-    const env = { ...hookEnv(), CLAUDECODE: "1" };
-    const run = context(repo, env);
-    expect(await runWorkflow(["propose", "autoMerge", "true"], run.context)).toBe(1);
-    expect(run.errors).toEqual([
-      `cc-smart-dev-kit workflow propose autoMerge cannot run inside a Claude Code session: autoMerge is part of the merge guard's review gate, which only you change. Run it in your own terminal (\`${COMMAND} workflow propose autoMerge <value>\`): the pull request is the gate.`,
-    ]);
-    expect(run.lines).toEqual([]);
   });
 });
 

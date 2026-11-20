@@ -21,7 +21,8 @@ import type { OwnerSources } from "../user-away/whose";
 import { askLogFile } from "./ask-log";
 import { BUDGET_MARGIN_MS } from "./budget";
 import { toolDecision } from "./io";
-import { gitGuardHook, userAwayHook } from "./specs";
+import type { HookSpec } from "./run";
+import { sessionNameHook, userAwayHook } from "./specs";
 import { askedWhileAway, userAwayAnswer } from "./user-away";
 import { awayStopBlock, awayStopWouldBlock } from "./user-away-stop";
 
@@ -71,6 +72,14 @@ function preToolUse(tool: string, toolInput: Record<string, unknown> = {}) {
 function decisionOf(stdout: string | undefined) {
   return JSON.parse(stdout ?? "{}").hookSpecificOutput;
 }
+
+/** A hook that asks, standing in for a guard: the kit has none left, the frame still turns its ask into a deny. */
+const ASKING: HookSpec = {
+  ...sessionNameHook,
+  name: "asking-hook",
+  events: ["PreToolUse"],
+  run: () => toolDecision("ask", "Approve this call."),
+};
 
 describe("AskUserQuestion and ExitPlanMode", () => {
   test("denied while the person is away, with the step that parks the question", async () => {
@@ -478,22 +487,22 @@ describe("a guard that would ask: the frame turns it into a deny and parks the c
     expect(item?.text).toContain("The command was cut at 16000 characters.");
   });
 
-  test("through the real git guard: the same push asks when available, denies and parks while away", async () => {
+  test("through a hook that asks: the call asks when available, denies and parks while away", async () => {
     const { repo } = makeClone();
-    writeClaudeFile(repo, "cc-smart-dev-kit.json", { protectedBranches: ["main"] });
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", {});
     const env = hookEnv();
-    const input = preToolUse("Bash", { command: "git push --force origin main" });
+    const input = preToolUse("Bash", { command: "ls -la; true" });
     input.cwd = repo;
 
-    const asked = await runHook(gitGuardHook, input, env);
+    const asked = await runHook(ASKING, input, env);
     expect(decisionOf(asked.stdout).permissionDecision).toBe("ask");
 
     await setUnavailable(cliPaths(env).stateDir, Date.now(), null);
-    const denied = await runHook(gitGuardHook, input, env);
+    const denied = await runHook(ASKING, input, env);
     const output = decisionOf(denied.stdout);
     expect(output.permissionDecision).toBe("deny");
     expect(output.permissionDecisionReason).toContain("parked as #1");
-    expect(readAway(cliPaths(env).stateDir).items[0]?.command).toBe("git push --force origin main");
+    expect(readAway(cliPaths(env).stateDir).items[0]?.command).toBe("ls -la; true");
   });
 });
 
@@ -1058,19 +1067,19 @@ describe("what the review found", () => {
 
   test("an ask that became a deny is on the person's list and not in the record of asks", async () => {
     const { repo } = makeClone();
-    writeClaudeFile(repo, "cc-smart-dev-kit.json", { protectedBranches: ["main"] });
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", {});
     const env = hookEnv();
-    const input = preToolUse("Bash", { command: "git push --force origin main" });
+    const input = preToolUse("Bash", { command: "ls -la; true" });
     input.cwd = repo;
     const log = askLogFile(cliPaths(env).stateDir);
     const lines = () =>
       existsSync(log) ? readFileSync(log, "utf8").split("\n").filter(Boolean) : [];
 
-    await runHook(gitGuardHook, input, env);
+    await runHook(ASKING, input, env);
     expect(lines()).toHaveLength(1);
 
     await setUnavailable(cliPaths(env).stateDir, Date.now(), null);
-    const denied = await runHook(gitGuardHook, input, env);
+    const denied = await runHook(ASKING, input, env);
     expect(decisionOf(denied.stdout).permissionDecision).toBe("deny");
     expect(lines()).toHaveLength(1);
   });

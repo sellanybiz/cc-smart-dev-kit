@@ -277,9 +277,13 @@ describe("spawnAndWait in a scope", () => {
   // the nested job a second time.
   test("a nested job run gets one forwarded signal once: the outer wrapper has a scope", async () => {
     const dir = tempDir("scope-nested");
-    const [pidFile, counted, stop, relay] = ["pid", "count", "stop", "relay"].map((name) =>
-      join(dir, name),
-    ) as [string, string, string, string];
+    const [pidFile, counted, stop, relay, outerReady] = [
+      "pid",
+      "count",
+      "stop",
+      "relay",
+      "outer-ready",
+    ].map((name) => join(dir, name)) as [string, string, string, string, string];
     // The outer scope holds the nested job: its kill reaches it.
     const { kills, scope } = deliveringScope(pidFile);
     const outerSignals = new EventEmitter();
@@ -287,13 +291,20 @@ describe("spawnAndWait in a scope", () => {
     // The nested wrapper (no scope) runs the counting job in a group of its own.
     const nested = spawnAndWait(["sh", "-c", counting(pidFile, counted, stop)], nestedSignals);
     // The outer job holds the nested wrapper: it gets the group's INT and the wrapper catches it.
+    // The outer job says it is ready only after its INT trap is in place: a signal that reaches a
+    // shell before then ends it (the default action), and the relay below is never touched.
     const outer = spawnAndWait(
-      ["sh", "-c", `trap 'touch "${relay}"' INT; while [ ! -e "${stop}" ]; do sleep 0.05; done`],
+      [
+        "sh",
+        "-c",
+        `trap 'touch "${relay}"' INT; touch "${outerReady}"; while [ ! -e "${stop}" ]; do sleep 0.05; done`,
+      ],
       outerSignals,
       undefined,
       { scope },
     );
     await waitForPid(pidFile);
+    expect(await until(() => existsSync(outerReady), 5_000)).toBe(true);
     outerSignals.emit("SIGINT");
     // The INT the outer wrapper sent to its group reaches the nested wrapper, which forwards it.
     expect(await until(() => existsSync(relay), 5_000)).toBe(true);

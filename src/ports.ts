@@ -19,8 +19,7 @@ export const LOCK_PORTS = {
 
 /**
  * The port the portal binds when nothing else is asked: 20150, the design's own number. It is
- * not a lock (the portal is a server), but it lives here with the other ports: the session-escape
- * guard (`src/hooks/session-escape-guard.ts`) reads the same number to ask before a Bash command
- * reaches the portal, and the portal command (`src/portal/command.ts`) binds it.
+ * not a lock (the portal is a server), but it lives here with the other ports; the portal
+ * command (`src/portal/command.ts`) binds it.
  */
 export const DEFAULT_PORTAL_PORT = 20_150;

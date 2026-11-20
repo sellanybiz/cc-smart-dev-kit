@@ -3,27 +3,18 @@
  * review tracks. One senior engineer per track on the tier D46 gives the change set (`sonnet`
  * at `high`, or `opus` at `xhigh` for a risky one), a second one to refute every finding on the
  * same tier, and the verified findings merged and ranked. Every launch takes the editing tools
- * away, and every launch is a literal the agent guard allows (`scripts.test.ts` proves it for
- * each shipped script and the guard the plugin ships).
+ * away, and every launch names its model, effort and agent type as literals.
  */
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { GatewayConfig } from "../gateway/config";
-import { type GuardContext, judgeWorkflow } from "../hooks/agent-guard";
 import { REVIEW_MODE_MARKER } from "../hooks/review-record";
-import { loadScriptParser } from "../hooks/script-parser";
 import { TASK_TOOL, taskToolId } from "../tasks/words";
 import { recordsReview } from "../workflow/reviews";
 import { workflowDefaults } from "../workflow/schema";
 import type { AgentCall } from "./script-runner";
 import { runScript } from "./script-runner";
 
-// The guard's bundle loads its script parser in its entry; this file judges a script too.
-loadScriptParser();
-
 const REVIEW_SPLIT = join(import.meta.dir, "..", "..", "plugin", "workflows", "review-split.js");
-const NO_ENV = {} as Record<string, string | undefined>;
 const REVIEWER = "cc-smart-dev-kit:senior-engineer";
 /** The kit's task tools that write: a reviewer reports, it never changes the task ledger. */
 const TASK_WRITES = ["create", "update", "done", "note", "delete", "take"] as const;
@@ -394,20 +385,20 @@ describe("the review-split workflow", () => {
     expect(run.calls[0]?.options).toMatchObject({ effort: "xhigh", model: "opus" });
   });
 
-  test("its literal agentType matches the schema default for the merge guard", () => {
-    const script = readFileSync(REVIEW_SPLIT, "utf8");
-    const launches = judgeWorkflow(
-      script,
-      { config: null, gatewayOn: false, sessionModel: null },
-      NO_ENV,
-    );
-    expect(launches.length).toBe(4);
+  test("its agentType is the schema default review agent, so the review record counts it", async () => {
     expect(workflowDefaults.reviewAgents[0]).toBe(REVIEWER);
-    for (const launch of launches) {
-      expect(launch.launch.agentType).toBe(REVIEWER);
-      expect(recordsReview(launch.launch.agentType ?? "", workflowDefaults.reviewAgents)).toBe(
-        true,
-      );
+    for (const risky of [false, true]) {
+      const run = await runScript(REVIEW_SPLIT, {
+        answer: answers([finding("A")]),
+        args: { base: "main", risky, tracks: ["craft"] },
+      });
+      expect(run.calls.length).toBeGreaterThan(1);
+      for (const call of run.calls) {
+        expect(call.options.agentType).toBe(REVIEWER);
+        expect(recordsReview(String(call.options.agentType), workflowDefaults.reviewAgents)).toBe(
+          true,
+        );
+      }
     }
   });
 
@@ -458,28 +449,6 @@ describe("the review-split workflow", () => {
     expect(report).toContain("## Hunches (unproven, never findings)");
     expect(report).toContain("- maybe B");
     expect(report).toContain("track 1 (craft): read src/a.ts, not src/b.ts");
-  });
-
-  test("with the gateway on and an affordable worker slot, the guard still allows every launch", () => {
-    const workerBackend: GatewayConfig = {
-      aliases: {},
-      anthropicBaseUrl: "https://api.anthropic.com",
-      backends: { omniroute: { apiKey: "k", baseUrl: "http://127.0.0.1:9" } },
-      modelSlots: {},
-      port: 20100,
-      slots: { "cc-smart-dev-kit-worker": ["omniroute:glm-5.3-flash", "claude-sonnet-5-5"] },
-      timeouts: { firstByteMs: 60_000 },
-      version: 1,
-    };
-    const context: GuardContext = { config: workerBackend, gatewayOn: true, sessionModel: null };
-    const script = readFileSync(REVIEW_SPLIT, "utf8");
-    // The ordinary and the risky launch sets: each allowed, on a plain machine and behind the slot.
-    expect(judgeWorkflow(script, context, NO_ENV).map((one) => one.verdict.decision)).toEqual([
-      "allow",
-      "allow",
-      "allow",
-      "allow",
-    ]);
   });
 });
 

@@ -786,7 +786,7 @@ function projectForm(
     .map(protectedChip)
     .join("")}<button type="button" class="btn dashed" data-add-protected>+ add</button></div>
 <template data-chip-template>${protectedChip("")}</template>
-<p class="small muted">The git guard still asks you before a push or a force push to any of these.</p>
+<p class="small muted">A session never pushes straight to any of these.</p>
 </div>
 
 <div class="col g8">
@@ -1155,7 +1155,7 @@ ${privacyStep(1, "Who can open it", [
     text: `It starts with Claude Code, in the background, and stays up: a new session starts it when it is not running, and a plugin update hands it over to the new version. <span class="mono">${COMMAND} portal</span> opens it, <span class="mono">${COMMAND} portal stop</span> stops it.`,
   },
   {
-    text: `There is no sign-in: <b>every program and every account on this machine can open it</b> — a Claude session's own <span class="mono">curl</span> included — and can change the slots, the judge, the updates and the settings. That is a deliberate trade-off. The session-escape guard asks you before a session's shell command reaches this port.`,
+    text: `There is no sign-in: <b>every program and every account on this machine can open it</b> — a Claude session's own <span class="mono">curl</span> included — and can change the slots, the judge, the updates and the settings. That is a deliberate trade-off.`,
     tone: "warn",
   },
   {

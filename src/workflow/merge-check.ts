@@ -241,11 +241,6 @@ export type MergeVerdict =
       /** The short sentence both the guard's `allow` and the command print. */
       reason: string;
     }
-  /**
-   * The project runs its own merge guard (`ownHooks` in the committed file): that one answers,
-   * so this check says nothing. Only the hook uses this; the command prints it as no verdict.
-   */
-  | { kind: "silent" }
   | { detail: MergeDetail | null; kind: "refused"; number: number | null; reason: string }
   | { kind: "unread"; number: number | null; what: string }
   | { kind: "late"; number: number | null; what: string };
@@ -619,9 +614,6 @@ export async function checkPullRequest(
     };
   }
   const { resolved, config: committed } = read.gate;
-  // The project runs its own merge guard, as its committed policy says: that one answers.
-  if (committed?.ownHooks?.includes("merge-guard") === true) return { kind: "silent" };
-
   const where = target.repo ?? "";
   if (!defaultBranches.has(where)) {
     const branchLeft = world.timeFor(GH_TIMEOUT_MS);

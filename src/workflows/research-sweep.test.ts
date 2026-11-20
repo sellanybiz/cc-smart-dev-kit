@@ -1,24 +1,15 @@
 /**
  * `plugin/workflows/research-sweep.js`: the run the `research-first` skill starts for a question
- * with several sources. One `researcher` per angle on `sonnet` at `high` (the guard allows it on
- * any tier), one `researcher` per claim on `opus` at `high` to refute it at the cited source, all
- * allowed by the agent guard. The script returns the verified claims, the
+ * with several sources. One `researcher` per angle on `sonnet` at `high` (any tier),
+ * one `researcher` per claim on `opus` at `high` to refute it at the cited source. The script returns the verified claims, the
  * refuted ones, the unproven ones and the ones past the budget; it never drops a claim.
  */
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { GatewayConfig } from "../gateway/config";
-import { type GuardContext, judgeWorkflow } from "../hooks/agent-guard";
-import { loadScriptParser } from "../hooks/script-parser";
 import type { AgentCall } from "./script-runner";
 import { runScript } from "./script-runner";
 
-// The guard's bundle loads its script parser in its entry; this file judges a script too.
-loadScriptParser();
-
 const SWEEP = join(import.meta.dir, "..", "..", "plugin", "workflows", "research-sweep.js");
-const NO_ENV = {} as Record<string, string | undefined>;
 
 /** One claim, as a researcher's schema returns it. */
 function claim(text: string, weight: "decisive" | "supporting" = "decisive") {
@@ -306,24 +297,5 @@ describe("the research-sweep workflow", () => {
         expect(calls).toEqual([]);
       });
     }
-  });
-
-  test("with the gateway on and an affordable worker slot, the guard still allows every launch", () => {
-    const workerBackend: GatewayConfig = {
-      aliases: {},
-      anthropicBaseUrl: "https://api.anthropic.com",
-      backends: { omniroute: { apiKey: "k", baseUrl: "http://127.0.0.1:9" } },
-      modelSlots: {},
-      port: 20100,
-      slots: { "cc-smart-dev-kit-worker": ["omniroute:glm-5.3-flash", "claude-sonnet-5-5"] },
-      timeouts: { firstByteMs: 60_000 },
-      version: 1,
-    };
-    const context: GuardContext = { config: workerBackend, gatewayOn: true, sessionModel: null };
-    const script = readFileSync(SWEEP, "utf8");
-    expect(judgeWorkflow(script, context, NO_ENV).map((one) => one.verdict.decision)).toEqual([
-      "allow",
-      "allow",
-    ]);
   });
 });

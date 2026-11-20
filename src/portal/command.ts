@@ -11,8 +11,7 @@
  *
  * There is no sign-in any more (D9): the door is the `Host`, `Origin` and `Sec-Fetch-Site`
  * checks plus the CSRF token (`guard.ts`), and nothing here refuses inside a Claude Code
- * session. The session-escape guard asks the person before a session's shell command reaches
- * this port, which is the seatbelt that replaced the refusal.
+ * session.
  *
  * **It never opens the browser Claude drives.** When Chrome's `claude-code` profile — the one
  * Claude Code drives — is on this machine, `portal` opens no browser at all: Chrome opens an

@@ -3027,7 +3027,7 @@ describe("the settings page", () => {
       const page = await world.call("/settings");
       expect(page.status).toBe(200);
       expect(page.body).toContain(
-        "! openPr opens a pull request, but autoPush is off: the git guard asks before the push that pull request needs, so it waits for you every time. Fix: turn autoPush on (`cc-smart-dev-kit workflow set autoPush true`), or set openPr off (`cc-smart-dev-kit workflow set openPr off`).",
+        "! openPr opens a pull request, but autoPush is off: a session does not push, and that pull request needs the push, so it waits for you every time. Fix: turn autoPush on (`cc-smart-dev-kit workflow set autoPush true`), or set openPr off (`cc-smart-dev-kit workflow set openPr off`).",
       );
     } finally {
       world.portal.stop();

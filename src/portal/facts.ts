@@ -1231,7 +1231,7 @@ export async function settingsData(
     : null;
   return {
     autoMerge,
-    clashes: clashesOf(resolved, base),
+    clashes: clashesOf(resolved),
     error: null,
     projectNote,
     rows,

@@ -15,14 +15,8 @@ import { resolveWorkflow } from "./resolve";
 /** The one clash each pair gives, written out by hand from D16. */
 const OPEN_PR_WITHOUT_PUSH = {
   fix: `turn autoPush on (\`${COMMAND} workflow set autoPush true\`), or set openPr off (\`${COMMAND} workflow set openPr off\`)`,
-  line: "openPr opens a pull request, but autoPush is off: the git guard asks before the push that pull request needs, so it waits for you every time",
+  line: "openPr opens a pull request, but autoPush is off: a session does not push, and that pull request needs the push, so it waits for you every time",
   setting: "openPr" as const,
-};
-
-const MERGE_WITHOUT_BASE = {
-  fix: `name the integration base in .claude/cc-smart-dev-kit.json ("worktrees": {"base": "<branch>"}), or turn autoMerge off (\`${COMMAND} workflow set autoMerge false\`)`,
-  line: "autoMerge is on, but the project names no integration base (worktrees.base), so the merge guard asks before every merge",
-  setting: "autoMerge" as const,
 };
 
 const DRAFT_WITH_MERGE = {
@@ -33,56 +27,46 @@ const DRAFT_WITH_MERGE = {
 
 describe("D16: the settings that cannot work together", () => {
   test("D16: the defaults work together, and name no clash", () => {
-    expect(
-      workflowClashes({ autoMerge: false, autoPush: false, base: "integration", openPr: "off" }),
-    ).toEqual([]);
+    expect(workflowClashes({ autoMerge: false, autoPush: false, openPr: "off" })).toEqual([]);
     // Everything on, with an integration base: nothing waits for a person by surprise.
-    expect(
-      workflowClashes({ autoMerge: true, autoPush: true, base: "integration", openPr: "ready" }),
-    ).toEqual([]);
+    expect(workflowClashes({ autoMerge: true, autoPush: true, openPr: "ready" })).toEqual([]);
     // A draft pull request with autoPush on and no autoMerge is a plain choice.
-    expect(
-      workflowClashes({ autoMerge: false, autoPush: true, base: null, openPr: "draft" }),
-    ).toEqual([]);
+    expect(workflowClashes({ autoMerge: false, autoPush: true, openPr: "draft" })).toEqual([]);
   });
 
   test("D16: openPr on with autoPush off names the push it waits for, and both fixes", () => {
-    expect(
-      workflowClashes({ autoMerge: false, autoPush: false, base: "integration", openPr: "ready" }),
-    ).toEqual([OPEN_PR_WITHOUT_PUSH]);
-    expect(
-      workflowClashes({ autoMerge: false, autoPush: false, base: "integration", openPr: "draft" }),
-    ).toEqual([OPEN_PR_WITHOUT_PUSH]);
+    expect(workflowClashes({ autoMerge: false, autoPush: false, openPr: "ready" })).toEqual([
+      OPEN_PR_WITHOUT_PUSH,
+    ]);
+    expect(workflowClashes({ autoMerge: false, autoPush: false, openPr: "draft" })).toEqual([
+      OPEN_PR_WITHOUT_PUSH,
+    ]);
   });
 
-  test("D16: autoMerge on with no integration base names the branch it needs, and both fixes", () => {
-    expect(workflowClashes({ autoMerge: true, autoPush: true, base: null, openPr: "off" })).toEqual(
-      [MERGE_WITHOUT_BASE],
-    );
+  test("autoMerge on with no integration base is no clash: it merges into the default branch", () => {
+    expect(workflowClashes({ autoMerge: true, autoPush: true, openPr: "off" })).toEqual([]);
   });
 
   test("D16: autoMerge on with openPr draft names the pull request that never merges", () => {
-    expect(
-      workflowClashes({ autoMerge: true, autoPush: true, base: "integration", openPr: "draft" }),
-    ).toEqual([DRAFT_WITH_MERGE]);
+    expect(workflowClashes({ autoMerge: true, autoPush: true, openPr: "draft" })).toEqual([
+      DRAFT_WITH_MERGE,
+    ]);
   });
 
   test("D16: each clash is named once, with its fix, in the order a person reads them", () => {
     const lines = clashLines(
-      workflowClashes({ autoMerge: true, autoPush: false, base: null, openPr: "draft" }),
+      workflowClashes({ autoMerge: true, autoPush: false, openPr: "draft" }),
     );
     expect(lines).toEqual([
       `! ${OPEN_PR_WITHOUT_PUSH.line}. Fix: ${OPEN_PR_WITHOUT_PUSH.fix}.`,
-      `! ${MERGE_WITHOUT_BASE.line}. Fix: ${MERGE_WITHOUT_BASE.fix}.`,
       `! ${DRAFT_WITH_MERGE.line}. Fix: ${DRAFT_WITH_MERGE.fix}.`,
     ]);
     // Each line names its setting once, and its own fix, never another clash's.
     expect(lines[0]).toContain("autoPush is off");
-    expect(lines[1]).toContain("names no integration base");
-    expect(lines[2]).toContain("draft pull request is never merged");
+    expect(lines[1]).toContain("draft pull request is never merged");
   });
 
-  test("D16: clashesOf reads the resolved values and the project's integration base", () => {
+  test("D16: clashesOf reads the resolved values", () => {
     const env = hookEnv();
     const paths = cliPaths(env);
     mkdirSync(dirname(paths.workflowConfigFile), { recursive: true });
@@ -90,14 +74,11 @@ describe("D16: the settings that cannot work together", () => {
       paths.workflowConfigFile,
       `${JSON.stringify({ autoMerge: true, autoPush: true, openPr: "draft" }, null, 2)}\n`,
     );
-    // A project with an integration base: only the draft pull request is a clash.
-    expect(
-      clashesOf(resolveWorkflow(paths, { worktrees: { base: "integration" } }), "integration"),
-    ).toEqual([DRAFT_WITH_MERGE]);
-    // The same settings with no base: autoMerge has no branch it may merge into.
-    expect(clashesOf(resolveWorkflow(paths, null), null)).toEqual([
-      MERGE_WITHOUT_BASE,
+    // Only the draft pull request is a clash.
+    expect(clashesOf(resolveWorkflow(paths, { worktrees: { base: "integration" } }))).toEqual([
       DRAFT_WITH_MERGE,
     ]);
+    // The same settings with no project: the same clash.
+    expect(clashesOf(resolveWorkflow(paths, null))).toEqual([DRAFT_WITH_MERGE]);
   });
 });

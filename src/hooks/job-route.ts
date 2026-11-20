@@ -1,28 +1,24 @@
 /**
- * The `job-route` hook: PreToolUse on Bash and PowerShell, the kit's one shell judge. It keeps
- * its public name (`ownHooks` values, project files and `hooks.json` stay valid) and does two
- * jobs.
+ * The `job-route` hook: PreToolUse on Bash and PowerShell, the heavy-job queue's door and the
+ * kit's one guard. It keeps its public name (`ownHooks` values, project files and `hooks.json`
+ * stay valid) and does one job: sends a heavy command through the machine's queue, or refuses
+ * a heavy run mixed with other commands. It never asks the person anything, and it judges
+ * nothing else: a launch, a push, a merge and a deploy are Claude's own to run.
  *
- * **The launch judge** (`bash-judge.ts`, the rules; this file, the answer). It is
- * **machine-wide** (`HookSpec.alwaysOn`): a raw `claude --bg` asks the person (and is refused in
- * `claude -p`); `claude -p` is judged by the launch policy (`judgeLaunch`, the same one the
- * Agent guard uses); and `workflow propose` asks where the push gate says the push or the pull
- * request is the person's. **It ignores the project's file**: a session cannot switch the
- * limits on its own launches off by editing `cc-smart-dev-kit.json`, so the frame skips the
- * `ownHooks` step for this hook. It runs outside git too, and with a broken or too new
- * `cc-smart-dev-kit.json`.
+ * It is **machine-wide** (`HookSpec.alwaysOn`): `ownHooks` cannot switch it off. Outside git, and
+ * with a broken or too new `cc-smart-dev-kit.json`, there is no project to route for, so it
+ * leaves the line as written.
  *
  * **Both shells.** The hook is wired on Bash and PowerShell, and it reads a line in the
  * dialect of the tool that runs it (`dialectOfTool`): on native Windows the PowerShell tool is
- * one command away, and a judge that read only Bash would let a launch through
+ * one command away, and a reader of Bash alone would miss a heavy run
  * there. The queue's rewrite stays Bash-only: the rewritten line names the launcher and, for
  * anything but one plain command, a `sh -c` line, which the PowerShell tool cannot run, and a
  * wrong rewrite is worse than none. So where the route is on, a PowerShell line that runs a
  * heavy command is **refused**, with the Bash tool and (for one plain command) the exact Bash
  * line to run there, which the Bash tool then queues (`powerShellDenial`). Only where the Bash
  * tool exists: on Windows it needs Git Bash, and with none
- * (`bashToolExists`) the line is left as written. Any other PowerShell line is judged and left
- * as it is.
+ * (`bashToolExists`) the line is left as written. Any other PowerShell line is left as it is.
  *
  * **The job route** (the switch `switches.jobRoute`: the project's `"jobs": { "route": true }`
  * when it sets one, else the person's machine-wide default in their workflow file, else off;
@@ -135,14 +131,6 @@ import { gitCalls, longOption } from "../shell/git-calls";
 import { programName } from "../shell/program-name";
 import { shellQuote, shellWord } from "../shell/quote";
 import { resolveJobRoute } from "../workflow/resolve";
-import {
-  type BashVerdict,
-  commandOf,
-  judgeAnswer,
-  judgeBash,
-  judgedDomain,
-  readBash,
-} from "./bash-judge";
 import { SHORT_GUARD_BUDGET_MS, startBudget } from "./budget";
 import { GUARD_GIT_TIMEOUT_MS } from "./git";
 import {
@@ -153,7 +141,7 @@ import {
   toolDecision,
   toolInput,
 } from "./io";
-import type { Env, HookContext, HookEnvContext } from "./run";
+import type { Env, HookContext } from "./run";
 
 /**
  * A character whose shell meaning quoting would change (an expansion, a glob, a redirect, a
@@ -656,17 +644,9 @@ export function routesHeavyCommands(context: HookContext): boolean {
   return resolveJobRoute(context.paths, context.project.config).value;
 }
 
-/** The judge's answer for one command, or null; the part that runs outside the project. */
-export function judgeCommandAnswer(input: HookInput, context: HookEnvContext): null | HookResult {
-  const command = commandOf(input);
-  if (command === null) return null;
-  const verdict = judgeBash(readBash(command, inputDialect(input)), {
-    env: context.env,
-    input,
-    paths: context.paths,
-    startedAtMs: context.nowMs,
-  });
-  return verdict === null ? null : judgeAnswer(verdict);
+/** The command of a shell call, or null when the input names none. */
+function commandOf(input: HookInput): null | string {
+  return stringField(toolInput(input).command);
 }
 
 /**
@@ -678,10 +658,7 @@ function inputDialect(input: HookInput): Dialect {
 }
 
 /**
- * The hook: the judge first, then the route.
- *
- * A judged line answers the judge and goes no further: an ask or a denial is never combined
- * with a rewrite.
+ * The hook: the route.
  *
  * **A Bash line** is, in this order: queued whole (`routeHeavyCommand`), refused when it mixes
  * heavy work with commands that are not glue (`mixedLineDenial`), or given the hooks prefix for
@@ -692,7 +669,7 @@ function inputDialect(input: HookInput): Dialect {
  * (`routedShell`), and the PowerShell tool cannot run one. So where the route is on, a heavy
  * PowerShell line is refused instead, naming the Bash tool (`powerShellDenial`) — but only where
  * the Bash tool exists (`bashTool`, Git Bash on Windows): with none, the line is left as written.
- * Any other PowerShell line is judged and otherwise left exactly as the model wrote it.
+ * Any other PowerShell line is left exactly as the model wrote it.
  */
 export function jobRoute(
   context: HookContext,
@@ -703,13 +680,6 @@ export function jobRoute(
   const command = stringField(fields.command);
   if (command === null) return SILENT;
   const dialect = inputDialect(context.input);
-  const verdict: BashVerdict | null = judgeBash(readBash(command, dialect), {
-    env: context.env,
-    input: context.input,
-    paths: context.paths,
-    startedAtMs: context.nowMs,
-  });
-  if (verdict !== null) return judgeAnswer(verdict);
   const kinds = mergeKinds(context.project.config?.jobs?.kinds);
   // The Bash tool's shell starts in the input's `cwd`; the classifier follows a `cd`.
   const source = diskWeightSource(context.cwd);
@@ -738,79 +708,13 @@ export function jobRoute(
 }
 
 /**
- * The answer when cc-smart-dev-kit.json is broken or needs a newer plugin. The judge runs
- * anyway (it ignores the file). Otherwise routing cannot be read: a heavy command is asked
- * about rather than run raw, exactly as before. A line outside both is left alone.
+ * The facts for the hook log: for a Bash line run in a known folder, how the queue weighs it
+ * (light, heavy or none), so `doctor --live` can prove the hook read the command line.
  */
-export function jobRouteConfigAnswer(
-  message: string,
-  input: HookInput,
-  context: HookEnvContext,
-): HookResult {
-  const judged = judgeCommandAnswer(input, context);
-  if (judged !== null) return judged;
-  const command = commandOf(input);
-  const dialect = inputDialect(input);
-  // A heavy PowerShell line is refused where the route is on, so it is asked about here too —
-  // unless there is no Bash tool to run it in, where it is left as written (`jobRoute`). A light
-  // run is neither routed nor refused, so it is not asked about either.
-  if (
-    command === null ||
-    heavyRunKind(command, mergeKinds(undefined), weightSourceOf(input), dialect) === null ||
-    (dialect !== "bash" && !bashToolExists(context.env))
-  ) {
-    return SILENT;
-  }
-  return toolDecision(
-    "ask",
-    `cc-smart-dev-kit cannot check whether this project routes heavy commands through its job queue: ${message}`,
-  );
-}
-
-/** The answer outside git: the judge alone (routing is a project's, and there is none here). */
-export function jobRouteOutsideGit(input: HookInput, context: HookEnvContext): HookResult {
-  return judgeCommandAnswer(input, context) ?? SILENT;
-}
-
-/**
- * True when a crash must ask: the line is judged, or a heavy command by the default kinds. A
- * light run is outside it: the route would have left it raw. A check that throws is a yes
- * (`guardCrash`), so a line this cannot read still asks.
- */
-export function jobRouteDomain(input: HookInput): boolean {
-  const command = commandOf(input);
-  if (command === null) return false;
-  const dialect = inputDialect(input);
-  if (judgedDomain(readBash(command, dialect))) return true;
-  // A heavy line of either shell: the route rewrites a Bash one and may refuse a PowerShell one.
-  return heavyRunKind(command, mergeKinds(undefined), weightSourceOf(input), dialect) !== null;
-}
-
-/**
- * The facts for the hook log: what the judge read (its launches and decision) and, for a Bash
- * line run in a known folder, how the queue weighs it (light, heavy or none), so `doctor --live`
- * can prove both parts answered.
- */
-export function routeFacts(input: HookInput, context: HookEnvContext): Record<string, unknown> {
+export function routeFacts(input: HookInput): Record<string, unknown> {
   const command = commandOf(input);
   if (command === null) return {};
-  const reading = readBash(command, inputDialect(input));
-  const verdict = judgeBash(reading, {
-    env: context.env,
-    input,
-    paths: context.paths,
-    startedAtMs: context.nowMs,
-  });
-  const facts: Record<string, unknown> = {};
   const source = weightSourceOf(input);
-  if (source !== null && inputDialect(input) === "bash") {
-    facts.weight = runWeight(command, mergeKinds(undefined), source).weight;
-  }
-  if (reading.launches.length > 0) facts.launches = reading.launches.map((one) => one.form);
-  if (reading.workflowPropose) facts.workflow_propose = true;
-  if (verdict !== null) {
-    facts.decision = verdict.decision;
-    facts.why = verdict.why;
-  }
-  return facts;
+  if (source === null || inputDialect(input) !== "bash") return {};
+  return { weight: runWeight(command, mergeKinds(undefined), source).weight };
 }

@@ -864,25 +864,6 @@ describe("Claude Code's own worktrees, and the retired engine", () => {
     ]);
   });
 
-  test("a project Bash hook beside deploy-guard: a warning only when the project sets tasks.deployCommands", async () => {
-    const repo = makeRepo();
-    writeClaudeFile(repo, "settings.json", {
-      hooks: {
-        PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: "./guard.sh" }] }],
-      },
-    });
-    const deployGuardLines = async () =>
-      (await check(repo)).filter((line) => line.includes("plugin's deploy-guard"));
-    writeClaudeFile(repo, "cc-smart-dev-kit.json", { worktrees: { base: "main" } });
-    expect(await deployGuardLines()).toEqual([]);
-    writeClaudeFile(repo, "cc-smart-dev-kit.json", {
-      tasks: { deployCommands: { prod: ["vercel --prod"] } },
-    });
-    expect(await deployGuardLines()).toEqual([
-      "! project: the plugin's deploy-guard and the project's ./guard.sh (.claude/settings.json) both run on PreToolUse (Bash), so both may answer. If that is the project's own copy of deploy-guard, list \"deploy-guard\" in ownHooks in .claude/cc-smart-dev-kit.json until the copy is removed",
-    ]);
-  });
-
   test("D20: engine lines with no cc-smart-dev-kit.json at all: still named, each fails", async () => {
     const repo = makeRepo();
     wireOnly(repo, ["WorktreeCreate", "WorktreeRemove"]);
@@ -968,9 +949,6 @@ describe("a project that used the old anymodel name", () => {
     });
     expect(await check(repo)).toEqual([
       engineLine(".claude/settings.json", ["worktree-create", "worktree-remove", "subagent-stop"]),
-      "! project: the plugin's git-guard and the project's ./note-anymodel.sh (.claude/settings.json) both run on PreToolUse (Bash), so both may answer. If that is the project's own copy of git-guard, list \"git-guard\" in ownHooks in .claude/cc-smart-dev-kit.json until the copy is removed",
-      "! project: the plugin's merge-guard and the project's ./note-anymodel.sh (.claude/settings.json) both run on PreToolUse (Bash), so both may answer. If that is the project's own copy of merge-guard, list \"merge-guard\" in ownHooks in .claude/cc-smart-dev-kit.json until the copy is removed",
-      "! project: the plugin's main-folder-guard and the project's ./note-anymodel.sh (.claude/settings.json) both run on PreToolUse (Bash), so both may answer. If that is the project's own copy of main-folder-guard, list \"main-folder-guard\" in ownHooks in .claude/cc-smart-dev-kit.json until the copy is removed",
       "! project: the plugin's job-route and the project's ./note-anymodel.sh (.claude/settings.json) both run on PreToolUse (Bash), so both may answer. The plugin's job-route cannot be switched off (it judges every launch): remove the project's copy, or keep it knowing both answer",
     ]);
   });
@@ -1011,9 +989,6 @@ describe("the project's own copies of plugin hooks (ownHooks)", () => {
     writeClaudeFile(repo, "cc-smart-dev-kit.json", { sessionNames: true });
     wireOnly(repo, [], OTHERS);
     expect(await check(repo)).toEqual([
-      both("git-guard", "./guard.sh", "PreToolUse (Bash)"),
-      both("merge-guard", "./guard.sh", "PreToolUse (Bash)"),
-      both("main-folder-guard", "./guard.sh", "PreToolUse (Bash)"),
       bothJobRoute("./guard.sh", "PreToolUse (Bash)"),
       both("worktree-leftovers", "./hello.sh", "SessionStart (startup)"),
       both("session-name", "./hello.sh", "SessionStart (startup)"),
@@ -1032,10 +1007,8 @@ describe("the project's own copies of plugin hooks (ownHooks)", () => {
     writeClaudeFile(repo, "cc-smart-dev-kit.json", { ownHooks: ["git-guard", "session-name"] });
     wireOnly(repo, [], OTHERS);
     expect(await check(repo)).toEqual([
-      "· project: the plugin's git-guard is off here: .claude/cc-smart-dev-kit.json lists it in ownHooks, so the project's own copy answers alone",
+      '· project: .claude/cc-smart-dev-kit.json lists git-guard in ownHooks, a plugin hook that is retired: it silences nothing. Take "git-guard" out of ownHooks',
       "· project: the plugin's session-name is off here: .claude/cc-smart-dev-kit.json lists it in ownHooks, so the project's own copy answers alone",
-      both("merge-guard", "./guard.sh", "PreToolUse (Bash)"),
-      both("main-folder-guard", "./guard.sh", "PreToolUse (Bash)"),
       bothJobRoute("./guard.sh", "PreToolUse (Bash)"),
       both("worktree-leftovers", "./hello.sh", "SessionStart (startup)"),
     ]);
@@ -1053,27 +1026,11 @@ describe("the project's own copies of plugin hooks (ownHooks)", () => {
     ]);
   });
 
-  test("a project hook on the Agent event: no warning for the machine-wide agent-guard", async () => {
-    const repo = makeRepo();
-    writeClaudeFile(repo, "cc-smart-dev-kit.json", { sessionNames: true });
-    wireOnly(repo, [], {
-      PreToolUse: [
-        {
-          matcher: "Agent|Task|Workflow",
-          hooks: [{ type: "command", command: "./agent-guard.sh" }],
-        },
-      ],
-    });
-    // The machine-wide hooks (notify, update-check, agent-guard) answer about the machine,
-    // not this project: a project hook beside one is not a second copy of a plugin piece.
-    expect(await check(repo)).toEqual([]);
-  });
-
   test("a listed hook with no project hook left on its event: ! nothing answers in its place", async () => {
     const repo = makeRepo();
-    writeClaudeFile(repo, "cc-smart-dev-kit.json", { ownHooks: ["main-folder-guard"] });
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", { ownHooks: ["verify-gate"] });
     expect(await check(repo)).toEqual([
-      "! project: .claude/cc-smart-dev-kit.json lists main-folder-guard in ownHooks, so the plugin's main-folder-guard is off here, but the project's settings wire no hook on PreToolUse (Edit, Write, NotebookEdit, Bash): nothing answers in its place. Take \"main-folder-guard\" out of ownHooks once the project's copy is gone",
+      "! project: .claude/cc-smart-dev-kit.json lists verify-gate in ownHooks, so the plugin's verify-gate is off here, but the project's settings wire no hook on Stop: nothing answers in its place. Take \"verify-gate\" out of ownHooks once the project's copy is gone",
     ]);
   });
 
@@ -1089,6 +1046,25 @@ describe("the project's own copies of plugin hooks (ownHooks)", () => {
         (l) => l.ok,
       ),
     ).toBe(true);
+  });
+
+  test("the six guards of 5.7.0 in ownHooks still parse, and doctor names each as retired", async () => {
+    const guards = [
+      "git-guard",
+      "merge-guard",
+      "deploy-guard",
+      "main-folder-guard",
+      "agent-guard",
+      "session-escape-guard",
+    ];
+    const repo = makeRepo();
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", { ownHooks: guards });
+    expect(await check(repo)).toEqual(
+      guards.map(
+        (name) =>
+          `· project: .claude/cc-smart-dev-kit.json lists ${name} in ownHooks, a plugin hook that is retired: it silences nothing. Take "${name}" out of ownHooks`,
+      ),
+    );
   });
 
   test("message-guard in ownHooks still parses and doctor names it as retired", async () => {
@@ -1112,9 +1088,6 @@ describe("the project's own copies of plugin hooks (ownHooks)", () => {
     });
     expect(await check(repo)).toEqual([
       '· project: .claude/cc-smart-dev-kit.json lists job-route in ownHooks, a plugin hook no project can switch off any more: it silences nothing. Take "job-route" out of ownHooks',
-      both("git-guard", "./guard.sh", "PreToolUse (Bash)"),
-      both("merge-guard", "./guard.sh", "PreToolUse (Bash)"),
-      both("main-folder-guard", "./guard.sh", "PreToolUse (Bash)"),
       bothJobRoute("./guard.sh", "PreToolUse (Bash)"),
     ]);
   });
@@ -1456,9 +1429,6 @@ describe("deploy tasks in doctor's project group", () => {
 });
 
 describe("the deploy-skill block in doctor", () => {
-  /** The `·` line a project with a deploy skill and no deploy commands gets. */
-  const NO_COMMANDS =
-    "· project: the project has a deploy skill but lists no deploy commands in tasks.deployCommands, so the deploy guard never asks before a deploy Fix: cc-smart-dev-kit project init asks for the commands";
   const OLD = `${BLOCK_BEGIN}\n## Deploy tasks\nold text\n${BLOCK_END}\n`;
   const CURRENT = `${BLOCK_BEGIN}\n${deployBlockBody()}\n${BLOCK_END}\n`;
 
@@ -1478,7 +1448,6 @@ describe("the deploy-skill block in doctor", () => {
     skill(repo, "deploy", `# Deploy\n${OLD}`);
     expect(await check(repo)).toEqual([
       "! project: the deploy-skill block in .claude/skills/deploy/SKILL.md is out of date Fix: cc-smart-dev-kit project init rewrites it",
-      NO_COMMANDS,
     ]);
   });
 
@@ -1488,7 +1457,6 @@ describe("the deploy-skill block in doctor", () => {
     writeClaudeFile(repo, "cc-smart-dev-kit.json", { requires: ">=1.0" });
     expect(await check(repo)).toEqual([
       '! project: .claude/cc-smart-dev-kit.json says requires ">=1.0", but its fields and its deploy tasks need ">=5.0": a teammate on an older plugin gets the whole file refused instead of "update" Fix: cc-smart-dev-kit project init raises it to ">=5.0"',
-      NO_COMMANDS,
     ]);
   });
 
@@ -1508,14 +1476,14 @@ describe("the deploy-skill block in doctor", () => {
     const repo = project();
     skill(repo, "deploy", `# Deploy\n${CURRENT}`);
     skill(repo, "deploy-other", "no block here");
-    expect(await check(repo)).toEqual([NO_COMMANDS]);
+    expect(await check(repo)).toEqual([]);
   });
 
-  test("a deploy skill and no deployCommands: one · line; with the field, a project without a skill, or without a file: nothing", async () => {
+  test("a deploy skill and no deployCommands: nothing to say, with the field or without it", async () => {
     const repo = project();
     expect(await check(repo)).toEqual([]);
     skill(repo, "deploy", `# Deploy\n${CURRENT}`);
-    expect(await check(repo)).toEqual([NO_COMMANDS]);
+    expect(await check(repo)).toEqual([]);
     writeClaudeFile(repo, "cc-smart-dev-kit.json", {
       requires: ">=5.3",
       tasks: { deployCommands: { prod: ["vercel --prod"] } },
@@ -1526,7 +1494,7 @@ describe("the deploy-skill block in doctor", () => {
   test("a skill that only names a deploy (no block yet) counts as a deploy skill", async () => {
     const repo = project();
     skill(repo, "deploy-prod", "Use when you deploy this project to prod.");
-    expect(await check(repo)).toEqual([NO_COMMANDS]);
+    expect(await check(repo)).toEqual([]);
   });
 
   test("a project without cc-smart-dev-kit.json: no line", async () => {

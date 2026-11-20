@@ -13,14 +13,10 @@ import { allowsNewer, isValidRange, lowestAllowed, satisfiesRange } from "./vers
 /**
  * The hooks the plugin wires in `plugin/hooks/hooks.json`, by name: what `ownHooks` may list
  * to switch a plugin hook off. A test keeps it the same as `HOOKS` in `src/hooks/specs.ts`,
- * except the hooks marked `alwaysOn` (`session-escape-guard`, `job-route`): a project cannot
+ * except the hooks marked `alwaysOn` (`job-route`, `user-away`): a project cannot
  * switch those off, so their names are not here.
  */
 export const PLUGIN_HOOK_NAMES = [
-  "git-guard",
-  "merge-guard",
-  "main-folder-guard",
-  "agent-guard",
   "fable-session",
   "tier-view",
   "after-merge",
@@ -33,7 +29,6 @@ export const PLUGIN_HOOK_NAMES = [
   "worktree-leftovers",
   "session-name",
   "task-start",
-  "deploy-guard",
 ] as const;
 
 /** One name from `PLUGIN_HOOK_NAMES`. */
@@ -54,6 +49,16 @@ export const RETIRED_HOOK_NAMES = [
   "lead-notes",
   // 4.3.0: messages to sessions in other repos no longer ask.
   "message-guard",
+  // 5.7.0: the kit asks the person nothing through hooks; its only guard is the heavy-job
+  // queue (`job-route`). These six guards went. A project file written for an older plugin
+  // that lists one must still parse (`session-escape-guard` was never listable: its name is
+  // accepted from 5.7.0, and `OWN_HOOK_NAMES_SINCE` holds that floor).
+  "git-guard",
+  "merge-guard",
+  "deploy-guard",
+  "main-folder-guard",
+  "agent-guard",
+  "session-escape-guard",
 ] as const;
 
 /**
@@ -176,6 +181,8 @@ export const OWN_HOOK_NAMES_SINCE: Readonly<
   "keep-going": "2.0.0",
   "builder-finish": "2.0.0",
   "deploy-guard": DEPLOY_GUARD_SINCE,
+  // Never listable before: the strict parse of an older plugin refuses the name.
+  "session-escape-guard": "5.7.0",
 };
 
 /**

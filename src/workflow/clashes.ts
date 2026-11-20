@@ -4,12 +4,11 @@
  * and the portal's Settings page — so a person hears about the same conflict in the same words
  * everywhere, with the fix.
  *
- * A "cannot work" pair is not an error: the guards still run and still ask. It is a setting
+ * A "cannot work" pair is not an error. It is a setting
  * that will never do what the person meant, which is worth knowing before a session waits for
  * something that never happens.
  */
 import { COMMAND } from "../build-info/names";
-import { CONFIG_PATH } from "../project/resolve";
 import type { ResolvedWorkflow } from "./resolve";
 
 /** The settings the rules below read. */
@@ -17,8 +16,6 @@ export interface ClashInput {
   openPr: "off" | "draft" | "ready";
   autoPush: boolean;
   autoMerge: boolean;
-  /** The project's integration base (`worktrees.base`), or null when it names none. */
-  base: string | null;
 }
 
 /** One conflict: the setting it is about, the `!` line a screen shows, and the fix. */
@@ -36,21 +33,13 @@ export interface Clash {
  */
 export function workflowClashes(input: ClashInput): Clash[] {
   const clashes: Clash[] = [];
-  // A pull request needs the branch pushed. With autoPush off the git guard asks before every
-  // push, so the pull request waits for a person who was not expecting to be asked.
+  // A pull request needs the branch pushed. With autoPush off a session does not push, so the
+  // pull request waits for a person who was not expecting to be asked.
   if (input.openPr !== "off" && !input.autoPush) {
     clashes.push({
       fix: `turn autoPush on (\`${COMMAND} workflow set autoPush true\`), or set openPr off (\`${COMMAND} workflow set openPr off\`)`,
-      line: "openPr opens a pull request, but autoPush is off: the git guard asks before the push that pull request needs, so it waits for you every time",
+      line: "openPr opens a pull request, but autoPush is off: a session does not push, and that pull request needs the push, so it waits for you every time",
       setting: "openPr",
-    });
-  }
-  // autoMerge merges into the integration base, and only there. Without one, every merge asks.
-  if (input.autoMerge && input.base === null) {
-    clashes.push({
-      fix: `name the integration base in ${CONFIG_PATH} ("worktrees": {"base": "<branch>"}), or turn autoMerge off (\`${COMMAND} workflow set autoMerge false\`)`,
-      line: "autoMerge is on, but the project names no integration base (worktrees.base), so the merge guard asks before every merge",
-      setting: "autoMerge",
     });
   }
   // A draft pull request is never merged, so autoMerge can never act on the one a session opens.
@@ -64,12 +53,11 @@ export function workflowClashes(input: ClashInput): Clash[] {
   return clashes;
 }
 
-/** The conflicts of a resolved policy, with the project's integration base. */
-export function clashesOf(resolved: ResolvedWorkflow, base: string | null): Clash[] {
+/** The conflicts of a resolved policy. */
+export function clashesOf(resolved: ResolvedWorkflow): Clash[] {
   return workflowClashes({
     autoMerge: resolved.autoMerge.value,
     autoPush: resolved.autoPush.value,
-    base,
     openPr: resolved.openPr.value,
   });
 }

@@ -37,9 +37,9 @@
  * must always be able to finish.
  */
 import { readFileSync } from "node:fs";
-import { AGENT_TOOLS } from "./agent-guard";
 import { type HookInput, type HookResult, SILENT, stringField } from "./io";
 import type { HookContext } from "./run";
+import { AGENT_TOOLS } from "./session-facts";
 
 /** What the subagent reads when it hands back too early. */
 export const HAND_BACK_REASON =

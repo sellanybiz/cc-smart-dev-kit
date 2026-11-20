@@ -328,7 +328,7 @@ function titleOf(key: WorkflowKey, from: unknown, to: unknown): string {
 function bodyOf(key: WorkflowKey, from: unknown, to: unknown, base: string): string {
   return [
     `Updated by \`${COMMAND} workflow propose\`: the project's workflow setting ${key}, from ${saidValue(key, from)} to ${saidValue(key, to)}.`,
-    `It counts once this pull request is merged into ${base}: the merge guard reads the review gate from the file committed on the base, and a session's own checkout never counts.`,
+    `It counts once this pull request is merged into ${base}: merge-check reads the review gate from the file committed on the base, and a session's own checkout never counts.`,
   ].join("\n");
 }
 

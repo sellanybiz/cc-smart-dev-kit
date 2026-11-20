@@ -24,7 +24,7 @@
  * yes, `--no-deploy-block` no file, and a path already there is never overwritten. The portal's
  * Project card never writes it: it plans through `planProjectInit` alone.
  *
- * **The deploy commands** (`tasks.deployCommands`, which the deploy guard reads): for each
+ * **The deploy commands** (`tasks.deployCommands`): for each
  * environment of `tasks.envs`, a question asked until an empty answer; Enter on the first
  * keeps the file's list, `-` clears it. `--deploy-command <env>=<command>` replaces an
  * environment's list (`<env>=` clears it), so the same flags give the same file. Each answer is
@@ -691,10 +691,7 @@ function refusal(check: () => unknown): string | null {
 const QUESTIONS = [
   ["base", "Base branch: the branch a new worktree starts from"],
   ["bases", `Bases for other branch prefixes, as prefix=base,prefix=base ("${NONE}" for none)`],
-  [
-    "protectedBranches",
-    `Protected branches: the git guard asks before a push to these, comma separated ("${NONE}" for none)`,
-  ],
+  ["protectedBranches", `Protected branches, comma separated ("${NONE}" for none)`],
   ["checks", `The fast check a session runs before it stops: one command ("${NONE}" for none)`],
   [
     "workflow",
@@ -1094,7 +1091,7 @@ the project.
   --base <branch>        the branch a new worktree starts from (default: origin/HEAD, else the
                          repo's only branch, else main, else master, else the current branch)
   --bases <p=b,p=b>      bases for other branch prefixes (default: hotfix/, release/)
-  --protected <a,b>      the branches the git guard asks about (default: the default
+  --protected <a,b>      the protected branches (default: the default
                          branch, the base, and GitHub's protected branches)
   --check <command>      the fast check a session runs before it stops (default: a script in
                          package.json — typecheck, lint, check or test — with its package
