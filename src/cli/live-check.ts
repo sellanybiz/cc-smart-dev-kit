@@ -12,10 +12,10 @@
  * (`CC_SMART_DEV_KIT_HOOK_LOG`), with what the hook's own parser read (`logFacts`), and the check
  * reads that log and git:
  *
- * - the plugin's hooks fired: SessionStart, and the git guard before the Bash call;
- * - the git guard read the command (its log names the programs it parsed: `git`);
+ * - the plugin's hooks fired: SessionStart, and `job-route` before the Bash call;
+ * - `job-route` read the command (its log names the weight the queue gave it: `weight`);
  * - no WorktreeCreate hook ran, Claude Code made its own worktree, and the session worked in
- *   it (the git guard's `cwd`); ExitWorktree removed it.
+ *   it (`job-route`'s `cwd`); ExitWorktree removed it.
  *
  * When every check passes, the Claude Code version is recorded in the state folder
  * (`live-check.json`); plain `doctor` then shows it. The temp folder is removed at the end.
@@ -117,8 +117,8 @@ interface LoggedRun {
   cwd: string | null;
   exitCode: number;
   stdout: string;
-  /** What the hook's own parser read (its spec's `logFacts`): the git guard's programs. */
-  facts?: { programs?: string[] };
+  /** What the hook's own reader found (its spec's `logFacts`): `job-route`'s weight of the command. */
+  facts?: { weight?: string };
 }
 
 function readLog(file: string): LoggedRun[] {
@@ -176,10 +176,10 @@ function proveIn(
   const said = `claude exited ${session.exitCode}: ${session.output.trim().split("\n").slice(-3).join(" ")}`;
   const fired = (event: string) => runs.some((run) => run.event === event);
   const created = runs.find((run) => run.event === "WorktreeCreate");
-  const guarded = runs.filter((run) => run.hook === "git-guard" && run.event === "PreToolUse");
+  const guarded = runs.filter((run) => run.hook === "job-route" && run.event === "PreToolUse");
   const guardedThere = guarded.some((run) => run.cwd === expected.folder);
-  // Firing is not answering: the guard logs the programs its own parser read in the command.
-  const guardParsed = guarded.some((run) => run.facts?.programs?.includes("git") === true);
+  // Firing is not answering: the hook logs the weight its own reader gave the command.
+  const guardParsed = guarded.some((run) => typeof run.facts?.weight === "string");
   const branchLeft = deps.run(
     ["git", "rev-parse", "--verify", "--quiet", `refs/heads/${expected.branch}`],
     { cwd: repo, env, timeoutMs: 10_000 },
@@ -199,11 +199,11 @@ function proveIn(
     guardParsed
       ? {
           ok: true,
-          text: `${label}: the git guard read the command line (it parsed git) before the Bash call`,
+          text: `${label}: the job-route hook read the command line (it weighed it) before the Bash call`,
         }
       : {
           ok: false,
-          text: `${label}: the git guard ${guarded.length === 0 ? "never ran" : `ran in ${where} without parsing a command`}: its log names no git program. ${said}`,
+          text: `${label}: the job-route hook ${guarded.length === 0 ? "never ran" : `ran in ${where} without weighing a command`}: its log names no weight. ${said}`,
           fix: LIVE_FIX,
         },
   );
@@ -215,7 +215,7 @@ function proveIn(
         }
       : {
           ok: false,
-          text: `${label}: ${created === undefined ? "" : "a WorktreeCreate hook ran; "}the git guard ran in ${where}; expected Claude Code's own ${expected.folder}`,
+          text: `${label}: ${created === undefined ? "" : "a WorktreeCreate hook ran; "}the job-route hook ran in ${where}; expected Claude Code's own ${expected.folder}`,
           fix: LIVE_FIX,
         },
   );

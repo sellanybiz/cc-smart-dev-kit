@@ -59,10 +59,10 @@ import { openPhasesOf, type PhaseRef } from "../tasks/work/phases";
 import { allTasks } from "../tasks/work/queries";
 import { type ReadState, readWorkStore } from "../tasks/work/read";
 import type { ClaimProcess, Who } from "../tasks/work/types";
-import { AGENT_TOOLS, WORKFLOW_TOOLS } from "./agent-guard";
 import { cappedHookList, HOOK_LIST_LIMIT } from "./capped-list";
 import { type HookInput, type HookResult, SILENT, stringField } from "./io";
 import type { Env, HookContext } from "./run";
+import { AGENT_TOOLS, WORKFLOW_TOOLS } from "./session-facts";
 import { lastAssistantText, stopFeedbackGiven } from "./transcript";
 
 /** Claude Code's tool that messages another agent or session; it resumes a builder. */

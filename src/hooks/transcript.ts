@@ -1,7 +1,7 @@
 /**
  * What the plugin reads from Claude Code's transcript — one home, for the hooks
  * that need it:
- *   - the session's own model (the StopFailure usage-limit alert, the Agent guard);
+ *   - the session's own model (the StopFailure usage-limit alert, the launch judge);
  *   - the session's name (the notifier names the session in its alert);
  *   - the turn's last answer (the notifier's "finished" message);
  *   - who started the turn (the notifier stays quiet for a turn another session started);

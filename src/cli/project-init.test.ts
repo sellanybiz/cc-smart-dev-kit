@@ -464,7 +464,7 @@ describe("the questions on a terminal", () => {
     expect(shown).toEqual([
       "[1/9] Base branch: the branch a new worktree starts from [main] ",
       '[2/9] Bases for other branch prefixes, as prefix=base,prefix=base ("none" for none) [hotfix/=main,release/=main] ',
-      '[3/9] Protected branches: the git guard asks before a push to these, comma separated ("none" for none) [main] ',
+      '[3/9] Protected branches, comma separated ("none" for none) [main] ',
       '[4/9] The fast check a session runs before it stops: one command ("none" for none) [none] ',
       '[5/9] Workflow policy: what happens by itself after a step, as openPr=draft,autoCommit=true,alerts.usagePercent=90 ("none" for none) ',
       "[6/9] Refuse edits in the main checkout itself, so every change goes in a worktree? [Y/n] ",
@@ -632,7 +632,7 @@ describe("the run", () => {
       ),
     ).toBe(0);
     expect(run.lines).toContain(
-      `  ! openPr opens a pull request, but autoPush is off: the git guard asks before the push that pull request needs, so it waits for you every time. Fix: turn autoPush on (\`${COMMAND} workflow set autoPush true\`), or set openPr off (\`${COMMAND} workflow set openPr off\`).`,
+      `  ! openPr opens a pull request, but autoPush is off: a session does not push, and that pull request needs the push, so it waits for you every time. Fix: turn autoPush on (\`${COMMAND} workflow set autoPush true\`), or set openPr off (\`${COMMAND} workflow set openPr off\`).`,
     );
     expect(run.lines).toContain(
       `  ! openPr is draft and autoMerge is on: a draft pull request is never merged, so autoMerge never acts on the pull request a session opens. Fix: set openPr ready (\`${COMMAND} workflow set openPr ready\`) so the pull request can merge, or turn autoMerge off (\`${COMMAND} workflow set autoMerge false\`).`,
@@ -1315,7 +1315,7 @@ describe("the deploy skill", () => {
     ).toBe(0);
     expect(run.lines.join("\n")).not.toContain("is also in");
     expect(skillText(repo, "ops/SKILL.md")).toContain(
-      "## Deploy tasks\n\nWhen `tasks.deployCommands`",
+      "## Deploy tasks\n\nDo not run a deploy while",
     );
   });
 

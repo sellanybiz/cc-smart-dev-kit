@@ -207,7 +207,7 @@ describe("the note at a session start", () => {
     const result = await runHook(tierViewHook, event("SessionStart", makeRepo()), onRouter(env));
     expect(result.exitCode ?? 0).toBe(0);
     expect(said(result)).toBe(
-      "Subagent tiers now: not known — the gateway config cannot be read (`cc-smart-dev-kit doctor` says why). The Agent guard judges each launch and names the effort it needs.",
+      "Subagent tiers now: not known — the gateway config cannot be read (`cc-smart-dev-kit doctor` says why). The launch policy names the effort each launch needs.",
     );
   });
 

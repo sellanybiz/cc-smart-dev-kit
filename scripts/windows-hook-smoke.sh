@@ -3,8 +3,9 @@
 # there (docs/windows-hooks.md says why each piece is shaped the way it is). Four cases:
 #
 #   1. a hook bundle runs through the shim, through Git Bash — the shell Claude Code gives a
-#      shell-form hook on Windows — and the git guard answers;
-#   2. with no bun anywhere, the guard still fails closed: the shim's `--missing=ask` answer;
+#      shell-form hook on Windows — and the `job-route` hook answers;
+#   2. with no bun anywhere, the one hook that asks (`user-away`) still fails closed: the shim's
+#      `--missing=ask` answer;
 #   4. `--missing=fail`, the mode the plugin's command runs: no bun is one line on stderr and
 #      exit 1, because a command must never report success when it did not run;
 #   5. a process that ended is seen as gone: `process.kill(deadPid, 0)` throws `ESRCH` in Bun
@@ -16,7 +17,8 @@ set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
 shim="$root/plugin/bin/cc-smart-dev-kit-bun.sh"
-guard="$root/plugin/dist/git-guard.js"
+hook="$root/plugin/dist/job-route.js"
+asking="$root/plugin/dist/user-away.js"
 # The shell Claude Code uses for a shell-form hook: Git Bash on Windows (CLAUDE_CODE_GIT_BASH_PATH
 # says where it is), and bash here. Resolved before any PATH is changed below.
 bash_bin="${CLAUDE_CODE_GIT_BASH_PATH:-$(command -v bash)}"
@@ -32,10 +34,10 @@ empty="$(mktemp -d)"
 home="$(mktemp -d)"
 trap 'rm -rf "$work" "$empty" "$home"' EXIT
 
-# A project the guard answers in: a git repo with a cc-smart-dev-kit.json. Without that file a
-# plugin hook stays silent, so the guard would print nothing.
+# A project `job-route` answers in: a git repo whose cc-smart-dev-kit.json turns the route on.
+# With the route off the hook stays silent, so it would print nothing.
 mkdir -p "$work/repo/.claude"
-printf '{}\n' >"$work/repo/.claude/cc-smart-dev-kit.json"
+printf '{"jobs":{"route":true}}\n' >"$work/repo/.claude/cc-smart-dev-kit.json"
 (cd "$work/repo" && git init -q -b main)
 
 # The hook's input. `cwd` is a native path: the hook is a native program, so a Git Bash path
@@ -46,34 +48,34 @@ if command -v cygpath >/dev/null 2>&1; then
 else
   cwd="$work/repo"
 fi
-input="$(printf '{"hook_event_name":"PreToolUse","cwd":"%s","tool_name":"Bash","tool_input":{"command":"git reset --hard"}}' "$cwd")"
+input="$(printf '{"hook_event_name":"PreToolUse","cwd":"%s","tool_name":"Bash","tool_input":{"command":"bunx tsc --noEmit"}}' "$cwd")"
 
-# 1. bun is installed on this machine: the shim finds it, the guard reads the command and asks.
-answer="$(printf '%s' "$input" | "$bash_bin" "$shim" --missing=ask "$guard")"
+# 1. bun is installed on this machine: the shim finds it, the hook reads the command and queues it.
+answer="$(printf '%s' "$input" | "$bash_bin" "$shim" --missing=quiet "$hook")"
 case "$answer" in
-  *'"permissionDecision":"ask"'*) ;;
-  *) fail "the git guard did not answer with a PreToolUse ask: $answer" ;;
+  *'job run --kind tsc'*) ;;
+  *) fail "job-route did not queue the heavy command: $answer" ;;
 esac
 case "$answer" in
   *"bun was not found"*) fail "the shim found no bun: $answer" ;;
 esac
 case "$answer" in
   *"older than the plugin needs"*)
-    # The shim refuses a bun below MIN_BUN the way it refuses a missing one, so the guard
+    # The shim refuses a bun below MIN_BUN the way it refuses a missing one, so the hook
     # cannot run here. CI pins the right bun with setup-bun; a machine that does not has to
     # put one on PATH.
     fail "the bun on PATH is older than the plugin needs (MIN_BUN in src/build-info/bun.ts), so the shim refused it: $answer"
     ;;
 esac
 case "$answer" in
-  *"git reset --hard"*) ;;
-  *) fail "the guard's answer does not name the command it judged: $answer" ;;
+  *"bunx tsc --noEmit"*) ;;
+  *) fail "the hook's answer does not name the command it queued: $answer" ;;
 esac
 
 # 2. No bun anywhere: an empty folder for HOME and for PATH, and no $BUN_INSTALL. The shim
-#    cannot run the guard, so it must fail closed — one ask, which is what a guard owes a call
-#    it cannot judge.
-answer="$(printf '%s' "$input" | BUN_INSTALL= HOME="$empty" PATH="$empty" "$bash_bin" "$shim" --missing=ask "$guard")"
+#    cannot run the hook that asks, so it must fail closed — one ask, which is what a guard owes
+#    a call it cannot judge.
+answer="$(printf '%s' "$input" | BUN_INSTALL= HOME="$empty" PATH="$empty" "$bash_bin" "$shim" --missing=ask "$asking")"
 case "$answer" in
   *'"permissionDecision":"ask"'*) ;;
   *) fail "with no bun the shim did not fail closed: $answer" ;;
@@ -87,7 +89,7 @@ esac
 #    command through — writes one line on stderr and exits 1. A command that did not run must
 #    never report success.
 set +e
-refusal="$(printf '%s' "$input" | BUN_INSTALL= HOME="$empty" PATH="$empty" "$bash_bin" "$shim" --missing=fail "$guard" 2>&1 >/dev/null)"
+refusal="$(printf '%s' "$input" | BUN_INSTALL= HOME="$empty" PATH="$empty" "$bash_bin" "$shim" --missing=fail "$hook" 2>&1 >/dev/null)"
 code=$?
 set -e
 [ "$code" = 1 ] || fail "--missing=fail exited $code, not 1: $refusal"
@@ -116,4 +118,4 @@ process.stdout.write(`${code} ${gone} ${alive}`);
 ')"
 [ "$proved" = "ESRCH true true" ] || fail "a process that ended is not seen as gone (the code Bun threw, processIsGone of the ended child, not of this process): $proved"
 
-echo "windows-hook-smoke: the shim ran a hook bundle, the guard failed closed with no bun, --missing=fail exited 1, and an ended process is seen as gone"
+echo "windows-hook-smoke: the shim ran a hook bundle, the hook that asks failed closed with no bun, --missing=fail exited 1, and an ended process is seen as gone"

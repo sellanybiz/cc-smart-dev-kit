@@ -243,7 +243,7 @@ describe("workflow propose: one setting through a pull request", () => {
     expect(w.ghLog()).toEqual([
       "repo view --json nameWithOwner --jq .nameWithOwner",
       `pr create --base main --head ${branch} --title workflow: autoCommit (unset) → true --body Updated by \`${COMMAND} workflow propose\`: the project's workflow setting autoCommit, from (unset) to true.
-It counts once this pull request is merged into main: the merge guard reads the review gate from the file committed on the base, and a session's own checkout never counts.`,
+It counts once this pull request is merged into main: merge-check reads the review gate from the file committed on the base, and a session's own checkout never counts.`,
     ]);
     // The commit is the person's, with a message naming the setting and both values.
     expect(git(w.repo, "log", "-1", "--format=%s", branch).trim()).toBe(
@@ -482,17 +482,10 @@ It counts once this pull request is merged into main: the merge guard reads the 
     expect(branchesIn(w.repo, "worktree-workflow-*")).toEqual([]);
   });
 
-  test("inside Claude Code a review-gate key is refused; outside it every key is allowed", async () => {
+  test("a review-gate key is proposed inside Claude Code like any other key", async () => {
     const w = world();
-    const refused = await w.run(["propose", "autoMerge", "true"], { CLAUDECODE: "1" });
-    expect(refused.status).toBe(1);
-    expect(refused.errors).toEqual([
-      `cc-smart-dev-kit workflow propose autoMerge cannot run inside a Claude Code session: autoMerge is part of the merge guard's review gate, which only you change. Run it in your own terminal (\`${COMMAND} workflow propose autoMerge <value>\`): the pull request is the gate.`,
-    ]);
-    expect(branchesIn(w.repo, "worktree-workflow-*")).toEqual([]);
-
-    const allowed = await w.run(["propose", "autoMerge", "true"]);
-    expect(allowed.status).toBe(0);
+    const run = await w.run(["propose", "autoMerge", "true"], { CLAUDECODE: "1" });
+    expect(run.status).toBe(0);
     expect(fileOn(w.repo, "worktree-workflow-autoMerge-20261023").workflow).toEqual({
       autoMerge: true,
     });

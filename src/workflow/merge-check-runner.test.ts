@@ -124,6 +124,67 @@ describe("the merge check never blocks its caller (B8)", () => {
     });
   });
 
+  /** gh as a pull request into `base` meets it: the view, the default branch, the checks. */
+  const ghFor =
+    (base: string, bucket: string): GhRunner =>
+    async (args) => {
+      if (args[0] === "pr" && args[1] === "view") {
+        return JSON.stringify({
+          baseRefName: base,
+          headRefName: "feat",
+          headRefOid: "a".repeat(40),
+          number: 7,
+        });
+      }
+      if (args[0] === "repo" && args[1] === "view") {
+        return JSON.stringify({ defaultBranchRef: { name: "main" } });
+      }
+      if (args[0] === "pr" && args[1] === "checks") return JSON.stringify([{ bucket, name: "ci" }]);
+      return null;
+    };
+  const checkInto = (base: string, bucket: string, workflow: Record<string, unknown>) =>
+    checkPullRequest(
+      world(ghFor(base, bucket), undefined, (repo) =>
+        commitConfig(repo, { workflow, worktrees: { base: "integration" } }, [
+          "main",
+          "integration",
+        ]),
+      ),
+      { ref: "7", repo: null },
+      new Map(),
+    );
+
+  test("autoMerge on, a pull request into the default branch (main), green checks, no review gate: allowed", async () => {
+    const verdict = await checkInto("main", "pass", { autoMerge: true, reviewBeforePush: false });
+    expect(verdict.kind).toBe("allowed");
+    expect(verdict).toMatchObject({
+      reason: "its required checks are green, and reviewBeforePush is off",
+    });
+  });
+
+  test("into main it explains why not: autoMerge off, a red check, or no recorded review", async () => {
+    const off = await checkInto("main", "pass", { autoMerge: false, reviewBeforePush: false });
+    expect(off).toMatchObject({ kind: "refused" });
+    expect(JSON.stringify(off)).toContain("autoMerge is off");
+    const red = await checkInto("main", "fail", { autoMerge: true, reviewBeforePush: false });
+    expect(red).toMatchObject({
+      kind: "refused",
+      reason: "its required checks are not all green: ci (fail)",
+    });
+    // The review gate stays on: no review is recorded for the head, so it is refused.
+    const unreviewed = await checkInto("main", "pass", { autoMerge: true });
+    expect(unreviewed).toMatchObject({ kind: "refused" });
+    expect(JSON.stringify(unreviewed)).toContain("review");
+  });
+
+  test("a pull request into a branch that is neither the integration base nor main is refused", async () => {
+    const verdict = await checkInto("release/1.0", "pass", {
+      autoMerge: true,
+      reviewBeforePush: false,
+    });
+    expect(verdict).toMatchObject({ kind: "refused" });
+  });
+
   test("past the caller's deadline a verdict is late, and no gh call is made", async () => {
     const asked: string[][] = [];
     const gh: GhRunner = async (args) => {

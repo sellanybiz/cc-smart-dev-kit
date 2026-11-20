@@ -61,7 +61,7 @@ export const SETTINGS: readonly SettingSpec[] = [
   },
   {
     card: "flow",
-    help: "Push your own branch. Never main, dev or a protected branch: the git guard still asks there.",
+    help: "Push your own branch. Never main, dev or a protected branch.",
     id: "set-push",
     key: "autoPush",
     kind: "boolean",

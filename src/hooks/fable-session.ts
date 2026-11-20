@@ -26,7 +26,7 @@
  *     Code's own words ("Resolved model id the session runs after the switch"). So a `/model`
  *     switch is judged at the switch itself;
  *   - **Stop**: the model that last answered in the transcript (`sessionModelOf`, the same
- *     reading the Agent guard's fork rule uses), then `ANTHROPIC_MODEL`. At Stop the last
+ *     reading the launch judge's fork rule uses), then `ANTHROPIC_MODEL`. At Stop the last
  *     assistant message IS the answer that just finished, so this is the model that really
  *     answered — the catch-all for a Claude Code that fires no PostModelSwitch. **Stop's input
  *     has no model field**, so every Stop still reads the transcript's tail; nothing here can
@@ -38,11 +38,11 @@
  * Opus — a warning about Fable, said while on Opus. Stop cannot do that: it judges the answer
  * that just ended, and a switch back is a different answer.
  *
- * The model is read the Agent guard's way (`resolveLaunchModel`: the family name, a Claude id,
+ * The model is read the launch judge's way (`resolveLaunchModel`: the family name, a Claude id,
  * the family's slot chain while the gateway is on, `ANTHROPIC_DEFAULT_<FAMILY>_MODEL`), so there
  * is no second list of what counts as Fable or Opus — and a tier a backend answers is named by
  * the model that answers it. The gateway is the session's own (`sessionGatewayOf`: its
- * `ANTHROPIC_BASE_URL`, a profile's chains), as in the Agent guard — never the machine's file.
+ * `ANTHROPIC_BASE_URL`, a profile's chains), as in the launch judge — never the machine's file.
  *
  * **What it costs.** Once both lines are said, the hook stops at the two marks. Otherwise each
  * model is judged once a session: the judgment leaves a mark named after the model (`.judged-…`,
@@ -72,9 +72,9 @@ import {
   type SessionModel,
 } from "../models/launch-policy";
 import { resolveLeadHint } from "../workflow/resolve";
-import { sessionGatewayOf, sessionModelOf } from "./agent-guard";
 import { type HookInput, type HookResult, SILENT, stringField, systemMessage } from "./io";
 import type { Env } from "./run";
+import { sessionGatewayOf, sessionModelOf } from "./session-facts";
 import { isSessionId, namesDir } from "./session-name";
 
 /** The Fable line the person sees, once a session: `named` is how the message calls the model. */

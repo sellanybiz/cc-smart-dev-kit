@@ -18,7 +18,7 @@
  *   name is a warning too: both run, so both may answer. The machine-wide hooks
  *   (`MACHINE_WIDE_HOOKS`: the user hooks stop-failure, update-check, notify and
  *   playwright-output, and the specs that run with or without the project's file, such as
- *   `agent-guard`, `keep-going` and `agent-usage`) are never warned about: they
+ *   `fable-session`, `keep-going` and `agent-usage`) are never warned about: they
  *   answer about the machine, so a project hook beside one is not a copy of a plugin piece.
  *   A retired hook name in `ownHooks` (`RETIRED_HOOK_NAMES`) is information: it silences
  *   nothing, and can be taken out.
@@ -412,11 +412,10 @@ function onEvent(event: string, subjects: Array<string | null>): string {
 /**
  * A plugin hook that only answers when the project sets one of its fields: while that field
  * is unset the hook is silent, so a project hook on its event is no second copy of it.
- * `verify-gate` answers only with `checks.fast`; `deploy-guard` only with `tasks.deployCommands`.
+ * `verify-gate` answers only with `checks.fast`.
  */
 const OPT_IN_HOOKS: Record<string, (config: CcSmartDevKitConfig) => boolean> = {
   "verify-gate": (config) => config.checks !== undefined,
-  "deploy-guard": (config) => config.tasks?.deployCommands !== undefined,
 };
 
 /**
@@ -496,7 +495,7 @@ function ownCopyLines(
     ) {
       continue;
     }
-    // A machine-wide hook (stop-failure, update-check, notify, agent-guard, fable-session)
+    // A machine-wide hook (stop-failure, update-check, notify, fable-session)
     // answers about the machine, not this project: a project hook on its event is the person's
     // own business, not a second copy of a plugin piece, so nothing warns about it.
     if (MACHINE_WIDE_HOOKS.includes(hook.name)) continue;
@@ -563,30 +562,6 @@ function requiresLines(
       fix: byDeploy
         ? `${COMMAND} project init raises it to "${needed.floor}"`
         : `${COMMAND} project init (or any ${COMMAND} workflow set … --project) raises it to "${needed.floor}"`,
-    },
-  ];
-}
-
-/**
- * One `·` line when the project has a deploy skill (the one `project init` finds: a file that
- * holds the kit's block, or a top skill that names a deploy) but lists no `tasks.deployCommands`:
- * the deploy guard has nothing to ask about, which is no failure, only a gap a person may want
- * to close. A skill folder that cannot be read says nothing here: `deployBlockLines` names it.
- */
-function deployCommandsLines(config: CcSmartDevKitConfig | null, root: string): ProjectLine[] {
-  if (config === null || config.tasks?.deployCommands !== undefined) return [];
-  try {
-    const found = findDeploySkills(root);
-    if (found.holders.length === 0 && found.named.length === 0) return [];
-  } catch {
-    return [];
-  }
-  return [
-    {
-      ok: true,
-      info: true,
-      text: "project: the project has a deploy skill but lists no deploy commands in tasks.deployCommands, so the deploy guard never asks before a deploy",
-      fix: `${COMMAND} project init asks for the commands`,
     },
   ];
 }
@@ -969,7 +944,6 @@ export async function projectChecks(
   lines.push(...(await issuesChecks({ cwd: checkout.root, env, gh, paths })));
   lines.push(...(await projectTaskChecks(checkout.root, env)));
   lines.push(...deployBlockLines(checkout.root, usesDeployTasks));
-  lines.push(...deployCommandsLines(config, checkout.root));
   lines.push(...planCapChecks(checkout.root, env, paths, config));
   return lines;
 }

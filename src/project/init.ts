@@ -588,12 +588,11 @@ export function planProjectInit(
   // D16: the file this command is about to write must not leave settings that cannot work
   // together, shown before anything is written. The values are the policy the guards will
   // see: the person's own file, over the built-in defaults, and this file's answers over
-  // both — the same order `resolveWorkflow` merges them in. The base is the one being written.
+  // both — the same order `resolveWorkflow` merges them in.
   const personal = input.personalWorkflow ?? {};
   for (const clash of workflowClashes({
     autoMerge: answers.workflow.autoMerge ?? personal.autoMerge ?? workflowDefaults.autoMerge,
     autoPush: answers.workflow.autoPush ?? personal.autoPush ?? workflowDefaults.autoPush,
-    base: answers.base,
     openPr: answers.workflow.openPr ?? personal.openPr ?? workflowDefaults.openPr,
   })) {
     notes.push(clashNote(clash));

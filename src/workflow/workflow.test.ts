@@ -10,7 +10,7 @@ import { hookEnv, makeClone, makeRepo, writeClaudeFile } from "../testing/hooks"
 import { git } from "../testing/temp";
 import { hold, updateFiles } from "../update/state";
 import { describeIssues } from "../zod-issues";
-import { autoMergeAllowed } from "./auto-merge";
+import { autoMergeAllowed, autoMergeRefusal } from "./auto-merge";
 import {
   jobRouteFrom,
   leadHintFrom,
@@ -574,31 +574,41 @@ describe("autoMergeAllowed", () => {
     expect(autoMergeAllowed(resolved, project({ base: "dev" }), "dev", "main")).toBe(true);
   });
 
-  test("no worktrees, or no base: no integration base to merge into", () => {
+  test("no worktrees, or no base: only the repository's default branch", () => {
     const resolved = resolvedWith(true);
-    expect(autoMergeAllowed(resolved, null, "dev", "main")).toBe(false);
-    expect(autoMergeAllowed(resolved, ccSmartDevKitConfigSchema.parse({}), "dev", "main")).toBe(
-      false,
+    for (const config of [null, ccSmartDevKitConfigSchema.parse({})]) {
+      expect(autoMergeAllowed(resolved, config, "dev", "main")).toBe(false);
+      expect(autoMergeAllowed(resolved, config, "main", "main")).toBe(true);
+    }
+  });
+
+  test("a pull request into any other branch is never merged by itself", () => {
+    const resolved = resolvedWith(true);
+    const config = project({ base: "dev" });
+    expect(autoMergeAllowed(resolved, config, "release/1.0", "main")).toBe(false);
+    expect(autoMergeRefusal(resolved, config, "release/1.0", "main")).toBe(
+      "the pull request's base is release/1.0, not the project's integration base dev or the repository's default branch main",
     );
   });
 
-  test("a pull request into another branch is never merged by itself", () => {
+  test("on, the repository's default branch is allowed, with or without an integration base (the person's ruling of 2026-11-21)", () => {
     const resolved = resolvedWith(true);
-    const config = project({ base: "dev" });
-    expect(autoMergeAllowed(resolved, config, "main", "main")).toBe(false);
-    expect(autoMergeAllowed(resolved, config, "release/1.0", "main")).toBe(false);
+    expect(autoMergeAllowed(resolved, project({ base: "dev" }), "main", "main")).toBe(true);
+    expect(autoMergeAllowed(resolved, project({ base: "main" }), "main", "main")).toBe(true);
+    expect(autoMergeRefusal(resolved, project({ base: "main" }), "main", "main")).toBeNull();
   });
 
-  test("the repository's default branch always asks the person", () => {
-    const resolved = resolvedWith(true);
-    const config = project({ base: "main" });
-    expect(autoMergeAllowed(resolved, config, "main", "main")).toBe(false);
+  test("off, the default branch is refused with the reason", () => {
+    const resolved = resolvedWith(false);
+    expect(autoMergeRefusal(resolved, project({ base: "dev" }), "main", "main")).toContain(
+      "autoMerge is off",
+    );
   });
 
-  test("a base another family of branches feeds always asks the person", () => {
+  test("a base another family of branches feeds is a plain base too", () => {
     const resolved = resolvedWith(true);
     const config = project({ base: "dev", bases: { "release/": "dev" } });
-    expect(autoMergeAllowed(resolved, config, "dev", "main")).toBe(false);
+    expect(autoMergeAllowed(resolved, config, "dev", "main")).toBe(true);
   });
 
   test("the integration base may itself be protected: it is the one branch this writes to", () => {

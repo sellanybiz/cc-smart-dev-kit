@@ -1,7 +1,7 @@
 /**
  * `doctor --live` with a fake `claude` first on PATH: it never reaches a model. The fake
  * plays Claude Code's part for `-p`: the plugin's SessionStart hook; then the worktree,
- * made by Claude Code itself (`.claude/worktrees/<name>`); the plugin's git guard before a
+ * made by Claude Code itself (`.claude/worktrees/<name>`); the plugin's job-route hook before a
  * Bash call in that worktree; then the removal, by Claude Code. So the check reads real hook
  * runs from the log. The test HOME holds a launcher that runs this repo's CLI.
  */
@@ -50,7 +50,7 @@ plugin("worktree-leftovers", { hook_event_name: "SessionStart", session_id: "s",
 const folder = cwd + "/.claude/worktrees/" + name;
 git(cwd, "worktree", "add", "-q", "-b", "worktree-" + name, folder);
 const at = mode === "stay" ? cwd : folder;
-plugin("git-guard", { hook_event_name: "PreToolUse", session_id: "s", cwd: at, tool_name: "Bash", tool_input: { command: "git status" } }, at);
+plugin("job-route", { hook_event_name: "PreToolUse", session_id: "s", cwd: at, tool_name: "Bash", tool_input: { command: "git status" } }, at);
 if (mode !== "keep") {
   git(cwd, "worktree", "remove", folder);
   git(cwd, "branch", "-D", "worktree-" + name);
@@ -119,7 +119,7 @@ describe("doctor --live", () => {
     const lines = runLiveCheck(paths, env, deps);
     expect(shown(lines)).toEqual([
       "✓ live, Claude Code's worktrees: the hooks fired (SessionStart, PreToolUse)",
-      "✓ live, Claude Code's worktrees: the git guard read the command line (it parsed git) before the Bash call",
+      "✓ live, Claude Code's worktrees: the job-route hook read the command line (it weighed it) before the Bash call",
       `✓ live, Claude Code's worktrees: no WorktreeCreate hook ran; Claude Code made …/${LIVE_NAME}, and the session worked there`,
       `✓ live, Claude Code's worktrees: ExitWorktree removed the folder and the branch worktree-${LIVE_NAME}`,
       "✓ live: passed on Claude Code 2.1.300; recorded",
@@ -162,7 +162,7 @@ describe("doctor --live", () => {
       "live, Claude Code's worktrees: no SessionStart, PreToolUse hook ran. claude exited 0: done",
     );
     expect(shown(lines)[1]).toBe(
-      "✗ live, Claude Code's worktrees: the git guard never ran: its log names no git program. claude exited 0: done",
+      "✗ live, Claude Code's worktrees: the job-route hook never ran: its log names no weight. claude exited 0: done",
     );
     expect(shown(lines)[3]).toBe(
       `✗ live, Claude Code's worktrees: after ExitWorktree (the session never worked in it) the folder is gone, the branch is gone`,
@@ -174,7 +174,7 @@ describe("doctor --live", () => {
     const { env, paths, deps } = fakeClaude("stay");
     const lines = shown(runLiveCheck(paths, env, deps));
     expect(lines[2]).toBe(
-      `✗ live, Claude Code's worktrees: the git guard ran in …/plain; expected Claude Code's own …/${LIVE_NAME}`,
+      `✗ live, Claude Code's worktrees: the job-route hook ran in …/plain; expected Claude Code's own …/${LIVE_NAME}`,
     );
   });
 

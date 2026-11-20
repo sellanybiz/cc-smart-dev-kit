@@ -21,7 +21,6 @@ import { GH_TIMEOUT_MS } from "../workflow/merge-check";
 import { GUARD_BUDGET_MS, SHORT_GUARD_BUDGET_MS } from "./budget";
 import { GUARD_GIT_TIMEOUT_MS } from "./git";
 import { HOOK_LOG_ENV } from "./run";
-import { ESCAPE_EDIT_TOOLS, ESCAPE_SHELL_TOOLS } from "./session-escape-guard";
 import { GUARD_BUNDLES, HOOKS, sessionNameHook, USER_HOOKS, userAwayHook } from "./specs";
 import { AWAY_ASK_TOOLS } from "./user-away";
 
@@ -67,7 +66,34 @@ const bundleOf = (handler: Handler): string =>
  */
 const SHELL = process.platform === "win32" ? (Bun.which("bash") ?? "bash") : "/bin/sh";
 
+/** The guards the kit no longer has (5.7.0): its only guard is the heavy-job queue. */
+const REMOVED_GUARDS = [
+  "git-guard",
+  "merge-guard",
+  "deploy-guard",
+  "main-folder-guard",
+  "agent-guard",
+  "session-escape-guard",
+] as const;
+
 describe("hooks.json", () => {
+  test("wires none of the removed guards: no entry, no spec, no source entry file", () => {
+    expect(
+      wired
+        .map(({ handler }) => bundleOf(handler))
+        .filter((name) => REMOVED_GUARDS.includes(name as never)),
+    ).toEqual([]);
+    expect(
+      HOOKS.map((spec) => spec.name).filter((name) => REMOVED_GUARDS.includes(name as never)),
+    ).toEqual([]);
+    for (const name of REMOVED_GUARDS) {
+      expect({ name, entry: existsSync(join(ROOT, "src", "entries", `${name}.ts`)) }).toEqual({
+        name,
+        entry: false,
+      });
+    }
+  });
+
   test("registered session-name matcher resets an unnamed context on clear", async () => {
     const registered = wired.find(
       ({ event, handler }) => event === "SessionStart" && bundleOf(handler) === "session-name",
@@ -138,16 +164,6 @@ describe("hooks.json", () => {
         ({ event, handler }) => event === "PreToolUse" && GUARD_BUNDLES.has(bundleOf(handler)),
       ).length,
     );
-  });
-
-  test("the agent guard's record is wired after the call ran: PostToolUse on the same tools", () => {
-    // An asked launch is recorded when it is known to run, and Claude Code runs PostToolUse
-    // only for a call that ran (`RAN_EVENT`). The matcher is the guard's own.
-    const matcherOf = (event: string) =>
-      wired.find(({ event: one, handler }) => one === event && bundleOf(handler) === "agent-guard")
-        ?.matcher;
-    expect(matcherOf("PostToolUse")).toBe("Agent|Task|Workflow");
-    expect(matcherOf("PostToolUse")).toBe(matcherOf("PreToolUse"));
   });
 
   test("the first token is the shim and ends in .sh: Claude Code runs it through bash on Windows", () => {
@@ -260,14 +276,6 @@ esac
     }
   });
 
-  test("the main-folder-guard matcher is exactly the tools the guard judges", () => {
-    const matcher = wired.find(({ handler }) => bundleOf(handler) === "main-folder-guard")?.matcher;
-    // Claude Code matches the tool name against the matcher as a regular expression: the
-    // three edit tools that name their file by an absolute path, and Bash, whose command names
-    // the files it writes; nothing else.
-    expect(matcher).toBe("Edit|Write|NotebookEdit|Bash");
-  });
-
   test("the job-route matcher is exactly the shell tools its judge reads", () => {
     const matcher = wired.find(({ handler }) => bundleOf(handler) === "job-route")?.matcher;
     // Both of Claude Code's shell tools, so a raw `claude --bg` or a polling loop is judged in
@@ -299,96 +307,70 @@ esac
     expect(hooksJson.hooks.PermissionRequest).toHaveLength(1);
   });
 
-  test("the session-escape-guard matcher is exactly the tools it judges: the shell tools and the edit tools", () => {
-    const matcher = wired.find(
-      ({ handler }) => bundleOf(handler) === "session-escape-guard",
-    )?.matcher;
-    expect(matcher).toBe([...ESCAPE_SHELL_TOOLS, ...ESCAPE_EDIT_TOOLS].join("|"));
-    // It is the guard that no project can switch off, so it is also on every PreToolUse once.
-    expect(
-      wired.filter(
-        ({ event, handler }) =>
-          event === "PreToolUse" && bundleOf(handler) === "session-escape-guard",
-      ),
-    ).toHaveLength(1);
-  });
-
   test("the timeouts: short for a guard", () => {
     const timeout = (bundle: string) =>
       wired.find(({ handler }) => bundleOf(handler) === bundle)?.handler.timeout;
-    expect(timeout("git-guard")).toBe(10);
-    expect(timeout("main-folder-guard")).toBe(10);
-    expect(timeout("agent-guard")).toBe(10);
-    expect(timeout("session-escape-guard")).toBe(10);
     expect(timeout("job-route")).toBe(10);
   });
 
   test("a hook's budget is shorter than the hook's own timeout, the room to answer in between", () => {
     const timeoutMs = (bundle: string) =>
       (wired.find(({ handler }) => bundleOf(handler) === bundle)?.handler.timeout ?? 0) * 1000;
-    // The merge guard and `after-merge` share `GUARD_BUDGET_MS`; `job-route`'s question about
-    // `workflow propose` shares the short one (`budget.ts`).
-    expect(GUARD_BUDGET_MS).toBeLessThan(timeoutMs("merge-guard"));
+    // `after-merge` runs on `GUARD_BUDGET_MS`; `job-route`'s question about `workflow propose`
+    // shares the short one (`budget.ts`).
     expect(GUARD_BUDGET_MS).toBeLessThan(timeoutMs("after-merge"));
     expect(SHORT_GUARD_BUDGET_MS).toBeLessThan(timeoutMs("job-route"));
   });
 
   test("every git call inside a hook stays well inside that hook's own timeout", () => {
-    // The merge guard: two `gh` calls of its own timeout, inside the 30 s hooks.json gives it.
+    // `after-merge`: two `gh` calls of its own timeout, inside the 30 s hooks.json gives it.
     expect(GH_TIMEOUT_MS).toBeLessThan(30_000 / 2);
-    expect(GUARD_GIT_TIMEOUT_MS).toBeLessThan(10_000); // git-guard, main-folder-guard
+    expect(GUARD_GIT_TIMEOUT_MS).toBeLessThan(10_000); // job-route
     expect(RESOLVE_GIT_TIMEOUT_MS).toBeLessThan(10_000); // the frame's project lookup, in every hook
   });
 });
 
 describe("the entries, run as Claude Code runs them", () => {
-  test("the git guard: a PreToolUse ask, exactly; the run is logged with its cwd", () => {
+  test("job-route: a heavy command is queued, a raw background session is left alone; the run is logged with its weight", () => {
     const repo = makeRepo();
-    writeClaudeFile(repo, "cc-smart-dev-kit.json", {});
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", { jobs: { route: true } });
     const log = join(tempDir("log"), "hooks.log");
-    const run = runEntry(
-      "git-guard",
-      JSON.stringify({
-        hook_event_name: "PreToolUse",
-        cwd: repo,
-        tool_name: "Bash",
-        tool_input: { command: "git reset --hard" },
-      }),
-      { ...hookEnv(), [HOOK_LOG_ENV]: log },
-    );
-    const answer = JSON.stringify({
-      hookSpecificOutput: {
-        hookEventName: "PreToolUse",
-        permissionDecision: "ask",
-        permissionDecisionReason:
-          "`git reset --hard` throws away every uncommitted change in this folder, for good. Approve only if you want them gone; a WIP commit keeps the work first.",
-      },
+    const env = { ...hookEnv(), [HOOK_LOG_ENV]: log };
+    const call = (command: string) =>
+      runEntry(
+        "job-route",
+        JSON.stringify({
+          hook_event_name: "PreToolUse",
+          cwd: repo,
+          tool_name: "Bash",
+          tool_input: { command },
+        }),
+        env,
+      );
+    const queued = call("bunx tsc --noEmit");
+    expect(queued.exitCode).toBe(0);
+    const answer = JSON.parse(queued.stdout).hookSpecificOutput;
+    expect(answer.updatedInput.command).toContain("job run --kind tsc -- bunx tsc --noEmit");
+    // Nothing else is judged: a raw background session gets no answer at all.
+    expect(call("claude --bg")).toEqual({ exitCode: 0, stdout: "", stderr: "" });
+    // The log line carries the answer, its cwd, and what the hook read (`facts`): `doctor --live`
+    // reads that to prove the hook read the line, not only that it ran.
+    const logged = readFileSync(log, "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    expect(logged[0]).toMatchObject({
+      hook: "job-route",
+      event: "PreToolUse",
+      cwd: repo,
+      exitCode: 0,
     });
-    expect(run).toEqual({ exitCode: 0, stdout: answer, stderr: "" });
-    // The log line carries the answer, its cwd, and what the guard's parser read (`facts`):
-    // `doctor --live` reads that to prove the guard answered, not only that it ran.
-    expect(readFileSync(log, "utf8")).toBe(
-      `${JSON.stringify({
-        hook: "git-guard",
-        event: "PreToolUse",
-        cwd: repo,
-        exitCode: 0,
-        stdout: answer,
-        facts: { programs: ["git"] },
-      })}\n`,
-    );
+    expect(logged[0].facts.weight).toBe("heavy");
   });
 
   // What each guard says it cannot check, when it cannot read its input: a guard that cannot
   // judge a call asks (written by hand, one per guard in `GUARD_BUNDLES`).
   const CANNOT_CHECK: Record<string, string> = {
-    "agent-guard": "the model this launch runs on",
-    "deploy-guard": "whether this deploy may run while a task is open",
-    "git-guard": "this git command",
-    "job-route": "whether this launch or heavy command may run",
-    "main-folder-guard": "whether this edit belongs in a worktree",
-    "merge-guard": "whether this merge may happen by itself",
-    "session-escape-guard": "whether this call goes around the limits set for the session",
     "user-away": "whether the person is available",
   };
 
