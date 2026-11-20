@@ -23136,7 +23136,7 @@ function invocationOf(words) {
 function isComputedWord(word) {
   if (word === "{}")
     return true;
-  if (!word.startsWith("$") && !word.startsWith("`"))
+  if (!/[$`]/.test(word))
     return false;
   return /[$`(){}[\]\s]/.test(programName(word));
 }

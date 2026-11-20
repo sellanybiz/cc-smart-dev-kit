@@ -16074,7 +16074,7 @@ function invocationOf(words) {
 function isComputedWord(word) {
   if (word === "{}")
     return true;
-  if (!word.startsWith("$") && !word.startsWith("`"))
+  if (!/[$`]/.test(word))
     return false;
   return /[$`(){}[\]\s]/.test(programName(word));
 }
@@ -31952,41 +31952,56 @@ function configKey(raw) {
   return [first, ...parts.slice(1, -1), last].join(".");
 }
 function gitCalls(args) {
-  const dirs = [];
-  const config = new Map;
-  let workTree = null;
-  let gitDir = null;
-  for (let index = 0;index < args.length; index++) {
-    const arg = args[index] ?? "";
-    const name = arg.startsWith("--") ? arg.split("=")[0] ?? arg : arg;
-    const attached = arg.startsWith("--") && arg.includes("=");
-    if (arg === "-C") {
-      const dir = args[++index];
-      if (dir !== undefined)
-        dirs.push(dir);
-    } else if (arg === "-c" || name === "--config-env") {
-      const setting = attached ? arg.slice(name.length + 1) : args[++index] ?? "";
-      const equals = setting.indexOf("=");
-      const key = configKey(equals === -1 ? setting : setting.slice(0, equals));
-      config.set(key, arg === "-c" ? equals === -1 ? "true" : setting.slice(equals + 1) : null);
-    } else if (name === "--work-tree") {
-      workTree = (attached ? arg.slice(name.length + 1) : args[++index]) ?? workTree;
-    } else if (name === "--git-dir") {
-      gitDir = (attached ? arg.slice(name.length + 1) : args[++index]) ?? gitDir;
-    } else if (GIT_VALUE_OPTIONS.has(arg)) {
-      index++;
-    } else if (GIT_PRINTS.has(arg) || name === "--list-cmds") {
-      return [];
-    } else if (attached && GIT_VALUE_OPTIONS.has(name) || name === "--exec-path") {} else if (!GIT_FLAGS.has(arg) && arg.startsWith("-")) {
-      const later = args.slice(index + 1);
-      return later.flatMap((word, at) => word.startsWith("-") ? [] : [{ config, dirs: [...dirs], gitDir, rest: later.slice(at + 1), sub: word, workTree }]);
-    } else if (!arg.startsWith("-")) {
-      return [{ config, dirs, gitDir, rest: args.slice(index + 1), sub: arg, workTree }];
+  const calls = [];
+  const readings = [
+    { config: new Map, dirs: [], gitDir: null, index: 0, workTree: null }
+  ];
+  let started = 1;
+  for (let next = readings.shift();next !== undefined; next = readings.shift()) {
+    const { config, dirs } = next;
+    let { gitDir, workTree } = next;
+    let index = next.index;
+    for (;index < args.length; index++) {
+      const arg = args[index] ?? "";
+      const name = arg.startsWith("--") ? arg.split("=")[0] ?? arg : arg;
+      const attached = arg.startsWith("--") && arg.includes("=");
+      if (arg === "-C") {
+        const dir = args[++index];
+        if (dir !== undefined)
+          dirs.push(dir);
+      } else if (arg === "-c" || name === "--config-env") {
+        const setting = attached ? arg.slice(name.length + 1) : args[++index] ?? "";
+        const equals = setting.indexOf("=");
+        const key = configKey(equals === -1 ? setting : setting.slice(0, equals));
+        config.set(key, arg === "-c" ? equals === -1 ? "true" : setting.slice(equals + 1) : null);
+      } else if (name === "--work-tree") {
+        workTree = (attached ? arg.slice(name.length + 1) : args[++index]) ?? workTree;
+      } else if (name === "--git-dir") {
+        gitDir = (attached ? arg.slice(name.length + 1) : args[++index]) ?? gitDir;
+      } else if (GIT_VALUE_OPTIONS.has(arg)) {
+        index++;
+      } else if (GIT_PRINTS.has(arg) || name === "--list-cmds") {
+        break;
+      } else if (attached && GIT_VALUE_OPTIONS.has(name) || name === "--exec-path") {} else if (GIT_FLAGS.has(arg)) {} else if (arg.startsWith("-")) {
+        if (!attached && index + 1 < args.length && started < MAX_READINGS) {
+          started++;
+          readings.push({
+            config: new Map(config),
+            dirs: [...dirs],
+            gitDir,
+            index: index + 2,
+            workTree
+          });
+        }
+      } else {
+        calls.push({ config, dirs, gitDir, rest: args.slice(index + 1), sub: arg, workTree });
+        break;
+      }
     }
   }
-  return [];
+  return calls;
 }
-var GIT_VALUE_OPTIONS, GIT_FLAGS, GIT_PRINTS;
+var GIT_VALUE_OPTIONS, GIT_FLAGS, GIT_PRINTS, MAX_READINGS = 16;
 var init_git_calls = __esm(() => {
   GIT_VALUE_OPTIONS = new Set([
     "-C",
@@ -52793,6 +52808,7 @@ function forceDeletesBranch(rest) {
 }
 var COMPUTED_PUSH_ASK = "This command runs a program it works out when it runs, and its words name a push, so this guard cannot tell whether it pushes. Write the command out in full (for example `git push \u2026`) if you meant it.";
 var COMPUTED_GIT_ASK = "This command runs git, or a git subcommand, that it works out when it runs, so this guard cannot tell what it does: it may be a command this guard asks about (for example `git restore`, `git reset --hard` or `git push --force`). Write the command out in full if you meant it.";
+var COMPUTED_WORD_ASK = "This git command holds a word it works out when it runs (a `$` or a backtick), so this guard cannot tell whether that word becomes one it asks about (for example `--hard`, `--force` or a protected branch). Write the command out in full if you meant it.";
 function namesPush(words) {
   return words.some((word) => word === "push" || word === "send-pack");
 }
@@ -52808,30 +52824,53 @@ function computedGitIn(command, dialect) {
   }));
 }
 function gitQuestions(args, folder, dialect, run) {
-  return gitCalls(args).flatMap((call) => {
-    if (!isComputedWord(call.sub))
-      return callQuestions(call, folder, dialect, run);
-    const asks = [...SUBCOMMAND_JUDGES].some(([sub, judge]) => judge({ ...call, sub }, folder, dialect, asMainSession(run)).length > 0);
-    return asks ? [COMPUTED_GIT_ASK] : [];
-  });
+  const found = [];
+  let computedJudged = false;
+  for (const call of gitCalls(args)) {
+    if (isComputedWord(call.sub)) {
+      if (computedJudged)
+        continue;
+      computedJudged = true;
+      const asMain = asMainSession(run);
+      const asks = [...SUBCOMMAND_JUDGES].some(([sub, judge]) => judge({ ...call, sub }, folder, dialect, asMain).length > 0);
+      if (asks)
+        found.push(COMPUTED_GIT_ASK);
+      continue;
+    }
+    found.push(...callQuestions(call, folder, dialect, run));
+    const judged = SUBCOMMAND_JUDGES.has(call.sub) || pushAlias(call) !== null;
+    if (judged && call.rest.some(holdsExpansion))
+      found.push(COMPUTED_WORD_ASK);
+  }
+  return found;
 }
+var holdsExpansion = (word) => EXPANSION.test(word);
 function computedProgramAsks(operands, folder, dialect, run) {
   const asMain = asMainSession(run);
+  const judged = new Set;
   const named = operands.some((sub, at) => {
     const judge = SUBCOMMAND_JUDGES.get(sub);
-    return judge !== undefined && judge(bareCall(sub, operands.slice(at + 1)), folder, dialect, asMain).length > 0;
+    if (judge === undefined || judged.has(sub))
+      return false;
+    judged.add(sub);
+    const rest = operands.slice(at + 1);
+    return rest.some(holdsExpansion) || judge(bareCall(sub, rest), folder, dialect, asMain).length > 0;
   });
   if (named)
     return true;
-  if (!operands.some(isComputedWord))
+  if (!operands.some(holdsExpansion))
     return false;
-  const plain = new Set(operands.filter((word) => !isComputedWord(word)));
-  return [...plain].some((word) => dangerOption(word, folder, dialect, asMain));
+  const alone = new Map([...SUBCOMMAND_JUDGES].map(([sub, judge]) => [
+    sub,
+    judge(bareCall(sub, []), folder, dialect, asMain)
+  ]));
+  const plain = new Set(operands.filter((word) => !holdsExpansion(word)));
+  return [...plain].some((word) => dangerOption(word, alone, folder, dialect, asMain));
 }
-function dangerOption(word, folder, dialect, run) {
+function dangerOption(word, alone, folder, dialect, run) {
   return [...SUBCOMMAND_JUDGES].some(([sub, judge]) => {
-    const alone = judge(bareCall(sub, []), folder, dialect, run);
-    return judge(bareCall(sub, [word]), folder, dialect, run).some((ask) => !alone.includes(ask));
+    const before = alone.get(sub) ?? [];
+    return judge(bareCall(sub, [word]), folder, dialect, run).some((ask) => !before.includes(ask));
   });
 }
 function bareCall(sub, rest) {
@@ -52919,39 +52958,6 @@ var SUBCOMMAND_JUDGES = new Map([
     }
   ]
 ]);
-var INERT_PROGRAMS = new Set([
-  "[",
-  "cat",
-  "cp",
-  "diff",
-  "echo",
-  "false",
-  "grep",
-  "head",
-  "ls",
-  "mkdir",
-  "mv",
-  "printf",
-  "pwd",
-  "rm",
-  "rmdir",
-  "tail",
-  "tee",
-  "test",
-  "touch",
-  "true",
-  "uniq",
-  "wc",
-  "copy-item",
-  "get-childitem",
-  "get-content",
-  "move-item",
-  "new-item",
-  "remove-item",
-  "test-path",
-  "write-host",
-  "write-output"
-]);
 var FOLLOWED_FOLDER_CHANGES = new Set([
   "cd",
   "chdir",
@@ -52962,6 +52968,27 @@ var FOLLOWED_FOLDER_CHANGES = new Set([
 ]);
 var FUNCTION_DEFINITION = /\(\s*\)/;
 var EXPANSION = /[$`]/;
+var BACKGROUND = /(?<![&>])&(?![&>])/;
+var GIT_READS_ONLY = new Set([
+  "diff",
+  "log",
+  "ls-files",
+  "rev-parse",
+  "show",
+  "status"
+]);
+function noteGitWrites(program, operands, proof) {
+  if (program !== "git") {
+    if (proof.gitWrote)
+      proof.plain = false;
+    return;
+  }
+  const calls = gitCalls(operands);
+  if (proof.gitWrote && calls.some((call) => call.dirs.length > 0))
+    proof.plain = false;
+  if (calls.some((call) => !GIT_READS_ONLY.has(call.sub)))
+    proof.gitWrote = true;
+}
 var PLAIN_GIT_SUBCOMMANDS = new Set([
   "add",
   "branch",
@@ -53026,7 +53053,8 @@ function plainStep(words, invocation, nested, dialect) {
   const first = (words[0] ?? "").toLowerCase();
   if (first !== invocation.program)
     return false;
-  if (words.some((word) => DOT_GIT_PATH.test(word) || DOT_GLOB.test(word)))
+  const named = (word) => DOT_GIT_PATH.test(word) || DOT_GLOB.test(word) || BRACE_PAIR.test(word);
+  if (words.some(named) || opensFile(invocation.args))
     return false;
   const operands = withoutRedirections(invocation.args);
   if (dialect === "powershell" && !plainPowerShellWords(operands))
@@ -53035,9 +53063,12 @@ function plainStep(words, invocation, nested, dialect) {
     return plainGit(operands);
   if (FOLLOWED_FOLDER_CHANGES.has(first))
     return plainFolderChange(operands, dialect);
-  if (first === "printf")
-    return !(operands[0] ?? "").startsWith("-");
-  return INERT_PROGRAMS.has(first);
+  return false;
+}
+var STREAM_COPY = /^[\d*]?>&\d+$/;
+function opensFile(args) {
+  const kept = args.filter((arg) => !STREAM_COPY.test(arg));
+  return withoutRedirections(kept).length !== kept.length || kept.some((arg) => /^\*>/.test(arg));
 }
 var BRACE_PAIR = /\{[^}]*(?:,|\.\.)[^}]*\}/;
 var MAX_FOLDER_CHANGES = 64;
@@ -53177,6 +53208,8 @@ function inspect2(command, cwd, reading, run, proof, depth = 0) {
     proof.plain = false;
   if (EXPANSION.test(command))
     proof.plain = false;
+  if (BACKGROUND.test(command))
+    proof.plain = false;
   for (const step of shellSteps(command, { blindWhenOpen: true, dialect, joinLines })) {
     const words = wordsOf(step.text, dialect);
     if (namesGitLocation(words))
@@ -53185,12 +53218,16 @@ function inspect2(command, cwd, reading, run, proof, depth = 0) {
     const inner = invocation === undefined ? undefined : nestedCommand(invocation.program, invocation.args, step.pipedFrom);
     if (!plainStep(words, invocation, inner, dialect))
       proof.plain = false;
+    if (step.pipedFrom !== null)
+      proof.plain = false;
     if (invocation === undefined)
       continue;
     const { args, program } = invocation;
     const operands = withoutRedirections(args);
     if (CHANGES_FOLDER.has(program))
       proof.folderChanges.push({ dialect, operands, program });
+    if (program === "git" || CHANGES_FOLDER.has(program))
+      noteGitWrites(program, operands, proof);
     if (program === "git")
       found.push(...gitQuestions(operands, folder, dialect, run));
     if (invocation.computed && namesPush(words))
@@ -53225,7 +53262,8 @@ function guardQuestions(command, cwd, options) {
     const proof = {
       dialect: reading.dialect,
       plain: !definesFunction,
-      folderChanges: []
+      folderChanges: [],
+      gitWrote: false
     };
     run.readings.push(proof);
     return inspect2(command, cwd, reading, run, proof);
