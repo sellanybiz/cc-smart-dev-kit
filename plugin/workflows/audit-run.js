@@ -81,6 +81,19 @@ log(
   `Auditing ${target} for ${question} on ${tracks.length} track(s); at most ${maxFindings} finding(s) are verified.`,
 )
 
+// The kit's task write tools: no launch of this run changes the task ledger, which the lead owns.
+// A workflow script cannot import another file, so `review-split.js` holds its own copy of the list
+// (`src/workflows/*.test.ts` derive it from the task server's tools, so a new one fails both).
+const TASK_WRITES = [
+  'mcp__cc-smart-dev-kit-tasks__task_create',
+  'mcp__cc-smart-dev-kit-tasks__task_update',
+  'mcp__cc-smart-dev-kit-tasks__task_done',
+  'mcp__cc-smart-dev-kit-tasks__task_note',
+  'mcp__cc-smart-dev-kit-tasks__task_delete',
+  'mcp__cc-smart-dev-kit-tasks__task_take',
+]
+const READ_ONLY = ['Edit', 'Write', 'NotebookEdit', 'Agent'].concat(TASK_WRITES)
+
 // One auditor per track, in parallel, on `sonnet` at `high`: the breadth, which `high` covers.
 // Each track is the caller's: the audit skill takes them from the review skill's edge-case axes,
 // so the list of tracks has one home (`references/axes.md`). The auditor's own file already
@@ -95,7 +108,7 @@ const audits = await pipeline(tracks, (track) =>
       model: 'sonnet',
       effort: 'high',
       agentType: 'cc-smart-dev-kit:auditor',
-      disallowedTools: ['Edit', 'Write', 'NotebookEdit', 'Agent'],
+      disallowedTools: READ_ONLY,
       schema: FINDINGS,
     },
   ),
@@ -132,7 +145,7 @@ const verdicts = await pipeline(checked, (finding) =>
       model: 'opus',
       effort: 'xhigh',
       agentType: 'cc-smart-dev-kit:auditor',
-      disallowedTools: ['Edit', 'Write', 'NotebookEdit', 'Agent'],
+      disallowedTools: READ_ONLY,
       schema: VERDICT,
     },
   ),
@@ -188,7 +201,13 @@ const uncheckedText =
     : `Unchecked findings (${unchecked.length}, not verified: the budget did not reach them), to copy as they are:\n${uncheckedLines.join('\n')}`
 const report = await agent(
   `Write the audit report for ${target}, audited for: ${question}.\n\nOne section per confirmed finding, most severe first: the title, \`file:line\`, the trigger, the outcome, the missing guard, and the fix. Then one coverage line per track: what was audited and what was not reached. Then the unchecked findings, under their own heading, listed as given and marked as not verified: say that the caller can check them or run again. Then the hunches, under their own heading, marked as unproven. Report nothing that the code does not support.\n\n${where}\n\n${uncheckedText}\n\nConfirmed findings:\n${JSON.stringify(confirmed, null, 2)}\n\nHunches:\n${JSON.stringify(hunches, null, 2)}\n\nCoverage:\n${coverage.join('\n')}`,
-  { label: 'report', model: 'sonnet', effort: 'medium', agentType: 'cc-smart-dev-kit:builder' },
+  {
+    label: 'report',
+    model: 'sonnet',
+    effort: 'medium',
+    agentType: 'cc-smart-dev-kit:builder',
+    disallowedTools: TASK_WRITES,
+  },
 )
 
 return report

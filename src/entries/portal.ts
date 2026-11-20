@@ -33,6 +33,7 @@ import { cliPaths, tildify } from "../cli/paths";
 import { loopbackFetch, realProbe } from "../gateway/health";
 import type { Runner } from "../gateway/service";
 import { startDetached } from "../hooks/detached";
+import { realLimitFacts } from "../jobs/limits";
 import { type Machine, realMachine } from "../machine/machine";
 import { openUrlOnDesktop } from "../machine/open-url";
 import { realMcpDoctorDeps } from "../mcp/doctor";
@@ -248,6 +249,7 @@ async function runServer(
         },
       },
       live: null,
+      limits: realLimitFacts(),
       local: { cwd: process.cwd(), instructionsSource: instructionsFolder(join(folder, "dist")) },
       mcp: realMcpDoctorDeps(runRead),
       portal: () => probePortal(DEFAULT_PORTAL_PORT, realPortalProbe()),

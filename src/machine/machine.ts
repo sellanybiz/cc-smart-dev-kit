@@ -59,7 +59,7 @@ const RUN_TIMEOUT_MS = 300_000;
  * test about a program the plugin looks for — the browser's Chrome — the same on
  * every machine, including one where the real Chrome sits in a standard place.
  */
-interface HostFacts {
+export interface HostFacts {
   nativeAppleSilicon: boolean;
   userId: number | undefined;
   platform: NodeJS.Platform;
@@ -89,9 +89,27 @@ function nativeAppleSilicon(env: Record<string, string | undefined>): boolean {
   });
 }
 
-function hostFacts(env: Record<string, string | undefined>): HostFacts {
-  const real: HostFacts = {
-    nativeAppleSilicon: false,
+/**
+ * `nativeAppleSilicon` is worked out on first read, never on building the facts: on an Intel Mac
+ * it runs `sysctl`, and a caller that needs only the platform, the user id or `exists` (the heavy
+ * jobs' limits, which every job and every portal poll read) must never spawn.
+ */
+function lazily(facts: Omit<HostFacts, "nativeAppleSilicon">, compute: () => boolean): HostFacts {
+  let value: boolean | undefined;
+  return {
+    ...facts,
+    get nativeAppleSilicon() {
+      value ??= compute();
+      return value;
+    },
+  };
+}
+
+export function hostFacts(
+  env: Record<string, string | undefined>,
+  probeAppleSilicon: () => boolean = () => nativeAppleSilicon(env),
+): HostFacts {
+  const real: Omit<HostFacts, "nativeAppleSilicon"> = {
     userId: process.getuid?.(),
     exists: (path) => existsSync(path),
     platform: hostPlatform(env),
@@ -100,7 +118,7 @@ function hostFacts(env: Record<string, string | undefined>): HostFacts {
       existsSync("/etc/os-release") ? readFileSync("/etc/os-release", "utf8") : null,
   };
   const text = env[TEST_HOST_VAR];
-  if (!text) return { ...real, nativeAppleSilicon: nativeAppleSilicon(env) };
+  if (!text) return lazily(real, probeAppleSilicon);
   const given = JSON.parse(text) as Partial<{
     platform: NodeJS.Platform;
     arch: string;
@@ -109,16 +127,19 @@ function hostFacts(env: Record<string, string | undefined>): HostFacts {
     userId: number;
     nativeAppleSilicon: boolean;
   }>;
-  return {
-    nativeAppleSilicon:
-      given.nativeAppleSilicon ?? (given.platform === "darwin" && given.arch === "arm64"),
-    userId: given.userId ?? real.userId,
-    exists:
-      given.existing === undefined ? real.exists : (path) => (given.existing ?? []).includes(path),
-    platform: given.platform ?? real.platform,
-    arch: given.arch ?? real.arch,
-    osRelease: given.osRelease !== undefined ? () => given.osRelease ?? null : real.osRelease,
-  };
+  return lazily(
+    {
+      userId: given.userId ?? real.userId,
+      exists:
+        given.existing === undefined
+          ? real.exists
+          : (path) => (given.existing ?? []).includes(path),
+      platform: given.platform ?? real.platform,
+      arch: given.arch ?? real.arch,
+      osRelease: given.osRelease !== undefined ? () => given.osRelease ?? null : real.osRelease,
+    },
+    () => given.nativeAppleSilicon ?? (given.platform === "darwin" && given.arch === "arm64"),
+  );
 }
 
 /** The real machine, with commands found on `env.PATH`. */

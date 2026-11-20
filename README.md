@@ -248,12 +248,14 @@ files and limits, patterns and tools, and done-check.
 The `build` skill starts one builder per ready phase. Phases with disjoint files run at
 once in separate git worktrees; phases that share files wait through `blocked_by`.
 Each builder records a `Report:` note. The main session records its agent, branch,
-worktree and base commit on the phase task, then sends the diff to a fresh reviewer for
-spec and quality. Fix rounds resume the same builder, up to three times; after that, a
-fresh builder on a stronger model takes over. Builders never start agents or review themselves.
+worktree and base commit on the phase task, then checks the report against the branch:
+the diff, the file list and the tests the builder ran. No reviewer reads a phase. Fix rounds
+resume the same builder, up to three times; after that, a fresh builder on a stronger model
+takes over. Builders never start agents or review themselves.
 
-The main session merges each reviewed phase, closes its task and starts what it unblocked.
-One final whole-branch review runs on `opus`, followed by one fix pass and one full check.
+The main session merges each checked phase, closes its task and starts what it unblocked.
+The plan gets one review, in two rounds of the `review-split` workflow on `opus` at `xhigh`,
+with a fix pass after each, then one full check. Round 2 is the last review.
 Commit, push and pull request steps follow the project's workflow policy.
 
 The task system is the ledger. `Ruling:` notes keep decisions; `Report:` notes keep results.
@@ -293,7 +295,7 @@ differs:
 | The launcher | `~/.local/bin/cc-smart-dev-kit` for Git Bash, and `cc-smart-dev-kit.cmd` beside it for `cmd` and PowerShell. `setup` writes both. |
 | Every path | The same layout as Linux and macOS, under `%USERPROFILE%` (`%USERPROFILE%\.claude`, `…\.local\share\cc-smart-dev-kit`, `…\.config\cc-smart-dev-kit`). |
 | The gateway | A per-user **Scheduled Task** instead of the systemd units. A restart refuses requests for a moment (Claude Code retries them), and a stop cuts the answers in flight. |
-| The heavy-job queue | Works: each job runs as a plain child process, and the machine limit keeps full runs within your chosen concurrency (default 1). Nothing caps a job's memory, here or on Linux. |
+| The heavy-job queue | Works: each job runs as a plain child process, and the machine limit keeps full runs within your chosen concurrency (default 1). Nothing caps a job's CPU or memory on Windows: the [caps](#heavy-jobs-one-queue-for-the-machine) need Linux with a systemd user manager. |
 | The guards | Work through Git Bash. The shell judge (`job-route`) is wired on **Bash and PowerShell** and reads each in its own dialect; its queue rewrite stays Bash-only, so with the job route on a heavy PowerShell line is refused with the Bash line to run instead (only where Git Bash is found). |
 | The background clean | Works: the detached clean goes through `cmd /c start` so it outlives the hook, with no console window. |
 | Notifications | No custom kit notifications; Claude Code and other plugins keep their own behaviour. |
@@ -600,7 +602,7 @@ tasks: it cannot start or be done while one of them is open. Lists mark both:
 | `task mcp` | Run the stdio server; setup registers it. |
 
 The server exposes nine tools: `task_create`, `task_update`, `task_done`, `task_note`,
-`task_list`, `task_get`, `task_search`, `task_delete`, `task_take`; `task_delete` removes a deploy task only while its file is untracked. `task_list` takes `plan` to select a slug; without it, scope `plan` shows all own plans when there are several, each marked in flight, queued, finishing or parked, in plan-number order (finishing: a plan started under 4.8.0, pending with every phase closed and one done, at its final review). Only one plan runs at a time; parking and resuming are in `/cc-smart-dev-kit:plan-task` § 6. The CLI is the fallback when they
+`task_list`, `task_get`, `task_search`, `task_delete`, `task_take`; `task_delete` removes a deploy task only while its file is untracked. `task_list` takes `plan` to select a slug; without it, scope `plan` shows all own plans when there are several, each marked in flight, queued, finishing or parked, in plan-number order (finishing: a plan started under 4.8.0, pending with every phase closed and one done, at its review). Only one plan runs at a time; parking and resuming are in `/cc-smart-dev-kit:plan-task` § 6. The CLI is the fallback when they
 are missing. Work references use a number such as `#12`; deploy task ids look like
 `prod-20261117-144503` (the environment, then the UTC date and time). A `T-…` id answers "old task ids
 are gone in 5.0.0". The status line shows current work on rows of its own, one per layer: `Plan · <title>` (with `· 2 queued, 1 parked` when your other plans wait), then
@@ -907,6 +909,7 @@ as one JSON object instead: `format`, `version`, `ok`, `counts`, and `groups`, e
   its old line for anything else;
 - Claude Code's own plugin auto-update is off for this marketplace. It fails when it is on (`autoUpdate: true` in `settings.json`, or Claude Code's own record in `known_marketplaces.json` with no key in the settings): it knows nothing of the major hold, so it would install a major version by itself. For setup's own leftover `true` the fix is `cc-smart-dev-kit setup`; for a `true` you set, remove it by hand, then run setup;
 - the heavy-job limit and its source (default or the new machine file), plus ignored legacy `maxJobs` with its removal step;
+- the heavy jobs' [CPU and memory caps](docs/jobs.md#cpu-and-memory-limits), on Linux, as a pass, information or a warning, never a failure: the caps applied (read from the jobs' slice, so it claims no cap it has not read), written when the next job starts, or not applied with the reason and its fix (no user manager, a missing controller, a bad `cpuPercent` or `memoryPercent`); and a warning when `systemd-oomd` is not running, since then nothing stops a job that stalls on memory. Elsewhere one `·` line says the caps do not apply;
 - the kit's [git hooks folder](docs/jobs.md#git-hooks): present with a script under every hook name, executable and in this version's text. A folder that is **missing** is a warning (`!`): a commit or push whose hook runs heavy work then does not wait for a slot, and `setup` writes it. A folder the kit did not make is a ✗ that says to move it away first; stale or non-executable scripts are a ✗ with `setup` as the fix. On native Windows one `·` line says it is not set up yet;
 - Claude Code's [retry watchdog](#waiting-at-a-limit-claude-codes-retry-watchdog), as information (`·`), never a failure: on (set by cc-smart-dev-kit), on (your own `CLAUDE_CODE_RETRY_WATCHDOG`), off with the command that turns it on, or off because your own value leaves it off;
 - how many subagents a session runs at once ([Subagent concurrency](#subagent-concurrency)), as
@@ -1731,7 +1734,7 @@ splits the work into independent phases and orchestrates; every worker is a suba
 builder, a reviewer or a scout. An approved plan runs through `/cc-smart-dev-kit:build`, with
 the kit's tasks as the ledger. Disjoint phases start at the same time in separate worktrees,
 the session never waits on a result the next work does not need, and each hand-back is
-reviewed and integrated before what it unblocked starts. Also: the role, each subagent's model
+checked and merged before what it unblocked starts. Also: the role, each subagent's model
 and effort, review, the core principles, how to end a turn, and keeping docs true.
 `cc-smart-dev-kit setup` installs them for your user, **on by default**:
 
@@ -1784,7 +1787,7 @@ names such a missing import.
 | Skill | Use it for |
 |---|---|
 | `review` | Your own review before a commit, and the one second opinion per change set. |
-| `build` | Build an approved plan with parallel worktree builders, phase reviews and the task ledger. |
+| `build` | Build an approved plan with parallel worktree builders, one two-round plan review and the task ledger. |
 | `plan-task` | Planning work whose design is open, in plan mode: research, questions, the plan file, approval, phases and owners. |
 | `commit` | When to commit, push, open the pull request and ask for the merge. |
 | `pull-request` | What every pull request body carries. |
@@ -2126,16 +2129,26 @@ commands are heavy, and the defaults know `bun test` too: `bun test ./src/a.test
 |---|---|
 | `cc-smart-dev-kit job run [--kind <kind>] [--exclusive <name>] [--hook] -- <command…>` | Waits until the heavy slot is free, then runs the command. Its stdin, stdout, stderr and exit code pass through; SIGINT, SIGTERM and SIGHUP are sent on to the whole job. `--exclusive <name>`: at most one job with that name at a time, in order (with a kind, or alone, when it takes no slot). A job inside a job that already holds the slot does not wait again. `--hook` is for the kit's git hooks: the slot is taken without reading the command's words, and when the queue cannot be used the command runs at once. |
 | `cc-smart-dev-kit job set max <n>` | Sets your machine limit (1–8, default 1) in the new `~/.config/cc-smart-dev-kit/heavy-jobs.json` as `maxConcurrent`. Backed up and written atomically under setup's lock; `restore` takes back the kit's value. Lowering it never stops running jobs; waiting jobs see changes without a restart. |
-| `cc-smart-dev-kit job status` | The limit and its source (default or new file), slots in use, who holds them and who waits, and whether the job route is on for the folder it runs in, and who decided (the project, your own `switches.jobRoute`, or the default). |
+| `cc-smart-dev-kit job set cpu <n>` | Caps the CPU of all heavy jobs together at `<n>`% of the machine's CPUs (10–100, default 90), as `cpuPercent` in the same `heavy-jobs.json`, under the same lock and managed writer as `job set max`. Linux with a systemd user manager; elsewhere the jobs run without a cap. The jobs also yield to your apps (CPU weight 20). It reaches the jobs' slice when the next heavy job starts. |
+| `cc-smart-dev-kit job set memory <n>` | Caps the memory of all heavy jobs together at `<n>`% of the machine's memory (10–100, default 90), as `memoryPercent`. The jobs never swap, a watchdog (systemd-oomd) stops a job that stalls on memory, and a job it stopped for memory says why and how to change the cap. A lowered cap reaches the running jobs when the next heavy job starts, which with the default of one slot is after the running job ends ([how](docs/jobs.md#a-lower-limit-while-a-job-runs)). |
+| `cc-smart-dev-kit job status` | The limit and its source (default or new file), the CPU and memory caps (Linux), slots in use, who holds them and who waits, and whether the job route is on for the folder it runs in, and who decided (the project, your own `switches.jobRoute`, or the default). |
 | `cc-smart-dev-kit job kinds` | The kinds, the defaults and the project's own, each with its one-line description. |
 | `cc-smart-dev-kit job hook <name>` | For the kit's git hook scripts, not for you: prints `direct` or `queue <kind>` for git hook `<name>` in this repo, and always ends with 0. See [Git hooks](docs/jobs.md#git-hooks). |
 
+**CPU and memory caps.** On Linux with a systemd user manager and cgroup v2, a queued job runs
+in its own scope inside one shared top-level systemd slice, so all heavy jobs together stay under
+a CPU cap and a memory cap (90% each by default), and yield the CPU to your apps. The slice has no swap, and systemd-oomd stops the jobs
+when they stall on memory below the cap. The limits are runtime properties: they are gone at
+reboot, and no file in your home changes. Where they cannot apply (macOS, Windows, no user
+manager, a bad `cpuPercent` or `memoryPercent`), the job runs as before, and on Linux `job run`
+says why in one line. How it works, what it needs and what it cannot do:
+[docs/jobs.md](docs/jobs.md) § CPU and memory limits.
+
 The queue's state is per user, in `~/.local/share/cc-smart-dev-kit/jobs/`. There are no
-memory gates, CPU or I/O weights, systemd slices, shared folders or light lane: the slot does
-not cap the memory or the cores one run uses. A machine's old `jobs.json` and its `job set`
-values are ignored since 2.0. The new file never reads legacy `maxJobs`; `doctor` names that
-leftover with its removal step. `/api/jobs` and the portal's Machine page show the same limit
-and source as `job status`.
+memory gates before a start, I/O weights, shared folders or light lane. A machine's old
+`jobs.json` and its `job set` values are ignored since 2.0. The new file never reads legacy
+`maxJobs`; `doctor` names that leftover with its removal step. `/api/jobs` and the portal's
+Machine page show the same limit, caps and source as `job status`.
 
 Whether a project's heavy commands are sent through the queue is the `switches.jobRoute`
 setting ([The workflow](#the-workflow)): the project's `jobs.route` when it has one, else your
@@ -2892,7 +2905,7 @@ CI is green and the review is done is the caller's check (the merge guard hook),
 **Fewer pull requests and CI runs (5.4.0).** A push before a pull request opens costs no CI only
 where CI runs on pull requests and the default branch alone: read your CI triggers before you treat
 it as free. The skills keep the count low.
-A plan's archive moves in the plan's own pull request (a commit before the final review, so the
+A plan's archive moves in the plan's own pull request (a commit before the plan's review, so the
 review covers it), and the plan task closes in the turn the pull request opens. The small fixes of one session go on one branch and share one pull request at one
 ship point: the end of the turn that finishes your request, or when you say ship now (a plan branch,
 or one that carries a reviewed change set, gets a new branch from the default branch for them). The
@@ -2928,13 +2941,18 @@ one `reviewAgents` lists (by default the plugin's own reviewer) it notes the com
 working folder is on at the start, and its branch, and records **that start commit, on that
 branch**, at the end. A fix committed while the reviewer read is a fix it never saw: it counts
 as change after the review, like every later fix. A record also needs a run that was a review
-from start to end: the agent's brief (the first user entry of its transcript) holds the line
+from start to end: the agent's brief (the first user entry of its transcript; for a workflow
+agent, read through the workflow harness's two-space indent) holds the line
 `Mode: review` (trailing spaces and tabs allowed), and so does every prompt it was given after
 the brief — a resume, a message from the session that started it (whether Claude Code writes
 it as a user entry or as a queued-command attachment), a task notification, Stop hook
 feedback. Tool results are no prompt, nor are the entries Claude Code writes itself when the
-agent loads a skill or gets a system reminder (a reminder that ends at its closing tag); any
-other entry is. The hook reads the whole transcript, up to 16 MB. So a consult, a review agent
+agent loads a skill (a built-in one too, when it follows the agent's own `Skill` call) or gets a
+system reminder (a reminder that ends at its closing tag), nor is
+the end of a background command, or of a Monitor's stream, that the agent itself started (Claude
+Code's own origin and producer, exact tags, and a call id the agent made earlier in its own
+transcript); any other entry is, and so is every other task notification, a Monitor that expired
+or failed included. The hook reads the whole transcript, up to 16 MB. So a consult, a review agent
 resumed for a question, a review a Stop hook sent back to work, a review that compacted (the
 summary counts as a prompt), and a missing, unreadable or larger transcript record nothing,
 and the merge guard asks.

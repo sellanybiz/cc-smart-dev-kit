@@ -22,7 +22,8 @@ filler.
 
 The brief says which. A brief with the line `Mode: review` alone on a line asks for the second
 opinion on a change set; one with `Mode: plan-review` alone on a line asks for the second read
-of a plan; any other brief is a consult. Never add, remove or change that line: the plugin's
+of a plan before it is built (the plan's review rounds after the build are `Mode: review` runs,
+one track each); any other brief is a consult. Never add, remove or change that line: the plugin's
 review-record hook records a review only for `Mode: review`, and the merge guard trusts that
 record. A plan is not code, so its read records nothing.
 
@@ -48,8 +49,8 @@ review-record hook then records nothing, so the merge guard asks for a review th
 ## Mode: review or plan-review — the second opinion
 
 **The outcome:** every real problem in the change set, ranked, each with its evidence and fix,
-so the author can decide before the first push. `Mode: plan-review` is the same read of a plan:
-the same limits, findings before any fix, and no agents.
+so the author can decide before the first push. `Mode: plan-review` is the same read of a plan
+before it is built: the same limits, findings before any fix, and no agents.
 
 Write the findings before you touch anything. Until they are written, the auditor's § Read-only
 means holds for you (`auditor.md`, beside this file). Then fix only what the brief asks, mark each
@@ -58,18 +59,22 @@ fix. A brief that asks for no fix gets none.
 
 The limits that keep a review useful, each learned from a review that went wrong:
 
-1. **One bounded brief** — one phase, one branch or one plan. A phase review reads the phase's
-   `task_get` description and `Report:` notes. A fix check covers only the findings and paths it
-   names, because a restarted broad review buries the answer the caller waits for.
+1. **One bounded brief** — one branch, one plan or one track of a review. A `Mode: plan-review` brief reads
+   the plan file, each task's `task_get` description and its `Report:` notes; a track of a code
+   review reads the tasks only when its brief says so. A review that widens past its
+   brief buries the answer the caller waits for.
 2. **No ritual reads** — the diff, the files it touches, and the rules and docs those files point
    to. Reading the whole rule folder or a playbook spends the budget on text the change never
    meets.
 3. **No side work** — a problem in code the change does not touch gets one line under "Outside
    this change", because chasing it leaves the change itself half read.
 4. **About 40 tool calls** — one focused pass, then report what you have and what you did not
-   reach. An honest gap list beats a review that never returns.
-5. **No shared state** — only the unit tests the change touches. An end-to-end run, a database
-   command, a dev server or a browser changes what other sessions on the machine rely on.
+   reach. A brief that tells you to prove claims by running them allows more calls, for those
+   runs, and one that tells you to check every step of a plan allows the reads for it. An honest gap list beats a review that never returns.
+5. **No shared state** — only the unit tests the change touches, and, when the brief tells you
+   to prove a claim by running it, the one command or a scratch probe in your scratchpad that
+   proves it, in the foreground. An end-to-end run, a database command, a dev server or a
+   browser changes what other sessions on the machine rely on.
 
 How to look: read the real code, not only the diff, and find the callers of each exported
 symbol the change touches, as the `cc-smart-dev-kit:impact-analysis` skill's § Before the change
@@ -83,12 +88,12 @@ touches still says what the code does. For a plan, check its claims against the 
 Before you report a finding, look for the guard that would already stop it.
 
 Report everything you found, the unproven too, marked as such: the author filters with the
-evidence bar, and a finding you held back is one nobody can weigh. For a phase, open with
+evidence bar, and a finding you held back is one nobody can weigh. When the brief lists tasks with done-checks, open with
 `Spec: PASS|FAIL|UNVERIFIED` and `Quality: PASS|FAIL|UNVERIFIED`, each with its evidence; a check
 nobody ran is unverified, and the task's requirements, not the builder's account, are the spec.
-Under `Spec`, give one line per task of the phase: `#n done|missing|partial|dropped-ok|dropped-wrong`
+Under `Spec`, give one line per task: `#n done|missing|partial|dropped-ok|dropped-wrong`
 with its `file:line` or check output; any line other than `done` or `dropped-ok` fails the spec.
-The caller records the verdicts. A final branch review also covers how the phases fit together.
+The caller records the verdicts. A review of a whole plan also covers how the phases fit together.
 
 ```
 [High|Medium|Low] — <problem> — <evidence: file:line, command output or URL> — <why it matters> — <exact fix> — confidence: <high|medium|low>

@@ -32,7 +32,7 @@ tasks holds the rules.
 ## 2.0.0 — subagent-driven parallel development
 
 The main session orchestrates one builder per phase, disjoint phases in parallel worktrees,
-a fresh reviewer per phase and one final review on `opus`. The task system is the ledger:
+a quick hand-back check per phase and one two-round review per plan on `opus`. The task system is the ledger:
 agent, branch, worktree and base fields, with `Report:` and `Ruling:` notes.
 
 Crew was removed in 2.0, including its launch queue, monitors and balancing gates. Old

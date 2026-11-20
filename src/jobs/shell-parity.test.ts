@@ -184,6 +184,8 @@ async function startedArgv(command: [string, ...string[]]): Promise<readonly str
     isNested: async () => false,
     ancestorHoldsName: async () => false,
     acquire: async () => ({ release: () => {}, waitedSince: null }),
+    // The limits are off here: this test is about the argv as given.
+    limits: () => ({ on: false, line: null }),
     now: Date.now,
     run: async (argv) => {
       started = argv;

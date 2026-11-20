@@ -91,7 +91,8 @@ Answer eight questions; they are the plan's sections:
 7. **Rollback** — how to undo it cleanly.
 8. **How we prove it** — the checks that show it works: the tests (for a bug, the test that
    fails first), the checks the push and CI run, and what only the person can judge
-   (`/cc-smart-dev-kit:verify-change` § 6). Each phase's done-check (§ 5) comes from here.
+   (`/cc-smart-dev-kit:verify-change` § 6). Each phase's done-check (§ 5) comes from here. Name
+   the plan's two review runs (`/cc-smart-dev-kit:build` § 6): approving the plan approves them.
 
 Put a three-line **Summary** at the top. Keep approval and build status out of the design.
 Write it so a fresh session can build from the file alone: the approval screen may offer to
@@ -176,9 +177,10 @@ CLI fallback: `/cc-smart-dev-kit:tasks`.
   real dependency (one needs the other's merged code), never to order plans that merely share
   a file you could split.
 - **A phase is one area of the code with its own file set.** One fresh subagent builds it
-  and one review reads it. Its real steps are its tasks, usually 3 to 10, each with a
-  done-check. Size a phase by files and area, not by minutes; never make a step a phase.
-  Its upper bound: what one builder can finish and one reviewer can read line by line. Past
+  and the lead checks its hand-back (`/cc-smart-dev-kit:build` § 3). Its real steps are its
+  tasks, usually 3 to 10, each with a done-check. Size a phase by files and area, not by
+  minutes; never make a step a phase. Its upper bound: what one builder can finish and the
+  lead can check against its branch. Past
   that, split the area into two phases. Fewer phases never means fewer steps: every step
   keeps its own task and check, and merging phases carries each old brief and done-check over.
   Name its agent type, model and effort using the core instructions' table. Keep shared
@@ -210,7 +212,7 @@ CLI fallback: `/cc-smart-dev-kit:tasks`.
   `pending` and may hold phases and tasks with briefs (§ 4). The store sets the plan task
   `in_progress` when work in it starts, and refuses to start work in another plan while one is
   in flight. The refusal names that plan and the two ways forward: finish it (§ 8) or park it.
-  A plan stays in flight until its `task_done`, so its final review and fix pass belong to it.
+  A plan stays in flight until its `task_done`, so its two review rounds and their fixes belong to it.
   Take plans in plan-number order, unless the person says otherwise: with none in flight,
   start the lowest-numbered queued plan.
   **To park** a plan, stop or finish its running work, `task_update` the plan task to
@@ -259,14 +261,14 @@ At plan end, give a short summary of what shipped, failed and remains.
 ## 8. Archive it — a commit of the plan's own pull request
 
 A finished plan leaves the live folder before its pull request opens, never in a pull request of
-its own. When the phases are built and before the final review (`/cc-smart-dev-kit:build` § 6), move
+its own. When the phases are built and before the plan's review (`/cc-smart-dev-kit:build` § 6), move
 the plan file, and any research file still in the live folder, to `<plans dir>/archive/`. Commit
-that move on the plan branch, as the workflow allows: the final review then covers it, in any
+that move on the plan branch, as the workflow allows: the review then covers it, in any
 `fixesAfterReview` setting. After the review, its fixes and the full check, open the pull request.
 In the turn it opens, close the plan task with verification and the commits that shipped it: a
 reserved plan's files stay held until its pull request merges or closes, and an unreserved plan's
 files are free once its task closes. If that pull request is abandoned, its archived file moves
-back in the next pull request. If the final review leaves the plan open, move the file back.
+back in the next pull request. If the review leaves the plan open, move the file back.
 Keep the outcome on its task, not in a status history appended to the design.
 
 A parked plan stays open and `pending` with its work intact (§ 6), and a note on the plan task

@@ -3,6 +3,51 @@
 What each release changed, newest first. A release's **What to run** steps are the ones to do
 in your own terminal after the update; the user guide is [README.md](README.md).
 
+## 5.6.0
+
+- **Queued heavy jobs can no longer hang the machine (Linux).** Every queued job now runs in
+  one systemd user slice, `cc_smart_dev_kit_jobs.slice`, with limits set before each launch:
+  - **CPU:** at most 90% of the machine's CPUs by default, and the jobs yield to your apps
+    when the CPU is busy (a CPU weight of 20 against your apps' 100). An idle machine still
+    runs a job at full speed, up to the cap.
+  - **Memory:** at most 90% of the machine's memory by default, with no swap. A job past the
+    cap is stopped with exit code 137 and a line that says so.
+  - **A watchdog:** systemd-oomd stops a job that stalls the machine on memory below the
+    cap, and the job is marked as the first thing to stop if the machine runs out.
+  - The caps hold for all heavy jobs together, also with `job set max` above 1.
+- **Two new settings:** `cc-smart-dev-kit job set cpu <n>` and `job set memory <n>` (10 to
+  100, default 90) write `cpuPercent` and `memoryPercent` into the jobs' settings file. A
+  lower limit reaches the slice at the next launch.
+- **`job status`, the portal's Machine page and `doctor` show the limits**, and say so when
+  they cannot apply on this machine.
+- **The job's command is never changed.** Each job's words reach it exactly as written,
+  `$` included, on every systemd version.
+- **Where the limits cannot apply, the job runs as before.** That means macOS, Windows, a
+  container, a machine without a systemd user manager and cgroup v2, or a bad setting. On
+  Linux, one line names the reason. A command not on the PATH runs plain, so it still exits
+  127.
+- Details, and the limits' own limits: [docs/jobs.md](docs/jobs.md) § CPU and memory limits.
+- **A plan gets one strict review, in two rounds, not a review per phase.**
+  - **The order:** round 1 → fixes → round 2 → fixes → the full check → the pull request.
+  - **The workflow:** each round is the `review-split` workflow, and every agent in it is the senior engineer on `opus` at `xhigh`.
+  - **The plan goes in:** every reviewer reads the plan, and a spec track checks each decision, edge case and step's done-check against the code.
+  - **Round 2:** it gets round 1's report, and marks each finding fixed, not fixed or made worse.
+  - **Two strict rules:** reviewers prove claims by running things where they can, and a track with no findings must say what it read and ran.
+  - **At a phase's hand-back:** the lead checks the builder's report against its branch, with no reviewer.
+  - **Fewer review runs:** this cuts the review runs per plan from one per phase plus re-reviews to two (`/cc-smart-dev-kit:build` § 6).
+- **`review-split` takes `spec`** (the plan file) **and `prior`** (round 1's whole report). A call with neither still runs the same tracks and refuters, but every call now also gets the two strict rules (prove a claim by running it; a track with no findings says what it read and ran), and the report says when a track gave no evidence of coverage.
+- **A review that ran its own background commands is recorded again.** A reviewer's notice that its own background `bun test` ended counted as a message without the review marker. So the merge guard saw no review: the final review of job limits was never recorded. The record now treats the reviewer's own notices as harmless:
+  - **What counts:** a notice that its own background command ended, or that its own Monitor's stream ended. The notice must name a call the reviewer itself made earlier in the same transcript. A Monitor that expires, fails or ends with no output still counts as a message.
+  - **Workflow reviews are recorded at all now.** Claude Code indents every line of a workflow agent's brief, so the record never found `Mode: review` at the start of a line, and no workflow review had ever been recorded. The record now reads the brief through that wrapper, in both forms Claude Code writes.
+  - **A skill the reviewer loads itself** no longer counts as a message.
+  - **What still counts as a message:** any other notice.
+  - **NUL-padded lines:** a transcript line padded with NUL characters (seen in real transcripts) is read now, not counted as an empty message.
+- **The review and audit workflows' agents can no longer write tasks.** They can't create, change or close tasks.
+- **Each review round's tracks follow the plan's areas.** There is one track per area the plan changes, each with its own risks, plus one track across all layers and the spec track. Every reviewer checks outside facts in current docs (web search or Tavily) and cites the source.
+- **Each round's report is kept.** It is saved on the plan task, and round 2 gets round 1's whole report. Its headline says when round 1 findings are still open.
+
+**What to run:** nothing. Run `cc-smart-dev-kit doctor` to see the limits on this machine.
+
 ## 5.5.0
 
 - **Heavy work in a mixed Bash line no longer runs past the queue.** With the job route on,

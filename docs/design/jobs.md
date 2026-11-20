@@ -3,7 +3,8 @@
 `src/jobs/` owns the machine's heavy-job slots, one by default. A project's `jobs.kinds`
 classifies heavy commands. A run on named files bypasses the queue. `config.ts` owns the
 new `heavy-jobs.json` file, its `maxConcurrent` schema (1–8) and the default. It never reads
-legacy `jobs.json` as configuration. No resource estimate, second lane or shared-folder coordination.
+legacy `jobs.json` as configuration. No resource estimate, second lane or shared-folder coordination; the CPU and memory caps below
+are a bound on all heavy jobs together, not an estimate for one.
 
 `job set max <n>` writes through setup's managed JSON writer under the setup lock, so backups,
 atomic writes, ownership and restore work as for other managed keys. Status and doctor show the
@@ -14,10 +15,11 @@ its own lease. Concurrent takers cannot exceed it. Waiting jobs reread it, so a 
 needs no restart. Lowering the limit leaves existing leases alone and blocks new heavy jobs until
 the count falls below it. Stale-process recovery is unchanged. Invalid new settings fail closed.
 The default stays 1: competing full suites starved each other, timed out, then passed alone,
-causing false failures. The upper bound limits accidental fan-out, not machine resources.
+causing false failures. The upper bound limits accidental fan-out; the CPU and memory caps (below) bound what the jobs use.
 
 `job run` waits in ticket order, acquires the slot, starts the command and returns its exit
-code. The lease covers the child process group until the run ends. Signals reach the
+code. The lease covers the child process group (and, where the limits apply, its scope:
+`docs/jobs.md` § The job's own process group) until the run ends. Signals reach the
 children. Stale owners can be recovered after a crash; an owner that cannot be proved gone
 keeps its lease. The hook only rewrites the call through this API, never runs a heavy job.
 
@@ -60,7 +62,20 @@ keeps its lease. The hook only rewrites the call through this API, never runs a 
 `job status`, `/api/jobs` and the portal share the same status reader. The queue stores live
 state, not project settings. Old machine `jobs.json` settings are ignored since 2.0.
 
-The queue does not read memory, set CPU or I/O weights, create systemd slices, run `choom`,
-use shared folders or maintain a light lane. One job may still use all the machine's resources.
+**Limits (`src/jobs/limits.ts`).** The slot count bounds how many jobs run, not what one job
+uses, and a heavy machine hung because of that. So, on Linux with a systemd user manager and
+cgroup v2, a queued job runs in its own scope in one shared slice with a CPU quota, a low CPU
+weight, a memory ceiling, no swap and a memory-pressure watchdog (systemd-oomd), and carries a
+kill mark (`choom`). The slice's name has no dash (`cc_smart_dev_kit_jobs.slice`): a dash nests a
+slice, and a CPU weight only counts against siblings, so a nested slice would never yield. The
+caps are the settings `cpuPercent` and `memoryPercent` (90% by default),
+written as runtime properties before each launch, so nothing in the home changes. Where the
+limits cannot apply, the job runs as before and says why: a broken kit never blocks a build. Why
+the caps alone do not stop a hang, the detail, what it needs and what it cannot do:
+`docs/jobs.md` § CPU and memory limits.
+
+The queue still has no memory gate before a start, no I/O weights, no shared folders and no
+light lane. Where the limits cannot apply (macOS, Windows, no user manager), one job may still
+use all the machine's resources.
 
 Commands, configuration and limits: [Heavy jobs](../jobs.md).

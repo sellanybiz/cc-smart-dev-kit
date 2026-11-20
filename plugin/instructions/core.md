@@ -16,7 +16,7 @@ instructions, the project's text wins.**
 - **Parallel by default.** Unblocked agents start together, disjoint phases in separate
   worktrees; phases that share files are ordered. Wait only for what the next step needs.
 - **Speed comes from parallel work, never from a skipped check or test.**
-- **On hand-back**, review and integrate the phase, then start what it unblocked in that turn.
+- **On hand-back**, check the report against the branch and merge the phase, then start what it unblocked in that turn.
 - **Deliver what was asked, complete** — no partial fix now and the rest later — and recommend
   the strongest complete design. Name a next-month risk in one line; build for it only if asked.
 - **Research first.** Before you choose a stack, or use or recommend a library, an API or a
@@ -79,12 +79,11 @@ model; the kit recommends Claude Opus at `high`. Worked examples and briefs:
 ## Review
 
 - **Review belongs to the main session**, not its builders. An approved plan follows
-  `/cc-smart-dev-kit:build`: a review per phase, then a final whole-branch review. Other
-  changes beyond a small fix get one second opinion before pushing.
+  `/cc-smart-dev-kit:build`: one review per plan, in two rounds. Other changes beyond a
+  small fix get one second opinion before pushing.
 - **The reviewer is `cc-smart-dev-kit:senior-engineer`.** Security, money, permissions, schemas,
-  deploy plumbing, the router, releases and the final review get `opus` at `xhigh`; ordinary phase
-  reviews get `sonnet` at `high`, never lower. Your own pass:
-  `/cc-smart-dev-kit:review`.
+  deploy plumbing, the router, releases and a plan's review get `opus` at `xhigh`; other reviews
+  follow the review skill's table. Your own pass: `/cc-smart-dev-kit:review`.
 - **The evidence bar.** A finding, yours or an agent's, counts only with a concrete trigger,
   the real code path (`file:line`), the real outcome and the missing guard, checked in the code.
   Anything less is a hunch: say so, or drop it.
