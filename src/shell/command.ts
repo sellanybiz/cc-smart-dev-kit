@@ -1448,11 +1448,6 @@ const WRAPPERS: Record<string, WrapperSpec> = {
 /** The shells whose script this module reads (`-c`, a here-doc, a here-string, a pipe). */
 const SHELLS = new Set(["bash", "dash", "fish", "ksh", "mksh", "sh", "zsh"]);
 
-/** True when `word` names a wrapper (`env`, `sudo`, `setsid`, …), which runs the command after it. */
-export function isWrapper(word: string): boolean {
-  return WRAPPERS[programName(word)] !== undefined;
-}
-
 /** A package whose binary is Claude Code's own `claude` (`@anthropic-ai/claude-code@2.1.3`). */
 const CLAUDE_PACKAGE = /^@anthropic-ai\/claude-code(?:@[^/]*)?$/;
 

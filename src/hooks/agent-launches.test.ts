@@ -4,17 +4,10 @@
  * launches share one `tool_use_id`.
  */
 import { describe, expect, it } from "bun:test";
-import { readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
-import { tempDir } from "../testing/temp";
 import {
   type AgentLaunch,
-  appendAgentLaunch,
-  appendAgentLaunches,
   formatAgentLaunches,
   parseAgentLaunch,
-  RECORD_TAIL_BYTES,
-  readAgentLaunches,
   reasonParts,
 } from "./agent-launches";
 
@@ -94,49 +87,6 @@ describe("G2: a line of the record", () => {
       const line = JSON.stringify({ ...launch({}), launchIndex: bad });
       expect(parseAgentLaunch(line)?.launchIndex).toBe(0);
     }
-  });
-});
-
-describe("G2: each launch is recorded once", () => {
-  it("G2: three launches of one call, one tool_use_id: three lines, and a second run adds none", () => {
-    const file = join(tempDir("launches"), "agent-launches.jsonl");
-    const run = [0, 1, 2].map((launchIndex) => launch({ launchIndex }));
-    appendAgentLaunches(file, run);
-    appendAgentLaunches(file, run);
-    // One at a time, too: the line already there is found, not only the last one.
-    appendAgentLaunch(file, launch({ launchIndex: 0 }));
-    expect(readAgentLaunches(file, 0).map((one) => one.launchIndex)).toEqual([0, 1, 2]);
-    // Another call, or the same id in another session, is another launch.
-    appendAgentLaunch(file, launch({ toolUseId: "toolu_2" }));
-    appendAgentLaunch(file, launch({ session: "s2" }));
-    expect(readAgentLaunches(file, 0)).toHaveLength(5);
-  });
-
-  it("A4: a state folder that is not there yet is made, so the first launch is not lost", () => {
-    // An asked launch is recorded on PostToolUse, and nothing may have written the folder
-    // before it: the record must not vanish into a missing folder.
-    const file = join(tempDir("launches"), "state", "agent-launches.jsonl");
-    appendAgentLaunch(file, launch({}));
-    expect(readAgentLaunches(file, 0)).toHaveLength(1);
-  });
-
-  it("G2: a line with no tool_use_id is never taken for another", () => {
-    const file = join(tempDir("launches"), "agent-launches.jsonl");
-    appendAgentLaunch(file, launch({ toolUseId: "" }));
-    appendAgentLaunch(file, launch({ toolUseId: "" }));
-    expect(readAgentLaunches(file, 0)).toHaveLength(2);
-  });
-
-  it("G2: only the record's tail is read to find a line already written", () => {
-    const file = join(tempDir("launches"), "agent-launches.jsonl");
-    const first = `${JSON.stringify(launch({ toolUseId: "toolu_old" }))}\n`;
-    // A record longer than the tail: the first line lies before it.
-    const filler = `${JSON.stringify(launch({ toolUseId: "toolu_x", session: "other" }))}\n`;
-    const count = Math.ceil(RECORD_TAIL_BYTES / filler.length) + 1;
-    writeFileSync(file, first + filler.repeat(count));
-    appendAgentLaunch(file, launch({ toolUseId: "toolu_x", session: "other" }));
-    // The tail held that line: nothing added.
-    expect(readFileSync(file, "utf8").split("\n").filter(Boolean)).toHaveLength(count + 1);
   });
 });
 

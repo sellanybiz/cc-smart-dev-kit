@@ -27,21 +27,15 @@ export function heldMajor(now: number): HeldMajor {
   };
 }
 
-const GUARDS = ["git-guard", "agent-guard", "merge-guard", "escape-guard", "auto-mode"];
+const GUARDS = ["job-route", "user-away", "auto-mode"];
 const REASONS: Record<string, string[]> = {
-  "git-guard": [
-    "Push to a protected branch: release-1.1.0",
-    "git push --force asked",
-    "git reset --hard in the main checkout",
+  "job-route": [
+    "A raw background session: claude --bg",
+    "A heavy run beside other commands: run it on its own line",
   ],
-  "agent-guard": [
-    "An opus agent at max effort: the person's yes",
-    "A fable agent with no reason word",
-  ],
-  "merge-guard": ["The change after the review is over the limit", "No review covers the head"],
-  "escape-guard": [
-    "A write outside the worktree: ../my-app/.env",
-    "A settings file of Claude Code's own",
+  "user-away": [
+    "AskUserQuestion while the person is away",
+    "ExitPlanMode while the person is away",
   ],
   "auto-mode": ["Refused: curl … | sh", "Refused: rm -rf on a folder outside the project"],
 };
@@ -59,13 +53,13 @@ export function guardAsks(
     let at = now - 90_000;
     while (at > now - spanMs) {
       at -= Math.round(40 * MINUTE * (0.1 + random() * 1.8));
-      const hook = GUARDS[Math.floor(random() * random() * GUARDS.length)] ?? "git-guard";
+      const hook = GUARDS[Math.floor(random() * random() * GUARDS.length)] ?? "job-route";
       const reasons = REASONS[hook] ?? [""];
       all.push({
         at,
         hook,
         session: sessions[Math.floor(random() * sessions.length)] ?? "",
-        tool: hook === "agent-guard" ? "Agent" : hook === "escape-guard" ? "Write" : "Bash",
+        tool: hook === "user-away" ? "AskUserQuestion" : "Bash",
         reason: reasons[Math.floor(random() * reasons.length)] ?? "",
       });
     }

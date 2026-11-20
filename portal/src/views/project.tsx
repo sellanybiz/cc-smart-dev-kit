@@ -351,7 +351,7 @@ function Branches({ data }: { data: ProjectData }) {
       <CardHeader>
         <CardTitle>Merge check</CardTitle>
         <CardDescription>
-          The open pull requests, with the merge guard's verdict on each: whether it would merge by
+          The open pull requests, with merge-check's verdict on each: whether it would merge by
           itself. Read {ago(data.checkedAt)}.
         </CardDescription>
       </CardHeader>
@@ -467,7 +467,7 @@ function ProjectPage({
             <TriangleAlertIcon className="text-warn" aria-hidden="true" />
             <AlertTitle>The project files are not committed yet</AlertTitle>
             <AlertDescription>
-              The merge guard reads what is committed: commit them and push before they count.
+              merge-check reads what is committed: commit them and push before they count.
             </AlertDescription>
           </Alert>
         )}

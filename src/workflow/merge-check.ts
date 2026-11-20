@@ -437,12 +437,6 @@ export function workflowUnread(error: unknown): string {
   return `the workflow settings cannot be read (${error instanceof Error ? error.message : String(error)})`;
 }
 
-/** The question when cc-smart-dev-kit may not merge this by itself. */
-export function notByItself(reason: string, number: null | number = null): string {
-  const which = number === null ? "this pull request" : `#${number}`;
-  return `cc-smart-dev-kit will not merge ${which} by itself: ${reason}. Approve the merge yourself if you meant it.`;
-}
-
 /** The question when the guard could not read what it needs: gh is missing, or did not answer. */
 export function notChecked(what: string, env: Env): string {
   const why = ghMissing(env) ? "gh is not installed" : `gh could not read ${what}`;

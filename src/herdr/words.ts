@@ -12,24 +12,6 @@ export function normalizeMode(mode: string): HerdrMode | null {
 export function cliModeFlag(mode: HerdrMode): string {
   return mode === "default" ? "manual" : mode;
 }
-export function modeWiderThan(a: HerdrMode, b: HerdrMode): boolean {
-  return MODE_ORDER.indexOf(a) > MODE_ORDER.indexOf(b);
-}
-export function childModeAllowed(
-  lead: string,
-  child: string,
-): { ok: true } | { ok: false; why: string } {
-  if (lead === "bypassPermissions" || child === "bypassPermissions")
-    return { ok: false, why: "bypassPermissions is never allowed." };
-  const parent = normalizeMode(lead),
-    next = normalizeMode(child);
-  if (!parent) return { ok: false, why: "Unknown lead mode: ask the person." };
-  if (parent === "plan") return { ok: false, why: "Approve the plan first." };
-  if (!next) return { ok: false, why: "Unknown child mode: ask the person." };
-  if (modeWiderThan(next, parent))
-    return { ok: false, why: "The child mode is wider than the lead mode." };
-  return { ok: true };
-}
 export const HERDR_VERBS = [
   "start",
   "list",
@@ -41,7 +23,6 @@ export const HERDR_VERBS = [
   "stop",
   "machines",
 ] as const;
-export const MACHINE_VERBS = ["list", "allow", "forget", "production"] as const;
 const USAGE_LINES = {
   start: `start --model <${CLAUDE_FAMILIES.join("|")}> --effort <${ALLOWED_EFFORTS.join("|")}> --mode <${MODE_ORDER.join("|")}|manual> [--cwd <dir>] [--on <machine>] [--name <name>] [--task <#n> | --plan <slug> | --followup [--issue <n>]…] [--independent] [--asked] -- <brief>`,
   list: "list [--all] [--json]",

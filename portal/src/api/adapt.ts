@@ -189,7 +189,7 @@ function initAnswersOf(answers: WireProjectInitAnswers | null): ProjectInitAnswe
       };
 }
 
-/** The merge guard's verdict on one branch, in the page's words and tone. */
+/** merge-check's verdict on one branch, in the page's words and tone. */
 export function branchVerdictOf(verdict: MergeVerdict): BranchVerdict {
   switch (verdict.kind) {
     case "allowed":
@@ -200,8 +200,6 @@ export function branchVerdictOf(verdict: MergeVerdict): BranchVerdict {
       return { kind: "late", label: "ran late", reason: verdict.what, tone: "warn" };
     case "unread":
       return { kind: "unread", label: "not read", reason: verdict.what, tone: "info" };
-    case "silent":
-      return { kind: "silent", label: "no verdict", reason: null, tone: "info" };
   }
 }
 
