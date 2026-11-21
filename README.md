@@ -520,10 +520,12 @@ plans that each add a migration run at once. A plan built on another plan's bran
 that one parent plan, both ways, while the parent holds its files (open, or done until its pull request
 merges and `herdr plans` releases it); every other plan still blocks. Only the session that leads
 both plans sets a stack, and it counts only while that session still leads both and the stacked plan
-is built on the parent's own work: the parent records its branch, which has a commit past
-`origin/<default>`, and the start (the `herdr start` base, else the plan's recorded `base`) shares
-some of that work and is on the stacked plan's own branch. A parent rebased after the start, or a
-take by another session, ends the pair. Otherwise the two are judged as rivals. `herdr start --plan` on a stacked plan with no `--base` starts on the parent's recorded
+is built on the parent's own work: the parent records its branch and where it started (`base`), its
+branch has a commit past `origin/<default>` and past that start (and past the branch of the plan it
+is stacked on), and the stacked plan's start (the `herdr start` base, else its recorded `base`,
+which needs its own recorded branch) shares some of that work and is on the stacked plan's own
+branch. A parent rebased after the start, or a take by another session, ends the pair. Otherwise
+the two are judged as rivals. `herdr start --plan` on a stacked plan with no `--base` starts on the parent's recorded
 branch. `task_list` and `herdr plans` show the stack. The design: [Herdr](docs/design/herdr.md) and [tasks](docs/design/tasks.md).
 
 **After updating to 5.2.0:** restart every Claude Code session that was open before the update. A

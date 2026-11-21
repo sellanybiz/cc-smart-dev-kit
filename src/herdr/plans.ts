@@ -719,6 +719,12 @@ function unprovedStackFix(
     return `${counts} once ${name}'s branch ${parent.branch} is in this repository: fetch it`;
   if (gap === "parent-empty")
     return `${counts} once ${name} has work of its own: wait for its first commit on ${parent.branch}`;
+  if (gap === "parent-base")
+    return `${counts} once ${name} records where it started: task_update #${parent.number} with base set to the commit its branch started from`;
+  if (gap === "chain-branch")
+    return `${counts} once the branch of ${parent.stackedOn ?? "the plan it is stacked on"}, which ${name} is stacked on, is in this repository: fetch it`;
+  if (gap === "own-branch" || gap === "start-off-branch")
+    return `${counts} when this plan records its own branch, built on ${name}'s work: task_update #${plan.number} branch=<branch built on ${name}>`;
   if (gap === "git")
     return `${counts} once git can read ${name}'s branch and this plan's start: run ${COMMAND} herdr plans again`;
   return `${counts} when this plan is built on ${name}'s work: ${COMMAND} herdr start --plan ${slug} starts it on ${parent.branch} when --base is left out; a plan built here rebuilds its branch on ${parent.branch}`;

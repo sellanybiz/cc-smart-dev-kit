@@ -185,8 +185,8 @@ CLI fallback: `/cc-smart-dev-kit:tasks`.
   a file you could split.
 - **Stack a plan only on your own plan whose branch it is built on** (`stacked_on`). The store
   refuses a stack on another lead's plan. The pair counts only while you lead both, the parent
-  records its branch with a commit past the default branch, and the stacked plan is built on that
-  commit; else they are rivals.
+  records its branch and base with a commit past both the default branch and that base, and the
+  stacked plan's own branch is built on that commit; else they are rivals.
 - **A phase is one area of the code with its own file set.** One fresh subagent builds it
   and the lead checks its hand-back (`/cc-smart-dev-kit:build` § 3). Its real steps are its
   tasks, usually 3 to 10, each with a done-check. Size a phase by files and area, not by

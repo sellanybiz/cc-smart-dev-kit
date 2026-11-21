@@ -211,9 +211,11 @@ own work (`judgeStacks`, the rule is in `docs/design/tasks.md`, under "Stacked p
 reads that proof before the transaction, with the commit a start resets the child to and the
 default branch it found (a guessed one proves nothing), and passes the proved pairs to
 `reservePlan`; a stack it cannot prove leaves the parent a rival, and the line's fix says why: the
-parent records no branch, has no commit of its own yet (wait for it), another session holds one of
-the two plans, or the plan is not built on the parent's work (start it with `herdr start --plan`
-and no `--base`, or rebuild its branch on the parent's branch). `herdr plans`
+parent records no branch or no start (`base`), has no commit of its own yet (wait for it), another
+session holds one of the two plans, the plan keeps a branch that does not hold its start or is the
+parent's own (record the branch built on the parent: `task_update #n branch=<branch>`, since a new
+start does not replace a recorded branch), or the plan is not built on the parent's work (start it
+with `herdr start --plan` and no `--base`, or rebuild its branch on the parent's branch). `herdr plans`
 shows `(stacked on <slug>)` after the plan's name. The reservation
 records the lead (session and process), a holder kind (`child`, or `self` for the lead's own plan)
 and a **hand-out id**, the key a child takes the plan with. A launch proved failed releases the
