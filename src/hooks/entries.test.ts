@@ -10,6 +10,7 @@ import {
   copyFileSync,
   existsSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   rmSync,
   writeFileSync,
@@ -465,7 +466,8 @@ describe("the hook bundles, built as Claude Code runs them", () => {
     "agent-usage": 39_300,
     "builder-finish": 320_000,
     "fable-session": 330_000,
-    "job-route": 390_000,
+    // job-route holds no zod module: its chain was cut (`jobs/kind-defaults`, `workflow/merge`).
+    "job-route": 176_000,
     "keep-going": 350_000,
     // 10 KB: it imports no spec and no frame, only the hook's own few modules.
     "playwright-output": 12_000,
@@ -600,6 +602,34 @@ describe("the hook bundles, built as Claude Code runs them", () => {
       expect(configs).toEqual(["checked", "cached"]);
     });
 
+    test("job-route: the person's own default is checked and cached like the project's, and a broken one routes nothing", async () => {
+      const file = await built("job-route");
+      const repo = makeRepo();
+      writeClaudeFile(repo, "cc-smart-dev-kit.json", { worktrees: { base: "main" } });
+      const env = hookEnv();
+      const paths = cliPaths(env);
+      mkdirSync(dirname(paths.workflowConfigFile), { recursive: true });
+      writeFileSync(paths.workflowConfigFile, JSON.stringify({ switches: { jobRoute: true } }));
+      for (let run = 0; run < 2; run += 1) {
+        const result = runBundle(file, jobRouteInput(repo, "bunx tsc --noEmit"), env);
+        expect(result.stderr).toBe("");
+        expect(JSON.parse(result.stdout).hookSpecificOutput.updatedInput.command).toContain(
+          "job run --kind tsc -- bunx tsc --noEmit",
+        );
+      }
+      const entries = readdirSync(join(paths.stateDir, "checked")).filter((name) =>
+        name.endsWith(".json"),
+      );
+      expect(entries).toHaveLength(2);
+      // The file breaks: the hook leaves the line as written, and says nothing.
+      writeFileSync(paths.workflowConfigFile, '{"switches": {"jobRoute": "yes"}}');
+      expect(runBundle(file, jobRouteInput(repo, "bunx tsc --noEmit"), env)).toEqual({
+        exitCode: 0,
+        stdout: "",
+        stderr: "",
+      });
+    });
+
     test("without the checker beside it, a hook fails closed in its own way with the one fix", async () => {
       const file = await built("job-route");
       const dist = dirname(file);
@@ -636,7 +666,7 @@ describe("the hook bundles, built as Claude Code runs them", () => {
       const dist = dirname(file);
       writeFileSync(
         join(dist, "config-check.js"),
-        'export function checkProjectText() { throw new Error("a bug in the parser"); }\n',
+        'export function checkProjectText() { throw new Error("a bug in the parser"); }\nexport function checkWorkflowText() { throw new Error("a bug in the parser"); }\n',
       );
       const repo = makeRepo();
       writeClaudeFile(repo, "cc-smart-dev-kit.json", { jobs: { route: true } });
@@ -670,14 +700,28 @@ Object.defineProperty(globalThis, "__zod_globalConfig", {
 `;
 
     /**
-     * The hooks the frame change makes zod-free: those whose bundle came out with no zod module
-     * when `run.ts`'s project imports were stubbed (the baseline of this change), with the answer
-     * each gives to the input below, which a crash would not give.
+     * The hooks whose warm run evaluates no zod, each with the answer it gives to the input
+     * below, which a crash would not give. The frame change made those whose bundle came out
+     * with no zod module when `run.ts`'s project imports were stubbed; `job-route` cut its own
+     * chain after it; `ZOD_BEHIND_IMPORT` names the hooks whose bundle still holds zod, behind a
+     * dynamic import that this run never reaches.
      */
     const ZOD_FREE: Record<
       string,
       { input: (cwd: string) => object; stdout?: string; stderr?: string }
     > = {
+      "after-merge": {
+        // A line that merges nothing: the hook ends with no note, and loads neither the workflow
+        // resolver nor the clean's start.
+        input: (cwd) => ({
+          hook_event_name: "PostToolUse",
+          session_id: "s",
+          cwd,
+          tool_name: "Bash",
+          tool_input: { command: "ls" },
+        }),
+        stderr: "",
+      },
       "agent-usage": {
         input: (cwd) => ({ hook_event_name: "SubagentStop", session_id: "s", cwd }),
         stderr: "cc-smart-dev-kit agent-usage: the input names no agent transcript\n",
@@ -698,6 +742,17 @@ Object.defineProperty(globalThis, "__zod_globalConfig", {
         },
         stdout: "has not run the project's fast check since: run `bun test`",
       },
+      "job-route": {
+        input: (cwd) => ({
+          hook_event_name: "PreToolUse",
+          session_id: "s",
+          cwd,
+          tool_name: "Bash",
+          tool_input: { command: "bunx tsc --noEmit" },
+        }),
+        stdout: "job run --kind tsc -- bunx tsc --noEmit",
+        stderr: "",
+      },
       "session-name": {
         // A session names itself once, so each run is a new session.
         input: (cwd) => ({
@@ -710,7 +765,10 @@ Object.defineProperty(globalThis, "__zod_globalConfig", {
       },
     };
 
-    test("the list is exactly the hooks whose bundles hold no zod module", async () => {
+    /** The `ZOD_FREE` hooks whose bundle holds zod, but loads it only behind a dynamic import. */
+    const ZOD_BEHIND_IMPORT = ["after-merge"];
+
+    test("the list is the hooks whose bundles hold no zod module, and the ones that load it behind an import", async () => {
       const withZod: string[] = [];
       for (const name of BUNDLES) {
         const dist = tempDir("zod-list");
@@ -718,9 +776,11 @@ Object.defineProperty(globalThis, "__zod_globalConfig", {
         if (/^\/\/ node_modules\/zod\//m.test(readFileSync(join(dist, `${name}.js`), "utf8")))
           withZod.push(name);
       }
+      const zodless = Object.keys(ZOD_FREE).filter((name) => !ZOD_BEHIND_IMPORT.includes(name));
       expect(BUNDLES.filter((name) => !withZod.includes(name)).sort()).toEqual(
-        ["playwright-output", ...Object.keys(ZOD_FREE)].sort(),
+        ["playwright-output", ...zodless].sort(),
       );
+      expect(ZOD_BEHIND_IMPORT.filter((name) => !withZod.includes(name))).toEqual([]);
     });
 
     test.each(Object.keys(ZOD_FREE))(
@@ -735,8 +795,14 @@ Object.defineProperty(globalThis, "__zod_globalConfig", {
         writeClaudeFile(repo, "cc-smart-dev-kit.json", {
           sessionNames: true,
           checks: { fast: "bun test" },
+          worktrees: { base: "main" },
         });
         const env = hookEnv();
+        // The route comes from the person's own default, so the personal file is read (checked,
+        // then cached) through the same sibling as the project's.
+        const personalFile = cliPaths(env).workflowConfigFile;
+        mkdirSync(dirname(personalFile), { recursive: true });
+        writeFileSync(personalFile, JSON.stringify({ switches: { jobRoute: true } }));
         const marks = tempDir("zod-marks");
         const guard = subprocessGuard();
         const run = (mark: string) => {
