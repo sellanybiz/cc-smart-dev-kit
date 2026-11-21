@@ -2019,7 +2019,10 @@ describe("cc-smart-dev-kit doctor: the gateway", () => {
     const m = machine();
     const server = fakeServer();
     m.writeConfig(server.port, { "cc-smart-dev-kit-worker": ["claude-sonnet-5-5"] });
-    await m.run(["gateway", "setup"]);
+    // The doctor below can only see a set-up gateway when this succeeded: when it did not, say so
+    // here, with what the command printed, not as a doctor that sees no gateway.
+    const setup = await m.run(["gateway", "setup"]);
+    expect({ exitCode: setup.exitCode, stderr: setup.stderr }).toEqual({ exitCode: 0, stderr: "" });
     const doctor = await m.run(["doctor", "--verbose"]);
     // The gateway's group is the report's last: its lines, then the verdict after a blank line.
     expect(doctor.stdout).toContain(
