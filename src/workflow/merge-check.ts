@@ -778,9 +778,9 @@ function parseCommitsPage(out: string): { commits: string[]; total: number } | n
 
 /**
  * The commits `head` has and `base` lacks, by GitHub's compare (`COMMITS_FIELDS`), read page by
- * page until `total_commits` are in hand. Never a part of them: a total above
- * `STACK_COMMITS_LIMIT`, a total that changes between pages, or pages that end before the total
- * is reached are no answer, with the reason. `{owner}/{repo}` is gh's own placeholder for the
+ * page until a page holds fewer than `per_page` commits, then the count must equal
+ * `total_commits`. Never a part of them: a total above `STACK_COMMITS_LIMIT`, a total that
+ * changes between pages, or a count that is not the total are no answer, with the reason. `{owner}/{repo}` is gh's own placeholder for the
  * folder's repository; a `--repo` names it outright. Each name is encoded as a path segment (a
  * branch `release/1` is `release%2F1`), and the `...` between them stays.
  */
@@ -832,12 +832,21 @@ async function askCommits(
       };
     }
     for (const commit of answer.commits) read.add(commit);
-    if (read.size >= total) return { ok: true, value: read };
-    if (page >= Math.ceil(total / COMMITS_PER_PAGE)) {
+    // A page with room left is the last one. Only then is the count checked against the total, so
+    // a total that counts too low cannot stop the reading on a partial set.
+    if (answer.commits.length < COMMITS_PER_PAGE) {
+      if (read.size === total) return { ok: true, value: read };
       return {
         late: false,
         ok: false,
         why: `GitHub listed ${read.size} of the ${total} commits of ${named}`,
+      };
+    }
+    if (read.size > total || page >= Math.ceil(STACK_COMMITS_LIMIT / COMMITS_PER_PAGE) + 1) {
+      return {
+        late: false,
+        ok: false,
+        why: `GitHub listed more than the ${total} commits of ${named}`,
       };
     }
   }
@@ -879,7 +888,7 @@ function stackedOnView(
 /** What the stacked check found about one other open pull request. */
 type StackedOn =
   | { kind: "clear" }
-  | { kind: "shares" }
+  | { kind: "shares"; fork: boolean }
   | { kind: "unread"; late: boolean; why: string };
 
 /** The refusal when the check cannot tell whether a pull request is stacked: never a pass. */
@@ -955,7 +964,11 @@ async function stackedVerdict(
       batch.map(async (other): Promise<StackedOn> => {
         const theirs = await commitsOf(world, target, cache, other.base, other.headOid);
         if (!theirs.ok) return { kind: "unread", late: theirs.late, why: theirs.why };
-        for (const commit of theirs.value) if (mine.value.has(commit)) return { kind: "shares" };
+        for (const commit of theirs.value) {
+          if (mine.value.has(commit)) {
+            return { fork: other.fork || self?.fork === true, kind: "shares" };
+          }
+        }
         return { kind: "clear" };
       }),
     );
@@ -966,11 +979,17 @@ async function stackedVerdict(
   }
   const shared = found.find((one) => one.on.kind === "shares");
   if (shared !== undefined) {
+    // A base must be a branch of this repository, so a fork's branch cannot be one: the advice to
+    // open the upper one against the lower one's branch cannot be followed.
+    const advice =
+      shared.on.kind === "shares" && shared.on.fork
+        ? ", and one of them is from a fork, so neither can be opened against the other: merge the lower one by hand, then check again"
+        : ": merge the lower one first (open the upper one against the lower one's branch), then check again";
     return {
       detail: null,
       kind: "refused",
       number: view.number,
-      reason: `pull request #${view.number} shares commits with open pull request #${shared.number} that ${view.base} does not hold yet: merge the lower one first (open the upper one against the lower one's branch), then check again`,
+      reason: `pull request #${view.number} shares commits with open pull request #${shared.number} that ${view.base} does not hold yet${advice}`,
     };
   }
   for (const { number, on } of found) {

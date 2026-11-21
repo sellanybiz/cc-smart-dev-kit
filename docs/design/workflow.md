@@ -182,7 +182,9 @@ base rule refuses B until A merges; the stacked check holds whatever base B name
   `gh api 'repos/{owner}/{repo}/compare/<base>...<head>?per_page=100&page=<n>' --jq
   '.total_commits, .commits[].sha'` (`commitsOf`; [REST: Compare two
   commits](https://docs.github.com/en/rest/commits/commits#compare-two-commits) is "equivalent to
-  running the git log BASE..HEAD command"). It pages until `total_commits` are in hand. The docs
+  running the git log BASE..HEAD command"). It pages until a page holds fewer than 100 commits,
+  and then the count must equal `total_commits` (a total counted too low cannot stop it early).
+  The docs
   limit an unpaged answer to 250 commits and a page to 100 (`per_page`'s maximum), so the check
   always pages.
 - **Stacked:** this pull request's set and another open one's share a commit. Commits, not a
@@ -199,7 +201,10 @@ base rule refuses B until A merges; the stacked check holds whatever base B name
   is lower, so each is refused with `pull request #<n> shares commits with open pull request #<m>
   that <base> does not hold yet: merge the lower one first (open the upper one against the lower
   one's branch), then check again` (the lowest number when several; a shared commit found wins
-  over a read that failed).
+  over a read that failed). When either of the two is a fork's (`isCrossRepository`), that
+  advice cannot be followed (a base must be a branch of the base repository), so the words are
+  `... that <base> does not hold yet, and one of them is from a fork, so neither can be opened
+  against the other: merge the lower one by hand, then check again`.
 - **Clear:** two open pull requests at the same head (one commit has one review and one set of
   checks), a pull request with no commits of its own, and commits its base already holds.
 
@@ -233,8 +238,13 @@ request is open, or when every other one is skipped.
 - A pull request with more than 1000 commits its base lacks is refused, never judged on part of
   them; each 100 commits cost one gh call per run.
 - Commits are matched by id: a lower branch rewritten by a rebase has new ids, so the upper one
-  no longer shares them. A force-push or any rewrite of pushed history needs the person's yes
-  (the commit skill), so a pushed lower branch keeps its ids unless the person says otherwise.
+  no longer shares them, and an upper one opened against the default branch is freed while the
+  lower one is open. A force-push needs the person's yes (the commit skill), but GitHub's "Update
+  branch" with rebase rewrites the ids with no force-push: never use it on a lower pull request
+  while an upper one is open. A patch compare (`git cherry` on `refs/pull/<n>/head`) would see
+  through a rewrite; it costs a fetch per pull request and is not built.
+- A refused pair with a fork in it cannot be fixed by opening one against the other's branch: the
+  lower one is merged by hand.
 - A lower pull request closed without merging is no longer open, so it is not read here: the
   commit skill rebuilds the upper one on a new branch (`plugin/skills/commit/SKILL.md`).
 

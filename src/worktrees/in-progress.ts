@@ -22,39 +22,54 @@ import { resolve } from "node:path";
 import { runGit } from "../hooks/git";
 import type { Env } from "../hooks/run";
 
-interface Operation {
+/** What a person calls an operation, and the command that ends it, run in the worktree. */
+interface Named {
+  what: string;
+  ending: string;
+}
+
+// A stop on a conflict ends with `--abort`. A series whose conflicting commit was committed by
+// hand ends with `--quit`: `--abort` would roll those commits back.
+const BISECT: Named = { ending: "`git bisect reset`", what: "a bisect" };
+const REBASE: Named = { ending: "`git rebase --abort`", what: "a rebase" };
+const AM: Named = { ending: "`git am --abort`", what: "a git am" };
+const REBASE_OR_AM: Named = {
+  ending: "`git rebase --abort`, or `git am --abort` for a git am",
+  what: "a rebase or a git am",
+};
+const MERGE: Named = { ending: "`git merge --abort`", what: "a merge" };
+const CHERRY_PICK: Named = { ending: "`git cherry-pick --abort`", what: "a cherry-pick" };
+const REVERT: Named = { ending: "`git revert --abort`", what: "a revert" };
+const SERIES: Named = {
+  ending: "`git cherry-pick --quit`, or `git revert --quit` for a revert series",
+  what: "a cherry-pick or revert series",
+};
+
+interface Operation extends Named {
   /** The marker, relative to the worktree's git folder. */
   path: string;
   /** A file (its text may name the branch) or a folder (it is there or not). */
   kind: "file" | "folder";
-  /** What a person calls it, for the reason. */
-  what: string;
   /** True when the file holds the name of the branch the operation returns to. */
   namesBranch: boolean;
 }
 
 /** The markers, in the order a reason names them: the most telling first. */
 const OPERATIONS: readonly Operation[] = [
-  { kind: "file", namesBranch: true, path: "BISECT_START", what: "a bisect" },
-  { kind: "file", namesBranch: true, path: "rebase-merge/head-name", what: "a rebase" },
-  { kind: "file", namesBranch: true, path: "rebase-apply/head-name", what: "a rebase" },
-  { kind: "file", namesBranch: false, path: "rebase-apply/applying", what: "a git am" },
-  { kind: "folder", namesBranch: false, path: "rebase-merge", what: "a rebase" },
-  { kind: "folder", namesBranch: false, path: "rebase-apply", what: "a rebase or a git am" },
-  { kind: "file", namesBranch: false, path: "MERGE_HEAD", what: "a merge" },
-  { kind: "file", namesBranch: false, path: "CHERRY_PICK_HEAD", what: "a cherry-pick" },
-  { kind: "file", namesBranch: false, path: "REVERT_HEAD", what: "a revert" },
-  {
-    kind: "folder",
-    namesBranch: false,
-    path: "sequencer",
-    what: "a cherry-pick or revert series",
-  },
+  { ...BISECT, kind: "file", namesBranch: true, path: "BISECT_START" },
+  { ...REBASE, kind: "file", namesBranch: true, path: "rebase-merge/head-name" },
+  { ...REBASE, kind: "file", namesBranch: true, path: "rebase-apply/head-name" },
+  { ...AM, kind: "file", namesBranch: false, path: "rebase-apply/applying" },
+  { ...REBASE, kind: "folder", namesBranch: false, path: "rebase-merge" },
+  { ...REBASE_OR_AM, kind: "folder", namesBranch: false, path: "rebase-apply" },
+  { ...MERGE, kind: "file", namesBranch: false, path: "MERGE_HEAD" },
+  { ...CHERRY_PICK, kind: "file", namesBranch: false, path: "CHERRY_PICK_HEAD" },
+  { ...REVERT, kind: "file", namesBranch: false, path: "REVERT_HEAD" },
+  { ...SERIES, kind: "folder", namesBranch: false, path: "sequencer" },
 ];
 
-/** One operation that is running: what it is, and the branch it returns to (when its file says). */
-interface Running {
-  what: string;
+/** One operation that is running, and the branch it returns to (when its file says). */
+interface Running extends Named {
   branch: string | null;
 }
 
@@ -92,14 +107,19 @@ function readInProgress(worktree: string, env: Env): Read {
       const why = error instanceof Error ? error.message : String(error);
       return { state: "unreadable", why: `${marker} cannot be read (${why})` };
     }
-    running.push({ branch: operation.namesBranch ? text.trim() : null, what: operation.what });
+    running.push({
+      branch: operation.namesBranch ? text.trim() : null,
+      ending: operation.ending,
+      what: operation.what,
+    });
   }
   return { running, state: "read" };
 }
 
 /**
- * Why the worktree must stay: an operation of git's is unfinished in it, in words (`a bisect is
- * in progress`). Null when none is. When git cannot say, the worktree stays and the reason says so.
+ * Why the worktree must stay: an operation of git's is unfinished in it, in words, with the
+ * command that ends it (`a bisect is in progress (end it in that worktree with ...)`). Null when
+ * none is. When git cannot say, the worktree stays and the reason says so.
  */
 export function inProgressWhy(worktree: string, env: Env): string | null {
   const read = readInProgress(worktree, env);
@@ -107,7 +127,9 @@ export function inProgressWhy(worktree: string, env: Env): string | null {
     return `git could not say whether a bisect, rebase, git am, merge, cherry-pick or revert is in progress in it (${read.why}), so it is kept`;
   }
   const first = read.running[0];
-  return first === undefined ? null : `${first.what} is in progress`;
+  return first === undefined
+    ? null
+    : `${first.what} is in progress (end it in that worktree with ${first.ending})`;
 }
 
 /**

@@ -49,14 +49,16 @@ describe("an operation in progress in a worktree", () => {
   });
 
   test.each([
-    ["a merge", ["merge", "other"]],
-    ["a cherry-pick", ["cherry-pick", "other"]],
-    ["a revert", ["revert", "main~1"]],
-    ["a rebase", ["rebase", "other"]],
-  ])("%s that stopped on a conflict is said", (what, args) => {
+    ["a merge", "git merge --abort", ["merge", "other"]],
+    ["a cherry-pick", "git cherry-pick --abort", ["cherry-pick", "other"]],
+    ["a revert", "git revert --abort", ["revert", "main~1"]],
+    ["a rebase", "git rebase --abort", ["rebase", "other"]],
+  ])("%s that stopped on a conflict is said, with the way out", (what, way, args) => {
     const { side } = repo();
     stops(side, ...(args as string[]));
-    expect(inProgressWhy(side, env)).toBe(`${what} is in progress`);
+    expect(inProgressWhy(side, env)).toBe(
+      `${what} is in progress (end it in that worktree with \`${way}\`)`,
+    );
   });
 
   test("a bisect is said", () => {
@@ -64,7 +66,9 @@ describe("an operation in progress in a worktree", () => {
     git(side, "commit", "--allow-empty", "-m", "two");
     git(side, "commit", "--allow-empty", "-m", "three");
     git(side, "bisect", "start", "HEAD", "HEAD~2");
-    expect(inProgressWhy(side, env)).toBe("a bisect is in progress");
+    expect(inProgressWhy(side, env)).toBe(
+      "a bisect is in progress (end it in that worktree with `git bisect reset`)",
+    );
     git(side, "bisect", "reset");
     expect(inProgressWhy(side, env)).toBeNull();
   });
@@ -85,7 +89,9 @@ describe("an operation in progress in a worktree", () => {
       .sort()
       .map((name) => join(patches, name));
     stops(side, "am", ...files);
-    expect(inProgressWhy(side, env)).toBe("a git am is in progress");
+    expect(inProgressWhy(side, env)).toBe(
+      "a git am is in progress (end it in that worktree with `git am --abort`)",
+    );
   });
 
   test("a cherry-pick series after its conflicting commit is committed is still said", () => {
@@ -101,7 +107,9 @@ describe("an operation in progress in a worktree", () => {
     git(side, "add", "file.txt");
     // A plain commit ends that pick (CHERRY_PICK_HEAD goes) and leaves the rest of the series.
     git(side, "commit", "--no-edit");
-    expect(inProgressWhy(side, env)).toBe("a cherry-pick or revert series is in progress");
+    expect(inProgressWhy(side, env)).toBe(
+      "a cherry-pick or revert series is in progress (end it in that worktree with `git cherry-pick --quit`, or `git revert --quit` for a revert series)",
+    );
   });
 
   test("only the worktree that runs it is in progress, not its sibling", () => {
