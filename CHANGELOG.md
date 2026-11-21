@@ -51,6 +51,10 @@ in your own terminal after the update; the user guide is [README.md](README.md).
   never hands back while its own background job runs, and `subagent-background` blocks a stop
   once per background task, so the same final report no longer repeats. A hand-back carries
   the builder's own work only.
+- **Heavy-command routing works in auto mode.** Auto mode's check on Anthropic's side gives no
+  verdict for a call a hook changed, and it cancels every other call in the same response. In
+  auto mode, `job-route` no longer rewrites a heavy command; it refuses it and names the exact
+  `cc-smart-dev-kit job run` line to send, with the longest timeout. Other modes keep the rewrite.
 - **The merge note knows a lead keeps its worktree.** After a merge, a session that still
   holds another open plan reads "Kept: plan <slug> is still open here." instead of being told
   to clear the worktree.
