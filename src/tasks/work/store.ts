@@ -279,7 +279,6 @@ function addBlockers(db: WorkDb, task: WorkTask, refs: readonly string[]): void 
     graph.addWait(task.id, ref);
   }
 }
-/** What a refused block says (`blockRefusal` names the rule; the repair's note words it shorter). */
 function blockMessage(refusal: BlockRefusal, task: WorkTask, other: WorkTask): string {
   switch (refusal) {
     case "under":

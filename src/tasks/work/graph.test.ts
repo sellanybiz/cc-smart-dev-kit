@@ -173,7 +173,7 @@ function named(t: WorkTask): string {
   return `#${t.number} "${t.subject}"`;
 }
 function holdCount(db: WorkDb): number {
-  return db.sqlite.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM task_deps").get()?.n ?? -1;
+  return db.sqlite.query("SELECT 1 FROM task_deps").all().length;
 }
 
 test("addBlockers refuses an unknown task and another project's task before any rule", () => {

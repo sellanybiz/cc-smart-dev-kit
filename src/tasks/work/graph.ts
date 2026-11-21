@@ -1,12 +1,8 @@
 /**
  * The task graph: who sits under whom (`parentId`) and who waits for whom (`waitsFor`), read
- * once from a list of tasks. Two callers share its rules: `addBlockers` in `store.ts`, which
- * refuses a block that could never be done, and the lift in `db.ts`, which restores an older
- * kit's holds and must refuse the same ones. The graph is pure: no store, no I/O.
- *
- * It sits below `queries.ts` (which wraps `holdingUnder` and `waitsFor` for its callers), so the
- * two helpers the walks need, `isOpen` and `inProgressFirst`, live here and `queries.ts`
- * re-exports `isOpen`.
+ * once from a list of tasks. `addBlockers` (`store.ts`) and the lift (`db.ts`) share its refusal
+ * rules, so the lift never restores a hold the store would refuse. `queries.ts` imports this
+ * file, so `isOpen` and `inProgressFirst`, which the walks need, live here.
  */
 import type { WorkTask } from "./types";
 
@@ -20,20 +16,15 @@ export function inProgressFirst(a: WorkTask, b: WorkTask): number {
   );
 }
 
-/** Why a block is refused: the task sits under the blocker, it makes a cycle, or it waits through a parent. */
 export type BlockRefusal = "under" | "cycle" | "through";
 
-/**
- * The refusal in a few words, for a history note. The refusals `addBlockers` says in full are
- * worded in `store.ts`, with the tasks named.
- */
+/** The refusal in a few words, for the lift's history note (`addBlockers` names the tasks in full). */
 export const BLOCK_REFUSAL_WORDS: Record<BlockRefusal, string> = {
   under: "it sits above this task",
   cycle: "it would make a blocker cycle",
   through: "it already waits for this task, through a parent",
 };
 
-/** A stored block of a task on one of its own ancestors: neither can ever be done. */
 export interface AncestorHold {
   task: WorkTask;
   ancestor: WorkTask;
@@ -55,17 +46,15 @@ export class TaskGraph {
     }
   }
 
-  /** The tasks directly under `id`, in the order the graph was read. */
   childrenOf(id: string): readonly WorkTask[] {
     return this.children.get(id) ?? [];
   }
 
-  /** The tasks `id` waits for: the stored ones, then those added with `addWait`. */
   waitsOf(id: string): readonly string[] {
     return [...(this.byId.get(id)?.waitsFor ?? []), ...(this.added.get(id) ?? [])];
   }
 
-  /** Records that `id` now waits for `ref`, so the checks after it see the new edge. */
+  /** Records a wait the caller just stored, so the checks after it see the edge. */
   addWait(id: string, ref: string): void {
     const waits = this.added.get(id);
     if (waits) waits.push(ref);
@@ -108,7 +97,7 @@ export class TaskGraph {
     return result.sort(inProgressFirst);
   }
 
-  /** Whether `start` already waits for `target`, through explicit blockers or parent completion holds. */
+  /** Whether `start` waits for `target`, through blockers or the tasks a parent waits for. */
   waitsFor(start: string, target: string): boolean {
     const reached = new Set<string>();
     const pending = [start];
@@ -150,15 +139,12 @@ export function blockRefusal(
   return graph.waitsFor(other.id, task.id) ? "through" : null;
 }
 
-/**
- * Every hold of a task on one of its own ancestors, in task number order. `addBlockers` refuses
- * these today, but a store an earlier release lifted may still hold some.
- */
+/** Every hold of a task on one of its ancestors, which `addBlockers` refuses but an earlier lift may have stored. */
 export function ancestorHolds(graph: TaskGraph): AncestorHold[] {
   const found: AncestorHold[] = [];
   for (const task of graph.byId.values()) {
     const above = graph.ancestorsOf(task);
-    for (const id of new Set(graph.waitsOf(task.id))) {
+    for (const id of graph.waitsOf(task.id)) {
       const ancestor = above.find((up) => up.id === id);
       if (ancestor) found.push({ task, ancestor });
     }

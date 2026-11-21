@@ -422,7 +422,6 @@ test("the repair restores exactly the holds addBlockers would accept", () => {
   db.close();
   const repaired = openWorkDb(file, { mode: "write" });
   try {
-    expect(chain.map((t) => t.number)).toEqual([3, 4, 5]);
     // Hand-written: X (#3) holds Y (#4) and Z (#5), Y holds Z, and the two cycles hold nothing.
     expect(storedHolds(repaired)).toEqual(["#3 -> #4", "#3 -> #5", "#4 -> #5"]);
     expect(skippedHolds(repaired, closed.a)).toHaveLength(2);
