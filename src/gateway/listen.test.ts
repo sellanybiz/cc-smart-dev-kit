@@ -18,6 +18,7 @@ import net from "node:net";
 import { join } from "node:path";
 import { subprocessGuard } from "../testing/port-guard";
 import { tempDir } from "../testing/temp";
+import { childEnv } from "../testing/test-home";
 import { IDLE_GRACE_MS, inheritedListenFd, SD_LISTEN_FDS_START } from "./listen";
 
 const ROUTER_ENTRY = join(import.meta.dir, "..", "entries", "router.ts");
@@ -299,7 +300,7 @@ describe.skipIf(ACTIVATE === null)("the relay alone (no router behind it)", () =
     const proc = Bun.spawn(
       [ACTIVATE as string, "-l", `127.0.0.1:${port}`, process.execPath, ...guard.args, script],
       {
-        env: { PATH: process.env.PATH ?? "", ...guard.env },
+        env: childEnv({ PATH: process.env.PATH ?? "", ...guard.env }),
         stderr: "pipe",
         stdin: "pipe",
         stdout: "pipe",

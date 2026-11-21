@@ -3,18 +3,27 @@
 // falls back to "the home folder" can land in the real one.
 import { mock } from "bun:test";
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
-import * as os from "node:os";
+import osDefault, * as os from "node:os";
 import { join } from "node:path";
 
 // Read before `installTestHome` replaces `os.homedir()`: this module loads first.
 const realHome = os.homedir();
 const realOs = { ...os };
+const realOsDefault = { ...osDefault };
 
 let home: string | null = null;
 
 /** The real home folder of the person running the tests. Only a proof test may read it. */
 export function realHomeDir(): string {
   return realHome;
+}
+
+/**
+ * The real `node:os` as it was before the preload replaced `homedir`: its named exports, and
+ * its default export. Copies, so the mock cannot change them. Only a proof test reads them.
+ */
+export function realOsModule(): { named: typeof os; default: typeof osDefault } {
+  return { named: realOs, default: realOsDefault };
 }
 
 /** The temp home of this test run. Throws before the preload has made it. */
@@ -59,7 +68,7 @@ export function installTestHome(): void {
   Object.assign(process.env, testHomeEnv());
   // Every other export of `node:os` stays as it was; both the named and the default import
   // of the module see the new `homedir`.
-  const replaced = { ...realOs, homedir: () => testHome() };
+  const replaced = { ...realOsDefault, homedir: () => testHome() };
   mock.module("node:os", () => ({ ...replaced, default: replaced }));
   mock.module("os", () => ({ ...replaced, default: replaced }));
 }
