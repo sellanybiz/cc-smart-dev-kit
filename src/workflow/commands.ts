@@ -1,7 +1,7 @@
 /**
  * `cc-smart-dev-kit workflow [show] | set <setting> <value> [--project] | unset <setting> [--project]
  * | propose <setting> <value> [--unset] [--folder <project>] [--json] | review-done [--sha <commit>]
- * | merge-check [<pr>… | --branch <b> --base <base>]`.
+ * | merge-check [<pr>… [--asked] | --branch <b> --base <base>]`.
  *
  * `show` prints every value with where it came from, so a person can see whether it is the
  * project's policy, their own, or the built-in default — and, for a switch, that it is the
@@ -23,7 +23,8 @@
  *
  * `merge-check` judges a merge without making one, with merge-check's own judgment
  * (`merge-check.ts`): each pull request number, or a local branch against a base. It prints one
- * line per verdict and exits 0 when every merge is allowed, 1 when any asks.
+ * line per verdict and exits 0 when every merge is allowed, 1 when any asks. `--asked` (pull
+ * requests only) is the person's own yes to the merge: it sets aside `allowMerge` and nothing else.
  *
  * Exit codes, the same as the rest of the command: 0 done, 1 a file that cannot be read or
  * written (or a merge that asks), 2 a setting or a value that is not one of the settings there are.
@@ -102,7 +103,7 @@ function renamedLine(typed: string, current: string): string | null {
     : `${typed} is now called ${current}: using ${current} (the old name still works in a file)`;
 }
 
-export const WORKFLOW_USAGE = `Usage: ${COMMAND} workflow [show] | set <setting> <value> [--project] | unset <setting> [--project] | propose <setting> <value> [--unset] [--folder <project>] [--json] | review-done [--sha <commit>] | merge-check [<pr>… | --branch <b> --base <base>]
+export const WORKFLOW_USAGE = `Usage: ${COMMAND} workflow [show] | set <setting> <value> [--project] | unset <setting> [--project] | propose <setting> <value> [--unset] [--folder <project>] [--json] | review-done [--sha <commit>] | merge-check [<pr>… [--asked] | --branch <b> --base <base>]
 
 The settings are: ${WORKFLOW_KEYS.join(", ")}
 ${OLD_NAMES_TEXT}.
@@ -145,7 +146,10 @@ pull request number, or a local branch against a base (--branch <b> --base <base
 request is allowed when the committed policy passes: allowMerge on, its base the project's
 integration base or the repository's default branch, every required check green, and a review covering its head under
 fixesAfterReview. A branch is allowed when the review record covers its head. One line per
-verdict; exit 0 when every merge is allowed, 1 when any asks.`;
+verdict; exit 0 when every merge is allowed, 1 when any asks.
+--asked (pull requests only) says the person gave their own yes to this merge. It
+sets aside allowMerge and nothing else: the base rules, the required checks and the review still
+decide, and the verdict says the merge rests on the person's yes. Use it only with that yes in hand.`;
 
 /** One git call a `workflow` run makes (a `rev-parse`): milliseconds, never a hang. */
 const WORKFLOW_GIT_TIMEOUT_MS = 5_000;
@@ -467,15 +471,20 @@ function verdictLine(verdict: MergeVerdict, subject: string, env: Env): string {
 
 /** `merge-check`'s arguments: pull request numbers, or a branch with its base. */
 type MergeCheckArgs =
-  | { ok: true; prs: number[]; branch: string | null; base: string | null }
+  | { ok: true; prs: number[]; branch: string | null; base: string | null; asked: boolean }
   | { ok: false; why: string };
 
 function mergeCheckArgs(argv: string[]): MergeCheckArgs {
   const prs: number[] = [];
   let branch: string | null = null;
   let base: string | null = null;
+  let asked = false;
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index] ?? "";
+    if (arg === "--asked") {
+      asked = true;
+      continue;
+    }
     if (arg === "--branch" || arg === "--base") {
       const value = argv[index + 1];
       if (value === undefined || value.startsWith("--")) {
@@ -491,6 +500,14 @@ function mergeCheckArgs(argv: string[]): MergeCheckArgs {
     prs.push(Number(arg));
   }
   if (branch !== null || base !== null) {
+    // A local merge has no `allowMerge` test, so a yes has nothing to set aside: say so, never
+    // accept an option that would do nothing and let a session think it did.
+    if (asked) {
+      return {
+        ok: false,
+        why: "--asked is for a pull request: a local branch has no allowMerge to set aside",
+      };
+    }
     if (branch === null || base === null) {
       return { ok: false, why: "merge-check needs both --branch and --base" };
     }
@@ -500,16 +517,16 @@ function mergeCheckArgs(argv: string[]): MergeCheckArgs {
         why: "merge-check takes pull request numbers, or --branch with --base, not both",
       };
     }
-    return { ok: true, prs, branch, base };
+    return { ok: true, prs, branch, base, asked };
   }
   if (prs.length === 0) {
     return { ok: false, why: "merge-check needs a pull request number, or --branch with --base" };
   }
-  return { ok: true, prs, branch: null, base: null };
+  return { ok: true, prs, branch: null, base: null, asked };
 }
 
 /**
- * `workflow merge-check [<pr>… | --branch <b> --base <base>]`: merge-check's judgment,
+ * `workflow merge-check [<pr>… [--asked] | --branch <b> --base <base>]`: merge-check's judgment,
  * printed and not made. Exit 0 when every verdict is allowed, 1 when any asks.
  */
 async function mergeCheck(context: WorkflowContext, argv: string[]): Promise<number> {
@@ -538,7 +555,14 @@ async function mergeCheck(context: WorkflowContext, argv: string[]): Promise<num
   let everyAllowed = true;
   const defaultBranches = new Map<string, string | null>();
   for (const pr of parsed.prs) {
-    const verdict = await checkPullRequest(world, { ref: String(pr), repo: null }, defaultBranches);
+    const verdict = await checkPullRequest(
+      world,
+      { ref: String(pr), repo: null },
+      defaultBranches,
+      {
+        asked: parsed.asked,
+      },
+    );
     if (verdict.kind !== "allowed") everyAllowed = false;
     context.print(verdictLine(verdict, `#${pr}`, context.env));
   }

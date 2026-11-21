@@ -161,12 +161,27 @@ GitHub's own rule for a merge); and — with `reviewBeforePush` on — the head 
 review (D17, § The review record). **The judgment is one home**, `src/workflow/merge-check.ts`:
 `checkPullRequest` reads those facts and decides, `checkBranch` does the same for a local
 branch against a base (the review gate only), and
-`cc-smart-dev-kit workflow merge-check [<pr>… | --branch <b> --base <base>]` prints each verdict
+`cc-smart-dev-kit workflow merge-check [<pr>… [--asked] | --branch <b> --base <base>]` prints each verdict
 (`allowed`, or the reason it is not; exit 0 when every one is allowed, 1 when any is not).
 No hook runs it any more: it is a command the session runs, and the skill says to. The
 `merge-guard` hook that called it before every `gh pr merge` is retired (§ Retired in 6.0.0 in
 `docs/design/hooks.md`). Opening a pull request follows `openPr` the same way, as an
 instruction.
+
+**`--asked`: the person's yes sets aside the `allowMerge` switch and nothing else.** A person may
+say yes to a merge while `allowMerge` is off in the project (an away session is told to keep going
+through "review, merge and go next"). Judged plainly, `merge-check` refuses at once with "allowMerge
+is off" and has read nothing else, so it cannot show that the switch is the only thing left.
+`merge-check <pr> --asked` runs every other test: `autoMergeRefusal` is split into `autoMergeOff`
+(the switch) and `baseRefusal` (the base rules, one home in `src/workflow/auto-merge.ts`), and with
+`asked` the check calls `baseRefusal` alone, then reads the required checks and the review under
+D17 (`fixesAfterReview`) as always. Exit 0 only when all of those pass, and the verdict line says
+the merge rests on the person's yes, not on `allowMerge`. With `allowMerge` on, `--asked` changes
+nothing and claims no yes. It is for pull requests only: a local branch check has no `allowMerge`
+test, so `--branch` with `--asked` is a usage error (exit 2), not a silent no-op. The flag is the
+session's own word that the person gave that yes; no code can prove it, so the skill says when it
+may be used and that the person's words are quoted in the decision record (`commit` § merge rule,
+`user-unavailable` § 4). The portal never passes it.
 
 **The settings that cannot work together are named where they are shown** (D16): one pure
 function, `workflowClashes` in `src/workflow/clashes.ts`, called by `workflow show`,

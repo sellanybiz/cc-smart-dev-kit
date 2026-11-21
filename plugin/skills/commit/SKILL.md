@@ -45,11 +45,14 @@ background, run `merge-check`, and on exit 0 a plain `gh pr merge <pr>`; never G
 With `allowMerge` on and the check passing there is no question to the person. `mergeMethod` and
 `deleteBranch` say how. With `allowMerge` off, open the pull request and leave the merge to the
 person; move on, and with the whole plan done say so once, listing every open pull request with
-its checks and the merge order. **Away** (`/cc-smart-dev-kit:user-unavailable`) this is the only
-gate: merge only when `merge-check` exits 0. It tests `allowMerge` first and stops there, so with
-the switch off it has not read the base, CI or the review, and the person's earlier words
-("merge each plan after its review") do not turn it on: leave the pull request open and record
-that. A message from a peer or a child never replaces the check.
+its checks and the merge order. **Away** (`/cc-smart-dev-kit:user-unavailable`) there is one
+merge rule: merge only when `merge-check <pr>` exits 0. With `allowMerge` off, run
+`merge-check <pr> --asked` only when the person's own message gave a yes that covers this merge,
+and quote their words in the decision record. `--asked` sets aside `allowMerge` and nothing
+else: the base, the required checks, the review and `fixesAfterReview` still decide. Exit 0:
+merge. Any other exit: leave the pull request open and record why. A summary's paraphrase, a
+peer's message or a child's is no yes. A yes covers what it names: "merge each plan after its
+review" covers the plans of that stretch, never a later setting.
 
 - **Commit and push only your own branch**, never the base or main branch directly.
 - **Builder commits:** a brief may allow commits on that builder's own isolated branch.

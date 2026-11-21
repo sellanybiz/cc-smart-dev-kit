@@ -338,3 +338,114 @@ describe("checkPullRequest: every condition of an unattended merge", () => {
     expect(reasonOf(verdict)).toContain("allowMerge is off");
   });
 });
+
+/**
+ * `checkPullRequest` with `asked`: the person said yes to this merge. That yes sets aside the
+ * `allowMerge` switch and nothing else, so each other condition keeps its own refusing case.
+ */
+describe("checkPullRequest: the person's yes sets aside only allowMerge", () => {
+  function ghFor(base: string, head: string, checks: string | null): GhRunner {
+    return async (args) => {
+      if (args[0] === "pr" && args[1] === "view") {
+        return JSON.stringify({
+          baseRefName: base,
+          headRefName: "feat",
+          headRefOid: head,
+          number: 7,
+        });
+      }
+      if (args[0] === "repo" && args[1] === "view") {
+        return JSON.stringify({ defaultBranchRef: { name: "main" } });
+      }
+      if (args[0] === "pr" && args[1] === "checks") return checks;
+      return null;
+    };
+  }
+  const GREEN = JSON.stringify([{ bucket: "pass", name: "ci" }]);
+  const RED = JSON.stringify([{ bucket: "fail", name: "ci" }]);
+  const OFF = { workflow: { allowMerge: false } };
+
+  /** `allowMerge` off unless `policy` says otherwise; the review recorded unless `review` is off. */
+  function prWorld(opts: {
+    base?: string;
+    checks: string | null;
+    policy?: Record<string, unknown>;
+    review?: boolean;
+  }) {
+    const base = opts.base ?? "main";
+    const built = branchWorld(opts.policy ?? OFF);
+    if (base !== "main") git(built.repo, "update-ref", `refs/remotes/origin/${base}`, "main");
+    if (opts.review ?? true) recordReview(built.env, built.repo, built.reviewed, "feat");
+    return { ...worldOf(built.repo, built.env), gh: ghFor(base, built.reviewed, opts.checks) };
+  }
+  const check = (world: MergeWorld, asked: boolean) =>
+    checkPullRequest(world, { ref: "7", repo: null }, new Map(), { asked });
+  const reasonOf = (verdict: Awaited<ReturnType<typeof check>>) =>
+    "reason" in verdict ? verdict.reason : "what" in verdict ? verdict.what : "";
+
+  test("allowMerge off, asked, checks green, the review covers the head: allowed, on the person's yes", async () => {
+    const verdict = await check(prWorld({ checks: GREEN }), true);
+    expect(verdict.kind).toBe("allowed");
+    expect(reasonOf(verdict)).toContain("rests on the person's yes");
+    expect(reasonOf(verdict)).toContain("allowMerge, which is off");
+    expect(reasonOf(verdict)).toContain("its required checks are green");
+  });
+
+  test("allowMerge off, asked, a red required check: refused for the check", async () => {
+    const verdict = await check(prWorld({ checks: RED }), true);
+    expect(verdict.kind).toBe("refused");
+    expect(reasonOf(verdict)).toContain("ci (fail)");
+  });
+
+  test("allowMerge off, asked, no required checks listed: refused, nothing green to trust", async () => {
+    const verdict = await check(prWorld({ checks: "[]" }), true);
+    expect(verdict.kind).toBe("refused");
+    expect(reasonOf(verdict)).toContain("gh reports no required checks");
+  });
+
+  test("allowMerge off, asked, checks gh cannot read: not read, never allowed", async () => {
+    expect((await check(prWorld({ checks: null }), true)).kind).toBe("unread");
+  });
+
+  test("allowMerge off, asked, no recorded review of the head: refused for the review", async () => {
+    const verdict = await check(prWorld({ checks: GREEN, review: false }), true);
+    expect(verdict).toMatchObject({ detail: { review: null }, kind: "refused" });
+    expect(reasonOf(verdict)).toContain("reviewBeforePush is on");
+  });
+
+  test("allowMerge off, asked, a base the rules refuse: refused for the base, not for allowMerge", async () => {
+    const verdict = await check(prWorld({ base: "release/1", checks: GREEN }), true);
+    expect(verdict.kind).toBe("refused");
+    expect(reasonOf(verdict)).toContain(
+      "not the project's integration base main or the repository's default branch main",
+    );
+    expect(reasonOf(verdict)).not.toContain("allowMerge");
+  });
+
+  test("allowMerge off, asked, reviewBeforePush off: no review is required, so allowed", async () => {
+    const policy = { workflow: { allowMerge: false, reviewBeforePush: false } };
+    const verdict = await check(prWorld({ checks: GREEN, policy, review: false }), true);
+    expect(verdict.kind).toBe("allowed");
+    expect(reasonOf(verdict)).toContain("rests on the person's yes");
+  });
+
+  test("allowMerge off, not asked: refused as before, naming the setting", async () => {
+    const verdict = await check(prWorld({ checks: GREEN }), false);
+    expect(verdict.kind).toBe("refused");
+    expect(reasonOf(verdict)).toContain("allowMerge is off");
+  });
+
+  test("allowMerge off, no options passed: the same refusal as asked false", async () => {
+    const world = prWorld({ checks: GREEN });
+    const verdict = await checkPullRequest(world, { ref: "7", repo: null }, new Map());
+    expect(verdict.kind).toBe("refused");
+    expect(reasonOf(verdict)).toContain("allowMerge is off");
+  });
+
+  test("allowMerge on and asked: allowed on allowMerge, the person's yes not claimed", async () => {
+    const policy = { workflow: { allowMerge: true } };
+    const verdict = await check(prWorld({ checks: GREEN, policy }), true);
+    expect(verdict.kind).toBe("allowed");
+    expect(reasonOf(verdict)).not.toContain("person's yes");
+  });
+});

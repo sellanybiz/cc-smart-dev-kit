@@ -16,6 +16,7 @@
  *
  * Who calls this: `workflow merge-check` and the portal's branch verdicts, after the checks that
  * are not branch policy (CI green, the review done) and after `resolved.allowMerge` is on.
+ * `merge-check --asked` calls `baseRefusal` alone: the person's yes stands in for the switch.
  * Nothing here runs a command; it is a decision, so it is a pure function with its own tests.
  */
 
@@ -42,9 +43,29 @@ export function autoMergeOff(resolved: ResolvedWorkflow, base: string | null): s
 }
 
 /**
+ * The base rules on their own, without the `allowMerge` switch: a pull request may be merged by
+ * itself into the integration base or the default branch and no other. The one home of those
+ * rules. `merge-check --asked` calls this alone, because the person's yes sets aside the switch
+ * (`autoMergeOff`) and nothing else; every other caller goes through `autoMergeRefusal`.
+ *
+ * `defaultBranch` is the repository's own default branch, as the caller read it.
+ */
+export function baseRefusal(
+  projectConfig: CcSmartDevKitConfig | null,
+  prBase: string,
+  defaultBranch: string,
+): string | null {
+  const integration = projectConfig?.worktrees?.base;
+  if (prBase === defaultBranch || prBase === integration) return null;
+  return integration === undefined
+    ? `the pull request's base is ${prBase}, not the repository's default branch ${defaultBranch}`
+    : `the pull request's base is ${prBase}, not the project's integration base ${integration} or the repository's default branch ${defaultBranch}`;
+}
+
+/**
  * The reason cc-smart-dev-kit may not merge this pull request by itself, in words for the person
- * or the session; null when it may. This is the one home of those conditions:
- * `autoMergeAllowed` is `autoMergeRefusal(…) === null`.
+ * or the session; null when it may: the switch first, then the base rules. These two are the
+ * whole of the conditions: `autoMergeAllowed` is `autoMergeRefusal(…) === null`.
  *
  * `defaultBranch` is the repository's own default branch, as the caller read it.
  */
@@ -57,11 +78,7 @@ export function autoMergeRefusal(
   // The policy is the one committed on the pull request's own base (`resolveGate`).
   const off = autoMergeOff(resolved, prBase);
   if (off !== null) return off;
-  const integration = projectConfig?.worktrees?.base;
-  if (prBase === defaultBranch || prBase === integration) return null;
-  return integration === undefined
-    ? `the pull request's base is ${prBase}, not the repository's default branch ${defaultBranch}`
-    : `the pull request's base is ${prBase}, not the project's integration base ${integration} or the repository's default branch ${defaultBranch}`;
+  return baseRefusal(projectConfig, prBase, defaultBranch);
 }
 
 /**
