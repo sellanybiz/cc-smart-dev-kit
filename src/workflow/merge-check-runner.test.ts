@@ -74,6 +74,7 @@ describe("the merge check never blocks its caller (B8)", () => {
     const asked: string[][] = [];
     const gh: GhRunner = async (args) => {
       asked.push(args);
+      if (args[0] === "pr" && args[1] === "list") return "[]";
       if (args[0] === "pr" && args[1] === "view") {
         return JSON.stringify({
           baseRefName: "integration",
@@ -106,10 +107,21 @@ describe("the merge check never blocks its caller (B8)", () => {
       { ref: "7", repo: null },
       new Map(),
     );
-    expect(asked.map((one) => one.slice(0, 2))).toEqual([
-      ["pr", "view"],
-      ["repo", "view"],
-      ["pr", "checks"],
+    // The stacked questions sit after the base rule and before the checks, in that order.
+    expect(asked).toEqual([
+      ["pr", "view", "7", "--json", "number,baseRefName,headRefName,headRefOid"],
+      ["repo", "view", "--json", "defaultBranchRef"],
+      [
+        "pr",
+        "list",
+        "--state",
+        "open",
+        "--limit",
+        "500",
+        "--json",
+        "number,headRefOid,headRefName,baseRefName,isCrossRepository",
+      ],
+      ["pr", "checks", "7", "--required", "--json", "name,bucket"],
     ]);
     expect(verdict).toEqual({
       detail: {
@@ -124,10 +136,75 @@ describe("the merge check never blocks its caller (B8)", () => {
     });
   });
 
+  test("each open pull request's own commits are read once, by its own base, and compared as sets", async () => {
+    // The pull request's head is "a…" into main; #5 is at "9…" into main and shares nothing;
+    // #6 is at "c…" into `release`, and its commits include "a…", which main lacks.
+    const asked: string[][] = [];
+    const head = "a".repeat(40);
+    const nine = "9".repeat(40);
+    const see = "c".repeat(40);
+    const gh: GhRunner = async (args) => {
+      asked.push(args);
+      if (args[0] === "pr" && args[1] === "view") {
+        return JSON.stringify({
+          baseRefName: "main",
+          headRefName: "feat",
+          headRefOid: head,
+          number: 7,
+        });
+      }
+      if (args[0] === "repo" && args[1] === "view") {
+        return JSON.stringify({ defaultBranchRef: { name: "main" } });
+      }
+      if (args[0] === "pr" && args[1] === "list") {
+        const row = (number: number, headRefOid: string, baseRefName: string) => ({
+          baseRefName,
+          headRefName: `head-${number}`,
+          headRefOid,
+          isCrossRepository: false,
+          number,
+        });
+        return JSON.stringify([row(5, nine, "main"), row(6, see, "release"), row(7, head, "main")]);
+      }
+      if (args[0] === "api") {
+        const basehead = args[1]?.split("/compare/")[1]?.split("?")[0];
+        if (basehead === `main...${head}`) return `1\n${head}`;
+        if (basehead === `main...${nine}`) return `1\n${nine}`;
+        if (basehead === `release...${see}`) return `2\n${head}\n${see}`;
+      }
+      return null;
+    };
+    const verdict = await checkPullRequest(
+      world(gh, undefined, (repo) =>
+        commitConfig(repo, { workflow: { allowMerge: true, reviewBeforePush: false } }, ["main"]),
+      ),
+      { ref: "7", repo: null },
+      new Map(),
+    );
+    expect(verdict).toMatchObject({
+      kind: "refused",
+      reason:
+        "pull request #7 shares commits with open pull request #6 that main does not hold yet: merge the lower one first (open the upper one against the lower one's branch), then check again",
+    });
+    const compares = asked
+      .filter((one) => one[0] === "api")
+      .map((one) => one.slice(1))
+      .sort();
+    const at = (basehead: string) => [
+      `repos/{owner}/{repo}/compare/${basehead}?per_page=100&page=1`,
+      "--jq",
+      ".total_commits, .commits[].sha",
+    ];
+    expect(compares).toEqual(
+      [at(`main...${head}`), at(`main...${nine}`), at(`release...${see}`)].sort(),
+    );
+  });
+
   /** gh as a pull request into `base` meets it: the view, the default branch, the checks. */
   const ghFor =
     (base: string, bucket: string): GhRunner =>
     async (args) => {
+      if (args[0] === "pr" && args[1] === "list") return "[]";
       if (args[0] === "pr" && args[1] === "view") {
         return JSON.stringify({
           baseRefName: base,

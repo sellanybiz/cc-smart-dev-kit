@@ -9,6 +9,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
+import { NO_TASK_RECORDS } from "../testing/task-records";
 import { cleanGitEnv, git, tempDir } from "../testing/temp";
 import { removeWorktree, scanWorktrees } from "../worktrees/scan";
 import { folderFingerprint, hasUnsavedChanges, savedFingerprint } from "./unsaved-changes";
@@ -262,6 +263,7 @@ describe("worktrees removes a folder whose edits the base holds", () => {
   const options = (main: string) => ({
     base: "main",
     claudeConfigDir: join(main, "..", "claude"),
+    recorded: NO_TASK_RECORDS,
     env: cleanGitEnv(),
     idleLimit: 0,
     facts: { containers: [], mounts: [], programs: [], sessions: [] },

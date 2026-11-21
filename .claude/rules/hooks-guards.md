@@ -5,6 +5,8 @@ paths:
   - "src/hooks/user-away*"
   - "src/hooks/prompt-source.ts"
   - "src/hooks/specs.ts"
+  - "src/hooks/specs/**"
+  - "src/hooks/guard-crash.ts"
   - "src/hooks/run.ts"
   - "src/hooks/fail-closed.test.ts"
   - "src/hooks/matrix.test.ts"

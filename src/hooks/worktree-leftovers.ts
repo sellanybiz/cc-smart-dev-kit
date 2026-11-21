@@ -33,7 +33,9 @@
  *   NOTHING: it sends the person to `cc-smart-dev-kit worktrees --clean`, whose own judgment
  *   (`scan.ts` → `verdict.ts`) asks the machine's facts again before anything goes. Keep them
  *   in step: a new reason to keep a worktree belongs in `verdict.ts`, and in `judgeWorktree`
- *   only when it can be worked out without a probe.
+ *   only when it can be worked out without a probe. A bisect, rebase, merge, cherry-pick or
+ *   revert in progress is one: git's own files, read with one git call from the one list
+ *   (`worktrees/in-progress.ts`).
  *
  * No fetch: a session start must stay quick, so `origin/<base>` is read as it is.
  *
@@ -47,6 +49,7 @@ import { basename, join, resolve } from "node:path";
 import type { Project } from "../project/resolve";
 import { startAutoClean, takeToldLine } from "../worktrees/auto-start";
 import { autoCleanFiles, readRepoRecord } from "../worktrees/auto-state";
+import { inProgressWhy } from "../worktrees/in-progress";
 import { isAttended } from "./attended";
 import { cappedHookList } from "./capped-list";
 import {
@@ -168,6 +171,9 @@ export function judgeWorktree(
     env,
   );
   if (!ahead.ok || ahead.out !== "0") return "kept";
+  // The command's own keep (`verdict()`, before the idle hour): a bisect, rebase, merge,
+  // cherry-pick or revert is unfinished. One git call, from the one list (`in-progress.ts`).
+  if (inProgressWhy(listed.path, env) !== null) return "kept";
   if (idleMinutes(listed.path, now) < IDLE_MINUTES) return "kept";
   if (hasChanges(listed.path, env)) return "kept";
   // An ignored file that cannot come back (an edited `.env.local`): removing it loses work.

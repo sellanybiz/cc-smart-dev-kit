@@ -781,8 +781,8 @@ export interface FallbackRow {
   since: string;
 }
 
-/** The plan-limit words of a claim, the same the status line uses. */
-export function claimText(claim: null | string): string {
+/** The words for the plan-limit window a rate-limit claim names, the same the status line uses. */
+export function limitWindowText(claim: null | string): string {
   switch (claim) {
     case "five_hour":
       return "the 5-hour window";
@@ -820,7 +820,7 @@ export function limitFacts(ctx: PortalContext): {
       target: record.target,
     })),
     limits: currentLimits(state, nowMs).map(([model, record]: [string, LimitRecord]) => ({
-      claim: claimText(record.claim),
+      claim: limitWindowText(record.claim),
       model,
       resets: record.resetsAt === null ? null : formatClock(record.resetsAt, nowMs),
     })),

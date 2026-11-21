@@ -950,6 +950,12 @@ Since 2.1, `job set max` chooses the heavy-job count, and since the limits, `job
 - **A dead ticket from another pid namespace** cannot be judged by its pid: it holds the line
   until it is stale, 30 seconds after its last touch.
 - **The classifier's `typed.` rule for ESLint** can match a file whose name holds that text.
+- **A heavy command run outside the Bash tool is never queued.** The route is a hook on the Bash
+  tool only. A build or test run by another tool, such as an editor task, a script a hook starts or
+  a program that starts its own children, never meets it. Start it with `job run` yourself.
+- **A heavy command in `bash <(…)` or over `ssh` is never queued.** The route reads the line's
+  own commands, and what a process substitution produces or what runs on another machine is not
+  one of them. Put `job run` inside the script, or on the other machine, to queue it there.
 - **Watch runs are never queued by the route**, and a run the judge cannot read is never
   called light: it keeps its slot. A `job run` you type holds a slot for a watch run too.
 - **A package script's own body is never refused as a mix.** The route refuses a mixed line the

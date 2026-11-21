@@ -41,10 +41,12 @@ command that asks, and nobody is there to answer. Tell the person once, in one l
   skills or the facts support. A finding outside the plan: the recommended option of the finding
   rule's list (`/cc-smart-dev-kit:tasks` § 1).
 - **An action that needed their yes just runs** when the work calls for it and the instructions
-  allow it (a push of your own branch, a merge as `allowMerge` says, a staging deploy a task owes).
+  allow it (a push of your own branch, a merge by the one rule in `/cc-smart-dev-kit:commit`'s
+  merge section, a staging deploy a task owes).
   The steps that are the person's word every time (`/cc-smart-dev-kit:commit`: a deploy to
   production, a force-push, `reset --hard`, a direct push to the main branch) you do not run: take
-  the safe option, and record that you did not.
+  the safe option, and record that you did not. The one exception is § 4's start of a stacked
+  plan, in a fresh worktree that has nothing to lose.
 - **Plan mode.** Never enter plan mode while away: it cannot be left without the person. A
   session already in it writes its plan file, records a `Decision:` (what it would build, why,
   and that it stopped there) and stops that work; it never keeps trying `ExitPlanMode`.
@@ -63,15 +65,41 @@ reader without your context. Record every real choice (not a trivial one, like a
 
 ## 3. The end of a stretch
 
-At the end of each stretch (a phase done, a wave merged, the work running out) record one more
+A stretch is the work between two summaries: it ends when a phase is done, a wave is merged or
+the work runs out, and work may run on after it. At each end record one more
 decision whose text starts `Summary:` (not `Decision:`): what is done, what you chose, what runs on, and what the person
 should look at first. `/cc-smart-dev-kit:user-available` shows it first.
 
 ## 4. Keep working
 
-Use `/cc-smart-dev-kit:build` for subagent work. Resolve ambiguities in its task ledger and keep
-unrelated phases and reviews running. When there is truly no work left that you may do, the
-stretch is done: write § 3 and stop.
+Use `/cc-smart-dev-kit:build` for subagent work. Resolve ambiguities in its task ledger.
+
+- **Work at full parallel width.** Nobody is there to wait for, so start every ready phase in one
+  message (build § 2), keep reviews, hunts and checks running in the background, and never idle
+  while ready work exists.
+- **A finished plan does not stop the work.** When its phases are merged, run its review
+  rounds, the full check and its pull request (build § 6). Merge it only by the one merge rule in
+  `/cc-smart-dev-kit:commit` (`merge-check`, with `--asked` on the person's quoted yes). Then start
+  the next queued plan at once. A plan that needs plan mode follows § 1's plan-mode line. Record
+  the merge or the open pull request, and each next plan's start, as decisions (§ 2).
+- **Stack on an open pull request.** When the next plan starts while the previous plan's pull
+  request is not merged, make its worktree as usual (`/cc-smart-dev-kit:worktree`), run
+  `git reset --hard <previous plan branch>` there before the first edit, and record that head
+  as the plan's `base`: its review reads only its own work. A fresh worktree may start at the
+  default branch's tip or at the session's head (a project's `baseRef`), so `git merge
+  --ff-only` fails whenever that start moved past the plan below; the reset does not. It is safe only in a worktree with no commits of its own
+  and a clean tree (`git log --oneline HEAD --not --exclude=<this branch> --branches --remotes`
+  and `git status --short` both print nothing; `<this branch>` is from `git branch
+  --show-current`), and it is the one `reset --hard` this skill runs. In any other worktree do not stack:
+  leave the plan queued and record why. The pull request opens against the previous plan's
+  branch, and nothing merges before the one below
+  (the stacked pull request rule in `/cc-smart-dev-kit:commit`; `/cc-smart-dev-kit:pull-request`).
+- **The run mode.** `plans.runMode` `ask` (the default) asks, and asking is refused while away.
+  Nobody is waiting, so use the width: with two or more ready plans whose files do not
+  overlap and a Herdr terminal, run as lead + children (build § Lead + children and coordinator
+  modes); otherwise solo. Record the choice as a decision. A mode the person set is followed.
+
+When there is truly no work left that you may do, write § 3 and stop.
 
 ## Never
 

@@ -552,7 +552,26 @@ origin string; `evidence` is set when the task closes.
   base, grouped by environment, for the pull request's notes. `task list --branches` finds open
   tasks on local branches not yet merged, and, for a task the base still has open, the closes
   already made on such a branch (`closed on <branch>, not merged`). It reports a broken file on
-  one branch while it keeps listing the others. A deploy branch left unmerged is a visible run in
+  one branch while it keeps listing the others. Both read the base the way the release gates do,
+  and what the name is decides (`resolveListBase`). A local branch, slash or not (`main`,
+  `release/1.0`), reads `origin/<base>` whenever origin has it, so a local copy that is behind
+  gives no wrong answer. When the local branch holds commits `origin/<base>` lacks, the listing
+  still reads origin's, because the release gates read origin's (`task release`), and says so in
+  one line (`local <base> is ahead of origin/<base>`). A name git knows that is not a local
+  branch (a commit id, a tag, `HEAD`, `origin/main`) is read as written, with no note: a phase's
+  recorded base is a commit id. A local branch whose `origin/<base>` is not here (the plan
+  branch, while it stays local; or a base never fetched), or any local branch with no `origin`
+  remote, is read as written and says so in one line, with `git fetch origin` as the advice for
+  the unfetched case. The local branch and origin's copy are both read by their full names
+  (`refs/heads/<base>`, `refs/remotes/origin/<base>`), so a tag, or a stray local branch spelled
+  `origin/main`, never stands in for either. A name that means more than one ref (a tag beside
+  a branch, a stray local `origin/main` beside origin's, a bare `main` with a tag `main` and
+  origin's copy) is refused and the refs named, in the gates' own words (`names more than one
+  ref`): name the one you mean in full with `--base`, or delete the one that should not be
+  there. A local branch and origin's copy of it are one branch, not a clash. A name that
+  resolves nowhere gives the gates' advice (`git fetch origin`, or pass a ref git knows). The branch lists refuse
+  `--json`, so the one-line note never reaches a JSON answer. A deploy
+  branch left unmerged is a visible run in
   progress, and a prod gate that waits on an open staging twin points at this list: the twin's
   close may sit on a branch not merged yet.
 - **Old ids.** An id that starts with `T-` answers "old task ids are gone in 5.0.0". The old

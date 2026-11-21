@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { cliPaths } from "../cli/paths";
+import { escapeRegex } from "../regex-escape";
 import { RUNNER_PROGRAM_NAMES } from "../shell/command";
 import { hookEnv, makeClone, recordingStarter, runHook, writeClaudeFile } from "../testing/hooks";
 import { git, tempDir } from "../testing/temp";
@@ -92,10 +93,18 @@ describe("did the command merge a pull request?", () => {
     expect(refusal("sudo gh pr merge 7")).toEqual([
       "the merge runs under `sudo`, with another user's login and gh config",
     ]);
-    // An earlier step moves the merge: the folder, the branch, or gh's own repository.
-    expect(refusal("export GH_REPO=o/r && gh pr merge 5")).toEqual([
-      "an earlier step in the same command sets `GH_REPO`/`GH_HOST`, so which repository gh works on is not certain",
-    ]);
+    // The command moves the merge: the folder, the branch, or gh's own repository. One reason,
+    // true for an earlier step and for the merge's own prefix, `=` or `+=` (append) alike.
+    const pointing =
+      "this command sets `GH_REPO`/`GH_HOST`, so which repository gh works on is not certain";
+    for (const command of [
+      "export GH_REPO=o/r && gh pr merge 5",
+      "GH_REPO=o/r gh pr merge 5",
+      "GH_REPO+=o/r gh pr merge 5",
+      "GH_HOST=example.com gh pr merge 5",
+      "GH_HOST+=example.com gh pr merge 5",
+    ])
+      expect(refusal(command)).toEqual([pointing]);
     expect(refusal("gh pr checkout 11 && gh pr merge")).toEqual([
       "an earlier `gh pr checkout` in the same command changes the branch gh works on",
     ]);
@@ -670,7 +679,7 @@ describe("the hook", () => {
     const result = await runHook(afterMergeHook, ran(repo, "gh pr merge"), fakeGh(merged));
     expect(JSON.parse(result.stdout ?? "{}").hookSpecificOutput.additionalContext).toMatch(
       new RegExp(
-        `^cc-smart-dev-kit: ${file.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}: this project needs cc-smart-dev-kit >=99; you have [0-9.]+; run claude plugin update cc-smart-dev-kit@cc-smart-dev-kit$`,
+        `^cc-smart-dev-kit: ${escapeRegex(file)}: this project needs cc-smart-dev-kit >=99; you have [0-9.]+; run claude plugin update cc-smart-dev-kit@cc-smart-dev-kit$`,
       ),
     );
     expect(await runHook(afterMergeHook, ran(repo, "ls"), fakeGh(merged))).toEqual({});

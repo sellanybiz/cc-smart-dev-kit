@@ -190,6 +190,24 @@ describe("worktree-leftovers", () => {
     });
   });
 
+  test("never one in the middle of a bisect, however long it has been idle", async () => {
+    const { repo, add } = project();
+    // History on the base, so the worktree has a range to bisect.
+    git(repo, "commit", "--allow-empty", "-q", "-m", "two");
+    git(repo, "commit", "--allow-empty", "-q", "-m", "three");
+    git(repo, "push", "-q", "origin", "main");
+    const bisecting = add("bisecting");
+    git(bisecting, "bisect", "start", "HEAD", "HEAD~2");
+    makeIdle(bisecting);
+    // `--clean` keeps it (`inProgressWhy`), so the note must not call it finished.
+    expect(await runHook(worktreeLeftoversHook, start(repo), hookEnv())).toEqual({});
+    // Once the bisect is over, the same worktree is finished.
+    git(bisecting, "bisect", "reset");
+    makeIdle(bisecting);
+    const result = await runHook(worktreeLeftoversHook, start(repo), hookEnv());
+    expect(result.stdout).toContain("1 finished worktree is left in this repo: app-wt-bisecting");
+  });
+
   test("never a locked one", async () => {
     const { repo, add } = project();
     const env = hookEnv();

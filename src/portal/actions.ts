@@ -1706,7 +1706,10 @@ function notConfirmed(what: string): ActionResult {
 /**
  * `worktrees.clean`: the command line's own `worktrees --clean`, in a child in the portal's
  * own folder, with its lines collected. The page asks first (`confirm`): every finished
- * worktree goes, and a worktree that is not finished is kept with its reason.
+ * worktree goes, and a worktree that is not finished is kept with its reason. The command also
+ * deletes the `worktree-agent-*` branches no worktree uses and the base holds
+ * (`worktrees/branch-sweep.ts`), so the page's confirmation says so
+ * (`portal/src/components/machine-cards.tsx`).
  */
 async function cleanWorktrees(action: ActionContext): Promise<ActionResult> {
   const run = await runCliChild(action.portal, ["worktrees", "--clean"], {

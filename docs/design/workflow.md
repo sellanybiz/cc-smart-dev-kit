@@ -157,16 +157,113 @@ place (`auto-merge.ts`).
 **The merge is the session's own step.** It merges its pull request itself, with `gh pr merge`,
 only when **all** of these hold: `allowMerge` is on; the merge names **this project's own repository**; every required check
 `gh pr checks --required` reports is green (a `skipping` check counts as passed, which is
-GitHub's own rule for a merge); and — with `reviewBeforePush` on — the head is covered by a
+GitHub's own rule for a merge); the pull request is **not stacked on another open one**
+(the paragraph "A stacked pull request waits", below); and — with `reviewBeforePush` on — the head is covered by a
 review (D17, § The review record). **The judgment is one home**, `src/workflow/merge-check.ts`:
 `checkPullRequest` reads those facts and decides, `checkBranch` does the same for a local
 branch against a base (the review gate only), and
-`cc-smart-dev-kit workflow merge-check [<pr>… | --branch <b> --base <base>]` prints each verdict
+`cc-smart-dev-kit workflow merge-check [<pr>… | <pr> --asked | --branch <b> --base <base>]` prints each verdict
 (`allowed`, or the reason it is not; exit 0 when every one is allowed, 1 when any is not).
 No hook runs it any more: it is a command the session runs, and the skill says to. The
 `merge-guard` hook that called it before every `gh pr merge` is retired (§ Retired in 6.0.0 in
 `docs/design/hooks.md`). Opening a pull request follows `openPr` the same way, as an
 instruction.
+
+**A stacked pull request waits (`stackedVerdict` in `merge-check.ts`).** Plan B's pull request
+may be stacked on plan A's open one: B's branch started from A's, so B's commits include A's. B's
+own review and checks pass, and merging B would put A's unreviewed or refused commits into the
+base. The commit skill opens B against A's branch (`gh pr create --base <A's branch>`), so the
+base rule refuses B until A merges; the stacked check holds whatever base B names.
+
+**The rule, in the code's words:**
+
+- **Each pull request's own commits.** For this pull request and every other open one, the check
+  reads the commits its head has and its base lacks, once:
+  `gh api 'repos/{owner}/{repo}/compare/<base>...<head>?per_page=100&page=<n>' --jq
+  '.total_commits, .commits[].sha'` (`commitsOf`; [REST: Compare two
+  commits](https://docs.github.com/en/rest/commits/commits#compare-two-commits) is "equivalent to
+  running the git log BASE..HEAD command"). It pages until a page holds fewer than 100 commits,
+  and then the count must equal `total_commits` (a total counted too low cannot stop it early).
+  The docs
+  limit an unpaged answer to 250 commits and a page to 100 (`per_page`'s maximum), so the check
+  always pages.
+- **Stacked:** this pull request's set and another open one's share a commit. Commits, not a
+  merge base: after both branches merge a newer base (a criss-cross), the one merge base git
+  names is the base's new commit, which hides the shared ones (GitHub does not document which of
+  several it picks); a set cannot hide them.
+- **Direction, from the open list** (`gh pr list --state open --json
+  number,headRefOid,headRefName,baseRefName,isCrossRepository`). An open pull request whose base is
+  this one's head branch is stacked on this one, so it never holds this one up (`stackedOnView`).
+  That holds only when neither head is a fork's (`isCrossRepository`: a fork's head branch is
+  not this repository's branch of that name), and only when the list has this pull request.
+- **The refusals.** The upper one, opened against the lower branch, is refused by the base rule,
+  with its own words. Two pull requests into the same base that share commits cannot say which
+  is lower, so each is refused with `pull request #<n> shares commits with open pull request #<m>
+  that <base> does not hold yet: merge the lower one first (open the upper one against the lower
+  one's branch), then check again` (the lowest number when several; a shared commit found wins
+  over a read that failed). When either of the two is a fork's (`isCrossRepository`), that
+  advice cannot be followed (a base must be a branch of the base repository), so the words are
+  `... that <base> does not hold yet, and one of them is from a fork, so neither can be opened
+  against the other: merge the lower one by hand, then check again`.
+- **Clear:** two open pull requests at the same head (one commit has one review and one set of
+  checks), a pull request with no commits of its own, and commits its base already holds.
+
+It runs after the base rule and before the required checks: a stack is refused whatever the
+checks say, and `--asked` never sets it aside, because that sets aside the `allowMerge` switch
+alone. **When in doubt it refuses**: a gh that fails, an answer that is not a total and commit ids
+(gh prints the JSON body of an HTTP error on stdout; it is never read or shown, the reason says
+"GitHub could not compare <base> and <head>"), an open entry of another shape, an open list that
+fills its `--limit 500` (`OPEN_PULL_REQUESTS_LIMIT`; gh's default is 30), a pull request that holds
+more than `STACK_COMMITS_LIMIT` (1000) commits its base lacks, a total that changes between pages,
+and pages that end before the total all refuse, never read as "not stacked". A read the caller's
+deadline cut short (the portal's page has one) is `late`, as every other read of the check is, not
+a refusal. A branch name in the compare path is encoded (`encodeURIComponent`, so `release/1` is
+`release%2F1`) and the `...` between the names stays.
+
+**One read per run**: `newStackCache` is what the portal's project page (`readBranches`) and a
+`merge-check` line of several pull requests pass on, so the open list is read once for all rows
+and each pull request's commits once. Its keys carry the folder, repository, base and head they
+answer for, so one cache can never mix two projects. Nothing is compared when no other pull
+request is open, or when every other one is skipped.
+
+**Its costs:**
+
+- Two pull requests into one base that share an unmerged commit refuse each other until one
+  merges, or the upper one is opened against the lower one's branch. That includes a lower one
+  with the upper one opened against the default branch, and siblings cut from the same unmerged
+  commit. It errs on the safe side.
+- One open pull request whose commits cannot be read (a base branch deleted, no history in
+  common with its base, which GitHub answers with a 404) refuses every other pull request of the
+  repository with "cannot prove", naming it.
+- A pull request with more than 1000 commits its base lacks is refused, never judged on part of
+  them; each 100 commits cost one gh call per run.
+- Commits are matched by id: a lower branch rewritten by a rebase has new ids, so the upper one
+  no longer shares them, and an upper one opened against the default branch is freed while the
+  lower one is open. A force-push needs the person's yes (the commit skill), but GitHub's "Update
+  branch" with rebase rewrites the ids with no force-push: never use it on a lower pull request
+  while an upper one is open. A patch compare (`git cherry` on `refs/pull/<n>/head`) would see
+  through a rewrite; it costs a fetch per pull request and is not built.
+- A refused pair with a fork in it cannot be fixed by opening one against the other's branch: the
+  lower one is merged by hand.
+- A lower pull request closed without merging is no longer open, so it is not read here: the
+  commit skill rebuilds the upper one on a new branch (`plugin/skills/commit/SKILL.md`).
+
+**`--asked`: the person's yes sets aside the `allowMerge` switch and nothing else.** A person may
+say yes to a merge while `allowMerge` is off in the project (an away session is told to keep going
+through "review, merge and go next"). Judged plainly, `merge-check` refuses at once with "allowMerge
+is off" and has read nothing else, so it cannot show that the switch is the only thing left.
+`merge-check <pr> --asked` runs every other test: `autoMergeRefusal` is split into `autoMergeOff`
+(the switch) and `baseRefusal` (the base rules, one home in `src/workflow/auto-merge.ts`), and with
+`asked` the check calls `baseRefusal` alone, then reads the required checks and the review under
+D17 (`fixesAfterReview`) as always, and the stacked check above. Exit 0 only when all of those pass, and the verdict line says
+the merge rests on the person's yes, not on `allowMerge`. With `allowMerge` on, `--asked` changes
+nothing and claims no yes. It is for pull requests only: a local branch check has no `allowMerge`
+test, so `--branch` with `--asked` is a usage error (exit 2), not a silent no-op. **It names one
+merge**: `--asked` with more than one pull request (`merge-check 12 13 --asked`) is a usage error
+(exit 2) too, so one yes never covers a number it did not name. The flag is the
+session's own word that the person gave that yes; no code can prove it, so the skill says when it
+may be used and that the person's words are quoted in the decision record (`commit` § merge rule,
+`user-unavailable` § 4). The portal never passes it.
 
 **The settings that cannot work together are named where they are shown** (D16): one pure
 function, `workflowClashes` in `src/workflow/clashes.ts`, called by `workflow show`,
@@ -385,11 +482,22 @@ push to a branch the person may push to. What holds against that is the reposito
 branch protection and the person's own deny rules.
 
 **The usage-warning setting** is read by the status line through `src/workflow/alerts.ts`.
-`alertsAt(paths, cwd, env)` resolves `alerts.usagePercent` once per run: the project's over
+`alertsAt(paths, checkout)` resolves `alerts.usagePercent` once per run: the project's over
 the person's over the built-in default. An unreadable project or personal settings file
 drops only that file, keeps every value it can read, and returns one line for stderr.
-A folder outside a project, or no `cwd`, is not a problem. Retired `alerts.events` and
+A folder outside a project (no checkout) is not a problem. Retired `alerts.events` and
 `alerts.sound` values load but are discarded by the schema, not used by the status line.
+
+**The status line reads one folder, and locates its checkout once.** `runStatusline` reads stdin
+first. The session's folder is `cwd` in that JSON, else the process's own folder (run by hand in
+a terminal). It locates that folder's checkout once (`locateCheckout`), then hands the answer to
+`alertsAt` and takes the task rows' project key from it (`projectKeyOf`), so the warning share
+and the task rows can never describe two different folders. A session in a worktree whose
+project file sets `workflow.alerts` gets the worktree's value, even when Claude Code started
+the command from the main checkout. A folder that cannot be read at all (gone, git too old, git
+did not answer) leaves the person's own settings for the alerts and no task rows. The same lookup is one
+`git rev-parse` in a main checkout, plus one `git worktree list` in a linked worktree; it used to
+run twice. `subagent-statusline` reads no folder, no alerts and no tasks, so it has no lookup.
 
 ## Fewer pull requests
 

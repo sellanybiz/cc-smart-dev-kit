@@ -49,6 +49,9 @@ function userConfigFile(env, home) {
   return dir ? join2(dir, ".claude.json") : join2(home, ".claude.json");
 }
 function cliPaths(env = process.env) {
+  if (env === null || typeof env !== "object" || Array.isArray(env)) {
+    throw new TypeError(`cliPaths takes an environment object (like process.env), not ${env === null ? "null" : Array.isArray(env) ? "an array" : typeof env}`);
+  }
   const router = routerPaths(env);
   const claudeConfigDir = env.CLAUDE_CONFIG_DIR || join2(router.home, ".claude");
   return {

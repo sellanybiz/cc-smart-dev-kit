@@ -3,6 +3,85 @@
 What each release changed, newest first. A release's **What to run** steps are the ones to do
 in your own terminal after the update; the user guide is [README.md](README.md).
 
+## 6.2.0
+
+- **Each hook loads only itself.** Every hook bundle carried every other hook (583 KB each),
+  because each one loaded the full hook list. Now each loads only its own: 266 to 357 KB, and a
+  hook run takes about 22 ms instead of about 32 ms. A test builds every hook, runs it the way
+  Claude Code does, checks that it names itself, and fails a bundle that grows past its budget.
+  What is left is mostly the settings checker (zod), a follow-up of its own.
+- **The status line reads your session's folder.** The usage alerts followed the folder the
+  status line process started in, not the one the session works in. Both the alerts and the
+  task rows now read the session's folder, and git runs half as often per update. A session in a
+  worktree now shows that worktree's alert setting.
+- **`task list --branch` sees what the release gates see.** It read your local `main`, which can
+  be far behind, so it listed tasks as unmerged that were already on `origin/main`. A bare base
+  name now reads `origin/<base>`; with no `origin` remote it reads the local branch and says so.
+  A local base ahead of `origin/<base>` still reads origin's, as the gates do, and says so. A base
+  origin does not have here reads the local branch and tells you to run `git fetch origin`. A
+  commit id, a tag or `HEAD` is read as written, and a branch is read by its full name. A name
+  that means more than one ref (a tag beside a branch, a stray local branch `origin/main` beside
+  origin's) is refused with the refs named, as the gates do.
+- **A task's history prints a claim as text.** A take-over wrote `[object Object]`; it now writes
+  the session id, and older rows print the same way.
+- **Finished worktrees stop staying for `next-env.d.ts`.** Next.js writes that file in every
+  checkout; it now counts as rebuildable, so it no longer keeps a finished worktree.
+- **`worktrees --clean` deletes finished builder branches.** A builder's `worktree-agent-*`
+  branch stayed after its folder went, once its work reached `main` through the plan branch.
+  `--clean` now deletes those whose work the base holds and no worktree uses, and keeps the rest
+  with the reason. Every branch delete (`--clean`, `--remove`, the background clean) now keeps a
+  branch an open task still records and one a worktree is bisecting or rebasing, deletes only the
+  commit it judged, so a branch that moved meanwhile stays, and removes the branch's git config
+  section with it (in any language git speaks). A worktree with a bisect, rebase, merge,
+  cherry-pick or revert in progress is kept whatever its idle time, and so is one with a `git am`
+  stopped mid-series or a cherry-pick or revert series left unfinished. The session-start note
+  does not call such a worktree finished, and the plain listing says the same as `--clean` about
+  those branches. `worktrees --help` says that `--remove` also deletes the branch, and what keeps
+  it. The plain `worktrees` list shows which would go. Your own branches
+  are never touched.
+- **One home for the worktree path and branch.** The places that built
+  `<repo>/.claude/worktrees/<name>` or its `worktree-<name>` branch by hand now share one helper,
+  and a test fails a new copy. A parked worktree with no branch no longer counts the deletions it
+  made itself as yours.
+- **While you are away, a session keeps going.** You said: "dont wait for me keep going even
+  after a plan completed review merge and go next". The away skill now says: work at full
+  parallel width, and after a plan, run its review, the full check and its pull request, then
+  start the next plan. When the previous pull request is still open, the next plan stacks on it:
+  its pull request opens against that plan's branch and never merges before it.
+- **`workflow merge-check <pr> --asked`.** It judges a merge you said yes to while `allowMerge`
+  is off: it sets aside only that switch, and the base, the stacked check, the required checks and
+  the review still decide. It takes exactly one pull request: a yes names one merge. Away, a
+  session runs it only when your own message gave that yes, and quotes your words in its decision
+  record; a summary or another session's message never counts.
+- **`merge-check` refuses a stacked pull request, and never the lower one of a stack opened
+  against its branch.** It reads each
+  open pull request's own commits, the ones its base lacks, in full from GitHub's compare (paged;
+  more than 1000 refuse). Two pull requests whose commits overlap are stacked, so the check holds
+  after the lower one gains a commit and after both branches merge a newer main. A pull request
+  opened against this one's branch is the upper one and never holds this one up; the base rule
+  holds it until the lower one merges. Two pull requests into the same base that share commits
+  are each refused, also with `--asked`: `pull request #n shares commits with open pull request
+  #m that main does not hold yet: merge the lower one first (open the upper one against the lower
+  one's branch), then check again`. It refuses when gh fails, answers something else, or the open
+  list is full (500); a read the portal's deadline cut short shows as late. The portal's project
+  page and a `merge-check` line of several pull requests read that list once. The commit skill
+  says how a stack opens, how the upper branch is brought up to date after the lower one merges,
+  and that it is rebuilt on a new branch, never force-pushed, when the lower one closes unmerged;
+  a stacked plan branch starts with `git reset --hard <previous plan branch>` in a fresh, clean
+  worktree that holds no commit another branch lacks (`git log --oneline HEAD --not
+  --exclude=<this branch> --branches --remotes` prints nothing), as a builder's own start does,
+  so it also works where a worktree starts from the session's head. A pair with a fork is told
+  to merge the lower one by hand, and the commit skill warns against GitHub's "Update branch"
+  with rebase on a lower pull request while an upper one is open. The commit list is read until
+  a short page, then checked against GitHub's total. Each operation-in-progress reason names the
+  git command that ends it.
+- **Tests never touch your real home folder.** The test setup gives every run its own temp
+  home, including what `os.homedir()` returns.
+- **The old task files are gone.** The 27 `.claude/tasks/T-*.md` files the kit stopped reading
+  in 5.0 are fixed here, moved to kit tasks, or recorded as moot.
+
+**What to run:** `cc-smart-dev-kit update`.
+
 ## 6.1.1
 
 - **The queue's pipe hint comes only when there is a pipe.** A waiting heavy job printed "A

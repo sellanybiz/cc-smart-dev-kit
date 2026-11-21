@@ -6,9 +6,9 @@ import { git, tempDir } from "../../testing/temp";
 import { scanDeployTasks } from "../deploy/files";
 import { createTaskOps } from "../ops";
 import { openWorkDb, workDbFile } from "./db";
-import { historyText } from "./history";
+import { historyChanges, historyText } from "./history";
 import { eventsOf } from "./queries";
-import { addNote, deleteTask, systemClose, updateTask } from "./store";
+import { addNote, deleteTask, systemClose, takeTasks, updateTask } from "./store";
 import type { Result, WorkEvent } from "./types";
 
 const at = (minute: number) => Date.UTC(2026, 10, 3, 9, minute);
@@ -258,4 +258,39 @@ test("a project task's history is its file's git log, across its move into the a
   } finally {
     ops.close();
   }
+});
+
+test("a take-over records each claim as the text a person reads, never an object", () => {
+  const { db } = world();
+  const task = value(createTask(db, { project: "p", subject: "Held" }, lead, at(10)));
+  value(updateTask(db, task.id, { status: "in_progress" }, lead, at(11)));
+  const taken = value(
+    takeTasks(db, "p", task.id, builder, at(12), { from: "s-1", force: true, isLive: () => true }),
+  );
+  expect(taken.map((t) => t.createdBy)).toEqual(["s-2"]);
+  const row = eventsOf(db, task).at(-1);
+  expect(row?.changes.claim).toEqual(["s-1", "s-2"]);
+  const text = historyText(eventsOf(db, task), { full: false });
+  expect(text).not.toContain("[object Object]");
+  expect(text).toContain("claimed by s-1 → s-2");
+  expect(text.split("\n").at(-1)).toContain("forced take-over");
+});
+
+test("a claim stored as an object by an earlier version prints as the same text", () => {
+  const stored = (claim: unknown, after: unknown): WorkEvent => ({
+    id: 1,
+    taskId: "t",
+    number: 1,
+    at: at(0),
+    action: "changed",
+    changes: { claim: [claim, after] },
+    sessionId: "s-1",
+    sessionName: null,
+    pid: 7,
+    reason: null,
+  });
+  const withSession = { pid: 7, procStart: "70", sessionId: "s-1" };
+  const processOnly = { pid: 8, procStart: null, sessionId: null };
+  expect(historyChanges(stored(withSession, processOnly))).toEqual(["claimed by s-1 → process 8"]);
+  expect(historyChanges(stored(withSession, null))).toEqual(["claimed by s-1 → none"]);
 });

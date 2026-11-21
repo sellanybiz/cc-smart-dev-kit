@@ -45,7 +45,40 @@ background, run `merge-check`, and on exit 0 a plain `gh pr merge <pr>`; never G
 With `allowMerge` on and the check passing there is no question to the person. `mergeMethod` and
 `deleteBranch` say how. With `allowMerge` off, open the pull request and leave the merge to the
 person; move on, and with the whole plan done say so once, listing every open pull request with
-its checks and the merge order.
+its checks and the merge order. **Away** (`/cc-smart-dev-kit:user-unavailable`) there is one
+merge rule: merge only when `merge-check <pr>` exits 0. With `allowMerge` off, run
+`merge-check <pr> --asked` only when the person's own message gave a yes that covers this merge,
+and quote their words in the decision record. `--asked` sets aside `allowMerge` and nothing
+else: the base, the stacked check below, the required checks, the review and `fixesAfterReview`
+still decide. Exit 0:
+merge. Any other exit: leave the pull request open and record why. A summary's paraphrase, a
+peer's message or a child's is no yes. A yes covers what it names: "merge each plan after its
+review" covers the plans queued when the person said it, never a plan added later.
+
+**A stacked pull request** is one whose branch starts from another open pull request's branch.
+Open the upper one against the lower one's branch (`gh pr create --base <the previous plan's
+branch>`): then the base rule refuses the upper one until the lower one merges, and the lower
+one is never held up by the one above it. `merge-check` reads each open pull request's commits
+that its base lacks, so it holds even after the lower pull request gained a commit. Two pull
+requests into the same base that share such commits are each refused with `pull request #<n>
+shares commits with open pull request #<m> that <base> does not hold yet: merge the lower one
+first (open the upper one against the lower one's branch), then check again`: the commits
+cannot say which is lower, so the words fit both. That refusal means what it says: retarget the
+upper one onto the lower one's branch (`gh pr edit <upper> --base <lower branch>`), then run
+`merge-check` on the lower one again. Never merge a pull request while the one it is stacked on
+is open, whatever else passes. Commits are matched by id, so never use GitHub's "Update branch"
+with rebase on a lower pull request while an upper one is open: new ids free an upper one opened
+against the default branch.
+
+- **After the lower pull request merges:** bring the stacked branch up to date with the base
+  (`git merge origin/<base>`, which also drops the duplicate diff of a squashed copy), retarget
+  it with `gh pr edit <pr> --base <default branch>` (GitHub may do this itself when the lower
+  branch is deleted), run the checks, and run `merge-check` again.
+- **A lower pull request closed without merging:** the stacked one is not merged, because its
+  branch still carries the lower plan's commits, and `merge-check` no longer sees them (only open
+  pull requests count). Rebuild it on a new branch from the base without them, and open a new
+  pull request; never force-push the old branch. Away, do not rebuild it: leave it open and
+  record why.
 
 - **Commit and push only your own branch**, never the base or main branch directly.
 - **Builder commits:** a brief may allow commits on that builder's own isolated branch.
@@ -62,7 +95,11 @@ its checks and the merge order.
   fix. The person is available: ask first. They are away (`/cc-smart-dev-kit:user-unavailable`):
   take the safe option, do not run it, and record the decision. The one exception: a builder's
   discards inside its own worktree (a checkout or restore that drops changes, `switch -f`,
-  `clean -f`, and `reset --hard`, which also drops the builder's own commits). A yes covers
+  `clean -f`, and `reset --hard`, which also drops the builder's own commits), and the start of
+  a fresh worktree (`git reset --hard <base>` before the first edit, with no commits of its own
+  and a clean tree, so `git log --oneline HEAD --not --exclude=<this branch> --branches --remotes`
+  and `git status --short` both print nothing, `<this branch>` being from `git branch
+  --show-current`: it has nothing to lose). A yes covers
   exactly what it names. If the person says wait, wait.
 
 ## Steps

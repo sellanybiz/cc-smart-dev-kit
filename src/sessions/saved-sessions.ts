@@ -19,7 +19,7 @@
  * machine started were closed by the shutdown (`docs/windows-setup.md` says what that costs).
  */
 
-import { join } from "node:path";
+import { worktreesFolder } from "../worktrees/paths";
 
 /** One saved session, as far as its file tells. */
 export interface SavedSession {
@@ -89,7 +89,7 @@ export function belongsToRepo(projectFolder: string, mainCheckout: string): bool
   if (projectFolder === main) return true;
   // The folder name of a path under `<main>/.claude/worktrees/`, built the same way Claude
   // Code names a project folder: every character that is not a letter or a digit is a dash.
-  const claudeOwn = `${projectFolderName(join(mainCheckout, ".claude", "worktrees"))}-`;
+  const claudeOwn = `${projectFolderName(worktreesFolder(mainCheckout))}-`;
   return projectFolder.startsWith(claudeOwn);
 }
 

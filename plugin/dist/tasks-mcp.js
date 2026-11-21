@@ -21525,7 +21525,7 @@ var COMMAND = "cc-smart-dev-kit";
 
 // src/build-info/index.ts
 var info = {
-  version: "6.1.1",
+  version: "6.2.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -21684,6 +21684,9 @@ var PLAN_FILES_WORDS = "Plan task only: the repo-relative paths the plan changes
 var SUBJECT_LIMIT = 200;
 var DESCRIPTION_LIMIT = 200000;
 var NOTE_LIMIT = 64000;
+function claimText(claim) {
+  return claim.sessionId ?? `process ${claim.pid}`;
+}
 
 // src/tasks/schemas.ts
 var fields = deployTaskSchema.shape;
@@ -21804,6 +21807,9 @@ function userConfigFile(env, home) {
   return dir ? join2(dir, ".claude.json") : join2(home, ".claude.json");
 }
 function cliPaths(env = process.env) {
+  if (env === null || typeof env !== "object" || Array.isArray(env)) {
+    throw new TypeError(`cliPaths takes an environment object (like process.env), not ${env === null ? "null" : Array.isArray(env) ? "an array" : typeof env}`);
+  }
   const router = routerPaths(env);
   const claudeConfigDir = env.CLAUDE_CONFIG_DIR || join2(router.home, ".claude");
   return {
@@ -24511,14 +24517,14 @@ function taskContext(cwd, env = process.env) {
   }
   return contextOf(checkout, cwd);
 }
-function keyOf(checkout, cwd) {
+function projectKeyOf(checkout, cwd) {
   return projectKey(checkout === null ? realpathSync3(cwd) : checkout.mainCheckout ?? checkout.root);
 }
 function contextOf(checkout, cwd) {
   if (checkout === null) {
     return {
       ok: true,
-      project: keyOf(null, cwd),
+      project: projectKeyOf(null, cwd),
       repo: null,
       checkoutRoot: null,
       projectTasks: { ok: false, why: "not in a git checkout: deploy tasks live in a repository" },
@@ -24528,7 +24534,7 @@ function contextOf(checkout, cwd) {
   const repo = checkout.mainCheckout ?? checkout.root;
   const base = {
     ok: true,
-    project: keyOf(checkout, cwd),
+    project: projectKeyOf(checkout, cwd),
     repo,
     checkoutRoot: checkout.root
   };
@@ -24571,281 +24577,6 @@ var recordSchema = object({
   seq: number2()
 });
 var toldSchema = object({ seq: number2() });
-
-// src/hooks/sessions.ts
-import { existsSync as existsSync6, readdirSync as readdirSync3, readFileSync as readFileSync6, statSync as statSync3 } from "fs";
-import { uptime } from "os";
-import { join as join6 } from "path";
-
-// src/jobs/ancestry.ts
-import { readFileSync as readFileSync5 } from "fs";
-var MAX_DEPTH = 128;
-function parentPidFromStat(stat) {
-  const end = stat.lastIndexOf(")");
-  if (end === -1)
-    return null;
-  const fields = stat.slice(end + 1).trim().split(/\s+/);
-  const ppid = Number(fields[1]);
-  return Number.isInteger(ppid) && ppid >= 0 ? ppid : null;
-}
-function ancestorsBy(pid, parentOf) {
-  const ancestors = [];
-  const seen = new Set([pid]);
-  let current = pid;
-  while (ancestors.length < MAX_DEPTH) {
-    const parent = parentOf(current);
-    if (parent === null || parent === 0 || seen.has(parent))
-      break;
-    ancestors.push(parent);
-    seen.add(parent);
-    current = parent;
-  }
-  return ancestors;
-}
-function ancestorPids(pid, readStat) {
-  return ancestorsBy(pid, (one) => {
-    const stat = readStat(one);
-    return stat === null ? null : parentPidFromStat(stat);
-  });
-}
-function readProcStat(pid) {
-  try {
-    return readFileSync5(`/proc/${String(pid)}/stat`, "utf8");
-  } catch {
-    return null;
-  }
-}
-
-// src/hooks/sessions.ts
-function parseSessionRecord(json) {
-  let value;
-  try {
-    value = JSON.parse(json);
-  } catch {
-    return null;
-  }
-  if (typeof value !== "object" || value === null)
-    return null;
-  const { cwd, name, pid, sessionId, procStart } = value;
-  if (typeof cwd !== "string" || typeof pid !== "number" || typeof sessionId !== "string") {
-    return null;
-  }
-  return {
-    pid,
-    sessionId,
-    cwd,
-    name: typeof name === "string" ? name : sessionId.slice(0, 8),
-    ...typeof procStart === "string" ? { procStart } : {}
-  };
-}
-function processStart(pid, facts) {
-  if ((facts.platform ?? process.platform) !== "linux")
-    return;
-  const stat = (facts.readStat ?? readProcStat)(pid);
-  const end = stat?.lastIndexOf(")") ?? -1;
-  const start = end < 0 ? undefined : stat?.slice(end + 1).trim().split(/\s+/)[19];
-  return start !== undefined && /^\d+$/.test(start) ? start : undefined;
-}
-function sessionIdentityProved(record, facts = {}) {
-  return record.procStart !== undefined && processStart(record.pid, facts) === record.procStart;
-}
-function isRunning(pid) {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return error.code === "EPERM";
-  }
-}
-function sessionRecordOf(claudeConfigDir, pid, facts = {}) {
-  if (!(facts.running ?? isRunning)(pid))
-    return null;
-  const dir = join6(claudeConfigDir, "sessions");
-  const file = join6(dir, `${pid}.json`);
-  const bootedAt = Date.now() - uptime() * 1000;
-  let text;
-  try {
-    if (statSync3(file).mtimeMs < bootedAt)
-      return null;
-    text = readFileSync6(file, "utf8");
-  } catch (error) {
-    if (error.code === "ENOENT")
-      return null;
-    throw new Error(`the record of running session ${pid} cannot be read; retry`);
-  }
-  const record = parseSessionRecord(text);
-  if (record === null) {
-    throw new Error(`the record of running session ${pid} in ${dir} cannot be read, so it is unknown where it works`);
-  }
-  if ((facts.platform ?? process.platform) === "linux" && record.procStart !== undefined) {
-    const start = processStart(pid, facts);
-    if (start !== undefined && record.procStart !== start)
-      return null;
-  }
-  return record;
-}
-function liveSessions(claudeConfigDir, facts = {}) {
-  const dir = join6(claudeConfigDir, "sessions");
-  if (!existsSync6(dir))
-    return [];
-  const live = [];
-  for (const file of readdirSync3(dir)) {
-    const pid = Number(file.replace(/\.json$/, ""));
-    if (!file.endsWith(".json") || !Number.isInteger(pid))
-      continue;
-    const record = sessionRecordOf(claudeConfigDir, pid, facts);
-    if (record !== null)
-      live.push(record);
-  }
-  return live;
-}
-
-// src/hooks/unsaved-changes.ts
-var FILE_MODES = new Set(["100644", "100755"]);
-
-// src/hooks/worktree-leftovers.ts
-var REFLOG_TAIL_BYTES = 8 * 1024;
-
-// src/worktrees/machine-facts.ts
-import { readdirSync as readdirSync4, readFileSync as readFileSync7, readlinkSync as readlinkSync2 } from "fs";
-import { platform } from "os";
-var PROGRAMS_TIMEOUT_MS = 15000;
-var PS_PROGRAMS_ARGV = ["ps", "-ww", "-axo", "pid=,ppid=,args="];
-function spawnPrograms(argv) {
-  return Bun.spawnSync([...argv], {
-    stderr: "pipe",
-    stdout: "pipe",
-    timeout: PROGRAMS_TIMEOUT_MS
-  });
-}
-function parsePrograms(lines) {
-  const programs = [];
-  for (const line of lines.split(/\r?\n/)) {
-    const fields = line.split("\t");
-    const pid = Number(fields[0]?.trim() ?? "");
-    const parentPid = Number(fields[1]?.trim() ?? "");
-    const path = fields.slice(2).join("\t").trim();
-    if (!Number.isInteger(pid) || pid <= 0)
-      continue;
-    if (!Number.isInteger(parentPid) || parentPid < 0)
-      continue;
-    if (path === "")
-      continue;
-    programs.push({ parentPid, path, pid });
-  }
-  return programs;
-}
-function parseCommandLines(lines) {
-  const programs = [];
-  for (const line of lines.split(/\r?\n/)) {
-    const text = line.trim();
-    if (text === "")
-      continue;
-    const afterPid = text.indexOf(" ");
-    if (afterPid === -1)
-      continue;
-    const pid = Number(text.slice(0, afterPid));
-    const rest = text.slice(afterPid + 1).trimStart();
-    const afterParent = rest.indexOf(" ");
-    if (afterParent === -1)
-      continue;
-    const parentPid = Number(rest.slice(0, afterParent));
-    const path = rest.slice(afterParent + 1).trim();
-    if (!Number.isInteger(pid) || pid <= 0)
-      continue;
-    if (!Number.isInteger(parentPid) || parentPid < 0)
-      continue;
-    if (path === "")
-      continue;
-    programs.push({ parentPid, path, pid });
-  }
-  return programs;
-}
-var OUR_TOOLS = new Set(["git", "docker", "ps", "powershell", "pgrep"]);
-var SHELL_NAMES = new Set(["sh", "bash", "zsh", "dash", "fish", "ksh", "pwsh", "powershell"]);
-var LIST_PROGRAMS = "[Console]::OutputEncoding = [Text.Encoding]::UTF8; " + "Get-CimInstance Win32_Process | Where-Object ExecutablePath | " + 'ForEach-Object { "$($_.ProcessId)`t$($_.ParentProcessId)`t$($_.ExecutablePath)" }';
-function cwdOf(pid) {
-  try {
-    return readlinkSync2(`/proc/${String(pid)}/cwd`);
-  } catch {
-    return;
-  }
-}
-function procPids() {
-  try {
-    return readdirSync4("/proc").filter((name) => /^\d+$/.test(name)).map(Number);
-  } catch {
-    return [];
-  }
-}
-function runningPrograms(on = platform(), spawn = spawnPrograms) {
-  if (on === "win32") {
-    try {
-      const run = Bun.spawnSync(["powershell", "-NoProfile", "-NonInteractive", "-Command", LIST_PROGRAMS], {
-        stderr: "pipe",
-        stdout: "pipe",
-        timeout: PROGRAMS_TIMEOUT_MS,
-        windowsHide: true
-      });
-      return run.exitCode === 0 ? parsePrograms(run.stdout.toString()) : "unknown";
-    } catch {
-      return "unknown";
-    }
-  }
-  let lines;
-  try {
-    const run = spawn(PS_PROGRAMS_ARGV);
-    if (run.exitCode !== 0)
-      return "unknown";
-    lines = run.stdout.toString();
-  } catch {
-    return "unknown";
-  }
-  const programs = parseCommandLines(lines);
-  if (on !== "linux")
-    return programs;
-  for (const pid of procPids()) {
-    const cwd = cwdOf(pid);
-    if (cwd === undefined)
-      continue;
-    const known = programs.find((program) => program.pid === pid);
-    if (known === undefined)
-      programs.push({ cwd, path: null, pid });
-    else
-      known.cwd = cwd;
-  }
-  return programs;
-}
-
-// src/worktrees/scan.ts
-var REMOVAL_TIMEOUT_MS = 10 * 60000;
-// src/worktrees/command.ts
-var DEFAULT_BASE = "main";
-function baseBranch(checkout, env, repo) {
-  if (checkout !== null) {
-    const config = loadProjectConfig(checkout).config;
-    const base = config?.worktrees?.base;
-    if (base !== undefined)
-      return { base, from: "config" };
-  }
-  const head = runGit(repo, ["rev-parse", "--abbrev-ref", "origin/HEAD"], env);
-  const name = head.ok ? head.out.replace(/^origin\//, "") : "";
-  return name === "" ? { base: DEFAULT_BASE, from: "default" } : { base: name, from: "origin" };
-}
-
-// src/tasks/files-check.ts
-function planFilesCheck(cwd, env = process.env) {
-  const checkout = locateCheckout(cwd, { env });
-  if (checkout === null)
-    return { ignore: [], caseFold: false, reason: null };
-  const merge = resolveMergeFiles(checkout, baseBranch(checkout, env, checkout.root).base, { env });
-  const ignorecase = runGit(checkout.root, ["config", "--type=bool", "core.ignorecase"], env);
-  return {
-    ignore: merge.files,
-    caseFold: ignorecase.ok && ignorecase.out === "true",
-    reason: merge.reason
-  };
-}
 
 // src/tasks/work/queries.ts
 function hasFilesTable(db) {
@@ -25182,6 +24913,741 @@ function waitsForTask(tasks, start, target) {
   return false;
 }
 
+// src/tasks/work/db.ts
+import { Database } from "bun:sqlite";
+import { chmodSync as chmodSync2, existsSync as existsSync6, mkdirSync as mkdirSync3, renameSync as renameSync2, rmSync as rmSync2, writeFileSync as writeFileSync3 } from "fs";
+import { dirname as dirname3, join as join6 } from "path";
+var WORK_SCHEMA_VERSION = 6;
+var LEGACY_LIFT_REASON = "lift legacy nested task";
+var WRITE_TIMEOUT_MS = 3000;
+var HOOK_TIMEOUT_MS = 200;
+var NEWER_STORE = `the task store was made by a newer kit version: update the kit (${COMMAND} update)`;
+function workDbFile(paths) {
+  return join6(paths.stateDir, "tasks", "work.db");
+}
+var SCHEMA = `
+CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
+INSERT INTO meta VALUES ('min_compatible','1');
+CREATE TABLE tasks(id TEXT PRIMARY KEY, project TEXT NOT NULL, number INTEGER NOT NULL,
+ parent_id TEXT REFERENCES tasks(id), kind TEXT NOT NULL DEFAULT 'task' CHECK(kind IN ('task','plan','phase')),
+ subject TEXT NOT NULL, description TEXT NOT NULL DEFAULT '', status TEXT NOT NULL CHECK(status IN ('pending','in_progress','done','dropped')),
+ plan TEXT, phase TEXT, crew_id TEXT, created_by TEXT, claim_pid INTEGER, claim_start TEXT, claim_session TEXT,
+ created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, closed_at INTEGER, UNIQUE(project,number));
+CREATE UNIQUE INDEX task_plan ON tasks(project,plan) WHERE kind='plan';
+CREATE UNIQUE INDEX task_phase ON tasks(project,plan,phase) WHERE kind='phase';
+CREATE INDEX task_status ON tasks(project,status);
+CREATE INDEX task_parent ON tasks(parent_id);
+CREATE INDEX task_crew ON tasks(project,crew_id);
+CREATE TABLE task_deps(task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE, waits_for TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE, PRIMARY KEY(task_id,waits_for));
+CREATE TABLE task_notes(id INTEGER PRIMARY KEY, task_id TEXT NOT NULL REFERENCES tasks(id), text TEXT NOT NULL, session_id TEXT, crew_id TEXT, at INTEGER NOT NULL);
+CREATE TABLE acks(project TEXT NOT NULL, task_ref TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY(project,task_ref));
+CREATE TABLE task_events(id INTEGER PRIMARY KEY, task_id TEXT NOT NULL, project TEXT NOT NULL, number INTEGER NOT NULL,
+ at INTEGER NOT NULL, action TEXT NOT NULL CHECK(action IN ('created','changed','noted','closed','deleted')),
+ changes TEXT NOT NULL, session_id TEXT, session_name TEXT, crew_id TEXT, pid INTEGER, reason TEXT);
+CREATE INDEX task_event_task ON task_events(task_id,id);
+CREATE INDEX task_event_number ON task_events(project,number);
+`;
+var MIGRATIONS = [
+  "ALTER TABLE tasks ADD COLUMN blocking INTEGER NOT NULL DEFAULT 1 CHECK(blocking IN (0,1))",
+  `ALTER TABLE tasks ADD COLUMN agent TEXT;
+   ALTER TABLE tasks ADD COLUMN branch TEXT;
+   ALTER TABLE tasks ADD COLUMN worktree TEXT;
+   ALTER TABLE tasks ADD COLUMN base TEXT;`,
+  repairTaskLayers,
+  `ALTER TABLE tasks ADD COLUMN created_pid INTEGER;
+   ALTER TABLE tasks ADD COLUMN created_start TEXT;
+   CREATE INDEX IF NOT EXISTS task_note_task ON task_notes(task_id);`,
+  `CREATE TABLE IF NOT EXISTS task_files(task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE, path TEXT NOT NULL, PRIMARY KEY(task_id,path));
+   ALTER TABLE tasks ADD COLUMN lead_session TEXT;
+   ALTER TABLE tasks ADD COLUMN lead_pid INTEGER;
+   ALTER TABLE tasks ADD COLUMN lead_start TEXT;
+   ALTER TABLE tasks ADD COLUMN lead_child INTEGER NOT NULL DEFAULT 0 CHECK(lead_child IN (0,1));
+   ALTER TABLE tasks ADD COLUMN lead_handout TEXT;`
+];
+
+class BackupFailure extends Error {
+}
+function repairTaskLayers(sqlite, file) {
+  const nestedExists = sqlite.query("SELECT 1 FROM tasks t JOIN tasks p ON p.id=t.parent_id WHERE t.kind='task' AND p.kind='task' LIMIT 1").get();
+  if (!nestedExists)
+    return;
+  const rows = sqlite.query("SELECT id,project,number,parent_id,kind,blocking,status FROM tasks ORDER BY project,number").all();
+  const byId = new Map(rows.map((row) => [row.id, row]));
+  const originalHolds = new Map;
+  const reader = { sqlite, writable: false, close() {} };
+  for (const project of new Set(rows.map((row) => row.project))) {
+    const tasks = allTasks(reader, project);
+    for (const task of tasks.filter((task) => task.kind === "task" && tasks.some((child) => child.kind === "task" && child.parentId === task.id)))
+      originalHolds.set(task.id, holdingUnder(tasks, task.id).map((held) => held.id));
+  }
+  let backed = false;
+  const move = (row, parent, above) => {
+    if (!backed) {
+      if (!existsSync6(`${file}.v4.bak`)) {
+        try {
+          writeFileSync3(`${file}.v4.bak.tmp`, sqlite.serialize(), { mode: 384 });
+          renameSync2(`${file}.v4.bak.tmp`, `${file}.v4.bak`);
+        } catch (error) {
+          let cleanup = "";
+          try {
+            rmSync2(`${file}.v4.bak.tmp`, { force: true });
+          } catch (cleanupError) {
+            cleanup = ` Temporary backup cleanup also failed: ${String(cleanupError)}.`;
+          }
+          throw new BackupFailure(`task lift needs a backup: ${error instanceof Error ? error.message : String(error)}. Fix: free disk space and check folder rights for ${dirname3(file)}. The next task call tries again.${cleanup}`);
+        }
+      }
+      backed = true;
+    }
+    const blocking = parent.blocking === 0 ? 0 : row.blocking;
+    sqlite.query("UPDATE tasks SET parent_id=?,blocking=? WHERE id=?").run(above?.id ?? null, blocking, row.id);
+    sqlite.query("INSERT INTO task_events(task_id,project,number,at,action,changes,reason) VALUES (?,?,?,?,'changed',?,?)").run(row.id, row.project, row.number, Date.now(), JSON.stringify({
+      parent: [`#${parent.number}`, above === null ? null : `#${above.number}`],
+      ...blocking !== row.blocking ? { type: ["blocking", "non-blocking"] } : {}
+    }), LEGACY_LIFT_REASON);
+    row.parent_id = above?.id ?? null;
+    row.blocking = blocking;
+  };
+  for (;; ) {
+    const nested = rows.find((row) => row.kind === "task" && byId.get(row.parent_id ?? "")?.kind === "task");
+    if (!nested) {
+      for (const [id, held] of originalHolds)
+        for (const h of held) {
+          if (waitsForTask(allTasks(reader, byId.get(id)?.project ?? ""), h, id))
+            continue;
+          sqlite.query("INSERT OR IGNORE INTO task_deps(task_id,waits_for) VALUES (?,?)").run(id, h);
+        }
+      return;
+    }
+    const chain = [];
+    const positions = new Map;
+    let up = nested;
+    while (up) {
+      const at = positions.get(up.id);
+      if (at !== undefined) {
+        const lowest = chain.slice(at).filter((row) => row.kind === "task").sort((a, b) => a.number - b.number || a.id.localeCompare(b.id))[0];
+        if (!lowest) {
+          up = undefined;
+          break;
+        }
+        const parent = byId.get(lowest.parent_id ?? "");
+        if (!parent)
+          throw new Error("missing cycle parent");
+        move(lowest, parent, null);
+        break;
+      }
+      positions.set(up.id, chain.length);
+      chain.push(up);
+      up = byId.get(up.parent_id ?? "");
+    }
+    if (up)
+      continue;
+    const parent = byId.get(nested.parent_id ?? "");
+    if (!parent)
+      throw new Error("missing legacy task parent");
+    move(nested, parent, byId.get(parent.parent_id ?? "") ?? null);
+  }
+}
+function openWorkDb(file, options) {
+  const hook = options.mode === "hook";
+  const fresh = !existsSync6(file);
+  if (hook && fresh)
+    throw new Error("task store does not exist");
+  if (!hook)
+    mkdirSync3(dirname3(file), { recursive: true, mode: 448 });
+  const sqlite = new Database(file, { create: !hook, readwrite: true });
+  let writeRefusal;
+  try {
+    sqlite.run(`PRAGMA busy_timeout = ${hook ? HOOK_TIMEOUT_MS : WRITE_TIMEOUT_MS}`);
+    sqlite.run("PRAGMA foreign_keys = ON");
+    if (!hook) {
+      chmodSync2(dirname3(file), 448);
+      chmodSync2(file, 384);
+      if (fresh)
+        sqlite.run("PRAGMA journal_mode = WAL");
+      sqlite.run("BEGIN IMMEDIATE");
+      try {
+        const version = sqlite.query("PRAGMA user_version").get()?.user_version ?? 0;
+        if (version < 1) {
+          sqlite.run(SCHEMA);
+          sqlite.run("PRAGMA user_version = 1");
+        }
+        for (let at = Math.max(version, 1);at < WORK_SCHEMA_VERSION; at += 1) {
+          const step = MIGRATIONS[at - 1];
+          if (step === undefined)
+            throw new Error(`no migration from task schema ${at}`);
+          if (typeof step === "string")
+            sqlite.run(step);
+          else
+            step(sqlite, file);
+          sqlite.run(`PRAGMA user_version = ${at + 1}`);
+        }
+        const minimum = Number(sqlite.query("SELECT value FROM meta WHERE key='min_compatible'").get()?.value ?? 1);
+        if (minimum <= WORK_SCHEMA_VERSION)
+          repairTaskLayers(sqlite, file);
+        sqlite.run("COMMIT");
+      } catch (error) {
+        sqlite.run("ROLLBACK");
+        if (error instanceof BackupFailure)
+          writeRefusal = error.message;
+        else
+          throw error;
+      }
+    }
+    const minimum = Number(sqlite.query("SELECT value FROM meta WHERE key='min_compatible'").get()?.value ?? WORK_SCHEMA_VERSION);
+    if (hook || writeRefusal !== undefined || minimum > WORK_SCHEMA_VERSION)
+      sqlite.run("PRAGMA query_only = ON");
+    return {
+      sqlite,
+      writable: !hook && writeRefusal === undefined && minimum <= WORK_SCHEMA_VERSION,
+      ...writeRefusal === undefined ? {} : { writeRefusal },
+      close: () => sqlite.close()
+    };
+  } catch (error) {
+    sqlite.close();
+    throw error;
+  }
+}
+function writeWork(db, body, options = {}) {
+  if (!db.writable)
+    return { ok: false, why: db.writeRefusal ?? NEWER_STORE };
+  let began = false;
+  try {
+    db.sqlite.run("BEGIN IMMEDIATE");
+    began = true;
+    const min = Number(db.sqlite.query("SELECT value FROM meta WHERE key='min_compatible'").get()?.value ?? 1);
+    if (min > WORK_SCHEMA_VERSION)
+      throw new Error(NEWER_STORE);
+    const value = body();
+    db.sqlite.run(options.rehearse ? "ROLLBACK" : "COMMIT");
+    return { ok: true, value };
+  } catch (error) {
+    if (began)
+      db.sqlite.run("ROLLBACK");
+    return { ok: false, why: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+// src/tasks/work/history.ts
+var FIELDS = [
+  ["kind", "kind"],
+  ["plan", "plan"],
+  ["phase", "phase"],
+  ["subject", "subject"],
+  ["status", "status"],
+  ["type", "type"],
+  ["parent", "parent"],
+  ["agent", "agent"],
+  ["branch", "branch"],
+  ["worktree", "worktree"],
+  ["base", "base"],
+  ["createdBy", "made by session"],
+  ["creator", "made by"],
+  ["claim", "claimed by"],
+  ["waitsFor", "blocked by"],
+  ["files", "files"],
+  ["lead", "reserved for"],
+  ["description", "description"],
+  ["note", "note"]
+];
+function actor(event) {
+  const parts = [];
+  if (event.sessionId !== null) {
+    const name = event.sessionName ? `"${event.sessionName}" ` : "";
+    parts.push(`session ${name}${event.sessionId}`);
+  }
+  if (event.pid !== null)
+    parts.push(`process ${event.pid}`);
+  if (event.reason !== null)
+    parts.push(`the kit (${event.reason})`);
+  return parts.length > 0 ? parts.join(", ") : "a caller outside any Claude session";
+}
+function isClaimObject(value) {
+  if (typeof value !== "object" || value === null || Array.isArray(value))
+    return false;
+  const { pid, sessionId } = value;
+  return typeof pid === "number" && (sessionId === null || typeof sessionId === "string");
+}
+function shown(key, value) {
+  if (value === null || value === undefined || value === "")
+    return "none";
+  if (key === "claim" && isClaimObject(value))
+    return claimText(value);
+  if (Array.isArray(value))
+    return value.length > 0 ? value.join(", ") : "none";
+  if (key === "subject" || key === "note")
+    return JSON.stringify(value);
+  return String(value);
+}
+function descriptionText(event, before, after) {
+  const length = (value) => typeof value === "string" ? value.length : 0;
+  if (event.action === "created")
+    return `description ${length(after)} characters`;
+  if (event.action === "deleted")
+    return `description ${length(before)} characters`;
+  return `description changed, ${length(before)} \u2192 ${length(after)} characters`;
+}
+function fieldText(event, key, label) {
+  const change = event.changes[key];
+  if (change === undefined)
+    return null;
+  const [before, after] = change;
+  if (key === "description")
+    return descriptionText(event, before, after);
+  if (event.action === "created" || event.action === "noted")
+    return `${label} ${shown(key, after)}`;
+  if (event.action === "deleted")
+    return `${label} ${shown(key, before)}`;
+  return `${label} ${shown(key, before)} \u2192 ${shown(key, after)}`;
+}
+function historyChanges(event) {
+  return FIELDS.map(([key, label]) => fieldText(event, key, label)).filter((text) => text !== null);
+}
+function historyLine(event) {
+  const fields = historyChanges(event);
+  const what = event.action === "deleted" ? "deleted; its last version:" : `${event.action}:`;
+  return `${new Date(event.at).toISOString()} by ${actor(event)} \xB7 ${what} ${fields.join("; ")}`;
+}
+function historyText(events, options) {
+  if (events.length === 0)
+    return "History: none recorded.";
+  const lines = ["History (oldest first):"];
+  for (const event of events) {
+    lines.push(historyLine(event));
+    const description = event.changes.description;
+    if (!options.full || description === undefined)
+      continue;
+    const [before, after] = description;
+    if (event.action !== "created" && typeof before === "string")
+      lines.push("  description before:", indent(before));
+    if (event.action !== "deleted" && typeof after === "string")
+      lines.push("  description after:", indent(after));
+  }
+  return lines.join(`
+`);
+}
+function indent(text) {
+  return text === "" ? "    (empty)" : text.split(`
+`).map((line) => `    ${line}`).join(`
+`);
+}
+
+// src/hooks/sessions.ts
+import { existsSync as existsSync7, readdirSync as readdirSync3, readFileSync as readFileSync6, statSync as statSync3 } from "fs";
+import { uptime } from "os";
+import { join as join7 } from "path";
+
+// src/jobs/ancestry.ts
+import { readFileSync as readFileSync5 } from "fs";
+var MAX_DEPTH = 128;
+function parentPidFromStat(stat) {
+  const end = stat.lastIndexOf(")");
+  if (end === -1)
+    return null;
+  const fields = stat.slice(end + 1).trim().split(/\s+/);
+  const ppid = Number(fields[1]);
+  return Number.isInteger(ppid) && ppid >= 0 ? ppid : null;
+}
+function ancestorsBy(pid, parentOf) {
+  const ancestors = [];
+  const seen = new Set([pid]);
+  let current = pid;
+  while (ancestors.length < MAX_DEPTH) {
+    const parent = parentOf(current);
+    if (parent === null || parent === 0 || seen.has(parent))
+      break;
+    ancestors.push(parent);
+    seen.add(parent);
+    current = parent;
+  }
+  return ancestors;
+}
+function ancestorPids(pid, readStat) {
+  return ancestorsBy(pid, (one) => {
+    const stat = readStat(one);
+    return stat === null ? null : parentPidFromStat(stat);
+  });
+}
+function readProcStat(pid) {
+  try {
+    return readFileSync5(`/proc/${String(pid)}/stat`, "utf8");
+  } catch {
+    return null;
+  }
+}
+
+// src/hooks/sessions.ts
+function parseSessionRecord(json) {
+  let value;
+  try {
+    value = JSON.parse(json);
+  } catch {
+    return null;
+  }
+  if (typeof value !== "object" || value === null)
+    return null;
+  const { cwd, name, pid, sessionId, procStart } = value;
+  if (typeof cwd !== "string" || typeof pid !== "number" || typeof sessionId !== "string") {
+    return null;
+  }
+  return {
+    pid,
+    sessionId,
+    cwd,
+    name: typeof name === "string" ? name : sessionId.slice(0, 8),
+    ...typeof procStart === "string" ? { procStart } : {}
+  };
+}
+function processStart(pid, facts) {
+  if ((facts.platform ?? process.platform) !== "linux")
+    return;
+  const stat = (facts.readStat ?? readProcStat)(pid);
+  const end = stat?.lastIndexOf(")") ?? -1;
+  const start = end < 0 ? undefined : stat?.slice(end + 1).trim().split(/\s+/)[19];
+  return start !== undefined && /^\d+$/.test(start) ? start : undefined;
+}
+function sessionIdentityProved(record, facts = {}) {
+  return record.procStart !== undefined && processStart(record.pid, facts) === record.procStart;
+}
+function isRunning(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error.code === "EPERM";
+  }
+}
+function sessionRecordOf(claudeConfigDir, pid, facts = {}) {
+  if (!(facts.running ?? isRunning)(pid))
+    return null;
+  const dir = join7(claudeConfigDir, "sessions");
+  const file = join7(dir, `${pid}.json`);
+  const bootedAt = Date.now() - uptime() * 1000;
+  let text;
+  try {
+    if (statSync3(file).mtimeMs < bootedAt)
+      return null;
+    text = readFileSync6(file, "utf8");
+  } catch (error) {
+    if (error.code === "ENOENT")
+      return null;
+    throw new Error(`the record of running session ${pid} cannot be read; retry`);
+  }
+  const record = parseSessionRecord(text);
+  if (record === null) {
+    throw new Error(`the record of running session ${pid} in ${dir} cannot be read, so it is unknown where it works`);
+  }
+  if ((facts.platform ?? process.platform) === "linux" && record.procStart !== undefined) {
+    const start = processStart(pid, facts);
+    if (start !== undefined && record.procStart !== start)
+      return null;
+  }
+  return record;
+}
+function liveSessions(claudeConfigDir, facts = {}) {
+  const dir = join7(claudeConfigDir, "sessions");
+  if (!existsSync7(dir))
+    return [];
+  const live = [];
+  for (const file of readdirSync3(dir)) {
+    const pid = Number(file.replace(/\.json$/, ""));
+    if (!file.endsWith(".json") || !Number.isInteger(pid))
+      continue;
+    const record = sessionRecordOf(claudeConfigDir, pid, facts);
+    if (record !== null)
+      live.push(record);
+  }
+  return live;
+}
+
+// src/worktrees/machine-facts.ts
+import { readdirSync as readdirSync4, readFileSync as readFileSync7, readlinkSync as readlinkSync2 } from "fs";
+import { platform } from "os";
+var PROGRAMS_TIMEOUT_MS = 15000;
+var PS_PROGRAMS_ARGV = ["ps", "-ww", "-axo", "pid=,ppid=,args="];
+function spawnPrograms(argv) {
+  return Bun.spawnSync([...argv], {
+    stderr: "pipe",
+    stdout: "pipe",
+    timeout: PROGRAMS_TIMEOUT_MS
+  });
+}
+function parsePrograms(lines) {
+  const programs = [];
+  for (const line of lines.split(/\r?\n/)) {
+    const fields = line.split("\t");
+    const pid = Number(fields[0]?.trim() ?? "");
+    const parentPid = Number(fields[1]?.trim() ?? "");
+    const path = fields.slice(2).join("\t").trim();
+    if (!Number.isInteger(pid) || pid <= 0)
+      continue;
+    if (!Number.isInteger(parentPid) || parentPid < 0)
+      continue;
+    if (path === "")
+      continue;
+    programs.push({ parentPid, path, pid });
+  }
+  return programs;
+}
+function parseCommandLines(lines) {
+  const programs = [];
+  for (const line of lines.split(/\r?\n/)) {
+    const text = line.trim();
+    if (text === "")
+      continue;
+    const afterPid = text.indexOf(" ");
+    if (afterPid === -1)
+      continue;
+    const pid = Number(text.slice(0, afterPid));
+    const rest = text.slice(afterPid + 1).trimStart();
+    const afterParent = rest.indexOf(" ");
+    if (afterParent === -1)
+      continue;
+    const parentPid = Number(rest.slice(0, afterParent));
+    const path = rest.slice(afterParent + 1).trim();
+    if (!Number.isInteger(pid) || pid <= 0)
+      continue;
+    if (!Number.isInteger(parentPid) || parentPid < 0)
+      continue;
+    if (path === "")
+      continue;
+    programs.push({ parentPid, path, pid });
+  }
+  return programs;
+}
+var OUR_TOOLS = new Set(["git", "docker", "ps", "powershell", "pgrep"]);
+var SHELL_NAMES = new Set(["sh", "bash", "zsh", "dash", "fish", "ksh", "pwsh", "powershell"]);
+var LIST_PROGRAMS = "[Console]::OutputEncoding = [Text.Encoding]::UTF8; " + "Get-CimInstance Win32_Process | Where-Object ExecutablePath | " + 'ForEach-Object { "$($_.ProcessId)`t$($_.ParentProcessId)`t$($_.ExecutablePath)" }';
+function cwdOf(pid) {
+  try {
+    return readlinkSync2(`/proc/${String(pid)}/cwd`);
+  } catch {
+    return;
+  }
+}
+function procPids() {
+  try {
+    return readdirSync4("/proc").filter((name) => /^\d+$/.test(name)).map(Number);
+  } catch {
+    return [];
+  }
+}
+function runningPrograms(on = platform(), spawn = spawnPrograms) {
+  if (on === "win32") {
+    try {
+      const run = Bun.spawnSync(["powershell", "-NoProfile", "-NonInteractive", "-Command", LIST_PROGRAMS], {
+        stderr: "pipe",
+        stdout: "pipe",
+        timeout: PROGRAMS_TIMEOUT_MS,
+        windowsHide: true
+      });
+      return run.exitCode === 0 ? parsePrograms(run.stdout.toString()) : "unknown";
+    } catch {
+      return "unknown";
+    }
+  }
+  let lines;
+  try {
+    const run = spawn(PS_PROGRAMS_ARGV);
+    if (run.exitCode !== 0)
+      return "unknown";
+    lines = run.stdout.toString();
+  } catch {
+    return "unknown";
+  }
+  const programs = parseCommandLines(lines);
+  if (on !== "linux")
+    return programs;
+  for (const pid of procPids()) {
+    const cwd = cwdOf(pid);
+    if (cwd === undefined)
+      continue;
+    const known = programs.find((program) => program.pid === pid);
+    if (known === undefined)
+      programs.push({ cwd, path: null, pid });
+    else
+      known.cwd = cwd;
+  }
+  return programs;
+}
+
+// src/tasks/work/identity.ts
+function listedParentOf(platform) {
+  let listed = null;
+  return (pid) => {
+    if (listed === null) {
+      const found = runningPrograms(platform);
+      listed = new Map(found === "unknown" ? [] : found.map((one) => [one.pid, one]));
+    }
+    return listed.get(pid)?.parentPid ?? null;
+  };
+}
+function claimLive(claim, facts = {}) {
+  const platform = facts.platform ?? process.platform;
+  if (platform !== "linux")
+    return (facts.running ?? isRunning)(claim.pid);
+  return claim.procStart !== null && sessionIdentityProved({
+    pid: claim.pid,
+    procStart: claim.procStart,
+    sessionId: claim.sessionId ?? "",
+    cwd: "",
+    name: ""
+  }, { platform, ...facts.readStat ? { readStat: facts.readStat } : {} });
+}
+function claimGone(claim, facts = {}) {
+  if (!(facts.running ?? isRunning)(claim.pid))
+    return true;
+  const platform = facts.platform ?? process.platform;
+  if (platform !== "linux" || claim.procStart === null)
+    return false;
+  const start = processStart(claim.pid, {
+    platform,
+    ...facts.readStat ? { readStat: facts.readStat } : {}
+  });
+  return start !== undefined && start !== claim.procStart;
+}
+function sessionEnded(claim, facts = {}) {
+  if (!claimGone(claim, facts))
+    return false;
+  if (claim.sessionId === null)
+    return true;
+  try {
+    const dir = facts.claudeConfigDir ?? cliPaths(facts.env ?? process.env).claudeConfigDir;
+    const records = facts.sessions ? facts.sessions(dir) : liveSessions(dir, {
+      ...facts.platform ? { platform: facts.platform } : {},
+      ...facts.readStat ? { readStat: facts.readStat } : {},
+      ...facts.running ? { running: facts.running } : {}
+    });
+    return !records.some((record) => record.sessionId === claim.sessionId);
+  } catch {
+    return false;
+  }
+}
+var CLAIM_PROCESS = {
+  live: (claim) => claimLive(claim),
+  gone: (claim) => claimGone(claim),
+  ended: (claim) => sessionEnded(claim)
+};
+var cached2 = new Map;
+function callerOf(facts = {}) {
+  const env = facts.env ?? process.env;
+  const platform = facts.platform ?? process.platform;
+  const pid = facts.pid ?? process.pid;
+  const readStat = facts.readStat ?? readProcStat;
+  const config = facts.claudeConfigDir ?? cliPaths(env).claudeConfigDir;
+  const cacheKey = `${config}:${pid}:${platform}`;
+  const recordOf = (p) => sessionRecordOf(config, p, {
+    readStat,
+    platform,
+    ...facts.running ? { running: facts.running } : {}
+  });
+  const previous = cached2.get(cacheKey);
+  const remembered = previous ? recordOf(previous.pid) : null;
+  let record = remembered !== null && (remembered.procStart ?? null) === previous?.procStart ? remembered : null;
+  if (!record) {
+    const parent = facts.ppid ?? process.ppid;
+    const grandparent = platform === "linux" ? null : (facts.parentOf ?? listedParentOf(platform))(parent);
+    const pids = platform === "linux" ? ancestorPids(pid, readStat) : [parent, ...grandparent ? [grandparent] : []];
+    for (const p of pids) {
+      record = recordOf(p);
+      if (record !== null)
+        break;
+    }
+  }
+  if (record) {
+    cached2.set(cacheKey, { pid: record.pid, procStart: record.procStart ?? null });
+    return {
+      sessionId: record.sessionId,
+      pid: record.pid,
+      procStart: record.procStart ?? null,
+      cwd: record.cwd,
+      name: record.name
+    };
+  }
+  cached2.delete(cacheKey);
+  const sessionId = env.CLAUDE_CODE_SESSION_ID?.trim();
+  return sessionId ? {
+    sessionId,
+    pid: null,
+    procStart: null,
+    cwd: facts.cwd ?? process.cwd(),
+    name: null
+  } : null;
+}
+
+// src/worktrees/paths.ts
+var WORKTREES_FOLDER_SEGMENTS = [".claude", "worktrees"];
+var WORKTREES_GITIGNORE_ENTRY = `${WORKTREES_FOLDER_SEGMENTS.join("/")}/`;
+function worktreeBranch(name) {
+  return `worktree-${name}`;
+}
+var SUBAGENT_NAME_PREFIX = "agent-";
+var SUBAGENT_BRANCH_PREFIX = worktreeBranch(SUBAGENT_NAME_PREFIX);
+
+// src/hooks/unsaved-changes.ts
+var FILE_MODES = new Set(["100644", "100755"]);
+
+// src/worktrees/in-progress.ts
+var BISECT = { ending: "`git bisect reset`", what: "a bisect" };
+var REBASE = { ending: "`git rebase --abort`", what: "a rebase" };
+var AM = { ending: "`git am --abort`", what: "a git am" };
+var REBASE_OR_AM = {
+  ending: "`git rebase --abort`, or `git am --abort` for a git am",
+  what: "a rebase or a git am"
+};
+var MERGE = { ending: "`git merge --abort`", what: "a merge" };
+var CHERRY_PICK = { ending: "`git cherry-pick --abort`", what: "a cherry-pick" };
+var REVERT = { ending: "`git revert --abort`", what: "a revert" };
+var SERIES = {
+  ending: "`git cherry-pick --quit`, or `git revert --quit` for a revert series",
+  what: "a cherry-pick or revert series"
+};
+var OPERATIONS = [
+  { ...BISECT, kind: "file", namesBranch: true, path: "BISECT_START" },
+  { ...REBASE, kind: "file", namesBranch: true, path: "rebase-merge/head-name" },
+  { ...REBASE, kind: "file", namesBranch: true, path: "rebase-apply/head-name" },
+  { ...AM, kind: "file", namesBranch: false, path: "rebase-apply/applying" },
+  { ...REBASE, kind: "folder", namesBranch: false, path: "rebase-merge" },
+  { ...REBASE_OR_AM, kind: "folder", namesBranch: false, path: "rebase-apply" },
+  { ...MERGE, kind: "file", namesBranch: false, path: "MERGE_HEAD" },
+  { ...CHERRY_PICK, kind: "file", namesBranch: false, path: "CHERRY_PICK_HEAD" },
+  { ...REVERT, kind: "file", namesBranch: false, path: "REVERT_HEAD" },
+  { ...SERIES, kind: "folder", namesBranch: false, path: "sequencer" }
+];
+
+// src/hooks/worktree-leftovers.ts
+var REFLOG_TAIL_BYTES = 8 * 1024;
+
+// src/worktrees/scan.ts
+var REMOVAL_TIMEOUT_MS = 10 * 60000;
+// src/worktrees/command.ts
+var DEFAULT_BASE = "main";
+function baseBranch(checkout, env, repo) {
+  if (checkout !== null) {
+    const config = loadProjectConfig(checkout).config;
+    const base = config?.worktrees?.base;
+    if (base !== undefined)
+      return { base, from: "config" };
+  }
+  const head = runGit(repo, ["rev-parse", "--abbrev-ref", "origin/HEAD"], env);
+  const name = head.ok ? head.out.replace(/^origin\//, "") : "";
+  return name === "" ? { base: DEFAULT_BASE, from: "default" } : { base: name, from: "origin" };
+}
+
+// src/tasks/files-check.ts
+function planFilesCheck(cwd, env = process.env) {
+  const checkout = locateCheckout(cwd, { env });
+  if (checkout === null)
+    return { ignore: [], caseFold: false, reason: null };
+  const merge = resolveMergeFiles(checkout, baseBranch(checkout, env, checkout.root).base, { env });
+  const ignorecase = runGit(checkout.root, ["config", "--type=bool", "core.ignorecase"], env);
+  return {
+    ignore: merge.files,
+    caseFold: ignorecase.ok && ignorecase.out === "true",
+    reason: merge.reason
+  };
+}
+
 // src/tasks/plan-guards.ts
 function reservedAgainstCaller(options) {
   const { all, plan, caller } = options;
@@ -25297,421 +25763,6 @@ function planNote(all, plan, cap) {
   return waiting.length ? `${phases} \xB7 waiting ${waiting.length}` : phases;
 }
 
-// src/tasks/work/db.ts
-import { Database } from "bun:sqlite";
-import { chmodSync as chmodSync2, existsSync as existsSync7, mkdirSync as mkdirSync3, renameSync as renameSync2, rmSync as rmSync2, writeFileSync as writeFileSync3 } from "fs";
-import { dirname as dirname3, join as join7 } from "path";
-var WORK_SCHEMA_VERSION = 6;
-var LEGACY_LIFT_REASON = "lift legacy nested task";
-var WRITE_TIMEOUT_MS = 3000;
-var HOOK_TIMEOUT_MS = 200;
-var NEWER_STORE = `the task store was made by a newer kit version: update the kit (${COMMAND} update)`;
-function workDbFile(paths) {
-  return join7(paths.stateDir, "tasks", "work.db");
-}
-var SCHEMA = `
-CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
-INSERT INTO meta VALUES ('min_compatible','1');
-CREATE TABLE tasks(id TEXT PRIMARY KEY, project TEXT NOT NULL, number INTEGER NOT NULL,
- parent_id TEXT REFERENCES tasks(id), kind TEXT NOT NULL DEFAULT 'task' CHECK(kind IN ('task','plan','phase')),
- subject TEXT NOT NULL, description TEXT NOT NULL DEFAULT '', status TEXT NOT NULL CHECK(status IN ('pending','in_progress','done','dropped')),
- plan TEXT, phase TEXT, crew_id TEXT, created_by TEXT, claim_pid INTEGER, claim_start TEXT, claim_session TEXT,
- created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, closed_at INTEGER, UNIQUE(project,number));
-CREATE UNIQUE INDEX task_plan ON tasks(project,plan) WHERE kind='plan';
-CREATE UNIQUE INDEX task_phase ON tasks(project,plan,phase) WHERE kind='phase';
-CREATE INDEX task_status ON tasks(project,status);
-CREATE INDEX task_parent ON tasks(parent_id);
-CREATE INDEX task_crew ON tasks(project,crew_id);
-CREATE TABLE task_deps(task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE, waits_for TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE, PRIMARY KEY(task_id,waits_for));
-CREATE TABLE task_notes(id INTEGER PRIMARY KEY, task_id TEXT NOT NULL REFERENCES tasks(id), text TEXT NOT NULL, session_id TEXT, crew_id TEXT, at INTEGER NOT NULL);
-CREATE TABLE acks(project TEXT NOT NULL, task_ref TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY(project,task_ref));
-CREATE TABLE task_events(id INTEGER PRIMARY KEY, task_id TEXT NOT NULL, project TEXT NOT NULL, number INTEGER NOT NULL,
- at INTEGER NOT NULL, action TEXT NOT NULL CHECK(action IN ('created','changed','noted','closed','deleted')),
- changes TEXT NOT NULL, session_id TEXT, session_name TEXT, crew_id TEXT, pid INTEGER, reason TEXT);
-CREATE INDEX task_event_task ON task_events(task_id,id);
-CREATE INDEX task_event_number ON task_events(project,number);
-`;
-var MIGRATIONS = [
-  "ALTER TABLE tasks ADD COLUMN blocking INTEGER NOT NULL DEFAULT 1 CHECK(blocking IN (0,1))",
-  `ALTER TABLE tasks ADD COLUMN agent TEXT;
-   ALTER TABLE tasks ADD COLUMN branch TEXT;
-   ALTER TABLE tasks ADD COLUMN worktree TEXT;
-   ALTER TABLE tasks ADD COLUMN base TEXT;`,
-  repairTaskLayers,
-  `ALTER TABLE tasks ADD COLUMN created_pid INTEGER;
-   ALTER TABLE tasks ADD COLUMN created_start TEXT;
-   CREATE INDEX IF NOT EXISTS task_note_task ON task_notes(task_id);`,
-  `CREATE TABLE IF NOT EXISTS task_files(task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE, path TEXT NOT NULL, PRIMARY KEY(task_id,path));
-   ALTER TABLE tasks ADD COLUMN lead_session TEXT;
-   ALTER TABLE tasks ADD COLUMN lead_pid INTEGER;
-   ALTER TABLE tasks ADD COLUMN lead_start TEXT;
-   ALTER TABLE tasks ADD COLUMN lead_child INTEGER NOT NULL DEFAULT 0 CHECK(lead_child IN (0,1));
-   ALTER TABLE tasks ADD COLUMN lead_handout TEXT;`
-];
-
-class BackupFailure extends Error {
-}
-function repairTaskLayers(sqlite, file) {
-  const nestedExists = sqlite.query("SELECT 1 FROM tasks t JOIN tasks p ON p.id=t.parent_id WHERE t.kind='task' AND p.kind='task' LIMIT 1").get();
-  if (!nestedExists)
-    return;
-  const rows = sqlite.query("SELECT id,project,number,parent_id,kind,blocking,status FROM tasks ORDER BY project,number").all();
-  const byId = new Map(rows.map((row) => [row.id, row]));
-  const originalHolds = new Map;
-  const reader = { sqlite, writable: false, close() {} };
-  for (const project of new Set(rows.map((row) => row.project))) {
-    const tasks = allTasks(reader, project);
-    for (const task of tasks.filter((task) => task.kind === "task" && tasks.some((child) => child.kind === "task" && child.parentId === task.id)))
-      originalHolds.set(task.id, holdingUnder(tasks, task.id).map((held) => held.id));
-  }
-  let backed = false;
-  const move = (row, parent, above) => {
-    if (!backed) {
-      if (!existsSync7(`${file}.v4.bak`)) {
-        try {
-          writeFileSync3(`${file}.v4.bak.tmp`, sqlite.serialize(), { mode: 384 });
-          renameSync2(`${file}.v4.bak.tmp`, `${file}.v4.bak`);
-        } catch (error) {
-          let cleanup = "";
-          try {
-            rmSync2(`${file}.v4.bak.tmp`, { force: true });
-          } catch (cleanupError) {
-            cleanup = ` Temporary backup cleanup also failed: ${String(cleanupError)}.`;
-          }
-          throw new BackupFailure(`task lift needs a backup: ${error instanceof Error ? error.message : String(error)}. Fix: free disk space and check folder rights for ${dirname3(file)}. The next task call tries again.${cleanup}`);
-        }
-      }
-      backed = true;
-    }
-    const blocking = parent.blocking === 0 ? 0 : row.blocking;
-    sqlite.query("UPDATE tasks SET parent_id=?,blocking=? WHERE id=?").run(above?.id ?? null, blocking, row.id);
-    sqlite.query("INSERT INTO task_events(task_id,project,number,at,action,changes,reason) VALUES (?,?,?,?,'changed',?,?)").run(row.id, row.project, row.number, Date.now(), JSON.stringify({
-      parent: [`#${parent.number}`, above === null ? null : `#${above.number}`],
-      ...blocking !== row.blocking ? { type: ["blocking", "non-blocking"] } : {}
-    }), LEGACY_LIFT_REASON);
-    row.parent_id = above?.id ?? null;
-    row.blocking = blocking;
-  };
-  for (;; ) {
-    const nested = rows.find((row) => row.kind === "task" && byId.get(row.parent_id ?? "")?.kind === "task");
-    if (!nested) {
-      for (const [id, held] of originalHolds)
-        for (const h of held) {
-          if (waitsForTask(allTasks(reader, byId.get(id)?.project ?? ""), h, id))
-            continue;
-          sqlite.query("INSERT OR IGNORE INTO task_deps(task_id,waits_for) VALUES (?,?)").run(id, h);
-        }
-      return;
-    }
-    const chain = [];
-    const positions = new Map;
-    let up = nested;
-    while (up) {
-      const at = positions.get(up.id);
-      if (at !== undefined) {
-        const lowest = chain.slice(at).filter((row) => row.kind === "task").sort((a, b) => a.number - b.number || a.id.localeCompare(b.id))[0];
-        if (!lowest) {
-          up = undefined;
-          break;
-        }
-        const parent = byId.get(lowest.parent_id ?? "");
-        if (!parent)
-          throw new Error("missing cycle parent");
-        move(lowest, parent, null);
-        break;
-      }
-      positions.set(up.id, chain.length);
-      chain.push(up);
-      up = byId.get(up.parent_id ?? "");
-    }
-    if (up)
-      continue;
-    const parent = byId.get(nested.parent_id ?? "");
-    if (!parent)
-      throw new Error("missing legacy task parent");
-    move(nested, parent, byId.get(parent.parent_id ?? "") ?? null);
-  }
-}
-function openWorkDb(file, options) {
-  const hook = options.mode === "hook";
-  const fresh = !existsSync7(file);
-  if (hook && fresh)
-    throw new Error("task store does not exist");
-  if (!hook)
-    mkdirSync3(dirname3(file), { recursive: true, mode: 448 });
-  const sqlite = new Database(file, { create: !hook, readwrite: true });
-  let writeRefusal;
-  try {
-    sqlite.run(`PRAGMA busy_timeout = ${hook ? HOOK_TIMEOUT_MS : WRITE_TIMEOUT_MS}`);
-    sqlite.run("PRAGMA foreign_keys = ON");
-    if (!hook) {
-      chmodSync2(dirname3(file), 448);
-      chmodSync2(file, 384);
-      if (fresh)
-        sqlite.run("PRAGMA journal_mode = WAL");
-      sqlite.run("BEGIN IMMEDIATE");
-      try {
-        const version = sqlite.query("PRAGMA user_version").get()?.user_version ?? 0;
-        if (version < 1) {
-          sqlite.run(SCHEMA);
-          sqlite.run("PRAGMA user_version = 1");
-        }
-        for (let at = Math.max(version, 1);at < WORK_SCHEMA_VERSION; at += 1) {
-          const step = MIGRATIONS[at - 1];
-          if (step === undefined)
-            throw new Error(`no migration from task schema ${at}`);
-          if (typeof step === "string")
-            sqlite.run(step);
-          else
-            step(sqlite, file);
-          sqlite.run(`PRAGMA user_version = ${at + 1}`);
-        }
-        const minimum = Number(sqlite.query("SELECT value FROM meta WHERE key='min_compatible'").get()?.value ?? 1);
-        if (minimum <= WORK_SCHEMA_VERSION)
-          repairTaskLayers(sqlite, file);
-        sqlite.run("COMMIT");
-      } catch (error) {
-        sqlite.run("ROLLBACK");
-        if (error instanceof BackupFailure)
-          writeRefusal = error.message;
-        else
-          throw error;
-      }
-    }
-    const minimum = Number(sqlite.query("SELECT value FROM meta WHERE key='min_compatible'").get()?.value ?? WORK_SCHEMA_VERSION);
-    if (hook || writeRefusal !== undefined || minimum > WORK_SCHEMA_VERSION)
-      sqlite.run("PRAGMA query_only = ON");
-    return {
-      sqlite,
-      writable: !hook && writeRefusal === undefined && minimum <= WORK_SCHEMA_VERSION,
-      ...writeRefusal === undefined ? {} : { writeRefusal },
-      close: () => sqlite.close()
-    };
-  } catch (error) {
-    sqlite.close();
-    throw error;
-  }
-}
-function writeWork(db, body, options = {}) {
-  if (!db.writable)
-    return { ok: false, why: db.writeRefusal ?? NEWER_STORE };
-  let began = false;
-  try {
-    db.sqlite.run("BEGIN IMMEDIATE");
-    began = true;
-    const min = Number(db.sqlite.query("SELECT value FROM meta WHERE key='min_compatible'").get()?.value ?? 1);
-    if (min > WORK_SCHEMA_VERSION)
-      throw new Error(NEWER_STORE);
-    const value = body();
-    db.sqlite.run(options.rehearse ? "ROLLBACK" : "COMMIT");
-    return { ok: true, value };
-  } catch (error) {
-    if (began)
-      db.sqlite.run("ROLLBACK");
-    return { ok: false, why: error instanceof Error ? error.message : String(error) };
-  }
-}
-
-// src/tasks/work/history.ts
-var FIELDS = [
-  ["kind", "kind"],
-  ["plan", "plan"],
-  ["phase", "phase"],
-  ["subject", "subject"],
-  ["status", "status"],
-  ["type", "type"],
-  ["parent", "parent"],
-  ["agent", "agent"],
-  ["branch", "branch"],
-  ["worktree", "worktree"],
-  ["base", "base"],
-  ["createdBy", "made by session"],
-  ["creator", "made by"],
-  ["claim", "claimed by"],
-  ["waitsFor", "blocked by"],
-  ["files", "files"],
-  ["lead", "reserved for"],
-  ["description", "description"],
-  ["note", "note"]
-];
-function actor(event) {
-  const parts = [];
-  if (event.sessionId !== null) {
-    const name = event.sessionName ? `"${event.sessionName}" ` : "";
-    parts.push(`session ${name}${event.sessionId}`);
-  }
-  if (event.pid !== null)
-    parts.push(`process ${event.pid}`);
-  if (event.reason !== null)
-    parts.push(`the kit (${event.reason})`);
-  return parts.length > 0 ? parts.join(", ") : "a caller outside any Claude session";
-}
-function shown(key, value) {
-  if (value === null || value === undefined || value === "")
-    return "none";
-  if (Array.isArray(value))
-    return value.length > 0 ? value.join(", ") : "none";
-  if (key === "subject" || key === "note")
-    return JSON.stringify(value);
-  return String(value);
-}
-function descriptionText(event, before, after) {
-  const length = (value) => typeof value === "string" ? value.length : 0;
-  if (event.action === "created")
-    return `description ${length(after)} characters`;
-  if (event.action === "deleted")
-    return `description ${length(before)} characters`;
-  return `description changed, ${length(before)} \u2192 ${length(after)} characters`;
-}
-function fieldText(event, key, label) {
-  const change = event.changes[key];
-  if (change === undefined)
-    return null;
-  const [before, after] = change;
-  if (key === "description")
-    return descriptionText(event, before, after);
-  if (event.action === "created" || event.action === "noted")
-    return `${label} ${shown(key, after)}`;
-  if (event.action === "deleted")
-    return `${label} ${shown(key, before)}`;
-  return `${label} ${shown(key, before)} \u2192 ${shown(key, after)}`;
-}
-function historyChanges(event) {
-  return FIELDS.map(([key, label]) => fieldText(event, key, label)).filter((text) => text !== null);
-}
-function historyLine(event) {
-  const fields = historyChanges(event);
-  const what = event.action === "deleted" ? "deleted; its last version:" : `${event.action}:`;
-  return `${new Date(event.at).toISOString()} by ${actor(event)} \xB7 ${what} ${fields.join("; ")}`;
-}
-function historyText(events, options) {
-  if (events.length === 0)
-    return "History: none recorded.";
-  const lines = ["History (oldest first):"];
-  for (const event of events) {
-    lines.push(historyLine(event));
-    const description = event.changes.description;
-    if (!options.full || description === undefined)
-      continue;
-    const [before, after] = description;
-    if (event.action !== "created" && typeof before === "string")
-      lines.push("  description before:", indent(before));
-    if (event.action !== "deleted" && typeof after === "string")
-      lines.push("  description after:", indent(after));
-  }
-  return lines.join(`
-`);
-}
-function indent(text) {
-  return text === "" ? "    (empty)" : text.split(`
-`).map((line) => `    ${line}`).join(`
-`);
-}
-
-// src/tasks/work/identity.ts
-function listedParentOf(platform) {
-  let listed = null;
-  return (pid) => {
-    if (listed === null) {
-      const found = runningPrograms(platform);
-      listed = new Map(found === "unknown" ? [] : found.map((one) => [one.pid, one]));
-    }
-    return listed.get(pid)?.parentPid ?? null;
-  };
-}
-function claimLive(claim, facts = {}) {
-  const platform = facts.platform ?? process.platform;
-  if (platform !== "linux")
-    return (facts.running ?? isRunning)(claim.pid);
-  return claim.procStart !== null && sessionIdentityProved({
-    pid: claim.pid,
-    procStart: claim.procStart,
-    sessionId: claim.sessionId ?? "",
-    cwd: "",
-    name: ""
-  }, { platform, ...facts.readStat ? { readStat: facts.readStat } : {} });
-}
-function claimGone(claim, facts = {}) {
-  if (!(facts.running ?? isRunning)(claim.pid))
-    return true;
-  const platform = facts.platform ?? process.platform;
-  if (platform !== "linux" || claim.procStart === null)
-    return false;
-  const start = processStart(claim.pid, {
-    platform,
-    ...facts.readStat ? { readStat: facts.readStat } : {}
-  });
-  return start !== undefined && start !== claim.procStart;
-}
-function sessionEnded(claim, facts = {}) {
-  if (!claimGone(claim, facts))
-    return false;
-  if (claim.sessionId === null)
-    return true;
-  try {
-    const dir = facts.claudeConfigDir ?? cliPaths(facts.env ?? process.env).claudeConfigDir;
-    const records = facts.sessions ? facts.sessions(dir) : liveSessions(dir, {
-      ...facts.platform ? { platform: facts.platform } : {},
-      ...facts.readStat ? { readStat: facts.readStat } : {},
-      ...facts.running ? { running: facts.running } : {}
-    });
-    return !records.some((record) => record.sessionId === claim.sessionId);
-  } catch {
-    return false;
-  }
-}
-var CLAIM_PROCESS = {
-  live: (claim) => claimLive(claim),
-  gone: (claim) => claimGone(claim),
-  ended: (claim) => sessionEnded(claim)
-};
-var cached2 = new Map;
-function callerOf(facts = {}) {
-  const env = facts.env ?? process.env;
-  const platform = facts.platform ?? process.platform;
-  const pid = facts.pid ?? process.pid;
-  const readStat = facts.readStat ?? readProcStat;
-  const config = facts.claudeConfigDir ?? cliPaths(env).claudeConfigDir;
-  const cacheKey = `${config}:${pid}:${platform}`;
-  const recordOf = (p) => sessionRecordOf(config, p, {
-    readStat,
-    platform,
-    ...facts.running ? { running: facts.running } : {}
-  });
-  const previous = cached2.get(cacheKey);
-  const remembered = previous ? recordOf(previous.pid) : null;
-  let record = remembered !== null && (remembered.procStart ?? null) === previous?.procStart ? remembered : null;
-  if (!record) {
-    const parent = facts.ppid ?? process.ppid;
-    const grandparent = platform === "linux" ? null : (facts.parentOf ?? listedParentOf(platform))(parent);
-    const pids = platform === "linux" ? ancestorPids(pid, readStat) : [parent, ...grandparent ? [grandparent] : []];
-    for (const p of pids) {
-      record = recordOf(p);
-      if (record !== null)
-        break;
-    }
-  }
-  if (record) {
-    cached2.set(cacheKey, { pid: record.pid, procStart: record.procStart ?? null });
-    return {
-      sessionId: record.sessionId,
-      pid: record.pid,
-      procStart: record.procStart ?? null,
-      cwd: record.cwd,
-      name: record.name
-    };
-  }
-  cached2.delete(cacheKey);
-  const sessionId = env.CLAUDE_CODE_SESSION_ID?.trim();
-  return sessionId ? {
-    sessionId,
-    pid: null,
-    procStart: null,
-    cwd: facts.cwd ?? process.cwd(),
-    name: null
-  } : null;
-}
-
 // src/tasks/work/store.ts
 var NOTE_PREVIEW = 120;
 function shape(db, task) {
@@ -25727,7 +25778,7 @@ function shape(db, task) {
     branch: task.branch,
     worktree: task.worktree,
     base: task.base,
-    claim: task.claim === null ? null : task.claim.sessionId ?? `process ${task.claim.pid}`,
+    claim: task.claim === null ? null : claimText(task.claim),
     waitsFor: task.waitsFor.map(numberOf).sort(),
     files: task.files,
     lead: task.lead === null ? null : `${task.lead.sessionId ?? `process ${task.lead.pid}`} (${task.lead.holder})`
@@ -26101,8 +26152,8 @@ function takeTasks(db, project, id, who, now, options) {
         ],
         ...task.claim === null ? {} : {
           claim: [
-            task.claim,
-            who.pid === null ? null : { pid: who.pid, procStart: who.procStart, sessionId: who.sessionId }
+            claimText(task.claim),
+            who.pid === null ? null : claimText({ pid: who.pid, sessionId: who.sessionId })
           ]
         }
       }, who, now, options.force ? "forced take-over" : "take-over");
@@ -26173,7 +26224,7 @@ function reclaimResumed(db, who, now, isGone) {
         recordEvent(db, task, "changed", { claim: [`process ${task.claim?.pid}`, `process ${who.pid}`] }, who, now, "claim moved to the resumed session's process");
       } else if (claim === "session") {
         db.sqlite.query("UPDATE tasks SET claim_session=?,updated_at=? WHERE id=?").run(who.sessionId, now, task.id);
-        recordEvent(db, task, "changed", { claim: [task.claim?.sessionId ?? `process ${task.claim?.pid}`, who.sessionId] }, who, now, "claim follows the session id its process now runs under");
+        recordEvent(db, task, "changed", { claim: [task.claim === null ? null : claimText(task.claim), who.sessionId] }, who, now, "claim follows the session id its process now runs under");
       }
       if (createdBy) {
         db.sqlite.query("UPDATE tasks SET created_by=?,updated_at=? WHERE id=?").run(who.sessionId, now, task.id);

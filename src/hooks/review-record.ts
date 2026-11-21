@@ -69,7 +69,6 @@
 import type { CcSmartDevKitConfig } from "../project/config";
 import { type ResolvedWorkflow, resolveWorkflow } from "../workflow/resolve";
 import {
-  agentIdKey,
   noteReviewStart,
   recordReview,
   recordsReview,
@@ -80,7 +79,7 @@ import {
 import { GUARD_GIT_TIMEOUT_MS, runGit } from "./git";
 import { type HookResult, SILENT, stringField } from "./io";
 import type { Env, HookContext } from "./run";
-import { subagentWorktreeOf } from "./subagent-worktree";
+import { subagentWorktreeByShape } from "./subagent-worktree";
 import { runPrompts } from "./transcript";
 
 /** Only an explicit review brief can write a review record. */
@@ -134,13 +133,12 @@ function said(why: string): HookResult {
 
 /**
  * True when `cwd` is inside the worktree a subagent worked in. The engine's shape
- * (`.claude/worktrees/agent-<hex>`, `hooks.md`) is checked with the id when the input names
- * one, and by the shape alone when it does not: a record must never name a branch that was
- * cut from the base rather than the commit a reviewer read.
+ * (`.claude/worktrees/agent-<hex>`, `hooks.md`) is read by the shape alone, whatever the agent
+ * id: a record must never name a branch that was cut from the base rather than the commit a
+ * reviewer read.
  */
-export function inSubagentWorktree(cwd: string, agentId: string | null): boolean {
-  if (subagentWorktreeOf(cwd, agentId) !== null) return true;
-  return /[\\/]\.claude[\\/]worktrees[\\/]agent-[0-9a-f]+(?:[\\/]|$)/.test(cwd);
+export function inSubagentWorktree(cwd: string): boolean {
+  return subagentWorktreeByShape(cwd) !== null;
 }
 
 export async function reviewRecord(context: HookContext): Promise<HookResult> {
@@ -151,7 +149,7 @@ export async function reviewRecord(context: HookContext): Promise<HookResult> {
   const agent = agentTypeOf(input);
   if (agent === null) return SILENT;
   const agentId = stringField(input.agent_id);
-  if (inSubagentWorktree(cwd, agentId === null ? null : agentIdKey(agentId))) return SILENT;
+  if (inSubagentWorktree(cwd)) return SILENT;
 
   let resolved: ResolvedWorkflow;
   try {

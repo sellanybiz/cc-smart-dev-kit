@@ -15,6 +15,7 @@ import { getTask, heldPlans, isOpen, planByRef } from "../tasks/work/queries";
 import { adoptLeadPlans, releasePlan, swapPlanAgent } from "../tasks/work/store";
 import type { Who } from "../tasks/work/types";
 import { baseBranch } from "../worktrees/command";
+import { worktreeBranch, worktreePath } from "../worktrees/paths";
 import { pullRequestState } from "../worktrees/scan";
 import { briefPath, type FollowupTrailer, reportPath, writeBrief, writePrivate } from "./brief";
 import {
@@ -434,7 +435,7 @@ function leftBehind(
   worktree: string,
   name: string,
 ): { branch: string; tip: string } | null {
-  let branch = `worktree-${name}`;
+  let branch = worktreeBranch(name);
   let tip: string | undefined;
   if (existsSync(worktree)) {
     const head = runGit(worktree, ["symbolic-ref", "--short", "HEAD"], ctx.env);
@@ -497,7 +498,7 @@ function followupGate(
   // An ended child of any lead of this core: its work is not lost when its lead is another.
   for (const gone of inRepo.filter((t) => t.state !== "live")) {
     if (!gone.name) continue;
-    const worktree = join(repo, ".claude", "worktrees", gone.name);
+    const worktree = worktreePath(repo, gone.name);
     const left = leftBehind(ctx, repo, worktree, gone.name);
     if (left === null) continue;
     const { branch, tip } = left;
@@ -957,12 +958,8 @@ async function startChild(
   const worktreeName = reuse ? basename(reuse.worktree) : childWorktreeName(name);
   const gitRoot = a.on ? remoteRepo(r, a.on, cwd) : project.repo;
   const repo = gitRoot ?? cwd;
-  const worktree = reuse
-    ? reuse.worktree
-    : gitRoot
-      ? join(repo, ".claude", "worktrees", worktreeName)
-      : cwd;
-  const branch = reuse ? reuse.branch : `worktree-${worktreeName}`;
+  const worktree = reuse ? reuse.worktree : gitRoot ? worktreePath(repo, worktreeName) : cwd;
+  const branch = reuse ? reuse.branch : worktreeBranch(worktreeName);
   if (reuse && !existsSync(worktree))
     return refuse(
       ctx,

@@ -31,6 +31,58 @@ asked for (`src/sessions/`, `src/worktrees/`):
   The plugin's own leftovers hook uses the same verdict; the dev-server probe the project
   this came from had (one project's `.dev-server.json` and ports) is **not** ported — the
   general rule is a program running from the worktree, or working in it.
+  - **One home for Claude Code's names** (`src/worktrees/paths.ts`): the folder
+    `<repo>/.claude/worktrees`, one worktree's path, and the subagent's name and branch prefixes
+    (`agent-`, `worktree-agent-`). Everything that builds or matches the folder imports them;
+    `paths.test.ts` fails a source file that joins the folder by hand.
+  - **A folder a removal moved aside** (`<path>-removing-<time>`) is known by that name alone
+    (`isParkedWorktree`), and its own deletions are never counted as the person's changes —
+    on a branch or detached. The verdict's `parked` fact, which waives the commits test and
+    the idle hour, still needs a branch: a detached folder has no branch to hold its commits,
+    so one with commits of its own stays.
+  - **Rebuildable files:** `next-env.d.ts`, which Next.js writes and says not to edit, counts
+    as one at any depth, like a cache (`REBUILDABLE`, `src/hooks/local-files.ts`).
+  - **The builder branch sweep** (`branch-sweep.ts`): a builder's branch
+    (`worktree-agent-<id>`) outlives its folder, so `--clean` — and only `--clean`, never
+    `--remove` or the background clean — also judges the local `worktree-agent-*` branches that
+    no worktree has checked out, with the same test as every removal (`tryDeleteBranch`:
+    ancestry, replay, cherry-pick, merged pull request). The base holds its work: deleted. It
+    does not: kept, and its line says so. The base cannot be read: every branch is kept. The
+    plain listing shows which would go (there is no `--dry-run`: the listing is the preview).
+    A branch of any other name is never touched.
+  - **A branch an open task records stays, in every delete** (`recordedKeepWhy`, in
+    `tryDeleteBranch`, the one path of `--clean`'s removals, `--remove`, the background clean,
+    the forgetting of a gone folder and the sweep). A phase binds its builder's branch in the
+    task's `branch` field and cannot close once the branch is gone (`refuseEmptyHandBack`), so
+    the line is `kept branch <b>: task #<n> still records it`; the folder still goes. The
+    records are read through the task store (`recordedBranches`, `readWorkStore`) once per
+    run, by `worktrees` and by the background clean, and handed down as `DeleteOptions.recorded`
+    (`ScanOptions & { recorded }`: required on every delete, which is why `deleteJudgedBranch`
+    takes it too and keeps such a branch itself); a store that cannot be read keeps every branch
+    and removes the folders.
+  - **An operation in progress keeps the worktree** (`in-progress.ts`, the verdict's
+    `inProgress` fact): a bisect, a rebase, a merge, a cherry-pick or a revert that git has not
+    finished, a `git am` stopped mid-series, or a cherry-pick or revert series left after its
+    conflicting commit (the `rebase-apply`, `rebase-merge` and `sequencer` folders). Each reason names the command
+    that ends it in that worktree (`git bisect reset`, `--abort`, or `--quit` for a series). The check comes before the idle hour, so a bisect left paused for a day still
+    keeps the folder, and with it the branch. When git or the disk cannot say, it keeps too.
+    The same file list serves the branch delete below: one `git rev-parse --git-path` call per
+    worktree asks for every marker.
+  - **The delete names the judged commit.** The judge reads the branch's commit once
+    (`judgeBranchOnRef`) and the delete is `git update-ref -d refs/heads/<branch> <that commit>`
+    (`deleteJudgedBranch`): git refuses it when the branch moved after the judge, so a commit
+    added meanwhile is never lost, and the line says so. `update-ref` does not look at
+    worktrees, as `git branch -D` does, so a branch a worktree uses is refused first, by name of
+    its folder: one that has it checked out, and one that is bisecting or rebasing it (its HEAD
+    is detached then, so the worktree list does not show the branch; git's own files name it:
+    `BISECT_START`, `rebase-merge/head-name`, `rebase-apply/head-name`, read with
+    `git rev-parse --git-path` in each worktree). `branch -D` also removes the branch's
+    `[branch "<name>"]` config section, so the delete does the same (`git config
+    --remove-section`). A missing section is fine and says nothing, in any locale: git words
+    "no such section" by the locale, so the call runs with `LC_ALL=C`. Any other failure is said
+    in the line. The listing (the sweep's `list` mode) applies the same keeps as `--clean`, in
+    the same order, so it never says a branch goes that `--clean` keeps.
+    A kept branch's line names the ref it was compared with (`origin/<base>`, `comparedWith`).
 
 ### Finished background sessions
 

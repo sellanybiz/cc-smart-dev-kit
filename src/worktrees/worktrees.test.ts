@@ -21,6 +21,7 @@ import { dirname, join } from "node:path";
 import { COMMAND } from "../build-info/names";
 import { cliPaths } from "../cli/paths";
 import { type Checkout, loadProjectConfig, locateCheckout } from "../project/resolve";
+import { NO_TASK_RECORDS } from "../testing/task-records";
 import { cleanGitEnv, git, tempDir, withGitVersion } from "../testing/temp";
 import { runAutoClean } from "./auto-clean";
 import { baseBranch, DEFAULT_BASE, runWorktrees, type WorktreesAnswer } from "./command";
@@ -72,6 +73,7 @@ const facts = (over: Partial<WorktreeFacts> = {}): WorktreeFacts => ({
   containers: [],
   gitTooOld: null,
   idleMinutes: IDLE_MINUTES + 1,
+  inProgress: null,
   innerWorktree: null,
   locked: false,
   mergedBy: null,
@@ -172,6 +174,10 @@ describe("the verdict on one worktree", () => {
       held: false,
       why: "another worktree lives inside it: /work/app-wt-x/.claude/worktrees/agent-1",
     });
+    // An operation in progress keeps it before the idle hour is asked, whatever the commits say.
+    expect(
+      verdict(facts({ idleMinutes: 9999, inProgress: "a bisect is in progress" }), () => clean),
+    ).toEqual({ finished: false, held: false, why: "a bisect is in progress" });
     expect(verdict(facts({ aheadOfBase: 3 }), () => clean)).toEqual({
       finished: false,
       held: false,
@@ -418,6 +424,7 @@ describe("scanning and removing, against a real repo", () => {
     const scanOptions = {
       base: "main",
       claudeConfigDir: tempDir("worktrees-config"),
+      recorded: NO_TASK_RECORDS,
       env,
       facts: { containers: [], programs: [], sessions: [] },
       // git wrote the worktree's admin files just now: the one-hour wait is what `--remove`
@@ -447,6 +454,7 @@ describe("scanning and removing, against a real repo", () => {
     const scanOptions = {
       base: "main",
       claudeConfigDir: tempDir("worktrees-config"),
+      recorded: NO_TASK_RECORDS,
       env,
       facts: { containers: [], programs: [], sessions: [] },
       idleLimit: 0,
@@ -485,6 +493,7 @@ describe("scanning and removing, against a real repo", () => {
     const scanned = scanWorktrees(main, {
       base: "main",
       claudeConfigDir: tempDir("worktrees-config"),
+      recorded: NO_TASK_RECORDS,
       env,
       facts: { containers: [], programs: [], sessions: [] },
       idleLimit: 0,
@@ -516,6 +525,7 @@ describe("scanning and removing, against a real repo", () => {
     const scanned = scanWorktrees(main, {
       base: "main",
       claudeConfigDir: tempDir("worktrees-config"),
+      recorded: NO_TASK_RECORDS,
       env,
       facts: { containers: [], programs: [], sessions: [] },
       idleLimit: 0,
@@ -543,6 +553,7 @@ describe("scanning and removing, against a real repo", () => {
     const scanned = scanWorktrees(main, {
       base: "main",
       claudeConfigDir: tempDir("worktrees-config"),
+      recorded: NO_TASK_RECORDS,
       env,
       facts: { containers: [], programs: [], sessions: [] },
       idleLimit: 0,
@@ -568,6 +579,7 @@ describe("scanning and removing, against a real repo", () => {
     const scanned = scanWorktrees(main, {
       base: "main",
       claudeConfigDir: tempDir("worktrees-config"),
+      recorded: NO_TASK_RECORDS,
       env,
       facts: { containers: [], programs: [], sessions: [] },
       idleLimit: 0,
@@ -599,6 +611,7 @@ describe("scanning and removing, against a real repo", () => {
     const scanned = scanWorktrees(main, {
       base: "main",
       claudeConfigDir: tempDir("worktrees-config"),
+      recorded: NO_TASK_RECORDS,
       env,
       facts: { containers: [], programs: [], sessions: [] },
       idleLimit: 0,
@@ -684,6 +697,7 @@ describe("scanning and removing, against a real repo", () => {
     const scanned = scanWorktrees(main, {
       base: "main",
       claudeConfigDir: tempDir("worktrees-config"),
+      recorded: NO_TASK_RECORDS,
       env: withGitVersion(env, "2.30.0"),
       facts: { containers: [], programs: [], sessions: [] },
       idleLimit: 0,
@@ -717,6 +731,7 @@ describe("scanning and removing, against a real repo", () => {
     const scanOptions = {
       base: "main",
       claudeConfigDir: tempDir("worktrees-config"),
+      recorded: NO_TASK_RECORDS,
       env,
       facts: { containers: [], programs: [], sessions: [] },
       idleLimit: 0,
@@ -744,6 +759,7 @@ describe("scanning and removing, against a real repo", () => {
     const withCommit = scanWorktrees(main, {
       base: "main",
       claudeConfigDir: tempDir("worktrees-config"),
+      recorded: NO_TASK_RECORDS,
       env,
       facts: { containers: [], programs: [], sessions: [] },
       idleLimit: 0,
@@ -761,6 +777,7 @@ describe("scanning and removing, against a real repo", () => {
     const withFile = scanWorktrees(main, {
       base: "main",
       claudeConfigDir: tempDir("worktrees-config"),
+      recorded: NO_TASK_RECORDS,
       env,
       facts: { containers: [], programs: [], sessions: [] },
       idleLimit: 0,
@@ -775,6 +792,7 @@ describe("scanning and removing, against a real repo", () => {
     const removal = removeWorktree(main, withFileListed, {
       base: "main",
       claudeConfigDir: tempDir("worktrees-config"),
+      recorded: NO_TASK_RECORDS,
       env,
       // The machine's facts are the test's, as in the scan: never this machine's Docker.
       facts: { containers: [], programs: [], sessions: [] },
@@ -789,6 +807,7 @@ describe("scanning and removing, against a real repo", () => {
     const scanned = scanWorktrees(main, {
       base: "main",
       claudeConfigDir: tempDir("worktrees-config"),
+      recorded: NO_TASK_RECORDS,
       env,
       facts: {
         containers: [],
@@ -806,6 +825,7 @@ describe("scanning and removing, against a real repo", () => {
     const held = scanWorktrees(main, {
       base: "main",
       claudeConfigDir: tempDir("worktrees-config"),
+      recorded: NO_TASK_RECORDS,
       env,
       facts: {
         containers: [],
@@ -828,6 +848,7 @@ describe("scanning and removing, against a real repo", () => {
     const scanned = scanWorktrees(main, {
       base: "main",
       claudeConfigDir: tempDir("worktrees-config"),
+      recorded: NO_TASK_RECORDS,
       env,
       facts: { containers: [], programs: [], sessions: [] },
       idleLimit: 0,
@@ -842,6 +863,7 @@ describe("scanning and removing, against a real repo", () => {
     const scanned = scanWorktrees(main, {
       base: "main",
       claudeConfigDir: tempDir("worktrees-config"),
+      recorded: NO_TASK_RECORDS,
       env,
       // Claude Code records the folder the session was started in, which may be the linked
       // one while git lists the physical one.
@@ -865,6 +887,7 @@ describe("scanning and removing, against a real repo", () => {
       scanWorktrees(main, {
         base: "trunk",
         claudeConfigDir: tempDir("worktrees-config"),
+        recorded: NO_TASK_RECORDS,
         env,
         facts: { containers: [], programs: [], sessions: [] },
       }),
@@ -880,6 +903,7 @@ describe("scanning and removing, against a real repo", () => {
       const options = {
         base: "main",
         claudeConfigDir: tempDir("claude"),
+        recorded: NO_TASK_RECORDS,
         env: cleanGitEnv(),
         idleLimit: 0,
         facts: {
@@ -909,6 +933,7 @@ describe("scanning and removing, against a real repo", () => {
       const options = {
         base: "main",
         claudeConfigDir: tempDir("claude"),
+        recorded: NO_TASK_RECORDS,
         env: cleanGitEnv(),
         idleLimit: 0,
         facts: {
@@ -947,6 +972,7 @@ describe("scanning and removing, against a real repo", () => {
     const options = {
       base: "main",
       claudeConfigDir: tempDir("claude"),
+      recorded: NO_TASK_RECORDS,
       env: { ...cleanGitEnv(), PATH: `${bin}:${process.env.PATH ?? ""}` },
       idleLimit: 0,
       facts: {
@@ -974,6 +1000,7 @@ describe("scanning and removing, against a real repo", () => {
       const options = {
         base: "main",
         claudeConfigDir: tempDir("claude"),
+        recorded: NO_TASK_RECORDS,
         env: cleanGitEnv(),
         idleLimit: 0,
         facts: {
@@ -1012,6 +1039,7 @@ describe("scanning and removing, against a real repo", () => {
     const options = {
       base: "main",
       claudeConfigDir: join(tempDir("claude"), ".claude"),
+      recorded: NO_TASK_RECORDS,
       env: cleanGitEnv(),
       now: Date.now() + 60 * 60 * 1000,
       facts: {
@@ -1058,6 +1086,7 @@ describe("scanning and removing, against a real repo", () => {
     const options = {
       base: "main",
       claudeConfigDir: join(tempDir("claude"), ".claude"),
+      recorded: NO_TASK_RECORDS,
       env: cleanGitEnv(),
       now: Date.now() + 60 * 60 * 1000,
       facts: {
@@ -1083,11 +1112,11 @@ describe("scanning and removing, against a real repo", () => {
     expect(existsSync(worktree)).toBe(false);
   });
 
-  test("a branch git still has checked out is kept, and the reason is git's own", () => {
+  test("a branch a worktree still has checked out is kept, and the line names the folder", () => {
     const { main, worktree } = repo();
-    // git refuses while the worktree holds it: the removal deletes the branch afterwards.
-    expect(deleteMergedBranch(main, "main", "fix/login", env)).toBe(
-      `kept branch fix/login: error: cannot delete branch 'fix/login' used by worktree at '${worktree}'`,
+    // The worktree holds it: the removal deletes the branch afterwards.
+    expect(deleteMergedBranch(main, "main", "fix/login", env, NO_TASK_RECORDS)).toBe(
+      `kept branch fix/login: a worktree has it checked out, at ${worktree}`,
     );
     expect(existsSync(worktree)).toBe(true);
   });
@@ -1097,10 +1126,10 @@ describe("scanning and removing, against a real repo", () => {
     writeFileSync(join(worktree, "work.ts"), "export const x = 1;\n");
     git(worktree, "add", ".");
     git(worktree, "commit", "-m", "work");
-    expect(deleteMergedBranch(main, "main", "fix/login", env)).toBe(
-      "kept branch fix/login: it has commits that are not on main",
+    expect(deleteMergedBranch(main, "main", "fix/login", env, NO_TASK_RECORDS)).toBe(
+      "kept branch fix/login: it has commits that are not on origin/main",
     );
-    expect(deleteMergedBranch(main, "main", "no-such-branch", env)).toContain(
+    expect(deleteMergedBranch(main, "main", "no-such-branch", env, NO_TASK_RECORDS)).toContain(
       "kept branch no-such-branch:",
     );
   });
@@ -1303,6 +1332,7 @@ describe("the worktrees command", () => {
     const options = {
       base: "main",
       claudeConfigDir: tempDir("worktrees-config"),
+      recorded: NO_TASK_RECORDS,
       env: cleanGitEnv(),
       facts: { containers: [], programs: [], sessions: [] },
     };
@@ -1315,7 +1345,7 @@ describe("the worktrees command", () => {
     expect(removal.status).toBe("removed");
     expect(removal.said).toEqual([
       `removed ${parked}`,
-      "kept branch fix/login: it has commits that are not on main",
+      "kept branch fix/login: it has commits that are not on origin/main",
     ]);
     expect(existsSync(parked)).toBe(false);
     // The commit is still there, on the branch the folder had.
@@ -1331,6 +1361,7 @@ describe("the worktrees command", () => {
     const options = {
       base: "main",
       claudeConfigDir: tempDir("worktrees-config"),
+      recorded: NO_TASK_RECORDS,
       env: cleanGitEnv(),
       facts: { containers: [], programs: [], sessions: [] },
     };
@@ -1358,11 +1389,38 @@ describe("the worktrees command", () => {
     const found = scanWorktrees(main, {
       base: "main",
       claudeConfigDir: tempDir("worktrees-config"),
+      recorded: NO_TASK_RECORDS,
       env: cleanGitEnv(),
       facts: { containers: [], programs: [], sessions: [] },
     }).find((one) => one.listed.path === parked);
     // No branch holds this commit: removing the folder would lose it.
     expect(found?.state).toMatchObject({ finished: false, why: "1 commit not on main" });
+  });
+
+  test("D62: a detached folder whose commits the base holds does not count the removal's own deletions", () => {
+    const { main, worktree } = repo();
+    git(worktree, "checkout", "--detach");
+    const parked = `${worktree}-removing-1761300000000`;
+    git(main, "worktree", "move", worktree, parked);
+    // `git worktree remove` deleted a tracked file before it failed.
+    rmSync(join(parked, "README.md"));
+    const state = () =>
+      scanWorktrees(main, {
+        base: "main",
+        claudeConfigDir: tempDir("worktrees-config"),
+        recorded: NO_TASK_RECORDS,
+        env: cleanGitEnv(),
+        facts: { containers: [], programs: [], sessions: [] },
+        // The idle hour is the branch-less folder's own rule: this asks only about its files.
+        idleLimit: 0,
+      }).find((one) => one.listed.path === parked)?.state;
+    expect(state()).toEqual({ finished: true, note: null });
+    // A file someone changed, or one nobody tracks, is still not the removal's own work.
+    writeFileSync(join(parked, "README.md"), "# mine\n");
+    expect(state()).toMatchObject({ finished: false, why: "uncommitted changes" });
+    git(parked, "checkout", "--", "README.md");
+    writeFileSync(join(parked, "notes.txt"), "mine\n");
+    expect(state()).toMatchObject({ finished: false, why: "uncommitted changes" });
   });
 
   test("D62: a folder already moved aside is removed where it stands, never moved again", () => {
@@ -1378,6 +1436,7 @@ describe("the worktrees command", () => {
       const options = {
         base: "main",
         claudeConfigDir: tempDir("worktrees-config"),
+        recorded: NO_TASK_RECORDS,
         env: cleanGitEnv(),
         facts: { containers: [], programs: [], sessions: [] },
         idleLimit: 0,
@@ -1420,6 +1479,7 @@ describe("the worktrees command", () => {
     const options = (facts: Record<string, unknown> = {}) => ({
       base: "main",
       claudeConfigDir: tempDir("worktrees-config"),
+      recorded: NO_TASK_RECORDS,
       env: cleanGitEnv(),
       facts: { containers: [], programs: [], sessions: [], ...facts },
     });
@@ -1777,6 +1837,7 @@ describe("Claude builder lock ownership", () => {
     const options = {
       base: "main",
       claudeConfigDir: tempDir("claude"),
+      recorded: NO_TASK_RECORDS,
       env: cleanGitEnv(),
       idleLimit: 0,
       ownerMode,
@@ -1841,6 +1902,7 @@ describe("Claude builder lock ownership", () => {
     const options = {
       base: "main",
       claudeConfigDir,
+      recorded: NO_TASK_RECORDS,
       env: cleanGitEnv(),
       idleLimit: 0,
       facts: {
@@ -1877,6 +1939,7 @@ describe("Claude builder lock ownership", () => {
     const options = {
       base: "main",
       claudeConfigDir: tempDir("claude"),
+      recorded: NO_TASK_RECORDS,
       env: cleanGitEnv(),
       idleLimit: 0,
       ownerMode: true,
@@ -2000,6 +2063,7 @@ test("unproved finished marker keeps a builder even when its pid is gone", () =>
   const options = {
     base: "main",
     claudeConfigDir: tempDir("claude"),
+    recorded: NO_TASK_RECORDS,
     env: cleanGitEnv(),
     idleLimit: 0,
     facts: {
@@ -2027,6 +2091,7 @@ test("a live builder lock with no start time: no one can prove they own it, and 
   const options = {
     base: "main",
     claudeConfigDir: tempDir("claude"),
+    recorded: NO_TASK_RECORDS,
     env: cleanGitEnv(),
     idleLimit: 0,
     ownerMode: true,
@@ -2069,6 +2134,7 @@ test("a builder resumed between scan and removal keeps its lock", () => {
   const options = {
     base: "main",
     claudeConfigDir: tempDir("claude"),
+    recorded: NO_TASK_RECORDS,
     env: cleanGitEnv(),
     idleLimit: 0,
     ownerMode: true,
@@ -2108,6 +2174,7 @@ test.each([null, "not-ticks"])("dead session with unmeasured start %s stays lock
   const options = {
     base: "main",
     claudeConfigDir: tempDir("claude"),
+    recorded: NO_TASK_RECORDS,
     env: cleanGitEnv(),
     idleLimit: 0,
     facts: {
@@ -2139,6 +2206,7 @@ test.each([false, true])("reused builder pid requires finished proof %s", (finis
   const options = {
     base: "main",
     claudeConfigDir: tempDir("claude"),
+    recorded: NO_TASK_RECORDS,
     env: cleanGitEnv(),
     idleLimit: 0,
     facts: {

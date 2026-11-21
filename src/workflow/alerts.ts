@@ -15,10 +15,8 @@
  */
 import type { CliPaths } from "../cli/paths";
 import { type CcSmartDevKitConfig, CcSmartDevKitConfigError } from "../project/config";
-import { loadProjectConfig, locateCheckout } from "../project/resolve";
+import { type Checkout, loadProjectConfig } from "../project/resolve";
 import { alertsFrom, type ResolvedWorkflow, resolveAlerts } from "./resolve";
-
-type Env = Record<string, string | undefined>;
 
 /** The usage-warning threshold and where its value came from. */
 export type ResolvedAlerts = ResolvedWorkflow["alerts"];
@@ -35,21 +33,21 @@ function fallbackLine(problems: string[]): string {
 }
 
 /**
- * The alert settings where `cwd` runs: the project of that folder, if it has one and its
- * file can be read, over the person's own defaults. Never throws. `cwd` null: no folder to
- * resolve from (a hook input that names none).
+ * The alert settings of `checkout`: the project it is in, if it has one and its file can be
+ * read, over the person's own defaults. Never throws. The caller locates the checkout once
+ * (`locateCheckout`) and hands it in, so the status line's other readers use the same answer.
+ * `checkout` null: no project (a folder outside git, or one git could not read), as silent as
+ * it is for every other hook.
  */
-export function alertsAt(paths: CliPaths, cwd: null | string, env: Env): AlertsHere {
+export function alertsAt(paths: CliPaths, checkout: Checkout | null): AlertsHere {
   const problems: string[] = [];
   let project: CcSmartDevKitConfig | null = null;
-  if (cwd !== null) {
+  if (checkout !== null) {
     try {
-      const checkout = locateCheckout(cwd, { env });
-      if (checkout !== null) project = loadProjectConfig(checkout).config;
+      project = loadProjectConfig(checkout).config;
     } catch (error) {
       // A project file that cannot be used (broken, or needing a newer plugin) is worth a
-      // line: the person must hear it. A folder that is not in git, or one git too old to
-      // read, is simply no project — as silent as it is for every other hook.
+      // line: the person must hear it.
       if (error instanceof CcSmartDevKitConfigError) problems.push(error.message);
     }
   }

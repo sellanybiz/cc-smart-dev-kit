@@ -14,10 +14,13 @@ the machine it runs on. A test that cannot fail proves nothing.
 - **Every file a test writes goes into `tempDir()`** (`src/testing/temp.ts`). The
   preload in `bunfig.toml` (`src/testing/setup.ts`) removes those folders after each
   test.
-- **Never the real `HOME`, `~/.claude`, `~/.config` or `~/.local`.** A test that runs the
-  CLI sets `HOME` and `CLAUDE_CONFIG_DIR` to a temp folder (see `src/cli/cli.test.ts`).
-  Code under test takes its paths from `cliPaths()` or from arguments, never from
-  `homedir()`.
+- **Never the real `HOME`, `~/.claude`, `~/.config` or `~/.local`.** The preload gives each
+  run its own temp home (`src/testing/test-home.ts`): it sets `HOME`, `USERPROFILE`,
+  `CLAUDE_CONFIG_DIR` and the `XDG_*` folders, and makes `os.homedir()` answer it. That is the
+  net, not the method: a test that runs the CLI still sets `HOME` and `CLAUDE_CONFIG_DIR` to its
+  own `tempDir()` (see `src/cli/cli.test.ts`), and a child started with a hand-built env gets
+  `childEnv()`, so it never falls back to the real home. Code under test takes its paths from
+  `cliPaths()` or from arguments, never from `homedir()`.
 - **Git in a test** uses `git()` and `cleanGitEnv()` from `src/testing/temp.ts`: no
   `GIT_*` variable from outside, no global or system git config, a fixed author.
 

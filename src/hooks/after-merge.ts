@@ -218,11 +218,11 @@ function call(fields: Partial<MergeCall> = {}): MergeCall {
 /** The word `env` as a program (`env`, `/usr/bin/env`, `env.exe`). */
 const ENV_PROGRAM = /^(?:.*[\\/])?env(?:\.(?:exe|cmd))?$/i;
 
-/** `GH_REPO` / `GH_HOST` named anywhere in a step (`export GH_REPO=…`, `$env:GH_REPO='…'`). */
+/**
+ * `GH_REPO` / `GH_HOST` named anywhere in a step (`export GH_REPO=…`, `$env:GH_REPO='…'`,
+ * `GH_REPO+=…`), the merge's own prefix (`GH_REPO=… gh pr merge`) included. The one rule for it.
+ */
 const GH_POINTING_TEXT = /GH_(?:REPO|HOST)/;
-
-/** `GH_REPO=` / `GH_HOST=`: the assignment form, in the merge's own words. */
-const GH_POINTING = /^GH_(?:REPO|HOST)=/;
 
 /** `--auto` arms a merge for later. */
 const isAutoFlag = (word: string) => /^--auto(?:=|$)/.test(word);
@@ -311,12 +311,13 @@ function readMerges(
     const read = wordsWithFill(step.text, dialect);
     const words = read.map((word) => word.text);
     const fill = fillOfStep(step, read, dialect, filledIn);
-    // Any mention of `GH_REPO` / `GH_HOST` in a step points the gh calls after it somewhere
-    // else — in every spelling (`export GH_REPO=…`, `$env:GH_REPO='…'`, `set GH_REPO=…`),
-    // including a step that is nothing but the assignment.
+    // Any mention of `GH_REPO` / `GH_HOST` in a step (`export GH_REPO=…`, `$env:GH_REPO='…'`,
+    // `set GH_REPO=…`, or the merge's own prefix `GH_REPO=… gh pr merge`) points this step's gh
+    // call and every later one somewhere else, including a step that is nothing but the
+    // assignment. The prefix is one of the step's words, so this one check covers it.
     if (words.some((word) => GH_POINTING_TEXT.test(word))) {
       moved ??=
-        "an earlier step in the same command sets `GH_REPO`/`GH_HOST`, so which repository gh works on is not certain";
+        "this command sets `GH_REPO`/`GH_HOST`, so which repository gh works on is not certain";
     }
     const invocation = invocationOf(words);
     // A runner whose own words the line cut in two — in PowerShell, where every brace ends a
@@ -510,9 +511,6 @@ function gitMoved(args: string[]): string | null {
  * this merge's own repository or environment uncertain, or null.
  */
 function prefixMoved(before: readonly string[]): string | null {
-  if (before.some((word) => GH_POINTING.test(word))) {
-    return "{the} sets `GH_REPO`/`GH_HOST` itself, so which repository it {acts} is not certain";
-  }
   if (before.some((word) => ENV_PROGRAM.test(word))) {
     return "{the} runs through `env`, so which environment gh sees is not certain";
   }

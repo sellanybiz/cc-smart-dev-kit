@@ -1,5 +1,5 @@
 // The tier-view hook: plugin/dist/tier-view.js. Its logic and tests live in src/hooks/.
 import { runHookEntry } from "../hooks/run";
-import { tierViewHook } from "../hooks/specs";
+import { tierViewHook } from "../hooks/specs/tier-view";
 
 await runHookEntry(tierViewHook);

@@ -10,7 +10,10 @@
  * WHAT IT DOES
  *   cc-smart-dev-kit worktrees                  lists them, after fetching origin/<base>.
  *   cc-smart-dev-kit worktrees --clean          also removes every FINISHED one, with its
- *                                               branch.
+ *                                               branch, and deletes the `worktree-agent-*`
+ *                                               branches no worktree uses once the base
+ *                                               holds their work (`branch-sweep.ts`). The
+ *                                               plain listing says which would go.
  *   cc-smart-dev-kit worktrees --remove <path>  removes that one now — for the session that
  *                                               has just finished in it, so without the
  *                                               one-hour wait.
@@ -35,7 +38,9 @@ import type { CliPaths } from "../cli/paths";
 import { isInside, realPath, runGit, samePath } from "../hooks/git";
 import type { Env } from "../hooks/run";
 import { type Checkout, loadProjectConfig, locateCheckout } from "../project/resolve";
+import { projectKeyOf } from "../tasks/context";
 import { autoCleanFiles, readRepoRecord } from "./auto-state";
+import { type BuilderBranchLine, recordedBranches, sweepBuilderBranches } from "./branch-sweep";
 import {
   type CleanLock,
   type CleanLockResult,
@@ -117,6 +122,16 @@ const CONSOLE_SINKS: WorktreesSinks = {
 function strayRow(stray: StrayFolder): string {
   const name = basename(stray.path).padEnd(30);
   return `  ${name} ${"(no worktree)".padEnd(42)} left by a removal that stopped halfway; git no longer lists it`;
+}
+
+/** The listing's rows for the builder branches no worktree uses: what `--clean` would do to each. */
+function builderBranchRows(branches: BuilderBranchLine[]): string[] {
+  if (branches.length === 0) return [];
+  return [
+    "Builder branches no worktree uses (worktree-agent-*)",
+    ...branches.map((one) => `  ${one.text}`),
+    "",
+  ];
 }
 
 function show(scanned: ScannedWorktree[], print: (line: string) => void): void {
@@ -356,6 +371,10 @@ export async function runWorktrees(
       print(`Could not fetch origin/${base}; judging against the copy of it here.\n`);
     }
 
+    // The branches an open task records stay, in every delete below (`tryDeleteBranch`). The
+    // store is read once for the run and handed down; when it cannot be read, no branch goes.
+    const recorded = recordedBranches(paths, projectKeyOf(checkout, cwd));
+
     if (options.remove !== null) {
       const target = resolve(options.remove);
       // `--remove` is the session that has just finished in it, so the one-hour wait is out;
@@ -366,6 +385,7 @@ export async function runWorktrees(
         env,
         idleLimit: 0,
         ownerMode: true,
+        recorded,
       };
       const scanned = scanWorktrees(repo, judged);
       const found = scanned.find(
@@ -379,7 +399,7 @@ export async function runWorktrees(
         pruneWorktrees(repo, env);
         print(forgottenLine(found.listed.path));
         if (found.listed.branch !== null) {
-          print(deleteMergedBranch(repo, base, found.listed.branch, env));
+          print(deleteMergedBranch(repo, base, found.listed.branch, env, recorded));
         }
         return 0;
       }
@@ -395,27 +415,37 @@ export async function runWorktrees(
       return 1;
     }
 
-    const judged = { base, claudeConfigDir: paths.claudeConfigDir, env };
+    const judged = { base, claudeConfigDir: paths.claudeConfigDir, env, recorded };
     const scanned = scanWorktrees(repo, judged);
     // The folders a removal moved aside and could not remove, that git no longer lists (D62).
     const strays = strayParkedFolders(repo, env);
+    // The builder branches no worktree uses, judged here only for the listing: `--clean` judges
+    // and deletes them below, after its own removals have freed some.
+    const branches = options.clean ? [] : sweepBuilderBranches(repo, judged, "list");
+    const branchesGoing = branches.filter((one) => one.state === "goes").length;
     print(`Worktrees of ${repo}\n`);
     show(scanned, print);
     if (strays.length > 0) {
       for (const stray of strays) print(strayRow(stray));
       print("");
     }
+    for (const row of builderBranchRows(branches)) print(row);
 
     const going = scanned.filter(canGo);
     const strayLine =
       strays.length === 0
         ? null
         : `${String(strays.length)} leftover folder${strays.length === 1 ? "" : "s"} from a removal that stopped halfway: \`${COMMAND} worktrees --clean\` removes ${strays.length === 1 ? "it" : "them"} when nothing runs from ${strays.length === 1 ? "it" : "them"}.`;
-    const nothing = going.length === 0 && strayLine === null;
+    const nothing = going.length === 0 && strayLine === null && branchesGoing === 0;
     if (!options.clean) {
       if (going.length > 0) {
         print(
           `${String(going.length)} can go. \`${COMMAND} worktrees --clean\` in the main checkout removes them.`,
+        );
+      }
+      if (branchesGoing > 0) {
+        print(
+          `${String(branchesGoing)} builder branch${branchesGoing === 1 ? "" : "es"} whose work the base holds: \`${COMMAND} worktrees --clean\` deletes ${branchesGoing === 1 ? "it" : "them"}.`,
         );
       }
       if (strayLine !== null) print(strayLine);
@@ -427,7 +457,11 @@ export async function runWorktrees(
     // ones this clean left behind (`cleanWithStrays`).
     const { strays: finished } = cleanWithStrays(repo, scanned, judged, print, strays);
     for (const kept of finished.kept) print(`kept ${kept.path}: ${kept.why}`);
-    if (nothing) print("Nothing finished to clear.");
+    // Only here: `--remove` is one worktree, and the background clean shares `cleanWithStrays`
+    // and never deletes a branch it did not remove.
+    const swept = sweepBuilderBranches(repo, judged, "delete");
+    for (const one of swept) print(one.text);
+    if (nothing && swept.length === 0) print("Nothing finished to clear.");
     return 0;
   } finally {
     lock?.close();

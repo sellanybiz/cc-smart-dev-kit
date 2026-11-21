@@ -50,6 +50,9 @@ export const REBUILDABLE: readonly RegExp[] = [
   /\.(?:tsbuildinfo|pyc|pyo)$/,
   /(?:^|\/)\.DS_Store$/,
   /(?:^|\/)Thumbs\.db$/,
+  // Next.js writes this file on every dev start and build, and its own header says not to
+  // edit it. A file only: a folder of that name is read, never taken whole.
+  /(?:^|\/)next-env\.d\.ts$/,
   // Package manager logs.
   /(?:^|\/)(?:npm-debug|yarn-debug|yarn-error|pnpm-debug|lerna-debug)\.log/,
   // Logs: a `logs/` folder and a `.log` file, at any depth. Only what git ignores is judged

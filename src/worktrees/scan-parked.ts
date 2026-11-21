@@ -28,7 +28,9 @@ import {
 } from "../hooks/git";
 import type { Env } from "../hooks/run";
 import { containersUsing, mountKeptWhy, programsInside } from "./machine-facts";
+import { worktreesFolder } from "./paths";
 import {
+  type DeleteOptions,
   forgottenLine,
   isParkedWorktree,
   type MachineFacts,
@@ -63,7 +65,7 @@ export interface ParkedPass {
 export function finishParked(
   repo: string,
   paths: readonly string[],
-  options: ScanOptions,
+  options: DeleteOptions,
   say: (line: string) => void,
 ): ParkedPass {
   const pass: ParkedPass = { kept: [], removed: [], said: [] };
@@ -140,7 +142,7 @@ export function strayParkedFolders(
   } catch {
     return [];
   }
-  const folders = new Set<string>([join(repo, ".claude", "worktrees")]);
+  const folders = new Set<string>([worktreesFolder(repo)]);
   for (const listed of [...all.slice(1), ...earlier.slice(1)]) folders.add(dirname(listed.path));
   const found: StrayFolder[] = [];
   for (const folder of folders) {
@@ -281,6 +283,8 @@ export function strayKeptWhy(stray: StrayFolder, machine: MachineFacts): null | 
         : containersUsing(stray.path, machine.containers),
     gitTooOld: null,
     idleMinutes: 0,
+    // A leftover folder is no worktree git lists, so no bisect or rebase runs in it.
+    inProgress: null,
     innerWorktree: null,
     locked: false,
     mergedBy: null,

@@ -57,7 +57,7 @@ Every hook runs in the same frame (`src/hooks/run.ts`), in this order:
    never means silent: a person must hear why.
 4. **Run.** An informational hook's error is one line on stderr and exit 0: its bug never
    stops work. A crash of `user-away`'s question-tool entry answers through its `onCrash`
-   (`guardCrash` in `specs.ts`): it asks about the call in its own domain, so a crash never lets
+   (`guardCrash` in `guard-crash.ts`): it asks about the call in its own domain, so a crash never lets
    a question tool through; a crash of `job-route` lets the line run as written.
 5. **Record an ask.** An answer that asks the person is appended to `guard-asks.jsonl` in the
    state folder (`src/hooks/ask-log.ts`): the time, the hook, the session, the tool and a
@@ -82,6 +82,42 @@ bun is one stderr line and exit 1, because a command must never report success w
 The frame is general on purpose: later hooks are new specs in it. **No hook turns an ask into a
 parked action any more**: while the person is away, `user-away` refuses the two question tools
 and leaves every permission dialog to Claude Code (§ While the person is away).
+
+### What a hook bundle carries
+
+Each hook is its own bundle (`plugin/dist/<name>.js`), and every run loads the whole file, so its
+size is part of the cost of every session event. A spec lives in its own module,
+`src/hooks/specs/<name>.ts`, and the entry imports only that one. `specs.ts` holds the lists
+(`HOOKS`, `GUARD_BUNDLES`, `MACHINE_WIDE_HOOKS`) and re-exports every spec for the code and tests
+that want them all; **an entry never imports it**, because it builds all the hooks at load.
+`guardCrash` has its own module (`guard-crash.ts`), so `user-away`'s spec can use it without a
+cycle through `specs.ts`.
+
+Before the split each hook bundle was about 585 KB and a run took about 32 ms. Now each bundle is
+266 to 357 KB and a run takes about 22 ms (`tier-view`, median of 40 runs on one machine). `entries.test.ts`
+builds every bundle `hooks.json` runs (the hooks with a spec, and `update-check` and
+`playwright-output`) into a temp folder and holds three proofs for them:
+
+- **A size budget** for each bundle (the measured size plus about a tenth). It catches an entry
+  that loads the whole list of hooks, which is about 585 KB. It can miss one extra spec: a small
+  spec adds less than the tenth the budget allows.
+- **An import walk** from each `src/entries/<name>.ts` (`Bun.Transpiler.scanImports`, following
+  relative paths): the files it reaches under `src/hooks/specs` must be exactly its own
+  `specs/<name>.ts`, and never `specs.ts`. It catches any extra spec, whatever its size. The two
+  bundles without a spec must reach none.
+- **The built file run as a subprocess**, with the two flags the shim gives a hook
+  (`--no-env-file` and the plugin's own `bunfig.toml`, `runBundle` in `src/testing/hooks.ts`).
+  A hook with a spec gets input that is not JSON: the run must exit as the hook says and its log
+  line (`CC_SMART_DEV_KIT_HOOK_LOG`) must name the hook itself, so an entry that runs another
+  hook's spec in place of its own, or a cycle that only shows in a built bundle, fails a test.
+  `update-check` and `playwright-output` log no name (they never enter the frame), so each gets
+  its own proof that the built file is wired: the session-start record it writes, and the
+  screenshot path it rewrites.
+
+What is left is mostly the frame's own load: `run.ts` reads the project's file, and that pulls
+in zod and the config schemas (about 235 KB of the bundle and about 17 ms of a run of about
+22 ms, against about 4 ms for an empty bun script). Making the frame lighter is a separate
+piece of work.
 
 ### Worktrees: Claude Code's own
 

@@ -29,6 +29,7 @@ import { ownPidNamespace, processStartTime } from "../setup/lock";
 import { parseGitVersion } from "../workflow/review-cover";
 import { COMMIT_SHA } from "../workflow/reviews";
 import { agentFinished, ownsClaudeLock, parentOf, parseClaudeLock } from "./agent-lock";
+import { branchInProgressWhy, inProgressWhy } from "./in-progress";
 import {
   CLAUDE_NAME,
   type ContainerMounts,
@@ -42,6 +43,7 @@ import {
   type RunningProgram,
   runningPrograms,
 } from "./machine-facts";
+import { worktreesFolder } from "./paths";
 import {
   type MergedBy,
   MIN_MERGE_TREE_GIT,
@@ -106,7 +108,7 @@ function innerWorktreeOf(worktree: string, all: ListedWorktree[]): null | string
     (other) => isInside(other.path, worktree) && !isInside(worktree, other.path),
   );
   if (listed !== undefined) return listed.path;
-  const claudeOwn = join(worktree, ".claude", "worktrees");
+  const claudeOwn = worktreesFolder(worktree);
   let entries: string[];
   try {
     entries = readdirSync(claudeOwn);
@@ -157,9 +159,35 @@ export interface ScannedWorktree {
   state: "gone" | "main" | Verdict;
 }
 
+/**
+ * The branches the open tasks of one project record, each with the lowest task number that does;
+ * or why the task store cannot be read. No store at all is no task: nothing records a branch.
+ */
+export type RecordedBranches =
+  | { ok: true; byBranch: ReadonlyMap<string, number> }
+  | { ok: false; why: string };
+
+/**
+ * Why a branch must stay, when a task records it or the store cannot say: a phase binds its
+ * builder's branch (`branch`), and cannot close once the branch is gone (`refuseEmptyHandBack`).
+ * Null when nothing keeps it. The one rule of every branch delete (`tryDeleteBranch`).
+ */
+export function recordedKeepWhy(branch: string, recorded: RecordedBranches): string | null {
+  if (!recorded.ok) {
+    return `the task store cannot be read (${recorded.why}), so nothing proves no task records it`;
+  }
+  const number = recorded.byBranch.get(branch);
+  return number === undefined ? null : `task #${String(number)} still records it`;
+}
+
 export interface ScanOptions {
   /** The base branch work must be on: `worktrees.base`, or the repo's default branch. */
   base: string;
+  /**
+   * The branches the open tasks record, read once per run (`recordedBranches`, `branch-sweep.ts`).
+   * A scan alone does not need it; every delete does (`DeleteOptions`), and keeps such a branch.
+   */
+  recorded?: RecordedBranches;
   /**
    * The ref the commits are judged against, and how a message calls it. Without it the ref is
    * `origin/<base>`, as `worktrees` judges.
@@ -190,6 +218,12 @@ export interface ScanOptions {
     pidNamespace?: string | null;
   };
 }
+
+/**
+ * What a delete needs beyond a scan: the branches the open tasks record, which it keeps. Required,
+ * so no delete path can leave the guard out.
+ */
+export type DeleteOptions = ScanOptions & { recorded: RecordedBranches };
 
 /** How long a `gh` call may take: the same 10 s the guards give one read-only call. */
 const GH_TIMEOUT_MS = 10_000;
@@ -608,6 +642,9 @@ function judgeOne(
     (one) => one.pid !== owner?.claudePid && isInside(realPath(one.cwd), realPath(listed.path)),
   );
   // A folder a removal moved aside, standing on a branch (D62): the branch holds its commits.
+  // This is the commits' test only; the removal's own deletions are judged by the name alone
+  // (below, in `contentsOf`'s call). Never one test for both: a detached folder with commits
+  // of its own would be removed.
   const parked = isParkedWorktree(listed.path) && listed.branch !== null;
   if (parked) {
     const mountWhy = mountKeptWhy(listed.path, look.mounts);
@@ -629,6 +666,7 @@ function judgeOne(
     gitTooOld: look.replayer.tooOld,
     // The hook's own rule: unknown counts as just now, which keeps it.
     idleMinutes: idle ?? 0,
+    inProgress: inProgressWhy(listed.path, look.env),
     innerWorktree: innerWorktreeOf(listed.path, all),
     locked: listed.locked && !releasableClaudeLock(listed, look),
     // A few more git calls (and one `gh` call) per worktree: only worth it for one with
@@ -643,7 +681,10 @@ function judgeOne(
   };
   return verdict(
     facts,
-    () => contentsOf(listed.path, repo, look.ref, look.env, parked),
+    // The removal's own deletions are known by the folder's name alone, as `removeWorktree`
+    // reads them: a detached folder holds no commit a branch keeps (so `parked` is false for it),
+    // yet a removal stopped halfway in it too.
+    () => contentsOf(listed.path, repo, look.ref, look.env, isParkedWorktree(listed.path)),
     look.idleLimit,
   );
 }
@@ -679,6 +720,29 @@ export function machineFactsOf(options: ScanOptions): MachineFacts & {
   };
 }
 
+/**
+ * The ref a scan judges commits against, and how a message calls it: `against`, else
+ * `origin/<base>` (labelled with the bare base name). One home for the scan and the branch sweep.
+ */
+export function baseRefOf(options: Pick<ScanOptions, "against" | "base">): {
+  label: string;
+  ref: string;
+} {
+  return {
+    label: options.against?.label ?? options.base,
+    ref: options.against?.ref ?? `refs/remotes/origin/${options.base}`,
+  };
+}
+
+/**
+ * The words for the ref a branch was compared with: `against`'s label, else `origin/<base>`. The
+ * branch lines use these, since a branch is compared with origin's copy of the base, not a local
+ * branch of the same name (`baseRefOf`'s label is the bare name).
+ */
+export function comparedWith(options: Pick<ScanOptions, "against" | "base">): string {
+  return options.against?.label ?? `origin/${options.base}`;
+}
+
 /** The machine's facts, read once for a whole scan (or one removal). */
 function lookAt(repo: string, options: ScanOptions): MachineLook {
   return {
@@ -691,19 +755,12 @@ function lookAt(repo: string, options: ScanOptions): MachineLook {
     ownerMode: options.ownerMode === true,
     env: options.env,
     idleLimit: options.idleLimit,
-    label: options.against?.label ?? options.base,
+    ...baseRefOf(options),
     now: options.now ?? Date.now(),
-    ref: options.against?.ref ?? `refs/remotes/origin/${options.base}`,
     replayer: replayerFor(repo, options.env),
   };
 }
 
-/**
- * Every worktree of the repo, judged: its commits against `against.ref`, or `origin/<base>`
- * without `against` — fetched fresh first (`fetchBase`).
- *
- * Throws when that ref is not known here: nothing can be judged against it.
- */
 function lockLine(listed: ListedWorktree, look: MachineLook, onBase = false): string {
   const reason = listed.lockReason;
   if (reason === undefined) return "locked with `git worktree lock` (locker cannot be proved gone)";
@@ -721,10 +778,15 @@ function lockLine(listed: ListedWorktree, look: MachineLook, onBase = false): st
   return `locked by live or unprovable Claude session ${lock.name}${onBase ? "; its work is on the base — that session leaves it with ExitWorktree (keep) and runs `worktrees --remove`, or it goes when that session ends" : "; its locker is not proved gone"}`;
 }
 
+/**
+ * Every worktree of the repo, judged: its commits against `against.ref`, or `origin/<base>`
+ * without `against` — fetched fresh first (`fetchBase`).
+ *
+ * Throws when that ref is not known here: nothing can be judged against it.
+ */
 export function scanWorktrees(repo: string, options: ScanOptions): ScannedWorktree[] {
   const { env } = options;
-  const againstRef = options.against?.ref ?? `refs/remotes/origin/${options.base}`;
-  const againstLabel = options.against?.label ?? options.base;
+  const { label: againstLabel, ref: againstRef } = baseRefOf(options);
   if (!runGit(repo, ["rev-parse", "--verify", "--quiet", againstRef], env).ok) {
     throw new Error(
       options.against === undefined
@@ -778,8 +840,9 @@ export interface Removal {
 }
 
 /**
- * Removes a worktree that is finished, then its branch (by `deleteBranch`, which says whether
- * it went). git itself refuses a worktree with modified or untracked files.
+ * Removes a worktree that is finished, then its branch when the base holds its work and no open
+ * task records it (`tryDeleteBranch`). git itself refuses a worktree with modified or untracked
+ * files.
  *
  * **The verdict is taken again here**, on the folder as it is now, with the same options the
  * scan ran with: the scan a person read may be minutes old, and in between the session in
@@ -794,10 +857,7 @@ export interface Removal {
 export function removeWorktree(
   repo: string,
   listed: ListedWorktree,
-  options: ScanOptions & {
-    /** How its branch goes once the folder did: the default keeps a branch off the base. */
-    deleteBranch?: (repo: string, branch: string) => string;
-  },
+  options: DeleteOptions,
 ): Removal {
   // The listing is read again too: a worktree's head moves when a session commits, and a
   // verdict on the head the scan saw would miss exactly that.
@@ -932,18 +992,21 @@ export function removeWorktree(
       : `removed ${listed.path}`,
   ];
   if (listed.branch !== null) {
-    if (options.deleteBranch !== undefined) {
-      said.push(options.deleteBranch(repo, listed.branch));
-    } else {
-      const outcome = tryDeleteBranch(repo, look.ref, look.label, listed.branch, options.env);
-      // The held wording is for one case only: the ref lacks the branch's work, and a live
-      // branch (named by the fresh verdict above) has it. git's own refusal keeps its words.
-      said.push(
-        outcome.kind === "not-on-ref" && fresh.heldBy !== undefined
-          ? `kept branch ${listed.branch}: its work is held by ${fresh.heldBy}, not yet on ${refName(fresh.heldBy, look.label, options.against !== undefined)}`
-          : branchOutcomeLine(listed.branch, look.label, outcome),
-      );
-    }
+    const outcome = tryDeleteBranch(
+      repo,
+      look.ref,
+      comparedWith(options),
+      listed.branch,
+      options.env,
+      options.recorded,
+    );
+    // The held wording is for one case only: the ref lacks the branch's work, and a live
+    // branch (named by the fresh verdict above) has it. git's own refusal keeps its words.
+    said.push(
+      outcome.kind === "not-on-ref" && fresh.heldBy !== undefined
+        ? `kept branch ${listed.branch}: its work is held by ${fresh.heldBy}, not yet on ${refName(fresh.heldBy, look.label, options.against !== undefined)}`
+        : branchOutcomeLine(listed.branch, comparedWith(options), outcome),
+    );
   }
   return { said, status: "removed" };
 }
@@ -952,8 +1015,9 @@ export function removeWorktree(
  * Deletes a branch only when `ref` holds its work, so nothing on it is lost: every commit by
  * ancestry, or the work under another sha (a rebase merge), or the work a squash merge left on
  * the base (merging the branch into the base changes nothing), or the work through a merged
- * pull request; `label` is how a message calls that ref. git refuses while a worktree — even
- * one whose folder is gone and not yet pruned — still has the branch checked out.
+ * pull request; `label` is how a message calls that ref. A branch is kept while a worktree — even
+ * one whose folder is gone and not yet pruned — has it checked out, bisects or rebases it, and
+ * while an open task records it (`recorded`).
  */
 export function deleteBranchOnRef(
   repo: string,
@@ -961,19 +1025,27 @@ export function deleteBranchOnRef(
   label: string,
   branch: string,
   env: Env,
+  recorded: RecordedBranches,
 ): string {
-  return branchOutcomeLine(branch, label, tryDeleteBranch(repo, ref, label, branch, env));
+  return branchOutcomeLine(branch, label, tryDeleteBranch(repo, ref, label, branch, env, recorded));
 }
 
-/** What `tryDeleteBranch` did: deleted it, found commits `ref` lacks, or met git's own refusal. */
+/**
+ * What `tryDeleteBranch` did: deleted it (`note`: a step after the delete that did not finish),
+ * kept it for a task that records it (`recorded`), found commits `ref` lacks, or met git's own
+ * refusal.
+ */
 export type BranchOutcome =
-  | { kind: "deleted" }
+  | { kind: "deleted"; note?: string }
+  | { kind: "recorded"; text: string }
   | { kind: "not-on-ref" }
   | { kind: "git-error"; text: string };
 
 /** The line a person reads for a branch's outcome. */
 export function branchOutcomeLine(branch: string, label: string, outcome: BranchOutcome): string {
-  if (outcome.kind === "deleted") return `deleted branch ${branch}`;
+  if (outcome.kind === "deleted") {
+    return `deleted branch ${branch}${outcome.note === undefined ? "" : ` (${outcome.note})`}`;
+  }
   if (outcome.kind === "not-on-ref") {
     return `kept branch ${branch}: it has commits that are not on ${label}`;
   }
@@ -989,35 +1061,154 @@ function refName(holder: string, label: string, customRef: boolean): string {
   return !customRef && holder === label ? `origin/${label}` : label;
 }
 
-/** `deleteBranchOnRef`'s decision, as data. */
+/**
+ * Does `ref` hold a branch's work? What `tryDeleteBranch` acts on, decided without acting. An
+ * `on-ref` answer carries the commit it judged (`sha`): the only one a delete may remove.
+ */
+export type BranchJudgement =
+  | { kind: "on-ref"; sha: string }
+  | { kind: "not-on-ref" }
+  | { kind: "git-error"; text: string };
+
+/**
+ * Is the work of `refs/heads/<branch>` on `ref`: every commit by ancestry, or the work under
+ * another sha, a squash merge or a merged pull request (`workOnBase`)? Changes nothing. The
+ * branch is read once and judged at that commit, so what is judged is what `deleteJudgedBranch`
+ * can delete.
+ */
+export function judgeBranchOnRef(
+  repo: string,
+  ref: string,
+  label: string,
+  branch: string,
+  env: Env,
+): BranchJudgement {
+  const head = runGit(repo, ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`], env);
+  const sha = head.ok ? head.out.trim() : "";
+  if (!COMMIT_SHA.test(sha)) {
+    return { kind: "git-error", text: head.err || `git could not read the branch ${branch}` };
+  }
+  const ahead = runGit(repo, ["rev-list", "--count", `${ref}..${sha}`], env);
+  if (!ahead.ok) {
+    return { kind: "git-error", text: ahead.err || `git could not compare it with ${label}` };
+  }
+  if (ahead.out === "0") return { kind: "on-ref", sha };
+  // The same answer the worktree's verdict gave, on the same branch: the branch goes only
+  // when its work is on the ref.
+  return workOnBase(repo, ref, sha, branch, env, replayerFor(repo, env)) !== null
+    ? { kind: "on-ref", sha }
+    : { kind: "not-on-ref" };
+}
+
+/**
+ * Why a worktree keeps a branch: it has it checked out, or is bisecting or rebasing it
+ * (`branchInProgressWhy`). Null when none does. `git branch -D` refuses both; `update-ref -d`
+ * looks at neither. The listing asks it too, so it says what `--clean` would do.
+ */
+export function usedByWorktree(repo: string, branch: string, env: Env): string | null {
+  let worktrees: ListedWorktree[];
+  try {
+    worktrees = listWorktrees(repo, env);
+  } catch (error) {
+    const why = error instanceof Error ? error.message : String(error);
+    return `${why}, so it is not proved that no worktree uses it`;
+  }
+  const checkedOut = worktrees.find((worktree) => worktree.branch === branch);
+  if (checkedOut !== undefined) return `a worktree has it checked out, at ${checkedOut.path}`;
+  for (const worktree of worktrees) {
+    const walking = branchInProgressWhy(worktree.path, branch, env);
+    if (walking !== null) return walking;
+  }
+  return null;
+}
+
+/**
+ * Takes the `[branch "<name>"]` section out of the repo's config, as `git branch -D` does and
+ * `update-ref -d` does not. A branch with no section is the usual case: git then says "no such
+ * section" (exit 128). Null when it is gone; else why it stays. Git words that message by the
+ * locale, so the call runs with `LC_ALL=C` and the match holds on every machine.
+ */
+function forgetBranchConfig(repo: string, branch: string, env: Env): string | null {
+  const removed = runGit(repo, ["config", "--remove-section", `branch.${branch}`], env, undefined, {
+    LC_ALL: "C",
+  });
+  if (removed.ok) return null;
+  if (removed.code === 128 && /no such section/i.test(removed.err)) return null;
+  return removed.err === "" ? `git config exited ${String(removed.code)}` : removed.err;
+}
+
+/**
+ * Deletes `refs/heads/<branch>` only while it is still at `sha`, the commit that was judged: the
+ * delete is refused for a branch that moved since, so work added after the judge is never lost.
+ * `update-ref -d` does not look at worktrees (`branch -D` does, but names no commit), so a branch
+ * a worktree has checked out, bisects or rebases is refused here first (`usedByWorktree`), and
+ * the branch's config section goes after it, as `branch -D` removes it. It takes `recorded` and
+ * keeps a branch an open task records, so no caller can delete one without the task records
+ * (`tryDeleteBranch` asks first as well, before it judges anything).
+ */
+export function deleteJudgedBranch(
+  repo: string,
+  branch: string,
+  sha: string,
+  env: Env,
+  recorded: RecordedBranches,
+): BranchOutcome {
+  const keep = recordedKeepWhy(branch, recorded);
+  if (keep !== null) return { kind: "recorded", text: keep };
+  const usedBy = usedByWorktree(repo, branch, env);
+  if (usedBy !== null) return { kind: "git-error", text: usedBy };
+  const deleted = runGit(repo, ["update-ref", "-d", `refs/heads/${branch}`, sha], env);
+  if (deleted.ok) {
+    const stays = forgetBranchConfig(repo, branch, env);
+    return stays === null
+      ? { kind: "deleted" }
+      : { kind: "deleted", note: `its [branch] config section stays: ${stays}` };
+  }
+  const now = runGit(repo, ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`], env);
+  return {
+    kind: "git-error",
+    text:
+      now.ok && now.out.trim() !== sha ? "it moved after it was judged, so it stays" : deleted.err,
+  };
+}
+
+/**
+ * `deleteBranchOnRef`'s decision, as data, and the one path of every branch delete: `--clean`,
+ * `--remove`, the background clean, the sweep. A branch an open task records stays (`recorded`),
+ * before anything is judged.
+ */
 export function tryDeleteBranch(
   repo: string,
   ref: string,
   label: string,
   branch: string,
   env: Env,
+  recorded: RecordedBranches,
 ): BranchOutcome {
-  const ahead = runGit(repo, ["rev-list", "--count", `${ref}..refs/heads/${branch}`], env);
-  if (!ahead.ok) {
-    return { kind: "git-error", text: ahead.err || `git could not compare it with ${label}` };
-  }
-  if (ahead.out !== "0") {
-    const head = runGit(repo, ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`], env);
-    const sha = head.ok ? head.out.trim() : "";
-    // The same answer the worktree's verdict gave, on the same branch: the branch goes only
-    // when its work is on the ref.
-    const elsewhere =
-      COMMIT_SHA.test(sha) &&
-      workOnBase(repo, ref, sha, branch, env, replayerFor(repo, env)) !== null;
-    if (!elsewhere) return { kind: "not-on-ref" };
-  }
-  const deleted = runGit(repo, ["branch", "-D", branch], env);
-  return deleted.ok ? { kind: "deleted" } : { kind: "git-error", text: deleted.err };
+  const keep = recordedKeepWhy(branch, recorded);
+  if (keep !== null) return { kind: "recorded", text: keep };
+  const judged = judgeBranchOnRef(repo, ref, label, branch, env);
+  return judged.kind === "on-ref"
+    ? deleteJudgedBranch(repo, branch, judged.sha, env, recorded)
+    : judged;
 }
 
 /** `deleteBranchOnRef` against `origin/<base>`: what `worktrees` asks. */
-export function deleteMergedBranch(repo: string, base: string, branch: string, env: Env): string {
-  return deleteBranchOnRef(repo, `refs/remotes/origin/${base}`, base, branch, env);
+export function deleteMergedBranch(
+  repo: string,
+  base: string,
+  branch: string,
+  env: Env,
+  recorded: RecordedBranches,
+): string {
+  return deleteBranchOnRef(
+    repo,
+    baseRefOf({ base }).ref,
+    comparedWith({ base }),
+    branch,
+    env,
+    recorded,
+  );
 }
 
 /** Forgets worktrees whose folder is gone. */

@@ -18,7 +18,7 @@ import { hookEnv, makeClone, makeRepo, writeClaudeFile } from "../testing/hooks"
 import { subprocessGuard } from "../testing/port-guard";
 import { git, tempDir } from "../testing/temp";
 import { PROCESS_TEST_TIMEOUT_MS } from "../testing/timeouts";
-import { runWorkflow, type WorkflowContext } from "./commands";
+import { runWorkflow, WORKFLOW_USAGE, type WorkflowContext } from "./commands";
 import { personalWorkflowFile } from "./resolve";
 import { MERGE_FILES_RULE, WORKFLOW_KEYS } from "./schema";
 import { writePersonalSetting, writeProjectSetting } from "./write";
@@ -1250,6 +1250,65 @@ describe("workflow merge-check", () => {
     ]);
   });
 
+  test("--asked is a known option: a pull request with it still asks when gh is not there", async () => {
+    const { repo, env } = branchWorld();
+    const run = context(repo, envWithoutGh(env));
+    expect(await runWorkflow(["merge-check", "7", "--asked"], run.context)).toBe(1);
+    expect(run.errors).toEqual([]);
+    expect(run.lines).toEqual([
+      "#7: asks — cc-smart-dev-kit could not check this merge: gh is not installed. Approve the merge yourself if it is right.",
+    ]);
+  });
+
+  test("several pull requests share one list of the open ones, and each pull request's commits are read once", async () => {
+    const { repo, env } = branchWorld();
+    // The policy the check reads is the one committed on origin/main: merging by itself is on.
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", {
+      ...SETTINGS,
+      workflow: { allowMerge: true, reviewBeforePush: false },
+    });
+    git(repo, "add", ".claude/cc-smart-dev-kit.json");
+    git(repo, "commit", "-q", "-m", "merge by itself");
+    git(repo, "update-ref", "refs/remotes/origin/main", "HEAD");
+    const bin = tempDir("fake-gh");
+    const log = join(bin, "calls.log");
+    const head = "a".repeat(40);
+    writeFileSync(
+      join(bin, "gh"),
+      [
+        "#!/bin/sh",
+        `echo "$*" >> "${log}"`,
+        'case "$1 $2" in',
+        `  "pr view") echo '{"baseRefName":"main","headRefName":"feat","headRefOid":"${head}","number":'"$3"'}' ;;`,
+        `  "repo view") echo '{"defaultBranchRef":{"name":"main"}}' ;;`,
+        `  "pr list") echo '[{"baseRefName":"main","headRefName":"other","headRefOid":"${"c".repeat(40)}","isCrossRepository":false,"number":9}]' ;;`,
+        `  "pr checks") echo '[{"bucket":"pass","name":"ci"}]' ;;`,
+        // Each head's own commits: the two share none, so neither is stacked.
+        `  api*) case "$2" in *compare/main...${head}*) printf "1\\n${head}\\n" ;; *) printf "1\\n${"c".repeat(40)}\\n" ;; esac ;;`,
+        "esac",
+        "",
+      ].join("\n"),
+      { mode: 0o755 },
+    );
+    const run = context(repo, { ...env, PATH: `${bin}:${env.PATH ?? ""}` });
+    expect(await runWorkflow(["merge-check", "7", "8"], run.context)).toBe(0);
+    expect(run.lines).toHaveLength(2);
+    const calls = readFileSync(log, "utf8").trim().split("\n");
+    expect(calls.filter((line) => line.startsWith("pr list --state open"))).toHaveLength(1);
+    // The head both pull requests share is read once, and #9's commits once.
+    expect(calls.filter((line) => line.startsWith("api "))).toHaveLength(2);
+  });
+
+  test("the usage text names --asked and says what it sets aside", () => {
+    expect(WORKFLOW_USAGE).toContain(
+      "merge-check [<pr>… | <pr> --asked | --branch <b> --base <base>]",
+    );
+    expect(WORKFLOW_USAGE).toContain("sets aside allowMerge and nothing else");
+    expect(WORKFLOW_USAGE).toContain("the verdict says the merge rests on the person's yes");
+    expect(WORKFLOW_USAGE).toContain("--asked takes exactly one pull request");
+    expect(WORKFLOW_USAGE).toContain("not stacked on another open pull request");
+  });
+
   test("the usage mistakes: a pair of flags, numbers, or both refused", async () => {
     const { repo, env } = branchWorld();
     for (const [argv, why] of [
@@ -1261,6 +1320,22 @@ describe("workflow merge-check", () => {
       ],
       [["merge-check", "fix/login"], "Not a pull request number: fix/login"],
       [["merge-check", "7", "--since", "yesterday"], "Unknown option: --since"],
+      [
+        ["merge-check", "--asked"],
+        "merge-check needs a pull request number, or --branch with --base",
+      ],
+      [
+        ["merge-check", "7", "8", "--asked"],
+        "--asked is one person's yes to one merge: give it exactly one pull request, not 2",
+      ],
+      [
+        ["merge-check", "--asked", "7", "7"],
+        "--asked is one person's yes to one merge: give it exactly one pull request, not 2",
+      ],
+      [
+        ["merge-check", "--branch", "feat", "--base", "main", "--asked"],
+        "--asked is for a pull request: a local branch has no allowMerge to set aside",
+      ],
     ]) {
       const run = context(repo, env);
       expect(await runWorkflow(argv as string[], run.context)).toBe(2);

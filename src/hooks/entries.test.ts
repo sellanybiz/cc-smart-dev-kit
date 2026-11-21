@@ -13,10 +13,16 @@ import {
   readFileSync,
   writeFileSync,
 } from "node:fs";
-import { join } from "node:path";
+import { dirname, join, relative, sep } from "node:path";
+import { buildEntry, ENTRIES_DIR } from "../../scripts/build-entry";
+import { cliPaths } from "../cli/paths";
+import { recordMcpServer } from "../mcp/records";
 import { RESOLVE_GIT_TIMEOUT_MS } from "../project/resolve";
-import { hookEnv, makeRepo, runEntry, runHook, writeClaudeFile } from "../testing/hooks";
+import { bunConfigArg } from "../setup/bun-config";
+import { hookEnv, makeRepo, runBundle, runEntry, runHook, writeClaudeFile } from "../testing/hooks";
 import { tempDir } from "../testing/temp";
+import { optOutDetail } from "../update/background";
+import { readLastCheck, updateFiles } from "../update/state";
 import { GH_TIMEOUT_MS } from "../workflow/merge-check";
 import { GUARD_BUDGET_MS, SHORT_GUARD_BUDGET_MS } from "./budget";
 import { GUARD_GIT_TIMEOUT_MS } from "./git";
@@ -233,6 +239,18 @@ esac
     expect([...bundles].sort()).toEqual([...HOOKS.map((spec) => spec.name), ...USER_HOOKS].sort());
   });
 
+  test("the hooks rule's paths: list holds the source entry of every bundle hooks.json runs", () => {
+    // The rule loads itself when a file in its `paths:` list is touched, so an entry missing from
+    // the list would be edited with none of the hook contract in front of the editor.
+    const rule = readFileSync(join(ROOT, ".claude", "rules", "hooks.md"), "utf8");
+    const frontmatter = rule.split("\n---\n")[0] ?? "";
+    const listed = [...frontmatter.matchAll(/^\s+-\s+"([^"]+)"\s*$/gm)].map((match) => match[1]);
+    const missing = [...new Set(wired.map(({ handler }) => bundleOf(handler)))]
+      .map((bundle) => `src/entries/${bundle}.ts`)
+      .filter((entry) => !listed.includes(entry));
+    expect(missing).toEqual([]);
+  });
+
   test("no worktree hook: a plugin WorktreeCreate would replace Claude Code's worktrees everywhere", () => {
     // `WorktreeCreate` and `WorktreeRemove` are never wired: they would replace Claude Code's
     // own worktrees in every project. A `SubagentStop` hook is allowed only when it touches no
@@ -408,5 +426,161 @@ describe("the entries, run as Claude Code runs them", () => {
 
   test("no plugin hook exits 1 on a bad input: a bug never stops work", () => {
     expect(HOOKS.filter((spec) => spec.crashExitCode !== undefined)).toEqual([]);
+  });
+});
+
+describe("the hook bundles, built as Claude Code runs them", () => {
+  /**
+   * Builds one hook's entry the way `scripts/build.ts` does, into a temp folder (never
+   * `plugin/dist`, which is the committed build), and returns the file `hooks.json` would run.
+   * A temp folder lives for one test, so each test builds its own.
+   */
+  async function built(name: string): Promise<string> {
+    const dist = tempDir("hook-bundle");
+    await buildEntry(join(ENTRIES_DIR, `${name}.ts`), dist);
+    return join(dist, `${name}.js`);
+  }
+
+  /** Every bundle `hooks.json` runs: the hooks with a spec, and the `USER_HOOKS` without one. */
+  const BUNDLES = [...HOOKS.map((spec) => spec.name), ...USER_HOOKS];
+
+  /**
+   * The most bytes each bundle may have, written by hand: the measured build (bun 1.4.4, one
+   * entry built alone) plus about a tenth. Every hook bundle was about 585 KB when each entry
+   * loaded `specs.ts`, which builds every hook; one that imports its own spec is 266 to 357 KB.
+   * So the budget catches a bundle that loads the whole list. It can miss one extra spec: a small
+   * one adds less than the tenth the budget allows. The import walk below catches any extra
+   * spec, and the log-name test catches a swapped one. A hook that
+   * grows on purpose raises its own number here, with its reason in the commit.
+   */
+  const BUNDLE_BUDGET_BYTES: Record<string, number> = {
+    "after-merge": 360_000,
+    "agent-usage": 300_000,
+    "builder-finish": 320_000,
+    "fable-session": 330_000,
+    "job-route": 390_000,
+    "keep-going": 350_000,
+    // 10 KB: it imports no spec and no frame, only the hook's own few modules.
+    "playwright-output": 12_000,
+    "review-record": 330_000,
+    "session-name": 300_000,
+    "subagent-background": 310_000,
+    "task-start": 330_000,
+    "tier-view": 330_000,
+    "update-check": 355_000,
+    "user-away": 330_000,
+    "verify-gate": 310_000,
+    "worktree-leftovers": 320_000,
+  };
+
+  test("every bundle hooks.json runs has a size budget, and no budget is left for one that is gone", () => {
+    expect(Object.keys(BUNDLE_BUDGET_BYTES).sort()).toEqual([...BUNDLES].sort());
+  });
+
+  test.each(BUNDLES)("%s: the built bundle stays inside its size budget", async (name) => {
+    const size = Bun.file(await built(name)).size;
+    expect(size).toBeLessThanOrEqual(BUNDLE_BUDGET_BYTES[name] ?? 0);
+  });
+
+  /**
+   * Every file `entry` loads, found from its source: its imports, and theirs, through relative
+   * paths only (a package is not ours to walk). Paths are relative to the repo root.
+   */
+  function reachableFrom(entry: string): Set<string> {
+    const transpiler = new Bun.Transpiler({ loader: "ts" });
+    const seen = new Set<string>();
+    const pending = [entry];
+    for (let file = pending.pop(); file !== undefined; file = pending.pop()) {
+      if (seen.has(file)) continue;
+      seen.add(file);
+      for (const { path } of transpiler.scanImports(readFileSync(file, "utf8"))) {
+        if (!path.startsWith(".")) continue;
+        const base = join(dirname(file), path);
+        const found = [`${base}.ts`, join(base, "index.ts")].find((one) => existsSync(one));
+        if (found !== undefined) pending.push(found);
+      }
+    }
+    return new Set([...seen].map((file) => relative(ROOT, file).split(sep).join("/")));
+  }
+
+  test.each(BUNDLES)("%s: its entry reaches only its own hook spec, never specs.ts", (name) => {
+    const specFiles = [...reachableFrom(join(ENTRIES_DIR, `${name}.ts`))]
+      .filter((file) => file.startsWith("src/hooks/specs"))
+      .sort();
+    // A `USER_HOOKS` bundle has no spec and never enters the frame: it reaches none.
+    const own = USER_HOOKS.includes(name) ? [] : [`src/hooks/specs/${name}.ts`];
+    expect(specFiles).toEqual(own);
+  });
+
+  test("the subprocess gets the flags the shim gives a hook, so a folder's .env and bunfig.toml stay out", () => {
+    const script = join(tempDir("bundle-flags"), "flags.js");
+    writeFileSync(script, "console.log(JSON.stringify(process.execArgv));");
+    const run = runBundle(script, "", hookEnv());
+    expect(run.exitCode).toBe(0);
+    expect(JSON.parse(run.stdout).slice(0, 2)).toEqual([
+      "--no-env-file",
+      bunConfigArg(join(ROOT, "plugin")),
+    ]);
+  });
+
+  test.each(HOOKS.map((spec) => [spec.name, spec.crashExitCode ?? 0] as const))(
+    "%s: the built bundle runs as a subprocess, and its log line names this hook",
+    async (name, exitCode) => {
+      // The log line is the proof that the entry wired its own spec: an entry that imports
+      // another hook's spec type-checks, and runs, and logs the other name.
+      const log = join(tempDir("bundle-log"), "hooks.log");
+      const run = runBundle(await built(name), "not json", {
+        ...hookEnv(),
+        [HOOK_LOG_ENV]: log,
+      });
+      expect(run.exitCode).toBe(exitCode);
+      const logged = readFileSync(log, "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line));
+      expect(logged.map((line) => line.hook)).toEqual([name]);
+    },
+  );
+
+  // The two `USER_HOOKS` bundles have no spec and never enter the frame, so they log no name.
+  // Each one's own proof that the built file is wired: the answer only its own code gives.
+  test("playwright-output: the built bundle puts a named screenshot in the browser's output folder", async () => {
+    const env = hookEnv();
+    const paths = cliPaths(env);
+    const server = JSON.stringify({ args: ["browser", "mcp"], command: "/l" });
+    recordMcpServer(paths.stateDir, "playwright", server, "then");
+    mkdirSync(dirname(paths.userConfigFile), { recursive: true });
+    writeFileSync(
+      paths.userConfigFile,
+      JSON.stringify({ mcpServers: { playwright: JSON.parse(server) } }),
+    );
+    const run = runBundle(
+      await built("playwright-output"),
+      JSON.stringify({
+        hook_event_name: "PreToolUse",
+        tool_name: "mcp__playwright__browser_take_screenshot",
+        tool_input: { filename: "check.png" },
+      }),
+      env,
+    );
+    expect(run.exitCode).toBe(0);
+    expect(run.stderr).toBe("");
+    expect(JSON.parse(run.stdout).hookSpecificOutput.updatedInput).toEqual({
+      filename: join(paths.browserOutputDir, "check.png"),
+    });
+  });
+
+  test("update-check: the built bundle answers a session start, and records the switch that holds updates", async () => {
+    // DISABLE_AUTOUPDATER keeps the check from starting anything: the hook records why and ends.
+    const env = { ...hookEnv(), DISABLE_AUTOUPDATER: "1" };
+    const run = runBundle(
+      await built("update-check"),
+      JSON.stringify({ hook_event_name: "SessionStart", source: "startup" }),
+      env,
+    );
+    expect(run).toEqual({ exitCode: 0, stdout: "", stderr: "" });
+    const last = readLastCheck(updateFiles(cliPaths(env).stateDir));
+    expect(last?.result).toBe("skipped");
+    expect(last?.detail).toBe(optOutDetail("DISABLE_AUTOUPDATER"));
   });
 });

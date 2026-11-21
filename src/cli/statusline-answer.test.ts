@@ -66,9 +66,8 @@ it("both commands read their own history identity only on the gateway", async ()
   try {
     await runStatusline(
       paths,
-      async () => JSON.stringify({ ...input, session_id: "s-1" }),
+      async () => JSON.stringify({ ...input, cwd: home, session_id: "s-1" }),
       Date.now(),
-      undefined,
       on,
     );
     await runSubagentStatusline(
@@ -82,9 +81,8 @@ it("both commands read their own history identity only on the gateway", async ()
     );
     await runStatusline(
       paths,
-      async () => JSON.stringify({ ...input, session_id: "s-1" }),
+      async () => JSON.stringify({ ...input, cwd: home, session_id: "s-1" }),
       Date.now(),
-      undefined,
       { ANTHROPIC_BASE_URL: "https://api.anthropic.com" },
     );
   } finally {
@@ -132,9 +130,8 @@ it("plain Claude supersedes a backend in both command rows", async () => {
   try {
     await runStatusline(
       paths,
-      async () => JSON.stringify({ ...input, session_id: "s-1" }),
+      async () => JSON.stringify({ ...input, cwd: home, session_id: "s-1" }),
       Date.now(),
-      undefined,
       env,
     );
     await runSubagentStatusline(
@@ -178,6 +175,7 @@ it("an unset gateway URL never pins backend effort in a direct session", async (
     const read = async () =>
       JSON.stringify({
         ...input,
+        cwd: home,
         effort: { level: "low" },
         context_window: {
           context_window_size: 200000,
@@ -189,10 +187,10 @@ it("an unset gateway URL never pins backend effort in a direct session", async (
           },
         },
       });
-    await runStatusline(paths, read, Date.now(), undefined, {
+    await runStatusline(paths, read, Date.now(), {
       ANTHROPIC_BASE_URL: "http://127.0.0.1:47812",
     });
-    await runStatusline(paths, read, Date.now(), undefined, {});
+    await runStatusline(paths, read, Date.now(), {});
   } finally {
     console.log = log;
   }
@@ -269,9 +267,8 @@ it("gateway off never accesses the history path", async () => {
   try {
     await runStatusline(
       paths,
-      async () => JSON.stringify({ ...input, session_id: "s-1" }),
+      async () => JSON.stringify({ ...input, cwd: home, session_id: "s-1" }),
       Date.now(),
-      undefined,
       { ANTHROPIC_BASE_URL: "https://api.anthropic.com" },
     );
     await runSubagentStatusline(

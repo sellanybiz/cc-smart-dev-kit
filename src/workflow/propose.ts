@@ -51,6 +51,7 @@ import {
   locateCheckout,
   readCommittedConfig,
 } from "../project/resolve";
+import { WORKTREES_GITIGNORE_ENTRY, worktreeBranch, worktreePath } from "../worktrees/paths";
 import { GH_TIMEOUT_MS, type GhRunner, ghMissing, spawnGh } from "./merge-check";
 import { type ResolvedWorkflow, resolvedValueOf, resolveWorkflow } from "./resolve";
 import { isProjectKey, PERSONAL_ONLY_REASONS, showValue, type WorkflowKey } from "./schema";
@@ -100,7 +101,7 @@ export const PROPOSE_WORST_CASE_MS =
  * have stopped anywhere, so the line says where to look.
  */
 export function proposeTimeoutLine(setting: string): string {
-  return `workflow propose did not answer in time, so it may have left a worktree and a branch behind (the folder .claude/worktrees/workflow-${setting.replace(/[^A-Za-z0-9]+/g, "-")}-…) or opened the pull request: look at the project's pull requests and at \`git worktree list\` before running it again.`;
+  return `workflow propose did not answer in time, so it may have left a worktree and a branch behind (the folder ${WORKTREES_GITIGNORE_ENTRY}workflow-${setting.replace(/[^A-Za-z0-9]+/g, "-")}-…) or opened the pull request: look at the project's pull requests and at \`git worktree list\` before running it again.`;
 }
 
 /** How many names a taken branch may push the new one to before the command gives up. */
@@ -197,9 +198,9 @@ interface Place {
 
 function placeOf(repo: string, name: string): Place {
   return {
-    branch: `worktree-${name}`,
+    branch: worktreeBranch(name),
     name,
-    worktree: join(repo, ".claude", "worktrees", name),
+    worktree: worktreePath(repo, name),
   };
 }
 
@@ -241,7 +242,7 @@ function placeFree(repo: string, place: Place, env: Env, taken: ReadonlySet<stri
 
 /** The first free place from `wanted` on: the same day's second change is `-2`, then `-3`. */
 function freePlace(repo: string, wanted: string, env: Env): Place {
-  const taken = remoteBranches(repo, `worktree-${wanted}`, env);
+  const taken = remoteBranches(repo, worktreeBranch(wanted), env);
   const first = placeOf(repo, wanted);
   if (placeFree(repo, first, env, taken)) return first;
   for (let count = 2; count <= NAME_TRIES; count += 1) {
