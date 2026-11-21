@@ -26070,7 +26070,7 @@ function stackHolds(git, onDefault, { parent, child, grandparent, start, given }
   const parentStart = parent.base === null ? null : commitOf(git, parent.base);
   if (parentStart === null)
     return gap("parent-base");
-  const fences = [onDefault, parentStart];
+  const fences = [onDefault];
   if (grandparent !== null && grandparent.branch !== null) {
     const chain = branchTip(git, grandparent.branch);
     if (chain === null)
@@ -26087,8 +26087,15 @@ function stackHolds(git, onDefault, { parent, child, grandparent, start, given }
     return gap("start-lacks-parent");
   if (!forks.ok || forks.out === "")
     return gap("git");
+  const own = git(["rev-list", "--first-parent", `${parentStart}..${tip}`]);
+  if (!own.ok)
+    return gap("git");
+  const line = new Set(own.out.split(`
+`));
   for (const fork of forks.out.split(`
 `)) {
+    if (!line.has(fork))
+      return gap("start-lacks-parent");
     for (const fence of fences) {
       const under = isAncestor(git, fork, fence);
       if (under === null)

@@ -36058,7 +36058,7 @@ function stackHolds(git, onDefault, { parent, child, grandparent, start, given }
   const parentStart = parent.base === null ? null : commitOf3(git, parent.base);
   if (parentStart === null)
     return gap("parent-base");
-  const fences = [onDefault, parentStart];
+  const fences = [onDefault];
   if (grandparent !== null && grandparent.branch !== null) {
     const chain = branchTip(git, grandparent.branch);
     if (chain === null)
@@ -36075,8 +36075,15 @@ function stackHolds(git, onDefault, { parent, child, grandparent, start, given }
     return gap("start-lacks-parent");
   if (!forks.ok || forks.out === "")
     return gap("git");
+  const own = git(["rev-list", "--first-parent", `${parentStart}..${tip}`]);
+  if (!own.ok)
+    return gap("git");
+  const line = new Set(own.out.split(`
+`));
   for (const fork of forks.out.split(`
 `)) {
+    if (!line.has(fork))
+      return gap("start-lacks-parent");
     for (const fence of fences) {
       const under = isAncestor3(git, fork, fence);
       if (under === null)
@@ -57843,10 +57850,10 @@ function readiness(world, entry, held, byId, base, proved, stacks) {
       parent = other.plan;
   }
   if (clashes.length)
-    return line("overlaps", `overlaps ${clashes.join("; ")}`, parent === null ? null : unprovedStackFix(plan, parent, stacks.get(plan.id)));
+    return line("overlaps", `overlaps ${clashes.join("; ")}`, parent === null ? null : unprovedStackFix(plan, parent, stacks.get(plan.id), byId));
   return line("ready", "ready: nothing blocks it and no held plan shares its files");
 }
-function unprovedStackFix(plan, parent, judged) {
+function unprovedStackFix(plan, parent, judged, byId) {
   const name = parent.plan ?? parent.subject;
   const slug = plan.plan ?? plan.subject;
   const counts = `the stack on ${name} counts only`;
@@ -57862,9 +57869,12 @@ function unprovedStackFix(plan, parent, judged) {
   if (gap === "parent-empty")
     return `${counts} once ${name} has work of its own: wait for its first commit on ${parent.branch}`;
   if (gap === "parent-base")
-    return `${counts} once ${name} records where it started: task_update #${parent.number} with base set to the commit its branch started from`;
-  if (gap === "chain-branch")
-    return `${counts} once the branch of ${parent.stackedOn ?? "the plan it is stacked on"}, which ${name} is stacked on, is in this repository: fetch it`;
+    return `${counts} once ${name} records where it started: task_update #${parent.number} with base set to the commit you created its branch from (\`git rev-parse HEAD\` at that moment), not its fork from the default branch`;
+  if (gap === "chain-branch") {
+    const above = parent.stackedOn ?? "the plan it is stacked on";
+    const chain = [...byId.values()].find((t) => t.kind === "plan" && t.plan === parent.stackedOn);
+    return chain !== undefined && !parentHolds(chain) ? `${counts} once ${name} no longer names ${above}, which holds no files and whose branch is gone: clear #${parent.number}'s stack on ${above} (task_update stacked_on null)` : `${counts} once the branch of ${above}, which ${name} is stacked on, is in this repository: fetch it`;
+  }
   if (gap === "own-branch" || gap === "start-off-branch")
     return `${counts} when this plan records its own branch, built on ${name}'s work: task_update #${plan.number} branch=<branch built on ${name}>`;
   if (gap === "git")
