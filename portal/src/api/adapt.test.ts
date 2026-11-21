@@ -18,7 +18,7 @@ import {
   proposeValueText,
   workflowValueText,
 } from "./adapt";
-import { GUARD_PAGE_SIZE, guardQuery, liveClient } from "./client";
+import { GUARD_PAGE_SIZE, guardQuery, liveClient, mockClient } from "./client";
 import { CSRF_HEADER, getJson, PortalRequestError, postAction } from "./http";
 import type { SettingsRow } from "./types";
 import type {
@@ -683,4 +683,13 @@ test("the Overview: the router's facts, the chains, and the plan window", () => 
   expect(() =>
     overviewOf({ ...answer, configured: false, error: "the gateway is not set up" }),
   ).toThrow(NotSetUpError);
+});
+
+test("the five-hour mock state draws the 5-hour usage window alone", async () => {
+  const normal = await mockClient("normal").overview();
+  expect(normal.fiveHour?.percent).toBe(61);
+  expect(normal.sevenDay?.percent).toBe(38);
+  const fiveHour = await mockClient("five-hour").overview();
+  expect(fiveHour.fiveHour?.percent).toBe(61);
+  expect(fiveHour.sevenDay).toBe(null);
 });

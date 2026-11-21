@@ -229,7 +229,7 @@ describe("statusline", () => {
     expect(statuslineText(input(85, 90), EMPTY, NOW, "UTC", 95)).toBe("Opus 5.5 · 5h 85% · 7d 90%");
   });
 
-  it("D54: records the 5-hour window it read, so the opus guard can read it back", async () => {
+  it("D54: records the 5-hour window it read, so the portal's Overview can read it back", async () => {
     const home = tempDir("home");
     const paths = cliPaths({ HOME: home });
     mkdirSync(paths.stateDir, { recursive: true });

@@ -70,7 +70,7 @@ test("the plan card shows one labelled row for each window the status line recor
   expect(both).toContain('max="100" value="33"');
   expect(both).toContain("Resets in 2 h 7 min");
   // More than a day away, a clock time alone would not say which day: the span says it.
-  expect(both).toContain("Resets in 93 h<");
+  expect(both).toContain("Resets in 3 d 21 h<");
   expect(both).toContain("From the status line");
   expect(both).not.toContain("written nowhere");
   // The page policy forbids a style attribute: the bar's width is an SVG attribute.

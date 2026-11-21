@@ -8,7 +8,7 @@
  * - **mock**: `?mock=<state>` in the address, or `next dev` (no server behind it). It answers
  *   in the same shapes from `mock.ts`, sends nothing, and the header says "Mock data". The
  *   `?mock=` words show each page's other states: `loading`, `error`, `empty`, `no-gateway`,
- *   `reconnecting`.
+ *   `reconnecting`, and `five-hour` (a status line before 2.2.0: the 5-hour usage window alone).
  */
 
 import * as adapt from "./adapt";
@@ -102,11 +102,19 @@ export class GatewayNotSetUpError extends Error {
   override name = "GatewayNotSetUpError";
 }
 
-export type MockScenario = "empty" | "error" | "loading" | "no-gateway" | "normal" | "reconnecting";
+export type MockScenario =
+  | "empty"
+  | "error"
+  | "five-hour"
+  | "loading"
+  | "no-gateway"
+  | "normal"
+  | "reconnecting";
 
 const SCENARIOS: readonly MockScenario[] = [
   "empty",
   "error",
+  "five-hour",
   "loading",
   "no-gateway",
   "normal",
@@ -148,7 +156,11 @@ export function mockClient(scenario: MockScenario): PortalClient {
     kind: "mock",
     facts: () =>
       answer(() => (scenario === "no-gateway" ? { ...data.facts, router: null } : data.facts)),
-    overview: () => answer(() => data.overview, true),
+    overview: () =>
+      answer(
+        () => (scenario === "five-hour" ? { ...data.overview, sevenDay: null } : data.overview),
+        true,
+      ),
     history: (query) => answer(() => data.history(query), true),
     historyKeys: () => answer(() => data.keys, true),
     historyRate: () => answer(() => data.historyRate, true),

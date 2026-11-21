@@ -17,6 +17,7 @@ import { columnsFor, DataTable, PortalTable } from "@/components/data-table";
 import { FilterBar } from "@/components/filter-bar";
 import { HistoryChart } from "@/components/history-chart";
 import { type HistoryState, useHistoryState, useSessionNames } from "@/components/history-state";
+import { Meter } from "@/components/meter";
 import { METRICS } from "@/components/metrics";
 import { RequestsTable } from "@/components/requests-table";
 import { AppLink } from "@/components/router";
@@ -220,23 +221,17 @@ function resetWords(resetsAt: null | number, now: number): string {
     : `Resets ${until(resetsAt, now)}, at ${clockTime(resetsAt)}`;
 }
 
-/** One window: its share, a bar, and when it resets. The bar's width is an SVG attribute, never a style. */
+/** One window: its share, a bar, and when it resets. */
 function PlanWindowRow({ label, window, now }: { label: string; window: PlanWindow; now: number }) {
-  const share = Math.min(1, Math.max(0, window.percent / 100));
   return (
     <div className="flex flex-col gap-1.5">
       <div className="flex items-baseline justify-between gap-2">
         <span className="text-sm text-muted-foreground">{label}</span>
         <span className="text-xl font-semibold tabular-nums">{percent(window.percent / 100)}</span>
       </div>
-      {/* The native meter speaks; the SVG draws it (a meter's own look cannot be themed). */}
-      <meter className="sr-only" min={0} max={100} value={window.percent}>
+      <Meter value={window.percent} max={100} className="w-full">
         {percent(window.percent / 100)} of the {label} used
-      </meter>
-      <svg className="h-2 w-full" aria-hidden="true" preserveAspectRatio="none">
-        <rect width="100%" height="100%" rx="4" className="fill-muted" />
-        <rect width={`${share * 100}%`} height="100%" rx="4" className="fill-primary" />
-      </svg>
+      </Meter>
       <span className="text-xs text-muted-foreground">{resetWords(window.resetsAt, now)}</span>
     </div>
   );

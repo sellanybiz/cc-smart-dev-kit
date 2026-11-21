@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { portalClient } from "@/api/client";
 import { type Resource, useResource } from "@/api/hooks";
 import type { JobEntry, JobStore, JobsData } from "@/api/types";
+import { Meter } from "@/components/meter";
 import { EmptyState } from "@/components/states";
 import { TonePill } from "@/components/status";
 import {
@@ -49,9 +50,8 @@ const holdsOf = (job: JobEntry) => (job.slot ? "the heavy slot" : "a name");
 
 const slotsOf = (count: number) => `${count} ${count === 1 ? "slot" : "slots"}`;
 
-/** Slots in use against the slots there are, as a bar: an SVG whose widths are attributes, never styles. */
+/** Slots in use against the slots there are, as a bar. */
 function SlotMeter({ store }: { store: JobStore }) {
-  const share = store.slots === 0 ? 0 : Math.min(1, store.used / store.slots);
   return (
     <div className="flex flex-col gap-1.5">
       <div className="flex flex-wrap items-baseline justify-between gap-2 text-sm">
@@ -65,14 +65,9 @@ function SlotMeter({ store }: { store: JobStore }) {
           {slotsOf(Math.max(0, store.slots - store.used))} free now
         </span>
       </div>
-      {/* The native meter speaks; the SVG draws it (a meter's own look cannot be themed). */}
-      <meter className="sr-only" min={0} max={store.slots} value={store.used}>
+      <Meter value={store.used} max={store.slots} className="w-full">
         {store.used} of {slotsOf(store.slots)}
-      </meter>
-      <svg className="h-2.5 w-full" aria-hidden="true" preserveAspectRatio="none">
-        <rect width="100%" height="100%" rx="4" className="fill-muted" />
-        <rect width={`${share * 100}%`} height="100%" rx="4" className="fill-primary" />
-      </svg>
+      </Meter>
       {store.note !== undefined && <p className="text-xs text-muted-foreground">{store.note}</p>}
     </div>
   );
