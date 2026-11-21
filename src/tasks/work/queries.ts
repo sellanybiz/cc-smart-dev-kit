@@ -408,12 +408,15 @@ export function filesOverlap(
 }
 
 /**
- * True when one of the two plans is stacked on the other (`stacked_on`) and that parent is still
- * open: the overlap check skips the pair, both ways. A closed parent, done but not yet released
- * included, is judged like any other plan again.
+ * True when one of the two plans is stacked on the other (`stacked_on`) and that parent still
+ * holds its files: open, or closed and still reserved (`lead`) until its pull request merges and
+ * `herdr plans` releases it. The overlap check skips the pair, both ways: a plan built on its
+ * parent's branch shares the parent's files by construction. A released or dropped parent holds
+ * nothing (a drop releases it), so the pair ends with it.
  */
 export function isStackedPair(a: WorkTask, b: WorkTask): boolean {
-  return (a.stackedOn === b.plan && isOpen(b)) || (b.stackedOn === a.plan && isOpen(a));
+  const holds = (parent: WorkTask) => isOpen(parent) || parent.lead !== null;
+  return (a.stackedOn === b.plan && holds(b)) || (b.stackedOn === a.plan && holds(a));
 }
 
 /**

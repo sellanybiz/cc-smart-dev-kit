@@ -512,13 +512,13 @@ start yourself and never reserve stops being held once its task closes or it is 
 back until the pull request of every plan it waits on has merged. `herdr plans` shows where each stands. A child takes its plan, builds it with
 `/cc-smart-dev-kit:build`, opens its own pull request and reports. `herdr start --plan <slug>`
 resumes a child that is gone, in its own worktree: one outside `.claude/worktrees/` (a project's own hook put it there) only when git lists it for the repo and herdr's own launch record of that start names it, so a path typed into a task is refused (a remote start writes no record). Needs a git project whose default branch is
-known (`git remote set-head origin --auto`). Paths every plan touches and each merge settles go in
+known (`git remote set-head origin --auto`), unless `--base` names where the child starts. Paths every plan touches and each merge settles go in
 `plans.mergeFiles`. Folders where plans only add new files (a migrations folder) go in
 `plans.appendOnly` (6.3.0): inside one, two plans overlap only when they list the same file, so two
 plans that each add a migration run at once. A plan built on another plan's branch names it with
 `stacked_on` (`task_update`, or `task add --plan … --stacked-on <slug>`): the overlap check then skips
-that one parent plan, both ways, while the parent is open; every other plan still blocks, and once the
-parent is closed (done but not yet merged too) the two are judged like any other pair. `task_list` and
+that one parent plan, both ways, while the parent holds its files (open, or done until its pull request
+merges and `herdr plans` releases it); every other plan still blocks. `task_list` and
 `herdr plans` show the stack. The design: [Herdr](docs/design/herdr.md) and [tasks](docs/design/tasks.md).
 
 **After updating to 5.2.0:** restart every Claude Code session that was open before the update. A
@@ -2936,7 +2936,7 @@ name: it is a choice of three, not a yes.
 | `alerts.usagePercent` | `85` | The plan usage, in percent, a warning starts at (1–100). |
 | `plans.maxPhases` | `10` | The most phases one plan may hold (a whole number, 1–50). A plan is a short list of areas, each with its tasks; more phases than this is a plan to split. Your own default, or the project's in this checkout's `.claude/cc-smart-dev-kit.json` (`workflow set plans.maxPhases 12 --project`); the project's wins. Only you raise it: `workflow set` and `unset` of it refuse inside Claude Code, so a session cannot lift its own limit (`propose` stays open). A project that sets it needs `"requires": ">=4.8"`. |
 | `plans.runMode` | `ask` | How queued plans run when two or more are laid (§ [Plans for children](#plans-for-children-520)): `ask`, `solo`, `lead-children` or `coordinator`. With `ask` Claude asks once, states each mode's cost and recommends lead + children when ready plans share no file (`/cc-smart-dev-kit:plan-task` § 6). Yours alone: a project file that sets it is refused, because a committed value would spend every teammate's usage. `workflow set` and `unset` of it refuse inside Claude Code and print the command to run in your own terminal. |
-| `plans.appendOnly` | `[]` | Folders where plans add new files (a migrations folder): inside one, two plans overlap only when they list the same file, and no folder entry holds it, so two plans that each add a file there run at once. Each entry is a folder, repo-relative and ending in `/`; no `..`, no root. Written in the project's `.claude/cc-smart-dev-kit.json` by hand (it is not a `workflow set` key) and read **only as committed on the base branch**, like `mergeFiles`. A project that sets it needs `"requires": ">=6.3"`. |
+| `plans.appendOnly` | `[]` | Folders where plans add new files (a migrations folder): inside one, two plans overlap only when they list the same file, and no folder entry holds it, so two plans that each add a file there run at once. Each entry is a folder, repo-relative and ending in `/`; no `..`, no root. The project's alone, like `mergeFiles`: set it with `workflow set plans.appendOnly db/migrations/ --project` in your own terminal (it refuses inside Claude Code), commit it, and it counts **only as committed on the base branch**; `workflow show` prints the committed list the plan tools read. A project that sets it needs `"requires": ">=6.3"`. |
 | `plans.mergeFiles` | `[]` | Paths every plan touches and each merge settles (a version manifest, a changelog, a lockfile, build output): the overlap check between plans leaves them out. Repo-relative, a folder ends in `/` (`plugin/dist/`); no `..`, no root, no `*` or `?`. The project's, with `--project` (`workflow set plans.mergeFiles CHANGELOG.md,plugin/dist/ --project`), and read **only as committed on the base branch**, so a session cannot widen it by editing its own copy; `workflow set` and `unset` of it refuse inside Claude Code (`propose` stays open). A project that sets it needs `"requires": ">=5.2"`. |
 
 **Merging by itself.** With `allowMerge` on, Claude merges its own pull request into the project's

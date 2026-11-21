@@ -175,7 +175,7 @@ export interface FilesCheck extends OverlapRule {
   ignore: readonly string[];
   caseFold: boolean;
   /**
-   * Why `ignore` may be short (`resolveMergeFiles`): a refusal for an overlap says it, since a
+   * Why `ignore` may be short (`resolvePlanFiles`): a refusal for an overlap says it, since a
    * merge file that could not be read may be what the overlap is about.
    */
   reason?: string | null;
@@ -1039,7 +1039,7 @@ export interface ReservePlan {
   holder: "self" | "child";
   /** Why `ignore` may be short (`planFilesCheck().reason`); an overlap refusal says it. */
   reason?: string | null;
-  /** `plans.mergeFiles` as committed (`resolveMergeFiles`): paths every plan touches, left out of the overlap check. */
+  /** `plans.mergeFiles` as committed (`resolvePlanFiles`): paths every plan touches, left out of the overlap check. */
   ignore: readonly string[];
   /** `core.ignorecase`: compare paths without case, the ignore list too. */
   caseFold: boolean;

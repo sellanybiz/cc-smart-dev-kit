@@ -131,7 +131,7 @@ export type MergeFilePath = { ok: true; path: string } | { ok: false; why: strin
  * manifest, a changelog, a lockfile, build output), normalised by the one path rule
  * (`normalizeRepoPath`, which a plan's file list uses too) and worded for a person who typed it.
  * Pure: whether a path without a trailing `/` names a folder needs the repository, so
- * `resolveMergeFiles` (`resolve.ts`) checks that, on the committed tree. One home: the schema
+ * `resolvePlanFiles` (`resolve.ts`) checks that, on the committed tree. One home: the schema
  * checks a file with it, and `parseWorkflowValue` a value a person types.
  */
 export function normalizeMergeFile(raw: string): MergeFilePath {
@@ -170,26 +170,38 @@ const mergeFilesSchema = z.array(z.string()).transform((paths, context) => {
 });
 
 /**
- * The list `plans.appendOnly` holds: folders where plans add new files (a migrations folder),
- * each normalised by the same path rule (`normalizeMergeFile`) and ending in `/`, named once.
- * Inside one, two plans overlap only when they list the same file (`filesOverlap`). A bare name
- * is refused, not guessed: a folder written without its `/` would exempt nothing, and a file
- * named here would exempt a path that is not a folder.
+ * One folder of `plans.appendOnly` (a folder where plans add new files, like a migrations
+ * folder), normalised by the same path rule as a merge file (`normalizeMergeFile`) and ending in
+ * `/`. A bare name is refused, not guessed: a folder written without its `/` would exempt nothing,
+ * and a file named here would exempt a path that is not a folder. One home: the schema checks a
+ * file with it, and `parseWorkflowValue` a value a person types.
+ */
+export function normalizeAppendOnlyFolder(raw: string): MergeFilePath {
+  const parsed = normalizeMergeFile(raw);
+  if (!parsed.ok || parsed.path.endsWith("/")) return parsed;
+  return {
+    ok: false,
+    why: `${JSON.stringify(raw)} is not a folder: plans.appendOnly names folders, each ending in /`,
+  };
+}
+
+/** The words of the one rule behind `normalizeAppendOnlyFolder`, for a value a person types. */
+export const APPEND_ONLY_RULE =
+  "plans.appendOnly is a list of folders inside the repository, each written with / and ending in /, with no absolute path, no .. and not the root";
+
+/**
+ * The list `plans.appendOnly` holds: each folder normalised (`normalizeAppendOnlyFolder`), named
+ * once. Inside one, two plans overlap only when they list the same file (`filesOverlap`).
  */
 const appendOnlySchema = z.array(z.string()).transform((paths, context) => {
   const folders: string[] = [];
   for (const [index, raw] of paths.entries()) {
-    const parsed = normalizeMergeFile(raw);
-    const why = !parsed.ok
-      ? parsed.why
-      : parsed.path.endsWith("/")
-        ? null
-        : `${JSON.stringify(raw)} is not a folder: plans.appendOnly names folders, each ending in /`;
-    if (why !== null) {
-      context.issues.push({ code: "custom", input: raw, message: why, path: [index] });
+    const parsed = normalizeAppendOnlyFolder(raw);
+    if (!parsed.ok) {
+      context.issues.push({ code: "custom", input: raw, message: parsed.why, path: [index] });
       return z.NEVER;
     }
-    if (parsed.ok && !folders.includes(parsed.path)) folders.push(parsed.path);
+    if (!folders.includes(parsed.path)) folders.push(parsed.path);
   }
   return folders;
 });
@@ -345,13 +357,13 @@ const workflowObjectSchema = z.strictObject({
       /**
        * Paths every plan touches and each merge settles, which the plans' overlap check leaves
        * out. A project fact, so it lives in the project's file alone, and it counts only as
-       * **committed on `origin/<base>`** (`resolveMergeFiles`), never a working copy. Default: none.
+       * **committed on `origin/<base>`** (`resolvePlanFiles`), never a working copy. Default: none.
        */
       mergeFiles: mergeFilesSchema.optional(),
       /**
        * Folders where plans add new files: inside one, two plans overlap only when they list the
        * same file, and no folder entry holds it (`filesOverlap`). A project fact like
-       * `mergeFiles`, counted only as **committed on `origin/<base>`** (`planFilesCheck`).
+       * `mergeFiles`, counted only as **committed on `origin/<base>`** (`resolvePlanFiles`).
        * Default: none.
        */
       appendOnly: appendOnlySchema.optional(),
@@ -487,6 +499,7 @@ export const workflowDefaults = {
   plans: {
     maxPhases: 10,
     mergeFiles: [],
+    appendOnly: [],
     runMode: "ask",
   },
 } as const;
@@ -527,6 +540,7 @@ export type WorkflowKey =
   | "plans.maxPhases"
   | "plans.runMode"
   | "plans.mergeFiles"
+  | "plans.appendOnly"
   | `switches.${SwitchName}`;
 
 /** Every policy key, in the order `workflow show` and `--help` print them. */
@@ -552,6 +566,7 @@ export const POLICY_KEYS: readonly WorkflowKey[] = [
   "plans.maxPhases",
   "plans.runMode",
   "plans.mergeFiles",
+  "plans.appendOnly",
 ];
 
 /**
@@ -590,19 +605,21 @@ export const INBOUND_KEYS: readonly WorkflowKey[] = ["issues.readyLabel"];
 
 /**
  * The settings that bound a session's own work (`plans.maxPhases`, `plans.runMode`,
- * `plans.mergeFiles`). `workflow set` and `unset` refuse them inside Claude Code, like
- * `OUTBOUND_KEYS`, each for its own reason (`planKeyReason` in `commands.ts`): the task store
- * holds a session to the cap, so a session that could raise it would lift its own limit; the run
- * mode decides how many sessions spend the person's usage; and the merge files are what the plans'
- * overlap check leaves out, so a session that could widen them would lift its own check. Only the
- * person changes them. `propose` stays open for the two project settings: a person reviews its
- * pull request. The cap and the run mode are read from the working copy and the person's file;
- * `plans.mergeFiles` only as committed on `origin/<base>` (`resolveMergeFiles`).
+ * `plans.mergeFiles`, `plans.appendOnly`). `workflow set` and `unset` refuse them inside Claude
+ * Code, like `OUTBOUND_KEYS`, each for its own reason (`planKeyRefusal` in `commands.ts`): the
+ * task store holds a session to the cap, so a session that could raise it would lift its own
+ * limit; the run mode decides how many sessions spend the person's usage; and the merge files and
+ * the append-only folders narrow the plans' overlap check, so a session that could widen them
+ * would lift its own check. Only the person changes them. `propose` stays open for the project
+ * settings: a person reviews its pull request. The cap and the run mode are read from the working
+ * copy and the person's file; `plans.mergeFiles` and `plans.appendOnly` only as committed on
+ * `origin/<base>` (`resolvePlanFiles`).
  */
 export const PLAN_KEYS: readonly WorkflowKey[] = [
   "plans.maxPhases",
   "plans.runMode",
   "plans.mergeFiles",
+  "plans.appendOnly",
 ];
 
 /**
@@ -614,10 +631,11 @@ export const PLAN_KEYS: readonly WorkflowKey[] = [
 export const PERSONAL_ONLY_KEYS: readonly WorkflowKey[] = ["plans.runMode"];
 
 /**
- * The settings only the project's file holds. `plans.mergeFiles` is a project fact, read as
- * committed on `origin/<base>`: a value in the person's own file would never count.
+ * The settings only the project's file holds. `plans.mergeFiles` and `plans.appendOnly` are
+ * project facts, read as committed on `origin/<base>`: a value in the person's own file would
+ * never count.
  */
-export const PROJECT_ONLY_KEYS: readonly WorkflowKey[] = ["plans.mergeFiles"];
+export const PROJECT_ONLY_KEYS: readonly WorkflowKey[] = ["plans.mergeFiles", "plans.appendOnly"];
 
 /** Every switch key, in the order `workflow show` prints them. */
 export const SWITCH_KEYS: readonly WorkflowKey[] = SWITCH_NAMES.map(
@@ -740,17 +758,24 @@ function parseNumber(key: NumberKey, value: string): ParsedValue {
     : { ok: false, why: numberRuleText(key) };
 }
 
-/** `plans.mergeFiles` as a person typed it: paths split at commas and line breaks, each normalised. */
-function parseMergeFiles(value: string): ParsedValue {
+/**
+ * A list of paths as a person typed it (`plans.mergeFiles`, `plans.appendOnly`): split at commas
+ * and line breaks, each normalised by the key's own rule, named once. `rule` is the key's words.
+ */
+function parsePathList(
+  value: string,
+  rule: string,
+  normalize: (raw: string) => MergeFilePath,
+): ParsedValue {
   const named = value
     .split(/[,\n]/)
     .map((word) => word.trim())
     .filter((word) => word !== "");
-  if (named.length === 0) return { ok: false, why: MERGE_FILES_RULE };
+  if (named.length === 0) return { ok: false, why: rule };
   const paths: string[] = [];
   for (const raw of named) {
-    const parsed = normalizeMergeFile(raw);
-    if (!parsed.ok) return { ok: false, why: `${MERGE_FILES_RULE}; ${parsed.why}` };
+    const parsed = normalize(raw);
+    if (!parsed.ok) return { ok: false, why: `${rule}; ${parsed.why}` };
     if (!paths.includes(parsed.path)) paths.push(parsed.path);
   }
   return { ok: true, value: paths };
@@ -778,7 +803,9 @@ export function parseWorkflowValue(key: WorkflowKey, text: string): ParsedValue 
       ? { ok: true, value }
       : { ok: false, why: `${key} is one of ${RUN_MODES.join(", ")}` };
   }
-  if (key === "plans.mergeFiles") return parseMergeFiles(value);
+  if (key === "plans.mergeFiles") return parsePathList(value, MERGE_FILES_RULE, normalizeMergeFile);
+  if (key === "plans.appendOnly")
+    return parsePathList(value, APPEND_ONLY_RULE, normalizeAppendOnlyFolder);
   if (key === "reviewAgents") {
     const named = value
       .split(/[,\s]+/)

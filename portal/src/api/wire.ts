@@ -455,6 +455,7 @@ export type WorkflowKey =
   | "plans.maxPhases"
   | "plans.runMode"
   | "plans.mergeFiles"
+  | "plans.appendOnly"
   | "switches.statusLine"
   | "switches.sessionNames"
   | "switches.jobRoute"
@@ -1235,6 +1236,8 @@ interface WorkTask {
   files: string[];
   /** The lead the plan is reserved for; null while it is unreserved. */
   lead: WorkLead | null;
+  /** The slug of the plan this plan is built on (`stacked_on`); null for none and any other task. */
+  stackedOn: string | null;
 }
 interface WorkNote {
   id: number;

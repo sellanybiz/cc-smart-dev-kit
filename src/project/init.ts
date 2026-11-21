@@ -63,6 +63,7 @@ import {
   retiredFieldsOf,
   TASKS_SINCE,
   WORKFLOW_ALLOW_KEYS_SINCE,
+  WORKFLOW_APPEND_ONLY_SINCE,
   WORKFLOW_FIXES_SINCE,
   WORKFLOW_ISSUES_SINCE,
   WORKFLOW_MERGE_FILES_SINCE,
@@ -292,6 +293,9 @@ export function requiresFloor(
   // `plans.mergeFiles` is gated on its own: a file that only caps its phases keeps 4.8.
   if (isObject(workflow.plans) && Object.hasOwn(workflow.plans, "mergeFiles")) {
     needs.push(WORKFLOW_MERGE_FILES_SINCE);
+  }
+  if (isObject(workflow.plans) && Object.hasOwn(workflow.plans, "appendOnly")) {
+    needs.push(WORKFLOW_APPEND_ONLY_SINCE);
   }
   if (Object.hasOwn(worktrees, "autoClean")) needs.push(WORKTREE_AUTO_CLEAN_SINCE);
   if (Object.hasOwn(worktrees, "rebuildable")) needs.push(WORKTREE_REBUILDABLE_SINCE);

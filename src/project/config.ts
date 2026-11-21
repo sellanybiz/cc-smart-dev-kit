@@ -152,6 +152,16 @@ export const WORKFLOW_PLANS_SINCE = "4.8.0";
 export const WORKFLOW_MERGE_FILES_SINCE = "5.2.0";
 
 /**
+ * The release that brought `workflow.plans.appendOnly` (the folders where plans add new files,
+ * inside which two plans overlap only on the same file). Gated per key, like
+ * `WORKFLOW_MERGE_FILES_SINCE`: a plugin before this one reads `plans` strictly and refuses a file
+ * that names `appendOnly`, so the floor makes it say "update". A fixed fact about the past, so it
+ * is written as the release it was, never the running version; the since-tables test checks it is
+ * a real release no newer than this build (`VERSION`).
+ */
+export const WORKFLOW_APPEND_ONLY_SINCE = "6.3.0";
+
+/**
  * The release that renamed `workflow.autoCommit`, `autoPush` and `autoMerge` to `allowCommit`,
  * `allowPush` and `allowMerge` (`WORKFLOW_KEY_ALIASES`, `src/workflow/schema.ts`). A project file
  * that holds a new name needs that plugin version or newer, for the same reason as
