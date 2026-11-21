@@ -239,6 +239,18 @@ esac
     expect([...bundles].sort()).toEqual([...HOOKS.map((spec) => spec.name), ...USER_HOOKS].sort());
   });
 
+  test("the hooks rule's paths: list holds the source entry of every bundle hooks.json runs", () => {
+    // The rule loads itself when a file in its `paths:` list is touched, so an entry missing from
+    // the list would be edited with none of the hook contract in front of the editor.
+    const rule = readFileSync(join(ROOT, ".claude", "rules", "hooks.md"), "utf8");
+    const frontmatter = rule.split("\n---\n")[0] ?? "";
+    const listed = [...frontmatter.matchAll(/^\s+-\s+"([^"]+)"\s*$/gm)].map((match) => match[1]);
+    const missing = [...new Set(wired.map(({ handler }) => bundleOf(handler)))]
+      .map((bundle) => `src/entries/${bundle}.ts`)
+      .filter((entry) => !listed.includes(entry));
+    expect(missing).toEqual([]);
+  });
+
   test("no worktree hook: a plugin WorktreeCreate would replace Claude Code's worktrees everywhere", () => {
     // `WorktreeCreate` and `WorktreeRemove` are never wired: they would replace Claude Code's
     // own worktrees in every project. A `SubagentStop` hook is allowed only when it touches no

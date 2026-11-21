@@ -562,9 +562,14 @@ origin string; `evidence` is set when the task closes.
   recorded base is a commit id. A local branch whose `origin/<base>` is not here (the plan
   branch, while it stays local; or a base never fetched), or any local branch with no `origin`
   remote, is read as written and says so in one line, with `git fetch origin` as the advice for
-  the unfetched case. A local branch is read by its full name (`refs/heads/<base>`), so a tag of
-  the same name never stands in for it. A name that resolves nowhere gives
-  the gates' advice (`git fetch origin`, or pass a ref git knows). The branch lists refuse
+  the unfetched case. The local branch and origin's copy are both read by their full names
+  (`refs/heads/<base>`, `refs/remotes/origin/<base>`), so a tag, or a stray local branch spelled
+  `origin/main`, never stands in for either. A name that means more than one ref (a tag beside
+  a branch, a stray local `origin/main` beside origin's, a bare `main` with a tag `main` and
+  origin's copy) is refused and the refs named, in the gates' own words (`names more than one
+  ref`): name the one you mean in full with `--base`, or delete the one that should not be
+  there. A local branch and origin's copy of it are one branch, not a clash. A name that
+  resolves nowhere gives the gates' advice (`git fetch origin`, or pass a ref git knows). The branch lists refuse
   `--json`, so the one-line note never reaches a JSON answer. A deploy
   branch left unmerged is a visible run in
   progress, and a prod gate that waits on an open staging twin points at this list: the twin's

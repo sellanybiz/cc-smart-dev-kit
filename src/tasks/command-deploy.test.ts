@@ -678,32 +678,37 @@ test("list reads a local branch origin lacks as written, with one note", async (
   expect((await run(["list", "--branches"])).error).toBe("");
 });
 
-test("list reads the local branch the note names when a tag has the same name", async () => {
-  const { run, cwd, onBranch } = await behindOriginWorld();
-  // The branch is where the task change is; the tag, at the branch's tip, has none against the base.
+/** The words a listing refuses a name with when it means more than one ref. */
+const MEANS_MANY = "names more than one ref (";
+const DELETE_ONE =
+  "name the one you mean in full with --base, or delete the one that should not be there";
+
+test("list refuses a name that is both a local branch and a tag, as the gates do", async () => {
+  const { run, cwd } = await behindOriginWorld();
   git(cwd, "branch", "plan-branch", "origin/main");
   git(cwd, "tag", "plan-branch", "HEAD");
-  const note =
-    "origin/plan-branch is not here (not fetched, or origin has no such branch): read against the local branch plan-branch. Run `git fetch origin` if it should be there.";
-  expect(await run(["list", "--branch", "--base", "plan-branch"])).toEqual({
-    code: 0,
-    text: `${note}\n${branchChange(onBranch)}`,
-    error: "",
-  });
+  const refused = await run(["list", "--branch", "--base", "plan-branch"]);
+  expect(refused.code).toBe(1);
+  expect(refused.text).toBe("");
+  expect(refused.error).toContain(
+    `plan-branch ${MEANS_MANY}refs/tags/plan-branch, refs/heads/plan-branch): `,
+  );
+  expect(refused.error).toContain(DELETE_ONE);
+  // Named in full, either one reads.
+  expect((await run(["list", "--branch", "--base", "refs/heads/plan-branch"])).code).toBe(0);
 });
 
-test("list with no origin reads the local branch, not a tag of the same name", async () => {
+test("list with no origin refuses a local branch and a tag of the same name", async () => {
   const { run, add, cwd } = world({ origin: false });
   git(cwd, "switch", "-c", "deploy-branch");
-  const id = await add("Seed data", "staging", "after", "non-blocking");
+  await add("Seed data", "staging", "after", "non-blocking");
   git(cwd, "add", "-A");
   git(cwd, "commit", "-m", "the task");
   git(cwd, "tag", "main", "HEAD");
-  expect(await run(["list", "--branch"])).toEqual({
-    code: 0,
-    text: `No origin remote: read against the local branch main.\nstaging\nadded: ${id} [after · non-blocking] Seed data\n`,
-    error: "",
-  });
+  const refused = await run(["list", "--branch"]);
+  expect(refused.code).toBe(1);
+  expect(refused.error).toContain(`main ${MEANS_MANY}refs/tags/main, refs/heads/main): `);
+  expect(refused.error).toContain(DELETE_ONE);
 });
 
 test("list says when the local base is ahead of origin and reads origin's, as the gates do", async () => {
@@ -748,6 +753,41 @@ test("list reads origin's branch by its full name: a stray local branch named or
     text: branchChange(id),
     error: "",
   });
+});
+
+test("list refuses --base origin/main when a stray local branch has that name too, and names both refs", async () => {
+  const { run, add, cwd } = world();
+  git(cwd, "switch", "-c", "deploy-branch");
+  await add("Branch only", "staging", "after", "non-blocking");
+  git(cwd, "add", "-A");
+  git(cwd, "commit", "-m", "the branch task");
+  git(cwd, "branch", "origin/main", "deploy-branch");
+  const refused = await run(["list", "--branch", "--base", "origin/main"]);
+  expect(refused.code).toBe(1);
+  expect(refused.text).toBe("");
+  expect(refused.error).toContain(
+    `origin/main ${MEANS_MANY}refs/heads/origin/main, refs/remotes/origin/main): `,
+  );
+  expect(refused.error).toContain(DELETE_ONE);
+  // Not the wrong fetch advice for a ref that cannot exist.
+  expect(refused.error).not.toContain("origin/origin");
+  // Named in full, the one the person means reads.
+  expect((await run(["list", "--branch", "--base", "refs/remotes/origin/main"])).code).toBe(0);
+});
+
+test("list refuses a bare main when a tag main and origin's main both exist, with no local branch", async () => {
+  const { run, add, cwd } = world();
+  git(cwd, "switch", "-c", "deploy-branch");
+  await add("Branch only", "staging", "after", "non-blocking");
+  git(cwd, "add", "-A");
+  git(cwd, "commit", "-m", "the branch task");
+  git(cwd, "branch", "-D", "main");
+  git(cwd, "tag", "main", "deploy-branch");
+  const refused = await run(["list", "--branch", "--base", "main"]);
+  expect(refused.code).toBe(1);
+  expect(refused.text).toBe("");
+  expect(refused.error).toContain(`main ${MEANS_MANY}refs/tags/main, refs/remotes/origin/main): `);
+  expect(refused.error).toContain(DELETE_ONE);
 });
 
 test("list --branch --json is a usage error: the note never reaches a JSON answer", async () => {
