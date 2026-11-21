@@ -1261,9 +1261,13 @@ describe("workflow merge-check", () => {
   });
 
   test("the usage text names --asked and says what it sets aside", () => {
-    expect(WORKFLOW_USAGE).toContain("merge-check [<pr>… [--asked] | --branch <b> --base <base>]");
+    expect(WORKFLOW_USAGE).toContain(
+      "merge-check [<pr>… | <pr> --asked | --branch <b> --base <base>]",
+    );
     expect(WORKFLOW_USAGE).toContain("sets aside allowMerge and nothing else");
     expect(WORKFLOW_USAGE).toContain("the verdict says the merge rests on the person's yes");
+    expect(WORKFLOW_USAGE).toContain("--asked takes exactly one pull request");
+    expect(WORKFLOW_USAGE).toContain("not stacked on another open pull request");
   });
 
   test("the usage mistakes: a pair of flags, numbers, or both refused", async () => {
@@ -1280,6 +1284,14 @@ describe("workflow merge-check", () => {
       [
         ["merge-check", "--asked"],
         "merge-check needs a pull request number, or --branch with --base",
+      ],
+      [
+        ["merge-check", "7", "8", "--asked"],
+        "--asked is one person's yes to one merge: give it exactly one pull request, not 2",
+      ],
+      [
+        ["merge-check", "--asked", "7", "7"],
+        "--asked is one person's yes to one merge: give it exactly one pull request, not 2",
       ],
       [
         ["merge-check", "--branch", "feat", "--base", "main", "--asked"],

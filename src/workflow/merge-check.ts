@@ -9,7 +9,9 @@
  * checkout's working copy: `allowMerge` on, its base the project's integration base or the
  * repository's default branch, every required check green, and — with `reviewBeforePush` on —
  * the head covered by a review under D17 (`readCover`: a review of an earlier commit of the
- * head's branch counts while the fixes after it stay within `workflow.fixesAfterReview`). Only
+ * head's branch counts while the fixes after it stay within `workflow.fixesAfterReview`), and
+ * the pull request not stacked on another open one (`stackedVerdict`: a commit of its own that
+ * is the head of another open pull request means that one goes first). Only
  * then is it allowed; everything else is refused, with the reason. Every fact is read read-only
  * (`gh pr view`, `gh repo view`, `gh pr checks`, the review record, git); a `gh` that is
  * missing or answers nothing is "could not read", never a guess.
@@ -178,6 +180,62 @@ export function parseDefaultBranch(json: string): string | null {
     if (typeof ref !== "object" || ref === null) return null;
     const name = (ref as { name?: unknown }).name;
     return typeof name === "string" && name !== "" ? name : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * How many commits `gh pr view --json commits` returns at most. The number is in gh's own query
+ * (`commits(first: 100)` in `api/query_builder.go`, gh 2.104.0), which pages nothing and prints
+ * no total, so a list this long may be cut: the check refuses it rather than guess.
+ */
+export const GH_COMMITS_CAP = 100;
+
+/**
+ * How many open pull requests `gh pr list --limit` is asked for. A list that fills it may be
+ * cut (gh's own default is 30), so the check refuses it rather than guess.
+ */
+export const OPEN_PULL_REQUESTS_LIMIT = 500;
+
+/** The commit ids of one pull request, from `gh pr view --json commits`, or null when not that shape. */
+export function parsePullRequestCommits(json: string): string[] | null {
+  try {
+    const view = JSON.parse(json) as { commits?: unknown };
+    if (!Array.isArray(view.commits)) return null;
+    const oids: string[] = [];
+    for (const commit of view.commits) {
+      if (typeof commit !== "object" || commit === null) return null;
+      const { oid } = commit as { oid?: unknown };
+      if (typeof oid !== "string" || !COMMIT_SHA.test(oid)) return null;
+      oids.push(oid);
+    }
+    return oids;
+  } catch {
+    return null;
+  }
+}
+
+/** One open pull request: its number and the commit at its head. */
+export interface OpenHead {
+  number: number;
+  headOid: string;
+}
+
+/** The open pull requests from `gh pr list --json number,headRefOid`, or null when not that shape. */
+export function parseOpenHeads(json: string): OpenHead[] | null {
+  try {
+    const parsed: unknown = JSON.parse(json);
+    if (!Array.isArray(parsed)) return null;
+    const open: OpenHead[] = [];
+    for (const entry of parsed) {
+      if (typeof entry !== "object" || entry === null) return null;
+      const { headRefOid, number } = entry as { headRefOid?: unknown; number?: unknown };
+      if (typeof number !== "number" || !Number.isInteger(number)) return null;
+      if (typeof headRefOid !== "string" || !COMMIT_SHA.test(headRefOid)) return null;
+      open.push({ headOid: headRefOid, number });
+    }
+    return open;
   } catch {
     return null;
   }
@@ -576,6 +634,102 @@ async function gateFor(world: MergeWorld, branch: string): Promise<GateRead | "l
   });
 }
 
+/** The refusal when the check cannot tell whether a pull request is stacked: never a pass. */
+function cannotProve(number: number, why: string): MergeVerdict {
+  return {
+    detail: null,
+    kind: "refused",
+    number,
+    reason: `${why}, so merge-check cannot prove it is not stacked on an open pull request`,
+  };
+}
+
+/**
+ * Whether a pull request is stacked on another open one: a commit it carries is the head of
+ * another open pull request, so merging it would put that pull request's commits into the base
+ * past its own review, checks and refusals. Whatever base the pull request names, only its
+ * commits tell (a base rule would not see a stack opened against the default branch). Null when
+ * it is not stacked; a refusal when it is, and also when gh cannot say, answers in a shape the
+ * check does not know, or may have cut a list (`GH_COMMITS_CAP`, `OPEN_PULL_REQUESTS_LIMIT`):
+ * only a complete answer proves it is not stacked. The person's yes (`asked`) never reaches
+ * here: it sets aside `allowMerge` alone.
+ */
+async function stackedVerdict(
+  world: MergeWorld,
+  view: PullRequestFacts,
+  target: { ref: string | null; repo: string | null },
+): Promise<MergeVerdict | null> {
+  const run = world.gh ?? spawnGh;
+  const repo = target.repo === null ? [] : ["--repo", target.repo];
+  const commitsLeft = world.timeFor(GH_TIMEOUT_MS);
+  if (commitsLeft <= 0) {
+    return { kind: "late", number: view.number, what: `the commits of #${view.number}` };
+  }
+  const commitsOut = await ghStdout(
+    ["pr", "view", String(view.number), ...repo, "--json", "commits"],
+    world.folder,
+    world.env,
+    commitsLeft,
+    run,
+  );
+  const commits = commitsOut === null ? null : parsePullRequestCommits(commitsOut);
+  if (commits === null) {
+    return cannotProve(view.number, `gh could not say what pull request #${view.number} carries`);
+  }
+  if (commits.length >= GH_COMMITS_CAP) {
+    return cannotProve(
+      view.number,
+      `gh returns at most ${GH_COMMITS_CAP} commits of a pull request, and #${view.number} has that many`,
+    );
+  }
+  if (!commits.includes(view.headOid)) {
+    return cannotProve(
+      view.number,
+      `the commits gh returned for #${view.number} do not include its head ${short(view.headOid)}`,
+    );
+  }
+  const openLeft = world.timeFor(GH_TIMEOUT_MS);
+  if (openLeft <= 0) {
+    return { kind: "late", number: view.number, what: "the open pull requests" };
+  }
+  const openOut = await ghStdout(
+    [
+      "pr",
+      "list",
+      "--state",
+      "open",
+      ...repo,
+      "--limit",
+      String(OPEN_PULL_REQUESTS_LIMIT),
+      "--json",
+      "number,headRefOid",
+    ],
+    world.folder,
+    world.env,
+    openLeft,
+    run,
+  );
+  const open = openOut === null ? null : parseOpenHeads(openOut);
+  if (open === null) return cannotProve(view.number, "gh could not list the open pull requests");
+  if (open.length >= OPEN_PULL_REQUESTS_LIMIT) {
+    return cannotProve(
+      view.number,
+      `gh listed ${OPEN_PULL_REQUESTS_LIMIT} open pull requests, the most it was asked for`,
+    );
+  }
+  const carried = new Set(commits);
+  const below = open
+    .filter((other) => other.number !== view.number && carried.has(other.headOid))
+    .sort((left, right) => left.number - right.number)[0];
+  if (below === undefined) return null;
+  return {
+    detail: null,
+    kind: "refused",
+    number: view.number,
+    reason: `pull request #${view.number} is stacked on open pull request #${below.number}: merge #${below.number} first, then check again`,
+  };
+}
+
 /** What a caller may add to a pull request check. */
 export interface PullRequestOptions {
   /**
@@ -653,6 +807,10 @@ export async function checkPullRequest(
   const onTheYes = asked && autoMergeOff(resolved, view.base) !== null;
   let checks: RequiredCheck[] | null = null;
   if (branchRefusal === null) {
+    // After the base rule, before the checks: a stack is refused whatever the checks say, and
+    // never set aside by `asked`.
+    const stacked = await stackedVerdict(world, view, target);
+    if (stacked !== null) return stacked;
     const checksLeft = world.timeFor(GH_TIMEOUT_MS);
     if (checksLeft <= 0) {
       return { kind: "late", number: view.number, what: `the required checks of #${view.number}` };

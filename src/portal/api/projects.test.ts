@@ -205,6 +205,11 @@ function mergeableRepo(name: string): string {
 function mergeableRunner(numbers: number[], onCall?: (args: string[]) => Promise<void>): GhRunner {
   return async (args) => {
     if (onCall !== undefined) await onCall(args);
+    // The stacked questions of the merge check: it carries its own head alone, nothing is below it.
+    if (args[0] === "pr" && args[1] === "view" && args.includes("commits")) {
+      return JSON.stringify({ commits: [{ oid: "c".repeat(40) }] });
+    }
+    if (args[0] === "pr" && args[1] === "list" && args.includes("number,headRefOid")) return "[]";
     if (args[0] === "pr" && args[1] === "list") {
       return JSON.stringify(
         numbers.map((number) => ({
@@ -580,9 +585,12 @@ describe("/api/projects/<id> (B8)", () => {
       [8, "allowed"],
       [9, "allowed"],
     ]);
-    // One default branch for the page, and one view per pull request.
+    // One default branch for the page, and one view per pull request (and, for the stacked
+    // question, one more view of its commits and one list of the open heads).
     expect(asked.filter((one) => one[0] === "repo" && one[1] === "view")).toHaveLength(1);
-    expect(asked.filter((one) => one[0] === "pr" && one[1] === "view")).toHaveLength(3);
+    const views = asked.filter((one) => one[0] === "pr" && one[1] === "view");
+    expect(views.filter((one) => !one.includes("commits"))).toHaveLength(3);
+    expect(views.filter((one) => one.includes("commits"))).toHaveLength(3);
   });
 
   test("the pull request verdicts run together, at most PROJECT_VERDICTS_AT_ONCE at a time", async () => {
@@ -969,6 +977,10 @@ test("an open pull request with the merge guard's own verdict", async () => {
   const asked: string[][] = [];
   const run: GhRunner = async (args) => {
     asked.push(args);
+    if (args[0] === "pr" && args[1] === "view" && args.includes("commits")) {
+      return JSON.stringify({ commits: [{ oid: "c".repeat(40) }] });
+    }
+    if (args[0] === "pr" && args[1] === "list" && args.includes("number,headRefOid")) return "[]";
     if (args[0] === "pr" && args[1] === "list") {
       return JSON.stringify([
         {
@@ -1020,6 +1032,8 @@ test("an open pull request with the merge guard's own verdict", async () => {
       },
     },
   ]);
-  // gh's list was asked once; the page reuses its branch read.
-  expect(asked.filter((one) => one[1] === "list")).toHaveLength(1);
+  // The page's own list was asked once (it reuses its branch read); the other list is the
+  // merge check's, of the open heads.
+  const lists = asked.filter((one) => one[1] === "list" && !one.includes("number,headRefOid"));
+  expect(lists).toHaveLength(1);
 });

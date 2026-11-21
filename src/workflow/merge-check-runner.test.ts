@@ -74,6 +74,10 @@ describe("the merge check never blocks its caller (B8)", () => {
     const asked: string[][] = [];
     const gh: GhRunner = async (args) => {
       asked.push(args);
+      if (args[0] === "pr" && args[1] === "view" && args.includes("commits")) {
+        return JSON.stringify({ commits: [{ oid: "a".repeat(40) }] });
+      }
+      if (args[0] === "pr" && args[1] === "list") return "[]";
       if (args[0] === "pr" && args[1] === "view") {
         return JSON.stringify({
           baseRefName: "integration",
@@ -106,10 +110,13 @@ describe("the merge check never blocks its caller (B8)", () => {
       { ref: "7", repo: null },
       new Map(),
     );
-    expect(asked.map((one) => one.slice(0, 2))).toEqual([
-      ["pr", "view"],
-      ["repo", "view"],
-      ["pr", "checks"],
+    // The stacked questions sit after the base rule and before the checks, in that order.
+    expect(asked).toEqual([
+      ["pr", "view", "7", "--json", "number,baseRefName,headRefName,headRefOid"],
+      ["repo", "view", "--json", "defaultBranchRef"],
+      ["pr", "view", "7", "--json", "commits"],
+      ["pr", "list", "--state", "open", "--limit", "500", "--json", "number,headRefOid"],
+      ["pr", "checks", "7", "--required", "--json", "name,bucket"],
     ]);
     expect(verdict).toEqual({
       detail: {
@@ -128,6 +135,10 @@ describe("the merge check never blocks its caller (B8)", () => {
   const ghFor =
     (base: string, bucket: string): GhRunner =>
     async (args) => {
+      if (args[0] === "pr" && args[1] === "view" && args.includes("commits")) {
+        return JSON.stringify({ commits: [{ oid: "a".repeat(40) }] });
+      }
+      if (args[0] === "pr" && args[1] === "list") return "[]";
       if (args[0] === "pr" && args[1] === "view") {
         return JSON.stringify({
           baseRefName: base,
