@@ -4,7 +4,7 @@
  * words one change another way. The entries themselves are written by `store.ts`, in the change's own
  * transaction.
  */
-import type { WorkEvent } from "./types";
+import { claimText, type WorkEvent } from "./types";
 
 /** The order fields are named in, and the words a person reads for each. */
 const FIELDS: readonly [key: string, label: string][] = [
@@ -41,8 +41,16 @@ function actor(event: WorkEvent): string {
   return parts.length > 0 ? parts.join(", ") : "a caller outside any Claude session";
 }
 
+/** A claim object (what the 6.1 take-over stored in a history row), not the text it should be. */
+function isClaimObject(value: unknown): value is { pid: number; sessionId: string | null } {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const { pid, sessionId } = value as Record<string, unknown>;
+  return typeof pid === "number" && (sessionId === null || typeof sessionId === "string");
+}
+
 function shown(key: string, value: unknown): string {
   if (value === null || value === undefined || value === "") return "none";
+  if (key === "claim" && isClaimObject(value)) return claimText(value);
   if (Array.isArray(value)) return value.length > 0 ? value.join(", ") : "none";
   if (key === "subject" || key === "note") return JSON.stringify(value);
   return String(value);

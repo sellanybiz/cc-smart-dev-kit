@@ -24,6 +24,45 @@ export function taskGit(repo: string, args: string[], env: Env = process.env): s
 export function refCommit(repo: string, ref: string, env: Env = process.env): string {
   return taskGit(repo, ["rev-parse", "--verify", "--end-of-options", `${ref}^{commit}`], env);
 }
+/**
+ * The words for a ref git does not know: the fetch advice, then what to name instead. The release
+ * gates and the listings (`resolveListBase`) both say it, so there is one text.
+ */
+export function unreadableRefMessage(ref: string, cause: unknown, instead: string): string {
+  return `Cannot read ${ref} (${cause instanceof Error ? cause.message : String(cause)}): run \`git fetch origin\`, or ${instead}`;
+}
+/** True when git knows `ref` as a commit. Any git answer other than success counts as unknown. */
+function knowsRef(repo: string, ref: string, env: Env): boolean {
+  return runGit(
+    repo,
+    ["rev-parse", "--verify", "--quiet", "--end-of-options", `${ref}^{commit}`],
+    env,
+    RESOLVE_GIT_TIMEOUT_MS,
+  ).ok;
+}
+/**
+ * The ref a listing reads as the base, so it sees what the release gates see (`origin/<base>`).
+ * A ref with a slash that resolves (`origin/main`, `release/1.0`) is read as written. A bare name
+ * reads `origin/<base>`; with no `origin` remote it reads the local branch and `note` says so; with
+ * an `origin` that lacks the ref it throws the gates' fetch advice.
+ */
+export function resolveListBase(
+  repo: string,
+  base: string,
+  env: Env = process.env,
+): { ref: string; note: string | null } {
+  if (base.includes("/") && knowsRef(repo, base, env)) return { ref: base, note: null };
+  const remotes = taskGit(repo, ["remote"], env).split("\n");
+  if (!remotes.includes("origin"))
+    return { ref: base, note: `No origin remote: read against the local branch ${base}.` };
+  const ref = base.startsWith("origin/") ? base : `origin/${base}`;
+  try {
+    refCommit(repo, ref, env);
+  } catch (error) {
+    throw new Error(unreadableRefMessage(ref, error, "name the base with --base <ref>"));
+  }
+  return { ref, note: null };
+}
 export function taskRepoPath(repo: string, dir: string): string {
   const path = relative(resolve(repo), resolve(repo, dir));
   if (path === ".." || path.startsWith(`..${sep}`) || isAbsolute(path))

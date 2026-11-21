@@ -552,7 +552,12 @@ origin string; `evidence` is set when the task closes.
   base, grouped by environment, for the pull request's notes. `task list --branches` finds open
   tasks on local branches not yet merged, and, for a task the base still has open, the closes
   already made on such a branch (`closed on <branch>, not merged`). It reports a broken file on
-  one branch while it keeps listing the others. A deploy branch left unmerged is a visible run in
+  one branch while it keeps listing the others. Both read the base the way the release gates do:
+  a bare name (`main`, from `--base` or the default) is `origin/<base>`, so a local `main` that
+  is behind gives no wrong answer, and a ref with a slash that resolves (`origin/main`) is read
+  as written. With no `origin` remote the listing reads the local branch and says so in one line;
+  with an `origin` that lacks the base it gives the gates' advice (`git fetch origin`). A deploy
+  branch left unmerged is a visible run in
   progress, and a prod gate that waits on an open staging twin points at this list: the twin's
   close may sit on a branch not merged yet.
 - **Old ids.** An id that starts with `T-` answers "old task ids are gone in 5.0.0". The old

@@ -26,6 +26,7 @@ import {
   waitsForTask,
 } from "./queries";
 import {
+  claimText,
   DESCRIPTION_LIMIT,
   NOTE_LIMIT,
   type Result,
@@ -57,7 +58,7 @@ function shape(db: WorkDb, task: WorkTask): Record<string, unknown> {
     branch: task.branch,
     worktree: task.worktree,
     base: task.base,
-    claim: task.claim === null ? null : (task.claim.sessionId ?? `process ${task.claim.pid}`),
+    claim: task.claim === null ? null : claimText(task.claim),
     waitsFor: task.waitsFor.map(numberOf).sort(),
     files: task.files,
     lead:
@@ -959,10 +960,8 @@ export function takeTasks(
             ? {}
             : {
                 claim: [
-                  task.claim,
-                  who.pid === null
-                    ? null
-                    : { pid: who.pid, procStart: who.procStart, sessionId: who.sessionId },
+                  claimText(task.claim),
+                  who.pid === null ? null : claimText({ pid: who.pid, sessionId: who.sessionId }),
                 ],
               }),
         },
@@ -1368,7 +1367,7 @@ export function reclaimResumed(
           db,
           task,
           "changed",
-          { claim: [task.claim?.sessionId ?? `process ${task.claim?.pid}`, who.sessionId] },
+          { claim: [task.claim === null ? null : claimText(task.claim), who.sessionId] },
           who,
           now,
           "claim follows the session id its process now runs under",
