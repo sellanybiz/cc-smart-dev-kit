@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { cliPaths } from "../cli/paths";
+import { escapeRegex } from "../regex-escape";
 import { RUNNER_PROGRAM_NAMES } from "../shell/command";
 import { hookEnv, makeClone, recordingStarter, runHook, writeClaudeFile } from "../testing/hooks";
 import { git, tempDir } from "../testing/temp";
@@ -678,7 +679,7 @@ describe("the hook", () => {
     const result = await runHook(afterMergeHook, ran(repo, "gh pr merge"), fakeGh(merged));
     expect(JSON.parse(result.stdout ?? "{}").hookSpecificOutput.additionalContext).toMatch(
       new RegExp(
-        `^cc-smart-dev-kit: ${file.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}: this project needs cc-smart-dev-kit >=99; you have [0-9.]+; run claude plugin update cc-smart-dev-kit@cc-smart-dev-kit$`,
+        `^cc-smart-dev-kit: ${escapeRegex(file)}: this project needs cc-smart-dev-kit >=99; you have [0-9.]+; run claude plugin update cc-smart-dev-kit@cc-smart-dev-kit$`,
       ),
     );
     expect(await runHook(afterMergeHook, ran(repo, "ls"), fakeGh(merged))).toEqual({});
