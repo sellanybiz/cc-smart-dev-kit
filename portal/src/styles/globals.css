@@ -223,6 +223,17 @@
 body[data-scroll-locked] {
   overflow: hidden !important;
 }
+
+/*
+ * The open sheet's scroll lock (the mobile sidebar), with no script: the sheet renders a plain
+ * backdrop, never Radix's Overlay, because the Overlay mounts react-remove-scroll and its
+ * measured <style> (`components/ui/sheet.tsx`). It keys on the backdrop, never on the sheet's
+ * content: the sidebar overrides the content's `data-slot`. A browser without `:has()` lets
+ * the page scroll behind the sheet, and nothing else changes.
+ */
+body:has([data-slot="sheet-overlay"][data-state="open"]) {
+  overflow: hidden;
+}
 [data-radix-select-viewport] {
   scrollbar-width: none;
   -ms-overflow-style: none;

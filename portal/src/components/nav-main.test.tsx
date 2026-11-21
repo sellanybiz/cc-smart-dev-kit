@@ -1,8 +1,22 @@
 import { describe, expect, test } from "bun:test";
+import { isValidElement, type ReactElement, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { NavMain } from "@/components/nav-main";
-import { SidebarProvider } from "@/components/ui/sidebar";
+import { NAV_GROUPS } from "@/components/nav-items";
+import { NavLinkItem, NavMain } from "@/components/nav-main";
+import { SidebarMenuButton, SidebarProvider } from "@/components/ui/sidebar";
 import { TooltipProvider } from "@/components/ui/tooltip";
+
+/** The first element in a tree of elements whose type is `type`, without rendering it. */
+function findElement(node: ReactNode, type: unknown): ReactElement | null {
+  if (!isValidElement(node)) return null;
+  if (node.type === type) return node;
+  const children = (node.props as { children?: ReactNode }).children;
+  for (const child of Array.isArray(children) ? children : [children]) {
+    const found = findElement(child, type);
+    if (found !== null) return found;
+  }
+  return null;
+}
 
 /** The class lists of every menu (`ul[data-sidebar="menu"]`) in the markup. */
 function menuClasses(html: string): string[][] {
@@ -74,5 +88,33 @@ describe("the sidebar's menus", () => {
       expect(classes).toContain("group-data-[collapsible=icon]:opacity-0");
       expect(classes).toContain("group-data-[collapsible=icon]:pointer-events-none");
     }
+  });
+
+  // T-lxjff2: the mobile sheet stayed open after a nav tap. A tap on the current page's link
+  // changes no path, so the tap itself must close it, not the route change.
+  test("a tap on a link closes the mobile sheet, the current page's link too", () => {
+    const item = NAV_GROUPS[0]?.items[0];
+    if (item === undefined) throw new Error("no nav item");
+    for (const active of [true, false]) {
+      let closed = 0;
+      const tree = NavLinkItem({ item, active, onNavigate: () => closed++ });
+      const button = findElement(tree, SidebarMenuButton);
+      if (button === null) throw new Error("no menu button");
+      const onClick = (button.props as { onClick?: () => void }).onClick;
+      onClick?.();
+      expect(closed).toBe(1);
+    }
+  });
+
+  test("only the current page's link is marked as the page", () => {
+    const html = renderToStaticMarkup(
+      <TooltipProvider>
+        <SidebarProvider>
+          <NavMain />
+        </SidebarProvider>
+      </TooltipProvider>,
+    );
+    expect(html.match(/aria-current="page"/g)).toHaveLength(1);
+    expect(html).toContain('href="/" aria-current="page"');
   });
 });

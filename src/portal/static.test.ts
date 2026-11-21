@@ -83,6 +83,23 @@ describe("the Next.js export", () => {
     expect(server.page("/nowhere")).toBe(null);
   });
 
+  // T-lxjff2 named a favicon 404. The export's `_document.tsx` links `/favicon.svg`, and the
+  // browser asks for nothing else; this is the answer it gets.
+  test("the export's /favicon.svg answers as an SVG under the export's policy", () => {
+    const folder = fixture();
+    writeFileSync(join(folder, "favicon.svg"), '<svg xmlns="http://www.w3.org/2000/svg"/>');
+    const server = exportServer(readExport(folder) as NonNullable<ReturnType<typeof readExport>>);
+    const file = server.page("/favicon.svg");
+    if (file === null) throw new Error("no favicon");
+    const icon = exportResponse(server, file, "csrf-value");
+    if (icon === null) throw new Error("no answer");
+    expect(icon.status).toBe(200);
+    expect(icon.headers.get("content-type")).toBe("image/svg+xml; charset=utf-8");
+    expect(icon.headers.get("content-security-policy")).toBe(server.policy);
+    expect(server.policy).toContain("default-src 'none'");
+    expect(server.policy).toContain("script-src 'self'");
+  });
+
   test("a path never leaves the export's folder", () => {
     const folder = fixture();
     const server = exportServer(readExport(folder) as NonNullable<ReturnType<typeof readExport>>);

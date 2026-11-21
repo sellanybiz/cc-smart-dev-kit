@@ -51,7 +51,12 @@ The page runs under `script-src 'self'` and `style-src 'self'`. So:
   the client only (`AppShell`), because Radix writes `style` attributes when it renders.
   Recharts, dnd-kit and Radix's positioning set styles through the CSSOM after mount, which
   the policy allows. What a library would inject as a runtime `<style>` is repeated in
-  `src/styles/globals.css`, and the menus are not modal (a modal menu injects a scroll lock).
+  `src/styles/globals.css`.
+- Nothing mounts `react-remove-scroll`, whose scroll lock is a measured `<style>`: the menus
+  are not modal (`modal={false}`), and the mobile sidebar's sheet draws a plain backdrop, not
+  Radix's Overlay, with its scroll lock as a static `:has()` rule in `globals.css`.
+  `src/components/csp-safe.test.ts` fails on a rendered Overlay, an import of `ui/dialog` or
+  `ui/popover`, a Radix Select, or a `DropdownMenu` without `modal={false}`.
 - `bun run build` ends with `scripts/csp-hashes.ts`, which writes `out/csp.json`: the hash of
   every style attribute and `<style>` body the export still holds (none today). The server
   builds `style-src-attr` and `style-src` from it.
@@ -62,3 +67,19 @@ The page runs under `script-src 'self'` and `style-src 'self'`. So:
 portal, add `?mock=` to any address to see a page's other states: `normal`, `loading`, `error`,
 `empty`, `no-gateway`, `reconnecting`; the header then says "Mock data", and an action sends
 nothing. Filters live in the address too (`?range=7d&slot=…`).
+
+## Checking the built export in a browser
+
+`bun run dev` runs without the page policy, so a runtime `<style>` that a real machine blocks
+works there. To see what a machine sees, build the export, then serve it through the kit's
+own server, from the repository root:
+
+```sh
+bun run --cwd portal build
+bun scripts/portal-preview.ts            # or: bun scripts/portal-preview.ts <export folder>
+```
+
+It builds nothing. It serves `portal/out` with the export's `csp.json` on `127.0.0.1` at a
+free port, with a new temp folder as its home, and prints the address. It runs no command and
+reaches no network, so use the mock states: `/?mock=normal`, `/work/?mock=empty`. Ctrl+C stops
+it and removes the temp home.
