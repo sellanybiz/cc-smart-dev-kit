@@ -15,7 +15,13 @@ import { hookEnv, makeClone } from "../testing/hooks";
 import { git, tempDir } from "../testing/temp";
 import { folderProject } from "./context";
 import { createTaskOps, type TaskAnswer } from "./ops";
-import { judgeStacks, provedStacks, type StackGit, stackHolds } from "./stack-proof";
+import {
+  judgeStacks,
+  provedStacks,
+  type StackCase,
+  type StackGit,
+  stackHolds,
+} from "./stack-proof";
 import { openWorkDb, workDbFile } from "./work/db";
 import { allTasks, taskById } from "./work/queries";
 import { createTask, reservePlan, updateTask } from "./work/store";
@@ -94,14 +100,33 @@ function store() {
   return { db, plan };
 }
 
-test("the proof: a start that shares the parent's own work, past origin/<default>, on the child's own branch", () => {
+/** `stackHolds` for one pair: a start given unless `given` says it was only recorded, no grandparent. */
+function verdict(
+  run: StackGit,
+  onDefault: string | null,
+  parent: WorkTask,
+  child: WorkTask,
+  start: string | null,
+  over: Partial<StackCase> = {},
+) {
+  return stackHolds(run, onDefault, {
+    parent,
+    child,
+    grandparent: null,
+    start,
+    given: true,
+    ...over,
+  });
+}
+
+test("the proof: a start that shares the parent's own work, past origin/<default> and its start", () => {
   const g = stackRepo();
   const { plan } = store();
-  const alpha = plan("alpha", { branch: "alpha-branch" });
+  const alpha = plan("alpha", { branch: "alpha-branch", base: g.base });
   const beta = plan("beta", { stackedOn: "alpha" });
   const D = git(g.repo, "rev-parse", "origin/main").trim();
   const holds = (start: string | null, child: WorkTask = beta, parent: WorkTask = alpha) =>
-    stackHolds(g.run, D, parent, child, start);
+    verdict(g.run, D, parent, child, start);
   // Started on the parent's tip, or on a commit past it: proved.
   expect(holds(g.tip)).toEqual({ proved: true });
   const past = g.onBranch("beta-branch", { "beta.txt": "1\n" }, "alpha-branch");
@@ -112,7 +137,7 @@ test("the proof: a start that shares the parent's own work, past origin/<default
   expect(holds("no-such-ref")).toEqual({ proved: false, gap: "no-start" });
   expect(holds("--all")).toEqual({ proved: false, gap: "no-start" });
   // A default branch that is unknown, or a parent with no branch git knows, proves nothing.
-  expect(stackHolds(g.run, null, alpha, beta, g.tip)).toEqual({
+  expect(verdict(g.run, null, alpha, beta, g.tip)).toEqual({
     proved: false,
     gap: "default-unknown",
   });
@@ -124,27 +149,39 @@ test("the proof: a start that shares the parent's own work, past origin/<default
     proved: false,
     gap: "parent-branch",
   });
-  // The parent's recorded base decides nothing any more: a wrong one changes no verdict.
-  expect(holds(g.tip, beta, { ...alpha, base: g.tip })).toEqual({ proved: true });
+  // The parent's own start bounds its work: with none git knows, nothing is proved; a start at
+  // its tip leaves it no work of its own below the fork point.
+  expect(holds(g.tip, beta, { ...alpha, base: null })).toEqual({
+    proved: false,
+    gap: "parent-base",
+  });
+  expect(holds(g.tip, beta, { ...alpha, base: "no-such-ref" })).toEqual({
+    proved: false,
+    gap: "parent-base",
+  });
+  expect(holds(g.tip, beta, { ...alpha, base: g.tip })).toEqual({
+    proved: false,
+    gap: "start-lacks-parent",
+  });
 });
 
 test("an empty parent proves nothing: its branch holds no commit past origin/<default>", () => {
   const g = stackRepo();
   const { plan } = store();
   git(g.repo, "branch", "empty-branch", "main");
-  const empty = plan("alpha", { branch: "empty-branch" });
+  const empty = plan("alpha", { branch: "empty-branch", base: g.base });
   const beta = plan("beta", { stackedOn: "alpha" });
   const D = git(g.repo, "rev-parse", "origin/main").trim();
-  expect(stackHolds(g.run, D, empty, beta, g.base)).toEqual({
+  expect(verdict(g.run, D, empty, beta, g.base)).toEqual({
     proved: false,
     gap: "parent-empty",
   });
   // A parent whose work merged into the default branch has none of its own left either.
-  const alpha = plan("gamma", { branch: "alpha-branch" });
+  const alpha = plan("gamma", { branch: "alpha-branch", base: g.base });
   git(g.repo, "merge", "-q", "--no-edit", "alpha-branch");
   git(g.repo, "push", "-q", "origin", "main");
   const merged = git(g.repo, "rev-parse", "origin/main").trim();
-  expect(stackHolds(g.run, merged, alpha, beta, g.tip)).toEqual({
+  expect(verdict(g.run, merged, alpha, beta, g.tip)).toEqual({
     proved: false,
     gap: "parent-empty",
   });
@@ -153,40 +190,63 @@ test("an empty parent proves nothing: its branch holds no commit past origin/<de
 test("a start the stacked plan only wrote down proves nothing: its own branch must hold it", () => {
   const g = stackRepo();
   const { plan } = store();
-  const alpha = plan("alpha", { branch: "alpha-branch" });
+  const alpha = plan("alpha", { branch: "alpha-branch", base: g.base });
   const D = git(g.repo, "rev-parse", "origin/main").trim();
   // Its branch was made on the default branch, and its base names alpha's tip all the same.
   g.onBranch("beta-branch", { "beta.txt": "1\n" }, "main");
   const beta = plan("beta", { stackedOn: "alpha", branch: "beta-branch", base: g.tip });
-  expect(stackHolds(g.run, D, alpha, beta, beta.base)).toEqual({
+  const recorded = { given: false };
+  expect(verdict(g.run, D, alpha, beta, beta.base, recorded)).toEqual({
     proved: false,
     gap: "start-off-branch",
   });
   // A branch git does not know holds nothing.
-  expect(stackHolds(g.run, D, alpha, { ...beta, branch: "gone-branch" }, g.tip)).toEqual({
+  expect(verdict(g.run, D, alpha, { ...beta, branch: "gone-branch" }, g.tip, recorded)).toEqual({
     proved: false,
     gap: "start-off-branch",
   });
   // Rebuilt on alpha's branch, the same start is proved.
   git(g.repo, "branch", "-f", "beta-branch", "alpha-branch");
   g.onBranch("beta-branch", { "beta.txt": "1\n" });
-  expect(stackHolds(g.run, D, alpha, beta, beta.base)).toEqual({ proved: true });
+  expect(verdict(g.run, D, alpha, beta, beta.base, recorded)).toEqual({ proved: true });
+});
+
+test("PROBE 6: a recorded start needs a recorded branch of the stacked plan's own, never the parent's", () => {
+  const g = stackRepo();
+  const { plan } = store();
+  const alpha = plan("alpha", { branch: "alpha-branch", base: g.base });
+  const D = git(g.repo, "rev-parse", "origin/main").trim();
+  const unbranched = plan("beta", { stackedOn: "alpha", base: g.tip });
+  expect(verdict(g.run, D, alpha, unbranched, g.tip, { given: false })).toEqual({
+    proved: false,
+    gap: "own-branch",
+  });
+  // The start a `herdr start` is about to reset to needs no branch yet: herdr records it at launch.
+  expect(verdict(g.run, D, alpha, unbranched, g.tip)).toEqual({ proved: true });
+  // The parent's own branch is never the stacked plan's, given or recorded.
+  const shared = { ...unbranched, branch: "alpha-branch" };
+  expect(verdict(g.run, D, alpha, shared, g.tip, { given: false })).toEqual({
+    proved: false,
+    gap: "own-branch",
+  });
+  expect(verdict(g.run, D, alpha, shared, g.tip)).toEqual({ proved: false, gap: "own-branch" });
 });
 
 test("a parent that moves on after the stacked plan started stays proved; one rebased since is a rival", () => {
   const g = stackRepo();
   const { plan } = store();
-  const alpha = plan("alpha", { branch: "alpha-branch" });
+  const alpha = plan("alpha", { branch: "alpha-branch", base: g.base });
   g.onBranch("beta-branch", { "beta.txt": "1\n" }, "alpha-branch");
   const beta = plan("beta", { stackedOn: "alpha", branch: "beta-branch", base: g.tip });
   const D = () => git(g.repo, "rev-parse", "origin/main").trim();
+  const recorded = { given: false };
   // Alpha keeps building after beta started: the fork point is still alpha's own commit.
   g.onBranch("alpha-branch", { "alpha.txt": "2\n" });
-  expect(stackHolds(g.run, D(), alpha, beta, beta.base)).toEqual({ proved: true });
+  expect(verdict(g.run, D(), alpha, beta, beta.base, recorded)).toEqual({ proved: true });
   // The default branch moves on, and alpha is rebased onto it: the fork point is on main now.
   g.onMain({ "main.txt": "1\n" });
   g.rebase("alpha-branch");
-  expect(stackHolds(g.run, D(), alpha, beta, beta.base)).toEqual({
+  expect(verdict(g.run, D(), alpha, beta, beta.base, recorded)).toEqual({
     proved: false,
     gap: "start-lacks-parent",
   });
@@ -195,15 +255,98 @@ test("a parent that moves on after the stacked plan started stays proved; one re
 test("PROBE 2: a parent rebased onto a later main never proves a start on main, before or after", () => {
   const g = stackRepo();
   const { plan } = store();
-  // The parent records its old base: it decides nothing.
   const alpha = plan("alpha", { branch: "alpha-branch", base: g.base });
   const beta = plan("beta", { stackedOn: "alpha" });
   const m1 = g.onMain({ "m.txt": "1\n" }); // beta starts here, on main, without alpha's work
   g.onMain({ "m.txt": "2\n" });
   const D = () => git(g.repo, "rev-parse", "origin/main").trim();
-  expect(stackHolds(g.run, D(), alpha, beta, m1).proved).toBe(false);
+  expect(verdict(g.run, D(), alpha, beta, m1).proved).toBe(false);
   g.rebase("alpha-branch");
-  expect(stackHolds(g.run, D(), alpha, beta, m1)).toEqual({
+  expect(verdict(g.run, D(), alpha, beta, m1)).toEqual({
+    proved: false,
+    gap: "start-lacks-parent",
+  });
+});
+
+/**
+ * A chain of stacks: `p-branch` (P1) leaves `origin/main`, `alpha-branch` (A1) is built on P1,
+ * and `beta-branch` (B1) on P1 only, so it holds none of alpha's own work.
+ */
+function chainRepo() {
+  const g = stackRepo();
+  const p1 = g.onBranch("p-branch", { "p.txt": "1\n" }, "main");
+  const a1 = g.onBranch("chain-alpha", { "a.txt": "1\n" }, "p-branch");
+  g.onBranch("chain-beta", { "b.txt": "1\n" }, p1);
+  return { ...g, p1, a1 };
+}
+
+test("PROBE 3: a plan stacked on a stacked plan, started on the grandparent's tip, holds none of its parent's work", () => {
+  const g = chainRepo();
+  const { plan } = store();
+  const pp = plan("pp", { branch: "p-branch", base: g.base });
+  const alpha = plan("alpha", { stackedOn: "pp", branch: "chain-alpha", base: g.p1 });
+  const beta = plan("beta", { stackedOn: "alpha", branch: "chain-beta", base: g.p1 });
+  const D = git(g.repo, "rev-parse", "origin/main").trim();
+  const recorded = { given: false, grandparent: pp };
+  // P1 is under alpha's own start: alpha's work starts above it.
+  expect(verdict(g.run, D, alpha, beta, g.p1, recorded)).toEqual({
+    proved: false,
+    gap: "start-lacks-parent",
+  });
+  // Alpha's start recorded too low (the default branch): the grandparent's tip still fences P1.
+  expect(verdict(g.run, D, { ...alpha, base: g.base }, beta, g.p1, recorded)).toEqual({
+    proved: false,
+    gap: "start-lacks-parent",
+  });
+  // A grandparent's branch git does not know proves nothing.
+  expect(
+    verdict(g.run, D, alpha, beta, g.p1, { ...recorded, grandparent: { ...pp, branch: "gone" } }),
+  ).toEqual({ proved: false, gap: "chain-branch" });
+  // Built on alpha's own commit, it is proved past every fence.
+  git(g.repo, "branch", "-f", "chain-beta", "chain-alpha");
+  g.onBranch("chain-beta", { "b.txt": "1\n" });
+  expect(verdict(g.run, D, alpha, { ...beta, base: g.a1 }, g.a1, recorded)).toEqual({
+    proved: true,
+  });
+});
+
+test("PROBE 5: an unpushed commit on the local default branch is never the parent's own work", () => {
+  const g = stackRepo();
+  const { plan } = store();
+  // L1 is on local main only; alpha starts there (its base), and beta's branch too.
+  git(g.repo, "checkout", "-q", "main");
+  const l1 = commit(g.repo, { "local.txt": "1\n" });
+  g.onBranch("local-alpha", { "alpha.txt": "1\n" }, l1);
+  g.onBranch("local-beta", { "beta.txt": "1\n" }, l1);
+  const alpha = plan("alpha", { branch: "local-alpha", base: l1 });
+  const beta = plan("beta", { stackedOn: "alpha", branch: "local-beta", base: l1 });
+  const D = git(g.repo, "rev-parse", "origin/main").trim();
+  expect(verdict(g.run, D, alpha, beta, l1, { given: false })).toEqual({
+    proved: false,
+    gap: "start-lacks-parent",
+  });
+});
+
+test("a criss-cross history has several fork points, and every one must pass", () => {
+  const g = stackRepo();
+  const { plan } = store();
+  // The parent merges main in, and so does a start made apart from it: the two share two best
+  // fork points, alpha's own commit and main's, which is on origin/main. A plain `git merge-base`
+  // names alpha's commit here, so one fork point alone would prove the pair.
+  const m1 = g.onMain({ "m.txt": "1\n" });
+  git(g.repo, "checkout", "-q", "-b", "start-branch", g.tip);
+  git(g.repo, "merge", "-q", "--no-edit", m1);
+  const start = git(g.repo, "rev-parse", "HEAD").trim();
+  git(g.repo, "checkout", "-q", "alpha-branch");
+  git(g.repo, "merge", "-q", "--no-edit", m1);
+  git(g.repo, "checkout", "-q", "main");
+  const forks = git(g.repo, "merge-base", "--all", start, "alpha-branch").trim().split("\n");
+  expect(forks.sort()).toEqual([g.tip, m1].sort());
+  expect(git(g.repo, "merge-base", start, "alpha-branch").trim()).toBe(g.tip);
+  const alpha = plan("alpha", { branch: "alpha-branch", base: g.base });
+  const beta = plan("beta", { stackedOn: "alpha" });
+  const D = git(g.repo, "rev-parse", "origin/main").trim();
+  expect(verdict(g.run, D, alpha, beta, start)).toEqual({
     proved: false,
     gap: "start-lacks-parent",
   });
@@ -212,8 +355,9 @@ test("PROBE 2: a parent rebased onto a later main never proves a start on main, 
 test("judgeStacks proves pairs, never a plan alone, and runs no git for a pair with two leads", () => {
   const g = stackRepo();
   const { db, plan } = store();
-  const alpha = plan("alpha", { branch: "alpha-branch" });
-  const onTip = plan("on-tip", { stackedOn: "alpha", base: g.tip });
+  const alpha = plan("alpha", { branch: "alpha-branch", base: g.base });
+  g.onBranch("on-tip-branch", { "t.txt": "1\n" }, "alpha-branch");
+  const onTip = plan("on-tip", { stackedOn: "alpha", branch: "on-tip-branch", base: g.tip });
   const onMain = plan("on-main", { stackedOn: "alpha", base: g.base });
   const unbased = plan("unbased", { stackedOn: "alpha" });
   plan("plain");
@@ -227,6 +371,16 @@ test("judgeStacks proves pairs, never a plan alone, and runs no git for a pair w
   ]);
   // The default branch unknown: nothing is proved.
   expect(provedStacks(all(), g.run, null)).toEqual([]);
+  // The parent's own parent fences its work: alpha stacked on a plan whose branch holds alpha's
+  // tip leaves alpha no work of its own above it.
+  const pp = plan("pp", { branch: "alpha-branch" });
+  db.sqlite.query("UPDATE tasks SET stacked_on='pp' WHERE id=?").run(alpha.id);
+  expect(judgeStacks(all(), g.run, "main").get(onTip.id)?.verdict).toEqual({
+    proved: false,
+    gap: "start-lacks-parent",
+  });
+  db.sqlite.query("UPDATE tasks SET stacked_on=NULL WHERE id=?").run(alpha.id);
+  expect(pp.stackedOn).toBeNull();
   // A plan of another lead stacked on alpha (written past the store's own refusal) is judged
   // without git, and is not proved.
   const theirs = plan("theirs", {}, OTHER);
@@ -250,7 +404,7 @@ test("judgeStacks proves pairs, never a plan alone, and runs no git for a pair w
 
 /**
  * The task tools in a temp clone, for any caller, with nothing ignored and case compared, and
- * `alpha` laid with its branch recorded: the parent of every stack below.
+ * `alpha` laid with its branch and start recorded: the parent of every stack below.
  */
 function world() {
   const g = stackRepo();
@@ -311,16 +465,21 @@ function world() {
         }),
       ),
     );
+  /** A branch for `slug` built on alpha's tip, with one commit of its own: its name. */
+  const built = (slug: string) => {
+    g.onBranch(`${slug}-branch`, { [`${slug}.txt`]: "1\n" }, "alpha-branch");
+    return `${slug}-branch`;
+  };
   lay("alpha", ["src/a/"]);
-  set("alpha", { branch: "alpha-branch" });
-  return { ...g, project, call, lay, set, row, reserve, db };
+  set("alpha", { branch: "alpha-branch", base: g.base });
+  return { ...g, project, call, lay, set, row, reserve, db, built };
 }
 
 test("PROBE 1: a stack moved to another parent in one update carries no proof: the new parent is a rival", () => {
   const w = world();
   w.lay("beta", ["src/b/"], "alpha");
   w.lay("gamma", ["src/c/"]);
-  w.set("beta", { base: w.tip });
+  w.set("beta", { branch: w.built("beta"), base: w.tip });
   w.reserve("alpha");
   w.reserve("beta");
   w.reserve("gamma");
@@ -337,7 +496,7 @@ test("PROBE 1b: a stack moved to another parent while the plan starts is judged 
   const w = world();
   w.lay("beta", ["src/c/x.ts"], "alpha");
   w.lay("gamma", ["src/c/"]);
-  w.set("beta", { base: w.tip });
+  w.set("beta", { branch: w.built("beta"), base: w.tip });
   w.reserve("alpha");
   w.reserve("gamma");
   // The start makes beta held in the same write, so its new stack is judged like a held plan's.
@@ -349,10 +508,30 @@ test("PROBE 1b: a stack moved to another parent while the plan starts is judged 
   expect([w.row("beta").stackedOn, w.row("beta").status]).toEqual(["alpha", "pending"]);
 });
 
+test("PROBE 3b: through the task tools, a plan stacked on a stacked plan but started below its work is a rival", () => {
+  const w = world();
+  w.lay("child", ["src/c/"], "alpha");
+  w.set("child", { branch: w.built("child"), base: w.tip });
+  w.lay("grand", ["src/c/x.ts"], "child");
+  w.reserve("child");
+  // Grand records where it really started (alpha's tip, below child's work) and its real branch.
+  git(w.repo, "branch", "grand-branch", "alpha-branch");
+  expect(
+    refused(
+      w.call(LEAD, "update", {
+        task: "#3",
+        base: w.tip,
+        branch: "grand-branch",
+        status: "in_progress",
+      }),
+    ),
+  ).toContain('#3 "grand" cannot start, since it overlaps #2 "child": src/c/x.ts (src/c/)');
+});
+
 test("a stack set in the same call as the start is proved on that stack", () => {
   const w = world();
   w.lay("beta", ["src/a/x.ts"]);
-  w.set("beta", { base: w.tip });
+  w.set("beta", { branch: w.built("beta"), base: w.tip });
   w.reserve("alpha");
   expect(
     said(w.call(LEAD, "update", { task: "#2", stacked_on: "alpha", status: "in_progress" })),
@@ -362,7 +541,7 @@ test("a stack set in the same call as the start is proved on that stack", () => 
 test("a base set in the same call as the start is judged, not the base it replaces", () => {
   const w = world();
   w.lay("beta", ["src/a/x.ts"], "alpha");
-  w.set("beta", { base: w.tip });
+  w.set("beta", { branch: w.built("beta"), base: w.tip });
   w.reserve("alpha");
   // The stored base is proved; the call moves it to the default branch: judged on the new one.
   expect(
@@ -379,7 +558,7 @@ test("a base set in the same call as the start is judged, not the base it replac
 test("a take by another session ends the pair: the same lead must lead both when the overlap is judged", () => {
   const w = world();
   w.lay("beta", ["src/a/x.ts"], "alpha");
-  w.set("beta", { base: w.tip });
+  w.set("beta", { branch: w.built("beta"), base: w.tip });
   w.reserve("alpha");
   expect(
     provedStacks(
@@ -406,7 +585,7 @@ test("a take by another session ends the pair: the same lead must lead both when
 test("a child that takes the parent it was handed keeps the pair: the reservation still names the lead", () => {
   const w = world();
   w.lay("beta", ["src/a/x.ts"], "alpha");
-  w.set("beta", { base: w.tip });
+  w.set("beta", { branch: w.built("beta"), base: w.tip });
   const handout = w.reserve("alpha").lead?.handoutId ?? "";
   said(w.call(CHILD, "take", { task: "alpha", from: handout }));
   expect(w.db((d) => taskById(d, w.row("alpha").id)).createdBy).toBe("child");
@@ -505,7 +684,7 @@ test("a stacked plan's phase starts beside its reserved parent only when its bas
   const gamma = layPhase(THIRD, "gamma", ["src/a/y.ts"]);
   w.reserve("alpha");
   // Beta records the default branch as its start: its stack is not proved, so alpha is a rival.
-  w.set("beta", { base: w.base });
+  w.set("beta", { branch: w.built("beta"), base: w.base });
   expect(refused(w.call(LEAD, "update", { task: beta, status: "in_progress" }))).toContain(
     '"beta" cannot start, since it overlaps #1 "alpha": src/a/x.ts (src/a/)',
   );

@@ -1066,6 +1066,39 @@ test("a stacked plan is ready beside its held parent once it starts on its work,
   expect(guessed?.fix).toBe(
     "the stack on alpha counts only once the default branch is known: run `git remote set-head origin --auto`, or set worktrees.base in .claude/cc-smart-dev-kit.json",
   );
+  // A parent that records no start has no lower end to its own work: the fix asks for it.
+  const unstarted = build();
+  unstarted.branch("alpha-branch", { "src/a/one.ts": "1\n" });
+  unstarted.change(unstarted.plan("alpha", ["src/a/"]), { branch: "alpha-branch" });
+  unstarted.reserve("alpha");
+  unstarted.change(unstarted.plan("beta", ["src/a/x.ts"]), { stackedOn: "alpha" });
+  const noBase = judgePlans(
+    unstarted.base,
+    "beta",
+    unstarted.git("rev-parse", "alpha-branch"),
+  ).lines.find((one) => one.plan === "beta");
+  expect(noBase?.fix).toBe(
+    "the stack on alpha counts only once alpha records where it started: task_update #1 with base set to the commit its branch started from",
+  );
+  // A stacked plan that keeps a branch made apart from its parent's: the fix records the branch
+  // built on the parent, since a new herdr start would not replace it.
+  const offBranch = build();
+  const offBase = offBranch.git("rev-parse", "HEAD");
+  offBranch.branch("alpha-branch", { "src/a/one.ts": "1\n" });
+  offBranch.branch("beta-branch", { "src/b/one.ts": "1\n" });
+  offBranch.change(offBranch.plan("alpha", ["src/a/"]), {
+    branch: "alpha-branch",
+    base: offBase,
+  });
+  offBranch.reserve("alpha");
+  offBranch.change(offBranch.plan("beta", ["src/a/x.ts"]), {
+    stackedOn: "alpha",
+    branch: "beta-branch",
+    base: offBranch.git("rev-parse", "alpha-branch"),
+  });
+  expect(offBranch.line("beta").fix).toBe(
+    "the stack on alpha counts only when this plan records its own branch, built on alpha's work: task_update #2 branch=<branch built on alpha>",
+  );
   // The stack is shown on the line the command prints.
   const shown: string[] = [];
   const out = createOut(
