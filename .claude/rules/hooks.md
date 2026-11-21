@@ -4,6 +4,7 @@ paths:
   - "src/entries/after-merge.ts"
   - "src/entries/agent-usage.ts"
   - "src/entries/builder-finish.ts"
+  - "src/entries/config-check.ts"
   - "src/entries/fable-session.ts"
   - "src/entries/job-route.ts"
   - "src/entries/keep-going.ts"
@@ -50,25 +51,15 @@ WorktreeCreate cannot step aside for a project that did not opt in, and a hook-m
 loses Claude Code's lock, its cleanup marker, `-w "#123"` and its Git LFS handling.
 
 **A plugin SubagentStop hook that touches no worktree is fine.** Four are wired, all on the
-subagent's stop alone: `review-record` (which also runs on SubagentStart to note the commit
-and branch a review agent starts on, and records the review of that start commit, on that
-branch, at the stop — commits made while it read count as change after the review,
-`src/workflow/review-cover.ts`), `subagent-background` (one block when a subagent ends its
-turn with background work it started still running, `src/hooks/subagent-background.ts`),
-`builder-finish` (one block when a builder hands back while the task its brief names,
-`Your task: #<n>`, still has open blocking steps, `src/hooks/builder-finish.ts`) and
-`agent-usage` (each subagent's cost on record, `src/hooks/agent-usage.ts`: **machine-wide**,
-the person's spend, so it records with no `cc-smart-dev-kit.json` and outside git; and
-`builder-finish` is machine-wide too, since it reads only the person's task list). The two
-project-scoped ones can be silent for a project that never opted in, none removes anything,
-and no two answer the same thing: `review-record` writes the review,
-`subagent-background` continues the agent for its running background work, `builder-finish`
-continues it for its open steps, and `agent-usage` only appends a line.
-`entries.test.ts` fails when `hooks.json` wires WorktreeCreate, WorktreeRemove, or a SubagentStart or SubagentStop entry outside the exact
-list it names (`review-record` on SubagentStart; `review-record`, `subagent-background`,
-`builder-finish` and `agent-usage` on SubagentStop), so a new entry is checked before it is wired. The review gate `review-record`
-feeds stops mistakes, not a same-user process set on getting past it
-(`docs/design/workflow.md` § The review record).
+subagent's stop alone (`review-record` also runs on SubagentStart): `review-record`,
+`subagent-background`, `builder-finish` and `agent-usage`. `agent-usage` (the person's spend)
+and `builder-finish` (their task list) are machine-wide; the other two are silent for a project
+that never opted in. None removes anything, and no two answer the same thing; what each does:
+`docs/design/hooks.md` § The hooks. `entries.test.ts` fails when `hooks.json` wires
+WorktreeCreate, WorktreeRemove, or a SubagentStart or SubagentStop entry outside that list, so
+a new entry is checked before it is wired. The review gate `review-record` feeds stops
+mistakes, not a same-user process set on getting past it (`docs/design/workflow.md` § The
+review record).
 
 ## The plugin's hooks: shell form, through the bun shim
 
@@ -144,15 +135,32 @@ Every entry in `plugin/hooks/hooks.json` uses the shell form, never the exec for
 
 1. **Read the input**; not JSON, another event, or a `cwd` outside git: nothing to do.
 2. **`ownHooks`** (`hooks-guards.md` § The project's own copy).
-3. **Read `cc-smart-dev-kit.json`**; broken or too new: fail closed (`hooks-guards.md` § Fail closed).
+3. **Read `cc-smart-dev-kit.json`**, once, through the checked cache; broken or too new: fail closed (`hooks-guards.md` § Fail closed).
 4. **Run.** `user-away`'s question-tool crash answers through `onCrash` (`hooks-guards.md` § Fail safe).
 5. **Record an ask**: an answer that asks the person is appended to `guard-asks.jsonl`
    (`hooks-guards.md` § Fail safe).
 
+## The project file: one read, through the checked cache
+
+The frame reads the project file (`job-route` also the person's workflow file) once, through
+`src/hooks/checked-config.ts`: a cache of checked answers keyed by the file's bytes and the
+parser's build fingerprint. The parsers sit in the sibling bundle `dist/config-check.js`
+(`src/entries/config-check.ts`), loaded only on a miss: `docs/design/hooks.md` § The checked project file.
+
+- **A hook passes the frame's read on** (`context.project`); it never reads the file again and
+  never calls `loadProjectConfig()` (the CLI's reader, which loads zod).
+- **A module on a zod-free hook's path** imports `src/project/locate.ts` and
+  `src/project/config-facts.ts`, never `project/resolve.ts` or `config.ts`, and no zod. A warm
+  run of `agent-usage`, `session-name`, `verify-gate` and `job-route` loads no zod, and
+  `after-merge` loads it only on a line that merges: `entries.test.ts` traps and budgets them.
+- **A missing sibling fails closed** (one fix: reinstall the plugin); a config problem in it
+  is data, said in the old words; any other error inside it stays a crash.
+- **A lazy `import()` never goes in a module `tasks-mcp.js` reaches** (the design page says why).
+
 ## Find the project from the input's `cwd`
 
-The hook reads its input as JSON on stdin. **Use the input's `cwd`** (`locateCheckout()`,
-then `loadProjectConfig()`, from `src/project/`). It follows the session into a worktree.
+The hook reads its input as JSON on stdin. **Use the input's `cwd`** (`locateCheckout()`
+from `src/project/locate.ts`; the frame reads the file). It follows the session into a worktree.
 
 - Never `CLAUDE_PROJECT_DIR`: it stays at the folder the session started in.
 - Never `process.cwd()`.

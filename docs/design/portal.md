@@ -414,6 +414,23 @@ owner's yes to D49's one loosening, for the exact values the export writes. `scr
 server-rendered page, and with no export folder at all the server-rendered pages answer as
 before: the switch-over costs nothing.
 
+**The sidebar under the strict policy.** On a phone the sidebar is a sheet (a Radix Dialog). A
+Radix `Overlay`, and any modal menu, popover or select, mounts `RemoveScroll`, which writes a
+measured `<style>` at run time that `style-src 'self'` blocks (a policy error on every open, seen
+live), so the sheet draws its own plain backdrop (`SheetBackdrop`, `portal/src/components/ui/sheet.tsx`)
+and the scroll lock is one static `:has()` rule in `globals.css`. `csp-safe.test.ts` reads the
+source and fails on a rendered Overlay, an import of `ui/dialog` or `ui/popover`, a Radix Select
+or a `DropdownMenu` without `modal={false}`. The rest of the sheet's behaviour: the nav tooltips
+exist only on the folded desktop sidebar, so one Escape closes the sheet; a tap on any nav item, a
+route change and a wider window close it; focus goes back to the trigger on close, without
+scrolling the page; and the targets are 44 px at the mobile width and on a coarse pointer. A bar
+anywhere on a page is `Meter` or `MeterBar` (`portal/src/components/meter.tsx`): an SVG whose width
+is an attribute, never a `style`, with a track that stays visible in both themes. The built export
+cannot be judged under `next dev`, which runs with no page policy: `scripts/portal-preview.ts`
+serves `portal/out` through the real server, on a free `127.0.0.1` port with a temp home and no
+effect allowed, for a browser check. A touch scroll through the backdrop, WebKit and a real phone
+are not proved.
+
 ### The page side: the client, the stream, the actions (B6c)
 
 **One client, chosen in one place** (`portal/src/api/client.ts` › `portalClient()`): the live

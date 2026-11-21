@@ -104,7 +104,8 @@ A session's history follows its folder: while it works in a worktree, Claude Cod
 under that folder. From the main checkout, `/resume` can widen its list to every worktree;
 `claude --resume <session-id>` works from any folder. A session whose worktree was removed
 resumes in the current folder. `cc-smart-dev-kit sessions` lists this project's sessions in
-its worktrees too, and brings back the ones a restart or a closed window stopped.
+its worktrees too, wherever git lists them (a project's own hook may put them outside
+`.claude/worktrees/`), and brings back the ones a restart or a closed window stopped.
 
 ## After a merged change to hooks or settings
 

@@ -3,6 +3,8 @@ paths:
   - "src/portal/**"
   - "src/omniroute/**"
   - "src/entries/portal.ts"
+  - "portal/src/**"
+  - "scripts/portal-preview.ts"
 ---
 
 # The Portal And OmniRoute: Rules For Working On Them
@@ -53,10 +55,14 @@ in this turn.
   So:
   - **no inline script, and no `on*=` attribute** — every handler is a `data-*` and an
     `addEventListener` in `assets.ts`;
-  - **no `style` attribute in the markup** — a value the CSS needs (a meter's width) travels
-    as a `data-` attribute and the browser script applies it. `[hidden] { display: none
-    !important }` stays, or a class with `display: flex` beats the `hidden` attribute and a
-    box that should be closed stays open;
+  - **no `style` attribute in the markup** — a value the CSS needs travels as a `data-`
+    attribute and the browser script applies it. A bar is `Meter` or `MeterBar`
+    (`portal/src/components/meter.tsx`, the one home of every bar: its width is an SVG
+    attribute). `[hidden] { display: none !important }` stays, or a class with `display: flex`
+    beats the `hidden` attribute and a box that should be closed stays open;
+  - **no Radix part that mounts `RemoveScroll`** (an Overlay, a modal `DropdownMenu`, a Popover,
+    a Select): it injects a runtime `<style>` no hash covers. `portal/src/components/csp-safe.test.ts`
+    fails on any such part;
   - **nothing from the internet** — no web font, no CDN. A local font stack.
 - **A key never reaches a page.** Every backend key goes through `maskKey`; no page, JSON
   answer or log line ever holds a whole key. A backend's address goes through `backendAddress`
@@ -100,10 +106,7 @@ in this turn.
 - **The portal keeps no slot state of its own.** Every chain lives in `gateway.json` — in use
   in `slots`, saved in `kept` while the slot answers as Claude (`.claude/rules/gateway.md`) —
   and every slot has the same switch: one `slot.mode` action runs `gateway slot <slot>
-  claude|custom`. The old `portal.json` (the opus, fable and judge chains) was the portal's memory up to
-  1.0.1; `gateway setup` moved it into `kept` from 1.1.0 to 1.4.0; from 1.4.1 nothing reads or
-  writes it.
-  "Claude login" in the model list is what the router saw (`seenClaude` in the state file),
+  claude|custom`. "Claude login" in the model list is what the router saw (`seenClaude` in the state file),
   never a list the portal made up.
 - `GatewayContext`, `runUpdate` and `doctorChecks` take their output from the caller
   (`print` / `error` sinks) for exactly this. A new command the portal shows must do the same,
@@ -126,12 +129,11 @@ in this turn.
   rules needs an explicit confirmation on the page, and is written only as shown: the card is
   `setup`'s own `+` / `-` dry run, its button carries that change's hash (`autoModeChange`), and
   the write plans again under the lock and refuses a different one.
-- **No command refuses inside a Claude Code session any more** (D9 removed the token, so there
-  is nothing to leak). The retired session-escape guard was the seatbelt for a session's shell
-  command that reaches the portal's port; nothing replaces it, the owner's ruling.
-- **Never a number the machine cannot give.** Claude Code's usage percentages are not written
-  down anywhere and OmniRoute's prices are in its own catalog: a page says so and shows what it
-  does know. Never invent one to match a mockup. A sum that holds requests the history could
+- **Never a number the machine cannot give.** Claude Code's usage percentages reach the kit
+  only through the status line, which records the 5-hour and 7-day windows it was given
+  (`src/cli/usage-window.ts`); the Overview shows what was recorded, and a window not
+  recorded, or one that has ended, has no row. OmniRoute's prices are in its own catalog: a
+  page says so and shows what it does know. Never invent one to match a mockup. A sum that holds requests the history could
   not price says how many in words, and one made only of them shows "no price", never "$0".
 
 ## It is a bundle of its own, and it runs from a copy
@@ -192,6 +194,13 @@ in this turn.
 - **Every effect goes through an injected `runner`, `registry` or `fetch`.** A test uses a fake
   bun, a fake systemctl, a fake registry and a fake backend; it never reaches the real
   OmniRoute, the real npm registry or systemd.
+
+## Checking the UI
+
+`bun run --cwd portal build`, then `bun scripts/portal-preview.ts`: it serves `portal/out`
+through the real server, so the page policy is the real one (`next dev` has none), on a free
+`127.0.0.1` port with a temp home and every effect refused. `?mock=<state>` shows a page's
+other states (`portal/README.md`). `ui-verify` drives that address.
 
 ## Docs
 

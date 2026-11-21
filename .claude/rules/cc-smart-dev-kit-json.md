@@ -14,7 +14,7 @@ changing it breaks other people's projects.
 ## Where it is read from
 
 `resolveProject(cwd, { pluginVersion?, env? })` locates the checkout, then reads config.
-Hooks can call `locateCheckout()` and `loadProjectConfig()` apart for `ownHooks`.
+A hook's frame calls `locateCheckout()` (`src/project/locate.ts`) and reads the file through the checked cache (`.claude/rules/hooks.md`); the CLI uses `resolveProject`.
 `env` supplies git's environment, including a test's fake git. The read order is:
 
 1. `<checkout root>/.claude/cc-smart-dev-kit.json` — a linked worktree's own file wins;
@@ -31,7 +31,7 @@ a clear error that says what is wrong.
 | Field | Type | Meaning |
 |---|---|---|
 | `requires` | version range, npm syntax (`">=0.1"`) | The plugin versions this project needs. |
-| `worktrees` | object | Turns on the notes that work with worktrees (the after-merge and leftovers notes). Every project uses Claude Code's own worktrees (`<repo>/.claude/worktrees/<name>`); `project init` writes `base` for every project. |
+| `worktrees` | object | Turns on the notes that work with worktrees (the after-merge and leftovers notes). Every project uses Claude Code's own worktrees (`<repo>/.claude/worktrees/<name>`); `project init` writes `base` for every project. A project's own WorktreeCreate hook may place worktrees elsewhere; `herdr` and `sessions` (and the portal's Work page) learn the folders from `git worktree list`, so no setting names one (`docs/design/herdr.md`). |
 | `worktrees.base` | string | The branch new worktrees start from and pull requests go into; also the base the after-merge and leftovers hooks compare with. |
 | `worktrees.prefix` | **retired in 1.0.0, refused** | The folder-name prefix the plugin's worktree engine gave a worktree beside the repo. Not in the schema; `RETIRED_WORKTREE_FIELDS` refuses it by name, with the fix (`project init` removes it). |
 | `worktrees.setup` | **retired in 1.0.0, refused** | A command the engine ran inside a new worktree. Refused the same way. |
