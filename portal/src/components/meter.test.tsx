@@ -11,7 +11,7 @@ test("a meter speaks its words and draws its share as an SVG width, never a styl
   expect(html).toBe(
     '<meter class="sr-only" min="0" max="4" value="3">3 of 4 slots</meter>' +
       '<svg data-slot="meter" class="h-2.5 w-full" aria-hidden="true" preserveAspectRatio="none">' +
-      '<rect width="100%" height="100%" rx="4" class="fill-muted"></rect>' +
+      '<rect width="100%" height="100%" rx="4" class="fill-muted-foreground/40"></rect>' +
       '<rect width="75%" height="100%" rx="4" class="fill-primary"></rect></svg>',
   );
 });
@@ -19,7 +19,7 @@ test("a meter speaks its words and draws its share as an SVG width, never a styl
 test("the bar alone draws the same bar, with no meter to speak it", () => {
   expect(renderToStaticMarkup(<MeterBar value={1} max={4} className="w-full" />)).toBe(
     '<svg data-slot="meter" class="h-2.5 w-full" aria-hidden="true" preserveAspectRatio="none">' +
-      '<rect width="100%" height="100%" rx="4" class="fill-muted"></rect>' +
+      '<rect width="100%" height="100%" rx="4" class="fill-muted-foreground/40"></rect>' +
       '<rect width="25%" height="100%" rx="4" class="fill-primary"></rect></svg>',
   );
 });
