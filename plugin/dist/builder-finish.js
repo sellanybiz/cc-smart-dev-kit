@@ -8719,11 +8719,18 @@ var FIND_INSTALL_JS = [
 
 // src/worktrees/paths.ts
 var WORKTREES_FOLDER_SEGMENTS = [".claude", "worktrees"];
+function worktreeBranch(name) {
+  return `worktree-${name}`;
+}
 var SUBAGENT_NAME_PREFIX = "agent-";
-var SUBAGENT_BRANCH_PREFIX = `worktree-${SUBAGENT_NAME_PREFIX}`;
+var SUBAGENT_BRANCH_PREFIX = worktreeBranch(SUBAGENT_NAME_PREFIX);
 
 // src/hooks/subagent-worktree.ts
-var FOLDER_PATTERN = WORKTREES_FOLDER_SEGMENTS.map((segment) => segment.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join(String.raw`[\\/]`);
+function literal(text) {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+var FOLDER_PATTERN = WORKTREES_FOLDER_SEGMENTS.map(literal).join(String.raw`[\\/]`);
+var NAME_PREFIX_PATTERN = literal(SUBAGENT_NAME_PREFIX);
 
 // src/hooks/transcript.ts
 import { closeSync as closeSync2, fstatSync, openSync as openSync2, readSync } from "fs";

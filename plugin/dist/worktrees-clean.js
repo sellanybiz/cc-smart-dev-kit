@@ -9292,8 +9292,11 @@ var WORKTREES_FOLDER_SEGMENTS = [".claude", "worktrees"];
 function worktreesFolder(repoRoot) {
   return join13(repoRoot, ...WORKTREES_FOLDER_SEGMENTS);
 }
+function worktreeBranch(name) {
+  return `worktree-${name}`;
+}
 var SUBAGENT_NAME_PREFIX = "agent-";
-var SUBAGENT_BRANCH_PREFIX = `worktree-${SUBAGENT_NAME_PREFIX}`;
+var SUBAGENT_BRANCH_PREFIX = worktreeBranch(SUBAGENT_NAME_PREFIX);
 
 // src/worktrees/verdict.ts
 var MIN_MERGE_TREE_GIT = "2.38.0";
@@ -9668,6 +9671,9 @@ function baseRefOf(options) {
     ref: options.against?.ref ?? `refs/remotes/origin/${options.base}`
   };
 }
+function comparedWith(options) {
+  return options.against?.label ?? `origin/${options.base}`;
+}
 function lookAt(repo, options) {
   return {
     ...machineFactsOf(options),
@@ -9823,8 +9829,8 @@ function removeWorktree(repo, listed, options) {
     if (options.deleteBranch !== undefined) {
       said.push(options.deleteBranch(repo, listed.branch));
     } else {
-      const outcome = tryDeleteBranch(repo, look.ref, look.label, listed.branch, options.env);
-      said.push(outcome.kind === "not-on-ref" && fresh.heldBy !== undefined ? `kept branch ${listed.branch}: its work is held by ${fresh.heldBy}, not yet on ${refName(fresh.heldBy, look.label, options.against !== undefined)}` : branchOutcomeLine(listed.branch, look.label, outcome));
+      const outcome = tryDeleteBranch(repo, look.ref, comparedWith(options), listed.branch, options.env);
+      said.push(outcome.kind === "not-on-ref" && fresh.heldBy !== undefined ? `kept branch ${listed.branch}: its work is held by ${fresh.heldBy}, not yet on ${refName(fresh.heldBy, look.label, options.against !== undefined)}` : branchOutcomeLine(listed.branch, comparedWith(options), outcome));
     }
   }
   return { said, status: "removed" };
@@ -9844,26 +9850,45 @@ function refName(holder, label, customRef) {
   return !customRef && holder === label ? `origin/${label}` : label;
 }
 function judgeBranchOnRef(repo, ref, label, branch, env) {
-  const ahead = runGit(repo, ["rev-list", "--count", `${ref}..refs/heads/${branch}`], env);
+  const head = runGit(repo, ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`], env);
+  const sha = head.ok ? head.out.trim() : "";
+  if (!COMMIT_SHA.test(sha)) {
+    return { kind: "git-error", text: head.err || `git could not read the branch ${branch}` };
+  }
+  const ahead = runGit(repo, ["rev-list", "--count", `${ref}..${sha}`], env);
   if (!ahead.ok) {
     return { kind: "git-error", text: ahead.err || `git could not compare it with ${label}` };
   }
   if (ahead.out === "0")
-    return { kind: "on-ref" };
-  const head = runGit(repo, ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`], env);
-  const sha = head.ok ? head.out.trim() : "";
-  const elsewhere = COMMIT_SHA.test(sha) && workOnBase(repo, ref, sha, branch, env, replayerFor(repo, env)) !== null;
-  return elsewhere ? { kind: "on-ref" } : { kind: "not-on-ref" };
+    return { kind: "on-ref", sha };
+  return workOnBase(repo, ref, sha, branch, env, replayerFor(repo, env)) !== null ? { kind: "on-ref", sha } : { kind: "not-on-ref" };
+}
+function deleteJudgedBranch(repo, branch, sha, env) {
+  let usedBy;
+  try {
+    usedBy = listWorktrees(repo, env).find((worktree) => worktree.branch === branch)?.path;
+  } catch (error) {
+    const why = error instanceof Error ? error.message : String(error);
+    return { kind: "git-error", text: `${why}, so it is not proved that no worktree uses it` };
+  }
+  if (usedBy !== undefined) {
+    return { kind: "git-error", text: `a worktree has it checked out, at ${usedBy}` };
+  }
+  const deleted = runGit(repo, ["update-ref", "-d", `refs/heads/${branch}`, sha], env);
+  if (deleted.ok)
+    return { kind: "deleted" };
+  const now = runGit(repo, ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`], env);
+  return {
+    kind: "git-error",
+    text: now.ok && now.out.trim() !== sha ? "it moved after it was judged, so it stays" : deleted.err
+  };
 }
 function tryDeleteBranch(repo, ref, label, branch, env) {
   const judged = judgeBranchOnRef(repo, ref, label, branch, env);
-  if (judged.kind !== "on-ref")
-    return judged;
-  const deleted = runGit(repo, ["branch", "-D", branch], env);
-  return deleted.ok ? { kind: "deleted" } : { kind: "git-error", text: deleted.err };
+  return judged.kind === "on-ref" ? deleteJudgedBranch(repo, branch, judged.sha, env) : judged;
 }
 function deleteMergedBranch(repo, base, branch, env) {
-  return deleteBranchOnRef(repo, `refs/remotes/origin/${base}`, base, branch, env);
+  return deleteBranchOnRef(repo, `refs/remotes/origin/${base}`, comparedWith({ base }), branch, env);
 }
 function pruneWorktrees(repo, env) {
   runGit(repo, ["worktree", "prune"], env);
@@ -10132,6 +10157,19 @@ function cleanWithStrays(repo, scanned, judged, say, before = strayParkedFolders
     union.set(realPath(stray.path), stray);
   return { report, strays: finishStrays(repo, judged, say, [...union.values()]) };
 }
+
+// src/mcp/task-server-name.ts
+var TASKS_SERVER_NAME = `${COMMAND}-tasks`;
+
+// src/tasks/words.ts
+var TASK_TOOLS_ALLOW_RULE = `mcp__${TASKS_SERVER_NAME}__*`;
+var TASK_COMMAND = `${COMMAND} task`;
+
+// src/tasks/work/db.ts
+var NEWER_STORE = `the task store was made by a newer kit version: update the kit (${COMMAND} update)`;
+
+// src/tasks/work/identity.ts
+var cached2 = new Map;
 
 // src/worktrees/command.ts
 var DEFAULT_BASE = "main";

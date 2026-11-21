@@ -8914,19 +8914,21 @@ function resolveWorkflow(paths, projectConfig) {
 
 // src/worktrees/paths.ts
 var WORKTREES_FOLDER_SEGMENTS = [".claude", "worktrees"];
+function worktreeBranch(name) {
+  return `worktree-${name}`;
+}
 var SUBAGENT_NAME_PREFIX = "agent-";
-var SUBAGENT_BRANCH_PREFIX = `worktree-${SUBAGENT_NAME_PREFIX}`;
+var SUBAGENT_BRANCH_PREFIX = worktreeBranch(SUBAGENT_NAME_PREFIX);
 
 // src/hooks/subagent-worktree.ts
-var FOLDER_PATTERN = WORKTREES_FOLDER_SEGMENTS.map((segment) => segment.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join(String.raw`[\\/]`);
-function subagentWorktreeMatching(cwd, idPattern) {
-  const found = new RegExp(String.raw`^(.*[\\/]${FOLDER_PATTERN}[\\/]${SUBAGENT_NAME_PREFIX}${idPattern})(?:[\\/]|$)`).exec(cwd);
-  return found?.[1] ?? null;
+function literal(text) {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
-function subagentWorktreeOf(cwd, agentId) {
-  if (agentId === null || !/^[0-9a-f]+$/.test(agentId))
-    return null;
-  return subagentWorktreeMatching(cwd, agentId);
+var FOLDER_PATTERN = WORKTREES_FOLDER_SEGMENTS.map(literal).join(String.raw`[\\/]`);
+var NAME_PREFIX_PATTERN = literal(SUBAGENT_NAME_PREFIX);
+function subagentWorktreeMatching(cwd, idPattern) {
+  const found = new RegExp(String.raw`^(.*[\\/]${FOLDER_PATTERN}[\\/]${NAME_PREFIX_PATTERN}${idPattern})(?:[\\/]|$)`).exec(cwd);
+  return found?.[1] ?? null;
 }
 function subagentWorktreeByShape(cwd) {
   return subagentWorktreeMatching(cwd, "[0-9a-f]+");
@@ -9173,9 +9175,7 @@ function headCommit(folder, env) {
 function said(why) {
   return { stderr: `cc-smart-dev-kit review-record: ${why}` };
 }
-function inSubagentWorktree(cwd, agentId) {
-  if (subagentWorktreeOf(cwd, agentId) !== null)
-    return true;
+function inSubagentWorktree(cwd) {
   return subagentWorktreeByShape(cwd) !== null;
 }
 async function reviewRecord(context) {
@@ -9187,7 +9187,7 @@ async function reviewRecord(context) {
   if (agent === null)
     return SILENT;
   const agentId = stringField(input.agent_id);
-  if (inSubagentWorktree(cwd, agentId === null ? null : agentIdKey(agentId)))
+  if (inSubagentWorktree(cwd))
     return SILENT;
   let resolved;
   try {

@@ -17727,8 +17727,11 @@ function worktreesFolder(repoRoot) {
 function worktreePath(repoRoot, name) {
   return join19(worktreesFolder(repoRoot), name);
 }
+function worktreeBranch(name) {
+  return `worktree-${name}`;
+}
 var SUBAGENT_NAME_PREFIX = "agent-";
-var SUBAGENT_BRANCH_PREFIX = `worktree-${SUBAGENT_NAME_PREFIX}`;
+var SUBAGENT_BRANCH_PREFIX = worktreeBranch(SUBAGENT_NAME_PREFIX);
 
 // src/sessions/saved-sessions.ts
 var PROJECT_FOLDER_NAME_MAX = 200;
@@ -19443,14 +19446,17 @@ function autoMergeOff(resolved, base) {
   const where = base ?? "the integration base (worktrees.base)";
   return `allowMerge is off (${sourceLabel(resolved.allowMerge, base)}): turn it on with \`${COMMAND} workflow set allowMerge true --project\`, or write ("workflow": {"allowMerge": true}) in ${CONFIG_PATH} together with "requires": "${requiresFor(WORKFLOW_ALLOW_KEYS_SINCE)}"; commit it to ${where} and push`;
 }
-function autoMergeRefusal(resolved, projectConfig, prBase, defaultBranch) {
-  const off = autoMergeOff(resolved, prBase);
-  if (off !== null)
-    return off;
+function baseRefusal(projectConfig, prBase, defaultBranch) {
   const integration = projectConfig?.worktrees?.base;
   if (prBase === defaultBranch || prBase === integration)
     return null;
   return integration === undefined ? `the pull request's base is ${prBase}, not the repository's default branch ${defaultBranch}` : `the pull request's base is ${prBase}, not the project's integration base ${integration} or the repository's default branch ${defaultBranch}`;
+}
+function autoMergeRefusal(resolved, projectConfig, prBase, defaultBranch) {
+  const off = autoMergeOff(resolved, prBase);
+  if (off !== null)
+    return off;
+  return baseRefusal(projectConfig, prBase, defaultBranch);
 }
 function autoMergeAllowed(resolved, projectConfig, prBase, defaultBranch) {
   return autoMergeRefusal(resolved, projectConfig, prBase, defaultBranch) === null;
@@ -20011,6 +20017,9 @@ function pullRequestAllowed(cover) {
     return "its required checks are green, and reviewBeforePush is off";
   return `the review of ${short2(cover.review)} covers its head, and its required checks are green`;
 }
+function askedAllowed(reason) {
+  return `the merge rests on the person's yes (--asked), not on allowMerge, which is off: ${reason}`;
+}
 function mergeRefusal(facts) {
   if (facts.branchRefusal !== null)
     return facts.branchRefusal;
@@ -20084,7 +20093,7 @@ async function gateFor(world, branch) {
     timeoutMs: left
   });
 }
-async function checkPullRequest(world, target, defaultBranches = new Map) {
+async function checkPullRequest(world, target, defaultBranches = new Map, options = {}) {
   const viewLeft = world.timeFor(GH_TIMEOUT_MS);
   if (viewLeft <= 0) {
     return { kind: "late", number: null, what: "the pull request this command names" };
@@ -20123,7 +20132,9 @@ async function checkPullRequest(world, target, defaultBranches = new Map) {
   if (defaultBranch === null) {
     return { kind: "unread", number: view.number, what: "this repository's default branch" };
   }
-  const branchRefusal = autoMergeRefusal(resolved, committed, view.base, defaultBranch);
+  const asked = options.asked === true;
+  const branchRefusal = asked ? baseRefusal(committed, view.base, defaultBranch) : autoMergeRefusal(resolved, committed, view.base, defaultBranch);
+  const onTheYes = asked && autoMergeOff(resolved, view.base) !== null;
   let checks = null;
   if (branchRefusal === null) {
     const checksLeft = world.timeFor(GH_TIMEOUT_MS);
@@ -20158,10 +20169,11 @@ async function checkPullRequest(world, target, defaultBranches = new Map) {
       reason: refused
     };
   }
+  const allowed = pullRequestAllowed(cover?.covered === true ? cover : null);
   return {
     detail: detailOf(cover, review.limits),
     kind: "allowed",
-    reason: pullRequestAllowed(cover?.covered === true ? cover : null)
+    reason: onTheYes ? askedAllowed(allowed) : allowed
   };
 }
 
@@ -20897,7 +20909,7 @@ function runLiveCheck(paths, env, deps) {
     git(plain, "commit", "-q", "-m", "first");
     const lines = proveIn("Claude Code's worktrees", plain, {
       folder: worktreePath(plain, LIVE_NAME),
-      branch: `worktree-${LIVE_NAME}`
+      branch: worktreeBranch(LIVE_NAME)
     }, deps, env).map((line) => ({ ...line, text: `live, ${line.text}` }));
     if (lines.every((line) => line.ok)) {
       mkdirSync14(paths.stateDir, { recursive: true, mode: 448 });
@@ -27945,7 +27957,7 @@ function switchFacts(ctx, config) {
     warnings
   };
 }
-function claimText(claim) {
+function limitWindowText(claim) {
   switch (claim) {
     case "five_hour":
       return "the 5-hour window";
@@ -27978,7 +27990,7 @@ function limitFacts(ctx) {
       target: record.target
     })),
     limits: currentLimits(state, nowMs).map(([model, record]) => ({
-      claim: claimText(record.claim),
+      claim: limitWindowText(record.claim),
       model,
       resets: record.resetsAt === null ? null : formatClock(record.resetsAt, nowMs)
     })),
@@ -34470,7 +34482,7 @@ import { existsSync as existsSync53 } from "fs";
 var SUBJECT_LIMIT = 200;
 var DESCRIPTION_LIMIT = 200000;
 var NOTE_LIMIT = 64000;
-function claimText2(claim) {
+function claimText(claim) {
   return claim.sessionId ?? `process ${claim.pid}`;
 }
 
@@ -34518,7 +34530,7 @@ function shown2(key, value) {
   if (value === null || value === undefined || value === "")
     return "none";
   if (key === "claim" && isClaimObject(value))
-    return claimText2(value);
+    return claimText(value);
   if (Array.isArray(value))
     return value.length > 0 ? value.join(", ") : "none";
   if (key === "subject" || key === "note")
@@ -34866,15 +34878,14 @@ function cappedHookList(items, render, command, separator = ", ") {
 }
 
 // src/hooks/subagent-worktree.ts
-var FOLDER_PATTERN = WORKTREES_FOLDER_SEGMENTS.map((segment) => segment.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join(String.raw`[\\/]`);
-function subagentWorktreeMatching(cwd, idPattern) {
-  const found = new RegExp(String.raw`^(.*[\\/]${FOLDER_PATTERN}[\\/]${SUBAGENT_NAME_PREFIX}${idPattern})(?:[\\/]|$)`).exec(cwd);
-  return found?.[1] ?? null;
+function literal2(text) {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
-function subagentWorktreeOf(cwd, agentId) {
-  if (agentId === null || !/^[0-9a-f]+$/.test(agentId))
-    return null;
-  return subagentWorktreeMatching(cwd, agentId);
+var FOLDER_PATTERN = WORKTREES_FOLDER_SEGMENTS.map(literal2).join(String.raw`[\\/]`);
+var NAME_PREFIX_PATTERN = literal2(SUBAGENT_NAME_PREFIX);
+function subagentWorktreeMatching(cwd, idPattern) {
+  const found = new RegExp(String.raw`^(.*[\\/]${FOLDER_PATTERN}[\\/]${NAME_PREFIX_PATTERN}${idPattern})(?:[\\/]|$)`).exec(cwd);
+  return found?.[1] ?? null;
 }
 function subagentWorktreeByShape(cwd) {
   return subagentWorktreeMatching(cwd, "[0-9a-f]+");
@@ -35238,9 +35249,7 @@ function headCommit(folder, env) {
 function said2(why) {
   return { stderr: `cc-smart-dev-kit review-record: ${why}` };
 }
-function inSubagentWorktree(cwd, agentId) {
-  if (subagentWorktreeOf(cwd, agentId) !== null)
-    return true;
+function inSubagentWorktree(cwd) {
   return subagentWorktreeByShape(cwd) !== null;
 }
 async function reviewRecord(context) {
@@ -35252,7 +35261,7 @@ async function reviewRecord(context) {
   if (agent === null)
     return SILENT;
   const agentId = stringField(input.agent_id);
-  if (inSubagentWorktree(cwd, agentId === null ? null : agentIdKey(agentId)))
+  if (inSubagentWorktree(cwd))
     return SILENT;
   let resolved;
   try {
@@ -41003,7 +41012,7 @@ function shape(db, task) {
     branch: task.branch,
     worktree: task.worktree,
     base: task.base,
-    claim: task.claim === null ? null : claimText2(task.claim),
+    claim: task.claim === null ? null : claimText(task.claim),
     waitsFor: task.waitsFor.map(numberOf).sort(),
     files: task.files,
     lead: task.lead === null ? null : `${task.lead.sessionId ?? `process ${task.lead.pid}`} (${task.lead.holder})`
@@ -41377,8 +41386,8 @@ function takeTasks(db, project, id, who, now, options) {
         ],
         ...task.claim === null ? {} : {
           claim: [
-            claimText2(task.claim),
-            who.pid === null ? null : claimText2({ pid: who.pid, sessionId: who.sessionId })
+            claimText(task.claim),
+            who.pid === null ? null : claimText({ pid: who.pid, sessionId: who.sessionId })
           ]
         }
       }, who, now, options.force ? "forced take-over" : "take-over");
@@ -41449,7 +41458,7 @@ function reclaimResumed(db, who, now, isGone) {
         recordEvent(db, task, "changed", { claim: [`process ${task.claim?.pid}`, `process ${who.pid}`] }, who, now, "claim moved to the resumed session's process");
       } else if (claim === "session") {
         db.sqlite.query("UPDATE tasks SET claim_session=?,updated_at=? WHERE id=?").run(who.sessionId, now, task.id);
-        recordEvent(db, task, "changed", { claim: [task.claim === null ? null : claimText2(task.claim), who.sessionId] }, who, now, "claim follows the session id its process now runs under");
+        recordEvent(db, task, "changed", { claim: [task.claim === null ? null : claimText(task.claim), who.sessionId] }, who, now, "claim follows the session id its process now runs under");
       }
       if (createdBy) {
         db.sqlite.query("UPDATE tasks SET created_by=?,updated_at=? WHERE id=?").run(who.sessionId, now, task.id);

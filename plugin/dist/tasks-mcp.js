@@ -24578,285 +24578,6 @@ var recordSchema = object({
 });
 var toldSchema = object({ seq: number2() });
 
-// src/worktrees/paths.ts
-var SUBAGENT_NAME_PREFIX = "agent-";
-var SUBAGENT_BRANCH_PREFIX = `worktree-${SUBAGENT_NAME_PREFIX}`;
-
-// src/hooks/sessions.ts
-import { existsSync as existsSync6, readdirSync as readdirSync3, readFileSync as readFileSync6, statSync as statSync3 } from "fs";
-import { uptime } from "os";
-import { join as join6 } from "path";
-
-// src/jobs/ancestry.ts
-import { readFileSync as readFileSync5 } from "fs";
-var MAX_DEPTH = 128;
-function parentPidFromStat(stat) {
-  const end = stat.lastIndexOf(")");
-  if (end === -1)
-    return null;
-  const fields = stat.slice(end + 1).trim().split(/\s+/);
-  const ppid = Number(fields[1]);
-  return Number.isInteger(ppid) && ppid >= 0 ? ppid : null;
-}
-function ancestorsBy(pid, parentOf) {
-  const ancestors = [];
-  const seen = new Set([pid]);
-  let current = pid;
-  while (ancestors.length < MAX_DEPTH) {
-    const parent = parentOf(current);
-    if (parent === null || parent === 0 || seen.has(parent))
-      break;
-    ancestors.push(parent);
-    seen.add(parent);
-    current = parent;
-  }
-  return ancestors;
-}
-function ancestorPids(pid, readStat) {
-  return ancestorsBy(pid, (one) => {
-    const stat = readStat(one);
-    return stat === null ? null : parentPidFromStat(stat);
-  });
-}
-function readProcStat(pid) {
-  try {
-    return readFileSync5(`/proc/${String(pid)}/stat`, "utf8");
-  } catch {
-    return null;
-  }
-}
-
-// src/hooks/sessions.ts
-function parseSessionRecord(json) {
-  let value;
-  try {
-    value = JSON.parse(json);
-  } catch {
-    return null;
-  }
-  if (typeof value !== "object" || value === null)
-    return null;
-  const { cwd, name, pid, sessionId, procStart } = value;
-  if (typeof cwd !== "string" || typeof pid !== "number" || typeof sessionId !== "string") {
-    return null;
-  }
-  return {
-    pid,
-    sessionId,
-    cwd,
-    name: typeof name === "string" ? name : sessionId.slice(0, 8),
-    ...typeof procStart === "string" ? { procStart } : {}
-  };
-}
-function processStart(pid, facts) {
-  if ((facts.platform ?? process.platform) !== "linux")
-    return;
-  const stat = (facts.readStat ?? readProcStat)(pid);
-  const end = stat?.lastIndexOf(")") ?? -1;
-  const start = end < 0 ? undefined : stat?.slice(end + 1).trim().split(/\s+/)[19];
-  return start !== undefined && /^\d+$/.test(start) ? start : undefined;
-}
-function sessionIdentityProved(record, facts = {}) {
-  return record.procStart !== undefined && processStart(record.pid, facts) === record.procStart;
-}
-function isRunning(pid) {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return error.code === "EPERM";
-  }
-}
-function sessionRecordOf(claudeConfigDir, pid, facts = {}) {
-  if (!(facts.running ?? isRunning)(pid))
-    return null;
-  const dir = join6(claudeConfigDir, "sessions");
-  const file = join6(dir, `${pid}.json`);
-  const bootedAt = Date.now() - uptime() * 1000;
-  let text;
-  try {
-    if (statSync3(file).mtimeMs < bootedAt)
-      return null;
-    text = readFileSync6(file, "utf8");
-  } catch (error) {
-    if (error.code === "ENOENT")
-      return null;
-    throw new Error(`the record of running session ${pid} cannot be read; retry`);
-  }
-  const record = parseSessionRecord(text);
-  if (record === null) {
-    throw new Error(`the record of running session ${pid} in ${dir} cannot be read, so it is unknown where it works`);
-  }
-  if ((facts.platform ?? process.platform) === "linux" && record.procStart !== undefined) {
-    const start = processStart(pid, facts);
-    if (start !== undefined && record.procStart !== start)
-      return null;
-  }
-  return record;
-}
-function liveSessions(claudeConfigDir, facts = {}) {
-  const dir = join6(claudeConfigDir, "sessions");
-  if (!existsSync6(dir))
-    return [];
-  const live = [];
-  for (const file of readdirSync3(dir)) {
-    const pid = Number(file.replace(/\.json$/, ""));
-    if (!file.endsWith(".json") || !Number.isInteger(pid))
-      continue;
-    const record = sessionRecordOf(claudeConfigDir, pid, facts);
-    if (record !== null)
-      live.push(record);
-  }
-  return live;
-}
-
-// src/hooks/unsaved-changes.ts
-var FILE_MODES = new Set(["100644", "100755"]);
-
-// src/hooks/worktree-leftovers.ts
-var REFLOG_TAIL_BYTES = 8 * 1024;
-
-// src/worktrees/machine-facts.ts
-import { readdirSync as readdirSync4, readFileSync as readFileSync7, readlinkSync as readlinkSync2 } from "fs";
-import { platform } from "os";
-var PROGRAMS_TIMEOUT_MS = 15000;
-var PS_PROGRAMS_ARGV = ["ps", "-ww", "-axo", "pid=,ppid=,args="];
-function spawnPrograms(argv) {
-  return Bun.spawnSync([...argv], {
-    stderr: "pipe",
-    stdout: "pipe",
-    timeout: PROGRAMS_TIMEOUT_MS
-  });
-}
-function parsePrograms(lines) {
-  const programs = [];
-  for (const line of lines.split(/\r?\n/)) {
-    const fields = line.split("\t");
-    const pid = Number(fields[0]?.trim() ?? "");
-    const parentPid = Number(fields[1]?.trim() ?? "");
-    const path = fields.slice(2).join("\t").trim();
-    if (!Number.isInteger(pid) || pid <= 0)
-      continue;
-    if (!Number.isInteger(parentPid) || parentPid < 0)
-      continue;
-    if (path === "")
-      continue;
-    programs.push({ parentPid, path, pid });
-  }
-  return programs;
-}
-function parseCommandLines(lines) {
-  const programs = [];
-  for (const line of lines.split(/\r?\n/)) {
-    const text = line.trim();
-    if (text === "")
-      continue;
-    const afterPid = text.indexOf(" ");
-    if (afterPid === -1)
-      continue;
-    const pid = Number(text.slice(0, afterPid));
-    const rest = text.slice(afterPid + 1).trimStart();
-    const afterParent = rest.indexOf(" ");
-    if (afterParent === -1)
-      continue;
-    const parentPid = Number(rest.slice(0, afterParent));
-    const path = rest.slice(afterParent + 1).trim();
-    if (!Number.isInteger(pid) || pid <= 0)
-      continue;
-    if (!Number.isInteger(parentPid) || parentPid < 0)
-      continue;
-    if (path === "")
-      continue;
-    programs.push({ parentPid, path, pid });
-  }
-  return programs;
-}
-var OUR_TOOLS = new Set(["git", "docker", "ps", "powershell", "pgrep"]);
-var SHELL_NAMES = new Set(["sh", "bash", "zsh", "dash", "fish", "ksh", "pwsh", "powershell"]);
-var LIST_PROGRAMS = "[Console]::OutputEncoding = [Text.Encoding]::UTF8; " + "Get-CimInstance Win32_Process | Where-Object ExecutablePath | " + 'ForEach-Object { "$($_.ProcessId)`t$($_.ParentProcessId)`t$($_.ExecutablePath)" }';
-function cwdOf(pid) {
-  try {
-    return readlinkSync2(`/proc/${String(pid)}/cwd`);
-  } catch {
-    return;
-  }
-}
-function procPids() {
-  try {
-    return readdirSync4("/proc").filter((name) => /^\d+$/.test(name)).map(Number);
-  } catch {
-    return [];
-  }
-}
-function runningPrograms(on = platform(), spawn = spawnPrograms) {
-  if (on === "win32") {
-    try {
-      const run = Bun.spawnSync(["powershell", "-NoProfile", "-NonInteractive", "-Command", LIST_PROGRAMS], {
-        stderr: "pipe",
-        stdout: "pipe",
-        timeout: PROGRAMS_TIMEOUT_MS,
-        windowsHide: true
-      });
-      return run.exitCode === 0 ? parsePrograms(run.stdout.toString()) : "unknown";
-    } catch {
-      return "unknown";
-    }
-  }
-  let lines;
-  try {
-    const run = spawn(PS_PROGRAMS_ARGV);
-    if (run.exitCode !== 0)
-      return "unknown";
-    lines = run.stdout.toString();
-  } catch {
-    return "unknown";
-  }
-  const programs = parseCommandLines(lines);
-  if (on !== "linux")
-    return programs;
-  for (const pid of procPids()) {
-    const cwd = cwdOf(pid);
-    if (cwd === undefined)
-      continue;
-    const known = programs.find((program) => program.pid === pid);
-    if (known === undefined)
-      programs.push({ cwd, path: null, pid });
-    else
-      known.cwd = cwd;
-  }
-  return programs;
-}
-
-// src/worktrees/scan.ts
-var REMOVAL_TIMEOUT_MS = 10 * 60000;
-// src/worktrees/command.ts
-var DEFAULT_BASE = "main";
-function baseBranch(checkout, env, repo) {
-  if (checkout !== null) {
-    const config = loadProjectConfig(checkout).config;
-    const base = config?.worktrees?.base;
-    if (base !== undefined)
-      return { base, from: "config" };
-  }
-  const head = runGit(repo, ["rev-parse", "--abbrev-ref", "origin/HEAD"], env);
-  const name = head.ok ? head.out.replace(/^origin\//, "") : "";
-  return name === "" ? { base: DEFAULT_BASE, from: "default" } : { base: name, from: "origin" };
-}
-
-// src/tasks/files-check.ts
-function planFilesCheck(cwd, env = process.env) {
-  const checkout = locateCheckout(cwd, { env });
-  if (checkout === null)
-    return { ignore: [], caseFold: false, reason: null };
-  const merge = resolveMergeFiles(checkout, baseBranch(checkout, env, checkout.root).base, { env });
-  const ignorecase = runGit(checkout.root, ["config", "--type=bool", "core.ignorecase"], env);
-  return {
-    ignore: merge.files,
-    caseFold: ignorecase.ok && ignorecase.out === "true",
-    reason: merge.reason
-  };
-}
-
 // src/tasks/work/queries.ts
 function hasFilesTable(db) {
   return db.sqlite.query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='task_files'").get() !== null;
@@ -25192,132 +24913,17 @@ function waitsForTask(tasks, start, target) {
   return false;
 }
 
-// src/tasks/plan-guards.ts
-function reservedAgainstCaller(options) {
-  const { all, plan, caller } = options;
-  if (caller === undefined)
-    return null;
-  const row = all.find((t) => t.kind === "plan" && t.plan === plan);
-  if (row === undefined || row.lead === null)
-    return null;
-  if (row.lead.holder === "child" && caller.isLead(row))
-    return row;
-  return caller.owns(row) ? null : row;
-}
-function planInTheWay(options) {
-  const reserved = reservedAgainstCaller(options);
-  if (reserved !== null)
-    return reserved;
-  const { all, inFlight, plan, claimedElsewhere } = options;
-  if (inFlight === null || inFlight.plan === plan)
-    return null;
-  const row = all.find((t) => t.kind === "plan" && t.plan === plan);
-  if (row === undefined || claimedElsewhere(row))
-    return null;
-  return inFlight;
-}
-function refuseOtherPlan(options) {
-  const inFlight = planInTheWay(options);
-  if (inFlight === null)
-    return;
-  const { plan, caller } = options;
-  if (inFlight.plan === plan) {
-    const mine = caller?.isLead(inFlight) === true;
-    const holder = inFlight.lead?.sessionId ?? `process ${inFlight.lead?.pid}`;
-    const first = `Plan "${plan}" (#${inFlight.number})`;
-    if (mine)
-      throw new Error(caller?.owns(inFlight) === true ? `${first} is reserved as a hand-out: its child builds it, never you. Do not start work in it. To build it yourself, release the reservation first.` : `${first} was handed to another session: it owns the plan now. Do not start work in it; its report arrives when it finishes.`);
-    throw new Error(`${first} is reserved for session ${holder}: it is that lead's, or its child's. Do not start work in it. If it was handed to you, take it first with the hand-out id your brief names.`);
-  }
-  const n = inFlight.number;
-  const finish = `Finish "${inFlight.plan}" (${TASK_TOOL.done} on its #${n} once its phases are closed)`;
-  throw new Error(`Plan "${inFlight.plan}" (#${n}) is in flight: your session runs one plan at a time. Do not start work in plan "${plan}" yet. ${finish}, or ${stopOrPark(options.all, inFlight)}.`);
-}
-function stopOrPark(all, inFlight) {
-  const n = inFlight.number;
-  if (inFlight.status === "in_progress")
-    return `park it in two calls: ${TASK_TOOL.update} with task "#${n}" and status "pending" (refused while any phase or task of "${inFlight.plan}" is running, so stop that first), then ${TASK_TOOL.note} on "#${n}" with a note that starts "${PARK_NOTE_PREFIX}" and says why`;
-  const running = runningTasksOf(all, inFlight.plan);
-  if (running.every((t) => t.kind === "phase"))
-    return `stop its running phase (finish it with ${TASK_TOOL.done}, or set it back to pending with ${TASK_TOOL.update}); "${inFlight.plan}" was started before plans carried their own status, so it is in flight only while a phase runs`;
-  const them = running.length === 1 ? "it" : "them";
-  return `stop the work running in "${inFlight.plan}" (${running.map((t) => `#${t.number}`).join(", ")}): finish ${them} (${TASK_TOOL.done}), or set ${them} back to pending (${TASK_TOOL.update} with status "pending")`;
-}
-function refuseParkWhileBusy(all, task, status) {
-  if (task.kind !== "plan" || task.status !== "in_progress" || status !== "pending")
-    return;
-  const running = runningTasksOf(all, task.plan);
-  if (running.length === 0)
-    return;
-  throw new Error(`Plan "${task.plan}" (#${task.number}) has work in progress (${running.map((t) => `#${t.number}`).join(", ")}): do not park it yet. Finish that work (${TASK_TOOL.done}), or set it back to pending (${TASK_TOOL.update} with status "pending"), then park the plan.`);
-}
-function refuseEmptyPhase(all, phase) {
-  if (phase.kind !== "phase" || all.some((t) => t.parentId === phase.id && t.status !== "dropped"))
-    return;
-  throw new Error(`#${phase.number} "${phase.subject}" has no tasks: add its steps first, each with its done-check (${TASK_TOOL.create} with parent "#${phase.number}"), then start it`);
-}
-function refuseBareClose(all, task, outcome, given) {
-  const parent = task.parentId === null ? undefined : all.find((t) => t.id === task.parentId);
-  if (task.kind !== "task" || parent?.kind !== "phase" || task.status === outcome)
-    return;
-  const step = `#${task.number} "${task.subject}" is a step of phase #${parent.number}`;
-  if (outcome === "done" && !given.evidence?.trim())
-    throw new Error(`${step}: a step closes done with evidence: what you ran or checked and its result (${TASK_TOOL.done} with task "#${task.number}" and evidence)`);
-  if (outcome === "dropped" && !given.note?.trim())
-    throw new Error(`${step}: a step is dropped with a note that gives the reason (${TASK_TOOL.done} with task "#${task.number}", outcome "dropped" and note)`);
-}
-function refuseEmptyHandBack(all, phase, outcome, git) {
-  const { branch, base } = phase;
-  if (phase.kind !== "phase" || outcome !== "done" || phase.status === "done")
-    return;
-  if (!branch || !base)
-    return;
-  const what = `#${phase.number} "${phase.subject}" records its builder's branch "${branch}" and base ${base}`;
-  const planBranch = all.find((t) => t.kind === "plan" && t.plan === phase.plan)?.branch ?? null;
-  for (const name of [branch, base, planBranch])
-    if (name?.startsWith("-"))
-      throw new Error(`${what}, and "${name}" is not a branch or commit name: fix the phase's binding`);
-  const counted = git(["rev-list", "--count", `${base}..${branch}`]);
-  if (!counted.ok)
-    throw new Error(`${what}: git could not count its commits (${counted.err || "no reason given"}), so the hand-back is not proved. Fix the binding or the repo, then close the phase`);
-  if (counted.out === "0")
-    throw new Error(`${what}, but "${branch}" has no commit past its base: the builder handed back nothing. Get its work committed on "${branch}" and merged into ${planBranch === null ? "the plan branch" : `"${planBranch}"`}, then close the phase`);
-  if (planBranch === null)
-    return;
-  const held = git(["merge-base", "--is-ancestor", branch, planBranch]);
-  if (held.ok)
-    return;
-  if (held.code === 1)
-    throw new Error(`${what}, but "${branch}" is not in the plan branch "${planBranch}": merge the builder's commit into "${planBranch}", then close the phase`);
-  throw new Error(`${what}: git could not check that "${branch}" is in the plan branch "${planBranch}" (${held.err || "no reason given"}), so the hand-back is not proved. Fix the binding or the repo, then close the phase`);
-}
-function refuseStepEscape(all, task, to) {
-  const from = task.parentId === null ? undefined : all.find((t) => t.id === task.parentId);
-  if (task.kind !== "task" || from?.kind !== "phase" || !isOpen(task))
-    return;
-  if (to !== null && to.kind === "phase" && to.plan === from.plan)
-    return;
-  throw new Error(`#${task.number} "${task.subject}" is an open step of phase #${from.number} and stays there until it is closed: close it with evidence (${TASK_TOOL.done} with task "#${task.number}" and evidence), or drop it with a note that gives the reason (${TASK_TOOL.done} with outcome "dropped" and note); it may move to another phase of the plan`);
-}
-function planNote(all, plan, cap) {
-  const slug = plan.plan ?? "";
-  const count = livePhaseCount(all, slug);
-  const phases = cap === null ? `Phases ${count}` : `Phases ${count}/${cap}${count > cap ? " \xB7 frozen: over the cap, no new phases" : ""}`;
-  const waiting = all.filter((t) => t.parentId === plan.id && t.kind === "task" && isOpen(t));
-  return waiting.length ? `${phases} \xB7 waiting ${waiting.length}` : phases;
-}
-
 // src/tasks/work/db.ts
 import { Database } from "bun:sqlite";
-import { chmodSync as chmodSync2, existsSync as existsSync7, mkdirSync as mkdirSync3, renameSync as renameSync2, rmSync as rmSync2, writeFileSync as writeFileSync3 } from "fs";
-import { dirname as dirname3, join as join7 } from "path";
+import { chmodSync as chmodSync2, existsSync as existsSync6, mkdirSync as mkdirSync3, renameSync as renameSync2, rmSync as rmSync2, writeFileSync as writeFileSync3 } from "fs";
+import { dirname as dirname3, join as join6 } from "path";
 var WORK_SCHEMA_VERSION = 6;
 var LEGACY_LIFT_REASON = "lift legacy nested task";
 var WRITE_TIMEOUT_MS = 3000;
 var HOOK_TIMEOUT_MS = 200;
 var NEWER_STORE = `the task store was made by a newer kit version: update the kit (${COMMAND} update)`;
 function workDbFile(paths) {
-  return join7(paths.stateDir, "tasks", "work.db");
+  return join6(paths.stateDir, "tasks", "work.db");
 }
 var SCHEMA = `
 CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -25377,7 +24983,7 @@ function repairTaskLayers(sqlite, file) {
   let backed = false;
   const move = (row, parent, above) => {
     if (!backed) {
-      if (!existsSync7(`${file}.v4.bak`)) {
+      if (!existsSync6(`${file}.v4.bak`)) {
         try {
           writeFileSync3(`${file}.v4.bak.tmp`, sqlite.serialize(), { mode: 384 });
           renameSync2(`${file}.v4.bak.tmp`, `${file}.v4.bak`);
@@ -25444,7 +25050,7 @@ function repairTaskLayers(sqlite, file) {
 }
 function openWorkDb(file, options) {
   const hook = options.mode === "hook";
-  const fresh = !existsSync7(file);
+  const fresh = !existsSync6(file);
   if (hook && fresh)
     throw new Error("task store does not exist");
   if (!hook)
@@ -25626,6 +25232,245 @@ function indent(text) {
 `);
 }
 
+// src/hooks/sessions.ts
+import { existsSync as existsSync7, readdirSync as readdirSync3, readFileSync as readFileSync6, statSync as statSync3 } from "fs";
+import { uptime } from "os";
+import { join as join7 } from "path";
+
+// src/jobs/ancestry.ts
+import { readFileSync as readFileSync5 } from "fs";
+var MAX_DEPTH = 128;
+function parentPidFromStat(stat) {
+  const end = stat.lastIndexOf(")");
+  if (end === -1)
+    return null;
+  const fields = stat.slice(end + 1).trim().split(/\s+/);
+  const ppid = Number(fields[1]);
+  return Number.isInteger(ppid) && ppid >= 0 ? ppid : null;
+}
+function ancestorsBy(pid, parentOf) {
+  const ancestors = [];
+  const seen = new Set([pid]);
+  let current = pid;
+  while (ancestors.length < MAX_DEPTH) {
+    const parent = parentOf(current);
+    if (parent === null || parent === 0 || seen.has(parent))
+      break;
+    ancestors.push(parent);
+    seen.add(parent);
+    current = parent;
+  }
+  return ancestors;
+}
+function ancestorPids(pid, readStat) {
+  return ancestorsBy(pid, (one) => {
+    const stat = readStat(one);
+    return stat === null ? null : parentPidFromStat(stat);
+  });
+}
+function readProcStat(pid) {
+  try {
+    return readFileSync5(`/proc/${String(pid)}/stat`, "utf8");
+  } catch {
+    return null;
+  }
+}
+
+// src/hooks/sessions.ts
+function parseSessionRecord(json) {
+  let value;
+  try {
+    value = JSON.parse(json);
+  } catch {
+    return null;
+  }
+  if (typeof value !== "object" || value === null)
+    return null;
+  const { cwd, name, pid, sessionId, procStart } = value;
+  if (typeof cwd !== "string" || typeof pid !== "number" || typeof sessionId !== "string") {
+    return null;
+  }
+  return {
+    pid,
+    sessionId,
+    cwd,
+    name: typeof name === "string" ? name : sessionId.slice(0, 8),
+    ...typeof procStart === "string" ? { procStart } : {}
+  };
+}
+function processStart(pid, facts) {
+  if ((facts.platform ?? process.platform) !== "linux")
+    return;
+  const stat = (facts.readStat ?? readProcStat)(pid);
+  const end = stat?.lastIndexOf(")") ?? -1;
+  const start = end < 0 ? undefined : stat?.slice(end + 1).trim().split(/\s+/)[19];
+  return start !== undefined && /^\d+$/.test(start) ? start : undefined;
+}
+function sessionIdentityProved(record, facts = {}) {
+  return record.procStart !== undefined && processStart(record.pid, facts) === record.procStart;
+}
+function isRunning(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error.code === "EPERM";
+  }
+}
+function sessionRecordOf(claudeConfigDir, pid, facts = {}) {
+  if (!(facts.running ?? isRunning)(pid))
+    return null;
+  const dir = join7(claudeConfigDir, "sessions");
+  const file = join7(dir, `${pid}.json`);
+  const bootedAt = Date.now() - uptime() * 1000;
+  let text;
+  try {
+    if (statSync3(file).mtimeMs < bootedAt)
+      return null;
+    text = readFileSync6(file, "utf8");
+  } catch (error) {
+    if (error.code === "ENOENT")
+      return null;
+    throw new Error(`the record of running session ${pid} cannot be read; retry`);
+  }
+  const record = parseSessionRecord(text);
+  if (record === null) {
+    throw new Error(`the record of running session ${pid} in ${dir} cannot be read, so it is unknown where it works`);
+  }
+  if ((facts.platform ?? process.platform) === "linux" && record.procStart !== undefined) {
+    const start = processStart(pid, facts);
+    if (start !== undefined && record.procStart !== start)
+      return null;
+  }
+  return record;
+}
+function liveSessions(claudeConfigDir, facts = {}) {
+  const dir = join7(claudeConfigDir, "sessions");
+  if (!existsSync7(dir))
+    return [];
+  const live = [];
+  for (const file of readdirSync3(dir)) {
+    const pid = Number(file.replace(/\.json$/, ""));
+    if (!file.endsWith(".json") || !Number.isInteger(pid))
+      continue;
+    const record = sessionRecordOf(claudeConfigDir, pid, facts);
+    if (record !== null)
+      live.push(record);
+  }
+  return live;
+}
+
+// src/worktrees/machine-facts.ts
+import { readdirSync as readdirSync4, readFileSync as readFileSync7, readlinkSync as readlinkSync2 } from "fs";
+import { platform } from "os";
+var PROGRAMS_TIMEOUT_MS = 15000;
+var PS_PROGRAMS_ARGV = ["ps", "-ww", "-axo", "pid=,ppid=,args="];
+function spawnPrograms(argv) {
+  return Bun.spawnSync([...argv], {
+    stderr: "pipe",
+    stdout: "pipe",
+    timeout: PROGRAMS_TIMEOUT_MS
+  });
+}
+function parsePrograms(lines) {
+  const programs = [];
+  for (const line of lines.split(/\r?\n/)) {
+    const fields = line.split("\t");
+    const pid = Number(fields[0]?.trim() ?? "");
+    const parentPid = Number(fields[1]?.trim() ?? "");
+    const path = fields.slice(2).join("\t").trim();
+    if (!Number.isInteger(pid) || pid <= 0)
+      continue;
+    if (!Number.isInteger(parentPid) || parentPid < 0)
+      continue;
+    if (path === "")
+      continue;
+    programs.push({ parentPid, path, pid });
+  }
+  return programs;
+}
+function parseCommandLines(lines) {
+  const programs = [];
+  for (const line of lines.split(/\r?\n/)) {
+    const text = line.trim();
+    if (text === "")
+      continue;
+    const afterPid = text.indexOf(" ");
+    if (afterPid === -1)
+      continue;
+    const pid = Number(text.slice(0, afterPid));
+    const rest = text.slice(afterPid + 1).trimStart();
+    const afterParent = rest.indexOf(" ");
+    if (afterParent === -1)
+      continue;
+    const parentPid = Number(rest.slice(0, afterParent));
+    const path = rest.slice(afterParent + 1).trim();
+    if (!Number.isInteger(pid) || pid <= 0)
+      continue;
+    if (!Number.isInteger(parentPid) || parentPid < 0)
+      continue;
+    if (path === "")
+      continue;
+    programs.push({ parentPid, path, pid });
+  }
+  return programs;
+}
+var OUR_TOOLS = new Set(["git", "docker", "ps", "powershell", "pgrep"]);
+var SHELL_NAMES = new Set(["sh", "bash", "zsh", "dash", "fish", "ksh", "pwsh", "powershell"]);
+var LIST_PROGRAMS = "[Console]::OutputEncoding = [Text.Encoding]::UTF8; " + "Get-CimInstance Win32_Process | Where-Object ExecutablePath | " + 'ForEach-Object { "$($_.ProcessId)`t$($_.ParentProcessId)`t$($_.ExecutablePath)" }';
+function cwdOf(pid) {
+  try {
+    return readlinkSync2(`/proc/${String(pid)}/cwd`);
+  } catch {
+    return;
+  }
+}
+function procPids() {
+  try {
+    return readdirSync4("/proc").filter((name) => /^\d+$/.test(name)).map(Number);
+  } catch {
+    return [];
+  }
+}
+function runningPrograms(on = platform(), spawn = spawnPrograms) {
+  if (on === "win32") {
+    try {
+      const run = Bun.spawnSync(["powershell", "-NoProfile", "-NonInteractive", "-Command", LIST_PROGRAMS], {
+        stderr: "pipe",
+        stdout: "pipe",
+        timeout: PROGRAMS_TIMEOUT_MS,
+        windowsHide: true
+      });
+      return run.exitCode === 0 ? parsePrograms(run.stdout.toString()) : "unknown";
+    } catch {
+      return "unknown";
+    }
+  }
+  let lines;
+  try {
+    const run = spawn(PS_PROGRAMS_ARGV);
+    if (run.exitCode !== 0)
+      return "unknown";
+    lines = run.stdout.toString();
+  } catch {
+    return "unknown";
+  }
+  const programs = parseCommandLines(lines);
+  if (on !== "linux")
+    return programs;
+  for (const pid of procPids()) {
+    const cwd = cwdOf(pid);
+    if (cwd === undefined)
+      continue;
+    const known = programs.find((program) => program.pid === pid);
+    if (known === undefined)
+      programs.push({ cwd, path: null, pid });
+    else
+      known.cwd = cwd;
+  }
+  return programs;
+}
+
 // src/tasks/work/identity.ts
 function listedParentOf(platform) {
   let listed = null;
@@ -25728,6 +25573,164 @@ function callerOf(facts = {}) {
     cwd: facts.cwd ?? process.cwd(),
     name: null
   } : null;
+}
+
+// src/worktrees/paths.ts
+function worktreeBranch(name) {
+  return `worktree-${name}`;
+}
+var SUBAGENT_NAME_PREFIX = "agent-";
+var SUBAGENT_BRANCH_PREFIX = worktreeBranch(SUBAGENT_NAME_PREFIX);
+
+// src/hooks/unsaved-changes.ts
+var FILE_MODES = new Set(["100644", "100755"]);
+
+// src/hooks/worktree-leftovers.ts
+var REFLOG_TAIL_BYTES = 8 * 1024;
+
+// src/worktrees/scan.ts
+var REMOVAL_TIMEOUT_MS = 10 * 60000;
+// src/worktrees/command.ts
+var DEFAULT_BASE = "main";
+function baseBranch(checkout, env, repo) {
+  if (checkout !== null) {
+    const config = loadProjectConfig(checkout).config;
+    const base = config?.worktrees?.base;
+    if (base !== undefined)
+      return { base, from: "config" };
+  }
+  const head = runGit(repo, ["rev-parse", "--abbrev-ref", "origin/HEAD"], env);
+  const name = head.ok ? head.out.replace(/^origin\//, "") : "";
+  return name === "" ? { base: DEFAULT_BASE, from: "default" } : { base: name, from: "origin" };
+}
+
+// src/tasks/files-check.ts
+function planFilesCheck(cwd, env = process.env) {
+  const checkout = locateCheckout(cwd, { env });
+  if (checkout === null)
+    return { ignore: [], caseFold: false, reason: null };
+  const merge = resolveMergeFiles(checkout, baseBranch(checkout, env, checkout.root).base, { env });
+  const ignorecase = runGit(checkout.root, ["config", "--type=bool", "core.ignorecase"], env);
+  return {
+    ignore: merge.files,
+    caseFold: ignorecase.ok && ignorecase.out === "true",
+    reason: merge.reason
+  };
+}
+
+// src/tasks/plan-guards.ts
+function reservedAgainstCaller(options) {
+  const { all, plan, caller } = options;
+  if (caller === undefined)
+    return null;
+  const row = all.find((t) => t.kind === "plan" && t.plan === plan);
+  if (row === undefined || row.lead === null)
+    return null;
+  if (row.lead.holder === "child" && caller.isLead(row))
+    return row;
+  return caller.owns(row) ? null : row;
+}
+function planInTheWay(options) {
+  const reserved = reservedAgainstCaller(options);
+  if (reserved !== null)
+    return reserved;
+  const { all, inFlight, plan, claimedElsewhere } = options;
+  if (inFlight === null || inFlight.plan === plan)
+    return null;
+  const row = all.find((t) => t.kind === "plan" && t.plan === plan);
+  if (row === undefined || claimedElsewhere(row))
+    return null;
+  return inFlight;
+}
+function refuseOtherPlan(options) {
+  const inFlight = planInTheWay(options);
+  if (inFlight === null)
+    return;
+  const { plan, caller } = options;
+  if (inFlight.plan === plan) {
+    const mine = caller?.isLead(inFlight) === true;
+    const holder = inFlight.lead?.sessionId ?? `process ${inFlight.lead?.pid}`;
+    const first = `Plan "${plan}" (#${inFlight.number})`;
+    if (mine)
+      throw new Error(caller?.owns(inFlight) === true ? `${first} is reserved as a hand-out: its child builds it, never you. Do not start work in it. To build it yourself, release the reservation first.` : `${first} was handed to another session: it owns the plan now. Do not start work in it; its report arrives when it finishes.`);
+    throw new Error(`${first} is reserved for session ${holder}: it is that lead's, or its child's. Do not start work in it. If it was handed to you, take it first with the hand-out id your brief names.`);
+  }
+  const n = inFlight.number;
+  const finish = `Finish "${inFlight.plan}" (${TASK_TOOL.done} on its #${n} once its phases are closed)`;
+  throw new Error(`Plan "${inFlight.plan}" (#${n}) is in flight: your session runs one plan at a time. Do not start work in plan "${plan}" yet. ${finish}, or ${stopOrPark(options.all, inFlight)}.`);
+}
+function stopOrPark(all, inFlight) {
+  const n = inFlight.number;
+  if (inFlight.status === "in_progress")
+    return `park it in two calls: ${TASK_TOOL.update} with task "#${n}" and status "pending" (refused while any phase or task of "${inFlight.plan}" is running, so stop that first), then ${TASK_TOOL.note} on "#${n}" with a note that starts "${PARK_NOTE_PREFIX}" and says why`;
+  const running = runningTasksOf(all, inFlight.plan);
+  if (running.every((t) => t.kind === "phase"))
+    return `stop its running phase (finish it with ${TASK_TOOL.done}, or set it back to pending with ${TASK_TOOL.update}); "${inFlight.plan}" was started before plans carried their own status, so it is in flight only while a phase runs`;
+  const them = running.length === 1 ? "it" : "them";
+  return `stop the work running in "${inFlight.plan}" (${running.map((t) => `#${t.number}`).join(", ")}): finish ${them} (${TASK_TOOL.done}), or set ${them} back to pending (${TASK_TOOL.update} with status "pending")`;
+}
+function refuseParkWhileBusy(all, task, status) {
+  if (task.kind !== "plan" || task.status !== "in_progress" || status !== "pending")
+    return;
+  const running = runningTasksOf(all, task.plan);
+  if (running.length === 0)
+    return;
+  throw new Error(`Plan "${task.plan}" (#${task.number}) has work in progress (${running.map((t) => `#${t.number}`).join(", ")}): do not park it yet. Finish that work (${TASK_TOOL.done}), or set it back to pending (${TASK_TOOL.update} with status "pending"), then park the plan.`);
+}
+function refuseEmptyPhase(all, phase) {
+  if (phase.kind !== "phase" || all.some((t) => t.parentId === phase.id && t.status !== "dropped"))
+    return;
+  throw new Error(`#${phase.number} "${phase.subject}" has no tasks: add its steps first, each with its done-check (${TASK_TOOL.create} with parent "#${phase.number}"), then start it`);
+}
+function refuseBareClose(all, task, outcome, given) {
+  const parent = task.parentId === null ? undefined : all.find((t) => t.id === task.parentId);
+  if (task.kind !== "task" || parent?.kind !== "phase" || task.status === outcome)
+    return;
+  const step = `#${task.number} "${task.subject}" is a step of phase #${parent.number}`;
+  if (outcome === "done" && !given.evidence?.trim())
+    throw new Error(`${step}: a step closes done with evidence: what you ran or checked and its result (${TASK_TOOL.done} with task "#${task.number}" and evidence)`);
+  if (outcome === "dropped" && !given.note?.trim())
+    throw new Error(`${step}: a step is dropped with a note that gives the reason (${TASK_TOOL.done} with task "#${task.number}", outcome "dropped" and note)`);
+}
+function refuseEmptyHandBack(all, phase, outcome, git) {
+  const { branch, base } = phase;
+  if (phase.kind !== "phase" || outcome !== "done" || phase.status === "done")
+    return;
+  if (!branch || !base)
+    return;
+  const what = `#${phase.number} "${phase.subject}" records its builder's branch "${branch}" and base ${base}`;
+  const planBranch = all.find((t) => t.kind === "plan" && t.plan === phase.plan)?.branch ?? null;
+  for (const name of [branch, base, planBranch])
+    if (name?.startsWith("-"))
+      throw new Error(`${what}, and "${name}" is not a branch or commit name: fix the phase's binding`);
+  const counted = git(["rev-list", "--count", `${base}..${branch}`]);
+  if (!counted.ok)
+    throw new Error(`${what}: git could not count its commits (${counted.err || "no reason given"}), so the hand-back is not proved. Fix the binding or the repo, then close the phase`);
+  if (counted.out === "0")
+    throw new Error(`${what}, but "${branch}" has no commit past its base: the builder handed back nothing. Get its work committed on "${branch}" and merged into ${planBranch === null ? "the plan branch" : `"${planBranch}"`}, then close the phase`);
+  if (planBranch === null)
+    return;
+  const held = git(["merge-base", "--is-ancestor", branch, planBranch]);
+  if (held.ok)
+    return;
+  if (held.code === 1)
+    throw new Error(`${what}, but "${branch}" is not in the plan branch "${planBranch}": merge the builder's commit into "${planBranch}", then close the phase`);
+  throw new Error(`${what}: git could not check that "${branch}" is in the plan branch "${planBranch}" (${held.err || "no reason given"}), so the hand-back is not proved. Fix the binding or the repo, then close the phase`);
+}
+function refuseStepEscape(all, task, to) {
+  const from = task.parentId === null ? undefined : all.find((t) => t.id === task.parentId);
+  if (task.kind !== "task" || from?.kind !== "phase" || !isOpen(task))
+    return;
+  if (to !== null && to.kind === "phase" && to.plan === from.plan)
+    return;
+  throw new Error(`#${task.number} "${task.subject}" is an open step of phase #${from.number} and stays there until it is closed: close it with evidence (${TASK_TOOL.done} with task "#${task.number}" and evidence), or drop it with a note that gives the reason (${TASK_TOOL.done} with outcome "dropped" and note); it may move to another phase of the plan`);
+}
+function planNote(all, plan, cap) {
+  const slug = plan.plan ?? "";
+  const count = livePhaseCount(all, slug);
+  const phases = cap === null ? `Phases ${count}` : `Phases ${count}/${cap}${count > cap ? " \xB7 frozen: over the cap, no new phases" : ""}`;
+  const waiting = all.filter((t) => t.parentId === plan.id && t.kind === "task" && isOpen(t));
+  return waiting.length ? `${phases} \xB7 waiting ${waiting.length}` : phases;
 }
 
 // src/tasks/work/store.ts
