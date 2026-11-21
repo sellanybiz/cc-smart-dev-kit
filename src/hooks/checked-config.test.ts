@@ -471,4 +471,10 @@ describe("checkedCacheProblem", () => {
       expect(checkedCacheProblem({ stateDir })).toBe("cannot be written (EACCES)");
     },
   );
+
+  test("a state folder under a missing root is named, not walked forever", () => {
+    expect(checkedCacheProblem({ stateDir: "/missing-root/state" }, () => false)).toBe(
+      "cannot be written (no folder above it exists)",
+    );
+  });
 });

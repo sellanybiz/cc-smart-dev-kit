@@ -282,17 +282,25 @@ export async function loadPersonalWorkflow(
  * null when it can. Read-only: it creates nothing. An unwritable folder costs every hook run the
  * parser's load, so `doctor` names it.
  */
-export function checkedCacheProblem(paths: Pick<CliPaths, "stateDir">): string | null {
+export function checkedCacheProblem(
+  paths: Pick<CliPaths, "stateDir">,
+  exists: (path: string) => boolean = existsSync,
+): string | null {
   const dir = join(paths.stateDir, CHECKED_DIR);
   try {
-    if (existsSync(dir)) {
+    if (exists(dir)) {
       if (!statSync(dir).isDirectory()) return "is not a folder";
       accessSync(dir, constants.W_OK | constants.X_OK);
       return null;
     }
-    // Not made yet: the nearest folder that exists must let a new folder in.
+    // Not made yet: the nearest folder that exists must let a new folder in. A missing root (an
+    // unmounted drive, an unreachable share) is its own dirname, so the walk stops there.
     let parent = dirname(dir);
-    while (!existsSync(parent)) parent = dirname(parent);
+    while (!exists(parent)) {
+      const above = dirname(parent);
+      if (above === parent) return "cannot be written (no folder above it exists)";
+      parent = above;
+    }
     accessSync(parent, constants.W_OK | constants.X_OK);
     return null;
   } catch (error) {
