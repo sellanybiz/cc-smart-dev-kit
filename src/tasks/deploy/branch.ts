@@ -47,28 +47,48 @@ function knowsRef(repo: string, ref: string, env: Env): boolean {
  *   remote-tracking ref) is read as written.
  * - A local branch, or a name git does not know, reads `origin/<base>` when origin has it, even
  *   when the name holds a slash (`release/1.0`): the local copy may be behind.
- * - A local branch that origin lacks (or any local branch with no `origin` remote) is read as
- *   written, and `note` says so. A name that resolves nowhere throws.
+ * - A local branch with commits `origin/<base>` lacks (it is ahead) still reads origin's, as the
+ *   gates do, and `note` says so.
+ * - A local branch whose `origin/<base>` is not here (never fetched, or not on origin), or any
+ *   local branch with no `origin` remote, is read as written, and `note` says so. A name that
+ *   resolves nowhere throws.
+ * A local branch is read by its full name (`refs/heads/<base>`): git resolves a short name to a
+ * tag first (gitrevisions), and the note would then name a ref the listing did not read.
  */
 export function resolveListBase(
   repo: string,
   base: string,
   env: Env = process.env,
 ): { ref: string; note: string | null } {
-  const isLocalBranch = refExists(repo, `refs/heads/${base}`, env);
+  const localRef = `refs/heads/${base}`;
+  const isLocalBranch = refExists(repo, localRef, env);
   if (!isLocalBranch && knowsRef(repo, base, env)) return { ref: base, note: null };
   const remotes = taskGit(repo, ["remote"], env).split("\n");
   if (!remotes.includes("origin")) {
     if (isLocalBranch)
-      return { ref: base, note: `No origin remote: read against the local branch ${base}.` };
+      return { ref: localRef, note: `No origin remote: read against the local branch ${base}.` };
     throw new Error(
       `Cannot read ${base}: git does not know it. Pass a ref git knows (a branch, a tag or a commit id).`,
     );
   }
-  if (knowsRef(repo, `refs/remotes/origin/${base}`, env))
-    return { ref: `origin/${base}`, note: null };
+  const remoteRef = `refs/remotes/origin/${base}`;
+  if (knowsRef(repo, remoteRef, env)) {
+    const ahead = isLocalBranch
+      ? Number(taskGit(repo, ["rev-list", "--count", `${remoteRef}..${localRef}`], env))
+      : 0;
+    return {
+      ref: `origin/${base}`,
+      note:
+        ahead > 0
+          ? `local ${base} is ahead of origin/${base}: read against origin/${base}, as the release gates do.`
+          : null,
+    };
+  }
   if (isLocalBranch)
-    return { ref: base, note: `origin has no ${base}: read against the local branch ${base}.` };
+    return {
+      ref: localRef,
+      note: `origin/${base} is not here (not fetched, or origin has no such branch): read against the local branch ${base}. Run \`git fetch origin\` if it should be there.`,
+    };
   const named = base.startsWith("origin/") ? base : `origin/${base}`;
   try {
     refCommit(repo, named, env);
