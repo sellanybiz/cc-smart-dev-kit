@@ -609,6 +609,9 @@ function judgeOne(
     (one) => one.pid !== owner?.claudePid && isInside(realPath(one.cwd), realPath(listed.path)),
   );
   // A folder a removal moved aside, standing on a branch (D62): the branch holds its commits.
+  // This is the commits' test only; the removal's own deletions are judged by the name alone
+  // (below, in `contentsOf`'s call). Never one test for both: a detached folder with commits
+  // of its own would be removed.
   const parked = isParkedWorktree(listed.path) && listed.branch !== null;
   if (parked) {
     const mountWhy = mountKeptWhy(listed.path, look.mounts);
@@ -644,7 +647,10 @@ function judgeOne(
   };
   return verdict(
     facts,
-    () => contentsOf(listed.path, repo, look.ref, look.env, parked),
+    // The removal's own deletions are known by the folder's name alone, as `removeWorktree`
+    // reads them: a detached folder holds no commit a branch keeps (so `parked` is false for it),
+    // yet a removal stopped halfway in it too.
+    () => contentsOf(listed.path, repo, look.ref, look.env, isParkedWorktree(listed.path)),
     look.idleLimit,
   );
 }
