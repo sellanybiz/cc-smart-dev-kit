@@ -77,6 +77,7 @@ import {
   WORKFLOW_KEYS,
   type Workflow,
   type WorkflowKey,
+  withCurrentNames,
 } from "../workflow/schema";
 import { cliPaths, tildify } from "./paths";
 import { dryRunEnding, leadingMark, type Mark, type Out, plural } from "./ui/out";
@@ -794,9 +795,10 @@ export function askedAnswers(
   const checksText = listAnswer(
     prompts.ask(numbered("checks"), { default: answers.checks?.fast ?? NONE }),
   );
+  const shownPolicy = shownWorkflow(answers.workflow);
   const workflowText = listAnswer(
     prompts.ask(numbered("workflow"), {
-      default: shownWorkflow(answers.workflow),
+      default: shownPolicy,
       check: (answer) => refusal(() => workflowFromFlags(listOf(listAnswer(answer)))),
     }),
   );
@@ -819,7 +821,10 @@ export function askedAnswers(
     checks: checkAnswer(checksText),
     deployCommands,
     guards,
-    workflow: workflowFromFlags(listOf(workflowText)),
+    // Enter keeps the file's policy as it is, an old setting name and any setting the line
+    // cannot show included; only a changed line is the answer.
+    workflow:
+      workflowText === shownPolicy ? answers.workflow : workflowFromFlags(listOf(workflowText)),
   };
 }
 
@@ -842,13 +847,17 @@ export function parseBases(text: string, where = ""): Record<string, string> {
   return bases;
 }
 
-/** A workflow policy as one line of `key=value`: `openPr=draft,alerts.usagePercent=90`. */
+/**
+ * A workflow policy as one line of `key=value`: `openPr=draft,alerts.usagePercent=90`. A file
+ * that still holds an old setting name shows it under the new one (`autoPush` as `allowPush`).
+ */
 export function shownWorkflow(workflow: Workflow): string {
   const words: string[] = [];
+  const current = withCurrentNames(workflow) as Record<string, unknown>;
   for (const key of WORKFLOW_KEYS) {
     if (isSwitchKey(key)) continue;
     const [head, tail] = key.split(".");
-    const group = head === undefined ? undefined : (workflow as Record<string, unknown>)[head];
+    const group = head === undefined ? undefined : current[head];
     const value =
       tail === undefined
         ? group

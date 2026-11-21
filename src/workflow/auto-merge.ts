@@ -19,7 +19,9 @@
  * Nothing here runs a command; it is a decision, so it is a pure function with its own tests.
  */
 
-import type { CcSmartDevKitConfig } from "../project/config";
+import { COMMAND } from "../build-info/names";
+import { type CcSmartDevKitConfig, WORKFLOW_ALLOW_KEYS_SINCE } from "../project/config";
+import { requiresFor } from "../project/init";
 import { CONFIG_PATH } from "../project/resolve";
 import { type ResolvedWorkflow, sourceLabel } from "./resolve";
 
@@ -34,7 +36,9 @@ import { type ResolvedWorkflow, sourceLabel } from "./resolve";
 export function autoMergeOff(resolved: ResolvedWorkflow, base: string | null): string | null {
   if (resolved.allowMerge.value) return null;
   const where = base ?? "the integration base (worktrees.base)";
-  return `allowMerge is off (${sourceLabel(resolved.allowMerge, base)}): turn it on in ${CONFIG_PATH} ("workflow": {"allowMerge": true}), commit it to ${where} and push`;
+  // A hand-written `allowMerge` needs `requires` at the release that knows it; `workflow set
+  // --project` raises it, so the command is the first way named.
+  return `allowMerge is off (${sourceLabel(resolved.allowMerge, base)}): turn it on with \`${COMMAND} workflow set allowMerge true --project\`, or write ("workflow": {"allowMerge": true}) in ${CONFIG_PATH} together with "requires": "${requiresFor(WORKFLOW_ALLOW_KEYS_SINCE)}"; commit it to ${where} and push`;
 }
 
 /**
