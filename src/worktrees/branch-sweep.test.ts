@@ -2,18 +2,28 @@
  * The sweep of finished builders' branches: only `worktree-agent-*`, only when no worktree has
  * the branch checked out, only when the base holds the work, and only on `--clean`.
  */
-import { describe, expect, test } from "bun:test";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { describe, expect, spyOn, test } from "bun:test";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, join } from "node:path";
 import { cliPaths } from "../cli/paths";
 import { projectKey } from "../tasks/context";
 import { openWorkDb, workDbFile } from "../tasks/work/db";
+import * as workRead from "../tasks/work/read";
 import { createTask } from "../tasks/work/store";
 import type { WorkStatus } from "../tasks/work/types";
 import { cleanGitEnv, git, tempDir } from "../testing/temp";
 import { recordedBranches, sweepBuilderBranches, unusedBuilderBranches } from "./branch-sweep";
 import { cleanWithStrays } from "./clean";
 import { runWorktrees } from "./command";
+import * as machineFacts from "./machine-facts";
 import { scanWorktrees } from "./scan";
 
 const freeLock = async (): Promise<{ close(): void }> => ({ close: () => undefined });
@@ -237,5 +247,147 @@ describe("the builder branch sweep", () => {
     expect(lines.map((one) => one.state)).toEqual(["kept", "kept", "kept"]);
     expect(lines.every((one) => one.text.startsWith("kept branch worktree-agent-"))).toBe(true);
     expect(branches()).toEqual(before);
+  });
+});
+
+/**
+ * A worktree git has left alone for hours: the reflog's times and the admin files' times moved
+ * back, so the verdict's idle hour has passed without a sleep.
+ */
+function leftAlone(worktree: string): void {
+  const admin = git(worktree, "rev-parse", "--absolute-git-dir").trim();
+  const longAgo = Date.now() - 3 * 60 * 60_000;
+  const log = join(admin, "logs", "HEAD");
+  const old = String(Math.floor(longAgo / 1000));
+  writeFileSync(log, readFileSync(log, "utf8").replace(/> \d+ /g, `> ${old} `));
+  for (const name of ["HEAD", "index"]) {
+    const file = join(admin, name);
+    if (existsSync(file)) utimesSync(file, longAgo / 1000, longAgo / 1000);
+  }
+  expect(Date.now() - statSync(join(admin, "HEAD")).mtimeMs).toBeGreaterThan(60 * 60_000);
+}
+
+describe("every branch delete keeps a branch an open task records", () => {
+  /** A finished worktree on its own branch at the base's commit: the folder and the branch may go. */
+  function finished(w: ReturnType<typeof world>, branch: string) {
+    const folder = join(w.root, `app-wt-${branch.replace("/", "-")}`);
+    git(w.main, "worktree", "add", "-q", "-b", branch, folder);
+    leftAlone(folder);
+    return folder;
+  }
+
+  /** The machine's own facts (Docker, programs) would make a run depend on the host. */
+  function quietMachine() {
+    const docker = spyOn(machineFacts, "dockerMounts").mockReturnValue([]);
+    const programs = spyOn(machineFacts, "runningPrograms").mockReturnValue([]);
+    return () => {
+      docker.mockRestore();
+      programs.mockRestore();
+    };
+  }
+
+  test("--clean removes the folder of a finished worktree and keeps its branch", async () => {
+    const w = world();
+    const folder = finished(w, "fix/done");
+    const number = w.record("fix/done");
+    const restore = quietMachine();
+    try {
+      const { code, text } = await w.run({ clean: true });
+      expect(code).toBe(0);
+      expect(text).toContain(`removed ${folder}`);
+      expect(text).toContain(`kept branch fix/done: task #${String(number)} still records it`);
+    } finally {
+      restore();
+    }
+    expect(existsSync(folder)).toBe(false);
+    expect(w.branches()).toContain("fix/done");
+  });
+
+  test("the same worktree with no task on it loses its branch too", async () => {
+    const w = world();
+    const folder = finished(w, "fix/done");
+    const restore = quietMachine();
+    try {
+      const { text } = await w.run({ clean: true });
+      expect(text).toContain("deleted branch fix/done");
+    } finally {
+      restore();
+    }
+    expect(existsSync(folder)).toBe(false);
+    expect(w.branches()).not.toContain("fix/done");
+  });
+
+  test("--remove of one worktree keeps its recorded branch as well", async () => {
+    const w = world();
+    const folder = finished(w, "fix/done");
+    const number = w.record("fix/done");
+    const { code, text } = await w.run({ clean: false, remove: folder });
+    expect(code).toBe(0);
+    expect(text).toContain(`kept branch fix/done: task #${String(number)} still records it`);
+    expect(existsSync(folder)).toBe(false);
+    expect(w.branches()).toContain("fix/done");
+  });
+
+  test("a worktree whose folder is gone is forgotten, and its recorded branch stays", async () => {
+    const w = world();
+    const folder = finished(w, "fix/gone");
+    const number = w.record("fix/gone");
+    rmSync(folder, { recursive: true });
+    const restore = quietMachine();
+    try {
+      const { text } = await w.run({ clean: true });
+      expect(text).toContain(`kept branch fix/gone: task #${String(number)} still records it`);
+    } finally {
+      restore();
+    }
+    expect(w.branches()).toContain("fix/gone");
+  });
+
+  test("`--remove` of a gone folder keeps the recorded branch too", async () => {
+    const w = world();
+    const folder = finished(w, "fix/gone");
+    const number = w.record("fix/gone");
+    rmSync(folder, { recursive: true });
+    const { text } = await w.run({ clean: false, remove: folder });
+    expect(text).toContain(`kept branch fix/gone: task #${String(number)} still records it`);
+    expect(w.branches()).toContain("fix/gone");
+  });
+
+  test("an unreadable task store keeps the branch and still removes the folder", async () => {
+    const w = world();
+    const folder = finished(w, "fix/done");
+    const file = workDbFile(w.paths);
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, "this is not a database");
+    const restore = quietMachine();
+    try {
+      const { code, text } = await w.run({ clean: true });
+      expect(code).toBe(0);
+      expect(text).toContain(`removed ${folder}`);
+      expect(text).toContain("kept branch fix/done: the task store cannot be read");
+    } finally {
+      restore();
+    }
+    expect(existsSync(folder)).toBe(false);
+    expect(w.branches()).toContain("fix/done");
+  });
+
+  test("the task store is read once for a whole run, however many removals it makes", async () => {
+    const w = world();
+    finished(w, "fix/one");
+    finished(w, "fix/two");
+    w.record("fix/one");
+    const real = workRead.readWorkStore;
+    const reads = spyOn(workRead, "readWorkStore").mockImplementation((...args) => real(...args));
+    const restore = quietMachine();
+    try {
+      await w.run({ clean: true });
+      expect(reads).toHaveBeenCalledTimes(1);
+    } finally {
+      restore();
+      reads.mockRestore();
+    }
+    expect(w.branches()).toContain("fix/one");
+    expect(w.branches()).not.toContain("fix/two");
   });
 });

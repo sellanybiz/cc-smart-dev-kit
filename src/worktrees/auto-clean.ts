@@ -33,6 +33,7 @@ import { samePath } from "../hooks/git";
 import type { Env } from "../hooks/run";
 import { liveSessions, type SessionRecord } from "../hooks/sessions";
 import { loadProjectConfig, locateCheckout } from "../project/resolve";
+import { projectKeyOf } from "../tasks/context";
 import { appendLogLine } from "../update/state";
 import {
   type AutoCleanTrigger,
@@ -43,6 +44,7 @@ import {
   recordRun,
   recordStart,
 } from "./auto-state";
+import { recordedBranches } from "./branch-sweep";
 import { type CleanLock, cleanWithStrays, holdCleanLock, type KeptWorktree } from "./clean";
 import { baseBranch } from "./command";
 import { fetchBase, type ScanOptions, scanWorktrees } from "./scan";
@@ -221,13 +223,15 @@ export async function runAutoClean(
     if (!fetchBase(main, base, env)) {
       log(`${main} (${trigger}): could not fetch origin/${base}; judging against the copy here`);
     }
-    // No `idleLimit`: the hour git must have left a worktree alone, as the command asks.
+    // No `idleLimit`: the hour git must have left a worktree alone, as the command asks. The
+    // branches an open task records stay (`tryDeleteBranch`): the store is read once for the run.
     const judged: ScanOptions = {
       base,
       claudeConfigDir: paths.claudeConfigDir,
       env,
       now,
       facts: { ...deps.facts, sessions: sessionsToKeep(deps, paths.claudeConfigDir) },
+      recorded: recordedBranches(paths, projectKeyOf(checkout, repo)),
     };
     const scanned = scanWorktrees(main, judged);
     // The removals, then the folders a removal moved aside that git no longer lists, read

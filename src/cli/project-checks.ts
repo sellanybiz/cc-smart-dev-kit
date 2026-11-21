@@ -97,6 +97,7 @@ import { type GhExec, runGh } from "../workflow/merge-check";
 import { resolvePlans } from "../workflow/resolve";
 import { parseGitVersion, tooOldToCover } from "../workflow/review-cover";
 import { oldNamesIn, workflowDefaults } from "../workflow/schema";
+import { WORKTREES_GITIGNORE_ENTRY } from "../worktrees/paths";
 import type { Check } from "./check";
 import { type CliPaths, tildify } from "./paths";
 import { defaultBranchOf, realRunnerAsync } from "./project-init";
@@ -369,13 +370,13 @@ async function worktreeLines(
   // opted into the worktree workflow has the `worktrees` field, and only it gets told.
   if (worktrees !== undefined) {
     const ignored = (
-      await runGitAsync(checkout.root, ["check-ignore", "-q", ".claude/worktrees/"], env)
+      await runGitAsync(checkout.root, ["check-ignore", "-q", WORKTREES_GITIGNORE_ENTRY], env)
     ).ok;
     if (!ignored) {
       lines.push({
         ok: true,
         warn: true,
-        text: "project: .claude/worktrees/ is not git-ignored here, so Claude Code's own worktrees show up in git status: add \".claude/worktrees/\" to the repo's .gitignore and commit it",
+        text: `project: ${WORKTREES_GITIGNORE_ENTRY} is not git-ignored here, so Claude Code's own worktrees show up in git status: add "${WORKTREES_GITIGNORE_ENTRY}" to the repo's .gitignore and commit it`,
       });
     }
     // Claude Code cuts a new worktree from the default branch, unless the project's settings

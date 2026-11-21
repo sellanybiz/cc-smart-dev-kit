@@ -12,6 +12,12 @@ import { join } from "node:path";
 /** The folder's path from a repo's root, one segment each, so a regex can be built from them. */
 export const WORKTREES_FOLDER_SEGMENTS: readonly string[] = [".claude", "worktrees"];
 
+/**
+ * The folder as git and `.gitignore` write it: slashes on every platform, and a trailing slash
+ * for a folder. What `git check-ignore` is asked, and what a repo adds to its `.gitignore`.
+ */
+export const WORKTREES_GITIGNORE_ENTRY = `${WORKTREES_FOLDER_SEGMENTS.join("/")}/`;
+
 /** The folder that holds the worktrees Claude Code makes for a repo. */
 export function worktreesFolder(repoRoot: string): string {
   return join(repoRoot, ...WORKTREES_FOLDER_SEGMENTS);

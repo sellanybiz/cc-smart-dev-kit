@@ -8,6 +8,7 @@ import { cleanGitEnv, git, tempDir } from "../testing/temp";
 import { runWorktrees } from "./command";
 import * as scan from "./scan";
 import {
+  branchOutcomeLine,
   deleteBranchOnRef,
   deleteJudgedBranch,
   deleteMergedBranch,
@@ -464,6 +465,133 @@ describe("the outcome of a branch deletion, as data", () => {
       kind: "git-error",
       text: `a worktree has it checked out, at ${worktree}`,
     });
+    expect(git(main, "branch", "--list", "fix/login")).toContain("fix/login");
+  });
+
+  test("a branch a worktree is bisecting is kept, as `git branch -D` keeps it", () => {
+    const { main, worktree } = withWork();
+    for (const name of ["two", "three"]) {
+      git(worktree, "commit", "--allow-empty", "-m", name);
+    }
+    git(main, "merge", "--ff-only", "fix/login");
+    // The builder starts a bisect: git checks out a commit in the middle, so its HEAD is
+    // detached and no worktree "has" the branch checked out, yet `git bisect reset` returns to it.
+    git(worktree, "bisect", "start", "HEAD", "HEAD~3");
+    expect(git(worktree, "branch", "--show-current").trim()).toBe("");
+    const judged = judgeBranchOnRef(main, "main", "main", "fix/login", env);
+    if (judged.kind !== "on-ref") throw new Error("the merged branch should be on main");
+    expect(deleteJudgedBranch(main, "fix/login", judged.sha, env)).toEqual({
+      kind: "git-error",
+      text: `a worktree is bisecting or rebasing it, at ${worktree}`,
+    });
+    expect(git(main, "branch", "--list", "fix/login")).toContain("fix/login");
+    // Once the bisect is over, the branch goes.
+    git(worktree, "bisect", "reset");
+    git(worktree, "checkout", "--detach", "-q");
+    expect(deleteJudgedBranch(main, "fix/login", judged.sha, env)).toEqual({ kind: "deleted" });
+  });
+
+  test("a branch a worktree is rebasing is kept too", () => {
+    const { main, worktree } = withWork();
+    // The worktree's own work conflicts with a commit on main, so its rebase stops half way.
+    writeFileSync(join(main, "work.ts"), "export const x = 2;\n");
+    git(main, "add", ".");
+    git(main, "commit", "-m", "the other work");
+    const stopped = Bun.spawnSync(["git", "rebase", "main"], {
+      cwd: worktree,
+      env,
+      stderr: "pipe",
+      stdout: "pipe",
+    });
+    expect(stopped.exitCode).not.toBe(0);
+    const branchTip = git(main, "rev-parse", "fix/login").trim();
+    expect(deleteJudgedBranch(main, "fix/login", branchTip, env)).toEqual({
+      kind: "git-error",
+      text: `a worktree is bisecting or rebasing it, at ${worktree}`,
+    });
+    expect(git(main, "branch", "--list", "fix/login")).toContain("fix/login");
+  });
+
+  test("a deleted branch takes its [branch] config section with it, as `git branch -D` does", () => {
+    const { main, worktree } = withWork();
+    git(main, "worktree", "remove", "--force", worktree);
+    git(main, "merge", "--ff-only", "fix/login");
+    git(main, "config", "branch.fix/login.remote", "origin");
+    git(main, "config", "branch.fix/login.merge", "refs/heads/fix/login");
+    const judged = judgeBranchOnRef(main, "main", "main", "fix/login", env);
+    if (judged.kind !== "on-ref") throw new Error("the merged branch should be on main");
+    expect(deleteJudgedBranch(main, "fix/login", judged.sha, env)).toEqual({ kind: "deleted" });
+    expect(git(main, "config", "--local", "--list")).not.toContain("branch.fix/login.");
+  });
+
+  test("a branch with no config section goes without a word about it", () => {
+    const { main, worktree } = withWork();
+    git(main, "worktree", "remove", "--force", worktree);
+    git(main, "merge", "--ff-only", "fix/login");
+    const judged = judgeBranchOnRef(main, "main", "main", "fix/login", env);
+    if (judged.kind !== "on-ref") throw new Error("the merged branch should be on main");
+    expect(deleteJudgedBranch(main, "fix/login", judged.sha, env)).toEqual({ kind: "deleted" });
+  });
+
+  test("a config section git cannot remove is said, and the branch still counts as deleted", () => {
+    const { main, worktree } = withWork();
+    git(main, "worktree", "remove", "--force", worktree);
+    git(main, "merge", "--ff-only", "fix/login");
+    git(main, "config", "branch.fix/login.remote", "origin");
+    const judged = judgeBranchOnRef(main, "main", "main", "fix/login", env);
+    if (judged.kind !== "on-ref") throw new Error("the merged branch should be on main");
+    const realRun = gitTools.runGit;
+    const spy = spyOn(gitTools, "runGit").mockImplementation((cwd, args, givenEnv, timeout, own) =>
+      args[0] === "config" && args[1] === "--remove-section"
+        ? { ok: false, out: "", err: "fatal: could not lock config file", code: 255 }
+        : realRun(cwd, args, givenEnv, timeout, own),
+    );
+    try {
+      const outcome = deleteJudgedBranch(main, "fix/login", judged.sha, env);
+      expect(outcome).toEqual({
+        kind: "deleted",
+        note: "its [branch] config section stays: fatal: could not lock config file",
+      });
+      expect(branchOutcomeLine("fix/login", "main", outcome)).toBe(
+        "deleted branch fix/login (its [branch] config section stays: fatal: could not lock config file)",
+      );
+    } finally {
+      spy.mockRestore();
+    }
+    expect(git(main, "branch", "--list", "fix/login")).toBe("");
+  });
+
+  test("a branch an open task records is kept, with the task named, before anything is judged", () => {
+    const { main, worktree } = withWork();
+    git(main, "worktree", "remove", "--force", worktree);
+    git(main, "merge", "--ff-only", "fix/login");
+    const recorded = { byBranch: new Map([["fix/login", 7]]), ok: true } as const;
+    const outcome = tryDeleteBranch(main, "main", "main", "fix/login", env, recorded);
+    expect(outcome).toEqual({ kind: "recorded", text: "task #7 still records it" });
+    expect(branchOutcomeLine("fix/login", "main", outcome)).toBe(
+      "kept branch fix/login: task #7 still records it",
+    );
+    git(main, "push", "origin", "main");
+    expect(deleteMergedBranch(main, "main", "fix/login", env, recorded)).toBe(
+      "kept branch fix/login: task #7 still records it",
+    );
+    expect(git(main, "branch", "--list", "fix/login")).toContain("fix/login");
+    // A branch no task records goes as before; so does a call that names no store.
+    const other = { byBranch: new Map([["another", 1]]), ok: true } as const;
+    expect(tryDeleteBranch(main, "main", "main", "fix/login", env, other)).toEqual({
+      kind: "deleted",
+    });
+  });
+
+  test("an unreadable task store keeps the branch, and says so", () => {
+    const { main, worktree } = withWork();
+    git(main, "worktree", "remove", "--force", worktree);
+    git(main, "merge", "--ff-only", "fix/login");
+    git(main, "push", "origin", "main");
+    const recorded = { ok: false, why: "disk I/O error" } as const;
+    expect(deleteMergedBranch(main, "main", "fix/login", env, recorded)).toBe(
+      "kept branch fix/login: the task store cannot be read (disk I/O error), so nothing proves no task records it",
+    );
     expect(git(main, "branch", "--list", "fix/login")).toContain("fix/login");
   });
 

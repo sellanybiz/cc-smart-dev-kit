@@ -371,6 +371,10 @@ export async function runWorktrees(
       print(`Could not fetch origin/${base}; judging against the copy of it here.\n`);
     }
 
+    // The branches an open task records stay, in every delete below (`tryDeleteBranch`). The
+    // store is read once for the run and handed down; when it cannot be read, no branch goes.
+    const recorded = recordedBranches(paths, projectKeyOf(checkout, cwd));
+
     if (options.remove !== null) {
       const target = resolve(options.remove);
       // `--remove` is the session that has just finished in it, so the one-hour wait is out;
@@ -381,6 +385,7 @@ export async function runWorktrees(
         env,
         idleLimit: 0,
         ownerMode: true,
+        recorded,
       };
       const scanned = scanWorktrees(repo, judged);
       const found = scanned.find(
@@ -394,7 +399,7 @@ export async function runWorktrees(
         pruneWorktrees(repo, env);
         print(forgottenLine(found.listed.path));
         if (found.listed.branch !== null) {
-          print(deleteMergedBranch(repo, base, found.listed.branch, env));
+          print(deleteMergedBranch(repo, base, found.listed.branch, env, recorded));
         }
         return 0;
       }
@@ -410,18 +415,13 @@ export async function runWorktrees(
       return 1;
     }
 
-    const judged = { base, claudeConfigDir: paths.claudeConfigDir, env };
+    const judged = { base, claudeConfigDir: paths.claudeConfigDir, env, recorded };
     const scanned = scanWorktrees(repo, judged);
     // The folders a removal moved aside and could not remove, that git no longer lists (D62).
     const strays = strayParkedFolders(repo, env);
     // The builder branches no worktree uses, judged here only for the listing: `--clean` judges
     // and deletes them below, after its own removals have freed some.
-    // The branches an open task records stay (`recordedBranches`), read again right before a delete.
-    const project = projectKeyOf(checkout, cwd);
-    const recordedNow = () => recordedBranches(paths, project);
-    const branches = options.clean
-      ? []
-      : sweepBuilderBranches(repo, { ...judged, recorded: recordedNow() }, "list");
+    const branches = options.clean ? [] : sweepBuilderBranches(repo, judged, "list");
     const branchesGoing = branches.filter((one) => one.state === "goes").length;
     print(`Worktrees of ${repo}\n`);
     show(scanned, print);
@@ -459,7 +459,7 @@ export async function runWorktrees(
     for (const kept of finished.kept) print(`kept ${kept.path}: ${kept.why}`);
     // Only here: `--remove` is one worktree, and the background clean shares `cleanWithStrays`
     // and never deletes a branch it did not remove.
-    const swept = sweepBuilderBranches(repo, { ...judged, recorded: recordedNow() }, "delete");
+    const swept = sweepBuilderBranches(repo, judged, "delete");
     for (const one of swept) print(one.text);
     if (nothing && swept.length === 0) print("Nothing finished to clear.");
     return 0;
