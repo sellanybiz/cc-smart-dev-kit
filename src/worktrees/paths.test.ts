@@ -5,12 +5,16 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join, relative } from "node:path";
+import type { ListedWorktree } from "../hooks/git";
 import {
+  inDefaultFolder,
+  listedNamed,
   SUBAGENT_BRANCH_PREFIX,
   SUBAGENT_NAME_PREFIX,
   WORKTREES_FOLDER_SEGMENTS,
   WORKTREES_GITIGNORE_ENTRY,
   worktreeBranch,
+  worktreeFolders,
   worktreePath,
   worktreesFolder,
 } from "./paths";
@@ -125,4 +129,71 @@ test("the branch scan can fail: it names a template that builds the branch", () 
   const handBuilt = "const branch = `worktree-$" + "{name}`;";
   expect(BRANCH_BY_HAND.test(handBuilt)).toBe(true);
   expect(BRANCH_BY_HAND.test("worktreeBranch(name)")).toBe(false);
+});
+
+const listedWorktree = (
+  path: string,
+  branch: null | string,
+  over: Partial<ListedWorktree> = {},
+): ListedWorktree => ({
+  branch,
+  head: "abc",
+  locked: false,
+  path,
+  prunable: false,
+  ...over,
+});
+
+test("the folders worktrees may be in: the default one, and the parents of what git lists", () => {
+  const listed = [
+    listedWorktree("/r", "main"),
+    listedWorktree("/r/.claude/worktrees/a", "worktree-a"),
+    listedWorktree("/elsewhere/b", "feat-b"),
+    listedWorktree("/elsewhere/c", "feat-c"),
+  ];
+  expect(worktreeFolders("/r", listed)).toEqual([
+    join("/r", ".claude", "worktrees"),
+    join("/elsewhere"),
+  ]);
+  // The first entry is the main checkout: its parent is never a worktrees folder.
+  expect(worktreeFolders("/r", [listedWorktree("/work/r", "main")])).toEqual([
+    join("/r", ".claude", "worktrees"),
+  ]);
+  expect(worktreeFolders("/r", [])).toEqual([join("/r", ".claude", "worktrees")]);
+});
+
+test("a worktree is named only by an exact match, never by a name that contains it", () => {
+  const listed = [
+    listedWorktree("/r", "main"),
+    listedWorktree("/r/.claude/worktrees/kit-api-2", "worktree-kit-api-2"),
+    listedWorktree("/elsewhere/kit-api", "feat-api"),
+    listedWorktree("/elsewhere/other", "worktree-kit-api"),
+    listedWorktree("/elsewhere/kit-api-3", "worktree-kit-api-3"),
+  ];
+  expect(listedNamed(listed, "kit-api").map((one) => one.path)).toEqual([
+    "/elsewhere/kit-api",
+    "/elsewhere/other",
+  ]);
+  expect(listedNamed(listed, "kit-api-2").map((one) => one.path)).toEqual([
+    "/r/.claude/worktrees/kit-api-2",
+  ]);
+  expect(listedNamed(listed, "api")).toEqual([]);
+});
+
+test("a subagent's worktree, the main checkout and a gone folder are never a match", () => {
+  const listed = [
+    listedWorktree("/r/kit-x", "main"),
+    listedWorktree("/r/.claude/worktrees/agent-123", `${SUBAGENT_BRANCH_PREFIX}123`),
+    listedWorktree("/r/.claude/worktrees/kit-y", "worktree-kit-y", { prunable: true }),
+  ];
+  expect(listedNamed(listed, "kit-x")).toEqual([]);
+  expect(listedNamed(listed, "agent-123")).toEqual([]);
+  expect(listedNamed(listed, "kit-y")).toEqual([]);
+});
+
+test("a path is in the default folder only as the folder's own child, spelled the same", () => {
+  expect(inDefaultFolder("/r", join("/r", ".claude", "worktrees", "kit-a"))).toBe(true);
+  expect(inDefaultFolder("/r", "/elsewhere/kit-a")).toBe(false);
+  expect(inDefaultFolder("/r", join("/r", ".claude", "worktrees", "x", "kit-a"))).toBe(false);
+  expect(inDefaultFolder("/r", "/r")).toBe(false);
 });

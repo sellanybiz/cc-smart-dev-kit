@@ -3,7 +3,7 @@
  * `prepareStart` decides a start. Real git in a temp clone; gh and hc are fakes.
  */
 import { expect, test } from "bun:test";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { openWorkDb, workDbFile } from "../tasks/work/db";
 import { allTasks, eventsOf, taskById } from "../tasks/work/queries";
@@ -11,6 +11,7 @@ import { createTask, releasePlan, reservePlan, takeTasks, updateTask } from "../
 import type { ClaimProcess, Result, Who, WorkTask } from "../tasks/work/types";
 import { makeClone } from "../testing/hooks";
 import { cleanGitEnv, git, tempDir } from "../testing/temp";
+import { launchedHere, writeLaunchRecord } from "./launch-record";
 import {
   changesBetween,
   confirmClaim,
@@ -62,6 +63,7 @@ function build() {
     pr: (_repo, branch) => prs[branch] ?? "none",
     pane: (agent) => (agent === null ? NONE : (panes[agent] ?? GONE)),
     labelled: (slug) => strays[slug] ?? null,
+    launched: (worktree) => launchedHere(paths.stateDir, repo, worktree),
     check: { ignore: [], caseFold: false },
     now: () => 1000,
   };
@@ -120,6 +122,7 @@ function build() {
   };
   return {
     repo,
+    stateDir: paths.stateDir,
     db,
     prs,
     panes,
@@ -780,6 +783,67 @@ test("a recorded worktree outside .claude/worktrees is never reused", () => {
   if (answer.ok) throw new Error("expected a refusal");
   expect(answer.why).toContain("its recorded worktree /etc is not a child's folder");
   expect(answer.fix).toContain("task_update #1 worktree");
+});
+
+/** A plan whose child is gone, its worktree recorded at `worktree`; the resume reads it. */
+function goneAt(w: ReturnType<typeof build>, worktree: string) {
+  const first = w.plan("first", ["src/one/"]);
+  const handout = w.reserve("first").lead?.handoutId ?? "";
+  ok(takeTasks(w.db, "p", first.id, CHILD, 20, { from: handout, isLive: () => false }));
+  w.change(first, { agent: "herdr:core/t2", worktree, branch: "feat-x" });
+  return () => prepareStart({ ...w.base, process: ENDED }, "first");
+}
+
+/** The words of a refused start, or a failure when it started. */
+function refusedWhy(answer: ReturnType<typeof prepareStart>): string {
+  if (answer.ok) throw new Error("expected a refusal");
+  return answer.why;
+}
+
+test("a worktree outside the default folder is reused only when git lists it and herdr's launch record names it", async () => {
+  const w = build();
+  const elsewhere = join(tempDir("elsewhere"), "feature-x");
+  git(w.repo, "worktree", "add", "-q", "-b", "feat-x", elsewhere);
+  const resume = goneAt(w, elsewhere);
+  // Listed by git, but herdr never launched a child there: a hand-made worktree for a task row.
+  expect(refusedWhy(resume())).toContain(
+    `its recorded worktree ${elsewhere} is not a child's folder`,
+  );
+  await writeLaunchRecord(w.stateDir, {
+    at: 1,
+    branch: "feat-x",
+    repo: w.repo,
+    worktree: elsewhere,
+  });
+  const resumed = resume();
+  if (!resumed.ok) throw new Error(resumed.why);
+  expect(resumed.recorded).toEqual({ worktree: elsewhere, branch: "feat-x" });
+});
+
+test("a launch record alone is not enough: the main checkout, an unlisted path and a gone folder stay refused", async () => {
+  const gone = join(tempDir("elsewhere"), "feature-g");
+  const cases: Record<string, (repo: string) => string> = {
+    main: (repo) => repo,
+    unlisted: () => join(tempDir("unlisted"), "x"),
+    gone: (repo) => {
+      git(repo, "worktree", "add", "-q", "-b", "feat-g", gone);
+      rmSync(gone, { recursive: true });
+      return gone;
+    },
+  };
+  for (const [kind, where] of Object.entries(cases)) {
+    const w = build();
+    const target = where(w.repo);
+    await writeLaunchRecord(w.stateDir, { at: 1, branch: "b", repo: w.repo, worktree: target });
+    expect(refusedWhy(goneAt(w, target)()), kind).toContain("is not a child's folder");
+  }
+});
+
+test("a worktree git lists in the default folder keeps today's rule, with no record needed", () => {
+  const w = build();
+  const home = join(w.repo, ".claude", "worktrees", "kit-first");
+  git(w.repo, "worktree", "add", "-q", "-b", "worktree-kit-first", home);
+  expect(goneAt(w, home)().ok).toBe(true);
 });
 
 test("plans.ts holds no gh code of its own: pullRequestState is the one home", () => {

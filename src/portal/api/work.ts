@@ -13,6 +13,8 @@ import {
 import { oneLine } from "../../gateway/plain-text";
 import { readSafetyChecks, safetyCheckWindow } from "../../gateway/safety-checks-read";
 import { askLogFile } from "../../hooks/ask-log";
+import { type ListedWorktree, parseWorktreeList, runGitAsync } from "../../hooks/git";
+import type { Env } from "../../hooks/run";
 import { locateCheckoutAsync } from "../../project/resolve";
 import { savedSessions } from "../../sessions/command";
 import { readFinishedSessions } from "../../sessions/finished";
@@ -85,6 +87,17 @@ async function repoOf(
   }
 }
 
+/**
+ * The worktrees git lists for a project, read without blocking the portal (as `projects.ts`
+ * reads them): the sessions of one a project's own WorktreeCreate hook put outside
+ * `.claude/worktrees` are this project's too. Null when git cannot list: the sessions then fall
+ * back to the main checkout and the default folder, as the `sessions` command does.
+ */
+async function listedWorktrees(repo: string, env: Env): Promise<ListedWorktree[] | null> {
+  const listed = await runGitAsync(repo, ["worktree", "list", "--porcelain"], env);
+  return listed.ok ? parseWorktreeList(listed.out) : null;
+}
+
 /** Why a thrown thing happened, in one line. */
 function _reasonOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -106,6 +119,7 @@ export async function workAnswer(deps: PageDataDeps): Promise<WorkAnswer> {
       join(paths.claudeConfigDir, "projects"),
       repo,
       now - WORK_SESSIONS_MS,
+      await listedWorktrees(repo, deps.action.portal.env),
     );
     // The open permission prompts, read once (the flow report's own cache), only when a session
     // could be waiting on one.

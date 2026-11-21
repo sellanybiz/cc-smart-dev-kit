@@ -5,7 +5,7 @@ import { COMMAND } from "../build-info/names";
 import { isOlder } from "../build-info/semver";
 import { parseOptions } from "../cli/args";
 import { cliPaths } from "../cli/paths";
-import { runGit } from "../hooks/git";
+import { type ListedWorktree, parseWorktreeList, runGit } from "../hooks/git";
 import { locateCheckout } from "../project/resolve";
 import { taskContext } from "../tasks/context";
 import { createTaskOps } from "../tasks/ops";
@@ -15,7 +15,7 @@ import { getTask, heldPlans, isOpen, planByRef } from "../tasks/work/queries";
 import { adoptLeadPlans, releasePlan, swapPlanAgent } from "../tasks/work/store";
 import type { Who } from "../tasks/work/types";
 import { baseBranch } from "../worktrees/command";
-import { worktreeBranch, worktreePath } from "../worktrees/paths";
+import { inDefaultFolder, listedNamed, worktreeBranch, worktreePath } from "../worktrees/paths";
 import { pullRequestState } from "../worktrees/scan";
 import { briefPath, type FollowupTrailer, reportPath, writeBrief, writePrivate } from "./brief";
 import {
@@ -57,6 +57,7 @@ import {
   parseLeadId,
   validChildName,
 } from "./labels";
+import { writeLaunchRecord } from "./launch-record";
 import { MachinesFileError, machineRule, readMachines, writeMachines } from "./machines";
 import {
   confirmClaim,
@@ -83,6 +84,15 @@ export const WAIT_TIMEOUT_MS = 180_000;
 export const LAUNCH_CHECK_MS = 20_000;
 export const LAUNCH_POLL_MS = 250;
 export const LAUNCH_POLL_LIMIT = Math.ceil(LAUNCH_CHECK_MS / LAUNCH_POLL_MS) + 1;
+/**
+ * How long a start that must record its child's worktree waits, after hc reports Claude Code, for
+ * git to list a worktree that launch made: a project's own WorktreeCreate hook, or a slow
+ * `git worktree add`, may finish after the app is up. The wait is bounded, and a start that finds
+ * nothing records nothing.
+ */
+export const WORKTREE_BIND_WAIT_MS = 10_000;
+/** Like `LAUNCH_POLL_LIMIT`: a finite number of looks, so a stationary clock cannot spin forever. */
+const WORKTREE_BIND_POLL_LIMIT = Math.ceil(WORKTREE_BIND_WAIT_MS / LAUNCH_POLL_MS) + 1;
 function terminalEnded(error: unknown): boolean {
   return error instanceof HcError && ["finished", "not_found"].includes(error.kind);
 }
@@ -496,9 +506,12 @@ function followupGate(
     return { why, fix: `It is in the ${state} state: look at its pane: hc attach ${live.address}` };
   }
   // An ended child of any lead of this core: its work is not lost when its lead is another.
-  for (const gone of inRepo.filter((t) => t.state !== "live")) {
+  const ended = inRepo.filter((t) => t.state !== "live");
+  // A project's own WorktreeCreate hook may have put its worktree outside the default folder.
+  const listing = ended.length > 0 ? (listedWorktrees(ctx, r, undefined, repo) ?? []) : [];
+  for (const gone of ended) {
     if (!gone.name) continue;
-    const worktree = worktreePath(repo, gone.name);
+    const worktree = listedNamed(listing, gone.name)[0]?.path ?? worktreePath(repo, gone.name);
     const left = leftBehind(ctx, repo, worktree, gone.name);
     if (left === null) continue;
     const { branch, tip } = left;
@@ -655,6 +668,49 @@ function remoteCollision(
   if (ref.code === 0) return true;
   if (ref.code !== 1) throw new Error("The remote branch could not be checked.");
   return false;
+}
+/**
+ * The worktrees git lists for the repo at `at`, here or on the machine `on`; null when git cannot
+ * say. Where worktrees are is git's to tell: a project's own WorktreeCreate hook may put them
+ * anywhere, so no path is guessed from a name.
+ */
+function listedWorktrees(
+  ctx: HerdrContext,
+  r: HcRunner,
+  on: string | undefined,
+  at: string,
+): ListedWorktree[] | null {
+  const args = ["git", "worktree", "list", "--porcelain"];
+  if (on) {
+    const listed = remoteResult(r, on, args, at);
+    return listed.code === 0 ? parseWorktreeList(listed.stdout) : null;
+  }
+  const listed = runGit(at, args.slice(1), ctx.env);
+  return listed.ok ? parseWorktreeList(listed.out) : null;
+}
+/**
+ * The one worktree on a branch that `listedNamed` finds for the launch's `name`, waiting up to
+ * `waitMs` and listing again every `LAUNCH_POLL_MS`. Null when nothing matches in time, when two
+ * match (which is the child's is not known), or when git cannot list. A count of one new
+ * worktree is never enough: a builder's `agent-<id>` worktree may appear while the launch waits.
+ */
+async function boundWorktree(
+  ctx: HerdrContext,
+  r: HcRunner,
+  on: string | undefined,
+  at: string,
+  name: string,
+  waitMs: number,
+): Promise<{ branch: string; path: string } | null> {
+  const deadline = ctx.now() + waitMs;
+  for (let look = 0; look < WORKTREE_BIND_POLL_LIMIT; look++) {
+    const found = listedNamed(listedWorktrees(ctx, r, on, at) ?? [], name);
+    const only = found[0];
+    if (found.length === 1 && only?.branch) return { branch: only.branch, path: only.path };
+    if (ctx.now() >= deadline) return null;
+    await ctx.sleep(Math.min(LAUNCH_POLL_MS, Math.max(0, deadline - ctx.now())));
+  }
+  return null;
 }
 function remoteReportFolder(ctx: HerdrContext): string {
   const defaults = cliPaths({ HOME: ctx.paths.home });
@@ -972,9 +1028,17 @@ async function startChild(
         ? remoteCollision(r, a.on, cwd, worktree, branch)
         : runGit(cwd, ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`], ctx.env).ok
       : false;
+  // A project's own WorktreeCreate hook may have put a worktree of this name outside the default
+  // folder. A remote list that cannot be read refuses, as every other remote check does.
+  const listedBefore = gitRoot && !reuse ? listedWorktrees(ctx, r, a.on, a.on ? cwd : repo) : null;
+  if (a.on && gitRoot && !reuse && listedBefore === null)
+    throw new Error("The remote worktrees could not be listed.");
+  const listedCollision =
+    listedBefore !== null && listedNamed(listedBefore, worktreeName).length > 0;
   if (
     all.some((t) => t.name === terminalName && (!reuse || t.state === "live")) ||
     (!reuse && !a.on && gitRoot && existsSync(worktree)) ||
+    listedCollision ||
     branchExists
   )
     return refuse(
@@ -997,6 +1061,9 @@ async function startChild(
   );
   const path = a.on ? await remoteBrief(r, ctx, a.on, file) : file;
   const first = escapeReport(`Read your brief at ${path} and do it.`, "lead");
+  // A resume of a worktree outside the default folder starts Claude Code in that folder with no
+  // `-w`: the project's own WorktreeCreate hook must never run again for a folder that exists.
+  const resumeInFolder = reuse !== null && !inDefaultFolder(repo, reuse.worktree);
   const args = [
     "--bg",
     ...(a.independent ? ["--keep"] : []),
@@ -1005,7 +1072,7 @@ async function startChild(
     "--name",
     terminalName,
     "--cwd",
-    a.on ? (a.cwd ?? ctx.cwd) : cwd,
+    a.on ? (a.cwd ?? ctx.cwd) : resumeInFolder ? worktree : cwd,
     ...(a.on ? ["--on", a.on] : []),
   ];
   const labels: Record<string, string> = { [KIT_REPO]: repo };
@@ -1036,7 +1103,7 @@ async function startChild(
     "-n",
     name,
   ];
-  if (gitRoot) programArgs.push("-w", worktreeName);
+  if (gitRoot && !resumeInFolder) programArgs.push("-w", worktreeName);
   programArgs.push(first);
   args.push("--", ...loginShellArgv("claude", ...programArgs));
   // A start that stalled past the grace may have lost its claim to another start: check once more.
@@ -1095,19 +1162,18 @@ async function startChild(
             `The child ${child.address} exited during launch.`,
             "Resolve the screen error above, then retry.",
           );
-        const folderExists = a.on
-          ? remoteResult(r, a.on, ["test", "-d", worktree]).code
-          : existsSync(worktree)
-            ? 0
-            : 1;
-        if (folderExists !== 0 && folderExists !== 1)
+        const after = listedWorktrees(ctx, r, a.on, a.on ? cwd : repo);
+        if (after === null)
           return refuse(
             ctx,
             "The child exited; its worktree folder could not be checked.",
-            `Check ${worktree} before retrying.`,
+            "Check git worktree list before retrying.",
           );
+        const made = listedNamed(after, worktreeName)[0];
         ctx.out.say(
-          `Worktree folder ${folderExists === 0 ? "exists" : "does not exist"}: ${worktree}`,
+          made
+            ? `Worktree folder exists: ${made.path}`
+            : `Worktree folder does not exist: git lists no worktree named ${worktreeName} or on ${worktreeBranch(worktreeName)}.`,
         );
         return refuse(
           ctx,
@@ -1123,7 +1189,28 @@ async function startChild(
     }
     await ctx.sleep(Math.min(LAUNCH_POLL_MS, Math.max(0, deadline - ctx.now())));
   }
-  if (a.task || handout) {
+  // Only a start that records the worktree waits for it; any other looks once, to print it.
+  const recording = a.task !== undefined || handout !== null;
+  const bound: { branch: string; path: string } | null = !gitRoot
+    ? { branch, path: worktree }
+    : reuse
+      ? { branch: reuse.branch, path: reuse.worktree }
+      : await boundWorktree(
+          ctx,
+          r,
+          a.on,
+          a.on ? cwd : repo,
+          worktreeName,
+          recording ? WORKTREE_BIND_WAIT_MS : 0,
+        );
+  if (bound !== null && gitRoot && !reuse && !a.on)
+    await writeLaunchRecord(ctx.paths.stateDir, {
+      at: ctx.nowMs,
+      branch: bound.branch,
+      repo,
+      worktree: bound.path,
+    });
+  if (recording) {
     const ops = createTaskOps({
       stateDir: ctx.paths.stateDir,
       env: ctx.env,
@@ -1133,16 +1220,31 @@ async function startChild(
     try {
       // A plan's branch and worktree are written once: a resume or a relaunch binds the new pane
       // only, and a plan that already records them keeps them.
+      const taskRef = handout ? `#${handout.plan.number}` : (a.task ?? "");
       const answer = ops.call("update", {
-        task: handout ? `#${handout.plan.number}` : (a.task ?? ""),
+        task: taskRef,
         agent: herdrAgent(core, child.address),
-        ...(handout && (handout.plan.worktree !== null || reuse) ? {} : { worktree }),
-        ...(handout && (handout.plan.branch !== null || reuse) ? {} : { branch }),
+        ...(bound === null || (handout && (handout.plan.worktree !== null || reuse))
+          ? {}
+          : { worktree: bound.path }),
+        ...(bound === null || (handout && (handout.plan.branch !== null || reuse))
+          ? {}
+          : { branch: bound.branch }),
       });
       if (!answer.ok) {
         ctx.out.line(
           "warn",
           `The child started, but its ${handout ? "plan" : "task"} binding failed: ${answer.why}`,
+        );
+        return 1;
+      }
+      if (bound === null) {
+        ctx.out.line(
+          "warn",
+          `The child started, but its ${handout ? "plan" : "task"} binding failed: git lists no worktree named ${worktreeName} or on ${worktreeBranch(worktreeName)} within ${WORKTREE_BIND_WAIT_MS / 1000} seconds.`,
+          {
+            fix: `find its worktree (git worktree list), then task_update ${taskRef} with worktree and branch`,
+          },
         );
         return 1;
       }
@@ -1152,7 +1254,7 @@ async function startChild(
   }
   ctx.out.line(
     "created",
-    `${a.independent ? "independent session" : "linked child"}: ${child.address}; name ${terminalName}; worktree ${worktree}`,
+    `${a.independent ? "independent session" : "linked child"}: ${child.address}; name ${terminalName}; worktree ${bound?.path ?? worktree}`,
   );
   if (child.first_message == null) {
     const screen = hcRead(r, child.address, SCREEN_LINES);

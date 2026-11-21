@@ -14,6 +14,7 @@ import type { CliPaths } from "../cli/paths";
 import { createOut } from "../cli/ui/out";
 import { terminalPrompts } from "../cli/ui/prompt";
 import { currentTerminal } from "../cli/ui/terminal";
+import { type ListedWorktree, listWorktrees, realPath } from "../hooks/git";
 import { liveSessions } from "../hooks/sessions";
 import { callClaude, findClaude } from "../machine/claude";
 import { locateCheckout } from "../project/resolve";
@@ -37,6 +38,7 @@ import {
   sessionsToReopen,
   stoppedByRestart,
   windowsTerminalCommand,
+  worktreeProjectFolders,
   xfceTerminalCommand,
 } from "./saved-sessions";
 
@@ -134,16 +136,26 @@ export function sessionWorkFolders(projectsDir: string): string[] {
   return sessionWorkFolderTimes(projectsDir).map((worked) => worked.folder);
 }
 
-/** This project's sessions written since `since`, newest first. */
+/**
+ * This project's sessions written since `since`, newest first. `listed` is git's worktree list
+ * for the project: the caller reads it (the command with `listWorktrees`, the portal without
+ * blocking), so a worktree a project's own WorktreeCreate hook put outside `.claude/worktrees`
+ * still counts, by its exact folder, also when it is reached through a link. Null when git could
+ * not say: then only the main checkout and the default folder count.
+ */
 export function savedSessions(
   projectsDir: string,
   mainCheckout: string,
   since: number,
+  listed: readonly ListedWorktree[] | null = null,
 ): SavedSession[] {
   if (!existsSync(projectsDir)) return [];
   const sessions: SavedSession[] = [];
+  const worktrees = worktreeProjectFolders(
+    (listed ?? []).flatMap((one) => [one.path, realPath(one.path)]),
+  );
   for (const folder of readdirSync(projectsDir)) {
-    if (!belongsToRepo(folder, mainCheckout)) continue;
+    if (!belongsToRepo(folder, mainCheckout, worktrees)) continue;
     for (const file of sessionFiles(projectsDir, folder)) {
       if (file.lastWrite < since) continue;
       const session = readSession(file);
@@ -403,7 +415,18 @@ export async function runSessions(
 
   const projectsDir = paths.projectsDir;
   const machineStartedAt = deps.now - deps.uptimeSeconds * 1000;
-  const sessions = savedSessions(projectsDir, mainCheckout, deps.now - PIN_HOURS * 3_600_000);
+  let listed: ListedWorktree[] | null = null;
+  try {
+    listed = listWorktrees(mainCheckout, process.env);
+  } catch {
+    // Outside git, or git cannot list: the main checkout and the default folder still count.
+  }
+  const sessions = savedSessions(
+    projectsDir,
+    mainCheckout,
+    deps.now - PIN_HOURS * 3_600_000,
+    listed,
+  );
 
   /**
    * The sessions running right now, from Claude Code's own records. A resumed session may not
