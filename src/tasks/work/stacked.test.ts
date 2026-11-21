@@ -1,6 +1,7 @@
 /**
  * A plan stacked on another (`stacked_on`): the overlap check skips that one parent plan, both
- * ways, while it is open; every other plan still blocks. What is refused, what the history and
+ * ways, while that parent holds its files (open, or done and still reserved until its pull request
+ * merges); every other plan still blocks. What is refused, what the history and
  * the task tools show, and the schema step that brought the column.
  */
 import { expect, test } from "bun:test";
@@ -12,7 +13,14 @@ import { createTaskOps, type TaskAnswer } from "../ops";
 import { openWorkDb, workDbFile } from "./db";
 import { allTasks, eventsOf, filesOverlap, isStackedPair, rivalsOf, taskById } from "./queries";
 import { readWorkStore } from "./read";
-import { createTask, deleteTask, type ReservePlan, reservePlan, updateTask } from "./store";
+import {
+  createTask,
+  deleteTask,
+  type ReservePlan,
+  releasePlan,
+  reservePlan,
+  updateTask,
+} from "./store";
 import type { Result, Who, WorkTask } from "./types";
 
 const LEAD: Who = { sessionId: "lead", pid: 4101, procStart: "41010" };
@@ -88,15 +96,22 @@ test("every other plan still blocks: a third plan, and a plan stacked on the sta
   expect(why(reserve(db, "delta"))).toBe('#4 "delta" overlaps #1 "alpha": src/a/x.ts (src/a/)');
 });
 
-test("a parent that is closed is judged again, done but not released included", () => {
+test("a parent done but still reserved is skipped while it holds its files; released, the pair ends", () => {
   const { db } = setup();
   const alpha = plan(db, "alpha", ["src/a/"]);
-  plan(db, "beta", ["src/a/x.ts"], "alpha");
+  const beta = plan(db, "beta", ["src/a/x.ts"], "alpha");
+  plan(db, "gamma", ["src/a/y.ts"]);
   ok(reserve(db, "alpha"));
-  ok(updateTask(db, alpha.id, { status: "done" }, LEAD, 5));
-  expect(why(reserve(db, "beta"))).toBe(
-    '#2 "beta" overlaps #1 "alpha" (done, not released: `cc-smart-dev-kit herdr plans` releases it when its pull request merges): src/a/x.ts (src/a/)',
+  const done = ok(updateTask(db, alpha.id, { status: "done" }, LEAD, 5));
+  // Built on alpha's branch, beta shares alpha's files by construction until alpha's pull request merges.
+  expect(isStackedPair(beta, done)).toBe(true);
+  expect(ok(reserve(db, "beta")).lead).not.toBeNull();
+  // A plan that is not stacked on alpha is still held off by it.
+  expect(why(reserve(db, "gamma"))).toBe(
+    '#3 "gamma" overlaps #1 "alpha" (done, not released: `cc-smart-dev-kit herdr plans` releases it when its pull request merges): src/a/y.ts (src/a/)',
   );
+  const released = ok(releasePlan(db, { project: "p", plan: "alpha", who: LEAD, now: 6 }));
+  expect(isStackedPair(beta, released)).toBe(false);
 });
 
 test("the stacked pair is the one filter: open parent, either way, never a third plan", () => {

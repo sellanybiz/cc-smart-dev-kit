@@ -682,6 +682,18 @@ test("a start is refused when the default branch can only be guessed", () => {
   expect(prepareStart({ ...w.base, baseFrom: "config" }, "alpha").ok).toBe(true);
 });
 
+test("a start given its own base (--base) needs no default branch: the child resets to that commit", () => {
+  const w = build();
+  w.plan("alpha", ["src/a/"]);
+  w.plan("beta", ["src/b/"]);
+  const guessed = { ...w.base, baseFrom: "default" as const };
+  expect(prepareStart(guessed, "alpha", { baseGiven: true }).ok).toBe(true);
+  // The lead's own reservation has no --base: it still needs the default branch.
+  const reserve = prepareReserve(guessed, "beta");
+  if (reserve.ok) throw new Error("expected a refusal");
+  expect(reserve.why).toContain("The default branch cannot be found");
+});
+
 test("a resume claims the plan before it launches, and a second reading of it finds a child starting", () => {
   const w = build();
   const first = w.plan("first", ["src/one/"]);

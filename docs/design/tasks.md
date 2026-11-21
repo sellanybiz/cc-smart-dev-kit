@@ -418,18 +418,21 @@ one is a folder holding the other. Paths in `plans.mergeFiles` take no part, and
 from the committed copy only (`docs/design/workflow.md`). Inside a `plans.appendOnly` folder
 (6.3.0, a folder where plans add new files, such as a migrations folder) a path overlaps only the
 same file named exactly: no folder entry holds it, whether that folder, one inside it or one around
-it, so `db/` still holds `db/schema.ts` but not `db/migrations/3.sql`. `planFilesCheck` reads it
-from the same committed file as `mergeFiles`; a file it cannot read gives no folders, so more paths
+it, so `db/` still holds `db/schema.ts` but not `db/migrations/3.sql`. `planFilesCheck` reads it in
+the same read of the committed file as `mergeFiles` (`resolvePlanFiles`); a file it cannot read gives no folders, so more paths
 overlap, never fewer.
 
 **Stacked plans** (schema 7, 6.3.0). A plan names the plan it is built on in `stacked_on` (its
 slug; `task_create` and `task_update`, CLI `--stacked-on`, `--no-stack` clears it). Every overlap
 judgment (`reservePlan`, `refuseHeldOverlap`, `refuseFlightOverlap`, and `herdr plans`' lines and
 drift) first takes the held plans through `rivalsOf`, which drops the plan itself and its stacked
-pair (`isStackedPair`): the plan it is stacked on, or one stacked on it, while that parent is open
-(pending or in progress). Only that one plan is skipped: a plan stacked on a stacked plan still
-meets the first parent, and every other plan blocks as before. A closed parent, done but not yet
-released included, is judged again, so the stack never outlives the parent's own work. The store
+pair (`isStackedPair`): the plan it is stacked on, or one stacked on it, while that parent holds
+its files: open (pending or in progress), or done and still reserved until its pull request merges
+(a plan built on its parent's branch shares those files by construction, so judging the pair then
+would only refuse the plan the stack exists for). Only that
+one plan is skipped: a plan stacked on a stacked plan still meets the first parent, and every other
+plan blocks as before. Once the parent is released (its pull request merged or closed, or the plan
+dropped, which releases it) it holds nothing, so the stack ends with it. The store
 refuses a stack on a task that is not a plan, on itself, on a slug with no plan, and one that
 closes a loop. Setting or clearing a stack on a held plan is judged like a new list, so clearing it
 while the two held plans share files is refused. A plan another plan is stacked on is not deleted

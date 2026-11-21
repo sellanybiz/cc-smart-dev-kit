@@ -263,7 +263,7 @@ test("task_create and task_update say the rules the store enforces: the phase id
     // Said on both tools, the nullable update field too.
     for (const name of ["task_create", "task_update"])
       expect(tool(name)?.inputSchema.properties.stacked_on?.description).toBe(
-        "Plan task only: the slug of the plan this plan is built on. The overlap check skips that one plan, both ways, while it is open; every other plan still blocks. Never itself, a missing plan or a loop; null clears it.",
+        "Plan task only: the slug of the plan this plan is built on. The overlap check skips that one plan, both ways, while it holds its files (open, or done and reserved until its pull request merges); every other plan still blocks. Never itself, a missing plan or a loop; null clears it.",
       );
   } finally {
     await kit.close();

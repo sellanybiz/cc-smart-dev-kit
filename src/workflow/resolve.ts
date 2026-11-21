@@ -33,10 +33,10 @@
  * (`personal`), else on (`default`). The `fable-session` hook reads it through
  * `resolveLeadHint`, which never throws.
  *
- * **Two plan settings have one home each.** `plans.runMode` lives in the person's file alone
- * (`personal`, else `default`). `plans.mergeFiles` lives in the project's file alone, and what the
- * task store and herdr act on is read as committed on `origin/<base>` (`resolveMergeFiles`),
- * never from a working copy.
+ * **Three plan settings have one home each.** `plans.runMode` lives in the person's file alone
+ * (`personal`, else `default`). `plans.mergeFiles` and `plans.appendOnly` live in the project's
+ * file alone, and what the task store and herdr act on is read as committed on `origin/<base>`
+ * (`resolvePlanFiles`), never from a working copy.
  *
  * A broken personal file throws `WorkflowConfigError` (the message names the file and the
  * field): the person must hear that their file is wrong. A caller that must not fail — a
@@ -106,14 +106,15 @@ export interface ResolvedWorkflow {
   };
   /**
    * How the kit's plans are shaped: the most phases one plan may hold, how queued plans run
-   * (`runMode`, the person's alone) and the paths the plans' overlap check leaves out.
-   * **`mergeFiles` here is whatever project file was passed in, the working copy for a caller
-   * that passed one.** What the store and herdr act on is `resolveMergeFiles`: the list as
-   * committed on `origin/<base>`.
+   * (`runMode`, the person's alone), the paths the plans' overlap check leaves out, and the
+   * folders where it compares files only. **`mergeFiles` and `appendOnly` here are whatever
+   * project file was passed in, the working copy for a caller that passed one.** What the store
+   * and herdr act on is `resolvePlanFiles`: the lists as committed on `origin/<base>`.
    */
   plans: {
     maxPhases: ResolvedValue<number>;
     mergeFiles: ResolvedValue<string[]>;
+    appendOnly: ResolvedValue<string[]>;
     runMode: ResolvedValue<RunMode>;
   };
   switches: {
@@ -215,13 +216,14 @@ export function alertsFrom(personal: Workflow, project: Workflow): ResolvedWorkf
 
 /**
  * The plan settings of two workflow objects. The cap: the project's over the person's, over the
- * default. `runMode` is the person's alone (`personal`, else `default`), and `mergeFiles` the
- * project's alone (`project`, else `default`): a project file cannot hold the first
- * (`checkPersonalOnlyFields`), and the person's file cannot hold the second (`schema.ts`).
+ * default. `runMode` is the person's alone (`personal`, else `default`), and `mergeFiles` and
+ * `appendOnly` the project's alone (`project`, else `default`): a project file cannot hold the
+ * first (`checkPersonalOnlyFields`), and the person's file cannot hold the others (`schema.ts`).
  */
 function plansFrom(personal: PersonalWorkflow, project: Workflow): ResolvedWorkflow["plans"] {
   const plans = mergeWorkflows(personal, project).plans ?? {};
   const mergeFiles = project.plans?.mergeFiles;
+  const appendOnly = project.plans?.appendOnly;
   const runMode = personal.plans?.runMode;
   return {
     maxPhases: {
@@ -232,6 +234,10 @@ function plansFrom(personal: PersonalWorkflow, project: Workflow): ResolvedWorkf
       mergeFiles === undefined
         ? current([...workflowDefaults.plans.mergeFiles], "default")
         : current(mergeFiles, "project"),
+    appendOnly:
+      appendOnly === undefined
+        ? current([...workflowDefaults.plans.appendOnly], "default")
+        : current(appendOnly, "project"),
     runMode:
       runMode === undefined
         ? current(workflowDefaults.plans.runMode, "default")
@@ -409,29 +415,39 @@ export interface MergeFiles {
   reason: string | null;
 }
 
+/** The two committed plan lists the overlap check reads: the merge files, and the append-only folders. */
+export interface PlanFiles extends MergeFiles {
+  /** `plans.appendOnly`: folders, each ending in `/`. Empty when none could be read. */
+  appendOnly: string[];
+}
+
 /**
- * `plans.mergeFiles` **as committed on `origin/<base>`**: the one list the plans' overlap check
- * leaves out. Read as the review gate is (`readCommittedConfig`), never from a working copy a
- * session can edit, so a session cannot widen it. It needs no person's file: the key is a
- * project fact, so unlike `resolveGate` this does not read the person's workflow file.
+ * `plans.mergeFiles` and `plans.appendOnly` **as committed on `origin/<base>`**, from one read of
+ * the committed file: the paths the plans' overlap check leaves out, and the folders where it
+ * compares files only. Read as the review gate is (`readCommittedConfig`), never from a working
+ * copy a session can edit, so a session cannot widen either. It needs no person's file: both are
+ * project facts, so unlike `resolveGate` this does not read the person's workflow file. The one
+ * reader the store and herdr act on (`planFilesCheck`).
  *
  * `base` is the project's integration base (`worktrees.base`). With none, or when the ref, the
- * file or git cannot be read, the list is empty and `reason` says why, and the caller shows it.
- * Nothing falls back to the working copy.
+ * file or git cannot be read, both lists are empty and `reason` says why, and the caller shows
+ * it: more paths then overlap, never fewer. Nothing falls back to the working copy.
  *
- * An entry written without a trailing `/` that names a folder in the committed tree is left out
- * and named in `reason`, with the fix: `docs` would match only a file called `docs`, so the check
- * would quietly leave out nothing. The tree is asked with git, so parsing stays pure
- * (`normalizeMergeFile`). A path that is not in the tree stays: a build output may not be committed.
+ * A merge entry written without a trailing `/` that names a folder in the committed tree is left
+ * out and named in `reason`, with the fix: `docs` would match only a file called `docs`, so the
+ * check would quietly leave out nothing (`settleMergeFiles`). The tree is asked with git, so
+ * parsing stays pure (`normalizeMergeFile`). A path that is not in the tree stays: a build output
+ * may not be committed. An append-only folder needs no such step: the schema takes folders only.
  */
-export function resolveMergeFiles(
+export function resolvePlanFiles(
   checkout: Checkout,
   base: string | null,
   options: CommittedOptions = {},
-): MergeFiles {
+): PlanFiles {
   if (base === null) {
     return {
       files: [],
+      appendOnly: [],
       reason:
         "this project names no worktrees.base, so there is no committed copy of plans.mergeFiles to read",
     };
@@ -440,21 +456,24 @@ export function resolveMergeFiles(
   try {
     committed = readCommittedConfig(checkout, base, options);
   } catch (error) {
-    return { files: [], reason: error instanceof Error ? error.message : String(error) };
+    return {
+      files: [],
+      appendOnly: [],
+      reason: error instanceof Error ? error.message : String(error),
+    };
   }
-  if (!committed.found) return { files: [], reason: committed.why };
-  return settleMergeFiles(
-    checkout,
-    base,
-    committed.config.workflow?.plans?.mergeFiles ?? [],
-    options,
-  );
+  if (!committed.found) return { files: [], appendOnly: [], reason: committed.why };
+  const plans = committed.config.workflow?.plans;
+  return {
+    ...settleMergeFiles(checkout, base, plans?.mergeFiles ?? [], options),
+    appendOnly: [...(plans?.appendOnly ?? [])],
+  };
 }
 
 /**
  * The list `listed` (already read from the committed file on `origin/<base>`) as the plan tools
  * use it: a bare entry that names a folder on the committed tree is left out, named in `reason`.
- * The second half of `resolveMergeFiles`, apart so that a caller that has the committed file
+ * The merge half of `resolvePlanFiles`, apart so that a caller that has the committed file
  * already (`workflow show`, through the gate's read) asks git about the tree only and never reads
  * the file a second time.
  */
@@ -519,6 +538,7 @@ const RESOLVED: {
   "plans.maxPhases": (r) => r.plans.maxPhases,
   "plans.runMode": (r) => r.plans.runMode,
   "plans.mergeFiles": (r) => r.plans.mergeFiles,
+  "plans.appendOnly": (r) => r.plans.appendOnly,
   "switches.statusLine": (r) => r.switches.statusLine,
   "switches.sessionNames": (r) => r.switches.sessionNames,
   "switches.jobRoute": (r) => r.switches.jobRoute,

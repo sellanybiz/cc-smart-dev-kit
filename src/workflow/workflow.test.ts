@@ -16,7 +16,7 @@ import {
   leadHintFrom,
   resolveJobRoute,
   resolveLeadHint,
-  resolveMergeFiles,
+  resolvePlanFiles,
   resolveWorkflow,
 } from "./resolve";
 import {
@@ -788,7 +788,37 @@ describe("plans.mergeFiles: parsing", () => {
 
   test("the person's file refuses it: it is a project fact, so it would never count there", () => {
     expect(personalWorkflowSchema.safeParse({ plans: { mergeFiles: ["a"] } }).success).toBe(false);
-    expect(PROJECT_ONLY_KEYS).toEqual(["plans.mergeFiles"]);
+    expect(personalWorkflowSchema.safeParse({ plans: { appendOnly: ["a/"] } }).success).toBe(false);
+    expect(PROJECT_ONLY_KEYS).toEqual(["plans.mergeFiles", "plans.appendOnly"]);
+  });
+
+  test("plans.appendOnly resolves as the project's file says, else nothing, and a typed list takes folders only", () => {
+    const env = hookEnv();
+    expect(resolveWorkflow(pathsFor(env), null).plans.appendOnly).toEqual({
+      value: [],
+      source: "default",
+    });
+    const config = ccSmartDevKitConfigSchema.parse({
+      workflow: { plans: { appendOnly: ["./db/migrations/"] } },
+    });
+    expect(resolveWorkflow(pathsFor(env), config).plans.appendOnly).toEqual({
+      value: ["db/migrations/"],
+      source: "project",
+    });
+    expect(
+      parseWorkflowValue("plans.appendOnly", "db/migrations/, ./docs/adr/,db/migrations/"),
+    ).toEqual({
+      ok: true,
+      value: ["db/migrations/", "docs/adr/"],
+    });
+    expect(parseWorkflowValue("plans.appendOnly", "db/migrations")).toEqual({
+      ok: false,
+      why: 'plans.appendOnly is a list of folders inside the repository, each written with / and ending in /, with no absolute path, no .. and not the root; "db/migrations" is not a folder: plans.appendOnly names folders, each ending in /',
+    });
+    expect(parseWorkflowValue("plans.appendOnly", " , ")).toEqual({
+      ok: false,
+      why: "plans.appendOnly is a list of folders inside the repository, each written with / and ending in /, with no absolute path, no .. and not the root",
+    });
   });
 
   test("it resolves as the project's file says, else nothing, and never as the person's", () => {
@@ -807,16 +837,22 @@ describe("plans.mergeFiles: parsing", () => {
   });
 });
 
-/** A clone whose `origin/main` carries `workflow.plans.mergeFiles = listed`, and the files `tree` adds. */
+/**
+ * A clone whose `origin/main` carries `workflow.plans.mergeFiles = listed` (and `appendOnly` when
+ * given), and the files `tree` adds.
+ */
 function mergeFilesWorld(
   listed: unknown,
   tree: Record<string, string> = {},
+  appendOnly?: unknown,
 ): { checkout: Checkout; repo: string } {
   const { repo } = makeClone();
   writeClaudeFile(repo, "cc-smart-dev-kit.json", {
     requires: ">=0.1",
     worktrees: { base: "main" },
-    workflow: { plans: { mergeFiles: listed } },
+    workflow: {
+      plans: { mergeFiles: listed, ...(appendOnly === undefined ? {} : { appendOnly }) },
+    },
   });
   for (const [path, text] of Object.entries(tree)) {
     mkdirSync(dirname(join(repo, path)), { recursive: true });
@@ -830,10 +866,25 @@ function mergeFilesWorld(
   return { checkout, repo };
 }
 
-describe("plans.mergeFiles: read as committed on origin/<base>", () => {
+describe("plans.mergeFiles and plans.appendOnly: read as committed on origin/<base>", () => {
+  test("both lists come back from the one read, and a widened working copy is ignored", () => {
+    const { checkout, repo } = mergeFilesWorld(["CHANGELOG.md"], {}, ["./db/migrations/"]);
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", {
+      requires: ">=0.1",
+      worktrees: { base: "main" },
+      workflow: { plans: { mergeFiles: ["CHANGELOG.md"], appendOnly: ["db/migrations/", "src/"] } },
+    });
+    expect(resolvePlanFiles(checkout, "main", { env: hookEnv() })).toEqual({
+      files: ["CHANGELOG.md"],
+      appendOnly: ["db/migrations/"],
+      reason: null,
+    });
+  });
+
   test("the committed list comes back normalised, with no reason", () => {
     const { checkout } = mergeFilesWorld(["./plugin/dist\\", "CHANGELOG.md"]);
-    expect(resolveMergeFiles(checkout, "main", { env: hookEnv() })).toEqual({
+    expect(resolvePlanFiles(checkout, "main", { env: hookEnv() })).toEqual({
+      appendOnly: [],
       files: ["plugin/dist/", "CHANGELOG.md"],
       reason: null,
     });
@@ -847,9 +898,9 @@ describe("plans.mergeFiles: read as committed on origin/<base>", () => {
       worktrees: { base: "main" },
       workflow: { plans: { mergeFiles: ["src/", "plugin/"] } },
     });
-    expect(resolveMergeFiles(checkout, "main", { env: hookEnv() }).files).toEqual(["CHANGELOG.md"]);
+    expect(resolvePlanFiles(checkout, "main", { env: hookEnv() }).files).toEqual(["CHANGELOG.md"]);
     git(repo, "commit", "-q", "-am", "widen it here");
-    expect(resolveMergeFiles(checkout, "main", { env: hookEnv() }).files).toEqual(["CHANGELOG.md"]);
+    expect(resolvePlanFiles(checkout, "main", { env: hookEnv() }).files).toEqual(["CHANGELOG.md"]);
   });
 
   test("a committed file with no mergeFiles is an empty list with no reason", () => {
@@ -863,7 +914,8 @@ describe("plans.mergeFiles: read as committed on origin/<base>", () => {
     git(repo, "update-ref", "refs/remotes/origin/main", "HEAD");
     const checkout = locateCheckout(repo, { env: hookEnv() });
     if (checkout === null) throw new Error("a checkout");
-    expect(resolveMergeFiles(checkout, "main", { env: hookEnv() })).toEqual({
+    expect(resolvePlanFiles(checkout, "main", { env: hookEnv() })).toEqual({
+      appendOnly: [],
       files: [],
       reason: null,
     });
@@ -878,7 +930,8 @@ describe("plans.mergeFiles: read as committed on origin/<base>", () => {
     });
     const checkout = locateCheckout(repo, { env: hookEnv() });
     if (checkout === null) throw new Error("a checkout");
-    expect(resolveMergeFiles(checkout, "main", { env: hookEnv() })).toEqual({
+    expect(resolvePlanFiles(checkout, "main", { env: hookEnv() })).toEqual({
+      appendOnly: [],
       files: [],
       reason:
         "origin/main is not known in this repository (no origin, or the branch was never fetched)",
@@ -890,7 +943,8 @@ describe("plans.mergeFiles: read as committed on origin/<base>", () => {
     const checkout = locateCheckout(repo, { env: hookEnv() });
     if (checkout === null) throw new Error("a checkout");
     git(repo, "update-ref", "refs/remotes/origin/main", "HEAD");
-    expect(resolveMergeFiles(checkout, "main", { env: hookEnv() })).toEqual({
+    expect(resolvePlanFiles(checkout, "main", { env: hookEnv() })).toEqual({
+      appendOnly: [],
       files: [],
       reason: "origin/main has no .claude/cc-smart-dev-kit.json committed",
     });
@@ -898,7 +952,7 @@ describe("plans.mergeFiles: read as committed on origin/<base>", () => {
 
   test("no worktrees.base: an empty list and the reason", () => {
     const { checkout } = mergeFilesWorld(["CHANGELOG.md"]);
-    const read = resolveMergeFiles(checkout, null, { env: hookEnv() });
+    const read = resolvePlanFiles(checkout, null, { env: hookEnv() });
     expect(read.files).toEqual([]);
     expect(read.reason).toBe(
       "this project names no worktrees.base, so there is no committed copy of plans.mergeFiles to read",
@@ -907,7 +961,7 @@ describe("plans.mergeFiles: read as committed on origin/<base>", () => {
 
   test("a committed file that cannot be read gives an empty list and its own error", () => {
     const { checkout } = mergeFilesWorld(["../outside"]);
-    const read = resolveMergeFiles(checkout, "main", { env: hookEnv() });
+    const read = resolvePlanFiles(checkout, "main", { env: hookEnv() });
     expect(read.files).toEqual([]);
     expect(read.reason).toBe(
       'Invalid origin/main:.claude/cc-smart-dev-kit.json: workflow.plans.mergeFiles.0: "../outside" leaves the repository: no .. segments',
@@ -919,7 +973,8 @@ describe("plans.mergeFiles: read as committed on origin/<base>", () => {
       "docs/guide.md": "x\n",
       "CHANGELOG.md": "x\n",
     });
-    expect(resolveMergeFiles(checkout, "main", { env: hookEnv() })).toEqual({
+    expect(resolvePlanFiles(checkout, "main", { env: hookEnv() })).toEqual({
+      appendOnly: [],
       files: ["plugin/dist/", "CHANGELOG.md", "build/out.js"],
       reason:
         "plans.mergeFiles on origin/main leaves out docs until fixed (docs is a folder: write it docs/)",
@@ -930,7 +985,8 @@ describe("plans.mergeFiles: read as committed on origin/<base>", () => {
     const { checkout, repo } = mergeFilesWorld(["gen"]);
     mkdirSync(join(repo, "gen"));
     writeFileSync(join(repo, "gen", "a.txt"), "x\n");
-    expect(resolveMergeFiles(checkout, "main", { env: hookEnv() })).toEqual({
+    expect(resolvePlanFiles(checkout, "main", { env: hookEnv() })).toEqual({
+      appendOnly: [],
       files: ["gen"],
       reason: null,
     });

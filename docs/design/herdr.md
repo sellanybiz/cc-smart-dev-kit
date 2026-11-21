@@ -179,7 +179,10 @@ take) is `docs/design/tasks.md` § Plans handed to children.
 - The slug resolves with the take path's resolver (`planByRef`), so `#n` works as well. The
   plan must be one this session laid and not started.
 - It refuses when the default branch is only a guess (no `origin/HEAD`, no `worktrees.base`),
-  with the fix `git remote set-head origin --auto`: the child resets onto that branch.
+  with the fix `git remote set-head origin --auto`: the child resets onto that branch. A start
+  with `--base` is not refused for it: that child resets to the commit `--base` named, never to the
+  default branch (`prepareStart`'s `baseGiven`). `plans --reserve` has no `--base`, so it still
+  refuses.
 - The child's name is the slug. When `kit-<slug>` is not a valid child name, `--name` is the fix.
 
 **The order** is: those refusals, then the name check (`kit-<slug>` must be a valid child name),
@@ -192,8 +195,12 @@ origin/<default>...<branch>` lists both sides of a rename), so no git runs under
 open blocker, no file list, an existing reservation or files that overlap a **held** plan, and any
 held plan with no file list and no branch diff (the rule is in `docs/design/tasks.md`, under "Held"). A held
 plan is any reserved plan until it is released, and any session's own plan in flight.
-`plans.mergeFiles` never counts, and case folds when `core.ignorecase` is on. Both come from
-`planFilesCheck`: the committed copy on `origin/<default>`, never the working copy. The reservation
+`plans.mergeFiles` never counts, inside a `plans.appendOnly` folder only the same file overlaps,
+and case folds when `core.ignorecase` is on. All three come from `planFilesCheck`: the two lists
+from one read of the committed copy on `origin/<default>` (`resolvePlanFiles`), never the working
+copy. A plan's stacked pair (`stacked_on`: its parent while the parent holds its files, or a plan
+stacked on it) is left out of the judgment both ways (`rivalsOf`); `herdr plans` shows
+`(stacked on <slug>)` after the plan's name. The reservation
 records the lead (session and process), a holder kind (`child`, or `self` for the lead's own plan)
 and a **hand-out id**, the key a child takes the plan with. A launch proved failed releases the
 reservation. A child that started but cannot be read does not.
@@ -328,7 +335,7 @@ The refusals, in the command's words:
 | `--issue` is used wrongly | "--issue belongs to --followup." or "Use an issue number such as 12." |
 | Not in a git project, or no lead terminal | "A follow-up child needs a git project and the lead's own terminal." Fix: run it in the project's folder, or give `--cwd`, from the lead's terminal. |
 | The caller's terminal carries `kit.lead` (any child) | "A child never starts a follow-up child: only a lead does." Fix: put the finding in `cc-smart-dev-kit herdr report`. |
-| The default branch is only a guess | The text `start --plan` uses (`UNKNOWN_BASE`): "… so a child would reset to a guess." Fix: `git remote set-head origin --auto`, or set `worktrees.base`. |
+| The default branch is only a guess | The text `start --plan` uses (`UNKNOWN_BASE`): "… so a child would reset to a guess." Fix: `git remote set-head origin --auto`, or set `worktrees.base`. A start with `--base` skips it: the child resets to that commit. |
 | This lead already has a live follow-up child in this repository | "This lead already has a follow-up child for this repository: `<addr>`." The fix depends on its state (below). |
 | A live follow-up child of a lead that has **ended** is here | "A follow-up child of a lead that has ended is still live in this repository: `<addr>`." Fix: take it over with `cc-smart-dev-kit herdr adopt`, then send the finding. |
 | An ended follow-up child left unmerged commits | "A follow-up child in this repository ended (`<addr>`) and left commits on `<branch>` that are not on origin/`<base>`, with no merged pull request. Its worktree is `<path>`." Fix: push and merge that work, or remove the worktree and branch once checked (`cc-smart-dev-kit worktrees --clean`), then start again. |

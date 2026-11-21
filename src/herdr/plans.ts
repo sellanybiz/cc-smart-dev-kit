@@ -724,13 +724,18 @@ export const UNKNOWN_BASE = {
   fix: "run `git remote set-head origin --auto`, or set worktrees.base in .claude/cc-smart-dev-kit.json",
 } as const;
 
-/** The plan a ref names, after the checks every plan command shares: a session, a real default branch, a plan. */
+/**
+ * The plan a ref names, after the checks every plan command shares: a session, a real default
+ * branch, a plan. `baseGiven`: the lead named the child's start commit (`herdr start --base`), so
+ * the child resets to that commit and never to the default branch, and a guessed default branch
+ * cannot send it to the wrong place.
+ */
 type Located = { ok: true; plan: WorkTask; slug: string } | Refusal;
 
-function locatePlan(world: PlansWorld, ref: string): Located {
+function locatePlan(world: PlansWorld, ref: string, baseGiven = false): Located {
   if (!world.who.sessionId) return refuse("A plan hand-out needs a resolvable calling session.");
   // `main` is a guess when nothing says otherwise: a child built and reset from the wrong branch.
-  if (world.baseFrom === "default") return refuse(UNKNOWN_BASE.why, UNKNOWN_BASE.fix);
+  if (world.baseFrom === "default" && !baseGiven) return refuse(UNKNOWN_BASE.why, UNKNOWN_BASE.fix);
   const plan = planByRef(world.db, world.project, ref);
   if (plan === null) return refuse(`Plan "${ref}" was not found in this project.`);
   if (plan.kind !== "plan")
@@ -840,10 +845,15 @@ export function prepareReserve(world: PlansWorld, ref: string): PlanStart {
  * 2. a plan that is ready is judged by the live gates, its held diffs are read, and then
  *    `reservePlan` takes it in one transaction. The caller launches after this and gives the
  *    plan back (`releasePlan`) if the launch fails.
- * Everything else is refused with its reason and fix.
+ * Everything else is refused with its reason and fix. `baseGiven`: the lead gave `--base`, so a
+ * default branch that is only a guess does not refuse the start (`locatePlan`).
  */
-export function prepareStart(world: PlansWorld, ref: string): PlanStart {
-  const found = locatePlan(world, ref);
+export function prepareStart(
+  world: PlansWorld,
+  ref: string,
+  options: { baseGiven?: boolean } = {},
+): PlanStart {
+  const found = locatePlan(world, ref, options.baseGiven === true);
   if (!found.ok) return found;
   const { plan, slug } = found;
   const owns = ownerOf(world.who);

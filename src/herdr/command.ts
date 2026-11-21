@@ -1034,7 +1034,7 @@ async function startChild(
   // The gates, the diffs and the reservation (D6): after every cheap refusal above, before the launch.
   let handout: Extract<PlanStart, { ok: true }> | null = null;
   if (planWorld !== null && slug !== null) {
-    const prepared = prepareStart(planWorld, slug);
+    const prepared = prepareStart(planWorld, slug, { baseGiven: base !== null });
     if (!prepared.ok) return refuse(ctx, prepared.why, prepared.fix);
     handout = prepared;
     if (prepared.reserved)

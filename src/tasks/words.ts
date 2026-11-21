@@ -74,4 +74,4 @@ export const PLAN_FILES_WORDS =
  * plan it is built on, which the overlap check then skips (`isStackedPair`).
  */
 export const STACKED_ON_WORDS =
-  "Plan task only: the slug of the plan this plan is built on. The overlap check skips that one plan, both ways, while it is open; every other plan still blocks. Never itself, a missing plan or a loop; null clears it.";
+  "Plan task only: the slug of the plan this plan is built on. The overlap check skips that one plan, both ways, while it holds its files (open, or done and reserved until its pull request merges); every other plan still blocks. Never itself, a missing plan or a loop; null clears it.";
