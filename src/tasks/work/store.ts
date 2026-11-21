@@ -2,6 +2,7 @@ import { COMMAND } from "../../build-info/names";
 import type { WorkflowSource } from "../../workflow/resolve";
 import { TASK_TOOL } from "../words";
 import { type WorkDb, writeWork } from "./db";
+import { type BlockRefusal, blockRefusal, TaskGraph } from "./graph";
 import {
   allTasks,
   claimHeldBy,
@@ -23,7 +24,6 @@ import {
   planIsOpen,
   resumedClaim,
   taskById,
-  waitsForTask,
 } from "./queries";
 import {
   claimText,
@@ -267,33 +267,26 @@ function unblockedValid(db: WorkDb, task: WorkTask): void {
  * that waits for that parent) could never start, and neither could ever be done.
  */
 function addBlockers(db: WorkDb, task: WorkTask, refs: readonly string[]): void {
+  let graph: TaskGraph | null = null;
   for (const ref of refs) {
     const other = taskById(db, ref);
     if (other.project !== task.project) throw new Error("dependency belongs to another project");
-    const byId = new Map(allTasks(db, task.project).map((t) => [t.id, t]));
-    for (let up = byId.get(task.parentId ?? ""); up; up = byId.get(up.parentId ?? ""))
-      if (up.id === other.id)
-        throw new Error(
-          `${label(task)} cannot be blocked by ${label(other)}: it sits under it, and a parent waits for its tasks`,
-        );
-    const seen = new Set<string>();
-    const pending = [ref];
-    while (pending.length) {
-      const id = pending.pop();
-      if (!id || seen.has(id)) continue;
-      if (id === task.id) throw new Error("blocked-by would make a cycle");
-      seen.add(id);
-      pending.push(...(byId.get(id)?.waitsFor ?? []));
-    }
-    // A wait through a parent: a task waits for its blockers, and a parent for the tasks that
-    // hold it (`holdingUnder`). When the blocker already waits for this task that way, at any
-    // depth and in either order the blocks were added, neither could ever be done.
-    const tasks = [...byId.values()];
-    if (waitsForTask(tasks, ref, task.id))
-      throw new Error(
-        `${label(task)} cannot be blocked by ${label(other)}: ${label(other)} already waits for it, through what it is blocked by and the tasks a parent waits for, so neither could ever be done`,
-      );
+    // One graph for the call: each insert below is added to it, so a later ref sees it.
+    graph ??= new TaskGraph(allTasks(db, task.project));
+    const refusal = blockRefusal(graph, task, other);
+    if (refusal) throw new Error(blockMessage(refusal, task, other));
     db.sqlite.query("INSERT OR IGNORE INTO task_deps VALUES (?,?)").run(task.id, ref);
+    graph.addWait(task.id, ref);
+  }
+}
+function blockMessage(refusal: BlockRefusal, task: WorkTask, other: WorkTask): string {
+  switch (refusal) {
+    case "under":
+      return `${label(task)} cannot be blocked by ${label(other)}: it sits under it, and a parent waits for its tasks`;
+    case "cycle":
+      return "blocked-by would make a cycle";
+    case "through":
+      return `${label(task)} cannot be blocked by ${label(other)}: ${label(other)} already waits for it, through what it is blocked by and the tasks a parent waits for, so neither could ever be done`;
   }
 }
 function openPlanValid(tasks: readonly WorkTask[], plan: string): void {

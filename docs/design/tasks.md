@@ -105,8 +105,15 @@ the store (`min_compatible` stays 1). The snapshot is written to a temporary fil
 atomically. If it fails, the store opens read-only and writes report how to free space or fix
 folder rights; no task is lifted. The next task call reopens a refused handle and tries again. A legacy parent cycle is broken by lifting its lowest-numbered **task**
 member to the top, with a history event, before the remaining tasks are lifted. Plans and phases
-never move. A cycle with no task-under-task link is left alone. Restored holds are checked against
-existing blockers and completion holds so they cannot introduce a wait cycle.
+never move. A cycle with no task-under-task link is left alone.
+
+The repair restores a hold only where `addBlockers` would accept it. Both read the one task graph
+(`work/graph.ts`: `TaskGraph` and `blockRefusal`), so a hold the store refuses is never written
+back: not one on a task above, not one that would close a wait cycle, not one the blocker already
+waits for through a parent. The repair reads each project's tasks once, before the moves, and
+brings the graph to where the moves left it; every hold it restores is added to that graph, so the
+next hold is judged with it. Each hold it skips adds one `noted` entry to the task's history, with
+the lift's reason and the task that was refused. A hold already stored is never deleted.
 
 **The type** says whether a task holds the one above it. A `blocking` task (the default) must
 be closed before its parent is done. A `non-blocking` one (a nice-to-have, a later idea) holds
@@ -126,8 +133,16 @@ this one, and a task that already waits for this one through a parent: a parent 
 blocking tasks, so a task blocked by its parent, or by a task that waits for that parent,
 could never start, and none of them could ever be done. That last walk follows both kinds of
 wait (blocked-by, and a parent for the tasks that hold it), so the order the blocks were
-added does not matter. Done is judged only on the move to done, so a done task's other fields
+added does not matter. The three refusals are checked in that order (above it, then a cycle,
+then through a parent), after the unknown-task and other-project checks, so a block that breaks
+two of them says the first. `blockRefusal` in `work/graph.ts` is the one home of these rules; the
+lift's repair uses it too. Done is judged only on the move to done, so a done task's other fields
 still change.
+
+A store an earlier release already lifted may still hold a block on an ancestor, which the repair
+used to restore: neither task can then be done. The repair never deletes a hold, so `doctor`'s
+project checks print one `!` line for each open task blocked by an open task above it, with the
+fix (`task_update` with `blocked_by_remove`). The check only reads (`ancestorHoldChecks`).
 
 **The main session lays out its phases ahead of its builders.** `task_create` with `phase` (its
 id: letters, digits, `.`, `_` and `-`, a letter or a digit at each end) makes the phase task
