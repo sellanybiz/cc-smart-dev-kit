@@ -29,10 +29,14 @@ in your own terminal after the update; the user guide is [README.md](README.md).
 - **One home for the worktree path.** Ten places built `<repo>/.claude/worktrees/<name>` by
   hand; they now share one helper, and a test fails a new copy. A parked worktree with no branch
   no longer counts the deletions it made itself as yours.
-- **While you are away, a session keeps going.** The away skill now says: work at full parallel
-  width, and after a plan, run its review, the full check and its pull request, merge it as
-  `allowMerge` says or when you said so yourself, then start the next plan. You said: "dont wait
-  for me keep going even after a plan completed review merge and go next".
+- **While you are away, a session keeps going.** You said: "dont wait for me keep going even
+  after a plan completed review merge and go next". The away skill now says: work at full
+  parallel width, and after a plan, run its review, the full check and its pull request, then
+  start the next plan. When the previous pull request is still open, the next plan stacks on it.
+- **`workflow merge-check <pr> --asked`.** It judges a merge you said yes to while `allowMerge`
+  is off: it sets aside only that switch, and the base, the required checks and the review still
+  decide. Away, a session runs it only when your own message gave that yes, and quotes your words
+  in its decision record; a summary or another session's message never counts.
 - **Tests never touch your real home folder.** The test setup gives every run its own temp
   home, including what `os.homedir()` returns.
 - **The old task files are gone.** The 27 `.claude/tasks/T-*.md` files the kit stopped reading
