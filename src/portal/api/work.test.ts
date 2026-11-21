@@ -1,11 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { type CliPaths, cliPaths } from "../../cli/paths";
 import { localDay } from "../../gateway/safety-checks";
+import { projectFolderName } from "../../sessions/saved-sessions";
 import { fakeDefaults, fakeWorkflow } from "../../testing/fake-workflow";
 import { makeRepo } from "../../testing/hooks";
-import { cleanGitEnv, tempDir } from "../../testing/temp";
+import { cleanGitEnv, git, tempDir } from "../../testing/temp";
 import { type ActionContext, portalOmnirouteContext } from "../actions";
 import { PAGE_READ_FRESH_MS } from "../cli-child";
 import type { PageDataDeps } from "../page-data";
@@ -173,6 +174,29 @@ describe("a page read starts one child inside the cache window (RX3)", () => {
     await workAnswer(w.deps);
     expect(starts()).toBe(2);
   });
+});
+
+test("Work lists the sessions of a worktree git lists outside .claude/worktrees", async () => {
+  const w = world();
+  const elsewhere = join(tempDir("elsewhere"), "feature-x");
+  git(w.repoA, "worktree", "add", "-q", "-b", "feat-x", elsewhere);
+  // A second repo's session in its own folder never shows here.
+  const sessions = join(w.paths.claudeConfigDir, "projects");
+  for (const [cwd, id] of [
+    [elsewhere, "aaaaaaa1"],
+    [w.repoB, "aaaaaaa2"],
+  ] as const) {
+    const folder = join(sessions, projectFolderName(cwd));
+    mkdirSync(folder, { recursive: true });
+    writeFileSync(
+      join(folder, `${id}-1111-2222-3333-444444444444.jsonl`),
+      `${JSON.stringify({ agentName: `session ${id}`, cwd, type: "agent-name" })}\n${JSON.stringify({ type: "cost-state" })}\n`,
+    );
+    utimesSync(join(folder, `${id}-1111-2222-3333-444444444444.jsonl`), NOW / 1000, NOW / 1000);
+  }
+  const answer = await workAnswer({ ...w.deps, action: { ...w.deps.action, cwd: w.repoA } });
+  expect(answer.repo).toBe(w.repoA);
+  expect(answer.sessions.map((one) => one.name)).toEqual(["session aaaaaaa1"]);
 });
 
 test("Work keeps finished background sessions and reports no-project context", async () => {

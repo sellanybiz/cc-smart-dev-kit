@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { VERSION } from "../build-info";
 import { COMMAND } from "../build-info/names";
@@ -13,18 +13,43 @@ import { allTasks } from "../tasks/work/queries";
 import { createTask, reservePlan, takeTasks, updateTask } from "../tasks/work/store";
 import type { ClaimProcess, Who, WorkTask } from "../tasks/work/types";
 import { cleanGitEnv, git, tempDir } from "../testing/temp";
+import { worktreeBranch, worktreePath } from "../worktrees/paths";
 import { briefPath } from "./brief";
 import {
   type HerdrContext,
+  LAUNCH_POLL_MS,
   LOGIN_SHELL_SCRIPT,
   loginShellArgv,
   runHerdr,
   SEND_STATES,
   WaitBarrier,
+  WORKTREE_BIND_WAIT_MS,
 } from "./command";
 import type { HcRunner } from "./hc";
+import { launchedHere, launchRecordsFolder } from "./launch-record";
 import { PLAN_POLL_MS, type PrState } from "./plans";
 import { FOLLOWUP_EXCLUSION, PLAN_EXCLUSION } from "./words";
+
+/** What the fake `claude -w <name>` is told: where it runs, the name, and a way to work later. */
+interface FakeLaunch {
+  /** Runs `make` after `ms` of the fake clock: a slow `git worktree add`, or a project's hook. */
+  later: (ms: number, make: () => void) => void;
+  name: string;
+  repo: string;
+}
+
+/** Claude Code's own `-w <name>`: `<repo>/.claude/worktrees/<name>` on `worktree-<name>`. */
+function addWorktree(repo: string, name: string): void {
+  const path = worktreePath(repo, name);
+  if (existsSync(path)) return;
+  const branch = worktreeBranch(name);
+  const known = Bun.spawnSync(["git", "show-ref", "--verify", "--quiet", `refs/heads/${branch}`], {
+    cwd: repo,
+    env: cleanGitEnv(),
+  });
+  if (known.exitCode === 0) git(repo, "worktree", "add", "-q", path, branch);
+  else git(repo, "worktree", "add", "-q", "-b", branch, path);
+}
 
 function world() {
   const dir = tempDir(),
@@ -53,6 +78,15 @@ function world() {
   let screen = "❯ 1. Yes\n  2. No";
   let failure: ((args: string[]) => string | null) | undefined;
   let response: ((args: string[]) => unknown) | undefined;
+  /** What the fake `claude -w <name>` does: by default the plain `<repo>/.claude/worktrees/<name>`. */
+  let claude: (launch: FakeLaunch) => void = (launch) => addWorktree(launch.repo, launch.name);
+  /** Work that happens later in the fake clock: a slow `git worktree add`, a project's own hook. */
+  const later: { at: number; make: () => void }[] = [];
+  const runLater = () => {
+    const due = later.filter((one) => one.at <= time);
+    for (const one of due) later.splice(later.indexOf(one), 1);
+    for (const one of due) one.make();
+  };
   const runner: HcRunner = (args, opts) => {
     calls.push({ args, ...(opts?.stdin === undefined ? {} : { stdin: opts.stdin }) });
     const error = failure?.(args);
@@ -87,7 +121,18 @@ function world() {
           }
         : { code: 0, stdout: Buffer.from(`${COMMAND} ${VERSION}`).toString("base64"), stderr: "" };
     if (args[0] === "file") data = { path: "/remote/brief.md", bytes: 42 };
-    return { exitCode: 0, stdout: JSON.stringify(response?.(args) ?? data), stderr: "" };
+    const answer = response?.(args) ?? data;
+    if (args[0] === "run" && !args.includes("--on")) {
+      // The child's `claude -w <name>` makes its worktree in the folder hc ran it in, unless the
+      // child's own row says it exited at once (a launch error: nothing is made).
+      const at = (answer as { address?: string }).address ?? "";
+      const name = args[args.indexOf("-w") + 1];
+      const repo = args[args.indexOf("--cwd") + 1];
+      if (args.includes("-w") && name && repo && existsSync(join(repo, ".git")))
+        if ((rows[at] as { state?: string } | undefined)?.state !== "finished")
+          claude({ later: (ms, make) => later.push({ at: time + ms, make }), name, repo });
+    }
+    return { exitCode: 0, stdout: JSON.stringify(answer), stderr: "" };
   };
   const paths = cliPaths({ HOME: dir, CLAUDE_CONFIG_DIR: dir });
   const ctx: HerdrContext = {
@@ -98,6 +143,7 @@ function world() {
     now: () => time,
     sleep: async (ms) => {
       time += ms;
+      runLater();
     },
     runner,
     identity: () => ({ core: "core", address: "t1", leadId: "core/t1" }),
@@ -123,6 +169,9 @@ function world() {
     },
     setFailure: (v: typeof failure) => {
       failure = v;
+    },
+    setClaude: (v: typeof claude) => {
+      claude = v;
     },
   };
 }
@@ -1231,6 +1280,8 @@ test("a recorded worktree that is gone refuses the resume", async () => {
   expect(await runHerdr([...planLaunch, "--plan", "alpha", "--", "work"], p.ctx)).toBe(0);
   const handout = p.row("alpha").lead?.handoutId ?? "";
   takeTasks(p.db, p.project, alpha.id, CHILD, 30, { from: handout, isLive: () => false });
+  // The child's worktree is removed after it died.
+  rmSync(join(p.ctx.cwd, ".claude", "worktrees", "kit-alpha"), { recursive: true });
   delete p.rows.t2;
   p.ctx.process = ENDED;
   p.calls.length = 0;
@@ -1239,6 +1290,161 @@ test("a recorded worktree that is gone refuses the resume", async () => {
   expect(p.lines.join("\n")).toContain("The recorded worktree");
   expect(p.lines.join("\n")).toContain("is gone");
   p.noRun();
+});
+
+// ---- worktrees a project's own WorktreeCreate hook puts outside the default folder ----
+
+/** The plan's recorded folder and branch, and whether herdr wrote a launch record for it. */
+function boundTo(p: ReturnType<typeof planWorld>, slug: string) {
+  const row = p.row(slug);
+  return {
+    branch: row.branch,
+    recorded: row.worktree !== null && launchedHere(p.ctx.paths.stateDir, repoOf(p), row.worktree),
+    worktree: row.worktree,
+  };
+}
+
+test("a launch records the worktree git lists, wherever a project's own hook put it, and writes its launch record", async () => {
+  for (const shape of ["named-folder", "named-branch"] as const) {
+    const p = planWorld();
+    p.plan("alpha", ["src/a/"]);
+    const folder = join(
+      tempDir("hook-worktrees"),
+      shape === "named-folder" ? "kit-alpha" : "sanitized",
+    );
+    const branch = shape === "named-folder" ? "feat-x" : "worktree-kit-alpha";
+    p.setClaude(({ repo }) => git(repo, "worktree", "add", "-q", "-b", branch, folder));
+    expect(await runHerdr([...planLaunch, "--plan", "alpha", "--", "work"], p.ctx)).toBe(0);
+    expect(boundTo(p, "alpha")).toEqual({ branch, recorded: true, worktree: folder });
+    expect(p.lines.join("\n")).toContain(`worktree ${folder}`);
+    // The child was started with `-w <name>` as always: the hook decides where it goes.
+    const run = p.calls.find((c) => c.args[0] === "run")?.args ?? [];
+    expect(run.slice(run.indexOf("-w"), run.indexOf("-w") + 2)).toEqual(["-w", "kit-alpha"]);
+  }
+});
+
+test("a builder's worktree that appears first is never bound: the launch waits for its own, then binds it", async () => {
+  const p = planWorld();
+  p.plan("alpha", ["src/a/"]);
+  p.setClaude(({ later, name, repo }) => {
+    // A subagent of the lead starts in the same repository first; the child's own is slow.
+    addWorktree(repo, "agent-123");
+    later(2000, () => addWorktree(repo, name));
+  });
+  expect(await runHerdr([...planLaunch, "--plan", "alpha", "--", "work"], p.ctx)).toBe(0);
+  const row = boundTo(p, "alpha");
+  expect(row.worktree).toBe(worktreePath(repoOf(p), "kit-alpha"));
+  expect(row.branch).toBe("worktree-kit-alpha");
+  expect(row.recorded).toBe(true);
+});
+
+test("a launch whose worktree never appears records nothing, binds only its pane and says how to fix it", async () => {
+  const p = planWorld();
+  p.plan("alpha", ["src/a/"]);
+  p.setClaude(({ repo }) => addWorktree(repo, "agent-123"));
+  let slept = 0;
+  const sleep = p.ctx.sleep;
+  p.ctx.sleep = async (ms) => {
+    slept += ms;
+    await sleep(ms);
+  };
+  expect(await runHerdr([...planLaunch, "--plan", "alpha", "--", "work"], p.ctx)).toBe(1);
+  // The wait is bounded.
+  expect(slept).toBeGreaterThanOrEqual(WORKTREE_BIND_WAIT_MS);
+  expect(slept).toBeLessThan(WORKTREE_BIND_WAIT_MS + LAUNCH_POLL_MS * 2);
+  const text = p.lines.join("\n");
+  expect(text).toContain("The child started, but its plan binding failed");
+  expect(text).toContain("git lists no worktree named kit-alpha or on worktree-kit-alpha");
+  expect(text).toContain("task_update #1 with worktree and branch");
+  const row = p.row("alpha");
+  expect(row.worktree).toBeNull();
+  expect(row.branch).toBeNull();
+  expect(row.agent).toBe("herdr:core/t2");
+  expect(existsSync(launchRecordsFolder(p.ctx.paths.stateDir))).toBe(false);
+});
+
+test("two launches whose names contain each other each bind their own worktree", async () => {
+  for (const [slug, other] of [
+    ["api", "api-2"],
+    ["api-2", "api"],
+  ] as const) {
+    const p = planWorld();
+    p.plan(slug, ["src/a/"]);
+    p.setClaude(({ repo }) => {
+      // The other launch's worktree is made first, then this launch's own.
+      addWorktree(repo, `kit-${other}`);
+      addWorktree(repo, `kit-${slug}`);
+    });
+    expect(
+      await runHerdr([...planLaunch, "--plan", slug, "--name", slug, "--", "work"], p.ctx),
+    ).toBe(0);
+    expect(p.row(slug).worktree).toBe(worktreePath(repoOf(p), `kit-${slug}`));
+  }
+});
+
+test("a resume of a worktree outside the default folder starts in that folder with no -w", async () => {
+  const p = planWorld();
+  const alpha = p.plan("alpha", ["src/a/"]);
+  const folder = join(tempDir("hook-worktrees"), "kit-alpha");
+  p.setClaude(({ repo }) => git(repo, "worktree", "add", "-q", "-b", "feat-x", folder));
+  expect(await runHerdr([...planLaunch, "--plan", "alpha", "--", "work"], p.ctx)).toBe(0);
+  const handout = p.row("alpha").lead?.handoutId ?? "";
+  takeTasks(p.db, p.project, alpha.id, CHILD, 30, { from: handout, isLive: () => false });
+  delete p.rows.t2;
+  p.rows.t3 = {
+    address: "t3",
+    name: "kit-alpha",
+    state: "live",
+    labels: { "kit.lead": "core/t1", "kit.plan": "alpha" },
+    status: { app: "claude-code", state: "idle" },
+  };
+  p.setResponse((args) =>
+    args[0] === "run"
+      ? { address: "t3", state: "live", first_message: "sent", labels: {} }
+      : undefined,
+  );
+  p.ctx.process = ENDED;
+  p.calls.length = 0;
+  expect(await runHerdr([...planLaunch, "--plan", "alpha", "--", "work"], p.ctx)).toBe(0);
+  const run = p.calls.find((c) => c.args[0] === "run")?.args ?? [];
+  expect(run.slice(run.indexOf("--cwd"), run.indexOf("--cwd") + 2)).toEqual(["--cwd", folder]);
+  expect(run).not.toContain("-w");
+  // The record the resume needed is still what vouches for it, and the row is unchanged.
+  expect(boundTo(p, "alpha")).toEqual({ branch: "feat-x", recorded: true, worktree: folder });
+});
+
+test("a worktree git lists under the launch's name outside the default folder is a collision", async () => {
+  const w = world();
+  git(w.ctx.cwd, "init");
+  git(w.ctx.cwd, "commit", "--allow-empty", "-m", "initial");
+  git(
+    w.ctx.cwd,
+    "worktree",
+    "add",
+    "-q",
+    "-b",
+    "feat-x",
+    join(tempDir("hook-worktrees"), "kit-one"),
+  );
+  expect(await runHerdr([...launch, "--", "work"], w.ctx)).toBe(1);
+  expect(w.lines.join("\n")).toContain("already has a terminal, worktree or branch");
+  expect(w.calls.some((c) => c.args[0] === "run")).toBe(false);
+});
+
+test("a launch that exits says from git's list whether its worktree exists, wherever it is", async () => {
+  const w = world();
+  git(w.ctx.cwd, "init");
+  git(w.ctx.cwd, "commit", "--allow-empty", "-m", "initial");
+  const folder = join(tempDir("hook-worktrees"), "kit-one");
+  w.rows.t2 = { address: "t2", state: "finished", labels: {} };
+  w.setScreen("Error: the hook failed\n");
+  w.setResponse((args) => {
+    if (args[0] === "run") git(w.ctx.cwd, "worktree", "add", "-q", "-b", "feat-x", folder);
+    return undefined;
+  });
+  expect(await runHerdr([...launch, "--", "work"], w.ctx)).toBe(1);
+  expect(w.lines.join("\n")).toContain(`Worktree folder exists: ${folder}`);
+  expect(w.lines.join("\n")).not.toContain(worktreePath(w.ctx.cwd, "kit-one"));
 });
 
 test("herdr list shows the plan of a plan child", async () => {
@@ -1320,7 +1526,7 @@ test("plans --wait ends with what changed when a blocker's pull request merges",
     labels: { "kit.lead": "core/t1", "kit.plan": "first" },
     status: { app: "claude-code", state: "working" },
   };
-  git(p.ctx.cwd, "branch", "worktree-kit-first");
+  // The fake claude made the child's worktree and its branch, `worktree-kit-first`.
   p.prs["worktree-kit-first"] = "open";
   let sleeps = 0;
   let time = 0;

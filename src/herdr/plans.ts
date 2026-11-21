@@ -15,7 +15,7 @@ import { basename } from "node:path";
 import { COMMAND } from "../build-info/names";
 import type { CliPaths } from "../cli/paths";
 import type { Out } from "../cli/ui/out";
-import { runGit, runGitRaw } from "../hooks/git";
+import { type ListedWorktree, listWorktrees, runGit, runGitRaw, samePath } from "../hooks/git";
 import type { Env } from "../hooks/run";
 import { locateCheckout } from "../project/resolve";
 import { taskContext } from "../tasks/context";
@@ -36,10 +36,11 @@ import {
 import { releasePlan, reservePlan, swapPlanAgent } from "../tasks/work/store";
 import type { ClaimProcess, Who, WorkTask } from "../tasks/work/types";
 import { baseBranch } from "../worktrees/command";
-import { worktreePath } from "../worktrees/paths";
+import { inDefaultFolder, worktreePath } from "../worktrees/paths";
 import { type PullRequestState, pullRequestState } from "../worktrees/scan";
 import { HcError, type HcRunner, hcGet, hcList } from "./hc";
 import { HERDR_AGENT_PREFIX, isHerdrAgent, KIT_PLAN, parseLeadId } from "./labels";
+import { launchedHere } from "./launch-record";
 
 /** How often `herdr plans --wait` looks again: a gh call per plan with a child, so not often. */
 export const PLAN_POLL_MS = 15_000;
@@ -106,6 +107,11 @@ export interface PlansWorld {
   pane: PaneProbe;
   /** The address of a live terminal labelled `kit.plan=<slug>`, or null: a child that no plan row names. */
   labelled: (slug: string) => string | null;
+  /**
+   * Whether herdr's own launch record names this worktree of this repo (`launchedHere`). A
+   * worktree outside the default folder is a child's only when the record says so.
+   */
+  launched: (worktree: string) => boolean;
   /** `plans.mergeFiles` and `core.ignorecase` (`planFilesCheck`), read before any write lock. */
   check: { ignore: readonly string[]; caseFold: boolean };
   /** The clock, read fresh each time: a store write is stamped when it happens, not when this opened. */
@@ -114,6 +120,26 @@ export interface PlansWorld {
 
 function git(world: PlansWorld, args: string[]) {
   return runGit(world.repo, args, world.env);
+}
+
+/**
+ * Is this worktree outside the default folder one herdr launched a child in? Git must list it for
+ * this repo (not the main checkout, not one it finds gone), and herdr's launch record must name
+ * it: a project's own WorktreeCreate hook may put a worktree anywhere, but a path someone typed
+ * into a task row is in neither.
+ */
+function launchedOutsideDefault(world: PlansWorld, worktree: string): boolean {
+  let listed: ListedWorktree[];
+  try {
+    listed = listWorktrees(world.repo, world.env);
+  } catch {
+    // Git cannot say what it lists: nothing outside the default folder is proved a child's.
+    return false;
+  }
+  return (
+    listed.slice(1).some((one) => !one.prunable && samePath(one.path, worktree)) &&
+    world.launched(worktree)
+  );
 }
 
 /** `origin/<base>` when the checkout knows it, else the local default branch; null when neither exists. */
@@ -866,10 +892,15 @@ export function prepareStart(world: PlansWorld, ref: string): PlanStart {
         `find its worktree (git worktree list), then task_update #${plan.number} with worktree and branch`,
       );
     // The recorded worktree is a task row, which any session may write: only the folder a child
-    // starts in (`<repo>/.claude/worktrees/<name>`) is reused, never a path someone put there.
+    // starts in (`<repo>/.claude/worktrees/<name>`) is reused, or one outside it that git lists and
+    // herdr's launch record names (a project's own WorktreeCreate hook), never a path someone
+    // put there.
     if (recorded !== null) {
       const home = worktreePath(world.repo, basename(recorded.worktree));
-      if (recorded.worktree !== home)
+      if (
+        !inDefaultFolder(world.repo, recorded.worktree) &&
+        !launchedOutsideDefault(world, recorded.worktree)
+      )
         return refuse(
           `Plan "${slug}": its recorded worktree ${recorded.worktree} is not a child's folder (${home}).`,
           `correct it with task_update #${plan.number} worktree, or release the plan`,
@@ -1129,6 +1160,7 @@ export function openPlansWorld(
   try {
     const chosen = baseBranch(locateCheckout(cwd, { env: ctx.env }), ctx.env, project.repo);
     const check = ctx.filesCheck ? ctx.filesCheck(cwd) : planFilesCheck(cwd, ctx.env);
+    const repo = project.repo;
     return {
       ok: true,
       close: () => db.close(),
@@ -1144,6 +1176,7 @@ export function openPlansWorld(
         pr: ctx.pr ?? pullRequestState,
         pane: paneProbe(r, core),
         labelled: labelledProbe(r),
+        launched: (worktree) => launchedHere(ctx.paths.stateDir, repo, worktree),
         check: { ignore: check.ignore, caseFold: check.caseFold },
         now: ctx.now,
       },

@@ -89,8 +89,26 @@ A child with no status at the deadline prints its screen and an `hc attach` warn
 continues successfully, including task binding. A slow first status is not a failed launch.
 
 Terminal, branch or folder reuse is refused with a fresh-name suggestion. A project's own
-WorktreeCreate hook can change that layout; the command's predicted path is not a live proof
-of such a hook's result.
+WorktreeCreate hook can put the worktree anywhere, so where it is comes from `git worktree list`
+(through hc's exec for a remote start), never from a path guessed from the name. No
+`cc-smart-dev-kit.json` field names the folder.
+
+- **Collision.** A listed worktree whose folder's last part is the launch's name, or whose branch is
+  `worktree-<name>`, refuses the start, as does the default path existing.
+- **Binding.** After hc reports Claude Code, the start lists again and binds only the worktree
+  `listedNamed` finds: its folder's last part equals the name, or its branch equals
+  `worktree-<name>`. Equality is exact, never "contains" (`kit-api` never binds `kit-api-2`'s),
+  one new worktree is never enough, and a subagent's `worktree-agent-*` is never a candidate. A
+  start that records the worktree (`--task`, `--plan`) lists again every `LAUNCH_POLL_MS` up to
+  `WORKTREE_BIND_WAIT_MS` (10 s). With no match it records no worktree, binds the pane, prints the
+  binding-failed line with the `task_update` fix and exits 1. A hook that renames both the folder
+  and the branch is out of scope: herdr says so with that line.
+- **The launch record.** A bound local worktree gets `{repo, worktree, branch, at}` in
+  `<stateDir>/herdr/launches/`, one private file keyed by the worktree's real path
+  (`src/herdr/launch-record.ts`). A remote start writes none, so a remote resume of a worktree
+  outside the default folder is refused until the live proof shows otherwise.
+- **The exit path** says from the post-exit listing whether a worktree with the launch's name
+  exists, and where.
 
 `--task` must name an existing open task in the same project and machine; independent
 starts cannot use it. After launch the command records agent, branch and worktree through
@@ -184,9 +202,14 @@ proofs. The store's classifier reads `child-gone`: the child's process is gone a
 session carries its id (`sessionEnded`), so a reopened child that has made no task call yet still
 counts as alive. And hc shows its pane gone.
 
-The new child starts in the **recorded** worktree (`claude -w <name>`). That worktree may be reused
-once, and only when it sits under `<repo>/.claude/worktrees/`. The hand-out id is the same, the
-brief skips the reset, and an `in_progress` plan is allowed on this path only. A hand-out its child
+The new child starts in the **recorded** worktree. That worktree may be reused once, and only
+when it sits under `<repo>/.claude/worktrees/`, or outside it when git lists it for the repo (not
+the main checkout, not prunable) and herdr's launch record names it. A path someone typed into a
+task row, or a hand-made `../repo-hotfix`, has no record and is refused. A worktree in the default
+folder starts with `claude -w <basename>`; one outside it starts with hc's `--cwd` set to the
+recorded folder and no `-w`, so the project's hook never runs again for a folder that exists. The
+hand-out id is the same, the brief skips the reset, and an `in_progress` plan is allowed on this
+path only. A hand-out its child
 never took, with the pane gone, relaunches the same way; with no worktree recorded, `herdr plans`
 releases it.
 

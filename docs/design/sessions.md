@@ -15,7 +15,14 @@ asked for (`src/sessions/`, `src/worktrees/`):
   when the machine last went down or a window closed; the whole rule, and why one session
   alone cannot be told from `/exit`, is in the file's header. Which terminal does the opening
   is picked from the machine (XFCE Terminal on Linux, Windows Terminal on Windows), and
-  a session already running is never opened twice.
+  a session already running is never opened twice. A session belongs to the project when its
+  folder is the main checkout, a folder under `<repo>/.claude/worktrees/`, or the exact folder of
+  a worktree git lists (`belongsToRepo`): a project's own WorktreeCreate hook may put worktrees
+  elsewhere. Each listed path is matched in both separator forms, with either drive-letter case,
+  and by its real path, because Claude Code hashes the raw path of a long folder name. The
+  folder's parent never counts: worktrees beside the repo would claim every sibling project's
+  sessions. The command lists with `listWorktrees` and the portal without blocking; a failed
+  listing falls back to the main checkout and the default folder.
 - **`cc-smart-dev-kit worktrees`** judges every worktree of the repo against
   `origin/<base>`: the verdict is a pure function of the facts (`verdict.ts`), so every reason
   to keep a worktree is one testable rule, and the facts themselves (git's list, the running

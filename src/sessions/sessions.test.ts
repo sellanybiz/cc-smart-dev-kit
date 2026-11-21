@@ -3,11 +3,20 @@
  * ones a restart or a closed window stopped.
  */
 import { describe, expect, spyOn, test } from "bun:test";
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { dirname, join } from "node:path";
 import { cliPaths } from "../cli/paths";
+import { type ListedWorktree, listWorktrees } from "../hooks/git";
+import { makeRepo } from "../testing/hooks";
 import { sessionProcessIdentity } from "../testing/session-record";
-import { tempDir } from "../testing/temp";
+import { cleanGitEnv, git, tempDir } from "../testing/temp";
 import {
   markOpened,
   OPENED_AGAIN_MINUTES,
@@ -27,6 +36,7 @@ import {
   sessionsToReopen,
   stoppedByRestart,
   windowsTerminalCommand,
+  worktreeProjectFolders,
   xfceTerminalCommand,
 } from "./saved-sessions";
 
@@ -178,6 +188,86 @@ describe("reading a saved session", () => {
         .map((one) => one.name)
         .sort(),
     ).toEqual(["inside it", "the main checkout"]);
+  });
+
+  /** One session file, named by `name`, in the project folder Claude Code makes for `cwd`. */
+  function sessionIn(projectsDir: string, cwd: string, name: string, number: number): void {
+    const folder = join(projectsDir, projectFolderName(cwd));
+    mkdirSync(folder, { recursive: true });
+    writeFileSync(
+      join(folder, `bbbbbbb${String(number)}-1111-2222-3333-444444444444.jsonl`),
+      line({ agentName: name, type: "agent-name" }),
+    );
+  }
+
+  test("a worktree git lists outside .claude/worktrees is this project's, by its exact folder (a project's own WorktreeCreate hook)", () => {
+    const repo = makeRepo("my-app");
+    const elsewhere = join(tempDir("elsewhere"), "feature-x");
+    git(repo, "worktree", "add", "-q", "-b", "feat-x", elsewhere);
+    const projectsDir = tempDir("sessions-projects");
+    sessionIn(projectsDir, elsewhere, "in the hook's worktree", 1);
+    sessionIn(projectsDir, `${elsewhere}-sibling`, "beside it", 2);
+    sessionIn(
+      projectsDir,
+      join(dirname(elsewhere), "other-project"),
+      "its parent's other folder",
+      3,
+    );
+    sessionIn(projectsDir, repo, "the main checkout", 4);
+    const listed = listWorktrees(repo, cleanGitEnv());
+    expect(
+      savedSessions(projectsDir, repo, 0, listed)
+        .map((one) => one.name)
+        .sort(),
+    ).toEqual(["in the hook's worktree", "the main checkout"]);
+    // Without a listing (git could not say), today's rule stands.
+    expect(savedSessions(projectsDir, repo, 0, null).map((one) => one.name)).toEqual([
+      "the main checkout",
+    ]);
+  });
+
+  test("a listed folder that is spelled through a link also matches by its real path", () => {
+    const repo = makeRepo("my-app");
+    const real = join(tempDir("real"), "feature-y");
+    mkdirSync(real);
+    const linkParent = tempDir("links");
+    symlinkSync(dirname(real), join(linkParent, "via"));
+    const throughLink = join(linkParent, "via", "feature-y");
+    const listed: ListedWorktree[] = [
+      { branch: "main", head: "", locked: false, path: repo, prunable: false },
+      { branch: "feat-y", head: "", locked: false, path: throughLink, prunable: false },
+    ];
+    const projectsDir = tempDir("sessions-projects");
+    // Claude Code saw the real folder as its cwd; git printed the link's spelling.
+    sessionIn(projectsDir, real, "by its real path", 1);
+    sessionIn(projectsDir, throughLink, "by the link's path", 2);
+    expect(
+      savedSessions(projectsDir, repo, 0, listed)
+        .map((one) => one.name)
+        .sort(),
+    ).toEqual(["by its real path", "by the link's path"]);
+    expect(savedSessions(projectsDir, repo, 0, null)).toEqual([]);
+  });
+
+  test("a Windows-shaped path matches in both separator forms and with either drive letter case", () => {
+    const listed = ["C:/work/hooked/feature"];
+    const names = worktreeProjectFolders(listed);
+    expect(belongsToRepo("C--work-hooked-feature", "C:\\work\\app", names)).toBe(true);
+    expect(belongsToRepo("c--work-hooked-feature", "C:\\work\\app", names)).toBe(true);
+    // A folder beside it, or its parent, is not.
+    expect(belongsToRepo("C--work-hooked-feature-2", "C:\\work\\app", names)).toBe(false);
+    expect(belongsToRepo("C--work-hooked", "C:\\work\\app", names)).toBe(false);
+  });
+
+  test("a path over 200 characters is matched by its hash, in both separator forms", () => {
+    const long = `C:/work/${"deep-folder-".repeat(20)}feature`;
+    const names = worktreeProjectFolders([long]);
+    // Claude Code hashes the raw cwd it saw: `C:\…` is one spelling and `C:/…` another.
+    expect(projectFolderName(long)).not.toBe(projectFolderName(long.replaceAll("/", "\\")));
+    for (const seen of [long, long.replaceAll("/", "\\"), `c${long.slice(1)}`]) {
+      expect(belongsToRepo(projectFolderName(seen), "C:\\work\\app", names)).toBe(true);
+    }
+    expect(belongsToRepo(projectFolderName(`${long}x`), "C:\\work\\app", names)).toBe(false);
   });
 });
 
