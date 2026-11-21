@@ -22,18 +22,12 @@ const NAME_PREFIX_PATTERN = literal(SUBAGENT_NAME_PREFIX);
 
 /**
  * The subagent worktree `cwd` is in, whose agent id matches `idPattern` (regex text), or null.
- * The id is matched, never trusted as text: the callers pass a checked id or a hex class.
  */
 function subagentWorktreeMatching(cwd: string, idPattern: string): string | null {
   const found = new RegExp(
     String.raw`^(.*[\\/]${FOLDER_PATTERN}[\\/]${NAME_PREFIX_PATTERN}${idPattern})(?:[\\/]|$)`,
   ).exec(cwd);
   return found?.[1] ?? null;
-}
-
-export function subagentWorktreeOf(cwd: string, agentId: string | null): string | null {
-  if (agentId === null || !/^[0-9a-f]+$/.test(agentId)) return null;
-  return subagentWorktreeMatching(cwd, agentId);
 }
 
 /** The subagent worktree `cwd` is in, by its shape alone: any agent id. Null when it is in none. */

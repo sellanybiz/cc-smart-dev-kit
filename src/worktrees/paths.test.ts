@@ -57,3 +57,25 @@ test("the scan can fail: it names a file that joins the folder by hand", () => {
   ).toBe(true);
   expect(BUILT_BY_HAND.some((p) => p.test('basename(common) === ".git"'))).toBe(false);
 });
+
+/** A worktree's branch name built by hand: the prefix in a template string. */
+const BRANCH_BY_HAND = /`worktree-\$\{/;
+
+test("no source file outside paths.ts builds a worktree's branch name by hand", () => {
+  const sourceRoot = join(import.meta.dir, "..");
+  const offenders: string[] = [];
+  for (const file of new Bun.Glob("**/*.ts").scanSync({ cwd: sourceRoot })) {
+    if (file.endsWith(".test.ts") || file === join("worktrees", "paths.ts")) continue;
+    if (BRANCH_BY_HAND.test(readFileSync(join(sourceRoot, file), "utf8"))) {
+      offenders.push(relative(join(sourceRoot, ".."), join(sourceRoot, file)));
+    }
+  }
+  expect(offenders).toEqual([]);
+});
+
+test("the branch scan can fail: it names a template that builds the branch", () => {
+  // The sample is source text, so its placeholder is spelled from two parts.
+  const handBuilt = "const branch = `worktree-$" + "{name}`;";
+  expect(BRANCH_BY_HAND.test(handBuilt)).toBe(true);
+  expect(BRANCH_BY_HAND.test("worktreeBranch(name)")).toBe(false);
+});

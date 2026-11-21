@@ -37,7 +37,7 @@ import { COMMAND, VERSION } from "../build-info";
 import { formatClock } from "../gateway/limit-state";
 import { HOOK_LOG_ENV } from "../hooks/run";
 import { atomicWrite } from "../setup/write";
-import { worktreePath } from "../worktrees/paths";
+import { worktreeBranch, worktreePath } from "../worktrees/paths";
 import { cacheMissCause, readCacheMissRecord } from "./cache-miss";
 import type { Check } from "./check";
 import type { CliPaths } from "./paths";
@@ -296,7 +296,7 @@ export function runLiveCheck(
       plain,
       {
         folder: worktreePath(plain, LIVE_NAME),
-        branch: `worktree-${LIVE_NAME}`,
+        branch: worktreeBranch(LIVE_NAME),
       },
       deps,
       env,

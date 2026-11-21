@@ -51,7 +51,7 @@ import {
   locateCheckout,
   readCommittedConfig,
 } from "../project/resolve";
-import { worktreePath } from "../worktrees/paths";
+import { worktreeBranch, worktreePath } from "../worktrees/paths";
 import { GH_TIMEOUT_MS, type GhRunner, ghMissing, spawnGh } from "./merge-check";
 import { type ResolvedWorkflow, resolvedValueOf, resolveWorkflow } from "./resolve";
 import { isProjectKey, PERSONAL_ONLY_REASONS, showValue, type WorkflowKey } from "./schema";
@@ -198,7 +198,7 @@ interface Place {
 
 function placeOf(repo: string, name: string): Place {
   return {
-    branch: `worktree-${name}`,
+    branch: worktreeBranch(name),
     name,
     worktree: worktreePath(repo, name),
   };
@@ -242,7 +242,7 @@ function placeFree(repo: string, place: Place, env: Env, taken: ReadonlySet<stri
 
 /** The first free place from `wanted` on: the same day's second change is `-2`, then `-3`. */
 function freePlace(repo: string, wanted: string, env: Env): Place {
-  const taken = remoteBranches(repo, `worktree-${wanted}`, env);
+  const taken = remoteBranches(repo, worktreeBranch(wanted), env);
   const first = placeOf(repo, wanted);
   if (placeFree(repo, first, env, taken)) return first;
   for (let count = 2; count <= NAME_TRIES; count += 1) {
