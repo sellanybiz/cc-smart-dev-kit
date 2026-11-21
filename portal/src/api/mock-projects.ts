@@ -1,7 +1,7 @@
 /**
  * The Projects tab and a project's page, in mock data (B8). Every name is a placeholder
  * (`my-app`, `/home/user/code`). The set of rows covers each state the pages draw: the
- * current project, set up, with its files not committed yet and branches the merge guard
+ * current project, set up, with its files not committed yet and branches merge-check
  * allows, refuses and ran late on; a set-up one; one not set up; and an added folder git
  * could not count.
  */
@@ -99,10 +99,10 @@ export interface ProjectMocks {
  * only draws them, and a value the project's own file sets is marked `project`.
  */
 const WORKFLOW_SETTINGS: ProjectWorkflowSetting[] = [
-  { key: "autoCommit", source: "project", value: true },
-  { key: "autoPush", source: "project", value: true },
+  { key: "allowCommit", source: "project", value: true },
+  { key: "allowPush", source: "project", value: true },
   { key: "openPr", source: "project", value: "draft" },
-  { key: "autoMerge", source: "personal", value: true },
+  { key: "allowMerge", source: "personal", value: true },
   { key: "mergeMethod", source: "default", value: "merge" },
   { key: "deleteBranch", source: "default", value: false },
   { key: "reviewBeforePush", source: "default", value: true },

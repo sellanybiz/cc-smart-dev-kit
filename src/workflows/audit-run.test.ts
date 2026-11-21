@@ -2,24 +2,15 @@
  * `plugin/workflows/audit-run.js`: the run the `audit` skill starts. One read-only auditor per
  * track on `sonnet` at `high` (breadth: D46 keeps `opus` at `xhigh` for the judgment), a second
  * auditor on `opus` at `xhigh` to refute every finding, and one writer on `sonnet` at `medium`,
- * all allowed by the agent guard (`scripts.test.ts` proves the guard reads and allows every
- * launch). The auditors and the verifiers take the editing tools away on each launch.
+ * each on literal model and effort. The auditors and the verifiers take the editing tools away on each launch.
  */
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { GatewayConfig } from "../gateway/config";
-import { type GuardContext, judgeWorkflow } from "../hooks/agent-guard";
-import { loadScriptParser } from "../hooks/script-parser";
 import { TASK_TOOL, taskToolId } from "../tasks/words";
 import type { AgentCall } from "./script-runner";
 import { runScript } from "./script-runner";
 
-// The guard's bundle loads its script parser in its entry; this file judges a script too.
-loadScriptParser();
-
 const AUDIT_RUN = join(import.meta.dir, "..", "..", "plugin", "workflows", "audit-run.js");
-const NO_ENV = {} as Record<string, string | undefined>;
 /** The kit's task tools that write: an auditor reports, it never changes the task ledger. */
 const TASK_WRITES = ["create", "update", "done", "note", "delete", "take"] as const;
 /**
@@ -357,25 +348,5 @@ describe("the audit-run workflow", () => {
         /audit-run refused its arguments/,
       );
     }
-  });
-
-  test("with the gateway on and an affordable worker slot, the guard still allows every launch", () => {
-    const workerBackend: GatewayConfig = {
-      aliases: {},
-      anthropicBaseUrl: "https://api.anthropic.com",
-      backends: { omniroute: { apiKey: "k", baseUrl: "http://127.0.0.1:9" } },
-      modelSlots: {},
-      port: 20100,
-      slots: { "cc-smart-dev-kit-worker": ["omniroute:glm-5.3-flash", "claude-sonnet-5-5"] },
-      timeouts: { firstByteMs: 60_000 },
-      version: 1,
-    };
-    const context: GuardContext = { config: workerBackend, gatewayOn: true, sessionModel: null };
-    const script = readFileSync(AUDIT_RUN, "utf8");
-    expect(judgeWorkflow(script, context, NO_ENV).map((one) => one.verdict.decision)).toEqual([
-      "allow",
-      "allow",
-      "allow",
-    ]);
   });
 });

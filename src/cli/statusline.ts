@@ -73,8 +73,8 @@ import {
 } from "../gateway/limit-state";
 import { answerTargetName } from "../gateway/target-label";
 import { JUDGE_SLOT, withoutContextSuffix } from "../gateway/targets";
-import { type SessionGateway, sessionGatewayOf } from "../hooks/agent-guard";
 import type { Env } from "../hooks/run";
+import { type SessionGateway, sessionGatewayOf } from "../hooks/session-facts";
 import { compactWindowsOf, mainCheckoutOfFolder } from "../machine/claude-settings";
 import { taskContext } from "../tasks/context";
 import { CLAIM_PROCESS, callerOf } from "../tasks/work/identity";

@@ -14,12 +14,18 @@ first of them — `cc-smart-dev-kit workflow show` prints every value, with wher
 and follow it for the branch you are on. Nothing in it set: the safe default holds, and none
 of the four happens until the person asks (or the add-on says otherwise).
 
+The three yes-or-no settings are `allowCommit`, `allowPush` and `allowMerge`: each says
+whether Claude may do that step without asking. The older names `autoCommit`, `autoPush` and
+`autoMerge` in a settings file still work, and `workflow set` accepts them too.
+`cc-smart-dev-kit workflow set allowPush true` writes the new name, and `doctor` names a file's
+old key.
+
 | `workflow show` | What you do |
 |---|---|
-| `autoCommit = false` | Commit when the person asks. At the end of a finished phase, say in one line that it is ready, and carry on. |
-| `autoCommit = true` | Commit each finished phase with no question. Never commit half-built work. |
-| `autoPush = false` | Push when the person asks. |
-| `autoPush = true` | Push your own branch once the change set is complete (a planned build pushes the plan branch after each merged phase: `/cc-smart-dev-kit:build` § 5). **Never straight to the base or main branch:** the git guard asks there, and work reaches them through a pull request. |
+| `allowCommit = false` | Commit when the person asks. At the end of a finished phase, say in one line that it is ready, and carry on. |
+| `allowCommit = true` | Commit each finished phase with no question. Never commit half-built work. |
+| `allowPush = false` | Push when the person asks. |
+| `allowPush = true` | Push your own branch once the change set is complete (a planned build pushes the plan branch after each merged phase: `/cc-smart-dev-kit:build` § 5). **Never straight to the base or main branch:** work reaches them through a pull request. |
 | `openPr = "off"` | Open a pull request only when the person asks. |
 | `openPr = "draft"` | Open it as a draft; a person marks it ready. |
 | `openPr = "ready"` | Open it ready for review. |
@@ -27,13 +33,19 @@ of the four happens until the person asks (or the add-on says otherwise).
 | `mergeMethod` | `merge`, `squash` or `rebase`: how a merge is made. |
 | `deleteBranch` | Whether the branch goes once its pull request merged. |
 
-**A merge is the one step a hook guards.** With `autoMerge` off, or a pull request whose base
-is not the project's integration base, or a check not green, or no recorded review of its head
-commit, the merge guard asks the person before `gh pr merge` runs. Where `autoMerge` is on and
-everything is in place, it lets the merge through with no question — and `mergeMethod` and
-`deleteBranch` still say how. **Either way, never wait for a merge:** open the pull request and
-move on; with the whole plan done, ask once, listing every open pull request with its checks
-and the merge order.
+**A merge follows the workflow, not a hook.** No hook stops one: you check, and the check is
+`cc-smart-dev-kit workflow merge-check <pr>` (exit 0: merge; any other exit: do not). Its rule,
+exactly: `allowMerge` is on (`workflow show`); the pull request's base is the project's integration
+base (`worktrees.base`) or the repository's default branch, the main branch included, and any
+other base is refused (that merge is the person's); every required check is green; the head
+commit has a recorded review (`/cc-smart-dev-kit:review` § Second opinion); and the fixes after
+that review are within `fixesAfterReview` (when they are over it, say so in the pull request body
+and leave it unmerged). **Wait for CI yourself:** run `gh pr checks <pr> --watch` in the
+background, run `merge-check`, and on exit 0 a plain `gh pr merge <pr>`; never GitHub's `--auto`.
+With `allowMerge` on and the check passing there is no question to the person. `mergeMethod` and
+`deleteBranch` say how. With `allowMerge` off, open the pull request and leave the merge to the
+person; move on, and with the whole plan done say so once, listing every open pull request with
+its checks and the merge order.
 
 - **Commit and push only your own branch**, never the base or main branch directly.
 - **Builder commits:** a brief may allow commits on that builder's own isolated branch.
@@ -44,13 +56,14 @@ and the merge order.
   has read it, or it is a small fix that skips it (§ Pushing says when). Not after each commit. In a planned build
   the plan branch is pushed after each merged phase, and the pull request waits for the
   plan's review (two rounds, and a final review when its fixes are big).
-- **Always the person's word, every time:** anything into the main branch or production, a
-  force-push or any rewrite of pushed history, `reset --hard`, `clean -f`, deleting or
-  renaming a branch that is not merged, and shipping a Warning without its fix. The one
-  exception: a builder's discards inside its own worktree, on a line of only `git` commands
-  and `cd`s to one folder, which the git guard lets through: a checkout or
-  restore that drops changes, `switch -f`, `clean -f`, and `reset --hard`, which also drops
-  the builder's own commits. A yes covers exactly what it names. If the person says wait, wait.
+- **The person's word, every time** (no hook checks it; you do): a direct push to the main
+  branch (not through a pull request), a deploy to production (staging is Claude's own to run), a force-push or any rewrite of pushed history, `reset --hard`, `clean
+  -f`, deleting or renaming a branch that is not merged, and shipping a Warning without its
+  fix. The person is available: ask first. They are away (`/cc-smart-dev-kit:user-unavailable`):
+  take the safe option, do not run it, and record the decision. The one exception: a builder's
+  discards inside its own worktree (a checkout or restore that drops changes, `switch -f`,
+  `clean -f`, and `reset --hard`, which also drops the builder's own commits). A yes covers
+  exactly what it names. If the person says wait, wait.
 
 ## Steps
 
@@ -98,7 +111,7 @@ land together?
 
 ## Pushing
 
-Push when the change set is complete and the second opinion has read it — as `autoPush` says,
+Push when the change set is complete and the second opinion has read it — as `allowPush` says,
 or when the person asks. Run the push (its hooks may be slow) and any CI watch in the
 background; write the pull request body while it runs (`/cc-smart-dev-kit:pull-request`). Open the
 pull request only after the push succeeded, and as `openPr` says: a draft a person marks ready,

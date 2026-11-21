@@ -433,10 +433,10 @@ export interface MachineAnswer {
 
 /** `src/workflow/schema.ts` › `WorkflowKey`. */
 export type WorkflowKey =
-  | "autoCommit"
-  | "autoPush"
+  | "allowCommit"
+  | "allowPush"
   | "openPr"
-  | "autoMerge"
+  | "allowMerge"
   | "mergeMethod"
   | "deleteBranch"
   | "reviewBeforePush"
@@ -478,11 +478,11 @@ export interface SettingsRow {
 }
 
 export interface SettingsData {
-  autoMerge: null | { allowed: boolean; base: null | string };
+  allowMerge: null | { allowed: boolean; base: null | string };
   error: null | string;
   projectNote: null | string;
   rows: SettingsRow[];
-  clashes: { setting: "autoMerge" | "autoPush" | "openPr"; line: string; fix: string }[];
+  clashes: { setting: "allowMerge" | "allowPush" | "openPr"; line: string; fix: string }[];
 }
 
 export type SettingsAnswer = SettingsData;
@@ -809,7 +809,6 @@ export interface WorkAnswer {
 export type MergeVerdict =
   | { detail: MergeDetail | null; kind: "allowed"; reason: string }
   | { detail: MergeDetail | null; kind: "refused"; number: null | number; reason: string }
-  | { kind: "silent" }
   | { kind: "unread"; number: null | number; what: string }
   | { kind: "late"; number: null | number; what: string };
 

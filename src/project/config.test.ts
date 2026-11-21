@@ -13,6 +13,7 @@
 import { describe, expect, test } from "bun:test";
 import { z } from "zod";
 import { VERSION } from "../build-info";
+import { WORKFLOW_KEY_ALIASES } from "../workflow/schema";
 import {
   CcSmartDevKitConfigError,
   CcSmartDevKitVersionError,
@@ -24,6 +25,7 @@ import {
   parseCcSmartDevKitConfig,
   RETIRED_HOOK_NAMES,
   UNSWITCHABLE_HOOK_NAMES,
+  WORKFLOW_ALLOW_KEYS_SINCE,
   WORKTREE_PREFIX_OPTIONAL_SINCE,
 } from "./config";
 import { requiresFloor } from "./init";
@@ -59,6 +61,8 @@ const ACCEPTED_BY_0_5_2 = [
   "jobs.kinds.*.match.script",
   "jobs.kinds.*.about",
   "workflow",
+  // The 0.5.2 plugin's names. 6.1.0 reads them as aliases (`WORKFLOW_KEY_ALIASES`), so the schema
+  // has no key of this name any more, and a file that holds one still asks for no more than 0.5.2.
   "workflow.autoCommit",
   "workflow.autoPush",
   "workflow.openPr",
@@ -82,6 +86,10 @@ const FIRST_ACCEPTED_IN: Record<string, string> = {
   "workflow.fixesAfterReview.lines": "1.0.0",
   "workflow.fixesAfterReview.files": "1.0.0",
   "workflow.fixesAfterReview.percent": "1.0.0",
+  // 6.1.0 renamed the three `auto*` settings: the new names need the plugin that knows them.
+  "workflow.allowCommit": "6.1.0",
+  "workflow.allowPush": "6.1.0",
+  "workflow.allowMerge": "6.1.0",
   "workflow.plans": "4.8.0",
   "workflow.plans.maxPhases": "4.8.0",
   "workflow.plans.mergeFiles": "5.2.0",
@@ -157,11 +165,20 @@ const HOOK_NAME_FIRST_ACCEPTED_IN: Record<string, string> = {
   "keep-going": "2.0.0",
   "builder-finish": "2.0.0",
   "deploy-guard": "5.3.0",
+  // Never listable before 6.0.0: it was an `alwaysOn` guard whose name the parse refused.
+  "session-escape-guard": "6.0.0",
 };
 
 /** Every key of a schema, by dotted path. A record's keys are a person's, so they show as `*`. */
 function keyPaths(schema: z.ZodType, prefix = ""): string[] {
-  if (schema instanceof z.ZodPipe) return keyPaths(schema.in as z.ZodType, prefix);
+  // A pipe reads its object on one side: `.in` for an object then a transform, `.out` for a
+  // preprocess (a transform then the object, `workflowSchema`).
+  if (schema instanceof z.ZodPipe) {
+    return keyPaths(
+      (schema.in instanceof z.ZodTransform ? schema.out : schema.in) as z.ZodType,
+      prefix,
+    );
+  }
   if (schema instanceof z.ZodOptional) return keyPaths(schema.unwrap() as z.ZodType, prefix);
   if (schema instanceof z.ZodArray) return keyPaths(schema.element as z.ZodType, prefix);
   if (schema instanceof z.ZodRecord) return keyPaths(schema.valueType as z.ZodType, `${prefix}.*`);
@@ -196,7 +213,12 @@ function uniqueSorted(values: string[]): string[] {
 }
 
 describe("the schema's keys, against the floor", () => {
-  const current = uniqueSorted(keyPaths(ccSmartDevKitConfigSchema));
+  // The schema reads an old name as its new one, so it lists only the new names: the old ones
+  // are still keys a file may hold, and `ACCEPTED_BY_0_5_2` names them.
+  const current = uniqueSorted([
+    ...keyPaths(ccSmartDevKitConfigSchema),
+    ...Object.keys(WORKFLOW_KEY_ALIASES).map((old) => `workflow.${old}`),
+  ]);
 
   test("every key the schema has is in the 0.5.2 list or the first-accepted list", () => {
     const known = uniqueSorted([...ACCEPTED_BY_0_5_2, ...Object.keys(FIRST_ACCEPTED_IN)]);
@@ -466,6 +488,7 @@ describe("the since-tables", () => {
     const versions = [
       ...Object.values(OWN_HOOK_NAMES_SINCE),
       ...Object.values(JOB_KIND_KEYS_SINCE),
+      WORKFLOW_ALLOW_KEYS_SINCE,
     ];
     for (const since of versions) {
       expect(since).toMatch(/^\d+\.\d+\.\d+$/);

@@ -1,7 +1,7 @@
 /**
  * `workflow propose`: one workflow setting of a project, changed through a pull request (D57).
  *
- * The project's `.claude/cc-smart-dev-kit.json` is committed and shared, and the merge guard
+ * The project's `.claude/cc-smart-dev-kit.json` is committed and shared, and merge-check
  * reads the review gate from the file committed on the base (`origin/<base>`): a change to it
  * counts once it is merged, never from a session's own checkout. So a change is never a write
  * in the project's main checkout. It is a small pull request:
@@ -328,7 +328,7 @@ function titleOf(key: WorkflowKey, from: unknown, to: unknown): string {
 function bodyOf(key: WorkflowKey, from: unknown, to: unknown, base: string): string {
   return [
     `Updated by \`${COMMAND} workflow propose\`: the project's workflow setting ${key}, from ${saidValue(key, from)} to ${saidValue(key, to)}.`,
-    `It counts once this pull request is merged into ${base}: the merge guard reads the review gate from the file committed on the base, and a session's own checkout never counts.`,
+    `It counts once this pull request is merged into ${base}: merge-check reads the review gate from the file committed on the base, and a session's own checkout never counts.`,
   ].join("\n");
 }
 

@@ -1,28 +1,25 @@
 /**
- * The merge check: may this merge happen, or does the person decide? One judgment, made for a
- * pull request (the merge guard's, D17 and D31) and for a local branch against a base (D22, the
- * check before a phase's branch merges locally). The merge guard hook calls it before a merge
- * (`src/hooks/merge-guard.ts`); `cc-smart-dev-kit workflow merge-check` prints its verdicts.
+ * The merge check: may this merge happen by itself? One judgment, made for a pull request and
+ * for a local branch against a base (D22, the check before a phase's branch merges locally).
+ * `cc-smart-dev-kit workflow merge-check` prints its verdicts and the portal shows them; no hook
+ * calls it. It is what a session reads before it merges with `allowMerge` on, so it is the one
+ * gate before an unattended merge: its checks below are the whole policy.
  *
  * **A pull request** is judged with the policy committed on its base (`resolveGate`), never a
- * checkout's working copy: `autoMerge` on, its base the project's plain integration base, every
- * required check green, and — with `reviewBeforePush` on — the head covered by a review under
- * D17 (`readCover`: a review of an earlier commit of the head's branch counts while the fixes
- * after it stay within `workflow.fixesAfterReview`). Only then is it allowed; everything else
- * asks, with the reason. Every fact is read read-only (`gh pr view`, `gh repo view`, `gh pr
- * checks`, the review record, git); a `gh` that is missing or answers nothing is "could not
- * read", never a guess.
+ * checkout's working copy: `allowMerge` on, its base the project's integration base or the
+ * repository's default branch, every required check green, and — with `reviewBeforePush` on —
+ * the head covered by a review under D17 (`readCover`: a review of an earlier commit of the
+ * head's branch counts while the fixes after it stay within `workflow.fixesAfterReview`). Only
+ * then is it allowed; everything else is refused, with the reason. Every fact is read read-only
+ * (`gh pr view`, `gh repo view`, `gh pr checks`, the review record, git); a `gh` that is
+ * missing or answers nothing is "could not read", never a guess.
  *
  * **A local branch** is judged against a base without gh: the review gate's `reviewBeforePush`
  * and the record alone, the same limits. It is what the main session checks before it merges a
- * phase's branch locally (D22), and it never speaks for a merge the guard would make.
+ * phase's branch locally (D22).
  *
  * **What it never decides:** which command is a merge, whether it names this project's own
- * repository, and whether it carries `--admin` — the guard's rules about the command line. It
- * does read `ownHooks` from the base's committed file: a project that runs its own merge guard
- * makes the check silent, and the hook then says nothing at all. And the one answer `allow` is
- * the guard's alone, only for the exact `gh pr merge <n>` (`exactMergeOf` in `after-merge.ts`,
- * D31); this module says the policy passed, not how the guard answers.
+ * repository, and whether it carries `--admin`: the caller's rules about the command line.
  *
  * Nothing here writes, fetches or reaches the network beyond the read-only `gh` calls.
  * **Every child is awaited** (`Bun.spawn`: the caller's `gh` runner, `runGitAsync`,
@@ -241,11 +238,6 @@ export type MergeVerdict =
       /** The short sentence both the guard's `allow` and the command print. */
       reason: string;
     }
-  /**
-   * The project runs its own merge guard (`ownHooks` in the committed file): that one answers,
-   * so this check says nothing. Only the hook uses this; the command prints it as no verdict.
-   */
-  | { kind: "silent" }
   | { detail: MergeDetail | null; kind: "refused"; number: number | null; reason: string }
   | { kind: "unread"; number: number | null; what: string }
   | { kind: "late"; number: number | null; what: string };
@@ -261,7 +253,7 @@ export interface MergeWorld {
   env: Env;
   /**
    * How long the next child may take: the smaller of `limitMs` and the time the caller has
-   * left (the merge guard's `timeFor`). A caller with no deadline returns `limitMs`.
+   * left (merge-check's `timeFor`). A caller with no deadline returns `limitMs`.
    */
   timeFor: (limitMs: number) => number;
   /**
@@ -438,14 +430,8 @@ export function policyUnread(branch: string | null, why: string, policy = "merge
 
 /** Why the guard cannot judge when the person's own workflow file cannot be read. */
 export function workflowUnread(error: unknown): string {
-  // The person's own workflow file cannot be read, so whether autoMerge is on is unknown.
+  // The person's own workflow file cannot be read, so whether allowMerge is on is unknown.
   return `the workflow settings cannot be read (${error instanceof Error ? error.message : String(error)})`;
-}
-
-/** The question when cc-smart-dev-kit may not merge this by itself. */
-export function notByItself(reason: string, number: null | number = null): string {
-  const which = number === null ? "this pull request" : `#${number}`;
-  return `cc-smart-dev-kit will not merge ${which} by itself: ${reason}. Approve the merge yourself if you meant it.`;
 }
 
 /** The question when the guard could not read what it needs: gh is missing, or did not answer. */
@@ -619,9 +605,6 @@ export async function checkPullRequest(
     };
   }
   const { resolved, config: committed } = read.gate;
-  // The project runs its own merge guard, as its committed policy says: that one answers.
-  if (committed?.ownHooks?.includes("merge-guard") === true) return { kind: "silent" };
-
   const where = target.repo ?? "";
   if (!defaultBranches.has(where)) {
     const branchLeft = world.timeFor(GH_TIMEOUT_MS);
@@ -703,7 +686,7 @@ async function commitOf(world: MergeWorld, rev: string): Promise<string | null> 
 /**
  * The verdict for a local branch against a base (D22): whether the review gate's record
  * covers the branch's head under D17. A local merge asks no pull request question — no
- * `autoMerge`, no checks — so those are not read.
+ * `allowMerge`, no checks — so those are not read.
  */
 export async function checkBranch(
   world: MergeWorld,

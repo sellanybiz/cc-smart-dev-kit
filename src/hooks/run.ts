@@ -10,22 +10,17 @@
  *    newer plugin. Nothing else silences a plugin hook: a project hook on the same event does
  *    not (it may be a logger, and a guard must not go quiet for it).
  * 3. Read the project's cc-smart-dev-kit.json. When it is broken or needs a newer plugin, the
- *    hook **fails closed** in its own way (`onConfigProblem`): a guard asks, an informational
+ *    hook **fails closed** in its own way (`onConfigProblem`): `user-away` asks, an informational
  *    hook prints one line.
- * 4. Run the hook. A guard's own crash answers through `onCrash` (a guard asks about the
- *    call in its own domain, never a silent pass); an informational hook's crash is one line
- *    on stderr and exit 0 — a bug never stops a person's work. Claude Code holds the second
- *    belt: a guard's hooks.json entry carries `onFailure: "block"`, so a hook that cannot
- *    start, times out or answers nothing readable blocks the tool call.
- * 5. **While the person cannot answer**, an answer that asks them becomes a deny that keeps the
- *    hook's own words, with the call parked for them (`askedWhileAway`, `src/hooks/user-away.ts`):
- *    one step for every hook, never an allow, and the ask stays when the state cannot be read.
- * 6. **Record an ask.** When the answer asks the person, the frame appends one line to
+ * 4. Run the hook. A hook with an `onCrash` (`user-away`, the one hook left that asks) answers
+ *    a crash through it; every other hook's crash is one line on stderr and exit 0 — a bug
+ *    never stops a person's work. Claude Code holds a second belt for `user-away`: its
+ *    PreToolUse entry in hooks.json carries `onFailure: "block"`.
+ * 5. **Record an ask.** When the answer asks the person, the frame appends one line to
  *    `guard-asks.jsonl` in the state folder (`src/hooks/ask-log.ts`); a write that fails is
- *    one line on stderr and never changes the answer. An ask that became a deny is no ask: it is
- *    on the person's list instead.
+ *    one line on stderr and never changes the answer.
  *
- * A **machine-wide** hook (`agent-guard`, and the notifier) answers about the machine, not a
+ * A **machine-wide** hook (`tier-view`, `fable-session`) answers about the machine, not a
  * project: it runs with or without `cc-smart-dev-kit.json`, and its answer does not depend on the
  * project's file. It gets the input and the environment (`HookEnvContext`) where the frame's
  * checkout or config step does not apply, and a project may still silence it through
@@ -55,7 +50,6 @@ import {
   SILENT,
   stringField,
 } from "./io";
-import { askedWhileAway } from "./user-away";
 
 export type Env = Record<string, string | undefined>;
 
@@ -274,28 +268,6 @@ async function answer(
 }
 
 /**
- * Step 5: the ask of any hook but `user-away` itself (whose one ask is its own crash, made
- * because it could not read anything) becomes a deny while the person is away. Never throws:
- * a failure here leaves the answer as it was, so a bug in it can only keep today's ask.
- */
-async function whileAway(
-  spec: HookSpec,
-  input: HookInput | null,
-  result: HookResult,
-  context: HookEnvContext,
-): Promise<HookResult> {
-  if (spec.name === "user-away" || askReason(result) === null) return result;
-  try {
-    return await askedWhileAway(input, result, context.env, context.paths, context.nowMs);
-  } catch (error) {
-    return {
-      ...result,
-      stderr: `cc-smart-dev-kit ${spec.name}: the person's availability could not be read (${errorMessage(error)})`,
-    };
-  }
-}
-
-/**
  * Runs one hook on its input text: the answer of the frame's steps, then the record of an ask.
  * Never throws. `nowMs` is the time a recorded ask carries; `start` is the starter a test
  * hands in for a hook that starts a background program.
@@ -315,7 +287,7 @@ export async function handleHook(
   };
   const input = parseHookInput(text);
   const result = await answer(spec, input, context);
-  return recordAsk(spec, input, await whileAway(spec, input, result, context), context);
+  return recordAsk(spec, input, result, context);
 }
 
 /**

@@ -13,14 +13,10 @@ import { allowsNewer, isValidRange, lowestAllowed, satisfiesRange } from "./vers
 /**
  * The hooks the plugin wires in `plugin/hooks/hooks.json`, by name: what `ownHooks` may list
  * to switch a plugin hook off. A test keeps it the same as `HOOKS` in `src/hooks/specs.ts`,
- * except the hooks marked `alwaysOn` (`session-escape-guard`, `job-route`): a project cannot
+ * except the hooks marked `alwaysOn` (`job-route`, `user-away`): a project cannot
  * switch those off, so their names are not here.
  */
 export const PLUGIN_HOOK_NAMES = [
-  "git-guard",
-  "merge-guard",
-  "main-folder-guard",
-  "agent-guard",
   "fable-session",
   "tier-view",
   "after-merge",
@@ -33,7 +29,6 @@ export const PLUGIN_HOOK_NAMES = [
   "worktree-leftovers",
   "session-name",
   "task-start",
-  "deploy-guard",
 ] as const;
 
 /** One name from `PLUGIN_HOOK_NAMES`. */
@@ -54,6 +49,18 @@ export const RETIRED_HOOK_NAMES = [
   "lead-notes",
   // 4.3.0: messages to sessions in other repos no longer ask.
   "message-guard",
+  // 6.0.0: the kit asks the person nothing through hooks; its only guard is the heavy-job
+  // queue (`job-route`). These six guards went. A project file written for an older plugin
+  // that lists one must still parse. Four of them were `ownHooks` names from 0.5.2 on (deploy-guard from 5.3.0);
+  // `session-escape-guard` never was (an `alwaysOn` hook, its name was refused in every older
+  // plugin, checked in the history of this file), so it is accepted from this release
+  // (`OWN_HOOK_NAMES_SINCE` holds that floor).
+  "git-guard",
+  "merge-guard",
+  "deploy-guard",
+  "main-folder-guard",
+  "agent-guard",
+  "session-escape-guard",
 ] as const;
 
 /**
@@ -131,6 +138,15 @@ export const WORKFLOW_PLANS_SINCE = "4.8.0";
 export const WORKFLOW_MERGE_FILES_SINCE = "5.2.0";
 
 /**
+ * The release that renamed `workflow.autoCommit`, `autoPush` and `autoMerge` to `allowCommit`,
+ * `allowPush` and `allowMerge` (`WORKFLOW_KEY_ALIASES`, `src/workflow/schema.ts`). A project file
+ * that holds a new name needs that plugin version or newer, for the same reason as
+ * `WORKFLOW_FIXES_SINCE`: an older plugin reads the object strictly and refuses a name it does
+ * not know. A file that keeps the old names loads on every plugin, so they raise no floor.
+ */
+export const WORKFLOW_ALLOW_KEYS_SINCE = "6.1.0";
+
+/**
  * The fields of a heavy-job kind (`jobs.kinds.<name>`) that came after 0.5.2, with the release
  * that brought them: `noSlotForFiles` (a run on named files goes at once) in 1.5.0. A project
  * file whose kind sets one needs that plugin version or newer, for the same reason as
@@ -176,6 +192,8 @@ export const OWN_HOOK_NAMES_SINCE: Readonly<
   "keep-going": "2.0.0",
   "builder-finish": "2.0.0",
   "deploy-guard": DEPLOY_GUARD_SINCE,
+  // Never listable before: the strict parse of an older plugin refuses the name.
+  "session-escape-guard": "6.0.0",
 };
 
 /**
@@ -299,7 +317,7 @@ export const ccSmartDevKitConfigSchema = z.strictObject({
       /**
        * A branch-name prefix (ending in "/") to the base that branch family's pull requests
        * go into: `{"hotfix/": "main", "release/": "main"}`. Every other branch's requests go
-       * into `base`. The longest prefix that matches wins (`baseForBranch`). The merge guard's
+       * into `base`. The longest prefix that matches wins (`baseForBranch`). merge-check's
        * opening check, auto-merge and the after-merge note read it.
        */
       bases: z
@@ -415,7 +433,7 @@ export type CcSmartDevKitConfig = z.infer<typeof ccSmartDevKitConfigSchema>;
 /**
  * The base a branch's pull request goes into: `worktrees.base`, or the longest
  * `worktrees.bases` prefix that matches the branch's name. The one home of that rule (the
- * schema's comment, `.claude/rules/cc-smart-dev-kit-json.md`): the merge guard's opening check
+ * schema's comment, `.claude/rules/cc-smart-dev-kit-json.md`): merge-check's opening check
  * and the after-merge note name the same base.
  */
 export function baseForBranch(

@@ -287,12 +287,6 @@ describe("portal", () => {
     expect(source).not.toContain("CLAUDECODE");
     expect(source).not.toContain("claudeCodeRefusal");
     expect(PORTAL_USAGE).not.toContain("refuses");
-    // And what replaced it: the session-escape guard asks before a shell reaches the port.
-    const guard = readFileSync(
-      join(import.meta.dir, "..", "hooks", "session-escape-guard.ts"),
-      "utf8",
-    );
-    expect(guard).toContain("DEFAULT_PORTAL_PORT");
   });
 });
 

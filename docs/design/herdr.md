@@ -11,7 +11,7 @@ own pane, and the lead never relays it (4.10.1). The user workflow is
 | File under `src/herdr/` | Job |
 |---|---|
 | `hc.ts` | The argv-only runner, tolerant JSON shapes, errors and minimum hc version. |
-| `words.ts` | Shared verbs, flags, permission-mode order and parser for command and judge. |
+| `words.ts` | Shared verbs, flags, permission-mode order and parser. |
 | `labels.ts` | Label names, core/address identities, child names, report escaping and agent prefix. |
 | `machines.ts` | The remote approval rules, validated reads and managed writes. |
 | `identity.ts` | Live terminal and process-ancestry checks. |
@@ -21,9 +21,9 @@ own pane, and the lead never relays it (4.10.1). The user workflow is
 | `doctor.ts` | Optional hc discovery and conservative diagnostics. |
 
 `src/entries/cli.ts` wires the command; `src/cli/help.ts` shares its grammar.
-`src/hooks/bash-judge.ts` adds hook-input checks through `job-route`; its launch kind is in
-`src/hooks/agent-guard.ts`. `prompt-source.ts` and `keep-going.ts` understand Herdr reports
-and the `herdr:<core>/<address>` task-agent prefix. See `docs/design/hooks.md` § Herdr commands in the Bash judge.
+No hook judges a Herdr line since 6.0.0 (the launch judge in `job-route` is gone,
+`docs/design/hooks.md` § Retired in 6.0.0). `prompt-source.ts` and `keep-going.ts` understand
+Herdr reports and the `herdr:<core>/<address>` task-agent prefix.
 
 ## Identity and the two kinds
 
@@ -164,8 +164,7 @@ and `reservePlan` with holder `self`, with `ignore` and `caseFold` from `planFil
 before the write lock. It prints one line naming the plan and the next step: start its first phase
 as usual. It refuses from a plan child or a follow-up child (the terminal carries `kit.plan` or `kit.followup`), when the default branch
 is only a guess, and for a plan that is not pending (one already started: park it first, then reserve it), not the
-caller's own or already reserved, each with its fix. It stands alone: `--wait`, `--json` and `--release` cannot join it. The Bash judge
-stays silent, since it reserves the caller's own plan and frees nothing. A reserved plan stays held until
+caller's own or already reserved, each with its fix. It stands alone: `--wait`, `--json` and `--release` cannot join it. A reserved plan stays held until
 its pull request merges or closes (or the settle proof below holds; an unreserved plan's files are free once its task closes): the classifier reads it as `own`, then `merging` once it is closed, and a
 `herdr plans` pass releases it like any other.
 
@@ -229,8 +228,7 @@ its pull request merged or closed, or when that proof holds with no pull request
 never started, with no pane and no labelled terminal, is released. A done plan never releases
 itself, and a dropped plan always does. A plan whose pull request was merged by hand stays
 `merging` until a pass runs. `plans --release <slug>` is the person's way out when nothing can
-prove a closed plan merged: it refuses an open plan, and the Bash judge asks before it runs
-(`docs/design/hooks.md` § Herdr commands in the Bash judge).
+prove a closed plan merged: it refuses an open plan; since 6.0.0 no hook asks before it runs.
 
 `--wait` returns at once when a plan is ready already or none can change by itself. Otherwise it
 looks again every `PLAN_POLL_MS` (15 s) until a plan turns ready, a reservation is released or a
@@ -390,7 +388,7 @@ it." `planTrailer` and `followupTrailer` carry no copy of it.
 request, or when the person says to ship now. A blocked child cannot take it: the lead tells the
 person where it waits (`hc attach`), saves a task note "send ship to `<terminal>`" and sends it
 the next time the child is idle, working or done. A child in the error state: the lead tells the
-person to look at its pane. While the person is away, the send is parked as an action.
+person to look at its pane. While the person is away, the lead sends it and records a decision.
 
 **Sending to it.** `herdr send` reaches the follow-up child in the states `SEND_STATES` lists
 (idle, working, done), one constant read by `send`, `report` and the gate. A blocked child, or
@@ -403,11 +401,6 @@ follow-up children live it prints "No live kit children to wait for (a follow-up
 settles)." (no live child at all keeps "No live kit children."). `wait` without `--all`, `list`
 and `stop` see it as any linked child.
 
-**The judge** reuses the command's parser. A `herdr start` line with a parse error (a bad
-`--issue`, a refused pair of flags) shows that error alone when `--model`, `--effort` and `--mode`
-are all given. With one missing, the old "Pass both --model and --effort, plus --mode" line still
-comes first.
-
 **Limits.**
 
 - The held-plan list in the trailer is a snapshot; the lead repeats a new one in a `send`.
@@ -419,9 +412,9 @@ comes first.
   branch, so the child's own-commit count includes them and the guard does not reset.
 - The child follows its trailer in prose; nothing enforces the steps.
 - A review covers only its own branch (`review-cover.ts`). After a cherry-pick onto a new branch,
-  the moved commits' reviews do not cover the new head, so the merge guard asks the person at
-  that pull request's merge. Nothing is lost.
-- A merged or closed pull request (by the person or `autoMerge`) is noticed only at the child's
+  the moved commits' reviews do not cover the new head, so the lead sees no review of the new head at
+  that pull request's merge, and says so in the pull request. Nothing is lost.
+- A merged or closed pull request (by the person or `allowMerge`) is noticed only at the child's
   next finding.
 - No `--issue` and no `Fixes` line when issues are refused (a public repository without
   `allowPublic`, no GitHub, issues off).
@@ -433,8 +426,8 @@ comes first.
 `CLAUDE_CONFIG_DIR`. Its shape is `{ "version": 1, "machines": { "worker": { "allow": true } } }`.
 Missing file means no approvals. `allow` means free remote starts, an unknown/unallowed name
 asks, and `production` always asks even when `allow` is also true. `forget` removes the entry.
-Machine-rule changes ask the person and use the managed atomic writer under the kit lock.
-An unreadable or invalid file fails loudly; the judge asks rather than treating it as free.
+Machine-rule changes use the managed atomic writer under the kit lock (no hook asks first
+since 6.0.0). An unreadable or invalid file fails loudly.
 
 Remote starts require `--cwd` on that machine. The command checks `claude --version` first,
 then the remote kit's version, through the same login-shell wrapper as launch. Both programs
@@ -449,7 +442,7 @@ mode 600 before launch. It does not use `hc put`, which would need a terminal al
 The remote brief states where reports stay. Start and wait print the actual report folder
 and the retrieval lines `hc exec --on <machine> find <folder> -type f` and
 `hc file read --on <machine> <folder>/<child>/<file>`. The exec line is for the person's shell:
-raw hc exec remains denied to Claude by the judge. A different remote config override does
+no hook stops Claude from running raw hc exec since 6.0.0. A different remote config override does
 not alter the absolute brief path already handed to the child; report retrieval with such
 an override still needs live verification.
 
@@ -457,11 +450,10 @@ an override still needs live verification.
 
 The person answers a child's questions, permission prompts, plan approval and login in the
 child's own pane. The lead takes no part: `wait` does not report a blocked child, the skill
-tells the lead never to ask or answer for it, and the judge refuses raw input into a child's
-dialog, so only the person answers. Until 4.10.0 the kit had a relay (`herdr answer`, with a
-screen reader that matched the dialog and a judge question for every answer); the person
+tells the lead never to ask or answer for it, so only the person answers. Until 4.10.0 the kit had a relay (`herdr answer`, with a
+screen reader that matched the dialog and a hook question for every answer); the person
 chose to answer in the pane instead, so 4.10.1 removed it, and its guards with it.
-While away, the existing frame denies and parks the lead's own questions; a child waits in its
+While away, the lead takes the recommended option and records a decision; a child waits in its
 pane until the person comes back.
 
 ## Waiting without polling
@@ -486,24 +478,16 @@ printed, with the same mode and timeout. It never consumes an unreported later s
 that exact next command. A lost event stream is a failure with unknown child outcome,
 not a successful completion. Remote news also prints the report retrieval hints.
 
-## Judge and command boundaries
+## Command boundaries
 
 The command holds ownership, identity, names, task locality, remote version, brief privacy,
 report safety and send guards. It requires `--asked` for Fable, Opus/max, and non-free remote
-starts. The judge still asks for every such launch, even with that flag: the approved line
-is the line that runs. It also asks for every machine-rule change, denies raw hc
-writes and identity assignments, and caps mode from PreToolUse's `permission_mode`.
-
-The mode cap, premium/remote approval prompts and machine-rule approval prompts live only
-in the judge, as does the refusal of unattended starts (`claude -p`): nobody watches their
-children or receives their reports. A script calling the command directly meets only the
-command's identity, ownership, name, task-locality, version, privacy and send checks, its
-explicit model/effort/mode requirements, its bypassPermissions ban and its `--asked` flag
-requirements. The flag alone is not a recorded approval outside the judge. Raw remote hc
-reads also meet the judge's machine rule: production and unknown machines ask; free ones
-pass silently; unreadable rules ask. Likewise, a shell judge
-cannot inspect arbitrary script bodies or identify commands assembled from unrelated string
-fragments. These are policy checks, not a sandbox; keep that limit explicit.
+starts. Since 6.0.0 no hook records or checks that approval (the launch judge that did is gone):
+the flag is the command's own refusal, and the skills tell Claude to ask the person first when
+they are available. A script calling the command directly meets the command's identity,
+ownership, name, task-locality, version, privacy and send checks, its explicit
+model/effort/mode requirements, its bypassPermissions ban and its `--asked` flag requirements.
+These are policy checks, not a sandbox; keep that limit explicit.
 
 ## Edge cases
 

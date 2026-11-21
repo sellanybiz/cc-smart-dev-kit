@@ -6,15 +6,9 @@
  *
  * | Hook | Event (matcher) | Fails closed by |
  * |---|---|---|
- * | git-guard | PreToolUse (Bash, PowerShell) | asking before every command that runs git |
- * | deploy-guard | PreToolUse (Bash, PowerShell) | project-scoped: a project's file that cannot be read asks only when its raw `tasks.deployCommands` lists the command the call runs (`deploy-guard.ts`) |
- * | main-folder-guard | PreToolUse (Edit, Write, NotebookEdit, Bash) | asking before every edit, and every shell command that writes, in the repo |
- * | agent-guard | PreToolUse (Agent, Task, Workflow) | machine-wide: it judges the same way without cc-smart-dev-kit.json (`agent-guard.ts`) |
  * | fable-session | SessionStart, PostModelSwitch, Stop | machine-wide: it says the same line without cc-smart-dev-kit.json (`fable-session.ts`) |
  * | tier-view | SessionStart, UserPromptSubmit | machine-wide: the note of what each subagent tier runs now says the same without cc-smart-dev-kit.json (`tier-view.ts`) |
- * | merge-guard | PreToolUse (Bash, PowerShell) | asking before every command that merges or opens a pull request, or writes to GitHub's issues (`merge-guard.ts`) |
- * | session-escape-guard | PreToolUse (Bash, PowerShell, Edit, Write, NotebookEdit) | machine-wide, and `ownHooks` cannot switch it off: it judges the same without cc-smart-dev-kit.json (`session-escape-guard.ts`) |
- * | job-route | PreToolUse (Bash, PowerShell) | machine-wide, and `ownHooks` cannot switch it off: a launch is judged the same without cc-smart-dev-kit.json; routing a heavy command reads `jobs.route` and is Bash-only (`bash-judge.ts`, `job-route.ts`) |
+ * | job-route | PreToolUse (Bash, PowerShell) | silent: with a broken or too new file, outside git or after a crash the line runs as written; routing a heavy command reads `jobs.route` and is Bash-only (`job-route.ts`) |
  * | after-merge | PostToolUse, PostToolUseFailure (Bash, PowerShell) | one line after a merge |
  * | review-record | SubagentStart, SubagentStop | one line when the review could not be recorded |
  * | subagent-background | SubagentStop | one block when a subagent ends with its own background work running |
@@ -24,7 +18,7 @@
  * | agent-usage | SubagentStop | machine-wide: each subagent's cost on record (`agent-usage.ts`) |
  * | worktree-leftovers | SessionStart (startup, resume) | one line |
  * | session-name | SessionStart, UserPromptSubmit | nothing but a line on stderr |
- * | user-away | PreToolUse (AskUserQuestion, ExitPlanMode), PermissionRequest, UserPromptSubmit, Stop | machine-wide, and `ownHooks` cannot switch it off: while the person cannot answer, a question and Claude Code's own permission prompt are denied and parked, and a note is said once per change — at the prompt, or by one block at the stop of a session that has not heard it (`user-away.ts`) |
+ * | user-away | PreToolUse (AskUserQuestion, ExitPlanMode), UserPromptSubmit, Stop | machine-wide, and `ownHooks` cannot switch it off: while the person cannot answer, a question is refused with the step to take the recommended option and record a decision, nothing is parked, and a note is said once per change — at the prompt, or by one block at the stop of a session that has not heard it (`user-away.ts`) |
  *
  * Two more bundles are in `hooks.json` without a spec here (`USER_HOOKS`): they need no
  * project file — `update-check` (the background self-update and instructions copy) and
@@ -35,17 +29,12 @@
  * (`src/hooks/settings-hooks.ts`).
  */
 
-import { dialectOfTool, programsOf } from "../shell/command";
-import { agentIdKey, recordsReview } from "../workflow/reviews";
+import { recordsReview } from "../workflow/reviews";
 import { workflowDefaults } from "../workflow/schema";
-import { afterMerge, mergesPullRequest, requestsPullRequestChange } from "./after-merge";
-import { AGENT_TOOLS, agentGuard, guardFacts, WORKFLOW_TOOLS } from "./agent-guard";
+import { afterMerge, mergesPullRequest } from "./after-merge";
 import { recordAgentUsage } from "./agent-usage";
 import { builderFinish, builderFinishAnswer } from "./builder-finish";
-import { deployConfigProblem, deployCrashDomain, deployFacts, deployGuard } from "./deploy-guard";
 import { fableSession } from "./fable-session";
-import { isInside } from "./git";
-import { DEFAULT_PROTECTED_BRANCHES, guardQuestions, runsGit } from "./git-guard";
 import {
   addContext,
   type HookInput,
@@ -55,21 +44,10 @@ import {
   toolDecision,
   toolInput,
 } from "./io";
-import { requestsIssueWrite } from "./issue-writes";
-import {
-  jobRoute,
-  jobRouteConfigAnswer,
-  jobRouteDomain,
-  jobRouteOutsideGit,
-  routeFacts,
-} from "./job-route";
+import { jobRoute, routeFacts } from "./job-route";
 import { KEEP_GOING, keepGoing, keepGoingAnswer } from "./keep-going";
-import { mainFolderGuard, mayWriteInRepo, writtenPaths } from "./main-folder-guard";
-import { mergeGuard } from "./merge-guard";
-import { autoPushQuestion } from "./push-policy";
 import { agentTypeOf, reviewRecord } from "./review-record";
 import type { HookSpec } from "./run";
-import { inEscapeDomain, sessionEscapeGuard } from "./session-escape-guard";
 import { sessionName } from "./session-name";
 import { subagentBackground } from "./subagent-background";
 import { taskStart } from "./task-start";
@@ -118,134 +96,6 @@ function judgesCall(inDomain: (input: HookInput) => boolean, input: HookInput): 
   }
 }
 
-/** The tool the call is for, or "" when the input names none. */
-function toolOf(input: HookInput | null): string {
-  return input === null ? "" : (stringField(input.tool_name) ?? "");
-}
-
-/** The command of the call, or "" when the input names none. */
-function commandOf(input: HookInput | null): string {
-  return input === null ? "" : (stringField(toolInput(input).command) ?? "");
-}
-
-export const gitGuardHook: HookSpec = {
-  name: "git-guard",
-  events: ["PreToolUse"],
-  onConfigProblem: (message, input) => {
-    const command = stringField(toolInput(input).command);
-    return command !== null && runsGit(command)
-      ? toolDecision("ask", cannotCheck("this git command", message))
-      : SILENT;
-  },
-  // A crash must not let a git command through: the guard asks about the command it was
-  // asked to judge.
-  onCrash: guardCrash("this git command", (input) => {
-    const command = commandOf(input);
-    return command !== "" && runsGit(command);
-  }),
-  // For the hook log: the programs of the command line, read the way the guard reads it, so
-  // `doctor --live` can prove the guard parsed the call (not only that the hook ran).
-  logFacts: (input) => {
-    const command = stringField(toolInput(input).command);
-    return command === null ? {} : { programs: programsOf(command) };
-  },
-  run: (context): HookResult => {
-    const { project, input, cwd, env } = context;
-    const config = project.config;
-    if (config === null) return SILENT;
-    const command = stringField(toolInput(input).command);
-    if (command === null) return SILENT;
-    // Read as review-record reads it (`agentIdKey`), so the two hooks agree on a prefixed id.
-    const agentId = stringField(input.agent_id);
-    const questions = guardQuestions(command, cwd, {
-      protectedBranches: config.protectedBranches ?? DEFAULT_PROTECTED_BRANCHES,
-      autoPushAsk: () => autoPushQuestion(context),
-      // Every worktree of a repo shares one stash list: a project that works in worktrees, or
-      // any linked worktree (a builder's), can take another session's stash.
-      sharedStash: config.worktrees !== undefined || project.isWorktree,
-      env,
-      // Set when a subagent runs the line: its discards in its own worktree ask nothing.
-      agentId: agentId === null ? null : agentIdKey(agentId),
-      toolDialect: dialectOfTool(input.tool_name),
-      startedAtMs: context.nowMs,
-    });
-    return questions.length === 0 ? SILENT : toolDecision("ask", questions.join("\n"));
-  },
-};
-
-/**
- * The deploy guard: PreToolUse on Bash and PowerShell, before a command the project lists as
- * a deploy while that environment has open work that holds a deploy. Project-scoped: silent
- * with no project file or no `tasks.deployCommands`. It only asks (`deploy-guard.ts`).
- */
-export const deployGuardHook: HookSpec = {
-  name: "deploy-guard",
-  events: ["PreToolUse"],
-  onConfigProblem: (message, input, _event, checkout) =>
-    deployConfigProblem(message, input, checkout),
-  // A crash must not let a deploy through: it asks about a call that runs a listed command.
-  onCrash: guardCrash("whether this deploy may run while a task is open", deployCrashDomain),
-  // For the hook log: the environment and the list place of the command, never its text.
-  logFacts: (input, context) => deployFacts(input, context.env),
-  run: deployGuard,
-};
-
-/**
- * The merge guard: PreToolUse on Bash and PowerShell, before a command that merges, opens or readies a pull
- * request. It lets the merge through without a question only when the project's `autoMerge`
- * allows it, the required checks are green, and the head commit's review is recorded;
- * everything else is a question for the person (§ `merge-guard.ts`, `src/workflow/`).
- */
-export const mergeGuardHook: HookSpec = {
-  name: "merge-guard",
-  events: ["PreToolUse"],
-  onConfigProblem: (message, input) => {
-    const command = stringField(toolInput(input).command);
-    if (command === null) return SILENT;
-    if (requestsPullRequestChange(command)) {
-      return toolDecision("ask", cannotCheck("whether this merge may happen by itself", message));
-    }
-    // The domain also holds a raw write to GitHub's issues (D67): it asks like the rest.
-    return requestsIssueWrite(command)
-      ? toolDecision("ask", cannotCheck("whether this issue write may happen by itself", message))
-      : SILENT;
-  },
-  // For the hook log: the programs of the command line, read the way the guard reads it, so
-  // `doctor --live` can prove the guard parsed the call.
-  logFacts: (input) => {
-    const command = stringField(toolInput(input).command);
-    return command === null ? {} : { programs: programsOf(command) };
-  },
-  // A crash must not let a merge through: the guard asks about the command it was asked to
-  // judge.
-  onCrash: guardCrash("whether this merge may happen by itself", (input) => {
-    const command = commandOf(input);
-    return command !== "" && (requestsPullRequestChange(command) || requestsIssueWrite(command));
-  }),
-  run: mergeGuard,
-};
-
-export const mainFolderGuardHook: HookSpec = {
-  name: "main-folder-guard",
-  events: ["PreToolUse"],
-  onConfigProblem: (message, input, _event, checkout) => {
-    const cwd = stringField(input.cwd);
-    const repo = checkout.mainCheckout ?? checkout.root;
-    // A shell command asks when its words write in the repo, as an edit of a file there does.
-    return cwd !== null && writtenPaths(input, cwd).targets.some(({ path }) => isInside(path, repo))
-      ? toolDecision("ask", cannotCheck("whether this edit belongs in a worktree", message))
-      : SILENT;
-  },
-  // A crash must not let a change through: the guard asks about the edit, or the shell
-  // command that writes, it was asked to judge.
-  onCrash: guardCrash("whether this edit belongs in a worktree", (input) =>
-    ["Edit", "Write", "NotebookEdit"].includes(toolOf(input))
-      ? true
-      : mayWriteInRepo(input, stringField(input.cwd)),
-  ),
-  run: mainFolderGuard,
-};
-
 export const afterMergeHook: HookSpec = {
   name: "after-merge",
   events: ["PostToolUse", "PostToolUseFailure"],
@@ -261,7 +111,7 @@ export const afterMergeHook: HookSpec = {
 /**
  * The review record: SubagentStart notes the commit a review agent (`workflow.reviewAgents`,
  * default: the plugin's own reviewer) starts on, and SubagentStop records it when the agent
- * stops on that same commit — what the merge guard reads before a merge it would make with
+ * stops on that same commit — what merge-check reads before a merge it would make with
  * no person watching (`src/hooks/review-record.ts`, the whole story).
  *
  * A plugin-wired SubagentStop is safe for THIS hook because it never touches a worktree
@@ -370,7 +220,7 @@ export const keepGoingHook: HookSpec = {
  * time, the session, the agent and its type, and per model the replies, the four token counts
  * and the estimated USD — what `usage` shows and a portal can read. **Machine-wide**: the
  * person's spend is the machine's, not a project's, so it records with no
- * `cc-smart-dev-kit.json` and outside git, like the Agent guard's launch record. A project
+ * `cc-smart-dev-kit.json` and outside git, like the launch record `usage` reads. A project
  * that runs its own copy lists the name in `ownHooks`. It touches no worktree, the one kind of
  * plugin SubagentStop entry `hooks.md` allows, and it answers nothing on stdout: one stderr
  * line when its record cannot be made, exit 0.
@@ -401,92 +251,34 @@ export const sessionNameHook: HookSpec = {
 
 /**
  * While the person cannot answer (`cc-smart-dev-kit user unavailable`): the two tools that ask
- * them are denied with the step that parks the question, Claude Code's own permission prompt is
- * denied and the call parked, and one note per change is said at the prompt — or, for a session
- * the person never prompts, by one block at its stop (`user-away.ts`). A guard's own ask is
- * turned into a deny by the frame itself (`askedWhileAway`, `run.ts`), for every hook.
+ * them are refused with the step to take the recommended option and record a decision (nothing
+ * is parked), and one note per change is said at the prompt — or, for a session the person never
+ * prompts, by one block at its stop (`user-away.ts`). Claude Code's own permission prompt is not
+ * answered: a hook never approves for the person, so the event is not wired.
  *
- * **Machine-wide**, like `agent-guard`: the person is one for the whole machine, so the answer
+ * **Machine-wide**, like `job-route`: the person is one for the whole machine, so the answer
  * reads the state file and never the project's, and a broken or too new project file, and a
  * folder outside git, are judged the same way. **`alwaysOn`**: `ownHooks` cannot switch it off —
  * the switch is the person's, and a project must not be able to turn it off for a session. A
  * crash asks about the calls in its domain (the two question tools), like any guard; on the other
- * three events it says one line on stderr and the session goes on.
+ * two events it says one line on stderr and the session goes on.
  */
 export const userAwayHook: HookSpec = {
   name: "user-away",
-  events: ["PreToolUse", "PermissionRequest", "UserPromptSubmit", "Stop"],
+  events: ["PreToolUse", "UserPromptSubmit", "Stop"],
   alwaysOn: true,
   onConfigProblem: (_message, input, event, _checkout, context) =>
     userAwayAnswer(input, event, context.env, context.paths, context.nowMs),
   outsideGit: (input, event, _why, context) =>
     userAwayAnswer(input, event, context.env, context.paths, context.nowMs),
   // The two tools that ask the person are a guard's domain: a crash asks about them, as any guard
-  // does. On the other three events there is no call to ask about; the crash is one line on
-  // stderr, and Claude Code's own prompt, the prompt's text, or the stop goes on as it would
-  // without this hook.
+  // does. On the other two events there is no call to ask about; the crash is one line on
+  // stderr, and the prompt's text, or the stop goes on as it would without this hook.
   onCrash: (why, input, event, context) =>
-    event === "PermissionRequest" || event === "UserPromptSubmit" || event === "Stop"
+    event === "UserPromptSubmit" || event === "Stop"
       ? { stderr: `cc-smart-dev-kit user-away: ${why}` }
       : guardCrash("whether the person is available", inAwayDomain)(why, input, event, context),
   run: ({ input, event, env, paths, nowMs }) => userAwayAnswer(input, event, env, paths, nowMs),
-};
-
-/**
- * The Agent guard: PreToolUse on the Agent tool (and the older name `Task`), and PostToolUse
- * for the record. **Machine-wide**: it runs with or without cc-smart-dev-kit.json (like
- * `update-check`), and its answer never depends on the project's file — it judges the model
- * and effort a launch names (§ `agent-guard.ts`). A project that runs its own Agent guard
- * lists `"agent-guard"` in `ownHooks`, and this one stays silent there. `onConfigProblem` and
- * `outsideGit` judge the same way: a broken or too new cc-smart-dev-kit.json, or a folder that
- * is not in git, does not change which model a launch runs on.
- *
- * PostToolUse is the **record**: a launch the guard asked about on PreToolUse, and the person
- * allowed, ran, and is recorded there (`RAN_EVENT` in `agent-guard.ts`). Claude Code runs
- * PostToolUse only for a call that ran, so a launch the person refused is never recorded. It
- * is wired `--missing=quiet`: a launch that could not be recorded is one line on stderr, and
- * the record is never a question.
- */
-export const agentGuardHook: HookSpec = {
-  name: "agent-guard",
-  events: ["PreToolUse", "PostToolUse"],
-  onConfigProblem: (_message, input, _event, _checkout, context) =>
-    agentGuard(input, context.env, context.paths, cwdOf(input)),
-  outsideGit: (input, _event, _why, context) =>
-    agentGuard(input, context.env, context.paths, cwdOf(input)),
-  // A crash must not let a launch through unchecked: the guard asks about the launch it was
-  // asked to judge. On PostToolUse (the record) it says nothing: the launch already ran.
-  onCrash: guardCrash("the model this launch runs on", (input) =>
-    ([...AGENT_TOOLS, ...WORKFLOW_TOOLS] as readonly string[]).includes(toolOf(input)),
-  ),
-  logFacts: guardFacts,
-  run: ({ input, env, paths, cwd }) => agentGuard(input, env, paths, cwd),
-};
-
-/**
- * The session-escape guard: PreToolUse on the shell tools and the three edit tools. It denies
- * the ways a session gets around the limits the person set for it (`workflow review-done`; a
- * kit command run with CLAUDECODE removed) and asks before a command that reaches the portal
- * or an edit of the kit's own settings (§ `session-escape-guard.ts`).
- *
- * **Machine-wide**, like `agent-guard`: its answer never depends on the project's file, so a
- * broken or too new file, and a folder outside git, are judged the same way. And **`alwaysOn`**:
- * `ownHooks` cannot switch it off (it does not even accept the name), because the project's
- * file is one of the things this guard guards. A crash asks about the calls in its domain.
- */
-export const sessionEscapeGuardHook: HookSpec = {
-  name: "session-escape-guard",
-  events: ["PreToolUse"],
-  alwaysOn: true,
-  onConfigProblem: (_message, input, _event, _checkout, context) =>
-    sessionEscapeGuard(input, context.paths, process.platform),
-  outsideGit: (input, _event, _why, context) =>
-    sessionEscapeGuard(input, context.paths, process.platform),
-  onCrash: guardCrash(
-    "whether this call goes around the limits set for the session",
-    inEscapeDomain,
-  ),
-  run: ({ input, paths }) => sessionEscapeGuard(input, paths, process.platform),
 };
 
 /**
@@ -515,7 +307,7 @@ export const fableSessionHook: HookSpec = {
 /**
  * The tier note (`tier-view.ts`): at every SessionStart, and at a UserPromptSubmit when it
  * changed, one note to Claude of what each subagent tier (`haiku`, `sonnet`, `opus`, `fable`)
- * runs now and the effort rule that follows, read the Agent guard's way. **Machine-wide**, like
+ * runs now and the effort rule that follows, read the launch judge's way. **Machine-wide**, like
  * `agent-guard`: it runs with or without cc-smart-dev-kit.json and in a folder outside git, and
  * never a question or a block. Its SessionStart entry carries **no
  * matcher**, so a start, a resume, a clear and a compaction each say it. A project that runs its
@@ -531,41 +323,37 @@ export const tierViewHook: HookSpec = {
 };
 
 /**
- * The job queue's door and the kit's one Bash judge: PreToolUse on Bash, **machine-wide**, and
- * `alwaysOn` (`ownHooks` cannot switch it off). Two parts, and only one reads the project:
+ * The job queue's door, the kit's one guard: PreToolUse on Bash and PowerShell, **machine-wide**,
+ * and `alwaysOn` (`ownHooks` cannot switch it off). The route is the `switches.jobRoute` switch
+ * (the project's `"jobs": { "route": true }` over the person's machine-wide default, one
+ * resolver, off until one says on): a heavy command is rewritten to run through
+ * `cc-smart-dev-kit job run` (or refused with that command line), a heavy run mixed with other
+ * commands is refused, and a heavy PowerShell line is refused, naming the Bash tool, where Git
+ * Bash lets that tool run. Off, a heavy command runs raw.
  *
- * - **The launch judge** (`bash-judge.ts`) ignores the project's file, broken or not, and runs
- *   outside git: a raw `claude --bg` asks the person (and is refused in `claude -p`), `claude -p`
- *   is judged by the launch policy every Agent launch meets, and `workflow propose` asks while
- *   the gate keeps the push or the pull request the person's. It is always on because it limits
- *   what the session itself may launch: a session must not switch it off by editing a file it
- *   owns.
- * - **The route** is the `switches.jobRoute` switch (the project's `"jobs": { "route": true }`
- *   over the person's machine-wide default, one resolver, off until one says on): a heavy command
- *   is rewritten to run through `cc-smart-dev-kit job run` (or refused with that command line),
- *   and a heavy PowerShell line is refused, naming the Bash tool, where Git Bash lets that tool
- *   run. Off, a heavy command runs raw.
- *
- * It is the one guard that changes the call rather than asking about it.
+ * It never asks the person. With a broken or too new `cc-smart-dev-kit.json` it routes by the
+ * person's own default, as if the project's file were absent. Outside git there is no project to
+ * route for, and after a crash there is nothing to answer: the line runs as written, and a crash
+ * is one line on stderr.
  */
 export const jobRouteHook: HookSpec = {
   name: "job-route",
   events: ["PreToolUse"],
   alwaysOn: true,
-  onConfigProblem: (message, input, _event, _checkout, context) =>
-    jobRouteConfigAnswer(message, input, context),
-  outsideGit: (input, _event, _why, context) => jobRouteOutsideGit(input, context),
+  // The file cannot be read, so its `jobs` part is unknown: the person's own default decides.
+  onConfigProblem: (_message, input, event, checkout, context) =>
+    jobRoute({
+      input,
+      event,
+      cwd: stringField(input.cwd) ?? checkout.root,
+      project: { ...checkout, config: null, configFile: null },
+      env: context.env,
+      paths: context.paths,
+      nowMs: context.nowMs,
+    }),
   logFacts: routeFacts,
-  // A crash must not let a launch through unjudged, nor a heavy command run raw: the
-  // guard asks about the calls in that domain, the same one its answers cover.
-  onCrash: guardCrash("whether this launch or heavy command may run", jobRouteDomain),
   run: jobRoute,
 };
-
-/** The input's `cwd` for the guard's record; empty when it names none. */
-function cwdOf(input: HookInput): string {
-  return stringField(input.cwd) ?? "";
-}
 
 /** The hooks the plugin wires in `plugin/hooks/hooks.json`, by their bundle name. */
 export const taskStartHook: HookSpec = {
@@ -579,12 +367,6 @@ export const taskStartHook: HookSpec = {
 
 export const HOOKS: readonly HookSpec[] = [
   taskStartHook,
-  gitGuardHook,
-  mergeGuardHook,
-  deployGuardHook,
-  mainFolderGuardHook,
-  agentGuardHook,
-  sessionEscapeGuardHook,
   fableSessionHook,
   tierViewHook,
   jobRouteHook,
@@ -602,9 +384,13 @@ export const HOOKS: readonly HookSpec[] = [
 
 /**
  * The PreToolUse hooks that are **not** guards: `playwright-output` only rewrites the name of
- * a file the browser saves, so a machine with no bun gets no rewrite, never a question.
+ * a file the browser saves, and `job-route` only queues or refuses a heavy command, so a machine
+ * with no bun gets no rewrite, never a question.
  */
-export const NON_GUARD_PRE_TOOL_USE: ReadonlySet<string> = new Set(["playwright-output"]);
+export const NON_GUARD_PRE_TOOL_USE: ReadonlySet<string> = new Set([
+  "playwright-output",
+  "job-route",
+]);
 
 /**
  * The bundles whose `hooks.json` entry runs the shim with `--missing=ask`: the guards, which
@@ -628,9 +414,8 @@ export const USER_HOOKS: readonly string[] = ["update-check", "playwright-output
 /**
  * Every hook that answers about the **machine**, not a project: the `USER_HOOKS` bundles
  * (no project file is needed for them to act) and the plugin hooks whose answer does not
- * depend on the project's file either — `agent-guard` (the model a launch runs on),
- * `fable-session` (the model this session runs on), `session-escape-guard` (whether a call
- * goes around the limits set for the session), `task-start` (the session's own task list),
+ * depend on the project's file either — `fable-session` (the model this session runs on),
+ * `task-start` (the session's own task list),
  * `keep-going` (whether the session's own plan has a phase in progress), `builder-finish`
  * (whether a builder's task still has open steps), `tier-view` (what each
  * subagent tier runs), `user-away` (whether the person can answer) and
@@ -643,10 +428,8 @@ export const MACHINE_WIDE_HOOKS: readonly string[] = [
   "task-start",
   "keep-going",
   "builder-finish",
-  "agent-guard",
   "fable-session",
   "tier-view",
-  "session-escape-guard",
   "agent-usage",
   "user-away",
 ];

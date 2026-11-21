@@ -10,7 +10,7 @@
  * 3. **the built-in default** — the safe one (nothing is committed, pushed or merged by
  *    itself), from `schema.ts`.
  *
- * **The review gate** (`REVIEW_GATE_KEYS`, what the merge guard judges with) resolves the same
+ * **The review gate** (`REVIEW_GATE_KEYS`, what merge-check judges with) resolves the same
  * way, with one change of source: the project's part is the file as committed on a branch
  * (`resolveGate`), never a checkout's working copy, which a session can edit.
  *
@@ -74,10 +74,10 @@ export interface ResolvedValue<T> {
 }
 
 export interface ResolvedWorkflow {
-  autoCommit: ResolvedValue<boolean>;
-  autoPush: ResolvedValue<boolean>;
+  allowCommit: ResolvedValue<boolean>;
+  allowPush: ResolvedValue<boolean>;
   openPr: ResolvedValue<"off" | "draft" | "ready">;
-  autoMerge: ResolvedValue<boolean>;
+  allowMerge: ResolvedValue<boolean>;
   mergeMethod: ResolvedValue<"merge" | "squash" | "rebase">;
   deleteBranch: ResolvedValue<boolean>;
   reviewBeforePush: ResolvedValue<boolean>;
@@ -356,7 +356,7 @@ export function sourceLabel(value: ResolvedValue<unknown>, branch: string | null
 }
 
 /**
- * The review gate (`REVIEW_GATE_KEYS`) as the merge guard reads it: the built-in default, the
+ * The review gate (`REVIEW_GATE_KEYS`) as merge-check reads it: the built-in default, the
  * person's own file, and the project's file **as committed on `origin/<branch>`**, never the
  * working copy of a checkout. A session can edit its own worktree's file; it cannot change
  * what a branch it has not pushed to says.
@@ -530,10 +530,10 @@ function isFolderOnBase(
 const RESOLVED: {
   readonly [K in WorkflowKey]: (resolved: ResolvedWorkflow) => ResolvedValue<unknown>;
 } = {
-  autoCommit: (r) => r.autoCommit,
-  autoPush: (r) => r.autoPush,
+  allowCommit: (r) => r.allowCommit,
+  allowPush: (r) => r.allowPush,
   openPr: (r) => r.openPr,
-  autoMerge: (r) => r.autoMerge,
+  allowMerge: (r) => r.allowMerge,
   mergeMethod: (r) => r.mergeMethod,
   deleteBranch: (r) => r.deleteBranch,
   reviewBeforePush: (r) => r.reviewBeforePush,
@@ -587,10 +587,10 @@ export function resolveWorkflow(
   const fixes = merged.fixesAfterReview ?? {};
   const issues = merged.issues ?? {};
   return {
-    autoCommit: of("autoCommit", merged.autoCommit ?? workflowDefaults.autoCommit),
-    autoPush: of("autoPush", merged.autoPush ?? workflowDefaults.autoPush),
+    allowCommit: of("allowCommit", merged.allowCommit ?? workflowDefaults.allowCommit),
+    allowPush: of("allowPush", merged.allowPush ?? workflowDefaults.allowPush),
     openPr: of("openPr", merged.openPr ?? workflowDefaults.openPr),
-    autoMerge: of("autoMerge", merged.autoMerge ?? workflowDefaults.autoMerge),
+    allowMerge: of("allowMerge", merged.allowMerge ?? workflowDefaults.allowMerge),
     mergeMethod: of("mergeMethod", merged.mergeMethod ?? workflowDefaults.mergeMethod),
     deleteBranch: of("deleteBranch", merged.deleteBranch ?? workflowDefaults.deleteBranch),
     reviewBeforePush: of(

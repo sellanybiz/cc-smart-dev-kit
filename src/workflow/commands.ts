@@ -6,22 +6,22 @@
  * `show` prints every value with where it came from, so a person can see whether it is the
  * project's policy, their own, or the built-in default — and, for a switch, that it is the
  * value of the setting it maps onto right now (`resolve.ts`). Its `gate` lines are the review
- * gate exactly as the merge guard reads it — the policy committed on `origin/<worktrees.base>`
+ * gate exactly as merge-check reads it — the policy committed on `origin/<worktrees.base>`
  * (`resolveGate`) — and it prints whether the commit this checkout is on has a recorded review
  * that gate trusts. Both `show` and `set` end with the settings that cannot work together
  * (`workflowClashes` in `clashes.ts`, D16): one `!` line each, with its fix. `set` and `unset` write one value where
  * it really lives (`write.ts`): without `--project`, the person's own defaults; with it, the
  * project's `.claude/cc-smart-dev-kit.json` in this checkout (the person commits it). Of a gate
- * key (`REVIEW_GATE_KEYS`) the three refuse inside Claude Code. `propose` changes one of the
+ * key (`REVIEW_GATE_KEYS`) the three work inside Claude Code. `propose` changes one of the
  * project's own settings through a pull request instead (`propose.ts`, D57): a branch and a
  * worktree cut from `origin/<worktrees.base>`, the same writer, the commit, the push and
  * `gh pr create` — never a write in the main checkout. `review-done` records one commit in the
- * review record (`reviews.ts`) — default HEAD — which is what the merge guard reads before a
+ * review record (`reviews.ts`) — default HEAD — which is what merge-check reads before a
  * merge it would make without a person. It refuses inside Claude Code (`CLAUDECODE`), where
  * the `review-record` hook writes the record from the review agent's own end: a record a
  * session writes for itself is only its own word.
  *
- * `merge-check` judges a merge without making one, with the merge guard's own judgment
+ * `merge-check` judges a merge without making one, with merge-check's own judgment
  * (`merge-check.ts`): each pull request number, or a local branch against a base. It prints one
  * line per verdict and exits 0 when every merge is allowed, 1 when any asks.
  *
@@ -32,7 +32,7 @@ import { resolve } from "node:path";
 import { COMMAND } from "../build-info/names";
 import { type CliPaths, tildify } from "../cli/paths";
 import { runGit } from "../hooks/git";
-import type { CcSmartDevKitConfig } from "../project/config";
+import { type CcSmartDevKitConfig, WORKFLOW_ALLOW_KEYS_SINCE } from "../project/config";
 import { type Checkout, CONFIG_PATH, loadProjectConfig, locateCheckout } from "../project/resolve";
 import { clashesOf, clashLines } from "./clashes";
 import {
@@ -63,6 +63,7 @@ import {
 } from "./reviews";
 import type { WorkflowKey } from "./schema";
 import {
+  currentKeyName,
   INBOUND_KEYS,
   OUTBOUND_KEYS,
   PLAN_KEYS,
@@ -71,6 +72,7 @@ import {
   REVIEW_GATE_KEYS,
   RUN_MODES,
   showValue,
+  WORKFLOW_KEY_ALIASES,
   WORKFLOW_KEYS,
 } from "./schema";
 import { writePersonalSetting, writeProjectSetting } from "./write";
@@ -87,9 +89,23 @@ export interface WorkflowContext {
   now?: () => number;
 }
 
+/** The old names, said once: what the usage and a renamed setting's line both name. */
+const OLD_NAMES_TEXT = `${Object.keys(WORKFLOW_KEY_ALIASES).join(", ")} are the old names of ${Object.values(WORKFLOW_KEY_ALIASES).join(", ")} (${WORKFLOW_ALLOW_KEYS_SINCE}): a file and this command still take them, and every write uses the new name`;
+
+/**
+ * The line that says a setting was typed under its old name, or null when the name is current.
+ * One line, printed before the write's own line.
+ */
+function renamedLine(typed: string, current: string): string | null {
+  return typed === current
+    ? null
+    : `${typed} is now called ${current}: using ${current} (the old name still works in a file)`;
+}
+
 export const WORKFLOW_USAGE = `Usage: ${COMMAND} workflow [show] | set <setting> <value> [--project] | unset <setting> [--project] | propose <setting> <value> [--unset] [--folder <project>] [--json] | review-done [--sha <commit>] | merge-check [<pr>… | --branch <b> --base <base>]
 
 The settings are: ${WORKFLOW_KEYS.join(", ")}
+${OLD_NAMES_TEXT}.
 show (the default) prints each value and where it came from: the project's
 .claude/cc-smart-dev-kit.json, your own ~/.config/cc-smart-dev-kit/workflow.json, or the
 built-in default, and whether the commit this checkout is on has a recorded review. set
@@ -106,11 +122,10 @@ worktree cut from origin/<worktrees.base>, the setting written by the same write
 --project uses, committed, pushed, and the pull request opened with gh. It counts once it
 is merged. --folder names the project (the current folder otherwise), --unset removes the
 project's value, and --json prints { url, branch, worktree, setting, from, to }.
-The review gate (${REVIEW_GATE_KEYS.join(", ")}) is what the merge guard judges with: its
+The review gate (${REVIEW_GATE_KEYS.join(", ")}) is what merge-check judges with: its
 project part is read from ${CONFIG_PATH} as committed on the base (origin/<base>), and
-show prints it on its gate lines, with the fixesAfterReview limits in force. Inside Claude
-Code, set, unset and propose of those refuse: run them in your own terminal (propose, and the
-pull request's review, are the gate).
+show prints it on its gate lines, with the fixesAfterReview limits in force. set, unset and
+propose of those work inside Claude Code like any other setting.
 ${OUTBOUND_KEYS.join(" and ")} let text leave this machine for GitHub (${COMMAND} issue file), and
 ${INBOUND_KEYS.join(" and ")} decides which issues are ready: set and unset refuse these inside
 Claude Code too; propose does not, since a person reviews its pull request. So does
@@ -121,14 +136,14 @@ file that sets it is refused. plans.mergeFiles (a comma-separated list; a folder
 the paths every plan touches and each merge settles; it is the project's, needs --project, and
 counts only as committed on origin/<base>.
 review-done records that the change set up to a commit (default: HEAD, or --sha <commit>)
-had its one premium review and its fixes. The merge guard reads it before a merge it
-would make by itself, while reviewBeforePush is on. Inside Claude Code the review-record
+had its one premium review and its fixes. merge-check reads it before a merge that
+allowMerge would make by itself, while reviewBeforePush is on. Inside Claude Code the review-record
 hook writes it, when a review agent (the reviewAgents setting) returns, so review-done
 refuses there: it is for your own terminal.
-merge-check judges a merge without making it, with the merge guard's own judgment: each
+merge-check judges a merge without making it: each
 pull request number, or a local branch against a base (--branch <b> --base <base>). A pull
-request is allowed when the committed policy passes: autoMerge on, its base the project's
-integration base, every required check green, and a review covering its head under
+request is allowed when the committed policy passes: allowMerge on, its base the project's
+integration base or the repository's default branch, every required check green, and a review covering its head under
 fixesAfterReview. A branch is allowed when the review record covers its head. One line per
 verdict; exit 0 when every merge is allowed, 1 when any asks.`;
 
@@ -161,7 +176,7 @@ function project(
 /**
  * The checkout of `cwd` alone, without the project's settings. Recording a review needs the
  * repository, not the project's policy: a `cc-smart-dev-kit.json` that is broken (or too
- * new) must not stop a person from recording one — the record is what the merge guard reads,
+ * new) must not stop a person from recording one — the record is what merge-check reads,
  * and the guards that cannot read the file fail closed until it is fixed.
  */
 function checkoutOf(cwd: string, env: Env): { checkout: Checkout | null; why: string | null } {
@@ -194,7 +209,7 @@ function repoOf(checkout: Checkout): string {
 
 /**
  * The line `show` prints: whether the commit this checkout is on has a recorded review that
- * `agents` (the gate's own list, when it can be read) trusts — the merge guard's answer.
+ * `agents` (the gate's own list, when it can be read) trusts — merge-check's answer.
  */
 function reviewLine(
   paths: CliPaths,
@@ -210,7 +225,7 @@ function reviewLine(
 }
 
 /**
- * The gate's lines: the review gate exactly as the merge guard reads it — the policy committed
+ * The gate's lines: the review gate exactly as merge-check reads it — the policy committed
  * on `origin/<worktrees.base>`, the same read (`resolveGate`) — so `show` never disagrees with
  * the guard, even while this checkout's own file says something else. Nothing for a folder
  * with no project file: there the guard is silent. It ends with the `plans.mergeFiles` line, from the
@@ -227,7 +242,7 @@ function gateLines(
   if (base === undefined) {
     return {
       lines: [
-        "gate: this project names no worktrees.base, so the merge guard reads the policy committed on each pull request's base",
+        "gate: this project names no worktrees.base, so merge-check reads the policy committed on each pull request's base",
       ],
       gate: null,
     };
@@ -236,7 +251,7 @@ function gateLines(
   if (!read.ok) {
     return {
       lines: [
-        `gate: the merge guard cannot read the policy committed on ${base} (${read.why}), so it asks before every merge`,
+        `gate: merge-check cannot read the policy committed on ${base} (${read.why}), so it allows no merge`,
         mergeFilesLine(base, [], read.why),
       ],
       gate: null,
@@ -244,7 +259,7 @@ function gateLines(
   }
   const { gate } = read;
   const lines = [
-    `gate: what the merge guard judges with, from origin/${base}:${CONFIG_PATH} as committed (this checkout's own copy does not count)`,
+    `gate: what merge-check judges with, from origin/${base}:${CONFIG_PATH} as committed (this checkout's own copy does not count)`,
   ];
   for (const key of REVIEW_GATE_KEYS) {
     const value = resolvedValueOf(gate.resolved, key);
@@ -303,7 +318,7 @@ function show(context: WorkflowContext): number {
     print(`${key} = ${showValue(key, value)} (${source})`);
   }
   for (const line of gate.lines) print(line);
-  for (const line of clashLines(clashesOf(resolved, here.config?.worktrees?.base ?? null))) {
+  for (const line of clashLines(clashesOf(resolved))) {
     print(line);
   }
   const agents = (gate.gate?.resolved ?? resolved).reviewAgents.value;
@@ -315,23 +330,10 @@ function show(context: WorkflowContext): number {
 /**
  * True inside a Claude Code session (`CLAUDECODE`, which Claude Code sets for the commands it
  * runs). A courtesy, not a lock: a command can drop the variable (`env -u CLAUDECODE`). It
- * keeps a session from changing the review gate by mistake; the merge guard reading only the
- * committed policy is what keeps a session's own edits out of it.
+ * keeps a session from changing a setting that is the person's alone (the issue and plan keys).
  */
 export function insideClaudeCode(env: Env): boolean {
   return env.CLAUDECODE !== undefined;
-}
-
-/**
- * The refusal of a review-gate key (`REVIEW_GATE_KEYS`) inside a Claude Code session, shared by
- * `set`, `unset` and `propose` so the three refuse in the same words: the gate is the person's.
- */
-function gateKeyRefusal(sub: "propose" | "set" | "unset", key: WorkflowKey): string {
-  const fix =
-    sub === "propose"
-      ? `Run it in your own terminal (\`${COMMAND} workflow propose ${key} <value>\`): the pull request is the gate.`
-      : `Run it in your own terminal; for the project's policy, change ${CONFIG_PATH} there, commit it to the base and push it — the merge guard reads only the committed file.`;
-  return `${COMMAND} workflow ${sub} ${key} cannot run inside a Claude Code session: ${key} is part of the merge guard's review gate, which only you change. ${fix}`;
 }
 
 /**
@@ -458,9 +460,6 @@ function checkWorld(paths: CliPaths, checkout: Checkout, cwd: string, env: Env):
 /** One verdict as a person reads it: what was checked, then allowed, or the reason it asks. */
 function verdictLine(verdict: MergeVerdict, subject: string, env: Env): string {
   if (verdict.kind === "allowed") return `${subject}: allowed — ${verdict.reason}`;
-  if (verdict.kind === "silent") {
-    return `${subject}: no verdict — this project runs its own merge guard (ownHooks in the committed policy), so its answer decides`;
-  }
   if (verdict.kind === "refused") return `${subject}: asks — ${verdict.reason}`;
   if (verdict.kind === "unread") return `${subject}: asks — ${notChecked(verdict.what, env)}`;
   return `${subject}: asks — ${notInTime(verdict.what)}`;
@@ -510,7 +509,7 @@ function mergeCheckArgs(argv: string[]): MergeCheckArgs {
 }
 
 /**
- * `workflow merge-check [<pr>… | --branch <b> --base <base>]`: the merge guard's judgment,
+ * `workflow merge-check [<pr>… | --branch <b> --base <base>]`: merge-check's judgment,
  * printed and not made. Exit 0 when every verdict is allowed, 1 when any asks.
  */
 async function mergeCheck(context: WorkflowContext, argv: string[]): Promise<number> {
@@ -556,7 +555,12 @@ function setOrUnset(context: WorkflowContext, sub: string, argv: string[]): numb
     context.error(`Unknown option: ${unknown.join(" ")}\n\n${WORKFLOW_USAGE}`);
     return 2;
   }
-  if (key === undefined || !WORKFLOW_KEYS.includes(key as WorkflowKey)) {
+  const current = key === undefined ? undefined : currentKeyName(key);
+  if (
+    key === undefined ||
+    current === undefined ||
+    !WORKFLOW_KEYS.includes(current as WorkflowKey)
+  ) {
     context.error(
       key === undefined
         ? `${sub} needs a setting\n\n${WORKFLOW_USAGE}`
@@ -564,13 +568,7 @@ function setOrUnset(context: WorkflowContext, sub: string, argv: string[]): numb
     );
     return 2;
   }
-  const wanted = key as WorkflowKey;
-  // The review gate is the person's to change, never a session's: refused before anything
-  // is parsed or written. The project's part counts only once committed and pushed anyway.
-  if (REVIEW_GATE_KEYS.includes(wanted) && insideClaudeCode(context.env)) {
-    context.error(gateKeyRefusal(sub === "set" ? "set" : "unset", wanted));
-    return 1;
-  }
+  const wanted = current as WorkflowKey;
   if (
     (OUTBOUND_KEYS.includes(wanted) || INBOUND_KEYS.includes(wanted)) &&
     insideClaudeCode(context.env)
@@ -608,15 +606,15 @@ function setOrUnset(context: WorkflowContext, sub: string, argv: string[]): numb
   }
   try {
     const line = projectFlag
-      ? writeProjectSetting(context.cwd, key, value, context.env)
-      : writePersonalSetting(context.paths, key, value);
+      ? writeProjectSetting(context.cwd, wanted, value, context.env)
+      : writePersonalSetting(context.paths, wanted, value);
+    const renamed = renamedLine(key, wanted);
+    if (renamed !== null) context.print(renamed);
     context.print(line);
     // D16: a write that leaves settings that cannot work together says so, with the fix. The
     // policy after the write is read the same way `show` reads it.
     const here = project(context.cwd, context.env);
-    for (const clash of clashLines(
-      clashesOf(resolveWorkflow(context.paths, here.config), here.config?.worktrees?.base ?? null),
-    )) {
+    for (const clash of clashLines(clashesOf(resolveWorkflow(context.paths, here.config)))) {
       context.print(clash);
     }
     return 0;
@@ -628,7 +626,15 @@ function setOrUnset(context: WorkflowContext, sub: string, argv: string[]): numb
 
 /** `propose`'s arguments: one setting, one value or `--unset`, a folder, and JSON. */
 type ProposeArgs =
-  | { folder: null | string; json: boolean; ok: true; setting: WorkflowKey; value: unknown }
+  | {
+      folder: null | string;
+      json: boolean;
+      ok: true;
+      setting: WorkflowKey;
+      /** The name as typed, which may be an old one (`autoPush` for `allowPush`). */
+      typed: string;
+      value: unknown;
+    }
   | { ok: false; why: string };
 
 function proposeArgs(argv: string[]): ProposeArgs {
@@ -659,7 +665,12 @@ function proposeArgs(argv: string[]): ProposeArgs {
     words.push(arg);
   }
   const [key, ...rest] = words;
-  if (key === undefined || !WORKFLOW_KEYS.includes(key as WorkflowKey)) {
+  const current = key === undefined ? undefined : currentKeyName(key);
+  if (
+    key === undefined ||
+    current === undefined ||
+    !WORKFLOW_KEYS.includes(current as WorkflowKey)
+  ) {
     return {
       ok: false,
       why:
@@ -668,11 +679,11 @@ function proposeArgs(argv: string[]): ProposeArgs {
           : `Unknown setting: ${key}. The settings are: ${WORKFLOW_KEYS.join(", ")}`,
     };
   }
-  const wanted = key as WorkflowKey;
+  const wanted = current as WorkflowKey;
   if (unset) {
     return rest.length > 0
       ? { ok: false, why: "propose takes a value, or --unset, not both" }
-      : { folder, json, ok: true, setting: wanted, value: undefined };
+      : { folder, json, ok: true, setting: wanted, typed: key, value: undefined };
   }
   const text = rest[0];
   if (rest.length !== 1 || text === undefined) {
@@ -683,14 +694,13 @@ function proposeArgs(argv: string[]): ProposeArgs {
   }
   const parsed = parseWorkflowValue(wanted, text);
   return parsed.ok
-    ? { folder, json, ok: true, setting: wanted, value: parsed.value }
+    ? { folder, json, ok: true, setting: wanted, typed: key, value: parsed.value }
     : { ok: false, why: parsed.why };
 }
 
 /**
  * `workflow propose <setting> <value> [--unset] [--folder <project>] [--json]`: one of the
- * project's own settings, changed through a pull request (`propose.ts`, D57). Of a review-gate
- * key it refuses inside Claude Code, as `set` does there.
+ * project's own settings, changed through a pull request (`propose.ts`, D57).
  */
 async function propose(context: WorkflowContext, argv: string[]): Promise<number> {
   const parsed = proposeArgs(argv);
@@ -698,10 +708,9 @@ async function propose(context: WorkflowContext, argv: string[]): Promise<number
     context.error(`${parsed.why}\n\n${WORKFLOW_USAGE}`);
     return 2;
   }
-  if (REVIEW_GATE_KEYS.includes(parsed.setting) && insideClaudeCode(context.env)) {
-    context.error(gateKeyRefusal("propose", parsed.setting));
-    return 1;
-  }
+  // `--json` prints one object and nothing else, so the rename line stays out of it.
+  const renamed = parsed.json ? null : renamedLine(parsed.typed, parsed.setting);
+  if (renamed !== null) context.print(renamed);
   return await proposeWorkflow(
     {
       env: context.env,

@@ -10,7 +10,7 @@ import { hookEnv, makeClone, makeRepo, writeClaudeFile } from "../testing/hooks"
 import { git } from "../testing/temp";
 import { hold, updateFiles } from "../update/state";
 import { describeIssues } from "../zod-issues";
-import { autoMergeAllowed } from "./auto-merge";
+import { autoMergeAllowed, autoMergeRefusal } from "./auto-merge";
 import {
   jobRouteFrom,
   leadHintFrom,
@@ -113,11 +113,11 @@ describe("the workflow schema", () => {
 
 describe("one value, as a person types it", () => {
   test("a boolean is true or false, and nothing else", () => {
-    expect(parseWorkflowValue("autoMerge", "true")).toEqual({ ok: true, value: true });
-    expect(parseWorkflowValue("autoMerge", "false")).toEqual({ ok: true, value: false });
-    expect(parseWorkflowValue("autoMerge", "yes")).toEqual({
+    expect(parseWorkflowValue("allowMerge", "true")).toEqual({ ok: true, value: true });
+    expect(parseWorkflowValue("allowMerge", "false")).toEqual({ ok: true, value: false });
+    expect(parseWorkflowValue("allowMerge", "yes")).toEqual({
       ok: false,
-      why: "autoMerge is true or false",
+      why: "allowMerge is true or false",
     });
   });
 
@@ -185,7 +185,7 @@ describe("setting one field of an object", () => {
   });
 
   test("a value is read back the way it was written", () => {
-    expect(workflowValue({ autoMerge: true }, "autoMerge")).toBe(true);
+    expect(workflowValue({ allowMerge: true }, "allowMerge")).toBe(true);
     expect(workflowValue({ alerts: { usagePercent: 70 } }, "alerts.usagePercent")).toBe(70);
     expect(workflowValue({}, "alerts.usagePercent")).toBeUndefined();
     expect(workflowValue({ plans: { maxPhases: 12 } }, "plans.maxPhases")).toBe(12);
@@ -196,10 +196,10 @@ describe("resolveWorkflow: the order", () => {
   test("nothing set anywhere: every value is the built-in default, said as such", () => {
     const env = hookEnv();
     const resolved = resolveWorkflow(pathsFor(env), null);
-    expect(resolved.autoCommit).toEqual({ value: false, source: "default" });
-    expect(resolved.autoPush).toEqual({ value: false, source: "default" });
+    expect(resolved.allowCommit).toEqual({ value: false, source: "default" });
+    expect(resolved.allowPush).toEqual({ value: false, source: "default" });
     expect(resolved.openPr).toEqual({ value: "off", source: "default" });
-    expect(resolved.autoMerge).toEqual({ value: false, source: "default" });
+    expect(resolved.allowMerge).toEqual({ value: false, source: "default" });
     expect(resolved.mergeMethod).toEqual({ value: "merge", source: "default" });
     expect(resolved.deleteBranch).toEqual({ value: false, source: "default" });
     expect(resolved.reviewBeforePush).toEqual({ value: true, source: "default" });
@@ -313,9 +313,9 @@ describe("resolveWorkflow: the order", () => {
 
   test("the person's file sets a value, and says so", () => {
     const env = hookEnv();
-    writePersonal(env, { autoCommit: true, alerts: { sound: true, usagePercent: 70 } });
+    writePersonal(env, { allowCommit: true, alerts: { sound: true, usagePercent: 70 } });
     const resolved = resolveWorkflow(pathsFor(env), null);
-    expect(resolved.autoCommit).toEqual({ value: true, source: "personal" });
+    expect(resolved.allowCommit).toEqual({ value: true, source: "personal" });
     expect(resolved.alerts.usagePercent).toEqual({ value: 70, source: "personal" });
   });
 
@@ -341,21 +341,21 @@ describe("resolveWorkflow: the order", () => {
 
   test("the project wins field by field, and only where it says something", () => {
     const env = hookEnv();
-    writePersonal(env, { autoCommit: true, openPr: "ready", alerts: { sound: true } });
+    writePersonal(env, { allowCommit: true, openPr: "ready", alerts: { sound: true } });
     const config = ccSmartDevKitConfigSchema.parse({
       workflow: { openPr: "draft", alerts: { usagePercent: 60 } },
     });
     const resolved = resolveWorkflow(pathsFor(env), config);
-    expect(resolved.autoCommit).toEqual({ value: true, source: "personal" });
+    expect(resolved.allowCommit).toEqual({ value: true, source: "personal" });
     expect(resolved.openPr).toEqual({ value: "draft", source: "project" });
     expect(resolved.alerts.usagePercent).toEqual({ value: 60, source: "project" });
   });
 
   test("a broken personal file throws, naming the file and the field", () => {
     const env = hookEnv();
-    const file = writePersonal(env, { autoCommit: "yes" });
+    const file = writePersonal(env, { allowCommit: "yes" });
     expect(() => resolveWorkflow(pathsFor(env), null)).toThrow(
-      `Invalid ${file}: autoCommit: Invalid input: expected boolean, received string`,
+      `Invalid ${file}: allowCommit: Invalid input: expected boolean, received string`,
     );
   });
 
@@ -507,7 +507,7 @@ describe("switches.jobRoute: the person's default, and the project wins", () => 
     expect([...PERSONAL_FILE_SWITCH_NAMES]).toEqual(["jobRoute", "leadHint"]);
     expect(isPersonalFileSwitch("switches.jobRoute")).toBe(true);
     expect(isPersonalFileSwitch("switches.leadHint")).toBe(true);
-    for (const key of ["switches.sessionNames", "switches.statusLine", "autoCommit"]) {
+    for (const key of ["switches.sessionNames", "switches.statusLine", "allowCommit"]) {
       expect(isPersonalFileSwitch(key)).toBe(false);
     }
   });
@@ -559,8 +559,8 @@ describe("switches.leadHint: the person's own, on by default", () => {
 describe("autoMergeAllowed", () => {
   const env = hookEnv();
   const paths = pathsFor(env);
-  const resolvedWith = (autoMerge: boolean) =>
-    resolveWorkflow(paths, ccSmartDevKitConfigSchema.parse({ workflow: { autoMerge } }));
+  const resolvedWith = (allowMerge: boolean) =>
+    resolveWorkflow(paths, ccSmartDevKitConfigSchema.parse({ workflow: { allowMerge } }));
   const project = (worktrees: Record<string, unknown>) =>
     ccSmartDevKitConfigSchema.parse({ worktrees });
 
@@ -574,31 +574,41 @@ describe("autoMergeAllowed", () => {
     expect(autoMergeAllowed(resolved, project({ base: "dev" }), "dev", "main")).toBe(true);
   });
 
-  test("no worktrees, or no base: no integration base to merge into", () => {
+  test("no worktrees, or no base: only the repository's default branch", () => {
     const resolved = resolvedWith(true);
-    expect(autoMergeAllowed(resolved, null, "dev", "main")).toBe(false);
-    expect(autoMergeAllowed(resolved, ccSmartDevKitConfigSchema.parse({}), "dev", "main")).toBe(
-      false,
+    for (const config of [null, ccSmartDevKitConfigSchema.parse({})]) {
+      expect(autoMergeAllowed(resolved, config, "dev", "main")).toBe(false);
+      expect(autoMergeAllowed(resolved, config, "main", "main")).toBe(true);
+    }
+  });
+
+  test("a pull request into any other branch is never merged by itself", () => {
+    const resolved = resolvedWith(true);
+    const config = project({ base: "dev" });
+    expect(autoMergeAllowed(resolved, config, "release/1.0", "main")).toBe(false);
+    expect(autoMergeRefusal(resolved, config, "release/1.0", "main")).toBe(
+      "the pull request's base is release/1.0, not the project's integration base dev or the repository's default branch main",
     );
   });
 
-  test("a pull request into another branch is never merged by itself", () => {
+  test("on, the repository's default branch is allowed, with or without an integration base (the person's ruling of 2026-11-21)", () => {
     const resolved = resolvedWith(true);
-    const config = project({ base: "dev" });
-    expect(autoMergeAllowed(resolved, config, "main", "main")).toBe(false);
-    expect(autoMergeAllowed(resolved, config, "release/1.0", "main")).toBe(false);
+    expect(autoMergeAllowed(resolved, project({ base: "dev" }), "main", "main")).toBe(true);
+    expect(autoMergeAllowed(resolved, project({ base: "main" }), "main", "main")).toBe(true);
+    expect(autoMergeRefusal(resolved, project({ base: "main" }), "main", "main")).toBeNull();
   });
 
-  test("the repository's default branch always asks the person", () => {
-    const resolved = resolvedWith(true);
-    const config = project({ base: "main" });
-    expect(autoMergeAllowed(resolved, config, "main", "main")).toBe(false);
+  test("off, the default branch is refused with the reason", () => {
+    const resolved = resolvedWith(false);
+    expect(autoMergeRefusal(resolved, project({ base: "dev" }), "main", "main")).toContain(
+      "allowMerge is off",
+    );
   });
 
-  test("a base another family of branches feeds always asks the person", () => {
+  test("a base another family of branches feeds is a plain base too", () => {
     const resolved = resolvedWith(true);
     const config = project({ base: "dev", bases: { "release/": "dev" } });
-    expect(autoMergeAllowed(resolved, config, "dev", "main")).toBe(false);
+    expect(autoMergeAllowed(resolved, config, "dev", "main")).toBe(true);
   });
 
   test("the integration base may itself be protected: it is the one branch this writes to", () => {

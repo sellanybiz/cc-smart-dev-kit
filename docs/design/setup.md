@@ -122,8 +122,7 @@ Claude Code resolves a relative folder against the session's own project root (p
 2.1.326, `claude-code-contract.md` § Worktrees): a session started in the main checkout writes
 its plan in the main checkout's `.claude/plans/`, and one started in a linked worktree writes it
 in that worktree's. So a plan approved in plan mode from the main checkout of a project that
-guards its main folder lands there, and the `plan-task` skill copies it into the worktree
-(`main-folder-guard` lets that one write through, `docs/design/hooks.md`). A home-root project
+keeps its main folder for the person lands there, and the `plan-task` skill copies it into the worktree and removes the original. A home-root project
 or a Windows path with a backslash may fall back to the config folder's `plans` directory, and
 is [still to prove](../claude-code-contract.md#relied-on-not-proved-yet).
 

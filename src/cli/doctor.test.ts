@@ -13,6 +13,7 @@ import {
   checkPlugin,
   checkPortal,
   checkReviewAgent,
+  checkWorkflowNames,
   claudeMemChecks,
   countChecks,
   doctorReport,
@@ -62,7 +63,46 @@ describe("doctor: personal review agent migration", () => {
     expect(result).not.toBeNull();
     if (result === null) throw new Error("missing migration check");
     expect(checkLine(result)).toBe(
-      "✗ ~/.config/cc-smart-dev-kit/workflow.json names the retired cc-smart-dev-kit:reviewer in reviewAgents Fix: replace the old id cc-smart-dev-kit:reviewer with the new one cc-smart-dev-kit:senior-engineer: in your own terminal, not inside Claude Code (it refuses the gate's keys there), run cc-smart-dev-kit workflow set reviewAgents cc-smart-dev-kit:senior-engineer, or cc-smart-dev-kit workflow unset reviewAgents to use the default; personal changes count at once",
+      "✗ ~/.config/cc-smart-dev-kit/workflow.json names the retired cc-smart-dev-kit:reviewer in reviewAgents Fix: replace the old id cc-smart-dev-kit:reviewer with the new one cc-smart-dev-kit:senior-engineer: run cc-smart-dev-kit workflow set reviewAgents cc-smart-dev-kit:senior-engineer, or cc-smart-dev-kit workflow unset reviewAgents to use the default; personal changes count at once",
+    );
+  });
+});
+
+describe("doctor: the old workflow setting names", () => {
+  function personalFile(content: unknown) {
+    const paths = cliPaths(hookEnv());
+    mkdirSync(dirname(paths.workflowConfigFile), { recursive: true });
+    writeFileSync(paths.workflowConfigFile, JSON.stringify(content));
+    return paths;
+  }
+
+  test("a file with only the new names, or no file, says nothing", () => {
+    expect(checkWorkflowNames(cliPaths(hookEnv()))).toBeNull();
+    expect(checkWorkflowNames(personalFile({ allowPush: true, openPr: "off" }))).toBeNull();
+  });
+
+  test("an old name is a warning with the rename, never a failure", () => {
+    const result = checkWorkflowNames(personalFile({ autoPush: true }));
+    if (result === null) throw new Error("missing rename line");
+    expect(result.ok).toBe(true);
+    expect(checkLine(result)).toBe(
+      "! ~/.config/cc-smart-dev-kit/workflow.json uses the old setting name autoPush (now allowPush) Fix: run cc-smart-dev-kit workflow set allowPush true; the old name keeps working until then",
+    );
+  });
+
+  test("both names in one file: the new one wins, and the fix says to remove the old one", () => {
+    const result = checkWorkflowNames(personalFile({ autoPush: true, allowPush: false }));
+    if (result === null) throw new Error("missing rename line");
+    expect(checkLine(result)).toBe(
+      "! ~/.config/cc-smart-dev-kit/workflow.json uses the old setting name autoPush (now allowPush) Fix: remove autoPush from this file: allowPush is set there and wins",
+    );
+  });
+
+  test("two old names are both named", () => {
+    const result = checkWorkflowNames(personalFile({ autoCommit: false, autoMerge: true }));
+    if (result === null) throw new Error("missing rename line");
+    expect(checkLine(result)).toBe(
+      "! ~/.config/cc-smart-dev-kit/workflow.json uses the old setting names autoCommit (now allowCommit), autoMerge (now allowMerge) Fix: run cc-smart-dev-kit workflow set allowCommit false; run cc-smart-dev-kit workflow set allowMerge true; the old names keep working until then",
     );
   });
 });

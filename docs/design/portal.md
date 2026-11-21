@@ -4,7 +4,7 @@ The Needs you page and `/api/needs` are removed, with no redirect or replacement
 The network door still runs first. Unsupported HTML routes are rejected before reading
 exported HTML, so a stale `needs/index.html` cannot restore the page. Unknown API GETs
 return 404; GETs for registered POST-only actions keep their 405 response. Work/Flow waits,
-guard asks, user-away parking, doctor and held-update controls remain.
+guard asks (old records stay readable; the retired guards write no new ones), user-away items, doctor and held-update controls remain.
 
 
 `cc-smart-dev-kit portal` (`src/portal/`) starts a page on this machine, on `127.0.0.1` only,
@@ -43,14 +43,14 @@ whether the project files are set and committed on the branch it is on (`git sta
 --porcelain` on the two files; the merge gate itself reads them from `origin/<base>`), and
 whether the portal's own folder is in it. `/api/projects/<id>` adds the project-init card for
 that root and the open pull requests (`gh pr list`), each judged by `checkPullRequest` — the
-merge guard's own code — under **one deadline per page** (`PROJECT_BRANCHES_DEADLINE_MS`; past
+`merge-check`'s own code — under **one deadline per page** (`PROJECT_BRANCHES_DEADLINE_MS`; past
 it a verdict is `late`, never a guess) and kept for `PROJECT_BRANCHES_CACHE_MS` (a read the
 deadline cut short is not kept). The verdicts run `PROJECT_VERDICTS_AT_ONCE` at a time and
 share one default-branch read. The list itself is kept for `PROJECTS_LIST_CACHE_MS`, shared by
 looks at once, dropped by an add or a write, and its scan runs at most `PROJECT_GIT_AT_ONCE`
 git children together. Every git and `gh` child on these paths is awaited (`Bun.spawn`):
-merge-check takes an injectable async `GhRunner` (default `spawnGh`), and the merge guard and
-`workflow merge-check` await it with their time budget unchanged, so a verdict never freezes the
+merge-check takes an injectable async `GhRunner` (default `spawnGh`), and
+`workflow merge-check` awaits it with their time budget unchanged, so a verdict never freezes the
 pages or the live stream. `project.preview` and `project.write` take an optional `project` id,
 looked up in that list (an unknown id writes nothing; no path ever comes from the request), and
 `project.add {folder}` adds a git folder's main checkout to the list — so a write reaches only a
@@ -105,9 +105,9 @@ not a network read.
 - **There is no sign-in (D9).** The portal starts with Claude Code and stays up; a page load
   from this machine is served, so any program and any user account on this machine — a Claude
   session using `curl` included — can read and change what it shows. The owner chose that
-  trade-off against pairing the browser once. What replaces the refusal: the door below, and
-  the session-escape guard, which asks the person before a session's shell command reaches the
-  portal's port.
+  trade-off against pairing the browser once. What replaces the refusal: the door below. Since 6.0.0 no hook asks before a session's shell
+  command reaches the portal's port (the `session-escape-guard` is retired); Claude Code's own
+  permission mode is the stop left.
 
 ### How it starts (D10)
 
@@ -250,7 +250,7 @@ the live stream, a console line, a page or a file under the home.
 **It stays up until it is stopped** (D10): no idle clock, so it is there whenever the person
 opens it. `cc-smart-dev-kit portal stop` ends it, and a plugin update replaces it at the next
 session start. The trade-off is D9's: the page is open to every program and account on this
-machine, which is why the door above and the session-escape guard matter.
+machine, which is why the door above matters.
 
 **A page's own reload is not a request of the person's.** The Health page asks for itself
 every five seconds; the page's script stops reloading while the tab is hidden
@@ -359,7 +359,7 @@ policy settings and the project's two switches), each with its value and where t
 from, the base a change would go into (`worktrees.base`) and whether `gh` can open a pull
 request now (`ghLoginState`, one cached answer a minute, as the branch verdicts are). **The
 values are the base's**, read with `resolveGateAsync` over the file committed on
-`origin/<base>` — the same read the merge guard judges with, and the one `workflow propose`
+`origin/<base>` — the same read `merge-check` judges with, and the one `workflow propose`
 compares against — then through `resolvedValueOf`, the map `workflow show` prints from. An
 uncommitted edit in the person's checkout, or another branch's file, is never shown as the
 project's policy; the ref is as fresh as the last fetch, so after a merge on GitHub the card

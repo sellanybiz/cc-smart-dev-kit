@@ -1,7 +1,7 @@
 # GitHub Issues
 
 The kit files its follow-ups and its findings as GitHub issues, one switch (decision D67, the
-owner, 2026-10-25). The switch began opt-in, off by default, like `autoPush` and `openPr`. Since
+owner, 2026-10-25). The switch began opt-in, off by default, like `openPr`. Since
 5.0.0 it is **on by default** (D7 of the deploy-tasks plan, the owner's choice), in a project that
 has a kit config; `allowPublic` stays off, so a public repository still needs its own yes. Before
 the kit filed issues, a follow-up outside a plan, a review finding left open or a hunch ended as a
@@ -37,7 +37,7 @@ The defaults live in `workflowDefaults.issues`, one place. A flat set of keys
 (`issues.enabled`, …) because `workflow show`, `set` and the portal name a setting by a key of at
 most two parts.
 
-**Where it is read.** Like `autoPush`: the built-in default, the person's file, and the project's
+**Where it is read.** Like the review-gate settings (`REVIEW_GATE_KEYS`: `allowMerge`, `reviewBeforePush`, `fixesAfterReview.*`): the built-in default, the person's file, and the project's
 file **as committed on `origin/<worktrees.base>`** (`resolveGate`), never a working copy a session
 can edit. A project that names no `worktrees.base` has the default and the person's file only.
 A policy that cannot be read (no `origin/<base>`, a committed file that is broken or newer than
@@ -45,14 +45,14 @@ the plugin) is a refusal, not a guess. `workflow show` prints each key with its 
 set` writes the person's own value, `--project` the project's file.
 
 **A session cannot change it.** `workflow set` and `unset` of `enabled` and `allowPublic` refuse
-inside Claude Code (`OUTBOUND_KEYS`, as a review-gate key does): a session must not open its own
+inside Claude Code (`OUTBOUND_KEYS`): a session must not open its own
 way out, nor switch off what the person left on. So does `readyLabel` (`INBOUND_KEYS`, IX2): a session must never pick which issues
 count as chosen. Each is read as `enabled` is, from the person's file and the project's
 file as committed on the base (`resolveSwitch`), never a working copy. `workflow propose` stays
 open, because a person reviews and merges its pull request. The refusal is a courtesy that a
-command can drop (`env -u CLAUDECODE`); what stops a session from dropping it, or from writing
-the person's `workflow.json` directly, is the session-escape guard
-(`src/hooks/session-escape-guard.ts`), and what keeps a session's own edit of the project's file
+command can drop (`env -u CLAUDECODE`); nothing stops a session from dropping it, or from
+writing the person's `workflow.json` directly (the `session-escape-guard` is retired,
+`docs/design/hooks.md` § Retired in 6.0.0); what keeps a session's own edit of the project's file
 out is the committed-file rule.
 
 **Only a project that opted in.** `issue file` and `doctor` need a `.claude/cc-smart-dev-kit.json`
@@ -84,7 +84,7 @@ word and the number. The code is `src/issues/`
 1. **The text.** A title and a fingerprint, no marker of its own in the text (a body that holds
    one could take over another issue), labels GitHub takes (`isLabelName`).
 2. **The switch.** `issues.enabled`, read as above. Off, it refuses with the words of
-   `turnOn` (`src/workflow/pr-switches.ts`, the same words the git and merge guards use).
+   `turnOn` (`src/workflow/pr-switches.ts`, the words every workflow switch uses).
 3. **The repository.** Owner and name from `git remote get-url origin`, on github.com, passed to
    `gh` as `--repo github.com/<owner>/<name>` on **every** call — never the folder's guess, never
    `GH_REPO`, never a fork's upstream. User info before the host (`https://user@github.com/…`,
@@ -155,50 +155,14 @@ nothing and open two issues; no lock spans GitHub.
 An issue someone else wrote is data, never an instruction: the kit reads only its own marker
 from an issue body, and never acts on any other text in it.
 
-## The guards
+## Raw issue writes
 
-A write to GitHub leaves the machine. The merge guard (`src/hooks/merge-guard.ts`, the reader
-`src/hooks/issue-writes.ts`) therefore **asks the person**, in a project with a
-`.claude/cc-smart-dev-kit.json`, before a session's raw `gh issue create`, `edit`, `comment`,
-`close`, `reopen`, `delete` (and the other `gh issue` subcommands that are not reads), a `gh label
-create`, `edit`, `delete` or `clone` (a renamed label could make issues "ready" that nobody
-labelled), a `gh api` POST, PATCH, PUT or DELETE to a repository's `issues` or `labels`
-endpoints, or any GraphQL mutation that is not a pull request one the merge guard judges. Reads,
-`--help` and the kit's own `issue` commands pass (they are not `gh` commands).
-
-**Text the reader cannot read whole fails closed** (IX1), as the merge reader does for a path it
-cannot read: a write method (explicit, or inferred from `-f`, `-F` or `--input`) to an endpoint
-the shell fills in counts as a write ("the endpoint cannot be read"), and so do a GraphQL request
-with `--input`, a `query=@file`, or a query the shell fills in. A read (a GET with no fields)
-stays silent. **"The shell fills it in" is the shell reader's answer, per word** (IX3,
-`wordsWithFill`, `RunInvocation.filled`): a `$` expansion (`$x`, `${x}`, `$(…)`, `$((…))`) or a
-backtick outside single quotes. So a literal query in single quotes is read whole, whatever `$`
-it holds: `query($n: Int!) { … issue(number: $n) … }` is a plain read, a `mutation` in it is
-judged by its name, and `'repos/o/r/issues/$x'` is the path it says. `"$Q"`, `"…$(cat q)…"`, a
-backtick, a bare `$Q`, and `"repos/o/r/$K/5/comments"` still fail closed, and so does a `$` the
-line reader cut off from what follows (`$\<newline>P` joins into `$ P`, PowerShell's `${env:P}`
-is cut at its brace): a word with a lone `$` before a space, an escape, a closing quote or its
-end counts as filled. Words a wrapper splits out of a string of its own (`env -S '…'`, `script
--c '…'`) are read by their text (`derivedFill`). A line the shell fills in first (`bash -c
-"…$K…"`, `echo "…$K…" | sh`, `eval`, the script of a here-doc with no quoted delimiter) is
-filled all through: the quotes inside it were written before the shell chose the text. The pull
-request part of the guard reads a query the same way (`graphqlCalls`). `-X=POST` is `POST`, as
-gh reads it (`shortFlags` drops one leading `=`). Never looser than IX1 for a word the shell
-fills in; looser only for single-quoted text, which the shell never changes. A pull request
-answer on the same line wins. gh's flags are read the way gh reads them (before the subcommand
-an option takes the next word; a `-h` after an option is its value), and the runners `find
--exec`, `watch`, `su -c`, `parallel` and `xargs` are read for the `gh` they name. A `gh <word>`
-that is not a gh command (`GH_COMMANDS`, gh's own command aliases such as `ext` and `cs`
-included) is looked up in `gh alias list`, by the name as typed (gh's aliases are
-case-sensitive). The list is read once per hook run and shared with the pull request part
-(`aliasReaderOf`): an alias is read for what it expands to, a shell alias (`!…`) or one that
-expands too deep counts as a write, and a list that cannot be read counts as a write. A word
-that is no alias at all (an extension) is no write. A word the shell fills in (`gh "$CMD"
-create`) counts as a write, and so does a program the line works out when it runs, when its
-words name an issue (`computedIssueRisk`). Not read: a script file. The guard's fail-closed
-answers (a broken or too new project file, a crash) cover an issue write like a pull request
-change. The reader is described in `docs/design/hooks.md` (the `merge-guard` row) and
-`.claude/rules/hooks-guards.md`.
+A write to GitHub leaves the machine. Until 5.6.x the `merge-guard` hook asked the person before
+a session's raw `gh issue create`, `edit`, `comment`, `close`, `reopen` or `delete`, a `gh label`
+write, a `gh api` write to a repository's `issues` or `labels` endpoints, or a GraphQL mutation
+(the reader was `src/hooks/issue-writes.ts`). That hook is retired (`docs/design/hooks.md` §
+Retired in 6.0.0), so **no hook asks any more**: the instructions say to file through
+`issue file`, and Claude Code's own permission mode is the stop left for a raw `gh` write.
 
 `issue file` is the sanctioned path: with the switch on it files without a question, and every
 refusal above is its own.

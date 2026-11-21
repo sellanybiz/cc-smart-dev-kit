@@ -40,8 +40,7 @@
  * THE MAIN-CHECKOUT NUDGE
  *   A project that guards its main checkout (`worktrees.guardMainFolder`) also gets one line at an
  *   attended start in that checkout: the first change belongs in a worktree (`mainCheckoutNudge`).
- *   It says the same way in as the main-folder guard's refusal (`ENTER_WORKTREE_PHRASE`), before
- *   the session is ever refused.
+ *   It names the way in (`ENTER_WORKTREE_PHRASE`).
  */
 import { closeSync, existsSync, fstatSync, openSync, readSync, statSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
@@ -62,9 +61,12 @@ import {
 } from "./git";
 import { addContext, addContextAndMessage, type HookResult, SILENT, systemMessage } from "./io";
 import { localFiles } from "./local-files";
-import { ENTER_WORKTREE_PHRASE } from "./main-folder-guard";
 import type { Env, HookContext } from "./run";
 import { liveSessions, type SessionRecord } from "./sessions";
+
+/** The way into a worktree, said once. */
+const ENTER_WORKTREE_PHRASE =
+  "`EnterWorktree` with the task's name as its `name` (dashes, not `/`)";
 
 /** How long git must have left a worktree alone before it counts as finished. */
 export const IDLE_MINUTES = 60;

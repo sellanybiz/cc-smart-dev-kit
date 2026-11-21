@@ -2,7 +2,7 @@
  * SubagentStart and SubagentStop: when a review agent finishes on the commit it started on,
  * record the review it was run for.
  *
- * The review record (`src/workflow/reviews.ts`) is what the merge guard reads before a merge
+ * The review record (`src/workflow/reviews.ts`) is what merge-check reads before a merge
  * it would make with no person watching: with `reviewBeforePush` on, the pull request's head
  * commit must be in it (`merge-guard.ts`). A record written by hand is only the writer's
  * word — a session can write one for a commit nobody read — so the record is written by the
@@ -20,7 +20,7 @@
  * (`noteReviewStart`). The stop records the review of that START commit, on that branch
  * (`takeReviewStart`) — always the start, never the commit the folder is on at the stop: a
  * commit made while the reviewer read is a fix it never saw. Such commits count as change
- * after the review, as every later fix does, when the merge guard asks whether the review
+ * after the review, as every later fix does, when merge-check asks whether the review
  * still covers the branch's head (`src/workflow/review-cover.ts`, D17). A stop with no start
  * seen (the plugin was updated mid-review) records nothing and says so — except the stop that
  * a block caused (`stop_hook_active`): the first stop took the start and recorded the review,
@@ -30,7 +30,7 @@
  * the plugin's own reviewer), compared by `recordsReview`: a `plugin:name` exactly, a bare
  * name only for an agent with no plugin prefix — so another plugin's `reviewer` never counts.
  * The list read here is the checkout's own; the record keeps the agent that wrote it, and
- * the merge guard judges that agent again against the list committed on the pull request's
+ * merge-check judges that agent again against the list committed on the pull request's
  * base (`hasReview`), so a list a session edits in its own worktree records nothing it trusts.
  *
  * **Only a run that was a review records** (`isReviewRun`): the agent's brief — the first user
@@ -46,13 +46,13 @@
  * is still a review), are no prompt (`runPrompts`). So a consult, a review agent
  * resumed for a question, a missing, unreadable or oversized transcript, a review that
  * compacted, and a review that a Stop hook sent back to work all record nothing: the safe
- * side, where the merge guard asks.
+ * side, where merge-check asks.
  * Start tracking still happens at SubagentStart; the stop consumes that start even for a run
  * that records nothing.
  *
  * It records the commit the session's working folder (`cwd`) is on, in the repository's
  * record — one file per repository, the same one every worktree of it shares (`reviews.ts`),
- * and the same one the merge guard reads.
+ * and the same one merge-check reads.
  *
  * What it never records, on purpose: an agent that is not on the list; a run whose `cwd` is
  * inside a subagent's own worktree (`.claude/worktrees/agent-<hex>`, the engine's shape: its
@@ -157,7 +157,7 @@ export async function reviewRecord(context: HookContext): Promise<HookResult> {
   try {
     resolved = resolveWorkflow(paths, config);
   } catch (error) {
-    // Which agents record a review is unknown, so nothing is recorded (the merge guard asks)
+    // Which agents record a review is unknown, so nothing is recorded (merge-check asks)
     // and the person hears why: it is their own workflow file that is broken.
     const why = error instanceof Error ? error.message : String(error);
     return said(`the workflow settings cannot be read (${why})`);
@@ -196,7 +196,7 @@ export async function reviewRecord(context: HookContext): Promise<HookResult> {
       );
     }
     // The commit the reviewer started on is the one it read: commits made since are change
-    // after the review, which the merge guard measures (D17).
+    // after the review, which merge-check measures (D17).
     await recordReview(
       reviewsFile(paths.stateDir, repository),
       start.head,

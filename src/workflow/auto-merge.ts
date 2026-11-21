@@ -1,49 +1,50 @@
 /**
  * May cc-smart-dev-kit merge a pull request by itself?
  *
- * The one place it may write to is the project's **integration base**, `worktrees.base`: the
- * branch every session's work comes together on. And even there it asks the person when that
- * base is not a plain one:
+ * With `allowMerge` on (and the checks green and the review recorded, which `merge-check.ts`
+ * reads), a pull request may be merged into two bases and no other:
  *
- * - the repository's **default branch** (`main`): merging there is a release, which is the
- *   person's decision, never a hook's;
- * - a **target of `worktrees.bases`** (`{"release/": "dev"}` makes `dev` such a target):
- *   another family of branches feeds it, so it is not a plain integration base either.
+ * - the project's **integration base**, `worktrees.base`: the branch every session's work
+ *   comes together on;
+ * - the repository's **default branch** (`main`): the person's ruling (2026-11-21) is that
+ *   `allowMerge` on means a merge into `main` too, with no question.
  *
- * The integration base may itself be listed in `protectedBranches`: it is the one branch
- * this may write to, and a protection there is about pushing by hand (the git guard still
- * asks about that). Any other protected branch is never a target here — the pull request's
- * base must BE the integration base — so those keep asking the person, as they should.
+ * A project that names no integration base may merge into the default branch alone. A pull
+ * request into any other branch (a release branch, a protected one) is not covered: that merge
+ * stays the person's own. The old rule that a target of `worktrees.bases` is no plain base is
+ * gone with the guard it fed: a merge into the PR's base is the merge `allowMerge` asked for.
  *
- * Who calls this: the merge guard hook (`src/hooks/merge-guard.ts`) decides a merge with the
- * two functions here, after the checks that are not branch policy — CI green, the review
- * done — and after `resolved.autoMerge` is on. Nothing here runs a command; it is a decision,
- * so it is a pure function with its own tests.
+ * Who calls this: `workflow merge-check` and the portal's branch verdicts, after the checks that
+ * are not branch policy (CI green, the review done) and after `resolved.allowMerge` is on.
+ * Nothing here runs a command; it is a decision, so it is a pure function with its own tests.
  */
 
-import type { CcSmartDevKitConfig } from "../project/config";
+import { COMMAND } from "../build-info/names";
+import { type CcSmartDevKitConfig, WORKFLOW_ALLOW_KEYS_SINCE } from "../project/config";
+import { requiresFor } from "../project/init";
 import { CONFIG_PATH } from "../project/resolve";
 import { type ResolvedWorkflow, sourceLabel } from "./resolve";
 
 /**
- * The first condition on its own: the policy is off. The merge guard asks with this before
+ * The first condition on its own: the policy is off. `merge-check` asks with this before
  * it reads anything with `gh`, so a machine without `gh` still hears the real reason.
  *
  * `base` is the branch whose committed file the value was read from (`resolveGate`), or null
- * when none was. The way to turn it on is the way the guard reads it: in the project's file,
- * committed to that branch and pushed — never a `workflow set` a session cannot run, nor a
- * change in a checkout the guard does not read.
+ * when none was. The project's value is the one committed on that branch and pushed, so the
+ * message names the file to change.
  */
 export function autoMergeOff(resolved: ResolvedWorkflow, base: string | null): string | null {
-  if (resolved.autoMerge.value) return null;
+  if (resolved.allowMerge.value) return null;
   const where = base ?? "the integration base (worktrees.base)";
-  return `autoMerge is off (${sourceLabel(resolved.autoMerge, base)}): turn it on in ${CONFIG_PATH} ("workflow": {"autoMerge": true}), commit it to ${where} and push`;
+  // A hand-written `allowMerge` needs `requires` at the release that knows it; `workflow set
+  // --project` raises it, so the command is the first way named.
+  return `allowMerge is off (${sourceLabel(resolved.allowMerge, base)}): turn it on with \`${COMMAND} workflow set allowMerge true --project\`, or write ("workflow": {"allowMerge": true}) in ${CONFIG_PATH} together with "requires": "${requiresFor(WORKFLOW_ALLOW_KEYS_SINCE)}"; commit it to ${where} and push`;
 }
 
 /**
- * The reason cc-smart-dev-kit may not merge this pull request by itself, in the words the
- * person reads when the merge guard asks them; null when it may. This is the one home of
- * those conditions: `autoMergeAllowed` is `autoMergeRefusal(…) === null`.
+ * The reason cc-smart-dev-kit may not merge this pull request by itself, in words for the person
+ * or the session; null when it may. This is the one home of those conditions:
+ * `autoMergeAllowed` is `autoMergeRefusal(…) === null`.
  *
  * `defaultBranch` is the repository's own default branch, as the caller read it.
  */
@@ -53,30 +54,19 @@ export function autoMergeRefusal(
   prBase: string,
   defaultBranch: string,
 ): string | null {
-  // The guard reads the policy committed on the pull request's own base (`resolveGate`).
+  // The policy is the one committed on the pull request's own base (`resolveGate`).
   const off = autoMergeOff(resolved, prBase);
   if (off !== null) return off;
   const integration = projectConfig?.worktrees?.base;
-  if (integration === undefined) {
-    return "this project names no integration base (worktrees.base in .claude/cc-smart-dev-kit.json), so there is no branch cc-smart-dev-kit may merge into by itself";
-  }
-  if (prBase !== integration) {
-    return `the pull request's base is ${prBase}, not the project's integration base ${integration}`;
-  }
-  if (integration === defaultBranch) {
-    return `${integration} is the repository's default branch: merging there is a release, and that is your decision`;
-  }
-  const targets = Object.values(projectConfig?.worktrees?.bases ?? {});
-  if (targets.includes(integration)) {
-    return `${integration} is the target of another branch family (worktrees.bases), so it is not a plain integration base`;
-  }
-  return null;
+  if (prBase === defaultBranch || prBase === integration) return null;
+  return integration === undefined
+    ? `the pull request's base is ${prBase}, not the repository's default branch ${defaultBranch}`
+    : `the pull request's base is ${prBase}, not the project's integration base ${integration} or the repository's default branch ${defaultBranch}`;
 }
 
 /**
- * True when cc-smart-dev-kit may merge a pull request whose base is `prBase` into the
- * project's integration base by itself. `defaultBranch` is the repository's own default
- * branch (`origin/HEAD`), as the caller read it. False whenever anything is not plain.
+ * True when cc-smart-dev-kit may merge a pull request whose base is `prBase` by itself.
+ * `defaultBranch` is the repository's own default branch (`origin/HEAD`), as the caller read it.
  */
 export function autoMergeAllowed(
   resolved: ResolvedWorkflow,

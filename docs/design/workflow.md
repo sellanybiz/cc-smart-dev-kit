@@ -27,6 +27,18 @@ file and the field: the person must hear it. A field with a wrong kind can never
 alone rather than half-written. A `crew` group, from a file written before 2.0, is accepted and
 ignored: it still loads, and nothing reads it.
 
+**The names of the three yes-or-no settings (6.1.0, `WORKFLOW_KEY_ALIASES` in `schema.ts`).** They
+are `allowCommit`, `allowPush` and `allowMerge`: each says whether the session may do that step
+without asking. Until 6.1.0 they were `autoCommit`, `autoPush` and `autoMerge`, and the old names
+still work. One alias table maps an old key to its new key before the schema parses, in both
+files; a file that holds both names uses the new one. A value set under an old name counts as set,
+not as a default (`sourceOf`). `workflow set|unset|propose` accept either name and write the new
+one, with one line saying so. A project file that names a new key needs `requires` 6.1.0 or newer
+(`WORKFLOW_ALLOW_KEYS_SINCE`; a write that sets one raises it, a file with none of them keeps its
+floor), so an older plugin is told to update and is never handed a key it would refuse. `doctor` prints one line for a file that still uses an old name, with the rename to
+do; it is never a failure. An alias never rewrites a file by itself. `openPr` keeps its name: it
+is a choice of three, not a yes.
+
 **A write keeps the file's own layout (JW1).** `workflow set|unset` and `project init` never
 write the whole object again with `JSON.stringify`: that laid every line out anew, and a
 project that format-checks its `.claude/` JSON (Biome, Prettier) then failed on `["main"]`
@@ -109,118 +121,81 @@ base. A project that sets it needs `requires` `>=5.2` (`WORKFLOW_MERGE_FILES_SIN
 `plans` object alone still needs `>=4.8`.
 
 **The auto-merge rule** (`auto-merge.ts`, `autoMergeAllowed`) is a pure function with its own
-tests, because it decides whether a command may run without a person:
+tests, because it decides whether the session may merge by itself:
 
 ```
 autoMergeAllowed(resolved, projectConfig, prBase, defaultBranch)
 ```
 
-True only when `autoMerge` is on **and** the project names an integration base
-(`worktrees.base`) **and** the pull request's base is exactly that base **and** that base is
-not the repository's default branch (a merge there is a release, never a hook's decision)
-**and** it is not a target of `worktrees.bases` (then another family of branches feeds it,
-so it is not a plain integration base). The integration base may itself be in
-`protectedBranches`: it is the one branch this may write to, and the git guard still asks
-about a push of it by hand. Every other protected branch is never a target, because the
-pull request's base must be the integration base — so those keep asking the person, which is
-the whole point of protecting them. CI green and the review done are the caller's checks
-(the merge guard hook), not this one's: this function answers about branches only.
-`autoMergeRefusal` is the same rule in words — the reason the merge guard asks — and
+True when `allowMerge` is on and the pull request's base is the project's integration base
+(`worktrees.base`) or the repository's default branch, the main branch included (the owner,
+2026-11-21: "autoMerge on" merges with no question); a pull request into another branch, such as a
+release branch, is the person's own merge. A direct push to the
+main branch, not through a pull request, stays the person's. CI green and the review done are the
+caller's checks (`merge-check.ts`, and the session's own instruction), not this one's: this
+function answers about branches only. `autoMergeRefusal` is the same rule in words — the
+reason a merge is not allowed — and
 `autoMergeAllowed` is `autoMergeRefusal(…) === null`, so the five conditions live in one
 place (`auto-merge.ts`).
 
-**Who follows a setting: a hook where a hook can, the instructions where only the session can.**
+**Who follows a setting: the instructions, and a hook only where a hook records.** Since 6.0.0 no hook stands in front of a push, a pull request or a merge (`docs/design/hooks.md` § Retired in 6.0.0): the session reads `workflow show` and does what it says.
 
 | Setting | Followed by |
 |---|---|
-| `autoCommit`, `clearWorktreeAfterMerge` | the skills (`commit`, `worktree`): `autoCommit` is off by default, `clearWorktreeAfterMerge` on (the session removes its own finished worktree, `docs/design/sessions.md` § Locks, owners and who may remove what); each reads `cc-smart-dev-kit workflow show` and follows it. Nothing else can: a commit and a folder are the session's own doing, and no hook sees them as one act. |
-| `autoPush` | the **git guard hook** (`src/hooks/git-guard.ts`), PreToolUse on Bash and PowerShell: while it is off (the default) the guard asks before every `git push` (D15), reading the value as committed on the base (`resolveGate`). |
-| `openPr` | the **merge guard hook** (`src/hooks/merge-guard.ts`): `off` asks before `gh pr create` and `gh pr ready`, `draft` asks for a pull request that does not open as a draft and for every `gh pr ready`, `ready` asks for neither (D16); read as committed on the base. |
-| `autoMerge` | the **merge guard hook** (`src/hooks/merge-guard.ts`), PreToolUse on Bash and PowerShell — the one step a hook can stand in front of. `mergeMethod` and `deleteBranch` stay instructions: they say how a merge the guard allowed is made. |
-| `reviewBeforePush` | both: the **review-record hook** writes the record when a review agent finishes (§ The review record), and the merge guard reads it. |
-| `reviewAgents` | both: the **review-record hook** records only an agent listed there, and the **merge guard** trusts a record only when the list committed on the pull request's base names the agent that wrote it. A project that runs its own reviewer names it (the plugin's `cc-smart-dev-kit:senior-engineer` by default). |
+| `allowCommit`, `clearWorktreeAfterMerge` | the skills (`commit`, `worktree`): `allowCommit` is off by default, `clearWorktreeAfterMerge` on (the session removes its own finished worktree, `docs/design/sessions.md` § Locks, owners and who may remove what); each reads `cc-smart-dev-kit workflow show` and follows it. Nothing else can: a commit and a folder are the session's own doing, and no hook sees them as one act. |
+| `allowPush` | the skills (`commit`): on, the session pushes its own branch once the change set is complete; off, only when the person asks. Never straight to the base or main branch. |
+| `openPr` | the skills (`commit`, `pull-request`): `off` opens a pull request only when the person asks, `draft` opens it as a draft, `ready` opens it ready for review. |
+| `allowMerge` | the skills (`commit`): on, the session merges its own pull request into its base, the main branch included, once CI is green (it waits in the background with `gh pr checks <pr> --watch`, then a plain `gh pr merge`, never `--auto`), the review of its head commit is recorded and the fixes after it are within `fixesAfterReview` (when they are over, it says so in the pull request); off, it leaves the merge to the person. `mergeMethod` and `deleteBranch` say how. |
+| `reviewBeforePush` | both: the **review-record hook** writes the record when a review agent finishes (§ The review record), and the session reads it before it merges. |
+| `reviewAgents` | the **review-record hook** records only an agent listed there. A project that runs its own reviewer names it (the plugin's `cc-smart-dev-kit:senior-engineer` by default). |
 | `alerts.events`, `alerts.sound` | Retired load-only keys: ignored, omitted by `workflow show`, and refused by `workflow set`. Existing values survive unrelated writes. |
 | `alerts.usagePercent` | the status line (`src/cli/statusline.ts`), whose warning share it is. |
 | `plans.maxPhases` | the kit's task store (`docs/design/tasks.md`): the most phases one plan may hold, a whole number 1-50, default 10. Like every number setting it has one rule (`NUMBER_RULES` in `schema.ts`) that the file check and `workflow set` share, and a file that holds another value is refused with the field named. The project's file wins over the person's, and the cap is read from the checkout's working copy, not the committed file. The task tools hold a session to it, so `workflow set` and `unset` of it refuse inside Claude Code (`PLAN_KEYS` in `schema.ts`): only the person raises it, and the cap refusal says to ask them. `propose` stays open, since a person reviews its pull request. A project that sets it needs `requires` `>=4.8` (`WORKFLOW_PLANS_SINCE`). |
 | `plans.runMode`, `plans.mergeFiles` | the plan tools and herdr's plan hand-outs, and the skills that ask for the mode: see the two paragraphs above, and `docs/design/herdr.md` § Handing out plans. Both are in `PLAN_KEYS` and refuse `set`/`unset` inside Claude Code. |
-| `fixesAfterReview.*` | `readCover` (`src/workflow/review-cover.ts`, § The review record): the limits a change after a review may reach and still be covered. Resolved, shown by `workflow show` with their source (and as one `in force` line), and written by `workflow set`; the merge guard judges with them, through `merge-check.ts`. |
+| `fixesAfterReview.*` | `readCover` (`src/workflow/review-cover.ts`, § The review record): the limits a change after a review may reach and still be covered. Resolved, shown by `workflow show` with their source (and as one `in force` line), and written by `workflow set`; `merge-check.ts` judges with them. |
 
-**The merge guard** asks the person before a merge its rules do not allow, and lets one through
-with no question only when **all** of these hold: `autoMerge` is on (`autoMergeOff` is the first
-check, before any `gh` call, so a machine without `gh` hears the real reason); `autoMergeAllowed`
-says yes for the pull request's base; the merge names **this project's own repository**
-(`--repo`/`-R` is compared, owner/name case-insensitively, against the `origin` remote read with
-git — the policy is about the repository the work is in, so another one always asks); every
-required check `gh pr checks --required --json name,bucket` reports is green (a `skipping` check
-counts as passed, which is GitHub's own rule for a merge); and — with `reviewBeforePush` on —
-the head from `gh pr view` is covered by a review (D17, § The review record).
-
-**The judgment is one home**, `src/workflow/merge-check.ts`: `checkPullRequest` reads those
-facts and decides, `checkBranch` does the same for a local branch against a base (the review gate
-only: a local merge has no pull request's checks or `autoMerge`), and
+**The merge is the session's own step.** It merges its pull request itself, with `gh pr merge`,
+only when **all** of these hold: `allowMerge` is on; the merge names **this project's own repository**; every required check
+`gh pr checks --required` reports is green (a `skipping` check counts as passed, which is
+GitHub's own rule for a merge); and — with `reviewBeforePush` on — the head is covered by a
+review (D17, § The review record). **The judgment is one home**, `src/workflow/merge-check.ts`:
+`checkPullRequest` reads those facts and decides, `checkBranch` does the same for a local
+branch against a base (the review gate only), and
 `cc-smart-dev-kit workflow merge-check [<pr>… | --branch <b> --base <base>]` prints each verdict
-(`allowed`, or the reason it asks; exit 0 when every one is allowed, 1 when any asks) — the
-guard's own words, without making a merge. The hook keeps the rules about the command line: what
-is a merge, `--admin`, and another repository; it reads `ownHooks` from the integration base
-before any gh call, so a project that runs its own merge guard answers alone.
-
-**D31: the exact merge is answered `allow`.** Auto mode's built-in "Merge Without Review" rule
-blocks every merge no person approved; a hook's `allow` skips the classifier for that call
-(proved live, L1a.5). So `merge-guard` answers `allow`, with a short reason, only when the WHOLE
-line is exactly `gh pr merge <n>` with flags gh 2.102.0 has (`exactMergeOf` in `after-merge.ts`:
-one reading, one command, no wrapper or assignment before gh, no pipe, no writing redirection, no
-alias, a number rather than a branch or URL) and the whole policy above passed. Any other
-passing form — `timeout 60 gh pr merge 7`, `gh pr merge 5 && gh pr merge 6`, an alias, an
-unknown flag, an armed `--auto` merge (it lands later, so a commit pushed after the check would
-merge unread) — stays silent, so auto mode's own rule still applies to it; an unknown
-`gh pr merge` flag asks.
-
-**It also governs opening a pull request** (D16, `openPr`): it reads `gh pr create`, `gh pr
-new` and `gh pr ready` — a `-R`, a `gh alias`, a `gh api` POST to the repository's pulls
-endpoint, the GraphQL `createPullRequest` and `markPullRequestReadyForReview` — and the
-committed `openPr` decides: `off` asks before any of them, `draft` lets a create that opens
-as a draft through (`--draft`, `-d`, `-fd`, `--draft=true`) and asks for one that opens
-ready and for every `gh pr ready`, `ready` asks for neither. `gh pr ready --undo` opens
-nothing. The value is read with `resolveGate` like the merge's, from the base this checkout
-names (`worktrees.base`); a policy it cannot read asks.
-
-**An opening outside the base its head branch belongs to asks** (WA1): `gh pr create`'s
-`--base` (`-B`) is compared with the base `worktrees.base` or the `worktrees.bases` prefix
-mapping gives that branch (`baseForBranch` in `src/project/config.ts`, the longest prefix),
-and with no `--base` the pull request opens into the repository's default branch — read with
-`gh repo view`, then git's `origin/HEAD` — so that asks too when it is not the base. The
-question names both branches, and it never denies: the person may mean it. A `gh pr ready`
-and a `gh api` opening, which names its base in its own fields, are not part of this check.
+(`allowed`, or the reason it is not; exit 0 when every one is allowed, 1 when any is not).
+No hook runs it any more: it is a command the session runs, and the skill says to. The
+`merge-guard` hook that called it before every `gh pr merge` is retired (§ Retired in 6.0.0 in
+`docs/design/hooks.md`). Opening a pull request follows `openPr` the same way, as an
+instruction.
 
 **The settings that cannot work together are named where they are shown** (D16): one pure
 function, `workflowClashes` in `src/workflow/clashes.ts`, called by `workflow show`,
 `workflow set` (after the write), `project init` (in its plan, before anything is written)
 and the portal's Settings page (a `!` line under the row). The pairs: `openPr` on with
-`autoPush` off (the pull request waits for a push a person must approve every time),
-`autoMerge` on with no `worktrees.base` (there is no branch it may merge into by itself),
-and `autoMerge` on with `openPr: draft` (a draft is never merged). Each line says the fix.
+`allowPush` off (a session does not push, so the pull request waits for the person),
+and `allowMerge` on with `openPr: draft` (a draft is never merged). A project with no
+`worktrees.base` is no clash: it may merge into the default branch. Each line says the fix.
 
 **The review gate is read as committed on the pull request's base**, never from a checkout's
-working copy. Every value the guard judges with — `autoMerge`, `reviewBeforePush`,
+working copy. Every value the judgment uses — `allowMerge`, `reviewBeforePush`,
 `reviewAgents`, `fixesAfterReview.*` (the limits a fix after a review may reach and still count,
-D17, § The review record — read and shown with the gate, and the guard judges with them through
-`merge-check.ts`), `worktrees.base` and `worktrees.bases`, and whether the committed `ownHooks`
-hands the merge to the project's own guard — comes from the built-in default, the person's
+D17, § The review record — read and shown with the gate, and `merge-check.ts` judges with them),
+`worktrees.base` and `worktrees.bases` — comes from the built-in default, the person's
 `workflow.json`, and `.claude/cc-smart-dev-kit.json` as `git` holds it at `origin/<base>`
 (`resolveGate` in `src/workflow/resolve.ts`, over `readCommittedConfig` in
 `src/project/resolve.ts`: `rev-parse` and `cat-file`, no fetch). A session edits its own
 worktree's file in a second; it cannot change what a branch it has not pushed to says, and a
-push to the base is what the guards and the review stand in front of. Two reads, one function:
-before any `gh` call, the base this checkout names (`worktrees.base`), so `autoMerge` off still
-asks without `gh`; then, once `gh pr view` names the pull request's base, that base's file,
+push to the base is what the review stands in front of. Two reads, one function:
+before any `gh` call, the base this checkout names (`worktrees.base`), so `allowMerge` off is still
+reported without `gh`; then, once `gh pr view` names the pull request's base, that base's file,
 which judges the merge (`autoMergeRefusal` gets its `worktrees`). No `origin/<base>` (a new
 repository, a fork, a branch never fetched), no file there, or a file this plugin cannot use
-(broken, or a `requires` it does not meet) asks, naming which. Because nothing is fetched, a
+(broken, or a `requires` it does not meet) is not allowed, naming which. Because nothing is fetched, a
 policy change counts once it is committed, pushed and fetched. `cc-smart-dev-kit workflow
-show` prints the gate's own lines (`gate autoMerge = …`) from the same read, so it never
-disagrees with the guard, even while the checkout's file says something else; `workflow
-set|unset` of a gate key (`REVIEW_GATE_KEYS` in `schema.ts`) refuses inside Claude Code, and
-the guard's "autoMerge is off" question says to commit the change to the base and push it.
+show` prints the gate's own lines (`gate allowMerge = …`) from the same read, so it never
+disagrees with `merge-check`, even while the checkout's file says something else; `workflow
+set|unset` of a gate key (`REVIEW_GATE_KEYS` in `schema.ts`) works inside Claude Code since
+6.0.0, and the "allowMerge is off" answer says to commit the change to the base and push it.
 
 **A project's policy changes through a pull request** (D57, `src/workflow/propose.ts`).
 Because the gate is read from the base's committed file, a change that counts must be merged,
@@ -255,41 +230,10 @@ branch back, and the line says what is left if any of that fails. Two exceptions
 avoid destroying what may be another run's: a `gh pr create` that does not answer in time
 leaves the pushed branch and the pull request it may have made, and a name another proposal
 took between the check and the add is skipped for the next free one rather than reused. The
-command pushes a branch and opens a pull request in children no hook sees, so **the shell judge
-asks the person first** (RF1-4, `src/hooks/bash-judge.ts`) whenever the gate the git and merge
-guards read has `autoPush` off or `openPr` short of `ready`: the question names the push, the
-pull request and the switch that says no; a gate or a project it cannot read is a question with
-its reason; in `claude -p`, where nobody answers, it is a denial. Inside Claude Code a gate key
-refuses, as `set` does; outside it — a terminal, the portal — every key is allowed: the pull
-request's review is the gate.
-
-**Every merge of the line is judged**, in the order it runs them: `gh pr merge 5 && gh pr merge
-6` reads both, and the first the policy does not allow asks, naming that pull request
-(`mergeCalls`, in `after-merge.ts` — the one reader of a merge command line, on the one lexer
-every guard uses, `src/shell/command.ts`). The forms it reads: `gh pr [<its own flags>] merge …`
-(`gh pr -R owner/repo merge 5`, `-R` before the subcommand), `--auto` (an armed merge lands once
-the checks pass, with nobody watching) while `--disable-auto` is no merge, and a `gh <word>`
-that is no gh command — an alias, looked up once in `gh alias list` (a local file read) and
-judged like its expansion, with a shell alias (`!…`) asking. The forms it never judges ask with
-the reason: a `gh api` merge (the pull-request merge endpoint in any method spelling, or a
-GraphQL query naming `mergePullRequest`/`enablePullRequestAutoMerge` — or one it cannot read at
-all), an extension whose words name a merge, and a command whose earlier steps change the folder,
-the branch or the repository the merge acts on (`cd`/`pushd`/`git -C`, `git switch`/`checkout`,
-a `GH_REPO=`/`GH_HOST=` assignment, an `env` prefix): the guard does not follow those, it asks. A
-quote, a here-doc or a comment is not a command, and the wrappers the git guard reads work the
-same way (`timeout 60 gh pr merge 5`, `setsid gh pr merge 5`). A program the line works out when
-it runs (`$(which gh) pr merge 5`, `$GH pr merge 5`) cannot be named, so a line whose words name
-a merge asks rather than pass unseen.
-
-Everything it reads is read-only (`gh pr view`, `gh repo view`, `gh pr checks`, `gh alias
-list`), each call takes 10 s and the hook has 30 s (`hooks.json`), and only a command that
-really asks for a merge reaches them. **It fails closed**: a `gh` that is missing, fails, or
-answers something the guard cannot read is a question, never silence. In a project with no
-`cc-smart-dev-kit.json` it stays silent like every plugin hook: there is no policy to judge with,
-and a project that never opted in must not notice the plugin. A project that keeps its own
-merge guard silences this one with `ownHooks`, like the other guards; the guard also reads
-`ownHooks` from the committed file of the base. (The frame's own `ownHooks` step still reads
-the checkout's file, for every plugin hook alike: `src/hooks/run.ts`.)
+command pushes a branch and opens a pull request in a child no hook sees. Until 5.6.x the shell
+judge asked the person first when `allowPush` was off or `openPr` short of `ready`; that judge is
+gone (§ Retired in 6.0.0 in `docs/design/hooks.md`). Every key may be proposed, inside Claude Code
+or outside it: the pull request's review is the gate.
 
 ## The review record
 
@@ -301,7 +245,7 @@ is `sha → { at, by, branches? }`: when it was first recorded, every writer tha
 agent type, or `workflow review-done` for the person by hand), and the branches the reviewer was
 on (since 1.0.0). An entry without `branches` — a 0.6.0 record, a review on a detached HEAD, one
 written by hand — still reads and counts for its exact commit only. An entry an older plugin
-wrote (`sha → time`) names no writer and counts for nothing: that commit asks once.
+wrote (`sha → time`) names no writer and counts for nothing: that commit has no review.
 
 **A review counts for its branch and the fixes after it (D17).** A review of commit R covers a
 later head H when R's record names H's branch and the change made since R, **the base's own
@@ -337,10 +281,10 @@ review of H itself covers H on any branch, as before. The one home is
   matches the exact head only). It never fetches.
 
 The limits come from this repo's own fix rounds: 10% of the reviewed change is covered, 105% and
-160% ask. A limit is a trade: up to 200 lines written after the review merge unread, which is the
-point of not paying a second review for a small fix. **The merge guard judges with this rule**
+160% are not covered. A limit is a trade: up to 200 lines written after the review merge unread, which is the
+point of not paying a second review for a small fix. **The merge judgment uses this rule**
 (D17b): `checkPullRequest` in `src/workflow/merge-check.ts` reads the cover for the pull request's
-head on its head branch, and asks with the counts and the limit when the fixes are over it; a
+head on its head branch, and refuses with the counts and the limit when the fixes are over it (the session then says so in the pull request); a
 record of the exact head still covers at once, on any branch, with no git run.
 `cc-smart-dev-kit workflow merge-check --branch <branch> --base <base>` prints the same verdict
 for a local merge, and `workflow show` prints the limits in force on one `gate fixesAfterReview in force:` line.
@@ -393,7 +337,7 @@ meta entry included, is a prompt. The reader (`runPrompts`) reads the whole
 transcript forward, up to 16 MB, so a prompt far from both ends still counts. A consult, a
 review agent resumed for a question, a review a Stop hook sent back to work, a review that
 compacted (the summary counts as a prompt: a known limit, on the safe side), and a missing,
-unreadable or larger transcript record nothing: the safe side, where the merge guard asks.
+unreadable or larger transcript record nothing: the safe side, where the merge judgment finds no review.
 A plan's second read records nothing by design: its brief carries `Mode: plan-review`, which the
 whole-line match does not take, because a record of a plan read would name the lead's head
 commit as reviewed code and cover later heads with it. And a review starts no agents: a child's
@@ -416,12 +360,9 @@ records nothing (one stderr line says to run the review again). The names are co
 `recordsReview` in `reviews.ts`, the one home of that question: a `plugin:name` exactly, a bare
 name only for an agent with no plugin prefix — Claude Code reports a plugin agent as
 `plugin:name` (code.claude.com/docs/en/hooks § SubagentStart), so another plugin's
-`reviewer`, or a project agent of that name, never counts for `cc-smart-dev-kit:senior-engineer`. The
-Agent guard keeps no review list since D11: every `opus`-tier launch below `max` runs with no
-question, a review or not.
-The list the hook reads is the checkout's own, but the record keeps the agent that wrote it,
-and the merge guard judges that agent against the list committed on the base (`hasReview`):
-a list a session adds to in its own worktree records nothing the guard trusts. **SubagentStop,
+`reviewer`, or a project agent of that name, never counts for `cc-smart-dev-kit:senior-engineer`. The list the hook reads is the checkout's own, but the record keeps the agent that wrote it,
+and the merge judgment checks that agent against the list committed on the base (`hasReview`):
+a list a session adds to in its own worktree records nothing it trusts. **SubagentStop,
 not PostToolUse on the Agent tool**: on Claude Code 2.1.301 every Agent call runs in the
 background — the tool call returns at launch, and the agent's end comes later — so a
 PostToolUse hook would record the commit before the reviewer had read a line. A plugin
@@ -431,7 +372,7 @@ subagent's own worktree records nothing: its branch is a fresh one from the base
 commit a reviewer read. Success prints nothing at all; a record that cannot be written is one
 stderr line, exit 0. `cc-smart-dev-kit workflow review-done [--sha <commit>]` stays for the
 person's own terminal and **refuses inside Claude Code** (`CLAUDECODE`): it resolves the
-commit with `git rev-parse` and records it `by` the person, which the guard trusts whatever
+commit with `git rev-parse` and records it `by` the person, which the judgment trusts whatever
 the list says; `cc-smart-dev-kit workflow show` prints whether the commit here has a record
 the gate's own list trusts.
 
@@ -441,7 +382,7 @@ refusals stop mistakes — a session that switches a setting off in its own chec
 against a process set on getting past them: anything that runs as the person can write the
 person's own files (the record, `workflow.json`), drop `CLAUDECODE` (`env -u CLAUDECODE`), or
 push to a branch the person may push to. What holds against that is the repository's own
-branch protection and the person's yes to a merge.
+branch protection and the person's own deny rules.
 
 **The usage-warning setting** is read by the status line through `src/workflow/alerts.ts`.
 `alertsAt(paths, cwd, env)` resolves `alerts.usagePercent` once per run: the project's over

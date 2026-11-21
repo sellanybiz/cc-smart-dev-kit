@@ -153,10 +153,9 @@ function flowReport(now: number, window: FlowWindow, empty: boolean): FlowReport
   const byAsker: Record<string, AskerCount> = empty
     ? {}
     : {
-        "git guard": { count: n(9), ms: n(9) * 41_000 },
-        "agent guard": { count: n(6), ms: n(6) * 22_000 },
+        "job-route": { count: n(9), ms: n(9) * 41_000 },
+        "user-away": { count: n(6), ms: n(6) * 22_000 },
         "Claude Code": { count: n(4), ms: n(4) * 63_000 },
-        "merge guard": { count: n(2), ms: n(2) * 95_000 },
       };
   const askCount = Object.values(byAsker).reduce((sum, a) => sum + a.count, 0);
   const askMs = Object.values(byAsker).reduce((sum, a) => sum + a.ms, 0);
@@ -220,7 +219,7 @@ function flowReport(now: number, window: FlowWindow, empty: boolean): FlowReport
             session: "e51a9b30",
             cwd: `${PATH}/docs-site`,
             at: now - 6 * MINUTE,
-            asker: "git guard",
+            asker: "job-route",
             kind: "push",
             tool: "Bash",
           },
@@ -240,22 +239,22 @@ function settingsRows(): SettingsRow[] {
   return [
     row({
       card: "flow",
-      help: "Commit each finished, reviewed step without asking.",
+      help: "Let a session commit each finished, reviewed step without asking.",
       id: "set-commit",
-      key: "autoCommit",
+      key: "allowCommit",
       kind: "boolean",
-      label: "Auto commit",
+      label: "Allow commit",
       where: "personal",
       value: true,
       source: "personal",
     }),
     row({
       card: "flow",
-      help: "Push your own branch. Never main, dev or a protected branch: the git guard still asks there.",
+      help: "Let a session push your own branch. Never main, dev or a protected branch.",
       id: "set-push",
-      key: "autoPush",
+      key: "allowPush",
       kind: "boolean",
-      label: "Auto push",
+      label: "Allow push",
       where: "personal",
       value: false,
     }),
@@ -277,11 +276,11 @@ function settingsRows(): SettingsRow[] {
     }),
     row({
       card: "flow",
-      help: "Merge your pull request yourself once CI has passed and the review is done.",
+      help: "Let a session merge your pull request once CI has passed and the review is done.",
       id: "set-merge",
-      key: "autoMerge",
+      key: "allowMerge",
       kind: "boolean",
-      label: "Auto merge",
+      label: "Allow merge",
       where: "personal",
       value: false,
       ...projectSets,
@@ -835,7 +834,7 @@ export function mockData(empty: boolean): MockData {
         },
       ],
     },
-    settings: { autoMerge: null, error: null, projectNote: null, rows: settingsRows() },
+    settings: { allowMerge: null, error: null, projectNote: null, rows: settingsRows() },
     projects: projects.projects,
     projectPages: projects.projectPages,
     gatewayPages: projects.gatewayPages,

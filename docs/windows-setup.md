@@ -22,14 +22,14 @@ Windows yet.
 | The gateway service | A per-user **Scheduled Task**, `cc-smart-dev-kit-router`, instead of the systemd units: `gateway setup` writes its definition and registers it, `doctor` reads its state, `restore` stops and removes it. No socket activation and no journal (`windows-gateway.md`). |
 | The heavy-job queue | As many heavy runs at once as `job set max` allows (default 1). A named-file run bypasses the queue; no CPU or memory limits, no priority settings. See [Windows jobs](windows-jobs.md). |
 | Notifications | No custom kit desktop, sound or terminal notifications. Claude Code and other plugins keep their own behaviour. |
-| **The always-on guards** (the Agent guard's PostToolUse record, the session-escape guard, the shell judge `job-route`) | **Works.** Shell form through Git Bash. The shell judge is wired on **Bash and PowerShell** and reads a line in the dialect of the tool that runs it (`src/hooks/bash-judge.ts` § `readBash`); its queue rewrite stays Bash-only, because the rewritten line is a `sh` line the PowerShell tool cannot run, so with the route on a heavy PowerShell line is refused with the Bash line to run instead (`src/hooks/job-route.ts` § `jobRoute`; the live check is owed, `docs/windows-jobs.md`). The session-escape guard asks on a `C:\…` settings path, on Git Bash's own `/c/…` form of it, and on PowerShell's `Set-Content`/`Copy-Item` (`src/hooks/session-escape-guard.ts` § `kitFileKind`, `shellTargetPath`). |
-| **The hook frame's fail-closed path** (A4) and the shim's `--missing=fail` | **Works.** No bun, or one older than the plugin needs, is an **ask** for a guard and one line on stderr with exit 1 for the command (`plugin/bin/cc-smart-dev-kit-bun.sh`, its `--missing=fail` block); the Windows CI job runs both in Git Bash. |
+| **The always-on guard** (`job-route`) | **Works.** Shell form through Git Bash. The hook is wired on **Bash and PowerShell** and reads a line in the dialect of the tool that runs it (`src/hooks/job-route.ts`); its queue rewrite stays Bash-only, because the rewritten line is a `sh` line the PowerShell tool cannot run, so with the route on a heavy PowerShell line is refused with the Bash line to run instead (`src/hooks/job-route.ts` § `jobRoute`; the live check is owed, `docs/windows-jobs.md`). |
+| **The hook frame's fail-closed path** (A4) and the shim's `--missing=fail` | **Works.** No bun, or one older than the plugin needs, is an **ask** for `user-away`'s question tools and one line on stderr with exit 1 for the command (`plugin/bin/cc-smart-dev-kit-bun.sh`, its `--missing=fail` block); the Windows CI job runs both in Git Bash. |
 | **The background clean** (WT, D48) | **Works.** A detached start from a hook goes through `cmd /d /s /v:off /c "start "" /b …"` with every argument quoted, so the clean outlives the hook (`src/hooks/detached.ts` § `windowsStart`, `src/worktrees/auto-start.ts` § `startAutoClean`), and `windowsHide` starts no console window. The scan and removal it calls were already Windows-aware (the `worktrees` row above). |
 | **The gateway's breaker** (BR1–BR3) | **Works**, with the Windows service's cost: a restart is the Scheduled Task stopped and started, so it refuses requests for a moment and a stop cuts answers in flight (`windows-gateway.md`). The breaker itself is in the router — the same bundle on every platform. |
 | **The retry watchdog keys** (CC1) | **Works.** Three owned keys under `env` in `settings.json`, written through the managed-key path (`src/setup/retry-watchdog.ts` § `RETRY_WATCHDOG_SETTINGS`). No platform code. |
 | **The major-version hold and `autoUpdate: false`** (D33, D39) | **Works.** State files and one managed settings key: no platform code (`src/update/major.ts`, `src/setup/auto-update.ts`). |
 | **Server tools and the judge** (WS) | **Works.** The router's route is the same bundle and the same rule on every platform (`docs/gateway.md`). |
-| **The one shell reader** (A2) | **Works.** It reads Bash and PowerShell and is the only reader every guard uses; its tests run in the Windows CI job. |
+| **The one shell reader** (A2) | **Works.** It reads Bash and PowerShell and is the only reader every hook uses; its tests run in the Windows CI job. |
 
 Herdr GUI is offered only by manual setup, with `--no-herdr` to skip this run. Its official
 PowerShell installer and normal core bootstrap own their app/core, shortcuts and user PATH
@@ -165,7 +165,7 @@ there.
 
 On Windows, Claude Code runs **shell-form hooks** (and the Bash tool) through Git Bash. The
 plugin's own hooks are shell-form `.sh` commands on purpose, so Git Bash is what makes the
-guards work there. `doctor` finds it exactly as Claude Code does (this order):
+hooks work there. `doctor` finds it exactly as Claude Code does (this order):
 
 1. `CLAUDE_CODE_GIT_BASH_PATH`, accepted only when the file is named `bash.exe`, `sh.exe`,
    `bash` or `sh` **and** it exists (anything else Claude Code ignores — `doctor` warns about
@@ -245,11 +245,8 @@ exit code is 0.
 
 **3. A normal session.** In a git repository you can try things in, start `claude`, and:
 
-- ask it to run `git push --force` — the git guard **asks** (it must not run in silence);
-- ask it to run `claude --bg "x"` — the shell judge **asks**, saying to build the work with
-  subagents instead;
-- ask it to edit a file in the main checkout from a session in a worktree — the main-folder
-  guard asks.
+- ask it to run a heavy test command — `job-route` queues it (the old `git push --force` question is gone with the git guard);
+- ask it to run a heavy command mixed with a light one on one line — `job-route` refuses it.
 
 Shows: the hooks run through Git Bash and fail closed where they should; no console window
 flashes. No kit notification sender is installed.

@@ -2,11 +2,11 @@
  * SessionStart and UserPromptSubmit: tell Claude what each subagent tier runs now, so it can name
  * the model when it launches. The tier and the effort are chosen by the job, never by the model
  * behind a tier (2.2.0, the owner, 2026-11-05; `/cc-smart-dev-kit:subagent-decision`). Nothing
- * used to tell a session what answered its tiers: the Agent guard knew, and the session read
+ * used to tell a session what answered its tiers: the launch judge knew, and the session read
  * "the gateway is on".
  *
  * **What it says.** `tierNote` (`src/models/tier-view.ts`): a header and one line per tier the
- * Agent tool's `model` names, read the Agent guard's way (`resolveLaunchModel`) through the
+ * Agent tool's `model` names, read the launch judge's way (`resolveLaunchModel`) through the
  * session's own gateway view (`sessionGatewayOf`: its effective `ANTHROPIC_BASE_URL`, a profile's
  * chains) — never a second list. The gateway off says that every tier is Claude, in the same
  * lines: the instructions' effort rule reads the note, so a session without a gateway needs it
@@ -21,7 +21,7 @@
  * hook never saw start (the plugin updated mid-session) says it once. A mark that cannot be kept
  * makes a prompt silent: a note that cannot be remembered would repeat at every prompt.
  *
- * **Why UserPromptSubmit and not the Agent guard's PreToolUse.** The guard answers a launch
+ * **Why UserPromptSubmit and not a PreToolUse on the Agent tool.** A hook there answers a launch
  * after Claude chose its effort; a note there arrives too late and costs a denied call. A
  * prompt's context reaches Claude before it picks.
  *
@@ -38,7 +38,7 @@
  * when the checks start failing and the tiers' note repeats when they recover. Only a session on
  * the gateway gets it (`sessionGatewayOf`), its own profile's record only.
  *
- * **Machine-wide**, like `agent-guard` whose view it reads: the note never depends on the
+ * **Machine-wide**, like the launch judge whose view it reads: the note never depends on the
  * project's file, and a folder outside git gets it too (its subagents run on these tiers). A
  * config that cannot be read is said plainly, never a crash; the address
  * of a proxy that is not the kit's gateway (no `gateway.json`) is read as Claude, the guard's
@@ -51,14 +51,14 @@ import type { CliPaths } from "../cli/paths";
 import { checksDownNote, checksDownNow } from "../gateway/checks-down";
 import { scopeOfStateKey } from "../gateway/limit-state";
 import { tierNote } from "../models/tier-view";
-import { sessionGatewayOf } from "./agent-guard";
 import { addContext, type HookInput, type HookResult, SILENT, stringField } from "./io";
 import type { Env } from "./run";
+import { sessionGatewayOf } from "./session-facts";
 import { isSessionId, namesDir } from "./session-name";
 
 /** The note when the gateway is on and its config cannot be used: the view is not known. */
 export function tierNoteUnknown(): string {
-  return `Subagent tiers now: not known — the gateway config cannot be read (\`${COMMAND} doctor\` says why). The Agent guard judges each launch and names the effort it needs.`;
+  return `Subagent tiers now: not known — the gateway config cannot be read (\`${COMMAND} doctor\` says why). The launch policy names the effort each launch needs.`;
 }
 
 /** The mark that holds the note this session was told last, beside the session's name files. */

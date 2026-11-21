@@ -42,10 +42,6 @@ function routerPaths(env = process.env) {
 }
 
 // src/cli/paths.ts
-function managedAgentsDir(platform = process.platform) {
-  const root = platform === "darwin" ? "/Library/Application Support/ClaudeCode" : platform === "win32" ? "C:\\Program Files\\ClaudeCode" : "/etc/claude-code";
-  return join2(root, ".claude", "agents");
-}
 function userConfigFile(env, home) {
   const dir = env.CLAUDE_CONFIG_DIR;
   return dir ? join2(dir, ".claude.json") : join2(home, ".claude.json");
@@ -82,8 +78,7 @@ function cliPaths(env = process.env) {
     workflowConfigFile: join2(router.home, ".config", "cc-smart-dev-kit", "workflow.json"),
     machinesFile: join2(router.home, ".config", "cc-smart-dev-kit", "machines.json"),
     tmuxConfFile: join2(router.home, ".tmux.conf"),
-    tavilyKeyFile: join2(claudeConfigDir, "cc-smart-dev-kit", "tavily.key"),
-    managedAgentsDir: managedAgentsDir()
+    tavilyKeyFile: join2(claudeConfigDir, "cc-smart-dev-kit", "tavily.key")
   };
 }
 function claudeMemDataDir(env, home) {
@@ -3197,6 +3192,9 @@ function handlePipeResult(left, next, ctx) {
   }
   return next._zod.run({ value: left.value, issues: left.issues }, ctx);
 }
+var $ZodPreprocess = /* @__PURE__ */ $constructor("$ZodPreprocess", (inst, def) => {
+  $ZodPipe.init(inst, def);
+});
 var $ZodReadonly = /* @__PURE__ */ $constructor("$ZodReadonly", (inst, def) => {
   $ZodType.init(inst, def);
   defineLazyInternal(inst, "propValues", (zod) => zod.def.innerType._zod.propValues);
@@ -6055,6 +6053,10 @@ function pipe(in_, out) {
     out
   });
 }
+var ZodPreprocess = /* @__PURE__ */ $constructor("ZodPreprocess", (inst, def) => {
+  ZodPipe.init(inst, def);
+  $ZodPreprocess.init(inst, def);
+});
 var ZodReadonly = /* @__PURE__ */ $constructor("ZodReadonly", (inst, def) => {
   $ZodReadonly.init(inst, def);
   ZodType.init(inst, def);
@@ -6078,9 +6080,16 @@ function refine(fn, _params = {}) {
 function superRefine(fn, params) {
   return _superRefine(fn, params);
 }
+function preprocess(fn, schema) {
+  return new ZodPreprocess({
+    type: "pipe",
+    in: transform(fn),
+    out: schema
+  });
+}
 // src/build-info/index.ts
 var info = {
-  version: "5.6.1",
+  version: "6.1.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -6257,7 +6266,6 @@ var INERT = new Set([
   "wc",
   "which"
 ]);
-var KIT_TOKEN = new RegExp(`(^|[^\\w.-])${COMMAND.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?:\\.(?:exe|cmd|ps1|bat))?(?=$|[^\\w.\\-/\\\\])`, "i");
 
 // src/shell/command.ts
 var MAX_NESTING = 3;
@@ -7712,11 +7720,59 @@ var mergeFilesSchema = array(string2()).transform((paths, context) => {
   }
   return normalised;
 });
-var workflowSchema = strictObject({
-  autoCommit: boolean2().optional(),
-  autoPush: boolean2().optional(),
+var WORKFLOW_KEY_ALIASES = {
+  autoCommit: "allowCommit",
+  autoPush: "allowPush",
+  autoMerge: "allowMerge"
+};
+function oldNamesIn(raw) {
+  return Object.keys(WORKFLOW_KEY_ALIASES).filter((old) => Object.hasOwn(raw, old)).map((old) => ({
+    old,
+    current: WORKFLOW_KEY_ALIASES[old],
+    both: Object.hasOwn(raw, WORKFLOW_KEY_ALIASES[old])
+  }));
+}
+function withCurrentNames(raw) {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw))
+    return raw;
+  const moved = { ...raw };
+  for (const old of Object.keys(WORKFLOW_KEY_ALIASES)) {
+    if (!Object.hasOwn(moved, old))
+      continue;
+    const current = WORKFLOW_KEY_ALIASES[old];
+    if (!Object.hasOwn(moved, current))
+      moved[current] = moved[old];
+    delete moved[old];
+  }
+  return moved;
+}
+function readWithCurrentNames(raw, context) {
+  const moved = withCurrentNames(raw);
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw))
+    return moved;
+  const current = moved;
+  for (const old of oldNamesIn(raw)) {
+    if (old.both)
+      continue;
+    const checked = workflowObjectSchema.shape[old.current].safeParse(current[old.current]);
+    if (checked.success)
+      continue;
+    const reason = checked.error.issues.map((issue) => issue.message).join(", ");
+    context.issues.push({
+      code: "custom",
+      input: current[old.current],
+      message: `${reason} (${old.old} is the old name of ${old.current})`,
+      path: [old.old]
+    });
+    delete current[old.current];
+  }
+  return current;
+}
+var workflowObjectSchema = strictObject({
+  allowCommit: boolean2().optional(),
+  allowPush: boolean2().optional(),
   openPr: _enum(["off", "draft", "ready"]).optional(),
-  autoMerge: boolean2().optional(),
+  allowMerge: boolean2().optional(),
   mergeMethod: _enum(["merge", "squash", "rebase"]).optional(),
   deleteBranch: boolean2().optional(),
   reviewBeforePush: boolean2().optional(),
@@ -7755,18 +7811,19 @@ var workflowSchema = strictObject({
   }).transform(({ events: _events, sound: _sound, ...usage }) => usage).optional(),
   crew: unknown().optional()
 });
-var personalWorkflowSchema = workflowSchema.extend({
+var workflowSchema = preprocess(readWithCurrentNames, workflowObjectSchema);
+var personalWorkflowSchema = preprocess(readWithCurrentNames, workflowObjectSchema.extend({
   plans: strictObject({
     maxPhases: numberField("plans.maxPhases"),
     runMode: _enum(RUN_MODES).optional()
   }).optional(),
   switches: strictObject({ jobRoute: boolean2().optional(), leadHint: boolean2().optional() }).optional()
-});
+}));
 var workflowDefaults = {
-  autoCommit: false,
-  autoPush: false,
+  allowCommit: false,
+  allowPush: false,
   openPr: "off",
-  autoMerge: false,
+  allowMerge: false,
   mergeMethod: "merge",
   deleteBranch: false,
   reviewBeforePush: true,
@@ -7801,10 +7858,10 @@ var SWITCH_NAMES = [
   "leadHint"
 ];
 var POLICY_KEYS = [
-  "autoCommit",
-  "autoPush",
+  "allowCommit",
+  "allowPush",
   "openPr",
-  "autoMerge",
+  "allowMerge",
   "mergeMethod",
   "deleteBranch",
   "reviewBeforePush",
@@ -7889,10 +7946,6 @@ function allowsNewer(version, range) {
 
 // src/project/config.ts
 var PLUGIN_HOOK_NAMES = [
-  "git-guard",
-  "merge-guard",
-  "main-folder-guard",
-  "agent-guard",
   "fable-session",
   "tier-view",
   "after-merge",
@@ -7904,14 +7957,19 @@ var PLUGIN_HOOK_NAMES = [
   "agent-usage",
   "worktree-leftovers",
   "session-name",
-  "task-start",
-  "deploy-guard"
+  "task-start"
 ];
 var RETIRED_HOOK_NAMES = [
   "serena-root",
   "crew-role",
   "lead-notes",
-  "message-guard"
+  "message-guard",
+  "git-guard",
+  "merge-guard",
+  "deploy-guard",
+  "main-folder-guard",
+  "agent-guard",
+  "session-escape-guard"
 ];
 var UNSWITCHABLE_HOOK_NAMES = ["job-route"];
 var RETIRED_WORKTREE_FIELDS = ["prefix", "setup", "engine"];
@@ -8794,97 +8852,6 @@ function chunks(paths) {
 // src/hooks/worktree-leftovers.ts
 import { closeSync as closeSync4, existsSync as existsSync6, fstatSync, openSync as openSync4, readSync as readSync2, statSync as statSync6 } from "fs";
 import { basename as basename3, join as join11, resolve as resolve4 } from "path";
-
-// src/shell/change-dir.ts
-var CHANGES_FOLDER = new Set([...CHANGE_DIR, "push-location"]);
-
-// src/shell/git-calls.ts
-var GIT_VALUE_OPTIONS = new Set([
-  "-C",
-  "-c",
-  "--attr-source",
-  "--config-env",
-  "--git-dir",
-  "--namespace",
-  "--super-prefix",
-  "--work-tree"
-]);
-var GIT_FLAGS = new Set([
-  "-P",
-  "-p",
-  "--bare",
-  "--glob-pathspecs",
-  "--icase-pathspecs",
-  "--literal-pathspecs",
-  "--no-advice",
-  "--no-lazy-fetch",
-  "--no-optional-locks",
-  "--no-pager",
-  "--no-replace-objects",
-  "--noglob-pathspecs",
-  "--paginate"
-]);
-var GIT_PRINTS = new Set([
-  "-h",
-  "-v",
-  "--exec-path",
-  "--help",
-  "--html-path",
-  "--info-path",
-  "--man-path",
-  "--version"
-]);
-
-// src/shell/writes.ts
-var NO_VALUES = { short: "", long: {} };
-var CHANGES_OPERANDS = new Map([
-  ["mkdir", { short: "m", long: { "--mode": 3 } }],
-  ["rm", NO_VALUES],
-  ["rmdir", NO_VALUES],
-  ["tee", NO_VALUES],
-  ["touch", { short: "dtr", long: { "--date": 3, "--reference": 3, "--time": 3 } }]
-]);
-var WRITES_ITS_FILES = new Set([
-  "ac",
-  "add-content",
-  "out-file",
-  "sc",
-  "set-content",
-  "tee-object"
-]);
-var COPIES = new Set([
-  "copy",
-  "copy-item",
-  "cp",
-  "cpi",
-  "install",
-  "ln",
-  "mi",
-  "move",
-  "move-item",
-  "mv"
-]);
-var MOVES = new Set(["mi", "move", "move-item", "mv"]);
-var GIT_CHANGES_CHECKOUT = new Set([
-  "am",
-  "apply",
-  "checkout",
-  "cherry-pick",
-  "clean",
-  "commit",
-  "merge",
-  "mv",
-  "pull",
-  "rebase",
-  "reset",
-  "restore",
-  "revert",
-  "rm",
-  "stash",
-  "switch"
-]);
-
-// src/hooks/worktree-leftovers.ts
 var REFLOG_TAIL_BYTES = 8 * 1024;
 function lastReflogTime(file, now) {
   try {

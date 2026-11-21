@@ -105,10 +105,10 @@ describe("user unavailable, status, available", () => {
     expect(run.out).toBe(
       [
         "✓ The person is unavailable since 01:00.",
-        "· Sessions park what needs the person instead of asking. Nothing is parked yet.",
+        "· Sessions take the recommended option and record a decision instead of asking. Nothing is recorded yet.",
         "",
         "Next steps:",
-        "  1. When the person is back, go through what waited:",
+        "  1. When the person is back, go through what was decided:",
         "       /cc-smart-dev-kit:user-available",
         "",
       ].join("\n"),

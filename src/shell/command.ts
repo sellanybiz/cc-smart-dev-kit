@@ -1,7 +1,7 @@
 /**
  * Reads a shell command line as the commands it RUNS. This is the one reader of a shell line
  * in the plugin: the git guard (`src/hooks/git-guard.ts`), the merge reader
- * (`src/hooks/after-merge.ts`, which the merge guard reads through), job-route
+ * (`src/hooks/after-merge.ts`, which merge-check reads through), job-route
  * (`src/hooks/job-route.ts`), the job classifier (`src/jobs/classify.ts`) and `job run`
  * (`src/jobs/run.ts`) all read a line here, so a line means the same to each of them.
  *
@@ -1447,11 +1447,6 @@ const WRAPPERS: Record<string, WrapperSpec> = {
 
 /** The shells whose script this module reads (`-c`, a here-doc, a here-string, a pipe). */
 const SHELLS = new Set(["bash", "dash", "fish", "ksh", "mksh", "sh", "zsh"]);
-
-/** True when `word` names a wrapper (`env`, `sudo`, `setsid`, …), which runs the command after it. */
-export function isWrapper(word: string): boolean {
-  return WRAPPERS[programName(word)] !== undefined;
-}
 
 /** A package whose binary is Claude Code's own `claude` (`@anthropic-ai/claude-code@2.1.3`). */
 const CLAUDE_PACKAGE = /^@anthropic-ai\/claude-code(?:@[^/]*)?$/;

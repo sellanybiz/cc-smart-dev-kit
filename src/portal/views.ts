@@ -544,15 +544,15 @@ function clashNote(data: SettingsData, key: string | undefined): string {
 
 /** The auto-merge row's own rule box: the design's words, with the project's base named. */
 function autoMergeBox(data: SettingsData): string {
-  const base = data.autoMerge?.base;
+  const base = data.allowMerge?.base;
   const inside = base === null || base === undefined ? "" : ` (${escapeHtml(base)} here)`;
   // The rule is the design's sentence, word for word; the line under it is what the module's
   // own `autoMergeAllowed` answers for this project right now, on its own line.
   const decided =
-    data.autoMerge === null
+    data.allowMerge === null
       ? ""
       : `<span class="small rulemore">${
-          data.autoMerge.allowed
+          data.allowMerge.allowed
             ? `On this project, a pull request into ${escapeHtml(base ?? "")} may be merged by itself, once CI is green and the review is done.`
             : "On this project it will not merge by itself: only a plain integration branch is ever merged into without asking you."
         }</span>`;
@@ -577,7 +577,7 @@ export function settingsPage(shell: Shell, data: SettingsData): string {
 <h2 id="${card}-h">${escapeHtml(title)}</h2>
 <div class="card list" data-scope>
 ${rows
-  .map((row) => settingRow(row, row.key === "autoMerge" ? autoMergeBox(data) : ""))
+  .map((row) => settingRow(row, row.key === "allowMerge" ? autoMergeBox(data) : ""))
   .map((html, index) => html + clashNote(data, rows[index]?.key))
   .join("")}
 <div class="foot" data-out-for="workflow.set" role="status"></div>
@@ -754,7 +754,7 @@ function projectForm(
   answers: ProjectInitAnswers,
   plan: ProjectInitPlan,
 ): string {
-  const baseHelp = "Edits happen in a worktree, never in the main checkout.";
+  const baseHelp = "A session that starts in the main checkout is told to work in a worktree.";
   // What the settings file changes: Claude Code's `worktree.baseRef` line, when the base
   // branch is not the repo's default branch, and any line of the retired worktree engine.
   const settingsNote = settingsLineNote(plan.settings);
@@ -786,13 +786,13 @@ function projectForm(
     .map(protectedChip)
     .join("")}<button type="button" class="btn dashed" data-add-protected>+ add</button></div>
 <template data-chip-template>${protectedChip("")}</template>
-<p class="small muted">The git guard still asks you before a push or a force push to any of these.</p>
+<p class="small muted">A session never pushes straight to any of these.</p>
 </div>
 
 <div class="col g8">
-<h3>Guards</h3>
+<h3>Switches</h3>
 <div class="card list">
-${guardRow({ help: baseHelp, id: "g-main", label: "Refuse edits in the main folder", name: "guardMainFolder", on: answers.guards.guardMainFolder })}
+${guardRow({ help: baseHelp, id: "g-main", label: "Tell sessions in the main checkout to use a worktree", name: "guardMainFolder", on: answers.guards.guardMainFolder })}
 ${guardRow({ help: "Every session is named after the branch it works on.", id: "g-name", label: "Name each session", name: "sessionNames", on: answers.guards.sessionNames })}
 ${guardRow({ help: "The type check, the build, the tests and the coverage run here go through the queue.", id: "g-jobs", label: "Heavy jobs through the queue", name: "jobRoute", on: answers.guards.jobRoute })}
 </div>
@@ -1155,7 +1155,7 @@ ${privacyStep(1, "Who can open it", [
     text: `It starts with Claude Code, in the background, and stays up: a new session starts it when it is not running, and a plugin update hands it over to the new version. <span class="mono">${COMMAND} portal</span> opens it, <span class="mono">${COMMAND} portal stop</span> stops it.`,
   },
   {
-    text: `There is no sign-in: <b>every program and every account on this machine can open it</b> — a Claude session's own <span class="mono">curl</span> included — and can change the slots, the judge, the updates and the settings. That is a deliberate trade-off. The session-escape guard asks you before a session's shell command reaches this port.`,
+    text: `There is no sign-in: <b>every program and every account on this machine can open it</b> — a Claude session's own <span class="mono">curl</span> included — and can change the slots, the judge, the updates and the settings. That is a deliberate trade-off.`,
     tone: "warn",
   },
   {

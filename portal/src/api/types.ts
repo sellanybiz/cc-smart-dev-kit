@@ -508,7 +508,7 @@ export type ProjectGatewayData = ProjectGatewayAnswer;
 
 /** `src/portal/facts.ts` › `SettingsData`. */
 export interface SettingsData {
-  autoMerge: null | { allowed: boolean; base: null | string };
+  allowMerge: null | { allowed: boolean; base: null | string };
   error: null | string;
   projectNote: null | string;
   rows: SettingsRow[];
@@ -552,9 +552,9 @@ export interface ProjectInitAnswers {
   guards: { guardMainFolder: boolean; sessionNames: boolean; jobRoute: boolean };
 }
 
-/** The merge guard's verdict on one branch, in the page's words (from `MergeVerdict`). */
+/** merge-check's verdict on one branch, in the page's words (from `MergeVerdict`). */
 export interface BranchVerdict {
-  /** The command's own kind: `allowed`, `refused`, `silent`, `unread` or `late`. */
+  /** The command's own kind: `allowed`, `refused`, `unread` or `late`. */
   kind: MergeVerdict["kind"];
   /** `ok`: it would merge by itself; `warn`: it is refused or ran late; `info`: no verdict. */
   tone: "info" | "ok" | "warn";

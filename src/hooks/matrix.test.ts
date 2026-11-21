@@ -6,18 +6,18 @@
  *   even when the rest of the file is broken or too new; a project hook on the same event
  *   that is not listed silences nothing;
  * - `requires` not met (and a broken cc-smart-dev-kit.json): each fails closed its own way;
- * - the guard matrix: the plugin's hook on or off × the project's hook wired or not × listed
- *   in `ownHooks` or not × the project's `requires` met or not. Exactly one guard answers a
- *   destructive command when the project lists the copy it runs; two when it forgot to (what
- *   `cc-smart-dev-kit doctor` warns about); none only when neither is installed.
  */
 import { describe, expect, test } from "bun:test";
 import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { cliPaths } from "../cli/paths";
-import { PLUGIN_HOOK_NAMES, RETIRED_HOOK_NAMES, UNSWITCHABLE_HOOK_NAMES } from "../project/config";
+import {
+  ccSmartDevKitConfigSchema,
+  PLUGIN_HOOK_NAMES,
+  RETIRED_HOOK_NAMES,
+  UNSWITCHABLE_HOOK_NAMES,
+} from "../project/config";
 import { projectKey, taskContext } from "../tasks/context";
-import { renderDeployTask } from "../tasks/deploy/format";
 import { openWorkDb, workDbFile, writeWork } from "../tasks/work/db";
 import { createTask, ensurePlanTask, layPhase, updateTask } from "../tasks/work/store";
 import {
@@ -35,19 +35,13 @@ import type { HookResult } from "./io";
 import type { HookSpec } from "./run";
 import {
   afterMergeHook,
-  agentGuardHook,
   agentUsageHook,
   builderFinishHook,
-  deployGuardHook,
   fableSessionHook,
-  gitGuardHook,
   HOOKS,
   jobRouteHook,
   keepGoingHook,
-  mainFolderGuardHook,
-  mergeGuardHook,
   reviewRecordHook,
-  sessionEscapeGuardHook,
   sessionNameHook,
   subagentBackgroundHook,
   taskStartHook,
@@ -187,7 +181,7 @@ interface Case {
   /** What it says when `requires` is not met (null: silent but for one stderr line). */
   failsClosed: (result: HookResult) => void;
   /**
-   * A machine-wide hook (agent-guard): it runs with or without cc-smart-dev-kit.json, and its answer
+   * A machine-wide hook (job-route): it runs with or without cc-smart-dev-kit.json, and its answer
    * does not depend on the project's file, so the shared rows below say so.
    */
   machineWide?: boolean;
@@ -213,7 +207,7 @@ function mainOf(input: Record<string, unknown>): string {
 
 const makeIdle = (worktree: string): void => makeWorktreeIdle(worktree);
 
-const askLine = (result: HookResult) => {
+const _askLine = (result: HookResult) => {
   expect(result.exitCode ?? 0).toBe(0);
   const output = JSON.parse(result.stdout ?? "{}").hookSpecificOutput;
   expect(output.permissionDecision).toBe("ask");
@@ -221,48 +215,12 @@ const askLine = (result: HookResult) => {
     "run claude plugin update cc-smart-dev-kit@cc-smart-dev-kit",
   );
 };
-const denyLine = (result: HookResult) => {
-  expect(result.exitCode ?? 0).toBe(0);
-  const output = JSON.parse(result.stdout ?? "{}").hookSpecificOutput;
-  expect(output.permissionDecision).toBe("deny");
-  expect(output.permissionDecisionReason).toContain("asks for effort `low`");
-};
 const contextLine = (result: HookResult) => {
   const text: string = JSON.parse(result.stdout ?? "{}").hookSpecificOutput.additionalContext;
   expect(text).toStartWith("cc-smart-dev-kit: ");
   expect(text).toEndWith("run claude plugin update cc-smart-dev-kit@cc-smart-dev-kit");
   expect(text).not.toContain("\n");
 };
-
-/**
- * A project file that lists `vercel --prod` as its prod deploy, whatever else the config holds
- * (nothing when there is no file), and one open blocking prod task in the checkout: what makes
- * `deploy-guard` speak.
- */
-function deployProject(config: unknown): string {
-  const repo = project(
-    config === undefined
-      ? undefined
-      : { ...(config as object), tasks: { deployCommands: { prod: ["vercel --prod"] } } },
-  );
-  const folder = join(repo, ".claude", "tasks", "prod");
-  mkdirSync(folder, { recursive: true });
-  writeFileSync(
-    join(folder, "prod-20260101-000000-seed.md"),
-    renderDeployTask({
-      id: "prod-20260101-000000",
-      title: "Seed the data",
-      env: "prod",
-      status: "open",
-      deploy: "before",
-      type: "blocking",
-      created: "2026-01-01T00:00:00Z",
-      body: "Do it.\n",
-      file: "prod-20260101-000000-seed.md",
-    }),
-  );
-  return repo;
-}
 
 const CASES: Case[] = [
   {
@@ -283,96 +241,6 @@ const CASES: Case[] = [
           },
         }),
       );
-    },
-  },
-  {
-    spec: gitGuardHook,
-    own: { event: "PreToolUse", matcher: "Bash|PowerShell" },
-    setup: (config) => ({
-      input: {
-        hook_event_name: "PreToolUse",
-        session_id: SESSION,
-        cwd: project(config),
-        tool_name: "Bash",
-        tool_input: { command: "git push --force" },
-      },
-      env: hookEnv(),
-    }),
-    failsClosed: askLine,
-  },
-  {
-    spec: deployGuardHook,
-    own: { event: "PreToolUse", matcher: "Bash|PowerShell" },
-    setup: (config) => ({
-      input: {
-        hook_event_name: "PreToolUse",
-        session_id: SESSION,
-        cwd: deployProject(config),
-        tool_name: "Bash",
-        tool_input: { command: "vercel --prod" },
-      },
-      env: hookEnv(),
-    }),
-    failsClosed: (result) => {
-      askLine(result);
-      expect(
-        JSON.parse(result.stdout ?? "{}").hookSpecificOutput.permissionDecisionReason,
-      ).toStartWith(
-        "cc-smart-dev-kit cannot check whether this deploy to prod is held by open tasks: ",
-      );
-    },
-  },
-  {
-    spec: mergeGuardHook,
-    own: { event: "PreToolUse", matcher: "Bash|PowerShell" },
-    setup: (config) => ({
-      input: {
-        hook_event_name: "PreToolUse",
-        session_id: SESSION,
-        cwd: project(config),
-        tool_name: "Bash",
-        tool_input: { command: "gh pr merge 7" },
-      },
-      env: hookEnv(),
-    }),
-    failsClosed: askLine,
-  },
-  {
-    spec: agentGuardHook,
-    own: { event: "PreToolUse", matcher: "Agent|Task|Workflow" },
-    machineWide: true,
-    setup: (config) => ({
-      input: {
-        hook_event_name: "PreToolUse",
-        session_id: SESSION,
-        cwd: project(config),
-        tool_name: "Agent",
-        tool_input: { effort: "low", model: "opus", prompt: "do it" },
-      },
-      env: hookEnv(),
-    }),
-    failsClosed: denyLine,
-  },
-  {
-    spec: sessionEscapeGuardHook,
-    own: { event: "PreToolUse", matcher: "Bash|PowerShell|Edit|Write|NotebookEdit" },
-    machineWide: true,
-    alwaysOn: true,
-    setup: (config) => ({
-      input: {
-        hook_event_name: "PreToolUse",
-        session_id: SESSION,
-        cwd: project(config),
-        tool_name: "Bash",
-        tool_input: { command: "env -u CLAUDECODE cc-smart-dev-kit workflow set autoMerge true" },
-      },
-      env: hookEnv(),
-    }),
-    failsClosed: (result) => {
-      expect(result.exitCode ?? 0).toBe(0);
-      const output = JSON.parse(result.stdout ?? "{}").hookSpecificOutput;
-      expect(output.permissionDecision).toBe("deny");
-      expect(output.permissionDecisionReason).toContain("with CLAUDECODE removed");
     },
   },
   {
@@ -414,49 +282,6 @@ const CASES: Case[] = [
       expect(said).toStartWith("Subagent tiers now (the Agent tool's `model`):");
     },
   },
-  {
-    spec: jobRouteHook,
-    own: { event: "PreToolUse", matcher: "Bash" },
-    machineWide: true,
-    alwaysOn: true,
-    setup: (config) => ({
-      input: {
-        hook_event_name: "PreToolUse",
-        session_id: SESSION,
-        cwd: project(config),
-        tool_name: "Bash",
-        tool_input: { command: "claude --bg 'do the phase'" },
-      },
-      env: hookEnv(),
-    }),
-    failsClosed: (result) => {
-      expect(result.exitCode ?? 0).toBe(0);
-      const output = JSON.parse(result.stdout ?? "{}").hookSpecificOutput;
-      expect(output.permissionDecision).toBe("ask");
-      expect(output.permissionDecisionReason).toStartWith(
-        "This starts a raw background session (`claude --bg`): it runs beside this session, nobody watches it, and it reports to nobody.\nBuild the work with subagents instead (the Agent tool):",
-      );
-    },
-  },
-  {
-    spec: mainFolderGuardHook,
-    own: { event: "PreToolUse", matcher: "Edit|Write|NotebookEdit|Bash" },
-    setup: (config) => {
-      const repo = project(config);
-      return {
-        input: {
-          hook_event_name: "PreToolUse",
-          session_id: SESSION,
-          cwd: repo,
-          tool_name: "Edit",
-          tool_input: { file_path: join(repo, "README.md") },
-        },
-        env: hookEnv(),
-      };
-    },
-    failsClosed: askLine,
-  },
-
   {
     spec: afterMergeHook,
     own: { event: "PostToolUse", matcher: "Bash" },
@@ -829,8 +654,81 @@ describe.each(["clear", "compact"])("session-name SessionStart (%s)", (source) =
   );
 });
 
-test("the table covers every hook", () => {
-  expect(CASES.map((c) => c.spec.name).sort()).toEqual(HOOKS.map((spec) => spec.name).sort());
+test("an ownHooks that names a guard the kit removed still parses, and silences nothing", () => {
+  const removed = [
+    "git-guard",
+    "merge-guard",
+    "deploy-guard",
+    "main-folder-guard",
+    "agent-guard",
+    "session-escape-guard",
+  ] as const;
+  expect(removed.filter((name) => HOOKS.some((spec) => spec.name === name))).toEqual([]);
+  expect(ccSmartDevKitConfigSchema.parse({ ownHooks: removed }).ownHooks).toEqual([...removed]);
+  expect(removed.filter((name) => (PLUGIN_HOOK_NAMES as readonly string[]).includes(name))).toEqual(
+    [],
+  );
+});
+
+test("the table covers every hook but job-route, which has its own rows below", () => {
+  expect(CASES.map((c) => c.spec.name).sort()).toEqual(
+    HOOKS.map((spec) => spec.name)
+      .filter((name) => name !== "job-route")
+      .sort(),
+  );
+});
+
+describe("job-route: the one guard, the heavy-job queue; it never asks", () => {
+  const heavy = (config: unknown) => {
+    const { repo } = makeClone();
+    if (config !== undefined) writeClaudeFile(repo, "cc-smart-dev-kit.json", config);
+    return {
+      hook_event_name: "PreToolUse",
+      session_id: SESSION,
+      cwd: repo,
+      tool_name: "Bash",
+      tool_input: { command: "bunx tsc --noEmit" },
+    };
+  };
+  const routed = (result: HookResult) =>
+    JSON.parse(result.stdout ?? "{}").hookSpecificOutput?.updatedInput?.command ?? null;
+
+  test("with the route on it queues a heavy command, even when ownHooks lists it", async () => {
+    for (const config of [FULL_CONFIG, { ...FULL_CONFIG, ownHooks: ["job-route"] }]) {
+      const result = await runHook(jobRouteHook, heavy(config), hookEnv());
+      expect(routed(result)).toContain("job run --kind tsc -- bunx tsc --noEmit");
+    }
+  });
+
+  test("a file that needs a newer plugin, a broken file or no file: the person's own default decides", async () => {
+    const env = hookEnv();
+    const file = cliPaths(env).workflowConfigFile;
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, `${JSON.stringify({ switches: { jobRoute: true } })}\n`);
+    for (const config of [
+      { requires: ">=99", fieldFromTheFuture: true },
+      { worktree: {} },
+      undefined,
+    ]) {
+      expect(routed(await runHook(jobRouteHook, heavy(config), env))).toContain(
+        "job run --kind tsc -- bunx tsc --noEmit",
+      );
+      // Their default off: the line runs as written.
+      expect(await runHook(jobRouteHook, heavy(config), hookEnv())).toEqual({});
+    }
+  });
+
+  test.each([
+    "claude --bg 'do the phase'",
+    "claude -p --model fable 'x'",
+    "cc-smart-dev-kit workflow propose autoCommit true",
+    "cc-smart-dev-kit herdr start --model opus --effort max --mode manual -- work",
+  ])("%s: no answer", async (command) => {
+    for (const config of [FULL_CONFIG, undefined, { requires: ">=99" }]) {
+      const input = { ...heavy(config), tool_input: { command } };
+      expect(await runHook(jobRouteHook, input, hookEnv())).toEqual({});
+    }
+  });
 });
 
 test("ownHooks accepts exactly the plugin's hooks that a project can switch off", () => {
@@ -841,7 +739,6 @@ test("ownHooks accepts exactly the plugin's hooks that a project can switch off"
   // a project file may already list for one (`UNSWITCHABLE_HOOK_NAMES`) still parses and
   // silences nothing.
   expect(HOOKS.filter((spec) => spec.alwaysOn === true).map((spec) => spec.name)).toEqual([
-    "session-escape-guard",
     "job-route",
     "user-away",
   ]);
@@ -884,7 +781,7 @@ describe.each(CASES.map((c) => [c.spec.name, c] as const))("%s", (_name, c) => {
     else expect(result).toEqual({});
   });
 
-  test("the retired names in ownHooks (serena-root, crew-role, lead-notes, message-guard): the file still reads, and this hook still speaks", async () => {
+  test("the retired names in ownHooks (serena-root, crew-role, lead-notes, message-guard, and the six guards of 6.0.0): the file still reads, and this hook still speaks", async () => {
     // A project file written for an older plugin may still list one. Refused, the strict parse
     // would fail and every guard would ask about every call; accepted, it silences nothing.
     expect([...RETIRED_HOOK_NAMES]).toEqual([
@@ -892,6 +789,12 @@ describe.each(CASES.map((c) => [c.spec.name, c] as const))("%s", (_name, c) => {
       "crew-role",
       "lead-notes",
       "message-guard",
+      "git-guard",
+      "merge-guard",
+      "deploy-guard",
+      "main-folder-guard",
+      "agent-guard",
+      "session-escape-guard",
     ]);
     const { input, env } = c.setup({ ...FULL_CONFIG, ownHooks: [...RETIRED_HOOK_NAMES] });
     const result = await runHook(c.spec, input, env);
@@ -949,55 +852,16 @@ describe("no cc-smart-dev-kit.json", () => {
   );
 });
 
-describe("the guard matrix", () => {
-  const guards = CASES.filter((c) =>
-    [gitGuardHook, mergeGuardHook, mainFolderGuardHook].includes(c.spec),
-  );
-
-  // [plugin installed, project wires its own, listed in ownHooks, requires met, guards that answer]
-  const ROWS: Array<[boolean, boolean, boolean, boolean, number]> = [
-    [true, false, false, true, 1], // the plugin's
-    [true, true, true, true, 1], // the project's alone: listed, so the plugin's is silent
-    [true, true, false, true, 2], // both: the project forgot to list it (doctor warns)
-    [true, false, false, false, 1], // the plugin's, failing closed: it asks
-    [true, true, true, false, 1], // the project's alone: ownHooks is read on its own
-    [false, true, true, true, 1], // the project's
-    [false, true, true, false, 1], // the project's
-    [false, false, false, true, 0], // nobody: the project removed its copy before the plugin came
-    [false, false, false, false, 0], // the project's own fail-closed check covers this (design.md)
-  ];
-
-  test.each(
-    guards.flatMap((c) =>
-      ROWS.map(
-        ([plugin, wired, listed, met, expected]) =>
-          [c.spec.name, plugin, wired, listed, met, expected, c] as const,
-      ),
-    ),
-  )(
-    "%s: plugin %j, project's own %j, listed %j, requires met %j → %j",
-    async (_n, plugin, wired, listed, met, expected, c) => {
-      const config = met ? FULL_CONFIG : { requires: ">=99" };
-      const { input, env } = c.setup(listed ? listing(c, config) : config);
-      if (wired) wireProjectHook(mainOf(input), c.own.event, c.own.matcher);
-      const pluginAnswered = plugin
-        ? (await runHook(c.spec, input, env)).stdout !== undefined
-        : false;
-      expect(Number(pluginAnswered) + Number(wired)).toBe(expected);
-    },
-  );
-});
-
 test("an input that is not JSON: a guard asks, any other hook says one line; for another event: nothing", async () => {
   const { handleHook } = await import("./run");
   // A guard that cannot read its input cannot judge the call, so it asks (fails closed).
-  expect(await handleHook(gitGuardHook, "not json", hookEnv())).toEqual({
+  expect(await handleHook(userAwayHook, "not json", hookEnv())).toEqual({
     stdout: JSON.stringify({
       hookSpecificOutput: {
         hookEventName: "PreToolUse",
         permissionDecision: "ask",
         permissionDecisionReason:
-          "cc-smart-dev-kit cannot check this git command: the hook input is not JSON",
+          "cc-smart-dev-kit cannot check whether the person is available: the hook input is not JSON",
       },
     }),
   });
@@ -1008,7 +872,7 @@ test("an input that is not JSON: a guard asks, any other hook says one line; for
   });
   expect(
     await handleHook(
-      gitGuardHook,
+      jobRouteHook,
       JSON.stringify({ hook_event_name: "Stop", cwd: "/" }),
       hookEnv(),
     ),

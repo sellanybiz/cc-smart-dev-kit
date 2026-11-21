@@ -218,7 +218,6 @@ describe("the hooks' bun shim", () => {
         "PreToolUse",
         "PostToolUse",
         "PostToolUseFailure",
-        "PermissionRequest",
         "PostModelSwitch",
         "SessionStart",
         "Stop",

@@ -27,8 +27,8 @@ changes outside that loop.
 
 **The project's workflow says how strictly this holds.** `cc-smart-dev-kit workflow show` prints
 `reviewBeforePush`, and with it on — the default — the second opinion is due before the first
-push, and recorded (§ Second opinion). With it off, this skill is still worth running, and the
-merge guard asks the person about a merge whose head commit has no record.
+push, and recorded (§ Second opinion). With it off, this skill is still worth running; a merge
+still waits for the record of the pull request's head commit (`/cc-smart-dev-kit:commit`).
 
 **A small fix** skips the second opinion: a typo, wording, a comment, docs only (not
 instruction files: rules, skills, agents, settings, hooks), or a one-line fix inside a
@@ -76,9 +76,8 @@ change set's risk — what a missed bug would cost:
 | Normal | `sonnet`, `high` |
 | Risky: security, money, permissions, a schema, deploy plumbing, the router, a release | `opus`, `xhigh` |
 
-Unsure between two rows, take the higher one. `fable` only when the person asks for it: the
-senior engineer can change files, so the launch carries `Fable reason: build - <what the person
-asked>`, and `agent-guard` asks the person.
+Unsure between two rows, take the higher one. `fable` only when the person asks for it
+(`core.md` § Subagents).
 
 - **When:** once the non-plan change is complete, before its first push. A plan's review
   follows the build skill instead (§ 6: two `review-split` rounds, and a final senior engineer review when round 2's fixes are big).
@@ -100,9 +99,9 @@ asked>`, and `agent-guard` asks the person.
   on, the record of the review is written by the plugin's `review-record` hook: Claude Code
   tells it when a subagent finishes, and when that agent is one the workflow's `reviewAgents`
   lists (the plugin's `senior-engineer` by default) and its brief carried the `Mode: review`
-  line, it records the commit the working folder is on at that moment. The merge guard reads
-  that record — for the pull request's head commit — before a merge it would make with no
-  person watching. So the senior engineer must read the commit the record will name: commit
+  line, it records the commit the working folder is on at that moment. You read that
+  record (`cc-smart-dev-kit workflow merge-check <pr>`, or `workflow show`'s `review-done`) for
+  the pull request's head commit before you merge it yourself. So the senior engineer must read the commit the record will name: commit
   your own fixes first, and commit nothing until it has finished.
 - **Not in your agent list** (the plugin is off, or the session started before it
   existed)? Use `general-purpose`, paste the senior engineer's instructions (the cc-smart-dev-kit

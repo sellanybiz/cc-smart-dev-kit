@@ -1173,7 +1173,7 @@ export interface SettingsData {
    * is off (nothing would merge), else whether a pull request into this project's base may be
    * merged by itself, and the base's name.
    */
-  autoMerge: null | { allowed: boolean; base: null | string };
+  allowMerge: null | { allowed: boolean; base: null | string };
   /** Why the values cannot be resolved (a broken file of the person's own, no module): a notice. */
   error: null | string;
   /** What to know about the project, when its own file cannot be read; null otherwise. */
@@ -1197,7 +1197,7 @@ export async function settingsData(
   workflow: WorkflowAdapter,
 ): Promise<SettingsData> {
   const empty = (why: string | null): SettingsData => ({
-    autoMerge: null,
+    allowMerge: null,
     clashes: [],
     error: why,
     projectNote: null,
@@ -1215,7 +1215,7 @@ export async function settingsData(
   }
   const rows = settingsRows(resolved, { projectFile: project.configFile !== null });
   const base = project.config?.worktrees?.base ?? null;
-  const autoMerge = resolved.autoMerge.value
+  const allowMerge = resolved.allowMerge.value
     ? {
         allowed:
           base !== null &&
@@ -1230,8 +1230,8 @@ export async function settingsData(
       }
     : null;
   return {
-    autoMerge,
-    clashes: clashesOf(resolved, base),
+    allowMerge,
+    clashes: clashesOf(resolved),
     error: null,
     projectNote,
     rows,

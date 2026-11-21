@@ -15,7 +15,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
-import { findGitBash, GIT_BASH_INSTALLS, GIT_BASH_VAR } from "../cli/git-bash";
+import { findGitBash, GIT_BASH_INSTALLS } from "../cli/git-bash";
 import { cliPaths } from "../cli/paths";
 import { classifyHeavyCommand, runWeight, type WeightSource } from "../jobs/classify";
 import { HOOK_NAMES } from "../jobs/git-hooks";
@@ -28,22 +28,17 @@ import {
   stageFile,
   writeFileIn,
 } from "../testing/git-hook-world";
-import { hookEnv } from "../testing/hooks";
+import { hookEnv, makeRepo, runHook, writeClaudeFile } from "../testing/hooks";
 import { cleanGitEnv, git, tempDir } from "../testing/temp";
 import { pullRequestMerges } from "./after-merge";
-import { guardQuestions } from "./git-guard";
-import type { HookInput, HookResult } from "./io";
+import type { HookResult } from "./io";
 import {
   bashLineOf,
   bashToolExists,
   DEFAULT_BASH_MAX_TIMEOUT_MS,
   DEFAULT_BASH_TIMEOUT_MS,
   jobRoute,
-  jobRouteConfigAnswer,
-  jobRouteDomain,
-  jobRouteOutsideGit,
   jobRunCommand,
-  judgeCommandAnswer,
   powerShellDenial,
   REWRITE_TIMEOUT_SUPPORTED,
   rewriteAnswer,
@@ -53,7 +48,8 @@ import {
   routeGitHooks,
   routeHeavyCommand,
 } from "./job-route";
-import type { HookContext, HookEnvContext } from "./run";
+import type { HookContext } from "./run";
+import { jobRouteHook } from "./specs";
 
 const KINDS = mergeKinds(undefined);
 const LAUNCHER = '"$HOME/.local/bin/cc-smart-dev-kit"';
@@ -229,19 +225,10 @@ describe("which commands are routed", () => {
     expect(plain?.command).toBe(`${LAUNCHER} job run --kind tsc -- bash -c 'bunx tsc --noEmit'`);
   });
 
-  it("HK hunch 1: the kit's own guards still read inside a routed line", () => {
-    const routed = routeHeavyCommand("cd app && bunx tsc --noEmit", KINDS, SHELL, SOURCE);
-    const options = {
-      protectedBranches: ["main"],
-      autoPushAsk: () => null,
-      sharedStash: false,
-      env: {},
-    };
-    expect(guardQuestions(routed?.command ?? "", "/nowhere", options)).toEqual([]);
-    // What a guard asks about is asked inside a routed line as well: a hand-built line that
-    // hides a push and a merge in its shell string.
+  it("HK hunch 1: the merge reader still reads inside a routed line", () => {
+    // A hand-built line hides a push and a merge in its shell string: `after-merge` still finds
+    // the merge there.
     const hidden = `${LAUNCHER} job run --kind tsc -- ${SHELL} -c 'bunx tsc --noEmit && git push --force origin main && gh pr merge 5'`;
-    expect(guardQuestions(hidden, "/nowhere", options).length).toBe(2);
     expect(pullRequestMerges(hidden).map((one) => one.target?.ref)).toEqual(["5"]);
   });
 });
@@ -269,72 +256,68 @@ describe("the two answers", () => {
 });
 
 // ---------------------------------------------------------------------------------------
-// The judge outside the project, and a heavy command beside a broken or too new project
-// file: the person is asked.
+// The kit has one guard: the heavy-job queue. job-route judges no launch, and never asks.
 // ---------------------------------------------------------------------------------------
 
-describe("the judge alone, and a project file that cannot be read", () => {
-  const input = (command: string, tool = "Bash"): HookInput => ({
+describe("job-route answers nothing but the queue", () => {
+  const input = (command: string, tool = "Bash"): Record<string, unknown> => ({
+    cwd: makeRepo(),
     hook_event_name: "PreToolUse",
     tool_input: { command },
     tool_name: tool,
   });
-  const context = (env: Record<string, string>): HookEnvContext => ({
-    env,
-    nowMs: 0,
-    paths: cliPaths(env),
-  });
-  const decisionOf = (result: HookResult | null) =>
-    JSON.parse(result?.stdout ?? "{}").hookSpecificOutput;
 
-  it("a `claude -p` launch the policy questions: the person is asked", () => {
-    const command = "claude -p --model opus --effort max 'do it'";
-    const person = decisionOf(judgeCommandAnswer(input(command), context(hookEnv())));
-    expect(person.permissionDecision).toBe("ask");
-  });
-
-  it("a heavy command beside a broken or too new project file: the person is asked", () => {
-    const env = hookEnv();
-    const command = "bunx vitest run src/a.test.ts";
-    const why =
-      "cc-smart-dev-kit cannot check whether this project routes heavy commands through its job queue: the file needs a newer plugin";
-    expect(
-      jobRouteConfigAnswer("the file needs a newer plugin", input(command), context(env)),
-    ).toEqual({
-      stdout: JSON.stringify({
-        hookSpecificOutput: {
-          hookEventName: "PreToolUse",
-          permissionDecision: "ask",
-          permissionDecisionReason: why,
-        },
-      }),
+  it.each([
+    "claude --bg 'do the phase'",
+    "claude -p --model fable --effort max 'do it'",
+    "claude -p 'do it'",
+    "cc-smart-dev-kit workflow propose autoCommit true",
+    "cc-smart-dev-kit herdr start --model opus --effort max --mode manual -- work",
+    "hc send t1 hi",
+  ])("%s: no answer, whichever the project's settings", async (command) => {
+    const result = await runHook(jobRouteHook, input(command), hookEnv());
+    expect(result).toEqual({});
+    const unattended = await runHook(jobRouteHook, input(command), {
+      ...hookEnv(),
+      CLAUDE_CODE_SESSION_ATTENDED: "0",
     });
+    expect(unattended).toEqual({});
   });
 
-  it("a light command: silence", () => {
+  /** The person's own workflow file, with the route default on or off. */
+  const personal = (route: boolean) => {
     const env = hookEnv();
-    expect(jobRouteConfigAnswer("broken", input("git status"), context(env))).toEqual({});
-    expect(jobRouteConfigAnswer("broken", input("git status", "PowerShell"), context(env))).toEqual(
-      {},
-    );
-  });
+    const file = cliPaths(env).workflowConfigFile;
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, `${JSON.stringify({ switches: { jobRoute: route } })}\n`);
+    return env;
+  };
+  const heavy = "bunx tsc --noEmit";
+  const queued = (result: HookResult) =>
+    JSON.parse(result.stdout ?? "{}").hookSpecificOutput?.updatedInput?.command ?? null;
 
-  it("a PowerShell heavy command: asked about like a Bash one, since the route may refuse it", () => {
-    // A Git Bash the lookup finds on any machine (off Windows the Bash tool is always there).
-    const bash = join(tempDir("git-bash"), "bash.exe");
-    writeFileSync(bash, "");
-    const env = { ...hookEnv(), [GIT_BASH_VAR]: bash };
-    const answer = decisionOf(
-      jobRouteConfigAnswer(
-        "broken",
-        input("bunx vitest run src/a.test.ts", "PowerShell"),
-        context(env),
-      ),
-    );
-    expect(answer.permissionDecision).toBe("ask");
-    expect(answer.permissionDecisionReason).toBe(
-      "cc-smart-dev-kit cannot check whether this project routes heavy commands through its job queue: broken",
-    );
+  it.each([
+    ["too new", { requires: ">=99", future: true }],
+    ["broken", { worktree: {} }],
+  ])(
+    "a project file that is %s: the person's own route default decides, as if it were absent",
+    async (_name, file) => {
+      const repo = makeRepo();
+      writeClaudeFile(repo, "cc-smart-dev-kit.json", file);
+      const call = { ...input(heavy), cwd: repo };
+      // Their default on: the heavy command is queued, though the project's own file says nothing.
+      expect(queued(await runHook(jobRouteHook, call, personal(true)))).toContain(
+        "job run --kind tsc -- bunx tsc --noEmit",
+      );
+      // Their default off (or none): it runs as written.
+      expect(await runHook(jobRouteHook, call, personal(false))).toEqual({});
+      expect(await runHook(jobRouteHook, call, hookEnv())).toEqual({});
+    },
+  );
+
+  it("a folder outside git has no project to route for: the line runs as written", async () => {
+    const call = { ...input(heavy), cwd: tempDir("not-git") };
+    expect(await runHook(jobRouteHook, call, personal(true))).toEqual({});
   });
 });
 
@@ -601,7 +584,7 @@ describe("a light line stays raw, a heavy one is routed", () => {
     );
   });
 
-  it("a package script is read by its body: a lone tsc is routed, a mixed body is not", () => {
+  it("a package script is read by its body: a lone tsc is routed, and a mixed body is queued whole", () => {
     const repo = repoWith({
       "package.json": JSON.stringify({
         scripts: { typecheck: "tsc --noEmit", check: "tsc --noEmit && biome check ." },
@@ -610,7 +593,9 @@ describe("a light line stays raw, a heavy one is routed", () => {
     expect(rewrittenTo(repo, "bun run typecheck")).toBe(
       `${LAUNCHER} job run --kind tsc -- bun run typecheck`,
     );
-    expect(rewrittenTo(repo, "bun run check")).toBeNull();
+    expect(rewrittenTo(repo, "bun run check")).toBe(
+      `${LAUNCHER} job run --kind tsc -- bun run check`,
+    );
   });
 
   it("two heavy commands in one line are queued once, as one job", () => {
@@ -699,50 +684,6 @@ describe("a PowerShell line: only a heavy run is refused", () => {
   it("a line the Bash translation cannot read stays refused, as before", () => {
     const refused = powerShellDecision(repoWith(TEST_FILE), "cd app; bun test");
     expect(refused?.permissionDecision).toBe("deny");
-  });
-});
-
-describe("a project file that cannot be read: a light line is not asked about", () => {
-  const input = (repo: string, command: string, tool = "Bash"): HookInput => ({
-    cwd: repo,
-    hook_event_name: "PreToolUse",
-    tool_input: { command },
-    tool_name: tool,
-  });
-  const context = (): HookEnvContext => {
-    const env = hookEnv();
-    return { env, nowMs: 0, paths: cliPaths(env) };
-  };
-  const asked = (repo: string, command: string) =>
-    JSON.parse(jobRouteConfigAnswer("broken", input(repo, command), context()).stdout ?? "{}")
-      .hookSpecificOutput?.permissionDecision ?? null;
-
-  it("a run on a file that exists is silent; a full run is asked about", () => {
-    const repo = repoWith(TEST_FILE);
-    expect(asked(repo, "bun test ./a.test.ts")).toBeNull();
-    expect(asked(repo, "bun test")).toBe("ask");
-  });
-
-  it("a script that is a lone tsc is asked about, as the route would have routed it", () => {
-    const repo = repoWith({ "package.json": JSON.stringify({ scripts: { tc: "tsc --noEmit" } }) });
-    expect(asked(repo, "bun run tc")).toBe("ask");
-  });
-
-  it("the crash domain: a light line is out of it, a heavy one is in", () => {
-    const repo = repoWith(TEST_FILE);
-    expect(jobRouteDomain(input(repo, "bun test ./a.test.ts"))).toBe(false);
-    expect(jobRouteDomain(input(repo, "bun test"))).toBe(true);
-    expect(jobRouteDomain(input(repo, "bunx vitest --watch"))).toBe(false);
-    // The judge's own lines stay in it, whatever the weight.
-    expect(jobRouteDomain(input(repo, "claude --bg 'x'"))).toBe(true);
-    // No cwd: the files cannot be read, so the line is judged by its kind alone, as before.
-    expect(
-      jobRouteDomain({
-        hook_event_name: "PreToolUse",
-        tool_input: { command: "bun test ./a.test.ts" },
-        tool_name: "Bash",
-      }),
-    ).toBe(true);
   });
 });
 
@@ -1596,31 +1537,74 @@ describe("a mixed line: what is not refused", () => {
     }
   });
 
-  it("no heavy run in the line, and a heavy script whose own body cannot be split", () => {
+  it("no heavy run in the line, and a heavy script whose body holds other commands", () => {
     const repo = repoWith({
       "package.json": JSON.stringify({ scripts: { check: "tsc --noEmit && rm -rf dist" } }),
     });
     expect(jobRoute(contextFor(repo, "git status && ls"))).toEqual({});
     expect(jobRoute(contextFor(repo, "bun install && git status"))).toEqual({});
-    // The person cannot split a script's body: the line runs raw, as it did.
-    expect(jobRoute(contextFor(repo, "bun run check"))).toEqual({});
-    expect(jobRoute(contextFor(repo, "bun run check && git status"))).toEqual({});
+    // The person's rules see only the call, never the body: the call is queued whole.
+    expect(rewrittenTo(repo, "bun run check")).toBe(
+      `${LAUNCHER} job run --kind tsc -- bun run check`,
+    );
+    // Only what the person's own line adds beside the call is refused.
+    expect(denialOf(repo, "bun run check && git status")).toContain("beside other commands");
   });
 
   // The rule's walk stops at a body's first failing command, so a heavy command after it
-  // (`biome check . && tsc --noEmit`) must still keep the call exempt: run alone, it could never
-  // meet a refusal.
+  // (`biome check . && tsc --noEmit`) is found by the plain walk of the whole body: the call is
+  // heavy work, and is queued whole.
   it("a heavy script whose body starts with a command that is not heavy", () => {
     const repo = repoWith({
       "package.json": JSON.stringify({
-        scripts: { check: "biome check . && tsc --noEmit", lint: "biome check ." },
+        scripts: {
+          check: "biome check . && tsc --noEmit",
+          lint: "biome check .",
+          tsc: "SKIP_ENV_VALIDATION=1 next typegen && tsc --noEmit",
+          loop: "next typegen && tsc --noEmit && bun run loop",
+        },
       }),
     });
-    expect(jobRoute(contextFor(repo, "bun run check"))).toEqual({});
-    expect(jobRoute(contextFor(repo, "npm run check"))).toEqual({});
-    expect(jobRoute(contextFor(repo, "bun run check; git status"))).toEqual({});
+    expect(rewrittenTo(repo, "bun run check")).toBe(
+      `${LAUNCHER} job run --kind tsc -- bun run check`,
+    );
+    expect(rewrittenTo(repo, "npm run check")).toBe(
+      `${LAUNCHER} job run --kind tsc -- npm run check`,
+    );
+    expect(rewrittenTo(repo, "bun run tsc")).toBe(`${LAUNCHER} job run --kind tsc -- bun run tsc`);
+    expect(denialOf(repo, "bun run check; git status")).toContain("beside other commands");
+    expect(denialOf(repo, "bun run tsc && rm x")).toContain("beside other commands");
+    // A script that calls itself cannot be read whole: the line runs raw, as it did.
+    expect(jobRoute(contextFor(repo, "bun run loop"))).toEqual({});
     // A script call whose body runs no heavy work is still a command of its own.
     expect(denialOf(repo, "bun run lint && bun test")).toContain("beside other commands");
+  });
+
+  // A body that never ends holds the one slot for as long as it runs: it stays raw, with a
+  // call's own words (`--watch`, `--ui`) read as the runners hand them to the body.
+  it("a script body that never ends, or runs in the background, is not queued", () => {
+    const repo = repoWith({
+      "package.json": JSON.stringify({
+        scripts: {
+          t: "next typegen && vitest",
+          pure: "tsc --noEmit && vitest",
+          e2e: "next typegen && playwright test",
+          w2: "next typegen && watch tsc --noEmit",
+          bg: "next dev & tsc --noEmit",
+        },
+      }),
+    });
+    for (const command of [
+      "bun run t --watch",
+      "bun run t -- --watch",
+      "bun run pure --watch",
+      "bun run e2e --ui",
+      "bun run w2",
+      "bun run bg",
+    ]) {
+      expect([command, jobRoute(contextFor(repo, command))]).toEqual([command, {}]);
+    }
+    expect(rewrittenTo(repo, "bun run t")).toBe(`${LAUNCHER} job run --kind test:run -- bun run t`);
   });
 
   it("the route off, and outside git", () => {
@@ -1630,8 +1614,6 @@ describe("a mixed line: what is not refused", () => {
       project: { config: { jobs: { route: false } }, mainCheckout: null, root: repo },
     } as unknown as HookContext;
     expect(jobRoute(off)).toEqual({});
-    const outside = contextFor(repo, "bun test; git status");
-    expect(jobRouteOutsideGit(outside.input, outside as unknown as HookEnvContext)).toEqual({});
   });
 
   it("a PowerShell line keeps its own refusal, a git-only line keeps the hooks prefix", () => {

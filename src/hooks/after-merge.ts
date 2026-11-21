@@ -49,7 +49,6 @@ import {
   nestedCommand,
   nestedDialect,
   readingsOf,
-  redirectionTargets,
   shellSteps,
   shortFlags,
   withoutRedirections,
@@ -131,8 +130,8 @@ export const GH_COMMANDS: ReadonlySet<string> = new Set([
 
 /**
  * One command of a line that asks GitHub to merge a pull request. This is the one reader of
- * a merge command line: `mergesPullRequest` (what the after-merge note asks), `requestsMerge`
- * and `mergeCalls` (what the merge guard asks) all read what it returns.
+ * a merge command line: `mergesPullRequest` (what the after-merge note asks) and `mergeCalls` both read what it
+ * returns.
  */
 export interface MergeCall {
   /**
@@ -150,7 +149,7 @@ export interface MergeCall {
   disarms: boolean;
   /**
    * An `--admin` (any value) on the merge's own words: gh merges with administrator rights,
-   * past the repository's branch protection, so the merge guard always asks.
+   * past the repository's branch protection, so merge-check always asks.
    */
   admin: boolean;
   /** The word after `gh` that names no gh command: an alias to look up, or an extension. */
@@ -1270,130 +1269,6 @@ export function mergesPullRequest(command: string, dialect?: Dialect): boolean {
   return pullRequestMerges(command, null, dialect).some(
     (one) => !one.arms && !one.disarms && (one.target !== null || one.refusal !== null),
   );
-}
-
-/**
- * Did this shell command ask GitHub to merge a pull request — now, or with `--auto` for
- * later, once the checks pass? What the merge guard watches: an armed merge lands with
- * nobody watching, so it is judged like a merge, and a `gh <word>` that is no gh command may
- * be an alias that merges, so it is looked at too. A `--disable-auto` only takes an armed
- * one back, so it is not.
- */
-export function requestsMerge(command: string, dialect?: Dialect): boolean {
-  return pullRequestMerges(command, null, dialect).some((one) => !one.disarms);
-}
-
-/**
- * The question when a line's program is worked out when it runs (`$GH`, `$(which gh)`) and
- * its words name a merge: the guard cannot tell whether it merges a pull request.
- */
-export const COMPUTED_MERGE =
-  "This command runs a program it works out when it runs, and its words name a merge, so this guard cannot tell whether it merges a pull request. Write the command out in full if you meant it.";
-
-/**
- * True when a command's program is worked out when it runs (`$GH`, `$(which gh)`) and the
- * words of that command, as the reader sees them, say `names`. One reader for every
- * computed-program risk, so the merge check and the opening check can never disagree.
- */
-export function computedInvocationRisk(
-  command: string,
-  dialect: Dialect | undefined,
-  names: (words: readonly string[]) => boolean,
-): boolean {
-  return readingsOf(command, dialect).some((reading) =>
-    shellSteps(command, {
-      blindWhenOpen: true,
-      dialect: reading.dialect,
-      joinLines: reading.joinLines,
-    }).some((step) => {
-      const words = wordsOf(step.text, reading.dialect);
-      const invocation = invocationOf(words);
-      return invocation?.computed === true && names(words);
-    }),
-  );
-}
-
-/**
- * True when a command's program is computed (`$GH`, `$(which gh)`) and the words of that
- * command name a merge. The one reader of a merge command line answers it for the merge
- * guard, its fail-closed answers, and every other caller.
- */
-export function computedMergeRisk(command: string, dialect?: Dialect): boolean {
-  return computedInvocationRisk(command, dialect, (words) =>
-    words.some((word) => /merge/i.test(word)),
-  );
-}
-
-/**
- * Do these words name a pull request change: an opening (`pr create`, `pr new`, `pr ready`)
- * or a merge? Read the way `couldBeMerge` reads a `gh pr` command, over a line whose program
- * cannot be named.
- */
-function namesPullRequestChange(words: readonly string[]): boolean {
-  const lower = words.map((word) => word.toLowerCase());
-  if (lower.some((word) => /merge/i.test(word))) return true;
-  return lower.includes("pr") && lower.some((word) => PR_OPENERS.has(word));
-}
-
-/**
- * True when a command's program is computed (`$GH`, `$(which gh)`) and the words of that
- * command name a pull request opening or merge. The program cannot be named, so a guard cannot
- * tell the line's work apart: the merge guard asks about it.
- */
-export function computedPullRequestRisk(command: string, dialect?: Dialect): boolean {
-  return computedInvocationRisk(command, dialect, namesPullRequestChange);
-}
-
-/**
- * Did this shell command ask GitHub to merge a pull request, or open or ready one? What the
- * merge guard watches (D16): one cheap read, so an ordinary Bash call finds nothing and pays
- * nothing. A computed program whose words name a merge, an opening or making one ready counts:
- * the guard asks rather than stay silent.
- */
-export function requestsPullRequestChange(command: string, dialect?: Dialect): boolean {
-  return (
-    pullRequestCalls(command, null, dialect).some((one) => !one.disarms) ||
-    computedPullRequestRisk(command, dialect)
-  );
-}
-
-/**
- * The one merge a line is, when the WHOLE line is exactly `gh pr merge <n>` with flags this
- * guard knows (D31). Only that form may the merge guard answer `allow` for: an `allow` skips
- * auto mode's own "Merge Without Review" rule for the whole tool call (proved live, L1a.5),
- * and any other work on the line — a second command, a pipe, a wrapper or an assignment
- * before gh (`timeout 60 gh pr merge 7`), an alias, a `bash -c` — would skip that rule for
- * work the guard never judged. A redirection that writes a file, or a pull request named by a
- * branch or a URL rather than a number, is no exact merge either. So is an armed merge
- * (`--auto`): it lands later, once the checks pass, with nobody watching, so a commit pushed
- * after this check would merge unread — it stays silent, and auto mode's rule still applies.
- *
- * Null when the line is anything else. Read with the one shell reader, in the tool's dialect;
- * an unknown dialect (both readings) is never exact.
- */
-export function exactMergeOf(command: string, dialect?: Dialect): MergeCall | null {
-  const readings = readingsOf(command, dialect);
-  if (readings.length !== 1) return null;
-  const reading = readings[0];
-  if (reading === undefined) return null;
-  const steps = shellSteps(command, { dialect: reading.dialect, joinLines: reading.joinLines });
-  const step = steps[0];
-  if (steps.length !== 1 || step === undefined || step.pipedFrom !== null) return null;
-  const filled = wordsWithFill(step.text, reading.dialect);
-  // The filled words tell `>"(x"` (a file) from `>(x)`: a merge that writes a file is no plain merge.
-  if (redirectionTargets(filled).length > 0) return null;
-  const words = filled.map((word) => word.text);
-  const invocation = invocationOf(words);
-  if (invocation === undefined || invocation.program !== "gh") return null;
-  // An assignment or a wrapper before gh (`env`, `sudo`, `timeout`) runs more than the merge.
-  if (invocation.prefix.length > 0) return null;
-  const calls = pullRequestCalls(step.text, null, reading.dialect);
-  const one = calls[0];
-  if (calls.length !== 1 || one === undefined || !isMerge(one)) return null;
-  if (one.refusal !== null || one.unread !== null || one.unknown !== null) return null;
-  if (one.unknownFlag !== null || one.admin || one.disarms || one.arms) return null;
-  const ref = one.target?.ref ?? null;
-  return ref !== null && /^\d+$/.test(ref) ? one : null;
 }
 
 /**

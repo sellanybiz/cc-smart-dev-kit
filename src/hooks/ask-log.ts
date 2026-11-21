@@ -31,9 +31,9 @@ export const ASK_REASON_MAX = 200;
 
 /** One question a guard put to the person. */
 export interface GuardAsk {
-  /** When the guard asked (ms since the epoch, like `agent-launches.jsonl`). */
+  /** When the guard asked (ms since the epoch). */
   at: number;
-  /** The hook that asked (`git-guard`). */
+  /** The hook that asked (`job-route`). */
   hook: string;
   /** The session it happened in; empty when the input names none. */
   session: string;

@@ -52,20 +52,20 @@ export interface SettingSpec {
 export const SETTINGS: readonly SettingSpec[] = [
   {
     card: "flow",
-    help: "Commit each finished, reviewed step without asking.",
+    help: "Let a session commit each finished, reviewed step without asking.",
     id: "set-commit",
-    key: "autoCommit",
+    key: "allowCommit",
     kind: "boolean",
-    label: "Auto commit",
+    label: "Allow commit",
     where: "personal",
   },
   {
     card: "flow",
-    help: "Push your own branch. Never main, dev or a protected branch: the git guard still asks there.",
+    help: "Let a session push your own branch. Never main, dev or a protected branch.",
     id: "set-push",
-    key: "autoPush",
+    key: "allowPush",
     kind: "boolean",
-    label: "Auto push",
+    label: "Allow push",
     where: "personal",
   },
   {
@@ -84,11 +84,11 @@ export const SETTINGS: readonly SettingSpec[] = [
   },
   {
     card: "flow",
-    help: "Merge your pull request yourself once CI has passed and the review is done.",
+    help: "Let a session merge your pull request once CI has passed and the review is done.",
     id: "set-merge",
-    key: "autoMerge",
+    key: "allowMerge",
     kind: "boolean",
-    label: "Auto merge",
+    label: "Allow merge",
     where: "personal",
   },
   {

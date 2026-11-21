@@ -46,8 +46,8 @@ import { type LastAnswer, lastAnswers } from "../gateway/history-read";
 import { cutText, oneLine } from "../gateway/plain-text";
 import { answerTargetName } from "../gateway/target-label";
 import { familySlotFor } from "../gateway/targets";
-import { sessionGatewayOf } from "../hooks/agent-guard";
 import type { Env } from "../hooks/run";
+import { sessionGatewayOf } from "../hooks/session-facts";
 import type { CliPaths } from "./paths";
 import { formatTokens } from "./statusline-context";
 

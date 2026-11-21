@@ -18,7 +18,7 @@
  *   name is a warning too: both run, so both may answer. The machine-wide hooks
  *   (`MACHINE_WIDE_HOOKS`: the user hooks stop-failure, update-check, notify and
  *   playwright-output, and the specs that run with or without the project's file, such as
- *   `agent-guard`, `keep-going` and `agent-usage`) are never warned about: they
+ *   `fable-session`, `keep-going` and `agent-usage`) are never warned about: they
  *   answer about the machine, so a project hook beside one is not a copy of a plugin piece.
  *   A retired hook name in `ownHooks` (`RETIRED_HOOK_NAMES`) is information: it silences
  *   nothing, and can be taken out.
@@ -75,10 +75,11 @@ import {
   IGNORED_TASK_FIELDS,
   RETIRED_HOOK_NAMES,
   UNSWITCHABLE_HOOK_NAMES,
+  WORKFLOW_ALLOW_KEYS_SINCE,
   WORKTREE_ENGINE_RETIRED_IN,
 } from "../project/config";
 import { findDeploySkills, skillsFolderLink, staleBlocks } from "../project/deploy-skill";
-import { hasDeployTaskFolders, requiresFloor, requiresTooLow } from "../project/init";
+import { hasDeployTaskFolders, requiresFloor, requiresFor, requiresTooLow } from "../project/init";
 import {
   type Checkout,
   checkoutFailure,
@@ -95,7 +96,7 @@ import { readWorkStore } from "../tasks/work/read";
 import { type GhExec, runGh } from "../workflow/merge-check";
 import { resolvePlans } from "../workflow/resolve";
 import { parseGitVersion, tooOldToCover } from "../workflow/review-cover";
-import { workflowDefaults } from "../workflow/schema";
+import { oldNamesIn, workflowDefaults } from "../workflow/schema";
 import type { Check } from "./check";
 import { type CliPaths, tildify } from "./paths";
 import { defaultBranchOf, realRunnerAsync } from "./project-init";
@@ -152,8 +153,49 @@ export function retiredReviewAgentCheck(
     ok: false,
     text: `${label} names the retired ${OLD_REVIEW_AGENT} in ${personal ? "reviewAgents" : "workflow.reviewAgents"}`,
     fix: personal
-      ? `${REPLACE_REVIEW_AGENT}: in your own terminal, not inside Claude Code (it refuses the gate's keys there), run ${COMMAND} workflow set reviewAgents ${NEW_REVIEW_AGENT}, or ${COMMAND} workflow unset reviewAgents to use the default; personal changes count at once`
-      : `${REPLACE_REVIEW_AGENT}, then merge that change by hand or run ${COMMAND} workflow review-done, because the merge guard judges with the base branch's list`,
+      ? `${REPLACE_REVIEW_AGENT}: run ${COMMAND} workflow set reviewAgents ${NEW_REVIEW_AGENT}, or ${COMMAND} workflow unset reviewAgents to use the default; personal changes count at once`
+      : `${REPLACE_REVIEW_AGENT}, then merge that change by hand or run ${COMMAND} workflow review-done, because merge-check judges with the base branch's list`,
+  };
+}
+
+/**
+ * One line for a workflow file that still holds an old setting name (`autoPush`, now `allowPush`;
+ * `WORKFLOW_KEY_ALIASES`), or null. The old name keeps working, so it is a warning with the
+ * rename, never a failure. A file that holds both names says to remove the old one: the new one
+ * wins already. A project's file also gets the cost of the new name: `requires` rises to
+ * 6.1 (`WORKFLOW_ALLOW_KEYS_SINCE`), which a teammate on an older plugin hears as "update". A file
+ * that is missing or cannot be read is the other checks' to say, so it gives null here.
+ */
+export function oldWorkflowNamesCheck(file: string, label: string, personal = false): Check | null {
+  let parsed: unknown;
+  try {
+    parsed = existsSync(file) ? readUserJson(file) : null;
+  } catch {
+    return null;
+  }
+  const workflow = personal || !isObject(parsed) ? parsed : parsed.workflow;
+  if (!isObject(workflow)) return null;
+  const found = oldNamesIn(workflow);
+  if (found.length === 0) return null;
+  const typedValue = (old: string) =>
+    typeof workflow[old] === "boolean" ? String(workflow[old]) : "<true|false>";
+  const steps = found.map(({ old, current, both }) => {
+    if (both) return `remove ${old} from this file: ${current} is set there and wins`;
+    const command = `${COMMAND} workflow set ${current} ${typedValue(old)}`;
+    return personal
+      ? `run ${command}`
+      : `rename ${old} to ${current} in this file, or run ${command} --project (a file with the new name needs requires "${requiresFor(WORKFLOW_ALLOW_KEYS_SINCE)}")`;
+  });
+  const waiting = found.filter(({ both }) => !both).length;
+  if (waiting > 0) {
+    steps.push(`the old name${waiting === 1 ? " keeps" : "s keep"} working until then`);
+  }
+  const names = found.map(({ old, current }) => `${old} (now ${current})`).join(", ");
+  return {
+    ok: true,
+    warn: true,
+    text: `${label} uses the old setting name${found.length === 1 ? "" : "s"} ${names}`,
+    fix: steps.join("; "),
   };
 }
 
@@ -412,11 +454,10 @@ function onEvent(event: string, subjects: Array<string | null>): string {
 /**
  * A plugin hook that only answers when the project sets one of its fields: while that field
  * is unset the hook is silent, so a project hook on its event is no second copy of it.
- * `verify-gate` answers only with `checks.fast`; `deploy-guard` only with `tasks.deployCommands`.
+ * `verify-gate` answers only with `checks.fast`.
  */
 const OPT_IN_HOOKS: Record<string, (config: CcSmartDevKitConfig) => boolean> = {
   "verify-gate": (config) => config.checks !== undefined,
-  "deploy-guard": (config) => config.tasks?.deployCommands !== undefined,
 };
 
 /**
@@ -496,7 +537,7 @@ function ownCopyLines(
     ) {
       continue;
     }
-    // A machine-wide hook (stop-failure, update-check, notify, agent-guard, fable-session)
+    // A machine-wide hook (stop-failure, update-check, notify, fable-session)
     // answers about the machine, not this project: a project hook on its event is the person's
     // own business, not a second copy of a plugin piece, so nothing warns about it.
     if (MACHINE_WIDE_HOOKS.includes(hook.name)) continue;
@@ -519,7 +560,7 @@ function ownCopyLines(
   }
   for (const { hook, handler, subjects } of found.values()) {
     const advice = (UNSWITCHABLE_HOOK_NAMES as readonly string[]).includes(hook.name)
-      ? `The plugin's ${hook.name} cannot be switched off (it judges every launch): remove the project's copy, or keep it knowing both answer`
+      ? `The plugin's ${hook.name} cannot be switched off (it queues heavy commands): remove the project's copy, or keep it knowing both answer`
       : `If that is the project's own copy of ${hook.name}, list "${hook.name}" in ownHooks in .claude/cc-smart-dev-kit.json until the copy is removed`;
     lines.push({
       ok: true,
@@ -563,30 +604,6 @@ function requiresLines(
       fix: byDeploy
         ? `${COMMAND} project init raises it to "${needed.floor}"`
         : `${COMMAND} project init (or any ${COMMAND} workflow set … --project) raises it to "${needed.floor}"`,
-    },
-  ];
-}
-
-/**
- * One `·` line when the project has a deploy skill (the one `project init` finds: a file that
- * holds the kit's block, or a top skill that names a deploy) but lists no `tasks.deployCommands`:
- * the deploy guard has nothing to ask about, which is no failure, only a gap a person may want
- * to close. A skill folder that cannot be read says nothing here: `deployBlockLines` names it.
- */
-function deployCommandsLines(config: CcSmartDevKitConfig | null, root: string): ProjectLine[] {
-  if (config === null || config.tasks?.deployCommands !== undefined) return [];
-  try {
-    const found = findDeploySkills(root);
-    if (found.holders.length === 0 && found.named.length === 0) return [];
-  } catch {
-    return [];
-  }
-  return [
-    {
-      ok: true,
-      info: true,
-      text: "project: the project has a deploy skill but lists no deploy commands in tasks.deployCommands, so the deploy guard never asks before a deploy",
-      fix: `${COMMAND} project init asks for the commands`,
     },
   ];
 }
@@ -947,8 +964,13 @@ export async function projectChecks(
           configFile,
           `project: ${shown(configFile, projectDir, paths.home)}`,
         );
+  const oldNames =
+    configFile === null
+      ? null
+      : oldWorkflowNamesCheck(configFile, `project: ${shown(configFile, projectDir, paths.home)}`);
   const lines = [
     ...(retired === null ? [] : [retired]),
+    ...(oldNames === null ? [] : [oldNames]),
     ...retiredReviewMentions(projectDir),
     ...oldNameLines(projectDir, sources, paths.home),
     ...engine,
@@ -969,7 +991,6 @@ export async function projectChecks(
   lines.push(...(await issuesChecks({ cwd: checkout.root, env, gh, paths })));
   lines.push(...(await projectTaskChecks(checkout.root, env)));
   lines.push(...deployBlockLines(checkout.root, usesDeployTasks));
-  lines.push(...deployCommandsLines(config, checkout.root));
   lines.push(...planCapChecks(checkout.root, env, paths, config));
   return lines;
 }

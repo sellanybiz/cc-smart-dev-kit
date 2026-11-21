@@ -194,7 +194,7 @@ export interface ProjectsAnswer {
   note: null | string;
 }
 
-/** One branch on a project's page, with the merge guard's verdict on it. */
+/** One branch on a project's page, with merge-check's verdict on it. */
 export interface ProjectBranch {
   /** The branch it would merge into; null when it is not known. */
   base: null | string;
@@ -601,7 +601,6 @@ export interface WorkAnswer {
 export type MergeVerdict =
   | { detail: MergeDetail | null; kind: "allowed"; reason: string }
   | { detail: MergeDetail | null; kind: "refused"; number: null | number; reason: string }
-  | { kind: "silent" }
   | { kind: "unread"; number: null | number; what: string }
   | { kind: "late"; number: null | number; what: string };
 

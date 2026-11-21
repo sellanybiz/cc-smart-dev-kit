@@ -15,20 +15,12 @@ export const GUARD_BUDGET_MS = 25_000;
 
 /**
  * The budget of a hook that has 10 s (`job-route`'s question about `workflow propose`; every other
- * guard but the merge guard): the same share, and the same room to answer.
+ * guard but merge-check): the same share, and the same room to answer.
  */
 export const SHORT_GUARD_BUDGET_MS = 8_000;
 
 /** What is kept back when a call is handed its time: the answer itself, and Claude Code reading it. */
 export const BUDGET_MARGIN_MS = 2_000;
-
-/**
- * The budget of the git guard's proof that a subagent's discard stays in its own worktree
- * (`git-guard.ts`, a 10 s hook): less the margin, every git call of the proof ends 4 s after the
- * hook started, however many folders the line names. The rest of the hook's time is left for
- * the guard's other git reads and its answer. A proof that runs out of time asks.
- */
-export const OWN_WORKTREE_PROOF_BUDGET_MS = 6_000;
 
 /**
  * Where a test sets the budget: `CC_SMART_DEV_KIT_GUARD_BUDGET_MS`, in milliseconds, so the

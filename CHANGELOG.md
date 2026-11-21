@@ -3,6 +3,92 @@
 What each release changed, newest first. A release's **What to run** steps are the ones to do
 in your own terminal after the update; the user guide is [README.md](README.md).
 
+## 6.1.0
+
+- **The settings say what they do.** `autoCommit`, `autoPush` and `autoMerge` are now
+  `allowCommit`, `allowPush` and `allowMerge`: each says whether Claude may do that step without
+  asking you. You said: "auto merge and auto push was meaning Claude should not ask for a prompt
+  ... rename it like allow merge allow push allow commit". The old names still work in your own
+  file, in a project's file and in `workflow set`, `unset` and `propose`. When a file holds both,
+  the new one wins. `cc-smart-dev-kit workflow set allowPush true` writes the new name, and
+  `cc-smart-dev-kit doctor` names a file's old key (never as a failure). `project init --workflow
+  autoCommit=true` takes an old name too, and writes the new one. A project file that sets
+  a new name gets `requires` `>=6.1`, so an older plugin is told to update. `openPr` keeps its
+  name: it is a choice of three, not a yes.
+- **A phase closes only with its work in the plan branch.** `task_done` on a phase refuses when
+  its recorded branch has no commit past its base, or is not in the plan branch. The build skill
+  merges the commit the builder's report names, then checks it with `git merge-base
+  --is-ancestor <commit> <plan branch>` before it closes the phase. A hand-back once merged the
+  worktree's default branch while the builder had committed on another, and the phase closed with
+  none of its work. The check needs the phase's `base` to be the commit the builder started from,
+  and a branch merged by a squash is refused (its commits are not in the plan branch).
+- **A package script that runs heavy work is queued whole.** `bun run tsc` with the body
+  `SKIP_ENV_VALIDATION=1 next typegen && tsc --noEmit` skipped the job queue with no message,
+  because a command that is not heavy work came first in the body. A `<pm> run <script>` that is the line's own
+  command, and whose body runs heavy work, now waits for a slot. A script that calls itself or
+  nests too deep, a body that never ends (a watch run, a runner), a body that runs in the
+  background and a body that runs as another user still run raw. **New refusal:** a line such as
+  `bun run check; git status`, where the script's body mixes heavy work with another command and
+  you add one more command beside it, ran raw in 6.0.0 and is now refused as a mixed line; run
+  the script on its own line. A line you mixed yourself (`bun run tsc && rm x`) is still refused.
+
+**What to run:** `cc-smart-dev-kit update`, then restart open Claude Code sessions: a session
+keeps the plugin it started with. Your files keep working; move a value with
+`cc-smart-dev-kit workflow set allowPush true` when you like. A file that has the new names is
+refused by a plugin older than 6.1.0, which is why a project file's `requires` rises with them;
+your own `workflow.json` has no `requires`, so update every machine that shares it.
+
+## 6.0.0
+
+- **Full auto: the kit has one guard.** You said: "I am tired ... I have to wait all time in
+  front of the Claude session. Please drop all the guards ... the only guard our kit will support
+  will be the heavy-job guard. Everything will run in full auto." Six guard hooks are removed, with
+  their bundles and tests: `git-guard` (pushes, force-pushes, resets, cleans, discards),
+  `merge-guard` (merges, pull-request opens and readies, raw issue writes), `deploy-guard`,
+  `main-folder-guard`, `agent-guard` (the model and effort rules, the Fable gate and the UI
+  rule's deny) and `session-escape-guard`. `user-away` no longer turns another hook's question
+  into a parked action, and no longer answers Claude Code's own permission dialog: a hook
+  never approves for you. `acorn`, the JavaScript parser only `agent-guard` used, leaves the
+  bundles.
+- **`job-route` never asks.** Its launch judge is gone: a raw `claude --bg`, `claude -p` on
+  `fable` or `opus` at `max`, `workflow propose` and the Herdr rules (raw `hc` writes, machine
+  rules, the mode cap) no longer ask or refuse. The `herdr` command keeps its own refusals, such
+  as `--asked` for Fable. `job-route`'s `hooks.json` entry is `--missing=quiet` with no
+  `onFailure`: with no bun, the line runs as written.
+- **What stays.** `job-route`, the heavy-job queue: heavy commands still wait for a slot, a
+  heavy line mixed with other commands is still refused, and so is a heavy PowerShell line. Every hook that never asks you stays:
+  session names, the task list at a start, the cost record, the update check, the tier note, the
+  review record, the after-merge and leftovers notes, and the stops that keep work going
+  (`keep-going`, `verify-gate`, `builder-finish`, `subagent-background`).
+- **What Claude does instead.** The rules are instructions now. A merge follows `autoMerge`: Claude
+  merges its own pull request into its base, the main branch included, once CI is green (it
+  waits with `gh pr checks --watch` and never uses `--auto`), the review of its head
+  commit is recorded and the fixes after the review are within `fixesAfterReview` (over them, it
+  says so in the pull request); `workflow merge-check` prints that judgment and allows a merge into the integration base or
+  `main`; `workflow set autoMerge` (and the other review-gate keys) now works inside a session. Claude runs the
+  deploy gates (`task release <env> --before` and `--after`) itself. It asks you before a `fable`
+  or `opus`-at-`max` launch when you are available, and uses `opus` at `xhigh` when you are
+  away. Every planning agent (a plan's second read, the edge-case hunter on a plan, a `Plan`
+  agent) runs on `opus` at `xhigh`, and on Fable only with your yes.
+- **When you are away.** Claude takes the recommended option, records it with
+  `cc-smart-dev-kit user park --kind decision` (the text starts `Decision:`), and keeps going; it never enters plan mode while you are away, and a
+  deploy to production waits for you (staging may run).
+  Nothing is parked to wait for an answer. When you are available, it asks its real questions
+  as before. `/cc-smart-dev-kit:user-available` shows the decisions when you are back.
+- **The trade-off, at your ruling.** With no guard, nothing now stops a mistaken
+  `git reset --hard` in the main checkout, a force-push to `main`, an unreviewed merge, a deploy,
+  a write in the main folder, or a Fable or Opus-at-`max` launch. Claude Code's own permission
+  mode and your own `deny` rules are the stops left. A project's `ownHooks` that names a removed
+  hook still parses and silences nothing; `doctor` says the name can go. A project's own asking
+  hooks and `permissions.ask` lists are its own: remove them in that project.
+- **A flaky test is fixed:** the nested job signal test no longer fails under load.
+- **Fields that enforce nothing now.** `protectedBranches`, `worktrees.guardMainFolder` and
+  `tasks.deployCommands` stay in the schema so older files load; no hook reads them.
+- **A major version.** 6.0.0 removes features, so the background self-update holds it until you
+  run `cc-smart-dev-kit update` yourself: nothing changes on a machine before that.
+- **What to run:** `cc-smart-dev-kit update`, then restart open Claude Code sessions (a session
+  keeps the old guards until it restarts).
+
 ## 5.6.1
 
 - **A builder undoing its own edits no longer asks you.** The git guard asks before a command

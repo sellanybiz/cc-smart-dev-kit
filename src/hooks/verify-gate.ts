@@ -27,7 +27,7 @@
  * **`notify` asks this module's decision** (`verifyGateWouldBlock`): a Stop that this hook will
  * block is not the end of the turn, so the "finished" alert waits for the stop that ends it.
  */
-import { extname, isAbsolute } from "node:path";
+import { extname, isAbsolute, resolve } from "node:path";
 import type { CcSmartDevKitConfig } from "../project/config";
 import { loadProjectConfig, locateCheckout } from "../project/resolve";
 import {
@@ -42,7 +42,6 @@ import {
 } from "../shell/command";
 import { isInside, realPath } from "./git";
 import { type HookInput, type HookResult, SILENT, stringField } from "./io";
-import { editedFile } from "./main-folder-guard";
 import { plansFolders } from "./plans-folders";
 import type { Env, HookContext } from "./run";
 import { STOP_FEEDBACK, stopFeedbackTexts, tailLines } from "./transcript";
@@ -258,8 +257,8 @@ export function verifyGateWouldBlock(
       (!isAbsolute(path) && (editCwd === null || !isAbsolute(editCwd)))
     )
       return true;
-    const file = editedFile({ tool_input: { file_path: path } }, editCwd ?? cwd);
-    if (file === null) return true;
+    // A real path: a link on the way to the file must not hide which checkout it is in.
+    const file = realPath(isAbsolute(path) ? resolve(path) : resolve(editCwd ?? cwd, path));
     return (
       isInside(file, root) &&
       ![".md", ".mdx"].includes(extname(file).toLowerCase()) &&

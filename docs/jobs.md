@@ -221,15 +221,20 @@ classifier reads what a script runs:
   script, so `"$npm_execpath" test` under `bun run test` is `bun test`. A script that calls
   another script is followed, three levels deep (`MAX_NESTING`); a script that calls itself,
   or goes deeper, is not read.
-- **The route needs every command of the body to be heavy or glue** (a `cd`, an assignment,
-  glue such as `echo`, or another such script are fine; § The route). A **mixed** script —
-  `biome check . && tsc --noEmit` — is never routed, because the queue would also hold the lint.
-  The line that calls it is not refused either, because the other command sits in the script's
-  body, which the person cannot split off their own line. This exemption is only for the body
-  of a script that **also runs the heavy work**. A script whose body runs no heavy work
-  (`lint: "biome check ."`) is an ordinary command of the line: `bun run lint && bun test` is
-  refused at `bun run lint`, like `bun test; git status`. To queue a mixed script, give the
-  project a kind with `{ "script": "check" }`: the whole script then waits for one slot.
+- **A script whose body runs heavy work is queued whole**, even when a command that is not
+  heavy work comes first in the body: `bun run check` with the body `biome check . && tsc
+  --noEmit`, or `bun run tsc` with `SKIP_ENV_VALIDATION=1 next typegen && tsc --noEmit`, waits for
+  one slot. The kinds are those of the plain walk of the body. This holds only when the call is
+  the line's own command and the body takes a slot. It stays raw when the body never ends (a
+  watch run, a runner, `--watch` or `--ui`), runs in the background, runs as another user
+  (`sudo …`), calls itself or nests too deep. The route does not refuse that line either, because
+  the other command sits in the script's body, which the person cannot split off their own line.
+  A script whose body runs no heavy work (`lint: "biome check ."`) is an ordinary command of the
+  line: `bun run lint && bun test` is refused at `bun run lint`, like `bun test; git status`.
+  **New in 6.1.0:** a line such as `bun run check; git status` (that script, plus a command of
+  your own) ran raw before and is now refused as a mixed line, like any line you mixed yourself
+  (`bun run tsc && rm x`): run the script on its own line. A `{ "script": "check" }` kind still
+  queues a script whatever its body holds, under that kind.
 - **`pre<name>` and `post<name>`** are read where the runner runs them: Bun, npm, pnpm and Yarn
   classic. Yarn Berry (a `packageManager` of `yarn@2` or newer, or a `.yarnrc.yml`) runs
   none, so none is read.
@@ -278,8 +283,7 @@ it is bash or zsh, else `bash` where the machine has it, else `sh` — never `/b
 dash on Debian and Ubuntu, and cannot read bash syntax). Each word is quoted unless it holds
 only letters, digits and `_ . / -`, so one with `=`, `:`, `@`, `,`, `%` or `+` is quoted too. A
 command already inside `cc-smart-dev-kit job run` is left alone, also when it is inside a
-script's body. Outside git there is no project, so a heavy command there runs raw. The hook's other part, the launch judge, is always on:
-`docs/design/hooks.md` § The Bash judge and the job route.
+script's body. Outside git there is no project, so a heavy command there runs raw. The hook itself: `docs/design/hooks.md` § The job route.
 
 **A line is queued whole only when every command in it is heavy, a `cd`, an assignment or
 glue** (`routableLine` in `src/jobs/classify.ts`; `classifyRoutableLine` gives its kind), and at
@@ -447,7 +451,7 @@ hook is ever skipped:
   bash array's list). `git --git-dir` and `--work-tree` also leave the hook unqueued: `job hook`
   cannot find the repo, answers `direct`, and the hook runs as it is;
 - none when the hook is not heavy, or git does not answer in time (the questions share the
-  guards' short time budget, 8 s of the hook's 10).
+  hook's short time budget, 8 s of the hook's 10).
 
 The prefixed call gets the same longest timeout as a wrapped one (§ The route).
 
@@ -841,8 +845,9 @@ one walk of the line:
 - **`mixedHeavyLine`**: the other side of that question. It finds a line that runs heavy work
   which takes a slot (weighed as `runWeight` does) beside a command that is neither heavy nor
   glue, and names both, for the route's refusal (`mixedLineDenial`; § The route). It gives null
-  for a line the queue takes whole, for a run that takes no slot, and for a line whose non-glue
-  command sits in a package script's body or in shells nested too deep.
+  for a line the queue takes whole (a script whose body runs heavy work is one), for a run that
+  takes no slot, and for a line whose non-glue command sits in a package script's body or in
+  shells nested too deep.
 - **`runWeight(line, kinds, source)`**: how heavy is the run? `{ weight: "light" }` (it only
   prints, or names only existing files), `{ weight: "heavy", kind }` (it waits for a slot), or
   `{ weight: "none" }` (no heavy command in the line, a watch run, or a line that queues
@@ -853,8 +858,8 @@ one walk of the line:
   reader understands: a `cd`, an assignment, glue (the same `GLUE_COMMANDS` and readers the
   route uses, § The route) or a script it followed. Anything else is heavy.
 
-The classifier reads the line with the one shell reader the guards use too
-(`src/shell/command.ts`), so the queue and the guards see the same commands: a tool inside
+The classifier reads the line with the one shell reader the kit's hooks use
+(`src/shell/command.ts`), so the queue and the other hooks see the same commands: a tool inside
 quotes, an `echo`, a quoted here-doc, a comment or a commit message is text, not a run; a
 substitution (`$( … )`, a backtick, the body of an unquoted here-doc) is a run. It finds the
 tool behind `bunx`, `bun x`, `bun run`, `bun test`, `bun <name>`, `npx`, `npm exec`, `npm run`,
@@ -874,7 +879,7 @@ whose `tsc` script already wraps the type check is not queued a second time. A n
 script** there is the package manager's `node_modules/.bin/<name>`, so a tool rule matches it.
 With no `package.json` there, or one the reader cannot use, the answer is the tool: a broken
 file is treated as no file. These cases are in `src/jobs/classify.test.ts` and, through the
-hook, in `src/hooks/bash-judge.test.ts`.
+hook, in `src/hooks/job-route.test.ts`.
 
 ## What 2.0 took out
 
@@ -945,10 +950,12 @@ Since 2.1, `job set max` chooses the heavy-job count, and since the limits, `job
 - **The classifier's `typed.` rule for ESLint** can match a file whose name holds that text.
 - **Watch runs are never queued by the route**, and a run the judge cannot read is never
   called light: it keeps its slot. A `job run` you type holds a slot for a watch run too.
-- **A package script's own body can still mix.** The route refuses a mixed line the person
-  wrote, never one inside a script's body. A script such as `biome check . && tsc --noEmit`
-  runs raw, so its heavy part waits for no slot. Give the script a kind (`{ "script": "<name>" }`)
-  to queue it whole, or split it into scripts of one job each.
+- **A package script's own body is never refused as a mix.** The route refuses a mixed line the
+  person wrote, never one inside a script's body. A script such as `biome check . && tsc
+  --noEmit` is queued whole when the call is the line's own command (§ Scripts are read by their
+  body). A script that never ends, runs in the background or as another user, calls itself or
+  nests too deep still runs raw: give it a kind (`{ "script": "<name>" }`), or split it into
+  scripts of one job each.
 - **Multi-package script forms are not read** (`--filter`, `-r`, `--workspaces`, `turbo`,
   `nx`): the line runs raw, or takes the slot of the kind you gave it.
 - **lefthook's and pre-commit's YAML files are not read.** What their hooks run is invisible: a

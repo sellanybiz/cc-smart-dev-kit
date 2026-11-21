@@ -20,10 +20,10 @@ in this turn.
 - **There is no sign-in** (D9, 2026-10-17): no one-time token, no session cookie, no idle
   clock. A page load from this machine is served. **The trade-off, the owner's:** every
   program and every user account on this machine — a Claude session using `curl` included —
-  can read and change the slots, the judge, the updates and the workflow settings. The
-  session-escape guard asks the person before a session's shell command reaches the port;
-  that seatbelt is why a session cannot switch the review gate off unseen. Never add a check
-  back that makes a browser pairing necessary without the owner's word.
+  can read and change the slots, the judge, the updates and the workflow settings. No hook
+  asks about a session's shell command that reaches the port (the `session-escape-guard` is
+  retired in 6.0.0, the owner's "full auto"); Claude Code's own permission mode is the stop
+  left. Never add a check back that makes a browser pairing necessary without the owner's word.
 - **`Host` exactly ours** (`127.0.0.1:<port>`, `localhost:<port>`), or 403. That is where DNS
   rebinding stops.
 - **A foreign `Origin` is 403**, on any method; **a POST without one is 403 too** (a browser
@@ -127,9 +127,8 @@ in this turn.
   `setup`'s own `+` / `-` dry run, its button carries that change's hash (`autoModeChange`), and
   the write plans again under the lock and refuses a different one.
 - **No command refuses inside a Claude Code session any more** (D9 removed the token, so there
-  is nothing to leak). The session-escape guard is the seatbelt: it asks the person before a
-  session's shell command reaches the portal's port. Never remove that guard's portal rule
-  while the portal has no sign-in.
+  is nothing to leak). The retired session-escape guard was the seatbelt for a session's shell
+  command that reaches the portal's port; nothing replaces it, the owner's ruling.
 - **Never a number the machine cannot give.** Claude Code's usage percentages are not written
   down anywhere and OmniRoute's prices are in its own catalog: a page says so and shows what it
   does know. Never invent one to match a mockup. A sum that holds requests the history could
