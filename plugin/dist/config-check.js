@@ -7309,6 +7309,28 @@ var mergeFilesSchema = array(string2()).transform((paths, context) => {
   }
   return normalised;
 });
+function normalizeAppendOnlyFolder(raw) {
+  const parsed = normalizeMergeFile(raw);
+  if (!parsed.ok || parsed.path.endsWith("/"))
+    return parsed;
+  return {
+    ok: false,
+    why: `${JSON.stringify(raw)} is not a folder: plans.appendOnly names folders, each ending in /`
+  };
+}
+var appendOnlySchema = array(string2()).transform((paths, context) => {
+  const folders = [];
+  for (const [index, raw] of paths.entries()) {
+    const parsed = normalizeAppendOnlyFolder(raw);
+    if (!parsed.ok) {
+      context.issues.push({ code: "custom", input: raw, message: parsed.why, path: [index] });
+      return NEVER;
+    }
+    if (!folders.includes(parsed.path))
+      folders.push(parsed.path);
+  }
+  return folders;
+});
 var WORKFLOW_KEY_ALIASES = {
   autoCommit: "allowCommit",
   autoPush: "allowPush",
@@ -7374,7 +7396,8 @@ var workflowObjectSchema = strictObject({
   clearWorktreeAfterMerge: boolean2().optional(),
   plans: strictObject({
     maxPhases: numberField("plans.maxPhases"),
-    mergeFiles: mergeFilesSchema.optional()
+    mergeFiles: mergeFilesSchema.optional(),
+    appendOnly: appendOnlySchema.optional()
   }).optional(),
   issues: strictObject({
     enabled: boolean2().optional(),
@@ -7436,6 +7459,7 @@ var workflowDefaults = {
   plans: {
     maxPhases: 10,
     mergeFiles: [],
+    appendOnly: [],
     runMode: "ask"
   }
 };
@@ -7467,7 +7491,8 @@ var POLICY_KEYS = [
   "alerts.usagePercent",
   "plans.maxPhases",
   "plans.runMode",
-  "plans.mergeFiles"
+  "plans.mergeFiles",
+  "plans.appendOnly"
 ];
 var PERSONAL_ONLY_KEYS = ["plans.runMode"];
 var SWITCH_KEYS = SWITCH_NAMES.map((name) => `switches.${name}`);
@@ -7765,7 +7790,7 @@ function parseWorkflowText(text, file) {
 }
 
 // src/entries/config-check.ts
-var FINGERPRINT = "ecbf12d64fe46194dd034dc713b5e1e608f672cd2abae09ebc3f7dec686bda49";
+var FINGERPRINT = "7fc5bd214566a6afa4b5b0cd48a956f6fb94efee5260d617936fbf08d92f4145";
 function answerOf(parse, isConfigError) {
   try {
     return { ok: true, value: parse(), fingerprint: FINGERPRINT };

@@ -21678,7 +21678,10 @@ var TASK_TOOL = {
 };
 var TASK_TOOLS_ALLOW_RULE = `mcp__${TASKS_SERVER_NAME}__*`;
 var TASK_COMMAND = `${COMMAND} task`;
-var PLAN_FILES_WORDS = "Plan task only: the repo-relative paths the plan changes, with / separators; a folder ends in /. Two plans overlap when a path is equal or inside the other's folder; a plan that overlaps a reserved or running plan is not handed out. The list replaces the stored one; an empty list clears it.";
+var MAX_PHASE = 8;
+var PHASE_RULE = `1-${MAX_PHASE} characters: ASCII letters, digits, ".", "_" and "-", a letter or a digit at each end, never "--"`;
+var PLAN_FILES_WORDS = "Plan task only: the repo-relative paths the plan changes, with / separators; a folder ends in /. Two plans overlap when a path is equal or inside the other's folder (inside a plans.appendOnly folder, only the same file); a plan that overlaps a reserved or running plan is not handed out. The list replaces the stored one; an empty list clears it.";
+var STACKED_ON_WORDS = "Plan task only: the slug of the plan this plan is built on. The overlap check skips that one plan, both ways, while it holds its files (open, or done and reserved until its pull request merges); every other plan still blocks. Never itself, a missing plan or a loop; null clears it.";
 
 // src/tasks/work/types.ts
 var SUBJECT_LIMIT = 200;
@@ -21697,11 +21700,12 @@ var ref = string2().min(1);
 var type = _enum(DEPLOY_TYPES).describe("blocking or non-blocking. A work task: blocking (the default) holds its parent while it is open; non-blocking holds nothing. A prod or staging deploy task: required; blocking holds the release gate until it is done, non-blocking is done or dropped with a reason.");
 var blockedBy = array(ref).describe("Tasks (#n) it waits for: it cannot start or be done while one of them is open.");
 var files = array(string2().min(1)).describe(PLAN_FILES_WORDS);
+var stackedOn = string2().trim().min(1);
 var bindings = {
   agent: string2().describe("The builder subagent's name or id.").optional(),
   branch: string2().describe("The builder's git branch.").optional(),
   worktree: string2().refine(isAbsolute, "worktree must be an absolute path").describe("The builder's absolute worktree path.").optional(),
-  base: string2().describe("The commit sha the builder started from.").optional()
+  base: string2().describe("The commit the builder started from: any name git reads, a full or a short sha (a short one is not refused). A phase started with a base warns when the default branch changed the plan's files since its brief was written.").optional()
 };
 var deployFields = {
   deploy: fields.deploy.optional().describe("Deploy task only, required there: when the step is owed, before or after the deploy."),
@@ -21721,7 +21725,8 @@ var taskSchemas = {
     type: type.optional(),
     blocked_by: blockedBy.optional(),
     files: files.optional(),
-    phase: string2().trim().min(1).optional().describe("Create the plan phase once, by its id."),
+    stacked_on: stackedOn.optional().describe(STACKED_ON_WORDS),
+    phase: string2().trim().min(1).optional().describe(`Create the plan phase once, by its id: ${PHASE_RULE}. A phase takes no parent (it sits under its plan), and it starts only once it holds tasks.`),
     plan: string2().trim().min(1).optional().describe("The plan's slug. For a phase it defaults to the caller's plan in flight, else the plan being finished, else the next queued plan (the lowest-numbered own open plan with an open phase), else its latest own open plan, never an older one; with no open default a phase needs plan. With no phase or parent, it makes the plan task. A task with neither plan nor parent is loose, whatever plans are open; to add a task to a plan, name its phase, or its plan, as parent."),
     ...deployFields
   }).strict(),
@@ -21741,6 +21746,7 @@ var taskSchemas = {
     blocked_by_add: blockedBy.optional(),
     blocked_by_remove: array(ref).optional(),
     files: files.optional(),
+    stacked_on: stackedOn.nullable().optional().describe(STACKED_ON_WORDS),
     ...deployFields
   }).strict(),
   done: object({
@@ -23494,6 +23500,28 @@ var mergeFilesSchema = array(string2()).transform((paths, context) => {
   }
   return normalised;
 });
+function normalizeAppendOnlyFolder(raw) {
+  const parsed = normalizeMergeFile(raw);
+  if (!parsed.ok || parsed.path.endsWith("/"))
+    return parsed;
+  return {
+    ok: false,
+    why: `${JSON.stringify(raw)} is not a folder: plans.appendOnly names folders, each ending in /`
+  };
+}
+var appendOnlySchema = array(string2()).transform((paths, context) => {
+  const folders = [];
+  for (const [index, raw] of paths.entries()) {
+    const parsed = normalizeAppendOnlyFolder(raw);
+    if (!parsed.ok) {
+      context.issues.push({ code: "custom", input: raw, message: parsed.why, path: [index] });
+      return NEVER;
+    }
+    if (!folders.includes(parsed.path))
+      folders.push(parsed.path);
+  }
+  return folders;
+});
 var WORKFLOW_KEY_ALIASES = {
   autoCommit: "allowCommit",
   autoPush: "allowPush",
@@ -23559,7 +23587,8 @@ var workflowObjectSchema = strictObject({
   clearWorktreeAfterMerge: boolean2().optional(),
   plans: strictObject({
     maxPhases: numberField("plans.maxPhases"),
-    mergeFiles: mergeFilesSchema.optional()
+    mergeFiles: mergeFilesSchema.optional(),
+    appendOnly: appendOnlySchema.optional()
   }).optional(),
   issues: strictObject({
     enabled: boolean2().optional(),
@@ -23621,6 +23650,7 @@ var workflowDefaults = {
   plans: {
     maxPhases: 10,
     mergeFiles: [],
+    appendOnly: [],
     runMode: "ask"
   }
 };
@@ -23652,7 +23682,8 @@ var POLICY_KEYS = [
   "alerts.usagePercent",
   "plans.maxPhases",
   "plans.runMode",
-  "plans.mergeFiles"
+  "plans.mergeFiles",
+  "plans.appendOnly"
 ];
 var PERSONAL_ONLY_KEYS = ["plans.runMode"];
 var SWITCH_KEYS = SWITCH_NAMES.map((name) => `switches.${name}`);
@@ -23914,9 +23945,6 @@ function checkCcSmartDevKitConfig(raw, where, pluginVersion = VERSION) {
   return parsed.data;
 }
 
-// src/workflow/resolve.ts
-import { existsSync as existsSync4, readFileSync as readFileSync3 } from "fs";
-
 // src/project/locate.ts
 import { existsSync as existsSync3, realpathSync as realpathSync2, statSync as statSync2 } from "fs";
 import { join as join4 } from "path";
@@ -24118,6 +24146,9 @@ function readCommittedConfig(checkout, branch, options = {}) {
   return committedOf(text, where, options);
 }
 
+// src/workflow/resolve.ts
+import { existsSync as existsSync4, readFileSync as readFileSync3 } from "fs";
+
 // src/setup/launcher.ts
 var LAUNCHER_NAME = "cc-smart-dev-kit";
 var LAUNCHER_IN_SHELL = `"$HOME/.local/bin/${LAUNCHER_NAME}"`;
@@ -24217,6 +24248,7 @@ function sourceOf(personal, project, key) {
 function plansFrom(personal, project) {
   const plans = mergeWorkflows(personal, project).plans ?? {};
   const mergeFiles = project.plans?.mergeFiles;
+  const appendOnly = project.plans?.appendOnly;
   const runMode = personal.plans?.runMode;
   return {
     maxPhases: {
@@ -24224,16 +24256,18 @@ function plansFrom(personal, project) {
       source: sourceOf(personal, project, "plans.maxPhases")
     },
     mergeFiles: mergeFiles === undefined ? current([...workflowDefaults.plans.mergeFiles], "default") : current(mergeFiles, "project"),
+    appendOnly: appendOnly === undefined ? current([...workflowDefaults.plans.appendOnly], "default") : current(appendOnly, "project"),
     runMode: runMode === undefined ? current(workflowDefaults.plans.runMode, "default") : current(runMode, "personal")
   };
 }
 function resolvePlans(paths, projectConfig) {
   return plansFrom(loadWorkflow(personalWorkflowFile(paths)), projectConfig?.workflow ?? {});
 }
-function resolveMergeFiles(checkout, base, options = {}) {
+function resolvePlanFiles(checkout, base, options = {}) {
   if (base === null) {
     return {
       files: [],
+      appendOnly: [],
       reason: "this project names no worktrees.base, so there is no committed copy of plans.mergeFiles to read"
     };
   }
@@ -24241,11 +24275,19 @@ function resolveMergeFiles(checkout, base, options = {}) {
   try {
     committed = readCommittedConfig(checkout, base, options);
   } catch (error) {
-    return { files: [], reason: error instanceof Error ? error.message : String(error) };
+    return {
+      files: [],
+      appendOnly: [],
+      reason: error instanceof Error ? error.message : String(error)
+    };
   }
   if (!committed.found)
-    return { files: [], reason: committed.why };
-  return settleMergeFiles(checkout, base, committed.config.workflow?.plans?.mergeFiles ?? [], options);
+    return { files: [], appendOnly: [], reason: committed.why };
+  const plans = committed.config.workflow?.plans;
+  return {
+    ...settleMergeFiles(checkout, base, plans?.mergeFiles ?? [], options),
+    appendOnly: [...plans?.appendOnly ?? []]
+  };
 }
 function settleMergeFiles(checkout, base, listed, options = {}) {
   const files = [];
@@ -24760,7 +24802,8 @@ function allTasks(db, project) {
       procStart: row.lead_start ?? null,
       holder: row.lead_child === 1 ? "child" : "self",
       handoutId: row.lead_handout
-    }
+    },
+    stackedOn: row.stacked_on ?? null
   }));
 }
 function getTask(db, project, ref) {
@@ -24859,7 +24902,10 @@ function filesOverlap(a, b, options = {}) {
   const fold = (path) => options.caseFold ? path.toLowerCase() : path;
   const holds = (folder, path) => folder.endsWith("/") && path.startsWith(folder);
   const ignore = (options.ignore ?? []).map(fold);
+  const appendOnly = (options.appendOnly ?? []).map(fold);
   const taken = (path) => ignore.some((one) => one === path || holds(one, path));
+  const added = (path) => appendOnly.some((folder) => path.startsWith(folder));
+  const touch = (x, y) => added(x) || added(y) ? x === y && !x.endsWith("/") : x === y || holds(x, y) || holds(y, x);
   const found = [];
   for (const path of a) {
     const x = fold(path);
@@ -24869,11 +24915,18 @@ function filesOverlap(a, b, options = {}) {
       const y = fold(other);
       if (taken(y))
         continue;
-      if (x === y || holds(x, y) || holds(y, x))
+      if (touch(x, y))
         found.push({ path, other });
     }
   }
   return found;
+}
+function isStackedPair(a, b) {
+  const holds = (parent) => isOpen(parent) || parent.lead !== null;
+  return a.stackedOn === b.plan && holds(b) || b.stackedOn === a.plan && holds(a);
+}
+function rivalsOf(held, plan) {
+  return held.filter((h) => h.plan.id !== plan.id && !isStackedPair(plan, h.plan));
 }
 function heldPlansIn(all, who, extraFiles = {}) {
   const owns = ownerOf(who);
@@ -24998,7 +25051,7 @@ function claimState(task, process2, who) {
 import { Database } from "bun:sqlite";
 import { chmodSync as chmodSync2, existsSync as existsSync6, mkdirSync as mkdirSync3, renameSync as renameSync2, rmSync as rmSync2, writeFileSync as writeFileSync3 } from "fs";
 import { dirname as dirname3, join as join6 } from "path";
-var WORK_SCHEMA_VERSION = 6;
+var WORK_SCHEMA_VERSION = 7;
 var LEGACY_LIFT_REASON = "lift legacy nested task";
 var WRITE_TIMEOUT_MS = 3000;
 var HOOK_TIMEOUT_MS = 200;
@@ -25043,7 +25096,8 @@ var MIGRATIONS = [
    ALTER TABLE tasks ADD COLUMN lead_pid INTEGER;
    ALTER TABLE tasks ADD COLUMN lead_start TEXT;
    ALTER TABLE tasks ADD COLUMN lead_child INTEGER NOT NULL DEFAULT 0 CHECK(lead_child IN (0,1));
-   ALTER TABLE tasks ADD COLUMN lead_handout TEXT;`
+   ALTER TABLE tasks ADD COLUMN lead_handout TEXT;`,
+  "ALTER TABLE tasks ADD COLUMN stacked_on TEXT"
 ];
 
 class BackupFailure extends Error {
@@ -25752,13 +25806,16 @@ function baseBranch(checkout, env, repo) {
 function planFilesCheck(cwd, env = process.env) {
   const checkout = locateCheckout(cwd, { env });
   if (checkout === null)
-    return { ignore: [], caseFold: false, reason: null };
-  const merge = resolveMergeFiles(checkout, baseBranch(checkout, env, checkout.root).base, { env });
+    return { ignore: [], appendOnly: [], caseFold: false, reason: null };
+  const committed = resolvePlanFiles(checkout, baseBranch(checkout, env, checkout.root).base, {
+    env
+  });
   const ignorecase = runGit(checkout.root, ["config", "--type=bool", "core.ignorecase"], env);
   return {
-    ignore: merge.files,
+    ignore: committed.files,
+    appendOnly: committed.appendOnly,
     caseFold: ignorecase.ok && ignorecase.out === "true",
-    reason: merge.reason
+    reason: committed.reason
   };
 }
 
@@ -25876,6 +25933,52 @@ function planNote(all, plan, cap) {
   const waiting = all.filter((t) => t.parentId === plan.id && t.kind === "task" && isOpen(t));
   return waiting.length ? `${phases} \xB7 waiting ${waiting.length}` : phases;
 }
+var STALE_BRIEF_FILES = 10;
+function staleBriefWarning(check) {
+  const { phase, files, writtenAt, base, git } = check;
+  if (writtenAt === null || files.length === 0)
+    return null;
+  const ref = `refs/remotes/origin/${base}`;
+  const known = git(["rev-parse", "--verify", "--quiet", `${ref}^{commit}`]);
+  if (!known.ok && known.code === 1)
+    return null;
+  const since = new Date(Math.floor(writtenAt / 1000) * 1000).toISOString();
+  const log = git([
+    "-c",
+    "core.quotePath=false",
+    "--literal-pathspecs",
+    "log",
+    "--first-parent",
+    "--diff-merges=first-parent",
+    `--since=${since}`,
+    "--format=%x1e%h%x09%ct%x09%s",
+    "--name-only",
+    ref,
+    "--",
+    ...files
+  ]);
+  const brief = `the brief of #${phase.number}`;
+  if (!known.ok || !log.ok)
+    return `Warning: ${brief} was not checked against origin/${base}: git could not read it (${(known.ok ? log.err : known.err) || "no reason given"})`;
+  const changed = [];
+  let newest = null;
+  for (const entry of log.out.split("\x1E")) {
+    const [head = "", ...paths] = entry.split(`
+`);
+    const [sha = "", seconds = "", subject = ""] = head.split("\t");
+    if (sha === "" || Number(seconds) * 1000 <= writtenAt)
+      continue;
+    newest ??= `${sha} "${subject}"`;
+    for (const path of paths)
+      if (path !== "" && !changed.includes(path))
+        changed.push(path);
+  }
+  if (newest === null || changed.length === 0)
+    return null;
+  const shown = changed.slice(0, STALE_BRIEF_FILES);
+  const more = changed.length > shown.length ? ` and ${changed.length - shown.length} more` : "";
+  return `Warning: ${brief} may be stale: origin/${base} changed ${shown.join(", ")}${more} after it was written (newest: ${newest}). Read those changes before you build on it.`;
+}
 
 // src/tasks/work/store.ts
 var NOTE_PREVIEW = 120;
@@ -25895,6 +25998,7 @@ function shape(db, task) {
     claim: task.claim === null ? null : claimText(task.claim),
     waitsFor: task.waitsFor.map(numberOf).sort(),
     files: task.files,
+    stackedOn: task.stackedOn,
     lead: task.lead === null ? null : `${task.lead.sessionId ?? `process ${task.lead.pid}`} (${task.lead.holder})`
   };
 }
@@ -26009,6 +26113,27 @@ function storeFiles(db, task, files) {
   for (const path of list)
     db.sqlite.query("INSERT INTO task_files(task_id,path) VALUES (?,?)").run(task.id, path);
 }
+function storeStack(db, task, slug) {
+  if (task.kind !== "plan")
+    throw new Error(`${label(task)} is a ${task.kind}: only a plan is stacked on another plan`);
+  if (slug !== null) {
+    if (slug === task.plan)
+      throw new Error(`${label(task)} cannot be stacked on itself`);
+    const plans = new Map(allTasks(db, task.project).filter((t) => t.kind === "plan" && t.plan !== null).map((t) => [t.plan, t]));
+    if (!plans.has(slug))
+      throw new Error(`Plan "${slug}" not found: stacked_on names a plan of this project`);
+    const chain = [slug];
+    for (let at = plans.get(slug)?.stackedOn ?? null;at !== null; ) {
+      if (at === task.plan)
+        throw new Error(`${label(task)} cannot be stacked on "${slug}": that would make a loop (${[task.plan, ...chain, at].join(" \u2192 ")})`);
+      if (chain.includes(at))
+        break;
+      chain.push(at);
+      at = plans.get(at)?.stackedOn ?? null;
+    }
+  }
+  db.sqlite.query("UPDATE tasks SET stacked_on=? WHERE id=?").run(slug, task.id);
+}
 function overlapText(held, overlaps) {
   const shown = [
     ...new Set(overlaps.map((o) => o.path === o.other ? o.path : `${o.path} (${o.other})`))
@@ -26030,7 +26155,8 @@ function refuseHeldOverlap(db, task, who, check) {
   const held = heldPlansIn(allTasks(db, task.project), who);
   if (!held.some((h) => h.plan.id === task.id))
     return;
-  const clashes = overlapsWith(held.filter((h) => h.plan.id !== task.id), taskById(db, task.id).files, check);
+  const current = taskById(db, task.id);
+  const clashes = overlapsWith(rivalsOf(held, current), current.files, check);
   if (clashes.length > 0)
     throw new Error(`${label(task)} is held, so its files may not overlap another held plan: overlaps ${clashes.map((c) => overlapText(c.plan, c.overlaps)).join("; ")}${mergeFilesNote(check)}`);
 }
@@ -26039,10 +26165,11 @@ function wayOut(held) {
   return held.why === "reserved" ? `${label(held.plan)} is reserved: wait until its pull request merges or closes` : `${label(held.plan)} is running: wait until it is done or parked; if its session is gone, take it (${TASK_TOOL.take}), or park or drop it`;
 }
 function refuseFlightOverlap(db, plan, who, check) {
-  const others = heldPlansIn(allTasks(db, plan.project), who).filter((h) => h.plan.id !== plan.id);
+  const row = taskById(db, plan.id);
+  const others = rivalsOf(heldPlansIn(allTasks(db, plan.project), who), row);
   if (others.length === 0)
     return;
-  const files = taskById(db, plan.id).files;
+  const files = row.files;
   if (files.length === 0) {
     const reserved = others.filter((h) => h.why === "reserved");
     if (reserved.length > 0)
@@ -26136,10 +26263,12 @@ function applyUpdate(db, id, change, who, now) {
   if (status === "dropped" && task.kind === "plan")
     clearLead(db, id);
   const check = change.filesCheck ?? NO_FILES_CHECK;
-  if (change.files !== undefined) {
+  if (change.files !== undefined)
     storeFiles(db, task, change.files);
+  if (change.stackedOn !== undefined)
+    storeStack(db, task, change.stackedOn);
+  if (change.files !== undefined || change.stackedOn !== undefined)
     refuseHeldOverlap(db, task, who, check);
-  }
   if (entering !== null)
     refuseFlightOverlap(db, entering, who, check);
   const changed = taskById(db, id);
@@ -26169,6 +26298,9 @@ function deleteTask(db, id, who, now) {
       throw new Error("task has tasks");
     if (db.sqlite.query("SELECT 1 FROM task_notes WHERE task_id=?").get(id))
       throw new Error("task has notes");
+    const stacked = task.kind === "plan" ? allTasks(db, task.project).filter((t) => t.kind === "plan" && t.stackedOn === task.plan) : [];
+    if (stacked.length > 0)
+      throw new Error(`${stacked.map(label).join(", ")} ${stacked.length > 1 ? "are" : "is"} stacked on it: clear that first (${TASK_TOOL.update} with stacked_on null)`);
     const last = {};
     for (const [key, value] of Object.entries(shape(db, task)))
       if (!empty(key, value))
@@ -26355,8 +26487,6 @@ function reclaimResumed(db, who, now, isGone) {
 }
 
 // src/tasks/ops.ts
-var MAX_PHASE = 8;
-var PHASE_RULE = `1-${MAX_PHASE} characters: ASCII letters, digits, ".", "_" and "-", a letter or a digit at each end, never "--"`;
 function isPhaseId(value) {
   return value.length <= MAX_PHASE && /^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$/.test(value) && !value.includes("--");
 }
@@ -26413,6 +26543,7 @@ function marks(task, byId) {
   const blockers = isOpen(task) ? openBlockers(task, byId) : [];
   return [
     ...task.type === "non-blocking" ? ["non-blocking"] : [],
+    ...task.stackedOn === null ? [] : [`stacked on ${task.stackedOn}`],
     ...blockers.length ? [`blocked by ${blockers.map((t) => `#${t.number}`).join(", ")}`] : []
   ];
 }
@@ -26512,6 +26643,14 @@ function createTaskOps(options = {}) {
         }
         return { files, filesCheck: (options.filesCheck ?? planFilesCheck)(cwd) };
       };
+      const planWrite = (files, stackedOn) => {
+        if (files === undefined && stackedOn === undefined)
+          return null;
+        return {
+          ...files === undefined ? { filesCheck: (options.filesCheck ?? planFilesCheck)(cwd) } : filesWrite(files),
+          ...stackedOn === undefined ? {} : { stackedOn }
+        };
+      };
       const startCheck = (plan) => {
         const row = all.find((t) => t.kind === "plan" && t.plan === plan);
         return row === undefined || isInFlight(all, row) ? {} : { filesCheck: (options.filesCheck ?? planFilesCheck)(cwd) };
@@ -26521,6 +26660,24 @@ function createTaskOps(options = {}) {
         if (row === undefined || row.status !== "pending" || !owns(row))
           return;
         applyUpdate(store, row.id, { status: "in_progress", ...check }, who, now);
+      };
+      const staleBrief = (phase, after) => {
+        if (phase.kind !== "phase" || phase.base === null || ctx.checkoutRoot === null)
+          return null;
+        const root = ctx.checkoutRoot;
+        const files = after.find((t) => t.kind === "plan" && t.plan === phase.plan)?.files ?? [];
+        const written = eventsOf(store, phase).filter((event) => event.changes.description !== undefined).at(-1);
+        try {
+          return staleBriefWarning({
+            phase,
+            files,
+            writtenAt: written?.at ?? null,
+            base: baseBranch(locateCheckout(root, { env }), env, root).base,
+            git: handBackGit
+          });
+        } catch (error) {
+          return `Warning: the brief of #${phase.number} was not checked against the default branch: ${error instanceof Error ? error.message : String(error)}`;
+        }
       };
       const deployTasksOf = () => {
         const here = deployContext();
@@ -26578,8 +26735,8 @@ function createTaskOps(options = {}) {
       if (operation === "create") {
         const input = taskSchemas.create.parse(raw);
         if (input.kind !== "work") {
-          if (Object.keys(bindings2(input)).length || input.parent || input.blocked_by?.length || input.status || input.phase || input.plan || input.files !== undefined)
-            throw new Error("Deploy tasks have no parent, blocked-by, work status, phase, plan or files");
+          if (Object.keys(bindings2(input)).length || input.parent || input.blocked_by?.length || input.status || input.phase || input.plan || input.files !== undefined || input.stacked_on !== undefined)
+            throw new Error("Deploy tasks have no parent, blocked-by, work status, phase, plan, files or stacked_on");
           if (input.deploy === undefined)
             throw new Error("A deploy task needs deploy (before or after)");
           if (input.type === undefined)
@@ -26618,8 +26775,11 @@ function createTaskOps(options = {}) {
           from: input.from
         });
         const blockedBy = input.blocked_by?.map((r) => work(r).id) ?? [];
-        if (input.files !== undefined && (input.phase !== undefined || input.plan === undefined || input.parent !== undefined))
+        const notPlanTask = input.phase !== undefined || input.plan === undefined || input.parent !== undefined;
+        if (input.files !== undefined && notPlanTask)
           throw new Error("files belong to a plan task: create the plan with plan and a subject (no phase, no parent), or set files on it with task_update");
+        if (input.stacked_on !== undefined && notPlanTask)
+          throw new Error("stacked_on belongs to a plan task: create the plan with plan and a subject (no phase, no parent), or set it with task_update");
         if (input.phase !== undefined || input.plan !== undefined && input.parent === undefined) {
           if (input.parent !== undefined)
             throw new Error("A plan stays at the top and a phase under its plan: leave out parent");
@@ -26633,10 +26793,10 @@ function createTaskOps(options = {}) {
           if (input.phase === undefined) {
             const existing = all.find((t) => t.kind === "plan" && t.plan === slug);
             const there = existing !== undefined;
-            const listed = input.files === undefined ? undefined : filesWrite(input.files);
+            const listed = planWrite(input.files, input.stacked_on);
             const made = value(writeWork(store, () => {
               const row = planTask(store, { project: ctx.project, plan: slug, subject: input.subject }, who, now);
-              return listed === undefined ? row : applyUpdate(store, row.id, listed, who, now);
+              return listed === null ? row : applyUpdate(store, row.id, listed, who, now);
             }));
             return {
               ok: true,
@@ -26706,8 +26866,8 @@ function createTaskOps(options = {}) {
       if (operation === "update") {
         const input = taskSchemas.update.parse(raw);
         if (isDeployTaskId(input.task)) {
-          if (Object.keys(bindings2(input)).length || input.parent !== undefined || input.blocked_by_add !== undefined || input.blocked_by_remove !== undefined || input.files !== undefined)
-            throw new Error("Deploy tasks have no parent, blocked-by, files or builder bindings");
+          if (Object.keys(bindings2(input)).length || input.parent !== undefined || input.blocked_by_add !== undefined || input.blocked_by_remove !== undefined || input.files !== undefined || input.stacked_on !== undefined)
+            throw new Error("Deploy tasks have no parent, blocked-by, files, stacked_on or builder bindings");
           if (input.status !== undefined && input.status !== "open")
             throw new Error(`A deploy task closes through ${TASK_TOOL.done} (done with evidence, dropped with a note); status open reopens a closed one`);
           const current = project(input.task);
@@ -26745,7 +26905,9 @@ function createTaskOps(options = {}) {
         const task = work(input.task);
         if (input.files !== undefined && task.kind !== "plan")
           throw new Error(`${label2(task)} is a ${task.kind}: only a plan task has a file list (set files on the plan's own #n)`);
-        const listed = input.files === undefined ? undefined : filesWrite(input.files);
+        if (input.stacked_on !== undefined && task.kind !== "plan")
+          throw new Error(`${label2(task)} is a ${task.kind}: only a plan task is stacked on another plan (set stacked_on on the plan's own #n)`);
+        const listed = planWrite(input.files, input.stacked_on);
         if (task.kind === "phase" && task.status === "dropped" && (status === "pending" || status === "in_progress") && task.plan !== null) {
           const cap = phaseCap();
           refuseOverCap(all, task.plan, cap);
@@ -26775,7 +26937,7 @@ function createTaskOps(options = {}) {
             ...input.parent === undefined ? {} : { parentId: input.parent === null ? null : work(input.parent).id },
             ...input.type === undefined ? {} : { type: input.type },
             ...flight,
-            ...listed,
+            ...listed ?? {},
             waitsFor: {
               add: (input.blocked_by_add ?? []).map((r) => work(r).id),
               remove: (input.blocked_by_remove ?? []).map((r) => work(r).id)
@@ -26788,9 +26950,11 @@ function createTaskOps(options = {}) {
         const afterAll = allTasks(store, ctx.project);
         const byId = new Map(afterAll.map((t) => [t.id, t]));
         const closed = updated.status === "done" || updated.status === "dropped";
+        const stale = starting ? staleBrief(updated, afterAll) : null;
         return {
           ok: true,
-          text: [label2(updated), updated.status.replaceAll("_", " "), ...marks(updated, byId)].join(" \xB7 ") + (closed ? freedAfter(afterAll, updated) : "")
+          text: [label2(updated), updated.status.replaceAll("_", " "), ...marks(updated, byId)].join(" \xB7 ") + (closed ? freedAfter(afterAll, updated) : "") + (stale === null ? "" : `
+${stale}`)
         };
       }
       if (operation === "done") {
@@ -27022,7 +27186,7 @@ Save notes as you go with ${TASK_TOOL.note}.`;
 var descriptions = {
   take: "Take a plan or task into the calling session. Live claims need force; a refusal changes nothing.",
   create: "Create a work task (kind work, the default), or a deploy task for prod or staging (deploy and type required; pair true with staging also creates its prod twin): a file to commit with this branch. Create the plan's phases here (phase): at most plans.maxPhases per plan, each holding its tasks. A plan without parent creates the plan itself; to add a task to a plan, give its phase as parent, or the plan as parent to make it wait there for a phase. A task with neither plan nor parent is loose, whatever plans are open. Phases may be laid in any of your plans; one plan is in flight at a time.",
-  update: `Update a task: its status, type, parent or blockers; status open reopens a closed deploy task. Starting work claims it for this Claude process and puts its plan in flight; a phase starts only with tasks, and not while another plan of yours is in flight. Setting an in-flight plan's task to pending parks it, refused while its phases run. A task waiting under a plan moves under a phase of that plan with parent. Close a step with ${TASK_TOOL.done}.`,
+  update: `Update a task: its status, type, parent or blockers; status open reopens a closed deploy task. Starting work claims it for this Claude process and puts its plan in flight; a phase starts only with tasks, and not while another plan of yours is in flight. A phase takes no parent: it stays under its plan. Setting an in-flight plan's task to pending parks it, refused while its phases run. A task waiting under a plan moves under a phase of that plan with parent. Close a step with ${TASK_TOOL.done}.`,
   done: 'Finish or drop a task. Its open blocking tasks must be finished or dropped first. A step of a phase, and every deploy task, finishes with evidence or drops with a note; only the person drops a blocking deploy task. A phase with a recorded branch closes done only once that branch has a commit past its base and is in the plan branch. The answer lists your own work this close freed ("now ready"): start it, phases together.',
   note: "Save a note on a task as work proceeds.",
   list: "List the caller's tasks as a tree, or list the plan or project (scope project also lists the open deploy tasks).",

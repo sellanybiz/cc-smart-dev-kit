@@ -506,7 +506,7 @@ var PLUGIN_INSTALL_COMMAND = `claude plugin install ${PLUGIN_ID}`;
 var PLUGIN_UPDATE_COMMAND = `claude plugin update ${PLUGIN_ID}`;
 
 // src/hooks/checked-config.ts
-var PARSER_FINGERPRINT = "ecbf12d64fe46194dd034dc713b5e1e608f672cd2abae09ebc3f7dec686bda49";
+var PARSER_FINGERPRINT = "7fc5bd214566a6afa4b5b0cd48a956f6fb94efee5260d617936fbf08d92f4145";
 var CHECKED_DIR = "checked";
 var CHECKED_CACHE_LIMIT = 64;
 var CHECKED_FILE_MAX_BYTES = 256 * 1024;
@@ -8346,6 +8346,28 @@ var mergeFilesSchema = array(string2()).transform((paths, context) => {
   }
   return normalised;
 });
+function normalizeAppendOnlyFolder(raw) {
+  const parsed = normalizeMergeFile(raw);
+  if (!parsed.ok || parsed.path.endsWith("/"))
+    return parsed;
+  return {
+    ok: false,
+    why: `${JSON.stringify(raw)} is not a folder: plans.appendOnly names folders, each ending in /`
+  };
+}
+var appendOnlySchema = array(string2()).transform((paths, context) => {
+  const folders = [];
+  for (const [index, raw] of paths.entries()) {
+    const parsed = normalizeAppendOnlyFolder(raw);
+    if (!parsed.ok) {
+      context.issues.push({ code: "custom", input: raw, message: parsed.why, path: [index] });
+      return NEVER;
+    }
+    if (!folders.includes(parsed.path))
+      folders.push(parsed.path);
+  }
+  return folders;
+});
 var WORKFLOW_KEY_ALIASES = {
   autoCommit: "allowCommit",
   autoPush: "allowPush",
@@ -8411,7 +8433,8 @@ var workflowObjectSchema = strictObject({
   clearWorktreeAfterMerge: boolean2().optional(),
   plans: strictObject({
     maxPhases: numberField("plans.maxPhases"),
-    mergeFiles: mergeFilesSchema.optional()
+    mergeFiles: mergeFilesSchema.optional(),
+    appendOnly: appendOnlySchema.optional()
   }).optional(),
   issues: strictObject({
     enabled: boolean2().optional(),
@@ -8473,6 +8496,7 @@ var workflowDefaults = {
   plans: {
     maxPhases: 10,
     mergeFiles: [],
+    appendOnly: [],
     runMode: "ask"
   }
 };
@@ -8504,7 +8528,8 @@ var POLICY_KEYS = [
   "alerts.usagePercent",
   "plans.maxPhases",
   "plans.runMode",
-  "plans.mergeFiles"
+  "plans.mergeFiles",
+  "plans.appendOnly"
 ];
 var SWITCH_KEYS = SWITCH_NAMES.map((name) => `switches.${name}`);
 var WORKFLOW_KEYS = [...POLICY_KEYS, ...SWITCH_KEYS];

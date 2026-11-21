@@ -9,6 +9,7 @@ import { join as join2, sep } from "path";
 var MARKETPLACE = "cc-smart-dev-kit";
 var PLUGIN = "cc-smart-dev-kit";
 var PLUGIN_ID = `${PLUGIN}@${MARKETPLACE}`;
+var COMMAND = "cc-smart-dev-kit";
 
 // src/gateway/paths.ts
 import { homedir } from "os";
@@ -348,10 +349,10 @@ function ownHooksOf(checkout) {
 }
 
 // src/hooks/ask-log.ts
-import { join as join5 } from "path";
+import { join as join6 } from "path";
 
 // src/hooks/jsonl-log.ts
-import { appendFileSync, mkdirSync as mkdirSync2, readFileSync as readFileSync3, statSync as statSync3 } from "fs";
+import { appendFileSync, mkdirSync as mkdirSync3, readFileSync as readFileSync4, statSync as statSync4 } from "fs";
 import { dirname as dirname2 } from "path";
 
 // src/setup/write.ts
@@ -424,7 +425,224 @@ function atomicWrite(file, content, mode, beforeRename) {
 }
 
 // src/setup/lock.ts
+import {
+  closeSync as closeSync2,
+  mkdirSync as mkdirSync2,
+  openSync as openSync2,
+  readFileSync as readFileSync3,
+  readlinkSync as readlinkSync2,
+  statSync as statSync3,
+  unlinkSync as unlinkSync2,
+  writeSync
+} from "fs";
+import { hostname } from "os";
+import { join as join5 } from "path";
 var FALLBACK_STALE_MS = 10 * 60 * 1000;
+var LOCK_FILE = "lock";
+var TAKEOVER_SUFFIX = ".takeover";
+
+class LockBusyError extends Error {
+  name = "LockBusyError";
+}
+function procStartTime(pid) {
+  try {
+    const stat = readFileSync3(`/proc/${pid}/stat`, "utf8");
+    const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
+    const start = fields[22 - 3];
+    return start && /^\d+$/.test(start) ? start : null;
+  } catch {
+    return null;
+  }
+}
+function psStartTime(pid) {
+  try {
+    const result = Bun.spawnSync(["ps", "-o", "lstart=", "-p", String(pid)], {
+      env: { ...process.env, LC_ALL: "C" },
+      stdout: "pipe",
+      stderr: "ignore"
+    });
+    const text = result.stdout.toString().trim();
+    return result.exitCode === 0 && text !== "" ? text : null;
+  } catch {
+    return null;
+  }
+}
+function processStartTime(pid, like) {
+  if (like === undefined || like.startsWith("proc:")) {
+    const proc = procStartTime(pid);
+    if (proc !== null)
+      return `proc:${proc}`;
+  }
+  if (like === undefined || like.startsWith("ps:")) {
+    const ps = psStartTime(pid);
+    if (ps !== null)
+      return `ps:${ps}`;
+  }
+  return null;
+}
+function ownPidNamespace() {
+  try {
+    return readlinkSync2("/proc/self/ns/pid");
+  } catch {
+    return null;
+  }
+}
+var ownPidns;
+function isAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error.code === "EPERM";
+  }
+}
+function parseLock(text) {
+  try {
+    const parsed = JSON.parse(text);
+    if (typeof parsed.pid !== "number" || typeof parsed.time !== "number" || typeof parsed.token !== "string") {
+      return null;
+    }
+    return {
+      pid: parsed.pid,
+      startTime: typeof parsed.startTime === "string" ? parsed.startTime : null,
+      host: typeof parsed.host === "string" ? parsed.host : "",
+      pidns: typeof parsed.pidns === "string" ? parsed.pidns : null,
+      time: parsed.time,
+      token: parsed.token
+    };
+  } catch {
+    return null;
+  }
+}
+function readHeld(file) {
+  let stat;
+  try {
+    stat = statSync3(file);
+  } catch (error) {
+    if (error.code === "ENOENT")
+      return null;
+    throw error;
+  }
+  let info;
+  try {
+    info = parseLock(readFileSync3(file, "utf8"));
+  } catch (error) {
+    const code = error.code;
+    if (code === "ENOENT")
+      return null;
+    if (code !== "EACCES" && code !== "EPERM")
+      throw error;
+    info = null;
+  }
+  return { info, ino: stat.ino, mtimeMs: stat.mtimeMs, size: stat.size };
+}
+function sameHeld(a, b) {
+  if (a.info && b.info)
+    return a.info.token === b.info.token;
+  if (a.info || b.info)
+    return false;
+  return a.ino === b.ino && a.mtimeMs === b.mtimeMs && a.size === b.size;
+}
+function holderIsGone(holder, lastSeenMs, fallbackStaleMs, startTimeOf = processStartTime) {
+  const oldEnough = Date.now() - lastSeenMs > fallbackStaleMs;
+  if (holder === null || holder.host !== hostname())
+    return oldEnough;
+  ownPidns ??= ownPidNamespace();
+  const theirs = holder.pidns ?? null;
+  if (theirs !== null && ownPidns !== null && theirs !== ownPidns)
+    return oldEnough;
+  if (!isAlive(holder.pid))
+    return true;
+  if (holder.startTime === null)
+    return oldEnough;
+  const now = startTimeOf(holder.pid, holder.startTime);
+  if (now === null)
+    return oldEnough;
+  return now !== holder.startTime;
+}
+function isStale(held, fallbackStaleMs) {
+  return holderIsGone(held.info, held.info?.time ?? held.mtimeMs, fallbackStaleMs);
+}
+function tryCreate(file, info, mode) {
+  let fd;
+  try {
+    fd = openSync2(file, "wx", mode);
+  } catch (error) {
+    if (error.code === "EEXIST")
+      return false;
+    throw error;
+  }
+  try {
+    setFileMode(fd, mode);
+    writeSync(fd, JSON.stringify(info));
+  } finally {
+    closeSync2(fd);
+  }
+  return true;
+}
+var ownStartTime;
+function currentHolder() {
+  ownStartTime ??= processStartTime(process.pid);
+  ownPidns ??= ownPidNamespace();
+  return { pid: process.pid, startTime: ownStartTime, host: hostname(), pidns: ownPidns };
+}
+function newLockInfo() {
+  return { ...currentHolder(), time: Date.now(), token: crypto.randomUUID() };
+}
+function takeOverStale(file, judged, fallbackStaleMs, mode) {
+  const claim = `${file}${TAKEOVER_SUFFIX}`;
+  const me = newLockInfo();
+  if (!tryCreate(claim, me, mode)) {
+    const other = readHeld(claim);
+    if (other && isStale(other, fallbackStaleMs)) {
+      const again = readHeld(claim);
+      if (again && sameHeld(again, other))
+        unlinkSync2(claim);
+    }
+    return false;
+  }
+  try {
+    const now = readHeld(file);
+    if (now && sameHeld(now, judged))
+      unlinkSync2(file);
+    return true;
+  } finally {
+    if (readHeld(claim)?.info?.token === me.token)
+      unlinkSync2(claim);
+  }
+}
+async function withLock(stateDir, fn, options = {}) {
+  mkdirSync2(stateDir, { recursive: true });
+  const file = join5(stateDir, LOCK_FILE);
+  const mine = newLockInfo();
+  const deadline = Date.now() + (options.waitMs ?? 0);
+  const fallbackStaleMs = options.fallbackStaleMs ?? FALLBACK_STALE_MS;
+  const mode = options.mode ?? 384;
+  for (;; ) {
+    mine.time = Date.now();
+    if (tryCreate(file, mine, mode))
+      break;
+    const held = readHeld(file);
+    if (held === null)
+      continue;
+    if (isStale(held, fallbackStaleMs) && takeOverStale(file, held, fallbackStaleMs, mode)) {
+      continue;
+    }
+    if (Date.now() >= deadline) {
+      const info = held.info;
+      const where = info && info.host !== hostname() ? ` on ${info.host || "another host"}` : "";
+      const who = info ? `process ${info.pid}${where}` : "another run";
+      throw new LockBusyError(`cc-smart-dev-kit is busy: ${who} holds ${file}. Wait for it to finish, then try again.`);
+    }
+    await Bun.sleep(100);
+  }
+  try {
+    return await fn();
+  } finally {
+    if (readHeld(file)?.info?.token === mine.token)
+      unlinkSync2(file);
+  }
+}
 
 // src/update/state.ts
 var CHECK_INTERVAL_MS = 60 * 60 * 1000;
@@ -436,19 +654,19 @@ var UNREACHABLE_FAILS_AFTER_MS = UNREACHABLE_FAILS_AFTER_HOURS * 60 * 60 * 1000;
 function cutBack(file) {
   let size;
   try {
-    size = statSync3(file).size;
+    size = statSync4(file).size;
   } catch {
     return;
   }
   if (size <= LOG_MAX_BYTES)
     return;
-  const text = readFileSync3(file, "utf8");
+  const text = readFileSync4(file, "utf8");
   const keep = text.slice(text.length - LOG_MAX_BYTES / 2);
   atomicWrite(file, keep.slice(keep.indexOf(`
 `) + 1), 384);
 }
 function appendJsonLine(file, value) {
-  mkdirSync2(dirname2(file), { recursive: true, mode: 448 });
+  mkdirSync3(dirname2(file), { recursive: true, mode: 448 });
   cutBack(file);
   appendFileSync(file, `${JSON.stringify(value)}
 `, { mode: 384 });
@@ -458,7 +676,7 @@ function appendJsonLine(file, value) {
 var ASK_LOG_FILE = "guard-asks.jsonl";
 var ASK_REASON_MAX = 200;
 function askLogFile(stateDir) {
-  return join5(stateDir, ASK_LOG_FILE);
+  return join6(stateDir, ASK_LOG_FILE);
 }
 function appendAsk(file, ask) {
   appendJsonLine(file, ask);
@@ -470,13 +688,13 @@ import {
   accessSync,
   constants,
   existsSync as existsSync4,
-  mkdirSync as mkdirSync3,
+  mkdirSync as mkdirSync4,
   readdirSync as readdirSync2,
-  readFileSync as readFileSync4,
-  statSync as statSync4,
-  unlinkSync as unlinkSync2
+  readFileSync as readFileSync5,
+  statSync as statSync5,
+  unlinkSync as unlinkSync3
 } from "fs";
-import { dirname as dirname3, join as join6 } from "path";
+import { dirname as dirname3, join as join7 } from "path";
 
 // src/build-info/index.ts
 var info = {
@@ -502,7 +720,7 @@ var PLUGIN_INSTALL_COMMAND = `claude plugin install ${PLUGIN_ID}`;
 var PLUGIN_UPDATE_COMMAND = `claude plugin update ${PLUGIN_ID}`;
 
 // src/hooks/checked-config.ts
-var PARSER_FINGERPRINT = "ecbf12d64fe46194dd034dc713b5e1e608f672cd2abae09ebc3f7dec686bda49";
+var PARSER_FINGERPRINT = "7fc5bd214566a6afa4b5b0cd48a956f6fb94efee5260d617936fbf08d92f4145";
 var CHECKED_DIR = "checked";
 var CHECKED_CACHE_LIMIT = 64;
 var CHECKED_FILE_MAX_BYTES = 256 * 1024;
@@ -517,8 +735,8 @@ function reinstallMessage(why) {
   return `The plugin's config checker is not usable (${why}): run \`${PLUGIN_INSTALL_COMMAND}\` to reinstall the plugin, then try again.`;
 }
 async function loadSibling() {
-  const built = join6(import.meta.dir, "config-check.js");
-  const entry = existsSync4(built) ? built : join6(import.meta.dir, "..", "entries", "config-check.ts");
+  const built = join7(import.meta.dir, "config-check.js");
+  const entry = existsSync4(built) ? built : join7(import.meta.dir, "..", "entries", "config-check.ts");
   const loaded = await import(entry);
   for (const name of ["checkProjectText", "checkWorkflowText"]) {
     if (typeof loaded[name] !== "function") {
@@ -534,7 +752,7 @@ ${kind}
 }
 function readEntry(file, key, kind) {
   try {
-    const entry = JSON.parse(readFileSync4(file, "utf8"));
+    const entry = JSON.parse(readFileSync5(file, "utf8"));
     if (entry?.format !== ENTRY_FORMAT || entry.key !== key || entry.kind !== kind)
       return null;
     const { value } = entry;
@@ -547,43 +765,43 @@ function readEntry(file, key, kind) {
 function prune(dir, nowMs) {
   const entries = [];
   for (const name of readdirSync2(dir)) {
-    const path = join6(dir, name);
+    const path = join7(dir, name);
     try {
       if (TEMP_NAME.test(name)) {
-        if (nowMs - statSync4(path).mtimeMs > CHECKED_TEMP_MAX_AGE_MS)
-          unlinkSync2(path);
+        if (nowMs - statSync5(path).mtimeMs > CHECKED_TEMP_MAX_AGE_MS)
+          unlinkSync3(path);
       } else if (name.endsWith(".json")) {
-        entries.push({ path, mtimeMs: statSync4(path).mtimeMs });
+        entries.push({ path, mtimeMs: statSync5(path).mtimeMs });
       }
     } catch {}
   }
   entries.sort((a, b) => a.mtimeMs - b.mtimeMs);
   for (const old of entries.slice(0, Math.max(0, entries.length - (CHECKED_CACHE_LIMIT - 1)))) {
     try {
-      unlinkSync2(old.path);
+      unlinkSync3(old.path);
     } catch {}
   }
 }
 function writeEntry(dir, key, kind, value) {
   try {
     if (!existsSync4(dir)) {
-      mkdirSync3(dir, { recursive: true, mode: 448 });
+      mkdirSync4(dir, { recursive: true, mode: 448 });
       setFileMode(dir, 448);
     }
     prune(dir, Date.now());
     const entry = { format: ENTRY_FORMAT, key, kind, value };
-    atomicWrite(join6(dir, `${key}.json`), JSON.stringify(entry), 384);
+    atomicWrite(join7(dir, `${key}.json`), JSON.stringify(entry), 384);
   } catch {}
 }
 async function loadCheckedFile(file, kind, { paths }) {
   if (!existsSync4(file))
     return { ok: true, value: null, fact: "none" };
-  const bytes = readFileSync4(file);
+  const bytes = readFileSync5(file);
   const cacheable = bytes.length <= CHECKED_FILE_MAX_BYTES;
-  const dir = join6(paths.stateDir, CHECKED_DIR);
+  const dir = join7(paths.stateDir, CHECKED_DIR);
   const key = checkedKey(PARSER_FINGERPRINT, kind, bytes);
   if (cacheable) {
-    const hit = readEntry(join6(dir, `${key}.json`), key, kind);
+    const hit = readEntry(join7(dir, `${key}.json`), key, kind);
     if (hit !== null)
       return { ok: true, value: hit, fact: "cached" };
   }
@@ -773,7 +991,8 @@ async function runHookEntry(spec) {
 }
 
 // src/hooks/subagent-background.ts
-import { readFileSync as readFileSync5 } from "fs";
+import { mkdirSync as mkdirSync5, readFileSync as readFileSync6 } from "fs";
+import { dirname as dirname4, join as join8 } from "path";
 
 // node_modules/zod/v4/core/util.js
 function getEnumValues(entries) {
@@ -8433,6 +8652,28 @@ var mergeFilesSchema = array(string2()).transform((paths, context) => {
   }
   return normalised;
 });
+function normalizeAppendOnlyFolder(raw) {
+  const parsed = normalizeMergeFile(raw);
+  if (!parsed.ok || parsed.path.endsWith("/"))
+    return parsed;
+  return {
+    ok: false,
+    why: `${JSON.stringify(raw)} is not a folder: plans.appendOnly names folders, each ending in /`
+  };
+}
+var appendOnlySchema = array(string2()).transform((paths, context) => {
+  const folders = [];
+  for (const [index, raw] of paths.entries()) {
+    const parsed = normalizeAppendOnlyFolder(raw);
+    if (!parsed.ok) {
+      context.issues.push({ code: "custom", input: raw, message: parsed.why, path: [index] });
+      return NEVER;
+    }
+    if (!folders.includes(parsed.path))
+      folders.push(parsed.path);
+  }
+  return folders;
+});
 var WORKFLOW_KEY_ALIASES = {
   autoCommit: "allowCommit",
   autoPush: "allowPush",
@@ -8498,7 +8739,8 @@ var workflowObjectSchema = strictObject({
   clearWorktreeAfterMerge: boolean2().optional(),
   plans: strictObject({
     maxPhases: numberField("plans.maxPhases"),
-    mergeFiles: mergeFilesSchema.optional()
+    mergeFiles: mergeFilesSchema.optional(),
+    appendOnly: appendOnlySchema.optional()
   }).optional(),
   issues: strictObject({
     enabled: boolean2().optional(),
@@ -8560,6 +8802,7 @@ var workflowDefaults = {
   plans: {
     maxPhases: 10,
     mergeFiles: [],
+    appendOnly: [],
     runMode: "ask"
   }
 };
@@ -8591,7 +8834,8 @@ var POLICY_KEYS = [
   "alerts.usagePercent",
   "plans.maxPhases",
   "plans.runMode",
-  "plans.mergeFiles"
+  "plans.mergeFiles",
+  "plans.appendOnly"
 ];
 var SWITCH_KEYS = SWITCH_NAMES.map((name) => `switches.${name}`);
 var WORKFLOW_KEYS = [...POLICY_KEYS, ...SWITCH_KEYS];
@@ -8751,6 +8995,7 @@ var MONITOR_NOTICE = new RegExp(`^${NOTICE_HEAD}<summary>Monitor "[^<]*" stream 
 var AGENT_TOOLS = ["Agent", "Task"];
 
 // src/hooks/subagent-background.ts
+var SUBAGENT_BACKGROUND = "subagent-background";
 var HAND_BACK_REASON = "Your background work is still running: wait for it or stop it, then report.";
 var BACKGROUND_ID = /Command running in background with ID: ([A-Za-z0-9_-]+)/;
 var AGENT_ID = /agentId: ([A-Za-z0-9_-]+)/;
@@ -8802,7 +9047,7 @@ function resultText(content) {
 function startedByAgent(text, ids) {
   const wanted = new Set(ids);
   if (wanted.size === 0)
-    return false;
+    return [];
   const tools = new Map;
   const results = [];
   for (const raw of text.split(`
@@ -8824,15 +9069,50 @@ function startedByAgent(text, ids) {
       }
     }
   }
+  const started = new Set;
   for (const result of results) {
     const found = result.tool === "Bash" ? BACKGROUND_ID.exec(result.text)?.[1] : result.tool !== undefined && AGENT_TOOLS.includes(result.tool) && AGENT_ID.exec(result.text)?.[1];
     if (typeof found === "string" && wanted.has(found))
-      return true;
+      started.add(found);
   }
-  return false;
+  return [...started];
 }
-function subagentBackground(context) {
-  const { input, event, project } = context;
+function blocksFile(stateDir) {
+  return join8(stateDir, "subagent-background", "blocked.json");
+}
+var BLOCKS_LOCK_WAIT_MS = 3000;
+var BLOCKS_KEPT_MS = 24 * 60 * 60 * 1000;
+function readBlocks(file) {
+  try {
+    const parsed = JSON.parse(readFileSync6(file, "utf8"));
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed))
+      return {};
+    return Object.fromEntries(Object.entries(parsed).filter((entry) => typeof entry[1] === "number"));
+  } catch {
+    return {};
+  }
+}
+async function newBlocks(file, agent, tasks, atMs) {
+  const folder = dirname4(file);
+  mkdirSync5(folder, { mode: 448, recursive: true });
+  return await withLock(folder, () => {
+    const kept = {};
+    for (const [key, at] of Object.entries(readBlocks(file))) {
+      if (atMs - at <= BLOCKS_KEPT_MS)
+        kept[key] = at;
+    }
+    const fresh = tasks.filter((task) => kept[`${agent}:${task}`] === undefined);
+    if (fresh.length === 0)
+      return [];
+    for (const task of fresh)
+      kept[`${agent}:${task}`] = atMs;
+    atomicWrite(file, `${JSON.stringify(kept, null, 2)}
+`, 384);
+    return fresh;
+  }, { waitMs: BLOCKS_LOCK_WAIT_MS });
+}
+async function subagentBackground(context) {
+  const { input, event, paths, project } = context;
   if (project.config === null)
     return SILENT;
   if (event !== "SubagentStop")
@@ -8848,11 +9128,27 @@ function subagentBackground(context) {
     return SILENT;
   let text;
   try {
-    text = readFileSync5(transcript, "utf8");
+    text = readFileSync6(transcript, "utf8");
   } catch {
     return SILENT;
   }
-  return startedByAgent(text, ids) ? { stdout: JSON.stringify({ decision: "block", reason: HAND_BACK_REASON }) } : SILENT;
+  const running = startedByAgent(text, ids);
+  if (running.length === 0)
+    return SILENT;
+  let fresh;
+  try {
+    fresh = await newBlocks(blocksFile(paths.stateDir), selfId ?? transcript, running, Date.now());
+  } catch (error) {
+    const why = error instanceof Error ? error.message : String(error);
+    return {
+      stderr: `${COMMAND} ${SUBAGENT_BACKGROUND}: cannot keep the record of blocks: ${why}`
+    };
+  }
+  if (fresh.length > 0)
+    return { stdout: JSON.stringify({ decision: "block", reason: HAND_BACK_REASON }) };
+  return {
+    stderr: `${COMMAND} ${SUBAGENT_BACKGROUND}: background work of this agent (${running.join(", ")}) is still running, and it was told once: this stop goes through.`
+  };
 }
 
 // src/hooks/specs/subagent-background.ts

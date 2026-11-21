@@ -1,4 +1,18 @@
 // @bun
+var __defProp = Object.defineProperty;
+var __returnValue = (v) => v;
+function __exportSetter(name, newValue) {
+  this[name] = __returnValue.bind(null, newValue);
+}
+var __export = (target, all) => {
+  for (var name in all)
+    __defProp(target, name, {
+      get: all[name],
+      enumerable: true,
+      configurable: true,
+      set: __exportSetter.bind(all, name)
+    });
+};
 var __esm = (fn, res, err) => () => {
   if (fn)
     try {
@@ -26,6 +40,85 @@ function hostPlatform(env = process.env) {
   return given.platform ?? process.platform;
 }
 var TEST_HOST_VAR = "CC_SMART_DEV_KIT_TEST_HOST";
+
+// src/gateway/paths.ts
+import { homedir } from "os";
+import { join } from "path";
+function homeDir(env = process.env) {
+  if (env.HOME)
+    return env.HOME;
+  if (hostPlatform(env) === "win32" && env.USERPROFILE)
+    return env.USERPROFILE;
+  return homedir();
+}
+function routerPaths(env = process.env) {
+  const home = homeDir(env);
+  return {
+    home,
+    gatewayConfigFile: join(home, ".config", "cc-smart-dev-kit", "gateway.json"),
+    gatewayStateFile: join(home, ".local", "state", "cc-smart-dev-kit", "gateway-state.json"),
+    safetyChecksFile: join(home, ".local", "state", "cc-smart-dev-kit", "safety-checks.json"),
+    historyDbFile: join(home, ".local", "state", "cc-smart-dev-kit", "history.db")
+  };
+}
+var init_paths = () => {};
+
+// src/cli/paths.ts
+import { join as join2, sep } from "path";
+function userConfigFile(env, home) {
+  const dir = env.CLAUDE_CONFIG_DIR;
+  return dir ? join2(dir, ".claude.json") : join2(home, ".claude.json");
+}
+function cliPaths(env = process.env) {
+  if (env === null || typeof env !== "object" || Array.isArray(env)) {
+    throw new TypeError(`cliPaths takes an environment object (like process.env), not ${env === null ? "null" : Array.isArray(env) ? "an array" : typeof env}`);
+  }
+  const router = routerPaths(env);
+  const claudeConfigDir = env.CLAUDE_CONFIG_DIR || join2(router.home, ".claude");
+  return {
+    ...router,
+    claudeConfigDir,
+    settingsFile: join2(claudeConfigDir, "settings.json"),
+    installedPluginsFile: join2(claudeConfigDir, "plugins", "installed_plugins.json"),
+    pluginCacheDir: join2(claudeConfigDir, "plugins", "cache", MARKETPLACE, PLUGIN),
+    knownMarketplacesFile: join2(claudeConfigDir, "plugins", "known_marketplaces.json"),
+    projectsDir: join2(claudeConfigDir, "projects"),
+    userConfigFile: userConfigFile(env, router.home),
+    binDir: join2(router.home, ".local", "bin"),
+    stateDir: join2(claudeConfigDir, "cc-smart-dev-kit"),
+    dataDir: join2(router.home, ".local", "share", "cc-smart-dev-kit"),
+    browserOutputDir: join2(router.home, ".local", "share", "cc-smart-dev-kit", "playwright-output"),
+    browserTokenFile: join2(router.home, ".config", "cc-smart-dev-kit", "playwright-extension.token"),
+    routerCopy: join2(router.home, ".local", "share", "cc-smart-dev-kit", "router.js"),
+    routerTaskFile: join2(router.home, ".local", "share", "cc-smart-dev-kit", "router-task.xml"),
+    portalCopy: join2(router.home, ".local", "share", "cc-smart-dev-kit", "portal.js"),
+    portalUiFolder: join2(router.home, ".local", "share", "cc-smart-dev-kit", "portal-ui"),
+    gitHooksFolder: join2(router.home, ".local", "share", "cc-smart-dev-kit", "git-hooks"),
+    portalProjectsFile: join2(claudeConfigDir, "cc-smart-dev-kit", "portal-projects.json"),
+    portalLogFile: join2(claudeConfigDir, "cc-smart-dev-kit", "portal.log"),
+    portalHeldFile: join2(claudeConfigDir, "cc-smart-dev-kit", "portal-held.json"),
+    omnirouteStateFile: join2(claudeConfigDir, "cc-smart-dev-kit", "omniroute.json"),
+    routerUnitFile: join2(router.home, ".config", "systemd", "user", "cc-smart-dev-kit-router.service"),
+    claudeMemSettingsFile: join2(claudeMemDataDir(env, router.home), "settings.json"),
+    routerSocketFile: join2(router.home, ".config", "systemd", "user", "cc-smart-dev-kit-router.socket"),
+    workflowConfigFile: join2(router.home, ".config", "cc-smart-dev-kit", "workflow.json"),
+    machinesFile: join2(router.home, ".config", "cc-smart-dev-kit", "machines.json"),
+    tmuxConfFile: join2(router.home, ".tmux.conf"),
+    tavilyKeyFile: join2(claudeConfigDir, "cc-smart-dev-kit", "tavily.key")
+  };
+}
+function claudeMemDataDir(env, home) {
+  const dir = env.CLAUDE_MEM_DATA_DIR;
+  if (!dir)
+    return join2(home, ".claude-mem");
+  if (dir === "~")
+    return home;
+  return dir.startsWith("~/") ? join2(home, dir.slice(2)) : dir;
+}
+var init_paths2 = __esm(() => {
+  init_names();
+  init_paths();
+});
 
 // src/setup/user-json.ts
 import { readFileSync } from "fs";
@@ -2112,6 +2205,34 @@ var init_command = __esm(() => {
   ]);
   PARALLEL_SOURCES = new Set([":::", "::::", ":::+", "::::+"]);
   PARALLEL_LONG = [...PARALLEL_VALUED, ...PARALLEL_SWITCHES];
+});
+
+// src/mcp/task-server-name.ts
+var TASKS_SERVER_NAME;
+var init_task_server_name = __esm(() => {
+  init_names();
+  TASKS_SERVER_NAME = `${COMMAND}-tasks`;
+});
+
+// src/tasks/words.ts
+var TASK_TOOL, TASK_TOOLS_ALLOW_RULE, TASK_COMMAND, MAX_PHASE = 8, PHASE_RULE;
+var init_words = __esm(() => {
+  init_names();
+  init_task_server_name();
+  TASK_TOOL = {
+    create: "task_create",
+    take: "task_take",
+    update: "task_update",
+    done: "task_done",
+    note: "task_note",
+    list: "task_list",
+    get: "task_get",
+    search: "task_search",
+    delete: "task_delete"
+  };
+  TASK_TOOLS_ALLOW_RULE = `mcp__${TASKS_SERVER_NAME}__*`;
+  TASK_COMMAND = `${COMMAND} task`;
+  PHASE_RULE = `1-${MAX_PHASE} characters: ASCII letters, digits, ".", "_" and "-", a letter or a digit at each end, never "--"`;
 });
 
 // src/path-compare.ts
@@ -8206,6 +8327,15 @@ function normalizeMergeFile(raw) {
   };
   return { ok: false, why: why[parsed.problem] };
 }
+function normalizeAppendOnlyFolder(raw) {
+  const parsed = normalizeMergeFile(raw);
+  if (!parsed.ok || parsed.path.endsWith("/"))
+    return parsed;
+  return {
+    ok: false,
+    why: `${JSON.stringify(raw)} is not a folder: plans.appendOnly names folders, each ending in /`
+  };
+}
 function oldNamesIn(raw) {
   return Object.keys(WORKFLOW_KEY_ALIASES).filter((old) => Object.hasOwn(raw, old)).map((old) => ({
     old,
@@ -8258,7 +8388,7 @@ function workflowValue(workflow, key) {
     return;
   return group[tail];
 }
-var PERCENT, AT_LEAST_ZERO, PHASE_COUNT, NUMBER_RULES, LABEL_RULE = "a label name of 1-50 characters on one line, with no comma, not starting with -", labelSchema, RUN_MODES, mergeFilesSchema, WORKFLOW_KEY_ALIASES, workflowObjectSchema, workflowSchema, personalWorkflowSchema, workflowDefaults, SWITCH_NAMES, POLICY_KEYS, SWITCH_KEYS, WORKFLOW_KEYS;
+var PERCENT, AT_LEAST_ZERO, PHASE_COUNT, NUMBER_RULES, LABEL_RULE = "a label name of 1-50 characters on one line, with no comma, not starting with -", labelSchema, RUN_MODES, mergeFilesSchema, appendOnlySchema, WORKFLOW_KEY_ALIASES, workflowObjectSchema, workflowSchema, personalWorkflowSchema, workflowDefaults, SWITCH_NAMES, POLICY_KEYS, SWITCH_KEYS, WORKFLOW_KEYS;
 var init_schema = __esm(() => {
   init_zod();
   PERCENT = { kind: "whole", max: 100, min: 1 };
@@ -8286,6 +8416,19 @@ var init_schema = __esm(() => {
     }
     return normalised;
   });
+  appendOnlySchema = array(string2()).transform((paths, context) => {
+    const folders = [];
+    for (const [index, raw] of paths.entries()) {
+      const parsed = normalizeAppendOnlyFolder(raw);
+      if (!parsed.ok) {
+        context.issues.push({ code: "custom", input: raw, message: parsed.why, path: [index] });
+        return NEVER;
+      }
+      if (!folders.includes(parsed.path))
+        folders.push(parsed.path);
+    }
+    return folders;
+  });
   WORKFLOW_KEY_ALIASES = {
     autoCommit: "allowCommit",
     autoPush: "allowPush",
@@ -8308,7 +8451,8 @@ var init_schema = __esm(() => {
     clearWorktreeAfterMerge: boolean2().optional(),
     plans: strictObject({
       maxPhases: numberField("plans.maxPhases"),
-      mergeFiles: mergeFilesSchema.optional()
+      mergeFiles: mergeFilesSchema.optional(),
+      appendOnly: appendOnlySchema.optional()
     }).optional(),
     issues: strictObject({
       enabled: boolean2().optional(),
@@ -8370,6 +8514,7 @@ var init_schema = __esm(() => {
     plans: {
       maxPhases: 10,
       mergeFiles: [],
+      appendOnly: [],
       runMode: "ask"
     }
   };
@@ -8401,7 +8546,8 @@ var init_schema = __esm(() => {
     "alerts.usagePercent",
     "plans.maxPhases",
     "plans.runMode",
-    "plans.mergeFiles"
+    "plans.mergeFiles",
+    "plans.appendOnly"
   ];
   SWITCH_KEYS = SWITCH_NAMES.map((name) => `switches.${name}`);
   WORKFLOW_KEYS = [...POLICY_KEYS, ...SWITCH_KEYS];
@@ -8669,6 +8815,7 @@ function alertsFrom(personal, project) {
 function plansFrom(personal, project) {
   const plans = mergeWorkflows(personal, project).plans ?? {};
   const mergeFiles = project.plans?.mergeFiles;
+  const appendOnly = project.plans?.appendOnly;
   const runMode = personal.plans?.runMode;
   return {
     maxPhases: {
@@ -8676,6 +8823,7 @@ function plansFrom(personal, project) {
       source: sourceOf(personal, project, "plans.maxPhases")
     },
     mergeFiles: mergeFiles === undefined ? current([...workflowDefaults.plans.mergeFiles], "default") : current(mergeFiles, "project"),
+    appendOnly: appendOnly === undefined ? current([...workflowDefaults.plans.appendOnly], "default") : current(appendOnly, "project"),
     runMode: runMode === undefined ? current(workflowDefaults.plans.runMode, "default") : current(runMode, "personal")
   };
 }
@@ -8746,6 +8894,906 @@ var init_resolve2 = __esm(() => {
   WorkflowConfigError = class WorkflowConfigError extends Error {
     name = "WorkflowConfigError";
   };
+});
+
+// src/workflow/reviews.ts
+import { createHash as createHash2 } from "crypto";
+function repoKey(repo) {
+  return createHash2("sha256").update(repo).digest("hex").slice(0, 16);
+}
+var START_KEPT_MS;
+var init_reviews = __esm(() => {
+  init_lock();
+  init_write();
+  START_KEPT_MS = 24 * 60 * 60 * 1000;
+});
+
+// src/tasks/deploy/files.ts
+var init_files = __esm(() => {
+  init_write();
+  init_format();
+});
+
+// src/tasks/deploy/check.ts
+var init_check = __esm(() => {
+  init_config();
+  init_words();
+  init_files();
+  init_format();
+});
+
+// src/tasks/context.ts
+var exports_context = {};
+__export(exports_context, {
+  projectKey: () => projectKey
+});
+function projectKey(repo) {
+  return repoKey(repo);
+}
+var init_context = __esm(() => {
+  init_resolve();
+  init_reviews();
+  init_check();
+  init_files();
+  init_format();
+});
+
+// src/jobs/ancestry.ts
+import { readFileSync as readFileSync7 } from "fs";
+function parentPidFromStat(stat) {
+  const end = stat.lastIndexOf(")");
+  if (end === -1)
+    return null;
+  const fields = stat.slice(end + 1).trim().split(/\s+/);
+  const ppid = Number(fields[1]);
+  return Number.isInteger(ppid) && ppid >= 0 ? ppid : null;
+}
+function ancestorsBy(pid, parentOf) {
+  const ancestors = [];
+  const seen = new Set([pid]);
+  let current = pid;
+  while (ancestors.length < MAX_DEPTH) {
+    const parent = parentOf(current);
+    if (parent === null || parent === 0 || seen.has(parent))
+      break;
+    ancestors.push(parent);
+    seen.add(parent);
+    current = parent;
+  }
+  return ancestors;
+}
+function ancestorPids(pid, readStat) {
+  return ancestorsBy(pid, (one) => {
+    const stat = readStat(one);
+    return stat === null ? null : parentPidFromStat(stat);
+  });
+}
+function readProcStat(pid) {
+  try {
+    return readFileSync7(`/proc/${String(pid)}/stat`, "utf8");
+  } catch {
+    return null;
+  }
+}
+var MAX_DEPTH = 128;
+var init_ancestry = () => {};
+
+// src/hooks/sessions.ts
+import { existsSync as existsSync7, readdirSync as readdirSync4, readFileSync as readFileSync8, statSync as statSync6 } from "fs";
+import { uptime } from "os";
+import { join as join9 } from "path";
+function parseSessionRecord(json) {
+  let value;
+  try {
+    value = JSON.parse(json);
+  } catch {
+    return null;
+  }
+  if (typeof value !== "object" || value === null)
+    return null;
+  const { cwd, name, pid, sessionId, procStart } = value;
+  if (typeof cwd !== "string" || typeof pid !== "number" || typeof sessionId !== "string") {
+    return null;
+  }
+  return {
+    pid,
+    sessionId,
+    cwd,
+    name: typeof name === "string" ? name : sessionId.slice(0, 8),
+    ...typeof procStart === "string" ? { procStart } : {}
+  };
+}
+function processStart(pid, facts) {
+  if ((facts.platform ?? process.platform) !== "linux")
+    return;
+  const stat = (facts.readStat ?? readProcStat)(pid);
+  const end = stat?.lastIndexOf(")") ?? -1;
+  const start = end < 0 ? undefined : stat?.slice(end + 1).trim().split(/\s+/)[19];
+  return start !== undefined && /^\d+$/.test(start) ? start : undefined;
+}
+function sessionIdentityProved(record, facts = {}) {
+  return record.procStart !== undefined && processStart(record.pid, facts) === record.procStart;
+}
+function isRunning(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error.code === "EPERM";
+  }
+}
+function sessionRecordOf(claudeConfigDir, pid, facts = {}) {
+  if (!(facts.running ?? isRunning)(pid))
+    return null;
+  const dir = join9(claudeConfigDir, "sessions");
+  const file = join9(dir, `${pid}.json`);
+  const bootedAt = Date.now() - uptime() * 1000;
+  let text;
+  try {
+    if (statSync6(file).mtimeMs < bootedAt)
+      return null;
+    text = readFileSync8(file, "utf8");
+  } catch (error) {
+    if (error.code === "ENOENT")
+      return null;
+    throw new Error(`the record of running session ${pid} cannot be read; retry`);
+  }
+  const record = parseSessionRecord(text);
+  if (record === null) {
+    throw new Error(`the record of running session ${pid} in ${dir} cannot be read, so it is unknown where it works`);
+  }
+  if ((facts.platform ?? process.platform) === "linux" && record.procStart !== undefined) {
+    const start = processStart(pid, facts);
+    if (start !== undefined && record.procStart !== start)
+      return null;
+  }
+  return record;
+}
+function liveSessions(claudeConfigDir, facts = {}) {
+  const dir = join9(claudeConfigDir, "sessions");
+  if (!existsSync7(dir))
+    return [];
+  const live = [];
+  for (const file of readdirSync4(dir)) {
+    const pid = Number(file.replace(/\.json$/, ""));
+    if (!file.endsWith(".json") || !Number.isInteger(pid))
+      continue;
+    const record = sessionRecordOf(claudeConfigDir, pid, facts);
+    if (record !== null)
+      live.push(record);
+  }
+  return live;
+}
+var init_sessions = __esm(() => {
+  init_ancestry();
+});
+
+// src/worktrees/machine-facts.ts
+import { readdirSync as readdirSync5, readFileSync as readFileSync9, readlinkSync as readlinkSync2 } from "fs";
+import { platform } from "os";
+function spawnPrograms(argv) {
+  return Bun.spawnSync([...argv], {
+    stderr: "pipe",
+    stdout: "pipe",
+    timeout: PROGRAMS_TIMEOUT_MS
+  });
+}
+function parsePrograms(lines) {
+  const programs = [];
+  for (const line of lines.split(/\r?\n/)) {
+    const fields = line.split("\t");
+    const pid = Number(fields[0]?.trim() ?? "");
+    const parentPid = Number(fields[1]?.trim() ?? "");
+    const path = fields.slice(2).join("\t").trim();
+    if (!Number.isInteger(pid) || pid <= 0)
+      continue;
+    if (!Number.isInteger(parentPid) || parentPid < 0)
+      continue;
+    if (path === "")
+      continue;
+    programs.push({ parentPid, path, pid });
+  }
+  return programs;
+}
+function parseCommandLines(lines) {
+  const programs = [];
+  for (const line of lines.split(/\r?\n/)) {
+    const text = line.trim();
+    if (text === "")
+      continue;
+    const afterPid = text.indexOf(" ");
+    if (afterPid === -1)
+      continue;
+    const pid = Number(text.slice(0, afterPid));
+    const rest = text.slice(afterPid + 1).trimStart();
+    const afterParent = rest.indexOf(" ");
+    if (afterParent === -1)
+      continue;
+    const parentPid = Number(rest.slice(0, afterParent));
+    const path = rest.slice(afterParent + 1).trim();
+    if (!Number.isInteger(pid) || pid <= 0)
+      continue;
+    if (!Number.isInteger(parentPid) || parentPid < 0)
+      continue;
+    if (path === "")
+      continue;
+    programs.push({ parentPid, path, pid });
+  }
+  return programs;
+}
+function cwdOf(pid) {
+  try {
+    return readlinkSync2(`/proc/${String(pid)}/cwd`);
+  } catch {
+    return;
+  }
+}
+function procPids() {
+  try {
+    return readdirSync5("/proc").filter((name) => /^\d+$/.test(name)).map(Number);
+  } catch {
+    return [];
+  }
+}
+function runningPrograms(on = platform(), spawn = spawnPrograms) {
+  if (on === "win32") {
+    try {
+      const run = Bun.spawnSync(["powershell", "-NoProfile", "-NonInteractive", "-Command", LIST_PROGRAMS], {
+        stderr: "pipe",
+        stdout: "pipe",
+        timeout: PROGRAMS_TIMEOUT_MS,
+        windowsHide: true
+      });
+      return run.exitCode === 0 ? parsePrograms(run.stdout.toString()) : "unknown";
+    } catch {
+      return "unknown";
+    }
+  }
+  let lines;
+  try {
+    const run = spawn(PS_PROGRAMS_ARGV);
+    if (run.exitCode !== 0)
+      return "unknown";
+    lines = run.stdout.toString();
+  } catch {
+    return "unknown";
+  }
+  const programs = parseCommandLines(lines);
+  if (on !== "linux")
+    return programs;
+  for (const pid of procPids()) {
+    const cwd = cwdOf(pid);
+    if (cwd === undefined)
+      continue;
+    const known = programs.find((program) => program.pid === pid);
+    if (known === undefined)
+      programs.push({ cwd, path: null, pid });
+    else
+      known.cwd = cwd;
+  }
+  return programs;
+}
+var PROGRAMS_TIMEOUT_MS = 15000, PS_PROGRAMS_ARGV, OUR_TOOLS, SHELL_NAMES, LIST_PROGRAMS;
+var init_machine_facts = __esm(() => {
+  init_git();
+  PS_PROGRAMS_ARGV = ["ps", "-ww", "-axo", "pid=,ppid=,args="];
+  OUR_TOOLS = new Set(["git", "docker", "ps", "powershell", "pgrep"]);
+  SHELL_NAMES = new Set(["sh", "bash", "zsh", "dash", "fish", "ksh", "pwsh", "powershell"]);
+  LIST_PROGRAMS = "[Console]::OutputEncoding = [Text.Encoding]::UTF8; " + "Get-CimInstance Win32_Process | Where-Object ExecutablePath | " + 'ForEach-Object { "$($_.ProcessId)`t$($_.ParentProcessId)`t$($_.ExecutablePath)" }';
+});
+
+// src/tasks/work/identity.ts
+var exports_identity = {};
+__export(exports_identity, {
+  CLAIM_PROCESS: () => CLAIM_PROCESS,
+  callerOf: () => callerOf,
+  claimGone: () => claimGone
+});
+function listedParentOf(platform) {
+  let listed = null;
+  return (pid) => {
+    if (listed === null) {
+      const found = runningPrograms(platform);
+      listed = new Map(found === "unknown" ? [] : found.map((one) => [one.pid, one]));
+    }
+    return listed.get(pid)?.parentPid ?? null;
+  };
+}
+function claimLive(claim, facts = {}) {
+  const platform = facts.platform ?? process.platform;
+  if (platform !== "linux")
+    return (facts.running ?? isRunning)(claim.pid);
+  return claim.procStart !== null && sessionIdentityProved({
+    pid: claim.pid,
+    procStart: claim.procStart,
+    sessionId: claim.sessionId ?? "",
+    cwd: "",
+    name: ""
+  }, { platform, ...facts.readStat ? { readStat: facts.readStat } : {} });
+}
+function claimGone(claim, facts = {}) {
+  if (!(facts.running ?? isRunning)(claim.pid))
+    return true;
+  const platform = facts.platform ?? process.platform;
+  if (platform !== "linux" || claim.procStart === null)
+    return false;
+  const start = processStart(claim.pid, {
+    platform,
+    ...facts.readStat ? { readStat: facts.readStat } : {}
+  });
+  return start !== undefined && start !== claim.procStart;
+}
+function sessionEnded(claim, facts = {}) {
+  if (!claimGone(claim, facts))
+    return false;
+  if (claim.sessionId === null)
+    return true;
+  try {
+    const dir = facts.claudeConfigDir ?? cliPaths(facts.env ?? process.env).claudeConfigDir;
+    const records = facts.sessions ? facts.sessions(dir) : liveSessions(dir, {
+      ...facts.platform ? { platform: facts.platform } : {},
+      ...facts.readStat ? { readStat: facts.readStat } : {},
+      ...facts.running ? { running: facts.running } : {}
+    });
+    return !records.some((record) => record.sessionId === claim.sessionId);
+  } catch {
+    return false;
+  }
+}
+function callerOf(facts = {}) {
+  const env = facts.env ?? process.env;
+  const platform = facts.platform ?? process.platform;
+  const pid = facts.pid ?? process.pid;
+  const readStat = facts.readStat ?? readProcStat;
+  const config = facts.claudeConfigDir ?? cliPaths(env).claudeConfigDir;
+  const cacheKey = `${config}:${pid}:${platform}`;
+  const recordOf = (p) => sessionRecordOf(config, p, {
+    readStat,
+    platform,
+    ...facts.running ? { running: facts.running } : {}
+  });
+  const previous = cached2.get(cacheKey);
+  const remembered = previous ? recordOf(previous.pid) : null;
+  let record = remembered !== null && (remembered.procStart ?? null) === previous?.procStart ? remembered : null;
+  if (!record) {
+    const parent = facts.ppid ?? process.ppid;
+    const grandparent = platform === "linux" ? null : (facts.parentOf ?? listedParentOf(platform))(parent);
+    const pids = platform === "linux" ? ancestorPids(pid, readStat) : [parent, ...grandparent ? [grandparent] : []];
+    for (const p of pids) {
+      record = recordOf(p);
+      if (record !== null)
+        break;
+    }
+  }
+  if (record) {
+    cached2.set(cacheKey, { pid: record.pid, procStart: record.procStart ?? null });
+    return {
+      sessionId: record.sessionId,
+      pid: record.pid,
+      procStart: record.procStart ?? null,
+      cwd: record.cwd,
+      name: record.name
+    };
+  }
+  cached2.delete(cacheKey);
+  const sessionId = env.CLAUDE_CODE_SESSION_ID?.trim();
+  return sessionId ? {
+    sessionId,
+    pid: null,
+    procStart: null,
+    cwd: facts.cwd ?? process.cwd(),
+    name: null
+  } : null;
+}
+var CLAIM_PROCESS, cached2;
+var init_identity = __esm(() => {
+  init_paths2();
+  init_sessions();
+  init_ancestry();
+  init_machine_facts();
+  CLAIM_PROCESS = {
+    live: (claim) => claimLive(claim),
+    gone: (claim) => claimGone(claim),
+    ended: (claim) => sessionEnded(claim)
+  };
+  cached2 = new Map;
+});
+
+// src/tasks/work/graph.ts
+function isOpen(task) {
+  return task.status === "pending" || task.status === "in_progress";
+}
+function inProgressFirst(a, b) {
+  return Number(b.status === "in_progress") - Number(a.status === "in_progress") || a.number - b.number;
+}
+
+class TaskGraph {
+  byId;
+  children = new Map;
+  added = new Map;
+  constructor(tasks) {
+    this.byId = new Map(tasks.map((task) => [task.id, task]));
+    for (const task of tasks) {
+      if (!task.parentId)
+        continue;
+      const siblings = this.children.get(task.parentId);
+      if (siblings)
+        siblings.push(task);
+      else
+        this.children.set(task.parentId, [task]);
+    }
+  }
+  childrenOf(id) {
+    return this.children.get(id) ?? [];
+  }
+  waitsOf(id) {
+    return [...this.byId.get(id)?.waitsFor ?? [], ...this.added.get(id) ?? []];
+  }
+  addWait(id, ref) {
+    const waits = this.added.get(id);
+    if (waits)
+      waits.push(ref);
+    else
+      this.added.set(id, [ref]);
+  }
+  ancestorsOf(task) {
+    const up = [];
+    const seen = new Set([task.id]);
+    for (let parent = this.byId.get(task.parentId ?? "");parent && !seen.has(parent.id); parent = this.byId.get(parent.parentId ?? "")) {
+      seen.add(parent.id);
+      up.push(parent);
+    }
+    return up;
+  }
+  holdingUnder(id) {
+    const seen = new Set([id]);
+    const result = [];
+    const walk = (parent) => {
+      for (const child of this.childrenOf(parent)) {
+        if (seen.has(child.id) || child.type === "non-blocking")
+          continue;
+        seen.add(child.id);
+        if (isOpen(child))
+          result.push(child);
+        walk(child.id);
+      }
+    };
+    walk(id);
+    return result.sort(inProgressFirst);
+  }
+  waitsFor(start, target) {
+    const reached = new Set;
+    const pending = [start];
+    while (pending.length) {
+      const id = pending.pop();
+      if (!id || reached.has(id))
+        continue;
+      if (id === target)
+        return true;
+      reached.add(id);
+      pending.push(...this.waitsOf(id), ...this.holdingUnder(id).map((held) => held.id));
+    }
+    return false;
+  }
+}
+function blockRefusal(graph, task, other) {
+  if (graph.ancestorsOf(task).some((up) => up.id === other.id))
+    return "under";
+  const seen = new Set;
+  const pending = [other.id];
+  while (pending.length) {
+    const id = pending.pop();
+    if (!id || seen.has(id))
+      continue;
+    if (id === task.id)
+      return "cycle";
+    seen.add(id);
+    pending.push(...graph.waitsOf(id));
+  }
+  return graph.waitsFor(other.id, task.id) ? "through" : null;
+}
+var BLOCK_REFUSAL_WORDS;
+var init_graph = __esm(() => {
+  BLOCK_REFUSAL_WORDS = {
+    under: "it sits above this task",
+    cycle: "it would make a blocker cycle",
+    through: "it already waits for this task, through a parent"
+  };
+});
+
+// src/tasks/work/queries.ts
+function hasFilesTable(db) {
+  return db.sqlite.query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='task_files'").get() !== null;
+}
+function storedFiles(db, project) {
+  const files = new Map;
+  if (!hasFilesTable(db))
+    return files;
+  for (const row of db.sqlite.query("SELECT f.task_id,f.path FROM task_files f JOIN tasks t ON t.id=f.task_id WHERE t.project=? ORDER BY f.path").all(project)) {
+    const paths = files.get(row.task_id) ?? [];
+    paths.push(row.path);
+    files.set(row.task_id, paths);
+  }
+  return files;
+}
+function allTasks(db, project) {
+  const dependencies = new Map;
+  for (const row of db.sqlite.query("SELECT d.task_id,d.waits_for FROM task_deps d JOIN tasks t ON t.id=d.task_id WHERE t.project=? ORDER BY d.waits_for").all(project)) {
+    const refs = dependencies.get(row.task_id) ?? [];
+    refs.push(row.waits_for);
+    dependencies.set(row.task_id, refs);
+  }
+  const files = storedFiles(db, project);
+  return db.sqlite.query("SELECT * FROM tasks WHERE project=? ORDER BY number").all(project).map((row) => ({
+    id: row.id,
+    number: row.number,
+    project: row.project,
+    parentId: row.parent_id,
+    kind: row.kind,
+    subject: row.subject,
+    description: row.description,
+    status: row.status,
+    plan: row.plan,
+    phase: row.phase,
+    agent: row.agent ?? null,
+    branch: row.branch ?? null,
+    worktree: row.worktree ?? null,
+    base: row.base ?? null,
+    createdBy: row.created_by,
+    creator: row.created_pid == null ? null : {
+      pid: row.created_pid,
+      procStart: row.created_start ?? null,
+      sessionId: row.created_by
+    },
+    claim: row.claim_pid === null ? null : { pid: row.claim_pid, procStart: row.claim_start, sessionId: row.claim_session },
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    closedAt: row.closed_at,
+    waitsFor: dependencies.get(row.id) ?? [],
+    type: row.blocking === 0 ? "non-blocking" : "blocking",
+    files: files.get(row.id) ?? [],
+    lead: row.lead_handout == null ? null : {
+      sessionId: row.lead_session ?? null,
+      pid: row.lead_pid ?? null,
+      procStart: row.lead_start ?? null,
+      holder: row.lead_child === 1 ? "child" : "self",
+      handoutId: row.lead_handout
+    },
+    stackedOn: row.stacked_on ?? null
+  }));
+}
+function runningTasksOf(all, plan) {
+  if (plan === null)
+    return [];
+  return all.filter((t) => t.kind !== "plan" && t.plan === plan && t.status === "in_progress");
+}
+function isSessionWork(task) {
+  return task.createdBy !== null || task.creator !== null || task.claim !== null;
+}
+function hasRunningTask(all, plan) {
+  return runningTasksOf(all, plan.plan).some(isSessionWork);
+}
+function isInFlight(all, plan) {
+  return plan.kind === "plan" && isOpen(plan) && (plan.status === "in_progress" || hasRunningTask(all, plan));
+}
+function ownerOf(who) {
+  return (t) => who.sessionId !== null && t.createdBy === who.sessionId || claimHeldBy(t.claim, who) || claimHeldBy(t.creator, who);
+}
+function isLead(lead, who) {
+  if (lead === null || !who)
+    return false;
+  if (who.sessionId !== null && lead.sessionId === who.sessionId)
+    return true;
+  return claimHeldBy(leadProcess(lead), who);
+}
+function leadProcess(lead) {
+  return lead.pid === null ? null : { pid: lead.pid, procStart: lead.procStart, sessionId: lead.sessionId };
+}
+function openBlockers(task, byId) {
+  return task.waitsFor.map((id) => byId.get(id)).filter((t) => t !== undefined && isOpen(t)).sort((a, b) => a.number - b.number);
+}
+function claimHeldBy(claim, who) {
+  if (!claim || !who || who.pid === null || claim.pid !== who.pid)
+    return false;
+  if (claim.procStart !== null && who.procStart !== null)
+    return claim.procStart === who.procStart;
+  return who.sessionId !== null && claim.sessionId === who.sessionId;
+}
+var init_queries = __esm(() => {
+  init_graph();
+});
+
+// src/tasks/work/lead-plans.ts
+var exports_lead_plans = {};
+__export(exports_lead_plans, {
+  classifyLeadPlans: () => classifyLeadPlans
+});
+function reservedState(plan, owns, process2) {
+  if (owns(plan))
+    return plan.lead?.holder === "self" ? "own" : "with-child";
+  const child = plan.creator;
+  if (child === null || process2.live(child))
+    return "with-child";
+  return process2.ended(child) && (plan.claim === null || process2.ended(plan.claim)) ? "child-gone" : "with-child";
+}
+function classifyLeadPlans(db, project, who, process2 = CLAIM_PROCESS) {
+  const all = allTasks(db, project);
+  const byId = new Map(all.map((t) => [t.id, t]));
+  const owns = ownerOf(who);
+  const found = [];
+  for (const plan of all) {
+    if (plan.kind !== "plan")
+      continue;
+    if (isLead(plan.lead, who)) {
+      const state = isOpen(plan) ? reservedState(plan, owns, process2) : "merging";
+      found.push({ plan, state, waitingOn: [] });
+    } else if (isOpen(plan) && plan.lead === null && owns(plan) && !isInFlight(all, plan)) {
+      const waitingOn = openBlockers(plan, byId);
+      const state = waitingOn.length > 0 ? "waiting" : plan.files.length === 0 ? "no-files" : "ready";
+      found.push({ plan, state, waitingOn });
+    }
+  }
+  return found;
+}
+var init_lead_plans = __esm(() => {
+  init_identity();
+  init_queries();
+});
+
+// src/tasks/work/db.ts
+import { Database } from "bun:sqlite";
+import { chmodSync as chmodSync2, existsSync as existsSync8, mkdirSync as mkdirSync5, renameSync as renameSync2, rmSync as rmSync2, writeFileSync as writeFileSync3 } from "fs";
+import { dirname as dirname5, join as join10 } from "path";
+function workDbFile(paths) {
+  return join10(paths.stateDir, "tasks", "work.db");
+}
+function restoreHolds(sqlite, projects, originalHolds, moved) {
+  for (const tasks of projects.values()) {
+    const graph = new TaskGraph(tasks.map((task) => {
+      const row = moved.get(task.id);
+      if (!row)
+        return task;
+      return {
+        ...task,
+        parentId: row.parent_id,
+        type: row.blocking === 0 ? "non-blocking" : "blocking"
+      };
+    }));
+    for (const task of graph.byId.values())
+      for (const held of originalHolds.get(task.id) ?? []) {
+        if (graph.waitsOf(task.id).includes(held.id))
+          continue;
+        const refusal = blockRefusal(graph, task, held);
+        if (refusal) {
+          sqlite.query("INSERT INTO task_events(task_id,project,number,at,action,changes,reason) VALUES (?,?,?,?,'noted',?,?)").run(task.id, task.project, task.number, Date.now(), JSON.stringify({
+            note: [
+              null,
+              `hold on #${held.number} not restored: ${BLOCK_REFUSAL_WORDS[refusal]}`
+            ]
+          }), LEGACY_LIFT_REASON);
+          continue;
+        }
+        sqlite.query("INSERT OR IGNORE INTO task_deps(task_id,waits_for) VALUES (?,?)").run(task.id, held.id);
+        graph.addWait(task.id, held.id);
+      }
+  }
+}
+function repairTaskLayers(sqlite, file) {
+  const nestedExists = sqlite.query("SELECT 1 FROM tasks t JOIN tasks p ON p.id=t.parent_id WHERE t.kind='task' AND p.kind='task' LIMIT 1").get();
+  if (!nestedExists)
+    return;
+  const rows = sqlite.query("SELECT id,project,number,parent_id,kind,blocking,status FROM tasks ORDER BY project,number").all();
+  const byId = new Map(rows.map((row) => [row.id, row]));
+  const originalHolds = new Map;
+  const reader = { sqlite, writable: false, close() {} };
+  const projects = new Map;
+  for (const project of new Set(rows.map((row) => row.project))) {
+    const tasks = allTasks(reader, project);
+    projects.set(project, tasks);
+    const before = new TaskGraph(tasks);
+    for (const task of tasks)
+      if (task.kind === "task" && before.childrenOf(task.id).some((child) => child.kind === "task"))
+        originalHolds.set(task.id, before.holdingUnder(task.id));
+  }
+  let backed = false;
+  const move = (row, parent, above) => {
+    if (!backed) {
+      if (!existsSync8(`${file}.v4.bak`)) {
+        try {
+          writeFileSync3(`${file}.v4.bak.tmp`, sqlite.serialize(), { mode: 384 });
+          renameSync2(`${file}.v4.bak.tmp`, `${file}.v4.bak`);
+        } catch (error) {
+          let cleanup = "";
+          try {
+            rmSync2(`${file}.v4.bak.tmp`, { force: true });
+          } catch (cleanupError) {
+            cleanup = ` Temporary backup cleanup also failed: ${String(cleanupError)}.`;
+          }
+          throw new BackupFailure(`task lift needs a backup: ${error instanceof Error ? error.message : String(error)}. Fix: free disk space and check folder rights for ${dirname5(file)}. The next task call tries again.${cleanup}`);
+        }
+      }
+      backed = true;
+    }
+    const blocking = parent.blocking === 0 ? 0 : row.blocking;
+    sqlite.query("UPDATE tasks SET parent_id=?,blocking=? WHERE id=?").run(above?.id ?? null, blocking, row.id);
+    sqlite.query("INSERT INTO task_events(task_id,project,number,at,action,changes,reason) VALUES (?,?,?,?,'changed',?,?)").run(row.id, row.project, row.number, Date.now(), JSON.stringify({
+      parent: [`#${parent.number}`, above === null ? null : `#${above.number}`],
+      ...blocking !== row.blocking ? { type: ["blocking", "non-blocking"] } : {}
+    }), LEGACY_LIFT_REASON);
+    row.parent_id = above?.id ?? null;
+    row.blocking = blocking;
+  };
+  for (;; ) {
+    const nested = rows.find((row) => row.kind === "task" && byId.get(row.parent_id ?? "")?.kind === "task");
+    if (!nested) {
+      restoreHolds(sqlite, projects, originalHolds, byId);
+      return;
+    }
+    const chain = [];
+    const positions = new Map;
+    let up = nested;
+    while (up) {
+      const at = positions.get(up.id);
+      if (at !== undefined) {
+        const lowest = chain.slice(at).filter((row) => row.kind === "task").sort((a, b) => a.number - b.number || a.id.localeCompare(b.id))[0];
+        if (!lowest) {
+          up = undefined;
+          break;
+        }
+        const parent = byId.get(lowest.parent_id ?? "");
+        if (!parent)
+          throw new Error("missing cycle parent");
+        move(lowest, parent, null);
+        break;
+      }
+      positions.set(up.id, chain.length);
+      chain.push(up);
+      up = byId.get(up.parent_id ?? "");
+    }
+    if (up)
+      continue;
+    const parent = byId.get(nested.parent_id ?? "");
+    if (!parent)
+      throw new Error("missing legacy task parent");
+    move(nested, parent, byId.get(parent.parent_id ?? "") ?? null);
+  }
+}
+function openWorkDb(file, options) {
+  const hook = options.mode === "hook";
+  const fresh = !existsSync8(file);
+  if (hook && fresh)
+    throw new Error("task store does not exist");
+  if (!hook)
+    mkdirSync5(dirname5(file), { recursive: true, mode: 448 });
+  const sqlite = new Database(file, { create: !hook, readwrite: true });
+  let writeRefusal;
+  try {
+    sqlite.run(`PRAGMA busy_timeout = ${hook ? HOOK_TIMEOUT_MS : WRITE_TIMEOUT_MS}`);
+    sqlite.run("PRAGMA foreign_keys = ON");
+    if (!hook) {
+      chmodSync2(dirname5(file), 448);
+      chmodSync2(file, 384);
+      if (fresh)
+        sqlite.run("PRAGMA journal_mode = WAL");
+      sqlite.run("BEGIN IMMEDIATE");
+      try {
+        const version = sqlite.query("PRAGMA user_version").get()?.user_version ?? 0;
+        if (version < 1) {
+          sqlite.run(SCHEMA);
+          sqlite.run("PRAGMA user_version = 1");
+        }
+        for (let at = Math.max(version, 1);at < WORK_SCHEMA_VERSION; at += 1) {
+          const step = MIGRATIONS[at - 1];
+          if (step === undefined)
+            throw new Error(`no migration from task schema ${at}`);
+          if (typeof step === "string")
+            sqlite.run(step);
+          else
+            step(sqlite, file);
+          sqlite.run(`PRAGMA user_version = ${at + 1}`);
+        }
+        const minimum = Number(sqlite.query("SELECT value FROM meta WHERE key='min_compatible'").get()?.value ?? 1);
+        if (minimum <= WORK_SCHEMA_VERSION)
+          repairTaskLayers(sqlite, file);
+        sqlite.run("COMMIT");
+      } catch (error) {
+        sqlite.run("ROLLBACK");
+        if (error instanceof BackupFailure)
+          writeRefusal = error.message;
+        else
+          throw error;
+      }
+    }
+    const minimum = Number(sqlite.query("SELECT value FROM meta WHERE key='min_compatible'").get()?.value ?? WORK_SCHEMA_VERSION);
+    if (hook || writeRefusal !== undefined || minimum > WORK_SCHEMA_VERSION)
+      sqlite.run("PRAGMA query_only = ON");
+    return {
+      sqlite,
+      writable: !hook && writeRefusal === undefined && minimum <= WORK_SCHEMA_VERSION,
+      ...writeRefusal === undefined ? {} : { writeRefusal },
+      close: () => sqlite.close()
+    };
+  } catch (error) {
+    sqlite.close();
+    throw error;
+  }
+}
+var WORK_SCHEMA_VERSION = 7, LEGACY_LIFT_REASON = "lift legacy nested task", WRITE_TIMEOUT_MS = 3000, HOOK_TIMEOUT_MS = 200, NEWER_STORE, SCHEMA = `
+CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
+INSERT INTO meta VALUES ('min_compatible','1');
+CREATE TABLE tasks(id TEXT PRIMARY KEY, project TEXT NOT NULL, number INTEGER NOT NULL,
+ parent_id TEXT REFERENCES tasks(id), kind TEXT NOT NULL DEFAULT 'task' CHECK(kind IN ('task','plan','phase')),
+ subject TEXT NOT NULL, description TEXT NOT NULL DEFAULT '', status TEXT NOT NULL CHECK(status IN ('pending','in_progress','done','dropped')),
+ plan TEXT, phase TEXT, crew_id TEXT, created_by TEXT, claim_pid INTEGER, claim_start TEXT, claim_session TEXT,
+ created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, closed_at INTEGER, UNIQUE(project,number));
+CREATE UNIQUE INDEX task_plan ON tasks(project,plan) WHERE kind='plan';
+CREATE UNIQUE INDEX task_phase ON tasks(project,plan,phase) WHERE kind='phase';
+CREATE INDEX task_status ON tasks(project,status);
+CREATE INDEX task_parent ON tasks(parent_id);
+CREATE INDEX task_crew ON tasks(project,crew_id);
+CREATE TABLE task_deps(task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE, waits_for TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE, PRIMARY KEY(task_id,waits_for));
+CREATE TABLE task_notes(id INTEGER PRIMARY KEY, task_id TEXT NOT NULL REFERENCES tasks(id), text TEXT NOT NULL, session_id TEXT, crew_id TEXT, at INTEGER NOT NULL);
+CREATE TABLE acks(project TEXT NOT NULL, task_ref TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY(project,task_ref));
+CREATE TABLE task_events(id INTEGER PRIMARY KEY, task_id TEXT NOT NULL, project TEXT NOT NULL, number INTEGER NOT NULL,
+ at INTEGER NOT NULL, action TEXT NOT NULL CHECK(action IN ('created','changed','noted','closed','deleted')),
+ changes TEXT NOT NULL, session_id TEXT, session_name TEXT, crew_id TEXT, pid INTEGER, reason TEXT);
+CREATE INDEX task_event_task ON task_events(task_id,id);
+CREATE INDEX task_event_number ON task_events(project,number);
+`, MIGRATIONS, BackupFailure;
+var init_db = __esm(() => {
+  init_names();
+  init_graph();
+  init_queries();
+  NEWER_STORE = `the task store was made by a newer kit version: update the kit (${COMMAND} update)`;
+  MIGRATIONS = [
+    "ALTER TABLE tasks ADD COLUMN blocking INTEGER NOT NULL DEFAULT 1 CHECK(blocking IN (0,1))",
+    `ALTER TABLE tasks ADD COLUMN agent TEXT;
+   ALTER TABLE tasks ADD COLUMN branch TEXT;
+   ALTER TABLE tasks ADD COLUMN worktree TEXT;
+   ALTER TABLE tasks ADD COLUMN base TEXT;`,
+    repairTaskLayers,
+    `ALTER TABLE tasks ADD COLUMN created_pid INTEGER;
+   ALTER TABLE tasks ADD COLUMN created_start TEXT;
+   CREATE INDEX IF NOT EXISTS task_note_task ON task_notes(task_id);`,
+    `CREATE TABLE IF NOT EXISTS task_files(task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE, path TEXT NOT NULL, PRIMARY KEY(task_id,path));
+   ALTER TABLE tasks ADD COLUMN lead_session TEXT;
+   ALTER TABLE tasks ADD COLUMN lead_pid INTEGER;
+   ALTER TABLE tasks ADD COLUMN lead_start TEXT;
+   ALTER TABLE tasks ADD COLUMN lead_child INTEGER NOT NULL DEFAULT 0 CHECK(lead_child IN (0,1));
+   ALTER TABLE tasks ADD COLUMN lead_handout TEXT;`,
+    "ALTER TABLE tasks ADD COLUMN stacked_on TEXT"
+  ];
+  BackupFailure = class BackupFailure extends Error {
+  };
+});
+// src/tasks/work/history.ts
+var init_history = () => {};
+
+// src/tasks/work/read.ts
+var exports_read = {};
+__export(exports_read, {
+  readWorkStore: () => readWorkStore
+});
+import { existsSync as existsSync9 } from "fs";
+function readWorkStore(paths, body) {
+  let db;
+  try {
+    const file = workDbFile(paths);
+    if (!existsSync9(file))
+      return { state: "none" };
+    db = openWorkDb(file, { mode: "hook" });
+    return { state: "ready", value: body(db) };
+  } catch (error) {
+    return { state: "unreadable", why: error instanceof Error ? error.message : String(error) };
+  } finally {
+    db?.close();
+  }
+}
+var init_read = __esm(() => {
+  init_db();
+  init_history();
+  init_identity();
+  init_queries();
 });
 
 // src/hooks/attended.ts
@@ -8834,38 +9882,38 @@ var init_detached = __esm(() => {
 });
 
 // src/setup/bun-config.ts
-import { basename as basename2, join as join9 } from "path";
+import { basename as basename2, join as join11 } from "path";
 function bunConfigPath(pluginDir) {
-  return join9(pluginDir, BUN_CONFIG_NAME);
+  return join11(pluginDir, BUN_CONFIG_NAME);
 }
 function bunConfigArg(pluginDir) {
   return `--config=${bunConfigPath(pluginDir)}`;
 }
 function pluginFolderBeside(importDir) {
-  return basename2(importDir) === "dist" ? join9(importDir, "..") : join9(importDir, "..", "..", "plugin");
+  return basename2(importDir) === "dist" ? join11(importDir, "..") : join11(importDir, "..", "..", "plugin");
 }
 var BUN_CONFIG_NAME = "bunfig.toml";
 var init_bun_config = () => {};
 
 // src/worktrees/auto-state.ts
-import { createHash as createHash2 } from "crypto";
-import { mkdirSync as mkdirSync5, readFileSync as readFileSync7 } from "fs";
-import { dirname as dirname5, join as join10 } from "path";
+import { createHash as createHash3 } from "crypto";
+import { mkdirSync as mkdirSync6, readFileSync as readFileSync10 } from "fs";
+import { dirname as dirname6, join as join12 } from "path";
 function autoCleanLog(stateDir) {
-  return join10(stateDir, "worktrees-auto-clean.log");
+  return join12(stateDir, "worktrees-auto-clean.log");
 }
 function autoCleanFiles(stateDir, repo) {
-  const key = createHash2("sha256").update(pathForm(repo)).digest("hex").slice(0, 16);
-  const dir = join10(stateDir, "worktrees-auto-clean");
+  const key = createHash3("sha256").update(pathForm(repo)).digest("hex").slice(0, 16);
+  const dir = join12(stateDir, "worktrees-auto-clean");
   return {
     log: autoCleanLog(stateDir),
-    result: join10(dir, `${key}.json`),
-    told: join10(dir, `${key}.told.json`)
+    result: join12(dir, `${key}.json`),
+    told: join12(dir, `${key}.told.json`)
   };
 }
 function readJson(file, schema) {
   try {
-    const parsed = schema.safeParse(JSON.parse(readFileSync7(file, "utf8")));
+    const parsed = schema.safeParse(JSON.parse(readFileSync10(file, "utf8")));
     return parsed.success ? parsed.data : null;
   } catch {
     return null;
@@ -8905,12 +9953,12 @@ var init_auto_state = __esm(() => {
 });
 
 // src/worktrees/auto-start.ts
-import { basename as basename3, join as join11 } from "path";
+import { basename as basename3, join as join13 } from "path";
 function autoCleanOn(context) {
   return context.project.config?.worktrees?.autoClean !== false;
 }
 function autoCleanEntry(importDir) {
-  return basename3(importDir) === "dist" ? join11(importDir, `${AUTO_CLEAN_BUNDLE}.js`) : join11(importDir, "..", "entries", `${AUTO_CLEAN_BUNDLE}.ts`);
+  return basename3(importDir) === "dist" ? join13(importDir, `${AUTO_CLEAN_BUNDLE}.js`) : join13(importDir, "..", "entries", `${AUTO_CLEAN_BUNDLE}.ts`);
 }
 function autoCleanArgv(bun, entry, pluginDir, repo, trigger, keep) {
   return [bun, "--no-env-file", bunConfigArg(pluginDir), entry, repo, trigger, keep];
@@ -8944,84 +9992,8 @@ var init_auto_start = __esm(() => {
 });
 
 // src/hooks/run.ts
+init_paths2();
 import { appendFileSync as appendFileSync3 } from "fs";
-
-// src/cli/paths.ts
-init_names();
-import { join as join2, sep } from "path";
-
-// src/gateway/paths.ts
-import { homedir } from "os";
-import { join } from "path";
-function homeDir(env = process.env) {
-  if (env.HOME)
-    return env.HOME;
-  if (hostPlatform(env) === "win32" && env.USERPROFILE)
-    return env.USERPROFILE;
-  return homedir();
-}
-function routerPaths(env = process.env) {
-  const home = homeDir(env);
-  return {
-    home,
-    gatewayConfigFile: join(home, ".config", "cc-smart-dev-kit", "gateway.json"),
-    gatewayStateFile: join(home, ".local", "state", "cc-smart-dev-kit", "gateway-state.json"),
-    safetyChecksFile: join(home, ".local", "state", "cc-smart-dev-kit", "safety-checks.json"),
-    historyDbFile: join(home, ".local", "state", "cc-smart-dev-kit", "history.db")
-  };
-}
-
-// src/cli/paths.ts
-function userConfigFile(env, home) {
-  const dir = env.CLAUDE_CONFIG_DIR;
-  return dir ? join2(dir, ".claude.json") : join2(home, ".claude.json");
-}
-function cliPaths(env = process.env) {
-  if (env === null || typeof env !== "object" || Array.isArray(env)) {
-    throw new TypeError(`cliPaths takes an environment object (like process.env), not ${env === null ? "null" : Array.isArray(env) ? "an array" : typeof env}`);
-  }
-  const router = routerPaths(env);
-  const claudeConfigDir = env.CLAUDE_CONFIG_DIR || join2(router.home, ".claude");
-  return {
-    ...router,
-    claudeConfigDir,
-    settingsFile: join2(claudeConfigDir, "settings.json"),
-    installedPluginsFile: join2(claudeConfigDir, "plugins", "installed_plugins.json"),
-    pluginCacheDir: join2(claudeConfigDir, "plugins", "cache", MARKETPLACE, PLUGIN),
-    knownMarketplacesFile: join2(claudeConfigDir, "plugins", "known_marketplaces.json"),
-    projectsDir: join2(claudeConfigDir, "projects"),
-    userConfigFile: userConfigFile(env, router.home),
-    binDir: join2(router.home, ".local", "bin"),
-    stateDir: join2(claudeConfigDir, "cc-smart-dev-kit"),
-    dataDir: join2(router.home, ".local", "share", "cc-smart-dev-kit"),
-    browserOutputDir: join2(router.home, ".local", "share", "cc-smart-dev-kit", "playwright-output"),
-    browserTokenFile: join2(router.home, ".config", "cc-smart-dev-kit", "playwright-extension.token"),
-    routerCopy: join2(router.home, ".local", "share", "cc-smart-dev-kit", "router.js"),
-    routerTaskFile: join2(router.home, ".local", "share", "cc-smart-dev-kit", "router-task.xml"),
-    portalCopy: join2(router.home, ".local", "share", "cc-smart-dev-kit", "portal.js"),
-    portalUiFolder: join2(router.home, ".local", "share", "cc-smart-dev-kit", "portal-ui"),
-    gitHooksFolder: join2(router.home, ".local", "share", "cc-smart-dev-kit", "git-hooks"),
-    portalProjectsFile: join2(claudeConfigDir, "cc-smart-dev-kit", "portal-projects.json"),
-    portalLogFile: join2(claudeConfigDir, "cc-smart-dev-kit", "portal.log"),
-    portalHeldFile: join2(claudeConfigDir, "cc-smart-dev-kit", "portal-held.json"),
-    omnirouteStateFile: join2(claudeConfigDir, "cc-smart-dev-kit", "omniroute.json"),
-    routerUnitFile: join2(router.home, ".config", "systemd", "user", "cc-smart-dev-kit-router.service"),
-    claudeMemSettingsFile: join2(claudeMemDataDir(env, router.home), "settings.json"),
-    routerSocketFile: join2(router.home, ".config", "systemd", "user", "cc-smart-dev-kit-router.socket"),
-    workflowConfigFile: join2(router.home, ".config", "cc-smart-dev-kit", "workflow.json"),
-    machinesFile: join2(router.home, ".config", "cc-smart-dev-kit", "machines.json"),
-    tmuxConfFile: join2(router.home, ".tmux.conf"),
-    tavilyKeyFile: join2(claudeConfigDir, "cc-smart-dev-kit", "tavily.key")
-  };
-}
-function claudeMemDataDir(env, home) {
-  const dir = env.CLAUDE_MEM_DATA_DIR;
-  if (!dir)
-    return join2(home, ".claude-mem");
-  if (dir === "~")
-    return home;
-  return dir.startsWith("~/") ? join2(home, dir.slice(2)) : dir;
-}
 
 // src/gateway/plain-text.ts
 var CONTROL = /[\p{Cc}\p{Cf}]/gu;
@@ -9131,7 +10103,7 @@ import {
   unlinkSync as unlinkSync2
 } from "fs";
 import { dirname as dirname3, join as join7 } from "path";
-var PARSER_FINGERPRINT = "ecbf12d64fe46194dd034dc713b5e1e608f672cd2abae09ebc3f7dec686bda49";
+var PARSER_FINGERPRINT = "7fc5bd214566a6afa4b5b0cd48a956f6fb94efee5260d617936fbf08d92f4145";
 var CHECKED_DIR = "checked";
 var CHECKED_CACHE_LIMIT = 64;
 var CHECKED_FILE_MAX_BYTES = 256 * 1024;
@@ -9415,10 +10387,10 @@ async function runHookEntry(spec) {
 // src/hooks/after-merge.ts
 init_names();
 init_command();
-import { createHash as createHash3 } from "crypto";
-import { existsSync as existsSync7, mkdirSync as mkdirSync6, writeFileSync as writeFileSync3 } from "fs";
+import { createHash as createHash4 } from "crypto";
+import { existsSync as existsSync10, mkdirSync as mkdirSync7, writeFileSync as writeFileSync4 } from "fs";
 import { tmpdir } from "os";
-import { join as join12 } from "path";
+import { join as join14 } from "path";
 
 // src/shell/git-calls.ts
 function configKey(raw) {
@@ -9515,6 +10487,10 @@ function gitCalls(args) {
   }
   return calls;
 }
+
+// src/hooks/after-merge.ts
+init_words();
+
 // src/hooks/budget.ts
 var GUARD_BUDGET_MS = 25000;
 var BUDGET_MARGIN_MS = 2000;
@@ -9526,6 +10502,15 @@ function budgetMs(env, ceilingMs = GUARD_BUDGET_MS) {
 function startBudget(env, now = Date.now, ceilingMs = GUARD_BUDGET_MS, startedAtMs) {
   const budgetAt = (startedAtMs ?? now()) + budgetMs(env, ceilingMs);
   return { timeFor: (limitMs) => Math.min(limitMs, budgetAt - now() - BUDGET_MARGIN_MS) };
+}
+
+// src/hooks/capped-list.ts
+var HOOK_LIST_LIMIT = 8;
+function cappedHookList(items, render, command, separator = ", ") {
+  const shown = items.slice(0, HOOK_LIST_LIMIT).map(render);
+  if (items.length > HOOK_LIST_LIMIT)
+    shown.push(`+${items.length - HOOK_LIST_LIMIT} more: ${command}`);
+  return shown.join(separator);
 }
 
 // src/hooks/after-merge.ts
@@ -10406,6 +11391,40 @@ async function clearsAfterMerge(context) {
     throw error;
   }
 }
+var KEPT_PLAN_STATES = new Set([
+  "with-child",
+  "child-gone",
+  "waiting",
+  "no-files",
+  "ready"
+]);
+function keptWorktreeNote(slugs) {
+  const one = slugs.length === 1;
+  return `Kept: ${one ? "plan" : "plans"} ${cappedHookList(slugs, (slug) => slug, TASK_TOOL.list)} ${one ? "is" : "are"} still open here.`;
+}
+async function otherOpenPlans(context) {
+  const { cwd, env, input, paths, project } = context;
+  try {
+    const [{ projectKey }, { callerOf }, { classifyLeadPlans }, { readWorkStore }] = await Promise.all([
+      Promise.resolve().then(() => (init_context(), exports_context)),
+      Promise.resolve().then(() => (init_identity(), exports_identity)),
+      Promise.resolve().then(() => (init_lead_plans(), exports_lead_plans)),
+      Promise.resolve().then(() => (init_read(), exports_read))
+    ]);
+    const sessionId = stringField(input.session_id);
+    const who = callerOf({ env, cwd, claudeConfigDir: paths.claudeConfigDir }) ?? {
+      sessionId,
+      pid: null,
+      procStart: null
+    };
+    if (who.sessionId === null && who.pid === null)
+      return { state: "none" };
+    const key = projectKey(project.mainCheckout ?? project.root);
+    return readWorkStore(paths, (db) => classifyLeadPlans(db, key, who).filter((entry) => KEPT_PLAN_STATES.has(entry.state)).map((entry) => entry.plan.plan ?? `#${entry.plan.number}`));
+  } catch (error) {
+    return { state: "unreadable", why: error instanceof Error ? error.message : String(error) };
+  }
+}
 function viewPullRequest(ref, repo, folder, env, timeoutMs) {
   if (timeoutMs <= 0)
     return null;
@@ -10425,8 +11444,8 @@ function viewPullRequest(ref, repo, folder, env, timeoutMs) {
   }
 }
 function seenFile(repo, number, env) {
-  const key = createHash3("sha256").update(repo).digest("hex").slice(0, 16);
-  return join12(env.TMPDIR || tmpdir(), "cc-smart-dev-kit-merges", `${key}-${number}`);
+  const key = createHash4("sha256").update(repo).digest("hex").slice(0, 16);
+  return join14(env.TMPDIR || tmpdir(), "cc-smart-dev-kit-merges", `${key}-${number}`);
 }
 async function afterMerge(context) {
   const { project, input, event, env, cwd } = context;
@@ -10470,19 +11489,23 @@ async function afterMerge(context) {
     now: Date.now(),
     pr,
     sameRepo: pr !== null && origin.ok && sameRepository(pr.url, origin.out),
-    seen: record !== null && existsSync7(record),
+    seen: record !== null && existsSync10(record),
     target,
     worktree
   });
   if (outcome.intoBase !== null && record !== null) {
-    mkdirSync6(join12(record, ".."), { recursive: true });
-    writeFileSync3(record, "");
+    mkdirSync7(join14(record, ".."), { recursive: true });
+    writeFileSync4(record, "");
     await Promise.resolve().then(() => init_auto_start());
     startAutoClean(context, repo, "merge");
   }
   if (outcome.clear === null)
     return SILENT;
-  return addContext(event, clearWorktreeNote(outcome.clear.path, outcome.clear.branch, await clearsAfterMerge(context)));
+  const others = await otherOpenPlans(context);
+  if (others.state === "ready" && others.value.length > 0)
+    return addContext(event, keptWorktreeNote(others.value));
+  const note = addContext(event, clearWorktreeNote(outcome.clear.path, outcome.clear.branch, await clearsAfterMerge(context)));
+  return others.state === "unreadable" ? { ...note, stderr: `${COMMAND} after-merge: ${others.why}` } : note;
 }
 
 // src/hooks/specs/after-merge.ts

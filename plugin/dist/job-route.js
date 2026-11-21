@@ -503,7 +503,7 @@ var PLUGIN_INSTALL_COMMAND = `claude plugin install ${PLUGIN_ID}`;
 var PLUGIN_UPDATE_COMMAND = `claude plugin update ${PLUGIN_ID}`;
 
 // src/hooks/checked-config.ts
-var PARSER_FINGERPRINT = "ecbf12d64fe46194dd034dc713b5e1e608f672cd2abae09ebc3f7dec686bda49";
+var PARSER_FINGERPRINT = "7fc5bd214566a6afa4b5b0cd48a956f6fb94efee5260d617936fbf08d92f4145";
 var CHECKED_DIR = "checked";
 var CHECKED_CACHE_LIMIT = 64;
 var CHECKED_FILE_MAX_BYTES = 256 * 1024;
@@ -5002,7 +5002,7 @@ function commandOf(input) {
 function inputDialect(input) {
   return dialectOfTool(input.tool_name) ?? "bash";
 }
-function jobRoute(context, bashTool = bashToolExists, platform = process.platform, personal = {}) {
+function jobRoute(context, personal, bashTool = bashToolExists, platform = process.platform) {
   const fields = toolInput(context.input);
   const command = stringField(fields.command);
   if (command === null)
@@ -5032,7 +5032,7 @@ function jobRoute(context, bashTool = bashToolExists, platform = process.platfor
 }
 async function jobRouteAnswer(context) {
   const personal = await loadPersonalWorkflow(context.paths);
-  return jobRoute(context, bashToolExists, process.platform, personal);
+  return jobRoute(context, personal, bashToolExists, process.platform);
 }
 function routeFacts(input) {
   const command = commandOf(input);

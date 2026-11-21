@@ -520,7 +520,7 @@ var PLUGIN_INSTALL_COMMAND = `claude plugin install ${PLUGIN_ID}`;
 var PLUGIN_UPDATE_COMMAND = `claude plugin update ${PLUGIN_ID}`;
 
 // src/hooks/checked-config.ts
-var PARSER_FINGERPRINT = "ecbf12d64fe46194dd034dc713b5e1e608f672cd2abae09ebc3f7dec686bda49";
+var PARSER_FINGERPRINT = "7fc5bd214566a6afa4b5b0cd48a956f6fb94efee5260d617936fbf08d92f4145";
 var CHECKED_DIR = "checked";
 var CHECKED_CACHE_LIMIT = 64;
 var CHECKED_FILE_MAX_BYTES = 256 * 1024;
@@ -8148,6 +8148,28 @@ var mergeFilesSchema = array(string2()).transform((paths, context) => {
   }
   return normalised;
 });
+function normalizeAppendOnlyFolder(raw) {
+  const parsed = normalizeMergeFile(raw);
+  if (!parsed.ok || parsed.path.endsWith("/"))
+    return parsed;
+  return {
+    ok: false,
+    why: `${JSON.stringify(raw)} is not a folder: plans.appendOnly names folders, each ending in /`
+  };
+}
+var appendOnlySchema = array(string2()).transform((paths, context) => {
+  const folders = [];
+  for (const [index, raw] of paths.entries()) {
+    const parsed = normalizeAppendOnlyFolder(raw);
+    if (!parsed.ok) {
+      context.issues.push({ code: "custom", input: raw, message: parsed.why, path: [index] });
+      return NEVER;
+    }
+    if (!folders.includes(parsed.path))
+      folders.push(parsed.path);
+  }
+  return folders;
+});
 var WORKFLOW_KEY_ALIASES = {
   autoCommit: "allowCommit",
   autoPush: "allowPush",
@@ -8213,7 +8235,8 @@ var workflowObjectSchema = strictObject({
   clearWorktreeAfterMerge: boolean2().optional(),
   plans: strictObject({
     maxPhases: numberField("plans.maxPhases"),
-    mergeFiles: mergeFilesSchema.optional()
+    mergeFiles: mergeFilesSchema.optional(),
+    appendOnly: appendOnlySchema.optional()
   }).optional(),
   issues: strictObject({
     enabled: boolean2().optional(),
@@ -8275,6 +8298,7 @@ var workflowDefaults = {
   plans: {
     maxPhases: 10,
     mergeFiles: [],
+    appendOnly: [],
     runMode: "ask"
   }
 };
@@ -8306,7 +8330,8 @@ var POLICY_KEYS = [
   "alerts.usagePercent",
   "plans.maxPhases",
   "plans.runMode",
-  "plans.mergeFiles"
+  "plans.mergeFiles",
+  "plans.appendOnly"
 ];
 var PERSONAL_ONLY_KEYS = ["plans.runMode"];
 var SWITCH_KEYS = SWITCH_NAMES.map((name) => `switches.${name}`);
@@ -8571,6 +8596,8 @@ var TASK_TOOL = {
 };
 var TASK_TOOLS_ALLOW_RULE = `mcp__${TASKS_SERVER_NAME}__*`;
 var TASK_COMMAND = `${COMMAND} task`;
+var MAX_PHASE = 8;
+var PHASE_RULE = `1-${MAX_PHASE} characters: ASCII letters, digits, ".", "_" and "-", a letter or a digit at each end, never "--"`;
 
 // src/tasks/deploy/files.ts
 import { existsSync as existsSync7, mkdirSync as mkdirSync4, readdirSync as readdirSync3, readFileSync as readFileSync7, rmSync, writeFileSync as writeFileSync2 } from "fs";
@@ -9219,7 +9246,8 @@ function allTasks(db, project) {
       procStart: row.lead_start ?? null,
       holder: row.lead_child === 1 ? "child" : "self",
       handoutId: row.lead_handout
-    }
+    },
+    stackedOn: row.stacked_on ?? null
   }));
 }
 function openBlockers(task, byId) {
@@ -9247,7 +9275,7 @@ function claimState(task, process2, who) {
 }
 
 // src/tasks/work/db.ts
-var WORK_SCHEMA_VERSION = 6;
+var WORK_SCHEMA_VERSION = 7;
 var LEGACY_LIFT_REASON = "lift legacy nested task";
 var WRITE_TIMEOUT_MS = 3000;
 var HOOK_TIMEOUT_MS = 200;
@@ -9292,7 +9320,8 @@ var MIGRATIONS = [
    ALTER TABLE tasks ADD COLUMN lead_pid INTEGER;
    ALTER TABLE tasks ADD COLUMN lead_start TEXT;
    ALTER TABLE tasks ADD COLUMN lead_child INTEGER NOT NULL DEFAULT 0 CHECK(lead_child IN (0,1));
-   ALTER TABLE tasks ADD COLUMN lead_handout TEXT;`
+   ALTER TABLE tasks ADD COLUMN lead_handout TEXT;`,
+  "ALTER TABLE tasks ADD COLUMN stacked_on TEXT"
 ];
 
 class BackupFailure extends Error {
