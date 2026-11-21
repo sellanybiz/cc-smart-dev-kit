@@ -24,8 +24,10 @@ import {
   openChildren,
   ownerOf,
   planIsOpen,
+  provedSet,
   resumedClaim,
   rivalsOf,
+  type StackPair,
   taskById,
 } from "./queries";
 import {
@@ -181,11 +183,11 @@ export interface FilesCheck extends OverlapRule {
    */
   reason?: string | null;
   /**
-   * The stacked plans, by plan task id, whose start is proved to hold their parent's work
-   * (`provedStacks`), read before the lock. Only these pairs are skipped (`isStackedPair`); left
-   * out, no stack is proved and every stacked pair is judged as rivals.
+   * The proved stacks, each a pair of stacked plan and parent (`provedStacks`), read before the
+   * lock from the rows as this write leaves them. Only these pairs are skipped (`isStackedPair`);
+   * left out, no stack is proved and every stacked pair is judged as rivals.
    */
-  stacked?: readonly string[];
+  stacked?: readonly StackPair[];
 }
 export interface UpdateTask {
   agent?: string | undefined;
@@ -327,8 +329,9 @@ function storeFiles(db: WorkDb, task: WorkTask, files: readonly string[]): void 
  * on a plan the caller does not lead, and a stack that would loop back to `task` (each plan in the
  * chain is followed by its own stack). A stack lifts the overlap check for the pair, so only the
  * lead of both plans (`leadsPlan`: the reservation, or the plan's own task) sets one: a session
- * never stacks its plan on another lead's plan to get past an overlap. Clearing one only adds
- * checks, so anyone may.
+ * never stacks its plan on another lead's plan to get past an overlap. The overlap check asks it
+ * again each time it judges the pair (`sameLead`), since a take can move a plan later. Clearing
+ * one only adds checks, so anyone may.
  */
 function storeStack(db: WorkDb, task: WorkTask, slug: string | null, who: Who): void {
   if (task.kind !== "plan")
@@ -439,9 +442,9 @@ function refuseHeldOverlap(db: WorkDb, task: WorkTask, who: Who, check: FilesChe
  */
 const NO_FILES_CHECK: FilesCheck = { ignore: [], caseFold: false };
 
-/** The stacked plans a check proved (`FilesCheck.stacked`); none when it proved none. */
+/** The stacked pairs a check proved (`FilesCheck.stacked`); none when it proved none. */
 function provedOf(check: FilesCheck): ReadonlySet<string> {
-  return new Set(check.stacked ?? []);
+  return provedSet(check.stacked);
 }
 
 /**
@@ -1071,10 +1074,10 @@ export interface ReservePlan {
   /** Each held plan's branch diff by its plan task's id, read before the transaction (no git runs under the lock). */
   extraFiles?: Readonly<Record<string, readonly string[]>>;
   /**
-   * The stacked plans, by plan task id, whose start is proved to hold their parent's work
-   * (`provedStacks`), read before the transaction. Left out, every stacked pair is judged as rivals.
+   * The proved stacks, each a pair of stacked plan and parent (`provedStacks`), read before the
+   * transaction. Left out, every stacked pair is judged as rivals.
    */
-  stacked?: readonly string[];
+  stacked?: readonly StackPair[];
   now: number;
 }
 
@@ -1115,7 +1118,7 @@ export function reservePlan(db: WorkDb, input: ReservePlan): Result<WorkTask> {
     const others = rivalsOf(
       heldPlansIn(all, who, input.extraFiles),
       plan,
-      new Set(input.stacked ?? []),
+      provedSet(input.stacked),
     );
     refuseUnlisted(others);
     const clashes = overlapsWith(others, plan.files, input);

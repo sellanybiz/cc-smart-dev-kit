@@ -2468,7 +2468,7 @@ test("a stacked plan whose start lacks its parent's work is judged against it: -
   ).toBe(1);
   expect(p.lines.join("\n")).toContain('Plan "beta" is not ready: overlaps #1 alpha: src/a/x.ts.');
   expect(p.lines.join("\n")).toContain(
-    "the stack on alpha counts only when this plan starts on alpha's work",
+    "the stack on alpha counts only when this plan is built on alpha's work: cc-smart-dev-kit herdr start --plan beta starts it on alpha-branch when --base is left out; a plan built here rebuilds its branch on alpha-branch",
   );
   p.noRun();
   expect(p.row("beta").lead).toBeNull();

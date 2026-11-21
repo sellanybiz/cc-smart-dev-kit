@@ -121,8 +121,8 @@ export interface WorkTask {
   lead: WorkLead | null;
   /**
    * The slug of the plan this plan is built on (`stacked_on`): the overlap check skips that one
-   * plan, both ways, while it holds its files and the stack is proved (`isStackedPair`). Set only by
-   * the lead of both plans (`leadsPlan`). Null for a plan stacked on none, for any
+   * plan, both ways, while it holds its files, one lead leads both and the pair is proved
+   * (`isStackedPair`). Set only by the lead of both plans (`leadsPlan`). Null for a plan stacked on none, for any
    * other task, and in a store from before schema 7.
    */
   stackedOn: string | null;

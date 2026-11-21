@@ -7,7 +7,7 @@ import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { createOut } from "../cli/ui/out";
 import { openWorkDb, workDbFile } from "../tasks/work/db";
-import { allTasks, eventsOf, taskById } from "../tasks/work/queries";
+import { allTasks, eventsOf, type StackPair, taskById } from "../tasks/work/queries";
 import { createTask, releasePlan, reservePlan, takeTasks, updateTask } from "../tasks/work/store";
 import type { ClaimProcess, Result, Who, WorkTask } from "../tasks/work/types";
 import { makeClone } from "../testing/hooks";
@@ -94,7 +94,7 @@ function build() {
     ok(updateTask(db, task.id, to, LEAD, 50));
   const reserve = (
     slug: string,
-    over: { files?: Record<string, string[]>; stacked?: string[] } = {},
+    over: { files?: Record<string, string[]>; stacked?: StackPair[] } = {},
   ) =>
     ok(
       reservePlan(db, {
@@ -999,7 +999,7 @@ test("a stacked plan is ready beside its held parent once it starts on its work,
   expect([unproved.state, unproved.text, unproved.fix]).toEqual([
     "overlaps",
     "overlaps #1 alpha: src/a/x.ts",
-    "the stack on alpha counts only when this plan starts on alpha's work: cc-smart-dev-kit herdr start --plan beta starts it on alpha-branch when --base is left out; a plan built here records a base that holds alpha-branch (task_update #2 with base)",
+    "the stack on alpha counts only when this plan is built on alpha's work: cc-smart-dev-kit herdr start --plan beta starts it on alpha-branch when --base is left out; a plan built here rebuilds its branch on alpha-branch",
   ]);
   // A start on alpha's tip proves it; a start on the default branch does not.
   const started = (start: string) =>
@@ -1010,7 +1010,7 @@ test("a stacked plan is ready beside its held parent once it starts on its work,
   expect(prepareStart(w.base, "beta", base).ok).toBe(false);
   expect(w.line("gamma").text).toBe("overlaps #1 alpha: src/a/y.ts");
   // The stacked plan's branch holds its parent's work: that is no drift against the parent.
-  w.reserve("beta", { stacked: [beta.id] });
+  w.reserve("beta", { stacked: [{ child: beta.id, parent: "alpha" }] });
   git(w.repo, "checkout", "-q", "-b", "beta-branch", "alpha-branch");
   writeFileSync(join(w.repo, "src/a/x.ts"), "x\n");
   writeFileSync(join(w.repo, "src/a/z.ts"), "z\n");
@@ -1025,7 +1025,46 @@ test("a stacked plan is ready beside its held parent once it starts on its work,
   parentless.reserve("alpha");
   parentless.change(parentless.plan("beta", ["src/a/x.ts"]), { stackedOn: "alpha" });
   expect(parentless.line("beta").fix).toBe(
-    "the stack on alpha counts only once alpha records its branch and base: task_update #1 with branch and base",
+    "the stack on alpha counts only once alpha records its branch: task_update #1 with branch",
+  );
+  // A parent whose branch holds no commit of its own yet proves no stack: the fix waits for one,
+  // whatever the start.
+  const empty = build();
+  git(empty.repo, "branch", "alpha-branch", "main");
+  empty.change(empty.plan("alpha", ["src/a/"]), { branch: "alpha-branch" });
+  empty.reserve("alpha");
+  empty.change(empty.plan("beta", ["src/a/x.ts"]), { stackedOn: "alpha" });
+  const waiting = judgePlans(empty.base, "beta", empty.git("rev-parse", "alpha-branch")).lines.find(
+    (one) => one.plan === "beta",
+  );
+  expect([waiting?.state, waiting?.fix]).toEqual([
+    "overlaps",
+    "the stack on alpha counts only once alpha has work of its own: wait for its first commit on alpha-branch",
+  ]);
+  // A stacked plan another session took is no pair, and the fix names it.
+  const taken = build();
+  taken.branch("alpha-branch", { "src/a/one.ts": "1\n" });
+  taken.change(taken.plan("alpha", ["src/a/"]), { branch: "alpha-branch" });
+  taken.reserve("alpha");
+  const theirs = taken.change(taken.plan("beta", ["src/a/x.ts"]), { stackedOn: "alpha" });
+  ok(takeTasks(taken.db, "p", theirs.id, OTHER, 60, { isLive: () => false }));
+  const after = judgePlans(
+    { ...taken.base, who: OTHER },
+    "beta",
+    taken.git("rev-parse", "alpha-branch"),
+  );
+  expect(after.stacked).toEqual([]);
+  expect(after.lines.find((one) => one.plan === "beta")?.fix).toBe(
+    "the stack on alpha counts only while one lead leads both plans, and another session now holds this plan or alpha: take it back (task_take), or clear the stack (task_update #2 with stacked_on null)",
+  );
+  // The default branch only guessed proves nothing either.
+  const guessed = judgePlans(
+    { ...empty.base, baseFrom: "default" },
+    "beta",
+    empty.git("rev-parse", "alpha-branch"),
+  ).lines.find((one) => one.plan === "beta");
+  expect(guessed?.fix).toBe(
+    "the stack on alpha counts only once the default branch is known: run `git remote set-head origin --auto`, or set worktrees.base in .claude/cc-smart-dev-kit.json",
   );
   // The stack is shown on the line the command prints.
   const shown: string[] = [];

@@ -20,7 +20,7 @@ import type { Env } from "../hooks/run";
 import { locateCheckout } from "../project/resolve";
 import { taskContext } from "../tasks/context";
 import { planFilesCheck } from "../tasks/files-check";
-import { branchTip, provedStacks } from "../tasks/stack-proof";
+import { branchTip, judgeStacks, provedPairs, type StackJudgment } from "../tasks/stack-proof";
 import { openWorkDb, type WorkDb, workDbFile } from "../tasks/work/db";
 import { CLAIM_PROCESS, callerOf } from "../tasks/work/identity";
 import { classifyLeadPlans, type LeadPlan, type LeadPlanState } from "../tasks/work/lead-plans";
@@ -33,7 +33,9 @@ import {
   isOpen,
   ownerOf,
   planByRef,
+  provedSet,
   rivalsOf,
+  type StackPair,
 } from "../tasks/work/queries";
 import { type FilesCheck, releasePlan, reservePlan, swapPlanAgent } from "../tasks/work/store";
 import type { ClaimProcess, Who, WorkTask } from "../tasks/work/types";
@@ -314,8 +316,8 @@ export interface Judgment {
   lines: PlanLine[];
   /** Each held plan's branch diff by its plan task id: what `reservePlan` is given. */
   extraFiles: Record<string, string[]>;
-  /** The stacked plans whose start holds their parent's work (`provedStacks`): what `reservePlan` is given. */
-  stacked: string[];
+  /** The proved stacks (`provedStacks`): what `reservePlan` is given. */
+  stacked: StackPair[];
 }
 
 /** The line a plan starts from: its identity, and no live facts yet. */
@@ -427,15 +429,17 @@ export function judgePlans(input: PlansWorld, only?: string, start?: string): Ju
   for (const held of heldPlansIn(all, world.who))
     if (held.plan.branch !== null) extraFiles[held.plan.id] = branchDiff(world, held.plan);
   const held = heldPlansIn(all, world.who, extraFiles);
-  // A stack counts only when proved (`provedStacks`): the plan being started is judged from the
-  // commit it starts on, every other plan from its recorded base.
+  // A stack counts only when proved (`judgeStacks`): the plan being started is judged from the
+  // commit it starts on, every other plan from its recorded base. A guessed default branch proves none.
   const starting = all.find((t) => t.kind === "plan" && t.plan === only);
-  const stacked = provedStacks(
+  const stacks = judgeStacks(
     all,
     (args) => git(world, args),
+    world.baseFrom === "default" ? null : world.base,
     starting !== undefined && start !== undefined ? { [starting.id]: start } : {},
   );
-  const proved = new Set(stacked);
+  const stacked = provedPairs(stacks);
+  const proved = provedSet(stacked);
   const lines: PlanLine[] = [...released];
   for (const entry of stored) {
     const plan = entry.plan;
@@ -560,7 +564,7 @@ export function judgePlans(input: PlansWorld, only?: string, start?: string): Ju
           lines.push(lineOf(base, entry.state, "not judged: another plan is being started"));
           break;
         }
-        lines.push(readiness(world, entry, held, byId, base, proved));
+        lines.push(readiness(world, entry, held, byId, base, proved, stacks));
         break;
       }
     }
@@ -630,6 +634,7 @@ function readiness(
   byId: ReadonlyMap<string, WorkTask>,
   base: Pick<PlanLine, "number" | "plan" | "subject" | "pr" | "pane" | "stackedOn" | "drift">,
   proved: ReadonlySet<string>,
+  stacks: ReadonlyMap<string, StackJudgment>,
 ): PlanLine {
   const plan = entry.plan;
   const line = (state: PlanState, text: string, fix: string | null = null): PlanLine => ({
@@ -685,20 +690,38 @@ function readiness(
     return line(
       "overlaps",
       `overlaps ${clashes.join("; ")}`,
-      parent === null ? null : unprovedStackFix(plan, parent),
+      parent === null ? null : unprovedStackFix(plan, parent, stacks.get(plan.id)),
     );
   return line("ready", "ready: nothing blocks it and no held plan shares its files");
 }
 
 /**
- * What a stacked plan needs when its stack is not proved (`provedStacks`), so its parent counts as
- * a rival: the parent's branch and base recorded, work on that branch, and a start that holds it.
+ * What a stacked plan needs when its stack is not proved (`judgeStacks`), so its parent counts as
+ * a rival, by why it is not: the fix always rebuilds on the parent's work, or waits for it, and
+ * never only writes a start down (a recorded start proves nothing its branch does not hold).
  */
-function unprovedStackFix(plan: WorkTask, parent: WorkTask): string {
+function unprovedStackFix(
+  plan: WorkTask,
+  parent: WorkTask,
+  judged: StackJudgment | undefined,
+): string {
   const name = parent.plan ?? parent.subject;
-  if (parent.branch === null || parent.base === null)
-    return `the stack on ${name} counts only once ${name} records its branch and base: task_update #${parent.number} with branch and base`;
-  return `the stack on ${name} counts only when this plan starts on ${name}'s work: ${COMMAND} herdr start --plan ${plan.plan ?? plan.subject} starts it on ${parent.branch} when --base is left out; a plan built here records a base that holds ${parent.branch} (task_update #${plan.number} with base)`;
+  const slug = plan.plan ?? plan.subject;
+  const counts = `the stack on ${name} counts only`;
+  const gap = judged === undefined || judged.verdict.proved ? null : judged.verdict.gap;
+  if (gap === "default-unknown")
+    return `${counts} once the default branch is known: ${UNKNOWN_BASE.fix}`;
+  if (gap === "other-lead")
+    return `${counts} while one lead leads both plans, and another session now holds this plan or ${name}: take it back (task_take), or clear the stack (task_update #${plan.number} with stacked_on null)`;
+  if (parent.branch === null)
+    return `${counts} once ${name} records its branch: task_update #${parent.number} with branch`;
+  if (gap === "parent-branch")
+    return `${counts} once ${name}'s branch ${parent.branch} is in this repository: fetch it`;
+  if (gap === "parent-empty")
+    return `${counts} once ${name} has work of its own: wait for its first commit on ${parent.branch}`;
+  if (gap === "git")
+    return `${counts} once git can read ${name}'s branch and this plan's start: run ${COMMAND} herdr plans again`;
+  return `${counts} when this plan is built on ${name}'s work: ${COMMAND} herdr start --plan ${slug} starts it on ${parent.branch} when --base is left out; a plan built here rebuilds its branch on ${parent.branch}`;
 }
 
 /** The `plans` summary line's words for each count. */
