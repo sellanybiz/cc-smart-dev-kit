@@ -20,6 +20,7 @@ import type { Env } from "../hooks/run";
 import { locateCheckout } from "../project/resolve";
 import { taskContext } from "../tasks/context";
 import { planFilesCheck } from "../tasks/files-check";
+import { branchTip, provedStacks } from "../tasks/stack-proof";
 import { openWorkDb, type WorkDb, workDbFile } from "../tasks/work/db";
 import { CLAIM_PROCESS, callerOf } from "../tasks/work/identity";
 import { classifyLeadPlans, type LeadPlan, type LeadPlanState } from "../tasks/work/lead-plans";
@@ -153,13 +154,9 @@ function baseRef(world: PlansWorld): string | null {
   return null;
 }
 
-/** The commit a recorded branch is at, here or on origin; null when the branch is unknown. */
+/** The commit a recorded branch is at, here or on origin (`branchTip`); null when the branch is unknown. */
 function tipOf(world: PlansWorld, branch: string): string | null {
-  for (const ref of [`refs/heads/${branch}`, `refs/remotes/origin/${branch}`]) {
-    const run = git(world, ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`]);
-    if (run.ok && run.out !== "") return run.out;
-  }
-  return null;
+  return branchTip((args) => git(world, args), branch);
 }
 
 /**
@@ -317,6 +314,8 @@ export interface Judgment {
   lines: PlanLine[];
   /** Each held plan's branch diff by its plan task id: what `reservePlan` is given. */
   extraFiles: Record<string, string[]>;
+  /** The stacked plans whose start holds their parent's work (`provedStacks`): what `reservePlan` is given. */
+  stacked: string[];
 }
 
 /** The line a plan starts from: its identity, and no live facts yet. */
@@ -405,7 +404,7 @@ function settle(world: PlansWorld, owns: (task: WorkTask) => boolean): PlanLine[
  * gates of one plan (a start); reserved plans are always read, since they hold files. Settling
  * runs first (`settle`), so a plan whose pull request just merged no longer holds its files.
  */
-export function judgePlans(input: PlansWorld, only?: string): Judgment {
+export function judgePlans(input: PlansWorld, only?: string, start?: string): Judgment {
   const answers = new Map<string, PrState>();
   const world: PlansWorld = {
     ...input,
@@ -428,12 +427,21 @@ export function judgePlans(input: PlansWorld, only?: string): Judgment {
   for (const held of heldPlansIn(all, world.who))
     if (held.plan.branch !== null) extraFiles[held.plan.id] = branchDiff(world, held.plan);
   const held = heldPlansIn(all, world.who, extraFiles);
+  // A stack counts only when proved (`provedStacks`): the plan being started is judged from the
+  // commit it starts on, every other plan from its recorded base.
+  const starting = all.find((t) => t.kind === "plan" && t.plan === only);
+  const stacked = provedStacks(
+    all,
+    (args) => git(world, args),
+    starting !== undefined && start !== undefined ? { [starting.id]: start } : {},
+  );
+  const proved = new Set(stacked);
   const lines: PlanLine[] = [...released];
   for (const entry of stored) {
     const plan = entry.plan;
     const base = baseLine(plan);
     const slug = base.plan;
-    const drift = driftOf(world, held, extraFiles, plan);
+    const drift = driftOf(world, held, extraFiles, plan, proved);
     switch (entry.state) {
       case "own":
         lines.push(
@@ -552,13 +560,13 @@ export function judgePlans(input: PlansWorld, only?: string): Judgment {
           lines.push(lineOf(base, entry.state, "not judged: another plan is being started"));
           break;
         }
-        lines.push(readiness(world, entry, held, byId, base));
+        lines.push(readiness(world, entry, held, byId, base, proved));
         break;
       }
     }
   }
   lines.sort((a, b) => a.number - b.number);
-  return { lines, extraFiles };
+  return { lines, extraFiles, stacked };
 }
 
 /** The pull request of a plan's own branch; null when no branch is recorded or it is not here. */
@@ -577,6 +585,7 @@ function driftOf(
   held: readonly HeldPlan[],
   extraFiles: Readonly<Record<string, readonly string[]>>,
   plan: WorkTask,
+  proved: ReadonlySet<string>,
 ): string[] {
   // A changed path inside the plan's own list (a file of a declared folder) is no drift.
   const diff = (extraFiles[plan.id] ?? []).filter(
@@ -584,7 +593,7 @@ function driftOf(
   );
   if (diff.length === 0) return [];
   const found: string[] = [];
-  for (const other of rivalsOf(held, plan)) {
+  for (const other of rivalsOf(held, plan, proved)) {
     const touched = filesOverlap(diff, other.files, world.check);
     if (touched.length)
       found.push(`${label(other.plan)}: ${[...new Set(touched.map((t) => t.path))].join(", ")}`);
@@ -620,6 +629,7 @@ function readiness(
   held: readonly HeldPlan[],
   byId: ReadonlyMap<string, WorkTask>,
   base: Pick<PlanLine, "number" | "plan" | "subject" | "pr" | "pane" | "stackedOn" | "drift">,
+  proved: ReadonlySet<string>,
 ): PlanLine {
   const plan = entry.plan;
   const line = (state: PlanState, text: string, fix: string | null = null): PlanLine => ({
@@ -646,8 +656,8 @@ function readiness(
     waiting.push(verdict.text);
   }
   if (waiting.length) return line("waiting", `waiting on ${waiting.join(", ")}`);
-  // The plan it is stacked on, or that is stacked on it, is not judged (`rivalsOf`).
-  const rivals = rivalsOf(held, plan);
+  // The plan it is stacked on, or that is stacked on it, is not judged once proved (`rivalsOf`).
+  const rivals = rivalsOf(held, plan, proved);
   // Unknown is never clear (D5): a held plan with no list and no branch diff shares nothing a check can find.
   const unlisted = rivals.filter((other) => other.files.length === 0);
   if (unlisted.length > 0)
@@ -662,15 +672,33 @@ function readiness(
         .join("; "),
     );
   const clashes: string[] = [];
+  let parent: WorkTask | null = null;
   for (const other of rivals) {
     const touched = filesOverlap(plan.files, other.files, world.check);
     if (touched.length === 0) continue;
     const files = [...new Set(touched.map((t) => t.path))].join(", ");
     const closed = isOpen(other.plan) ? "" : " (finished: held until its pull request settles)";
     clashes.push(`${label(other.plan)}${closed}: ${files}`);
+    if (plan.stackedOn !== null && other.plan.plan === plan.stackedOn) parent = other.plan;
   }
-  if (clashes.length) return line("overlaps", `overlaps ${clashes.join("; ")}`);
+  if (clashes.length)
+    return line(
+      "overlaps",
+      `overlaps ${clashes.join("; ")}`,
+      parent === null ? null : unprovedStackFix(plan, parent),
+    );
   return line("ready", "ready: nothing blocks it and no held plan shares its files");
+}
+
+/**
+ * What a stacked plan needs when its stack is not proved (`provedStacks`), so its parent counts as
+ * a rival: the parent's branch and base recorded, work on that branch, and a start that holds it.
+ */
+function unprovedStackFix(plan: WorkTask, parent: WorkTask): string {
+  const name = parent.plan ?? parent.subject;
+  if (parent.branch === null || parent.base === null)
+    return `the stack on ${name} counts only once ${name} records its branch and base: task_update #${parent.number} with branch and base`;
+  return `the stack on ${name} counts only when this plan starts on ${name}'s work: ${COMMAND} herdr start --plan ${plan.plan ?? plan.subject} starts it on ${parent.branch} when --base is left out; a plan built here records a base that holds ${parent.branch} (task_update #${plan.number} with base)`;
 }
 
 /** The `plans` summary line's words for each count. */
@@ -753,6 +781,7 @@ function reserveReady(
   plan: WorkTask,
   slug: string,
   holder: "self" | "child",
+  start?: string,
 ): PlanStart {
   const strayChild = world.labelled(slug);
   if (strayChild !== null)
@@ -760,7 +789,7 @@ function reserveReady(
       `Plan "${slug}": terminal ${strayChild} carries its label and is live.`,
       `if it is a child of this plan, leave it; if not: ${COMMAND} herdr stop ${strayChild}`,
     );
-  const judged = judgePlans(world, slug);
+  const judged = judgePlans(world, slug, start);
   const line = judged.lines.find((one) => one.number === plan.number);
   if (line === undefined || line.state !== "ready")
     return refuse(
@@ -776,6 +805,7 @@ function reserveReady(
     caseFold: world.check.caseFold,
     appendOnly: world.check.appendOnly ?? [],
     extraFiles: judged.extraFiles,
+    stacked: judged.stacked,
     now: world.now(),
   });
   // A refusal here is a lost race: the plan moved between the gates and the transaction.
@@ -847,7 +877,7 @@ export function prepareReserve(world: PlansWorld, ref: string): PlanStart {
  *    plan back (`releasePlan`) if the launch fails.
  * Everything else is refused with its reason and fix.
  */
-export function prepareStart(world: PlansWorld, ref: string): PlanStart {
+export function prepareStart(world: PlansWorld, ref: string, start?: string): PlanStart {
   const found = locatePlan(world, ref);
   if (!found.ok) return found;
   const { plan, slug } = found;
@@ -950,7 +980,7 @@ export function prepareStart(world: PlansWorld, ref: string): PlanStart {
       claim: { marker, previous: plan.agent },
     };
   }
-  return reserveReady(world, plan, slug, "child");
+  return reserveReady(world, plan, slug, "child", start);
 }
 
 /**

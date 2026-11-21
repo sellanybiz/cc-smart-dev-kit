@@ -7,7 +7,7 @@ import { expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { cliPaths } from "../cli/paths";
-import type { GitRun } from "../hooks/git";
+import { type GitRun, runGit } from "../hooks/git";
 import { hookEnv, makeClone, makeRepo } from "../testing/hooks";
 import { git } from "../testing/temp";
 import { createTaskOps, type TaskAnswer } from "./ops";
@@ -144,6 +144,7 @@ test("git that fails is said in the line, never a refusal; nothing to judge runs
   const phase = { number: 7 };
   const failing = fakeGit([
     { ok: true, out: "abc", err: "", code: 0 },
+    { ok: true, out: "git version 2.53.0", err: "", code: 0 },
     { ok: false, out: "", err: "fatal: bad object", code: 128 },
   ]);
   expect(
@@ -163,9 +164,68 @@ test("git that fails is said in the line, never a refusal; nothing to judge runs
   // The paths go to git as literal pathspecs: a name git would read as magic is just a name.
   const seen = fakeGit([
     { ok: true, out: "abc", err: "", code: 0 },
+    { ok: true, out: "git version 2.53.0", err: "", code: 0 },
     { ok: true, out: "", err: "", code: 0 },
   ]);
   staleBriefWarning({ phase, files: [":(glob)*"], writtenAt: 1000, base: "main", git: seen });
   expect(RAN.at(-1)?.slice(0, 3)).toEqual(["-c", "core.quotePath=false", "--literal-pathspecs"]);
   expect(RAN.at(-1)?.slice(-2)).toEqual(["--", ":(glob)*"]);
+});
+
+/** Commits `files` with both dates set to `iso`: a fast-forward keeps a commit's own dates. */
+function commitDated(repo: string, iso: string, message: string, files: Record<string, string>) {
+  for (const [path, text] of Object.entries(files)) writeFileSync(join(repo, path), text);
+  git(repo, "add", "-A");
+  const env = { ...hookEnv(), GIT_AUTHOR_DATE: iso, GIT_COMMITTER_DATE: iso };
+  const made = Bun.spawnSync(["git", "commit", "-q", "-m", message], { cwd: repo, env });
+  if (made.exitCode !== 0) throw new Error(made.stderr.toString());
+}
+
+test("a change behind an older-dated commit at the tip still counts: the date filters, never stops the walk", () => {
+  // The default branch: a base, a commit that changes the plan's file after the brief (written
+  // at 11:00), then a fast-forwarded commit at the tip whose own date is before the brief.
+  const repo = makeRepo();
+  commitDated(repo, "2026-01-01T09:00:00Z", "base", { "a.txt": "a\n" });
+  commitDated(repo, "2026-01-01T11:30:00Z", "landed after brief", { "plan.txt": "p\n" });
+  commitDated(repo, "2026-01-01T10:00:00Z", "fast-forwarded, dated before", { "other.txt": "o\n" });
+  git(repo, "update-ref", "refs/remotes/origin/main", "HEAD");
+  const landed = git(repo, "rev-parse", "--short", "HEAD~1").trim();
+  const env = hookEnv();
+  expect(
+    staleBriefWarning({
+      phase: { number: 3 },
+      files: ["plan.txt"],
+      writtenAt: Date.parse("2026-01-01T11:00:00Z"),
+      base: "main",
+      git: (args) => runGit(repo, args, env),
+    }),
+  ).toBe(
+    `Warning: the brief of #3 may be stale: origin/main changed plan.txt after it was written (newest: ${landed} "landed after brief"). Read those changes before you build on it.`,
+  );
+});
+
+test("git 2.38 and newer filters by date; an older or unreadable git falls back to --since", () => {
+  const phase = { number: 7 };
+  const sinceFlag = (version: GitRun) => {
+    RAN.length = 0;
+    const run = fakeGit([
+      { ok: true, out: "abc", err: "", code: 0 },
+      version,
+      { ok: true, out: "", err: "", code: 0 },
+    ]);
+    staleBriefWarning({ phase, files: ["src/"], writtenAt: 1000, base: "main", git: run });
+    expect(RAN.at(-2)).toEqual(["--version"]);
+    return RAN.at(-1)?.find((arg) => arg.startsWith("--since"));
+  };
+  const version = (out: string): GitRun => ({ ok: true, out, err: "", code: 0 });
+  expect(sinceFlag(version("git version 2.38.0"))).toBe(
+    "--since-as-filter=1970-01-01T00:00:01.000Z",
+  );
+  expect(sinceFlag(version("git version 2.53.0"))).toBe(
+    "--since-as-filter=1970-01-01T00:00:01.000Z",
+  );
+  expect(sinceFlag(version("git version 2.37.9"))).toBe("--since=1970-01-01T00:00:01.000Z");
+  expect(sinceFlag({ ok: false, out: "", err: "no", code: 1 })).toBe(
+    "--since=1970-01-01T00:00:01.000Z",
+  );
 });

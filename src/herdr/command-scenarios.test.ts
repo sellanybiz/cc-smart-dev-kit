@@ -2423,6 +2423,80 @@ test("a --base that names no commit refuses before anything is reserved or launc
   p.noRun();
 });
 
+/**
+ * A held parent `alpha` with its branch and base recorded and one commit of work, and a plan
+ * `beta` stacked on it that shares a file: the stacked hand-out's world. Returns alpha's tip.
+ */
+function stackedWorld(p: ReturnType<typeof planWorld>): string {
+  const base = git(p.ctx.cwd, "rev-parse", "main").trim();
+  const tip = branchPastMain(p, "alpha-branch");
+  p.plan("alpha", ["src/a/"]);
+  p.change("alpha", { branch: "alpha-branch", base });
+  const reserved = reservePlan(p.db, {
+    project: p.project,
+    plan: "alpha",
+    who: LEAD,
+    holder: "child",
+    ignore: [],
+    caseFold: false,
+    now: 5,
+  });
+  if (!reserved.ok) throw new Error(reserved.why);
+  p.plan("beta", ["src/a/x.ts"]);
+  p.change("beta", { stackedOn: "alpha" });
+  return tip;
+}
+
+test("a stacked plan started with no --base starts on its parent's branch, beside its held parent", async () => {
+  const p = planWorld();
+  const tip = stackedWorld(p);
+  expect(await runHerdr([...planLaunch, "--plan", "beta", "--", "Build beta"], p.ctx)).toBe(0);
+  const brief = readFileSync(briefPath(p.ctx.paths.stateDir, "core", "kit-beta"), "utf8");
+  expect(brief).toContain(`git reset --hard ${tip}`);
+  expect(brief).toContain("it is the commit of alpha-branch when your lead started you");
+  expect(brief).not.toContain("origin/main");
+  const run = p.calls.find((c) => c.args[0] === "run")?.args ?? [];
+  expect(run).toContain("kit.base=alpha-branch");
+  expect(p.row("beta").lead).not.toBeNull();
+});
+
+test("a stacked plan whose start lacks its parent's work is judged against it: --base main is refused", async () => {
+  const p = planWorld();
+  stackedWorld(p);
+  expect(
+    await runHerdr([...planLaunch, "--plan", "beta", "--base", "main", "--", "go"], p.ctx),
+  ).toBe(1);
+  expect(p.lines.join("\n")).toContain('Plan "beta" is not ready: overlaps #1 alpha: src/a/x.ts.');
+  expect(p.lines.join("\n")).toContain(
+    "the stack on alpha counts only when this plan starts on alpha's work",
+  );
+  p.noRun();
+  expect(p.row("beta").lead).toBeNull();
+});
+
+test("a stacked plan whose parent records no branch is refused with no --base, naming the fix", async () => {
+  const p = planWorld();
+  p.plan("alpha", ["src/a/"]);
+  p.plan("beta", ["src/a/x.ts"]);
+  p.change("beta", { stackedOn: "alpha" });
+  expect(await runHerdr([...planLaunch, "--plan", "beta", "--", "go"], p.ctx)).toBe(1);
+  const said = p.lines.join("\n");
+  expect(said).toContain(
+    'Plan "beta" is stacked on "alpha", which has no branch recorded, so its start cannot be found.',
+  );
+  expect(said).toContain("give --base <alpha's branch>");
+  p.noRun();
+  expect(p.row("beta").lead).toBeNull();
+  // A recorded branch git does not know is refused the same way, before anything is reserved.
+  p.change("alpha", { branch: "gone-branch" });
+  p.lines.length = 0;
+  expect(await runHerdr([...planLaunch, "--plan", "beta", "--", "go"], p.ctx)).toBe(1);
+  expect(p.lines.join("\n")).toContain(
+    'Plan "beta" is stacked on "alpha", whose branch gone-branch is not in this repository.',
+  );
+  p.noRun();
+});
+
 test("--base HEAD names the commit of the lead's own folder, not the main checkout's", async () => {
   const p = planWorld();
   const mainHead = git(p.ctx.cwd, "rev-parse", "HEAD").trim();

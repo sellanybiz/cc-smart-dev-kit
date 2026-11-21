@@ -262,9 +262,14 @@ checkout's working copy through the normal workflow resolver:
   starts with a `base` gets one more line in the answer when commits reached `origin/<default>`
   (the default branch from `baseBranch`, first parent, so a merge counts when it landed) after the
   phase's description was last written (its history) and changed any of the plan's files. The line
-  names the files and the newest commit. One `rev-parse` and one `git log` with the plan's paths as
-  literal pathspecs; nothing is fetched. No description, no files, no checkout and no
-  `origin/<default>` add nothing; git that fails says so in the line.
+  names the files and the newest commit. One `rev-parse`, one `git --version` and one `git log`
+  with the plan's paths as literal pathspecs; nothing is fetched. A commit counts by its own
+  commit date, so a commit fast-forwarded onto the default branch keeps the date it was made, and
+  one dated before the brief is not named. Git 2.38 and newer filters by that date
+  (`--since-as-filter`), so such a commit at the tip never hides the changes behind it; an older
+  git, or one whose version cannot be read, gets `--since`, which stops at the first older commit.
+  No description, no files, no checkout and no `origin/<default>` add nothing; git that fails says
+  so in the line.
 - **The tools say these rules.** `task_create`'s `phase` field states the phase id rule
   (`PHASE_RULE` and `MAX_PHASE`, `words.ts`, the words the refusal uses), that a phase takes no
   parent and starts only with tasks; `task_update` says a phase takes no parent; `base` says what it
@@ -418,7 +423,9 @@ one is a folder holding the other. Paths in `plans.mergeFiles` take no part, and
 from the committed copy only (`docs/design/workflow.md`). Inside a `plans.appendOnly` folder
 (6.3.0, a folder where plans add new files, such as a migrations folder) a path overlaps only the
 same file named exactly: no folder entry holds it, whether that folder, one inside it or one around
-it, so `db/` still holds `db/schema.ts` but not `db/migrations/3.sql`. `planFilesCheck` reads it in
+it, so `db/` still holds `db/schema.ts` but not `db/migrations/3.sql`. A shared file inside such a
+folder that every plan edits (a migrations journal) clashes only when both plans list it by name,
+so list it in each plan that edits it. `planFilesCheck` reads it in
 the same read of the committed file as `mergeFiles` (`resolvePlanFiles`); a file it cannot read gives no folders, so more paths
 overlap, never fewer.
 
@@ -427,13 +434,30 @@ slug; `task_create` and `task_update`, CLI `--stacked-on`, `--no-stack` clears i
 judgment (`reservePlan`, `refuseHeldOverlap`, `refuseFlightOverlap`, and `herdr plans`' lines and
 drift) first takes the held plans through `rivalsOf`, which drops the plan itself and its stacked
 pair (`isStackedPair`): the plan it is stacked on, or one stacked on it, while that parent holds
-its files: open (pending or in progress), or done and still reserved until its pull request merges
-(a plan built on its parent's branch shares those files by construction, so judging the pair then
-would only refuse the plan the stack exists for). Only that
+its files (`parentHolds`): open (pending or in progress), or done and still reserved until its pull
+request merges (a plan built on its parent's branch shares those files by construction, so judging
+the pair then would only refuse the plan the stack exists for). Only that
 one plan is skipped: a plan stacked on a stacked plan still meets the first parent, and every other
 plan blocks as before. Once the parent is released (its pull request merged or closed, or the plan
-dropped, which releases it) it holds nothing, so the stack ends with it. The store
-refuses a stack on a task that is not a plan, on itself, on a slug with no plan, and one that
+dropped, which releases it) it holds nothing, so the stack ends with it.
+
+A stack lifts a check, so it is never taken on a session's word alone (6.3.0 fix). **Same lead:**
+the store refuses a stack unless the caller leads both plans (`leadsPlan`: it holds the plan's
+reservation, `isLead`, or owns its task, `ownerOf`). The reservation counts because a plan handed to
+a child becomes the child's task once the child takes it, while the lead stays in its `lead_*`
+columns; the lead stacks its next plan on its own held plan. Clearing a stack only adds checks, so
+anyone may. **Proved:** a pair counts only when the stacked plan's start holds its parent's work
+(`provedStacks`, `src/tasks/stack-proof.ts`), read from git before the write lock the way
+`planFilesCheck` is, and passed in as `FilesCheck.stacked` (the task tools, for a held plan's new
+list or stack and for a start into flight) or `ReservePlan.stacked` (`herdr start --plan` and
+`plans --reserve`). The start is the commit a `herdr start` resets the child to, else the plan's
+recorded `base`. It holds the parent's work when the parent records its `branch` and `base`, its
+branch has a commit past that base, and either the branch tip is an ancestor of the start (`git
+merge-base --is-ancestor`), or the start is a commit of the parent's own first-parent line from its
+base (so a parent that keeps building after the stacked plan started does not undo the proof). A
+parent with no branch, no base or no work, a start that is unknown, and git that cannot answer all
+leave the pair as rivals: it fails closed. The store refuses a stack on a task that is not a plan,
+on itself, on a slug with no plan, on a plan the caller does not lead, and one that
 closes a loop. Setting or clearing a stack on a held plan is judged like a new list, so clearing it
 while the two held plans share files is refused. A plan another plan is stacked on is not deleted
 until that stack is cleared, so a new plan made under the same slug never inherits it. The column

@@ -323,6 +323,17 @@ export function isLead(lead: WorkLead | null, who: Who | null | undefined): bool
   return claimHeldBy(leadProcess(lead), who);
 }
 
+/**
+ * Whether `who` leads a plan: it holds the plan's reservation (`isLead`), or it owns the plan's
+ * task (`ownerOf`). A plan handed to a child keeps its lead in the reservation after the child
+ * takes it, and an unreserved plan's lead is the session that laid it. The one rule a held plan's
+ * `mine` and a stack (`stacked_on`: both plans the caller's) are judged by.
+ */
+export function leadsPlan(who: Who): (plan: WorkTask) => boolean {
+  const owns = ownerOf(who);
+  return (plan) => isLead(plan.lead, who) || owns(plan);
+}
+
 /** The lead's process in the shape of a claim (`claimHeldBy`, `claimGone` judge both); null without a process. */
 export function leadProcess(lead: WorkLead): WorkClaim | null {
   return lead.pid === null
@@ -408,23 +419,37 @@ export function filesOverlap(
 }
 
 /**
- * True when one of the two plans is stacked on the other (`stacked_on`) and that parent still
- * holds its files: open, or closed and still reserved (`lead`) until its pull request merges and
- * `herdr plans` releases it. The overlap check skips the pair, both ways: a plan built on its
- * parent's branch shares the parent's files by construction. A released or dropped parent holds
- * nothing (a drop releases it), so the pair ends with it.
+ * True when the parent a plan is stacked on (`stacked_on`) still holds its files: open, or closed
+ * and still reserved (`lead`) until its pull request merges and `herdr plans` releases it. A
+ * released or dropped parent holds nothing (a drop releases it), so the stack ends with it.
  */
-export function isStackedPair(a: WorkTask, b: WorkTask): boolean {
-  const holds = (parent: WorkTask) => isOpen(parent) || parent.lead !== null;
-  return (a.stackedOn === b.plan && holds(b)) || (b.stackedOn === a.plan && holds(a));
+export function parentHolds(parent: WorkTask): boolean {
+  return isOpen(parent) || parent.lead !== null;
 }
 
 /**
- * The held plans `plan` is judged against: every one but itself and its stacked pair
+ * True when one of the two plans is stacked on the other (`stacked_on`), that parent still holds
+ * its files (`parentHolds`), and the stack is proved: the stacked plan's id is in `proved`, the
+ * plans whose start holds their parent's branch (`provedStacks`, read from git before any write
+ * lock). The overlap check skips the pair, both ways: a plan built on its parent's branch shares
+ * the parent's files by construction. A stack that is not proved is no pair: the two are rivals.
+ */
+export function isStackedPair(a: WorkTask, b: WorkTask, proved: ReadonlySet<string>): boolean {
+  const stackedOn = (child: WorkTask, parent: WorkTask) =>
+    child.stackedOn === parent.plan && parentHolds(parent) && proved.has(child.id);
+  return stackedOn(a, b) || stackedOn(b, a);
+}
+
+/**
+ * The held plans `plan` is judged against: every one but itself and its proved stacked pair
  * (`isStackedPair`). The one filter the store and herdr's plan lines use before `filesOverlap`.
  */
-export function rivalsOf<H extends { plan: WorkTask }>(held: readonly H[], plan: WorkTask): H[] {
-  return held.filter((h) => h.plan.id !== plan.id && !isStackedPair(plan, h.plan));
+export function rivalsOf<H extends { plan: WorkTask }>(
+  held: readonly H[],
+  plan: WorkTask,
+  proved: ReadonlySet<string>,
+): H[] {
+  return held.filter((h) => h.plan.id !== plan.id && !isStackedPair(plan, h.plan, proved));
 }
 
 /** One plan's stored file list, in path order; empty before schema 6 (no table yet). */
@@ -456,13 +481,13 @@ export function heldPlansIn(
   who: Who,
   extraFiles: Readonly<Record<string, readonly string[]>> = {},
 ): HeldPlan[] {
-  const owns = ownerOf(who);
+  const mine = leadsPlan(who);
   return all
     .filter((t) => t.kind === "plan" && (t.lead !== null || isInFlight(all, t)))
     .map((plan) => ({
       plan,
       why: plan.lead !== null ? ("reserved" as const) : ("in-flight" as const),
-      mine: isLead(plan.lead, who) || owns(plan),
+      mine: mine(plan),
       files: [...new Set([...plan.files, ...(extraFiles[plan.id] ?? [])])],
     }));
 }

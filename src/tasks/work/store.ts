@@ -16,6 +16,7 @@ import {
   isLead,
   isOpen,
   leadProcess,
+  leadsPlan,
   livePhaseCount,
   normalizePlanFiles,
   type OverlapRule,
@@ -179,6 +180,12 @@ export interface FilesCheck extends OverlapRule {
    * merge file that could not be read may be what the overlap is about.
    */
   reason?: string | null;
+  /**
+   * The stacked plans, by plan task id, whose start is proved to hold their parent's work
+   * (`provedStacks`), read before the lock. Only these pairs are skipped (`isStackedPair`); left
+   * out, no stack is proved and every stacked pair is judged as rivals.
+   */
+  stacked?: readonly string[];
 }
 export interface UpdateTask {
   agent?: string | undefined;
@@ -316,10 +323,14 @@ function storeFiles(db: WorkDb, task: WorkTask, files: readonly string[]): void 
 
 /**
  * Writes the plan `task` is stacked on (`stacked_on`), or clears it with null. Refused for a task
- * that is not a plan, a plan stacked on itself, a slug that names no plan of the project, and a
- * stack that would loop back to `task` (each plan in the chain is followed by its own stack).
+ * that is not a plan, a plan stacked on itself, a slug that names no plan of the project, a stack
+ * on a plan the caller does not lead, and a stack that would loop back to `task` (each plan in the
+ * chain is followed by its own stack). A stack lifts the overlap check for the pair, so only the
+ * lead of both plans (`leadsPlan`: the reservation, or the plan's own task) sets one: a session
+ * never stacks its plan on another lead's plan to get past an overlap. Clearing one only adds
+ * checks, so anyone may.
  */
-function storeStack(db: WorkDb, task: WorkTask, slug: string | null): void {
+function storeStack(db: WorkDb, task: WorkTask, slug: string | null, who: Who): void {
   if (task.kind !== "plan")
     throw new Error(`${label(task)} is a ${task.kind}: only a plan is stacked on another plan`);
   if (slug !== null) {
@@ -329,8 +340,15 @@ function storeStack(db: WorkDb, task: WorkTask, slug: string | null): void {
         .filter((t) => t.kind === "plan" && t.plan !== null)
         .map((t) => [t.plan, t]),
     );
-    if (!plans.has(slug))
+    const parent = plans.get(slug);
+    if (parent === undefined)
       throw new Error(`Plan "${slug}" not found: stacked_on names a plan of this project`);
+    const leads = leadsPlan(who);
+    const foreign = [task, parent].filter((plan) => !leads(plan));
+    if (foreign.length > 0)
+      throw new Error(
+        `${label(task)} cannot be stacked on "${slug}": ${foreign.map(label).join(" and ")} ${foreign.length > 1 ? "are" : "is"} not led by this session. A plan is stacked only on another plan of the same lead, whose branch it is built on`,
+      );
     const chain = [slug];
     for (let at = plans.get(slug)?.stackedOn ?? null; at !== null; ) {
       if (at === task.plan)
@@ -408,7 +426,7 @@ function refuseHeldOverlap(db: WorkDb, task: WorkTask, who: Who, check: FilesChe
   const held = heldPlansIn(allTasks(db, task.project), who);
   if (!held.some((h) => h.plan.id === task.id)) return;
   const current = taskById(db, task.id);
-  const clashes = overlapsWith(rivalsOf(held, current), current.files, check);
+  const clashes = overlapsWith(rivalsOf(held, current, provedOf(check)), current.files, check);
   if (clashes.length > 0)
     throw new Error(
       `${label(task)} is held, so its files may not overlap another held plan: overlaps ${clashes.map((c) => overlapText(c.plan, c.overlaps)).join("; ")}${mergeFilesNote(check)}`,
@@ -420,6 +438,11 @@ function refuseHeldOverlap(db: WorkDb, task: WorkTask, who: Who, check: FilesChe
  * has the checkout reads the real one before the lock (`planFilesCheck`) and passes it in.
  */
 const NO_FILES_CHECK: FilesCheck = { ignore: [], caseFold: false };
+
+/** The stacked plans a check proved (`FilesCheck.stacked`); none when it proved none. */
+function provedOf(check: FilesCheck): ReadonlySet<string> {
+  return new Set(check.stacked ?? []);
+}
 
 /**
  * The way out of an overlap with a held plan, by why it is held: a reserved plan holds its files
@@ -444,7 +467,7 @@ function wayOut(held: { plan: WorkTask; why: HeldPlan["why"] }): string {
  */
 function refuseFlightOverlap(db: WorkDb, plan: WorkTask, who: Who, check: FilesCheck): void {
   const row = taskById(db, plan.id);
-  const others = rivalsOf(heldPlansIn(allTasks(db, plan.project), who), row);
+  const others = rivalsOf(heldPlansIn(allTasks(db, plan.project), who), row, provedOf(check));
   if (others.length === 0) return;
   const files = row.files;
   if (files.length === 0) {
@@ -659,7 +682,7 @@ export function applyUpdate(
   if (status === "dropped" && task.kind === "plan") clearLead(db, id);
   const check = change.filesCheck ?? NO_FILES_CHECK;
   if (change.files !== undefined) storeFiles(db, task, change.files);
-  if (change.stackedOn !== undefined) storeStack(db, task, change.stackedOn);
+  if (change.stackedOn !== undefined) storeStack(db, task, change.stackedOn, who);
   // A new list, or a stack set or cleared, may make a held plan reach another held plan.
   if (change.files !== undefined || change.stackedOn !== undefined)
     refuseHeldOverlap(db, task, who, check);
@@ -1047,6 +1070,11 @@ export interface ReservePlan {
   appendOnly?: readonly string[];
   /** Each held plan's branch diff by its plan task's id, read before the transaction (no git runs under the lock). */
   extraFiles?: Readonly<Record<string, readonly string[]>>;
+  /**
+   * The stacked plans, by plan task id, whose start is proved to hold their parent's work
+   * (`provedStacks`), read before the transaction. Left out, every stacked pair is judged as rivals.
+   */
+  stacked?: readonly string[];
   now: number;
 }
 
@@ -1084,7 +1112,11 @@ export function reservePlan(db: WorkDb, input: ReservePlan): Result<WorkTask> {
       throw new Error(
         `${label(plan)} waits for ${open.map((t) => `${label(t)} (${t.status.replaceAll("_", " ")})`).join(", ")}`,
       );
-    const others = rivalsOf(heldPlansIn(all, who, input.extraFiles), plan);
+    const others = rivalsOf(
+      heldPlansIn(all, who, input.extraFiles),
+      plan,
+      new Set(input.stacked ?? []),
+    );
     refuseUnlisted(others);
     const clashes = overlapsWith(others, plan.files, input);
     if (clashes.length > 0)

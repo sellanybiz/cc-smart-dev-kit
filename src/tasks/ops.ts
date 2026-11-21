@@ -35,6 +35,7 @@ import {
   refuseStepEscape,
   staleBriefWarning,
 } from "./plan-guards";
+import { provedStacks } from "./stack-proof";
 import { MAX_PHASE, PHASE_RULE, TASK_COMMAND, TASK_TOOL } from "./words";
 import { openWorkDb, type WorkDb, workDbFile, writeWork } from "./work/db";
 import { historyText } from "./work/history";
@@ -344,6 +345,16 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
             }) === null,
         );
       /**
+       * What an overlap is judged by, read from git before the write lock: the files check
+       * (`planFilesCheck`, or the test's own) and the stacked plans whose start holds their
+       * parent's work (`provedStacks`, in the session's checkout). Outside a checkout no stack is
+       * proved, so every stacked pair is judged as rivals.
+       */
+      const readCheck = (): FilesCheck => ({
+        ...(options.filesCheck ?? planFilesCheck)(cwd),
+        stacked: ctx.checkoutRoot === null ? [] : provedStacks(all, handBackGit),
+      });
+      /**
        * A plan's new file list, checked before the write lock: each entry is normalised (D2) and
        * a folder written without its `/` is refused with the fix. It always reads `plans.mergeFiles`
        * and case from git here (whether the plan is held is only known inside the transaction), so
@@ -356,7 +367,7 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
           if (isFolderOnDisk(ctx.checkoutRoot, path))
             throw new Error(`file "${raw}" is a folder: write it ${path}/`);
         }
-        return { files, filesCheck: (options.filesCheck ?? planFilesCheck)(cwd) };
+        return { files, filesCheck: readCheck() };
       };
       /**
        * A plan's new file list and stack, as one update: a stack set or cleared on a held plan is
@@ -373,9 +384,7 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
       } | null => {
         if (files === undefined && stackedOn === undefined) return null;
         return {
-          ...(files === undefined
-            ? { filesCheck: (options.filesCheck ?? planFilesCheck)(cwd) }
-            : filesWrite(files)),
+          ...(files === undefined ? { filesCheck: readCheck() } : filesWrite(files)),
           ...(stackedOn === undefined ? {} : { stackedOn }),
         };
       };
@@ -391,9 +400,7 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
        */
       const startCheck = (plan: string | null): { filesCheck?: FilesCheck } => {
         const row = all.find((t) => t.kind === "plan" && t.plan === plan);
-        return row === undefined || isInFlight(all, row)
-          ? {}
-          : { filesCheck: (options.filesCheck ?? planFilesCheck)(cwd) };
+        return row === undefined || isInFlight(all, row) ? {} : { filesCheck: readCheck() };
       };
       /**
        * Marks the caller's own plan in flight when work in it starts: its task goes from pending

@@ -123,7 +123,11 @@ moves later changes nothing; read a remote branch after a `git fetch`. A plan ch
 becomes `git reset --hard <commit>` (no fetch, and never the default branch); a task or plain child
 gets one "Your start point" step after its task trailer: `git status --porcelain` must print
 nothing, then the reset. The ref also goes in the `kit.base` label (`herdr list` shows it in the
-`base` column) and in the launch record. A start without `--base` is as before. `--base` is
+`base` column) and in the launch record. A start without `--base` is as before, except for a
+stacked plan's first start (`stacked_on`, not yet reserved): its base defaults to the parent's
+recorded branch, read here or on origin, so the child builds on the parent's work; a parent with
+no branch recorded, or one git does not know, refuses the start with the fix "give --base
+<parent's branch>". `--base` is
 refused with `--followup` (that child's trailer uses one base for its reset, its pull request and
 its branches: it always starts from the default branch) and refused for a plan that resumes, which
 continues its own worktree. `--plan` still judges its gates against the default branch, and still
@@ -201,8 +205,12 @@ plan is any reserved plan until it is released, and any session's own plan in fl
 and case folds when `core.ignorecase` is on. All three come from `planFilesCheck`: the two lists
 from one read of the committed copy on `origin/<default>` (`resolvePlanFiles`), never the working
 copy. A plan's stacked pair (`stacked_on`: its parent while the parent holds its files, or a plan
-stacked on it) is left out of the judgment both ways (`rivalsOf`); `herdr plans` shows
-`(stacked on <slug>)` after the plan's name. The reservation
+stacked on it) is left out of the judgment both ways (`rivalsOf`), but only once the stack is
+proved: the stacked plan's start holds the parent's work (`provedStacks`, the rule is in
+`docs/design/tasks.md`, under "Stacked plans"). `judgePlans` reads that proof before the
+transaction, with the commit a start resets the child to, and passes it to `reservePlan`; a stack
+it cannot prove leaves the parent a rival, and the line's fix says what proves it. `herdr plans`
+shows `(stacked on <slug>)` after the plan's name. The reservation
 records the lead (session and process), a holder kind (`child`, or `self` for the lead's own plan)
 and a **hand-out id**, the key a child takes the plan with. A launch proved failed releases the
 reservation. A child that started but cannot be read does not.
