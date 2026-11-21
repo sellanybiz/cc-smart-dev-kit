@@ -10,7 +10,14 @@ import { locateCheckout } from "../project/resolve";
 import { insideClaudeCode } from "../workflow/commands";
 import { baseBranch } from "../worktrees/command";
 import { taskContext } from "./context";
-import { branchTaskChanges, readGitFacts, refCommit, unmergedBranchTasks } from "./deploy/branch";
+import {
+  branchTaskChanges,
+  readGitFacts,
+  refCommit,
+  resolveListBase,
+  unmergedBranchTasks,
+  unreadableRefMessage,
+} from "./deploy/branch";
 import { checkDeployTasks } from "./deploy/check";
 import { scanDeployTasks } from "./deploy/files";
 import { DEPLOY_ENVS, DEPLOY_STEPS, DEPLOY_TYPES, type DeployEnv } from "./deploy/format";
@@ -361,7 +368,10 @@ export async function runTaskCommand(argv: string[]): Promise<number> {
       const settings = ctx.projectTasks;
       const dir = settings.dir;
       if (command === "list") {
-        const base = get("base") ?? baseBranch(locateCheckout(cwd), process.env, root).base;
+        const named = get("base") ?? baseBranch(locateCheckout(cwd), process.env, root).base;
+        // The gates read origin's copy of the base; a bare name here must see the same one.
+        const { ref: base, note } = resolveListBase(root, named);
+        if (note !== null) out.say(note);
         if (has("branches")) {
           const { tasks, closed, broken } = unmergedBranchTasks(root, dir, base);
           for (const item of tasks) out.say(`${item.branch}: ${projectLine(item.task)}`);
@@ -432,7 +442,7 @@ export async function runTaskCommand(argv: string[]): Promise<number> {
           refCommit(root, ref);
         } catch (error) {
           throw new Error(
-            `Cannot read ${ref} (${error instanceof Error ? error.message : String(error)}): run \`git fetch origin\`, or name the commit that ships with --ref <ref>`,
+            unreadableRefMessage(ref, error, "name the commit that ships with --ref <ref>"),
           );
         }
         const facts = readGitFacts(root, dir, ref, process.env, { outside: step === "before" });

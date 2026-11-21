@@ -96,6 +96,11 @@ describe("did the command merge a pull request?", () => {
     expect(refusal("export GH_REPO=o/r && gh pr merge 5")).toEqual([
       "an earlier step in the same command sets `GH_REPO`/`GH_HOST`, so which repository gh works on is not certain",
     ]);
+    // The same words when the assignment is the merge's own prefix, `+=` (append) included.
+    const prefixRefusal = refusal("GH_REPO=o/r gh pr merge 5");
+    expect(prefixRefusal).toHaveLength(1);
+    expect(refusal("GH_REPO+=o/r gh pr merge 5")).toEqual(prefixRefusal);
+    expect(refusal("GH_HOST+=example.com gh pr merge 5")).toEqual(prefixRefusal);
     expect(refusal("gh pr checkout 11 && gh pr merge")).toEqual([
       "an earlier `gh pr checkout` in the same command changes the branch gh works on",
     ]);

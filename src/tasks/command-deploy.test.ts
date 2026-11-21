@@ -353,6 +353,8 @@ test("list --branches shows a close that waits on an unmerged branch", async () 
   const id = await add("Gate", "staging", "before", "blocking");
   git(cwd, "add", "-A");
   git(cwd, "commit", "-m", "the task");
+  // The listing reads origin's base, so the task must be there for the close to be the news.
+  git(cwd, "push", "origin", "main");
   git(cwd, "switch", "-c", "deploy/staging-20261117-1445");
   expect((await run(["done", id, "--evidence", "ran it: ok"])).code).toBe(0);
   git(cwd, "add", "-A");
@@ -512,4 +514,113 @@ test("release --check is a usage error (2) with no environment, or with --before
     expect(answer.error).toContain("--check does not take --before, --after or --ref");
   }
   expect((await run(["release", "qa", "--check"])).code).toBe(2);
+});
+
+/**
+ * A world where origin's `main` holds a deploy task that the local `main` has not fetched yet:
+ * the local `main` sits one commit behind. A branch cut from `origin/main` then adds its own task.
+ * Returns the id of the task already on origin and the one only the branch has.
+ */
+async function behindOriginWorld(base = "main") {
+  const w = world();
+  if (base !== "main") {
+    git(w.cwd, "switch", "-c", base);
+    git(w.cwd, "push", "-u", "origin", base);
+  }
+  const onOrigin = await w.add("Already shipped", "prod", "before", "blocking");
+  git(w.cwd, "add", "-A");
+  git(w.cwd, "commit", "-m", "a task origin already has");
+  git(w.cwd, "push", "origin", base);
+  git(w.cwd, "reset", "--hard", "HEAD~1");
+  git(w.cwd, "switch", "-c", "deploy-branch", `origin/${base}`);
+  const onBranch = await w.add("Branch only", "staging", "after", "non-blocking");
+  git(w.cwd, "add", "-A");
+  git(w.cwd, "commit", "-m", "the branch task");
+  return { ...w, onOrigin, onBranch };
+}
+
+test("list --branch reads origin's base for a bare name, not a local main that is behind", async () => {
+  const { run, onBranch } = await behindOriginWorld();
+  const expected = `staging\nadded: ${onBranch} [after · non-blocking] Branch only\n`;
+  const byDefault = await run(["list", "--branch"]);
+  expect(byDefault).toEqual({ code: 0, text: expected, error: "" });
+  expect(await run(["list", "--branch", "--base", "main"])).toEqual({
+    code: 0,
+    text: expected,
+    error: "",
+  });
+  expect(await run(["list", "--branch", "--base", "origin/main"])).toEqual({
+    code: 0,
+    text: expected,
+    error: "",
+  });
+});
+
+test("list --branches reads origin's base: a branch origin already holds is not unmerged", async () => {
+  const { run, cwd, onBranch } = await behindOriginWorld();
+  git(cwd, "switch", "-c", "other-branch", "origin/main");
+  const other = await run([
+    "add",
+    "Parked",
+    "--kind",
+    "prod",
+    "--deploy",
+    "after",
+    "--type",
+    "non-blocking",
+  ]);
+  expect(other.code).toBe(0);
+  git(cwd, "add", "-A");
+  git(cwd, "commit", "-m", "another task");
+  git(cwd, "switch", "main");
+  const listed = await run(["list", "--branches"]);
+  expect(listed.code).toBe(0);
+  expect(listed.text).toContain(`deploy-branch: ${onBranch} [after · non-blocking] Branch only`);
+  expect(listed.text).toContain("other-branch: ");
+  // The task origin's main already holds is not "on an unmerged branch".
+  expect(listed.text).not.toContain("Already shipped");
+  expect(listed.text.trim().split("\n")).toHaveLength(2);
+});
+
+test("list reads origin/<base> for a project whose base is not main", async () => {
+  const { run, onBranch } = await behindOriginWorld("develop");
+  const listed = await run(["list", "--branch", "--base", "develop"]);
+  expect(listed).toEqual({
+    code: 0,
+    text: `staging\nadded: ${onBranch} [after · non-blocking] Branch only\n`,
+    error: "",
+  });
+});
+
+test("list with no origin remote reads the local branch and says so in one line", async () => {
+  const { run, add, cwd } = world({ origin: false });
+  git(cwd, "switch", "-c", "deploy-branch");
+  const id = await add("Seed data", "staging", "after", "non-blocking");
+  const note = "No origin remote: read against the local branch main.";
+  expect(await run(["list", "--branch"])).toEqual({
+    code: 0,
+    text: `${note}\nstaging\nadded: ${id} [after · non-blocking] Seed data\n`,
+    error: "",
+  });
+  git(cwd, "add", "-A");
+  git(cwd, "commit", "-m", "the task");
+  git(cwd, "switch", "main");
+  expect(await run(["list", "--branches"])).toEqual({
+    code: 0,
+    text: `${note}\ndeploy-branch: ${id} [after · non-blocking] Seed data\n`,
+    error: "",
+  });
+});
+
+test("list with an origin that has no such base gives the gates' fetch hint", async () => {
+  const { run } = world();
+  const missing = await run(["list", "--branch", "--base", "release"]);
+  expect(missing.code).toBe(1);
+  expect(missing.text).toBe("");
+  expect(missing.error).toContain("Cannot read origin/release (");
+  expect(missing.error).toContain("run `git fetch origin`, or name the base with --base <ref>");
+  const written = await run(["list", "--branch", "--base", "origin/release"]);
+  expect(written.code).toBe(1);
+  expect(written.error).toContain("Cannot read origin/release (");
+  expect(written.error).not.toContain("origin/origin");
 });

@@ -221,8 +221,8 @@ const ENV_PROGRAM = /^(?:.*[\\/])?env(?:\.(?:exe|cmd))?$/i;
 /** `GH_REPO` / `GH_HOST` named anywhere in a step (`export GH_REPO=…`, `$env:GH_REPO='…'`). */
 const GH_POINTING_TEXT = /GH_(?:REPO|HOST)/;
 
-/** `GH_REPO=` / `GH_HOST=`: the assignment form, in the merge's own words. */
-const GH_POINTING = /^GH_(?:REPO|HOST)=/;
+/** `GH_REPO=` / `GH_HOST=` (and the append form `+=`): the assignment form, in the merge's own words. */
+const GH_POINTING = /^GH_(?:REPO|HOST)\+?=/;
 
 /** `--auto` arms a merge for later. */
 const isAutoFlag = (word: string) => /^--auto(?:=|$)/.test(word);

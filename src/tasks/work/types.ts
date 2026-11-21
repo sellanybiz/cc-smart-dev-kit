@@ -43,6 +43,14 @@ export interface WorkClaim {
   sessionId: string | null;
 }
 /**
+ * A claim as a history reads it: its session id, or its process when it has no session. The one
+ * wording `shape()`, a take-over and a reclaim record, and the one `shown()` gives a claim object
+ * an earlier version stored.
+ */
+export function claimText(claim: Pick<WorkClaim, "pid" | "sessionId">): string {
+  return claim.sessionId ?? `process ${claim.pid}`;
+}
+/**
  * The two questions about a claim's process. `live`: does it run, proved (a claim not proved
  * live is free to take). `gone`: is it proved to have ended (only then may the caller's own
  * session move the claim to itself). A process that runs but cannot be proved either way is
