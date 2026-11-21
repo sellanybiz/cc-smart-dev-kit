@@ -1232,6 +1232,33 @@ test("a hand-back: a branch git cannot find is refused with git's reason, never 
   }
 });
 
+test("a hand-back: task_update judges the binding the call writes, not the old one", () => {
+  // The old binding ("work") has no commit, the new one holds a merged commit: it closes.
+  const fixed = handBack();
+  try {
+    git(fixed.repo, "branch", "good");
+    commitOn(fixed.repo, "good", "a.txt");
+    git(fixed.repo, "branch", "-f", "plan-br", "good");
+    expect(
+      said(fixed.ops.call("update", { task: "#2", branch: "good", status: "done" })),
+    ).toContain("done");
+  } finally {
+    fixed.ops.close();
+  }
+  // The old binding is merged work, the new one is empty: refused, naming the new branch.
+  const broken = handBack();
+  try {
+    commitOn(broken.repo, "work", "a.txt");
+    git(broken.repo, "branch", "-f", "plan-br", "work");
+    git(broken.repo, "branch", "empty");
+    const why = refused(broken.ops.call("update", { task: "#2", branch: "empty", status: "done" }));
+    expect(why).toContain('"empty"');
+    expect(why).toContain("no commit");
+  } finally {
+    broken.ops.close();
+  }
+});
+
 test("a hand-back: a dropped phase is not judged", () => {
   const w = handBack();
   try {

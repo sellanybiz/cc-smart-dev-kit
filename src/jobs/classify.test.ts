@@ -1836,6 +1836,13 @@ describe("routableLine: harmless glue rides in the queued line", () => {
         s3: "bun run s4",
         s4: "tsc --noEmit",
         sudo: "next typegen && sudo tsc --noEmit",
+        w1: "watch -n 5 tsc --noEmit",
+        w2: "next typegen && watch tsc --noEmit",
+        t: "next typegen && vitest",
+        e2e: "next typegen && playwright test",
+        bg: "next dev & tsc --noEmit",
+        pure: "tsc --noEmit && vitest",
+        printed: "tsc --version && next typegen && vitest run",
       },
     });
     const whole = (command: string, kind: string) =>
@@ -1883,6 +1890,41 @@ describe("routableLine: harmless glue rides in the queued line", () => {
 
     test("a body that runs work as another user is not routed", () => {
       expect(routableLine("bun run sudo", DEFAULT_KINDS, source)).toBeNull();
+    });
+
+    // A body that never ends, or sends work to the background, would hold the one slot: it runs raw.
+    test("a body with a runner or a background command is not routed", () => {
+      for (const command of ["bun run w1", "bun run w2", "bun run bg"]) {
+        expect([command, routableLine(command, DEFAULT_KINDS, source)]).toEqual([command, null]);
+      }
+    });
+
+    // bun, npm, pnpm and yarn hand a call's words to the body's last command: the watch check
+    // must see them, whatever the body holds before it.
+    test("a call's words reach a body of several commands, so a watch flag is seen", () => {
+      for (const command of [
+        "bun run t --watch",
+        "bun run t -- --watch",
+        "bun run e2e --ui",
+        "bun run pure --watch",
+        "npm run pure -- --watch",
+      ]) {
+        expect([command, runWeight(command, DEFAULT_KINDS, source)]).toEqual([
+          command,
+          { weight: "none" },
+        ]);
+      }
+      // The same bodies without the words are queued.
+      for (const command of ["bun run t", "bun run e2e", "bun run pure"]) {
+        expect([command, runWeight(command, DEFAULT_KINDS, source).weight]).toEqual([
+          command,
+          "heavy",
+        ]);
+      }
+    });
+
+    test("the kind is the run that takes the slot, not one that only prints", () => {
+      expect(routableLine("bun run printed", DEFAULT_KINDS, source)?.kind).toBe("test:run");
     });
 
     test("a body that only prints, or a body of no heavy work, is still a command to split off", () => {

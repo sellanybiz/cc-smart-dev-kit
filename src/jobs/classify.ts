@@ -276,9 +276,10 @@ interface Scan {
  * Why a walk could not read a script's body whole. `not-heavy`: the rule refused a command of
  * the body that is no heavy work (`next typegen`, `rm`), so the body may still take a slot.
  * `unreadable`: nesting too deep, or a script that calls itself. `other-user`: work run as
- * another user, which is never queued.
+ * another user, which is never queued. `runner`: a runner program (`watch`, `find`) that may
+ * never end.
  */
-type Unread = "not-heavy" | "unreadable" | "other-user";
+type Unread = "not-heavy" | "unreadable" | "other-user" | "runner";
 
 const newScan = (): Scan => ({
   found: [],
@@ -348,7 +349,9 @@ function expandScript(
     bodies.has(part),
   );
   const main = bodies.get(name) ?? "";
-  // Extra arguments reach a body that is one plain command; a body of several is never light.
+  // The runners hand a call's words to the body's last command. Every command of the main body
+  // is read with them, so a watch flag is never hidden behind an earlier command. A body of
+  // several commands is never light.
   const one = parts.length === 1 && isOneCommand(main);
   for (const part of parts) {
     const key = JSON.stringify([folder, part]);
@@ -362,7 +365,7 @@ function expandScript(
       ...run,
       folder,
       runner,
-      extra: one && part === name ? call.args : undefined,
+      extra: part === name ? call.args : undefined,
       compound: run.compound || !one,
       reading: [...run.reading, key],
     };
@@ -528,8 +531,10 @@ function scan(
         : refuse(run, out, step);
     }
     if (all && isRunnerProgram(program)) return refuse(run, out, step);
-    // A plain walk goes on through it, but a script body that holds it is not read whole.
+    // A plain walk goes on through these, but a script body that holds one is not read whole:
+    // a runner (`watch tsc`) may never end, and work as another user is never queued.
     if (!all && runsAsAnotherUser(invocation)) out.unread ??= "other-user";
+    if (!all && isRunnerProgram(program)) out.unread ??= "runner";
     // The queue's own command: whatever it runs is queued already, and must not nest.
     if (isJobRun(program, args)) out.queued = true;
     const inner = nestedCommand(program, args, step.pipedFrom);
@@ -577,15 +582,22 @@ function scan(
         if (call !== undefined) matchCall(call, program, kinds, depth, { ...run }, false, body);
         if (!takesSlot(body, kinds, run.source)) {
           if (out.found.length === before) out.opaque = false;
-        } else if (out.unread === "not-heavy" && body.unread === null) {
+        } else if (out.unread === "not-heavy" && body.unread === null && !body.background) {
           // The call is the line's own command and its body takes a slot, but the rule refused
           // a command of the body that is no heavy work (`SKIP_ENV_VALIDATION=1 next typegen &&
           // tsc --noEmit`). The person's rules see only the call, never the body, so nothing
           // hides in it: the call is heavy work, of the kinds the plain walk finds. A body that
-          // is too deep, loops or runs work as another user (`unread`) stays unread.
+          // is too deep, loops, runs a runner or work as another user (`unread`), or sends work
+          // to the background, stays raw: it may never end, and would hold the slot.
+          // The run that takes the slot comes first, so the kind is its, not a print-only run's.
+          const taking = canWeigh(run.source) ? slotRun(body, kinds, run.source) : undefined;
+          const heavyRuns = body.found.filter((one) => !one.printOnly);
           out.found.length = before;
-          out.found.push(...body.found);
-          out.background ||= body.background;
+          out.found.push(
+            ...(typeof taking === "object"
+              ? [taking, ...heavyRuns.filter((one) => one !== taking)]
+              : heavyRuns),
+          );
           out.queued ||= body.queued;
           out.opaque = false;
           out.unread = null;
