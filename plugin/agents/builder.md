@@ -31,6 +31,9 @@ Read its notes for the caller's rulings, then the named files, patterns and near
   ends the quote. **A refused read-only command** is rephrased once, plainly, such as one
   file per command or the Read tool. **A permission denial** is reported,
   never routed around. Never retry in a loop or widen scope.
+- Write a delete so no empty variable can widen it: `rm -rf "${DIR:?}/${name:?}"` or a literal
+  path, never a bare `$DIR/$name`. Claude Code stops and asks the person before `rm -rf` on a
+  path that may be empty, and that question waits for nobody while you run.
 - Your caller relays rulings and the person's answers to the questions you sent up, in the
   brief, task notes or `SendMessage`. Act on them for your own judgment calls (an action you
   held back for a yes); never ask for the person's own words in your transcript. A relayed

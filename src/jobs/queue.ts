@@ -406,8 +406,9 @@ export const ENDED_LINE_LEAD = "Heavy job ended";
 /**
  * What the first waiting line carries besides the wait. A job whose output goes down a
  * pipe (`| tail`) reports the pipe's own status, so the person is told where the job's own
- * status shows up. Once per job, never again on the minute lines after it — and never for
- * a job that does not wait: those get no hint and no end line.
+ * status shows up. Once per job, never again on the minute lines after it — never for
+ * a job that does not wait (those get no hint and no end line), and never when the job's
+ * output is a file or a terminal (`outputPiped`, from `stdout-pipe.ts`).
  */
 function pipeHint(): string {
   return `A pipe (| tail) hides this job's exit status: the "${ENDED_LINE_LEAD}" line carries it.`;
@@ -440,6 +441,11 @@ export interface EngineOptions {
   waitingLineEveryMs?: number;
   /** Stops the wait (a signal arrived): tickets and units are given back, then it throws. */
   signal?: AbortSignal;
+  /**
+   * Whether the job's output may go into a pipe (`stdoutMayBePiped`). Only then does the first
+   * waiting line carry the pipe hint. Default: true, since a caller that does not know keeps it.
+   */
+  outputPiped?: boolean;
 }
 
 function once(release: () => void): () => void {
@@ -516,7 +522,7 @@ export async function acquireFrom(
           `Heavy job waits for ${job.slot ? "a free slot" : "its exclusive name"}: ${job.what}. Why: ${reasonText(reason)}.${place === "" ? "" : ` ${place}`}`,
         );
         if (first) {
-          options.onWaiting(pipeHint());
+          if (options.outputPiped ?? true) options.onWaiting(pipeHint());
           options.onWaiting(backgroundHint());
         }
         for (const line of holderLines(held, store.label, at)) options.onWaiting(line);

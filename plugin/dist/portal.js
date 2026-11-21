@@ -47,7 +47,7 @@ function bunTooOld(version, path) {
 
 // src/build-info/index.ts
 var info = {
-  version: "6.1.0",
+  version: "6.1.1",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
