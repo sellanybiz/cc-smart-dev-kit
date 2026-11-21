@@ -8340,7 +8340,7 @@ async function runHookEntry(spec) {
 }
 
 // src/hooks/worktree-leftovers.ts
-import { closeSync as closeSync3, existsSync as existsSync6, fstatSync, openSync as openSync3, readSync as readSync2, statSync as statSync5 } from "fs";
+import { closeSync as closeSync3, existsSync as existsSync6, fstatSync, openSync as openSync3, readSync as readSync2, statSync as statSync6 } from "fs";
 import { basename as basename5, join as join12, resolve as resolve5 } from "path";
 
 // src/worktrees/auto-start.ts
@@ -8578,7 +8578,7 @@ function takeToldLine(context, repo) {
 }
 
 // src/worktrees/in-progress.ts
-import { existsSync as existsSync4, readFileSync as readFileSync7 } from "fs";
+import { existsSync as existsSync4, readFileSync as readFileSync7, statSync as statSync4 } from "fs";
 import { resolve as resolve4 } from "path";
 
 // src/hooks/git.ts
@@ -8662,17 +8662,26 @@ function reflogEntryTime(line) {
 
 // src/worktrees/in-progress.ts
 var OPERATIONS = [
-  { file: "BISECT_START", what: "a bisect", namesBranch: true },
-  { file: "rebase-merge/head-name", what: "a rebase", namesBranch: true },
-  { file: "rebase-apply/head-name", what: "a rebase", namesBranch: true },
-  { file: "MERGE_HEAD", what: "a merge", namesBranch: false },
-  { file: "CHERRY_PICK_HEAD", what: "a cherry-pick", namesBranch: false },
-  { file: "REVERT_HEAD", what: "a revert", namesBranch: false }
+  { kind: "file", namesBranch: true, path: "BISECT_START", what: "a bisect" },
+  { kind: "file", namesBranch: true, path: "rebase-merge/head-name", what: "a rebase" },
+  { kind: "file", namesBranch: true, path: "rebase-apply/head-name", what: "a rebase" },
+  { kind: "file", namesBranch: false, path: "rebase-apply/applying", what: "a git am" },
+  { kind: "folder", namesBranch: false, path: "rebase-merge", what: "a rebase" },
+  { kind: "folder", namesBranch: false, path: "rebase-apply", what: "a rebase or a git am" },
+  { kind: "file", namesBranch: false, path: "MERGE_HEAD", what: "a merge" },
+  { kind: "file", namesBranch: false, path: "CHERRY_PICK_HEAD", what: "a cherry-pick" },
+  { kind: "file", namesBranch: false, path: "REVERT_HEAD", what: "a revert" },
+  {
+    kind: "folder",
+    namesBranch: false,
+    path: "sequencer",
+    what: "a cherry-pick or revert series"
+  }
 ];
 function readInProgress(worktree, env) {
   if (!existsSync4(worktree))
     return { running: [], state: "read" };
-  const located = runGit(worktree, ["rev-parse", ...OPERATIONS.flatMap((operation) => ["--git-path", operation.file])], env);
+  const located = runGit(worktree, ["rev-parse", ...OPERATIONS.flatMap((operation) => ["--git-path", operation.path])], env);
   if (!located.ok)
     return { state: "unreadable", why: located.err };
   const paths = located.out.split(/\r?\n/);
@@ -8684,25 +8693,28 @@ function readInProgress(worktree, env) {
   }
   const running = [];
   for (const [index, operation] of OPERATIONS.entries()) {
-    const file = resolve4(worktree, paths[index] ?? "");
-    let text;
+    const marker = resolve4(worktree, paths[index] ?? "");
+    let text = "";
     try {
-      text = readFileSync7(file, "utf8").trim();
+      if (operation.kind === "folder")
+        statSync4(marker);
+      else
+        text = readFileSync7(marker, "utf8");
     } catch (error) {
       const code = error.code;
       if (code === "ENOENT" || code === "ENOTDIR")
         continue;
       const why = error instanceof Error ? error.message : String(error);
-      return { state: "unreadable", why: `${file} cannot be read (${why})` };
+      return { state: "unreadable", why: `${marker} cannot be read (${why})` };
     }
-    running.push({ branch: operation.namesBranch ? text : null, what: operation.what });
+    running.push({ branch: operation.namesBranch ? text.trim() : null, what: operation.what });
   }
   return { running, state: "read" };
 }
 function inProgressWhy(worktree, env) {
   const read = readInProgress(worktree, env);
   if (read.state === "unreadable") {
-    return `git could not say whether a bisect, rebase, merge, cherry-pick or revert is in progress in it (${read.why}), so it is kept`;
+    return `git could not say whether a bisect, rebase, git am, merge, cherry-pick or revert is in progress in it (${read.why}), so it is kept`;
   }
   const first = read.running[0];
   return first === undefined ? null : `${first.what} is in progress`;
@@ -8869,7 +8881,7 @@ function localFiles(worktree, mainCheckout, env, patterns = projectRebuildable(m
 }
 
 // src/hooks/sessions.ts
-import { existsSync as existsSync5, readdirSync as readdirSync3, readFileSync as readFileSync10, statSync as statSync4 } from "fs";
+import { existsSync as existsSync5, readdirSync as readdirSync3, readFileSync as readFileSync10, statSync as statSync5 } from "fs";
 import { uptime } from "os";
 import { join as join11 } from "path";
 
@@ -8929,7 +8941,7 @@ function sessionRecordOf(claudeConfigDir, pid, facts = {}) {
   const bootedAt = Date.now() - uptime() * 1000;
   let text;
   try {
-    if (statSync4(file).mtimeMs < bootedAt)
+    if (statSync5(file).mtimeMs < bootedAt)
       return null;
     text = readFileSync10(file, "utf8");
   } catch (error) {
@@ -9001,7 +9013,7 @@ function idleMinutesOrNull(worktree, now) {
   let last = lastReflogTime(join12(admin, "logs", "HEAD"), now) ?? 0;
   for (const file of ["index", "HEAD"]) {
     try {
-      last = Math.max(last, statSync5(join12(admin, file)).mtimeMs);
+      last = Math.max(last, statSync6(join12(admin, file)).mtimeMs);
     } catch {}
   }
   return last === 0 ? null : (now - last) / 60000;
@@ -9015,7 +9027,7 @@ function judgeWorktree(repo, listed, base, sessions, env, now) {
   if (listed.prunable)
     return "gone";
   try {
-    statSync5(listed.path);
+    statSync6(listed.path);
   } catch {
     return "gone";
   }

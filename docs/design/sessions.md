@@ -62,10 +62,11 @@ asked for (`src/sessions/`, `src/worktrees/`):
     and removes the folders.
   - **An operation in progress keeps the worktree** (`in-progress.ts`, the verdict's
     `inProgress` fact): a bisect, a rebase, a merge, a cherry-pick or a revert that git has not
-    finished. The check comes before the idle hour, so a bisect left paused for a day still
+    finished, a `git am` stopped mid-series, or a cherry-pick or revert series left after its
+    conflicting commit (the `rebase-apply`, `rebase-merge` and `sequencer` folders). The check comes before the idle hour, so a bisect left paused for a day still
     keeps the folder, and with it the branch. When git or the disk cannot say, it keeps too.
     The same file list serves the branch delete below: one `git rev-parse --git-path` call per
-    worktree asks for every file.
+    worktree asks for every marker.
   - **The delete names the judged commit.** The judge reads the branch's commit once
     (`judgeBranchOnRef`) and the delete is `git update-ref -d refs/heads/<branch> <that commit>`
     (`deleteJudgedBranch`): git refuses it when the branch moved after the judge, so a commit

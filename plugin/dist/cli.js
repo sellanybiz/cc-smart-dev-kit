@@ -23916,7 +23916,7 @@ function parseDefaultBranch(json) {
     return null;
   }
 }
-function parseOpenHeads(json) {
+function parseOpenPullRequests(json) {
   try {
     const parsed = JSON.parse(json);
     if (!Array.isArray(parsed))
@@ -23925,12 +23925,24 @@ function parseOpenHeads(json) {
     for (const entry of parsed) {
       if (typeof entry !== "object" || entry === null)
         return null;
-      const { headRefOid, number } = entry;
+      const { baseRefName, headRefName, headRefOid, isCrossRepository, number } = entry;
       if (typeof number !== "number" || !Number.isInteger(number))
         return null;
       if (typeof headRefOid !== "string" || !COMMIT_SHA.test(headRefOid))
         return null;
-      open.push({ headOid: headRefOid, number });
+      if (typeof baseRefName !== "string" || baseRefName === "")
+        return null;
+      if (typeof headRefName !== "string")
+        return null;
+      if (typeof isCrossRepository !== "boolean")
+        return null;
+      open.push({
+        base: baseRefName,
+        fork: isCrossRepository,
+        headOid: headRefOid,
+        headRef: headRefName,
+        number
+      });
     }
     return open;
   } catch {
@@ -24099,7 +24111,7 @@ async function gateFor(world, branch) {
   });
 }
 function newStackCache() {
-  return { compares: new Map, open: new Map };
+  return { commits: new Map, open: new Map };
 }
 function noAnswer(world, why) {
   return world.timeFor(GH_TIMEOUT_MS) <= 0 ? { late: true, ok: false, why: "" } : { late: false, ok: false, why };
@@ -24108,7 +24120,7 @@ function stackKey(world, target, asked) {
   return [world.folder, target.repo ?? "", asked].join(`
 `);
 }
-async function askOpenHeads(world, target) {
+async function askOpenPullRequests(world, target) {
   const left = world.timeFor(GH_TIMEOUT_MS);
   if (left <= 0)
     return { late: true, ok: false, why: "" };
@@ -24121,9 +24133,9 @@ async function askOpenHeads(world, target) {
     "--limit",
     String(OPEN_PULL_REQUESTS_LIMIT),
     "--json",
-    "number,headRefOid"
+    OPEN_PULL_REQUEST_FIELDS
   ], world.folder, world.env, left, world.gh ?? spawnGh);
-  const open = out === null ? null : parseOpenHeads(out);
+  const open = out === null ? null : parseOpenPullRequests(out);
   if (open === null)
     return noAnswer(world, "gh could not list the open pull requests");
   if (open.length >= OPEN_PULL_REQUESTS_LIMIT) {
@@ -24135,58 +24147,86 @@ async function askOpenHeads(world, target) {
   }
   return { ok: true, value: open };
 }
-function openHeadsOf(world, target, cache) {
+function openPullRequestsOf(world, target, cache) {
   const key = stackKey(world, target, "open pull requests");
   let read = cache.open.get(key);
   if (read === undefined) {
-    read = askOpenHeads(world, target);
+    read = askOpenPullRequests(world, target);
     cache.open.set(key, read);
   }
   return read;
 }
-async function askCompare(world, target, base, head) {
-  const left = world.timeFor(GH_TIMEOUT_MS);
-  if (left <= 0)
-    return { late: true, ok: false, why: "" };
-  const basehead = `${encodeURIComponent(base)}...${encodeURIComponent(head)}`;
-  const out = await ghStdout([
-    "api",
-    `repos/${target.repo ?? "{owner}/{repo}"}/compare/${basehead}?per_page=1`,
-    "--jq",
-    COMPARE_FIELDS
-  ], world.folder, world.env, left, world.gh ?? spawnGh);
-  const answer = out === null ? null : COMPARE_ANSWER.exec(out.trim());
-  if (answer === null) {
-    return noAnswer(world, `GitHub could not compare ${shortCommit(base)} and ${shortCommit(head)} (gh printed no status and merge base)`);
-  }
-  return { ok: true, value: { mergeBase: answer[2] ?? "", status: answer[1] ?? "" } };
-}
 function shortCommit(name) {
   return COMMIT_SHA.test(name) ? name.slice(0, 12) : name;
 }
-function compareOf(world, target, cache, base, head) {
-  const key = stackKey(world, target, `${base}...${head}`);
-  let read = cache.compares.get(key);
+function parseCommitsPage(out) {
+  const [first, ...commits] = out.trim().split(/\r?\n/);
+  if (first === undefined || !/^\d+$/.test(first))
+    return null;
+  if (!commits.every((line) => COMMIT_SHA.test(line)))
+    return null;
+  return { commits, total: Number(first) };
+}
+async function askCommits(world, target, base, head) {
+  const basehead = `${encodeURIComponent(base)}...${encodeURIComponent(head)}`;
+  const named = `${shortCommit(base)}...${shortCommit(head)}`;
+  const read = new Set;
+  let total = null;
+  for (let page = 1;; page += 1) {
+    const left = world.timeFor(GH_TIMEOUT_MS);
+    if (left <= 0)
+      return { late: true, ok: false, why: "" };
+    const out = await ghStdout([
+      "api",
+      `repos/${target.repo ?? "{owner}/{repo}"}/compare/${basehead}?per_page=${COMMITS_PER_PAGE}&page=${page}`,
+      "--jq",
+      COMMITS_FIELDS
+    ], world.folder, world.env, left, world.gh ?? spawnGh);
+    const answer = out === null ? null : parseCommitsPage(out);
+    if (answer === null) {
+      return noAnswer(world, `GitHub could not compare ${shortCommit(base)} and ${shortCommit(head)} (gh printed no total and commit ids)`);
+    }
+    if (total !== null && answer.total !== total) {
+      return {
+        late: false,
+        ok: false,
+        why: `GitHub's count of ${named} changed from ${total} to ${answer.total} while it was read`
+      };
+    }
+    total = answer.total;
+    if (total > STACK_COMMITS_LIMIT) {
+      return {
+        late: false,
+        ok: false,
+        why: `${named} holds ${total} commits, more than the ${STACK_COMMITS_LIMIT} merge-check reads`
+      };
+    }
+    for (const commit of answer.commits)
+      read.add(commit);
+    if (read.size >= total)
+      return { ok: true, value: read };
+    if (page >= Math.ceil(total / COMMITS_PER_PAGE)) {
+      return {
+        late: false,
+        ok: false,
+        why: `GitHub listed ${read.size} of the ${total} commits of ${named}`
+      };
+    }
+  }
+}
+function commitsOf(world, target, cache, base, head) {
+  const key = stackKey(world, target, `commits ${base}...${head}`);
+  let read = cache.commits.get(key);
   if (read === undefined) {
-    read = askCompare(world, target, base, head);
-    cache.compares.set(key, read);
+    read = askCommits(world, target, base, head);
+    cache.commits.set(key, read);
   }
   return read;
 }
-async function mergeBaseOf(world, target, cache, one, other) {
-  const read = one <= other ? await compareOf(world, target, cache, one, other) : await compareOf(world, target, cache, other, one);
-  return read.ok ? { ok: true, value: read.value.mergeBase } : read;
-}
-async function carriesOpen(world, target, cache, view, other) {
-  const shared = await mergeBaseOf(world, target, cache, other.headOid, view.headOid);
-  if (!shared.ok)
-    return { kind: "unread", late: shared.late, why: shared.why };
-  if (shared.value === view.headOid)
-    return { kind: "clear" };
-  const inBase = await compareOf(world, target, cache, view.base, shared.value);
-  if (!inBase.ok)
-    return { kind: "unread", late: inBase.late, why: inBase.why };
-  return inBase.value.status === "behind" || inBase.value.status === "identical" ? { kind: "clear" } : { kind: "stacked" };
+function stackedOnView(other, view, self) {
+  if (self === undefined || self.fork || other.fork)
+    return false;
+  return other.base === view.headRef;
 }
 function cannotProve(number, why) {
   return {
@@ -24197,39 +24237,59 @@ function cannotProve(number, why) {
   };
 }
 async function stackedVerdict(world, view, target, cache) {
-  const listed = await openHeadsOf(world, target, cache);
+  const listed = await openPullRequestsOf(world, target, cache);
   if (!listed.ok) {
     if (listed.late)
       return { kind: "late", number: view.number, what: "the open pull requests" };
     return cannotProve(view.number, listed.why);
   }
-  const others = listed.value.filter((other) => other.number !== view.number).sort((left, right) => left.number - right.number);
+  const self = listed.value.find((one) => one.number === view.number);
+  const others = listed.value.filter((other) => other.number !== view.number && other.headOid !== view.headOid && !stackedOnView(other, view, self)).sort((left, right) => left.number - right.number);
+  if (others.length === 0)
+    return null;
+  const mine = await commitsOf(world, target, cache, view.base, view.headOid);
+  if (!mine.ok) {
+    if (mine.late) {
+      return { kind: "late", number: view.number, what: `whether #${view.number} is stacked` };
+    }
+    return cannotProve(view.number, `the commits of pull request #${view.number} could not be read (${mine.why})`);
+  }
+  if (mine.value.size === 0)
+    return null;
   const found = [];
-  for (let at = 0;at < others.length; at += STACK_COMPARES_AT_ONCE) {
-    const batch = others.slice(at, at + STACK_COMPARES_AT_ONCE);
-    const ons = await Promise.all(batch.map((other) => carriesOpen(world, target, cache, view, other)));
+  for (let at = 0;at < others.length; at += STACK_READS_AT_ONCE) {
+    const batch = others.slice(at, at + STACK_READS_AT_ONCE);
+    const ons = await Promise.all(batch.map(async (other) => {
+      const theirs = await commitsOf(world, target, cache, other.base, other.headOid);
+      if (!theirs.ok)
+        return { kind: "unread", late: theirs.late, why: theirs.why };
+      for (const commit of theirs.value)
+        if (mine.value.has(commit))
+          return { kind: "shares" };
+      return { kind: "clear" };
+    }));
     batch.forEach((other, index) => {
       const on = ons[index];
       if (on !== undefined)
         found.push({ number: other.number, on });
     });
   }
-  const below = found.find((one) => one.on.kind === "stacked");
-  if (below !== undefined) {
+  const shared = found.find((one) => one.on.kind === "shares");
+  if (shared !== undefined) {
     return {
       detail: null,
       kind: "refused",
       number: view.number,
-      reason: `pull request #${view.number} is stacked on open pull request #${below.number}: merge #${below.number} first, then check again`
+      reason: `pull request #${view.number} shares commits with open pull request #${shared.number} that ${view.base} does not hold yet: merge the lower one first (open the upper one against the lower one's branch), then check again`
     };
   }
-  for (const { on } of found) {
+  for (const { number, on } of found) {
     if (on.kind !== "unread")
       continue;
     if (on.late) {
       return { kind: "late", number: view.number, what: `whether #${view.number} is stacked` };
     }
-    return cannotProve(view.number, on.why);
+    return cannotProve(view.number, `the commits of open pull request #${number} could not be read (${on.why})`);
   }
   return null;
 }
@@ -24411,14 +24471,13 @@ var GH_TIMEOUT_MS = 1e4, GH_WRITE_TIMEOUT_MS = 30000, runGh = async (args, { fol
   if (kind === "missing" || kind === "timeout")
     return null;
   return out.trim() === "" ? null : out;
-}, PULL_REQUEST_FACTS = "number,baseRefName,headRefName,headRefOid", OPEN_PULL_REQUESTS_LIMIT = 500, COMPARE_FIELDS = '.status + " " + .merge_base_commit.sha', COMPARE_ANSWER, STACK_COMPARES_AT_ONCE = 4, PASSING_BUCKETS;
+}, PULL_REQUEST_FACTS = "number,baseRefName,headRefName,headRefOid", OPEN_PULL_REQUESTS_LIMIT = 500, OPEN_PULL_REQUEST_FIELDS = "number,headRefOid,headRefName,baseRefName,isCrossRepository", COMMITS_FIELDS = ".total_commits, .commits[].sha", COMMITS_PER_PAGE = 100, STACK_COMMITS_LIMIT = 1000, STACK_READS_AT_ONCE = 4, PASSING_BUCKETS;
 var init_merge_check = __esm(() => {
   init_git();
   init_auto_merge();
   init_resolve2();
   init_review_cover();
   init_reviews();
-  COMPARE_ANSWER = /^(ahead|behind|diverged|identical) ([0-9a-f]{40})$/;
   PASSING_BUCKETS = new Set(["pass", "skipping"]);
 });
 
@@ -31169,8 +31228,9 @@ merge-check judges a merge without making it: each
 pull request number, or a local branch against a base (--branch <b> --base <base>). A pull
 request is allowed when the committed policy passes: allowMerge on, its base the project's
 integration base or the repository's default branch, not stacked on another open pull request
-(no other open one's head is among its ancestors, by GitHub's compare, unless its base holds it:
-that one is merged first), every required check green, and a review covering its head under
+(its commits that its base lacks, by GitHub's compare, share none with another open one's, unless
+that one is opened against its branch: the lower one merges first), every required check green,
+and a review covering its head under
 fixesAfterReview. When gh cannot say, or may have cut the open list, it asks: a stack is never
 read as absent. A branch is allowed when the review
 record covers its head. One line per verdict; exit 0 when every merge is allowed, 1 when any asks.
@@ -33157,12 +33217,12 @@ var init_auto_start = __esm(() => {
 });
 
 // src/worktrees/in-progress.ts
-import { existsSync as existsSync40, readFileSync as readFileSync44 } from "fs";
+import { existsSync as existsSync40, readFileSync as readFileSync44, statSync as statSync16 } from "fs";
 import { resolve as resolve12 } from "path";
 function readInProgress(worktree, env) {
   if (!existsSync40(worktree))
     return { running: [], state: "read" };
-  const located = runGit(worktree, ["rev-parse", ...OPERATIONS.flatMap((operation) => ["--git-path", operation.file])], env);
+  const located = runGit(worktree, ["rev-parse", ...OPERATIONS.flatMap((operation) => ["--git-path", operation.path])], env);
   if (!located.ok)
     return { state: "unreadable", why: located.err };
   const paths = located.out.split(/\r?\n/);
@@ -33174,25 +33234,28 @@ function readInProgress(worktree, env) {
   }
   const running = [];
   for (const [index, operation] of OPERATIONS.entries()) {
-    const file = resolve12(worktree, paths[index] ?? "");
-    let text;
+    const marker = resolve12(worktree, paths[index] ?? "");
+    let text = "";
     try {
-      text = readFileSync44(file, "utf8").trim();
+      if (operation.kind === "folder")
+        statSync16(marker);
+      else
+        text = readFileSync44(marker, "utf8");
     } catch (error) {
       const code = error.code;
       if (code === "ENOENT" || code === "ENOTDIR")
         continue;
       const why = error instanceof Error ? error.message : String(error);
-      return { state: "unreadable", why: `${file} cannot be read (${why})` };
+      return { state: "unreadable", why: `${marker} cannot be read (${why})` };
     }
-    running.push({ branch: operation.namesBranch ? text : null, what: operation.what });
+    running.push({ branch: operation.namesBranch ? text.trim() : null, what: operation.what });
   }
   return { running, state: "read" };
 }
 function inProgressWhy(worktree, env) {
   const read = readInProgress(worktree, env);
   if (read.state === "unreadable") {
-    return `git could not say whether a bisect, rebase, merge, cherry-pick or revert is in progress in it (${read.why}), so it is kept`;
+    return `git could not say whether a bisect, rebase, git am, merge, cherry-pick or revert is in progress in it (${read.why}), so it is kept`;
   }
   const first = read.running[0];
   return first === undefined ? null : `${first.what} is in progress`;
@@ -33209,12 +33272,21 @@ var OPERATIONS;
 var init_in_progress = __esm(() => {
   init_git();
   OPERATIONS = [
-    { file: "BISECT_START", what: "a bisect", namesBranch: true },
-    { file: "rebase-merge/head-name", what: "a rebase", namesBranch: true },
-    { file: "rebase-apply/head-name", what: "a rebase", namesBranch: true },
-    { file: "MERGE_HEAD", what: "a merge", namesBranch: false },
-    { file: "CHERRY_PICK_HEAD", what: "a cherry-pick", namesBranch: false },
-    { file: "REVERT_HEAD", what: "a revert", namesBranch: false }
+    { kind: "file", namesBranch: true, path: "BISECT_START", what: "a bisect" },
+    { kind: "file", namesBranch: true, path: "rebase-merge/head-name", what: "a rebase" },
+    { kind: "file", namesBranch: true, path: "rebase-apply/head-name", what: "a rebase" },
+    { kind: "file", namesBranch: false, path: "rebase-apply/applying", what: "a git am" },
+    { kind: "folder", namesBranch: false, path: "rebase-merge", what: "a rebase" },
+    { kind: "folder", namesBranch: false, path: "rebase-apply", what: "a rebase or a git am" },
+    { kind: "file", namesBranch: false, path: "MERGE_HEAD", what: "a merge" },
+    { kind: "file", namesBranch: false, path: "CHERRY_PICK_HEAD", what: "a cherry-pick" },
+    { kind: "file", namesBranch: false, path: "REVERT_HEAD", what: "a revert" },
+    {
+      kind: "folder",
+      namesBranch: false,
+      path: "sequencer",
+      what: "a cherry-pick or revert series"
+    }
   ];
 });
 
@@ -33228,7 +33300,7 @@ function cappedHookList(items, render, command, separator = ", ") {
 var HOOK_LIST_LIMIT = 8;
 
 // src/hooks/worktree-leftovers.ts
-import { closeSync as closeSync8, existsSync as existsSync41, fstatSync as fstatSync2, openSync as openSync8, readSync as readSync4, statSync as statSync16 } from "fs";
+import { closeSync as closeSync8, existsSync as existsSync41, fstatSync as fstatSync2, openSync as openSync8, readSync as readSync4, statSync as statSync17 } from "fs";
 import { basename as basename10, join as join45, resolve as resolve13 } from "path";
 function lastReflogTime(file, now) {
   try {
@@ -33263,7 +33335,7 @@ function idleMinutesOrNull(worktree, now) {
   let last = lastReflogTime(join45(admin, "logs", "HEAD"), now) ?? 0;
   for (const file of ["index", "HEAD"]) {
     try {
-      last = Math.max(last, statSync16(join45(admin, file)).mtimeMs);
+      last = Math.max(last, statSync17(join45(admin, file)).mtimeMs);
     } catch {}
   }
   return last === 0 ? null : (now - last) / 60000;
@@ -33277,7 +33349,7 @@ function judgeWorktree(repo, listed, base, sessions, env, now) {
   if (listed.prunable)
     return "gone";
   try {
-    statSync16(listed.path);
+    statSync17(listed.path);
   } catch {
     return "gone";
   }
@@ -33582,7 +33654,7 @@ function programsWhy(names) {
 var MIN_MERGE_TREE_GIT = "2.38.0", IDLE_MINUTES2 = 60;
 
 // src/worktrees/scan.ts
-import { existsSync as existsSync42, mkdtempSync as mkdtempSync4, readdirSync as readdirSync20, rmSync as rmSync11, statSync as statSync17 } from "fs";
+import { existsSync as existsSync42, mkdtempSync as mkdtempSync4, readdirSync as readdirSync20, rmSync as rmSync11, statSync as statSync18 } from "fs";
 import { tmpdir as tmpdir5 } from "os";
 import { basename as basename11, join as join47 } from "path";
 function parkedOriginal(path) {
@@ -33612,7 +33684,7 @@ function innerWorktreeOf(worktree, all) {
   for (const entry of entries) {
     const folder = join47(claudeOwn, entry);
     try {
-      if (statSync17(folder).isDirectory() && readdirSync20(folder).length > 0)
+      if (statSync18(folder).isDirectory() && readdirSync20(folder).length > 0)
         return folder;
     } catch {}
   }
@@ -36011,7 +36083,7 @@ var init_store2 = __esm(() => {
 });
 
 // src/tasks/ops.ts
-import { existsSync as existsSync45, readFileSync as readFileSync47, rmSync as rmSync13, statSync as statSync18 } from "fs";
+import { existsSync as existsSync45, readFileSync as readFileSync47, rmSync as rmSync13, statSync as statSync19 } from "fs";
 import { join as join50, relative as relative7 } from "path";
 function isPhaseId(value) {
   return value.length <= MAX_PHASE && /^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$/.test(value) && !value.includes("--");
@@ -36043,7 +36115,7 @@ function deployTasksIn(root) {
 }
 function isFolderOnDisk(root, path) {
   const full = join50(root, path);
-  return existsSync45(full) && statSync18(full).isDirectory();
+  return existsSync45(full) && statSync19(full).isDirectory();
 }
 function value(result) {
   if (!result.ok)
@@ -37378,11 +37450,11 @@ Use ${AVAILABLE_SKILL} when the person is back: it goes through the list with th
 });
 
 // src/machine/claude.ts
-import { statSync as statSync19 } from "fs";
+import { statSync as statSync20 } from "fs";
 import { join as join52 } from "path";
 function isFile2(path) {
   try {
-    return statSync19(path).isFile();
+    return statSync20(path).isFile();
   } catch {
     return false;
   }
@@ -37899,7 +37971,7 @@ import {
   openSync as openSync9,
   readdirSync as readdirSync22,
   readFileSync as readFileSync50,
-  statSync as statSync20,
+  statSync as statSync21,
   unlinkSync as unlinkSync6,
   writeFileSync as writeFileSync8
 } from "fs";
@@ -37978,7 +38050,7 @@ function isTopSkill(top, file) {
 }
 function skillFilesUnder(folder, depth, realRoot, seen = new Set) {
   const real = realTarget(folder);
-  if (seen.has(real) || !existsSync48(folder) || !statSync20(folder).isDirectory())
+  if (seen.has(real) || !existsSync48(folder) || !statSync21(folder).isDirectory())
     return [];
   seen.add(real);
   const found = [];
@@ -38046,7 +38118,7 @@ function planDeploySkill(root, file, mode) {
   if (!isInside2(realTarget(root), real)) {
     return refused(root, file, outsideMessage(root, file, real));
   }
-  if (!existsSync48(real) || !statSync20(real).isFile()) {
+  if (!existsSync48(real) || !statSync21(real).isFile()) {
     return refused(root, file, `${shown} is not a file`);
   }
   const before = readFileSync50(real, "utf8");
@@ -38088,11 +38160,11 @@ function planDeploySkill(root, file, mode) {
   };
 }
 function deployCommandUnder(folder, depth) {
-  if (statSync20(folder, { throwIfNoEntry: false })?.isDirectory() !== true)
+  if (statSync21(folder, { throwIfNoEntry: false })?.isDirectory() !== true)
     return null;
   for (const entry of readdirSync22(folder).sort()) {
     const path = join54(folder, entry);
-    const stat = statSync20(path, { throwIfNoEntry: false });
+    const stat = statSync21(path, { throwIfNoEntry: false });
     if (stat?.isFile() === true && DEPLOY_COMMAND_FILE.test(entry))
       return path;
     if (stat?.isDirectory() === true && depth > 0 && entry !== "node_modules") {
@@ -38221,7 +38293,7 @@ var init_deploy_skill = __esm(() => {
 });
 
 // src/cli/project-init.ts
-import { existsSync as existsSync49, readFileSync as readFileSync51, statSync as statSync21 } from "fs";
+import { existsSync as existsSync49, readFileSync as readFileSync51, statSync as statSync22 } from "fs";
 import { join as join55, resolve as resolve17 } from "path";
 async function runGh2(ghPath, args, env) {
   try {
@@ -38832,7 +38904,7 @@ ${PROJECT_INIT_USAGE}`);
     return 2;
   }
   const flags = parsed.flags;
-  if (flags.deploySkill !== undefined && statSync21(resolve17(context.cwd ?? process.cwd(), flags.deploySkill), {
+  if (flags.deploySkill !== undefined && statSync22(resolve17(context.cwd ?? process.cwd(), flags.deploySkill), {
     throwIfNoEntry: false
   })?.isFile() !== true) {
     context.error(`--deploy-skill: ${flags.deploySkill} is not a file
@@ -39041,12 +39113,12 @@ var init_safety_checks_read = __esm(() => {
 });
 
 // src/hooks/jsonl-log.ts
-import { appendFileSync as appendFileSync2, mkdirSync as mkdirSync19, readFileSync as readFileSync53, statSync as statSync22 } from "fs";
+import { appendFileSync as appendFileSync2, mkdirSync as mkdirSync19, readFileSync as readFileSync53, statSync as statSync23 } from "fs";
 import { dirname as dirname21 } from "path";
 function cutBack(file) {
   let size;
   try {
-    size = statSync22(file).size;
+    size = statSync23(file).size;
   } catch {
     return;
   }
@@ -39269,7 +39341,7 @@ var init_agent_usage = __esm(() => {
 });
 
 // src/cli/transcripts.ts
-import { readdirSync as readdirSync23, readFileSync as readFileSync55, statSync as statSync23 } from "fs";
+import { readdirSync as readdirSync23, readFileSync as readFileSync55, statSync as statSync24 } from "fs";
 import { join as join57 } from "path";
 function listed(path) {
   try {
@@ -39326,7 +39398,7 @@ function transcriptText(ref) {
 }
 function transcriptChangedAt(ref) {
   try {
-    return statSync23(ref.path).mtimeMs;
+    return statSync24(ref.path).mtimeMs;
   } catch {
     return Number.NEGATIVE_INFINITY;
   }
@@ -39729,7 +39801,7 @@ function transcriptTree2(projectsDir) {
 var init_transcripts2 = () => {};
 
 // src/sessions/flow.ts
-import { closeSync as closeSync10, mkdirSync as mkdirSync20, openSync as openSync10, readFileSync as readFileSync56, readSync as readSync5, statSync as statSync24 } from "fs";
+import { closeSync as closeSync10, mkdirSync as mkdirSync20, openSync as openSync10, readFileSync as readFileSync56, readSync as readSync5, statSync as statSync25 } from "fs";
 import { dirname as dirname22, join as join59 } from "path";
 function isJsonObject12(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -40248,7 +40320,7 @@ function replaced(ref, transcript) {
     return false;
   let stat;
   try {
-    stat = statSync24(ref.path);
+    stat = statSync25(ref.path);
   } catch {
     return false;
   }
@@ -40279,7 +40351,7 @@ function readTranscriptFile(ref, session, transcript, subagent, context) {
   const file = ref.path;
   let stat;
   try {
-    stat = statSync24(file);
+    stat = statSync25(file);
   } catch {
     return false;
   }
@@ -41572,7 +41644,7 @@ import {
   readFileSync as readFileSync61,
   readSync as readSync6,
   rmSync as rmSync16,
-  statSync as statSync25
+  statSync as statSync26
 } from "fs";
 import { dirname as dirname23, join as join64, resolve as resolve19 } from "path";
 function readTail(path, size) {
@@ -41598,7 +41670,7 @@ function sessionFiles(projectsDir, folder) {
     if (!name.endsWith(".jsonl"))
       continue;
     const path = join64(projectsDir, folder, name);
-    const stat = statSync25(path, { throwIfNoEntry: false });
+    const stat = statSync26(path, { throwIfNoEntry: false });
     if (stat === undefined || !stat.isFile())
       continue;
     files.push({
@@ -42521,7 +42593,7 @@ take-over records the values you set by hand in claude-mem's file as ${COMMAND}'
 });
 
 // src/entries/cli.ts
-import { existsSync as existsSync84, statSync as statSync32 } from "fs";
+import { existsSync as existsSync84, statSync as statSync33 } from "fs";
 import { uptime as uptime2 } from "os";
 import { join as join97, resolve as resolve26 } from "path";
 
@@ -45755,7 +45827,7 @@ init_lock();
 init_managed_folder();
 init_write();
 init_git_hooks();
-import { accessSync as accessSync2, constants as constants3, existsSync as existsSync56, readdirSync as readdirSync26, readFileSync as readFileSync64, statSync as statSync26 } from "fs";
+import { accessSync as accessSync2, constants as constants3, existsSync as existsSync56, readdirSync as readdirSync26, readFileSync as readFileSync64, statSync as statSync27 } from "fs";
 import { join as join67 } from "path";
 var HOOK_FILE_MODE = 493;
 function hookLauncher(paths) {
@@ -45871,7 +45943,7 @@ function gitHooksState(paths) {
   const problems = [];
   for (const name of HOOK_NAMES) {
     const file = join67(folder, name);
-    if (!existsSync56(file) || !statSync26(file).isFile())
+    if (!existsSync56(file) || !statSync27(file).isFile())
       problems.push(`${name} is missing`);
     else if (!isExecutable(file))
       problems.push(`${name} is not executable`);
@@ -46409,7 +46481,7 @@ import {
   readFileSync as readFileSync68,
   rmdirSync,
   rmSync as rmSync17,
-  statSync as statSync27
+  statSync as statSync28
 } from "fs";
 import { join as join70 } from "path";
 
@@ -46650,7 +46722,7 @@ function removeEmptyFolders(dir) {
     rmdirSync(dir);
 }
 function isFile3(path) {
-  return existsSync59(path) && statSync27(path).isFile();
+  return existsSync59(path) && statSync28(path).isFile();
 }
 function isFolder2(path) {
   return existsSync59(path) && lstatSync6(path).isDirectory();
@@ -46752,7 +46824,7 @@ function retiredChecks(paths) {
 init_file_mode();
 init_managed_json();
 init_user_json();
-import { existsSync as existsSync60, readFileSync as readFileSync69, statSync as statSync28 } from "fs";
+import { existsSync as existsSync60, readFileSync as readFileSync69, statSync as statSync29 } from "fs";
 var TAVILY_ENV_KEY = "TAVILY_API_KEY";
 var TAVILY_KEY_PATH = ["env", TAVILY_ENV_KEY];
 function settingsEnvValue(file, name) {
@@ -46798,7 +46870,7 @@ function readKeyFile(paths, platform) {
   let mode;
   let text;
   try {
-    mode = statSync28(paths.tavilyKeyFile).mode & 4095;
+    mode = statSync29(paths.tavilyKeyFile).mode & 4095;
     text = readFileSync69(paths.tavilyKeyFile, "utf8");
   } catch (error) {
     return {
@@ -48208,7 +48280,7 @@ import {
   readFileSync as readFileSync80,
   readSync as readSync8,
   realpathSync as realpathSync11,
-  statSync as statSync29
+  statSync as statSync30
 } from "fs";
 import { isAbsolute as isAbsolute8, join as join83, relative as relative11, resolve as resolve23, sep as sep7 } from "path";
 
@@ -52261,7 +52333,7 @@ function shadcnFolders(root) {
       const rel = relative11(realpathSync11(root), target);
       if (rel === ".." || rel.startsWith(`..${sep7}`) || isAbsolute8(rel))
         return;
-      if (statSync29(folder).isDirectory() && !folders.has(target))
+      if (statSync30(folder).isDirectory() && !folders.has(target))
         folders.set(target, folder);
     } catch {}
   };
@@ -53490,7 +53562,7 @@ init_config();
 init_health();
 init_service();
 init_settings();
-import { existsSync as existsSync75, readdirSync as readdirSync31, readFileSync as readFileSync82, renameSync as renameSync6, rmSync as rmSync21, statSync as statSync30 } from "fs";
+import { existsSync as existsSync75, readdirSync as readdirSync31, readFileSync as readFileSync82, renameSync as renameSync6, rmSync as rmSync21, statSync as statSync31 } from "fs";
 import { basename as basename18, dirname as dirname32, join as join85 } from "path";
 init_path_compare();
 init_file_mode();
@@ -53771,7 +53843,7 @@ function absorbStateFolder(from, to, dryRun) {
         renameSync6(source, target);
       continue;
     }
-    if (statSync30(source).isDirectory() && statSync30(target).isDirectory()) {
+    if (statSync31(source).isDirectory() && statSync31(target).isDirectory()) {
       moved += absorbStateFolder(source, target, dryRun);
       if (!dryRun)
         rmSync21(source, { recursive: true, force: true });
@@ -53881,7 +53953,7 @@ function settingsChanges(settingsFile, stateDir, oldEnv, newEnv) {
   return { set, remove, kept };
 }
 function readOldConfig(file, platform = hostPlatform()) {
-  const mode = statSync30(file).mode;
+  const mode = statSync31(file).mode;
   if (!isOwnerOnly(mode, platform)) {
     throw new ConfigError(`${file} can be read by other users (mode ${(mode & 511).toString(8)}); it holds API keys. Run: chmod 600 ${file}`);
   }
@@ -53949,7 +54021,7 @@ function rewriteLimitState(file, stateDir, renamer, dryRun) {
   if (changed === 0)
     return 0;
   if (!dryRun) {
-    const mode = statSync30(file).mode & 4095;
+    const mode = statSync31(file).mode & 4095;
     backupFile(stateDir, file);
     atomicWrite(file, `${JSON.stringify({ ...parsed, fallbacks }, null, 2)}
 `, mode);
@@ -55544,7 +55616,7 @@ import { readFileSync as readFileSync86 } from "fs";
 // src/machine/claude-settings.ts
 init_targets();
 init_user_json();
-import { readFileSync as readFileSync84, statSync as statSync31 } from "fs";
+import { readFileSync as readFileSync84, statSync as statSync32 } from "fs";
 import { basename as basename21, dirname as dirname35, join as join91, resolve as resolve24 } from "path";
 var AUTOCOMPACT_WINDOW_ENV = "CLAUDE_CODE_AUTO_COMPACT_WINDOW";
 var AUTOCOMPACT_PERCENT_ENV = "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE";
@@ -55674,7 +55746,7 @@ function mainCheckoutOfFolder(folder) {
 function checkoutRootAt(dir) {
   const entry = join91(dir, ".git");
   try {
-    if (statSync31(entry).isDirectory())
+    if (statSync32(entry).isDirectory())
       return dir;
     const line = readFileSync84(entry, "utf8").split(`
 `, 1)[0] ?? "";
@@ -58968,7 +59040,7 @@ async function main(argv) {
         console.error(usageError(`Use ${RETRY_WATCHDOG_FLAG} or ${NO_RETRY_WATCHDOG_FLAG}, not both.`, "setup"));
         return 2;
       }
-      if (!existsSync84(project) || !statSync32(project).isDirectory()) {
+      if (!existsSync84(project) || !statSync33(project).isDirectory()) {
         console.error(`Not a folder: ${project}
 Fix: give the folder of a project, or leave --project out to use the folder you are in`);
         return 1;

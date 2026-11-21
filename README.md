@@ -2921,7 +2921,8 @@ stays yours.
 
 `allowMerge` says only that a merge **may** happen by itself. That
 CI is green, the review is done and the pull request is not stacked on another open one (a pull
-request that carries another open pull request's head waits for that one) is the session's own
+request that shares commits its base lacks with another open pull request waits, unless that one
+is opened against its branch; open a stacked pull request against the one below it) is the session's own
 check (`workflow merge-check` prints it; no hook runs it since 6.0.0). `merge-check <pr> --asked`
 takes exactly one pull request.
 `mergeMethod` and `deleteBranch` say how the merge is made, not that it skips a check.

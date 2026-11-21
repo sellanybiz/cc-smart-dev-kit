@@ -19947,10 +19947,12 @@ function parseDefaultBranch(json) {
   }
 }
 var OPEN_PULL_REQUESTS_LIMIT = 500;
-var COMPARE_FIELDS = '.status + " " + .merge_base_commit.sha';
-var COMPARE_ANSWER = /^(ahead|behind|diverged|identical) ([0-9a-f]{40})$/;
-var STACK_COMPARES_AT_ONCE = 4;
-function parseOpenHeads(json) {
+var OPEN_PULL_REQUEST_FIELDS = "number,headRefOid,headRefName,baseRefName,isCrossRepository";
+var COMMITS_FIELDS = ".total_commits, .commits[].sha";
+var COMMITS_PER_PAGE = 100;
+var STACK_COMMITS_LIMIT = 1000;
+var STACK_READS_AT_ONCE = 4;
+function parseOpenPullRequests(json) {
   try {
     const parsed = JSON.parse(json);
     if (!Array.isArray(parsed))
@@ -19959,12 +19961,24 @@ function parseOpenHeads(json) {
     for (const entry of parsed) {
       if (typeof entry !== "object" || entry === null)
         return null;
-      const { headRefOid, number } = entry;
+      const { baseRefName, headRefName, headRefOid, isCrossRepository, number } = entry;
       if (typeof number !== "number" || !Number.isInteger(number))
         return null;
       if (typeof headRefOid !== "string" || !COMMIT_SHA.test(headRefOid))
         return null;
-      open.push({ headOid: headRefOid, number });
+      if (typeof baseRefName !== "string" || baseRefName === "")
+        return null;
+      if (typeof headRefName !== "string")
+        return null;
+      if (typeof isCrossRepository !== "boolean")
+        return null;
+      open.push({
+        base: baseRefName,
+        fork: isCrossRepository,
+        headOid: headRefOid,
+        headRef: headRefName,
+        number
+      });
     }
     return open;
   } catch {
@@ -20120,7 +20134,7 @@ async function gateFor(world, branch) {
   });
 }
 function newStackCache() {
-  return { compares: new Map, open: new Map };
+  return { commits: new Map, open: new Map };
 }
 function noAnswer(world, why) {
   return world.timeFor(GH_TIMEOUT_MS) <= 0 ? { late: true, ok: false, why: "" } : { late: false, ok: false, why };
@@ -20129,7 +20143,7 @@ function stackKey(world, target, asked) {
   return [world.folder, target.repo ?? "", asked].join(`
 `);
 }
-async function askOpenHeads(world, target) {
+async function askOpenPullRequests(world, target) {
   const left = world.timeFor(GH_TIMEOUT_MS);
   if (left <= 0)
     return { late: true, ok: false, why: "" };
@@ -20142,9 +20156,9 @@ async function askOpenHeads(world, target) {
     "--limit",
     String(OPEN_PULL_REQUESTS_LIMIT),
     "--json",
-    "number,headRefOid"
+    OPEN_PULL_REQUEST_FIELDS
   ], world.folder, world.env, left, world.gh ?? spawnGh);
-  const open = out === null ? null : parseOpenHeads(out);
+  const open = out === null ? null : parseOpenPullRequests(out);
   if (open === null)
     return noAnswer(world, "gh could not list the open pull requests");
   if (open.length >= OPEN_PULL_REQUESTS_LIMIT) {
@@ -20156,58 +20170,86 @@ async function askOpenHeads(world, target) {
   }
   return { ok: true, value: open };
 }
-function openHeadsOf(world, target, cache) {
+function openPullRequestsOf(world, target, cache) {
   const key = stackKey(world, target, "open pull requests");
   let read = cache.open.get(key);
   if (read === undefined) {
-    read = askOpenHeads(world, target);
+    read = askOpenPullRequests(world, target);
     cache.open.set(key, read);
   }
   return read;
 }
-async function askCompare(world, target, base, head) {
-  const left = world.timeFor(GH_TIMEOUT_MS);
-  if (left <= 0)
-    return { late: true, ok: false, why: "" };
-  const basehead = `${encodeURIComponent(base)}...${encodeURIComponent(head)}`;
-  const out = await ghStdout([
-    "api",
-    `repos/${target.repo ?? "{owner}/{repo}"}/compare/${basehead}?per_page=1`,
-    "--jq",
-    COMPARE_FIELDS
-  ], world.folder, world.env, left, world.gh ?? spawnGh);
-  const answer = out === null ? null : COMPARE_ANSWER.exec(out.trim());
-  if (answer === null) {
-    return noAnswer(world, `GitHub could not compare ${shortCommit(base)} and ${shortCommit(head)} (gh printed no status and merge base)`);
-  }
-  return { ok: true, value: { mergeBase: answer[2] ?? "", status: answer[1] ?? "" } };
-}
 function shortCommit(name) {
   return COMMIT_SHA.test(name) ? name.slice(0, 12) : name;
 }
-function compareOf(world, target, cache, base, head) {
-  const key = stackKey(world, target, `${base}...${head}`);
-  let read = cache.compares.get(key);
+function parseCommitsPage(out) {
+  const [first, ...commits] = out.trim().split(/\r?\n/);
+  if (first === undefined || !/^\d+$/.test(first))
+    return null;
+  if (!commits.every((line) => COMMIT_SHA.test(line)))
+    return null;
+  return { commits, total: Number(first) };
+}
+async function askCommits(world, target, base, head) {
+  const basehead = `${encodeURIComponent(base)}...${encodeURIComponent(head)}`;
+  const named = `${shortCommit(base)}...${shortCommit(head)}`;
+  const read = new Set;
+  let total = null;
+  for (let page = 1;; page += 1) {
+    const left = world.timeFor(GH_TIMEOUT_MS);
+    if (left <= 0)
+      return { late: true, ok: false, why: "" };
+    const out = await ghStdout([
+      "api",
+      `repos/${target.repo ?? "{owner}/{repo}"}/compare/${basehead}?per_page=${COMMITS_PER_PAGE}&page=${page}`,
+      "--jq",
+      COMMITS_FIELDS
+    ], world.folder, world.env, left, world.gh ?? spawnGh);
+    const answer = out === null ? null : parseCommitsPage(out);
+    if (answer === null) {
+      return noAnswer(world, `GitHub could not compare ${shortCommit(base)} and ${shortCommit(head)} (gh printed no total and commit ids)`);
+    }
+    if (total !== null && answer.total !== total) {
+      return {
+        late: false,
+        ok: false,
+        why: `GitHub's count of ${named} changed from ${total} to ${answer.total} while it was read`
+      };
+    }
+    total = answer.total;
+    if (total > STACK_COMMITS_LIMIT) {
+      return {
+        late: false,
+        ok: false,
+        why: `${named} holds ${total} commits, more than the ${STACK_COMMITS_LIMIT} merge-check reads`
+      };
+    }
+    for (const commit of answer.commits)
+      read.add(commit);
+    if (read.size >= total)
+      return { ok: true, value: read };
+    if (page >= Math.ceil(total / COMMITS_PER_PAGE)) {
+      return {
+        late: false,
+        ok: false,
+        why: `GitHub listed ${read.size} of the ${total} commits of ${named}`
+      };
+    }
+  }
+}
+function commitsOf(world, target, cache, base, head) {
+  const key = stackKey(world, target, `commits ${base}...${head}`);
+  let read = cache.commits.get(key);
   if (read === undefined) {
-    read = askCompare(world, target, base, head);
-    cache.compares.set(key, read);
+    read = askCommits(world, target, base, head);
+    cache.commits.set(key, read);
   }
   return read;
 }
-async function mergeBaseOf(world, target, cache, one, other) {
-  const read = one <= other ? await compareOf(world, target, cache, one, other) : await compareOf(world, target, cache, other, one);
-  return read.ok ? { ok: true, value: read.value.mergeBase } : read;
-}
-async function carriesOpen(world, target, cache, view, other) {
-  const shared = await mergeBaseOf(world, target, cache, other.headOid, view.headOid);
-  if (!shared.ok)
-    return { kind: "unread", late: shared.late, why: shared.why };
-  if (shared.value === view.headOid)
-    return { kind: "clear" };
-  const inBase = await compareOf(world, target, cache, view.base, shared.value);
-  if (!inBase.ok)
-    return { kind: "unread", late: inBase.late, why: inBase.why };
-  return inBase.value.status === "behind" || inBase.value.status === "identical" ? { kind: "clear" } : { kind: "stacked" };
+function stackedOnView(other, view, self) {
+  if (self === undefined || self.fork || other.fork)
+    return false;
+  return other.base === view.headRef;
 }
 function cannotProve(number, why) {
   return {
@@ -20218,39 +20260,59 @@ function cannotProve(number, why) {
   };
 }
 async function stackedVerdict(world, view, target, cache) {
-  const listed = await openHeadsOf(world, target, cache);
+  const listed = await openPullRequestsOf(world, target, cache);
   if (!listed.ok) {
     if (listed.late)
       return { kind: "late", number: view.number, what: "the open pull requests" };
     return cannotProve(view.number, listed.why);
   }
-  const others = listed.value.filter((other) => other.number !== view.number).sort((left, right) => left.number - right.number);
+  const self = listed.value.find((one) => one.number === view.number);
+  const others = listed.value.filter((other) => other.number !== view.number && other.headOid !== view.headOid && !stackedOnView(other, view, self)).sort((left, right) => left.number - right.number);
+  if (others.length === 0)
+    return null;
+  const mine = await commitsOf(world, target, cache, view.base, view.headOid);
+  if (!mine.ok) {
+    if (mine.late) {
+      return { kind: "late", number: view.number, what: `whether #${view.number} is stacked` };
+    }
+    return cannotProve(view.number, `the commits of pull request #${view.number} could not be read (${mine.why})`);
+  }
+  if (mine.value.size === 0)
+    return null;
   const found = [];
-  for (let at = 0;at < others.length; at += STACK_COMPARES_AT_ONCE) {
-    const batch = others.slice(at, at + STACK_COMPARES_AT_ONCE);
-    const ons = await Promise.all(batch.map((other) => carriesOpen(world, target, cache, view, other)));
+  for (let at = 0;at < others.length; at += STACK_READS_AT_ONCE) {
+    const batch = others.slice(at, at + STACK_READS_AT_ONCE);
+    const ons = await Promise.all(batch.map(async (other) => {
+      const theirs = await commitsOf(world, target, cache, other.base, other.headOid);
+      if (!theirs.ok)
+        return { kind: "unread", late: theirs.late, why: theirs.why };
+      for (const commit of theirs.value)
+        if (mine.value.has(commit))
+          return { kind: "shares" };
+      return { kind: "clear" };
+    }));
     batch.forEach((other, index) => {
       const on = ons[index];
       if (on !== undefined)
         found.push({ number: other.number, on });
     });
   }
-  const below = found.find((one) => one.on.kind === "stacked");
-  if (below !== undefined) {
+  const shared = found.find((one) => one.on.kind === "shares");
+  if (shared !== undefined) {
     return {
       detail: null,
       kind: "refused",
       number: view.number,
-      reason: `pull request #${view.number} is stacked on open pull request #${below.number}: merge #${below.number} first, then check again`
+      reason: `pull request #${view.number} shares commits with open pull request #${shared.number} that ${view.base} does not hold yet: merge the lower one first (open the upper one against the lower one's branch), then check again`
     };
   }
-  for (const { on } of found) {
+  for (const { number, on } of found) {
     if (on.kind !== "unread")
       continue;
     if (on.late) {
       return { kind: "late", number: view.number, what: `whether #${view.number} is stacked` };
     }
-    return cannotProve(view.number, on.why);
+    return cannotProve(view.number, `the commits of open pull request #${number} could not be read (${on.why})`);
   }
   return null;
 }
@@ -29381,7 +29443,7 @@ async function scanProjects(world) {
   projects.sort((a, b) => (b.lastUsed ?? "").localeCompare(a.lastUsed ?? "") || a.name.localeCompare(b.name) || a.root.localeCompare(b.root));
   return { note: records === 0 ? NO_SESSION_RECORDS : null, projects };
 }
-function parseOpenPullRequests(json) {
+function parseOpenPullRequests2(json) {
   try {
     const parsed = JSON.parse(json);
     if (!Array.isArray(parsed))
@@ -29456,7 +29518,7 @@ async function readBranches(world, project, at) {
       folder: project.root,
       timeoutMs: timeFor(GH_TIMEOUT_MS)
     });
-    const parsed = out === null ? null : parseOpenPullRequests(out);
+    const parsed = out === null ? null : parseOpenPullRequests2(out);
     if (parsed === null) {
       notes.push("gh could not list this project's open pull requests");
     } else {
@@ -33265,7 +33327,7 @@ import {
   readFileSync as readFileSync71,
   readSync as readSync7,
   realpathSync as realpathSync10,
-  statSync as statSync22
+  statSync as statSync23
 } from "fs";
 import { isAbsolute as isAbsolute6, join as join70, relative as relative8, resolve as resolve18, sep as sep6 } from "path";
 
@@ -37426,24 +37488,33 @@ var verifyGateHook = {
 };
 
 // src/hooks/worktree-leftovers.ts
-import { closeSync as closeSync10, existsSync as existsSync61, fstatSync as fstatSync2, openSync as openSync10, readSync as readSync6, statSync as statSync21 } from "fs";
+import { closeSync as closeSync10, existsSync as existsSync61, fstatSync as fstatSync2, openSync as openSync10, readSync as readSync6, statSync as statSync22 } from "fs";
 import { basename as basename14, join as join69, resolve as resolve17 } from "path";
 
 // src/worktrees/in-progress.ts
-import { existsSync as existsSync60, readFileSync as readFileSync69 } from "fs";
+import { existsSync as existsSync60, readFileSync as readFileSync69, statSync as statSync21 } from "fs";
 import { resolve as resolve16 } from "path";
 var OPERATIONS = [
-  { file: "BISECT_START", what: "a bisect", namesBranch: true },
-  { file: "rebase-merge/head-name", what: "a rebase", namesBranch: true },
-  { file: "rebase-apply/head-name", what: "a rebase", namesBranch: true },
-  { file: "MERGE_HEAD", what: "a merge", namesBranch: false },
-  { file: "CHERRY_PICK_HEAD", what: "a cherry-pick", namesBranch: false },
-  { file: "REVERT_HEAD", what: "a revert", namesBranch: false }
+  { kind: "file", namesBranch: true, path: "BISECT_START", what: "a bisect" },
+  { kind: "file", namesBranch: true, path: "rebase-merge/head-name", what: "a rebase" },
+  { kind: "file", namesBranch: true, path: "rebase-apply/head-name", what: "a rebase" },
+  { kind: "file", namesBranch: false, path: "rebase-apply/applying", what: "a git am" },
+  { kind: "folder", namesBranch: false, path: "rebase-merge", what: "a rebase" },
+  { kind: "folder", namesBranch: false, path: "rebase-apply", what: "a rebase or a git am" },
+  { kind: "file", namesBranch: false, path: "MERGE_HEAD", what: "a merge" },
+  { kind: "file", namesBranch: false, path: "CHERRY_PICK_HEAD", what: "a cherry-pick" },
+  { kind: "file", namesBranch: false, path: "REVERT_HEAD", what: "a revert" },
+  {
+    kind: "folder",
+    namesBranch: false,
+    path: "sequencer",
+    what: "a cherry-pick or revert series"
+  }
 ];
 function readInProgress(worktree, env) {
   if (!existsSync60(worktree))
     return { running: [], state: "read" };
-  const located = runGit(worktree, ["rev-parse", ...OPERATIONS.flatMap((operation) => ["--git-path", operation.file])], env);
+  const located = runGit(worktree, ["rev-parse", ...OPERATIONS.flatMap((operation) => ["--git-path", operation.path])], env);
   if (!located.ok)
     return { state: "unreadable", why: located.err };
   const paths = located.out.split(/\r?\n/);
@@ -37455,25 +37526,28 @@ function readInProgress(worktree, env) {
   }
   const running = [];
   for (const [index, operation] of OPERATIONS.entries()) {
-    const file = resolve16(worktree, paths[index] ?? "");
-    let text;
+    const marker = resolve16(worktree, paths[index] ?? "");
+    let text = "";
     try {
-      text = readFileSync69(file, "utf8").trim();
+      if (operation.kind === "folder")
+        statSync21(marker);
+      else
+        text = readFileSync69(marker, "utf8");
     } catch (error) {
       const code = error.code;
       if (code === "ENOENT" || code === "ENOTDIR")
         continue;
       const why = error instanceof Error ? error.message : String(error);
-      return { state: "unreadable", why: `${file} cannot be read (${why})` };
+      return { state: "unreadable", why: `${marker} cannot be read (${why})` };
     }
-    running.push({ branch: operation.namesBranch ? text : null, what: operation.what });
+    running.push({ branch: operation.namesBranch ? text.trim() : null, what: operation.what });
   }
   return { running, state: "read" };
 }
 function inProgressWhy(worktree, env) {
   const read = readInProgress(worktree, env);
   if (read.state === "unreadable") {
-    return `git could not say whether a bisect, rebase, merge, cherry-pick or revert is in progress in it (${read.why}), so it is kept`;
+    return `git could not say whether a bisect, rebase, git am, merge, cherry-pick or revert is in progress in it (${read.why}), so it is kept`;
   }
   const first = read.running[0];
   return first === undefined ? null : `${first.what} is in progress`;
@@ -37667,7 +37741,7 @@ function idleMinutesOrNull(worktree, now) {
   let last = lastReflogTime(join69(admin, "logs", "HEAD"), now) ?? 0;
   for (const file of ["index", "HEAD"]) {
     try {
-      last = Math.max(last, statSync21(join69(admin, file)).mtimeMs);
+      last = Math.max(last, statSync22(join69(admin, file)).mtimeMs);
     } catch {}
   }
   return last === 0 ? null : (now - last) / 60000;
@@ -37681,7 +37755,7 @@ function judgeWorktree(repo, listed, base, sessions, env, now) {
   if (listed.prunable)
     return "gone";
   try {
-    statSync21(listed.path);
+    statSync22(listed.path);
   } catch {
     return "gone";
   }
@@ -38502,7 +38576,7 @@ function shadcnFolders(root) {
       const rel = relative8(realpathSync10(root), target);
       if (rel === ".." || rel.startsWith(`..${sep6}`) || isAbsolute6(rel))
         return;
-      if (statSync22(folder).isDirectory() && !folders.has(target))
+      if (statSync23(folder).isDirectory() && !folders.has(target))
         folders.set(target, folder);
     } catch {}
   };
@@ -39629,7 +39703,7 @@ function checkLine(check) {
 }
 
 // src/jobs/status.ts
-import { mkdirSync as mkdirSync26, readdirSync as readdirSync22, readFileSync as readFileSync74, statSync as statSync24 } from "fs";
+import { mkdirSync as mkdirSync26, readdirSync as readdirSync22, readFileSync as readFileSync74, statSync as statSync25 } from "fs";
 import { join as join73 } from "path";
 
 // src/jobs/queue.ts
@@ -39723,7 +39797,7 @@ import {
   readdirSync as readdirSync21,
   readFileSync as readFileSync73,
   renameSync as renameSync5,
-  statSync as statSync23,
+  statSync as statSync24,
   unlinkSync as unlinkSync5,
   utimesSync,
   writeFileSync as writeFileSync12
@@ -39888,7 +39962,7 @@ function leaseStore(options) {
   };
   const removeLeftover = (path) => {
     try {
-      if (Date.now() - statSync23(path).mtimeMs > LEFTOVER_MS)
+      if (Date.now() - statSync24(path).mtimeMs > LEFTOVER_MS)
         removeQuietly(path);
     } catch {}
   };
@@ -39921,7 +39995,7 @@ function leaseStore(options) {
       let text;
       let mtimeMs;
       try {
-        mtimeMs = statSync23(path).mtimeMs;
+        mtimeMs = statSync24(path).mtimeMs;
       } catch (error) {
         if (errorCode(error) === "ENOENT")
           continue;
@@ -40139,7 +40213,7 @@ function jobsFingerprint(home) {
     }
     for (const name of names) {
       try {
-        const stat = statSync24(join73(folder, name));
+        const stat = statSync25(join73(folder, name));
         parts.push(`${folder}/${name}:${stat.size}:${stat.mtimeMs}`);
       } catch {
         parts.push(`${folder}/${name}:gone`);
@@ -40151,7 +40225,7 @@ function jobsFingerprint(home) {
 
 // src/portal/actions.ts
 import { createHash as createHash10 } from "crypto";
-import { existsSync as existsSync66, statSync as statSync26 } from "fs";
+import { existsSync as existsSync66, statSync as statSync27 } from "fs";
 import { isAbsolute as isAbsolute8, join as join77 } from "path";
 
 // src/update/check.ts
@@ -40984,7 +41058,7 @@ function applyAutoMode(settingsFile, stateDir, wanted, dryRun) {
 }
 
 // src/tasks/ops.ts
-import { existsSync as existsSync65, readFileSync as readFileSync75, rmSync as rmSync16, statSync as statSync25 } from "fs";
+import { existsSync as existsSync65, readFileSync as readFileSync75, rmSync as rmSync16, statSync as statSync26 } from "fs";
 import { join as join76, relative as relative9 } from "path";
 
 // src/tasks/schemas.ts
@@ -41727,7 +41801,7 @@ function deployTasksIn(root) {
 }
 function isFolderOnDisk(root, path) {
   const full = join76(root, path);
-  return existsSync65(full) && statSync25(full).isDirectory();
+  return existsSync65(full) && statSync26(full).isDirectory();
 }
 var DELETE_TRACKED = "Tracked deploy task: it is part of a commit, so close it with task_done instead";
 var TASK_LINE_CAP = 200;
@@ -43129,7 +43203,7 @@ async function projectAdd(action, body) {
   }
   let isFolder = false;
   try {
-    isFolder = existsSync66(folder) && statSync26(folder).isDirectory();
+    isFolder = existsSync66(folder) && statSync27(folder).isDirectory();
   } catch {
     isFolder = false;
   }
@@ -45862,7 +45936,7 @@ class LiveHub {
 }
 
 // src/portal/live/sources.ts
-import { readFileSync as readFileSync76, statSync as statSync27 } from "fs";
+import { readFileSync as readFileSync76, statSync as statSync28 } from "fs";
 var LIVE_POLL_MS = 2000;
 function fingerprintOf(entry) {
   return [entry.at, entry.slot, entry.status, entry.target, entry.ms].join("\x00");
@@ -45999,7 +46073,7 @@ function createLiveSources(deps) {
     const file = workDbFile(deps.paths);
     return [file, `${file}-wal`].map((one) => {
       try {
-        const stat = statSync27(one);
+        const stat = statSync28(one);
         return `${stat.size}:${stat.mtimeMs}`;
       } catch {
         return "-";
@@ -46051,7 +46125,7 @@ function createLiveSources(deps) {
 }
 
 // src/portal/static.ts
-import { existsSync as existsSync67, readFileSync as readFileSync77, statSync as statSync28 } from "fs";
+import { existsSync as existsSync67, readFileSync as readFileSync77, statSync as statSync29 } from "fs";
 import { extname as extname2, join as join78, resolve as resolve19, sep as sep7 } from "path";
 var TYPES = {
   ".css": "text/css; charset=utf-8",
@@ -46085,7 +46159,7 @@ function fileInside(folder, pathname) {
   if (file !== folder && !file.startsWith(`${folder}${sep7}`))
     return null;
   try {
-    return statSync28(file).isFile() ? file : null;
+    return statSync29(file).isFile() ? file : null;
   } catch {
     return null;
   }

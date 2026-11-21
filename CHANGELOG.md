@@ -33,9 +33,11 @@ in your own terminal after the update; the user guide is [README.md](README.md).
   branch an open task still records and one a worktree is bisecting or rebasing, deletes only the
   commit it judged, so a branch that moved meanwhile stays, and removes the branch's git config
   section with it (in any language git speaks). A worktree with a bisect, rebase, merge,
-  cherry-pick or revert in progress is kept whatever its idle time, the session-start note does
-  not call it finished, and the plain listing says the same as `--clean` about those branches.
-  `worktrees --help` says that `--remove` also deletes the branch, and what keeps it. The plain `worktrees` list shows which would go. Your own branches
+  cherry-pick or revert in progress is kept whatever its idle time, and so is one with a `git am`
+  stopped mid-series or a cherry-pick or revert series left unfinished. The session-start note
+  does not call such a worktree finished, and the plain listing says the same as `--clean` about
+  those branches. `worktrees --help` says that `--remove` also deletes the branch, and what keeps
+  it. The plain `worktrees` list shows which would go. Your own branches
   are never touched.
 - **One home for the worktree path and branch.** The places that built
   `<repo>/.claude/worktrees/<name>` or its `worktree-<name>` branch by hand now share one helper,
@@ -51,18 +53,21 @@ in your own terminal after the update; the user guide is [README.md](README.md).
   the review still decide. It takes exactly one pull request: a yes names one merge. Away, a
   session runs it only when your own message gave that yes, and quotes your words in its decision
   record; a summary or another session's message never counts.
-- **`merge-check` refuses a stacked pull request.** A pull request that shares commits with
-  another open pull request that its base does not hold (plan B started from plan A's branch) is
-  refused until that one merges, whatever base B names and also with `--asked`: `pull request #B
-  is stacked on open pull request #A: merge #A first, then check again`. It reads the merge base
-  of the two heads from GitHub, so it holds after A gains a commit and for a pull request of any
-  size, and two pull requests at the same head do not block each other. It refuses when gh fails,
-  answers an unknown status, or the list of open pull requests is full (500); a read the portal's
-  deadline cut short shows as late. The portal's project page and a `merge-check` line of several
-  pull requests read that list once. The commit skill says how a stacked branch is brought up to
-  date after the lower pull request merges, and rebuilt when it closes unmerged; a stacked plan
-  branch starts with `git reset --hard <previous plan branch>` in a fresh worktree, as a
-  builder's own start does.
+- **`merge-check` refuses a stacked pull request, and never the lower one.** It reads each
+  open pull request's own commits, the ones its base lacks, in full from GitHub's compare (paged;
+  more than 1000 refuse). Two pull requests whose commits overlap are stacked, so the check holds
+  after the lower one gains a commit and after both branches merge a newer main. A pull request
+  opened against this one's branch is the upper one and never holds this one up; the base rule
+  holds it until the lower one merges. Two pull requests into the same base that share commits
+  are each refused, also with `--asked`: `pull request #n shares commits with open pull request
+  #m that main does not hold yet: merge the lower one first (open the upper one against the lower
+  one's branch), then check again`. It refuses when gh fails, answers something else, or the open
+  list is full (500); a read the portal's deadline cut short shows as late. The portal's project
+  page and a `merge-check` line of several pull requests read that list once. The commit skill
+  says how a stack opens, how the upper branch is brought up to date after the lower one merges,
+  and that it is rebuilt on a new branch, never force-pushed, when the lower one closes unmerged;
+  a stacked plan branch starts with `git reset --hard <previous plan branch>` in a fresh, clean
+  worktree with no commits of its own, as a builder's own start does.
 - **Tests never touch your real home folder.** The test setup gives every run its own temp
   home, including what `os.homedir()` returns.
 - **The old task files are gone.** The 27 `.claude/tasks/T-*.md` files the kit stopped reading

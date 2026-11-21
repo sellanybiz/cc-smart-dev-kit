@@ -12,7 +12,8 @@
  *   - no Docker container, running or stopped, mounts files from inside it;
  *   - every commit on it is on `origin/<base>`, or merging it into the base changes nothing
  *     (a squash or a rebase merge leaves the work there under a commit of its own);
- *   - no bisect, rebase, merge, cherry-pick or revert is unfinished in it (`in-progress.ts`);
+ *   - no bisect, rebase, merge, cherry-pick, revert or `git am` is unfinished in it, a series
+ *     included (`in-progress.ts`);
  *   - git has not touched it for an hour — a worktree made a minute ago is not finished, its
  *     session simply has not moved into it yet;
  *   - nothing in it is uncommitted, untracked files included, that the base's history does not
