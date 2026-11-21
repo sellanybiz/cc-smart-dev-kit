@@ -682,14 +682,34 @@ test("a start is refused when the default branch can only be guessed", () => {
   expect(prepareStart({ ...w.base, baseFrom: "config" }, "alpha").ok).toBe(true);
 });
 
-test("a start given its own base (--base) needs no default branch: the child resets to that commit", () => {
+test("a start refuses a guessed default branch even with --base: a held branch could hide in the unread diff", () => {
   const w = build();
-  w.plan("alpha", ["src/a/"]);
+  const holder = w.plan("holder", ["src/a/"]);
+  w.plan("mover", ["src/b/x.ts"]);
+  w.reserve("holder");
+  // The holder's branch drifted into the mover's file, which its stored list never named.
+  w.branch("holder-branch", { "src/b/x.ts": "drift\n" });
+  w.change(holder, { branch: "holder-branch" });
+  // The real default branch is not `main`: a guessed one finds no branch to diff against.
+  const guessed = { ...w.base, base: "no-such-branch", baseFrom: "default" as const };
+  expect(w.line("mover", guessed).state).toBe("ready");
+  const answer = prepareStart(guessed, "mover");
+  if (answer.ok) throw new Error("expected a refusal");
+  expect(answer.why).toContain("The default branch cannot be found");
+  expect(answer.fix).toBe(
+    "run `git remote set-head origin --auto`, or set worktrees.base in .claude/cc-smart-dev-kit.json",
+  );
+  expect(allTasks(w.db, "p").find((t) => t.plan === "mover")?.lead).toBeNull();
+  // With the default branch known, the same start is refused for the overlap the guess hid.
+  const known = prepareStart(w.base, "mover");
+  if (known.ok) throw new Error("expected a refusal");
+  expect(known.why).toContain("src/b/x.ts");
+});
+
+test("the lead's own reservation also needs the default branch", () => {
+  const w = build();
   w.plan("beta", ["src/b/"]);
-  const guessed = { ...w.base, baseFrom: "default" as const };
-  expect(prepareStart(guessed, "alpha", { baseGiven: true }).ok).toBe(true);
-  // The lead's own reservation has no --base: it still needs the default branch.
-  const reserve = prepareReserve(guessed, "beta");
+  const reserve = prepareReserve({ ...w.base, baseFrom: "default" }, "beta");
   if (reserve.ok) throw new Error("expected a refusal");
   expect(reserve.why).toContain("The default branch cannot be found");
 });

@@ -1018,11 +1018,13 @@ async function startChild(
       slug !== null && a.name === undefined ? "Give a shorter --name." : undefined,
     );
   const gitRoot = a.on ? remoteRepo(r, a.on, cwd) : project.repo;
-  // `--base` names a commit now, before anything is reserved: a wrong ref costs nothing.
+  // `--base` names a commit now, before anything is reserved: a wrong ref costs nothing. It reads
+  // in the lead's own folder, never the main checkout (`gitRoot`): HEAD, HEAD~2 and @{-1} are the
+  // lead's, and a linked worktree's HEAD is not the main checkout's.
   let base: StartBase | null = null;
   if (a.base !== undefined) {
     if (gitRoot === null) return refuse(ctx, "--base needs a git project.");
-    const commit = resolveBase(ctx, r, a.on, a.on ? cwd : gitRoot, a.base);
+    const commit = resolveBase(ctx, r, a.on, cwd, a.base);
     if (commit === null)
       return refuse(
         ctx,
@@ -1034,7 +1036,7 @@ async function startChild(
   // The gates, the diffs and the reservation (D6): after every cheap refusal above, before the launch.
   let handout: Extract<PlanStart, { ok: true }> | null = null;
   if (planWorld !== null && slug !== null) {
-    const prepared = prepareStart(planWorld, slug, { baseGiven: base !== null });
+    const prepared = prepareStart(planWorld, slug);
     if (!prepared.ok) return refuse(ctx, prepared.why, prepared.fix);
     handout = prepared;
     if (prepared.reserved)

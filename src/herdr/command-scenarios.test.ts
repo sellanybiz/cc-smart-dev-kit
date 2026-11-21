@@ -2423,6 +2423,40 @@ test("a --base that names no commit refuses before anything is reserved or launc
   p.noRun();
 });
 
+test("--base HEAD names the commit of the lead's own folder, not the main checkout's", async () => {
+  const p = planWorld();
+  const mainHead = git(p.ctx.cwd, "rev-parse", "HEAD").trim();
+  const leadFolder = join(tempDir(), "lead-worktree");
+  git(p.ctx.cwd, "worktree", "add", "-q", "-b", "lead-branch", leadFolder);
+  git(leadFolder, "commit", "-q", "--allow-empty", "-m", "ahead of the main checkout");
+  const leadHead = git(leadFolder, "rev-parse", "HEAD").trim();
+  expect(leadHead).not.toBe(mainHead);
+  // The lead runs the command from its worktree; the project's repo is still the main checkout.
+  p.ctx.cwd = leadFolder;
+  expect(await runHerdr([...launch, "--base", "HEAD", "--", "work"], p.ctx)).toBe(0);
+  const brief = readFileSync(briefPath(p.ctx.paths.stateDir, "core", "kit-one"), "utf8");
+  expect(brief).toContain(`git reset --hard ${leadHead}`);
+  expect(brief).not.toContain(mainHead);
+  expect(onlyLaunchRecord(p)).toMatchObject({ base: { ref: "HEAD", commit: leadHead } });
+});
+
+test("a plan start with --base still refuses a default branch that can only be guessed", async () => {
+  const p = planWorld();
+  p.plan("alpha", ["src/a/"]);
+  const commit = branchPastMain(p, "plan-branch");
+  git(p.ctx.cwd, "remote", "set-head", "origin", "-d");
+  git(p.ctx.cwd, "update-ref", "-d", "refs/remotes/origin/main");
+  expect(
+    await runHerdr(
+      [...planLaunch, "--plan", "alpha", "--base", commit, "--", "Build alpha"],
+      p.ctx,
+    ),
+  ).toBe(1);
+  expect(p.lines.join("\n")).toContain("The default branch cannot be found");
+  p.noRun();
+  expect(p.row("alpha").lead).toBeNull();
+});
+
 test("--base needs a git project", async () => {
   const w = world();
   expect(await runHerdr([...launch, "--base", "main", "--", "go"], w.ctx)).toBe(1);
