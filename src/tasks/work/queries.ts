@@ -52,6 +52,8 @@ interface TaskRow {
   lead_start?: string | null;
   lead_child?: number;
   lead_handout?: string | null;
+  /** Absent in a store a hook reads before a writer moved it to schema 7. */
+  stacked_on?: string | null;
 }
 /** False in a store a hook reads before a writer moved it to schema 6: no file list is stored yet. */
 function hasFilesTable(db: WorkDb): boolean {
@@ -135,6 +137,7 @@ export function allTasks(db: WorkDb, project: string): WorkTask[] {
               holder: row.lead_child === 1 ? "child" : "self",
               handoutId: row.lead_handout,
             },
+      stackedOn: row.stacked_on ?? null,
     }));
 }
 export function getTask(db: WorkDb, project: string, ref: string): WorkTask | null {
@@ -360,20 +363,37 @@ export interface FileOverlap {
 }
 
 /**
+ * How two plans' file lists are compared: `ignore` is `plans.mergeFiles`, `appendOnly` is
+ * `plans.appendOnly`, both as committed (`planFilesCheck`), and `caseFold` is `core.ignorecase`.
+ */
+export interface OverlapRule {
+  ignore?: readonly string[];
+  appendOnly?: readonly string[];
+  caseFold?: boolean;
+}
+
+/**
  * Where two plans' file lists touch (D2): two paths touch when they are equal, or one is a
  * folder (ends in `/`) that holds the other. `ignore` is `plans.mergeFiles`: a path equal to an
- * ignored entry, or inside an ignored folder, takes no part. `caseFold` compares without case
- * (`core.ignorecase`), the ignore list included. Lists are as stored (`normalizePlanFile`).
+ * ignored entry, or inside an ignored folder, takes no part. `appendOnly` is `plans.appendOnly`,
+ * folders where plans add new files: a path inside one (or the folder itself) touches only the
+ * same file, named exactly, so no folder entry holds it, whether it is that folder, a folder
+ * inside it or a folder around it. `caseFold` compares without case (`core.ignorecase`), both
+ * lists included. Lists are as stored (`normalizePlanFile`). The one home of the overlap rule.
  */
 export function filesOverlap(
   a: readonly string[],
   b: readonly string[],
-  options: { ignore?: readonly string[]; caseFold?: boolean } = {},
+  options: OverlapRule = {},
 ): FileOverlap[] {
   const fold = (path: string) => (options.caseFold ? path.toLowerCase() : path);
   const holds = (folder: string, path: string) => folder.endsWith("/") && path.startsWith(folder);
   const ignore = (options.ignore ?? []).map(fold);
+  const appendOnly = (options.appendOnly ?? []).map(fold);
   const taken = (path: string) => ignore.some((one) => one === path || holds(one, path));
+  const added = (path: string) => appendOnly.some((folder) => path.startsWith(folder));
+  const touch = (x: string, y: string) =>
+    added(x) || added(y) ? x === y && !x.endsWith("/") : x === y || holds(x, y) || holds(y, x);
   const found: FileOverlap[] = [];
   for (const path of a) {
     const x = fold(path);
@@ -381,10 +401,27 @@ export function filesOverlap(
     for (const other of b) {
       const y = fold(other);
       if (taken(y)) continue;
-      if (x === y || holds(x, y) || holds(y, x)) found.push({ path, other });
+      if (touch(x, y)) found.push({ path, other });
     }
   }
   return found;
+}
+
+/**
+ * True when one of the two plans is stacked on the other (`stacked_on`) and that parent is still
+ * open: the overlap check skips the pair, both ways. A closed parent, done but not yet released
+ * included, is judged like any other plan again.
+ */
+export function isStackedPair(a: WorkTask, b: WorkTask): boolean {
+  return (a.stackedOn === b.plan && isOpen(b)) || (b.stackedOn === a.plan && isOpen(a));
+}
+
+/**
+ * The held plans `plan` is judged against: every one but itself and its stacked pair
+ * (`isStackedPair`). The one filter the store and herdr's plan lines use before `filesOverlap`.
+ */
+export function rivalsOf<H extends { plan: WorkTask }>(held: readonly H[], plan: WorkTask): H[] {
+  return held.filter((h) => h.plan.id !== plan.id && !isStackedPair(plan, h.plan));
 }
 
 /** One plan's stored file list, in path order; empty before schema 6 (no table yet). */

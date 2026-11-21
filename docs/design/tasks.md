@@ -255,7 +255,20 @@ checkout's working copy through the normal workflow resolver:
   builder started from, not a branch name that moves on (`main..branch` counts nothing once the
   branch has been merged into it). A branch merged by a squash is refused: its commits are not in
   the plan branch, so merge the builder's own commit (`/cc-smart-dev-kit:build` § 5). A dropped
-  close and a phase already done pass.
+  close and a phase already done pass. Nothing checks the form of `base` when it is written: any
+  name git reads is taken, a short sha too, and only a name that starts with `-` is refused, at
+  the close.
+- **A stale brief warns, never refuses** (`staleBriefWarning`, `plan-guards.ts`). A phase that
+  starts with a `base` gets one more line in the answer when commits reached `origin/<default>`
+  (the default branch from `baseBranch`, first parent, so a merge counts when it landed) after the
+  phase's description was last written (its history) and changed any of the plan's files. The line
+  names the files and the newest commit. One `rev-parse` and one `git log` with the plan's paths as
+  literal pathspecs; nothing is fetched. No description, no files, no checkout and no
+  `origin/<default>` add nothing; git that fails says so in the line.
+- **The tools say these rules.** `task_create`'s `phase` field states the phase id rule
+  (`PHASE_RULE` and `MAX_PHASE`, `words.ts`, the words the refusal uses), that a phase takes no
+  parent and starts only with tasks; `task_update` says a phase takes no parent; `base` says what it
+  accepts. Each is built from the constant, never typed twice.
 - **Where it shows.** `task_list` with `scope: "plan"` lists the plans in number order and
   puts each open plan's place in the queue in its brackets in place of the status: `in flight`
   (`isInFlight`), `finishing` (pending, every phase closed and one done: a plan started under
@@ -402,7 +415,28 @@ hand-out id …`. A folder written without its `/` is refused by the ops, which 
 copy. `filesOverlap` (`queries.ts`, the one home) says two paths overlap when they are equal or
 one is a folder holding the other. Paths in `plans.mergeFiles` take no part, and case folds when
 `core.ignorecase` is on, both read by `planFilesCheck` (`files-check.ts`) before any write lock,
-from the committed copy only (`docs/design/workflow.md`).
+from the committed copy only (`docs/design/workflow.md`). Inside a `plans.appendOnly` folder
+(6.3.0, a folder where plans add new files, such as a migrations folder) a path overlaps only the
+same file named exactly: no folder entry holds it, whether that folder, one inside it or one around
+it, so `db/` still holds `db/schema.ts` but not `db/migrations/3.sql`. `planFilesCheck` reads it
+from the same committed file as `mergeFiles`; a file it cannot read gives no folders, so more paths
+overlap, never fewer.
+
+**Stacked plans** (schema 7, 6.3.0). A plan names the plan it is built on in `stacked_on` (its
+slug; `task_create` and `task_update`, CLI `--stacked-on`, `--no-stack` clears it). Every overlap
+judgment (`reservePlan`, `refuseHeldOverlap`, `refuseFlightOverlap`, and `herdr plans`' lines and
+drift) first takes the held plans through `rivalsOf`, which drops the plan itself and its stacked
+pair (`isStackedPair`): the plan it is stacked on, or one stacked on it, while that parent is open
+(pending or in progress). Only that one plan is skipped: a plan stacked on a stacked plan still
+meets the first parent, and every other plan blocks as before. A closed parent, done but not yet
+released included, is judged again, so the stack never outlives the parent's own work. The store
+refuses a stack on a task that is not a plan, on itself, on a slug with no plan, and one that
+closes a loop. Setting or clearing a stack on a held plan is judged like a new list, so clearing it
+while the two held plans share files is refused. A plan another plan is stacked on is not deleted
+until that stack is cleared, so a new plan made under the same slug never inherits it. The column
+is additive (`min_compatible` stays 1); an older kit never reads it and judges the pair as an
+overlap, which only refuses more. `task_list`, `task_get` and the answers show `stacked on <slug>`
+in a plan's brackets; `herdr plans` shows `(stacked on <slug>)` after the plan's name.
 
 **Held.** `heldPlans` is every plan with a reservation, whatever its status, until it is released,
 plus every open plan in flight of **any** session, so a solo session's plan counts. A held plan's

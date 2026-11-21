@@ -156,6 +156,8 @@ test("schema 4 moves to 5: the columns and the notes index appear, an old row ke
   db.sqlite.run("DROP INDEX task_note_task");
   // Schema 6 added the file list and the lead columns: the older store has neither.
   db.sqlite.run("DROP TABLE task_files");
+  // Schema 7 added the stack column: the older store has none.
+  db.sqlite.run("ALTER TABLE tasks DROP COLUMN stacked_on");
   for (const column of ["lead_session", "lead_pid", "lead_start", "lead_child", "lead_handout"])
     db.sqlite.run(`ALTER TABLE tasks DROP COLUMN ${column}`);
   for (const column of ["created_pid", "created_start"])
@@ -171,7 +173,7 @@ test("schema 4 moves to 5: the columns and the notes index appear, an old row ke
   });
   const moved = openWorkDb(workDbFile(paths), { mode: "write" });
   try {
-    expect(moved.sqlite.query("PRAGMA user_version").get()).toEqual({ user_version: 6 });
+    expect(moved.sqlite.query("PRAGMA user_version").get()).toEqual({ user_version: 7 });
     expect(
       moved.sqlite
         .query<{ name: string }, []>("PRAGMA table_info(tasks)")

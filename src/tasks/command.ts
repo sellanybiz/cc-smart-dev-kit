@@ -23,7 +23,7 @@ import { scanDeployTasks } from "./deploy/files";
 import { DEPLOY_ENVS, DEPLOY_STEPS, DEPLOY_TYPES, type DeployEnv } from "./deploy/format";
 import { envRefusal, gateAfter, gateBefore, judgeTasks, releaseList } from "./deploy/release";
 import { createTaskOps, projectLine, type TaskOperation } from "./ops";
-import { PLAN_FILES_WORDS, TASK_COMMAND } from "./words";
+import { PLAN_FILES_WORDS, STACKED_ON_WORDS, TASK_COMMAND } from "./words";
 import { openWorkDb, workDbFile } from "./work/db";
 import { importClaudeMem } from "./work/import-claude-mem";
 
@@ -37,11 +37,12 @@ export const TASK_USAGE = `Usage: ${TASK_COMMAND} <command>
 
 add <subject> [--description <text> | --file <path|->] [--kind ${KINDS}]
     [--parent <ref>] [--start] [--type ${TYPES}] [--blocked-by <ref>]...
-    [--phase <id>] [--plan <slug> [--path <file-or-folder/>]...]
+    [--phase <id>] [--plan <slug> [--path <file-or-folder/>]... [--stacked-on <slug>]]
     [--agent <id>] [--branch <name>] [--worktree <absolute-path>] [--base <sha>]
     [--deploy ${STEPS}] [--pair] [--flag <flag>]... [--ref <path>]...
 set <ref> [--type ${TYPES}] [--deploy ${STEPS}] [--block <ref>]... [--unblock <ref>]... [--parent <ref> | --top]
     [--path <file-or-folder/>]... | --no-files   (a plan's file list)
+    [--stacked-on <slug> | --no-stack]   (the plan a plan is built on)
     Bindings on set/start: --agent <id> --branch <name> --worktree <absolute-path> --base <sha>
 start <ref>
 done <ref> [--evidence <text>] [--note <text>]
@@ -75,7 +76,8 @@ one holds nothing. A task blocked by an open task cannot start or be done.
 --parent may name a plan (#n): the task waits there for a phase, and set --parent <phase> moves it under a phase of that plan.
 A plan holds at most plans.maxPhases phases, and a phase starts only once it holds tasks.
 A step of a phase closes with done --evidence <text>, or drop --note <reason>.
-A plan's file list (--path, once for each file or folder; set replaces it, --no-files clears it): ${PLAN_FILES_WORDS}`;
+A plan's file list (--path, once for each file or folder; set replaces it, --no-files clears it): ${PLAN_FILES_WORDS}
+A plan's stack (--stacked-on; set --no-stack clears it): ${STACKED_ON_WORDS}`;
 /** What `task release` was asked: an environment (none lists them all) and a gate (none lists the tasks). */
 interface ReleaseRequest {
   env: DeployEnv | undefined;
@@ -103,6 +105,7 @@ const definitions: Record<
       "--flag",
       "--ref",
       "--path",
+      "--stacked-on",
     ],
     flags: ["--start", "--pair"],
     repeat: ["--flag", "--ref", "--blocked-by", "--path"],
@@ -110,8 +113,17 @@ const definitions: Record<
   },
   take: { values: ["--from"], flags: ["--force"], min: 1, max: 1 },
   set: {
-    values: [...bindingFlags, "--type", "--deploy", "--block", "--unblock", "--parent", "--path"],
-    flags: ["--top", "--no-files"],
+    values: [
+      ...bindingFlags,
+      "--type",
+      "--deploy",
+      "--block",
+      "--unblock",
+      "--parent",
+      "--path",
+      "--stacked-on",
+    ],
+    flags: ["--top", "--no-files", "--no-stack"],
     repeat: ["--block", "--unblock", "--path"],
     min: 1,
     max: 1,
@@ -209,12 +221,15 @@ export async function runTaskCommand(argv: string[]): Promise<number> {
           flags: lists.get("--flag"),
           refs: lists.get("--ref"),
           files: lists.get("--path"),
+          stacked_on: get("stacked-on"),
         };
         break;
       case "set":
         if (get("parent") && has("top")) return bad("Use --parent or --top, not both");
         if (lists.get("--path") !== undefined && has("no-files"))
           return bad("Use --path or --no-files, not both");
+        if (get("stacked-on") && has("no-stack"))
+          return bad("Use --stacked-on or --no-stack, not both");
         operation = "update";
         input = {
           task,
@@ -225,6 +240,7 @@ export async function runTaskCommand(argv: string[]): Promise<number> {
           blocked_by_remove: lists.get("--unblock"),
           parent: has("top") ? null : get("parent"),
           files: has("no-files") ? [] : lists.get("--path"),
+          stacked_on: has("no-stack") ? null : get("stacked-on"),
         };
         break;
       case "start":

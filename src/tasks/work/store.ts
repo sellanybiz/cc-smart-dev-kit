@@ -18,11 +18,13 @@ import {
   leadProcess,
   livePhaseCount,
   normalizePlanFiles,
+  type OverlapRule,
   openBlockers,
   openChildren,
   ownerOf,
   planIsOpen,
   resumedClaim,
+  rivalsOf,
   taskById,
 } from "./queries";
 import {
@@ -61,6 +63,7 @@ function shape(db: WorkDb, task: WorkTask): Record<string, unknown> {
     claim: task.claim === null ? null : claimText(task.claim),
     waitsFor: task.waitsFor.map(numberOf).sort(),
     files: task.files,
+    stackedOn: task.stackedOn,
     lead:
       task.lead === null
         ? null
@@ -165,9 +168,10 @@ export interface CreateTask {
 }
 /**
  * What a change to a plan's files is judged by when the plan is held (`refuseHeldOverlap`): the
- * `plans.mergeFiles` list that takes no part in an overlap, and whether paths compare without case.
+ * `plans.mergeFiles` list that takes no part in an overlap, the `plans.appendOnly` folders where
+ * only the same file overlaps, and whether paths compare without case (`filesOverlap`).
  */
-export interface FilesCheck {
+export interface FilesCheck extends OverlapRule {
   ignore: readonly string[];
   caseFold: boolean;
   /**
@@ -192,6 +196,11 @@ export interface UpdateTask {
   claim?: boolean;
   /** The plan's whole file list (D2): it replaces the stored one, and an empty list clears it. */
   files?: readonly string[];
+  /**
+   * The slug of the plan this plan is built on (`stackedOn`); null clears it. Only a plan has one,
+   * never itself, a plan that is not there, or one that would close a loop.
+   */
+  stackedOn?: string | null;
   /** How a new list on a held plan is judged; without it nothing is ignored and case counts. */
   filesCheck?: FilesCheck;
 }
@@ -305,6 +314,37 @@ function storeFiles(db: WorkDb, task: WorkTask, files: readonly string[]): void 
     db.sqlite.query("INSERT INTO task_files(task_id,path) VALUES (?,?)").run(task.id, path);
 }
 
+/**
+ * Writes the plan `task` is stacked on (`stacked_on`), or clears it with null. Refused for a task
+ * that is not a plan, a plan stacked on itself, a slug that names no plan of the project, and a
+ * stack that would loop back to `task` (each plan in the chain is followed by its own stack).
+ */
+function storeStack(db: WorkDb, task: WorkTask, slug: string | null): void {
+  if (task.kind !== "plan")
+    throw new Error(`${label(task)} is a ${task.kind}: only a plan is stacked on another plan`);
+  if (slug !== null) {
+    if (slug === task.plan) throw new Error(`${label(task)} cannot be stacked on itself`);
+    const plans = new Map(
+      allTasks(db, task.project)
+        .filter((t) => t.kind === "plan" && t.plan !== null)
+        .map((t) => [t.plan, t]),
+    );
+    if (!plans.has(slug))
+      throw new Error(`Plan "${slug}" not found: stacked_on names a plan of this project`);
+    const chain = [slug];
+    for (let at = plans.get(slug)?.stackedOn ?? null; at !== null; ) {
+      if (at === task.plan)
+        throw new Error(
+          `${label(task)} cannot be stacked on "${slug}": that would make a loop (${[task.plan, ...chain, at].join(" → ")})`,
+        );
+      if (chain.includes(at)) break;
+      chain.push(at);
+      at = plans.get(at)?.stackedOn ?? null;
+    }
+  }
+  db.sqlite.query("UPDATE tasks SET stacked_on=? WHERE id=?").run(slug, task.id);
+}
+
 /** One plan's overlaps in words, as every refusal says them: `#3 "Plan": src/a.ts, src/b/ (src/b/x.ts)`. */
 function overlapText(held: WorkTask, overlaps: readonly FileOverlap[]): string {
   const shown = [
@@ -329,7 +369,7 @@ function mergeFilesNote(check: FilesCheck): string {
 function overlapsWith(
   held: readonly HeldPlan[],
   files: readonly string[],
-  check: FilesCheck,
+  check: OverlapRule,
 ): { plan: WorkTask; why: HeldPlan["why"]; overlaps: FileOverlap[] }[] {
   return held
     .map(({ plan, why, files: theirs }) => ({
@@ -367,11 +407,8 @@ function unlistedWords(plans: readonly WorkTask[]): string {
 function refuseHeldOverlap(db: WorkDb, task: WorkTask, who: Who, check: FilesCheck): void {
   const held = heldPlansIn(allTasks(db, task.project), who);
   if (!held.some((h) => h.plan.id === task.id)) return;
-  const clashes = overlapsWith(
-    held.filter((h) => h.plan.id !== task.id),
-    taskById(db, task.id).files,
-    check,
-  );
+  const current = taskById(db, task.id);
+  const clashes = overlapsWith(rivalsOf(held, current), current.files, check);
   if (clashes.length > 0)
     throw new Error(
       `${label(task)} is held, so its files may not overlap another held plan: overlaps ${clashes.map((c) => overlapText(c.plan, c.overlaps)).join("; ")}${mergeFilesNote(check)}`,
@@ -406,9 +443,10 @@ function wayOut(held: { plan: WorkTask; why: HeldPlan["why"] }): string {
  * flight alone it starts as before. The plan's own reservation never counts against it.
  */
 function refuseFlightOverlap(db: WorkDb, plan: WorkTask, who: Who, check: FilesCheck): void {
-  const others = heldPlansIn(allTasks(db, plan.project), who).filter((h) => h.plan.id !== plan.id);
+  const row = taskById(db, plan.id);
+  const others = rivalsOf(heldPlansIn(allTasks(db, plan.project), who), row);
   if (others.length === 0) return;
-  const files = taskById(db, plan.id).files;
+  const files = row.files;
   if (files.length === 0) {
     const reserved = others.filter((h) => h.why === "reserved");
     if (reserved.length > 0)
@@ -620,10 +658,11 @@ export function applyUpdate(
   // A plan that is dropped is released: a drop frees what it held (D4).
   if (status === "dropped" && task.kind === "plan") clearLead(db, id);
   const check = change.filesCheck ?? NO_FILES_CHECK;
-  if (change.files !== undefined) {
-    storeFiles(db, task, change.files);
+  if (change.files !== undefined) storeFiles(db, task, change.files);
+  if (change.stackedOn !== undefined) storeStack(db, task, change.stackedOn);
+  // A new list, or a stack set or cleared, may make a held plan reach another held plan.
+  if (change.files !== undefined || change.stackedOn !== undefined)
     refuseHeldOverlap(db, task, who, check);
-  }
   // A plan entering flight (a first start, or a reopen) is judged by its list as stored just now.
   if (entering !== null) refuseFlightOverlap(db, entering, who, check);
   const changed = taskById(db, id);
@@ -669,6 +708,15 @@ export function deleteTask(db: WorkDb, id: string, who: Who, now: number) {
       throw new Error("task has tasks");
     if (db.sqlite.query("SELECT 1 FROM task_notes WHERE task_id=?").get(id))
       throw new Error("task has notes");
+    // A stack names its plan by slug: a new plan made under the same slug must never inherit it.
+    const stacked =
+      task.kind === "plan"
+        ? allTasks(db, task.project).filter((t) => t.kind === "plan" && t.stackedOn === task.plan)
+        : [];
+    if (stacked.length > 0)
+      throw new Error(
+        `${stacked.map(label).join(", ")} ${stacked.length > 1 ? "are" : "is"} stacked on it: clear that first (${TASK_TOOL.update} with stacked_on null)`,
+      );
     const last: Record<string, [unknown, unknown]> = {};
     for (const [key, value] of Object.entries(shape(db, task)))
       if (!empty(key, value)) last[key] = [value, null];
@@ -995,6 +1043,8 @@ export interface ReservePlan {
   ignore: readonly string[];
   /** `core.ignorecase`: compare paths without case, the ignore list too. */
   caseFold: boolean;
+  /** `plans.appendOnly` as committed: folders where only the same file overlaps (`filesOverlap`). */
+  appendOnly?: readonly string[];
   /** Each held plan's branch diff by its plan task's id, read before the transaction (no git runs under the lock). */
   extraFiles?: Readonly<Record<string, readonly string[]>>;
   now: number;
@@ -1034,7 +1084,7 @@ export function reservePlan(db: WorkDb, input: ReservePlan): Result<WorkTask> {
       throw new Error(
         `${label(plan)} waits for ${open.map((t) => `${label(t)} (${t.status.replaceAll("_", " ")})`).join(", ")}`,
       );
-    const others = heldPlansIn(all, who, input.extraFiles).filter((h) => h.plan.id !== plan.id);
+    const others = rivalsOf(heldPlansIn(all, who, input.extraFiles), plan);
     refuseUnlisted(others);
     const clashes = overlapsWith(others, plan.files, input);
     if (clashes.length > 0)

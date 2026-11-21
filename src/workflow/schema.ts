@@ -170,6 +170,31 @@ const mergeFilesSchema = z.array(z.string()).transform((paths, context) => {
 });
 
 /**
+ * The list `plans.appendOnly` holds: folders where plans add new files (a migrations folder),
+ * each normalised by the same path rule (`normalizeMergeFile`) and ending in `/`, named once.
+ * Inside one, two plans overlap only when they list the same file (`filesOverlap`). A bare name
+ * is refused, not guessed: a folder written without its `/` would exempt nothing, and a file
+ * named here would exempt a path that is not a folder.
+ */
+const appendOnlySchema = z.array(z.string()).transform((paths, context) => {
+  const folders: string[] = [];
+  for (const [index, raw] of paths.entries()) {
+    const parsed = normalizeMergeFile(raw);
+    const why = !parsed.ok
+      ? parsed.why
+      : parsed.path.endsWith("/")
+        ? null
+        : `${JSON.stringify(raw)} is not a folder: plans.appendOnly names folders, each ending in /`;
+    if (why !== null) {
+      context.issues.push({ code: "custom", input: raw, message: why, path: [index] });
+      return z.NEVER;
+    }
+    if (parsed.ok && !folders.includes(parsed.path)) folders.push(parsed.path);
+  }
+  return folders;
+});
+
+/**
  * The names 6.1.0 replaced: each old workflow key and the key that says what it does (a setting
  * that lets a step happen without a question, not one that makes it happen). One home. Both files
  * read an old name as its new one (`withCurrentNames`), `workflow set`, `unset` and `propose`
@@ -323,6 +348,13 @@ const workflowObjectSchema = z.strictObject({
        * **committed on `origin/<base>`** (`resolveMergeFiles`), never a working copy. Default: none.
        */
       mergeFiles: mergeFilesSchema.optional(),
+      /**
+       * Folders where plans add new files: inside one, two plans overlap only when they list the
+       * same file, and no folder entry holds it (`filesOverlap`). A project fact like
+       * `mergeFiles`, counted only as **committed on `origin/<base>`** (`planFilesCheck`).
+       * Default: none.
+       */
+      appendOnly: appendOnlySchema.optional(),
     })
     .optional(),
   /**
@@ -405,8 +437,8 @@ export const personalWorkflowSchema = z.preprocess(
   workflowObjectSchema.extend({
     /**
      * The person's `plans`: the cap, and `runMode`, how queued plans run (`ask` by default: one
-     * question when two or more are laid). Never `mergeFiles`, which is a project fact. `runMode`
-     * is the person's alone: a committed value would spend every teammate's usage.
+     * question when two or more are laid). Never `mergeFiles` or `appendOnly`, which are project
+     * facts. `runMode` is the person's alone: a committed value would spend every teammate's usage.
      */
     plans: z
       .strictObject({

@@ -715,7 +715,7 @@ test("doctor: a ! line for each open task blocked by an open task above it, with
     const db = openWorkDb(workDbFile(w.paths), { mode: "write" });
     try {
       holdOnAncestor(db);
-      expect(db.sqlite.query("PRAGMA user_version").get()).toEqual({ user_version: 6 });
+      expect(db.sqlite.query("PRAGMA user_version").get()).toEqual({ user_version: 7 });
     } finally {
       db.close();
     }

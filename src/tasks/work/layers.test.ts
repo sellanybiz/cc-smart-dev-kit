@@ -267,6 +267,8 @@ test("a schema 1 store reads as all blocking, takes the column on its first writ
   db.sqlite.run("DROP INDEX task_note_task");
   // Schema 6 added the file list and the lead columns: the older store has neither.
   db.sqlite.run("DROP TABLE task_files");
+  // Schema 7 added the stack column: the older store has none.
+  db.sqlite.run("ALTER TABLE tasks DROP COLUMN stacked_on");
   for (const column of ["lead_session", "lead_pid", "lead_start", "lead_child", "lead_handout"])
     db.sqlite.run(`ALTER TABLE tasks DROP COLUMN ${column}`);
   db.sqlite.run("PRAGMA user_version = 1");
@@ -275,7 +277,7 @@ test("a schema 1 store reads as all blocking, takes the column on its first writ
     readWorkStore(paths, (hook) => allTasks(hook, "p").map((t) => [t.subject, t.type])),
   ).toEqual({ state: "ready", value: [["Before", "blocking"]] });
   const moved = openWorkDb(workDbFile(paths), { mode: "write" });
-  expect(moved.sqlite.query("PRAGMA user_version").get()).toEqual({ user_version: 6 });
+  expect(moved.sqlite.query("PRAGMA user_version").get()).toEqual({ user_version: 7 });
   // Code from an older version folder inserts without the column: the task is blocking.
   moved.sqlite
     .query(

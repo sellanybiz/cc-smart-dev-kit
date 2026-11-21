@@ -37,6 +37,7 @@ function task(number: number, parent: WorkTask | null, change: Partial<WorkTask>
     type: "blocking",
     files: [],
     lead: null,
+    stackedOn: null,
     ...change,
   };
 }
