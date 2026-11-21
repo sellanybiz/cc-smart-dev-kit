@@ -224,8 +224,13 @@ container using it).
   --clean              remove the finished ones, with their branches. It also deletes the
                        worktree-agent-* branches (a subagent's) that no worktree uses once
                        origin/<base> holds their work; a branch an open task records, or
-                       with commits the base lacks, stays, and its line says why
-  --remove <path>      remove one now, without the one-hour wait
+                       with commits the base lacks, or that a worktree is bisecting or
+                       rebasing, stays, and its line says why
+  --remove <path>      remove one now, without the one-hour wait. It also deletes the
+                       worktree's branch once origin/<base> holds its work. A branch an
+                       open task records, or that a worktree is bisecting or rebasing,
+                       stays; a worktree with a bisect, rebase, merge, cherry-pick or
+                       revert in progress is not removed
   --no-fetch           judge against origin/<base> as it is, without fetching it first
   --json               print each worktree's facts as one object, and change nothing (no
                        fetch; with neither --clean nor --remove). It leaves out the builder

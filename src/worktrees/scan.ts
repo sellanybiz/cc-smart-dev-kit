@@ -5,9 +5,9 @@
  * `hooks/worktree-leftovers.ts`, which names the questions again in its own words and says
  * there why it leaves the machine's facts out.
  */
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, join, resolve } from "node:path";
+import { basename, join } from "node:path";
 import { COMMAND } from "../build-info";
 import {
   GUARD_GIT_TIMEOUT_MS,
@@ -29,6 +29,7 @@ import { ownPidNamespace, processStartTime } from "../setup/lock";
 import { parseGitVersion } from "../workflow/review-cover";
 import { COMMIT_SHA } from "../workflow/reviews";
 import { agentFinished, ownsClaudeLock, parentOf, parseClaudeLock } from "./agent-lock";
+import { branchInProgressWhy, inProgressWhy } from "./in-progress";
 import {
   CLAUDE_NAME,
   type ContainerMounts,
@@ -171,10 +172,7 @@ export type RecordedBranches =
  * builder's branch (`branch`), and cannot close once the branch is gone (`refuseEmptyHandBack`).
  * Null when nothing keeps it. The one rule of every branch delete (`tryDeleteBranch`).
  */
-export function recordedKeepWhy(
-  branch: string,
-  recorded: RecordedBranches,
-): string | null {
+export function recordedKeepWhy(branch: string, recorded: RecordedBranches): string | null {
   if (!recorded.ok) {
     return `the task store cannot be read (${recorded.why}), so nothing proves no task records it`;
   }
@@ -668,6 +666,7 @@ function judgeOne(
     gitTooOld: look.replayer.tooOld,
     // The hook's own rule: unknown counts as just now, which keeps it.
     idleMinutes: idle ?? 0,
+    inProgress: inProgressWhy(listed.path, look.env),
     innerWorktree: innerWorktreeOf(listed.path, all),
     locked: listed.locked && !releasableClaudeLock(listed, look),
     // A few more git calls (and one `gh` call) per worktree: only worth it for one with
@@ -1102,49 +1101,11 @@ export function judgeBranchOnRef(
 }
 
 /**
- * Git's own files that name the branch a worktree returns to: a bisect (`BISECT_START`) and a
- * rebase (`head-name`) leave its HEAD detached, so the worktree list does not show the branch.
- * `git branch -D` reads them; `update-ref -d` does not. They sit in each worktree's own git
- * folder, which only `git rev-parse --git-path` names.
+ * Why a worktree keeps a branch: it has it checked out, or is bisecting or rebasing it
+ * (`branchInProgressWhy`). Null when none does. `git branch -D` refuses both; `update-ref -d`
+ * looks at neither. The listing asks it too, so it says what `--clean` would do.
  */
-const BRANCH_IN_PROGRESS_FILES = [
-  "BISECT_START",
-  "rebase-merge/head-name",
-  "rebase-apply/head-name",
-] as const;
-
-/**
- * Why a branch must stay for this worktree, or null: it is bisecting or rebasing it. A folder
- * that is gone has nothing running in it. What git or the disk cannot answer keeps the branch.
- */
-function bisectsOrRebases(worktree: string, branch: string, env: Env): string | null {
-  if (!existsSync(worktree)) return null;
-  for (const name of BRANCH_IN_PROGRESS_FILES) {
-    const located = runGit(worktree, ["rev-parse", "--git-path", name], env);
-    if (!located.ok) {
-      return `git could not read ${name} in ${worktree} (${located.err}), so it is not proved that nothing there bisects or rebases it`;
-    }
-    const file = resolve(worktree, located.out);
-    if (!existsSync(file)) continue;
-    let named: string;
-    try {
-      named = readFileSync(file, "utf8").trim();
-    } catch (error) {
-      const why = error instanceof Error ? error.message : String(error);
-      return `${file} cannot be read (${why}), so it is not proved that nothing there bisects or rebases it`;
-    }
-    if (named === branch || named === `refs/heads/${branch}`) {
-      return `a worktree is bisecting or rebasing it, at ${worktree}`;
-    }
-  }
-  return null;
-}
-
-/**
- * Why a worktree keeps a branch: it has it checked out, or is bisecting or rebasing it. Null
- * when none does. `git branch -D` refuses both; `update-ref -d` looks at neither.
- */
-function usedByWorktree(repo: string, branch: string, env: Env): string | null {
+export function usedByWorktree(repo: string, branch: string, env: Env): string | null {
   let worktrees: ListedWorktree[];
   try {
     worktrees = listWorktrees(repo, env);
@@ -1155,7 +1116,7 @@ function usedByWorktree(repo: string, branch: string, env: Env): string | null {
   const checkedOut = worktrees.find((worktree) => worktree.branch === branch);
   if (checkedOut !== undefined) return `a worktree has it checked out, at ${checkedOut.path}`;
   for (const worktree of worktrees) {
-    const walking = bisectsOrRebases(worktree.path, branch, env);
+    const walking = branchInProgressWhy(worktree.path, branch, env);
     if (walking !== null) return walking;
   }
   return null;
@@ -1164,10 +1125,13 @@ function usedByWorktree(repo: string, branch: string, env: Env): string | null {
 /**
  * Takes the `[branch "<name>"]` section out of the repo's config, as `git branch -D` does and
  * `update-ref -d` does not. A branch with no section is the usual case: git then says "no such
- * section" (exit 128). Null when it is gone; else why it stays.
+ * section" (exit 128). Null when it is gone; else why it stays. Git words that message by the
+ * locale, so the call runs with `LC_ALL=C` and the match holds on every machine.
  */
 function forgetBranchConfig(repo: string, branch: string, env: Env): string | null {
-  const removed = runGit(repo, ["config", "--remove-section", `branch.${branch}`], env);
+  const removed = runGit(repo, ["config", "--remove-section", `branch.${branch}`], env, undefined, {
+    LC_ALL: "C",
+  });
   if (removed.ok) return null;
   if (removed.code === 128 && /no such section/i.test(removed.err)) return null;
   return removed.err === "" ? `git config exited ${String(removed.code)}` : removed.err;
@@ -1178,14 +1142,19 @@ function forgetBranchConfig(repo: string, branch: string, env: Env): string | nu
  * delete is refused for a branch that moved since, so work added after the judge is never lost.
  * `update-ref -d` does not look at worktrees (`branch -D` does, but names no commit), so a branch
  * a worktree has checked out, bisects or rebases is refused here first (`usedByWorktree`), and
- * the branch's config section goes after it, as `branch -D` removes it.
+ * the branch's config section goes after it, as `branch -D` removes it. It takes `recorded` and
+ * keeps a branch an open task records, so no caller can delete one without the task records
+ * (`tryDeleteBranch` asks first as well, before it judges anything).
  */
 export function deleteJudgedBranch(
   repo: string,
   branch: string,
   sha: string,
   env: Env,
+  recorded: RecordedBranches,
 ): BranchOutcome {
+  const keep = recordedKeepWhy(branch, recorded);
+  if (keep !== null) return { kind: "recorded", text: keep };
   const usedBy = usedByWorktree(repo, branch, env);
   if (usedBy !== null) return { kind: "git-error", text: usedBy };
   const deleted = runGit(repo, ["update-ref", "-d", `refs/heads/${branch}`, sha], env);
@@ -1219,7 +1188,9 @@ export function tryDeleteBranch(
   const keep = recordedKeepWhy(branch, recorded);
   if (keep !== null) return { kind: "recorded", text: keep };
   const judged = judgeBranchOnRef(repo, ref, label, branch, env);
-  return judged.kind === "on-ref" ? deleteJudgedBranch(repo, branch, judged.sha, env) : judged;
+  return judged.kind === "on-ref"
+    ? deleteJudgedBranch(repo, branch, judged.sha, env, recorded)
+    : judged;
 }
 
 /** `deleteBranchOnRef` against `origin/<base>`: what `worktrees` asks. */

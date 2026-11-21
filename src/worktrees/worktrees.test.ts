@@ -73,6 +73,7 @@ const facts = (over: Partial<WorktreeFacts> = {}): WorktreeFacts => ({
   containers: [],
   gitTooOld: null,
   idleMinutes: IDLE_MINUTES + 1,
+  inProgress: null,
   innerWorktree: null,
   locked: false,
   mergedBy: null,
@@ -173,6 +174,10 @@ describe("the verdict on one worktree", () => {
       held: false,
       why: "another worktree lives inside it: /work/app-wt-x/.claude/worktrees/agent-1",
     });
+    // An operation in progress keeps it before the idle hour is asked, whatever the commits say.
+    expect(
+      verdict(facts({ idleMinutes: 9999, inProgress: "a bisect is in progress" }), () => clean),
+    ).toEqual({ finished: false, held: false, why: "a bisect is in progress" });
     expect(verdict(facts({ aheadOfBase: 3 }), () => clean)).toEqual({
       finished: false,
       held: false,
