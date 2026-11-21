@@ -42,9 +42,18 @@ in your own terminal after the update; the user guide is [README.md](README.md).
   parallel width, and after a plan, run its review, the full check and its pull request, then
   start the next plan. When the previous pull request is still open, the next plan stacks on it.
 - **`workflow merge-check <pr> --asked`.** It judges a merge you said yes to while `allowMerge`
-  is off: it sets aside only that switch, and the base, the required checks and the review still
-  decide. Away, a session runs it only when your own message gave that yes, and quotes your words
-  in its decision record; a summary or another session's message never counts.
+  is off: it sets aside only that switch, and the base, the stacked check, the required checks and
+  the review still decide. It takes exactly one pull request: a yes names one merge. Away, a
+  session runs it only when your own message gave that yes, and quotes your words in its decision
+  record; a summary or another session's message never counts.
+- **`merge-check` refuses a stacked pull request.** A pull request that carries the head of
+  another open pull request (plan B started from plan A's branch) is refused until that one
+  merges, whatever base B names and also with `--asked`: `pull request #B is stacked on open pull
+  request #A: merge #A first, then check again`. It asks GitHub whether each other open pull
+  request's head is an ancestor, so a pull request of any size is judged, and skips a head the
+  base already holds. It refuses when gh fails, answers an unknown status, or the list of open
+  pull requests is full (500). The portal's project page and a `merge-check` line of several pull
+  requests read that list once.
 - **Tests never touch your real home folder.** The test setup gives every run its own temp
   home, including what `os.homedir()` returns.
 - **The old task files are gone.** The 27 `.claude/tasks/T-*.md` files the kit stopped reading
