@@ -3,7 +3,7 @@
  * unfinished: read once per worktree, with one git call.
  */
 import { describe, expect, spyOn, test } from "bun:test";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import * as gitTools from "../hooks/git";
 import { cleanGitEnv, git, tempDir } from "../testing/temp";
@@ -67,6 +67,41 @@ describe("an operation in progress in a worktree", () => {
     expect(inProgressWhy(side, env)).toBe("a bisect is in progress");
     git(side, "bisect", "reset");
     expect(inProgressWhy(side, env)).toBeNull();
+  });
+
+  test("a git am stopped in the middle of a series is said, though it leaves no head-name", () => {
+    const { main, side } = repo();
+    // Two patches from `one`: the first adds a file, the second changes the line main changed.
+    git(main, "checkout", "-q", "-b", "series", "main~1");
+    writeFileSync(join(main, "added.txt"), "added\n");
+    git(main, "add", "added.txt");
+    git(main, "commit", "-m", "add a file");
+    writeFileSync(join(main, "file.txt"), "series\n");
+    git(main, "commit", "-am", "series change");
+    const patches = tempDir("patches");
+    git(main, "format-patch", "-q", "-o", patches, "main~1..series");
+    git(main, "checkout", "-q", "main");
+    const files = readdirSync(patches)
+      .sort()
+      .map((name) => join(patches, name));
+    stops(side, "am", ...files);
+    expect(inProgressWhy(side, env)).toBe("a git am is in progress");
+  });
+
+  test("a cherry-pick series after its conflicting commit is committed is still said", () => {
+    const { main, side } = repo();
+    git(main, "checkout", "-q", "-b", "extra", "main");
+    writeFileSync(join(main, "extra.txt"), "extra\n");
+    git(main, "add", "extra.txt");
+    git(main, "commit", "-m", "extra");
+    git(main, "checkout", "-q", "main");
+    // `other` conflicts; `extra` waits in the series.
+    stops(side, "cherry-pick", "other", "extra");
+    writeFileSync(join(side, "file.txt"), "resolved\n");
+    git(side, "add", "file.txt");
+    // A plain commit ends that pick (CHERRY_PICK_HEAD goes) and leaves the rest of the series.
+    git(side, "commit", "--no-edit");
+    expect(inProgressWhy(side, env)).toBe("a cherry-pick or revert series is in progress");
   });
 
   test("only the worktree that runs it is in progress, not its sibling", () => {
