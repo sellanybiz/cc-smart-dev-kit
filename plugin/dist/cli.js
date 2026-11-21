@@ -31384,7 +31384,7 @@ var init_task_server_name = __esm(() => {
 });
 
 // src/tasks/words.ts
-var TASK_TOOL, RETIRED_TASK_TOOLS, TASK_TOOLS_ALLOW_RULE, TASK_COMMAND, MAX_PHASE = 8, PHASE_RULE, PLAN_FILES_WORDS = "Plan task only: the repo-relative paths the plan changes, with / separators; a folder ends in /. Two plans overlap when a path is equal or inside the other's folder (inside a plans.appendOnly folder, only the same file); a plan that overlaps a reserved or running plan is not handed out. The list replaces the stored one; an empty list clears it.", STACKED_ON_WORDS = "Plan task only: the slug of your own plan this plan is built on. The overlap check skips that one plan, both ways, while it holds its files (open, or done and reserved until its pull request merges), one lead leads both, and this plan is built on its work: that plan records its branch, which has commits past the default branch, and this plan's start (its herdr start base, or its base) holds some of them and is on this plan's own branch; every other plan still blocks. Never itself, a missing plan, another lead's plan or a loop; null clears it.";
+var TASK_TOOL, RETIRED_TASK_TOOLS, TASK_TOOLS_ALLOW_RULE, TASK_COMMAND, MAX_PHASE = 8, PHASE_RULE, PLAN_FILES_WORDS = "Plan task only: the repo-relative paths the plan changes, with / separators; a folder ends in /. Two plans overlap when a path is equal or inside the other's folder (inside a plans.appendOnly folder, only the same file); a plan that overlaps a reserved or running plan is not handed out. The list replaces the stored one; an empty list clears it.", STACKED_ON_WORDS = "Plan task only: the slug of your own plan this plan is built on. The overlap check skips that one plan, both ways, while it holds its files (open, or done and reserved until its pull request merges), one lead leads both, and this plan is built on its work: that plan records its branch and base, its branch has commits past the default branch and past that base, and this plan's start (its herdr start base, or its base with its own branch recorded) holds some of them and is on this plan's own branch; every other plan still blocks. Never itself, a missing plan, another lead's plan or a loop; null clears it.";
 var init_words2 = __esm(() => {
   init_names();
   init_task_server_name();
@@ -36040,11 +36040,13 @@ function isAncestor3(git, commit, tip) {
   const run = git(["merge-base", "--is-ancestor", commit, tip]);
   return run.code === 0 ? true : run.code === 1 ? false : null;
 }
-function stackHolds(git, onDefault, parent, child, start) {
+function stackHolds(git, onDefault, { parent, child, grandparent, start, given }) {
   if (onDefault === null)
     return gap("default-unknown");
   if (parent.branch === null)
     return gap("parent-branch");
+  if (child.branch === parent.branch)
+    return gap("own-branch");
   const tip = branchTip(git, parent.branch);
   if (tip === null)
     return gap("parent-branch");
@@ -36053,19 +36055,36 @@ function stackHolds(git, onDefault, parent, child, start) {
     return gap("git");
   if (empty)
     return gap("parent-empty");
+  const parentStart = parent.base === null ? null : commitOf3(git, parent.base);
+  if (parentStart === null)
+    return gap("parent-base");
+  const fences = [onDefault, parentStart];
+  if (grandparent !== null && grandparent.branch !== null) {
+    const chain = branchTip(git, grandparent.branch);
+    if (chain === null)
+      return gap("chain-branch");
+    fences.push(chain);
+  }
   const from = start === null ? null : commitOf3(git, start);
   if (from === null)
     return gap("no-start");
-  const fork = git(["merge-base", from, tip]);
-  if (fork.code === 1)
+  if (!given && child.branch === null)
+    return gap("own-branch");
+  const forks = git(["merge-base", "--all", from, tip]);
+  if (forks.code === 1)
     return gap("start-lacks-parent");
-  if (!fork.ok || fork.out === "")
+  if (!forks.ok || forks.out === "")
     return gap("git");
-  const shared = isAncestor3(git, fork.out, onDefault);
-  if (shared === null)
-    return gap("git");
-  if (shared)
-    return gap("start-lacks-parent");
+  for (const fork of forks.out.split(`
+`)) {
+    for (const fence of fences) {
+      const under = isAncestor3(git, fork, fence);
+      if (under === null)
+        return gap("git");
+      if (under)
+        return gap("start-lacks-parent");
+    }
+  }
   if (child.branch !== null) {
     const built = branchTip(git, child.branch);
     if (built === null)
@@ -36094,7 +36113,14 @@ function judgeStacks(all, git, defaultBranch, starts = {}) {
       continue;
     }
     onDefault ??= { tip: defaultTip(git, defaultBranch) };
-    const verdict = stackHolds(git, onDefault.tip, parent, plan, starts[plan.id] ?? plan.base);
+    const given = starts[plan.id];
+    const verdict = stackHolds(git, onDefault.tip, {
+      parent,
+      child: plan,
+      grandparent: parent.stackedOn === null ? null : plans.get(parent.stackedOn) ?? null,
+      start: given ?? plan.base,
+      given: given !== undefined
+    });
     judged.set(plan.id, { pair, verdict });
   }
   return judged;
@@ -57835,6 +57861,12 @@ function unprovedStackFix(plan, parent, judged) {
     return `${counts} once ${name}'s branch ${parent.branch} is in this repository: fetch it`;
   if (gap === "parent-empty")
     return `${counts} once ${name} has work of its own: wait for its first commit on ${parent.branch}`;
+  if (gap === "parent-base")
+    return `${counts} once ${name} records where it started: task_update #${parent.number} with base set to the commit its branch started from`;
+  if (gap === "chain-branch")
+    return `${counts} once the branch of ${parent.stackedOn ?? "the plan it is stacked on"}, which ${name} is stacked on, is in this repository: fetch it`;
+  if (gap === "own-branch" || gap === "start-off-branch")
+    return `${counts} when this plan records its own branch, built on ${name}'s work: task_update #${plan.number} branch=<branch built on ${name}>`;
   if (gap === "git")
     return `${counts} once git can read ${name}'s branch and this plan's start: run ${COMMAND} herdr plans again`;
   return `${counts} when this plan is built on ${name}'s work: ${COMMAND} herdr start --plan ${slug} starts it on ${parent.branch} when --base is left out; a plan built here rebuilds its branch on ${parent.branch}`;
