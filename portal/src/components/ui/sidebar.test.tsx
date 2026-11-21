@@ -9,7 +9,12 @@ import { describe, expect, test } from "bun:test";
 import type { ReactElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { Sheet, SheetBackdrop, SheetCloseButton } from "@/components/ui/sheet";
-import { SidebarMenuButton, SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
+import {
+  returnFocusWithoutScroll,
+  SidebarMenuButton,
+  SidebarProvider,
+  SidebarTrigger,
+} from "@/components/ui/sidebar";
 
 /** The opening tag of the first element whose attributes hold `needle`. */
 function tagWith(html: string, needle: string): string {
@@ -101,5 +106,33 @@ describe("44px targets on a phone and on a touch screen", () => {
         expect.arrayContaining(["in-data-[mobile=true]:h-11", "pointer-coarse:h-11"]),
       );
     }
+  });
+});
+
+describe("closing the mobile sheet", () => {
+  test("focus goes back to the header's switch without scrolling the page to it", () => {
+    const focused: (FocusOptions | undefined)[] = [];
+    let prevented = false;
+    const close = returnFocusWithoutScroll({
+      current: { focus: (options?: FocusOptions) => focused.push(options) },
+    });
+    close({
+      preventDefault: () => {
+        prevented = true;
+      },
+    });
+    // Radix's own return is stopped: it finds no trigger and would leave focus on the body.
+    expect(prevented).toBe(true);
+    expect(focused).toEqual([{ preventScroll: true }]);
+  });
+
+  test("with no switch mounted, the close still stops Radix's return and focuses nothing", () => {
+    let prevented = false;
+    returnFocusWithoutScroll({ current: null })({
+      preventDefault: () => {
+        prevented = true;
+      },
+    });
+    expect(prevented).toBe(true);
   });
 });

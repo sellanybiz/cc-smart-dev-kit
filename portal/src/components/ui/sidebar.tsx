@@ -160,6 +160,20 @@ function SidebarProvider({
   )
 }
 
+/**
+ * The mobile sheet's close handler: it stops Radix's own focus return and focuses the header's
+ * switch instead. The header is not sticky, so a plain focus would scroll the page back up to
+ * show the switch; `preventScroll` keeps the reader where they were.
+ */
+function returnFocusWithoutScroll(trigger: {
+  current: Pick<HTMLElement, "focus"> | null
+}) {
+  return (event: Pick<Event, "preventDefault">) => {
+    event.preventDefault()
+    trigger.current?.focus({ preventScroll: true })
+  }
+}
+
 function Sidebar({
   side = "left",
   variant = "sidebar",
@@ -205,10 +219,7 @@ function Sidebar({
           data-mobile="true"
           className="w-(--sidebar-width-mobile) bg-sidebar p-0 text-sidebar-foreground"
           side={side}
-          onCloseAutoFocus={(event) => {
-            event.preventDefault()
-            triggerRef.current?.focus()
-          }}
+          onCloseAutoFocus={returnFocusWithoutScroll(triggerRef)}
         >
           <SheetHeader className="sr-only">
             <SheetTitle>Sidebar</SheetTitle>
@@ -699,6 +710,7 @@ function SidebarMenuSubButton({
 }
 
 export {
+  returnFocusWithoutScroll,
   Sidebar,
   SidebarContent,
   SidebarFooter,

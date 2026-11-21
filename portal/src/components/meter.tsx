@@ -9,6 +9,13 @@ const SIZES = {
 
 const TONES = { ok: "fill-ok", primary: "fill-primary" } as const;
 
+/**
+ * The track shows where a full bar would end. The muted foreground at 40 % stays neutral beside
+ * either tone and reaches at least 1.5:1 against a card in both themes; the muted token itself
+ * stayed under 1.2:1, so the track all but vanished in dark mode.
+ */
+const TRACK = "fill-muted-foreground/40";
+
 interface BarProps {
   value: number;
   max: number;
@@ -32,7 +39,7 @@ export function MeterBar({ value, max, size = "default", tone = "primary", class
       aria-hidden="true"
       preserveAspectRatio="none"
     >
-      <rect width="100%" height="100%" rx={rx} className="fill-muted" />
+      <rect width="100%" height="100%" rx={rx} className={TRACK} />
       <rect width={`${share * 100}%`} height="100%" rx={rx} className={TONES[tone]} />
     </svg>
   );
