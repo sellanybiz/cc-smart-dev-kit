@@ -31,6 +31,24 @@ asked for (`src/sessions/`, `src/worktrees/`):
   The plugin's own leftovers hook uses the same verdict; the dev-server probe the project
   this came from had (one project's `.dev-server.json` and ports) is **not** ported — the
   general rule is a program running from the worktree, or working in it.
+  - **One home for Claude Code's names** (`src/worktrees/paths.ts`): the folder
+    `<repo>/.claude/worktrees`, one worktree's path, and the subagent's name and branch prefixes
+    (`agent-`, `worktree-agent-`). Everything that builds or matches the folder imports them;
+    `paths.test.ts` fails a source file that joins the folder by hand.
+  - **A folder a removal moved aside** (`<path>-removing-<time>`) is known by that name alone
+    (`isParkedWorktree`), and its own deletions are never counted as the person's changes —
+    on a branch or detached. The verdict's `parked` fact, which waives the commits test and
+    the idle hour, still needs a branch: a detached folder has no branch to hold its commits,
+    so one with commits of its own stays.
+  - **Rebuildable files:** `next-env.d.ts`, which Next.js writes and says not to edit, counts
+    as one at any depth, like a cache (`REBUILDABLE`, `src/hooks/local-files.ts`).
+  - **The builder branch sweep** (`branch-sweep.ts`): a builder's branch
+    (`worktree-agent-<id>`) outlives its folder, so `--clean` — and only `--clean`, never
+    `--remove` or the background clean — also judges the local `worktree-agent-*` branches that
+    no worktree has checked out, with the same test as every removal (`tryDeleteBranch`:
+    ancestry, replay, cherry-pick, merged pull request). The base holds its work: deleted. It
+    does not: kept, and its line says so. The base cannot be read: every branch is kept. The
+    plain listing shows which would go. A branch of any other name is never touched.
 
 ### Finished background sessions
 

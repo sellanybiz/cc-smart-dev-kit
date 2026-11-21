@@ -687,6 +687,20 @@ export function machineFactsOf(options: ScanOptions): MachineFacts & {
 }
 
 /** The machine's facts, read once for a whole scan (or one removal). */
+/**
+ * The ref a scan judges commits against, and how a message calls it: `against`, else
+ * `origin/<base>` (labelled with the bare base name). One home for the scan and the branch sweep.
+ */
+export function baseRefOf(options: Pick<ScanOptions, "against" | "base">): {
+  label: string;
+  ref: string;
+} {
+  return {
+    label: options.against?.label ?? options.base,
+    ref: options.against?.ref ?? `refs/remotes/origin/${options.base}`,
+  };
+}
+
 function lookAt(repo: string, options: ScanOptions): MachineLook {
   return {
     ...machineFactsOf(options),
@@ -698,9 +712,8 @@ function lookAt(repo: string, options: ScanOptions): MachineLook {
     ownerMode: options.ownerMode === true,
     env: options.env,
     idleLimit: options.idleLimit,
-    label: options.against?.label ?? options.base,
+    ...baseRefOf(options),
     now: options.now ?? Date.now(),
-    ref: options.against?.ref ?? `refs/remotes/origin/${options.base}`,
     replayer: replayerFor(repo, options.env),
   };
 }
@@ -730,8 +743,7 @@ function lockLine(listed: ListedWorktree, look: MachineLook, onBase = false): st
 
 export function scanWorktrees(repo: string, options: ScanOptions): ScannedWorktree[] {
   const { env } = options;
-  const againstRef = options.against?.ref ?? `refs/remotes/origin/${options.base}`;
-  const againstLabel = options.against?.label ?? options.base;
+  const { label: againstLabel, ref: againstRef } = baseRefOf(options);
   if (!runGit(repo, ["rev-parse", "--verify", "--quiet", againstRef], env).ok) {
     throw new Error(
       options.against === undefined
@@ -996,6 +1008,38 @@ function refName(holder: string, label: string, customRef: boolean): string {
   return !customRef && holder === label ? `origin/${label}` : label;
 }
 
+/** Does `ref` hold a branch's work? What `tryDeleteBranch` acts on, decided without acting. */
+export type BranchJudgement =
+  | { kind: "on-ref" }
+  | { kind: "not-on-ref" }
+  | { kind: "git-error"; text: string };
+
+/**
+ * Is the work of `refs/heads/<branch>` on `ref`: every commit by ancestry, or the work under
+ * another sha, a squash merge or a merged pull request (`workOnBase`)? Changes nothing.
+ */
+export function judgeBranchOnRef(
+  repo: string,
+  ref: string,
+  label: string,
+  branch: string,
+  env: Env,
+): BranchJudgement {
+  const ahead = runGit(repo, ["rev-list", "--count", `${ref}..refs/heads/${branch}`], env);
+  if (!ahead.ok) {
+    return { kind: "git-error", text: ahead.err || `git could not compare it with ${label}` };
+  }
+  if (ahead.out === "0") return { kind: "on-ref" };
+  const head = runGit(repo, ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`], env);
+  const sha = head.ok ? head.out.trim() : "";
+  // The same answer the worktree's verdict gave, on the same branch: the branch goes only
+  // when its work is on the ref.
+  const elsewhere =
+    COMMIT_SHA.test(sha) &&
+    workOnBase(repo, ref, sha, branch, env, replayerFor(repo, env)) !== null;
+  return elsewhere ? { kind: "on-ref" } : { kind: "not-on-ref" };
+}
+
 /** `deleteBranchOnRef`'s decision, as data. */
 export function tryDeleteBranch(
   repo: string,
@@ -1004,20 +1048,8 @@ export function tryDeleteBranch(
   branch: string,
   env: Env,
 ): BranchOutcome {
-  const ahead = runGit(repo, ["rev-list", "--count", `${ref}..refs/heads/${branch}`], env);
-  if (!ahead.ok) {
-    return { kind: "git-error", text: ahead.err || `git could not compare it with ${label}` };
-  }
-  if (ahead.out !== "0") {
-    const head = runGit(repo, ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`], env);
-    const sha = head.ok ? head.out.trim() : "";
-    // The same answer the worktree's verdict gave, on the same branch: the branch goes only
-    // when its work is on the ref.
-    const elsewhere =
-      COMMIT_SHA.test(sha) &&
-      workOnBase(repo, ref, sha, branch, env, replayerFor(repo, env)) !== null;
-    if (!elsewhere) return { kind: "not-on-ref" };
-  }
+  const judged = judgeBranchOnRef(repo, ref, label, branch, env);
+  if (judged.kind !== "on-ref") return judged;
   const deleted = runGit(repo, ["branch", "-D", branch], env);
   return deleted.ok ? { kind: "deleted" } : { kind: "git-error", text: deleted.err };
 }

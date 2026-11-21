@@ -10,7 +10,10 @@
  * WHAT IT DOES
  *   cc-smart-dev-kit worktrees                  lists them, after fetching origin/<base>.
  *   cc-smart-dev-kit worktrees --clean          also removes every FINISHED one, with its
- *                                               branch.
+ *                                               branch, and deletes the `worktree-agent-*`
+ *                                               branches no worktree uses once the base
+ *                                               holds their work (`branch-sweep.ts`). The
+ *                                               plain listing says which would go.
  *   cc-smart-dev-kit worktrees --remove <path>  removes that one now — for the session that
  *                                               has just finished in it, so without the
  *                                               one-hour wait.
@@ -36,6 +39,7 @@ import { isInside, realPath, runGit, samePath } from "../hooks/git";
 import type { Env } from "../hooks/run";
 import { type Checkout, loadProjectConfig, locateCheckout } from "../project/resolve";
 import { autoCleanFiles, readRepoRecord } from "./auto-state";
+import { type BuilderBranchLine, sweepBuilderBranches } from "./branch-sweep";
 import {
   type CleanLock,
   type CleanLockResult,
@@ -117,6 +121,16 @@ const CONSOLE_SINKS: WorktreesSinks = {
 function strayRow(stray: StrayFolder): string {
   const name = basename(stray.path).padEnd(30);
   return `  ${name} ${"(no worktree)".padEnd(42)} left by a removal that stopped halfway; git no longer lists it`;
+}
+
+/** The listing's rows for the builder branches no worktree uses: what `--clean` would do to each. */
+function builderBranchRows(branches: BuilderBranchLine[]): string[] {
+  if (branches.length === 0) return [];
+  return [
+    "Builder branches no worktree uses (worktree-agent-*)",
+    ...branches.map((one) => `  ${one.text}`),
+    "",
+  ];
 }
 
 function show(scanned: ScannedWorktree[], print: (line: string) => void): void {
@@ -399,23 +413,33 @@ export async function runWorktrees(
     const scanned = scanWorktrees(repo, judged);
     // The folders a removal moved aside and could not remove, that git no longer lists (D62).
     const strays = strayParkedFolders(repo, env);
+    // The builder branches no worktree uses, judged here only for the listing: `--clean` judges
+    // and deletes them below, after its own removals have freed some.
+    const branches = options.clean ? [] : sweepBuilderBranches(repo, judged, "list");
+    const branchesGoing = branches.filter((one) => one.state === "goes").length;
     print(`Worktrees of ${repo}\n`);
     show(scanned, print);
     if (strays.length > 0) {
       for (const stray of strays) print(strayRow(stray));
       print("");
     }
+    for (const row of builderBranchRows(branches)) print(row);
 
     const going = scanned.filter(canGo);
     const strayLine =
       strays.length === 0
         ? null
         : `${String(strays.length)} leftover folder${strays.length === 1 ? "" : "s"} from a removal that stopped halfway: \`${COMMAND} worktrees --clean\` removes ${strays.length === 1 ? "it" : "them"} when nothing runs from ${strays.length === 1 ? "it" : "them"}.`;
-    const nothing = going.length === 0 && strayLine === null;
+    const nothing = going.length === 0 && strayLine === null && branchesGoing === 0;
     if (!options.clean) {
       if (going.length > 0) {
         print(
           `${String(going.length)} can go. \`${COMMAND} worktrees --clean\` in the main checkout removes them.`,
+        );
+      }
+      if (branchesGoing > 0) {
+        print(
+          `${String(branchesGoing)} builder branch${branchesGoing === 1 ? "" : "es"} whose work the base holds: \`${COMMAND} worktrees --clean\` deletes ${branchesGoing === 1 ? "it" : "them"}.`,
         );
       }
       if (strayLine !== null) print(strayLine);
@@ -427,7 +451,11 @@ export async function runWorktrees(
     // ones this clean left behind (`cleanWithStrays`).
     const { strays: finished } = cleanWithStrays(repo, scanned, judged, print, strays);
     for (const kept of finished.kept) print(`kept ${kept.path}: ${kept.why}`);
-    if (nothing) print("Nothing finished to clear.");
+    // Only here: `--remove` is one worktree, and the background clean shares `cleanWithStrays`
+    // and never deletes a branch it did not remove.
+    const swept = sweepBuilderBranches(repo, judged, "delete");
+    for (const one of swept) print(one.text);
+    if (nothing && swept.length === 0) print("Nothing finished to clear.");
     return 0;
   } finally {
     lock?.close();
