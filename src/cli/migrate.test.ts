@@ -34,6 +34,7 @@ import { processStartTime } from "../setup/lock";
 import { backupDir, listBackups, realTarget } from "../setup/write";
 import { capturePrinted, printed } from "../testing/fake-machine";
 import { tempDir } from "../testing/temp";
+import { childEnv } from "../testing/test-home";
 import {
   BOOKKEEPING_NAMES,
   MIGRATE_STEPS,
@@ -379,7 +380,7 @@ function machine(fixture: FixtureOptions = {}) {
 
   const runner: Runner = (cmd) => {
     const result = Bun.spawnSync(cmd, {
-      env: { PATH: fakeBin },
+      env: childEnv({ PATH: fakeBin }),
       stdout: "pipe",
       stderr: "pipe",
     });

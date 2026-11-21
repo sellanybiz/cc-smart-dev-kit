@@ -3,6 +3,7 @@ import { afterAll, afterEach } from "bun:test";
 import { bunTooOld } from "../build-info/bun";
 import { installPortGuard, removeSubprocessLog, takeViolations } from "./port-guard";
 import { removeTempDirs } from "./temp";
+import { installTestHome, removeTestHome } from "./test-home";
 
 // The tests need the Bun cc-smart-dev-kit needs: on an older one the proxy tests fail, and the CLI
 // they start refuses to run. One clear line instead of a page of failures: exit, because
@@ -22,6 +23,11 @@ process.env.TZ ||= Intl.DateTimeFormat().resolvedOptions().timeZone;
 // it, even when the code under test caught the error.
 installPortGuard();
 
+// No test may write to the real home. A path that falls back to the home folder (`cliPaths({})`,
+// `os.homedir()`, a child started with an env that has no HOME) lands in a temp folder that
+// lives for the whole run. The folder is removed once, after the last test.
+installTestHome();
+
 afterEach(() => {
   removeTempDirs();
   const violations = takeViolations();
@@ -30,4 +36,7 @@ afterEach(() => {
   }
 });
 
-afterAll(removeSubprocessLog);
+afterAll(() => {
+  removeSubprocessLog();
+  removeTestHome();
+});
