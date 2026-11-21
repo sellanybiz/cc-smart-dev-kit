@@ -4,7 +4,7 @@
  * be wrong is checked before anything is sent, in this order:
  *
  * 1. the text — a title, a fingerprint, no marker of its own, labels GitHub takes;
- * 2. the switch — `issues.enabled`, read as `allowPush` is: the person's file and the project's
+ * 2. the switch — `issues.enabled`, read as the review-gate keys are: the person's file and the project's
  *    file **as committed on `origin/<worktrees.base>`** (`resolveGate`), never a working copy;
  * 3. the repository — owner and name from `origin`'s URL, on github.com, passed to `gh` as
  *    `--repo github.com/<owner>/<name>` on every call (never the folder's guess, never a fork's
