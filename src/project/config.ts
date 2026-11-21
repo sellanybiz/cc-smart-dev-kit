@@ -4,11 +4,25 @@ import { z } from "zod";
 import { COMMAND, PLUGIN_UPDATE_COMMAND, VERSION } from "../build-info";
 import { type KindSpec, kindsSchema, type MatchRule, matchRuleSchema } from "../jobs/kinds";
 import { isObject } from "../setup/managed-json";
-import { parseUserJson, readUserJson } from "../setup/user-json";
+import { parseUserJson } from "../setup/user-json";
 import { shellSteps } from "../shell/command";
 import { DEPLOY_ENVS } from "../tasks/deploy/format";
 import { PERSONAL_ONLY_KEYS, PERSONAL_ONLY_REASONS, workflowSchema } from "../workflow/schema";
+import {
+  CcSmartDevKitConfigError,
+  CcSmartDevKitRetiredFieldError,
+  CcSmartDevKitVersionError,
+} from "./config-facts";
 import { allowsNewer, isValidRange, lowestAllowed, satisfiesRange } from "./version-range";
+
+// The error classes and `readOwnHooks` live in `config-facts.ts`, which has no zod; they are
+// re-exported here so every importer of this file keeps its import.
+export {
+  CcSmartDevKitConfigError,
+  CcSmartDevKitRetiredFieldError,
+  CcSmartDevKitVersionError,
+  readOwnHooks,
+} from "./config-facts";
 
 /**
  * The hooks the plugin wires in `plugin/hooks/hooks.json`, by name: what `ownHooks` may list
@@ -449,25 +463,6 @@ export function baseForBranch(
   return match === null ? worktrees.base : (worktrees.bases?.[match] ?? worktrees.base);
 }
 
-/** A cc-smart-dev-kit.json that exists but cannot be used. The message names the file and the field. */
-export class CcSmartDevKitConfigError extends Error {
-  override name = "CcSmartDevKitConfigError";
-}
-
-/** The project needs a newer (or other) version of the plugin than the one running. */
-export class CcSmartDevKitVersionError extends CcSmartDevKitConfigError {
-  override name = "CcSmartDevKitVersionError";
-}
-
-/**
- * The file still sets a retired worktree engine field (`RETIRED_WORKTREE_FIELDS`). A config
- * error like any other to every reader; its own class only so the portal's Project card can
- * still offer its write, which takes the field out (`src/portal/facts.ts` › `readProject`).
- */
-export class CcSmartDevKitRetiredFieldError extends CcSmartDevKitConfigError {
-  override name = "CcSmartDevKitRetiredFieldError";
-}
-
 function describeIssue(issue: z.core.$ZodIssue): string {
   const field = issue.path.length > 0 ? issue.path.join(".") : "(top level)";
   if (issue.code === "unrecognized_keys") {
@@ -549,28 +544,6 @@ function checkPersonalOnlyFields(where: string, raw: unknown): void {
     throw new CcSmartDevKitConfigError(
       `Invalid ${where}: workflow.${key} is your own setting, not the project's, because ${PERSONAL_ONLY_REASONS[key]}: remove it from this file and run \`${COMMAND} workflow set ${key} <value>\` in your own terminal.`,
     );
-  }
-}
-
-/**
- * The names `ownHooks` lists in one cc-smart-dev-kit.json, read on their own, the way `requires` is:
- * a hook the project runs as its own copy stays silent even when the rest of the file needs
- * a newer plugin or is broken, so the person never gets two questions for one command.
- * Null when the file does not exist; empty when it cannot be read or lists nothing.
- */
-export function readOwnHooks(file: string): string[] | null {
-  if (!existsSync(file)) return null;
-  try {
-    // The one reader of a person-edited JSON file: an editor's byte order mark is skipped,
-    // so a file Claude Code reads without trouble is not refused here (F5-2).
-    const raw: unknown = readUserJson(file);
-    if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return [];
-    const listed = (raw as { ownHooks?: unknown }).ownHooks;
-    return Array.isArray(listed)
-      ? listed.filter((name): name is string => typeof name === "string")
-      : [];
-  } catch {
-    return [];
   }
 }
 

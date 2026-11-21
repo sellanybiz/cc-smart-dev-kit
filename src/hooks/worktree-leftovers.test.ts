@@ -1,7 +1,8 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, mock, spyOn, test } from "bun:test";
 import { existsSync, mkdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { cliPaths } from "../cli/paths";
+import * as config from "../project/config";
 import {
   hookEnv,
   makeClone,
@@ -35,6 +36,10 @@ test.each([8, 10])("caps each worktree list at eight (%i total)", (count) => {
   expect(text?.split("+2 more: git worktree list --porcelain").length).toBe(count === 10 ? 3 : 1);
   expect(text).toContain("`cc-smart-dev-kit worktrees --clean`");
   expect(text).toContain("`git worktree prune`");
+});
+
+afterEach(() => {
+  mock.restore();
 });
 
 const adminOf = worktreeAdmin;
@@ -188,6 +193,43 @@ describe("worktree-leftovers", () => {
         },
       }),
     });
+  });
+
+  test("the project's own rebuildable folders count as disposable, from the main checkout's file", async () => {
+    const { repo, add } = project();
+    const done = add("done");
+    writeFileSync(join(repo, ".git", "info", "exclude"), ".tool-cache/\n");
+    mkdirSync(join(done, ".tool-cache"));
+    writeFileSync(join(done, ".tool-cache", "data"), "cache");
+    makeIdle(done);
+    const env = hookEnv();
+    expect(await runHook(worktreeLeftoversHook, start(repo), env)).toEqual({});
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", {
+      requires: ">=1.9",
+      worktrees: { base: "main", rebuildable: [".tool-cache/"] },
+    });
+    const inlineRead = spyOn(config, "loadCcSmartDevKitConfig");
+    const result = await runHook(worktreeLeftoversHook, start(repo), env);
+    expect(result.stdout).toContain("1 finished worktree is left in this repo: app-wt-done.");
+    // The patterns came through the checked read, not a second parse of the file.
+    expect(inlineRead).not.toHaveBeenCalled();
+  });
+
+  test("a main checkout's file that cannot be used grants no rebuildable pattern", async () => {
+    const { repo, add } = project();
+    const done = add("done");
+    const session = add("session");
+    writeFileSync(join(repo, ".git", "info", "exclude"), ".tool-cache/\n");
+    mkdirSync(join(done, ".tool-cache"));
+    writeFileSync(join(done, ".tool-cache", "data"), "cache");
+    makeIdle(done);
+    // The hook runs under the session's own file; the main checkout's is too new for this plugin.
+    writeClaudeFile(session, "cc-smart-dev-kit.json", { worktrees: { base: "main" } });
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", {
+      requires: ">=999",
+      worktrees: { base: "main", rebuildable: [".tool-cache/"] },
+    });
+    expect(await runHook(worktreeLeftoversHook, start(session), hookEnv())).toEqual({});
   });
 
   test("never one in the middle of a bisect, however long it has been idle", async () => {

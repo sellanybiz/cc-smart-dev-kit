@@ -21,6 +21,7 @@ import { loopbackFetch } from "../gateway/health";
 import type { RouterServiceKind, Runner } from "../gateway/service";
 import { herdrChecks } from "../herdr/doctor";
 import type { HcRunner } from "../herdr/hc";
+import { CHECKED_DIR, checkedCacheProblem } from "../hooks/checked-config";
 import { heavyJobChecks } from "../jobs/doctor";
 import type { LimitFacts } from "../jobs/limits";
 import {
@@ -953,6 +954,23 @@ function claudeMemStartBlocksCheck(
 }
 
 /**
+ * The folder the hooks keep the checked project file in (`src/hooks/checked-config.ts`). When it
+ * cannot be written, every hook run loads the file's parser (about 20 to 46 ms) and says nothing
+ * else, so the cost is named here. Nothing when it can be written.
+ */
+export function checkedCacheCheck(paths: CliPaths): Check | null {
+  const problem = checkedCacheProblem(paths);
+  if (problem === null) return null;
+  const dir = tildify(join(paths.stateDir, CHECKED_DIR), paths.home);
+  return {
+    ok: true,
+    warn: true,
+    text: `hook cache: ${dir} ${problem}, so every hook run parses the project file again`,
+    fix: `make ${dir}, or the folder above it when it is not made yet, yours with mode 700: chmod 700 ${dir}`,
+  };
+}
+
+/**
  * D75: the kit's tools are trusted and the two built-in lists are hidden.
  * Check every machine, independently of claude-mem's settings.
  */
@@ -1272,6 +1290,7 @@ function doctorGroups(
           ...(await checkLauncher(paths, machine.platform, readCommand)),
           checkGitBash(machine.platform, env, machine),
           checkInstructions(paths, local.instructionsSource),
+          checkedCacheCheck(paths),
           taskToolsCheck(paths),
           ...taskStoreChecks(paths),
           oldTodoToolsKeyCheck(paths),

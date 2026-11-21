@@ -1,9 +1,10 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, mock, spyOn, test } from "bun:test";
 import { copyFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { cliPaths } from "../cli/paths";
 import { mcpRecordsFile } from "../mcp/records";
 import { TASKS_SERVER_NAME } from "../mcp/task-server-name";
+import * as resolve from "../project/resolve";
 import { projectKey } from "../tasks/context";
 import { closeDeployTask, createDeployTask } from "../tasks/deploy/files";
 import { openWorkDb, workDbFile } from "../tasks/work/db";
@@ -13,6 +14,10 @@ import { hookEnv, makeClone, runHook, writeClaudeFile } from "../testing/hooks";
 import { tempDir } from "../testing/temp";
 import { addContext } from "./io";
 import { taskStartHook } from "./specs";
+
+afterEach(() => {
+  mock.restore();
+});
 
 test("a 500-task store stays capped and startView and planProgress fit the hook budget", async () => {
   const { repo } = makeClone();
@@ -62,6 +67,21 @@ test("a 500-task store stays capped and startView and planProgress fit the hook 
       "Open tasks here (the kit's task list):\n#1 [in progress] Step 1\n#500 [pending] Step 500\n#499 [pending] Step 499\n#498 [pending] Step 498\n#497 [pending] Step 497\n#496 [pending] Step 496\n#495 [pending] Step 495\n#494 [pending] Step 494\n+492 more: task_list",
     ),
   );
+});
+
+test("a start does not read the project file a second time: the frame's read is the only one", async () => {
+  const { repo } = makeClone();
+  writeClaudeFile(repo, "cc-smart-dev-kit.json", { tasks: { staleDays: 7 } });
+  const env = hookEnv();
+  const inlineRead = spyOn(resolve, "loadProjectConfig");
+  for (let run = 0; run < 2; run += 1) {
+    await runHook(
+      taskStartHook,
+      { hook_event_name: "SessionStart", source: "startup", cwd: repo },
+      env,
+    );
+  }
+  expect(inlineRead).not.toHaveBeenCalled();
 });
 
 test("work untouched past the project's tasks.staleDays is counted, not listed", async () => {

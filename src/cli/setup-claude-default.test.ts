@@ -12,6 +12,7 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { reachableFiles } from "../build-info/import-walk";
 import { claudeDefaultsMarkerFile } from "../gateway/claude-defaults";
 import { loadConfigFile } from "../gateway/config";
 import { turnOn } from "../gateway/settings";
@@ -397,26 +398,6 @@ describe("D66: setup is the only caller", () => {
   const src = join(import.meta.dir, "..");
   const target = join(src, "gateway", "claude-defaults.ts");
 
-  /** The relative imports a file makes, resolved to files (the walk `out.test.ts` makes). */
-  function reach(entry: string): Set<string> {
-    const transpiler = new Bun.Transpiler({ loader: "ts" });
-    const seen = new Set<string>();
-    const queue = [entry];
-    while (queue.length > 0) {
-      const file = queue.pop() as string;
-      if (seen.has(file)) continue;
-      seen.add(file);
-      const source = readFileSync(file, "utf8").replace(/\bwith\s*\{\s*type:\s*"macro"\s*\}/g, "");
-      for (const { path } of transpiler.scanImports(source)) {
-        if (!path.startsWith(".")) continue;
-        const base = join(dirname(file), path);
-        const found = [base, `${base}.ts`, join(base, "index.ts")].find((one) => existsSync(one));
-        if (found?.endsWith(".ts")) queue.push(found);
-      }
-    }
-    return seen;
-  }
-
   const hookEntries = readdirSync(join(src, "entries"))
     .filter((name) => name.endsWith(".ts") && !name.endsWith(".test.ts"))
     .filter((name) => name !== "cli.ts" && name !== "portal.ts")
@@ -426,14 +407,17 @@ describe("D66: setup is the only caller", () => {
     .map((name) => join(src, "update", name));
 
   test("the walk finds the module where it is used: the setup command", () => {
-    expect(reach(join(src, "cli", "setup.ts")).has(target)).toBe(true);
+    expect(reachableFiles(join(src, "cli", "setup.ts")).has(target)).toBe(true);
   });
 
   test("no hook bundle (SessionStart's included) and no file of the background update reaches it", () => {
     expect(hookEntries.length).toBeGreaterThan(5);
     expect(updateFiles.length).toBeGreaterThan(3);
     for (const entry of [...hookEntries, ...updateFiles]) {
-      expect({ entry, reaches: reach(entry).has(target) }).toEqual({ entry, reaches: false });
+      expect({ entry, reaches: reachableFiles(entry).has(target) }).toEqual({
+        entry,
+        reaches: false,
+      });
     }
   });
 });
