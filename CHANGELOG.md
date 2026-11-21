@@ -19,14 +19,27 @@ in your own terminal after the update; the user guide is [README.md](README.md).
   stopped is resumed with the others once the limit lifts, and that is not a fix round. In a
   worktree, the lead runs plain commands one at a time, as Claude Code's own check may refuse a
   compound line.
+- **Four hooks no longer load the config checker on a normal run.** A hook now reads the
+  project's `.claude/cc-smart-dev-kit.json` through a small cache of files it has already
+  checked, kept in the kit's state folder. The checker, with its zod library, sits in its own
+  bundle (`config-check.js`) and loads only when the file is new or changed. `agent-usage`,
+  `session-name`, `verify-gate` and `job-route` hold no zod at all: their bundles went from
+  266-355 KB to 30-160 KB. `after-merge` loads it only on a line that merges. A test fails any
+  change that brings zod back into those hooks, and `doctor` warns when the cache folder cannot
+  be written.
+- **`merge-check` names the real reason when a branch has no required checks**, instead of
+  saying it could not read them.
+- **`after-merge` sees `GH_REPO` and `GH_HOST` in any case on a PowerShell line**, where
+  variable names ignore case.
 - **The portal shows the 7-day usage window** beside the 5-hour one, each with its percent, a
   bar and its reset time; a reset a day or more away reads in days and hours ("3 d 21 h"). One
-  shared bar now draws every bar in the portal.
+  shared bar now draws every bar in the portal, with a track you can see in both themes, and
+  the bars of a list line up whatever the width of their numbers.
 - **A Settings row for the lead-model hint.** The switch rows are built from the switch list, so
   a new switch cannot be left off the page.
 - **The mobile sidebar works under the portal's strict page policy.** It no longer breaks the
   policy when it opens, the page behind it does not scroll, one Escape closes it, focus goes
-  back to the menu button, and its targets are 44px. It closes on any link tap and when the
+  back to the menu button without scrolling the page, and its targets are 44px. It closes on any link tap and when the
   window grows to desktop width. A guard test fails anything that would inject a style again,
   and `scripts/portal-preview.ts` serves the built portal under the real policy for checks.
 - **Next.js 16.4.6 for the portal's build.** 16.4.2 had seven moderate advisories, so Next.js
@@ -39,6 +52,8 @@ in your own terminal after the update; the user guide is [README.md](README.md).
   list, herdr binds only a worktree whose name matches its launch exactly and keeps its own
   launch record, and a resume of a worktree outside `.claude/worktrees` starts in its folder.
 - **The shadcn guide names `npx shadcn@<pin>` for npm projects again.**
+
+**What to run:** `cc-smart-dev-kit update`.
 
 ## 6.2.0
 
