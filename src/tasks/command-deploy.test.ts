@@ -612,15 +612,77 @@ test("list with no origin remote reads the local branch and says so in one line"
   });
 });
 
-test("list with an origin that has no such base gives the gates' fetch hint", async () => {
+test("list with an origin that has no such base, and nothing local either, gives the fetch advice", async () => {
   const { run } = world();
-  const missing = await run(["list", "--branch", "--base", "release"]);
+  const advice =
+    "run `git fetch origin`, or pass a ref git knows (a commit id, or origin/<base> after a fetch)";
+  for (const [named, shown] of [
+    ["release", "origin/release"],
+    ["origin/release", "origin/release"],
+    ["no-such-ref", "origin/no-such-ref"],
+  ] as const) {
+    const missing = await run(["list", "--branch", "--base", named]);
+    expect(missing.code).toBe(1);
+    expect(missing.text).toBe("");
+    expect(missing.error).toContain(`Cannot read ${shown} (`);
+    expect(missing.error).toContain(advice);
+    expect(missing.error).not.toContain("origin/origin");
+    expect(missing.error).not.toContain("--base");
+  }
+});
+
+test("list with no origin and a name git does not know says so, without fetch advice", async () => {
+  const { run } = world({ origin: false });
+  const missing = await run(["list", "--branch", "--base", "no-such-ref"]);
   expect(missing.code).toBe(1);
   expect(missing.text).toBe("");
-  expect(missing.error).toContain("Cannot read origin/release (");
-  expect(missing.error).toContain("run `git fetch origin`, or name the base with --base <ref>");
-  const written = await run(["list", "--branch", "--base", "origin/release"]);
-  expect(written.code).toBe(1);
-  expect(written.error).toContain("Cannot read origin/release (");
-  expect(written.error).not.toContain("origin/origin");
+  expect(missing.error).toContain("no-such-ref");
+  expect(missing.error).not.toContain("git fetch");
+});
+
+/** What a listing reads for each kind of name the base can be, with a local branch behind origin. */
+const branchChange = (id: string) => `staging\nadded: ${id} [after · non-blocking] Branch only\n`;
+
+test("list reads origin/<base> for a base with a slash in its name, not a stale local branch", async () => {
+  const { run, onBranch } = await behindOriginWorld("release/1.0");
+  const expected = { code: 0, text: branchChange(onBranch), error: "" };
+  expect(await run(["list", "--branch", "--base", "release/1.0"])).toEqual(expected);
+  expect(await run(["list", "--branch", "--base", "origin/release/1.0"])).toEqual(expected);
+});
+
+test("list reads a commit id, a tag or HEAD as written, with no note", async () => {
+  const { run, cwd, onBranch } = await behindOriginWorld();
+  const sha = git(cwd, "rev-parse", "origin/main").trim();
+  git(cwd, "tag", "shipped", sha);
+  const expected = { code: 0, text: branchChange(onBranch), error: "" };
+  expect(await run(["list", "--branch", "--base", sha])).toEqual(expected);
+  expect(await run(["list", "--branch", "--base", sha.slice(0, 8)])).toEqual(expected);
+  expect(await run(["list", "--branch", "--base", "shipped"])).toEqual(expected);
+  expect(await run(["list", "--branch", "--base", "HEAD"])).toEqual({
+    code: 0,
+    text: "No deploy task changes on this branch.\n",
+    error: "",
+  });
+});
+
+test("list reads a local branch origin lacks as written, with one note", async () => {
+  const { run, cwd, onBranch } = await behindOriginWorld();
+  git(cwd, "branch", "plan-branch", "origin/main");
+  const note = "origin has no plan-branch: read against the local branch plan-branch.";
+  expect(await run(["list", "--branch", "--base", "plan-branch"])).toEqual({
+    code: 0,
+    text: `${note}\n${branchChange(onBranch)}`,
+    error: "",
+  });
+  expect((await run(["list", "--branches"])).error).toBe("");
+});
+
+test("list --branch --json is a usage error: the note never reaches a JSON answer", async () => {
+  const { run } = world({ origin: false });
+  for (const list of ["--branch", "--branches"]) {
+    const refused = await run(["list", list, "--json"]);
+    expect(refused.code).toBe(2);
+    expect(refused.text).toBe("");
+    expect(refused.error).toContain("Branch lists do not take --scope or --json");
+  }
 });

@@ -66,7 +66,7 @@ it("both commands read their own history identity only on the gateway", async ()
   try {
     await runStatusline(
       paths,
-      async () => JSON.stringify({ ...input, session_id: "s-1" }),
+      async () => JSON.stringify({ ...input, cwd: home, session_id: "s-1" }),
       Date.now(),
       on,
     );
@@ -81,7 +81,7 @@ it("both commands read their own history identity only on the gateway", async ()
     );
     await runStatusline(
       paths,
-      async () => JSON.stringify({ ...input, session_id: "s-1" }),
+      async () => JSON.stringify({ ...input, cwd: home, session_id: "s-1" }),
       Date.now(),
       { ANTHROPIC_BASE_URL: "https://api.anthropic.com" },
     );
@@ -130,7 +130,7 @@ it("plain Claude supersedes a backend in both command rows", async () => {
   try {
     await runStatusline(
       paths,
-      async () => JSON.stringify({ ...input, session_id: "s-1" }),
+      async () => JSON.stringify({ ...input, cwd: home, session_id: "s-1" }),
       Date.now(),
       env,
     );
@@ -175,6 +175,7 @@ it("an unset gateway URL never pins backend effort in a direct session", async (
     const read = async () =>
       JSON.stringify({
         ...input,
+        cwd: home,
         effort: { level: "low" },
         context_window: {
           context_window_size: 200000,
@@ -266,7 +267,7 @@ it("gateway off never accesses the history path", async () => {
   try {
     await runStatusline(
       paths,
-      async () => JSON.stringify({ ...input, session_id: "s-1" }),
+      async () => JSON.stringify({ ...input, cwd: home, session_id: "s-1" }),
       Date.now(),
       { ANTHROPIC_BASE_URL: "https://api.anthropic.com" },
     );

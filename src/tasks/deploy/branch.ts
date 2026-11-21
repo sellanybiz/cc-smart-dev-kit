@@ -42,26 +42,46 @@ function knowsRef(repo: string, ref: string, env: Env): boolean {
 }
 /**
  * The ref a listing reads as the base, so it sees what the release gates see (`origin/<base>`).
- * A ref with a slash that resolves (`origin/main`, `release/1.0`) is read as written. A bare name
- * reads `origin/<base>`; with no `origin` remote it reads the local branch and `note` says so; with
- * an `origin` that lacks the ref it throws the gates' fetch advice.
+ * What the name is decides:
+ * - A name git knows that is not a local branch (a commit id, a tag, `HEAD`, `origin/main`, any
+ *   remote-tracking ref) is read as written.
+ * - A local branch, or a name git does not know, reads `origin/<base>` when origin has it, even
+ *   when the name holds a slash (`release/1.0`): the local copy may be behind.
+ * - A local branch that origin lacks (or any local branch with no `origin` remote) is read as
+ *   written, and `note` says so. A name that resolves nowhere throws.
  */
 export function resolveListBase(
   repo: string,
   base: string,
   env: Env = process.env,
 ): { ref: string; note: string | null } {
-  if (base.includes("/") && knowsRef(repo, base, env)) return { ref: base, note: null };
+  const isLocalBranch = refExists(repo, `refs/heads/${base}`, env);
+  if (!isLocalBranch && knowsRef(repo, base, env)) return { ref: base, note: null };
   const remotes = taskGit(repo, ["remote"], env).split("\n");
-  if (!remotes.includes("origin"))
-    return { ref: base, note: `No origin remote: read against the local branch ${base}.` };
-  const ref = base.startsWith("origin/") ? base : `origin/${base}`;
-  try {
-    refCommit(repo, ref, env);
-  } catch (error) {
-    throw new Error(unreadableRefMessage(ref, error, "name the base with --base <ref>"));
+  if (!remotes.includes("origin")) {
+    if (isLocalBranch)
+      return { ref: base, note: `No origin remote: read against the local branch ${base}.` };
+    throw new Error(
+      `Cannot read ${base}: git does not know it. Pass a ref git knows (a branch, a tag or a commit id).`,
+    );
   }
-  return { ref, note: null };
+  if (knowsRef(repo, `refs/remotes/origin/${base}`, env))
+    return { ref: `origin/${base}`, note: null };
+  if (isLocalBranch)
+    return { ref: base, note: `origin has no ${base}: read against the local branch ${base}.` };
+  const named = base.startsWith("origin/") ? base : `origin/${base}`;
+  try {
+    refCommit(repo, named, env);
+  } catch (error) {
+    throw new Error(
+      unreadableRefMessage(
+        named,
+        error,
+        "pass a ref git knows (a commit id, or origin/<base> after a fetch)",
+      ),
+    );
+  }
+  return { ref: named, note: null };
 }
 export function taskRepoPath(repo: string, dir: string): string {
   const path = relative(resolve(repo), resolve(repo, dir));

@@ -18,8 +18,16 @@ const NOW = Date.UTC(2026, 9, 15, 10, 0, 0);
 const AT_13 = NOW / 1000 + 3 * 3600;
 const IN_3_DAYS = NOW / 1000 + 3 * 86_400;
 
-/** The status line input as Claude Code 2.1.300 passes it (the fields this reads). */
-function input(five: null | number, seven: null | number): Record<string, unknown> {
+/**
+ * The status line input as Claude Code 2.1.300 passes it (the fields this reads). `folder` is the
+ * session's folder (`cwd`): a test that runs the command passes its own temp folder, so the run
+ * never reads the checkout the test runner started in.
+ */
+function input(
+  five: null | number,
+  seven: null | number,
+  folder?: string,
+): Record<string, unknown> {
   const rateLimits: Record<string, unknown> = {};
   if (five !== null) rateLimits.five_hour = { resets_at: AT_13, used_percentage: five };
   if (seven !== null) rateLimits.seven_day = { resets_at: IN_3_DAYS, used_percentage: seven };
@@ -27,6 +35,7 @@ function input(five: null | number, seven: null | number): Record<string, unknow
     model: { display_name: "Opus 5.5", id: "claude-opus-5-5" },
     ...(five === null && seven === null ? {} : { rate_limits: rateLimits }),
     session_id: "s-1",
+    ...(folder === undefined ? {} : { cwd: folder }),
   };
 }
 
@@ -221,7 +230,8 @@ describe("statusline", () => {
   });
 
   it("D54: records the 5-hour window it read, so the opus guard can read it back", async () => {
-    const paths = cliPaths({ HOME: tempDir("home") });
+    const home = tempDir("home");
+    const paths = cliPaths({ HOME: home });
     mkdirSync(paths.stateDir, { recursive: true });
     const printed: string[] = [];
     const original = console.log;
@@ -229,10 +239,10 @@ describe("statusline", () => {
       printed.push(parts.map(String).join(" "));
     };
     try {
-      await runStatusline(paths, async () => JSON.stringify(input(87, 41)), NOW);
+      await runStatusline(paths, async () => JSON.stringify(input(87, 41, home)), NOW);
       expect(readUsageWindow(paths, NOW)).toEqual({ percent: 87, resetsAt: AT_13 });
       // An input with no rate_limits (an API key, or a refused request) records nothing.
-      await runStatusline(paths, async () => JSON.stringify(input(null, null)), NOW + 1000);
+      await runStatusline(paths, async () => JSON.stringify(input(null, null, home)), NOW + 1000);
       expect(readUsageWindow(paths, NOW + 1000)).toEqual({ percent: 87, resetsAt: AT_13 });
     } finally {
       console.log = original;
@@ -241,12 +251,13 @@ describe("statusline", () => {
   });
 
   it("2.2.0: records the 7-day window too", async () => {
-    const paths = cliPaths({ HOME: tempDir("home") });
+    const home = tempDir("home");
+    const paths = cliPaths({ HOME: home });
     mkdirSync(paths.stateDir, { recursive: true });
     const original = console.log;
     console.log = () => {};
     try {
-      await runStatusline(paths, async () => JSON.stringify(input(87, 41)), NOW);
+      await runStatusline(paths, async () => JSON.stringify(input(87, 41, home)), NOW);
     } finally {
       console.log = original;
     }
@@ -258,9 +269,10 @@ describe("statusline", () => {
   });
 
   it("2.2.0: a prompt-cache miss shows for a minute, after the numbers", async () => {
-    const paths = cliPaths({ HOME: tempDir("home") });
+    const home = tempDir("home");
+    const paths = cliPaths({ HOME: home });
     const withMiss = (at: number, causes: string[]) => ({
-      ...input(30, null),
+      ...input(30, null, home),
       prompt_cache: { last_miss_at: at, last_miss_cause: { causes }, misses: 1, warm: true },
       session_id: "11111111-2222-3333-4444-555555555555",
     });
@@ -396,14 +408,14 @@ describe("RV3: a record shows in the session it is about", () => {
     };
     try {
       const run = (url: string) =>
-        runStatusline(paths, async () => JSON.stringify(input(null, null)), NOW, {
+        runStatusline(paths, async () => JSON.stringify(input(null, null, home)), NOW, {
           ANTHROPIC_BASE_URL: url,
         });
       await run("http://127.0.0.1:20199/p/team");
       await run("http://127.0.0.1:20199");
       await run("https://api.anthropic.com");
       // No address in the environment says nothing about the gateway: the machine's records.
-      await runStatusline(paths, async () => JSON.stringify(input(null, null)), NOW, {});
+      await runStatusline(paths, async () => JSON.stringify(input(null, null, home)), NOW, {});
       // An empty address is Anthropic's own (what `sessionGatewayOf` and Claude Code read): off.
       await run("");
     } finally {
