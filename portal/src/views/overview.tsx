@@ -39,6 +39,7 @@ import {
   clockTime,
   costWords,
   count,
+  DAY_MS,
   duration,
   percent,
   slotName,
@@ -210,8 +211,6 @@ export function SwitchesCard({ switches, port }: { switches: SwitchFacts; port: 
     </PagePad>
   );
 }
-
-const DAY_MS = 24 * 60 * 60_000;
 
 /** When a window resets. More than a day away, a clock time alone would not say which day. */
 function resetWords(resetsAt: null | number, now: number): string {

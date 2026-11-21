@@ -60,5 +60,6 @@ The page runs under `script-src 'self'` and `style-src 'self'`. So:
 
 `bun run dev` draws every page from mock data (there is no server behind it). On the real
 portal, add `?mock=` to any address to see a page's other states: `normal`, `loading`, `error`,
-`empty`, `no-gateway`, `reconnecting`; the header then says "Mock data", and an action sends
+`empty`, `no-gateway`, `reconnecting`, `five-hour` (the 5-hour usage window alone, as a status
+line before 2.2.0 recorded it); the header then says "Mock data", and an action sends
 nothing. Filters live in the address too (`?range=7d&slot=…`).

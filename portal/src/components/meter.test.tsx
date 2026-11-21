@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
-import { Meter } from "@/components/meter";
+import { Meter, MeterBar } from "@/components/meter";
 
 test("a meter speaks its words and draws its share as an SVG width, never a style", () => {
   const html = renderToStaticMarkup(
@@ -13,6 +13,14 @@ test("a meter speaks its words and draws its share as an SVG width, never a styl
       '<svg data-slot="meter" class="h-2.5 w-full" aria-hidden="true" preserveAspectRatio="none">' +
       '<rect width="100%" height="100%" rx="4" class="fill-muted"></rect>' +
       '<rect width="75%" height="100%" rx="4" class="fill-primary"></rect></svg>',
+  );
+});
+
+test("the bar alone draws the same bar, with no meter to speak it", () => {
+  expect(renderToStaticMarkup(<MeterBar value={1} max={4} className="w-full" />)).toBe(
+    '<svg data-slot="meter" class="h-2.5 w-full" aria-hidden="true" preserveAspectRatio="none">' +
+      '<rect width="100%" height="100%" rx="4" class="fill-muted"></rect>' +
+      '<rect width="25%" height="100%" rx="4" class="fill-primary"></rect></svg>',
   );
 });
 

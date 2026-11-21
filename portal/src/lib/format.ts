@@ -129,7 +129,7 @@ export function ago(at: number | string, now: number = Date.now()): string {
 }
 
 const HOUR_MS = 3_600_000;
-const DAY_MS = 24 * HOUR_MS;
+export const DAY_MS = 24 * HOUR_MS;
 
 /**
  * A duration that may run to days: under a day as `duration` writes it, from a day up in days and
