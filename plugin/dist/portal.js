@@ -7184,6 +7184,7 @@ var init_task_server_name = __esm(() => {
 });
 
 // src/path-compare.ts
+import { statSync as statSync8 } from "fs";
 import { dirname as dirname7, resolve as resolve3 } from "path";
 function isInside(path, folder, ignoreCase = IGNORE_CASE) {
   const child = pathForm(path, ignoreCase);
@@ -7196,6 +7197,30 @@ function pathForm(path, ignoreCase = IGNORE_CASE) {
 }
 function samePath2(a, b, ignoreCase = IGNORE_CASE) {
   return isInside(a, b, ignoreCase) && isInside(b, a, ignoreCase);
+}
+function folderId(path) {
+  try {
+    const stat = statSync8(path, { bigint: true });
+    return stat.ino === 0n ? null : `${stat.dev}:${stat.ino}`;
+  } catch {
+    return null;
+  }
+}
+function isInsideOnDisk(path, folder, ignoreCase = IGNORE_CASE) {
+  if (isInside(path, folder, ignoreCase))
+    return true;
+  const target = folderId(folder);
+  if (target === null)
+    return false;
+  let at = resolve3(path);
+  for (;; ) {
+    if (folderId(at) === target)
+      return true;
+    const up = dirname7(at);
+    if (up === at)
+      return false;
+    at = up;
+  }
 }
 function isStrictlyInside(path, folder, ignoreCase = IGNORE_CASE) {
   return isInside(path, folder, ignoreCase) && !isInside(folder, path, ignoreCase);
@@ -10529,7 +10554,7 @@ var init_config = __esm(() => {
 });
 
 // src/project/locate.ts
-import { existsSync as existsSync13, realpathSync as realpathSync3, statSync as statSync8 } from "fs";
+import { existsSync as existsSync13, realpathSync as realpathSync3, statSync as statSync9 } from "fs";
 import { join as join15 } from "path";
 function gitNotFound(error) {
   const why = error instanceof Error ? error.message : String(error);
@@ -10652,7 +10677,7 @@ function checkoutRoots(parts) {
   return { commonDir, isWorktree: realpathSync3(parts.gitDir) !== commonDir, root };
 }
 function locateCheckout(cwd, options = {}) {
-  if (!existsSync13(cwd) || !statSync8(cwd).isDirectory()) {
+  if (!existsSync13(cwd) || !statSync9(cwd).isDirectory()) {
     throw new Error(`resolveProject: ${cwd} is not a folder`);
   }
   const git = gitIn(cwd, gitEnv(options.env ?? process.env), undefined, options.timeFor);
@@ -10682,7 +10707,7 @@ function locateCheckout(cwd, options = {}) {
   };
 }
 async function locateCheckoutAsync(cwd, options = {}) {
-  if (!existsSync13(cwd) || !statSync8(cwd).isDirectory()) {
+  if (!existsSync13(cwd) || !statSync9(cwd).isDirectory()) {
     throw new Error(`resolveProject: ${cwd} is not a folder`);
   }
   const git = gitInAsync(cwd, gitEnv(options.env ?? process.env), undefined, options.timeFor);
@@ -10867,7 +10892,7 @@ var MAX_DEPTH = 128;
 var init_ancestry = () => {};
 
 // src/hooks/sessions.ts
-import { existsSync as existsSync14, readdirSync as readdirSync7, readFileSync as readFileSync23, statSync as statSync9 } from "fs";
+import { existsSync as existsSync14, readdirSync as readdirSync7, readFileSync as readFileSync23, statSync as statSync10 } from "fs";
 import { uptime } from "os";
 import { join as join16 } from "path";
 function parseSessionRecord(json) {
@@ -10918,7 +10943,7 @@ function sessionRecordOf(claudeConfigDir, pid, facts = {}) {
   const bootedAt = Date.now() - uptime() * 1000;
   let text;
   try {
-    if (statSync9(file).mtimeMs < bootedAt)
+    if (statSync10(file).mtimeMs < bootedAt)
       return null;
     text = readFileSync23(file, "utf8");
   } catch (error) {
@@ -11290,7 +11315,7 @@ import {
   readdirSync as readdirSync10,
   readFileSync as readFileSync29,
   rmSync as rmSync5,
-  statSync as statSync12,
+  statSync as statSync13,
   writeFileSync as writeFileSync3
 } from "fs";
 import { join as join26 } from "path";
@@ -11382,7 +11407,7 @@ function isoSeconds(ms) {
 function appendLogLine(logFile, line, nowMs) {
   ensureDir(join26(logFile, ".."));
   try {
-    if (statSync12(logFile).size > LOG_MAX_BYTES) {
+    if (statSync13(logFile).size > LOG_MAX_BYTES) {
       const text = readFileSync29(logFile, "utf8");
       const keep = text.slice(text.length - LOG_MAX_BYTES / 2);
       writeFileSync3(logFile, keep.slice(keep.indexOf(`
@@ -20071,7 +20096,7 @@ import {
   readFileSync as readFileSync25,
   readSync as readSync2,
   rmSync as rmSync3,
-  statSync as statSync11
+  statSync as statSync12
 } from "fs";
 import { dirname as dirname10, join as join20, resolve as resolve5 } from "path";
 
@@ -20341,12 +20366,12 @@ init_sessions();
 
 // src/machine/claude.ts
 init_detached();
-import { statSync as statSync10 } from "fs";
+import { statSync as statSync11 } from "fs";
 import { join as join17 } from "path";
 var CLAUDE_TIMEOUT_MS = 30000;
 function isFile2(path) {
   try {
-    return statSync10(path).isFile();
+    return statSync11(path).isFile();
   } catch {
     return false;
   }
@@ -20613,7 +20638,7 @@ function sessionFiles(projectsDir, folder) {
     if (!name.endsWith(".jsonl"))
       continue;
     const path = join20(projectsDir, folder, name);
-    const stat = statSync11(path, { throwIfNoEntry: false });
+    const stat = statSync12(path, { throwIfNoEntry: false });
     if (stat === undefined || !stat.isFile())
       continue;
     files.push({
@@ -22869,12 +22894,12 @@ import { join as join30 } from "path";
 // src/hooks/jsonl-log.ts
 init_write();
 init_state();
-import { appendFileSync as appendFileSync2, mkdirSync as mkdirSync12, readFileSync as readFileSync33, statSync as statSync13 } from "fs";
+import { appendFileSync as appendFileSync2, mkdirSync as mkdirSync12, readFileSync as readFileSync33, statSync as statSync14 } from "fs";
 import { dirname as dirname14 } from "path";
 function cutBack(file) {
   let size;
   try {
-    size = statSync13(file).size;
+    size = statSync14(file).size;
   } catch {
     return;
   }
@@ -22911,7 +22936,7 @@ import {
   mkdirSync as mkdirSync13,
   readdirSync as readdirSync12,
   readFileSync as readFileSync34,
-  statSync as statSync14,
+  statSync as statSync15,
   unlinkSync as unlinkSync4
 } from "fs";
 import { dirname as dirname15, join as join31 } from "path";
@@ -22963,10 +22988,10 @@ function prune(dir, nowMs) {
     const path = join31(dir, name);
     try {
       if (TEMP_NAME.test(name)) {
-        if (nowMs - statSync14(path).mtimeMs > CHECKED_TEMP_MAX_AGE_MS)
+        if (nowMs - statSync15(path).mtimeMs > CHECKED_TEMP_MAX_AGE_MS)
           unlinkSync4(path);
       } else if (name.endsWith(".json")) {
-        entries.push({ path, mtimeMs: statSync14(path).mtimeMs });
+        entries.push({ path, mtimeMs: statSync15(path).mtimeMs });
       }
     } catch {}
   }
@@ -23030,7 +23055,7 @@ function checkedCacheProblem(paths, exists = existsSync23) {
   const dir = join31(paths.stateDir, CHECKED_DIR);
   try {
     if (exists(dir)) {
-      if (!statSync14(dir).isDirectory())
+      if (!statSync15(dir).isDirectory())
         return "is not a folder";
       accessSync(dir, constants.W_OK | constants.X_OK);
       return null;
@@ -23816,7 +23841,7 @@ function applyManagedLine(options) {
 // src/gateway/project-state.ts
 init_git_env();
 init_resolve();
-import { existsSync as existsSync30, realpathSync as realpathSync5, statSync as statSync15 } from "fs";
+import { existsSync as existsSync30, realpathSync as realpathSync5, statSync as statSync16 } from "fs";
 import { join as join35, resolve as resolve7 } from "path";
 
 // src/gateway/settings.ts
@@ -24371,7 +24396,7 @@ function realFolder(path) {
 }
 function isFolder2(path) {
   try {
-    return statSync15(path).isDirectory();
+    return statSync16(path).isDirectory();
   } catch {
     return false;
   }
@@ -29200,7 +29225,7 @@ init_build_info();
 init_names();
 init_git();
 init_config();
-import { existsSync as existsSync41, readFileSync as readFileSync50, statSync as statSync17 } from "fs";
+import { existsSync as existsSync41, readFileSync as readFileSync50, statSync as statSync18 } from "fs";
 import { join as join42, resolve as resolve10 } from "path";
 
 // src/project/deploy-skill.ts
@@ -29213,7 +29238,7 @@ import {
   openSync as openSync6,
   readdirSync as readdirSync15,
   readFileSync as readFileSync49,
-  statSync as statSync16,
+  statSync as statSync17,
   unlinkSync as unlinkSync5,
   writeFileSync as writeFileSync5
 } from "fs";
@@ -29386,7 +29411,7 @@ function isTopSkill(top, file) {
 }
 function skillFilesUnder(folder, depth, realRoot, seen = new Set) {
   const real = realTarget(folder);
-  if (seen.has(real) || !existsSync40(folder) || !statSync16(folder).isDirectory())
+  if (seen.has(real) || !existsSync40(folder) || !statSync17(folder).isDirectory())
     return [];
   seen.add(real);
   const found = [];
@@ -29454,7 +29479,7 @@ function planDeploySkill(root, file, mode) {
   if (!isInside2(realTarget(root), real)) {
     return refused(root, file, outsideMessage(root, file, real));
   }
-  if (!existsSync40(real) || !statSync16(real).isFile()) {
+  if (!existsSync40(real) || !statSync17(real).isFile()) {
     return refused(root, file, `${shown} is not a file`);
   }
   const before = readFileSync49(real, "utf8");
@@ -31977,7 +32002,7 @@ import {
   readFileSync as readFileSync56,
   renameSync as renameSync2,
   rmSync as rmSync9,
-  statSync as statSync18,
+  statSync as statSync19,
   writeFileSync as writeFileSync6
 } from "fs";
 import { basename as basename11, dirname as dirname22, join as join50, relative as relative5, sep as sep3 } from "path";
@@ -32001,7 +32026,7 @@ function contentOfFolder(source) {
 function sameFile(file, bytes, mode) {
   if (!existsSync43(file))
     return false;
-  if (mode !== undefined && hostPlatform() !== "win32" && (statSync18(file).mode & 511) !== mode) {
+  if (mode !== undefined && hostPlatform() !== "win32" && (statSync19(file).mode & 511) !== mode) {
     return false;
   }
   return readFileSync56(file).equals(bytes);
@@ -32109,7 +32134,7 @@ function rewriteFiles(real, content, mode) {
     const bytes = content.read(name);
     if (sameFile(file, bytes, mode))
       continue;
-    const keep = existsSync43(file) ? statSync18(file).mode & 511 : FILE_MODE;
+    const keep = existsSync43(file) ? statSync19(file).mode & 511 : FILE_MODE;
     atomicWrite(file, bytes.toString("utf8"), mode ?? keep);
   }
   const wanted = new Set(content.names.map((name) => name.split("/")[0]));
@@ -32598,7 +32623,7 @@ init_user_json();
 
 // src/jobs/git-hooks.ts
 init_git();
-import { closeSync as closeSync7, openSync as openSync7, readSync as readSync3, realpathSync as realpathSync7, statSync as statSync19 } from "fs";
+import { closeSync as closeSync7, openSync as openSync7, readSync as readSync3, realpathSync as realpathSync7, statSync as statSync20 } from "fs";
 import { basename as basename12, dirname as dirname23, join as join54, resolve as resolve11 } from "path";
 
 // src/jobs/classify.ts
@@ -33731,7 +33756,7 @@ function isHuskyStubFolder(folder) {
 }
 function isFile3(file) {
   try {
-    return statSync19(file).isFile();
+    return statSync20(file).isFile();
   } catch {
     return false;
   }
@@ -33740,7 +33765,7 @@ function hookText(file) {
   let fd = null;
   try {
     fd = openSync7(file, "r");
-    const size = statSync19(file).size;
+    const size = statSync20(file).size;
     if (size > MAX_HOOK_BYTES)
       return null;
     const buffer = Buffer.alloc(size);
@@ -33775,7 +33800,7 @@ function hookDecision(name, cwd, kinds, scriptsIn, env = process.env, gitTimeout
 
 // src/jobs/hook-folder.ts
 init_build_info();
-import { accessSync as accessSync3, constants as constants3, existsSync as existsSync47, readdirSync as readdirSync17, readFileSync as readFileSync58, statSync as statSync20 } from "fs";
+import { accessSync as accessSync3, constants as constants3, existsSync as existsSync47, readdirSync as readdirSync17, readFileSync as readFileSync58, statSync as statSync21 } from "fs";
 import { join as join55 } from "path";
 init_launcher();
 init_lock();
@@ -33885,7 +33910,7 @@ function gitHooksState(paths) {
   const problems = [];
   for (const name of HOOK_NAMES) {
     const file = join55(folder, name);
-    if (!existsSync47(file) || !statSync20(file).isFile())
+    if (!existsSync47(file) || !statSync21(file).isFile())
       problems.push(`${name} is missing`);
     else if (!isExecutable(file))
       problems.push(`${name} is not executable`);
@@ -35013,7 +35038,7 @@ import {
   readFileSync as readFileSync72,
   readSync as readSync7,
   realpathSync as realpathSync10,
-  statSync as statSync24
+  statSync as statSync25
 } from "fs";
 import { isAbsolute as isAbsolute6, join as join72, relative as relative8, resolve as resolve18, sep as sep6 } from "path";
 
@@ -36969,7 +36994,7 @@ import { existsSync as existsSync58 } from "fs";
 init_kind_defaults();
 
 // src/jobs/package-scripts.ts
-import { existsSync as existsSync57, readFileSync as readFileSync66, statSync as statSync21 } from "fs";
+import { existsSync as existsSync57, readFileSync as readFileSync66, statSync as statSync22 } from "fs";
 import { dirname as dirname27, join as join65, resolve as resolve13 } from "path";
 var NO_FILE_HERE = new Set(["ENOENT", "ENOTDIR", "EISDIR"]);
 function foldersToCheckoutRoot(start) {
@@ -37040,7 +37065,7 @@ function packageJsonAt(dir) {
 }
 function fileExistsIn(folder, word) {
   try {
-    return statSync21(resolve13(folder, word)).isFile();
+    return statSync22(resolve13(folder, word)).isFile();
   } catch {
     return false;
   }
@@ -38439,6 +38464,7 @@ var userAwayHook = {
 };
 
 // src/hooks/verify-gate.ts
+init_path_compare();
 init_locate();
 init_command();
 init_git();
@@ -38594,7 +38620,7 @@ function seenIn(lines, check, countsEdit) {
   }
   return seen;
 }
-function verifyGateWouldBlock(input, config, env) {
+function verifyGateWouldBlock(input, config, env, real = realPath) {
   if (config === null)
     return false;
   if (input.stop_hook_active === true)
@@ -38616,15 +38642,15 @@ function verifyGateWouldBlock(input, config, env) {
   const checkout = locateCheckout(cwd, { env });
   if (checkout === null)
     return false;
-  const root = realPath(checkout.root);
+  const root = real(checkout.root);
   const excluded = plansFolders(root, env);
   const seen = seenIn(lines, check, (block, editCwd) => {
     const fields = objectOf(block.input);
     const path = stringField(block.name === "NotebookEdit" ? fields?.notebook_path : fields?.file_path);
     if (path === null || path.trim() === "" || path.includes("\x00") || !isAbsolute5(path) && (editCwd === null || !isAbsolute5(editCwd)))
       return true;
-    const file = realPath(isAbsolute5(path) ? resolve15(path) : resolve15(editCwd ?? cwd, path));
-    return isInside(file, root) && ![".md", ".mdx"].includes(extname(file).toLowerCase()) && !excluded.some((folder) => isInside(file, folder));
+    const file = real(isAbsolute5(path) ? resolve15(path) : resolve15(editCwd ?? cwd, path));
+    return isInsideOnDisk(file, root) && ![".md", ".mdx"].includes(extname(file).toLowerCase()) && !excluded.some((folder) => isInsideOnDisk(file, folder));
   });
   return seen.lastEdit > Math.max(seen.lastCheck, seen.lastReminder);
 }
@@ -38649,12 +38675,12 @@ var verifyGateHook = {
 init_config_facts();
 init_auto_start();
 init_auto_state();
-import { closeSync as closeSync10, existsSync as existsSync62, fstatSync as fstatSync2, openSync as openSync10, readSync as readSync6, statSync as statSync23 } from "fs";
+import { closeSync as closeSync10, existsSync as existsSync62, fstatSync as fstatSync2, openSync as openSync10, readSync as readSync6, statSync as statSync24 } from "fs";
 import { basename as basename15, join as join71, resolve as resolve17 } from "path";
 
 // src/worktrees/in-progress.ts
 init_git();
-import { existsSync as existsSync61, readFileSync as readFileSync70, statSync as statSync22 } from "fs";
+import { existsSync as existsSync61, readFileSync as readFileSync70, statSync as statSync23 } from "fs";
 import { resolve as resolve16 } from "path";
 var BISECT = { ending: "`git bisect reset`", what: "a bisect" };
 var REBASE = { ending: "`git rebase --abort`", what: "a rebase" };
@@ -38701,7 +38727,7 @@ function readInProgress(worktree, env) {
     let text = "";
     try {
       if (operation.kind === "folder")
-        statSync22(marker);
+        statSync23(marker);
       else
         text = readFileSync70(marker, "utf8");
     } catch (error) {
@@ -38913,7 +38939,7 @@ function idleMinutesOrNull(worktree, now) {
   let last = lastReflogTime(join71(admin, "logs", "HEAD"), now) ?? 0;
   for (const file of ["index", "HEAD"]) {
     try {
-      last = Math.max(last, statSync23(join71(admin, file)).mtimeMs);
+      last = Math.max(last, statSync24(join71(admin, file)).mtimeMs);
     } catch {}
   }
   return last === 0 ? null : (now - last) / 60000;
@@ -38927,7 +38953,7 @@ function judgeWorktree(repo, listed, base, sessions, env, now, patterns) {
   if (listed.prunable)
     return "gone";
   try {
-    statSync23(listed.path);
+    statSync24(listed.path);
   } catch {
     return "gone";
   }
@@ -39786,7 +39812,7 @@ function shadcnFolders(root) {
       const rel = relative8(realpathSync10(root), target);
       if (rel === ".." || rel.startsWith(`..${sep6}`) || isAbsolute6(rel))
         return;
-      if (statSync24(folder).isDirectory() && !folders.has(target))
+      if (statSync25(folder).isDirectory() && !folders.has(target))
         folders.set(target, folder);
     } catch {}
   };
@@ -40943,7 +40969,7 @@ function checkLine(check) {
 // src/jobs/status.ts
 init_resolve();
 init_resolve2();
-import { mkdirSync as mkdirSync28, readdirSync as readdirSync23, readFileSync as readFileSync75, statSync as statSync26 } from "fs";
+import { mkdirSync as mkdirSync28, readdirSync as readdirSync23, readFileSync as readFileSync75, statSync as statSync27 } from "fs";
 import { join as join75 } from "path";
 
 // src/jobs/queue.ts
@@ -41038,7 +41064,7 @@ import {
   readdirSync as readdirSync22,
   readFileSync as readFileSync74,
   renameSync as renameSync5,
-  statSync as statSync25,
+  statSync as statSync26,
   unlinkSync as unlinkSync6,
   utimesSync,
   writeFileSync as writeFileSync12
@@ -41204,7 +41230,7 @@ function leaseStore(options) {
   };
   const removeLeftover = (path) => {
     try {
-      if (Date.now() - statSync25(path).mtimeMs > LEFTOVER_MS)
+      if (Date.now() - statSync26(path).mtimeMs > LEFTOVER_MS)
         removeQuietly(path);
     } catch {}
   };
@@ -41237,7 +41263,7 @@ function leaseStore(options) {
       let text;
       let mtimeMs;
       try {
-        mtimeMs = statSync25(path).mtimeMs;
+        mtimeMs = statSync26(path).mtimeMs;
       } catch (error) {
         if (errorCode(error) === "ENOENT")
           continue;
@@ -41455,7 +41481,7 @@ function jobsFingerprint(home) {
     }
     for (const name of names) {
       try {
-        const stat = statSync26(join75(folder, name));
+        const stat = statSync27(join75(folder, name));
         parts.push(`${folder}/${name}:${stat.size}:${stat.mtimeMs}`);
       } catch {
         parts.push(`${folder}/${name}:gone`);
@@ -41467,7 +41493,7 @@ function jobsFingerprint(home) {
 
 // src/portal/actions.ts
 import { createHash as createHash11 } from "crypto";
-import { existsSync as existsSync67, statSync as statSync28 } from "fs";
+import { existsSync as existsSync67, statSync as statSync29 } from "fs";
 import { isAbsolute as isAbsolute8, join as join79 } from "path";
 init_build_info();
 init_paths2();
@@ -42327,7 +42353,7 @@ init_lock();
 init_managed_json();
 
 // src/tasks/ops.ts
-import { existsSync as existsSync66, readFileSync as readFileSync76, rmSync as rmSync16, statSync as statSync27 } from "fs";
+import { existsSync as existsSync66, readFileSync as readFileSync76, rmSync as rmSync16, statSync as statSync28 } from "fs";
 import { join as join78, relative as relative9 } from "path";
 
 // src/tasks/schemas.ts
@@ -43369,7 +43395,7 @@ function deployTasksIn(root) {
 }
 function isFolderOnDisk(root, path) {
   const full = join78(root, path);
-  return existsSync66(full) && statSync27(full).isDirectory();
+  return existsSync66(full) && statSync28(full).isDirectory();
 }
 var DELETE_TRACKED = "Tracked deploy task: it is part of a commit, so close it with task_done instead";
 var TASK_LINE_CAP = 200;
@@ -44826,7 +44852,7 @@ async function projectAdd(action, body) {
   }
   let isFolder = false;
   try {
-    isFolder = existsSync67(folder) && statSync28(folder).isDirectory();
+    isFolder = existsSync67(folder) && statSync29(folder).isDirectory();
   } catch {
     isFolder = false;
   }
@@ -47576,7 +47602,7 @@ class LiveHub {
 }
 
 // src/portal/live/sources.ts
-import { readFileSync as readFileSync77, statSync as statSync29 } from "fs";
+import { readFileSync as readFileSync77, statSync as statSync30 } from "fs";
 init_db();
 init_state();
 var LIVE_POLL_MS = 2000;
@@ -47715,7 +47741,7 @@ function createLiveSources(deps) {
     const file = workDbFile(deps.paths);
     return [file, `${file}-wal`].map((one) => {
       try {
-        const stat = statSync29(one);
+        const stat = statSync30(one);
         return `${stat.size}:${stat.mtimeMs}`;
       } catch {
         return "-";
@@ -47767,7 +47793,7 @@ function createLiveSources(deps) {
 }
 
 // src/portal/static.ts
-import { existsSync as existsSync68, readFileSync as readFileSync78, statSync as statSync30 } from "fs";
+import { existsSync as existsSync68, readFileSync as readFileSync78, statSync as statSync31 } from "fs";
 import { extname as extname2, join as join80, resolve as resolve19, sep as sep7 } from "path";
 var TYPES = {
   ".css": "text/css; charset=utf-8",
@@ -47801,7 +47827,7 @@ function fileInside(folder, pathname) {
   if (file !== folder && !file.startsWith(`${folder}${sep7}`))
     return null;
   try {
-    return statSync30(file).isFile() ? file : null;
+    return statSync31(file).isFile() ? file : null;
   } catch {
     return null;
   }

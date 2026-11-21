@@ -63,12 +63,11 @@ const OTHERS: Record<string, Expectation> = {
     code: 1,
     setup: (home) => {
       const held = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("") });
-      saveConfig(routerPaths({ HOME: home }).gatewayConfigFile, {
-        ...emptyConfig(),
-        port: held.port,
-      });
+      const port = held.port;
+      if (port === undefined) throw new Error("the held server has no TCP port");
+      saveConfig(routerPaths({ HOME: home }).gatewayConfigFile, { ...emptyConfig(), port });
       return {
-        said: new RegExp(`Failed to start server\\. Is port ${held.port} in use`),
+        said: new RegExp(`Failed to start server\\. Is port ${port} in use`),
         undo: () => void held.stop(true),
       };
     },

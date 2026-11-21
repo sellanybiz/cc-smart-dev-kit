@@ -776,6 +776,44 @@ async function runHookEntry(spec) {
 // src/hooks/verify-gate.ts
 import { extname, isAbsolute, resolve as resolve5 } from "path";
 
+// src/path-compare.ts
+import { statSync as statSync5 } from "fs";
+import { dirname as dirname4, resolve as resolve2 } from "path";
+var IGNORE_CASE = process.platform === "win32";
+function isInside(path, folder, ignoreCase = IGNORE_CASE) {
+  const child = pathForm(path, ignoreCase);
+  const parent = pathForm(folder, ignoreCase);
+  return child === parent || child.startsWith(`${parent}/`);
+}
+function pathForm(path, ignoreCase = IGNORE_CASE) {
+  const forward = resolve2(path.replace(/\\/g, "/")).replace(/\\/g, "/").replace(/\/+$/, "");
+  return ignoreCase ? forward.toLowerCase() : forward;
+}
+function folderId(path) {
+  try {
+    const stat = statSync5(path, { bigint: true });
+    return stat.ino === 0n ? null : `${stat.dev}:${stat.ino}`;
+  } catch {
+    return null;
+  }
+}
+function isInsideOnDisk(path, folder, ignoreCase = IGNORE_CASE) {
+  if (isInside(path, folder, ignoreCase))
+    return true;
+  const target = folderId(folder);
+  if (target === null)
+    return false;
+  let at = resolve2(path);
+  for (;; ) {
+    if (folderId(at) === target)
+      return true;
+    const up = dirname4(at);
+    if (up === at)
+      return false;
+    at = up;
+  }
+}
+
 // src/shell/program-name.ts
 function programName(word) {
   return (word.split(/[\\/]/).pop() ?? word).toLowerCase().replace(/\.(exe|cmd|ps1|bat)$/, "");
@@ -2473,20 +2511,6 @@ function nestedDialect(program) {
 // src/hooks/git.ts
 import { readFileSync as readFileSync5, realpathSync as realpathSync3 } from "fs";
 import { basename as basename2, dirname as dirname5, join as join7, resolve as resolve3 } from "path";
-
-// src/path-compare.ts
-import { dirname as dirname4, resolve as resolve2 } from "path";
-var IGNORE_CASE = process.platform === "win32";
-function isInside(path, folder, ignoreCase = IGNORE_CASE) {
-  const child = pathForm(path, ignoreCase);
-  const parent = pathForm(folder, ignoreCase);
-  return child === parent || child.startsWith(`${parent}/`);
-}
-function pathForm(path, ignoreCase = IGNORE_CASE) {
-  const forward = resolve2(path.replace(/\\/g, "/")).replace(/\\/g, "/").replace(/\/+$/, "");
-  return ignoreCase ? forward.toLowerCase() : forward;
-}
-// src/hooks/git.ts
 function realPath(path) {
   const rest = [];
   let at = resolve3(path);
@@ -2722,7 +2746,7 @@ function seenIn(lines, check, countsEdit) {
   }
   return seen;
 }
-function verifyGateWouldBlock(input, config, env) {
+function verifyGateWouldBlock(input, config, env, real = realPath) {
   if (config === null)
     return false;
   if (input.stop_hook_active === true)
@@ -2744,15 +2768,15 @@ function verifyGateWouldBlock(input, config, env) {
   const checkout = locateCheckout(cwd, { env });
   if (checkout === null)
     return false;
-  const root = realPath(checkout.root);
+  const root = real(checkout.root);
   const excluded = plansFolders(root, env);
   const seen = seenIn(lines, check, (block, editCwd) => {
     const fields = objectOf(block.input);
     const path = stringField(block.name === "NotebookEdit" ? fields?.notebook_path : fields?.file_path);
     if (path === null || path.trim() === "" || path.includes("\x00") || !isAbsolute(path) && (editCwd === null || !isAbsolute(editCwd)))
       return true;
-    const file = realPath(isAbsolute(path) ? resolve5(path) : resolve5(editCwd ?? cwd, path));
-    return isInside(file, root) && ![".md", ".mdx"].includes(extname(file).toLowerCase()) && !excluded.some((folder) => isInside(file, folder));
+    const file = real(isAbsolute(path) ? resolve5(path) : resolve5(editCwd ?? cwd, path));
+    return isInsideOnDisk(file, root) && ![".md", ".mdx"].includes(extname(file).toLowerCase()) && !excluded.some((folder) => isInsideOnDisk(file, folder));
   });
   return seen.lastEdit > Math.max(seen.lastCheck, seen.lastReminder);
 }

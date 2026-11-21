@@ -81,6 +81,9 @@ in your own terminal after the update; the user guide is [README.md](README.md).
 - **herdr and sessions find worktrees wherever a project's hook puts them.** They read git's own
   list, herdr binds only a worktree whose name matches its launch exactly and keeps its own
   launch record, and a resume of a worktree outside `.claude/worktrees` starts in its folder.
+- **`verify-gate` on Windows compares folders on disk.** A path written with an 8.3 short name
+  (`RUNNER~1`) was read as outside the checkout, so the reminder to run the fast check never
+  came.
 - **The shadcn guide names `npx shadcn@<pin>` for npm projects again.**
 
 **What to run:** `cc-smart-dev-kit update`.
