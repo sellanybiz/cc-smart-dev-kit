@@ -3,6 +3,43 @@
 What each release changed, newest first. A release's **What to run** steps are the ones to do
 in your own terminal after the update; the user guide is [README.md](README.md).
 
+## 6.2.0
+
+- **Each hook loads only itself.** Every hook bundle carried every other hook (583 KB each),
+  because each one loaded the full hook list. Now each loads only its own: 266 to 357 KB, and a
+  hook run takes about 22 ms instead of about 32 ms. A test builds every hook, runs it the way
+  Claude Code does, checks that it names itself, and fails a bundle that grows past its budget.
+  What is left is mostly the settings checker (zod), a follow-up of its own.
+- **The status line reads your session's folder.** The usage alerts followed the folder the
+  status line process started in, not the one the session works in. Both the alerts and the
+  task rows now read the session's folder, and git runs half as often per update. A session in a
+  worktree now shows that worktree's alert setting.
+- **`task list --branch` sees what the release gates see.** It read your local `main`, which can
+  be far behind, so it listed tasks as unmerged that were already on `origin/main`. A bare base
+  name now reads `origin/<base>`; with no `origin` remote it reads the local branch and says so.
+- **A task's history prints a claim as text.** A take-over wrote `[object Object]`; it now writes
+  the session id, and older rows print the same way.
+- **Finished worktrees stop staying for `next-env.d.ts`.** Next.js writes that file in every
+  checkout; it now counts as rebuildable, so it no longer keeps a finished worktree.
+- **`worktrees --clean` deletes finished builder branches.** A builder's `worktree-agent-*`
+  branch stayed after its folder went, once its work reached `main` through the plan branch.
+  `--clean` now deletes those whose work the base holds and no worktree uses, and keeps the rest
+  with the reason. The plain `worktrees` list shows which would go. Your own branches are never
+  touched.
+- **One home for the worktree path.** Ten places built `<repo>/.claude/worktrees/<name>` by
+  hand; they now share one helper, and a test fails a new copy. A parked worktree with no branch
+  no longer counts the deletions it made itself as yours.
+- **While you are away, a session keeps going.** The away skill now says: work at full parallel
+  width, and after a plan, run its review, the full check and its pull request, merge it as
+  `allowMerge` says or when you said so yourself, then start the next plan. You said: "dont wait
+  for me keep going even after a plan completed review merge and go next".
+- **Tests never touch your real home folder.** The test setup gives every run its own temp
+  home, including what `os.homedir()` returns.
+- **The old task files are gone.** The 27 `.claude/tasks/T-*.md` files the kit stopped reading
+  in 5.0 are fixed here, moved to kit tasks, or recorded as moot.
+
+**What to run:** `cc-smart-dev-kit update`.
+
 ## 6.1.1
 
 - **The queue's pipe hint comes only when there is a pipe.** A waiting heavy job printed "A
