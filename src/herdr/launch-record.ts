@@ -13,7 +13,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { realPath } from "../hooks/git";
 import { pathForm } from "../path-compare";
-import { writePrivate } from "./brief";
+import { type StartBase, writePrivate } from "./brief";
 
 export interface LaunchRecord {
   /** When herdr bound the worktree, in milliseconds. */
@@ -24,6 +24,8 @@ export interface LaunchRecord {
   repo: string;
   /** The worktree's folder, as git lists it. */
   worktree: string;
+  /** Where the lead started it (`herdr start --base`); absent for a start from the default branch. */
+  base?: StartBase;
 }
 
 export function launchRecordsFolder(stateDir: string): string {

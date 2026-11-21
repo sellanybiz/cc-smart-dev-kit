@@ -58,6 +58,14 @@ The first message is wrapped as lead evidence, never the person’s approval.
   refuses while the default branch is unknown (fix: `git remote set-head origin --auto`). The plan holds the
   scope, so the brief after `--` can be short: the command adds the steps (take the plan, reset to
   the default branch, build it, report).
+- Add `--base <ref>` to start the child's worktree at a branch, tag or commit instead of the
+  default branch: the plan branch's head for a phase child, say. The command reads the ref first
+  and refuses one that names no commit (fetch a remote branch before you name it); the child
+  resets to that commit. `herdr list` shows the base. It is refused with `--followup` and for a
+  plan that resumes.
+- For a brief with quotes, `$` or several lines, write it to a file and pass `--brief-file <path>`
+  in place of `-- "<brief>"`: no shell reads the text. A missing or empty file refuses the start.
+  `herdr send <terminal> --brief-file <path>` does the same for a message.
 - For an allowlisted remote machine, add `--on <machine>` and its own `--cwd <dir>`.
   The remote user’s login shell must find Claude Code and the kit, with the kit at least as new as this one. Remote reports stay there as files;
   keep the report-list and file-read commands printed by start and wait.
@@ -74,7 +82,7 @@ If identity is refused, do not set `HC_TERMINAL_ID`: the lead must actually run 
 `cc-smart-dev-kit herdr list` shows this lead's children; `list --all` includes independent
 sessions. Read a pane with `hc get <terminal> --json` and `hc read <terminal>` when needed.
 
-Send a follow-up with `cc-smart-dev-kit herdr send <terminal> "<scope>"`. The command tags it
+Send a follow-up with `cc-smart-dev-kit herdr send <terminal> "<scope>"` (or `--brief-file <path>`). The command tags it
 as lead text. A blocked child is the person's, not a send: see below. An unknown status
 needs its pane. Never force text into a dialog.
 
@@ -90,7 +98,10 @@ merged; it is the person's call: ask the person first.
 Run `cc-smart-dev-kit herdr wait` with Bash's `run_in_background: true`; let completion
 notify you, rather than polling. Default/`--any` waits for news (done, error, ended);
 `--all` waits for each child in its initial barrier to settle or leave. A blocked child is
-not news: the wait goes on while the person answers it. A timeout can leave work running. Copy the exact
+not news: the wait goes on while the person answers it. One wait runs per lead: start a second
+and it names the live one and exits at once, so wait for the first to end. A timeout can leave
+work running; it lists the children without news as still working, blocked (waiting for the
+person) or gone. Copy the exact
 next command it prints: `--seen` holds percent-encoded address, turn and state for news
 already printed. Do not manufacture a cursor from a later status read.
 

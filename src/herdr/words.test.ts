@@ -1,5 +1,7 @@
 import { expect, test } from "bun:test";
 import {
+  BASE_FOLLOWUP_REFUSAL,
+  BRIEF_AND_WORDS,
   cliModeFlag,
   HERDR_USAGE,
   MODE_ORDER,
@@ -294,4 +296,74 @@ test("the --plan exclusion has one text, in the parser and in the early refusal"
   ]);
   if (!("error" in parsed)) throw new Error("expected an error");
   expect(parsed.error).toStartWith(PLAN_EXCLUSION);
+});
+
+test("start --base keeps the ref, and a follow-up child cannot take one", () => {
+  const start = ["start", "--model", "sonnet", "--effort", "high", "--mode", "manual"];
+  expect(parseHerdrArgs([...start, "--base", "plan-branch", "--", "go"])).toMatchObject({
+    verb: "start",
+    base: "plan-branch",
+    brief: "go",
+  });
+  expect(
+    parseHerdrArgs([...start, "--base=origin/feat", "--task", "#7", "--", "go"]),
+  ).toMatchObject({ base: "origin/feat", task: "#7" });
+  expect(parseHerdrArgs([...start, "--", "go"])).not.toHaveProperty("base");
+  for (const [extra, why] of [
+    [["--base", "x", "--followup"], BASE_FOLLOWUP_REFUSAL],
+    [["--base", " "], "--base needs a value."],
+    [["--base", "-x"], "--base needs a branch, a tag or a commit, not an option."],
+  ] as const) {
+    const parsed = parseHerdrArgs([...start, ...extra, "--", "go"]);
+    expect(parsed).toHaveProperty("error");
+    if ("error" in parsed) expect(parsed.error).toStartWith(why);
+  }
+});
+
+test("start --brief-file takes the place of the words after --, and never both", () => {
+  const start = ["start", "--model", "sonnet", "--effort", "high", "--mode", "manual"];
+  const expected = {
+    verb: "start",
+    model: "sonnet",
+    effort: "high",
+    mode: "default",
+    independent: false,
+    asked: false,
+    brief: "",
+    briefFile: "brief.md",
+  } as const;
+  expect(parseHerdrArgs([...start, "--brief-file", "brief.md"])).toEqual(expected);
+  expect(parseHerdrArgs([...start, "--brief-file=brief.md", "--"])).toEqual(expected);
+  const both = parseHerdrArgs([...start, "--brief-file", "brief.md", "--", "words"]);
+  if (!("error" in both)) throw new Error("expected an error");
+  expect(both.error).toStartWith(BRIEF_AND_WORDS);
+  // Without the file, the old rule stays word for word.
+  const bare = parseHerdrArgs(start);
+  if (!("error" in bare)) throw new Error("expected an error");
+  expect(bare.error).toStartWith("Put -- before the brief.");
+  expect(parseHerdrArgs([...start, "--brief-file", " "])).toHaveProperty("error");
+  expect(parseHerdrArgs([...start, "--brief-file", "a", "--brief-file", "b"])).toHaveProperty(
+    "error",
+  );
+});
+
+test("send --brief-file takes the message from a file, and never beside words", () => {
+  expect(parseHerdrArgs(["send", "t7", "--brief-file", "msg.md"])).toEqual({
+    verb: "send",
+    target: "t7",
+    text: "",
+    briefFile: "msg.md",
+  });
+  for (const args of [
+    ["send", "t7", "words", "--brief-file", "msg.md"],
+    ["send", "--brief-file", "msg.md"],
+    ["send", "t7", "--brief-file"],
+  ]) {
+    const parsed = parseHerdrArgs(args);
+    expect(parsed).toHaveProperty("error");
+    if ("error" in parsed) expect(parsed.error).toContain("Usage:");
+  }
+  expect(HERDR_USAGE).toContain("send <terminal> (<text> | --brief-file <path>)");
+  expect(HERDR_USAGE).toContain("[--base <ref>]");
+  expect(HERDR_USAGE).toContain("(-- <brief> | --brief-file <path>)");
 });

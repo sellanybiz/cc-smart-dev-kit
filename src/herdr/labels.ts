@@ -5,6 +5,8 @@ export const KIT_TASK = "kit.task";
 export const KIT_PLAN = "kit.plan";
 /** The lead's follow-up child (`herdr start --followup`): value `1`. It never settles, and `wait --all` leaves it out. */
 export const KIT_FOLLOWUP = "kit.followup";
+/** The ref a child's worktree was started at (`herdr start --base`); `herdr list` shows it. */
+export const KIT_BASE = "kit.base";
 export const KIT_INDEPENDENT = "kit.independent";
 export const KIT_STARTED_BY = "kit.started-by";
 export const KIT_LABELS = {
@@ -13,6 +15,7 @@ export const KIT_LABELS = {
   task: KIT_TASK,
   plan: KIT_PLAN,
   followup: KIT_FOLLOWUP,
+  base: KIT_BASE,
   independent: KIT_INDEPENDENT,
   startedBy: KIT_STARTED_BY,
 } as const;

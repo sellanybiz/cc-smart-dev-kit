@@ -214,3 +214,72 @@ test("the reset check of step 1 counts only the child's own commits, in real git
   git(work, "fetch", "-q", "origin");
   expect(own("worktree-kit-fu")).toBe(1);
 });
+
+const START_POINT = { ref: "plan-branch", commit: "0123456789abcdef0123456789abcdef01234567" };
+
+test("a plan child with a base resets to its commit, never to the default branch", async () => {
+  const state = tempDir();
+  const plan = { slug: "alpha", handoutId: "habc", base: "trunk", resume: false };
+  const fresh = await writeBrief(
+    state,
+    "core",
+    "kit-alpha",
+    "Build it.",
+    true,
+    undefined,
+    plan,
+    undefined,
+    START_POINT,
+  );
+  const text = readFileSync(fresh, "utf8");
+  expect(text).toContain(
+    `2. Run \`git reset --hard ${START_POINT.commit}\`: it is the commit of plan-branch when your lead started you, and your worktree's own branch is the plan branch. Never reset to the default branch. Then save where you started: task_update on the plan with base set to the output of \`git rev-parse HEAD\`.`,
+  );
+  expect(text).not.toContain("git fetch");
+  expect(text).not.toContain("origin/trunk");
+  // A resume continues its own worktree: the base changes nothing there.
+  const resumed = await writeBrief(
+    state,
+    "core",
+    "kit-beta",
+    "Build it.",
+    true,
+    undefined,
+    { ...plan, resume: true },
+    undefined,
+    START_POINT,
+  );
+  expect(readFileSync(resumed, "utf8")).toContain("2. This is a resume");
+  expect(readFileSync(resumed, "utf8")).not.toContain("git reset --hard");
+});
+
+test("a task or plain child with a base gets one start-point step after its task trailer", async () => {
+  const state = tempDir();
+  const step = `Your start point: plan-branch, commit ${START_POINT.commit}. Your worktree starts from the default branch, not from this commit. Before anything else, run \`git status --porcelain\`: if it prints anything, stop and report. Otherwise run \`git reset --hard ${START_POINT.commit}\`.`;
+  const task = await writeBrief(
+    state,
+    "core",
+    "kit-one",
+    "Do it.",
+    true,
+    "#7",
+    undefined,
+    undefined,
+    START_POINT,
+  );
+  const text = readFileSync(task, "utf8");
+  expect(text).toContain(step);
+  expect(text.indexOf("Your task: #7")).toBeLessThan(text.indexOf("Your start point:"));
+  const plain = await writeBrief(
+    state,
+    "core",
+    "kit-two",
+    "Do it.",
+    false,
+    undefined,
+    undefined,
+    undefined,
+    START_POINT,
+  );
+  expect(readFileSync(plain, "utf8")).toBe(`Do it.\n\n${step}\n`);
+});

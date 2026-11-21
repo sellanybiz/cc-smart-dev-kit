@@ -73,3 +73,17 @@ test("a file that is not a record, or names another worktree, never vouches", as
   );
   expect(launchedHere(stateDir, repo, worktree)).toBe(false);
 });
+
+test("a record carries the base the lead gave, and still vouches for its worktree", async () => {
+  const { repo, stateDir, worktree } = folders();
+  const base = { ref: "plan-branch", commit: "0123456789abcdef0123456789abcdef01234567" };
+  await writeLaunchRecord(stateDir, { at: 5, branch: "feat-x", repo, worktree, base });
+  expect(JSON.parse(readFileSync(launchRecordPath(stateDir, worktree), "utf8"))).toEqual({
+    at: 5,
+    branch: "feat-x",
+    repo,
+    worktree,
+    base,
+  });
+  expect(launchedHere(stateDir, repo, worktree)).toBe(true);
+});

@@ -1,10 +1,12 @@
 import { expect, test } from "bun:test";
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { hostname } from "node:os";
 import { dirname, join } from "node:path";
 import { VERSION } from "../build-info";
 import { COMMAND } from "../build-info/names";
 import { cliPaths } from "../cli/paths";
 import { createOut } from "../cli/ui/out";
+import { withLock } from "../setup/lock";
 import { taskContext } from "../tasks/context";
 import { createTaskOps } from "../tasks/ops";
 import { openWorkDb, workDbFile } from "../tasks/work/db";
@@ -28,6 +30,7 @@ import {
 import type { HcRunner } from "./hc";
 import { launchedHere, launchRecordsFolder } from "./launch-record";
 import { PLAN_POLL_MS, type PrState } from "./plans";
+import { waiterFolder } from "./waiter";
 import { FOLLOWUP_EXCLUSION, PLAN_EXCLUSION } from "./words";
 
 /** What the fake `claude -w <name>` is told: where it runs, the name, and a way to work later. */
@@ -624,6 +627,12 @@ test("empty all barrier has no continuation", async () => {
 });
 test("wait prints every news timestamp and exact continuation", async () => {
   const w = world();
+  w.rows.t3 = {
+    address: "t3",
+    state: "live",
+    labels: { "kit.lead": "core/t1" },
+    status: { app: "claude-code", state: "working" },
+  };
   w.setList(["t2"]);
   w.ctx.events = async () => ({
     news: [{ terminal: "t2", state: "error", status_ms: 9, turn: 3 }],
@@ -635,7 +644,7 @@ test("wait prints every news timestamp and exact continuation", async () => {
   );
   expect(w.lines).toEqual([
     "t2: error; status_ms=9",
-    "· Not settled yet (a blocked child waits for the person; see herdr list): t3",
+    "· Not settled yet; still working: t3 (working)",
     `${COMMAND} herdr wait --all --timeout 9 --seen t2:3:error`,
   ]);
 });
@@ -2339,4 +2348,345 @@ test("the all barrier completes while a skipped follow-up child is still working
   const waiting = new WaitBarrier("all");
   expect(waiting.consume(rows("working"))).toBe(false);
   expect(waiting.pending()).toEqual(["t3"]);
+});
+
+// ---- `herdr start --base`, `--brief-file`, one waiter per lead, and the timeout words ----
+
+/** A branch one commit past main, made without leaving main: where a lead's plan branch might be. */
+function branchPastMain(p: ReturnType<typeof planWorld>, name: string): string {
+  git(p.ctx.cwd, "switch", "-q", "-c", name);
+  git(p.ctx.cwd, "commit", "-q", "--allow-empty", "-m", "work on the branch");
+  git(p.ctx.cwd, "switch", "-q", "main");
+  return git(p.ctx.cwd, "rev-parse", name).trim();
+}
+
+function onlyLaunchRecord(p: ReturnType<typeof planWorld>): Record<string, unknown> {
+  const folder = launchRecordsFolder(p.ctx.paths.stateDir);
+  const files = readdirSync(folder);
+  expect(files).toHaveLength(1);
+  return JSON.parse(readFileSync(join(folder, files[0] ?? ""), "utf8"));
+}
+
+test("--base starts a plan child at that ref: the brief resets to its commit, and the label and the launch record say so", async () => {
+  const p = planWorld();
+  p.plan("alpha", ["src/a/"]);
+  const commit = branchPastMain(p, "plan-branch");
+  expect(
+    await runHerdr(
+      [...planLaunch, "--plan", "alpha", "--base", "plan-branch", "--", "Build alpha"],
+      p.ctx,
+    ),
+  ).toBe(0);
+  const brief = readFileSync(briefPath(p.ctx.paths.stateDir, "core", "kit-alpha"), "utf8");
+  expect(brief).toContain(`git reset --hard ${commit}`);
+  expect(brief).toContain("it is the commit of plan-branch when your lead started you");
+  expect(brief).not.toContain("origin/main");
+  const run = p.calls.find((c) => c.args[0] === "run")?.args ?? [];
+  expect(run).toContain("kit.base=plan-branch");
+  expect(onlyLaunchRecord(p)).toMatchObject({ base: { ref: "plan-branch", commit } });
+});
+
+test("a start without --base keeps the default: no base label, no base in the record", async () => {
+  const p = planWorld();
+  p.plan("alpha", ["src/a/"]);
+  expect(await runHerdr([...planLaunch, "--plan", "alpha", "--", "Build alpha"], p.ctx)).toBe(0);
+  const run = p.calls.find((c) => c.args[0] === "run")?.args ?? [];
+  expect(run.some((a) => a.startsWith("kit.base="))).toBe(false);
+  expect(onlyLaunchRecord(p)).not.toHaveProperty("base");
+  expect(readFileSync(briefPath(p.ctx.paths.stateDir, "core", "kit-alpha"), "utf8")).toContain(
+    "git reset --hard origin/main",
+  );
+});
+
+test("--base gives a plain child a start-point step in its brief", async () => {
+  const p = planWorld();
+  const commit = branchPastMain(p, "plan-branch");
+  expect(await runHerdr([...launch, "--base", "plan-branch", "--", "work"], p.ctx)).toBe(0);
+  const brief = readFileSync(briefPath(p.ctx.paths.stateDir, "core", "kit-one"), "utf8");
+  expect(brief).toContain(`Your start point: plan-branch, commit ${commit}.`);
+  expect(brief).toContain(`git reset --hard ${commit}`);
+  expect(onlyLaunchRecord(p)).toMatchObject({ base: { ref: "plan-branch", commit } });
+});
+
+test("a --base that names no commit refuses before anything is reserved or launched", async () => {
+  const p = planWorld();
+  p.plan("alpha", ["src/a/"]);
+  expect(
+    await runHerdr([...planLaunch, "--plan", "alpha", "--base", "no-such-ref", "--", "go"], p.ctx),
+  ).toBe(1);
+  expect(p.lines.join("\n")).toContain("--base no-such-ref names no commit in this project.");
+  p.noRun();
+  expect(p.row("alpha").lead).toBeNull();
+  p.lines.length = 0;
+  expect(await runHerdr([...launch, "--base", "no-such-ref", "--", "go"], p.ctx)).toBe(1);
+  expect(p.lines.join("\n")).toContain("--base no-such-ref names no commit in this project.");
+  p.noRun();
+});
+
+test("--base needs a git project", async () => {
+  const w = world();
+  expect(await runHerdr([...launch, "--base", "main", "--", "go"], w.ctx)).toBe(1);
+  expect(w.lines.join("\n")).toContain("--base needs a git project.");
+  expect(w.calls.some((c) => c.args[0] === "run")).toBe(false);
+});
+
+test("--base never moves a plan that resumes in its own worktree, and gives the claim back", async () => {
+  const p = planWorld();
+  const alpha = p.plan("alpha", ["src/a/"]);
+  branchPastMain(p, "plan-branch");
+  expect(await runHerdr([...planLaunch, "--plan", "alpha", "--", "work"], p.ctx)).toBe(0);
+  const handout = p.row("alpha").lead?.handoutId ?? "";
+  const taken = takeTasks(p.db, p.project, alpha.id, CHILD, 30, {
+    from: handout,
+    isLive: () => false,
+  });
+  expect(taken.ok).toBe(true);
+  p.ctx.process = ENDED;
+  delete p.rows.t2;
+  const agent = p.row("alpha").agent;
+  p.calls.length = 0;
+  p.lines.length = 0;
+  expect(
+    await runHerdr(
+      [...planLaunch, "--plan", "alpha", "--base", "plan-branch", "--", "work"],
+      p.ctx,
+    ),
+  ).toBe(1);
+  expect(p.lines.join("\n")).toContain(
+    "--base cannot start a plan that resumes: it continues its own worktree.",
+  );
+  p.noRun();
+  expect(p.row("alpha").agent).toBe(agent);
+});
+
+test("--base on a remote machine is read there, argv only, and the brief carries the commit", async () => {
+  const w = world();
+  const commit = "0123456789abcdef0123456789abcdef01234567";
+  w.setResponse((args) =>
+    args[0] !== "exec"
+      ? undefined
+      : args.includes("--show-toplevel")
+        ? { code: 0, stdout: Buffer.from("/repo").toString("base64"), stderr: "" }
+        : args.includes("--verify") && args.includes("plan-branch^{commit}")
+          ? { code: 0, stdout: Buffer.from(`${commit}\n`).toString("base64"), stderr: "" }
+          : args.includes("test") || args.includes("show-ref")
+            ? { code: 1, stdout: "", stderr: "" }
+            : undefined,
+  );
+  expect(
+    await runHerdr(
+      [
+        ...launch,
+        "--on",
+        "remote",
+        "--asked",
+        "--cwd",
+        "/repo",
+        "--base",
+        "plan-branch",
+        "--",
+        "go",
+      ],
+      w.ctx,
+    ),
+  ).toBe(0);
+  expect(w.calls).toContainEqual({
+    args: [
+      "exec",
+      "--on",
+      "remote",
+      "--json",
+      "--cwd",
+      "/repo",
+      "--",
+      "git",
+      "rev-parse",
+      "--verify",
+      "--quiet",
+      "plan-branch^{commit}",
+    ],
+  });
+  expect(w.calls.find((c) => c.args[0] === "file")?.stdin).toContain(`git reset --hard ${commit}`);
+});
+
+test("herdr list shows the base of a child", async () => {
+  const p = planWorld();
+  p.rows.t3 = {
+    address: "t3",
+    name: "kit-one",
+    state: "live",
+    labels: { "kit.lead": "core/t1", "kit.base": "plan-branch" },
+    status: { app: "claude-code", state: "idle" },
+  };
+  p.rows.t4 = {
+    address: "t4",
+    name: "kit-two",
+    state: "live",
+    labels: { "kit.lead": "core/t1" },
+    status: { app: "claude-code", state: "idle" },
+  };
+  p.setList(["t3", "t4"]);
+  expect(await runHerdr(["list"], p.ctx)).toBe(0);
+  expect(p.lines.join("\n")).toContain("| message | base | worktree");
+  const rows = p.lines.filter((l) => l.startsWith("t3 |") || l.startsWith("t4 |"));
+  expect(rows[0]).toMatch(/\| - \| plan-branch \| -$/);
+  expect(rows[1]).toMatch(/\| - \| - \| -$/);
+});
+
+test("--brief-file reads the brief from a file: quotes, $ and newlines arrive as written", async () => {
+  const w = world();
+  const text = `Fix "the" bug; don't touch $HOME or \`rm -rf\`.\nSecond line: $(echo no)\n\n  indented`;
+  writeFileSync(join(w.ctx.cwd, "brief.md"), text);
+  expect(await runHerdr([...launch, "--brief-file", "brief.md"], w.ctx)).toBe(0);
+  const brief = readFileSync(briefPath(w.ctx.paths.stateDir, "core", "kit-one"), "utf8");
+  expect(brief.startsWith(`${text}\n`)).toBe(true);
+  expect(w.lines.join("\n")).not.toContain("Fix");
+});
+
+test("--brief-file refuses a missing, empty or unreadable file, and launches nothing", async () => {
+  const w = world();
+  writeFileSync(join(w.ctx.cwd, "empty.md"), " \n\n");
+  mkdirSync(join(w.ctx.cwd, "folder"));
+  for (const [file, why] of [
+    ["missing.md", "does not exist"],
+    ["empty.md", "is empty"],
+    ["folder", "cannot be read"],
+  ] as const) {
+    w.lines.length = 0;
+    expect(await runHerdr([...launch, "--brief-file", file], w.ctx)).toBe(1);
+    expect(w.lines.join("\n")).toContain(`The brief file ${join(w.ctx.cwd, file)} ${why}`);
+  }
+  expect(w.calls.some((c) => c.args[0] === "run")).toBe(false);
+  expect(existsSync(briefPath(w.ctx.paths.stateDir, "core", "kit-one"))).toBe(false);
+});
+
+test("send --brief-file sends the file's text as one message, and refuses an empty one", async () => {
+  const w = world();
+  writeFileSync(join(w.ctx.cwd, "msg.md"), `Run "this" for $USER\nthen stop\n`);
+  expect(await runHerdr(["send", "t2", "--brief-file", "msg.md"], w.ctx)).toBe(0);
+  expect(w.calls.find((c) => c.args[0] === "send")?.args.at(-1)).toBe(
+    '<kit-report from="lead">Run "this" for $USER\nthen stop</kit-report>',
+  );
+  writeFileSync(join(w.ctx.cwd, "msg.md"), "\n");
+  w.calls.length = 0;
+  expect(await runHerdr(["send", "t2", "--brief-file", "msg.md"], w.ctx)).toBe(1);
+  expect(w.calls.some((c) => c.args[0] === "send")).toBe(false);
+});
+
+/** A wait whose event stream stays open until the test lets it end; `started` says it began. */
+function openWait(w: ReturnType<typeof world>) {
+  let end: (value: "timeout") => void = () => {};
+  const calls: number[] = [];
+  const started = new Promise<void>((resolve) => {
+    w.ctx.events = () => {
+      calls.push(calls.length);
+      resolve();
+      return new Promise((done) => {
+        end = done;
+      });
+    };
+  });
+  return { started, calls, end: () => end("timeout") };
+}
+
+test("a second wait for the same lead names the live one and exits without waiting", async () => {
+  const w = world();
+  w.setList(["t2"]);
+  const open = openWait(w);
+  const first = runHerdr(["wait", "--all", "--timeout", "30"], w.ctx);
+  await open.started;
+  w.lines.length = 0;
+  expect(await runHerdr(["wait"], w.ctx)).toBe(0);
+  expect(open.calls).toHaveLength(1);
+  const said = w.lines.join("\n");
+  expect(said).toContain(
+    `A herdr wait is already running for your children (process ${process.pid}`,
+  );
+  expect(said).toContain("--all, 30 seconds");
+  expect(said).toContain("it ends when a child settles");
+  open.end();
+  expect(await first).toBe(0);
+  // The lock went with it: the next wait is the only one again.
+  const next = openWait(w);
+  const again = runHerdr(["wait"], w.ctx);
+  await next.started;
+  next.end();
+  expect(await again).toBe(0);
+});
+
+test("a wait lock whose process is gone is taken over, and a lock without details is still busy", async () => {
+  const w = world();
+  w.setList(["t2"]);
+  const folder = waiterFolder(w.ctx.paths.stateDir, "core/t1");
+  mkdirSync(folder, { recursive: true });
+  const dead = Bun.spawnSync(["true"]).pid;
+  writeFileSync(
+    join(folder, "lock"),
+    JSON.stringify({
+      pid: dead,
+      startTime: null,
+      host: hostname(),
+      pidns: null,
+      time: Date.now(),
+      token: "stale",
+    }),
+  );
+  w.ctx.events = async () => ({ news: [], pending: [], timeout: true });
+  expect(await runHerdr(["wait"], w.ctx)).toBe(0);
+  expect(w.lines.join("\n")).not.toContain("already running");
+  expect(existsSync(join(folder, "lock"))).toBe(false);
+  let ran = false;
+  w.ctx.events = async () => {
+    ran = true;
+    return "timeout";
+  };
+  w.lines.length = 0;
+  await withLock(folder, async () => {
+    expect(await runHerdr(["wait"], w.ctx)).toBe(0);
+  });
+  expect(ran).toBe(false);
+  expect(w.lines.join("\n")).toContain("A herdr wait is already running for your children");
+});
+
+test("another lead's wait does not block this one", async () => {
+  const w = world();
+  w.setList(["t2"]);
+  let ran = false;
+  w.ctx.events = async () => {
+    ran = true;
+    return "timeout";
+  };
+  await withLock(waiterFolder(w.ctx.paths.stateDir, "core/other"), async () => {
+    expect(await runHerdr(["wait"], w.ctx)).toBe(0);
+  });
+  expect(ran).toBe(true);
+});
+
+test("a wait that times out says which children still work and which wait for the person", async () => {
+  const w = world();
+  const row = (address: string, state: string | null) => ({
+    address,
+    state: "live",
+    labels: { "kit.lead": "core/t1" },
+    status: state === null ? null : { app: "claude-code", state },
+  });
+  w.rows.t2 = row("t2", "working");
+  w.rows.t3 = row("t3", "idle");
+  w.rows.t4 = row("t4", "blocked");
+  w.rows.t5 = row("t5", null);
+  // t6 ended after the wait began: the listing no longer holds it, the stream still counts it.
+  w.setList(["t2", "t3", "t4", "t5"]);
+  w.ctx.events = async () => ({
+    news: [{ terminal: "t7", state: "done", status_ms: 5, turn: 1 }],
+    pending: ["t2", "t3", "t4", "t5", "t6"],
+    timeout: true,
+  });
+  expect(await runHerdr(["wait", "--all"], w.ctx)).toBe(0);
+  expect(w.lines).toEqual([
+    "t7: done; status_ms=5",
+    "· Not settled yet; still working: t2 (working), t3 (idle)",
+    "· Not settled yet; blocked, waiting for the person (hc attach <terminal> to answer): t4, t5",
+    "· Not settled yet; gone since the wait began: t6",
+    `${COMMAND} herdr wait --all --seen t7:1:done`,
+  ]);
 });
