@@ -25,7 +25,9 @@
  * **`switches.jobRoute` has two homes, and the project's wins** (`jobRouteFrom`, the one place
  * that decides it): the project's `jobs.route` when it sets one (`project`), else the person's
  * machine-wide default `switches.jobRoute` in the workflow file (`personal`), else off
- * (`default`). The `job-route` hook reads it through `resolveJobRoute`, never its own reader.
+ * (`default`). The `job-route` hook reads the person's file through the checked cache
+ * (`loadPersonalWorkflow`) and decides with `jobRouteFrom`, the same function `resolveJobRoute`
+ * and `workflow show` use, so the three agree.
  *
  * **`switches.leadHint` lives in the person's file alone** (`leadHintFrom`): their value
  * (`personal`), else on (`default`). The `fable-session` hook reads it through

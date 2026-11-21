@@ -74,12 +74,13 @@ own choice; the person's machine-wide default sits under it as `switches.jobRout
 `workflow.json`, and nowhere else: only the person's schema (`personalWorkflowSchema`) has a
 `switches` group, with the fields `PERSONAL_FILE_SWITCH_NAMES` lists, and a project's `workflow`
 object refuses it. They are
-two settings of one switch, not two copies. The resolver (`jobRouteFrom`, `src/workflow/resolve.ts`)
+two settings of one switch, not two copies. The decision (`jobRouteFrom`, `src/workflow/merge.ts`)
 reads the project's value first (`project`), then the person's (`personal`), then off
 (`default`), and `workflow show` prints which one answered. `workflow set switches.jobRoute`
 writes the person's default; with `--project` it writes the project's `jobs.route`. The
-`job-route` hook reads it through the same function (`resolveJobRoute`), with or without a
-project file, so the hook and `show` can never disagree.
+`job-route` hook reads the person's file through the checked cache (`loadPersonalWorkflow`,
+`src/hooks/checked-config.ts`) and decides with the same function `resolveJobRoute` and `show`
+use (`jobRouteFrom`), with or without a project file, so the hook and `show` can never disagree.
 
 **`switches.leadHint` lives in the person's file alone** (2.2.0). It is the other field of that
 `switches` group: whether the `fable-session` hook tells the person once a session that the lead
