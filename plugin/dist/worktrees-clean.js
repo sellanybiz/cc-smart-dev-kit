@@ -7725,6 +7725,13 @@ var WORKFLOW_KEY_ALIASES = {
   autoPush: "allowPush",
   autoMerge: "allowMerge"
 };
+function oldNamesIn(raw) {
+  return Object.keys(WORKFLOW_KEY_ALIASES).filter((old) => Object.hasOwn(raw, old)).map((old) => ({
+    old,
+    current: WORKFLOW_KEY_ALIASES[old],
+    both: Object.hasOwn(raw, WORKFLOW_KEY_ALIASES[old])
+  }));
+}
 function withCurrentNames(raw) {
   if (typeof raw !== "object" || raw === null || Array.isArray(raw))
     return raw;
@@ -7738,6 +7745,28 @@ function withCurrentNames(raw) {
     delete moved[old];
   }
   return moved;
+}
+function readWithCurrentNames(raw, context) {
+  const moved = withCurrentNames(raw);
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw))
+    return moved;
+  const current = moved;
+  for (const old of oldNamesIn(raw)) {
+    if (old.both)
+      continue;
+    const checked = workflowObjectSchema.shape[old.current].safeParse(current[old.current]);
+    if (checked.success)
+      continue;
+    const reason = checked.error.issues.map((issue) => issue.message).join(", ");
+    context.issues.push({
+      code: "custom",
+      input: current[old.current],
+      message: `${reason} (${old.old} is the old name of ${old.current})`,
+      path: [old.old]
+    });
+    delete current[old.current];
+  }
+  return current;
 }
 var workflowObjectSchema = strictObject({
   allowCommit: boolean2().optional(),
@@ -7782,8 +7811,8 @@ var workflowObjectSchema = strictObject({
   }).transform(({ events: _events, sound: _sound, ...usage }) => usage).optional(),
   crew: unknown().optional()
 });
-var workflowSchema = preprocess(withCurrentNames, workflowObjectSchema);
-var personalWorkflowSchema = preprocess(withCurrentNames, workflowObjectSchema.extend({
+var workflowSchema = preprocess(readWithCurrentNames, workflowObjectSchema);
+var personalWorkflowSchema = preprocess(readWithCurrentNames, workflowObjectSchema.extend({
   plans: strictObject({
     maxPhases: numberField("plans.maxPhases"),
     runMode: _enum(RUN_MODES).optional()

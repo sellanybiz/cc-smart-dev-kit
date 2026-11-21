@@ -16406,6 +16406,28 @@ function withCurrentNames(raw) {
   }
   return moved;
 }
+function readWithCurrentNames(raw, context) {
+  const moved = withCurrentNames(raw);
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw))
+    return moved;
+  const current = moved;
+  for (const old of oldNamesIn(raw)) {
+    if (old.both)
+      continue;
+    const checked = workflowObjectSchema.shape[old.current].safeParse(current[old.current]);
+    if (checked.success)
+      continue;
+    const reason = checked.error.issues.map((issue) => issue.message).join(", ");
+    context.issues.push({
+      code: "custom",
+      input: current[old.current],
+      message: `${reason} (${old.old} is the old name of ${old.current})`,
+      path: [old.old]
+    });
+    delete current[old.current];
+  }
+  return current;
+}
 var workflowObjectSchema = strictObject({
   allowCommit: boolean2().optional(),
   allowPush: boolean2().optional(),
@@ -16449,12 +16471,12 @@ var workflowObjectSchema = strictObject({
   }).transform(({ events: _events, sound: _sound, ...usage }) => usage).optional(),
   crew: unknown().optional()
 });
-var workflowSchema = preprocess(withCurrentNames, workflowObjectSchema);
+var workflowSchema = preprocess(readWithCurrentNames, workflowObjectSchema);
 var PERSONAL_FILE_SWITCH_NAMES = [
   "jobRoute",
   "leadHint"
 ];
-var personalWorkflowSchema = preprocess(withCurrentNames, workflowObjectSchema.extend({
+var personalWorkflowSchema = preprocess(readWithCurrentNames, workflowObjectSchema.extend({
   plans: strictObject({
     maxPhases: numberField("plans.maxPhases"),
     runMode: _enum(RUN_MODES).optional()
@@ -18009,11 +18031,896 @@ function retiredRepoLines(paths, env) {
   return reposWithRetiredParts(paths, env).map((found) => retiredRepoLine(found, paths.home));
 }
 
+// src/project/init.ts
+import { existsSync as existsSync19 } from "fs";
+import { join as join24 } from "path";
+
+// src/setup/json-edit.ts
+var DEFAULT_LINE_WIDTH = 80;
+var MAX_LINE_WIDTH = 120;
+var TAB_COLUMNS = 2;
+function isObject3(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function columns(text) {
+  let width = 0;
+  for (const char of text)
+    width += char === "\t" ? TAB_COLUMNS : 1;
+  return width;
+}
+function lineWidthOf(text) {
+  const longest = Math.max(0, ...text.split(`
+`).map((line) => columns(line.replace(/\r$/, ""))));
+  return Math.min(MAX_LINE_WIDTH, Math.max(DEFAULT_LINE_WIDTH, longest));
+}
+function printValue(value, layout, indent, column, trailing) {
+  if (Array.isArray(value)) {
+    if (value.length === 0)
+      return "[]";
+    const scalars = value.every((item) => !Array.isArray(item) && !isObject3(item));
+    if (scalars) {
+      const flat = `[${value.map((item) => JSON.stringify(item) ?? "null").join(", ")}]`;
+      if (column + flat.length + trailing <= layout.width)
+        return flat;
+    }
+    const inner = indent + layout.unit;
+    const items = value.map((item, index) => {
+      const last = index === value.length - 1;
+      return `${inner}${printValue(item, layout, inner, columns(inner), last ? 0 : 1)}${last ? "" : ","}`;
+    });
+    return `[${layout.eol}${items.join(layout.eol)}${layout.eol}${indent}]`;
+  }
+  if (isObject3(value)) {
+    const entries = Object.entries(value).filter(([, item]) => item !== undefined);
+    if (entries.length === 0)
+      return "{}";
+    const inner = indent + layout.unit;
+    const members = entries.map(([key, item], index) => {
+      const last = index === entries.length - 1;
+      return `${inner}${printMember(key, item, layout, inner, last ? 0 : 1)}${last ? "" : ","}`;
+    });
+    return `{${layout.eol}${members.join(layout.eol)}${layout.eol}${indent}}`;
+  }
+  return JSON.stringify(value);
+}
+function printMember(key, value, layout, indent, trailing) {
+  const head = `${JSON.stringify(key)}: `;
+  return `${head}${printValue(value, layout, indent, columns(indent) + head.length, trailing)}`;
+}
+function printJson(value, unit = "  ", width = DEFAULT_LINE_WIDTH) {
+  return `${printValue(value, { unit, width, eol: `
+` }, "", 0, 0)}
+`;
+}
+
+class Scanner {
+  text;
+  at = 0;
+  constructor(text) {
+    this.text = text;
+  }
+  node() {
+    this.skipSpace();
+    const start = this.at;
+    const char = this.text[start];
+    if (char === "{")
+      return this.object();
+    if (char === "[")
+      return this.array();
+    if (char === '"')
+      this.string();
+    else
+      while (this.at < this.text.length && !/[\s,\]}]/.test(this.text[this.at] ?? ""))
+        this.at += 1;
+    return { start, end: this.at };
+  }
+  object() {
+    const start = this.at;
+    const members = [];
+    this.at += 1;
+    for (;; ) {
+      this.skipSpace();
+      if (this.text[this.at] === "}")
+        break;
+      if (this.text[this.at] === ",") {
+        this.at += 1;
+        continue;
+      }
+      const keyStart = this.at;
+      this.string();
+      const key = JSON.parse(this.text.slice(keyStart, this.at));
+      this.skipSpace();
+      this.at += 1;
+      members.push({ key, keyStart, value: this.node() });
+    }
+    this.at += 1;
+    return { start, end: this.at, members };
+  }
+  array() {
+    const start = this.at;
+    this.at += 1;
+    for (;; ) {
+      this.skipSpace();
+      if (this.text[this.at] === "]")
+        break;
+      if (this.text[this.at] === ",")
+        this.at += 1;
+      else
+        this.node();
+    }
+    this.at += 1;
+    return { start, end: this.at };
+  }
+  string() {
+    this.at += 1;
+    while (this.text[this.at] !== '"')
+      this.at += this.text[this.at] === "\\" ? 2 : 1;
+    this.at += 1;
+  }
+  skipSpace() {
+    while (/\s/.test(this.text[this.at] ?? "x"))
+      this.at += 1;
+  }
+}
+function lineIndent(text, position) {
+  const lineStart = text.lastIndexOf(`
+`, position - 1) + 1;
+  return /^[ \t]*/.exec(text.slice(lineStart))?.[0] ?? "";
+}
+function columnOf(text, position) {
+  return columns(text.slice(text.lastIndexOf(`
+`, position - 1) + 1, position));
+}
+function editObject(text, node, before, after, layout, edits) {
+  const members = node.members ?? [];
+  const last = (key) => members.findLast((m) => m.key === key);
+  const wanted = (key) => Object.hasOwn(after, key) && after[key] !== undefined;
+  const closeAt = node.end - 1;
+  const survivors = members.filter((member) => wanted(member.key));
+  for (const key of Object.keys(before)) {
+    if (!wanted(key))
+      continue;
+    const member = last(key);
+    if (member === undefined)
+      continue;
+    const was = before[key];
+    const is = after[key];
+    if (Bun.deepEquals(was, is, true))
+      continue;
+    if (isObject3(was) && isObject3(is) && member.value.members !== undefined) {
+      editObject(text, member.value, was, is, layout, edits);
+      continue;
+    }
+    const indent = lineIndent(text, member.keyStart);
+    const followed = text.slice(member.value.end).match(/^\s*,/) !== null;
+    edits.push({
+      start: member.value.start,
+      end: member.value.end,
+      text: printValue(is, layout, indent, columnOf(text, member.value.start), followed ? 1 : 0)
+    });
+  }
+  const added = Object.keys(after).filter((key) => after[key] !== undefined && !Object.hasOwn(before, key));
+  const indent = lineIndent(text, node.start);
+  const first = members[0];
+  const expanded = first !== undefined && text.slice(node.start, first.keyStart).includes(`
+`);
+  const memberIndent = survivors.length > 0 && expanded ? lineIndent(text, survivors[0].keyStart) : indent + layout.unit;
+  const printed = added.map((key, index) => printMember(key, after[key], layout, memberIndent, index === added.length - 1 ? 0 : 1));
+  if (survivors.length === 0) {
+    if (members.length === 0 && added.length === 0)
+      return;
+    const inside = printed.length === 0 ? "" : `${layout.eol}${printed.map((line) => memberIndent + line).join(`,${layout.eol}`)}${layout.eol}${indent}`;
+    edits.push({ start: node.start + 1, end: closeAt, text: inside });
+    return;
+  }
+  const lastSurvivor = survivors[survivors.length - 1];
+  let tailRemoved = false;
+  for (let index = 0;index < members.length; index += 1) {
+    const member = members[index];
+    if (wanted(member.key))
+      continue;
+    if (member.keyStart < lastSurvivor.keyStart) {
+      const next = members[index + 1];
+      edits.push({ start: member.keyStart, end: next.keyStart, text: "" });
+    } else
+      tailRemoved = true;
+  }
+  const tail = members[members.length - 1];
+  if (tailRemoved) {
+    edits.push({ start: lastSurvivor.value.end, end: tail.value.end, text: "" });
+  }
+  if (added.length > 0) {
+    const at = tail.value.end;
+    const inserted = expanded ? printed.map((line) => `,${layout.eol}${memberIndent}${line}`).join("") : printed.map((line) => `, ${line}`).join("");
+    edits.push({ start: at, end: at, text: inserted });
+  }
+}
+function editJsonText(text, after) {
+  const source = withoutBom(text);
+  const before = JSON.parse(source);
+  if (!isObject3(before))
+    throw new Error("editJsonText: the text is not a JSON object");
+  if (Bun.deepEquals(before, after, true) && source === text)
+    return text;
+  const layout = {
+    unit: detectIndent(source),
+    width: lineWidthOf(source),
+    eol: source.includes(`\r
+`) ? `\r
+` : `
+`
+  };
+  const root = new Scanner(source).node();
+  const edits = [];
+  editObject(source, root, before, after, layout, edits);
+  let result = source;
+  for (const edit of edits.sort((a, b) => b.start - a.start || b.end - a.end)) {
+    result = result.slice(0, edit.start) + edit.text + result.slice(edit.end);
+  }
+  return result;
+}
+function jsonTextFor(existing, data, indent) {
+  if (existing === null || existing.trim() === "")
+    return printJson(data, indent);
+  return editJsonText(existing, data);
+}
+
+// src/tasks/deploy/files.ts
+import { existsSync as existsSync18, mkdirSync as mkdirSync7, readdirSync as readdirSync9, readFileSync as readFileSync28, rmSync as rmSync4, writeFileSync as writeFileSync2 } from "fs";
+import { basename as basename4, dirname as dirname10, isAbsolute, join as join23, relative as relative2, resolve as resolve6, sep as sep2 } from "path";
+var DEFAULT_TASKS_DIR = ".claude/tasks";
+function deployTasksDir(checkoutRoot, settings) {
+  const dir = settings.dir ?? DEFAULT_TASKS_DIR;
+  const target = resolve6(checkoutRoot, dir);
+  const rel = relative2(checkoutRoot, target);
+  if (isAbsolute(dir) || rel === ".." || rel.startsWith(`..${sep2}`))
+    throw new Error("Task folder must be inside the checkout");
+  return target;
+}
+function isTaskFile(name) {
+  return !name.startsWith(".") && name !== "README.md" && name.endsWith(".md");
+}
+var ARCHIVE = "archive";
+function envFolder(dir, env) {
+  return join23(dir, env);
+}
+function isArchived(file) {
+  return basename4(dirname10(file)) === ARCHIVE;
+}
+function archiveFolder(dir, env) {
+  return join23(dir, env, ARCHIVE);
+}
+function scanDeployTasks(dir, options) {
+  const found = [];
+  const broken = [];
+  for (const env of DEPLOY_ENVS) {
+    for (const folder of options.archive ? [envFolder(dir, env), archiveFolder(dir, env)] : [envFolder(dir, env)]) {
+      if (!existsSync18(folder))
+        continue;
+      for (const entry of readdirSync9(folder, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+        if (!entry.isFile() || !isTaskFile(entry.name))
+          continue;
+        const file = join23(folder, entry.name);
+        const result = parseDeployTask(readFileSync28(file, "utf8"), file, env);
+        if (result.ok)
+          found.push(result.task);
+        else
+          broken.push({ file, why: result.why });
+      }
+    }
+  }
+  const byId = new Map;
+  for (const task of found)
+    byId.set(task.id, [...byId.get(task.id) ?? [], task]);
+  const tasks = [];
+  const duplicates = [];
+  for (const copies of byId.values()) {
+    const first = copies[0];
+    if (!first)
+      continue;
+    if (new Set(copies.map((task) => basename4(task.file))).size > 1) {
+      duplicates.push({ id: first.id, files: copies.map((task) => task.file) });
+      tasks.push(...copies);
+      continue;
+    }
+    const kept = copies.find((task) => isArchived(task.file)) ?? first;
+    tasks.push(kept);
+    for (const task of copies)
+      if (task !== kept)
+        broken.push({
+          file: task.file,
+          why: `a second copy of ${task.id}: the one in archive/ is kept; remove this file`
+        });
+  }
+  return { tasks, broken, duplicates };
+}
+function oldTaskFiles(dir) {
+  if (!existsSync18(dir))
+    return [];
+  return readdirSync9(dir, { withFileTypes: true }).filter((entry) => entry.isFile() && isTaskFile(entry.name)).map((entry) => join23(dir, entry.name)).sort();
+}
+function newDeployId(env, now, used) {
+  const stamp = now.toISOString().replace(/\.\d+Z$/, "").replace(/[-:]/g, "").replace("T", "-");
+  const base = `${env}-${stamp}`;
+  let id = base;
+  for (let n = 2;used.has(id); n++)
+    id = `${base}-${n}`;
+  return id;
+}
+function takenDeployIds(dir, env) {
+  const ids = new Set(scanDeployTasks(dir, { archive: true }).tasks.filter((task) => task.env === env).map((task) => task.id));
+  for (const folder of [envFolder(dir, env), archiveFolder(dir, env)])
+    if (existsSync18(folder))
+      for (const name of readdirSync9(folder)) {
+        const id = deployIdOfFileName(name);
+        if (id)
+          ids.add(id);
+      }
+  return ids;
+}
+function slugOf(title) {
+  return title.normalize("NFKD").replace(/[\u0300-\u036F]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 50).replace(/-$/, "") || "task";
+}
+function planDeployTask(dir, input, sources, used) {
+  const id = newDeployId(input.env, sources.now, used);
+  const { body = "", ...fields } = input;
+  const validated = deployTaskSchema.parse({
+    ...fields,
+    id,
+    status: "open",
+    created: taskInstant(sources.now)
+  });
+  used.add(id);
+  return {
+    ...validated,
+    body,
+    file: join23(envFolder(dir, validated.env), `${id}-${slugOf(validated.title)}.md`)
+  };
+}
+function save(task) {
+  atomicWrite(task.file, renderDeployTask(task), 420);
+  return task;
+}
+var CLAIM_ATTEMPTS = 5;
+function claim2(dir, task, sources) {
+  sources.beforeClaim?.(task);
+  try {
+    writeFileSync2(task.file, renderDeployTask(task), { flag: "wx", mode: 420 });
+  } catch (error) {
+    if (error.code === "EEXIST")
+      return false;
+    throw error;
+  }
+  const own = basename4(task.file);
+  const rival = [envFolder(dir, task.env), archiveFolder(dir, task.env)].filter((folder) => existsSync18(folder)).flatMap((folder) => readdirSync9(folder)).some((name) => name !== own && deployIdOfFileName(name) === task.id);
+  if (rival)
+    rmSync4(task.file, { force: true });
+  return !rival;
+}
+function createDeployTask(dir, input, sources) {
+  mkdirSync7(envFolder(dir, input.env), { recursive: true });
+  for (let attempt = 0;attempt < CLAIM_ATTEMPTS; attempt++) {
+    const task = planDeployTask(dir, input, sources, takenDeployIds(dir, input.env));
+    if (claim2(dir, task, sources))
+      return task;
+  }
+  throw new Error("Could not allocate a unique deploy task id");
+}
+function createDeployPair(dir, input, sources, envs) {
+  for (const env of DEPLOY_ENVS)
+    if (!envs.includes(env))
+      throw new Error(`A staging and prod pair needs both environments; this project lists only: ${envs.join(", ")}`);
+  mkdirSync7(envFolder(dir, "staging"), { recursive: true });
+  mkdirSync7(envFolder(dir, "prod"), { recursive: true });
+  for (let attempt = 0;attempt < CLAIM_ATTEMPTS; attempt++) {
+    const staging = planDeployTask(dir, { ...input, env: "staging" }, sources, takenDeployIds(dir, "staging"));
+    const prod = planDeployTask(dir, { ...input, env: "prod" }, sources, takenDeployIds(dir, "prod"));
+    staging.twin = prod.id;
+    prod.twin = staging.id;
+    if (!claim2(dir, staging, sources))
+      continue;
+    let claimed = false;
+    try {
+      claimed = claim2(dir, prod, sources);
+    } finally {
+      if (!claimed)
+        rmSync4(staging.file, { force: true });
+    }
+    if (claimed)
+      return { staging, prod };
+  }
+  throw new Error("Could not allocate unique ids for a staging and prod pair");
+}
+function findDeployTask(dir, id) {
+  const scan = scanDeployTasks(dir, { archive: true });
+  const clash = scan.duplicates.find((duplicate) => duplicate.id === id);
+  if (clash)
+    throw new Error(`Deploy task id ${id} is ambiguous: ${clash.files.join(" and ")} both claim it. Rename the id inside one of them`);
+  const match = scan.tasks.find((task) => task.id === id);
+  if (!match)
+    throw new Error(`Deploy task not found: ${id}`);
+  return match;
+}
+function updateDeployTask(dir, id, patch, _now) {
+  const task = findDeployTask(dir, id);
+  const merged = { ...task, ...patch };
+  const { body, file, ...fields } = merged;
+  return save({ ...deployTaskSchema.parse(fields), body, file });
+}
+function withNote(task, text, now) {
+  const line = `- ${taskInstant(now).slice(0, 10)} ${text.replace(/\r?\n/g, `
+  `)}
+`;
+  const heading = /^## Log\s*$/m.exec(task.body);
+  if (!heading)
+    return {
+      ...task,
+      body: `${task.body}${task.body.endsWith(`
+`) || !task.body ? "" : `
+`}
+## Log
+${line}`
+    };
+  const start = heading.index + heading[0].length;
+  const next = /^## /m.exec(task.body.slice(start));
+  const end = next ? start + next.index : task.body.length;
+  const before = task.body.slice(0, end);
+  return {
+    ...task,
+    body: `${before}${before.endsWith(`
+`) ? "" : `
+`}${line}${task.body.slice(end)}`
+  };
+}
+function addDeployNote(dir, id, text, now) {
+  return save(withNote(findDeployTask(dir, id), text, now));
+}
+function closeDeployTask(dir, id, options, now) {
+  const task = findDeployTask(dir, id);
+  if (task.status !== "open")
+    throw new Error(`${id} is already ${task.status}: reopen it first to close it again`);
+  if (options.status === "done" && !options.evidence?.trim())
+    throw new Error(`${id} needs evidence to be done: what you ran or checked, and its result`);
+  if (options.status === "dropped" && !options.note?.trim())
+    throw new Error(`${id} needs a note to be dropped: the reason it no longer applies`);
+  const closed = withNote({
+    ...task,
+    status: options.status,
+    closed: taskInstant(now),
+    ...options.evidence === undefined ? {} : { evidence: options.evidence }
+  }, options.note ?? `${options.status}: ${options.evidence ?? ""}`, now);
+  const archive = archiveFolder(dir, task.env);
+  mkdirSync7(archive, { recursive: true });
+  const destination = join23(archive, basename4(task.file));
+  if (destination !== task.file && existsSync18(destination))
+    throw new Error(`Archive task already exists: ${destination}`);
+  const saved = save({ ...closed, file: destination });
+  if (destination !== task.file)
+    rmSync4(task.file, { force: true });
+  return saved;
+}
+function reopenDeployTask(dir, id, now, note) {
+  const task = findDeployTask(dir, id);
+  const archived = isArchived(task.file);
+  if (task.status === "open" && !archived)
+    throw new Error(`${id} is already open`);
+  let reopened = task;
+  if (task.status !== "open") {
+    const { closed: _closed, evidence: _evidence, ...rest } = task;
+    reopened = save(withNote({ ...rest, status: "open" }, note?.trim() ? `reopened: ${note}` : "reopened", now));
+  }
+  const destination = join23(envFolder(dir, task.env), basename4(task.file));
+  const saved = save({ ...reopened, file: destination });
+  if (destination !== task.file)
+    rmSync4(task.file, { force: true });
+  return saved;
+}
+
+// src/workflow/clashes.ts
+function workflowClashes(input) {
+  const clashes = [];
+  if (input.openPr !== "off" && !input.allowPush) {
+    clashes.push({
+      fix: `turn allowPush on (\`${COMMAND} workflow set allowPush true\`), or set openPr off (\`${COMMAND} workflow set openPr off\`)`,
+      line: "openPr opens a pull request, but allowPush is off: a session does not push, and that pull request needs the push, so it waits for you every time",
+      setting: "openPr"
+    });
+  }
+  if (input.allowMerge && input.openPr === "draft") {
+    clashes.push({
+      fix: `set openPr ready (\`${COMMAND} workflow set openPr ready\`) so the pull request can merge, or turn allowMerge off (\`${COMMAND} workflow set allowMerge false\`)`,
+      line: "openPr is draft and allowMerge is on: a draft pull request is never merged, so allowMerge never acts on the pull request a session opens",
+      setting: "openPr"
+    });
+  }
+  return clashes;
+}
+function clashesOf(resolved) {
+  return workflowClashes({
+    allowMerge: resolved.allowMerge.value,
+    allowPush: resolved.allowPush.value,
+    openPr: resolved.openPr.value
+  });
+}
+function clashNote(clash) {
+  return `${clash.line}. Fix: ${clash.fix}.`;
+}
+
+// src/project/init.ts
+var FILE_ORDER = [
+  "requires",
+  "worktrees",
+  "protectedBranches",
+  "checks",
+  "sessionNames",
+  "instructions",
+  "autoMode",
+  "jobs",
+  "ownHooks",
+  "workflow"
+];
+var WORKTREE_ORDER = ["base", "guardMainFolder", "bases"];
+function orderKeys(data, order) {
+  const ordered = {};
+  for (const key of order) {
+    if (Object.hasOwn(data, key))
+      ordered[key] = data[key];
+  }
+  for (const [key, value] of Object.entries(data)) {
+    if (!Object.hasOwn(ordered, key))
+      ordered[key] = value;
+  }
+  return ordered;
+}
+function parseObject(text, file) {
+  if (text === null || text.trim() === "")
+    return {};
+  let raw;
+  try {
+    raw = parseUserJson(text);
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new Error(`${file} is not valid JSON (${reason}). Fix it by hand, then run again.`);
+  }
+  if (!isObject2(raw))
+    throw new Error(`${file} must hold a JSON object.`);
+  return raw;
+}
+function requiresFor(version) {
+  const [major, minor] = version.split(".");
+  return `>=${major ?? "0"}.${minor ?? "0"}`;
+}
+function raisedRequires(existing, floor, floorVersion) {
+  if (typeof existing === "string") {
+    const lowest = lowestAllowed(existing);
+    if (lowest !== null && Bun.semver.order(lowest, floorVersion) >= 0)
+      return existing;
+  }
+  return floor;
+}
+function requiresTooLow(existing, floorVersion) {
+  if (typeof existing !== "string")
+    return false;
+  const lowest = lowestAllowed(existing);
+  return lowest !== null && Bun.semver.order(lowest, floorVersion) < 0;
+}
+function requiresFloor(file, options = {}) {
+  const workflow = isObject2(file.workflow) ? file.workflow : {};
+  const worktrees = isObject2(file.worktrees) ? file.worktrees : {};
+  const needs = [];
+  if (Object.hasOwn(file, "checks"))
+    needs.push(CHECKS_SINCE);
+  if (Object.hasOwn(file, "tasks"))
+    needs.push(TASKS_SINCE);
+  if (isObject2(file.tasks) && Object.hasOwn(file.tasks, "envs"))
+    needs.push(DEPLOY_TASKS_SINCE);
+  if (isObject2(file.tasks) && Object.hasOwn(file.tasks, "deployCommands"))
+    needs.push(DEPLOY_GUARD_SINCE);
+  if (options.deployTasks === true)
+    needs.push(DEPLOY_TASKS_SINCE);
+  if (Object.hasOwn(workflow, "issues"))
+    needs.push(WORKFLOW_ISSUES_SINCE);
+  const ownHooks = Array.isArray(file.ownHooks) ? file.ownHooks : [];
+  for (const [name, since] of Object.entries(OWN_HOOK_NAMES_SINCE)) {
+    if (ownHooks.includes(name))
+      needs.push(since);
+  }
+  if (Object.hasOwn(workflow, "fixesAfterReview")) {
+    needs.push(WORKFLOW_FIXES_SINCE);
+  }
+  if (Object.values(WORKFLOW_KEY_ALIASES).some((name) => Object.hasOwn(workflow, name))) {
+    needs.push(WORKFLOW_ALLOW_KEYS_SINCE);
+  }
+  if (Object.hasOwn(workflow, "plans"))
+    needs.push(WORKFLOW_PLANS_SINCE);
+  if (isObject2(workflow.plans) && Object.hasOwn(workflow.plans, "mergeFiles")) {
+    needs.push(WORKFLOW_MERGE_FILES_SINCE);
+  }
+  if (Object.hasOwn(worktrees, "autoClean"))
+    needs.push(WORKTREE_AUTO_CLEAN_SINCE);
+  if (Object.hasOwn(worktrees, "rebuildable"))
+    needs.push(WORKTREE_REBUILDABLE_SINCE);
+  const jobs = isObject2(file.jobs) ? file.jobs : {};
+  const kinds = isObject2(jobs.kinds) ? Object.values(jobs.kinds) : [];
+  for (const [key, since] of Object.entries(JOB_KIND_KEYS_SINCE)) {
+    if (kinds.some((kind) => isObject2(kind) && Object.hasOwn(kind, key)))
+      needs.push(since);
+  }
+  if (needs.length === 0) {
+    return {
+      floor: `>=${WORKTREE_PREFIX_OPTIONAL_SINCE}`,
+      version: WORKTREE_PREFIX_OPTIONAL_SINCE
+    };
+  }
+  const version = needs.reduce((newest, one) => Bun.semver.order(one, newest) > 0 ? one : newest);
+  return { floor: requiresFor(version), version };
+}
+function leaves(value, prefix, found) {
+  if (isObject2(value)) {
+    const entries = Object.entries(value);
+    if (entries.length === 0 && prefix !== "")
+      found.set(prefix, value);
+    for (const [key, child] of entries) {
+      leaves(child, prefix === "" ? key : `${prefix}.${key}`, found);
+    }
+    return;
+  }
+  if (prefix !== "")
+    found.set(prefix, value);
+}
+function shownLeaf(value) {
+  return JSON.stringify(value);
+}
+function diffOf(before, after) {
+  const was = new Map;
+  const is = new Map;
+  leaves(before, "", was);
+  leaves(after, "", is);
+  const keys = [...new Set([...was.keys(), ...is.keys()])].sort();
+  const lines = [];
+  for (const key of keys) {
+    const had = was.get(key);
+    const has = is.get(key);
+    if (!was.has(key))
+      lines.push(`+ ${key}: ${shownLeaf(has)}`);
+    else if (!is.has(key))
+      lines.push(`- ${key}: ${shownLeaf(had)}`);
+    else if (!Bun.deepEquals(had, has, true)) {
+      lines.push(`~ ${key}: ${shownLeaf(had)} -> ${shownLeaf(has)}`);
+    }
+  }
+  return lines;
+}
+function withBaseRef(settings, head) {
+  const now = isObject2(settings.worktree) ? settings.worktree : null;
+  if (!head || now?.baseRef === "head")
+    return { settings, added: [] };
+  const worktree = { ...now ?? {}, baseRef: "head" };
+  return { settings: { ...settings, worktree }, added: ['worktree.baseRef: "head"'] };
+}
+function withoutEngineHooks(settings) {
+  if (!isObject2(settings.hooks))
+    return { settings, removed: [] };
+  const removed = [];
+  const hooks = {};
+  for (const [event, groups] of Object.entries(settings.hooks)) {
+    if (!Array.isArray(groups)) {
+      hooks[event] = groups;
+      continue;
+    }
+    let touched = false;
+    const kept = [];
+    for (const group of groups) {
+      if (!isObject2(group) || !Array.isArray(group.hooks)) {
+        kept.push(group);
+        continue;
+      }
+      const handlers = group.hooks.filter((handler) => {
+        const command = describeHandler(handler);
+        if (retiredEngineHookOf(command) === null)
+          return true;
+        removed.push(`hooks.${event}: ${command}`);
+        return false;
+      });
+      if (handlers.length === group.hooks.length) {
+        kept.push(group);
+        continue;
+      }
+      touched = true;
+      if (handlers.length > 0)
+        kept.push({ ...group, hooks: handlers });
+    }
+    if (!touched)
+      hooks[event] = groups;
+    else if (kept.length > 0)
+      hooks[event] = kept;
+  }
+  if (removed.length === 0)
+    return { settings, removed };
+  const next = { ...settings, hooks };
+  if (Object.keys(hooks).length === 0)
+    delete next.hooks;
+  return { settings: next, removed };
+}
+function settingsPlan(file, existing, head) {
+  const cleaned = withoutEngineHooks(parseObject(existing, file));
+  const merged = withBaseRef(cleaned.settings, head);
+  const changed = cleaned.removed.length > 0 || merged.added.length > 0;
+  return {
+    file,
+    text: !changed && existing !== null ? existing : jsonTextFor(existing, merged.settings, detectIndent(existing ?? "")),
+    changed,
+    adds: merged.added,
+    removes: cleaned.removed,
+    lines: [
+      ...cleaned.removed.map((line) => `- ${line}`),
+      ...merged.added.map((line) => `+ ${line}`)
+    ]
+  };
+}
+function hasDeployTaskFolders(root, tasks) {
+  const settings = typeof tasks.dir === "string" ? { dir: tasks.dir } : {};
+  let dir;
+  try {
+    dir = deployTasksDir(root, settings);
+  } catch {
+    return false;
+  }
+  return DEPLOY_ENVS.some((env) => existsSync19(envFolder(dir, env)));
+}
+function planProjectInit(input, extras = {}) {
+  const { root, existing, existingSettings, existingLocalSettings, defaultBranch, answers } = input;
+  const file = join24(root, ".claude", "cc-smart-dev-kit.json");
+  const before = parseObject(existing, file);
+  const beforeWorktrees = isObject2(before.worktrees) ? before.worktrees : {};
+  const beforeJobs = isObject2(before.jobs) ? before.jobs : {};
+  const worktrees = { ...beforeWorktrees };
+  for (const field of RETIRED_WORKTREE_FIELDS)
+    delete worktrees[field];
+  worktrees.base = answers.base;
+  if (answers.guards.guardMainFolder)
+    worktrees.guardMainFolder = true;
+  else
+    delete worktrees.guardMainFolder;
+  if (Object.keys(answers.bases).length > 0)
+    worktrees.bases = answers.bases;
+  else
+    delete worktrees.bases;
+  const next = { ...before };
+  const beforeTasks = isObject2(before.tasks) ? before.tasks : null;
+  const ignoredTaskFields = IGNORED_TASK_FIELDS.filter((field) => beforeTasks !== null && Object.hasOwn(beforeTasks, field));
+  if (beforeTasks !== null && ignoredTaskFields.length > 0) {
+    const tasks = { ...beforeTasks };
+    for (const field of ignoredTaskFields)
+      delete tasks[field];
+    if (Object.keys(tasks).length > 0)
+      next.tasks = tasks;
+    else
+      delete next.tasks;
+  }
+  next.worktrees = orderKeys(worktrees, WORKTREE_ORDER);
+  if (answers.protectedBranches.length > 0)
+    next.protectedBranches = answers.protectedBranches;
+  else
+    delete next.protectedBranches;
+  if (answers.checks !== undefined) {
+    if (answers.checks === null)
+      delete next.checks;
+    else
+      next.checks = { fast: answers.checks.fast };
+  }
+  if (answers.deployCommands !== undefined) {
+    const tasks = isObject2(next.tasks) ? { ...next.tasks } : {};
+    const had = Object.hasOwn(tasks, "deployCommands");
+    const lists = Object.fromEntries(Object.entries(answers.deployCommands).filter(([, list]) => list.length > 0));
+    if (Object.keys(lists).length > 0)
+      tasks.deployCommands = lists;
+    else
+      delete tasks.deployCommands;
+    if (Object.keys(tasks).length > 0)
+      next.tasks = tasks;
+    else if (had)
+      delete next.tasks;
+  }
+  if (answers.guards.sessionNames)
+    next.sessionNames = true;
+  else
+    delete next.sessionNames;
+  const jobs = { ...beforeJobs };
+  if (answers.guards.jobRoute)
+    jobs.route = true;
+  else
+    delete jobs.route;
+  if (Object.keys(jobs).length > 0)
+    next.jobs = jobs;
+  else
+    delete next.jobs;
+  const beforeWorkflow = isObject2(before.workflow) ? before.workflow : {};
+  const beforeAlerts = isObject2(beforeWorkflow.alerts) ? beforeWorkflow.alerts : {};
+  const retiredAlerts = {};
+  for (const key of ["events", "sound"]) {
+    if (Object.hasOwn(beforeAlerts, key))
+      retiredAlerts[key] = beforeAlerts[key];
+  }
+  const workflow = { ...answers.workflow };
+  if (Object.keys(retiredAlerts).length > 0) {
+    workflow.alerts = { ...retiredAlerts, ...workflow.alerts };
+  }
+  if (Object.keys(workflow).length > 0)
+    next.workflow = workflow;
+  else
+    delete next.workflow;
+  const floor = requiresFloor(next, {
+    deployTasks: extras.deployBlock === true || hasDeployTaskFolders(root, isObject2(next.tasks) ? next.tasks : {})
+  });
+  next.requires = raisedRequires(before.requires, floor.floor, floor.version);
+  const after = orderKeys(next, FILE_ORDER);
+  const valid = ccSmartDevKitConfigSchema.safeParse(after);
+  if (!valid.success) {
+    throw new Error(`${file} would not be a valid project file (${prettifyError(valid.error)}). ` + `Change the answer, then run again.`);
+  }
+  const text = jsonTextFor(existing, after, detectIndent(existing ?? ""));
+  const settings = settingsPlan(join24(root, ".claude", "settings.json"), existingSettings, answers.base !== defaultBranch);
+  const localSettings = settingsPlan(join24(root, ".claude", "settings.local.json"), existingLocalSettings, false);
+  const notes = [];
+  if (answers.base !== defaultBranch) {
+    notes.push(`base ${answers.base} is not the repo's default branch ${defaultBranch}: .claude/settings.json gets "worktree": {"baseRef": "head"}, so a new worktree starts from the branch the session is on`);
+  }
+  if (ignoredTaskFields.length > 0) {
+    const plural = ignoredTaskFields.length > 1;
+    notes.push(`${ignoredTaskFields.map((field) => `tasks.${field}`).join(", ")} ${plural ? "are" : "is"} read by nothing since ${DEPLOY_TASKS_SINCE}, so ${plural ? "they go" : "it goes"}`);
+  }
+  const retired = retiredFieldsOf(before);
+  const engineLines = settings.removes.length + localSettings.removes.length;
+  if (retired.length > 0 || engineLines > 0) {
+    const what = [
+      ...retired.length > 0 ? [retired.map((field) => `worktrees.${field}`).join(", ")] : [],
+      ...engineLines > 0 ? [`its hook line${engineLines === 1 ? "" : "s"}`] : []
+    ].join(" and ");
+    notes.push(`the plugin's worktree engine was retired in ${WORKTREE_ENGINE_RETIRED_IN}: ${what} ${retired.length + engineLines === 1 ? "goes" : "go"}, because Claude Code's own worktrees need none`);
+  }
+  const personal = input.personalWorkflow ?? {};
+  const answered = withCurrentNames(answers.workflow);
+  for (const clash of workflowClashes({
+    allowMerge: answered.allowMerge ?? personal.allowMerge ?? workflowDefaults.allowMerge,
+    allowPush: answered.allowPush ?? personal.allowPush ?? workflowDefaults.allowPush,
+    openPr: answered.openPr ?? personal.openPr ?? workflowDefaults.openPr
+  })) {
+    notes.push(clashNote(clash));
+  }
+  return {
+    file,
+    text,
+    changed: text !== existing,
+    diff: diffOf(before, after),
+    settings,
+    localSettings,
+    notes
+  };
+}
+function applyProjectInit(plan, options) {
+  const wanted = [];
+  if (plan.changed)
+    wanted.push([plan.file, plan.text]);
+  for (const settings of [plan.settings, plan.localSettings]) {
+    if (settings.changed)
+      wanted.push([settings.file, settings.text]);
+  }
+  return wanted.map(([file, text]) => {
+    const created = !existsSync19(file);
+    if (options.dryRun === true)
+      return { file, created, backup: null };
+    const backup = backupFile(options.stateDir, file);
+    atomicWrite(realTarget(file), text, fileMode(file) ?? 420);
+    return { file, created, backup };
+  });
+}
+
 // src/workflow/resolve.ts
-import { existsSync as existsSync19, readFileSync as readFileSync29 } from "fs";
+import { existsSync as existsSync21, readFileSync as readFileSync30 } from "fs";
 
 // src/setup/statusline.ts
-import { join as join23 } from "path";
+import { join as join25 } from "path";
 
 // src/setup/launcher.ts
 var LAUNCHER_NAME = "cc-smart-dev-kit";
@@ -18076,32 +18983,32 @@ exec "$bun" --no-env-file "$@"
 // src/setup/statusline.ts
 var STATUSLINE_KEY = ["statusLine"];
 function statuslineSetting(paths) {
-  return { command: `${shellWord(join23(paths.binDir, LAUNCHER_NAME))} statusline`, type: "command" };
+  return { command: `${shellWord(join25(paths.binDir, LAUNCHER_NAME))} statusline`, type: "command" };
 }
 
 // src/update/state.ts
 import {
   appendFileSync,
-  existsSync as existsSync18,
-  mkdirSync as mkdirSync7,
-  readdirSync as readdirSync9,
-  readFileSync as readFileSync28,
-  rmSync as rmSync4,
+  existsSync as existsSync20,
+  mkdirSync as mkdirSync8,
+  readdirSync as readdirSync10,
+  readFileSync as readFileSync29,
+  rmSync as rmSync5,
   statSync as statSync12,
-  writeFileSync as writeFileSync2
+  writeFileSync as writeFileSync3
 } from "fs";
-import { join as join24 } from "path";
+import { join as join26 } from "path";
 var CHECK_INTERVAL_MS = 60 * 60 * 1000;
 var LOG_MAX_BYTES = 256 * 1024;
 function updateFiles(stateDir) {
   return {
-    hold: join24(stateDir, "update-hold"),
-    check: join24(stateDir, "update-check.json"),
-    reported: join24(stateDir, "update-reported"),
-    major: join24(stateDir, "update-major.json"),
-    log: join24(stateDir, "update.log"),
-    lockDir: join24(stateDir, "update"),
-    sessions: join24(stateDir, "sessions")
+    hold: join26(stateDir, "update-hold"),
+    check: join26(stateDir, "update-check.json"),
+    reported: join26(stateDir, "update-reported"),
+    major: join26(stateDir, "update-major.json"),
+    log: join26(stateDir, "update.log"),
+    lockDir: join26(stateDir, "update"),
+    sessions: join26(stateDir, "sessions")
   };
 }
 var RESULTS = [
@@ -18132,11 +19039,11 @@ function unreachableCheck(previous, at, nowMs, detail) {
   };
 }
 function ensureDir(dir) {
-  mkdirSync7(dir, { recursive: true, mode: 448 });
+  mkdirSync8(dir, { recursive: true, mode: 448 });
 }
 function readLastCheck(files) {
   try {
-    const parsed = JSON.parse(readFileSync28(files.check, "utf8"));
+    const parsed = JSON.parse(readFileSync29(files.check, "utf8"));
     if (typeof parsed?.at !== "string" || Number.isNaN(Date.parse(parsed.at)) || !RESULTS.includes(parsed.result) || typeof parsed.detail !== "string") {
       return null;
     }
@@ -18154,16 +19061,16 @@ function readLastCheck(files) {
   }
 }
 function writeLastCheck(files, check) {
-  ensureDir(join24(files.check, ".."));
+  ensureDir(join26(files.check, ".."));
   atomicWrite(files.check, `${JSON.stringify(check, null, 2)}
 `, 384);
 }
 function isHeld(files) {
-  return existsSync18(files.hold);
+  return existsSync20(files.hold);
 }
 function heldSince(files) {
   try {
-    const text = readFileSync28(files.hold, "utf8").trim();
+    const text = readFileSync29(files.hold, "utf8").trim();
     return text === "" ? "an unknown time" : text;
   } catch {
     return null;
@@ -18172,7 +19079,7 @@ function heldSince(files) {
 function hold(files, nowMs) {
   if (isHeld(files))
     return false;
-  ensureDir(join24(files.hold, ".."));
+  ensureDir(join26(files.hold, ".."));
   atomicWrite(files.hold, `${isoSeconds(nowMs)}
 `, 384);
   return true;
@@ -18180,7 +19087,7 @@ function hold(files, nowMs) {
 function resume(files) {
   if (!isHeld(files))
     return false;
-  rmSync4(files.hold, { force: true });
+  rmSync5(files.hold, { force: true });
   return true;
 }
 function checkRunning(files) {
@@ -18190,12 +19097,12 @@ function isoSeconds(ms) {
   return `${new Date(ms).toISOString().slice(0, 19)}Z`;
 }
 function appendLogLine(logFile, line, nowMs) {
-  ensureDir(join24(logFile, ".."));
+  ensureDir(join26(logFile, ".."));
   try {
     if (statSync12(logFile).size > LOG_MAX_BYTES) {
-      const text = readFileSync28(logFile, "utf8");
+      const text = readFileSync29(logFile, "utf8");
       const keep = text.slice(text.length - LOG_MAX_BYTES / 2);
-      writeFileSync2(logFile, keep.slice(keep.indexOf(`
+      writeFileSync3(logFile, keep.slice(keep.indexOf(`
 `) + 1), { mode: 384 });
     }
   } catch {}
@@ -18204,7 +19111,7 @@ function appendLogLine(logFile, line, nowMs) {
 }
 function readHeldMajor(files) {
   try {
-    const parsed = JSON.parse(readFileSync28(files.major, "utf8"));
+    const parsed = JSON.parse(readFileSync29(files.major, "utf8"));
     if (typeof parsed?.version !== "string" || typeof parsed.at !== "string" || parsed.from !== null && typeof parsed.from !== "string" || !Array.isArray(parsed.notes) || !parsed.notes.every((note) => typeof note === "string")) {
       return null;
     }
@@ -18214,11 +19121,11 @@ function readHeldMajor(files) {
   }
 }
 function clearHeldMajor(files) {
-  rmSync4(files.major, { force: true });
+  rmSync5(files.major, { force: true });
 }
 function readSession2(file) {
   try {
-    const parsed = JSON.parse(readFileSync28(file, "utf8"));
+    const parsed = JSON.parse(readFileSync29(file, "utf8"));
     if (typeof parsed?.pid !== "number" || typeof parsed.start !== "string" || typeof parsed.version !== "string") {
       return null;
     }
@@ -18234,11 +19141,11 @@ function isRunning2(session) {
 function runningSessions(files) {
   let names;
   try {
-    names = readdirSync9(files.sessions);
+    names = readdirSync10(files.sessions);
   } catch {
     return [];
   }
-  return names.filter((name) => SESSION_FILE.test(name)).map((name) => readSession2(join24(files.sessions, name))).filter((session) => session !== null && isRunning2(session));
+  return names.filter((name) => SESSION_FILE.test(name)).map((name) => readSession2(join26(files.sessions, name))).filter((session) => session !== null && isRunning2(session));
 }
 
 // src/zod-issues.ts
@@ -18257,11 +19164,11 @@ function personalWorkflowFile(paths) {
   return paths.workflowConfigFile;
 }
 function loadWorkflow(file) {
-  if (!existsSync19(file))
+  if (!existsSync21(file))
     return {};
   let raw;
   try {
-    raw = JSON.parse(readFileSync29(file, "utf8"));
+    raw = JSON.parse(readFileSync30(file, "utf8"));
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
     throw new WorkflowConfigError(`Invalid ${file}: not valid JSON (${reason})`);
@@ -18336,7 +19243,7 @@ function resolvePlans(paths, projectConfig) {
 }
 function statusLineIsOurs(paths) {
   try {
-    const parsed = JSON.parse(readFileSync29(paths.settingsFile, "utf8"));
+    const parsed = JSON.parse(readFileSync30(paths.settingsFile, "utf8"));
     if (typeof parsed !== "object" || parsed === null)
       return false;
     const statusLine = parsed.statusLine;
@@ -18520,7 +19427,7 @@ function autoMergeOff(resolved, base) {
   if (resolved.allowMerge.value)
     return null;
   const where = base ?? "the integration base (worktrees.base)";
-  return `allowMerge is off (${sourceLabel(resolved.allowMerge, base)}): turn it on in ${CONFIG_PATH} ("workflow": {"allowMerge": true}), commit it to ${where} and push`;
+  return `allowMerge is off (${sourceLabel(resolved.allowMerge, base)}): turn it on with \`${COMMAND} workflow set allowMerge true --project\`, or write ("workflow": {"allowMerge": true}) in ${CONFIG_PATH} together with "requires": "${requiresFor(WORKFLOW_ALLOW_KEYS_SINCE)}"; commit it to ${where} and push`;
 }
 function autoMergeRefusal(resolved, projectConfig, prBase, defaultBranch) {
   const off = autoMergeOff(resolved, prBase);
@@ -18536,14 +19443,14 @@ function autoMergeAllowed(resolved, projectConfig, prBase, defaultBranch) {
 }
 
 // src/workflow/review-cover.ts
-import { mkdtempSync as mkdtempSync2, rmSync as rmSync5 } from "fs";
+import { mkdtempSync as mkdtempSync2, rmSync as rmSync6 } from "fs";
 import { tmpdir as tmpdir2 } from "os";
-import { join as join26 } from "path";
+import { join as join28 } from "path";
 
 // src/workflow/reviews.ts
 import { createHash as createHash4 } from "crypto";
-import { mkdirSync as mkdirSync8, readFileSync as readFileSync30 } from "fs";
-import { dirname as dirname10, join as join25 } from "path";
+import { mkdirSync as mkdirSync9, readFileSync as readFileSync31 } from "fs";
+import { dirname as dirname11, join as join27 } from "path";
 var REVIEWS_KEPT = 50;
 var REVIEWS_LOCK_WAIT_MS = 3000;
 var START_KEPT_MS = 24 * 60 * 60 * 1000;
@@ -18556,14 +19463,14 @@ function repoKey(repo) {
   return createHash4("sha256").update(repo).digest("hex").slice(0, 16);
 }
 function reviewsFile(stateDir, repo) {
-  return join25(stateDir, "reviews", `${repoKey(repo)}.json`);
+  return join27(stateDir, "reviews", `${repoKey(repo)}.json`);
 }
 function reviewStartsFile(stateDir, repo) {
-  return join25(stateDir, "reviews", `${repoKey(repo)}.starts.json`);
+  return join27(stateDir, "reviews", `${repoKey(repo)}.starts.json`);
 }
 function readObject(file) {
   try {
-    const parsed = JSON.parse(readFileSync30(file, "utf8"));
+    const parsed = JSON.parse(readFileSync31(file, "utf8"));
     return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed) ? parsed : {};
   } catch {
     return {};
@@ -18595,8 +19502,8 @@ function trustedReviews(file, agents) {
   return Object.entries(readReviews(file)).filter(([, entry]) => trusted(entry, agents)).sort(([, a], [, b]) => b.at.localeCompare(a.at)).map(([sha, entry]) => ({ sha, at: entry.at, branches: entry.branches ?? [] }));
 }
 async function underRecordLock(file, write) {
-  const folder = dirname10(file);
-  mkdirSync8(folder, { mode: 448, recursive: true });
+  const folder = dirname11(file);
+  mkdirSync9(folder, { mode: 448, recursive: true });
   return await withLock(folder, write, { waitMs: REVIEWS_LOCK_WAIT_MS });
 }
 async function recordReview(file, sha, by, atMs, branch = null) {
@@ -18771,7 +19678,7 @@ async function readCover(checkout, target, records, limits, git) {
   }
   let objects = null;
   try {
-    objects = mkdtempSync2(join26(tmpdir2(), `${COMMAND}-cover-`));
+    objects = mkdtempSync2(join28(tmpdir2(), `${COMMAND}-cover-`));
     return await measure(checkout, target, candidates, limits, git, objects);
   } catch (error) {
     if (error instanceof Uncovered)
@@ -18784,14 +19691,14 @@ async function readCover(checkout, target, records, limits, git) {
     };
   } finally {
     if (objects !== null)
-      rmSync5(objects, { recursive: true, force: true });
+      rmSync6(objects, { recursive: true, force: true });
   }
 }
 async function measure(checkout, { head, branch, base }, candidates, limits, git, objects) {
   const baseRef = `refs/remotes/origin/${base}`;
   const own = {
     GIT_OBJECT_DIRECTORY: objects,
-    GIT_ALTERNATE_OBJECT_DIRECTORIES: alternateEntry(join26(checkout.commonDir, "objects"))
+    GIT_ALTERNATE_OBJECT_DIRECTORIES: alternateEntry(join28(checkout.commonDir, "objects"))
   };
   const run = async (args) => {
     const left = (git.timeFor ?? ((limit) => limit))(GUARD_GIT_TIMEOUT_MS);
@@ -19247,892 +20154,6 @@ async function checkPullRequest(world, target, defaultBranches = new Map) {
 // src/workflow/write.ts
 import { mkdirSync as mkdirSync10 } from "fs";
 import { dirname as dirname12 } from "path";
-
-// src/project/init.ts
-import { existsSync as existsSync21 } from "fs";
-import { join as join28 } from "path";
-
-// src/setup/json-edit.ts
-var DEFAULT_LINE_WIDTH = 80;
-var MAX_LINE_WIDTH = 120;
-var TAB_COLUMNS = 2;
-function isObject3(value) {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-function columns(text) {
-  let width = 0;
-  for (const char of text)
-    width += char === "\t" ? TAB_COLUMNS : 1;
-  return width;
-}
-function lineWidthOf(text) {
-  const longest = Math.max(0, ...text.split(`
-`).map((line) => columns(line.replace(/\r$/, ""))));
-  return Math.min(MAX_LINE_WIDTH, Math.max(DEFAULT_LINE_WIDTH, longest));
-}
-function printValue(value, layout, indent, column, trailing) {
-  if (Array.isArray(value)) {
-    if (value.length === 0)
-      return "[]";
-    const scalars = value.every((item) => !Array.isArray(item) && !isObject3(item));
-    if (scalars) {
-      const flat = `[${value.map((item) => JSON.stringify(item) ?? "null").join(", ")}]`;
-      if (column + flat.length + trailing <= layout.width)
-        return flat;
-    }
-    const inner = indent + layout.unit;
-    const items = value.map((item, index) => {
-      const last = index === value.length - 1;
-      return `${inner}${printValue(item, layout, inner, columns(inner), last ? 0 : 1)}${last ? "" : ","}`;
-    });
-    return `[${layout.eol}${items.join(layout.eol)}${layout.eol}${indent}]`;
-  }
-  if (isObject3(value)) {
-    const entries = Object.entries(value).filter(([, item]) => item !== undefined);
-    if (entries.length === 0)
-      return "{}";
-    const inner = indent + layout.unit;
-    const members = entries.map(([key, item], index) => {
-      const last = index === entries.length - 1;
-      return `${inner}${printMember(key, item, layout, inner, last ? 0 : 1)}${last ? "" : ","}`;
-    });
-    return `{${layout.eol}${members.join(layout.eol)}${layout.eol}${indent}}`;
-  }
-  return JSON.stringify(value);
-}
-function printMember(key, value, layout, indent, trailing) {
-  const head = `${JSON.stringify(key)}: `;
-  return `${head}${printValue(value, layout, indent, columns(indent) + head.length, trailing)}`;
-}
-function printJson(value, unit = "  ", width = DEFAULT_LINE_WIDTH) {
-  return `${printValue(value, { unit, width, eol: `
-` }, "", 0, 0)}
-`;
-}
-
-class Scanner {
-  text;
-  at = 0;
-  constructor(text) {
-    this.text = text;
-  }
-  node() {
-    this.skipSpace();
-    const start = this.at;
-    const char = this.text[start];
-    if (char === "{")
-      return this.object();
-    if (char === "[")
-      return this.array();
-    if (char === '"')
-      this.string();
-    else
-      while (this.at < this.text.length && !/[\s,\]}]/.test(this.text[this.at] ?? ""))
-        this.at += 1;
-    return { start, end: this.at };
-  }
-  object() {
-    const start = this.at;
-    const members = [];
-    this.at += 1;
-    for (;; ) {
-      this.skipSpace();
-      if (this.text[this.at] === "}")
-        break;
-      if (this.text[this.at] === ",") {
-        this.at += 1;
-        continue;
-      }
-      const keyStart = this.at;
-      this.string();
-      const key = JSON.parse(this.text.slice(keyStart, this.at));
-      this.skipSpace();
-      this.at += 1;
-      members.push({ key, keyStart, value: this.node() });
-    }
-    this.at += 1;
-    return { start, end: this.at, members };
-  }
-  array() {
-    const start = this.at;
-    this.at += 1;
-    for (;; ) {
-      this.skipSpace();
-      if (this.text[this.at] === "]")
-        break;
-      if (this.text[this.at] === ",")
-        this.at += 1;
-      else
-        this.node();
-    }
-    this.at += 1;
-    return { start, end: this.at };
-  }
-  string() {
-    this.at += 1;
-    while (this.text[this.at] !== '"')
-      this.at += this.text[this.at] === "\\" ? 2 : 1;
-    this.at += 1;
-  }
-  skipSpace() {
-    while (/\s/.test(this.text[this.at] ?? "x"))
-      this.at += 1;
-  }
-}
-function lineIndent(text, position) {
-  const lineStart = text.lastIndexOf(`
-`, position - 1) + 1;
-  return /^[ \t]*/.exec(text.slice(lineStart))?.[0] ?? "";
-}
-function columnOf(text, position) {
-  return columns(text.slice(text.lastIndexOf(`
-`, position - 1) + 1, position));
-}
-function editObject(text, node, before, after, layout, edits) {
-  const members = node.members ?? [];
-  const last = (key) => members.findLast((m) => m.key === key);
-  const wanted = (key) => Object.hasOwn(after, key) && after[key] !== undefined;
-  const closeAt = node.end - 1;
-  const survivors = members.filter((member) => wanted(member.key));
-  for (const key of Object.keys(before)) {
-    if (!wanted(key))
-      continue;
-    const member = last(key);
-    if (member === undefined)
-      continue;
-    const was = before[key];
-    const is = after[key];
-    if (Bun.deepEquals(was, is, true))
-      continue;
-    if (isObject3(was) && isObject3(is) && member.value.members !== undefined) {
-      editObject(text, member.value, was, is, layout, edits);
-      continue;
-    }
-    const indent = lineIndent(text, member.keyStart);
-    const followed = text.slice(member.value.end).match(/^\s*,/) !== null;
-    edits.push({
-      start: member.value.start,
-      end: member.value.end,
-      text: printValue(is, layout, indent, columnOf(text, member.value.start), followed ? 1 : 0)
-    });
-  }
-  const added = Object.keys(after).filter((key) => after[key] !== undefined && !Object.hasOwn(before, key));
-  const indent = lineIndent(text, node.start);
-  const first = members[0];
-  const expanded = first !== undefined && text.slice(node.start, first.keyStart).includes(`
-`);
-  const memberIndent = survivors.length > 0 && expanded ? lineIndent(text, survivors[0].keyStart) : indent + layout.unit;
-  const printed = added.map((key, index) => printMember(key, after[key], layout, memberIndent, index === added.length - 1 ? 0 : 1));
-  if (survivors.length === 0) {
-    if (members.length === 0 && added.length === 0)
-      return;
-    const inside = printed.length === 0 ? "" : `${layout.eol}${printed.map((line) => memberIndent + line).join(`,${layout.eol}`)}${layout.eol}${indent}`;
-    edits.push({ start: node.start + 1, end: closeAt, text: inside });
-    return;
-  }
-  const lastSurvivor = survivors[survivors.length - 1];
-  let tailRemoved = false;
-  for (let index = 0;index < members.length; index += 1) {
-    const member = members[index];
-    if (wanted(member.key))
-      continue;
-    if (member.keyStart < lastSurvivor.keyStart) {
-      const next = members[index + 1];
-      edits.push({ start: member.keyStart, end: next.keyStart, text: "" });
-    } else
-      tailRemoved = true;
-  }
-  const tail = members[members.length - 1];
-  if (tailRemoved) {
-    edits.push({ start: lastSurvivor.value.end, end: tail.value.end, text: "" });
-  }
-  if (added.length > 0) {
-    const at = tail.value.end;
-    const inserted = expanded ? printed.map((line) => `,${layout.eol}${memberIndent}${line}`).join("") : printed.map((line) => `, ${line}`).join("");
-    edits.push({ start: at, end: at, text: inserted });
-  }
-}
-function editJsonText(text, after) {
-  const source = withoutBom(text);
-  const before = JSON.parse(source);
-  if (!isObject3(before))
-    throw new Error("editJsonText: the text is not a JSON object");
-  if (Bun.deepEquals(before, after, true) && source === text)
-    return text;
-  const layout = {
-    unit: detectIndent(source),
-    width: lineWidthOf(source),
-    eol: source.includes(`\r
-`) ? `\r
-` : `
-`
-  };
-  const root = new Scanner(source).node();
-  const edits = [];
-  editObject(source, root, before, after, layout, edits);
-  let result = source;
-  for (const edit of edits.sort((a, b) => b.start - a.start || b.end - a.end)) {
-    result = result.slice(0, edit.start) + edit.text + result.slice(edit.end);
-  }
-  return result;
-}
-function jsonTextFor(existing, data, indent) {
-  if (existing === null || existing.trim() === "")
-    return printJson(data, indent);
-  return editJsonText(existing, data);
-}
-
-// src/tasks/deploy/files.ts
-import { existsSync as existsSync20, mkdirSync as mkdirSync9, readdirSync as readdirSync10, readFileSync as readFileSync31, rmSync as rmSync6, writeFileSync as writeFileSync3 } from "fs";
-import { basename as basename4, dirname as dirname11, isAbsolute, join as join27, relative as relative2, resolve as resolve6, sep as sep2 } from "path";
-var DEFAULT_TASKS_DIR = ".claude/tasks";
-function deployTasksDir(checkoutRoot, settings) {
-  const dir = settings.dir ?? DEFAULT_TASKS_DIR;
-  const target = resolve6(checkoutRoot, dir);
-  const rel = relative2(checkoutRoot, target);
-  if (isAbsolute(dir) || rel === ".." || rel.startsWith(`..${sep2}`))
-    throw new Error("Task folder must be inside the checkout");
-  return target;
-}
-function isTaskFile(name) {
-  return !name.startsWith(".") && name !== "README.md" && name.endsWith(".md");
-}
-var ARCHIVE = "archive";
-function envFolder(dir, env) {
-  return join27(dir, env);
-}
-function isArchived(file) {
-  return basename4(dirname11(file)) === ARCHIVE;
-}
-function archiveFolder(dir, env) {
-  return join27(dir, env, ARCHIVE);
-}
-function scanDeployTasks(dir, options) {
-  const found = [];
-  const broken = [];
-  for (const env of DEPLOY_ENVS) {
-    for (const folder of options.archive ? [envFolder(dir, env), archiveFolder(dir, env)] : [envFolder(dir, env)]) {
-      if (!existsSync20(folder))
-        continue;
-      for (const entry of readdirSync10(folder, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
-        if (!entry.isFile() || !isTaskFile(entry.name))
-          continue;
-        const file = join27(folder, entry.name);
-        const result = parseDeployTask(readFileSync31(file, "utf8"), file, env);
-        if (result.ok)
-          found.push(result.task);
-        else
-          broken.push({ file, why: result.why });
-      }
-    }
-  }
-  const byId = new Map;
-  for (const task of found)
-    byId.set(task.id, [...byId.get(task.id) ?? [], task]);
-  const tasks = [];
-  const duplicates = [];
-  for (const copies of byId.values()) {
-    const first = copies[0];
-    if (!first)
-      continue;
-    if (new Set(copies.map((task) => basename4(task.file))).size > 1) {
-      duplicates.push({ id: first.id, files: copies.map((task) => task.file) });
-      tasks.push(...copies);
-      continue;
-    }
-    const kept = copies.find((task) => isArchived(task.file)) ?? first;
-    tasks.push(kept);
-    for (const task of copies)
-      if (task !== kept)
-        broken.push({
-          file: task.file,
-          why: `a second copy of ${task.id}: the one in archive/ is kept; remove this file`
-        });
-  }
-  return { tasks, broken, duplicates };
-}
-function oldTaskFiles(dir) {
-  if (!existsSync20(dir))
-    return [];
-  return readdirSync10(dir, { withFileTypes: true }).filter((entry) => entry.isFile() && isTaskFile(entry.name)).map((entry) => join27(dir, entry.name)).sort();
-}
-function newDeployId(env, now, used) {
-  const stamp = now.toISOString().replace(/\.\d+Z$/, "").replace(/[-:]/g, "").replace("T", "-");
-  const base = `${env}-${stamp}`;
-  let id = base;
-  for (let n = 2;used.has(id); n++)
-    id = `${base}-${n}`;
-  return id;
-}
-function takenDeployIds(dir, env) {
-  const ids = new Set(scanDeployTasks(dir, { archive: true }).tasks.filter((task) => task.env === env).map((task) => task.id));
-  for (const folder of [envFolder(dir, env), archiveFolder(dir, env)])
-    if (existsSync20(folder))
-      for (const name of readdirSync10(folder)) {
-        const id = deployIdOfFileName(name);
-        if (id)
-          ids.add(id);
-      }
-  return ids;
-}
-function slugOf(title) {
-  return title.normalize("NFKD").replace(/[\u0300-\u036F]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 50).replace(/-$/, "") || "task";
-}
-function planDeployTask(dir, input, sources, used) {
-  const id = newDeployId(input.env, sources.now, used);
-  const { body = "", ...fields } = input;
-  const validated = deployTaskSchema.parse({
-    ...fields,
-    id,
-    status: "open",
-    created: taskInstant(sources.now)
-  });
-  used.add(id);
-  return {
-    ...validated,
-    body,
-    file: join27(envFolder(dir, validated.env), `${id}-${slugOf(validated.title)}.md`)
-  };
-}
-function save(task) {
-  atomicWrite(task.file, renderDeployTask(task), 420);
-  return task;
-}
-var CLAIM_ATTEMPTS = 5;
-function claim2(dir, task, sources) {
-  sources.beforeClaim?.(task);
-  try {
-    writeFileSync3(task.file, renderDeployTask(task), { flag: "wx", mode: 420 });
-  } catch (error) {
-    if (error.code === "EEXIST")
-      return false;
-    throw error;
-  }
-  const own = basename4(task.file);
-  const rival = [envFolder(dir, task.env), archiveFolder(dir, task.env)].filter((folder) => existsSync20(folder)).flatMap((folder) => readdirSync10(folder)).some((name) => name !== own && deployIdOfFileName(name) === task.id);
-  if (rival)
-    rmSync6(task.file, { force: true });
-  return !rival;
-}
-function createDeployTask(dir, input, sources) {
-  mkdirSync9(envFolder(dir, input.env), { recursive: true });
-  for (let attempt = 0;attempt < CLAIM_ATTEMPTS; attempt++) {
-    const task = planDeployTask(dir, input, sources, takenDeployIds(dir, input.env));
-    if (claim2(dir, task, sources))
-      return task;
-  }
-  throw new Error("Could not allocate a unique deploy task id");
-}
-function createDeployPair(dir, input, sources, envs) {
-  for (const env of DEPLOY_ENVS)
-    if (!envs.includes(env))
-      throw new Error(`A staging and prod pair needs both environments; this project lists only: ${envs.join(", ")}`);
-  mkdirSync9(envFolder(dir, "staging"), { recursive: true });
-  mkdirSync9(envFolder(dir, "prod"), { recursive: true });
-  for (let attempt = 0;attempt < CLAIM_ATTEMPTS; attempt++) {
-    const staging = planDeployTask(dir, { ...input, env: "staging" }, sources, takenDeployIds(dir, "staging"));
-    const prod = planDeployTask(dir, { ...input, env: "prod" }, sources, takenDeployIds(dir, "prod"));
-    staging.twin = prod.id;
-    prod.twin = staging.id;
-    if (!claim2(dir, staging, sources))
-      continue;
-    let claimed = false;
-    try {
-      claimed = claim2(dir, prod, sources);
-    } finally {
-      if (!claimed)
-        rmSync6(staging.file, { force: true });
-    }
-    if (claimed)
-      return { staging, prod };
-  }
-  throw new Error("Could not allocate unique ids for a staging and prod pair");
-}
-function findDeployTask(dir, id) {
-  const scan = scanDeployTasks(dir, { archive: true });
-  const clash = scan.duplicates.find((duplicate) => duplicate.id === id);
-  if (clash)
-    throw new Error(`Deploy task id ${id} is ambiguous: ${clash.files.join(" and ")} both claim it. Rename the id inside one of them`);
-  const match = scan.tasks.find((task) => task.id === id);
-  if (!match)
-    throw new Error(`Deploy task not found: ${id}`);
-  return match;
-}
-function updateDeployTask(dir, id, patch, _now) {
-  const task = findDeployTask(dir, id);
-  const merged = { ...task, ...patch };
-  const { body, file, ...fields } = merged;
-  return save({ ...deployTaskSchema.parse(fields), body, file });
-}
-function withNote(task, text, now) {
-  const line = `- ${taskInstant(now).slice(0, 10)} ${text.replace(/\r?\n/g, `
-  `)}
-`;
-  const heading = /^## Log\s*$/m.exec(task.body);
-  if (!heading)
-    return {
-      ...task,
-      body: `${task.body}${task.body.endsWith(`
-`) || !task.body ? "" : `
-`}
-## Log
-${line}`
-    };
-  const start = heading.index + heading[0].length;
-  const next = /^## /m.exec(task.body.slice(start));
-  const end = next ? start + next.index : task.body.length;
-  const before = task.body.slice(0, end);
-  return {
-    ...task,
-    body: `${before}${before.endsWith(`
-`) ? "" : `
-`}${line}${task.body.slice(end)}`
-  };
-}
-function addDeployNote(dir, id, text, now) {
-  return save(withNote(findDeployTask(dir, id), text, now));
-}
-function closeDeployTask(dir, id, options, now) {
-  const task = findDeployTask(dir, id);
-  if (task.status !== "open")
-    throw new Error(`${id} is already ${task.status}: reopen it first to close it again`);
-  if (options.status === "done" && !options.evidence?.trim())
-    throw new Error(`${id} needs evidence to be done: what you ran or checked, and its result`);
-  if (options.status === "dropped" && !options.note?.trim())
-    throw new Error(`${id} needs a note to be dropped: the reason it no longer applies`);
-  const closed = withNote({
-    ...task,
-    status: options.status,
-    closed: taskInstant(now),
-    ...options.evidence === undefined ? {} : { evidence: options.evidence }
-  }, options.note ?? `${options.status}: ${options.evidence ?? ""}`, now);
-  const archive = archiveFolder(dir, task.env);
-  mkdirSync9(archive, { recursive: true });
-  const destination = join27(archive, basename4(task.file));
-  if (destination !== task.file && existsSync20(destination))
-    throw new Error(`Archive task already exists: ${destination}`);
-  const saved = save({ ...closed, file: destination });
-  if (destination !== task.file)
-    rmSync6(task.file, { force: true });
-  return saved;
-}
-function reopenDeployTask(dir, id, now, note) {
-  const task = findDeployTask(dir, id);
-  const archived = isArchived(task.file);
-  if (task.status === "open" && !archived)
-    throw new Error(`${id} is already open`);
-  let reopened = task;
-  if (task.status !== "open") {
-    const { closed: _closed, evidence: _evidence, ...rest } = task;
-    reopened = save(withNote({ ...rest, status: "open" }, note?.trim() ? `reopened: ${note}` : "reopened", now));
-  }
-  const destination = join27(envFolder(dir, task.env), basename4(task.file));
-  const saved = save({ ...reopened, file: destination });
-  if (destination !== task.file)
-    rmSync6(task.file, { force: true });
-  return saved;
-}
-
-// src/workflow/clashes.ts
-function workflowClashes(input) {
-  const clashes = [];
-  if (input.openPr !== "off" && !input.allowPush) {
-    clashes.push({
-      fix: `turn allowPush on (\`${COMMAND} workflow set allowPush true\`), or set openPr off (\`${COMMAND} workflow set openPr off\`)`,
-      line: "openPr opens a pull request, but allowPush is off: a session does not push, and that pull request needs the push, so it waits for you every time",
-      setting: "openPr"
-    });
-  }
-  if (input.allowMerge && input.openPr === "draft") {
-    clashes.push({
-      fix: `set openPr ready (\`${COMMAND} workflow set openPr ready\`) so the pull request can merge, or turn allowMerge off (\`${COMMAND} workflow set allowMerge false\`)`,
-      line: "openPr is draft and allowMerge is on: a draft pull request is never merged, so allowMerge never acts on the pull request a session opens",
-      setting: "openPr"
-    });
-  }
-  return clashes;
-}
-function clashesOf(resolved) {
-  return workflowClashes({
-    allowMerge: resolved.allowMerge.value,
-    allowPush: resolved.allowPush.value,
-    openPr: resolved.openPr.value
-  });
-}
-function clashNote(clash) {
-  return `${clash.line}. Fix: ${clash.fix}.`;
-}
-
-// src/project/init.ts
-var FILE_ORDER = [
-  "requires",
-  "worktrees",
-  "protectedBranches",
-  "checks",
-  "sessionNames",
-  "instructions",
-  "autoMode",
-  "jobs",
-  "ownHooks",
-  "workflow"
-];
-var WORKTREE_ORDER = ["base", "guardMainFolder", "bases"];
-function orderKeys(data, order) {
-  const ordered = {};
-  for (const key of order) {
-    if (Object.hasOwn(data, key))
-      ordered[key] = data[key];
-  }
-  for (const [key, value] of Object.entries(data)) {
-    if (!Object.hasOwn(ordered, key))
-      ordered[key] = value;
-  }
-  return ordered;
-}
-function parseObject(text, file) {
-  if (text === null || text.trim() === "")
-    return {};
-  let raw;
-  try {
-    raw = parseUserJson(text);
-  } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error);
-    throw new Error(`${file} is not valid JSON (${reason}). Fix it by hand, then run again.`);
-  }
-  if (!isObject2(raw))
-    throw new Error(`${file} must hold a JSON object.`);
-  return raw;
-}
-function requiresFor(version) {
-  const [major, minor] = version.split(".");
-  return `>=${major ?? "0"}.${minor ?? "0"}`;
-}
-function raisedRequires(existing, floor, floorVersion) {
-  if (typeof existing === "string") {
-    const lowest = lowestAllowed(existing);
-    if (lowest !== null && Bun.semver.order(lowest, floorVersion) >= 0)
-      return existing;
-  }
-  return floor;
-}
-function requiresTooLow(existing, floorVersion) {
-  if (typeof existing !== "string")
-    return false;
-  const lowest = lowestAllowed(existing);
-  return lowest !== null && Bun.semver.order(lowest, floorVersion) < 0;
-}
-function requiresFloor(file, options = {}) {
-  const workflow = isObject2(file.workflow) ? file.workflow : {};
-  const worktrees = isObject2(file.worktrees) ? file.worktrees : {};
-  const needs = [];
-  if (Object.hasOwn(file, "checks"))
-    needs.push(CHECKS_SINCE);
-  if (Object.hasOwn(file, "tasks"))
-    needs.push(TASKS_SINCE);
-  if (isObject2(file.tasks) && Object.hasOwn(file.tasks, "envs"))
-    needs.push(DEPLOY_TASKS_SINCE);
-  if (isObject2(file.tasks) && Object.hasOwn(file.tasks, "deployCommands"))
-    needs.push(DEPLOY_GUARD_SINCE);
-  if (options.deployTasks === true)
-    needs.push(DEPLOY_TASKS_SINCE);
-  if (Object.hasOwn(workflow, "issues"))
-    needs.push(WORKFLOW_ISSUES_SINCE);
-  const ownHooks = Array.isArray(file.ownHooks) ? file.ownHooks : [];
-  for (const [name, since] of Object.entries(OWN_HOOK_NAMES_SINCE)) {
-    if (ownHooks.includes(name))
-      needs.push(since);
-  }
-  if (Object.hasOwn(workflow, "fixesAfterReview")) {
-    needs.push(WORKFLOW_FIXES_SINCE);
-  }
-  if (Object.values(WORKFLOW_KEY_ALIASES).some((name) => Object.hasOwn(workflow, name))) {
-    needs.push(WORKFLOW_ALLOW_KEYS_SINCE);
-  }
-  if (Object.hasOwn(workflow, "plans"))
-    needs.push(WORKFLOW_PLANS_SINCE);
-  if (isObject2(workflow.plans) && Object.hasOwn(workflow.plans, "mergeFiles")) {
-    needs.push(WORKFLOW_MERGE_FILES_SINCE);
-  }
-  if (Object.hasOwn(worktrees, "autoClean"))
-    needs.push(WORKTREE_AUTO_CLEAN_SINCE);
-  if (Object.hasOwn(worktrees, "rebuildable"))
-    needs.push(WORKTREE_REBUILDABLE_SINCE);
-  const jobs = isObject2(file.jobs) ? file.jobs : {};
-  const kinds = isObject2(jobs.kinds) ? Object.values(jobs.kinds) : [];
-  for (const [key, since] of Object.entries(JOB_KIND_KEYS_SINCE)) {
-    if (kinds.some((kind) => isObject2(kind) && Object.hasOwn(kind, key)))
-      needs.push(since);
-  }
-  if (needs.length === 0) {
-    return {
-      floor: `>=${WORKTREE_PREFIX_OPTIONAL_SINCE}`,
-      version: WORKTREE_PREFIX_OPTIONAL_SINCE
-    };
-  }
-  const version = needs.reduce((newest, one) => Bun.semver.order(one, newest) > 0 ? one : newest);
-  return { floor: requiresFor(version), version };
-}
-function leaves(value, prefix, found) {
-  if (isObject2(value)) {
-    const entries = Object.entries(value);
-    if (entries.length === 0 && prefix !== "")
-      found.set(prefix, value);
-    for (const [key, child] of entries) {
-      leaves(child, prefix === "" ? key : `${prefix}.${key}`, found);
-    }
-    return;
-  }
-  if (prefix !== "")
-    found.set(prefix, value);
-}
-function shownLeaf(value) {
-  return JSON.stringify(value);
-}
-function diffOf(before, after) {
-  const was = new Map;
-  const is = new Map;
-  leaves(before, "", was);
-  leaves(after, "", is);
-  const keys = [...new Set([...was.keys(), ...is.keys()])].sort();
-  const lines = [];
-  for (const key of keys) {
-    const had = was.get(key);
-    const has = is.get(key);
-    if (!was.has(key))
-      lines.push(`+ ${key}: ${shownLeaf(has)}`);
-    else if (!is.has(key))
-      lines.push(`- ${key}: ${shownLeaf(had)}`);
-    else if (!Bun.deepEquals(had, has, true)) {
-      lines.push(`~ ${key}: ${shownLeaf(had)} -> ${shownLeaf(has)}`);
-    }
-  }
-  return lines;
-}
-function withBaseRef(settings, head) {
-  const now = isObject2(settings.worktree) ? settings.worktree : null;
-  if (!head || now?.baseRef === "head")
-    return { settings, added: [] };
-  const worktree = { ...now ?? {}, baseRef: "head" };
-  return { settings: { ...settings, worktree }, added: ['worktree.baseRef: "head"'] };
-}
-function withoutEngineHooks(settings) {
-  if (!isObject2(settings.hooks))
-    return { settings, removed: [] };
-  const removed = [];
-  const hooks = {};
-  for (const [event, groups] of Object.entries(settings.hooks)) {
-    if (!Array.isArray(groups)) {
-      hooks[event] = groups;
-      continue;
-    }
-    let touched = false;
-    const kept = [];
-    for (const group of groups) {
-      if (!isObject2(group) || !Array.isArray(group.hooks)) {
-        kept.push(group);
-        continue;
-      }
-      const handlers = group.hooks.filter((handler) => {
-        const command = describeHandler(handler);
-        if (retiredEngineHookOf(command) === null)
-          return true;
-        removed.push(`hooks.${event}: ${command}`);
-        return false;
-      });
-      if (handlers.length === group.hooks.length) {
-        kept.push(group);
-        continue;
-      }
-      touched = true;
-      if (handlers.length > 0)
-        kept.push({ ...group, hooks: handlers });
-    }
-    if (!touched)
-      hooks[event] = groups;
-    else if (kept.length > 0)
-      hooks[event] = kept;
-  }
-  if (removed.length === 0)
-    return { settings, removed };
-  const next = { ...settings, hooks };
-  if (Object.keys(hooks).length === 0)
-    delete next.hooks;
-  return { settings: next, removed };
-}
-function settingsPlan(file, existing, head) {
-  const cleaned = withoutEngineHooks(parseObject(existing, file));
-  const merged = withBaseRef(cleaned.settings, head);
-  const changed = cleaned.removed.length > 0 || merged.added.length > 0;
-  return {
-    file,
-    text: !changed && existing !== null ? existing : jsonTextFor(existing, merged.settings, detectIndent(existing ?? "")),
-    changed,
-    adds: merged.added,
-    removes: cleaned.removed,
-    lines: [
-      ...cleaned.removed.map((line) => `- ${line}`),
-      ...merged.added.map((line) => `+ ${line}`)
-    ]
-  };
-}
-function hasDeployTaskFolders(root, tasks) {
-  const settings = typeof tasks.dir === "string" ? { dir: tasks.dir } : {};
-  let dir;
-  try {
-    dir = deployTasksDir(root, settings);
-  } catch {
-    return false;
-  }
-  return DEPLOY_ENVS.some((env) => existsSync21(envFolder(dir, env)));
-}
-function planProjectInit(input, extras = {}) {
-  const { root, existing, existingSettings, existingLocalSettings, defaultBranch, answers } = input;
-  const file = join28(root, ".claude", "cc-smart-dev-kit.json");
-  const before = parseObject(existing, file);
-  const beforeWorktrees = isObject2(before.worktrees) ? before.worktrees : {};
-  const beforeJobs = isObject2(before.jobs) ? before.jobs : {};
-  const worktrees = { ...beforeWorktrees };
-  for (const field of RETIRED_WORKTREE_FIELDS)
-    delete worktrees[field];
-  worktrees.base = answers.base;
-  if (answers.guards.guardMainFolder)
-    worktrees.guardMainFolder = true;
-  else
-    delete worktrees.guardMainFolder;
-  if (Object.keys(answers.bases).length > 0)
-    worktrees.bases = answers.bases;
-  else
-    delete worktrees.bases;
-  const next = { ...before };
-  const beforeTasks = isObject2(before.tasks) ? before.tasks : null;
-  const ignoredTaskFields = IGNORED_TASK_FIELDS.filter((field) => beforeTasks !== null && Object.hasOwn(beforeTasks, field));
-  if (beforeTasks !== null && ignoredTaskFields.length > 0) {
-    const tasks = { ...beforeTasks };
-    for (const field of ignoredTaskFields)
-      delete tasks[field];
-    if (Object.keys(tasks).length > 0)
-      next.tasks = tasks;
-    else
-      delete next.tasks;
-  }
-  next.worktrees = orderKeys(worktrees, WORKTREE_ORDER);
-  if (answers.protectedBranches.length > 0)
-    next.protectedBranches = answers.protectedBranches;
-  else
-    delete next.protectedBranches;
-  if (answers.checks !== undefined) {
-    if (answers.checks === null)
-      delete next.checks;
-    else
-      next.checks = { fast: answers.checks.fast };
-  }
-  if (answers.deployCommands !== undefined) {
-    const tasks = isObject2(next.tasks) ? { ...next.tasks } : {};
-    const had = Object.hasOwn(tasks, "deployCommands");
-    const lists = Object.fromEntries(Object.entries(answers.deployCommands).filter(([, list]) => list.length > 0));
-    if (Object.keys(lists).length > 0)
-      tasks.deployCommands = lists;
-    else
-      delete tasks.deployCommands;
-    if (Object.keys(tasks).length > 0)
-      next.tasks = tasks;
-    else if (had)
-      delete next.tasks;
-  }
-  if (answers.guards.sessionNames)
-    next.sessionNames = true;
-  else
-    delete next.sessionNames;
-  const jobs = { ...beforeJobs };
-  if (answers.guards.jobRoute)
-    jobs.route = true;
-  else
-    delete jobs.route;
-  if (Object.keys(jobs).length > 0)
-    next.jobs = jobs;
-  else
-    delete next.jobs;
-  const beforeWorkflow = isObject2(before.workflow) ? before.workflow : {};
-  const beforeAlerts = isObject2(beforeWorkflow.alerts) ? beforeWorkflow.alerts : {};
-  const retiredAlerts = {};
-  for (const key of ["events", "sound"]) {
-    if (Object.hasOwn(beforeAlerts, key))
-      retiredAlerts[key] = beforeAlerts[key];
-  }
-  const workflow = { ...answers.workflow };
-  if (Object.keys(retiredAlerts).length > 0) {
-    workflow.alerts = { ...retiredAlerts, ...workflow.alerts };
-  }
-  if (Object.keys(workflow).length > 0)
-    next.workflow = workflow;
-  else
-    delete next.workflow;
-  const floor = requiresFloor(next, {
-    deployTasks: extras.deployBlock === true || hasDeployTaskFolders(root, isObject2(next.tasks) ? next.tasks : {})
-  });
-  next.requires = raisedRequires(before.requires, floor.floor, floor.version);
-  const after = orderKeys(next, FILE_ORDER);
-  const valid = ccSmartDevKitConfigSchema.safeParse(after);
-  if (!valid.success) {
-    throw new Error(`${file} would not be a valid project file (${prettifyError(valid.error)}). ` + `Change the answer, then run again.`);
-  }
-  const text = jsonTextFor(existing, after, detectIndent(existing ?? ""));
-  const settings = settingsPlan(join28(root, ".claude", "settings.json"), existingSettings, answers.base !== defaultBranch);
-  const localSettings = settingsPlan(join28(root, ".claude", "settings.local.json"), existingLocalSettings, false);
-  const notes = [];
-  if (answers.base !== defaultBranch) {
-    notes.push(`base ${answers.base} is not the repo's default branch ${defaultBranch}: .claude/settings.json gets "worktree": {"baseRef": "head"}, so a new worktree starts from the branch the session is on`);
-  }
-  if (ignoredTaskFields.length > 0) {
-    const plural = ignoredTaskFields.length > 1;
-    notes.push(`${ignoredTaskFields.map((field) => `tasks.${field}`).join(", ")} ${plural ? "are" : "is"} read by nothing since ${DEPLOY_TASKS_SINCE}, so ${plural ? "they go" : "it goes"}`);
-  }
-  const retired = retiredFieldsOf(before);
-  const engineLines = settings.removes.length + localSettings.removes.length;
-  if (retired.length > 0 || engineLines > 0) {
-    const what = [
-      ...retired.length > 0 ? [retired.map((field) => `worktrees.${field}`).join(", ")] : [],
-      ...engineLines > 0 ? [`its hook line${engineLines === 1 ? "" : "s"}`] : []
-    ].join(" and ");
-    notes.push(`the plugin's worktree engine was retired in ${WORKTREE_ENGINE_RETIRED_IN}: ${what} ${retired.length + engineLines === 1 ? "goes" : "go"}, because Claude Code's own worktrees need none`);
-  }
-  const personal = input.personalWorkflow ?? {};
-  for (const clash of workflowClashes({
-    allowMerge: answers.workflow.allowMerge ?? personal.allowMerge ?? workflowDefaults.allowMerge,
-    allowPush: answers.workflow.allowPush ?? personal.allowPush ?? workflowDefaults.allowPush,
-    openPr: answers.workflow.openPr ?? personal.openPr ?? workflowDefaults.openPr
-  })) {
-    notes.push(clashNote(clash));
-  }
-  return {
-    file,
-    text,
-    changed: text !== existing,
-    diff: diffOf(before, after),
-    settings,
-    localSettings,
-    notes
-  };
-}
-function applyProjectInit(plan, options) {
-  const wanted = [];
-  if (plan.changed)
-    wanted.push([plan.file, plan.text]);
-  for (const settings of [plan.settings, plan.localSettings]) {
-    if (settings.changed)
-      wanted.push([settings.file, settings.text]);
-  }
-  return wanted.map(([file, text]) => {
-    const created = !existsSync21(file);
-    if (options.dryRun === true)
-      return { file, created, backup: null };
-    const backup = backupFile(options.stateDir, file);
-    atomicWrite(realTarget(file), text, fileMode(file) ?? 420);
-    return { file, created, backup };
-  });
-}
-
-// src/workflow/write.ts
 function unknownKey(key) {
   return new Error(`Unknown setting: ${key}. The settings are: ${WORKFLOW_KEYS.join(", ")}`);
 }
@@ -30460,7 +30481,7 @@ function expandScript(call, runner, bodies, lookedUpIn, kinds, depth, run, all, 
       ...run,
       folder,
       runner,
-      extra: one && part === name ? call.args : undefined,
+      extra: part === name ? call.args : undefined,
       compound: run.compound || !one,
       reading: [...run.reading, key]
     };
@@ -30547,6 +30568,8 @@ function scan(command, kinds, dialect, depth, run, all, out) {
       return refuse(run, out, step);
     if (!all && runsAsAnotherUser(invocation))
       out.unread ??= "other-user";
+    if (!all && isRunnerProgram(program))
+      out.unread ??= "runner";
     if (isJobRun(program, args))
       out.queued = true;
     const inner = nestedCommand(program, args, step.pipedFrom);
@@ -30575,10 +30598,11 @@ function scan(command, kinds, dialect, depth, run, all, out) {
         if (!takesSlot(body, kinds, run.source)) {
           if (out.found.length === before)
             out.opaque = false;
-        } else if (out.unread === "not-heavy" && body.unread === null) {
+        } else if (out.unread === "not-heavy" && body.unread === null && !body.background) {
+          const taking = canWeigh(run.source) ? slotRun(body, kinds, run.source) : undefined;
+          const heavyRuns = body.found.filter((one) => !one.printOnly);
           out.found.length = before;
-          out.found.push(...body.found);
-          out.background ||= body.background;
+          out.found.push(...typeof taking === "object" ? [taking, ...heavyRuns.filter((one) => one !== taking)] : heavyRuns);
           out.queued ||= body.queued;
           out.opaque = false;
           out.unread = null;
@@ -41796,7 +41820,7 @@ function createTaskOps(options = {}) {
           refuseStepEscape(all, task, destination);
         if (status === "done" || status === "dropped") {
           refuseBareClose(all, task, status, {});
-          refuseEmptyHandBack(all, task, status, handBackGit);
+          refuseEmptyHandBack(all, { ...task, ...bindings2({ branch: input.branch, base: input.base }) }, status, handBackGit);
         }
         const flight = entering ? startCheck(task.kind === "plan" ? task.plan : landing) : {};
         const updated = value(writeWork(store, () => {
