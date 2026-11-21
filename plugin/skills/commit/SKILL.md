@@ -66,7 +66,9 @@ first (open the upper one against the lower one's branch), then check again`: th
 cannot say which is lower, so the words fit both. That refusal means what it says: retarget the
 upper one onto the lower one's branch (`gh pr edit <upper> --base <lower branch>`), then run
 `merge-check` on the lower one again. Never merge a pull request while the one it is stacked on
-is open, whatever else passes.
+is open, whatever else passes. Commits are matched by id, so never use GitHub's "Update branch"
+with rebase on a lower pull request while an upper one is open: new ids free an upper one opened
+against the default branch.
 
 - **After the lower pull request merges:** bring the stacked branch up to date with the base
   (`git merge origin/<base>`, which also drops the duplicate diff of a squashed copy), retarget
@@ -95,8 +97,9 @@ is open, whatever else passes.
   discards inside its own worktree (a checkout or restore that drops changes, `switch -f`,
   `clean -f`, and `reset --hard`, which also drops the builder's own commits), and the start of
   a fresh worktree (`git reset --hard <base>` before the first edit, with no commits of its own
-  and a clean tree, so `git log --oneline origin/HEAD..HEAD` and `git status --short` both print
-  nothing: it has nothing to lose). A yes covers
+  and a clean tree, so `git log --oneline HEAD --not --exclude=<this branch> --branches --remotes`
+  and `git status --short` both print nothing, `<this branch>` being from `git branch
+  --show-current`: it has nothing to lose). A yes covers
   exactly what it names. If the person says wait, wait.
 
 ## Steps

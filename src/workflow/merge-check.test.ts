@@ -426,6 +426,9 @@ describe("checkPullRequest: every condition of an unattended merge", () => {
   const sharesWith = (m: number) =>
     `pull request #7 shares commits with open pull request #${m} that main does not hold yet: merge the lower one first (open the upper one against the lower one's branch), then check again`;
   const SHARES_5 = sharesWith(5);
+  /** The same refusal when one of the two is a fork's: neither can be opened against the other. */
+  const SHARES_5_FORK =
+    "pull request #7 shares commits with open pull request #5 that main does not hold yet, and one of them is from a fork, so neither can be opened against the other: merge the lower one by hand, then check again";
   /** The compare call the check makes for page `page` of `<base>...<head>`. */
   const compareArgs = (basehead: string, page = 1) => [
     "api",
@@ -546,10 +549,10 @@ describe("checkPullRequest: every condition of an unattended merge", () => {
             ]),
       ]),
     });
-    for (const [self, other] of [
-      [true, false],
-      [false, true],
-      [null, false],
+    for (const [self, other, reason] of [
+      [true, false, SHARES_5_FORK],
+      [false, true, SHARES_5_FORK],
+      [null, false, SHARES_5],
     ] as const) {
       // #5 holds #7's head, so once #5 is not skipped, the two share it.
       const { world } = prWorld(
@@ -560,7 +563,7 @@ describe("checkPullRequest: every condition of an unattended merge", () => {
         true,
         rows(self, other),
       );
-      expect(reasonOf(await check(world))).toBe(SHARES_5);
+      expect(reasonOf(await check(world))).toBe(reason);
     }
   });
 
@@ -887,6 +890,27 @@ describe("checkPullRequest: every condition of an unattended merge", () => {
       `holds ${STACK_COMMITS_LIMIT + 1} commits, more than the ${STACK_COMMITS_LIMIT} merge-check reads), so merge-check cannot prove it is not stacked`,
     );
     expect(asked).toHaveLength(1);
+  });
+
+  test("a full page is followed by another, whatever the total says: a total counted too low is refused", async () => {
+    const { world } = prWorld(
+      ON,
+      "main",
+      (built) => built.reviewed,
+      GREEN,
+      true,
+      (head) => ({
+        // It says 100, gives a full page of 100, and then 20 more.
+        compare: (path) => {
+          const page = Number(new URLSearchParams(path.split("?")[1]).get("page"));
+          return ["100", ...(page === 1 ? ids(100, "a") : page === 2 ? ids(20, "b") : [])].join(
+            "\n",
+          );
+        },
+        open: openJson([5, BELOW], [7, head]),
+      }),
+    );
+    expect(reasonOf(await check(world))).toContain("GitHub listed 120 of the 100 commits");
   });
 
   test("GitHub's pages end before its total: refused, never judged on part of the commits", async () => {
@@ -1264,6 +1288,13 @@ describe("the stacked check over real git histories", () => {
     number: n,
     reason: `pull request #${n} shares commits with open pull request #${m} that ${base} does not hold yet: merge the lower one first (open the upper one against the lower one's branch), then check again`,
   });
+  /** The same refusal when one of the two is from a fork: no base can name the other's branch. */
+  const sharesFork = (n: number, m: number): MergeVerdict => ({
+    detail: null,
+    kind: "refused",
+    number: n,
+    reason: `pull request #${n} shares commits with open pull request #${m} that main does not hold yet, and one of them is from a fork, so neither can be opened against the other: merge the lower one by hand, then check again`,
+  });
   /** The base rule's refusal of a pull request into `base`. */
   const intoBranch = (n: number, base: string): MergeVerdict => ({
     detail: null,
@@ -1436,10 +1467,22 @@ describe("the stacked check over real git histories", () => {
     const m1 = w.commit("m1");
     const fork = { base: "main", fork: true, head: f1, headRef: "a", number: 5 };
     const other = { base: "a", head: m1, headRef: "m", number: 7 };
-    expect((await judge(w.repo, w.env, fork, [fork, other])).verdict).toEqual(shares(5, 7));
+    expect((await judge(w.repo, w.env, fork, [fork, other])).verdict).toEqual(sharesFork(5, 7));
     // The same rows from this repository's own branch: #7 is stacked on #5, so #5 goes.
     const own = { ...fork, fork: false };
     expect((await judge(w.repo, w.env, own, [own, other])).verdict).toEqual(ALLOWED);
+  });
+
+  test("two fork pull requests into main, one built on the other: each is told to merge by hand", async () => {
+    const w = historyWorld();
+    w.start("a", "main");
+    const a1 = w.commit("a1");
+    w.start("b", a1);
+    const b1 = w.commit("b1");
+    const lower = { base: "main", fork: true, head: a1, headRef: "a", number: 5 };
+    const upper = { base: "main", fork: true, head: b1, headRef: "b", number: 7 };
+    expect((await judge(w.repo, w.env, lower, [lower, upper])).verdict).toEqual(sharesFork(5, 7));
+    expect((await judge(w.repo, w.env, upper, [lower, upper])).verdict).toEqual(sharesFork(7, 5));
   });
 
   test("each pull request's commits are read once, paged, and nothing is read with no other pull request open", async () => {

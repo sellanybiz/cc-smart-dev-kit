@@ -53,8 +53,9 @@ Read its notes for the caller's rulings, then the named files, patterns and near
 
 Before the first edit, bring your worktree to the commit the brief names as its base:
 `git reset --hard <that commit>`. Run it only in a fresh worktree, with no commits of its own
-and a clean tree (`git log --oneline origin/HEAD..HEAD` and `git status --short` both print
-nothing): it has nothing to lose, and it
+and a clean tree (`git log --oneline HEAD --not --exclude=<this branch> --branches --remotes`
+and `git status --short` both print nothing; `<this branch>` is from `git branch --show-current`):
+it has nothing to lose, and it
 starts at the default branch's tip, so `git merge --ff-only` fails whenever that branch moved
 after the base was cut. Any other worktree: stop and report it, and never build on another
 base. The brief names no commit: say so in your report, with the commit you started from.
