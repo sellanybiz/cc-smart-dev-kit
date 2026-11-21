@@ -519,7 +519,12 @@ function contextFor(
   repo: string,
   command: string,
   tool = "Bash",
-  more: { env?: Record<string, string>; fields?: Record<string, unknown> } = {},
+  more: {
+    env?: Record<string, string>;
+    fields?: Record<string, unknown>;
+    /** The input's `permission_mode`; absent when the test names none. */
+    mode?: string | undefined;
+  } = {},
 ): HookContext {
   // hookEnv drops the session's own Bash timeouts (cleanGitEnv): a test sets them itself.
   const env = { ...hookEnv(), SHELL, ...more.env };
@@ -529,6 +534,7 @@ function contextFor(
     event: "PreToolUse",
     input: {
       hook_event_name: "PreToolUse",
+      permission_mode: more.mode,
       tool_input: { command, ...more.fields },
       tool_name: tool,
     },
@@ -1625,5 +1631,116 @@ describe("a mixed line: what is not refused", () => {
     const refused = powerShellDecision(repo, "bun test; git status");
     expect(String(refused?.permissionDecisionReason)).toContain("the job queue takes Bash lines");
     expect(denialOf(repo, "git status && ls")).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------------------
+// Auto mode (C8, proved live 2026-11-22, docs/claude-code-contract.md § Hooks): Claude Code's
+// server-side check gives no verdict for a call a hook changed, and voids every other call of
+// that response. So in auto mode the hook never rewrites: it denies, naming the exact line.
+// ---------------------------------------------------------------------------------------
+
+describe("auto mode: a heavy line is denied with the exact queue line, never rewritten", () => {
+  const decision = (answer: HookResult) => JSON.parse(answer.stdout ?? "{}").hookSpecificOutput;
+  const auto = (repo: string, command: string, more: Parameters<typeof contextFor>[3] = {}) =>
+    jobRoute(contextFor(repo, command, "Bash", { ...more, mode: "auto" }), {});
+
+  it("one plain command: a deny that names the line, with no updatedInput", () => {
+    const repo = repoWith({});
+    const answer = decision(auto(repo, "bunx tsc --noEmit"));
+    expect(answer.updatedInput).toBeUndefined();
+    expect(answer.permissionDecision).toBe("deny");
+    expect(answer.permissionDecisionReason).toContain(
+      `\n${LAUNCHER} job run --kind tsc -- bunx tsc --noEmit\n`,
+    );
+  });
+
+  it("the line is the one the rewrite gives in the default mode, for every shape", () => {
+    const repo = repoWith({
+      "package.json": JSON.stringify({ scripts: { check: "tsc --noEmit && bun test" } }),
+      "src/package.json": JSON.stringify({ scripts: {} }),
+    });
+    for (const command of [
+      "bunx tsc --noEmit",
+      "bunx tsc --noEmit 2>&1 | tail -20",
+      'bun run check; echo "exit $?"',
+      "cd src && bunx vitest run",
+    ]) {
+      const rewritten = rewrittenTo(repo, command);
+      expect(rewritten).not.toBeNull();
+      const reason = decision(auto(repo, command)).permissionDecisionReason as string;
+      expect(reason.split("\n")[2]).toBe(rewritten as string);
+    }
+    expect(
+      decision(auto(repo, 'bun run check; echo "exit $?"')).permissionDecisionReason,
+    ).toContain(`${LAUNCHER} job run --kind tsc -- ${SHELL} -c 'bun run check; echo "exit $?"'`);
+  });
+
+  it("the reason names the longest timeout when the call set none, and only then", () => {
+    const repo = repoWith({});
+    const reasonOf = (fields: Record<string, unknown>) =>
+      decision(auto(repo, "bunx tsc --noEmit", { fields })).permissionDecisionReason as string;
+    expect(reasonOf({})).toContain("timeout of 600000 ms");
+    expect(reasonOf({ timeout: 5000 })).not.toContain("timeout of");
+    expect(reasonOf({ run_in_background: true })).not.toContain("timeout of");
+  });
+
+  it.skipIf(NATIVE_WINDOWS)(
+    "a git command with a heavy hook is denied with the prefixed line too",
+    () => {
+      const world = worldWithHooks({ "pre-push": HEAVY_HOOK });
+      const context = contextFor(world.repo, "git push origin x", "Bash", {
+        env: { HOME: world.home },
+        mode: "auto",
+      });
+      const answer = decision(jobRoute(context, {}, () => true));
+      expect(answer.updatedInput).toBeUndefined();
+      expect(answer.permissionDecision).toBe("deny");
+      expect(answer.permissionDecisionReason).toContain(`\n${prefixOf(world)} git push origin x\n`);
+    },
+  );
+
+  it.each([
+    ["default", "default"],
+    ["bypassPermissions", "bypassPermissions"],
+    ["acceptEdits", "acceptEdits"],
+    ["plan", "plan"],
+    ["no mode in the input", undefined],
+  ])("%s: the rewrite, byte for byte as before", (_name, mode) => {
+    const repo = repoWith({});
+    const answer = jobRoute(contextFor(repo, "bunx tsc --noEmit", "Bash", { mode }), {});
+    expect(answer.stdout).toBe(
+      JSON.stringify({
+        hookSpecificOutput: {
+          hookEventName: "PreToolUse",
+          updatedInput: {
+            command: `${LAUNCHER} job run --kind tsc -- bunx tsc --noEmit`,
+            timeout: 600_000,
+          },
+        },
+      }),
+    );
+  });
+
+  it("a line that already queues itself passes untouched, and a light line stays raw", () => {
+    const repo = repoWith({ "src/a.test.ts": "" });
+    expect(auto(repo, `${LAUNCHER} job run --kind tsc -- bunx tsc --noEmit`)).toEqual({});
+    expect(auto(repo, "bunx vitest run src/a.test.ts")).toEqual({});
+    expect(auto(repo, "ls -la")).toEqual({});
+  });
+
+  it("the mixed-line refusal is the same in auto mode", () => {
+    const repo = repoWith({});
+    const reason = (mode: string) =>
+      decision(jobRoute(contextFor(repo, "bun test; git status", "Bash", { mode }), {}))
+        .permissionDecisionReason;
+    expect(reason("auto")).toBe(reason("default"));
+    expect(reason("auto")).toContain("Run the heavy command on its own line");
+  });
+
+  it("with the route switch off, auto mode changes nothing", () => {
+    const context = contextFor(repoWith({}), "bunx tsc --noEmit", "Bash", { mode: "auto" });
+    const off = { ...context, project: { ...context.project, config: { jobs: { route: false } } } };
+    expect(jobRoute(off as HookContext, {})).toEqual({});
   });
 });

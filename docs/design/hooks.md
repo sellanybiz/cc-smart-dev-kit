@@ -841,7 +841,12 @@ route). It answers with Claude Code's `updatedInput` — the same tool input,
 its `command` replaced by `"$HOME/.local/bin/cc-smart-dev-kit" job run --kind <kind> --
 <command>` — proved live on 2.1.301 (`claude-code-contract.md`). It gives no
 `permissionDecision`: the rewrite replaces the input and the permission system still decides
-about the new command, so a person's own rule for Bash keeps working. **A line is queued whole
+about the new command, so a person's own rule for Bash keeps working. **In auto mode
+(`permission_mode: "auto"`) it never rewrites**: auto mode's server-side check gives no verdict for
+a call a hook changed and voids its review of the other calls in that response (proved live
+2026-11-22, `claude-code-contract.md`). It denies instead, and the reason names the exact line the
+rewrite would have given, built by the same function (`jobRunCommand`; the prefixed line for a git
+command), plus the longest `timeout` when the call set none. **A line is queued whole
 only when every command in it is heavy, a `cd`, an assignment or glue, and one is heavy**
 (`routableLine`, `classifyRoutableLine`). Glue is what nobody writes a permission rule against:
 the commands of `GLUE_COMMANDS` under their argument rules, the readers of `READ_ONLY_FILTERS`

@@ -287,7 +287,11 @@ it is bash or zsh, else `bash` where the machine has it, else `sh` — never `/b
 dash on Debian and Ubuntu, and cannot read bash syntax). Each word is quoted unless it holds
 only letters, digits and `_ . / -`, so one with `=`, `:`, `@`, `,`, `%` or `+` is quoted too. A
 command already inside `cc-smart-dev-kit job run` is left alone, also when it is inside a
-script's body. Outside git there is no project, so a heavy command there runs raw. The hook itself: `docs/design/hooks.md` § The job route.
+script's body. Outside git there is no project, so a heavy command there runs raw. **In auto mode
+the hook does not rewrite**: Claude Code's server-side check gives no verdict for a call a hook
+changed, and voids its review of every other call in that response. So it denies, and the reason
+names this same line (and the Bash tool's longest `timeout`, when the call set none) for the
+session to send itself. Every other mode keeps the rewrite. The hook itself: `docs/design/hooks.md` § The job route.
 
 **A line is queued whole only when every command in it is heavy, a `cd`, an assignment or
 glue** (`routableLine` in `src/jobs/classify.ts`; `classifyRoutableLine` gives its kind), and at
