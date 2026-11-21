@@ -22,7 +22,11 @@ function write(file: string, value: unknown): void {
   writeFileSync(file, typeof value === "string" ? value : JSON.stringify(value));
 }
 
-/** The status line input as Claude Code 2.1.310 passes it. */
+/**
+ * The status line input as Claude Code 2.1.310 passes it. `folder` is the session's folder, given
+ * as `workspace.project_dir` and as `cwd`: with no `cwd` the command reads the checkout the test
+ * runner started in, and that checkout's project file.
+ */
 function inputOf(
   over: {
     context?: Record<string, unknown> | null;
@@ -46,7 +50,9 @@ function inputOf(
     model: { display_name: "Opus 5.5", id: over.id ?? OPUS },
     ...context,
     ...(over.effort === undefined ? {} : { effort: over.effort }),
-    ...(over.folder === undefined ? {} : { workspace: { project_dir: over.folder } }),
+    ...(over.folder === undefined
+      ? {}
+      : { cwd: over.folder, workspace: { project_dir: over.folder } }),
   };
 }
 
