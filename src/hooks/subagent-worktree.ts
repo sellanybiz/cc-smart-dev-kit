@@ -9,10 +9,16 @@
  */
 import { SUBAGENT_NAME_PREFIX, WORKTREES_FOLDER_SEGMENTS } from "../worktrees/paths";
 
-/** The folder's segments as regex text: either slash between them, a dot taken literally. */
-const FOLDER_PATTERN = WORKTREES_FOLDER_SEGMENTS.map((segment) =>
-  segment.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
-).join(String.raw`[\\/]`);
+/** Text taken literally in a regex: a dot is a dot, not any character. */
+function literal(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/** The folder's segments as regex text: either slash between them. */
+const FOLDER_PATTERN = WORKTREES_FOLDER_SEGMENTS.map(literal).join(String.raw`[\\/]`);
+
+/** The name's prefix as regex text, taken literally like the folder's segments. */
+const NAME_PREFIX_PATTERN = literal(SUBAGENT_NAME_PREFIX);
 
 /**
  * The subagent worktree `cwd` is in, whose agent id matches `idPattern` (regex text), or null.
@@ -20,7 +26,7 @@ const FOLDER_PATTERN = WORKTREES_FOLDER_SEGMENTS.map((segment) =>
  */
 function subagentWorktreeMatching(cwd: string, idPattern: string): string | null {
   const found = new RegExp(
-    String.raw`^(.*[\\/]${FOLDER_PATTERN}[\\/]${SUBAGENT_NAME_PREFIX}${idPattern})(?:[\\/]|$)`,
+    String.raw`^(.*[\\/]${FOLDER_PATTERN}[\\/]${NAME_PREFIX_PATTERN}${idPattern})(?:[\\/]|$)`,
   ).exec(cwd);
   return found?.[1] ?? null;
 }

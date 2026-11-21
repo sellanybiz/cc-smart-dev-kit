@@ -686,7 +686,6 @@ export function machineFactsOf(options: ScanOptions): MachineFacts & {
   };
 }
 
-/** The machine's facts, read once for a whole scan (or one removal). */
 /**
  * The ref a scan judges commits against, and how a message calls it: `against`, else
  * `origin/<base>` (labelled with the bare base name). One home for the scan and the branch sweep.
@@ -701,6 +700,16 @@ export function baseRefOf(options: Pick<ScanOptions, "against" | "base">): {
   };
 }
 
+/**
+ * The words for the ref a branch was compared with: `against`'s label, else `origin/<base>`. The
+ * branch lines use these, since a branch is compared with origin's copy of the base, not a local
+ * branch of the same name (`baseRefOf`'s label is the bare name).
+ */
+export function comparedWith(options: Pick<ScanOptions, "against" | "base">): string {
+  return options.against?.label ?? `origin/${options.base}`;
+}
+
+/** The machine's facts, read once for a whole scan (or one removal). */
 function lookAt(repo: string, options: ScanOptions): MachineLook {
   return {
     ...machineFactsOf(options),
@@ -718,12 +727,6 @@ function lookAt(repo: string, options: ScanOptions): MachineLook {
   };
 }
 
-/**
- * Every worktree of the repo, judged: its commits against `against.ref`, or `origin/<base>`
- * without `against` — fetched fresh first (`fetchBase`).
- *
- * Throws when that ref is not known here: nothing can be judged against it.
- */
 function lockLine(listed: ListedWorktree, look: MachineLook, onBase = false): string {
   const reason = listed.lockReason;
   if (reason === undefined) return "locked with `git worktree lock` (locker cannot be proved gone)";
@@ -741,6 +744,12 @@ function lockLine(listed: ListedWorktree, look: MachineLook, onBase = false): st
   return `locked by live or unprovable Claude session ${lock.name}${onBase ? "; its work is on the base — that session leaves it with ExitWorktree (keep) and runs `worktrees --remove`, or it goes when that session ends" : "; its locker is not proved gone"}`;
 }
 
+/**
+ * Every worktree of the repo, judged: its commits against `against.ref`, or `origin/<base>`
+ * without `against` — fetched fresh first (`fetchBase`).
+ *
+ * Throws when that ref is not known here: nothing can be judged against it.
+ */
 export function scanWorktrees(repo: string, options: ScanOptions): ScannedWorktree[] {
   const { env } = options;
   const { label: againstLabel, ref: againstRef } = baseRefOf(options);
@@ -954,13 +963,19 @@ export function removeWorktree(
     if (options.deleteBranch !== undefined) {
       said.push(options.deleteBranch(repo, listed.branch));
     } else {
-      const outcome = tryDeleteBranch(repo, look.ref, look.label, listed.branch, options.env);
+      const outcome = tryDeleteBranch(
+        repo,
+        look.ref,
+        comparedWith(options),
+        listed.branch,
+        options.env,
+      );
       // The held wording is for one case only: the ref lacks the branch's work, and a live
       // branch (named by the fresh verdict above) has it. git's own refusal keeps its words.
       said.push(
         outcome.kind === "not-on-ref" && fresh.heldBy !== undefined
           ? `kept branch ${listed.branch}: its work is held by ${fresh.heldBy}, not yet on ${refName(fresh.heldBy, look.label, options.against !== undefined)}`
-          : branchOutcomeLine(listed.branch, look.label, outcome),
+          : branchOutcomeLine(listed.branch, comparedWith(options), outcome),
       );
     }
   }
@@ -1008,15 +1023,20 @@ function refName(holder: string, label: string, customRef: boolean): string {
   return !customRef && holder === label ? `origin/${label}` : label;
 }
 
-/** Does `ref` hold a branch's work? What `tryDeleteBranch` acts on, decided without acting. */
+/**
+ * Does `ref` hold a branch's work? What `tryDeleteBranch` acts on, decided without acting. An
+ * `on-ref` answer carries the commit it judged (`sha`): the only one a delete may remove.
+ */
 export type BranchJudgement =
-  | { kind: "on-ref" }
+  | { kind: "on-ref"; sha: string }
   | { kind: "not-on-ref" }
   | { kind: "git-error"; text: string };
 
 /**
  * Is the work of `refs/heads/<branch>` on `ref`: every commit by ancestry, or the work under
- * another sha, a squash merge or a merged pull request (`workOnBase`)? Changes nothing.
+ * another sha, a squash merge or a merged pull request (`workOnBase`)? Changes nothing. The
+ * branch is read once and judged at that commit, so what is judged is what `deleteJudgedBranch`
+ * can delete.
  */
 export function judgeBranchOnRef(
   repo: string,
@@ -1025,19 +1045,53 @@ export function judgeBranchOnRef(
   branch: string,
   env: Env,
 ): BranchJudgement {
-  const ahead = runGit(repo, ["rev-list", "--count", `${ref}..refs/heads/${branch}`], env);
+  const head = runGit(repo, ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`], env);
+  const sha = head.ok ? head.out.trim() : "";
+  if (!COMMIT_SHA.test(sha)) {
+    return { kind: "git-error", text: head.err || `git could not read the branch ${branch}` };
+  }
+  const ahead = runGit(repo, ["rev-list", "--count", `${ref}..${sha}`], env);
   if (!ahead.ok) {
     return { kind: "git-error", text: ahead.err || `git could not compare it with ${label}` };
   }
-  if (ahead.out === "0") return { kind: "on-ref" };
-  const head = runGit(repo, ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`], env);
-  const sha = head.ok ? head.out.trim() : "";
+  if (ahead.out === "0") return { kind: "on-ref", sha };
   // The same answer the worktree's verdict gave, on the same branch: the branch goes only
   // when its work is on the ref.
-  const elsewhere =
-    COMMIT_SHA.test(sha) &&
-    workOnBase(repo, ref, sha, branch, env, replayerFor(repo, env)) !== null;
-  return elsewhere ? { kind: "on-ref" } : { kind: "not-on-ref" };
+  return workOnBase(repo, ref, sha, branch, env, replayerFor(repo, env)) !== null
+    ? { kind: "on-ref", sha }
+    : { kind: "not-on-ref" };
+}
+
+/**
+ * Deletes `refs/heads/<branch>` only while it is still at `sha`, the commit that was judged: the
+ * delete is refused for a branch that moved since, so work added after the judge is never lost.
+ * `update-ref -d` does not look at worktrees (`branch -D` does, but names no commit), so a branch
+ * a worktree has checked out is refused here first.
+ */
+export function deleteJudgedBranch(
+  repo: string,
+  branch: string,
+  sha: string,
+  env: Env,
+): BranchOutcome {
+  let usedBy: string | undefined;
+  try {
+    usedBy = listWorktrees(repo, env).find((worktree) => worktree.branch === branch)?.path;
+  } catch (error) {
+    const why = error instanceof Error ? error.message : String(error);
+    return { kind: "git-error", text: `${why}, so it is not proved that no worktree uses it` };
+  }
+  if (usedBy !== undefined) {
+    return { kind: "git-error", text: `a worktree has it checked out, at ${usedBy}` };
+  }
+  const deleted = runGit(repo, ["update-ref", "-d", `refs/heads/${branch}`, sha], env);
+  if (deleted.ok) return { kind: "deleted" };
+  const now = runGit(repo, ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`], env);
+  return {
+    kind: "git-error",
+    text:
+      now.ok && now.out.trim() !== sha ? "it moved after it was judged, so it stays" : deleted.err,
+  };
 }
 
 /** `deleteBranchOnRef`'s decision, as data. */
@@ -1049,14 +1103,18 @@ export function tryDeleteBranch(
   env: Env,
 ): BranchOutcome {
   const judged = judgeBranchOnRef(repo, ref, label, branch, env);
-  if (judged.kind !== "on-ref") return judged;
-  const deleted = runGit(repo, ["branch", "-D", branch], env);
-  return deleted.ok ? { kind: "deleted" } : { kind: "git-error", text: deleted.err };
+  return judged.kind === "on-ref" ? deleteJudgedBranch(repo, branch, judged.sha, env) : judged;
 }
 
 /** `deleteBranchOnRef` against `origin/<base>`: what `worktrees` asks. */
 export function deleteMergedBranch(repo: string, base: string, branch: string, env: Env): string {
-  return deleteBranchOnRef(repo, `refs/remotes/origin/${base}`, base, branch, env);
+  return deleteBranchOnRef(
+    repo,
+    `refs/remotes/origin/${base}`,
+    comparedWith({ base }),
+    branch,
+    env,
+  );
 }
 
 /** Forgets worktrees whose folder is gone. */

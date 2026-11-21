@@ -4,15 +4,21 @@
  */
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { cliPaths } from "../cli/paths";
+import { projectKey } from "../tasks/context";
+import { openWorkDb, workDbFile } from "../tasks/work/db";
+import { createTask } from "../tasks/work/store";
+import type { WorkStatus } from "../tasks/work/types";
 import { cleanGitEnv, git, tempDir } from "../testing/temp";
-import { sweepBuilderBranches, unusedBuilderBranches } from "./branch-sweep";
+import { recordedBranches, sweepBuilderBranches, unusedBuilderBranches } from "./branch-sweep";
 import { cleanWithStrays } from "./clean";
 import { runWorktrees } from "./command";
 import { scanWorktrees } from "./scan";
 
 const freeLock = async (): Promise<{ close(): void }> => ({ close: () => undefined });
+
+const NOTHING_RECORDED = { byBranch: new Map<string, number>(), ok: true } as const;
 
 const QUIET_FACTS = { containers: [], mounts: [], programs: [], sessions: [] };
 
@@ -75,7 +81,24 @@ function world() {
     );
     return { code, text: out.join("\n") };
   };
-  return { branches, main, root, run, running };
+  /** A task of this project that records a builder branch, as a lead binds a phase to its builder. */
+  const record = (branch: string, status: WorkStatus = "pending", project = projectKey(main)) => {
+    const db = openWorkDb(workDbFile(paths), { mode: "write" });
+    try {
+      const who = { pid: null, procStart: null, sessionId: "lead" };
+      const task = createTask(
+        db,
+        { branch, project, status, subject: `builder of ${branch}` },
+        who,
+        1,
+      );
+      if (!task.ok) throw new Error(task.why);
+      return task.value.number;
+    } finally {
+      db.close();
+    }
+  };
+  return { branches, main, paths, record, root, run, running };
 }
 
 describe("the builder branch sweep", () => {
@@ -95,7 +118,7 @@ describe("the builder branch sweep", () => {
     expect(text).toContain("deleted branch worktree-agent-ancestor");
     expect(text).toContain("deleted branch worktree-agent-squashed");
     expect(text).toContain(
-      "kept branch worktree-agent-unique: it has commits that are not on main",
+      "kept branch worktree-agent-unique: it has commits that are not on origin/main",
     );
     // A person's branch, a branch a worktree has, and unique work stay.
     expect(branches()).toEqual([
@@ -112,9 +135,9 @@ describe("the builder branch sweep", () => {
     const { code, text } = await run({ clean: false });
     expect(code).toBe(0);
     expect(text).toContain("Builder branches no worktree uses (worktree-agent-*)");
-    expect(text).toContain("branch worktree-agent-ancestor: main holds its work");
+    expect(text).toContain("branch worktree-agent-ancestor: origin/main holds its work");
     expect(text).toContain(
-      "kept branch worktree-agent-unique: it has commits that are not on main",
+      "kept branch worktree-agent-unique: it has commits that are not on origin/main",
     );
     expect(text).toContain("2 builder branches whose work the base holds");
     // The branch a worktree has is in the worktree table above, never in the branch rows.
@@ -147,12 +170,68 @@ describe("the builder branch sweep", () => {
     expect(branches()).toContain("worktree-agent-squashed");
   });
 
+  test("a branch an open task still records is kept, so its phase can still close", async () => {
+    const { branches, record, run } = world();
+    const number = record("worktree-agent-ancestor");
+    const { code, text } = await run({ clean: true });
+    expect(code).toBe(0);
+    expect(text).toContain(
+      `kept branch worktree-agent-ancestor: task #${String(number)} still records it`,
+    );
+    expect(text).toContain("deleted branch worktree-agent-squashed");
+    expect(branches()).toContain("worktree-agent-ancestor");
+    expect(branches()).not.toContain("worktree-agent-squashed");
+  });
+
+  test("the listing says the same, and does not count the kept branch as going", async () => {
+    const { record, run } = world();
+    record("worktree-agent-ancestor");
+    const { text } = await run({ clean: false });
+    expect(text).toContain("kept branch worktree-agent-ancestor: task #1 still records it");
+    expect(text).toContain("1 builder branch whose work the base holds");
+  });
+
+  test("a task that is done or dropped, or of another project, keeps nothing", async () => {
+    const { branches, record, run } = world();
+    record("worktree-agent-ancestor", "done");
+    record("worktree-agent-squashed", "dropped");
+    record("worktree-agent-unique", "pending", "another-project");
+    const { text } = await run({ clean: true });
+    expect(text).not.toContain("still records it");
+    expect(branches()).not.toContain("worktree-agent-ancestor");
+    expect(branches()).not.toContain("worktree-agent-squashed");
+  });
+
+  test("when the task store cannot be read, every branch is kept and the line says so", () => {
+    const { branches, main, paths } = world();
+    const file = workDbFile(paths);
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, "this is not a database");
+    const recorded = recordedBranches(paths, projectKey(main));
+    expect(recorded.ok).toBe(false);
+    const before = branches();
+    const lines = sweepBuilderBranches(
+      main,
+      { base: "main", env: cleanGitEnv(), recorded },
+      "delete",
+    );
+    expect(lines.map((one) => one.state)).toEqual(["kept", "kept", "kept"]);
+    expect(lines.every((one) => one.text.includes("task store cannot be read"))).toBe(true);
+    expect(branches()).toEqual(before);
+  });
+
+  test("with no task store at all, no task records anything", () => {
+    const { main, paths } = world();
+    const recorded = recordedBranches(paths, projectKey(main));
+    expect(recorded.ok).toBe(true);
+  });
+
   test("when the base cannot be read, every branch is kept and the line says so", () => {
     const { branches, main } = world();
     const before = branches();
     const lines = sweepBuilderBranches(
       main,
-      { base: "no-such-base", env: cleanGitEnv() },
+      { base: "no-such-base", env: cleanGitEnv(), recorded: NOTHING_RECORDED },
       "delete",
     );
     expect(lines.map((one) => one.state)).toEqual(["kept", "kept", "kept"]);

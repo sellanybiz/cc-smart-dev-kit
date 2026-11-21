@@ -9,6 +9,7 @@ import {
   SUBAGENT_BRANCH_PREFIX,
   SUBAGENT_NAME_PREFIX,
   WORKTREES_FOLDER_SEGMENTS,
+  worktreeBranch,
   worktreePath,
   worktreesFolder,
 } from "./paths";
@@ -17,6 +18,11 @@ test("the worktrees folder and one worktree's path, from the repo's root", () =>
   expect(worktreesFolder("/r")).toBe(join("/r", ".claude", "worktrees"));
   expect(worktreePath("/r", "my-work")).toBe(join("/r", ".claude", "worktrees", "my-work"));
   expect(WORKTREES_FOLDER_SEGMENTS).toEqual([".claude", "worktrees"]);
+});
+
+test("a worktree's branch is its name behind worktree-", () => {
+  expect(worktreeBranch("my-work")).toBe("worktree-my-work");
+  expect(worktreeBranch(`${SUBAGENT_NAME_PREFIX}1f`)).toBe("worktree-agent-1f");
 });
 
 test("a subagent's name and branch prefixes are the shapes Claude Code gives", () => {

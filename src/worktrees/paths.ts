@@ -4,8 +4,8 @@
  * `claude -w <name>` and a subagent with `isolation: "worktree"` make a checkout at
  * `<repo>/.claude/worktrees/<name>`, on the branch `worktree-<name>`. A subagent's name is
  * `agent-<id>`, so its branch is `worktree-agent-<id>` (`docs/claude-code-contract.md`).
- * Code that builds or matches such a path imports these, and never joins the folder by hand
- * (`paths.test.ts` fails a file that does).
+ * Code that builds or matches such a path or branch imports these, and never joins the folder or
+ * the branch by hand (`paths.test.ts` fails a file that joins the folder).
  */
 import { join } from "node:path";
 
@@ -22,6 +22,11 @@ export function worktreePath(repoRoot: string, name: string): string {
   return join(worktreesFolder(repoRoot), name);
 }
 
+/** The branch Claude Code gives a worktree of this name: `worktree-<name>`. */
+export function worktreeBranch(name: string): string {
+  return `worktree-${name}`;
+}
+
 /** What starts the name of a subagent's worktree: `agent-<id>`. */
 export const SUBAGENT_NAME_PREFIX = "agent-";
 
@@ -29,4 +34,4 @@ export const SUBAGENT_NAME_PREFIX = "agent-";
  * What starts the branch Claude Code gives a subagent's worktree: `worktree-agent-<id>`. The
  * branch stays when the folder goes, so `worktrees --clean` sweeps the ones the base holds.
  */
-export const SUBAGENT_BRANCH_PREFIX = `worktree-${SUBAGENT_NAME_PREFIX}`;
+export const SUBAGENT_BRANCH_PREFIX = worktreeBranch(SUBAGENT_NAME_PREFIX);

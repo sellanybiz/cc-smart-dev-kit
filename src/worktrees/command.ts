@@ -38,8 +38,9 @@ import type { CliPaths } from "../cli/paths";
 import { isInside, realPath, runGit, samePath } from "../hooks/git";
 import type { Env } from "../hooks/run";
 import { type Checkout, loadProjectConfig, locateCheckout } from "../project/resolve";
+import { projectKeyOf } from "../tasks/context";
 import { autoCleanFiles, readRepoRecord } from "./auto-state";
-import { type BuilderBranchLine, sweepBuilderBranches } from "./branch-sweep";
+import { type BuilderBranchLine, recordedBranches, sweepBuilderBranches } from "./branch-sweep";
 import {
   type CleanLock,
   type CleanLockResult,
@@ -415,7 +416,12 @@ export async function runWorktrees(
     const strays = strayParkedFolders(repo, env);
     // The builder branches no worktree uses, judged here only for the listing: `--clean` judges
     // and deletes them below, after its own removals have freed some.
-    const branches = options.clean ? [] : sweepBuilderBranches(repo, judged, "list");
+    // The branches an open task records stay (`recordedBranches`), read again right before a delete.
+    const project = projectKeyOf(checkout, cwd);
+    const recordedNow = () => recordedBranches(paths, project);
+    const branches = options.clean
+      ? []
+      : sweepBuilderBranches(repo, { ...judged, recorded: recordedNow() }, "list");
     const branchesGoing = branches.filter((one) => one.state === "goes").length;
     print(`Worktrees of ${repo}\n`);
     show(scanned, print);
@@ -453,7 +459,7 @@ export async function runWorktrees(
     for (const kept of finished.kept) print(`kept ${kept.path}: ${kept.why}`);
     // Only here: `--remove` is one worktree, and the background clean shares `cleanWithStrays`
     // and never deletes a branch it did not remove.
-    const swept = sweepBuilderBranches(repo, judged, "delete");
+    const swept = sweepBuilderBranches(repo, { ...judged, recorded: recordedNow() }, "delete");
     for (const one of swept) print(one.text);
     if (nothing && swept.length === 0) print("Nothing finished to clear.");
     return 0;
