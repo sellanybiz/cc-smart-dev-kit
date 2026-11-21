@@ -5,7 +5,7 @@ import osDefault, { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { cliPaths } from "../cli/paths";
 import { routerPaths } from "../gateway/paths";
-import { childEnv, realHomeDir, testHome, testHomeEnv } from "./test-home";
+import { childEnv, realHomeDir, realOsModule, testHome, testHomeEnv } from "./test-home";
 
 const zone = () => Intl.DateTimeFormat().resolvedOptions().timeZone;
 
@@ -54,9 +54,28 @@ describe("the preload's home folder", () => {
     expect(homedir()).toBe(testHome());
     expect(os.homedir()).toBe(testHome());
     expect(osDefault.homedir()).toBe(testHome());
-    // Every other export of node:os is still there.
-    expect(osDefault.tmpdir()).toBe(tmpdir());
-    expect(typeof osDefault.platform()).toBe("string");
+  });
+
+  test("the node:os mock keeps every export name of the real module, and only homedir differs", () => {
+    const real = realOsModule();
+    // The named exports are compared without `default` (a different object by design: it holds
+    // the new `homedir`); the default object is compared whole, against the real default export.
+    const mocked = [
+      ["the named exports", { ...os, default: undefined }, { ...real.named, default: undefined }],
+      ["the default export", osDefault, real.default],
+    ] as const;
+    for (const [what, mock, original] of mocked) {
+      const mockedExports = mock as unknown as Record<string, unknown>;
+      const realExports = original as unknown as Record<string, unknown>;
+      expect([what, Object.keys(mockedExports).sort()]).toEqual([
+        what,
+        Object.keys(realExports).sort(),
+      ]);
+      const changed = Object.keys(realExports).filter(
+        (name) => mockedExports[name] !== realExports[name],
+      );
+      expect([what, changed]).toEqual([what, ["homedir"]]);
+    }
   });
 
   test("a child with a hand-built env that has no HOME still starts in the temp home", () => {

@@ -313,7 +313,8 @@ function readMerges(
     const fill = fillOfStep(step, read, dialect, filledIn);
     // Any mention of `GH_REPO` / `GH_HOST` in a step points the gh calls after it somewhere
     // else — in every spelling (`export GH_REPO=…`, `$env:GH_REPO='…'`, `set GH_REPO=…`),
-    // including a step that is nothing but the assignment.
+    // including a step that is nothing but the assignment. The merge's own prefix
+    // (`GH_REPO=… gh pr merge`) is read by `prefixMoved` below.
     if (words.some((word) => GH_POINTING_TEXT.test(word))) {
       moved ??=
         "this command sets `GH_REPO`/`GH_HOST`, so which repository gh works on is not certain";

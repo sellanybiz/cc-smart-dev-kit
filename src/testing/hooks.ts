@@ -9,6 +9,7 @@ import { cliPaths } from "../cli/paths";
 import type { DetachedOptions } from "../hooks/detached";
 import type { HookResult } from "../hooks/io";
 import { type DetachedStarter, type HookSpec, handleHook } from "../hooks/run";
+import { bunConfigArg, pluginFolderBeside } from "../setup/bun-config";
 import { subprocessGuard } from "./port-guard";
 import { sessionProcessIdentity } from "./session-record";
 import { cleanGitEnv, git, tempDir } from "./temp";
@@ -149,19 +150,32 @@ export function runEntry(name: string, stdin: string, env: Record<string, string
 }
 
 /**
- * Runs one script as Claude Code runs a hook: a bun subprocess with the input on stdin. The
- * script is a source entry (`runEntry`) or a built bundle, the file Claude Code really runs.
+ * Runs one script as Claude Code runs a hook: a bun subprocess with the input on stdin, and
+ * the two flags the shim `plugin/bin/cc-smart-dev-kit-bun.sh` gives every hook run
+ * (`--no-env-file`, and `--config=` the plugin's own empty `bunfig.toml`, spelled by
+ * `bunConfigArg`). So the script neither loads the working folder's `.env` files nor reads
+ * its `bunfig.toml`, as in production. The script is a source entry (`runEntry`) or a built
+ * bundle, the file Claude Code really runs.
  */
 export function runBundle(file: string, stdin: string, env: Record<string, string>): EntryRun {
   const guard = subprocessGuard();
   // `process.execPath`, never `bun`: the bun running the suite is the one the repo needs
   // (the preload refuses an older one), and PATH may hold another or none.
-  const result = Bun.spawnSync([process.execPath, ...guard.args, file], {
-    env: { ...env, ...guard.env },
-    stdin: Buffer.from(stdin),
-    stdout: "pipe",
-    stderr: "pipe",
-  });
+  const result = Bun.spawnSync(
+    [
+      process.execPath,
+      "--no-env-file",
+      bunConfigArg(pluginFolderBeside(import.meta.dir)),
+      ...guard.args,
+      file,
+    ],
+    {
+      env: { ...env, ...guard.env },
+      stdin: Buffer.from(stdin),
+      stdout: "pipe",
+      stderr: "pipe",
+    },
+  );
   return {
     exitCode: result.exitCode ?? -1,
     stdout: result.stdout.toString(),

@@ -13,11 +13,16 @@ import {
   readFileSync,
   writeFileSync,
 } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { buildEntry, ENTRIES_DIR } from "../../scripts/build-entry";
+import { cliPaths } from "../cli/paths";
+import { recordMcpServer } from "../mcp/records";
 import { RESOLVE_GIT_TIMEOUT_MS } from "../project/resolve";
+import { bunConfigArg } from "../setup/bun-config";
 import { hookEnv, makeRepo, runBundle, runEntry, runHook, writeClaudeFile } from "../testing/hooks";
 import { tempDir } from "../testing/temp";
+import { optOutDetail } from "../update/background";
+import { readLastCheck, updateFiles } from "../update/state";
 import { GH_TIMEOUT_MS } from "../workflow/merge-check";
 import { GUARD_BUDGET_MS, SHORT_GUARD_BUDGET_MS } from "./budget";
 import { GUARD_GIT_TIMEOUT_MS } from "./git";
@@ -424,12 +429,17 @@ describe("the hook bundles, built as Claude Code runs them", () => {
     return join(dist, `${name}.js`);
   }
 
+  /** Every bundle `hooks.json` runs: the hooks with a spec, and the `USER_HOOKS` without one. */
+  const BUNDLES = [...HOOKS.map((spec) => spec.name), ...USER_HOOKS];
+
   /**
-   * The most bytes each hook's bundle may have, written by hand: the measured build (bun
-   * 1.4.4, one entry built alone) plus about a tenth. Every hook bundle was 583 KB when each
-   * entry loaded `specs.ts`, which builds every hook; one that imports its own spec is 266 to
-   * 357 KB, so a bundle that pulls in another hook, or all of them, goes over. A hook that
-   * grows on purpose raises its own number here, with its reason in the commit.
+   * The most bytes each bundle may have, written by hand: the measured build (bun 1.4.4, one
+   * entry built alone) plus about a tenth. Every hook bundle was about 585 KB when each entry
+   * loaded `specs.ts`, which builds every hook; one that imports its own spec is 266 to 357 KB.
+   * So the budget catches a bundle that loads the whole list. It does not catch one that takes
+   * a single wrong spec (one more spec adds only 11 to 23 KB, inside a tenth): the log-name test
+   * below does. A hook that grows on purpose raises its own number here, with its reason in
+   * the commit.
    */
   const BUNDLE_BUDGET_BYTES: Record<string, number> = {
     "after-merge": 360_000,
@@ -438,27 +448,38 @@ describe("the hook bundles, built as Claude Code runs them", () => {
     "fable-session": 330_000,
     "job-route": 390_000,
     "keep-going": 350_000,
+    // 10 KB: it imports no spec and no frame, only the hook's own few modules.
+    "playwright-output": 12_000,
     "review-record": 330_000,
     "session-name": 300_000,
     "subagent-background": 310_000,
     "task-start": 330_000,
     "tier-view": 330_000,
+    "update-check": 355_000,
     "user-away": 330_000,
     "verify-gate": 310_000,
     "worktree-leftovers": 320_000,
   };
 
-  test("every hook has a size budget, and no budget is left for a hook that is gone", () => {
-    expect(Object.keys(BUNDLE_BUDGET_BYTES).sort()).toEqual(HOOKS.map((spec) => spec.name).sort());
+  test("every bundle hooks.json runs has a size budget, and no budget is left for one that is gone", () => {
+    expect(Object.keys(BUNDLE_BUDGET_BYTES).sort()).toEqual([...BUNDLES].sort());
   });
 
-  test.each(HOOKS.map((spec) => spec.name))(
-    "%s: the built bundle stays inside its size budget",
-    async (name) => {
-      const size = Bun.file(await built(name)).size;
-      expect(size).toBeLessThanOrEqual(BUNDLE_BUDGET_BYTES[name] ?? 0);
-    },
-  );
+  test.each(BUNDLES)("%s: the built bundle stays inside its size budget", async (name) => {
+    const size = Bun.file(await built(name)).size;
+    expect(size).toBeLessThanOrEqual(BUNDLE_BUDGET_BYTES[name] ?? 0);
+  });
+
+  test("the subprocess gets the flags the shim gives a hook, so a folder's .env and bunfig.toml stay out", () => {
+    const script = join(tempDir("bundle-flags"), "flags.js");
+    writeFileSync(script, "console.log(JSON.stringify(process.execArgv));");
+    const run = runBundle(script, "", hookEnv());
+    expect(run.exitCode).toBe(0);
+    expect(JSON.parse(run.stdout).slice(0, 2)).toEqual([
+      "--no-env-file",
+      bunConfigArg(join(ROOT, "plugin")),
+    ]);
+  });
 
   test.each(HOOKS.map((spec) => [spec.name, spec.crashExitCode ?? 0] as const))(
     "%s: the built bundle runs as a subprocess, and its log line names this hook",
@@ -478,4 +499,46 @@ describe("the hook bundles, built as Claude Code runs them", () => {
       expect(logged.map((line) => line.hook)).toEqual([name]);
     },
   );
+
+  // The two `USER_HOOKS` bundles have no spec and never enter the frame, so they log no name.
+  // Each one's own proof that the built file is wired: the answer only its own code gives.
+  test("playwright-output: the built bundle puts a named screenshot in the browser's output folder", async () => {
+    const env = hookEnv();
+    const paths = cliPaths(env);
+    const server = JSON.stringify({ args: ["browser", "mcp"], command: "/l" });
+    recordMcpServer(paths.stateDir, "playwright", server, "then");
+    mkdirSync(dirname(paths.userConfigFile), { recursive: true });
+    writeFileSync(
+      paths.userConfigFile,
+      JSON.stringify({ mcpServers: { playwright: JSON.parse(server) } }),
+    );
+    const run = runBundle(
+      await built("playwright-output"),
+      JSON.stringify({
+        hook_event_name: "PreToolUse",
+        tool_name: "mcp__playwright__browser_take_screenshot",
+        tool_input: { filename: "check.png" },
+      }),
+      env,
+    );
+    expect(run.exitCode).toBe(0);
+    expect(run.stderr).toBe("");
+    expect(JSON.parse(run.stdout).hookSpecificOutput.updatedInput).toEqual({
+      filename: join(paths.browserOutputDir, "check.png"),
+    });
+  });
+
+  test("update-check: the built bundle answers a session start, and records the switch that holds updates", async () => {
+    // DISABLE_AUTOUPDATER keeps the check from starting anything: the hook records why and ends.
+    const env = { ...hookEnv(), DISABLE_AUTOUPDATER: "1" };
+    const run = runBundle(
+      await built("update-check"),
+      JSON.stringify({ hook_event_name: "SessionStart", source: "startup" }),
+      env,
+    );
+    expect(run).toEqual({ exitCode: 0, stdout: "", stderr: "" });
+    const last = readLastCheck(updateFiles(cliPaths(env).stateDir));
+    expect(last?.result).toBe("skipped");
+    expect(last?.detail).toBe(optOutDetail("DISABLE_AUTOUPDATER"));
+  });
 });
