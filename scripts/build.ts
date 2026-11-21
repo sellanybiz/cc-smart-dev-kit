@@ -8,19 +8,12 @@
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildEntry, ENTRIES_DIR } from "./build-entry";
+import { buildEntry, entryPoints } from "./build-entry";
 
 const repoRoot = join(import.meta.dir, "..");
 const distDir = join(repoRoot, "plugin", "dist");
 // The bundles carry source-path comments relative to the working folder: pin it.
 process.chdir(repoRoot);
-
-function entryPoints(): string[] {
-  return readdirSync(ENTRIES_DIR)
-    .filter((name) => name.endsWith(".ts") && !name.endsWith(".test.ts"))
-    .sort()
-    .map((name) => join(ENTRIES_DIR, name));
-}
 
 /**
  * One `Bun.build` per entry, never all of them in one call. Built together, the bundles

@@ -131,10 +131,12 @@ export const runGh: GhExec = async (args, { folder, env, input, timeoutMs }) => 
 
 /**
  * What `gh pr checks --required` says when the branch has none, as gh words it: a line on
- * stderr and exit 1, not a list. It is an answer ("none"), so `spawnGh` hands it on and
- * `requiredChecks` reads it as an empty list; every other failure stays a failure.
+ * stderr and exit 1, not a list. gh has two such lines: `no required checks reported` (checks
+ * exist, none is required) and `no checks reported` (a pull request with no checks at all).
+ * Both are an answer ("none"), so `spawnGh` hands it on and `requiredChecks` reads it as an
+ * empty list; every other failure stays a failure.
  */
-const NO_REQUIRED_CHECKS = /^no required checks reported on the '.*' branch$/;
+const NO_REQUIRED_CHECKS = /^no (?:required )?checks reported on the '.*' branch$/;
 
 /**
  * One read-only `gh` command's stdout, or null when gh is not there, the call fails, or it
