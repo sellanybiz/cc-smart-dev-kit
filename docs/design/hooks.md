@@ -96,19 +96,23 @@ cycle through `specs.ts`.
 Before the split each hook bundle was about 585 KB and a run took about 32 ms. Now each bundle is
 266 to 357 KB and a run takes about 22 ms (`tier-view`, median of 40 runs on one machine). `entries.test.ts`
 builds every bundle `hooks.json` runs (the hooks with a spec, and `update-check` and
-`playwright-output`) into a temp folder and holds two proofs for them:
+`playwright-output`) into a temp folder and holds three proofs for them:
 
 - **A size budget** for each bundle (the measured size plus about a tenth). It catches an entry
-  that loads the whole list of hooks, which is about 585 KB. It does not catch an entry that takes
-  one wrong spec: one more spec adds only 11 to 23 KB, inside the tenth.
+  that loads the whole list of hooks, which is about 585 KB. It can miss one extra spec: a small
+  spec adds less than the tenth the budget allows.
+- **An import walk** from each `src/entries/<name>.ts` (`Bun.Transpiler.scanImports`, following
+  relative paths): the files it reaches under `src/hooks/specs` must be exactly its own
+  `specs/<name>.ts`, and never `specs.ts`. It catches any extra spec, whatever its size. The two
+  bundles without a spec must reach none.
 - **The built file run as a subprocess**, with the two flags the shim gives a hook
   (`--no-env-file` and the plugin's own `bunfig.toml`, `runBundle` in `src/testing/hooks.ts`).
   A hook with a spec gets input that is not JSON: the run must exit as the hook says and its log
-  line (`CC_SMART_DEV_KIT_HOOK_LOG`) must name the hook itself, so an entry that imports another
-  hook's spec, or a cycle that only shows in a built bundle, fails a test. `update-check` and
-  `playwright-output` log no name (they never enter the frame), so each gets its own proof that
-  the built file is wired: the session-start record it writes, and the screenshot path it
-  rewrites.
+  line (`CC_SMART_DEV_KIT_HOOK_LOG`) must name the hook itself, so an entry that runs another
+  hook's spec in place of its own, or a cycle that only shows in a built bundle, fails a test.
+  `update-check` and `playwright-output` log no name (they never enter the frame), so each gets
+  its own proof that the built file is wired: the session-start record it writes, and the
+  screenshot path it rewrites.
 
 What is left is mostly the frame's own load: `run.ts` reads the project's file, and that pulls
 in zod and the config schemas (about 235 KB of the bundle and about 17 ms of a run of about

@@ -10,6 +10,7 @@
  * the shapes a person would never mean to publish and tells where. Its URL rule reads the same
  * schemes `redactUrl` hides (`TOKEN_SCHEMES`, `src/setup/marketplace-access.ts`).
  */
+import { escapeRegex } from "../regex-escape";
 import { TOKEN_SCHEMES } from "../setup/marketplace-access";
 
 /** What a hit is, in the words of a refusal. */
@@ -93,7 +94,7 @@ function homePatterns(home: string | null): RegExp[] {
   const trimmed = home.replace(/[\\/]+$/, "");
   if (trimmed.length < 2) return [];
   const { drive, parts } = homeShape(trimmed);
-  const escaped = parts.map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+  const escaped = parts.map((part) => escapeRegex(part));
   const below = escaped.join("[\\\\/]+");
   // The next character must not continue a name: `/home/ab` is not `/home/abc`. A full stop
   // ends a sentence (`it is in /home/user.`) unless a name character follows it.

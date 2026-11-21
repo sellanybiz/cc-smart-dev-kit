@@ -13,7 +13,7 @@ import {
   readFileSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, relative, sep } from "node:path";
 import { buildEntry, ENTRIES_DIR } from "../../scripts/build-entry";
 import { cliPaths } from "../cli/paths";
 import { recordMcpServer } from "../mcp/records";
@@ -436,10 +436,10 @@ describe("the hook bundles, built as Claude Code runs them", () => {
    * The most bytes each bundle may have, written by hand: the measured build (bun 1.4.4, one
    * entry built alone) plus about a tenth. Every hook bundle was about 585 KB when each entry
    * loaded `specs.ts`, which builds every hook; one that imports its own spec is 266 to 357 KB.
-   * So the budget catches a bundle that loads the whole list. It does not catch one that takes
-   * a single wrong spec (one more spec adds only 11 to 23 KB, inside a tenth): the log-name test
-   * below does. A hook that grows on purpose raises its own number here, with its reason in
-   * the commit.
+   * So the budget catches a bundle that loads the whole list. It can miss one extra spec: a small
+   * one adds less than the tenth the budget allows. The import walk below catches any extra
+   * spec, and the log-name test catches a swapped one. A hook that
+   * grows on purpose raises its own number here, with its reason in the commit.
    */
   const BUNDLE_BUDGET_BYTES: Record<string, number> = {
     "after-merge": 360_000,
@@ -468,6 +468,36 @@ describe("the hook bundles, built as Claude Code runs them", () => {
   test.each(BUNDLES)("%s: the built bundle stays inside its size budget", async (name) => {
     const size = Bun.file(await built(name)).size;
     expect(size).toBeLessThanOrEqual(BUNDLE_BUDGET_BYTES[name] ?? 0);
+  });
+
+  /**
+   * Every file `entry` loads, found from its source: its imports, and theirs, through relative
+   * paths only (a package is not ours to walk). Paths are relative to the repo root.
+   */
+  function reachableFrom(entry: string): Set<string> {
+    const transpiler = new Bun.Transpiler({ loader: "ts" });
+    const seen = new Set<string>();
+    const pending = [entry];
+    for (let file = pending.pop(); file !== undefined; file = pending.pop()) {
+      if (seen.has(file)) continue;
+      seen.add(file);
+      for (const { path } of transpiler.scanImports(readFileSync(file, "utf8"))) {
+        if (!path.startsWith(".")) continue;
+        const base = join(dirname(file), path);
+        const found = [`${base}.ts`, join(base, "index.ts")].find((one) => existsSync(one));
+        if (found !== undefined) pending.push(found);
+      }
+    }
+    return new Set([...seen].map((file) => relative(ROOT, file).split(sep).join("/")));
+  }
+
+  test.each(BUNDLES)("%s: its entry reaches only its own hook spec, never specs.ts", (name) => {
+    const specFiles = [...reachableFrom(join(ENTRIES_DIR, `${name}.ts`))]
+      .filter((file) => file.startsWith("src/hooks/specs"))
+      .sort();
+    // A `USER_HOOKS` bundle has no spec and never enters the frame: it reaches none.
+    const own = USER_HOOKS.includes(name) ? [] : [`src/hooks/specs/${name}.ts`];
+    expect(specFiles).toEqual(own);
   });
 
   test("the subprocess gets the flags the shim gives a hook, so a folder's .env and bunfig.toml stay out", () => {

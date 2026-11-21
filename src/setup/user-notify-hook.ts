@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { COMMAND } from "../build-info/names";
 import type { CliPaths } from "../cli/paths";
+import { escapeRegex } from "../regex-escape";
 import { LAUNCHER_IN_SHELL } from "./launcher";
 import { type HookEntry, isHookEntry, removeManagedHooks, runsPluginNotify } from "./managed-hook";
 import { isObject, readJsonObject } from "./managed-json";
@@ -16,7 +17,7 @@ export const USER_NOTIFY_ENTRY: HookEntry = {
 const TMUX_LINE = "set -g allow-passthrough all";
 
 export function runsHookNotify(command: string): boolean {
-  const escaped = COMMAND.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const escaped = escapeRegex(COMMAND);
   return new RegExp(`(^|[\\s/"'])${escaped}["']?\\s+hook\\s+notify(\\s|;|$)`).test(command);
 }
 
