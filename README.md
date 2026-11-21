@@ -1812,7 +1812,7 @@ names such a missing import.
 | `worktree` | The steps of one-worktree-per-session work (for projects that opt in). |
 | `gateway` | The optional AI gateway. |
 | `audit` | A sweep of an area for one class of defect, not a diff: scope, tracks and budget, the `audit-run` workflow, then every finding proved in the code. |
-| `user-unavailable` | While you cannot answer (`user unavailable`): never stop to ask, never park or wait. It takes the recommended option of every question, records each choice as a decision (`Decision: …`, with its reason and how to undo it), keeps going, and writes the stretch's summary. |
+| `user-unavailable` | While you cannot answer (`user unavailable`): never stop to ask, never park or wait. It takes the recommended option of every question, records each choice as a decision (`Decision: …`, with its reason and how to undo it), keeps going at full parallel width, and writes the stretch's summary. After a plan's review it merges only when `workflow merge-check` exits 0, else leaves the pull request open; it stacks the next plan on a pull request still open ("stacked on #n"); and under the default `plans.runMode` (`ask`, refused while away) it runs lead + children when two or more ready plans do not overlap and a Herdr terminal exists, otherwise solo. |
 | `user-available` | When you are back: switches the state off, shows what was done while you were away, then shows the decisions taken for you (undone as their own words say, if you dislike one). Nothing waits for an answer. |
 
 **Skills only you start.** Seven third-party skills ship as they are upstream, with their
