@@ -19,7 +19,7 @@ import {
   configExists,
   type FallbackRow,
   mcpRows,
-  planWindow,
+  planWindows,
   portHolder,
   type RouterFacts,
   routerFacts,
@@ -113,7 +113,7 @@ export async function overviewAnswer(deps: PageDataDeps): Promise<OverviewAnswer
       backends: [],
       dashboardUrl: null,
       fallbacks: [],
-      fiveHour: planWindow(deps.action.portal),
+      ...planWindows(deps.action.portal),
       jobs: await jobsAtAGlance(deps),
       limits: [],
       limitsRead: false,
@@ -130,7 +130,7 @@ export async function overviewAnswer(deps: PageDataDeps): Promise<OverviewAnswer
     ...(await overviewData(deps, deps.found.config)),
     configured: true,
     error: null,
-    fiveHour: planWindow(deps.action.portal),
+    ...planWindows(deps.action.portal),
     jobs: await jobsAtAGlance(deps),
   };
 }

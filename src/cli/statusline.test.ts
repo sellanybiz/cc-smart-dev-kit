@@ -11,7 +11,7 @@ import { tempDir } from "../testing/temp";
 import { cliPaths } from "./paths";
 import { runStatusline, statuslineText } from "./statusline";
 
-import { readUsageWindow, readUsageWindows } from "./usage-window";
+import { readUsageWindows } from "./usage-window";
 
 /** 2026-10-15 10:00 UTC. */
 const NOW = Date.UTC(2026, 9, 15, 10, 0, 0);
@@ -240,10 +240,13 @@ describe("statusline", () => {
     };
     try {
       await runStatusline(paths, async () => JSON.stringify(input(87, 41, home)), NOW);
-      expect(readUsageWindow(paths, NOW)).toEqual({ percent: 87, resetsAt: AT_13 });
+      expect(readUsageWindows(paths, NOW).fiveHour).toEqual({ percent: 87, resetsAt: AT_13 });
       // An input with no rate_limits (an API key, or a refused request) records nothing.
       await runStatusline(paths, async () => JSON.stringify(input(null, null, home)), NOW + 1000);
-      expect(readUsageWindow(paths, NOW + 1000)).toEqual({ percent: 87, resetsAt: AT_13 });
+      expect(readUsageWindows(paths, NOW + 1000).fiveHour).toEqual({
+        percent: 87,
+        resetsAt: AT_13,
+      });
     } finally {
       console.log = original;
     }

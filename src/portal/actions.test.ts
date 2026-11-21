@@ -9,6 +9,7 @@ import { cleanGitEnv, tempDir } from "../testing/temp";
 import { type ActionContext, portalOmnirouteContext, runAction } from "./actions";
 import { addProjectRoot, forgetProjectsList } from "./api/projects";
 import { testPortalContext } from "./api/test-context";
+import { workflowAdapter } from "./workflow-adapter";
 
 function fakePlugin(): { done: string; folder: string; log: string } {
   const folder = tempDir("plugin");
@@ -124,6 +125,33 @@ describe("an action runs the CLI's own command in a child", () => {
     expect(card).toContain(
       "Each one goes with its branch. A worktree that is not finished is kept, with its reason. Builder branches (worktree-agent-*) that no worktree uses and whose work the base holds are deleted too; one with commits the base lacks is kept.",
     );
+  });
+});
+
+describe("workflow.set writes through the workflow module's own writer", () => {
+  test("the lead-model hint goes into the person's own workflow.json, never the project's file", async () => {
+    const { action, paths, repoA } = world();
+    // The real module, not the fake: the file it writes is what this test reads back.
+    action.workflow = workflowAdapter;
+    action.cwd = repoA;
+    const projectFile = join(repoA, ".claude", "cc-smart-dev-kit.json");
+    const projectText = '{\n  "requires": ">=0.3",\n  "sessionNames": true\n}\n';
+    mkdirSync(join(repoA, ".claude"));
+    writeFileSync(projectFile, projectText);
+
+    const result = await runAction(
+      "workflow.set",
+      { key: "switches.leadHint", value: false },
+      action,
+    );
+    expect(result).toEqual({
+      lines: ["+ ~/.config/cc-smart-dev-kit/workflow.json: switches.leadHint = false"],
+      ok: true,
+    });
+    expect(readFileSync(paths.workflowConfigFile, "utf8")).toBe(
+      '{\n  "switches": {\n    "leadHint": false\n  }\n}\n',
+    );
+    expect(readFileSync(projectFile, "utf8")).toBe(projectText);
   });
 });
 

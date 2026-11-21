@@ -97,12 +97,14 @@ export interface NotSetUp {
 
 /**
  * `GET /api/overview`: the Overview page. `jobs` is the queue at a glance (D52); the whole
- * queue is `/api/jobs`. `fiveHour` is the plan's 5-hour window as the status line last
- * recorded it (null with no reading, or one from a window that is over).
+ * queue is `/api/jobs`. `fiveHour` and `sevenDay` are the plan's 5-hour and 7-day windows as
+ * the status line last recorded them, each null with no reading, or one from a window that is
+ * over (a file from before 2.2.0 holds no 7-day window).
  */
 export interface OverviewAnswer extends NotSetUp, OverviewData {
   fiveHour: null | PlanWindow;
   jobs: { slots: number; used: number; waiting: number };
+  sevenDay: null | PlanWindow;
 }
 
 /** `GET /api/slots`: the Slots page, its switches and each backend target's optional effort pin. */

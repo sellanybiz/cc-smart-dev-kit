@@ -210,6 +210,7 @@ export interface OverviewAnswer extends NotSetUp {
   limitsRead: boolean;
   requests: OverviewRequests;
   router: RouterFacts;
+  sevenDay: null | PlanWindow;
   slots: SlotRow[];
   switches: SwitchFacts;
   warnings: LogLine[];

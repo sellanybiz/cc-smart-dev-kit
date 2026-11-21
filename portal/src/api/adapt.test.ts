@@ -645,6 +645,7 @@ test("the Overview: the router's facts, the chains, and the plan window", () => 
     limitsRead: true,
     requests: { perMinute: 21.6, sinceRouterStart: 892 },
     router: ROUTER,
+    sevenDay: { percent: 33, resetsAt: "2026-10-27T09:00:00.000Z" },
     slots: [SLOTS_ROW],
     switches: {
       gateway: true,
@@ -670,8 +671,15 @@ test("the Overview: the router's facts, the chains, and the plan window", () => 
   ]);
   // The status line's own reading, with its reset as a time; the switches as the server says.
   expect(data.fiveHour).toEqual({ percent: 61, resetsAt: Date.UTC(2026, 9, 23, 14, 0, 0) });
+  expect(data.sevenDay).toEqual({ percent: 33, resetsAt: Date.UTC(2026, 9, 27, 9, 0, 0) });
   expect(data.switches.gateway).toBe(true);
   expect(overviewOf({ ...answer, fiveHour: null }).fiveHour).toBe(null);
+  // Each window on its own: a missing one is null, and a window with no reset time keeps none.
+  expect(overviewOf({ ...answer, sevenDay: null }).sevenDay).toBe(null);
+  expect(overviewOf({ ...answer, sevenDay: { percent: 40, resetsAt: null } }).sevenDay).toEqual({
+    percent: 40,
+    resetsAt: null,
+  });
   expect(() =>
     overviewOf({ ...answer, configured: false, error: "the gateway is not set up" }),
   ).toThrow(NotSetUpError);
