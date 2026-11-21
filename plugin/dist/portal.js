@@ -13,41 +13,33 @@ var __export = (target, all) => {
       set: __exportSetter.bind(all, name)
     });
 };
-
-// node_modules/zod/v4/classic/iso.js
-var exports_iso = {};
-__export(exports_iso, {
-  ZodISODate: () => ZodISODate,
-  ZodISODateTime: () => ZodISODateTime,
-  ZodISODuration: () => ZodISODuration,
-  ZodISOTime: () => ZodISOTime,
-  date: () => date2,
-  datetime: () => datetime2,
-  duration: () => duration2,
-  time: () => time2
-});
-
-// src/entries/portal.ts
-import { join as join80 } from "path";
-
-// src/browser/doctor.ts
-import { readdirSync as readdirSync4, readFileSync as readFileSync5 } from "fs";
+var __esm = (fn, res, err) => () => {
+  if (fn)
+    try {
+      res = fn(fn = 0);
+    } catch (e) {
+      err = [e];
+    }
+  if (err)
+    throw err[0];
+  return res;
+};
 
 // src/build-info/names.ts
-var MARKETPLACE = "cc-smart-dev-kit";
-var PLUGIN = "cc-smart-dev-kit";
-var PLUGIN_ID = `${PLUGIN}@${MARKETPLACE}`;
-var COMMAND = "cc-smart-dev-kit";
+var MARKETPLACE = "cc-smart-dev-kit", PLUGIN = "cc-smart-dev-kit", PLUGIN_ID, COMMAND = "cc-smart-dev-kit";
+var init_names = __esm(() => {
+  PLUGIN_ID = `${PLUGIN}@${MARKETPLACE}`;
+});
 
 // src/build-info/bun.ts
-var MIN_BUN = "1.4.3";
 function bunTooOld(version, path) {
   return Bun.semver.order(version, MIN_BUN) < 0 ? `cc-smart-dev-kit needs Bun \u2265 ${MIN_BUN}; this is ${version} (${path}).` : null;
 }
+var MIN_BUN = "1.4.3";
 
 // src/build-info/index.ts
 var info = {
-  version: "6.2.0",
+  version: "6.3.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -60,317 +52,19 @@ var info = {
       marketplace: "claude-plugins-official"
     }
   ]
-};
-var VERSION = info.version;
-var MARKETPLACE_SOURCE = info.repo;
-var DEPENDENCIES = info.dependencies;
-var MARKETPLACE_ADD_COMMAND = `claude plugin marketplace add ${MARKETPLACE_SOURCE}`;
-var PLUGIN_INSTALL_COMMAND = `claude plugin install ${PLUGIN_ID}`;
-var PLUGIN_UPDATE_COMMAND = `claude plugin update ${PLUGIN_ID}`;
-
-// src/browser/chrome.ts
-import { closeSync, existsSync, openSync, readdirSync, readFileSync, readlinkSync } from "fs";
-import { hostname } from "os";
-import { join, posix, win32 } from "path";
-var PLAYWRIGHT_EXTENSION_ID = "mmlmfjhmonkocbjadbfplnigmagldckm";
-var PLAYWRIGHT_EXTENSION_URL = `https://chromewebstore.google.com/detail/playwright-extension/${PLAYWRIGHT_EXTENSION_ID}`;
-var PLAYWRIGHT_EXTENSION_SETTINGS_URL = `chrome://extensions/?id=${PLAYWRIGHT_EXTENSION_ID}`;
-var CLAUDE_CODE_PROFILE = "claude-code";
-var FILE_ACCESS_KEYS = ["newAllowFileAccess", "allowFileAccess"];
-function existsIn(deps) {
-  return deps.exists ?? existsSync;
-}
-function readFileIn(deps) {
-  return deps.readFile ?? ((file) => {
-    try {
-      return readFileSync(file, "utf8");
-    } catch {
-      return null;
-    }
-  });
-}
-function readdirIn(deps) {
-  return deps.readdir ?? ((dir) => {
-    try {
-      return readdirSync(dir);
-    } catch {
-      return [];
-    }
-  });
-}
-function chromeCandidates(platform, home) {
-  if (platform === "darwin") {
-    const app = "Google Chrome.app/Contents/MacOS/Google Chrome";
-    return [`/Applications/${app}`, posix.join(home, "Applications", app)];
-  }
-  if (platform === "win32") {
-    return [
-      "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
-      "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
-      win32.join(home, "AppData", "Local", "Google", "Chrome", "Application", "chrome.exe")
-    ];
-  }
-  return ["/opt/google/chrome/chrome", "/usr/bin/google-chrome", "/usr/bin/google-chrome-stable"];
-}
-function findChrome(deps = {}) {
-  const exists = existsIn(deps);
-  const home = deps.home ?? "";
-  const platform = deps.platform ?? process.platform;
-  return chromeCandidates(platform, home).find((path) => exists(path)) ?? null;
-}
-function chromeUserDataDir(platform, home) {
-  if (platform === "darwin")
-    return join(home, "Library", "Application Support", "Google", "Chrome");
-  if (platform === "win32")
-    return win32.join(home, "AppData", "Local", "Google", "Chrome", "User Data");
-  return join(home, ".config", "google-chrome");
-}
-function infoCache(userDataDir, deps = {}) {
-  const text = readFileIn(deps)(join(userDataDir, "Local State"));
-  if (text === null)
-    return [];
-  let parsed;
-  try {
-    parsed = JSON.parse(text);
-  } catch {
-    return [];
-  }
-  const cache = parsed?.profile?.info_cache;
-  if (typeof cache !== "object" || cache === null)
-    return [];
-  const entries = [];
-  for (const [dirName, value] of Object.entries(cache)) {
-    const name = value?.name;
-    entries.push({ dirName, name: typeof name === "string" ? name : null });
-  }
-  return entries;
-}
-function findClaudeCodeProfile(userDataDir, deps = {}) {
-  const cache = infoCache(userDataDir, deps);
-  const nameOf = (dirName) => cache.find((entry) => entry.dirName === dirName)?.name ?? null;
-  const directory = join(userDataDir, CLAUDE_CODE_PROFILE);
-  if (existsIn(deps)(directory)) {
-    return {
-      dir: directory,
-      dirName: CLAUDE_CODE_PROFILE,
-      displayName: nameOf(CLAUDE_CODE_PROFILE),
-      found: "directory"
-    };
-  }
-  const named = cache.find((entry) => entry.name === CLAUDE_CODE_PROFILE);
-  if (named !== undefined && existsIn(deps)(join(userDataDir, named.dirName))) {
-    return {
-      dir: join(userDataDir, named.dirName),
-      dirName: named.dirName,
-      displayName: named.name,
-      found: "local-state"
-    };
-  }
-  return null;
-}
-function claudeCodeProfileOn(deps) {
-  const userDataDir = chromeUserDataDir(deps.platform, deps.home);
-  return userDataDir === null ? null : findClaudeCodeProfile(userDataDir, deps);
-}
-function profileNameIn(profileDir, deps = {}) {
-  const text = readFileIn(deps)(join(profileDir, "Preferences"));
-  if (text === null)
-    return null;
-  let parsed;
-  try {
-    parsed = JSON.parse(text);
-  } catch {
-    return null;
-  }
-  const name = parsed?.profile?.name;
-  return typeof name === "string" ? name : null;
-}
-function extensionIds(profileDir, deps) {
-  return readdirIn(deps)(join(profileDir, "Extensions"));
-}
-function extensionRecord(profileDir, id, deps) {
-  const read = readFileIn(deps);
-  for (const fileName of ["Preferences", "Secure Preferences"]) {
-    const text = read(join(profileDir, fileName));
-    if (text === null)
-      continue;
-    let parsed;
-    try {
-      parsed = JSON.parse(text);
-    } catch {
-      continue;
-    }
-    const settings = parsed?.extensions?.settings;
-    if (typeof settings !== "object" || settings === null)
-      continue;
-    const record = settings[id];
-    if (typeof record === "object" && record !== null && Object.keys(record).length > 0) {
-      return record;
-    }
-  }
-  return null;
-}
-function isExtensionInstalledInProfile(profileDir, deps = {}) {
-  if (extensionIds(profileDir, deps).includes(PLAYWRIGHT_EXTENSION_ID))
-    return true;
-  return extensionRecord(profileDir, PLAYWRIGHT_EXTENSION_ID, deps) !== null;
-}
-function extensionVersion(profileDir, deps = {}) {
-  const folder = join(profileDir, "Extensions", PLAYWRIGHT_EXTENSION_ID);
-  const versions = readdirIn(deps)(folder).filter((name) => name !== "_metadata");
-  return versions.sort().at(-1) ?? null;
-}
-var EXTENSIONS_METADATA = "_metadata";
-var EXTENSION_ID = /^[a-p]{32}$/;
-function isChromesOwnExtension(record) {
-  if (record.was_installed_by_default === true)
-    return true;
-  const location = record.location;
-  return location === 5 || location === 10;
-}
-function installedExtensionVersion(profileDir, id, deps = {}) {
-  if (!EXTENSION_ID.test(id))
-    return null;
-  const read = readFileIn(deps);
-  const versions = readdirIn(deps)(join(profileDir, "Extensions", id)).filter((name) => name !== EXTENSIONS_METADATA).sort().reverse();
-  for (const version of versions) {
-    const manifest = read(join(profileDir, "Extensions", id, version, "manifest.json"));
-    if (manifest === null)
-      continue;
-    try {
-      JSON.parse(manifest);
-      return version;
-    } catch {}
-  }
-  return null;
-}
-function extensionName(profileDir, id, version, deps = {}) {
-  const read = readFileIn(deps);
-  const folder = join(profileDir, "Extensions", id, version);
-  let manifest = null;
-  try {
-    manifest = JSON.parse(read(join(folder, "manifest.json")) ?? "");
-  } catch {
-    return id;
-  }
-  const raw = typeof manifest?.name === "string" ? manifest.name : "";
-  const locale = typeof manifest?.default_locale === "string" ? manifest.default_locale : "";
-  const placeholder = /^__MSG_(.+)__$/.exec(raw);
-  if (placeholder === null)
-    return raw.trim() === "" ? id : raw.trim();
-  const key = placeholder[1] ?? "";
-  const locales = readdirIn(deps)(join(folder, "_locales")).filter((name) => name !== EXTENSIONS_METADATA);
-  const order = [locale, "en", "en_US", ...locales].filter((name) => name !== "");
-  for (const name of order) {
-    let messages = null;
-    try {
-      messages = JSON.parse(read(join(folder, "_locales", name, "messages.json")) ?? "");
-    } catch {
-      continue;
-    }
-    const entry = messages?.[key];
-    const message = entry?.message;
-    if (typeof message === "string" && message.trim() !== "")
-      return message.trim();
-  }
-  return id;
-}
-function otherExtensions(profileDir, deps = {}) {
-  const found = [];
-  for (const id of extensionIds(profileDir, deps)) {
-    if (id === PLAYWRIGHT_EXTENSION_ID || !EXTENSION_ID.test(id))
-      continue;
-    const version = installedExtensionVersion(profileDir, id, deps);
-    if (version === null)
-      continue;
-    const record = extensionRecord(profileDir, id, deps);
-    if (record !== null && isChromesOwnExtension(record))
-      continue;
-    found.push({ id, name: extensionName(profileDir, id, version, deps) });
-  }
-  return found;
-}
-function allowsFileUrls(profileDir, deps = {}) {
-  const read = readFileIn(deps);
-  let readAny = false;
-  for (const fileName of ["Preferences", "Secure Preferences"]) {
-    const text = read(join(profileDir, fileName));
-    if (text === null)
-      continue;
-    readAny = true;
-    let parsed;
-    try {
-      parsed = JSON.parse(text);
-    } catch {
-      continue;
-    }
-    const settings = parsed?.extensions?.settings;
-    if (typeof settings !== "object" || settings === null)
-      continue;
-    const record = settings[PLAYWRIGHT_EXTENSION_ID];
-    if (typeof record !== "object" || record === null)
-      continue;
-    for (const key of FILE_ACCESS_KEYS) {
-      if (record[key] === true)
-        return true;
-    }
-  }
-  return readAny ? false : null;
-}
-function isAlive(pid) {
-  if (!Number.isInteger(pid) || pid <= 0)
-    return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return error instanceof Error && "code" in error && String(error.code) === "EPERM";
-  }
-}
-function chromeMayBeRunning(userDataDir, platform, deps = {}) {
-  if (platform === "win32") {
-    const open = deps.openLockfile ?? ((file) => {
-      closeSync(openSync(file, "r+"));
-    });
-    try {
-      open(join(userDataDir, "lockfile"));
-      return false;
-    } catch (error) {
-      const code = error instanceof Error && "code" in error ? String(error.code) : "";
-      return code !== "ENOENT";
-    }
-  }
-  const readlink = deps.readlink ?? ((path) => {
-    try {
-      return readlinkSync(path);
-    } catch {
-      return null;
-    }
-  });
-  const target = readlink(join(userDataDir, "SingletonLock"));
-  if (target === null)
-    return false;
-  const cut = target.lastIndexOf("-");
-  const host = target.slice(0, cut);
-  const pid = Number(target.slice(cut + 1));
-  const alive = (deps.isAlive ?? isAlive)(pid);
-  const here = host === (deps.hostname ?? hostname)();
-  return !(here && !alive);
-}
-
-// src/browser/legacy.ts
-import { existsSync as existsSync2, readdirSync as readdirSync2, readFileSync as readFileSync2 } from "fs";
-import { join as join4 } from "path";
-
-// src/cli/paths.ts
-import { join as join3, sep } from "path";
-
-// src/gateway/paths.ts
-import { homedir } from "os";
-import { join as join2 } from "path";
+}, VERSION, MARKETPLACE_SOURCE, DEPENDENCIES, MARKETPLACE_ADD_COMMAND, PLUGIN_INSTALL_COMMAND, PLUGIN_UPDATE_COMMAND;
+var init_build_info = __esm(() => {
+  init_names();
+  init_names();
+  VERSION = info.version;
+  MARKETPLACE_SOURCE = info.repo;
+  DEPENDENCIES = info.dependencies;
+  MARKETPLACE_ADD_COMMAND = `claude plugin marketplace add ${MARKETPLACE_SOURCE}`;
+  PLUGIN_INSTALL_COMMAND = `claude plugin install ${PLUGIN_ID}`;
+  PLUGIN_UPDATE_COMMAND = `claude plugin update ${PLUGIN_ID}`;
+});
 
 // src/machine/host.ts
-var TEST_HOST_VAR = "CC_SMART_DEV_KIT_TEST_HOST";
 function hostPlatform(env = process.env) {
   const text = env[TEST_HOST_VAR];
   if (!text)
@@ -378,229 +72,7 @@ function hostPlatform(env = process.env) {
   const given = JSON.parse(text);
   return given.platform ?? process.platform;
 }
-
-// src/gateway/paths.ts
-function homeDir(env = process.env) {
-  if (env.HOME)
-    return env.HOME;
-  if (hostPlatform(env) === "win32" && env.USERPROFILE)
-    return env.USERPROFILE;
-  return homedir();
-}
-function routerPaths(env = process.env) {
-  const home = homeDir(env);
-  return {
-    home,
-    gatewayConfigFile: join2(home, ".config", "cc-smart-dev-kit", "gateway.json"),
-    gatewayStateFile: join2(home, ".local", "state", "cc-smart-dev-kit", "gateway-state.json"),
-    safetyChecksFile: join2(home, ".local", "state", "cc-smart-dev-kit", "safety-checks.json"),
-    historyDbFile: join2(home, ".local", "state", "cc-smart-dev-kit", "history.db")
-  };
-}
-
-// src/cli/paths.ts
-function userConfigFile(env, home) {
-  const dir = env.CLAUDE_CONFIG_DIR;
-  return dir ? join3(dir, ".claude.json") : join3(home, ".claude.json");
-}
-function cliPaths(env = process.env) {
-  if (env === null || typeof env !== "object" || Array.isArray(env)) {
-    throw new TypeError(`cliPaths takes an environment object (like process.env), not ${env === null ? "null" : Array.isArray(env) ? "an array" : typeof env}`);
-  }
-  const router = routerPaths(env);
-  const claudeConfigDir = env.CLAUDE_CONFIG_DIR || join3(router.home, ".claude");
-  return {
-    ...router,
-    claudeConfigDir,
-    settingsFile: join3(claudeConfigDir, "settings.json"),
-    installedPluginsFile: join3(claudeConfigDir, "plugins", "installed_plugins.json"),
-    pluginCacheDir: join3(claudeConfigDir, "plugins", "cache", MARKETPLACE, PLUGIN),
-    knownMarketplacesFile: join3(claudeConfigDir, "plugins", "known_marketplaces.json"),
-    projectsDir: join3(claudeConfigDir, "projects"),
-    userConfigFile: userConfigFile(env, router.home),
-    binDir: join3(router.home, ".local", "bin"),
-    stateDir: join3(claudeConfigDir, "cc-smart-dev-kit"),
-    dataDir: join3(router.home, ".local", "share", "cc-smart-dev-kit"),
-    browserOutputDir: join3(router.home, ".local", "share", "cc-smart-dev-kit", "playwright-output"),
-    browserTokenFile: join3(router.home, ".config", "cc-smart-dev-kit", "playwright-extension.token"),
-    routerCopy: join3(router.home, ".local", "share", "cc-smart-dev-kit", "router.js"),
-    routerTaskFile: join3(router.home, ".local", "share", "cc-smart-dev-kit", "router-task.xml"),
-    portalCopy: join3(router.home, ".local", "share", "cc-smart-dev-kit", "portal.js"),
-    portalUiFolder: join3(router.home, ".local", "share", "cc-smart-dev-kit", "portal-ui"),
-    gitHooksFolder: join3(router.home, ".local", "share", "cc-smart-dev-kit", "git-hooks"),
-    portalProjectsFile: join3(claudeConfigDir, "cc-smart-dev-kit", "portal-projects.json"),
-    portalLogFile: join3(claudeConfigDir, "cc-smart-dev-kit", "portal.log"),
-    portalHeldFile: join3(claudeConfigDir, "cc-smart-dev-kit", "portal-held.json"),
-    omnirouteStateFile: join3(claudeConfigDir, "cc-smart-dev-kit", "omniroute.json"),
-    routerUnitFile: join3(router.home, ".config", "systemd", "user", "cc-smart-dev-kit-router.service"),
-    claudeMemSettingsFile: join3(claudeMemDataDir(env, router.home), "settings.json"),
-    routerSocketFile: join3(router.home, ".config", "systemd", "user", "cc-smart-dev-kit-router.socket"),
-    workflowConfigFile: join3(router.home, ".config", "cc-smart-dev-kit", "workflow.json"),
-    machinesFile: join3(router.home, ".config", "cc-smart-dev-kit", "machines.json"),
-    tmuxConfFile: join3(router.home, ".tmux.conf"),
-    tavilyKeyFile: join3(claudeConfigDir, "cc-smart-dev-kit", "tavily.key")
-  };
-}
-function claudeMemDataDir(env, home) {
-  const dir = env.CLAUDE_MEM_DATA_DIR;
-  if (!dir)
-    return join3(home, ".claude-mem");
-  if (dir === "~")
-    return home;
-  return dir.startsWith("~/") ? join3(home, dir.slice(2)) : dir;
-}
-function tildify(path, home) {
-  const rest = path.slice(home.length);
-  return path === home || path.startsWith(home) && (rest.startsWith("/") || rest.startsWith(sep)) ? `~${rest}` : path;
-}
-
-// src/browser/legacy.ts
-var LEGACY_PROFILE_NAME = "playwright";
-var LEGACY_PICKER_NAME = "playwright-picker.js";
-function legacyBrowserPaths(paths) {
-  return {
-    picker: join4(paths.dataDir, LEGACY_PICKER_NAME),
-    profile: join4(paths.dataDir, LEGACY_PROFILE_NAME)
-  };
-}
-function processCommandLines(platform, run) {
-  if (platform === "linux")
-    return linuxProcessCommandLines();
-  if (platform === "darwin") {
-    return run === undefined ? null : parsedLines(run(PROCESS_LIST_ARGV.darwin));
-  }
-  if (platform === "win32") {
-    return run === undefined ? null : parsedLines(run(PROCESS_LIST_ARGV.win32));
-  }
-  return null;
-}
-async function processCommandLinesAsync(platform, run) {
-  if (platform === "linux")
-    return linuxProcessCommandLines();
-  if (platform === "darwin")
-    return parsedLines(await run(PROCESS_LIST_ARGV.darwin));
-  if (platform === "win32")
-    return parsedLines(await run(PROCESS_LIST_ARGV.win32));
-  return null;
-}
-function parsedLines(result) {
-  if (result.exitCode !== 0)
-    return null;
-  const processes = [];
-  for (const line of result.output.split(/\r?\n/)) {
-    const text = line.trim();
-    if (text === "")
-      continue;
-    const space = text.indexOf(" ");
-    if (space === -1)
-      continue;
-    const pid = Number(text.slice(0, space));
-    const command = text.slice(space + 1).trim();
-    if (Number.isInteger(pid) && pid > 0 && command !== "")
-      processes.push({ command, pid });
-  }
-  return processes;
-}
-var WINDOWS_LIST = "[Console]::OutputEncoding = [Text.Encoding]::UTF8; " + "Get-CimInstance Win32_Process | Where-Object CommandLine | " + 'ForEach-Object { "$($_.ProcessId) $($_.CommandLine)" }';
-var PROCESS_LIST_ARGV = {
-  darwin: ["ps", "-ww", "-axo", "pid=,command="],
-  win32: ["powershell", "-NoProfile", "-NonInteractive", "-Command", WINDOWS_LIST]
-};
-function linuxProcessCommandLines() {
-  let names;
-  try {
-    names = readdirSync2("/proc");
-  } catch {
-    return null;
-  }
-  const processes = [];
-  for (const name of names) {
-    if (!/^\d+$/.test(name))
-      continue;
-    try {
-      const args = readFileSync2(join4("/proc", name, "cmdline")).toString("utf8").split("\x00").filter((arg) => arg !== "");
-      if (args.length > 0)
-        processes.push({ command: args.join(" "), pid: Number(name) });
-    } catch {}
-  }
-  return processes;
-}
-var USER_DATA_DIR = "--user-data-dir=";
-function namesLegacyProfile(command, profile) {
-  const plain = command.replace(/["']/g, "");
-  const wanted = `${USER_DATA_DIR}${profile}`;
-  for (let at = plain.indexOf(wanted);at !== -1; at = plain.indexOf(wanted, at + 1)) {
-    const after = plain[at + wanted.length];
-    if (after === undefined || after === " ")
-      return true;
-  }
-  return false;
-}
-function removeCommand(paths, platform) {
-  return platform === "win32" ? `Remove-Item -Recurse -Force ${paths.map((path) => `'${path}'`).join(",")}` : `rm -rf ${paths.join(" ")}`;
-}
-function killCommand(pid, platform) {
-  return platform === "win32" ? `taskkill /PID ${String(pid)} /F` : `kill ${String(pid)}`;
-}
-function leftoverLine(profile, picker, platform, home) {
-  const shown = (path) => tildify(path, home);
-  const andPicker = picker === null ? "" : `, and its file picker is at ${shown(picker)} (harmless on its own)`;
-  const it = picker === null ? "it" : "them";
-  return `the 0.3.0 shared browser's profile is still at ${shown(profile)} and may hold sign-ins${andPicker}. ` + `Nothing reads ${it} now. Delete ${it} yourself when you no longer need the sign-ins: ` + removeCommand((picker === null ? [profile] : [profile, picker]).map((path) => shown(path)), platform);
-}
-function runningLine(first, others, profile, platform, home) {
-  const pids = [first, ...others];
-  const named = pids.map((pid) => String(pid)).join(", ");
-  return `the 0.3.0 shared Chrome is still running (pid${pids.length === 1 ? "" : "s"} ${named}, ` + `--user-data-dir=${tildify(profile, home)}). Its debug port has no password, so any program ` + `on this machine can drive that signed-in browser: close it (every window; a headless one ` + `has none), or run: ${killCommand(first, platform)}`;
-}
-function unknownLine(profile, home) {
-  return `cannot read this machine's process list, so whether the 0.3.0 shared Chrome is still running ` + `with --user-data-dir=${tildify(profile, home)} is unknown: if that Chrome is open, close it`;
-}
-function legacyBrowserLeftovers(paths, exists = existsSync2) {
-  const { picker, profile } = legacyBrowserPaths(paths);
-  return exists(profile) || exists(picker);
-}
-function legacyBrowserFacts(paths, deps) {
-  const exists = deps.exists ?? existsSync2;
-  if (!legacyBrowserLeftovers(paths, exists))
-    return [];
-  const { picker, profile } = legacyBrowserPaths(paths);
-  const profileThere = exists(profile);
-  const pickerThere = exists(picker);
-  const facts = [];
-  if (profileThere) {
-    facts.push({
-      kind: "warn",
-      text: leftoverLine(profile, pickerThere ? picker : null, deps.platform, paths.home)
-    });
-  }
-  const listing = (deps.processes ?? (() => processCommandLines(deps.platform, deps.run)))();
-  if (listing === null) {
-    facts.push({ kind: "info", text: unknownLine(profile, paths.home) });
-    return facts;
-  }
-  const pids = listing.filter((process2) => !process2.command.includes("--type=")).filter((process2) => namesLegacyProfile(process2.command, profile)).map((process2) => process2.pid);
-  const [first, ...others] = pids;
-  if (first !== undefined) {
-    facts.push({
-      kind: "warn",
-      text: runningLine(first, others, profile, deps.platform, paths.home)
-    });
-  }
-  return facts;
-}
-
-// src/browser/token.ts
-import { existsSync as existsSync4, mkdirSync as mkdirSync2, readFileSync as readFileSync4, statSync as statSync2, unlinkSync as unlinkSync2 } from "fs";
-import { dirname as dirname2 } from "path";
-
-// src/cli/secret-line.ts
-var PASTE_START = "\x1B[200~";
-var PASTE_END = "\x1B[201~";
-var CONTROL = /[\p{Cc}\p{Cf}]/gu;
-function cleanSecretLine(text) {
-  return text.replaceAll(PASTE_START, "").replaceAll(PASTE_END, "").replace(CONTROL, "").trim();
-}
+var TEST_HOST_VAR = "CC_SMART_DEV_KIT_TEST_HOST";
 
 // src/setup/file-mode.ts
 import { chmodSync, fchmodSync } from "fs";
@@ -621,6 +93,7 @@ function setFileMode(fileOrFd, mode, platform = hostPlatform()) {
 function isOwnerOnly(mode, platform = hostPlatform()) {
   return platform === "win32" || (mode & 63) === 0;
 }
+var init_file_mode = () => {};
 
 // src/setup/write.ts
 import {
@@ -640,11 +113,6 @@ import {
   writeFileSync
 } from "fs";
 import { basename, dirname, join as join5, resolve } from "path";
-var BACKUPS_DIR = "backups";
-var BACKUP_INFIX = ".bak-cc-smart-dev-kit-";
-var ABSENT_SUFFIX = ".absent";
-var CHANGED_FILE = "changed.json";
-var MAX_LINKS = 40;
 function utcStamp(date = new Date) {
   return date.toISOString().replace(/[-:.]/g, "");
 }
@@ -764,13 +232,6 @@ function backupFile(stateDir, file) {
   }
   return target;
 }
-var CHANGE_KINDS = [
-  "json-keys",
-  "json-entries",
-  "markdown-block",
-  "file-line",
-  "whole-file"
-];
 function isChangedEntry(value) {
   if (typeof value !== "object" || value === null)
     return false;
@@ -820,9 +281,6 @@ function recordChange(stateDir, file, kind, backup, lines) {
   if (changed)
     writeChanged(stateDir, files);
   return false;
-}
-class ConcurrentChangeError extends Error {
-  name = "ConcurrentChangeError";
 }
 function retryOnConcurrentChange(file, fn, attempts = 3) {
   for (let attempt = 1;; attempt += 1) {
@@ -876,231 +334,20 @@ function writeManagedFile(file, content, options) {
   }
   return { outcome, backup };
 }
-
-// src/browser/token.ts
-var BROWSER_TOKEN_ENV = "PLAYWRIGHT_MCP_EXTENSION_TOKEN";
-var TOKEN_LINE_PREFIX = `${BROWSER_TOKEN_ENV}=`;
-var TOKEN_SHAPE = /^[A-Za-z0-9_-]{43}$/;
-function isBrowserToken(token) {
-  return TOKEN_SHAPE.test(token);
-}
-function parseBrowserToken(pasted) {
-  let text = cleanSecretLine(pasted);
-  if (text.startsWith(TOKEN_LINE_PREFIX))
-    text = text.slice(TOKEN_LINE_PREFIX.length).trim();
-  if (text === "") {
-    return {
-      ok: false,
-      why: "nothing was pasted. Copy the token from the extension's status page"
-    };
-  }
-  if (!isBrowserToken(text)) {
-    return {
-      ok: false,
-      why: `that is not the Playwright extension's token (${String(text.length)} characters; its ` + `own token is exactly 43 letters, digits, "-" and "_"). Open the extension's status ` + `page and press Copy, then paste the whole line`
-    };
-  }
-  return { ok: true, token: text };
-}
-function readBrowserToken(paths, deps = {}, platform = hostPlatform()) {
-  const exists = deps.exists ?? existsSync4;
-  const read = deps.read ?? ((file) => {
-    try {
-      return { mode: statSync2(file).mode & 4095, text: readFileSync4(file, "utf8") };
-    } catch {
-      return null;
-    }
-  });
-  if (!exists(paths.browserTokenFile)) {
-    return {
-      source: "none",
-      reason: `no token file at ${paths.browserTokenFile}`
-    };
-  }
-  let file;
-  try {
-    file = read(paths.browserTokenFile);
-  } catch (error) {
-    return {
-      source: "none",
-      reason: `${paths.browserTokenFile} cannot be read (${error instanceof Error ? error.message : String(error)})`
-    };
-  }
-  if (file === null) {
-    return {
-      source: "none",
-      reason: `${paths.browserTokenFile} cannot be read; run \`${COMMAND} browser token\` again`
-    };
-  }
-  if (!isOwnerOnly(file.mode, platform)) {
-    return {
-      source: "none",
-      reason: `${paths.browserTokenFile} is readable by others (mode ${file.mode.toString(8)}): ` + `run \`chmod 600 ${paths.browserTokenFile}\`, then start a new session`
-    };
-  }
-  const value = file.text.trim();
-  if (value === "") {
-    return {
-      source: "none",
-      reason: `${paths.browserTokenFile} is empty; write the token into it`
-    };
-  }
-  if (!isBrowserToken(value)) {
-    return {
-      source: "none",
-      reason: `${paths.browserTokenFile} does not hold the extension's token: run ` + `\`${COMMAND} browser token\` again and paste it from the extension's status page`
-    };
-  }
-  return { source: "file", value };
-}
-function tokenProtection(platform = hostPlatform()) {
-  return platform === "win32" ? "your user profile's permissions keep it yours" : "mode 600";
-}
-function tokenSavedLine(file, platform = hostPlatform()) {
-  return `+ ${file}: the browser token is set (${tokenProtection(platform)})`;
-}
-function writeBrowserToken(paths, token) {
-  mkdirSync2(dirname2(paths.browserTokenFile), { mode: 448, recursive: true });
-  atomicWrite(paths.browserTokenFile, `${token}
-`, 384);
-}
-
-// src/browser/doctor.ts
-var SETUP_COMMAND = `${COMMAND} browser setup`;
-var TOKEN_COMMAND = `${COMMAND} browser token`;
-function line(check) {
-  return { ...check, group: "browser" };
-}
-function realBrowserDoctorDeps(machine, home) {
-  return {
-    exists: machine.exists,
-    home,
-    platform: machine.platform,
-    readdir: (dir) => {
-      try {
-        return readdirSync4(dir);
-      } catch {
-        return [];
-      }
-    },
-    readFile: (file) => {
-      try {
-        return readFileSync5(file, "utf8");
-      } catch {
-        return null;
-      }
-    },
-    run: machine.run
+var BACKUPS_DIR = "backups", BACKUP_INFIX = ".bak-cc-smart-dev-kit-", ABSENT_SUFFIX = ".absent", CHANGED_FILE = "changed.json", MAX_LINKS = 40, CHANGE_KINDS, ConcurrentChangeError;
+var init_write = __esm(() => {
+  init_file_mode();
+  CHANGE_KINDS = [
+    "json-keys",
+    "json-entries",
+    "markdown-block",
+    "file-line",
+    "whole-file"
+  ];
+  ConcurrentChangeError = class ConcurrentChangeError extends Error {
+    name = "ConcurrentChangeError";
   };
-}
-function browserChecks(paths, deps) {
-  return [...prerequisiteChecks(paths, deps), ...legacyChecks(paths, deps)];
-}
-function prerequisiteChecks(paths, deps) {
-  const chrome = findChrome(deps);
-  if (chrome === null) {
-    return [
-      line({
-        ok: false,
-        text: `Google Chrome is not installed where ${COMMAND} looks (${chromeCandidates(deps.platform, deps.home).join(", ")})`,
-        fix: `install Google Chrome, then run: ${SETUP_COMMAND}`
-      })
-    ];
-  }
-  const checks = [line({ ok: true, text: `Google Chrome is at ${chrome}` })];
-  const userDataDir = chromeUserDataDir(deps.platform, deps.home);
-  if (userDataDir === null) {
-    checks.push(line({
-      info: true,
-      ok: true,
-      text: `this system's Chrome profile folder is not one cc-smart-dev-kit knows: the browser's checks stop here (${SETUP_COMMAND} says what to pass)`
-    }));
-    return checks;
-  }
-  const profile = findClaudeCodeProfile(userDataDir, deps);
-  if (profile === null) {
-    checks.push(line({
-      ok: false,
-      text: `the Chrome profile "${CLAUDE_CODE_PROFILE}" is not in ${userDataDir}`,
-      fix: SETUP_COMMAND
-    }));
-    return checks;
-  }
-  const how = profile.found === "directory" ? "its folder" : "the name in Chrome's profile list";
-  checks.push(line({
-    ok: true,
-    text: `the Chrome profile "${CLAUDE_CODE_PROFILE}" is at ${profile.dir} (found by ${how})`
-  }));
-  checks.push(chromeMayBeRunning(userDataDir, deps.platform, deps) ? line({
-    ok: true,
-    info: true,
-    text: "Google Chrome is running: the browser connects to it"
-  }) : line({
-    ok: true,
-    info: true,
-    text: `Google Chrome is not running: the first browser call starts it in the "${profile.dirName}" profile`
-  }));
-  const installed = isExtensionInstalledInProfile(profile.dir, deps);
-  const version = installed ? extensionVersion(profile.dir, deps) : null;
-  checks.push(installed ? line({
-    ok: true,
-    text: `the Playwright extension${version === null ? "" : ` ${version}`} is installed in that profile`
-  }) : line({
-    ok: false,
-    text: `the Playwright extension is not installed in the "${CLAUDE_CODE_PROFILE}" profile`,
-    fix: `${SETUP_COMMAND}, then click "Add to Chrome" on ${PLAYWRIGHT_EXTENSION_URL}`
-  }));
-  const others = otherExtensions(profile.dir, deps);
-  checks.push(others.length === 0 ? line({ ok: true, text: "no other extension is in that profile" }) : line({
-    ok: true,
-    warn: true,
-    text: `${String(others.length)} other extension${others.length === 1 ? "" : "s"} in the ` + `"${CLAUDE_CODE_PROFILE}" profile (${others.map((one) => `${one.name} [${one.id}]`).join(", ")}): ` + `one that injects into pages breaks a browser session (microsoft/playwright#43230, open)`,
-    fix: "remove it from that profile: chrome://extensions"
-  }));
-  if (installed) {
-    const fileUrls = allowsFileUrls(profile.dir, deps);
-    checks.push(fileUrls === true ? line({ ok: true, text: "that profile lets the extension open file:// pages" }) : fileUrls === false ? line({
-      ok: false,
-      text: `the "${CLAUDE_CODE_PROFILE}" profile does not let the extension open file:// pages`,
-      fix: `open ${PLAYWRIGHT_EXTENSION_SETTINGS_URL} in that profile and switch on "Allow access to file URLs"`
-    }) : line({
-      info: true,
-      ok: true,
-      text: `cannot read the profile's Preferences to check the file:// setting: open ` + `${PLAYWRIGHT_EXTENSION_SETTINGS_URL} in that profile and make sure "Allow access ` + `to file URLs" is on`
-    }));
-  }
-  const token = readBrowserToken(paths, deps, deps.platform);
-  checks.push(token.source === "file" ? line({
-    ok: true,
-    text: `the browser token is set (${paths.browserTokenFile}, ${tokenProtection(deps.platform)})`
-  }) : line({
-    ok: false,
-    text: `the browser token is not set, so the browser cannot connect (${token.reason})`,
-    fix: `${SETUP_COMMAND}, then ${TOKEN_COMMAND}`
-  }));
-  return checks;
-}
-function legacyChecks(paths, deps) {
-  return legacyBrowserFacts(paths, deps).map((fact) => fact.kind === "warn" ? line({ ok: true, text: fact.text, warn: true }) : line({ info: true, ok: true, text: fact.text }));
-}
-
-// src/build-info/semver.ts
-function isOlder(a, b) {
-  if (b === null)
-    return false;
-  if (a === null)
-    return true;
-  try {
-    return Bun.semver.order(a, b) < 0;
-  } catch {
-    return false;
-  }
-}
-
-// src/gateway/config.ts
-import { createHash } from "crypto";
-import { mkdirSync as mkdirSync4, readFileSync as readFileSync6, statSync as statSync4 } from "fs";
-import { dirname as dirname4 } from "path";
+});
 
 // node_modules/zod/v4/core/util.js
 function getEnumValues(entries) {
@@ -1222,25 +469,9 @@ function esc(str) {
 function slugify(input) {
   return input.toLowerCase().trim().replace(/[^\w\s-]/g, "").replace(/[\s_-]+/g, "-").replace(/^-+|-+$/g, "");
 }
-var captureStackTrace = "captureStackTrace" in Error ? Error.captureStackTrace : (..._args) => {};
 function isObject(data) {
   return typeof data === "object" && data !== null && !Array.isArray(data);
 }
-var allowsEval = /* @__PURE__ */ cached(() => {
-  if (globalConfig.jitless) {
-    return false;
-  }
-  if (typeof navigator !== "undefined" && navigator?.userAgent?.includes("Cloudflare")) {
-    return false;
-  }
-  try {
-    const F = Function;
-    new F("");
-    return true;
-  } catch (_) {
-    return false;
-  }
-});
 function isPlainObject(o) {
   if (isObject(o) === false)
     return false;
@@ -1268,7 +499,6 @@ function shallowClone(o) {
     return new Set(o);
   return o;
 }
-var propertyKeyTypes = /* @__PURE__ */ new Set(["string", "number", "symbol"]);
 function escapeRegex(str) {
   return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -1306,17 +536,6 @@ function optionalKeys(shape) {
     return shape[k]._zod.optin !== undefined && shape[k]._zod.optout === "optional";
   });
 }
-var NUMBER_FORMAT_RANGES = /* @__PURE__ */ (() => ({
-  safeint: [Number.MIN_SAFE_INTEGER, Number.MAX_SAFE_INTEGER],
-  int32: [-2147483648, 2147483647],
-  uint32: [0, 4294967295],
-  float32: [-340282346638528860000000000000000000000, 340282346638528860000000000000000000000],
-  float64: [-Number.MAX_VALUE, Number.MAX_VALUE]
-}))();
-var BIGINT_FORMAT_RANGES = {
-  int64: [/* @__PURE__ */ BigInt("-9223372036854775808"), /* @__PURE__ */ BigInt("9223372036854775807")],
-  uint64: [/* @__PURE__ */ BigInt(0), /* @__PURE__ */ BigInt("18446744073709551615")]
-};
 function pick(schema, mask) {
   const currDef = schema._zod.def;
   const checks = currDef.checks;
@@ -1490,7 +709,6 @@ function finalizeIssue(iss, ctx, config) {
   }
   return full;
 }
-var highSurrogate = /[\uD800-\uDBFF]/;
 function codePointLength(str) {
   const units = str.length;
   if (!highSurrogate.test(str))
@@ -1591,15 +809,6 @@ function claim(inst, sentinel) {
   const proto = Object.getPrototypeOf(inst);
   return sentinel in proto ? undefined : proto;
 }
-var installing;
-var broke = false;
-var breaker = {
-  configurable: true,
-  get() {
-    broke = true;
-    return;
-  }
-};
 function defineLazyInternal(inst, key, compute) {
   const proto = Object.getPrototypeOf(inst._zod);
   if (key in proto && installing !== inst._zod) {
@@ -1650,20 +859,53 @@ function installLazyProp(inst, key, make, enumerable) {
     }
   });
 }
-var CONSTANT_CATCH = "~constantCatch";
 function constantCatch(value) {
   const fn = () => value;
   fn[CONSTANT_CATCH] = true;
   return fn;
 }
+var captureStackTrace, allowsEval, propertyKeyTypes, NUMBER_FORMAT_RANGES, BIGINT_FORMAT_RANGES, highSurrogate, installing, broke = false, breaker, CONSTANT_CATCH = "~constantCatch";
+var init_util = __esm(() => {
+  init_core();
+  captureStackTrace = "captureStackTrace" in Error ? Error.captureStackTrace : (..._args) => {};
+  allowsEval = /* @__PURE__ */ cached(() => {
+    if (globalConfig.jitless) {
+      return false;
+    }
+    if (typeof navigator !== "undefined" && navigator?.userAgent?.includes("Cloudflare")) {
+      return false;
+    }
+    try {
+      const F = Function;
+      new F("");
+      return true;
+    } catch (_) {
+      return false;
+    }
+  });
+  propertyKeyTypes = /* @__PURE__ */ new Set(["string", "number", "symbol"]);
+  NUMBER_FORMAT_RANGES = /* @__PURE__ */ (() => ({
+    safeint: [Number.MIN_SAFE_INTEGER, Number.MAX_SAFE_INTEGER],
+    int32: [-2147483648, 2147483647],
+    uint32: [0, 4294967295],
+    float32: [-340282346638528860000000000000000000000, 340282346638528860000000000000000000000],
+    float64: [-Number.MAX_VALUE, Number.MAX_VALUE]
+  }))();
+  BIGINT_FORMAT_RANGES = {
+    int64: [/* @__PURE__ */ BigInt("-9223372036854775808"), /* @__PURE__ */ BigInt("9223372036854775807")],
+    uint64: [/* @__PURE__ */ BigInt(0), /* @__PURE__ */ BigInt("18446744073709551615")]
+  };
+  highSurrogate = /[\uD800-\uDBFF]/;
+  breaker = {
+    configurable: true,
+    get() {
+      broke = true;
+      return;
+    }
+  };
+});
 
 // node_modules/zod/v4/core/core.js
-var _a;
-var NEVER = /* @__PURE__ */ Object.freeze({
-  status: "aborted"
-});
-var _zodDesc = { value: undefined, enumerable: false };
-var _E = "captureStackTrace" in Error ? Error : null;
 function newError(Definition) {
   const E = _E;
   if (E) {
@@ -1759,25 +1001,34 @@ function $constructor(name, initializer, proto, params) {
   Object.defineProperty(_, "name", { value: name });
   return _;
 }
-class $ZodAsyncError extends Error {
-  constructor() {
-    super(`Encountered Promise during synchronous parse. Use .parseAsync() instead.`);
-  }
-}
-
-class $ZodEncodeError extends Error {
-  constructor(name) {
-    super(`Encountered unidirectional transform during encode: ${name}`);
-    this.name = "ZodEncodeError";
-  }
-}
-(_a = globalThis).__zod_globalConfig ?? (_a.__zod_globalConfig = {});
-var globalConfig = globalThis.__zod_globalConfig;
 function config(newConfig) {
   if (newConfig)
     Object.assign(globalConfig, newConfig);
   return globalConfig;
 }
+var _a, NEVER, _zodDesc, _E, $ZodAsyncError, $ZodEncodeError, globalConfig;
+var init_core = __esm(() => {
+  init_util();
+  NEVER = /* @__PURE__ */ Object.freeze({
+    status: "aborted"
+  });
+  _zodDesc = { value: undefined, enumerable: false };
+  _E = "captureStackTrace" in Error ? Error : null;
+  $ZodAsyncError = class $ZodAsyncError extends Error {
+    constructor() {
+      super(`Encountered Promise during synchronous parse. Use .parseAsync() instead.`);
+    }
+  };
+  $ZodEncodeError = class $ZodEncodeError extends Error {
+    constructor(name) {
+      super(`Encountered unidirectional transform during encode: ${name}`);
+      this.name = "ZodEncodeError";
+    }
+  };
+  (_a = globalThis).__zod_globalConfig ?? (_a.__zod_globalConfig = {});
+  globalConfig = globalThis.__zod_globalConfig;
+});
+
 // node_modules/zod/v4/core/errors.js
 function _getMessage() {
   const internals = this._zod;
@@ -1787,41 +1038,6 @@ function _getMessage() {
 function _setMessage(value) {
   this._zod.message = value;
 }
-var _messageDesc = {
-  get: _getMessage,
-  set: _setMessage,
-  enumerable: true,
-  configurable: true
-};
-var _issuesDesc = { value: undefined, enumerable: false };
-var _installedToString = /* @__PURE__ */ new WeakSet([Object.prototype, Error.prototype]);
-var initializer = (inst, def) => {
-  inst.name = "$ZodError";
-  _issuesDesc.value = def;
-  Object.defineProperty(inst, "issues", _issuesDesc);
-  _issuesDesc.value = undefined;
-  Object.defineProperty(inst, "message", _messageDesc);
-  const proto = Object.getPrototypeOf(inst);
-  if (!_installedToString.has(proto)) {
-    _installedToString.add(proto);
-    Object.defineProperty(proto, "toString", {
-      configurable: true,
-      enumerable: false,
-      get() {
-        const value = () => this.message;
-        Object.defineProperty(this, "toString", { value, configurable: true, writable: true });
-        return value;
-      },
-      set(value) {
-        Object.defineProperty(this, "toString", { value, configurable: true, writable: true });
-      }
-    });
-  }
-};
-var $ZodError = $constructor("$ZodError", initializer);
-var $ZodRealError = $constructor("$ZodError", initializer, undefined, {
-  Parent: Error
-});
 function node(obj, key, make) {
   if (!Object.prototype.hasOwnProperty.call(obj, key)) {
     if (key === "__proto__") {
@@ -1921,50 +1137,50 @@ function prettifyError(error) {
   return lines.join(`
 `);
 }
+var _messageDesc, _issuesDesc, _installedToString, initializer = (inst, def) => {
+  inst.name = "$ZodError";
+  _issuesDesc.value = def;
+  Object.defineProperty(inst, "issues", _issuesDesc);
+  _issuesDesc.value = undefined;
+  Object.defineProperty(inst, "message", _messageDesc);
+  const proto = Object.getPrototypeOf(inst);
+  if (!_installedToString.has(proto)) {
+    _installedToString.add(proto);
+    Object.defineProperty(proto, "toString", {
+      configurable: true,
+      enumerable: false,
+      get() {
+        const value = () => this.message;
+        Object.defineProperty(this, "toString", { value, configurable: true, writable: true });
+        return value;
+      },
+      set(value) {
+        Object.defineProperty(this, "toString", { value, configurable: true, writable: true });
+      }
+    });
+  }
+}, $ZodError, $ZodRealError;
+var init_errors = __esm(() => {
+  init_core();
+  init_util();
+  _messageDesc = {
+    get: _getMessage,
+    set: _setMessage,
+    enumerable: true,
+    configurable: true
+  };
+  _issuesDesc = { value: undefined, enumerable: false };
+  _installedToString = /* @__PURE__ */ new WeakSet([Object.prototype, Error.prototype]);
+  $ZodError = $constructor("$ZodError", initializer);
+  $ZodRealError = $constructor("$ZodError", initializer, undefined, {
+    Parent: Error
+  });
+});
 
 // node_modules/zod/v4/core/parse.js
 function finalizeParams(callee, params) {
   return { callee: params?.callee ?? callee, Err: params?.Err };
 }
-var _parse = (_Err) => {
-  const fn = (schema, value, _ctx, _params) => {
-    const ctx = _ctx ? { ..._ctx, async: false } : { async: false };
-    const result = schema._zod.run({ value, issues: [] }, ctx);
-    if (result instanceof Promise) {
-      throw new $ZodAsyncError;
-    }
-    if (result.issues.length) {
-      const e = new (_params?.Err ?? _Err)(result.issues.map((iss) => finalizeIssue(iss, ctx, config())));
-      captureStackTrace(e, _params?.callee ?? fn);
-      throw e;
-    }
-    return result.value;
-  };
-  return fn;
-};
-var _parseAsync = (_Err) => {
-  const fn = async (schema, value, _ctx, params) => {
-    const ctx = _ctx ? { ..._ctx, async: true } : { async: true };
-    let result = schema._zod.run({ value, issues: [] }, ctx);
-    if (result instanceof Promise)
-      result = await result;
-    if (result.issues.length) {
-      const e = new (params?.Err ?? _Err)(result.issues.map((iss) => finalizeIssue(iss, ctx, config())));
-      captureStackTrace(e, params?.callee ?? fn);
-      throw e;
-    }
-    return result.value;
-  };
-  return fn;
-};
-var _safeParse = (_Err) => (schema, value, _ctx) => {
-  const ctx = _ctx ? { ..._ctx, async: false } : { async: false };
-  const result = schema._zod.run({ value, issues: [] }, ctx);
-  if (result instanceof Promise) {
-    throw new $ZodAsyncError;
-  }
-  return result.issues.length ? failure(_Err, result.issues, ctx) : { success: true, data: result.value };
-};
 function failure(Err, issues, ctx) {
   let error;
   return {
@@ -1984,25 +1200,6 @@ function failure(Err, issues, ctx) {
     }
   };
 }
-var _safeParseAsync = (_Err) => async (schema, value, _ctx) => {
-  const ctx = _ctx ? { ..._ctx, async: true } : { async: true };
-  let result = schema._zod.run({ value, issues: [] }, ctx);
-  if (result instanceof Promise)
-    result = await result;
-  return result.issues.length ? failure(_Err, result.issues, ctx) : { success: true, data: result.value };
-};
-var COMPILE_INVALID = /* @__PURE__ */ Symbol.for("zod.compile.invalid");
-var COMPILE_FALLBACK = /* @__PURE__ */ Symbol.for("zod.compile.fallback");
-var validate = (schema, value, _ctx) => {
-  const validator = schema._zod.bag.validator;
-  if (validator !== undefined) {
-    if (validator(value) !== COMPILE_INVALID)
-      return true;
-    if (validator.definite === true && _ctx === undefined)
-      return false;
-  }
-  return validateFallback(schema, value, _ctx);
-};
 function validateFallback(schema, value, _ctx) {
   const ctx = _ctx ? { ..._ctx, async: false, abortEarly: true } : { async: false, abortEarly: true };
   const fallbackRun = schema._zod.bag.fallbackRun;
@@ -2018,92 +1215,117 @@ function validateFallback(schema, value, _ctx) {
   }
   return result.issues.length === 0;
 }
-var validateAsync = async (schema, value, _ctx) => {
+var _parse = (_Err) => {
+  const fn = (schema, value, _ctx, _params) => {
+    const ctx = _ctx ? { ..._ctx, async: false } : { async: false };
+    const result = schema._zod.run({ value, issues: [] }, ctx);
+    if (result instanceof Promise) {
+      throw new $ZodAsyncError;
+    }
+    if (result.issues.length) {
+      const e = new (_params?.Err ?? _Err)(result.issues.map((iss) => finalizeIssue(iss, ctx, config())));
+      captureStackTrace(e, _params?.callee ?? fn);
+      throw e;
+    }
+    return result.value;
+  };
+  return fn;
+}, _parseAsync = (_Err) => {
+  const fn = async (schema, value, _ctx, params) => {
+    const ctx = _ctx ? { ..._ctx, async: true } : { async: true };
+    let result = schema._zod.run({ value, issues: [] }, ctx);
+    if (result instanceof Promise)
+      result = await result;
+    if (result.issues.length) {
+      const e = new (params?.Err ?? _Err)(result.issues.map((iss) => finalizeIssue(iss, ctx, config())));
+      captureStackTrace(e, params?.callee ?? fn);
+      throw e;
+    }
+    return result.value;
+  };
+  return fn;
+}, _safeParse = (_Err) => (schema, value, _ctx) => {
+  const ctx = _ctx ? { ..._ctx, async: false } : { async: false };
+  const result = schema._zod.run({ value, issues: [] }, ctx);
+  if (result instanceof Promise) {
+    throw new $ZodAsyncError;
+  }
+  return result.issues.length ? failure(_Err, result.issues, ctx) : { success: true, data: result.value };
+}, _safeParseAsync = (_Err) => async (schema, value, _ctx) => {
+  const ctx = _ctx ? { ..._ctx, async: true } : { async: true };
+  let result = schema._zod.run({ value, issues: [] }, ctx);
+  if (result instanceof Promise)
+    result = await result;
+  return result.issues.length ? failure(_Err, result.issues, ctx) : { success: true, data: result.value };
+}, COMPILE_INVALID, COMPILE_FALLBACK, validate = (schema, value, _ctx) => {
+  const validator = schema._zod.bag.validator;
+  if (validator !== undefined) {
+    if (validator(value) !== COMPILE_INVALID)
+      return true;
+    if (validator.definite === true && _ctx === undefined)
+      return false;
+  }
+  return validateFallback(schema, value, _ctx);
+}, validateAsync = async (schema, value, _ctx) => {
   const ctx = _ctx ? { ..._ctx, async: true, abortEarly: true } : { async: true, abortEarly: true };
   let result = schema._zod.run({ value, issues: [] }, ctx);
   if (result instanceof Promise)
     result = await result;
   return result.issues.length === 0;
-};
-var _encode = (_Err) => {
+}, _encode = (_Err) => {
   const parse = _parse(_Err);
   const fn = (schema, value, _ctx, _params) => {
     const ctx = _ctx ? { ..._ctx, direction: "backward" } : { direction: "backward" };
     return parse(schema, value, ctx, finalizeParams(fn, _params));
   };
   return fn;
-};
-var _decode = (_Err) => {
+}, _decode = (_Err) => {
   const parse = _parse(_Err);
   const fn = (schema, value, _ctx, _params) => {
     return parse(schema, value, _ctx, finalizeParams(fn, _params));
   };
   return fn;
-};
-var _encodeAsync = (_Err) => {
+}, _encodeAsync = (_Err) => {
   const parseAsync = _parseAsync(_Err);
   const fn = async (schema, value, _ctx, _params) => {
     const ctx = _ctx ? { ..._ctx, direction: "backward" } : { direction: "backward" };
     return await parseAsync(schema, value, ctx, finalizeParams(fn, _params));
   };
   return fn;
-};
-var _decodeAsync = (_Err) => {
+}, _decodeAsync = (_Err) => {
   const parseAsync = _parseAsync(_Err);
   const fn = async (schema, value, _ctx, _params) => {
     return await parseAsync(schema, value, _ctx, finalizeParams(fn, _params));
   };
   return fn;
-};
-var _safeEncode = (_Err) => (schema, value, _ctx) => {
+}, _safeEncode = (_Err) => (schema, value, _ctx) => {
   const ctx = _ctx ? { ..._ctx, direction: "backward" } : { direction: "backward" };
   return _safeParse(_Err)(schema, value, ctx);
-};
-var _safeDecode = (_Err) => (schema, value, _ctx) => {
+}, _safeDecode = (_Err) => (schema, value, _ctx) => {
   return _safeParse(_Err)(schema, value, _ctx);
-};
-var _safeEncodeAsync = (_Err) => async (schema, value, _ctx) => {
+}, _safeEncodeAsync = (_Err) => async (schema, value, _ctx) => {
   const ctx = _ctx ? { ..._ctx, direction: "backward" } : { direction: "backward" };
   return _safeParseAsync(_Err)(schema, value, ctx);
-};
-var _safeDecodeAsync = (_Err) => async (schema, value, _ctx) => {
+}, _safeDecodeAsync = (_Err) => async (schema, value, _ctx) => {
   return _safeParseAsync(_Err)(schema, value, _ctx);
 };
+var init_parse = __esm(() => {
+  init_core();
+  init_util();
+  COMPILE_INVALID = /* @__PURE__ */ Symbol.for("zod.compile.invalid");
+  COMPILE_FALLBACK = /* @__PURE__ */ Symbol.for("zod.compile.fallback");
+});
+
 // node_modules/zod/v4/core/regexes.js
-var cuid = /^[cC][0-9a-z]{6,}$/;
-var cuid2 = /^[0-9a-z]+$/;
-var ulid = /^[0-7][0-9A-HJKMNP-TV-Za-hjkmnp-tv-z]{25}$/;
-var xid = /^[0-9a-vA-V]{20}$/;
-var ksuid = /^[A-Za-z0-9]{27}$/;
-var nanoid = /^[a-zA-Z0-9_-]{21}$/;
 function nanoidOfLength(length) {
   return new RegExp(`^[a-zA-Z0-9_-]{${length}}$`);
 }
-var duration = /^P(?:(\d+W)|(?!.*W)(?=\d|T\d)(\d+Y)?(\d+M)?(\d+D)?(T(?=\d)(\d+H)?(\d+M)?(\d+([.,]\d+)?S)?)?)$/;
-var guid = /^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$/;
-var uuid = (version) => {
-  if (!version)
-    return /^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/;
-  return new RegExp(`^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-${version}[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$`);
-};
-var email = /^(?:[A-Za-z0-9_'+\-]+\.)*[A-Za-z0-9_'+\-]*[A-Za-z0-9_+-]@(?:[A-Za-z0-9][A-Za-z0-9\-]*\.)+[A-Za-z]{2,}$/;
-var _emoji = `^(?=[\\s\\S]*[\\p{Extended_Pictographic}\\p{Regional_Indicator}\\u20E3])[\\p{Extended_Pictographic}\\p{Emoji_Component}]+$`;
 function emoji() {
   return new RegExp(_emoji, "u");
 }
-var ipv4 = /^(?:(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[0-9])\.){3}(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[0-9])$/;
-var ipv6 = /^(([0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}|([0-9a-fA-F]{1,4}:){1,7}:|([0-9a-fA-F]{1,4}:){1,6}:[0-9a-fA-F]{1,4}|([0-9a-fA-F]{1,4}:){1,5}(:[0-9a-fA-F]{1,4}){1,2}|([0-9a-fA-F]{1,4}:){1,4}(:[0-9a-fA-F]{1,4}){1,3}|([0-9a-fA-F]{1,4}:){1,3}(:[0-9a-fA-F]{1,4}){1,4}|([0-9a-fA-F]{1,4}:){1,2}(:[0-9a-fA-F]{1,4}){1,5}|[0-9a-fA-F]{1,4}:((:[0-9a-fA-F]{1,4}){1,6})|:((:[0-9a-fA-F]{1,4}){1,7}|:))$/;
-var cidrv4 = /^((25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[0-9])\.){3}(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[0-9])\/([0-9]|[1-2][0-9]|3[0-2])$/;
-var cidrv6 = /^(([0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}|([0-9a-fA-F]{1,4}:){1,7}:|([0-9a-fA-F]{1,4}:){1,6}:[0-9a-fA-F]{1,4}|([0-9a-fA-F]{1,4}:){1,5}(:[0-9a-fA-F]{1,4}){1,2}|([0-9a-fA-F]{1,4}:){1,4}(:[0-9a-fA-F]{1,4}){1,3}|([0-9a-fA-F]{1,4}:){1,3}(:[0-9a-fA-F]{1,4}){1,4}|([0-9a-fA-F]{1,4}:){1,2}(:[0-9a-fA-F]{1,4}){1,5}|[0-9a-fA-F]{1,4}:((:[0-9a-fA-F]{1,4}){1,6})|:((:[0-9a-fA-F]{1,4}){1,7}|:))\/(12[0-8]|1[01][0-9]|[1-9]?[0-9])$/;
-var base64 = /^$|^(?:[0-9a-zA-Z+/]{4})*(?:(?:[0-9a-zA-Z+/]{2}==)|(?:[0-9a-zA-Z+/]{3}=))?$/;
-var base64url = /^(?:[A-Za-z0-9_-]{4})*(?:[A-Za-z0-9_-]{2,3})?$/;
-var httpProtocol = /^https?$/;
-var e164 = /^\+[1-9]\d{6,14}$/;
-var dateSource = `(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))`;
 function anchor(source) {
   return new RegExp(`^${source}$`);
 }
-var date = /* @__PURE__ */ anchor(dateSource);
 function timeSource(args) {
   const hhmm = `(?:[01]\\d|2[0-3]):[0-5]\\d`;
   const regex = typeof args.precision === "number" ? args.precision === -1 ? `${hhmm}` : args.precision === 0 ? `${hhmm}:[0-5]\\d` : `${hhmm}:[0-5]\\d\\.\\d{${args.precision}}` : args.seconds ? `${hhmm}:[0-5]\\d(?:\\.\\d+)?` : `${hhmm}(?::[0-5]\\d(?:\\.\\d+)?)?`;
@@ -2120,327 +1342,357 @@ function datetime(args) {
   const timeRegex = args.local ? `${qualified}|${timeSource({ precision: args.precision })}` : qualified;
   return new RegExp(`^${dateSource}T(?:${timeRegex})$`);
 }
-var anyString = /^[\s\S]{0,}$/;
-var integer = /^-?\d+$/;
-var number = /^-?\d+(?:\.\d+)?$/;
-var boolean = /^(?:true|false)$/i;
-var lowercase = /^[^A-Z]*$/;
-var uppercase = /^[^a-z]*$/;
+var cuid, cuid2, ulid, xid, ksuid, nanoid, duration, guid, uuid = (version) => {
+  if (!version)
+    return /^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/;
+  return new RegExp(`^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-${version}[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$`);
+}, email, _emoji = `^(?=[\\s\\S]*[\\p{Extended_Pictographic}\\p{Regional_Indicator}\\u20E3])[\\p{Extended_Pictographic}\\p{Emoji_Component}]+$`, ipv4, ipv6, cidrv4, cidrv6, base64, base64url, httpProtocol, e164, dateSource = `(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))`, date, anyString, integer, number, boolean, lowercase, uppercase;
+var init_regexes = __esm(() => {
+  cuid = /^[cC][0-9a-z]{6,}$/;
+  cuid2 = /^[0-9a-z]+$/;
+  ulid = /^[0-7][0-9A-HJKMNP-TV-Za-hjkmnp-tv-z]{25}$/;
+  xid = /^[0-9a-vA-V]{20}$/;
+  ksuid = /^[A-Za-z0-9]{27}$/;
+  nanoid = /^[a-zA-Z0-9_-]{21}$/;
+  duration = /^P(?:(\d+W)|(?!.*W)(?=\d|T\d)(\d+Y)?(\d+M)?(\d+D)?(T(?=\d)(\d+H)?(\d+M)?(\d+([.,]\d+)?S)?)?)$/;
+  guid = /^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$/;
+  email = /^(?:[A-Za-z0-9_'+\-]+\.)*[A-Za-z0-9_'+\-]*[A-Za-z0-9_+-]@(?:[A-Za-z0-9][A-Za-z0-9\-]*\.)+[A-Za-z]{2,}$/;
+  ipv4 = /^(?:(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[0-9])\.){3}(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[0-9])$/;
+  ipv6 = /^(([0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}|([0-9a-fA-F]{1,4}:){1,7}:|([0-9a-fA-F]{1,4}:){1,6}:[0-9a-fA-F]{1,4}|([0-9a-fA-F]{1,4}:){1,5}(:[0-9a-fA-F]{1,4}){1,2}|([0-9a-fA-F]{1,4}:){1,4}(:[0-9a-fA-F]{1,4}){1,3}|([0-9a-fA-F]{1,4}:){1,3}(:[0-9a-fA-F]{1,4}){1,4}|([0-9a-fA-F]{1,4}:){1,2}(:[0-9a-fA-F]{1,4}){1,5}|[0-9a-fA-F]{1,4}:((:[0-9a-fA-F]{1,4}){1,6})|:((:[0-9a-fA-F]{1,4}){1,7}|:))$/;
+  cidrv4 = /^((25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[0-9])\.){3}(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[0-9])\/([0-9]|[1-2][0-9]|3[0-2])$/;
+  cidrv6 = /^(([0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}|([0-9a-fA-F]{1,4}:){1,7}:|([0-9a-fA-F]{1,4}:){1,6}:[0-9a-fA-F]{1,4}|([0-9a-fA-F]{1,4}:){1,5}(:[0-9a-fA-F]{1,4}){1,2}|([0-9a-fA-F]{1,4}:){1,4}(:[0-9a-fA-F]{1,4}){1,3}|([0-9a-fA-F]{1,4}:){1,3}(:[0-9a-fA-F]{1,4}){1,4}|([0-9a-fA-F]{1,4}:){1,2}(:[0-9a-fA-F]{1,4}){1,5}|[0-9a-fA-F]{1,4}:((:[0-9a-fA-F]{1,4}){1,6})|:((:[0-9a-fA-F]{1,4}){1,7}|:))\/(12[0-8]|1[01][0-9]|[1-9]?[0-9])$/;
+  base64 = /^$|^(?:[0-9a-zA-Z+/]{4})*(?:(?:[0-9a-zA-Z+/]{2}==)|(?:[0-9a-zA-Z+/]{3}=))?$/;
+  base64url = /^(?:[A-Za-z0-9_-]{4})*(?:[A-Za-z0-9_-]{2,3})?$/;
+  httpProtocol = /^https?$/;
+  e164 = /^\+[1-9]\d{6,14}$/;
+  date = /* @__PURE__ */ anchor(dateSource);
+  anyString = /^[\s\S]{0,}$/;
+  integer = /^-?\d+$/;
+  number = /^-?\d+(?:\.\d+)?$/;
+  boolean = /^(?:true|false)$/i;
+  lowercase = /^[^A-Z]*$/;
+  uppercase = /^[^a-z]*$/;
+});
 
 // node_modules/zod/v4/core/checks.js
-var $ZodCheck = /* @__PURE__ */ $constructor("$ZodCheck", (inst, def) => {
-  var _a;
-  inst._zod ?? (inst._zod = {});
-  inst._zod.def = def;
-  (_a = inst._zod).onattach ?? (_a.onattach = []);
-});
-var _whenHasLength = (payload) => {
+var $ZodCheck, _whenHasLength = (payload) => {
   const val = payload.value;
   return !nullish(val) && val.length !== undefined;
-};
-var numericOriginMap = {
-  number: "number",
-  bigint: "bigint",
-  object: "date"
-};
-var $ZodCheckLessThan = /* @__PURE__ */ $constructor("$ZodCheckLessThan", (inst, def) => {
-  $ZodCheck.init(inst, def);
-  const origin = numericOriginMap[typeof def.value];
-  inst._zod.check = (payload) => {
-    if (def.inclusive ? payload.value <= def.value : payload.value < def.value) {
-      return;
-    }
-    payload.issues.push({
-      origin: numericOriginMap[typeof payload.value] ?? origin,
-      code: "too_big",
-      maximum: typeof def.value === "object" ? def.value.getTime() : def.value,
-      input: payload.value,
-      inclusive: def.inclusive,
-      inst,
-      continue: !def.abort
-    });
+}, numericOriginMap, $ZodCheckLessThan, $ZodCheckGreaterThan, $ZodCheckMultipleOf, $ZodCheckNumberFormat, $ZodCheckMaxLength, $ZodCheckMinLength, $ZodCheckLengthEquals, $ZodCheckStringFormat, $ZodCheckRegex, $ZodCheckLowerCase, $ZodCheckUpperCase, $ZodCheckIncludes, $ZodCheckStartsWith, $ZodCheckEndsWith, $ZodCheckOverwrite;
+var init_checks = __esm(() => {
+  init_core();
+  init_regexes();
+  init_util();
+  $ZodCheck = /* @__PURE__ */ $constructor("$ZodCheck", (inst, def) => {
+    var _a;
+    inst._zod ?? (inst._zod = {});
+    inst._zod.def = def;
+    (_a = inst._zod).onattach ?? (_a.onattach = []);
+  });
+  numericOriginMap = {
+    number: "number",
+    bigint: "bigint",
+    object: "date"
   };
-});
-var $ZodCheckGreaterThan = /* @__PURE__ */ $constructor("$ZodCheckGreaterThan", (inst, def) => {
-  $ZodCheck.init(inst, def);
-  const origin = numericOriginMap[typeof def.value];
-  inst._zod.check = (payload) => {
-    if (def.inclusive ? payload.value >= def.value : payload.value > def.value) {
-      return;
-    }
-    payload.issues.push({
-      origin: numericOriginMap[typeof payload.value] ?? origin,
-      code: "too_small",
-      minimum: typeof def.value === "object" ? def.value.getTime() : def.value,
-      input: payload.value,
-      inclusive: def.inclusive,
-      inst,
-      continue: !def.abort
-    });
-  };
-});
-var $ZodCheckMultipleOf = /* @__PURE__ */ $constructor("$ZodCheckMultipleOf", (inst, def) => {
-  $ZodCheck.init(inst, def);
-  inst._zod.check = (payload) => {
-    if (typeof payload.value !== typeof def.value)
-      throw new Error("Cannot mix number and bigint in multiple_of check.");
-    const isMultiple = typeof payload.value === "bigint" ? def.value !== BigInt(0) && payload.value % def.value === BigInt(0) : floatSafeRemainder(payload.value, def.value) === 0;
-    if (isMultiple)
-      return;
-    payload.issues.push({
-      origin: typeof payload.value,
-      code: "not_multiple_of",
-      divisor: def.value,
-      input: payload.value,
-      inst,
-      continue: !def.abort
-    });
-  };
-});
-var $ZodCheckNumberFormat = /* @__PURE__ */ $constructor("$ZodCheckNumberFormat", (inst, def) => {
-  $ZodCheck.init(inst, def);
-  def.format = def.format || "float64";
-  const isInt = def.format?.includes("int");
-  const origin = isInt ? "int" : "number";
-  const [minimum, maximum] = NUMBER_FORMAT_RANGES[def.format];
-  inst._zod.check = (payload) => {
-    const input = payload.value;
-    if (isInt) {
-      if (!Number.isInteger(input)) {
-        payload.issues.push({
-          expected: origin,
-          format: def.format,
-          code: "invalid_type",
-          continue: false,
-          input,
-          inst
-        });
+  $ZodCheckLessThan = /* @__PURE__ */ $constructor("$ZodCheckLessThan", (inst, def) => {
+    $ZodCheck.init(inst, def);
+    const origin = numericOriginMap[typeof def.value];
+    inst._zod.check = (payload) => {
+      if (def.inclusive ? payload.value <= def.value : payload.value < def.value) {
         return;
       }
-      if (!Number.isSafeInteger(input)) {
-        if (input > 0) {
-          payload.issues.push({
-            input,
-            code: "too_big",
-            maximum: Number.MAX_SAFE_INTEGER,
-            note: "Integers must be within the safe integer range.",
-            inst,
-            origin,
-            inclusive: true,
-            continue: !def.abort
-          });
-        } else {
-          payload.issues.push({
-            input,
-            code: "too_small",
-            minimum: Number.MIN_SAFE_INTEGER,
-            note: "Integers must be within the safe integer range.",
-            inst,
-            origin,
-            inclusive: true,
-            continue: !def.abort
-          });
-        }
-        return;
-      }
-    }
-    if (input < minimum) {
       payload.issues.push({
-        origin: "number",
-        input,
-        code: "too_small",
-        minimum,
-        inclusive: true,
-        inst,
-        continue: !def.abort
-      });
-    }
-    if (input > maximum) {
-      payload.issues.push({
-        origin: "number",
-        input,
+        origin: numericOriginMap[typeof payload.value] ?? origin,
         code: "too_big",
-        maximum,
-        inclusive: true,
+        maximum: typeof def.value === "object" ? def.value.getTime() : def.value,
+        input: payload.value,
+        inclusive: def.inclusive,
         inst,
         continue: !def.abort
       });
-    }
-  };
-});
-var $ZodCheckMaxLength = /* @__PURE__ */ $constructor("$ZodCheckMaxLength", (inst, def) => {
-  var _a;
-  $ZodCheck.init(inst, def);
-  (_a = inst._zod.def).when ?? (_a.when = _whenHasLength);
-  inst._zod.check = (payload) => {
-    const input = payload.value;
-    const units = input.length;
-    const length = typeof input === "string" && units > def.maximum ? codePointLength(input) : units;
-    if (length <= def.maximum)
-      return;
-    const origin = getLengthableOrigin(input);
-    payload.issues.push({
-      origin,
-      code: "too_big",
-      maximum: def.maximum,
-      inclusive: true,
-      input,
-      inst,
-      continue: !def.abort
-    });
-  };
-});
-var $ZodCheckMinLength = /* @__PURE__ */ $constructor("$ZodCheckMinLength", (inst, def) => {
-  var _a;
-  $ZodCheck.init(inst, def);
-  (_a = inst._zod.def).when ?? (_a.when = _whenHasLength);
-  inst._zod.check = (payload) => {
-    const input = payload.value;
-    const units = input.length;
-    const length = typeof input === "string" && units >= def.minimum && units < def.minimum * 2 ? codePointLength(input) : units;
-    if (length >= def.minimum)
-      return;
-    const origin = getLengthableOrigin(input);
-    payload.issues.push({
-      origin,
-      code: "too_small",
-      minimum: def.minimum,
-      inclusive: true,
-      input,
-      inst,
-      continue: !def.abort
-    });
-  };
-});
-var $ZodCheckLengthEquals = /* @__PURE__ */ $constructor("$ZodCheckLengthEquals", (inst, def) => {
-  var _a;
-  $ZodCheck.init(inst, def);
-  (_a = inst._zod.def).when ?? (_a.when = _whenHasLength);
-  inst._zod.check = (payload) => {
-    const input = payload.value;
-    const units = input.length;
-    const length = typeof input === "string" && units >= def.length && units <= def.length * 2 ? codePointLength(input) : units;
-    if (length === def.length)
-      return;
-    const origin = getLengthableOrigin(input);
-    const tooBig = length > def.length;
-    payload.issues.push({
-      origin,
-      ...tooBig ? { code: "too_big", maximum: def.length } : { code: "too_small", minimum: def.length },
-      inclusive: true,
-      exact: true,
-      input: payload.value,
-      inst,
-      continue: !def.abort
-    });
-  };
-});
-var $ZodCheckStringFormat = /* @__PURE__ */ $constructor("$ZodCheckStringFormat", (inst, def) => {
-  var _a, _b;
-  $ZodCheck.init(inst, def);
-  if (def.pattern)
-    (_a = inst._zod).check ?? (_a.check = (payload) => {
+    };
+  });
+  $ZodCheckGreaterThan = /* @__PURE__ */ $constructor("$ZodCheckGreaterThan", (inst, def) => {
+    $ZodCheck.init(inst, def);
+    const origin = numericOriginMap[typeof def.value];
+    inst._zod.check = (payload) => {
+      if (def.inclusive ? payload.value >= def.value : payload.value > def.value) {
+        return;
+      }
+      payload.issues.push({
+        origin: numericOriginMap[typeof payload.value] ?? origin,
+        code: "too_small",
+        minimum: typeof def.value === "object" ? def.value.getTime() : def.value,
+        input: payload.value,
+        inclusive: def.inclusive,
+        inst,
+        continue: !def.abort
+      });
+    };
+  });
+  $ZodCheckMultipleOf = /* @__PURE__ */ $constructor("$ZodCheckMultipleOf", (inst, def) => {
+    $ZodCheck.init(inst, def);
+    inst._zod.check = (payload) => {
+      if (typeof payload.value !== typeof def.value)
+        throw new Error("Cannot mix number and bigint in multiple_of check.");
+      const isMultiple = typeof payload.value === "bigint" ? def.value !== BigInt(0) && payload.value % def.value === BigInt(0) : floatSafeRemainder(payload.value, def.value) === 0;
+      if (isMultiple)
+        return;
+      payload.issues.push({
+        origin: typeof payload.value,
+        code: "not_multiple_of",
+        divisor: def.value,
+        input: payload.value,
+        inst,
+        continue: !def.abort
+      });
+    };
+  });
+  $ZodCheckNumberFormat = /* @__PURE__ */ $constructor("$ZodCheckNumberFormat", (inst, def) => {
+    $ZodCheck.init(inst, def);
+    def.format = def.format || "float64";
+    const isInt = def.format?.includes("int");
+    const origin = isInt ? "int" : "number";
+    const [minimum, maximum] = NUMBER_FORMAT_RANGES[def.format];
+    inst._zod.check = (payload) => {
+      const input = payload.value;
+      if (isInt) {
+        if (!Number.isInteger(input)) {
+          payload.issues.push({
+            expected: origin,
+            format: def.format,
+            code: "invalid_type",
+            continue: false,
+            input,
+            inst
+          });
+          return;
+        }
+        if (!Number.isSafeInteger(input)) {
+          if (input > 0) {
+            payload.issues.push({
+              input,
+              code: "too_big",
+              maximum: Number.MAX_SAFE_INTEGER,
+              note: "Integers must be within the safe integer range.",
+              inst,
+              origin,
+              inclusive: true,
+              continue: !def.abort
+            });
+          } else {
+            payload.issues.push({
+              input,
+              code: "too_small",
+              minimum: Number.MIN_SAFE_INTEGER,
+              note: "Integers must be within the safe integer range.",
+              inst,
+              origin,
+              inclusive: true,
+              continue: !def.abort
+            });
+          }
+          return;
+        }
+      }
+      if (input < minimum) {
+        payload.issues.push({
+          origin: "number",
+          input,
+          code: "too_small",
+          minimum,
+          inclusive: true,
+          inst,
+          continue: !def.abort
+        });
+      }
+      if (input > maximum) {
+        payload.issues.push({
+          origin: "number",
+          input,
+          code: "too_big",
+          maximum,
+          inclusive: true,
+          inst,
+          continue: !def.abort
+        });
+      }
+    };
+  });
+  $ZodCheckMaxLength = /* @__PURE__ */ $constructor("$ZodCheckMaxLength", (inst, def) => {
+    var _a;
+    $ZodCheck.init(inst, def);
+    (_a = inst._zod.def).when ?? (_a.when = _whenHasLength);
+    inst._zod.check = (payload) => {
+      const input = payload.value;
+      const units = input.length;
+      const length = typeof input === "string" && units > def.maximum ? codePointLength(input) : units;
+      if (length <= def.maximum)
+        return;
+      const origin = getLengthableOrigin(input);
+      payload.issues.push({
+        origin,
+        code: "too_big",
+        maximum: def.maximum,
+        inclusive: true,
+        input,
+        inst,
+        continue: !def.abort
+      });
+    };
+  });
+  $ZodCheckMinLength = /* @__PURE__ */ $constructor("$ZodCheckMinLength", (inst, def) => {
+    var _a;
+    $ZodCheck.init(inst, def);
+    (_a = inst._zod.def).when ?? (_a.when = _whenHasLength);
+    inst._zod.check = (payload) => {
+      const input = payload.value;
+      const units = input.length;
+      const length = typeof input === "string" && units >= def.minimum && units < def.minimum * 2 ? codePointLength(input) : units;
+      if (length >= def.minimum)
+        return;
+      const origin = getLengthableOrigin(input);
+      payload.issues.push({
+        origin,
+        code: "too_small",
+        minimum: def.minimum,
+        inclusive: true,
+        input,
+        inst,
+        continue: !def.abort
+      });
+    };
+  });
+  $ZodCheckLengthEquals = /* @__PURE__ */ $constructor("$ZodCheckLengthEquals", (inst, def) => {
+    var _a;
+    $ZodCheck.init(inst, def);
+    (_a = inst._zod.def).when ?? (_a.when = _whenHasLength);
+    inst._zod.check = (payload) => {
+      const input = payload.value;
+      const units = input.length;
+      const length = typeof input === "string" && units >= def.length && units <= def.length * 2 ? codePointLength(input) : units;
+      if (length === def.length)
+        return;
+      const origin = getLengthableOrigin(input);
+      const tooBig = length > def.length;
+      payload.issues.push({
+        origin,
+        ...tooBig ? { code: "too_big", maximum: def.length } : { code: "too_small", minimum: def.length },
+        inclusive: true,
+        exact: true,
+        input: payload.value,
+        inst,
+        continue: !def.abort
+      });
+    };
+  });
+  $ZodCheckStringFormat = /* @__PURE__ */ $constructor("$ZodCheckStringFormat", (inst, def) => {
+    var _a, _b;
+    $ZodCheck.init(inst, def);
+    if (def.pattern)
+      (_a = inst._zod).check ?? (_a.check = (payload) => {
+        def.pattern.lastIndex = 0;
+        if (def.pattern.test(payload.value))
+          return;
+        payload.issues.push({
+          origin: "string",
+          code: "invalid_format",
+          format: def.format,
+          input: payload.value,
+          ...def.pattern ? { pattern: def.pattern.toString() } : {},
+          inst,
+          continue: !def.abort
+        });
+      });
+    else
+      (_b = inst._zod).check ?? (_b.check = () => {});
+  });
+  $ZodCheckRegex = /* @__PURE__ */ $constructor("$ZodCheckRegex", (inst, def) => {
+    $ZodCheckStringFormat.init(inst, def);
+    inst._zod.check = (payload) => {
       def.pattern.lastIndex = 0;
       if (def.pattern.test(payload.value))
         return;
       payload.issues.push({
         origin: "string",
         code: "invalid_format",
-        format: def.format,
+        format: "regex",
         input: payload.value,
-        ...def.pattern ? { pattern: def.pattern.toString() } : {},
+        pattern: def.pattern.toString(),
         inst,
         continue: !def.abort
       });
-    });
-  else
-    (_b = inst._zod).check ?? (_b.check = () => {});
-});
-var $ZodCheckRegex = /* @__PURE__ */ $constructor("$ZodCheckRegex", (inst, def) => {
-  $ZodCheckStringFormat.init(inst, def);
-  inst._zod.check = (payload) => {
-    def.pattern.lastIndex = 0;
-    if (def.pattern.test(payload.value))
-      return;
-    payload.issues.push({
-      origin: "string",
-      code: "invalid_format",
-      format: "regex",
-      input: payload.value,
-      pattern: def.pattern.toString(),
-      inst,
-      continue: !def.abort
-    });
-  };
-});
-var $ZodCheckLowerCase = /* @__PURE__ */ $constructor("$ZodCheckLowerCase", (inst, def) => {
-  def.pattern ?? (def.pattern = lowercase);
-  $ZodCheckStringFormat.init(inst, def);
-});
-var $ZodCheckUpperCase = /* @__PURE__ */ $constructor("$ZodCheckUpperCase", (inst, def) => {
-  def.pattern ?? (def.pattern = uppercase);
-  $ZodCheckStringFormat.init(inst, def);
-});
-var $ZodCheckIncludes = /* @__PURE__ */ $constructor("$ZodCheckIncludes", (inst, def) => {
-  $ZodCheck.init(inst, def);
-  const escapedRegex = escapeRegex(def.includes);
-  const pattern = new RegExp(typeof def.position === "number" ? `^.{${def.position},}${escapedRegex}` : escapedRegex);
-  def.pattern = pattern;
-  inst._zod.check = (payload) => {
-    if (payload.value.includes(def.includes, def.position))
-      return;
-    payload.issues.push({
-      origin: "string",
-      code: "invalid_format",
-      format: "includes",
-      includes: def.includes,
-      input: payload.value,
-      inst,
-      continue: !def.abort
-    });
-  };
-});
-var $ZodCheckStartsWith = /* @__PURE__ */ $constructor("$ZodCheckStartsWith", (inst, def) => {
-  $ZodCheck.init(inst, def);
-  const pattern = new RegExp(`^${escapeRegex(def.prefix)}.*`);
-  def.pattern ?? (def.pattern = pattern);
-  inst._zod.check = (payload) => {
-    if (payload.value.startsWith(def.prefix))
-      return;
-    payload.issues.push({
-      origin: "string",
-      code: "invalid_format",
-      format: "starts_with",
-      prefix: def.prefix,
-      input: payload.value,
-      inst,
-      continue: !def.abort
-    });
-  };
-});
-var $ZodCheckEndsWith = /* @__PURE__ */ $constructor("$ZodCheckEndsWith", (inst, def) => {
-  $ZodCheck.init(inst, def);
-  const pattern = new RegExp(`.*${escapeRegex(def.suffix)}$`);
-  def.pattern ?? (def.pattern = pattern);
-  inst._zod.check = (payload) => {
-    if (payload.value.endsWith(def.suffix))
-      return;
-    payload.issues.push({
-      origin: "string",
-      code: "invalid_format",
-      format: "ends_with",
-      suffix: def.suffix,
-      input: payload.value,
-      inst,
-      continue: !def.abort
-    });
-  };
-});
-var $ZodCheckOverwrite = /* @__PURE__ */ $constructor("$ZodCheckOverwrite", (inst, def) => {
-  $ZodCheck.init(inst, def);
-  inst._zod.check = (payload) => {
-    payload.value = def.tx(payload.value);
-  };
+    };
+  });
+  $ZodCheckLowerCase = /* @__PURE__ */ $constructor("$ZodCheckLowerCase", (inst, def) => {
+    def.pattern ?? (def.pattern = lowercase);
+    $ZodCheckStringFormat.init(inst, def);
+  });
+  $ZodCheckUpperCase = /* @__PURE__ */ $constructor("$ZodCheckUpperCase", (inst, def) => {
+    def.pattern ?? (def.pattern = uppercase);
+    $ZodCheckStringFormat.init(inst, def);
+  });
+  $ZodCheckIncludes = /* @__PURE__ */ $constructor("$ZodCheckIncludes", (inst, def) => {
+    $ZodCheck.init(inst, def);
+    const escapedRegex = escapeRegex(def.includes);
+    const pattern = new RegExp(typeof def.position === "number" ? `^.{${def.position},}${escapedRegex}` : escapedRegex);
+    def.pattern = pattern;
+    inst._zod.check = (payload) => {
+      if (payload.value.includes(def.includes, def.position))
+        return;
+      payload.issues.push({
+        origin: "string",
+        code: "invalid_format",
+        format: "includes",
+        includes: def.includes,
+        input: payload.value,
+        inst,
+        continue: !def.abort
+      });
+    };
+  });
+  $ZodCheckStartsWith = /* @__PURE__ */ $constructor("$ZodCheckStartsWith", (inst, def) => {
+    $ZodCheck.init(inst, def);
+    const pattern = new RegExp(`^${escapeRegex(def.prefix)}.*`);
+    def.pattern ?? (def.pattern = pattern);
+    inst._zod.check = (payload) => {
+      if (payload.value.startsWith(def.prefix))
+        return;
+      payload.issues.push({
+        origin: "string",
+        code: "invalid_format",
+        format: "starts_with",
+        prefix: def.prefix,
+        input: payload.value,
+        inst,
+        continue: !def.abort
+      });
+    };
+  });
+  $ZodCheckEndsWith = /* @__PURE__ */ $constructor("$ZodCheckEndsWith", (inst, def) => {
+    $ZodCheck.init(inst, def);
+    const pattern = new RegExp(`.*${escapeRegex(def.suffix)}$`);
+    def.pattern ?? (def.pattern = pattern);
+    inst._zod.check = (payload) => {
+      if (payload.value.endsWith(def.suffix))
+        return;
+      payload.issues.push({
+        origin: "string",
+        code: "invalid_format",
+        format: "ends_with",
+        suffix: def.suffix,
+        input: payload.value,
+        inst,
+        continue: !def.abort
+      });
+    };
+  });
+  $ZodCheckOverwrite = /* @__PURE__ */ $constructor("$ZodCheckOverwrite", (inst, def) => {
+    $ZodCheck.init(inst, def);
+    inst._zod.check = (payload) => {
+      payload.value = def.tx(payload.value);
+    };
+  });
 });
 
 // node_modules/zod/v4/core/doc.js
@@ -2486,122 +1738,16 @@ ${content.join(`
 }
 
 // node_modules/zod/v4/core/versions.js
-var version = {
-  major: 4,
-  minor: 6,
-  patch: 7
-};
+var version;
+var init_versions = __esm(() => {
+  version = {
+    major: 4,
+    minor: 6,
+    patch: 7
+  };
+});
 
 // node_modules/zod/v4/core/schemas.js
-var $ZodType = /* @__PURE__ */ $constructor("$ZodType", (inst, def) => {
-  var _a;
-  inst ?? (inst = {});
-  inst._zod.def = def;
-  inst._zod.bag = inst._zod.bag || {};
-  inst._zod.version = version;
-  const defChecks = inst._zod.def.checks;
-  const checks = inst._zod.traits.has("$ZodCheck") ? [inst, ...defChecks ?? []] : defChecks?.length ? [...defChecks] : [];
-  for (const ch of checks) {
-    for (const fn of ch._zod.onattach) {
-      fn(inst);
-    }
-  }
-  if (checks.length === 0) {
-    (_a = inst._zod).deferred ?? (_a.deferred = []);
-    inst._zod.deferred?.push(() => {
-      inst._zod.run = inst._zod.parse;
-    });
-  } else {
-    const runChecks = (payload, checks, ctx) => {
-      if (payload.memo)
-        return payload;
-      let isAborted = aborted(payload);
-      let asyncResult;
-      for (const ch of checks) {
-        if (ch._zod.def.when) {
-          if (explicitlyAborted(payload))
-            continue;
-          const shouldRun = ch._zod.def.when(payload);
-          if (!shouldRun)
-            continue;
-        } else if (isAborted) {
-          continue;
-        }
-        const currLen = payload.issues.length;
-        const _ = ch._zod.check(payload);
-        if (_ instanceof Promise && ctx?.async === false) {
-          throw new $ZodAsyncError;
-        }
-        if (asyncResult || _ instanceof Promise) {
-          asyncResult = (asyncResult ?? Promise.resolve()).then(async () => {
-            await _;
-            const nextLen = payload.issues.length;
-            if (nextLen === currLen)
-              return;
-            attachSchema(payload.issues, currLen, inst);
-            if (!isAborted)
-              isAborted = aborted(payload, currLen);
-          });
-        } else {
-          const nextLen = payload.issues.length;
-          if (nextLen === currLen)
-            continue;
-          attachSchema(payload.issues, currLen, inst);
-          if (!isAborted)
-            isAborted = aborted(payload, currLen);
-        }
-      }
-      if (asyncResult) {
-        return asyncResult.then(() => {
-          return payload;
-        });
-      }
-      return payload;
-    };
-    const handleCanaryResult = (canary, payload, ctx) => {
-      if (aborted(canary)) {
-        canary.aborted = true;
-        return canary;
-      }
-      const checkResult = runChecks(payload, checks, ctx);
-      if (checkResult instanceof Promise) {
-        if (ctx.async === false)
-          throw new $ZodAsyncError;
-        return checkResult.then((checkResult) => inst._zod.parse(checkResult, ctx));
-      }
-      return inst._zod.parse(checkResult, ctx);
-    };
-    inst._zod.run = (payload, ctx) => {
-      if (ctx.skipChecks) {
-        return inst._zod.parse(payload, ctx);
-      }
-      if (ctx.direction === "backward") {
-        const canary = inst._zod.parse({ value: payload.value, issues: [] }, { ...ctx, skipChecks: true });
-        if (canary instanceof Promise) {
-          return canary.then((canary) => {
-            return handleCanaryResult(canary, payload, ctx);
-          });
-        }
-        return handleCanaryResult(canary, payload, ctx);
-      }
-      const result = inst._zod.parse(payload, ctx);
-      if (result instanceof Promise) {
-        if (ctx.async === false)
-          throw new $ZodAsyncError;
-        return result.then((result) => runChecks(result, checks, ctx));
-      }
-      return runChecks(result, checks, ctx);
-    };
-  }
-}, {
-  get "~standard"() {
-    return hide(this, "~standard", standardProps(this));
-  },
-  set "~standard"(value) {
-    own(this, "~standard", value);
-  }
-});
-var toStandardResult = (r, ctx) => r.issues.length ? { issues: r.issues.map((iss) => finalizeIssue(iss, ctx, config())) } : { value: r.value };
 async function validateAsync2(inst, value) {
   const ctx = { async: true };
   return toStandardResult(await inst._zod.run({ value, issues: [] }, ctx), ctx);
@@ -2621,59 +1767,6 @@ function standardProps(inst) {
     version: 1
   };
 }
-var $ZodString = /* @__PURE__ */ $constructor("$ZodString", (inst, def) => {
-  $ZodType.init(inst, def);
-  inst._zod.pattern = def.pattern ?? anyString;
-  inst._zod.parse = (payload, _) => {
-    if (def.coerce)
-      try {
-        payload.value = String(payload.value);
-      } catch (_) {}
-    if (typeof payload.value === "string")
-      return payload;
-    payload.issues.push({
-      expected: "string",
-      code: "invalid_type",
-      input: payload.value,
-      inst
-    });
-    return payload;
-  };
-});
-var $ZodStringFormat = /* @__PURE__ */ $constructor("$ZodStringFormat", (inst, def) => {
-  $ZodCheckStringFormat.init(inst, def);
-  $ZodString.init(inst, def);
-});
-var $ZodGUID = /* @__PURE__ */ $constructor("$ZodGUID", (inst, def) => {
-  def.pattern ?? (def.pattern = guid);
-  $ZodStringFormat.init(inst, def);
-});
-var $ZodUUID = /* @__PURE__ */ $constructor("$ZodUUID", (inst, def) => {
-  if (def.version) {
-    const versionMap = {
-      v1: 1,
-      v2: 2,
-      v3: 3,
-      v4: 4,
-      v5: 5,
-      v6: 6,
-      v7: 7,
-      v8: 8
-    };
-    const v = versionMap[def.version];
-    if (v === undefined)
-      throw new Error(`Invalid UUID version: "${def.version}"`);
-    def.pattern ?? (def.pattern = uuid(v));
-  } else
-    def.pattern ?? (def.pattern = uuid());
-  $ZodStringFormat.init(inst, def);
-});
-var $ZodEmail = /* @__PURE__ */ $constructor("$ZodEmail", (inst, def) => {
-  def.pattern ?? (def.pattern = email);
-  $ZodStringFormat.init(inst, def);
-});
-var URL_BAD_FORMAT = 1;
-var URL_UNPARSEABLE = 2;
 function canParseURL(input) {
   try {
     if (typeof URL !== "undefined" && typeof URL.canParse === "function")
@@ -2705,7 +1798,6 @@ function parseURLObject(trimmed, def) {
     return URL_UNPARSEABLE;
   }
 }
-var asciiTabOrNewline = /[\t\n\r]/g;
 function stripTabAndNewline(value) {
   return value.replace(asciiTabOrNewline, "");
 }
@@ -2717,147 +1809,11 @@ function urlProtocolOk(url, protocol) {
   protocol.lastIndex = 0;
   return protocol.test(url.protocol.endsWith(":") ? url.protocol.slice(0, -1) : url.protocol);
 }
-var $ZodURL = /* @__PURE__ */ $constructor("$ZodURL", (inst, def) => {
-  $ZodStringFormat.init(inst, def);
-  inst._zod.check = (payload) => {
-    try {
-      const trimmed = payload.value.trim();
-      const url = validateURL(trimmed, def);
-      if (url === URL_BAD_FORMAT) {
-        payload.issues.push({
-          code: "invalid_format",
-          format: "url",
-          note: "Invalid URL format",
-          input: payload.value,
-          inst,
-          continue: !def.abort
-        });
-        return;
-      }
-      if (url === URL_UNPARSEABLE) {
-        payload.issues.push({
-          code: "invalid_format",
-          format: "url",
-          input: payload.value,
-          inst,
-          continue: !def.abort
-        });
-        return;
-      }
-      if (url === true) {
-        payload.value = stripTabAndNewline(trimmed);
-        return;
-      }
-      if (def.hostname && !urlHostnameOk(url, def.hostname)) {
-        payload.issues.push({
-          code: "invalid_format",
-          format: "url",
-          note: "Invalid hostname",
-          pattern: def.hostname.source,
-          input: payload.value,
-          inst,
-          continue: !def.abort
-        });
-      }
-      if (def.protocol && !urlProtocolOk(url, def.protocol)) {
-        payload.issues.push({
-          code: "invalid_format",
-          format: "url",
-          note: "Invalid protocol",
-          pattern: def.protocol.source,
-          input: payload.value,
-          inst,
-          continue: !def.abort
-        });
-      }
-      payload.value = def.normalize ? url.href : stripTabAndNewline(trimmed);
-      return;
-    } catch (_) {
-      payload.issues.push({
-        code: "invalid_format",
-        format: "url",
-        input: payload.value,
-        inst,
-        continue: !def.abort
-      });
-    }
-  };
-});
-var $ZodEmoji = /* @__PURE__ */ $constructor("$ZodEmoji", (inst, def) => {
-  def.pattern ?? (def.pattern = emoji());
-  $ZodStringFormat.init(inst, def);
-});
-var $ZodNanoID = /* @__PURE__ */ $constructor("$ZodNanoID", (inst, def) => {
-  if (def.length !== undefined && (!Number.isInteger(def.length) || def.length < 1))
-    throw new Error(`Invalid nanoid length: ${def.length}`);
-  def.pattern ?? (def.pattern = def.length === undefined ? nanoid : nanoidOfLength(def.length));
-  $ZodStringFormat.init(inst, def);
-});
-var $ZodCUID = /* @__PURE__ */ $constructor("$ZodCUID", (inst, def) => {
-  def.pattern ?? (def.pattern = cuid);
-  $ZodStringFormat.init(inst, def);
-});
-var $ZodCUID2 = /* @__PURE__ */ $constructor("$ZodCUID2", (inst, def) => {
-  def.pattern ?? (def.pattern = cuid2);
-  $ZodStringFormat.init(inst, def);
-});
-var $ZodULID = /* @__PURE__ */ $constructor("$ZodULID", (inst, def) => {
-  def.pattern ?? (def.pattern = ulid);
-  $ZodStringFormat.init(inst, def);
-});
-var $ZodXID = /* @__PURE__ */ $constructor("$ZodXID", (inst, def) => {
-  def.pattern ?? (def.pattern = xid);
-  $ZodStringFormat.init(inst, def);
-});
-var $ZodKSUID = /* @__PURE__ */ $constructor("$ZodKSUID", (inst, def) => {
-  def.pattern ?? (def.pattern = ksuid);
-  $ZodStringFormat.init(inst, def);
-});
-var $ZodISODateTime = /* @__PURE__ */ $constructor("$ZodISODateTime", (inst, def) => {
-  def.pattern ?? (def.pattern = datetime(def));
-  $ZodStringFormat.init(inst, def);
-});
-var $ZodISODate = /* @__PURE__ */ $constructor("$ZodISODate", (inst, def) => {
-  def.pattern ?? (def.pattern = date);
-  $ZodStringFormat.init(inst, def);
-});
-var $ZodISOTime = /* @__PURE__ */ $constructor("$ZodISOTime", (inst, def) => {
-  def.pattern ?? (def.pattern = time(def));
-  $ZodStringFormat.init(inst, def);
-});
-var $ZodISODuration = /* @__PURE__ */ $constructor("$ZodISODuration", (inst, def) => {
-  def.pattern ?? (def.pattern = duration);
-  $ZodStringFormat.init(inst, def);
-});
-var $ZodIPv4 = /* @__PURE__ */ $constructor("$ZodIPv4", (inst, def) => {
-  def.pattern ?? (def.pattern = ipv4);
-  $ZodStringFormat.init(inst, def);
-});
-var ipv6Alphabet = /^[0-9a-fA-F:.]+$/;
 function isValidIPv6(value) {
   if (!ipv6Alphabet.test(value))
     return false;
   return canParseURL(`http://[${value}]`);
 }
-var $ZodIPv6 = /* @__PURE__ */ $constructor("$ZodIPv6", (inst, def) => {
-  def.pattern ?? (def.pattern = ipv6);
-  $ZodStringFormat.init(inst, def);
-  inst._zod.check = (payload) => {
-    if (!isValidIPv6(payload.value)) {
-      payload.issues.push({
-        code: "invalid_format",
-        format: "ipv6",
-        input: payload.value,
-        inst,
-        continue: !def.abort
-      });
-    }
-  };
-});
-var $ZodCIDRv4 = /* @__PURE__ */ $constructor("$ZodCIDRv4", (inst, def) => {
-  def.pattern ?? (def.pattern = cidrv4);
-  $ZodStringFormat.init(inst, def);
-});
 function isValidCIDRv6(value) {
   const parts = value.split("/");
   if (parts.length !== 2)
@@ -2872,21 +1828,6 @@ function isValidCIDRv6(value) {
     return false;
   return isValidIPv6(address);
 }
-var $ZodCIDRv6 = /* @__PURE__ */ $constructor("$ZodCIDRv6", (inst, def) => {
-  def.pattern ?? (def.pattern = cidrv6);
-  $ZodStringFormat.init(inst, def);
-  inst._zod.check = (payload) => {
-    if (!isValidCIDRv6(payload.value)) {
-      payload.issues.push({
-        code: "invalid_format",
-        format: "cidrv6",
-        input: payload.value,
-        inst,
-        continue: !def.abort
-      });
-    }
-  };
-});
 function isValidBase64(data) {
   if (data === "")
     return true;
@@ -2901,23 +1842,6 @@ function isValidBase64(data) {
     return false;
   }
 }
-var base64Charset = /^[0-9a-zA-Z+/]*={0,2}$/;
-var $ZodBase64 = /* @__PURE__ */ $constructor("$ZodBase64", (inst, def) => {
-  def.pattern ?? (def.pattern = base64Charset);
-  $ZodStringFormat.init(inst, def);
-  inst._zod.check = (payload) => {
-    if (isValidBase64(payload.value))
-      return;
-    payload.issues.push({
-      code: "invalid_format",
-      format: "base64",
-      input: payload.value,
-      inst,
-      continue: !def.abort
-    });
-  };
-});
-var base64urlCharset = /^[A-Za-z0-9_-]*$/;
 function isValidBase64URL(data) {
   if (!base64urlCharset.test(data))
     return false;
@@ -2925,25 +1849,6 @@ function isValidBase64URL(data) {
   const padded = base64.padEnd(Math.ceil(base64.length / 4) * 4, "=");
   return isValidBase64(padded);
 }
-var $ZodBase64URL = /* @__PURE__ */ $constructor("$ZodBase64URL", (inst, def) => {
-  def.pattern ?? (def.pattern = base64urlCharset);
-  $ZodStringFormat.init(inst, def);
-  inst._zod.check = (payload) => {
-    if (isValidBase64URL(payload.value))
-      return;
-    payload.issues.push({
-      code: "invalid_format",
-      format: "base64url",
-      input: payload.value,
-      inst,
-      continue: !def.abort
-    });
-  };
-});
-var $ZodE164 = /* @__PURE__ */ $constructor("$ZodE164", (inst, def) => {
-  def.pattern ?? (def.pattern = e164);
-  $ZodStringFormat.init(inst, def);
-});
 function isValidJWT(token, algorithm = null) {
   try {
     const tokensParts = token.split(".");
@@ -2964,83 +1869,6 @@ function isValidJWT(token, algorithm = null) {
     return false;
   }
 }
-var $ZodJWT = /* @__PURE__ */ $constructor("$ZodJWT", (inst, def) => {
-  $ZodStringFormat.init(inst, def);
-  inst._zod.check = (payload) => {
-    if (isValidJWT(payload.value, def.alg))
-      return;
-    payload.issues.push({
-      code: "invalid_format",
-      format: "jwt",
-      input: payload.value,
-      inst,
-      continue: !def.abort
-    });
-  };
-});
-var $ZodNumber = /* @__PURE__ */ $constructor("$ZodNumber", (inst, def) => {
-  $ZodType.init(inst, def);
-  inst._zod.pattern = number;
-  inst._zod.parse = (payload, _ctx) => {
-    if (def.coerce)
-      try {
-        payload.value = Number(payload.value);
-      } catch (_) {}
-    const input = payload.value;
-    if (typeof input === "number" && !Number.isNaN(input) && Number.isFinite(input)) {
-      return payload;
-    }
-    const received = typeof input === "number" ? Number.isNaN(input) ? "NaN" : !Number.isFinite(input) ? String(input) : undefined : undefined;
-    payload.issues.push({
-      expected: "number",
-      code: "invalid_type",
-      input,
-      inst,
-      ...received ? { received } : {}
-    });
-    return payload;
-  };
-});
-var $ZodNumberFormat = /* @__PURE__ */ $constructor("$ZodNumberFormat", (inst, def) => {
-  $ZodCheckNumberFormat.init(inst, def);
-  $ZodNumber.init(inst, def);
-});
-var $ZodBoolean = /* @__PURE__ */ $constructor("$ZodBoolean", (inst, def) => {
-  $ZodType.init(inst, def);
-  inst._zod.pattern = boolean;
-  inst._zod.parse = (payload, _ctx) => {
-    if (def.coerce)
-      try {
-        payload.value = Boolean(payload.value);
-      } catch (_) {}
-    const input = payload.value;
-    if (typeof input === "boolean")
-      return payload;
-    payload.issues.push({
-      expected: "boolean",
-      code: "invalid_type",
-      input,
-      inst
-    });
-    return payload;
-  };
-});
-var $ZodUnknown = /* @__PURE__ */ $constructor("$ZodUnknown", (inst, def) => {
-  $ZodType.init(inst, def);
-  inst._zod.parse = (payload) => payload;
-});
-var $ZodNever = /* @__PURE__ */ $constructor("$ZodNever", (inst, def) => {
-  $ZodType.init(inst, def);
-  inst._zod.parse = (payload, _ctx) => {
-    payload.issues.push({
-      expected: "never",
-      code: "invalid_type",
-      input: payload.value,
-      inst
-    });
-    return payload;
-  };
-});
 function capSize(inst, size) {
   const caps = sizeCaps(inst._zod.def.checks);
   if (!caps.length)
@@ -3063,52 +1891,12 @@ function capSize(inst, size) {
     return parse(payload, ctx);
   };
 }
-var arraySize = (input) => Array.isArray(input) ? input.length : -1;
 function handleArrayResult(result, final, index) {
   if (result.issues.length) {
     final.issues.push(...prefixIssues(index, result.issues));
   }
   final.value[index] = result.value;
 }
-var $ZodArray = /* @__PURE__ */ $constructor("$ZodArray", (inst, def) => {
-  $ZodType.init(inst, def);
-  const memo = globalConfig.memoizer;
-  memo?.attach(inst);
-  inst._zod.parse = (payload, ctx) => {
-    const input = payload.value;
-    if (!Array.isArray(input)) {
-      payload.issues.push({
-        expected: "array",
-        code: "invalid_type",
-        input,
-        inst
-      });
-      return payload;
-    }
-    payload.value = memo ? memo.alloc(inst, payload, Array(input.length), ctx) : Array(input.length);
-    const proms = [];
-    const abortEarly = ctx?.abortEarly;
-    for (let i = 0;i < input.length; i++) {
-      const item = input[i];
-      const result = def.element._zod.run({
-        value: item,
-        issues: []
-      }, ctx);
-      if (result instanceof Promise) {
-        proms.push(result.then((result) => handleArrayResult(result, payload, i)));
-      } else {
-        handleArrayResult(result, payload, i);
-        if (abortEarly && result.issues.length !== 0 && aborted(result))
-          break;
-      }
-    }
-    if (proms.length) {
-      return Promise.all(proms).then(() => payload);
-    }
-    return payload;
-  };
-  capSize(inst, arraySize);
-});
 function handlePropertyResult(result, final, key, input, optin, optout) {
   const isPresent = key in input;
   const isOptionalOut = optout === "optional";
@@ -3140,7 +1928,6 @@ function handlePropertyResult(result, final, key, input, optin, optout) {
     final.value[key] = result.value;
   }
 }
-var NO_SYMBOL_KEYS = [];
 function normalizeDef(def) {
   const keys = Object.keys(def.shape);
   const ownSymbols = Object.getOwnPropertySymbols(def.shape);
@@ -3208,211 +1995,6 @@ function handleCatchall(proms, input, payload, ctx, def, inst, abortEarly) {
     return payload;
   });
 }
-var $ZodObject = /* @__PURE__ */ $constructor("$ZodObject", (inst, def) => {
-  $ZodType.init(inst, def);
-  const desc = Object.getOwnPropertyDescriptor(def, "shape");
-  const sh = desc?.get ? desc.get.raw : def.shape ?? {};
-  if (sh) {
-    const get = () => {
-      const newSh = { ...sh };
-      Object.defineProperty(def, "shape", { value: newSh });
-      get.raw = newSh;
-      return newSh;
-    };
-    get.raw = sh;
-    Object.defineProperty(def, "shape", { get });
-  }
-  const _normalized = cached(() => normalizeDef(def));
-  defineLazyInternal(inst, "propValues", (zod) => {
-    const shape = zod.def.shape;
-    const propValues = {};
-    for (const key in shape) {
-      const field = shape[key]._zod;
-      if (field.values) {
-        if (!Object.prototype.hasOwnProperty.call(propValues, key)) {
-          assignProp(propValues, key, new Set);
-        }
-        for (const v of field.values)
-          propValues[key].add(v);
-        if (field.optin !== undefined)
-          propValues[key].add(undefined);
-      }
-    }
-    return propValues;
-  });
-  const isObject2 = isObject;
-  const catchall = def.catchall;
-  let value;
-  const memo = globalConfig.memoizer;
-  memo?.attach(inst);
-  inst._zod.parse = (payload, ctx) => {
-    value ?? (value = _normalized.value);
-    const input = payload.value;
-    if (!isObject2(input)) {
-      payload.issues.push({
-        expected: "object",
-        code: "invalid_type",
-        input,
-        inst
-      });
-      return payload;
-    }
-    payload.value = memo ? memo.alloc(inst, payload, {}, ctx) : {};
-    const proms = [];
-    const shape = value.shape;
-    const abortEarly = ctx?.abortEarly;
-    let seen = payload.issues.length;
-    for (const key of value.allKeys) {
-      if (abortEarly && payload.issues.length !== seen) {
-        if (aborted(payload, seen))
-          break;
-        seen = payload.issues.length;
-      }
-      if (key === "__proto__")
-        continue;
-      const el = shape[key];
-      const optin = el._zod.optin;
-      const optout = el._zod.optout;
-      const r = el._zod.run({ value: input[key], issues: [] }, ctx);
-      if (r instanceof Promise) {
-        proms.push(r.then((r) => handlePropertyResult(r, payload, key, input, optin, optout)));
-      } else {
-        handlePropertyResult(r, payload, key, input, optin, optout);
-      }
-    }
-    if (!catchall) {
-      return proms.length ? Promise.all(proms).then(() => payload) : payload;
-    }
-    return handleCatchall(proms, input, payload, ctx, _normalized.value, inst, abortEarly === true);
-  };
-});
-var $ZodObjectJIT = /* @__PURE__ */ $constructor("$ZodObjectJIT", (inst, def) => {
-  $ZodObject.init(inst, def);
-  const superParse = inst._zod.parse;
-  const _normalized = cached(() => normalizeDef(def));
-  const memo = globalConfig.memoizer;
-  const generateFastpass = (shape) => {
-    const normalized = _normalized.value;
-    const syms = normalized.symbolKeys;
-    const doc = new Doc(["payload", "ctx"], { shape, inst, memo, syms });
-    const parseStr = (k) => `shape[${k}]._zod.run({ value: input[${k}], issues: [] }, ctx)`;
-    const prefixStr = (id, k) => `
-          let ${id}_ab = false;
-          for (let i = 0; i < ${id}.issues.length; i++) {
-            const iss = ${id}.issues[i];
-            iss.path = iss.path ? [${k}, ...iss.path] : [${k}];
-            payload.issues.push(iss);
-            if (iss.continue !== true) ${id}_ab = true;
-          }
-          if (${id}_ab && ctx && ctx.abortEarly) {
-            payload.value = newResult;
-            return payload;
-          }`;
-    doc.write(`const input = payload.value;`);
-    const ids = Object.create(null);
-    let counter = 0;
-    for (const key of normalized.allKeys) {
-      ids[key] = `key_${counter++}`;
-    }
-    doc.write(memo ? `const newResult = memo.alloc(inst, payload, {}, ctx);` : `const newResult = {};`);
-    for (const key of normalized.allKeys) {
-      if (key === "__proto__")
-        continue;
-      const id = ids[key];
-      const k = typeof key === "symbol" ? `syms[${syms.indexOf(key)}]` : esc(key);
-      const isPresent = `${k} in input`;
-      const schema = shape[key];
-      const optin = schema?._zod?.optin;
-      const isOptionalIn = optin !== undefined;
-      const isOptionalOut = schema?._zod?.optout === "optional";
-      doc.write(`const ${id} = ${parseStr(k)};`);
-      if (isOptionalIn && isOptionalOut) {
-        const assign = optin === "optional" ? `${id}_present` : `${id}.value !== undefined || ${id}_present`;
-        doc.write(`
-        const ${id}_present = ${isPresent};
-        if (!${id}.issues.length || ${id}_present) {
-          if (${id}.issues.length) {${prefixStr(id, k)}
-          }
-
-          if (${assign}) {
-            newResult[${k}] = ${id}.value;
-          }
-        }
-
-      `);
-      } else if (!isOptionalIn) {
-        doc.write(`
-        const ${id}_present = ${isPresent};
-        if (${id}.issues.length) {${prefixStr(id, k)}
-        }
-        if (!${id}_present && !${id}.issues.length) {
-          payload.issues.push({
-            code: "invalid_type",
-            expected: "nonoptional",
-            input: undefined,
-            path: [${k}]
-          });
-          if (ctx && ctx.abortEarly) {
-            payload.value = newResult;
-            return payload;
-          }
-        }
-
-        if (${id}_present) {
-          newResult[${k}] = ${id}.value;
-        }
-
-      `);
-      } else {
-        doc.write(`
-        if (${id}.issues.length) {${prefixStr(id, k)}
-        }
-      `);
-        if (optin === "defaulted") {
-          doc.write(`newResult[${k}] = ${id}.value;`);
-        } else {
-          doc.write(`
-        if (${id}.value !== undefined || ${isPresent}) {
-          newResult[${k}] = ${id}.value;
-        }
-      `);
-        }
-      }
-    }
-    doc.write(`payload.value = newResult;`);
-    doc.write(`return payload;`);
-    return doc.compile();
-  };
-  let fastpass;
-  const isObject2 = isObject;
-  const jit = !globalConfig.jitless;
-  const allowsEval2 = allowsEval;
-  const fastEnabled = jit && allowsEval2.value;
-  const catchall = def.catchall;
-  let value;
-  inst._zod.parse = (payload, ctx) => {
-    value ?? (value = _normalized.value);
-    const input = payload.value;
-    if (!isObject2(input)) {
-      payload.issues.push({
-        expected: "object",
-        code: "invalid_type",
-        input,
-        inst
-      });
-      return payload;
-    }
-    if (jit && fastEnabled && ctx?.async === false && ctx.jitless !== true) {
-      if (!fastpass)
-        fastpass = generateFastpass(def.shape);
-      payload = fastpass(payload, ctx);
-      if (!catchall)
-        return payload;
-      return handleCatchall([], input, payload, ctx, value, inst, ctx?.abortEarly === true);
-    }
-    return superParse(payload, ctx);
-  };
-});
 function handleUnionResults(results, final, inst, ctx) {
   for (const result of results) {
     if (result.issues.length === 0) {
@@ -3433,66 +2015,6 @@ function handleUnionResults(results, final, inst, ctx) {
   });
   return final;
 }
-var $ZodUnion = /* @__PURE__ */ $constructor("$ZodUnion", (inst, def) => {
-  $ZodType.init(inst, def);
-  defineLazyInternal(inst, "optin", (zod) => zod.def.options.some((o) => o._zod.optin === "defaulted") ? "defaulted" : zod.def.options.some((o) => o._zod.optin !== undefined) ? "optional" : undefined);
-  defineLazyInternal(inst, "optout", (zod) => zod.def.options.some((o) => o._zod.optout === "optional") ? "optional" : undefined);
-  defineLazyInternal(inst, "values", (zod) => {
-    if (zod.def.options.every((o) => o._zod.values)) {
-      return new Set(zod.def.options.flatMap((option) => Array.from(option._zod.values)));
-    }
-    return;
-  });
-  defineLazyInternal(inst, "pattern", (zod) => {
-    if (zod.def.options.every((o) => o._zod.pattern)) {
-      const patterns = zod.def.options.map((o) => o._zod.pattern);
-      return new RegExp(`^(${patterns.map((p) => cleanRegex(p.source)).join("|")})$`);
-    }
-    return;
-  });
-  const first = def.options.length === 1 ? def.options[0]._zod.run : null;
-  inst._zod.parse = (payload, ctx) => {
-    if (first) {
-      return first(payload, ctx);
-    }
-    let async = false;
-    const results = [];
-    for (const option of def.options) {
-      const result = option._zod.run({
-        value: payload.value,
-        issues: []
-      }, ctx);
-      if (result instanceof Promise) {
-        results.push(result);
-        async = true;
-      } else {
-        if (result.issues.length === 0)
-          return result;
-        results.push(result);
-      }
-    }
-    if (!async)
-      return handleUnionResults(results, payload, inst, ctx);
-    return Promise.all(results).then((results) => {
-      return handleUnionResults(results, payload, inst, ctx);
-    });
-  };
-});
-var $ZodIntersection = /* @__PURE__ */ $constructor("$ZodIntersection", (inst, def) => {
-  $ZodType.init(inst, def);
-  inst._zod.parse = (payload, ctx) => {
-    const input = payload.value;
-    const left = def.left._zod.run({ value: input, issues: [] }, ctx);
-    const right = def.right._zod.run({ value: input, issues: [] }, ctx);
-    const async = left instanceof Promise || right instanceof Promise;
-    if (async) {
-      return Promise.all([left, right]).then(([left, right]) => {
-        return handleIntersectionResults(payload, left, right);
-      });
-    }
-    return handleIntersectionResults(payload, left, right);
-  };
-});
 function mergeValues(a, b) {
   if (a === b) {
     return { valid: true, data: a };
@@ -3592,335 +2114,16 @@ function handleIntersectionResults(result, left, right) {
   result.value = merged.data;
   return result;
 }
-var $ZodRecord = /* @__PURE__ */ $constructor("$ZodRecord", (inst, def) => {
-  $ZodType.init(inst, def);
-  const memo = globalConfig.memoizer;
-  memo?.attach(inst);
-  inst._zod.parse = (payload, ctx) => {
-    const input = payload.value;
-    if (!isPlainObject(input)) {
-      payload.issues.push({
-        expected: "record",
-        code: "invalid_type",
-        input,
-        inst
-      });
-      return payload;
-    }
-    const proms = [];
-    const values = def.keyType._zod.values;
-    if (values && !def.partial) {
-      payload.value = memo ? memo.alloc(inst, payload, {}, ctx) : {};
-      const recordKeys = new Set;
-      for (const key of values) {
-        if (typeof key === "string" || typeof key === "number" || typeof key === "symbol") {
-          recordKeys.add(typeof key === "number" ? key.toString() : key);
-          if (key === "__proto__")
-            continue;
-          const keyResult = def.keyType._zod.run({ value: key, issues: [] }, ctx);
-          if (keyResult instanceof Promise) {
-            throw new Error("Async schemas not supported in object keys currently");
-          }
-          if (keyResult.issues.length) {
-            payload.issues.push({
-              code: "invalid_key",
-              origin: "record",
-              issues: keyResult.issues.map((iss) => finalizeIssue(iss, ctx, config())),
-              input: key,
-              path: [key],
-              inst
-            });
-            continue;
-          }
-          const outKey = keyResult.value;
-          if (outKey === "__proto__")
-            continue;
-          const result = def.valueType._zod.run({ value: input[key], issues: [] }, ctx);
-          if (result instanceof Promise) {
-            proms.push(result.then((result) => {
-              if (result.issues.length) {
-                payload.issues.push(...prefixIssues(key, result.issues));
-              }
-              payload.value[outKey] = result.value;
-            }));
-          } else {
-            if (result.issues.length) {
-              payload.issues.push(...prefixIssues(key, result.issues));
-            }
-            payload.value[outKey] = result.value;
-          }
-        }
-      }
-      let unrecognized;
-      for (const key in input) {
-        if (!recordKeys.has(key)) {
-          if (def.mode === "loose") {
-            if (key === "__proto__")
-              continue;
-            payload.value[key] = input[key];
-          } else {
-            unrecognized = unrecognized ?? [];
-            unrecognized.push(key);
-          }
-        }
-      }
-      if (unrecognized && unrecognized.length > 0) {
-        payload.issues.push({
-          code: "unrecognized_keys",
-          input,
-          inst,
-          keys: unrecognized,
-          continue: true
-        });
-      }
-    } else {
-      payload.value = memo ? memo.alloc(inst, payload, {}, ctx) : {};
-      let unrecognized;
-      for (const key of Reflect.ownKeys(input)) {
-        if (key === "__proto__")
-          continue;
-        if (!Object.prototype.propertyIsEnumerable.call(input, key))
-          continue;
-        let keyResult = def.keyType._zod.run({ value: key, issues: [] }, ctx);
-        if (keyResult instanceof Promise) {
-          throw new Error("Async schemas not supported in object keys currently");
-        }
-        const checkNumericKey = typeof key === "string" && number.test(key) && keyResult.issues.length;
-        if (checkNumericKey) {
-          const retryResult = def.keyType._zod.run({ value: Number(key), issues: [] }, ctx);
-          if (retryResult instanceof Promise) {
-            throw new Error("Async schemas not supported in object keys currently");
-          }
-          if (retryResult.issues.length === 0) {
-            keyResult = retryResult;
-          }
-        }
-        if (keyResult.issues.length) {
-          if (def.mode === "loose") {
-            payload.value[key] = input[key];
-          } else if (values) {
-            unrecognized = unrecognized ?? [];
-            unrecognized.push(key);
-          } else {
-            payload.issues.push({
-              code: "invalid_key",
-              origin: "record",
-              issues: keyResult.issues.map((iss) => finalizeIssue(iss, ctx, config())),
-              input: key,
-              path: [key],
-              inst
-            });
-          }
-          continue;
-        }
-        const outKey = keyResult.value;
-        if (outKey === "__proto__")
-          continue;
-        const result = def.valueType._zod.run({ value: input[key], issues: [] }, ctx);
-        if (result instanceof Promise) {
-          proms.push(result.then((result) => {
-            if (result.issues.length) {
-              payload.issues.push(...prefixIssues(key, result.issues));
-            }
-            payload.value[outKey] = result.value;
-          }));
-        } else {
-          if (result.issues.length) {
-            payload.issues.push(...prefixIssues(key, result.issues));
-          }
-          payload.value[outKey] = result.value;
-        }
-      }
-      if (unrecognized && unrecognized.length > 0) {
-        payload.issues.push({
-          code: "unrecognized_keys",
-          input,
-          inst,
-          keys: unrecognized,
-          continue: true
-        });
-      }
-    }
-    if (proms.length) {
-      return Promise.all(proms).then(() => payload);
-    }
-    return payload;
-  };
-});
-var $ZodEnum = /* @__PURE__ */ $constructor("$ZodEnum", (inst, def) => {
-  $ZodType.init(inst, def);
-  const values = getEnumValues(def.entries);
-  const valuesSet = new Set(values);
-  inst._zod.values = valuesSet;
-  defineLazyInternal(inst, "pattern", (zod) => {
-    const patternValues = getEnumValues(zod.def.entries).filter((k) => propertyKeyTypes.has(typeof k));
-    return new RegExp(patternValues.length ? `^(${patternValues.map((o) => escapeRegex(o.toString())).join("|")})$` : "^[^\\s\\S]$");
-  });
-  inst._zod.parse = (payload, _ctx) => {
-    const input = payload.value;
-    if (valuesSet.has(input)) {
-      return payload;
-    }
-    payload.issues.push({
-      code: "invalid_value",
-      values,
-      input,
-      inst
-    });
-    return payload;
-  };
-});
-var $ZodLiteral = /* @__PURE__ */ $constructor("$ZodLiteral", (inst, def) => {
-  $ZodType.init(inst, def);
-  const values = new Set(def.values);
-  inst._zod.values = values;
-  defineLazyInternal(inst, "pattern", (zod) => {
-    const vals = zod.def.values;
-    return new RegExp(vals.length ? `^(${vals.map((o) => typeof o === "string" ? escapeRegex(o) : o ? escapeRegex(o.toString()) : String(o)).join("|")})$` : "^[^\\s\\S]$");
-  });
-  inst._zod.parse = (payload, _ctx) => {
-    const input = payload.value;
-    if (values.has(input)) {
-      return payload;
-    }
-    payload.issues.push({
-      code: "invalid_value",
-      values: def.values,
-      input,
-      inst
-    });
-    return payload;
-  };
-});
-var $ZodTransform = /* @__PURE__ */ $constructor("$ZodTransform", (inst, def) => {
-  $ZodType.init(inst, def);
-  inst._zod.optin = "optional";
-  globalConfig.memoizer?.guard(inst);
-  inst._zod.parse = (payload, ctx) => {
-    if (ctx.direction === "backward") {
-      throw new $ZodEncodeError(inst.constructor.name);
-    }
-    const _out = def.transform(payload.value, payload);
-    if (ctx.async) {
-      const output = _out instanceof Promise ? _out : Promise.resolve(_out);
-      return output.then((output) => {
-        payload.value = output;
-        return payload;
-      });
-    }
-    if (_out instanceof Promise) {
-      throw new $ZodAsyncError;
-    }
-    payload.value = _out;
-    return payload;
-  };
-});
 function handleOptionalResult(payload, result) {
   payload.value = result.issues.length ? undefined : result.value;
   return payload;
 }
-var $ZodOptional = /* @__PURE__ */ $constructor("$ZodOptional", (inst, def) => {
-  $ZodType.init(inst, def);
-  defineLazyInternal(inst, "optin", (zod) => zod.def.innerType._zod.optin === "defaulted" ? "defaulted" : "optional");
-  inst._zod.optout = "optional";
-  defineLazyInternal(inst, "values", (zod) => {
-    const values = zod.def.innerType._zod.values;
-    return values ? new Set([...values, undefined]) : undefined;
-  });
-  defineLazyInternal(inst, "pattern", (zod) => {
-    const pattern = zod.def.innerType._zod.pattern;
-    return pattern ? new RegExp(`^(${cleanRegex(pattern.source)})?$`) : undefined;
-  });
-  inst._zod.parse = (payload, ctx) => {
-    if (payload.value === undefined) {
-      if (def.innerType._zod.optin !== "defaulted")
-        return payload;
-      const result = def.innerType._zod.run({ value: payload.value, issues: [] }, ctx);
-      if (result instanceof Promise)
-        return result.then((result) => handleOptionalResult(payload, result));
-      return handleOptionalResult(payload, result);
-    }
-    return def.innerType._zod.run(payload, ctx);
-  };
-});
-var $ZodExactOptional = /* @__PURE__ */ $constructor("$ZodExactOptional", (inst, def) => {
-  $ZodOptional.init(inst, def);
-  defineLazyInternal(inst, "values", (zod) => zod.def.innerType._zod.values);
-  defineLazyInternal(inst, "pattern", (zod) => zod.def.innerType._zod.pattern);
-  inst._zod.parse = (payload, ctx) => {
-    return def.innerType._zod.run(payload, ctx);
-  };
-});
-var $ZodNullable = /* @__PURE__ */ $constructor("$ZodNullable", (inst, def) => {
-  $ZodType.init(inst, def);
-  defineLazyInternal(inst, "optin", (zod) => zod.def.innerType._zod.optin);
-  defineLazyInternal(inst, "optout", (zod) => zod.def.innerType._zod.optout);
-  defineLazyInternal(inst, "pattern", (zod) => {
-    const pattern = zod.def.innerType._zod.pattern;
-    return pattern ? new RegExp(`^(${cleanRegex(pattern.source)}|null)$`) : undefined;
-  });
-  defineLazyInternal(inst, "values", (zod) => {
-    return zod.def.innerType._zod.values ? new Set([...zod.def.innerType._zod.values, null]) : undefined;
-  });
-  inst._zod.parse = (payload, ctx) => {
-    if (payload.value === null)
-      return payload;
-    return def.innerType._zod.run(payload, ctx);
-  };
-});
-var $ZodDefault = /* @__PURE__ */ $constructor("$ZodDefault", (inst, def) => {
-  $ZodType.init(inst, def);
-  inst._zod.optin = "defaulted";
-  defineLazyInternal(inst, "values", (zod) => zod.def.innerType._zod.values);
-  inst._zod.parse = (payload, ctx) => {
-    if (ctx.direction === "backward") {
-      return def.innerType._zod.run(payload, ctx);
-    }
-    if (payload.value === undefined) {
-      payload.value = def.defaultValue;
-      return payload;
-    }
-    const result = def.innerType._zod.run(payload, ctx);
-    if (result instanceof Promise) {
-      return result.then((result) => handleDefaultResult(result, def));
-    }
-    return handleDefaultResult(result, def);
-  };
-});
 function handleDefaultResult(payload, def) {
   if (payload.value === undefined) {
     payload.value = def.defaultValue;
   }
   return payload;
 }
-var $ZodPrefault = /* @__PURE__ */ $constructor("$ZodPrefault", (inst, def) => {
-  $ZodType.init(inst, def);
-  inst._zod.optin = "defaulted";
-  defineLazyInternal(inst, "values", (zod) => zod.def.innerType._zod.values);
-  inst._zod.parse = (payload, ctx) => {
-    if (ctx.direction === "backward") {
-      return def.innerType._zod.run(payload, ctx);
-    }
-    if (payload.value === undefined) {
-      payload.value = def.defaultValue;
-    }
-    return def.innerType._zod.run(payload, ctx);
-  };
-});
-var $ZodNonOptional = /* @__PURE__ */ $constructor("$ZodNonOptional", (inst, def) => {
-  $ZodType.init(inst, def);
-  defineLazyInternal(inst, "values", (zod) => {
-    const v = zod.def.innerType._zod.values;
-    return v ? new Set([...v].filter((x) => x !== undefined)) : undefined;
-  });
-  inst._zod.parse = (payload, ctx) => {
-    const result = def.innerType._zod.run(payload, ctx);
-    if (result instanceof Promise) {
-      return result.then((result) => handleNonOptionalResult(result, inst));
-    }
-    return handleNonOptionalResult(result, inst);
-  };
-});
 function handleNonOptionalResult(payload, inst) {
   if (!payload.issues.length && payload.value === undefined) {
     payload.issues.push({
@@ -3949,43 +2152,6 @@ function handleCatchResult(payload, result, def, ctx) {
   });
   return payload;
 }
-var $ZodCatch = /* @__PURE__ */ $constructor("$ZodCatch", (inst, def) => {
-  $ZodType.init(inst, def);
-  defineLazyInternal(inst, "optin", (zod) => zod.def.innerType._zod.optin === "defaulted" ? "defaulted" : "optional");
-  defineLazyInternal(inst, "optout", (zod) => zod.def.innerType._zod.optout);
-  defineLazyInternal(inst, "values", (zod) => zod.def.innerType._zod.values);
-  inst._zod.parse = (payload, ctx) => {
-    if (ctx.direction === "backward") {
-      return def.innerType._zod.run(payload, ctx);
-    }
-    const result = def.innerType._zod.run({ value: payload.value, issues: [] }, ctx);
-    if (result instanceof Promise) {
-      return result.then((result) => handleCatchResult(payload, result, def, ctx));
-    }
-    return handleCatchResult(payload, result, def, ctx);
-  };
-});
-var $ZodPipe = /* @__PURE__ */ $constructor("$ZodPipe", (inst, def) => {
-  $ZodType.init(inst, def);
-  defineLazyInternal(inst, "values", (zod) => zod.def.in._zod.values);
-  defineLazyInternal(inst, "optin", (zod) => zod.def.in._zod.optin);
-  defineLazyInternal(inst, "optout", (zod) => zod.def.out._zod.optout);
-  defineLazyInternal(inst, "propValues", (zod) => zod.def.in._zod.propValues);
-  inst._zod.parse = (payload, ctx) => {
-    if (ctx.direction === "backward") {
-      const right = def.out._zod.run(payload, ctx);
-      if (right instanceof Promise) {
-        return right.then((right) => handlePipeResult(right, def.in, ctx));
-      }
-      return handlePipeResult(right, def.in, ctx);
-    }
-    const left = def.in._zod.run(payload, ctx);
-    if (left instanceof Promise) {
-      return left.then((left) => handlePipeResult(left, def.out, ctx));
-    }
-    return handlePipeResult(left, def.out, ctx);
-  };
-});
 function handlePipeResult(left, next, ctx) {
   if (left.issues.some((iss) => iss.code !== "unrecognized_keys")) {
     left.aborted = true;
@@ -3993,47 +2159,11 @@ function handlePipeResult(left, next, ctx) {
   }
   return next._zod.run({ value: left.value, issues: left.issues }, ctx);
 }
-var $ZodPreprocess = /* @__PURE__ */ $constructor("$ZodPreprocess", (inst, def) => {
-  $ZodPipe.init(inst, def);
-});
-var $ZodReadonly = /* @__PURE__ */ $constructor("$ZodReadonly", (inst, def) => {
-  $ZodType.init(inst, def);
-  defineLazyInternal(inst, "propValues", (zod) => zod.def.innerType._zod.propValues);
-  defineLazyInternal(inst, "values", (zod) => zod.def.innerType._zod.values);
-  defineLazyInternal(inst, "optin", (zod) => zod.def.innerType?._zod?.optin);
-  defineLazyInternal(inst, "optout", (zod) => zod.def.innerType?._zod?.optout);
-  inst._zod.parse = (payload, ctx) => {
-    if (ctx.direction === "backward") {
-      return def.innerType._zod.run(payload, ctx);
-    }
-    const result = def.innerType._zod.run(payload, ctx);
-    if (result instanceof Promise) {
-      return result.then(handleReadonlyResult);
-    }
-    return handleReadonlyResult(result);
-  };
-});
 function handleReadonlyResult(payload) {
   if (!payload.memo)
     payload.value = Object.freeze(payload.value);
   return payload;
 }
-var $ZodCustom = /* @__PURE__ */ $constructor("$ZodCustom", (inst, def) => {
-  $ZodCheck.init(inst, def);
-  $ZodType.init(inst, def);
-  inst._zod.parse = (payload, _) => {
-    return payload;
-  };
-  inst._zod.check = (payload) => {
-    const input = payload.value;
-    const r = def.fn(input);
-    if (r instanceof Promise) {
-      return r.then((r) => handleRefineResult(r, payload, input, inst));
-    }
-    handleRefineResult(r, payload, input, inst);
-    return;
-  };
-});
 function handleRefineResult(result, payload, input, inst) {
   if (!result) {
     const _iss = {
@@ -4048,25 +2178,1144 @@ function handleRefineResult(result, payload, input, inst) {
     payload.issues.push(issue(_iss));
   }
 }
+var $ZodType, toStandardResult = (r, ctx) => r.issues.length ? { issues: r.issues.map((iss) => finalizeIssue(iss, ctx, config())) } : { value: r.value }, $ZodString, $ZodStringFormat, $ZodGUID, $ZodUUID, $ZodEmail, URL_BAD_FORMAT = 1, URL_UNPARSEABLE = 2, asciiTabOrNewline, $ZodURL, $ZodEmoji, $ZodNanoID, $ZodCUID, $ZodCUID2, $ZodULID, $ZodXID, $ZodKSUID, $ZodISODateTime, $ZodISODate, $ZodISOTime, $ZodISODuration, $ZodIPv4, ipv6Alphabet, $ZodIPv6, $ZodCIDRv4, $ZodCIDRv6, base64Charset, $ZodBase64, base64urlCharset, $ZodBase64URL, $ZodE164, $ZodJWT, $ZodNumber, $ZodNumberFormat, $ZodBoolean, $ZodUnknown, $ZodNever, arraySize = (input) => Array.isArray(input) ? input.length : -1, $ZodArray, NO_SYMBOL_KEYS, $ZodObject, $ZodObjectJIT, $ZodUnion, $ZodIntersection, $ZodRecord, $ZodEnum, $ZodLiteral, $ZodTransform, $ZodOptional, $ZodExactOptional, $ZodNullable, $ZodDefault, $ZodPrefault, $ZodNonOptional, $ZodCatch, $ZodPipe, $ZodPreprocess, $ZodReadonly, $ZodCustom;
+var init_schemas = __esm(() => {
+  init_checks();
+  init_core();
+  init_regexes();
+  init_util();
+  init_versions();
+  init_util();
+  $ZodType = /* @__PURE__ */ $constructor("$ZodType", (inst, def) => {
+    var _a;
+    inst ?? (inst = {});
+    inst._zod.def = def;
+    inst._zod.bag = inst._zod.bag || {};
+    inst._zod.version = version;
+    const defChecks = inst._zod.def.checks;
+    const checks = inst._zod.traits.has("$ZodCheck") ? [inst, ...defChecks ?? []] : defChecks?.length ? [...defChecks] : [];
+    for (const ch of checks) {
+      for (const fn of ch._zod.onattach) {
+        fn(inst);
+      }
+    }
+    if (checks.length === 0) {
+      (_a = inst._zod).deferred ?? (_a.deferred = []);
+      inst._zod.deferred?.push(() => {
+        inst._zod.run = inst._zod.parse;
+      });
+    } else {
+      const runChecks = (payload, checks, ctx) => {
+        if (payload.memo)
+          return payload;
+        let isAborted = aborted(payload);
+        let asyncResult;
+        for (const ch of checks) {
+          if (ch._zod.def.when) {
+            if (explicitlyAborted(payload))
+              continue;
+            const shouldRun = ch._zod.def.when(payload);
+            if (!shouldRun)
+              continue;
+          } else if (isAborted) {
+            continue;
+          }
+          const currLen = payload.issues.length;
+          const _ = ch._zod.check(payload);
+          if (_ instanceof Promise && ctx?.async === false) {
+            throw new $ZodAsyncError;
+          }
+          if (asyncResult || _ instanceof Promise) {
+            asyncResult = (asyncResult ?? Promise.resolve()).then(async () => {
+              await _;
+              const nextLen = payload.issues.length;
+              if (nextLen === currLen)
+                return;
+              attachSchema(payload.issues, currLen, inst);
+              if (!isAborted)
+                isAborted = aborted(payload, currLen);
+            });
+          } else {
+            const nextLen = payload.issues.length;
+            if (nextLen === currLen)
+              continue;
+            attachSchema(payload.issues, currLen, inst);
+            if (!isAborted)
+              isAborted = aborted(payload, currLen);
+          }
+        }
+        if (asyncResult) {
+          return asyncResult.then(() => {
+            return payload;
+          });
+        }
+        return payload;
+      };
+      const handleCanaryResult = (canary, payload, ctx) => {
+        if (aborted(canary)) {
+          canary.aborted = true;
+          return canary;
+        }
+        const checkResult = runChecks(payload, checks, ctx);
+        if (checkResult instanceof Promise) {
+          if (ctx.async === false)
+            throw new $ZodAsyncError;
+          return checkResult.then((checkResult) => inst._zod.parse(checkResult, ctx));
+        }
+        return inst._zod.parse(checkResult, ctx);
+      };
+      inst._zod.run = (payload, ctx) => {
+        if (ctx.skipChecks) {
+          return inst._zod.parse(payload, ctx);
+        }
+        if (ctx.direction === "backward") {
+          const canary = inst._zod.parse({ value: payload.value, issues: [] }, { ...ctx, skipChecks: true });
+          if (canary instanceof Promise) {
+            return canary.then((canary) => {
+              return handleCanaryResult(canary, payload, ctx);
+            });
+          }
+          return handleCanaryResult(canary, payload, ctx);
+        }
+        const result = inst._zod.parse(payload, ctx);
+        if (result instanceof Promise) {
+          if (ctx.async === false)
+            throw new $ZodAsyncError;
+          return result.then((result) => runChecks(result, checks, ctx));
+        }
+        return runChecks(result, checks, ctx);
+      };
+    }
+  }, {
+    get "~standard"() {
+      return hide(this, "~standard", standardProps(this));
+    },
+    set "~standard"(value) {
+      own(this, "~standard", value);
+    }
+  });
+  $ZodString = /* @__PURE__ */ $constructor("$ZodString", (inst, def) => {
+    $ZodType.init(inst, def);
+    inst._zod.pattern = def.pattern ?? anyString;
+    inst._zod.parse = (payload, _) => {
+      if (def.coerce)
+        try {
+          payload.value = String(payload.value);
+        } catch (_) {}
+      if (typeof payload.value === "string")
+        return payload;
+      payload.issues.push({
+        expected: "string",
+        code: "invalid_type",
+        input: payload.value,
+        inst
+      });
+      return payload;
+    };
+  });
+  $ZodStringFormat = /* @__PURE__ */ $constructor("$ZodStringFormat", (inst, def) => {
+    $ZodCheckStringFormat.init(inst, def);
+    $ZodString.init(inst, def);
+  });
+  $ZodGUID = /* @__PURE__ */ $constructor("$ZodGUID", (inst, def) => {
+    def.pattern ?? (def.pattern = guid);
+    $ZodStringFormat.init(inst, def);
+  });
+  $ZodUUID = /* @__PURE__ */ $constructor("$ZodUUID", (inst, def) => {
+    if (def.version) {
+      const versionMap = {
+        v1: 1,
+        v2: 2,
+        v3: 3,
+        v4: 4,
+        v5: 5,
+        v6: 6,
+        v7: 7,
+        v8: 8
+      };
+      const v = versionMap[def.version];
+      if (v === undefined)
+        throw new Error(`Invalid UUID version: "${def.version}"`);
+      def.pattern ?? (def.pattern = uuid(v));
+    } else
+      def.pattern ?? (def.pattern = uuid());
+    $ZodStringFormat.init(inst, def);
+  });
+  $ZodEmail = /* @__PURE__ */ $constructor("$ZodEmail", (inst, def) => {
+    def.pattern ?? (def.pattern = email);
+    $ZodStringFormat.init(inst, def);
+  });
+  asciiTabOrNewline = /[\t\n\r]/g;
+  $ZodURL = /* @__PURE__ */ $constructor("$ZodURL", (inst, def) => {
+    $ZodStringFormat.init(inst, def);
+    inst._zod.check = (payload) => {
+      try {
+        const trimmed = payload.value.trim();
+        const url = validateURL(trimmed, def);
+        if (url === URL_BAD_FORMAT) {
+          payload.issues.push({
+            code: "invalid_format",
+            format: "url",
+            note: "Invalid URL format",
+            input: payload.value,
+            inst,
+            continue: !def.abort
+          });
+          return;
+        }
+        if (url === URL_UNPARSEABLE) {
+          payload.issues.push({
+            code: "invalid_format",
+            format: "url",
+            input: payload.value,
+            inst,
+            continue: !def.abort
+          });
+          return;
+        }
+        if (url === true) {
+          payload.value = stripTabAndNewline(trimmed);
+          return;
+        }
+        if (def.hostname && !urlHostnameOk(url, def.hostname)) {
+          payload.issues.push({
+            code: "invalid_format",
+            format: "url",
+            note: "Invalid hostname",
+            pattern: def.hostname.source,
+            input: payload.value,
+            inst,
+            continue: !def.abort
+          });
+        }
+        if (def.protocol && !urlProtocolOk(url, def.protocol)) {
+          payload.issues.push({
+            code: "invalid_format",
+            format: "url",
+            note: "Invalid protocol",
+            pattern: def.protocol.source,
+            input: payload.value,
+            inst,
+            continue: !def.abort
+          });
+        }
+        payload.value = def.normalize ? url.href : stripTabAndNewline(trimmed);
+        return;
+      } catch (_) {
+        payload.issues.push({
+          code: "invalid_format",
+          format: "url",
+          input: payload.value,
+          inst,
+          continue: !def.abort
+        });
+      }
+    };
+  });
+  $ZodEmoji = /* @__PURE__ */ $constructor("$ZodEmoji", (inst, def) => {
+    def.pattern ?? (def.pattern = emoji());
+    $ZodStringFormat.init(inst, def);
+  });
+  $ZodNanoID = /* @__PURE__ */ $constructor("$ZodNanoID", (inst, def) => {
+    if (def.length !== undefined && (!Number.isInteger(def.length) || def.length < 1))
+      throw new Error(`Invalid nanoid length: ${def.length}`);
+    def.pattern ?? (def.pattern = def.length === undefined ? nanoid : nanoidOfLength(def.length));
+    $ZodStringFormat.init(inst, def);
+  });
+  $ZodCUID = /* @__PURE__ */ $constructor("$ZodCUID", (inst, def) => {
+    def.pattern ?? (def.pattern = cuid);
+    $ZodStringFormat.init(inst, def);
+  });
+  $ZodCUID2 = /* @__PURE__ */ $constructor("$ZodCUID2", (inst, def) => {
+    def.pattern ?? (def.pattern = cuid2);
+    $ZodStringFormat.init(inst, def);
+  });
+  $ZodULID = /* @__PURE__ */ $constructor("$ZodULID", (inst, def) => {
+    def.pattern ?? (def.pattern = ulid);
+    $ZodStringFormat.init(inst, def);
+  });
+  $ZodXID = /* @__PURE__ */ $constructor("$ZodXID", (inst, def) => {
+    def.pattern ?? (def.pattern = xid);
+    $ZodStringFormat.init(inst, def);
+  });
+  $ZodKSUID = /* @__PURE__ */ $constructor("$ZodKSUID", (inst, def) => {
+    def.pattern ?? (def.pattern = ksuid);
+    $ZodStringFormat.init(inst, def);
+  });
+  $ZodISODateTime = /* @__PURE__ */ $constructor("$ZodISODateTime", (inst, def) => {
+    def.pattern ?? (def.pattern = datetime(def));
+    $ZodStringFormat.init(inst, def);
+  });
+  $ZodISODate = /* @__PURE__ */ $constructor("$ZodISODate", (inst, def) => {
+    def.pattern ?? (def.pattern = date);
+    $ZodStringFormat.init(inst, def);
+  });
+  $ZodISOTime = /* @__PURE__ */ $constructor("$ZodISOTime", (inst, def) => {
+    def.pattern ?? (def.pattern = time(def));
+    $ZodStringFormat.init(inst, def);
+  });
+  $ZodISODuration = /* @__PURE__ */ $constructor("$ZodISODuration", (inst, def) => {
+    def.pattern ?? (def.pattern = duration);
+    $ZodStringFormat.init(inst, def);
+  });
+  $ZodIPv4 = /* @__PURE__ */ $constructor("$ZodIPv4", (inst, def) => {
+    def.pattern ?? (def.pattern = ipv4);
+    $ZodStringFormat.init(inst, def);
+  });
+  ipv6Alphabet = /^[0-9a-fA-F:.]+$/;
+  $ZodIPv6 = /* @__PURE__ */ $constructor("$ZodIPv6", (inst, def) => {
+    def.pattern ?? (def.pattern = ipv6);
+    $ZodStringFormat.init(inst, def);
+    inst._zod.check = (payload) => {
+      if (!isValidIPv6(payload.value)) {
+        payload.issues.push({
+          code: "invalid_format",
+          format: "ipv6",
+          input: payload.value,
+          inst,
+          continue: !def.abort
+        });
+      }
+    };
+  });
+  $ZodCIDRv4 = /* @__PURE__ */ $constructor("$ZodCIDRv4", (inst, def) => {
+    def.pattern ?? (def.pattern = cidrv4);
+    $ZodStringFormat.init(inst, def);
+  });
+  $ZodCIDRv6 = /* @__PURE__ */ $constructor("$ZodCIDRv6", (inst, def) => {
+    def.pattern ?? (def.pattern = cidrv6);
+    $ZodStringFormat.init(inst, def);
+    inst._zod.check = (payload) => {
+      if (!isValidCIDRv6(payload.value)) {
+        payload.issues.push({
+          code: "invalid_format",
+          format: "cidrv6",
+          input: payload.value,
+          inst,
+          continue: !def.abort
+        });
+      }
+    };
+  });
+  base64Charset = /^[0-9a-zA-Z+/]*={0,2}$/;
+  $ZodBase64 = /* @__PURE__ */ $constructor("$ZodBase64", (inst, def) => {
+    def.pattern ?? (def.pattern = base64Charset);
+    $ZodStringFormat.init(inst, def);
+    inst._zod.check = (payload) => {
+      if (isValidBase64(payload.value))
+        return;
+      payload.issues.push({
+        code: "invalid_format",
+        format: "base64",
+        input: payload.value,
+        inst,
+        continue: !def.abort
+      });
+    };
+  });
+  base64urlCharset = /^[A-Za-z0-9_-]*$/;
+  $ZodBase64URL = /* @__PURE__ */ $constructor("$ZodBase64URL", (inst, def) => {
+    def.pattern ?? (def.pattern = base64urlCharset);
+    $ZodStringFormat.init(inst, def);
+    inst._zod.check = (payload) => {
+      if (isValidBase64URL(payload.value))
+        return;
+      payload.issues.push({
+        code: "invalid_format",
+        format: "base64url",
+        input: payload.value,
+        inst,
+        continue: !def.abort
+      });
+    };
+  });
+  $ZodE164 = /* @__PURE__ */ $constructor("$ZodE164", (inst, def) => {
+    def.pattern ?? (def.pattern = e164);
+    $ZodStringFormat.init(inst, def);
+  });
+  $ZodJWT = /* @__PURE__ */ $constructor("$ZodJWT", (inst, def) => {
+    $ZodStringFormat.init(inst, def);
+    inst._zod.check = (payload) => {
+      if (isValidJWT(payload.value, def.alg))
+        return;
+      payload.issues.push({
+        code: "invalid_format",
+        format: "jwt",
+        input: payload.value,
+        inst,
+        continue: !def.abort
+      });
+    };
+  });
+  $ZodNumber = /* @__PURE__ */ $constructor("$ZodNumber", (inst, def) => {
+    $ZodType.init(inst, def);
+    inst._zod.pattern = number;
+    inst._zod.parse = (payload, _ctx) => {
+      if (def.coerce)
+        try {
+          payload.value = Number(payload.value);
+        } catch (_) {}
+      const input = payload.value;
+      if (typeof input === "number" && !Number.isNaN(input) && Number.isFinite(input)) {
+        return payload;
+      }
+      const received = typeof input === "number" ? Number.isNaN(input) ? "NaN" : !Number.isFinite(input) ? String(input) : undefined : undefined;
+      payload.issues.push({
+        expected: "number",
+        code: "invalid_type",
+        input,
+        inst,
+        ...received ? { received } : {}
+      });
+      return payload;
+    };
+  });
+  $ZodNumberFormat = /* @__PURE__ */ $constructor("$ZodNumberFormat", (inst, def) => {
+    $ZodCheckNumberFormat.init(inst, def);
+    $ZodNumber.init(inst, def);
+  });
+  $ZodBoolean = /* @__PURE__ */ $constructor("$ZodBoolean", (inst, def) => {
+    $ZodType.init(inst, def);
+    inst._zod.pattern = boolean;
+    inst._zod.parse = (payload, _ctx) => {
+      if (def.coerce)
+        try {
+          payload.value = Boolean(payload.value);
+        } catch (_) {}
+      const input = payload.value;
+      if (typeof input === "boolean")
+        return payload;
+      payload.issues.push({
+        expected: "boolean",
+        code: "invalid_type",
+        input,
+        inst
+      });
+      return payload;
+    };
+  });
+  $ZodUnknown = /* @__PURE__ */ $constructor("$ZodUnknown", (inst, def) => {
+    $ZodType.init(inst, def);
+    inst._zod.parse = (payload) => payload;
+  });
+  $ZodNever = /* @__PURE__ */ $constructor("$ZodNever", (inst, def) => {
+    $ZodType.init(inst, def);
+    inst._zod.parse = (payload, _ctx) => {
+      payload.issues.push({
+        expected: "never",
+        code: "invalid_type",
+        input: payload.value,
+        inst
+      });
+      return payload;
+    };
+  });
+  $ZodArray = /* @__PURE__ */ $constructor("$ZodArray", (inst, def) => {
+    $ZodType.init(inst, def);
+    const memo = globalConfig.memoizer;
+    memo?.attach(inst);
+    inst._zod.parse = (payload, ctx) => {
+      const input = payload.value;
+      if (!Array.isArray(input)) {
+        payload.issues.push({
+          expected: "array",
+          code: "invalid_type",
+          input,
+          inst
+        });
+        return payload;
+      }
+      payload.value = memo ? memo.alloc(inst, payload, Array(input.length), ctx) : Array(input.length);
+      const proms = [];
+      const abortEarly = ctx?.abortEarly;
+      for (let i = 0;i < input.length; i++) {
+        const item = input[i];
+        const result = def.element._zod.run({
+          value: item,
+          issues: []
+        }, ctx);
+        if (result instanceof Promise) {
+          proms.push(result.then((result) => handleArrayResult(result, payload, i)));
+        } else {
+          handleArrayResult(result, payload, i);
+          if (abortEarly && result.issues.length !== 0 && aborted(result))
+            break;
+        }
+      }
+      if (proms.length) {
+        return Promise.all(proms).then(() => payload);
+      }
+      return payload;
+    };
+    capSize(inst, arraySize);
+  });
+  NO_SYMBOL_KEYS = [];
+  $ZodObject = /* @__PURE__ */ $constructor("$ZodObject", (inst, def) => {
+    $ZodType.init(inst, def);
+    const desc = Object.getOwnPropertyDescriptor(def, "shape");
+    const sh = desc?.get ? desc.get.raw : def.shape ?? {};
+    if (sh) {
+      const get = () => {
+        const newSh = { ...sh };
+        Object.defineProperty(def, "shape", { value: newSh });
+        get.raw = newSh;
+        return newSh;
+      };
+      get.raw = sh;
+      Object.defineProperty(def, "shape", { get });
+    }
+    const _normalized = cached(() => normalizeDef(def));
+    defineLazyInternal(inst, "propValues", (zod) => {
+      const shape = zod.def.shape;
+      const propValues = {};
+      for (const key in shape) {
+        const field = shape[key]._zod;
+        if (field.values) {
+          if (!Object.prototype.hasOwnProperty.call(propValues, key)) {
+            assignProp(propValues, key, new Set);
+          }
+          for (const v of field.values)
+            propValues[key].add(v);
+          if (field.optin !== undefined)
+            propValues[key].add(undefined);
+        }
+      }
+      return propValues;
+    });
+    const isObject2 = isObject;
+    const catchall = def.catchall;
+    let value;
+    const memo = globalConfig.memoizer;
+    memo?.attach(inst);
+    inst._zod.parse = (payload, ctx) => {
+      value ?? (value = _normalized.value);
+      const input = payload.value;
+      if (!isObject2(input)) {
+        payload.issues.push({
+          expected: "object",
+          code: "invalid_type",
+          input,
+          inst
+        });
+        return payload;
+      }
+      payload.value = memo ? memo.alloc(inst, payload, {}, ctx) : {};
+      const proms = [];
+      const shape = value.shape;
+      const abortEarly = ctx?.abortEarly;
+      let seen = payload.issues.length;
+      for (const key of value.allKeys) {
+        if (abortEarly && payload.issues.length !== seen) {
+          if (aborted(payload, seen))
+            break;
+          seen = payload.issues.length;
+        }
+        if (key === "__proto__")
+          continue;
+        const el = shape[key];
+        const optin = el._zod.optin;
+        const optout = el._zod.optout;
+        const r = el._zod.run({ value: input[key], issues: [] }, ctx);
+        if (r instanceof Promise) {
+          proms.push(r.then((r) => handlePropertyResult(r, payload, key, input, optin, optout)));
+        } else {
+          handlePropertyResult(r, payload, key, input, optin, optout);
+        }
+      }
+      if (!catchall) {
+        return proms.length ? Promise.all(proms).then(() => payload) : payload;
+      }
+      return handleCatchall(proms, input, payload, ctx, _normalized.value, inst, abortEarly === true);
+    };
+  });
+  $ZodObjectJIT = /* @__PURE__ */ $constructor("$ZodObjectJIT", (inst, def) => {
+    $ZodObject.init(inst, def);
+    const superParse = inst._zod.parse;
+    const _normalized = cached(() => normalizeDef(def));
+    const memo = globalConfig.memoizer;
+    const generateFastpass = (shape) => {
+      const normalized = _normalized.value;
+      const syms = normalized.symbolKeys;
+      const doc = new Doc(["payload", "ctx"], { shape, inst, memo, syms });
+      const parseStr = (k) => `shape[${k}]._zod.run({ value: input[${k}], issues: [] }, ctx)`;
+      const prefixStr = (id, k) => `
+          let ${id}_ab = false;
+          for (let i = 0; i < ${id}.issues.length; i++) {
+            const iss = ${id}.issues[i];
+            iss.path = iss.path ? [${k}, ...iss.path] : [${k}];
+            payload.issues.push(iss);
+            if (iss.continue !== true) ${id}_ab = true;
+          }
+          if (${id}_ab && ctx && ctx.abortEarly) {
+            payload.value = newResult;
+            return payload;
+          }`;
+      doc.write(`const input = payload.value;`);
+      const ids = Object.create(null);
+      let counter = 0;
+      for (const key of normalized.allKeys) {
+        ids[key] = `key_${counter++}`;
+      }
+      doc.write(memo ? `const newResult = memo.alloc(inst, payload, {}, ctx);` : `const newResult = {};`);
+      for (const key of normalized.allKeys) {
+        if (key === "__proto__")
+          continue;
+        const id = ids[key];
+        const k = typeof key === "symbol" ? `syms[${syms.indexOf(key)}]` : esc(key);
+        const isPresent = `${k} in input`;
+        const schema = shape[key];
+        const optin = schema?._zod?.optin;
+        const isOptionalIn = optin !== undefined;
+        const isOptionalOut = schema?._zod?.optout === "optional";
+        doc.write(`const ${id} = ${parseStr(k)};`);
+        if (isOptionalIn && isOptionalOut) {
+          const assign = optin === "optional" ? `${id}_present` : `${id}.value !== undefined || ${id}_present`;
+          doc.write(`
+        const ${id}_present = ${isPresent};
+        if (!${id}.issues.length || ${id}_present) {
+          if (${id}.issues.length) {${prefixStr(id, k)}
+          }
+
+          if (${assign}) {
+            newResult[${k}] = ${id}.value;
+          }
+        }
+
+      `);
+        } else if (!isOptionalIn) {
+          doc.write(`
+        const ${id}_present = ${isPresent};
+        if (${id}.issues.length) {${prefixStr(id, k)}
+        }
+        if (!${id}_present && !${id}.issues.length) {
+          payload.issues.push({
+            code: "invalid_type",
+            expected: "nonoptional",
+            input: undefined,
+            path: [${k}]
+          });
+          if (ctx && ctx.abortEarly) {
+            payload.value = newResult;
+            return payload;
+          }
+        }
+
+        if (${id}_present) {
+          newResult[${k}] = ${id}.value;
+        }
+
+      `);
+        } else {
+          doc.write(`
+        if (${id}.issues.length) {${prefixStr(id, k)}
+        }
+      `);
+          if (optin === "defaulted") {
+            doc.write(`newResult[${k}] = ${id}.value;`);
+          } else {
+            doc.write(`
+        if (${id}.value !== undefined || ${isPresent}) {
+          newResult[${k}] = ${id}.value;
+        }
+      `);
+          }
+        }
+      }
+      doc.write(`payload.value = newResult;`);
+      doc.write(`return payload;`);
+      return doc.compile();
+    };
+    let fastpass;
+    const isObject2 = isObject;
+    const jit = !globalConfig.jitless;
+    const allowsEval2 = allowsEval;
+    const fastEnabled = jit && allowsEval2.value;
+    const catchall = def.catchall;
+    let value;
+    inst._zod.parse = (payload, ctx) => {
+      value ?? (value = _normalized.value);
+      const input = payload.value;
+      if (!isObject2(input)) {
+        payload.issues.push({
+          expected: "object",
+          code: "invalid_type",
+          input,
+          inst
+        });
+        return payload;
+      }
+      if (jit && fastEnabled && ctx?.async === false && ctx.jitless !== true) {
+        if (!fastpass)
+          fastpass = generateFastpass(def.shape);
+        payload = fastpass(payload, ctx);
+        if (!catchall)
+          return payload;
+        return handleCatchall([], input, payload, ctx, value, inst, ctx?.abortEarly === true);
+      }
+      return superParse(payload, ctx);
+    };
+  });
+  $ZodUnion = /* @__PURE__ */ $constructor("$ZodUnion", (inst, def) => {
+    $ZodType.init(inst, def);
+    defineLazyInternal(inst, "optin", (zod) => zod.def.options.some((o) => o._zod.optin === "defaulted") ? "defaulted" : zod.def.options.some((o) => o._zod.optin !== undefined) ? "optional" : undefined);
+    defineLazyInternal(inst, "optout", (zod) => zod.def.options.some((o) => o._zod.optout === "optional") ? "optional" : undefined);
+    defineLazyInternal(inst, "values", (zod) => {
+      if (zod.def.options.every((o) => o._zod.values)) {
+        return new Set(zod.def.options.flatMap((option) => Array.from(option._zod.values)));
+      }
+      return;
+    });
+    defineLazyInternal(inst, "pattern", (zod) => {
+      if (zod.def.options.every((o) => o._zod.pattern)) {
+        const patterns = zod.def.options.map((o) => o._zod.pattern);
+        return new RegExp(`^(${patterns.map((p) => cleanRegex(p.source)).join("|")})$`);
+      }
+      return;
+    });
+    const first = def.options.length === 1 ? def.options[0]._zod.run : null;
+    inst._zod.parse = (payload, ctx) => {
+      if (first) {
+        return first(payload, ctx);
+      }
+      let async = false;
+      const results = [];
+      for (const option of def.options) {
+        const result = option._zod.run({
+          value: payload.value,
+          issues: []
+        }, ctx);
+        if (result instanceof Promise) {
+          results.push(result);
+          async = true;
+        } else {
+          if (result.issues.length === 0)
+            return result;
+          results.push(result);
+        }
+      }
+      if (!async)
+        return handleUnionResults(results, payload, inst, ctx);
+      return Promise.all(results).then((results) => {
+        return handleUnionResults(results, payload, inst, ctx);
+      });
+    };
+  });
+  $ZodIntersection = /* @__PURE__ */ $constructor("$ZodIntersection", (inst, def) => {
+    $ZodType.init(inst, def);
+    inst._zod.parse = (payload, ctx) => {
+      const input = payload.value;
+      const left = def.left._zod.run({ value: input, issues: [] }, ctx);
+      const right = def.right._zod.run({ value: input, issues: [] }, ctx);
+      const async = left instanceof Promise || right instanceof Promise;
+      if (async) {
+        return Promise.all([left, right]).then(([left, right]) => {
+          return handleIntersectionResults(payload, left, right);
+        });
+      }
+      return handleIntersectionResults(payload, left, right);
+    };
+  });
+  $ZodRecord = /* @__PURE__ */ $constructor("$ZodRecord", (inst, def) => {
+    $ZodType.init(inst, def);
+    const memo = globalConfig.memoizer;
+    memo?.attach(inst);
+    inst._zod.parse = (payload, ctx) => {
+      const input = payload.value;
+      if (!isPlainObject(input)) {
+        payload.issues.push({
+          expected: "record",
+          code: "invalid_type",
+          input,
+          inst
+        });
+        return payload;
+      }
+      const proms = [];
+      const values = def.keyType._zod.values;
+      if (values && !def.partial) {
+        payload.value = memo ? memo.alloc(inst, payload, {}, ctx) : {};
+        const recordKeys = new Set;
+        for (const key of values) {
+          if (typeof key === "string" || typeof key === "number" || typeof key === "symbol") {
+            recordKeys.add(typeof key === "number" ? key.toString() : key);
+            if (key === "__proto__")
+              continue;
+            const keyResult = def.keyType._zod.run({ value: key, issues: [] }, ctx);
+            if (keyResult instanceof Promise) {
+              throw new Error("Async schemas not supported in object keys currently");
+            }
+            if (keyResult.issues.length) {
+              payload.issues.push({
+                code: "invalid_key",
+                origin: "record",
+                issues: keyResult.issues.map((iss) => finalizeIssue(iss, ctx, config())),
+                input: key,
+                path: [key],
+                inst
+              });
+              continue;
+            }
+            const outKey = keyResult.value;
+            if (outKey === "__proto__")
+              continue;
+            const result = def.valueType._zod.run({ value: input[key], issues: [] }, ctx);
+            if (result instanceof Promise) {
+              proms.push(result.then((result) => {
+                if (result.issues.length) {
+                  payload.issues.push(...prefixIssues(key, result.issues));
+                }
+                payload.value[outKey] = result.value;
+              }));
+            } else {
+              if (result.issues.length) {
+                payload.issues.push(...prefixIssues(key, result.issues));
+              }
+              payload.value[outKey] = result.value;
+            }
+          }
+        }
+        let unrecognized;
+        for (const key in input) {
+          if (!recordKeys.has(key)) {
+            if (def.mode === "loose") {
+              if (key === "__proto__")
+                continue;
+              payload.value[key] = input[key];
+            } else {
+              unrecognized = unrecognized ?? [];
+              unrecognized.push(key);
+            }
+          }
+        }
+        if (unrecognized && unrecognized.length > 0) {
+          payload.issues.push({
+            code: "unrecognized_keys",
+            input,
+            inst,
+            keys: unrecognized,
+            continue: true
+          });
+        }
+      } else {
+        payload.value = memo ? memo.alloc(inst, payload, {}, ctx) : {};
+        let unrecognized;
+        for (const key of Reflect.ownKeys(input)) {
+          if (key === "__proto__")
+            continue;
+          if (!Object.prototype.propertyIsEnumerable.call(input, key))
+            continue;
+          let keyResult = def.keyType._zod.run({ value: key, issues: [] }, ctx);
+          if (keyResult instanceof Promise) {
+            throw new Error("Async schemas not supported in object keys currently");
+          }
+          const checkNumericKey = typeof key === "string" && number.test(key) && keyResult.issues.length;
+          if (checkNumericKey) {
+            const retryResult = def.keyType._zod.run({ value: Number(key), issues: [] }, ctx);
+            if (retryResult instanceof Promise) {
+              throw new Error("Async schemas not supported in object keys currently");
+            }
+            if (retryResult.issues.length === 0) {
+              keyResult = retryResult;
+            }
+          }
+          if (keyResult.issues.length) {
+            if (def.mode === "loose") {
+              payload.value[key] = input[key];
+            } else if (values) {
+              unrecognized = unrecognized ?? [];
+              unrecognized.push(key);
+            } else {
+              payload.issues.push({
+                code: "invalid_key",
+                origin: "record",
+                issues: keyResult.issues.map((iss) => finalizeIssue(iss, ctx, config())),
+                input: key,
+                path: [key],
+                inst
+              });
+            }
+            continue;
+          }
+          const outKey = keyResult.value;
+          if (outKey === "__proto__")
+            continue;
+          const result = def.valueType._zod.run({ value: input[key], issues: [] }, ctx);
+          if (result instanceof Promise) {
+            proms.push(result.then((result) => {
+              if (result.issues.length) {
+                payload.issues.push(...prefixIssues(key, result.issues));
+              }
+              payload.value[outKey] = result.value;
+            }));
+          } else {
+            if (result.issues.length) {
+              payload.issues.push(...prefixIssues(key, result.issues));
+            }
+            payload.value[outKey] = result.value;
+          }
+        }
+        if (unrecognized && unrecognized.length > 0) {
+          payload.issues.push({
+            code: "unrecognized_keys",
+            input,
+            inst,
+            keys: unrecognized,
+            continue: true
+          });
+        }
+      }
+      if (proms.length) {
+        return Promise.all(proms).then(() => payload);
+      }
+      return payload;
+    };
+  });
+  $ZodEnum = /* @__PURE__ */ $constructor("$ZodEnum", (inst, def) => {
+    $ZodType.init(inst, def);
+    const values = getEnumValues(def.entries);
+    const valuesSet = new Set(values);
+    inst._zod.values = valuesSet;
+    defineLazyInternal(inst, "pattern", (zod) => {
+      const patternValues = getEnumValues(zod.def.entries).filter((k) => propertyKeyTypes.has(typeof k));
+      return new RegExp(patternValues.length ? `^(${patternValues.map((o) => escapeRegex(o.toString())).join("|")})$` : "^[^\\s\\S]$");
+    });
+    inst._zod.parse = (payload, _ctx) => {
+      const input = payload.value;
+      if (valuesSet.has(input)) {
+        return payload;
+      }
+      payload.issues.push({
+        code: "invalid_value",
+        values,
+        input,
+        inst
+      });
+      return payload;
+    };
+  });
+  $ZodLiteral = /* @__PURE__ */ $constructor("$ZodLiteral", (inst, def) => {
+    $ZodType.init(inst, def);
+    const values = new Set(def.values);
+    inst._zod.values = values;
+    defineLazyInternal(inst, "pattern", (zod) => {
+      const vals = zod.def.values;
+      return new RegExp(vals.length ? `^(${vals.map((o) => typeof o === "string" ? escapeRegex(o) : o ? escapeRegex(o.toString()) : String(o)).join("|")})$` : "^[^\\s\\S]$");
+    });
+    inst._zod.parse = (payload, _ctx) => {
+      const input = payload.value;
+      if (values.has(input)) {
+        return payload;
+      }
+      payload.issues.push({
+        code: "invalid_value",
+        values: def.values,
+        input,
+        inst
+      });
+      return payload;
+    };
+  });
+  $ZodTransform = /* @__PURE__ */ $constructor("$ZodTransform", (inst, def) => {
+    $ZodType.init(inst, def);
+    inst._zod.optin = "optional";
+    globalConfig.memoizer?.guard(inst);
+    inst._zod.parse = (payload, ctx) => {
+      if (ctx.direction === "backward") {
+        throw new $ZodEncodeError(inst.constructor.name);
+      }
+      const _out = def.transform(payload.value, payload);
+      if (ctx.async) {
+        const output = _out instanceof Promise ? _out : Promise.resolve(_out);
+        return output.then((output) => {
+          payload.value = output;
+          return payload;
+        });
+      }
+      if (_out instanceof Promise) {
+        throw new $ZodAsyncError;
+      }
+      payload.value = _out;
+      return payload;
+    };
+  });
+  $ZodOptional = /* @__PURE__ */ $constructor("$ZodOptional", (inst, def) => {
+    $ZodType.init(inst, def);
+    defineLazyInternal(inst, "optin", (zod) => zod.def.innerType._zod.optin === "defaulted" ? "defaulted" : "optional");
+    inst._zod.optout = "optional";
+    defineLazyInternal(inst, "values", (zod) => {
+      const values = zod.def.innerType._zod.values;
+      return values ? new Set([...values, undefined]) : undefined;
+    });
+    defineLazyInternal(inst, "pattern", (zod) => {
+      const pattern = zod.def.innerType._zod.pattern;
+      return pattern ? new RegExp(`^(${cleanRegex(pattern.source)})?$`) : undefined;
+    });
+    inst._zod.parse = (payload, ctx) => {
+      if (payload.value === undefined) {
+        if (def.innerType._zod.optin !== "defaulted")
+          return payload;
+        const result = def.innerType._zod.run({ value: payload.value, issues: [] }, ctx);
+        if (result instanceof Promise)
+          return result.then((result) => handleOptionalResult(payload, result));
+        return handleOptionalResult(payload, result);
+      }
+      return def.innerType._zod.run(payload, ctx);
+    };
+  });
+  $ZodExactOptional = /* @__PURE__ */ $constructor("$ZodExactOptional", (inst, def) => {
+    $ZodOptional.init(inst, def);
+    defineLazyInternal(inst, "values", (zod) => zod.def.innerType._zod.values);
+    defineLazyInternal(inst, "pattern", (zod) => zod.def.innerType._zod.pattern);
+    inst._zod.parse = (payload, ctx) => {
+      return def.innerType._zod.run(payload, ctx);
+    };
+  });
+  $ZodNullable = /* @__PURE__ */ $constructor("$ZodNullable", (inst, def) => {
+    $ZodType.init(inst, def);
+    defineLazyInternal(inst, "optin", (zod) => zod.def.innerType._zod.optin);
+    defineLazyInternal(inst, "optout", (zod) => zod.def.innerType._zod.optout);
+    defineLazyInternal(inst, "pattern", (zod) => {
+      const pattern = zod.def.innerType._zod.pattern;
+      return pattern ? new RegExp(`^(${cleanRegex(pattern.source)}|null)$`) : undefined;
+    });
+    defineLazyInternal(inst, "values", (zod) => {
+      return zod.def.innerType._zod.values ? new Set([...zod.def.innerType._zod.values, null]) : undefined;
+    });
+    inst._zod.parse = (payload, ctx) => {
+      if (payload.value === null)
+        return payload;
+      return def.innerType._zod.run(payload, ctx);
+    };
+  });
+  $ZodDefault = /* @__PURE__ */ $constructor("$ZodDefault", (inst, def) => {
+    $ZodType.init(inst, def);
+    inst._zod.optin = "defaulted";
+    defineLazyInternal(inst, "values", (zod) => zod.def.innerType._zod.values);
+    inst._zod.parse = (payload, ctx) => {
+      if (ctx.direction === "backward") {
+        return def.innerType._zod.run(payload, ctx);
+      }
+      if (payload.value === undefined) {
+        payload.value = def.defaultValue;
+        return payload;
+      }
+      const result = def.innerType._zod.run(payload, ctx);
+      if (result instanceof Promise) {
+        return result.then((result) => handleDefaultResult(result, def));
+      }
+      return handleDefaultResult(result, def);
+    };
+  });
+  $ZodPrefault = /* @__PURE__ */ $constructor("$ZodPrefault", (inst, def) => {
+    $ZodType.init(inst, def);
+    inst._zod.optin = "defaulted";
+    defineLazyInternal(inst, "values", (zod) => zod.def.innerType._zod.values);
+    inst._zod.parse = (payload, ctx) => {
+      if (ctx.direction === "backward") {
+        return def.innerType._zod.run(payload, ctx);
+      }
+      if (payload.value === undefined) {
+        payload.value = def.defaultValue;
+      }
+      return def.innerType._zod.run(payload, ctx);
+    };
+  });
+  $ZodNonOptional = /* @__PURE__ */ $constructor("$ZodNonOptional", (inst, def) => {
+    $ZodType.init(inst, def);
+    defineLazyInternal(inst, "values", (zod) => {
+      const v = zod.def.innerType._zod.values;
+      return v ? new Set([...v].filter((x) => x !== undefined)) : undefined;
+    });
+    inst._zod.parse = (payload, ctx) => {
+      const result = def.innerType._zod.run(payload, ctx);
+      if (result instanceof Promise) {
+        return result.then((result) => handleNonOptionalResult(result, inst));
+      }
+      return handleNonOptionalResult(result, inst);
+    };
+  });
+  $ZodCatch = /* @__PURE__ */ $constructor("$ZodCatch", (inst, def) => {
+    $ZodType.init(inst, def);
+    defineLazyInternal(inst, "optin", (zod) => zod.def.innerType._zod.optin === "defaulted" ? "defaulted" : "optional");
+    defineLazyInternal(inst, "optout", (zod) => zod.def.innerType._zod.optout);
+    defineLazyInternal(inst, "values", (zod) => zod.def.innerType._zod.values);
+    inst._zod.parse = (payload, ctx) => {
+      if (ctx.direction === "backward") {
+        return def.innerType._zod.run(payload, ctx);
+      }
+      const result = def.innerType._zod.run({ value: payload.value, issues: [] }, ctx);
+      if (result instanceof Promise) {
+        return result.then((result) => handleCatchResult(payload, result, def, ctx));
+      }
+      return handleCatchResult(payload, result, def, ctx);
+    };
+  });
+  $ZodPipe = /* @__PURE__ */ $constructor("$ZodPipe", (inst, def) => {
+    $ZodType.init(inst, def);
+    defineLazyInternal(inst, "values", (zod) => zod.def.in._zod.values);
+    defineLazyInternal(inst, "optin", (zod) => zod.def.in._zod.optin);
+    defineLazyInternal(inst, "optout", (zod) => zod.def.out._zod.optout);
+    defineLazyInternal(inst, "propValues", (zod) => zod.def.in._zod.propValues);
+    inst._zod.parse = (payload, ctx) => {
+      if (ctx.direction === "backward") {
+        const right = def.out._zod.run(payload, ctx);
+        if (right instanceof Promise) {
+          return right.then((right) => handlePipeResult(right, def.in, ctx));
+        }
+        return handlePipeResult(right, def.in, ctx);
+      }
+      const left = def.in._zod.run(payload, ctx);
+      if (left instanceof Promise) {
+        return left.then((left) => handlePipeResult(left, def.out, ctx));
+      }
+      return handlePipeResult(left, def.out, ctx);
+    };
+  });
+  $ZodPreprocess = /* @__PURE__ */ $constructor("$ZodPreprocess", (inst, def) => {
+    $ZodPipe.init(inst, def);
+  });
+  $ZodReadonly = /* @__PURE__ */ $constructor("$ZodReadonly", (inst, def) => {
+    $ZodType.init(inst, def);
+    defineLazyInternal(inst, "propValues", (zod) => zod.def.innerType._zod.propValues);
+    defineLazyInternal(inst, "values", (zod) => zod.def.innerType._zod.values);
+    defineLazyInternal(inst, "optin", (zod) => zod.def.innerType?._zod?.optin);
+    defineLazyInternal(inst, "optout", (zod) => zod.def.innerType?._zod?.optout);
+    inst._zod.parse = (payload, ctx) => {
+      if (ctx.direction === "backward") {
+        return def.innerType._zod.run(payload, ctx);
+      }
+      const result = def.innerType._zod.run(payload, ctx);
+      if (result instanceof Promise) {
+        return result.then(handleReadonlyResult);
+      }
+      return handleReadonlyResult(result);
+    };
+  });
+  $ZodCustom = /* @__PURE__ */ $constructor("$ZodCustom", (inst, def) => {
+    $ZodCheck.init(inst, def);
+    $ZodType.init(inst, def);
+    inst._zod.parse = (payload, _) => {
+      return payload;
+    };
+    inst._zod.check = (payload) => {
+      const input = payload.value;
+      const r = def.fn(input);
+      if (r instanceof Promise) {
+        return r.then((r) => handleRefineResult(r, payload, input, inst));
+      }
+      handleRefineResult(r, payload, input, inst);
+      return;
+    };
+  });
+});
+
 // node_modules/zod/v4/core/memoizer.js
-class $ZodCyclicError extends Error {
-  constructor() {
-    super(`Cannot parse a reference cycle that closes through a transform`);
-    this.name = "ZodCyclicError";
-  }
-}
-var STATE = "~memo";
-var NO_ISSUES = [];
 function isRef(value) {
   return value !== null && typeof value === "object";
 }
 function cloneIssues(issues) {
   return issues.map((iss) => iss.path ? { ...iss, path: iss.path.slice() } : { ...iss });
 }
-var recursive = /* @__PURE__ */ new WeakMap;
-var NONE = 0;
-var ASSUMED = 1;
-var PROVEN = 2;
 function isRecursive(inst, stack, resolve) {
   const cached = recursive.get(inst);
   if (cached !== undefined)
@@ -4208,108 +3457,6 @@ function bucketFor(state, inst) {
   }
   return bucket;
 }
-var handoff;
-var open = [];
-var memo = {
-  alloc(_inst, payload, empty) {
-    const bucket = handoff;
-    if (!bucket)
-      return empty;
-    handoff = undefined;
-    const entry = { value: empty, issues: null };
-    bucket.set(payload.value, entry);
-    open.push(entry);
-    return empty;
-  },
-  guard(inst) {
-    var _a;
-    (_a = inst._zod).deferred ?? (_a.deferred = []);
-    inst._zod.deferred.push(() => {
-      const base = inst._zod.parse;
-      const wrapped = (payload, ctx) => {
-        if (ctx.direction !== "backward" && isBackEdge(ctx, payload.value))
-          throw new $ZodCyclicError;
-        return base(payload, ctx);
-      };
-      inst._zod.parse = wrapped;
-      if (inst._zod.run === base)
-        inst._zod.run = wrapped;
-    });
-  },
-  attach(inst) {
-    var _a;
-    let isRecursiveInst;
-    let rechecked = false;
-    let lastCtx;
-    let lastBucket;
-    (_a = inst._zod).deferred ?? (_a.deferred = []);
-    inst._zod.deferred.push(() => {
-      const base = inst._zod.parse;
-      const wrapped = (payload, ctx) => {
-        if (isRecursiveInst === undefined) {
-          const walked = isRecursive(inst, new Set, false);
-          if (walked === NONE) {
-            inst._zod.parse = base;
-            if (inst._zod.run === wrapped)
-              inst._zod.run = base;
-            return base(payload, ctx);
-          }
-          if (walked === PROVEN || rechecked)
-            isRecursiveInst = true;
-          else
-            rechecked = true;
-        }
-        const input = payload.value;
-        if (!isRef(input))
-          return base(payload, ctx);
-        let state = ctx[STATE];
-        if (!state) {
-          state = { buckets: new WeakMap, backEdges: undefined };
-          ctx[STATE] = state;
-        }
-        let bucket;
-        if (lastCtx === ctx) {
-          bucket = lastBucket;
-        } else {
-          bucket = bucketFor(state, inst);
-          lastCtx = ctx;
-          lastBucket = bucket;
-        }
-        const hit = bucket.get(input);
-        if (hit) {
-          payload.value = hit.value;
-          if (hit.issues) {
-            if (hit.issues.length)
-              payload.issues.push(...cloneIssues(hit.issues));
-          } else {
-            payload.memo = true;
-            state.backEdges ?? (state.backEdges = new WeakSet);
-            state.backEdges.add(hit.value);
-          }
-          return payload;
-        }
-        handoff = bucket;
-        const depth = open.length;
-        const result = base(payload, ctx);
-        handoff = undefined;
-        const entry = open.length > depth ? open.pop() : undefined;
-        if (result instanceof Promise) {
-          return result.then((r) => {
-            if (entry)
-              entry.issues = r.issues.length ? cloneIssues(r.issues) : NO_ISSUES;
-            return r;
-          });
-        }
-        if (entry)
-          entry.issues = result.issues.length ? cloneIssues(result.issues) : NO_ISSUES;
-        return result;
-      };
-      inst._zod.parse = wrapped;
-      if (inst._zod.run === base)
-        inst._zod.run = wrapped;
-    });
-  }
-};
 function memoizer() {
   return memo;
 }
@@ -4317,7 +3464,126 @@ function isBackEdge(ctx, value) {
   const backEdges = ctx[STATE]?.backEdges;
   return backEdges !== undefined && isRef(value) && backEdges.has(value);
 }
+var $ZodCyclicError, STATE = "~memo", NO_ISSUES, recursive, NONE = 0, ASSUMED = 1, PROVEN = 2, handoff, open, memo;
+var init_memoizer = __esm(() => {
+  init_util();
+  $ZodCyclicError = class $ZodCyclicError extends Error {
+    constructor() {
+      super(`Cannot parse a reference cycle that closes through a transform`);
+      this.name = "ZodCyclicError";
+    }
+  };
+  NO_ISSUES = [];
+  recursive = /* @__PURE__ */ new WeakMap;
+  open = [];
+  memo = {
+    alloc(_inst, payload, empty) {
+      const bucket = handoff;
+      if (!bucket)
+        return empty;
+      handoff = undefined;
+      const entry = { value: empty, issues: null };
+      bucket.set(payload.value, entry);
+      open.push(entry);
+      return empty;
+    },
+    guard(inst) {
+      var _a;
+      (_a = inst._zod).deferred ?? (_a.deferred = []);
+      inst._zod.deferred.push(() => {
+        const base = inst._zod.parse;
+        const wrapped = (payload, ctx) => {
+          if (ctx.direction !== "backward" && isBackEdge(ctx, payload.value))
+            throw new $ZodCyclicError;
+          return base(payload, ctx);
+        };
+        inst._zod.parse = wrapped;
+        if (inst._zod.run === base)
+          inst._zod.run = wrapped;
+      });
+    },
+    attach(inst) {
+      var _a;
+      let isRecursiveInst;
+      let rechecked = false;
+      let lastCtx;
+      let lastBucket;
+      (_a = inst._zod).deferred ?? (_a.deferred = []);
+      inst._zod.deferred.push(() => {
+        const base = inst._zod.parse;
+        const wrapped = (payload, ctx) => {
+          if (isRecursiveInst === undefined) {
+            const walked = isRecursive(inst, new Set, false);
+            if (walked === NONE) {
+              inst._zod.parse = base;
+              if (inst._zod.run === wrapped)
+                inst._zod.run = base;
+              return base(payload, ctx);
+            }
+            if (walked === PROVEN || rechecked)
+              isRecursiveInst = true;
+            else
+              rechecked = true;
+          }
+          const input = payload.value;
+          if (!isRef(input))
+            return base(payload, ctx);
+          let state = ctx[STATE];
+          if (!state) {
+            state = { buckets: new WeakMap, backEdges: undefined };
+            ctx[STATE] = state;
+          }
+          let bucket;
+          if (lastCtx === ctx) {
+            bucket = lastBucket;
+          } else {
+            bucket = bucketFor(state, inst);
+            lastCtx = ctx;
+            lastBucket = bucket;
+          }
+          const hit = bucket.get(input);
+          if (hit) {
+            payload.value = hit.value;
+            if (hit.issues) {
+              if (hit.issues.length)
+                payload.issues.push(...cloneIssues(hit.issues));
+            } else {
+              payload.memo = true;
+              state.backEdges ?? (state.backEdges = new WeakSet);
+              state.backEdges.add(hit.value);
+            }
+            return payload;
+          }
+          handoff = bucket;
+          const depth = open.length;
+          const result = base(payload, ctx);
+          handoff = undefined;
+          const entry = open.length > depth ? open.pop() : undefined;
+          if (result instanceof Promise) {
+            return result.then((r) => {
+              if (entry)
+                entry.issues = r.issues.length ? cloneIssues(r.issues) : NO_ISSUES;
+              return r;
+            });
+          }
+          if (entry)
+            entry.issues = result.issues.length ? cloneIssues(result.issues) : NO_ISSUES;
+          return result;
+        };
+        inst._zod.parse = wrapped;
+        if (inst._zod.run === base)
+          inst._zod.run = wrapped;
+      });
+    }
+  };
+});
+
 // node_modules/zod/v4/locales/en.js
+function en_default() {
+  return {
+    localeError: error()
+  };
+}
 var error = () => {
   const Sizable = {
     string: { unit: "characters", verb: "to have" },
@@ -4434,13 +3700,14 @@ var error = () => {
     }
   };
 };
-function en_default() {
-  return {
-    localeError: error()
-  };
-}
+var init_en = __esm(() => {
+  init_util();
+});
+
+// node_modules/zod/v4/locales/index.js
+var init_locales = () => {};
+
 // node_modules/zod/v4/core/registries.js
-var _a2;
 class $ZodRegistry {
   constructor() {
     this._map = new WeakMap;
@@ -4484,8 +3751,53 @@ class $ZodRegistry {
 function registry() {
   return new $ZodRegistry;
 }
-(_a2 = globalThis).__zod_globalRegistry ?? (_a2.__zod_globalRegistry = registry());
-var globalRegistry = globalThis.__zod_globalRegistry;
+var _a2, globalRegistry;
+var init_registries = __esm(() => {
+  (_a2 = globalThis).__zod_globalRegistry ?? (_a2.__zod_globalRegistry = registry());
+  globalRegistry = globalThis.__zod_globalRegistry;
+});
+
+// node_modules/zod/v4/core/compile.js
+var INVALID, FALLBACK_FLAG, WHEN_DEFAULTED_CHECKS, PATTERN_IS_COMPLETE;
+var init_compile = __esm(() => {
+  INVALID = Symbol.for("zod.compile.invalid");
+  FALLBACK_FLAG = Symbol.for("zod.compile.fallback");
+  WHEN_DEFAULTED_CHECKS = new Set([
+    "max_size",
+    "min_size",
+    "size_equals",
+    "max_length",
+    "min_length",
+    "length_equals"
+  ]);
+  PATTERN_IS_COMPLETE = new Set([
+    "cidrv4",
+    "cuid",
+    "cuid2",
+    "date",
+    "datetime",
+    "duration",
+    "e164",
+    "email",
+    "emoji",
+    "ends_with",
+    "guid",
+    "includes",
+    "ipv4",
+    "ksuid",
+    "lowercase",
+    "mac",
+    "nanoid",
+    "regex",
+    "starts_with",
+    "time",
+    "ulid",
+    "uppercase",
+    "uuid",
+    "xid"
+  ]);
+});
+
 // node_modules/zod/v4/core/api.js
 function snapshotChecks(def) {
   if (def.checks)
@@ -4934,6 +4246,11 @@ function _check(fn, params) {
   ch._zod.check = fn;
   return ch;
 }
+var init_api = __esm(() => {
+  init_checks();
+  init_util();
+});
+
 // node_modules/zod/v4/core/to-json-schema.js
 function assignProps(target, ...sources) {
   for (const source of sources) {
@@ -5151,8 +4468,6 @@ function compactTypeUnion(schema) {
   delete schema.anyOf;
   schema.type = types.length === 1 ? types[0] : types;
 }
-var FOLDABLE_KEYS = new Set(["type", "properties", "required", "additionalProperties"]);
-var UNION_KEYS = ["oneOf", "anyOf"];
 function undeclaredConstraint(member) {
   const extra = member.additionalProperties;
   if (extra === undefined || extra === false || typeof extra !== "object" || extra === null)
@@ -5444,80 +4759,26 @@ function isTransforming(_schema, _ctx) {
   }
   return false;
 }
-var createToJSONSchemaMethod = (schema, processors = {}) => (params) => {
+var FOLDABLE_KEYS, UNION_KEYS, createToJSONSchemaMethod = (schema, processors = {}) => (params) => {
   const ctx = initializeContext({ ...params, processors });
   processSchema(schema, ctx);
   extractDefs(ctx, schema);
   return finalize(ctx, schema);
-};
-var createStandardJSONSchemaMethod = (schema, io, processors = {}) => (params) => {
+}, createStandardJSONSchemaMethod = (schema, io, processors = {}) => (params) => {
   const { libraryOptions, target } = params ?? {};
   const ctx = initializeContext({ ...libraryOptions ?? {}, target, io, processors });
   processSchema(schema, ctx);
   extractDefs(ctx, schema);
   return finalize(ctx, schema);
 };
+var init_to_json_schema = __esm(() => {
+  init_registries();
+  init_util();
+  FOLDABLE_KEYS = new Set(["type", "properties", "required", "additionalProperties"]);
+  UNION_KEYS = ["oneOf", "anyOf"];
+});
+
 // node_modules/zod/v4/core/json-schema-processors.js
-var narrowMin = (agg, key, value) => {
-  if (agg[key] === undefined || value > agg[key])
-    agg[key] = value;
-};
-var narrowMax = (agg, key, value) => {
-  if (agg[key] === undefined || value < agg[key])
-    agg[key] = value;
-};
-var narrowBoth = (agg, value) => {
-  narrowMin(agg, "minimum", value);
-  narrowMax(agg, "maximum", value);
-};
-var addDivisor = (agg, value) => {
-  agg.multipleOf ?? (agg.multipleOf = []);
-  if (!agg.multipleOf.includes(value))
-    agg.multipleOf.push(value);
-};
-var addPattern = (agg, pattern) => {
-  agg.patterns ?? (agg.patterns = new Set);
-  agg.patterns.add(pattern);
-};
-var intersectMime = (agg, mime) => {
-  agg.mime = agg.mime ? agg.mime.filter((m) => mime.includes(m)) : [...mime];
-};
-var setFormat = (agg, format) => {
-  agg.format = format;
-  if (format.includes("int"))
-    agg.isInt = true;
-};
-var minContributor = (agg, def) => narrowMin(agg, "minimum", def.minimum);
-var maxContributor = (agg, def) => narrowMax(agg, "maximum", def.maximum);
-var formatContributor = (ranges) => (agg, def) => {
-  setFormat(agg, def.format);
-  const [minimum, maximum] = ranges[def.format];
-  narrowMin(agg, "minimum", minimum);
-  narrowMax(agg, "maximum", maximum);
-};
-var contributors = {
-  greater_than: (agg, def) => narrowMin(agg, def.inclusive ? "minimum" : "exclusiveMinimum", def.value),
-  less_than: (agg, def) => narrowMax(agg, def.inclusive ? "maximum" : "exclusiveMaximum", def.value),
-  multiple_of: (agg, def) => addDivisor(agg, def.value),
-  number_format: formatContributor(NUMBER_FORMAT_RANGES),
-  bigint_format: formatContributor(BIGINT_FORMAT_RANGES),
-  min_length: minContributor,
-  max_length: maxContributor,
-  length_equals: (agg, def) => narrowBoth(agg, def.length),
-  min_size: minContributor,
-  max_size: maxContributor,
-  size_equals: (agg, def) => narrowBoth(agg, def.size),
-  string_format: (agg, def) => {
-    setFormat(agg, def.format);
-    if (def.pattern)
-      addPattern(agg, def.pattern);
-    if (def.format === "base64" || def.format === "base64url")
-      agg.contentEncoding = def.format;
-    if (def.local || def.precision === -1)
-      agg.laxFormat = true;
-  },
-  mime_type: (agg, def) => intersectMime(agg, def.mime)
-};
 function aggregateChecks(schema) {
   const agg = {};
   const def = schema._zod.def;
@@ -5546,19 +4807,119 @@ function aggregateChecks(schema) {
     addPattern(agg, pattern);
   return agg;
 }
-var formatMap = {
-  guid: "uuid",
-  url: "uri",
-  datetime: "date-time",
-  json_string: "json-string",
-  regex: ""
-};
-var exactPatterns = new Map([
-  [base64Charset, base64],
-  [base64urlCharset, base64url]
-]);
-var exactPattern = (p) => exactPatterns.get(p) ?? p;
-var stringProcessor = (schema, ctx, _json, _params) => {
+function inputOptin(schema) {
+  const def = schema._zod.def;
+  if (def.type === "pipe" && def.in._zod.traits.has("$ZodTransform")) {
+    return inputOptin(def.out);
+  }
+  if (def.type === "catch") {
+    return inputOptin(def.innerType);
+  }
+  return schema._zod.optin;
+}
+function stringifyKeyNames(bySchema, json, visited) {
+  if (json.$ref) {
+    if (visited.has(json))
+      return json;
+    visited.add(json);
+    const def = bySchema.get(json)?.def;
+    if (!def)
+      return json;
+    const inlined = stringifyKeyNames(bySchema, def, visited);
+    return inlined === def ? json : inlined;
+  }
+  for (const keyword of ["anyOf", "oneOf"]) {
+    const branches = json[keyword];
+    if (!Array.isArray(branches))
+      continue;
+    const mapped = branches.map((branch) => stringifyKeyNames(bySchema, branch, visited));
+    if (mapped.some((branch, i) => branch !== branches[i]))
+      json = { ...json, [keyword]: mapped };
+  }
+  const types = Array.isArray(json.type) ? json.type : [json.type];
+  const numericType = !types.includes("string") && types.some((t) => t === "number" || t === "integer");
+  const values = json.enum ?? (json.const !== undefined ? [json.const] : undefined);
+  if (!numericType && !values?.some((v) => typeof v === "number"))
+    return json;
+  const { minimum, maximum, exclusiveMinimum, exclusiveMaximum, multipleOf, format, id, ...rest } = json;
+  if (rest.enum)
+    rest.enum = rest.enum.map((v) => typeof v === "number" ? String(v) : v);
+  else if (typeof rest.const === "number")
+    rest.const = String(rest.const);
+  if (!numericType)
+    return rest;
+  rest.type = "string";
+  if (!values)
+    rest.pattern = (types.includes("number") ? number : integer).source;
+  return rest;
+}
+function rewriteKeyNames(ctx) {
+  const bySchema = new Map;
+  for (const entry of ctx.seen.values()) {
+    if (entry.def && !bySchema.has(entry.schema))
+      bySchema.set(entry.schema, entry);
+  }
+  const rewrites = new Map;
+  for (const record of pendingRecords.get(ctx) ?? []) {
+    const seen = ctx.seen.get(record);
+    const names = (seen?.def ?? seen?.schema)?.propertyNames;
+    if (!names || names === true || rewrites.has(names))
+      continue;
+    const rewritten = stringifyKeyNames(bySchema, names, new Set);
+    if (rewritten !== names)
+      rewrites.set(names, rewritten);
+  }
+  if (!rewrites.size)
+    return;
+  for (const entry of ctx.seen.values()) {
+    for (const carrier of [entry.schema, entry.def]) {
+      const rewritten = carrier && rewrites.get(carrier.propertyNames);
+      if (rewritten)
+        carrier.propertyNames = rewritten;
+    }
+  }
+}
+function serializeDefaultValue(value, schema, ctx, json, params) {
+  let unrepresentable = false;
+  const serialized = JSON.stringify(value, (_, val) => {
+    if (typeof val !== "bigint")
+      return val;
+    unrepresentable = true;
+    return null;
+  });
+  if (!unrepresentable)
+    return JSON.parse(serialized);
+  handleUnrepresentable(schema, ctx, json, params, "BigInt defaults cannot be represented in JSON Schema");
+  return UNREPRESENTABLE_DEFAULT;
+}
+var narrowMin = (agg, key, value) => {
+  if (agg[key] === undefined || value > agg[key])
+    agg[key] = value;
+}, narrowMax = (agg, key, value) => {
+  if (agg[key] === undefined || value < agg[key])
+    agg[key] = value;
+}, narrowBoth = (agg, value) => {
+  narrowMin(agg, "minimum", value);
+  narrowMax(agg, "maximum", value);
+}, addDivisor = (agg, value) => {
+  agg.multipleOf ?? (agg.multipleOf = []);
+  if (!agg.multipleOf.includes(value))
+    agg.multipleOf.push(value);
+}, addPattern = (agg, pattern) => {
+  agg.patterns ?? (agg.patterns = new Set);
+  agg.patterns.add(pattern);
+}, intersectMime = (agg, mime) => {
+  agg.mime = agg.mime ? agg.mime.filter((m) => mime.includes(m)) : [...mime];
+}, setFormat = (agg, format) => {
+  agg.format = format;
+  if (format.includes("int"))
+    agg.isInt = true;
+}, minContributor = (agg, def) => narrowMin(agg, "minimum", def.minimum), maxContributor = (agg, def) => narrowMax(agg, "maximum", def.maximum), formatContributor = (ranges) => (agg, def) => {
+  setFormat(agg, def.format);
+  const [minimum, maximum] = ranges[def.format];
+  narrowMin(agg, "minimum", minimum);
+  narrowMax(agg, "maximum", maximum);
+}, contributors, formatMap, exactPatterns, exactPattern = (p) => exactPatterns.get(p) ?? p, stringProcessor = (schema, ctx, _json, _params) => {
   const json = _json;
   json.type = "string";
   const { minimum, maximum, format, patterns, contentEncoding, laxFormat } = aggregateChecks(schema);
@@ -5589,8 +4950,7 @@ var stringProcessor = (schema, ctx, _json, _params) => {
       ];
     }
   }
-};
-var numberProcessor = (schema, ctx, _json, params) => {
+}, numberProcessor = (schema, ctx, _json, params) => {
   const json = _json;
   const { minimum, maximum, multipleOf, exclusiveMaximum, exclusiveMinimum, isInt } = aggregateChecks(schema);
   json.type = isInt ? "integer" : "number";
@@ -5631,15 +4991,11 @@ var numberProcessor = (schema, ctx, _json, params) => {
     if (rest.length)
       json.allOf = [...json.allOf ?? [], ...rest.map((m) => ({ multipleOf: m }))];
   }
-};
-var booleanProcessor = (_schema, _ctx, json, _params) => {
+}, booleanProcessor = (_schema, _ctx, json, _params) => {
   json.type = "boolean";
-};
-var neverProcessor = (_schema, _ctx, json, _params) => {
+}, neverProcessor = (_schema, _ctx, json, _params) => {
   json.not = {};
-};
-var unknownProcessor = (_schema, _ctx, _json, _params) => {};
-var enumProcessor = (schema, _ctx, json, _params) => {
+}, unknownProcessor = (_schema, _ctx, _json, _params) => {}, enumProcessor = (schema, _ctx, json, _params) => {
   const def = schema._zod.def;
   const values = getEnumValues(def.entries);
   if (values.length === 0) {
@@ -5651,8 +5007,7 @@ var enumProcessor = (schema, _ctx, json, _params) => {
   if (values.every((v) => typeof v === "string"))
     json.type = "string";
   json.enum = values;
-};
-var literalProcessor = (schema, ctx, json, params) => {
+}, literalProcessor = (schema, ctx, json, params) => {
   const def = schema._zod.def;
   if (def.values.length === 0) {
     json.not = {};
@@ -5690,14 +5045,11 @@ var literalProcessor = (schema, ctx, json, params) => {
       json.type = "null";
     json.enum = vals;
   }
-};
-var customProcessor = (schema, ctx, json, params) => {
+}, customProcessor = (schema, ctx, json, params) => {
   handleUnrepresentable(schema, ctx, json, params, "Custom types cannot be represented in JSON Schema");
-};
-var transformProcessor = (schema, ctx, json, params) => {
+}, transformProcessor = (schema, ctx, json, params) => {
   handleUnrepresentable(schema, ctx, json, params, "Transforms cannot be represented in JSON Schema");
-};
-var arrayProcessor = (schema, ctx, _json, params) => {
+}, arrayProcessor = (schema, ctx, _json, params) => {
   const json = _json;
   const def = schema._zod.def;
   const { minimum, maximum } = aggregateChecks(schema);
@@ -5710,18 +5062,7 @@ var arrayProcessor = (schema, ctx, _json, params) => {
     ...params,
     path: [...params.path, "items"]
   });
-};
-function inputOptin(schema) {
-  const def = schema._zod.def;
-  if (def.type === "pipe" && def.in._zod.traits.has("$ZodTransform")) {
-    return inputOptin(def.out);
-  }
-  if (def.type === "catch") {
-    return inputOptin(def.innerType);
-  }
-  return schema._zod.optin;
-}
-var objectProcessor = (schema, ctx, _json, params) => {
+}, objectProcessor = (schema, ctx, _json, params) => {
   const json = _json;
   const def = schema._zod.def;
   const shape = def.shape;
@@ -5758,8 +5099,7 @@ var objectProcessor = (schema, ctx, _json, params) => {
       path: [...params.path, "additionalProperties"]
     });
   }
-};
-var unionProcessor = (schema, ctx, json, params) => {
+}, unionProcessor = (schema, ctx, json, params) => {
   const def = schema._zod.def;
   const isExclusive = def.inclusive === false;
   const options = def.options.map((x, i) => processSchema(x, ctx, {
@@ -5771,8 +5111,7 @@ var unionProcessor = (schema, ctx, json, params) => {
   } else {
     json.anyOf = options;
   }
-};
-var intersectionProcessor = (schema, ctx, json, params) => {
+}, intersectionProcessor = (schema, ctx, json, params) => {
   const def = schema._zod.def;
   const a = processSchema(def.left, ctx, {
     ...params,
@@ -5789,71 +5128,7 @@ var intersectionProcessor = (schema, ctx, json, params) => {
   ];
   json.allOf = allOf;
   ctx.intersections.push(allOf);
-};
-function stringifyKeyNames(bySchema, json, visited) {
-  if (json.$ref) {
-    if (visited.has(json))
-      return json;
-    visited.add(json);
-    const def = bySchema.get(json)?.def;
-    if (!def)
-      return json;
-    const inlined = stringifyKeyNames(bySchema, def, visited);
-    return inlined === def ? json : inlined;
-  }
-  for (const keyword of ["anyOf", "oneOf"]) {
-    const branches = json[keyword];
-    if (!Array.isArray(branches))
-      continue;
-    const mapped = branches.map((branch) => stringifyKeyNames(bySchema, branch, visited));
-    if (mapped.some((branch, i) => branch !== branches[i]))
-      json = { ...json, [keyword]: mapped };
-  }
-  const types = Array.isArray(json.type) ? json.type : [json.type];
-  const numericType = !types.includes("string") && types.some((t) => t === "number" || t === "integer");
-  const values = json.enum ?? (json.const !== undefined ? [json.const] : undefined);
-  if (!numericType && !values?.some((v) => typeof v === "number"))
-    return json;
-  const { minimum, maximum, exclusiveMinimum, exclusiveMaximum, multipleOf, format, id, ...rest } = json;
-  if (rest.enum)
-    rest.enum = rest.enum.map((v) => typeof v === "number" ? String(v) : v);
-  else if (typeof rest.const === "number")
-    rest.const = String(rest.const);
-  if (!numericType)
-    return rest;
-  rest.type = "string";
-  if (!values)
-    rest.pattern = (types.includes("number") ? number : integer).source;
-  return rest;
-}
-var pendingRecords = new WeakMap;
-function rewriteKeyNames(ctx) {
-  const bySchema = new Map;
-  for (const entry of ctx.seen.values()) {
-    if (entry.def && !bySchema.has(entry.schema))
-      bySchema.set(entry.schema, entry);
-  }
-  const rewrites = new Map;
-  for (const record of pendingRecords.get(ctx) ?? []) {
-    const seen = ctx.seen.get(record);
-    const names = (seen?.def ?? seen?.schema)?.propertyNames;
-    if (!names || names === true || rewrites.has(names))
-      continue;
-    const rewritten = stringifyKeyNames(bySchema, names, new Set);
-    if (rewritten !== names)
-      rewrites.set(names, rewritten);
-  }
-  if (!rewrites.size)
-    return;
-  for (const entry of ctx.seen.values()) {
-    for (const carrier of [entry.schema, entry.def]) {
-      const rewritten = carrier && rewrites.get(carrier.propertyNames);
-      if (rewritten)
-        carrier.propertyNames = rewritten;
-    }
-  }
-}
-var recordProcessor = (schema, ctx, _json, params) => {
+}, pendingRecords, recordProcessor = (schema, ctx, _json, params) => {
   const json = _json;
   const def = schema._zod.def;
   json.type = "object";
@@ -5895,8 +5170,7 @@ var recordProcessor = (schema, ctx, _json, params) => {
       json.required = validKeyValues.map(String);
     }
   }
-};
-var nullableProcessor = (schema, ctx, json, params) => {
+}, nullableProcessor = (schema, ctx, json, params) => {
   const def = schema._zod.def;
   const inner = processSchema(def.innerType, ctx, params);
   const seen = ctx.seen.get(schema);
@@ -5906,28 +5180,12 @@ var nullableProcessor = (schema, ctx, json, params) => {
   } else {
     json.anyOf = [inner, { type: "null" }];
   }
-};
-var nonoptionalProcessor = (schema, ctx, _json, params) => {
+}, nonoptionalProcessor = (schema, ctx, _json, params) => {
   const def = schema._zod.def;
   processSchema(def.innerType, ctx, params);
   const seen = ctx.seen.get(schema);
   seen.ref = def.innerType;
-};
-var UNREPRESENTABLE_DEFAULT = Symbol();
-function serializeDefaultValue(value, schema, ctx, json, params) {
-  let unrepresentable = false;
-  const serialized = JSON.stringify(value, (_, val) => {
-    if (typeof val !== "bigint")
-      return val;
-    unrepresentable = true;
-    return null;
-  });
-  if (!unrepresentable)
-    return JSON.parse(serialized);
-  handleUnrepresentable(schema, ctx, json, params, "BigInt defaults cannot be represented in JSON Schema");
-  return UNREPRESENTABLE_DEFAULT;
-}
-var defaultProcessor = (schema, ctx, json, params) => {
+}, UNREPRESENTABLE_DEFAULT, defaultProcessor = (schema, ctx, json, params) => {
   const def = schema._zod.def;
   processSchema(def.innerType, ctx, params);
   const seen = ctx.seen.get(schema);
@@ -5935,8 +5193,7 @@ var defaultProcessor = (schema, ctx, json, params) => {
   const value = serializeDefaultValue(def.defaultValue, schema, ctx, json, params);
   if (value !== UNREPRESENTABLE_DEFAULT)
     json.default = value;
-};
-var prefaultProcessor = (schema, ctx, json, params) => {
+}, prefaultProcessor = (schema, ctx, json, params) => {
   const def = schema._zod.def;
   processSchema(def.innerType, ctx, params);
   const seen = ctx.seen.get(schema);
@@ -5946,8 +5203,7 @@ var prefaultProcessor = (schema, ctx, json, params) => {
   const value = serializeDefaultValue(def.defaultValue, schema, ctx, json, params);
   if (value !== UNREPRESENTABLE_DEFAULT)
     json._prefault = value;
-};
-var catchProcessor = (schema, ctx, json, params) => {
+}, catchProcessor = (schema, ctx, json, params) => {
   const def = schema._zod.def;
   processSchema(def.innerType, ctx, params);
   const seen = ctx.seen.get(schema);
@@ -5960,30 +5216,96 @@ var catchProcessor = (schema, ctx, json, params) => {
     return;
   }
   json.default = catchValue;
-};
-var pipeProcessor = (schema, ctx, _json, params) => {
+}, pipeProcessor = (schema, ctx, _json, params) => {
   const def = schema._zod.def;
   const inIsTransform = def.in._zod.traits.has("$ZodTransform");
   const innerType = ctx.io === "input" ? inIsTransform ? def.out : def.in : def.out;
   processSchema(innerType, ctx, params);
   const seen = ctx.seen.get(schema);
   seen.ref = innerType;
-};
-var readonlyProcessor = (schema, ctx, json, params) => {
+}, readonlyProcessor = (schema, ctx, json, params) => {
   const def = schema._zod.def;
   processSchema(def.innerType, ctx, params);
   const seen = ctx.seen.get(schema);
   seen.ref = def.innerType;
   json.readOnly = true;
-};
-var optionalProcessor = (schema, ctx, _json, params) => {
+}, optionalProcessor = (schema, ctx, _json, params) => {
   const def = schema._zod.def;
   processSchema(def.innerType, ctx, params);
   const seen = ctx.seen.get(schema);
   seen.ref = def.innerType;
 };
+var init_json_schema_processors = __esm(() => {
+  init_regexes();
+  init_schemas();
+  init_to_json_schema();
+  init_util();
+  contributors = {
+    greater_than: (agg, def) => narrowMin(agg, def.inclusive ? "minimum" : "exclusiveMinimum", def.value),
+    less_than: (agg, def) => narrowMax(agg, def.inclusive ? "maximum" : "exclusiveMaximum", def.value),
+    multiple_of: (agg, def) => addDivisor(agg, def.value),
+    number_format: formatContributor(NUMBER_FORMAT_RANGES),
+    bigint_format: formatContributor(BIGINT_FORMAT_RANGES),
+    min_length: minContributor,
+    max_length: maxContributor,
+    length_equals: (agg, def) => narrowBoth(agg, def.length),
+    min_size: minContributor,
+    max_size: maxContributor,
+    size_equals: (agg, def) => narrowBoth(agg, def.size),
+    string_format: (agg, def) => {
+      setFormat(agg, def.format);
+      if (def.pattern)
+        addPattern(agg, def.pattern);
+      if (def.format === "base64" || def.format === "base64url")
+        agg.contentEncoding = def.format;
+      if (def.local || def.precision === -1)
+        agg.laxFormat = true;
+    },
+    mime_type: (agg, def) => intersectMime(agg, def.mime)
+  };
+  formatMap = {
+    guid: "uuid",
+    url: "uri",
+    datetime: "date-time",
+    json_string: "json-string",
+    regex: ""
+  };
+  exactPatterns = new Map([
+    [base64Charset, base64],
+    [base64urlCharset, base64url]
+  ]);
+  pendingRecords = new WeakMap;
+  UNREPRESENTABLE_DEFAULT = Symbol();
+});
+
+// node_modules/zod/v4/core/json-schema.js
+var init_json_schema = () => {};
+
+// node_modules/zod/v4/core/index.js
+var init_core2 = __esm(() => {
+  init_util();
+  init_regexes();
+  init_locales();
+  init_json_schema();
+  init_core();
+  init_parse();
+  init_errors();
+  init_schemas();
+  init_memoizer();
+  init_checks();
+  init_versions();
+  init_registries();
+  init_compile();
+  init_api();
+  init_to_json_schema();
+});
+
+// node_modules/zod/v4/classic/checks.js
+var init_checks2 = __esm(() => {
+  init_core2();
+});
+
 // node_modules/zod/v4/classic/errors.js
-var _installedErrorProtos = /* @__PURE__ */ new WeakSet([Object.prototype, Error.prototype]);
 function _lazyMethod(proto, key, make) {
   Object.defineProperty(proto, key, {
     configurable: true,
@@ -5998,7 +5320,7 @@ function _lazyMethod(proto, key, make) {
     }
   });
 }
-var initializer2 = (inst, issues) => {
+var _installedErrorProtos, initializer2 = (inst, issues) => {
   $ZodError.init(inst, issues);
   inst.name = "ZodError";
   const proto = Object.getPrototypeOf(inst);
@@ -6022,24 +5344,36 @@ var initializer2 = (inst, issues) => {
       return this.issues.length === 0;
     }
   });
-};
-var ZodRealError = /* @__PURE__ */ $constructor("ZodError", initializer2, undefined, {
-  Parent: Error
+}, ZodRealError;
+var init_errors2 = __esm(() => {
+  init_core2();
+  init_core2();
+  init_util();
+  _installedErrorProtos = /* @__PURE__ */ new WeakSet([Object.prototype, Error.prototype]);
+  ZodRealError = /* @__PURE__ */ $constructor("ZodError", initializer2, undefined, {
+    Parent: Error
+  });
 });
 
 // node_modules/zod/v4/classic/parse.js
-var parse2 = /* @__PURE__ */ _parse(ZodRealError);
-var parseAsync = /* @__PURE__ */ _parseAsync(ZodRealError);
-var safeParse = /* @__PURE__ */ _safeParse(ZodRealError);
-var safeParseAsync = /* @__PURE__ */ _safeParseAsync(ZodRealError);
-var encode = /* @__PURE__ */ _encode(ZodRealError);
-var decode = /* @__PURE__ */ _decode(ZodRealError);
-var encodeAsync = /* @__PURE__ */ _encodeAsync(ZodRealError);
-var decodeAsync = /* @__PURE__ */ _decodeAsync(ZodRealError);
-var safeEncode = /* @__PURE__ */ _safeEncode(ZodRealError);
-var safeDecode = /* @__PURE__ */ _safeDecode(ZodRealError);
-var safeEncodeAsync = /* @__PURE__ */ _safeEncodeAsync(ZodRealError);
-var safeDecodeAsync = /* @__PURE__ */ _safeDecodeAsync(ZodRealError);
+var parse2, parseAsync, safeParse, safeParseAsync, encode, decode, encodeAsync, decodeAsync, safeEncode, safeDecode, safeEncodeAsync, safeDecodeAsync;
+var init_parse2 = __esm(() => {
+  init_core2();
+  init_errors2();
+  init_core2();
+  parse2 = /* @__PURE__ */ _parse(ZodRealError);
+  parseAsync = /* @__PURE__ */ _parseAsync(ZodRealError);
+  safeParse = /* @__PURE__ */ _safeParse(ZodRealError);
+  safeParseAsync = /* @__PURE__ */ _safeParseAsync(ZodRealError);
+  encode = /* @__PURE__ */ _encode(ZodRealError);
+  decode = /* @__PURE__ */ _decode(ZodRealError);
+  encodeAsync = /* @__PURE__ */ _encodeAsync(ZodRealError);
+  decodeAsync = /* @__PURE__ */ _decodeAsync(ZodRealError);
+  safeEncode = /* @__PURE__ */ _safeEncode(ZodRealError);
+  safeDecode = /* @__PURE__ */ _safeDecode(ZodRealError);
+  safeEncodeAsync = /* @__PURE__ */ _safeEncodeAsync(ZodRealError);
+  safeDecodeAsync = /* @__PURE__ */ _safeDecodeAsync(ZodRealError);
+});
 
 // node_modules/zod/v4/classic/schemas.js
 function _ensureDefaultLocale() {
@@ -6050,593 +5384,30 @@ function _ensureDefaultMemoizer() {
   if (!globalConfig.memoizer)
     config({ memoizer: memoizer() });
 }
-var ZodType = /* @__PURE__ */ $constructor("ZodType", (inst, def) => {
-  _ensureDefaultLocale();
-  $ZodType.init(inst, def);
-  inst.def = def;
-  inst.type = def.type;
-  return inst;
-}, {
-  check(...chks) {
-    const def = this.def;
-    return this.clone(mergeDefs(def, {
-      checks: [
-        ...def.checks ?? [],
-        ...chks.map((ch) => typeof ch === "function" ? { _zod: { check: ch, def: { check: "custom" }, onattach: [] } } : ch)
-      ]
-    }), { parent: true });
-  },
-  with(...chks) {
-    return this.check(...chks);
-  },
-  clone(def, params) {
-    return clone(this, def, params);
-  },
-  brand() {
-    return this;
-  },
-  register(reg, meta) {
-    reg.add(this, meta);
-    return this;
-  },
-  refine(check, params) {
-    return this.check(refine(check, params));
-  },
-  superRefine(refinement, params) {
-    return this.check(superRefine(refinement, params));
-  },
-  overwrite(fn) {
-    return this.check(_overwrite(fn));
-  },
-  optional() {
-    return optional(this);
-  },
-  exactOptional() {
-    return exactOptional(this);
-  },
-  nullable() {
-    return nullable(this);
-  },
-  nullish() {
-    return optional(nullable(this));
-  },
-  nonoptional(params) {
-    return nonoptional(this, params);
-  },
-  array() {
-    return array(this);
-  },
-  or(arg) {
-    return union([this, arg]);
-  },
-  and(arg) {
-    return intersection(this, arg);
-  },
-  transform(tx) {
-    return pipe(this, transform(tx));
-  },
-  default(d) {
-    return _default(this, d);
-  },
-  prefault(d) {
-    return prefault(this, d);
-  },
-  catch(params) {
-    return _catch(this, params);
-  },
-  pipe(target) {
-    return pipe(this, target);
-  },
-  readonly() {
-    return readonly(this);
-  },
-  describe(description) {
-    const cl = this.clone();
-    globalRegistry.add(cl, { description });
-    return cl;
-  },
-  meta(...args) {
-    if (args.length === 0)
-      return globalRegistry.get(this);
-    const cl = this.clone();
-    globalRegistry.add(cl, args[0]);
-    return cl;
-  },
-  isOptional() {
-    return this.safeParse(undefined).success;
-  },
-  isNullable() {
-    return this.safeParse(null).success;
-  },
-  apply(fn, ...args) {
-    return args.length === 0 ? fn(this) : fn(this, ...args);
-  },
-  get "~standard"() {
-    return hide(this, "~standard", {
-      ...standardProps(this),
-      jsonSchema: {
-        input: createStandardJSONSchemaMethod(this, "input"),
-        output: createStandardJSONSchemaMethod(this, "output")
-      }
-    });
-  },
-  set "~standard"(value) {
-    own(this, "~standard", value);
-  },
-  parse: function _parse(data, params) {
-    return parse2(this, data, params, { callee: _parse });
-  },
-  parseAsync: async function _parseAsync(data, params) {
-    return await parseAsync(this, data, params, { callee: _parseAsync });
-  },
-  safeParse(data, params) {
-    return safeParse(this, data, params);
-  },
-  async safeParseAsync(data, params) {
-    return safeParseAsync(this, data, params);
-  },
-  get spa() {
-    return this?.safeParseAsync;
-  },
-  set spa(value) {
-    own(this, "spa", value);
-  },
-  validate(data, params) {
-    return validate(this, data, params);
-  },
-  validateAsync(data, params) {
-    return validateAsync(this, data, params);
-  },
-  encode: function _encode(data, params) {
-    return encode(this, data, params, { callee: _encode });
-  },
-  decode: function _decode(data, params) {
-    return decode(this, data, params, { callee: _decode });
-  },
-  encodeAsync: async function _encodeAsync(data, params) {
-    return await encodeAsync(this, data, params, { callee: _encodeAsync });
-  },
-  decodeAsync: async function _decodeAsync(data, params) {
-    return await decodeAsync(this, data, params, { callee: _decodeAsync });
-  },
-  safeEncode(data, params) {
-    return safeEncode(this, data, params);
-  },
-  safeDecode(data, params) {
-    return safeDecode(this, data, params);
-  },
-  async safeEncodeAsync(data, params) {
-    return safeEncodeAsync(this, data, params);
-  },
-  async safeDecodeAsync(data, params) {
-    return safeDecodeAsync(this, data, params);
-  },
-  toJSONSchema(params) {
-    return createToJSONSchemaMethod(this, {})(params);
-  },
-  get description() {
-    return globalRegistry.get(this)?.description;
-  },
-  get _def() {
-    return this._zod.def;
-  }
-});
-var _ZodString = /* @__PURE__ */ $constructor("_ZodString", (inst, def) => {
-  $ZodString.init(inst, def);
-  ZodType.init(inst, def);
-  inst._zod.processJSONSchema = (ctx, json, params) => stringProcessor(inst, ctx, json, params);
-}, /* @__PURE__ */ derived({
-  format: (inst) => aggregateChecks(inst).format ?? null,
-  minLength: (inst) => aggregateChecks(inst).minimum ?? null,
-  maxLength: (inst) => aggregateChecks(inst).maximum ?? null
-}, {
-  regex(...args) {
-    return this.check(_regex(...args));
-  },
-  includes(...args) {
-    return this.check(_includes(...args));
-  },
-  startsWith(...args) {
-    return this.check(_startsWith(...args));
-  },
-  endsWith(...args) {
-    return this.check(_endsWith(...args));
-  },
-  min(...args) {
-    return this.check(_minLength(...args));
-  },
-  max(...args) {
-    return this.check(_maxLength(...args));
-  },
-  length(...args) {
-    return this.check(_length(...args));
-  },
-  nonempty(...args) {
-    return this.check(_minLength(1, ...args));
-  },
-  lowercase(params) {
-    return this.check(_lowercase(params));
-  },
-  uppercase(params) {
-    return this.check(_uppercase(params));
-  },
-  trim() {
-    return this.check(_trim());
-  },
-  normalize(...args) {
-    return this.check(_normalize(...args));
-  },
-  toLowerCase() {
-    return this.check(_toLowerCase());
-  },
-  toUpperCase() {
-    return this.check(_toUpperCase());
-  },
-  slugify() {
-    return this.check(_slugify());
-  }
-}));
-var ZodString = /* @__PURE__ */ $constructor("ZodString", (inst, def) => {
-  $ZodString.init(inst, def);
-  _ZodString.init(inst, def);
-}, {
-  email(params) {
-    return this.check(_email(ZodEmail, params));
-  },
-  url(params) {
-    return this.check(_url(ZodURL, params));
-  },
-  jwt(params) {
-    return this.check(_jwt(ZodJWT, params));
-  },
-  emoji(params) {
-    return this.check(_emoji2(ZodEmoji, params));
-  },
-  guid(params) {
-    return this.check(_guid(ZodGUID, params));
-  },
-  uuid(params) {
-    return this.check(_uuid(ZodUUID, params));
-  },
-  uuidv4(params) {
-    return this.check(_uuidv4(ZodUUID, params));
-  },
-  uuidv6(params) {
-    return this.check(_uuidv6(ZodUUID, params));
-  },
-  uuidv7(params) {
-    return this.check(_uuidv7(ZodUUID, params));
-  },
-  nanoid(params) {
-    return this.check(_nanoid(ZodNanoID, params));
-  },
-  cuid(params) {
-    return this.check(_cuid(ZodCUID, params));
-  },
-  cuid2(params) {
-    return this.check(_cuid2(ZodCUID2, params));
-  },
-  ulid(params) {
-    return this.check(_ulid(ZodULID, params));
-  },
-  base64(params) {
-    return this.check(_base64(ZodBase64, params));
-  },
-  base64url(params) {
-    return this.check(_base64url(ZodBase64URL, params));
-  },
-  xid(params) {
-    return this.check(_xid(ZodXID, params));
-  },
-  ksuid(params) {
-    return this.check(_ksuid(ZodKSUID, params));
-  },
-  ipv4(params) {
-    return this.check(_ipv4(ZodIPv4, params));
-  },
-  ipv6(params) {
-    return this.check(_ipv6(ZodIPv6, params));
-  },
-  cidrv4(params) {
-    return this.check(_cidrv4(ZodCIDRv4, params));
-  },
-  cidrv6(params) {
-    return this.check(_cidrv6(ZodCIDRv6, params));
-  },
-  e164(params) {
-    return this.check(_e164(ZodE164, params));
-  },
-  datetime(params) {
-    return this.check(_isoDateTime(ZodISODateTime, params));
-  },
-  date(params) {
-    return this.check(_isoDate(ZodISODate, params));
-  },
-  time(params) {
-    return this.check(_isoTime(ZodISOTime, params));
-  },
-  duration(params) {
-    return this.check(_isoDuration(ZodISODuration, params));
-  }
-});
 function string2(params) {
   return _string(ZodString, params);
 }
-var ZodStringFormat = /* @__PURE__ */ $constructor("ZodStringFormat", (inst, def) => {
-  $ZodStringFormat.init(inst, def);
-  _ZodString.init(inst, def);
-});
-var ZodISODateTime = /* @__PURE__ */ $constructor("ZodISODateTime", (inst, def) => {
-  $ZodISODateTime.init(inst, def);
-  ZodStringFormat.init(inst, def);
-});
-var ZodISODate = /* @__PURE__ */ $constructor("ZodISODate", (inst, def) => {
-  $ZodISODate.init(inst, def);
-  ZodStringFormat.init(inst, def);
-});
-var ZodISOTime = /* @__PURE__ */ $constructor("ZodISOTime", (inst, def) => {
-  $ZodISOTime.init(inst, def);
-  ZodStringFormat.init(inst, def);
-});
-var ZodISODuration = /* @__PURE__ */ $constructor("ZodISODuration", (inst, def) => {
-  $ZodISODuration.init(inst, def);
-  ZodStringFormat.init(inst, def);
-});
-var ZodEmail = /* @__PURE__ */ $constructor("ZodEmail", (inst, def) => {
-  $ZodEmail.init(inst, def);
-  ZodStringFormat.init(inst, def);
-});
-var ZodGUID = /* @__PURE__ */ $constructor("ZodGUID", (inst, def) => {
-  $ZodGUID.init(inst, def);
-  ZodStringFormat.init(inst, def);
-});
-var ZodUUID = /* @__PURE__ */ $constructor("ZodUUID", (inst, def) => {
-  $ZodUUID.init(inst, def);
-  ZodStringFormat.init(inst, def);
-});
-var ZodURL = /* @__PURE__ */ $constructor("ZodURL", (inst, def) => {
-  $ZodURL.init(inst, def);
-  ZodStringFormat.init(inst, def);
-});
 function url(params) {
   return _url(ZodURL, params);
 }
-var ZodEmoji = /* @__PURE__ */ $constructor("ZodEmoji", (inst, def) => {
-  $ZodEmoji.init(inst, def);
-  ZodStringFormat.init(inst, def);
-});
-var ZodNanoID = /* @__PURE__ */ $constructor("ZodNanoID", (inst, def) => {
-  $ZodNanoID.init(inst, def);
-  ZodStringFormat.init(inst, def);
-});
-var ZodCUID = /* @__PURE__ */ $constructor("ZodCUID", (inst, def) => {
-  $ZodCUID.init(inst, def);
-  ZodStringFormat.init(inst, def);
-});
-var ZodCUID2 = /* @__PURE__ */ $constructor("ZodCUID2", (inst, def) => {
-  $ZodCUID2.init(inst, def);
-  ZodStringFormat.init(inst, def);
-});
-var ZodULID = /* @__PURE__ */ $constructor("ZodULID", (inst, def) => {
-  $ZodULID.init(inst, def);
-  ZodStringFormat.init(inst, def);
-});
-var ZodXID = /* @__PURE__ */ $constructor("ZodXID", (inst, def) => {
-  $ZodXID.init(inst, def);
-  ZodStringFormat.init(inst, def);
-});
-var ZodKSUID = /* @__PURE__ */ $constructor("ZodKSUID", (inst, def) => {
-  $ZodKSUID.init(inst, def);
-  ZodStringFormat.init(inst, def);
-});
-var ZodIPv4 = /* @__PURE__ */ $constructor("ZodIPv4", (inst, def) => {
-  $ZodIPv4.init(inst, def);
-  ZodStringFormat.init(inst, def);
-});
-var ZodIPv6 = /* @__PURE__ */ $constructor("ZodIPv6", (inst, def) => {
-  $ZodIPv6.init(inst, def);
-  ZodStringFormat.init(inst, def);
-});
-var ZodCIDRv4 = /* @__PURE__ */ $constructor("ZodCIDRv4", (inst, def) => {
-  $ZodCIDRv4.init(inst, def);
-  ZodStringFormat.init(inst, def);
-});
-var ZodCIDRv6 = /* @__PURE__ */ $constructor("ZodCIDRv6", (inst, def) => {
-  $ZodCIDRv6.init(inst, def);
-  ZodStringFormat.init(inst, def);
-});
-var ZodBase64 = /* @__PURE__ */ $constructor("ZodBase64", (inst, def) => {
-  $ZodBase64.init(inst, def);
-  ZodStringFormat.init(inst, def);
-});
-var ZodBase64URL = /* @__PURE__ */ $constructor("ZodBase64URL", (inst, def) => {
-  $ZodBase64URL.init(inst, def);
-  ZodStringFormat.init(inst, def);
-});
-var ZodE164 = /* @__PURE__ */ $constructor("ZodE164", (inst, def) => {
-  $ZodE164.init(inst, def);
-  ZodStringFormat.init(inst, def);
-});
-var ZodJWT = /* @__PURE__ */ $constructor("ZodJWT", (inst, def) => {
-  $ZodJWT.init(inst, def);
-  ZodStringFormat.init(inst, def);
-});
-var ZodNumber = /* @__PURE__ */ $constructor("ZodNumber", (inst, def) => {
-  $ZodNumber.init(inst, def);
-  ZodType.init(inst, def);
-  inst._zod.processJSONSchema = (ctx, json, params) => numberProcessor(inst, ctx, json, params);
-  inst.isFinite = true;
-}, /* @__PURE__ */ derived({
-  minValue: (inst) => {
-    const { minimum, exclusiveMinimum } = aggregateChecks(inst);
-    return Math.max(minimum ?? Number.NEGATIVE_INFINITY, exclusiveMinimum ?? Number.NEGATIVE_INFINITY);
-  },
-  maxValue: (inst) => {
-    const { maximum, exclusiveMaximum } = aggregateChecks(inst);
-    return Math.min(maximum ?? Number.POSITIVE_INFINITY, exclusiveMaximum ?? Number.POSITIVE_INFINITY);
-  },
-  isInt: (inst) => {
-    const { isInt, multipleOf } = aggregateChecks(inst);
-    return !!isInt || !!multipleOf?.some(Number.isSafeInteger);
-  },
-  format: (inst) => aggregateChecks(inst).format ?? null
-}, {
-  gt(value, params) {
-    return this.check(_gt(value, params));
-  },
-  gte(value, params) {
-    return this.check(_gte(value, params));
-  },
-  min(value, params) {
-    return this.check(_gte(value, params));
-  },
-  lt(value, params) {
-    return this.check(_lt(value, params));
-  },
-  lte(value, params) {
-    return this.check(_lte(value, params));
-  },
-  max(value, params) {
-    return this.check(_lte(value, params));
-  },
-  int(params) {
-    return this.check(int(params));
-  },
-  safe(params) {
-    return this.check(int(params));
-  },
-  positive(params) {
-    return this.check(_gt(0, params));
-  },
-  nonnegative(params) {
-    return this.check(_gte(0, params));
-  },
-  negative(params) {
-    return this.check(_lt(0, params));
-  },
-  nonpositive(params) {
-    return this.check(_lte(0, params));
-  },
-  multipleOf(value, params) {
-    return this.check(_multipleOf(value, params));
-  },
-  step(value, params) {
-    return this.check(_multipleOf(value, params));
-  },
-  finite() {
-    return this;
-  }
-}));
 function number2(params) {
   return _number(ZodNumber, params);
 }
-var ZodNumberFormat = /* @__PURE__ */ $constructor("ZodNumberFormat", (inst, def) => {
-  $ZodNumberFormat.init(inst, def);
-  ZodNumber.init(inst, def);
-});
 function int(params) {
   return _int(ZodNumberFormat, params);
 }
-var ZodBoolean = /* @__PURE__ */ $constructor("ZodBoolean", (inst, def) => {
-  $ZodBoolean.init(inst, def);
-  ZodType.init(inst, def);
-  inst._zod.processJSONSchema = (ctx, json, params) => booleanProcessor(inst, ctx, json, params);
-});
 function boolean2(params) {
   return _boolean(ZodBoolean, params);
 }
-var ZodUnknown = /* @__PURE__ */ $constructor("ZodUnknown", (inst, def) => {
-  $ZodUnknown.init(inst, def);
-  ZodType.init(inst, def);
-  inst._zod.processJSONSchema = (ctx, json, params) => unknownProcessor(inst, ctx, json, params);
-});
 function unknown() {
   return _unknown(ZodUnknown);
 }
-var ZodNever = /* @__PURE__ */ $constructor("ZodNever", (inst, def) => {
-  $ZodNever.init(inst, def);
-  ZodType.init(inst, def);
-  inst._zod.processJSONSchema = (ctx, json, params) => neverProcessor(inst, ctx, json, params);
-});
 function never(params) {
   return _never(ZodNever, params);
 }
-var ZodArray = /* @__PURE__ */ $constructor("ZodArray", (inst, def) => {
-  _ensureDefaultMemoizer();
-  $ZodArray.init(inst, def);
-  ZodType.init(inst, def);
-  inst._zod.processJSONSchema = (ctx, json, params) => arrayProcessor(inst, ctx, json, params);
-  inst.element = def.element;
-}, {
-  min(n, params) {
-    return this.check(_minLength(n, params));
-  },
-  nonempty(params) {
-    return this.check(_minLength(1, params));
-  },
-  max(n, params) {
-    return this.check(_maxLength(n, params));
-  },
-  length(n, params) {
-    return this.check(_length(n, params));
-  },
-  unwrap() {
-    return this.element;
-  }
-});
 function array(element, params) {
   return _array(ZodArray, element, params);
 }
-var ZodObject = /* @__PURE__ */ $constructor("ZodObject", (inst, def) => {
-  _ensureDefaultMemoizer();
-  $ZodObjectJIT.init(inst, def);
-  ZodType.init(inst, def);
-  inst._zod.processJSONSchema = (ctx, json, params) => objectProcessor(inst, ctx, json, params);
-  installLazyProp(inst, "shape", (self) => self._zod.def.shape, false);
-}, {
-  keyof() {
-    return _enum(Object.keys(this._zod.def.shape));
-  },
-  catchall(catchall) {
-    return this.clone(mergeDefs(this._zod.def, { catchall }));
-  },
-  passthrough() {
-    return this.clone(mergeDefs(this._zod.def, { catchall: unknown() }));
-  },
-  loose() {
-    return this.clone(mergeDefs(this._zod.def, { catchall: unknown() }));
-  },
-  strict() {
-    return this.clone(mergeDefs(this._zod.def, { catchall: never() }));
-  },
-  strip() {
-    return this.clone(mergeDefs(this._zod.def, { catchall: undefined }));
-  },
-  extend(incoming) {
-    return extend(this, incoming);
-  },
-  safeExtend(incoming) {
-    return safeExtend(this, incoming);
-  },
-  merge(other) {
-    return merge(this, other);
-  },
-  pick(mask) {
-    return pick(this, mask);
-  },
-  omit(mask) {
-    return omit(this, mask);
-  },
-  partial(...args) {
-    return partial(ZodOptional, this, args[0]);
-  },
-  exactPartial(...args) {
-    return partial(ZodExactOptional, this, args[0], "exactPartial");
-  },
-  required(...args) {
-    return required(ZodNonOptional, this, args[0]);
-  }
-});
 function object(shape, params) {
   const def = {
     type: "object",
@@ -6661,12 +5432,6 @@ function looseObject(shape, params) {
     ...normalizeParams(params)
   });
 }
-var ZodUnion = /* @__PURE__ */ $constructor("ZodUnion", (inst, def) => {
-  $ZodUnion.init(inst, def);
-  ZodType.init(inst, def);
-  inst._zod.processJSONSchema = (ctx, json, params) => unionProcessor(inst, ctx, json, params);
-  inst.options = def.options;
-});
 function union(options, params) {
   return new ZodUnion({
     type: "union",
@@ -6674,11 +5439,6 @@ function union(options, params) {
     ...normalizeParams(params)
   });
 }
-var ZodIntersection = /* @__PURE__ */ $constructor("ZodIntersection", (inst, def) => {
-  $ZodIntersection.init(inst, def);
-  ZodType.init(inst, def);
-  inst._zod.processJSONSchema = (ctx, json, params) => intersectionProcessor(inst, ctx, json, params);
-});
 function intersection(left, right) {
   return new ZodIntersection({
     type: "intersection",
@@ -6686,14 +5446,6 @@ function intersection(left, right) {
     right
   });
 }
-var ZodRecord = /* @__PURE__ */ $constructor("ZodRecord", (inst, def) => {
-  _ensureDefaultMemoizer();
-  $ZodRecord.init(inst, def);
-  ZodType.init(inst, def);
-  inst._zod.processJSONSchema = (ctx, json, params) => recordProcessor(inst, ctx, json, params);
-  inst.keyType = def.keyType;
-  inst.valueType = def.valueType;
-});
 function record(keyType, valueType, params) {
   if (!valueType || !valueType._zod) {
     return new ZodRecord({
@@ -6710,44 +5462,6 @@ function record(keyType, valueType, params) {
     ...normalizeParams(params)
   });
 }
-var ZodEnum = /* @__PURE__ */ $constructor("ZodEnum", (inst, def) => {
-  $ZodEnum.init(inst, def);
-  ZodType.init(inst, def);
-  inst._zod.processJSONSchema = (ctx, json, params) => enumProcessor(inst, ctx, json, params);
-  inst.enum = def.entries;
-  inst.options = [...inst._zod.values];
-  const keys = new Set(Object.keys(def.entries));
-  inst.extract = (values, params) => {
-    const newEntries = {};
-    for (const value of values) {
-      if (keys.has(value)) {
-        newEntries[value] = def.entries[value];
-      } else
-        throw new Error(`Key ${value} not found in enum`);
-    }
-    return new ZodEnum({
-      ...def,
-      checks: [],
-      ...normalizeParams(params),
-      entries: newEntries
-    });
-  };
-  inst.exclude = (values, params) => {
-    const newEntries = { ...def.entries };
-    for (const value of values) {
-      if (keys.has(value)) {
-        delete newEntries[value];
-      } else
-        throw new Error(`Key ${value} not found in enum`);
-    }
-    return new ZodEnum({
-      ...def,
-      checks: [],
-      ...normalizeParams(params),
-      entries: newEntries
-    });
-  };
-});
 function _enum(values, params) {
   const entries = Array.isArray(values) ? Object.fromEntries(values.map((v) => [v, v])) : values;
   return new ZodEnum({
@@ -6756,20 +5470,6 @@ function _enum(values, params) {
     ...normalizeParams(params)
   });
 }
-var ZodLiteral = /* @__PURE__ */ $constructor("ZodLiteral", (inst, def) => {
-  $ZodLiteral.init(inst, def);
-  ZodType.init(inst, def);
-  inst._zod.processJSONSchema = (ctx, json, params) => literalProcessor(inst, ctx, json, params);
-  inst.values = new Set(def.values);
-  Object.defineProperty(inst, "value", {
-    get() {
-      if (def.values.length > 1) {
-        throw new Error("This schema contains multiple valid literal values. Use `.values` instead.");
-      }
-      return def.values[0];
-    }
-  });
-});
 function literal(value, params) {
   return new ZodLiteral({
     type: "literal",
@@ -6777,89 +5477,30 @@ function literal(value, params) {
     ...normalizeParams(params)
   });
 }
-var ZodTransform = /* @__PURE__ */ $constructor("ZodTransform", (inst, def) => {
-  _ensureDefaultMemoizer();
-  $ZodTransform.init(inst, def);
-  ZodType.init(inst, def);
-  inst._zod.processJSONSchema = (ctx, json, params) => transformProcessor(inst, ctx, json, params);
-  inst._zod.parse = (payload, _ctx) => {
-    if (_ctx.direction === "backward") {
-      throw new $ZodEncodeError(inst.constructor.name);
-    }
-    payload.addIssue = (issue2) => {
-      if (typeof issue2 === "string") {
-        payload.issues.push(issue(issue2, payload.value, def));
-      } else {
-        const _issue = issue2;
-        if (_issue.fatal)
-          _issue.continue = false;
-        _issue.code ?? (_issue.code = "custom");
-        if (!("input" in _issue))
-          _issue.input = payload.value;
-        _issue.inst ?? (_issue.inst = inst);
-        payload.issues.push(issue(_issue));
-      }
-    };
-    const output = def.transform(payload.value, payload);
-    if (output instanceof Promise) {
-      return output.then((output) => {
-        payload.value = output;
-        return payload;
-      });
-    }
-    payload.value = output;
-    return payload;
-  };
-});
 function transform(fn) {
   return new ZodTransform({
     type: "transform",
     transform: fn
   });
 }
-var ZodOptional = /* @__PURE__ */ $constructor("ZodOptional", (inst, def) => {
-  $ZodOptional.init(inst, def);
-  ZodType.init(inst, def);
-  inst._zod.processJSONSchema = (ctx, json, params) => optionalProcessor(inst, ctx, json, params);
-  inst.unwrap = () => inst._zod.def.innerType;
-});
 function optional(innerType) {
   return new ZodOptional({
     type: "optional",
     innerType
   });
 }
-var ZodExactOptional = /* @__PURE__ */ $constructor("ZodExactOptional", (inst, def) => {
-  $ZodExactOptional.init(inst, def);
-  ZodType.init(inst, def);
-  inst._zod.processJSONSchema = (ctx, json, params) => optionalProcessor(inst, ctx, json, params);
-  inst.unwrap = () => inst._zod.def.innerType;
-});
 function exactOptional(innerType) {
   return new ZodExactOptional({
     type: "optional",
     innerType
   });
 }
-var ZodNullable = /* @__PURE__ */ $constructor("ZodNullable", (inst, def) => {
-  $ZodNullable.init(inst, def);
-  ZodType.init(inst, def);
-  inst._zod.processJSONSchema = (ctx, json, params) => nullableProcessor(inst, ctx, json, params);
-  inst.unwrap = () => inst._zod.def.innerType;
-});
 function nullable(innerType) {
   return new ZodNullable({
     type: "nullable",
     innerType
   });
 }
-var ZodDefault = /* @__PURE__ */ $constructor("ZodDefault", (inst, def) => {
-  $ZodDefault.init(inst, def);
-  ZodType.init(inst, def);
-  inst._zod.processJSONSchema = (ctx, json, params) => defaultProcessor(inst, ctx, json, params);
-  inst.unwrap = () => inst._zod.def.innerType;
-  inst.removeDefault = inst.unwrap;
-});
 function _default(innerType, defaultValue) {
   return new ZodDefault({
     type: "default",
@@ -6869,12 +5510,6 @@ function _default(innerType, defaultValue) {
     }
   });
 }
-var ZodPrefault = /* @__PURE__ */ $constructor("ZodPrefault", (inst, def) => {
-  $ZodPrefault.init(inst, def);
-  ZodType.init(inst, def);
-  inst._zod.processJSONSchema = (ctx, json, params) => prefaultProcessor(inst, ctx, json, params);
-  inst.unwrap = () => inst._zod.def.innerType;
-});
 function prefault(innerType, defaultValue) {
   return new ZodPrefault({
     type: "prefault",
@@ -6884,12 +5519,6 @@ function prefault(innerType, defaultValue) {
     }
   });
 }
-var ZodNonOptional = /* @__PURE__ */ $constructor("ZodNonOptional", (inst, def) => {
-  $ZodNonOptional.init(inst, def);
-  ZodType.init(inst, def);
-  inst._zod.processJSONSchema = (ctx, json, params) => nonoptionalProcessor(inst, ctx, json, params);
-  inst.unwrap = () => inst._zod.def.innerType;
-});
 function nonoptional(innerType, params) {
   return new ZodNonOptional({
     type: "nonoptional",
@@ -6897,13 +5526,6 @@ function nonoptional(innerType, params) {
     ...normalizeParams(params)
   });
 }
-var ZodCatch = /* @__PURE__ */ $constructor("ZodCatch", (inst, def) => {
-  $ZodCatch.init(inst, def);
-  ZodType.init(inst, def);
-  inst._zod.processJSONSchema = (ctx, json, params) => catchProcessor(inst, ctx, json, params);
-  inst.unwrap = () => inst._zod.def.innerType;
-  inst.removeCatch = inst.unwrap;
-});
 function _catch(innerType, catchValue) {
   return new ZodCatch({
     type: "catch",
@@ -6911,13 +5533,6 @@ function _catch(innerType, catchValue) {
     catchValue: typeof catchValue === "function" ? catchValue : constantCatch(catchValue)
   });
 }
-var ZodPipe = /* @__PURE__ */ $constructor("ZodPipe", (inst, def) => {
-  $ZodPipe.init(inst, def);
-  ZodType.init(inst, def);
-  inst._zod.processJSONSchema = (ctx, json, params) => pipeProcessor(inst, ctx, json, params);
-  inst.in = def.in;
-  inst.out = def.out;
-});
 function pipe(in_, out) {
   return new ZodPipe({
     type: "pipe",
@@ -6925,27 +5540,12 @@ function pipe(in_, out) {
     out
   });
 }
-var ZodPreprocess = /* @__PURE__ */ $constructor("ZodPreprocess", (inst, def) => {
-  ZodPipe.init(inst, def);
-  $ZodPreprocess.init(inst, def);
-});
-var ZodReadonly = /* @__PURE__ */ $constructor("ZodReadonly", (inst, def) => {
-  $ZodReadonly.init(inst, def);
-  ZodType.init(inst, def);
-  inst._zod.processJSONSchema = (ctx, json, params) => readonlyProcessor(inst, ctx, json, params);
-  inst.unwrap = () => inst._zod.def.innerType;
-});
 function readonly(innerType) {
   return new ZodReadonly({
     type: "readonly",
     innerType
   });
 }
-var ZodCustom = /* @__PURE__ */ $constructor("ZodCustom", (inst, def) => {
-  $ZodCustom.init(inst, def);
-  ZodType.init(inst, def);
-  inst._zod.processJSONSchema = (ctx, json, params) => customProcessor(inst, ctx, json, params);
-});
 function refine(fn, _params = {}) {
   return _refine(ZodCustom, fn, _params);
 }
@@ -6959,7 +5559,769 @@ function preprocess(fn, schema) {
     out: schema
   });
 }
+var ZodType, _ZodString, ZodString, ZodStringFormat, ZodISODateTime, ZodISODate, ZodISOTime, ZodISODuration, ZodEmail, ZodGUID, ZodUUID, ZodURL, ZodEmoji, ZodNanoID, ZodCUID, ZodCUID2, ZodULID, ZodXID, ZodKSUID, ZodIPv4, ZodIPv6, ZodCIDRv4, ZodCIDRv6, ZodBase64, ZodBase64URL, ZodE164, ZodJWT, ZodNumber, ZodNumberFormat, ZodBoolean, ZodUnknown, ZodNever, ZodArray, ZodObject, ZodUnion, ZodIntersection, ZodRecord, ZodEnum, ZodLiteral, ZodTransform, ZodOptional, ZodExactOptional, ZodNullable, ZodDefault, ZodPrefault, ZodNonOptional, ZodCatch, ZodPipe, ZodPreprocess, ZodReadonly, ZodCustom;
+var init_schemas2 = __esm(() => {
+  init_core2();
+  init_core2();
+  init_json_schema_processors();
+  init_to_json_schema();
+  init_en();
+  init_checks2();
+  init_parse2();
+  ZodType = /* @__PURE__ */ $constructor("ZodType", (inst, def) => {
+    _ensureDefaultLocale();
+    $ZodType.init(inst, def);
+    inst.def = def;
+    inst.type = def.type;
+    return inst;
+  }, {
+    check(...chks) {
+      const def = this.def;
+      return this.clone(mergeDefs(def, {
+        checks: [
+          ...def.checks ?? [],
+          ...chks.map((ch) => typeof ch === "function" ? { _zod: { check: ch, def: { check: "custom" }, onattach: [] } } : ch)
+        ]
+      }), { parent: true });
+    },
+    with(...chks) {
+      return this.check(...chks);
+    },
+    clone(def, params) {
+      return clone(this, def, params);
+    },
+    brand() {
+      return this;
+    },
+    register(reg, meta) {
+      reg.add(this, meta);
+      return this;
+    },
+    refine(check, params) {
+      return this.check(refine(check, params));
+    },
+    superRefine(refinement, params) {
+      return this.check(superRefine(refinement, params));
+    },
+    overwrite(fn) {
+      return this.check(_overwrite(fn));
+    },
+    optional() {
+      return optional(this);
+    },
+    exactOptional() {
+      return exactOptional(this);
+    },
+    nullable() {
+      return nullable(this);
+    },
+    nullish() {
+      return optional(nullable(this));
+    },
+    nonoptional(params) {
+      return nonoptional(this, params);
+    },
+    array() {
+      return array(this);
+    },
+    or(arg) {
+      return union([this, arg]);
+    },
+    and(arg) {
+      return intersection(this, arg);
+    },
+    transform(tx) {
+      return pipe(this, transform(tx));
+    },
+    default(d) {
+      return _default(this, d);
+    },
+    prefault(d) {
+      return prefault(this, d);
+    },
+    catch(params) {
+      return _catch(this, params);
+    },
+    pipe(target) {
+      return pipe(this, target);
+    },
+    readonly() {
+      return readonly(this);
+    },
+    describe(description) {
+      const cl = this.clone();
+      globalRegistry.add(cl, { description });
+      return cl;
+    },
+    meta(...args) {
+      if (args.length === 0)
+        return globalRegistry.get(this);
+      const cl = this.clone();
+      globalRegistry.add(cl, args[0]);
+      return cl;
+    },
+    isOptional() {
+      return this.safeParse(undefined).success;
+    },
+    isNullable() {
+      return this.safeParse(null).success;
+    },
+    apply(fn, ...args) {
+      return args.length === 0 ? fn(this) : fn(this, ...args);
+    },
+    get "~standard"() {
+      return hide(this, "~standard", {
+        ...standardProps(this),
+        jsonSchema: {
+          input: createStandardJSONSchemaMethod(this, "input"),
+          output: createStandardJSONSchemaMethod(this, "output")
+        }
+      });
+    },
+    set "~standard"(value) {
+      own(this, "~standard", value);
+    },
+    parse: function _parse(data, params) {
+      return parse2(this, data, params, { callee: _parse });
+    },
+    parseAsync: async function _parseAsync(data, params) {
+      return await parseAsync(this, data, params, { callee: _parseAsync });
+    },
+    safeParse(data, params) {
+      return safeParse(this, data, params);
+    },
+    async safeParseAsync(data, params) {
+      return safeParseAsync(this, data, params);
+    },
+    get spa() {
+      return this?.safeParseAsync;
+    },
+    set spa(value) {
+      own(this, "spa", value);
+    },
+    validate(data, params) {
+      return validate(this, data, params);
+    },
+    validateAsync(data, params) {
+      return validateAsync(this, data, params);
+    },
+    encode: function _encode(data, params) {
+      return encode(this, data, params, { callee: _encode });
+    },
+    decode: function _decode(data, params) {
+      return decode(this, data, params, { callee: _decode });
+    },
+    encodeAsync: async function _encodeAsync(data, params) {
+      return await encodeAsync(this, data, params, { callee: _encodeAsync });
+    },
+    decodeAsync: async function _decodeAsync(data, params) {
+      return await decodeAsync(this, data, params, { callee: _decodeAsync });
+    },
+    safeEncode(data, params) {
+      return safeEncode(this, data, params);
+    },
+    safeDecode(data, params) {
+      return safeDecode(this, data, params);
+    },
+    async safeEncodeAsync(data, params) {
+      return safeEncodeAsync(this, data, params);
+    },
+    async safeDecodeAsync(data, params) {
+      return safeDecodeAsync(this, data, params);
+    },
+    toJSONSchema(params) {
+      return createToJSONSchemaMethod(this, {})(params);
+    },
+    get description() {
+      return globalRegistry.get(this)?.description;
+    },
+    get _def() {
+      return this._zod.def;
+    }
+  });
+  _ZodString = /* @__PURE__ */ $constructor("_ZodString", (inst, def) => {
+    $ZodString.init(inst, def);
+    ZodType.init(inst, def);
+    inst._zod.processJSONSchema = (ctx, json, params) => stringProcessor(inst, ctx, json, params);
+  }, /* @__PURE__ */ derived({
+    format: (inst) => aggregateChecks(inst).format ?? null,
+    minLength: (inst) => aggregateChecks(inst).minimum ?? null,
+    maxLength: (inst) => aggregateChecks(inst).maximum ?? null
+  }, {
+    regex(...args) {
+      return this.check(_regex(...args));
+    },
+    includes(...args) {
+      return this.check(_includes(...args));
+    },
+    startsWith(...args) {
+      return this.check(_startsWith(...args));
+    },
+    endsWith(...args) {
+      return this.check(_endsWith(...args));
+    },
+    min(...args) {
+      return this.check(_minLength(...args));
+    },
+    max(...args) {
+      return this.check(_maxLength(...args));
+    },
+    length(...args) {
+      return this.check(_length(...args));
+    },
+    nonempty(...args) {
+      return this.check(_minLength(1, ...args));
+    },
+    lowercase(params) {
+      return this.check(_lowercase(params));
+    },
+    uppercase(params) {
+      return this.check(_uppercase(params));
+    },
+    trim() {
+      return this.check(_trim());
+    },
+    normalize(...args) {
+      return this.check(_normalize(...args));
+    },
+    toLowerCase() {
+      return this.check(_toLowerCase());
+    },
+    toUpperCase() {
+      return this.check(_toUpperCase());
+    },
+    slugify() {
+      return this.check(_slugify());
+    }
+  }));
+  ZodString = /* @__PURE__ */ $constructor("ZodString", (inst, def) => {
+    $ZodString.init(inst, def);
+    _ZodString.init(inst, def);
+  }, {
+    email(params) {
+      return this.check(_email(ZodEmail, params));
+    },
+    url(params) {
+      return this.check(_url(ZodURL, params));
+    },
+    jwt(params) {
+      return this.check(_jwt(ZodJWT, params));
+    },
+    emoji(params) {
+      return this.check(_emoji2(ZodEmoji, params));
+    },
+    guid(params) {
+      return this.check(_guid(ZodGUID, params));
+    },
+    uuid(params) {
+      return this.check(_uuid(ZodUUID, params));
+    },
+    uuidv4(params) {
+      return this.check(_uuidv4(ZodUUID, params));
+    },
+    uuidv6(params) {
+      return this.check(_uuidv6(ZodUUID, params));
+    },
+    uuidv7(params) {
+      return this.check(_uuidv7(ZodUUID, params));
+    },
+    nanoid(params) {
+      return this.check(_nanoid(ZodNanoID, params));
+    },
+    cuid(params) {
+      return this.check(_cuid(ZodCUID, params));
+    },
+    cuid2(params) {
+      return this.check(_cuid2(ZodCUID2, params));
+    },
+    ulid(params) {
+      return this.check(_ulid(ZodULID, params));
+    },
+    base64(params) {
+      return this.check(_base64(ZodBase64, params));
+    },
+    base64url(params) {
+      return this.check(_base64url(ZodBase64URL, params));
+    },
+    xid(params) {
+      return this.check(_xid(ZodXID, params));
+    },
+    ksuid(params) {
+      return this.check(_ksuid(ZodKSUID, params));
+    },
+    ipv4(params) {
+      return this.check(_ipv4(ZodIPv4, params));
+    },
+    ipv6(params) {
+      return this.check(_ipv6(ZodIPv6, params));
+    },
+    cidrv4(params) {
+      return this.check(_cidrv4(ZodCIDRv4, params));
+    },
+    cidrv6(params) {
+      return this.check(_cidrv6(ZodCIDRv6, params));
+    },
+    e164(params) {
+      return this.check(_e164(ZodE164, params));
+    },
+    datetime(params) {
+      return this.check(_isoDateTime(ZodISODateTime, params));
+    },
+    date(params) {
+      return this.check(_isoDate(ZodISODate, params));
+    },
+    time(params) {
+      return this.check(_isoTime(ZodISOTime, params));
+    },
+    duration(params) {
+      return this.check(_isoDuration(ZodISODuration, params));
+    }
+  });
+  ZodStringFormat = /* @__PURE__ */ $constructor("ZodStringFormat", (inst, def) => {
+    $ZodStringFormat.init(inst, def);
+    _ZodString.init(inst, def);
+  });
+  ZodISODateTime = /* @__PURE__ */ $constructor("ZodISODateTime", (inst, def) => {
+    $ZodISODateTime.init(inst, def);
+    ZodStringFormat.init(inst, def);
+  });
+  ZodISODate = /* @__PURE__ */ $constructor("ZodISODate", (inst, def) => {
+    $ZodISODate.init(inst, def);
+    ZodStringFormat.init(inst, def);
+  });
+  ZodISOTime = /* @__PURE__ */ $constructor("ZodISOTime", (inst, def) => {
+    $ZodISOTime.init(inst, def);
+    ZodStringFormat.init(inst, def);
+  });
+  ZodISODuration = /* @__PURE__ */ $constructor("ZodISODuration", (inst, def) => {
+    $ZodISODuration.init(inst, def);
+    ZodStringFormat.init(inst, def);
+  });
+  ZodEmail = /* @__PURE__ */ $constructor("ZodEmail", (inst, def) => {
+    $ZodEmail.init(inst, def);
+    ZodStringFormat.init(inst, def);
+  });
+  ZodGUID = /* @__PURE__ */ $constructor("ZodGUID", (inst, def) => {
+    $ZodGUID.init(inst, def);
+    ZodStringFormat.init(inst, def);
+  });
+  ZodUUID = /* @__PURE__ */ $constructor("ZodUUID", (inst, def) => {
+    $ZodUUID.init(inst, def);
+    ZodStringFormat.init(inst, def);
+  });
+  ZodURL = /* @__PURE__ */ $constructor("ZodURL", (inst, def) => {
+    $ZodURL.init(inst, def);
+    ZodStringFormat.init(inst, def);
+  });
+  ZodEmoji = /* @__PURE__ */ $constructor("ZodEmoji", (inst, def) => {
+    $ZodEmoji.init(inst, def);
+    ZodStringFormat.init(inst, def);
+  });
+  ZodNanoID = /* @__PURE__ */ $constructor("ZodNanoID", (inst, def) => {
+    $ZodNanoID.init(inst, def);
+    ZodStringFormat.init(inst, def);
+  });
+  ZodCUID = /* @__PURE__ */ $constructor("ZodCUID", (inst, def) => {
+    $ZodCUID.init(inst, def);
+    ZodStringFormat.init(inst, def);
+  });
+  ZodCUID2 = /* @__PURE__ */ $constructor("ZodCUID2", (inst, def) => {
+    $ZodCUID2.init(inst, def);
+    ZodStringFormat.init(inst, def);
+  });
+  ZodULID = /* @__PURE__ */ $constructor("ZodULID", (inst, def) => {
+    $ZodULID.init(inst, def);
+    ZodStringFormat.init(inst, def);
+  });
+  ZodXID = /* @__PURE__ */ $constructor("ZodXID", (inst, def) => {
+    $ZodXID.init(inst, def);
+    ZodStringFormat.init(inst, def);
+  });
+  ZodKSUID = /* @__PURE__ */ $constructor("ZodKSUID", (inst, def) => {
+    $ZodKSUID.init(inst, def);
+    ZodStringFormat.init(inst, def);
+  });
+  ZodIPv4 = /* @__PURE__ */ $constructor("ZodIPv4", (inst, def) => {
+    $ZodIPv4.init(inst, def);
+    ZodStringFormat.init(inst, def);
+  });
+  ZodIPv6 = /* @__PURE__ */ $constructor("ZodIPv6", (inst, def) => {
+    $ZodIPv6.init(inst, def);
+    ZodStringFormat.init(inst, def);
+  });
+  ZodCIDRv4 = /* @__PURE__ */ $constructor("ZodCIDRv4", (inst, def) => {
+    $ZodCIDRv4.init(inst, def);
+    ZodStringFormat.init(inst, def);
+  });
+  ZodCIDRv6 = /* @__PURE__ */ $constructor("ZodCIDRv6", (inst, def) => {
+    $ZodCIDRv6.init(inst, def);
+    ZodStringFormat.init(inst, def);
+  });
+  ZodBase64 = /* @__PURE__ */ $constructor("ZodBase64", (inst, def) => {
+    $ZodBase64.init(inst, def);
+    ZodStringFormat.init(inst, def);
+  });
+  ZodBase64URL = /* @__PURE__ */ $constructor("ZodBase64URL", (inst, def) => {
+    $ZodBase64URL.init(inst, def);
+    ZodStringFormat.init(inst, def);
+  });
+  ZodE164 = /* @__PURE__ */ $constructor("ZodE164", (inst, def) => {
+    $ZodE164.init(inst, def);
+    ZodStringFormat.init(inst, def);
+  });
+  ZodJWT = /* @__PURE__ */ $constructor("ZodJWT", (inst, def) => {
+    $ZodJWT.init(inst, def);
+    ZodStringFormat.init(inst, def);
+  });
+  ZodNumber = /* @__PURE__ */ $constructor("ZodNumber", (inst, def) => {
+    $ZodNumber.init(inst, def);
+    ZodType.init(inst, def);
+    inst._zod.processJSONSchema = (ctx, json, params) => numberProcessor(inst, ctx, json, params);
+    inst.isFinite = true;
+  }, /* @__PURE__ */ derived({
+    minValue: (inst) => {
+      const { minimum, exclusiveMinimum } = aggregateChecks(inst);
+      return Math.max(minimum ?? Number.NEGATIVE_INFINITY, exclusiveMinimum ?? Number.NEGATIVE_INFINITY);
+    },
+    maxValue: (inst) => {
+      const { maximum, exclusiveMaximum } = aggregateChecks(inst);
+      return Math.min(maximum ?? Number.POSITIVE_INFINITY, exclusiveMaximum ?? Number.POSITIVE_INFINITY);
+    },
+    isInt: (inst) => {
+      const { isInt, multipleOf } = aggregateChecks(inst);
+      return !!isInt || !!multipleOf?.some(Number.isSafeInteger);
+    },
+    format: (inst) => aggregateChecks(inst).format ?? null
+  }, {
+    gt(value, params) {
+      return this.check(_gt(value, params));
+    },
+    gte(value, params) {
+      return this.check(_gte(value, params));
+    },
+    min(value, params) {
+      return this.check(_gte(value, params));
+    },
+    lt(value, params) {
+      return this.check(_lt(value, params));
+    },
+    lte(value, params) {
+      return this.check(_lte(value, params));
+    },
+    max(value, params) {
+      return this.check(_lte(value, params));
+    },
+    int(params) {
+      return this.check(int(params));
+    },
+    safe(params) {
+      return this.check(int(params));
+    },
+    positive(params) {
+      return this.check(_gt(0, params));
+    },
+    nonnegative(params) {
+      return this.check(_gte(0, params));
+    },
+    negative(params) {
+      return this.check(_lt(0, params));
+    },
+    nonpositive(params) {
+      return this.check(_lte(0, params));
+    },
+    multipleOf(value, params) {
+      return this.check(_multipleOf(value, params));
+    },
+    step(value, params) {
+      return this.check(_multipleOf(value, params));
+    },
+    finite() {
+      return this;
+    }
+  }));
+  ZodNumberFormat = /* @__PURE__ */ $constructor("ZodNumberFormat", (inst, def) => {
+    $ZodNumberFormat.init(inst, def);
+    ZodNumber.init(inst, def);
+  });
+  ZodBoolean = /* @__PURE__ */ $constructor("ZodBoolean", (inst, def) => {
+    $ZodBoolean.init(inst, def);
+    ZodType.init(inst, def);
+    inst._zod.processJSONSchema = (ctx, json, params) => booleanProcessor(inst, ctx, json, params);
+  });
+  ZodUnknown = /* @__PURE__ */ $constructor("ZodUnknown", (inst, def) => {
+    $ZodUnknown.init(inst, def);
+    ZodType.init(inst, def);
+    inst._zod.processJSONSchema = (ctx, json, params) => unknownProcessor(inst, ctx, json, params);
+  });
+  ZodNever = /* @__PURE__ */ $constructor("ZodNever", (inst, def) => {
+    $ZodNever.init(inst, def);
+    ZodType.init(inst, def);
+    inst._zod.processJSONSchema = (ctx, json, params) => neverProcessor(inst, ctx, json, params);
+  });
+  ZodArray = /* @__PURE__ */ $constructor("ZodArray", (inst, def) => {
+    _ensureDefaultMemoizer();
+    $ZodArray.init(inst, def);
+    ZodType.init(inst, def);
+    inst._zod.processJSONSchema = (ctx, json, params) => arrayProcessor(inst, ctx, json, params);
+    inst.element = def.element;
+  }, {
+    min(n, params) {
+      return this.check(_minLength(n, params));
+    },
+    nonempty(params) {
+      return this.check(_minLength(1, params));
+    },
+    max(n, params) {
+      return this.check(_maxLength(n, params));
+    },
+    length(n, params) {
+      return this.check(_length(n, params));
+    },
+    unwrap() {
+      return this.element;
+    }
+  });
+  ZodObject = /* @__PURE__ */ $constructor("ZodObject", (inst, def) => {
+    _ensureDefaultMemoizer();
+    $ZodObjectJIT.init(inst, def);
+    ZodType.init(inst, def);
+    inst._zod.processJSONSchema = (ctx, json, params) => objectProcessor(inst, ctx, json, params);
+    installLazyProp(inst, "shape", (self) => self._zod.def.shape, false);
+  }, {
+    keyof() {
+      return _enum(Object.keys(this._zod.def.shape));
+    },
+    catchall(catchall) {
+      return this.clone(mergeDefs(this._zod.def, { catchall }));
+    },
+    passthrough() {
+      return this.clone(mergeDefs(this._zod.def, { catchall: unknown() }));
+    },
+    loose() {
+      return this.clone(mergeDefs(this._zod.def, { catchall: unknown() }));
+    },
+    strict() {
+      return this.clone(mergeDefs(this._zod.def, { catchall: never() }));
+    },
+    strip() {
+      return this.clone(mergeDefs(this._zod.def, { catchall: undefined }));
+    },
+    extend(incoming) {
+      return extend(this, incoming);
+    },
+    safeExtend(incoming) {
+      return safeExtend(this, incoming);
+    },
+    merge(other) {
+      return merge(this, other);
+    },
+    pick(mask) {
+      return pick(this, mask);
+    },
+    omit(mask) {
+      return omit(this, mask);
+    },
+    partial(...args) {
+      return partial(ZodOptional, this, args[0]);
+    },
+    exactPartial(...args) {
+      return partial(ZodExactOptional, this, args[0], "exactPartial");
+    },
+    required(...args) {
+      return required(ZodNonOptional, this, args[0]);
+    }
+  });
+  ZodUnion = /* @__PURE__ */ $constructor("ZodUnion", (inst, def) => {
+    $ZodUnion.init(inst, def);
+    ZodType.init(inst, def);
+    inst._zod.processJSONSchema = (ctx, json, params) => unionProcessor(inst, ctx, json, params);
+    inst.options = def.options;
+  });
+  ZodIntersection = /* @__PURE__ */ $constructor("ZodIntersection", (inst, def) => {
+    $ZodIntersection.init(inst, def);
+    ZodType.init(inst, def);
+    inst._zod.processJSONSchema = (ctx, json, params) => intersectionProcessor(inst, ctx, json, params);
+  });
+  ZodRecord = /* @__PURE__ */ $constructor("ZodRecord", (inst, def) => {
+    _ensureDefaultMemoizer();
+    $ZodRecord.init(inst, def);
+    ZodType.init(inst, def);
+    inst._zod.processJSONSchema = (ctx, json, params) => recordProcessor(inst, ctx, json, params);
+    inst.keyType = def.keyType;
+    inst.valueType = def.valueType;
+  });
+  ZodEnum = /* @__PURE__ */ $constructor("ZodEnum", (inst, def) => {
+    $ZodEnum.init(inst, def);
+    ZodType.init(inst, def);
+    inst._zod.processJSONSchema = (ctx, json, params) => enumProcessor(inst, ctx, json, params);
+    inst.enum = def.entries;
+    inst.options = [...inst._zod.values];
+    const keys = new Set(Object.keys(def.entries));
+    inst.extract = (values, params) => {
+      const newEntries = {};
+      for (const value of values) {
+        if (keys.has(value)) {
+          newEntries[value] = def.entries[value];
+        } else
+          throw new Error(`Key ${value} not found in enum`);
+      }
+      return new ZodEnum({
+        ...def,
+        checks: [],
+        ...normalizeParams(params),
+        entries: newEntries
+      });
+    };
+    inst.exclude = (values, params) => {
+      const newEntries = { ...def.entries };
+      for (const value of values) {
+        if (keys.has(value)) {
+          delete newEntries[value];
+        } else
+          throw new Error(`Key ${value} not found in enum`);
+      }
+      return new ZodEnum({
+        ...def,
+        checks: [],
+        ...normalizeParams(params),
+        entries: newEntries
+      });
+    };
+  });
+  ZodLiteral = /* @__PURE__ */ $constructor("ZodLiteral", (inst, def) => {
+    $ZodLiteral.init(inst, def);
+    ZodType.init(inst, def);
+    inst._zod.processJSONSchema = (ctx, json, params) => literalProcessor(inst, ctx, json, params);
+    inst.values = new Set(def.values);
+    Object.defineProperty(inst, "value", {
+      get() {
+        if (def.values.length > 1) {
+          throw new Error("This schema contains multiple valid literal values. Use `.values` instead.");
+        }
+        return def.values[0];
+      }
+    });
+  });
+  ZodTransform = /* @__PURE__ */ $constructor("ZodTransform", (inst, def) => {
+    _ensureDefaultMemoizer();
+    $ZodTransform.init(inst, def);
+    ZodType.init(inst, def);
+    inst._zod.processJSONSchema = (ctx, json, params) => transformProcessor(inst, ctx, json, params);
+    inst._zod.parse = (payload, _ctx) => {
+      if (_ctx.direction === "backward") {
+        throw new $ZodEncodeError(inst.constructor.name);
+      }
+      payload.addIssue = (issue2) => {
+        if (typeof issue2 === "string") {
+          payload.issues.push(issue(issue2, payload.value, def));
+        } else {
+          const _issue = issue2;
+          if (_issue.fatal)
+            _issue.continue = false;
+          _issue.code ?? (_issue.code = "custom");
+          if (!("input" in _issue))
+            _issue.input = payload.value;
+          _issue.inst ?? (_issue.inst = inst);
+          payload.issues.push(issue(_issue));
+        }
+      };
+      const output = def.transform(payload.value, payload);
+      if (output instanceof Promise) {
+        return output.then((output) => {
+          payload.value = output;
+          return payload;
+        });
+      }
+      payload.value = output;
+      return payload;
+    };
+  });
+  ZodOptional = /* @__PURE__ */ $constructor("ZodOptional", (inst, def) => {
+    $ZodOptional.init(inst, def);
+    ZodType.init(inst, def);
+    inst._zod.processJSONSchema = (ctx, json, params) => optionalProcessor(inst, ctx, json, params);
+    inst.unwrap = () => inst._zod.def.innerType;
+  });
+  ZodExactOptional = /* @__PURE__ */ $constructor("ZodExactOptional", (inst, def) => {
+    $ZodExactOptional.init(inst, def);
+    ZodType.init(inst, def);
+    inst._zod.processJSONSchema = (ctx, json, params) => optionalProcessor(inst, ctx, json, params);
+    inst.unwrap = () => inst._zod.def.innerType;
+  });
+  ZodNullable = /* @__PURE__ */ $constructor("ZodNullable", (inst, def) => {
+    $ZodNullable.init(inst, def);
+    ZodType.init(inst, def);
+    inst._zod.processJSONSchema = (ctx, json, params) => nullableProcessor(inst, ctx, json, params);
+    inst.unwrap = () => inst._zod.def.innerType;
+  });
+  ZodDefault = /* @__PURE__ */ $constructor("ZodDefault", (inst, def) => {
+    $ZodDefault.init(inst, def);
+    ZodType.init(inst, def);
+    inst._zod.processJSONSchema = (ctx, json, params) => defaultProcessor(inst, ctx, json, params);
+    inst.unwrap = () => inst._zod.def.innerType;
+    inst.removeDefault = inst.unwrap;
+  });
+  ZodPrefault = /* @__PURE__ */ $constructor("ZodPrefault", (inst, def) => {
+    $ZodPrefault.init(inst, def);
+    ZodType.init(inst, def);
+    inst._zod.processJSONSchema = (ctx, json, params) => prefaultProcessor(inst, ctx, json, params);
+    inst.unwrap = () => inst._zod.def.innerType;
+  });
+  ZodNonOptional = /* @__PURE__ */ $constructor("ZodNonOptional", (inst, def) => {
+    $ZodNonOptional.init(inst, def);
+    ZodType.init(inst, def);
+    inst._zod.processJSONSchema = (ctx, json, params) => nonoptionalProcessor(inst, ctx, json, params);
+    inst.unwrap = () => inst._zod.def.innerType;
+  });
+  ZodCatch = /* @__PURE__ */ $constructor("ZodCatch", (inst, def) => {
+    $ZodCatch.init(inst, def);
+    ZodType.init(inst, def);
+    inst._zod.processJSONSchema = (ctx, json, params) => catchProcessor(inst, ctx, json, params);
+    inst.unwrap = () => inst._zod.def.innerType;
+    inst.removeCatch = inst.unwrap;
+  });
+  ZodPipe = /* @__PURE__ */ $constructor("ZodPipe", (inst, def) => {
+    $ZodPipe.init(inst, def);
+    ZodType.init(inst, def);
+    inst._zod.processJSONSchema = (ctx, json, params) => pipeProcessor(inst, ctx, json, params);
+    inst.in = def.in;
+    inst.out = def.out;
+  });
+  ZodPreprocess = /* @__PURE__ */ $constructor("ZodPreprocess", (inst, def) => {
+    ZodPipe.init(inst, def);
+    $ZodPreprocess.init(inst, def);
+  });
+  ZodReadonly = /* @__PURE__ */ $constructor("ZodReadonly", (inst, def) => {
+    $ZodReadonly.init(inst, def);
+    ZodType.init(inst, def);
+    inst._zod.processJSONSchema = (ctx, json, params) => readonlyProcessor(inst, ctx, json, params);
+    inst.unwrap = () => inst._zod.def.innerType;
+  });
+  ZodCustom = /* @__PURE__ */ $constructor("ZodCustom", (inst, def) => {
+    $ZodCustom.init(inst, def);
+    ZodType.init(inst, def);
+    inst._zod.processJSONSchema = (ctx, json, params) => customProcessor(inst, ctx, json, params);
+  });
+});
+
+// node_modules/zod/v4/classic/compat.js
+var ZodFirstPartyTypeKind;
+var init_compat = __esm(() => {
+  (function(ZodFirstPartyTypeKind) {})(ZodFirstPartyTypeKind || (ZodFirstPartyTypeKind = {}));
+});
+
 // node_modules/zod/v4/classic/iso.js
+var exports_iso = {};
+__export(exports_iso, {
+  ZodISODate: () => ZodISODate,
+  ZodISODateTime: () => ZodISODateTime,
+  ZodISODuration: () => ZodISODuration,
+  ZodISOTime: () => ZodISOTime,
+  date: () => date2,
+  datetime: () => datetime2,
+  duration: () => duration2,
+  time: () => time2
+});
 function datetime2(params) {
   return _isoDateTime(ZodISODateTime, params);
 }
@@ -6972,7 +6334,5836 @@ function time2(params) {
 function duration2(params) {
   return _isoDuration(ZodISODuration, params);
 }
+var init_iso = __esm(() => {
+  init_core2();
+  init_schemas2();
+  init_schemas2();
+});
+
+// node_modules/zod/v4/classic/coerce.js
+var init_coerce = () => {};
+
+// node_modules/zod/v4/classic/external.js
+var init_external = __esm(() => {
+  init_core2();
+  init_core2();
+  init_locales();
+  init_iso();
+  init_coerce();
+  init_schemas2();
+  init_checks2();
+  init_errors2();
+  init_parse2();
+  init_compat();
+});
+
+// node_modules/zod/index.js
+var init_zod = __esm(() => {
+  init_external();
+  init_external();
+});
+
+// src/hooks/detached.ts
+import { spawn } from "child_process";
+function unableInCmd(argument) {
+  if (argument.includes('"'))
+    return 'a " would end the quoted argument';
+  if (argument.includes("%"))
+    return "a % is read as a variable name, inside double quotes too";
+  if (/[\r\n]/.test(argument))
+    return "a line break ends the command line";
+  if (argument.includes("\x00"))
+    return "a NUL ends the command line";
+  return null;
+}
+function cmdArgument(argument) {
+  const reason = unableInCmd(argument);
+  if (reason !== null)
+    return { ok: false, reason };
+  const trailing = /\\+$/.exec(argument)?.[0] ?? "";
+  const kept = argument.slice(0, argument.length - trailing.length);
+  return { ok: true, text: `"${kept}${trailing}${trailing}"` };
+}
+function windowsStart(argv) {
+  return cmdLine('start "" /b ', argv);
+}
+function windowsRun(argv) {
+  return cmdLine("", argv);
+}
+function cmdLine(head, argv) {
+  if (argv[0] === undefined) {
+    return { argument: "", ok: false, reason: "there is no program to start" };
+  }
+  const quoted = [];
+  for (const argument of argv) {
+    const one = cmdArgument(argument);
+    if (!one.ok)
+      return { argument, ok: false, reason: one.reason };
+    quoted.push(one.text);
+  }
+  return { argv: [CMD, ...CMD_ARGUMENTS, `"${head}${quoted.join(" ")}"`], ok: true };
+}
+function forMessage(argument) {
+  return argument.replace(/[\r\n]/g, " ").replaceAll("\x00", " ");
+}
+function startDetached(platform, argv, options) {
+  const [file, ...args] = argv;
+  if (file === undefined)
+    return;
+  const where = {
+    ...options.cwd !== undefined && { cwd: options.cwd },
+    ...options.env !== undefined && { env: options.env }
+  };
+  try {
+    if (platform === "win32") {
+      const start = windowsStart(argv);
+      if (!start.ok) {
+        options.onError(`cannot run "${forMessage(start.argument)}" through cmd.exe: ${start.reason}; nothing was started`);
+        return;
+      }
+      const result = Bun.spawnSync(start.argv, {
+        ...where,
+        stdin: "ignore",
+        stdout: "ignore",
+        stderr: "ignore",
+        windowsHide: true,
+        windowsVerbatimArguments: true
+      });
+      const exitCode = result.exitCode ?? 1;
+      if (exitCode !== 0)
+        options.onError(`cmd /d /s /c start failed (exit ${exitCode})`);
+      return;
+    }
+    const child = spawn(file, args, { ...where, detached: true, stdio: "ignore" });
+    child.on("error", (error) => options.onError(error.message));
+    child.unref();
+  } catch (error) {
+    options.onError(error instanceof Error ? error.message : String(error));
+  }
+}
+var CMD = "cmd", CMD_ARGUMENTS;
+var init_detached = __esm(() => {
+  CMD_ARGUMENTS = ["/d", "/s", "/v:off", "/c"];
+});
+
+// src/setup/lock.ts
+import {
+  closeSync as closeSync3,
+  mkdirSync as mkdirSync6,
+  openSync as openSync3,
+  readFileSync as readFileSync10,
+  readlinkSync as readlinkSync3,
+  statSync as statSync5,
+  unlinkSync as unlinkSync3,
+  writeSync
+} from "fs";
+import { hostname as hostname2 } from "os";
+import { join as join7 } from "path";
+function procStartTime(pid) {
+  try {
+    const stat = readFileSync10(`/proc/${pid}/stat`, "utf8");
+    const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
+    const start = fields[22 - 3];
+    return start && /^\d+$/.test(start) ? start : null;
+  } catch {
+    return null;
+  }
+}
+function psStartTime(pid) {
+  try {
+    const result = Bun.spawnSync(["ps", "-o", "lstart=", "-p", String(pid)], {
+      env: { ...process.env, LC_ALL: "C" },
+      stdout: "pipe",
+      stderr: "ignore"
+    });
+    const text = result.stdout.toString().trim();
+    return result.exitCode === 0 && text !== "" ? text : null;
+  } catch {
+    return null;
+  }
+}
+function processStartTime(pid, like) {
+  if (like === undefined || like.startsWith("proc:")) {
+    const proc = procStartTime(pid);
+    if (proc !== null)
+      return `proc:${proc}`;
+  }
+  if (like === undefined || like.startsWith("ps:")) {
+    const ps = psStartTime(pid);
+    if (ps !== null)
+      return `ps:${ps}`;
+  }
+  return null;
+}
+function ownPidNamespace() {
+  try {
+    return readlinkSync3("/proc/self/ns/pid");
+  } catch {
+    return null;
+  }
+}
+function isAlive2(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error.code === "EPERM";
+  }
+}
+function parseLock(text) {
+  try {
+    const parsed = JSON.parse(text);
+    if (typeof parsed.pid !== "number" || typeof parsed.time !== "number" || typeof parsed.token !== "string") {
+      return null;
+    }
+    return {
+      pid: parsed.pid,
+      startTime: typeof parsed.startTime === "string" ? parsed.startTime : null,
+      host: typeof parsed.host === "string" ? parsed.host : "",
+      pidns: typeof parsed.pidns === "string" ? parsed.pidns : null,
+      time: parsed.time,
+      token: parsed.token
+    };
+  } catch {
+    return null;
+  }
+}
+function readHeld(file) {
+  let stat;
+  try {
+    stat = statSync5(file);
+  } catch (error) {
+    if (error.code === "ENOENT")
+      return null;
+    throw error;
+  }
+  let info;
+  try {
+    info = parseLock(readFileSync10(file, "utf8"));
+  } catch (error) {
+    const code = error.code;
+    if (code === "ENOENT")
+      return null;
+    if (code !== "EACCES" && code !== "EPERM")
+      throw error;
+    info = null;
+  }
+  return { info, ino: stat.ino, mtimeMs: stat.mtimeMs, size: stat.size };
+}
+function sameHeld(a, b) {
+  if (a.info && b.info)
+    return a.info.token === b.info.token;
+  if (a.info || b.info)
+    return false;
+  return a.ino === b.ino && a.mtimeMs === b.mtimeMs && a.size === b.size;
+}
+function holderIsGone(holder, lastSeenMs, fallbackStaleMs, startTimeOf = processStartTime) {
+  const oldEnough = Date.now() - lastSeenMs > fallbackStaleMs;
+  if (holder === null || holder.host !== hostname2())
+    return oldEnough;
+  ownPidns ??= ownPidNamespace();
+  const theirs = holder.pidns ?? null;
+  if (theirs !== null && ownPidns !== null && theirs !== ownPidns)
+    return oldEnough;
+  if (!isAlive2(holder.pid))
+    return true;
+  if (holder.startTime === null)
+    return oldEnough;
+  const now = startTimeOf(holder.pid, holder.startTime);
+  if (now === null)
+    return oldEnough;
+  return now !== holder.startTime;
+}
+function isStale(held, fallbackStaleMs) {
+  return holderIsGone(held.info, held.info?.time ?? held.mtimeMs, fallbackStaleMs);
+}
+function tryCreate(file, info, mode) {
+  let fd;
+  try {
+    fd = openSync3(file, "wx", mode);
+  } catch (error) {
+    if (error.code === "EEXIST")
+      return false;
+    throw error;
+  }
+  try {
+    setFileMode(fd, mode);
+    writeSync(fd, JSON.stringify(info));
+  } finally {
+    closeSync3(fd);
+  }
+  return true;
+}
+function currentHolder() {
+  ownStartTime ??= processStartTime(process.pid);
+  ownPidns ??= ownPidNamespace();
+  return { pid: process.pid, startTime: ownStartTime, host: hostname2(), pidns: ownPidns };
+}
+function newLockInfo() {
+  return { ...currentHolder(), time: Date.now(), token: crypto.randomUUID() };
+}
+function takeOverStale(file, judged, fallbackStaleMs, mode) {
+  const claim = `${file}${TAKEOVER_SUFFIX}`;
+  const me = newLockInfo();
+  if (!tryCreate(claim, me, mode)) {
+    const other = readHeld(claim);
+    if (other && isStale(other, fallbackStaleMs)) {
+      const again = readHeld(claim);
+      if (again && sameHeld(again, other))
+        unlinkSync3(claim);
+    }
+    return false;
+  }
+  try {
+    const now = readHeld(file);
+    if (now && sameHeld(now, judged))
+      unlinkSync3(file);
+    return true;
+  } finally {
+    if (readHeld(claim)?.info?.token === me.token)
+      unlinkSync3(claim);
+  }
+}
+function lockIsHeld(stateDir, fallbackStaleMs = FALLBACK_STALE_MS) {
+  try {
+    const held = readHeld(join7(stateDir, LOCK_FILE));
+    return held !== null && !isStale(held, fallbackStaleMs);
+  } catch {
+    return false;
+  }
+}
+async function withLock(stateDir, fn, options = {}) {
+  mkdirSync6(stateDir, { recursive: true });
+  const file = join7(stateDir, LOCK_FILE);
+  const mine = newLockInfo();
+  const deadline = Date.now() + (options.waitMs ?? 0);
+  const fallbackStaleMs = options.fallbackStaleMs ?? FALLBACK_STALE_MS;
+  const mode = options.mode ?? 384;
+  for (;; ) {
+    mine.time = Date.now();
+    if (tryCreate(file, mine, mode))
+      break;
+    const held = readHeld(file);
+    if (held === null)
+      continue;
+    if (isStale(held, fallbackStaleMs) && takeOverStale(file, held, fallbackStaleMs, mode)) {
+      continue;
+    }
+    if (Date.now() >= deadline) {
+      const info = held.info;
+      const where = info && info.host !== hostname2() ? ` on ${info.host || "another host"}` : "";
+      const who = info ? `process ${info.pid}${where}` : "another run";
+      throw new LockBusyError(`cc-smart-dev-kit is busy: ${who} holds ${file}. Wait for it to finish, then try again.`);
+    }
+    await Bun.sleep(100);
+  }
+  try {
+    return await fn();
+  } finally {
+    if (readHeld(file)?.info?.token === mine.token)
+      unlinkSync3(file);
+  }
+}
+var FALLBACK_STALE_MS, LOCK_FILE = "lock", TAKEOVER_SUFFIX = ".takeover", LockBusyError, ownPidns, ownStartTime;
+var init_lock = __esm(() => {
+  init_file_mode();
+  FALLBACK_STALE_MS = 10 * 60 * 1000;
+  LockBusyError = class LockBusyError extends Error {
+    name = "LockBusyError";
+  };
+});
+
+// src/setup/user-json.ts
+import { readFileSync as readFileSync11 } from "fs";
+function withoutBom(text) {
+  return text.startsWith(BOM) ? text.slice(BOM.length) : text;
+}
+function parseUserJson(text) {
+  return JSON.parse(withoutBom(text));
+}
+function readUserJson(file) {
+  return parseUserJson(readFileSync11(file, "utf8"));
+}
+var BOM = "\uFEFF";
+var init_user_json = () => {};
+
+// src/setup/managed-json.ts
+import { createHash as createHash3 } from "crypto";
+import { existsSync as existsSync6, readFileSync as readFileSync12 } from "fs";
+import { join as join8 } from "path";
+function formatKeyPath(path) {
+  return path.map((segment, index) => {
+    if (/^[A-Za-z_$][\w$]*$/.test(segment))
+      return index === 0 ? segment : `.${segment}`;
+    return `[${JSON.stringify(segment)}]`;
+  }).join("");
+}
+function isObject2(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function samePath(a, b) {
+  return a.length === b.length && a.every((segment, index) => segment === b[index]);
+}
+function detectIndent(text) {
+  return /^([ \t]+)"/m.exec(text)?.[1] ?? "  ";
+}
+function readJsonObject(file) {
+  if (!existsSync6(file))
+    return { data: {}, indent: "  ", text: null };
+  const text = readFileSync12(file, "utf8");
+  if (text.trim() === "")
+    return { data: {}, indent: "  ", text };
+  let parsed;
+  try {
+    parsed = parseUserJson(text);
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new Error(`${file} is not valid JSON (${reason}). Fix it by hand, then run again.`);
+  }
+  if (!isObject2(parsed))
+    throw new Error(`${file} must hold a JSON object.`);
+  return { data: parsed, indent: detectIndent(text), text };
+}
+function toRecord(entry, file) {
+  if (Array.isArray(entry) && entry.every((segment) => typeof segment === "string")) {
+    return { path: [...entry] };
+  }
+  if (isObject2(entry) && Array.isArray(entry.path) && entry.path.every((segment) => typeof segment === "string")) {
+    const record = { path: [...entry.path] };
+    if (Object.hasOwn(entry, "value"))
+      record.value = entry.value;
+    if (typeof entry.sha256 === "string")
+      record.sha256 = entry.sha256;
+    if (Object.hasOwn(entry, "was"))
+      record.was = entry.was;
+    if (typeof entry.wasSha256 === "string")
+      record.wasSha256 = entry.wasSha256;
+    if (entry.taken === true)
+      record.taken = true;
+    return record;
+  }
+  throw new Error(`Invalid ${file}: an owned key that is neither a path nor a record`);
+}
+function readOwned(stateDir) {
+  const file = join8(stateDir, OWNED_FILE);
+  if (!existsSync6(file))
+    return {};
+  const parsed = JSON.parse(readFileSync12(file, "utf8"));
+  if (!isObject2(parsed))
+    throw new Error(`Invalid ${file}: expected an object`);
+  const owned = {};
+  for (const [target, entries] of Object.entries(parsed)) {
+    if (!Array.isArray(entries))
+      throw new Error(`Invalid ${file}: expected a list per file`);
+    owned[target] = entries.map((entry) => toRecord(entry, file));
+  }
+  return owned;
+}
+function writeOwned(stateDir, owned) {
+  atomicWrite(join8(stateDir, OWNED_FILE), `${JSON.stringify(owned, null, 2)}
+`, 384);
+}
+function ownedKeys(stateDir, file) {
+  return ownedRecords(stateDir, file).map((record) => record.path);
+}
+function ownedRecords(stateDir, file) {
+  return readOwned(stateDir)[file] ?? [];
+}
+function hashOf(value) {
+  return createHash3("sha256").update(JSON.stringify(value)).digest("hex");
+}
+function isOwnedValue(stateDir, file, path, value) {
+  const record = ownedRecords(stateDir, realTarget(file)).find((entry) => samePath(entry.path, path));
+  if (record === undefined)
+    return false;
+  if (record.sha256 !== undefined)
+    return hashOf(value) === record.sha256;
+  return Object.hasOwn(record, "value") && Bun.deepEquals(record.value, value, true);
+}
+function recordOf(path, value, secret) {
+  return secret ? { path: [...path], sha256: hashOf(value) } : { path: [...path], value };
+}
+function ownership(records, path, current, unchosen) {
+  const record = records.find((entry) => samePath(entry.path, path));
+  if (record === undefined)
+    return "none";
+  if (!current.found)
+    return "changed";
+  if (record.sha256 !== undefined) {
+    if (hashOf(current.value) === record.sha256)
+      return "ours";
+  } else if (!Object.hasOwn(record, "value")) {
+    return "ours";
+  } else if (Bun.deepEquals(current.value, record.value, true)) {
+    return "ours";
+  }
+  return unchosen?.(path, current.value) ? "ours" : "changed";
+}
+function getKey(data, path) {
+  let node = data;
+  for (const segment of path) {
+    if (!isObject2(node) || !Object.hasOwn(node, segment))
+      return { found: false, value: undefined };
+    node = node[segment];
+  }
+  return { found: true, value: node };
+}
+function setKey(data, path, value) {
+  let node = data;
+  for (const [index, segment] of path.slice(0, -1).entries()) {
+    const next = node[segment];
+    if (next === undefined) {
+      node[segment] = {};
+    } else if (!isObject2(next)) {
+      throw new ForeignKeyError(`Cannot set ${formatKeyPath(path)}: ${formatKeyPath(path.slice(0, index + 1))} is not an object.`);
+    }
+    node = node[segment];
+  }
+  const leaf = path.at(-1);
+  if (leaf !== undefined)
+    node[leaf] = structuredClone(value);
+}
+function deleteKey(data, path) {
+  const parent = getKey(data, path.slice(0, -1));
+  const leaf = path.at(-1);
+  if (parent.found && isObject2(parent.value) && leaf !== undefined)
+    delete parent.value[leaf];
+}
+function deleteKeyAndEmptiedObjects(data, path, createdObject) {
+  deleteKey(data, path);
+  const removed = [];
+  for (let depth = path.length - 1;depth >= 1; depth -= 1) {
+    const parentPath = path.slice(0, depth);
+    const parent = getKey(data, parentPath);
+    if (!parent.found || !isObject2(parent.value))
+      break;
+    if (Object.keys(parent.value).length > 0)
+      break;
+    if (createdObject?.(parentPath) !== true)
+      break;
+    deleteKey(data, parentPath);
+    removed.push(parentPath);
+  }
+  return removed;
+}
+function createdObjects(stateDir, file) {
+  const real = realTarget(file);
+  let entry;
+  try {
+    entry = readChanged(stateDir)[real];
+  } catch (error) {
+    console.error(`cc-smart-dev-kit: the record of changed files cannot be read (${error instanceof Error ? error.message : String(error)}), so nothing is pruned from ${real}.`);
+    return () => false;
+  }
+  const baseline = entry === undefined ? undefined : listBackups(stateDir, real).find((backup) => backup.path === entry.baseline);
+  if (baseline === undefined)
+    return () => false;
+  if (baseline.absent)
+    return () => true;
+  let before;
+  try {
+    before = readJsonObject(baseline.path).data;
+  } catch {
+    return () => false;
+  }
+  return (path) => !getKey(before, path).found;
+}
+function applyManagedJson(options) {
+  const file = realTarget(options.file);
+  const snapshot = readOwned(options.stateDir);
+  return retryOnConcurrentChange(file, () => applyOnce(file, options, snapshot));
+}
+function applyOnce(file, options, owned) {
+  const { data, indent, text } = readJsonObject(file);
+  const ownedHere = owned[file] ?? [];
+  const isSecret = (path) => options.secret?.(path) ?? false;
+  const shown = (path, value) => isSecret(path) ? "a secret" : JSON.stringify(value);
+  const changes = [];
+  const skipped = [];
+  const updated = [];
+  const dropped = [];
+  const released = [];
+  let setsSecret = false;
+  const recordFor = (path, value) => {
+    const held = ownedHere.find((entry) => samePath(entry.path, path));
+    return {
+      ...recordOf(path, value, isSecret(path)),
+      ...held?.was !== undefined && { was: held.was },
+      ...held?.wasSha256 !== undefined && { wasSha256: held.wasSha256 },
+      ...held?.taken === true && { taken: true }
+    };
+  };
+  for (const [path, value] of options.set ?? []) {
+    if (path.length === 0)
+      throw new Error("applyManagedJson: an empty key path");
+    if (isSecret(path))
+      setsSecret = true;
+    const current = getKey(data, path);
+    const whose = ownership(ownedHere, path, current, options.unchosen);
+    if (current.found && Bun.deepEquals(current.value, value, true)) {
+      if (whose === "none") {
+        skipped.push({ path, reason: "already set by someone else; left alone" });
+      } else if (whose === "changed") {
+        skipped.push({
+          path,
+          reason: "set by you since; left alone, no longer cc-smart-dev-kit's"
+        });
+        dropped.push(path);
+      } else {
+        updated.push(recordFor(path, value));
+      }
+      continue;
+    }
+    if (current.found && whose === "changed") {
+      throw new ForeignKeyError(`${file}: ${formatKeyPath(path)} is ${shown(path, current.value)}: it was changed after cc-smart-dev-kit set it, so it is your choice now. ` + "cc-smart-dev-kit does not overwrite it. Remove it by hand if cc-smart-dev-kit should manage it again.");
+    }
+    if (current.found && whose === "none" && !options.unchosen?.(path, current.value)) {
+      throw new ForeignKeyError(`${file}: ${formatKeyPath(path)} is ${shown(path, current.value)}, set by someone else. ` + "cc-smart-dev-kit does not overwrite it. Remove it by hand if cc-smart-dev-kit should manage it.");
+    }
+    setKey(data, path, value);
+    changes.push({ path, before: current.found ? current.value : undefined, after: value });
+    updated.push(recordFor(path, value));
+  }
+  for (const [path, value] of options.claim ?? []) {
+    const current = getKey(data, path);
+    if (!current.found || !Bun.deepEquals(current.value, value, true)) {
+      skipped.push({ path, reason: "not the value it was taken over with; left alone" });
+      continue;
+    }
+    const record = recordFor(path, value);
+    record.taken = true;
+    if (isSecret(path))
+      record.wasSha256 = hashOf(value);
+    else
+      record.was = value;
+    updated.push(record);
+  }
+  for (const [path, value] of options.release ?? []) {
+    const current = getKey(data, path);
+    if (ownership(ownedHere, path, current) !== "ours") {
+      dropped.push(path);
+      skipped.push({ path, reason: "changed since cc-smart-dev-kit managed it; left alone" });
+      continue;
+    }
+    if (value === undefined) {
+      const held = ownedHere.find((entry) => samePath(entry.path, path));
+      if (held?.taken === true) {
+        dropped.push(path);
+        skipped.push({ path, reason: TAKEN_SECRET_LEFT });
+        continue;
+      }
+      skipped.push({ path, reason: "no value to write back; left as it is" });
+      continue;
+    }
+    dropped.push(path);
+    released.push(path);
+    if (current.found && Bun.deepEquals(current.value, value, true)) {
+      skipped.push({
+        path,
+        reason: "already holds that value; cc-smart-dev-kit's claim is dropped"
+      });
+      continue;
+    }
+    if (isSecret(path))
+      setsSecret = true;
+    setKey(data, path, value);
+    changes.push({ path, before: current.found ? current.value : undefined, after: value });
+  }
+  for (const path of options.withdraw ?? []) {
+    const current = getKey(data, path);
+    dropped.push(path);
+    if (ownership(ownedHere, path, current) !== "ours") {
+      skipped.push({ path, reason: "changed since cc-smart-dev-kit managed it; left alone" });
+      continue;
+    }
+    const emptied = deleteKeyAndEmptiedObjects(data, path, options.createdObject);
+    changes.push({ path, before: current.value, after: undefined });
+    for (const parentPath of emptied)
+      changes.push({ path: parentPath, before: {}, after: undefined });
+  }
+  for (const path of options.remove ?? []) {
+    const current = getKey(data, path);
+    const whose = ownership(ownedHere, path, current);
+    if (whose === "none") {
+      skipped.push({ path, reason: "not owned by cc-smart-dev-kit; left alone" });
+      continue;
+    }
+    dropped.push(path);
+    if (whose === "changed") {
+      skipped.push({
+        path,
+        reason: current.found ? "changed since cc-smart-dev-kit set it; left alone" : "not in the file any more (removed since cc-smart-dev-kit set it); left alone"
+      });
+      continue;
+    }
+    if (!current.found)
+      continue;
+    const held = ownedHere.find((entry) => samePath(entry.path, path));
+    if (held?.was !== undefined) {
+      if (Bun.deepEquals(current.value, held.was, true)) {
+        skipped.push({ path, reason: TAKEN_VALUE_HELD });
+        continue;
+      }
+      setKey(data, path, held.was);
+      changes.push({ path, before: current.value, after: held.was });
+      continue;
+    }
+    if (held?.wasSha256 !== undefined) {
+      skipped.push({ path, reason: TAKEN_SECRET_LEFT });
+      continue;
+    }
+    const emptied = deleteKeyAndEmptiedObjects(data, path, options.createdObject);
+    changes.push({ path, before: current.value, after: undefined });
+    for (const parentPath of emptied) {
+      changes.push({ path: parentPath, before: {}, after: undefined });
+    }
+  }
+  const touched = (entry) => updated.some((record) => samePath(record.path, entry.path)) || dropped.some((path) => samePath(path, entry.path));
+  const finalOwned = [...ownedHere.filter((entry) => !touched(entry)), ...updated];
+  const ownedChanged = !Bun.deepEquals([...finalOwned].sort(byPath), [...ownedHere].sort(byPath), true);
+  if (options.dryRun || changes.length === 0 && !ownedChanged) {
+    return { file, changes, skipped, written: false, backup: null };
+  }
+  const nextState = (records) => {
+    const next = { ...owned, [file]: records };
+    if (records.length === 0)
+      delete next[file];
+    return next;
+  };
+  const changedPaths = changes.filter((change) => change.after !== undefined && !released.some((path) => samePath(path, change.path)));
+  if (changedPaths.length > 0) {
+    const pending = [
+      ...ownedHere.filter((entry) => !changedPaths.some((c) => samePath(c.path, entry.path))),
+      ...changedPaths.map((change) => {
+        const held = ownedHere.find((entry) => samePath(entry.path, change.path));
+        return {
+          path: [...change.path],
+          ...held?.was !== undefined && { was: held.was },
+          ...held?.wasSha256 !== undefined && { wasSha256: held.wasSha256 },
+          ...held?.taken === true && { taken: true }
+        };
+      })
+    ];
+    writeOwned(options.stateDir, nextState(pending));
+  }
+  let written = false;
+  let backup = null;
+  if (changes.length > 0) {
+    options.onBeforeWrite?.();
+    let result;
+    try {
+      result = writeManagedFile(file, `${JSON.stringify(data, null, indent)}
+`, {
+        stateDir: options.stateDir,
+        kind: "json-keys",
+        newFileMode: 384,
+        ...setsSecret && { mode: 384 },
+        expectedContent: text
+      });
+    } catch (error) {
+      if (changedPaths.length > 0)
+        writeOwned(options.stateDir, owned);
+      throw error;
+    }
+    written = result.outcome !== "unchanged";
+    backup = result.backup;
+  }
+  writeOwned(options.stateDir, nextState(finalOwned));
+  return { file, changes, skipped, written, backup };
+}
+function byPath(a, b) {
+  const left = JSON.stringify(a.path);
+  const right = JSON.stringify(b.path);
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+var OWNED_FILE = "owned.json", TAKEN_SECRET_LEFT = "a taken-over key's value is never kept; its claim is dropped and the key stays", TAKEN_VALUE_HELD = "already holds the value it had before cc-smart-dev-kit took it over; the claim is dropped", ForeignKeyError;
+var init_managed_json = __esm(() => {
+  init_user_json();
+  init_write();
+  ForeignKeyError = class ForeignKeyError extends Error {
+    name = "ForeignKeyError";
+  };
+});
+
+// src/shell/quote.ts
+function shellQuote(value) {
+  return `'${value.replaceAll("'", "'\\''")}'`;
+}
+function shellWord(value) {
+  return /^[\w./-]+$/.test(value) ? value : shellQuote(value);
+}
+
+// src/path-compare.ts
+import { dirname as dirname7, resolve as resolve3 } from "path";
+function isInside(path, folder, ignoreCase = IGNORE_CASE) {
+  const child = pathForm(path, ignoreCase);
+  const parent = pathForm(folder, ignoreCase);
+  return child === parent || child.startsWith(`${parent}/`);
+}
+function pathForm(path, ignoreCase = IGNORE_CASE) {
+  const forward = resolve3(path.replace(/\\/g, "/")).replace(/\\/g, "/").replace(/\/+$/, "");
+  return ignoreCase ? forward.toLowerCase() : forward;
+}
+function samePath2(a, b, ignoreCase = IGNORE_CASE) {
+  return isInside(a, b, ignoreCase) && isInside(b, a, ignoreCase);
+}
+function isStrictlyInside(path, folder, ignoreCase = IGNORE_CASE) {
+  return isInside(path, folder, ignoreCase) && !isInside(folder, path, ignoreCase);
+}
+var IGNORE_CASE;
+var init_path_compare = __esm(() => {
+  IGNORE_CASE = process.platform === "win32";
+});
+
+// src/project/git-env.ts
+function gitEnv(base) {
+  const env = {};
+  for (const [key, value] of Object.entries(base)) {
+    if (value !== undefined && !REPO_SELECTING_GIT_VARS.includes(key))
+      env[key] = value;
+  }
+  return env;
+}
+var REPO_SELECTING_GIT_VARS;
+var init_git_env = __esm(() => {
+  REPO_SELECTING_GIT_VARS = [
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_COMMON_DIR",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_PREFIX",
+    "GIT_NAMESPACE"
+  ];
+});
+
+// src/hooks/git.ts
+import { readFileSync as readFileSync20, realpathSync as realpathSync2 } from "fs";
+import { basename as basename3, dirname as dirname8, join as join14, resolve as resolve4 } from "path";
+function runGit(cwd, args, env, timeoutMs = 15000, own = {}) {
+  return spawnGit(cwd, args, env, timeoutMs, own, true);
+}
+function spawnGit(cwd, args, env, timeoutMs, own, trim) {
+  try {
+    const result = Bun.spawnSync(["git", ...args], {
+      cwd,
+      env: { ...gitEnv(env), ...own },
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+      timeout: timeoutMs,
+      windowsHide: true
+    });
+    const err = result.signalCode ? GIT_TIMED_OUT : result.stderr.toString().trim();
+    const code = result.signalCode ? null : result.exitCode;
+    const out = result.stdout.toString();
+    return { ok: result.exitCode === 0, out: trim ? out.trim() : out, err, code };
+  } catch (error) {
+    const err = error instanceof Error ? error.message : String(error);
+    return { ok: false, out: "", err, code: null };
+  }
+}
+async function runGitAsync(cwd, args, env, timeoutMs = 15000, own = {}) {
+  try {
+    const child = Bun.spawn(["git", ...args], {
+      cwd,
+      env: { ...gitEnv(env), ...own },
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+      timeout: timeoutMs,
+      windowsHide: true
+    });
+    const [stdout, stderr, code] = await Promise.all([
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+      child.exited
+    ]);
+    const signaled = child.signalCode !== null && child.signalCode !== undefined;
+    return {
+      ok: code === 0,
+      out: stdout.trim(),
+      err: signaled ? GIT_TIMED_OUT : stderr.trim(),
+      code: signaled ? null : code
+    };
+  } catch (error) {
+    const err = error instanceof Error ? error.message : String(error);
+    return { ok: false, out: "", err, code: null };
+  }
+}
+function realPath(path) {
+  const rest = [];
+  let at = resolve4(path);
+  for (;; ) {
+    try {
+      return join14(realpathSync2(at), ...rest);
+    } catch {
+      const parent = dirname8(at);
+      if (parent === at)
+        return resolve4(path);
+      rest.unshift(basename3(at));
+      at = parent;
+    }
+  }
+}
+function parseWorktreeList(porcelain) {
+  const worktrees = [];
+  for (const block of porcelain.split(/\r?\n\r?\n/)) {
+    const lines = block.split(/\r?\n/).filter((line) => line !== "");
+    const value = (key) => lines.find((line) => line.startsWith(`${key} `))?.slice(key.length + 1);
+    const flag = (key) => lines.some((line) => line === key || line.startsWith(`${key} `));
+    const path = value("worktree");
+    if (path === undefined)
+      continue;
+    const lockReason = value("locked")?.trim();
+    worktrees.push({
+      path,
+      head: value("HEAD") ?? "",
+      branch: value("branch")?.replace(/^refs\/heads\//, "") ?? null,
+      locked: flag("locked"),
+      ...lockReason === undefined || lockReason === "" ? {} : { lockReason },
+      prunable: flag("prunable")
+    });
+  }
+  return worktrees;
+}
+function listWorktrees(cwd, env, timeoutMs = 15000) {
+  const listed = runGit(cwd, ["worktree", "list", "--porcelain"], env, timeoutMs);
+  if (!listed.ok)
+    throw new Error(`git worktree list failed: ${listed.err}`);
+  return parseWorktreeList(listed.out);
+}
+function innermostWorktree(path, worktrees) {
+  let deepest = null;
+  for (const worktree of worktrees) {
+    if (isInside(path, worktree) && (deepest === null || worktree.length > deepest.length)) {
+      deepest = worktree;
+    }
+  }
+  return deepest;
+}
+function hasChanges(folder, env) {
+  const status = runGit(folder, ["--no-optional-locks", "status", "--porcelain", "--untracked-files=all"], env);
+  return !status.ok || status.out !== "";
+}
+function worktreeAdminDir(worktree) {
+  let text;
+  try {
+    text = readFileSync20(join14(worktree, ".git"), "utf8");
+  } catch {
+    return null;
+  }
+  const target = /^gitdir:\s*(.+)$/.exec(text.trim())?.[1]?.trim();
+  return target === undefined || target === "" ? null : resolve4(worktree, target);
+}
+function reflogEntryTime(line) {
+  const tab = line.indexOf("\t");
+  const epoch = REFLOG_HEADER.exec(tab < 0 ? line : line.slice(0, tab))?.[1];
+  if (epoch === undefined)
+    return null;
+  const time = Number(epoch) * 1000;
+  return Number.isFinite(time) ? time : null;
+}
+var GIT_TIMED_OUT = "timed out", GUARD_GIT_TIMEOUT_MS = 5000, REFLOG_HEADER;
+var init_git = __esm(() => {
+  init_path_compare();
+  init_git_env();
+  init_path_compare();
+  REFLOG_HEADER = /^[a-f0-9]+ [a-f0-9]+ .*<[^<>]*> (\d+) [+-]\d{4}$/;
+});
+
+// src/jobs/kind-defaults.ts
+function mergeKinds(projectKinds) {
+  return { ...DEFAULT_KINDS, ...projectKinds ?? {} };
+}
+function isPrintOnly(kind, args) {
+  const printOnly = new Set((kind.printOnly ?? []).map((flag) => flag.toLowerCase()));
+  return args.some((arg) => printOnly.has(arg.toLowerCase()));
+}
+function namesOnlyFiles(kind, args, isFile, tool) {
+  if (kind.noSlotForFiles !== true)
+    return false;
+  const table = tool === undefined ? undefined : TOOL_OPTIONS[tool];
+  const skip = new Set([...kind.skipWords ?? [], ...table?.skip ?? []]);
+  const valued = new Set([...table?.valued ?? TEST_VALUED_FLAGS, ...kind.valuedFlags ?? []]);
+  const bare = new Set(table?.bare ?? TEST_BARE_FLAGS);
+  let index = 0;
+  while (index < args.length && skip.has(args[index] ?? ""))
+    index++;
+  const operands = [];
+  let optionsEnded = false;
+  for (;index < args.length; index++) {
+    const arg = args[index] ?? "";
+    if (!optionsEnded && arg === "--")
+      optionsEnded = true;
+    else if (!optionsEnded && arg.startsWith("-")) {
+      if (arg.includes("=") || bare.has(arg))
+        continue;
+      if (!valued.has(arg))
+        return false;
+      index++;
+    } else
+      operands.push(arg);
+  }
+  const names = table?.isOperand;
+  return operands.length > 0 && operands.length <= LIGHT_FILE_LIMIT && operands.every((word) => (names === undefined || names(word)) && isFile(word));
+}
+function isWatchRun(tool, args) {
+  const watch = TOOL_OPTIONS[tool]?.watch;
+  if (watch === undefined)
+    return false;
+  const fold = (word) => watch.ignoreCase === true ? word.toLowerCase() : word;
+  for (const arg of args) {
+    if (arg === "--")
+      break;
+    const [flag = "", value] = arg.split("=", 2);
+    if (watch.flags.includes(fold(flag)) && value !== "false" && value !== "0")
+      return true;
+  }
+  if (watch.commands === undefined)
+    return false;
+  const valued = new Set(TOOL_OPTIONS[tool]?.valued);
+  for (let index = 0;index < args.length; index++) {
+    const arg = args[index] ?? "";
+    if (!arg.startsWith("-"))
+      return watch.commands.includes(arg);
+    if (valued.has(arg))
+      index++;
+  }
+  return false;
+}
+function ignoredFieldsOf(kind) {
+  return IGNORED_KIND_FIELDS.filter((field) => kind[field] !== undefined);
+}
+var LIGHT_FILE_LIMIT = 10, IGNORED_KIND_FIELDS, KIND_NAME, TSC_PRINT_ONLY, TEST_PRINT_ONLY, TEST_VALUED_FLAGS, TEST_BARE_FLAGS, TSC_OPTIONS, VITEST_OPTIONS, JEST_OPTIONS, BUN_TEST_OPTIONS, PLAYWRIGHT_OPTIONS, TOOL_OPTIONS, DEFAULT_KINDS;
+var init_kind_defaults = __esm(() => {
+  IGNORED_KIND_FIELDS = [
+    "gb",
+    "filesGb",
+    "maxFiles",
+    "workers",
+    "light"
+  ];
+  KIND_NAME = /^[a-z0-9][a-z0-9:._-]*$/;
+  TSC_PRINT_ONLY = ["--help", "--listfilesonly", "--showconfig", "--version", "-h", "-v"];
+  TEST_PRINT_ONLY = ["--help", "--version", "-h", "-v"];
+  TEST_VALUED_FLAGS = [
+    "--bail",
+    "--config",
+    "--coverageDirectory",
+    "--dir",
+    "--environment",
+    "--env",
+    "--exclude",
+    "--hookTimeout",
+    "--maxWorkers",
+    "--minWorkers",
+    "--mode",
+    "--outputFile",
+    "--pool",
+    "--project",
+    "--reporter",
+    "--reporters",
+    "--retry",
+    "--root",
+    "--rootDir",
+    "--roots",
+    "--selectProjects",
+    "--shard",
+    "--testEnvironment",
+    "--testNamePattern",
+    "--testPathIgnorePatterns",
+    "--testPathPattern",
+    "--testTimeout",
+    "-c",
+    "-r",
+    "-t",
+    "-w"
+  ];
+  TEST_BARE_FLAGS = [
+    "--ci",
+    "--detectOpenHandles",
+    "--forceExit",
+    "--no-cache",
+    "--no-color",
+    "--passWithNoTests",
+    "--run",
+    "--runInBand",
+    "--updateSnapshot",
+    "--verbose",
+    "-i"
+  ];
+  TSC_OPTIONS = {
+    valued: [
+      "--baseUrl",
+      "--charset",
+      "--checkers",
+      "--customConditions",
+      "--declarationDir",
+      "--excludeDirectories",
+      "--excludeFiles",
+      "--fallbackPolling",
+      "--generateCpuProfile",
+      "--generateTrace",
+      "--ignoreDeprecations",
+      "--jsx",
+      "--jsxFactory",
+      "--jsxFragmentFactory",
+      "--jsxImportSource",
+      "--lib",
+      "--locale",
+      "--mapRoot",
+      "--maxNodeModuleJsDepth",
+      "--module",
+      "--moduleDetection",
+      "--moduleResolution",
+      "--moduleSuffixes",
+      "--newLine",
+      "--outDir",
+      "--outFile",
+      "--plugins",
+      "--pprofDir",
+      "--reactNamespace",
+      "--rootDir",
+      "--rootDirs",
+      "--sourceRoot",
+      "--target",
+      "--tsBuildInfoFile",
+      "--typeRoots",
+      "--types",
+      "--watchDirectory",
+      "--watchFile",
+      "--watchInterval",
+      "-m",
+      "-t"
+    ],
+    bare: [
+      "--allowArbitraryExtensions",
+      "--allowImportingTsExtensions",
+      "--allowJs",
+      "--allowSyntheticDefaultImports",
+      "--allowUmdGlobalAccess",
+      "--allowUnreachableCode",
+      "--allowUnusedLabels",
+      "--alwaysStrict",
+      "--checkJs",
+      "--composite",
+      "--declaration",
+      "--declarationMap",
+      "--deduplicatePackages",
+      "--diagnostics",
+      "--disableSizeLimit",
+      "--downlevelIteration",
+      "--emitBOM",
+      "--emitDeclarationOnly",
+      "--emitDecoratorMetadata",
+      "--erasableSyntaxOnly",
+      "--esModuleInterop",
+      "--exactOptionalPropertyTypes",
+      "--experimentalDecorators",
+      "--explainFiles",
+      "--extendedDiagnostics",
+      "--forceConsistentCasingInFileNames",
+      "--ignoreConfig",
+      "--importHelpers",
+      "--incremental",
+      "--inlineSourceMap",
+      "--inlineSources",
+      "--isolatedDeclarations",
+      "--isolatedModules",
+      "--libReplacement",
+      "--listEmittedFiles",
+      "--listFiles",
+      "--noCheck",
+      "--noEmit",
+      "--noEmitHelpers",
+      "--noEmitOnError",
+      "--noErrorTruncation",
+      "--noFallthroughCasesInSwitch",
+      "--noImplicitAny",
+      "--noImplicitOverride",
+      "--noImplicitReturns",
+      "--noImplicitThis",
+      "--noLib",
+      "--noPropertyAccessFromIndexSignature",
+      "--noResolve",
+      "--noUncheckedIndexedAccess",
+      "--noUncheckedSideEffectImports",
+      "--noUnusedLocals",
+      "--noUnusedParameters",
+      "--preserveConstEnums",
+      "--preserveSymlinks",
+      "--preserveWatchOutput",
+      "--pretty",
+      "--quiet",
+      "--removeComments",
+      "--resolveJsonModule",
+      "--resolvePackageJsonExports",
+      "--resolvePackageJsonImports",
+      "--rewriteRelativeImportExtensions",
+      "--singleThreaded",
+      "--skipDefaultLibCheck",
+      "--skipLibCheck",
+      "--sourceMap",
+      "--stableTypeOrdering",
+      "--strict",
+      "--strictBindCallApply",
+      "--strictBuiltinIteratorReturn",
+      "--strictFunctionTypes",
+      "--strictNullChecks",
+      "--strictPropertyInitialization",
+      "--stripInternal",
+      "--traceResolution",
+      "--useDefineForClassFields",
+      "--useUnknownInCatchVariables",
+      "--verbatimModuleSyntax",
+      "-d",
+      "-i",
+      "-q"
+    ],
+    watch: { flags: ["--watch", "-w"], ignoreCase: true }
+  };
+  VITEST_OPTIONS = {
+    valued: [
+      "--attachmentsDir",
+      "--config",
+      "--configLoader",
+      "--dir",
+      "--environment",
+      "--exclude",
+      "--execArgv",
+      "--hookTimeout",
+      "--maxConcurrency",
+      "--maxWorkers",
+      "--minWorkers",
+      "--mode",
+      "--outputFile",
+      "--pool",
+      "--project",
+      "--reporter",
+      "--repeats",
+      "--retry",
+      "--retry.count",
+      "--root",
+      "--sequence.hooks",
+      "--sequence.seed",
+      "--sequence.setupFiles",
+      "--shard",
+      "--slowTestThreshold",
+      "--tagsFilter",
+      "--teardownTimeout",
+      "--testNamePattern",
+      "--testTimeout",
+      "--vmMemoryLimit",
+      "-c",
+      "-p",
+      "-r",
+      "-t"
+    ],
+    bare: [
+      "--allowOnly",
+      "--cache",
+      "--clearScreen",
+      "--detectAsyncLeaks",
+      "--disableConsoleIntercept",
+      "--expandSnapshotDiff",
+      "--fileParallelism",
+      "--globals",
+      "--hideSkippedTests",
+      "--includeTaskLocation",
+      "--isolate",
+      "--last-failed",
+      "--lastFailed",
+      "--logHeapUsage",
+      "--no-cache",
+      "--no-color",
+      "--no-file-parallelism",
+      "--no-isolate",
+      "--passWithNoTests",
+      "--printConsoleTrace",
+      "--run",
+      "--sequence.concurrent",
+      "--sequence.shuffle.files",
+      "--sequence.shuffle.tests"
+    ],
+    skip: ["run"],
+    watch: { flags: ["--watch", "-w"], commands: ["watch", "dev"] }
+  };
+  JEST_OPTIONS = {
+    valued: [
+      "--changedSince",
+      "--collectCoverageFrom",
+      "--config",
+      "--coverageDirectory",
+      "--coverageProvider",
+      "--env",
+      "--filter",
+      "--maxConcurrency",
+      "--maxWorkers",
+      "--openHandlesTimeout",
+      "--outputFile",
+      "--rootDir",
+      "--seed",
+      "--shard",
+      "--testEnvironment",
+      "--testEnvironmentOptions",
+      "--testNamePattern",
+      "--testRunner",
+      "--testSequencer",
+      "--testTimeout",
+      "--workerGracefulExitTimeout",
+      "-c",
+      "-t",
+      "-w"
+    ],
+    bare: [
+      "--cache",
+      "--changedFilesWithAncestor",
+      "--ci",
+      "--clearMocks",
+      "--colors",
+      "--debug",
+      "--detectOpenHandles",
+      "--errorOnDeprecated",
+      "--expand",
+      "--forceExit",
+      "--injectGlobals",
+      "--json",
+      "--lastCommit",
+      "--listTests",
+      "--logHeapUsage",
+      "--no-cache",
+      "--no-watchman",
+      "--noStackTrace",
+      "--notify",
+      "--onlyChanged",
+      "--onlyFailures",
+      "--passWithNoTests",
+      "--randomize",
+      "--resetMocks",
+      "--restoreMocks",
+      "--runInBand",
+      "--runTestsByPath",
+      "--showSeed",
+      "--silent",
+      "--testLocationInResults",
+      "--updateSnapshot",
+      "--useStderr",
+      "--verbose",
+      "--waitForUnhandledRejections",
+      "--watchman",
+      "--workerThreads",
+      "-e",
+      "-f",
+      "-i",
+      "-o",
+      "-u"
+    ],
+    watch: { flags: ["--watch", "--watchAll"] }
+  };
+  BUN_TEST_OPTIONS = {
+    valued: [
+      "--coverage-dir",
+      "--coverage-reporter",
+      "--max-concurrency",
+      "--parallel-delay",
+      "--path-ignore-patterns",
+      "--rerun-each",
+      "--reporter",
+      "--reporter-outfile",
+      "--retry",
+      "--seed",
+      "--shard",
+      "--test-name-pattern",
+      "--timeout",
+      "--timings",
+      "-t"
+    ],
+    bare: [
+      "--check",
+      "--concurrent",
+      "--dots",
+      "--isolate",
+      "--no-isolate",
+      "--no-orphans",
+      "--only",
+      "--only-failures",
+      "--pass-with-no-tests",
+      "--randomize",
+      "--todo",
+      "--update-snapshots",
+      "--update-timings",
+      "-u"
+    ],
+    skip: ["test"],
+    isOperand: (word) => word.startsWith("./") || word.startsWith("/"),
+    watch: { flags: ["--watch"] }
+  };
+  PLAYWRIGHT_OPTIONS = {
+    valued: [
+      "--add-reporter",
+      "--browser",
+      "--config",
+      "--global-timeout",
+      "--grep",
+      "--grep-invert",
+      "--last-failed-file",
+      "--max-failures",
+      "--output",
+      "--project",
+      "--repeat-each",
+      "--reporter",
+      "--retries",
+      "--run-agents",
+      "--shard",
+      "--test-list",
+      "--test-list-invert",
+      "--timeout",
+      "--trace",
+      "--tsconfig",
+      "--ui-host",
+      "--ui-port",
+      "--update-source-method",
+      "--workers",
+      "-c",
+      "-G",
+      "-g",
+      "-j"
+    ],
+    bare: [
+      "--fail-on-flaky-tests",
+      "--forbid-only",
+      "--fully-parallel",
+      "--headed",
+      "--ignore-snapshots",
+      "--last-failed",
+      "--no-deps",
+      "--pass-with-no-tests",
+      "--quiet",
+      "--ui",
+      "-x"
+    ],
+    skip: ["test"],
+    watch: { flags: ["--debug", "--ui", "--ui-host", "--ui-port"] }
+  };
+  TOOL_OPTIONS = {
+    bun: BUN_TEST_OPTIONS,
+    jest: JEST_OPTIONS,
+    playwright: PLAYWRIGHT_OPTIONS,
+    tsc: TSC_OPTIONS,
+    tsgo: TSC_OPTIONS,
+    vitest: VITEST_OPTIONS,
+    "vue-tsc": TSC_OPTIONS
+  };
+  DEFAULT_KINDS = {
+    tsc: {
+      about: "A TypeScript type check (tsc, tsgo, vue-tsc). A run on named files runs at once, with no slot.",
+      printOnly: TSC_PRINT_ONLY,
+      noSlotForFiles: true,
+      match: [{ tool: "tsc" }, { tool: "tsgo" }, { tool: "vue-tsc" }]
+    },
+    "lint:typed": {
+      about: "A type-aware lint: ESLint with a typed config, or oxlint --type-aware.",
+      printOnly: TEST_PRINT_ONLY,
+      match: [
+        { tool: "eslint", argIncludes: "typed" },
+        { tool: "eslint", argIncludes: "type-checked" },
+        { tool: "oxlint", flags: ["--type-aware"] }
+      ]
+    },
+    "test:coverage": {
+      about: "A test run with coverage (vitest, jest or bun test with --coverage).",
+      printOnly: TEST_PRINT_ONLY,
+      match: [
+        { tool: "vitest", argIncludes: "--coverage" },
+        { tool: "jest", argIncludes: "--coverage" },
+        { tool: "bun", sub: ["test"], argIncludes: "--coverage" }
+      ]
+    },
+    "test:run": {
+      about: "A test run (vitest, jest, bun test). A run on named test files runs at once, with no slot.",
+      printOnly: TEST_PRINT_ONLY,
+      noSlotForFiles: true,
+      match: [{ tool: "vitest" }, { tool: "jest" }, { tool: "bun", sub: ["test"] }]
+    },
+    e2e: {
+      about: "An end-to-end test run (playwright test). Every run takes a slot, one spec file too: it starts the app and its browsers.",
+      printOnly: ["--list", "--help", "-h"],
+      match: [{ tool: "playwright", sub: ["test"] }]
+    },
+    build: {
+      about: "A framework production build (next build).",
+      match: [{ tool: "next", sub: ["build"] }]
+    },
+    "image:build": {
+      about: "A container image build (docker, podman, compose).",
+      match: [
+        { tool: "docker", sub: ["build"] },
+        { tool: "docker", sub: ["image", "build"] },
+        { tool: "docker", sub: ["builder", "build"] },
+        { tool: "docker", sub: ["buildx", "build"] },
+        { tool: "docker", sub: ["buildx", "b"] },
+        { tool: "docker", sub: ["buildx", "bake"] },
+        { tool: "docker", sub: ["compose", "build"] },
+        { tool: "docker", sub: ["compose", "up"], flags: ["--build"] },
+        { tool: "docker", sub: ["compose", "run"], flags: ["--build"] },
+        { tool: "docker", sub: ["compose", "create"], flags: ["--build"] },
+        { tool: "docker-compose", sub: ["build"] },
+        { tool: "docker-compose", sub: ["up"], flags: ["--build"] },
+        { tool: "docker-compose", sub: ["run"], flags: ["--build"] },
+        { tool: "docker-compose", sub: ["create"], flags: ["--build"] },
+        { tool: "podman", sub: ["build"] },
+        { tool: "podman", sub: ["image", "build"] },
+        { tool: "buildah", sub: ["build"] }
+      ]
+    }
+  };
+});
+
+// src/jobs/kinds.ts
+var matchRuleSchema, kindSpecSchema, kindsSchema;
+var init_kinds = __esm(() => {
+  init_zod();
+  init_kind_defaults();
+  init_kind_defaults();
+  matchRuleSchema = union([
+    strictObject({
+      tool: string2().min(1),
+      sub: array(string2().min(1)).optional(),
+      flags: array(string2().min(1)).optional(),
+      argIncludes: string2().min(1).optional(),
+      valued: array(string2().min(1)).optional()
+    }),
+    strictObject({
+      script: string2().min(1)
+    })
+  ]);
+  kindSpecSchema = strictObject({
+    printOnly: array(string2().min(1)).optional(),
+    noSlotForFiles: boolean2().optional(),
+    skipWords: array(string2().min(1)).optional(),
+    valuedFlags: array(string2().min(1)).optional(),
+    match: array(matchRuleSchema).optional(),
+    about: string2().min(1).optional(),
+    gb: unknown().optional(),
+    filesGb: unknown().optional(),
+    maxFiles: unknown().optional(),
+    workers: unknown().optional(),
+    light: unknown().optional()
+  });
+  kindsSchema = record(string2().regex(KIND_NAME, "a kind's name is lower-case letters, digits and : . _ -"), kindSpecSchema);
+});
+
+// src/shell/program-name.ts
+function programName(word) {
+  return (word.split(/[\\/]/).pop() ?? word).toLowerCase().replace(/\.(exe|cmd|ps1|bat)$/, "");
+}
+
+// src/shell/kit-invocation.ts
+function isKitWord(word) {
+  return programName(word) === COMMAND || KIT_BUNDLE.test(word);
+}
+function kitArguments(program, args) {
+  if (programName(program) === COMMAND)
+    return [...args];
+  if (INERT.has(program))
+    return null;
+  const at = args.findIndex(isKitWord);
+  return at === -1 ? null : args.slice(at + 1);
+}
+var INERT, KIT_BUNDLE;
+var init_kit_invocation = __esm(() => {
+  init_names();
+  INERT = new Set([
+    "[",
+    "[[",
+    "awk",
+    "cat",
+    "chmod",
+    "chown",
+    "cp",
+    "diff",
+    "echo",
+    "egrep",
+    "fgrep",
+    "file",
+    "git",
+    "grep",
+    "head",
+    "less",
+    "ln",
+    "ls",
+    "man",
+    "mkdir",
+    "more",
+    "mv",
+    "printf",
+    "readlink",
+    "realpath",
+    "rg",
+    "rm",
+    "sed",
+    "stat",
+    "tail",
+    "tee",
+    "test",
+    "touch",
+    "type",
+    "wc",
+    "which"
+  ]);
+  KIT_BUNDLE = /(?:^|[\\/])(?:dist|entries)[\\/](?:cli|portal)\.(?:js|ts)$/;
+});
+
+// src/shell/powershell.ts
+function powershellLiteral(value) {
+  if (/[\r\n]/.test(value)) {
+    throw new Error(`cannot put ${JSON.stringify(value)} in a PowerShell command`);
+  }
+  return powershellQuoted(value);
+}
+function powershellQuoted(value) {
+  return `'${value.replace(SINGLE_QUOTES, (quote) => quote + quote)}'`;
+}
+var SINGLE_QUOTES;
+var init_powershell = __esm(() => {
+  SINGLE_QUOTES = /['\u2018\u2019\u201A\u201B]/g;
+});
+
+// src/shell/command.ts
+function dialectOfTool(tool) {
+  if (tool === "Bash")
+    return "bash";
+  if (tool === "PowerShell")
+    return "powershell";
+  return;
+}
+function readingsOf(command, dialect) {
+  const readings = [];
+  for (const one of dialect === undefined ? DIALECTS : [dialect]) {
+    readings.push({ dialect: one, joinLines: false });
+    if (new RegExp(CONTINUATION[one].source).test(command)) {
+      readings.push({ dialect: one, joinLines: true });
+    }
+  }
+  return readings;
+}
+function opensBraceSubstitution(text, at) {
+  return text.startsWith("${", at) && /^[ \t\n|]$/.test(text.charAt(at + 2));
+}
+function braceSubstitutionClose(text, from) {
+  const read = lex(text.slice(from), {
+    blind: false,
+    dialect: "bash",
+    join: false,
+    substitution: true
+  });
+  return read.open ? -1 : from + read.end;
+}
+function lex(text, options) {
+  const { blind, dialect, join } = options;
+  const bash = dialect === "bash";
+  const escaper = ESCAPE[dialect];
+  const single = SINGLE[dialect];
+  const double = DOUBLE[dialect];
+  const segments = [];
+  const piped = [];
+  const expanded = [];
+  const groups = [];
+  const starts = [];
+  let group = options.outer ?? null;
+  const enterGroup = (array = false) => {
+    group = { depth: (group?.depth ?? 0) + 1, outer: group, ...array ? { array } : {} };
+  };
+  const leaveGroup = () => {
+    if (group !== (options.outer ?? null))
+      group = group?.outer ?? null;
+  };
+  const cases = [];
+  const owed = [];
+  let open = false;
+  let unparsable = false;
+  let at = 0;
+  let afterPipe = false;
+  let matching = null;
+  let semicolons = null;
+  const push = (piece, from, filledIn = false, inner = group, start = null) => {
+    segments.push(piece);
+    piped.push(from);
+    expanded.push(filledIn);
+    groups.push(inner);
+    starts.push(start);
+  };
+  function addInner(inner, body, filledIn = false) {
+    const depth = (options.depth ?? 0) + 1;
+    if (depth > MAX_INNER) {
+      open = true;
+      return;
+    }
+    const outer = { depth: (group?.depth ?? 0) + 1, outer: group };
+    const read = lex(inner, { blind, dialect, join, body: body && !blind, depth, outer });
+    if (read.open)
+      open = true;
+    if (read.unparsable)
+      unparsable = true;
+    for (let i = 0;i < read.segments.length; i++) {
+      push(read.segments[i] ?? "", read.piped[i] ?? null, filledIn || read.expanded[i] === true, read.groups[i] ?? outer);
+    }
+  }
+  function skipBodies() {
+    for (const { quoted, script, stripTabs, word } of owed.splice(0)) {
+      let line = at;
+      let closedAt = -1;
+      let bodyEnd = text.length;
+      while (line < text.length) {
+        const end = text.indexOf(`
+`, line);
+        const stop = end === -1 ? text.length : end;
+        const content = text.slice(line, stop).replace(/\r$/, "");
+        if ((stripTabs ? content.replace(/^\t+/, "") : content) === word) {
+          closedAt = Math.min(stop + 1, text.length);
+          bodyEnd = line;
+          break;
+        }
+        line = stop + 1;
+      }
+      if (closedAt === -1 && blind)
+        continue;
+      if (script) {
+        const body = text.slice(at, bodyEnd);
+        addInner(body, false, !quoted && /[$`]/.test(body));
+      } else if (!quoted)
+        addInner(text.slice(at, bodyEnd), true);
+      if (closedAt === -1) {
+        open = true;
+        at = text.length;
+      } else {
+        at = closedAt;
+      }
+    }
+  }
+  function arithmeticEnd(from) {
+    if (text.charAt(from + 1) !== "(")
+      return -1;
+    if (matching === null || semicolons === null) {
+      matching = new Int32Array(text.length).fill(-1);
+      semicolons = new Int32Array(text.length + 1);
+      const stack = [];
+      for (let i = 0;i < text.length; i++) {
+        const char = text.charAt(i);
+        semicolons[i + 1] = (semicolons[i] ?? 0) + (char === ";" ? 1 : 0);
+        if (char === "(")
+          stack.push(i);
+        else if (char === ")") {
+          const opened = stack.pop();
+          if (opened !== undefined)
+            matching[opened] = i;
+        }
+      }
+    }
+    const close = matching[from] ?? -1;
+    if (close === -1)
+      return -1;
+    const closes = text.charAt(close - 1) === ")" && close - 1 > from + 1;
+    const plain = (semicolons[close] ?? 0) === (semicolons[from] ?? 0);
+    return closes && plain ? close + 1 : -1;
+  }
+  function readArithmetic(end) {
+    addInner(text.slice(at + 3, end - 2), true);
+    const piece = text.slice(at, end);
+    at = end;
+    return piece;
+  }
+  function readSingle(ansi) {
+    let end = at + 1;
+    while (end < text.length) {
+      const char = text.charAt(end);
+      if (ansi && char === "\\") {
+        end += 2;
+        continue;
+      }
+      if (oneOf(single, char)) {
+        if (!bash && oneOf(single, text.charAt(end + 1))) {
+          end += 2;
+          continue;
+        }
+        break;
+      }
+      end++;
+    }
+    if (end >= text.length)
+      open = true;
+    const piece = text.slice(at, end + 1);
+    at = Math.min(end + 1, text.length);
+    return piece;
+  }
+  function readBacktick() {
+    let end = at + 1;
+    while (end < text.length && text.charAt(end) !== "`") {
+      end += text.charAt(end) === "\\" ? 2 : 1;
+    }
+    if (end >= text.length) {
+      open = true;
+      const piece = text.slice(at);
+      at = text.length;
+      return piece;
+    }
+    addInner(text.slice(at + 1, end).replace(/\\([`\\$])/g, "$1"), false);
+    const piece = text.slice(at, end + 1);
+    at = end + 1;
+    return piece;
+  }
+  function readDouble(closes, substitutions = 0) {
+    const mark = segments.length;
+    let raw = "";
+    if (closes) {
+      raw = text.charAt(at);
+      at++;
+    }
+    while (at < text.length) {
+      const char = text.charAt(at);
+      const next = text.charAt(at + 1);
+      if (closes && oneOf(double, char)) {
+        if (!bash && oneOf(double, next)) {
+          raw += char + next;
+          at += 2;
+          continue;
+        }
+        at++;
+        return raw + char;
+      }
+      if (char === escaper && next !== "") {
+        raw += char + next;
+        at += 2;
+      } else if (bash && char === "$" && next === "$") {
+        raw += "$$";
+        at += 2;
+      } else if (char === "$" && (next === "(" || braceSubstitution()) && substitutions >= MAX_INNER) {
+        open = true;
+        raw += char;
+        at++;
+      } else if (char === "$" && next === "(") {
+        const end = bash ? arithmeticEnd(at + 1) : -1;
+        if (end === -1) {
+          at += 2;
+          enterGroup();
+          raw += `$(${read(")", substitutions + 1).raw}`;
+          leaveGroup();
+        } else {
+          raw += readArithmetic(end);
+        }
+      } else if (bash && char === "`") {
+        raw += readBacktick();
+      } else if (braceSubstitution()) {
+        raw += readBraceSubstitution(substitutions);
+      } else {
+        raw += char;
+        at++;
+      }
+    }
+    if (!closes)
+      return raw;
+    open = true;
+    segments.length = mark;
+    piped.length = mark;
+    expanded.length = mark;
+    groups.length = mark;
+    starts.length = mark;
+    return raw;
+  }
+  function hereDocOpener() {
+    let pos = at + 2;
+    const stripTabs = text.charAt(pos) === "-";
+    if (stripTabs)
+      pos++;
+    while (isBlank(text.charAt(pos)))
+      pos++;
+    let word = "";
+    let quoted = false;
+    while (pos < text.length) {
+      const char = text.charAt(pos);
+      if (/\s/.test(char) || "<>;&|()".includes(char))
+        break;
+      if (char === "'" || char === '"') {
+        const close = text.indexOf(char, pos + 1);
+        if (close === -1)
+          return null;
+        word += text.slice(pos + 1, close);
+        quoted = true;
+        pos = close + 1;
+      } else if (char === "\\") {
+        word += text.charAt(pos + 1);
+        quoted = true;
+        pos += 2;
+      } else {
+        word += char;
+        pos++;
+      }
+    }
+    return word === "" ? null : { end: pos, quoted, script: false, stripTabs, word };
+  }
+  const braceSubstitution = () => bash && opensBraceSubstitution(text, at);
+  function readBraceSubstitution(substitutions) {
+    const pipe = text.charAt(at + 2) === "|" ? "|" : "";
+    at += 2 + pipe.length;
+    const substitution = read("}", substitutions + 1);
+    if (!substitution.closed)
+      open = true;
+    return `\${${pipe}${substitution.raw}`;
+  }
+  function isGroupBrace(char, wordStart) {
+    if (char !== "{" && char !== "}")
+      return false;
+    if (!bash)
+      return true;
+    const after = text.charAt(at + 1);
+    return wordStart && (after === "" || /\s/.test(after) || char === "}" && /[;&|)]/.test(after));
+  }
+  function casePattern(current, char, next) {
+    const words = current.trim();
+    const command = words.replace(/^(?:(?:do|then|else|elif|if|while|until|!|time(?:\s+-p)?)\s+)+/, "");
+    const level = group;
+    let top = cases.at(-1);
+    if (top?.level === level && /^esac(?![\w-])/.test(command)) {
+      cases.pop();
+      top = cases.at(-1);
+    }
+    const starts = /^case\s[\s\S]*\sin(?:\s|$)/.test(command) && !/\sin\s+esac(?![\w-])/.test(command);
+    if (starts) {
+      top = { level, pattern: true };
+      cases.push(top);
+    }
+    if (top?.level !== level)
+      return false;
+    if (char === ";" && (next === ";" || next === "&"))
+      top.pattern = true;
+    if (!top.pattern)
+      return false;
+    if (char === ")") {
+      top.pattern = false;
+      return true;
+    }
+    return char === "(" && (words === "" || starts && /\sin$/.test(command));
+  }
+  function read(closer, substitutions = 0) {
+    const nested = closer !== null;
+    let raw = "";
+    let current = "";
+    let currentStart = at;
+    let depth = 0;
+    let braces = 0;
+    let wordStart = true;
+    let afterClose = false;
+    let stdinShell = null;
+    const take = (piece, blank = false) => {
+      current += piece;
+      raw += piece;
+      wordStart = blank;
+      afterClose = false;
+    };
+    while (at < text.length) {
+      const char = text.charAt(at);
+      const next = text.charAt(at + 1);
+      if (join && char === escaper) {
+        const continuation = CONTINUATION[dialect];
+        continuation.lastIndex = at;
+        if (continuation.test(text)) {
+          take(" ", true);
+          at = continuation.lastIndex;
+          continue;
+        }
+      }
+      if (!blind) {
+        if (char === escaper && next !== "" && next !== `
+` && next !== "\r") {
+          take(char + next);
+          at += 2;
+          continue;
+        }
+        if (oneOf(single, char)) {
+          take(readSingle(false));
+          continue;
+        }
+        if (oneOf(double, char)) {
+          take(readDouble(true, substitutions));
+          continue;
+        }
+        if (bash && char === "$" && next === "$") {
+          take("$$");
+          at += 2;
+          continue;
+        }
+        if (bash && char === "$" && next === "'") {
+          at++;
+          take(`$${readSingle(true)}`);
+          continue;
+        }
+        if (bash && char === "`") {
+          take(readBacktick());
+          continue;
+        }
+        const arithmetic = bash && char === "$" && next === "(" ? arithmeticEnd(at + 1) : -1;
+        if (arithmetic !== -1) {
+          take(readArithmetic(arithmetic));
+          continue;
+        }
+        const processSubstitution = bash && (char === "<" || char === ">") && wordStart;
+        const arraySubexpression = !bash && char === "@" && wordStart;
+        if (next === "(" && (char === "$" || processSubstitution || arraySubexpression) && substitutions < MAX_INNER) {
+          at += 2;
+          enterGroup();
+          const substitution = read(")", substitutions + 1);
+          leaveGroup();
+          if (!substitution.closed)
+            open = true;
+          take(`${char}(${substitution.raw}`);
+          continue;
+        }
+        if (braceSubstitution()) {
+          if (substitutions < MAX_INNER) {
+            take(readBraceSubstitution(substitutions));
+            continue;
+          }
+          open = true;
+        }
+        if (closer === "}" && char === "}" && depth === 0 && braces === 0 && current.trim() === "") {
+          push(current, afterPipe ? segments[segments.length - 1] ?? null : null, false, group, currentStart);
+          afterPipe = false;
+          at++;
+          return { closed: true, raw: `${raw}}` };
+        }
+        if (char === "#" && wordStart && !afterClose) {
+          const end = text.indexOf(`
+`, at);
+          at = end === -1 ? text.length : end;
+          continue;
+        }
+        if (!bash && char === "<" && next !== "#")
+          unparsable = true;
+        if (!bash && char === "<" && next === "#" && wordStart) {
+          const end = text.indexOf("#>", at + 2);
+          if (end === -1)
+            open = true;
+          at = end === -1 ? text.length : end + 2;
+          take(" ", true);
+          continue;
+        }
+        if (!bash && wordStart && text.startsWith("--%", at) && /^\s?$/.test(text.charAt(at + 3))) {
+          let end = at;
+          while (end < text.length && text.charAt(end) !== `
+` && text.charAt(end) !== "|")
+            end++;
+          take(text.slice(at, end));
+          at = end;
+          continue;
+        }
+      }
+      if (bash && char === "<" && next === "<") {
+        if (text.charAt(at + 2) === "<") {
+          take("<<<");
+          at += 3;
+          continue;
+        }
+        const opener = hereDocOpener();
+        if (opener === null) {
+          take("<<");
+          at += 2;
+          continue;
+        }
+        stdinShell ??= readsStdinShell(current);
+        owed.push({ ...opener, script: stdinShell });
+        take(text.slice(at, opener.end));
+        at = opener.end;
+        continue;
+      }
+      if (!bash && char === "@" && (next === '"' || next === "'")) {
+        HERE_STRING.lastIndex = at;
+        const quoted = HERE_STRING.exec(text);
+        if (quoted !== null) {
+          if (next === '"' || blind)
+            addInner(quoted[2] ?? "", true);
+          take(`${next}${next}`);
+          at = HERE_STRING.lastIndex;
+          continue;
+        }
+      }
+      if (bash && !blind && char === "|" && current.endsWith(">") && !current.endsWith("\\>")) {
+        take(char);
+        at++;
+        continue;
+      }
+      if (!blind && char === "&" && (current.endsWith(">") && !current.endsWith(`${escaper}>`) || bash && next === ">")) {
+        take(char);
+        at++;
+        continue;
+      }
+      if (SEPARATORS.has(char) || isGroupBrace(char, wordStart) || blind && bash && char === "`" || blind && braceSubstitution()) {
+        const pattern = !blind && bash ? casePattern(current, char, next) : false;
+        push(current, afterPipe ? segments[segments.length - 1] ?? null : null, false, group, currentStart);
+        afterPipe = char === "|";
+        if (!pattern && closer === ")" && char === ")" && depth === 0) {
+          at++;
+          return { closed: true, raw: `${raw})` };
+        }
+        if (!pattern && closer === "}" && char === ")" && depth === 0) {
+          return { closed: false, raw };
+        }
+        if (!pattern && nested && char === "(")
+          depth++;
+        if (!pattern && nested && char === ")")
+          depth--;
+        if (closer === "}" && char === "{" && current.trim() === "")
+          braces++;
+        if (closer === "}" && char === "}" && braces > 0)
+          braces--;
+        if (!pattern && char === "(")
+          enterGroup(bash && ARRAY_ASSIGNMENT.test(current));
+        else if (!pattern && char === ")")
+          leaveGroup();
+        current = "";
+        stdinShell = null;
+        raw += char;
+        at++;
+        wordStart = true;
+        afterClose = char === ")";
+        if (char === `
+`)
+          skipBodies();
+        currentStart = at;
+        continue;
+      }
+      take(char, isBlank(char));
+      at++;
+    }
+    push(current, afterPipe ? segments[segments.length - 1] ?? null : null, false, group, currentStart);
+    return { closed: false, raw };
+  }
+  if (options.body === true)
+    readDouble(false);
+  else if (options.substitution === true)
+    readBraceSubstitution(0);
+  else
+    read(null);
+  return { end: at, expanded, groups, open, piped, segments, starts, unparsable };
+}
+function shellSteps(command, { blindWhenOpen = false, dialect = "bash", joinLines = false } = {}) {
+  const read = lex(command, { blind: false, dialect, join: joinLines });
+  if (read.unparsable)
+    return [];
+  const chosen = read.open && blindWhenOpen ? lex(command, { blind: true, dialect, join: joinLines }) : read;
+  return chosen.segments.map((text, index) => {
+    const start = chosen.starts[index];
+    return {
+      expanded: chosen.expanded[index] === true,
+      pipedFrom: chosen.piped[index] ?? null,
+      ...chosen.groups[index] ? { subshell: chosen.groups[index] } : {},
+      ...typeof start === "number" && !joinLines ? { start } : {},
+      text
+    };
+  });
+}
+function shellSegments(command, options = {}) {
+  return shellSteps(command, options).map((step) => step.text);
+}
+function ansiText(body) {
+  return body.replace(/\\(x[0-9A-Fa-f]{1,2}|u[0-9A-Fa-f]{1,4}|U[0-9A-Fa-f]{1,8}|[0-7]{1,3}|c.|.)/gs, (_, code) => {
+    const kind = code.charAt(0);
+    if (kind === "x" || kind === "u" || kind === "U") {
+      return String.fromCodePoint(Number.parseInt(code.slice(1), 16));
+    }
+    if (/[0-7]/.test(kind))
+      return String.fromCharCode(Number.parseInt(code, 8) & 255);
+    if (kind === "c")
+      return String.fromCharCode(code.charCodeAt(1) & 31);
+    return ANSI_ESCAPES[code] ?? code;
+  });
+}
+function wordsOf(segment, dialect = "bash") {
+  return wordsWithFill(segment, dialect).map((one) => one.text);
+}
+function wordsWithFill(segment, dialect = "bash") {
+  const bash = dialect === "bash";
+  const escaper = ESCAPE[dialect];
+  const single = SINGLE[dialect];
+  const double = DOUBLE[dialect];
+  const expands = EXPANDS[dialect];
+  const words = [];
+  let word = "";
+  let inWord = false;
+  let quoted = false;
+  let filled = false;
+  const end = () => {
+    if (inWord)
+      words.push({ text: word, filled });
+    word = "";
+    inWord = false;
+    quoted = false;
+    filled = false;
+  };
+  const add = (piece) => {
+    word += piece;
+    inWord = true;
+  };
+  const startsExpansion = (after) => expands.test(after) || after === "" || /\s/.test(after) || after === escaper || oneOf(double, after);
+  const addExpandable = (char, after) => {
+    if (char === "$" && startsExpansion(after) || bash && char === "`")
+      filled = true;
+    add(char);
+  };
+  let closes = null;
+  const closeOf = (open) => {
+    closes ??= parenCloses(segment);
+    return closes[open] ?? -1;
+  };
+  let braceOpen = false;
+  let braceTried = { from: -1, close: -1 };
+  const braceCloseOf = (from) => {
+    if (!bash || braceOpen || !opensBraceSubstitution(segment, from))
+      return -1;
+    if (braceTried.from !== from) {
+      braceTried = { from, close: braceSubstitutionClose(segment, from) };
+      if (braceTried.close === -1)
+        braceOpen = true;
+    }
+    return braceTried.close;
+  };
+  const addSubstitution = (from, close) => {
+    add(segment.slice(from, close));
+    filled = true;
+    i = close;
+  };
+  let i = 0;
+  while (i < segment.length) {
+    const char = segment.charAt(i);
+    const next = segment.charAt(i + 1);
+    if (/\s/.test(char)) {
+      end();
+      i++;
+    } else if (char === escaper && next === `
+`) {
+      i += 2;
+    } else if (char === escaper) {
+      quoted = true;
+      add(next === "" ? char : bash ? next : POWERSHELL_ESCAPES[next] ?? next);
+      i += 2;
+    } else if (bash && (char === "$" || !inWord && (char === "<" || char === ">")) && next === "(" && closeOf(i + 1) !== -1) {
+      addSubstitution(i, closeOf(i + 1));
+    } else if (braceCloseOf(i) !== -1) {
+      addSubstitution(i, braceCloseOf(i));
+    } else if (!bash && !inWord && char === "@" && next === "(" && powershellParenClose(segment, i + 1) !== -1) {
+      const close = powershellParenClose(segment, i + 1);
+      add(segment.slice(i, close));
+      filled = true;
+      i = close;
+    } else if (bash && char === "&" && next === ">") {
+      end();
+      add(char);
+      i++;
+    } else if (char === "<" || char === ">") {
+      const bothStreams = bash && !quoted && char === ">" && word === "&";
+      if (!bothStreams && (quoted || !/^\d+$/.test(word)))
+        end();
+      while (oneOf("<>", segment.charAt(i)))
+        add(segment.charAt(i++));
+      if (oneOf("&|", segment.charAt(i)))
+        add(segment.charAt(i++));
+    } else if (bash && char === "$" && next === "$") {
+      filled = true;
+      add("$$");
+      i += 2;
+    } else if (bash && char === "$" && next === "'") {
+      let close = i + 2;
+      while (close < segment.length && segment.charAt(close) !== "'") {
+        close += segment.charAt(close) === "\\" ? 2 : 1;
+      }
+      add(ansiText(segment.slice(i + 2, Math.min(close, segment.length))));
+      quoted = true;
+      i = close + 1;
+    } else if (bash && char === "$" && next === '"') {
+      i++;
+    } else if (oneOf(single, char)) {
+      quoted = true;
+      inWord = true;
+      i++;
+      while (i < segment.length) {
+        const inside = segment.charAt(i);
+        if (oneOf(single, inside)) {
+          if (bash || !oneOf(single, segment.charAt(i + 1)))
+            break;
+          add(inside);
+          i += 2;
+          continue;
+        }
+        add(inside);
+        i++;
+      }
+      i++;
+    } else if (oneOf(double, char)) {
+      quoted = true;
+      inWord = true;
+      i++;
+      while (i < segment.length) {
+        const inside = segment.charAt(i);
+        const after = segment.charAt(i + 1);
+        if (oneOf(double, inside)) {
+          if (bash || !oneOf(double, after))
+            break;
+          add(inside);
+          i += 2;
+          continue;
+        }
+        if (bash && inside === "$" && after === "$") {
+          filled = true;
+          add("$$");
+          i += 2;
+          continue;
+        }
+        const substitution = bash && inside === "$" && after === "(" ? closeOf(i + 1) : braceCloseOf(i);
+        if (substitution !== -1) {
+          addSubstitution(i, substitution);
+          continue;
+        }
+        if (inside === escaper && after !== "") {
+          if (!bash)
+            add(POWERSHELL_ESCAPES[after] ?? after);
+          else if ('$`"\\'.includes(after))
+            add(after);
+          else if (after !== `
+`)
+            add(inside + after);
+          i += 2;
+          continue;
+        }
+        addExpandable(inside, after);
+        i++;
+      }
+      i++;
+    } else {
+      addExpandable(char, next);
+      i++;
+    }
+  }
+  end();
+  return words;
+}
+function parenCloses(text) {
+  const closes = new Int32Array(text.length).fill(-1);
+  const open = [];
+  const quoteEnd = (quote, from, escapes) => {
+    for (let at = from;at < text.length; at++) {
+      const char = text.charAt(at);
+      if (escapes && char === "\\")
+        at++;
+      else if (char === quote)
+        return at;
+    }
+    return -1;
+  };
+  for (let i = 0;i < text.length; i++) {
+    const char = text.charAt(i);
+    const next = text.charAt(i + 1);
+    if (char === "\\" || char === "$" && next === "$") {
+      i++;
+    } else if (char === "`") {
+      i = quoteEnd("`", i + 1, true);
+    } else if (open.at(-1) === -1) {
+      if (char === '"')
+        open.pop();
+      else if (char === "$" && next === "(")
+        open.push(++i);
+    } else if (char === "'") {
+      i = quoteEnd("'", i + 1, false);
+    } else if (char === "$" && next === "'") {
+      i = quoteEnd("'", i + 2, true);
+    } else if (char === '"') {
+      open.push(-1);
+    } else if (char === "(") {
+      open.push(i);
+    } else if (char === ")") {
+      const at = open.pop();
+      if (at !== undefined && at >= 0)
+        closes[at] = i + 1;
+    }
+    if (i === -1)
+      break;
+  }
+  return closes;
+}
+function powershellParenClose(text, open) {
+  const single = SINGLE.powershell;
+  const double = DOUBLE.powershell;
+  const quoteEnd = (quotes, from, escapes) => {
+    for (let at = from;at < text.length; at++) {
+      const char = text.charAt(at);
+      if (escapes && char === "`")
+        at++;
+      else if (oneOf(quotes, char)) {
+        if (!oneOf(quotes, text.charAt(at + 1)))
+          return at;
+        at++;
+      }
+    }
+    return -1;
+  };
+  let depth = 0;
+  for (let i = open;i < text.length; i++) {
+    const char = text.charAt(i);
+    if (char === "`")
+      i++;
+    else if (oneOf(single, char))
+      i = quoteEnd(single, i + 1, false);
+    else if (oneOf(double, char))
+      i = quoteEnd(double, i + 1, true);
+    else if (char === "(")
+      depth++;
+    else if (char === ")" && --depth === 0)
+      return i + 1;
+    if (i === -1)
+      return -1;
+  }
+  return -1;
+}
+function isAssignmentOnly(words) {
+  return words.length > 0 && words.every((word) => ASSIGNMENT.test(word));
+}
+function isProcessSubstitution(word) {
+  return /^[<>]\(/.test(textOf(word)) && (typeof word === "string" || word.filled);
+}
+function packageCommand(program, args) {
+  let rest;
+  if (PACKAGE_RUNNERS.has(program))
+    rest = args;
+  else if (program === "pnpm" && args[0] === "dlx")
+    rest = args.slice(1);
+  else
+    return null;
+  for (let index = 0;index < rest.length; index++) {
+    const word = rest[index] ?? "";
+    if (word === "--") {
+      const pkg = rest[index + 1];
+      return pkg !== undefined && CLAUDE_PACKAGE.test(pkg) ? { args: rest.slice(index + 2), program: "claude" } : null;
+    }
+    const name = word.split("=")[0] ?? word;
+    if (name === "-p" || name === "--package") {
+      const inline = word.includes("=") ? word.slice(word.indexOf("=") + 1) : undefined;
+      const pkg = inline ?? rest[index + 1];
+      if (pkg === undefined || !CLAUDE_PACKAGE.test(pkg))
+        return null;
+      const after = rest.slice(index + (inline === undefined ? 2 : 1));
+      const command = after[0] === "claude" ? after.slice(1) : after;
+      return { args: [...command], program: "claude" };
+    }
+    if (word.startsWith("-")) {
+      index += /^--(?:registry|prefix|cache|userconfig)$/.test(name) ? 1 : 0;
+      continue;
+    }
+    return CLAUDE_PACKAGE.test(word) ? { args: rest.slice(index + 1), program: "claude" } : null;
+  }
+  return null;
+}
+function shortFlags(arg, valued) {
+  let flags = "";
+  for (let i = 1;i < arg.length; i++) {
+    const letter = arg.charAt(i);
+    flags += letter;
+    if (valued.includes(letter)) {
+      const attached = arg.slice(i + 1);
+      return {
+        flags,
+        value: attached.startsWith("=") ? attached.slice(1) : attached,
+        wantsNext: i === arg.length - 1
+      };
+    }
+  }
+  return { flags, value: "", wantsNext: false };
+}
+function isShort(arg) {
+  return /^-[^-]/.test(arg);
+}
+function afterWrapper(words, from, spec) {
+  let index = from;
+  let skipped = false;
+  while (index < words.length) {
+    const word = words[index] ?? "";
+    if (word === "--")
+      return { index: index + 1 };
+    if (!isShort(word) && !word.startsWith("--")) {
+      if (!skipped && spec.skip?.(word) === true) {
+        skipped = true;
+        index++;
+        continue;
+      }
+      break;
+    }
+    const name = word.split("=")[0] ?? word;
+    if (spec.inert?.some((inert) => inert === name || inert === word) === true)
+      return;
+    if (word.startsWith("--")) {
+      const valued = spec.long.includes(name) && !word.includes("=");
+      if (spec.split !== undefined && name === spec.split.long) {
+        const value = valued ? words[index + 1] ?? "" : word.slice(name.length + 1);
+        const to = index + (valued ? 2 : 1);
+        return { index, split: { from: index, to, value, keep: null } };
+      }
+      if (spec.runs !== undefined && name === spec.runs.long) {
+        const value = valued ? words[index + 1] ?? "" : word.slice(name.length + 1);
+        return { index, runs: { from: index, to: index + (valued ? 2 : 1), value } };
+      }
+      index += valued ? 2 : 1;
+      continue;
+    }
+    const { flags, wantsNext } = shortFlags(word, spec.short);
+    if (spec.split !== undefined && flags.endsWith(spec.split.short)) {
+      const value = wantsNext ? words[index + 1] ?? "" : word.slice(flags.length + 1);
+      const before = flags.slice(0, -1);
+      const to = index + (wantsNext ? 2 : 1);
+      return {
+        index,
+        split: { from: index, to, value, keep: before === "" ? null : `-${before}` }
+      };
+    }
+    if (spec.runs !== undefined && flags.endsWith(spec.runs.short)) {
+      const value = wantsNext ? words[index + 1] ?? "" : word.slice(flags.length + 1);
+      return { index, runs: { from: index, to: index + (wantsNext ? 2 : 1), value } };
+    }
+    index += wantsNext ? 2 : 1;
+  }
+  return { index };
+}
+function invocationOf(words) {
+  let list = [...words];
+  let splits = 0;
+  let index = 0;
+  while (index < list.length) {
+    const word = list[index] ?? "";
+    if (ASSIGNMENT.test(word) || KEYWORDS.has(word)) {
+      index++;
+      continue;
+    }
+    const redirection = REDIRECTION.exec(word);
+    if (redirection !== null) {
+      index += (redirection[2] ?? "") === "" ? 2 : 1;
+      continue;
+    }
+    const spec = WRAPPERS[programName(word)];
+    if (spec === undefined)
+      break;
+    const after = afterWrapper(list, index + 1, spec);
+    if (after === undefined)
+      return;
+    if (after.split !== undefined && splits < MAX_NESTING) {
+      const { from, keep, to, value } = after.split;
+      const kept = keep === null ? [] : [keep];
+      list = [...list.slice(0, from), ...kept, ...wordsOf(value), ...list.slice(to)];
+      splits++;
+      continue;
+    }
+    if (after.runs !== undefined && splits < MAX_NESTING) {
+      const { from, to, value } = after.runs;
+      list = [...list.slice(0, from), ...wordsOf(value), ...list.slice(to)];
+      index = from;
+      splits++;
+      continue;
+    }
+    index = after.split === undefined ? after.index : after.split.to;
+  }
+  const first = list[index];
+  if (first === undefined)
+    return;
+  const program = programName(first);
+  const ran = packageCommand(program, list.slice(index + 1));
+  const started = program === START_PROCESS ? startProcess(list.slice(index + 1)) : null;
+  const command = started ?? ran;
+  return {
+    args: command?.args ?? list.slice(index + 1),
+    computed: isComputedWord(first),
+    prefix: [...list.slice(0, index), ...started?.prefix ?? []],
+    program: command?.program ?? program
+  };
+}
+function isComputedWord(word) {
+  if (word === "{}")
+    return true;
+  if (!/[$`]/.test(word))
+    return false;
+  return /[$`(){}[\]\s]/.test(programName(word));
+}
+function startProcessParameter(word) {
+  const match = /^-([A-Za-z]\w*)(?::(.*))?$/.exec(word);
+  const given = match?.[1]?.toLowerCase() ?? "";
+  if (given === "")
+    return null;
+  const names = [...START_PROCESS_PARAMETERS.keys()].filter((name) => name.startsWith(given));
+  const [name] = names;
+  if (names.length !== 1 || name === undefined)
+    return null;
+  return { name, takesValue: START_PROCESS_PARAMETERS.get(name) === true, value: match?.[2] };
+}
+function continuesArray(args, index) {
+  return (args[index] ?? "").endsWith(",") || (args[index + 1] ?? "").startsWith(",");
+}
+function arrayAt(args, from, first) {
+  const words = [first];
+  let next = from + 1;
+  while (next < args.length && continuesArray([words.at(-1) ?? "", args[next] ?? ""], 0)) {
+    words.push(args[next] ?? "");
+    next++;
+  }
+  return { words, next };
+}
+function arrayElements(words) {
+  return words.flatMap((word) => {
+    const inner = /^@\(([\s\S]*)\)$/.exec(word)?.[1];
+    return inner === undefined ? [word] : wordsOf(inner, "powershell");
+  }).join(" ").split(",").flatMap((part) => wordsOf(part)).filter((one) => one !== "");
+}
+function startProcess(args) {
+  let file = null;
+  let list = null;
+  let fresh = null;
+  const positional = [];
+  for (let index = 0;index < args.length; index++) {
+    const arg = args[index] ?? "";
+    if (arg === "--") {
+      positional.push(...args.slice(index + 1).map((word) => [word]));
+      break;
+    }
+    const parameter = startProcessParameter(arg);
+    if (parameter === null) {
+      if (!arg.startsWith("-") || continuesArray(args, index)) {
+        const array = arrayAt(args, index, arg);
+        positional.push(array.words);
+        index = array.next - 1;
+      }
+      continue;
+    }
+    const { name, takesValue } = parameter;
+    let value;
+    if (takesValue) {
+      const inline = parameter.value;
+      const from = inline === undefined ? index + 1 : index;
+      if (from < args.length) {
+        const array = arrayAt(args, from, inline ?? args[from] ?? "");
+        value = array.words;
+        index = array.next - 1;
+      }
+    }
+    if (name === "filepath" && value !== undefined)
+      file = value[0] ?? null;
+    else if (name === "argumentlist" && value !== undefined)
+      list = arrayElements(value);
+    else if (name === "usenewenvironment")
+      fresh = arg;
+  }
+  file ??= positional[0]?.[0] ?? null;
+  list ??= arrayElements(positional.slice(1).flat());
+  if (file === null)
+    return null;
+  return {
+    args: list,
+    prefix: fresh === null ? [] : [START_PROCESS, fresh],
+    program: programName(file)
+  };
+}
+function withoutRedirections(args) {
+  const kept = [];
+  for (let index = 0;index < args.length; index++) {
+    const redirection = REDIRECTION.exec(args[index] ?? "");
+    if (redirection === null)
+      kept.push(args[index] ?? "");
+    else if ((redirection[2] ?? "") === "")
+      index++;
+  }
+  return kept;
+}
+function redirectionTargets(words) {
+  const targets = [];
+  for (let index = 0;index < words.length; index++) {
+    const word = words[index] ?? "";
+    const known = typeof word !== "string" && !word.filled;
+    const redirection = (known ? ANY_REDIRECTION : REDIRECTION).exec(textOf(word));
+    if (redirection === null)
+      continue;
+    const operator = redirection[1] ?? "";
+    let target = redirection[2] ?? "";
+    const apart = operator === ">" && target === "&";
+    if (target === "" || apart) {
+      const next = words[++index] ?? "";
+      if (isProcessSubstitution(next))
+        continue;
+      target = apart ? `&${textOf(next)}` : textOf(next);
+    }
+    if (operator === ">" && target.startsWith("&")) {
+      target = /^&(\d+|-)$/.test(target) ? "" : target.slice(1);
+    }
+    if (WRITING_REDIRECTIONS.has(operator) && target !== "")
+      targets.push(target);
+  }
+  return targets;
+}
+function shellTakesStdin(args) {
+  let stdin = false;
+  let scriptFile = false;
+  for (let index = 0;index < args.length; index++) {
+    const arg = args[index] ?? "";
+    const redirection = REDIRECTION.exec(arg);
+    if (redirection !== null) {
+      if ((redirection[2] ?? "") === "")
+        index++;
+      if ((redirection[1] ?? "").startsWith("<<"))
+        stdin = true;
+      continue;
+    }
+    if (arg === "-") {
+      stdin = true;
+      continue;
+    }
+    if (arg.startsWith("--")) {
+      if (arg === "--init-file" || arg === "--rcfile")
+        index++;
+      continue;
+    }
+    if (isShort(arg) || arg.startsWith("+")) {
+      const letters = arg.replace(/^[-+]+/, "");
+      if (letters.includes("c"))
+        return false;
+      if (letters.includes("s"))
+        stdin = true;
+      if (letters === "o")
+        index++;
+      continue;
+    }
+    scriptFile = true;
+  }
+  return stdin || !scriptFile;
+}
+function shellCommandString(args) {
+  let commandMode = false;
+  for (let index = 0;index < args.length; index++) {
+    const arg = args[index] ?? "";
+    if (arg === "--")
+      return commandMode ? args[index + 1] : undefined;
+    const redirection = REDIRECTION.exec(arg);
+    if (redirection !== null) {
+      if ((redirection[2] ?? "") === "")
+        index++;
+      continue;
+    }
+    if (arg.startsWith("--")) {
+      if (arg === "--init-file" || arg === "--rcfile")
+        index++;
+      continue;
+    }
+    if (/^[-+][A-Za-z]+$/.test(arg)) {
+      const letters = arg.slice(1);
+      if (arg.startsWith("-") && letters.includes("c"))
+        commandMode = true;
+      if (/[oO]$/.test(letters))
+        index++;
+      continue;
+    }
+    return commandMode ? arg : undefined;
+  }
+  return;
+}
+function readsStdinShell(segment) {
+  const invocation = invocationOf(wordsOf(segment));
+  return invocation !== undefined && SHELLS.has(invocation.program) && shellTakesStdin(invocation.args);
+}
+function writtenText(segment) {
+  const invocation = invocationOf(wordsOf(segment));
+  if (invocation === undefined || invocation.args.length === 0)
+    return null;
+  const text = invocation.args.join(" ");
+  return invocation.program === "printf" ? text.replace(/\\([nrt])/g, " ") : text;
+}
+function isRunnerProgram(program) {
+  return RUNNER_PROGRAM_NAMES.includes(program);
+}
+function runsAsAnotherUser(invocation) {
+  return [invocation.program, ...invocation.prefix].some((word) => AS_ANOTHER_USER_NAMES.includes(programName(word)));
+}
+function endsFindCommand(word, before) {
+  return word === ";" || word === "+" && before === "{}";
+}
+function findCommands(args) {
+  const commands = [];
+  for (let index = 0;index < args.length; index++) {
+    const word = args[index] ?? "";
+    if (FIND_VALUED.has(word) || /^-newer[a-zA-Z]{2}$/.test(word)) {
+      index++;
+      continue;
+    }
+    if (!FIND_EXEC.has(word))
+      continue;
+    const words = [];
+    for (index++;index < args.length && !endsFindCommand(args[index] ?? "", args[index - 1] ?? ""); index++) {
+      words.push(args[index] ?? "");
+    }
+    if (words.length > 0)
+      commands.push(words.map(shellQuote).join(" "));
+  }
+  return commands.length === 0 ? undefined : commands.join(" ; ");
+}
+function longOption(word, names) {
+  const name = word.split("=")[0] ?? word;
+  if (names.includes(name))
+    return name;
+  const starts = names.filter((one) => one.startsWith(name));
+  return starts.length === 1 ? starts[0] ?? null : null;
+}
+function watchCommand(args) {
+  let exec = false;
+  let index = 0;
+  for (;index < args.length; index++) {
+    const word = args[index] ?? "";
+    if (word === "--") {
+      index++;
+      break;
+    }
+    if (!word.startsWith("-") || word === "-")
+      break;
+    if (word.startsWith("--")) {
+      const name = longOption(word, WATCH_LONG);
+      if (name === "--exec")
+        exec = true;
+      else if (name !== null && WATCH_VALUED.has(name) && !word.includes("="))
+        index++;
+      continue;
+    }
+    for (let at = 1;at < word.length; at++) {
+      const letter = word.charAt(at);
+      if (letter === "d")
+        break;
+      if (letter === "x")
+        exec = true;
+      if (letter === "n" || letter === "q") {
+        if (at === word.length - 1)
+          index++;
+        break;
+      }
+    }
+  }
+  const words = args.slice(index);
+  if (words.length === 0)
+    return;
+  return exec ? words.map(shellQuote).join(" ") : words.join(" ");
+}
+function suCommand(args) {
+  for (let index = 0;index < args.length; index++) {
+    const word = args[index] ?? "";
+    if (word === "--")
+      continue;
+    if (word.startsWith("--")) {
+      const name = longOption(word, SU_LONG);
+      const carried = word.includes("=");
+      if (name === "--command" || name === "--session-command") {
+        return carried ? word.slice(word.indexOf("=") + 1) : args[index + 1];
+      }
+      if (name !== null && SU_VALUED.has(name) && !carried)
+        index++;
+      continue;
+    }
+    if (isShort(word)) {
+      const { flags, wantsNext } = shortFlags(word, "cgGsw");
+      if (flags.endsWith("c"))
+        return wantsNext ? args[index + 1] : word.slice(flags.length + 1);
+      if (wantsNext)
+        index++;
+    }
+  }
+  return;
+}
+function parallelStarts(args) {
+  const starts = new Set;
+  const seen = new Set;
+  const queue = [0];
+  for (let at = queue.pop();at !== undefined; at = queue.pop()) {
+    if (seen.has(at))
+      continue;
+    seen.add(at);
+    const word = args[at];
+    if (word === undefined) {
+      starts.add(at);
+    } else if (word === "--") {
+      starts.add(at + 1);
+    } else if (!word.startsWith("-") || word === "-") {
+      starts.add(at);
+    } else if (word.startsWith("--")) {
+      const carried = word.includes("=");
+      const name = longOption(word, PARALLEL_LONG);
+      if (name === null)
+        queue.push(at + 1, at + 2);
+      else
+        queue.push(PARALLEL_VALUED.has(name) && !carried ? at + 2 : at + 1);
+    } else {
+      queue.push(shortFlags(word, "jnNPadSIELCsJ").wantsNext ? at + 2 : at + 1);
+    }
+  }
+  return [...starts].sort((a, b) => a - b);
+}
+function parallelLines(args) {
+  const sepAt = args.findIndex((word) => word === "--arg-sep" || word.startsWith("--arg-sep="));
+  const sepWord = sepAt === -1 ? undefined : args[sepAt];
+  const separator = sepWord === undefined ? null : sepWord.includes("=") ? sepWord.slice(sepWord.indexOf("=") + 1) : args[sepAt + 1] ?? null;
+  const isSource = (word) => separator === null ? PARALLEL_SOURCES.has(word) : word === separator;
+  const lines = [];
+  for (const start of parallelStarts(args)) {
+    let index = start;
+    const command = [];
+    for (;index < args.length && !isSource(args[index] ?? ""); index++) {
+      command.push(args[index] ?? "");
+    }
+    const given = [];
+    let reading = false;
+    for (;index < args.length; index++) {
+      const word = args[index] ?? "";
+      if (isSource(word))
+        reading = !word.startsWith("::::");
+      else if (reading)
+        given.push(word);
+    }
+    if (command.length === 0) {
+      if (given.length > 0)
+        lines.push(given.join(" ; "));
+      continue;
+    }
+    const line = command.join(" ");
+    lines.push(line);
+    if (given.length === 0)
+      continue;
+    const quoted = given.map(shellQuote).join(" ");
+    lines.push(line.includes("{}") ? line.replaceAll("{}", quoted) : `${line} ${quoted}`);
+    const program = programName(command[0] ?? "");
+    if (SHELLS.has(program) || program === "eval")
+      lines.push(...given);
+  }
+  return lines;
+}
+function parallelCommand(args) {
+  const lines = [...new Set(parallelLines(args))];
+  return lines.length === 0 ? undefined : lines.join(" ; ");
+}
+function jobRunArguments(program, args) {
+  const kit = kitArguments(program, args);
+  return kit !== null && kit[0] === "job" && kit[1] === "run" ? kit.slice(2) : null;
+}
+function isJobRun(program, args) {
+  return jobRunArguments(program, args) !== null;
+}
+function nestedCommand(program, args, pipedFrom = null) {
+  if (SHELLS.has(program)) {
+    const script = shellCommandString(args);
+    if (script !== undefined)
+      return script;
+    if (!shellTakesStdin(args))
+      return jobRunLine(program, args);
+    const here = args.findIndex((arg) => arg === "<<<" || arg.startsWith("<<<"));
+    if (here !== -1) {
+      const word = args[here] ?? "";
+      return word.length > 3 ? word.slice(3) : args.slice(here + 1).join(" ");
+    }
+    return pipedFrom === null ? undefined : writtenText(pipedFrom) ?? undefined;
+  }
+  if (program === "find")
+    return findCommands(args) ?? jobRunLine(program, args);
+  if (program === "watch")
+    return watchCommand(args) ?? jobRunLine(program, args);
+  if (program === "su")
+    return suCommand(args) ?? jobRunLine(program, args);
+  if (program === "parallel")
+    return parallelCommand(args) ?? jobRunLine(program, args);
+  if (program === "cmd") {
+    const at = args.findIndex((arg) => /^\/[ck]$/i.test(arg));
+    return at === -1 ? jobRunLine(program, args) : args.slice(at + 1).join(" ");
+  }
+  if (program === "powershell" || program === "pwsh") {
+    const at = args.findIndex((arg) => arg.length > 1 && "-command".startsWith(arg.toLowerCase()));
+    return at === -1 ? jobRunLine(program, args, powershellQuoted) : afterCommandFlag(program, args, at, powershellQuoted);
+  }
+  if (program === "eval" || program === "iex" || program === "invoke-expression") {
+    return args.join(" ");
+  }
+  return jobRunLine(program, args);
+}
+function afterCommandFlag(program, args, at, quote) {
+  const job = jobRunArguments(program, args.slice(0, at)) === null ? undefined : jobRunLine(program, args, quote);
+  return job ?? args.slice(at + 1).join(" ");
+}
+function jobRunLine(program, args, quote = shellQuote) {
+  const queued = jobRunArguments(program, args);
+  if (queued === null)
+    return;
+  const dashes = queued.indexOf("--");
+  return dashes === -1 || dashes === queued.length - 1 ? undefined : queued.slice(dashes + 1).map(quote).join(" ");
+}
+function nestedDialect(program) {
+  return ["iex", "invoke-expression", "powershell", "pwsh"].includes(program) ? "powershell" : "bash";
+}
+function fillTest(filled) {
+  const set = new Set(filled);
+  return (word) => set.has(word);
+}
+function derivedFill(words, args) {
+  const own = new Set(words);
+  return args.filter((arg) => !own.has(arg) && anyFill(arg));
+}
+function fillOfStep(step, words, dialect, inherited) {
+  const all = inherited || step.expanded;
+  const own = words.some((word) => word.filled);
+  const piped = step.pipedFrom !== null && wordsWithFill(step.pipedFrom, dialect).some((w) => w.filled);
+  const filled = words.filter((word) => all || word.filled).map((word) => word.text);
+  return { filled: [...new Set(filled)], passes: all || own || piped };
+}
+var DIALECTS, MAX_NESTING = 3, ESCAPE, SINGLE, DOUBLE, oneOf = (chars, char) => char !== "" && chars.includes(char), CONTINUATION, SEPARATORS, HERE_STRING, ARRAY_ASSIGNMENT, MAX_INNER = 8, isBlank = (char) => char === " " || char === "\t", ANSI_ESCAPES, POWERSHELL_ESCAPES, EXPANDS, KEYWORDS, ASSIGNMENT, CHANGE_DIR, REDIRECTION, ANY_REDIRECTION, textOf = (word) => typeof word === "string" ? word : word.text, DURATION = (word) => /^\d+(?:\.\d+)?[smhd]?$/.test(word), CPU_MASK = (word) => /^(?:0x)?[0-9a-f]+(?:[,-][0-9a-f]+)*$/i.test(word), WRAPPERS, SHELLS, CLAUDE_PACKAGE, PACKAGE_RUNNERS, START_PROCESS_PARAMETERS, START_PROCESS = "start-process", WRITING_REDIRECTIONS, RUNNER_PROGRAM_NAMES, AS_ANOTHER_USER_NAMES, FIND_EXEC, FIND_VALUED, WATCH_LONG, WATCH_VALUED, SU_LONG, SU_VALUED, PARALLEL_VALUED, PARALLEL_SWITCHES, PARALLEL_SOURCES, PARALLEL_LONG, anyFill = (word) => /[$`]/.test(word);
+var init_command = __esm(() => {
+  init_kit_invocation();
+  init_powershell();
+  DIALECTS = ["bash", "powershell"];
+  ESCAPE = { bash: "\\", powershell: "`" };
+  SINGLE = { bash: "'", powershell: "'\u2018\u2019\u201A\u201B" };
+  DOUBLE = { bash: '"', powershell: '"\u201C\u201D\u201E' };
+  CONTINUATION = {
+    bash: /\\[ \t]*\r?\n/y,
+    powershell: /`[ \t]*\r?\n/y
+  };
+  SEPARATORS = new Set([`
+`, "\r", "&", "(", ")", ";", "|"]);
+  HERE_STRING = /@(["'])\r?\n([\s\S]*?)\r?\n\1@/y;
+  ARRAY_ASSIGNMENT = /(?:^|\s)[A-Za-z_][A-Za-z0-9_]*\+?=$/;
+  ANSI_ESCAPES = {
+    a: "\x07",
+    b: "\b",
+    e: "\x1B",
+    E: "\x1B",
+    f: "\f",
+    n: `
+`,
+    r: "\r",
+    t: "\t",
+    v: "\v"
+  };
+  POWERSHELL_ESCAPES = {
+    "0": "\x00",
+    a: "\x07",
+    b: "\b",
+    e: "\x1B",
+    f: "\f",
+    n: `
+`,
+    r: "\r",
+    t: "\t",
+    v: "\v"
+  };
+  EXPANDS = {
+    bash: /[A-Za-z_0-9{([@*#?$!-]/,
+    powershell: /[A-Za-z_0-9{(?$^:]/
+  };
+  KEYWORDS = new Set(["!", "do", "done", "elif", "else", "fi", "if", "then", "until", "while"]);
+  ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*\+?=/;
+  CHANGE_DIR = new Set([
+    "cd",
+    "chdir",
+    "popd",
+    "pushd",
+    "set-location",
+    "sl"
+  ]);
+  REDIRECTION = /^\d*(<<<|<<|<>|<|>>|>\||>|&>>|&>)(?!\()(.*)$/s;
+  ANY_REDIRECTION = /^\d*(<<<|<<|<>|<|>>|>\||>|&>>|&>)(.*)$/s;
+  WRAPPERS = {
+    builtin: { long: [], short: "" },
+    busybox: { long: [], short: "" },
+    chrt: {
+      long: [
+        "--sched-runtime",
+        "--sched-period",
+        "--sched-deadline",
+        "--sched-priority",
+        "--reset-on-fork"
+      ],
+      short: "PT",
+      skip: (word) => /^-?\d+$/.test(word)
+    },
+    command: { inert: ["-v", "-V"], long: [], short: "" },
+    "cross-env": { long: [], short: "" },
+    doas: { long: [], short: "uC" },
+    env: {
+      long: ["--unset", "--chdir", "--split-string"],
+      short: "uCS",
+      split: { long: "--split-string", short: "S" }
+    },
+    exec: { long: [], short: "a" },
+    flock: {
+      long: ["--timeout", "--conflict-exit-code", "--command"],
+      short: "wEc",
+      skip: () => true,
+      runs: { long: "--command", short: "c" }
+    },
+    ionice: { long: ["--class", "--classdata", "--pid", "--pgid"], short: "cnpPu" },
+    nice: { long: ["--adjustment"], short: "n" },
+    nohup: { long: [], short: "" },
+    nsenter: {
+      long: ["--target", "--setuid", "--setgid", "--root", "--wd", "--wdns", "--env"],
+      short: "tSG"
+    },
+    script: {
+      long: ["--command", "--log-out", "--log-in", "--logging-format", "--timing", "--output-limit"],
+      short: "cEOI",
+      skip: () => true,
+      runs: { long: "--command", short: "c" }
+    },
+    setsid: { long: [], short: "" },
+    stdbuf: { long: ["--input", "--output", "--error"], short: "ioe" },
+    sudo: {
+      long: [
+        "--user",
+        "--group",
+        "--host",
+        "--prompt",
+        "--close-from",
+        "--chdir",
+        "--chroot",
+        "--command-timeout",
+        "--other-user"
+      ],
+      short: "ughpCDRTU"
+    },
+    taskset: { long: ["--cpu-list"], short: "c", skip: CPU_MASK },
+    time: { long: [], short: "" },
+    timeout: { long: ["--signal", "--kill-after"], short: "sk", skip: DURATION },
+    unbuffer: { long: [], short: "" },
+    xargs: {
+      long: [
+        "--arg-file",
+        "--delimiter",
+        "--eof",
+        "--max-args",
+        "--max-chars",
+        "--max-lines",
+        "--max-procs",
+        "--replace",
+        "--process-slot-var"
+      ],
+      short: "adEILnPs"
+    }
+  };
+  SHELLS = new Set(["bash", "dash", "fish", "ksh", "mksh", "sh", "zsh"]);
+  CLAUDE_PACKAGE = /^@anthropic-ai\/claude-code(?:@[^/]*)?$/;
+  PACKAGE_RUNNERS = new Set(["bunx", "npx", "pnpx"]);
+  START_PROCESS_PARAMETERS = new Map([
+    ["argumentlist", true],
+    ["credential", true],
+    ["erroraction", true],
+    ["errorvariable", true],
+    ["filepath", true],
+    ["informationaction", true],
+    ["informationvariable", true],
+    ["loaduserprofile", false],
+    ["nonewwindow", false],
+    ["outbuffer", true],
+    ["outvariable", true],
+    ["passthru", false],
+    ["pipelinevariable", true],
+    ["redirectstandarderror", true],
+    ["redirectstandardinput", true],
+    ["redirectstandardoutput", true],
+    ["usenewenvironment", false],
+    ["verb", true],
+    ["wait", false],
+    ["warningaction", true],
+    ["warningvariable", true],
+    ["windowstyle", true],
+    ["workingdirectory", true]
+  ]);
+  WRITING_REDIRECTIONS = new Set([">", ">>", ">|", "&>", "&>>", "<>"]);
+  RUNNER_PROGRAM_NAMES = ["find", "parallel", "su", "watch"];
+  AS_ANOTHER_USER_NAMES = ["doas", "pkexec", "su", "sudo"];
+  FIND_EXEC = new Set(["-exec", "-execdir", "-ok", "-okdir"]);
+  FIND_VALUED = new Set([
+    "-amin",
+    "-anewer",
+    "-atime",
+    "-cmin",
+    "-cnewer",
+    "-context",
+    "-ctime",
+    "-fls",
+    "-fprint",
+    "-fprint0",
+    "-fprintf",
+    "-fstype",
+    "-gid",
+    "-group",
+    "-iname",
+    "-inum",
+    "-ipath",
+    "-iregex",
+    "-iwholename",
+    "-links",
+    "-lname",
+    "-maxdepth",
+    "-mindepth",
+    "-mmin",
+    "-mtime",
+    "-name",
+    "-newer",
+    "-path",
+    "-perm",
+    "-printf",
+    "-regex",
+    "-regextype",
+    "-samefile",
+    "-size",
+    "-type",
+    "-uid",
+    "-used",
+    "-user",
+    "-wholename",
+    "-xtype"
+  ]);
+  WATCH_LONG = [
+    "--beep",
+    "--chgexit",
+    "--color",
+    "--cumulative",
+    "--differences",
+    "--equexit",
+    "--errexit",
+    "--exec",
+    "--help",
+    "--interval",
+    "--no-color",
+    "--no-title",
+    "--no-wrap",
+    "--precise",
+    "--version"
+  ];
+  WATCH_VALUED = new Set(["--equexit", "--interval"]);
+  SU_LONG = [
+    "--command",
+    "--fast",
+    "--group",
+    "--help",
+    "--login",
+    "--preserve-environment",
+    "--pty",
+    "--session-command",
+    "--shell",
+    "--supp-group",
+    "--version",
+    "--whitelist-environment"
+  ];
+  SU_VALUED = new Set([
+    "--command",
+    "--group",
+    "--session-command",
+    "--shell",
+    "--supp-group",
+    "--whitelist-environment"
+  ]);
+  PARALLEL_VALUED = new Set([
+    "--arg-file",
+    "--arg-file-sep",
+    "--arg-sep",
+    "--block",
+    "--colsep",
+    "--delay",
+    "--delimiter",
+    "--env",
+    "--eof",
+    "--halt",
+    "--header",
+    "--jobs",
+    "--joblog",
+    "--load",
+    "--max-args",
+    "--max-lines",
+    "--max-procs",
+    "--memfree",
+    "--nice",
+    "--profile",
+    "--recend",
+    "--recstart",
+    "--results",
+    "--retries",
+    "--rpl",
+    "--sshlogin",
+    "--sshloginfile",
+    "--tagstring",
+    "--timeout",
+    "--workdir",
+    "--basefile",
+    "--bf",
+    "--block-size",
+    "--bt",
+    "--ctagstring",
+    "--filter",
+    "--group-by",
+    "--id",
+    "--jl",
+    "--limit",
+    "--max-chars",
+    "--memsuspend",
+    "--res",
+    "--return",
+    "--ssh",
+    "--ssh-delay",
+    "--term-seq",
+    "--tf",
+    "--tmpdir",
+    "--tmpl",
+    "--trc",
+    "--wd"
+  ]);
+  PARALLEL_SWITCHES = new Set([
+    "--bar",
+    "--dry-run",
+    "--eta",
+    "--group",
+    "--keep-order",
+    "--line-buffer",
+    "--pipe",
+    "--progress",
+    "--quote",
+    "--shebang",
+    "--tag",
+    "--ungroup",
+    "--verbose",
+    "--will-cite",
+    "--xargs"
+  ]);
+  PARALLEL_SOURCES = new Set([":::", "::::", ":::+", "::::+"]);
+  PARALLEL_LONG = [...PARALLEL_VALUED, ...PARALLEL_SWITCHES];
+});
+
+// src/project/frontmatter.ts
+import { closeSync as closeSync4, openSync as openSync4, readSync } from "fs";
+function splitFrontmatter(text) {
+  const match = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(text);
+  if (!match)
+    return null;
+  return { header: match[1] ?? "", body: text.slice(match[0].length) };
+}
+function readFrontmatterHeader(file) {
+  const fd = openSync4(file, "r");
+  try {
+    const byte = Buffer.alloc(1);
+    const lines = [];
+    let line = "";
+    let opened = false;
+    while (readSync(fd, byte, 0, 1, null) !== 0) {
+      if (byte[0] !== 10) {
+        line += byte.toString("latin1");
+        continue;
+      }
+      const normalized = line.endsWith("\r") ? line.slice(0, -1) : line;
+      if (!opened) {
+        if (normalized !== "---")
+          return null;
+        opened = true;
+      } else if (normalized === "---") {
+        return Buffer.from(lines.join(`
+`), "latin1").toString("utf8");
+      } else {
+        lines.push(normalized);
+      }
+      line = "";
+    }
+    return opened && line === "---" ? Buffer.from(lines.join(`
+`), "latin1").toString("utf8") : null;
+  } finally {
+    closeSync4(fd);
+  }
+}
+var init_frontmatter = () => {};
+
+// src/tasks/deploy/format.ts
+function isDeployTaskId(value) {
+  return DEPLOY_TASK_ID.test(value);
+}
+function deployIdEnv(value) {
+  return DEPLOY_TASK_ID.test(value) ? value.split("-")[0] : null;
+}
+function deployIdOfFileName(name) {
+  const parts = name.replace(/\.md$/, "").split("-");
+  for (const length of [4, 3]) {
+    const candidate = parts.slice(0, length).join("-");
+    if (parts.length >= length && DEPLOY_TASK_ID.test(candidate))
+      return candidate;
+  }
+  return null;
+}
+function taskInstant(now) {
+  return now.toISOString().replace(/\.\d{3}Z$/, "Z");
+}
+function parseDeployTask(text, file, env) {
+  const parts = splitFrontmatter(text);
+  if (!parts)
+    return { ok: false, why: `${file}: missing front matter --- delimiters` };
+  try {
+    const raw = Bun.YAML.parse(parts.header);
+    for (const key of RESERVED_KEYS) {
+      if (typeof raw === "object" && raw !== null && Object.hasOwn(raw, key)) {
+        return {
+          ok: false,
+          why: `${file}: "${key}" is a reserved name and cannot be a front-matter key`
+        };
+      }
+    }
+    const parsed = deployTaskSchema.safeParse(raw);
+    if (!parsed.success)
+      return { ok: false, why: `${file}: invalid front matter: ${parsed.error.message}` };
+    const fields = parsed.data;
+    if (fields.env !== env)
+      return {
+        ok: false,
+        why: `${file}: env is "${fields.env}" but the file is in the ${env} folder: move it, or fix the env`
+      };
+    if (deployIdEnv(fields.id) !== env)
+      return {
+        ok: false,
+        why: `${file}: id ${fields.id} does not start with "${env}-" like the folder it is in`
+      };
+    return { ok: true, task: { ...fields, body: parts.body, file } };
+  } catch (error) {
+    return {
+      ok: false,
+      why: `${file}: invalid YAML: ${error instanceof Error ? error.message : String(error)}`
+    };
+  }
+}
+function renderDeployTask(task) {
+  const { body, file: _file, ...fields } = task;
+  const known = Object.keys(deployTaskSchema.shape);
+  const keys = [
+    ...known,
+    ...Object.keys(fields).filter((key) => !known.includes(key)).sort()
+  ];
+  return `---
+${keys.filter((key) => fields[key] !== undefined).map((key) => `${/^[a-zA-Z][a-zA-Z0-9_-]*$/.test(key) ? key : JSON.stringify(key)}: ${JSON.stringify(fields[key])}`).join(`
+`)}
+---
+${body}`;
+}
+var DEPLOY_ENVS, DEPLOY_ENVS_RISK_FIRST, DEPLOY_STEPS, DEPLOY_TYPES, DEPLOY_FLAGS, DEPLOY_TASK_ID, instant, deployTaskSchema, RESERVED_KEYS;
+var init_format = __esm(() => {
+  init_zod();
+  init_frontmatter();
+  DEPLOY_ENVS = ["staging", "prod"];
+  DEPLOY_ENVS_RISK_FIRST = [...DEPLOY_ENVS].reverse();
+  DEPLOY_STEPS = ["before", "after"];
+  DEPLOY_TYPES = ["blocking", "non-blocking"];
+  DEPLOY_FLAGS = [
+    "needs-yes",
+    "twice-safe",
+    "spends-money",
+    "real-people",
+    "destructive"
+  ];
+  DEPLOY_TASK_ID = /^(prod|staging)-\d{8}-\d{6}(-\d+)?$/;
+  instant = string2().regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/, "Expected a UTC date-time ending in Z").refine((value) => {
+    const parsed = new Date(value);
+    return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 19) === value.slice(0, 19);
+  }, "Expected a calendar date-time that exists");
+  deployTaskSchema = object({
+    id: string2().regex(DEPLOY_TASK_ID),
+    title: string2().min(1).max(200),
+    env: _enum(DEPLOY_ENVS),
+    status: _enum(["open", "done", "dropped"]),
+    deploy: _enum(DEPLOY_STEPS),
+    type: _enum(DEPLOY_TYPES),
+    twin: string2().regex(DEPLOY_TASK_ID).optional(),
+    flags: array(_enum(DEPLOY_FLAGS)).optional(),
+    created: instant,
+    closed: instant.optional(),
+    from: string2().optional(),
+    refs: array(string2()).optional(),
+    evidence: string2().optional()
+  }).passthrough();
+  RESERVED_KEYS = ["body", "file"];
+});
+
+// src/workflow/repo-path.ts
+function normalizeRepoPath(raw) {
+  const text = raw.trim().replaceAll("\\", "/");
+  if (/\p{Cc}/u.test(text))
+    return { ok: false, problem: "control" };
+  if (/[*?]/.test(text))
+    return { ok: false, problem: "pattern" };
+  const kept = text.split("/").filter((segment) => segment !== "" && segment !== ".");
+  if (kept.length === 0)
+    return { ok: false, problem: "root" };
+  if (text.startsWith("/") || /^[A-Za-z]:/.test(text))
+    return { ok: false, problem: "absolute" };
+  if (kept.includes(".."))
+    return { ok: false, problem: "up" };
+  const folder = text.endsWith("/") || text.endsWith("/.");
+  return { ok: true, path: `${kept.join("/")}${folder ? "/" : ""}` };
+}
+
+// src/workflow/schema.ts
+function numberSchema(rule) {
+  const whole = number2().int().min(rule.min);
+  return rule.max === undefined ? whole : whole.max(rule.max);
+}
+function numberField(key) {
+  return numberSchema(NUMBER_RULES[key]).optional();
+}
+function isLabelName(name) {
+  return name.length >= 1 && name.length <= 50 && !name.startsWith("-") && !/[\p{Cc}\p{Cf},]/u.test(name) && name.trim() === name;
+}
+function labelsClash(labels) {
+  const same = (a, b) => a.toLowerCase() === b.toLowerCase();
+  if (same(labels.foundLabel, labels.readyLabel)) {
+    return `issues.foundLabel and issues.readyLabel are both ${labels.foundLabel}: the ready label is only a person's to add, so the kit's found label must be another word`;
+  }
+  if (same(labels.fixedLabel, labels.readyLabel)) {
+    return `issues.fixedLabel and issues.readyLabel are both ${labels.fixedLabel}: the ready label is only a person's to add, so the kit's fixed label must be another word`;
+  }
+  if (same(labels.foundLabel, labels.fixedLabel)) {
+    return `issues.foundLabel and issues.fixedLabel are both ${labels.foundLabel}: an issue could not be told found from fixed`;
+  }
+  return null;
+}
+function normalizeMergeFile(raw) {
+  const parsed = normalizeRepoPath(raw);
+  if (parsed.ok)
+    return parsed;
+  const shown = JSON.stringify(raw);
+  const why = {
+    control: `${shown} holds a control character`,
+    pattern: `${shown} holds a pattern character (* or ?): name the path itself, and a whole folder with a trailing / (like plugin/dist/)`,
+    root: `${shown} is the root: name the files or folders under it`,
+    absolute: `${shown} is absolute: write it relative to the repository root`,
+    up: `${shown} leaves the repository: no .. segments`
+  };
+  return { ok: false, why: why[parsed.problem] };
+}
+function isOldKeyName(name) {
+  return Object.hasOwn(WORKFLOW_KEY_ALIASES, name);
+}
+function currentKeyName(name) {
+  return isOldKeyName(name) ? WORKFLOW_KEY_ALIASES[name] : name;
+}
+function oldNamesOf(key) {
+  return Object.keys(WORKFLOW_KEY_ALIASES).filter((old) => WORKFLOW_KEY_ALIASES[old] === key);
+}
+function oldNamesIn(raw) {
+  return Object.keys(WORKFLOW_KEY_ALIASES).filter((old) => Object.hasOwn(raw, old)).map((old) => ({
+    old,
+    current: WORKFLOW_KEY_ALIASES[old],
+    both: Object.hasOwn(raw, WORKFLOW_KEY_ALIASES[old])
+  }));
+}
+function withCurrentNames(raw) {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw))
+    return raw;
+  const moved = { ...raw };
+  for (const old of Object.keys(WORKFLOW_KEY_ALIASES)) {
+    if (!Object.hasOwn(moved, old))
+      continue;
+    const current = WORKFLOW_KEY_ALIASES[old];
+    if (!Object.hasOwn(moved, current))
+      moved[current] = moved[old];
+    delete moved[old];
+  }
+  return moved;
+}
+function readWithCurrentNames(raw, context) {
+  const moved = withCurrentNames(raw);
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw))
+    return moved;
+  const current = moved;
+  for (const old of oldNamesIn(raw)) {
+    if (old.both)
+      continue;
+    const checked = workflowObjectSchema.shape[old.current].safeParse(current[old.current]);
+    if (checked.success)
+      continue;
+    const reason = checked.error.issues.map((issue) => issue.message).join(", ");
+    context.issues.push({
+      code: "custom",
+      input: current[old.current],
+      message: `${reason} (${old.old} is the old name of ${old.current})`,
+      path: [old.old]
+    });
+    delete current[old.current];
+  }
+  return current;
+}
+function isSwitchKey(key) {
+  return SWITCH_KEYS.includes(key);
+}
+function isProjectKey(key) {
+  if (PERSONAL_ONLY_KEYS.includes(key))
+    return false;
+  return !isSwitchKey(key) || PROJECT_SWITCH_NAMES.includes(switchOf(key));
+}
+function isPersonalFileSwitch(key) {
+  return isSwitchKey(key) && PERSONAL_FILE_SWITCH_NAMES.includes(switchOf(key));
+}
+function switchOf(key) {
+  return key.slice("switches.".length);
+}
+function workflowValue(workflow, key) {
+  const [head, tail] = key.split(".");
+  if (head === undefined || tail === undefined)
+    return workflow[head ?? ""];
+  const group = workflow[head];
+  if (typeof group !== "object" || group === null)
+    return;
+  return group[tail];
+}
+function isNumberKey(key) {
+  return Object.hasOwn(NUMBER_RULES, key);
+}
+function numberRuleText(key) {
+  const rule = NUMBER_RULES[key];
+  return rule.max === undefined ? `${key} is a whole number, ${rule.min} or more` : `${key} is a whole number ${rule.min}-${rule.max}`;
+}
+function parseNumber(key, value) {
+  const rule = NUMBER_RULES[key];
+  const shape = /^\d+$/;
+  const number = Number(value);
+  return shape.test(value) && numberSchema(rule).safeParse(number).success ? { ok: true, value: number } : { ok: false, why: numberRuleText(key) };
+}
+function parseMergeFiles(value) {
+  const named = value.split(/[,\n]/).map((word) => word.trim()).filter((word) => word !== "");
+  if (named.length === 0)
+    return { ok: false, why: MERGE_FILES_RULE };
+  const paths = [];
+  for (const raw of named) {
+    const parsed = normalizeMergeFile(raw);
+    if (!parsed.ok)
+      return { ok: false, why: `${MERGE_FILES_RULE}; ${parsed.why}` };
+    if (!paths.includes(parsed.path))
+      paths.push(parsed.path);
+  }
+  return { ok: true, value: paths };
+}
+function parseWorkflowValue(key, text) {
+  const value = text.trim();
+  if (key === "openPr" || key === "mergeMethod") {
+    const words = key === "openPr" ? ["off", "draft", "ready"] : ["merge", "squash", "rebase"];
+    return words.includes(value) ? { ok: true, value } : { ok: false, why: `${key} is one of ${words.join(", ")}` };
+  }
+  if (isNumberKey(key))
+    return parseNumber(key, value);
+  if (key === "issues.foundLabel" || key === "issues.fixedLabel" || key === "issues.readyLabel") {
+    return isLabelName(value) ? { ok: true, value } : { ok: false, why: `${key} is ${LABEL_RULE}` };
+  }
+  if (key === "plans.runMode") {
+    return RUN_MODES.includes(value) ? { ok: true, value } : { ok: false, why: `${key} is one of ${RUN_MODES.join(", ")}` };
+  }
+  if (key === "plans.mergeFiles")
+    return parseMergeFiles(value);
+  if (key === "reviewAgents") {
+    const named = value.split(/[,\s]+/).map((word) => word.trim()).filter((word) => word !== "");
+    if (named.length === 0) {
+      return {
+        ok: false,
+        why: "reviewAgents is a list of agent types, like cc-smart-dev-kit:senior-engineer"
+      };
+    }
+    return { ok: true, value: [...new Set(named)] };
+  }
+  if (value === "true" || value === "false")
+    return { ok: true, value: value === "true" };
+  return { ok: false, why: `${key} is true or false` };
+}
+function showValue(_key, value) {
+  if (Array.isArray(value))
+    return value.length === 0 ? "(nothing)" : value.join(", ");
+  return String(value);
+}
+var PERCENT, AT_LEAST_ZERO, PHASE_COUNT, NUMBER_RULES, LABEL_RULE = "a label name of 1-50 characters on one line, with no comma, not starting with -", labelSchema, RUN_MODES, MERGE_FILES_RULE = "plans.mergeFiles is a list of paths inside the repository, written with / (a folder ends in /), with no absolute path, no .. and not the root", mergeFilesSchema, WORKFLOW_KEY_ALIASES, workflowObjectSchema, workflowSchema, PERSONAL_FILE_SWITCH_NAMES, personalWorkflowSchema, workflowDefaults, SWITCH_NAMES, POLICY_KEYS, PERSONAL_ONLY_KEYS, SWITCH_KEYS, WORKFLOW_KEYS, PROJECT_SWITCH_NAMES, PERSONAL_ONLY_REASONS;
+var init_schema = __esm(() => {
+  init_zod();
+  PERCENT = { kind: "whole", max: 100, min: 1 };
+  AT_LEAST_ZERO = { kind: "whole", min: 0 };
+  PHASE_COUNT = { kind: "whole", max: 50, min: 1 };
+  NUMBER_RULES = {
+    "alerts.usagePercent": PERCENT,
+    "fixesAfterReview.lines": AT_LEAST_ZERO,
+    "fixesAfterReview.files": AT_LEAST_ZERO,
+    "fixesAfterReview.percent": AT_LEAST_ZERO,
+    "plans.maxPhases": PHASE_COUNT
+  };
+  labelSchema = string2().refine(isLabelName, LABEL_RULE);
+  RUN_MODES = ["ask", "solo", "lead-children", "coordinator"];
+  mergeFilesSchema = array(string2()).transform((paths, context) => {
+    const normalised = [];
+    for (const [index, raw] of paths.entries()) {
+      const parsed = normalizeMergeFile(raw);
+      if (!parsed.ok) {
+        context.issues.push({ code: "custom", input: raw, message: parsed.why, path: [index] });
+        return NEVER;
+      }
+      if (!normalised.includes(parsed.path))
+        normalised.push(parsed.path);
+    }
+    return normalised;
+  });
+  WORKFLOW_KEY_ALIASES = {
+    autoCommit: "allowCommit",
+    autoPush: "allowPush",
+    autoMerge: "allowMerge"
+  };
+  workflowObjectSchema = strictObject({
+    allowCommit: boolean2().optional(),
+    allowPush: boolean2().optional(),
+    openPr: _enum(["off", "draft", "ready"]).optional(),
+    allowMerge: boolean2().optional(),
+    mergeMethod: _enum(["merge", "squash", "rebase"]).optional(),
+    deleteBranch: boolean2().optional(),
+    reviewBeforePush: boolean2().optional(),
+    reviewAgents: array(string2().min(1)).min(1).refine((agents) => new Set(agents).size === agents.length, "an agent is listed twice").optional(),
+    fixesAfterReview: strictObject({
+      lines: numberField("fixesAfterReview.lines"),
+      files: numberField("fixesAfterReview.files"),
+      percent: numberField("fixesAfterReview.percent")
+    }).optional(),
+    clearWorktreeAfterMerge: boolean2().optional(),
+    plans: strictObject({
+      maxPhases: numberField("plans.maxPhases"),
+      mergeFiles: mergeFilesSchema.optional()
+    }).optional(),
+    issues: strictObject({
+      enabled: boolean2().optional(),
+      allowPublic: boolean2().optional(),
+      watch: unknown().optional(),
+      watchMinutes: unknown().optional(),
+      foundLabel: labelSchema.optional(),
+      fixedLabel: labelSchema.optional(),
+      readyLabel: labelSchema.optional()
+    }).superRefine((issues, context) => {
+      const clash = labelsClash({
+        fixedLabel: issues.fixedLabel ?? workflowDefaults.issues.fixedLabel,
+        foundLabel: issues.foundLabel ?? workflowDefaults.issues.foundLabel,
+        readyLabel: issues.readyLabel ?? workflowDefaults.issues.readyLabel
+      });
+      if (clash !== null)
+        context.addIssue({ code: "custom", message: clash });
+    }).optional(),
+    alerts: strictObject({
+      events: unknown().optional(),
+      sound: unknown().optional(),
+      usagePercent: numberField("alerts.usagePercent")
+    }).transform(({ events: _events, sound: _sound, ...usage }) => usage).optional(),
+    crew: unknown().optional()
+  });
+  workflowSchema = preprocess(readWithCurrentNames, workflowObjectSchema);
+  PERSONAL_FILE_SWITCH_NAMES = [
+    "jobRoute",
+    "leadHint"
+  ];
+  personalWorkflowSchema = preprocess(readWithCurrentNames, workflowObjectSchema.extend({
+    plans: strictObject({
+      maxPhases: numberField("plans.maxPhases"),
+      runMode: _enum(RUN_MODES).optional()
+    }).optional(),
+    switches: strictObject({ jobRoute: boolean2().optional(), leadHint: boolean2().optional() }).optional()
+  }));
+  workflowDefaults = {
+    allowCommit: false,
+    allowPush: false,
+    openPr: "off",
+    allowMerge: false,
+    mergeMethod: "merge",
+    deleteBranch: false,
+    reviewBeforePush: true,
+    reviewAgents: ["cc-smart-dev-kit:senior-engineer"],
+    fixesAfterReview: {
+      lines: 200,
+      files: 10,
+      percent: 20
+    },
+    clearWorktreeAfterMerge: true,
+    issues: {
+      enabled: true,
+      allowPublic: false,
+      foundLabel: "kit:found",
+      fixedLabel: "fixed-unreleased",
+      readyLabel: "kit:ready"
+    },
+    alerts: {
+      usagePercent: 85
+    },
+    plans: {
+      maxPhases: 10,
+      mergeFiles: [],
+      runMode: "ask"
+    }
+  };
+  SWITCH_NAMES = [
+    "statusLine",
+    "sessionNames",
+    "jobRoute",
+    "updateHold",
+    "leadHint"
+  ];
+  POLICY_KEYS = [
+    "allowCommit",
+    "allowPush",
+    "openPr",
+    "allowMerge",
+    "mergeMethod",
+    "deleteBranch",
+    "reviewBeforePush",
+    "reviewAgents",
+    "fixesAfterReview.lines",
+    "fixesAfterReview.files",
+    "fixesAfterReview.percent",
+    "clearWorktreeAfterMerge",
+    "issues.enabled",
+    "issues.allowPublic",
+    "issues.foundLabel",
+    "issues.fixedLabel",
+    "issues.readyLabel",
+    "alerts.usagePercent",
+    "plans.maxPhases",
+    "plans.runMode",
+    "plans.mergeFiles"
+  ];
+  PERSONAL_ONLY_KEYS = ["plans.runMode"];
+  SWITCH_KEYS = SWITCH_NAMES.map((name) => `switches.${name}`);
+  WORKFLOW_KEYS = [...POLICY_KEYS, ...SWITCH_KEYS];
+  PROJECT_SWITCH_NAMES = ["sessionNames", "jobRoute"];
+  PERSONAL_ONLY_REASONS = {
+    "plans.runMode": "a committed value would spend every teammate's usage",
+    "switches.statusLine": "the status line is per person, per machine",
+    "switches.updateHold": "the update hold is per person, per machine",
+    "switches.leadHint": "the lead-model hint is per person, per machine"
+  };
+});
+
+// src/project/config-facts.ts
+var CONFIG_PATH = ".claude/cc-smart-dev-kit.json", CcSmartDevKitConfigError, CcSmartDevKitVersionError, CcSmartDevKitRetiredFieldError;
+var init_config_facts = __esm(() => {
+  init_user_json();
+  CcSmartDevKitConfigError = class CcSmartDevKitConfigError extends Error {
+    name = "CcSmartDevKitConfigError";
+  };
+  CcSmartDevKitVersionError = class CcSmartDevKitVersionError extends CcSmartDevKitConfigError {
+    name = "CcSmartDevKitVersionError";
+  };
+  CcSmartDevKitRetiredFieldError = class CcSmartDevKitRetiredFieldError extends CcSmartDevKitConfigError {
+    name = "CcSmartDevKitRetiredFieldError";
+  };
+});
+
+// src/project/version-range.ts
+function isValidRange(range) {
+  const alternatives = range.split("||").map((part) => part.trim());
+  if (alternatives.some((part) => part === ""))
+    return false;
+  return alternatives.every((part) => {
+    if (HYPHEN.test(part))
+      return true;
+    const comparators = part.replace(/([<>]=?|=|\^|~)\s+/g, "$1").split(/\s+/);
+    return comparators.every((comparator) => COMPARATOR.test(comparator));
+  });
+}
+function satisfiesRange(version, range) {
+  if (!isValidRange(range))
+    throw new Error(`"${range}" is not a valid version range`);
+  return Bun.semver.satisfies(version, range);
+}
+function lowestAllowed(range) {
+  let lowest = null;
+  for (const part of range.split("||")) {
+    const match = RANGE_START.exec(part);
+    if (match === null)
+      return null;
+    const version = match[1]?.startsWith("<") ? "0.0.0" : `${match[2]}.${match[3] ?? "0"}.${match[4] ?? "0"}`;
+    if (lowest === null || Bun.semver.order(version, lowest) < 0)
+      lowest = version;
+  }
+  return lowest;
+}
+function partNumber(part) {
+  return part === undefined || /^[xX*]$/.test(part) ? 0 : Number(part);
+}
+function allowsNewer(version, range) {
+  if (!isValidRange(range))
+    throw new Error(`"${range}" is not a valid version range`);
+  const candidates = [NO_TOP];
+  for (const match of range.matchAll(WRITTEN_VERSION)) {
+    const major = partNumber(match[1]);
+    const minor = partNumber(match[2]);
+    const patch = partNumber(match[3]);
+    const pre = match[4] === undefined ? "" : `-${match[4]}`;
+    candidates.push(`${major}.${minor}.${patch}${pre}`, `${major}.${minor}.${patch + 1}`, `${major}.${minor + 1}.0`, `${major + 1}.0.0`);
+  }
+  return candidates.some((candidate) => Bun.semver.order(candidate, version) > 0 && Bun.semver.satisfies(candidate, range));
+}
+var NUMBER = "(?:x|X|\\*|0|[1-9]\\d*)", IDENT = "[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*", PARTIAL, COMPARATOR, HYPHEN, RANGE_START, NO_TOP = "999999.0.0", WRITTEN_VERSION;
+var init_version_range = __esm(() => {
+  PARTIAL = `v?${NUMBER}(?:\\.${NUMBER}(?:\\.${NUMBER}(?:-${IDENT})?(?:\\+${IDENT})?)?)?`;
+  COMPARATOR = new RegExp(`^(?:[<>]=?|=|\\^|~)?${PARTIAL}$`);
+  HYPHEN = new RegExp(`^(${PARTIAL})\\s+-\\s+(${PARTIAL})$`);
+  RANGE_START = /^\s*(>=|>|\^|~|=|<=|<)?\s*v?(\d+)(?:\.(\d+))?(?:\.(\d+))?/;
+  WRITTEN_VERSION = new RegExp(`v?(${NUMBER})(?:\\.(${NUMBER})(?:\\.(${NUMBER})(?:-(${IDENT}))?(?:\\+${IDENT})?)?)?`, "g");
+});
+
+// src/project/config.ts
+import { existsSync as existsSync12, readFileSync as readFileSync21 } from "fs";
+import { posix as posix2, win32 as win322 } from "path";
+function describeIssue(issue) {
+  const field = issue.path.length > 0 ? issue.path.join(".") : "(top level)";
+  if (issue.code === "unrecognized_keys") {
+    const keys = issue.keys.map((key) => field === "(top level)" ? key : `${field}.${key}`);
+    return `${keys.join(", ")}: unknown field (a newer cc-smart-dev-kit may be needed)`;
+  }
+  return `${field}: ${issue.message}`;
+}
+function checkRequires(file, raw, pluginVersion) {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw))
+    return;
+  const requires = raw.requires;
+  if (typeof requires !== "string" || !isValidRange(requires))
+    return;
+  if (satisfiesRange(pluginVersion, requires))
+    return;
+  if (!allowsNewer(pluginVersion, requires)) {
+    const lowest = lowestAllowed(requires);
+    const [major, minor] = lowest?.split(".") ?? [];
+    const example = lowest === null || lowest === "0.0.0" ? "" : ` (for example >=${major}.${minor})`;
+    throw new CcSmartDevKitVersionError(`${file}: this project's requires ${requires} does not let in cc-smart-dev-kit ` + `${pluginVersion}, which is newer; widen requires in that file${example}`);
+  }
+  throw new CcSmartDevKitVersionError(`${file}: this project needs cc-smart-dev-kit ${requires}; you have ${pluginVersion}; ` + `run ${PLUGIN_UPDATE_COMMAND}`);
+}
+function retiredFieldMessage(field) {
+  return `worktrees.${field} is no longer supported: remove it \u2014 Claude Code's own worktrees need none. \`${COMMAND} project init\` removes it (README \xA7 Worktrees).`;
+}
+function retiredFieldsOf(raw) {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw))
+    return [];
+  const worktrees = raw.worktrees;
+  if (typeof worktrees !== "object" || worktrees === null || Array.isArray(worktrees))
+    return [];
+  return RETIRED_WORKTREE_FIELDS.filter((field) => Object.hasOwn(worktrees, field));
+}
+function checkRetiredFields(where, raw) {
+  const found = retiredFieldsOf(raw);
+  if (found.length === 0)
+    return;
+  throw new CcSmartDevKitRetiredFieldError(`Invalid ${where}: ${found.map(retiredFieldMessage).join(" ")}`);
+}
+function checkPersonalOnlyFields(where, raw) {
+  const workflow = isObject2(raw) ? raw.workflow : undefined;
+  for (const key of PERSONAL_ONLY_KEYS) {
+    const [group, field] = key.split(".");
+    const settings = isObject2(workflow) ? workflow[group ?? ""] : undefined;
+    if (!isObject2(settings) || !Object.hasOwn(settings, field ?? ""))
+      continue;
+    throw new CcSmartDevKitConfigError(`Invalid ${where}: workflow.${key} is your own setting, not the project's, because ${PERSONAL_ONLY_REASONS[key]}: remove it from this file and run \`${COMMAND} workflow set ${key} <value>\` in your own terminal.`);
+  }
+}
+function loadCcSmartDevKitConfig(file, pluginVersion = VERSION) {
+  if (!existsSync12(file))
+    return null;
+  return parseCcSmartDevKitConfig(readFileSync21(file, "utf8"), file, pluginVersion);
+}
+function parseCcSmartDevKitConfig(text, where, pluginVersion = VERSION) {
+  let raw;
+  try {
+    raw = parseUserJson(text);
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new CcSmartDevKitConfigError(`Invalid ${where}: not valid JSON (${reason})`);
+  }
+  return checkCcSmartDevKitConfig(raw, where, pluginVersion);
+}
+function checkCcSmartDevKitConfig(raw, where, pluginVersion = VERSION) {
+  checkRequires(where, raw, pluginVersion);
+  checkRetiredFields(where, raw);
+  checkPersonalOnlyFields(where, raw);
+  const parsed = ccSmartDevKitConfigSchema.safeParse(raw);
+  if (!parsed.success) {
+    const issues = parsed.error.issues.map(describeIssue).join("; ");
+    throw new CcSmartDevKitConfigError(`Invalid ${where}: ${issues}`);
+  }
+  return parsed.data;
+}
+var PLUGIN_HOOK_NAMES, RETIRED_HOOK_NAMES, UNSWITCHABLE_HOOK_NAMES, WORKTREE_PREFIX_OPTIONAL_SINCE = "0.5.2", WORKTREE_ENGINE_RETIRED_IN = "1.0.0", RETIRED_WORKTREE_FIELDS, WORKFLOW_FIXES_SINCE = "1.0.0", WORKTREE_AUTO_CLEAN_SINCE = "1.0.0", WORKTREE_REBUILDABLE_SINCE = "1.9.0", CHECKS_SINCE = "1.1.0", WORKFLOW_ISSUES_SINCE = "1.4.0", WORKFLOW_PLANS_SINCE = "4.8.0", WORKFLOW_MERGE_FILES_SINCE = "5.2.0", WORKFLOW_ALLOW_KEYS_SINCE = "6.1.0", JOB_KIND_KEYS_SINCE, DEPLOY_GUARD_SINCE = "5.3.0", OWN_HOOK_NAMES_SINCE, TASKS_SINCE = "1.10.0", DEPLOY_TASKS_SINCE = "5.0.0", deployCommandEntry, deployCommandList, inCheckout, IGNORED_TASK_SCHEMAS, IGNORED_TASK_FIELDS, ccSmartDevKitConfigSchema;
+var init_config = __esm(() => {
+  init_zod();
+  init_build_info();
+  init_kinds();
+  init_managed_json();
+  init_user_json();
+  init_command();
+  init_format();
+  init_schema();
+  init_config_facts();
+  init_version_range();
+  init_config_facts();
+  PLUGIN_HOOK_NAMES = [
+    "fable-session",
+    "tier-view",
+    "after-merge",
+    "review-record",
+    "subagent-background",
+    "builder-finish",
+    "verify-gate",
+    "keep-going",
+    "agent-usage",
+    "worktree-leftovers",
+    "session-name",
+    "task-start"
+  ];
+  RETIRED_HOOK_NAMES = [
+    "serena-root",
+    "crew-role",
+    "lead-notes",
+    "message-guard",
+    "git-guard",
+    "merge-guard",
+    "deploy-guard",
+    "main-folder-guard",
+    "agent-guard",
+    "session-escape-guard"
+  ];
+  UNSWITCHABLE_HOOK_NAMES = ["job-route"];
+  RETIRED_WORKTREE_FIELDS = ["prefix", "setup", "engine"];
+  JOB_KIND_KEYS_SINCE = {
+    noSlotForFiles: "1.5.0"
+  };
+  OWN_HOOK_NAMES_SINCE = {
+    "subagent-background": "1.0.0",
+    "crew-role": "1.0.0",
+    "lead-notes": "1.0.0",
+    "verify-gate": "1.1.0",
+    "agent-usage": "1.1.0",
+    "tier-view": "1.3.0",
+    "task-start": "1.10.0",
+    "keep-going": "2.0.0",
+    "builder-finish": "2.0.0",
+    "deploy-guard": DEPLOY_GUARD_SINCE,
+    "session-escape-guard": "6.0.0"
+  };
+  deployCommandEntry = union([string2(), matchRuleSchema], { error: "is not a command or a match rule" }).superRefine((entry, ctx) => {
+    if (typeof entry !== "string")
+      return;
+    const steps = shellSteps(entry);
+    if (steps.every((step) => step.text.trim() === ""))
+      ctx.addIssue({
+        code: "custom",
+        message: `${JSON.stringify(entry)} holds no command: write one command, such as \`vercel --prod\``
+      });
+    else if (steps.length > 1)
+      ctx.addIssue({
+        code: "custom",
+        message: `${JSON.stringify(entry)} holds more than one command or a shell construct (;, &&, ||, |, &, a new line, $(\u2026), a here-doc or a group): write one plain command, such as \`vercel --prod\`; extra words in a run still match`
+      });
+  });
+  deployCommandList = array(deployCommandEntry).min(1, "is an empty list: list at least one command, or remove the key");
+  inCheckout = string2().min(1).refine((path) => !posix2.isAbsolute(path) && !win322.isAbsolute(path) && !path.split(/[\\/]/).includes(".."), "must be relative to the checkout root, without ..").refine((path) => !path.includes("\\"), "use / as the separator").refine((path) => !path.split("/").includes("."), "must not contain . segments");
+  IGNORED_TASK_SCHEMAS = {
+    releaseBranch: string2().trim().min(1).optional(),
+    legacyFolders: array(inCheckout).optional()
+  };
+  IGNORED_TASK_FIELDS = Object.keys(IGNORED_TASK_SCHEMAS);
+  ccSmartDevKitConfigSchema = strictObject({
+    requires: string2().refine(isValidRange, 'not a valid version range (like ">=1.2" or "^1.2")').optional(),
+    worktrees: strictObject({
+      base: string2().min(1),
+      guardMainFolder: boolean2().optional(),
+      autoClean: boolean2().optional(),
+      rebuildable: array(inCheckout.refine((path) => /[^*?/[\]{},!.]/.test(path), "names nothing; list the folder or file name")).optional(),
+      bases: record(string2(), string2().min(1)).refine((bases) => Object.keys(bases).every((prefix) => prefix.endsWith("/")), {
+        error: (issue) => {
+          const given = issue.input;
+          const wrong = typeof given === "object" && given !== null ? Object.keys(given).find((prefix) => !prefix.endsWith("/")) : undefined;
+          return `"${wrong ?? "a prefix"}" must end with "/" (a branch-name prefix, like "release/")`;
+        }
+      }).optional()
+    }).optional(),
+    protectedBranches: array(string2().min(1)).min(1).optional(),
+    checks: strictObject({ fast: string2().trim().min(1) }).optional(),
+    sessionNames: boolean2().optional(),
+    instructions: boolean2().optional(),
+    autoMode: array(string2().min(1)).optional(),
+    jobs: strictObject({ kinds: kindsSchema.optional(), route: boolean2().optional() }).optional(),
+    tasks: strictObject({
+      dir: inCheckout.optional(),
+      staleDays: number2().int().min(1).optional(),
+      envs: array(_enum(DEPLOY_ENVS)).min(1).refine((envs) => new Set(envs).size === envs.length, "Each environment once").optional(),
+      deployCommands: strictObject({ prod: deployCommandList.optional(), staging: deployCommandList.optional() }).refine((commands) => Object.keys(commands).length > 0, "is empty: list the commands for an environment, or remove the key").optional(),
+      ...IGNORED_TASK_SCHEMAS
+    }).superRefine((tasks, ctx) => {
+      if (tasks.envs?.length === 0)
+        return;
+      const envs = tasks.envs ?? DEPLOY_ENVS;
+      for (const env of Object.keys(tasks.deployCommands ?? {}))
+        if (!envs.includes(env))
+          ctx.addIssue({
+            code: "custom",
+            path: ["deployCommands", env],
+            message: `is not one of tasks.envs (${envs.join(", ")}): remove it, or add ${env} to tasks.envs`
+          });
+    }).optional(),
+    workflow: workflowSchema.optional(),
+    ownHooks: array(_enum([...PLUGIN_HOOK_NAMES, ...RETIRED_HOOK_NAMES, ...UNSWITCHABLE_HOOK_NAMES])).optional()
+  });
+});
+
+// src/project/locate.ts
+import { existsSync as existsSync13, realpathSync as realpathSync3, statSync as statSync8 } from "fs";
+import { join as join15 } from "path";
+function gitNotFound(error) {
+  const why = error instanceof Error ? error.message : String(error);
+  return /not found in \$PATH|ENOENT/.test(why) ? new Error(GIT_NOT_FOUND) : error;
+}
+function checkoutFailure(error) {
+  if (error instanceof GitTimedOutError)
+    return GIT_TIMED_OUT2;
+  return error instanceof Error ? error.message : String(error);
+}
+function callLimit(timeoutMs, timeFor) {
+  return timeFor === undefined ? timeoutMs : timeFor(timeoutMs);
+}
+function gitIn(cwd, env, timeoutMs = RESOLVE_GIT_TIMEOUT_MS, timeFor) {
+  return (args) => {
+    const limit = callLimit(timeoutMs, timeFor);
+    if (limit <= 0)
+      return NO_TIME_LEFT;
+    try {
+      const result = Bun.spawnSync(["git", ...args], {
+        cwd,
+        env,
+        stdin: "ignore",
+        stdout: "pipe",
+        stderr: "pipe",
+        timeout: limit,
+        windowsHide: true
+      });
+      return {
+        ok: result.exitCode === 0,
+        stdout: result.stdout.toString(),
+        stderr: result.stderr.toString(),
+        timedOut: result.exitedDueToTimeout === true
+      };
+    } catch (error) {
+      throw gitNotFound(error);
+    }
+  };
+}
+function gitInAsync(cwd, env, timeoutMs = RESOLVE_GIT_TIMEOUT_MS, timeFor) {
+  return async (args) => {
+    const limit = callLimit(timeoutMs, timeFor);
+    if (limit <= 0)
+      return NO_TIME_LEFT;
+    try {
+      const child = Bun.spawn(["git", ...args], {
+        cwd,
+        env,
+        stdin: "ignore",
+        stdout: "pipe",
+        stderr: "pipe",
+        timeout: limit,
+        windowsHide: true
+      });
+      const [stdout, stderr, code] = await Promise.all([
+        new Response(child.stdout).text(),
+        new Response(child.stderr).text(),
+        child.exited
+      ]);
+      return { ok: code === 0, stdout, stderr, timedOut: child.signalCode === "SIGTERM" };
+    } catch (error) {
+      throw gitNotFound(error);
+    }
+  };
+}
+function requireGitVersionText(out) {
+  const match = /git version (\d+)\.(\d+)(?:\.(\d+))?/.exec(out);
+  if (!match)
+    return;
+  const version = `${match[1]}.${match[2]}.${match[3] ?? "0"}`;
+  if (Bun.semver.order(version, MIN_GIT_VERSION) < 0) {
+    throw new Error(`git 2.31 or newer is needed; you have git ${version}. Update git.`);
+  }
+}
+function requireGitVersion(git) {
+  requireGitVersionText(git(["--version"]).stdout);
+}
+async function requireGitVersionAsync(git) {
+  requireGitVersionText((await git(["--version"])).stdout);
+}
+function mainCheckoutFrom(list, cwd) {
+  if (list.timedOut === true)
+    throw new GitTimedOutError;
+  if (!list.ok)
+    throw new Error(`git worktree list failed in ${cwd}: ${list.stderr.trim()}`);
+  const [firstEntry = ""] = list.stdout.split(`
+
+`);
+  const lines = firstEntry.split(`
+`);
+  if (lines.includes("bare"))
+    return null;
+  const pathLine = lines.find((line) => line.startsWith("worktree "));
+  if (!pathLine)
+    return null;
+  const path = pathLine.slice("worktree ".length);
+  if (!existsSync13(path) || lines.some((line) => line.startsWith("prunable"))) {
+    throw new Error(`The main checkout of the repo at ${cwd} is missing: ${path} was moved or deleted. ` + 'If you moved it, run "git worktree repair" in its new folder.');
+  }
+  return realpathSync3(path);
+}
+function findMainCheckout(git, cwd) {
+  return mainCheckoutFrom(git(["worktree", "list", "--porcelain"]), cwd);
+}
+async function findMainCheckoutAsync(git, cwd) {
+  return mainCheckoutFrom(await git(["worktree", "list", "--porcelain"]), cwd);
+}
+function revParseParts(revParse) {
+  const [top, gitDir, common] = revParse.stdout.trim().split(`
+`);
+  if (!revParse.ok || top?.startsWith("--"))
+    return "not-understood";
+  if (!top || !gitDir || !common)
+    return "outside";
+  return { common, gitDir, top };
+}
+function checkoutRoots(parts) {
+  const root = realpathSync3(parts.top);
+  const commonDir = realpathSync3(parts.common);
+  return { commonDir, isWorktree: realpathSync3(parts.gitDir) !== commonDir, root };
+}
+function locateCheckout(cwd, options = {}) {
+  if (!existsSync13(cwd) || !statSync8(cwd).isDirectory()) {
+    throw new Error(`resolveProject: ${cwd} is not a folder`);
+  }
+  const git = gitIn(cwd, gitEnv(options.env ?? process.env), undefined, options.timeFor);
+  const revParse = git([
+    "rev-parse",
+    "--path-format=absolute",
+    "--show-toplevel",
+    "--absolute-git-dir",
+    "--git-common-dir"
+  ]);
+  if (revParse.timedOut === true)
+    throw new GitTimedOutError;
+  const parts = revParseParts(revParse);
+  if (parts === "not-understood") {
+    requireGitVersion(git);
+    if (revParse.ok) {
+      throw new Error("git did not understand rev-parse --path-format: git 2.31 or newer is needed.");
+    }
+    return null;
+  }
+  if (parts === "outside")
+    return null;
+  const roots = checkoutRoots(parts);
+  return {
+    ...roots,
+    mainCheckout: roots.isWorktree ? findMainCheckout(git, cwd) : roots.root
+  };
+}
+async function locateCheckoutAsync(cwd, options = {}) {
+  if (!existsSync13(cwd) || !statSync8(cwd).isDirectory()) {
+    throw new Error(`resolveProject: ${cwd} is not a folder`);
+  }
+  const git = gitInAsync(cwd, gitEnv(options.env ?? process.env), undefined, options.timeFor);
+  const revParse = await git([
+    "rev-parse",
+    "--path-format=absolute",
+    "--show-toplevel",
+    "--absolute-git-dir",
+    "--git-common-dir"
+  ]);
+  if (revParse.timedOut === true)
+    throw new GitTimedOutError;
+  const parts = revParseParts(revParse);
+  if (parts === "not-understood") {
+    await requireGitVersionAsync(git);
+    if (revParse.ok) {
+      throw new Error("git did not understand rev-parse --path-format: git 2.31 or newer is needed.");
+    }
+    return null;
+  }
+  if (parts === "outside")
+    return null;
+  const roots = checkoutRoots(parts);
+  return {
+    ...roots,
+    mainCheckout: roots.isWorktree ? await findMainCheckoutAsync(git, cwd) : roots.root
+  };
+}
+function projectFileFor(checkout) {
+  const { root, mainCheckout } = checkout;
+  const own = join15(root, CONFIG_PATH);
+  if (existsSync13(own))
+    return own;
+  if (mainCheckout === null || mainCheckout === root)
+    return null;
+  const main = join15(mainCheckout, CONFIG_PATH);
+  return existsSync13(main) ? main : null;
+}
+var MIN_GIT_VERSION = "2.31.0", RESOLVE_GIT_TIMEOUT_MS = 5000, GIT_NOT_FOUND = "git was not found, so this project's own values cannot be read. Install git, then try again.", GIT_TIMED_OUT2 = "git did not answer in time", GIT_TIMED_OUT_FIX = "run `git status` in this folder; if that hangs too, fix git first, then run this again", GitTimedOutError, NO_TIME_LEFT;
+var init_locate = __esm(() => {
+  init_config_facts();
+  init_git_env();
+  GitTimedOutError = class GitTimedOutError extends Error {
+    constructor() {
+      super(`${GIT_TIMED_OUT2}: ${GIT_TIMED_OUT_FIX}`);
+      this.name = "GitTimedOutError";
+    }
+  };
+  NO_TIME_LEFT = {
+    ok: false,
+    stdout: "",
+    stderr: "no time left in the hook's budget",
+    timedOut: true
+  };
+});
+
+// src/project/resolve.ts
+function loadProjectConfig(checkout, pluginVersion) {
+  const file = projectFileFor(checkout);
+  const config = file === null ? null : loadCcSmartDevKitConfig(file, pluginVersion);
+  return { ...checkout, config, configFile: config === null ? null : file };
+}
+function gitTimedOut(where) {
+  return { found: false, where, why: GIT_TIMED_OUT2 };
+}
+function refNotKnown(where, ref, read) {
+  if (read.timedOut === true)
+    return gitTimedOut(where);
+  return {
+    found: false,
+    where,
+    why: `${ref} is not known in this repository (no origin, or the branch was never fetched)`
+  };
+}
+function noCommittedFile(where, ref, read) {
+  if (read.timedOut === true)
+    return gitTimedOut(where);
+  return { found: false, where, why: `${ref} has no ${CONFIG_PATH} committed` };
+}
+function unreadableCommitted(where, read) {
+  if (read.timedOut === true)
+    return gitTimedOut(where);
+  return { found: false, where, why: `git could not read ${where}` };
+}
+function committedOf(text, where, options) {
+  return {
+    found: true,
+    where,
+    config: parseCcSmartDevKitConfig(text.stdout, where, options.pluginVersion)
+  };
+}
+function readCommittedConfig(checkout, branch, options = {}) {
+  const ref = `origin/${branch}`;
+  const where = `${ref}:${CONFIG_PATH}`;
+  const git = gitIn(checkout.root, gitEnv(options.env ?? process.env), options.timeoutMs, options.timeFor);
+  const commit = git(["rev-parse", "--verify", "--quiet", `refs/remotes/${ref}^{commit}`]);
+  if (!commit.ok)
+    return refNotKnown(where, ref, commit);
+  const blob = git(["rev-parse", "--verify", "--quiet", `${commit.stdout.trim()}:${CONFIG_PATH}`]);
+  if (!blob.ok)
+    return noCommittedFile(where, ref, blob);
+  const text = git(["cat-file", "blob", blob.stdout.trim()]);
+  if (!text.ok)
+    return unreadableCommitted(where, text);
+  return committedOf(text, where, options);
+}
+async function readCommittedConfigAsync(checkout, branch, options = {}) {
+  const ref = `origin/${branch}`;
+  const where = `${ref}:${CONFIG_PATH}`;
+  const git = gitInAsync(checkout.root, gitEnv(options.env ?? process.env), options.timeoutMs, options.timeFor);
+  const commit = await git(["rev-parse", "--verify", "--quiet", `refs/remotes/${ref}^{commit}`]);
+  if (!commit.ok)
+    return refNotKnown(where, ref, commit);
+  const blob = await git([
+    "rev-parse",
+    "--verify",
+    "--quiet",
+    `${commit.stdout.trim()}:${CONFIG_PATH}`
+  ]);
+  if (!blob.ok)
+    return noCommittedFile(where, ref, blob);
+  const text = await git(["cat-file", "blob", blob.stdout.trim()]);
+  if (!text.ok)
+    return unreadableCommitted(where, text);
+  return committedOf(text, where, options);
+}
+function resolveProject(cwd, options = {}) {
+  const checkout = locateCheckout(cwd, options);
+  return checkout === null ? null : loadProjectConfig(checkout, options.pluginVersion);
+}
+async function resolveProjectAsync(cwd, options = {}) {
+  const checkout = await locateCheckoutAsync(cwd, options);
+  return checkout === null ? null : loadProjectConfig(checkout, options.pluginVersion);
+}
+var init_resolve = __esm(() => {
+  init_config();
+  init_config_facts();
+  init_git_env();
+  init_locate();
+  init_config_facts();
+  init_locate();
+});
+
+// src/setup/launcher.ts
+function bakedBunPath(script) {
+  const match = /^baked_bun=('(?:[^']|'\\'')*')$/m.exec(script);
+  if (!match?.[1])
+    return null;
+  return match[1].slice(1, -1).replaceAll("'\\''", "'");
+}
+function launcherScript(bunPath) {
+  return `#!/bin/sh
+# cc-smart-dev-kit launcher. Written by "cc-smart-dev-kit setup"; setup rewrites it, so do not edit it.
+# It runs the cc-smart-dev-kit command from the installed version of the cc-smart-dev-kit plugin.
+fail() {
+  echo "cc-smart-dev-kit: $1 Run: claude plugin install ${PLUGIN_ID}" >&2
+  exit 1
+}
+baked_bun=${shellQuote(bunPath)}
+if [ -x "$baked_bun" ]; then
+  bun="$baked_bun"
+elif command -v bun >/dev/null 2>&1; then
+  bun=$(command -v bun)
+else
+  echo "cc-smart-dev-kit: bun not found (not at $baked_bun, not on PATH). Install bun, then run: cc-smart-dev-kit setup" >&2
+  exit 1
+fi
+config_dir="\${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+installed="$config_dir/plugins/installed_plugins.json"
+[ -f "$installed" ] || fail "the cc-smart-dev-kit plugin is not installed."
+# The lookup runs in this launcher's own folder (never the person's working folder): bun reads
+# the working folder's bunfig.toml, and a project's preload could print another path \u2014 this
+# very path decides which CLI runs. The plugin's own empty config cannot be used here: it sits
+# in the folder this lookup has yet to find.
+launcher_dir=$HOME/.local/bin
+case $0 in */*) launcher_dir=\${0%/*} ;; esac
+install_path=$(cd "$launcher_dir" && "$bun" -e '${FIND_INSTALL_JS}' -- "$installed" 2>/dev/null) || fail "the cc-smart-dev-kit plugin is not installed."
+[ -n "$install_path" ] || fail "the cc-smart-dev-kit plugin is not installed."
+[ -f "$install_path/dist/cli.js" ] || fail "the cc-smart-dev-kit plugin folder is missing: $install_path."
+# --no-env-file: "cc-smart-dev-kit job run" hands its job exactly the environment it was given.
+# --config: the plugin's own empty config, beside the CLI in the same version folder, so the
+# working folder's bunfig.toml (a project's preload) never runs inside the command. An
+# installed version older than that file (0.2.x, until migrate replaces it) has none: bun
+# refuses a config path that does not exist, so the flag is left out then.
+set -- "$install_path/dist/cli.js" "$@"
+if [ -f "$install_path/bunfig.toml" ]; then
+  set -- "--config=$install_path/bunfig.toml" "$@"
+fi
+exec "$bun" --no-env-file "$@"
+`;
+}
+var LAUNCHER_NAME = "cc-smart-dev-kit", LAUNCHER_IN_SHELL, FIND_INSTALL_JS;
+var init_launcher = __esm(() => {
+  init_build_info();
+  init_write();
+  LAUNCHER_IN_SHELL = `"$HOME/.local/bin/${LAUNCHER_NAME}"`;
+  FIND_INSTALL_JS = [
+    "const f=process.argv[process.argv.length-1];",
+    'const j=JSON.parse(require("fs").readFileSync(f,"utf8"));',
+    `const e=((j&&j.plugins&&j.plugins["${PLUGIN_ID}"])||[]).find(x=>x&&x.scope==="user"&&typeof x.installPath==="string");`,
+    "if(!e)process.exit(1);",
+    "process.stdout.write(e.installPath);"
+  ].join("");
+});
+
+// src/setup/statusline.ts
+import { join as join25 } from "path";
+function statuslineSetting(paths) {
+  return { command: `${shellWord(join25(paths.binDir, LAUNCHER_NAME))} statusline`, type: "command" };
+}
+var STATUSLINE_KEY;
+var init_statusline = __esm(() => {
+  init_launcher();
+  STATUSLINE_KEY = ["statusLine"];
+});
+
+// src/update/state.ts
+import {
+  appendFileSync,
+  existsSync as existsSync20,
+  mkdirSync as mkdirSync8,
+  readdirSync as readdirSync10,
+  readFileSync as readFileSync29,
+  rmSync as rmSync5,
+  statSync as statSync12,
+  writeFileSync as writeFileSync3
+} from "fs";
+import { join as join26 } from "path";
+function updateFiles(stateDir) {
+  return {
+    hold: join26(stateDir, "update-hold"),
+    check: join26(stateDir, "update-check.json"),
+    reported: join26(stateDir, "update-reported"),
+    major: join26(stateDir, "update-major.json"),
+    log: join26(stateDir, "update.log"),
+    lockDir: join26(stateDir, "update"),
+    sessions: join26(stateDir, "sessions")
+  };
+}
+function unreachableSince(check) {
+  if (check?.since === undefined)
+    return null;
+  const inStreak = check.result === "unreachable" || check.result === "checking" || check.result === "failed" && check.detail.startsWith(UNREACHABLE_WORDS);
+  return inStreak ? check.since : null;
+}
+function unreachableCheck(previous, at, nowMs, detail) {
+  const since = unreachableSince(previous) ?? at;
+  const failed = nowMs - Date.parse(since) >= UNREACHABLE_FAILS_AFTER_MS;
+  return {
+    at,
+    detail: `${UNREACHABLE_WORDS}${failed ? ` since ${since}` : ""} (${detail})`,
+    result: failed ? "failed" : "unreachable",
+    since
+  };
+}
+function ensureDir(dir) {
+  mkdirSync8(dir, { recursive: true, mode: 448 });
+}
+function readLastCheck(files) {
+  try {
+    const parsed = JSON.parse(readFileSync29(files.check, "utf8"));
+    if (typeof parsed?.at !== "string" || Number.isNaN(Date.parse(parsed.at)) || !RESULTS.includes(parsed.result) || typeof parsed.detail !== "string") {
+      return null;
+    }
+    const check = {
+      at: parsed.at,
+      detail: parsed.detail,
+      result: parsed.result
+    };
+    if (typeof parsed.since === "string" && !Number.isNaN(Date.parse(parsed.since))) {
+      check.since = parsed.since;
+    }
+    return check;
+  } catch {
+    return null;
+  }
+}
+function writeLastCheck(files, check) {
+  ensureDir(join26(files.check, ".."));
+  atomicWrite(files.check, `${JSON.stringify(check, null, 2)}
+`, 384);
+}
+function isHeld(files) {
+  return existsSync20(files.hold);
+}
+function heldSince(files) {
+  try {
+    const text = readFileSync29(files.hold, "utf8").trim();
+    return text === "" ? "an unknown time" : text;
+  } catch {
+    return null;
+  }
+}
+function hold(files, nowMs) {
+  if (isHeld(files))
+    return false;
+  ensureDir(join26(files.hold, ".."));
+  atomicWrite(files.hold, `${isoSeconds(nowMs)}
+`, 384);
+  return true;
+}
+function resume(files) {
+  if (!isHeld(files))
+    return false;
+  rmSync5(files.hold, { force: true });
+  return true;
+}
+function checkRunning(files) {
+  return lockIsHeld(files.lockDir);
+}
+function isoSeconds(ms) {
+  return `${new Date(ms).toISOString().slice(0, 19)}Z`;
+}
+function appendLogLine(logFile, line, nowMs) {
+  ensureDir(join26(logFile, ".."));
+  try {
+    if (statSync12(logFile).size > LOG_MAX_BYTES) {
+      const text = readFileSync29(logFile, "utf8");
+      const keep = text.slice(text.length - LOG_MAX_BYTES / 2);
+      writeFileSync3(logFile, keep.slice(keep.indexOf(`
+`) + 1), { mode: 384 });
+    }
+  } catch {}
+  appendFileSync(logFile, `${isoSeconds(nowMs)} ${line}
+`, { mode: 384 });
+}
+function readHeldMajor(files) {
+  try {
+    const parsed = JSON.parse(readFileSync29(files.major, "utf8"));
+    if (typeof parsed?.version !== "string" || typeof parsed.at !== "string" || parsed.from !== null && typeof parsed.from !== "string" || !Array.isArray(parsed.notes) || !parsed.notes.every((note) => typeof note === "string")) {
+      return null;
+    }
+    return { at: parsed.at, from: parsed.from, notes: parsed.notes, version: parsed.version };
+  } catch {
+    return null;
+  }
+}
+function clearHeldMajor(files) {
+  rmSync5(files.major, { force: true });
+}
+function readSession2(file) {
+  try {
+    const parsed = JSON.parse(readFileSync29(file, "utf8"));
+    if (typeof parsed?.pid !== "number" || typeof parsed.start !== "string" || typeof parsed.version !== "string") {
+      return null;
+    }
+    return { pid: parsed.pid, start: parsed.start, version: parsed.version };
+  } catch {
+    return null;
+  }
+}
+function isRunning2(session) {
+  return processStartTime(session.pid, session.start) === session.start;
+}
+function runningSessions(files) {
+  let names;
+  try {
+    names = readdirSync10(files.sessions);
+  } catch {
+    return [];
+  }
+  return names.filter((name) => SESSION_FILE.test(name)).map((name) => readSession2(join26(files.sessions, name))).filter((session) => session !== null && isRunning2(session));
+}
+var CHECK_INTERVAL_MS, LOG_MAX_BYTES, RESULTS, UNREACHABLE_FAILS_AFTER_HOURS = 24, UNREACHABLE_FAILS_AFTER_MS, UNREACHABLE_WORDS = "cannot read the marketplace", SESSION_FILE;
+var init_state = __esm(() => {
+  init_lock();
+  init_write();
+  CHECK_INTERVAL_MS = 60 * 60 * 1000;
+  LOG_MAX_BYTES = 256 * 1024;
+  RESULTS = [
+    "checking",
+    "up-to-date",
+    "updated",
+    "skipped",
+    "unreachable",
+    "failed"
+  ];
+  UNREACHABLE_FAILS_AFTER_MS = UNREACHABLE_FAILS_AFTER_HOURS * 60 * 60 * 1000;
+  SESSION_FILE = /^\d+\.json$/;
+});
+
+// src/zod-issues.ts
+function describeIssues(issues) {
+  return issues.map((issue) => {
+    const field = issue.path.length > 0 ? issue.path.join(".") : "(top level)";
+    return issue.code === "unrecognized_keys" ? `${issue.keys.join(", ")}: unknown field` : `${field}: ${issue.message}`;
+  }).join("; ");
+}
+
+// src/workflow/merge.ts
+function current2(value, source) {
+  return { value, source };
+}
+function mergedGroup(personal, project) {
+  if (personal === undefined)
+    return project;
+  if (project === undefined)
+    return personal;
+  return { ...personal, ...project };
+}
+function mergeWorkflows(personal, project) {
+  const merged = { ...personal, ...project };
+  const alerts = mergedGroup(personal.alerts, project.alerts);
+  if (alerts !== undefined)
+    merged.alerts = alerts;
+  const fixes = mergedGroup(personal.fixesAfterReview, project.fixesAfterReview);
+  if (fixes !== undefined)
+    merged.fixesAfterReview = fixes;
+  const issues = mergedGroup(personal.issues, project.issues);
+  if (issues !== undefined)
+    merged.issues = issues;
+  const plans = mergedGroup(personal.plans, project.plans);
+  if (plans !== undefined)
+    merged.plans = plans;
+  return merged;
+}
+function jobRouteFrom(personal, projectConfig) {
+  const project = projectConfig?.jobs?.route;
+  if (project !== undefined)
+    return current2(project, "project");
+  const own = personal.switches?.jobRoute;
+  return own === undefined ? current2(false, "default") : current2(own, "personal");
+}
+function leadHintFrom(personal) {
+  const own = personal.switches?.leadHint;
+  return own === undefined ? current2(LEAD_HINT_DEFAULT, "default") : current2(own, "personal");
+}
+var LEAD_HINT_DEFAULT = true;
+
+// src/workflow/resolve.ts
+import { existsSync as existsSync21, readFileSync as readFileSync30 } from "fs";
+function personalWorkflowFile(paths) {
+  return paths.workflowConfigFile;
+}
+function invalidJson(file, error) {
+  const reason = error instanceof Error ? error.message : String(error);
+  return new WorkflowConfigError(`Invalid ${file}: not valid JSON (${reason})`);
+}
+function parseWorkflowText(text, file) {
+  let raw;
+  try {
+    raw = JSON.parse(text);
+  } catch (error) {
+    throw invalidJson(file, error);
+  }
+  const parsed = personalWorkflowSchema.safeParse(raw);
+  if (!parsed.success) {
+    throw new WorkflowConfigError(`Invalid ${file}: ${describeIssues(parsed.error.issues)}`);
+  }
+  return parsed.data;
+}
+function loadWorkflow(file) {
+  if (!existsSync21(file))
+    return {};
+  let text;
+  try {
+    text = readFileSync30(file, "utf8");
+  } catch (error) {
+    throw invalidJson(file, error);
+  }
+  return parseWorkflowText(text, file);
+}
+function personalWorkflowOrDefault(paths) {
+  try {
+    return loadWorkflow(personalWorkflowFile(paths));
+  } catch {
+    return {};
+  }
+}
+function sourceOf(personal, project, key) {
+  if (workflowValue(project, key) !== undefined)
+    return "project";
+  return workflowValue(personal, key) !== undefined ? "personal" : "default";
+}
+function alertsFrom(personal, project) {
+  const merged = mergeWorkflows(personal, project);
+  const alerts = merged.alerts ?? {};
+  const of = (key, value) => ({
+    value,
+    source: sourceOf(personal, project, key)
+  });
+  return {
+    usagePercent: of("alerts.usagePercent", alerts.usagePercent ?? workflowDefaults.alerts.usagePercent)
+  };
+}
+function plansFrom(personal, project) {
+  const plans = mergeWorkflows(personal, project).plans ?? {};
+  const mergeFiles = project.plans?.mergeFiles;
+  const runMode = personal.plans?.runMode;
+  return {
+    maxPhases: {
+      value: plans.maxPhases ?? workflowDefaults.plans.maxPhases,
+      source: sourceOf(personal, project, "plans.maxPhases")
+    },
+    mergeFiles: mergeFiles === undefined ? current2([...workflowDefaults.plans.mergeFiles], "default") : current2(mergeFiles, "project"),
+    runMode: runMode === undefined ? current2(workflowDefaults.plans.runMode, "default") : current2(runMode, "personal")
+  };
+}
+function resolvePlans(paths, projectConfig) {
+  return plansFrom(loadWorkflow(personalWorkflowFile(paths)), projectConfig?.workflow ?? {});
+}
+function statusLineIsOurs(paths) {
+  try {
+    const parsed = JSON.parse(readFileSync30(paths.settingsFile, "utf8"));
+    if (typeof parsed !== "object" || parsed === null)
+      return false;
+    const statusLine = parsed.statusLine;
+    return Bun.deepEquals(statusLine, statuslineSetting(paths), true);
+  } catch {
+    return false;
+  }
+}
+function projectFlag(value) {
+  return value === undefined ? current2(false, "default") : current2(value, "project");
+}
+function resolveJobRoute(paths, projectConfig) {
+  return jobRouteFrom(personalWorkflowOrDefault(paths), projectConfig);
+}
+function resolveLeadHint(paths) {
+  return leadHintFrom(personalWorkflowOrDefault(paths));
+}
+function sourceLabel(value, branch) {
+  return value.source === "project" && branch !== null ? `project, committed on origin/${branch}` : value.source;
+}
+function resolveGate(paths, checkout, branch, options = {}) {
+  if (branch === null) {
+    return { ok: true, gate: { branch, config: null, resolved: resolveWorkflow(paths, null) } };
+  }
+  let committed;
+  try {
+    committed = readCommittedConfig(checkout, branch, options);
+  } catch (error) {
+    return { ok: false, why: error instanceof Error ? error.message : String(error) };
+  }
+  return gateOfCommitted(paths, branch, committed);
+}
+async function resolveGateAsync(paths, checkout, branch, options = {}) {
+  if (branch === null) {
+    return { ok: true, gate: { branch, config: null, resolved: resolveWorkflow(paths, null) } };
+  }
+  let committed;
+  try {
+    committed = await readCommittedConfigAsync(checkout, branch, options);
+  } catch (error) {
+    return { ok: false, why: error instanceof Error ? error.message : String(error) };
+  }
+  return gateOfCommitted(paths, branch, committed);
+}
+function gateOfCommitted(paths, branch, committed) {
+  if (!committed.found)
+    return { ok: false, why: committed.why };
+  const resolved = resolveWorkflow(paths, committed.config);
+  return { ok: true, gate: { branch, config: committed.config, resolved } };
+}
+function resolveMergeFiles(checkout, base, options = {}) {
+  if (base === null) {
+    return {
+      files: [],
+      reason: "this project names no worktrees.base, so there is no committed copy of plans.mergeFiles to read"
+    };
+  }
+  let committed;
+  try {
+    committed = readCommittedConfig(checkout, base, options);
+  } catch (error) {
+    return { files: [], reason: error instanceof Error ? error.message : String(error) };
+  }
+  if (!committed.found)
+    return { files: [], reason: committed.why };
+  return settleMergeFiles(checkout, base, committed.config.workflow?.plans?.mergeFiles ?? [], options);
+}
+function settleMergeFiles(checkout, base, listed, options = {}) {
+  const files = [];
+  const folders = [];
+  for (const path of listed) {
+    if (!path.endsWith("/") && isFolderOnBase(checkout, base, path, options))
+      folders.push(path);
+    else
+      files.push(path);
+  }
+  if (folders.length === 0)
+    return { files, reason: null };
+  const hints = folders.map((path) => `${path} is a folder: write it ${path}/`);
+  return {
+    files,
+    reason: `plans.mergeFiles on origin/${base} leaves out ${folders.join(", ")} until fixed (${hints.join("; ")})`
+  };
+}
+function isFolderOnBase(checkout, base, path, options) {
+  const kind = runGit(checkout.root, ["cat-file", "-t", `refs/remotes/origin/${base}:${path}`], options.env ?? process.env, options.timeoutMs ?? RESOLVE_GIT_TIMEOUT_MS);
+  return kind.ok && kind.out === "tree";
+}
+function resolvedValueOf(resolved, key) {
+  return RESOLVED[key](resolved);
+}
+function resolveWorkflow(paths, projectConfig) {
+  const personal = loadWorkflow(personalWorkflowFile(paths));
+  const project = projectConfig?.workflow ?? {};
+  const merged = mergeWorkflows(personal, project);
+  const of = (key, value) => ({
+    value,
+    source: sourceOf(personal, project, key)
+  });
+  const fixes = merged.fixesAfterReview ?? {};
+  const issues = merged.issues ?? {};
+  return {
+    allowCommit: of("allowCommit", merged.allowCommit ?? workflowDefaults.allowCommit),
+    allowPush: of("allowPush", merged.allowPush ?? workflowDefaults.allowPush),
+    openPr: of("openPr", merged.openPr ?? workflowDefaults.openPr),
+    allowMerge: of("allowMerge", merged.allowMerge ?? workflowDefaults.allowMerge),
+    mergeMethod: of("mergeMethod", merged.mergeMethod ?? workflowDefaults.mergeMethod),
+    deleteBranch: of("deleteBranch", merged.deleteBranch ?? workflowDefaults.deleteBranch),
+    reviewBeforePush: of("reviewBeforePush", merged.reviewBeforePush ?? workflowDefaults.reviewBeforePush),
+    reviewAgents: of("reviewAgents", merged.reviewAgents ?? [...workflowDefaults.reviewAgents]),
+    fixesAfterReview: {
+      lines: of("fixesAfterReview.lines", fixes.lines ?? workflowDefaults.fixesAfterReview.lines),
+      files: of("fixesAfterReview.files", fixes.files ?? workflowDefaults.fixesAfterReview.files),
+      percent: of("fixesAfterReview.percent", fixes.percent ?? workflowDefaults.fixesAfterReview.percent)
+    },
+    clearWorktreeAfterMerge: of("clearWorktreeAfterMerge", merged.clearWorktreeAfterMerge ?? workflowDefaults.clearWorktreeAfterMerge),
+    issues: {
+      enabled: of("issues.enabled", issues.enabled ?? workflowDefaults.issues.enabled),
+      allowPublic: of("issues.allowPublic", issues.allowPublic ?? workflowDefaults.issues.allowPublic),
+      foundLabel: of("issues.foundLabel", issues.foundLabel ?? workflowDefaults.issues.foundLabel),
+      fixedLabel: of("issues.fixedLabel", issues.fixedLabel ?? workflowDefaults.issues.fixedLabel),
+      readyLabel: of("issues.readyLabel", issues.readyLabel ?? workflowDefaults.issues.readyLabel)
+    },
+    alerts: alertsFrom(personal, project),
+    plans: plansFrom(personal, project),
+    switches: {
+      statusLine: statusLineIsOurs(paths) ? current2(true, "personal") : current2(false, "default"),
+      sessionNames: projectFlag(projectConfig?.sessionNames),
+      jobRoute: jobRouteFrom(personal, projectConfig),
+      updateHold: isHeld(updateFiles(paths.stateDir)) ? current2(true, "personal") : current2(false, "default"),
+      leadHint: leadHintFrom(personal)
+    }
+  };
+}
+var WorkflowConfigError, RESOLVED;
+var init_resolve2 = __esm(() => {
+  init_git();
+  init_resolve();
+  init_statusline();
+  init_state();
+  init_schema();
+  WorkflowConfigError = class WorkflowConfigError extends Error {
+    name = "WorkflowConfigError";
+  };
+  RESOLVED = {
+    allowCommit: (r) => r.allowCommit,
+    allowPush: (r) => r.allowPush,
+    openPr: (r) => r.openPr,
+    allowMerge: (r) => r.allowMerge,
+    mergeMethod: (r) => r.mergeMethod,
+    deleteBranch: (r) => r.deleteBranch,
+    reviewBeforePush: (r) => r.reviewBeforePush,
+    reviewAgents: (r) => r.reviewAgents,
+    "fixesAfterReview.lines": (r) => r.fixesAfterReview.lines,
+    "fixesAfterReview.files": (r) => r.fixesAfterReview.files,
+    "fixesAfterReview.percent": (r) => r.fixesAfterReview.percent,
+    clearWorktreeAfterMerge: (r) => r.clearWorktreeAfterMerge,
+    "issues.enabled": (r) => r.issues.enabled,
+    "issues.allowPublic": (r) => r.issues.allowPublic,
+    "issues.foundLabel": (r) => r.issues.foundLabel,
+    "issues.fixedLabel": (r) => r.issues.fixedLabel,
+    "issues.readyLabel": (r) => r.issues.readyLabel,
+    "alerts.usagePercent": (r) => r.alerts.usagePercent,
+    "plans.maxPhases": (r) => r.plans.maxPhases,
+    "plans.runMode": (r) => r.plans.runMode,
+    "plans.mergeFiles": (r) => r.plans.mergeFiles,
+    "switches.statusLine": (r) => r.switches.statusLine,
+    "switches.sessionNames": (r) => r.switches.sessionNames,
+    "switches.jobRoute": (r) => r.switches.jobRoute,
+    "switches.updateHold": (r) => r.switches.updateHold,
+    "switches.leadHint": (r) => r.switches.leadHint
+  };
+});
+
+// src/setup/bun-config.ts
+import { basename as basename9, join as join46 } from "path";
+function bunConfigPath(pluginDir) {
+  return join46(pluginDir, BUN_CONFIG_NAME);
+}
+function bunConfigArg(pluginDir) {
+  return `--config=${bunConfigPath(pluginDir)}`;
+}
+function pluginFolderBeside(importDir) {
+  return basename9(importDir) === "dist" ? join46(importDir, "..") : join46(importDir, "..", "..", "plugin");
+}
+var BUN_CONFIG_NAME = "bunfig.toml";
+var init_bun_config = () => {};
+
+// src/hooks/attended.ts
+function isAttended(env) {
+  return env.CLAUDE_CODE_SESSION_ATTENDED !== "0";
+}
+
+// src/worktrees/auto-state.ts
+import { createHash as createHash8 } from "crypto";
+import { mkdirSync as mkdirSync20, readFileSync as readFileSync63 } from "fs";
+import { dirname as dirname25, join as join60 } from "path";
+function autoCleanLog(stateDir) {
+  return join60(stateDir, "worktrees-auto-clean.log");
+}
+function autoCleanFiles(stateDir, repo) {
+  const key = createHash8("sha256").update(pathForm(repo)).digest("hex").slice(0, 16);
+  const dir = join60(stateDir, "worktrees-auto-clean");
+  return {
+    log: autoCleanLog(stateDir),
+    result: join60(dir, `${key}.json`),
+    told: join60(dir, `${key}.told.json`)
+  };
+}
+function readJson2(file, schema) {
+  try {
+    const parsed = schema.safeParse(JSON.parse(readFileSync63(file, "utf8")));
+    return parsed.success ? parsed.data : null;
+  } catch {
+    return null;
+  }
+}
+function writeJson(file, value) {
+  mkdirSync20(dirname25(file), { recursive: true, mode: 448 });
+  atomicWrite(file, `${JSON.stringify(value, null, 2)}
+`, 384);
+}
+function readRepoRecord(files) {
+  return readJson2(files.result, recordSchema2);
+}
+function readTold(files) {
+  return readJson2(files.told, toldSchema)?.seq ?? 0;
+}
+function hourlyDue(record, nowMs) {
+  if (record === null)
+    return true;
+  return nowMs - record.lastRunAt >= AUTO_CLEAN_INTERVAL_MS || record.lastRunAt > nowMs + 60000;
+}
+function markTold(files, seq) {
+  if (readTold(files) >= seq)
+    return;
+  writeJson(files.told, { seq });
+}
+function untold(record, told) {
+  return record !== null && record.seq > told && record.removed.length > 0 ? record : null;
+}
+function toldLine(record) {
+  const count = record.removed.length;
+  const shown = record.removed.slice(0, TOLD_NAMES_MAX).map((one) => one.name);
+  const names = count > TOLD_NAMES_MAX ? `${shown.join(", ")} and ${String(count - TOLD_NAMES_MAX)} more` : shown.join(", ");
+  const noun = count === 1 ? "1 finished worktree" : `${String(count)} finished worktrees`;
+  return `${COMMAND} removed ${noun}: ${names} (work on ${record.base})`;
+}
+var AUTO_CLEAN_INTERVAL_MS, TOLD_NAMES_MAX = 8, removedSchema, keptSchema, recordSchema2, toldSchema;
+var init_auto_state = __esm(() => {
+  init_zod();
+  init_names();
+  init_path_compare();
+  init_write();
+  AUTO_CLEAN_INTERVAL_MS = 60 * 60 * 1000;
+  removedSchema = object({
+    branch: string2().nullable(),
+    name: string2(),
+    path: string2(),
+    why: string2()
+  });
+  keptSchema = object({ name: string2(), path: string2(), why: string2() });
+  recordSchema2 = object({
+    base: string2(),
+    kept: array(keptSchema),
+    lastRunAt: number2(),
+    removed: array(removedSchema),
+    repo: string2(),
+    seq: number2()
+  });
+  toldSchema = object({ seq: number2() });
+});
+
+// src/worktrees/auto-start.ts
+import { basename as basename13, join as join61 } from "path";
+function autoCleanOn(context) {
+  return context.project.config?.worktrees?.autoClean !== false;
+}
+function autoCleanEntry(importDir) {
+  return basename13(importDir) === "dist" ? join61(importDir, `${AUTO_CLEAN_BUNDLE}.js`) : join61(importDir, "..", "entries", `${AUTO_CLEAN_BUNDLE}.ts`);
+}
+function autoCleanArgv(bun, entry, pluginDir, repo, trigger, keep) {
+  return [bun, "--no-env-file", bunConfigArg(pluginDir), entry, repo, trigger, keep];
+}
+function startAutoClean(context, repo, trigger, importDir = import.meta.dir) {
+  if (!autoCleanOn(context))
+    return false;
+  if (trigger === "session") {
+    if (!isAttended(context.env))
+      return false;
+    const record = readRepoRecord(autoCleanFiles(context.paths.stateDir, repo));
+    if (!hourlyDue(record, Date.now()))
+      return false;
+  }
+  const argv = autoCleanArgv(process.execPath, autoCleanEntry(importDir), pluginFolderBeside(importDir), repo, trigger, context.cwd);
+  const env = gitEnv(context.env);
+  (context.start ?? startDetached)(process.platform, argv, {
+    cwd: context.paths.home,
+    env,
+    onError: (message) => console.error(`${COMMAND} worktrees clean: ${message}`)
+  });
+  return true;
+}
+function takeToldLine(context, repo) {
+  if (!isAttended(context.env))
+    return null;
+  const files = autoCleanFiles(context.paths.stateDir, repo);
+  const record = untold(readRepoRecord(files), readTold(files));
+  if (record === null)
+    return null;
+  try {
+    markTold(files, record.seq);
+  } catch (error) {
+    console.error(`${COMMAND} worktrees clean: could not mark the removals as told: ${error instanceof Error ? error.message : String(error)}`);
+    return null;
+  }
+  return toldLine(record);
+}
+var AUTO_CLEAN_BUNDLE = "worktrees-clean";
+var init_auto_start = __esm(() => {
+  init_names();
+  init_detached();
+  init_git_env();
+  init_bun_config();
+  init_auto_state();
+});
+
+// src/entries/portal.ts
+import { join as join81 } from "path";
+
+// src/browser/doctor.ts
+init_build_info();
+import { readdirSync as readdirSync4, readFileSync as readFileSync5 } from "fs";
+
+// src/browser/chrome.ts
+init_build_info();
+import { closeSync, existsSync, openSync, readdirSync, readFileSync, readlinkSync } from "fs";
+import { hostname } from "os";
+import { join, posix, win32 } from "path";
+var PLAYWRIGHT_EXTENSION_ID = "mmlmfjhmonkocbjadbfplnigmagldckm";
+var PLAYWRIGHT_EXTENSION_URL = `https://chromewebstore.google.com/detail/playwright-extension/${PLAYWRIGHT_EXTENSION_ID}`;
+var PLAYWRIGHT_EXTENSION_SETTINGS_URL = `chrome://extensions/?id=${PLAYWRIGHT_EXTENSION_ID}`;
+var CLAUDE_CODE_PROFILE = "claude-code";
+var FILE_ACCESS_KEYS = ["newAllowFileAccess", "allowFileAccess"];
+function existsIn(deps) {
+  return deps.exists ?? existsSync;
+}
+function readFileIn(deps) {
+  return deps.readFile ?? ((file) => {
+    try {
+      return readFileSync(file, "utf8");
+    } catch {
+      return null;
+    }
+  });
+}
+function readdirIn(deps) {
+  return deps.readdir ?? ((dir) => {
+    try {
+      return readdirSync(dir);
+    } catch {
+      return [];
+    }
+  });
+}
+function chromeCandidates(platform, home) {
+  if (platform === "darwin") {
+    const app = "Google Chrome.app/Contents/MacOS/Google Chrome";
+    return [`/Applications/${app}`, posix.join(home, "Applications", app)];
+  }
+  if (platform === "win32") {
+    return [
+      "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+      "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
+      win32.join(home, "AppData", "Local", "Google", "Chrome", "Application", "chrome.exe")
+    ];
+  }
+  return ["/opt/google/chrome/chrome", "/usr/bin/google-chrome", "/usr/bin/google-chrome-stable"];
+}
+function findChrome(deps = {}) {
+  const exists = existsIn(deps);
+  const home = deps.home ?? "";
+  const platform = deps.platform ?? process.platform;
+  return chromeCandidates(platform, home).find((path) => exists(path)) ?? null;
+}
+function chromeUserDataDir(platform, home) {
+  if (platform === "darwin")
+    return join(home, "Library", "Application Support", "Google", "Chrome");
+  if (platform === "win32")
+    return win32.join(home, "AppData", "Local", "Google", "Chrome", "User Data");
+  return join(home, ".config", "google-chrome");
+}
+function infoCache(userDataDir, deps = {}) {
+  const text = readFileIn(deps)(join(userDataDir, "Local State"));
+  if (text === null)
+    return [];
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return [];
+  }
+  const cache = parsed?.profile?.info_cache;
+  if (typeof cache !== "object" || cache === null)
+    return [];
+  const entries = [];
+  for (const [dirName, value] of Object.entries(cache)) {
+    const name = value?.name;
+    entries.push({ dirName, name: typeof name === "string" ? name : null });
+  }
+  return entries;
+}
+function findClaudeCodeProfile(userDataDir, deps = {}) {
+  const cache = infoCache(userDataDir, deps);
+  const nameOf = (dirName) => cache.find((entry) => entry.dirName === dirName)?.name ?? null;
+  const directory = join(userDataDir, CLAUDE_CODE_PROFILE);
+  if (existsIn(deps)(directory)) {
+    return {
+      dir: directory,
+      dirName: CLAUDE_CODE_PROFILE,
+      displayName: nameOf(CLAUDE_CODE_PROFILE),
+      found: "directory"
+    };
+  }
+  const named = cache.find((entry) => entry.name === CLAUDE_CODE_PROFILE);
+  if (named !== undefined && existsIn(deps)(join(userDataDir, named.dirName))) {
+    return {
+      dir: join(userDataDir, named.dirName),
+      dirName: named.dirName,
+      displayName: named.name,
+      found: "local-state"
+    };
+  }
+  return null;
+}
+function claudeCodeProfileOn(deps) {
+  const userDataDir = chromeUserDataDir(deps.platform, deps.home);
+  return userDataDir === null ? null : findClaudeCodeProfile(userDataDir, deps);
+}
+function profileNameIn(profileDir, deps = {}) {
+  const text = readFileIn(deps)(join(profileDir, "Preferences"));
+  if (text === null)
+    return null;
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  const name = parsed?.profile?.name;
+  return typeof name === "string" ? name : null;
+}
+function extensionIds(profileDir, deps) {
+  return readdirIn(deps)(join(profileDir, "Extensions"));
+}
+function extensionRecord(profileDir, id, deps) {
+  const read = readFileIn(deps);
+  for (const fileName of ["Preferences", "Secure Preferences"]) {
+    const text = read(join(profileDir, fileName));
+    if (text === null)
+      continue;
+    let parsed;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      continue;
+    }
+    const settings = parsed?.extensions?.settings;
+    if (typeof settings !== "object" || settings === null)
+      continue;
+    const record = settings[id];
+    if (typeof record === "object" && record !== null && Object.keys(record).length > 0) {
+      return record;
+    }
+  }
+  return null;
+}
+function isExtensionInstalledInProfile(profileDir, deps = {}) {
+  if (extensionIds(profileDir, deps).includes(PLAYWRIGHT_EXTENSION_ID))
+    return true;
+  return extensionRecord(profileDir, PLAYWRIGHT_EXTENSION_ID, deps) !== null;
+}
+function extensionVersion(profileDir, deps = {}) {
+  const folder = join(profileDir, "Extensions", PLAYWRIGHT_EXTENSION_ID);
+  const versions = readdirIn(deps)(folder).filter((name) => name !== "_metadata");
+  return versions.sort().at(-1) ?? null;
+}
+var EXTENSIONS_METADATA = "_metadata";
+var EXTENSION_ID = /^[a-p]{32}$/;
+function isChromesOwnExtension(record) {
+  if (record.was_installed_by_default === true)
+    return true;
+  const location = record.location;
+  return location === 5 || location === 10;
+}
+function installedExtensionVersion(profileDir, id, deps = {}) {
+  if (!EXTENSION_ID.test(id))
+    return null;
+  const read = readFileIn(deps);
+  const versions = readdirIn(deps)(join(profileDir, "Extensions", id)).filter((name) => name !== EXTENSIONS_METADATA).sort().reverse();
+  for (const version of versions) {
+    const manifest = read(join(profileDir, "Extensions", id, version, "manifest.json"));
+    if (manifest === null)
+      continue;
+    try {
+      JSON.parse(manifest);
+      return version;
+    } catch {}
+  }
+  return null;
+}
+function extensionName(profileDir, id, version, deps = {}) {
+  const read = readFileIn(deps);
+  const folder = join(profileDir, "Extensions", id, version);
+  let manifest = null;
+  try {
+    manifest = JSON.parse(read(join(folder, "manifest.json")) ?? "");
+  } catch {
+    return id;
+  }
+  const raw = typeof manifest?.name === "string" ? manifest.name : "";
+  const locale = typeof manifest?.default_locale === "string" ? manifest.default_locale : "";
+  const placeholder = /^__MSG_(.+)__$/.exec(raw);
+  if (placeholder === null)
+    return raw.trim() === "" ? id : raw.trim();
+  const key = placeholder[1] ?? "";
+  const locales = readdirIn(deps)(join(folder, "_locales")).filter((name) => name !== EXTENSIONS_METADATA);
+  const order = [locale, "en", "en_US", ...locales].filter((name) => name !== "");
+  for (const name of order) {
+    let messages = null;
+    try {
+      messages = JSON.parse(read(join(folder, "_locales", name, "messages.json")) ?? "");
+    } catch {
+      continue;
+    }
+    const entry = messages?.[key];
+    const message = entry?.message;
+    if (typeof message === "string" && message.trim() !== "")
+      return message.trim();
+  }
+  return id;
+}
+function otherExtensions(profileDir, deps = {}) {
+  const found = [];
+  for (const id of extensionIds(profileDir, deps)) {
+    if (id === PLAYWRIGHT_EXTENSION_ID || !EXTENSION_ID.test(id))
+      continue;
+    const version = installedExtensionVersion(profileDir, id, deps);
+    if (version === null)
+      continue;
+    const record = extensionRecord(profileDir, id, deps);
+    if (record !== null && isChromesOwnExtension(record))
+      continue;
+    found.push({ id, name: extensionName(profileDir, id, version, deps) });
+  }
+  return found;
+}
+function allowsFileUrls(profileDir, deps = {}) {
+  const read = readFileIn(deps);
+  let readAny = false;
+  for (const fileName of ["Preferences", "Secure Preferences"]) {
+    const text = read(join(profileDir, fileName));
+    if (text === null)
+      continue;
+    readAny = true;
+    let parsed;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      continue;
+    }
+    const settings = parsed?.extensions?.settings;
+    if (typeof settings !== "object" || settings === null)
+      continue;
+    const record = settings[PLAYWRIGHT_EXTENSION_ID];
+    if (typeof record !== "object" || record === null)
+      continue;
+    for (const key of FILE_ACCESS_KEYS) {
+      if (record[key] === true)
+        return true;
+    }
+  }
+  return readAny ? false : null;
+}
+function isAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0)
+    return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error instanceof Error && "code" in error && String(error.code) === "EPERM";
+  }
+}
+function chromeMayBeRunning(userDataDir, platform, deps = {}) {
+  if (platform === "win32") {
+    const open = deps.openLockfile ?? ((file) => {
+      closeSync(openSync(file, "r+"));
+    });
+    try {
+      open(join(userDataDir, "lockfile"));
+      return false;
+    } catch (error) {
+      const code = error instanceof Error && "code" in error ? String(error.code) : "";
+      return code !== "ENOENT";
+    }
+  }
+  const readlink = deps.readlink ?? ((path) => {
+    try {
+      return readlinkSync(path);
+    } catch {
+      return null;
+    }
+  });
+  const target = readlink(join(userDataDir, "SingletonLock"));
+  if (target === null)
+    return false;
+  const cut = target.lastIndexOf("-");
+  const host = target.slice(0, cut);
+  const pid = Number(target.slice(cut + 1));
+  const alive = (deps.isAlive ?? isAlive)(pid);
+  const here = host === (deps.hostname ?? hostname)();
+  return !(here && !alive);
+}
+
+// src/browser/legacy.ts
+import { existsSync as existsSync2, readdirSync as readdirSync2, readFileSync as readFileSync2 } from "fs";
+import { join as join4 } from "path";
+
+// src/cli/paths.ts
+init_names();
+import { join as join3, sep } from "path";
+
+// src/gateway/paths.ts
+import { homedir } from "os";
+import { join as join2 } from "path";
+function homeDir(env = process.env) {
+  if (env.HOME)
+    return env.HOME;
+  if (hostPlatform(env) === "win32" && env.USERPROFILE)
+    return env.USERPROFILE;
+  return homedir();
+}
+function routerPaths(env = process.env) {
+  const home = homeDir(env);
+  return {
+    home,
+    gatewayConfigFile: join2(home, ".config", "cc-smart-dev-kit", "gateway.json"),
+    gatewayStateFile: join2(home, ".local", "state", "cc-smart-dev-kit", "gateway-state.json"),
+    safetyChecksFile: join2(home, ".local", "state", "cc-smart-dev-kit", "safety-checks.json"),
+    historyDbFile: join2(home, ".local", "state", "cc-smart-dev-kit", "history.db")
+  };
+}
+
+// src/cli/paths.ts
+function userConfigFile(env, home) {
+  const dir = env.CLAUDE_CONFIG_DIR;
+  return dir ? join3(dir, ".claude.json") : join3(home, ".claude.json");
+}
+function cliPaths(env = process.env) {
+  if (env === null || typeof env !== "object" || Array.isArray(env)) {
+    throw new TypeError(`cliPaths takes an environment object (like process.env), not ${env === null ? "null" : Array.isArray(env) ? "an array" : typeof env}`);
+  }
+  const router = routerPaths(env);
+  const claudeConfigDir = env.CLAUDE_CONFIG_DIR || join3(router.home, ".claude");
+  return {
+    ...router,
+    claudeConfigDir,
+    settingsFile: join3(claudeConfigDir, "settings.json"),
+    installedPluginsFile: join3(claudeConfigDir, "plugins", "installed_plugins.json"),
+    pluginCacheDir: join3(claudeConfigDir, "plugins", "cache", MARKETPLACE, PLUGIN),
+    knownMarketplacesFile: join3(claudeConfigDir, "plugins", "known_marketplaces.json"),
+    projectsDir: join3(claudeConfigDir, "projects"),
+    userConfigFile: userConfigFile(env, router.home),
+    binDir: join3(router.home, ".local", "bin"),
+    stateDir: join3(claudeConfigDir, "cc-smart-dev-kit"),
+    dataDir: join3(router.home, ".local", "share", "cc-smart-dev-kit"),
+    browserOutputDir: join3(router.home, ".local", "share", "cc-smart-dev-kit", "playwright-output"),
+    browserTokenFile: join3(router.home, ".config", "cc-smart-dev-kit", "playwright-extension.token"),
+    routerCopy: join3(router.home, ".local", "share", "cc-smart-dev-kit", "router.js"),
+    routerTaskFile: join3(router.home, ".local", "share", "cc-smart-dev-kit", "router-task.xml"),
+    portalCopy: join3(router.home, ".local", "share", "cc-smart-dev-kit", "portal.js"),
+    portalUiFolder: join3(router.home, ".local", "share", "cc-smart-dev-kit", "portal-ui"),
+    gitHooksFolder: join3(router.home, ".local", "share", "cc-smart-dev-kit", "git-hooks"),
+    portalProjectsFile: join3(claudeConfigDir, "cc-smart-dev-kit", "portal-projects.json"),
+    portalLogFile: join3(claudeConfigDir, "cc-smart-dev-kit", "portal.log"),
+    portalHeldFile: join3(claudeConfigDir, "cc-smart-dev-kit", "portal-held.json"),
+    omnirouteStateFile: join3(claudeConfigDir, "cc-smart-dev-kit", "omniroute.json"),
+    routerUnitFile: join3(router.home, ".config", "systemd", "user", "cc-smart-dev-kit-router.service"),
+    claudeMemSettingsFile: join3(claudeMemDataDir(env, router.home), "settings.json"),
+    routerSocketFile: join3(router.home, ".config", "systemd", "user", "cc-smart-dev-kit-router.socket"),
+    workflowConfigFile: join3(router.home, ".config", "cc-smart-dev-kit", "workflow.json"),
+    machinesFile: join3(router.home, ".config", "cc-smart-dev-kit", "machines.json"),
+    tmuxConfFile: join3(router.home, ".tmux.conf"),
+    tavilyKeyFile: join3(claudeConfigDir, "cc-smart-dev-kit", "tavily.key")
+  };
+}
+function claudeMemDataDir(env, home) {
+  const dir = env.CLAUDE_MEM_DATA_DIR;
+  if (!dir)
+    return join3(home, ".claude-mem");
+  if (dir === "~")
+    return home;
+  return dir.startsWith("~/") ? join3(home, dir.slice(2)) : dir;
+}
+function tildify(path, home) {
+  const rest = path.slice(home.length);
+  return path === home || path.startsWith(home) && (rest.startsWith("/") || rest.startsWith(sep)) ? `~${rest}` : path;
+}
+
+// src/browser/legacy.ts
+var LEGACY_PROFILE_NAME = "playwright";
+var LEGACY_PICKER_NAME = "playwright-picker.js";
+function legacyBrowserPaths(paths) {
+  return {
+    picker: join4(paths.dataDir, LEGACY_PICKER_NAME),
+    profile: join4(paths.dataDir, LEGACY_PROFILE_NAME)
+  };
+}
+function processCommandLines(platform, run) {
+  if (platform === "linux")
+    return linuxProcessCommandLines();
+  if (platform === "darwin") {
+    return run === undefined ? null : parsedLines(run(PROCESS_LIST_ARGV.darwin));
+  }
+  if (platform === "win32") {
+    return run === undefined ? null : parsedLines(run(PROCESS_LIST_ARGV.win32));
+  }
+  return null;
+}
+async function processCommandLinesAsync(platform, run) {
+  if (platform === "linux")
+    return linuxProcessCommandLines();
+  if (platform === "darwin")
+    return parsedLines(await run(PROCESS_LIST_ARGV.darwin));
+  if (platform === "win32")
+    return parsedLines(await run(PROCESS_LIST_ARGV.win32));
+  return null;
+}
+function parsedLines(result) {
+  if (result.exitCode !== 0)
+    return null;
+  const processes = [];
+  for (const line of result.output.split(/\r?\n/)) {
+    const text = line.trim();
+    if (text === "")
+      continue;
+    const space = text.indexOf(" ");
+    if (space === -1)
+      continue;
+    const pid = Number(text.slice(0, space));
+    const command = text.slice(space + 1).trim();
+    if (Number.isInteger(pid) && pid > 0 && command !== "")
+      processes.push({ command, pid });
+  }
+  return processes;
+}
+var WINDOWS_LIST = "[Console]::OutputEncoding = [Text.Encoding]::UTF8; " + "Get-CimInstance Win32_Process | Where-Object CommandLine | " + 'ForEach-Object { "$($_.ProcessId) $($_.CommandLine)" }';
+var PROCESS_LIST_ARGV = {
+  darwin: ["ps", "-ww", "-axo", "pid=,command="],
+  win32: ["powershell", "-NoProfile", "-NonInteractive", "-Command", WINDOWS_LIST]
+};
+function linuxProcessCommandLines() {
+  let names;
+  try {
+    names = readdirSync2("/proc");
+  } catch {
+    return null;
+  }
+  const processes = [];
+  for (const name of names) {
+    if (!/^\d+$/.test(name))
+      continue;
+    try {
+      const args = readFileSync2(join4("/proc", name, "cmdline")).toString("utf8").split("\x00").filter((arg) => arg !== "");
+      if (args.length > 0)
+        processes.push({ command: args.join(" "), pid: Number(name) });
+    } catch {}
+  }
+  return processes;
+}
+var USER_DATA_DIR = "--user-data-dir=";
+function namesLegacyProfile(command, profile) {
+  const plain = command.replace(/["']/g, "");
+  const wanted = `${USER_DATA_DIR}${profile}`;
+  for (let at = plain.indexOf(wanted);at !== -1; at = plain.indexOf(wanted, at + 1)) {
+    const after = plain[at + wanted.length];
+    if (after === undefined || after === " ")
+      return true;
+  }
+  return false;
+}
+function removeCommand(paths, platform) {
+  return platform === "win32" ? `Remove-Item -Recurse -Force ${paths.map((path) => `'${path}'`).join(",")}` : `rm -rf ${paths.join(" ")}`;
+}
+function killCommand(pid, platform) {
+  return platform === "win32" ? `taskkill /PID ${String(pid)} /F` : `kill ${String(pid)}`;
+}
+function leftoverLine(profile, picker, platform, home) {
+  const shown = (path) => tildify(path, home);
+  const andPicker = picker === null ? "" : `, and its file picker is at ${shown(picker)} (harmless on its own)`;
+  const it = picker === null ? "it" : "them";
+  return `the 0.3.0 shared browser's profile is still at ${shown(profile)} and may hold sign-ins${andPicker}. ` + `Nothing reads ${it} now. Delete ${it} yourself when you no longer need the sign-ins: ` + removeCommand((picker === null ? [profile] : [profile, picker]).map((path) => shown(path)), platform);
+}
+function runningLine(first, others, profile, platform, home) {
+  const pids = [first, ...others];
+  const named = pids.map((pid) => String(pid)).join(", ");
+  return `the 0.3.0 shared Chrome is still running (pid${pids.length === 1 ? "" : "s"} ${named}, ` + `--user-data-dir=${tildify(profile, home)}). Its debug port has no password, so any program ` + `on this machine can drive that signed-in browser: close it (every window; a headless one ` + `has none), or run: ${killCommand(first, platform)}`;
+}
+function unknownLine(profile, home) {
+  return `cannot read this machine's process list, so whether the 0.3.0 shared Chrome is still running ` + `with --user-data-dir=${tildify(profile, home)} is unknown: if that Chrome is open, close it`;
+}
+function legacyBrowserLeftovers(paths, exists = existsSync2) {
+  const { picker, profile } = legacyBrowserPaths(paths);
+  return exists(profile) || exists(picker);
+}
+function legacyBrowserFacts(paths, deps) {
+  const exists = deps.exists ?? existsSync2;
+  if (!legacyBrowserLeftovers(paths, exists))
+    return [];
+  const { picker, profile } = legacyBrowserPaths(paths);
+  const profileThere = exists(profile);
+  const pickerThere = exists(picker);
+  const facts = [];
+  if (profileThere) {
+    facts.push({
+      kind: "warn",
+      text: leftoverLine(profile, pickerThere ? picker : null, deps.platform, paths.home)
+    });
+  }
+  const listing = (deps.processes ?? (() => processCommandLines(deps.platform, deps.run)))();
+  if (listing === null) {
+    facts.push({ kind: "info", text: unknownLine(profile, paths.home) });
+    return facts;
+  }
+  const pids = listing.filter((process2) => !process2.command.includes("--type=")).filter((process2) => namesLegacyProfile(process2.command, profile)).map((process2) => process2.pid);
+  const [first, ...others] = pids;
+  if (first !== undefined) {
+    facts.push({
+      kind: "warn",
+      text: runningLine(first, others, profile, deps.platform, paths.home)
+    });
+  }
+  return facts;
+}
+
+// src/browser/token.ts
+init_build_info();
+import { existsSync as existsSync4, mkdirSync as mkdirSync2, readFileSync as readFileSync4, statSync as statSync2, unlinkSync as unlinkSync2 } from "fs";
+import { dirname as dirname2 } from "path";
+
+// src/cli/secret-line.ts
+var PASTE_START = "\x1B[200~";
+var PASTE_END = "\x1B[201~";
+var CONTROL = /[\p{Cc}\p{Cf}]/gu;
+function cleanSecretLine(text) {
+  return text.replaceAll(PASTE_START, "").replaceAll(PASTE_END, "").replace(CONTROL, "").trim();
+}
+
+// src/browser/token.ts
+init_file_mode();
+init_write();
+var BROWSER_TOKEN_ENV = "PLAYWRIGHT_MCP_EXTENSION_TOKEN";
+var TOKEN_LINE_PREFIX = `${BROWSER_TOKEN_ENV}=`;
+var TOKEN_SHAPE = /^[A-Za-z0-9_-]{43}$/;
+function isBrowserToken(token) {
+  return TOKEN_SHAPE.test(token);
+}
+function parseBrowserToken(pasted) {
+  let text = cleanSecretLine(pasted);
+  if (text.startsWith(TOKEN_LINE_PREFIX))
+    text = text.slice(TOKEN_LINE_PREFIX.length).trim();
+  if (text === "") {
+    return {
+      ok: false,
+      why: "nothing was pasted. Copy the token from the extension's status page"
+    };
+  }
+  if (!isBrowserToken(text)) {
+    return {
+      ok: false,
+      why: `that is not the Playwright extension's token (${String(text.length)} characters; its ` + `own token is exactly 43 letters, digits, "-" and "_"). Open the extension's status ` + `page and press Copy, then paste the whole line`
+    };
+  }
+  return { ok: true, token: text };
+}
+function readBrowserToken(paths, deps = {}, platform = hostPlatform()) {
+  const exists = deps.exists ?? existsSync4;
+  const read = deps.read ?? ((file) => {
+    try {
+      return { mode: statSync2(file).mode & 4095, text: readFileSync4(file, "utf8") };
+    } catch {
+      return null;
+    }
+  });
+  if (!exists(paths.browserTokenFile)) {
+    return {
+      source: "none",
+      reason: `no token file at ${paths.browserTokenFile}`
+    };
+  }
+  let file;
+  try {
+    file = read(paths.browserTokenFile);
+  } catch (error) {
+    return {
+      source: "none",
+      reason: `${paths.browserTokenFile} cannot be read (${error instanceof Error ? error.message : String(error)})`
+    };
+  }
+  if (file === null) {
+    return {
+      source: "none",
+      reason: `${paths.browserTokenFile} cannot be read; run \`${COMMAND} browser token\` again`
+    };
+  }
+  if (!isOwnerOnly(file.mode, platform)) {
+    return {
+      source: "none",
+      reason: `${paths.browserTokenFile} is readable by others (mode ${file.mode.toString(8)}): ` + `run \`chmod 600 ${paths.browserTokenFile}\`, then start a new session`
+    };
+  }
+  const value = file.text.trim();
+  if (value === "") {
+    return {
+      source: "none",
+      reason: `${paths.browserTokenFile} is empty; write the token into it`
+    };
+  }
+  if (!isBrowserToken(value)) {
+    return {
+      source: "none",
+      reason: `${paths.browserTokenFile} does not hold the extension's token: run ` + `\`${COMMAND} browser token\` again and paste it from the extension's status page`
+    };
+  }
+  return { source: "file", value };
+}
+function tokenProtection(platform = hostPlatform()) {
+  return platform === "win32" ? "your user profile's permissions keep it yours" : "mode 600";
+}
+function tokenSavedLine(file, platform = hostPlatform()) {
+  return `+ ${file}: the browser token is set (${tokenProtection(platform)})`;
+}
+function writeBrowserToken(paths, token) {
+  mkdirSync2(dirname2(paths.browserTokenFile), { mode: 448, recursive: true });
+  atomicWrite(paths.browserTokenFile, `${token}
+`, 384);
+}
+
+// src/browser/doctor.ts
+var SETUP_COMMAND = `${COMMAND} browser setup`;
+var TOKEN_COMMAND = `${COMMAND} browser token`;
+function line(check) {
+  return { ...check, group: "browser" };
+}
+function realBrowserDoctorDeps(machine, home) {
+  return {
+    exists: machine.exists,
+    home,
+    platform: machine.platform,
+    readdir: (dir) => {
+      try {
+        return readdirSync4(dir);
+      } catch {
+        return [];
+      }
+    },
+    readFile: (file) => {
+      try {
+        return readFileSync5(file, "utf8");
+      } catch {
+        return null;
+      }
+    },
+    run: machine.run
+  };
+}
+function browserChecks(paths, deps) {
+  return [...prerequisiteChecks(paths, deps), ...legacyChecks(paths, deps)];
+}
+function prerequisiteChecks(paths, deps) {
+  const chrome = findChrome(deps);
+  if (chrome === null) {
+    return [
+      line({
+        ok: false,
+        text: `Google Chrome is not installed where ${COMMAND} looks (${chromeCandidates(deps.platform, deps.home).join(", ")})`,
+        fix: `install Google Chrome, then run: ${SETUP_COMMAND}`
+      })
+    ];
+  }
+  const checks = [line({ ok: true, text: `Google Chrome is at ${chrome}` })];
+  const userDataDir = chromeUserDataDir(deps.platform, deps.home);
+  if (userDataDir === null) {
+    checks.push(line({
+      info: true,
+      ok: true,
+      text: `this system's Chrome profile folder is not one cc-smart-dev-kit knows: the browser's checks stop here (${SETUP_COMMAND} says what to pass)`
+    }));
+    return checks;
+  }
+  const profile = findClaudeCodeProfile(userDataDir, deps);
+  if (profile === null) {
+    checks.push(line({
+      ok: false,
+      text: `the Chrome profile "${CLAUDE_CODE_PROFILE}" is not in ${userDataDir}`,
+      fix: SETUP_COMMAND
+    }));
+    return checks;
+  }
+  const how = profile.found === "directory" ? "its folder" : "the name in Chrome's profile list";
+  checks.push(line({
+    ok: true,
+    text: `the Chrome profile "${CLAUDE_CODE_PROFILE}" is at ${profile.dir} (found by ${how})`
+  }));
+  checks.push(chromeMayBeRunning(userDataDir, deps.platform, deps) ? line({
+    ok: true,
+    info: true,
+    text: "Google Chrome is running: the browser connects to it"
+  }) : line({
+    ok: true,
+    info: true,
+    text: `Google Chrome is not running: the first browser call starts it in the "${profile.dirName}" profile`
+  }));
+  const installed = isExtensionInstalledInProfile(profile.dir, deps);
+  const version = installed ? extensionVersion(profile.dir, deps) : null;
+  checks.push(installed ? line({
+    ok: true,
+    text: `the Playwright extension${version === null ? "" : ` ${version}`} is installed in that profile`
+  }) : line({
+    ok: false,
+    text: `the Playwright extension is not installed in the "${CLAUDE_CODE_PROFILE}" profile`,
+    fix: `${SETUP_COMMAND}, then click "Add to Chrome" on ${PLAYWRIGHT_EXTENSION_URL}`
+  }));
+  const others = otherExtensions(profile.dir, deps);
+  checks.push(others.length === 0 ? line({ ok: true, text: "no other extension is in that profile" }) : line({
+    ok: true,
+    warn: true,
+    text: `${String(others.length)} other extension${others.length === 1 ? "" : "s"} in the ` + `"${CLAUDE_CODE_PROFILE}" profile (${others.map((one) => `${one.name} [${one.id}]`).join(", ")}): ` + `one that injects into pages breaks a browser session (microsoft/playwright#43230, open)`,
+    fix: "remove it from that profile: chrome://extensions"
+  }));
+  if (installed) {
+    const fileUrls = allowsFileUrls(profile.dir, deps);
+    checks.push(fileUrls === true ? line({ ok: true, text: "that profile lets the extension open file:// pages" }) : fileUrls === false ? line({
+      ok: false,
+      text: `the "${CLAUDE_CODE_PROFILE}" profile does not let the extension open file:// pages`,
+      fix: `open ${PLAYWRIGHT_EXTENSION_SETTINGS_URL} in that profile and switch on "Allow access to file URLs"`
+    }) : line({
+      info: true,
+      ok: true,
+      text: `cannot read the profile's Preferences to check the file:// setting: open ` + `${PLAYWRIGHT_EXTENSION_SETTINGS_URL} in that profile and make sure "Allow access ` + `to file URLs" is on`
+    }));
+  }
+  const token = readBrowserToken(paths, deps, deps.platform);
+  checks.push(token.source === "file" ? line({
+    ok: true,
+    text: `the browser token is set (${paths.browserTokenFile}, ${tokenProtection(deps.platform)})`
+  }) : line({
+    ok: false,
+    text: `the browser token is not set, so the browser cannot connect (${token.reason})`,
+    fix: `${SETUP_COMMAND}, then ${TOKEN_COMMAND}`
+  }));
+  return checks;
+}
+function legacyChecks(paths, deps) {
+  return legacyBrowserFacts(paths, deps).map((fact) => fact.kind === "warn" ? line({ ok: true, text: fact.text, warn: true }) : line({ info: true, ok: true, text: fact.text }));
+}
+
+// src/entries/portal.ts
+init_build_info();
+
+// src/build-info/semver.ts
+function isOlder(a, b) {
+  if (b === null)
+    return false;
+  if (a === null)
+    return true;
+  try {
+    return Bun.semver.order(a, b) < 0;
+  } catch {
+    return false;
+  }
+}
+
+// src/gateway/config.ts
+init_zod();
+init_file_mode();
+init_write();
+import { createHash } from "crypto";
+import { mkdirSync as mkdirSync4, readFileSync as readFileSync6, statSync as statSync4 } from "fs";
+import { dirname as dirname4 } from "path";
+
 // src/gateway/history.ts
+init_file_mode();
 import { Database } from "bun:sqlite";
 import { mkdirSync as mkdirSync3, statSync as statSync3 } from "fs";
 import { dirname as dirname3 } from "path";
@@ -7975,6 +13166,8 @@ function backendFetch(url, init, fetchImpl = (target, options) => fetch(target, 
 }
 
 // src/gateway/router.ts
+init_names();
+init_write();
 import { mkdirSync as mkdirSync5, readFileSync as readFileSync8 } from "fs";
 import { dirname as dirname5 } from "path";
 
@@ -8357,7 +13550,11 @@ async function probeModel(options) {
   }
 }
 
+// src/gateway/breaker.ts
+init_names();
+
 // src/gateway/limit-state.ts
+init_zod();
 var NO_RESET_FRESH_MS = 15 * 60000;
 var limitSchema = object({
   claim: string2().nullable(),
@@ -8578,6 +13775,7 @@ function breakerStatusLines(value, nowMs) {
 }
 
 // src/gateway/checks-down.ts
+init_names();
 import { readFileSync as readFileSync7 } from "fs";
 function checksDownNow(statePath, nowMs) {
   try {
@@ -9168,6 +14366,7 @@ function serveUnix(path, fetch2) {
 }
 
 // src/gateway/refusal.ts
+init_names();
 var REFUSAL_STATUS = 424;
 var LENGTH_REFUSAL = /too long|too large|too many tokens|token limit|exceeds? (?:the |this )?(?:model'?s? )?(?:maximum )?(?:context|token)|(?:maximum|max) context|context (?:length|window|limit)/i;
 function isLengthRefusal(reason) {
@@ -9187,6 +14386,7 @@ function backendRefusal(label, status, reason) {
 }
 
 // src/gateway/safety-checks.ts
+init_zod();
 var SAFETY_CHECK_DAYS = 30;
 var countSchema = object({
   cacheRead: number2(),
@@ -9429,6 +14629,7 @@ class AnswerUsageReader {
 }
 
 // src/gateway/server-tools.ts
+init_names();
 import { randomUUID as randomUUID2 } from "crypto";
 
 // src/mcp/names.ts
@@ -11722,88 +16923,11 @@ async function waitForRouter(port, probe, waitMs = 5000) {
   }
 }
 
-// src/hooks/detached.ts
-import { spawn } from "child_process";
-var CMD = "cmd";
-var CMD_ARGUMENTS = ["/d", "/s", "/v:off", "/c"];
-function unableInCmd(argument) {
-  if (argument.includes('"'))
-    return 'a " would end the quoted argument';
-  if (argument.includes("%"))
-    return "a % is read as a variable name, inside double quotes too";
-  if (/[\r\n]/.test(argument))
-    return "a line break ends the command line";
-  if (argument.includes("\x00"))
-    return "a NUL ends the command line";
-  return null;
-}
-function cmdArgument(argument) {
-  const reason = unableInCmd(argument);
-  if (reason !== null)
-    return { ok: false, reason };
-  const trailing = /\\+$/.exec(argument)?.[0] ?? "";
-  const kept = argument.slice(0, argument.length - trailing.length);
-  return { ok: true, text: `"${kept}${trailing}${trailing}"` };
-}
-function windowsStart(argv) {
-  return cmdLine('start "" /b ', argv);
-}
-function windowsRun(argv) {
-  return cmdLine("", argv);
-}
-function cmdLine(head, argv) {
-  if (argv[0] === undefined) {
-    return { argument: "", ok: false, reason: "there is no program to start" };
-  }
-  const quoted = [];
-  for (const argument of argv) {
-    const one = cmdArgument(argument);
-    if (!one.ok)
-      return { argument, ok: false, reason: one.reason };
-    quoted.push(one.text);
-  }
-  return { argv: [CMD, ...CMD_ARGUMENTS, `"${head}${quoted.join(" ")}"`], ok: true };
-}
-function forMessage(argument) {
-  return argument.replace(/[\r\n]/g, " ").replaceAll("\x00", " ");
-}
-function startDetached(platform, argv, options) {
-  const [file, ...args] = argv;
-  if (file === undefined)
-    return;
-  const where = {
-    ...options.cwd !== undefined && { cwd: options.cwd },
-    ...options.env !== undefined && { env: options.env }
-  };
-  try {
-    if (platform === "win32") {
-      const start = windowsStart(argv);
-      if (!start.ok) {
-        options.onError(`cannot run "${forMessage(start.argument)}" through cmd.exe: ${start.reason}; nothing was started`);
-        return;
-      }
-      const result = Bun.spawnSync(start.argv, {
-        ...where,
-        stdin: "ignore",
-        stdout: "ignore",
-        stderr: "ignore",
-        windowsHide: true,
-        windowsVerbatimArguments: true
-      });
-      const exitCode = result.exitCode ?? 1;
-      if (exitCode !== 0)
-        options.onError(`cmd /d /s /c start failed (exit ${exitCode})`);
-      return;
-    }
-    const child = spawn(file, args, { ...where, detached: true, stdio: "ignore" });
-    child.on("error", (error) => options.onError(error.message));
-    child.unref();
-  } catch (error) {
-    options.onError(error instanceof Error ? error.message : String(error));
-  }
-}
+// src/entries/portal.ts
+init_detached();
 
 // src/jobs/limits.ts
+init_names();
 import { spawnSync } from "child_process";
 import { readdirSync as readdirSync5, readFileSync as readFileSync14 } from "fs";
 import { cpus } from "os";
@@ -11928,650 +17052,13 @@ function realMachine(env, confirm) {
 }
 
 // src/jobs/config.ts
+init_zod();
+init_names();
+init_lock();
+init_managed_json();
+init_user_json();
 import { readFileSync as readFileSync13 } from "fs";
 import { join as join9 } from "path";
-
-// src/setup/lock.ts
-import {
-  closeSync as closeSync3,
-  mkdirSync as mkdirSync6,
-  openSync as openSync3,
-  readFileSync as readFileSync10,
-  readlinkSync as readlinkSync3,
-  statSync as statSync5,
-  unlinkSync as unlinkSync3,
-  writeSync
-} from "fs";
-import { hostname as hostname2 } from "os";
-import { join as join7 } from "path";
-var FALLBACK_STALE_MS = 10 * 60 * 1000;
-var LOCK_FILE = "lock";
-var TAKEOVER_SUFFIX = ".takeover";
-
-class LockBusyError extends Error {
-  name = "LockBusyError";
-}
-function procStartTime(pid) {
-  try {
-    const stat = readFileSync10(`/proc/${pid}/stat`, "utf8");
-    const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
-    const start = fields[22 - 3];
-    return start && /^\d+$/.test(start) ? start : null;
-  } catch {
-    return null;
-  }
-}
-function psStartTime(pid) {
-  try {
-    const result = Bun.spawnSync(["ps", "-o", "lstart=", "-p", String(pid)], {
-      env: { ...process.env, LC_ALL: "C" },
-      stdout: "pipe",
-      stderr: "ignore"
-    });
-    const text = result.stdout.toString().trim();
-    return result.exitCode === 0 && text !== "" ? text : null;
-  } catch {
-    return null;
-  }
-}
-function processStartTime(pid, like) {
-  if (like === undefined || like.startsWith("proc:")) {
-    const proc = procStartTime(pid);
-    if (proc !== null)
-      return `proc:${proc}`;
-  }
-  if (like === undefined || like.startsWith("ps:")) {
-    const ps = psStartTime(pid);
-    if (ps !== null)
-      return `ps:${ps}`;
-  }
-  return null;
-}
-function ownPidNamespace() {
-  try {
-    return readlinkSync3("/proc/self/ns/pid");
-  } catch {
-    return null;
-  }
-}
-var ownPidns;
-function isAlive2(pid) {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return error.code === "EPERM";
-  }
-}
-function parseLock(text) {
-  try {
-    const parsed = JSON.parse(text);
-    if (typeof parsed.pid !== "number" || typeof parsed.time !== "number" || typeof parsed.token !== "string") {
-      return null;
-    }
-    return {
-      pid: parsed.pid,
-      startTime: typeof parsed.startTime === "string" ? parsed.startTime : null,
-      host: typeof parsed.host === "string" ? parsed.host : "",
-      pidns: typeof parsed.pidns === "string" ? parsed.pidns : null,
-      time: parsed.time,
-      token: parsed.token
-    };
-  } catch {
-    return null;
-  }
-}
-function readHeld(file) {
-  let stat;
-  try {
-    stat = statSync5(file);
-  } catch (error) {
-    if (error.code === "ENOENT")
-      return null;
-    throw error;
-  }
-  let info;
-  try {
-    info = parseLock(readFileSync10(file, "utf8"));
-  } catch (error) {
-    const code = error.code;
-    if (code === "ENOENT")
-      return null;
-    if (code !== "EACCES" && code !== "EPERM")
-      throw error;
-    info = null;
-  }
-  return { info, ino: stat.ino, mtimeMs: stat.mtimeMs, size: stat.size };
-}
-function sameHeld(a, b) {
-  if (a.info && b.info)
-    return a.info.token === b.info.token;
-  if (a.info || b.info)
-    return false;
-  return a.ino === b.ino && a.mtimeMs === b.mtimeMs && a.size === b.size;
-}
-function holderIsGone(holder, lastSeenMs, fallbackStaleMs, startTimeOf = processStartTime) {
-  const oldEnough = Date.now() - lastSeenMs > fallbackStaleMs;
-  if (holder === null || holder.host !== hostname2())
-    return oldEnough;
-  ownPidns ??= ownPidNamespace();
-  const theirs = holder.pidns ?? null;
-  if (theirs !== null && ownPidns !== null && theirs !== ownPidns)
-    return oldEnough;
-  if (!isAlive2(holder.pid))
-    return true;
-  if (holder.startTime === null)
-    return oldEnough;
-  const now = startTimeOf(holder.pid, holder.startTime);
-  if (now === null)
-    return oldEnough;
-  return now !== holder.startTime;
-}
-function isStale(held, fallbackStaleMs) {
-  return holderIsGone(held.info, held.info?.time ?? held.mtimeMs, fallbackStaleMs);
-}
-function tryCreate(file, info, mode) {
-  let fd;
-  try {
-    fd = openSync3(file, "wx", mode);
-  } catch (error) {
-    if (error.code === "EEXIST")
-      return false;
-    throw error;
-  }
-  try {
-    setFileMode(fd, mode);
-    writeSync(fd, JSON.stringify(info));
-  } finally {
-    closeSync3(fd);
-  }
-  return true;
-}
-var ownStartTime;
-function currentHolder() {
-  ownStartTime ??= processStartTime(process.pid);
-  ownPidns ??= ownPidNamespace();
-  return { pid: process.pid, startTime: ownStartTime, host: hostname2(), pidns: ownPidns };
-}
-function newLockInfo() {
-  return { ...currentHolder(), time: Date.now(), token: crypto.randomUUID() };
-}
-function takeOverStale(file, judged, fallbackStaleMs, mode) {
-  const claim = `${file}${TAKEOVER_SUFFIX}`;
-  const me = newLockInfo();
-  if (!tryCreate(claim, me, mode)) {
-    const other = readHeld(claim);
-    if (other && isStale(other, fallbackStaleMs)) {
-      const again = readHeld(claim);
-      if (again && sameHeld(again, other))
-        unlinkSync3(claim);
-    }
-    return false;
-  }
-  try {
-    const now = readHeld(file);
-    if (now && sameHeld(now, judged))
-      unlinkSync3(file);
-    return true;
-  } finally {
-    if (readHeld(claim)?.info?.token === me.token)
-      unlinkSync3(claim);
-  }
-}
-function lockIsHeld(stateDir, fallbackStaleMs = FALLBACK_STALE_MS) {
-  try {
-    const held = readHeld(join7(stateDir, LOCK_FILE));
-    return held !== null && !isStale(held, fallbackStaleMs);
-  } catch {
-    return false;
-  }
-}
-async function withLock(stateDir, fn, options = {}) {
-  mkdirSync6(stateDir, { recursive: true });
-  const file = join7(stateDir, LOCK_FILE);
-  const mine = newLockInfo();
-  const deadline = Date.now() + (options.waitMs ?? 0);
-  const fallbackStaleMs = options.fallbackStaleMs ?? FALLBACK_STALE_MS;
-  const mode = options.mode ?? 384;
-  for (;; ) {
-    mine.time = Date.now();
-    if (tryCreate(file, mine, mode))
-      break;
-    const held = readHeld(file);
-    if (held === null)
-      continue;
-    if (isStale(held, fallbackStaleMs) && takeOverStale(file, held, fallbackStaleMs, mode)) {
-      continue;
-    }
-    if (Date.now() >= deadline) {
-      const info = held.info;
-      const where = info && info.host !== hostname2() ? ` on ${info.host || "another host"}` : "";
-      const who = info ? `process ${info.pid}${where}` : "another run";
-      throw new LockBusyError(`cc-smart-dev-kit is busy: ${who} holds ${file}. Wait for it to finish, then try again.`);
-    }
-    await Bun.sleep(100);
-  }
-  try {
-    return await fn();
-  } finally {
-    if (readHeld(file)?.info?.token === mine.token)
-      unlinkSync3(file);
-  }
-}
-
-// src/setup/managed-json.ts
-import { createHash as createHash3 } from "crypto";
-import { existsSync as existsSync6, readFileSync as readFileSync12 } from "fs";
-import { join as join8 } from "path";
-
-// src/setup/user-json.ts
-import { readFileSync as readFileSync11 } from "fs";
-var BOM = "\uFEFF";
-function withoutBom(text) {
-  return text.startsWith(BOM) ? text.slice(BOM.length) : text;
-}
-function parseUserJson(text) {
-  return JSON.parse(withoutBom(text));
-}
-function readUserJson(file) {
-  return parseUserJson(readFileSync11(file, "utf8"));
-}
-
-// src/setup/managed-json.ts
-var OWNED_FILE = "owned.json";
-var TAKEN_SECRET_LEFT = "a taken-over key's value is never kept; its claim is dropped and the key stays";
-var TAKEN_VALUE_HELD = "already holds the value it had before cc-smart-dev-kit took it over; the claim is dropped";
-
-class ForeignKeyError extends Error {
-  name = "ForeignKeyError";
-}
-function formatKeyPath(path) {
-  return path.map((segment, index) => {
-    if (/^[A-Za-z_$][\w$]*$/.test(segment))
-      return index === 0 ? segment : `.${segment}`;
-    return `[${JSON.stringify(segment)}]`;
-  }).join("");
-}
-function isObject2(value) {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-function samePath(a, b) {
-  return a.length === b.length && a.every((segment, index) => segment === b[index]);
-}
-function detectIndent(text) {
-  return /^([ \t]+)"/m.exec(text)?.[1] ?? "  ";
-}
-function readJsonObject(file) {
-  if (!existsSync6(file))
-    return { data: {}, indent: "  ", text: null };
-  const text = readFileSync12(file, "utf8");
-  if (text.trim() === "")
-    return { data: {}, indent: "  ", text };
-  let parsed;
-  try {
-    parsed = parseUserJson(text);
-  } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error);
-    throw new Error(`${file} is not valid JSON (${reason}). Fix it by hand, then run again.`);
-  }
-  if (!isObject2(parsed))
-    throw new Error(`${file} must hold a JSON object.`);
-  return { data: parsed, indent: detectIndent(text), text };
-}
-function toRecord(entry, file) {
-  if (Array.isArray(entry) && entry.every((segment) => typeof segment === "string")) {
-    return { path: [...entry] };
-  }
-  if (isObject2(entry) && Array.isArray(entry.path) && entry.path.every((segment) => typeof segment === "string")) {
-    const record = { path: [...entry.path] };
-    if (Object.hasOwn(entry, "value"))
-      record.value = entry.value;
-    if (typeof entry.sha256 === "string")
-      record.sha256 = entry.sha256;
-    if (Object.hasOwn(entry, "was"))
-      record.was = entry.was;
-    if (typeof entry.wasSha256 === "string")
-      record.wasSha256 = entry.wasSha256;
-    if (entry.taken === true)
-      record.taken = true;
-    return record;
-  }
-  throw new Error(`Invalid ${file}: an owned key that is neither a path nor a record`);
-}
-function readOwned(stateDir) {
-  const file = join8(stateDir, OWNED_FILE);
-  if (!existsSync6(file))
-    return {};
-  const parsed = JSON.parse(readFileSync12(file, "utf8"));
-  if (!isObject2(parsed))
-    throw new Error(`Invalid ${file}: expected an object`);
-  const owned = {};
-  for (const [target, entries] of Object.entries(parsed)) {
-    if (!Array.isArray(entries))
-      throw new Error(`Invalid ${file}: expected a list per file`);
-    owned[target] = entries.map((entry) => toRecord(entry, file));
-  }
-  return owned;
-}
-function writeOwned(stateDir, owned) {
-  atomicWrite(join8(stateDir, OWNED_FILE), `${JSON.stringify(owned, null, 2)}
-`, 384);
-}
-function ownedKeys(stateDir, file) {
-  return ownedRecords(stateDir, file).map((record) => record.path);
-}
-function ownedRecords(stateDir, file) {
-  return readOwned(stateDir)[file] ?? [];
-}
-function hashOf(value) {
-  return createHash3("sha256").update(JSON.stringify(value)).digest("hex");
-}
-function isOwnedValue(stateDir, file, path, value) {
-  const record = ownedRecords(stateDir, realTarget(file)).find((entry) => samePath(entry.path, path));
-  if (record === undefined)
-    return false;
-  if (record.sha256 !== undefined)
-    return hashOf(value) === record.sha256;
-  return Object.hasOwn(record, "value") && Bun.deepEquals(record.value, value, true);
-}
-function recordOf(path, value, secret) {
-  return secret ? { path: [...path], sha256: hashOf(value) } : { path: [...path], value };
-}
-function ownership(records, path, current, unchosen) {
-  const record = records.find((entry) => samePath(entry.path, path));
-  if (record === undefined)
-    return "none";
-  if (!current.found)
-    return "changed";
-  if (record.sha256 !== undefined) {
-    if (hashOf(current.value) === record.sha256)
-      return "ours";
-  } else if (!Object.hasOwn(record, "value")) {
-    return "ours";
-  } else if (Bun.deepEquals(current.value, record.value, true)) {
-    return "ours";
-  }
-  return unchosen?.(path, current.value) ? "ours" : "changed";
-}
-function getKey(data, path) {
-  let node = data;
-  for (const segment of path) {
-    if (!isObject2(node) || !Object.hasOwn(node, segment))
-      return { found: false, value: undefined };
-    node = node[segment];
-  }
-  return { found: true, value: node };
-}
-function setKey(data, path, value) {
-  let node = data;
-  for (const [index, segment] of path.slice(0, -1).entries()) {
-    const next = node[segment];
-    if (next === undefined) {
-      node[segment] = {};
-    } else if (!isObject2(next)) {
-      throw new ForeignKeyError(`Cannot set ${formatKeyPath(path)}: ${formatKeyPath(path.slice(0, index + 1))} is not an object.`);
-    }
-    node = node[segment];
-  }
-  const leaf = path.at(-1);
-  if (leaf !== undefined)
-    node[leaf] = structuredClone(value);
-}
-function deleteKey(data, path) {
-  const parent = getKey(data, path.slice(0, -1));
-  const leaf = path.at(-1);
-  if (parent.found && isObject2(parent.value) && leaf !== undefined)
-    delete parent.value[leaf];
-}
-function deleteKeyAndEmptiedObjects(data, path, createdObject) {
-  deleteKey(data, path);
-  const removed = [];
-  for (let depth = path.length - 1;depth >= 1; depth -= 1) {
-    const parentPath = path.slice(0, depth);
-    const parent = getKey(data, parentPath);
-    if (!parent.found || !isObject2(parent.value))
-      break;
-    if (Object.keys(parent.value).length > 0)
-      break;
-    if (createdObject?.(parentPath) !== true)
-      break;
-    deleteKey(data, parentPath);
-    removed.push(parentPath);
-  }
-  return removed;
-}
-function createdObjects(stateDir, file) {
-  const real = realTarget(file);
-  let entry;
-  try {
-    entry = readChanged(stateDir)[real];
-  } catch (error) {
-    console.error(`cc-smart-dev-kit: the record of changed files cannot be read (${error instanceof Error ? error.message : String(error)}), so nothing is pruned from ${real}.`);
-    return () => false;
-  }
-  const baseline = entry === undefined ? undefined : listBackups(stateDir, real).find((backup) => backup.path === entry.baseline);
-  if (baseline === undefined)
-    return () => false;
-  if (baseline.absent)
-    return () => true;
-  let before;
-  try {
-    before = readJsonObject(baseline.path).data;
-  } catch {
-    return () => false;
-  }
-  return (path) => !getKey(before, path).found;
-}
-function applyManagedJson(options) {
-  const file = realTarget(options.file);
-  const snapshot = readOwned(options.stateDir);
-  return retryOnConcurrentChange(file, () => applyOnce(file, options, snapshot));
-}
-function applyOnce(file, options, owned) {
-  const { data, indent, text } = readJsonObject(file);
-  const ownedHere = owned[file] ?? [];
-  const isSecret = (path) => options.secret?.(path) ?? false;
-  const shown = (path, value) => isSecret(path) ? "a secret" : JSON.stringify(value);
-  const changes = [];
-  const skipped = [];
-  const updated = [];
-  const dropped = [];
-  const released = [];
-  let setsSecret = false;
-  const recordFor = (path, value) => {
-    const held = ownedHere.find((entry) => samePath(entry.path, path));
-    return {
-      ...recordOf(path, value, isSecret(path)),
-      ...held?.was !== undefined && { was: held.was },
-      ...held?.wasSha256 !== undefined && { wasSha256: held.wasSha256 },
-      ...held?.taken === true && { taken: true }
-    };
-  };
-  for (const [path, value] of options.set ?? []) {
-    if (path.length === 0)
-      throw new Error("applyManagedJson: an empty key path");
-    if (isSecret(path))
-      setsSecret = true;
-    const current = getKey(data, path);
-    const whose = ownership(ownedHere, path, current, options.unchosen);
-    if (current.found && Bun.deepEquals(current.value, value, true)) {
-      if (whose === "none") {
-        skipped.push({ path, reason: "already set by someone else; left alone" });
-      } else if (whose === "changed") {
-        skipped.push({
-          path,
-          reason: "set by you since; left alone, no longer cc-smart-dev-kit's"
-        });
-        dropped.push(path);
-      } else {
-        updated.push(recordFor(path, value));
-      }
-      continue;
-    }
-    if (current.found && whose === "changed") {
-      throw new ForeignKeyError(`${file}: ${formatKeyPath(path)} is ${shown(path, current.value)}: it was changed after cc-smart-dev-kit set it, so it is your choice now. ` + "cc-smart-dev-kit does not overwrite it. Remove it by hand if cc-smart-dev-kit should manage it again.");
-    }
-    if (current.found && whose === "none" && !options.unchosen?.(path, current.value)) {
-      throw new ForeignKeyError(`${file}: ${formatKeyPath(path)} is ${shown(path, current.value)}, set by someone else. ` + "cc-smart-dev-kit does not overwrite it. Remove it by hand if cc-smart-dev-kit should manage it.");
-    }
-    setKey(data, path, value);
-    changes.push({ path, before: current.found ? current.value : undefined, after: value });
-    updated.push(recordFor(path, value));
-  }
-  for (const [path, value] of options.claim ?? []) {
-    const current = getKey(data, path);
-    if (!current.found || !Bun.deepEquals(current.value, value, true)) {
-      skipped.push({ path, reason: "not the value it was taken over with; left alone" });
-      continue;
-    }
-    const record = recordFor(path, value);
-    record.taken = true;
-    if (isSecret(path))
-      record.wasSha256 = hashOf(value);
-    else
-      record.was = value;
-    updated.push(record);
-  }
-  for (const [path, value] of options.release ?? []) {
-    const current = getKey(data, path);
-    if (ownership(ownedHere, path, current) !== "ours") {
-      dropped.push(path);
-      skipped.push({ path, reason: "changed since cc-smart-dev-kit managed it; left alone" });
-      continue;
-    }
-    if (value === undefined) {
-      const held = ownedHere.find((entry) => samePath(entry.path, path));
-      if (held?.taken === true) {
-        dropped.push(path);
-        skipped.push({ path, reason: TAKEN_SECRET_LEFT });
-        continue;
-      }
-      skipped.push({ path, reason: "no value to write back; left as it is" });
-      continue;
-    }
-    dropped.push(path);
-    released.push(path);
-    if (current.found && Bun.deepEquals(current.value, value, true)) {
-      skipped.push({
-        path,
-        reason: "already holds that value; cc-smart-dev-kit's claim is dropped"
-      });
-      continue;
-    }
-    if (isSecret(path))
-      setsSecret = true;
-    setKey(data, path, value);
-    changes.push({ path, before: current.found ? current.value : undefined, after: value });
-  }
-  for (const path of options.withdraw ?? []) {
-    const current = getKey(data, path);
-    dropped.push(path);
-    if (ownership(ownedHere, path, current) !== "ours") {
-      skipped.push({ path, reason: "changed since cc-smart-dev-kit managed it; left alone" });
-      continue;
-    }
-    const emptied = deleteKeyAndEmptiedObjects(data, path, options.createdObject);
-    changes.push({ path, before: current.value, after: undefined });
-    for (const parentPath of emptied)
-      changes.push({ path: parentPath, before: {}, after: undefined });
-  }
-  for (const path of options.remove ?? []) {
-    const current = getKey(data, path);
-    const whose = ownership(ownedHere, path, current);
-    if (whose === "none") {
-      skipped.push({ path, reason: "not owned by cc-smart-dev-kit; left alone" });
-      continue;
-    }
-    dropped.push(path);
-    if (whose === "changed") {
-      skipped.push({
-        path,
-        reason: current.found ? "changed since cc-smart-dev-kit set it; left alone" : "not in the file any more (removed since cc-smart-dev-kit set it); left alone"
-      });
-      continue;
-    }
-    if (!current.found)
-      continue;
-    const held = ownedHere.find((entry) => samePath(entry.path, path));
-    if (held?.was !== undefined) {
-      if (Bun.deepEquals(current.value, held.was, true)) {
-        skipped.push({ path, reason: TAKEN_VALUE_HELD });
-        continue;
-      }
-      setKey(data, path, held.was);
-      changes.push({ path, before: current.value, after: held.was });
-      continue;
-    }
-    if (held?.wasSha256 !== undefined) {
-      skipped.push({ path, reason: TAKEN_SECRET_LEFT });
-      continue;
-    }
-    const emptied = deleteKeyAndEmptiedObjects(data, path, options.createdObject);
-    changes.push({ path, before: current.value, after: undefined });
-    for (const parentPath of emptied) {
-      changes.push({ path: parentPath, before: {}, after: undefined });
-    }
-  }
-  const touched = (entry) => updated.some((record) => samePath(record.path, entry.path)) || dropped.some((path) => samePath(path, entry.path));
-  const finalOwned = [...ownedHere.filter((entry) => !touched(entry)), ...updated];
-  const ownedChanged = !Bun.deepEquals([...finalOwned].sort(byPath), [...ownedHere].sort(byPath), true);
-  if (options.dryRun || changes.length === 0 && !ownedChanged) {
-    return { file, changes, skipped, written: false, backup: null };
-  }
-  const nextState = (records) => {
-    const next = { ...owned, [file]: records };
-    if (records.length === 0)
-      delete next[file];
-    return next;
-  };
-  const changedPaths = changes.filter((change) => change.after !== undefined && !released.some((path) => samePath(path, change.path)));
-  if (changedPaths.length > 0) {
-    const pending = [
-      ...ownedHere.filter((entry) => !changedPaths.some((c) => samePath(c.path, entry.path))),
-      ...changedPaths.map((change) => {
-        const held = ownedHere.find((entry) => samePath(entry.path, change.path));
-        return {
-          path: [...change.path],
-          ...held?.was !== undefined && { was: held.was },
-          ...held?.wasSha256 !== undefined && { wasSha256: held.wasSha256 },
-          ...held?.taken === true && { taken: true }
-        };
-      })
-    ];
-    writeOwned(options.stateDir, nextState(pending));
-  }
-  let written = false;
-  let backup = null;
-  if (changes.length > 0) {
-    options.onBeforeWrite?.();
-    let result;
-    try {
-      result = writeManagedFile(file, `${JSON.stringify(data, null, indent)}
-`, {
-        stateDir: options.stateDir,
-        kind: "json-keys",
-        newFileMode: 384,
-        ...setsSecret && { mode: 384 },
-        expectedContent: text
-      });
-    } catch (error) {
-      if (changedPaths.length > 0)
-        writeOwned(options.stateDir, owned);
-      throw error;
-    }
-    written = result.outcome !== "unchanged";
-    backup = result.backup;
-  }
-  writeOwned(options.stateDir, nextState(finalOwned));
-  return { file, changes, skipped, written, backup };
-}
-function byPath(a, b) {
-  const left = JSON.stringify(a.path);
-  const right = JSON.stringify(b.path);
-  return left < right ? -1 : left > right ? 1 : 0;
-}
-
-// src/jobs/config.ts
 var HEAVY_SLOTS = 1;
 var MAX_HEAVY_SLOTS = 8;
 var heavySlotsSchema = number2().int().min(HEAVY_SLOTS).max(MAX_HEAVY_SLOTS);
@@ -12810,7 +17297,11 @@ function openUrlOnDesktop(on, url, deps) {
   return null;
 }
 
+// src/mcp/doctor.ts
+init_build_info();
+
 // src/mcp/records.ts
+init_write();
 import { existsSync as existsSync7, readFileSync as readFileSync15 } from "fs";
 import { join as join10 } from "path";
 var RECORD_FILE = "mcp-servers.json";
@@ -12837,16 +17328,7 @@ function readMcpRecords(stateDir, file = mcpRecordsFile(stateDir)) {
 // src/mcp/register.ts
 import { existsSync as existsSync8, readFileSync as readFileSync16 } from "fs";
 import { dirname as dirname6, join as join11, resolve as resolve2 } from "path";
-
-// src/shell/quote.ts
-function shellQuote(value) {
-  return `'${value.replaceAll("'", "'\\''")}'`;
-}
-function shellWord(value) {
-  return /^[\w./-]+$/.test(value) ? value : shellQuote(value);
-}
-
-// src/mcp/register.ts
+init_user_json();
 function readUserServers(file) {
   let text;
   try {
@@ -12934,6 +17416,7 @@ function projectMcpFiles(cwd) {
 }
 
 // src/mcp/retired.ts
+init_build_info();
 import {
   existsSync as existsSync10,
   lstatSync as lstatSync2,
@@ -12944,8 +17427,11 @@ import {
   statSync as statSync6
 } from "fs";
 import { join as join13 } from "path";
+init_user_json();
+init_write();
 
 // src/mcp/task-server-name.ts
+init_names();
 var TASKS_SERVER_NAME = `${COMMAND}-tasks`;
 
 // src/mcp/servers.ts
@@ -12960,6 +17446,7 @@ var SERVER_NAMES = [
 var RETIRED_SERVER_NAMES = ["serena"];
 
 // src/mcp/status.ts
+init_build_info();
 import { basename as basename2 } from "path";
 
 // src/setup/marketplace-access.ts
@@ -13418,6 +17905,9 @@ function retiredChecks(paths) {
 }
 
 // src/mcp/tavily.ts
+init_file_mode();
+init_managed_json();
+init_user_json();
 import { existsSync as existsSync11, readFileSync as readFileSync19, statSync as statSync7 } from "fs";
 var TAVILY_ENV_KEY = "TAVILY_API_KEY";
 var TAVILY_KEY_PATH = ["env", TAVILY_ENV_KEY];
@@ -13618,3582 +18108,13 @@ async function mcpChecks(paths, deps, env, cwd = process.cwd()) {
 }
 
 // src/portal/api/projects.ts
-import { createHash as createHash6 } from "crypto";
-import { existsSync as existsSync41, mkdirSync as mkdirSync16, readFileSync as readFileSync54 } from "fs";
-import { basename as basename9, dirname as dirname19, join as join48, relative as relative4 } from "path";
-
-// src/hooks/git.ts
-import { readFileSync as readFileSync20, realpathSync as realpathSync2 } from "fs";
-import { basename as basename3, dirname as dirname8, join as join14, resolve as resolve4 } from "path";
-
-// src/path-compare.ts
-import { dirname as dirname7, resolve as resolve3 } from "path";
-var IGNORE_CASE = process.platform === "win32";
-function isInside(path, folder, ignoreCase = IGNORE_CASE) {
-  const child = pathForm(path, ignoreCase);
-  const parent = pathForm(folder, ignoreCase);
-  return child === parent || child.startsWith(`${parent}/`);
-}
-function pathForm(path, ignoreCase = IGNORE_CASE) {
-  const forward = resolve3(path.replace(/\\/g, "/")).replace(/\\/g, "/").replace(/\/+$/, "");
-  return ignoreCase ? forward.toLowerCase() : forward;
-}
-function samePath2(a, b, ignoreCase = IGNORE_CASE) {
-  return isInside(a, b, ignoreCase) && isInside(b, a, ignoreCase);
-}
-function isStrictlyInside(path, folder, ignoreCase = IGNORE_CASE) {
-  return isInside(path, folder, ignoreCase) && !isInside(folder, path, ignoreCase);
-}
-
-// src/project/git-env.ts
-var REPO_SELECTING_GIT_VARS = [
-  "GIT_DIR",
-  "GIT_WORK_TREE",
-  "GIT_COMMON_DIR",
-  "GIT_INDEX_FILE",
-  "GIT_OBJECT_DIRECTORY",
-  "GIT_ALTERNATE_OBJECT_DIRECTORIES",
-  "GIT_PREFIX",
-  "GIT_NAMESPACE"
-];
-function gitEnv(base) {
-  const env = {};
-  for (const [key, value] of Object.entries(base)) {
-    if (value !== undefined && !REPO_SELECTING_GIT_VARS.includes(key))
-      env[key] = value;
-  }
-  return env;
-}
-
-// src/hooks/git.ts
-var GIT_TIMED_OUT = "timed out";
-var GUARD_GIT_TIMEOUT_MS = 5000;
-function runGit(cwd, args, env, timeoutMs = 15000, own = {}) {
-  return spawnGit(cwd, args, env, timeoutMs, own, true);
-}
-function spawnGit(cwd, args, env, timeoutMs, own, trim) {
-  try {
-    const result = Bun.spawnSync(["git", ...args], {
-      cwd,
-      env: { ...gitEnv(env), ...own },
-      stdin: "ignore",
-      stdout: "pipe",
-      stderr: "pipe",
-      timeout: timeoutMs,
-      windowsHide: true
-    });
-    const err = result.signalCode ? GIT_TIMED_OUT : result.stderr.toString().trim();
-    const code = result.signalCode ? null : result.exitCode;
-    const out = result.stdout.toString();
-    return { ok: result.exitCode === 0, out: trim ? out.trim() : out, err, code };
-  } catch (error) {
-    const err = error instanceof Error ? error.message : String(error);
-    return { ok: false, out: "", err, code: null };
-  }
-}
-async function runGitAsync(cwd, args, env, timeoutMs = 15000, own = {}) {
-  try {
-    const child = Bun.spawn(["git", ...args], {
-      cwd,
-      env: { ...gitEnv(env), ...own },
-      stdin: "ignore",
-      stdout: "pipe",
-      stderr: "pipe",
-      timeout: timeoutMs,
-      windowsHide: true
-    });
-    const [stdout, stderr, code] = await Promise.all([
-      new Response(child.stdout).text(),
-      new Response(child.stderr).text(),
-      child.exited
-    ]);
-    const signaled = child.signalCode !== null && child.signalCode !== undefined;
-    return {
-      ok: code === 0,
-      out: stdout.trim(),
-      err: signaled ? GIT_TIMED_OUT : stderr.trim(),
-      code: signaled ? null : code
-    };
-  } catch (error) {
-    const err = error instanceof Error ? error.message : String(error);
-    return { ok: false, out: "", err, code: null };
-  }
-}
-function realPath(path) {
-  const rest = [];
-  let at = resolve4(path);
-  for (;; ) {
-    try {
-      return join14(realpathSync2(at), ...rest);
-    } catch {
-      const parent = dirname8(at);
-      if (parent === at)
-        return resolve4(path);
-      rest.unshift(basename3(at));
-      at = parent;
-    }
-  }
-}
-function parseWorktreeList(porcelain) {
-  const worktrees = [];
-  for (const block of porcelain.split(/\r?\n\r?\n/)) {
-    const lines = block.split(/\r?\n/).filter((line) => line !== "");
-    const value = (key) => lines.find((line) => line.startsWith(`${key} `))?.slice(key.length + 1);
-    const flag = (key) => lines.some((line) => line === key || line.startsWith(`${key} `));
-    const path = value("worktree");
-    if (path === undefined)
-      continue;
-    const lockReason = value("locked")?.trim();
-    worktrees.push({
-      path,
-      head: value("HEAD") ?? "",
-      branch: value("branch")?.replace(/^refs\/heads\//, "") ?? null,
-      locked: flag("locked"),
-      ...lockReason === undefined || lockReason === "" ? {} : { lockReason },
-      prunable: flag("prunable")
-    });
-  }
-  return worktrees;
-}
-function listWorktrees(cwd, env, timeoutMs = 15000) {
-  const listed = runGit(cwd, ["worktree", "list", "--porcelain"], env, timeoutMs);
-  if (!listed.ok)
-    throw new Error(`git worktree list failed: ${listed.err}`);
-  return parseWorktreeList(listed.out);
-}
-function innermostWorktree(path, worktrees) {
-  let deepest = null;
-  for (const worktree of worktrees) {
-    if (isInside(path, worktree) && (deepest === null || worktree.length > deepest.length)) {
-      deepest = worktree;
-    }
-  }
-  return deepest;
-}
-function hasChanges(folder, env) {
-  const status = runGit(folder, ["--no-optional-locks", "status", "--porcelain", "--untracked-files=all"], env);
-  return !status.ok || status.out !== "";
-}
-function worktreeAdminDir(worktree) {
-  let text;
-  try {
-    text = readFileSync20(join14(worktree, ".git"), "utf8");
-  } catch {
-    return null;
-  }
-  const target = /^gitdir:\s*(.+)$/.exec(text.trim())?.[1]?.trim();
-  return target === undefined || target === "" ? null : resolve4(worktree, target);
-}
-var REFLOG_HEADER = /^[a-f0-9]+ [a-f0-9]+ .*<[^<>]*> (\d+) [+-]\d{4}$/;
-function reflogEntryTime(line) {
-  const tab = line.indexOf("\t");
-  const epoch = REFLOG_HEADER.exec(tab < 0 ? line : line.slice(0, tab))?.[1];
-  if (epoch === undefined)
-    return null;
-  const time = Number(epoch) * 1000;
-  return Number.isFinite(time) ? time : null;
-}
-
-// src/project/config.ts
-import { existsSync as existsSync12, readFileSync as readFileSync21 } from "fs";
-import { posix as posix2, win32 as win322 } from "path";
-
-// src/jobs/kinds.ts
-var matchRuleSchema = union([
-  strictObject({
-    tool: string2().min(1),
-    sub: array(string2().min(1)).optional(),
-    flags: array(string2().min(1)).optional(),
-    argIncludes: string2().min(1).optional(),
-    valued: array(string2().min(1)).optional()
-  }),
-  strictObject({
-    script: string2().min(1)
-  })
-]);
-var LIGHT_FILE_LIMIT = 10;
-var kindSpecSchema = strictObject({
-  printOnly: array(string2().min(1)).optional(),
-  noSlotForFiles: boolean2().optional(),
-  skipWords: array(string2().min(1)).optional(),
-  valuedFlags: array(string2().min(1)).optional(),
-  match: array(matchRuleSchema).optional(),
-  about: string2().min(1).optional(),
-  gb: unknown().optional(),
-  filesGb: unknown().optional(),
-  maxFiles: unknown().optional(),
-  workers: unknown().optional(),
-  light: unknown().optional()
-});
-var IGNORED_KIND_FIELDS = [
-  "gb",
-  "filesGb",
-  "maxFiles",
-  "workers",
-  "light"
-];
-var KIND_NAME = /^[a-z0-9][a-z0-9:._-]*$/;
-var kindsSchema = record(string2().regex(KIND_NAME, "a kind's name is lower-case letters, digits and : . _ -"), kindSpecSchema);
-var TSC_PRINT_ONLY = ["--help", "--listfilesonly", "--showconfig", "--version", "-h", "-v"];
-var TEST_PRINT_ONLY = ["--help", "--version", "-h", "-v"];
-var TEST_VALUED_FLAGS = [
-  "--bail",
-  "--config",
-  "--coverageDirectory",
-  "--dir",
-  "--environment",
-  "--env",
-  "--exclude",
-  "--hookTimeout",
-  "--maxWorkers",
-  "--minWorkers",
-  "--mode",
-  "--outputFile",
-  "--pool",
-  "--project",
-  "--reporter",
-  "--reporters",
-  "--retry",
-  "--root",
-  "--rootDir",
-  "--roots",
-  "--selectProjects",
-  "--shard",
-  "--testEnvironment",
-  "--testNamePattern",
-  "--testPathIgnorePatterns",
-  "--testPathPattern",
-  "--testTimeout",
-  "-c",
-  "-r",
-  "-t",
-  "-w"
-];
-var TEST_BARE_FLAGS = [
-  "--ci",
-  "--detectOpenHandles",
-  "--forceExit",
-  "--no-cache",
-  "--no-color",
-  "--passWithNoTests",
-  "--run",
-  "--runInBand",
-  "--updateSnapshot",
-  "--verbose",
-  "-i"
-];
-var TSC_OPTIONS = {
-  valued: [
-    "--baseUrl",
-    "--charset",
-    "--checkers",
-    "--customConditions",
-    "--declarationDir",
-    "--excludeDirectories",
-    "--excludeFiles",
-    "--fallbackPolling",
-    "--generateCpuProfile",
-    "--generateTrace",
-    "--ignoreDeprecations",
-    "--jsx",
-    "--jsxFactory",
-    "--jsxFragmentFactory",
-    "--jsxImportSource",
-    "--lib",
-    "--locale",
-    "--mapRoot",
-    "--maxNodeModuleJsDepth",
-    "--module",
-    "--moduleDetection",
-    "--moduleResolution",
-    "--moduleSuffixes",
-    "--newLine",
-    "--outDir",
-    "--outFile",
-    "--plugins",
-    "--pprofDir",
-    "--reactNamespace",
-    "--rootDir",
-    "--rootDirs",
-    "--sourceRoot",
-    "--target",
-    "--tsBuildInfoFile",
-    "--typeRoots",
-    "--types",
-    "--watchDirectory",
-    "--watchFile",
-    "--watchInterval",
-    "-m",
-    "-t"
-  ],
-  bare: [
-    "--allowArbitraryExtensions",
-    "--allowImportingTsExtensions",
-    "--allowJs",
-    "--allowSyntheticDefaultImports",
-    "--allowUmdGlobalAccess",
-    "--allowUnreachableCode",
-    "--allowUnusedLabels",
-    "--alwaysStrict",
-    "--checkJs",
-    "--composite",
-    "--declaration",
-    "--declarationMap",
-    "--deduplicatePackages",
-    "--diagnostics",
-    "--disableSizeLimit",
-    "--downlevelIteration",
-    "--emitBOM",
-    "--emitDeclarationOnly",
-    "--emitDecoratorMetadata",
-    "--erasableSyntaxOnly",
-    "--esModuleInterop",
-    "--exactOptionalPropertyTypes",
-    "--experimentalDecorators",
-    "--explainFiles",
-    "--extendedDiagnostics",
-    "--forceConsistentCasingInFileNames",
-    "--ignoreConfig",
-    "--importHelpers",
-    "--incremental",
-    "--inlineSourceMap",
-    "--inlineSources",
-    "--isolatedDeclarations",
-    "--isolatedModules",
-    "--libReplacement",
-    "--listEmittedFiles",
-    "--listFiles",
-    "--noCheck",
-    "--noEmit",
-    "--noEmitHelpers",
-    "--noEmitOnError",
-    "--noErrorTruncation",
-    "--noFallthroughCasesInSwitch",
-    "--noImplicitAny",
-    "--noImplicitOverride",
-    "--noImplicitReturns",
-    "--noImplicitThis",
-    "--noLib",
-    "--noPropertyAccessFromIndexSignature",
-    "--noResolve",
-    "--noUncheckedIndexedAccess",
-    "--noUncheckedSideEffectImports",
-    "--noUnusedLocals",
-    "--noUnusedParameters",
-    "--preserveConstEnums",
-    "--preserveSymlinks",
-    "--preserveWatchOutput",
-    "--pretty",
-    "--quiet",
-    "--removeComments",
-    "--resolveJsonModule",
-    "--resolvePackageJsonExports",
-    "--resolvePackageJsonImports",
-    "--rewriteRelativeImportExtensions",
-    "--singleThreaded",
-    "--skipDefaultLibCheck",
-    "--skipLibCheck",
-    "--sourceMap",
-    "--stableTypeOrdering",
-    "--strict",
-    "--strictBindCallApply",
-    "--strictBuiltinIteratorReturn",
-    "--strictFunctionTypes",
-    "--strictNullChecks",
-    "--strictPropertyInitialization",
-    "--stripInternal",
-    "--traceResolution",
-    "--useDefineForClassFields",
-    "--useUnknownInCatchVariables",
-    "--verbatimModuleSyntax",
-    "-d",
-    "-i",
-    "-q"
-  ],
-  watch: { flags: ["--watch", "-w"], ignoreCase: true }
-};
-var VITEST_OPTIONS = {
-  valued: [
-    "--attachmentsDir",
-    "--config",
-    "--configLoader",
-    "--dir",
-    "--environment",
-    "--exclude",
-    "--execArgv",
-    "--hookTimeout",
-    "--maxConcurrency",
-    "--maxWorkers",
-    "--minWorkers",
-    "--mode",
-    "--outputFile",
-    "--pool",
-    "--project",
-    "--reporter",
-    "--repeats",
-    "--retry",
-    "--retry.count",
-    "--root",
-    "--sequence.hooks",
-    "--sequence.seed",
-    "--sequence.setupFiles",
-    "--shard",
-    "--slowTestThreshold",
-    "--tagsFilter",
-    "--teardownTimeout",
-    "--testNamePattern",
-    "--testTimeout",
-    "--vmMemoryLimit",
-    "-c",
-    "-p",
-    "-r",
-    "-t"
-  ],
-  bare: [
-    "--allowOnly",
-    "--cache",
-    "--clearScreen",
-    "--detectAsyncLeaks",
-    "--disableConsoleIntercept",
-    "--expandSnapshotDiff",
-    "--fileParallelism",
-    "--globals",
-    "--hideSkippedTests",
-    "--includeTaskLocation",
-    "--isolate",
-    "--last-failed",
-    "--lastFailed",
-    "--logHeapUsage",
-    "--no-cache",
-    "--no-color",
-    "--no-file-parallelism",
-    "--no-isolate",
-    "--passWithNoTests",
-    "--printConsoleTrace",
-    "--run",
-    "--sequence.concurrent",
-    "--sequence.shuffle.files",
-    "--sequence.shuffle.tests"
-  ],
-  skip: ["run"],
-  watch: { flags: ["--watch", "-w"], commands: ["watch", "dev"] }
-};
-var JEST_OPTIONS = {
-  valued: [
-    "--changedSince",
-    "--collectCoverageFrom",
-    "--config",
-    "--coverageDirectory",
-    "--coverageProvider",
-    "--env",
-    "--filter",
-    "--maxConcurrency",
-    "--maxWorkers",
-    "--openHandlesTimeout",
-    "--outputFile",
-    "--rootDir",
-    "--seed",
-    "--shard",
-    "--testEnvironment",
-    "--testEnvironmentOptions",
-    "--testNamePattern",
-    "--testRunner",
-    "--testSequencer",
-    "--testTimeout",
-    "--workerGracefulExitTimeout",
-    "-c",
-    "-t",
-    "-w"
-  ],
-  bare: [
-    "--cache",
-    "--changedFilesWithAncestor",
-    "--ci",
-    "--clearMocks",
-    "--colors",
-    "--debug",
-    "--detectOpenHandles",
-    "--errorOnDeprecated",
-    "--expand",
-    "--forceExit",
-    "--injectGlobals",
-    "--json",
-    "--lastCommit",
-    "--listTests",
-    "--logHeapUsage",
-    "--no-cache",
-    "--no-watchman",
-    "--noStackTrace",
-    "--notify",
-    "--onlyChanged",
-    "--onlyFailures",
-    "--passWithNoTests",
-    "--randomize",
-    "--resetMocks",
-    "--restoreMocks",
-    "--runInBand",
-    "--runTestsByPath",
-    "--showSeed",
-    "--silent",
-    "--testLocationInResults",
-    "--updateSnapshot",
-    "--useStderr",
-    "--verbose",
-    "--waitForUnhandledRejections",
-    "--watchman",
-    "--workerThreads",
-    "-e",
-    "-f",
-    "-i",
-    "-o",
-    "-u"
-  ],
-  watch: { flags: ["--watch", "--watchAll"] }
-};
-var BUN_TEST_OPTIONS = {
-  valued: [
-    "--coverage-dir",
-    "--coverage-reporter",
-    "--max-concurrency",
-    "--parallel-delay",
-    "--path-ignore-patterns",
-    "--rerun-each",
-    "--reporter",
-    "--reporter-outfile",
-    "--retry",
-    "--seed",
-    "--shard",
-    "--test-name-pattern",
-    "--timeout",
-    "--timings",
-    "-t"
-  ],
-  bare: [
-    "--check",
-    "--concurrent",
-    "--dots",
-    "--isolate",
-    "--no-isolate",
-    "--no-orphans",
-    "--only",
-    "--only-failures",
-    "--pass-with-no-tests",
-    "--randomize",
-    "--todo",
-    "--update-snapshots",
-    "--update-timings",
-    "-u"
-  ],
-  skip: ["test"],
-  isOperand: (word) => word.startsWith("./") || word.startsWith("/"),
-  watch: { flags: ["--watch"] }
-};
-var PLAYWRIGHT_OPTIONS = {
-  valued: [
-    "--add-reporter",
-    "--browser",
-    "--config",
-    "--global-timeout",
-    "--grep",
-    "--grep-invert",
-    "--last-failed-file",
-    "--max-failures",
-    "--output",
-    "--project",
-    "--repeat-each",
-    "--reporter",
-    "--retries",
-    "--run-agents",
-    "--shard",
-    "--test-list",
-    "--test-list-invert",
-    "--timeout",
-    "--trace",
-    "--tsconfig",
-    "--ui-host",
-    "--ui-port",
-    "--update-source-method",
-    "--workers",
-    "-c",
-    "-G",
-    "-g",
-    "-j"
-  ],
-  bare: [
-    "--fail-on-flaky-tests",
-    "--forbid-only",
-    "--fully-parallel",
-    "--headed",
-    "--ignore-snapshots",
-    "--last-failed",
-    "--no-deps",
-    "--pass-with-no-tests",
-    "--quiet",
-    "--ui",
-    "-x"
-  ],
-  skip: ["test"],
-  watch: { flags: ["--debug", "--ui", "--ui-host", "--ui-port"] }
-};
-var TOOL_OPTIONS = {
-  bun: BUN_TEST_OPTIONS,
-  jest: JEST_OPTIONS,
-  playwright: PLAYWRIGHT_OPTIONS,
-  tsc: TSC_OPTIONS,
-  tsgo: TSC_OPTIONS,
-  vitest: VITEST_OPTIONS,
-  "vue-tsc": TSC_OPTIONS
-};
-var DEFAULT_KINDS = {
-  tsc: {
-    about: "A TypeScript type check (tsc, tsgo, vue-tsc). A run on named files runs at once, with no slot.",
-    printOnly: TSC_PRINT_ONLY,
-    noSlotForFiles: true,
-    match: [{ tool: "tsc" }, { tool: "tsgo" }, { tool: "vue-tsc" }]
-  },
-  "lint:typed": {
-    about: "A type-aware lint: ESLint with a typed config, or oxlint --type-aware.",
-    printOnly: TEST_PRINT_ONLY,
-    match: [
-      { tool: "eslint", argIncludes: "typed" },
-      { tool: "eslint", argIncludes: "type-checked" },
-      { tool: "oxlint", flags: ["--type-aware"] }
-    ]
-  },
-  "test:coverage": {
-    about: "A test run with coverage (vitest, jest or bun test with --coverage).",
-    printOnly: TEST_PRINT_ONLY,
-    match: [
-      { tool: "vitest", argIncludes: "--coverage" },
-      { tool: "jest", argIncludes: "--coverage" },
-      { tool: "bun", sub: ["test"], argIncludes: "--coverage" }
-    ]
-  },
-  "test:run": {
-    about: "A test run (vitest, jest, bun test). A run on named test files runs at once, with no slot.",
-    printOnly: TEST_PRINT_ONLY,
-    noSlotForFiles: true,
-    match: [{ tool: "vitest" }, { tool: "jest" }, { tool: "bun", sub: ["test"] }]
-  },
-  e2e: {
-    about: "An end-to-end test run (playwright test). Every run takes a slot, one spec file too: it starts the app and its browsers.",
-    printOnly: ["--list", "--help", "-h"],
-    match: [{ tool: "playwright", sub: ["test"] }]
-  },
-  build: {
-    about: "A framework production build (next build).",
-    match: [{ tool: "next", sub: ["build"] }]
-  },
-  "image:build": {
-    about: "A container image build (docker, podman, compose).",
-    match: [
-      { tool: "docker", sub: ["build"] },
-      { tool: "docker", sub: ["image", "build"] },
-      { tool: "docker", sub: ["builder", "build"] },
-      { tool: "docker", sub: ["buildx", "build"] },
-      { tool: "docker", sub: ["buildx", "b"] },
-      { tool: "docker", sub: ["buildx", "bake"] },
-      { tool: "docker", sub: ["compose", "build"] },
-      { tool: "docker", sub: ["compose", "up"], flags: ["--build"] },
-      { tool: "docker", sub: ["compose", "run"], flags: ["--build"] },
-      { tool: "docker", sub: ["compose", "create"], flags: ["--build"] },
-      { tool: "docker-compose", sub: ["build"] },
-      { tool: "docker-compose", sub: ["up"], flags: ["--build"] },
-      { tool: "docker-compose", sub: ["run"], flags: ["--build"] },
-      { tool: "docker-compose", sub: ["create"], flags: ["--build"] },
-      { tool: "podman", sub: ["build"] },
-      { tool: "podman", sub: ["image", "build"] },
-      { tool: "buildah", sub: ["build"] }
-    ]
-  }
-};
-function mergeKinds(projectKinds) {
-  return { ...DEFAULT_KINDS, ...projectKinds ?? {} };
-}
-function isPrintOnly(kind, args) {
-  const printOnly = new Set((kind.printOnly ?? []).map((flag) => flag.toLowerCase()));
-  return args.some((arg) => printOnly.has(arg.toLowerCase()));
-}
-function namesOnlyFiles(kind, args, isFile, tool) {
-  if (kind.noSlotForFiles !== true)
-    return false;
-  const table = tool === undefined ? undefined : TOOL_OPTIONS[tool];
-  const skip = new Set([...kind.skipWords ?? [], ...table?.skip ?? []]);
-  const valued = new Set([...table?.valued ?? TEST_VALUED_FLAGS, ...kind.valuedFlags ?? []]);
-  const bare = new Set(table?.bare ?? TEST_BARE_FLAGS);
-  let index = 0;
-  while (index < args.length && skip.has(args[index] ?? ""))
-    index++;
-  const operands = [];
-  let optionsEnded = false;
-  for (;index < args.length; index++) {
-    const arg = args[index] ?? "";
-    if (!optionsEnded && arg === "--")
-      optionsEnded = true;
-    else if (!optionsEnded && arg.startsWith("-")) {
-      if (arg.includes("=") || bare.has(arg))
-        continue;
-      if (!valued.has(arg))
-        return false;
-      index++;
-    } else
-      operands.push(arg);
-  }
-  const names = table?.isOperand;
-  return operands.length > 0 && operands.length <= LIGHT_FILE_LIMIT && operands.every((word) => (names === undefined || names(word)) && isFile(word));
-}
-function isWatchRun(tool, args) {
-  const watch = TOOL_OPTIONS[tool]?.watch;
-  if (watch === undefined)
-    return false;
-  const fold = (word) => watch.ignoreCase === true ? word.toLowerCase() : word;
-  for (const arg of args) {
-    if (arg === "--")
-      break;
-    const [flag = "", value] = arg.split("=", 2);
-    if (watch.flags.includes(fold(flag)) && value !== "false" && value !== "0")
-      return true;
-  }
-  if (watch.commands === undefined)
-    return false;
-  const valued = new Set(TOOL_OPTIONS[tool]?.valued);
-  for (let index = 0;index < args.length; index++) {
-    const arg = args[index] ?? "";
-    if (!arg.startsWith("-"))
-      return watch.commands.includes(arg);
-    if (valued.has(arg))
-      index++;
-  }
-  return false;
-}
-function ignoredFieldsOf(kind) {
-  return IGNORED_KIND_FIELDS.filter((field) => kind[field] !== undefined);
-}
-
-// src/shell/program-name.ts
-function programName(word) {
-  return (word.split(/[\\/]/).pop() ?? word).toLowerCase().replace(/\.(exe|cmd|ps1|bat)$/, "");
-}
-
-// src/shell/kit-invocation.ts
-var INERT = new Set([
-  "[",
-  "[[",
-  "awk",
-  "cat",
-  "chmod",
-  "chown",
-  "cp",
-  "diff",
-  "echo",
-  "egrep",
-  "fgrep",
-  "file",
-  "git",
-  "grep",
-  "head",
-  "less",
-  "ln",
-  "ls",
-  "man",
-  "mkdir",
-  "more",
-  "mv",
-  "printf",
-  "readlink",
-  "realpath",
-  "rg",
-  "rm",
-  "sed",
-  "stat",
-  "tail",
-  "tee",
-  "test",
-  "touch",
-  "type",
-  "wc",
-  "which"
-]);
-var KIT_BUNDLE = /(?:^|[\\/])(?:dist|entries)[\\/](?:cli|portal)\.(?:js|ts)$/;
-function isKitWord(word) {
-  return programName(word) === COMMAND || KIT_BUNDLE.test(word);
-}
-function kitArguments(program, args) {
-  if (programName(program) === COMMAND)
-    return [...args];
-  if (INERT.has(program))
-    return null;
-  const at = args.findIndex(isKitWord);
-  return at === -1 ? null : args.slice(at + 1);
-}
-
-// src/shell/powershell.ts
-var SINGLE_QUOTES = /['\u2018\u2019\u201A\u201B]/g;
-function powershellLiteral(value) {
-  if (/[\r\n]/.test(value)) {
-    throw new Error(`cannot put ${JSON.stringify(value)} in a PowerShell command`);
-  }
-  return powershellQuoted(value);
-}
-function powershellQuoted(value) {
-  return `'${value.replace(SINGLE_QUOTES, (quote) => quote + quote)}'`;
-}
-
-// src/shell/command.ts
-function dialectOfTool(tool) {
-  if (tool === "Bash")
-    return "bash";
-  if (tool === "PowerShell")
-    return "powershell";
-  return;
-}
-var DIALECTS = ["bash", "powershell"];
-var MAX_NESTING = 3;
-var ESCAPE = { bash: "\\", powershell: "`" };
-var SINGLE = { bash: "'", powershell: "'\u2018\u2019\u201A\u201B" };
-var DOUBLE = { bash: '"', powershell: '"\u201C\u201D\u201E' };
-var oneOf = (chars, char) => char !== "" && chars.includes(char);
-var CONTINUATION = {
-  bash: /\\[ \t]*\r?\n/y,
-  powershell: /`[ \t]*\r?\n/y
-};
-var SEPARATORS = new Set([`
-`, "\r", "&", "(", ")", ";", "|"]);
-var HERE_STRING = /@(["'])\r?\n([\s\S]*?)\r?\n\1@/y;
-var ARRAY_ASSIGNMENT = /(?:^|\s)[A-Za-z_][A-Za-z0-9_]*\+?=$/;
-function readingsOf(command, dialect) {
-  const readings = [];
-  for (const one of dialect === undefined ? DIALECTS : [dialect]) {
-    readings.push({ dialect: one, joinLines: false });
-    if (new RegExp(CONTINUATION[one].source).test(command)) {
-      readings.push({ dialect: one, joinLines: true });
-    }
-  }
-  return readings;
-}
-var MAX_INNER = 8;
-var isBlank = (char) => char === " " || char === "\t";
-function opensBraceSubstitution(text, at) {
-  return text.startsWith("${", at) && /^[ \t\n|]$/.test(text.charAt(at + 2));
-}
-function braceSubstitutionClose(text, from) {
-  const read = lex(text.slice(from), {
-    blind: false,
-    dialect: "bash",
-    join: false,
-    substitution: true
-  });
-  return read.open ? -1 : from + read.end;
-}
-function lex(text, options) {
-  const { blind, dialect, join } = options;
-  const bash = dialect === "bash";
-  const escaper = ESCAPE[dialect];
-  const single = SINGLE[dialect];
-  const double = DOUBLE[dialect];
-  const segments = [];
-  const piped = [];
-  const expanded = [];
-  const groups = [];
-  const starts = [];
-  let group = options.outer ?? null;
-  const enterGroup = (array = false) => {
-    group = { depth: (group?.depth ?? 0) + 1, outer: group, ...array ? { array } : {} };
-  };
-  const leaveGroup = () => {
-    if (group !== (options.outer ?? null))
-      group = group?.outer ?? null;
-  };
-  const cases = [];
-  const owed = [];
-  let open = false;
-  let unparsable = false;
-  let at = 0;
-  let afterPipe = false;
-  let matching = null;
-  let semicolons = null;
-  const push = (piece, from, filledIn = false, inner = group, start = null) => {
-    segments.push(piece);
-    piped.push(from);
-    expanded.push(filledIn);
-    groups.push(inner);
-    starts.push(start);
-  };
-  function addInner(inner, body, filledIn = false) {
-    const depth = (options.depth ?? 0) + 1;
-    if (depth > MAX_INNER) {
-      open = true;
-      return;
-    }
-    const outer = { depth: (group?.depth ?? 0) + 1, outer: group };
-    const read = lex(inner, { blind, dialect, join, body: body && !blind, depth, outer });
-    if (read.open)
-      open = true;
-    if (read.unparsable)
-      unparsable = true;
-    for (let i = 0;i < read.segments.length; i++) {
-      push(read.segments[i] ?? "", read.piped[i] ?? null, filledIn || read.expanded[i] === true, read.groups[i] ?? outer);
-    }
-  }
-  function skipBodies() {
-    for (const { quoted, script, stripTabs, word } of owed.splice(0)) {
-      let line = at;
-      let closedAt = -1;
-      let bodyEnd = text.length;
-      while (line < text.length) {
-        const end = text.indexOf(`
-`, line);
-        const stop = end === -1 ? text.length : end;
-        const content = text.slice(line, stop).replace(/\r$/, "");
-        if ((stripTabs ? content.replace(/^\t+/, "") : content) === word) {
-          closedAt = Math.min(stop + 1, text.length);
-          bodyEnd = line;
-          break;
-        }
-        line = stop + 1;
-      }
-      if (closedAt === -1 && blind)
-        continue;
-      if (script) {
-        const body = text.slice(at, bodyEnd);
-        addInner(body, false, !quoted && /[$`]/.test(body));
-      } else if (!quoted)
-        addInner(text.slice(at, bodyEnd), true);
-      if (closedAt === -1) {
-        open = true;
-        at = text.length;
-      } else {
-        at = closedAt;
-      }
-    }
-  }
-  function arithmeticEnd(from) {
-    if (text.charAt(from + 1) !== "(")
-      return -1;
-    if (matching === null || semicolons === null) {
-      matching = new Int32Array(text.length).fill(-1);
-      semicolons = new Int32Array(text.length + 1);
-      const stack = [];
-      for (let i = 0;i < text.length; i++) {
-        const char = text.charAt(i);
-        semicolons[i + 1] = (semicolons[i] ?? 0) + (char === ";" ? 1 : 0);
-        if (char === "(")
-          stack.push(i);
-        else if (char === ")") {
-          const opened = stack.pop();
-          if (opened !== undefined)
-            matching[opened] = i;
-        }
-      }
-    }
-    const close = matching[from] ?? -1;
-    if (close === -1)
-      return -1;
-    const closes = text.charAt(close - 1) === ")" && close - 1 > from + 1;
-    const plain = (semicolons[close] ?? 0) === (semicolons[from] ?? 0);
-    return closes && plain ? close + 1 : -1;
-  }
-  function readArithmetic(end) {
-    addInner(text.slice(at + 3, end - 2), true);
-    const piece = text.slice(at, end);
-    at = end;
-    return piece;
-  }
-  function readSingle(ansi) {
-    let end = at + 1;
-    while (end < text.length) {
-      const char = text.charAt(end);
-      if (ansi && char === "\\") {
-        end += 2;
-        continue;
-      }
-      if (oneOf(single, char)) {
-        if (!bash && oneOf(single, text.charAt(end + 1))) {
-          end += 2;
-          continue;
-        }
-        break;
-      }
-      end++;
-    }
-    if (end >= text.length)
-      open = true;
-    const piece = text.slice(at, end + 1);
-    at = Math.min(end + 1, text.length);
-    return piece;
-  }
-  function readBacktick() {
-    let end = at + 1;
-    while (end < text.length && text.charAt(end) !== "`") {
-      end += text.charAt(end) === "\\" ? 2 : 1;
-    }
-    if (end >= text.length) {
-      open = true;
-      const piece = text.slice(at);
-      at = text.length;
-      return piece;
-    }
-    addInner(text.slice(at + 1, end).replace(/\\([`\\$])/g, "$1"), false);
-    const piece = text.slice(at, end + 1);
-    at = end + 1;
-    return piece;
-  }
-  function readDouble(closes, substitutions = 0) {
-    const mark = segments.length;
-    let raw = "";
-    if (closes) {
-      raw = text.charAt(at);
-      at++;
-    }
-    while (at < text.length) {
-      const char = text.charAt(at);
-      const next = text.charAt(at + 1);
-      if (closes && oneOf(double, char)) {
-        if (!bash && oneOf(double, next)) {
-          raw += char + next;
-          at += 2;
-          continue;
-        }
-        at++;
-        return raw + char;
-      }
-      if (char === escaper && next !== "") {
-        raw += char + next;
-        at += 2;
-      } else if (bash && char === "$" && next === "$") {
-        raw += "$$";
-        at += 2;
-      } else if (char === "$" && (next === "(" || braceSubstitution()) && substitutions >= MAX_INNER) {
-        open = true;
-        raw += char;
-        at++;
-      } else if (char === "$" && next === "(") {
-        const end = bash ? arithmeticEnd(at + 1) : -1;
-        if (end === -1) {
-          at += 2;
-          enterGroup();
-          raw += `$(${read(")", substitutions + 1).raw}`;
-          leaveGroup();
-        } else {
-          raw += readArithmetic(end);
-        }
-      } else if (bash && char === "`") {
-        raw += readBacktick();
-      } else if (braceSubstitution()) {
-        raw += readBraceSubstitution(substitutions);
-      } else {
-        raw += char;
-        at++;
-      }
-    }
-    if (!closes)
-      return raw;
-    open = true;
-    segments.length = mark;
-    piped.length = mark;
-    expanded.length = mark;
-    groups.length = mark;
-    starts.length = mark;
-    return raw;
-  }
-  function hereDocOpener() {
-    let pos = at + 2;
-    const stripTabs = text.charAt(pos) === "-";
-    if (stripTabs)
-      pos++;
-    while (isBlank(text.charAt(pos)))
-      pos++;
-    let word = "";
-    let quoted = false;
-    while (pos < text.length) {
-      const char = text.charAt(pos);
-      if (/\s/.test(char) || "<>;&|()".includes(char))
-        break;
-      if (char === "'" || char === '"') {
-        const close = text.indexOf(char, pos + 1);
-        if (close === -1)
-          return null;
-        word += text.slice(pos + 1, close);
-        quoted = true;
-        pos = close + 1;
-      } else if (char === "\\") {
-        word += text.charAt(pos + 1);
-        quoted = true;
-        pos += 2;
-      } else {
-        word += char;
-        pos++;
-      }
-    }
-    return word === "" ? null : { end: pos, quoted, script: false, stripTabs, word };
-  }
-  const braceSubstitution = () => bash && opensBraceSubstitution(text, at);
-  function readBraceSubstitution(substitutions) {
-    const pipe = text.charAt(at + 2) === "|" ? "|" : "";
-    at += 2 + pipe.length;
-    const substitution = read("}", substitutions + 1);
-    if (!substitution.closed)
-      open = true;
-    return `\${${pipe}${substitution.raw}`;
-  }
-  function isGroupBrace(char, wordStart) {
-    if (char !== "{" && char !== "}")
-      return false;
-    if (!bash)
-      return true;
-    const after = text.charAt(at + 1);
-    return wordStart && (after === "" || /\s/.test(after) || char === "}" && /[;&|)]/.test(after));
-  }
-  function casePattern(current, char, next) {
-    const words = current.trim();
-    const command = words.replace(/^(?:(?:do|then|else|elif|if|while|until|!|time(?:\s+-p)?)\s+)+/, "");
-    const level = group;
-    let top = cases.at(-1);
-    if (top?.level === level && /^esac(?![\w-])/.test(command)) {
-      cases.pop();
-      top = cases.at(-1);
-    }
-    const starts = /^case\s[\s\S]*\sin(?:\s|$)/.test(command) && !/\sin\s+esac(?![\w-])/.test(command);
-    if (starts) {
-      top = { level, pattern: true };
-      cases.push(top);
-    }
-    if (top?.level !== level)
-      return false;
-    if (char === ";" && (next === ";" || next === "&"))
-      top.pattern = true;
-    if (!top.pattern)
-      return false;
-    if (char === ")") {
-      top.pattern = false;
-      return true;
-    }
-    return char === "(" && (words === "" || starts && /\sin$/.test(command));
-  }
-  function read(closer, substitutions = 0) {
-    const nested = closer !== null;
-    let raw = "";
-    let current = "";
-    let currentStart = at;
-    let depth = 0;
-    let braces = 0;
-    let wordStart = true;
-    let afterClose = false;
-    let stdinShell = null;
-    const take = (piece, blank = false) => {
-      current += piece;
-      raw += piece;
-      wordStart = blank;
-      afterClose = false;
-    };
-    while (at < text.length) {
-      const char = text.charAt(at);
-      const next = text.charAt(at + 1);
-      if (join && char === escaper) {
-        const continuation = CONTINUATION[dialect];
-        continuation.lastIndex = at;
-        if (continuation.test(text)) {
-          take(" ", true);
-          at = continuation.lastIndex;
-          continue;
-        }
-      }
-      if (!blind) {
-        if (char === escaper && next !== "" && next !== `
-` && next !== "\r") {
-          take(char + next);
-          at += 2;
-          continue;
-        }
-        if (oneOf(single, char)) {
-          take(readSingle(false));
-          continue;
-        }
-        if (oneOf(double, char)) {
-          take(readDouble(true, substitutions));
-          continue;
-        }
-        if (bash && char === "$" && next === "$") {
-          take("$$");
-          at += 2;
-          continue;
-        }
-        if (bash && char === "$" && next === "'") {
-          at++;
-          take(`$${readSingle(true)}`);
-          continue;
-        }
-        if (bash && char === "`") {
-          take(readBacktick());
-          continue;
-        }
-        const arithmetic = bash && char === "$" && next === "(" ? arithmeticEnd(at + 1) : -1;
-        if (arithmetic !== -1) {
-          take(readArithmetic(arithmetic));
-          continue;
-        }
-        const processSubstitution = bash && (char === "<" || char === ">") && wordStart;
-        const arraySubexpression = !bash && char === "@" && wordStart;
-        if (next === "(" && (char === "$" || processSubstitution || arraySubexpression) && substitutions < MAX_INNER) {
-          at += 2;
-          enterGroup();
-          const substitution = read(")", substitutions + 1);
-          leaveGroup();
-          if (!substitution.closed)
-            open = true;
-          take(`${char}(${substitution.raw}`);
-          continue;
-        }
-        if (braceSubstitution()) {
-          if (substitutions < MAX_INNER) {
-            take(readBraceSubstitution(substitutions));
-            continue;
-          }
-          open = true;
-        }
-        if (closer === "}" && char === "}" && depth === 0 && braces === 0 && current.trim() === "") {
-          push(current, afterPipe ? segments[segments.length - 1] ?? null : null, false, group, currentStart);
-          afterPipe = false;
-          at++;
-          return { closed: true, raw: `${raw}}` };
-        }
-        if (char === "#" && wordStart && !afterClose) {
-          const end = text.indexOf(`
-`, at);
-          at = end === -1 ? text.length : end;
-          continue;
-        }
-        if (!bash && char === "<" && next !== "#")
-          unparsable = true;
-        if (!bash && char === "<" && next === "#" && wordStart) {
-          const end = text.indexOf("#>", at + 2);
-          if (end === -1)
-            open = true;
-          at = end === -1 ? text.length : end + 2;
-          take(" ", true);
-          continue;
-        }
-        if (!bash && wordStart && text.startsWith("--%", at) && /^\s?$/.test(text.charAt(at + 3))) {
-          let end = at;
-          while (end < text.length && text.charAt(end) !== `
-` && text.charAt(end) !== "|")
-            end++;
-          take(text.slice(at, end));
-          at = end;
-          continue;
-        }
-      }
-      if (bash && char === "<" && next === "<") {
-        if (text.charAt(at + 2) === "<") {
-          take("<<<");
-          at += 3;
-          continue;
-        }
-        const opener = hereDocOpener();
-        if (opener === null) {
-          take("<<");
-          at += 2;
-          continue;
-        }
-        stdinShell ??= readsStdinShell(current);
-        owed.push({ ...opener, script: stdinShell });
-        take(text.slice(at, opener.end));
-        at = opener.end;
-        continue;
-      }
-      if (!bash && char === "@" && (next === '"' || next === "'")) {
-        HERE_STRING.lastIndex = at;
-        const quoted = HERE_STRING.exec(text);
-        if (quoted !== null) {
-          if (next === '"' || blind)
-            addInner(quoted[2] ?? "", true);
-          take(`${next}${next}`);
-          at = HERE_STRING.lastIndex;
-          continue;
-        }
-      }
-      if (bash && !blind && char === "|" && current.endsWith(">") && !current.endsWith("\\>")) {
-        take(char);
-        at++;
-        continue;
-      }
-      if (!blind && char === "&" && (current.endsWith(">") && !current.endsWith(`${escaper}>`) || bash && next === ">")) {
-        take(char);
-        at++;
-        continue;
-      }
-      if (SEPARATORS.has(char) || isGroupBrace(char, wordStart) || blind && bash && char === "`" || blind && braceSubstitution()) {
-        const pattern = !blind && bash ? casePattern(current, char, next) : false;
-        push(current, afterPipe ? segments[segments.length - 1] ?? null : null, false, group, currentStart);
-        afterPipe = char === "|";
-        if (!pattern && closer === ")" && char === ")" && depth === 0) {
-          at++;
-          return { closed: true, raw: `${raw})` };
-        }
-        if (!pattern && closer === "}" && char === ")" && depth === 0) {
-          return { closed: false, raw };
-        }
-        if (!pattern && nested && char === "(")
-          depth++;
-        if (!pattern && nested && char === ")")
-          depth--;
-        if (closer === "}" && char === "{" && current.trim() === "")
-          braces++;
-        if (closer === "}" && char === "}" && braces > 0)
-          braces--;
-        if (!pattern && char === "(")
-          enterGroup(bash && ARRAY_ASSIGNMENT.test(current));
-        else if (!pattern && char === ")")
-          leaveGroup();
-        current = "";
-        stdinShell = null;
-        raw += char;
-        at++;
-        wordStart = true;
-        afterClose = char === ")";
-        if (char === `
-`)
-          skipBodies();
-        currentStart = at;
-        continue;
-      }
-      take(char, isBlank(char));
-      at++;
-    }
-    push(current, afterPipe ? segments[segments.length - 1] ?? null : null, false, group, currentStart);
-    return { closed: false, raw };
-  }
-  if (options.body === true)
-    readDouble(false);
-  else if (options.substitution === true)
-    readBraceSubstitution(0);
-  else
-    read(null);
-  return { end: at, expanded, groups, open, piped, segments, starts, unparsable };
-}
-function shellSteps(command, { blindWhenOpen = false, dialect = "bash", joinLines = false } = {}) {
-  const read = lex(command, { blind: false, dialect, join: joinLines });
-  if (read.unparsable)
-    return [];
-  const chosen = read.open && blindWhenOpen ? lex(command, { blind: true, dialect, join: joinLines }) : read;
-  return chosen.segments.map((text, index) => {
-    const start = chosen.starts[index];
-    return {
-      expanded: chosen.expanded[index] === true,
-      pipedFrom: chosen.piped[index] ?? null,
-      ...chosen.groups[index] ? { subshell: chosen.groups[index] } : {},
-      ...typeof start === "number" && !joinLines ? { start } : {},
-      text
-    };
-  });
-}
-function shellSegments(command, options = {}) {
-  return shellSteps(command, options).map((step) => step.text);
-}
-var ANSI_ESCAPES = {
-  a: "\x07",
-  b: "\b",
-  e: "\x1B",
-  E: "\x1B",
-  f: "\f",
-  n: `
-`,
-  r: "\r",
-  t: "\t",
-  v: "\v"
-};
-function ansiText(body) {
-  return body.replace(/\\(x[0-9A-Fa-f]{1,2}|u[0-9A-Fa-f]{1,4}|U[0-9A-Fa-f]{1,8}|[0-7]{1,3}|c.|.)/gs, (_, code) => {
-    const kind = code.charAt(0);
-    if (kind === "x" || kind === "u" || kind === "U") {
-      return String.fromCodePoint(Number.parseInt(code.slice(1), 16));
-    }
-    if (/[0-7]/.test(kind))
-      return String.fromCharCode(Number.parseInt(code, 8) & 255);
-    if (kind === "c")
-      return String.fromCharCode(code.charCodeAt(1) & 31);
-    return ANSI_ESCAPES[code] ?? code;
-  });
-}
-var POWERSHELL_ESCAPES = {
-  "0": "\x00",
-  a: "\x07",
-  b: "\b",
-  e: "\x1B",
-  f: "\f",
-  n: `
-`,
-  r: "\r",
-  t: "\t",
-  v: "\v"
-};
-function wordsOf(segment, dialect = "bash") {
-  return wordsWithFill(segment, dialect).map((one) => one.text);
-}
-var EXPANDS = {
-  bash: /[A-Za-z_0-9{([@*#?$!-]/,
-  powershell: /[A-Za-z_0-9{(?$^:]/
-};
-function wordsWithFill(segment, dialect = "bash") {
-  const bash = dialect === "bash";
-  const escaper = ESCAPE[dialect];
-  const single = SINGLE[dialect];
-  const double = DOUBLE[dialect];
-  const expands = EXPANDS[dialect];
-  const words = [];
-  let word = "";
-  let inWord = false;
-  let quoted = false;
-  let filled = false;
-  const end = () => {
-    if (inWord)
-      words.push({ text: word, filled });
-    word = "";
-    inWord = false;
-    quoted = false;
-    filled = false;
-  };
-  const add = (piece) => {
-    word += piece;
-    inWord = true;
-  };
-  const startsExpansion = (after) => expands.test(after) || after === "" || /\s/.test(after) || after === escaper || oneOf(double, after);
-  const addExpandable = (char, after) => {
-    if (char === "$" && startsExpansion(after) || bash && char === "`")
-      filled = true;
-    add(char);
-  };
-  let closes = null;
-  const closeOf = (open) => {
-    closes ??= parenCloses(segment);
-    return closes[open] ?? -1;
-  };
-  let braceOpen = false;
-  let braceTried = { from: -1, close: -1 };
-  const braceCloseOf = (from) => {
-    if (!bash || braceOpen || !opensBraceSubstitution(segment, from))
-      return -1;
-    if (braceTried.from !== from) {
-      braceTried = { from, close: braceSubstitutionClose(segment, from) };
-      if (braceTried.close === -1)
-        braceOpen = true;
-    }
-    return braceTried.close;
-  };
-  const addSubstitution = (from, close) => {
-    add(segment.slice(from, close));
-    filled = true;
-    i = close;
-  };
-  let i = 0;
-  while (i < segment.length) {
-    const char = segment.charAt(i);
-    const next = segment.charAt(i + 1);
-    if (/\s/.test(char)) {
-      end();
-      i++;
-    } else if (char === escaper && next === `
-`) {
-      i += 2;
-    } else if (char === escaper) {
-      quoted = true;
-      add(next === "" ? char : bash ? next : POWERSHELL_ESCAPES[next] ?? next);
-      i += 2;
-    } else if (bash && (char === "$" || !inWord && (char === "<" || char === ">")) && next === "(" && closeOf(i + 1) !== -1) {
-      addSubstitution(i, closeOf(i + 1));
-    } else if (braceCloseOf(i) !== -1) {
-      addSubstitution(i, braceCloseOf(i));
-    } else if (!bash && !inWord && char === "@" && next === "(" && powershellParenClose(segment, i + 1) !== -1) {
-      const close = powershellParenClose(segment, i + 1);
-      add(segment.slice(i, close));
-      filled = true;
-      i = close;
-    } else if (bash && char === "&" && next === ">") {
-      end();
-      add(char);
-      i++;
-    } else if (char === "<" || char === ">") {
-      const bothStreams = bash && !quoted && char === ">" && word === "&";
-      if (!bothStreams && (quoted || !/^\d+$/.test(word)))
-        end();
-      while (oneOf("<>", segment.charAt(i)))
-        add(segment.charAt(i++));
-      if (oneOf("&|", segment.charAt(i)))
-        add(segment.charAt(i++));
-    } else if (bash && char === "$" && next === "$") {
-      filled = true;
-      add("$$");
-      i += 2;
-    } else if (bash && char === "$" && next === "'") {
-      let close = i + 2;
-      while (close < segment.length && segment.charAt(close) !== "'") {
-        close += segment.charAt(close) === "\\" ? 2 : 1;
-      }
-      add(ansiText(segment.slice(i + 2, Math.min(close, segment.length))));
-      quoted = true;
-      i = close + 1;
-    } else if (bash && char === "$" && next === '"') {
-      i++;
-    } else if (oneOf(single, char)) {
-      quoted = true;
-      inWord = true;
-      i++;
-      while (i < segment.length) {
-        const inside = segment.charAt(i);
-        if (oneOf(single, inside)) {
-          if (bash || !oneOf(single, segment.charAt(i + 1)))
-            break;
-          add(inside);
-          i += 2;
-          continue;
-        }
-        add(inside);
-        i++;
-      }
-      i++;
-    } else if (oneOf(double, char)) {
-      quoted = true;
-      inWord = true;
-      i++;
-      while (i < segment.length) {
-        const inside = segment.charAt(i);
-        const after = segment.charAt(i + 1);
-        if (oneOf(double, inside)) {
-          if (bash || !oneOf(double, after))
-            break;
-          add(inside);
-          i += 2;
-          continue;
-        }
-        if (bash && inside === "$" && after === "$") {
-          filled = true;
-          add("$$");
-          i += 2;
-          continue;
-        }
-        const substitution = bash && inside === "$" && after === "(" ? closeOf(i + 1) : braceCloseOf(i);
-        if (substitution !== -1) {
-          addSubstitution(i, substitution);
-          continue;
-        }
-        if (inside === escaper && after !== "") {
-          if (!bash)
-            add(POWERSHELL_ESCAPES[after] ?? after);
-          else if ('$`"\\'.includes(after))
-            add(after);
-          else if (after !== `
-`)
-            add(inside + after);
-          i += 2;
-          continue;
-        }
-        addExpandable(inside, after);
-        i++;
-      }
-      i++;
-    } else {
-      addExpandable(char, next);
-      i++;
-    }
-  }
-  end();
-  return words;
-}
-function parenCloses(text) {
-  const closes = new Int32Array(text.length).fill(-1);
-  const open = [];
-  const quoteEnd = (quote, from, escapes) => {
-    for (let at = from;at < text.length; at++) {
-      const char = text.charAt(at);
-      if (escapes && char === "\\")
-        at++;
-      else if (char === quote)
-        return at;
-    }
-    return -1;
-  };
-  for (let i = 0;i < text.length; i++) {
-    const char = text.charAt(i);
-    const next = text.charAt(i + 1);
-    if (char === "\\" || char === "$" && next === "$") {
-      i++;
-    } else if (char === "`") {
-      i = quoteEnd("`", i + 1, true);
-    } else if (open.at(-1) === -1) {
-      if (char === '"')
-        open.pop();
-      else if (char === "$" && next === "(")
-        open.push(++i);
-    } else if (char === "'") {
-      i = quoteEnd("'", i + 1, false);
-    } else if (char === "$" && next === "'") {
-      i = quoteEnd("'", i + 2, true);
-    } else if (char === '"') {
-      open.push(-1);
-    } else if (char === "(") {
-      open.push(i);
-    } else if (char === ")") {
-      const at = open.pop();
-      if (at !== undefined && at >= 0)
-        closes[at] = i + 1;
-    }
-    if (i === -1)
-      break;
-  }
-  return closes;
-}
-function powershellParenClose(text, open) {
-  const single = SINGLE.powershell;
-  const double = DOUBLE.powershell;
-  const quoteEnd = (quotes, from, escapes) => {
-    for (let at = from;at < text.length; at++) {
-      const char = text.charAt(at);
-      if (escapes && char === "`")
-        at++;
-      else if (oneOf(quotes, char)) {
-        if (!oneOf(quotes, text.charAt(at + 1)))
-          return at;
-        at++;
-      }
-    }
-    return -1;
-  };
-  let depth = 0;
-  for (let i = open;i < text.length; i++) {
-    const char = text.charAt(i);
-    if (char === "`")
-      i++;
-    else if (oneOf(single, char))
-      i = quoteEnd(single, i + 1, false);
-    else if (oneOf(double, char))
-      i = quoteEnd(double, i + 1, true);
-    else if (char === "(")
-      depth++;
-    else if (char === ")" && --depth === 0)
-      return i + 1;
-    if (i === -1)
-      return -1;
-  }
-  return -1;
-}
-var KEYWORDS = new Set(["!", "do", "done", "elif", "else", "fi", "if", "then", "until", "while"]);
-var ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*\+?=/;
-function isAssignmentOnly(words) {
-  return words.length > 0 && words.every((word) => ASSIGNMENT.test(word));
-}
-var CHANGE_DIR = new Set([
-  "cd",
-  "chdir",
-  "popd",
-  "pushd",
-  "set-location",
-  "sl"
-]);
-var REDIRECTION = /^\d*(<<<|<<|<>|<|>>|>\||>|&>>|&>)(?!\()(.*)$/s;
-var ANY_REDIRECTION = /^\d*(<<<|<<|<>|<|>>|>\||>|&>>|&>)(.*)$/s;
-var textOf = (word) => typeof word === "string" ? word : word.text;
-function isProcessSubstitution(word) {
-  return /^[<>]\(/.test(textOf(word)) && (typeof word === "string" || word.filled);
-}
-var DURATION = (word) => /^\d+(?:\.\d+)?[smhd]?$/.test(word);
-var CPU_MASK = (word) => /^(?:0x)?[0-9a-f]+(?:[,-][0-9a-f]+)*$/i.test(word);
-var WRAPPERS = {
-  builtin: { long: [], short: "" },
-  busybox: { long: [], short: "" },
-  chrt: {
-    long: [
-      "--sched-runtime",
-      "--sched-period",
-      "--sched-deadline",
-      "--sched-priority",
-      "--reset-on-fork"
-    ],
-    short: "PT",
-    skip: (word) => /^-?\d+$/.test(word)
-  },
-  command: { inert: ["-v", "-V"], long: [], short: "" },
-  "cross-env": { long: [], short: "" },
-  doas: { long: [], short: "uC" },
-  env: {
-    long: ["--unset", "--chdir", "--split-string"],
-    short: "uCS",
-    split: { long: "--split-string", short: "S" }
-  },
-  exec: { long: [], short: "a" },
-  flock: {
-    long: ["--timeout", "--conflict-exit-code", "--command"],
-    short: "wEc",
-    skip: () => true,
-    runs: { long: "--command", short: "c" }
-  },
-  ionice: { long: ["--class", "--classdata", "--pid", "--pgid"], short: "cnpPu" },
-  nice: { long: ["--adjustment"], short: "n" },
-  nohup: { long: [], short: "" },
-  nsenter: {
-    long: ["--target", "--setuid", "--setgid", "--root", "--wd", "--wdns", "--env"],
-    short: "tSG"
-  },
-  script: {
-    long: ["--command", "--log-out", "--log-in", "--logging-format", "--timing", "--output-limit"],
-    short: "cEOI",
-    skip: () => true,
-    runs: { long: "--command", short: "c" }
-  },
-  setsid: { long: [], short: "" },
-  stdbuf: { long: ["--input", "--output", "--error"], short: "ioe" },
-  sudo: {
-    long: [
-      "--user",
-      "--group",
-      "--host",
-      "--prompt",
-      "--close-from",
-      "--chdir",
-      "--chroot",
-      "--command-timeout",
-      "--other-user"
-    ],
-    short: "ughpCDRTU"
-  },
-  taskset: { long: ["--cpu-list"], short: "c", skip: CPU_MASK },
-  time: { long: [], short: "" },
-  timeout: { long: ["--signal", "--kill-after"], short: "sk", skip: DURATION },
-  unbuffer: { long: [], short: "" },
-  xargs: {
-    long: [
-      "--arg-file",
-      "--delimiter",
-      "--eof",
-      "--max-args",
-      "--max-chars",
-      "--max-lines",
-      "--max-procs",
-      "--replace",
-      "--process-slot-var"
-    ],
-    short: "adEILnPs"
-  }
-};
-var SHELLS = new Set(["bash", "dash", "fish", "ksh", "mksh", "sh", "zsh"]);
-var CLAUDE_PACKAGE = /^@anthropic-ai\/claude-code(?:@[^/]*)?$/;
-var PACKAGE_RUNNERS = new Set(["bunx", "npx", "pnpx"]);
-function packageCommand(program, args) {
-  let rest;
-  if (PACKAGE_RUNNERS.has(program))
-    rest = args;
-  else if (program === "pnpm" && args[0] === "dlx")
-    rest = args.slice(1);
-  else
-    return null;
-  for (let index = 0;index < rest.length; index++) {
-    const word = rest[index] ?? "";
-    if (word === "--") {
-      const pkg = rest[index + 1];
-      return pkg !== undefined && CLAUDE_PACKAGE.test(pkg) ? { args: rest.slice(index + 2), program: "claude" } : null;
-    }
-    const name = word.split("=")[0] ?? word;
-    if (name === "-p" || name === "--package") {
-      const inline = word.includes("=") ? word.slice(word.indexOf("=") + 1) : undefined;
-      const pkg = inline ?? rest[index + 1];
-      if (pkg === undefined || !CLAUDE_PACKAGE.test(pkg))
-        return null;
-      const after = rest.slice(index + (inline === undefined ? 2 : 1));
-      const command = after[0] === "claude" ? after.slice(1) : after;
-      return { args: [...command], program: "claude" };
-    }
-    if (word.startsWith("-")) {
-      index += /^--(?:registry|prefix|cache|userconfig)$/.test(name) ? 1 : 0;
-      continue;
-    }
-    return CLAUDE_PACKAGE.test(word) ? { args: rest.slice(index + 1), program: "claude" } : null;
-  }
-  return null;
-}
-function shortFlags(arg, valued) {
-  let flags = "";
-  for (let i = 1;i < arg.length; i++) {
-    const letter = arg.charAt(i);
-    flags += letter;
-    if (valued.includes(letter)) {
-      const attached = arg.slice(i + 1);
-      return {
-        flags,
-        value: attached.startsWith("=") ? attached.slice(1) : attached,
-        wantsNext: i === arg.length - 1
-      };
-    }
-  }
-  return { flags, value: "", wantsNext: false };
-}
-function isShort(arg) {
-  return /^-[^-]/.test(arg);
-}
-function afterWrapper(words, from, spec) {
-  let index = from;
-  let skipped = false;
-  while (index < words.length) {
-    const word = words[index] ?? "";
-    if (word === "--")
-      return { index: index + 1 };
-    if (!isShort(word) && !word.startsWith("--")) {
-      if (!skipped && spec.skip?.(word) === true) {
-        skipped = true;
-        index++;
-        continue;
-      }
-      break;
-    }
-    const name = word.split("=")[0] ?? word;
-    if (spec.inert?.some((inert) => inert === name || inert === word) === true)
-      return;
-    if (word.startsWith("--")) {
-      const valued = spec.long.includes(name) && !word.includes("=");
-      if (spec.split !== undefined && name === spec.split.long) {
-        const value = valued ? words[index + 1] ?? "" : word.slice(name.length + 1);
-        const to = index + (valued ? 2 : 1);
-        return { index, split: { from: index, to, value, keep: null } };
-      }
-      if (spec.runs !== undefined && name === spec.runs.long) {
-        const value = valued ? words[index + 1] ?? "" : word.slice(name.length + 1);
-        return { index, runs: { from: index, to: index + (valued ? 2 : 1), value } };
-      }
-      index += valued ? 2 : 1;
-      continue;
-    }
-    const { flags, wantsNext } = shortFlags(word, spec.short);
-    if (spec.split !== undefined && flags.endsWith(spec.split.short)) {
-      const value = wantsNext ? words[index + 1] ?? "" : word.slice(flags.length + 1);
-      const before = flags.slice(0, -1);
-      const to = index + (wantsNext ? 2 : 1);
-      return {
-        index,
-        split: { from: index, to, value, keep: before === "" ? null : `-${before}` }
-      };
-    }
-    if (spec.runs !== undefined && flags.endsWith(spec.runs.short)) {
-      const value = wantsNext ? words[index + 1] ?? "" : word.slice(flags.length + 1);
-      return { index, runs: { from: index, to: index + (wantsNext ? 2 : 1), value } };
-    }
-    index += wantsNext ? 2 : 1;
-  }
-  return { index };
-}
-function invocationOf(words) {
-  let list = [...words];
-  let splits = 0;
-  let index = 0;
-  while (index < list.length) {
-    const word = list[index] ?? "";
-    if (ASSIGNMENT.test(word) || KEYWORDS.has(word)) {
-      index++;
-      continue;
-    }
-    const redirection = REDIRECTION.exec(word);
-    if (redirection !== null) {
-      index += (redirection[2] ?? "") === "" ? 2 : 1;
-      continue;
-    }
-    const spec = WRAPPERS[programName(word)];
-    if (spec === undefined)
-      break;
-    const after = afterWrapper(list, index + 1, spec);
-    if (after === undefined)
-      return;
-    if (after.split !== undefined && splits < MAX_NESTING) {
-      const { from, keep, to, value } = after.split;
-      const kept = keep === null ? [] : [keep];
-      list = [...list.slice(0, from), ...kept, ...wordsOf(value), ...list.slice(to)];
-      splits++;
-      continue;
-    }
-    if (after.runs !== undefined && splits < MAX_NESTING) {
-      const { from, to, value } = after.runs;
-      list = [...list.slice(0, from), ...wordsOf(value), ...list.slice(to)];
-      index = from;
-      splits++;
-      continue;
-    }
-    index = after.split === undefined ? after.index : after.split.to;
-  }
-  const first = list[index];
-  if (first === undefined)
-    return;
-  const program = programName(first);
-  const ran = packageCommand(program, list.slice(index + 1));
-  const started = program === START_PROCESS ? startProcess(list.slice(index + 1)) : null;
-  const command = started ?? ran;
-  return {
-    args: command?.args ?? list.slice(index + 1),
-    computed: isComputedWord(first),
-    prefix: [...list.slice(0, index), ...started?.prefix ?? []],
-    program: command?.program ?? program
-  };
-}
-function isComputedWord(word) {
-  if (word === "{}")
-    return true;
-  if (!/[$`]/.test(word))
-    return false;
-  return /[$`(){}[\]\s]/.test(programName(word));
-}
-var START_PROCESS_PARAMETERS = new Map([
-  ["argumentlist", true],
-  ["credential", true],
-  ["erroraction", true],
-  ["errorvariable", true],
-  ["filepath", true],
-  ["informationaction", true],
-  ["informationvariable", true],
-  ["loaduserprofile", false],
-  ["nonewwindow", false],
-  ["outbuffer", true],
-  ["outvariable", true],
-  ["passthru", false],
-  ["pipelinevariable", true],
-  ["redirectstandarderror", true],
-  ["redirectstandardinput", true],
-  ["redirectstandardoutput", true],
-  ["usenewenvironment", false],
-  ["verb", true],
-  ["wait", false],
-  ["warningaction", true],
-  ["warningvariable", true],
-  ["windowstyle", true],
-  ["workingdirectory", true]
-]);
-function startProcessParameter(word) {
-  const match = /^-([A-Za-z]\w*)(?::(.*))?$/.exec(word);
-  const given = match?.[1]?.toLowerCase() ?? "";
-  if (given === "")
-    return null;
-  const names = [...START_PROCESS_PARAMETERS.keys()].filter((name) => name.startsWith(given));
-  const [name] = names;
-  if (names.length !== 1 || name === undefined)
-    return null;
-  return { name, takesValue: START_PROCESS_PARAMETERS.get(name) === true, value: match?.[2] };
-}
-function continuesArray(args, index) {
-  return (args[index] ?? "").endsWith(",") || (args[index + 1] ?? "").startsWith(",");
-}
-function arrayAt(args, from, first) {
-  const words = [first];
-  let next = from + 1;
-  while (next < args.length && continuesArray([words.at(-1) ?? "", args[next] ?? ""], 0)) {
-    words.push(args[next] ?? "");
-    next++;
-  }
-  return { words, next };
-}
-function arrayElements(words) {
-  return words.flatMap((word) => {
-    const inner = /^@\(([\s\S]*)\)$/.exec(word)?.[1];
-    return inner === undefined ? [word] : wordsOf(inner, "powershell");
-  }).join(" ").split(",").flatMap((part) => wordsOf(part)).filter((one) => one !== "");
-}
-function startProcess(args) {
-  let file = null;
-  let list = null;
-  let fresh = null;
-  const positional = [];
-  for (let index = 0;index < args.length; index++) {
-    const arg = args[index] ?? "";
-    if (arg === "--") {
-      positional.push(...args.slice(index + 1).map((word) => [word]));
-      break;
-    }
-    const parameter = startProcessParameter(arg);
-    if (parameter === null) {
-      if (!arg.startsWith("-") || continuesArray(args, index)) {
-        const array = arrayAt(args, index, arg);
-        positional.push(array.words);
-        index = array.next - 1;
-      }
-      continue;
-    }
-    const { name, takesValue } = parameter;
-    let value;
-    if (takesValue) {
-      const inline = parameter.value;
-      const from = inline === undefined ? index + 1 : index;
-      if (from < args.length) {
-        const array = arrayAt(args, from, inline ?? args[from] ?? "");
-        value = array.words;
-        index = array.next - 1;
-      }
-    }
-    if (name === "filepath" && value !== undefined)
-      file = value[0] ?? null;
-    else if (name === "argumentlist" && value !== undefined)
-      list = arrayElements(value);
-    else if (name === "usenewenvironment")
-      fresh = arg;
-  }
-  file ??= positional[0]?.[0] ?? null;
-  list ??= arrayElements(positional.slice(1).flat());
-  if (file === null)
-    return null;
-  return {
-    args: list,
-    prefix: fresh === null ? [] : [START_PROCESS, fresh],
-    program: programName(file)
-  };
-}
-var START_PROCESS = "start-process";
-function withoutRedirections(args) {
-  const kept = [];
-  for (let index = 0;index < args.length; index++) {
-    const redirection = REDIRECTION.exec(args[index] ?? "");
-    if (redirection === null)
-      kept.push(args[index] ?? "");
-    else if ((redirection[2] ?? "") === "")
-      index++;
-  }
-  return kept;
-}
-var WRITING_REDIRECTIONS = new Set([">", ">>", ">|", "&>", "&>>", "<>"]);
-function redirectionTargets(words) {
-  const targets = [];
-  for (let index = 0;index < words.length; index++) {
-    const word = words[index] ?? "";
-    const known = typeof word !== "string" && !word.filled;
-    const redirection = (known ? ANY_REDIRECTION : REDIRECTION).exec(textOf(word));
-    if (redirection === null)
-      continue;
-    const operator = redirection[1] ?? "";
-    let target = redirection[2] ?? "";
-    const apart = operator === ">" && target === "&";
-    if (target === "" || apart) {
-      const next = words[++index] ?? "";
-      if (isProcessSubstitution(next))
-        continue;
-      target = apart ? `&${textOf(next)}` : textOf(next);
-    }
-    if (operator === ">" && target.startsWith("&")) {
-      target = /^&(\d+|-)$/.test(target) ? "" : target.slice(1);
-    }
-    if (WRITING_REDIRECTIONS.has(operator) && target !== "")
-      targets.push(target);
-  }
-  return targets;
-}
-function shellTakesStdin(args) {
-  let stdin = false;
-  let scriptFile = false;
-  for (let index = 0;index < args.length; index++) {
-    const arg = args[index] ?? "";
-    const redirection = REDIRECTION.exec(arg);
-    if (redirection !== null) {
-      if ((redirection[2] ?? "") === "")
-        index++;
-      if ((redirection[1] ?? "").startsWith("<<"))
-        stdin = true;
-      continue;
-    }
-    if (arg === "-") {
-      stdin = true;
-      continue;
-    }
-    if (arg.startsWith("--")) {
-      if (arg === "--init-file" || arg === "--rcfile")
-        index++;
-      continue;
-    }
-    if (isShort(arg) || arg.startsWith("+")) {
-      const letters = arg.replace(/^[-+]+/, "");
-      if (letters.includes("c"))
-        return false;
-      if (letters.includes("s"))
-        stdin = true;
-      if (letters === "o")
-        index++;
-      continue;
-    }
-    scriptFile = true;
-  }
-  return stdin || !scriptFile;
-}
-function shellCommandString(args) {
-  let commandMode = false;
-  for (let index = 0;index < args.length; index++) {
-    const arg = args[index] ?? "";
-    if (arg === "--")
-      return commandMode ? args[index + 1] : undefined;
-    const redirection = REDIRECTION.exec(arg);
-    if (redirection !== null) {
-      if ((redirection[2] ?? "") === "")
-        index++;
-      continue;
-    }
-    if (arg.startsWith("--")) {
-      if (arg === "--init-file" || arg === "--rcfile")
-        index++;
-      continue;
-    }
-    if (/^[-+][A-Za-z]+$/.test(arg)) {
-      const letters = arg.slice(1);
-      if (arg.startsWith("-") && letters.includes("c"))
-        commandMode = true;
-      if (/[oO]$/.test(letters))
-        index++;
-      continue;
-    }
-    return commandMode ? arg : undefined;
-  }
-  return;
-}
-function readsStdinShell(segment) {
-  const invocation = invocationOf(wordsOf(segment));
-  return invocation !== undefined && SHELLS.has(invocation.program) && shellTakesStdin(invocation.args);
-}
-function writtenText(segment) {
-  const invocation = invocationOf(wordsOf(segment));
-  if (invocation === undefined || invocation.args.length === 0)
-    return null;
-  const text = invocation.args.join(" ");
-  return invocation.program === "printf" ? text.replace(/\\([nrt])/g, " ") : text;
-}
-var RUNNER_PROGRAM_NAMES = ["find", "parallel", "su", "watch"];
-function isRunnerProgram(program) {
-  return RUNNER_PROGRAM_NAMES.includes(program);
-}
-var AS_ANOTHER_USER_NAMES = ["doas", "pkexec", "su", "sudo"];
-function runsAsAnotherUser(invocation) {
-  return [invocation.program, ...invocation.prefix].some((word) => AS_ANOTHER_USER_NAMES.includes(programName(word)));
-}
-var FIND_EXEC = new Set(["-exec", "-execdir", "-ok", "-okdir"]);
-var FIND_VALUED = new Set([
-  "-amin",
-  "-anewer",
-  "-atime",
-  "-cmin",
-  "-cnewer",
-  "-context",
-  "-ctime",
-  "-fls",
-  "-fprint",
-  "-fprint0",
-  "-fprintf",
-  "-fstype",
-  "-gid",
-  "-group",
-  "-iname",
-  "-inum",
-  "-ipath",
-  "-iregex",
-  "-iwholename",
-  "-links",
-  "-lname",
-  "-maxdepth",
-  "-mindepth",
-  "-mmin",
-  "-mtime",
-  "-name",
-  "-newer",
-  "-path",
-  "-perm",
-  "-printf",
-  "-regex",
-  "-regextype",
-  "-samefile",
-  "-size",
-  "-type",
-  "-uid",
-  "-used",
-  "-user",
-  "-wholename",
-  "-xtype"
-]);
-function endsFindCommand(word, before) {
-  return word === ";" || word === "+" && before === "{}";
-}
-function findCommands(args) {
-  const commands = [];
-  for (let index = 0;index < args.length; index++) {
-    const word = args[index] ?? "";
-    if (FIND_VALUED.has(word) || /^-newer[a-zA-Z]{2}$/.test(word)) {
-      index++;
-      continue;
-    }
-    if (!FIND_EXEC.has(word))
-      continue;
-    const words = [];
-    for (index++;index < args.length && !endsFindCommand(args[index] ?? "", args[index - 1] ?? ""); index++) {
-      words.push(args[index] ?? "");
-    }
-    if (words.length > 0)
-      commands.push(words.map(shellQuote).join(" "));
-  }
-  return commands.length === 0 ? undefined : commands.join(" ; ");
-}
-function longOption(word, names) {
-  const name = word.split("=")[0] ?? word;
-  if (names.includes(name))
-    return name;
-  const starts = names.filter((one) => one.startsWith(name));
-  return starts.length === 1 ? starts[0] ?? null : null;
-}
-var WATCH_LONG = [
-  "--beep",
-  "--chgexit",
-  "--color",
-  "--cumulative",
-  "--differences",
-  "--equexit",
-  "--errexit",
-  "--exec",
-  "--help",
-  "--interval",
-  "--no-color",
-  "--no-title",
-  "--no-wrap",
-  "--precise",
-  "--version"
-];
-var WATCH_VALUED = new Set(["--equexit", "--interval"]);
-function watchCommand(args) {
-  let exec = false;
-  let index = 0;
-  for (;index < args.length; index++) {
-    const word = args[index] ?? "";
-    if (word === "--") {
-      index++;
-      break;
-    }
-    if (!word.startsWith("-") || word === "-")
-      break;
-    if (word.startsWith("--")) {
-      const name = longOption(word, WATCH_LONG);
-      if (name === "--exec")
-        exec = true;
-      else if (name !== null && WATCH_VALUED.has(name) && !word.includes("="))
-        index++;
-      continue;
-    }
-    for (let at = 1;at < word.length; at++) {
-      const letter = word.charAt(at);
-      if (letter === "d")
-        break;
-      if (letter === "x")
-        exec = true;
-      if (letter === "n" || letter === "q") {
-        if (at === word.length - 1)
-          index++;
-        break;
-      }
-    }
-  }
-  const words = args.slice(index);
-  if (words.length === 0)
-    return;
-  return exec ? words.map(shellQuote).join(" ") : words.join(" ");
-}
-function suCommand(args) {
-  for (let index = 0;index < args.length; index++) {
-    const word = args[index] ?? "";
-    if (word === "--")
-      continue;
-    if (word.startsWith("--")) {
-      const name = longOption(word, SU_LONG);
-      const carried = word.includes("=");
-      if (name === "--command" || name === "--session-command") {
-        return carried ? word.slice(word.indexOf("=") + 1) : args[index + 1];
-      }
-      if (name !== null && SU_VALUED.has(name) && !carried)
-        index++;
-      continue;
-    }
-    if (isShort(word)) {
-      const { flags, wantsNext } = shortFlags(word, "cgGsw");
-      if (flags.endsWith("c"))
-        return wantsNext ? args[index + 1] : word.slice(flags.length + 1);
-      if (wantsNext)
-        index++;
-    }
-  }
-  return;
-}
-var SU_LONG = [
-  "--command",
-  "--fast",
-  "--group",
-  "--help",
-  "--login",
-  "--preserve-environment",
-  "--pty",
-  "--session-command",
-  "--shell",
-  "--supp-group",
-  "--version",
-  "--whitelist-environment"
-];
-var SU_VALUED = new Set([
-  "--command",
-  "--group",
-  "--session-command",
-  "--shell",
-  "--supp-group",
-  "--whitelist-environment"
-]);
-var PARALLEL_VALUED = new Set([
-  "--arg-file",
-  "--arg-file-sep",
-  "--arg-sep",
-  "--block",
-  "--colsep",
-  "--delay",
-  "--delimiter",
-  "--env",
-  "--eof",
-  "--halt",
-  "--header",
-  "--jobs",
-  "--joblog",
-  "--load",
-  "--max-args",
-  "--max-lines",
-  "--max-procs",
-  "--memfree",
-  "--nice",
-  "--profile",
-  "--recend",
-  "--recstart",
-  "--results",
-  "--retries",
-  "--rpl",
-  "--sshlogin",
-  "--sshloginfile",
-  "--tagstring",
-  "--timeout",
-  "--workdir",
-  "--basefile",
-  "--bf",
-  "--block-size",
-  "--bt",
-  "--ctagstring",
-  "--filter",
-  "--group-by",
-  "--id",
-  "--jl",
-  "--limit",
-  "--max-chars",
-  "--memsuspend",
-  "--res",
-  "--return",
-  "--ssh",
-  "--ssh-delay",
-  "--term-seq",
-  "--tf",
-  "--tmpdir",
-  "--tmpl",
-  "--trc",
-  "--wd"
-]);
-var PARALLEL_SWITCHES = new Set([
-  "--bar",
-  "--dry-run",
-  "--eta",
-  "--group",
-  "--keep-order",
-  "--line-buffer",
-  "--pipe",
-  "--progress",
-  "--quote",
-  "--shebang",
-  "--tag",
-  "--ungroup",
-  "--verbose",
-  "--will-cite",
-  "--xargs"
-]);
-var PARALLEL_SOURCES = new Set([":::", "::::", ":::+", "::::+"]);
-var PARALLEL_LONG = [...PARALLEL_VALUED, ...PARALLEL_SWITCHES];
-function parallelStarts(args) {
-  const starts = new Set;
-  const seen = new Set;
-  const queue = [0];
-  for (let at = queue.pop();at !== undefined; at = queue.pop()) {
-    if (seen.has(at))
-      continue;
-    seen.add(at);
-    const word = args[at];
-    if (word === undefined) {
-      starts.add(at);
-    } else if (word === "--") {
-      starts.add(at + 1);
-    } else if (!word.startsWith("-") || word === "-") {
-      starts.add(at);
-    } else if (word.startsWith("--")) {
-      const carried = word.includes("=");
-      const name = longOption(word, PARALLEL_LONG);
-      if (name === null)
-        queue.push(at + 1, at + 2);
-      else
-        queue.push(PARALLEL_VALUED.has(name) && !carried ? at + 2 : at + 1);
-    } else {
-      queue.push(shortFlags(word, "jnNPadSIELCsJ").wantsNext ? at + 2 : at + 1);
-    }
-  }
-  return [...starts].sort((a, b) => a - b);
-}
-function parallelLines(args) {
-  const sepAt = args.findIndex((word) => word === "--arg-sep" || word.startsWith("--arg-sep="));
-  const sepWord = sepAt === -1 ? undefined : args[sepAt];
-  const separator = sepWord === undefined ? null : sepWord.includes("=") ? sepWord.slice(sepWord.indexOf("=") + 1) : args[sepAt + 1] ?? null;
-  const isSource = (word) => separator === null ? PARALLEL_SOURCES.has(word) : word === separator;
-  const lines = [];
-  for (const start of parallelStarts(args)) {
-    let index = start;
-    const command = [];
-    for (;index < args.length && !isSource(args[index] ?? ""); index++) {
-      command.push(args[index] ?? "");
-    }
-    const given = [];
-    let reading = false;
-    for (;index < args.length; index++) {
-      const word = args[index] ?? "";
-      if (isSource(word))
-        reading = !word.startsWith("::::");
-      else if (reading)
-        given.push(word);
-    }
-    if (command.length === 0) {
-      if (given.length > 0)
-        lines.push(given.join(" ; "));
-      continue;
-    }
-    const line = command.join(" ");
-    lines.push(line);
-    if (given.length === 0)
-      continue;
-    const quoted = given.map(shellQuote).join(" ");
-    lines.push(line.includes("{}") ? line.replaceAll("{}", quoted) : `${line} ${quoted}`);
-    const program = programName(command[0] ?? "");
-    if (SHELLS.has(program) || program === "eval")
-      lines.push(...given);
-  }
-  return lines;
-}
-function parallelCommand(args) {
-  const lines = [...new Set(parallelLines(args))];
-  return lines.length === 0 ? undefined : lines.join(" ; ");
-}
-function jobRunArguments(program, args) {
-  const kit = kitArguments(program, args);
-  return kit !== null && kit[0] === "job" && kit[1] === "run" ? kit.slice(2) : null;
-}
-function isJobRun(program, args) {
-  return jobRunArguments(program, args) !== null;
-}
-function nestedCommand(program, args, pipedFrom = null) {
-  if (SHELLS.has(program)) {
-    const script = shellCommandString(args);
-    if (script !== undefined)
-      return script;
-    if (!shellTakesStdin(args))
-      return jobRunLine(program, args);
-    const here = args.findIndex((arg) => arg === "<<<" || arg.startsWith("<<<"));
-    if (here !== -1) {
-      const word = args[here] ?? "";
-      return word.length > 3 ? word.slice(3) : args.slice(here + 1).join(" ");
-    }
-    return pipedFrom === null ? undefined : writtenText(pipedFrom) ?? undefined;
-  }
-  if (program === "find")
-    return findCommands(args) ?? jobRunLine(program, args);
-  if (program === "watch")
-    return watchCommand(args) ?? jobRunLine(program, args);
-  if (program === "su")
-    return suCommand(args) ?? jobRunLine(program, args);
-  if (program === "parallel")
-    return parallelCommand(args) ?? jobRunLine(program, args);
-  if (program === "cmd") {
-    const at = args.findIndex((arg) => /^\/[ck]$/i.test(arg));
-    return at === -1 ? jobRunLine(program, args) : args.slice(at + 1).join(" ");
-  }
-  if (program === "powershell" || program === "pwsh") {
-    const at = args.findIndex((arg) => arg.length > 1 && "-command".startsWith(arg.toLowerCase()));
-    return at === -1 ? jobRunLine(program, args, powershellQuoted) : afterCommandFlag(program, args, at, powershellQuoted);
-  }
-  if (program === "eval" || program === "iex" || program === "invoke-expression") {
-    return args.join(" ");
-  }
-  return jobRunLine(program, args);
-}
-function afterCommandFlag(program, args, at, quote) {
-  const job = jobRunArguments(program, args.slice(0, at)) === null ? undefined : jobRunLine(program, args, quote);
-  return job ?? args.slice(at + 1).join(" ");
-}
-function jobRunLine(program, args, quote = shellQuote) {
-  const queued = jobRunArguments(program, args);
-  if (queued === null)
-    return;
-  const dashes = queued.indexOf("--");
-  return dashes === -1 || dashes === queued.length - 1 ? undefined : queued.slice(dashes + 1).map(quote).join(" ");
-}
-function nestedDialect(program) {
-  return ["iex", "invoke-expression", "powershell", "pwsh"].includes(program) ? "powershell" : "bash";
-}
-var anyFill = (word) => /[$`]/.test(word);
-function fillTest(filled) {
-  const set = new Set(filled);
-  return (word) => set.has(word);
-}
-function derivedFill(words, args) {
-  const own = new Set(words);
-  return args.filter((arg) => !own.has(arg) && anyFill(arg));
-}
-function fillOfStep(step, words, dialect, inherited) {
-  const all = inherited || step.expanded;
-  const own = words.some((word) => word.filled);
-  const piped = step.pipedFrom !== null && wordsWithFill(step.pipedFrom, dialect).some((w) => w.filled);
-  const filled = words.filter((word) => all || word.filled).map((word) => word.text);
-  return { filled: [...new Set(filled)], passes: all || own || piped };
-}
-
-// src/project/frontmatter.ts
-import { closeSync as closeSync4, openSync as openSync4, readSync } from "fs";
-function splitFrontmatter(text) {
-  const match = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(text);
-  if (!match)
-    return null;
-  return { header: match[1] ?? "", body: text.slice(match[0].length) };
-}
-function readFrontmatterHeader(file) {
-  const fd = openSync4(file, "r");
-  try {
-    const byte = Buffer.alloc(1);
-    const lines = [];
-    let line = "";
-    let opened = false;
-    while (readSync(fd, byte, 0, 1, null) !== 0) {
-      if (byte[0] !== 10) {
-        line += byte.toString("latin1");
-        continue;
-      }
-      const normalized = line.endsWith("\r") ? line.slice(0, -1) : line;
-      if (!opened) {
-        if (normalized !== "---")
-          return null;
-        opened = true;
-      } else if (normalized === "---") {
-        return Buffer.from(lines.join(`
-`), "latin1").toString("utf8");
-      } else {
-        lines.push(normalized);
-      }
-      line = "";
-    }
-    return opened && line === "---" ? Buffer.from(lines.join(`
-`), "latin1").toString("utf8") : null;
-  } finally {
-    closeSync4(fd);
-  }
-}
-
-// src/tasks/deploy/format.ts
-var DEPLOY_ENVS = ["staging", "prod"];
-var DEPLOY_ENVS_RISK_FIRST = [...DEPLOY_ENVS].reverse();
-var DEPLOY_STEPS = ["before", "after"];
-var DEPLOY_TYPES = ["blocking", "non-blocking"];
-var DEPLOY_FLAGS = [
-  "needs-yes",
-  "twice-safe",
-  "spends-money",
-  "real-people",
-  "destructive"
-];
-var DEPLOY_TASK_ID = /^(prod|staging)-\d{8}-\d{6}(-\d+)?$/;
-function isDeployTaskId(value) {
-  return DEPLOY_TASK_ID.test(value);
-}
-function deployIdEnv(value) {
-  return DEPLOY_TASK_ID.test(value) ? value.split("-")[0] : null;
-}
-function deployIdOfFileName(name) {
-  const parts = name.replace(/\.md$/, "").split("-");
-  for (const length of [4, 3]) {
-    const candidate = parts.slice(0, length).join("-");
-    if (parts.length >= length && DEPLOY_TASK_ID.test(candidate))
-      return candidate;
-  }
-  return null;
-}
-var instant = string2().regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/, "Expected a UTC date-time ending in Z").refine((value) => {
-  const parsed = new Date(value);
-  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 19) === value.slice(0, 19);
-}, "Expected a calendar date-time that exists");
-function taskInstant(now) {
-  return now.toISOString().replace(/\.\d{3}Z$/, "Z");
-}
-var deployTaskSchema = object({
-  id: string2().regex(DEPLOY_TASK_ID),
-  title: string2().min(1).max(200),
-  env: _enum(DEPLOY_ENVS),
-  status: _enum(["open", "done", "dropped"]),
-  deploy: _enum(DEPLOY_STEPS),
-  type: _enum(DEPLOY_TYPES),
-  twin: string2().regex(DEPLOY_TASK_ID).optional(),
-  flags: array(_enum(DEPLOY_FLAGS)).optional(),
-  created: instant,
-  closed: instant.optional(),
-  from: string2().optional(),
-  refs: array(string2()).optional(),
-  evidence: string2().optional()
-}).passthrough();
-var RESERVED_KEYS = ["body", "file"];
-function parseDeployTask(text, file, env) {
-  const parts = splitFrontmatter(text);
-  if (!parts)
-    return { ok: false, why: `${file}: missing front matter --- delimiters` };
-  try {
-    const raw = Bun.YAML.parse(parts.header);
-    for (const key of RESERVED_KEYS) {
-      if (typeof raw === "object" && raw !== null && Object.hasOwn(raw, key)) {
-        return {
-          ok: false,
-          why: `${file}: "${key}" is a reserved name and cannot be a front-matter key`
-        };
-      }
-    }
-    const parsed = deployTaskSchema.safeParse(raw);
-    if (!parsed.success)
-      return { ok: false, why: `${file}: invalid front matter: ${parsed.error.message}` };
-    const fields = parsed.data;
-    if (fields.env !== env)
-      return {
-        ok: false,
-        why: `${file}: env is "${fields.env}" but the file is in the ${env} folder: move it, or fix the env`
-      };
-    if (deployIdEnv(fields.id) !== env)
-      return {
-        ok: false,
-        why: `${file}: id ${fields.id} does not start with "${env}-" like the folder it is in`
-      };
-    return { ok: true, task: { ...fields, body: parts.body, file } };
-  } catch (error) {
-    return {
-      ok: false,
-      why: `${file}: invalid YAML: ${error instanceof Error ? error.message : String(error)}`
-    };
-  }
-}
-function renderDeployTask(task) {
-  const { body, file: _file, ...fields } = task;
-  const known = Object.keys(deployTaskSchema.shape);
-  const keys = [
-    ...known,
-    ...Object.keys(fields).filter((key) => !known.includes(key)).sort()
-  ];
-  return `---
-${keys.filter((key) => fields[key] !== undefined).map((key) => `${/^[a-zA-Z][a-zA-Z0-9_-]*$/.test(key) ? key : JSON.stringify(key)}: ${JSON.stringify(fields[key])}`).join(`
-`)}
----
-${body}`;
-}
-
-// src/workflow/repo-path.ts
-function normalizeRepoPath(raw) {
-  const text = raw.trim().replaceAll("\\", "/");
-  if (/\p{Cc}/u.test(text))
-    return { ok: false, problem: "control" };
-  if (/[*?]/.test(text))
-    return { ok: false, problem: "pattern" };
-  const kept = text.split("/").filter((segment) => segment !== "" && segment !== ".");
-  if (kept.length === 0)
-    return { ok: false, problem: "root" };
-  if (text.startsWith("/") || /^[A-Za-z]:/.test(text))
-    return { ok: false, problem: "absolute" };
-  if (kept.includes(".."))
-    return { ok: false, problem: "up" };
-  const folder = text.endsWith("/") || text.endsWith("/.");
-  return { ok: true, path: `${kept.join("/")}${folder ? "/" : ""}` };
-}
-
-// src/workflow/schema.ts
-var PERCENT = { kind: "whole", max: 100, min: 1 };
-var AT_LEAST_ZERO = { kind: "whole", min: 0 };
-var PHASE_COUNT = { kind: "whole", max: 50, min: 1 };
-function numberSchema(rule) {
-  const whole = number2().int().min(rule.min);
-  return rule.max === undefined ? whole : whole.max(rule.max);
-}
-var NUMBER_RULES = {
-  "alerts.usagePercent": PERCENT,
-  "fixesAfterReview.lines": AT_LEAST_ZERO,
-  "fixesAfterReview.files": AT_LEAST_ZERO,
-  "fixesAfterReview.percent": AT_LEAST_ZERO,
-  "plans.maxPhases": PHASE_COUNT
-};
-function numberField(key) {
-  return numberSchema(NUMBER_RULES[key]).optional();
-}
-var LABEL_RULE = "a label name of 1-50 characters on one line, with no comma, not starting with -";
-function isLabelName(name) {
-  return name.length >= 1 && name.length <= 50 && !name.startsWith("-") && !/[\p{Cc}\p{Cf},]/u.test(name) && name.trim() === name;
-}
-var labelSchema = string2().refine(isLabelName, LABEL_RULE);
-function labelsClash(labels) {
-  const same = (a, b) => a.toLowerCase() === b.toLowerCase();
-  if (same(labels.foundLabel, labels.readyLabel)) {
-    return `issues.foundLabel and issues.readyLabel are both ${labels.foundLabel}: the ready label is only a person's to add, so the kit's found label must be another word`;
-  }
-  if (same(labels.fixedLabel, labels.readyLabel)) {
-    return `issues.fixedLabel and issues.readyLabel are both ${labels.fixedLabel}: the ready label is only a person's to add, so the kit's fixed label must be another word`;
-  }
-  if (same(labels.foundLabel, labels.fixedLabel)) {
-    return `issues.foundLabel and issues.fixedLabel are both ${labels.foundLabel}: an issue could not be told found from fixed`;
-  }
-  return null;
-}
-var RUN_MODES = ["ask", "solo", "lead-children", "coordinator"];
-function normalizeMergeFile(raw) {
-  const parsed = normalizeRepoPath(raw);
-  if (parsed.ok)
-    return parsed;
-  const shown = JSON.stringify(raw);
-  const why = {
-    control: `${shown} holds a control character`,
-    pattern: `${shown} holds a pattern character (* or ?): name the path itself, and a whole folder with a trailing / (like plugin/dist/)`,
-    root: `${shown} is the root: name the files or folders under it`,
-    absolute: `${shown} is absolute: write it relative to the repository root`,
-    up: `${shown} leaves the repository: no .. segments`
-  };
-  return { ok: false, why: why[parsed.problem] };
-}
-var MERGE_FILES_RULE = "plans.mergeFiles is a list of paths inside the repository, written with / (a folder ends in /), with no absolute path, no .. and not the root";
-var mergeFilesSchema = array(string2()).transform((paths, context) => {
-  const normalised = [];
-  for (const [index, raw] of paths.entries()) {
-    const parsed = normalizeMergeFile(raw);
-    if (!parsed.ok) {
-      context.issues.push({ code: "custom", input: raw, message: parsed.why, path: [index] });
-      return NEVER;
-    }
-    if (!normalised.includes(parsed.path))
-      normalised.push(parsed.path);
-  }
-  return normalised;
-});
-var WORKFLOW_KEY_ALIASES = {
-  autoCommit: "allowCommit",
-  autoPush: "allowPush",
-  autoMerge: "allowMerge"
-};
-function isOldKeyName(name) {
-  return Object.hasOwn(WORKFLOW_KEY_ALIASES, name);
-}
-function currentKeyName(name) {
-  return isOldKeyName(name) ? WORKFLOW_KEY_ALIASES[name] : name;
-}
-function oldNamesOf(key) {
-  return Object.keys(WORKFLOW_KEY_ALIASES).filter((old) => WORKFLOW_KEY_ALIASES[old] === key);
-}
-function oldNamesIn(raw) {
-  return Object.keys(WORKFLOW_KEY_ALIASES).filter((old) => Object.hasOwn(raw, old)).map((old) => ({
-    old,
-    current: WORKFLOW_KEY_ALIASES[old],
-    both: Object.hasOwn(raw, WORKFLOW_KEY_ALIASES[old])
-  }));
-}
-function withCurrentNames(raw) {
-  if (typeof raw !== "object" || raw === null || Array.isArray(raw))
-    return raw;
-  const moved = { ...raw };
-  for (const old of Object.keys(WORKFLOW_KEY_ALIASES)) {
-    if (!Object.hasOwn(moved, old))
-      continue;
-    const current = WORKFLOW_KEY_ALIASES[old];
-    if (!Object.hasOwn(moved, current))
-      moved[current] = moved[old];
-    delete moved[old];
-  }
-  return moved;
-}
-function readWithCurrentNames(raw, context) {
-  const moved = withCurrentNames(raw);
-  if (typeof raw !== "object" || raw === null || Array.isArray(raw))
-    return moved;
-  const current = moved;
-  for (const old of oldNamesIn(raw)) {
-    if (old.both)
-      continue;
-    const checked = workflowObjectSchema.shape[old.current].safeParse(current[old.current]);
-    if (checked.success)
-      continue;
-    const reason = checked.error.issues.map((issue) => issue.message).join(", ");
-    context.issues.push({
-      code: "custom",
-      input: current[old.current],
-      message: `${reason} (${old.old} is the old name of ${old.current})`,
-      path: [old.old]
-    });
-    delete current[old.current];
-  }
-  return current;
-}
-var workflowObjectSchema = strictObject({
-  allowCommit: boolean2().optional(),
-  allowPush: boolean2().optional(),
-  openPr: _enum(["off", "draft", "ready"]).optional(),
-  allowMerge: boolean2().optional(),
-  mergeMethod: _enum(["merge", "squash", "rebase"]).optional(),
-  deleteBranch: boolean2().optional(),
-  reviewBeforePush: boolean2().optional(),
-  reviewAgents: array(string2().min(1)).min(1).refine((agents) => new Set(agents).size === agents.length, "an agent is listed twice").optional(),
-  fixesAfterReview: strictObject({
-    lines: numberField("fixesAfterReview.lines"),
-    files: numberField("fixesAfterReview.files"),
-    percent: numberField("fixesAfterReview.percent")
-  }).optional(),
-  clearWorktreeAfterMerge: boolean2().optional(),
-  plans: strictObject({
-    maxPhases: numberField("plans.maxPhases"),
-    mergeFiles: mergeFilesSchema.optional()
-  }).optional(),
-  issues: strictObject({
-    enabled: boolean2().optional(),
-    allowPublic: boolean2().optional(),
-    watch: unknown().optional(),
-    watchMinutes: unknown().optional(),
-    foundLabel: labelSchema.optional(),
-    fixedLabel: labelSchema.optional(),
-    readyLabel: labelSchema.optional()
-  }).superRefine((issues, context) => {
-    const clash = labelsClash({
-      fixedLabel: issues.fixedLabel ?? workflowDefaults.issues.fixedLabel,
-      foundLabel: issues.foundLabel ?? workflowDefaults.issues.foundLabel,
-      readyLabel: issues.readyLabel ?? workflowDefaults.issues.readyLabel
-    });
-    if (clash !== null)
-      context.addIssue({ code: "custom", message: clash });
-  }).optional(),
-  alerts: strictObject({
-    events: unknown().optional(),
-    sound: unknown().optional(),
-    usagePercent: numberField("alerts.usagePercent")
-  }).transform(({ events: _events, sound: _sound, ...usage }) => usage).optional(),
-  crew: unknown().optional()
-});
-var workflowSchema = preprocess(readWithCurrentNames, workflowObjectSchema);
-var PERSONAL_FILE_SWITCH_NAMES = [
-  "jobRoute",
-  "leadHint"
-];
-var personalWorkflowSchema = preprocess(readWithCurrentNames, workflowObjectSchema.extend({
-  plans: strictObject({
-    maxPhases: numberField("plans.maxPhases"),
-    runMode: _enum(RUN_MODES).optional()
-  }).optional(),
-  switches: strictObject({ jobRoute: boolean2().optional(), leadHint: boolean2().optional() }).optional()
-}));
-var workflowDefaults = {
-  allowCommit: false,
-  allowPush: false,
-  openPr: "off",
-  allowMerge: false,
-  mergeMethod: "merge",
-  deleteBranch: false,
-  reviewBeforePush: true,
-  reviewAgents: ["cc-smart-dev-kit:senior-engineer"],
-  fixesAfterReview: {
-    lines: 200,
-    files: 10,
-    percent: 20
-  },
-  clearWorktreeAfterMerge: true,
-  issues: {
-    enabled: true,
-    allowPublic: false,
-    foundLabel: "kit:found",
-    fixedLabel: "fixed-unreleased",
-    readyLabel: "kit:ready"
-  },
-  alerts: {
-    usagePercent: 85
-  },
-  plans: {
-    maxPhases: 10,
-    mergeFiles: [],
-    runMode: "ask"
-  }
-};
-var SWITCH_NAMES = [
-  "statusLine",
-  "sessionNames",
-  "jobRoute",
-  "updateHold",
-  "leadHint"
-];
-var POLICY_KEYS = [
-  "allowCommit",
-  "allowPush",
-  "openPr",
-  "allowMerge",
-  "mergeMethod",
-  "deleteBranch",
-  "reviewBeforePush",
-  "reviewAgents",
-  "fixesAfterReview.lines",
-  "fixesAfterReview.files",
-  "fixesAfterReview.percent",
-  "clearWorktreeAfterMerge",
-  "issues.enabled",
-  "issues.allowPublic",
-  "issues.foundLabel",
-  "issues.fixedLabel",
-  "issues.readyLabel",
-  "alerts.usagePercent",
-  "plans.maxPhases",
-  "plans.runMode",
-  "plans.mergeFiles"
-];
-var PERSONAL_ONLY_KEYS = ["plans.runMode"];
-var SWITCH_KEYS = SWITCH_NAMES.map((name) => `switches.${name}`);
-var WORKFLOW_KEYS = [...POLICY_KEYS, ...SWITCH_KEYS];
-function isSwitchKey(key) {
-  return SWITCH_KEYS.includes(key);
-}
-var PROJECT_SWITCH_NAMES = ["sessionNames", "jobRoute"];
-function isProjectKey(key) {
-  if (PERSONAL_ONLY_KEYS.includes(key))
-    return false;
-  return !isSwitchKey(key) || PROJECT_SWITCH_NAMES.includes(switchOf(key));
-}
-var PERSONAL_ONLY_REASONS = {
-  "plans.runMode": "a committed value would spend every teammate's usage",
-  "switches.statusLine": "the status line is per person, per machine",
-  "switches.updateHold": "the update hold is per person, per machine",
-  "switches.leadHint": "the lead-model hint is per person, per machine"
-};
-function isPersonalFileSwitch(key) {
-  return isSwitchKey(key) && PERSONAL_FILE_SWITCH_NAMES.includes(switchOf(key));
-}
-function switchOf(key) {
-  return key.slice("switches.".length);
-}
-function workflowValue(workflow, key) {
-  const [head, tail] = key.split(".");
-  if (head === undefined || tail === undefined)
-    return workflow[head ?? ""];
-  const group = workflow[head];
-  if (typeof group !== "object" || group === null)
-    return;
-  return group[tail];
-}
-function isNumberKey(key) {
-  return Object.hasOwn(NUMBER_RULES, key);
-}
-function numberRuleText(key) {
-  const rule = NUMBER_RULES[key];
-  return rule.max === undefined ? `${key} is a whole number, ${rule.min} or more` : `${key} is a whole number ${rule.min}-${rule.max}`;
-}
-function parseNumber(key, value) {
-  const rule = NUMBER_RULES[key];
-  const shape = /^\d+$/;
-  const number = Number(value);
-  return shape.test(value) && numberSchema(rule).safeParse(number).success ? { ok: true, value: number } : { ok: false, why: numberRuleText(key) };
-}
-function parseMergeFiles(value) {
-  const named = value.split(/[,\n]/).map((word) => word.trim()).filter((word) => word !== "");
-  if (named.length === 0)
-    return { ok: false, why: MERGE_FILES_RULE };
-  const paths = [];
-  for (const raw of named) {
-    const parsed = normalizeMergeFile(raw);
-    if (!parsed.ok)
-      return { ok: false, why: `${MERGE_FILES_RULE}; ${parsed.why}` };
-    if (!paths.includes(parsed.path))
-      paths.push(parsed.path);
-  }
-  return { ok: true, value: paths };
-}
-function parseWorkflowValue(key, text) {
-  const value = text.trim();
-  if (key === "openPr" || key === "mergeMethod") {
-    const words = key === "openPr" ? ["off", "draft", "ready"] : ["merge", "squash", "rebase"];
-    return words.includes(value) ? { ok: true, value } : { ok: false, why: `${key} is one of ${words.join(", ")}` };
-  }
-  if (isNumberKey(key))
-    return parseNumber(key, value);
-  if (key === "issues.foundLabel" || key === "issues.fixedLabel" || key === "issues.readyLabel") {
-    return isLabelName(value) ? { ok: true, value } : { ok: false, why: `${key} is ${LABEL_RULE}` };
-  }
-  if (key === "plans.runMode") {
-    return RUN_MODES.includes(value) ? { ok: true, value } : { ok: false, why: `${key} is one of ${RUN_MODES.join(", ")}` };
-  }
-  if (key === "plans.mergeFiles")
-    return parseMergeFiles(value);
-  if (key === "reviewAgents") {
-    const named = value.split(/[,\s]+/).map((word) => word.trim()).filter((word) => word !== "");
-    if (named.length === 0) {
-      return {
-        ok: false,
-        why: "reviewAgents is a list of agent types, like cc-smart-dev-kit:senior-engineer"
-      };
-    }
-    return { ok: true, value: [...new Set(named)] };
-  }
-  if (value === "true" || value === "false")
-    return { ok: true, value: value === "true" };
-  return { ok: false, why: `${key} is true or false` };
-}
-function showValue(_key, value) {
-  if (Array.isArray(value))
-    return value.length === 0 ? "(nothing)" : value.join(", ");
-  return String(value);
-}
-
-// src/project/version-range.ts
-var NUMBER = "(?:x|X|\\*|0|[1-9]\\d*)";
-var IDENT = "[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*";
-var PARTIAL = `v?${NUMBER}(?:\\.${NUMBER}(?:\\.${NUMBER}(?:-${IDENT})?(?:\\+${IDENT})?)?)?`;
-var COMPARATOR = new RegExp(`^(?:[<>]=?|=|\\^|~)?${PARTIAL}$`);
-var HYPHEN = new RegExp(`^(${PARTIAL})\\s+-\\s+(${PARTIAL})$`);
-function isValidRange(range) {
-  const alternatives = range.split("||").map((part) => part.trim());
-  if (alternatives.some((part) => part === ""))
-    return false;
-  return alternatives.every((part) => {
-    if (HYPHEN.test(part))
-      return true;
-    const comparators = part.replace(/([<>]=?|=|\^|~)\s+/g, "$1").split(/\s+/);
-    return comparators.every((comparator) => COMPARATOR.test(comparator));
-  });
-}
-function satisfiesRange(version, range) {
-  if (!isValidRange(range))
-    throw new Error(`"${range}" is not a valid version range`);
-  return Bun.semver.satisfies(version, range);
-}
-var RANGE_START = /^\s*(>=|>|\^|~|=|<=|<)?\s*v?(\d+)(?:\.(\d+))?(?:\.(\d+))?/;
-function lowestAllowed(range) {
-  let lowest = null;
-  for (const part of range.split("||")) {
-    const match = RANGE_START.exec(part);
-    if (match === null)
-      return null;
-    const version = match[1]?.startsWith("<") ? "0.0.0" : `${match[2]}.${match[3] ?? "0"}.${match[4] ?? "0"}`;
-    if (lowest === null || Bun.semver.order(version, lowest) < 0)
-      lowest = version;
-  }
-  return lowest;
-}
-var NO_TOP = "999999.0.0";
-var WRITTEN_VERSION = new RegExp(`v?(${NUMBER})(?:\\.(${NUMBER})(?:\\.(${NUMBER})(?:-(${IDENT}))?(?:\\+${IDENT})?)?)?`, "g");
-function partNumber(part) {
-  return part === undefined || /^[xX*]$/.test(part) ? 0 : Number(part);
-}
-function allowsNewer(version, range) {
-  if (!isValidRange(range))
-    throw new Error(`"${range}" is not a valid version range`);
-  const candidates = [NO_TOP];
-  for (const match of range.matchAll(WRITTEN_VERSION)) {
-    const major = partNumber(match[1]);
-    const minor = partNumber(match[2]);
-    const patch = partNumber(match[3]);
-    const pre = match[4] === undefined ? "" : `-${match[4]}`;
-    candidates.push(`${major}.${minor}.${patch}${pre}`, `${major}.${minor}.${patch + 1}`, `${major}.${minor + 1}.0`, `${major + 1}.0.0`);
-  }
-  return candidates.some((candidate) => Bun.semver.order(candidate, version) > 0 && Bun.semver.satisfies(candidate, range));
-}
-
-// src/project/config.ts
-var PLUGIN_HOOK_NAMES = [
-  "fable-session",
-  "tier-view",
-  "after-merge",
-  "review-record",
-  "subagent-background",
-  "builder-finish",
-  "verify-gate",
-  "keep-going",
-  "agent-usage",
-  "worktree-leftovers",
-  "session-name",
-  "task-start"
-];
-var RETIRED_HOOK_NAMES = [
-  "serena-root",
-  "crew-role",
-  "lead-notes",
-  "message-guard",
-  "git-guard",
-  "merge-guard",
-  "deploy-guard",
-  "main-folder-guard",
-  "agent-guard",
-  "session-escape-guard"
-];
-var UNSWITCHABLE_HOOK_NAMES = ["job-route"];
-var WORKTREE_PREFIX_OPTIONAL_SINCE = "0.5.2";
-var WORKTREE_ENGINE_RETIRED_IN = "1.0.0";
-var RETIRED_WORKTREE_FIELDS = ["prefix", "setup", "engine"];
-var WORKFLOW_FIXES_SINCE = "1.0.0";
-var WORKTREE_AUTO_CLEAN_SINCE = "1.0.0";
-var WORKTREE_REBUILDABLE_SINCE = "1.9.0";
-var CHECKS_SINCE = "1.1.0";
-var WORKFLOW_ISSUES_SINCE = "1.4.0";
-var WORKFLOW_PLANS_SINCE = "4.8.0";
-var WORKFLOW_MERGE_FILES_SINCE = "5.2.0";
-var WORKFLOW_ALLOW_KEYS_SINCE = "6.1.0";
-var JOB_KIND_KEYS_SINCE = {
-  noSlotForFiles: "1.5.0"
-};
-var DEPLOY_GUARD_SINCE = "5.3.0";
-var OWN_HOOK_NAMES_SINCE = {
-  "subagent-background": "1.0.0",
-  "crew-role": "1.0.0",
-  "lead-notes": "1.0.0",
-  "verify-gate": "1.1.0",
-  "agent-usage": "1.1.0",
-  "tier-view": "1.3.0",
-  "task-start": "1.10.0",
-  "keep-going": "2.0.0",
-  "builder-finish": "2.0.0",
-  "deploy-guard": DEPLOY_GUARD_SINCE,
-  "session-escape-guard": "6.0.0"
-};
-var TASKS_SINCE = "1.10.0";
-var DEPLOY_TASKS_SINCE = "5.0.0";
-var deployCommandEntry = union([string2(), matchRuleSchema], { error: "is not a command or a match rule" }).superRefine((entry, ctx) => {
-  if (typeof entry !== "string")
-    return;
-  const steps = shellSteps(entry);
-  if (steps.every((step) => step.text.trim() === ""))
-    ctx.addIssue({
-      code: "custom",
-      message: `${JSON.stringify(entry)} holds no command: write one command, such as \`vercel --prod\``
-    });
-  else if (steps.length > 1)
-    ctx.addIssue({
-      code: "custom",
-      message: `${JSON.stringify(entry)} holds more than one command or a shell construct (;, &&, ||, |, &, a new line, $(\u2026), a here-doc or a group): write one plain command, such as \`vercel --prod\`; extra words in a run still match`
-    });
-});
-var deployCommandList = array(deployCommandEntry).min(1, "is an empty list: list at least one command, or remove the key");
-var inCheckout = string2().min(1).refine((path) => !posix2.isAbsolute(path) && !win322.isAbsolute(path) && !path.split(/[\\/]/).includes(".."), "must be relative to the checkout root, without ..").refine((path) => !path.includes("\\"), "use / as the separator").refine((path) => !path.split("/").includes("."), "must not contain . segments");
-var IGNORED_TASK_SCHEMAS = {
-  releaseBranch: string2().trim().min(1).optional(),
-  legacyFolders: array(inCheckout).optional()
-};
-var IGNORED_TASK_FIELDS = Object.keys(IGNORED_TASK_SCHEMAS);
-var ccSmartDevKitConfigSchema = strictObject({
-  requires: string2().refine(isValidRange, 'not a valid version range (like ">=1.2" or "^1.2")').optional(),
-  worktrees: strictObject({
-    base: string2().min(1),
-    guardMainFolder: boolean2().optional(),
-    autoClean: boolean2().optional(),
-    rebuildable: array(inCheckout.refine((path) => /[^*?/[\]{},!.]/.test(path), "names nothing; list the folder or file name")).optional(),
-    bases: record(string2(), string2().min(1)).refine((bases) => Object.keys(bases).every((prefix) => prefix.endsWith("/")), {
-      error: (issue) => {
-        const given = issue.input;
-        const wrong = typeof given === "object" && given !== null ? Object.keys(given).find((prefix) => !prefix.endsWith("/")) : undefined;
-        return `"${wrong ?? "a prefix"}" must end with "/" (a branch-name prefix, like "release/")`;
-      }
-    }).optional()
-  }).optional(),
-  protectedBranches: array(string2().min(1)).min(1).optional(),
-  checks: strictObject({ fast: string2().trim().min(1) }).optional(),
-  sessionNames: boolean2().optional(),
-  instructions: boolean2().optional(),
-  autoMode: array(string2().min(1)).optional(),
-  jobs: strictObject({ kinds: kindsSchema.optional(), route: boolean2().optional() }).optional(),
-  tasks: strictObject({
-    dir: inCheckout.optional(),
-    staleDays: number2().int().min(1).optional(),
-    envs: array(_enum(DEPLOY_ENVS)).min(1).refine((envs) => new Set(envs).size === envs.length, "Each environment once").optional(),
-    deployCommands: strictObject({ prod: deployCommandList.optional(), staging: deployCommandList.optional() }).refine((commands) => Object.keys(commands).length > 0, "is empty: list the commands for an environment, or remove the key").optional(),
-    ...IGNORED_TASK_SCHEMAS
-  }).superRefine((tasks, ctx) => {
-    if (tasks.envs?.length === 0)
-      return;
-    const envs = tasks.envs ?? DEPLOY_ENVS;
-    for (const env of Object.keys(tasks.deployCommands ?? {}))
-      if (!envs.includes(env))
-        ctx.addIssue({
-          code: "custom",
-          path: ["deployCommands", env],
-          message: `is not one of tasks.envs (${envs.join(", ")}): remove it, or add ${env} to tasks.envs`
-        });
-  }).optional(),
-  workflow: workflowSchema.optional(),
-  ownHooks: array(_enum([...PLUGIN_HOOK_NAMES, ...RETIRED_HOOK_NAMES, ...UNSWITCHABLE_HOOK_NAMES])).optional()
-});
-class CcSmartDevKitConfigError extends Error {
-  name = "CcSmartDevKitConfigError";
-}
-
-class CcSmartDevKitVersionError extends CcSmartDevKitConfigError {
-  name = "CcSmartDevKitVersionError";
-}
-
-class CcSmartDevKitRetiredFieldError extends CcSmartDevKitConfigError {
-  name = "CcSmartDevKitRetiredFieldError";
-}
-function describeIssue(issue) {
-  const field = issue.path.length > 0 ? issue.path.join(".") : "(top level)";
-  if (issue.code === "unrecognized_keys") {
-    const keys = issue.keys.map((key) => field === "(top level)" ? key : `${field}.${key}`);
-    return `${keys.join(", ")}: unknown field (a newer cc-smart-dev-kit may be needed)`;
-  }
-  return `${field}: ${issue.message}`;
-}
-function checkRequires(file, raw, pluginVersion) {
-  if (typeof raw !== "object" || raw === null || Array.isArray(raw))
-    return;
-  const requires = raw.requires;
-  if (typeof requires !== "string" || !isValidRange(requires))
-    return;
-  if (satisfiesRange(pluginVersion, requires))
-    return;
-  if (!allowsNewer(pluginVersion, requires)) {
-    const lowest = lowestAllowed(requires);
-    const [major, minor] = lowest?.split(".") ?? [];
-    const example = lowest === null || lowest === "0.0.0" ? "" : ` (for example >=${major}.${minor})`;
-    throw new CcSmartDevKitVersionError(`${file}: this project's requires ${requires} does not let in cc-smart-dev-kit ` + `${pluginVersion}, which is newer; widen requires in that file${example}`);
-  }
-  throw new CcSmartDevKitVersionError(`${file}: this project needs cc-smart-dev-kit ${requires}; you have ${pluginVersion}; ` + `run ${PLUGIN_UPDATE_COMMAND}`);
-}
-function retiredFieldMessage(field) {
-  return `worktrees.${field} is no longer supported: remove it \u2014 Claude Code's own worktrees need none. \`${COMMAND} project init\` removes it (README \xA7 Worktrees).`;
-}
-function retiredFieldsOf(raw) {
-  if (typeof raw !== "object" || raw === null || Array.isArray(raw))
-    return [];
-  const worktrees = raw.worktrees;
-  if (typeof worktrees !== "object" || worktrees === null || Array.isArray(worktrees))
-    return [];
-  return RETIRED_WORKTREE_FIELDS.filter((field) => Object.hasOwn(worktrees, field));
-}
-function checkRetiredFields(where, raw) {
-  const found = retiredFieldsOf(raw);
-  if (found.length === 0)
-    return;
-  throw new CcSmartDevKitRetiredFieldError(`Invalid ${where}: ${found.map(retiredFieldMessage).join(" ")}`);
-}
-function checkPersonalOnlyFields(where, raw) {
-  const workflow = isObject2(raw) ? raw.workflow : undefined;
-  for (const key of PERSONAL_ONLY_KEYS) {
-    const [group, field] = key.split(".");
-    const settings = isObject2(workflow) ? workflow[group ?? ""] : undefined;
-    if (!isObject2(settings) || !Object.hasOwn(settings, field ?? ""))
-      continue;
-    throw new CcSmartDevKitConfigError(`Invalid ${where}: workflow.${key} is your own setting, not the project's, because ${PERSONAL_ONLY_REASONS[key]}: remove it from this file and run \`${COMMAND} workflow set ${key} <value>\` in your own terminal.`);
-  }
-}
-function loadCcSmartDevKitConfig(file, pluginVersion = VERSION) {
-  if (!existsSync12(file))
-    return null;
-  return parseCcSmartDevKitConfig(readFileSync21(file, "utf8"), file, pluginVersion);
-}
-function parseCcSmartDevKitConfig(text, where, pluginVersion = VERSION) {
-  let raw;
-  try {
-    raw = parseUserJson(text);
-  } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error);
-    throw new CcSmartDevKitConfigError(`Invalid ${where}: not valid JSON (${reason})`);
-  }
-  return checkCcSmartDevKitConfig(raw, where, pluginVersion);
-}
-function checkCcSmartDevKitConfig(raw, where, pluginVersion = VERSION) {
-  checkRequires(where, raw, pluginVersion);
-  checkRetiredFields(where, raw);
-  checkPersonalOnlyFields(where, raw);
-  const parsed = ccSmartDevKitConfigSchema.safeParse(raw);
-  if (!parsed.success) {
-    const issues = parsed.error.issues.map(describeIssue).join("; ");
-    throw new CcSmartDevKitConfigError(`Invalid ${where}: ${issues}`);
-  }
-  return parsed.data;
-}
-
-// src/project/resolve.ts
-import { existsSync as existsSync13, realpathSync as realpathSync3, statSync as statSync8 } from "fs";
-import { join as join15 } from "path";
-var MIN_GIT_VERSION = "2.31.0";
-var RESOLVE_GIT_TIMEOUT_MS = 5000;
-var GIT_NOT_FOUND = "git was not found, so this project's own values cannot be read. Install git, then try again.";
-function gitNotFound(error) {
-  const why = error instanceof Error ? error.message : String(error);
-  return /not found in \$PATH|ENOENT/.test(why) ? new Error(GIT_NOT_FOUND) : error;
-}
-var GIT_TIMED_OUT2 = "git did not answer in time";
-var GIT_TIMED_OUT_FIX = "run `git status` in this folder; if that hangs too, fix git first, then run this again";
-
-class GitTimedOutError extends Error {
-  constructor() {
-    super(`${GIT_TIMED_OUT2}: ${GIT_TIMED_OUT_FIX}`);
-    this.name = "GitTimedOutError";
-  }
-}
-function checkoutFailure(error) {
-  if (error instanceof GitTimedOutError)
-    return GIT_TIMED_OUT2;
-  return error instanceof Error ? error.message : String(error);
-}
-var NO_TIME_LEFT = {
-  ok: false,
-  stdout: "",
-  stderr: "no time left in the hook's budget",
-  timedOut: true
-};
-function callLimit(timeoutMs, timeFor) {
-  return timeFor === undefined ? timeoutMs : timeFor(timeoutMs);
-}
-function gitIn(cwd, env, timeoutMs = RESOLVE_GIT_TIMEOUT_MS, timeFor) {
-  return (args) => {
-    const limit = callLimit(timeoutMs, timeFor);
-    if (limit <= 0)
-      return NO_TIME_LEFT;
-    try {
-      const result = Bun.spawnSync(["git", ...args], {
-        cwd,
-        env,
-        stdin: "ignore",
-        stdout: "pipe",
-        stderr: "pipe",
-        timeout: limit,
-        windowsHide: true
-      });
-      return {
-        ok: result.exitCode === 0,
-        stdout: result.stdout.toString(),
-        stderr: result.stderr.toString(),
-        timedOut: result.exitedDueToTimeout === true
-      };
-    } catch (error) {
-      throw gitNotFound(error);
-    }
-  };
-}
-function gitInAsync(cwd, env, timeoutMs = RESOLVE_GIT_TIMEOUT_MS, timeFor) {
-  return async (args) => {
-    const limit = callLimit(timeoutMs, timeFor);
-    if (limit <= 0)
-      return NO_TIME_LEFT;
-    try {
-      const child = Bun.spawn(["git", ...args], {
-        cwd,
-        env,
-        stdin: "ignore",
-        stdout: "pipe",
-        stderr: "pipe",
-        timeout: limit,
-        windowsHide: true
-      });
-      const [stdout, stderr, code] = await Promise.all([
-        new Response(child.stdout).text(),
-        new Response(child.stderr).text(),
-        child.exited
-      ]);
-      return { ok: code === 0, stdout, stderr, timedOut: child.signalCode === "SIGTERM" };
-    } catch (error) {
-      throw gitNotFound(error);
-    }
-  };
-}
-function requireGitVersionText(out) {
-  const match = /git version (\d+)\.(\d+)(?:\.(\d+))?/.exec(out);
-  if (!match)
-    return;
-  const version = `${match[1]}.${match[2]}.${match[3] ?? "0"}`;
-  if (Bun.semver.order(version, MIN_GIT_VERSION) < 0) {
-    throw new Error(`git 2.31 or newer is needed; you have git ${version}. Update git.`);
-  }
-}
-function requireGitVersion(git) {
-  requireGitVersionText(git(["--version"]).stdout);
-}
-async function requireGitVersionAsync(git) {
-  requireGitVersionText((await git(["--version"])).stdout);
-}
-function mainCheckoutFrom(list, cwd) {
-  if (list.timedOut === true)
-    throw new GitTimedOutError;
-  if (!list.ok)
-    throw new Error(`git worktree list failed in ${cwd}: ${list.stderr.trim()}`);
-  const [firstEntry = ""] = list.stdout.split(`
-
-`);
-  const lines = firstEntry.split(`
-`);
-  if (lines.includes("bare"))
-    return null;
-  const pathLine = lines.find((line) => line.startsWith("worktree "));
-  if (!pathLine)
-    return null;
-  const path = pathLine.slice("worktree ".length);
-  if (!existsSync13(path) || lines.some((line) => line.startsWith("prunable"))) {
-    throw new Error(`The main checkout of the repo at ${cwd} is missing: ${path} was moved or deleted. ` + 'If you moved it, run "git worktree repair" in its new folder.');
-  }
-  return realpathSync3(path);
-}
-function findMainCheckout(git, cwd) {
-  return mainCheckoutFrom(git(["worktree", "list", "--porcelain"]), cwd);
-}
-async function findMainCheckoutAsync(git, cwd) {
-  return mainCheckoutFrom(await git(["worktree", "list", "--porcelain"]), cwd);
-}
-function revParseParts(revParse) {
-  const [top, gitDir, common] = revParse.stdout.trim().split(`
-`);
-  if (!revParse.ok || top?.startsWith("--"))
-    return "not-understood";
-  if (!top || !gitDir || !common)
-    return "outside";
-  return { common, gitDir, top };
-}
-function checkoutRoots(parts) {
-  const root = realpathSync3(parts.top);
-  const commonDir = realpathSync3(parts.common);
-  return { commonDir, isWorktree: realpathSync3(parts.gitDir) !== commonDir, root };
-}
-function locateCheckout(cwd, options = {}) {
-  if (!existsSync13(cwd) || !statSync8(cwd).isDirectory()) {
-    throw new Error(`resolveProject: ${cwd} is not a folder`);
-  }
-  const git = gitIn(cwd, gitEnv(options.env ?? process.env), undefined, options.timeFor);
-  const revParse = git([
-    "rev-parse",
-    "--path-format=absolute",
-    "--show-toplevel",
-    "--absolute-git-dir",
-    "--git-common-dir"
-  ]);
-  if (revParse.timedOut === true)
-    throw new GitTimedOutError;
-  const parts = revParseParts(revParse);
-  if (parts === "not-understood") {
-    requireGitVersion(git);
-    if (revParse.ok) {
-      throw new Error("git did not understand rev-parse --path-format: git 2.31 or newer is needed.");
-    }
-    return null;
-  }
-  if (parts === "outside")
-    return null;
-  const roots = checkoutRoots(parts);
-  return {
-    ...roots,
-    mainCheckout: roots.isWorktree ? findMainCheckout(git, cwd) : roots.root
-  };
-}
-async function locateCheckoutAsync(cwd, options = {}) {
-  if (!existsSync13(cwd) || !statSync8(cwd).isDirectory()) {
-    throw new Error(`resolveProject: ${cwd} is not a folder`);
-  }
-  const git = gitInAsync(cwd, gitEnv(options.env ?? process.env), undefined, options.timeFor);
-  const revParse = await git([
-    "rev-parse",
-    "--path-format=absolute",
-    "--show-toplevel",
-    "--absolute-git-dir",
-    "--git-common-dir"
-  ]);
-  if (revParse.timedOut === true)
-    throw new GitTimedOutError;
-  const parts = revParseParts(revParse);
-  if (parts === "not-understood") {
-    await requireGitVersionAsync(git);
-    if (revParse.ok) {
-      throw new Error("git did not understand rev-parse --path-format: git 2.31 or newer is needed.");
-    }
-    return null;
-  }
-  if (parts === "outside")
-    return null;
-  const roots = checkoutRoots(parts);
-  return {
-    ...roots,
-    mainCheckout: roots.isWorktree ? await findMainCheckoutAsync(git, cwd) : roots.root
-  };
-}
-function loadProjectConfig(checkout, pluginVersion) {
-  const { root, mainCheckout } = checkout;
-  const own = join15(root, ".claude", "cc-smart-dev-kit.json");
-  let config = loadCcSmartDevKitConfig(own, pluginVersion);
-  let configFile = config === null ? null : own;
-  if (config === null && mainCheckout !== null && mainCheckout !== root) {
-    const main = join15(mainCheckout, ".claude", "cc-smart-dev-kit.json");
-    config = loadCcSmartDevKitConfig(main, pluginVersion);
-    configFile = config === null ? null : main;
-  }
-  return { ...checkout, config, configFile };
-}
-var CONFIG_PATH = ".claude/cc-smart-dev-kit.json";
-function gitTimedOut(where) {
-  return { found: false, where, why: GIT_TIMED_OUT2 };
-}
-function refNotKnown(where, ref, read) {
-  if (read.timedOut === true)
-    return gitTimedOut(where);
-  return {
-    found: false,
-    where,
-    why: `${ref} is not known in this repository (no origin, or the branch was never fetched)`
-  };
-}
-function noCommittedFile(where, ref, read) {
-  if (read.timedOut === true)
-    return gitTimedOut(where);
-  return { found: false, where, why: `${ref} has no ${CONFIG_PATH} committed` };
-}
-function unreadableCommitted(where, read) {
-  if (read.timedOut === true)
-    return gitTimedOut(where);
-  return { found: false, where, why: `git could not read ${where}` };
-}
-function committedOf(text, where, options) {
-  return {
-    found: true,
-    where,
-    config: parseCcSmartDevKitConfig(text.stdout, where, options.pluginVersion)
-  };
-}
-function readCommittedConfig(checkout, branch, options = {}) {
-  const ref = `origin/${branch}`;
-  const where = `${ref}:${CONFIG_PATH}`;
-  const git = gitIn(checkout.root, gitEnv(options.env ?? process.env), options.timeoutMs, options.timeFor);
-  const commit = git(["rev-parse", "--verify", "--quiet", `refs/remotes/${ref}^{commit}`]);
-  if (!commit.ok)
-    return refNotKnown(where, ref, commit);
-  const blob = git(["rev-parse", "--verify", "--quiet", `${commit.stdout.trim()}:${CONFIG_PATH}`]);
-  if (!blob.ok)
-    return noCommittedFile(where, ref, blob);
-  const text = git(["cat-file", "blob", blob.stdout.trim()]);
-  if (!text.ok)
-    return unreadableCommitted(where, text);
-  return committedOf(text, where, options);
-}
-async function readCommittedConfigAsync(checkout, branch, options = {}) {
-  const ref = `origin/${branch}`;
-  const where = `${ref}:${CONFIG_PATH}`;
-  const git = gitInAsync(checkout.root, gitEnv(options.env ?? process.env), options.timeoutMs, options.timeFor);
-  const commit = await git(["rev-parse", "--verify", "--quiet", `refs/remotes/${ref}^{commit}`]);
-  if (!commit.ok)
-    return refNotKnown(where, ref, commit);
-  const blob = await git([
-    "rev-parse",
-    "--verify",
-    "--quiet",
-    `${commit.stdout.trim()}:${CONFIG_PATH}`
-  ]);
-  if (!blob.ok)
-    return noCommittedFile(where, ref, blob);
-  const text = await git(["cat-file", "blob", blob.stdout.trim()]);
-  if (!text.ok)
-    return unreadableCommitted(where, text);
-  return committedOf(text, where, options);
-}
-function resolveProject(cwd, options = {}) {
-  const checkout = locateCheckout(cwd, options);
-  return checkout === null ? null : loadProjectConfig(checkout, options.pluginVersion);
-}
-async function resolveProjectAsync(cwd, options = {}) {
-  const checkout = await locateCheckoutAsync(cwd, options);
-  return checkout === null ? null : loadProjectConfig(checkout, options.pluginVersion);
-}
+init_build_info();
+init_git();
+init_config();
+init_resolve();
+import { createHash as createHash7 } from "crypto";
+import { existsSync as existsSync42, mkdirSync as mkdirSync17, readFileSync as readFileSync55 } from "fs";
+import { basename as basename10, dirname as dirname21, join as join49, relative as relative4 } from "path";
 
 // src/sessions/command.ts
 import {
@@ -17206,9 +18127,10 @@ import {
   rmSync as rmSync3,
   statSync as statSync11
 } from "fs";
-import { dirname as dirname9, join as join20, resolve as resolve5 } from "path";
+import { dirname as dirname10, join as join20, resolve as resolve5 } from "path";
 
 // src/cli/check.ts
+init_names();
 var FIX_LABEL = "Fix:";
 var SETUP_FIX = `${COMMAND} setup`;
 function checkStatus(check) {
@@ -17467,6 +18389,9 @@ function detectTerminal(facts) {
   };
 }
 
+// src/sessions/command.ts
+init_git();
+
 // src/hooks/sessions.ts
 import { existsSync as existsSync14, readdirSync as readdirSync7, readFileSync as readFileSync23, statSync as statSync9 } from "fs";
 import { uptime } from "os";
@@ -17596,6 +18521,7 @@ function liveSessions(claudeConfigDir, facts = {}) {
 }
 
 // src/machine/claude.ts
+init_detached();
 import { statSync as statSync10 } from "fs";
 import { join as join17 } from "path";
 var CLAUDE_TIMEOUT_MS = 30000;
@@ -17630,7 +18556,12 @@ function claudeArgv(binary, args, platform) {
   return { argv: line.argv, verbatim: true };
 }
 
+// src/sessions/command.ts
+init_resolve();
+init_write();
+
 // src/sessions/finished.ts
+init_zod();
 import { readFileSync as readFileSync24 } from "fs";
 import { join as join18 } from "path";
 var FINISHED_SESSION_AGE_MS = 24 * 60 * 60 * 1000;
@@ -17719,7 +18650,7 @@ function readFinishedSessions(paths, deps) {
 }
 
 // src/worktrees/paths.ts
-import { join as join19 } from "path";
+import { basename as basename4, dirname as dirname9, join as join19 } from "path";
 var WORKTREES_FOLDER_SEGMENTS = [".claude", "worktrees"];
 var WORKTREES_GITIGNORE_ENTRY = `${WORKTREES_FOLDER_SEGMENTS.join("/")}/`;
 function worktreesFolder(repoRoot) {
@@ -17748,9 +18679,29 @@ function projectFolderName(path) {
   const name = path.replace(/[^A-Za-z0-9]/g, "-");
   return name.length <= PROJECT_FOLDER_NAME_MAX ? name : `${name.slice(0, PROJECT_FOLDER_NAME_MAX)}-${pathHash(path)}`;
 }
-function belongsToRepo(projectFolder, mainCheckout) {
+function pathSpellings(path) {
+  const separators = [path, path.replaceAll("/", "\\"), path.replaceAll("\\", "/")];
+  const spellings = new Set;
+  for (const spelled of separators) {
+    spellings.add(spelled);
+    if (/^[A-Za-z]:/.test(spelled)) {
+      const drive = spelled.charAt(0);
+      spellings.add(`${drive.toUpperCase()}${spelled.slice(1)}`);
+      spellings.add(`${drive.toLowerCase()}${spelled.slice(1)}`);
+    }
+  }
+  return [...spellings];
+}
+function worktreeProjectFolders(paths) {
+  const names = new Set;
+  for (const path of paths)
+    for (const spelled of pathSpellings(path))
+      names.add(projectFolderName(spelled));
+  return names;
+}
+function belongsToRepo(projectFolder, mainCheckout, worktrees = new Set) {
   const main = projectFolderName(mainCheckout);
-  if (projectFolder === main)
+  if (projectFolder === main || worktrees.has(projectFolder))
     return true;
   const claudeOwn = `${projectFolderName(worktreesFolder(mainCheckout))}-`;
   return projectFolder.startsWith(claudeOwn);
@@ -17879,12 +18830,13 @@ function sessionWorkFolderTimes(projectsDir) {
 function sessionWorkFolders(projectsDir) {
   return sessionWorkFolderTimes(projectsDir).map((worked) => worked.folder);
 }
-function savedSessions(projectsDir, mainCheckout, since) {
+function savedSessions(projectsDir, mainCheckout, since, listed = null) {
   if (!existsSync15(projectsDir))
     return [];
   const sessions = [];
+  const worktrees = worktreeProjectFolders((listed ?? []).flatMap((one) => [one.path, realPath(one.path)]));
   for (const folder of readdirSync8(projectsDir)) {
-    if (!belongsToRepo(folder, mainCheckout))
+    if (!belongsToRepo(folder, mainCheckout, worktrees))
       continue;
     for (const file of sessionFiles(projectsDir, folder)) {
       if (file.lastWrite < since)
@@ -17897,11 +18849,17 @@ function savedSessions(projectsDir, mainCheckout, since) {
   return sessions.sort((a, b) => b.lastWrite - a.lastWrite);
 }
 
+// src/portal/api/projects.ts
+init_lock();
+init_write();
+
 // src/update/retired-repos.ts
+init_build_info();
 import { existsSync as existsSync17, readFileSync as readFileSync27 } from "fs";
 import { join as join22, relative } from "path";
 
 // src/hooks/settings-hooks.ts
+init_names();
 import { existsSync as existsSync16, readFileSync as readFileSync26 } from "fs";
 import { join as join21 } from "path";
 var RETIRED_ENGINE_HOOKS = [
@@ -17978,6 +18936,9 @@ function allWiredHandlers(file) {
 }
 
 // src/update/retired-repos.ts
+init_config();
+init_resolve();
+init_user_json();
 function messageOf2(error) {
   return error instanceof Error ? error.message : String(error);
 }
@@ -18049,11 +19010,21 @@ function retiredRepoLines(paths, env) {
   return reposWithRetiredParts(paths, env).map((found) => retiredRepoLine(found, paths.home));
 }
 
+// src/workflow/merge-check.ts
+init_git();
+
+// src/workflow/auto-merge.ts
+init_names();
+init_config();
+
 // src/project/init.ts
+init_zod();
 import { existsSync as existsSync19 } from "fs";
 import { join as join24 } from "path";
 
 // src/setup/json-edit.ts
+init_managed_json();
+init_user_json();
 var DEFAULT_LINE_WIDTH = 80;
 var MAX_LINE_WIDTH = 120;
 var TAB_COLUMNS = 2;
@@ -18283,9 +19254,16 @@ function jsonTextFor(existing, data, indent) {
   return editJsonText(existing, data);
 }
 
+// src/project/init.ts
+init_managed_json();
+init_user_json();
+init_write();
+
 // src/tasks/deploy/files.ts
+init_write();
+init_format();
 import { existsSync as existsSync18, mkdirSync as mkdirSync7, readdirSync as readdirSync9, readFileSync as readFileSync28, rmSync as rmSync4, writeFileSync as writeFileSync2 } from "fs";
-import { basename as basename4, dirname as dirname10, isAbsolute, join as join23, relative as relative2, resolve as resolve6, sep as sep2 } from "path";
+import { basename as basename5, dirname as dirname11, isAbsolute, join as join23, relative as relative2, resolve as resolve6, sep as sep2 } from "path";
 var DEFAULT_TASKS_DIR = ".claude/tasks";
 function deployTasksDir(checkoutRoot, settings) {
   const dir = settings.dir ?? DEFAULT_TASKS_DIR;
@@ -18303,7 +19281,7 @@ function envFolder(dir, env) {
   return join23(dir, env);
 }
 function isArchived(file) {
-  return basename4(dirname10(file)) === ARCHIVE;
+  return basename5(dirname11(file)) === ARCHIVE;
 }
 function archiveFolder(dir, env) {
   return join23(dir, env, ARCHIVE);
@@ -18336,7 +19314,7 @@ function scanDeployTasks(dir, options) {
     const first = copies[0];
     if (!first)
       continue;
-    if (new Set(copies.map((task) => basename4(task.file))).size > 1) {
+    if (new Set(copies.map((task) => basename5(task.file))).size > 1) {
       duplicates.push({ id: first.id, files: copies.map((task) => task.file) });
       tasks.push(...copies);
       continue;
@@ -18409,7 +19387,7 @@ function claim2(dir, task, sources) {
       return false;
     throw error;
   }
-  const own = basename4(task.file);
+  const own = basename5(task.file);
   const rival = [envFolder(dir, task.env), archiveFolder(dir, task.env)].filter((folder) => existsSync18(folder)).flatMap((folder) => readdirSync9(folder)).some((name) => name !== own && deployIdOfFileName(name) === task.id);
   if (rival)
     rmSync4(task.file, { force: true });
@@ -18509,7 +19487,7 @@ function closeDeployTask(dir, id, options, now) {
   }, options.note ?? `${options.status}: ${options.evidence ?? ""}`, now);
   const archive = archiveFolder(dir, task.env);
   mkdirSync7(archive, { recursive: true });
-  const destination = join23(archive, basename4(task.file));
+  const destination = join23(archive, basename5(task.file));
   if (destination !== task.file && existsSync18(destination))
     throw new Error(`Archive task already exists: ${destination}`);
   const saved = save({ ...closed, file: destination });
@@ -18527,14 +19505,18 @@ function reopenDeployTask(dir, id, now, note) {
     const { closed: _closed, evidence: _evidence, ...rest } = task;
     reopened = save(withNote({ ...rest, status: "open" }, note?.trim() ? `reopened: ${note}` : "reopened", now));
   }
-  const destination = join23(envFolder(dir, task.env), basename4(task.file));
+  const destination = join23(envFolder(dir, task.env), basename5(task.file));
   const saved = save({ ...reopened, file: destination });
   if (destination !== task.file)
     rmSync4(task.file, { force: true });
   return saved;
 }
 
+// src/project/init.ts
+init_format();
+
 // src/workflow/clashes.ts
+init_names();
 function workflowClashes(input) {
   const clashes = [];
   if (input.openPr !== "off" && !input.allowPush) {
@@ -18565,6 +19547,9 @@ function clashNote(clash) {
 }
 
 // src/project/init.ts
+init_schema();
+init_config();
+init_version_range();
 var FILE_ORDER = [
   "requires",
   "worktrees",
@@ -18934,513 +19919,9 @@ function applyProjectInit(plan, options) {
   });
 }
 
-// src/workflow/resolve.ts
-import { existsSync as existsSync21, readFileSync as readFileSync30 } from "fs";
-
-// src/setup/statusline.ts
-import { join as join25 } from "path";
-
-// src/setup/launcher.ts
-var LAUNCHER_NAME = "cc-smart-dev-kit";
-var LAUNCHER_IN_SHELL = `"$HOME/.local/bin/${LAUNCHER_NAME}"`;
-var FIND_INSTALL_JS = [
-  "const f=process.argv[process.argv.length-1];",
-  'const j=JSON.parse(require("fs").readFileSync(f,"utf8"));',
-  `const e=((j&&j.plugins&&j.plugins["${PLUGIN_ID}"])||[]).find(x=>x&&x.scope==="user"&&typeof x.installPath==="string");`,
-  "if(!e)process.exit(1);",
-  "process.stdout.write(e.installPath);"
-].join("");
-function bakedBunPath(script) {
-  const match = /^baked_bun=('(?:[^']|'\\'')*')$/m.exec(script);
-  if (!match?.[1])
-    return null;
-  return match[1].slice(1, -1).replaceAll("'\\''", "'");
-}
-function launcherScript(bunPath) {
-  return `#!/bin/sh
-# cc-smart-dev-kit launcher. Written by "cc-smart-dev-kit setup"; setup rewrites it, so do not edit it.
-# It runs the cc-smart-dev-kit command from the installed version of the cc-smart-dev-kit plugin.
-fail() {
-  echo "cc-smart-dev-kit: $1 Run: claude plugin install ${PLUGIN_ID}" >&2
-  exit 1
-}
-baked_bun=${shellQuote(bunPath)}
-if [ -x "$baked_bun" ]; then
-  bun="$baked_bun"
-elif command -v bun >/dev/null 2>&1; then
-  bun=$(command -v bun)
-else
-  echo "cc-smart-dev-kit: bun not found (not at $baked_bun, not on PATH). Install bun, then run: cc-smart-dev-kit setup" >&2
-  exit 1
-fi
-config_dir="\${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
-installed="$config_dir/plugins/installed_plugins.json"
-[ -f "$installed" ] || fail "the cc-smart-dev-kit plugin is not installed."
-# The lookup runs in this launcher's own folder (never the person's working folder): bun reads
-# the working folder's bunfig.toml, and a project's preload could print another path \u2014 this
-# very path decides which CLI runs. The plugin's own empty config cannot be used here: it sits
-# in the folder this lookup has yet to find.
-launcher_dir=$HOME/.local/bin
-case $0 in */*) launcher_dir=\${0%/*} ;; esac
-install_path=$(cd "$launcher_dir" && "$bun" -e '${FIND_INSTALL_JS}' -- "$installed" 2>/dev/null) || fail "the cc-smart-dev-kit plugin is not installed."
-[ -n "$install_path" ] || fail "the cc-smart-dev-kit plugin is not installed."
-[ -f "$install_path/dist/cli.js" ] || fail "the cc-smart-dev-kit plugin folder is missing: $install_path."
-# --no-env-file: "cc-smart-dev-kit job run" hands its job exactly the environment it was given.
-# --config: the plugin's own empty config, beside the CLI in the same version folder, so the
-# working folder's bunfig.toml (a project's preload) never runs inside the command. An
-# installed version older than that file (0.2.x, until migrate replaces it) has none: bun
-# refuses a config path that does not exist, so the flag is left out then.
-set -- "$install_path/dist/cli.js" "$@"
-if [ -f "$install_path/bunfig.toml" ]; then
-  set -- "--config=$install_path/bunfig.toml" "$@"
-fi
-exec "$bun" --no-env-file "$@"
-`;
-}
-
-// src/setup/statusline.ts
-var STATUSLINE_KEY = ["statusLine"];
-function statuslineSetting(paths) {
-  return { command: `${shellWord(join25(paths.binDir, LAUNCHER_NAME))} statusline`, type: "command" };
-}
-
-// src/update/state.ts
-import {
-  appendFileSync,
-  existsSync as existsSync20,
-  mkdirSync as mkdirSync8,
-  readdirSync as readdirSync10,
-  readFileSync as readFileSync29,
-  rmSync as rmSync5,
-  statSync as statSync12,
-  writeFileSync as writeFileSync3
-} from "fs";
-import { join as join26 } from "path";
-var CHECK_INTERVAL_MS = 60 * 60 * 1000;
-var LOG_MAX_BYTES = 256 * 1024;
-function updateFiles(stateDir) {
-  return {
-    hold: join26(stateDir, "update-hold"),
-    check: join26(stateDir, "update-check.json"),
-    reported: join26(stateDir, "update-reported"),
-    major: join26(stateDir, "update-major.json"),
-    log: join26(stateDir, "update.log"),
-    lockDir: join26(stateDir, "update"),
-    sessions: join26(stateDir, "sessions")
-  };
-}
-var RESULTS = [
-  "checking",
-  "up-to-date",
-  "updated",
-  "skipped",
-  "unreachable",
-  "failed"
-];
-var UNREACHABLE_FAILS_AFTER_HOURS = 24;
-var UNREACHABLE_FAILS_AFTER_MS = UNREACHABLE_FAILS_AFTER_HOURS * 60 * 60 * 1000;
-var UNREACHABLE_WORDS = "cannot read the marketplace";
-function unreachableSince(check) {
-  if (check?.since === undefined)
-    return null;
-  const inStreak = check.result === "unreachable" || check.result === "checking" || check.result === "failed" && check.detail.startsWith(UNREACHABLE_WORDS);
-  return inStreak ? check.since : null;
-}
-function unreachableCheck(previous, at, nowMs, detail) {
-  const since = unreachableSince(previous) ?? at;
-  const failed = nowMs - Date.parse(since) >= UNREACHABLE_FAILS_AFTER_MS;
-  return {
-    at,
-    detail: `${UNREACHABLE_WORDS}${failed ? ` since ${since}` : ""} (${detail})`,
-    result: failed ? "failed" : "unreachable",
-    since
-  };
-}
-function ensureDir(dir) {
-  mkdirSync8(dir, { recursive: true, mode: 448 });
-}
-function readLastCheck(files) {
-  try {
-    const parsed = JSON.parse(readFileSync29(files.check, "utf8"));
-    if (typeof parsed?.at !== "string" || Number.isNaN(Date.parse(parsed.at)) || !RESULTS.includes(parsed.result) || typeof parsed.detail !== "string") {
-      return null;
-    }
-    const check = {
-      at: parsed.at,
-      detail: parsed.detail,
-      result: parsed.result
-    };
-    if (typeof parsed.since === "string" && !Number.isNaN(Date.parse(parsed.since))) {
-      check.since = parsed.since;
-    }
-    return check;
-  } catch {
-    return null;
-  }
-}
-function writeLastCheck(files, check) {
-  ensureDir(join26(files.check, ".."));
-  atomicWrite(files.check, `${JSON.stringify(check, null, 2)}
-`, 384);
-}
-function isHeld(files) {
-  return existsSync20(files.hold);
-}
-function heldSince(files) {
-  try {
-    const text = readFileSync29(files.hold, "utf8").trim();
-    return text === "" ? "an unknown time" : text;
-  } catch {
-    return null;
-  }
-}
-function hold(files, nowMs) {
-  if (isHeld(files))
-    return false;
-  ensureDir(join26(files.hold, ".."));
-  atomicWrite(files.hold, `${isoSeconds(nowMs)}
-`, 384);
-  return true;
-}
-function resume(files) {
-  if (!isHeld(files))
-    return false;
-  rmSync5(files.hold, { force: true });
-  return true;
-}
-function checkRunning(files) {
-  return lockIsHeld(files.lockDir);
-}
-function isoSeconds(ms) {
-  return `${new Date(ms).toISOString().slice(0, 19)}Z`;
-}
-function appendLogLine(logFile, line, nowMs) {
-  ensureDir(join26(logFile, ".."));
-  try {
-    if (statSync12(logFile).size > LOG_MAX_BYTES) {
-      const text = readFileSync29(logFile, "utf8");
-      const keep = text.slice(text.length - LOG_MAX_BYTES / 2);
-      writeFileSync3(logFile, keep.slice(keep.indexOf(`
-`) + 1), { mode: 384 });
-    }
-  } catch {}
-  appendFileSync(logFile, `${isoSeconds(nowMs)} ${line}
-`, { mode: 384 });
-}
-function readHeldMajor(files) {
-  try {
-    const parsed = JSON.parse(readFileSync29(files.major, "utf8"));
-    if (typeof parsed?.version !== "string" || typeof parsed.at !== "string" || parsed.from !== null && typeof parsed.from !== "string" || !Array.isArray(parsed.notes) || !parsed.notes.every((note) => typeof note === "string")) {
-      return null;
-    }
-    return { at: parsed.at, from: parsed.from, notes: parsed.notes, version: parsed.version };
-  } catch {
-    return null;
-  }
-}
-function clearHeldMajor(files) {
-  rmSync5(files.major, { force: true });
-}
-function readSession2(file) {
-  try {
-    const parsed = JSON.parse(readFileSync29(file, "utf8"));
-    if (typeof parsed?.pid !== "number" || typeof parsed.start !== "string" || typeof parsed.version !== "string") {
-      return null;
-    }
-    return { pid: parsed.pid, start: parsed.start, version: parsed.version };
-  } catch {
-    return null;
-  }
-}
-var SESSION_FILE = /^\d+\.json$/;
-function isRunning2(session) {
-  return processStartTime(session.pid, session.start) === session.start;
-}
-function runningSessions(files) {
-  let names;
-  try {
-    names = readdirSync10(files.sessions);
-  } catch {
-    return [];
-  }
-  return names.filter((name) => SESSION_FILE.test(name)).map((name) => readSession2(join26(files.sessions, name))).filter((session) => session !== null && isRunning2(session));
-}
-
-// src/zod-issues.ts
-function describeIssues(issues) {
-  return issues.map((issue) => {
-    const field = issue.path.length > 0 ? issue.path.join(".") : "(top level)";
-    return issue.code === "unrecognized_keys" ? `${issue.keys.join(", ")}: unknown field` : `${field}: ${issue.message}`;
-  }).join("; ");
-}
-
-// src/workflow/resolve.ts
-class WorkflowConfigError extends Error {
-  name = "WorkflowConfigError";
-}
-function personalWorkflowFile(paths) {
-  return paths.workflowConfigFile;
-}
-function loadWorkflow(file) {
-  if (!existsSync21(file))
-    return {};
-  let raw;
-  try {
-    raw = JSON.parse(readFileSync30(file, "utf8"));
-  } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error);
-    throw new WorkflowConfigError(`Invalid ${file}: not valid JSON (${reason})`);
-  }
-  const parsed = personalWorkflowSchema.safeParse(raw);
-  if (!parsed.success) {
-    throw new WorkflowConfigError(`Invalid ${file}: ${describeIssues(parsed.error.issues)}`);
-  }
-  return parsed.data;
-}
-function personalWorkflowOrDefault(paths) {
-  try {
-    return loadWorkflow(personalWorkflowFile(paths));
-  } catch {
-    return {};
-  }
-}
-function mergedGroup(personal, project) {
-  if (personal === undefined)
-    return project;
-  if (project === undefined)
-    return personal;
-  return { ...personal, ...project };
-}
-function mergeWorkflows(personal, project) {
-  const merged = { ...personal, ...project };
-  const alerts = mergedGroup(personal.alerts, project.alerts);
-  if (alerts !== undefined)
-    merged.alerts = alerts;
-  const fixes = mergedGroup(personal.fixesAfterReview, project.fixesAfterReview);
-  if (fixes !== undefined)
-    merged.fixesAfterReview = fixes;
-  const issues = mergedGroup(personal.issues, project.issues);
-  if (issues !== undefined)
-    merged.issues = issues;
-  const plans = mergedGroup(personal.plans, project.plans);
-  if (plans !== undefined)
-    merged.plans = plans;
-  return merged;
-}
-function sourceOf(personal, project, key) {
-  if (workflowValue(project, key) !== undefined)
-    return "project";
-  return workflowValue(personal, key) !== undefined ? "personal" : "default";
-}
-function alertsFrom(personal, project) {
-  const merged = mergeWorkflows(personal, project);
-  const alerts = merged.alerts ?? {};
-  const of = (key, value) => ({
-    value,
-    source: sourceOf(personal, project, key)
-  });
-  return {
-    usagePercent: of("alerts.usagePercent", alerts.usagePercent ?? workflowDefaults.alerts.usagePercent)
-  };
-}
-function plansFrom(personal, project) {
-  const plans = mergeWorkflows(personal, project).plans ?? {};
-  const mergeFiles = project.plans?.mergeFiles;
-  const runMode = personal.plans?.runMode;
-  return {
-    maxPhases: {
-      value: plans.maxPhases ?? workflowDefaults.plans.maxPhases,
-      source: sourceOf(personal, project, "plans.maxPhases")
-    },
-    mergeFiles: mergeFiles === undefined ? current2([...workflowDefaults.plans.mergeFiles], "default") : current2(mergeFiles, "project"),
-    runMode: runMode === undefined ? current2(workflowDefaults.plans.runMode, "default") : current2(runMode, "personal")
-  };
-}
-function resolvePlans(paths, projectConfig) {
-  return plansFrom(loadWorkflow(personalWorkflowFile(paths)), projectConfig?.workflow ?? {});
-}
-function statusLineIsOurs(paths) {
-  try {
-    const parsed = JSON.parse(readFileSync30(paths.settingsFile, "utf8"));
-    if (typeof parsed !== "object" || parsed === null)
-      return false;
-    const statusLine = parsed.statusLine;
-    return Bun.deepEquals(statusLine, statuslineSetting(paths), true);
-  } catch {
-    return false;
-  }
-}
-function current2(value, source) {
-  return { value, source };
-}
-function projectFlag(value) {
-  return value === undefined ? current2(false, "default") : current2(value, "project");
-}
-function jobRouteFrom(personal, projectConfig) {
-  const project = projectConfig?.jobs?.route;
-  if (project !== undefined)
-    return current2(project, "project");
-  const own = personal.switches?.jobRoute;
-  return own === undefined ? current2(false, "default") : current2(own, "personal");
-}
-function resolveJobRoute(paths, projectConfig) {
-  return jobRouteFrom(personalWorkflowOrDefault(paths), projectConfig);
-}
-var LEAD_HINT_DEFAULT = true;
-function leadHintFrom(personal) {
-  const own = personal.switches?.leadHint;
-  return own === undefined ? current2(LEAD_HINT_DEFAULT, "default") : current2(own, "personal");
-}
-function resolveLeadHint(paths) {
-  return leadHintFrom(personalWorkflowOrDefault(paths));
-}
-function sourceLabel(value, branch) {
-  return value.source === "project" && branch !== null ? `project, committed on origin/${branch}` : value.source;
-}
-function resolveGate(paths, checkout, branch, options = {}) {
-  if (branch === null) {
-    return { ok: true, gate: { branch, config: null, resolved: resolveWorkflow(paths, null) } };
-  }
-  let committed;
-  try {
-    committed = readCommittedConfig(checkout, branch, options);
-  } catch (error) {
-    return { ok: false, why: error instanceof Error ? error.message : String(error) };
-  }
-  return gateOfCommitted(paths, branch, committed);
-}
-async function resolveGateAsync(paths, checkout, branch, options = {}) {
-  if (branch === null) {
-    return { ok: true, gate: { branch, config: null, resolved: resolveWorkflow(paths, null) } };
-  }
-  let committed;
-  try {
-    committed = await readCommittedConfigAsync(checkout, branch, options);
-  } catch (error) {
-    return { ok: false, why: error instanceof Error ? error.message : String(error) };
-  }
-  return gateOfCommitted(paths, branch, committed);
-}
-function gateOfCommitted(paths, branch, committed) {
-  if (!committed.found)
-    return { ok: false, why: committed.why };
-  const resolved = resolveWorkflow(paths, committed.config);
-  return { ok: true, gate: { branch, config: committed.config, resolved } };
-}
-function resolveMergeFiles(checkout, base, options = {}) {
-  if (base === null) {
-    return {
-      files: [],
-      reason: "this project names no worktrees.base, so there is no committed copy of plans.mergeFiles to read"
-    };
-  }
-  let committed;
-  try {
-    committed = readCommittedConfig(checkout, base, options);
-  } catch (error) {
-    return { files: [], reason: error instanceof Error ? error.message : String(error) };
-  }
-  if (!committed.found)
-    return { files: [], reason: committed.why };
-  return settleMergeFiles(checkout, base, committed.config.workflow?.plans?.mergeFiles ?? [], options);
-}
-function settleMergeFiles(checkout, base, listed, options = {}) {
-  const files = [];
-  const folders = [];
-  for (const path of listed) {
-    if (!path.endsWith("/") && isFolderOnBase(checkout, base, path, options))
-      folders.push(path);
-    else
-      files.push(path);
-  }
-  if (folders.length === 0)
-    return { files, reason: null };
-  const hints = folders.map((path) => `${path} is a folder: write it ${path}/`);
-  return {
-    files,
-    reason: `plans.mergeFiles on origin/${base} leaves out ${folders.join(", ")} until fixed (${hints.join("; ")})`
-  };
-}
-function isFolderOnBase(checkout, base, path, options) {
-  const kind = runGit(checkout.root, ["cat-file", "-t", `refs/remotes/origin/${base}:${path}`], options.env ?? process.env, options.timeoutMs ?? RESOLVE_GIT_TIMEOUT_MS);
-  return kind.ok && kind.out === "tree";
-}
-var RESOLVED = {
-  allowCommit: (r) => r.allowCommit,
-  allowPush: (r) => r.allowPush,
-  openPr: (r) => r.openPr,
-  allowMerge: (r) => r.allowMerge,
-  mergeMethod: (r) => r.mergeMethod,
-  deleteBranch: (r) => r.deleteBranch,
-  reviewBeforePush: (r) => r.reviewBeforePush,
-  reviewAgents: (r) => r.reviewAgents,
-  "fixesAfterReview.lines": (r) => r.fixesAfterReview.lines,
-  "fixesAfterReview.files": (r) => r.fixesAfterReview.files,
-  "fixesAfterReview.percent": (r) => r.fixesAfterReview.percent,
-  clearWorktreeAfterMerge: (r) => r.clearWorktreeAfterMerge,
-  "issues.enabled": (r) => r.issues.enabled,
-  "issues.allowPublic": (r) => r.issues.allowPublic,
-  "issues.foundLabel": (r) => r.issues.foundLabel,
-  "issues.fixedLabel": (r) => r.issues.fixedLabel,
-  "issues.readyLabel": (r) => r.issues.readyLabel,
-  "alerts.usagePercent": (r) => r.alerts.usagePercent,
-  "plans.maxPhases": (r) => r.plans.maxPhases,
-  "plans.runMode": (r) => r.plans.runMode,
-  "plans.mergeFiles": (r) => r.plans.mergeFiles,
-  "switches.statusLine": (r) => r.switches.statusLine,
-  "switches.sessionNames": (r) => r.switches.sessionNames,
-  "switches.jobRoute": (r) => r.switches.jobRoute,
-  "switches.updateHold": (r) => r.switches.updateHold,
-  "switches.leadHint": (r) => r.switches.leadHint
-};
-function resolvedValueOf(resolved, key) {
-  return RESOLVED[key](resolved);
-}
-function resolveWorkflow(paths, projectConfig) {
-  const personal = loadWorkflow(personalWorkflowFile(paths));
-  const project = projectConfig?.workflow ?? {};
-  const merged = mergeWorkflows(personal, project);
-  const of = (key, value) => ({
-    value,
-    source: sourceOf(personal, project, key)
-  });
-  const fixes = merged.fixesAfterReview ?? {};
-  const issues = merged.issues ?? {};
-  return {
-    allowCommit: of("allowCommit", merged.allowCommit ?? workflowDefaults.allowCommit),
-    allowPush: of("allowPush", merged.allowPush ?? workflowDefaults.allowPush),
-    openPr: of("openPr", merged.openPr ?? workflowDefaults.openPr),
-    allowMerge: of("allowMerge", merged.allowMerge ?? workflowDefaults.allowMerge),
-    mergeMethod: of("mergeMethod", merged.mergeMethod ?? workflowDefaults.mergeMethod),
-    deleteBranch: of("deleteBranch", merged.deleteBranch ?? workflowDefaults.deleteBranch),
-    reviewBeforePush: of("reviewBeforePush", merged.reviewBeforePush ?? workflowDefaults.reviewBeforePush),
-    reviewAgents: of("reviewAgents", merged.reviewAgents ?? [...workflowDefaults.reviewAgents]),
-    fixesAfterReview: {
-      lines: of("fixesAfterReview.lines", fixes.lines ?? workflowDefaults.fixesAfterReview.lines),
-      files: of("fixesAfterReview.files", fixes.files ?? workflowDefaults.fixesAfterReview.files),
-      percent: of("fixesAfterReview.percent", fixes.percent ?? workflowDefaults.fixesAfterReview.percent)
-    },
-    clearWorktreeAfterMerge: of("clearWorktreeAfterMerge", merged.clearWorktreeAfterMerge ?? workflowDefaults.clearWorktreeAfterMerge),
-    issues: {
-      enabled: of("issues.enabled", issues.enabled ?? workflowDefaults.issues.enabled),
-      allowPublic: of("issues.allowPublic", issues.allowPublic ?? workflowDefaults.issues.allowPublic),
-      foundLabel: of("issues.foundLabel", issues.foundLabel ?? workflowDefaults.issues.foundLabel),
-      fixedLabel: of("issues.fixedLabel", issues.fixedLabel ?? workflowDefaults.issues.fixedLabel),
-      readyLabel: of("issues.readyLabel", issues.readyLabel ?? workflowDefaults.issues.readyLabel)
-    },
-    alerts: alertsFrom(personal, project),
-    plans: plansFrom(personal, project),
-    switches: {
-      statusLine: statusLineIsOurs(paths) ? current2(true, "personal") : current2(false, "default"),
-      sessionNames: projectFlag(projectConfig?.sessionNames),
-      jobRoute: jobRouteFrom(personal, projectConfig),
-      updateHold: isHeld(updateFiles(paths.stateDir)) ? current2(true, "personal") : current2(false, "default"),
-      leadHint: leadHintFrom(personal)
-    }
-  };
-}
-
 // src/workflow/auto-merge.ts
+init_resolve();
+init_resolve2();
 function autoMergeOff(resolved, base) {
   if (resolved.allowMerge.value)
     return null;
@@ -19463,15 +19944,22 @@ function autoMergeAllowed(resolved, projectConfig, prBase, defaultBranch) {
   return autoMergeRefusal(resolved, projectConfig, prBase, defaultBranch) === null;
 }
 
+// src/workflow/merge-check.ts
+init_resolve2();
+
 // src/workflow/review-cover.ts
+init_names();
+init_git();
 import { mkdtempSync as mkdtempSync2, rmSync as rmSync6 } from "fs";
 import { tmpdir as tmpdir2 } from "os";
 import { join as join28 } from "path";
 
 // src/workflow/reviews.ts
+init_lock();
+init_write();
 import { createHash as createHash4 } from "crypto";
 import { mkdirSync as mkdirSync9, readFileSync as readFileSync31 } from "fs";
-import { dirname as dirname11, join as join27 } from "path";
+import { dirname as dirname12, join as join27 } from "path";
 var REVIEWS_KEPT = 50;
 var REVIEWS_LOCK_WAIT_MS = 3000;
 var START_KEPT_MS = 24 * 60 * 60 * 1000;
@@ -19523,7 +20011,7 @@ function trustedReviews(file, agents) {
   return Object.entries(readReviews(file)).filter(([, entry]) => trusted(entry, agents)).sort(([, a], [, b]) => b.at.localeCompare(a.at)).map(([sha, entry]) => ({ sha, at: entry.at, branches: entry.branches ?? [] }));
 }
 async function underRecordLock(file, write) {
-  const folder = dirname11(file);
+  const folder = dirname12(file);
   mkdirSync9(folder, { mode: 448, recursive: true });
   return await withLock(folder, write, { waitMs: REVIEWS_LOCK_WAIT_MS });
 }
@@ -19912,11 +20400,14 @@ var runGh = async (args, { folder, env, input, timeoutMs }) => {
     };
   }
 };
+var NO_REQUIRED_CHECKS = /^no (?:required )?checks reported on the '.*' branch$/;
 var spawnGh = async (args, call) => {
-  const { kind, out } = await runGh(args, call);
+  const { err, kind, out } = await runGh(args, call);
   if (kind === "missing" || kind === "timeout")
     return null;
-  return out.trim() === "" ? null : out;
+  if (out.trim() === "")
+    return kind === "failed" && NO_REQUIRED_CHECKS.test(err) ? err : null;
+  return out;
 };
 var PULL_REQUEST_FACTS = "number,baseRefName,headRefName,headRefOid";
 function parsePullRequestFacts(json) {
@@ -20116,7 +20607,9 @@ async function requiredChecks(number, repo, folder, env, timeoutMs = GH_TIMEOUT_
     "--json",
     "name,bucket"
   ], folder, env, timeoutMs, run);
-  return out === null ? null : parseRequiredChecks(out);
+  if (out === null)
+    return null;
+  return NO_REQUIRED_CHECKS.test(out.trim()) ? [] : parseRequiredChecks(out);
 }
 async function defaultBranchOf(folder, env, repo = null, timeoutMs = GH_TIMEOUT_MS, run = spawnGh) {
   const out = await ghStdout(["repo", "view", ...repo === null ? [] : [repo], "--json", "defaultBranchRef"], folder, env, timeoutMs, run);
@@ -20413,9 +20906,25 @@ async function checkPullRequest(world, target, defaultBranches = new Map, option
   };
 }
 
+// src/workflow/propose.ts
+init_names();
+init_git();
+init_path_compare();
+init_resolve();
+init_resolve2();
+init_schema();
+
 // src/workflow/write.ts
 import { mkdirSync as mkdirSync10 } from "fs";
-import { dirname as dirname12 } from "path";
+import { dirname as dirname13 } from "path";
+init_config();
+init_resolve();
+init_managed_json();
+init_statusline();
+init_write();
+init_state();
+init_resolve2();
+init_schema();
 function unknownKey(key) {
   return new Error(`Unknown setting: ${key}. The settings are: ${WORKFLOW_KEYS.join(", ")}`);
 }
@@ -20502,7 +21011,7 @@ function writePersonalSetting(paths, key, value) {
   const shown = tildify(file, paths.home);
   if (Bun.deepEquals(before, data, true))
     return shownNothing(shown, wanted, value);
-  mkdirSync10(dirname12(file), { mode: 448, recursive: true });
+  mkdirSync10(dirname13(file), { mode: 448, recursive: true });
   atomicWrite(file, jsonTextFor(text, data, indent), 384);
   return shownWrite(shown, wanted, value, text === null);
 }
@@ -20628,12 +21137,19 @@ async function ghLoginState(folder, env, run = spawnGh, timeoutMs = GH_TIMEOUT_M
   return answer === null ? "out" : "in";
 }
 
+// src/portal/api/projects.ts
+init_resolve2();
+init_schema();
+
 // src/portal/facts.ts
-import { createHash as createHash5 } from "crypto";
-import { readFileSync as readFileSync50 } from "fs";
-import { basename as basename7, join as join43 } from "path";
+import { createHash as createHash6 } from "crypto";
+import { readFileSync as readFileSync51 } from "fs";
+import { basename as basename8, join as join44 } from "path";
 
 // src/browser/setup.ts
+init_build_info();
+init_managed_json();
+init_write();
 import { existsSync as existsSync22, mkdirSync as mkdirSync11, readdirSync as readdirSync11, readFileSync as readFileSync32 } from "fs";
 import { join as join29 } from "path";
 var MAC_EXTERNAL_EXTENSIONS = [
@@ -20888,25 +21404,34 @@ function legacyBrowserInfo(paths, deps) {
   return legacyBrowserFacts(paths, deps).map((fact) => `  ${fact.text}`);
 }
 
+// src/portal/facts.ts
+init_build_info();
+
 // src/cli/live-check.ts
+init_build_info();
 import {
-  existsSync as existsSync24,
-  mkdirSync as mkdirSync14,
+  existsSync as existsSync25,
+  mkdirSync as mkdirSync15,
   mkdtempSync as mkdtempSync3,
-  readFileSync as readFileSync35,
+  readFileSync as readFileSync36,
   realpathSync as realpathSync4,
   rmSync as rmSync7,
   writeFileSync as writeFileSync4
 } from "fs";
 import { tmpdir as tmpdir3 } from "os";
-import { dirname as dirname14, join as join32 } from "path";
+import { dirname as dirname16, join as join33 } from "path";
+
+// src/hooks/run.ts
+init_locate();
 
 // src/hooks/ask-log.ts
 import { join as join30 } from "path";
 
 // src/hooks/jsonl-log.ts
+init_write();
+init_state();
 import { appendFileSync as appendFileSync2, mkdirSync as mkdirSync12, readFileSync as readFileSync33, statSync as statSync13 } from "fs";
-import { dirname as dirname13 } from "path";
+import { dirname as dirname14 } from "path";
 function cutBack(file) {
   let size;
   try {
@@ -20922,7 +21447,7 @@ function cutBack(file) {
 `) + 1), 384);
 }
 function appendJsonLine(file, value) {
-  mkdirSync12(dirname13(file), { recursive: true, mode: 448 });
+  mkdirSync12(dirname14(file), { recursive: true, mode: 448 });
   cutBack(file);
   appendFileSync2(file, `${JSON.stringify(value)}
 `, { mode: 384 });
@@ -20932,6 +21457,154 @@ function appendJsonLine(file, value) {
 var ASK_LOG_FILE = "guard-asks.jsonl";
 function askLogFile(stateDir) {
   return join30(stateDir, ASK_LOG_FILE);
+}
+
+// src/hooks/checked-config.ts
+init_build_info();
+init_locate();
+init_file_mode();
+init_write();
+import { createHash as createHash5 } from "crypto";
+import {
+  accessSync,
+  constants,
+  existsSync as existsSync23,
+  mkdirSync as mkdirSync13,
+  readdirSync as readdirSync12,
+  readFileSync as readFileSync34,
+  statSync as statSync14,
+  unlinkSync as unlinkSync4
+} from "fs";
+import { dirname as dirname15, join as join31 } from "path";
+var PARSER_FINGERPRINT = "ecbf12d64fe46194dd034dc713b5e1e608f672cd2abae09ebc3f7dec686bda49";
+var CHECKED_DIR = "checked";
+var CHECKED_CACHE_LIMIT = 64;
+var CHECKED_FILE_MAX_BYTES = 256 * 1024;
+var CHECKED_TEMP_MAX_AGE_MS = 60000;
+var ENTRY_FORMAT = 1;
+var TEMP_NAME = /^\..+\.cc-smart-dev-kit-tmp-/;
+var PARSE = {
+  project: (sibling, text, where) => sibling.checkProjectText(text, where),
+  workflow: (sibling, text, where) => sibling.checkWorkflowText(text, where)
+};
+function reinstallMessage(why) {
+  return `The plugin's config checker is not usable (${why}): run \`${PLUGIN_INSTALL_COMMAND}\` to reinstall the plugin, then try again.`;
+}
+async function loadSibling() {
+  const built = join31(import.meta.dir, "config-check.js");
+  const entry = existsSync23(built) ? built : join31(import.meta.dir, "..", "entries", "config-check.ts");
+  const loaded = await import(entry);
+  for (const name of ["checkProjectText", "checkWorkflowText"]) {
+    if (typeof loaded[name] !== "function") {
+      throw new Error(`${entry} exports no ${name}`);
+    }
+  }
+  return loaded;
+}
+function checkedKey(fingerprint, kind, bytes) {
+  return createHash5("sha256").update(`${fingerprint}
+${kind}
+`).update(bytes).digest("hex");
+}
+function readEntry(file, key, kind) {
+  try {
+    const entry = JSON.parse(readFileSync34(file, "utf8"));
+    if (entry?.format !== ENTRY_FORMAT || entry.key !== key || entry.kind !== kind)
+      return null;
+    const { value } = entry;
+    const isObject = typeof value === "object" && value !== null && !Array.isArray(value);
+    return isObject ? value : null;
+  } catch {
+    return null;
+  }
+}
+function prune(dir, nowMs) {
+  const entries = [];
+  for (const name of readdirSync12(dir)) {
+    const path = join31(dir, name);
+    try {
+      if (TEMP_NAME.test(name)) {
+        if (nowMs - statSync14(path).mtimeMs > CHECKED_TEMP_MAX_AGE_MS)
+          unlinkSync4(path);
+      } else if (name.endsWith(".json")) {
+        entries.push({ path, mtimeMs: statSync14(path).mtimeMs });
+      }
+    } catch {}
+  }
+  entries.sort((a, b) => a.mtimeMs - b.mtimeMs);
+  for (const old of entries.slice(0, Math.max(0, entries.length - (CHECKED_CACHE_LIMIT - 1)))) {
+    try {
+      unlinkSync4(old.path);
+    } catch {}
+  }
+}
+function writeEntry(dir, key, kind, value) {
+  try {
+    if (!existsSync23(dir)) {
+      mkdirSync13(dir, { recursive: true, mode: 448 });
+      setFileMode(dir, 448);
+    }
+    prune(dir, Date.now());
+    const entry = { format: ENTRY_FORMAT, key, kind, value };
+    atomicWrite(join31(dir, `${key}.json`), JSON.stringify(entry), 384);
+  } catch {}
+}
+async function loadCheckedFile(file, kind, { paths }) {
+  if (!existsSync23(file))
+    return { ok: true, value: null, fact: "none" };
+  const bytes = readFileSync34(file);
+  const cacheable = bytes.length <= CHECKED_FILE_MAX_BYTES;
+  const dir = join31(paths.stateDir, CHECKED_DIR);
+  const key = checkedKey(PARSER_FINGERPRINT, kind, bytes);
+  if (cacheable) {
+    const hit = readEntry(join31(dir, `${key}.json`), key, kind);
+    if (hit !== null)
+      return { ok: true, value: hit, fact: "cached" };
+  }
+  let sibling;
+  try {
+    sibling = await loadSibling();
+  } catch (error) {
+    const why = error instanceof Error ? error.message : String(error);
+    return { ok: false, message: reinstallMessage(why), fact: "broken" };
+  }
+  const answer = PARSE[kind](sibling, bytes.toString("utf8"), file);
+  if (answer.fingerprint !== PARSER_FINGERPRINT) {
+    const why = "it was built from another version of the plugin than this hook";
+    return { ok: false, message: reinstallMessage(why), fact: "broken" };
+  }
+  if (!answer.ok)
+    return { ok: false, message: answer.message, fact: "broken" };
+  if (cacheable)
+    writeEntry(dir, key, kind, answer.value);
+  return { ok: true, value: answer.value, fact: "checked" };
+}
+async function loadPersonalWorkflow(paths) {
+  try {
+    const checked = await loadCheckedFile(paths.workflowConfigFile, "workflow", { paths });
+    return checked.ok ? checked.value ?? {} : {};
+  } catch {
+    return {};
+  }
+}
+function checkedCacheProblem(paths) {
+  const dir = join31(paths.stateDir, CHECKED_DIR);
+  try {
+    if (existsSync23(dir)) {
+      if (!statSync14(dir).isDirectory())
+        return "is not a folder";
+      accessSync(dir, constants.W_OK | constants.X_OK);
+      return null;
+    }
+    let parent = dirname15(dir);
+    while (!existsSync23(parent))
+      parent = dirname15(parent);
+    accessSync(parent, constants.W_OK | constants.X_OK);
+    return null;
+  } catch (error) {
+    const code = error.code;
+    return `cannot be written${code === undefined ? "" : ` (${code})`}`;
+  }
 }
 
 // src/hooks/io.ts
@@ -20987,14 +21660,20 @@ function addContextAndMessage(event, text, message) {
 // src/hooks/run.ts
 var HOOK_LOG_ENV = "CC_SMART_DEV_KIT_HOOK_LOG";
 
+// src/cli/live-check.ts
+init_write();
+
 // src/cli/cache-miss.ts
-import { existsSync as existsSync23, mkdirSync as mkdirSync13, readFileSync as readFileSync34 } from "fs";
-import { join as join31 } from "path";
+init_zod();
+init_names();
+init_write();
+import { existsSync as existsSync24, mkdirSync as mkdirSync14, readFileSync as readFileSync35 } from "fs";
+import { join as join32 } from "path";
 function cacheMissCause(miss) {
   return miss.causes === null ? "cause not known" : miss.causes.join(", ");
 }
 function cacheMissRecordFile(stateDir) {
-  return join31(stateDir, "cache-miss.json");
+  return join32(stateDir, "cache-miss.json");
 }
 var recordSchema = object({
   at: number2(),
@@ -21002,10 +21681,10 @@ var recordSchema = object({
 });
 function readCacheMissRecord(stateDir) {
   const file = cacheMissRecordFile(stateDir);
-  if (!existsSync23(file))
+  if (!existsSync24(file))
     return null;
   try {
-    const parsed = recordSchema.safeParse(JSON.parse(readFileSync34(file, "utf8")));
+    const parsed = recordSchema.safeParse(JSON.parse(readFileSync35(file, "utf8")));
     return parsed.success ? parsed.data : null;
   } catch {
     return null;
@@ -21019,11 +21698,11 @@ var LIVE_TOOLS = "EnterWorktree,ExitWorktree,Bash";
 var LIVE_ALLOWED = "EnterWorktree,ExitWorktree,Bash(git status:*)";
 var LIVE_FIX = `run ${COMMAND} doctor --live again; when it fails again, this Claude Code changed what the plugin relies on: report it with these lines`;
 function liveRecordFile(stateDir) {
-  return join32(stateDir, "live-check.json");
+  return join33(stateDir, "live-check.json");
 }
 function readLiveRecord(stateDir) {
   try {
-    const parsed = JSON.parse(readFileSync35(liveRecordFile(stateDir), "utf8"));
+    const parsed = JSON.parse(readFileSync36(liveRecordFile(stateDir), "utf8"));
     return typeof parsed.claudeCode === "string" && typeof parsed.plugin === "string" && typeof parsed.passedAt === "string" ? { claudeCode: parsed.claudeCode, plugin: parsed.plugin, passedAt: parsed.passedAt } : null;
   } catch {
     return null;
@@ -21034,9 +21713,9 @@ function parseClaudeVersion(output) {
 }
 var LIVE_PROMPT = `Call the EnterWorktree tool with name "${LIVE_NAME}". Then run the Bash command ` + '`git status`. Then call the ExitWorktree tool with action "remove" and discard_changes ' + "true. Then reply with the single word done. Do nothing else.";
 function readLog(file) {
-  if (!existsSync24(file))
+  if (!existsSync25(file))
     return [];
-  return readFileSync35(file, "utf8").split(`
+  return readFileSync36(file, "utf8").split(`
 `).filter((line) => line.trim() !== "").flatMap((line) => {
     try {
       return [JSON.parse(line)];
@@ -21052,7 +21731,7 @@ var GIT_ID = {
   GIT_COMMITTER_EMAIL: "live-check@example.com"
 };
 function proveIn(label, repo, expected, deps, env) {
-  const log = join32(dirname14(repo), `${label.replace(/[^a-z]+/gi, "-")}-hooks.log`);
+  const log = join33(dirname16(repo), `${label.replace(/[^a-z]+/gi, "-")}-hooks.log`);
   const session = deps.run([
     "claude",
     "-p",
@@ -21096,13 +21775,13 @@ function proveIn(label, repo, expected, deps, env) {
     text: `${label}: ${created === undefined ? "" : "a WorktreeCreate hook ran; "}the job-route hook ran in ${where}; expected Claude Code's own ${expected.folder}`,
     fix: LIVE_FIX
   });
-  const gone = !existsSync24(expected.folder) && branchLeft.exitCode !== 0;
+  const gone = !existsSync25(expected.folder) && branchLeft.exitCode !== 0;
   lines.push(gone && guardedThere ? {
     ok: true,
     text: `${label}: ExitWorktree removed the folder and the branch ${expected.branch}`
   } : {
     ok: false,
-    text: `${label}: after ExitWorktree${guardedThere ? "" : " (the session never worked in it)"} ${existsSync24(expected.folder) ? "the folder is still there" : "the folder is gone"}, ${branchLeft.exitCode === 0 ? `the branch ${expected.branch} is still there` : "the branch is gone"}`,
+    text: `${label}: after ExitWorktree${guardedThere ? "" : " (the session never worked in it)"} ${existsSync25(expected.folder) ? "the folder is still there" : "the folder is gone"}, ${branchLeft.exitCode === 0 ? `the branch ${expected.branch} is still there` : "the branch is gone"}`,
     fix: LIVE_FIX
   });
   return lines;
@@ -21128,7 +21807,7 @@ function runLiveCheck(paths, env, deps) {
       }
     ];
   }
-  const root = realpathSync4(mkdtempSync3(join32(tmpdir3(), "cc-smart-dev-kit-live-")));
+  const root = realpathSync4(mkdtempSync3(join33(tmpdir3(), "cc-smart-dev-kit-live-")));
   try {
     const gitEnv = { ...env, ...GIT_ID };
     const git = (cwd, ...args) => {
@@ -21136,10 +21815,10 @@ function runLiveCheck(paths, env, deps) {
       if (result.exitCode !== 0)
         throw new Error(`git ${args.join(" ")} failed: ${result.output}`);
     };
-    const plain = join32(root, "plain");
-    mkdirSync14(plain);
+    const plain = join33(root, "plain");
+    mkdirSync15(plain);
     git(plain, "init", "-q", "-b", "main");
-    writeFileSync4(join32(plain, "README.md"), `live check
+    writeFileSync4(join33(plain, "README.md"), `live check
 `);
     git(plain, "add", "README.md");
     git(plain, "commit", "-q", "-m", "first");
@@ -21148,7 +21827,7 @@ function runLiveCheck(paths, env, deps) {
       branch: worktreeBranch(LIVE_NAME)
     }, deps, env).map((line) => ({ ...line, text: `live, ${line.text}` }));
     if (lines.every((line) => line.ok)) {
-      mkdirSync14(paths.stateDir, { recursive: true, mode: 448 });
+      mkdirSync15(paths.stateDir, { recursive: true, mode: 448 });
       const record = {
         claudeCode: version,
         plugin: VERSION,
@@ -21168,12 +21847,14 @@ function runLiveCheck(paths, env, deps) {
 }
 
 // src/cli/usage-window.ts
-import { existsSync as existsSync25, readFileSync as readFileSync36 } from "fs";
-import { join as join33 } from "path";
+init_zod();
+init_write();
+import { existsSync as existsSync26, readFileSync as readFileSync37 } from "fs";
+import { join as join34 } from "path";
 var WINDOW_SPAN_MS = 5 * 60 * 60000;
 var SEVEN_DAY_SPAN_MS = 7 * 24 * 60 * 60000;
 function usageWindowFile(paths) {
-  return join33(paths.stateDir, "usage-window.json");
+  return join34(paths.stateDir, "usage-window.json");
 }
 var windowSchema = object({ percent: number2(), resetsAt: number2().nullable() });
 var storedSchema = looseObject({
@@ -21182,10 +21863,10 @@ var storedSchema = looseObject({
   sevenDay: windowSchema.optional()
 });
 function readStored(file) {
-  if (!existsSync25(file))
+  if (!existsSync26(file))
     return null;
   try {
-    const parsed = storedSchema.safeParse(JSON.parse(readFileSync36(file, "utf8")));
+    const parsed = storedSchema.safeParse(JSON.parse(readFileSync37(file, "utf8")));
     return parsed.success ? parsed.data : null;
   } catch {
     return null;
@@ -21210,14 +21891,17 @@ function readUsageWindows(paths, nowMs) {
     sevenDay: currentWindow(stored.sevenDay, stored.readAt, SEVEN_DAY_SPAN_MS, nowMs)
   };
 }
-function readUsageWindow(paths, nowMs) {
-  return readUsageWindows(paths, nowMs).fiveHour;
-}
 
 // src/gateway/commands.ts
-import { existsSync as existsSync32, readdirSync as readdirSync12, readFileSync as readFileSync40 } from "fs";
+init_zod();
+init_build_info();
+import { existsSync as existsSync33, readdirSync as readdirSync13, readFileSync as readFileSync41 } from "fs";
+init_lock();
+init_managed_json();
+init_write();
 
 // src/gateway/commands-chains.ts
+init_build_info();
 var SLOT_WORDS = {
   claude: ["claude", "off"],
   clear: ["clear"],
@@ -21289,6 +21973,7 @@ function judgeDefaultWords(config) {
 }
 
 // src/gateway/commands-out.ts
+init_managed_json();
 function gatewayOut(ctx) {
   const plain = detectTerminal({ env: {}, isTTY: false, platform: ctx.platform });
   return createOut(ctx.term ?? plain, {
@@ -21309,7 +21994,10 @@ function printChanges(out, result, home) {
 }
 
 // src/gateway/commands-profile.ts
-import { existsSync as existsSync26 } from "fs";
+init_build_info();
+import { existsSync as existsSync27 } from "fs";
+init_lock();
+init_managed_json();
 function missingProfile(config, name) {
   const names = Object.keys(config.profiles ?? {}).sort();
   return `gateway.json has no profile "${name}" (profiles: ${names.length > 0 ? names.join(", ") : "none"}). Make it: ${COMMAND} gateway profile ${name} slot <slot> <targets>`;
@@ -21549,7 +22237,7 @@ async function commandProfile(ctx, args, usage) {
   if (!isProfileName(name))
     throw new Error(PROFILE_NAME_RULE);
   const configPath = ctx.paths.gatewayConfigFile;
-  if (!existsSync26(configPath)) {
+  if (!existsSync27(configPath)) {
     throw new Error(`the gateway has no config yet (${tildify(configPath, ctx.paths.home)}): a profile lives in it. Make one: ${COMMAND} gateway setup --no-backend-key`);
   }
   const config = loadConfigFile(configPath);
@@ -21639,10 +22327,14 @@ var PROFILE_HELP = `  profile <name> <command>
                                                   still names it answers as plain Claude.`;
 
 // src/gateway/commands-project.ts
+init_build_info();
 import { resolve as resolve8 } from "path";
+init_lock();
+init_managed_json();
 
 // src/setup/managed-line.ts
-import { existsSync as existsSync27, readFileSync as readFileSync37 } from "fs";
+init_write();
+import { existsSync as existsSync28, readFileSync as readFileSync38 } from "fs";
 function renderWithLine(current, line) {
   const text = current === "" || current.endsWith(`
 `) ? current : `${current}
@@ -21653,7 +22345,7 @@ function renderWithLine(current, line) {
 function writeRendered(file, stateDir, render, options) {
   const target = realTarget(file);
   return retryOnConcurrentChange(target, () => {
-    const current = existsSync27(target) ? readFileSync37(target, "utf8") : null;
+    const current = existsSync28(target) ? readFileSync38(target, "utf8") : null;
     const { removed, text } = render(current ?? "");
     if (current === null && text === "") {
       return { backup: null, outcome: "unchanged", removed: removed ?? [] };
@@ -21675,13 +22367,21 @@ function applyManagedLine(options) {
 }
 
 // src/gateway/project-state.ts
-import { existsSync as existsSync29, realpathSync as realpathSync5, statSync as statSync14 } from "fs";
-import { join as join34, resolve as resolve7 } from "path";
+init_git_env();
+init_resolve();
+import { existsSync as existsSync30, realpathSync as realpathSync5, statSync as statSync15 } from "fs";
+import { join as join35, resolve as resolve7 } from "path";
 
 // src/gateway/settings.ts
-import { existsSync as existsSync28, readFileSync as readFileSync38 } from "fs";
+init_build_info();
+init_managed_json();
+init_user_json();
+init_write();
+import { existsSync as existsSync29, readFileSync as readFileSync39 } from "fs";
 
 // src/gateway/model-picker.ts
+init_managed_json();
+init_write();
 var PICKER_PATH = ["modelPicker"];
 function pickerFor(config, profile) {
   const view = profile === undefined ? config : profileView(config, profile) ?? plainClaudeView(config);
@@ -21783,9 +22483,9 @@ function isJsonObject7(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function readSettings(path) {
-  if (!existsSync28(path))
+  if (!existsSync29(path))
     return {};
-  const text = readFileSync38(path, "utf8");
+  const text = readFileSync39(path, "utf8");
   if (text.trim() === "")
     return {};
   let parsed;
@@ -21998,10 +22698,10 @@ async function personalTrackedAsync(mainCheckout) {
 var PERSONAL_FILE = "settings.local.json";
 var PERSONAL_EXCLUDE_LINE = `/.claude/${PERSONAL_FILE}`;
 function personalFileOf(checkout) {
-  return join34(checkout.mainCheckout, ".claude", PERSONAL_FILE);
+  return join35(checkout.mainCheckout, ".claude", PERSONAL_FILE);
 }
 function ownPersonalFileOf(folder) {
-  return join34(folder, ".claude", PERSONAL_FILE);
+  return join35(folder, ".claude", PERSONAL_FILE);
 }
 function linkedWorktreePaths(listing, mainCheckout) {
   const main = realFolder(mainCheckout);
@@ -22019,7 +22719,7 @@ function linkedWorktreePaths(listing, mainCheckout) {
   return paths;
 }
 function ownFilesOf(paths) {
-  return paths.map((path) => ownPersonalFileOf(path)).filter((file) => existsSync29(file)).map((file) => settingsFileState(file, "personal"));
+  return paths.map((path) => ownPersonalFileOf(path)).filter((file) => existsSync30(file)).map((file) => settingsFileState(file, "personal"));
 }
 function linkedWorktreeFilesOf(mainCheckout) {
   try {
@@ -22055,10 +22755,10 @@ function gatewayCopiesAmong(files) {
   return files.filter((file) => file.problem === null && file.url !== null && baseUrlPointsAtGateway(file.url));
 }
 function teamFileOf(folder) {
-  return join34(folder, ".claude", "settings.json");
+  return join35(folder, ".claude", "settings.json");
 }
 function excludeFileOf(checkout) {
-  return join34(checkout.commonDir, "info", "exclude");
+  return join35(checkout.commonDir, "info", "exclude");
 }
 function profileUrlOf(routerUrl, name) {
   return `${routerUrl}${PROFILE_PATH_PREFIX}${name}`;
@@ -22080,7 +22780,7 @@ function urlMeaning(url, routerUrl) {
   return { profile: null, state: "other" };
 }
 function settingsFileState(path, kind) {
-  if (!existsSync29(path)) {
+  if (!existsSync30(path)) {
     return {
       kind,
       loginOverrides: [],
@@ -22115,7 +22815,7 @@ function settingsFileState(path, kind) {
   }
 }
 function readGatewayConfig(path) {
-  if (!existsSync29(path))
+  if (!existsSync30(path))
     return { config: null, problem: null };
   try {
     return { config: loadConfigFile(path), problem: null };
@@ -22224,7 +22924,7 @@ function realFolder(path) {
 }
 function isFolder2(path) {
   try {
-    return statSync14(path).isDirectory();
+    return statSync15(path).isDirectory();
   } catch {
     return false;
   }
@@ -23068,9 +23768,11 @@ async function sendBackendTest(baseUrl, apiKey, request, fetchImpl = (url, init)
 }
 
 // src/gateway/model-picker-step.ts
-import { existsSync as existsSync30 } from "fs";
+init_managed_json();
+init_write();
+import { existsSync as existsSync31 } from "fs";
 function pickerConfig(paths) {
-  return existsSync30(paths.gatewayConfigFile) ? loadConfigFile(paths.gatewayConfigFile) : emptyConfig();
+  return existsSync31(paths.gatewayConfigFile) ? loadConfigFile(paths.gatewayConfigFile) : emptyConfig();
 }
 function ourActiveGateway(paths) {
   const address = getKey(readJsonObject(paths.settingsFile).data, BASE_URL_PATH);
@@ -23267,8 +23969,10 @@ async function createOmnirouteKey(options) {
 }
 
 // src/gateway/service.ts
-import { existsSync as existsSync31, readFileSync as readFileSync39, rmSync as rmSync8 } from "fs";
-import { basename as basename5, dirname as dirname15, join as join35 } from "path";
+init_build_info();
+import { existsSync as existsSync32, readFileSync as readFileSync40, rmSync as rmSync8 } from "fs";
+import { basename as basename6, dirname as dirname17, join as join36 } from "path";
+init_write();
 var UNIT_NAME = "cc-smart-dev-kit-router.service";
 var SOCKET_NAME = "cc-smart-dev-kit-router.socket";
 var UP_TO_DATE = "router already up to date (no restart)";
@@ -23379,7 +24083,7 @@ function unitStateFrom(answer) {
 }
 var DRAIN_NOTE = "waiting for the old router to finish its answers (up to 120 s)";
 function restartPendingFile(stateDir) {
-  return join35(stateDir, "restart-pending");
+  return join36(stateDir, "restart-pending");
 }
 var HEALTH_WAIT_MS = 5000;
 async function checkRouterPort(options) {
@@ -23398,7 +24102,7 @@ async function installRouter(options) {
   const { service } = options;
   const { listenerUp } = await checkRouterPort(options);
   const short = (path) => tildify(path, options.home);
-  const copyText = readFileSync39(options.bundle, "utf8");
+  const copyText = readFileSync40(options.bundle, "utf8");
   const definitions = service.definitions(options);
   const marker = restartPendingFile(options.stateDir);
   const write = (file, text, dryRun) => writeManagedFile(file, text, {
@@ -23413,7 +24117,7 @@ async function installRouter(options) {
     outcomes[definition.id] = write(definition.path, definition.text, true).outcome;
   }
   const filesUnchanged = copyPlan === "unchanged" && definitions.every((definition) => outcomes[definition.id] === "unchanged") && service.current(options.runner, options);
-  if (filesUnchanged && listenerUp && !existsSync31(marker)) {
+  if (filesUnchanged && listenerUp && !existsSync32(marker)) {
     if (options.dryRun)
       return "up-to-date";
     service.ensureRunning(options.runner);
@@ -23455,8 +24159,8 @@ async function installRouter(options) {
   return "installed";
 }
 function systemdService(options) {
-  const unitName = basename5(options.unitPath);
-  const socketName = basename5(options.socketPath);
+  const unitName = basename6(options.unitPath);
+  const socketName = basename6(options.socketPath);
   return {
     async activate(runner, input, plan) {
       if (plan.rebind) {
@@ -23531,7 +24235,7 @@ function systemdService(options) {
       if (!plan.listenerUp) {
         return plan.outcomes.socket === "created" ? MOVE_WARNING : SOCKET_STOPPED_WARNING;
       }
-      const oldPort = existsSync31(options.socketPath) ? socketPort(readFileSync39(options.socketPath, "utf8")) : null;
+      const oldPort = existsSync32(options.socketPath) ? socketPort(readFileSync40(options.socketPath, "utf8")) : null;
       return oldPort !== null && oldPort !== input.port ? PORT_WARNING : SOCKET_CHANGED_WARNING;
     },
     running(runner) {
@@ -23540,7 +24244,7 @@ function systemdService(options) {
     async stop(runner, port, probe) {
       const state = port === null ? null : unitState(runner, unitName);
       const stop = stopUnits(runner, {
-        dir: dirname15(options.unitPath),
+        dir: dirname17(options.unitPath),
         names: [socketName, unitName]
       });
       const refused = stop.refused[0];
@@ -23574,7 +24278,7 @@ var HOLDS_ITS_PORT = new Set(["active", "deactivating"]);
 function stopUnits(runner, options) {
   const result = { missing: [], refused: [], stopped: [] };
   const there = options.names.filter((name) => {
-    if (existsSync31(join35(options.dir, name)))
+    if (existsSync32(join36(options.dir, name)))
       return true;
     result.missing.push(name);
     return false;
@@ -23593,6 +24297,8 @@ function stopUnits(runner, options) {
 }
 
 // src/gateway/service-windows.ts
+init_build_info();
+init_powershell();
 var TASK_NAME = "cc-smart-dev-kit-router";
 var TASK_LABEL = `the task ${TASK_NAME}`;
 var TASK_RESTART_WARNING = `the task ${TASK_NAME} is running. A restart stops it and starts it again, so new requests are refused for a moment (Claude Code retries them). Windows has no socket that holds the router's port across a restart, so this restart cannot promise what a Linux one does: that no request fails.`;
@@ -24021,7 +24727,7 @@ function defaultConfig(omnirouteKey, baseUrl = KNOWN_BACKENDS.omniroute ?? "") {
   };
 }
 function ensureConfig(configPath, key, options = {}) {
-  if (!existsSync32(configPath)) {
+  if (!existsSync33(configPath)) {
     if (key === null && options.allowNone === true) {
       return `no config at ${configPath} yet: every slot is off, so every Claude model goes to Anthropic as Claude Code sent it, on your own login, until the OmniRoute key is added (setup --backend-key-stdin omniroute)`;
     }
@@ -24054,10 +24760,10 @@ function ensureConfig(configPath, key, options = {}) {
   return `set the key of backend "${key.backend}" (${maskKey(key.value)})${moved} in ${configPath}`;
 }
 function configuredPort(configPath) {
-  return existsSync32(configPath) ? loadConfigFile(configPath).port : DEFAULT_PORT;
+  return existsSync33(configPath) ? loadConfigFile(configPath).port : DEFAULT_PORT;
 }
 function backendBaseUrl(configPath, backend) {
-  if (existsSync32(configPath)) {
+  if (existsSync33(configPath)) {
     const config = loadConfigFile(configPath);
     const existing = Object.hasOwn(config.backends, backend) ? config.backends[backend] : undefined;
     if (existing !== undefined)
@@ -24160,7 +24866,7 @@ async function discardMadeKey(made, error) {
   ! the key this run made in OmniRoute could not be removed (${made.name}, id ${made.id ?? "unknown"}; ${gone.detail}): remove it in OmniRoute's dashboard by hand`);
 }
 function backupCount(backups) {
-  return existsSync32(backups) ? readdirSync12(backups).length : 0;
+  return existsSync33(backups) ? readdirSync13(backups).length : 0;
 }
 function keyBackupLine(backups, home) {
   return `  the file as it was before the change is in ${tildify(backups, home)}: copy it back to put the key that was there in place`;
@@ -24172,7 +24878,7 @@ var NOT_SET_UP_FOR_KEY = `The gateway is not set up on this machine yet, so ther
 async function setOmnirouteKey(ctx, given, options) {
   const { paths } = ctx;
   const configPath = paths.gatewayConfigFile;
-  if (!existsSync32(configPath))
+  if (!existsSync33(configPath))
     throw new Error(NOT_SET_UP_FOR_KEY);
   loadConfigFile(configPath);
   const omnirouteAt = () => backendBaseUrl(configPath, "omniroute") ?? KNOWN_BACKENDS.omniroute;
@@ -24191,7 +24897,7 @@ async function setOmnirouteKey(ctx, given, options) {
       saveUnchecked: options.saveUnchecked
     });
     await withLock(paths.stateDir, async () => {
-      if (!existsSync32(configPath))
+      if (!existsSync33(configPath))
         throw new Error(NOT_SET_UP_FOR_KEY);
       if (omnirouteAt() !== checkedAt) {
         throw new Error(`OmniRoute's address in ${configPath} changed while the key was checked. Nothing was saved: try again.`);
@@ -24285,7 +24991,7 @@ function withoutRetiredDefaultClaude(config) {
   return { config: { ...config, slots }, dropped };
 }
 function upgradeConfig(configPath, options = {}) {
-  if (!existsSync32(configPath))
+  if (!existsSync33(configPath))
     return [];
   const { config, dropped } = withoutRetiredDefaultClaude(loadConfigFile(configPath));
   if (options.dryRun !== true && dropped.length > 0) {
@@ -24546,7 +25252,7 @@ async function testWorkerTargets(ctx, config) {
 function dropFallbackRecord(statePath, slot) {
   let state;
   try {
-    state = parseLimitState(readFileSync40(statePath, "utf8"));
+    state = parseLimitState(readFileSync41(statePath, "utf8"));
   } catch {
     return;
   }
@@ -24558,7 +25264,7 @@ function dropFallbackRecord(statePath, slot) {
 function dropChecksDownRecord(statePath, why) {
   let state;
   try {
-    state = parseLimitState(readFileSync40(statePath, "utf8"));
+    state = parseLimitState(readFileSync41(statePath, "utf8"));
   } catch {
     return;
   }
@@ -24843,7 +25549,7 @@ function printOverrides(report, out) {
 async function commandStatus(ctx) {
   const out = gatewayOut(ctx);
   const configPath = ctx.paths.gatewayConfigFile;
-  const setUp = existsSync32(configPath);
+  const setUp = existsSync33(configPath);
   let config = null;
   if (!setUp)
     out.line("info", `config: none yet (no ${tildify(configPath, ctx.paths.home)})`);
@@ -25224,9 +25930,9 @@ async function commandSetup(ctx, args) {
       if (upgraded.length > 0) {
         ctx.print(`  the config as it was before these changes is in ${tildify(backups, paths.home)}`);
       }
-      if (existsSync32(configPath))
+      if (existsSync33(configPath))
         warnUntestedJudge(ctx);
-      const now = existsSync32(configPath) ? loadConfigFile(configPath) : null;
+      const now = existsSync33(configPath) ? loadConfigFile(configPath) : null;
       if (now !== null && Object.keys(now.slots).length === 0) {
         const saved = Object.keys(now.kept ?? {}).length;
         ctx.print(saved > 0 ? `Every slot is Claude, so every Claude model stays plain Claude, on your own login. ${String(saved)} saved chain(s) are not in use: ${COMMAND} gateway status lists them, and ${COMMAND} gateway slot <slot> custom uses one again.` : "Every slot is Claude, so every Claude model stays plain Claude, on your own login.");
@@ -25271,7 +25977,7 @@ var SETUP_AGAIN = `${COMMAND} gateway setup (on this terminal it asks the addres
 var STOPPED = "Stopped. Nothing was changed.";
 var OMNIROUTE = "omniroute";
 function savedOmniroute(configPath) {
-  if (!existsSync32(configPath))
+  if (!existsSync33(configPath))
     return null;
   const { backends } = loadConfigFile(configPath);
   return Object.hasOwn(backends, OMNIROUTE) ? backends[OMNIROUTE] ?? null : null;
@@ -25281,7 +25987,7 @@ function setupFacts(ctx) {
   return {
     label: "OmniRoute",
     saved: savedOmniroute(configPath),
-    hasConfig: existsSync32(configPath),
+    hasConfig: existsSync33(configPath),
     defaultBaseUrl: KNOWN_BACKENDS[OMNIROUTE] ?? "",
     keyFlags: `${COMMAND} gateway setup --backend-key-stdin ${OMNIROUTE} < key-file, or --omniroute-password`,
     print: ctx.print
@@ -25298,7 +26004,7 @@ function warnUntestedJudge(ctx) {
 async function proveWorkerTargets(ctx) {
   const configPath = ctx.paths.gatewayConfigFile;
   try {
-    if (!existsSync32(configPath))
+    if (!existsSync33(configPath))
       return;
     const tested = await testWorkerTargets(ctx, loadConfigFile(configPath));
     for (const line of tested.lines)
@@ -25337,7 +26043,7 @@ async function commandCheck(ctx) {
     });
     return CHECK_CODES.needsKey;
   };
-  if (!existsSync32(configPath))
+  if (!existsSync33(configPath))
     return noKeyYet(`the gateway has no config yet (no ${tildify(configPath, paths.home)})`);
   let config;
   try {
@@ -25381,7 +26087,7 @@ async function commandOn(ctx) {
     settingsFile: paths.settingsFile,
     stateDir: paths.stateDir,
     port,
-    config: existsSync32(paths.gatewayConfigFile) ? loadConfigFile(paths.gatewayConfigFile) : undefined
+    config: existsSync33(paths.gatewayConfigFile) ? loadConfigFile(paths.gatewayConfigFile) : undefined
   };
   turnOn({ ...options, dryRun: true });
   const result = await withLock(paths.stateDir, () => turnOn(options), { waitMs: 1e4 });
@@ -25519,12 +26225,17 @@ ${USAGE}`);
 }
 
 // src/gateway/doctor.ts
-import { existsSync as existsSync33, readFileSync as readFileSync41 } from "fs";
+init_build_info();
+import { existsSync as existsSync34, readFileSync as readFileSync42 } from "fs";
+init_managed_json();
+init_write();
 
 // src/gateway/claude-defaults.ts
-import { dirname as dirname16, join as join36 } from "path";
+init_build_info();
+import { dirname as dirname18, join as join37 } from "path";
+init_write();
 var CLAUDE_DEFAULTS_MARKER = "claude-by-default";
-var claudeDefaultsMarkerFile = (stateDir) => join36(stateDir, CLAUDE_DEFAULTS_MARKER);
+var claudeDefaultsMarkerFile = (stateDir) => join37(stateDir, CLAUDE_DEFAULTS_MARKER);
 
 // src/gateway/doctor.ts
 function isCostly(model) {
@@ -25550,23 +26261,23 @@ async function gatewayChecks(options) {
     runner: options.runner,
     service: options.service
   });
-  if (existsSync33(restartPendingFile(paths.stateDir))) {
+  if (existsSync34(restartPendingFile(paths.stateDir))) {
     checks.push({
       ok: false,
       text: "a gateway setup did not finish",
       fix: SETUP
     });
   }
-  if (existsSync33(paths.gatewayConfigFile) && !existsSync33(claudeDefaultsMarkerFile(paths.stateDir))) {
+  if (existsSync34(paths.gatewayConfigFile) && !existsSync34(claudeDefaultsMarkerFile(paths.stateDir))) {
     checks.push({
       ok: true,
       info: true,
       text: `gateway.json was made before the Claude defaults (D66): ${COMMAND} setup moves, once, every slot to Claude, every fallback to off and the gateway to off, with a backup of the config first (setup --dry-run shows it)`
     });
   }
-  const installed = existsSync33(paths.routerCopy) || existsSync33(paths.routerUnitFile) || existsSync33(paths.routerSocketFile) || existsSync33(paths.routerTaskFile);
+  const installed = existsSync34(paths.routerCopy) || existsSync34(paths.routerUnitFile) || existsSync34(paths.routerSocketFile) || existsSync34(paths.routerTaskFile);
   if (!installed) {
-    checks.push(existsSync33(paths.gatewayConfigFile) ? {
+    checks.push(existsSync34(paths.gatewayConfigFile) ? {
       ok: true,
       info: true,
       text: `gateway.json kept (${short(paths.gatewayConfigFile)}); the gateway is not installed. To use it: ${COMMAND} gateway setup`
@@ -25624,9 +26335,9 @@ async function gatewayChecks(options) {
     const state = await service.stateAsync(read);
     checks.push(state.running ? { ok: true, text: `the router service (${service.name}) is active` } : { ok: false, text: `the router service (${service.name}) is ${state.state}`, fix: SETUP });
   }
-  if (!existsSync33(paths.routerCopy)) {
+  if (!existsSync34(paths.routerCopy)) {
     checks.push({ ok: false, text: `no router copy at ${short(paths.routerCopy)}`, fix: SETUP });
-  } else if (existsSync33(options.bundle) && readFileSync41(paths.routerCopy, "utf8") !== readFileSync41(options.bundle, "utf8")) {
+  } else if (existsSync34(options.bundle) && readFileSync42(paths.routerCopy, "utf8") !== readFileSync42(options.bundle, "utf8")) {
     checks.push({
       ok: false,
       text: `the router copy ${short(paths.routerCopy)} is not this plugin version's router`,
@@ -25636,7 +26347,7 @@ async function gatewayChecks(options) {
     checks.push({ ok: true, text: `the router copy ${short(paths.routerCopy)} is up to date` });
   }
   let config;
-  if (!existsSync33(paths.gatewayConfigFile)) {
+  if (!existsSync34(paths.gatewayConfigFile)) {
     config = emptyConfig();
     checks.push({
       ok: true,
@@ -25891,7 +26602,7 @@ async function portHolderCheck(options, port) {
 async function taskDefinitionCheck(options) {
   const { paths } = options;
   const where = tildify(paths.routerTaskFile, paths.home);
-  if (!existsSync33(paths.routerTaskFile)) {
+  if (!existsSync34(paths.routerTaskFile)) {
     return {
       check: { ok: false, text: `no task definition at ${where}`, fix: SETUP },
       state: "other"
@@ -25926,7 +26637,7 @@ async function taskDefinitionCheck(options) {
 async function socketCheck(options, port) {
   const { paths } = options;
   const where = tildify(paths.routerSocketFile, paths.home);
-  if (!existsSync33(paths.routerSocketFile)) {
+  if (!existsSync34(paths.routerSocketFile)) {
     return {
       check: {
         ok: false,
@@ -25936,7 +26647,7 @@ async function socketCheck(options, port) {
       state: "other"
     };
   }
-  if (readFileSync41(paths.routerSocketFile, "utf8") !== renderSocket(port)) {
+  if (readFileSync42(paths.routerSocketFile, "utf8") !== renderSocket(port)) {
     return {
       check: {
         ok: false,
@@ -25975,16 +26686,19 @@ async function socketCheck(options, port) {
 }
 
 // src/machine/companions.ts
-import { existsSync as existsSync35 } from "fs";
+init_build_info();
+init_version_range();
+import { existsSync as existsSync36 } from "fs";
 
 // src/setup/installed-plugins.ts
-import { existsSync as existsSync34, readFileSync as readFileSync42 } from "fs";
+init_build_info();
+import { existsSync as existsSync35, readFileSync as readFileSync43 } from "fs";
 function pluginsRecord(installedPluginsFile) {
-  if (!existsSync34(installedPluginsFile))
+  if (!existsSync35(installedPluginsFile))
     return null;
   let parsed;
   try {
-    parsed = JSON.parse(readFileSync42(installedPluginsFile, "utf8"));
+    parsed = JSON.parse(readFileSync43(installedPluginsFile, "utf8"));
   } catch {
     return null;
   }
@@ -26005,6 +26719,7 @@ function findUserInstall(installedPluginsFile, pluginId = PLUGIN_ID) {
 }
 
 // src/machine/companions.ts
+init_user_json();
 var MARKETPLACE_SOURCES = {
   thedotmack: "thedotmack/claude-mem",
   "claude-plugins-official": "anthropics/claude-plugins-official"
@@ -26025,7 +26740,7 @@ function companions(dependencies = DEPENDENCIES) {
   });
 }
 function readJson(file) {
-  if (!existsSync35(file))
+  if (!existsSync36(file))
     return null;
   try {
     const parsed = readUserJson(file);
@@ -26050,7 +26765,7 @@ function comparableVersion(version) {
 }
 function companionInstall(paths, companion) {
   const install = findUserInstall(paths.installedPluginsFile, companion.id);
-  return install === null || !existsSync35(install.installPath) ? null : install;
+  return install === null || !existsSync36(install.installPath) ? null : install;
 }
 function companionState(paths, companion) {
   const install = companionInstall(paths, companion);
@@ -26123,18 +26838,21 @@ function companionCheck(companion, state) {
 }
 
 // src/omniroute/commands.ts
-import { existsSync as existsSync37, readFileSync as readFileSync44 } from "fs";
+init_build_info();
+import { existsSync as existsSync38, readFileSync as readFileSync45 } from "fs";
+init_lock();
+init_write();
 
 // src/omniroute/install.ts
 import {
-  accessSync,
-  constants,
-  existsSync as existsSync36,
-  readdirSync as readdirSync13,
-  readFileSync as readFileSync43,
+  accessSync as accessSync2,
+  constants as constants2,
+  existsSync as existsSync37,
+  readdirSync as readdirSync14,
+  readFileSync as readFileSync44,
   realpathSync as realpathSync6
 } from "fs";
-import { dirname as dirname17, join as join37 } from "path";
+import { dirname as dirname19, join as join38 } from "path";
 var PACKAGE = "omniroute";
 var NAME = "OmniRoute";
 function tokenize(text) {
@@ -26200,16 +26918,16 @@ function namesOmniroute(word) {
 function userUnits(dir) {
   let names;
   try {
-    names = readdirSync13(dir);
+    names = readdirSync14(dir);
   } catch {
     return [];
   }
   const units = [];
   for (const name of names.filter((entry) => entry.endsWith(".service")).sort()) {
-    const file = join37(dir, name);
+    const file = join38(dir, name);
     let argv;
     try {
-      argv = unitExecStart(readFileSync43(file, "utf8"));
+      argv = unitExecStart(readFileSync44(file, "utf8"));
     } catch {
       continue;
     }
@@ -26220,7 +26938,7 @@ function userUnits(dir) {
 }
 function versionOf(folder, name) {
   try {
-    const manifest = JSON.parse(readFileSync43(join37(folder, "package.json"), "utf8"));
+    const manifest = JSON.parse(readFileSync44(join38(folder, "package.json"), "utf8"));
     const wanted = manifest;
     if (wanted.name !== name || typeof wanted.version !== "string")
       return null;
@@ -26230,11 +26948,11 @@ function versionOf(folder, name) {
   }
 }
 function packageFolderOf(script, name) {
-  let dir = dirname17(script);
+  let dir = dirname19(script);
   for (let step = 0;step < 8; step += 1) {
     if (versionOf(dir, name) !== null)
       return dir;
-    const up = dirname17(dir);
+    const up = dirname19(dir);
     if (up === dir)
       break;
     dir = up;
@@ -26245,27 +26963,27 @@ function globalRootOf(folder, which) {
   const bun = /^(.*)\/install\/global\/node_modules\/[^/]+$/.exec(folder);
   if (bun !== null) {
     const prefix = bun[1] ?? "";
-    const own = join37(prefix, "bin", "bun");
-    return { kind: "bun", manager: existsSync36(own) ? own : which("bun") ?? "bun" };
+    const own = join38(prefix, "bin", "bun");
+    return { kind: "bun", manager: existsSync37(own) ? own : which("bun") ?? "bun" };
   }
   const npm = /^(.*)\/lib\/node_modules\/[^/]+$/.exec(folder);
   if (npm !== null) {
     const prefix = npm[1] ?? "";
-    const own = join37(prefix, "bin", "npm");
-    return { kind: "npm", manager: existsSync36(own) ? own : which("npm") ?? "npm" };
+    const own = join38(prefix, "bin", "npm");
+    return { kind: "npm", manager: existsSync37(own) ? own : which("npm") ?? "npm" };
   }
   return null;
 }
 var SYSTEM_PACKAGE_FOLDERS = [
-  join37("/usr", "local", "lib", "node_modules"),
-  join37("/usr", "lib", "node_modules")
+  join38("/usr", "local", "lib", "node_modules"),
+  join38("/usr", "lib", "node_modules")
 ];
 function guessFolders(env, home, systemFolders) {
-  const bunInstall = env.BUN_INSTALL ?? join37(home, ".bun");
+  const bunInstall = env.BUN_INSTALL ?? join38(home, ".bun");
   return [
-    join37(bunInstall, "install", "global", "node_modules", PACKAGE),
-    join37(home, ".local", "share", "bun", "install", "global", "node_modules", PACKAGE),
-    ...systemFolders.map((folder) => join37(folder, PACKAGE))
+    join38(bunInstall, "install", "global", "node_modules", PACKAGE),
+    join38(home, ".local", "share", "bun", "install", "global", "node_modules", PACKAGE),
+    ...systemFolders.map((folder) => join38(folder, PACKAGE))
   ];
 }
 function fromPath(which) {
@@ -26281,7 +26999,7 @@ function fromPath(which) {
 }
 function findOmniroute(options) {
   const { paths, env } = options;
-  const units = userUnits(dirname17(paths.routerUnitFile));
+  const units = userUnits(dirname19(paths.routerUnitFile));
   const unit = units.find((entry) => entry.argv.some(namesOmniroute)) ?? units.find((entry) => entry.argv.some((word) => word.includes(PACKAGE))) ?? null;
   const script = unit?.argv.find(namesOmniroute) ?? null;
   const fromUnit = script === null ? null : packageFolderOf(script, PACKAGE);
@@ -26339,14 +27057,14 @@ function installLine(install, home) {
 }
 function writable(dir) {
   try {
-    accessSync(dir, constants.W_OK);
+    accessSync2(dir, constants2.W_OK);
     return true;
   } catch {
     return false;
   }
 }
 function installIsWritable(install) {
-  return writable(install.folder) && writable(dirname17(install.folder));
+  return writable(install.folder) && writable(dirname19(install.folder));
 }
 
 // src/omniroute/registry.ts
@@ -26464,7 +27182,7 @@ function parseState(text) {
 }
 function readState(file) {
   try {
-    return parseState(readFileSync44(file, "utf8")) ?? emptyState();
+    return parseState(readFileSync45(file, "utf8")) ?? emptyState();
   } catch {
     return emptyState();
   }
@@ -26478,7 +27196,7 @@ function stateFile(paths) {
 }
 function readOrNull(path) {
   try {
-    return readFileSync44(path, "utf8");
+    return readFileSync45(path, "utf8");
   } catch {
     return null;
   }
@@ -26504,7 +27222,7 @@ async function omnirouteFacts(ctx) {
   });
   let backend = null;
   let model = null;
-  if (found.install !== null && existsSync37(ctx.paths.gatewayConfigFile)) {
+  if (found.install !== null && existsSync38(ctx.paths.gatewayConfigFile)) {
     try {
       const config = loadConfigFile(ctx.paths.gatewayConfigFile);
       backend = omnirouteBackend(config, found.unit, readOrNull);
@@ -26829,12 +27547,17 @@ async function omnirouteDoctorLine(ctx) {
   };
 }
 
+// src/portal/facts.ts
+init_config();
+init_resolve();
+
 // src/update/apply.ts
-import { existsSync as existsSync38, readFileSync as readFileSync47 } from "fs";
-import { join as join39 } from "path";
+init_build_info();
+import { existsSync as existsSync39, readFileSync as readFileSync48 } from "fs";
+import { join as join40 } from "path";
 
 // src/build-info/manifest.ts
-import { readFileSync as readFileSync45 } from "fs";
+import { readFileSync as readFileSync46 } from "fs";
 function readDependencies(manifestFile, raw) {
   if (raw === undefined)
     return [];
@@ -26856,17 +27579,21 @@ function readDependencies(manifestFile, raw) {
   });
 }
 function readManifestDependencies(manifestFile) {
-  const manifest = JSON.parse(readFileSync45(manifestFile, "utf8"));
+  const manifest = JSON.parse(readFileSync46(manifestFile, "utf8"));
   if (typeof manifest !== "object" || manifest === null || Array.isArray(manifest)) {
     throw new Error(`${manifestFile}: not a JSON object`);
   }
   return readDependencies(manifestFile, manifest.dependencies);
 }
 
+// src/update/apply.ts
+init_git_env();
+
 // src/update/major.ts
-import { readFileSync as readFileSync46 } from "fs";
-import { join as join38 } from "path";
-var MAJOR_NOTES_PATH = join38("src", "update", "major-notes.json");
+init_build_info();
+import { readFileSync as readFileSync47 } from "fs";
+import { join as join39 } from "path";
+var MAJOR_NOTES_PATH = join39("src", "update", "major-notes.json");
 var NOTE_MAX = 120;
 function majorOf(version) {
   const major = /^v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)/.exec(version.trim())?.[1];
@@ -26906,7 +27633,7 @@ function readMajorNotes(location, from, to) {
   if (location === null)
     return [];
   try {
-    return majorNotesBetween(readFileSync46(join38(location, MAJOR_NOTES_PATH), "utf8"), from, to);
+    return majorNotesBetween(readFileSync47(join39(location, MAJOR_NOTES_PATH), "utf8"), from, to);
   } catch {
     return [];
   }
@@ -26998,10 +27725,10 @@ function companionsBehindDetail(version, behind) {
 }
 function routerNeedsSetup(paths) {
   const install = findUserInstall(paths.installedPluginsFile);
-  if (install === null || !existsSync38(paths.routerCopy))
+  if (install === null || !existsSync39(paths.routerCopy))
     return false;
-  const bundle = join39(install.installPath, "dist", "router.js");
-  return existsSync38(bundle) && readFileSync47(bundle, "utf8") !== readFileSync47(paths.routerCopy, "utf8");
+  const bundle = join40(install.installPath, "dist", "router.js");
+  return existsSync39(bundle) && readFileSync48(bundle, "utf8") !== readFileSync48(paths.routerCopy, "utf8");
 }
 var ROUTER_SETUP_HINT = `its router changed: to run it, ${COMMAND} gateway setup (it asks before the restart); a machine set up before Claude became the default runs ${COMMAND} setup once first, which moves it`;
 function shownVersion(version) {
@@ -27011,29 +27738,38 @@ function commandContext(env, home) {
   return { cwd: home, env: gitEnv(env) };
 }
 
+// src/portal/settings.ts
+init_schema();
+
 // src/portal/workflow-adapter.ts
-import { join as join42 } from "path";
+import { join as join43 } from "path";
 
 // src/cli/project-init.ts
-import { existsSync as existsSync40, readFileSync as readFileSync49, statSync as statSync16 } from "fs";
-import { join as join41, resolve as resolve10 } from "path";
+init_build_info();
+init_names();
+init_git();
+init_config();
+import { existsSync as existsSync41, readFileSync as readFileSync50, statSync as statSync17 } from "fs";
+import { join as join42, resolve as resolve10 } from "path";
 
 // src/project/deploy-skill.ts
+init_file_mode();
 import {
   closeSync as closeSync6,
-  existsSync as existsSync39,
+  existsSync as existsSync40,
   lstatSync as lstatSync3,
-  mkdirSync as mkdirSync15,
+  mkdirSync as mkdirSync16,
   openSync as openSync6,
-  readdirSync as readdirSync14,
-  readFileSync as readFileSync48,
-  statSync as statSync15,
-  unlinkSync as unlinkSync4,
+  readdirSync as readdirSync15,
+  readFileSync as readFileSync49,
+  statSync as statSync16,
+  unlinkSync as unlinkSync5,
   writeFileSync as writeFileSync5
 } from "fs";
-import { basename as basename6, dirname as dirname18, isAbsolute as isAbsolute2, join as join40, relative as relative3, resolve as resolve9 } from "path";
+import { basename as basename7, dirname as dirname20, isAbsolute as isAbsolute2, join as join41, relative as relative3, resolve as resolve9 } from "path";
 
 // src/setup/managed-markdown.ts
+init_write();
 var BLOCK_BEGIN = "<!-- cc-smart-dev-kit:begin -->";
 var BLOCK_END = "<!-- cc-smart-dev-kit:end -->";
 function countOf(text, marker) {
@@ -27093,7 +27829,11 @@ function renderWithoutBlock(current, file = "the file") {
   return `${before}${after}`;
 }
 
+// src/project/deploy-skill.ts
+init_write();
+
 // src/project/deploy-block.ts
+init_names();
 function deployBlockBody() {
   const release = `${COMMAND} task release`;
   return [
@@ -27116,15 +27856,16 @@ function deployBlockBody() {
 }
 
 // src/project/deploy-skill.ts
+init_frontmatter();
 var SKILLS_DIR = [".claude", "skills"];
 var SKILL_FILE = "SKILL.md";
 var MARKER_SEARCH_DEPTH = 4;
 function skillsFolder(root) {
-  return join40(root, ...SKILLS_DIR);
+  return join41(root, ...SKILLS_DIR);
 }
 function skillsFolderLink(root) {
   const folder = skillsFolder(root);
-  if (!existsSync39(folder) || isInside2(realTarget(root), realTarget(folder)))
+  if (!existsSync40(folder) || isInside2(realTarget(root), realTarget(folder)))
     return null;
   return `${shownPath(root, folder)} is a link outside this checkout: not searched`;
 }
@@ -27176,7 +27917,7 @@ function holdsDeployBlock(text) {
 }
 function namesAny(file, words) {
   const has = (text) => words.some((word) => text.toLowerCase().includes(word));
-  if (has(basename6(join40(file, ".."))))
+  if (has(basename7(join41(file, ".."))))
     return true;
   const header = readFrontmatterHeader(file);
   if (header === null)
@@ -27194,17 +27935,17 @@ function isTopSkill(top, file) {
 }
 function skillFilesUnder(folder, depth, realRoot, seen = new Set) {
   const real = realTarget(folder);
-  if (seen.has(real) || !existsSync39(folder) || !statSync15(folder).isDirectory())
+  if (seen.has(real) || !existsSync40(folder) || !statSync16(folder).isDirectory())
     return [];
   seen.add(real);
   const found = [];
-  if (existsSync39(join40(folder, SKILL_FILE)))
-    found.push(join40(folder, SKILL_FILE));
+  if (existsSync40(join41(folder, SKILL_FILE)))
+    found.push(join41(folder, SKILL_FILE));
   if (depth === 0 || !isInside2(realRoot, real))
     return found;
-  for (const entry of readdirSync14(folder).sort()) {
+  for (const entry of readdirSync15(folder).sort()) {
     if (entry !== "node_modules") {
-      found.push(...skillFilesUnder(join40(folder, entry), depth - 1, realRoot, seen));
+      found.push(...skillFilesUnder(join41(folder, entry), depth - 1, realRoot, seen));
     }
   }
   return found;
@@ -27214,7 +27955,7 @@ function findDeploySkills(root) {
   const named = [];
   const top = skillsFolder(root);
   for (const file of skillFilesUnder(top, MARKER_SEARCH_DEPTH, realTarget(root))) {
-    if (holdsDeployBlock(readFileSync48(file, "utf8")))
+    if (holdsDeployBlock(readFileSync49(file, "utf8")))
       holders.push(file);
     else if (isTopSkill(top, file) && namesAny(file, ["deploy"]))
       named.push(file);
@@ -27262,10 +28003,10 @@ function planDeploySkill(root, file, mode) {
   if (!isInside2(realTarget(root), real)) {
     return refused(root, file, outsideMessage(root, file, real));
   }
-  if (!existsSync39(real) || !statSync15(real).isFile()) {
+  if (!existsSync40(real) || !statSync16(real).isFile()) {
     return refused(root, file, `${shown} is not a file`);
   }
-  const before = readFileSync48(real, "utf8");
+  const before = readFileSync49(real, "utf8");
   const crlf = isCrlf(before);
   const work = crlf ? before.replace(/\r\n/g, `
 `) : before;
@@ -27318,6 +28059,12 @@ function staleBlocks(root) {
 }
 
 // src/cli/project-init.ts
+init_managed_json();
+init_user_json();
+init_write();
+init_format();
+init_resolve2();
+init_schema();
 var RUN_TIMEOUT_MS2 = 1e4;
 async function runGh2(ghPath, args, env) {
   try {
@@ -27413,21 +28160,21 @@ async function protectedFromGithub(runner, root) {
 }
 var FAST_CHECK_SCRIPTS = ["typecheck", "lint", "check", "test"];
 function runnerOf(root) {
-  if (existsSync40(join41(root, "bun.lock")) || existsSync40(join41(root, "bun.lockb")))
+  if (existsSync41(join42(root, "bun.lock")) || existsSync41(join42(root, "bun.lockb")))
     return "bun run";
-  if (existsSync40(join41(root, "pnpm-lock.yaml")))
+  if (existsSync41(join42(root, "pnpm-lock.yaml")))
     return "pnpm run";
-  if (existsSync40(join41(root, "yarn.lock")))
+  if (existsSync41(join42(root, "yarn.lock")))
     return "yarn run";
   return "npm run";
 }
 function defaultFastCheck(root) {
-  const file = join41(root, "package.json");
-  if (!existsSync40(file))
+  const file = join42(root, "package.json");
+  if (!existsSync41(file))
     return null;
   let scripts;
   try {
-    const parsed = parseUserJson(readFileSync49(file, "utf8"));
+    const parsed = parseUserJson(readFileSync50(file, "utf8"));
     scripts = isObject2(parsed) ? parsed.scripts : undefined;
   } catch {
     return null;
@@ -27567,7 +28314,7 @@ var QUESTIONS = [
 ];
 var QUESTIONS_INTRO = `${QUESTIONS.length} questions. Enter keeps the answer in [brackets].`;
 function readText(file) {
-  return existsSync40(file) ? readFileSync49(file, "utf8") : null;
+  return existsSync41(file) ? readFileSync50(file, "utf8") : null;
 }
 function readExisting(file) {
   const text = readText(file);
@@ -27626,9 +28373,11 @@ the project.
 The workflow settings are: ${WORKFLOW_KEYS.join(", ")}`;
 
 // src/portal/workflow-adapter.ts
+init_managed_json();
+init_resolve2();
 async function projectInitDefaults(input) {
   const facts = await detectFacts(realRunnerAsync(input.env), input.root);
-  const existing = readExisting(join42(input.root, ".claude", "cc-smart-dev-kit.json"));
+  const existing = readExisting(join43(input.root, ".claude", "cc-smart-dev-kit.json"));
   const answers = defaultAnswers(existing, facts, { dryRun: false, yes: false });
   const { checks, ...rest } = answers;
   const fromFile = existing !== null && isObject2(existing.checks) && typeof existing.checks.fast === "string";
@@ -27650,6 +28399,40 @@ var workflowAdapter = {
 };
 
 // src/portal/settings.ts
+var SWITCH_WORDS2 = {
+  statusLine: {
+    help: "Show the slot and the model answering in Claude Code's status line.",
+    id: "set-status",
+    label: "Status line"
+  },
+  sessionNames: {
+    help: "Name each Claude session after the branch it works on, so a window is easy to find.",
+    id: "set-names",
+    label: "Session names"
+  },
+  jobRoute: {
+    help: "The type check, the build, the tests and the coverage run go through the queue: a few at a time, the rest wait for a free slot. A project can set its own.",
+    id: "set-jobs",
+    label: "Heavy jobs through the queue"
+  },
+  updateHold: {
+    help: "No new kit version installs until you turn this off again.",
+    id: "set-upd",
+    label: "Hold self-updates"
+  },
+  leadHint: {
+    help: "Once a session, tell me when the session's model is not Claude Opus, the lead the kit works best with. It never switches the model.",
+    id: "set-lead",
+    label: "Lead-model hint"
+  }
+};
+function switchWhere(key) {
+  return isPersonalFileSwitch(key) || PERSONAL_ONLY_REASONS[key] !== undefined ? "personal" : "project";
+}
+function switchRow(name) {
+  const key = `switches.${name}`;
+  return { card: "switches", ...SWITCH_WORDS2[name], key, kind: "boolean", where: switchWhere(key) };
+}
 var SETTINGS = [
   {
     card: "flow",
@@ -27743,42 +28526,7 @@ var SETTINGS = [
     unit: "%",
     where: "personal"
   },
-  {
-    card: "switches",
-    help: "Show the slot and the model answering in Claude Code's status line.",
-    id: "set-status",
-    key: "switches.statusLine",
-    kind: "boolean",
-    label: "Status line",
-    where: "personal"
-  },
-  {
-    card: "switches",
-    help: "Name each Claude session after the branch it works on, so a window is easy to find.",
-    id: "set-names",
-    key: "switches.sessionNames",
-    kind: "boolean",
-    label: "Session names",
-    where: "project"
-  },
-  {
-    card: "switches",
-    help: "The type check, the build, the tests and the coverage run go through the queue: a few at a time, the rest wait for a free slot. A project can set its own.",
-    id: "set-jobs",
-    key: "switches.jobRoute",
-    kind: "boolean",
-    label: "Heavy jobs through the queue",
-    where: "personal"
-  },
-  {
-    card: "switches",
-    help: "No new kit version installs until you turn this off again.",
-    id: "set-upd",
-    key: "switches.updateHold",
-    kind: "boolean",
-    label: "Hold self-updates",
-    where: "personal"
-  }
+  ...SWITCH_NAMES.map(switchRow)
 ];
 var SETTINGS_CARDS = [
   { card: "flow", title: "Work flow" },
@@ -27834,7 +28582,7 @@ function readConfig(ctx) {
 }
 function configExists(ctx) {
   try {
-    readFileSync50(ctx.paths.gatewayConfigFile);
+    readFileSync51(ctx.paths.gatewayConfigFile);
     return true;
   } catch (error) {
     return error.code !== "ENOENT";
@@ -28004,7 +28752,7 @@ async function routerLog(ctx, count) {
 function slotStamp(config, key) {
   const inUse = Object.hasOwn(config.slots, key) ? config.slots[key] ?? null : null;
   const saved = keptChain(config, key)?.targets ?? null;
-  return createHash5("sha256").update(JSON.stringify({ inUse, saved })).digest("hex").slice(0, 16);
+  return createHash6("sha256").update(JSON.stringify({ inUse, saved })).digest("hex").slice(0, 16);
 }
 var SLOT_META = {
   fable: {
@@ -28119,7 +28867,7 @@ function claudeModels(config, seen = []) {
 function seenClaudeModels(ctx) {
   let text;
   try {
-    text = readFileSync50(ctx.paths.gatewayStateFile, "utf8");
+    text = readFileSync51(ctx.paths.gatewayStateFile, "utf8");
   } catch {
     return [];
   }
@@ -28210,7 +28958,7 @@ function limitWindowText(claim) {
 function limitFacts(ctx) {
   let text = null;
   try {
-    text = readFileSync50(ctx.paths.gatewayStateFile, "utf8");
+    text = readFileSync51(ctx.paths.gatewayStateFile, "utf8");
   } catch {
     text = null;
   }
@@ -28301,20 +29049,20 @@ async function rootOf(cwd, env) {
   }
 }
 function projectName(root) {
-  return basename7(root);
+  return basename8(root);
 }
 function readTextFile(file) {
   try {
-    return readFileSync50(file, "utf8");
+    return readFileSync51(file, "utf8");
   } catch {
     return null;
   }
 }
 function projectFiles(root) {
   return {
-    config: join43(root, ".claude", "cc-smart-dev-kit.json"),
-    localSettings: join43(root, ".claude", "settings.local.json"),
-    settings: join43(root, ".claude", "settings.json")
+    config: join44(root, ".claude", "cc-smart-dev-kit.json"),
+    localSettings: join44(root, ".claude", "settings.local.json"),
+    settings: join44(root, ".claude", "settings.json")
   };
 }
 function projectFileTexts(root) {
@@ -28338,7 +29086,7 @@ function settingsLineNote(settings) {
   return `${added === 0 ? "" : `${lines(added)} added, `}${taken}. Nothing else there changes.`;
 }
 function projectFilesHash(texts) {
-  return createHash5("sha256").update(texts.existing ?? "\x00").update("\x00").update(texts.existingSettings ?? "\x00").update("\x00").update(texts.existingLocalSettings ?? "\x00").digest("hex").slice(0, 32);
+  return createHash6("sha256").update(texts.existing ?? "\x00").update("\x00").update(texts.existingSettings ?? "\x00").update("\x00").update(texts.existingLocalSettings ?? "\x00").digest("hex").slice(0, 32);
 }
 async function projectCardData(ctx, cwd, readDefaults, workflow) {
   const base = {
@@ -28467,8 +29215,7 @@ async function portHolder(ctx, port) {
   const { check, state } = await portHolderCheck({ paths: ctx.paths, runner: ctx.runRead, service: kind }, port);
   return { check, kind, name: kind === "systemd" ? SOCKET_NAME : TASK_NAME, state };
 }
-function planWindow(ctx) {
-  const window = readUsageWindow(ctx.paths, ctx.now());
+function planWindowOf(window) {
   if (window === null)
     return null;
   return {
@@ -28476,17 +29223,21 @@ function planWindow(ctx) {
     resetsAt: window.resetsAt === null ? null : new Date(window.resetsAt * 1000).toISOString()
   };
 }
+function planWindows(ctx) {
+  const windows = readUsageWindows(ctx.paths, ctx.now());
+  return { fiveHour: planWindowOf(windows.fiveHour), sevenDay: planWindowOf(windows.sevenDay) };
+}
 
 // src/portal/api/work.ts
-import { readFileSync as readFileSync53 } from "fs";
-import { join as join47 } from "path";
+import { readFileSync as readFileSync54 } from "fs";
+import { join as join48 } from "path";
 
 // src/gateway/safety-checks-read.ts
-import { readFileSync as readFileSync51 } from "fs";
+import { readFileSync as readFileSync52 } from "fs";
 var DAY_MS = 86400000;
 function readSafetyChecks(file) {
   try {
-    return parseSafetyCheckState(readFileSync51(file, "utf8"));
+    return parseSafetyCheckState(readFileSync52(file, "utf8"));
   } catch {
     return null;
   }
@@ -28504,12 +29255,16 @@ function safetyCheckWindow(state, options) {
   };
 }
 
+// src/portal/api/work.ts
+init_git();
+init_resolve();
+
 // src/hooks/agent-usage.ts
-import { readFileSync as readFileSync52 } from "fs";
-import { join as join44 } from "path";
+import { readFileSync as readFileSync53 } from "fs";
+import { join as join45 } from "path";
 var AGENT_USAGE_FILE = "agent-usage.jsonl";
 function agentUsageFile(stateDir) {
-  return join44(stateDir, AGENT_USAGE_FILE);
+  return join45(stateDir, AGENT_USAGE_FILE);
 }
 function isJsonObject11(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -28620,7 +29375,7 @@ function recordAgentUsage(input, event, paths, nowMs) {
     return said("the input names no agent transcript");
   let text;
   try {
-    text = readFileSync52(transcript, "utf8");
+    text = readFileSync53(transcript, "utf8");
   } catch {
     return said("the agent's transcript cannot be read, so its usage is not recorded");
   }
@@ -28636,6 +29391,7 @@ function recordAgentUsage(input, event, paths, nowMs) {
 }
 
 // src/sessions/flow.ts
+init_write();
 var FLOW_DAYS_KEPT = 8;
 var OPEN_WAIT_MAX_AGE_MS = 24 * 3600000;
 var CHUNK_BYTES = 4 * 1024 * 1024;
@@ -28643,29 +29399,15 @@ var LAUNCH_TOOLS = new Set(["Agent", "Task"]);
 var QUESTION_TOOLS = new Set(["AskUserQuestion", "ExitPlanMode"]);
 
 // src/portal/cli-child.ts
-import { join as join46 } from "path";
-
-// src/setup/bun-config.ts
-import { basename as basename8, join as join45 } from "path";
-var BUN_CONFIG_NAME = "bunfig.toml";
-function bunConfigPath(pluginDir) {
-  return join45(pluginDir, BUN_CONFIG_NAME);
-}
-function bunConfigArg(pluginDir) {
-  return `--config=${bunConfigPath(pluginDir)}`;
-}
-function pluginFolderBeside(importDir) {
-  return basename8(importDir) === "dist" ? join45(importDir, "..") : join45(importDir, "..", "..", "plugin");
-}
-
-// src/portal/cli-child.ts
+init_bun_config();
+import { join as join47 } from "path";
 var CLI_CHILD_TIMEOUT_MS = 180000;
 function cliChildArgv(folder, args) {
   return [
     process.execPath,
     "--no-env-file",
     bunConfigArg(folder),
-    join46(folder, "dist", "cli.js"),
+    join47(folder, "dist", "cli.js"),
     ...args
   ];
 }
@@ -29011,6 +29753,10 @@ async function repoOf(deps) {
     return { kind: "error", why: error instanceof Error ? error.message : String(error) };
   }
 }
+async function listedWorktrees(repo, env) {
+  const listed = await runGitAsync(repo, ["worktree", "list", "--porcelain"], env);
+  return listed.ok ? parseWorktreeList(listed.out) : null;
+}
 async function workAnswer(deps) {
   const paths = deps.action.portal.paths;
   const now = deps.action.portal.now();
@@ -29023,7 +29769,7 @@ async function workAnswer(deps) {
   let waitsError = null;
   if (found.kind === "repo") {
     const { repo } = found;
-    const others = savedSessions(join47(paths.claudeConfigDir, "projects"), repo, now - WORK_SESSIONS_MS);
+    const others = savedSessions(join48(paths.claudeConfigDir, "projects"), repo, now - WORK_SESSIONS_MS, await listedWorktrees(repo, deps.action.portal.env));
     const waits = others.some((session) => !session.endedCleanly) ? await openWaitsOffLoop(deps.action.portal, OPEN_WAIT_MAX_AGE_MS) : { open: [] };
     const waiting = new Set("open" in waits ? waits.open.map((wait) => wait.session) : []);
     sessions = others.map((session) => ({
@@ -29089,7 +29835,7 @@ function guardAsksAnswer(deps, query) {
   const bucketMs = HISTORY_BUCKET_MS[query.range];
   let text;
   try {
-    text = readFileSync53(askLogFile(deps.action.portal.paths.stateDir), "utf8");
+    text = readFileSync54(askLogFile(deps.action.portal.paths.stateDir), "utf8");
   } catch {
     return {
       asks: [],
@@ -29263,7 +30009,7 @@ function requestsAnswer(deps, options = {}) {
 // src/portal/api/projects.ts
 var PROJECT_ID_HEX = 12;
 function projectId(root) {
-  return createHash6("sha256").update(root).digest("hex").slice(0, PROJECT_ID_HEX);
+  return createHash7("sha256").update(root).digest("hex").slice(0, PROJECT_ID_HEX);
 }
 var PROJECT_BRANCHES_CACHE_MS = 60000;
 var PROJECT_BRANCHES_DEADLINE_MS = 8000;
@@ -29300,7 +30046,7 @@ var ADDED_VERSION = 1;
 function readAddedProjects(paths) {
   let text;
   try {
-    text = readFileSync54(paths.portalProjectsFile, "utf8");
+    text = readFileSync55(paths.portalProjectsFile, "utf8");
   } catch {
     return [];
   }
@@ -29319,7 +30065,7 @@ function readAddedProjects(paths) {
 }
 function writeAddedProjects(paths, roots) {
   const file = paths.portalProjectsFile;
-  mkdirSync16(dirname19(file), { mode: 448, recursive: true });
+  mkdirSync17(dirname21(file), { mode: 448, recursive: true });
   const value = { roots, version: ADDED_VERSION };
   atomicWrite(file, `${JSON.stringify(value, null, 2)}
 `, 384);
@@ -29383,7 +30129,7 @@ async function uncommittedProject(root, env) {
 }
 async function summaryOf(found, world, currentRoot) {
   const files = projectFiles(found.root);
-  const set = existsSync41(files.config);
+  const set = existsSync42(files.config);
   const [worktrees, uncommitted] = await Promise.all([
     linkedWorktrees(found.root, world.env),
     uncommittedProject(found.root, world.env)
@@ -29393,7 +30139,7 @@ async function summaryOf(found, world, currentRoot) {
     current: currentRoot !== null && samePath2(found.root, currentRoot),
     id: projectId(found.root),
     lastUsed: found.lastWrite > 0 ? new Date(found.lastWrite).toISOString() : null,
-    name: basename9(found.root),
+    name: basename10(found.root),
     root: found.root,
     set,
     source: found.source,
@@ -29629,7 +30375,7 @@ async function ghLoginOf(world, root) {
 }
 function configAt(root) {
   try {
-    const config = loadCcSmartDevKitConfig(join48(root, CONFIG_PATH));
+    const config = loadCcSmartDevKitConfig(join49(root, CONFIG_PATH));
     return config === null ? {
       ok: false,
       why: `${root} has no ${CONFIG_PATH} yet: set it up with \`${COMMAND} project init\` there.`
@@ -29692,8 +30438,10 @@ async function projectsAnswerFor(deps) {
 }
 
 // src/portal/command.ts
-import { existsSync as existsSync44 } from "fs";
-import { join as join51 } from "path";
+import { existsSync as existsSync45 } from "fs";
+import { join as join52 } from "path";
+init_build_info();
+init_detached();
 
 // src/ports.ts
 var DEFAULT_PORTAL_PORT = 20150;
@@ -29758,64 +30506,69 @@ async function waitForPortal(port, probe, wanted, waitMs) {
 }
 
 // src/portal/lifecycle.ts
-import { existsSync as existsSync43, readFileSync as readFileSync56, rmSync as rmSync10 } from "fs";
-import { join as join50 } from "path";
+init_build_info();
+import { existsSync as existsSync44, readFileSync as readFileSync57, rmSync as rmSync10 } from "fs";
+import { join as join51 } from "path";
+init_bun_config();
+init_lock();
 
 // src/setup/managed-folder.ts
+init_file_mode();
+init_write();
 import {
-  existsSync as existsSync42,
-  mkdirSync as mkdirSync17,
-  readdirSync as readdirSync15,
-  readFileSync as readFileSync55,
+  existsSync as existsSync43,
+  mkdirSync as mkdirSync18,
+  readdirSync as readdirSync16,
+  readFileSync as readFileSync56,
   renameSync as renameSync2,
   rmSync as rmSync9,
-  statSync as statSync17,
+  statSync as statSync18,
   writeFileSync as writeFileSync6
 } from "fs";
-import { basename as basename10, dirname as dirname20, join as join49, relative as relative5, sep as sep3 } from "path";
+import { basename as basename11, dirname as dirname22, join as join50, relative as relative5, sep as sep3 } from "path";
 var OWNED_FOLDERS_FILE = "owned-folders.json";
 var FILE_MODE = 420;
 var DIR_MODE = 493;
 var OWNED_FOLDER_MARK = ".cc-smart-dev-kit-owned";
 var OWNED_FOLDER_MARK_TEXT = "cc-smart-dev-kit made this folder and writes every file in it; `cc-smart-dev-kit restore` removes it.\n";
 function markedOwned(folder) {
-  return existsSync42(join49(folder, OWNED_FOLDER_MARK));
+  return existsSync43(join50(folder, OWNED_FOLDER_MARK));
 }
 function listFiles(folder) {
-  return readdirSync15(folder, { recursive: true, withFileTypes: true }).filter((entry) => entry.isFile()).map((entry) => relative5(folder, join49(entry.parentPath, entry.name)).split(sep3).join("/")).sort();
+  return readdirSync16(folder, { recursive: true, withFileTypes: true }).filter((entry) => entry.isFile()).map((entry) => relative5(folder, join50(entry.parentPath, entry.name)).split(sep3).join("/")).sort();
 }
 function contentOfFolder(source) {
   return {
     names: listFiles(source),
-    read: (name) => readFileSync55(join49(source, ...name.split("/")))
+    read: (name) => readFileSync56(join50(source, ...name.split("/")))
   };
 }
 function sameFile(file, bytes, mode) {
-  if (!existsSync42(file))
+  if (!existsSync43(file))
     return false;
-  if (mode !== undefined && hostPlatform() !== "win32" && (statSync17(file).mode & 511) !== mode) {
+  if (mode !== undefined && hostPlatform() !== "win32" && (statSync18(file).mode & 511) !== mode) {
     return false;
   }
-  return readFileSync55(file).equals(bytes);
+  return readFileSync56(file).equals(bytes);
 }
 function sameFolder(target, content, mode) {
   const files = content.names;
-  if (!existsSync42(target) || !markedOwned(target))
+  if (!existsSync43(target) || !markedOwned(target))
     return false;
   const have = listFiles(target).filter((file) => file !== OWNED_FOLDER_MARK);
   if (have.length !== files.length || have.some((file, index) => file !== files[index])) {
     return false;
   }
-  return files.every((file) => sameFile(join49(target, file), content.read(file), mode));
+  return files.every((file) => sameFile(join50(target, file), content.read(file), mode));
 }
 function ownedFoldersFile(stateDir) {
-  return join49(stateDir, OWNED_FOLDERS_FILE);
+  return join50(stateDir, OWNED_FOLDERS_FILE);
 }
 function readOwnedFolders(stateDir) {
   const file = ownedFoldersFile(stateDir);
-  if (!existsSync42(file))
+  if (!existsSync43(file))
     return [];
-  const parsed = JSON.parse(readFileSync55(file, "utf8"));
+  const parsed = JSON.parse(readFileSync56(file, "utf8"));
   const folders = parsed?.folders;
   if (!Array.isArray(folders) || !folders.every((one) => typeof one === "string")) {
     throw new Error(`Invalid ${file}: expected { "folders": [<path>, \u2026] }`);
@@ -29823,7 +30576,7 @@ function readOwnedFolders(stateDir) {
   return [...folders].sort();
 }
 function writeOwnedFolders(stateDir, folders) {
-  mkdirSync17(stateDir, { recursive: true });
+  mkdirSync18(stateDir, { recursive: true });
   atomicWrite(ownedFoldersFile(stateDir), `${JSON.stringify({ folders: [...folders].sort() }, null, 2)}
 `, 384);
 }
@@ -29842,14 +30595,14 @@ function forgetOwnedFolder(stateDir, folder) {
 }
 function copyFolder(content, into, mode) {
   for (const file of content.names) {
-    const to = join49(into, ...file.split("/"));
-    mkdirSync17(dirname20(to), { recursive: true, mode: DIR_MODE });
+    const to = join50(into, ...file.split("/"));
+    mkdirSync18(dirname22(to), { recursive: true, mode: DIR_MODE });
     writeFileSync6(to, content.read(file), { mode });
     setFileMode(to, mode);
   }
-  mkdirSync17(into, { recursive: true, mode: DIR_MODE });
-  writeFileSync6(join49(into, OWNED_FOLDER_MARK), OWNED_FOLDER_MARK_TEXT, { mode: FILE_MODE });
-  setFileMode(join49(into, OWNED_FOLDER_MARK), FILE_MODE);
+  mkdirSync18(into, { recursive: true, mode: DIR_MODE });
+  writeFileSync6(join50(into, OWNED_FOLDER_MARK), OWNED_FOLDER_MARK_TEXT, { mode: FILE_MODE });
+  setFileMode(join50(into, OWNED_FOLDER_MARK), FILE_MODE);
 }
 function writeFolder(target, content, options, update) {
   const real = realTarget(target);
@@ -29860,7 +30613,7 @@ function writeFolder(target, content, options, update) {
       recordOwnedFolder(options.stateDir, real);
     return { files: count, outcome: "unchanged" };
   }
-  const hadOld = existsSync42(real);
+  const hadOld = existsSync43(real);
   const outcome = hadOld ? "updated" : "created";
   if (hadOld && !markedOwned(real)) {
     throw new Error(`${real} is not a folder cc-smart-dev-kit made (it has no ${OWNED_FOLDER_MARK}): move it away, then run this again`);
@@ -29873,8 +30626,8 @@ function writeFolder(target, content, options, update) {
     return { files: count, outcome };
   }
   const token = `${process.pid}-${crypto.randomUUID()}`;
-  const temp = join49(dirname20(real), `.${basename10(real)}.cc-smart-dev-kit-tmp-${token}`);
-  const old = join49(dirname20(real), `.${basename10(real)}.cc-smart-dev-kit-old-${token}`);
+  const temp = join50(dirname22(real), `.${basename11(real)}.cc-smart-dev-kit-tmp-${token}`);
+  const old = join50(dirname22(real), `.${basename11(real)}.cc-smart-dev-kit-old-${token}`);
   try {
     copyFolder(content, temp, mode);
     if (hadOld)
@@ -29882,7 +30635,7 @@ function writeFolder(target, content, options, update) {
     try {
       renameSync2(temp, real);
     } catch (error) {
-      if (hadOld && !existsSync42(real))
+      if (hadOld && !existsSync43(real))
         renameSync2(old, real);
       throw error;
     }
@@ -29897,17 +30650,17 @@ function writeFolder(target, content, options, update) {
 }
 function rewriteFiles(real, content, mode) {
   for (const name of content.names) {
-    const file = join49(real, ...name.split("/"));
+    const file = join50(real, ...name.split("/"));
     const bytes = content.read(name);
     if (sameFile(file, bytes, mode))
       continue;
-    const keep = existsSync42(file) ? statSync17(file).mode & 511 : FILE_MODE;
+    const keep = existsSync43(file) ? statSync18(file).mode & 511 : FILE_MODE;
     atomicWrite(file, bytes.toString("utf8"), mode ?? keep);
   }
   const wanted = new Set(content.names.map((name) => name.split("/")[0]));
-  for (const entry of readdirSync15(real)) {
+  for (const entry of readdirSync16(real)) {
     if (entry !== OWNED_FOLDER_MARK && !wanted.has(entry)) {
-      rmSync9(join49(real, entry), { force: true, recursive: true });
+      rmSync9(join50(real, entry), { force: true, recursive: true });
     }
   }
 }
@@ -29916,7 +30669,7 @@ function writeManagedFolder(target, source, options) {
 }
 function removeManagedFolder(target, stateDir) {
   const real = realTarget(target);
-  const ours = existsSync42(real) && markedOwned(real);
+  const ours = existsSync43(real) && markedOwned(real);
   if (ours)
     rmSync9(real, { force: true, recursive: true });
   forgetOwnedFolder(stateDir, real);
@@ -29924,6 +30677,8 @@ function removeManagedFolder(target, stateDir) {
 }
 
 // src/portal/lifecycle.ts
+init_write();
+init_state();
 function portalStarterArgv(bunPath, bundle, pluginDir) {
   return [bunPath, "--no-env-file", bunConfigArg(pluginDir), bundle, "--ensure"];
 }
@@ -29940,22 +30695,22 @@ function portalServerArgv(bunPath, copy, pluginDir) {
 }
 var PORTAL_COPY_LOCK_WAIT_MS = 1e4;
 function refreshPortalCopy(paths, pluginFolder) {
-  const bundle = join50(pluginFolder, "dist", "portal.js");
-  if (!existsSync43(bundle)) {
+  const bundle = join51(pluginFolder, "dist", "portal.js");
+  if (!existsSync44(bundle)) {
     return {
       error: `the portal bundle is missing (${bundle}); this install is incomplete. Run ${COMMAND} doctor, then reinstall the plugin.`
     };
   }
-  writeManagedFile(paths.portalCopy, readFileSync56(bundle, "utf8"), {
+  writeManagedFile(paths.portalCopy, readFileSync57(bundle, "utf8"), {
     kind: "whole-file",
     stateDir: paths.stateDir
   });
   return { copy: paths.portalCopy, ...refreshPortalExport(paths, pluginFolder) };
 }
 function refreshPortalExport(paths, pluginFolder) {
-  const source = join50(pluginFolder, "portal-ui");
+  const source = join51(pluginFolder, "portal-ui");
   try {
-    if (existsSync43(join50(source, "index.html"))) {
+    if (existsSync44(join51(source, "index.html"))) {
       writeManagedFolder(paths.portalUiFolder, source, { stateDir: paths.stateDir });
     } else {
       removeManagedFolder(paths.portalUiFolder, paths.stateDir);
@@ -29973,7 +30728,7 @@ async function refreshCopyLocked(deps) {
   } catch (error) {
     if (!(error instanceof LockBusyError))
       throw error;
-    if (existsSync43(deps.paths.portalCopy)) {
+    if (existsSync44(deps.paths.portalCopy)) {
       return {
         copy: deps.paths.portalCopy,
         note: "another cc-smart-dev-kit run holds the lock; the copy that is already there was used"
@@ -30044,7 +30799,7 @@ function portalLog(paths, line, nowMs = Date.now()) {
 }
 function noteHeldPortOnce(paths, port, nowMs) {
   try {
-    const text = readFileSync56(paths.portalHeldFile, "utf8");
+    const text = readFileSync57(paths.portalHeldFile, "utf8");
     const held = JSON.parse(text);
     if (held.port === port)
       return false;
@@ -30116,20 +30871,20 @@ function claudeCodeProfileHere(machine, home) {
 }
 function installedPluginFolder(paths, fallback) {
   const installed = findUserInstall(paths.installedPluginsFile);
-  if (installed !== null && existsSync44(join51(installed.installPath, "dist", "portal.js"))) {
+  if (installed !== null && existsSync45(join52(installed.installPath, "dist", "portal.js"))) {
     return { folder: installed.installPath, source: "installed", version: installed.version };
   }
   return { folder: fallback, source: "fallback", version: installed?.version ?? null };
 }
 
 // src/portal/plugin-folder.ts
-import { existsSync as existsSync45 } from "fs";
+import { existsSync as existsSync46 } from "fs";
 function resolvePluginFolder(installedPluginsFile, fallback) {
   const installed = findUserInstall(installedPluginsFile);
-  if (installed !== null && existsSync45(installed.installPath)) {
+  if (installed !== null && existsSync46(installed.installPath)) {
     return { folder: installed.installPath };
   }
-  if (fallback !== null && existsSync45(fallback))
+  if (fallback !== null && existsSync46(fallback))
     return { folder: fallback };
   return {
     error: "the plugin's own folder is gone, and Claude Code records no installed version: an update or an uninstall removed it while this portal was running. Nothing can be restarted or checked from here. Stop the portal (Ctrl+C) and start it again."
@@ -30137,13 +30892,16 @@ function resolvePluginFolder(installedPluginsFile, fallback) {
 }
 
 // src/portal/server.ts
-import { dirname as dirname29, extname as extname3, join as join79 } from "path";
+init_build_info();
+import { dirname as dirname31, extname as extname3, join as join80 } from "path";
 
 // src/cli/doctor.ts
-import { accessSync as accessSync3, constants as constants4, existsSync as existsSync63, readFileSync as readFileSync72 } from "fs";
-import { dirname as dirname28, join as join71 } from "path";
+import { accessSync as accessSync4, constants as constants5, existsSync as existsSync64, readFileSync as readFileSync73 } from "fs";
+import { dirname as dirname30, join as join72 } from "path";
+init_build_info();
 
 // src/herdr/hc.ts
+init_zod();
 var HC_TIMEOUT_MS = 15000;
 var MIN_HC_VERSION = "0.1.20";
 
@@ -30378,14 +31136,18 @@ function herdrChecks(r = defaultHcRunner) {
 }
 
 // src/jobs/doctor.ts
-import { readFileSync as readFileSync58 } from "fs";
+init_names();
+import { readFileSync as readFileSync59 } from "fs";
+init_user_json();
 
 // src/jobs/git-hooks.ts
-import { closeSync as closeSync7, openSync as openSync7, readSync as readSync3, realpathSync as realpathSync7, statSync as statSync18 } from "fs";
-import { basename as basename11, dirname as dirname21, join as join53, resolve as resolve11 } from "path";
+init_git();
+import { closeSync as closeSync7, openSync as openSync7, readSync as readSync3, realpathSync as realpathSync7, statSync as statSync19 } from "fs";
+import { basename as basename12, dirname as dirname23, join as join54, resolve as resolve11 } from "path";
 
 // src/jobs/classify.ts
-import { isAbsolute as isAbsolute3, join as join52, normalize } from "path";
+init_command();
+import { isAbsolute as isAbsolute3, join as join53, normalize } from "path";
 
 // src/shell/tool.ts
 var BUN_VALUED = ["--config", "--cwd", "--env-file", "--filter", "--preload", "-c", "-F", "-r"];
@@ -30631,6 +31393,7 @@ function ruleMatches(rule, call, scriptOnly = false) {
 }
 
 // src/jobs/classify.ts
+init_kind_defaults();
 function runOf(source) {
   return {
     source,
@@ -30672,7 +31435,7 @@ function resolveFolder(folder, target) {
     return null;
   if (isAbsolute3(target))
     return normalize(target);
-  return folder === null ? null : normalize(join52(folder, target));
+  return folder === null ? null : normalize(join53(folder, target));
 }
 function folderAfter(program, args, folder) {
   if (folder === null)
@@ -31508,11 +32271,11 @@ function realFolder2(folder) {
   }
 }
 function isHuskyStubFolder(folder) {
-  return basename11(folder) === "_" && basename11(dirname21(folder)) === ".husky";
+  return basename12(folder) === "_" && basename12(dirname23(folder)) === ".husky";
 }
 function isFile3(file) {
   try {
-    return statSync18(file).isFile();
+    return statSync19(file).isFile();
   } catch {
     return false;
   }
@@ -31521,7 +32284,7 @@ function hookText(file) {
   let fd = null;
   try {
     fd = openSync7(file, "r");
-    const size = statSync18(file).size;
+    const size = statSync19(file).size;
     if (size > MAX_HOOK_BYTES)
       return null;
     const buffer = Buffer.alloc(size);
@@ -31542,9 +32305,9 @@ function hookDecision(name, cwd, kinds, scriptsIn, env = process.env, gitTimeout
   if (place === null)
     return "none";
   const { folder, top } = place;
-  if (!isFile3(join53(folder, name)))
+  if (!isFile3(join54(folder, name)))
     return "none";
-  const file = isHuskyStubFolder(folder) ? join53(dirname21(folder), name) : join53(folder, name);
+  const file = isHuskyStubFolder(folder) ? join54(dirname23(folder), name) : join54(folder, name);
   if (!isFile3(file))
     return "none";
   const text = hookText(file);
@@ -31555,10 +32318,14 @@ function hookDecision(name, cwd, kinds, scriptsIn, env = process.env, gitTimeout
 }
 
 // src/jobs/hook-folder.ts
-import { accessSync as accessSync2, constants as constants2, existsSync as existsSync46, readdirSync as readdirSync16, readFileSync as readFileSync57, statSync as statSync19 } from "fs";
-import { join as join54 } from "path";
+init_build_info();
+import { accessSync as accessSync3, constants as constants3, existsSync as existsSync47, readdirSync as readdirSync17, readFileSync as readFileSync58, statSync as statSync20 } from "fs";
+import { join as join55 } from "path";
+init_launcher();
+init_lock();
+init_write();
 function hookLauncher(paths) {
-  return join54(paths.binDir, LAUNCHER_NAME);
+  return join55(paths.binDir, LAUNCHER_NAME);
 }
 function hookScript(launcher) {
   return `#!/bin/sh
@@ -31646,7 +32413,7 @@ exec "$real" "$@"
 }
 function isExecutable(file) {
   try {
-    accessSync2(file, constants2.X_OK);
+    accessSync3(file, constants3.X_OK);
     return true;
   } catch {
     return false;
@@ -31654,22 +32421,22 @@ function isExecutable(file) {
 }
 function gitHooksState(paths) {
   const folder = paths.gitHooksFolder;
-  if (!existsSync46(folder))
+  if (!existsSync47(folder))
     return { kind: "missing" };
-  if (!existsSync46(join54(folder, OWNED_FOLDER_MARK)))
+  if (!existsSync47(join55(folder, OWNED_FOLDER_MARK)))
     return { kind: "not-ours" };
   const wanted = hookScript(hookLauncher(paths));
   const problems = [];
   for (const name of HOOK_NAMES) {
-    const file = join54(folder, name);
-    if (!existsSync46(file) || !statSync19(file).isFile())
+    const file = join55(folder, name);
+    if (!existsSync47(file) || !statSync20(file).isFile())
       problems.push(`${name} is missing`);
     else if (!isExecutable(file))
       problems.push(`${name} is not executable`);
-    else if (readFileSync57(file, "utf8") !== wanted)
+    else if (readFileSync58(file, "utf8") !== wanted)
       problems.push(`${name} is from another version`);
   }
-  for (const entry of readdirSync16(folder)) {
+  for (const entry of readdirSync17(folder)) {
     if (entry !== OWNED_FOLDER_MARK && !HOOK_NAMES.includes(entry)) {
       problems.push(`${entry} should not be there`);
     }
@@ -31798,7 +32565,7 @@ function heavyJobChecks(paths, limits, platform = hostPlatform()) {
     checks.push(...limitsChecks(paths, limits));
   const file = jobsPaths(paths.home).legacyFile;
   try {
-    const old = parseUserJson(readFileSync58(file, "utf8"));
+    const old = parseUserJson(readFileSync59(file, "utf8"));
     if (typeof old === "object" && old !== null && "maxJobs" in old)
       checks.push({
         ok: true,
@@ -31820,8 +32587,11 @@ function heavyJobChecks(paths, limits, platform = hostPlatform()) {
 }
 
 // src/machine/claude-mem.ts
-import { existsSync as existsSync47, readFileSync as readFileSync59, rmSync as rmSync11 } from "fs";
-import { join as join55 } from "path";
+init_names();
+import { existsSync as existsSync48, readFileSync as readFileSync60, rmSync as rmSync11 } from "fs";
+import { join as join56 } from "path";
+init_managed_json();
+init_write();
 var CLAUDE_MEM_ID = "claude-mem@thedotmack";
 var CLAUDE_MEM_MIN_VERSION = "13.29.0";
 var FALLBACK_PROVIDER = "CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER";
@@ -31878,7 +32648,7 @@ function gatewayAffordableTarget(gatewayConfigFile, after) {
   if (after !== undefined) {
     config = after;
   } else {
-    if (!existsSync47(gatewayConfigFile))
+    if (!existsSync48(gatewayConfigFile))
       return { reason: "the gateway is not set up" };
     try {
       config = loadConfigFile(gatewayConfigFile);
@@ -31913,7 +32683,7 @@ function gatewayAffordableTarget(gatewayConfigFile, after) {
 var CHOICES_FILE = "claude-mem-choices.json";
 function readChoicesFile(stateDir) {
   try {
-    const parsed = JSON.parse(readFileSync59(join55(stateDir, CHOICES_FILE), "utf8"));
+    const parsed = JSON.parse(readFileSync60(join56(stateDir, CHOICES_FILE), "utf8"));
     return isObject2(parsed) ? parsed : {};
   } catch {
     return {};
@@ -31929,7 +32699,7 @@ function writeChoices(stateDir, file, records) {
     delete all[file];
   else
     all[file] = records;
-  atomicWrite(join55(stateDir, CHOICES_FILE), `${JSON.stringify(all, null, 2)}
+  atomicWrite(join56(stateDir, CHOICES_FILE), `${JSON.stringify(all, null, 2)}
 `, 384);
 }
 function readClaudeMemSettings(paths) {
@@ -31969,7 +32739,7 @@ function hasValue(record) {
 }
 function readStartBlocks(paths) {
   const install = findUserInstall(paths.installedPluginsFile, CLAUDE_MEM_ID);
-  if (install === null || !existsSync47(install.installPath))
+  if (install === null || !existsSync48(install.installPath))
     return null;
   const read = readClaudeMemSettings(paths);
   if ("problem" in read)
@@ -32105,7 +32875,7 @@ function isOldNestedForm(data) {
 }
 function claudeMemPlan(paths, gatewayAfter) {
   const install = findUserInstall(paths.installedPluginsFile, CLAUDE_MEM_ID);
-  if (install === null || !existsSync47(install.installPath))
+  if (install === null || !existsSync48(install.installPath))
     return { notInstalled: true };
   const read = readClaudeMemSettings(paths);
   if ("problem" in read)
@@ -32200,6 +32970,10 @@ function shownClaudeMemValue(path, value) {
 }
 
 // src/setup/auto-update.ts
+init_build_info();
+init_lock();
+init_managed_json();
+init_write();
 var AUTO_UPDATE_KEY = ["extraKnownMarketplaces", MARKETPLACE, "autoUpdate"];
 function autoUpdateState(paths) {
   const current = getKey(readJsonObject(paths.settingsFile).data, AUTO_UPDATE_KEY);
@@ -32213,12 +32987,19 @@ function autoUpdateState(paths) {
 }
 
 // src/setup/instructions.ts
-import { existsSync as existsSync49, readdirSync as readdirSync17, readFileSync as readFileSync61, rmSync as rmSync12 } from "fs";
-import { join as join57, relative as relative6, sep as sep4 } from "path";
+import { existsSync as existsSync50, readdirSync as readdirSync18, readFileSync as readFileSync62, rmSync as rmSync12 } from "fs";
+import { join as join58, relative as relative6, sep as sep4 } from "path";
+init_path_compare();
+init_lock();
+
+// src/setup/restore.ts
+init_path_compare();
 
 // src/setup/managed-entries.ts
-import { existsSync as existsSync48, readFileSync as readFileSync60 } from "fs";
-import { join as join56 } from "path";
+init_managed_json();
+init_write();
+import { existsSync as existsSync49, readFileSync as readFileSync61 } from "fs";
+import { join as join57 } from "path";
 var OWNED_ENTRIES_FILE = "owned-entries.json";
 var ANCHOR_SOURCE = "";
 function pathKey(path) {
@@ -32228,10 +33009,10 @@ function isOwnedEntry(value) {
   return isObject2(value) && typeof value.entry === "string" && typeof value.source === "string";
 }
 function readOwnedEntries(stateDir) {
-  const file = join56(stateDir, OWNED_ENTRIES_FILE);
-  if (!existsSync48(file))
+  const file = join57(stateDir, OWNED_ENTRIES_FILE);
+  if (!existsSync49(file))
     return {};
-  const parsed = JSON.parse(readFileSync60(file, "utf8"));
+  const parsed = JSON.parse(readFileSync61(file, "utf8"));
   const valid = isObject2(parsed) && Object.values(parsed).every((lists) => isObject2(lists) && Object.values(lists).every((list) => Array.isArray(list) && list.every(isOwnedEntry)));
   if (!valid) {
     throw new Error(`Invalid ${file}: expected { <file>: { <key path>: [{ "entry", "source" }] } }`);
@@ -32239,7 +33020,7 @@ function readOwnedEntries(stateDir) {
   return parsed;
 }
 function writeOwnedEntries(stateDir, state) {
-  atomicWrite(join56(stateDir, OWNED_ENTRIES_FILE), `${JSON.stringify(state, null, 2)}
+  atomicWrite(join57(stateDir, OWNED_ENTRIES_FILE), `${JSON.stringify(state, null, 2)}
 `, 384);
 }
 function withRecords(state, file, key, records) {
@@ -32385,40 +33166,48 @@ function applyManagedEntries(options) {
 }
 
 // src/setup/managed-hook.ts
+init_names();
+init_managed_json();
+init_write();
 var PLUGIN_CACHE = `plugins/cache/${MARKETPLACE}/${PLUGIN}/`;
 
+// src/setup/restore.ts
+init_managed_json();
+init_write();
+
 // src/setup/instructions.ts
+init_write();
 var ALWAYS_ON_FILE = "core.md";
 function optOutFile(stateDir) {
-  return join57(stateDir, "no-instructions");
+  return join58(stateDir, "no-instructions");
 }
 function versionStampFile(stateDir) {
-  return join57(stateDir, "instructions-version");
+  return join58(stateDir, "instructions-version");
 }
 function instructionsOptedOut(stateDir) {
-  return existsSync49(optOutFile(stateDir));
+  return existsSync50(optOutFile(stateDir));
 }
 function readVersionStamp(stateDir) {
   const file = versionStampFile(stateDir);
-  if (!existsSync49(file))
+  if (!existsSync50(file))
     return null;
-  const version = readFileSync61(file, "utf8").trim();
+  const version = readFileSync62(file, "utf8").trim();
   return version === "" ? null : version;
 }
 function instructionsPaths(paths, source) {
-  const target = join57(paths.stateDir, "instructions");
+  const target = join58(paths.stateDir, "instructions");
   return {
     source,
     target,
-    claudeMd: join57(paths.claudeConfigDir, "CLAUDE.md"),
+    claudeMd: join58(paths.claudeConfigDir, "CLAUDE.md"),
     stateDir: paths.stateDir,
-    importPath: claudeImportPath(join57(target, ALWAYS_ON_FILE), paths.home),
+    importPath: claudeImportPath(join58(target, ALWAYS_ON_FILE), paths.home),
     installedPluginsFile: paths.installedPluginsFile
   };
 }
 function instructionsFolder(bundleDir) {
-  const beside = join57(bundleDir, "..", "instructions");
-  return existsSync49(beside) ? beside : join57(bundleDir, "..", "..", "plugin", "instructions");
+  const beside = join58(bundleDir, "..", "instructions");
+  return existsSync50(beside) ? beside : join58(bundleDir, "..", "..", "plugin", "instructions");
 }
 function claudeImportPath(path, home) {
   const rest = path.slice(home.length);
@@ -32433,10 +33222,10 @@ function instructionsBlockBody(importPath) {
 `);
 }
 function listInstructionFiles(source) {
-  if (!existsSync49(source)) {
+  if (!existsSync50(source)) {
     throw new Error(`The plugin's instructions folder is missing: ${source}. Reinstall the plugin.`);
   }
-  const files = readdirSync17(source, { recursive: true, withFileTypes: true }).filter((entry) => entry.isFile() && entry.name.endsWith(".md")).map((entry) => relative6(source, join57(entry.parentPath, entry.name)).split(sep4).join("/")).sort();
+  const files = readdirSync18(source, { recursive: true, withFileTypes: true }).filter((entry) => entry.isFile() && entry.name.endsWith(".md")).map((entry) => relative6(source, join58(entry.parentPath, entry.name)).split(sep4).join("/")).sort();
   if (!files.includes(ALWAYS_ON_FILE)) {
     throw new Error(`The plugin's instructions folder has no ${ALWAYS_ON_FILE}: ${source}. Reinstall the plugin.`);
   }
@@ -32462,24 +33251,31 @@ function copyDifferences(paths) {
   const files = listInstructionFiles(paths.source);
   const out = [];
   for (const name of files) {
-    const copy = join57(paths.target, name);
-    if (!existsSync49(copy))
+    const copy = join58(paths.target, name);
+    if (!existsSync50(copy))
       out.push(`${name} is missing`);
-    else if (readFileSync61(copy, "utf8") !== readFileSync61(join57(paths.source, name), "utf8")) {
+    else if (readFileSync62(copy, "utf8") !== readFileSync62(join58(paths.source, name), "utf8")) {
       out.push(`${name} differs`);
     }
   }
   const root = realTarget(paths.target);
-  const wanted = new Set(files.map((name) => realTarget(join57(paths.target, name))));
+  const wanted = new Set(files.map((name) => realTarget(join58(paths.target, name))));
   for (const file of trackedCopies(paths.target, paths.stateDir)) {
-    if (!wanted.has(file) && existsSync49(file)) {
+    if (!wanted.has(file) && existsSync50(file)) {
       out.push(`${relative6(root, file).split(sep4).join("/")} is not shipped any more`);
     }
   }
   return out;
 }
 
+// src/cli/doctor.ts
+init_launcher();
+
 // src/setup/launcher-cmd.ts
+init_build_info();
+init_bun_config();
+init_launcher();
+init_write();
 var LAUNCHER_CMD_NAME = "cc-smart-dev-kit.cmd";
 var FIND_INSTALL_JS2 = [
   "const f=process.argv[process.argv.length-1];",
@@ -32562,7 +33358,13 @@ function launcherCmdArgv(cmdPath, args) {
   return ["cmd.exe", "/c", cmdPath, ...args];
 }
 
+// src/cli/doctor.ts
+init_managed_json();
+
 // src/setup/max-subagents.ts
+init_build_info();
+init_managed_json();
+init_write();
 var DEFAULT_MAX_SUBAGENTS = 10;
 var MAX_SUBAGENTS_ENV = "CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS";
 var MAX_SUBAGENTS_FLAG = "--max-subagents";
@@ -32594,6 +33396,9 @@ function maxSubagentsLine(state, settingsFile) {
 }
 
 // src/setup/retry-watchdog.ts
+init_build_info();
+init_managed_json();
+init_write();
 var RETRY_WATCHDOG_ENV = "CLAUDE_CODE_RETRY_WATCHDOG";
 var RETRY_WATCHDOG_VALUE = "1";
 var RETRY_WATCHDOG_RECHECK_ENV = "CLAUDE_CODE_RETRY_WATCHDOG_USAGE_LIMIT_RECHECK_MS";
@@ -32642,6 +33447,7 @@ function retryWatchdogLine(state, settingsFile) {
 }
 
 // src/tasks/words.ts
+init_names();
 var TASK_TOOL = {
   create: "task_create",
   take: "task_take",
@@ -32668,11 +33474,125 @@ var PLAN_FILES_WORDS = "Plan task only: the repo-relative paths the plan changes
 var TASK_ALLOW_PATH = ["permissions", "allow"];
 var TASK_DENY_PATH = ["permissions", "deny"];
 
-// src/tasks/work/db.ts
-import { Database as Database3 } from "bun:sqlite";
-import { chmodSync as chmodSync2, existsSync as existsSync50, mkdirSync as mkdirSync18, renameSync as renameSync3, rmSync as rmSync13, writeFileSync as writeFileSync7 } from "fs";
-import { dirname as dirname22, join as join58 } from "path";
+// src/cli/doctor.ts
+init_user_json();
 
+// src/tasks/work/db.ts
+init_names();
+import { Database as Database3 } from "bun:sqlite";
+import { chmodSync as chmodSync2, existsSync as existsSync51, mkdirSync as mkdirSync19, renameSync as renameSync3, rmSync as rmSync13, writeFileSync as writeFileSync7 } from "fs";
+import { dirname as dirname24, join as join59 } from "path";
+
+// src/tasks/work/graph.ts
+function isOpen(task) {
+  return task.status === "pending" || task.status === "in_progress";
+}
+function inProgressFirst(a, b) {
+  return Number(b.status === "in_progress") - Number(a.status === "in_progress") || a.number - b.number;
+}
+var BLOCK_REFUSAL_WORDS = {
+  under: "it sits above this task",
+  cycle: "it would make a blocker cycle",
+  through: "it already waits for this task, through a parent"
+};
+
+class TaskGraph {
+  byId;
+  children = new Map;
+  added = new Map;
+  constructor(tasks) {
+    this.byId = new Map(tasks.map((task) => [task.id, task]));
+    for (const task of tasks) {
+      if (!task.parentId)
+        continue;
+      const siblings = this.children.get(task.parentId);
+      if (siblings)
+        siblings.push(task);
+      else
+        this.children.set(task.parentId, [task]);
+    }
+  }
+  childrenOf(id) {
+    return this.children.get(id) ?? [];
+  }
+  waitsOf(id) {
+    return [...this.byId.get(id)?.waitsFor ?? [], ...this.added.get(id) ?? []];
+  }
+  addWait(id, ref) {
+    const waits = this.added.get(id);
+    if (waits)
+      waits.push(ref);
+    else
+      this.added.set(id, [ref]);
+  }
+  ancestorsOf(task) {
+    const up = [];
+    const seen = new Set([task.id]);
+    for (let parent = this.byId.get(task.parentId ?? "");parent && !seen.has(parent.id); parent = this.byId.get(parent.parentId ?? "")) {
+      seen.add(parent.id);
+      up.push(parent);
+    }
+    return up;
+  }
+  holdingUnder(id) {
+    const seen = new Set([id]);
+    const result = [];
+    const walk = (parent) => {
+      for (const child of this.childrenOf(parent)) {
+        if (seen.has(child.id) || child.type === "non-blocking")
+          continue;
+        seen.add(child.id);
+        if (isOpen(child))
+          result.push(child);
+        walk(child.id);
+      }
+    };
+    walk(id);
+    return result.sort(inProgressFirst);
+  }
+  waitsFor(start, target) {
+    const reached = new Set;
+    const pending = [start];
+    while (pending.length) {
+      const id = pending.pop();
+      if (!id || reached.has(id))
+        continue;
+      if (id === target)
+        return true;
+      reached.add(id);
+      pending.push(...this.waitsOf(id), ...this.holdingUnder(id).map((held) => held.id));
+    }
+    return false;
+  }
+}
+function blockRefusal(graph, task, other) {
+  if (graph.ancestorsOf(task).some((up) => up.id === other.id))
+    return "under";
+  const seen = new Set;
+  const pending = [other.id];
+  while (pending.length) {
+    const id = pending.pop();
+    if (!id || seen.has(id))
+      continue;
+    if (id === task.id)
+      return "cycle";
+    seen.add(id);
+    pending.push(...graph.waitsOf(id));
+  }
+  return graph.waitsFor(other.id, task.id) ? "through" : null;
+}
+function ancestorHolds(graph) {
+  const found = [];
+  for (const task of graph.byId.values()) {
+    const above = graph.ancestorsOf(task);
+    for (const id of graph.waitsOf(task.id)) {
+      const ancestor = above.find((up) => up.id === id);
+      if (ancestor)
+        found.push({ task, ancestor });
+    }
+  }
+  return found.sort((a, b) => a.task.number - b.task.number || a.ancestor.number - b.ancestor.number);
+}
 // src/tasks/work/queries.ts
 function hasFilesTable(db) {
   return db.sqlite.query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='task_files'").get() !== null;
@@ -32749,9 +33669,6 @@ function taskById(db, id) {
   if (!task)
     throw new Error("task not found");
   return task;
-}
-function isOpen(task) {
-  return task.status === "pending" || task.status === "in_progress";
 }
 function planCounted(all, plan) {
   if (plan === null)
@@ -32904,9 +33821,6 @@ function descendantsIn(tasks, id) {
   }
   return result;
 }
-function inProgressFirst(a, b) {
-  return Number(b.status === "in_progress") - Number(a.status === "in_progress") || a.number - b.number;
-}
 function layerOf(task, _byId) {
   return task.kind;
 }
@@ -32924,30 +33838,7 @@ function freedBy(all, closed, owns) {
   return all.filter((t) => t.waitsFor.includes(closed.id) && owns(t) && isStartable(all, byId, t));
 }
 function holdingUnder(tasks, id) {
-  const children = new Map;
-  for (const t of tasks) {
-    if (!t.parentId)
-      continue;
-    const siblings = children.get(t.parentId);
-    if (siblings)
-      siblings.push(t);
-    else
-      children.set(t.parentId, [t]);
-  }
-  const seen = new Set([id]);
-  const result = [];
-  const walk = (parent) => {
-    for (const child of children.get(parent) ?? []) {
-      if (seen.has(child.id) || child.type === "non-blocking")
-        continue;
-      seen.add(child.id);
-      if (isOpen(child))
-        result.push(child);
-      walk(child.id);
-    }
-  };
-  walk(id);
-  return result.sort(inProgressFirst);
+  return new TaskGraph(tasks).holdingUnder(id);
 }
 function listTasks(db, options) {
   const all = allTasks(db, options.project);
@@ -33020,21 +33911,6 @@ function claimState(task, process2, who) {
     return resumedClaim(task.claim, who, process2.gone) ? "mine" : "free";
   return claimHeldBy(task.claim, who) ? "mine" : "another session";
 }
-function waitsForTask(tasks, start, target) {
-  const byId = new Map(tasks.map((task) => [task.id, task]));
-  const reached = new Set;
-  const pending = [start];
-  while (pending.length) {
-    const id = pending.pop();
-    if (!id || reached.has(id))
-      continue;
-    if (id === target)
-      return true;
-    reached.add(id);
-    pending.push(...byId.get(id)?.waitsFor ?? [], ...holdingUnder(tasks, id).map((task) => task.id));
-  }
-  return false;
-}
 
 // src/tasks/work/db.ts
 var WORK_SCHEMA_VERSION = 6;
@@ -33043,7 +33919,7 @@ var WRITE_TIMEOUT_MS = 3000;
 var HOOK_TIMEOUT_MS = 200;
 var NEWER_STORE = `the task store was made by a newer kit version: update the kit (${COMMAND} update)`;
 function workDbFile(paths) {
-  return join58(paths.stateDir, "tasks", "work.db");
+  return join59(paths.stateDir, "tasks", "work.db");
 }
 var SCHEMA = `
 CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -33087,6 +33963,37 @@ var MIGRATIONS = [
 
 class BackupFailure extends Error {
 }
+function restoreHolds(sqlite, projects, originalHolds, moved) {
+  for (const tasks of projects.values()) {
+    const graph = new TaskGraph(tasks.map((task) => {
+      const row = moved.get(task.id);
+      if (!row)
+        return task;
+      return {
+        ...task,
+        parentId: row.parent_id,
+        type: row.blocking === 0 ? "non-blocking" : "blocking"
+      };
+    }));
+    for (const task of graph.byId.values())
+      for (const held of originalHolds.get(task.id) ?? []) {
+        if (graph.waitsOf(task.id).includes(held.id))
+          continue;
+        const refusal = blockRefusal(graph, task, held);
+        if (refusal) {
+          sqlite.query("INSERT INTO task_events(task_id,project,number,at,action,changes,reason) VALUES (?,?,?,?,'noted',?,?)").run(task.id, task.project, task.number, Date.now(), JSON.stringify({
+            note: [
+              null,
+              `hold on #${held.number} not restored: ${BLOCK_REFUSAL_WORDS[refusal]}`
+            ]
+          }), LEGACY_LIFT_REASON);
+          continue;
+        }
+        sqlite.query("INSERT OR IGNORE INTO task_deps(task_id,waits_for) VALUES (?,?)").run(task.id, held.id);
+        graph.addWait(task.id, held.id);
+      }
+  }
+}
 function repairTaskLayers(sqlite, file) {
   const nestedExists = sqlite.query("SELECT 1 FROM tasks t JOIN tasks p ON p.id=t.parent_id WHERE t.kind='task' AND p.kind='task' LIMIT 1").get();
   if (!nestedExists)
@@ -33095,15 +34002,19 @@ function repairTaskLayers(sqlite, file) {
   const byId = new Map(rows.map((row) => [row.id, row]));
   const originalHolds = new Map;
   const reader = { sqlite, writable: false, close() {} };
+  const projects = new Map;
   for (const project of new Set(rows.map((row) => row.project))) {
     const tasks = allTasks(reader, project);
-    for (const task of tasks.filter((task) => task.kind === "task" && tasks.some((child) => child.kind === "task" && child.parentId === task.id)))
-      originalHolds.set(task.id, holdingUnder(tasks, task.id).map((held) => held.id));
+    projects.set(project, tasks);
+    const before = new TaskGraph(tasks);
+    for (const task of tasks)
+      if (task.kind === "task" && before.childrenOf(task.id).some((child) => child.kind === "task"))
+        originalHolds.set(task.id, before.holdingUnder(task.id));
   }
   let backed = false;
   const move = (row, parent, above) => {
     if (!backed) {
-      if (!existsSync50(`${file}.v4.bak`)) {
+      if (!existsSync51(`${file}.v4.bak`)) {
         try {
           writeFileSync7(`${file}.v4.bak.tmp`, sqlite.serialize(), { mode: 384 });
           renameSync3(`${file}.v4.bak.tmp`, `${file}.v4.bak`);
@@ -33114,7 +34025,7 @@ function repairTaskLayers(sqlite, file) {
           } catch (cleanupError) {
             cleanup = ` Temporary backup cleanup also failed: ${String(cleanupError)}.`;
           }
-          throw new BackupFailure(`task lift needs a backup: ${error instanceof Error ? error.message : String(error)}. Fix: free disk space and check folder rights for ${dirname22(file)}. The next task call tries again.${cleanup}`);
+          throw new BackupFailure(`task lift needs a backup: ${error instanceof Error ? error.message : String(error)}. Fix: free disk space and check folder rights for ${dirname24(file)}. The next task call tries again.${cleanup}`);
         }
       }
       backed = true;
@@ -33131,12 +34042,7 @@ function repairTaskLayers(sqlite, file) {
   for (;; ) {
     const nested = rows.find((row) => row.kind === "task" && byId.get(row.parent_id ?? "")?.kind === "task");
     if (!nested) {
-      for (const [id, held] of originalHolds)
-        for (const h of held) {
-          if (waitsForTask(allTasks(reader, byId.get(id)?.project ?? ""), h, id))
-            continue;
-          sqlite.query("INSERT OR IGNORE INTO task_deps(task_id,waits_for) VALUES (?,?)").run(id, h);
-        }
+      restoreHolds(sqlite, projects, originalHolds, byId);
       return;
     }
     const chain = [];
@@ -33170,18 +34076,18 @@ function repairTaskLayers(sqlite, file) {
 }
 function openWorkDb(file, options) {
   const hook = options.mode === "hook";
-  const fresh = !existsSync50(file);
+  const fresh = !existsSync51(file);
   if (hook && fresh)
     throw new Error("task store does not exist");
   if (!hook)
-    mkdirSync18(dirname22(file), { recursive: true, mode: 448 });
+    mkdirSync19(dirname24(file), { recursive: true, mode: 448 });
   const sqlite = new Database3(file, { create: !hook, readwrite: true });
   let writeRefusal;
   try {
     sqlite.run(`PRAGMA busy_timeout = ${hook ? HOOK_TIMEOUT_MS : WRITE_TIMEOUT_MS}`);
     sqlite.run("PRAGMA foreign_keys = ON");
     if (!hook) {
-      chmodSync2(dirname22(file), 448);
+      chmodSync2(dirname24(file), 448);
       chmodSync2(file, 384);
       if (fresh)
         sqlite.run("PRAGMA journal_mode = WAL");
@@ -33249,6 +34155,7 @@ function writeWork(db, body, options = {}) {
 }
 
 // src/update/opt-out.ts
+init_user_json();
 var UPDATE_BLOCKING_VARS = [
   "DISABLE_AUTOUPDATER",
   "DISABLE_UPDATES",
@@ -33273,7 +34180,11 @@ function updateOptOuts(env, fromSettings) {
   return { blocking, forced: false };
 }
 
+// src/cli/doctor.ts
+init_state();
+
 // src/cli/git-bash.ts
+init_names();
 import { win32 as win323 } from "path";
 var GIT_BASH_VAR = "CLAUDE_CODE_GIT_BASH_PATH";
 var ACCEPTED_NAMES = ["bash.exe", "sh.exe", "bash", "sh"];
@@ -33327,25 +34238,30 @@ function checkGitBash(platform, env, facts) {
 }
 
 // src/cli/project-checks.ts
+init_build_info();
+init_names();
+init_git();
 import {
   closeSync as closeSync11,
-  constants as constants3,
-  existsSync as existsSync62,
+  constants as constants4,
+  existsSync as existsSync63,
   fstatSync as fstatSync3,
   openSync as openSync11,
-  readdirSync as readdirSync20,
-  readFileSync as readFileSync71,
+  readdirSync as readdirSync21,
+  readFileSync as readFileSync72,
   readSync as readSync7,
   realpathSync as realpathSync10,
-  statSync as statSync23
+  statSync as statSync24
 } from "fs";
-import { isAbsolute as isAbsolute6, join as join70, relative as relative8, resolve as resolve18, sep as sep6 } from "path";
+import { isAbsolute as isAbsolute6, join as join71, relative as relative8, resolve as resolve18, sep as sep6 } from "path";
 
 // src/hooks/after-merge.ts
-import { createHash as createHash8 } from "crypto";
-import { existsSync as existsSync51, mkdirSync as mkdirSync20, writeFileSync as writeFileSync8 } from "fs";
+init_names();
+init_command();
+import { createHash as createHash9 } from "crypto";
+import { existsSync as existsSync52, mkdirSync as mkdirSync21, writeFileSync as writeFileSync8 } from "fs";
 import { tmpdir as tmpdir4 } from "os";
-import { join as join61 } from "path";
+import { join as join62 } from "path";
 
 // src/shell/git-calls.ts
 function longOption2(arg, full, min) {
@@ -33446,135 +34362,6 @@ function gitCalls(args) {
   }
   return calls;
 }
-
-// src/worktrees/auto-start.ts
-import { basename as basename12, join as join60 } from "path";
-
-// src/hooks/attended.ts
-function isAttended(env) {
-  return env.CLAUDE_CODE_SESSION_ATTENDED !== "0";
-}
-
-// src/worktrees/auto-state.ts
-import { createHash as createHash7 } from "crypto";
-import { mkdirSync as mkdirSync19, readFileSync as readFileSync62 } from "fs";
-import { dirname as dirname23, join as join59 } from "path";
-var AUTO_CLEAN_INTERVAL_MS = 60 * 60 * 1000;
-var TOLD_NAMES_MAX = 8;
-var removedSchema = object({
-  branch: string2().nullable(),
-  name: string2(),
-  path: string2(),
-  why: string2()
-});
-var keptSchema = object({ name: string2(), path: string2(), why: string2() });
-var recordSchema2 = object({
-  base: string2(),
-  kept: array(keptSchema),
-  lastRunAt: number2(),
-  removed: array(removedSchema),
-  repo: string2(),
-  seq: number2()
-});
-var toldSchema = object({ seq: number2() });
-function autoCleanLog(stateDir) {
-  return join59(stateDir, "worktrees-auto-clean.log");
-}
-function autoCleanFiles(stateDir, repo) {
-  const key = createHash7("sha256").update(pathForm(repo)).digest("hex").slice(0, 16);
-  const dir = join59(stateDir, "worktrees-auto-clean");
-  return {
-    log: autoCleanLog(stateDir),
-    result: join59(dir, `${key}.json`),
-    told: join59(dir, `${key}.told.json`)
-  };
-}
-function readJson2(file, schema) {
-  try {
-    const parsed = schema.safeParse(JSON.parse(readFileSync62(file, "utf8")));
-    return parsed.success ? parsed.data : null;
-  } catch {
-    return null;
-  }
-}
-function writeJson(file, value) {
-  mkdirSync19(dirname23(file), { recursive: true, mode: 448 });
-  atomicWrite(file, `${JSON.stringify(value, null, 2)}
-`, 384);
-}
-function readRepoRecord(files) {
-  return readJson2(files.result, recordSchema2);
-}
-function readTold(files) {
-  return readJson2(files.told, toldSchema)?.seq ?? 0;
-}
-function hourlyDue(record, nowMs) {
-  if (record === null)
-    return true;
-  return nowMs - record.lastRunAt >= AUTO_CLEAN_INTERVAL_MS || record.lastRunAt > nowMs + 60000;
-}
-function markTold(files, seq) {
-  if (readTold(files) >= seq)
-    return;
-  writeJson(files.told, { seq });
-}
-function untold(record, told) {
-  return record !== null && record.seq > told && record.removed.length > 0 ? record : null;
-}
-function toldLine(record) {
-  const count = record.removed.length;
-  const shown = record.removed.slice(0, TOLD_NAMES_MAX).map((one) => one.name);
-  const names = count > TOLD_NAMES_MAX ? `${shown.join(", ")} and ${String(count - TOLD_NAMES_MAX)} more` : shown.join(", ");
-  const noun = count === 1 ? "1 finished worktree" : `${String(count)} finished worktrees`;
-  return `${COMMAND} removed ${noun}: ${names} (work on ${record.base})`;
-}
-
-// src/worktrees/auto-start.ts
-var AUTO_CLEAN_BUNDLE = "worktrees-clean";
-function autoCleanOn(context) {
-  return context.project.config?.worktrees?.autoClean !== false;
-}
-function autoCleanEntry(importDir) {
-  return basename12(importDir) === "dist" ? join60(importDir, `${AUTO_CLEAN_BUNDLE}.js`) : join60(importDir, "..", "entries", `${AUTO_CLEAN_BUNDLE}.ts`);
-}
-function autoCleanArgv(bun, entry, pluginDir, repo, trigger, keep) {
-  return [bun, "--no-env-file", bunConfigArg(pluginDir), entry, repo, trigger, keep];
-}
-function startAutoClean(context, repo, trigger, importDir = import.meta.dir) {
-  if (!autoCleanOn(context))
-    return false;
-  if (trigger === "session") {
-    if (!isAttended(context.env))
-      return false;
-    const record = readRepoRecord(autoCleanFiles(context.paths.stateDir, repo));
-    if (!hourlyDue(record, Date.now()))
-      return false;
-  }
-  const argv = autoCleanArgv(process.execPath, autoCleanEntry(importDir), pluginFolderBeside(importDir), repo, trigger, context.cwd);
-  const env = gitEnv(context.env);
-  (context.start ?? startDetached)(process.platform, argv, {
-    cwd: context.paths.home,
-    env,
-    onError: (message) => console.error(`${COMMAND} worktrees clean: ${message}`)
-  });
-  return true;
-}
-function takeToldLine(context, repo) {
-  if (!isAttended(context.env))
-    return null;
-  const files = autoCleanFiles(context.paths.stateDir, repo);
-  const record = untold(readRepoRecord(files), readTold(files));
-  if (record === null)
-    return null;
-  try {
-    markTold(files, record.seq);
-  } catch (error) {
-    console.error(`${COMMAND} worktrees clean: could not mark the removals as told: ${error instanceof Error ? error.message : String(error)}`);
-    return null;
-  }
-  return toldLine(record);
-}
-
 // src/hooks/budget.ts
 var GUARD_BUDGET_MS = 25000;
 var SHORT_GUARD_BUDGET_MS = 8000;
@@ -33590,6 +34377,7 @@ function startBudget(env, now = Date.now, ceilingMs = GUARD_BUDGET_MS, startedAt
 }
 
 // src/hooks/after-merge.ts
+init_git();
 var GH_COMMANDS = new Set([
   "accessibility",
   "actions",
@@ -33669,7 +34457,10 @@ function call(fields = {}) {
   };
 }
 var ENV_PROGRAM = /^(?:.*[\\/])?env(?:\.(?:exe|cmd))?$/i;
-var GH_POINTING_TEXT = /GH_(?:REPO|HOST)/;
+var GH_POINTING_TEXT = {
+  bash: /GH_(?:REPO|HOST)/,
+  powershell: /GH_(?:REPO|HOST)/i
+};
 var isAutoFlag = (word) => /^--auto(?:=|$)/.test(word);
 var isDisableAutoFlag = (word) => /^--disable-auto(?:=|$)/.test(word);
 function pullRequestMerges(command, aliases = null, dialect) {
@@ -33700,7 +34491,7 @@ function readMerges(command, dialect, joinLines, aliases, depth, movedBefore, fi
     const read = wordsWithFill(step.text, dialect);
     const words = read.map((word) => word.text);
     const fill = fillOfStep(step, read, dialect, filledIn);
-    if (words.some((word) => GH_POINTING_TEXT.test(word))) {
+    if (words.some((word) => GH_POINTING_TEXT[dialect].test(word))) {
       moved ??= "this command sets `GH_REPO`/`GH_HOST`, so which repository gh works on is not certain";
     }
     const invocation = invocationOf(words);
@@ -34453,7 +35244,8 @@ function clearWorktreeNote(path, branch, clear) {
   ].join(`
 `);
 }
-function clearsAfterMerge(context) {
+async function clearsAfterMerge(context) {
+  await Promise.resolve().then(() => init_resolve2());
   try {
     return resolveWorkflow(context.paths, context.project.config).clearWorktreeAfterMerge.value;
   } catch (error) {
@@ -34481,8 +35273,8 @@ function viewPullRequest2(ref, repo, folder, env, timeoutMs) {
   }
 }
 function seenFile(repo, number, env) {
-  const key = createHash8("sha256").update(repo).digest("hex").slice(0, 16);
-  return join61(env.TMPDIR || tmpdir4(), "cc-smart-dev-kit-merges", `${key}-${number}`);
+  const key = createHash9("sha256").update(repo).digest("hex").slice(0, 16);
+  return join62(env.TMPDIR || tmpdir4(), "cc-smart-dev-kit-merges", `${key}-${number}`);
 }
 async function afterMerge(context) {
   const { project, input, event, env, cwd } = context;
@@ -34526,18 +35318,19 @@ async function afterMerge(context) {
     now: Date.now(),
     pr,
     sameRepo: pr !== null && origin.ok && sameRepository(pr.url, origin.out),
-    seen: record !== null && existsSync51(record),
+    seen: record !== null && existsSync52(record),
     target,
     worktree
   });
   if (outcome.intoBase !== null && record !== null) {
-    mkdirSync20(join61(record, ".."), { recursive: true });
+    mkdirSync21(join62(record, ".."), { recursive: true });
     writeFileSync8(record, "");
+    await Promise.resolve().then(() => init_auto_start());
     startAutoClean(context, repo, "merge");
   }
   if (outcome.clear === null)
     return SILENT;
-  return addContext(event, clearWorktreeNote(outcome.clear.path, outcome.clear.branch, clearsAfterMerge(context)));
+  return addContext(event, clearWorktreeNote(outcome.clear.path, outcome.clear.branch, await clearsAfterMerge(context)));
 }
 
 // src/hooks/specs/after-merge.ts
@@ -34560,12 +35353,18 @@ var agentUsageHook = {
   run: ({ input, event, paths, nowMs }) => recordAgentUsage(input, event, paths, nowMs)
 };
 
+// src/hooks/builder-finish.ts
+init_names();
+
 // src/tasks/context.ts
+init_resolve();
 import { realpathSync as realpathSync9 } from "fs";
 
 // src/tasks/deploy/check.ts
-import { existsSync as existsSync52, realpathSync as realpathSync8 } from "fs";
-import { basename as basename13, isAbsolute as isAbsolute4, relative as relative7, resolve as resolve12, sep as sep5 } from "path";
+init_config();
+import { existsSync as existsSync53, realpathSync as realpathSync8 } from "fs";
+import { basename as basename14, isAbsolute as isAbsolute4, relative as relative7, resolve as resolve12, sep as sep5 } from "path";
+init_format();
 var DEFAULT_STALE_DAYS = 30;
 var DAY_MS2 = 86400000;
 var OLD_FILES_LISTED = 10;
@@ -34614,7 +35413,7 @@ function checkDeployTasks(options) {
       });
     for (const ref of task.refs ?? []) {
       const target = resolve12(checkoutRoot, ref);
-      if (isAbsolute4(ref) || !inside(resolve12(checkoutRoot), target) || !existsSync52(target) || !inside(root, realpathSync8(target)))
+      if (isAbsolute4(ref) || !inside(resolve12(checkoutRoot), target) || !existsSync53(target) || !inside(root, realpathSync8(target)))
         findings.push({
           ...common,
           kind: "broken-ref",
@@ -34634,7 +35433,7 @@ function checkDeployTasks(options) {
   }
   const old = oldTaskFiles(dir);
   if (old.length > 0) {
-    const names = old.map((file) => basename13(file));
+    const names = old.map((file) => basename14(file));
     const shown = names.slice(0, OLD_FILES_LISTED).join(", ");
     findings.push({
       kind: "old-files",
@@ -34646,10 +35445,13 @@ function checkDeployTasks(options) {
 }
 
 // src/tasks/context.ts
+init_format();
 function projectKey(repo) {
   return repoKey(repo);
 }
-function taskContext(cwd, env = process.env) {
+function taskContext(cwd, env = process.env, read) {
+  if (read !== undefined)
+    return contextOf(read, cwd, read);
   let checkout;
   try {
     checkout = locateCheckout(cwd, { env });
@@ -34673,7 +35475,7 @@ function projectKeyOf(checkout, cwd) {
 function folderProject(cwd, options = {}) {
   return projectKeyOf(locateCheckout(cwd, options), cwd);
 }
-function contextOf(checkout, cwd) {
+function contextOf(checkout, cwd, read) {
   if (checkout === null) {
     return {
       ok: true,
@@ -34693,7 +35495,7 @@ function contextOf(checkout, cwd) {
   };
   let config;
   try {
-    config = loadProjectConfig(checkout).config;
+    config = (read ?? loadProjectConfig(checkout)).config;
   } catch (error) {
     const why = checkoutFailure(error);
     return { ...base, projectTasks: { ok: false, why }, projectConfig: { ok: false, why } };
@@ -34713,7 +35515,7 @@ function contextOf(checkout, cwd) {
 }
 
 // src/tasks/work/read.ts
-import { existsSync as existsSync53 } from "fs";
+import { existsSync as existsSync54 } from "fs";
 
 // src/tasks/work/types.ts
 var SUBJECT_LIMIT = 200;
@@ -34828,7 +35630,8 @@ function indent(text) {
 }
 
 // src/worktrees/machine-facts.ts
-import { readdirSync as readdirSync18, readFileSync as readFileSync63, readlinkSync as readlinkSync4 } from "fs";
+init_git();
+import { readdirSync as readdirSync19, readFileSync as readFileSync64, readlinkSync as readlinkSync4 } from "fs";
 import { platform } from "os";
 var PROGRAMS_TIMEOUT_MS = 15000;
 var PS_PROGRAMS_ARGV = ["ps", "-ww", "-axo", "pid=,ppid=,args="];
@@ -34894,7 +35697,7 @@ function cwdOf(pid) {
 }
 function procPids() {
   try {
-    return readdirSync18("/proc").filter((name) => /^\d+$/.test(name)).map(Number);
+    return readdirSync19("/proc").filter((name) => /^\d+$/.test(name)).map(Number);
   } catch {
     return [];
   }
@@ -35047,7 +35850,7 @@ function readWorkStore(paths, body) {
   let db;
   try {
     const file = workDbFile(paths);
-    if (!existsSync53(file))
+    if (!existsSync54(file))
       return { state: "none" };
     db = openWorkDb(file, { mode: "hook" });
     return { state: "ready", value: body(db) };
@@ -35113,6 +35916,10 @@ function cappedHookList(items, render, command, separator = ", ") {
     shown.push(`+${items.length - HOOK_LIST_LIMIT} more: ${command}`);
   return shown.join(separator);
 }
+
+// src/hooks/review-record.ts
+init_resolve2();
+init_git();
 
 // src/regex-escape.ts
 function escapeRegex2(text) {
@@ -35597,9 +36404,10 @@ var builderFinishHook = {
 };
 
 // src/hooks/fable-session.ts
-import { createHash as createHash9 } from "crypto";
-import { existsSync as existsSync55, mkdirSync as mkdirSync22, writeFileSync as writeFileSync10 } from "fs";
-import { dirname as dirname24, join as join63 } from "path";
+init_names();
+import { createHash as createHash10 } from "crypto";
+import { existsSync as existsSync56, mkdirSync as mkdirSync23, writeFileSync as writeFileSync10 } from "fs";
+import { dirname as dirname26, join as join64 } from "path";
 
 // src/models/launch-policy.ts
 function premiumTier(family) {
@@ -35696,6 +36504,9 @@ function resolveSessionModel(session, gateway, env) {
   return mapped === null ? own : { ...own, family: mapped, tier: mapped };
 }
 
+// src/hooks/fable-session.ts
+init_resolve2();
+
 // src/hooks/session-facts.ts
 var AGENT_TOOLS = ["Agent", "Task"];
 var WORKFLOW_TOOLS = ["Workflow"];
@@ -35731,9 +36542,10 @@ function sessionGatewayOf(paths, env) {
 }
 
 // src/hooks/session-name.ts
-import { existsSync as existsSync54, mkdirSync as mkdirSync21, readFileSync as readFileSync64, renameSync as renameSync4, rmSync as rmSync14, writeFileSync as writeFileSync9 } from "fs";
+init_names();
+import { existsSync as existsSync55, mkdirSync as mkdirSync22, readFileSync as readFileSync65, renameSync as renameSync4, rmSync as rmSync14, writeFileSync as writeFileSync9 } from "fs";
 import { tmpdir as tmpdir5 } from "os";
-import { join as join62 } from "path";
+import { join as join63 } from "path";
 var MAX_SESSION_NAME = 60;
 function cleanSessionName(raw) {
   const firstLine = raw.split(/\r?\n|\r/)[0] ?? "";
@@ -35746,11 +36558,11 @@ function isSessionId2(value) {
   return typeof value === "string" && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(value);
 }
 function namesDir(env) {
-  return join62(env.TMPDIR || tmpdir5(), "cc-smart-dev-kit-session-names");
+  return join63(env.TMPDIR || tmpdir5(), "cc-smart-dev-kit-session-names");
 }
 function readName(file) {
   try {
-    return existsSync54(file) ? cleanSessionName(readFileSync64(file, "utf8")) : null;
+    return existsSync55(file) ? cleanSessionName(readFileSync65(file, "utf8")) : null;
   } catch {
     return null;
   }
@@ -35761,13 +36573,13 @@ function writeAtomic(file, text) {
   renameSync4(partial, file);
 }
 function appliedFile(env, sessionId) {
-  return join62(namesDir(env), sessionId);
+  return join63(namesDir(env), sessionId);
 }
 function readAppliedName(env, sessionId) {
   return readName(appliedFile(env, sessionId));
 }
 function rememberAppliedName(env, sessionId, title) {
-  mkdirSync21(namesDir(env), { recursive: true });
+  mkdirSync22(namesDir(env), { recursive: true });
   writeAtomic(appliedFile(env, sessionId), title);
 }
 function titleToSet(env, sessionId, wanted, current) {
@@ -35787,17 +36599,17 @@ function sessionName(context) {
   const sessionId = input.session_id;
   if (!isSessionId2(sessionId))
     return SILENT;
-  const wanted = readName(join62(namesDir(env), `${sessionId}.name`));
+  const wanted = readName(join63(namesDir(env), `${sessionId}.name`));
   const note = namingNote(sessionId, wanted);
-  const reminded = join62(namesDir(env), `${sessionId}.reminded`);
+  const reminded = join63(namesDir(env), `${sessionId}.reminded`);
   if (event === "SessionStart") {
     rmSync14(reminded, { force: true });
     return addContext(event, note);
   }
   if (wanted === null) {
-    if (existsSync54(reminded))
+    if (existsSync55(reminded))
       return SILENT;
-    mkdirSync21(namesDir(env), { recursive: true });
+    mkdirSync22(namesDir(env), { recursive: true });
     writeAtomic(reminded, "reminded");
     return addContext(event, note);
   }
@@ -35822,16 +36634,16 @@ function sessionModelName(real) {
   return tier === null ? real.model : `the \`${tier}\` model, ${real.model}`;
 }
 function sessionMark(env, sessionId, kind) {
-  return join63(namesDir(env), `${sessionId}.${kind}`);
+  return join64(namesDir(env), `${sessionId}.${kind}`);
 }
 function judgedMark(env, sessionId, model, served = false) {
   const key = served ? `served:${model}` : model;
-  const hash = createHash9("sha256").update(key).digest("hex").slice(0, 16);
-  return join63(namesDir(env), `${sessionId}.judged-${hash}`);
+  const hash = createHash10("sha256").update(key).digest("hex").slice(0, 16);
+  return join64(namesDir(env), `${sessionId}.judged-${hash}`);
 }
 function firstTime(mark) {
   try {
-    mkdirSync22(dirname24(mark), { recursive: true });
+    mkdirSync23(dirname26(mark), { recursive: true });
     writeFileSync10(mark, "", { flag: "wx" });
     return true;
   } catch {
@@ -35866,13 +36678,13 @@ function fableSession(input, env, paths) {
     return SILENT;
   const fableMark = sessionMark(env, sessionId, "fable");
   const leadMark = sessionMark(env, sessionId, "lead");
-  if (existsSync55(fableMark) && existsSync55(leadMark))
+  if (existsSync56(fableMark) && existsSync56(leadMark))
     return SILENT;
   const session = currentModel(event, input, env);
   if (session === null)
     return SILENT;
   const judged = judgedMark(env, sessionId, session.model, session.served);
-  if (existsSync55(judged))
+  if (existsSync56(judged))
     return SILENT;
   const real = resolveSessionModel(session, sessionGatewayOf(paths, env), env);
   const verdict = leadVerdict(real);
@@ -35897,19 +36709,20 @@ var fableSessionHook = {
 };
 
 // src/hooks/job-route.ts
-import { existsSync as existsSync57 } from "fs";
+import { existsSync as existsSync58 } from "fs";
+init_kind_defaults();
 
 // src/jobs/package-scripts.ts
-import { existsSync as existsSync56, readFileSync as readFileSync65, statSync as statSync20 } from "fs";
-import { dirname as dirname25, join as join64, resolve as resolve13 } from "path";
+import { existsSync as existsSync57, readFileSync as readFileSync66, statSync as statSync21 } from "fs";
+import { dirname as dirname27, join as join65, resolve as resolve13 } from "path";
 var NO_FILE_HERE = new Set(["ENOENT", "ENOTDIR", "EISDIR"]);
 function foldersToCheckoutRoot(start) {
   const chain = [];
-  for (let dir = start;; dir = dirname25(dir)) {
+  for (let dir = start;; dir = dirname27(dir)) {
     chain.push(dir);
-    if (existsSync56(join64(dir, ".git")))
+    if (existsSync57(join65(dir, ".git")))
       return chain;
-    if (dirname25(dir) === dir)
+    if (dirname27(dir) === dir)
       return [start];
   }
 }
@@ -35917,7 +36730,7 @@ function packageScripts(folder) {
   for (const dir of foldersToCheckoutRoot(resolve13(folder))) {
     let text;
     try {
-      text = readFileSync65(join64(dir, "package.json"), "utf8");
+      text = readFileSync66(join65(dir, "package.json"), "utf8");
     } catch (error) {
       if (NO_FILE_HERE.has(error.code ?? ""))
         continue;
@@ -35951,7 +36764,7 @@ function scriptsOf(text, folder) {
 function usesYarnBerry(packageJson, folder) {
   let json = packageJson;
   for (const dir of foldersToCheckoutRoot(folder)) {
-    if (existsSync56(join64(dir, ".yarnrc.yml")))
+    if (existsSync57(join65(dir, ".yarnrc.yml")))
       return true;
     json ??= packageJsonAt(dir);
     const manager = json?.packageManager;
@@ -35963,7 +36776,7 @@ function usesYarnBerry(packageJson, folder) {
 }
 function packageJsonAt(dir) {
   try {
-    const parsed = JSON.parse(readFileSync65(join64(dir, "package.json"), "utf8"));
+    const parsed = JSON.parse(readFileSync66(join65(dir, "package.json"), "utf8"));
     return parsed !== null && typeof parsed === "object" ? parsed : null;
   } catch {
     return null;
@@ -35971,7 +36784,7 @@ function packageJsonAt(dir) {
 }
 function fileExistsIn(folder, word) {
   try {
-    return statSync20(resolve13(folder, word)).isFile();
+    return statSync21(resolve13(folder, word)).isFile();
   } catch {
     return false;
   }
@@ -35982,7 +36795,11 @@ function diskWeightSource(folder) {
   return { folder, isFile: fileExistsIn, scriptsIn: packageScripts };
 }
 
+// src/hooks/job-route.ts
+init_launcher();
+
 // src/shell/change-dir.ts
+init_command();
 import { posix as posix3, win32 as win324 } from "path";
 var CHANGES_FOLDER = new Set([...CHANGE_DIR, "push-location"]);
 function pathRules(platform) {
@@ -36047,6 +36864,8 @@ class FolderTracker {
 }
 
 // src/hooks/job-route.ts
+init_command();
+init_git();
 var SHELL_MEANING = /[$`*?[\]{}~<>|&;\n\\]/;
 function plainWords(command) {
   const segments = shellSegments(command);
@@ -36234,7 +37053,7 @@ function weightSourceOf(input) {
   return cwd === null ? null : diskWeightSource(cwd);
 }
 function bashToolExists(env, platform = process.platform, facts = {
-  exists: existsSync57,
+  exists: existsSync58,
   which: (command) => Bun.which(command, { PATH: env.PATH ?? env.Path ?? "" })
 }) {
   return platform !== "win32" || findGitBash(env, facts).path !== null;
@@ -36293,31 +37112,26 @@ function routeDenial(routed) {
   ].join(`
 `));
 }
-function routesHeavyCommands(context) {
-  return resolveJobRoute(context.paths, context.project.config).value;
-}
 function commandOf(input) {
   return stringField(toolInput(input).command);
 }
 function inputDialect(input) {
   return dialectOfTool(input.tool_name) ?? "bash";
 }
-function jobRoute(context, bashTool = bashToolExists, platform = process.platform) {
+function jobRoute(context, bashTool = bashToolExists, platform = process.platform, personal = {}) {
   const fields = toolInput(context.input);
   const command = stringField(fields.command);
   if (command === null)
+    return SILENT;
+  if (!jobRouteFrom(personal, context.project.config).value)
     return SILENT;
   const dialect = inputDialect(context.input);
   const kinds = mergeKinds(context.project.config?.jobs?.kinds);
   const source = diskWeightSource(context.cwd);
   if (dialect !== "bash") {
-    if (!routesHeavyCommands(context))
-      return SILENT;
     const refused = powerShellDenial(command, kinds, source);
     return refused !== null && bashTool(context.env) ? refused : SILENT;
   }
-  if (!routesHeavyCommands(context))
-    return SILENT;
   let routed = routeHeavyCommand(command, kinds, routedShell(context.env), source);
   if (routed === null) {
     const refused = mixedLineDenial(command, kinds, source);
@@ -36331,6 +37145,10 @@ function jobRoute(context, bashTool = bashToolExists, platform = process.platfor
     return routeDenial(routed);
   const timeoutMs = REWRITE_TIMEOUT_SUPPORTED ? routedTimeoutMs(context.env) : null;
   return rewriteAnswer(fields, routed.command, timeoutMs);
+}
+async function jobRouteAnswer(context) {
+  const personal = await loadPersonalWorkflow(context.paths);
+  return jobRoute(context, bashToolExists, process.platform, personal);
 }
 function routeFacts(input) {
   const command = commandOf(input);
@@ -36347,7 +37165,7 @@ var jobRouteHook = {
   name: "job-route",
   events: ["PreToolUse"],
   alwaysOn: true,
-  onConfigProblem: (_message, input, event, checkout, context) => jobRoute({
+  onConfigProblem: (_message, input, event, checkout, context) => jobRouteAnswer({
     input,
     event,
     cwd: stringField(input.cwd) ?? checkout.root,
@@ -36357,8 +37175,11 @@ var jobRouteHook = {
     nowMs: context.nowMs
   }),
   logFacts: routeFacts,
-  run: jobRoute
+  run: jobRouteAnswer
 };
+
+// src/hooks/keep-going.ts
+init_names();
 
 // src/tasks/work/lead-plans.ts
 function reservedState(plan, owns, process2) {
@@ -36568,6 +37389,7 @@ var keepGoingHook = {
 };
 
 // src/hooks/specs/review-record.ts
+init_schema();
 var reviewRecordHook = {
   name: "review-record",
   events: ["SubagentStart", "SubagentStop"],
@@ -36587,7 +37409,7 @@ var sessionNameHook = {
 };
 
 // src/hooks/subagent-background.ts
-import { readFileSync as readFileSync66 } from "fs";
+import { readFileSync as readFileSync67 } from "fs";
 var HAND_BACK_REASON = "Your background work is still running: wait for it or stop it, then report.";
 var BACKGROUND_ID = /Command running in background with ID: ([A-Za-z0-9_-]+)/;
 var AGENT_ID = /agentId: ([A-Za-z0-9_-]+)/;
@@ -36685,7 +37507,7 @@ function subagentBackground(context) {
     return SILENT;
   let text;
   try {
-    text = readFileSync66(transcript, "utf8");
+    text = readFileSync67(transcript, "utf8");
   } catch {
     return SILENT;
   }
@@ -36703,6 +37525,8 @@ var subagentBackgroundHook = {
 };
 
 // src/hooks/task-start.ts
+init_names();
+init_format();
 var START_TASK_LIMIT = 8;
 var plural2 = (count, one, many) => `${count} ${count === 1 ? one : many}`;
 function deployTaskLine(dir, envs, options) {
@@ -36727,11 +37551,11 @@ function deployTaskLine(dir, envs, options) {
   ].filter((note) => note !== null);
   return `Deploy tasks open: ${[parts.join(", "), ...notes].join("; ")} \u2014 /${PLUGIN}:tasks`;
 }
-function taskStart(input, paths, env, now = Date.now) {
+function taskStart(input, paths, env, project, now = Date.now) {
   const cwd = stringField(input.cwd);
   if (cwd === null)
     return SILENT;
-  const context = taskContext(cwd, env);
+  const context = taskContext(cwd, env, project);
   if (!context.ok)
     return { stderr: `${COMMAND} task-start: ${context.why}` };
   const who = callerOf({ env, cwd, claudeConfigDir: paths.claudeConfigDir }) ?? {
@@ -36791,12 +37615,13 @@ var taskStartHook = {
   events: ["SessionStart"],
   onConfigProblem: (_message, input, _event, _checkout, context) => taskStart(input, context.paths, context.env),
   outsideGit: (input, _event, _why, context) => taskStart(input, context.paths, context.env),
-  run: ({ input, paths, env }) => taskStart(input, paths, env)
+  run: ({ input, paths, env, project }) => taskStart(input, paths, env, project)
 };
 
 // src/hooks/tier-view.ts
-import { existsSync as existsSync58, mkdirSync as mkdirSync23, readFileSync as readFileSync67, writeFileSync as writeFileSync11 } from "fs";
-import { dirname as dirname26, join as join65 } from "path";
+init_names();
+import { existsSync as existsSync59, mkdirSync as mkdirSync24, readFileSync as readFileSync68, writeFileSync as writeFileSync11 } from "fs";
+import { dirname as dirname28, join as join66 } from "path";
 
 // src/models/tier-view.ts
 var TIERS = ["haiku", "sonnet", "opus", "fable"];
@@ -36826,11 +37651,11 @@ function tierNoteUnknown() {
   return `Subagent tiers now: not known \u2014 the gateway config cannot be read (\`${COMMAND} doctor\` says why). The launch policy names the effort each launch needs.`;
 }
 function tierViewMark(env, sessionId) {
-  return join65(namesDir(env), `${sessionId}.tiers`);
+  return join66(namesDir(env), `${sessionId}.tiers`);
 }
 function currentNote(paths, env) {
   const gateway = sessionGatewayOf(paths, env);
-  if (gateway.gatewayOn && gateway.config === null && existsSync58(paths.gatewayConfigFile)) {
+  if (gateway.gatewayOn && gateway.config === null && existsSync59(paths.gatewayConfigFile)) {
     return tierNoteUnknown();
   }
   return tierNote(gateway, env);
@@ -36844,14 +37669,14 @@ function checksNote(paths, env, nowMs) {
 }
 function lastSaid2(mark) {
   try {
-    return readFileSync67(mark, "utf8");
+    return readFileSync68(mark, "utf8");
   } catch {
     return null;
   }
 }
 function keep(mark, note) {
   try {
-    mkdirSync23(dirname26(mark), { recursive: true });
+    mkdirSync24(dirname28(mark), { recursive: true });
     writeFileSync11(mark, note);
     return true;
   } catch {
@@ -36909,8 +37734,11 @@ function judgesCall(inDomain, input) {
 }
 
 // src/user-away/state.ts
-import { mkdirSync as mkdirSync24, readFileSync as readFileSync68 } from "fs";
-import { join as join66 } from "path";
+init_zod();
+init_lock();
+init_write();
+import { mkdirSync as mkdirSync25, readFileSync as readFileSync69 } from "fs";
+import { join as join67 } from "path";
 var PARK_KINDS = ["question", "action", "decision"];
 var AWAY_LOCK_WAIT_MS = 5000;
 var MAX_SAID = 100;
@@ -36951,16 +37779,16 @@ function freshState() {
   };
 }
 function awayDir(stateDir) {
-  return join66(stateDir, "user-away");
+  return join67(stateDir, "user-away");
 }
 function awayStateFile(stateDir) {
-  return join66(awayDir(stateDir), "state.json");
+  return join67(awayDir(stateDir), "state.json");
 }
 function readAway(stateDir) {
   const file = awayStateFile(stateDir);
   let text;
   try {
-    text = readFileSync68(file, "utf8");
+    text = readFileSync69(file, "utf8");
   } catch (error) {
     if (error.code === "ENOENT")
       return freshState();
@@ -36975,7 +37803,7 @@ function readAway(stateDir) {
 }
 async function change(stateDir, apply, waitMs = AWAY_LOCK_WAIT_MS) {
   const folder = awayDir(stateDir);
-  mkdirSync24(folder, { mode: 448, recursive: true });
+  mkdirSync25(folder, { mode: 448, recursive: true });
   return await withLock(folder, () => {
     const state = readAway(stateDir);
     const result = apply(state);
@@ -37029,10 +37857,11 @@ async function forgetSaid(stateDir, session) {
 }
 
 // src/user-away/whose.ts
-import { existsSync as existsSync59 } from "fs";
-import { dirname as dirname27 } from "path";
+import { existsSync as existsSync60 } from "fs";
+import { dirname as dirname29 } from "path";
 
 // src/user-away/words.ts
+init_names();
 var UNAVAILABLE_SKILL = `/${PLUGIN}:user-unavailable`;
 var AVAILABLE_SKILL = `/${PLUGIN}:user-available`;
 var DECISION_COMMAND = `${COMMAND} user park --kind decision "Decision: <what you chose, why, how to undo>"`;
@@ -37092,8 +37921,8 @@ function orNull(fn) {
 }
 function projectOnDisk(cwd, asker) {
   let folder = cwd;
-  while (!existsSync59(folder) && dirname27(folder) !== folder)
-    folder = dirname27(folder);
+  while (!existsSync60(folder) && dirname29(folder) !== folder)
+    folder = dirname29(folder);
   return folderProject(folder, {
     env: asker.env,
     ...asker.timeFor === undefined ? {} : { timeFor: asker.timeFor }
@@ -37297,26 +38126,31 @@ var userAwayHook = {
 };
 
 // src/hooks/verify-gate.ts
+init_locate();
+init_command();
+init_git();
 import { extname, isAbsolute as isAbsolute5, resolve as resolve15 } from "path";
 
 // src/hooks/plans-folders.ts
-import { join as join67, resolve as resolve14 } from "path";
+import { join as join68, resolve as resolve14 } from "path";
+init_managed_json();
+init_git();
 function plansDirectory(root, env) {
   const paths = cliPaths(env);
-  let plans = join67(paths.claudeConfigDir, "plans");
+  let plans = join68(paths.claudeConfigDir, "plans");
   for (const settings of [
     paths.settingsFile,
-    join67(root, ".claude/settings.json"),
-    join67(root, ".claude/settings.local.json")
+    join68(root, ".claude/settings.json"),
+    join68(root, ".claude/settings.local.json")
   ]) {
     const configured = stringField(readJsonObject(settings).data.plansDirectory);
     if (configured !== null)
-      plans = configured.startsWith("~/") ? join67(paths.home, configured.slice(2)) : resolve14(root, configured);
+      plans = configured.startsWith("~/") ? join68(paths.home, configured.slice(2)) : resolve14(root, configured);
   }
   return realPath(plans);
 }
 function plansFolders(root, env) {
-  return [plansDirectory(root, env), realPath(join67(root, ".claude/plans"))];
+  return [plansDirectory(root, env), realPath(join68(root, ".claude/plans"))];
 }
 
 // src/hooks/verify-gate.ts
@@ -37498,11 +38332,15 @@ var verifyGateHook = {
 };
 
 // src/hooks/worktree-leftovers.ts
-import { closeSync as closeSync10, existsSync as existsSync61, fstatSync as fstatSync2, openSync as openSync10, readSync as readSync6, statSync as statSync22 } from "fs";
-import { basename as basename14, join as join69, resolve as resolve17 } from "path";
+init_config_facts();
+init_auto_start();
+init_auto_state();
+import { closeSync as closeSync10, existsSync as existsSync62, fstatSync as fstatSync2, openSync as openSync10, readSync as readSync6, statSync as statSync23 } from "fs";
+import { basename as basename15, join as join70, resolve as resolve17 } from "path";
 
 // src/worktrees/in-progress.ts
-import { existsSync as existsSync60, readFileSync as readFileSync69, statSync as statSync21 } from "fs";
+init_git();
+import { existsSync as existsSync61, readFileSync as readFileSync70, statSync as statSync22 } from "fs";
 import { resolve as resolve16 } from "path";
 var BISECT = { ending: "`git bisect reset`", what: "a bisect" };
 var REBASE = { ending: "`git rebase --abort`", what: "a rebase" };
@@ -37531,7 +38369,7 @@ var OPERATIONS = [
   { ...SERIES, kind: "folder", namesBranch: false, path: "sequencer" }
 ];
 function readInProgress(worktree, env) {
-  if (!existsSync60(worktree))
+  if (!existsSync61(worktree))
     return { running: [], state: "read" };
   const located = runGit(worktree, ["rev-parse", ...OPERATIONS.flatMap((operation) => ["--git-path", operation.path])], env);
   if (!located.ok)
@@ -37549,9 +38387,9 @@ function readInProgress(worktree, env) {
     let text = "";
     try {
       if (operation.kind === "folder")
-        statSync21(marker);
+        statSync22(marker);
       else
-        text = readFileSync69(marker, "utf8");
+        text = readFileSync70(marker, "utf8");
     } catch (error) {
       const code = error.code;
       if (code === "ENOENT" || code === "ENOTDIR")
@@ -37575,18 +38413,21 @@ function inProgressWhy(worktree, env) {
   const first = read.running[0];
   return first === undefined ? null : `${first.what} is in progress (end it in that worktree with ${first.ending})`;
 }
+// src/hooks/worktree-leftovers.ts
+init_git();
 
 // src/hooks/local-files.ts
+init_git();
 import {
   closeSync as closeSync9,
   lstatSync as lstatSync4,
   openSync as openSync9,
-  readdirSync as readdirSync19,
-  readFileSync as readFileSync70,
+  readdirSync as readdirSync20,
+  readFileSync as readFileSync71,
   readlinkSync as readlinkSync5,
   readSync as readSync5
 } from "fs";
-import { join as join68 } from "path";
+import { join as join69 } from "path";
 var REBUILDABLE = [
   /(?:^|\/)(?:node_modules|bower_components|jspm_packages|\.venv|venv|\.tox|\.nox|\.bundle|\.gradle|\.pnpm-store|\.yarn\/cache)\/$/,
   /(?:^|\/)(?:dist|build|out|target|coverage|\.next|\.nuxt|\.output|\.svelte-kit|\.turbo|\.vercel|\.parcel-cache|\.angular|storybook-static|test-results|playwright-report|htmlcov|\.nyc_output)\/$/,
@@ -37609,12 +38450,12 @@ function setupTime(worktree) {
     return null;
   const times = [];
   try {
-    const time = lstatSync4(join68(admin, "commondir")).mtimeMs;
+    const time = lstatSync4(join69(admin, "commondir")).mtimeMs;
     if (Number.isFinite(time))
       times.push(time);
   } catch {}
   try {
-    const fd = openSync9(join68(admin, "logs", "HEAD"), "r");
+    const fd = openSync9(join69(admin, "logs", "HEAD"), "r");
     try {
       const buffer = Buffer.alloc(FIRST_REFLOG_BYTES);
       const size = readSync5(fd, buffer, 0, buffer.length, 0);
@@ -37634,8 +38475,8 @@ function setupTime(worktree) {
 }
 function untouchedCopy(worktree, mainCheckout, entry) {
   try {
-    const here = lstatSync4(join68(worktree, entry));
-    if (!here.isFile() || !lstatSync4(join68(mainCheckout, entry)).isFile())
+    const here = lstatSync4(join69(worktree, entry));
+    if (!here.isFile() || !lstatSync4(join69(mainCheckout, entry)).isFile())
       return false;
     const setup = setupTime(worktree);
     return setup !== null && here.mtimeMs <= setup + INCLUDE_COPY_SLACK_MS;
@@ -37651,8 +38492,8 @@ function sameAsMain(worktree, mainCheckout, path) {
   const same = (relative) => {
     if (--budget < 0)
       return false;
-    const here = join68(worktree, relative);
-    const there = join68(mainCheckout, relative);
+    const here = join69(worktree, relative);
+    const there = join69(mainCheckout, relative);
     try {
       const a = lstatSync4(here);
       const b = lstatSync4(there);
@@ -37660,24 +38501,17 @@ function sameAsMain(worktree, mainCheckout, path) {
         return a.isSymbolicLink() && b.isSymbolicLink() && readlinkSync5(here) === readlinkSync5(there);
       }
       if (a.isDirectory()) {
-        return b.isDirectory() && readdirSync19(here).every((entry) => same(join68(relative, entry)));
+        return b.isDirectory() && readdirSync20(here).every((entry) => same(join69(relative, entry)));
       }
-      return a.isFile() && b.isFile() && a.size === b.size && readFileSync70(here).equals(readFileSync70(there));
+      return a.isFile() && b.isFile() && a.size === b.size && readFileSync71(here).equals(readFileSync71(there));
     } catch {
       return false;
     }
   };
   return same(path.replace(/\/$/, ""));
 }
-function projectRebuildable(mainCheckout) {
-  if (mainCheckout === null)
-    return [];
-  try {
-    const patterns = loadCcSmartDevKitConfig(join68(mainCheckout, CONFIG_PATH))?.worktrees?.rebuildable ?? [];
-    return patterns.map((pattern) => new Bun.Glob(`**/${pattern}`));
-  } catch {
-    return [];
-  }
+function rebuildableGlobs(config) {
+  return (config?.worktrees?.rebuildable ?? []).map((pattern) => new Bun.Glob(`**/${pattern}`));
 }
 function safeEntry(worktree, mainCheckout, entry, patterns) {
   if (patterns.some((pattern) => pattern.match(entry)))
@@ -37686,7 +38520,7 @@ function safeEntry(worktree, mainCheckout, entry, patterns) {
     if (!entry.endsWith("/cli-latest"))
       return true;
     try {
-      if (lstatSync4(join68(worktree, entry)).isFile())
+      if (lstatSync4(join69(worktree, entry)).isFile())
         return true;
     } catch {
       return false;
@@ -37694,7 +38528,7 @@ function safeEntry(worktree, mainCheckout, entry, patterns) {
   }
   return mainCheckout !== null && (sameAsMain(worktree, mainCheckout, entry) || untouchedCopy(worktree, mainCheckout, entry));
 }
-function localFiles(worktree, mainCheckout, env, patterns = projectRebuildable(mainCheckout)) {
+function localFiles(worktree, mainCheckout, env, patterns) {
   const status = runGit(worktree, [
     "--no-optional-locks",
     "status",
@@ -37714,10 +38548,10 @@ function localFiles(worktree, mainCheckout, env, patterns = projectRebuildable(m
       if (--budget < 0)
         return false;
       try {
-        if (!lstatSync4(join68(worktree, path)).isDirectory())
+        if (!lstatSync4(join69(worktree, path)).isDirectory())
           return safe(path);
         const folder = `${path.replace(/\/$/, "")}/`;
-        return safe(folder) || readdirSync19(join68(worktree, path)).every((name) => visit(`${folder}${name}`));
+        return safe(folder) || readdirSync20(join69(worktree, path)).every((name) => visit(`${folder}${name}`));
       } catch {
         return false;
       }
@@ -37761,10 +38595,10 @@ function idleMinutesOrNull(worktree, now) {
   const admin = worktreeAdminDir(worktree);
   if (admin === null)
     return null;
-  let last = lastReflogTime(join69(admin, "logs", "HEAD"), now) ?? 0;
+  let last = lastReflogTime(join70(admin, "logs", "HEAD"), now) ?? 0;
   for (const file of ["index", "HEAD"]) {
     try {
-      last = Math.max(last, statSync22(join69(admin, file)).mtimeMs);
+      last = Math.max(last, statSync23(join70(admin, file)).mtimeMs);
     } catch {}
   }
   return last === 0 ? null : (now - last) / 60000;
@@ -37772,13 +38606,13 @@ function idleMinutesOrNull(worktree, now) {
 function idleMinutes(worktree, now) {
   return idleMinutesOrNull(worktree, now) ?? 0;
 }
-function judgeWorktree(repo, listed, base, sessions, env, now) {
+function judgeWorktree(repo, listed, base, sessions, env, now, patterns) {
   if (listed.locked)
     return "kept";
   if (listed.prunable)
     return "gone";
   try {
-    statSync22(listed.path);
+    statSync23(listed.path);
   } catch {
     return "gone";
   }
@@ -37793,14 +38627,14 @@ function judgeWorktree(repo, listed, base, sessions, env, now) {
     return "kept";
   if (hasChanges(listed.path, env))
     return "kept";
-  return localFiles(listed.path, repo, env)?.length === 0 ? "finished" : "kept";
+  return localFiles(listed.path, repo, env, patterns)?.length === 0 ? "finished" : "kept";
 }
 function leftoversNote(base, finished, gone, keptBy = new Map) {
   const parts = [];
   if (finished.length > 0) {
     const names = cappedHookList(finished, (worktree) => {
       const why = keptBy.get(worktree.path);
-      return why === undefined ? basename14(worktree.path) : `${basename14(worktree.path)} (kept by the last clean: ${why})`;
+      return why === undefined ? basename15(worktree.path) : `${basename15(worktree.path)} (kept by the last clean: ${why})`;
     }, "git worktree list --porcelain");
     const count = finished.length === 1 ? "1 finished worktree is" : `${finished.length} finished worktrees are`;
     parts.push(`${count} left in this repo: ${names}. Each has every commit on origin/${base}, nothing uncommitted, no running session, and no git use for an hour. ` + "Tell the user, and when they agree, clear them in the main checkout with `cc-smart-dev-kit worktrees --clean` \u2014 it judges each one again, Docker containers and running programs included, before it removes anything.");
@@ -37826,7 +38660,7 @@ function operationInProgress(repo, env) {
   if (!paths.ok)
     return null;
   const [merge, rebaseMerge, rebaseApply, cherryPick] = paths.out.split(/\r?\n/);
-  const held = (path) => path !== undefined && path !== "" && existsSync61(resolve17(repo, path));
+  const held = (path) => path !== undefined && path !== "" && existsSync62(resolve17(repo, path));
   if (held(merge))
     return "merge";
   if (held(rebaseMerge) || held(rebaseApply))
@@ -37865,7 +38699,15 @@ function mainCheckoutNudge(project, env) {
     return null;
   return `This session is in the main checkout. Make the first change in a worktree: ${ENTER_WORKTREE_PHRASE}, or \`claude -w <name>\` from a terminal.`;
 }
-function worktreeLeftovers(context) {
+async function projectPatterns(repo, paths) {
+  try {
+    const checked = await loadCheckedFile(join70(repo, CONFIG_PATH), "project", { paths });
+    return checked.ok ? rebuildableGlobs(checked.value) : [];
+  } catch {
+    return [];
+  }
+}
+async function worktreeLeftovers(context) {
   const { project, env, paths, event } = context;
   const base = project.config?.worktrees?.base;
   if (base === undefined)
@@ -37899,11 +38741,12 @@ function worktreeLeftovers(context) {
   } catch {
     return answer(null);
   }
+  const patterns = await projectPatterns(repo, paths);
   const now = Date.now();
   const finished = [];
   const gone = [];
   for (const listed of linked) {
-    const verdict = judgeWorktree(repo, listed, base, sessions, env, now);
+    const verdict = judgeWorktree(repo, listed, base, sessions, env, now, patterns);
     if (verdict === "finished")
       finished.push(listed);
     if (verdict === "gone")
@@ -37954,7 +38797,13 @@ var MACHINE_WIDE_HOOKS = [
   "user-away"
 ];
 
+// src/issues/doctor.ts
+init_names();
+
 // src/workflow/pr-switches.ts
+init_names();
+init_resolve();
+init_resolve2();
 function turnOn2(key, value, base) {
   const where = base ?? "the integration base (worktrees.base)";
   const literal = value === "true" ? "true" : `"${value}"`;
@@ -37967,7 +38816,15 @@ function publicIssuesOff(resolved, base) {
   return `this repository is public, where everyone reads an issue, and issues.allowPublic is off (${sourceLabel(resolved.issues.allowPublic, base)}): ${turnOn2("issues.allowPublic", "true", base)}`;
 }
 
+// src/issues/file.ts
+init_names();
+init_git();
+init_resolve();
+init_resolve2();
+init_schema();
+
 // src/issues/marker.ts
+init_names();
 var MARKER_PREFIX = `<!-- ${COMMAND}:issue `;
 
 // src/issues/file.ts
@@ -38115,6 +38972,13 @@ async function issuesChecks(world) {
 }
 
 // src/cli/project-checks.ts
+init_kinds();
+init_config();
+init_resolve();
+init_managed_json();
+init_user_json();
+init_resolve2();
+init_schema();
 var GIT_FIX = `check that git works in this folder (git status), then run: ${COMMAND} doctor`;
 function message(error) {
   return error instanceof Error ? error.message : String(error);
@@ -38126,7 +38990,7 @@ var OLD_REVIEW_AGENT = `${PLUGIN}:reviewer`;
 var NEW_REVIEW_AGENT = workflowDefaults.reviewAgents[0];
 var REPLACE_REVIEW_AGENT = `replace the old id ${OLD_REVIEW_AGENT} with the new one ${NEW_REVIEW_AGENT}`;
 function retiredReviewAgentCheck(file, label, personal = false) {
-  if (!existsSync62(file))
+  if (!existsSync63(file))
     return null;
   let parsed;
   try {
@@ -38150,7 +39014,7 @@ function retiredReviewAgentCheck(file, label, personal = false) {
 function oldWorkflowNamesCheck(file, label, personal = false) {
   let parsed;
   try {
-    parsed = existsSync62(file) ? readUserJson(file) : null;
+    parsed = existsSync63(file) ? readUserJson(file) : null;
   } catch {
     return null;
   }
@@ -38188,24 +39052,24 @@ function readableMatches(pattern, folder) {
   } catch {}
   return found;
 }
-var PROJECT_MEMORY_FILES = ["CLAUDE.md", join70(".claude", "CLAUDE.md"), "CLAUDE.local.md"];
+var PROJECT_MEMORY_FILES = ["CLAUDE.md", join71(".claude", "CLAUDE.md"), "CLAUDE.local.md"];
 function retiredReviewMentions(projectDir) {
-  const folder = join70(projectDir, ".claude");
-  const inClaude = existsSync62(folder) ? [
+  const folder = join71(projectDir, ".claude");
+  const inClaude = existsSync63(folder) ? [
     `${PLUGIN}/**/*.md`,
     "rules/**/*.md",
     "agents/**/*.md",
     "skills/**/*.md",
     "commands/**/*.md",
     "output-styles/**/*.md"
-  ].flatMap((pattern) => readableMatches(pattern, folder)).map((file) => join70(".claude", file)) : [];
+  ].flatMap((pattern) => readableMatches(pattern, folder)).map((file) => join71(".claude", file)) : [];
   const files = [
-    ...PROJECT_MEMORY_FILES.filter((name) => existsSync62(join70(projectDir, name))),
+    ...PROJECT_MEMORY_FILES.filter((name) => existsSync63(join71(projectDir, name))),
     ...inClaude
   ].sort();
   return files.filter((file) => {
     try {
-      return readFileSync71(join70(projectDir, file), "utf8").includes(OLD_REVIEW_AGENT);
+      return readFileSync72(join71(projectDir, file), "utf8").includes(OLD_REVIEW_AGENT);
     } catch {
       return false;
     }
@@ -38223,16 +39087,16 @@ function renamedCommand(command) {
 }
 function oldNameLines(projectDir, sources, home) {
   const lines = [];
-  const config = join70(projectDir, ".claude", `${OLD_NAME}.json`);
-  if (existsSync62(config)) {
+  const config = join71(projectDir, ".claude", `${OLD_NAME}.json`);
+  if (existsSync63(config)) {
     lines.push({
       ok: true,
       warn: true,
       text: `project: ${shown3(config, projectDir, home)} is the old name of .claude/cc-smart-dev-kit.json, which the plugin reads now: rename it (merge the two when both are there)`
     });
   }
-  const addons = join70(projectDir, ".claude", OLD_NAME);
-  if (existsSync62(addons)) {
+  const addons = join71(projectDir, ".claude", OLD_NAME);
+  if (existsSync63(addons)) {
     lines.push({
       ok: true,
       warn: true,
@@ -38295,10 +39159,10 @@ async function worktreeLines(config, sources, checkout, env) {
 function baseRefOf(sources) {
   let baseRef = null;
   for (const file of sources) {
-    if (!existsSync62(file))
+    if (!existsSync63(file))
       continue;
     try {
-      const parsed = JSON.parse(readFileSync71(file, "utf8"));
+      const parsed = JSON.parse(readFileSync72(file, "utf8"));
       if (typeof parsed !== "object" || parsed === null)
         continue;
       const worktree = parsed.worktree;
@@ -38312,7 +39176,7 @@ function baseRefOf(sources) {
   return baseRef;
 }
 function readPluginHooks(file) {
-  const parsed = JSON.parse(readFileSync71(file, "utf8"));
+  const parsed = JSON.parse(readFileSync72(file, "utf8"));
   return Object.entries(parsed.hooks ?? {}).flatMap(([event, groups]) => groups.flatMap((group) => (group.hooks ?? []).flatMap((handler) => {
     const bundle = /\/dist\/([a-z-]+)\.js(?:["'\s]|$)/.exec(handler.command ?? "")?.[1];
     if (bundle === undefined)
@@ -38489,7 +39353,7 @@ function parseLintJson(text) {
 }
 var MAX_LINT_CONFIG_BYTES = 1024 * 1024;
 function readLintConfig(file) {
-  const fd = openSync11(file, constants3.O_RDONLY | (constants3.O_NONBLOCK ?? 0));
+  const fd = openSync11(file, constants4.O_RDONLY | (constants4.O_NONBLOCK ?? 0));
   try {
     const stat = fstatSync3(fd);
     if (!stat.isFile() || stat.size > MAX_LINT_CONFIG_BYTES) {
@@ -38565,7 +39429,7 @@ function lintRestriction(folder, projectFolder) {
   const result = { restricted: false, unreadable: [] };
   let files;
   try {
-    files = readdirSync20(folder);
+    files = readdirSync21(folder);
   } catch {
     return { restricted: false, unreadable: ["linter configs"] };
   }
@@ -38576,7 +39440,7 @@ function lintRestriction(folder, projectFolder) {
     if (!biome && !eslint && !packageConfig)
       continue;
     try {
-      const text = readLintConfig(join70(folder, file));
+      const text = readLintConfig(join71(folder, file));
       if (packageConfig) {
         const pkg = parseUserJson(text);
         result.restricted ||= isObject2(pkg) && eslintRestriction(JSON.stringify(pkg.eslintConfig) ?? "");
@@ -38599,12 +39463,12 @@ function shadcnFolders(root) {
       const rel = relative8(realpathSync10(root), target);
       if (rel === ".." || rel.startsWith(`..${sep6}`) || isAbsolute6(rel))
         return;
-      if (statSync23(folder).isDirectory() && !folders.has(target))
+      if (statSync24(folder).isDirectory() && !folders.has(target))
         folders.set(target, folder);
     } catch {}
   };
-  const packageFile = join70(root, "package.json");
-  if (existsSync62(packageFile)) {
+  const packageFile = join71(root, "package.json");
+  if (existsSync63(packageFile)) {
     try {
       const pkg = parseUserJson(readLintConfig(packageFile));
       const workspaces = isObject2(pkg) ? pkg.workspaces : null;
@@ -38617,14 +39481,14 @@ function shadcnFolders(root) {
         if (rel === ".." || rel.startsWith(`..${sep6}`) || isAbsolute6(rel))
           continue;
         if (entry.endsWith("/*") && !entry.slice(0, -2).includes("*")) {
-          if (!existsSync62(folder))
+          if (!existsSync63(folder))
             continue;
           const realFolder = realpathSync10(folder);
           const realRel = relative8(realpathSync10(root), realFolder);
           if (realRel === ".." || realRel.startsWith(`..${sep6}`) || isAbsolute6(realRel))
             continue;
-          for (const child of readdirSync20(folder).sort())
-            addFolder(join70(folder, child));
+          for (const child of readdirSync21(folder).sort())
+            addFolder(join71(folder, child));
         } else if (!entry.includes("*"))
           addFolder(folder);
       }
@@ -38637,7 +39501,7 @@ function shadcnFolders(root) {
     }
   }
   return {
-    folders: [...folders.values()].filter((folder) => existsSync62(join70(folder, "components.json"))).sort(),
+    folders: [...folders.values()].filter((folder) => existsSync63(join71(folder, "components.json"))).sort(),
     lines
   };
 }
@@ -38675,7 +39539,7 @@ async function projectChecks2(cwd, env, paths, pluginHooksFile, gh = runGh) {
   }
   let checkout;
   try {
-    checkout = existsSync62(cwd) ? await locateCheckoutAsync(cwd, { env }) : null;
+    checkout = existsSync63(cwd) ? await locateCheckoutAsync(cwd, { env }) : null;
   } catch (error) {
     return [{ ok: false, text: `project: ${checkoutFailure(error)}`, fix: GIT_FIX }];
   }
@@ -38723,6 +39587,7 @@ async function projectChecks2(cwd, env, paths, pluginHooksFile, gh = runGh) {
   lines.push(...await projectTaskChecks(checkout.root, env));
   lines.push(...deployBlockLines(checkout.root, usesDeployTasks));
   lines.push(...planCapChecks(checkout.root, env, paths, config));
+  lines.push(...ancestorHoldChecks(checkout.root, env, paths));
   return lines;
 }
 function planCapChecks(cwd, env, paths, config) {
@@ -38752,6 +39617,20 @@ function planCapChecks(cwd, env, paths, config) {
       }
     ];
   });
+}
+function ancestorHoldChecks(cwd, env, paths) {
+  const context = taskContext(cwd, env);
+  if (!context.ok)
+    return [];
+  const read = readWorkStore(paths, (db) => new TaskGraph(allTasks(db, context.project)));
+  if (read.state !== "ready")
+    return [];
+  return ancestorHolds(read.value).filter(({ task, ancestor }) => isOpen(task) && isOpen(ancestor)).map(({ task, ancestor }) => ({
+    ok: true,
+    warn: true,
+    text: `project tasks: #${task.number} is blocked by #${ancestor.number}, which it sits under, so neither can be done`,
+    fix: `${TASK_TOOL.update} #${task.number} with blocked_by_remove ["#${ancestor.number}"]`
+  }));
 }
 var FINDING_WORDS = {
   "broken-file": { one: "broken task file", many: "broken task files" },
@@ -38785,7 +39664,7 @@ async function projectTaskChecks(cwd, env) {
     return [
       { ok: false, text: `deploy tasks: ${tasks.why}`, fix: `run \`${COMMAND} task check\`` }
     ];
-  if (!existsSync62(tasks.dir))
+  if (!existsSync63(tasks.dir))
     return [];
   const lines = [];
   try {
@@ -38847,7 +39726,7 @@ function checkWorkflowNames(paths) {
 }
 var MARKETPLACE_UPDATE_COMMAND = `claude plugin marketplace update ${MARKETPLACE}`;
 function readSettings2(file) {
-  if (!existsSync63(file))
+  if (!existsSync64(file))
     return null;
   try {
     const parsed = readUserJson(file);
@@ -38875,7 +39754,7 @@ function checkPlugin(paths) {
     };
   }
   const where = tildify(install.installPath, paths.home);
-  if (!existsSync63(install.installPath)) {
+  if (!existsSync64(install.installPath)) {
     return {
       ok: false,
       text: `the plugin folder is missing: ${where}`,
@@ -38896,20 +39775,20 @@ function checkPlugin(paths) {
 }
 function isExecutable2(file) {
   try {
-    accessSync3(file, constants4.X_OK);
+    accessSync4(file, constants5.X_OK);
     return true;
   } catch {
     return false;
   }
 }
 function isUsableBun(bun, platform) {
-  return platform === "win32" ? existsSync63(bun) : isExecutable2(bun);
+  return platform === "win32" ? existsSync64(bun) : isExecutable2(bun);
 }
 async function checkLauncher(paths, platform, read) {
   const win = platform === "win32";
-  const launcher = join71(paths.binDir, LAUNCHER_NAME);
+  const launcher = join72(paths.binDir, LAUNCHER_NAME);
   const where = tildify(launcher, paths.home);
-  if (!existsSync63(launcher))
+  if (!existsSync64(launcher))
     return [{ ok: false, text: `no launcher at ${where}`, fix: SETUP_FIX }];
   if (!win && !isExecutable2(launcher)) {
     return [
@@ -38920,7 +39799,7 @@ async function checkLauncher(paths, platform, read) {
       }
     ];
   }
-  const script = readFileSync72(launcher, "utf8");
+  const script = readFileSync73(launcher, "utf8");
   const bun = bakedBunPath(script);
   if (bun === null || script !== launcherScript(bun)) {
     return [{ ok: false, text: `the launcher ${where} is out of date`, fix: SETUP_FIX }];
@@ -38947,16 +39826,16 @@ async function checkLauncher(paths, platform, read) {
   return [{ ok: true, text: `the launcher ${where} runs ${result.output}` }];
 }
 async function checkLauncherCmd(paths, shLauncher, read) {
-  const cmd = join71(paths.binDir, LAUNCHER_CMD_NAME);
+  const cmd = join72(paths.binDir, LAUNCHER_CMD_NAME);
   const where = tildify(cmd, paths.home);
-  if (!existsSync63(cmd)) {
+  if (!existsSync64(cmd)) {
     return {
       ok: false,
       text: `no Windows launcher at ${where}, so cmd and PowerShell cannot run ${COMMAND} (Git Bash runs ${shLauncher})`,
       fix: SETUP_FIX
     };
   }
-  const script = readFileSync72(cmd, "utf8");
+  const script = readFileSync73(cmd, "utf8");
   const bun = cmdBakedBunPath(script);
   if (bun === null || script !== launcherCmdScript(bun)) {
     return {
@@ -38997,7 +39876,7 @@ async function checkMarketplaceAccess(paths, env) {
         fix: `remove the marketplace (claude plugin marketplace remove ${MARKETPLACE}), then add it again: ${MARKETPLACE_ADD_COMMAND}`
       };
     case "local":
-      return existsSync63(source.path) ? { ok: true, text: `the marketplace folder ${tildify(source.path, paths.home)} exists` } : {
+      return existsSync64(source.path) ? { ok: true, text: `the marketplace folder ${tildify(source.path, paths.home)} exists` } : {
         ok: false,
         text: `the marketplace folder is missing: ${source.path}`,
         fix: `put the folder back, or remove the marketplace (claude plugin marketplace remove ${MARKETPLACE}) and add it again: ${MARKETPLACE_ADD_COMMAND}`
@@ -39274,7 +40153,7 @@ function hasEntry(data, field, key) {
 async function checkOldPlugin(settings, paths, read) {
   const plugins = settings?.enabledPlugins;
   const enabled = isJsonObject13(plugins) && plugins[OLD_PLUGIN_ID] === true;
-  if (!existsSync63(join71(paths.claudeConfigDir, OLD_NAME2))) {
+  if (!existsSync64(join72(paths.claudeConfigDir, OLD_NAME2))) {
     if (!enabled)
       return null;
     return {
@@ -39284,18 +40163,18 @@ async function checkOldPlugin(settings, paths, read) {
     };
   }
   const short = (path) => tildify(path, paths.home);
-  const launcher = join71(paths.binDir, OLD_NAME2);
+  const launcher = join72(paths.binDir, OLD_NAME2);
   const left = [
     enabled ? "the plugin enabled" : null,
     hasEntry(readSettings2(paths.installedPluginsFile), "plugins", OLD_PLUGIN_ID) ? "the plugin installed" : null,
-    existsSync63(launcher) ? `its launcher ${short(launcher)}` : null,
+    existsSync64(launcher) ? `its launcher ${short(launcher)}` : null,
     hasEntry(settings, "extraKnownMarketplaces", OLD_NAME2) ? `extraKnownMarketplaces.${OLD_NAME2} in ${short(paths.settingsFile)}` : null,
     hasEntry(readSettings2(paths.knownMarketplacesFile), null, OLD_NAME2) ? `the ${OLD_NAME2} marketplace` : null
   ].filter((thing) => thing !== null);
   if (left.length === 0)
     return null;
   const then = `claude plugin uninstall ${OLD_PLUGIN_ID}\`, then \`claude plugin marketplace remove ${OLD_NAME2}\``;
-  const canRun = existsSync63(launcher) && isExecutable2(launcher) && (await read([launcher, "version"])).exitCode === 0;
+  const canRun = existsSync64(launcher) && isExecutable2(launcher) && (await read([launcher, "version"])).exitCode === 0;
   return {
     ok: false,
     text: `the old plugin ${OLD_PLUGIN_ID} (before 0.2.0) left ${left.join(", ")}`,
@@ -39332,7 +40211,7 @@ function checkInstructions(paths, source) {
       fix: SETUP_FIX
     };
   }
-  const text = existsSync63(where.claudeMd) ? readFileSync72(where.claudeMd, "utf8") : "";
+  const text = existsSync64(where.claudeMd) ? readFileSync73(where.claudeMd, "utf8") : "";
   if (!text.includes(instructionsBlockBody(where.importPath))) {
     return {
       ok: false,
@@ -39387,28 +40266,28 @@ function ccSmartDevKitImports(text) {
 function checkProjectImports(paths, cwd) {
   const short = (path) => tildify(path, paths.home);
   const imports = [];
-  for (let dir = cwd;; dir = dirname28(dir)) {
+  for (let dir = cwd;; dir = dirname30(dir)) {
     for (const name of PROJECT_MEMORY_FILES) {
-      const from = join71(dir, name);
-      if (from === join71(paths.claudeConfigDir, "CLAUDE.md") || !existsSync63(from))
+      const from = join72(dir, name);
+      if (from === join72(paths.claudeConfigDir, "CLAUDE.md") || !existsSync64(from))
         continue;
       let text;
       try {
-        text = readFileSync72(from, "utf8");
+        text = readFileSync73(from, "utf8");
       } catch {
         continue;
       }
       for (const path of ccSmartDevKitImports(text)) {
-        const file = path.startsWith("~/") ? join71(paths.home, path.slice(2)) : path;
+        const file = path.startsWith("~/") ? join72(paths.home, path.slice(2)) : path;
         imports.push({ from, path, file });
       }
     }
-    if (dirname28(dir) === dir)
+    if (dirname30(dir) === dir)
       break;
   }
   if (imports.length === 0)
     return null;
-  const missing = imports.filter((entry) => !existsSync63(entry.file));
+  const missing = imports.filter((entry) => !existsSync64(entry.file));
   if (missing.length === 0) {
     const names = imports.map((entry) => entry.path).join(", ");
     return { ok: true, text: `the project's CLAUDE.md imports ${names}, and it is there` };
@@ -39463,6 +40342,18 @@ function claudeMemStartBlocksCheck(paths, readings) {
     text: base
   };
 }
+function checkedCacheCheck(paths) {
+  const problem = checkedCacheProblem(paths);
+  if (problem === null)
+    return null;
+  const dir = tildify(join72(paths.stateDir, CHECKED_DIR), paths.home);
+  return {
+    ok: true,
+    warn: true,
+    text: `hook cache: ${dir} ${problem}, so every hook run parses the project file again`,
+    fix: `make ${dir}, or the folder above it when it is not made yet, yours with mode 700: chmod 700 ${dir}`
+  };
+}
 function taskToolsCheck(paths) {
   const data = readSettings2(paths.settingsFile) ?? {};
   const allow = getKey(data, TASK_ALLOW_PATH).value;
@@ -39484,7 +40375,7 @@ function plansDirectoryCheck(paths) {
   return {
     ok: true,
     info: true,
-    text: folder === null ? `plan folder: ${tildify(join71(paths.claudeConfigDir, "plans"), paths.home)} (Claude Code default)` : `plan folder: ${folder} (user setting; project settings may override it)`
+    text: folder === null ? `plan folder: ${tildify(join72(paths.claudeConfigDir, "plans"), paths.home)} (Claude Code default)` : `plan folder: ${folder} (user setting; project settings may override it)`
   };
 }
 function oldTodoToolsKeyCheck(paths) {
@@ -39499,7 +40390,7 @@ function oldTodoToolsKeyCheck(paths) {
 }
 function taskStoreChecks(paths) {
   const file = workDbFile(paths);
-  if (!existsSync63(file))
+  if (!existsSync64(file))
     return [{ ok: true, info: true, text: "task work store: not made yet" }];
   const brokenFix = `move ${tildify(file, paths.home)} aside, with its -wal and -shm files; the next task call starts an empty store (deploy task files are in git and stay)`;
   try {
@@ -39632,6 +40523,7 @@ function doctorGroups(paths, env, { browser, bun, gateway, herdr, limits, local,
         ...await checkLauncher(paths, machine.platform, readCommand),
         checkGitBash(machine.platform, env, machine),
         checkInstructions(paths, local.instructionsSource),
+        checkedCacheCheck(paths),
         taskToolsCheck(paths),
         ...taskStoreChecks(paths),
         oldTodoToolsKeyCheck(paths),
@@ -39726,8 +40618,10 @@ function checkLine(check) {
 }
 
 // src/jobs/status.ts
-import { mkdirSync as mkdirSync26, readdirSync as readdirSync22, readFileSync as readFileSync74, statSync as statSync25 } from "fs";
-import { join as join73 } from "path";
+init_resolve();
+init_resolve2();
+import { mkdirSync as mkdirSync27, readdirSync as readdirSync23, readFileSync as readFileSync75, statSync as statSync26 } from "fs";
+import { join as join74 } from "path";
 
 // src/jobs/queue.ts
 function wireOfSlot(slot) {
@@ -39814,20 +40708,22 @@ function holderLines(held, store, now) {
 }
 
 // src/jobs/store.ts
+init_lock();
 import {
   chmodSync as chmodSync3,
-  mkdirSync as mkdirSync25,
-  readdirSync as readdirSync21,
-  readFileSync as readFileSync73,
+  mkdirSync as mkdirSync26,
+  readdirSync as readdirSync22,
+  readFileSync as readFileSync74,
   renameSync as renameSync5,
-  statSync as statSync24,
-  unlinkSync as unlinkSync5,
+  statSync as statSync25,
+  unlinkSync as unlinkSync6,
   utimesSync,
   writeFileSync as writeFileSync12
 } from "fs";
-import { join as join72, posix as posix4, win32 as win325 } from "path";
+import { join as join73, posix as posix4, win32 as win325 } from "path";
 
 // src/jobs/windows.ts
+init_lock();
 import { spawnSync as spawnSync2 } from "child_process";
 var WINDOWS_CALL_TIMEOUT_MS = 1e4;
 var WINDOWS_START_PREFIX = "win:";
@@ -39932,7 +40828,7 @@ function writeWhole(file, text, token) {
 }
 function removeQuietly(file) {
   try {
-    unlinkSync5(file);
+    unlinkSync6(file);
   } catch {}
 }
 function leaseStore(options) {
@@ -39942,8 +40838,8 @@ function leaseStore(options) {
     return holderIsGone(visible ? holder : null, lastSeenMs, UNSEEN_STALE_MS, startTimeOf);
   });
   const readStartTime = options.startTimeOf ?? startTimeReader(process.platform);
-  const leases = join72(options.dir, "leases");
-  const tickets = join72(options.dir, "tickets");
+  const leases = join73(options.dir, "leases");
+  const tickets = join73(options.dir, "tickets");
   const mine = new Map;
   const noted = new Set;
   let timer = null;
@@ -39985,14 +40881,14 @@ function leaseStore(options) {
   };
   const removeLeftover = (path) => {
     try {
-      if (Date.now() - statSync24(path).mtimeMs > LEFTOVER_MS)
+      if (Date.now() - statSync25(path).mtimeMs > LEFTOVER_MS)
         removeQuietly(path);
     } catch {}
   };
   const readLive = (folder) => {
     let names;
     try {
-      names = readdirSync21(folder);
+      names = readdirSync22(folder);
     } catch (error) {
       if (errorCode(error) === "ENOENT")
         return [];
@@ -40007,7 +40903,7 @@ function leaseStore(options) {
     };
     const live = [];
     for (const name of names) {
-      const path = join72(folder, name);
+      const path = join73(folder, name);
       if (name.startsWith(".")) {
         if (name.endsWith(".tmp") || name.startsWith(".probe-"))
           removeLeftover(path);
@@ -40018,7 +40914,7 @@ function leaseStore(options) {
       let text;
       let mtimeMs;
       try {
-        mtimeMs = statSync24(path).mtimeMs;
+        mtimeMs = statSync25(path).mtimeMs;
       } catch (error) {
         if (errorCode(error) === "ENOENT")
           continue;
@@ -40026,7 +40922,7 @@ function leaseStore(options) {
       }
       let unreadable = null;
       try {
-        text = readFileSync73(path, "utf8");
+        text = readFileSync74(path, "utf8");
       } catch (error) {
         const code = errorCode(error);
         if (code === "ENOENT")
@@ -40056,7 +40952,7 @@ function leaseStore(options) {
   };
   const write = (folder, slot, record, exclusive) => {
     const token = crypto.randomUUID();
-    const path = join72(folder, `${token}.json`);
+    const path = join73(folder, `${token}.json`);
     const text = JSON.stringify({
       store: 1,
       gb: wireOfSlot(slot),
@@ -40064,7 +40960,7 @@ function leaseStore(options) {
       holder: me,
       record
     });
-    mkdirSync25(folder, { recursive: true });
+    mkdirSync26(folder, { recursive: true });
     writeWhole(path, text, token);
     hold(path, text);
     return { path, token };
@@ -40111,7 +41007,7 @@ function leaseStore(options) {
 // src/jobs/status.ts
 function openStores(ctx) {
   const dir = jobsPaths(ctx.paths.home).stateDir;
-  mkdirSync26(dir, { recursive: true });
+  mkdirSync27(dir, { recursive: true });
   return {
     machine: leaseStore({
       dir,
@@ -40221,22 +41117,22 @@ function jobsFingerprint(home) {
   const dir = jobsPaths(home).stateDir;
   const parts = [];
   try {
-    parts.push(readFileSync74(jobsPaths(home).configFile, "utf8"));
+    parts.push(readFileSync75(jobsPaths(home).configFile, "utf8"));
   } catch (error) {
     parts.push(`config:${error.code}`);
   }
   for (const sub of ["leases", "tickets"]) {
-    const folder = join73(dir, sub);
+    const folder = join74(dir, sub);
     let names;
     try {
-      names = readdirSync22(folder).sort();
+      names = readdirSync23(folder).sort();
     } catch {
       parts.push(`${folder}:-`);
       continue;
     }
     for (const name of names) {
       try {
-        const stat = statSync25(join73(folder, name));
+        const stat = statSync26(join74(folder, name));
         parts.push(`${folder}/${name}:${stat.size}:${stat.mtimeMs}`);
       } catch {
         parts.push(`${folder}/${name}:gone`);
@@ -40247,14 +41143,21 @@ function jobsFingerprint(home) {
 }
 
 // src/portal/actions.ts
-import { createHash as createHash10 } from "crypto";
-import { existsSync as existsSync66, statSync as statSync27 } from "fs";
-import { isAbsolute as isAbsolute8, join as join77 } from "path";
+import { createHash as createHash11 } from "crypto";
+import { existsSync as existsSync67, statSync as statSync28 } from "fs";
+import { isAbsolute as isAbsolute8, join as join78 } from "path";
+init_build_info();
+
+// src/cli/update.ts
+init_build_info();
+init_lock();
 
 // src/update/check.ts
+init_build_info();
 import { mkdtempSync as mkdtempSync4, rmSync as rmSync15 } from "fs";
 import { tmpdir as tmpdir6 } from "os";
-import { join as join74 } from "path";
+import { join as join75 } from "path";
+init_git_env();
 var GIT_TIMEOUT_MS2 = 20000;
 function localHead(folder, env) {
   try {
@@ -40318,7 +41221,7 @@ function checkForUpdate(paths, env) {
 }
 function remotePluginVersion(url, ref, baseEnv) {
   const env = gitAccessEnv(gitEnv(baseEnv));
-  const dir = mkdtempSync4(join74(tmpdir6(), "cc-smart-dev-kit-update-check-"));
+  const dir = mkdtempSync4(join75(tmpdir6(), "cc-smart-dev-kit-update-check-"));
   const git = (args) => {
     const result = Bun.spawnSync(["git", ...args], {
       env,
@@ -40359,6 +41262,7 @@ function remotePluginVersion(url, ref, baseEnv) {
 }
 
 // src/cli/update.ts
+init_state();
 var UPDATE_USAGE = `Usage: ${COMMAND} update [--check | --hold | --resume]`;
 var CHECK_RUNNING = "A check is running now; it finishes.";
 var terminalRunner = (env, home) => {
@@ -40533,11 +41437,15 @@ ${UPDATE_USAGE}`);
 }
 
 // src/machine/claude-mem-choices.ts
-import { existsSync as existsSync64 } from "fs";
+init_build_info();
+import { existsSync as existsSync65 } from "fs";
+init_lock();
+init_managed_json();
+init_write();
 var KEY_MAX = 512;
 function readReady(paths) {
   const install = findUserInstall(paths.installedPluginsFile, CLAUDE_MEM_ID);
-  if (install === null || !existsSync64(install.installPath)) {
+  if (install === null || !existsSync65(install.installPath)) {
     return {
       blocked: {
         fix: `claude plugin install ${CLAUDE_MEM_ID}`,
@@ -40571,7 +41479,7 @@ function readReady(paths) {
   return { read, version };
 }
 function gatewayConfig(paths) {
-  if (!existsSync64(paths.gatewayConfigFile))
+  if (!existsSync65(paths.gatewayConfigFile))
     return null;
   try {
     return loadConfigFile(paths.gatewayConfigFile);
@@ -41041,8 +41949,13 @@ async function takeOver(paths) {
   });
 }
 
+// src/portal/actions.ts
+init_resolve();
+
 // src/setup/auto-mode.ts
-import { join as join75 } from "path";
+init_config();
+init_resolve();
+import { join as join76 } from "path";
 var AUTO_MODE_PATH = ["autoMode", "environment"];
 var AUTO_MODE_DEFAULTS = "$defaults";
 function autoModeSource(dir, which) {
@@ -41054,9 +41967,9 @@ function autoModeSource(dir, which) {
   const entries = project.config?.autoMode ?? [];
   let differsFrom = null;
   const main = project.mainCheckout;
-  const own = join75(project.root, ".claude", "cc-smart-dev-kit.json");
+  const own = join76(project.root, ".claude", "cc-smart-dev-kit.json");
   if (project.isWorktree && main !== null && project.configFile === own) {
-    const mainFile = join75(main, ".claude", "cc-smart-dev-kit.json");
+    const mainFile = join76(main, ".claude", "cc-smart-dev-kit.json");
     let mainEntries;
     try {
       mainEntries = loadCcSmartDevKitConfig(mainFile)?.autoMode ?? [];
@@ -41080,11 +41993,17 @@ function applyAutoMode(settingsFile, stateDir, wanted, dryRun) {
   });
 }
 
+// src/portal/actions.ts
+init_lock();
+init_managed_json();
+
 // src/tasks/ops.ts
-import { existsSync as existsSync65, readFileSync as readFileSync75, rmSync as rmSync16, statSync as statSync26 } from "fs";
-import { join as join76, relative as relative9 } from "path";
+import { existsSync as existsSync66, readFileSync as readFileSync76, rmSync as rmSync16, statSync as statSync27 } from "fs";
+import { join as join77, relative as relative9 } from "path";
 
 // src/tasks/schemas.ts
+init_zod();
+init_format();
 import { isAbsolute as isAbsolute7 } from "path";
 var fields = deployTaskSchema.shape;
 var subject = string2().trim().min(1).max(SUBJECT_LIMIT);
@@ -41162,11 +42081,45 @@ var taskSchemas = {
 };
 var READ_ONLY_OPERATIONS = new Set(["list", "get", "search"]);
 
+// src/tasks/ops.ts
+init_git();
+init_config();
+init_resolve2();
+init_format();
+
+// src/tasks/files-check.ts
+init_git();
+init_resolve();
+init_resolve2();
+
+// src/worktrees/command.ts
+init_names();
+init_git();
+init_resolve();
+init_auto_state();
+
+// src/worktrees/branch-sweep.ts
+init_git();
+
+// src/worktrees/scan.ts
+init_build_info();
+init_git();
+
 // src/hooks/unsaved-changes.ts
+init_git();
 var FILE_MODES = new Set(["100644", "100755"]);
 
 // src/worktrees/scan.ts
+init_config();
+init_config_facts();
+init_lock();
 var REMOVAL_TIMEOUT_MS = 10 * 60000;
+
+// src/worktrees/clean.ts
+init_git();
+
+// src/worktrees/scan-parked.ts
+init_git();
 // src/worktrees/command.ts
 var DEFAULT_BASE = "main";
 function baseBranch(checkout, env, repo) {
@@ -41311,6 +42264,7 @@ function planNote(all, plan, cap) {
 }
 
 // src/tasks/work/store.ts
+init_names();
 var NOTE_PREVIEW = 120;
 function shape(db, task) {
   const numberOf = (id) => `#${taskById(db, id).number}`;
@@ -41407,29 +42361,27 @@ function unblockedValid(db, task) {
     throw new Error(`${label(task)} is blocked by ${open.map((t) => `${label(t)} (${t.status.replaceAll("_", " ")})`).join(", ")}: finish or drop ${open.length > 1 ? "them" : "it"} first, or remove the block`);
 }
 function addBlockers(db, task, refs) {
+  let graph = null;
   for (const ref of refs) {
     const other = taskById(db, ref);
     if (other.project !== task.project)
       throw new Error("dependency belongs to another project");
-    const byId = new Map(allTasks(db, task.project).map((t) => [t.id, t]));
-    for (let up = byId.get(task.parentId ?? "");up; up = byId.get(up.parentId ?? ""))
-      if (up.id === other.id)
-        throw new Error(`${label(task)} cannot be blocked by ${label(other)}: it sits under it, and a parent waits for its tasks`);
-    const seen = new Set;
-    const pending = [ref];
-    while (pending.length) {
-      const id = pending.pop();
-      if (!id || seen.has(id))
-        continue;
-      if (id === task.id)
-        throw new Error("blocked-by would make a cycle");
-      seen.add(id);
-      pending.push(...byId.get(id)?.waitsFor ?? []);
-    }
-    const tasks = [...byId.values()];
-    if (waitsForTask(tasks, ref, task.id))
-      throw new Error(`${label(task)} cannot be blocked by ${label(other)}: ${label(other)} already waits for it, through what it is blocked by and the tasks a parent waits for, so neither could ever be done`);
+    graph ??= new TaskGraph(allTasks(db, task.project));
+    const refusal = blockRefusal(graph, task, other);
+    if (refusal)
+      throw new Error(blockMessage(refusal, task, other));
     db.sqlite.query("INSERT OR IGNORE INTO task_deps VALUES (?,?)").run(task.id, ref);
+    graph.addWait(task.id, ref);
+  }
+}
+function blockMessage(refusal, task, other) {
+  switch (refusal) {
+    case "under":
+      return `${label(task)} cannot be blocked by ${label(other)}: it sits under it, and a parent waits for its tasks`;
+    case "cycle":
+      return "blocked-by would make a cycle";
+    case "through":
+      return `${label(task)} cannot be blocked by ${label(other)}: ${label(other)} already waits for it, through what it is blocked by and the tasks a parent waits for, so neither could ever be done`;
   }
 }
 function openPlanValid(tasks, plan) {
@@ -41823,8 +42775,8 @@ function deployTasksIn(root) {
   return `Deploy tasks in ${root}:`;
 }
 function isFolderOnDisk(root, path) {
-  const full = join76(root, path);
-  return existsSync65(full) && statSync26(full).isDirectory();
+  const full = join77(root, path);
+  return existsSync66(full) && statSync27(full).isDirectory();
 }
 var DELETE_TRACKED = "Tracked deploy task: it is part of a commit, so close it with task_done instead";
 var TASK_LINE_CAP = 200;
@@ -42271,7 +43223,7 @@ function createTaskOps(options = {}) {
         const input = taskSchemas.get.parse(raw);
         const text = isDeployTaskId(input.task) ? (() => {
           const file = project(input.task).file;
-          const text = readFileSync75(file, "utf8");
+          const text = readFileSync76(file, "utf8");
           const here = deployContext();
           const root = here.ok ? here.checkoutRoot : null;
           if (root === null)
@@ -42442,6 +43394,10 @@ ${t.body}`.toLowerCase().includes(input.text.toLowerCase()));
   };
 }
 
+// src/portal/actions.ts
+init_state();
+init_schema();
+
 // src/portal/api/page-reads.ts
 function forgetPageReads(ctx) {
   forgetAgentLists(ctx);
@@ -42495,7 +43451,7 @@ function gatewayContext(action, print) {
     ctx: {
       bunPath: process.execPath,
       bunVersion: portal.bunVersion,
-      bundle: join77(folder.folder, "dist", "router.js"),
+      bundle: join78(folder.folder, "dist", "router.js"),
       confirm: null,
       error: print,
       paths: portal.paths,
@@ -42813,7 +43769,7 @@ function autoModeChange(action) {
     added: diff.added,
     differsFrom: wanted.differsFrom,
     from,
-    hash: createHash10("sha256").update(JSON.stringify(shown)).digest("hex").slice(0, 32),
+    hash: createHash11("sha256").update(JSON.stringify(shown)).digest("hex").slice(0, 32),
     removed: diff.removed,
     settings: paths.settingsFile,
     wanted
@@ -43226,7 +44182,7 @@ async function projectAdd(action, body) {
   }
   let isFolder = false;
   try {
-    isFolder = existsSync66(folder) && statSync27(folder).isDirectory();
+    isFolder = existsSync67(folder) && statSync28(folder).isDirectory();
   } catch {
     isFolder = false;
   }
@@ -43298,7 +44254,7 @@ function browserTokenAction(action, body) {
   }
 }
 async function claudeMemTarget(action, text) {
-  if (!existsSync66(action.portal.paths.gatewayConfigFile) && !text.startsWith("claude-")) {
+  if (!existsSync67(action.portal.paths.gatewayConfigFile) && !text.startsWith("claude-")) {
     return { why: "The gateway is not set up, so it has no backend for claude-mem to use." };
   }
   const parsed = parseTarget(text);
@@ -43877,7 +44833,7 @@ async function overviewAnswer(deps) {
       backends: [],
       dashboardUrl: null,
       fallbacks: [],
-      fiveHour: planWindow(deps.action.portal),
+      ...planWindows(deps.action.portal),
       jobs: await jobsAtAGlance(deps),
       limits: [],
       limitsRead: false,
@@ -43892,7 +44848,7 @@ async function overviewAnswer(deps) {
     ...await overviewData(deps, deps.found.config),
     configured: true,
     error: null,
-    fiveHour: planWindow(deps.action.portal),
+    ...planWindows(deps.action.portal),
     jobs: await jobsAtAGlance(deps)
   };
 }
@@ -43989,6 +44945,7 @@ async function jobsAnswerFor(deps) {
 }
 
 // src/portal/api/project-gateway.ts
+init_build_info();
 function wordsOf2(decision) {
   if (decision.state !== "other" || decision.url === null)
     return decisionWords(decision);
@@ -44154,6 +45111,8 @@ async function projectGatewayAnswerFor(deps, id) {
 
 // src/portal/api/project-tasks.ts
 import { relative as relative10 } from "path";
+init_path_compare();
+init_format();
 
 // src/tasks/work/tree.ts
 var TREE_TASK_LIMIT = 300;
@@ -45959,7 +46918,8 @@ class LiveHub {
 }
 
 // src/portal/live/sources.ts
-import { readFileSync as readFileSync76, statSync as statSync28 } from "fs";
+import { readFileSync as readFileSync77, statSync as statSync29 } from "fs";
+init_state();
 var LIVE_POLL_MS = 2000;
 function fingerprintOf(entry) {
   return [entry.at, entry.slot, entry.status, entry.target, entry.ms].join("\x00");
@@ -45996,7 +46956,7 @@ function createLiveSources(deps) {
   let guardSeeded = false;
   function textOf(file) {
     try {
-      return readFileSync76(file, "utf8");
+      return readFileSync77(file, "utf8");
     } catch {
       return null;
     }
@@ -46043,7 +47003,7 @@ function createLiveSources(deps) {
     const file = askLogFile(deps.paths.stateDir);
     let bytes;
     try {
-      bytes = readFileSync76(file);
+      bytes = readFileSync77(file);
     } catch {
       if (!guardSeeded) {
         guardSeeded = true;
@@ -46096,7 +47056,7 @@ function createLiveSources(deps) {
     const file = workDbFile(deps.paths);
     return [file, `${file}-wal`].map((one) => {
       try {
-        const stat = statSync28(one);
+        const stat = statSync29(one);
         return `${stat.size}:${stat.mtimeMs}`;
       } catch {
         return "-";
@@ -46148,8 +47108,8 @@ function createLiveSources(deps) {
 }
 
 // src/portal/static.ts
-import { existsSync as existsSync67, readFileSync as readFileSync77, statSync as statSync29 } from "fs";
-import { extname as extname2, join as join78, resolve as resolve19, sep as sep7 } from "path";
+import { existsSync as existsSync68, readFileSync as readFileSync78, statSync as statSync30 } from "fs";
+import { extname as extname2, join as join79, resolve as resolve19, sep as sep7 } from "path";
 var TYPES = {
   ".css": "text/css; charset=utf-8",
   ".html": "text/html; charset=utf-8",
@@ -46178,11 +47138,11 @@ function fileInside(folder, pathname) {
   }
   if (decoded.includes("\x00") || decoded.includes("\\"))
     return null;
-  const file = resolve19(join78(folder, decoded));
+  const file = resolve19(join79(folder, decoded));
   if (file !== folder && !file.startsWith(`${folder}${sep7}`))
     return null;
   try {
-    return statSync29(file).isFile() ? file : null;
+    return statSync30(file).isFile() ? file : null;
   } catch {
     return null;
   }
@@ -46200,7 +47160,7 @@ function pageFile(folder, pathname) {
 function readCsp(folder) {
   let parsed;
   try {
-    parsed = JSON.parse(readFileSync77(join78(folder, "csp.json"), "utf8"));
+    parsed = JSON.parse(readFileSync78(join79(folder, "csp.json"), "utf8"));
   } catch {
     return { styleAttr: [], styleElem: [] };
   }
@@ -46215,7 +47175,7 @@ function readExport(folder) {
   if (folder === null)
     return null;
   const absolute = resolve19(folder);
-  if (!existsSync67(join78(absolute, "index.html")))
+  if (!existsSync68(join79(absolute, "index.html")))
     return null;
   return { csp: readCsp(absolute), folder: absolute };
 }
@@ -46247,7 +47207,7 @@ function exportServer(source) {
       if (kept !== undefined)
         return kept;
       try {
-        const bytes = readFileSync77(file);
+        const bytes = readFileSync78(file);
         if (cache.size >= CACHE_MAX)
           cache.clear();
         cache.set(file, bytes);
@@ -46283,7 +47243,12 @@ function exportResponse(server, file, csrf) {
   });
 }
 
+// src/portal/views.ts
+init_build_info();
+init_names();
+
 // src/portal/page.ts
+init_build_info();
 function escapeHtml(value) {
   return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&#39;");
 }
@@ -47152,7 +48117,7 @@ var EXPORT_PAGES = new Set([
   "/settings/project"
 ]);
 function defaultExportFolder() {
-  return join79(dirname29(import.meta.path), "portal-ui");
+  return join80(dirname31(import.meta.path), "portal-ui");
 }
 function respond(body, headers, status) {
   return new Response(body, { headers: { ...securityHeaders(), ...headers }, status });
@@ -47425,6 +48390,7 @@ async function startPortal(ctx, options) {
 }
 
 // src/entries/portal.ts
+init_bun_config();
 var RUN_TIMEOUT_MS3 = 300000;
 var SIGINT_EXIT = 130;
 var runner = (cmd) => {
@@ -47483,7 +48449,7 @@ async function runEnsure(paths, pluginDir) {
   }
   if (newerInstalled) {
     log(`handed over: this starter is ${VERSION}, the installed version is ${installed.version}`);
-    startDetached(process.platform, portalStarterArgv(process.execPath, join80(installed.folder, "dist", "portal.js"), installed.folder), {
+    startDetached(process.platform, portalStarterArgv(process.execPath, join81(installed.folder, "dist", "portal.js"), installed.folder), {
       cwd: paths.home,
       env: startEnv(process.env),
       onError: (message) => log(`failed: ${message}`)
@@ -47536,7 +48502,7 @@ async function runServer(paths, options) {
       browser: { ...realBrowserDoctorDeps(machine, ctx.paths.home), processes: () => processes },
       bun: { path: process.execPath, version: Bun.version },
       gateway: {
-        bundle: join80(folder, "dist", "router.js"),
+        bundle: join81(folder, "dist", "router.js"),
         machine,
         read: runRead,
         runner,
@@ -47553,10 +48519,10 @@ async function runServer(paths, options) {
       },
       live: null,
       limits: realLimitFacts(),
-      local: { cwd: process.cwd(), instructionsSource: instructionsFolder(join80(folder, "dist")) },
+      local: { cwd: process.cwd(), instructionsSource: instructionsFolder(join81(folder, "dist")) },
       mcp: realMcpDoctorDeps(runRead),
       portal: () => probePortal(DEFAULT_PORTAL_PORT, realPortalProbe()),
-      project: { cwd: process.cwd(), pluginHooksFile: join80(folder, "hooks", "hooks.json") },
+      project: { cwd: process.cwd(), pluginHooksFile: join81(folder, "hooks", "hooks.json") },
       read: runRead
     };
   };

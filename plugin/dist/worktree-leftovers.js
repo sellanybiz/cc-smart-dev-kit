@@ -145,9 +145,759 @@ function maskedLine(text, known, max, options = {}) {
   return oneLine(maskSecrets(text, known), max, options);
 }
 
-// src/project/config.ts
-import { existsSync as existsSync2, readFileSync as readFileSync3 } from "fs";
-import { posix, win32 } from "path";
+// src/project/locate.ts
+import { existsSync as existsSync2, realpathSync, statSync } from "fs";
+import { join as join3 } from "path";
+
+// src/project/config-facts.ts
+import { existsSync } from "fs";
+
+// src/setup/user-json.ts
+import { readFileSync } from "fs";
+var BOM = "\uFEFF";
+function withoutBom(text) {
+  return text.startsWith(BOM) ? text.slice(BOM.length) : text;
+}
+function parseUserJson(text) {
+  return JSON.parse(withoutBom(text));
+}
+function readUserJson(file) {
+  return parseUserJson(readFileSync(file, "utf8"));
+}
+
+// src/project/config-facts.ts
+var CONFIG_PATH = ".claude/cc-smart-dev-kit.json";
+function readOwnHooks(file) {
+  if (!existsSync(file))
+    return null;
+  try {
+    const raw = readUserJson(file);
+    if (typeof raw !== "object" || raw === null || Array.isArray(raw))
+      return [];
+    const listed = raw.ownHooks;
+    return Array.isArray(listed) ? listed.filter((name) => typeof name === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+// src/project/git-env.ts
+var REPO_SELECTING_GIT_VARS = [
+  "GIT_DIR",
+  "GIT_WORK_TREE",
+  "GIT_COMMON_DIR",
+  "GIT_INDEX_FILE",
+  "GIT_OBJECT_DIRECTORY",
+  "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+  "GIT_PREFIX",
+  "GIT_NAMESPACE"
+];
+function gitEnv(base) {
+  const env = {};
+  for (const [key, value] of Object.entries(base)) {
+    if (value !== undefined && !REPO_SELECTING_GIT_VARS.includes(key))
+      env[key] = value;
+  }
+  return env;
+}
+
+// src/project/locate.ts
+var MIN_GIT_VERSION = "2.31.0";
+var RESOLVE_GIT_TIMEOUT_MS = 5000;
+var GIT_NOT_FOUND = "git was not found, so this project's own values cannot be read. Install git, then try again.";
+function gitNotFound(error) {
+  const why = error instanceof Error ? error.message : String(error);
+  return /not found in \$PATH|ENOENT/.test(why) ? new Error(GIT_NOT_FOUND) : error;
+}
+var GIT_TIMED_OUT = "git did not answer in time";
+var GIT_TIMED_OUT_FIX = "run `git status` in this folder; if that hangs too, fix git first, then run this again";
+
+class GitTimedOutError extends Error {
+  constructor() {
+    super(`${GIT_TIMED_OUT}: ${GIT_TIMED_OUT_FIX}`);
+    this.name = "GitTimedOutError";
+  }
+}
+var NO_TIME_LEFT = {
+  ok: false,
+  stdout: "",
+  stderr: "no time left in the hook's budget",
+  timedOut: true
+};
+function callLimit(timeoutMs, timeFor) {
+  return timeFor === undefined ? timeoutMs : timeFor(timeoutMs);
+}
+function gitIn(cwd, env, timeoutMs = RESOLVE_GIT_TIMEOUT_MS, timeFor) {
+  return (args) => {
+    const limit = callLimit(timeoutMs, timeFor);
+    if (limit <= 0)
+      return NO_TIME_LEFT;
+    try {
+      const result = Bun.spawnSync(["git", ...args], {
+        cwd,
+        env,
+        stdin: "ignore",
+        stdout: "pipe",
+        stderr: "pipe",
+        timeout: limit,
+        windowsHide: true
+      });
+      return {
+        ok: result.exitCode === 0,
+        stdout: result.stdout.toString(),
+        stderr: result.stderr.toString(),
+        timedOut: result.exitedDueToTimeout === true
+      };
+    } catch (error) {
+      throw gitNotFound(error);
+    }
+  };
+}
+function requireGitVersionText(out) {
+  const match = /git version (\d+)\.(\d+)(?:\.(\d+))?/.exec(out);
+  if (!match)
+    return;
+  const version = `${match[1]}.${match[2]}.${match[3] ?? "0"}`;
+  if (Bun.semver.order(version, MIN_GIT_VERSION) < 0) {
+    throw new Error(`git 2.31 or newer is needed; you have git ${version}. Update git.`);
+  }
+}
+function requireGitVersion(git) {
+  requireGitVersionText(git(["--version"]).stdout);
+}
+function mainCheckoutFrom(list, cwd) {
+  if (list.timedOut === true)
+    throw new GitTimedOutError;
+  if (!list.ok)
+    throw new Error(`git worktree list failed in ${cwd}: ${list.stderr.trim()}`);
+  const [firstEntry = ""] = list.stdout.split(`
+
+`);
+  const lines = firstEntry.split(`
+`);
+  if (lines.includes("bare"))
+    return null;
+  const pathLine = lines.find((line) => line.startsWith("worktree "));
+  if (!pathLine)
+    return null;
+  const path = pathLine.slice("worktree ".length);
+  if (!existsSync2(path) || lines.some((line) => line.startsWith("prunable"))) {
+    throw new Error(`The main checkout of the repo at ${cwd} is missing: ${path} was moved or deleted. ` + 'If you moved it, run "git worktree repair" in its new folder.');
+  }
+  return realpathSync(path);
+}
+function findMainCheckout(git, cwd) {
+  return mainCheckoutFrom(git(["worktree", "list", "--porcelain"]), cwd);
+}
+function revParseParts(revParse) {
+  const [top, gitDir, common] = revParse.stdout.trim().split(`
+`);
+  if (!revParse.ok || top?.startsWith("--"))
+    return "not-understood";
+  if (!top || !gitDir || !common)
+    return "outside";
+  return { common, gitDir, top };
+}
+function checkoutRoots(parts) {
+  const root = realpathSync(parts.top);
+  const commonDir = realpathSync(parts.common);
+  return { commonDir, isWorktree: realpathSync(parts.gitDir) !== commonDir, root };
+}
+function locateCheckout(cwd, options = {}) {
+  if (!existsSync2(cwd) || !statSync(cwd).isDirectory()) {
+    throw new Error(`resolveProject: ${cwd} is not a folder`);
+  }
+  const git = gitIn(cwd, gitEnv(options.env ?? process.env), undefined, options.timeFor);
+  const revParse = git([
+    "rev-parse",
+    "--path-format=absolute",
+    "--show-toplevel",
+    "--absolute-git-dir",
+    "--git-common-dir"
+  ]);
+  if (revParse.timedOut === true)
+    throw new GitTimedOutError;
+  const parts = revParseParts(revParse);
+  if (parts === "not-understood") {
+    requireGitVersion(git);
+    if (revParse.ok) {
+      throw new Error("git did not understand rev-parse --path-format: git 2.31 or newer is needed.");
+    }
+    return null;
+  }
+  if (parts === "outside")
+    return null;
+  const roots = checkoutRoots(parts);
+  return {
+    ...roots,
+    mainCheckout: roots.isWorktree ? findMainCheckout(git, cwd) : roots.root
+  };
+}
+function projectFileFor(checkout) {
+  const { root, mainCheckout } = checkout;
+  const own = join3(root, CONFIG_PATH);
+  if (existsSync2(own))
+    return own;
+  if (mainCheckout === null || mainCheckout === root)
+    return null;
+  const main = join3(mainCheckout, CONFIG_PATH);
+  return existsSync2(main) ? main : null;
+}
+function ownHooksOf(checkout) {
+  const file = projectFileFor(checkout);
+  return file === null ? [] : readOwnHooks(file) ?? [];
+}
+
+// src/hooks/ask-log.ts
+import { join as join5 } from "path";
+
+// src/hooks/jsonl-log.ts
+import { appendFileSync, mkdirSync as mkdirSync2, readFileSync as readFileSync3, statSync as statSync3 } from "fs";
+import { dirname as dirname2 } from "path";
+
+// src/setup/write.ts
+import {
+  closeSync,
+  existsSync as existsSync3,
+  fsyncSync,
+  lstatSync,
+  mkdirSync,
+  openSync,
+  readdirSync,
+  readFileSync as readFileSync2,
+  readlinkSync,
+  realpathSync as realpathSync2,
+  renameSync,
+  statSync as statSync2,
+  unlinkSync,
+  writeFileSync
+} from "fs";
+import { basename, dirname, join as join4, resolve } from "path";
+
+// src/setup/file-mode.ts
+import { chmodSync, fchmodSync } from "fs";
+function failureIsFatal(platform) {
+  return platform !== "win32";
+}
+function setFileMode(fileOrFd, mode, platform = hostPlatform()) {
+  try {
+    if (typeof fileOrFd === "number")
+      fchmodSync(fileOrFd, mode);
+    else
+      chmodSync(fileOrFd, mode);
+  } catch (error) {
+    if (failureIsFatal(platform))
+      throw error;
+  }
+}
+
+// src/setup/write.ts
+function writeTemp(file, content, mode) {
+  const dir = dirname(file);
+  mkdirSync(dir, { recursive: true });
+  const temp = join4(dir, `.${basename(file)}.cc-smart-dev-kit-tmp-${process.pid}-${crypto.randomUUID()}`);
+  try {
+    const fd = openSync(temp, "wx", mode);
+    try {
+      writeFileSync(fd, content);
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+    setFileMode(temp, mode);
+  } catch (error) {
+    if (existsSync3(temp))
+      unlinkSync(temp);
+    throw error;
+  }
+  return temp;
+}
+function atomicWrite(file, content, mode, beforeRename) {
+  const temp = writeTemp(file, content, mode);
+  try {
+    beforeRename?.();
+    renameSync(temp, file);
+  } catch (error) {
+    if (existsSync3(temp))
+      unlinkSync(temp);
+    throw error;
+  }
+}
+
+// src/setup/lock.ts
+var FALLBACK_STALE_MS = 10 * 60 * 1000;
+
+// src/update/state.ts
+var CHECK_INTERVAL_MS = 60 * 60 * 1000;
+var LOG_MAX_BYTES = 256 * 1024;
+var UNREACHABLE_FAILS_AFTER_HOURS = 24;
+var UNREACHABLE_FAILS_AFTER_MS = UNREACHABLE_FAILS_AFTER_HOURS * 60 * 60 * 1000;
+
+// src/hooks/jsonl-log.ts
+function cutBack(file) {
+  let size;
+  try {
+    size = statSync3(file).size;
+  } catch {
+    return;
+  }
+  if (size <= LOG_MAX_BYTES)
+    return;
+  const text = readFileSync3(file, "utf8");
+  const keep = text.slice(text.length - LOG_MAX_BYTES / 2);
+  atomicWrite(file, keep.slice(keep.indexOf(`
+`) + 1), 384);
+}
+function appendJsonLine(file, value) {
+  mkdirSync2(dirname2(file), { recursive: true, mode: 448 });
+  cutBack(file);
+  appendFileSync(file, `${JSON.stringify(value)}
+`, { mode: 384 });
+}
+
+// src/hooks/ask-log.ts
+var ASK_LOG_FILE = "guard-asks.jsonl";
+var ASK_REASON_MAX = 200;
+function askLogFile(stateDir) {
+  return join5(stateDir, ASK_LOG_FILE);
+}
+function appendAsk(file, ask) {
+  appendJsonLine(file, ask);
+}
+
+// src/hooks/checked-config.ts
+import { createHash } from "crypto";
+import {
+  accessSync,
+  constants,
+  existsSync as existsSync4,
+  mkdirSync as mkdirSync3,
+  readdirSync as readdirSync2,
+  readFileSync as readFileSync4,
+  statSync as statSync4,
+  unlinkSync as unlinkSync2
+} from "fs";
+import { dirname as dirname3, join as join6 } from "path";
+
+// src/build-info/index.ts
+var info = {
+  version: "6.3.0",
+  repo: "sellanybiz/cc-smart-dev-kit",
+  dependencies: [
+    {
+      name: "claude-mem",
+      marketplace: "thedotmack",
+      version: ">=15.0.0"
+    },
+    {
+      name: "frontend-design",
+      marketplace: "claude-plugins-official"
+    }
+  ]
+};
+var VERSION = info.version;
+var MARKETPLACE_SOURCE = info.repo;
+var DEPENDENCIES = info.dependencies;
+var MARKETPLACE_ADD_COMMAND = `claude plugin marketplace add ${MARKETPLACE_SOURCE}`;
+var PLUGIN_INSTALL_COMMAND = `claude plugin install ${PLUGIN_ID}`;
+var PLUGIN_UPDATE_COMMAND = `claude plugin update ${PLUGIN_ID}`;
+
+// src/hooks/checked-config.ts
+var PARSER_FINGERPRINT = "ecbf12d64fe46194dd034dc713b5e1e608f672cd2abae09ebc3f7dec686bda49";
+var CHECKED_DIR = "checked";
+var CHECKED_CACHE_LIMIT = 64;
+var CHECKED_FILE_MAX_BYTES = 256 * 1024;
+var CHECKED_TEMP_MAX_AGE_MS = 60000;
+var ENTRY_FORMAT = 1;
+var TEMP_NAME = /^\..+\.cc-smart-dev-kit-tmp-/;
+var PARSE = {
+  project: (sibling, text, where) => sibling.checkProjectText(text, where),
+  workflow: (sibling, text, where) => sibling.checkWorkflowText(text, where)
+};
+function reinstallMessage(why) {
+  return `The plugin's config checker is not usable (${why}): run \`${PLUGIN_INSTALL_COMMAND}\` to reinstall the plugin, then try again.`;
+}
+async function loadSibling() {
+  const built = join6(import.meta.dir, "config-check.js");
+  const entry = existsSync4(built) ? built : join6(import.meta.dir, "..", "entries", "config-check.ts");
+  const loaded = await import(entry);
+  for (const name of ["checkProjectText", "checkWorkflowText"]) {
+    if (typeof loaded[name] !== "function") {
+      throw new Error(`${entry} exports no ${name}`);
+    }
+  }
+  return loaded;
+}
+function checkedKey(fingerprint, kind, bytes) {
+  return createHash("sha256").update(`${fingerprint}
+${kind}
+`).update(bytes).digest("hex");
+}
+function readEntry(file, key, kind) {
+  try {
+    const entry = JSON.parse(readFileSync4(file, "utf8"));
+    if (entry?.format !== ENTRY_FORMAT || entry.key !== key || entry.kind !== kind)
+      return null;
+    const { value } = entry;
+    const isObject = typeof value === "object" && value !== null && !Array.isArray(value);
+    return isObject ? value : null;
+  } catch {
+    return null;
+  }
+}
+function prune(dir, nowMs) {
+  const entries = [];
+  for (const name of readdirSync2(dir)) {
+    const path = join6(dir, name);
+    try {
+      if (TEMP_NAME.test(name)) {
+        if (nowMs - statSync4(path).mtimeMs > CHECKED_TEMP_MAX_AGE_MS)
+          unlinkSync2(path);
+      } else if (name.endsWith(".json")) {
+        entries.push({ path, mtimeMs: statSync4(path).mtimeMs });
+      }
+    } catch {}
+  }
+  entries.sort((a, b) => a.mtimeMs - b.mtimeMs);
+  for (const old of entries.slice(0, Math.max(0, entries.length - (CHECKED_CACHE_LIMIT - 1)))) {
+    try {
+      unlinkSync2(old.path);
+    } catch {}
+  }
+}
+function writeEntry(dir, key, kind, value) {
+  try {
+    if (!existsSync4(dir)) {
+      mkdirSync3(dir, { recursive: true, mode: 448 });
+      setFileMode(dir, 448);
+    }
+    prune(dir, Date.now());
+    const entry = { format: ENTRY_FORMAT, key, kind, value };
+    atomicWrite(join6(dir, `${key}.json`), JSON.stringify(entry), 384);
+  } catch {}
+}
+async function loadCheckedFile(file, kind, { paths }) {
+  if (!existsSync4(file))
+    return { ok: true, value: null, fact: "none" };
+  const bytes = readFileSync4(file);
+  const cacheable = bytes.length <= CHECKED_FILE_MAX_BYTES;
+  const dir = join6(paths.stateDir, CHECKED_DIR);
+  const key = checkedKey(PARSER_FINGERPRINT, kind, bytes);
+  if (cacheable) {
+    const hit = readEntry(join6(dir, `${key}.json`), key, kind);
+    if (hit !== null)
+      return { ok: true, value: hit, fact: "cached" };
+  }
+  let sibling;
+  try {
+    sibling = await loadSibling();
+  } catch (error) {
+    const why = error instanceof Error ? error.message : String(error);
+    return { ok: false, message: reinstallMessage(why), fact: "broken" };
+  }
+  const answer = PARSE[kind](sibling, bytes.toString("utf8"), file);
+  if (answer.fingerprint !== PARSER_FINGERPRINT) {
+    const why = "it was built from another version of the plugin than this hook";
+    return { ok: false, message: reinstallMessage(why), fact: "broken" };
+  }
+  if (!answer.ok)
+    return { ok: false, message: answer.message, fact: "broken" };
+  if (cacheable)
+    writeEntry(dir, key, kind, answer.value);
+  return { ok: true, value: answer.value, fact: "checked" };
+}
+async function loadCheckedProject(checkout, options) {
+  const file = projectFileFor(checkout);
+  if (file === null) {
+    return { ok: true, project: { ...checkout, config: null, configFile: null }, fact: "none" };
+  }
+  const checked = await loadCheckedFile(file, "project", options);
+  if (!checked.ok)
+    return checked;
+  return {
+    ok: true,
+    project: { ...checkout, config: checked.value, configFile: file },
+    fact: checked.fact
+  };
+}
+
+// src/hooks/io.ts
+var SILENT = {};
+function parseHookInput(text) {
+  try {
+    const value = JSON.parse(text);
+    return typeof value === "object" && value !== null && !Array.isArray(value) ? value : null;
+  } catch {
+    return null;
+  }
+}
+function stringField(value) {
+  return typeof value === "string" && value !== "" ? value : null;
+}
+function askReason(result) {
+  if (result.stdout === undefined)
+    return null;
+  try {
+    const value = JSON.parse(result.stdout);
+    const output = value.hookSpecificOutput;
+    if (output?.permissionDecision !== "ask")
+      return null;
+    return typeof output.permissionDecisionReason === "string" ? output.permissionDecisionReason : "";
+  } catch {
+    return null;
+  }
+}
+function addContext(event, text) {
+  return {
+    stdout: JSON.stringify({
+      hookSpecificOutput: { hookEventName: event, additionalContext: text }
+    })
+  };
+}
+function systemMessage(text) {
+  return { stdout: JSON.stringify({ systemMessage: text }) };
+}
+function addContextAndMessage(event, text, message) {
+  return {
+    stdout: JSON.stringify({
+      systemMessage: message,
+      hookSpecificOutput: { hookEventName: event, additionalContext: text }
+    })
+  };
+}
+
+// src/hooks/run.ts
+var HOOK_LOG_ENV = "CC_SMART_DEV_KIT_HOOK_LOG";
+function errorMessage(error) {
+  return error instanceof Error ? error.message : String(error);
+}
+function crashResult(spec, why, input, event, context) {
+  const line = {
+    exitCode: spec.crashExitCode ?? 0,
+    stderr: `cc-smart-dev-kit ${spec.name}: ${why}`
+  };
+  if (spec.onCrash === undefined)
+    return line;
+  try {
+    return spec.onCrash(why, input, event, context);
+  } catch {
+    return line;
+  }
+}
+function recordAsk(spec, input, result, context) {
+  const reason = askReason(result);
+  if (reason === null)
+    return result;
+  try {
+    appendAsk(askLogFile(context.paths.stateDir), {
+      at: context.nowMs,
+      hook: spec.name,
+      session: stringField(input?.session_id) ?? "",
+      tool: stringField(input?.tool_name) ?? "",
+      reason: maskedLine(reason, [], ASK_REASON_MAX, { mark: "..." })
+    });
+  } catch (error) {
+    const note = `cc-smart-dev-kit ${spec.name}: the ask could not be recorded (${errorMessage(error)})`;
+    return { ...result, stderr: result.stderr === undefined ? note : `${result.stderr}
+${note}` };
+  }
+  return result;
+}
+async function answer(spec, input, context, observed) {
+  const { env } = context;
+  let event = "";
+  try {
+    if (input === null) {
+      return crashResult(spec, "the hook input is not JSON", null, "", context);
+    }
+    const named = stringField(input.hook_event_name);
+    if (named === null || !spec.events.includes(named))
+      return SILENT;
+    event = named;
+    const cwd = stringField(input.cwd);
+    const outside = spec.outsideGit ?? (() => SILENT);
+    if (cwd === null)
+      return await outside(input, event, "the hook input has no cwd", context);
+    let checkout;
+    try {
+      checkout = locateCheckout(cwd, { env });
+    } catch (error) {
+      return await outside(input, event, errorMessage(error), context);
+    }
+    if (checkout === null)
+      return await outside(input, event, `${cwd} is not in a git checkout`, context);
+    if (spec.alwaysOn !== true && ownHooksOf(checkout).includes(spec.name))
+      return SILENT;
+    const loaded = await loadCheckedProject(checkout, { paths: context.paths });
+    observed.config = loaded.fact;
+    if (!loaded.ok) {
+      return await spec.onConfigProblem(loaded.message, input, event, checkout, context);
+    }
+    return await spec.run({
+      input,
+      event,
+      cwd,
+      project: loaded.project,
+      env,
+      paths: context.paths,
+      nowMs: context.nowMs,
+      ...context.start !== undefined && { start: context.start }
+    });
+  } catch (error) {
+    return crashResult(spec, errorMessage(error), input, event, context);
+  }
+}
+async function handleHook(spec, text, env, nowMs = Date.now(), start, observed = {}) {
+  const context = {
+    env,
+    paths: cliPaths(env),
+    nowMs,
+    ...start !== undefined && { start }
+  };
+  const input = parseHookInput(text);
+  const result = await answer(spec, input, context, observed);
+  return recordAsk(spec, input, result, context);
+}
+function logRun(spec, text, result, env, nowMs, observed) {
+  const file = env[HOOK_LOG_ENV];
+  if (file === undefined || file === "")
+    return;
+  try {
+    const input = parseHookInput(text);
+    const facts = input === null ? {} : spec.logFacts?.(input, { env, paths: cliPaths(env), nowMs }) ?? {};
+    appendFileSync2(file, `${JSON.stringify({
+      hook: spec.name,
+      event: stringField(input?.hook_event_name),
+      cwd: stringField(input?.cwd),
+      exitCode: result.exitCode ?? 0,
+      ...observed.config !== undefined && { config: observed.config },
+      stdout: (result.stdout ?? "").slice(0, 2000),
+      ...Object.keys(facts).length === 0 ? {} : { facts }
+    })}
+`);
+  } catch {}
+}
+async function runHookEntry(spec) {
+  const text = await Bun.stdin.text();
+  const nowMs = Date.now();
+  const observed = {};
+  const result = await handleHook(spec, text, process.env, nowMs, undefined, observed);
+  logRun(spec, text, result, process.env, nowMs, observed);
+  if (result.stdout !== undefined)
+    await Bun.write(Bun.stdout, result.stdout);
+  if (result.stderr !== undefined)
+    await Bun.write(Bun.stderr, `${result.stderr}
+`);
+  process.exit(result.exitCode ?? 0);
+}
+
+// src/hooks/worktree-leftovers.ts
+import { closeSync as closeSync3, existsSync as existsSync7, fstatSync, openSync as openSync3, readSync as readSync2, statSync as statSync7 } from "fs";
+import { basename as basename5, join as join13, resolve as resolve5 } from "path";
+
+// src/worktrees/auto-start.ts
+import { basename as basename3, join as join9 } from "path";
+
+// src/hooks/attended.ts
+function isAttended(env) {
+  return env.CLAUDE_CODE_SESSION_ATTENDED !== "0";
+}
+
+// src/hooks/detached.ts
+import { spawn } from "child_process";
+var CMD = "cmd";
+var CMD_ARGUMENTS = ["/d", "/s", "/v:off", "/c"];
+function unableInCmd(argument) {
+  if (argument.includes('"'))
+    return 'a " would end the quoted argument';
+  if (argument.includes("%"))
+    return "a % is read as a variable name, inside double quotes too";
+  if (/[\r\n]/.test(argument))
+    return "a line break ends the command line";
+  if (argument.includes("\x00"))
+    return "a NUL ends the command line";
+  return null;
+}
+function cmdArgument(argument) {
+  const reason = unableInCmd(argument);
+  if (reason !== null)
+    return { ok: false, reason };
+  const trailing = /\\+$/.exec(argument)?.[0] ?? "";
+  const kept = argument.slice(0, argument.length - trailing.length);
+  return { ok: true, text: `"${kept}${trailing}${trailing}"` };
+}
+function windowsStart(argv) {
+  return cmdLine('start "" /b ', argv);
+}
+function cmdLine(head, argv) {
+  if (argv[0] === undefined) {
+    return { argument: "", ok: false, reason: "there is no program to start" };
+  }
+  const quoted = [];
+  for (const argument of argv) {
+    const one = cmdArgument(argument);
+    if (!one.ok)
+      return { argument, ok: false, reason: one.reason };
+    quoted.push(one.text);
+  }
+  return { argv: [CMD, ...CMD_ARGUMENTS, `"${head}${quoted.join(" ")}"`], ok: true };
+}
+function forMessage(argument) {
+  return argument.replace(/[\r\n]/g, " ").replaceAll("\x00", " ");
+}
+function startDetached(platform, argv, options) {
+  const [file, ...args] = argv;
+  if (file === undefined)
+    return;
+  const where = {
+    ...options.cwd !== undefined && { cwd: options.cwd },
+    ...options.env !== undefined && { env: options.env }
+  };
+  try {
+    if (platform === "win32") {
+      const start = windowsStart(argv);
+      if (!start.ok) {
+        options.onError(`cannot run "${forMessage(start.argument)}" through cmd.exe: ${start.reason}; nothing was started`);
+        return;
+      }
+      const result = Bun.spawnSync(start.argv, {
+        ...where,
+        stdin: "ignore",
+        stdout: "ignore",
+        stderr: "ignore",
+        windowsHide: true,
+        windowsVerbatimArguments: true
+      });
+      const exitCode = result.exitCode ?? 1;
+      if (exitCode !== 0)
+        options.onError(`cmd /d /s /c start failed (exit ${exitCode})`);
+      return;
+    }
+    const child = spawn(file, args, { ...where, detached: true, stdio: "ignore" });
+    child.on("error", (error) => options.onError(error.message));
+    child.unref();
+  } catch (error) {
+    options.onError(error instanceof Error ? error.message : String(error));
+  }
+}
+
+// src/setup/bun-config.ts
+import { basename as basename2, join as join7 } from "path";
+var BUN_CONFIG_NAME = "bunfig.toml";
+function bunConfigPath(pluginDir) {
+  return join7(pluginDir, BUN_CONFIG_NAME);
+}
+function bunConfigArg(pluginDir) {
+  return `--config=${bunConfigPath(pluginDir)}`;
+}
+function pluginFolderBeside(importDir) {
+  return basename2(importDir) === "dist" ? join7(importDir, "..") : join7(importDir, "..", "..", "plugin");
+}
+
+// src/worktrees/auto-state.ts
+import { createHash as createHash2 } from "crypto";
+import { mkdirSync as mkdirSync4, readFileSync as readFileSync5 } from "fs";
+import { dirname as dirname5, join as join8 } from "path";
 
 // node_modules/zod/v4/core/util.js
 function getEnumValues(entries) {
@@ -706,9 +1456,6 @@ function constantCatch(value) {
 
 // node_modules/zod/v4/core/core.js
 var _a;
-var NEVER = /* @__PURE__ */ Object.freeze({
-  status: "aborted"
-});
 var _zodDesc = { value: undefined, enumerable: false };
 var _E = "captureStackTrace" in Error ? Error : null;
 function newError(Definition) {
@@ -1139,9 +1886,7 @@ function datetime(args) {
   return new RegExp(`^${dateSource}T(?:${timeRegex})$`);
 }
 var anyString = /^[\s\S]{0,}$/;
-var integer = /^-?\d+$/;
 var number = /^-?\d+(?:\.\d+)?$/;
-var boolean = /^(?:true|false)$/i;
 var lowercase = /^[^A-Z]*$/;
 var uppercase = /^[^a-z]*$/;
 
@@ -2023,26 +2768,6 @@ var $ZodNumberFormat = /* @__PURE__ */ $constructor("$ZodNumberFormat", (inst, d
   $ZodCheckNumberFormat.init(inst, def);
   $ZodNumber.init(inst, def);
 });
-var $ZodBoolean = /* @__PURE__ */ $constructor("$ZodBoolean", (inst, def) => {
-  $ZodType.init(inst, def);
-  inst._zod.pattern = boolean;
-  inst._zod.parse = (payload, _ctx) => {
-    if (def.coerce)
-      try {
-        payload.value = Boolean(payload.value);
-      } catch (_) {}
-    const input = payload.value;
-    if (typeof input === "boolean")
-      return payload;
-    payload.issues.push({
-      expected: "boolean",
-      code: "invalid_type",
-      input,
-      inst
-    });
-    return payload;
-  };
-});
 var $ZodUnknown = /* @__PURE__ */ $constructor("$ZodUnknown", (inst, def) => {
   $ZodType.init(inst, def);
   inst._zod.parse = (payload) => payload;
@@ -2610,161 +3335,6 @@ function handleIntersectionResults(result, left, right) {
   result.value = merged.data;
   return result;
 }
-var $ZodRecord = /* @__PURE__ */ $constructor("$ZodRecord", (inst, def) => {
-  $ZodType.init(inst, def);
-  const memo = globalConfig.memoizer;
-  memo?.attach(inst);
-  inst._zod.parse = (payload, ctx) => {
-    const input = payload.value;
-    if (!isPlainObject(input)) {
-      payload.issues.push({
-        expected: "record",
-        code: "invalid_type",
-        input,
-        inst
-      });
-      return payload;
-    }
-    const proms = [];
-    const values = def.keyType._zod.values;
-    if (values && !def.partial) {
-      payload.value = memo ? memo.alloc(inst, payload, {}, ctx) : {};
-      const recordKeys = new Set;
-      for (const key of values) {
-        if (typeof key === "string" || typeof key === "number" || typeof key === "symbol") {
-          recordKeys.add(typeof key === "number" ? key.toString() : key);
-          if (key === "__proto__")
-            continue;
-          const keyResult = def.keyType._zod.run({ value: key, issues: [] }, ctx);
-          if (keyResult instanceof Promise) {
-            throw new Error("Async schemas not supported in object keys currently");
-          }
-          if (keyResult.issues.length) {
-            payload.issues.push({
-              code: "invalid_key",
-              origin: "record",
-              issues: keyResult.issues.map((iss) => finalizeIssue(iss, ctx, config())),
-              input: key,
-              path: [key],
-              inst
-            });
-            continue;
-          }
-          const outKey = keyResult.value;
-          if (outKey === "__proto__")
-            continue;
-          const result = def.valueType._zod.run({ value: input[key], issues: [] }, ctx);
-          if (result instanceof Promise) {
-            proms.push(result.then((result) => {
-              if (result.issues.length) {
-                payload.issues.push(...prefixIssues(key, result.issues));
-              }
-              payload.value[outKey] = result.value;
-            }));
-          } else {
-            if (result.issues.length) {
-              payload.issues.push(...prefixIssues(key, result.issues));
-            }
-            payload.value[outKey] = result.value;
-          }
-        }
-      }
-      let unrecognized;
-      for (const key in input) {
-        if (!recordKeys.has(key)) {
-          if (def.mode === "loose") {
-            if (key === "__proto__")
-              continue;
-            payload.value[key] = input[key];
-          } else {
-            unrecognized = unrecognized ?? [];
-            unrecognized.push(key);
-          }
-        }
-      }
-      if (unrecognized && unrecognized.length > 0) {
-        payload.issues.push({
-          code: "unrecognized_keys",
-          input,
-          inst,
-          keys: unrecognized,
-          continue: true
-        });
-      }
-    } else {
-      payload.value = memo ? memo.alloc(inst, payload, {}, ctx) : {};
-      let unrecognized;
-      for (const key of Reflect.ownKeys(input)) {
-        if (key === "__proto__")
-          continue;
-        if (!Object.prototype.propertyIsEnumerable.call(input, key))
-          continue;
-        let keyResult = def.keyType._zod.run({ value: key, issues: [] }, ctx);
-        if (keyResult instanceof Promise) {
-          throw new Error("Async schemas not supported in object keys currently");
-        }
-        const checkNumericKey = typeof key === "string" && number.test(key) && keyResult.issues.length;
-        if (checkNumericKey) {
-          const retryResult = def.keyType._zod.run({ value: Number(key), issues: [] }, ctx);
-          if (retryResult instanceof Promise) {
-            throw new Error("Async schemas not supported in object keys currently");
-          }
-          if (retryResult.issues.length === 0) {
-            keyResult = retryResult;
-          }
-        }
-        if (keyResult.issues.length) {
-          if (def.mode === "loose") {
-            payload.value[key] = input[key];
-          } else if (values) {
-            unrecognized = unrecognized ?? [];
-            unrecognized.push(key);
-          } else {
-            payload.issues.push({
-              code: "invalid_key",
-              origin: "record",
-              issues: keyResult.issues.map((iss) => finalizeIssue(iss, ctx, config())),
-              input: key,
-              path: [key],
-              inst
-            });
-          }
-          continue;
-        }
-        const outKey = keyResult.value;
-        if (outKey === "__proto__")
-          continue;
-        const result = def.valueType._zod.run({ value: input[key], issues: [] }, ctx);
-        if (result instanceof Promise) {
-          proms.push(result.then((result) => {
-            if (result.issues.length) {
-              payload.issues.push(...prefixIssues(key, result.issues));
-            }
-            payload.value[outKey] = result.value;
-          }));
-        } else {
-          if (result.issues.length) {
-            payload.issues.push(...prefixIssues(key, result.issues));
-          }
-          payload.value[outKey] = result.value;
-        }
-      }
-      if (unrecognized && unrecognized.length > 0) {
-        payload.issues.push({
-          code: "unrecognized_keys",
-          input,
-          inst,
-          keys: unrecognized,
-          continue: true
-        });
-      }
-    }
-    if (proms.length) {
-      return Promise.all(proms).then(() => payload);
-    }
-    return payload;
-  };
-});
 var $ZodEnum = /* @__PURE__ */ $constructor("$ZodEnum", (inst, def) => {
   $ZodType.init(inst, def);
   const values = getEnumValues(def.entries);
@@ -2989,9 +3559,6 @@ function handlePipeResult(left, next, ctx) {
   }
   return next._zod.run({ value: left.value, issues: left.issues }, ctx);
 }
-var $ZodPreprocess = /* @__PURE__ */ $constructor("$ZodPreprocess", (inst, def) => {
-  $ZodPipe.init(inst, def);
-});
 var $ZodReadonly = /* @__PURE__ */ $constructor("$ZodReadonly", (inst, def) => {
   $ZodType.init(inst, def);
   defineLazyInternal(inst, "propValues", (zod) => zod.def.innerType._zod.propValues);
@@ -3737,12 +4304,6 @@ function _int(Class, params) {
     check: "number_format",
     abort: false,
     format: "safeint",
-    ...normalizeParams(params)
-  });
-}
-function _boolean(Class, params) {
-  return new Class({
-    type: "boolean",
     ...normalizeParams(params)
   });
 }
@@ -4628,9 +5189,6 @@ var numberProcessor = (schema, ctx, _json, params) => {
       json.allOf = [...json.allOf ?? [], ...rest.map((m) => ({ multipleOf: m }))];
   }
 };
-var booleanProcessor = (_schema, _ctx, json, _params) => {
-  json.type = "boolean";
-};
 var neverProcessor = (_schema, _ctx, json, _params) => {
   json.not = {};
 };
@@ -4747,112 +5305,7 @@ var intersectionProcessor = (schema, ctx, json, params) => {
   json.allOf = allOf;
   ctx.intersections.push(allOf);
 };
-function stringifyKeyNames(bySchema, json, visited) {
-  if (json.$ref) {
-    if (visited.has(json))
-      return json;
-    visited.add(json);
-    const def = bySchema.get(json)?.def;
-    if (!def)
-      return json;
-    const inlined = stringifyKeyNames(bySchema, def, visited);
-    return inlined === def ? json : inlined;
-  }
-  for (const keyword of ["anyOf", "oneOf"]) {
-    const branches = json[keyword];
-    if (!Array.isArray(branches))
-      continue;
-    const mapped = branches.map((branch) => stringifyKeyNames(bySchema, branch, visited));
-    if (mapped.some((branch, i) => branch !== branches[i]))
-      json = { ...json, [keyword]: mapped };
-  }
-  const types = Array.isArray(json.type) ? json.type : [json.type];
-  const numericType = !types.includes("string") && types.some((t) => t === "number" || t === "integer");
-  const values = json.enum ?? (json.const !== undefined ? [json.const] : undefined);
-  if (!numericType && !values?.some((v) => typeof v === "number"))
-    return json;
-  const { minimum, maximum, exclusiveMinimum, exclusiveMaximum, multipleOf, format, id, ...rest } = json;
-  if (rest.enum)
-    rest.enum = rest.enum.map((v) => typeof v === "number" ? String(v) : v);
-  else if (typeof rest.const === "number")
-    rest.const = String(rest.const);
-  if (!numericType)
-    return rest;
-  rest.type = "string";
-  if (!values)
-    rest.pattern = (types.includes("number") ? number : integer).source;
-  return rest;
-}
 var pendingRecords = new WeakMap;
-function rewriteKeyNames(ctx) {
-  const bySchema = new Map;
-  for (const entry of ctx.seen.values()) {
-    if (entry.def && !bySchema.has(entry.schema))
-      bySchema.set(entry.schema, entry);
-  }
-  const rewrites = new Map;
-  for (const record of pendingRecords.get(ctx) ?? []) {
-    const seen = ctx.seen.get(record);
-    const names = (seen?.def ?? seen?.schema)?.propertyNames;
-    if (!names || names === true || rewrites.has(names))
-      continue;
-    const rewritten = stringifyKeyNames(bySchema, names, new Set);
-    if (rewritten !== names)
-      rewrites.set(names, rewritten);
-  }
-  if (!rewrites.size)
-    return;
-  for (const entry of ctx.seen.values()) {
-    for (const carrier of [entry.schema, entry.def]) {
-      const rewritten = carrier && rewrites.get(carrier.propertyNames);
-      if (rewritten)
-        carrier.propertyNames = rewritten;
-    }
-  }
-}
-var recordProcessor = (schema, ctx, _json, params) => {
-  const json = _json;
-  const def = schema._zod.def;
-  json.type = "object";
-  const keyType = def.keyType;
-  const patterns = aggregateChecks(keyType).patterns;
-  if (def.mode === "loose" && patterns && patterns.size > 0) {
-    const valueSchema = processSchema(def.valueType, ctx, {
-      ...params,
-      path: [...params.path, "patternProperties", "*"]
-    });
-    json.patternProperties = {};
-    for (const pattern of patterns) {
-      assignProp(json.patternProperties, exactPattern(pattern).source, valueSchema);
-    }
-  } else {
-    if (ctx.target === "draft-07" || ctx.target === "draft-2020-12") {
-      json.propertyNames = processSchema(def.keyType, ctx, {
-        ...params,
-        path: [...params.path, "propertyNames"]
-      });
-      let pending = pendingRecords.get(ctx);
-      if (!pending) {
-        pending = [];
-        pendingRecords.set(ctx, pending);
-        ctx.deferred.push(() => rewriteKeyNames(ctx));
-      }
-      pending.push(schema);
-    }
-    json.additionalProperties = processSchema(def.valueType, ctx, {
-      ...params,
-      path: [...params.path, "additionalProperties"]
-    });
-  }
-  const keyValues = keyType._zod.values;
-  const omittableOnInput = ctx.io === "input" && inputOptin(def.valueType) !== undefined;
-  if (keyValues && !def.partial && !omittableOnInput) {
-    const validKeyValues = [...keyValues].filter((v) => typeof v === "string" || typeof v === "number");
-    if (validKeyValues.length > 0) {
-      json.required = validKeyValues.map(String);
-    }
-  }
-};
 var nullableProcessor = (schema, ctx, json, params) => {
   const def = schema._zod.def;
   const inner = processSchema(def.innerType, ctx, params);
@@ -5491,14 +5944,6 @@ var ZodNumberFormat = /* @__PURE__ */ $constructor("ZodNumberFormat", (inst, def
 function int(params) {
   return _int(ZodNumberFormat, params);
 }
-var ZodBoolean = /* @__PURE__ */ $constructor("ZodBoolean", (inst, def) => {
-  $ZodBoolean.init(inst, def);
-  ZodType.init(inst, def);
-  inst._zod.processJSONSchema = (ctx, json, params) => booleanProcessor(inst, ctx, json, params);
-});
-function boolean2(params) {
-  return _boolean(ZodBoolean, params);
-}
 var ZodUnknown = /* @__PURE__ */ $constructor("ZodUnknown", (inst, def) => {
   $ZodUnknown.init(inst, def);
   ZodType.init(inst, def);
@@ -5599,14 +6044,6 @@ function object(shape, params) {
   };
   return new ZodObject(def);
 }
-function strictObject(shape, params) {
-  return new ZodObject({
-    type: "object",
-    shape,
-    catchall: never(),
-    ...normalizeParams(params)
-  });
-}
 var ZodUnion = /* @__PURE__ */ $constructor("ZodUnion", (inst, def) => {
   $ZodUnion.init(inst, def);
   ZodType.init(inst, def);
@@ -5630,30 +6067,6 @@ function intersection(left, right) {
     type: "intersection",
     left,
     right
-  });
-}
-var ZodRecord = /* @__PURE__ */ $constructor("ZodRecord", (inst, def) => {
-  _ensureDefaultMemoizer();
-  $ZodRecord.init(inst, def);
-  ZodType.init(inst, def);
-  inst._zod.processJSONSchema = (ctx, json, params) => recordProcessor(inst, ctx, json, params);
-  inst.keyType = def.keyType;
-  inst.valueType = def.valueType;
-});
-function record(keyType, valueType, params) {
-  if (!valueType || !valueType._zod) {
-    return new ZodRecord({
-      type: "record",
-      keyType: string2(),
-      valueType: keyType,
-      ...normalizeParams(valueType)
-    });
-  }
-  return new ZodRecord({
-    type: "record",
-    keyType,
-    valueType,
-    ...normalizeParams(params)
   });
 }
 var ZodEnum = /* @__PURE__ */ $constructor("ZodEnum", (inst, def) => {
@@ -5850,10 +6263,6 @@ function pipe(in_, out) {
     out
   });
 }
-var ZodPreprocess = /* @__PURE__ */ $constructor("ZodPreprocess", (inst, def) => {
-  ZodPipe.init(inst, def);
-  $ZodPreprocess.init(inst, def);
-});
 var ZodReadonly = /* @__PURE__ */ $constructor("ZodReadonly", (inst, def) => {
   $ZodReadonly.init(inst, def);
   ZodType.init(inst, def);
@@ -5877,2578 +6286,8 @@ function refine(fn, _params = {}) {
 function superRefine(fn, params) {
   return _superRefine(fn, params);
 }
-function preprocess(fn, schema) {
-  return new ZodPreprocess({
-    type: "pipe",
-    in: transform(fn),
-    out: schema
-  });
-}
-// src/build-info/index.ts
-var info = {
-  version: "6.2.0",
-  repo: "sellanybiz/cc-smart-dev-kit",
-  dependencies: [
-    {
-      name: "claude-mem",
-      marketplace: "thedotmack",
-      version: ">=15.0.0"
-    },
-    {
-      name: "frontend-design",
-      marketplace: "claude-plugins-official"
-    }
-  ]
-};
-var VERSION = info.version;
-var MARKETPLACE_SOURCE = info.repo;
-var DEPENDENCIES = info.dependencies;
-var MARKETPLACE_ADD_COMMAND = `claude plugin marketplace add ${MARKETPLACE_SOURCE}`;
-var PLUGIN_INSTALL_COMMAND = `claude plugin install ${PLUGIN_ID}`;
-var PLUGIN_UPDATE_COMMAND = `claude plugin update ${PLUGIN_ID}`;
-
-// src/jobs/kinds.ts
-var matchRuleSchema = union([
-  strictObject({
-    tool: string2().min(1),
-    sub: array(string2().min(1)).optional(),
-    flags: array(string2().min(1)).optional(),
-    argIncludes: string2().min(1).optional(),
-    valued: array(string2().min(1)).optional()
-  }),
-  strictObject({
-    script: string2().min(1)
-  })
-]);
-var kindSpecSchema = strictObject({
-  printOnly: array(string2().min(1)).optional(),
-  noSlotForFiles: boolean2().optional(),
-  skipWords: array(string2().min(1)).optional(),
-  valuedFlags: array(string2().min(1)).optional(),
-  match: array(matchRuleSchema).optional(),
-  about: string2().min(1).optional(),
-  gb: unknown().optional(),
-  filesGb: unknown().optional(),
-  maxFiles: unknown().optional(),
-  workers: unknown().optional(),
-  light: unknown().optional()
-});
-var KIND_NAME = /^[a-z0-9][a-z0-9:._-]*$/;
-var kindsSchema = record(string2().regex(KIND_NAME, "a kind's name is lower-case letters, digits and : . _ -"), kindSpecSchema);
-
-// src/setup/user-json.ts
-import { readFileSync } from "fs";
-var BOM = "\uFEFF";
-function withoutBom(text) {
-  return text.startsWith(BOM) ? text.slice(BOM.length) : text;
-}
-function parseUserJson(text) {
-  return JSON.parse(withoutBom(text));
-}
-function readUserJson(file) {
-  return parseUserJson(readFileSync(file, "utf8"));
-}
-
-// src/setup/write.ts
-import {
-  closeSync,
-  existsSync,
-  fsyncSync,
-  lstatSync,
-  mkdirSync,
-  openSync,
-  readdirSync,
-  readFileSync as readFileSync2,
-  readlinkSync,
-  realpathSync,
-  renameSync,
-  statSync,
-  unlinkSync,
-  writeFileSync
-} from "fs";
-import { basename, dirname, join as join3, resolve } from "path";
-
-// src/setup/file-mode.ts
-import { chmodSync, fchmodSync } from "fs";
-function failureIsFatal(platform) {
-  return platform !== "win32";
-}
-function setFileMode(fileOrFd, mode, platform = hostPlatform()) {
-  try {
-    if (typeof fileOrFd === "number")
-      fchmodSync(fileOrFd, mode);
-    else
-      chmodSync(fileOrFd, mode);
-  } catch (error) {
-    if (failureIsFatal(platform))
-      throw error;
-  }
-}
-
-// src/setup/write.ts
-function writeTemp(file, content, mode) {
-  const dir = dirname(file);
-  mkdirSync(dir, { recursive: true });
-  const temp = join3(dir, `.${basename(file)}.cc-smart-dev-kit-tmp-${process.pid}-${crypto.randomUUID()}`);
-  try {
-    const fd = openSync(temp, "wx", mode);
-    try {
-      writeFileSync(fd, content);
-      fsyncSync(fd);
-    } finally {
-      closeSync(fd);
-    }
-    setFileMode(temp, mode);
-  } catch (error) {
-    if (existsSync(temp))
-      unlinkSync(temp);
-    throw error;
-  }
-  return temp;
-}
-function atomicWrite(file, content, mode, beforeRename) {
-  const temp = writeTemp(file, content, mode);
-  try {
-    beforeRename?.();
-    renameSync(temp, file);
-  } catch (error) {
-    if (existsSync(temp))
-      unlinkSync(temp);
-    throw error;
-  }
-}
-
-// src/setup/managed-json.ts
-function isObject2(value) {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-// src/shell/program-name.ts
-function programName(word) {
-  return (word.split(/[\\/]/).pop() ?? word).toLowerCase().replace(/\.(exe|cmd|ps1|bat)$/, "");
-}
-
-// src/shell/kit-invocation.ts
-var INERT = new Set([
-  "[",
-  "[[",
-  "awk",
-  "cat",
-  "chmod",
-  "chown",
-  "cp",
-  "diff",
-  "echo",
-  "egrep",
-  "fgrep",
-  "file",
-  "git",
-  "grep",
-  "head",
-  "less",
-  "ln",
-  "ls",
-  "man",
-  "mkdir",
-  "more",
-  "mv",
-  "printf",
-  "readlink",
-  "realpath",
-  "rg",
-  "rm",
-  "sed",
-  "stat",
-  "tail",
-  "tee",
-  "test",
-  "touch",
-  "type",
-  "wc",
-  "which"
-]);
-
-// src/shell/command.ts
-var MAX_NESTING = 3;
-var ESCAPE = { bash: "\\", powershell: "`" };
-var SINGLE = { bash: "'", powershell: "'\u2018\u2019\u201A\u201B" };
-var DOUBLE = { bash: '"', powershell: '"\u201C\u201D\u201E' };
-var oneOf = (chars, char) => char !== "" && chars.includes(char);
-var CONTINUATION = {
-  bash: /\\[ \t]*\r?\n/y,
-  powershell: /`[ \t]*\r?\n/y
-};
-var SEPARATORS = new Set([`
-`, "\r", "&", "(", ")", ";", "|"]);
-var HERE_STRING = /@(["'])\r?\n([\s\S]*?)\r?\n\1@/y;
-var ARRAY_ASSIGNMENT = /(?:^|\s)[A-Za-z_][A-Za-z0-9_]*\+?=$/;
-var MAX_INNER = 8;
-var isBlank = (char) => char === " " || char === "\t";
-function opensBraceSubstitution(text, at) {
-  return text.startsWith("${", at) && /^[ \t\n|]$/.test(text.charAt(at + 2));
-}
-function braceSubstitutionClose(text, from) {
-  const read = lex(text.slice(from), {
-    blind: false,
-    dialect: "bash",
-    join: false,
-    substitution: true
-  });
-  return read.open ? -1 : from + read.end;
-}
-function lex(text, options) {
-  const { blind, dialect, join } = options;
-  const bash = dialect === "bash";
-  const escaper = ESCAPE[dialect];
-  const single = SINGLE[dialect];
-  const double = DOUBLE[dialect];
-  const segments = [];
-  const piped = [];
-  const expanded = [];
-  const groups = [];
-  const starts = [];
-  let group = options.outer ?? null;
-  const enterGroup = (array = false) => {
-    group = { depth: (group?.depth ?? 0) + 1, outer: group, ...array ? { array } : {} };
-  };
-  const leaveGroup = () => {
-    if (group !== (options.outer ?? null))
-      group = group?.outer ?? null;
-  };
-  const cases = [];
-  const owed = [];
-  let open = false;
-  let unparsable = false;
-  let at = 0;
-  let afterPipe = false;
-  let matching = null;
-  let semicolons = null;
-  const push = (piece, from, filledIn = false, inner = group, start = null) => {
-    segments.push(piece);
-    piped.push(from);
-    expanded.push(filledIn);
-    groups.push(inner);
-    starts.push(start);
-  };
-  function addInner(inner, body, filledIn = false) {
-    const depth = (options.depth ?? 0) + 1;
-    if (depth > MAX_INNER) {
-      open = true;
-      return;
-    }
-    const outer = { depth: (group?.depth ?? 0) + 1, outer: group };
-    const read = lex(inner, { blind, dialect, join, body: body && !blind, depth, outer });
-    if (read.open)
-      open = true;
-    if (read.unparsable)
-      unparsable = true;
-    for (let i = 0;i < read.segments.length; i++) {
-      push(read.segments[i] ?? "", read.piped[i] ?? null, filledIn || read.expanded[i] === true, read.groups[i] ?? outer);
-    }
-  }
-  function skipBodies() {
-    for (const { quoted, script, stripTabs, word } of owed.splice(0)) {
-      let line = at;
-      let closedAt = -1;
-      let bodyEnd = text.length;
-      while (line < text.length) {
-        const end = text.indexOf(`
-`, line);
-        const stop = end === -1 ? text.length : end;
-        const content = text.slice(line, stop).replace(/\r$/, "");
-        if ((stripTabs ? content.replace(/^\t+/, "") : content) === word) {
-          closedAt = Math.min(stop + 1, text.length);
-          bodyEnd = line;
-          break;
-        }
-        line = stop + 1;
-      }
-      if (closedAt === -1 && blind)
-        continue;
-      if (script) {
-        const body = text.slice(at, bodyEnd);
-        addInner(body, false, !quoted && /[$`]/.test(body));
-      } else if (!quoted)
-        addInner(text.slice(at, bodyEnd), true);
-      if (closedAt === -1) {
-        open = true;
-        at = text.length;
-      } else {
-        at = closedAt;
-      }
-    }
-  }
-  function arithmeticEnd(from) {
-    if (text.charAt(from + 1) !== "(")
-      return -1;
-    if (matching === null || semicolons === null) {
-      matching = new Int32Array(text.length).fill(-1);
-      semicolons = new Int32Array(text.length + 1);
-      const stack = [];
-      for (let i = 0;i < text.length; i++) {
-        const char = text.charAt(i);
-        semicolons[i + 1] = (semicolons[i] ?? 0) + (char === ";" ? 1 : 0);
-        if (char === "(")
-          stack.push(i);
-        else if (char === ")") {
-          const opened = stack.pop();
-          if (opened !== undefined)
-            matching[opened] = i;
-        }
-      }
-    }
-    const close = matching[from] ?? -1;
-    if (close === -1)
-      return -1;
-    const closes = text.charAt(close - 1) === ")" && close - 1 > from + 1;
-    const plain = (semicolons[close] ?? 0) === (semicolons[from] ?? 0);
-    return closes && plain ? close + 1 : -1;
-  }
-  function readArithmetic(end) {
-    addInner(text.slice(at + 3, end - 2), true);
-    const piece = text.slice(at, end);
-    at = end;
-    return piece;
-  }
-  function readSingle(ansi) {
-    let end = at + 1;
-    while (end < text.length) {
-      const char = text.charAt(end);
-      if (ansi && char === "\\") {
-        end += 2;
-        continue;
-      }
-      if (oneOf(single, char)) {
-        if (!bash && oneOf(single, text.charAt(end + 1))) {
-          end += 2;
-          continue;
-        }
-        break;
-      }
-      end++;
-    }
-    if (end >= text.length)
-      open = true;
-    const piece = text.slice(at, end + 1);
-    at = Math.min(end + 1, text.length);
-    return piece;
-  }
-  function readBacktick() {
-    let end = at + 1;
-    while (end < text.length && text.charAt(end) !== "`") {
-      end += text.charAt(end) === "\\" ? 2 : 1;
-    }
-    if (end >= text.length) {
-      open = true;
-      const piece = text.slice(at);
-      at = text.length;
-      return piece;
-    }
-    addInner(text.slice(at + 1, end).replace(/\\([`\\$])/g, "$1"), false);
-    const piece = text.slice(at, end + 1);
-    at = end + 1;
-    return piece;
-  }
-  function readDouble(closes, substitutions = 0) {
-    const mark = segments.length;
-    let raw = "";
-    if (closes) {
-      raw = text.charAt(at);
-      at++;
-    }
-    while (at < text.length) {
-      const char = text.charAt(at);
-      const next = text.charAt(at + 1);
-      if (closes && oneOf(double, char)) {
-        if (!bash && oneOf(double, next)) {
-          raw += char + next;
-          at += 2;
-          continue;
-        }
-        at++;
-        return raw + char;
-      }
-      if (char === escaper && next !== "") {
-        raw += char + next;
-        at += 2;
-      } else if (bash && char === "$" && next === "$") {
-        raw += "$$";
-        at += 2;
-      } else if (char === "$" && (next === "(" || braceSubstitution()) && substitutions >= MAX_INNER) {
-        open = true;
-        raw += char;
-        at++;
-      } else if (char === "$" && next === "(") {
-        const end = bash ? arithmeticEnd(at + 1) : -1;
-        if (end === -1) {
-          at += 2;
-          enterGroup();
-          raw += `$(${read(")", substitutions + 1).raw}`;
-          leaveGroup();
-        } else {
-          raw += readArithmetic(end);
-        }
-      } else if (bash && char === "`") {
-        raw += readBacktick();
-      } else if (braceSubstitution()) {
-        raw += readBraceSubstitution(substitutions);
-      } else {
-        raw += char;
-        at++;
-      }
-    }
-    if (!closes)
-      return raw;
-    open = true;
-    segments.length = mark;
-    piped.length = mark;
-    expanded.length = mark;
-    groups.length = mark;
-    starts.length = mark;
-    return raw;
-  }
-  function hereDocOpener() {
-    let pos = at + 2;
-    const stripTabs = text.charAt(pos) === "-";
-    if (stripTabs)
-      pos++;
-    while (isBlank(text.charAt(pos)))
-      pos++;
-    let word = "";
-    let quoted = false;
-    while (pos < text.length) {
-      const char = text.charAt(pos);
-      if (/\s/.test(char) || "<>;&|()".includes(char))
-        break;
-      if (char === "'" || char === '"') {
-        const close = text.indexOf(char, pos + 1);
-        if (close === -1)
-          return null;
-        word += text.slice(pos + 1, close);
-        quoted = true;
-        pos = close + 1;
-      } else if (char === "\\") {
-        word += text.charAt(pos + 1);
-        quoted = true;
-        pos += 2;
-      } else {
-        word += char;
-        pos++;
-      }
-    }
-    return word === "" ? null : { end: pos, quoted, script: false, stripTabs, word };
-  }
-  const braceSubstitution = () => bash && opensBraceSubstitution(text, at);
-  function readBraceSubstitution(substitutions) {
-    const pipe = text.charAt(at + 2) === "|" ? "|" : "";
-    at += 2 + pipe.length;
-    const substitution = read("}", substitutions + 1);
-    if (!substitution.closed)
-      open = true;
-    return `\${${pipe}${substitution.raw}`;
-  }
-  function isGroupBrace(char, wordStart) {
-    if (char !== "{" && char !== "}")
-      return false;
-    if (!bash)
-      return true;
-    const after = text.charAt(at + 1);
-    return wordStart && (after === "" || /\s/.test(after) || char === "}" && /[;&|)]/.test(after));
-  }
-  function casePattern(current, char, next) {
-    const words = current.trim();
-    const command = words.replace(/^(?:(?:do|then|else|elif|if|while|until|!|time(?:\s+-p)?)\s+)+/, "");
-    const level = group;
-    let top = cases.at(-1);
-    if (top?.level === level && /^esac(?![\w-])/.test(command)) {
-      cases.pop();
-      top = cases.at(-1);
-    }
-    const starts = /^case\s[\s\S]*\sin(?:\s|$)/.test(command) && !/\sin\s+esac(?![\w-])/.test(command);
-    if (starts) {
-      top = { level, pattern: true };
-      cases.push(top);
-    }
-    if (top?.level !== level)
-      return false;
-    if (char === ";" && (next === ";" || next === "&"))
-      top.pattern = true;
-    if (!top.pattern)
-      return false;
-    if (char === ")") {
-      top.pattern = false;
-      return true;
-    }
-    return char === "(" && (words === "" || starts && /\sin$/.test(command));
-  }
-  function read(closer, substitutions = 0) {
-    const nested = closer !== null;
-    let raw = "";
-    let current = "";
-    let currentStart = at;
-    let depth = 0;
-    let braces = 0;
-    let wordStart = true;
-    let afterClose = false;
-    let stdinShell = null;
-    const take = (piece, blank = false) => {
-      current += piece;
-      raw += piece;
-      wordStart = blank;
-      afterClose = false;
-    };
-    while (at < text.length) {
-      const char = text.charAt(at);
-      const next = text.charAt(at + 1);
-      if (join && char === escaper) {
-        const continuation = CONTINUATION[dialect];
-        continuation.lastIndex = at;
-        if (continuation.test(text)) {
-          take(" ", true);
-          at = continuation.lastIndex;
-          continue;
-        }
-      }
-      if (!blind) {
-        if (char === escaper && next !== "" && next !== `
-` && next !== "\r") {
-          take(char + next);
-          at += 2;
-          continue;
-        }
-        if (oneOf(single, char)) {
-          take(readSingle(false));
-          continue;
-        }
-        if (oneOf(double, char)) {
-          take(readDouble(true, substitutions));
-          continue;
-        }
-        if (bash && char === "$" && next === "$") {
-          take("$$");
-          at += 2;
-          continue;
-        }
-        if (bash && char === "$" && next === "'") {
-          at++;
-          take(`$${readSingle(true)}`);
-          continue;
-        }
-        if (bash && char === "`") {
-          take(readBacktick());
-          continue;
-        }
-        const arithmetic = bash && char === "$" && next === "(" ? arithmeticEnd(at + 1) : -1;
-        if (arithmetic !== -1) {
-          take(readArithmetic(arithmetic));
-          continue;
-        }
-        const processSubstitution = bash && (char === "<" || char === ">") && wordStart;
-        const arraySubexpression = !bash && char === "@" && wordStart;
-        if (next === "(" && (char === "$" || processSubstitution || arraySubexpression) && substitutions < MAX_INNER) {
-          at += 2;
-          enterGroup();
-          const substitution = read(")", substitutions + 1);
-          leaveGroup();
-          if (!substitution.closed)
-            open = true;
-          take(`${char}(${substitution.raw}`);
-          continue;
-        }
-        if (braceSubstitution()) {
-          if (substitutions < MAX_INNER) {
-            take(readBraceSubstitution(substitutions));
-            continue;
-          }
-          open = true;
-        }
-        if (closer === "}" && char === "}" && depth === 0 && braces === 0 && current.trim() === "") {
-          push(current, afterPipe ? segments[segments.length - 1] ?? null : null, false, group, currentStart);
-          afterPipe = false;
-          at++;
-          return { closed: true, raw: `${raw}}` };
-        }
-        if (char === "#" && wordStart && !afterClose) {
-          const end = text.indexOf(`
-`, at);
-          at = end === -1 ? text.length : end;
-          continue;
-        }
-        if (!bash && char === "<" && next !== "#")
-          unparsable = true;
-        if (!bash && char === "<" && next === "#" && wordStart) {
-          const end = text.indexOf("#>", at + 2);
-          if (end === -1)
-            open = true;
-          at = end === -1 ? text.length : end + 2;
-          take(" ", true);
-          continue;
-        }
-        if (!bash && wordStart && text.startsWith("--%", at) && /^\s?$/.test(text.charAt(at + 3))) {
-          let end = at;
-          while (end < text.length && text.charAt(end) !== `
-` && text.charAt(end) !== "|")
-            end++;
-          take(text.slice(at, end));
-          at = end;
-          continue;
-        }
-      }
-      if (bash && char === "<" && next === "<") {
-        if (text.charAt(at + 2) === "<") {
-          take("<<<");
-          at += 3;
-          continue;
-        }
-        const opener = hereDocOpener();
-        if (opener === null) {
-          take("<<");
-          at += 2;
-          continue;
-        }
-        stdinShell ??= readsStdinShell(current);
-        owed.push({ ...opener, script: stdinShell });
-        take(text.slice(at, opener.end));
-        at = opener.end;
-        continue;
-      }
-      if (!bash && char === "@" && (next === '"' || next === "'")) {
-        HERE_STRING.lastIndex = at;
-        const quoted = HERE_STRING.exec(text);
-        if (quoted !== null) {
-          if (next === '"' || blind)
-            addInner(quoted[2] ?? "", true);
-          take(`${next}${next}`);
-          at = HERE_STRING.lastIndex;
-          continue;
-        }
-      }
-      if (bash && !blind && char === "|" && current.endsWith(">") && !current.endsWith("\\>")) {
-        take(char);
-        at++;
-        continue;
-      }
-      if (!blind && char === "&" && (current.endsWith(">") && !current.endsWith(`${escaper}>`) || bash && next === ">")) {
-        take(char);
-        at++;
-        continue;
-      }
-      if (SEPARATORS.has(char) || isGroupBrace(char, wordStart) || blind && bash && char === "`" || blind && braceSubstitution()) {
-        const pattern = !blind && bash ? casePattern(current, char, next) : false;
-        push(current, afterPipe ? segments[segments.length - 1] ?? null : null, false, group, currentStart);
-        afterPipe = char === "|";
-        if (!pattern && closer === ")" && char === ")" && depth === 0) {
-          at++;
-          return { closed: true, raw: `${raw})` };
-        }
-        if (!pattern && closer === "}" && char === ")" && depth === 0) {
-          return { closed: false, raw };
-        }
-        if (!pattern && nested && char === "(")
-          depth++;
-        if (!pattern && nested && char === ")")
-          depth--;
-        if (closer === "}" && char === "{" && current.trim() === "")
-          braces++;
-        if (closer === "}" && char === "}" && braces > 0)
-          braces--;
-        if (!pattern && char === "(")
-          enterGroup(bash && ARRAY_ASSIGNMENT.test(current));
-        else if (!pattern && char === ")")
-          leaveGroup();
-        current = "";
-        stdinShell = null;
-        raw += char;
-        at++;
-        wordStart = true;
-        afterClose = char === ")";
-        if (char === `
-`)
-          skipBodies();
-        currentStart = at;
-        continue;
-      }
-      take(char, isBlank(char));
-      at++;
-    }
-    push(current, afterPipe ? segments[segments.length - 1] ?? null : null, false, group, currentStart);
-    return { closed: false, raw };
-  }
-  if (options.body === true)
-    readDouble(false);
-  else if (options.substitution === true)
-    readBraceSubstitution(0);
-  else
-    read(null);
-  return { end: at, expanded, groups, open, piped, segments, starts, unparsable };
-}
-function shellSteps(command, { blindWhenOpen = false, dialect = "bash", joinLines = false } = {}) {
-  const read = lex(command, { blind: false, dialect, join: joinLines });
-  if (read.unparsable)
-    return [];
-  const chosen = read.open && blindWhenOpen ? lex(command, { blind: true, dialect, join: joinLines }) : read;
-  return chosen.segments.map((text, index) => {
-    const start = chosen.starts[index];
-    return {
-      expanded: chosen.expanded[index] === true,
-      pipedFrom: chosen.piped[index] ?? null,
-      ...chosen.groups[index] ? { subshell: chosen.groups[index] } : {},
-      ...typeof start === "number" && !joinLines ? { start } : {},
-      text
-    };
-  });
-}
-var ANSI_ESCAPES = {
-  a: "\x07",
-  b: "\b",
-  e: "\x1B",
-  E: "\x1B",
-  f: "\f",
-  n: `
-`,
-  r: "\r",
-  t: "\t",
-  v: "\v"
-};
-function ansiText(body) {
-  return body.replace(/\\(x[0-9A-Fa-f]{1,2}|u[0-9A-Fa-f]{1,4}|U[0-9A-Fa-f]{1,8}|[0-7]{1,3}|c.|.)/gs, (_, code) => {
-    const kind = code.charAt(0);
-    if (kind === "x" || kind === "u" || kind === "U") {
-      return String.fromCodePoint(Number.parseInt(code.slice(1), 16));
-    }
-    if (/[0-7]/.test(kind))
-      return String.fromCharCode(Number.parseInt(code, 8) & 255);
-    if (kind === "c")
-      return String.fromCharCode(code.charCodeAt(1) & 31);
-    return ANSI_ESCAPES[code] ?? code;
-  });
-}
-var POWERSHELL_ESCAPES = {
-  "0": "\x00",
-  a: "\x07",
-  b: "\b",
-  e: "\x1B",
-  f: "\f",
-  n: `
-`,
-  r: "\r",
-  t: "\t",
-  v: "\v"
-};
-function wordsOf(segment, dialect = "bash") {
-  return wordsWithFill(segment, dialect).map((one) => one.text);
-}
-var EXPANDS = {
-  bash: /[A-Za-z_0-9{([@*#?$!-]/,
-  powershell: /[A-Za-z_0-9{(?$^:]/
-};
-function wordsWithFill(segment, dialect = "bash") {
-  const bash = dialect === "bash";
-  const escaper = ESCAPE[dialect];
-  const single = SINGLE[dialect];
-  const double = DOUBLE[dialect];
-  const expands = EXPANDS[dialect];
-  const words = [];
-  let word = "";
-  let inWord = false;
-  let quoted = false;
-  let filled = false;
-  const end = () => {
-    if (inWord)
-      words.push({ text: word, filled });
-    word = "";
-    inWord = false;
-    quoted = false;
-    filled = false;
-  };
-  const add = (piece) => {
-    word += piece;
-    inWord = true;
-  };
-  const startsExpansion = (after) => expands.test(after) || after === "" || /\s/.test(after) || after === escaper || oneOf(double, after);
-  const addExpandable = (char, after) => {
-    if (char === "$" && startsExpansion(after) || bash && char === "`")
-      filled = true;
-    add(char);
-  };
-  let closes = null;
-  const closeOf = (open) => {
-    closes ??= parenCloses(segment);
-    return closes[open] ?? -1;
-  };
-  let braceOpen = false;
-  let braceTried = { from: -1, close: -1 };
-  const braceCloseOf = (from) => {
-    if (!bash || braceOpen || !opensBraceSubstitution(segment, from))
-      return -1;
-    if (braceTried.from !== from) {
-      braceTried = { from, close: braceSubstitutionClose(segment, from) };
-      if (braceTried.close === -1)
-        braceOpen = true;
-    }
-    return braceTried.close;
-  };
-  const addSubstitution = (from, close) => {
-    add(segment.slice(from, close));
-    filled = true;
-    i = close;
-  };
-  let i = 0;
-  while (i < segment.length) {
-    const char = segment.charAt(i);
-    const next = segment.charAt(i + 1);
-    if (/\s/.test(char)) {
-      end();
-      i++;
-    } else if (char === escaper && next === `
-`) {
-      i += 2;
-    } else if (char === escaper) {
-      quoted = true;
-      add(next === "" ? char : bash ? next : POWERSHELL_ESCAPES[next] ?? next);
-      i += 2;
-    } else if (bash && (char === "$" || !inWord && (char === "<" || char === ">")) && next === "(" && closeOf(i + 1) !== -1) {
-      addSubstitution(i, closeOf(i + 1));
-    } else if (braceCloseOf(i) !== -1) {
-      addSubstitution(i, braceCloseOf(i));
-    } else if (!bash && !inWord && char === "@" && next === "(" && powershellParenClose(segment, i + 1) !== -1) {
-      const close = powershellParenClose(segment, i + 1);
-      add(segment.slice(i, close));
-      filled = true;
-      i = close;
-    } else if (bash && char === "&" && next === ">") {
-      end();
-      add(char);
-      i++;
-    } else if (char === "<" || char === ">") {
-      const bothStreams = bash && !quoted && char === ">" && word === "&";
-      if (!bothStreams && (quoted || !/^\d+$/.test(word)))
-        end();
-      while (oneOf("<>", segment.charAt(i)))
-        add(segment.charAt(i++));
-      if (oneOf("&|", segment.charAt(i)))
-        add(segment.charAt(i++));
-    } else if (bash && char === "$" && next === "$") {
-      filled = true;
-      add("$$");
-      i += 2;
-    } else if (bash && char === "$" && next === "'") {
-      let close = i + 2;
-      while (close < segment.length && segment.charAt(close) !== "'") {
-        close += segment.charAt(close) === "\\" ? 2 : 1;
-      }
-      add(ansiText(segment.slice(i + 2, Math.min(close, segment.length))));
-      quoted = true;
-      i = close + 1;
-    } else if (bash && char === "$" && next === '"') {
-      i++;
-    } else if (oneOf(single, char)) {
-      quoted = true;
-      inWord = true;
-      i++;
-      while (i < segment.length) {
-        const inside = segment.charAt(i);
-        if (oneOf(single, inside)) {
-          if (bash || !oneOf(single, segment.charAt(i + 1)))
-            break;
-          add(inside);
-          i += 2;
-          continue;
-        }
-        add(inside);
-        i++;
-      }
-      i++;
-    } else if (oneOf(double, char)) {
-      quoted = true;
-      inWord = true;
-      i++;
-      while (i < segment.length) {
-        const inside = segment.charAt(i);
-        const after = segment.charAt(i + 1);
-        if (oneOf(double, inside)) {
-          if (bash || !oneOf(double, after))
-            break;
-          add(inside);
-          i += 2;
-          continue;
-        }
-        if (bash && inside === "$" && after === "$") {
-          filled = true;
-          add("$$");
-          i += 2;
-          continue;
-        }
-        const substitution = bash && inside === "$" && after === "(" ? closeOf(i + 1) : braceCloseOf(i);
-        if (substitution !== -1) {
-          addSubstitution(i, substitution);
-          continue;
-        }
-        if (inside === escaper && after !== "") {
-          if (!bash)
-            add(POWERSHELL_ESCAPES[after] ?? after);
-          else if ('$`"\\'.includes(after))
-            add(after);
-          else if (after !== `
-`)
-            add(inside + after);
-          i += 2;
-          continue;
-        }
-        addExpandable(inside, after);
-        i++;
-      }
-      i++;
-    } else {
-      addExpandable(char, next);
-      i++;
-    }
-  }
-  end();
-  return words;
-}
-function parenCloses(text) {
-  const closes = new Int32Array(text.length).fill(-1);
-  const open = [];
-  const quoteEnd = (quote, from, escapes) => {
-    for (let at = from;at < text.length; at++) {
-      const char = text.charAt(at);
-      if (escapes && char === "\\")
-        at++;
-      else if (char === quote)
-        return at;
-    }
-    return -1;
-  };
-  for (let i = 0;i < text.length; i++) {
-    const char = text.charAt(i);
-    const next = text.charAt(i + 1);
-    if (char === "\\" || char === "$" && next === "$") {
-      i++;
-    } else if (char === "`") {
-      i = quoteEnd("`", i + 1, true);
-    } else if (open.at(-1) === -1) {
-      if (char === '"')
-        open.pop();
-      else if (char === "$" && next === "(")
-        open.push(++i);
-    } else if (char === "'") {
-      i = quoteEnd("'", i + 1, false);
-    } else if (char === "$" && next === "'") {
-      i = quoteEnd("'", i + 2, true);
-    } else if (char === '"') {
-      open.push(-1);
-    } else if (char === "(") {
-      open.push(i);
-    } else if (char === ")") {
-      const at = open.pop();
-      if (at !== undefined && at >= 0)
-        closes[at] = i + 1;
-    }
-    if (i === -1)
-      break;
-  }
-  return closes;
-}
-function powershellParenClose(text, open) {
-  const single = SINGLE.powershell;
-  const double = DOUBLE.powershell;
-  const quoteEnd = (quotes, from, escapes) => {
-    for (let at = from;at < text.length; at++) {
-      const char = text.charAt(at);
-      if (escapes && char === "`")
-        at++;
-      else if (oneOf(quotes, char)) {
-        if (!oneOf(quotes, text.charAt(at + 1)))
-          return at;
-        at++;
-      }
-    }
-    return -1;
-  };
-  let depth = 0;
-  for (let i = open;i < text.length; i++) {
-    const char = text.charAt(i);
-    if (char === "`")
-      i++;
-    else if (oneOf(single, char))
-      i = quoteEnd(single, i + 1, false);
-    else if (oneOf(double, char))
-      i = quoteEnd(double, i + 1, true);
-    else if (char === "(")
-      depth++;
-    else if (char === ")" && --depth === 0)
-      return i + 1;
-    if (i === -1)
-      return -1;
-  }
-  return -1;
-}
-var KEYWORDS = new Set(["!", "do", "done", "elif", "else", "fi", "if", "then", "until", "while"]);
-var ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*\+?=/;
-var CHANGE_DIR = new Set([
-  "cd",
-  "chdir",
-  "popd",
-  "pushd",
-  "set-location",
-  "sl"
-]);
-var REDIRECTION = /^\d*(<<<|<<|<>|<|>>|>\||>|&>>|&>)(?!\()(.*)$/s;
-var DURATION = (word) => /^\d+(?:\.\d+)?[smhd]?$/.test(word);
-var CPU_MASK = (word) => /^(?:0x)?[0-9a-f]+(?:[,-][0-9a-f]+)*$/i.test(word);
-var WRAPPERS = {
-  builtin: { long: [], short: "" },
-  busybox: { long: [], short: "" },
-  chrt: {
-    long: [
-      "--sched-runtime",
-      "--sched-period",
-      "--sched-deadline",
-      "--sched-priority",
-      "--reset-on-fork"
-    ],
-    short: "PT",
-    skip: (word) => /^-?\d+$/.test(word)
-  },
-  command: { inert: ["-v", "-V"], long: [], short: "" },
-  "cross-env": { long: [], short: "" },
-  doas: { long: [], short: "uC" },
-  env: {
-    long: ["--unset", "--chdir", "--split-string"],
-    short: "uCS",
-    split: { long: "--split-string", short: "S" }
-  },
-  exec: { long: [], short: "a" },
-  flock: {
-    long: ["--timeout", "--conflict-exit-code", "--command"],
-    short: "wEc",
-    skip: () => true,
-    runs: { long: "--command", short: "c" }
-  },
-  ionice: { long: ["--class", "--classdata", "--pid", "--pgid"], short: "cnpPu" },
-  nice: { long: ["--adjustment"], short: "n" },
-  nohup: { long: [], short: "" },
-  nsenter: {
-    long: ["--target", "--setuid", "--setgid", "--root", "--wd", "--wdns", "--env"],
-    short: "tSG"
-  },
-  script: {
-    long: ["--command", "--log-out", "--log-in", "--logging-format", "--timing", "--output-limit"],
-    short: "cEOI",
-    skip: () => true,
-    runs: { long: "--command", short: "c" }
-  },
-  setsid: { long: [], short: "" },
-  stdbuf: { long: ["--input", "--output", "--error"], short: "ioe" },
-  sudo: {
-    long: [
-      "--user",
-      "--group",
-      "--host",
-      "--prompt",
-      "--close-from",
-      "--chdir",
-      "--chroot",
-      "--command-timeout",
-      "--other-user"
-    ],
-    short: "ughpCDRTU"
-  },
-  taskset: { long: ["--cpu-list"], short: "c", skip: CPU_MASK },
-  time: { long: [], short: "" },
-  timeout: { long: ["--signal", "--kill-after"], short: "sk", skip: DURATION },
-  unbuffer: { long: [], short: "" },
-  xargs: {
-    long: [
-      "--arg-file",
-      "--delimiter",
-      "--eof",
-      "--max-args",
-      "--max-chars",
-      "--max-lines",
-      "--max-procs",
-      "--replace",
-      "--process-slot-var"
-    ],
-    short: "adEILnPs"
-  }
-};
-var SHELLS = new Set(["bash", "dash", "fish", "ksh", "mksh", "sh", "zsh"]);
-var CLAUDE_PACKAGE = /^@anthropic-ai\/claude-code(?:@[^/]*)?$/;
-var PACKAGE_RUNNERS = new Set(["bunx", "npx", "pnpx"]);
-function packageCommand(program, args) {
-  let rest;
-  if (PACKAGE_RUNNERS.has(program))
-    rest = args;
-  else if (program === "pnpm" && args[0] === "dlx")
-    rest = args.slice(1);
-  else
-    return null;
-  for (let index = 0;index < rest.length; index++) {
-    const word = rest[index] ?? "";
-    if (word === "--") {
-      const pkg = rest[index + 1];
-      return pkg !== undefined && CLAUDE_PACKAGE.test(pkg) ? { args: rest.slice(index + 2), program: "claude" } : null;
-    }
-    const name = word.split("=")[0] ?? word;
-    if (name === "-p" || name === "--package") {
-      const inline = word.includes("=") ? word.slice(word.indexOf("=") + 1) : undefined;
-      const pkg = inline ?? rest[index + 1];
-      if (pkg === undefined || !CLAUDE_PACKAGE.test(pkg))
-        return null;
-      const after = rest.slice(index + (inline === undefined ? 2 : 1));
-      const command = after[0] === "claude" ? after.slice(1) : after;
-      return { args: [...command], program: "claude" };
-    }
-    if (word.startsWith("-")) {
-      index += /^--(?:registry|prefix|cache|userconfig)$/.test(name) ? 1 : 0;
-      continue;
-    }
-    return CLAUDE_PACKAGE.test(word) ? { args: rest.slice(index + 1), program: "claude" } : null;
-  }
-  return null;
-}
-function shortFlags(arg, valued) {
-  let flags = "";
-  for (let i = 1;i < arg.length; i++) {
-    const letter = arg.charAt(i);
-    flags += letter;
-    if (valued.includes(letter)) {
-      const attached = arg.slice(i + 1);
-      return {
-        flags,
-        value: attached.startsWith("=") ? attached.slice(1) : attached,
-        wantsNext: i === arg.length - 1
-      };
-    }
-  }
-  return { flags, value: "", wantsNext: false };
-}
-function isShort(arg) {
-  return /^-[^-]/.test(arg);
-}
-function afterWrapper(words, from, spec) {
-  let index = from;
-  let skipped = false;
-  while (index < words.length) {
-    const word = words[index] ?? "";
-    if (word === "--")
-      return { index: index + 1 };
-    if (!isShort(word) && !word.startsWith("--")) {
-      if (!skipped && spec.skip?.(word) === true) {
-        skipped = true;
-        index++;
-        continue;
-      }
-      break;
-    }
-    const name = word.split("=")[0] ?? word;
-    if (spec.inert?.some((inert) => inert === name || inert === word) === true)
-      return;
-    if (word.startsWith("--")) {
-      const valued = spec.long.includes(name) && !word.includes("=");
-      if (spec.split !== undefined && name === spec.split.long) {
-        const value = valued ? words[index + 1] ?? "" : word.slice(name.length + 1);
-        const to = index + (valued ? 2 : 1);
-        return { index, split: { from: index, to, value, keep: null } };
-      }
-      if (spec.runs !== undefined && name === spec.runs.long) {
-        const value = valued ? words[index + 1] ?? "" : word.slice(name.length + 1);
-        return { index, runs: { from: index, to: index + (valued ? 2 : 1), value } };
-      }
-      index += valued ? 2 : 1;
-      continue;
-    }
-    const { flags, wantsNext } = shortFlags(word, spec.short);
-    if (spec.split !== undefined && flags.endsWith(spec.split.short)) {
-      const value = wantsNext ? words[index + 1] ?? "" : word.slice(flags.length + 1);
-      const before = flags.slice(0, -1);
-      const to = index + (wantsNext ? 2 : 1);
-      return {
-        index,
-        split: { from: index, to, value, keep: before === "" ? null : `-${before}` }
-      };
-    }
-    if (spec.runs !== undefined && flags.endsWith(spec.runs.short)) {
-      const value = wantsNext ? words[index + 1] ?? "" : word.slice(flags.length + 1);
-      return { index, runs: { from: index, to: index + (wantsNext ? 2 : 1), value } };
-    }
-    index += wantsNext ? 2 : 1;
-  }
-  return { index };
-}
-function invocationOf(words) {
-  let list = [...words];
-  let splits = 0;
-  let index = 0;
-  while (index < list.length) {
-    const word = list[index] ?? "";
-    if (ASSIGNMENT.test(word) || KEYWORDS.has(word)) {
-      index++;
-      continue;
-    }
-    const redirection = REDIRECTION.exec(word);
-    if (redirection !== null) {
-      index += (redirection[2] ?? "") === "" ? 2 : 1;
-      continue;
-    }
-    const spec = WRAPPERS[programName(word)];
-    if (spec === undefined)
-      break;
-    const after = afterWrapper(list, index + 1, spec);
-    if (after === undefined)
-      return;
-    if (after.split !== undefined && splits < MAX_NESTING) {
-      const { from, keep, to, value } = after.split;
-      const kept = keep === null ? [] : [keep];
-      list = [...list.slice(0, from), ...kept, ...wordsOf(value), ...list.slice(to)];
-      splits++;
-      continue;
-    }
-    if (after.runs !== undefined && splits < MAX_NESTING) {
-      const { from, to, value } = after.runs;
-      list = [...list.slice(0, from), ...wordsOf(value), ...list.slice(to)];
-      index = from;
-      splits++;
-      continue;
-    }
-    index = after.split === undefined ? after.index : after.split.to;
-  }
-  const first = list[index];
-  if (first === undefined)
-    return;
-  const program = programName(first);
-  const ran = packageCommand(program, list.slice(index + 1));
-  const started = program === START_PROCESS ? startProcess(list.slice(index + 1)) : null;
-  const command = started ?? ran;
-  return {
-    args: command?.args ?? list.slice(index + 1),
-    computed: isComputedWord(first),
-    prefix: [...list.slice(0, index), ...started?.prefix ?? []],
-    program: command?.program ?? program
-  };
-}
-function isComputedWord(word) {
-  if (word === "{}")
-    return true;
-  if (!/[$`]/.test(word))
-    return false;
-  return /[$`(){}[\]\s]/.test(programName(word));
-}
-var START_PROCESS_PARAMETERS = new Map([
-  ["argumentlist", true],
-  ["credential", true],
-  ["erroraction", true],
-  ["errorvariable", true],
-  ["filepath", true],
-  ["informationaction", true],
-  ["informationvariable", true],
-  ["loaduserprofile", false],
-  ["nonewwindow", false],
-  ["outbuffer", true],
-  ["outvariable", true],
-  ["passthru", false],
-  ["pipelinevariable", true],
-  ["redirectstandarderror", true],
-  ["redirectstandardinput", true],
-  ["redirectstandardoutput", true],
-  ["usenewenvironment", false],
-  ["verb", true],
-  ["wait", false],
-  ["warningaction", true],
-  ["warningvariable", true],
-  ["windowstyle", true],
-  ["workingdirectory", true]
-]);
-function startProcessParameter(word) {
-  const match = /^-([A-Za-z]\w*)(?::(.*))?$/.exec(word);
-  const given = match?.[1]?.toLowerCase() ?? "";
-  if (given === "")
-    return null;
-  const names = [...START_PROCESS_PARAMETERS.keys()].filter((name) => name.startsWith(given));
-  const [name] = names;
-  if (names.length !== 1 || name === undefined)
-    return null;
-  return { name, takesValue: START_PROCESS_PARAMETERS.get(name) === true, value: match?.[2] };
-}
-function continuesArray(args, index) {
-  return (args[index] ?? "").endsWith(",") || (args[index + 1] ?? "").startsWith(",");
-}
-function arrayAt(args, from, first) {
-  const words = [first];
-  let next = from + 1;
-  while (next < args.length && continuesArray([words.at(-1) ?? "", args[next] ?? ""], 0)) {
-    words.push(args[next] ?? "");
-    next++;
-  }
-  return { words, next };
-}
-function arrayElements(words) {
-  return words.flatMap((word) => {
-    const inner = /^@\(([\s\S]*)\)$/.exec(word)?.[1];
-    return inner === undefined ? [word] : wordsOf(inner, "powershell");
-  }).join(" ").split(",").flatMap((part) => wordsOf(part)).filter((one) => one !== "");
-}
-function startProcess(args) {
-  let file = null;
-  let list = null;
-  let fresh = null;
-  const positional = [];
-  for (let index = 0;index < args.length; index++) {
-    const arg = args[index] ?? "";
-    if (arg === "--") {
-      positional.push(...args.slice(index + 1).map((word) => [word]));
-      break;
-    }
-    const parameter = startProcessParameter(arg);
-    if (parameter === null) {
-      if (!arg.startsWith("-") || continuesArray(args, index)) {
-        const array = arrayAt(args, index, arg);
-        positional.push(array.words);
-        index = array.next - 1;
-      }
-      continue;
-    }
-    const { name, takesValue } = parameter;
-    let value;
-    if (takesValue) {
-      const inline = parameter.value;
-      const from = inline === undefined ? index + 1 : index;
-      if (from < args.length) {
-        const array = arrayAt(args, from, inline ?? args[from] ?? "");
-        value = array.words;
-        index = array.next - 1;
-      }
-    }
-    if (name === "filepath" && value !== undefined)
-      file = value[0] ?? null;
-    else if (name === "argumentlist" && value !== undefined)
-      list = arrayElements(value);
-    else if (name === "usenewenvironment")
-      fresh = arg;
-  }
-  file ??= positional[0]?.[0] ?? null;
-  list ??= arrayElements(positional.slice(1).flat());
-  if (file === null)
-    return null;
-  return {
-    args: list,
-    prefix: fresh === null ? [] : [START_PROCESS, fresh],
-    program: programName(file)
-  };
-}
-var START_PROCESS = "start-process";
-var WRITING_REDIRECTIONS = new Set([">", ">>", ">|", "&>", "&>>", "<>"]);
-function shellTakesStdin(args) {
-  let stdin = false;
-  let scriptFile = false;
-  for (let index = 0;index < args.length; index++) {
-    const arg = args[index] ?? "";
-    const redirection = REDIRECTION.exec(arg);
-    if (redirection !== null) {
-      if ((redirection[2] ?? "") === "")
-        index++;
-      if ((redirection[1] ?? "").startsWith("<<"))
-        stdin = true;
-      continue;
-    }
-    if (arg === "-") {
-      stdin = true;
-      continue;
-    }
-    if (arg.startsWith("--")) {
-      if (arg === "--init-file" || arg === "--rcfile")
-        index++;
-      continue;
-    }
-    if (isShort(arg) || arg.startsWith("+")) {
-      const letters = arg.replace(/^[-+]+/, "");
-      if (letters.includes("c"))
-        return false;
-      if (letters.includes("s"))
-        stdin = true;
-      if (letters === "o")
-        index++;
-      continue;
-    }
-    scriptFile = true;
-  }
-  return stdin || !scriptFile;
-}
-function readsStdinShell(segment) {
-  const invocation = invocationOf(wordsOf(segment));
-  return invocation !== undefined && SHELLS.has(invocation.program) && shellTakesStdin(invocation.args);
-}
-var FIND_EXEC = new Set(["-exec", "-execdir", "-ok", "-okdir"]);
-var FIND_VALUED = new Set([
-  "-amin",
-  "-anewer",
-  "-atime",
-  "-cmin",
-  "-cnewer",
-  "-context",
-  "-ctime",
-  "-fls",
-  "-fprint",
-  "-fprint0",
-  "-fprintf",
-  "-fstype",
-  "-gid",
-  "-group",
-  "-iname",
-  "-inum",
-  "-ipath",
-  "-iregex",
-  "-iwholename",
-  "-links",
-  "-lname",
-  "-maxdepth",
-  "-mindepth",
-  "-mmin",
-  "-mtime",
-  "-name",
-  "-newer",
-  "-path",
-  "-perm",
-  "-printf",
-  "-regex",
-  "-regextype",
-  "-samefile",
-  "-size",
-  "-type",
-  "-uid",
-  "-used",
-  "-user",
-  "-wholename",
-  "-xtype"
-]);
-var WATCH_VALUED = new Set(["--equexit", "--interval"]);
-var SU_VALUED = new Set([
-  "--command",
-  "--group",
-  "--session-command",
-  "--shell",
-  "--supp-group",
-  "--whitelist-environment"
-]);
-var PARALLEL_VALUED = new Set([
-  "--arg-file",
-  "--arg-file-sep",
-  "--arg-sep",
-  "--block",
-  "--colsep",
-  "--delay",
-  "--delimiter",
-  "--env",
-  "--eof",
-  "--halt",
-  "--header",
-  "--jobs",
-  "--joblog",
-  "--load",
-  "--max-args",
-  "--max-lines",
-  "--max-procs",
-  "--memfree",
-  "--nice",
-  "--profile",
-  "--recend",
-  "--recstart",
-  "--results",
-  "--retries",
-  "--rpl",
-  "--sshlogin",
-  "--sshloginfile",
-  "--tagstring",
-  "--timeout",
-  "--workdir",
-  "--basefile",
-  "--bf",
-  "--block-size",
-  "--bt",
-  "--ctagstring",
-  "--filter",
-  "--group-by",
-  "--id",
-  "--jl",
-  "--limit",
-  "--max-chars",
-  "--memsuspend",
-  "--res",
-  "--return",
-  "--ssh",
-  "--ssh-delay",
-  "--term-seq",
-  "--tf",
-  "--tmpdir",
-  "--tmpl",
-  "--trc",
-  "--wd"
-]);
-var PARALLEL_SWITCHES = new Set([
-  "--bar",
-  "--dry-run",
-  "--eta",
-  "--group",
-  "--keep-order",
-  "--line-buffer",
-  "--pipe",
-  "--progress",
-  "--quote",
-  "--shebang",
-  "--tag",
-  "--ungroup",
-  "--verbose",
-  "--will-cite",
-  "--xargs"
-]);
-var PARALLEL_SOURCES = new Set([":::", "::::", ":::+", "::::+"]);
-var PARALLEL_LONG = [...PARALLEL_VALUED, ...PARALLEL_SWITCHES];
-
-// src/tasks/deploy/format.ts
-var DEPLOY_ENVS = ["staging", "prod"];
-var DEPLOY_ENVS_RISK_FIRST = [...DEPLOY_ENVS].reverse();
-var DEPLOY_STEPS = ["before", "after"];
-var DEPLOY_TYPES = ["blocking", "non-blocking"];
-var DEPLOY_FLAGS = [
-  "needs-yes",
-  "twice-safe",
-  "spends-money",
-  "real-people",
-  "destructive"
-];
-var DEPLOY_TASK_ID = /^(prod|staging)-\d{8}-\d{6}(-\d+)?$/;
-var instant = string2().regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/, "Expected a UTC date-time ending in Z").refine((value) => {
-  const parsed = new Date(value);
-  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 19) === value.slice(0, 19);
-}, "Expected a calendar date-time that exists");
-var deployTaskSchema = object({
-  id: string2().regex(DEPLOY_TASK_ID),
-  title: string2().min(1).max(200),
-  env: _enum(DEPLOY_ENVS),
-  status: _enum(["open", "done", "dropped"]),
-  deploy: _enum(DEPLOY_STEPS),
-  type: _enum(DEPLOY_TYPES),
-  twin: string2().regex(DEPLOY_TASK_ID).optional(),
-  flags: array(_enum(DEPLOY_FLAGS)).optional(),
-  created: instant,
-  closed: instant.optional(),
-  from: string2().optional(),
-  refs: array(string2()).optional(),
-  evidence: string2().optional()
-}).passthrough();
-
-// src/workflow/repo-path.ts
-function normalizeRepoPath(raw) {
-  const text = raw.trim().replaceAll("\\", "/");
-  if (/\p{Cc}/u.test(text))
-    return { ok: false, problem: "control" };
-  if (/[*?]/.test(text))
-    return { ok: false, problem: "pattern" };
-  const kept = text.split("/").filter((segment) => segment !== "" && segment !== ".");
-  if (kept.length === 0)
-    return { ok: false, problem: "root" };
-  if (text.startsWith("/") || /^[A-Za-z]:/.test(text))
-    return { ok: false, problem: "absolute" };
-  if (kept.includes(".."))
-    return { ok: false, problem: "up" };
-  const folder = text.endsWith("/") || text.endsWith("/.");
-  return { ok: true, path: `${kept.join("/")}${folder ? "/" : ""}` };
-}
-
-// src/workflow/schema.ts
-var PERCENT = { kind: "whole", max: 100, min: 1 };
-var AT_LEAST_ZERO = { kind: "whole", min: 0 };
-var PHASE_COUNT = { kind: "whole", max: 50, min: 1 };
-function numberSchema(rule) {
-  const whole = number2().int().min(rule.min);
-  return rule.max === undefined ? whole : whole.max(rule.max);
-}
-var NUMBER_RULES = {
-  "alerts.usagePercent": PERCENT,
-  "fixesAfterReview.lines": AT_LEAST_ZERO,
-  "fixesAfterReview.files": AT_LEAST_ZERO,
-  "fixesAfterReview.percent": AT_LEAST_ZERO,
-  "plans.maxPhases": PHASE_COUNT
-};
-function numberField(key) {
-  return numberSchema(NUMBER_RULES[key]).optional();
-}
-var LABEL_RULE = "a label name of 1-50 characters on one line, with no comma, not starting with -";
-function isLabelName(name) {
-  return name.length >= 1 && name.length <= 50 && !name.startsWith("-") && !/[\p{Cc}\p{Cf},]/u.test(name) && name.trim() === name;
-}
-var labelSchema = string2().refine(isLabelName, LABEL_RULE);
-function labelsClash(labels) {
-  const same = (a, b) => a.toLowerCase() === b.toLowerCase();
-  if (same(labels.foundLabel, labels.readyLabel)) {
-    return `issues.foundLabel and issues.readyLabel are both ${labels.foundLabel}: the ready label is only a person's to add, so the kit's found label must be another word`;
-  }
-  if (same(labels.fixedLabel, labels.readyLabel)) {
-    return `issues.fixedLabel and issues.readyLabel are both ${labels.fixedLabel}: the ready label is only a person's to add, so the kit's fixed label must be another word`;
-  }
-  if (same(labels.foundLabel, labels.fixedLabel)) {
-    return `issues.foundLabel and issues.fixedLabel are both ${labels.foundLabel}: an issue could not be told found from fixed`;
-  }
-  return null;
-}
-var RUN_MODES = ["ask", "solo", "lead-children", "coordinator"];
-function normalizeMergeFile(raw) {
-  const parsed = normalizeRepoPath(raw);
-  if (parsed.ok)
-    return parsed;
-  const shown = JSON.stringify(raw);
-  const why = {
-    control: `${shown} holds a control character`,
-    pattern: `${shown} holds a pattern character (* or ?): name the path itself, and a whole folder with a trailing / (like plugin/dist/)`,
-    root: `${shown} is the root: name the files or folders under it`,
-    absolute: `${shown} is absolute: write it relative to the repository root`,
-    up: `${shown} leaves the repository: no .. segments`
-  };
-  return { ok: false, why: why[parsed.problem] };
-}
-var mergeFilesSchema = array(string2()).transform((paths, context) => {
-  const normalised = [];
-  for (const [index, raw] of paths.entries()) {
-    const parsed = normalizeMergeFile(raw);
-    if (!parsed.ok) {
-      context.issues.push({ code: "custom", input: raw, message: parsed.why, path: [index] });
-      return NEVER;
-    }
-    if (!normalised.includes(parsed.path))
-      normalised.push(parsed.path);
-  }
-  return normalised;
-});
-var WORKFLOW_KEY_ALIASES = {
-  autoCommit: "allowCommit",
-  autoPush: "allowPush",
-  autoMerge: "allowMerge"
-};
-function oldNamesIn(raw) {
-  return Object.keys(WORKFLOW_KEY_ALIASES).filter((old) => Object.hasOwn(raw, old)).map((old) => ({
-    old,
-    current: WORKFLOW_KEY_ALIASES[old],
-    both: Object.hasOwn(raw, WORKFLOW_KEY_ALIASES[old])
-  }));
-}
-function withCurrentNames(raw) {
-  if (typeof raw !== "object" || raw === null || Array.isArray(raw))
-    return raw;
-  const moved = { ...raw };
-  for (const old of Object.keys(WORKFLOW_KEY_ALIASES)) {
-    if (!Object.hasOwn(moved, old))
-      continue;
-    const current = WORKFLOW_KEY_ALIASES[old];
-    if (!Object.hasOwn(moved, current))
-      moved[current] = moved[old];
-    delete moved[old];
-  }
-  return moved;
-}
-function readWithCurrentNames(raw, context) {
-  const moved = withCurrentNames(raw);
-  if (typeof raw !== "object" || raw === null || Array.isArray(raw))
-    return moved;
-  const current = moved;
-  for (const old of oldNamesIn(raw)) {
-    if (old.both)
-      continue;
-    const checked = workflowObjectSchema.shape[old.current].safeParse(current[old.current]);
-    if (checked.success)
-      continue;
-    const reason = checked.error.issues.map((issue) => issue.message).join(", ");
-    context.issues.push({
-      code: "custom",
-      input: current[old.current],
-      message: `${reason} (${old.old} is the old name of ${old.current})`,
-      path: [old.old]
-    });
-    delete current[old.current];
-  }
-  return current;
-}
-var workflowObjectSchema = strictObject({
-  allowCommit: boolean2().optional(),
-  allowPush: boolean2().optional(),
-  openPr: _enum(["off", "draft", "ready"]).optional(),
-  allowMerge: boolean2().optional(),
-  mergeMethod: _enum(["merge", "squash", "rebase"]).optional(),
-  deleteBranch: boolean2().optional(),
-  reviewBeforePush: boolean2().optional(),
-  reviewAgents: array(string2().min(1)).min(1).refine((agents) => new Set(agents).size === agents.length, "an agent is listed twice").optional(),
-  fixesAfterReview: strictObject({
-    lines: numberField("fixesAfterReview.lines"),
-    files: numberField("fixesAfterReview.files"),
-    percent: numberField("fixesAfterReview.percent")
-  }).optional(),
-  clearWorktreeAfterMerge: boolean2().optional(),
-  plans: strictObject({
-    maxPhases: numberField("plans.maxPhases"),
-    mergeFiles: mergeFilesSchema.optional()
-  }).optional(),
-  issues: strictObject({
-    enabled: boolean2().optional(),
-    allowPublic: boolean2().optional(),
-    watch: unknown().optional(),
-    watchMinutes: unknown().optional(),
-    foundLabel: labelSchema.optional(),
-    fixedLabel: labelSchema.optional(),
-    readyLabel: labelSchema.optional()
-  }).superRefine((issues, context) => {
-    const clash = labelsClash({
-      fixedLabel: issues.fixedLabel ?? workflowDefaults.issues.fixedLabel,
-      foundLabel: issues.foundLabel ?? workflowDefaults.issues.foundLabel,
-      readyLabel: issues.readyLabel ?? workflowDefaults.issues.readyLabel
-    });
-    if (clash !== null)
-      context.addIssue({ code: "custom", message: clash });
-  }).optional(),
-  alerts: strictObject({
-    events: unknown().optional(),
-    sound: unknown().optional(),
-    usagePercent: numberField("alerts.usagePercent")
-  }).transform(({ events: _events, sound: _sound, ...usage }) => usage).optional(),
-  crew: unknown().optional()
-});
-var workflowSchema = preprocess(readWithCurrentNames, workflowObjectSchema);
-var personalWorkflowSchema = preprocess(readWithCurrentNames, workflowObjectSchema.extend({
-  plans: strictObject({
-    maxPhases: numberField("plans.maxPhases"),
-    runMode: _enum(RUN_MODES).optional()
-  }).optional(),
-  switches: strictObject({ jobRoute: boolean2().optional(), leadHint: boolean2().optional() }).optional()
-}));
-var workflowDefaults = {
-  allowCommit: false,
-  allowPush: false,
-  openPr: "off",
-  allowMerge: false,
-  mergeMethod: "merge",
-  deleteBranch: false,
-  reviewBeforePush: true,
-  reviewAgents: ["cc-smart-dev-kit:senior-engineer"],
-  fixesAfterReview: {
-    lines: 200,
-    files: 10,
-    percent: 20
-  },
-  clearWorktreeAfterMerge: true,
-  issues: {
-    enabled: true,
-    allowPublic: false,
-    foundLabel: "kit:found",
-    fixedLabel: "fixed-unreleased",
-    readyLabel: "kit:ready"
-  },
-  alerts: {
-    usagePercent: 85
-  },
-  plans: {
-    maxPhases: 10,
-    mergeFiles: [],
-    runMode: "ask"
-  }
-};
-var SWITCH_NAMES = [
-  "statusLine",
-  "sessionNames",
-  "jobRoute",
-  "updateHold",
-  "leadHint"
-];
-var POLICY_KEYS = [
-  "allowCommit",
-  "allowPush",
-  "openPr",
-  "allowMerge",
-  "mergeMethod",
-  "deleteBranch",
-  "reviewBeforePush",
-  "reviewAgents",
-  "fixesAfterReview.lines",
-  "fixesAfterReview.files",
-  "fixesAfterReview.percent",
-  "clearWorktreeAfterMerge",
-  "issues.enabled",
-  "issues.allowPublic",
-  "issues.foundLabel",
-  "issues.fixedLabel",
-  "issues.readyLabel",
-  "alerts.usagePercent",
-  "plans.maxPhases",
-  "plans.runMode",
-  "plans.mergeFiles"
-];
-var PERSONAL_ONLY_KEYS = ["plans.runMode"];
-var SWITCH_KEYS = SWITCH_NAMES.map((name) => `switches.${name}`);
-var WORKFLOW_KEYS = [...POLICY_KEYS, ...SWITCH_KEYS];
-var PERSONAL_ONLY_REASONS = {
-  "plans.runMode": "a committed value would spend every teammate's usage",
-  "switches.statusLine": "the status line is per person, per machine",
-  "switches.updateHold": "the update hold is per person, per machine",
-  "switches.leadHint": "the lead-model hint is per person, per machine"
-};
-
-// src/project/version-range.ts
-var NUMBER = "(?:x|X|\\*|0|[1-9]\\d*)";
-var IDENT = "[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*";
-var PARTIAL = `v?${NUMBER}(?:\\.${NUMBER}(?:\\.${NUMBER}(?:-${IDENT})?(?:\\+${IDENT})?)?)?`;
-var COMPARATOR = new RegExp(`^(?:[<>]=?|=|\\^|~)?${PARTIAL}$`);
-var HYPHEN = new RegExp(`^(${PARTIAL})\\s+-\\s+(${PARTIAL})$`);
-function isValidRange(range) {
-  const alternatives = range.split("||").map((part) => part.trim());
-  if (alternatives.some((part) => part === ""))
-    return false;
-  return alternatives.every((part) => {
-    if (HYPHEN.test(part))
-      return true;
-    const comparators = part.replace(/([<>]=?|=|\^|~)\s+/g, "$1").split(/\s+/);
-    return comparators.every((comparator) => COMPARATOR.test(comparator));
-  });
-}
-function satisfiesRange(version, range) {
-  if (!isValidRange(range))
-    throw new Error(`"${range}" is not a valid version range`);
-  return Bun.semver.satisfies(version, range);
-}
-var RANGE_START = /^\s*(>=|>|\^|~|=|<=|<)?\s*v?(\d+)(?:\.(\d+))?(?:\.(\d+))?/;
-function lowestAllowed(range) {
-  let lowest = null;
-  for (const part of range.split("||")) {
-    const match = RANGE_START.exec(part);
-    if (match === null)
-      return null;
-    const version = match[1]?.startsWith("<") ? "0.0.0" : `${match[2]}.${match[3] ?? "0"}.${match[4] ?? "0"}`;
-    if (lowest === null || Bun.semver.order(version, lowest) < 0)
-      lowest = version;
-  }
-  return lowest;
-}
-var NO_TOP = "999999.0.0";
-var WRITTEN_VERSION = new RegExp(`v?(${NUMBER})(?:\\.(${NUMBER})(?:\\.(${NUMBER})(?:-(${IDENT}))?(?:\\+${IDENT})?)?)?`, "g");
-function partNumber(part) {
-  return part === undefined || /^[xX*]$/.test(part) ? 0 : Number(part);
-}
-function allowsNewer(version, range) {
-  if (!isValidRange(range))
-    throw new Error(`"${range}" is not a valid version range`);
-  const candidates = [NO_TOP];
-  for (const match of range.matchAll(WRITTEN_VERSION)) {
-    const major = partNumber(match[1]);
-    const minor = partNumber(match[2]);
-    const patch = partNumber(match[3]);
-    const pre = match[4] === undefined ? "" : `-${match[4]}`;
-    candidates.push(`${major}.${minor}.${patch}${pre}`, `${major}.${minor}.${patch + 1}`, `${major}.${minor + 1}.0`, `${major + 1}.0.0`);
-  }
-  return candidates.some((candidate) => Bun.semver.order(candidate, version) > 0 && Bun.semver.satisfies(candidate, range));
-}
-
-// src/project/config.ts
-var PLUGIN_HOOK_NAMES = [
-  "fable-session",
-  "tier-view",
-  "after-merge",
-  "review-record",
-  "subagent-background",
-  "builder-finish",
-  "verify-gate",
-  "keep-going",
-  "agent-usage",
-  "worktree-leftovers",
-  "session-name",
-  "task-start"
-];
-var RETIRED_HOOK_NAMES = [
-  "serena-root",
-  "crew-role",
-  "lead-notes",
-  "message-guard",
-  "git-guard",
-  "merge-guard",
-  "deploy-guard",
-  "main-folder-guard",
-  "agent-guard",
-  "session-escape-guard"
-];
-var UNSWITCHABLE_HOOK_NAMES = ["job-route"];
-var RETIRED_WORKTREE_FIELDS = ["prefix", "setup", "engine"];
-var deployCommandEntry = union([string2(), matchRuleSchema], { error: "is not a command or a match rule" }).superRefine((entry, ctx) => {
-  if (typeof entry !== "string")
-    return;
-  const steps = shellSteps(entry);
-  if (steps.every((step) => step.text.trim() === ""))
-    ctx.addIssue({
-      code: "custom",
-      message: `${JSON.stringify(entry)} holds no command: write one command, such as \`vercel --prod\``
-    });
-  else if (steps.length > 1)
-    ctx.addIssue({
-      code: "custom",
-      message: `${JSON.stringify(entry)} holds more than one command or a shell construct (;, &&, ||, |, &, a new line, $(\u2026), a here-doc or a group): write one plain command, such as \`vercel --prod\`; extra words in a run still match`
-    });
-});
-var deployCommandList = array(deployCommandEntry).min(1, "is an empty list: list at least one command, or remove the key");
-var inCheckout = string2().min(1).refine((path) => !posix.isAbsolute(path) && !win32.isAbsolute(path) && !path.split(/[\\/]/).includes(".."), "must be relative to the checkout root, without ..").refine((path) => !path.includes("\\"), "use / as the separator").refine((path) => !path.split("/").includes("."), "must not contain . segments");
-var IGNORED_TASK_SCHEMAS = {
-  releaseBranch: string2().trim().min(1).optional(),
-  legacyFolders: array(inCheckout).optional()
-};
-var IGNORED_TASK_FIELDS = Object.keys(IGNORED_TASK_SCHEMAS);
-var ccSmartDevKitConfigSchema = strictObject({
-  requires: string2().refine(isValidRange, 'not a valid version range (like ">=1.2" or "^1.2")').optional(),
-  worktrees: strictObject({
-    base: string2().min(1),
-    guardMainFolder: boolean2().optional(),
-    autoClean: boolean2().optional(),
-    rebuildable: array(inCheckout.refine((path) => /[^*?/[\]{},!.]/.test(path), "names nothing; list the folder or file name")).optional(),
-    bases: record(string2(), string2().min(1)).refine((bases) => Object.keys(bases).every((prefix) => prefix.endsWith("/")), {
-      error: (issue) => {
-        const given = issue.input;
-        const wrong = typeof given === "object" && given !== null ? Object.keys(given).find((prefix) => !prefix.endsWith("/")) : undefined;
-        return `"${wrong ?? "a prefix"}" must end with "/" (a branch-name prefix, like "release/")`;
-      }
-    }).optional()
-  }).optional(),
-  protectedBranches: array(string2().min(1)).min(1).optional(),
-  checks: strictObject({ fast: string2().trim().min(1) }).optional(),
-  sessionNames: boolean2().optional(),
-  instructions: boolean2().optional(),
-  autoMode: array(string2().min(1)).optional(),
-  jobs: strictObject({ kinds: kindsSchema.optional(), route: boolean2().optional() }).optional(),
-  tasks: strictObject({
-    dir: inCheckout.optional(),
-    staleDays: number2().int().min(1).optional(),
-    envs: array(_enum(DEPLOY_ENVS)).min(1).refine((envs) => new Set(envs).size === envs.length, "Each environment once").optional(),
-    deployCommands: strictObject({ prod: deployCommandList.optional(), staging: deployCommandList.optional() }).refine((commands) => Object.keys(commands).length > 0, "is empty: list the commands for an environment, or remove the key").optional(),
-    ...IGNORED_TASK_SCHEMAS
-  }).superRefine((tasks, ctx) => {
-    if (tasks.envs?.length === 0)
-      return;
-    const envs = tasks.envs ?? DEPLOY_ENVS;
-    for (const env of Object.keys(tasks.deployCommands ?? {}))
-      if (!envs.includes(env))
-        ctx.addIssue({
-          code: "custom",
-          path: ["deployCommands", env],
-          message: `is not one of tasks.envs (${envs.join(", ")}): remove it, or add ${env} to tasks.envs`
-        });
-  }).optional(),
-  workflow: workflowSchema.optional(),
-  ownHooks: array(_enum([...PLUGIN_HOOK_NAMES, ...RETIRED_HOOK_NAMES, ...UNSWITCHABLE_HOOK_NAMES])).optional()
-});
-class CcSmartDevKitConfigError extends Error {
-  name = "CcSmartDevKitConfigError";
-}
-
-class CcSmartDevKitVersionError extends CcSmartDevKitConfigError {
-  name = "CcSmartDevKitVersionError";
-}
-
-class CcSmartDevKitRetiredFieldError extends CcSmartDevKitConfigError {
-  name = "CcSmartDevKitRetiredFieldError";
-}
-function describeIssue(issue) {
-  const field = issue.path.length > 0 ? issue.path.join(".") : "(top level)";
-  if (issue.code === "unrecognized_keys") {
-    const keys = issue.keys.map((key) => field === "(top level)" ? key : `${field}.${key}`);
-    return `${keys.join(", ")}: unknown field (a newer cc-smart-dev-kit may be needed)`;
-  }
-  return `${field}: ${issue.message}`;
-}
-function checkRequires(file, raw, pluginVersion) {
-  if (typeof raw !== "object" || raw === null || Array.isArray(raw))
-    return;
-  const requires = raw.requires;
-  if (typeof requires !== "string" || !isValidRange(requires))
-    return;
-  if (satisfiesRange(pluginVersion, requires))
-    return;
-  if (!allowsNewer(pluginVersion, requires)) {
-    const lowest = lowestAllowed(requires);
-    const [major, minor] = lowest?.split(".") ?? [];
-    const example = lowest === null || lowest === "0.0.0" ? "" : ` (for example >=${major}.${minor})`;
-    throw new CcSmartDevKitVersionError(`${file}: this project's requires ${requires} does not let in cc-smart-dev-kit ` + `${pluginVersion}, which is newer; widen requires in that file${example}`);
-  }
-  throw new CcSmartDevKitVersionError(`${file}: this project needs cc-smart-dev-kit ${requires}; you have ${pluginVersion}; ` + `run ${PLUGIN_UPDATE_COMMAND}`);
-}
-function retiredFieldMessage(field) {
-  return `worktrees.${field} is no longer supported: remove it \u2014 Claude Code's own worktrees need none. \`${COMMAND} project init\` removes it (README \xA7 Worktrees).`;
-}
-function retiredFieldsOf(raw) {
-  if (typeof raw !== "object" || raw === null || Array.isArray(raw))
-    return [];
-  const worktrees = raw.worktrees;
-  if (typeof worktrees !== "object" || worktrees === null || Array.isArray(worktrees))
-    return [];
-  return RETIRED_WORKTREE_FIELDS.filter((field) => Object.hasOwn(worktrees, field));
-}
-function checkRetiredFields(where, raw) {
-  const found = retiredFieldsOf(raw);
-  if (found.length === 0)
-    return;
-  throw new CcSmartDevKitRetiredFieldError(`Invalid ${where}: ${found.map(retiredFieldMessage).join(" ")}`);
-}
-function checkPersonalOnlyFields(where, raw) {
-  const workflow = isObject2(raw) ? raw.workflow : undefined;
-  for (const key of PERSONAL_ONLY_KEYS) {
-    const [group, field] = key.split(".");
-    const settings = isObject2(workflow) ? workflow[group ?? ""] : undefined;
-    if (!isObject2(settings) || !Object.hasOwn(settings, field ?? ""))
-      continue;
-    throw new CcSmartDevKitConfigError(`Invalid ${where}: workflow.${key} is your own setting, not the project's, because ${PERSONAL_ONLY_REASONS[key]}: remove it from this file and run \`${COMMAND} workflow set ${key} <value>\` in your own terminal.`);
-  }
-}
-function readOwnHooks(file) {
-  if (!existsSync2(file))
-    return null;
-  try {
-    const raw = readUserJson(file);
-    if (typeof raw !== "object" || raw === null || Array.isArray(raw))
-      return [];
-    const listed = raw.ownHooks;
-    return Array.isArray(listed) ? listed.filter((name) => typeof name === "string") : [];
-  } catch {
-    return [];
-  }
-}
-function loadCcSmartDevKitConfig(file, pluginVersion = VERSION) {
-  if (!existsSync2(file))
-    return null;
-  return parseCcSmartDevKitConfig(readFileSync3(file, "utf8"), file, pluginVersion);
-}
-function parseCcSmartDevKitConfig(text, where, pluginVersion = VERSION) {
-  let raw;
-  try {
-    raw = parseUserJson(text);
-  } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error);
-    throw new CcSmartDevKitConfigError(`Invalid ${where}: not valid JSON (${reason})`);
-  }
-  return checkCcSmartDevKitConfig(raw, where, pluginVersion);
-}
-function checkCcSmartDevKitConfig(raw, where, pluginVersion = VERSION) {
-  checkRequires(where, raw, pluginVersion);
-  checkRetiredFields(where, raw);
-  checkPersonalOnlyFields(where, raw);
-  const parsed = ccSmartDevKitConfigSchema.safeParse(raw);
-  if (!parsed.success) {
-    const issues = parsed.error.issues.map(describeIssue).join("; ");
-    throw new CcSmartDevKitConfigError(`Invalid ${where}: ${issues}`);
-  }
-  return parsed.data;
-}
-
-// src/project/resolve.ts
-import { existsSync as existsSync3, realpathSync as realpathSync2, statSync as statSync2 } from "fs";
-import { join as join4 } from "path";
-
-// src/project/git-env.ts
-var REPO_SELECTING_GIT_VARS = [
-  "GIT_DIR",
-  "GIT_WORK_TREE",
-  "GIT_COMMON_DIR",
-  "GIT_INDEX_FILE",
-  "GIT_OBJECT_DIRECTORY",
-  "GIT_ALTERNATE_OBJECT_DIRECTORIES",
-  "GIT_PREFIX",
-  "GIT_NAMESPACE"
-];
-function gitEnv(base) {
-  const env = {};
-  for (const [key, value] of Object.entries(base)) {
-    if (value !== undefined && !REPO_SELECTING_GIT_VARS.includes(key))
-      env[key] = value;
-  }
-  return env;
-}
-
-// src/project/resolve.ts
-var MIN_GIT_VERSION = "2.31.0";
-var RESOLVE_GIT_TIMEOUT_MS = 5000;
-var GIT_NOT_FOUND = "git was not found, so this project's own values cannot be read. Install git, then try again.";
-function gitNotFound(error) {
-  const why = error instanceof Error ? error.message : String(error);
-  return /not found in \$PATH|ENOENT/.test(why) ? new Error(GIT_NOT_FOUND) : error;
-}
-var GIT_TIMED_OUT = "git did not answer in time";
-var GIT_TIMED_OUT_FIX = "run `git status` in this folder; if that hangs too, fix git first, then run this again";
-
-class GitTimedOutError extends Error {
-  constructor() {
-    super(`${GIT_TIMED_OUT}: ${GIT_TIMED_OUT_FIX}`);
-    this.name = "GitTimedOutError";
-  }
-}
-var NO_TIME_LEFT = {
-  ok: false,
-  stdout: "",
-  stderr: "no time left in the hook's budget",
-  timedOut: true
-};
-function callLimit(timeoutMs, timeFor) {
-  return timeFor === undefined ? timeoutMs : timeFor(timeoutMs);
-}
-function gitIn(cwd, env, timeoutMs = RESOLVE_GIT_TIMEOUT_MS, timeFor) {
-  return (args) => {
-    const limit = callLimit(timeoutMs, timeFor);
-    if (limit <= 0)
-      return NO_TIME_LEFT;
-    try {
-      const result = Bun.spawnSync(["git", ...args], {
-        cwd,
-        env,
-        stdin: "ignore",
-        stdout: "pipe",
-        stderr: "pipe",
-        timeout: limit,
-        windowsHide: true
-      });
-      return {
-        ok: result.exitCode === 0,
-        stdout: result.stdout.toString(),
-        stderr: result.stderr.toString(),
-        timedOut: result.exitedDueToTimeout === true
-      };
-    } catch (error) {
-      throw gitNotFound(error);
-    }
-  };
-}
-function requireGitVersionText(out) {
-  const match = /git version (\d+)\.(\d+)(?:\.(\d+))?/.exec(out);
-  if (!match)
-    return;
-  const version = `${match[1]}.${match[2]}.${match[3] ?? "0"}`;
-  if (Bun.semver.order(version, MIN_GIT_VERSION) < 0) {
-    throw new Error(`git 2.31 or newer is needed; you have git ${version}. Update git.`);
-  }
-}
-function requireGitVersion(git) {
-  requireGitVersionText(git(["--version"]).stdout);
-}
-function mainCheckoutFrom(list, cwd) {
-  if (list.timedOut === true)
-    throw new GitTimedOutError;
-  if (!list.ok)
-    throw new Error(`git worktree list failed in ${cwd}: ${list.stderr.trim()}`);
-  const [firstEntry = ""] = list.stdout.split(`
-
-`);
-  const lines = firstEntry.split(`
-`);
-  if (lines.includes("bare"))
-    return null;
-  const pathLine = lines.find((line) => line.startsWith("worktree "));
-  if (!pathLine)
-    return null;
-  const path = pathLine.slice("worktree ".length);
-  if (!existsSync3(path) || lines.some((line) => line.startsWith("prunable"))) {
-    throw new Error(`The main checkout of the repo at ${cwd} is missing: ${path} was moved or deleted. ` + 'If you moved it, run "git worktree repair" in its new folder.');
-  }
-  return realpathSync2(path);
-}
-function findMainCheckout(git, cwd) {
-  return mainCheckoutFrom(git(["worktree", "list", "--porcelain"]), cwd);
-}
-function revParseParts(revParse) {
-  const [top, gitDir, common] = revParse.stdout.trim().split(`
-`);
-  if (!revParse.ok || top?.startsWith("--"))
-    return "not-understood";
-  if (!top || !gitDir || !common)
-    return "outside";
-  return { common, gitDir, top };
-}
-function checkoutRoots(parts) {
-  const root = realpathSync2(parts.top);
-  const commonDir = realpathSync2(parts.common);
-  return { commonDir, isWorktree: realpathSync2(parts.gitDir) !== commonDir, root };
-}
-function locateCheckout(cwd, options = {}) {
-  if (!existsSync3(cwd) || !statSync2(cwd).isDirectory()) {
-    throw new Error(`resolveProject: ${cwd} is not a folder`);
-  }
-  const git = gitIn(cwd, gitEnv(options.env ?? process.env), undefined, options.timeFor);
-  const revParse = git([
-    "rev-parse",
-    "--path-format=absolute",
-    "--show-toplevel",
-    "--absolute-git-dir",
-    "--git-common-dir"
-  ]);
-  if (revParse.timedOut === true)
-    throw new GitTimedOutError;
-  const parts = revParseParts(revParse);
-  if (parts === "not-understood") {
-    requireGitVersion(git);
-    if (revParse.ok) {
-      throw new Error("git did not understand rev-parse --path-format: git 2.31 or newer is needed.");
-    }
-    return null;
-  }
-  if (parts === "outside")
-    return null;
-  const roots = checkoutRoots(parts);
-  return {
-    ...roots,
-    mainCheckout: roots.isWorktree ? findMainCheckout(git, cwd) : roots.root
-  };
-}
-function ownHooksOf(checkout) {
-  const { root, mainCheckout } = checkout;
-  const own = readOwnHooks(join4(root, ".claude", "cc-smart-dev-kit.json"));
-  if (own !== null)
-    return own;
-  if (mainCheckout === null || mainCheckout === root)
-    return [];
-  return readOwnHooks(join4(mainCheckout, ".claude", "cc-smart-dev-kit.json")) ?? [];
-}
-function loadProjectConfig(checkout, pluginVersion) {
-  const { root, mainCheckout } = checkout;
-  const own = join4(root, ".claude", "cc-smart-dev-kit.json");
-  let config = loadCcSmartDevKitConfig(own, pluginVersion);
-  let configFile = config === null ? null : own;
-  if (config === null && mainCheckout !== null && mainCheckout !== root) {
-    const main = join4(mainCheckout, ".claude", "cc-smart-dev-kit.json");
-    config = loadCcSmartDevKitConfig(main, pluginVersion);
-    configFile = config === null ? null : main;
-  }
-  return { ...checkout, config, configFile };
-}
-var CONFIG_PATH = ".claude/cc-smart-dev-kit.json";
-
-// src/hooks/ask-log.ts
-import { join as join5 } from "path";
-
-// src/hooks/jsonl-log.ts
-import { appendFileSync, mkdirSync as mkdirSync2, readFileSync as readFileSync4, statSync as statSync3 } from "fs";
-import { dirname as dirname2 } from "path";
-
-// src/setup/lock.ts
-var FALLBACK_STALE_MS = 10 * 60 * 1000;
-
-// src/update/state.ts
-var CHECK_INTERVAL_MS = 60 * 60 * 1000;
-var LOG_MAX_BYTES = 256 * 1024;
-var UNREACHABLE_FAILS_AFTER_HOURS = 24;
-var UNREACHABLE_FAILS_AFTER_MS = UNREACHABLE_FAILS_AFTER_HOURS * 60 * 60 * 1000;
-
-// src/hooks/jsonl-log.ts
-function cutBack(file) {
-  let size;
-  try {
-    size = statSync3(file).size;
-  } catch {
-    return;
-  }
-  if (size <= LOG_MAX_BYTES)
-    return;
-  const text = readFileSync4(file, "utf8");
-  const keep = text.slice(text.length - LOG_MAX_BYTES / 2);
-  atomicWrite(file, keep.slice(keep.indexOf(`
-`) + 1), 384);
-}
-function appendJsonLine(file, value) {
-  mkdirSync2(dirname2(file), { recursive: true, mode: 448 });
-  cutBack(file);
-  appendFileSync(file, `${JSON.stringify(value)}
-`, { mode: 384 });
-}
-
-// src/hooks/ask-log.ts
-var ASK_LOG_FILE = "guard-asks.jsonl";
-var ASK_REASON_MAX = 200;
-function askLogFile(stateDir) {
-  return join5(stateDir, ASK_LOG_FILE);
-}
-function appendAsk(file, ask) {
-  appendJsonLine(file, ask);
-}
-
-// src/hooks/io.ts
-var SILENT = {};
-function parseHookInput(text) {
-  try {
-    const value = JSON.parse(text);
-    return typeof value === "object" && value !== null && !Array.isArray(value) ? value : null;
-  } catch {
-    return null;
-  }
-}
-function stringField(value) {
-  return typeof value === "string" && value !== "" ? value : null;
-}
-function askReason(result) {
-  if (result.stdout === undefined)
-    return null;
-  try {
-    const value = JSON.parse(result.stdout);
-    const output = value.hookSpecificOutput;
-    if (output?.permissionDecision !== "ask")
-      return null;
-    return typeof output.permissionDecisionReason === "string" ? output.permissionDecisionReason : "";
-  } catch {
-    return null;
-  }
-}
-function addContext(event, text) {
-  return {
-    stdout: JSON.stringify({
-      hookSpecificOutput: { hookEventName: event, additionalContext: text }
-    })
-  };
-}
-function systemMessage(text) {
-  return { stdout: JSON.stringify({ systemMessage: text }) };
-}
-function addContextAndMessage(event, text, message) {
-  return {
-    stdout: JSON.stringify({
-      systemMessage: message,
-      hookSpecificOutput: { hookEventName: event, additionalContext: text }
-    })
-  };
-}
-
-// src/hooks/run.ts
-var HOOK_LOG_ENV = "CC_SMART_DEV_KIT_HOOK_LOG";
-function errorMessage(error) {
-  return error instanceof Error ? error.message : String(error);
-}
-function crashResult(spec, why, input, event, context) {
-  const line = {
-    exitCode: spec.crashExitCode ?? 0,
-    stderr: `cc-smart-dev-kit ${spec.name}: ${why}`
-  };
-  if (spec.onCrash === undefined)
-    return line;
-  try {
-    return spec.onCrash(why, input, event, context);
-  } catch {
-    return line;
-  }
-}
-function recordAsk(spec, input, result, context) {
-  const reason = askReason(result);
-  if (reason === null)
-    return result;
-  try {
-    appendAsk(askLogFile(context.paths.stateDir), {
-      at: context.nowMs,
-      hook: spec.name,
-      session: stringField(input?.session_id) ?? "",
-      tool: stringField(input?.tool_name) ?? "",
-      reason: maskedLine(reason, [], ASK_REASON_MAX, { mark: "..." })
-    });
-  } catch (error) {
-    const note = `cc-smart-dev-kit ${spec.name}: the ask could not be recorded (${errorMessage(error)})`;
-    return { ...result, stderr: result.stderr === undefined ? note : `${result.stderr}
-${note}` };
-  }
-  return result;
-}
-async function answer(spec, input, context) {
-  const { env } = context;
-  let event = "";
-  try {
-    if (input === null) {
-      return crashResult(spec, "the hook input is not JSON", null, "", context);
-    }
-    const named = stringField(input.hook_event_name);
-    if (named === null || !spec.events.includes(named))
-      return SILENT;
-    event = named;
-    const cwd = stringField(input.cwd);
-    const outside = spec.outsideGit ?? (() => SILENT);
-    if (cwd === null)
-      return await outside(input, event, "the hook input has no cwd", context);
-    let checkout;
-    try {
-      checkout = locateCheckout(cwd, { env });
-    } catch (error) {
-      return await outside(input, event, errorMessage(error), context);
-    }
-    if (checkout === null)
-      return await outside(input, event, `${cwd} is not in a git checkout`, context);
-    if (spec.alwaysOn !== true && ownHooksOf(checkout).includes(spec.name))
-      return SILENT;
-    let project;
-    try {
-      project = loadProjectConfig(checkout);
-    } catch (error) {
-      if (error instanceof CcSmartDevKitConfigError) {
-        return await spec.onConfigProblem(error.message, input, event, checkout, context);
-      }
-      throw error;
-    }
-    return await spec.run({
-      input,
-      event,
-      cwd,
-      project,
-      env,
-      paths: context.paths,
-      nowMs: context.nowMs,
-      ...context.start !== undefined && { start: context.start }
-    });
-  } catch (error) {
-    return crashResult(spec, errorMessage(error), input, event, context);
-  }
-}
-async function handleHook(spec, text, env, nowMs = Date.now(), start) {
-  const context = {
-    env,
-    paths: cliPaths(env),
-    nowMs,
-    ...start !== undefined && { start }
-  };
-  const input = parseHookInput(text);
-  const result = await answer(spec, input, context);
-  return recordAsk(spec, input, result, context);
-}
-function logRun(spec, text, result, env, nowMs) {
-  const file = env[HOOK_LOG_ENV];
-  if (file === undefined || file === "")
-    return;
-  try {
-    const input = parseHookInput(text);
-    const facts = input === null ? {} : spec.logFacts?.(input, { env, paths: cliPaths(env), nowMs }) ?? {};
-    appendFileSync2(file, `${JSON.stringify({
-      hook: spec.name,
-      event: stringField(input?.hook_event_name),
-      cwd: stringField(input?.cwd),
-      exitCode: result.exitCode ?? 0,
-      stdout: (result.stdout ?? "").slice(0, 2000),
-      ...Object.keys(facts).length === 0 ? {} : { facts }
-    })}
-`);
-  } catch {}
-}
-async function runHookEntry(spec) {
-  const text = await Bun.stdin.text();
-  const nowMs = Date.now();
-  const result = await handleHook(spec, text, process.env, nowMs);
-  logRun(spec, text, result, process.env, nowMs);
-  if (result.stdout !== undefined)
-    await Bun.write(Bun.stdout, result.stdout);
-  if (result.stderr !== undefined)
-    await Bun.write(Bun.stderr, `${result.stderr}
-`);
-  process.exit(result.exitCode ?? 0);
-}
-
-// src/hooks/worktree-leftovers.ts
-import { closeSync as closeSync3, existsSync as existsSync6, fstatSync, openSync as openSync3, readSync as readSync2, statSync as statSync6 } from "fs";
-import { basename as basename5, join as join12, resolve as resolve5 } from "path";
-
-// src/worktrees/auto-start.ts
-import { basename as basename3, join as join8 } from "path";
-
-// src/hooks/attended.ts
-function isAttended(env) {
-  return env.CLAUDE_CODE_SESSION_ATTENDED !== "0";
-}
-
-// src/hooks/detached.ts
-import { spawn } from "child_process";
-var CMD = "cmd";
-var CMD_ARGUMENTS = ["/d", "/s", "/v:off", "/c"];
-function unableInCmd(argument) {
-  if (argument.includes('"'))
-    return 'a " would end the quoted argument';
-  if (argument.includes("%"))
-    return "a % is read as a variable name, inside double quotes too";
-  if (/[\r\n]/.test(argument))
-    return "a line break ends the command line";
-  if (argument.includes("\x00"))
-    return "a NUL ends the command line";
-  return null;
-}
-function cmdArgument(argument) {
-  const reason = unableInCmd(argument);
-  if (reason !== null)
-    return { ok: false, reason };
-  const trailing = /\\+$/.exec(argument)?.[0] ?? "";
-  const kept = argument.slice(0, argument.length - trailing.length);
-  return { ok: true, text: `"${kept}${trailing}${trailing}"` };
-}
-function windowsStart(argv) {
-  return cmdLine('start "" /b ', argv);
-}
-function cmdLine(head, argv) {
-  if (argv[0] === undefined) {
-    return { argument: "", ok: false, reason: "there is no program to start" };
-  }
-  const quoted = [];
-  for (const argument of argv) {
-    const one = cmdArgument(argument);
-    if (!one.ok)
-      return { argument, ok: false, reason: one.reason };
-    quoted.push(one.text);
-  }
-  return { argv: [CMD, ...CMD_ARGUMENTS, `"${head}${quoted.join(" ")}"`], ok: true };
-}
-function forMessage(argument) {
-  return argument.replace(/[\r\n]/g, " ").replaceAll("\x00", " ");
-}
-function startDetached(platform, argv, options) {
-  const [file, ...args] = argv;
-  if (file === undefined)
-    return;
-  const where = {
-    ...options.cwd !== undefined && { cwd: options.cwd },
-    ...options.env !== undefined && { env: options.env }
-  };
-  try {
-    if (platform === "win32") {
-      const start = windowsStart(argv);
-      if (!start.ok) {
-        options.onError(`cannot run "${forMessage(start.argument)}" through cmd.exe: ${start.reason}; nothing was started`);
-        return;
-      }
-      const result = Bun.spawnSync(start.argv, {
-        ...where,
-        stdin: "ignore",
-        stdout: "ignore",
-        stderr: "ignore",
-        windowsHide: true,
-        windowsVerbatimArguments: true
-      });
-      const exitCode = result.exitCode ?? 1;
-      if (exitCode !== 0)
-        options.onError(`cmd /d /s /c start failed (exit ${exitCode})`);
-      return;
-    }
-    const child = spawn(file, args, { ...where, detached: true, stdio: "ignore" });
-    child.on("error", (error) => options.onError(error.message));
-    child.unref();
-  } catch (error) {
-    options.onError(error instanceof Error ? error.message : String(error));
-  }
-}
-
-// src/setup/bun-config.ts
-import { basename as basename2, join as join6 } from "path";
-var BUN_CONFIG_NAME = "bunfig.toml";
-function bunConfigPath(pluginDir) {
-  return join6(pluginDir, BUN_CONFIG_NAME);
-}
-function bunConfigArg(pluginDir) {
-  return `--config=${bunConfigPath(pluginDir)}`;
-}
-function pluginFolderBeside(importDir) {
-  return basename2(importDir) === "dist" ? join6(importDir, "..") : join6(importDir, "..", "..", "plugin");
-}
-
-// src/worktrees/auto-state.ts
-import { createHash } from "crypto";
-import { mkdirSync as mkdirSync3, readFileSync as readFileSync5 } from "fs";
-import { dirname as dirname4, join as join7 } from "path";
-
 // src/path-compare.ts
-import { dirname as dirname3, resolve as resolve2 } from "path";
+import { dirname as dirname4, resolve as resolve2 } from "path";
 var IGNORE_CASE = process.platform === "win32";
 function isInside(path, folder, ignoreCase = IGNORE_CASE) {
   const child = pathForm(path, ignoreCase);
@@ -8480,15 +6319,15 @@ var recordSchema = object({
 });
 var toldSchema = object({ seq: number2() });
 function autoCleanLog(stateDir) {
-  return join7(stateDir, "worktrees-auto-clean.log");
+  return join8(stateDir, "worktrees-auto-clean.log");
 }
 function autoCleanFiles(stateDir, repo) {
-  const key = createHash("sha256").update(pathForm(repo)).digest("hex").slice(0, 16);
-  const dir = join7(stateDir, "worktrees-auto-clean");
+  const key = createHash2("sha256").update(pathForm(repo)).digest("hex").slice(0, 16);
+  const dir = join8(stateDir, "worktrees-auto-clean");
   return {
     log: autoCleanLog(stateDir),
-    result: join7(dir, `${key}.json`),
-    told: join7(dir, `${key}.told.json`)
+    result: join8(dir, `${key}.json`),
+    told: join8(dir, `${key}.told.json`)
   };
 }
 function readJson(file, schema) {
@@ -8500,7 +6339,7 @@ function readJson(file, schema) {
   }
 }
 function writeJson(file, value) {
-  mkdirSync3(dirname4(file), { recursive: true, mode: 448 });
+  mkdirSync4(dirname5(file), { recursive: true, mode: 448 });
   atomicWrite(file, `${JSON.stringify(value, null, 2)}
 `, 384);
 }
@@ -8537,7 +6376,7 @@ function autoCleanOn(context) {
   return context.project.config?.worktrees?.autoClean !== false;
 }
 function autoCleanEntry(importDir) {
-  return basename3(importDir) === "dist" ? join8(importDir, `${AUTO_CLEAN_BUNDLE}.js`) : join8(importDir, "..", "entries", `${AUTO_CLEAN_BUNDLE}.ts`);
+  return basename3(importDir) === "dist" ? join9(importDir, `${AUTO_CLEAN_BUNDLE}.js`) : join9(importDir, "..", "entries", `${AUTO_CLEAN_BUNDLE}.ts`);
 }
 function autoCleanArgv(bun, entry, pluginDir, repo, trigger, keep) {
   return [bun, "--no-env-file", bunConfigArg(pluginDir), entry, repo, trigger, keep];
@@ -8578,12 +6417,12 @@ function takeToldLine(context, repo) {
 }
 
 // src/worktrees/in-progress.ts
-import { existsSync as existsSync4, readFileSync as readFileSync7, statSync as statSync4 } from "fs";
+import { existsSync as existsSync5, readFileSync as readFileSync7, statSync as statSync5 } from "fs";
 import { resolve as resolve4 } from "path";
 
 // src/hooks/git.ts
 import { readFileSync as readFileSync6, realpathSync as realpathSync3 } from "fs";
-import { basename as basename4, dirname as dirname5, join as join9, resolve as resolve3 } from "path";
+import { basename as basename4, dirname as dirname6, join as join10, resolve as resolve3 } from "path";
 var GIT_TIMED_OUT2 = "timed out";
 var GUARD_GIT_TIMEOUT_MS = 5000;
 function runGit(cwd, args, env, timeoutMs = 15000, own = {}) {
@@ -8643,7 +6482,7 @@ function hasChanges(folder, env) {
 function worktreeAdminDir(worktree) {
   let text;
   try {
-    text = readFileSync6(join9(worktree, ".git"), "utf8");
+    text = readFileSync6(join10(worktree, ".git"), "utf8");
   } catch {
     return null;
   }
@@ -8688,7 +6527,7 @@ var OPERATIONS = [
   { ...SERIES, kind: "folder", namesBranch: false, path: "sequencer" }
 ];
 function readInProgress(worktree, env) {
-  if (!existsSync4(worktree))
+  if (!existsSync5(worktree))
     return { running: [], state: "read" };
   const located = runGit(worktree, ["rev-parse", ...OPERATIONS.flatMap((operation) => ["--git-path", operation.path])], env);
   if (!located.ok)
@@ -8706,7 +6545,7 @@ function readInProgress(worktree, env) {
     let text = "";
     try {
       if (operation.kind === "folder")
-        statSync4(marker);
+        statSync5(marker);
       else
         text = readFileSync7(marker, "utf8");
     } catch (error) {
@@ -8747,12 +6586,12 @@ import {
   closeSync as closeSync2,
   lstatSync as lstatSync2,
   openSync as openSync2,
-  readdirSync as readdirSync2,
+  readdirSync as readdirSync3,
   readFileSync as readFileSync8,
   readlinkSync as readlinkSync2,
   readSync
 } from "fs";
-import { join as join10 } from "path";
+import { join as join11 } from "path";
 var REBUILDABLE = [
   /(?:^|\/)(?:node_modules|bower_components|jspm_packages|\.venv|venv|\.tox|\.nox|\.bundle|\.gradle|\.pnpm-store|\.yarn\/cache)\/$/,
   /(?:^|\/)(?:dist|build|out|target|coverage|\.next|\.nuxt|\.output|\.svelte-kit|\.turbo|\.vercel|\.parcel-cache|\.angular|storybook-static|test-results|playwright-report|htmlcov|\.nyc_output)\/$/,
@@ -8775,12 +6614,12 @@ function setupTime(worktree) {
     return null;
   const times = [];
   try {
-    const time = lstatSync2(join10(admin, "commondir")).mtimeMs;
+    const time = lstatSync2(join11(admin, "commondir")).mtimeMs;
     if (Number.isFinite(time))
       times.push(time);
   } catch {}
   try {
-    const fd = openSync2(join10(admin, "logs", "HEAD"), "r");
+    const fd = openSync2(join11(admin, "logs", "HEAD"), "r");
     try {
       const buffer = Buffer.alloc(FIRST_REFLOG_BYTES);
       const size = readSync(fd, buffer, 0, buffer.length, 0);
@@ -8800,8 +6639,8 @@ function setupTime(worktree) {
 }
 function untouchedCopy(worktree, mainCheckout, entry) {
   try {
-    const here = lstatSync2(join10(worktree, entry));
-    if (!here.isFile() || !lstatSync2(join10(mainCheckout, entry)).isFile())
+    const here = lstatSync2(join11(worktree, entry));
+    if (!here.isFile() || !lstatSync2(join11(mainCheckout, entry)).isFile())
       return false;
     const setup = setupTime(worktree);
     return setup !== null && here.mtimeMs <= setup + INCLUDE_COPY_SLACK_MS;
@@ -8817,8 +6656,8 @@ function sameAsMain(worktree, mainCheckout, path) {
   const same = (relative) => {
     if (--budget < 0)
       return false;
-    const here = join10(worktree, relative);
-    const there = join10(mainCheckout, relative);
+    const here = join11(worktree, relative);
+    const there = join11(mainCheckout, relative);
     try {
       const a = lstatSync2(here);
       const b = lstatSync2(there);
@@ -8826,7 +6665,7 @@ function sameAsMain(worktree, mainCheckout, path) {
         return a.isSymbolicLink() && b.isSymbolicLink() && readlinkSync2(here) === readlinkSync2(there);
       }
       if (a.isDirectory()) {
-        return b.isDirectory() && readdirSync2(here).every((entry) => same(join10(relative, entry)));
+        return b.isDirectory() && readdirSync3(here).every((entry) => same(join11(relative, entry)));
       }
       return a.isFile() && b.isFile() && a.size === b.size && readFileSync8(here).equals(readFileSync8(there));
     } catch {
@@ -8835,15 +6674,8 @@ function sameAsMain(worktree, mainCheckout, path) {
   };
   return same(path.replace(/\/$/, ""));
 }
-function projectRebuildable(mainCheckout) {
-  if (mainCheckout === null)
-    return [];
-  try {
-    const patterns = loadCcSmartDevKitConfig(join10(mainCheckout, CONFIG_PATH))?.worktrees?.rebuildable ?? [];
-    return patterns.map((pattern) => new Bun.Glob(`**/${pattern}`));
-  } catch {
-    return [];
-  }
+function rebuildableGlobs(config) {
+  return (config?.worktrees?.rebuildable ?? []).map((pattern) => new Bun.Glob(`**/${pattern}`));
 }
 function safeEntry(worktree, mainCheckout, entry, patterns) {
   if (patterns.some((pattern) => pattern.match(entry)))
@@ -8852,7 +6684,7 @@ function safeEntry(worktree, mainCheckout, entry, patterns) {
     if (!entry.endsWith("/cli-latest"))
       return true;
     try {
-      if (lstatSync2(join10(worktree, entry)).isFile())
+      if (lstatSync2(join11(worktree, entry)).isFile())
         return true;
     } catch {
       return false;
@@ -8860,7 +6692,7 @@ function safeEntry(worktree, mainCheckout, entry, patterns) {
   }
   return mainCheckout !== null && (sameAsMain(worktree, mainCheckout, entry) || untouchedCopy(worktree, mainCheckout, entry));
 }
-function localFiles(worktree, mainCheckout, env, patterns = projectRebuildable(mainCheckout)) {
+function localFiles(worktree, mainCheckout, env, patterns) {
   const status = runGit(worktree, [
     "--no-optional-locks",
     "status",
@@ -8880,10 +6712,10 @@ function localFiles(worktree, mainCheckout, env, patterns = projectRebuildable(m
       if (--budget < 0)
         return false;
       try {
-        if (!lstatSync2(join10(worktree, path)).isDirectory())
+        if (!lstatSync2(join11(worktree, path)).isDirectory())
           return safe(path);
         const folder = `${path.replace(/\/$/, "")}/`;
-        return safe(folder) || readdirSync2(join10(worktree, path)).every((name) => visit(`${folder}${name}`));
+        return safe(folder) || readdirSync3(join11(worktree, path)).every((name) => visit(`${folder}${name}`));
       } catch {
         return false;
       }
@@ -8894,9 +6726,9 @@ function localFiles(worktree, mainCheckout, env, patterns = projectRebuildable(m
 }
 
 // src/hooks/sessions.ts
-import { existsSync as existsSync5, readdirSync as readdirSync3, readFileSync as readFileSync10, statSync as statSync5 } from "fs";
+import { existsSync as existsSync6, readdirSync as readdirSync4, readFileSync as readFileSync10, statSync as statSync6 } from "fs";
 import { uptime } from "os";
-import { join as join11 } from "path";
+import { join as join12 } from "path";
 
 // src/jobs/ancestry.ts
 import { readFileSync as readFileSync9 } from "fs";
@@ -8949,12 +6781,12 @@ function isRunning(pid) {
 function sessionRecordOf(claudeConfigDir, pid, facts = {}) {
   if (!(facts.running ?? isRunning)(pid))
     return null;
-  const dir = join11(claudeConfigDir, "sessions");
-  const file = join11(dir, `${pid}.json`);
+  const dir = join12(claudeConfigDir, "sessions");
+  const file = join12(dir, `${pid}.json`);
   const bootedAt = Date.now() - uptime() * 1000;
   let text;
   try {
-    if (statSync5(file).mtimeMs < bootedAt)
+    if (statSync6(file).mtimeMs < bootedAt)
       return null;
     text = readFileSync10(file, "utf8");
   } catch (error) {
@@ -8974,11 +6806,11 @@ function sessionRecordOf(claudeConfigDir, pid, facts = {}) {
   return record;
 }
 function liveSessions(claudeConfigDir, facts = {}) {
-  const dir = join11(claudeConfigDir, "sessions");
-  if (!existsSync5(dir))
+  const dir = join12(claudeConfigDir, "sessions");
+  if (!existsSync6(dir))
     return [];
   const live = [];
-  for (const file of readdirSync3(dir)) {
+  for (const file of readdirSync4(dir)) {
     const pid = Number(file.replace(/\.json$/, ""));
     if (!file.endsWith(".json") || !Number.isInteger(pid))
       continue;
@@ -9023,10 +6855,10 @@ function idleMinutesOrNull(worktree, now) {
   const admin = worktreeAdminDir(worktree);
   if (admin === null)
     return null;
-  let last = lastReflogTime(join12(admin, "logs", "HEAD"), now) ?? 0;
+  let last = lastReflogTime(join13(admin, "logs", "HEAD"), now) ?? 0;
   for (const file of ["index", "HEAD"]) {
     try {
-      last = Math.max(last, statSync6(join12(admin, file)).mtimeMs);
+      last = Math.max(last, statSync7(join13(admin, file)).mtimeMs);
     } catch {}
   }
   return last === 0 ? null : (now - last) / 60000;
@@ -9034,13 +6866,13 @@ function idleMinutesOrNull(worktree, now) {
 function idleMinutes(worktree, now) {
   return idleMinutesOrNull(worktree, now) ?? 0;
 }
-function judgeWorktree(repo, listed, base, sessions, env, now) {
+function judgeWorktree(repo, listed, base, sessions, env, now, patterns) {
   if (listed.locked)
     return "kept";
   if (listed.prunable)
     return "gone";
   try {
-    statSync6(listed.path);
+    statSync7(listed.path);
   } catch {
     return "gone";
   }
@@ -9055,7 +6887,7 @@ function judgeWorktree(repo, listed, base, sessions, env, now) {
     return "kept";
   if (hasChanges(listed.path, env))
     return "kept";
-  return localFiles(listed.path, repo, env)?.length === 0 ? "finished" : "kept";
+  return localFiles(listed.path, repo, env, patterns)?.length === 0 ? "finished" : "kept";
 }
 function leftoversNote(base, finished, gone, keptBy = new Map) {
   const parts = [];
@@ -9088,7 +6920,7 @@ function operationInProgress(repo, env) {
   if (!paths.ok)
     return null;
   const [merge, rebaseMerge, rebaseApply, cherryPick] = paths.out.split(/\r?\n/);
-  const held = (path) => path !== undefined && path !== "" && existsSync6(resolve5(repo, path));
+  const held = (path) => path !== undefined && path !== "" && existsSync7(resolve5(repo, path));
   if (held(merge))
     return "merge";
   if (held(rebaseMerge) || held(rebaseApply))
@@ -9127,7 +6959,15 @@ function mainCheckoutNudge(project, env) {
     return null;
   return `This session is in the main checkout. Make the first change in a worktree: ${ENTER_WORKTREE_PHRASE}, or \`claude -w <name>\` from a terminal.`;
 }
-function worktreeLeftovers(context) {
+async function projectPatterns(repo, paths) {
+  try {
+    const checked = await loadCheckedFile(join13(repo, CONFIG_PATH), "project", { paths });
+    return checked.ok ? rebuildableGlobs(checked.value) : [];
+  } catch {
+    return [];
+  }
+}
+async function worktreeLeftovers(context) {
   const { project, env, paths, event } = context;
   const base = project.config?.worktrees?.base;
   if (base === undefined)
@@ -9161,11 +7001,12 @@ function worktreeLeftovers(context) {
   } catch {
     return answer(null);
   }
+  const patterns = await projectPatterns(repo, paths);
   const now = Date.now();
   const finished = [];
   const gone = [];
   for (const listed of linked) {
-    const verdict = judgeWorktree(repo, listed, base, sessions, env, now);
+    const verdict = judgeWorktree(repo, listed, base, sessions, env, now, patterns);
     if (verdict === "finished")
       finished.push(listed);
     if (verdict === "gone")

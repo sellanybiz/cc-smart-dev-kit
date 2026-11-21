@@ -21525,7 +21525,7 @@ var COMMAND = "cc-smart-dev-kit";
 
 // src/build-info/index.ts
 var info = {
-  version: "6.2.0",
+  version: "6.3.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -21915,6 +21915,9 @@ function spawnGit(cwd, args, env, timeoutMs, own, trim) {
 import { existsSync as existsSync2, readFileSync as readFileSync2 } from "fs";
 import { posix, win32 } from "path";
 
+// src/jobs/kind-defaults.ts
+var KIND_NAME = /^[a-z0-9][a-z0-9:._-]*$/;
+
 // src/jobs/kinds.ts
 var matchRuleSchema = union([
   strictObject({
@@ -21941,7 +21944,6 @@ var kindSpecSchema = strictObject({
   workers: unknown().optional(),
   light: unknown().optional()
 });
-var KIND_NAME = /^[a-z0-9][a-z0-9:._-]*$/;
 var kindsSchema = record(string2().regex(KIND_NAME, "a kind's name is lower-case letters, digits and : . _ -"), kindSpecSchema);
 
 // src/setup/user-json.ts
@@ -23671,6 +23673,21 @@ function workflowValue(workflow, key) {
   return group[tail];
 }
 
+// src/project/config-facts.ts
+var CONFIG_PATH = ".claude/cc-smart-dev-kit.json";
+
+class CcSmartDevKitConfigError extends Error {
+  name = "CcSmartDevKitConfigError";
+}
+
+class CcSmartDevKitVersionError extends CcSmartDevKitConfigError {
+  name = "CcSmartDevKitVersionError";
+}
+
+class CcSmartDevKitRetiredFieldError extends CcSmartDevKitConfigError {
+  name = "CcSmartDevKitRetiredFieldError";
+}
+
 // src/project/version-range.ts
 var NUMBER = "(?:x|X|\\*|0|[1-9]\\d*)";
 var IDENT = "[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*";
@@ -23819,17 +23836,6 @@ var ccSmartDevKitConfigSchema = strictObject({
   workflow: workflowSchema.optional(),
   ownHooks: array(_enum([...PLUGIN_HOOK_NAMES, ...RETIRED_HOOK_NAMES, ...UNSWITCHABLE_HOOK_NAMES])).optional()
 });
-class CcSmartDevKitConfigError extends Error {
-  name = "CcSmartDevKitConfigError";
-}
-
-class CcSmartDevKitVersionError extends CcSmartDevKitConfigError {
-  name = "CcSmartDevKitVersionError";
-}
-
-class CcSmartDevKitRetiredFieldError extends CcSmartDevKitConfigError {
-  name = "CcSmartDevKitRetiredFieldError";
-}
 function describeIssue(issue) {
   const field = issue.path.length > 0 ? issue.path.join(".") : "(top level)";
   if (issue.code === "unrecognized_keys") {
@@ -23911,7 +23917,7 @@ function checkCcSmartDevKitConfig(raw, where, pluginVersion = VERSION) {
 // src/workflow/resolve.ts
 import { existsSync as existsSync4, readFileSync as readFileSync3 } from "fs";
 
-// src/project/resolve.ts
+// src/project/locate.ts
 import { existsSync as existsSync3, realpathSync as realpathSync2, statSync as statSync2 } from "fs";
 import { join as join4 } from "path";
 var MIN_GIT_VERSION = "2.31.0";
@@ -24050,19 +24056,23 @@ function locateCheckout(cwd, options = {}) {
     mainCheckout: roots.isWorktree ? findMainCheckout(git, cwd) : roots.root
   };
 }
-function loadProjectConfig(checkout, pluginVersion) {
+function projectFileFor(checkout) {
   const { root, mainCheckout } = checkout;
-  const own = join4(root, ".claude", "cc-smart-dev-kit.json");
-  let config = loadCcSmartDevKitConfig(own, pluginVersion);
-  let configFile = config === null ? null : own;
-  if (config === null && mainCheckout !== null && mainCheckout !== root) {
-    const main = join4(mainCheckout, ".claude", "cc-smart-dev-kit.json");
-    config = loadCcSmartDevKitConfig(main, pluginVersion);
-    configFile = config === null ? null : main;
-  }
-  return { ...checkout, config, configFile };
+  const own = join4(root, CONFIG_PATH);
+  if (existsSync3(own))
+    return own;
+  if (mainCheckout === null || mainCheckout === root)
+    return null;
+  const main = join4(mainCheckout, CONFIG_PATH);
+  return existsSync3(main) ? main : null;
 }
-var CONFIG_PATH = ".claude/cc-smart-dev-kit.json";
+
+// src/project/resolve.ts
+function loadProjectConfig(checkout, pluginVersion) {
+  const file = projectFileFor(checkout);
+  const config = file === null ? null : loadCcSmartDevKitConfig(file, pluginVersion);
+  return { ...checkout, config, configFile: config === null ? null : file };
+}
 function gitTimedOut(where) {
   return { found: false, where, why: GIT_TIMED_OUT2 };
 }
@@ -24136,28 +24146,9 @@ function describeIssues(issues) {
   }).join("; ");
 }
 
-// src/workflow/resolve.ts
-class WorkflowConfigError extends Error {
-  name = "WorkflowConfigError";
-}
-function personalWorkflowFile(paths) {
-  return paths.workflowConfigFile;
-}
-function loadWorkflow(file) {
-  if (!existsSync4(file))
-    return {};
-  let raw;
-  try {
-    raw = JSON.parse(readFileSync3(file, "utf8"));
-  } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error);
-    throw new WorkflowConfigError(`Invalid ${file}: not valid JSON (${reason})`);
-  }
-  const parsed = personalWorkflowSchema.safeParse(raw);
-  if (!parsed.success) {
-    throw new WorkflowConfigError(`Invalid ${file}: ${describeIssues(parsed.error.issues)}`);
-  }
-  return parsed.data;
+// src/workflow/merge.ts
+function current(value, source) {
+  return { value, source };
 }
 function mergedGroup(personal, project) {
   if (personal === undefined)
@@ -24182,6 +24173,42 @@ function mergeWorkflows(personal, project) {
     merged.plans = plans;
   return merged;
 }
+
+// src/workflow/resolve.ts
+class WorkflowConfigError extends Error {
+  name = "WorkflowConfigError";
+}
+function personalWorkflowFile(paths) {
+  return paths.workflowConfigFile;
+}
+function invalidJson(file, error) {
+  const reason = error instanceof Error ? error.message : String(error);
+  return new WorkflowConfigError(`Invalid ${file}: not valid JSON (${reason})`);
+}
+function parseWorkflowText(text, file) {
+  let raw;
+  try {
+    raw = JSON.parse(text);
+  } catch (error) {
+    throw invalidJson(file, error);
+  }
+  const parsed = personalWorkflowSchema.safeParse(raw);
+  if (!parsed.success) {
+    throw new WorkflowConfigError(`Invalid ${file}: ${describeIssues(parsed.error.issues)}`);
+  }
+  return parsed.data;
+}
+function loadWorkflow(file) {
+  if (!existsSync4(file))
+    return {};
+  let text;
+  try {
+    text = readFileSync3(file, "utf8");
+  } catch (error) {
+    throw invalidJson(file, error);
+  }
+  return parseWorkflowText(text, file);
+}
 function sourceOf(personal, project, key) {
   if (workflowValue(project, key) !== undefined)
     return "project";
@@ -24202,9 +24229,6 @@ function plansFrom(personal, project) {
 }
 function resolvePlans(paths, projectConfig) {
   return plansFrom(loadWorkflow(personalWorkflowFile(paths)), projectConfig?.workflow ?? {});
-}
-function current(value, source) {
-  return { value, source };
 }
 function resolveMergeFiles(checkout, base, options = {}) {
   if (base === null) {
@@ -24508,7 +24532,9 @@ var DEFAULT_STALE_DAYS = 30;
 function projectKey(repo) {
   return repoKey(repo);
 }
-function taskContext(cwd, env = process.env) {
+function taskContext(cwd, env = process.env, read) {
+  if (read !== undefined)
+    return contextOf(read, cwd, read);
   let checkout;
   try {
     checkout = locateCheckout(cwd, { env });
@@ -24520,7 +24546,7 @@ function taskContext(cwd, env = process.env) {
 function projectKeyOf(checkout, cwd) {
   return projectKey(checkout === null ? realpathSync3(cwd) : checkout.mainCheckout ?? checkout.root);
 }
-function contextOf(checkout, cwd) {
+function contextOf(checkout, cwd, read) {
   if (checkout === null) {
     return {
       ok: true,
@@ -24540,7 +24566,7 @@ function contextOf(checkout, cwd) {
   };
   let config;
   try {
-    config = loadProjectConfig(checkout).config;
+    config = (read ?? loadProjectConfig(checkout)).config;
   } catch (error) {
     const why = checkoutFailure(error);
     return { ...base, projectTasks: { ok: false, why }, projectConfig: { ok: false, why } };
@@ -24577,6 +24603,105 @@ var recordSchema = object({
   seq: number2()
 });
 var toldSchema = object({ seq: number2() });
+
+// src/tasks/work/graph.ts
+function isOpen(task) {
+  return task.status === "pending" || task.status === "in_progress";
+}
+function inProgressFirst(a, b) {
+  return Number(b.status === "in_progress") - Number(a.status === "in_progress") || a.number - b.number;
+}
+var BLOCK_REFUSAL_WORDS = {
+  under: "it sits above this task",
+  cycle: "it would make a blocker cycle",
+  through: "it already waits for this task, through a parent"
+};
+
+class TaskGraph {
+  byId;
+  children = new Map;
+  added = new Map;
+  constructor(tasks) {
+    this.byId = new Map(tasks.map((task) => [task.id, task]));
+    for (const task of tasks) {
+      if (!task.parentId)
+        continue;
+      const siblings = this.children.get(task.parentId);
+      if (siblings)
+        siblings.push(task);
+      else
+        this.children.set(task.parentId, [task]);
+    }
+  }
+  childrenOf(id) {
+    return this.children.get(id) ?? [];
+  }
+  waitsOf(id) {
+    return [...this.byId.get(id)?.waitsFor ?? [], ...this.added.get(id) ?? []];
+  }
+  addWait(id, ref) {
+    const waits = this.added.get(id);
+    if (waits)
+      waits.push(ref);
+    else
+      this.added.set(id, [ref]);
+  }
+  ancestorsOf(task) {
+    const up = [];
+    const seen = new Set([task.id]);
+    for (let parent = this.byId.get(task.parentId ?? "");parent && !seen.has(parent.id); parent = this.byId.get(parent.parentId ?? "")) {
+      seen.add(parent.id);
+      up.push(parent);
+    }
+    return up;
+  }
+  holdingUnder(id) {
+    const seen = new Set([id]);
+    const result = [];
+    const walk = (parent) => {
+      for (const child of this.childrenOf(parent)) {
+        if (seen.has(child.id) || child.type === "non-blocking")
+          continue;
+        seen.add(child.id);
+        if (isOpen(child))
+          result.push(child);
+        walk(child.id);
+      }
+    };
+    walk(id);
+    return result.sort(inProgressFirst);
+  }
+  waitsFor(start, target) {
+    const reached = new Set;
+    const pending = [start];
+    while (pending.length) {
+      const id = pending.pop();
+      if (!id || reached.has(id))
+        continue;
+      if (id === target)
+        return true;
+      reached.add(id);
+      pending.push(...this.waitsOf(id), ...this.holdingUnder(id).map((held) => held.id));
+    }
+    return false;
+  }
+}
+function blockRefusal(graph, task, other) {
+  if (graph.ancestorsOf(task).some((up) => up.id === other.id))
+    return "under";
+  const seen = new Set;
+  const pending = [other.id];
+  while (pending.length) {
+    const id = pending.pop();
+    if (!id || seen.has(id))
+      continue;
+    if (id === task.id)
+      return "cycle";
+    seen.add(id);
+    pending.push(...graph.waitsOf(id));
+  }
+  return graph.waitsFor(other.id, task.id) ? "through" : null;
+}
 
 // src/tasks/work/queries.ts
 function hasFilesTable(db) {
@@ -24654,9 +24779,6 @@ function taskById(db, id) {
   if (!task)
     throw new Error("task not found");
   return task;
-}
-function isOpen(task) {
-  return task.status === "pending" || task.status === "in_progress";
 }
 function planCounted(all, plan) {
   if (plan === null)
@@ -24805,9 +24927,6 @@ function descendantsIn(tasks, id) {
   }
   return result;
 }
-function inProgressFirst(a, b) {
-  return Number(b.status === "in_progress") - Number(a.status === "in_progress") || a.number - b.number;
-}
 function layerOf(task, _byId) {
   return task.kind;
 }
@@ -24825,30 +24944,7 @@ function freedBy(all, closed, owns) {
   return all.filter((t) => t.waitsFor.includes(closed.id) && owns(t) && isStartable(all, byId, t));
 }
 function holdingUnder(tasks, id) {
-  const children = new Map;
-  for (const t of tasks) {
-    if (!t.parentId)
-      continue;
-    const siblings = children.get(t.parentId);
-    if (siblings)
-      siblings.push(t);
-    else
-      children.set(t.parentId, [t]);
-  }
-  const seen = new Set([id]);
-  const result = [];
-  const walk = (parent) => {
-    for (const child of children.get(parent) ?? []) {
-      if (seen.has(child.id) || child.type === "non-blocking")
-        continue;
-      seen.add(child.id);
-      if (isOpen(child))
-        result.push(child);
-      walk(child.id);
-    }
-  };
-  walk(id);
-  return result.sort(inProgressFirst);
+  return new TaskGraph(tasks).holdingUnder(id);
 }
 function searchTasks(db, project, text) {
   const pattern = `%${text.replace(/[\\%_]/g, "\\$&")}%`;
@@ -24896,21 +24992,6 @@ function claimState(task, process2, who) {
   if (!process2.live(task.claim))
     return resumedClaim(task.claim, who, process2.gone) ? "mine" : "free";
   return claimHeldBy(task.claim, who) ? "mine" : "another session";
-}
-function waitsForTask(tasks, start, target) {
-  const byId = new Map(tasks.map((task) => [task.id, task]));
-  const reached = new Set;
-  const pending = [start];
-  while (pending.length) {
-    const id = pending.pop();
-    if (!id || reached.has(id))
-      continue;
-    if (id === target)
-      return true;
-    reached.add(id);
-    pending.push(...byId.get(id)?.waitsFor ?? [], ...holdingUnder(tasks, id).map((task) => task.id));
-  }
-  return false;
 }
 
 // src/tasks/work/db.ts
@@ -24967,6 +25048,37 @@ var MIGRATIONS = [
 
 class BackupFailure extends Error {
 }
+function restoreHolds(sqlite, projects, originalHolds, moved) {
+  for (const tasks of projects.values()) {
+    const graph = new TaskGraph(tasks.map((task) => {
+      const row = moved.get(task.id);
+      if (!row)
+        return task;
+      return {
+        ...task,
+        parentId: row.parent_id,
+        type: row.blocking === 0 ? "non-blocking" : "blocking"
+      };
+    }));
+    for (const task of graph.byId.values())
+      for (const held of originalHolds.get(task.id) ?? []) {
+        if (graph.waitsOf(task.id).includes(held.id))
+          continue;
+        const refusal = blockRefusal(graph, task, held);
+        if (refusal) {
+          sqlite.query("INSERT INTO task_events(task_id,project,number,at,action,changes,reason) VALUES (?,?,?,?,'noted',?,?)").run(task.id, task.project, task.number, Date.now(), JSON.stringify({
+            note: [
+              null,
+              `hold on #${held.number} not restored: ${BLOCK_REFUSAL_WORDS[refusal]}`
+            ]
+          }), LEGACY_LIFT_REASON);
+          continue;
+        }
+        sqlite.query("INSERT OR IGNORE INTO task_deps(task_id,waits_for) VALUES (?,?)").run(task.id, held.id);
+        graph.addWait(task.id, held.id);
+      }
+  }
+}
 function repairTaskLayers(sqlite, file) {
   const nestedExists = sqlite.query("SELECT 1 FROM tasks t JOIN tasks p ON p.id=t.parent_id WHERE t.kind='task' AND p.kind='task' LIMIT 1").get();
   if (!nestedExists)
@@ -24975,10 +25087,14 @@ function repairTaskLayers(sqlite, file) {
   const byId = new Map(rows.map((row) => [row.id, row]));
   const originalHolds = new Map;
   const reader = { sqlite, writable: false, close() {} };
+  const projects = new Map;
   for (const project of new Set(rows.map((row) => row.project))) {
     const tasks = allTasks(reader, project);
-    for (const task of tasks.filter((task) => task.kind === "task" && tasks.some((child) => child.kind === "task" && child.parentId === task.id)))
-      originalHolds.set(task.id, holdingUnder(tasks, task.id).map((held) => held.id));
+    projects.set(project, tasks);
+    const before = new TaskGraph(tasks);
+    for (const task of tasks)
+      if (task.kind === "task" && before.childrenOf(task.id).some((child) => child.kind === "task"))
+        originalHolds.set(task.id, before.holdingUnder(task.id));
   }
   let backed = false;
   const move = (row, parent, above) => {
@@ -25011,12 +25127,7 @@ function repairTaskLayers(sqlite, file) {
   for (;; ) {
     const nested = rows.find((row) => row.kind === "task" && byId.get(row.parent_id ?? "")?.kind === "task");
     if (!nested) {
-      for (const [id, held] of originalHolds)
-        for (const h of held) {
-          if (waitsForTask(allTasks(reader, byId.get(id)?.project ?? ""), h, id))
-            continue;
-          sqlite.query("INSERT OR IGNORE INTO task_deps(task_id,waits_for) VALUES (?,?)").run(id, h);
-        }
+      restoreHolds(sqlite, projects, originalHolds, byId);
       return;
     }
     const chain = [];
@@ -25615,6 +25726,9 @@ var OPERATIONS = [
   { ...SERIES, kind: "folder", namesBranch: false, path: "sequencer" }
 ];
 
+// src/hooks/checked-config.ts
+var CHECKED_FILE_MAX_BYTES = 256 * 1024;
+
 // src/hooks/worktree-leftovers.ts
 var REFLOG_TAIL_BYTES = 8 * 1024;
 
@@ -25860,29 +25974,27 @@ function unblockedValid(db, task) {
     throw new Error(`${label(task)} is blocked by ${open.map((t) => `${label(t)} (${t.status.replaceAll("_", " ")})`).join(", ")}: finish or drop ${open.length > 1 ? "them" : "it"} first, or remove the block`);
 }
 function addBlockers(db, task, refs) {
+  let graph = null;
   for (const ref of refs) {
     const other = taskById(db, ref);
     if (other.project !== task.project)
       throw new Error("dependency belongs to another project");
-    const byId = new Map(allTasks(db, task.project).map((t) => [t.id, t]));
-    for (let up = byId.get(task.parentId ?? "");up; up = byId.get(up.parentId ?? ""))
-      if (up.id === other.id)
-        throw new Error(`${label(task)} cannot be blocked by ${label(other)}: it sits under it, and a parent waits for its tasks`);
-    const seen = new Set;
-    const pending = [ref];
-    while (pending.length) {
-      const id = pending.pop();
-      if (!id || seen.has(id))
-        continue;
-      if (id === task.id)
-        throw new Error("blocked-by would make a cycle");
-      seen.add(id);
-      pending.push(...byId.get(id)?.waitsFor ?? []);
-    }
-    const tasks = [...byId.values()];
-    if (waitsForTask(tasks, ref, task.id))
-      throw new Error(`${label(task)} cannot be blocked by ${label(other)}: ${label(other)} already waits for it, through what it is blocked by and the tasks a parent waits for, so neither could ever be done`);
+    graph ??= new TaskGraph(allTasks(db, task.project));
+    const refusal = blockRefusal(graph, task, other);
+    if (refusal)
+      throw new Error(blockMessage(refusal, task, other));
     db.sqlite.query("INSERT OR IGNORE INTO task_deps VALUES (?,?)").run(task.id, ref);
+    graph.addWait(task.id, ref);
+  }
+}
+function blockMessage(refusal, task, other) {
+  switch (refusal) {
+    case "under":
+      return `${label(task)} cannot be blocked by ${label(other)}: it sits under it, and a parent waits for its tasks`;
+    case "cycle":
+      return "blocked-by would make a cycle";
+    case "through":
+      return `${label(task)} cannot be blocked by ${label(other)}: ${label(other)} already waits for it, through what it is blocked by and the tasks a parent waits for, so neither could ever be done`;
   }
 }
 function openPlanValid(tasks, plan) {

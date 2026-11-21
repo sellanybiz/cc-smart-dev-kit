@@ -9,7 +9,6 @@ import { join as join2, sep } from "path";
 var MARKETPLACE = "cc-smart-dev-kit";
 var PLUGIN = "cc-smart-dev-kit";
 var PLUGIN_ID = `${PLUGIN}@${MARKETPLACE}`;
-var COMMAND = "cc-smart-dev-kit";
 
 // src/gateway/paths.ts
 import { homedir } from "os";
@@ -145,9 +144,636 @@ function maskedLine(text, known, max, options = {}) {
   return oneLine(maskSecrets(text, known), max, options);
 }
 
-// src/project/config.ts
-import { existsSync as existsSync2, readFileSync as readFileSync3 } from "fs";
-import { posix, win32 } from "path";
+// src/project/locate.ts
+import { existsSync as existsSync2, realpathSync, statSync } from "fs";
+import { join as join3 } from "path";
+
+// src/project/config-facts.ts
+import { existsSync } from "fs";
+
+// src/setup/user-json.ts
+import { readFileSync } from "fs";
+var BOM = "\uFEFF";
+function withoutBom(text) {
+  return text.startsWith(BOM) ? text.slice(BOM.length) : text;
+}
+function parseUserJson(text) {
+  return JSON.parse(withoutBom(text));
+}
+function readUserJson(file) {
+  return parseUserJson(readFileSync(file, "utf8"));
+}
+
+// src/project/config-facts.ts
+var CONFIG_PATH = ".claude/cc-smart-dev-kit.json";
+function readOwnHooks(file) {
+  if (!existsSync(file))
+    return null;
+  try {
+    const raw = readUserJson(file);
+    if (typeof raw !== "object" || raw === null || Array.isArray(raw))
+      return [];
+    const listed = raw.ownHooks;
+    return Array.isArray(listed) ? listed.filter((name) => typeof name === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+// src/project/git-env.ts
+var REPO_SELECTING_GIT_VARS = [
+  "GIT_DIR",
+  "GIT_WORK_TREE",
+  "GIT_COMMON_DIR",
+  "GIT_INDEX_FILE",
+  "GIT_OBJECT_DIRECTORY",
+  "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+  "GIT_PREFIX",
+  "GIT_NAMESPACE"
+];
+function gitEnv(base) {
+  const env = {};
+  for (const [key, value] of Object.entries(base)) {
+    if (value !== undefined && !REPO_SELECTING_GIT_VARS.includes(key))
+      env[key] = value;
+  }
+  return env;
+}
+
+// src/project/locate.ts
+var MIN_GIT_VERSION = "2.31.0";
+var RESOLVE_GIT_TIMEOUT_MS = 5000;
+var GIT_NOT_FOUND = "git was not found, so this project's own values cannot be read. Install git, then try again.";
+function gitNotFound(error) {
+  const why = error instanceof Error ? error.message : String(error);
+  return /not found in \$PATH|ENOENT/.test(why) ? new Error(GIT_NOT_FOUND) : error;
+}
+var GIT_TIMED_OUT = "git did not answer in time";
+var GIT_TIMED_OUT_FIX = "run `git status` in this folder; if that hangs too, fix git first, then run this again";
+
+class GitTimedOutError extends Error {
+  constructor() {
+    super(`${GIT_TIMED_OUT}: ${GIT_TIMED_OUT_FIX}`);
+    this.name = "GitTimedOutError";
+  }
+}
+var NO_TIME_LEFT = {
+  ok: false,
+  stdout: "",
+  stderr: "no time left in the hook's budget",
+  timedOut: true
+};
+function callLimit(timeoutMs, timeFor) {
+  return timeFor === undefined ? timeoutMs : timeFor(timeoutMs);
+}
+function gitIn(cwd, env, timeoutMs = RESOLVE_GIT_TIMEOUT_MS, timeFor) {
+  return (args) => {
+    const limit = callLimit(timeoutMs, timeFor);
+    if (limit <= 0)
+      return NO_TIME_LEFT;
+    try {
+      const result = Bun.spawnSync(["git", ...args], {
+        cwd,
+        env,
+        stdin: "ignore",
+        stdout: "pipe",
+        stderr: "pipe",
+        timeout: limit,
+        windowsHide: true
+      });
+      return {
+        ok: result.exitCode === 0,
+        stdout: result.stdout.toString(),
+        stderr: result.stderr.toString(),
+        timedOut: result.exitedDueToTimeout === true
+      };
+    } catch (error) {
+      throw gitNotFound(error);
+    }
+  };
+}
+function requireGitVersionText(out) {
+  const match = /git version (\d+)\.(\d+)(?:\.(\d+))?/.exec(out);
+  if (!match)
+    return;
+  const version = `${match[1]}.${match[2]}.${match[3] ?? "0"}`;
+  if (Bun.semver.order(version, MIN_GIT_VERSION) < 0) {
+    throw new Error(`git 2.31 or newer is needed; you have git ${version}. Update git.`);
+  }
+}
+function requireGitVersion(git) {
+  requireGitVersionText(git(["--version"]).stdout);
+}
+function mainCheckoutFrom(list, cwd) {
+  if (list.timedOut === true)
+    throw new GitTimedOutError;
+  if (!list.ok)
+    throw new Error(`git worktree list failed in ${cwd}: ${list.stderr.trim()}`);
+  const [firstEntry = ""] = list.stdout.split(`
+
+`);
+  const lines = firstEntry.split(`
+`);
+  if (lines.includes("bare"))
+    return null;
+  const pathLine = lines.find((line) => line.startsWith("worktree "));
+  if (!pathLine)
+    return null;
+  const path = pathLine.slice("worktree ".length);
+  if (!existsSync2(path) || lines.some((line) => line.startsWith("prunable"))) {
+    throw new Error(`The main checkout of the repo at ${cwd} is missing: ${path} was moved or deleted. ` + 'If you moved it, run "git worktree repair" in its new folder.');
+  }
+  return realpathSync(path);
+}
+function findMainCheckout(git, cwd) {
+  return mainCheckoutFrom(git(["worktree", "list", "--porcelain"]), cwd);
+}
+function revParseParts(revParse) {
+  const [top, gitDir, common] = revParse.stdout.trim().split(`
+`);
+  if (!revParse.ok || top?.startsWith("--"))
+    return "not-understood";
+  if (!top || !gitDir || !common)
+    return "outside";
+  return { common, gitDir, top };
+}
+function checkoutRoots(parts) {
+  const root = realpathSync(parts.top);
+  const commonDir = realpathSync(parts.common);
+  return { commonDir, isWorktree: realpathSync(parts.gitDir) !== commonDir, root };
+}
+function locateCheckout(cwd, options = {}) {
+  if (!existsSync2(cwd) || !statSync(cwd).isDirectory()) {
+    throw new Error(`resolveProject: ${cwd} is not a folder`);
+  }
+  const git = gitIn(cwd, gitEnv(options.env ?? process.env), undefined, options.timeFor);
+  const revParse = git([
+    "rev-parse",
+    "--path-format=absolute",
+    "--show-toplevel",
+    "--absolute-git-dir",
+    "--git-common-dir"
+  ]);
+  if (revParse.timedOut === true)
+    throw new GitTimedOutError;
+  const parts = revParseParts(revParse);
+  if (parts === "not-understood") {
+    requireGitVersion(git);
+    if (revParse.ok) {
+      throw new Error("git did not understand rev-parse --path-format: git 2.31 or newer is needed.");
+    }
+    return null;
+  }
+  if (parts === "outside")
+    return null;
+  const roots = checkoutRoots(parts);
+  return {
+    ...roots,
+    mainCheckout: roots.isWorktree ? findMainCheckout(git, cwd) : roots.root
+  };
+}
+function projectFileFor(checkout) {
+  const { root, mainCheckout } = checkout;
+  const own = join3(root, CONFIG_PATH);
+  if (existsSync2(own))
+    return own;
+  if (mainCheckout === null || mainCheckout === root)
+    return null;
+  const main = join3(mainCheckout, CONFIG_PATH);
+  return existsSync2(main) ? main : null;
+}
+function ownHooksOf(checkout) {
+  const file = projectFileFor(checkout);
+  return file === null ? [] : readOwnHooks(file) ?? [];
+}
+
+// src/hooks/ask-log.ts
+import { join as join5 } from "path";
+
+// src/hooks/jsonl-log.ts
+import { appendFileSync, mkdirSync as mkdirSync2, readFileSync as readFileSync3, statSync as statSync3 } from "fs";
+import { dirname as dirname2 } from "path";
+
+// src/setup/write.ts
+import {
+  closeSync,
+  existsSync as existsSync3,
+  fsyncSync,
+  lstatSync,
+  mkdirSync,
+  openSync,
+  readdirSync,
+  readFileSync as readFileSync2,
+  readlinkSync,
+  realpathSync as realpathSync2,
+  renameSync,
+  statSync as statSync2,
+  unlinkSync,
+  writeFileSync
+} from "fs";
+import { basename, dirname, join as join4, resolve } from "path";
+
+// src/setup/file-mode.ts
+import { chmodSync, fchmodSync } from "fs";
+function failureIsFatal(platform) {
+  return platform !== "win32";
+}
+function setFileMode(fileOrFd, mode, platform = hostPlatform()) {
+  try {
+    if (typeof fileOrFd === "number")
+      fchmodSync(fileOrFd, mode);
+    else
+      chmodSync(fileOrFd, mode);
+  } catch (error) {
+    if (failureIsFatal(platform))
+      throw error;
+  }
+}
+
+// src/setup/write.ts
+function writeTemp(file, content, mode) {
+  const dir = dirname(file);
+  mkdirSync(dir, { recursive: true });
+  const temp = join4(dir, `.${basename(file)}.cc-smart-dev-kit-tmp-${process.pid}-${crypto.randomUUID()}`);
+  try {
+    const fd = openSync(temp, "wx", mode);
+    try {
+      writeFileSync(fd, content);
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+    setFileMode(temp, mode);
+  } catch (error) {
+    if (existsSync3(temp))
+      unlinkSync(temp);
+    throw error;
+  }
+  return temp;
+}
+function atomicWrite(file, content, mode, beforeRename) {
+  const temp = writeTemp(file, content, mode);
+  try {
+    beforeRename?.();
+    renameSync(temp, file);
+  } catch (error) {
+    if (existsSync3(temp))
+      unlinkSync(temp);
+    throw error;
+  }
+}
+
+// src/setup/lock.ts
+var FALLBACK_STALE_MS = 10 * 60 * 1000;
+
+// src/update/state.ts
+var CHECK_INTERVAL_MS = 60 * 60 * 1000;
+var LOG_MAX_BYTES = 256 * 1024;
+var UNREACHABLE_FAILS_AFTER_HOURS = 24;
+var UNREACHABLE_FAILS_AFTER_MS = UNREACHABLE_FAILS_AFTER_HOURS * 60 * 60 * 1000;
+
+// src/hooks/jsonl-log.ts
+function cutBack(file) {
+  let size;
+  try {
+    size = statSync3(file).size;
+  } catch {
+    return;
+  }
+  if (size <= LOG_MAX_BYTES)
+    return;
+  const text = readFileSync3(file, "utf8");
+  const keep = text.slice(text.length - LOG_MAX_BYTES / 2);
+  atomicWrite(file, keep.slice(keep.indexOf(`
+`) + 1), 384);
+}
+function appendJsonLine(file, value) {
+  mkdirSync2(dirname2(file), { recursive: true, mode: 448 });
+  cutBack(file);
+  appendFileSync(file, `${JSON.stringify(value)}
+`, { mode: 384 });
+}
+
+// src/hooks/ask-log.ts
+var ASK_LOG_FILE = "guard-asks.jsonl";
+var ASK_REASON_MAX = 200;
+function askLogFile(stateDir) {
+  return join5(stateDir, ASK_LOG_FILE);
+}
+function appendAsk(file, ask) {
+  appendJsonLine(file, ask);
+}
+
+// src/hooks/checked-config.ts
+import { createHash } from "crypto";
+import {
+  accessSync,
+  constants,
+  existsSync as existsSync4,
+  mkdirSync as mkdirSync3,
+  readdirSync as readdirSync2,
+  readFileSync as readFileSync4,
+  statSync as statSync4,
+  unlinkSync as unlinkSync2
+} from "fs";
+import { dirname as dirname3, join as join6 } from "path";
+
+// src/build-info/index.ts
+var info = {
+  version: "6.3.0",
+  repo: "sellanybiz/cc-smart-dev-kit",
+  dependencies: [
+    {
+      name: "claude-mem",
+      marketplace: "thedotmack",
+      version: ">=15.0.0"
+    },
+    {
+      name: "frontend-design",
+      marketplace: "claude-plugins-official"
+    }
+  ]
+};
+var VERSION = info.version;
+var MARKETPLACE_SOURCE = info.repo;
+var DEPENDENCIES = info.dependencies;
+var MARKETPLACE_ADD_COMMAND = `claude plugin marketplace add ${MARKETPLACE_SOURCE}`;
+var PLUGIN_INSTALL_COMMAND = `claude plugin install ${PLUGIN_ID}`;
+var PLUGIN_UPDATE_COMMAND = `claude plugin update ${PLUGIN_ID}`;
+
+// src/hooks/checked-config.ts
+var PARSER_FINGERPRINT = "ecbf12d64fe46194dd034dc713b5e1e608f672cd2abae09ebc3f7dec686bda49";
+var CHECKED_DIR = "checked";
+var CHECKED_CACHE_LIMIT = 64;
+var CHECKED_FILE_MAX_BYTES = 256 * 1024;
+var CHECKED_TEMP_MAX_AGE_MS = 60000;
+var ENTRY_FORMAT = 1;
+var TEMP_NAME = /^\..+\.cc-smart-dev-kit-tmp-/;
+var PARSE = {
+  project: (sibling, text, where) => sibling.checkProjectText(text, where),
+  workflow: (sibling, text, where) => sibling.checkWorkflowText(text, where)
+};
+function reinstallMessage(why) {
+  return `The plugin's config checker is not usable (${why}): run \`${PLUGIN_INSTALL_COMMAND}\` to reinstall the plugin, then try again.`;
+}
+async function loadSibling() {
+  const built = join6(import.meta.dir, "config-check.js");
+  const entry = existsSync4(built) ? built : join6(import.meta.dir, "..", "entries", "config-check.ts");
+  const loaded = await import(entry);
+  for (const name of ["checkProjectText", "checkWorkflowText"]) {
+    if (typeof loaded[name] !== "function") {
+      throw new Error(`${entry} exports no ${name}`);
+    }
+  }
+  return loaded;
+}
+function checkedKey(fingerprint, kind, bytes) {
+  return createHash("sha256").update(`${fingerprint}
+${kind}
+`).update(bytes).digest("hex");
+}
+function readEntry(file, key, kind) {
+  try {
+    const entry = JSON.parse(readFileSync4(file, "utf8"));
+    if (entry?.format !== ENTRY_FORMAT || entry.key !== key || entry.kind !== kind)
+      return null;
+    const { value } = entry;
+    const isObject = typeof value === "object" && value !== null && !Array.isArray(value);
+    return isObject ? value : null;
+  } catch {
+    return null;
+  }
+}
+function prune(dir, nowMs) {
+  const entries = [];
+  for (const name of readdirSync2(dir)) {
+    const path = join6(dir, name);
+    try {
+      if (TEMP_NAME.test(name)) {
+        if (nowMs - statSync4(path).mtimeMs > CHECKED_TEMP_MAX_AGE_MS)
+          unlinkSync2(path);
+      } else if (name.endsWith(".json")) {
+        entries.push({ path, mtimeMs: statSync4(path).mtimeMs });
+      }
+    } catch {}
+  }
+  entries.sort((a, b) => a.mtimeMs - b.mtimeMs);
+  for (const old of entries.slice(0, Math.max(0, entries.length - (CHECKED_CACHE_LIMIT - 1)))) {
+    try {
+      unlinkSync2(old.path);
+    } catch {}
+  }
+}
+function writeEntry(dir, key, kind, value) {
+  try {
+    if (!existsSync4(dir)) {
+      mkdirSync3(dir, { recursive: true, mode: 448 });
+      setFileMode(dir, 448);
+    }
+    prune(dir, Date.now());
+    const entry = { format: ENTRY_FORMAT, key, kind, value };
+    atomicWrite(join6(dir, `${key}.json`), JSON.stringify(entry), 384);
+  } catch {}
+}
+async function loadCheckedFile(file, kind, { paths }) {
+  if (!existsSync4(file))
+    return { ok: true, value: null, fact: "none" };
+  const bytes = readFileSync4(file);
+  const cacheable = bytes.length <= CHECKED_FILE_MAX_BYTES;
+  const dir = join6(paths.stateDir, CHECKED_DIR);
+  const key = checkedKey(PARSER_FINGERPRINT, kind, bytes);
+  if (cacheable) {
+    const hit = readEntry(join6(dir, `${key}.json`), key, kind);
+    if (hit !== null)
+      return { ok: true, value: hit, fact: "cached" };
+  }
+  let sibling;
+  try {
+    sibling = await loadSibling();
+  } catch (error) {
+    const why = error instanceof Error ? error.message : String(error);
+    return { ok: false, message: reinstallMessage(why), fact: "broken" };
+  }
+  const answer = PARSE[kind](sibling, bytes.toString("utf8"), file);
+  if (answer.fingerprint !== PARSER_FINGERPRINT) {
+    const why = "it was built from another version of the plugin than this hook";
+    return { ok: false, message: reinstallMessage(why), fact: "broken" };
+  }
+  if (!answer.ok)
+    return { ok: false, message: answer.message, fact: "broken" };
+  if (cacheable)
+    writeEntry(dir, key, kind, answer.value);
+  return { ok: true, value: answer.value, fact: "checked" };
+}
+async function loadCheckedProject(checkout, options) {
+  const file = projectFileFor(checkout);
+  if (file === null) {
+    return { ok: true, project: { ...checkout, config: null, configFile: null }, fact: "none" };
+  }
+  const checked = await loadCheckedFile(file, "project", options);
+  if (!checked.ok)
+    return checked;
+  return {
+    ok: true,
+    project: { ...checkout, config: checked.value, configFile: file },
+    fact: checked.fact
+  };
+}
+
+// src/hooks/io.ts
+var SILENT = {};
+function parseHookInput(text) {
+  try {
+    const value = JSON.parse(text);
+    return typeof value === "object" && value !== null && !Array.isArray(value) ? value : null;
+  } catch {
+    return null;
+  }
+}
+function stringField(value) {
+  return typeof value === "string" && value !== "" ? value : null;
+}
+function askReason(result) {
+  if (result.stdout === undefined)
+    return null;
+  try {
+    const value = JSON.parse(result.stdout);
+    const output = value.hookSpecificOutput;
+    if (output?.permissionDecision !== "ask")
+      return null;
+    return typeof output.permissionDecisionReason === "string" ? output.permissionDecisionReason : "";
+  } catch {
+    return null;
+  }
+}
+
+// src/hooks/run.ts
+var HOOK_LOG_ENV = "CC_SMART_DEV_KIT_HOOK_LOG";
+function errorMessage(error) {
+  return error instanceof Error ? error.message : String(error);
+}
+function crashResult(spec, why, input, event, context) {
+  const line = {
+    exitCode: spec.crashExitCode ?? 0,
+    stderr: `cc-smart-dev-kit ${spec.name}: ${why}`
+  };
+  if (spec.onCrash === undefined)
+    return line;
+  try {
+    return spec.onCrash(why, input, event, context);
+  } catch {
+    return line;
+  }
+}
+function recordAsk(spec, input, result, context) {
+  const reason = askReason(result);
+  if (reason === null)
+    return result;
+  try {
+    appendAsk(askLogFile(context.paths.stateDir), {
+      at: context.nowMs,
+      hook: spec.name,
+      session: stringField(input?.session_id) ?? "",
+      tool: stringField(input?.tool_name) ?? "",
+      reason: maskedLine(reason, [], ASK_REASON_MAX, { mark: "..." })
+    });
+  } catch (error) {
+    const note = `cc-smart-dev-kit ${spec.name}: the ask could not be recorded (${errorMessage(error)})`;
+    return { ...result, stderr: result.stderr === undefined ? note : `${result.stderr}
+${note}` };
+  }
+  return result;
+}
+async function answer(spec, input, context, observed) {
+  const { env } = context;
+  let event = "";
+  try {
+    if (input === null) {
+      return crashResult(spec, "the hook input is not JSON", null, "", context);
+    }
+    const named = stringField(input.hook_event_name);
+    if (named === null || !spec.events.includes(named))
+      return SILENT;
+    event = named;
+    const cwd = stringField(input.cwd);
+    const outside = spec.outsideGit ?? (() => SILENT);
+    if (cwd === null)
+      return await outside(input, event, "the hook input has no cwd", context);
+    let checkout;
+    try {
+      checkout = locateCheckout(cwd, { env });
+    } catch (error) {
+      return await outside(input, event, errorMessage(error), context);
+    }
+    if (checkout === null)
+      return await outside(input, event, `${cwd} is not in a git checkout`, context);
+    if (spec.alwaysOn !== true && ownHooksOf(checkout).includes(spec.name))
+      return SILENT;
+    const loaded = await loadCheckedProject(checkout, { paths: context.paths });
+    observed.config = loaded.fact;
+    if (!loaded.ok) {
+      return await spec.onConfigProblem(loaded.message, input, event, checkout, context);
+    }
+    return await spec.run({
+      input,
+      event,
+      cwd,
+      project: loaded.project,
+      env,
+      paths: context.paths,
+      nowMs: context.nowMs,
+      ...context.start !== undefined && { start: context.start }
+    });
+  } catch (error) {
+    return crashResult(spec, errorMessage(error), input, event, context);
+  }
+}
+async function handleHook(spec, text, env, nowMs = Date.now(), start, observed = {}) {
+  const context = {
+    env,
+    paths: cliPaths(env),
+    nowMs,
+    ...start !== undefined && { start }
+  };
+  const input = parseHookInput(text);
+  const result = await answer(spec, input, context, observed);
+  return recordAsk(spec, input, result, context);
+}
+function logRun(spec, text, result, env, nowMs, observed) {
+  const file = env[HOOK_LOG_ENV];
+  if (file === undefined || file === "")
+    return;
+  try {
+    const input = parseHookInput(text);
+    const facts = input === null ? {} : spec.logFacts?.(input, { env, paths: cliPaths(env), nowMs }) ?? {};
+    appendFileSync2(file, `${JSON.stringify({
+      hook: spec.name,
+      event: stringField(input?.hook_event_name),
+      cwd: stringField(input?.cwd),
+      exitCode: result.exitCode ?? 0,
+      ...observed.config !== undefined && { config: observed.config },
+      stdout: (result.stdout ?? "").slice(0, 2000),
+      ...Object.keys(facts).length === 0 ? {} : { facts }
+    })}
+`);
+  } catch {}
+}
+async function runHookEntry(spec) {
+  const text = await Bun.stdin.text();
+  const nowMs = Date.now();
+  const observed = {};
+  const result = await handleHook(spec, text, process.env, nowMs, undefined, observed);
+  logRun(spec, text, result, process.env, nowMs, observed);
+  if (result.stdout !== undefined)
+    await Bun.write(Bun.stdout, result.stdout);
+  if (result.stderr !== undefined)
+    await Bun.write(Bun.stderr, `${result.stderr}
+`);
+  process.exit(result.exitCode ?? 0);
+}
+
+// src/hooks/subagent-background.ts
+import { readFileSync as readFileSync5 } from "fs";
 
 // node_modules/zod/v4/core/util.js
 function getEnumValues(entries) {
@@ -5977,28 +6603,309 @@ function preprocess(fn, schema) {
     out: schema
   });
 }
-// src/build-info/index.ts
-var info = {
-  version: "6.2.0",
-  repo: "sellanybiz/cc-smart-dev-kit",
-  dependencies: [
-    {
-      name: "claude-mem",
-      marketplace: "thedotmack",
-      version: ">=15.0.0"
-    },
-    {
-      name: "frontend-design",
-      marketplace: "claude-plugins-official"
+// src/gateway/history.ts
+var HISTORY_MAX_RETENTION_DAYS = 3650;
+var HISTORY_PURGE_EVERY_MS = 24 * 60 * 60 * 1000;
+var HISTORY_RETRY_MS = 60 * 1000;
+
+// src/gateway/targets.ts
+var BACKEND_EFFORT_LEVELS = ["none", "low", "medium", "high", "xhigh", "max"];
+var BACKEND_NAME = /^[a-z0-9][a-z0-9_-]*$/;
+var SLOT_KEY = /^cc-smart-dev-kit-[a-z0-9][a-z0-9-]*$/;
+var CONTEXT_SUFFIX = /\[1m\]$/i;
+function isBackendName(name) {
+  return BACKEND_NAME.test(name);
+}
+function isSlotKey(name) {
+  return SLOT_KEY.test(name);
+}
+function withoutContextSuffix(name) {
+  return name.replace(CONTEXT_SUFFIX, "");
+}
+var PROFILE_NAME = /^[a-z0-9][a-z0-9-]{0,63}$/;
+function isProfileName(name) {
+  return PROFILE_NAME.test(name);
+}
+function parseTarget(text) {
+  const trimmed = text.trim();
+  if (trimmed.startsWith("claude-")) {
+    if (trimmed.length === "claude-".length || /\s/.test(trimmed)) {
+      return { error: `"${text}" is not a Claude model id` };
     }
-  ]
+    return { target: { kind: "anthropic", model: trimmed } };
+  }
+  const colon = trimmed.indexOf(":");
+  if (colon === -1) {
+    return { error: `"${text}" is neither claude-<id> nor <backend>:<model>` };
+  }
+  const backend = trimmed.slice(0, colon);
+  const model = trimmed.slice(colon + 1);
+  if (!isBackendName(backend)) {
+    return { error: `"${backend}" is not a backend name (a-z, 0-9, - and _)` };
+  }
+  if (model === "" || /\s/.test(model)) {
+    return { error: `"${text}" names no model after "${backend}:"` };
+  }
+  return { target: { backend, kind: "backend", model } };
+}
+var JUDGE_SLOT = "cc-smart-dev-kit-judge";
+var MODEL_SLOTS = {
+  "cc-smart-dev-kit-fable": "fable",
+  "cc-smart-dev-kit-opus": "opus"
 };
-var VERSION = info.version;
-var MARKETPLACE_SOURCE = info.repo;
-var DEPENDENCIES = info.dependencies;
-var MARKETPLACE_ADD_COMMAND = `claude plugin marketplace add ${MARKETPLACE_SOURCE}`;
-var PLUGIN_INSTALL_COMMAND = `claude plugin install ${PLUGIN_ID}`;
-var PLUGIN_UPDATE_COMMAND = `claude plugin update ${PLUGIN_ID}`;
+var CLAUDE_FAMILIES = ["opus", "sonnet", "haiku", "fable"];
+function familyEnv(family) {
+  return `ANTHROPIC_DEFAULT_${family.toUpperCase()}_MODEL`;
+}
+var WORKER_SLOT = "cc-smart-dev-kit-worker";
+var FAMILY_SLOTS = {
+  "cc-smart-dev-kit-scout": "haiku",
+  [WORKER_SLOT]: "sonnet",
+  ...MODEL_SLOTS
+};
+var PROVIDER_PREFIX = /^(?:[a-z0-9-]+\.)*claude-/;
+function claudeFamily(model) {
+  const name = `${withoutContextSuffix(model).toLowerCase()}-`;
+  const prefix = PROVIDER_PREFIX.exec(name);
+  if (prefix === null)
+    return null;
+  const id = name.slice(prefix[0].length - "claude-".length);
+  return CLAUDE_FAMILIES.find((family) => id.includes(`-${family}-`)) ?? null;
+}
+var CAPACITY_STATUSES = new Set([408, 429, 500, 502, 503, 504, 529]);
+
+// src/gateway/config.ts
+var DEFAULT_PORT = 20100;
+var DEFAULT_ANTHROPIC_BASE_URL = "https://api.anthropic.com";
+var DEFAULT_FIRST_BYTE_MS = 60000;
+var MAX_TIMER_MS = 2147483647;
+function timerTooLong(consequence) {
+  return `too long: at most ${MAX_TIMER_MS} ms, the longest a timer can wait (above it the wait is 1 ms and ${consequence})`;
+}
+var BREAKER_HOLD_CEILING_MS = 240000;
+var JUDGE_NEVER_HOLDS = "the judge never holds a request (a held safety check would freeze every action in auto mode), so it has no breaker switch";
+var baseUrl = url({ protocol: /^https?$/ }).transform((url2) => url2.replace(/\/+$/, ""));
+var backendSchema = looseObject({
+  apiKey: string2().min(1),
+  baseUrl
+});
+var keptChainSchema = looseObject({
+  effort: record(string2(), _enum(BACKEND_EFFORT_LEVELS)).optional(),
+  fallback: boolean2().optional(),
+  targets: array(string2().min(1)).min(1)
+});
+var PROFILE_NAME_RULE = "a profile name is lower-case letters, digits and - (the /p/<name> of a project's URL), at most 64";
+var SLOT_KEY_RULE = (slot) => `"${slot}" is not a slot key (cc-smart-dev-kit-<name>)`;
+var profileSlotSchema = union([literal("claude"), array(string2().min(1)).min(1)], {
+  error: 'a profile slot is "claude" (plain Claude for that slot there) or a chain: a list of one or more targets'
+});
+var profileSchema = looseObject({
+  breaker: record(string2(), boolean2()).optional(),
+  fallback: record(string2(), boolean2()).optional(),
+  kept: record(string2(), keptChainSchema).optional(),
+  slots: record(string2(), profileSlotSchema).optional()
+});
+var gatewayConfigSchema = looseObject({
+  aliases: record(string2(), string2()).default({}),
+  effort: record(string2(), record(string2(), _enum(BACKEND_EFFORT_LEVELS))).optional(),
+  anthropicBaseUrl: literal(DEFAULT_ANTHROPIC_BASE_URL).default(DEFAULT_ANTHROPIC_BASE_URL),
+  backends: record(string2().refine(isBackendName, "not a backend name"), backendSchema),
+  judgeTested: record(string2(), string2()).optional(),
+  kept: record(string2().refine(isSlotKey, "a slot key is cc-smart-dev-kit-<name>"), keptChainSchema).optional(),
+  fallback: record(string2(), boolean2()).optional(),
+  breaker: record(string2(), boolean2()).optional(),
+  history: looseObject({
+    retentionDays: int().min(0, "0 turns the request history off, which is the smallest value").max(HISTORY_MAX_RETENTION_DAYS, `at most ${String(HISTORY_MAX_RETENTION_DAYS)} days (ten years), so a typo cannot fill the disk`).optional()
+  }).optional(),
+  modelSlots: record(string2(), string2()).optional(),
+  port: int().min(1).max(65535).default(DEFAULT_PORT),
+  profiles: record(string2(), profileSchema).optional(),
+  slots: record(string2(), array(string2()).min(1)),
+  timeouts: looseObject({
+    breakerHoldMs: int().min(0).max(BREAKER_HOLD_CEILING_MS, `too long: at most ${BREAKER_HOLD_CEILING_MS} ms (${BREAKER_HOLD_CEILING_MS / 1000} s), because a longer hold risks Claude Code giving up on the request`).optional(),
+    firstByteMs: int().positive().max(MAX_TIMER_MS, timerTooLong("every wait it bounds would end at once")).default(DEFAULT_FIRST_BYTE_MS),
+    streamIdleMs: int().positive().max(MAX_TIMER_MS, timerTooLong("every stream would be cut")).optional()
+  }).default({ firstByteMs: DEFAULT_FIRST_BYTE_MS }),
+  version: literal(1)
+}).superRefine((config, ctx) => {
+  for (const [slot, pins] of Object.entries(config.effort ?? {})) {
+    if (!isSlotKey(slot))
+      ctx.addIssue({ code: "custom", message: SLOT_KEY_RULE(slot), path: ["effort", slot] });
+    effortIssues(pins, ["effort", slot], ctx);
+  }
+  for (const [slot, saved] of Object.entries(config.kept ?? {})) {
+    effortIssues(saved.effort ?? {}, ["kept", slot, "effort"], ctx);
+  }
+  for (const slot of Object.keys(config.slots)) {
+    if (!isSlotKey(slot))
+      ctx.addIssue({ code: "custom", message: SLOT_KEY_RULE(slot), path: ["slots", slot] });
+  }
+  for (const [slot, targets] of Object.entries(config.slots)) {
+    chainIssues(config, targets, ["slots", slot], ctx);
+  }
+  for (const [name, profile] of Object.entries(config.profiles ?? {})) {
+    if (!isProfileName(name)) {
+      ctx.addIssue({ code: "custom", message: PROFILE_NAME_RULE, path: ["profiles", name] });
+      continue;
+    }
+    for (const field of ["slots", "kept"]) {
+      for (const slot of Object.keys(profile[field] ?? {})) {
+        if (isSlotKey(slot))
+          continue;
+        ctx.addIssue({
+          code: "custom",
+          message: SLOT_KEY_RULE(slot),
+          path: ["profiles", name, field, slot]
+        });
+      }
+    }
+    for (const [slot, chain] of Object.entries(profile.slots ?? {})) {
+      if (chain === "claude")
+        continue;
+      chainIssues(config, chain, ["profiles", name, "slots", slot], ctx);
+    }
+    const chained = new Set([...Object.keys(config.slots), ...Object.keys(profile.slots ?? {})].filter((slot) => profileSlotChain(config, profile, slot) !== null));
+    for (const slot of Object.keys(profile.fallback ?? {})) {
+      if (slot !== JUDGE_SLOT && !chained.has(slot)) {
+        ctx.addIssue({
+          code: "custom",
+          message: `fallback names slot "${slot}", which profile "${name}" has no chain for (a slot with no chain has nothing to fall back to)`,
+          path: ["profiles", name, "fallback", slot]
+        });
+      }
+    }
+    for (const slot of Object.keys(profile.breaker ?? {})) {
+      if (slot === JUDGE_SLOT) {
+        ctx.addIssue({
+          code: "custom",
+          message: `breaker names ${slot}: ${JUDGE_NEVER_HOLDS}`,
+          path: ["profiles", name, "breaker", slot]
+        });
+      } else if (!chained.has(slot)) {
+        ctx.addIssue({
+          code: "custom",
+          message: `breaker names slot "${slot}", which profile "${name}" has no chain for (a slot with no chain has no request to hold)`,
+          path: ["profiles", name, "breaker", slot]
+        });
+      }
+    }
+  }
+  for (const [name, to] of Object.entries(config.aliases)) {
+    const error = aliasError(name, to, config);
+    if (error !== null)
+      ctx.addIssue({ code: "custom", message: error, path: ["aliases", name] });
+  }
+  for (const [model, slot] of Object.entries(config.modelSlots ?? {})) {
+    const error = modelSlotError(model, slot, config.slots);
+    if (error !== null) {
+      ctx.addIssue({ code: "custom", message: error, path: ["modelSlots", model] });
+    }
+  }
+  for (const slot of Object.keys(config.fallback ?? {})) {
+    if (slot !== JUDGE_SLOT && !Object.hasOwn(config.slots, slot)) {
+      ctx.addIssue({
+        code: "custom",
+        message: `fallback names slot "${slot}", which is not in slots (a slot with no chain has nothing to fall back to)`,
+        path: ["fallback", slot]
+      });
+    }
+  }
+  for (const slot of Object.keys(config.breaker ?? {})) {
+    if (slot === JUDGE_SLOT) {
+      ctx.addIssue({
+        code: "custom",
+        message: `breaker names ${slot}: ${JUDGE_NEVER_HOLDS}`,
+        path: ["breaker", slot]
+      });
+    } else if (!Object.hasOwn(config.slots, slot)) {
+      ctx.addIssue({
+        code: "custom",
+        message: `breaker names slot "${slot}", which is not in slots (a slot with no chain has no request to hold)`,
+        path: ["breaker", slot]
+      });
+    }
+  }
+});
+function chainIssues(config, targets, path, ctx) {
+  targets.forEach((text, index) => {
+    const parsed = parseTarget(text);
+    if ("error" in parsed) {
+      ctx.addIssue({ code: "custom", message: parsed.error, path: [...path, index] });
+    } else if (parsed.target.kind === "backend" && !Object.hasOwn(config.backends, parsed.target.backend)) {
+      ctx.addIssue({
+        code: "custom",
+        message: `"${text}" names backend "${parsed.target.backend}", which is not in backends`,
+        path: [...path, index]
+      });
+    }
+  });
+}
+function effortIssues(pins, path, ctx) {
+  for (const target of Object.keys(pins)) {
+    const parsed = parseTarget(target);
+    const error = "error" in parsed ? parsed.error : parsed.target.kind === "anthropic" ? "a Claude target cannot pin effort: Anthropic gets only the fields its model refuses changed" : null;
+    if (error !== null)
+      ctx.addIssue({ code: "custom", message: error, path: [...path, target] });
+  }
+}
+function profileSlotChain(config, profile, slot) {
+  const own = profile.slots !== undefined && Object.hasOwn(profile.slots, slot) ? profile.slots[slot] : undefined;
+  if (own === "claude")
+    return null;
+  if (own !== undefined)
+    return own;
+  return Object.hasOwn(config.slots, slot) ? config.slots[slot] ?? null : null;
+}
+function modelSlotError(model, slot, slots) {
+  if (!model.startsWith("claude-") || /\s/.test(model) || model === "claude-") {
+    return `modelSlots key "${model}" is not a Claude model id`;
+  }
+  if (withoutContextSuffix(model) !== model) {
+    return `modelSlots key "${model}": write it without [1m]; the router looks names up without it`;
+  }
+  const family = Object.hasOwn(MODEL_SLOTS, slot) ? MODEL_SLOTS[slot] : undefined;
+  if (family === undefined) {
+    return `modelSlots "${model}" points at "${slot}", which is not a model slot (${Object.keys(MODEL_SLOTS).sort().join(", ")})`;
+  }
+  if (claudeFamily(model) !== family) {
+    return `modelSlots "${model}" points at ${slot}, which is for ${family} models`;
+  }
+  if (!Object.hasOwn(slots, slot)) {
+    return `modelSlots "${model}" points at slot "${slot}", which is not in slots`;
+  }
+  return null;
+}
+function aliasError(name, to, config) {
+  if (name.trim() === "" || /\s/.test(name))
+    return `alias "${name}" is not a model name`;
+  if (withoutContextSuffix(name) !== name) {
+    return `alias "${name}": write it without [1m]; the router looks names up without it`;
+  }
+  if (name.startsWith("claude-"))
+    return `alias "${name}": a claude-\u2026 name cannot be an alias`;
+  if (Object.hasOwn(config.slots, name)) {
+    return `alias "${name}" has the name of a slot; a slot cannot be an alias too`;
+  }
+  if (Object.hasOwn(config.aliases, to)) {
+    return `alias "${name}" points at "${to}", which is an alias too; point it at a slot or a model`;
+  }
+  if (isSlotKey(to)) {
+    return Object.hasOwn(config.slots, to) || Object.hasOwn(config.kept ?? {}, to) || Object.hasOwn(FAMILY_SLOTS, to) || to === JUDGE_SLOT ? null : `alias "${name}" points at slot "${to}", which is no slot: not in slots, not saved in kept, and none of the five`;
+  }
+  const parsed = parseTarget(to);
+  if ("error" in parsed)
+    return `alias "${name}": ${parsed.error}`;
+  if (parsed.target.kind === "backend" && !Object.hasOwn(config.backends, parsed.target.backend)) {
+    return `alias "${name}" names backend "${parsed.target.backend}", which is not in backends`;
+  }
+  return null;
+}
+
+// src/project/config.ts
+import { posix, win32 } from "path";
+
+// src/jobs/kind-defaults.ts
+var KIND_NAME = /^[a-z0-9][a-z0-9:._-]*$/;
 
 // src/jobs/kinds.ts
 var matchRuleSchema = union([
@@ -6026,95 +6933,7 @@ var kindSpecSchema = strictObject({
   workers: unknown().optional(),
   light: unknown().optional()
 });
-var KIND_NAME = /^[a-z0-9][a-z0-9:._-]*$/;
 var kindsSchema = record(string2().regex(KIND_NAME, "a kind's name is lower-case letters, digits and : . _ -"), kindSpecSchema);
-
-// src/setup/user-json.ts
-import { readFileSync } from "fs";
-var BOM = "\uFEFF";
-function withoutBom(text) {
-  return text.startsWith(BOM) ? text.slice(BOM.length) : text;
-}
-function parseUserJson(text) {
-  return JSON.parse(withoutBom(text));
-}
-function readUserJson(file) {
-  return parseUserJson(readFileSync(file, "utf8"));
-}
-
-// src/setup/write.ts
-import {
-  closeSync,
-  existsSync,
-  fsyncSync,
-  lstatSync,
-  mkdirSync,
-  openSync,
-  readdirSync,
-  readFileSync as readFileSync2,
-  readlinkSync,
-  realpathSync,
-  renameSync,
-  statSync,
-  unlinkSync,
-  writeFileSync
-} from "fs";
-import { basename, dirname, join as join3, resolve } from "path";
-
-// src/setup/file-mode.ts
-import { chmodSync, fchmodSync } from "fs";
-function failureIsFatal(platform) {
-  return platform !== "win32";
-}
-function setFileMode(fileOrFd, mode, platform = hostPlatform()) {
-  try {
-    if (typeof fileOrFd === "number")
-      fchmodSync(fileOrFd, mode);
-    else
-      chmodSync(fileOrFd, mode);
-  } catch (error) {
-    if (failureIsFatal(platform))
-      throw error;
-  }
-}
-
-// src/setup/write.ts
-function writeTemp(file, content, mode) {
-  const dir = dirname(file);
-  mkdirSync(dir, { recursive: true });
-  const temp = join3(dir, `.${basename(file)}.cc-smart-dev-kit-tmp-${process.pid}-${crypto.randomUUID()}`);
-  try {
-    const fd = openSync(temp, "wx", mode);
-    try {
-      writeFileSync(fd, content);
-      fsyncSync(fd);
-    } finally {
-      closeSync(fd);
-    }
-    setFileMode(temp, mode);
-  } catch (error) {
-    if (existsSync(temp))
-      unlinkSync(temp);
-    throw error;
-  }
-  return temp;
-}
-function atomicWrite(file, content, mode, beforeRename) {
-  const temp = writeTemp(file, content, mode);
-  try {
-    beforeRename?.();
-    renameSync(temp, file);
-  } catch (error) {
-    if (existsSync(temp))
-      unlinkSync(temp);
-    throw error;
-  }
-}
-
-// src/setup/managed-json.ts
-function isObject2(value) {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 // src/shell/program-name.ts
 function programName(word) {
@@ -7774,15 +8593,8 @@ var POLICY_KEYS = [
   "plans.runMode",
   "plans.mergeFiles"
 ];
-var PERSONAL_ONLY_KEYS = ["plans.runMode"];
 var SWITCH_KEYS = SWITCH_NAMES.map((name) => `switches.${name}`);
 var WORKFLOW_KEYS = [...POLICY_KEYS, ...SWITCH_KEYS];
-var PERSONAL_ONLY_REASONS = {
-  "plans.runMode": "a committed value would spend every teammate's usage",
-  "switches.statusLine": "the status line is per person, per machine",
-  "switches.updateHold": "the update hold is per person, per machine",
-  "switches.leadHint": "the lead-model hint is per person, per machine"
-};
 
 // src/project/version-range.ts
 var NUMBER = "(?:x|X|\\*|0|[1-9]\\d*)";
@@ -7801,42 +8613,7 @@ function isValidRange(range) {
     return comparators.every((comparator) => COMPARATOR.test(comparator));
   });
 }
-function satisfiesRange(version, range) {
-  if (!isValidRange(range))
-    throw new Error(`"${range}" is not a valid version range`);
-  return Bun.semver.satisfies(version, range);
-}
-var RANGE_START = /^\s*(>=|>|\^|~|=|<=|<)?\s*v?(\d+)(?:\.(\d+))?(?:\.(\d+))?/;
-function lowestAllowed(range) {
-  let lowest = null;
-  for (const part of range.split("||")) {
-    const match = RANGE_START.exec(part);
-    if (match === null)
-      return null;
-    const version = match[1]?.startsWith("<") ? "0.0.0" : `${match[2]}.${match[3] ?? "0"}.${match[4] ?? "0"}`;
-    if (lowest === null || Bun.semver.order(version, lowest) < 0)
-      lowest = version;
-  }
-  return lowest;
-}
-var NO_TOP = "999999.0.0";
 var WRITTEN_VERSION = new RegExp(`v?(${NUMBER})(?:\\.(${NUMBER})(?:\\.(${NUMBER})(?:-(${IDENT}))?(?:\\+${IDENT})?)?)?`, "g");
-function partNumber(part) {
-  return part === undefined || /^[xX*]$/.test(part) ? 0 : Number(part);
-}
-function allowsNewer(version, range) {
-  if (!isValidRange(range))
-    throw new Error(`"${range}" is not a valid version range`);
-  const candidates = [NO_TOP];
-  for (const match of range.matchAll(WRITTEN_VERSION)) {
-    const major = partNumber(match[1]);
-    const minor = partNumber(match[2]);
-    const patch = partNumber(match[3]);
-    const pre = match[4] === undefined ? "" : `-${match[4]}`;
-    candidates.push(`${major}.${minor}.${patch}${pre}`, `${major}.${minor}.${patch + 1}`, `${major}.${minor + 1}.0`, `${major + 1}.0.0`);
-  }
-  return candidates.some((candidate) => Bun.semver.order(candidate, version) > 0 && Bun.semver.satisfies(candidate, range));
-}
 
 // src/project/config.ts
 var PLUGIN_HOOK_NAMES = [
@@ -7866,7 +8643,6 @@ var RETIRED_HOOK_NAMES = [
   "session-escape-guard"
 ];
 var UNSWITCHABLE_HOOK_NAMES = ["job-route"];
-var RETIRED_WORKTREE_FIELDS = ["prefix", "setup", "engine"];
 var deployCommandEntry = union([string2(), matchRuleSchema], { error: "is not a command or a match rule" }).superRefine((entry, ctx) => {
   if (typeof entry !== "string")
     return;
@@ -7931,789 +8707,6 @@ var ccSmartDevKitConfigSchema = strictObject({
   workflow: workflowSchema.optional(),
   ownHooks: array(_enum([...PLUGIN_HOOK_NAMES, ...RETIRED_HOOK_NAMES, ...UNSWITCHABLE_HOOK_NAMES])).optional()
 });
-class CcSmartDevKitConfigError extends Error {
-  name = "CcSmartDevKitConfigError";
-}
-
-class CcSmartDevKitVersionError extends CcSmartDevKitConfigError {
-  name = "CcSmartDevKitVersionError";
-}
-
-class CcSmartDevKitRetiredFieldError extends CcSmartDevKitConfigError {
-  name = "CcSmartDevKitRetiredFieldError";
-}
-function describeIssue(issue) {
-  const field = issue.path.length > 0 ? issue.path.join(".") : "(top level)";
-  if (issue.code === "unrecognized_keys") {
-    const keys = issue.keys.map((key) => field === "(top level)" ? key : `${field}.${key}`);
-    return `${keys.join(", ")}: unknown field (a newer cc-smart-dev-kit may be needed)`;
-  }
-  return `${field}: ${issue.message}`;
-}
-function checkRequires(file, raw, pluginVersion) {
-  if (typeof raw !== "object" || raw === null || Array.isArray(raw))
-    return;
-  const requires = raw.requires;
-  if (typeof requires !== "string" || !isValidRange(requires))
-    return;
-  if (satisfiesRange(pluginVersion, requires))
-    return;
-  if (!allowsNewer(pluginVersion, requires)) {
-    const lowest = lowestAllowed(requires);
-    const [major, minor] = lowest?.split(".") ?? [];
-    const example = lowest === null || lowest === "0.0.0" ? "" : ` (for example >=${major}.${minor})`;
-    throw new CcSmartDevKitVersionError(`${file}: this project's requires ${requires} does not let in cc-smart-dev-kit ` + `${pluginVersion}, which is newer; widen requires in that file${example}`);
-  }
-  throw new CcSmartDevKitVersionError(`${file}: this project needs cc-smart-dev-kit ${requires}; you have ${pluginVersion}; ` + `run ${PLUGIN_UPDATE_COMMAND}`);
-}
-function retiredFieldMessage(field) {
-  return `worktrees.${field} is no longer supported: remove it \u2014 Claude Code's own worktrees need none. \`${COMMAND} project init\` removes it (README \xA7 Worktrees).`;
-}
-function retiredFieldsOf(raw) {
-  if (typeof raw !== "object" || raw === null || Array.isArray(raw))
-    return [];
-  const worktrees = raw.worktrees;
-  if (typeof worktrees !== "object" || worktrees === null || Array.isArray(worktrees))
-    return [];
-  return RETIRED_WORKTREE_FIELDS.filter((field) => Object.hasOwn(worktrees, field));
-}
-function checkRetiredFields(where, raw) {
-  const found = retiredFieldsOf(raw);
-  if (found.length === 0)
-    return;
-  throw new CcSmartDevKitRetiredFieldError(`Invalid ${where}: ${found.map(retiredFieldMessage).join(" ")}`);
-}
-function checkPersonalOnlyFields(where, raw) {
-  const workflow = isObject2(raw) ? raw.workflow : undefined;
-  for (const key of PERSONAL_ONLY_KEYS) {
-    const [group, field] = key.split(".");
-    const settings = isObject2(workflow) ? workflow[group ?? ""] : undefined;
-    if (!isObject2(settings) || !Object.hasOwn(settings, field ?? ""))
-      continue;
-    throw new CcSmartDevKitConfigError(`Invalid ${where}: workflow.${key} is your own setting, not the project's, because ${PERSONAL_ONLY_REASONS[key]}: remove it from this file and run \`${COMMAND} workflow set ${key} <value>\` in your own terminal.`);
-  }
-}
-function readOwnHooks(file) {
-  if (!existsSync2(file))
-    return null;
-  try {
-    const raw = readUserJson(file);
-    if (typeof raw !== "object" || raw === null || Array.isArray(raw))
-      return [];
-    const listed = raw.ownHooks;
-    return Array.isArray(listed) ? listed.filter((name) => typeof name === "string") : [];
-  } catch {
-    return [];
-  }
-}
-function loadCcSmartDevKitConfig(file, pluginVersion = VERSION) {
-  if (!existsSync2(file))
-    return null;
-  return parseCcSmartDevKitConfig(readFileSync3(file, "utf8"), file, pluginVersion);
-}
-function parseCcSmartDevKitConfig(text, where, pluginVersion = VERSION) {
-  let raw;
-  try {
-    raw = parseUserJson(text);
-  } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error);
-    throw new CcSmartDevKitConfigError(`Invalid ${where}: not valid JSON (${reason})`);
-  }
-  return checkCcSmartDevKitConfig(raw, where, pluginVersion);
-}
-function checkCcSmartDevKitConfig(raw, where, pluginVersion = VERSION) {
-  checkRequires(where, raw, pluginVersion);
-  checkRetiredFields(where, raw);
-  checkPersonalOnlyFields(where, raw);
-  const parsed = ccSmartDevKitConfigSchema.safeParse(raw);
-  if (!parsed.success) {
-    const issues = parsed.error.issues.map(describeIssue).join("; ");
-    throw new CcSmartDevKitConfigError(`Invalid ${where}: ${issues}`);
-  }
-  return parsed.data;
-}
-
-// src/project/resolve.ts
-import { existsSync as existsSync3, realpathSync as realpathSync2, statSync as statSync2 } from "fs";
-import { join as join4 } from "path";
-
-// src/project/git-env.ts
-var REPO_SELECTING_GIT_VARS = [
-  "GIT_DIR",
-  "GIT_WORK_TREE",
-  "GIT_COMMON_DIR",
-  "GIT_INDEX_FILE",
-  "GIT_OBJECT_DIRECTORY",
-  "GIT_ALTERNATE_OBJECT_DIRECTORIES",
-  "GIT_PREFIX",
-  "GIT_NAMESPACE"
-];
-function gitEnv(base) {
-  const env = {};
-  for (const [key, value] of Object.entries(base)) {
-    if (value !== undefined && !REPO_SELECTING_GIT_VARS.includes(key))
-      env[key] = value;
-  }
-  return env;
-}
-
-// src/project/resolve.ts
-var MIN_GIT_VERSION = "2.31.0";
-var RESOLVE_GIT_TIMEOUT_MS = 5000;
-var GIT_NOT_FOUND = "git was not found, so this project's own values cannot be read. Install git, then try again.";
-function gitNotFound(error) {
-  const why = error instanceof Error ? error.message : String(error);
-  return /not found in \$PATH|ENOENT/.test(why) ? new Error(GIT_NOT_FOUND) : error;
-}
-var GIT_TIMED_OUT = "git did not answer in time";
-var GIT_TIMED_OUT_FIX = "run `git status` in this folder; if that hangs too, fix git first, then run this again";
-
-class GitTimedOutError extends Error {
-  constructor() {
-    super(`${GIT_TIMED_OUT}: ${GIT_TIMED_OUT_FIX}`);
-    this.name = "GitTimedOutError";
-  }
-}
-var NO_TIME_LEFT = {
-  ok: false,
-  stdout: "",
-  stderr: "no time left in the hook's budget",
-  timedOut: true
-};
-function callLimit(timeoutMs, timeFor) {
-  return timeFor === undefined ? timeoutMs : timeFor(timeoutMs);
-}
-function gitIn(cwd, env, timeoutMs = RESOLVE_GIT_TIMEOUT_MS, timeFor) {
-  return (args) => {
-    const limit = callLimit(timeoutMs, timeFor);
-    if (limit <= 0)
-      return NO_TIME_LEFT;
-    try {
-      const result = Bun.spawnSync(["git", ...args], {
-        cwd,
-        env,
-        stdin: "ignore",
-        stdout: "pipe",
-        stderr: "pipe",
-        timeout: limit,
-        windowsHide: true
-      });
-      return {
-        ok: result.exitCode === 0,
-        stdout: result.stdout.toString(),
-        stderr: result.stderr.toString(),
-        timedOut: result.exitedDueToTimeout === true
-      };
-    } catch (error) {
-      throw gitNotFound(error);
-    }
-  };
-}
-function requireGitVersionText(out) {
-  const match = /git version (\d+)\.(\d+)(?:\.(\d+))?/.exec(out);
-  if (!match)
-    return;
-  const version = `${match[1]}.${match[2]}.${match[3] ?? "0"}`;
-  if (Bun.semver.order(version, MIN_GIT_VERSION) < 0) {
-    throw new Error(`git 2.31 or newer is needed; you have git ${version}. Update git.`);
-  }
-}
-function requireGitVersion(git) {
-  requireGitVersionText(git(["--version"]).stdout);
-}
-function mainCheckoutFrom(list, cwd) {
-  if (list.timedOut === true)
-    throw new GitTimedOutError;
-  if (!list.ok)
-    throw new Error(`git worktree list failed in ${cwd}: ${list.stderr.trim()}`);
-  const [firstEntry = ""] = list.stdout.split(`
-
-`);
-  const lines = firstEntry.split(`
-`);
-  if (lines.includes("bare"))
-    return null;
-  const pathLine = lines.find((line) => line.startsWith("worktree "));
-  if (!pathLine)
-    return null;
-  const path = pathLine.slice("worktree ".length);
-  if (!existsSync3(path) || lines.some((line) => line.startsWith("prunable"))) {
-    throw new Error(`The main checkout of the repo at ${cwd} is missing: ${path} was moved or deleted. ` + 'If you moved it, run "git worktree repair" in its new folder.');
-  }
-  return realpathSync2(path);
-}
-function findMainCheckout(git, cwd) {
-  return mainCheckoutFrom(git(["worktree", "list", "--porcelain"]), cwd);
-}
-function revParseParts(revParse) {
-  const [top, gitDir, common] = revParse.stdout.trim().split(`
-`);
-  if (!revParse.ok || top?.startsWith("--"))
-    return "not-understood";
-  if (!top || !gitDir || !common)
-    return "outside";
-  return { common, gitDir, top };
-}
-function checkoutRoots(parts) {
-  const root = realpathSync2(parts.top);
-  const commonDir = realpathSync2(parts.common);
-  return { commonDir, isWorktree: realpathSync2(parts.gitDir) !== commonDir, root };
-}
-function locateCheckout(cwd, options = {}) {
-  if (!existsSync3(cwd) || !statSync2(cwd).isDirectory()) {
-    throw new Error(`resolveProject: ${cwd} is not a folder`);
-  }
-  const git = gitIn(cwd, gitEnv(options.env ?? process.env), undefined, options.timeFor);
-  const revParse = git([
-    "rev-parse",
-    "--path-format=absolute",
-    "--show-toplevel",
-    "--absolute-git-dir",
-    "--git-common-dir"
-  ]);
-  if (revParse.timedOut === true)
-    throw new GitTimedOutError;
-  const parts = revParseParts(revParse);
-  if (parts === "not-understood") {
-    requireGitVersion(git);
-    if (revParse.ok) {
-      throw new Error("git did not understand rev-parse --path-format: git 2.31 or newer is needed.");
-    }
-    return null;
-  }
-  if (parts === "outside")
-    return null;
-  const roots = checkoutRoots(parts);
-  return {
-    ...roots,
-    mainCheckout: roots.isWorktree ? findMainCheckout(git, cwd) : roots.root
-  };
-}
-function ownHooksOf(checkout) {
-  const { root, mainCheckout } = checkout;
-  const own = readOwnHooks(join4(root, ".claude", "cc-smart-dev-kit.json"));
-  if (own !== null)
-    return own;
-  if (mainCheckout === null || mainCheckout === root)
-    return [];
-  return readOwnHooks(join4(mainCheckout, ".claude", "cc-smart-dev-kit.json")) ?? [];
-}
-function loadProjectConfig(checkout, pluginVersion) {
-  const { root, mainCheckout } = checkout;
-  const own = join4(root, ".claude", "cc-smart-dev-kit.json");
-  let config = loadCcSmartDevKitConfig(own, pluginVersion);
-  let configFile = config === null ? null : own;
-  if (config === null && mainCheckout !== null && mainCheckout !== root) {
-    const main = join4(mainCheckout, ".claude", "cc-smart-dev-kit.json");
-    config = loadCcSmartDevKitConfig(main, pluginVersion);
-    configFile = config === null ? null : main;
-  }
-  return { ...checkout, config, configFile };
-}
-
-// src/hooks/ask-log.ts
-import { join as join5 } from "path";
-
-// src/hooks/jsonl-log.ts
-import { appendFileSync, mkdirSync as mkdirSync2, readFileSync as readFileSync4, statSync as statSync3 } from "fs";
-import { dirname as dirname2 } from "path";
-
-// src/setup/lock.ts
-var FALLBACK_STALE_MS = 10 * 60 * 1000;
-
-// src/update/state.ts
-var CHECK_INTERVAL_MS = 60 * 60 * 1000;
-var LOG_MAX_BYTES = 256 * 1024;
-var UNREACHABLE_FAILS_AFTER_HOURS = 24;
-var UNREACHABLE_FAILS_AFTER_MS = UNREACHABLE_FAILS_AFTER_HOURS * 60 * 60 * 1000;
-
-// src/hooks/jsonl-log.ts
-function cutBack(file) {
-  let size;
-  try {
-    size = statSync3(file).size;
-  } catch {
-    return;
-  }
-  if (size <= LOG_MAX_BYTES)
-    return;
-  const text = readFileSync4(file, "utf8");
-  const keep = text.slice(text.length - LOG_MAX_BYTES / 2);
-  atomicWrite(file, keep.slice(keep.indexOf(`
-`) + 1), 384);
-}
-function appendJsonLine(file, value) {
-  mkdirSync2(dirname2(file), { recursive: true, mode: 448 });
-  cutBack(file);
-  appendFileSync(file, `${JSON.stringify(value)}
-`, { mode: 384 });
-}
-
-// src/hooks/ask-log.ts
-var ASK_LOG_FILE = "guard-asks.jsonl";
-var ASK_REASON_MAX = 200;
-function askLogFile(stateDir) {
-  return join5(stateDir, ASK_LOG_FILE);
-}
-function appendAsk(file, ask) {
-  appendJsonLine(file, ask);
-}
-
-// src/hooks/io.ts
-var SILENT = {};
-function parseHookInput(text) {
-  try {
-    const value = JSON.parse(text);
-    return typeof value === "object" && value !== null && !Array.isArray(value) ? value : null;
-  } catch {
-    return null;
-  }
-}
-function stringField(value) {
-  return typeof value === "string" && value !== "" ? value : null;
-}
-function askReason(result) {
-  if (result.stdout === undefined)
-    return null;
-  try {
-    const value = JSON.parse(result.stdout);
-    const output = value.hookSpecificOutput;
-    if (output?.permissionDecision !== "ask")
-      return null;
-    return typeof output.permissionDecisionReason === "string" ? output.permissionDecisionReason : "";
-  } catch {
-    return null;
-  }
-}
-
-// src/hooks/run.ts
-var HOOK_LOG_ENV = "CC_SMART_DEV_KIT_HOOK_LOG";
-function errorMessage(error) {
-  return error instanceof Error ? error.message : String(error);
-}
-function crashResult(spec, why, input, event, context) {
-  const line = {
-    exitCode: spec.crashExitCode ?? 0,
-    stderr: `cc-smart-dev-kit ${spec.name}: ${why}`
-  };
-  if (spec.onCrash === undefined)
-    return line;
-  try {
-    return spec.onCrash(why, input, event, context);
-  } catch {
-    return line;
-  }
-}
-function recordAsk(spec, input, result, context) {
-  const reason = askReason(result);
-  if (reason === null)
-    return result;
-  try {
-    appendAsk(askLogFile(context.paths.stateDir), {
-      at: context.nowMs,
-      hook: spec.name,
-      session: stringField(input?.session_id) ?? "",
-      tool: stringField(input?.tool_name) ?? "",
-      reason: maskedLine(reason, [], ASK_REASON_MAX, { mark: "..." })
-    });
-  } catch (error) {
-    const note = `cc-smart-dev-kit ${spec.name}: the ask could not be recorded (${errorMessage(error)})`;
-    return { ...result, stderr: result.stderr === undefined ? note : `${result.stderr}
-${note}` };
-  }
-  return result;
-}
-async function answer(spec, input, context) {
-  const { env } = context;
-  let event = "";
-  try {
-    if (input === null) {
-      return crashResult(spec, "the hook input is not JSON", null, "", context);
-    }
-    const named = stringField(input.hook_event_name);
-    if (named === null || !spec.events.includes(named))
-      return SILENT;
-    event = named;
-    const cwd = stringField(input.cwd);
-    const outside = spec.outsideGit ?? (() => SILENT);
-    if (cwd === null)
-      return await outside(input, event, "the hook input has no cwd", context);
-    let checkout;
-    try {
-      checkout = locateCheckout(cwd, { env });
-    } catch (error) {
-      return await outside(input, event, errorMessage(error), context);
-    }
-    if (checkout === null)
-      return await outside(input, event, `${cwd} is not in a git checkout`, context);
-    if (spec.alwaysOn !== true && ownHooksOf(checkout).includes(spec.name))
-      return SILENT;
-    let project;
-    try {
-      project = loadProjectConfig(checkout);
-    } catch (error) {
-      if (error instanceof CcSmartDevKitConfigError) {
-        return await spec.onConfigProblem(error.message, input, event, checkout, context);
-      }
-      throw error;
-    }
-    return await spec.run({
-      input,
-      event,
-      cwd,
-      project,
-      env,
-      paths: context.paths,
-      nowMs: context.nowMs,
-      ...context.start !== undefined && { start: context.start }
-    });
-  } catch (error) {
-    return crashResult(spec, errorMessage(error), input, event, context);
-  }
-}
-async function handleHook(spec, text, env, nowMs = Date.now(), start) {
-  const context = {
-    env,
-    paths: cliPaths(env),
-    nowMs,
-    ...start !== undefined && { start }
-  };
-  const input = parseHookInput(text);
-  const result = await answer(spec, input, context);
-  return recordAsk(spec, input, result, context);
-}
-function logRun(spec, text, result, env, nowMs) {
-  const file = env[HOOK_LOG_ENV];
-  if (file === undefined || file === "")
-    return;
-  try {
-    const input = parseHookInput(text);
-    const facts = input === null ? {} : spec.logFacts?.(input, { env, paths: cliPaths(env), nowMs }) ?? {};
-    appendFileSync2(file, `${JSON.stringify({
-      hook: spec.name,
-      event: stringField(input?.hook_event_name),
-      cwd: stringField(input?.cwd),
-      exitCode: result.exitCode ?? 0,
-      stdout: (result.stdout ?? "").slice(0, 2000),
-      ...Object.keys(facts).length === 0 ? {} : { facts }
-    })}
-`);
-  } catch {}
-}
-async function runHookEntry(spec) {
-  const text = await Bun.stdin.text();
-  const nowMs = Date.now();
-  const result = await handleHook(spec, text, process.env, nowMs);
-  logRun(spec, text, result, process.env, nowMs);
-  if (result.stdout !== undefined)
-    await Bun.write(Bun.stdout, result.stdout);
-  if (result.stderr !== undefined)
-    await Bun.write(Bun.stderr, `${result.stderr}
-`);
-  process.exit(result.exitCode ?? 0);
-}
-
-// src/hooks/subagent-background.ts
-import { readFileSync as readFileSync5 } from "fs";
-
-// src/gateway/history.ts
-var HISTORY_MAX_RETENTION_DAYS = 3650;
-var HISTORY_PURGE_EVERY_MS = 24 * 60 * 60 * 1000;
-var HISTORY_RETRY_MS = 60 * 1000;
-
-// src/gateway/targets.ts
-var BACKEND_EFFORT_LEVELS = ["none", "low", "medium", "high", "xhigh", "max"];
-var BACKEND_NAME = /^[a-z0-9][a-z0-9_-]*$/;
-var SLOT_KEY = /^cc-smart-dev-kit-[a-z0-9][a-z0-9-]*$/;
-var CONTEXT_SUFFIX = /\[1m\]$/i;
-function isBackendName(name) {
-  return BACKEND_NAME.test(name);
-}
-function isSlotKey(name) {
-  return SLOT_KEY.test(name);
-}
-function withoutContextSuffix(name) {
-  return name.replace(CONTEXT_SUFFIX, "");
-}
-var PROFILE_NAME = /^[a-z0-9][a-z0-9-]{0,63}$/;
-function isProfileName(name) {
-  return PROFILE_NAME.test(name);
-}
-function parseTarget(text) {
-  const trimmed = text.trim();
-  if (trimmed.startsWith("claude-")) {
-    if (trimmed.length === "claude-".length || /\s/.test(trimmed)) {
-      return { error: `"${text}" is not a Claude model id` };
-    }
-    return { target: { kind: "anthropic", model: trimmed } };
-  }
-  const colon = trimmed.indexOf(":");
-  if (colon === -1) {
-    return { error: `"${text}" is neither claude-<id> nor <backend>:<model>` };
-  }
-  const backend = trimmed.slice(0, colon);
-  const model = trimmed.slice(colon + 1);
-  if (!isBackendName(backend)) {
-    return { error: `"${backend}" is not a backend name (a-z, 0-9, - and _)` };
-  }
-  if (model === "" || /\s/.test(model)) {
-    return { error: `"${text}" names no model after "${backend}:"` };
-  }
-  return { target: { backend, kind: "backend", model } };
-}
-var JUDGE_SLOT = "cc-smart-dev-kit-judge";
-var MODEL_SLOTS = {
-  "cc-smart-dev-kit-fable": "fable",
-  "cc-smart-dev-kit-opus": "opus"
-};
-var CLAUDE_FAMILIES = ["opus", "sonnet", "haiku", "fable"];
-function familyEnv(family) {
-  return `ANTHROPIC_DEFAULT_${family.toUpperCase()}_MODEL`;
-}
-var WORKER_SLOT = "cc-smart-dev-kit-worker";
-var FAMILY_SLOTS = {
-  "cc-smart-dev-kit-scout": "haiku",
-  [WORKER_SLOT]: "sonnet",
-  ...MODEL_SLOTS
-};
-var PROVIDER_PREFIX = /^(?:[a-z0-9-]+\.)*claude-/;
-function claudeFamily(model) {
-  const name = `${withoutContextSuffix(model).toLowerCase()}-`;
-  const prefix = PROVIDER_PREFIX.exec(name);
-  if (prefix === null)
-    return null;
-  const id = name.slice(prefix[0].length - "claude-".length);
-  return CLAUDE_FAMILIES.find((family) => id.includes(`-${family}-`)) ?? null;
-}
-var CAPACITY_STATUSES = new Set([408, 429, 500, 502, 503, 504, 529]);
-
-// src/gateway/config.ts
-var DEFAULT_PORT = 20100;
-var DEFAULT_ANTHROPIC_BASE_URL = "https://api.anthropic.com";
-var DEFAULT_FIRST_BYTE_MS = 60000;
-var MAX_TIMER_MS = 2147483647;
-function timerTooLong(consequence) {
-  return `too long: at most ${MAX_TIMER_MS} ms, the longest a timer can wait (above it the wait is 1 ms and ${consequence})`;
-}
-var BREAKER_HOLD_CEILING_MS = 240000;
-var JUDGE_NEVER_HOLDS = "the judge never holds a request (a held safety check would freeze every action in auto mode), so it has no breaker switch";
-var baseUrl = url({ protocol: /^https?$/ }).transform((url2) => url2.replace(/\/+$/, ""));
-var backendSchema = looseObject({
-  apiKey: string2().min(1),
-  baseUrl
-});
-var keptChainSchema = looseObject({
-  effort: record(string2(), _enum(BACKEND_EFFORT_LEVELS)).optional(),
-  fallback: boolean2().optional(),
-  targets: array(string2().min(1)).min(1)
-});
-var PROFILE_NAME_RULE = "a profile name is lower-case letters, digits and - (the /p/<name> of a project's URL), at most 64";
-var SLOT_KEY_RULE = (slot) => `"${slot}" is not a slot key (cc-smart-dev-kit-<name>)`;
-var profileSlotSchema = union([literal("claude"), array(string2().min(1)).min(1)], {
-  error: 'a profile slot is "claude" (plain Claude for that slot there) or a chain: a list of one or more targets'
-});
-var profileSchema = looseObject({
-  breaker: record(string2(), boolean2()).optional(),
-  fallback: record(string2(), boolean2()).optional(),
-  kept: record(string2(), keptChainSchema).optional(),
-  slots: record(string2(), profileSlotSchema).optional()
-});
-var gatewayConfigSchema = looseObject({
-  aliases: record(string2(), string2()).default({}),
-  effort: record(string2(), record(string2(), _enum(BACKEND_EFFORT_LEVELS))).optional(),
-  anthropicBaseUrl: literal(DEFAULT_ANTHROPIC_BASE_URL).default(DEFAULT_ANTHROPIC_BASE_URL),
-  backends: record(string2().refine(isBackendName, "not a backend name"), backendSchema),
-  judgeTested: record(string2(), string2()).optional(),
-  kept: record(string2().refine(isSlotKey, "a slot key is cc-smart-dev-kit-<name>"), keptChainSchema).optional(),
-  fallback: record(string2(), boolean2()).optional(),
-  breaker: record(string2(), boolean2()).optional(),
-  history: looseObject({
-    retentionDays: int().min(0, "0 turns the request history off, which is the smallest value").max(HISTORY_MAX_RETENTION_DAYS, `at most ${String(HISTORY_MAX_RETENTION_DAYS)} days (ten years), so a typo cannot fill the disk`).optional()
-  }).optional(),
-  modelSlots: record(string2(), string2()).optional(),
-  port: int().min(1).max(65535).default(DEFAULT_PORT),
-  profiles: record(string2(), profileSchema).optional(),
-  slots: record(string2(), array(string2()).min(1)),
-  timeouts: looseObject({
-    breakerHoldMs: int().min(0).max(BREAKER_HOLD_CEILING_MS, `too long: at most ${BREAKER_HOLD_CEILING_MS} ms (${BREAKER_HOLD_CEILING_MS / 1000} s), because a longer hold risks Claude Code giving up on the request`).optional(),
-    firstByteMs: int().positive().max(MAX_TIMER_MS, timerTooLong("every wait it bounds would end at once")).default(DEFAULT_FIRST_BYTE_MS),
-    streamIdleMs: int().positive().max(MAX_TIMER_MS, timerTooLong("every stream would be cut")).optional()
-  }).default({ firstByteMs: DEFAULT_FIRST_BYTE_MS }),
-  version: literal(1)
-}).superRefine((config, ctx) => {
-  for (const [slot, pins] of Object.entries(config.effort ?? {})) {
-    if (!isSlotKey(slot))
-      ctx.addIssue({ code: "custom", message: SLOT_KEY_RULE(slot), path: ["effort", slot] });
-    effortIssues(pins, ["effort", slot], ctx);
-  }
-  for (const [slot, saved] of Object.entries(config.kept ?? {})) {
-    effortIssues(saved.effort ?? {}, ["kept", slot, "effort"], ctx);
-  }
-  for (const slot of Object.keys(config.slots)) {
-    if (!isSlotKey(slot))
-      ctx.addIssue({ code: "custom", message: SLOT_KEY_RULE(slot), path: ["slots", slot] });
-  }
-  for (const [slot, targets] of Object.entries(config.slots)) {
-    chainIssues(config, targets, ["slots", slot], ctx);
-  }
-  for (const [name, profile] of Object.entries(config.profiles ?? {})) {
-    if (!isProfileName(name)) {
-      ctx.addIssue({ code: "custom", message: PROFILE_NAME_RULE, path: ["profiles", name] });
-      continue;
-    }
-    for (const field of ["slots", "kept"]) {
-      for (const slot of Object.keys(profile[field] ?? {})) {
-        if (isSlotKey(slot))
-          continue;
-        ctx.addIssue({
-          code: "custom",
-          message: SLOT_KEY_RULE(slot),
-          path: ["profiles", name, field, slot]
-        });
-      }
-    }
-    for (const [slot, chain] of Object.entries(profile.slots ?? {})) {
-      if (chain === "claude")
-        continue;
-      chainIssues(config, chain, ["profiles", name, "slots", slot], ctx);
-    }
-    const chained = new Set([...Object.keys(config.slots), ...Object.keys(profile.slots ?? {})].filter((slot) => profileSlotChain(config, profile, slot) !== null));
-    for (const slot of Object.keys(profile.fallback ?? {})) {
-      if (slot !== JUDGE_SLOT && !chained.has(slot)) {
-        ctx.addIssue({
-          code: "custom",
-          message: `fallback names slot "${slot}", which profile "${name}" has no chain for (a slot with no chain has nothing to fall back to)`,
-          path: ["profiles", name, "fallback", slot]
-        });
-      }
-    }
-    for (const slot of Object.keys(profile.breaker ?? {})) {
-      if (slot === JUDGE_SLOT) {
-        ctx.addIssue({
-          code: "custom",
-          message: `breaker names ${slot}: ${JUDGE_NEVER_HOLDS}`,
-          path: ["profiles", name, "breaker", slot]
-        });
-      } else if (!chained.has(slot)) {
-        ctx.addIssue({
-          code: "custom",
-          message: `breaker names slot "${slot}", which profile "${name}" has no chain for (a slot with no chain has no request to hold)`,
-          path: ["profiles", name, "breaker", slot]
-        });
-      }
-    }
-  }
-  for (const [name, to] of Object.entries(config.aliases)) {
-    const error = aliasError(name, to, config);
-    if (error !== null)
-      ctx.addIssue({ code: "custom", message: error, path: ["aliases", name] });
-  }
-  for (const [model, slot] of Object.entries(config.modelSlots ?? {})) {
-    const error = modelSlotError(model, slot, config.slots);
-    if (error !== null) {
-      ctx.addIssue({ code: "custom", message: error, path: ["modelSlots", model] });
-    }
-  }
-  for (const slot of Object.keys(config.fallback ?? {})) {
-    if (slot !== JUDGE_SLOT && !Object.hasOwn(config.slots, slot)) {
-      ctx.addIssue({
-        code: "custom",
-        message: `fallback names slot "${slot}", which is not in slots (a slot with no chain has nothing to fall back to)`,
-        path: ["fallback", slot]
-      });
-    }
-  }
-  for (const slot of Object.keys(config.breaker ?? {})) {
-    if (slot === JUDGE_SLOT) {
-      ctx.addIssue({
-        code: "custom",
-        message: `breaker names ${slot}: ${JUDGE_NEVER_HOLDS}`,
-        path: ["breaker", slot]
-      });
-    } else if (!Object.hasOwn(config.slots, slot)) {
-      ctx.addIssue({
-        code: "custom",
-        message: `breaker names slot "${slot}", which is not in slots (a slot with no chain has no request to hold)`,
-        path: ["breaker", slot]
-      });
-    }
-  }
-});
-function chainIssues(config, targets, path, ctx) {
-  targets.forEach((text, index) => {
-    const parsed = parseTarget(text);
-    if ("error" in parsed) {
-      ctx.addIssue({ code: "custom", message: parsed.error, path: [...path, index] });
-    } else if (parsed.target.kind === "backend" && !Object.hasOwn(config.backends, parsed.target.backend)) {
-      ctx.addIssue({
-        code: "custom",
-        message: `"${text}" names backend "${parsed.target.backend}", which is not in backends`,
-        path: [...path, index]
-      });
-    }
-  });
-}
-function effortIssues(pins, path, ctx) {
-  for (const target of Object.keys(pins)) {
-    const parsed = parseTarget(target);
-    const error = "error" in parsed ? parsed.error : parsed.target.kind === "anthropic" ? "a Claude target cannot pin effort: Anthropic gets only the fields its model refuses changed" : null;
-    if (error !== null)
-      ctx.addIssue({ code: "custom", message: error, path: [...path, target] });
-  }
-}
-function profileSlotChain(config, profile, slot) {
-  const own = profile.slots !== undefined && Object.hasOwn(profile.slots, slot) ? profile.slots[slot] : undefined;
-  if (own === "claude")
-    return null;
-  if (own !== undefined)
-    return own;
-  return Object.hasOwn(config.slots, slot) ? config.slots[slot] ?? null : null;
-}
-function modelSlotError(model, slot, slots) {
-  if (!model.startsWith("claude-") || /\s/.test(model) || model === "claude-") {
-    return `modelSlots key "${model}" is not a Claude model id`;
-  }
-  if (withoutContextSuffix(model) !== model) {
-    return `modelSlots key "${model}": write it without [1m]; the router looks names up without it`;
-  }
-  const family = Object.hasOwn(MODEL_SLOTS, slot) ? MODEL_SLOTS[slot] : undefined;
-  if (family === undefined) {
-    return `modelSlots "${model}" points at "${slot}", which is not a model slot (${Object.keys(MODEL_SLOTS).sort().join(", ")})`;
-  }
-  if (claudeFamily(model) !== family) {
-    return `modelSlots "${model}" points at ${slot}, which is for ${family} models`;
-  }
-  if (!Object.hasOwn(slots, slot)) {
-    return `modelSlots "${model}" points at slot "${slot}", which is not in slots`;
-  }
-  return null;
-}
-function aliasError(name, to, config) {
-  if (name.trim() === "" || /\s/.test(name))
-    return `alias "${name}" is not a model name`;
-  if (withoutContextSuffix(name) !== name) {
-    return `alias "${name}": write it without [1m]; the router looks names up without it`;
-  }
-  if (name.startsWith("claude-"))
-    return `alias "${name}": a claude-\u2026 name cannot be an alias`;
-  if (Object.hasOwn(config.slots, name)) {
-    return `alias "${name}" has the name of a slot; a slot cannot be an alias too`;
-  }
-  if (Object.hasOwn(config.aliases, to)) {
-    return `alias "${name}" points at "${to}", which is an alias too; point it at a slot or a model`;
-  }
-  if (isSlotKey(to)) {
-    return Object.hasOwn(config.slots, to) || Object.hasOwn(config.kept ?? {}, to) || Object.hasOwn(FAMILY_SLOTS, to) || to === JUDGE_SLOT ? null : `alias "${name}" points at slot "${to}", which is no slot: not in slots, not saved in kept, and none of the five`;
-  }
-  const parsed = parseTarget(to);
-  if ("error" in parsed)
-    return `alias "${name}": ${parsed.error}`;
-  if (parsed.target.kind === "backend" && !Object.hasOwn(config.backends, parsed.target.backend)) {
-    return `alias "${name}" names backend "${parsed.target.backend}", which is not in backends`;
-  }
-  return null;
-}
-
 // src/gateway/settings.ts
 function gatewayEnv(port) {
   return {

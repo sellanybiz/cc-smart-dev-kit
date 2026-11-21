@@ -347,10 +347,6 @@ function liveSessions(claudeConfigDir, facts = {}) {
   return live;
 }
 
-// src/project/resolve.ts
-import { existsSync as existsSync4, realpathSync as realpathSync3, statSync as statSync3 } from "fs";
-import { join as join6 } from "path";
-
 // src/project/config.ts
 import { existsSync as existsSync3, readFileSync as readFileSync5 } from "fs";
 import { posix, win32 } from "path";
@@ -6092,7 +6088,7 @@ function preprocess(fn, schema) {
 }
 // src/build-info/index.ts
 var info = {
-  version: "6.2.0",
+  version: "6.3.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -6112,6 +6108,9 @@ var DEPENDENCIES = info.dependencies;
 var MARKETPLACE_ADD_COMMAND = `claude plugin marketplace add ${MARKETPLACE_SOURCE}`;
 var PLUGIN_INSTALL_COMMAND = `claude plugin install ${PLUGIN_ID}`;
 var PLUGIN_UPDATE_COMMAND = `claude plugin update ${PLUGIN_ID}`;
+
+// src/jobs/kind-defaults.ts
+var KIND_NAME = /^[a-z0-9][a-z0-9:._-]*$/;
 
 // src/jobs/kinds.ts
 var matchRuleSchema = union([
@@ -6139,7 +6138,6 @@ var kindSpecSchema = strictObject({
   workers: unknown().optional(),
   light: unknown().optional()
 });
-var KIND_NAME = /^[a-z0-9][a-z0-9:._-]*$/;
 var kindsSchema = record(string2().regex(KIND_NAME, "a kind's name is lower-case letters, digits and : . _ -"), kindSpecSchema);
 
 // src/setup/user-json.ts
@@ -7893,6 +7891,21 @@ var PERSONAL_ONLY_REASONS = {
   "switches.leadHint": "the lead-model hint is per person, per machine"
 };
 
+// src/project/config-facts.ts
+var CONFIG_PATH = ".claude/cc-smart-dev-kit.json";
+
+class CcSmartDevKitConfigError extends Error {
+  name = "CcSmartDevKitConfigError";
+}
+
+class CcSmartDevKitVersionError extends CcSmartDevKitConfigError {
+  name = "CcSmartDevKitVersionError";
+}
+
+class CcSmartDevKitRetiredFieldError extends CcSmartDevKitConfigError {
+  name = "CcSmartDevKitRetiredFieldError";
+}
+
 // src/project/version-range.ts
 var NUMBER = "(?:x|X|\\*|0|[1-9]\\d*)";
 var IDENT = "[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*";
@@ -8040,17 +8053,6 @@ var ccSmartDevKitConfigSchema = strictObject({
   workflow: workflowSchema.optional(),
   ownHooks: array(_enum([...PLUGIN_HOOK_NAMES, ...RETIRED_HOOK_NAMES, ...UNSWITCHABLE_HOOK_NAMES])).optional()
 });
-class CcSmartDevKitConfigError extends Error {
-  name = "CcSmartDevKitConfigError";
-}
-
-class CcSmartDevKitVersionError extends CcSmartDevKitConfigError {
-  name = "CcSmartDevKitVersionError";
-}
-
-class CcSmartDevKitRetiredFieldError extends CcSmartDevKitConfigError {
-  name = "CcSmartDevKitRetiredFieldError";
-}
 function describeIssue(issue) {
   const field = issue.path.length > 0 ? issue.path.join(".") : "(top level)";
   if (issue.code === "unrecognized_keys") {
@@ -8129,7 +8131,9 @@ function checkCcSmartDevKitConfig(raw, where, pluginVersion = VERSION) {
   return parsed.data;
 }
 
-// src/project/resolve.ts
+// src/project/locate.ts
+import { existsSync as existsSync4, realpathSync as realpathSync3, statSync as statSync3 } from "fs";
+import { join as join6 } from "path";
 var MIN_GIT_VERSION = "2.31.0";
 var RESOLVE_GIT_TIMEOUT_MS = 5000;
 var GIT_NOT_FOUND = "git was not found, so this project's own values cannot be read. Install git, then try again.";
@@ -8261,19 +8265,23 @@ function locateCheckout(cwd, options = {}) {
     mainCheckout: roots.isWorktree ? findMainCheckout(git, cwd) : roots.root
   };
 }
-function loadProjectConfig(checkout, pluginVersion) {
+function projectFileFor(checkout) {
   const { root, mainCheckout } = checkout;
-  const own = join6(root, ".claude", "cc-smart-dev-kit.json");
-  let config = loadCcSmartDevKitConfig(own, pluginVersion);
-  let configFile = config === null ? null : own;
-  if (config === null && mainCheckout !== null && mainCheckout !== root) {
-    const main = join6(mainCheckout, ".claude", "cc-smart-dev-kit.json");
-    config = loadCcSmartDevKitConfig(main, pluginVersion);
-    configFile = config === null ? null : main;
-  }
-  return { ...checkout, config, configFile };
+  const own = join6(root, CONFIG_PATH);
+  if (existsSync4(own))
+    return own;
+  if (mainCheckout === null || mainCheckout === root)
+    return null;
+  const main = join6(mainCheckout, CONFIG_PATH);
+  return existsSync4(main) ? main : null;
 }
-var CONFIG_PATH = ".claude/cc-smart-dev-kit.json";
+
+// src/project/resolve.ts
+function loadProjectConfig(checkout, pluginVersion) {
+  const file = projectFileFor(checkout);
+  const config = file === null ? null : loadCcSmartDevKitConfig(file, pluginVersion);
+  return { ...checkout, config, configFile: config === null ? null : file };
+}
 
 // src/tasks/context.ts
 import { realpathSync as realpathSync4 } from "fs";
@@ -8477,6 +8485,105 @@ function recordStart(files, repo, nowMs) {
   writeJson(files.result, before === null ? { base: "", kept: [], lastRunAt: nowMs, removed: [], repo, seq: 0 } : { ...before, lastRunAt: nowMs });
 }
 
+// src/tasks/work/graph.ts
+function isOpen(task) {
+  return task.status === "pending" || task.status === "in_progress";
+}
+function inProgressFirst(a, b) {
+  return Number(b.status === "in_progress") - Number(a.status === "in_progress") || a.number - b.number;
+}
+var BLOCK_REFUSAL_WORDS = {
+  under: "it sits above this task",
+  cycle: "it would make a blocker cycle",
+  through: "it already waits for this task, through a parent"
+};
+
+class TaskGraph {
+  byId;
+  children = new Map;
+  added = new Map;
+  constructor(tasks) {
+    this.byId = new Map(tasks.map((task) => [task.id, task]));
+    for (const task of tasks) {
+      if (!task.parentId)
+        continue;
+      const siblings = this.children.get(task.parentId);
+      if (siblings)
+        siblings.push(task);
+      else
+        this.children.set(task.parentId, [task]);
+    }
+  }
+  childrenOf(id) {
+    return this.children.get(id) ?? [];
+  }
+  waitsOf(id) {
+    return [...this.byId.get(id)?.waitsFor ?? [], ...this.added.get(id) ?? []];
+  }
+  addWait(id, ref) {
+    const waits = this.added.get(id);
+    if (waits)
+      waits.push(ref);
+    else
+      this.added.set(id, [ref]);
+  }
+  ancestorsOf(task) {
+    const up = [];
+    const seen = new Set([task.id]);
+    for (let parent = this.byId.get(task.parentId ?? "");parent && !seen.has(parent.id); parent = this.byId.get(parent.parentId ?? "")) {
+      seen.add(parent.id);
+      up.push(parent);
+    }
+    return up;
+  }
+  holdingUnder(id) {
+    const seen = new Set([id]);
+    const result = [];
+    const walk = (parent) => {
+      for (const child of this.childrenOf(parent)) {
+        if (seen.has(child.id) || child.type === "non-blocking")
+          continue;
+        seen.add(child.id);
+        if (isOpen(child))
+          result.push(child);
+        walk(child.id);
+      }
+    };
+    walk(id);
+    return result.sort(inProgressFirst);
+  }
+  waitsFor(start, target) {
+    const reached = new Set;
+    const pending = [start];
+    while (pending.length) {
+      const id = pending.pop();
+      if (!id || reached.has(id))
+        continue;
+      if (id === target)
+        return true;
+      reached.add(id);
+      pending.push(...this.waitsOf(id), ...this.holdingUnder(id).map((held) => held.id));
+    }
+    return false;
+  }
+}
+function blockRefusal(graph, task, other) {
+  if (graph.ancestorsOf(task).some((up) => up.id === other.id))
+    return "under";
+  const seen = new Set;
+  const pending = [other.id];
+  while (pending.length) {
+    const id = pending.pop();
+    if (!id || seen.has(id))
+      continue;
+    if (id === task.id)
+      return "cycle";
+    seen.add(id);
+    pending.push(...graph.waitsOf(id));
+  }
+  return graph.waitsFor(other.id, task.id) ? "through" : null;
+}
+
 // src/tasks/work/queries.ts
 function hasFilesTable(db) {
   return db.sqlite.query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='task_files'").get() !== null;
@@ -8537,53 +8644,6 @@ function allTasks(db, project) {
     }
   }));
 }
-function isOpen(task) {
-  return task.status === "pending" || task.status === "in_progress";
-}
-function inProgressFirst(a, b) {
-  return Number(b.status === "in_progress") - Number(a.status === "in_progress") || a.number - b.number;
-}
-function holdingUnder(tasks, id) {
-  const children = new Map;
-  for (const t of tasks) {
-    if (!t.parentId)
-      continue;
-    const siblings = children.get(t.parentId);
-    if (siblings)
-      siblings.push(t);
-    else
-      children.set(t.parentId, [t]);
-  }
-  const seen = new Set([id]);
-  const result = [];
-  const walk = (parent) => {
-    for (const child of children.get(parent) ?? []) {
-      if (seen.has(child.id) || child.type === "non-blocking")
-        continue;
-      seen.add(child.id);
-      if (isOpen(child))
-        result.push(child);
-      walk(child.id);
-    }
-  };
-  walk(id);
-  return result.sort(inProgressFirst);
-}
-function waitsForTask(tasks, start, target) {
-  const byId = new Map(tasks.map((task) => [task.id, task]));
-  const reached = new Set;
-  const pending = [start];
-  while (pending.length) {
-    const id = pending.pop();
-    if (!id || reached.has(id))
-      continue;
-    if (id === target)
-      return true;
-    reached.add(id);
-    pending.push(...byId.get(id)?.waitsFor ?? [], ...holdingUnder(tasks, id).map((task) => task.id));
-  }
-  return false;
-}
 
 // src/tasks/work/read.ts
 import { existsSync as existsSync7 } from "fs";
@@ -8642,6 +8702,37 @@ var MIGRATIONS = [
 
 class BackupFailure extends Error {
 }
+function restoreHolds(sqlite, projects, originalHolds, moved) {
+  for (const tasks of projects.values()) {
+    const graph = new TaskGraph(tasks.map((task) => {
+      const row = moved.get(task.id);
+      if (!row)
+        return task;
+      return {
+        ...task,
+        parentId: row.parent_id,
+        type: row.blocking === 0 ? "non-blocking" : "blocking"
+      };
+    }));
+    for (const task of graph.byId.values())
+      for (const held of originalHolds.get(task.id) ?? []) {
+        if (graph.waitsOf(task.id).includes(held.id))
+          continue;
+        const refusal = blockRefusal(graph, task, held);
+        if (refusal) {
+          sqlite.query("INSERT INTO task_events(task_id,project,number,at,action,changes,reason) VALUES (?,?,?,?,'noted',?,?)").run(task.id, task.project, task.number, Date.now(), JSON.stringify({
+            note: [
+              null,
+              `hold on #${held.number} not restored: ${BLOCK_REFUSAL_WORDS[refusal]}`
+            ]
+          }), LEGACY_LIFT_REASON);
+          continue;
+        }
+        sqlite.query("INSERT OR IGNORE INTO task_deps(task_id,waits_for) VALUES (?,?)").run(task.id, held.id);
+        graph.addWait(task.id, held.id);
+      }
+  }
+}
 function repairTaskLayers(sqlite, file) {
   const nestedExists = sqlite.query("SELECT 1 FROM tasks t JOIN tasks p ON p.id=t.parent_id WHERE t.kind='task' AND p.kind='task' LIMIT 1").get();
   if (!nestedExists)
@@ -8650,10 +8741,14 @@ function repairTaskLayers(sqlite, file) {
   const byId = new Map(rows.map((row) => [row.id, row]));
   const originalHolds = new Map;
   const reader = { sqlite, writable: false, close() {} };
+  const projects = new Map;
   for (const project of new Set(rows.map((row) => row.project))) {
     const tasks = allTasks(reader, project);
-    for (const task of tasks.filter((task) => task.kind === "task" && tasks.some((child) => child.kind === "task" && child.parentId === task.id)))
-      originalHolds.set(task.id, holdingUnder(tasks, task.id).map((held) => held.id));
+    projects.set(project, tasks);
+    const before = new TaskGraph(tasks);
+    for (const task of tasks)
+      if (task.kind === "task" && before.childrenOf(task.id).some((child) => child.kind === "task"))
+        originalHolds.set(task.id, before.holdingUnder(task.id));
   }
   let backed = false;
   const move = (row, parent, above) => {
@@ -8686,12 +8781,7 @@ function repairTaskLayers(sqlite, file) {
   for (;; ) {
     const nested = rows.find((row) => row.kind === "task" && byId.get(row.parent_id ?? "")?.kind === "task");
     if (!nested) {
-      for (const [id, held] of originalHolds)
-        for (const h of held) {
-          if (waitsForTask(allTasks(reader, byId.get(id)?.project ?? ""), h, id))
-            continue;
-          sqlite.query("INSERT OR IGNORE INTO task_deps(task_id,waits_for) VALUES (?,?)").run(id, h);
-        }
+      restoreHolds(sqlite, projects, originalHolds, byId);
       return;
     }
     const chain = [];
@@ -9111,7 +9201,7 @@ function readWorkStore(paths, body) {
 }
 
 // src/worktrees/paths.ts
-import { join as join10 } from "path";
+import { basename as basename3, dirname as dirname6, join as join10 } from "path";
 var WORKTREES_FOLDER_SEGMENTS = [".claude", "worktrees"];
 var WORKTREES_GITIGNORE_ENTRY = `${WORKTREES_FOLDER_SEGMENTS.join("/")}/`;
 function worktreesFolder(repoRoot) {
@@ -9122,11 +9212,17 @@ function worktreeBranch(name) {
 }
 var SUBAGENT_NAME_PREFIX = "agent-";
 var SUBAGENT_BRANCH_PREFIX = worktreeBranch(SUBAGENT_NAME_PREFIX);
+function worktreeFolders(repoRoot, listed) {
+  const folders = new Set([worktreesFolder(repoRoot)]);
+  for (const one of listed.slice(1))
+    folders.add(dirname6(one.path));
+  return [...folders];
+}
 
 // src/worktrees/scan.ts
 import { existsSync as existsSync10, mkdtempSync, readdirSync as readdirSync7, rmSync as rmSync3, statSync as statSync8 } from "fs";
 import { tmpdir } from "os";
-import { basename as basename4, join as join15 } from "path";
+import { basename as basename5, join as join15 } from "path";
 
 // src/hooks/local-files.ts
 import {
@@ -9221,15 +9317,8 @@ function sameAsMain(worktree, mainCheckout, path) {
   };
   return same(path.replace(/\/$/, ""));
 }
-function projectRebuildable(mainCheckout) {
-  if (mainCheckout === null)
-    return [];
-  try {
-    const patterns = loadCcSmartDevKitConfig(join11(mainCheckout, CONFIG_PATH))?.worktrees?.rebuildable ?? [];
-    return patterns.map((pattern) => new Bun.Glob(`**/${pattern}`));
-  } catch {
-    return [];
-  }
+function rebuildableGlobs(config) {
+  return (config?.worktrees?.rebuildable ?? []).map((pattern) => new Bun.Glob(`**/${pattern}`));
 }
 function safeEntry(worktree, mainCheckout, entry, patterns) {
   if (patterns.some((pattern) => pattern.match(entry)))
@@ -9246,7 +9335,7 @@ function safeEntry(worktree, mainCheckout, entry, patterns) {
   }
   return mainCheckout !== null && (sameAsMain(worktree, mainCheckout, entry) || untouchedCopy(worktree, mainCheckout, entry));
 }
-function localFiles(worktree, mainCheckout, env, patterns = projectRebuildable(mainCheckout)) {
+function localFiles(worktree, mainCheckout, env, patterns) {
   const status = runGit(worktree, [
     "--no-optional-locks",
     "status",
@@ -9499,7 +9588,7 @@ function chunks(paths) {
 
 // src/hooks/worktree-leftovers.ts
 import { closeSync as closeSync4, existsSync as existsSync9, fstatSync, openSync as openSync4, readSync as readSync2, statSync as statSync7 } from "fs";
-import { basename as basename3, join as join13, resolve as resolve5 } from "path";
+import { basename as basename4, join as join13, resolve as resolve5 } from "path";
 
 // src/worktrees/in-progress.ts
 import { existsSync as existsSync8, readFileSync as readFileSync11, statSync as statSync6 } from "fs";
@@ -9583,6 +9672,9 @@ function branchInProgressWhy(worktree, branch, env) {
   const returnsToIt = read.running.some((one) => one.branch === branch || one.branch === `refs/heads/${branch}`);
   return returnsToIt ? `a worktree is bisecting or rebasing it, at ${worktree}` : null;
 }
+
+// src/hooks/checked-config.ts
+var CHECKED_FILE_MAX_BYTES = 256 * 1024;
 
 // src/hooks/worktree-leftovers.ts
 var REFLOG_TAIL_BYTES = 8 * 1024;
@@ -9832,11 +9924,18 @@ function innerWorktreeOf(worktree, all) {
   }
   return null;
 }
+function projectRebuildable(mainCheckout) {
+  try {
+    return rebuildableGlobs(loadCcSmartDevKitConfig(join15(mainCheckout, CONFIG_PATH)));
+  } catch {
+    return [];
+  }
+}
 function contentsOf(worktree, mainCheckout, ref, env, parked = false) {
   const changed = hasUnsavedChanges(worktree, ref, env, { ownDeletions: parked });
   if (changed)
     return { localFiles: [], uncommitted: true };
-  const ignored = localFiles(worktree, mainCheckout, env);
+  const ignored = localFiles(worktree, mainCheckout, env, projectRebuildable(mainCheckout));
   if (ignored === null) {
     return { localFiles: ["(git could not list the ignored files)"], uncommitted: false };
   }
@@ -10032,7 +10131,7 @@ function provedFinishedBuilder(listed, look) {
     return lock.kind === "agent";
   if (listed.locked)
     return false;
-  return finishedAgent(basename4(listed.path), listed.path, look);
+  return finishedAgent(basename5(listed.path), listed.path, look);
 }
 function judgeOne(repo, listed, all, look, idle) {
   const ahead = runGit(repo, ["rev-list", "--count", `${look.ref}..${listed.head}`], look.env);
@@ -10353,7 +10452,7 @@ function recordedBranches(paths, project) {
 }
 
 // src/worktrees/clean.ts
-import { basename as basename5 } from "path";
+import { basename as basename6 } from "path";
 
 // src/machine/hold-port.ts
 import { createServer } from "net";
@@ -10382,7 +10481,7 @@ var LOCK_PORTS = {
 
 // src/worktrees/scan-parked.ts
 import { existsSync as existsSync11, lstatSync as lstatSync4, readdirSync as readdirSync8, rmSync as rmSync4 } from "fs";
-import { dirname as dirname6, join as join16, relative } from "path";
+import { join as join16, relative } from "path";
 function parkedAtOf(path) {
   if (!isParkedWorktree(path))
     return null;
@@ -10396,9 +10495,10 @@ function strayParkedFolders(repo, env, earlier = []) {
   } catch {
     return [];
   }
-  const folders = new Set([worktreesFolder(repo)]);
-  for (const listed of [...all.slice(1), ...earlier.slice(1)])
-    folders.add(dirname6(listed.path));
+  const folders = new Set([
+    ...worktreeFolders(repo, all),
+    ...worktreeFolders(repo, earlier)
+  ]);
   const found = [];
   for (const folder of folders) {
     let names;
@@ -10589,7 +10689,7 @@ function cleanFinished(repo, scanned, judged, say) {
     const removal = removeWorktree(repo, worktree.listed, judged);
     for (const said of removal.said)
       say(`  ${said}`);
-    const name = basename5(worktree.listed.path);
+    const name = basename6(worktree.listed.path);
     if (removal.status === "removed") {
       removed.push({
         branch: worktree.listed.branch,
@@ -10628,7 +10728,7 @@ function cleanFinished(repo, scanned, judged, say) {
     const { state } = worktree;
     if (typeof state === "object" && !state.finished) {
       kept.push({
-        name: basename5(worktree.listed.path),
+        name: basename6(worktree.listed.path),
         path: worktree.listed.path,
         why: state.why
       });
