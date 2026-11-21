@@ -165,9 +165,9 @@ the work: after its review the session merges only when `workflow merge-check` e
 and nothing else; the one rule is in `commit`, the flag in `docs/design/workflow.md`), else leaves
 the pull request open; it stacks the next plan on a pull request that
 is still open (its branch fast-forwarded to the plan below, its pull request opened against that
-plan's branch, and never merged before it, which `merge-check` also refuses); and under `plans.runMode` `ask`, which is refused away, it runs lead + children
-for two or more ready plans that share no file when a Herdr terminal exists, otherwise solo,
-and records the choice. `user-available` switches the
+plan's branch, and never merged before it, which `merge-check` also refuses); and under `plans.runMode` `ask`, which is refused away, it takes the option the
+run-mode question recommends (`plan-task` § 6: lead + children for two or more ready plans that
+share no file when a Herdr terminal exists, otherwise solo), and records the choice. `user-available` switches the
 state back, shows what was done, then shows the decisions; nothing is parked to answer.
 Neither skill duplicates the hooks (`hooks.md` § While the person is away): the hook refuses the
 two question tools and says the person is away, the skills say how to work in that state. The pointer to them is in the hooks' notes, not
