@@ -99,10 +99,10 @@ export interface ProjectMocks {
  * only draws them, and a value the project's own file sets is marked `project`.
  */
 const WORKFLOW_SETTINGS: ProjectWorkflowSetting[] = [
-  { key: "autoCommit", source: "project", value: true },
-  { key: "autoPush", source: "project", value: true },
+  { key: "allowCommit", source: "project", value: true },
+  { key: "allowPush", source: "project", value: true },
   { key: "openPr", source: "project", value: "draft" },
-  { key: "autoMerge", source: "personal", value: true },
+  { key: "allowMerge", source: "personal", value: true },
   { key: "mergeMethod", source: "default", value: "merge" },
   { key: "deleteBranch", source: "default", value: false },
   { key: "reviewBeforePush", source: "default", value: true },

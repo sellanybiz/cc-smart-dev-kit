@@ -21525,7 +21525,7 @@ var COMMAND = "cc-smart-dev-kit";
 
 // src/build-info/index.ts
 var info = {
-  version: "6.0.0",
+  version: "6.1.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -23486,11 +23486,59 @@ var mergeFilesSchema = array(string2()).transform((paths, context) => {
   }
   return normalised;
 });
-var workflowSchema = strictObject({
-  autoCommit: boolean2().optional(),
-  autoPush: boolean2().optional(),
+var WORKFLOW_KEY_ALIASES = {
+  autoCommit: "allowCommit",
+  autoPush: "allowPush",
+  autoMerge: "allowMerge"
+};
+function oldNamesIn(raw) {
+  return Object.keys(WORKFLOW_KEY_ALIASES).filter((old) => Object.hasOwn(raw, old)).map((old) => ({
+    old,
+    current: WORKFLOW_KEY_ALIASES[old],
+    both: Object.hasOwn(raw, WORKFLOW_KEY_ALIASES[old])
+  }));
+}
+function withCurrentNames(raw) {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw))
+    return raw;
+  const moved = { ...raw };
+  for (const old of Object.keys(WORKFLOW_KEY_ALIASES)) {
+    if (!Object.hasOwn(moved, old))
+      continue;
+    const current = WORKFLOW_KEY_ALIASES[old];
+    if (!Object.hasOwn(moved, current))
+      moved[current] = moved[old];
+    delete moved[old];
+  }
+  return moved;
+}
+function readWithCurrentNames(raw, context) {
+  const moved = withCurrentNames(raw);
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw))
+    return moved;
+  const current = moved;
+  for (const old of oldNamesIn(raw)) {
+    if (old.both)
+      continue;
+    const checked = workflowObjectSchema.shape[old.current].safeParse(current[old.current]);
+    if (checked.success)
+      continue;
+    const reason = checked.error.issues.map((issue) => issue.message).join(", ");
+    context.issues.push({
+      code: "custom",
+      input: current[old.current],
+      message: `${reason} (${old.old} is the old name of ${old.current})`,
+      path: [old.old]
+    });
+    delete current[old.current];
+  }
+  return current;
+}
+var workflowObjectSchema = strictObject({
+  allowCommit: boolean2().optional(),
+  allowPush: boolean2().optional(),
   openPr: _enum(["off", "draft", "ready"]).optional(),
-  autoMerge: boolean2().optional(),
+  allowMerge: boolean2().optional(),
   mergeMethod: _enum(["merge", "squash", "rebase"]).optional(),
   deleteBranch: boolean2().optional(),
   reviewBeforePush: boolean2().optional(),
@@ -23529,18 +23577,19 @@ var workflowSchema = strictObject({
   }).transform(({ events: _events, sound: _sound, ...usage }) => usage).optional(),
   crew: unknown().optional()
 });
-var personalWorkflowSchema = workflowSchema.extend({
+var workflowSchema = preprocess(readWithCurrentNames, workflowObjectSchema);
+var personalWorkflowSchema = preprocess(readWithCurrentNames, workflowObjectSchema.extend({
   plans: strictObject({
     maxPhases: numberField("plans.maxPhases"),
     runMode: _enum(RUN_MODES).optional()
   }).optional(),
   switches: strictObject({ jobRoute: boolean2().optional(), leadHint: boolean2().optional() }).optional()
-});
+}));
 var workflowDefaults = {
-  autoCommit: false,
-  autoPush: false,
+  allowCommit: false,
+  allowPush: false,
   openPr: "off",
-  autoMerge: false,
+  allowMerge: false,
   mergeMethod: "merge",
   deleteBranch: false,
   reviewBeforePush: true,
@@ -23575,10 +23624,10 @@ var SWITCH_NAMES = [
   "leadHint"
 ];
 var POLICY_KEYS = [
-  "autoCommit",
-  "autoPush",
+  "allowCommit",
+  "allowPush",
   "openPr",
-  "autoMerge",
+  "allowMerge",
   "mergeMethod",
   "deleteBranch",
   "reviewBeforePush",
@@ -25207,6 +25256,31 @@ function refuseBareClose(all, task, outcome, given) {
   if (outcome === "dropped" && !given.note?.trim())
     throw new Error(`${step}: a step is dropped with a note that gives the reason (${TASK_TOOL.done} with task "#${task.number}", outcome "dropped" and note)`);
 }
+function refuseEmptyHandBack(all, phase, outcome, git) {
+  const { branch, base } = phase;
+  if (phase.kind !== "phase" || outcome !== "done" || phase.status === "done")
+    return;
+  if (!branch || !base)
+    return;
+  const what = `#${phase.number} "${phase.subject}" records its builder's branch "${branch}" and base ${base}`;
+  const planBranch = all.find((t) => t.kind === "plan" && t.plan === phase.plan)?.branch ?? null;
+  for (const name of [branch, base, planBranch])
+    if (name?.startsWith("-"))
+      throw new Error(`${what}, and "${name}" is not a branch or commit name: fix the phase's binding`);
+  const counted = git(["rev-list", "--count", `${base}..${branch}`]);
+  if (!counted.ok)
+    throw new Error(`${what}: git could not count its commits (${counted.err || "no reason given"}), so the hand-back is not proved. Fix the binding or the repo, then close the phase`);
+  if (counted.out === "0")
+    throw new Error(`${what}, but "${branch}" has no commit past its base: the builder handed back nothing. Get its work committed on "${branch}" and merged into ${planBranch === null ? "the plan branch" : `"${planBranch}"`}, then close the phase`);
+  if (planBranch === null)
+    return;
+  const held = git(["merge-base", "--is-ancestor", branch, planBranch]);
+  if (held.ok)
+    return;
+  if (held.code === 1)
+    throw new Error(`${what}, but "${branch}" is not in the plan branch "${planBranch}": merge the builder's commit into "${planBranch}", then close the phase`);
+  throw new Error(`${what}: git could not check that "${branch}" is in the plan branch "${planBranch}" (${held.err || "no reason given"}), so the hand-back is not proved. Fix the binding or the repo, then close the phase`);
+}
 function refuseStepEscape(all, task, to) {
   const from = task.parentId === null ? undefined : all.find((t) => t.id === task.parentId);
   if (task.kind !== "task" || from?.kind !== "phase" || !isOpen(task))
@@ -26256,6 +26330,7 @@ function createTaskOps(options = {}) {
       };
       const claimedElsewhere = (t) => claimState(t, CLAIM_PROCESS, who) === "another session";
       const guardCaller = { owns, isLead: (t) => isLead(t.lead, who) };
+      const handBackGit = (args) => ctx.checkoutRoot === null ? { ok: false, out: "", err: "this folder is not in a git checkout", code: null } : runGit(ctx.checkoutRoot, args, env);
       const refuseOther = (plan) => refuseOtherPlan({ all, inFlight, plan, claimedElsewhere, caller: guardCaller });
       const freedAfter = (after, closed) => freedText(after, closed, owns, (plan) => planInTheWay({
         all: after,
@@ -26523,8 +26598,10 @@ function createTaskOps(options = {}) {
         refuseParkWhileBusy(all, task, status);
         if (input.parent !== undefined)
           refuseStepEscape(all, task, destination);
-        if (status === "done" || status === "dropped")
+        if (status === "done" || status === "dropped") {
           refuseBareClose(all, task, status, {});
+          refuseEmptyHandBack(all, { ...task, ...bindings2({ branch: input.branch, base: input.base }) }, status, handBackGit);
+        }
         const flight = entering ? startCheck(task.kind === "plan" ? task.plan : landing) : {};
         const updated = value(writeWork(store, () => {
           const changed = applyUpdate(store, task.id, {
@@ -26571,6 +26648,7 @@ function createTaskOps(options = {}) {
         }
         const task = work(input.task);
         refuseBareClose(all, task, input.outcome, { evidence: input.evidence, note: input.note });
+        refuseEmptyHandBack(all, task, input.outcome, handBackGit);
         const changed = value(writeWork(store, () => {
           for (const text of [input.note, input.evidence])
             if (text)
@@ -26775,14 +26853,14 @@ After compaction, task_list scope plan and git log are the truth.
 Finish or drop every blocking task before marking its parent done.
 Three layers: plan \u203A phase \u203A task. A non-blocking task holds nothing; a task blocked by an open task waits for it.
 A plan holds at most plans.maxPhases phases, and a phase starts only once it holds tasks. Lay phases in any of your plans, up front; run one plan at a time: starting work in a plan puts it in flight, and a start in another plan is refused until the first is finished or parked (park = its plan task to pending, once its phases stop; resume = start a phase again). A later ask waits as a task under its plan (parent = the plan's #n). A task made with no plan and no parent is loose: a small fix needs no plan, and it never joins or starts one.
-A step of a phase closes done with evidence, or dropped with a note that gives the reason.
+A step of a phase closes done with evidence, or dropped with a note that gives the reason. A phase with a recorded branch closes done only once that branch has a commit past its base and is in the plan branch.
 A plan task holds its file list (files on task_create or task_update): repo-relative paths, a folder ends in /; a plan is handed to a child only when no held plan's files overlap.
 Save notes as you go with ${TASK_TOOL.note}.`;
 var descriptions = {
   take: "Take a plan or task into the calling session. Live claims need force; a refusal changes nothing.",
   create: "Create a work task (kind work, the default), or a deploy task for prod or staging (deploy and type required; pair true with staging also creates its prod twin): a file to commit with this branch. Create the plan's phases here (phase): at most plans.maxPhases per plan, each holding its tasks. A plan without parent creates the plan itself; to add a task to a plan, give its phase as parent, or the plan as parent to make it wait there for a phase. A task with neither plan nor parent is loose, whatever plans are open. Phases may be laid in any of your plans; one plan is in flight at a time.",
   update: `Update a task: its status, type, parent or blockers; status open reopens a closed deploy task. Starting work claims it for this Claude process and puts its plan in flight; a phase starts only with tasks, and not while another plan of yours is in flight. Setting an in-flight plan's task to pending parks it, refused while its phases run. A task waiting under a plan moves under a phase of that plan with parent. Close a step with ${TASK_TOOL.done}.`,
-  done: 'Finish or drop a task. Its open blocking tasks must be finished or dropped first. A step of a phase, and every deploy task, finishes with evidence or drops with a note; only the person drops a blocking deploy task. The answer lists your own work this close freed ("now ready"): start it, phases together.',
+  done: 'Finish or drop a task. Its open blocking tasks must be finished or dropped first. A step of a phase, and every deploy task, finishes with evidence or drops with a note; only the person drops a blocking deploy task. A phase with a recorded branch closes done only once that branch has a commit past its base and is in the plan branch. The answer lists your own work this close freed ("now ready"): start it, phases together.',
   note: "Save a note on a task as work proceeds.",
   list: "List the caller's tasks as a tree, or list the plan or project (scope project also lists the open deploy tasks).",
   get: "Read a task, its notes and its history: each change with its time, the values before and after, and the session that made it. Use offset to read the next part; history true also prints every earlier description.",

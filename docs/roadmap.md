@@ -203,7 +203,7 @@ Done in this release:
   answered each and the tokens their answers reported (`gateway.md` § The safety-check counts).
 - **The merge guard** (`docs/design/workflow.md` § The workflow): the `merge-guard` hook asks the person
   before a `gh pr merge` its policy does not allow, and lets one through with no question only
-  when `autoMerge` allows it, every required check is green, and the head commit's review is
+  when `allowMerge` allows it, every required check is green, and the head commit's review is
   recorded. **The review record**: `cc-smart-dev-kit workflow review-done` writes it, and
   `workflow show` says whether the commit here has one.
 - **The statusline usage warning** still reads `alerts.usagePercent`. Retired `alerts.events`

@@ -32,7 +32,7 @@ import { resolve } from "node:path";
 import { COMMAND } from "../build-info/names";
 import { type CliPaths, tildify } from "../cli/paths";
 import { runGit } from "../hooks/git";
-import type { CcSmartDevKitConfig } from "../project/config";
+import { type CcSmartDevKitConfig, WORKFLOW_ALLOW_KEYS_SINCE } from "../project/config";
 import { type Checkout, CONFIG_PATH, loadProjectConfig, locateCheckout } from "../project/resolve";
 import { clashesOf, clashLines } from "./clashes";
 import {
@@ -63,6 +63,7 @@ import {
 } from "./reviews";
 import type { WorkflowKey } from "./schema";
 import {
+  currentKeyName,
   INBOUND_KEYS,
   OUTBOUND_KEYS,
   PLAN_KEYS,
@@ -71,6 +72,7 @@ import {
   REVIEW_GATE_KEYS,
   RUN_MODES,
   showValue,
+  WORKFLOW_KEY_ALIASES,
   WORKFLOW_KEYS,
 } from "./schema";
 import { writePersonalSetting, writeProjectSetting } from "./write";
@@ -87,9 +89,23 @@ export interface WorkflowContext {
   now?: () => number;
 }
 
+/** The old names, said once: what the usage and a renamed setting's line both name. */
+const OLD_NAMES_TEXT = `${Object.keys(WORKFLOW_KEY_ALIASES).join(", ")} are the old names of ${Object.values(WORKFLOW_KEY_ALIASES).join(", ")} (${WORKFLOW_ALLOW_KEYS_SINCE}): a file and this command still take them, and every write uses the new name`;
+
+/**
+ * The line that says a setting was typed under its old name, or null when the name is current.
+ * One line, printed before the write's own line.
+ */
+function renamedLine(typed: string, current: string): string | null {
+  return typed === current
+    ? null
+    : `${typed} is now called ${current}: using ${current} (the old name still works in a file)`;
+}
+
 export const WORKFLOW_USAGE = `Usage: ${COMMAND} workflow [show] | set <setting> <value> [--project] | unset <setting> [--project] | propose <setting> <value> [--unset] [--folder <project>] [--json] | review-done [--sha <commit>] | merge-check [<pr>… | --branch <b> --base <base>]
 
 The settings are: ${WORKFLOW_KEYS.join(", ")}
+${OLD_NAMES_TEXT}.
 show (the default) prints each value and where it came from: the project's
 .claude/cc-smart-dev-kit.json, your own ~/.config/cc-smart-dev-kit/workflow.json, or the
 built-in default, and whether the commit this checkout is on has a recorded review. set
@@ -121,12 +137,12 @@ the paths every plan touches and each merge settles; it is the project's, needs 
 counts only as committed on origin/<base>.
 review-done records that the change set up to a commit (default: HEAD, or --sha <commit>)
 had its one premium review and its fixes. merge-check reads it before a merge that
-autoMerge would make by itself, while reviewBeforePush is on. Inside Claude Code the review-record
+allowMerge would make by itself, while reviewBeforePush is on. Inside Claude Code the review-record
 hook writes it, when a review agent (the reviewAgents setting) returns, so review-done
 refuses there: it is for your own terminal.
 merge-check judges a merge without making it: each
 pull request number, or a local branch against a base (--branch <b> --base <base>). A pull
-request is allowed when the committed policy passes: autoMerge on, its base the project's
+request is allowed when the committed policy passes: allowMerge on, its base the project's
 integration base or the repository's default branch, every required check green, and a review covering its head under
 fixesAfterReview. A branch is allowed when the review record covers its head. One line per
 verdict; exit 0 when every merge is allowed, 1 when any asks.`;
@@ -539,7 +555,12 @@ function setOrUnset(context: WorkflowContext, sub: string, argv: string[]): numb
     context.error(`Unknown option: ${unknown.join(" ")}\n\n${WORKFLOW_USAGE}`);
     return 2;
   }
-  if (key === undefined || !WORKFLOW_KEYS.includes(key as WorkflowKey)) {
+  const current = key === undefined ? undefined : currentKeyName(key);
+  if (
+    key === undefined ||
+    current === undefined ||
+    !WORKFLOW_KEYS.includes(current as WorkflowKey)
+  ) {
     context.error(
       key === undefined
         ? `${sub} needs a setting\n\n${WORKFLOW_USAGE}`
@@ -547,7 +568,7 @@ function setOrUnset(context: WorkflowContext, sub: string, argv: string[]): numb
     );
     return 2;
   }
-  const wanted = key as WorkflowKey;
+  const wanted = current as WorkflowKey;
   if (
     (OUTBOUND_KEYS.includes(wanted) || INBOUND_KEYS.includes(wanted)) &&
     insideClaudeCode(context.env)
@@ -585,8 +606,10 @@ function setOrUnset(context: WorkflowContext, sub: string, argv: string[]): numb
   }
   try {
     const line = projectFlag
-      ? writeProjectSetting(context.cwd, key, value, context.env)
-      : writePersonalSetting(context.paths, key, value);
+      ? writeProjectSetting(context.cwd, wanted, value, context.env)
+      : writePersonalSetting(context.paths, wanted, value);
+    const renamed = renamedLine(key, wanted);
+    if (renamed !== null) context.print(renamed);
     context.print(line);
     // D16: a write that leaves settings that cannot work together says so, with the fix. The
     // policy after the write is read the same way `show` reads it.
@@ -603,7 +626,15 @@ function setOrUnset(context: WorkflowContext, sub: string, argv: string[]): numb
 
 /** `propose`'s arguments: one setting, one value or `--unset`, a folder, and JSON. */
 type ProposeArgs =
-  | { folder: null | string; json: boolean; ok: true; setting: WorkflowKey; value: unknown }
+  | {
+      folder: null | string;
+      json: boolean;
+      ok: true;
+      setting: WorkflowKey;
+      /** The name as typed, which may be an old one (`autoPush` for `allowPush`). */
+      typed: string;
+      value: unknown;
+    }
   | { ok: false; why: string };
 
 function proposeArgs(argv: string[]): ProposeArgs {
@@ -634,7 +665,12 @@ function proposeArgs(argv: string[]): ProposeArgs {
     words.push(arg);
   }
   const [key, ...rest] = words;
-  if (key === undefined || !WORKFLOW_KEYS.includes(key as WorkflowKey)) {
+  const current = key === undefined ? undefined : currentKeyName(key);
+  if (
+    key === undefined ||
+    current === undefined ||
+    !WORKFLOW_KEYS.includes(current as WorkflowKey)
+  ) {
     return {
       ok: false,
       why:
@@ -643,11 +679,11 @@ function proposeArgs(argv: string[]): ProposeArgs {
           : `Unknown setting: ${key}. The settings are: ${WORKFLOW_KEYS.join(", ")}`,
     };
   }
-  const wanted = key as WorkflowKey;
+  const wanted = current as WorkflowKey;
   if (unset) {
     return rest.length > 0
       ? { ok: false, why: "propose takes a value, or --unset, not both" }
-      : { folder, json, ok: true, setting: wanted, value: undefined };
+      : { folder, json, ok: true, setting: wanted, typed: key, value: undefined };
   }
   const text = rest[0];
   if (rest.length !== 1 || text === undefined) {
@@ -658,7 +694,7 @@ function proposeArgs(argv: string[]): ProposeArgs {
   }
   const parsed = parseWorkflowValue(wanted, text);
   return parsed.ok
-    ? { folder, json, ok: true, setting: wanted, value: parsed.value }
+    ? { folder, json, ok: true, setting: wanted, typed: key, value: parsed.value }
     : { ok: false, why: parsed.why };
 }
 
@@ -672,6 +708,9 @@ async function propose(context: WorkflowContext, argv: string[]): Promise<number
     context.error(`${parsed.why}\n\n${WORKFLOW_USAGE}`);
     return 2;
   }
+  // `--json` prints one object and nothing else, so the rename line stays out of it.
+  const renamed = parsed.json ? null : renamedLine(parsed.typed, parsed.setting);
+  if (renamed !== null) context.print(renamed);
   return await proposeWorkflow(
     {
       env: context.env,

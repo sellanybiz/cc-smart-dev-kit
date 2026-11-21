@@ -3037,6 +3037,9 @@ function handlePipeResult(left, next, ctx) {
   }
   return next._zod.run({ value: left.value, issues: left.issues }, ctx);
 }
+var $ZodPreprocess = /* @__PURE__ */ $constructor("$ZodPreprocess", (inst, def) => {
+  $ZodPipe.init(inst, def);
+});
 var $ZodReadonly = /* @__PURE__ */ $constructor("$ZodReadonly", (inst, def) => {
   $ZodType.init(inst, def);
   defineLazyInternal(inst, "propValues", (zod) => zod.def.innerType._zod.propValues);
@@ -5966,6 +5969,10 @@ function pipe(in_, out) {
     out
   });
 }
+var ZodPreprocess = /* @__PURE__ */ $constructor("ZodPreprocess", (inst, def) => {
+  ZodPipe.init(inst, def);
+  $ZodPreprocess.init(inst, def);
+});
 var ZodReadonly = /* @__PURE__ */ $constructor("ZodReadonly", (inst, def) => {
   $ZodReadonly.init(inst, def);
   ZodType.init(inst, def);
@@ -5989,9 +5996,16 @@ function refine(fn, _params = {}) {
 function superRefine(fn, params) {
   return _superRefine(fn, params);
 }
+function preprocess(fn, schema) {
+  return new ZodPreprocess({
+    type: "pipe",
+    in: transform(fn),
+    out: schema
+  });
+}
 // src/build-info/index.ts
 var info = {
-  version: "6.0.0",
+  version: "6.1.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -8632,11 +8646,59 @@ var mergeFilesSchema = array(string2()).transform((paths, context) => {
   }
   return normalised;
 });
-var workflowSchema = strictObject({
-  autoCommit: boolean2().optional(),
-  autoPush: boolean2().optional(),
+var WORKFLOW_KEY_ALIASES = {
+  autoCommit: "allowCommit",
+  autoPush: "allowPush",
+  autoMerge: "allowMerge"
+};
+function oldNamesIn(raw) {
+  return Object.keys(WORKFLOW_KEY_ALIASES).filter((old) => Object.hasOwn(raw, old)).map((old) => ({
+    old,
+    current: WORKFLOW_KEY_ALIASES[old],
+    both: Object.hasOwn(raw, WORKFLOW_KEY_ALIASES[old])
+  }));
+}
+function withCurrentNames(raw) {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw))
+    return raw;
+  const moved = { ...raw };
+  for (const old of Object.keys(WORKFLOW_KEY_ALIASES)) {
+    if (!Object.hasOwn(moved, old))
+      continue;
+    const current = WORKFLOW_KEY_ALIASES[old];
+    if (!Object.hasOwn(moved, current))
+      moved[current] = moved[old];
+    delete moved[old];
+  }
+  return moved;
+}
+function readWithCurrentNames(raw, context) {
+  const moved = withCurrentNames(raw);
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw))
+    return moved;
+  const current = moved;
+  for (const old of oldNamesIn(raw)) {
+    if (old.both)
+      continue;
+    const checked = workflowObjectSchema.shape[old.current].safeParse(current[old.current]);
+    if (checked.success)
+      continue;
+    const reason = checked.error.issues.map((issue) => issue.message).join(", ");
+    context.issues.push({
+      code: "custom",
+      input: current[old.current],
+      message: `${reason} (${old.old} is the old name of ${old.current})`,
+      path: [old.old]
+    });
+    delete current[old.current];
+  }
+  return current;
+}
+var workflowObjectSchema = strictObject({
+  allowCommit: boolean2().optional(),
+  allowPush: boolean2().optional(),
   openPr: _enum(["off", "draft", "ready"]).optional(),
-  autoMerge: boolean2().optional(),
+  allowMerge: boolean2().optional(),
   mergeMethod: _enum(["merge", "squash", "rebase"]).optional(),
   deleteBranch: boolean2().optional(),
   reviewBeforePush: boolean2().optional(),
@@ -8675,18 +8737,19 @@ var workflowSchema = strictObject({
   }).transform(({ events: _events, sound: _sound, ...usage }) => usage).optional(),
   crew: unknown().optional()
 });
-var personalWorkflowSchema = workflowSchema.extend({
+var workflowSchema = preprocess(readWithCurrentNames, workflowObjectSchema);
+var personalWorkflowSchema = preprocess(readWithCurrentNames, workflowObjectSchema.extend({
   plans: strictObject({
     maxPhases: numberField("plans.maxPhases"),
     runMode: _enum(RUN_MODES).optional()
   }).optional(),
   switches: strictObject({ jobRoute: boolean2().optional(), leadHint: boolean2().optional() }).optional()
-});
+}));
 var workflowDefaults = {
-  autoCommit: false,
-  autoPush: false,
+  allowCommit: false,
+  allowPush: false,
   openPr: "off",
-  autoMerge: false,
+  allowMerge: false,
   mergeMethod: "merge",
   deleteBranch: false,
   reviewBeforePush: true,
@@ -8721,10 +8784,10 @@ var SWITCH_NAMES = [
   "leadHint"
 ];
 var POLICY_KEYS = [
-  "autoCommit",
-  "autoPush",
+  "allowCommit",
+  "allowPush",
   "openPr",
-  "autoMerge",
+  "allowMerge",
   "mergeMethod",
   "deleteBranch",
   "reviewBeforePush",
@@ -10190,10 +10253,10 @@ function resolveWorkflow(paths, projectConfig) {
   const fixes = merged.fixesAfterReview ?? {};
   const issues = merged.issues ?? {};
   return {
-    autoCommit: of("autoCommit", merged.autoCommit ?? workflowDefaults.autoCommit),
-    autoPush: of("autoPush", merged.autoPush ?? workflowDefaults.autoPush),
+    allowCommit: of("allowCommit", merged.allowCommit ?? workflowDefaults.allowCommit),
+    allowPush: of("allowPush", merged.allowPush ?? workflowDefaults.allowPush),
     openPr: of("openPr", merged.openPr ?? workflowDefaults.openPr),
-    autoMerge: of("autoMerge", merged.autoMerge ?? workflowDefaults.autoMerge),
+    allowMerge: of("allowMerge", merged.allowMerge ?? workflowDefaults.allowMerge),
     mergeMethod: of("mergeMethod", merged.mergeMethod ?? workflowDefaults.mergeMethod),
     deleteBranch: of("deleteBranch", merged.deleteBranch ?? workflowDefaults.deleteBranch),
     reviewBeforePush: of("reviewBeforePush", merged.reviewBeforePush ?? workflowDefaults.reviewBeforePush),
@@ -14207,7 +14270,8 @@ var newScan = () => ({
   background: false,
   queued: false,
   stray: null,
-  opaque: false
+  opaque: false,
+  unread: null
 });
 var LONE_AMPERSAND = /(?<![&|>])&(?![&>])/;
 function sendsToBackground(command, steps) {
@@ -14229,7 +14293,7 @@ function isOneCommand(body) {
 }
 function expandScript(call, runner, bodies, lookedUpIn, kinds, depth, run, all, out) {
   if (depth >= MAX_NESTING)
-    return opaque(out);
+    return opaque(out, "unreadable");
   const name = call.script ?? "";
   const folder = bodies.folder ?? lookedUpIn;
   const hooks = !(runner === "yarn" && bodies.yarnBerry === true);
@@ -14240,30 +14304,32 @@ function expandScript(call, runner, bodies, lookedUpIn, kinds, depth, run, all, 
     const key = JSON.stringify([folder, part]);
     if (run.reading.includes(key)) {
       if (all)
-        return opaque(out);
+        return opaque(out, "unreadable");
+      out.unread ??= "unreadable";
       continue;
     }
     const inside = {
       ...run,
       folder,
       runner,
-      extra: one && part === name ? call.args : undefined,
+      extra: part === name ? call.args : undefined,
       compound: run.compound || !one,
       reading: [...run.reading, key]
     };
     if (!scan(bodies.get(part) ?? "", kinds, "bash", depth + 1, inside, all, out) && all) {
-      return opaque(out);
+      return opaque(out, "unreadable");
     }
   }
   return true;
 }
-function opaque(out) {
+function opaque(out, why) {
   out.opaque = true;
+  out.unread ??= why;
   return false;
 }
 function refuse(run, out, step) {
   if (run.reading.length > 0)
-    return opaque(out);
+    return opaque(out, "not-heavy");
   out.stray ??= step.text.trim();
   return false;
 }
@@ -14327,10 +14393,14 @@ function scan(command, kinds, dialect, depth, run, all, out) {
     if (all && runsAsAnotherUser(invocation)) {
       const asked = newScan();
       scan(step.text, kinds, dialect, depth + 1, { ...run }, false, asked);
-      return takesSlot(asked, kinds, run.source) ? opaque(out) : refuse(run, out, step);
+      return takesSlot(asked, kinds, run.source) ? opaque(out, "other-user") : refuse(run, out, step);
     }
     if (all && isRunnerProgram(program))
       return refuse(run, out, step);
+    if (!all && runsAsAnotherUser(invocation))
+      out.unread ??= "other-user";
+    if (!all && isRunnerProgram(program))
+      out.unread ??= "runner";
     if (isJobRun(program, args))
       out.queued = true;
     const inner = nestedCommand(program, args, step.pipedFrom);
@@ -14340,7 +14410,7 @@ function scan(command, kinds, dialect, depth, run, all, out) {
       extra: undefined,
       pipeFed: run.pipeFed || pipeFed,
       step: pipeFed ? null : run.step
-    }, all, out) : opaque(out);
+    }, all, out) : opaque(out, "unreadable");
     if (all && inner !== undefined) {
       if (pipeFed)
         return refuse(run, out, step);
@@ -14352,12 +14422,23 @@ function scan(command, kinds, dialect, depth, run, all, out) {
     const before = out.found.length;
     const heavy = call !== undefined && matchCall(call, program, kinds, depth, run, all, out);
     if (all && !heavy && !(dialect === "bash" && isGlueCommand(step))) {
-      if (out.opaque && out.found.length === before && run.reading.length === 0) {
+      if (out.opaque && run.reading.length === 0) {
         const body = newScan();
         if (call !== undefined)
           matchCall(call, program, kinds, depth, { ...run }, false, body);
-        if (!takesSlot(body, kinds, run.source))
+        if (!takesSlot(body, kinds, run.source)) {
+          if (out.found.length === before)
+            out.opaque = false;
+        } else if (out.unread === "not-heavy" && body.unread === null && !body.background) {
+          const taking = canWeigh(run.source) ? slotRun(body, kinds, run.source) : undefined;
+          const heavyRuns = body.found.filter((one) => !one.printOnly);
+          out.found.length = before;
+          out.found.push(...typeof taking === "object" ? [taking, ...heavyRuns.filter((one) => one !== taking)] : heavyRuns);
+          out.queued ||= body.queued;
           out.opaque = false;
+          out.unread = null;
+          continue;
+        }
       }
       return out.opaque ? false : refuse(run, out, step);
     }

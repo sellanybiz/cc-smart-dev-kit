@@ -8,7 +8,7 @@ finding a lost session — are the `/cc-smart-dev-kit:worktree` skill.
 Every project uses Claude Code's own worktrees: `<repo>/.claude/worktrees/<name>` on the
 branch `worktree-<name>`. The project's values come from its `.claude/cc-smart-dev-kit.json`,
 `worktrees` field: `base` (the branch new work starts from and pull requests go into) and
-`bases` (a branch family whose pull requests go into another base, which auto-merge and the
+`bases` (a branch family whose pull requests go into another base, which the merge rule and the
 after-merge note read). To start a task from another base, switch the main checkout to it
 first with `baseRef: "head"`, or make a worktree of it with `git worktree add` as Claude
 Code's docs say. The git-ignored files a new worktree needs (`.env.local` and
@@ -41,7 +41,7 @@ already inside one; from the main checkout it fails. A worktree outside
 `.claude/worktrees/` is entered by the person starting a session in that folder. A session
 already in a worktree that starts an **unrelated** task goes back to the main checkout first
 (`ExitWorktree`), then starts the new one from there. Every change goes: worktree → branch →
-commit → push → pull request into `base` → merge (as `autoMerge` says: Claude's own, once CI is green and the review is recorded; else the person's) → clear the
+commit → push → pull request into `base` → merge (as `allowMerge` says: Claude's own, once CI is green and the review is recorded; else the person's) → clear the
 worktree. A merge is never announced to the other sessions.
 
 Why: in a shared folder, one session's `switch`, `stash`, `reset` or `restore` moves or hides

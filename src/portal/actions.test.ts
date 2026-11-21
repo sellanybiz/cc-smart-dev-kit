@@ -25,12 +25,12 @@ writeFileSync(${JSON.stringify(done)}, "done\\n");
 // workflow propose --json prints one JSON line and nothing else, as the real one does.
 if (process.argv[2] === "workflow" && process.argv[3] === "propose") {
   console.log(JSON.stringify({
-    branch: "worktree-workflow-autoCommit-20261023",
+    branch: "worktree-workflow-allowCommit-20261023",
     from: false,
     setting: process.argv[4],
     to: true,
     url: "https://github.com/example-org/app/pull/42",
-    worktree: process.cwd() + "/.claude/worktrees/worktree-workflow-autoCommit-20261023",
+    worktree: process.cwd() + "/.claude/worktrees/worktree-workflow-allowCommit-20261023",
   }));
 } else {
   console.log("command " + process.argv.slice(2).join(" ") + ": done");
@@ -127,7 +127,7 @@ describe("project.workflow.propose runs the CLI's own command in a child", () =>
     expect(
       await runAction(
         "project.workflow.propose",
-        { project: idOf(w.repoA), setting: "autoCommit", unset: true },
+        { project: idOf(w.repoA), setting: "allowCommit", unset: true },
         w.action,
       ),
     ).toEqual({
@@ -138,12 +138,12 @@ describe("project.workflow.propose runs the CLI's own command in a child", () =>
 
     const removed = await runAction(
       "project.workflow.propose",
-      { confirm: true, project: idOf(w.repoA), setting: "autoCommit", unset: true },
+      { confirm: true, project: idOf(w.repoA), setting: "allowCommit", unset: true },
       w.action,
     );
     expect(removed.ok).toBe(true);
     expect(runsOf(w.log)).toMatchObject([
-      { args: ["workflow", "propose", "autoCommit", "--unset", "--json"], cwd: w.repoA },
+      { args: ["workflow", "propose", "allowCommit", "--unset", "--json"], cwd: w.repoA },
     ]);
   });
 
@@ -155,7 +155,7 @@ describe("project.workflow.propose runs the CLI's own command in a child", () =>
     forgetProjectsList();
     const failed = await runAction(
       "project.workflow.propose",
-      { confirm: true, project: idOf(w.repoA), setting: "autoCommit", value: "true" },
+      { confirm: true, project: idOf(w.repoA), setting: "allowCommit", value: "true" },
       w.action,
     );
     expect(failed.ok).toBe(false);
@@ -171,7 +171,7 @@ describe("project.workflow.propose runs the CLI's own command in a child", () =>
     const refused = async (extra: Record<string, unknown>) =>
       runAction(
         "project.workflow.propose",
-        { confirm: true, setting: "autoCommit", value: "true", ...extra },
+        { confirm: true, setting: "allowCommit", value: "true", ...extra },
         w.action,
       );
     const line = "Name the project by its id: a proposal never runs in the portal's own folder.";
@@ -194,7 +194,7 @@ describe("project.workflow.propose runs the CLI's own command in a child", () =>
     expect(unknown.lines[0]).toStartWith('"worktree.base" is not a setting: the settings are ');
     const empty = await runAction(
       "project.workflow.propose",
-      { confirm: true, project: idOf(w.repoA), setting: "autoCommit", value: " " },
+      { confirm: true, project: idOf(w.repoA), setting: "allowCommit", value: " " },
       w.action,
     );
     expect(empty.lines).toEqual(["Type the setting's value, or remove it from the project."]);

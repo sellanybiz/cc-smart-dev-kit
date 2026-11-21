@@ -64,13 +64,13 @@ test("unrelated personal and project writes preserve retired raw alert keys", ()
   const file = personalWorkflowFile(paths);
   mkdirSync(dirname(file), { recursive: true });
   writeFileSync(file, JSON.stringify({ alerts }));
-  writePersonalSetting(paths, "autoCommit", true);
-  expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({ alerts, autoCommit: true });
+  writePersonalSetting(paths, "allowCommit", true);
+  expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({ alerts, allowCommit: true });
   const project = projectWith(JSON.stringify({ workflow: { alerts } }));
-  writeProjectSetting(project.repo, "autoCommit", true, project.env);
+  writeProjectSetting(project.repo, "allowCommit", true, project.env);
   expect(JSON.parse(readFileSync(project.file, "utf8")).workflow).toEqual({
     alerts,
-    autoCommit: true,
+    allowCommit: true,
   });
 });
 
@@ -78,12 +78,12 @@ describe("workflow set / unset --project", () => {
   test("a set leaves every line it does not touch byte for byte, and Biome has nothing to change", () => {
     const { repo, file, env } = projectWith(BIOME_PROJECT);
     expect(biomeFormat(BIOME_PROJECT)).toBe(BIOME_PROJECT);
-    writeProjectSetting(repo, "autoCommit", true, env);
+    writeProjectSetting(repo, "deleteBranch", true, env);
     const written = readFileSync(file, "utf8");
     expect(written).toBe(
       BIOME_PROJECT.replace(
         '      "lines": 200\n    }\n',
-        '      "lines": 200\n    },\n    "autoCommit": true\n',
+        '      "lines": 200\n    },\n    "deleteBranch": true\n',
       ),
     );
     expect(biomeFormat(written)).toBe(written);
@@ -100,22 +100,24 @@ describe("workflow set / unset --project", () => {
   test("a file indented with four spaces, and one with tabs, keep their indent and their lines", () => {
     const four = `{\n    "protectedBranches": ["main"],\n    "worktrees": { "base": "main" }\n}\n`;
     const a = projectWith(four);
-    writeProjectSetting(a.repo, "autoCommit", true, a.env);
+    writeProjectSetting(a.repo, "deleteBranch", true, a.env);
     expect(readFileSync(a.file, "utf8")).toBe(
-      `{\n    "protectedBranches": ["main"],\n    "worktrees": { "base": "main" },\n    "workflow": {\n        "autoCommit": true\n    }\n}\n`,
+      `{\n    "protectedBranches": ["main"],\n    "worktrees": { "base": "main" },\n    "workflow": {\n        "deleteBranch": true\n    }\n}\n`,
     );
     const tabs = `{\n\t"protectedBranches": ["main"],\n\t"worktrees": {\n\t\t"base": "main"\n\t}\n}\n`;
     const b = projectWith(tabs);
-    writeProjectSetting(b.repo, "autoCommit", true, b.env);
+    writeProjectSetting(b.repo, "deleteBranch", true, b.env);
     expect(readFileSync(b.file, "utf8")).toBe(
-      `{\n\t"protectedBranches": ["main"],\n\t"worktrees": {\n\t\t"base": "main"\n\t},\n\t"workflow": {\n\t\t"autoCommit": true\n\t}\n}\n`,
+      `{\n\t"protectedBranches": ["main"],\n\t"worktrees": {\n\t\t"base": "main"\n\t},\n\t"workflow": {\n\t\t"deleteBranch": true\n\t}\n}\n`,
     );
   });
 
   test("a key added to an empty object", () => {
     const { repo, file, env } = projectWith("{}\n");
-    writeProjectSetting(repo, "autoCommit", true, env);
-    expect(readFileSync(file, "utf8")).toBe(`{\n  "workflow": {\n    "autoCommit": true\n  }\n}\n`);
+    writeProjectSetting(repo, "deleteBranch", true, env);
+    expect(readFileSync(file, "utf8")).toBe(
+      `{\n  "workflow": {\n    "deleteBranch": true\n  }\n}\n`,
+    );
   });
 
   test("a key only the person holds is refused for the project, in the key's own words, and the file stays", () => {
@@ -138,7 +140,7 @@ describe("workflow set / unset --project", () => {
 
   test("a file that is not valid JSON is refused, and left as it was", () => {
     const { repo, file, env } = projectWith('{ "worktrees": { "base": "main" ,, }\n');
-    expect(() => writeProjectSetting(repo, "autoCommit", true, env)).toThrow("not valid JSON");
+    expect(() => writeProjectSetting(repo, "allowCommit", true, env)).toThrow("not valid JSON");
     expect(readFileSync(file, "utf8")).toBe('{ "worktrees": { "base": "main" ,, }\n');
   });
 });
@@ -151,13 +153,13 @@ describe("workflow set / unset (the person's own file)", () => {
     writePersonalSetting(paths, "alerts.usagePercent", 70);
     expect(readFileSync(file, "utf8")).toBe(`{\n  "alerts": {\n    "usagePercent": 70\n  }\n}\n`);
     writeFileSync(file, `{\n  "alerts": { "events": ["needs-you"] },\n  "openPr": "draft"\n}\n`);
-    writePersonalSetting(paths, "autoCommit", true);
+    writePersonalSetting(paths, "allowCommit", true);
     expect(readFileSync(file, "utf8")).toBe(
-      `{\n  "alerts": { "events": ["needs-you"] },\n  "openPr": "draft",\n  "autoCommit": true\n}\n`,
+      `{\n  "alerts": { "events": ["needs-you"] },\n  "openPr": "draft",\n  "allowCommit": true\n}\n`,
     );
     writePersonalSetting(paths, "openPr", undefined);
     expect(readFileSync(file, "utf8")).toBe(
-      `{\n  "alerts": { "events": ["needs-you"] },\n  "autoCommit": true\n}\n`,
+      `{\n  "alerts": { "events": ["needs-you"] },\n  "allowCommit": true\n}\n`,
     );
   });
 });

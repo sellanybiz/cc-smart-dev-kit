@@ -3,6 +3,41 @@
 What each release changed, newest first. A release's **What to run** steps are the ones to do
 in your own terminal after the update; the user guide is [README.md](README.md).
 
+## 6.1.0
+
+- **The settings say what they do.** `autoCommit`, `autoPush` and `autoMerge` are now
+  `allowCommit`, `allowPush` and `allowMerge`: each says whether Claude may do that step without
+  asking you. You said: "auto merge and auto push was meaning Claude should not ask for a prompt
+  ... rename it like allow merge allow push allow commit". The old names still work in your own
+  file, in a project's file and in `workflow set`, `unset` and `propose`. When a file holds both,
+  the new one wins. `cc-smart-dev-kit workflow set allowPush true` writes the new name, and
+  `cc-smart-dev-kit doctor` names a file's old key (never as a failure). `project init --workflow
+  autoCommit=true` takes an old name too, and writes the new one. A project file that sets
+  a new name gets `requires` `>=6.1`, so an older plugin is told to update. `openPr` keeps its
+  name: it is a choice of three, not a yes.
+- **A phase closes only with its work in the plan branch.** `task_done` on a phase refuses when
+  its recorded branch has no commit past its base, or is not in the plan branch. The build skill
+  merges the commit the builder's report names, then checks it with `git merge-base
+  --is-ancestor <commit> <plan branch>` before it closes the phase. A hand-back once merged the
+  worktree's default branch while the builder had committed on another, and the phase closed with
+  none of its work. The check needs the phase's `base` to be the commit the builder started from,
+  and a branch merged by a squash is refused (its commits are not in the plan branch).
+- **A package script that runs heavy work is queued whole.** `bun run tsc` with the body
+  `SKIP_ENV_VALIDATION=1 next typegen && tsc --noEmit` skipped the job queue with no message,
+  because a command that is not heavy work came first in the body. A `<pm> run <script>` that is the line's own
+  command, and whose body runs heavy work, now waits for a slot. A script that calls itself or
+  nests too deep, a body that never ends (a watch run, a runner), a body that runs in the
+  background and a body that runs as another user still run raw. **New refusal:** a line such as
+  `bun run check; git status`, where the script's body mixes heavy work with another command and
+  you add one more command beside it, ran raw in 6.0.0 and is now refused as a mixed line; run
+  the script on its own line. A line you mixed yourself (`bun run tsc && rm x`) is still refused.
+
+**What to run:** `cc-smart-dev-kit update`, then restart open Claude Code sessions: a session
+keeps the plugin it started with. Your files keep working; move a value with
+`cc-smart-dev-kit workflow set allowPush true` when you like. A file that has the new names is
+refused by a plugin older than 6.1.0, which is why a project file's `requires` rises with them;
+your own `workflow.json` has no `requires`, so update every machine that shares it.
+
 ## 6.0.0
 
 - **Full auto: the kit has one guard.** You said: "I am tired ... I have to wait all time in

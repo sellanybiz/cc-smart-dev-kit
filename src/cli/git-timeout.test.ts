@@ -68,7 +68,7 @@ describe("a git that never answers", () => {
           stderr: `cc-smart-dev-kit project init: ${SAYS}\n`,
         },
         {
-          args: ["workflow", "set", "autoCommit", "true", "--project"],
+          args: ["workflow", "set", "allowCommit", "true", "--project"],
           exitCode: 1,
           stderr: `${SAYS}\n`,
         },

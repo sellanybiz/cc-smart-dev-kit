@@ -139,7 +139,7 @@ describe("resolveProject", () => {
         sessionNames: true,
         instructions: true,
         autoMode: ["In my-app: never touch production."],
-        workflow: { autoCommit: true, alerts: { usagePercent: 70 } },
+        workflow: { allowCommit: true, alerts: { usagePercent: 70 } },
         ownHooks: ["git-guard", "after-merge"],
       }),
     );
@@ -155,7 +155,7 @@ describe("resolveProject", () => {
       sessionNames: true,
       instructions: true,
       autoMode: ["In my-app: never touch production."],
-      workflow: { autoCommit: true, alerts: { usagePercent: 70 } },
+      workflow: { allowCommit: true, alerts: { usagePercent: 70 } },
       ownHooks: ["git-guard", "after-merge"],
     });
   });
@@ -186,7 +186,7 @@ describe("resolveProject", () => {
       'worktrees.bases: "hotfix" must end with "/"',
     ],
     [{ worktrees: { base: "dev", bases: { "hotfix/": "" } } }, "worktrees.bases.hotfix/:"],
-    [{ workflow: { autoCommit: "yes" } }, "workflow.autoCommit:"],
+    [{ workflow: { allowCommit: "yes" } }, "workflow.allowCommit:"],
     [{ workflow: { switches: { statusLine: true } } }, "workflow.switches:"],
   ])("the hook fields are checked: %j names %j", (content, field) => {
     const repo = makeRepo();
@@ -456,17 +456,17 @@ describe("readCommittedConfig: the file as committed on origin/<branch> (CM-1)",
   }
 
   test("CM-1: the committed file, never the working copy", () => {
-    const repo = committedRepo('{ "workflow": { "autoMerge": true } }');
-    writeCcSmartDevKitJson(repo, '{ "workflow": { "autoMerge": false } }');
+    const repo = committedRepo('{ "workflow": { "allowMerge": true } }');
+    writeCcSmartDevKitJson(repo, '{ "workflow": { "allowMerge": false } }');
     expect(readCommittedConfig(checkoutOf(repo), "dev")).toEqual({
       found: true,
       where: "origin/dev:.claude/cc-smart-dev-kit.json",
-      config: { workflow: { autoMerge: true } },
+      config: { workflow: { allowMerge: true } },
     });
   });
 
   test("a hook's shared budget: each git call asks `timeFor`, and a call with no time left is not made", () => {
-    const repo = committedRepo('{ "workflow": { "autoMerge": true } }');
+    const repo = committedRepo('{ "workflow": { "allowMerge": true } }');
     // The calls each read ask for their own limit: one `rev-parse` to find the checkout, then
     // the three reads of the committed file (`rev-parse`, `rev-parse`, `cat-file`).
     const limits: number[] = [];
@@ -519,7 +519,7 @@ describe("readCommittedConfig: the file as committed on origin/<branch> (CM-1)",
     }
 
     test("the project lookup says git did not answer, not that the folder is outside git", async () => {
-      const repo = committedRepo('{ "workflow": { "autoMerge": true } }');
+      const repo = committedRepo('{ "workflow": { "allowMerge": true } }');
       const options = hung("rev-parse --path-format");
       expect(() => locateCheckout(repo, options)).toThrow(GIT_TIMED_OUT);
       await expect(locateCheckoutAsync(repo, options)).rejects.toThrow(GIT_TIMED_OUT);
@@ -528,7 +528,7 @@ describe("readCommittedConfig: the file as committed on origin/<branch> (CM-1)",
     });
 
     test("the committed file's reads say git did not answer, not that the ref is missing", async () => {
-      const repo = committedRepo('{ "workflow": { "autoMerge": true } }');
+      const repo = committedRepo('{ "workflow": { "allowMerge": true } }');
       const checkout = checkoutOf(repo);
       const options = hung("rev-parse --verify");
       const expected = {
@@ -545,12 +545,12 @@ describe("readCommittedConfig: the file as committed on origin/<branch> (CM-1)",
   });
 
   test("CM-1: a worktree reads the same ref, whatever its own copy says", () => {
-    const repo = committedRepo('{ "workflow": { "autoMerge": true } }');
+    const repo = committedRepo('{ "workflow": { "allowMerge": true } }');
     const worktree = join(repo, "..", "wt");
     git(repo, "worktree", "add", "-q", "-b", "wt", worktree);
-    writeCcSmartDevKitJson(worktree, '{ "workflow": { "autoMerge": false } }');
+    writeCcSmartDevKitJson(worktree, '{ "workflow": { "allowMerge": false } }');
     const read = readCommittedConfig(checkoutOf(worktree), "dev");
-    expect(read.found && read.config).toEqual({ workflow: { autoMerge: true } });
+    expect(read.found && read.config).toEqual({ workflow: { allowMerge: true } });
   });
 
   test("no such ref: found false, saying so", () => {

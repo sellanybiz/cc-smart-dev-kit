@@ -6,6 +6,7 @@
  * guard, not a security gate: it reads the checkout's working copy through the normal workflow
  * resolver.
  */
+import type { GitRun } from "../hooks/git";
 import { TASK_TOOL } from "./words";
 import { isOpen, livePhaseCount, PARK_NOTE_PREFIX, runningTasksOf } from "./work/queries";
 import type { WorkStatus, WorkTask } from "./work/types";
@@ -169,6 +170,53 @@ export function refuseBareClose(
     throw new Error(
       `${step}: a step is dropped with a note that gives the reason (${TASK_TOOL.done} with task "#${task.number}", outcome "dropped" and note)`,
     );
+}
+
+/**
+ * A phase whose builder's `branch` and `base` are recorded closes `done` only with that work in
+ * the plan: at least one commit in `base..branch`, and `branch` reachable from the plan branch
+ * (the plan task's `branch`; with none recorded, only the commit count is judged). A builder
+ * that handed back nothing, or whose commit never reached the plan branch, is refused with both
+ * names. A phase with no branch or no base, a dropped close and a phase already done pass. Git
+ * that cannot answer refuses with its own reason: a guess would let a phase close with none of
+ * its work. `git` runs one git command for the caller's repo (every worktree shares the refs).
+ */
+export function refuseEmptyHandBack(
+  all: readonly WorkTask[],
+  phase: WorkTask,
+  outcome: "done" | "dropped",
+  git: (args: string[]) => GitRun,
+): void {
+  const { branch, base } = phase;
+  if (phase.kind !== "phase" || outcome !== "done" || phase.status === "done") return;
+  if (!branch || !base) return;
+  const what = `#${phase.number} "${phase.subject}" records its builder's branch "${branch}" and base ${base}`;
+  const planBranch = all.find((t) => t.kind === "plan" && t.plan === phase.plan)?.branch ?? null;
+  // A git branch name never starts with "-": one that does is not a name, and git would read it as an option.
+  for (const name of [branch, base, planBranch])
+    if (name?.startsWith("-"))
+      throw new Error(
+        `${what}, and "${name}" is not a branch or commit name: fix the phase's binding`,
+      );
+  const counted = git(["rev-list", "--count", `${base}..${branch}`]);
+  if (!counted.ok)
+    throw new Error(
+      `${what}: git could not count its commits (${counted.err || "no reason given"}), so the hand-back is not proved. Fix the binding or the repo, then close the phase`,
+    );
+  if (counted.out === "0")
+    throw new Error(
+      `${what}, but "${branch}" has no commit past its base: the builder handed back nothing. Get its work committed on "${branch}" and merged into ${planBranch === null ? "the plan branch" : `"${planBranch}"`}, then close the phase`,
+    );
+  if (planBranch === null) return;
+  const held = git(["merge-base", "--is-ancestor", branch, planBranch]);
+  if (held.ok) return;
+  if (held.code === 1)
+    throw new Error(
+      `${what}, but "${branch}" is not in the plan branch "${planBranch}": merge the builder's commit into "${planBranch}", then close the phase`,
+    );
+  throw new Error(
+    `${what}: git could not check that "${branch}" is in the plan branch "${planBranch}" (${held.err || "no reason given"}), so the hand-back is not proved. Fix the binding or the repo, then close the phase`,
+  );
 }
 
 /**

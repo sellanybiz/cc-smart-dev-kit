@@ -584,7 +584,7 @@ describe("a light line stays raw, a heavy one is routed", () => {
     );
   });
 
-  it("a package script is read by its body: a lone tsc is routed, a mixed body is not", () => {
+  it("a package script is read by its body: a lone tsc is routed, and a mixed body is queued whole", () => {
     const repo = repoWith({
       "package.json": JSON.stringify({
         scripts: { typecheck: "tsc --noEmit", check: "tsc --noEmit && biome check ." },
@@ -593,7 +593,9 @@ describe("a light line stays raw, a heavy one is routed", () => {
     expect(rewrittenTo(repo, "bun run typecheck")).toBe(
       `${LAUNCHER} job run --kind tsc -- bun run typecheck`,
     );
-    expect(rewrittenTo(repo, "bun run check")).toBeNull();
+    expect(rewrittenTo(repo, "bun run check")).toBe(
+      `${LAUNCHER} job run --kind tsc -- bun run check`,
+    );
   });
 
   it("two heavy commands in one line are queued once, as one job", () => {
@@ -1535,31 +1537,74 @@ describe("a mixed line: what is not refused", () => {
     }
   });
 
-  it("no heavy run in the line, and a heavy script whose own body cannot be split", () => {
+  it("no heavy run in the line, and a heavy script whose body holds other commands", () => {
     const repo = repoWith({
       "package.json": JSON.stringify({ scripts: { check: "tsc --noEmit && rm -rf dist" } }),
     });
     expect(jobRoute(contextFor(repo, "git status && ls"))).toEqual({});
     expect(jobRoute(contextFor(repo, "bun install && git status"))).toEqual({});
-    // The person cannot split a script's body: the line runs raw, as it did.
-    expect(jobRoute(contextFor(repo, "bun run check"))).toEqual({});
-    expect(jobRoute(contextFor(repo, "bun run check && git status"))).toEqual({});
+    // The person's rules see only the call, never the body: the call is queued whole.
+    expect(rewrittenTo(repo, "bun run check")).toBe(
+      `${LAUNCHER} job run --kind tsc -- bun run check`,
+    );
+    // Only what the person's own line adds beside the call is refused.
+    expect(denialOf(repo, "bun run check && git status")).toContain("beside other commands");
   });
 
   // The rule's walk stops at a body's first failing command, so a heavy command after it
-  // (`biome check . && tsc --noEmit`) must still keep the call exempt: run alone, it could never
-  // meet a refusal.
+  // (`biome check . && tsc --noEmit`) is found by the plain walk of the whole body: the call is
+  // heavy work, and is queued whole.
   it("a heavy script whose body starts with a command that is not heavy", () => {
     const repo = repoWith({
       "package.json": JSON.stringify({
-        scripts: { check: "biome check . && tsc --noEmit", lint: "biome check ." },
+        scripts: {
+          check: "biome check . && tsc --noEmit",
+          lint: "biome check .",
+          tsc: "SKIP_ENV_VALIDATION=1 next typegen && tsc --noEmit",
+          loop: "next typegen && tsc --noEmit && bun run loop",
+        },
       }),
     });
-    expect(jobRoute(contextFor(repo, "bun run check"))).toEqual({});
-    expect(jobRoute(contextFor(repo, "npm run check"))).toEqual({});
-    expect(jobRoute(contextFor(repo, "bun run check; git status"))).toEqual({});
+    expect(rewrittenTo(repo, "bun run check")).toBe(
+      `${LAUNCHER} job run --kind tsc -- bun run check`,
+    );
+    expect(rewrittenTo(repo, "npm run check")).toBe(
+      `${LAUNCHER} job run --kind tsc -- npm run check`,
+    );
+    expect(rewrittenTo(repo, "bun run tsc")).toBe(`${LAUNCHER} job run --kind tsc -- bun run tsc`);
+    expect(denialOf(repo, "bun run check; git status")).toContain("beside other commands");
+    expect(denialOf(repo, "bun run tsc && rm x")).toContain("beside other commands");
+    // A script that calls itself cannot be read whole: the line runs raw, as it did.
+    expect(jobRoute(contextFor(repo, "bun run loop"))).toEqual({});
     // A script call whose body runs no heavy work is still a command of its own.
     expect(denialOf(repo, "bun run lint && bun test")).toContain("beside other commands");
+  });
+
+  // A body that never ends holds the one slot for as long as it runs: it stays raw, with a
+  // call's own words (`--watch`, `--ui`) read as the runners hand them to the body.
+  it("a script body that never ends, or runs in the background, is not queued", () => {
+    const repo = repoWith({
+      "package.json": JSON.stringify({
+        scripts: {
+          t: "next typegen && vitest",
+          pure: "tsc --noEmit && vitest",
+          e2e: "next typegen && playwright test",
+          w2: "next typegen && watch tsc --noEmit",
+          bg: "next dev & tsc --noEmit",
+        },
+      }),
+    });
+    for (const command of [
+      "bun run t --watch",
+      "bun run t -- --watch",
+      "bun run pure --watch",
+      "bun run e2e --ui",
+      "bun run w2",
+      "bun run bg",
+    ]) {
+      expect([command, jobRoute(contextFor(repo, command))]).toEqual([command, {}]);
+    }
+    expect(rewrittenTo(repo, "bun run t")).toBe(`${LAUNCHER} job run --kind test:run -- bun run t`);
   });
 
   it("the route off, and outside git", () => {

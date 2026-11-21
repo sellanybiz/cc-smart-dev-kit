@@ -27,6 +27,18 @@ file and the field: the person must hear it. A field with a wrong kind can never
 alone rather than half-written. A `crew` group, from a file written before 2.0, is accepted and
 ignored: it still loads, and nothing reads it.
 
+**The names of the three yes-or-no settings (6.1.0, `WORKFLOW_KEY_ALIASES` in `schema.ts`).** They
+are `allowCommit`, `allowPush` and `allowMerge`: each says whether the session may do that step
+without asking. Until 6.1.0 they were `autoCommit`, `autoPush` and `autoMerge`, and the old names
+still work. One alias table maps an old key to its new key before the schema parses, in both
+files; a file that holds both names uses the new one. A value set under an old name counts as set,
+not as a default (`sourceOf`). `workflow set|unset|propose` accept either name and write the new
+one, with one line saying so. A project file that names a new key needs `requires` 6.1.0 or newer
+(`WORKFLOW_ALLOW_KEYS_SINCE`; a write that sets one raises it, a file with none of them keeps its
+floor), so an older plugin is told to update and is never handed a key it would refuse. `doctor` prints one line for a file that still uses an old name, with the rename to
+do; it is never a failure. An alias never rewrites a file by itself. `openPr` keeps its name: it
+is a choice of three, not a yes.
+
 **A write keeps the file's own layout (JW1).** `workflow set|unset` and `project init` never
 write the whole object again with `JSON.stringify`: that laid every line out anew, and a
 project that format-checks its `.claude/` JSON (Biome, Prettier) then failed on `["main"]`
@@ -115,7 +127,7 @@ tests, because it decides whether the session may merge by itself:
 autoMergeAllowed(resolved, projectConfig, prBase, defaultBranch)
 ```
 
-True when `autoMerge` is on and the pull request's base is the project's integration base
+True when `allowMerge` is on and the pull request's base is the project's integration base
 (`worktrees.base`) or the repository's default branch, the main branch included (the owner,
 2026-11-21: "autoMerge on" merges with no question); a pull request into another branch, such as a
 release branch, is the person's own merge. A direct push to the
@@ -130,10 +142,10 @@ place (`auto-merge.ts`).
 
 | Setting | Followed by |
 |---|---|
-| `autoCommit`, `clearWorktreeAfterMerge` | the skills (`commit`, `worktree`): `autoCommit` is off by default, `clearWorktreeAfterMerge` on (the session removes its own finished worktree, `docs/design/sessions.md` § Locks, owners and who may remove what); each reads `cc-smart-dev-kit workflow show` and follows it. Nothing else can: a commit and a folder are the session's own doing, and no hook sees them as one act. |
-| `autoPush` | the skills (`commit`): on, the session pushes its own branch once the change set is complete; off, only when the person asks. Never straight to the base or main branch. |
+| `allowCommit`, `clearWorktreeAfterMerge` | the skills (`commit`, `worktree`): `allowCommit` is off by default, `clearWorktreeAfterMerge` on (the session removes its own finished worktree, `docs/design/sessions.md` § Locks, owners and who may remove what); each reads `cc-smart-dev-kit workflow show` and follows it. Nothing else can: a commit and a folder are the session's own doing, and no hook sees them as one act. |
+| `allowPush` | the skills (`commit`): on, the session pushes its own branch once the change set is complete; off, only when the person asks. Never straight to the base or main branch. |
 | `openPr` | the skills (`commit`, `pull-request`): `off` opens a pull request only when the person asks, `draft` opens it as a draft, `ready` opens it ready for review. |
-| `autoMerge` | the skills (`commit`): on, the session merges its own pull request into its base, the main branch included, once CI is green (it waits in the background with `gh pr checks <pr> --watch`, then a plain `gh pr merge`, never `--auto`), the review of its head commit is recorded and the fixes after it are within `fixesAfterReview` (when they are over, it says so in the pull request); off, it leaves the merge to the person. `mergeMethod` and `deleteBranch` say how. |
+| `allowMerge` | the skills (`commit`): on, the session merges its own pull request into its base, the main branch included, once CI is green (it waits in the background with `gh pr checks <pr> --watch`, then a plain `gh pr merge`, never `--auto`), the review of its head commit is recorded and the fixes after it are within `fixesAfterReview` (when they are over, it says so in the pull request); off, it leaves the merge to the person. `mergeMethod` and `deleteBranch` say how. |
 | `reviewBeforePush` | both: the **review-record hook** writes the record when a review agent finishes (§ The review record), and the session reads it before it merges. |
 | `reviewAgents` | the **review-record hook** records only an agent listed there. A project that runs its own reviewer names it (the plugin's `cc-smart-dev-kit:senior-engineer` by default). |
 | `alerts.events`, `alerts.sound` | Retired load-only keys: ignored, omitted by `workflow show`, and refused by `workflow set`. Existing values survive unrelated writes. |
@@ -143,7 +155,7 @@ place (`auto-merge.ts`).
 | `fixesAfterReview.*` | `readCover` (`src/workflow/review-cover.ts`, § The review record): the limits a change after a review may reach and still be covered. Resolved, shown by `workflow show` with their source (and as one `in force` line), and written by `workflow set`; `merge-check.ts` judges with them. |
 
 **The merge is the session's own step.** It merges its pull request itself, with `gh pr merge`,
-only when **all** of these hold: `autoMerge` is on; the merge names **this project's own repository**; every required check
+only when **all** of these hold: `allowMerge` is on; the merge names **this project's own repository**; every required check
 `gh pr checks --required` reports is green (a `skipping` check counts as passed, which is
 GitHub's own rule for a merge); and — with `reviewBeforePush` on — the head is covered by a
 review (D17, § The review record). **The judgment is one home**, `src/workflow/merge-check.ts`:
@@ -160,12 +172,12 @@ instruction.
 function, `workflowClashes` in `src/workflow/clashes.ts`, called by `workflow show`,
 `workflow set` (after the write), `project init` (in its plan, before anything is written)
 and the portal's Settings page (a `!` line under the row). The pairs: `openPr` on with
-`autoPush` off (a session does not push, so the pull request waits for the person),
-and `autoMerge` on with `openPr: draft` (a draft is never merged). A project with no
+`allowPush` off (a session does not push, so the pull request waits for the person),
+and `allowMerge` on with `openPr: draft` (a draft is never merged). A project with no
 `worktrees.base` is no clash: it may merge into the default branch. Each line says the fix.
 
 **The review gate is read as committed on the pull request's base**, never from a checkout's
-working copy. Every value the judgment uses — `autoMerge`, `reviewBeforePush`,
+working copy. Every value the judgment uses — `allowMerge`, `reviewBeforePush`,
 `reviewAgents`, `fixesAfterReview.*` (the limits a fix after a review may reach and still count,
 D17, § The review record — read and shown with the gate, and `merge-check.ts` judges with them),
 `worktrees.base` and `worktrees.bases` — comes from the built-in default, the person's
@@ -174,16 +186,16 @@ D17, § The review record — read and shown with the gate, and `merge-check.ts`
 `src/project/resolve.ts`: `rev-parse` and `cat-file`, no fetch). A session edits its own
 worktree's file in a second; it cannot change what a branch it has not pushed to says, and a
 push to the base is what the review stands in front of. Two reads, one function:
-before any `gh` call, the base this checkout names (`worktrees.base`), so `autoMerge` off is still
+before any `gh` call, the base this checkout names (`worktrees.base`), so `allowMerge` off is still
 reported without `gh`; then, once `gh pr view` names the pull request's base, that base's file,
 which judges the merge (`autoMergeRefusal` gets its `worktrees`). No `origin/<base>` (a new
 repository, a fork, a branch never fetched), no file there, or a file this plugin cannot use
 (broken, or a `requires` it does not meet) is not allowed, naming which. Because nothing is fetched, a
 policy change counts once it is committed, pushed and fetched. `cc-smart-dev-kit workflow
-show` prints the gate's own lines (`gate autoMerge = …`) from the same read, so it never
+show` prints the gate's own lines (`gate allowMerge = …`) from the same read, so it never
 disagrees with `merge-check`, even while the checkout's file says something else; `workflow
 set|unset` of a gate key (`REVIEW_GATE_KEYS` in `schema.ts`) works inside Claude Code since
-6.0.0, and the "autoMerge is off" answer says to commit the change to the base and push it.
+6.0.0, and the "allowMerge is off" answer says to commit the change to the base and push it.
 
 **A project's policy changes through a pull request** (D57, `src/workflow/propose.ts`).
 Because the gate is read from the base's committed file, a change that counts must be merged,
@@ -219,7 +231,7 @@ avoid destroying what may be another run's: a `gh pr create` that does not answe
 leaves the pushed branch and the pull request it may have made, and a name another proposal
 took between the check and the add is skipped for the next free one rather than reused. The
 command pushes a branch and opens a pull request in a child no hook sees. Until 5.6.x the shell
-judge asked the person first when `autoPush` was off or `openPr` short of `ready`; that judge is
+judge asked the person first when `allowPush` was off or `openPr` short of `ready`; that judge is
 gone (§ Retired in 6.0.0 in `docs/design/hooks.md`). Every key may be proposed, inside Claude Code
 or outside it: the pull request's review is the gate.
 

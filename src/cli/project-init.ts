@@ -70,11 +70,14 @@ import { realTarget } from "../setup/write";
 import { DEPLOY_ENVS, type DeployEnv } from "../tasks/deploy/format";
 import { personalWorkflowOrDefault } from "../workflow/resolve";
 import {
+  currentKeyName,
   isSwitchKey,
+  oldNamesOf,
   parseWorkflowValue,
   WORKFLOW_KEYS,
   type Workflow,
   type WorkflowKey,
+  withCurrentNames,
 } from "../workflow/schema";
 import { cliPaths, tildify } from "./paths";
 import { dryRunEnding, leadingMark, type Mark, type Out, plural } from "./ui/out";
@@ -492,16 +495,21 @@ export function parseFlags(argv: string[]): { flags: ProjectInitFlags } | { erro
   return { flags };
 }
 
-/** The policy the `--workflow` words hold; a wrong key or value is refused, never written. */
+/**
+ * The policy the `--workflow` words hold; a wrong key or value is refused, never written. An old
+ * name (`autoCommit=true`) is read as its new one (`allowCommit`), so a script written before
+ * 6.1.0 keeps working and the file gets the new name.
+ */
 export function workflowFromFlags(words: string[]): Workflow {
   const workflow: Record<string, unknown> = {};
   for (const word of words) {
-    const [key, ...rest] = word.split("=");
-    if (key === undefined || rest.length === 0)
+    const [typed, ...rest] = word.split("=");
+    if (typed === undefined || rest.length === 0)
       throw new Error(`--workflow: "${word}" is not key=value`);
+    const key = currentKeyName(typed);
     if (!WORKFLOW_KEYS.includes(key as WorkflowKey) || isSwitchKey(key)) {
       throw new Error(
-        `--workflow: unknown setting ${key} (a switch is set with \`${COMMAND} workflow set\`)`,
+        `--workflow: unknown setting ${typed} (a switch is set with \`${COMMAND} workflow set\`)`,
       );
     }
     const parsed = parseWorkflowValue(key as WorkflowKey, rest.join("="));
@@ -533,11 +541,13 @@ function setLeaf(data: Record<string, unknown>, path: string[], value: unknown):
  * `--workflow` word changes only its own field, so `alerts.*`, `fixesAfterReview.*` and every
  * other setting the file already holds survive a line that names one of them (F5-3). A group
  * (`alerts`, `fixesAfterReview`, `issues`) merges field by field; an array or a leaf replaces
- * the value before it.
+ * the value before it. A setting the overrides name under its new name (`allowPush`) takes the
+ * old name (`autoPush`) out of the result, so the file never holds both.
  */
 export function mergeWorkflow(base: Workflow, overrides: Workflow): Workflow {
   const merged: Record<string, unknown> = { ...(base as Record<string, unknown>) };
   for (const [key, value] of Object.entries(overrides as Record<string, unknown>)) {
+    for (const old of oldNamesOf(key)) delete merged[old];
     const before = merged[key];
     merged[key] =
       isObject(before) && isObject(value)
@@ -658,7 +668,7 @@ function listOf(text: string): string[] {
 }
 
 /** A workflow policy as the question shows it, for an example. */
-const POLICY_EXAMPLE = "openPr=draft,autoCommit=true,alerts.usagePercent=90";
+const POLICY_EXAMPLE = "openPr=draft,allowCommit=true,alerts.usagePercent=90";
 
 /** The word that answers a list question with an empty list: Enter keeps the default instead. */
 export const NONE = "none";
@@ -785,9 +795,10 @@ export function askedAnswers(
   const checksText = listAnswer(
     prompts.ask(numbered("checks"), { default: answers.checks?.fast ?? NONE }),
   );
+  const shownPolicy = shownWorkflow(answers.workflow);
   const workflowText = listAnswer(
     prompts.ask(numbered("workflow"), {
-      default: shownWorkflow(answers.workflow),
+      default: shownPolicy,
       check: (answer) => refusal(() => workflowFromFlags(listOf(listAnswer(answer)))),
     }),
   );
@@ -810,7 +821,10 @@ export function askedAnswers(
     checks: checkAnswer(checksText),
     deployCommands,
     guards,
-    workflow: workflowFromFlags(listOf(workflowText)),
+    // Enter keeps the file's policy as it is, an old setting name and any setting the line
+    // cannot show included; only a changed line is the answer.
+    workflow:
+      workflowText === shownPolicy ? answers.workflow : workflowFromFlags(listOf(workflowText)),
   };
 }
 
@@ -833,13 +847,17 @@ export function parseBases(text: string, where = ""): Record<string, string> {
   return bases;
 }
 
-/** A workflow policy as one line of `key=value`: `openPr=draft,alerts.usagePercent=90`. */
+/**
+ * A workflow policy as one line of `key=value`: `openPr=draft,alerts.usagePercent=90`. A file
+ * that still holds an old setting name shows it under the new one (`autoPush` as `allowPush`).
+ */
 export function shownWorkflow(workflow: Workflow): string {
   const words: string[] = [];
+  const current = withCurrentNames(workflow) as Record<string, unknown>;
   for (const key of WORKFLOW_KEYS) {
     if (isSwitchKey(key)) continue;
     const [head, tail] = key.split(".");
-    const group = head === undefined ? undefined : (workflow as Record<string, unknown>)[head];
+    const group = head === undefined ? undefined : current[head];
     const value =
       tail === undefined
         ? group

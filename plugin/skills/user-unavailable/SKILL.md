@@ -41,7 +41,7 @@ command that asks, and nobody is there to answer. Tell the person once, in one l
   skills or the facts support. A finding outside the plan: the recommended option of the finding
   rule's list (`/cc-smart-dev-kit:tasks` § 1).
 - **An action that needed their yes just runs** when the work calls for it and the instructions
-  allow it (a push of your own branch, a merge as `autoMerge` says, a staging deploy a task owes).
+  allow it (a push of your own branch, a merge as `allowMerge` says, a staging deploy a task owes).
   The steps that are the person's word every time (`/cc-smart-dev-kit:commit`: a deploy to
   production, a force-push, `reset --hard`, a direct push to the main branch) you do not run: take
   the safe option, and record that you did not.

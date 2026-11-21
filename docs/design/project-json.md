@@ -50,6 +50,7 @@ and `project init` and `workflow set --project` write it as `requires`. Each ver
 home in `src/project/config.ts`: `WORKTREE_PREFIX_OPTIONAL_SINCE` (0.5.2, the floor of every
 file), `WORKFLOW_FIXES_SINCE` and `WORKTREE_AUTO_CLEAN_SINCE` (1.0.0), `CHECKS_SINCE` (1.1.0),
 `WORKFLOW_ISSUES_SINCE` (1.4.0), `WORKTREE_REBUILDABLE_SINCE` (1.9.0), `TASKS_SINCE` (1.10.0),
+`WORKFLOW_ALLOW_KEYS_SINCE` (6.1.0, `allowCommit`, `allowPush` and `allowMerge` in the `workflow` object),
 `DEPLOY_TASKS_SINCE` (5.0.0, `tasks.envs`) and `DEPLOY_GUARD_SINCE` (5.3.0, `tasks.deployCommands` and the `deploy-guard` name, retired in 6.0.0 but kept as a floor),
 `JOB_KIND_KEYS_SINCE` (a kind's `noSlotForFiles` in 1.5.0; `light`, ignored since 2.0 like the
 old size fields and `workflow.crew`, raises no floor, and `doctor` says it can go) and
