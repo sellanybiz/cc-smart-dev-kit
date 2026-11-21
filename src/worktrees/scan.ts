@@ -173,9 +173,8 @@ export type RecordedBranches =
  */
 export function recordedKeepWhy(
   branch: string,
-  recorded: RecordedBranches | undefined,
+  recorded: RecordedBranches,
 ): string | null {
-  if (recorded === undefined) return null;
   if (!recorded.ok) {
     return `the task store cannot be read (${recorded.why}), so nothing proves no task records it`;
   }
@@ -188,8 +187,7 @@ export interface ScanOptions {
   base: string;
   /**
    * The branches the open tasks record, read once per run (`recordedBranches`, `branch-sweep.ts`).
-   * Every branch delete keeps such a branch. Left out, no task records anything: a caller with
-   * no task store (a test) deletes as before.
+   * A scan alone does not need it; every delete does (`DeleteOptions`), and keeps such a branch.
    */
   recorded?: RecordedBranches;
   /**
@@ -222,6 +220,12 @@ export interface ScanOptions {
     pidNamespace?: string | null;
   };
 }
+
+/**
+ * What a delete needs beyond a scan: the branches the open tasks record, which it keeps. Required,
+ * so no delete path can leave the guard out.
+ */
+export type DeleteOptions = ScanOptions & { recorded: RecordedBranches };
 
 /** How long a `gh` call may take: the same 10 s the guards give one read-only call. */
 const GH_TIMEOUT_MS = 10_000;
@@ -854,7 +858,7 @@ export interface Removal {
 export function removeWorktree(
   repo: string,
   listed: ListedWorktree,
-  options: ScanOptions,
+  options: DeleteOptions,
 ): Removal {
   // The listing is read again too: a worktree's head moves when a session commits, and a
   // verdict on the head the scan saw would miss exactly that.
@@ -1022,7 +1026,7 @@ export function deleteBranchOnRef(
   label: string,
   branch: string,
   env: Env,
-  recorded?: RecordedBranches,
+  recorded: RecordedBranches,
 ): string {
   return branchOutcomeLine(branch, label, tryDeleteBranch(repo, ref, label, branch, env, recorded));
 }
@@ -1210,7 +1214,7 @@ export function tryDeleteBranch(
   label: string,
   branch: string,
   env: Env,
-  recorded?: RecordedBranches,
+  recorded: RecordedBranches,
 ): BranchOutcome {
   const keep = recordedKeepWhy(branch, recorded);
   if (keep !== null) return { kind: "recorded", text: keep };
@@ -1224,7 +1228,7 @@ export function deleteMergedBranch(
   base: string,
   branch: string,
   env: Env,
-  recorded?: RecordedBranches,
+  recorded: RecordedBranches,
 ): string {
   return deleteBranchOnRef(
     repo,

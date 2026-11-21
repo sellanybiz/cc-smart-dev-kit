@@ -91,23 +91,8 @@ function stringLiterals(source: string): string {
 const FOLDER_LITERAL = /\.claude\/worktrees/;
 const writesFolderLiteral = (text: string) => FOLDER_LITERAL.test(stringLiterals(text));
 
-/**
- * Files outside the change that made `paths.ts` the one home that still write the folder in a
- * message. Each is listed until its own change moves it to `WORKTREES_GITIGNORE_ENTRY` or
- * `worktreesFolder`; the test below fails once an entry stops offending, so the list cannot go
- * stale.
- */
-const FOLDER_LITERAL_PENDING = [join("src", "workflow", "propose.ts")];
-
 test("no source file outside paths.ts spells the worktrees folder in a string", () => {
-  const offenders = sourcesThat(writesFolderLiteral).filter(
-    (file) => !FOLDER_LITERAL_PENDING.includes(file),
-  );
-  expect(offenders).toEqual([]);
-});
-
-test("every file waiting to be moved to paths.ts still spells the folder", () => {
-  expect(sourcesThat(writesFolderLiteral)).toEqual(expect.arrayContaining(FOLDER_LITERAL_PENDING));
+  expect(sourcesThat(writesFolderLiteral)).toEqual([]);
 });
 
 test("the literal scan can fail: it names a string, and passes a comment", () => {

@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { cliPaths } from "../cli/paths";
 import * as gitTools from "../hooks/git";
+import { NO_TASK_RECORDS } from "../testing/task-records";
 import { cleanGitEnv, git, tempDir } from "../testing/temp";
 import { runWorktrees } from "./command";
 import * as scan from "./scan";
@@ -27,6 +28,7 @@ const scanOptions = (claudeConfigDir = tempDir("against-config")) => ({
   env,
   facts: { ...quiet, mounts: [] },
   idleLimit: 0,
+  recorded: NO_TASK_RECORDS,
 });
 
 /**
@@ -397,28 +399,30 @@ describe("deleting a branch that a given ref holds", () => {
   test("it goes only when the ref has all of it, and the reason names that ref", () => {
     const { main, worktree } = withWork();
     git(main, "worktree", "remove", "--force", worktree);
-    expect(deleteBranchOnRef(main, "main", "the local branch", "fix/login", env)).toBe(
-      "kept branch fix/login: it has commits that are not on the local branch",
-    );
+    expect(
+      deleteBranchOnRef(main, "main", "the local branch", "fix/login", env, NO_TASK_RECORDS),
+    ).toBe("kept branch fix/login: it has commits that are not on the local branch");
     git(main, "merge", "--ff-only", "fix/login");
-    expect(deleteBranchOnRef(main, "main", "the local branch", "fix/login", env)).toBe(
-      "deleted branch fix/login",
-    );
+    expect(
+      deleteBranchOnRef(main, "main", "the local branch", "fix/login", env, NO_TASK_RECORDS),
+    ).toBe("deleted branch fix/login");
     expect(git(main, "branch", "--list", "fix/login")).toBe("");
   });
 
   test("a branch git cannot compare is kept with git's own words", () => {
     const { main } = withWork();
-    expect(deleteBranchOnRef(main, "no-such-ref", "nowhere", "fix/login", env)).toStartWith(
-      "kept branch fix/login:",
-    );
+    expect(
+      deleteBranchOnRef(main, "no-such-ref", "nowhere", "fix/login", env, NO_TASK_RECORDS),
+    ).toStartWith("kept branch fix/login:");
   });
 
   test("the origin-based call is the same function with origin's ref", () => {
     const { main, worktree } = withWork();
     git(main, "push", "origin", "fix/login:main");
     git(main, "worktree", "remove", "--force", worktree);
-    expect(deleteMergedBranch(main, "main", "fix/login", env)).toBe("deleted branch fix/login");
+    expect(deleteMergedBranch(main, "main", "fix/login", env, NO_TASK_RECORDS)).toBe(
+      "deleted branch fix/login",
+    );
   });
 });
 
@@ -426,12 +430,16 @@ describe("the outcome of a branch deletion, as data", () => {
   test("deleted, not on the ref, and git's own refusal each have their own kind", () => {
     const { main, worktree } = withWork();
     git(main, "worktree", "remove", "--force", worktree);
-    expect(tryDeleteBranch(main, "main", "main", "fix/login", env)).toEqual({ kind: "not-on-ref" });
-    expect(tryDeleteBranch(main, "no-such-ref", "nowhere", "fix/login", env).kind).toBe(
-      "git-error",
-    );
+    expect(tryDeleteBranch(main, "main", "main", "fix/login", env, NO_TASK_RECORDS)).toEqual({
+      kind: "not-on-ref",
+    });
+    expect(
+      tryDeleteBranch(main, "no-such-ref", "nowhere", "fix/login", env, NO_TASK_RECORDS).kind,
+    ).toBe("git-error");
     git(main, "merge", "--ff-only", "fix/login");
-    expect(tryDeleteBranch(main, "main", "main", "fix/login", env)).toEqual({ kind: "deleted" });
+    expect(tryDeleteBranch(main, "main", "main", "fix/login", env, NO_TASK_RECORDS)).toEqual({
+      kind: "deleted",
+    });
   });
 
   test("a branch that moved after it was judged is kept: only the judged commit is deleted", () => {

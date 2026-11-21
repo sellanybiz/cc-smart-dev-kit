@@ -27,9 +27,11 @@ in your own terminal after the update; the user guide is [README.md](README.md).
   checkout; it now counts as rebuildable, so it no longer keeps a finished worktree.
 - **`worktrees --clean` deletes finished builder branches.** A builder's `worktree-agent-*`
   branch stayed after its folder went, once its work reached `main` through the plan branch.
-  `--clean` now deletes those whose work the base holds, no worktree uses and no open task still
-  records, and keeps the rest with the reason. It deletes only the commit it judged, so a branch
-  that moved meanwhile stays. The plain `worktrees` list shows which would go. Your own branches
+  `--clean` now deletes those whose work the base holds and no worktree uses, and keeps the rest
+  with the reason. Every branch delete (`--clean`, `--remove`, the background clean) now keeps a
+  branch an open task still records and one a worktree is bisecting or rebasing, deletes only the
+  commit it judged, so a branch that moved meanwhile stays, and removes the branch's git config
+  section with it. The plain `worktrees` list shows which would go. Your own branches
   are never touched.
 - **One home for the worktree path and branch.** The places that built
   `<repo>/.claude/worktrees/<name>` or its `worktree-<name>` branch by hand now share one helper,

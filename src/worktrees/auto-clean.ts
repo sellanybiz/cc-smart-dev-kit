@@ -47,7 +47,7 @@ import {
 import { recordedBranches } from "./branch-sweep";
 import { type CleanLock, cleanWithStrays, holdCleanLock, type KeptWorktree } from "./clean";
 import { baseBranch } from "./command";
-import { fetchBase, type ScanOptions, scanWorktrees } from "./scan";
+import { type DeleteOptions, fetchBase, type ScanOptions, scanWorktrees } from "./scan";
 import type { StrayPass } from "./scan-parked";
 
 export interface AutoCleanDeps {
@@ -225,7 +225,7 @@ export async function runAutoClean(
     }
     // No `idleLimit`: the hour git must have left a worktree alone, as the command asks. The
     // branches an open task records stay (`tryDeleteBranch`): the store is read once for the run.
-    const judged: ScanOptions = {
+    const judged: DeleteOptions = {
       base,
       claudeConfigDir: paths.claudeConfigDir,
       env,

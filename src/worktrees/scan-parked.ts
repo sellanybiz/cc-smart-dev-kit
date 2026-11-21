@@ -30,6 +30,7 @@ import type { Env } from "../hooks/run";
 import { containersUsing, mountKeptWhy, programsInside } from "./machine-facts";
 import { worktreesFolder } from "./paths";
 import {
+  type DeleteOptions,
   forgottenLine,
   isParkedWorktree,
   type MachineFacts,
@@ -64,7 +65,7 @@ export interface ParkedPass {
 export function finishParked(
   repo: string,
   paths: readonly string[],
-  options: ScanOptions,
+  options: DeleteOptions,
   say: (line: string) => void,
 ): ParkedPass {
   const pass: ParkedPass = { kept: [], removed: [], said: [] };

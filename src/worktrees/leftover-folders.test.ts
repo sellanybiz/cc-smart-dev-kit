@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { NO_TASK_RECORDS } from "../testing/task-records";
 import { cleanGitEnv, git, tempDir } from "../testing/temp";
 import * as machineFacts from "./machine-facts";
 import { isParkedWorktree, parkedOriginal } from "./scan";
@@ -54,6 +55,7 @@ describe("mount points", () => {
         against: { label: "main", ref: "main" },
         base: "main",
         claudeConfigDir: tempDir("config"),
+        recorded: NO_TASK_RECORDS,
         env: cleanGitEnv(),
         facts: { ...QUIET, mounts: "unknown" },
         idleLimit: 0,
@@ -86,6 +88,7 @@ describe("mount points", () => {
         against: { label: "missing-base", ref: "refs/heads/missing-base" },
         base: "missing-base",
         claudeConfigDir: tempDir("config"),
+        recorded: NO_TASK_RECORDS,
         env: cleanGitEnv(),
         facts: QUIET,
         idleLimit: 0,
@@ -116,6 +119,7 @@ describe("mount points", () => {
         against: { label: "main", ref: "main" },
         base: "main",
         claudeConfigDir: tempDir("config"),
+        recorded: NO_TASK_RECORDS,
         env: cleanGitEnv(),
         facts: { ...QUIET, mounts: [join(parked, "bound")] },
         idleLimit: 0,

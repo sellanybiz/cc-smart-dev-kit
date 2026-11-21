@@ -11,12 +11,12 @@ import { realPath } from "../hooks/git";
 import { holdPort } from "../machine/hold-port";
 import { LOCK_PORTS } from "../ports";
 import {
+  type DeleteOptions,
   deleteMergedBranch,
   forgottenLine,
   pruneWorktrees,
   removeWorktree,
   type ScannedWorktree,
-  type ScanOptions,
 } from "./scan";
 import { finishStrays, type StrayFolder, type StrayPass, strayParkedFolders } from "./scan-parked";
 
@@ -95,7 +95,7 @@ function whyFinished(worktree: ScannedWorktree, base: string): string {
 export function cleanFinished(
   repo: string,
   scanned: ScannedWorktree[],
-  judged: ScanOptions,
+  judged: DeleteOptions,
   say: (line: string) => void,
 ): CleanReport {
   const going = scanned.filter(canGo);
@@ -179,7 +179,7 @@ export interface CleanWithStraysReport {
 export function cleanWithStrays(
   repo: string,
   scanned: ScannedWorktree[],
-  judged: ScanOptions,
+  judged: DeleteOptions,
   say: (line: string) => void,
   before: readonly StrayFolder[] = strayParkedFolders(
     repo,

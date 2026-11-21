@@ -19,6 +19,7 @@ import { openWorkDb, workDbFile } from "../tasks/work/db";
 import * as workRead from "../tasks/work/read";
 import { createTask } from "../tasks/work/store";
 import type { WorkStatus } from "../tasks/work/types";
+import { NO_TASK_RECORDS } from "../testing/task-records";
 import { cleanGitEnv, git, tempDir } from "../testing/temp";
 import { recordedBranches, sweepBuilderBranches, unusedBuilderBranches } from "./branch-sweep";
 import { cleanWithStrays } from "./clean";
@@ -172,6 +173,7 @@ describe("the builder branch sweep", () => {
     const judged = {
       base: "main",
       claudeConfigDir: tempDir("branch-sweep-config"),
+      recorded: NO_TASK_RECORDS,
       env: cleanGitEnv(),
       facts: QUIET_FACTS,
     };
