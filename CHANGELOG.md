@@ -40,7 +40,8 @@ in your own terminal after the update; the user guide is [README.md](README.md).
 - **While you are away, a session keeps going.** You said: "dont wait for me keep going even
   after a plan completed review merge and go next". The away skill now says: work at full
   parallel width, and after a plan, run its review, the full check and its pull request, then
-  start the next plan. When the previous pull request is still open, the next plan stacks on it.
+  start the next plan. When the previous pull request is still open, the next plan stacks on it:
+  its pull request opens against that plan's branch and never merges before it.
 - **`workflow merge-check <pr> --asked`.** It judges a merge you said yes to while `allowMerge`
   is off: it sets aside only that switch, and the base, the stacked check, the required checks and
   the review still decide. It takes exactly one pull request: a yes names one merge. Away, a
