@@ -19,6 +19,7 @@ import {
   type GhRunner,
   ghMissing,
   type MergeWorld,
+  newStackCache,
   spawnGh,
 } from "../../workflow/merge-check";
 import { type GhLoginState, ghLoginState } from "../../workflow/propose";
@@ -545,6 +546,10 @@ async function readBranches(
     }
   }
 
+  // The stacked question shares one list of the open pull requests and each compare of two
+  // commits between every row, so a page of ten asks gh for one list, not ten.
+  const stack = newStackCache();
+
   // The pull requests' verdicts run a few at a time (`PROJECT_VERDICTS_AT_ONCE`), all under the
   // page's one deadline, and keep gh's own order.
   const branches = await mapLimit(
@@ -558,6 +563,7 @@ async function readBranches(
               mergeWorld,
               { ref: String(pullRequest.number), repo: null },
               defaultBranches,
+              { stack },
             );
       // A verdict gh never answered because the page's clock ran out is "not read yet", never
       // "gh could not read it": the deadline is the page's own.

@@ -157,16 +157,43 @@ place (`auto-merge.ts`).
 **The merge is the session's own step.** It merges its pull request itself, with `gh pr merge`,
 only when **all** of these hold: `allowMerge` is on; the merge names **this project's own repository**; every required check
 `gh pr checks --required` reports is green (a `skipping` check counts as passed, which is
-GitHub's own rule for a merge); and — with `reviewBeforePush` on — the head is covered by a
+GitHub's own rule for a merge); the pull request is **not stacked on another open one**
+(the paragraph "A stacked pull request waits", below); and — with `reviewBeforePush` on — the head is covered by a
 review (D17, § The review record). **The judgment is one home**, `src/workflow/merge-check.ts`:
 `checkPullRequest` reads those facts and decides, `checkBranch` does the same for a local
 branch against a base (the review gate only), and
-`cc-smart-dev-kit workflow merge-check [<pr>… [--asked] | --branch <b> --base <base>]` prints each verdict
+`cc-smart-dev-kit workflow merge-check [<pr>… | <pr> --asked | --branch <b> --base <base>]` prints each verdict
 (`allowed`, or the reason it is not; exit 0 when every one is allowed, 1 when any is not).
 No hook runs it any more: it is a command the session runs, and the skill says to. The
 `merge-guard` hook that called it before every `gh pr merge` is retired (§ Retired in 6.0.0 in
 `docs/design/hooks.md`). Opening a pull request follows `openPr` the same way, as an
 instruction.
+
+**A stacked pull request waits (`stackedVerdict` in `merge-check.ts`).** Plan B's pull request
+may be stacked on plan A's open one: B's branch started from A's, so B's commits include A's. B's
+own review and checks pass, and merging B would put A's unreviewed or refused commits into the
+base. Whatever base B names (a skill rule alone, `gh pr create --base <A's branch>`, would be
+only a convention), `checkPullRequest` lists the open pull requests
+(`gh pr list --state open --json number,headRefOid`) and, for each other one #m, asks GitHub
+whether #m's head is an ancestor of B's head: `gh api repos/{owner}/{repo}/compare/<m's
+head>...<B's head> --jq .status` ([REST: Compare two
+commits](https://docs.github.com/en/rest/commits/commits#compare-two-commits); `status` is
+`ahead`, `behind`, `diverged` or `identical`). `ahead` or `identical` means B carries #m; then a
+second compare, `<B's base>...<m's head>`, made only then, says whether B's base already holds
+that commit (`behind` or `identical`), because an open pull request with no commits of its own
+must not stop every other one. When B carries #m's head and the base does not hold it, the check
+refuses with `pull request #<n> is stacked on open pull request #<m>: merge #<m> first, then
+check again` (the lowest number when several; a stack found wins over a compare that failed). No
+commit list is read, so a pull request of any size is judged (gh cuts `gh pr view --json
+commits` at 100). It runs after the base rule and before the required checks: a stack is refused
+whatever the checks say, and `--asked` never sets it aside, because that sets aside the
+`allowMerge` switch alone. **When in doubt it refuses**: a gh that fails, a compare that answers
+another word, an open entry of another shape, and an open list that fills its `--limit 500`
+(`OPEN_PULL_REQUESTS_LIMIT`; gh's default is 30) all refuse, never read as "not stacked".
+**One read per run**: `newStackCache` is what the portal's project page (`readBranches`) and a
+`merge-check` line of several pull requests pass on, so the open list is read once for all rows
+and each pair of commits is compared once, in one order only (the lower id first, the answer
+turned round for the other order); a row alone makes its own.
 
 **`--asked`: the person's yes sets aside the `allowMerge` switch and nothing else.** A person may
 say yes to a merge while `allowMerge` is off in the project (an away session is told to keep going
@@ -175,10 +202,12 @@ is off" and has read nothing else, so it cannot show that the switch is the only
 `merge-check <pr> --asked` runs every other test: `autoMergeRefusal` is split into `autoMergeOff`
 (the switch) and `baseRefusal` (the base rules, one home in `src/workflow/auto-merge.ts`), and with
 `asked` the check calls `baseRefusal` alone, then reads the required checks and the review under
-D17 (`fixesAfterReview`) as always. Exit 0 only when all of those pass, and the verdict line says
+D17 (`fixesAfterReview`) as always, and the stacked check above. Exit 0 only when all of those pass, and the verdict line says
 the merge rests on the person's yes, not on `allowMerge`. With `allowMerge` on, `--asked` changes
 nothing and claims no yes. It is for pull requests only: a local branch check has no `allowMerge`
-test, so `--branch` with `--asked` is a usage error (exit 2), not a silent no-op. The flag is the
+test, so `--branch` with `--asked` is a usage error (exit 2), not a silent no-op. **It names one
+merge**: `--asked` with more than one pull request (`merge-check 12 13 --asked`) is a usage error
+(exit 2) too, so one yes never covers a number it did not name. The flag is the
 session's own word that the person gave that yes; no code can prove it, so the skill says when it
 may be used and that the person's words are quoted in the decision record (`commit` § merge rule,
 `user-unavailable` § 4). The portal never passes it.

@@ -1,7 +1,7 @@
 /**
  * `cc-smart-dev-kit workflow [show] | set <setting> <value> [--project] | unset <setting> [--project]
  * | propose <setting> <value> [--unset] [--folder <project>] [--json] | review-done [--sha <commit>]
- * | merge-check [<pr>… [--asked] | --branch <b> --base <base>]`.
+ * | merge-check [<pr>… | <pr> --asked | --branch <b> --base <base>]`.
  *
  * `show` prints every value with where it came from, so a person can see whether it is the
  * project's policy, their own, or the built-in default — and, for a switch, that it is the
@@ -23,8 +23,9 @@
  *
  * `merge-check` judges a merge without making one, with merge-check's own judgment
  * (`merge-check.ts`): each pull request number, or a local branch against a base. It prints one
- * line per verdict and exits 0 when every merge is allowed, 1 when any asks. `--asked` (pull
- * requests only) is the person's own yes to the merge: it sets aside `allowMerge` and nothing else.
+ * line per verdict and exits 0 when every merge is allowed, 1 when any asks. `--asked` (one pull
+ * request only: a yes names one merge) is the person's own yes to that merge: it sets aside
+ * `allowMerge` and nothing else, so a pull request stacked on another open one is refused with it.
  *
  * Exit codes, the same as the rest of the command: 0 done, 1 a file that cannot be read or
  * written (or a merge that asks), 2 a setting or a value that is not one of the settings there are.
@@ -41,6 +42,7 @@ import {
   checkPullRequest,
   type MergeVerdict,
   type MergeWorld,
+  newStackCache,
   notChecked,
   notInTime,
 } from "./merge-check";
@@ -103,7 +105,7 @@ function renamedLine(typed: string, current: string): string | null {
     : `${typed} is now called ${current}: using ${current} (the old name still works in a file)`;
 }
 
-export const WORKFLOW_USAGE = `Usage: ${COMMAND} workflow [show] | set <setting> <value> [--project] | unset <setting> [--project] | propose <setting> <value> [--unset] [--folder <project>] [--json] | review-done [--sha <commit>] | merge-check [<pr>… [--asked] | --branch <b> --base <base>]
+export const WORKFLOW_USAGE = `Usage: ${COMMAND} workflow [show] | set <setting> <value> [--project] | unset <setting> [--project] | propose <setting> <value> [--unset] [--folder <project>] [--json] | review-done [--sha <commit>] | merge-check [<pr>… | <pr> --asked | --branch <b> --base <base>]
 
 The settings are: ${WORKFLOW_KEYS.join(", ")}
 ${OLD_NAMES_TEXT}.
@@ -144,12 +146,16 @@ refuses there: it is for your own terminal.
 merge-check judges a merge without making it: each
 pull request number, or a local branch against a base (--branch <b> --base <base>). A pull
 request is allowed when the committed policy passes: allowMerge on, its base the project's
-integration base or the repository's default branch, every required check green, and a review covering its head under
-fixesAfterReview. A branch is allowed when the review record covers its head. One line per
-verdict; exit 0 when every merge is allowed, 1 when any asks.
---asked (pull requests only) says the person gave their own yes to this merge. It
-sets aside allowMerge and nothing else: the base rules, the required checks and the review still
-decide, and the verdict says the merge rests on the person's yes. Use it only with that yes in hand.`;
+integration base or the repository's default branch, not stacked on another open pull request
+(no other open one's head is among its ancestors, by GitHub's compare, unless its base holds it:
+that one is merged first), every required check green, and a review covering its head under
+fixesAfterReview. When gh cannot say, or may have cut the open list, it asks: a stack is never
+read as absent. A branch is allowed when the review
+record covers its head. One line per verdict; exit 0 when every merge is allowed, 1 when any asks.
+--asked (one pull request only) says the person gave their own yes to this merge. It
+sets aside allowMerge and nothing else: the base rules, the stacked check, the required checks and
+the review still decide, and the verdict says the merge rests on the person's yes. A yes names one
+merge, so --asked takes exactly one pull request. Use it only with that yes in hand.`;
 
 /** One git call a `workflow` run makes (a `rev-parse`): milliseconds, never a hang. */
 const WORKFLOW_GIT_TIMEOUT_MS = 5_000;
@@ -522,11 +528,18 @@ function mergeCheckArgs(argv: string[]): MergeCheckArgs {
   if (prs.length === 0) {
     return { ok: false, why: "merge-check needs a pull request number, or --branch with --base" };
   }
+  // A yes names one merge: never let one `--asked` cover every number on the line.
+  if (asked && prs.length > 1) {
+    return {
+      ok: false,
+      why: `--asked is one person's yes to one merge: give it exactly one pull request, not ${prs.length}`,
+    };
+  }
   return { ok: true, prs, branch: null, base: null, asked };
 }
 
 /**
- * `workflow merge-check [<pr>… [--asked] | --branch <b> --base <base>]`: merge-check's judgment,
+ * `workflow merge-check [<pr>… | <pr> --asked | --branch <b> --base <base>]`: merge-check's judgment,
  * printed and not made. Exit 0 when every verdict is allowed, 1 when any asks.
  */
 async function mergeCheck(context: WorkflowContext, argv: string[]): Promise<number> {
@@ -554,14 +567,14 @@ async function mergeCheck(context: WorkflowContext, argv: string[]): Promise<num
   }
   let everyAllowed = true;
   const defaultBranches = new Map<string, string | null>();
+  // One list of the open pull requests, and each compare of two commits once, for the whole line.
+  const stack = newStackCache();
   for (const pr of parsed.prs) {
     const verdict = await checkPullRequest(
       world,
       { ref: String(pr), repo: null },
       defaultBranches,
-      {
-        asked: parsed.asked,
-      },
+      { asked: parsed.asked, stack },
     );
     if (verdict.kind !== "allowed") everyAllowed = false;
     context.print(verdictLine(verdict, `#${pr}`, context.env));
