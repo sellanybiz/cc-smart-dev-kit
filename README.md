@@ -461,7 +461,7 @@ installed command's full usage. A usage mistake exits 2; a refusal or failure ex
 
 | After `cc-smart-dev-kit herdr` | What it does |
 |---|---|
-| `start --model <model> --effort <effort> --mode <mode> [--cwd <dir>] [--on <machine>] [--name <name>] [--task <#n> \| --plan <slug> \| --followup [--issue <n>]…] [--independent] [--asked] -- <brief>` | Starts a session with a private brief file. `--task` is only for an existing open task in the same project and machine. `--plan` hands one queued plan of this project to a child that builds it end to end (§ [Plans for children](#plans-for-children-520)); it cannot be combined with `--task`, `--independent` or `--on`. `--followup` starts this lead's one follow-up child, which collects findings outside the plan into one pull request (§ [Follow-up children](#follow-up-children-540)); `--issue <n>` (repeat it) names the filed issues it fixes and needs `--followup`; it is refused with `--plan`, `--task`, `--independent` or `--on`, inside any child, while this lead's follow-up child for the repository is live, and when an ended one left unmerged commits. In git, Claude creates a worktree; existing terminal, folder or branch names are refused. Every session starts through your login shell, so it gets your own PATH. Independent sessions, local or remote, get their own space in Herdr's window; a linked child, local or remote, nests under its lead. Start waits until the child comes up: a child that exits at launch (for example, an untrusted folder) shows its error, is removed, and start fails with no task binding. |
+| `start --model <model> --effort <effort> --mode <mode> [--cwd <dir>] [--on <machine>] [--name <name>] [--task <#n> \| --plan <slug> \| --followup [--issue <n>]…] [--independent] [--asked] -- <brief>` | Starts a session with a private brief file. `--task` is only for an existing open task in the same project and machine. `--plan` hands one queued plan of this project to a child that builds it end to end (§ [Plans for children](#plans-for-children-520)); it cannot be combined with `--task`, `--independent` or `--on`. `--followup` starts this lead's one follow-up child, which collects findings outside the plan into one pull request (§ [Follow-up children](#follow-up-children-540)); `--issue <n>` (repeat it) names the filed issues it fixes and needs `--followup`; it is refused with `--plan`, `--task`, `--independent` or `--on`, inside any child, while this lead's follow-up child for the repository is live, and when an ended one left unmerged commits. In git, Claude creates a worktree; existing terminal, folder or branch names are refused. A project's own WorktreeCreate hook may put the worktree anywhere, so herdr finds it in `git worktree list` by the launch's exact name or branch (never a guess from the name), and a start that records the worktree (`--task`, `--plan`) waits up to 10 s for it; one that finds none says so and exits 1. Every session starts through your login shell, so it gets your own PATH. Independent sessions, local or remote, get their own space in Herdr's window; a linked child, local or remote, nests under its lead. Start waits until the child comes up: a child that exits at launch (for example, an untrusted folder) shows its error, is removed, and start fails with no task binding. |
 | `list [--all] [--json]` | Owned children (a follow-up child shows as "follow-up" in the task, plan or follow-up column), or all kit sessions including independent ones; includes counts and blocked status (a blocked child waits for you, in its pane). |
 | `send <terminal> <text>` | Tagged lead text to an owned linked child. A done child gets a plain send, never force; a blocked child is yours to answer in its pane. The follow-up child is sent each new finding this way, and `ship` at the session's ship point. |
 | `wait [--any \| --all] [--timeout <seconds>] [--seen <addr>:<turn\|?>:<error\|done\|end>[,…]]` | Waits for news (default/any) or each child in the initial barrier (all), up to the timeout. A blocked child is not news: it waits for you, so the lead keeps waiting. Run in a background Bash call. Copy its exact next command, whose percent-encoded address/turn/state cursor covers news already printed. `--all` leaves a follow-up child out, since it never settles. No live children returns immediately; timeout does not mean done. |
@@ -500,7 +500,8 @@ With two or more plans laid, `plans.runMode` (§ [The workflow](#the-workflow)) 
 **solo** (one session, one plan after another), **lead + children** (this session builds one plan
 and hands each other ready plan to a linked session) or **coordinator** (it builds nothing; every
 ready plan goes to a session of its own). Each child is a full session, so it spends more of your
-usage: with `ask`, the default, Claude asks once and states each cost. Both child modes need a
+usage: with `ask`, the default, Claude asks once and states each cost, and recommends lead + children when two or
+more ready plans share no file and a Herdr terminal exists, else solo (`/cc-smart-dev-kit:plan-task` § 6). Both child modes need a
 Herdr terminal. Each plan keeps a file list (`task_update` with `files`, or `task add --plan ...
 --path`), and the store reserves a plan in one step before its child starts. Two plans that share a
 file never run at once: that holds for a plan handed to a child or reserved by the lead, and for a
@@ -510,7 +511,7 @@ until that plan is done or parked. A reserved plan stays held until its pull req
 start yourself and never reserve stops being held once its task closes or it is parked. A plan is also held
 back until the pull request of every plan it waits on has merged. `herdr plans` shows where each stands. A child takes its plan, builds it with
 `/cc-smart-dev-kit:build`, opens its own pull request and reports. `herdr start --plan <slug>`
-resumes a child that is gone, in its own worktree. Needs a git project whose default branch is
+resumes a child that is gone, in its own worktree: one outside `.claude/worktrees/` (a project's own hook put it there) only when git lists it for the repo and herdr's own launch record of that start names it, so a path typed into a task is refused (a remote start writes no record). Needs a git project whose default branch is
 known (`git remote set-head origin --auto`). Paths every plan touches and each merge settles go in
 `plans.mergeFiles`. The design: [Herdr](docs/design/herdr.md) and [tasks](docs/design/tasks.md).
 
@@ -884,6 +885,11 @@ as one JSON object instead: `format`, `version`, `ok`, `counts`, and `groups`, e
   version while every file matches passes, and the line names the old stamp; the next session
   start or `setup` brings it up to date. After
   `--no-instructions`, a `·` line says they are left out, as information;
+- the hooks' [checked-file cache](#the-hooks): nothing while its folder
+  (`~/.local/state/cc-smart-dev-kit/checked/`, or the nearest folder above it that exists, when
+  it is not made yet) can be written. Otherwise one `!` line, never a failure: `hook cache:
+  <folder> cannot be written (EACCES), so every hook run parses the project file again` (or `is
+  not a folder`), with the fix `chmod 700 <folder>` and the folder to make first;
 - the current project: when a `CLAUDE.md`, `.claude/CLAUDE.md` or `CLAUDE.local.md` in the
   current folder or a folder above it imports a cc-smart-dev-kit file
   (`@~/.claude/cc-smart-dev-kit/instructions/…`), that file exists. A missing one loads nothing and
@@ -1075,6 +1081,11 @@ as one JSON object instead: `format`, `version`, `ok`, `counts`, and `groups`, e
     block there is not checked; and a `·` line when the project has a deploy skill but no
     `tasks.deployCommands` ("the project has a deploy skill but lists no deploy commands in
     tasks.deployCommands"; the field is no longer read by any hook);
+  - `!` for each open task of the project that an open task above it holds back
+    (`project tasks: #12 is blocked by #9, which it sits under, so neither can be done`): the
+    task store refuses such a hold, but a store an older kit lifted may still carry one. The fix
+    names the `task_update` call with `blocked_by_remove`; doctor itself removes nothing, and a
+    closed task or a store it cannot read adds no line;
   - GitHub Issues (`issues.enabled` is on by default since 5.0.0; no line, and no `gh` call, while
     it is off): one `✓` line that `gh` is logged in for github.com and can file issues in
     `origin`'s repository (`gh auth status`, and `gh repo view`'s `hasIssuesEnabled` and
@@ -2181,6 +2192,15 @@ or one older than 1.4.3, `user-away`'s question-tool entry asks you before every
 (`--missing=ask`: it fails closed), and every other hook, `job-route` included, writes one line on stderr and the
 session goes on (`--missing=quiet`).
 
+A hook reads `.claude/cc-smart-dev-kit.json` once and keeps the checked answer in the kit's state
+folder (`~/.local/state/cc-smart-dev-kit/checked/`, a folder of yours with mode 700, at most 64
+entries). An entry is found by the file's own bytes and the plugin build, so an edited file or a
+new build is checked again. The code that checks the file loads only when no entry matches, so
+`job-route`, `agent-usage`, `session-name` and `verify-gate` load no zod library on a warm run,
+and `after-merge` loads it only for a line that merges. A file that fails the check is checked
+again every time and never stored. The cost and the limits:
+[docs/design/hooks.md](docs/design/hooks.md) § The checked project file.
+
 | Hook | When | What it does |
 |---|---|---|
 | `playwright-output` | before every `mcp__playwright__*` call | Puts a screenshot or snapshot the caller names by a relative `filename` into the browser's output folder instead of the folder the session runs in (`@playwright/mcp` resolves a caller-named file against the process's own folder). |
@@ -2526,9 +2546,10 @@ with its history. `cc-smart-dev-kit sessions` lists this project's sessions of t
 days by name and worktree, with the command that resumes each. It creates no saved terminal
 tabs and leaves old tab files alone.
 
-**Which folders are this project's:** its main checkout, and Claude Code's own worktrees inside
-it (`.claude/worktrees/`). A project folder next to it in the same Code folder is another
-project's, and is left alone. A session running in another project's folder is never listed,
+**Which folders are this project's:** its main checkout, Claude Code's own worktrees inside
+it (`.claude/worktrees/`), and the exact folder of any other worktree `git worktree list` shows
+for it (a project's own WorktreeCreate hook may put one elsewhere). A project folder next to it in
+the same Code folder, which git does not list, is another project's, and is left alone. A session running in another project's folder is never listed,
 and never reopened.
 
 `cc-smart-dev-kit sessions --open` brings back the sessions that were **open when the machine
@@ -2908,7 +2929,7 @@ name: it is a choice of three, not a yes.
 | `alerts.sound` | — | Retired: the same load-only handling as `alerts.events`. |
 | `alerts.usagePercent` | `85` | The plan usage, in percent, a warning starts at (1–100). |
 | `plans.maxPhases` | `10` | The most phases one plan may hold (a whole number, 1–50). A plan is a short list of areas, each with its tasks; more phases than this is a plan to split. Your own default, or the project's in this checkout's `.claude/cc-smart-dev-kit.json` (`workflow set plans.maxPhases 12 --project`); the project's wins. Only you raise it: `workflow set` and `unset` of it refuse inside Claude Code, so a session cannot lift its own limit (`propose` stays open). A project that sets it needs `"requires": ">=4.8"`. |
-| `plans.runMode` | `ask` | How queued plans run when two or more are laid (§ [Plans for children](#plans-for-children-520)): `ask`, `solo`, `lead-children` or `coordinator`. With `ask` Claude asks once and states each mode's cost. Yours alone: a project file that sets it is refused, because a committed value would spend every teammate's usage. `workflow set` and `unset` of it refuse inside Claude Code and print the command to run in your own terminal. |
+| `plans.runMode` | `ask` | How queued plans run when two or more are laid (§ [Plans for children](#plans-for-children-520)): `ask`, `solo`, `lead-children` or `coordinator`. With `ask` Claude asks once, states each mode's cost and recommends lead + children when ready plans share no file (`/cc-smart-dev-kit:plan-task` § 6). Yours alone: a project file that sets it is refused, because a committed value would spend every teammate's usage. `workflow set` and `unset` of it refuse inside Claude Code and print the command to run in your own terminal. |
 | `plans.mergeFiles` | `[]` | Paths every plan touches and each merge settles (a version manifest, a changelog, a lockfile, build output): the overlap check between plans leaves them out. Repo-relative, a folder ends in `/` (`plugin/dist/`); no `..`, no root, no `*` or `?`. The project's, with `--project` (`workflow set plans.mergeFiles CHANGELOG.md,plugin/dist/ --project`), and read **only as committed on the base branch**, so a session cannot widen it by editing its own copy; `workflow set` and `unset` of it refuse inside Claude Code (`propose` stays open). A project that sets it needs `"requires": ">=5.2"`. |
 
 **Merging by itself.** With `allowMerge` on, Claude merges its own pull request into the project's
