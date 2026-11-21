@@ -19,8 +19,9 @@ in your own terminal after the update; the user guide is [README.md](README.md).
   name now reads `origin/<base>`; with no `origin` remote it reads the local branch and says so.
   A local base ahead of `origin/<base>` still reads origin's, as the gates do, and says so. A base
   origin does not have here reads the local branch and tells you to run `git fetch origin`. A
-  commit id, a tag or `HEAD` is read as written, and a branch is read by its full name, so a tag
-  with the same name never stands in.
+  commit id, a tag or `HEAD` is read as written, and a branch is read by its full name. A name
+  that means more than one ref (a tag beside a branch, a stray local branch `origin/main` beside
+  origin's) is refused with the refs named, as the gates do.
 - **A task's history prints a claim as text.** A take-over wrote `[object Object]`; it now writes
   the session id, and older rows print the same way.
 - **Finished worktrees stop staying for `next-env.d.ts`.** Next.js writes that file in every
