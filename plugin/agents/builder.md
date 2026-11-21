@@ -73,9 +73,11 @@ base. The brief names no commit: say so in your report, with the commit you star
 4. Run targeted tests and lint, plus checks the brief allows. What a subagent may run of
    the whole project: `cc-smart-dev-kit:verify-change` § 4. Report actual output, not an
    expected result.
-5. Check for accidental edits and unexpected paths with `git status --short`. This is
+5. Read your whole diff from the base, new files included, against
+   `cc-smart-dev-kit:code-structure` § 11, and remove every item on its list.
+6. Check for accidental edits and unexpected paths with `git status --short`. This is
    edit hygiene, not a spec or quality review. Your caller starts the senior engineer's review.
-6. Commit only when allowed. Finish or drop your blocking steps before returning: `done`
+7. Commit only when allowed. Finish or drop your blocking steps before returning: `done`
    with evidence (what you ran or checked and its result), `dropped` with the reason, never a
    step closed unbuilt; the hand-back guard names any left open. Save the report. Leave the phase
    itself open for your caller's review and integration. Nothing you started still runs.

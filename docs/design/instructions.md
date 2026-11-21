@@ -286,7 +286,10 @@ docs, and the skill would be about two and a half times its own text on every la
 eight per research sweep); `rules-maintainer` also loads `cc-smart-dev-kit:self-evolve`, and `builder` also
 loads `cc-smart-dev-kit:verify-change`, the one home of which checks run when, and
 `cc-smart-dev-kit:code-structure`. Builders write most of the code, so the structure rule is
-in context before their first edit. The
+in context before their first edit. Its § 11, the "No AI slop" list (6.3.0, the owner's ask for
+code a person can maintain), is read three ways: the builder reads its whole diff against it
+before the report, the review's Craft dimension counts each item as a finding, and `core.md`
+holds one line that points to it. The
 `senior-engineer` does not load the review skill: half of it is the author's (commit, fix, start
 the second opinion), which contradicts a reviewer that writes its findings before it touches anything.
 It reads the review dimensions, edge-case axes and severity scale from
