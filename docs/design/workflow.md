@@ -172,28 +172,43 @@ instruction.
 **A stacked pull request waits (`stackedVerdict` in `merge-check.ts`).** Plan B's pull request
 may be stacked on plan A's open one: B's branch started from A's, so B's commits include A's. B's
 own review and checks pass, and merging B would put A's unreviewed or refused commits into the
-base. Whatever base B names (a skill rule alone, `gh pr create --base <A's branch>`, would be
-only a convention), `checkPullRequest` lists the open pull requests
-(`gh pr list --state open --json number,headRefOid`) and, for each other one #m, asks GitHub
-whether #m's head is an ancestor of B's head: `gh api repos/{owner}/{repo}/compare/<m's
-head>...<B's head> --jq .status` ([REST: Compare two
-commits](https://docs.github.com/en/rest/commits/commits#compare-two-commits); `status` is
-`ahead`, `behind`, `diverged` or `identical`). `ahead` or `identical` means B carries #m; then a
-second compare, `<B's base>...<m's head>`, made only then, says whether B's base already holds
-that commit (`behind` or `identical`), because an open pull request with no commits of its own
-must not stop every other one. When B carries #m's head and the base does not hold it, the check
-refuses with `pull request #<n> is stacked on open pull request #<m>: merge #<m> first, then
-check again` (the lowest number when several; a stack found wins over a compare that failed). No
-commit list is read, so a pull request of any size is judged (gh cuts `gh pr view --json
-commits` at 100). It runs after the base rule and before the required checks: a stack is refused
-whatever the checks say, and `--asked` never sets it aside, because that sets aside the
-`allowMerge` switch alone. **When in doubt it refuses**: a gh that fails, a compare that answers
-another word, an open entry of another shape, and an open list that fills its `--limit 500`
-(`OPEN_PULL_REQUESTS_LIMIT`; gh's default is 30) all refuse, never read as "not stacked".
+base. **The rule: B is stacked on the open pull request #m when the merge base of #m's head and
+B's head is a commit that B's base does not hold.** It is the shared commits that count, not
+the heads: once #m gains a commit, the two heads diverge (neither holds the other) while B still
+carries #m's older commits. Whatever base B names (a skill rule alone, `gh pr create --base <A's
+branch>`, would be only a convention), `checkPullRequest` lists the open pull requests
+(`gh pr list --state open --json number,headRefOid`) and, for each other one #m, makes one
+compare: `gh api 'repos/{owner}/{repo}/compare/<m's head>...<B's head>?per_page=1' --jq '.status
++ " " + .merge_base_commit.sha'` ([REST: Compare two
+commits](https://docs.github.com/en/rest/commits/commits#compare-two-commits): the response has
+`status` and `merge_base_commit`, and `per_page` cuts the commit list, which is never read). The
+merge base is the same whichever head is named first, so a pair is compared in one order only.
+When the merge base is B's own head, B holds nothing of #m's (#m is ahead of B, or at the same
+commit: two open pull requests with one head never stack each other), and the answer is clear.
+Otherwise a second compare, `<B's base>...<merge base>`, says whether B's base holds it:
+`behind` or `identical` is clear (an open pull request with no commits of its own, or one that
+shares only a commit of the base, must not stop every other one); `ahead` or `diverged` is
+stacked. That second compare is cached by the merge base, so every pull request cut from the same
+commit of the base shares one call. A stacked B is refused with `pull request #<n> is stacked on
+open pull request #<m>: merge #<m> first, then check again` (the lowest number when several; a
+stack found wins over a compare that failed). No commit list is read, so a pull request of any
+size is judged (gh cuts `gh pr view --json commits` at 100). It runs after the base rule and
+before the required checks: a stack is refused whatever the checks say, and `--asked` never sets
+it aside, because that sets aside the `allowMerge` switch alone. **When in doubt it refuses**: a
+gh that fails, an answer that is not exactly a status and a merge base (gh prints the JSON body of
+an HTTP error on stdout; it is never read as a status or shown, the reason says "GitHub could not
+compare <a> and <b>"), an open entry of another shape, and an open list that fills its `--limit
+500` (`OPEN_PULL_REQUESTS_LIMIT`; gh's default is 30) all refuse, never read as "not stacked".
+A read the caller's deadline cut short (the portal's page has one) is `late`, as every other read
+of the check is, not a refusal. A branch name in the compare path is encoded
+(`encodeURIComponent`, so `release/1` is `release%2F1`) and the `...` between the names stays.
 **One read per run**: `newStackCache` is what the portal's project page (`readBranches`) and a
 `merge-check` line of several pull requests pass on, so the open list is read once for all rows
-and each pair of commits is compared once, in one order only (the lower id first, the answer
-turned round for the other order); a row alone makes its own.
+and each pair of commits is compared once. Its keys carry the folder and repository they answer
+for, so one cache can never mix two projects. The one cost of the rule: two open pull requests cut
+from the same unmerged commit (siblings, with nothing open below them) refuse each other, because
+each carries a commit the base lacks that the other has. That errs on the safe side. A lower pull request that was closed without merging is no longer open, so it is not
+read here: the skills say what to do then (`plugin/skills/commit/SKILL.md`).
 
 **`--asked`: the person's yes sets aside the `allowMerge` switch and nothing else.** A person may
 say yes to a merge while `allowMerge` is off in the project (an away session is told to keep going

@@ -52,9 +52,11 @@ Read its notes for the caller's rulings, then the named files, patterns and near
 ## Build and check
 
 Before the first edit, bring your worktree to the commit the brief names as its base:
-`git merge --ff-only <that commit>`. When it cannot fast-forward, stop and report it: never
-build on another base. The brief names no commit: say so in your report, with the commit
-you started from.
+`git reset --hard <that commit>`. Run it only in a fresh worktree, with no commits of its own
+and a clean tree (`git status --short` prints nothing): it has nothing to lose, and it
+starts at the default branch's tip, so `git merge --ff-only` fails whenever that branch moved
+after the base was cut. Any other worktree: stop and report it, and never build on another
+base. The brief names no commit: say so in your report, with the commit you started from.
 
 1. Read callers before changing shared code; use impact-analysis without a helper and
    code-structure to shape the change. Reuse before you write (the core instructions'

@@ -127,12 +127,13 @@ describe("the merge check never blocks its caller (B8)", () => {
     });
   });
 
-  test("a pair of commits is compared once, in the lower id's order, and its answer turned round", async () => {
-    // The pull request's head is "a…"; #5 is at "9…" (compared as 9…...a…) and #6 at "c…"
-    // (compared as a…...c…, then the answer turned round: a… holds c…).
+  test("a pair of commits is compared once, in the lower id's order, with its merge base asked for", async () => {
+    // The pull request's head is "a…"; #5 is at "9…" (compared as 9…...a…, merge base "e…") and
+    // #6 at "c…" (compared as a…...c…: a… holds c…, so the merge base is c…, which main lacks).
     const asked: string[][] = [];
     const nine = "9".repeat(40);
     const see = "c".repeat(40);
+    const root = "e".repeat(40);
     const gh: GhRunner = async (args) => {
       asked.push(args);
       if (args[0] === "pr" && args[1] === "view") {
@@ -153,11 +154,13 @@ describe("the merge check never blocks its caller (B8)", () => {
         ]);
       }
       if (args[0] === "api") {
-        const basehead = args[1]?.split("/compare/")[1];
-        // #5's head neither holds nor is held; #6's head is held by the pull request's own.
-        if (basehead === `${nine}...${"a".repeat(40)}`) return "diverged";
-        if (basehead === `${"a".repeat(40)}...${see}`) return "behind";
-        if (basehead === `main...${see}`) return "diverged";
+        const basehead = args[1]?.split("/compare/")[1]?.split("?")[0];
+        // #5's head neither holds nor is held (their merge base is held by main); #6's head is
+        // held by the pull request's own, and main lacks it.
+        if (basehead === `${nine}...${"a".repeat(40)}`) return `diverged ${root}`;
+        if (basehead === `main...${root}`) return `behind ${root}`;
+        if (basehead === `${"a".repeat(40)}...${see}`) return `behind ${see}`;
+        if (basehead === `main...${see}`) return `diverged ${root}`;
       }
       return null;
     };
@@ -178,13 +181,14 @@ describe("the merge check never blocks its caller (B8)", () => {
       .map((one) => one.slice(1))
       .sort();
     const at = (basehead: string) => [
-      `repos/{owner}/{repo}/compare/${basehead}`,
+      `repos/{owner}/{repo}/compare/${basehead}?per_page=1`,
       "--jq",
-      ".status",
+      '.status + " " + .merge_base_commit.sha',
     ];
     expect(compares).toEqual(
       [
         at(`${nine}...${"a".repeat(40)}`),
+        at(`main...${root}`),
         at(`${"a".repeat(40)}...${see}`),
         at(`main...${see}`),
       ].sort(),

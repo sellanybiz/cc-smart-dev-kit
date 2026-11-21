@@ -49,19 +49,28 @@ its checks and the merge order. **Away** (`/cc-smart-dev-kit:user-unavailable`) 
 merge rule: merge only when `merge-check <pr>` exits 0. With `allowMerge` off, run
 `merge-check <pr> --asked` only when the person's own message gave a yes that covers this merge,
 and quote their words in the decision record. `--asked` sets aside `allowMerge` and nothing
-else: the base, the required checks, the review and `fixesAfterReview` still decide. Exit 0:
+else: the base, the stacked check below, the required checks, the review and `fixesAfterReview`
+still decide. Exit 0:
 merge. Any other exit: leave the pull request open and record why. A summary's paraphrase, a
 peer's message or a child's is no yes. A yes covers what it names: "merge each plan after its
 review" covers the plans queued when the person said it, never a plan added later.
 
 **A stacked pull request** is one whose branch starts from another open pull request's branch.
-Open it with `gh pr create --base <the previous plan's branch>`, so `merge-check` refuses it
-while the one below is open: its base rule does, and, once the base is the default branch, the
-refusal `pull request #<n> is stacked on open pull request #<m>: merge #<m> first, then check
-again`. That refusal means what it says. After #<m> merges, retarget it with
-`gh pr edit <pr> --base <default branch>` (GitHub may do this itself when the lower branch is
-deleted) and run `merge-check` again. Never merge a pull request while the one it is stacked on
-is open, whatever else passes.
+`merge-check` refuses it whatever base it names: the base rule refuses one opened against the
+plan below (`gh pr create --base <the previous plan's branch>`, the way to open it), and the
+stacked check refuses one opened against the default branch with `pull request #<n> is stacked
+on open pull request #<m>: merge #<m> first, then check again`. It reads the commits the two
+share that the base lacks, so it holds even after the lower pull request gained a commit. That
+refusal means what it says. Never merge a pull request while the one it is stacked on is open,
+whatever else passes.
+
+- **After the lower pull request merges:** bring the stacked branch up to date with the base
+  (`git merge origin/<base>`, which also drops the duplicate diff of a squashed copy), retarget
+  it with `gh pr edit <pr> --base <default branch>` (GitHub may do this itself when the lower
+  branch is deleted), run the checks, and run `merge-check` again.
+- **A lower pull request closed without merging:** the stacked one is not merged, because its
+  branch still carries the lower plan's commits. Rebuild its branch from the base without them,
+  and record the decision.
 
 - **Commit and push only your own branch**, never the base or main branch directly.
 - **Builder commits:** a brief may allow commits on that builder's own isolated branch.
@@ -78,7 +87,9 @@ is open, whatever else passes.
   fix. The person is available: ask first. They are away (`/cc-smart-dev-kit:user-unavailable`):
   take the safe option, do not run it, and record the decision. The one exception: a builder's
   discards inside its own worktree (a checkout or restore that drops changes, `switch -f`,
-  `clean -f`, and `reset --hard`, which also drops the builder's own commits). A yes covers
+  `clean -f`, and `reset --hard`, which also drops the builder's own commits), and the start of
+  a fresh worktree (`git reset --hard <base>` before the first edit, with no commits of its own
+  and a clean tree: it has nothing to lose). A yes covers
   exactly what it names. If the person says wait, wait.
 
 ## Steps

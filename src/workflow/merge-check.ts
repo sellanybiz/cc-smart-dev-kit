@@ -193,11 +193,17 @@ export function parseDefaultBranch(json: string): string | null {
 export const OPEN_PULL_REQUESTS_LIMIT = 500;
 
 /**
- * The `status` values GitHub's REST "Compare two commits" gives (`diverged`, `ahead`, `behind`,
- * `identical`): `BASE...HEAD` is `ahead` when HEAD holds BASE and more, `identical` when they
- * are one commit, `behind` when HEAD is held by BASE. Any other word is not understood.
+ * What `gh api repos/{owner}/{repo}/compare/<basehead>?per_page=1` is asked to print (GitHub
+ * REST, "Compare two commits": https://docs.github.com/en/rest/commits/commits#compare-two-commits).
+ * `status` is `diverged`, `ahead`, `behind` or `identical`: `BASE...HEAD` is `ahead` when HEAD
+ * holds BASE and more, `identical` when they are one commit, `behind` when BASE holds HEAD.
+ * `merge_base_commit.sha` is the best common ancestor of the two, the same for either order.
+ * `per_page=1` cuts the commit list to one entry: only these two fields are read.
  */
-const COMPARE_STATUSES: ReadonlySet<string> = new Set(["ahead", "behind", "diverged", "identical"]);
+const COMPARE_FIELDS = '.status + " " + .merge_base_commit.sha';
+
+/** The whole answer `COMPARE_FIELDS` must print: a known status, a space, a full commit id. */
+const COMPARE_ANSWER = /^(ahead|behind|diverged|identical) ([0-9a-f]{40})$/;
 
 /** How many compares one stacked check asks gh at once. */
 const STACK_COMPARES_AT_ONCE = 4;
@@ -630,9 +636,9 @@ type StackRead<T> = { ok: true; value: T } | { late: boolean; ok: false; why: st
  * ten rows cost one list and each pair of commits once, not ten lists and a hundred compares.
  */
 export interface StackCache {
-  /** The compare answers, by repository and `basehead`. */
-  compares: Map<string, Promise<StackRead<string>>>;
-  /** The open pull requests' heads, by repository (`""` is this folder's own). */
+  /** The compare answers, by folder, repository and `basehead`. */
+  compares: Map<string, Promise<StackRead<Compared>>>;
+  /** The open pull requests' heads, by folder and repository. */
   open: Map<string, Promise<StackRead<OpenHead[]>>>;
 }
 
@@ -643,6 +649,31 @@ export function newStackCache(): StackCache {
 
 /** Where gh runs a stacked read: the repository it names, or the folder's own. */
 type StackTarget = { ref: string | null; repo: string | null };
+
+/** One answer of GitHub's compare: the status of `BASE...HEAD`, and the two commits' merge base. */
+interface Compared {
+  mergeBase: string;
+  status: string;
+}
+
+/**
+ * What a stacked read answers when it has none: `late` when the caller's clock has run out (the
+ * read was cut short, or never made), otherwise `why`. A cut read is `late`, as every other
+ * read of the check is, never a refusal that blames gh.
+ */
+function noAnswer(world: MergeWorld, why: string): { late: boolean; ok: false; why: string } {
+  return world.timeFor(GH_TIMEOUT_MS) <= 0
+    ? { late: true, ok: false, why: "" }
+    : { late: false, ok: false, why };
+}
+
+/**
+ * The key of a cached read: the folder and the repository it was made for, then what was asked.
+ * One cache may then serve several projects and never mix their answers.
+ */
+function stackKey(world: MergeWorld, target: StackTarget, asked: string): string {
+  return [world.folder, target.repo ?? "", asked].join("\n");
+}
 
 /** `gh pr list` of the open pull requests' heads, awaited; one answer or why there is none. */
 async function askOpenHeads(
@@ -669,9 +700,7 @@ async function askOpenHeads(
     world.gh ?? spawnGh,
   );
   const open = out === null ? null : parseOpenHeads(out);
-  if (open === null) {
-    return { late: false, ok: false, why: "gh could not list the open pull requests" };
-  }
+  if (open === null) return noAnswer(world, "gh could not list the open pull requests");
   if (open.length >= OPEN_PULL_REQUESTS_LIMIT) {
     return {
       late: false,
@@ -688,7 +717,7 @@ function openHeadsOf(
   target: StackTarget,
   cache: StackCache,
 ): Promise<StackRead<OpenHead[]>> {
-  const key = target.repo ?? "";
+  const key = stackKey(world, target, "open pull requests");
   let read = cache.open.get(key);
   if (read === undefined) {
     read = askOpenHeads(world, target);
@@ -698,68 +727,82 @@ function openHeadsOf(
 }
 
 /**
- * GitHub's compare of `basehead` (`BASE...HEAD`) through `gh api`: its `status`, one of
- * `COMPARE_STATUSES`. Another word, or no answer, is no read. `{owner}/{repo}` is gh's own
- * placeholder for the folder's repository; a `--repo` names it outright.
+ * GitHub's compare of `base` and `head` (`BASE...HEAD`) through `gh api`: the status and the
+ * merge base (`COMPARE_FIELDS`). Anything but exactly that answer is no read: gh prints the
+ * JSON body of an HTTP error (a 404, a rate limit) on stdout, and that body is never taken for
+ * a status or shown as one. `{owner}/{repo}` is gh's own placeholder for the folder's
+ * repository; a `--repo` names it outright. Each name is encoded as a path segment (a branch
+ * `release/1` is `release%2F1`), and the `...` between them stays.
  */
 async function askCompare(
   world: MergeWorld,
   target: StackTarget,
-  basehead: string,
-): Promise<StackRead<string>> {
+  base: string,
+  head: string,
+): Promise<StackRead<Compared>> {
   const left = world.timeFor(GH_TIMEOUT_MS);
   if (left <= 0) return { late: true, ok: false, why: "" };
+  const basehead = `${encodeURIComponent(base)}...${encodeURIComponent(head)}`;
   const out = await ghStdout(
-    ["api", `repos/${target.repo ?? "{owner}/{repo}"}/compare/${basehead}`, "--jq", ".status"],
+    [
+      "api",
+      `repos/${target.repo ?? "{owner}/{repo}"}/compare/${basehead}?per_page=1`,
+      "--jq",
+      COMPARE_FIELDS,
+    ],
     world.folder,
     world.env,
     left,
     world.gh ?? spawnGh,
   );
-  if (out === null) return { late: false, ok: false, why: `gh could not compare ${basehead}` };
-  const status = out.trim();
-  if (!COMPARE_STATUSES.has(status)) {
-    return {
-      late: false,
-      ok: false,
-      why: `gh answered "${status.slice(0, 40)}" when comparing ${basehead}, a status merge-check does not know`,
-    };
+  const answer = out === null ? null : COMPARE_ANSWER.exec(out.trim());
+  if (answer === null) {
+    return noAnswer(
+      world,
+      `GitHub could not compare ${shortCommit(base)} and ${shortCommit(head)} (gh printed no status and merge base)`,
+    );
   }
-  return { ok: true, value: status };
+  return { ok: true, value: { mergeBase: answer[2] ?? "", status: answer[1] ?? "" } };
 }
 
-/** One compare, asked once per run: the same `basehead` in `cache` is the same answer. */
+/** A commit id as a person reads it (twelve characters); a branch name as it is. */
+function shortCommit(name: string): string {
+  return COMMIT_SHA.test(name) ? name.slice(0, 12) : name;
+}
+
+/** One compare, asked once per run: the same two names in `cache` are the same answer. */
 function compareOf(
   world: MergeWorld,
   target: StackTarget,
   cache: StackCache,
-  basehead: string,
-): Promise<StackRead<string>> {
-  const key = `${target.repo ?? ""} ${basehead}`;
+  base: string,
+  head: string,
+): Promise<StackRead<Compared>> {
+  const key = stackKey(world, target, `${base}...${head}`);
   let read = cache.compares.get(key);
   if (read === undefined) {
-    read = askCompare(world, target, basehead);
+    read = askCompare(world, target, base, head);
     cache.compares.set(key, read);
   }
   return read;
 }
 
 /**
- * How commit `held` stands to commit `other`: `ahead` when `other` holds `held` and more. A pair
- * is asked in one order only (the lower id first) and the answer turned round for the other, so
- * two pull requests compared both ways cost one call.
+ * The merge base of two commits. It is the same whichever is named first, so a pair is asked in
+ * one order only (the lower id first): two pull requests compared both ways cost one call.
  */
-async function standing(
+async function mergeBaseOf(
   world: MergeWorld,
   target: StackTarget,
   cache: StackCache,
-  held: string,
+  one: string,
   other: string,
 ): Promise<StackRead<string>> {
-  if (held <= other) return await compareOf(world, target, cache, `${held}...${other}`);
-  const read = await compareOf(world, target, cache, `${other}...${held}`);
-  if (!read.ok || read.value === "diverged" || read.value === "identical") return read;
-  return { ok: true, value: read.value === "ahead" ? "behind" : "ahead" };
+  const read =
+    one <= other
+      ? await compareOf(world, target, cache, one, other)
+      : await compareOf(world, target, cache, other, one);
+  return read.ok ? { ok: true, value: read.value.mergeBase } : read;
 }
 
 /** What the stacked check found about one other open pull request. */
@@ -769,9 +812,16 @@ type StackedOn =
   | { kind: "unread"; late: boolean; why: string };
 
 /**
- * Whether `view` carries the head of `other`: `other`'s head is `view`'s head or one of its
- * ancestors (`standing`), and the base does not hold it already (a second compare, made only
- * then): an open pull request with no commits of its own must not stop every other one.
+ * Whether `view` is stacked on `other`: the merge base of their two heads is a commit that
+ * `view` has and `view`'s base does not. Heads alone would miss a lower pull request that has
+ * moved on (it gained a commit, so neither head holds the other) while `view` still carries
+ * its older commits. The merge base is read in the one compare (`mergeBaseOf`), and then:
+ * - it is `view`'s own head: `view` has nothing of `other`'s (`other` is ahead of it, or at
+ *   the same commit), so clear, with no second call;
+ * - otherwise the base is compared to it (`<base>...<merge base>`, one call for every pair
+ *   that shares it, so unrelated pull requests, whose merge base is a commit of the base, cost
+ *   one): `behind` or `identical` means the base holds it, so clear; `ahead` or `diverged`
+ *   means `view` carries commits the base lacks that are `other`'s too, so stacked.
  */
 async function carriesOpen(
   world: MergeWorld,
@@ -780,14 +830,12 @@ async function carriesOpen(
   view: PullRequestFacts,
   other: OpenHead,
 ): Promise<StackedOn> {
-  const first = await standing(world, target, cache, other.headOid, view.headOid);
-  if (!first.ok) return { kind: "unread", late: first.late, why: first.why };
-  // `view` holds `other`'s head only when it is ahead of it, or the very same commit.
-  if (first.value !== "ahead" && first.value !== "identical") return { kind: "clear" };
-  const inBase = await compareOf(world, target, cache, `${view.base}...${other.headOid}`);
+  const shared = await mergeBaseOf(world, target, cache, other.headOid, view.headOid);
+  if (!shared.ok) return { kind: "unread", late: shared.late, why: shared.why };
+  if (shared.value === view.headOid) return { kind: "clear" };
+  const inBase = await compareOf(world, target, cache, view.base, shared.value);
   if (!inBase.ok) return { kind: "unread", late: inBase.late, why: inBase.why };
-  // The base is ahead of `other`'s head, or at it: the base already holds those commits.
-  return inBase.value === "behind" || inBase.value === "identical"
+  return inBase.value.status === "behind" || inBase.value.status === "identical"
     ? { kind: "clear" }
     : { kind: "stacked" };
 }
@@ -803,15 +851,17 @@ function cannotProve(number: number, why: string): MergeVerdict {
 }
 
 /**
- * Whether a pull request is stacked on another open one: another open pull request's head is
- * one of its ancestors that its base does not hold, so merging it would put that pull
- * request's commits into the base past their own review, checks and refusals. Whatever base the
- * pull request names, only its commits tell (a base rule would not see a stack opened against
- * the default branch), and GitHub's compare answers it for any number of commits. Null when it
- * is not stacked; a refusal when it is, and also when gh cannot say, answers a status the check
- * does not know, or may have cut the open list (`OPEN_PULL_REQUESTS_LIMIT`): only a complete
- * answer proves it is not stacked. A stack found wins over a read that failed. The person's yes
- * (`asked`) never reaches here: it sets aside `allowMerge` alone.
+ * Whether a pull request is stacked on another open one: it shares commits with that pull
+ * request that its own base does not hold (`carriesOpen`), so merging it would put that pull
+ * request's commits into the base past their own review, checks and refusals, even when that
+ * pull request has moved on since. Whatever base the pull request names, only its commits tell
+ * (a base rule would not see a stack opened against the default branch), and GitHub's compare
+ * answers it for any number of commits. Null when it is not stacked; a refusal when it is, and
+ * also when gh cannot say, answers something other than a status and a merge base, or may have
+ * cut the open list (`OPEN_PULL_REQUESTS_LIMIT`): only a complete answer proves it is not
+ * stacked. A read the caller's deadline cut short is `late`, never a refusal. A stack found
+ * wins over a read that failed. The person's yes (`asked`) never reaches here: it sets aside
+ * `allowMerge` alone.
  */
 async function stackedVerdict(
   world: MergeWorld,
