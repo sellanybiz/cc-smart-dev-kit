@@ -1326,16 +1326,14 @@ test("a launch records the worktree git lists, wherever a project's own hook put
 test("a builder's worktree that appears first is never bound: the launch waits for its own, then binds it", async () => {
   const p = planWorld();
   p.plan("alpha", ["src/a/"]);
-  p.setClaude(({ later, name, repo }) => {
+  const folder = join(tempDir("hook-worktrees"), "kit-alpha");
+  p.setClaude(({ later, repo }) => {
     // A subagent of the lead starts in the same repository first; the child's own is slow.
     addWorktree(repo, "agent-123");
-    later(2000, () => addWorktree(repo, name));
+    later(2000, () => git(repo, "worktree", "add", "-q", "-b", "feat-x", folder));
   });
   expect(await runHerdr([...planLaunch, "--plan", "alpha", "--", "work"], p.ctx)).toBe(0);
-  const row = boundTo(p, "alpha");
-  expect(row.worktree).toBe(worktreePath(repoOf(p), "kit-alpha"));
-  expect(row.branch).toBe("worktree-kit-alpha");
-  expect(row.recorded).toBe(true);
+  expect(boundTo(p, "alpha")).toEqual({ branch: "feat-x", recorded: true, worktree: folder });
 });
 
 test("a launch whose worktree never appears records nothing, binds only its pane and says how to fix it", async () => {
@@ -1370,15 +1368,17 @@ test("two launches whose names contain each other each bind their own worktree",
   ] as const) {
     const p = planWorld();
     p.plan(slug, ["src/a/"]);
+    const folder = tempDir("hook-worktrees");
     p.setClaude(({ repo }) => {
-      // The other launch's worktree is made first, then this launch's own.
-      addWorktree(repo, `kit-${other}`);
-      addWorktree(repo, `kit-${slug}`);
+      // A project's hook puts the other launch's worktree first, then this launch's own.
+      for (const name of [other, slug])
+        git(repo, "worktree", "add", "-q", "-b", `feat-${name}`, join(folder, `kit-${name}`));
     });
     expect(
       await runHerdr([...planLaunch, "--plan", slug, "--name", slug, "--", "work"], p.ctx),
     ).toBe(0);
-    expect(p.row(slug).worktree).toBe(worktreePath(repoOf(p), `kit-${slug}`));
+    expect(p.row(slug).worktree).toBe(join(folder, `kit-${slug}`));
+    expect(p.row(slug).branch).toBe(`feat-${slug}`);
   }
 });
 
