@@ -8340,8 +8340,8 @@ async function runHookEntry(spec) {
 }
 
 // src/hooks/worktree-leftovers.ts
-import { closeSync as closeSync3, existsSync as existsSync5, fstatSync, openSync as openSync3, readSync as readSync2, statSync as statSync5 } from "fs";
-import { basename as basename5, join as join12, resolve as resolve4 } from "path";
+import { closeSync as closeSync3, existsSync as existsSync6, fstatSync, openSync as openSync3, readSync as readSync2, statSync as statSync5 } from "fs";
+import { basename as basename5, join as join12, resolve as resolve5 } from "path";
 
 // src/worktrees/auto-start.ts
 import { basename as basename3, join as join8 } from "path";
@@ -8577,14 +8577,9 @@ function takeToldLine(context, repo) {
   return toldLine(record);
 }
 
-// src/hooks/capped-list.ts
-var HOOK_LIST_LIMIT = 8;
-function cappedHookList(items, render, command, separator = ", ") {
-  const shown = items.slice(0, HOOK_LIST_LIMIT).map(render);
-  if (items.length > HOOK_LIST_LIMIT)
-    shown.push(`+${items.length - HOOK_LIST_LIMIT} more: ${command}`);
-  return shown.join(separator);
-}
+// src/worktrees/in-progress.ts
+import { existsSync as existsSync4, readFileSync as readFileSync7 } from "fs";
+import { resolve as resolve4 } from "path";
 
 // src/hooks/git.ts
 import { readFileSync as readFileSync6, realpathSync as realpathSync3 } from "fs";
@@ -8665,13 +8660,70 @@ function reflogEntryTime(line) {
   return Number.isFinite(time) ? time : null;
 }
 
+// src/worktrees/in-progress.ts
+var OPERATIONS = [
+  { file: "BISECT_START", what: "a bisect", namesBranch: true },
+  { file: "rebase-merge/head-name", what: "a rebase", namesBranch: true },
+  { file: "rebase-apply/head-name", what: "a rebase", namesBranch: true },
+  { file: "MERGE_HEAD", what: "a merge", namesBranch: false },
+  { file: "CHERRY_PICK_HEAD", what: "a cherry-pick", namesBranch: false },
+  { file: "REVERT_HEAD", what: "a revert", namesBranch: false }
+];
+function readInProgress(worktree, env) {
+  if (!existsSync4(worktree))
+    return { running: [], state: "read" };
+  const located = runGit(worktree, ["rev-parse", ...OPERATIONS.flatMap((operation) => ["--git-path", operation.file])], env);
+  if (!located.ok)
+    return { state: "unreadable", why: located.err };
+  const paths = located.out.split(/\r?\n/);
+  if (paths.length !== OPERATIONS.length) {
+    return {
+      state: "unreadable",
+      why: `git named ${String(paths.length)} paths, not ${String(OPERATIONS.length)}`
+    };
+  }
+  const running = [];
+  for (const [index, operation] of OPERATIONS.entries()) {
+    const file = resolve4(worktree, paths[index] ?? "");
+    let text;
+    try {
+      text = readFileSync7(file, "utf8").trim();
+    } catch (error) {
+      const code = error.code;
+      if (code === "ENOENT" || code === "ENOTDIR")
+        continue;
+      const why = error instanceof Error ? error.message : String(error);
+      return { state: "unreadable", why: `${file} cannot be read (${why})` };
+    }
+    running.push({ branch: operation.namesBranch ? text : null, what: operation.what });
+  }
+  return { running, state: "read" };
+}
+function inProgressWhy(worktree, env) {
+  const read = readInProgress(worktree, env);
+  if (read.state === "unreadable") {
+    return `git could not say whether a bisect, rebase, merge, cherry-pick or revert is in progress in it (${read.why}), so it is kept`;
+  }
+  const first = read.running[0];
+  return first === undefined ? null : `${first.what} is in progress`;
+}
+
+// src/hooks/capped-list.ts
+var HOOK_LIST_LIMIT = 8;
+function cappedHookList(items, render, command, separator = ", ") {
+  const shown = items.slice(0, HOOK_LIST_LIMIT).map(render);
+  if (items.length > HOOK_LIST_LIMIT)
+    shown.push(`+${items.length - HOOK_LIST_LIMIT} more: ${command}`);
+  return shown.join(separator);
+}
+
 // src/hooks/local-files.ts
 import {
   closeSync as closeSync2,
   lstatSync as lstatSync2,
   openSync as openSync2,
   readdirSync as readdirSync2,
-  readFileSync as readFileSync7,
+  readFileSync as readFileSync8,
   readlinkSync as readlinkSync2,
   readSync
 } from "fs";
@@ -8751,7 +8803,7 @@ function sameAsMain(worktree, mainCheckout, path) {
       if (a.isDirectory()) {
         return b.isDirectory() && readdirSync2(here).every((entry) => same(join10(relative, entry)));
       }
-      return a.isFile() && b.isFile() && a.size === b.size && readFileSync7(here).equals(readFileSync7(there));
+      return a.isFile() && b.isFile() && a.size === b.size && readFileSync8(here).equals(readFileSync8(there));
     } catch {
       return false;
     }
@@ -8817,15 +8869,15 @@ function localFiles(worktree, mainCheckout, env, patterns = projectRebuildable(m
 }
 
 // src/hooks/sessions.ts
-import { existsSync as existsSync4, readdirSync as readdirSync3, readFileSync as readFileSync9, statSync as statSync4 } from "fs";
+import { existsSync as existsSync5, readdirSync as readdirSync3, readFileSync as readFileSync10, statSync as statSync4 } from "fs";
 import { uptime } from "os";
 import { join as join11 } from "path";
 
 // src/jobs/ancestry.ts
-import { readFileSync as readFileSync8 } from "fs";
+import { readFileSync as readFileSync9 } from "fs";
 function readProcStat(pid) {
   try {
-    return readFileSync8(`/proc/${String(pid)}/stat`, "utf8");
+    return readFileSync9(`/proc/${String(pid)}/stat`, "utf8");
   } catch {
     return null;
   }
@@ -8879,7 +8931,7 @@ function sessionRecordOf(claudeConfigDir, pid, facts = {}) {
   try {
     if (statSync4(file).mtimeMs < bootedAt)
       return null;
-    text = readFileSync9(file, "utf8");
+    text = readFileSync10(file, "utf8");
   } catch (error) {
     if (error.code === "ENOENT")
       return null;
@@ -8898,7 +8950,7 @@ function sessionRecordOf(claudeConfigDir, pid, facts = {}) {
 }
 function liveSessions(claudeConfigDir, facts = {}) {
   const dir = join11(claudeConfigDir, "sessions");
-  if (!existsSync4(dir))
+  if (!existsSync5(dir))
     return [];
   const live = [];
   for (const file of readdirSync3(dir)) {
@@ -8972,6 +9024,8 @@ function judgeWorktree(repo, listed, base, sessions, env, now) {
   const ahead = runGit(repo, ["rev-list", "--count", `refs/remotes/origin/${base}..${listed.head}`], env);
   if (!ahead.ok || ahead.out !== "0")
     return "kept";
+  if (inProgressWhy(listed.path, env) !== null)
+    return "kept";
   if (idleMinutes(listed.path, now) < IDLE_MINUTES)
     return "kept";
   if (hasChanges(listed.path, env))
@@ -9009,7 +9063,7 @@ function operationInProgress(repo, env) {
   if (!paths.ok)
     return null;
   const [merge, rebaseMerge, rebaseApply, cherryPick] = paths.out.split(/\r?\n/);
-  const held = (path) => path !== undefined && path !== "" && existsSync5(resolve4(repo, path));
+  const held = (path) => path !== undefined && path !== "" && existsSync6(resolve5(repo, path));
   if (held(merge))
     return "merge";
   if (held(rebaseMerge) || held(rebaseApply))

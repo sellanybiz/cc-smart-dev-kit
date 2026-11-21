@@ -94,7 +94,7 @@ function claudeMemDataDir(env, home) {
 }
 
 // src/worktrees/auto-clean.ts
-import { existsSync as existsSync11, readdirSync as readdirSync9 } from "fs";
+import { existsSync as existsSync12, readdirSync as readdirSync9 } from "fs";
 import { join as join17 } from "path";
 
 // src/hooks/git.ts
@@ -9124,9 +9124,9 @@ var SUBAGENT_NAME_PREFIX = "agent-";
 var SUBAGENT_BRANCH_PREFIX = worktreeBranch(SUBAGENT_NAME_PREFIX);
 
 // src/worktrees/scan.ts
-import { existsSync as existsSync9, mkdtempSync, readdirSync as readdirSync7, readFileSync as readFileSync12, rmSync as rmSync3, statSync as statSync7 } from "fs";
+import { existsSync as existsSync10, mkdtempSync, readdirSync as readdirSync7, rmSync as rmSync3, statSync as statSync7 } from "fs";
 import { tmpdir } from "os";
-import { basename as basename4, join as join15, resolve as resolve5 } from "path";
+import { basename as basename4, join as join15 } from "path";
 
 // src/hooks/local-files.ts
 import {
@@ -9498,8 +9498,68 @@ function chunks(paths) {
 }
 
 // src/hooks/worktree-leftovers.ts
-import { closeSync as closeSync4, existsSync as existsSync8, fstatSync, openSync as openSync4, readSync as readSync2, statSync as statSync6 } from "fs";
-import { basename as basename3, join as join13, resolve as resolve4 } from "path";
+import { closeSync as closeSync4, existsSync as existsSync9, fstatSync, openSync as openSync4, readSync as readSync2, statSync as statSync6 } from "fs";
+import { basename as basename3, join as join13, resolve as resolve5 } from "path";
+
+// src/worktrees/in-progress.ts
+import { existsSync as existsSync8, readFileSync as readFileSync11 } from "fs";
+import { resolve as resolve4 } from "path";
+var OPERATIONS = [
+  { file: "BISECT_START", what: "a bisect", namesBranch: true },
+  { file: "rebase-merge/head-name", what: "a rebase", namesBranch: true },
+  { file: "rebase-apply/head-name", what: "a rebase", namesBranch: true },
+  { file: "MERGE_HEAD", what: "a merge", namesBranch: false },
+  { file: "CHERRY_PICK_HEAD", what: "a cherry-pick", namesBranch: false },
+  { file: "REVERT_HEAD", what: "a revert", namesBranch: false }
+];
+function readInProgress(worktree, env) {
+  if (!existsSync8(worktree))
+    return { running: [], state: "read" };
+  const located = runGit(worktree, ["rev-parse", ...OPERATIONS.flatMap((operation) => ["--git-path", operation.file])], env);
+  if (!located.ok)
+    return { state: "unreadable", why: located.err };
+  const paths = located.out.split(/\r?\n/);
+  if (paths.length !== OPERATIONS.length) {
+    return {
+      state: "unreadable",
+      why: `git named ${String(paths.length)} paths, not ${String(OPERATIONS.length)}`
+    };
+  }
+  const running = [];
+  for (const [index, operation] of OPERATIONS.entries()) {
+    const file = resolve4(worktree, paths[index] ?? "");
+    let text;
+    try {
+      text = readFileSync11(file, "utf8").trim();
+    } catch (error) {
+      const code = error.code;
+      if (code === "ENOENT" || code === "ENOTDIR")
+        continue;
+      const why = error instanceof Error ? error.message : String(error);
+      return { state: "unreadable", why: `${file} cannot be read (${why})` };
+    }
+    running.push({ branch: operation.namesBranch ? text : null, what: operation.what });
+  }
+  return { running, state: "read" };
+}
+function inProgressWhy(worktree, env) {
+  const read = readInProgress(worktree, env);
+  if (read.state === "unreadable") {
+    return `git could not say whether a bisect, rebase, merge, cherry-pick or revert is in progress in it (${read.why}), so it is kept`;
+  }
+  const first = read.running[0];
+  return first === undefined ? null : `${first.what} is in progress`;
+}
+function branchInProgressWhy(worktree, branch, env) {
+  const read = readInProgress(worktree, env);
+  if (read.state === "unreadable") {
+    return `${read.why} in ${worktree}, so it is not proved that nothing there bisects or rebases it`;
+  }
+  const returnsToIt = read.running.some((one) => one.branch === branch || one.branch === `refs/heads/${branch}`);
+  return returnsToIt ? `a worktree is bisecting or rebasing it, at ${worktree}` : null;
+}
+
+// src/hooks/worktree-leftovers.ts
 var REFLOG_TAIL_BYTES = 8 * 1024;
 function lastReflogTime(file, now) {
   try {
@@ -9557,7 +9617,7 @@ function parseGitVersion(out) {
 }
 
 // src/worktrees/agent-lock.ts
-import { readdirSync as readdirSync6, readFileSync as readFileSync11, realpathSync as realpathSync5 } from "fs";
+import { readdirSync as readdirSync6, readFileSync as readFileSync12, realpathSync as realpathSync5 } from "fs";
 import { join as join14 } from "path";
 function parseClaudeLock(reason) {
   const match = /^claude (agent|session) (.{1,255}) \(pid (\d{1,10})(?: start (.{1,255}))?\)$/.exec(reason);
@@ -9601,7 +9661,7 @@ function agentFinished(agentId, worktreePath, claudeConfigDir) {
         const file = join14(folder, session.name, "subagents", `agent-${agentId}.meta.json`);
         let text;
         try {
-          text = readFileSync11(file, "utf8");
+          text = readFileSync12(file, "utf8");
         } catch (error) {
           if (error instanceof Error && "code" in error && error.code === "ENOENT")
             continue;
@@ -9650,6 +9710,9 @@ function verdict(facts, contents, idleLimit = IDLE_MINUTES) {
     const commits = facts.aheadOfBase === 1 ? "1 commit" : `${String(facts.aheadOfBase)} commits`;
     const tooOld = facts.gitTooOld === null ? "" : ` (git ${facts.gitTooOld} is too old to replay it onto ${facts.base}: git ${MIN_MERGE_TREE_GIT} or newer is needed)`;
     return { finished: false, held: false, why: `${commits} not on ${facts.base}${tooOld}` };
+  }
+  if (facts.inProgress !== null) {
+    return { finished: false, held: false, why: facts.inProgress };
   }
   if (facts.idleMinutes < idleLimit && !facts.parked) {
     return {
@@ -9932,7 +9995,7 @@ function holdingBranch(repo, listed, all, env) {
   const holders = new Set(containing.out.split(`
 `).filter((ref) => ref.startsWith(prefix)).map((ref) => ref.slice(prefix.length)));
   for (const other of all) {
-    if (other.branch !== null && other.branch !== listed.branch && holders.has(other.branch) && !other.prunable && !samePath(other.path, listed.path) && existsSync9(other.path)) {
+    if (other.branch !== null && other.branch !== listed.branch && holders.has(other.branch) && !other.prunable && !samePath(other.path, listed.path) && existsSync10(other.path)) {
       return other.branch;
     }
   }
@@ -9972,6 +10035,7 @@ function judgeOne(repo, listed, all, look, idle) {
     containers: look.containers === "unknown" ? "unknown" : containersUsing(listed.path, look.containers),
     gitTooOld: look.replayer.tooOld,
     idleMinutes: idle ?? 0,
+    inProgress: inProgressWhy(listed.path, look.env),
     innerWorktree: innerWorktreeOf(listed.path, all),
     locked: listed.locked && !releasableClaudeLock(listed, look),
     mergedBy,
@@ -10043,7 +10107,7 @@ function scanWorktrees(repo, options) {
   const [main, ...others] = all;
   const scanned = main === undefined ? [] : [{ idleMinutes: null, listed: main, state: "main" }];
   for (const listed of others) {
-    if (listed.locked && (!existsSync9(listed.path) || !releasableClaudeLock(listed, look))) {
+    if (listed.locked && (!existsSync10(listed.path) || !releasableClaudeLock(listed, look))) {
       const onBase = (listed.lockReason ?? "").startsWith("claude session ") && ["ancestor", "replay"].includes(workOnRef(repo, look.ref, listed.head, env, look.replayer));
       scanned.push({
         idleMinutes: idleMinutesOrNull(listed.path, look.now),
@@ -10052,7 +10116,7 @@ function scanWorktrees(repo, options) {
       });
       continue;
     }
-    if (listed.prunable || !existsSync9(listed.path)) {
+    if (listed.prunable || !existsSync10(listed.path)) {
       scanned.push({ idleMinutes: null, listed, state: "gone" });
       continue;
     }
@@ -10070,7 +10134,7 @@ function removeWorktree(repo, listed, options) {
     return { said: [`kept ${listed.path}: git could not list the worktrees`], status: "kept" };
   }
   const current = all.find((one) => samePath(one.path, listed.path));
-  if (current === undefined || !existsSync9(current.path)) {
+  if (current === undefined || !existsSync10(current.path)) {
     return {
       said: [`kept ${listed.path}: its folder is gone \u2014 \`${COMMAND} worktrees\` forgets it`],
       status: "kept"
@@ -10188,35 +10252,6 @@ function judgeBranchOnRef(repo, ref, label, branch, env) {
     return { kind: "on-ref", sha };
   return workOnBase(repo, ref, sha, branch, env, replayerFor(repo, env)) !== null ? { kind: "on-ref", sha } : { kind: "not-on-ref" };
 }
-var BRANCH_IN_PROGRESS_FILES = [
-  "BISECT_START",
-  "rebase-merge/head-name",
-  "rebase-apply/head-name"
-];
-function bisectsOrRebases(worktree, branch, env) {
-  if (!existsSync9(worktree))
-    return null;
-  for (const name of BRANCH_IN_PROGRESS_FILES) {
-    const located = runGit(worktree, ["rev-parse", "--git-path", name], env);
-    if (!located.ok) {
-      return `git could not read ${name} in ${worktree} (${located.err}), so it is not proved that nothing there bisects or rebases it`;
-    }
-    const file = resolve5(worktree, located.out);
-    if (!existsSync9(file))
-      continue;
-    let named;
-    try {
-      named = readFileSync12(file, "utf8").trim();
-    } catch (error) {
-      const why = error instanceof Error ? error.message : String(error);
-      return `${file} cannot be read (${why}), so it is not proved that nothing there bisects or rebases it`;
-    }
-    if (named === branch || named === `refs/heads/${branch}`) {
-      return `a worktree is bisecting or rebasing it, at ${worktree}`;
-    }
-  }
-  return null;
-}
 function usedByWorktree(repo, branch, env) {
   let worktrees;
   try {
@@ -10229,21 +10264,26 @@ function usedByWorktree(repo, branch, env) {
   if (checkedOut !== undefined)
     return `a worktree has it checked out, at ${checkedOut.path}`;
   for (const worktree of worktrees) {
-    const walking = bisectsOrRebases(worktree.path, branch, env);
+    const walking = branchInProgressWhy(worktree.path, branch, env);
     if (walking !== null)
       return walking;
   }
   return null;
 }
 function forgetBranchConfig(repo, branch, env) {
-  const removed = runGit(repo, ["config", "--remove-section", `branch.${branch}`], env);
+  const removed = runGit(repo, ["config", "--remove-section", `branch.${branch}`], env, undefined, {
+    LC_ALL: "C"
+  });
   if (removed.ok)
     return null;
   if (removed.code === 128 && /no such section/i.test(removed.err))
     return null;
   return removed.err === "" ? `git config exited ${String(removed.code)}` : removed.err;
 }
-function deleteJudgedBranch(repo, branch, sha, env) {
+function deleteJudgedBranch(repo, branch, sha, env, recorded) {
+  const keep = recordedKeepWhy(branch, recorded);
+  if (keep !== null)
+    return { kind: "recorded", text: keep };
   const usedBy = usedByWorktree(repo, branch, env);
   if (usedBy !== null)
     return { kind: "git-error", text: usedBy };
@@ -10263,7 +10303,7 @@ function tryDeleteBranch(repo, ref, label, branch, env, recorded) {
   if (keep !== null)
     return { kind: "recorded", text: keep };
   const judged = judgeBranchOnRef(repo, ref, label, branch, env);
-  return judged.kind === "on-ref" ? deleteJudgedBranch(repo, branch, judged.sha, env) : judged;
+  return judged.kind === "on-ref" ? deleteJudgedBranch(repo, branch, judged.sha, env, recorded) : judged;
 }
 function deleteMergedBranch(repo, base, branch, env, recorded) {
   return deleteBranchOnRef(repo, baseRefOf({ base }).ref, comparedWith({ base }), branch, env, recorded);
@@ -10316,7 +10356,7 @@ var LOCK_PORTS = {
 };
 
 // src/worktrees/scan-parked.ts
-import { existsSync as existsSync10, lstatSync as lstatSync4, readdirSync as readdirSync8, rmSync as rmSync4 } from "fs";
+import { existsSync as existsSync11, lstatSync as lstatSync4, readdirSync as readdirSync8, rmSync as rmSync4 } from "fs";
 import { dirname as dirname6, join as join16, relative } from "path";
 function parkedAtOf(path) {
   if (!isParkedWorktree(path))
@@ -10428,7 +10468,7 @@ function gitEntryWhy(folder) {
   const admin = worktreeAdminDir(folder);
   if (admin === null)
     return "its .git file cannot be read";
-  return existsSync10(admin) ? `git still has an administrative folder for it: ${admin}` : null;
+  return existsSync11(admin) ? `git still has an administrative folder for it: ${admin}` : null;
 }
 function strayKeptWhy(stray, machine) {
   const mountWhy = mountKeptWhy(stray.path, machine.mounts);
@@ -10444,6 +10484,7 @@ function strayKeptWhy(stray, machine) {
     containers: machine.containers === "unknown" ? "unknown" : containersUsing(stray.path, machine.containers),
     gitTooOld: null,
     idleMinutes: 0,
+    inProgress: null,
     innerWorktree: null,
     locked: false,
     mergedBy: null,
@@ -10613,7 +10654,7 @@ function refLockUnder(dir, depth = 0) {
 }
 function gitLockHeld(gitDir) {
   for (const name of GIT_LOCKS) {
-    if (existsSync11(join17(gitDir, name)))
+    if (existsSync12(join17(gitDir, name)))
       return name;
   }
   return refLockUnder(join17(gitDir, "refs"));
