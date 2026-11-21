@@ -28,6 +28,8 @@ import { reviewsFile } from "./reviews";
 
 /** What gh prints on a branch with no required checks (the branch is the test's own). */
 const NO_REQUIRED_CHECKS_LINE = "no required checks reported on the 'feat' branch";
+/** What gh prints for a pull request with no checks at all. */
+const NO_CHECKS_AT_ALL_LINE = "no checks reported on the 'feat' branch";
 
 test("a missing origin base names the first push and repeat check", () => {
   const reason = policyUnread(
@@ -378,6 +380,7 @@ describe("checkPullRequest: every condition of an unattended merge", () => {
     ["missing: gh lists none", "[]", "gh reports no required checks"],
     // gh's own line when the branch has none: the same reason, not "could not read".
     ["missing: gh says there are none", NO_REQUIRED_CHECKS_LINE, "gh reports no required checks"],
+    ["missing: no checks at all", NO_CHECKS_AT_ALL_LINE, "gh reports no required checks"],
   ])("a required check that is %s refuses, with its reason", async (_what, checks, reason) => {
     const { world } = prWorld(ON, "main", (built) => built.reviewed, checks, true);
     const verdict = await check(world);
@@ -393,7 +396,6 @@ describe("checkPullRequest: every condition of an unattended merge", () => {
   });
 
   test.each([
-    ["a pull request with no checks at all", "no checks reported on the 'feat' branch"],
     [
       "a pull request gh cannot find",
       "GraphQL: Could not resolve to a PullRequest with the number of 7.",
@@ -1559,10 +1561,12 @@ describe("requiredChecks: a branch with no required checks", () => {
       expect(await checksOf(`echo "${NONE}"; exit 1`)).toEqual([]);
     });
 
+    test("a pull request with no checks at all: the same, an empty list", async () => {
+      expect(await checksOf(`echo "${NO_CHECKS_AT_ALL_LINE}" >&2; exit 1`)).toEqual([]);
+    });
+
     test("another failure is still null", async () => {
-      expect(
-        await checksOf("echo \"no checks reported on the 'feat' branch\" >&2; exit 1"),
-      ).toBeNull();
+      expect(await checksOf(`echo "gh: ${NO_CHECKS_AT_ALL_LINE}" >&2; exit 1`)).toBeNull();
       expect(await checksOf('echo "HTTP 502" >&2; exit 1')).toBeNull();
     });
 
