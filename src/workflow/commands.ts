@@ -147,8 +147,9 @@ merge-check judges a merge without making it: each
 pull request number, or a local branch against a base (--branch <b> --base <base>). A pull
 request is allowed when the committed policy passes: allowMerge on, its base the project's
 integration base or the repository's default branch, not stacked on another open pull request
-(no other open one's head is among its ancestors, by GitHub's compare, unless its base holds it:
-that one is merged first), every required check green, and a review covering its head under
+(its commits that its base lacks, by GitHub's compare, share none with another open one's, unless
+that one is opened against its branch: the lower one merges first), every required check green,
+and a review covering its head under
 fixesAfterReview. When gh cannot say, or may have cut the open list, it asks: a stack is never
 read as absent. A branch is allowed when the review
 record covers its head. One line per verdict; exit 0 when every merge is allowed, 1 when any asks.
@@ -567,7 +568,7 @@ async function mergeCheck(context: WorkflowContext, argv: string[]): Promise<num
   }
   let everyAllowed = true;
   const defaultBranches = new Map<string, string | null>();
-  // One list of the open pull requests, and each compare of two commits once, for the whole line.
+  // One list of the open pull requests, and each one's commits once, for the whole line.
   const stack = newStackCache();
   for (const pr of parsed.prs) {
     const verdict = await checkPullRequest(

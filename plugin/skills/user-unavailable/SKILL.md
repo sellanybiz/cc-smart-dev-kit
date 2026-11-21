@@ -88,8 +88,8 @@ Use `/cc-smart-dev-kit:build` for subagent work. Resolve ambiguities in its task
   as the plan's `base`: its review reads only its own work. A fresh worktree starts at the
   default branch's tip, so `git merge --ff-only` fails whenever that branch moved after the plan
   below was cut; the reset does not. It is safe only in a worktree with no commits of its own
-  and a clean tree (`git status --short` prints nothing, and the log past the default branch is
-  empty), and it is the one `reset --hard` this skill runs. In any other worktree do not stack:
+  and a clean tree (`git log --oneline origin/HEAD..HEAD` and `git status --short` both print
+  nothing), and it is the one `reset --hard` this skill runs. In any other worktree do not stack:
   leave the plan queued and record why. The pull request opens against the previous plan's
   branch, and nothing merges before the one below
   (the stacked pull request rule in `/cc-smart-dev-kit:commit`; `/cc-smart-dev-kit:pull-request`).
