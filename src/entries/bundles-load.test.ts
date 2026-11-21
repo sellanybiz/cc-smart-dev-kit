@@ -12,9 +12,9 @@
  * a temp HOME, no tool on PATH, the live-router port guard, and no server left running.
  */
 import { afterEach, describe, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { basename, join } from "node:path";
 import { buildEntry, entryPoints } from "../../scripts/build-entry";
+import { emptyConfig, saveConfig } from "../gateway/config";
 import { routerPaths } from "../gateway/paths";
 import { subprocessGuard } from "../testing/port-guard";
 import { cleanGitEnv, tempDir } from "../testing/temp";
@@ -29,8 +29,11 @@ interface Expectation {
   code: number;
   /** Words its main prints (stdout and stderr together), when it prints any. */
   said?: RegExp;
-  /** Prepares the temp HOME before the run; the function it returns undoes it. */
-  setup?: (home: string) => () => void;
+  /**
+   * Prepares the temp HOME before the run. It returns the function that undoes it, and the
+   * words that only this run can say (they replace `said`): a port the setup chose.
+   */
+  setup?: (home: string) => { said?: RegExp; undo: () => void };
 }
 
 /** A hook's frame given no input: it says so and exits 0, never failing a person's work. */
@@ -52,17 +55,22 @@ const OTHERS: Record<string, Expectation> = {
   // A server with no way to stay out of a port, so it is given a bad option and refuses it.
   portal: { args: ["--bogus"], code: 2, said: /Unknown option: --bogus/ },
   // Serves on the port in its config. The port is one the test holds, so it starts, finds
-  // the port taken and exits: no router is left running.
+  // the port taken and exits: no router is left running. The config is a whole valid one
+  // (`saveConfig` refuses any other): the router runs a bad config as `emptyConfig()`, whose
+  // port is the default 20100, and a machine where nothing holds 20100 would then serve there
+  // and never exit. The words name the held port, so a run that tried another port fails.
   router: {
     code: 1,
-    said: /Failed to start server/,
     setup: (home) => {
       const held = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("") });
-      const { gatewayConfigFile } = routerPaths({ HOME: home });
-      mkdirSync(dirname(gatewayConfigFile), { recursive: true });
-      writeFileSync(gatewayConfigFile, JSON.stringify({ port: held.port }));
-      chmodSync(gatewayConfigFile, 0o600);
-      return () => void held.stop(true);
+      saveConfig(routerPaths({ HOME: home }).gatewayConfigFile, {
+        ...emptyConfig(),
+        port: held.port,
+      });
+      return {
+        said: new RegExp(`Failed to start server\\. Is port ${held.port} in use`),
+        undo: () => void held.stop(true),
+      };
     },
   },
   // A stdio server: its input ends at once, and it ends.
@@ -93,7 +101,8 @@ describe("every built bundle loads and runs its main", () => {
       await buildEntry(entry, built);
 
       const home = tempDir("bundle-home");
-      if (want.setup !== undefined) cleanups.push(want.setup(home));
+      const prepared = want.setup?.(home);
+      if (prepared !== undefined) cleanups.push(prepared.undo);
       const guard = subprocessGuard();
       const child = Bun.spawn(
         [process.execPath, ...guard.args, join(built, `${name}.js`), ...(want.args ?? [])],
@@ -119,7 +128,7 @@ describe("every built bundle loads and runs its main", () => {
 
       expect({ code, output }).toMatchObject({
         code: want.code,
-        output: expect.stringMatching(want.said ?? /^/),
+        output: expect.stringMatching(prepared?.said ?? want.said ?? /^/),
       });
     },
   );

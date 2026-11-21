@@ -28,6 +28,7 @@
  * block is not the end of the turn, so the "finished" alert waits for the stop that ends it.
  */
 import { extname, isAbsolute, resolve } from "node:path";
+import { isInsideOnDisk } from "../path-compare";
 import type { CcSmartDevKitConfig } from "../project/config";
 import { locateCheckout } from "../project/locate";
 import {
@@ -40,7 +41,7 @@ import {
   shellSteps,
   wordsOf,
 } from "../shell/command";
-import { isInside, realPath } from "./git";
+import { realPath } from "./git";
 import { type HookInput, type HookResult, SILENT, stringField } from "./io";
 import { plansFolders } from "./plans-folders";
 import type { Env, HookContext } from "./run";
@@ -223,6 +224,8 @@ export function verifyGateWouldBlock(
   input: HookInput,
   config: CcSmartDevKitConfig | null,
   env: Env,
+  /** How a path becomes a real path; a test gives the one a Windows machine gives (`realPath`'s note). */
+  real: (path: string) => string = realPath,
 ): boolean {
   // A project that never opted in must not notice the plugin.
   if (config === null) return false;
@@ -241,7 +244,7 @@ export function verifyGateWouldBlock(
   if (cwd === null) return false;
   const checkout = locateCheckout(cwd, { env });
   if (checkout === null) return false;
-  const root = realPath(checkout.root);
+  const root = real(checkout.root);
   const excluded = plansFolders(root, env);
   const seen = seenIn(lines, check, (block, editCwd) => {
     const fields = objectOf(block.input);
@@ -258,11 +261,13 @@ export function verifyGateWouldBlock(
     )
       return true;
     // A real path: a link on the way to the file must not hide which checkout it is in.
-    const file = realPath(isAbsolute(path) ? resolve(path) : resolve(editCwd ?? cwd, path));
+    const file = real(isAbsolute(path) ? resolve(path) : resolve(editCwd ?? cwd, path));
+    // Compared on disk, not by text: on Windows `realpathSync` keeps an 8.3 short name
+    // (`C:\Users\RUNNER~1\…`) as it was written, while git names the checkout by its long one.
     return (
-      isInside(file, root) &&
+      isInsideOnDisk(file, root) &&
       ![".md", ".mdx"].includes(extname(file).toLowerCase()) &&
-      !excluded.some((folder) => isInside(file, folder))
+      !excluded.some((folder) => isInsideOnDisk(file, folder))
     );
   });
   // One reminder per change: a change already reminded about earns no second one, and a
