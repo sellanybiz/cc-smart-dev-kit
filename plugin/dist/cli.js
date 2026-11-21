@@ -57654,10 +57654,10 @@ var UNKNOWN_BASE = {
   why: "The default branch cannot be found: origin/HEAD is not set and no worktrees.base is configured, so a child would reset to a guess.",
   fix: "run `git remote set-head origin --auto`, or set worktrees.base in .claude/cc-smart-dev-kit.json"
 };
-function locatePlan(world, ref, baseGiven = false) {
+function locatePlan(world, ref) {
   if (!world.who.sessionId)
     return refuse3("A plan hand-out needs a resolvable calling session.");
-  if (world.baseFrom === "default" && !baseGiven)
+  if (world.baseFrom === "default")
     return refuse3(UNKNOWN_BASE.why, UNKNOWN_BASE.fix);
   const plan = planByRef(world.db, world.project, ref);
   if (plan === null)
@@ -57719,8 +57719,8 @@ function prepareReserve(world, ref) {
     return refuse3(`Plan "${slug}" is already reserved (${stored.state}).`, `${COMMAND} herdr plans shows where it stands`);
   return reserveReady(world, plan, slug, "self");
 }
-function prepareStart(world, ref, options = {}) {
-  const found = locatePlan(world, ref, options.baseGiven === true);
+function prepareStart(world, ref) {
+  const found = locatePlan(world, ref);
   if (!found.ok)
     return found;
   const { plan, slug } = found;
@@ -58761,14 +58761,14 @@ async function startChild(a, ctx, r, run) {
   if (a.base !== undefined) {
     if (gitRoot === null)
       return refuse4(ctx, "--base needs a git project.");
-    const commit = resolveBase(ctx, r, a.on, a.on ? cwd : gitRoot, a.base);
+    const commit = resolveBase(ctx, r, a.on, cwd, a.base);
     if (commit === null)
       return refuse4(ctx, `--base ${a.base} names no commit in this project.`, `git rev-parse --verify ${a.base}^{commit} shows what git finds; fetch first when it is a remote branch.`);
     base = { ref: a.base, commit };
   }
   let handout = null;
   if (planWorld !== null && slug !== null) {
-    const prepared = prepareStart(planWorld, slug, { baseGiven: base !== null });
+    const prepared = prepareStart(planWorld, slug);
     if (!prepared.ok)
       return refuse4(ctx, prepared.why, prepared.fix);
     handout = prepared;
