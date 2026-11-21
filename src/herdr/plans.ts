@@ -32,6 +32,7 @@ import {
   isLead,
   isOpen,
   ownerOf,
+  parentHolds,
   planByRef,
   provedSet,
   rivalsOf,
@@ -690,7 +691,7 @@ function readiness(
     return line(
       "overlaps",
       `overlaps ${clashes.join("; ")}`,
-      parent === null ? null : unprovedStackFix(plan, parent, stacks.get(plan.id)),
+      parent === null ? null : unprovedStackFix(plan, parent, stacks.get(plan.id), byId),
     );
   return line("ready", "ready: nothing blocks it and no held plan shares its files");
 }
@@ -704,6 +705,7 @@ function unprovedStackFix(
   plan: WorkTask,
   parent: WorkTask,
   judged: StackJudgment | undefined,
+  byId: ReadonlyMap<string, WorkTask>,
 ): string {
   const name = parent.plan ?? parent.subject;
   const slug = plan.plan ?? plan.subject;
@@ -720,9 +722,16 @@ function unprovedStackFix(
   if (gap === "parent-empty")
     return `${counts} once ${name} has work of its own: wait for its first commit on ${parent.branch}`;
   if (gap === "parent-base")
-    return `${counts} once ${name} records where it started: task_update #${parent.number} with base set to the commit its branch started from`;
-  if (gap === "chain-branch")
-    return `${counts} once the branch of ${parent.stackedOn ?? "the plan it is stacked on"}, which ${name} is stacked on, is in this repository: fetch it`;
+    return `${counts} once ${name} records where it started: task_update #${parent.number} with base set to the commit you created its branch from (\`git rev-parse HEAD\` at that moment), not its fork from the default branch`;
+  if (gap === "chain-branch") {
+    const above = parent.stackedOn ?? "the plan it is stacked on";
+    const chain = [...byId.values()].find((t) => t.kind === "plan" && t.plan === parent.stackedOn);
+    // A finished plan's branch is often deleted after its merge: no fetch brings it back, and the
+    // parent's own start still fences a wrong start once the stack on it is cleared.
+    return chain !== undefined && !parentHolds(chain)
+      ? `${counts} once ${name} no longer names ${above}, which holds no files and whose branch is gone: clear #${parent.number}'s stack on ${above} (task_update stacked_on null)`
+      : `${counts} once the branch of ${above}, which ${name} is stacked on, is in this repository: fetch it`;
+  }
   if (gap === "own-branch" || gap === "start-off-branch")
     return `${counts} when this plan records its own branch, built on ${name}'s work: task_update #${plan.number} branch=<branch built on ${name}>`;
   if (gap === "git")

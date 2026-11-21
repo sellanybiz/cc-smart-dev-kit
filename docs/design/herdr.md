@@ -211,7 +211,9 @@ own work (`judgeStacks`, the rule is in `docs/design/tasks.md`, under "Stacked p
 reads that proof before the transaction, with the commit a start resets the child to and the
 default branch it found (a guessed one proves nothing), and passes the proved pairs to
 `reservePlan`; a stack it cannot prove leaves the parent a rival, and the line's fix says why: the
-parent records no branch or no start (`base`), has no commit of its own yet (wait for it), another
+parent records no branch or no start (`base`: the exact commit its branch was created from), the
+plan the parent is stacked on is finished and its branch gone (clear the parent's stack on it), the
+parent has no commit of its own yet (wait for it), another
 session holds one of the two plans, the plan keeps a branch that does not hold its start or is the
 parent's own (record the branch built on the parent: `task_update #n branch=<branch>`, since a new
 start does not replace a recorded branch), or the plan is not built on the parent's work (start it
