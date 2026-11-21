@@ -555,10 +555,15 @@ origin string; `evidence` is set when the task closes.
   one branch while it keeps listing the others. Both read the base the way the release gates do,
   and what the name is decides (`resolveListBase`). A local branch, slash or not (`main`,
   `release/1.0`), reads `origin/<base>` whenever origin has it, so a local copy that is behind
-  gives no wrong answer. A name git knows that is not a local branch (a commit id, a tag, `HEAD`,
-  `origin/main`) is read as written, with no note: a phase's recorded base is a commit id. A local
-  branch that origin lacks (the plan branch, while it stays local), or any local branch with no
-  `origin` remote, is read as written and says so in one line. A name that resolves nowhere gives
+  gives no wrong answer. When the local branch holds commits `origin/<base>` lacks, the listing
+  still reads origin's, because the release gates read origin's (`task release`), and says so in
+  one line (`local <base> is ahead of origin/<base>`). A name git knows that is not a local
+  branch (a commit id, a tag, `HEAD`, `origin/main`) is read as written, with no note: a phase's
+  recorded base is a commit id. A local branch whose `origin/<base>` is not here (the plan
+  branch, while it stays local; or a base never fetched), or any local branch with no `origin`
+  remote, is read as written and says so in one line, with `git fetch origin` as the advice for
+  the unfetched case. A local branch is read by its full name (`refs/heads/<base>`), so a tag of
+  the same name never stands in for it. A name that resolves nowhere gives
   the gates' advice (`git fetch origin`, or pass a ref git knows). The branch lists refuse
   `--json`, so the one-line note never reaches a JSON answer. A deploy
   branch left unmerged is a visible run in

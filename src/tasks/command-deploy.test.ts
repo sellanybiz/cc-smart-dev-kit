@@ -668,13 +668,70 @@ test("list reads a commit id, a tag or HEAD as written, with no note", async () 
 test("list reads a local branch origin lacks as written, with one note", async () => {
   const { run, cwd, onBranch } = await behindOriginWorld();
   git(cwd, "branch", "plan-branch", "origin/main");
-  const note = "origin has no plan-branch: read against the local branch plan-branch.";
+  const note =
+    "origin/plan-branch is not here (not fetched, or origin has no such branch): read against the local branch plan-branch. Run `git fetch origin` if it should be there.";
   expect(await run(["list", "--branch", "--base", "plan-branch"])).toEqual({
     code: 0,
     text: `${note}\n${branchChange(onBranch)}`,
     error: "",
   });
   expect((await run(["list", "--branches"])).error).toBe("");
+});
+
+test("list reads the local branch the note names when a tag has the same name", async () => {
+  const { run, cwd, onBranch } = await behindOriginWorld();
+  // The branch is where the task change is; the tag, at the branch's tip, has none against the base.
+  git(cwd, "branch", "plan-branch", "origin/main");
+  git(cwd, "tag", "plan-branch", "HEAD");
+  const note =
+    "origin/plan-branch is not here (not fetched, or origin has no such branch): read against the local branch plan-branch. Run `git fetch origin` if it should be there.";
+  expect(await run(["list", "--branch", "--base", "plan-branch"])).toEqual({
+    code: 0,
+    text: `${note}\n${branchChange(onBranch)}`,
+    error: "",
+  });
+});
+
+test("list with no origin reads the local branch, not a tag of the same name", async () => {
+  const { run, add, cwd } = world({ origin: false });
+  git(cwd, "switch", "-c", "deploy-branch");
+  const id = await add("Seed data", "staging", "after", "non-blocking");
+  git(cwd, "add", "-A");
+  git(cwd, "commit", "-m", "the task");
+  git(cwd, "tag", "main", "HEAD");
+  expect(await run(["list", "--branch"])).toEqual({
+    code: 0,
+    text: `No origin remote: read against the local branch main.\nstaging\nadded: ${id} [after · non-blocking] Seed data\n`,
+    error: "",
+  });
+});
+
+test("list says when the local base is ahead of origin and reads origin's, as the gates do", async () => {
+  const { run, add, cwd } = world();
+  writeFileSync(join(cwd, "local-only.txt"), "a commit origin does not have\n");
+  git(cwd, "add", "-A");
+  git(cwd, "commit", "-m", "a local commit on main");
+  git(cwd, "switch", "-c", "deploy-branch");
+  const id = await add("Branch only", "staging", "after", "non-blocking");
+  git(cwd, "add", "-A");
+  git(cwd, "commit", "-m", "the branch task");
+  const note =
+    "local main is ahead of origin/main: read against origin/main, as the release gates do.";
+  const expected = { code: 0, text: `${note}\n${branchChange(id)}`, error: "" };
+  expect(await run(["list", "--branch"])).toEqual(expected);
+  expect(await run(["list", "--branch", "--base", "main"])).toEqual(expected);
+  // Named as origin's own ref, or once the local branch is not ahead, there is nothing to say.
+  expect(await run(["list", "--branch", "--base", "origin/main"])).toEqual({
+    code: 0,
+    text: branchChange(id),
+    error: "",
+  });
+  git(cwd, "push", "origin", "main");
+  expect(await run(["list", "--branch"])).toEqual({
+    code: 0,
+    text: branchChange(id),
+    error: "",
+  });
 });
 
 test("list --branch --json is a usage error: the note never reaches a JSON answer", async () => {
