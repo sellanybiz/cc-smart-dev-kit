@@ -32,6 +32,14 @@ in your own terminal after the update; the user guide is [README.md](README.md).
 - **A test starts every built bundle once**, so a bundle that crashes as it loads cannot ship.
 - **`after-merge` sees `GH_REPO` and `GH_HOST` in any case on a PowerShell line**, where
   variable names ignore case.
+- **Plans block each other less.** A project can list folders in `plans.appendOnly` (set with
+  `workflow set`, like `plans.mergeFiles`): inside them, two plans clash only when they list the
+  same file, so two plans that each add a new migration can run at once. A plan can name the
+  plan it is built on (`stacked_on`, or `--stacked-on` on the command line) and share that
+  plan's files for as long as the parent holds them, until the parent's pull request merges.
+  When a phase starts, a warning names the plan's files that the default branch changed after
+  the brief was written. The task tools' own descriptions now state the rules the store
+  enforces: the phase name, a phase without a parent, steps before a start, and the base.
 - **herdr for a lead with several children.** `herdr start --base <ref>` starts a child from
   a branch you name, such as the plan branch, instead of the default branch. `--brief-file
   <path>` on `start` and `send` reads the brief from a file, so quotes and `$` never pass through
