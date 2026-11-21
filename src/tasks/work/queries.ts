@@ -1,5 +1,6 @@
 import { normalizeRepoPath, type RepoPathProblem } from "../../workflow/repo-path";
 import type { WorkDb } from "./db";
+import { inProgressFirst, isOpen, TaskGraph } from "./graph";
 import type {
   ClaimProcess,
   Who,
@@ -14,6 +15,9 @@ import type {
   WorkTask,
   WorkTree,
 } from "./types";
+
+// `isOpen` lives with the graph walks that need it; every caller still reads it from here.
+export { isOpen };
 
 interface TaskRow {
   id: string;
@@ -157,9 +161,6 @@ export function taskById(db: WorkDb, id: string): WorkTask {
   const task = getTask(db, row.project, id);
   if (!task) throw new Error("task not found");
   return task;
-}
-export function isOpen(task: WorkTask): boolean {
-  return task.status === "pending" || task.status === "in_progress";
 }
 /**
  * What a plan counts, by the plan column: its phases, or its tasks when it has no phase. Each
@@ -537,12 +538,6 @@ function descendantsIn(tasks: readonly WorkTask[], id: string): WorkTask[] {
   }
   return result;
 }
-/** In progress first, then by number: the order every list of open tasks is said in. */
-function inProgressFirst(a: WorkTask, b: WorkTask): number {
-  return (
-    Number(b.status === "in_progress") - Number(a.status === "in_progress") || a.number - b.number
-  );
-}
 export function openChildren(db: WorkDb, id: string): WorkTask[] {
   return descendants(db, id).filter(isOpen).sort(inProgressFirst);
 }
@@ -591,32 +586,9 @@ export function freedBy(
   const byId = new Map(all.map((t) => [t.id, t]));
   return all.filter((t) => t.waitsFor.includes(closed.id) && owns(t) && isStartable(all, byId, t));
 }
-/**
- * The open tasks under a task that hold it (D76), in progress first: each open blocking task
- * reached through blocking tasks only. A non-blocking task holds nothing, and what is under it
- * holds only it. Below a closed blocking task the walk goes on, so a task an older kit or a
- * system close left open there still holds.
- */
+/** The open tasks under a task that hold it (D76), in progress first: `TaskGraph.holdingUnder`. */
 export function holdingUnder(tasks: readonly WorkTask[], id: string): WorkTask[] {
-  const children = new Map<string, WorkTask[]>();
-  for (const t of tasks) {
-    if (!t.parentId) continue;
-    const siblings = children.get(t.parentId);
-    if (siblings) siblings.push(t);
-    else children.set(t.parentId, [t]);
-  }
-  const seen = new Set([id]);
-  const result: WorkTask[] = [];
-  const walk = (parent: string) => {
-    for (const child of children.get(parent) ?? []) {
-      if (seen.has(child.id) || child.type === "non-blocking") continue;
-      seen.add(child.id);
-      if (isOpen(child)) result.push(child);
-      walk(child.id);
-    }
-  };
-  walk(id);
-  return result.sort(inProgressFirst);
+  return new TaskGraph(tasks).holdingUnder(id);
 }
 export interface ListOptions {
   project: string;
@@ -793,18 +765,5 @@ export function claimState(
 
 /** Whether start already waits for target, through explicit blockers or parent completion holds. */
 export function waitsForTask(tasks: readonly WorkTask[], start: string, target: string): boolean {
-  const byId = new Map(tasks.map((task) => [task.id, task]));
-  const reached = new Set<string>();
-  const pending = [start];
-  while (pending.length) {
-    const id = pending.pop();
-    if (!id || reached.has(id)) continue;
-    if (id === target) return true;
-    reached.add(id);
-    pending.push(
-      ...(byId.get(id)?.waitsFor ?? []),
-      ...holdingUnder(tasks, id).map((task) => task.id),
-    );
-  }
-  return false;
+  return new TaskGraph(tasks).waitsFor(start, target);
 }

@@ -2,8 +2,9 @@ import { Database } from "bun:sqlite";
 import { chmodSync, existsSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { COMMAND } from "../../build-info/names";
-import { allTasks, holdingUnder, waitsForTask } from "./queries";
-import type { Result } from "./types";
+import { BLOCK_REFUSAL_WORDS, blockRefusal, TaskGraph } from "./graph";
+import { allTasks } from "./queries";
+import type { Result, WorkTask } from "./types";
 /**
  * The schema this code writes. Each step is additive (`MIGRATIONS`), so `min_compatible` stays 1:
  * code from an older version folder still reads and writes the store, and a column it does not
@@ -80,6 +81,69 @@ const MIGRATIONS: (string | ((sqlite: Database, file: string) => void))[] = [
    ALTER TABLE tasks ADD COLUMN lead_handout TEXT;`,
 ];
 class BackupFailure extends Error {}
+/** What the lift's moves changed of a task: where it sits, and whether it holds its parent. */
+interface MovedTask {
+  parent_id: string | null;
+  blocking: number;
+}
+/**
+ * Restores the holds the nested tasks had (`originalHolds`, by task id) as blockers, each judged
+ * by the rules `addBlockers` applies (`blockRefusal`) over the graph as the moves left it, so the
+ * lift never writes a block the store would refuse. A hold it refuses (a legacy parent cycle can
+ * leave it on a task above) is skipped, and a history row on the task says which. A hold already
+ * stored stays and is not reported: the lift never deletes one. Each project's tasks are read
+ * once, before the moves (`projects`), and `moved` brings them to where the moves left them.
+ */
+function restoreHolds(
+  sqlite: Database,
+  projects: ReadonlyMap<string, readonly WorkTask[]>,
+  originalHolds: ReadonlyMap<string, readonly string[]>,
+  moved: ReadonlyMap<string, MovedTask>,
+): void {
+  for (const tasks of projects.values()) {
+    const graph = new TaskGraph(
+      tasks.map((task): WorkTask => {
+        const row = moved.get(task.id);
+        if (!row) return task;
+        return {
+          ...task,
+          parentId: row.parent_id,
+          type: row.blocking === 0 ? "non-blocking" : "blocking",
+        };
+      }),
+    );
+    for (const task of graph.byId.values())
+      for (const heldId of originalHolds.get(task.id) ?? []) {
+        const held = graph.byId.get(heldId);
+        if (!held || graph.waitsOf(task.id).includes(heldId)) continue;
+        const refusal = blockRefusal(graph, task, held);
+        if (refusal) {
+          sqlite
+            .query(
+              "INSERT INTO task_events(task_id,project,number,at,action,changes,reason) VALUES (?,?,?,?,'noted',?,?)",
+            )
+            .run(
+              task.id,
+              task.project,
+              task.number,
+              Date.now(),
+              JSON.stringify({
+                note: [
+                  null,
+                  `hold on #${held.number} not restored: ${BLOCK_REFUSAL_WORDS[refusal]}`,
+                ],
+              }),
+              LEGACY_LIFT_REASON,
+            );
+          continue;
+        }
+        sqlite
+          .query("INSERT OR IGNORE INTO task_deps(task_id,waits_for) VALUES (?,?)")
+          .run(task.id, heldId);
+        graph.addWait(task.id, heldId);
+      }
+  }
+}
 /** Lift legacy tasks under the write lock. A failed snapshot leaves the store readable. */
 function repairTaskLayers(sqlite: Database, file: string): void {
   const nestedExists = sqlite
@@ -103,19 +167,21 @@ function repairTaskLayers(sqlite: Database, file: string): void {
     )
     .all();
   const byId = new Map(rows.map((row) => [row.id, row]));
+  // Each project's tasks are read once, before any move: a task with a task under it held what
+  // was open beneath it (`holdingUnder`), and the lift restores those holds as blockers.
   const originalHolds = new Map<string, string[]>();
   const reader: WorkDb = { sqlite, writable: false, close() {} };
+  const projects = new Map<string, WorkTask[]>();
   for (const project of new Set(rows.map((row) => row.project))) {
     const tasks = allTasks(reader, project);
-    for (const task of tasks.filter(
-      (task) =>
-        task.kind === "task" &&
-        tasks.some((child) => child.kind === "task" && child.parentId === task.id),
-    ))
-      originalHolds.set(
-        task.id,
-        holdingUnder(tasks, task.id).map((held) => held.id),
-      );
+    projects.set(project, tasks);
+    const before = new TaskGraph(tasks);
+    for (const task of tasks)
+      if (task.kind === "task" && before.childrenOf(task.id).some((child) => child.kind === "task"))
+        originalHolds.set(
+          task.id,
+          before.holdingUnder(task.id).map((held) => held.id),
+        );
   }
   let backed = false;
   const move = (row: Row, parent: Row, above: Row | null) => {
@@ -165,14 +231,7 @@ function repairTaskLayers(sqlite: Database, file: string): void {
       (row) => row.kind === "task" && byId.get(row.parent_id ?? "")?.kind === "task",
     );
     if (!nested) {
-      for (const [id, held] of originalHolds)
-        for (const h of held) {
-          // A legacy parent cycle had no valid completion order; never turn it into a blocker cycle.
-          if (waitsForTask(allTasks(reader, byId.get(id)?.project ?? ""), h, id)) continue;
-          sqlite
-            .query("INSERT OR IGNORE INTO task_deps(task_id,waits_for) VALUES (?,?)")
-            .run(id, h);
-        }
+      restoreHolds(sqlite, projects, originalHolds, byId);
       return;
     }
     const chain: Row[] = [];

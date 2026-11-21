@@ -91,6 +91,8 @@ import { parseUserJson, readUserJson } from "../setup/user-json";
 import { taskContext } from "../tasks/context";
 import { checkDeployTasks, type DeployTaskFinding } from "../tasks/deploy/check";
 import { oldTaskFiles } from "../tasks/deploy/files";
+import { TASK_TOOL } from "../tasks/words";
+import { ancestorHolds, TaskGraph } from "../tasks/work/graph";
 import { allTasks, isOpen, livePhaseCount } from "../tasks/work/queries";
 import { readWorkStore } from "../tasks/work/read";
 import { type GhExec, runGh } from "../workflow/merge-check";
@@ -993,6 +995,7 @@ export async function projectChecks(
   lines.push(...(await projectTaskChecks(checkout.root, env)));
   lines.push(...deployBlockLines(checkout.root, usesDeployTasks));
   lines.push(...planCapChecks(checkout.root, env, paths, config));
+  lines.push(...ancestorHoldChecks(checkout.root, env, paths));
   return lines;
 }
 
@@ -1033,6 +1036,31 @@ export function planCapChecks(
         } satisfies Check,
       ];
     });
+}
+
+/**
+ * One `!` line for each open task of this project that is blocked by an open task above it. The
+ * store refuses such a block (a parent waits for its tasks), but a store an earlier release
+ * lifted may still hold one, and then neither task can be done. Nothing here deletes it: the line
+ * names the `blocked_by_remove` that does. A store that is missing or cannot be read says nothing
+ * here: the work-store checks name it.
+ */
+export function ancestorHoldChecks(cwd: string, env: Env, paths: CliPaths): Check[] {
+  const context = taskContext(cwd, env);
+  // `projectTaskChecks` already says a folder whose project cannot be found.
+  if (!context.ok) return [];
+  const read = readWorkStore(paths, (db) => new TaskGraph(allTasks(db, context.project)));
+  if (read.state !== "ready") return [];
+  return ancestorHolds(read.value)
+    .filter(({ task, ancestor }) => isOpen(task) && isOpen(ancestor))
+    .map(
+      ({ task, ancestor }): Check => ({
+        ok: true,
+        warn: true,
+        text: `project tasks: #${task.number} is blocked by #${ancestor.number}, which it sits under, so neither can be done`,
+        fix: `${TASK_TOOL.update} #${task.number} with blocked_by_remove ["#${ancestor.number}"]`,
+      }),
+    );
 }
 
 type FindingKind = Exclude<DeployTaskFinding["kind"], "old-files">;
