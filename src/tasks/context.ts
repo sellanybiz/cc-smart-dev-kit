@@ -94,7 +94,7 @@ export async function taskContextAsync(cwd: string, env: Env = process.env): Pro
 }
 
 /** The project key of a checkout already found; outside git (null), the folder's own real path. */
-function keyOf(checkout: Checkout | null, cwd: string): string {
+export function projectKeyOf(checkout: Checkout | null, cwd: string): string {
   return projectKey(
     checkout === null ? realpathSync(cwd) : (checkout.mainCheckout ?? checkout.root),
   );
@@ -109,7 +109,7 @@ export function folderProject(
   cwd: string,
   options: Pick<ResolveOptions, "env" | "timeFor"> = {},
 ): string {
-  return keyOf(locateCheckout(cwd, options), cwd);
+  return projectKeyOf(locateCheckout(cwd, options), cwd);
 }
 
 /** The answer for a checkout already found (null: the folder is not in git). */
@@ -117,7 +117,7 @@ function contextOf(checkout: Checkout | null, cwd: string): TaskContext {
   if (checkout === null) {
     return {
       ok: true,
-      project: keyOf(null, cwd),
+      project: projectKeyOf(null, cwd),
       repo: null,
       checkoutRoot: null,
       projectTasks: { ok: false, why: "not in a git checkout: deploy tasks live in a repository" },
@@ -127,7 +127,7 @@ function contextOf(checkout: Checkout | null, cwd: string): TaskContext {
   const repo = checkout.mainCheckout ?? checkout.root;
   const base = {
     ok: true as const,
-    project: keyOf(checkout, cwd),
+    project: projectKeyOf(checkout, cwd),
     repo,
     checkoutRoot: checkout.root,
   };

@@ -47,9 +47,11 @@
  * carries none), a profile's on that profile's address, none off the gateway. A plan limit shows
  * in every session: the login is one.
  *
- * **The warning share is a setting** (`alerts.usagePercent`, 85 by default): the entry reads it
- * once, at the folder the session is in, with the same reader the alert hooks use (`alertsAt`),
- * so the number lives in one place (`src/workflow/schema.ts`).
+ * **The warning share is a setting** (`alerts.usagePercent`, 85 by default): the command reads it
+ * once, after stdin, at the folder the session is in (`cwd` in the input, else the process's own),
+ * with the same reader the alert hooks use (`alertsAt`), so the number lives in one place
+ * (`src/workflow/schema.ts`). That folder's checkout is located once (`locateSessionCheckout`)
+ * and the task rows read the same one.
  *
  * It also records the 5-hour and 7-day usage windows (`usage-window.ts`) and the last cache miss
  * shown (`cache-miss.ts`) for other readers. A recording failure prints one stderr line without
@@ -76,12 +78,13 @@ import { JUDGE_SLOT, withoutContextSuffix } from "../gateway/targets";
 import type { Env } from "../hooks/run";
 import { type SessionGateway, sessionGatewayOf } from "../hooks/session-facts";
 import { compactWindowsOf, mainCheckoutOfFolder } from "../machine/claude-settings";
-import { taskContext } from "../tasks/context";
+import { type Checkout, locateCheckout } from "../project/resolve";
+import { projectKeyOf } from "../tasks/context";
 import { CLAIM_PROCESS, callerOf } from "../tasks/work/identity";
 import { classifyLeadPlans, type LeadPlanState } from "../tasks/work/lead-plans";
 import { planProgress, readWorkStore } from "../tasks/work/read";
 import type { ClaimProcess, Who } from "../tasks/work/types";
-import type { AlertsHere } from "../workflow/alerts";
+import { type AlertsHere, alertsAt } from "../workflow/alerts";
 
 /** ` · 2 queued, 1 parked` for the plans that wait behind the current one; nothing when none. */
 function waitingWords(waiting: { queued: number; parked: number } | null): string {
@@ -175,20 +178,47 @@ function claimedRows(paths: { stateDir: string }, project: string, who: Who): st
     .join("\n");
 }
 
-function currentTask(paths: CliPaths, input: unknown, env: Env): string | null {
-  if (!isJsonObject(input) || typeof input.cwd !== "string") return null;
+/**
+ * Where the session's checkout is, found once for the usage alerts and the task rows: `checkout`
+ * is null outside git, and `ok: false` when the folder cannot be read at all (it is gone, git is
+ * too old, or git did not answer in time). The status bar never fails on it: each reader shows
+ * its own empty answer.
+ */
+type SessionCheckout = { checkout: Checkout | null; ok: true } | { ok: false };
+
+function locateSessionCheckout(folder: string, env: Env): SessionCheckout {
   try {
-    const who = callerOf({ env, cwd: input.cwd, claudeConfigDir: paths.claudeConfigDir });
+    return { checkout: locateCheckout(folder, { env }), ok: true };
+  } catch {
+    // The folder is gone, git is too old or did not answer: no project to read, no task rows.
+    return { ok: false };
+  }
+}
+
+/** The folder Claude Code says the session is in; null when the input names none. */
+function sessionFolderOf(input: unknown): null | string {
+  return isJsonObject(input) && typeof input.cwd === "string" && input.cwd !== ""
+    ? input.cwd
+    : null;
+}
+
+function currentTask(
+  paths: CliPaths,
+  sessionFolder: null | string,
+  located: SessionCheckout,
+  env: Env,
+): string | null {
+  if (sessionFolder === null || !located.ok) return null;
+  try {
+    const who = callerOf({ env, cwd: sessionFolder, claudeConfigDir: paths.claudeConfigDir });
     if (who === null) return null;
-    const context = taskContext(input.cwd, env);
-    return context.ok ? taskSegment(paths, context.project, who) : null;
+    return taskSegment(paths, projectKeyOf(located.checkout, sessionFolder), who);
   } catch {
     // The status bar must still work when the session or task store is unavailable.
     return null;
   }
 }
 
-import { defaultAlerts } from "../workflow/resolve";
 import { workflowDefaults } from "../workflow/schema";
 import { cacheMissSegment } from "./cache-miss";
 import type { CliPaths } from "./paths";
@@ -373,18 +403,17 @@ function contextFactsOf(
 
 /**
  * Runs the command: stdin from Claude Code, the router's state file; prints the main row and, when present, a task row.
- * `alerts` is what the entry read once (`alertsAt`); one line on stderr says so when a
- * settings file could not be read and the defaults decided.
+ * Stdin is read first: the session's folder (`cwd` in it, else this process's own) is located once,
+ * and the usage alerts and the task rows both read that checkout. One line on stderr says so when
+ * a settings file could not be read and the defaults decided.
  */
 export async function runStatusline(
   paths: CliPaths,
   readStdin: () => Promise<string>,
   nowMs: number,
-  alerts: AlertsHere = { alerts: defaultAlerts(), problem: null },
   /** The environment Claude Code gave the command: its `ANTHROPIC_BASE_URL` is the session's. */
   env: Env = {},
 ): Promise<number> {
-  if (alerts.problem !== null) console.error(alerts.problem);
   let input: unknown = null;
   try {
     input = JSON.parse(await readStdin());
@@ -392,6 +421,10 @@ export async function runStatusline(
     // Run by hand, or a newer Claude Code: show what the state file knows.
     input = null;
   }
+  const sessionFolder = sessionFolderOf(input);
+  const located = locateSessionCheckout(sessionFolder ?? process.cwd(), env);
+  const alerts: AlertsHere = alertsAt(paths, located.ok ? located.checkout : null);
+  if (alerts.problem !== null) console.error(alerts.problem);
   try {
     recordUsageWindow(paths, input, nowMs);
   } catch (error) {
@@ -414,7 +447,7 @@ export async function runStatusline(
       : gateway
     : null;
   const cacheMiss = cacheMissSegment(input, paths.stateDir, nowMs);
-  const task = currentTask(paths, input, env);
+  const task = currentTask(paths, sessionFolder, located, env);
   const text = statuslineText(
     input,
     state,

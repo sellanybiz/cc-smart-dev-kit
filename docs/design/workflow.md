@@ -385,11 +385,22 @@ push to a branch the person may push to. What holds against that is the reposito
 branch protection and the person's own deny rules.
 
 **The usage-warning setting** is read by the status line through `src/workflow/alerts.ts`.
-`alertsAt(paths, cwd, env)` resolves `alerts.usagePercent` once per run: the project's over
+`alertsAt(paths, checkout)` resolves `alerts.usagePercent` once per run: the project's over
 the person's over the built-in default. An unreadable project or personal settings file
 drops only that file, keeps every value it can read, and returns one line for stderr.
-A folder outside a project, or no `cwd`, is not a problem. Retired `alerts.events` and
+A folder outside a project (no checkout) is not a problem. Retired `alerts.events` and
 `alerts.sound` values load but are discarded by the schema, not used by the status line.
+
+**The status line reads one folder, and locates its checkout once.** `runStatusline` reads stdin
+first. The session's folder is `cwd` in that JSON, else the process's own folder (run by hand in
+a terminal). It locates that folder's checkout once (`locateCheckout`), then hands the answer to
+`alertsAt` and takes the task rows' project key from it (`projectKeyOf`), so the warning share
+and the task rows can never describe two different folders. A session in a worktree whose
+project file sets `workflow.alerts` gets the worktree's value, even when Claude Code started
+the command from the main checkout. A folder that cannot be read at all (gone, git too old, git
+did not answer) leaves the person's own settings for the alerts and no task rows. The same lookup is one
+`git rev-parse` in a main checkout, plus one `git worktree list` in a linked worktree; it used to
+run twice. `subagent-statusline` reads no folder, no alerts and no tasks, so it has no lookup.
 
 ## Fewer pull requests
 

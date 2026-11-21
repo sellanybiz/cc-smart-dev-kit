@@ -66,7 +66,6 @@ import { instructionsFolder } from "../setup/instructions";
 import { MAX_SUBAGENTS_FLAG, parseMaxSubagents } from "../setup/max-subagents";
 import { NO_RETRY_WATCHDOG_FLAG, RETRY_WATCHDOG_FLAG } from "../setup/retry-watchdog";
 import { runUser } from "../user-away/command";
-import { alertsAt } from "../workflow/alerts";
 import { runWorkflow } from "../workflow/commands";
 import { runWorktrees } from "../worktrees/command";
 
@@ -343,12 +342,12 @@ async function main(argv: string[]): Promise<number> {
     }
     case "statusline":
       // Claude Code pipes its JSON in; run by hand in a terminal, there is none to wait for.
-      // The warning share comes from the workflow settings of the folder the session is in.
+      // The warning share comes from the workflow settings of the folder the session is in:
+      // `runStatusline` reads stdin first, then that folder (`cwd` in the input, else this one).
       return runStatusline(
         paths,
         () => (process.stdin.isTTY ? Promise.resolve("") : Bun.stdin.text()),
         Date.now(),
-        alertsAt(paths, process.cwd(), process.env),
         process.env,
       );
     case "usage":

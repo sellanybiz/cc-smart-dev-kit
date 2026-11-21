@@ -271,7 +271,7 @@ describe("statusline", () => {
     };
     try {
       const run = (data: unknown, nowMs: number) =>
-        runStatusline(paths, async () => JSON.stringify(data), nowMs, undefined, {});
+        runStatusline(paths, async () => JSON.stringify(data), nowMs, {});
       // A miss 10 s ago, refreshed twice: shown both times.
       await run(withMiss(NOW / 1000 - 10, ["tools_changed"]), NOW);
       await run(withMiss(NOW / 1000 - 10, ["tools_changed"]), NOW + 5000);
@@ -396,14 +396,14 @@ describe("RV3: a record shows in the session it is about", () => {
     };
     try {
       const run = (url: string) =>
-        runStatusline(paths, async () => JSON.stringify(input(null, null)), NOW, undefined, {
+        runStatusline(paths, async () => JSON.stringify(input(null, null)), NOW, {
           ANTHROPIC_BASE_URL: url,
         });
       await run("http://127.0.0.1:20199/p/team");
       await run("http://127.0.0.1:20199");
       await run("https://api.anthropic.com");
       // No address in the environment says nothing about the gateway: the machine's records.
-      await runStatusline(paths, async () => JSON.stringify(input(null, null)), NOW, undefined, {});
+      await runStatusline(paths, async () => JSON.stringify(input(null, null)), NOW, {});
       // An empty address is Anthropic's own (what `sessionGatewayOf` and Claude Code read): off.
       await run("");
     } finally {
