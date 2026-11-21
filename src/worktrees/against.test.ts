@@ -9,7 +9,9 @@ import { runWorktrees } from "./command";
 import * as scan from "./scan";
 import {
   deleteBranchOnRef,
+  deleteJudgedBranch,
   deleteMergedBranch,
+  judgeBranchOnRef,
   REMOVAL_TIMEOUT_MS,
   removeWorktree,
   scanWorktrees,
@@ -429,6 +431,40 @@ describe("the outcome of a branch deletion, as data", () => {
     );
     git(main, "merge", "--ff-only", "fix/login");
     expect(tryDeleteBranch(main, "main", "main", "fix/login", env)).toEqual({ kind: "deleted" });
+  });
+
+  test("a branch that moved after it was judged is kept: only the judged commit is deleted", () => {
+    const { main, worktree } = withWork();
+    git(main, "worktree", "remove", "--force", worktree);
+    git(main, "merge", "--ff-only", "fix/login");
+    const judged = judgeBranchOnRef(main, "main", "main", "fix/login", env);
+    if (judged.kind !== "on-ref") throw new Error("the merged branch should be on main");
+    // New work lands on the branch between the judge and the delete.
+    git(main, "checkout", "-q", "fix/login");
+    git(main, "commit", "--allow-empty", "-m", "late work");
+    git(main, "checkout", "-q", "main");
+    const outcome = deleteJudgedBranch(main, "fix/login", judged.sha, env);
+    expect(outcome).toEqual({
+      kind: "git-error",
+      text: "it moved after it was judged, so it stays",
+    });
+    expect(git(main, "branch", "--list", "fix/login")).toContain("fix/login");
+    // Still at the judged commit, it goes.
+    git(main, "branch", "-f", "fix/login", judged.sha);
+    expect(deleteJudgedBranch(main, "fix/login", judged.sha, env)).toEqual({ kind: "deleted" });
+    expect(git(main, "branch", "--list", "fix/login")).toBe("");
+  });
+
+  test("a branch a worktree has checked out is kept, with the folder named", () => {
+    const { main, worktree } = withWork();
+    git(main, "merge", "--ff-only", "fix/login");
+    const judged = judgeBranchOnRef(main, "main", "main", "fix/login", env);
+    if (judged.kind !== "on-ref") throw new Error("the merged branch should be on main");
+    expect(deleteJudgedBranch(main, "fix/login", judged.sha, env)).toEqual({
+      kind: "git-error",
+      text: `a worktree has it checked out, at ${worktree}`,
+    });
+    expect(git(main, "branch", "--list", "fix/login")).toContain("fix/login");
   });
 
   test("git's refusal keeps git's words and is never rewritten as a held branch", () => {

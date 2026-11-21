@@ -1083,11 +1083,11 @@ describe("scanning and removing, against a real repo", () => {
     expect(existsSync(worktree)).toBe(false);
   });
 
-  test("a branch git still has checked out is kept, and the reason is git's own", () => {
+  test("a branch a worktree still has checked out is kept, and the line names the folder", () => {
     const { main, worktree } = repo();
-    // git refuses while the worktree holds it: the removal deletes the branch afterwards.
+    // The worktree holds it: the removal deletes the branch afterwards.
     expect(deleteMergedBranch(main, "main", "fix/login", env)).toBe(
-      `kept branch fix/login: error: cannot delete branch 'fix/login' used by worktree at '${worktree}'`,
+      `kept branch fix/login: a worktree has it checked out, at ${worktree}`,
     );
     expect(existsSync(worktree)).toBe(true);
   });
@@ -1098,7 +1098,7 @@ describe("scanning and removing, against a real repo", () => {
     git(worktree, "add", ".");
     git(worktree, "commit", "-m", "work");
     expect(deleteMergedBranch(main, "main", "fix/login", env)).toBe(
-      "kept branch fix/login: it has commits that are not on main",
+      "kept branch fix/login: it has commits that are not on origin/main",
     );
     expect(deleteMergedBranch(main, "main", "no-such-branch", env)).toContain(
       "kept branch no-such-branch:",
@@ -1315,7 +1315,7 @@ describe("the worktrees command", () => {
     expect(removal.status).toBe("removed");
     expect(removal.said).toEqual([
       `removed ${parked}`,
-      "kept branch fix/login: it has commits that are not on main",
+      "kept branch fix/login: it has commits that are not on origin/main",
     ]);
     expect(existsSync(parked)).toBe(false);
     // The commit is still there, on the branch the folder had.
