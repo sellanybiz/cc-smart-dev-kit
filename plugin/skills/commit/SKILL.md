@@ -56,21 +56,27 @@ peer's message or a child's is no yes. A yes covers what it names: "merge each p
 review" covers the plans queued when the person said it, never a plan added later.
 
 **A stacked pull request** is one whose branch starts from another open pull request's branch.
-`merge-check` refuses it whatever base it names: the base rule refuses one opened against the
-plan below (`gh pr create --base <the previous plan's branch>`, the way to open it), and the
-stacked check refuses one opened against the default branch with `pull request #<n> is stacked
-on open pull request #<m>: merge #<m> first, then check again`. It reads the commits the two
-share that the base lacks, so it holds even after the lower pull request gained a commit. That
-refusal means what it says. Never merge a pull request while the one it is stacked on is open,
-whatever else passes.
+Open the upper one against the lower one's branch (`gh pr create --base <the previous plan's
+branch>`): then the base rule refuses the upper one until the lower one merges, and the lower
+one is never held up by the one above it. `merge-check` reads each open pull request's commits
+that its base lacks, so it holds even after the lower pull request gained a commit. Two pull
+requests into the same base that share such commits are each refused with `pull request #<n>
+shares commits with open pull request #<m> that <base> does not hold yet: merge the lower one
+first (open the upper one against the lower one's branch), then check again`: the commits
+cannot say which is lower, so the words fit both. That refusal means what it says: retarget the
+upper one onto the lower one's branch (`gh pr edit <upper> --base <lower branch>`), then run
+`merge-check` on the lower one again. Never merge a pull request while the one it is stacked on
+is open, whatever else passes.
 
 - **After the lower pull request merges:** bring the stacked branch up to date with the base
   (`git merge origin/<base>`, which also drops the duplicate diff of a squashed copy), retarget
   it with `gh pr edit <pr> --base <default branch>` (GitHub may do this itself when the lower
   branch is deleted), run the checks, and run `merge-check` again.
 - **A lower pull request closed without merging:** the stacked one is not merged, because its
-  branch still carries the lower plan's commits. Rebuild its branch from the base without them,
-  and record the decision.
+  branch still carries the lower plan's commits, and `merge-check` no longer sees them (only open
+  pull requests count). Rebuild it on a new branch from the base without them, and open a new
+  pull request; never force-push the old branch. Away, do not rebuild it: leave it open and
+  record why.
 
 - **Commit and push only your own branch**, never the base or main branch directly.
 - **Builder commits:** a brief may allow commits on that builder's own isolated branch.
@@ -89,7 +95,8 @@ whatever else passes.
   discards inside its own worktree (a checkout or restore that drops changes, `switch -f`,
   `clean -f`, and `reset --hard`, which also drops the builder's own commits), and the start of
   a fresh worktree (`git reset --hard <base>` before the first edit, with no commits of its own
-  and a clean tree: it has nothing to lose). A yes covers
+  and a clean tree, so `git log --oneline origin/HEAD..HEAD` and `git status --short` both print
+  nothing: it has nothing to lose). A yes covers
   exactly what it names. If the person says wait, wait.
 
 ## Steps

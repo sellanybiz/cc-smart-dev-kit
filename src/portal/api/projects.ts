@@ -546,8 +546,8 @@ async function readBranches(
     }
   }
 
-  // The stacked question shares one list of the open pull requests and each compare of two
-  // commits between every row, so a page of ten asks gh for one list, not ten.
+  // The stacked question shares one list of the open pull requests and each one's commits
+  // between every row, so a page of ten asks gh for one list, not ten.
   const stack = newStackCache();
 
   // The pull requests' verdicts run a few at a time (`PROJECT_VERDICTS_AT_ONCE`), all under the

@@ -1260,7 +1260,7 @@ describe("workflow merge-check", () => {
     ]);
   });
 
-  test("several pull requests share one list of the open ones, and each pair of commits is compared once", async () => {
+  test("several pull requests share one list of the open ones, and each pull request's commits are read once", async () => {
     const { repo, env } = branchWorld();
     // The policy the check reads is the one committed on origin/main: merging by itself is on.
     writeClaudeFile(repo, "cc-smart-dev-kit.json", {
@@ -1281,10 +1281,10 @@ describe("workflow merge-check", () => {
         'case "$1 $2" in',
         `  "pr view") echo '{"baseRefName":"main","headRefName":"feat","headRefOid":"${head}","number":'"$3"'}' ;;`,
         `  "repo view") echo '{"defaultBranchRef":{"name":"main"}}' ;;`,
-        `  "pr list") echo '[{"headRefOid":"${"c".repeat(40)}","number":9}]' ;;`,
+        `  "pr list") echo '[{"baseRefName":"main","headRefName":"other","headRefOid":"${"c".repeat(40)}","isCrossRepository":false,"number":9}]' ;;`,
         `  "pr checks") echo '[{"bucket":"pass","name":"ci"}]' ;;`,
-        // The two heads share a commit main holds (the merge base), so neither is stacked.
-        `  api*) case "$2" in *compare/main...*) echo "behind ${"e".repeat(40)}" ;; *) echo "diverged ${"e".repeat(40)}" ;; esac ;;`,
+        // Each head's own commits: the two share none, so neither is stacked.
+        `  api*) case "$2" in *compare/main...${head}*) printf "1\\n${head}\\n" ;; *) printf "1\\n${"c".repeat(40)}\\n" ;; esac ;;`,
         "esac",
         "",
       ].join("\n"),
@@ -1295,7 +1295,7 @@ describe("workflow merge-check", () => {
     expect(run.lines).toHaveLength(2);
     const calls = readFileSync(log, "utf8").trim().split("\n");
     expect(calls.filter((line) => line.startsWith("pr list --state open"))).toHaveLength(1);
-    // The pair of heads once, and the base against their merge base once.
+    // The head both pull requests share is read once, and #9's commits once.
     expect(calls.filter((line) => line.startsWith("api "))).toHaveLength(2);
   });
 

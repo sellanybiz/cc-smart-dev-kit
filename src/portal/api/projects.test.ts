@@ -206,7 +206,12 @@ function mergeableRunner(numbers: number[], onCall?: (args: string[]) => Promise
   return async (args) => {
     if (onCall !== undefined) await onCall(args);
     // The stacked question of the merge check: no other pull request is open, so nothing is below.
-    if (args[0] === "pr" && args[1] === "list" && args.includes("number,headRefOid")) return "[]";
+    if (
+      args[0] === "pr" &&
+      args[1] === "list" &&
+      args.includes("number,headRefOid,headRefName,baseRefName,isCrossRepository")
+    )
+      return "[]";
     if (args[0] === "pr" && args[1] === "list") {
       return JSON.stringify(
         numbers.map((number) => ({
@@ -587,7 +592,11 @@ describe("/api/projects/<id> (B8)", () => {
     expect(asked.filter((one) => one[0] === "repo" && one[1] === "view")).toHaveLength(1);
     expect(asked.filter((one) => one[0] === "pr" && one[1] === "view")).toHaveLength(3);
     expect(
-      asked.filter((one) => one[1] === "list" && one.includes("number,headRefOid")),
+      asked.filter(
+        (one) =>
+          one[1] === "list" &&
+          one.includes("number,headRefOid,headRefName,baseRefName,isCrossRepository"),
+      ),
     ).toHaveLength(1);
   });
 
@@ -975,7 +984,12 @@ test("an open pull request with the merge guard's own verdict", async () => {
   const asked: string[][] = [];
   const run: GhRunner = async (args) => {
     asked.push(args);
-    if (args[0] === "pr" && args[1] === "list" && args.includes("number,headRefOid")) return "[]";
+    if (
+      args[0] === "pr" &&
+      args[1] === "list" &&
+      args.includes("number,headRefOid,headRefName,baseRefName,isCrossRepository")
+    )
+      return "[]";
     if (args[0] === "pr" && args[1] === "list") {
       return JSON.stringify([
         {
@@ -1029,6 +1043,10 @@ test("an open pull request with the merge guard's own verdict", async () => {
   ]);
   // The page's own list was asked once (it reuses its branch read); the other list is the
   // merge check's, of the open heads.
-  const lists = asked.filter((one) => one[1] === "list" && !one.includes("number,headRefOid"));
+  const lists = asked.filter(
+    (one) =>
+      one[1] === "list" &&
+      !one.includes("number,headRefOid,headRefName,baseRefName,isCrossRepository"),
+  );
   expect(lists).toHaveLength(1);
 });
