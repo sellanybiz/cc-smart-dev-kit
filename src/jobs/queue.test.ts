@@ -280,6 +280,35 @@ test("the first waiting line says once that a long wait should run in the backgr
   expect(lines.filter((line) => line === BACKGROUND_HINT)).toHaveLength(1);
   expect(lines.indexOf(BACKGROUND_HINT)).toBe(2);
 });
+const PIPE_HINT =
+  'A pipe (| tail) hides this job\'s exit status: the "Heavy job ended" line carries it.';
+
+/** The lines one waiting job prints, with its output piped or not. */
+async function waitingLines(outputPiped: boolean): Promise<string[]> {
+  const store = leaseStore({ dir: tempDir("jobs-pipe-hint"), label: "machine" });
+  const first = await acquireFrom([store], job, { person: "host", onWaiting: () => {} });
+  const lines: string[] = [];
+  const second = await acquireFrom([store], job, {
+    person: "host",
+    onWaiting: (line) => lines.push(line),
+    outputPiped,
+    waitingLineEveryMs: 0,
+    sleep: async () => first.release(),
+  });
+  second.release();
+  return lines;
+}
+
+test("the pipe hint comes only when the job's output may go into a pipe", async () => {
+  const piped = await waitingLines(true);
+  expect(piped.filter((line) => line === PIPE_HINT)).toHaveLength(1);
+  expect(piped.indexOf(PIPE_HINT)).toBe(1);
+  // Output to a file or a terminal: no pipe can hide the status, so no hint; the background
+  // hint moves up to follow the first waiting line.
+  const plain = await waitingLines(false);
+  expect(plain).not.toContain(PIPE_HINT);
+  expect(plain.indexOf(BACKGROUND_HINT)).toBe(1);
+});
 test("a stopped wait releases its ticket, not another job's slot", async () => {
   const store = leaseStore({ dir: tempDir("jobs-stop"), label: "machine" });
   const first = await acquireFrom([store], job, { person: "host", onWaiting: () => {} });

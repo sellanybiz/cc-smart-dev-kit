@@ -3,6 +3,14 @@
 What each release changed, newest first. A release's **What to run** steps are the ones to do
 in your own terminal after the update; the user guide is [README.md](README.md).
 
+## 6.1.1
+
+- **The queue's pipe hint comes only when there is a pipe.** A waiting heavy job printed "A
+  pipe (| tail) hides this job's exit status" even for `bun test 2>&1`, with no pipe. Now the
+  hint comes only when the job's output goes into a pipe; on Windows it still always comes.
+
+**What to run:** `cc-smart-dev-kit update`.
+
 ## 6.1.0
 
 - **The settings say what they do.** `autoCommit`, `autoPush` and `autoMerge` are now

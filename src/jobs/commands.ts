@@ -30,6 +30,7 @@ import { startLimits } from "./limits";
 import { acquireFrom, pidsHolding, WaitStoppedError } from "./queue";
 import { type JobDeps, runJob } from "./run";
 import { type JobContext, openStores, readJobs, statusLines } from "./status";
+import { stdoutMayBePiped } from "./stdout-pipe";
 import { diskWeightSource } from "./weight-source";
 
 export type { JobContext } from "./status";
@@ -264,6 +265,7 @@ async function jobRun(args: readonly string[], ctx: JobContext): Promise<number>
           }
           const reservation = await acquireFrom(stores, job, {
             onWaiting,
+            outputPiped: stdoutMayBePiped(),
             person: hostname(),
             signal: stop.signal,
             now,

@@ -107,7 +107,9 @@ that never waits prints none of the lines below: a free machine gets no noise.
   holder; it is left out when none is. `job status` lists every waiting job in the same order.
   **The first line carries two hints**, once per job. The pipe hint: a job whose output goes
   down a pipe (`| tail`) reports the pipe's own status, so the hint points at the end line,
-  which holds the job's own. The background hint: a call that runs the job in the foreground
+  which holds the job's own. It comes only when the job's output is a pipe or a socket
+  (`src/jobs/stdout-pipe.ts`), never when it goes to a file or a terminal; on Windows, where
+  that check is not proved, it always comes. The background hint: a call that runs the job in the foreground
   ends at its timeout, so a long wait belongs in the background (`run_in_background`).
 - **The start line** says the wait is over, and how long it took.
 - **The end line** says how the job ended, and how long it ran. A job a signal stops **while it
