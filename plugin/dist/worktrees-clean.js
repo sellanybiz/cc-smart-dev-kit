@@ -47,6 +47,9 @@ function userConfigFile(env, home) {
   return dir ? join2(dir, ".claude.json") : join2(home, ".claude.json");
 }
 function cliPaths(env = process.env) {
+  if (env === null || typeof env !== "object" || Array.isArray(env)) {
+    throw new TypeError(`cliPaths takes an environment object (like process.env), not ${env === null ? "null" : Array.isArray(env) ? "an array" : typeof env}`);
+  }
   const router = routerPaths(env);
   const claudeConfigDir = env.CLAUDE_CONFIG_DIR || join2(router.home, ".claude");
   return {
@@ -92,7 +95,7 @@ function claudeMemDataDir(env, home) {
 
 // src/worktrees/auto-clean.ts
 import { existsSync as existsSync9, readdirSync as readdirSync9 } from "fs";
-import { join as join15 } from "path";
+import { join as join16 } from "path";
 
 // src/hooks/git.ts
 import { readFileSync, realpathSync } from "fs";
@@ -6089,7 +6092,7 @@ function preprocess(fn, schema) {
 }
 // src/build-info/index.ts
 var info = {
-  version: "6.1.1",
+  version: "6.2.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -8479,7 +8482,7 @@ var LOCK_PORTS = {
 // src/worktrees/scan.ts
 import { existsSync as existsSync7, mkdtempSync, readdirSync as readdirSync7, rmSync as rmSync2, statSync as statSync7 } from "fs";
 import { tmpdir } from "os";
-import { basename as basename4, join as join13 } from "path";
+import { basename as basename4, join as join14 } from "path";
 
 // src/hooks/local-files.ts
 import {
@@ -8500,6 +8503,7 @@ var REBUILDABLE = [
   /\.(?:tsbuildinfo|pyc|pyo)$/,
   /(?:^|\/)\.DS_Store$/,
   /(?:^|\/)Thumbs\.db$/,
+  /(?:^|\/)next-env\.d\.ts$/,
   /(?:^|\/)(?:npm-debug|yarn-debug|yarn-error|pnpm-debug|lerna-debug)\.log/,
   /(?:^|\/)logs\/$/,
   /\.log$/
@@ -9282,6 +9286,15 @@ function mountPoints(on = platform()) {
   }
 }
 
+// src/worktrees/paths.ts
+import { join as join13 } from "path";
+var WORKTREES_FOLDER_SEGMENTS = [".claude", "worktrees"];
+function worktreesFolder(repoRoot) {
+  return join13(repoRoot, ...WORKTREES_FOLDER_SEGMENTS);
+}
+var SUBAGENT_NAME_PREFIX = "agent-";
+var SUBAGENT_BRANCH_PREFIX = `worktree-${SUBAGENT_NAME_PREFIX}`;
+
 // src/worktrees/verdict.ts
 var MIN_MERGE_TREE_GIT = "2.38.0";
 var IDLE_MINUTES = 60;
@@ -9391,7 +9404,7 @@ function innerWorktreeOf(worktree, all) {
   const listed = all.find((other) => isInside(other.path, worktree) && !isInside(worktree, other.path));
   if (listed !== undefined)
     return listed.path;
-  const claudeOwn = join13(worktree, ".claude", "worktrees");
+  const claudeOwn = worktreesFolder(worktree);
   let entries;
   try {
     entries = readdirSync7(claudeOwn);
@@ -9399,7 +9412,7 @@ function innerWorktreeOf(worktree, all) {
     return null;
   }
   for (const entry of entries) {
-    const folder = join13(claudeOwn, entry);
+    const folder = join14(claudeOwn, entry);
     try {
       if (statSync7(folder).isDirectory() && readdirSync7(folder).length > 0)
         return folder;
@@ -9467,8 +9480,8 @@ function objectFolder(repo, env) {
   const common = runGit(repo, ["rev-parse", "--path-format=absolute", "--git-common-dir"], env);
   if (!common.ok || common.out === "")
     return null;
-  const dir = mkdtempSync(join13(tmpdir(), `${COMMAND}-worktrees-`));
-  const objects = join13(common.out, "objects");
+  const dir = mkdtempSync(join14(tmpdir(), `${COMMAND}-worktrees-`));
+  const objects = join14(common.out, "objects");
   return {
     dir,
     own: {
@@ -9635,7 +9648,7 @@ function judgeOne(repo, listed, all, look, idle) {
     programs: look.programs === "unknown" ? "unknown" : programsInside(look.programs, listed.path, undefined, undefined, owner),
     sessionName: session?.name ?? null
   };
-  return verdict(facts, () => contentsOf(listed.path, repo, look.ref, look.env, parked), look.idleLimit);
+  return verdict(facts, () => contentsOf(listed.path, repo, look.ref, look.env, isParkedWorktree(listed.path)), look.idleLimit);
 }
 function machineFactsOf(options) {
   return {
@@ -9649,6 +9662,12 @@ function machineFactsOf(options) {
     pidNamespace: options.facts?.pidNamespace === undefined ? ownPidNamespace() : options.facts.pidNamespace
   };
 }
+function baseRefOf(options) {
+  return {
+    label: options.against?.label ?? options.base,
+    ref: options.against?.ref ?? `refs/remotes/origin/${options.base}`
+  };
+}
 function lookAt(repo, options) {
   return {
     ...machineFactsOf(options),
@@ -9657,9 +9676,8 @@ function lookAt(repo, options) {
     ownerMode: options.ownerMode === true,
     env: options.env,
     idleLimit: options.idleLimit,
-    label: options.against?.label ?? options.base,
+    ...baseRefOf(options),
     now: options.now ?? Date.now(),
-    ref: options.against?.ref ?? `refs/remotes/origin/${options.base}`,
     replayer: replayerFor(repo, options.env)
   };
 }
@@ -9682,8 +9700,7 @@ function lockLine(listed, look, onBase = false) {
 }
 function scanWorktrees(repo, options) {
   const { env } = options;
-  const againstRef = options.against?.ref ?? `refs/remotes/origin/${options.base}`;
-  const againstLabel = options.against?.label ?? options.base;
+  const { label: againstLabel, ref: againstRef } = baseRefOf(options);
   if (!runGit(repo, ["rev-parse", "--verify", "--quiet", againstRef], env).ok) {
     throw new Error(options.against === undefined ? `origin/${options.base} is not known here \u2014 run \`git fetch origin ${options.base}\` first` : `${againstLabel} is not known here`);
   }
@@ -9826,18 +9843,22 @@ function branchOutcomeLine(branch, label, outcome) {
 function refName(holder, label, customRef) {
   return !customRef && holder === label ? `origin/${label}` : label;
 }
-function tryDeleteBranch(repo, ref, label, branch, env) {
+function judgeBranchOnRef(repo, ref, label, branch, env) {
   const ahead = runGit(repo, ["rev-list", "--count", `${ref}..refs/heads/${branch}`], env);
   if (!ahead.ok) {
     return { kind: "git-error", text: ahead.err || `git could not compare it with ${label}` };
   }
-  if (ahead.out !== "0") {
-    const head = runGit(repo, ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`], env);
-    const sha = head.ok ? head.out.trim() : "";
-    const elsewhere = COMMIT_SHA.test(sha) && workOnBase(repo, ref, sha, branch, env, replayerFor(repo, env)) !== null;
-    if (!elsewhere)
-      return { kind: "not-on-ref" };
-  }
+  if (ahead.out === "0")
+    return { kind: "on-ref" };
+  const head = runGit(repo, ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`], env);
+  const sha = head.ok ? head.out.trim() : "";
+  const elsewhere = COMMIT_SHA.test(sha) && workOnBase(repo, ref, sha, branch, env, replayerFor(repo, env)) !== null;
+  return elsewhere ? { kind: "on-ref" } : { kind: "not-on-ref" };
+}
+function tryDeleteBranch(repo, ref, label, branch, env) {
+  const judged = judgeBranchOnRef(repo, ref, label, branch, env);
+  if (judged.kind !== "on-ref")
+    return judged;
   const deleted = runGit(repo, ["branch", "-D", branch], env);
   return deleted.ok ? { kind: "deleted" } : { kind: "git-error", text: deleted.err };
 }
@@ -9850,7 +9871,7 @@ function pruneWorktrees(repo, env) {
 
 // src/worktrees/scan-parked.ts
 import { existsSync as existsSync8, lstatSync as lstatSync4, readdirSync as readdirSync8, rmSync as rmSync3 } from "fs";
-import { dirname as dirname5, join as join14, relative } from "path";
+import { dirname as dirname5, join as join15, relative } from "path";
 function parkedAtOf(path) {
   if (!isParkedWorktree(path))
     return null;
@@ -9864,7 +9885,7 @@ function strayParkedFolders(repo, env, earlier = []) {
   } catch {
     return [];
   }
-  const folders = new Set([join14(repo, ".claude", "worktrees")]);
+  const folders = new Set([worktreesFolder(repo)]);
   for (const listed of [...all.slice(1), ...earlier.slice(1)])
     folders.add(dirname5(listed.path));
   const found = [];
@@ -9876,7 +9897,7 @@ function strayParkedFolders(repo, env, earlier = []) {
       continue;
     }
     for (const name of names) {
-      const path = join14(folder, name);
+      const path = join15(folder, name);
       const parkedAt = parkedAtOf(path);
       if (parkedAt === null || all.some((listed) => samePath(listed.path, path)))
         continue;
@@ -9923,7 +9944,7 @@ function walkLeftover(root, limitMs) {
         walk.tooMany = true;
         return walk;
       }
-      const path = join14(folder, name);
+      const path = join15(folder, name);
       let stat;
       try {
         stat = lstatSync4(path);
@@ -9947,7 +9968,7 @@ function walkLeftover(root, limitMs) {
   return walk;
 }
 function gitEntryWhy(folder) {
-  const dotGit = join14(folder, ".git");
+  const dotGit = join15(folder, ".git");
   let stat;
   try {
     stat = lstatSync4(dotGit);
@@ -10134,7 +10155,7 @@ function refLockUnder(dir, depth = 0) {
   try {
     for (const entry of readdirSync9(dir, { withFileTypes: true })) {
       if (entry.isDirectory()) {
-        const found = refLockUnder(join15(dir, entry.name), depth + 1);
+        const found = refLockUnder(join16(dir, entry.name), depth + 1);
         if (found !== null)
           return found;
       } else if (entry.name.endsWith(".lock")) {
@@ -10146,10 +10167,10 @@ function refLockUnder(dir, depth = 0) {
 }
 function gitLockHeld(gitDir) {
   for (const name of GIT_LOCKS) {
-    if (existsSync9(join15(gitDir, name)))
+    if (existsSync9(join16(gitDir, name)))
       return name;
   }
-  return refLockUnder(join15(gitDir, "refs"));
+  return refLockUnder(join16(gitDir, "refs"));
 }
 function sessionsToKeep(deps, claudeConfigDir) {
   const running = deps.facts?.sessions ?? liveSessions(claudeConfigDir);

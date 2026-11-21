@@ -21525,7 +21525,7 @@ var COMMAND = "cc-smart-dev-kit";
 
 // src/build-info/index.ts
 var info = {
-  version: "6.1.1",
+  version: "6.2.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -21684,6 +21684,9 @@ var PLAN_FILES_WORDS = "Plan task only: the repo-relative paths the plan changes
 var SUBJECT_LIMIT = 200;
 var DESCRIPTION_LIMIT = 200000;
 var NOTE_LIMIT = 64000;
+function claimText(claim) {
+  return claim.sessionId ?? `process ${claim.pid}`;
+}
 
 // src/tasks/schemas.ts
 var fields = deployTaskSchema.shape;
@@ -21804,6 +21807,9 @@ function userConfigFile(env, home) {
   return dir ? join2(dir, ".claude.json") : join2(home, ".claude.json");
 }
 function cliPaths(env = process.env) {
+  if (env === null || typeof env !== "object" || Array.isArray(env)) {
+    throw new TypeError(`cliPaths takes an environment object (like process.env), not ${env === null ? "null" : Array.isArray(env) ? "an array" : typeof env}`);
+  }
   const router = routerPaths(env);
   const claudeConfigDir = env.CLAUDE_CONFIG_DIR || join2(router.home, ".claude");
   return {
@@ -24511,14 +24517,14 @@ function taskContext(cwd, env = process.env) {
   }
   return contextOf(checkout, cwd);
 }
-function keyOf(checkout, cwd) {
+function projectKeyOf(checkout, cwd) {
   return projectKey(checkout === null ? realpathSync3(cwd) : checkout.mainCheckout ?? checkout.root);
 }
 function contextOf(checkout, cwd) {
   if (checkout === null) {
     return {
       ok: true,
-      project: keyOf(null, cwd),
+      project: projectKeyOf(null, cwd),
       repo: null,
       checkoutRoot: null,
       projectTasks: { ok: false, why: "not in a git checkout: deploy tasks live in a repository" },
@@ -24528,7 +24534,7 @@ function contextOf(checkout, cwd) {
   const repo = checkout.mainCheckout ?? checkout.root;
   const base = {
     ok: true,
-    project: keyOf(checkout, cwd),
+    project: projectKeyOf(checkout, cwd),
     repo,
     checkoutRoot: checkout.root
   };
@@ -24571,6 +24577,10 @@ var recordSchema = object({
   seq: number2()
 });
 var toldSchema = object({ seq: number2() });
+
+// src/worktrees/paths.ts
+var SUBAGENT_NAME_PREFIX = "agent-";
+var SUBAGENT_BRANCH_PREFIX = `worktree-${SUBAGENT_NAME_PREFIX}`;
 
 // src/hooks/sessions.ts
 import { existsSync as existsSync6, readdirSync as readdirSync3, readFileSync as readFileSync6, statSync as statSync3 } from "fs";
@@ -25546,9 +25556,17 @@ function actor(event) {
     parts.push(`the kit (${event.reason})`);
   return parts.length > 0 ? parts.join(", ") : "a caller outside any Claude session";
 }
+function isClaimObject(value) {
+  if (typeof value !== "object" || value === null || Array.isArray(value))
+    return false;
+  const { pid, sessionId } = value;
+  return typeof pid === "number" && (sessionId === null || typeof sessionId === "string");
+}
 function shown(key, value) {
   if (value === null || value === undefined || value === "")
     return "none";
+  if (key === "claim" && isClaimObject(value))
+    return claimText(value);
   if (Array.isArray(value))
     return value.length > 0 ? value.join(", ") : "none";
   if (key === "subject" || key === "note")
@@ -25727,7 +25745,7 @@ function shape(db, task) {
     branch: task.branch,
     worktree: task.worktree,
     base: task.base,
-    claim: task.claim === null ? null : task.claim.sessionId ?? `process ${task.claim.pid}`,
+    claim: task.claim === null ? null : claimText(task.claim),
     waitsFor: task.waitsFor.map(numberOf).sort(),
     files: task.files,
     lead: task.lead === null ? null : `${task.lead.sessionId ?? `process ${task.lead.pid}`} (${task.lead.holder})`
@@ -26101,8 +26119,8 @@ function takeTasks(db, project, id, who, now, options) {
         ],
         ...task.claim === null ? {} : {
           claim: [
-            task.claim,
-            who.pid === null ? null : { pid: who.pid, procStart: who.procStart, sessionId: who.sessionId }
+            claimText(task.claim),
+            who.pid === null ? null : claimText({ pid: who.pid, sessionId: who.sessionId })
           ]
         }
       }, who, now, options.force ? "forced take-over" : "take-over");
@@ -26173,7 +26191,7 @@ function reclaimResumed(db, who, now, isGone) {
         recordEvent(db, task, "changed", { claim: [`process ${task.claim?.pid}`, `process ${who.pid}`] }, who, now, "claim moved to the resumed session's process");
       } else if (claim === "session") {
         db.sqlite.query("UPDATE tasks SET claim_session=?,updated_at=? WHERE id=?").run(who.sessionId, now, task.id);
-        recordEvent(db, task, "changed", { claim: [task.claim?.sessionId ?? `process ${task.claim?.pid}`, who.sessionId] }, who, now, "claim follows the session id its process now runs under");
+        recordEvent(db, task, "changed", { claim: [task.claim === null ? null : claimText(task.claim), who.sessionId] }, who, now, "claim follows the session id its process now runs under");
       }
       if (createdBy) {
         db.sqlite.query("UPDATE tasks SET created_by=?,updated_at=? WHERE id=?").run(who.sessionId, now, task.id);

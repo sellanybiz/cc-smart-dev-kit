@@ -47,7 +47,7 @@ function bunTooOld(version, path) {
 
 // src/build-info/index.ts
 var info = {
-  version: "6.1.1",
+  version: "6.2.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -404,6 +404,9 @@ function userConfigFile(env, home) {
   return dir ? join3(dir, ".claude.json") : join3(home, ".claude.json");
 }
 function cliPaths(env = process.env) {
+  if (env === null || typeof env !== "object" || Array.isArray(env)) {
+    throw new TypeError(`cliPaths takes an environment object (like process.env), not ${env === null ? "null" : Array.isArray(env) ? "an array" : typeof env}`);
+  }
   const router = routerPaths(env);
   const claudeConfigDir = env.CLAUDE_CONFIG_DIR || join3(router.home, ".claude");
   return {
@@ -17715,8 +17718,19 @@ function readFinishedSessions(paths, deps) {
   }
 }
 
-// src/sessions/saved-sessions.ts
+// src/worktrees/paths.ts
 import { join as join19 } from "path";
+var WORKTREES_FOLDER_SEGMENTS = [".claude", "worktrees"];
+function worktreesFolder(repoRoot) {
+  return join19(repoRoot, ...WORKTREES_FOLDER_SEGMENTS);
+}
+function worktreePath(repoRoot, name) {
+  return join19(worktreesFolder(repoRoot), name);
+}
+var SUBAGENT_NAME_PREFIX = "agent-";
+var SUBAGENT_BRANCH_PREFIX = `worktree-${SUBAGENT_NAME_PREFIX}`;
+
+// src/sessions/saved-sessions.ts
 var PROJECT_FOLDER_NAME_MAX = 200;
 function pathHash(path) {
   let hash = 0;
@@ -17734,7 +17748,7 @@ function belongsToRepo(projectFolder, mainCheckout) {
   const main = projectFolderName(mainCheckout);
   if (projectFolder === main)
     return true;
-  const claudeOwn = `${projectFolderName(join19(mainCheckout, ".claude", "worktrees"))}-`;
+  const claudeOwn = `${projectFolderName(worktreesFolder(mainCheckout))}-`;
   return projectFolder.startsWith(claudeOwn);
 }
 function describeSession(tail, file) {
@@ -20882,7 +20896,7 @@ function runLiveCheck(paths, env, deps) {
     git(plain, "add", "README.md");
     git(plain, "commit", "-q", "-m", "first");
     const lines = proveIn("Claude Code's worktrees", plain, {
-      folder: join32(plain, ".claude", "worktrees", LIVE_NAME),
+      folder: worktreePath(plain, LIVE_NAME),
       branch: `worktree-${LIVE_NAME}`
     }, deps, env).map((line) => ({ ...line, text: `live, ${line.text}` }));
     if (lines.every((line) => line.ok)) {
@@ -33407,7 +33421,6 @@ function call(fields = {}) {
 }
 var ENV_PROGRAM = /^(?:.*[\\/])?env(?:\.(?:exe|cmd))?$/i;
 var GH_POINTING_TEXT = /GH_(?:REPO|HOST)/;
-var GH_POINTING = /^GH_(?:REPO|HOST)=/;
 var isAutoFlag = (word) => /^--auto(?:=|$)/.test(word);
 var isDisableAutoFlag = (word) => /^--disable-auto(?:=|$)/.test(word);
 function pullRequestMerges(command, aliases = null, dialect) {
@@ -33439,7 +33452,7 @@ function readMerges(command, dialect, joinLines, aliases, depth, movedBefore, fi
     const words = read.map((word) => word.text);
     const fill = fillOfStep(step, read, dialect, filledIn);
     if (words.some((word) => GH_POINTING_TEXT.test(word))) {
-      moved ??= "an earlier step in the same command sets `GH_REPO`/`GH_HOST`, so which repository gh works on is not certain";
+      moved ??= "this command sets `GH_REPO`/`GH_HOST`, so which repository gh works on is not certain";
     }
     const invocation = invocationOf(words);
     const runnerWord = RUNNERS[programName(words[0] ?? "")];
@@ -33553,9 +33566,6 @@ function gitMoved(args) {
   return null;
 }
 function prefixMoved(before) {
-  if (before.some((word) => GH_POINTING.test(word))) {
-    return "{the} sets `GH_REPO`/`GH_HOST` itself, so which repository it {acts} is not certain";
-  }
   if (before.some((word) => ENV_PROGRAM.test(word))) {
     return "{the} runs through `env`, so which environment gh sees is not certain";
   }
@@ -34281,6 +34291,26 @@ async function afterMerge(context) {
   return addContext(event, clearWorktreeNote(outcome.clear.path, outcome.clear.branch, clearsAfterMerge(context)));
 }
 
+// src/hooks/specs/after-merge.ts
+var afterMergeHook = {
+  name: "after-merge",
+  events: ["PostToolUse", "PostToolUseFailure"],
+  onConfigProblem: (message, input, event) => {
+    const command = stringField(toolInput(input).command);
+    return command !== null && mergesPullRequest(command) ? addContext(event, `cc-smart-dev-kit: ${message}`) : SILENT;
+  },
+  run: afterMerge
+};
+
+// src/hooks/specs/agent-usage.ts
+var agentUsageHook = {
+  name: "agent-usage",
+  events: ["SubagentStop"],
+  onConfigProblem: (_message, input, event, _checkout, context) => recordAgentUsage(input, event, context.paths, context.nowMs),
+  outsideGit: (input, event, _why, context) => recordAgentUsage(input, event, context.paths, context.nowMs),
+  run: ({ input, event, paths, nowMs }) => recordAgentUsage(input, event, paths, nowMs)
+};
+
 // src/tasks/context.ts
 import { realpathSync as realpathSync9 } from "fs";
 
@@ -34388,17 +34418,17 @@ async function taskContextAsync(cwd, env = process.env) {
   }
   return contextOf(checkout, cwd);
 }
-function keyOf(checkout, cwd) {
+function projectKeyOf(checkout, cwd) {
   return projectKey(checkout === null ? realpathSync9(cwd) : checkout.mainCheckout ?? checkout.root);
 }
 function folderProject(cwd, options = {}) {
-  return keyOf(locateCheckout(cwd, options), cwd);
+  return projectKeyOf(locateCheckout(cwd, options), cwd);
 }
 function contextOf(checkout, cwd) {
   if (checkout === null) {
     return {
       ok: true,
-      project: keyOf(null, cwd),
+      project: projectKeyOf(null, cwd),
       repo: null,
       checkoutRoot: null,
       projectTasks: { ok: false, why: "not in a git checkout: deploy tasks live in a repository" },
@@ -34408,7 +34438,7 @@ function contextOf(checkout, cwd) {
   const repo = checkout.mainCheckout ?? checkout.root;
   const base = {
     ok: true,
-    project: keyOf(checkout, cwd),
+    project: projectKeyOf(checkout, cwd),
     repo,
     checkoutRoot: checkout.root
   };
@@ -34435,6 +34465,14 @@ function contextOf(checkout, cwd) {
 
 // src/tasks/work/read.ts
 import { existsSync as existsSync53 } from "fs";
+
+// src/tasks/work/types.ts
+var SUBJECT_LIMIT = 200;
+var DESCRIPTION_LIMIT = 200000;
+var NOTE_LIMIT = 64000;
+function claimText2(claim) {
+  return claim.sessionId ?? `process ${claim.pid}`;
+}
 
 // src/tasks/work/history.ts
 var FIELDS = [
@@ -34470,9 +34508,17 @@ function actor(event) {
     parts.push(`the kit (${event.reason})`);
   return parts.length > 0 ? parts.join(", ") : "a caller outside any Claude session";
 }
+function isClaimObject(value) {
+  if (typeof value !== "object" || value === null || Array.isArray(value))
+    return false;
+  const { pid, sessionId } = value;
+  return typeof pid === "number" && (sessionId === null || typeof sessionId === "string");
+}
 function shown2(key, value) {
   if (value === null || value === undefined || value === "")
     return "none";
+  if (key === "claim" && isClaimObject(value))
+    return claimText2(value);
   if (Array.isArray(value))
     return value.length > 0 ? value.join(", ") : "none";
   if (key === "subject" || key === "note")
@@ -34820,11 +34866,18 @@ function cappedHookList(items, render, command, separator = ", ") {
 }
 
 // src/hooks/subagent-worktree.ts
+var FOLDER_PATTERN = WORKTREES_FOLDER_SEGMENTS.map((segment) => segment.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join(String.raw`[\\/]`);
+function subagentWorktreeMatching(cwd, idPattern) {
+  const found = new RegExp(String.raw`^(.*[\\/]${FOLDER_PATTERN}[\\/]${SUBAGENT_NAME_PREFIX}${idPattern})(?:[\\/]|$)`).exec(cwd);
+  return found?.[1] ?? null;
+}
 function subagentWorktreeOf(cwd, agentId) {
   if (agentId === null || !/^[0-9a-f]+$/.test(agentId))
     return null;
-  const found = new RegExp(String.raw`^(.*[\\/]\.claude[\\/]worktrees[\\/]agent-${agentId})(?:[\\/]|$)`).exec(cwd);
-  return found?.[1] ?? null;
+  return subagentWorktreeMatching(cwd, agentId);
+}
+function subagentWorktreeByShape(cwd) {
+  return subagentWorktreeMatching(cwd, "[0-9a-f]+");
 }
 
 // src/hooks/transcript.ts
@@ -35188,7 +35241,7 @@ function said2(why) {
 function inSubagentWorktree(cwd, agentId) {
   if (subagentWorktreeOf(cwd, agentId) !== null)
     return true;
-  return /[\\/]\.claude[\\/]worktrees[\\/]agent-[0-9a-f]+(?:[\\/]|$)/.test(cwd);
+  return subagentWorktreeByShape(cwd) !== null;
 }
 async function reviewRecord(context) {
   const { project, input, event, env, cwd, paths } = context;
@@ -35289,6 +35342,14 @@ function builderFinishAnswer(input, event, project, paths) {
     stdout: JSON.stringify({ decision: "block", reason: handBackReason(task, read.value.open) })
   };
 }
+
+// src/hooks/specs/builder-finish.ts
+var builderFinishHook = {
+  name: "builder-finish",
+  events: ["SubagentStop"],
+  onConfigProblem: (_message, input, event, checkout, context) => builderFinishAnswer(input, event, checkout, context.paths),
+  run: builderFinish
+};
 
 // src/hooks/fable-session.ts
 import { createHash as createHash9 } from "crypto";
@@ -35580,6 +35641,15 @@ function fableSession(input, env, paths) {
   firstTime(judged);
   return said;
 }
+
+// src/hooks/specs/fable-session.ts
+var fableSessionHook = {
+  name: "fable-session",
+  events: ["SessionStart", "PostModelSwitch", "Stop"],
+  onConfigProblem: (_message, input, _event, _checkout, context) => fableSession(input, context.env, context.paths),
+  outsideGit: (input, _event, _why, context) => fableSession(input, context.env, context.paths),
+  run: ({ input, env, paths }) => fableSession(input, env, paths)
+};
 
 // src/hooks/job-route.ts
 import { existsSync as existsSync57 } from "fs";
@@ -36027,6 +36097,24 @@ function routeFacts(input) {
   return { weight: runWeight(command, mergeKinds(undefined), source).weight };
 }
 
+// src/hooks/specs/job-route.ts
+var jobRouteHook = {
+  name: "job-route",
+  events: ["PreToolUse"],
+  alwaysOn: true,
+  onConfigProblem: (_message, input, event, checkout, context) => jobRoute({
+    input,
+    event,
+    cwd: stringField(input.cwd) ?? checkout.root,
+    project: { ...checkout, config: null, configFile: null },
+    env: context.env,
+    paths: context.paths,
+    nowMs: context.nowMs
+  }),
+  logFacts: routeFacts,
+  run: jobRoute
+};
+
 // src/tasks/work/lead-plans.ts
 function reservedState(plan, owns, process2) {
   if (owns(plan))
@@ -36226,6 +36314,33 @@ function keepGoing(context) {
   return keepGoingAnswer(context.input, context.project, context.paths, context.env);
 }
 
+// src/hooks/specs/keep-going.ts
+var keepGoingHook = {
+  name: KEEP_GOING,
+  events: ["Stop"],
+  onConfigProblem: (_message, input, event, checkout, context) => event === "Stop" ? keepGoingAnswer(input, checkout, context.paths, context.env) : SILENT,
+  run: keepGoing
+};
+
+// src/hooks/specs/review-record.ts
+var reviewRecordHook = {
+  name: "review-record",
+  events: ["SubagentStart", "SubagentStop"],
+  onConfigProblem: (message, input, event) => {
+    const agent = agentTypeOf(input);
+    return event === "SubagentStop" && agent !== null && recordsReview(agent, workflowDefaults.reviewAgents) ? { stderr: `cc-smart-dev-kit review-record: ${message}` } : SILENT;
+  },
+  run: reviewRecord
+};
+
+// src/hooks/specs/session-name.ts
+var sessionNameHook = {
+  name: "session-name",
+  events: ["SessionStart", "UserPromptSubmit"],
+  onConfigProblem: (message) => ({ stderr: `cc-smart-dev-kit session-name: ${message}` }),
+  run: sessionName
+};
+
 // src/hooks/subagent-background.ts
 import { readFileSync as readFileSync66 } from "fs";
 var HAND_BACK_REASON = "Your background work is still running: wait for it or stop it, then report.";
@@ -36332,6 +36447,16 @@ function subagentBackground(context) {
   return startedByAgent(text, ids) ? { stdout: JSON.stringify({ decision: "block", reason: HAND_BACK_REASON }) } : SILENT;
 }
 
+// src/hooks/specs/subagent-background.ts
+var subagentBackgroundHook = {
+  name: "subagent-background",
+  events: ["SubagentStop"],
+  onConfigProblem: (message) => ({
+    stderr: `cc-smart-dev-kit subagent-background: ${message}`
+  }),
+  run: subagentBackground
+};
+
 // src/hooks/task-start.ts
 var START_TASK_LIMIT = 8;
 var plural2 = (count, one, many) => `${count} ${count === 1 ? one : many}`;
@@ -36415,6 +36540,15 @@ function taskStart(input, paths, env, now = Date.now) {
   return notes.length === 0 ? result : { ...result, stderr: `${COMMAND} task-start: ${notes.join("; ").replace(/\s*\n\s*/g, " ")}` };
 }
 
+// src/hooks/specs/task-start.ts
+var taskStartHook = {
+  name: "task-start",
+  events: ["SessionStart"],
+  onConfigProblem: (_message, input, _event, _checkout, context) => taskStart(input, context.paths, context.env),
+  outsideGit: (input, _event, _why, context) => taskStart(input, context.paths, context.env),
+  run: ({ input, paths, env }) => taskStart(input, paths, env)
+};
+
 // src/hooks/tier-view.ts
 import { existsSync as existsSync58, mkdirSync as mkdirSync23, readFileSync as readFileSync67, writeFileSync as writeFileSync11 } from "fs";
 import { dirname as dirname26, join as join65 } from "path";
@@ -36497,6 +36631,36 @@ function tierView(input, env, paths, nowMs = Date.now()) {
   if (mark === null || !isSessionId2(sessionId))
     return SILENT;
   return lastSaid2(mark) !== note && keep(mark, note) ? addContext(event, note) : SILENT;
+}
+
+// src/hooks/specs/tier-view.ts
+var tierViewHook = {
+  name: "tier-view",
+  events: ["SessionStart", "UserPromptSubmit"],
+  onConfigProblem: (_message, input, _event, _checkout, context) => tierView(input, context.env, context.paths),
+  outsideGit: (input, _event, _why, context) => tierView(input, context.env, context.paths),
+  run: ({ input, env, paths }) => tierView(input, env, paths)
+};
+
+// src/hooks/guard-crash.ts
+function cannotCheck(what, message) {
+  return `cc-smart-dev-kit cannot check ${what}: ${message}`;
+}
+function guardCrash(what, inDomain) {
+  return (why, input, event) => {
+    if (event !== "" && event !== "PreToolUse")
+      return SILENT;
+    if (input !== null && !judgesCall(inDomain, input))
+      return SILENT;
+    return toolDecision("ask", cannotCheck(what, why));
+  };
+}
+function judgesCall(inDomain, input) {
+  try {
+    return inDomain(input);
+  } catch {
+    return true;
+  }
 }
 
 // src/user-away/state.ts
@@ -36876,6 +37040,17 @@ async function userAwayAnswer(input, event, env, paths, nowMs, options = {}) {
   }
 }
 
+// src/hooks/specs/user-away.ts
+var userAwayHook = {
+  name: "user-away",
+  events: ["PreToolUse", "UserPromptSubmit", "Stop"],
+  alwaysOn: true,
+  onConfigProblem: (_message, input, event, _checkout, context) => userAwayAnswer(input, event, context.env, context.paths, context.nowMs),
+  outsideGit: (input, event, _why, context) => userAwayAnswer(input, event, context.env, context.paths, context.nowMs),
+  onCrash: (why, input, event, context) => event === "UserPromptSubmit" || event === "Stop" ? { stderr: `cc-smart-dev-kit user-away: ${why}` } : guardCrash("whether the person is available", inAwayDomain)(why, input, event, context),
+  run: ({ input, event, env, paths, nowMs }) => userAwayAnswer(input, event, env, paths, nowMs)
+};
+
 // src/hooks/verify-gate.ts
 import { extname, isAbsolute as isAbsolute5, resolve as resolve15 } from "path";
 
@@ -37069,6 +37244,14 @@ function verifyGate(context) {
   return { stdout: JSON.stringify({ decision: "block", reason: verifyGateReason(check) }) };
 }
 
+// src/hooks/specs/verify-gate.ts
+var verifyGateHook = {
+  name: "verify-gate",
+  events: ["Stop"],
+  onConfigProblem: (message) => ({ stderr: `cc-smart-dev-kit verify-gate: ${message}` }),
+  run: verifyGate
+};
+
 // src/hooks/worktree-leftovers.ts
 import { closeSync as closeSync10, existsSync as existsSync60, fstatSync as fstatSync2, openSync as openSync10, readSync as readSync6, statSync as statSync21 } from "fs";
 import { basename as basename14, join as join69, resolve as resolve16 } from "path";
@@ -37092,6 +37275,7 @@ var REBUILDABLE = [
   /\.(?:tsbuildinfo|pyc|pyo)$/,
   /(?:^|\/)\.DS_Store$/,
   /(?:^|\/)Thumbs\.db$/,
+  /(?:^|\/)next-env\.d\.ts$/,
   /(?:^|\/)(?:npm-debug|yarn-debug|yarn-error|pnpm-debug|lerna-debug)\.log/,
   /(?:^|\/)logs\/$/,
   /\.log$/
@@ -37407,135 +37591,14 @@ function worktreeLeftovers(context) {
   return answer(leftoversNote(base, finished, gone, new Map(kept.map((one) => [one.path, one.why]))));
 }
 
-// src/hooks/specs.ts
-function cannotCheck(what, message) {
-  return `cc-smart-dev-kit cannot check ${what}: ${message}`;
-}
-function guardCrash(what, inDomain) {
-  return (why, input, event) => {
-    if (event !== "" && event !== "PreToolUse")
-      return SILENT;
-    if (input !== null && !judgesCall(inDomain, input))
-      return SILENT;
-    return toolDecision("ask", cannotCheck(what, why));
-  };
-}
-function judgesCall(inDomain, input) {
-  try {
-    return inDomain(input);
-  } catch {
-    return true;
-  }
-}
-var afterMergeHook = {
-  name: "after-merge",
-  events: ["PostToolUse", "PostToolUseFailure"],
-  onConfigProblem: (message, input, event) => {
-    const command = stringField(toolInput(input).command);
-    return command !== null && mergesPullRequest(command) ? addContext(event, `cc-smart-dev-kit: ${message}`) : SILENT;
-  },
-  run: afterMerge
-};
-var reviewRecordHook = {
-  name: "review-record",
-  events: ["SubagentStart", "SubagentStop"],
-  onConfigProblem: (message, input, event) => {
-    const agent = agentTypeOf(input);
-    return event === "SubagentStop" && agent !== null && recordsReview(agent, workflowDefaults.reviewAgents) ? { stderr: `cc-smart-dev-kit review-record: ${message}` } : SILENT;
-  },
-  run: reviewRecord
-};
-var subagentBackgroundHook = {
-  name: "subagent-background",
-  events: ["SubagentStop"],
-  onConfigProblem: (message) => ({
-    stderr: `cc-smart-dev-kit subagent-background: ${message}`
-  }),
-  run: subagentBackground
-};
-var builderFinishHook = {
-  name: "builder-finish",
-  events: ["SubagentStop"],
-  onConfigProblem: (_message, input, event, checkout, context) => builderFinishAnswer(input, event, checkout, context.paths),
-  run: builderFinish
-};
-var verifyGateHook = {
-  name: "verify-gate",
-  events: ["Stop"],
-  onConfigProblem: (message) => ({ stderr: `cc-smart-dev-kit verify-gate: ${message}` }),
-  run: verifyGate
-};
-var keepGoingHook = {
-  name: KEEP_GOING,
-  events: ["Stop"],
-  onConfigProblem: (_message, input, event, checkout, context) => event === "Stop" ? keepGoingAnswer(input, checkout, context.paths, context.env) : SILENT,
-  run: keepGoing
-};
-var agentUsageHook = {
-  name: "agent-usage",
-  events: ["SubagentStop"],
-  onConfigProblem: (_message, input, event, _checkout, context) => recordAgentUsage(input, event, context.paths, context.nowMs),
-  outsideGit: (input, event, _why, context) => recordAgentUsage(input, event, context.paths, context.nowMs),
-  run: ({ input, event, paths, nowMs }) => recordAgentUsage(input, event, paths, nowMs)
-};
+// src/hooks/specs/worktree-leftovers.ts
 var worktreeLeftoversHook = {
   name: "worktree-leftovers",
   events: ["SessionStart"],
   onConfigProblem: (message, _input, event) => addContext(event, `cc-smart-dev-kit: ${message}`),
   run: worktreeLeftovers
 };
-var sessionNameHook = {
-  name: "session-name",
-  events: ["SessionStart", "UserPromptSubmit"],
-  onConfigProblem: (message) => ({ stderr: `cc-smart-dev-kit session-name: ${message}` }),
-  run: sessionName
-};
-var userAwayHook = {
-  name: "user-away",
-  events: ["PreToolUse", "UserPromptSubmit", "Stop"],
-  alwaysOn: true,
-  onConfigProblem: (_message, input, event, _checkout, context) => userAwayAnswer(input, event, context.env, context.paths, context.nowMs),
-  outsideGit: (input, event, _why, context) => userAwayAnswer(input, event, context.env, context.paths, context.nowMs),
-  onCrash: (why, input, event, context) => event === "UserPromptSubmit" || event === "Stop" ? { stderr: `cc-smart-dev-kit user-away: ${why}` } : guardCrash("whether the person is available", inAwayDomain)(why, input, event, context),
-  run: ({ input, event, env, paths, nowMs }) => userAwayAnswer(input, event, env, paths, nowMs)
-};
-var fableSessionHook = {
-  name: "fable-session",
-  events: ["SessionStart", "PostModelSwitch", "Stop"],
-  onConfigProblem: (_message, input, _event, _checkout, context) => fableSession(input, context.env, context.paths),
-  outsideGit: (input, _event, _why, context) => fableSession(input, context.env, context.paths),
-  run: ({ input, env, paths }) => fableSession(input, env, paths)
-};
-var tierViewHook = {
-  name: "tier-view",
-  events: ["SessionStart", "UserPromptSubmit"],
-  onConfigProblem: (_message, input, _event, _checkout, context) => tierView(input, context.env, context.paths),
-  outsideGit: (input, _event, _why, context) => tierView(input, context.env, context.paths),
-  run: ({ input, env, paths }) => tierView(input, env, paths)
-};
-var jobRouteHook = {
-  name: "job-route",
-  events: ["PreToolUse"],
-  alwaysOn: true,
-  onConfigProblem: (_message, input, event, checkout, context) => jobRoute({
-    input,
-    event,
-    cwd: stringField(input.cwd) ?? checkout.root,
-    project: { ...checkout, config: null, configFile: null },
-    env: context.env,
-    paths: context.paths,
-    nowMs: context.nowMs
-  }),
-  logFacts: routeFacts,
-  run: jobRoute
-};
-var taskStartHook = {
-  name: "task-start",
-  events: ["SessionStart"],
-  onConfigProblem: (_message, input, _event, _checkout, context) => taskStart(input, context.paths, context.env),
-  outsideGit: (input, _event, _why, context) => taskStart(input, context.paths, context.env),
-  run: ({ input, paths, env }) => taskStart(input, paths, env)
-};
+// src/hooks/specs.ts
 var HOOKS = [
   taskStartHook,
   fableSessionHook,
@@ -40701,13 +40764,6 @@ import { join as join76, relative as relative9 } from "path";
 
 // src/tasks/schemas.ts
 import { isAbsolute as isAbsolute7 } from "path";
-
-// src/tasks/work/types.ts
-var SUBJECT_LIMIT = 200;
-var DESCRIPTION_LIMIT = 200000;
-var NOTE_LIMIT = 64000;
-
-// src/tasks/schemas.ts
 var fields = deployTaskSchema.shape;
 var subject = string2().trim().min(1).max(SUBJECT_LIMIT);
 var description = string2().max(DESCRIPTION_LIMIT);
@@ -40947,7 +41003,7 @@ function shape(db, task) {
     branch: task.branch,
     worktree: task.worktree,
     base: task.base,
-    claim: task.claim === null ? null : task.claim.sessionId ?? `process ${task.claim.pid}`,
+    claim: task.claim === null ? null : claimText2(task.claim),
     waitsFor: task.waitsFor.map(numberOf).sort(),
     files: task.files,
     lead: task.lead === null ? null : `${task.lead.sessionId ?? `process ${task.lead.pid}`} (${task.lead.holder})`
@@ -41321,8 +41377,8 @@ function takeTasks(db, project, id, who, now, options) {
         ],
         ...task.claim === null ? {} : {
           claim: [
-            task.claim,
-            who.pid === null ? null : { pid: who.pid, procStart: who.procStart, sessionId: who.sessionId }
+            claimText2(task.claim),
+            who.pid === null ? null : claimText2({ pid: who.pid, sessionId: who.sessionId })
           ]
         }
       }, who, now, options.force ? "forced take-over" : "take-over");
@@ -41393,7 +41449,7 @@ function reclaimResumed(db, who, now, isGone) {
         recordEvent(db, task, "changed", { claim: [`process ${task.claim?.pid}`, `process ${who.pid}`] }, who, now, "claim moved to the resumed session's process");
       } else if (claim === "session") {
         db.sqlite.query("UPDATE tasks SET claim_session=?,updated_at=? WHERE id=?").run(who.sessionId, now, task.id);
-        recordEvent(db, task, "changed", { claim: [task.claim?.sessionId ?? `process ${task.claim?.pid}`, who.sessionId] }, who, now, "claim follows the session id its process now runs under");
+        recordEvent(db, task, "changed", { claim: [task.claim === null ? null : claimText2(task.claim), who.sessionId] }, who, now, "claim follows the session id its process now runs under");
       }
       if (createdBy) {
         db.sqlite.query("UPDATE tasks SET created_by=?,updated_at=? WHERE id=?").run(who.sessionId, now, task.id);
