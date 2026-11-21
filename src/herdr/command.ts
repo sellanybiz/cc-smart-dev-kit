@@ -9,6 +9,7 @@ import { type ListedWorktree, parseWorktreeList, runGit } from "../hooks/git";
 import { locateCheckout } from "../project/resolve";
 import { taskContext } from "../tasks/context";
 import { createTaskOps } from "../tasks/ops";
+import { branchTip } from "../tasks/stack-proof";
 import { openWorkDb, workDbFile } from "../tasks/work/db";
 import { CLAIM_PROCESS, callerOf } from "../tasks/work/identity";
 import { getTask, heldPlans, isOpen, planByRef } from "../tasks/work/queries";
@@ -938,6 +939,8 @@ async function startChild(
   // A plan child builds one plan and never coordinates (D1): its own terminal carries `kit.plan`.
   let planWorld: PlansWorld | null = null;
   let slug: string | null = null;
+  /** Where a stacked plan starts when the lead gives no --base: its parent's branch. */
+  let stackBase: StartBase | null = null;
   if (a.plan) {
     if (!me || !caller.ok || project.project !== caller.project || project.repo === null)
       return refuse(
@@ -953,6 +956,31 @@ async function startChild(
     const row = planByRef(opened.world.db, opened.world.project, a.plan);
     if (row === null) return refuse(ctx, `Plan "${a.plan}" was not found in this project.`);
     slug = row.plan ?? a.plan;
+    // A stacked plan's first start builds on its parent: with no --base, the child starts on the
+    // parent's recorded branch, never on the default branch (a reserved plan resumes or relaunches).
+    if (
+      a.base === undefined &&
+      row.kind === "plan" &&
+      row.stackedOn !== null &&
+      row.lead === null
+    ) {
+      const parent = planByRef(opened.world.db, opened.world.project, row.stackedOn);
+      const branch = parent?.kind === "plan" ? parent.branch : null;
+      if (branch === null)
+        return refuse(
+          ctx,
+          `Plan "${slug}" is stacked on "${row.stackedOn}", which has no branch recorded, so its start cannot be found.`,
+          `give --base <${row.stackedOn}'s branch>`,
+        );
+      const commit = branchTip((args) => runGit(cwd, args, ctx.env), branch);
+      if (commit === null)
+        return refuse(
+          ctx,
+          `Plan "${slug}" is stacked on "${row.stackedOn}", whose branch ${branch} is not in this repository.`,
+          `fetch it, or give --base <${row.stackedOn}'s branch>`,
+        );
+      stackBase = { ref: branch, commit };
+    }
   }
   if (a.on) {
     if (!a.asked && machineRule(readMachines(ctx.paths.machinesFile), a.on) !== "free")
@@ -1021,7 +1049,7 @@ async function startChild(
   // `--base` names a commit now, before anything is reserved: a wrong ref costs nothing. It reads
   // in the lead's own folder, never the main checkout (`gitRoot`): HEAD, HEAD~2 and @{-1} are the
   // lead's, and a linked worktree's HEAD is not the main checkout's.
-  let base: StartBase | null = null;
+  let base: StartBase | null = stackBase;
   if (a.base !== undefined) {
     if (gitRoot === null) return refuse(ctx, "--base needs a git project.");
     const commit = resolveBase(ctx, r, a.on, cwd, a.base);
@@ -1036,7 +1064,8 @@ async function startChild(
   // The gates, the diffs and the reservation (D6): after every cheap refusal above, before the launch.
   let handout: Extract<PlanStart, { ok: true }> | null = null;
   if (planWorld !== null && slug !== null) {
-    const prepared = prepareStart(planWorld, slug);
+    // A stacked plan's stack counts only when the commit it starts on holds its parent's work.
+    const prepared = prepareStart(planWorld, slug, base?.commit);
     if (!prepared.ok) return refuse(ctx, prepared.why, prepared.fix);
     handout = prepared;
     if (prepared.reserved)

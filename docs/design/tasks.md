@@ -434,13 +434,30 @@ slug; `task_create` and `task_update`, CLI `--stacked-on`, `--no-stack` clears i
 judgment (`reservePlan`, `refuseHeldOverlap`, `refuseFlightOverlap`, and `herdr plans`' lines and
 drift) first takes the held plans through `rivalsOf`, which drops the plan itself and its stacked
 pair (`isStackedPair`): the plan it is stacked on, or one stacked on it, while that parent holds
-its files: open (pending or in progress), or done and still reserved until its pull request merges
-(a plan built on its parent's branch shares those files by construction, so judging the pair then
-would only refuse the plan the stack exists for). Only that
+its files (`parentHolds`): open (pending or in progress), or done and still reserved until its pull
+request merges (a plan built on its parent's branch shares those files by construction, so judging
+the pair then would only refuse the plan the stack exists for). Only that
 one plan is skipped: a plan stacked on a stacked plan still meets the first parent, and every other
 plan blocks as before. Once the parent is released (its pull request merged or closed, or the plan
-dropped, which releases it) it holds nothing, so the stack ends with it. The store
-refuses a stack on a task that is not a plan, on itself, on a slug with no plan, and one that
+dropped, which releases it) it holds nothing, so the stack ends with it.
+
+A stack lifts a check, so it is never taken on a session's word alone (6.3.0 fix). **Same lead:**
+the store refuses a stack unless the caller leads both plans (`leadsPlan`: it holds the plan's
+reservation, `isLead`, or owns its task, `ownerOf`). The reservation counts because a plan handed to
+a child becomes the child's task once the child takes it, while the lead stays in its `lead_*`
+columns; the lead stacks its next plan on its own held plan. Clearing a stack only adds checks, so
+anyone may. **Proved:** a pair counts only when the stacked plan's start holds its parent's work
+(`provedStacks`, `src/tasks/stack-proof.ts`), read from git before the write lock the way
+`planFilesCheck` is, and passed in as `FilesCheck.stacked` (the task tools, for a held plan's new
+list or stack and for a start into flight) or `ReservePlan.stacked` (`herdr start --plan` and
+`plans --reserve`). The start is the commit a `herdr start` resets the child to, else the plan's
+recorded `base`. It holds the parent's work when the parent records its `branch` and `base`, its
+branch has a commit past that base, and either the branch tip is an ancestor of the start (`git
+merge-base --is-ancestor`), or the start is a commit of the parent's own first-parent line from its
+base (so a parent that keeps building after the stacked plan started does not undo the proof). A
+parent with no branch, no base or no work, a start that is unknown, and git that cannot answer all
+leave the pair as rivals: it fails closed. The store refuses a stack on a task that is not a plan,
+on itself, on a slug with no plan, on a plan the caller does not lead, and one that
 closes a loop. Setting or clearing a stack on a held plan is judged like a new list, so clearing it
 while the two held plans share files is refused. A plan another plan is stacked on is not deleted
 until that stack is cleared, so a new plan made under the same slug never inherits it. The column

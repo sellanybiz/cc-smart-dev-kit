@@ -92,7 +92,10 @@ function build() {
     );
   const change = (task: WorkTask, to: Parameters<typeof updateTask>[2]) =>
     ok(updateTask(db, task.id, to, LEAD, 50));
-  const reserve = (slug: string, over: { files?: Record<string, string[]> } = {}) =>
+  const reserve = (
+    slug: string,
+    over: { files?: Record<string, string[]>; stacked?: string[] } = {},
+  ) =>
     ok(
       reservePlan(db, {
         project: "p",
@@ -102,6 +105,7 @@ function build() {
         ignore: [],
         caseFold: false,
         extraFiles: over.files ?? {},
+        ...(over.stacked === undefined ? {} : { stacked: over.stacked }),
         now: 10,
       }),
     );
@@ -980,27 +984,56 @@ test("a held plan with a file list, or a branch diff, still allows a disjoint ha
   expect(prepareStart(w.base, "beta").ok).toBe(true);
 });
 
-test("a stacked plan is ready beside its held parent, says what it is stacked on, and drift skips the pair", () => {
+test("a stacked plan is ready beside its held parent once it starts on its work, says what it is stacked on, and drift skips the pair", () => {
   const w = build();
-  w.plan("alpha", ["src/a/"]);
+  const base = w.git("rev-parse", "HEAD");
+  w.branch("alpha-branch", { "src/a/one.ts": "1\n" });
+  const tip = w.git("rev-parse", "alpha-branch");
+  const alpha = w.plan("alpha", ["src/a/"]);
+  w.change(alpha, { branch: "alpha-branch", base });
   w.reserve("alpha");
   const beta = w.change(w.plan("beta", ["src/a/x.ts"]), { stackedOn: "alpha" });
   w.plan("gamma", ["src/a/y.ts"]);
-  const line = w.line("beta");
-  expect([line.state, line.stackedOn]).toEqual(["ready", "alpha"]);
+  // No start yet and no base recorded: nothing proves beta is built on alpha, so alpha is a rival.
+  const unproved = w.line("beta");
+  expect([unproved.state, unproved.text, unproved.fix]).toEqual([
+    "overlaps",
+    "overlaps #1 alpha: src/a/x.ts",
+    "the stack on alpha counts only when this plan starts on alpha's work: cc-smart-dev-kit herdr start --plan beta starts it on alpha-branch when --base is left out; a plan built here records a base that holds alpha-branch (task_update #2 with base)",
+  ]);
+  // A start on alpha's tip proves it; a start on the default branch does not.
+  const started = (start: string) =>
+    judgePlans(w.base, "beta", start).lines.find((one) => one.plan === "beta");
+  const line = started(tip);
+  expect([line?.state, line?.stackedOn]).toEqual(["ready", "alpha"]);
+  expect(started(base)?.state).toBe("overlaps");
+  expect(prepareStart(w.base, "beta", base).ok).toBe(false);
   expect(w.line("gamma").text).toBe("overlaps #1 alpha: src/a/y.ts");
   // The stacked plan's branch holds its parent's work: that is no drift against the parent.
-  w.reserve("beta");
-  w.branch("beta-branch", { "src/a/x.ts": "x\n", "src/a/z.ts": "z\n" });
-  w.change(beta, { branch: "beta-branch" });
+  w.reserve("beta", { stacked: [beta.id] });
+  git(w.repo, "checkout", "-q", "-b", "beta-branch", "alpha-branch");
+  writeFileSync(join(w.repo, "src/a/x.ts"), "x\n");
+  writeFileSync(join(w.repo, "src/a/z.ts"), "z\n");
+  git(w.repo, "add", "-A");
+  git(w.repo, "commit", "-q", "-m", "work on beta");
+  git(w.repo, "checkout", "-q", "main");
+  w.change(beta, { branch: "beta-branch", base: tip });
   expect(w.line("beta").drift).toEqual([]);
+  // A parent with no branch recorded proves no stack, and the fix says so.
+  const parentless = build();
+  parentless.plan("alpha", ["src/a/"]);
+  parentless.reserve("alpha");
+  parentless.change(parentless.plan("beta", ["src/a/x.ts"]), { stackedOn: "alpha" });
+  expect(parentless.line("beta").fix).toBe(
+    "the stack on alpha counts only once alpha records its branch and base: task_update #1 with branch and base",
+  );
   // The stack is shown on the line the command prints.
   const shown: string[] = [];
   const out = createOut(
     { color: false, unicode: true, width: 200, rich: false },
     { line: (text) => shown.push(text), raw: (text) => shown.push(text) },
   );
-  showPlanLines(out, [line]);
+  showPlanLines(out, line === undefined ? [] : [line]);
   expect(shown).toEqual([
     "✓ #2 beta (stacked on alpha): ready: nothing blocks it and no held plan shares its files",
   ]);

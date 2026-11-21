@@ -27,7 +27,7 @@ Task fields and the CLI fallback belong to `/cc-smart-dev-kit:tasks`.
 
 Work on the plan branch in its worktree. Read `cc-smart-dev-kit workflow show` before git
 side effects. Record the plan's starting commit (`base`) and its `branch` on its task, in every mode: `herdr plans` judges a
-blocker's merge and a held plan's files from them. Check each phase's files,
+blocker's merge and a held plan's files from them, and a stacked plan's proof (`/cc-smart-dev-kit:plan-task` § 5). Check each phase's files,
 contracts and blockers. Set `blocked_by` only for a real dependency or a shared file;
 disjoint phases run together. Noted work that holds nothing is `non-blocking`, and a
 follow-up inside the plan is a task in it, never a blocker (one outside it: `/cc-smart-dev-kit:tasks` § 1). Batch small same-shape edits into one phase
