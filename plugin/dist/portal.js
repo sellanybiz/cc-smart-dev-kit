@@ -37255,8 +37255,12 @@ function limitFromEnv(value, fallback) {
 function routedTimeoutMs(env) {
   return Math.max(limitFromEnv(env.BASH_MAX_TIMEOUT_MS, DEFAULT_BASH_MAX_TIMEOUT_MS), limitFromEnv(env.BASH_DEFAULT_TIMEOUT_MS, DEFAULT_BASH_TIMEOUT_MS));
 }
+function timeoutGiven(fields, timeoutMs) {
+  return timeoutMs !== null && fields.timeout === undefined && fields.run_in_background !== true ? timeoutMs : null;
+}
 function rewriteAnswer(fields, command, timeoutMs = null) {
-  const timeout = timeoutMs !== null && fields.timeout === undefined && fields.run_in_background !== true ? { timeout: timeoutMs } : {};
+  const given = timeoutGiven(fields, timeoutMs);
+  const timeout = given === null ? {} : { timeout: given };
   return {
     stdout: JSON.stringify({
       hookSpecificOutput: {
@@ -37331,13 +37335,19 @@ function mixedLineDenial(command, kinds, source) {
   ].join(`
 `));
 }
-function routeDenial(routed) {
+function routeDenial(routed, timeoutMs = null) {
   return toolDecision("deny", [
     `This is a heavy command (${routed.kind}): running it raw does not wait for a free slot, and many heavy runs at once have run machines out of memory.`,
     "Run it through the queue instead:",
-    routed.command
+    routed.command,
+    ...timeoutMs === null ? [] : [
+      `Give that call a timeout of ${timeoutMs} ms (the Bash tool's longest): it may wait for a free slot.`
+    ]
   ].join(`
 `));
+}
+function isAutoMode(input) {
+  return input.permission_mode === "auto";
 }
 function commandOf(input) {
   return stringField(toolInput(input).command);
@@ -37368,9 +37378,10 @@ function jobRoute(context, personal, bashTool = bashToolExists, platform = proce
   }
   if (routed === null)
     return SILENT;
-  if (!REWRITE_SUPPORTED)
-    return routeDenial(routed);
   const timeoutMs = REWRITE_TIMEOUT_SUPPORTED ? routedTimeoutMs(context.env) : null;
+  if (!REWRITE_SUPPORTED || isAutoMode(context.input)) {
+    return routeDenial(routed, timeoutGiven(fields, timeoutMs));
+  }
   return rewriteAnswer(fields, routed.command, timeoutMs);
 }
 async function jobRouteAnswer(context) {
