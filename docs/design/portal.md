@@ -422,7 +422,7 @@ or under `next dev` (and then the header says "Mock data"). The live client fetc
 `GET /api/…` on the same origin and nothing else; each answer goes through `adapt.ts`, the one
 translation into the shape its page draws. A fact the machine cannot give is `null` there and
 the page says it does not know (a version `claude --version` did not name, a project with no
-session record, the plan's 7-day windows): never a value made up to fill a field.
+session record, a usage window the status line has not recorded): never a value made up to fill a field.
 
 **The API types have one mirror** (`portal/src/api/wire.ts`): every type
 `src/portal/api/types.ts` exports, by the same name, written out because the server's file
@@ -573,9 +573,10 @@ API's builders (`src/portal/api/data.ts`, `work.ts`), never a second reader:
   and says "Works only with the gateway on", from the existing `switches.gateway` fact.
   It runs only `gateway slot judge custom|claude`, never `gateway on|off`: changing the judge
   leaves `ANTHROPIC_BASE_URL` and the gateway state alone. The combined opus/fable switch is
-  gone; each model slot keeps its own switch on Slots. The plan's 5-hour window as the status line recorded it
-  (`src/cli/usage-window.ts`, null for a window that is over). The file holds the 7-day window
-  too since 2.2.0, but no page shows it yet, so the page says there is none. Counting Claude's replies from the transcripts was the other
+  gone; each model slot keeps its own switch on Slots. The plan's 5-hour and 7-day windows as the status line recorded
+  them (`src/cli/usage-window.ts`, read once by `planWindows`), one row each in one card, so the
+  five-column grid keeps its shape; a window the file does not hold (a status line before 2.2.0
+  wrote the 5-hour one alone), or one that is over, has no row. Counting Claude's replies from the transcripts was the other
   choice: it was not taken, because a busy machine writes gigabytes of them a week, and a page
   read must never block the server. **The request rate comes from the history database**, not
   the router's own list (`requestsSince`): that list is capped at 200 entries and holds Claude
@@ -816,12 +817,12 @@ reports it as one failed check — rather than reading a path that is gone.
 
 Two numbers the design's mockups show are not invented, and the pages say so instead:
 
-- **Claude Code's plan-usage percentages, but the 5-hour window's.** Claude Code computes them
-  from the headers of its own answers and hands them to the status line on stdin
+- **Claude Code's plan-usage percentages, beyond the status line's last reading.** Claude Code
+  computes them from the headers of its own answers and hands them to the status line on stdin
   (`src/cli/statusline.ts`), which writes down the 5-hour and (since 2.2.0) the 7-day window
-  (`<stateDir>/usage-window.json`, D54; the Overview above shows the 5-hour one). No page shows
-  the 7-day one yet, and the plan's other windows are stored nowhere; the router records only
-  the limits it saw — which model, which window, when it resets.
+  (`<stateDir>/usage-window.json`, D54; the Overview above shows both). Nothing else of the
+  plan's usage is stored; the router records only the limits it saw — which model, which
+  window, when it resets.
 - **OmniRoute's prices and image support.** They are in OmniRoute's own catalog, which the
   gateway never reads: `/v1/models` carries an id and a context length, and that is all the
   model table shows.

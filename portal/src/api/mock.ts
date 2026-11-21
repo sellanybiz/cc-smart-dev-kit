@@ -383,6 +383,16 @@ function settingsRows(): SettingsRow[] {
       where: "personal",
       value: false,
     }),
+    row({
+      card: "switches",
+      help: "Once a session, tell me when the session's model is not Claude Opus, the lead the kit works best with. It never switches the model.",
+      id: "set-lead",
+      key: "switches.leadHint",
+      kind: "boolean",
+      label: "Lead-model hint",
+      where: "personal",
+      value: true,
+    }),
   ];
 }
 
@@ -620,6 +630,7 @@ export function mockData(empty: boolean): MockData {
       limits,
       fiveHour: empty ? null : { percent: 61, resetsAt: now + 127 * MINUTE },
       requests: historyRate,
+      sevenDay: empty ? null : { percent: 38, resetsAt: now + 3 * DAY + 5 * HOUR },
       switches: slots.switches,
       jobs: {
         slots: jobs.stores[0]?.slots ?? 0,

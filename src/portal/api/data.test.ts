@@ -8,7 +8,7 @@ import { fakeDefaults, fakeWorkflow } from "../../testing/fake-workflow";
 import { cleanGitEnv, tempDir } from "../../testing/temp";
 import { type ActionContext, portalOmnirouteContext } from "../actions";
 import type { PortalContext } from "../context";
-import { bunFacts, claudeCodeFacts, mcpRows, planWindow, portHolder } from "../facts";
+import { bunFacts, claudeCodeFacts, mcpRows, planWindows, portHolder } from "../facts";
 import type { PageDataDeps } from "../page-data";
 import { gatewayKeyState, overviewAnswer } from "./data";
 import { testPortalContext } from "./test-context";
@@ -181,7 +181,7 @@ describe("what holds the router's port", () => {
   });
 });
 
-describe("the plan's 5-hour window", () => {
+describe("the plan's usage windows", () => {
   const file = (paths: CliPaths) => join(paths.stateDir, "usage-window.json");
 
   test("the share the status line recorded, and when it resets", () => {
@@ -194,10 +194,13 @@ describe("the plan's 5-hour window", () => {
         readAt: "2026-10-23T11:50:00.000Z",
       }),
     );
-    expect(planWindow(ctx)).toEqual({ percent: 61, resetsAt: "2026-10-23T14:00:00.000Z" });
+    expect(planWindows(ctx)).toEqual({
+      fiveHour: { percent: 61, resetsAt: "2026-10-23T14:00:00.000Z" },
+      sevenDay: null,
+    });
   });
 
-  test("a file that also records the 7-day window (2.2.0) gives the same 5-hour number", () => {
+  test("a file that also records the 7-day window (2.2.0) gives both numbers", () => {
     const { ctx, paths } = world();
     const resets = Date.UTC(2026, 9, 23, 14, 0, 0) / 1000;
     writeAt(
@@ -208,7 +211,10 @@ describe("the plan's 5-hour window", () => {
         sevenDay: { percent: 33, resetsAt: Date.UTC(2026, 9, 27, 9, 0, 0) / 1000 },
       }),
     );
-    expect(planWindow(ctx)).toEqual({ percent: 61, resetsAt: "2026-10-23T14:00:00.000Z" });
+    expect(planWindows(ctx)).toEqual({
+      fiveHour: { percent: 61, resetsAt: "2026-10-23T14:00:00.000Z" },
+      sevenDay: { percent: 33, resetsAt: "2026-10-27T09:00:00.000Z" },
+    });
     // A file with the 7-day window alone has no 5-hour number.
     writeAt(
       file(paths),
@@ -217,21 +223,25 @@ describe("the plan's 5-hour window", () => {
         sevenDay: { percent: 33, resetsAt: Date.UTC(2026, 9, 27, 9, 0, 0) / 1000 },
       }),
     );
-    expect(planWindow(ctx)).toBe(null);
+    expect(planWindows(ctx)).toEqual({
+      fiveHour: null,
+      sevenDay: { percent: 33, resetsAt: "2026-10-27T09:00:00.000Z" },
+    });
   });
 
   test("a window that is over, or no reading at all: no number", () => {
     const { ctx, paths } = world();
-    expect(planWindow(ctx)).toBe(null);
+    expect(planWindows(ctx)).toEqual({ fiveHour: null, sevenDay: null });
     const past = Date.UTC(2026, 9, 23, 11, 0, 0) / 1000;
     writeAt(
       file(paths),
       JSON.stringify({
         fiveHour: { percent: 99, resetsAt: past },
         readAt: "2026-10-23T10:00:00.000Z",
+        sevenDay: { percent: 70, resetsAt: past },
       }),
     );
-    expect(planWindow(ctx)).toBe(null);
+    expect(planWindows(ctx)).toEqual({ fiveHour: null, sevenDay: null });
   });
 
   test("the Overview carries it, also on a machine whose gateway is not set up", async () => {
@@ -246,6 +256,35 @@ describe("the plan's 5-hour window", () => {
     const answer = await overviewAnswer(depsOf(ctx));
     expect(answer.configured).toBe(false);
     expect(answer.fiveHour).toEqual({ percent: 12, resetsAt: null });
+  });
+
+  test("the Overview carries the 7-day window beside the 5-hour one, from the same file", async () => {
+    const { ctx, paths } = world();
+    writeAt(
+      file(paths),
+      JSON.stringify({
+        fiveHour: { percent: 61, resetsAt: Date.UTC(2026, 9, 23, 14, 0, 0) / 1000 },
+        readAt: "2026-10-23T11:50:00.000Z",
+        sevenDay: { percent: 33, resetsAt: Date.UTC(2026, 9, 27, 9, 0, 0) / 1000 },
+      }),
+    );
+    const answer = await overviewAnswer(depsOf(ctx));
+    expect(answer.fiveHour).toEqual({ percent: 61, resetsAt: "2026-10-23T14:00:00.000Z" });
+    expect(answer.sevenDay).toEqual({ percent: 33, resetsAt: "2026-10-27T09:00:00.000Z" });
+  });
+
+  test("a file from before 2.2.0 holds the 5-hour window alone: no 7-day number", async () => {
+    const { ctx, paths } = world();
+    writeAt(
+      file(paths),
+      JSON.stringify({
+        fiveHour: { percent: 61, resetsAt: Date.UTC(2026, 9, 23, 14, 0, 0) / 1000 },
+        readAt: "2026-10-23T11:50:00.000Z",
+      }),
+    );
+    const answer = await overviewAnswer(depsOf(ctx));
+    expect(answer.fiveHour).toEqual({ percent: 61, resetsAt: "2026-10-23T14:00:00.000Z" });
+    expect(answer.sevenDay).toBe(null);
   });
 });
 

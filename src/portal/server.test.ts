@@ -41,7 +41,7 @@ import { realMcpDoctorDeps } from "../mcp/doctor";
 import { parseCcSmartDevKitConfig } from "../project/config";
 import { projectFolderName } from "../sessions/saved-sessions";
 import { LAUNCHER_NAME, launcherScript } from "../setup/launcher";
-import { isOwnedValue } from "../setup/managed-json";
+import { isObject, isOwnedValue } from "../setup/managed-json";
 import { fakeDefaults, fakeWorkflow } from "../testing/fake-workflow";
 import { subprocessGuard } from "../testing/port-guard";
 import { git, tempDir } from "../testing/temp";
@@ -57,6 +57,7 @@ import { LiveHub, PING_MS } from "./live/hub";
 import { switchButton } from "./page";
 import type { PluginFolder } from "./plugin-folder";
 import { startPortal } from "./server";
+import { SETTINGS } from "./settings";
 import { autoModeCard } from "./views";
 import { type ProjectInitAnswers, type WorkflowAdapter, workflowAdapter } from "./workflow-adapter";
 
@@ -2851,6 +2852,60 @@ describe("the settings page", () => {
       world.portal.stop();
       backend.stop();
     }
+  });
+
+  test("every row, in order, with its id, its key and where a change is written", async () => {
+    // Written by hand: the switch rows come from the switch names, and the lead hint is the
+    // person's own (its file alone holds it), so it is written to the personal file.
+    const backend = fakeBackend(["glm-5.3-flash"]);
+    const world = await open({ backendPort: backend.port, workflow: fakeWorkflow() });
+    try {
+      await world.call("/");
+      const answer = await world.call("/api/settings");
+      expect(answer.status).toBe(200);
+      const rows = (
+        JSON.parse(answer.body) as { rows: { id: string; key: string; where: string }[] }
+      ).rows;
+      expect(rows.map(({ id, key, where }) => ({ id, key, where }))).toEqual([
+        { id: "set-commit", key: "allowCommit", where: "personal" },
+        { id: "set-push", key: "allowPush", where: "personal" },
+        { id: "set-pr", key: "openPr", where: "personal" },
+        { id: "set-merge", key: "allowMerge", where: "personal" },
+        { id: "set-method", key: "mergeMethod", where: "personal" },
+        { id: "set-del", key: "deleteBranch", where: "personal" },
+        { id: "set-review", key: "reviewBeforePush", where: "personal" },
+        { id: "set-wt", key: "clearWorktreeAfterMerge", where: "personal" },
+        { id: "set-limit", key: "alerts.usagePercent", where: "personal" },
+        { id: "set-status", key: "switches.statusLine", where: "personal" },
+        { id: "set-names", key: "switches.sessionNames", where: "project" },
+        { id: "set-jobs", key: "switches.jobRoute", where: "personal" },
+        { id: "set-upd", key: "switches.updateHold", where: "personal" },
+        { id: "set-lead", key: "switches.leadHint", where: "personal" },
+      ]);
+      // The server-drawn page has the row too, with its words.
+      const page = await world.call("/settings");
+      expect(page.body).toContain(">Lead-model hint<");
+      expect(page.body).toContain('aria-labelledby="set-lead"');
+    } finally {
+      world.portal.stop();
+      backend.stop();
+    }
+  });
+
+  test("the page's mock rows carry the server's own words", async () => {
+    // The mock is the portal app's own package (its `@/` imports resolve there), so it is read
+    // at run time: the kit's type check does not follow a path into another package.
+    const mockFile = join(import.meta.dir, "..", "..", "portal", "src", "api", "mock.ts");
+    const mock: unknown = await import(mockFile);
+    const mockData = isObject(mock) ? mock.mockData : undefined;
+    if (typeof mockData !== "function") throw new Error(`${mockFile} exports no mockData`);
+    const mockRows: unknown = Reflect.get(Reflect.get(mockData(false), "settings"), "rows");
+    if (!Array.isArray(mockRows)) throw new Error("the mock's settings answer has no rows");
+    // A row's words: everything the table holds, never the value or where it came from.
+    const fields = ["card", "choices", "help", "id", "key", "kind", "label", "unit", "where"];
+    const words = (row: object) =>
+      Object.fromEntries(fields.map((field) => [field, Reflect.get(row, field)]));
+    expect(mockRows.map(words)).toEqual(SETTINGS.map(words));
   });
 
   test("a row the project sets is read-only here, and says where to change it", async () => {

@@ -8,11 +8,11 @@
  *
  * Some numbers a page would like are not here, and are not invented:
  *
- *   - **Plan usage percentages, but the 5-hour window's.** Claude Code computes them from the
- *     headers of its own answers and hands them to the status line on stdin
+ *   - **Plan usage, beyond the status line's last reading.** Claude Code computes the shares
+ *     from the headers of its own answers and hands them to the status line on stdin
  *     (`src/cli/statusline.ts`). The status line writes down the 5-hour and 7-day windows
- *     (`src/cli/usage-window.ts`); the pages show the 5-hour one (`planWindow` here), and the
- *     7-day one is not on a page yet.
+ *     (`src/cli/usage-window.ts`), and the Overview shows both (`planWindows` here); a window
+ *     the file does not hold, or one that is over, has no number.
  *     The router records the limits it saw (which model, which window, when it resets).
  *   - **Prices and image support.** They are in OmniRoute's own catalog, which the gateway
  *     never reads: `/v1/models` carries an id and a context length, and that is all.
@@ -33,7 +33,7 @@ import {
 import { bunTooOld, MIN_BUN, VERSION } from "../build-info";
 import type { Check } from "../cli/check";
 import { type LiveRecord, parseClaudeVersion, readLiveRecord } from "../cli/live-check";
-import { readUsageWindow } from "../cli/usage-window";
+import { readUsageWindows, type UsageWindow } from "../cli/usage-window";
 import { listModels } from "../gateway/backends";
 import { judgeDefaultWords } from "../gateway/commands";
 import {
@@ -1379,16 +1379,27 @@ export interface PlanWindow {
   resetsAt: null | string;
 }
 
-/**
- * The plan's 5-hour window, from the one file the status line records it in
- * (`src/cli/usage-window.ts`); null with no reading, or one from a window that is over. The
- * file records the 7-day window too (since 2.2.0), but no page shows it yet.
- */
-export function planWindow(ctx: PortalContext): null | PlanWindow {
-  const window = readUsageWindow(ctx.paths, ctx.now());
+/** The plan's two usage windows, each null with no reading, or one from a window that is over. */
+export interface PlanWindows {
+  fiveHour: null | PlanWindow;
+  sevenDay: null | PlanWindow;
+}
+
+/** One recorded window as a page shows it: its reset as an ISO time. */
+function planWindowOf(window: null | UsageWindow): null | PlanWindow {
   if (window === null) return null;
   return {
     percent: window.percent,
     resetsAt: window.resetsAt === null ? null : new Date(window.resetsAt * 1000).toISOString(),
   };
+}
+
+/**
+ * The plan's 5-hour and 7-day windows, from one read of the file the status line records them
+ * in (`readUsageWindows`, `src/cli/usage-window.ts`). A file a kit before 2.2.0 wrote holds the
+ * 5-hour window alone, so its 7-day window is null.
+ */
+export function planWindows(ctx: PortalContext): PlanWindows {
+  const windows = readUsageWindows(ctx.paths, ctx.now());
+  return { fiveHour: planWindowOf(windows.fiveHour), sevenDay: planWindowOf(windows.sevenDay) };
 }

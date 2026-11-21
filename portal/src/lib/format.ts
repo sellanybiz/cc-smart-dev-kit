@@ -128,12 +128,27 @@ export function ago(at: number | string, now: number = Date.now()): string {
   return `${days} day${days === 1 ? "" : "s"} ago`;
 }
 
-/** `in 52 min`: how long until, in words. */
+const HOUR_MS = 3_600_000;
+export const DAY_MS = 24 * HOUR_MS;
+
+/**
+ * A duration that may run to days: under a day as `duration` writes it, from a day up in days and
+ * whole hours (`93 h` → `3 d 21 h`, `48 h` → `2 d`).
+ */
+function longDuration(ms: number): string {
+  if (ms < DAY_MS) return duration(ms);
+  const hours = Math.round(ms / HOUR_MS);
+  const days = Math.floor(hours / 24);
+  const rest = hours % 24;
+  return rest === 0 ? `${days} d` : `${days} d ${rest} h`;
+}
+
+/** `in 52 min`, `in 3 d 21 h`: how long until, in words. */
 export function until(at: number | string, now: number = Date.now()): string {
   const ms = (typeof at === "string" ? Date.parse(at) : at) - now;
   if (!Number.isFinite(ms)) return "unknown";
   if (ms <= 0) return "now";
-  return `in ${duration(Math.round(ms / 1000) * 1000)}`;
+  return `in ${longDuration(Math.round(ms / 1000) * 1000)}`;
 }
 
 /** `128` → `128 MB`, `1536` → `1.5 GB`. */

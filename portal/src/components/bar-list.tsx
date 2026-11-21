@@ -1,7 +1,6 @@
-/**
- * A ranked list with a bar per row: the label, the bar, the value. The bar is an SVG `<rect>`
- * whose width is an attribute, not a style, so the content policy needs nothing for it.
- */
+import { MeterBar } from "@/components/meter";
+
+/** A ranked list with a bar per row: the label, the bar, the value. */
 export function BarList({
   rows,
   label,
@@ -20,15 +19,7 @@ export function BarList({
           <span className="truncate" title={row.label}>
             {row.label}
           </span>
-          <svg className="h-2.5 w-full" aria-hidden="true" preserveAspectRatio="none">
-            <rect width="100%" height="100%" rx="3" className="fill-muted" />
-            <rect
-              width={`${(row.value / max) * 100}%`}
-              height="100%"
-              rx="3"
-              className="fill-primary"
-            />
-          </svg>
+          <MeterBar value={row.value} max={max} className="w-full" />
           <span className="text-right tabular-nums">
             {row.shown}
             {row.note !== undefined && (

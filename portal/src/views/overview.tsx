@@ -17,6 +17,7 @@ import { columnsFor, DataTable, PortalTable } from "@/components/data-table";
 import { FilterBar } from "@/components/filter-bar";
 import { HistoryChart } from "@/components/history-chart";
 import { type HistoryState, useHistoryState, useSessionNames } from "@/components/history-state";
+import { Meter } from "@/components/meter";
 import { METRICS } from "@/components/metrics";
 import { RequestsTable } from "@/components/requests-table";
 import { AppLink } from "@/components/router";
@@ -25,11 +26,20 @@ import { SectionCards, StatCard } from "@/components/section-cards";
 import { PagePad, ResourceView } from "@/components/states";
 import { TonePill } from "@/components/status";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Card,
+  CardAction,
+  CardContent,
+  CardDescription,
+  CardFooter,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
 import {
   clockTime,
   costWords,
   count,
+  DAY_MS,
   duration,
   percent,
   slotName,
@@ -37,6 +47,7 @@ import {
   until,
 } from "@/lib/format";
 import { rangeOf } from "@/lib/history";
+import { cn } from "@/lib/utils";
 
 /**
  * The Overview's model-request headline: the count, or the reason there is none. Both numbers
@@ -201,46 +212,85 @@ export function SwitchesCard({ switches, port }: { switches: SwitchFacts; port: 
   );
 }
 
+/** When a window resets. More than a day away, a clock time alone would not say which day. */
+function resetWords(resetsAt: null | number, now: number): string {
+  if (resetsAt === null) return "Claude Code named no reset time";
+  return resetsAt - now > DAY_MS
+    ? `Resets ${until(resetsAt, now)}`
+    : `Resets ${until(resetsAt, now)}, at ${clockTime(resetsAt)}`;
+}
+
+/** One window: its share, a bar, and when it resets. */
+function PlanWindowRow({ label, window, now }: { label: string; window: PlanWindow; now: number }) {
+  return (
+    <div className="flex flex-col gap-1.5">
+      <div className="flex items-baseline justify-between gap-2">
+        <span className="text-sm text-muted-foreground">{label}</span>
+        <span className="text-xl font-semibold tabular-nums">{percent(window.percent / 100)}</span>
+      </div>
+      <Meter value={window.percent} max={100} className="w-full">
+        {percent(window.percent / 100)} of the {label} used
+      </Meter>
+      <span className="text-xs text-muted-foreground">{resetWords(window.resetsAt, now)}</span>
+    </div>
+  );
+}
+
 /**
- * The plan's 5-hour window, as Claude Code's status line last recorded it, and the newest plan
- * limit the router saw. Nothing else of the plan's usage is written down anywhere.
+ * The plan's 5-hour and 7-day windows, as Claude Code's status line last recorded them, and the
+ * newest plan limit the router saw. A window the status line has not recorded has no row.
  */
-function PlanCard({
-  window,
+export function PlanCard({
+  fiveHour,
+  sevenDay,
   limit,
   now,
 }: {
-  window: null | PlanWindow;
+  fiveHour: null | PlanWindow;
+  sevenDay: null | PlanWindow;
   limit: LimitRow | undefined;
   now: number;
 }) {
+  const noReading = fiveHour === null && sevenDay === null;
+  const badge =
+    limit !== undefined ? (
+      <TonePill tone="warn">limit until {limit.resets ?? "?"}</TonePill>
+    ) : noReading ? (
+      <TonePill tone="info">no reading</TonePill>
+    ) : (
+      <TonePill tone="ok">no limit seen</TonePill>
+    );
+  const detail =
+    limit !== undefined ? `${limit.model} ran out of ${limit.claim}` : "From the status line";
+  const className = "@4xl/main:col-span-2 @7xl/main:col-span-1";
+  if (noReading) {
+    return (
+      <StatCard
+        label="Plan usage"
+        className={className}
+        value="—"
+        badge={badge}
+        headline="The status line has recorded none yet"
+        detail={detail}
+      />
+    );
+  }
   return (
-    <StatCard
-      label="Plan usage, 5-hour window"
-      className="@4xl/main:col-span-2 @7xl/main:col-span-1"
-      value={window === null ? "—" : percent(window.percent / 100)}
-      badge={
-        limit !== undefined ? (
-          <TonePill tone="warn">limit until {limit.resets ?? "?"}</TonePill>
-        ) : window === null ? (
-          <TonePill tone="info">no reading</TonePill>
-        ) : (
-          <TonePill tone="ok">no limit seen</TonePill>
-        )
-      }
-      headline={
-        window === null
-          ? "The status line has recorded none yet"
-          : window.resetsAt === null
-            ? "Claude Code named no reset time"
-            : `Resets ${until(window.resetsAt, now)}, at ${clockTime(window.resetsAt)}`
-      }
-      detail={
-        limit !== undefined
-          ? `${limit.model} ran out of ${limit.claim}`
-          : "From the status line; the 7-day windows are written nowhere"
-      }
-    />
+    <Card className={cn("@container/card", className)}>
+      <CardHeader>
+        <CardDescription>Plan usage</CardDescription>
+        <CardAction>{badge}</CardAction>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-4">
+        {fiveHour !== null ? (
+          <PlanWindowRow label="5-hour window" window={fiveHour} now={now} />
+        ) : null}
+        {sevenDay !== null ? (
+          <PlanWindowRow label="7-day window" window={sevenDay} now={now} />
+        ) : null}
+      </CardContent>
+      <CardFooter className="text-sm text-muted-foreground">{detail}</CardFooter>
+    </Card>
   );
 }
 
@@ -353,7 +403,7 @@ function OverviewPage({ data }: { data: OverviewData }) {
               : `${breakers[0][1].heldNow} request${breakers[0][1].heldNow === 1 ? "" : "s"} waiting now`
           }
         />
-        <PlanCard window={data.fiveHour} limit={limit} now={now} />
+        <PlanCard fiveHour={data.fiveHour} sevenDay={data.sevenDay} limit={limit} now={now} />
       </SectionCards>
       <FilterBar state={state} />
       <Charts state={state} jobs={data.jobs} />
