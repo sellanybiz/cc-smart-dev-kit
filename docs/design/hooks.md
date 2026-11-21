@@ -181,7 +181,7 @@ file's bytes once and looks them up in a cache of checked answers
   (`tasks-mcp.js`): the bundler then wraps zod in lazy initialisers, and the SDK's own top-level
   `zod` calls run before them (`TypeError: undefined is not a constructor (new ZodLazy)`; seen on
   `worktree-leftovers.ts`, which `worktrees/scan.ts` imports for `idleMinutesOrNull`).
-  `src/tasks/bundle.test.ts` runs the built server and fails on it.
+  `src/entries/bundles-load.test.ts` starts every built bundle once and fails on it.
 
 The other hooks skip the parse on a hit and still load zod through their own imports; each
 chain below would have to go for one of them to join. Median of 40 runs on a machine at a load

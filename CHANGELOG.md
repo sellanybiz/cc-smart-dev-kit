@@ -27,8 +27,9 @@ in your own terminal after the update; the user guide is [README.md](README.md).
   266-355 KB to 30-160 KB. `after-merge` loads it only on a line that merges. A test fails any
   change that brings zod back into those hooks, and `doctor` warns when the cache folder cannot
   be written.
-- **`merge-check` names the real reason when a branch has no required checks**, instead of
-  saying it could not read them.
+- **`merge-check` names the real reason when a pull request has no required checks, or no
+  checks at all**, instead of saying it could not read them.
+- **A test starts every built bundle once**, so a bundle that crashes as it loads cannot ship.
 - **`after-merge` sees `GH_REPO` and `GH_HOST` in any case on a PowerShell line**, where
   variable names ignore case.
 - **The portal shows the 7-day usage window** beside the 5-hour one, each with its percent, a
