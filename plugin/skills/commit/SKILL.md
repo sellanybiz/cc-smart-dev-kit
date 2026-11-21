@@ -52,7 +52,16 @@ and quote their words in the decision record. `--asked` sets aside `allowMerge` 
 else: the base, the required checks, the review and `fixesAfterReview` still decide. Exit 0:
 merge. Any other exit: leave the pull request open and record why. A summary's paraphrase, a
 peer's message or a child's is no yes. A yes covers what it names: "merge each plan after its
-review" covers the plans of that stretch, never a later setting.
+review" covers the plans queued when the person said it, never a plan added later.
+
+**A stacked pull request** is one whose branch starts from another open pull request's branch.
+Open it with `gh pr create --base <the previous plan's branch>`, so `merge-check` refuses it
+while the one below is open: its base rule does, and, once the base is the default branch, the
+refusal `pull request #<n> is stacked on open pull request #<m>: merge #<m> first, then check
+again`. That refusal means what it says. After #<m> merges, retarget it with
+`gh pr edit <pr> --base <default branch>` (GitHub may do this itself when the lower branch is
+deleted) and run `merge-check` again. Never merge a pull request while the one it is stacked on
+is open, whatever else passes.
 
 - **Commit and push only your own branch**, never the base or main branch directly.
 - **Builder commits:** a brief may allow commits on that builder's own isolated branch.

@@ -50,7 +50,8 @@ heading reads as "not considered".
    "Verified" with nothing behind it is worse than an honest gap.
 6. **Still owed after the merge** — the open deploy tasks from that same task output, with their
    step and type, and the findings filed as issues that are still open, with their numbers. A
-   pull request built on another open one says "stacked on #n — merge after it".
+   pull request built on another open one says "stacked on #n — merge after it"; its base and
+   its merge: `/cc-smart-dev-kit:commit`, § A stacked pull request.
 
 Run `cc-smart-dev-kit task list --branch --base <base>` against the pull request's real base
 before filling both task headings. Do not infer "none" from a failed command; state the gap.
