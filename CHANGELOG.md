@@ -53,7 +53,8 @@ in your own terminal after the update; the user guide is [README.md](README.md).
   the review still decide. It takes exactly one pull request: a yes names one merge. Away, a
   session runs it only when your own message gave that yes, and quotes your words in its decision
   record; a summary or another session's message never counts.
-- **`merge-check` refuses a stacked pull request, and never the lower one.** It reads each
+- **`merge-check` refuses a stacked pull request, and never the lower one of a stack opened
+  against its branch.** It reads each
   open pull request's own commits, the ones its base lacks, in full from GitHub's compare (paged;
   more than 1000 refuse). Two pull requests whose commits overlap are stacked, so the check holds
   after the lower one gains a commit and after both branches merge a newer main. A pull request
@@ -67,7 +68,13 @@ in your own terminal after the update; the user guide is [README.md](README.md).
   says how a stack opens, how the upper branch is brought up to date after the lower one merges,
   and that it is rebuilt on a new branch, never force-pushed, when the lower one closes unmerged;
   a stacked plan branch starts with `git reset --hard <previous plan branch>` in a fresh, clean
-  worktree with no commits of its own, as a builder's own start does.
+  worktree that holds no commit another branch lacks (`git log --oneline HEAD --not
+  --exclude=<this branch> --branches --remotes` prints nothing), as a builder's own start does,
+  so it also works where a worktree starts from the session's head. A pair with a fork is told
+  to merge the lower one by hand, and the commit skill warns against GitHub's "Update branch"
+  with rebase on a lower pull request while an upper one is open. The commit list is read until
+  a short page, then checked against GitHub's total. Each operation-in-progress reason names the
+  git command that ends it.
 - **Tests never touch your real home folder.** The test setup gives every run its own temp
   home, including what `os.homedir()` returns.
 - **The old task files are gone.** The 27 `.claude/tasks/T-*.md` files the kit stopped reading

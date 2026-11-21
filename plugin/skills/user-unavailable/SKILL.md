@@ -85,9 +85,9 @@ Use `/cc-smart-dev-kit:build` for subagent work. Resolve ambiguities in its task
 - **Stack on an open pull request.** When the next plan starts while the previous plan's pull
   request is not merged, make its worktree as usual (`/cc-smart-dev-kit:worktree`), run
   `git reset --hard <previous plan branch>` there before the first edit, and record that head
-  as the plan's `base`: its review reads only its own work. A fresh worktree starts at the
-  default branch's tip, so `git merge --ff-only` fails whenever that branch moved after the plan
-  below was cut; the reset does not. It is safe only in a worktree with no commits of its own
+  as the plan's `base`: its review reads only its own work. A fresh worktree may start at the
+  default branch's tip or at the session's head (a project's `baseRef`), so `git merge
+  --ff-only` fails whenever that start moved past the plan below; the reset does not. It is safe only in a worktree with no commits of its own
   and a clean tree (`git log --oneline HEAD --not --exclude=<this branch> --branches --remotes`
   and `git status --short` both print nothing; `<this branch>` is from `git branch
   --show-current`), and it is the one `reset --hard` this skill runs. In any other worktree do not stack:

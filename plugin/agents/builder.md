@@ -55,9 +55,9 @@ Before the first edit, bring your worktree to the commit the brief names as its 
 `git reset --hard <that commit>`. Run it only in a fresh worktree, with no commits of its own
 and a clean tree (`git log --oneline HEAD --not --exclude=<this branch> --branches --remotes`
 and `git status --short` both print nothing; `<this branch>` is from `git branch --show-current`):
-it has nothing to lose, and it
-starts at the default branch's tip, so `git merge --ff-only` fails whenever that branch moved
-after the base was cut. Any other worktree: stop and report it, and never build on another
+it has nothing to lose, and it may start at the default branch's tip or at the session's
+head (a project's `baseRef`), so `git merge --ff-only` fails whenever that start moved past
+the base. Any other worktree: stop and report it, and never build on another
 base. The brief names no commit: say so in your report, with the commit you started from.
 
 1. Read callers before changing shared code; use impact-analysis without a helper and

@@ -63,7 +63,8 @@ asked for (`src/sessions/`, `src/worktrees/`):
   - **An operation in progress keeps the worktree** (`in-progress.ts`, the verdict's
     `inProgress` fact): a bisect, a rebase, a merge, a cherry-pick or a revert that git has not
     finished, a `git am` stopped mid-series, or a cherry-pick or revert series left after its
-    conflicting commit (the `rebase-apply`, `rebase-merge` and `sequencer` folders). The check comes before the idle hour, so a bisect left paused for a day still
+    conflicting commit (the `rebase-apply`, `rebase-merge` and `sequencer` folders). Each reason names the command
+    that ends it in that worktree (`git bisect reset`, `--abort`, or `--quit` for a series). The check comes before the idle hour, so a bisect left paused for a day still
     keeps the folder, and with it the branch. When git or the disk cannot say, it keeps too.
     The same file list serves the branch delete below: one `git rev-parse --git-path` call per
     worktree asks for every marker.

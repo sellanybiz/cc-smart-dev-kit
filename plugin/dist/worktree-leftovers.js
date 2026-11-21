@@ -8661,22 +8661,31 @@ function reflogEntryTime(line) {
 }
 
 // src/worktrees/in-progress.ts
+var BISECT = { ending: "`git bisect reset`", what: "a bisect" };
+var REBASE = { ending: "`git rebase --abort`", what: "a rebase" };
+var AM = { ending: "`git am --abort`", what: "a git am" };
+var REBASE_OR_AM = {
+  ending: "`git rebase --abort`, or `git am --abort` for a git am",
+  what: "a rebase or a git am"
+};
+var MERGE = { ending: "`git merge --abort`", what: "a merge" };
+var CHERRY_PICK = { ending: "`git cherry-pick --abort`", what: "a cherry-pick" };
+var REVERT = { ending: "`git revert --abort`", what: "a revert" };
+var SERIES = {
+  ending: "`git cherry-pick --quit`, or `git revert --quit` for a revert series",
+  what: "a cherry-pick or revert series"
+};
 var OPERATIONS = [
-  { kind: "file", namesBranch: true, path: "BISECT_START", what: "a bisect" },
-  { kind: "file", namesBranch: true, path: "rebase-merge/head-name", what: "a rebase" },
-  { kind: "file", namesBranch: true, path: "rebase-apply/head-name", what: "a rebase" },
-  { kind: "file", namesBranch: false, path: "rebase-apply/applying", what: "a git am" },
-  { kind: "folder", namesBranch: false, path: "rebase-merge", what: "a rebase" },
-  { kind: "folder", namesBranch: false, path: "rebase-apply", what: "a rebase or a git am" },
-  { kind: "file", namesBranch: false, path: "MERGE_HEAD", what: "a merge" },
-  { kind: "file", namesBranch: false, path: "CHERRY_PICK_HEAD", what: "a cherry-pick" },
-  { kind: "file", namesBranch: false, path: "REVERT_HEAD", what: "a revert" },
-  {
-    kind: "folder",
-    namesBranch: false,
-    path: "sequencer",
-    what: "a cherry-pick or revert series"
-  }
+  { ...BISECT, kind: "file", namesBranch: true, path: "BISECT_START" },
+  { ...REBASE, kind: "file", namesBranch: true, path: "rebase-merge/head-name" },
+  { ...REBASE, kind: "file", namesBranch: true, path: "rebase-apply/head-name" },
+  { ...AM, kind: "file", namesBranch: false, path: "rebase-apply/applying" },
+  { ...REBASE, kind: "folder", namesBranch: false, path: "rebase-merge" },
+  { ...REBASE_OR_AM, kind: "folder", namesBranch: false, path: "rebase-apply" },
+  { ...MERGE, kind: "file", namesBranch: false, path: "MERGE_HEAD" },
+  { ...CHERRY_PICK, kind: "file", namesBranch: false, path: "CHERRY_PICK_HEAD" },
+  { ...REVERT, kind: "file", namesBranch: false, path: "REVERT_HEAD" },
+  { ...SERIES, kind: "folder", namesBranch: false, path: "sequencer" }
 ];
 function readInProgress(worktree, env) {
   if (!existsSync4(worktree))
@@ -8707,7 +8716,11 @@ function readInProgress(worktree, env) {
       const why = error instanceof Error ? error.message : String(error);
       return { state: "unreadable", why: `${marker} cannot be read (${why})` };
     }
-    running.push({ branch: operation.namesBranch ? text.trim() : null, what: operation.what });
+    running.push({
+      branch: operation.namesBranch ? text.trim() : null,
+      ending: operation.ending,
+      what: operation.what
+    });
   }
   return { running, state: "read" };
 }
@@ -8717,7 +8730,7 @@ function inProgressWhy(worktree, env) {
     return `git could not say whether a bisect, rebase, git am, merge, cherry-pick or revert is in progress in it (${read.why}), so it is kept`;
   }
   const first = read.running[0];
-  return first === undefined ? null : `${first.what} is in progress`;
+  return first === undefined ? null : `${first.what} is in progress (end it in that worktree with ${first.ending})`;
 }
 
 // src/hooks/capped-list.ts

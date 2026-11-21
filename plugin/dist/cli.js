@@ -24203,13 +24203,20 @@ async function askCommits(world, target, base, head) {
     }
     for (const commit of answer.commits)
       read.add(commit);
-    if (read.size >= total)
-      return { ok: true, value: read };
-    if (page >= Math.ceil(total / COMMITS_PER_PAGE)) {
+    if (answer.commits.length < COMMITS_PER_PAGE) {
+      if (read.size === total)
+        return { ok: true, value: read };
       return {
         late: false,
         ok: false,
         why: `GitHub listed ${read.size} of the ${total} commits of ${named}`
+      };
+    }
+    if (read.size > total || page >= Math.ceil(STACK_COMMITS_LIMIT / COMMITS_PER_PAGE) + 1) {
+      return {
+        late: false,
+        ok: false,
+        why: `GitHub listed more than the ${total} commits of ${named}`
       };
     }
   }
@@ -24263,9 +24270,11 @@ async function stackedVerdict(world, view, target, cache) {
       const theirs = await commitsOf(world, target, cache, other.base, other.headOid);
       if (!theirs.ok)
         return { kind: "unread", late: theirs.late, why: theirs.why };
-      for (const commit of theirs.value)
-        if (mine.value.has(commit))
-          return { kind: "shares" };
+      for (const commit of theirs.value) {
+        if (mine.value.has(commit)) {
+          return { fork: other.fork || self?.fork === true, kind: "shares" };
+        }
+      }
       return { kind: "clear" };
     }));
     batch.forEach((other, index) => {
@@ -24276,11 +24285,12 @@ async function stackedVerdict(world, view, target, cache) {
   }
   const shared = found.find((one) => one.on.kind === "shares");
   if (shared !== undefined) {
+    const advice = shared.on.kind === "shares" && shared.on.fork ? ", and one of them is from a fork, so neither can be opened against the other: merge the lower one by hand, then check again" : ": merge the lower one first (open the upper one against the lower one's branch), then check again";
     return {
       detail: null,
       kind: "refused",
       number: view.number,
-      reason: `pull request #${view.number} shares commits with open pull request #${shared.number} that ${view.base} does not hold yet: merge the lower one first (open the upper one against the lower one's branch), then check again`
+      reason: `pull request #${view.number} shares commits with open pull request #${shared.number} that ${view.base} does not hold yet${advice}`
     };
   }
   for (const { number, on } of found) {
@@ -33248,7 +33258,11 @@ function readInProgress(worktree, env) {
       const why = error instanceof Error ? error.message : String(error);
       return { state: "unreadable", why: `${marker} cannot be read (${why})` };
     }
-    running.push({ branch: operation.namesBranch ? text.trim() : null, what: operation.what });
+    running.push({
+      branch: operation.namesBranch ? text.trim() : null,
+      ending: operation.ending,
+      what: operation.what
+    });
   }
   return { running, state: "read" };
 }
@@ -33258,7 +33272,7 @@ function inProgressWhy(worktree, env) {
     return `git could not say whether a bisect, rebase, git am, merge, cherry-pick or revert is in progress in it (${read.why}), so it is kept`;
   }
   const first = read.running[0];
-  return first === undefined ? null : `${first.what} is in progress`;
+  return first === undefined ? null : `${first.what} is in progress (end it in that worktree with ${first.ending})`;
 }
 function branchInProgressWhy(worktree, branch, env) {
   const read = readInProgress(worktree, env);
@@ -33268,25 +33282,34 @@ function branchInProgressWhy(worktree, branch, env) {
   const returnsToIt = read.running.some((one) => one.branch === branch || one.branch === `refs/heads/${branch}`);
   return returnsToIt ? `a worktree is bisecting or rebasing it, at ${worktree}` : null;
 }
-var OPERATIONS;
+var BISECT, REBASE, AM, REBASE_OR_AM, MERGE, CHERRY_PICK, REVERT, SERIES, OPERATIONS;
 var init_in_progress = __esm(() => {
   init_git();
+  BISECT = { ending: "`git bisect reset`", what: "a bisect" };
+  REBASE = { ending: "`git rebase --abort`", what: "a rebase" };
+  AM = { ending: "`git am --abort`", what: "a git am" };
+  REBASE_OR_AM = {
+    ending: "`git rebase --abort`, or `git am --abort` for a git am",
+    what: "a rebase or a git am"
+  };
+  MERGE = { ending: "`git merge --abort`", what: "a merge" };
+  CHERRY_PICK = { ending: "`git cherry-pick --abort`", what: "a cherry-pick" };
+  REVERT = { ending: "`git revert --abort`", what: "a revert" };
+  SERIES = {
+    ending: "`git cherry-pick --quit`, or `git revert --quit` for a revert series",
+    what: "a cherry-pick or revert series"
+  };
   OPERATIONS = [
-    { kind: "file", namesBranch: true, path: "BISECT_START", what: "a bisect" },
-    { kind: "file", namesBranch: true, path: "rebase-merge/head-name", what: "a rebase" },
-    { kind: "file", namesBranch: true, path: "rebase-apply/head-name", what: "a rebase" },
-    { kind: "file", namesBranch: false, path: "rebase-apply/applying", what: "a git am" },
-    { kind: "folder", namesBranch: false, path: "rebase-merge", what: "a rebase" },
-    { kind: "folder", namesBranch: false, path: "rebase-apply", what: "a rebase or a git am" },
-    { kind: "file", namesBranch: false, path: "MERGE_HEAD", what: "a merge" },
-    { kind: "file", namesBranch: false, path: "CHERRY_PICK_HEAD", what: "a cherry-pick" },
-    { kind: "file", namesBranch: false, path: "REVERT_HEAD", what: "a revert" },
-    {
-      kind: "folder",
-      namesBranch: false,
-      path: "sequencer",
-      what: "a cherry-pick or revert series"
-    }
+    { ...BISECT, kind: "file", namesBranch: true, path: "BISECT_START" },
+    { ...REBASE, kind: "file", namesBranch: true, path: "rebase-merge/head-name" },
+    { ...REBASE, kind: "file", namesBranch: true, path: "rebase-apply/head-name" },
+    { ...AM, kind: "file", namesBranch: false, path: "rebase-apply/applying" },
+    { ...REBASE, kind: "folder", namesBranch: false, path: "rebase-merge" },
+    { ...REBASE_OR_AM, kind: "folder", namesBranch: false, path: "rebase-apply" },
+    { ...MERGE, kind: "file", namesBranch: false, path: "MERGE_HEAD" },
+    { ...CHERRY_PICK, kind: "file", namesBranch: false, path: "CHERRY_PICK_HEAD" },
+    { ...REVERT, kind: "file", namesBranch: false, path: "REVERT_HEAD" },
+    { ...SERIES, kind: "folder", namesBranch: false, path: "sequencer" }
   ];
 });
 

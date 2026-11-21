@@ -25587,6 +25587,34 @@ var SUBAGENT_BRANCH_PREFIX = worktreeBranch(SUBAGENT_NAME_PREFIX);
 // src/hooks/unsaved-changes.ts
 var FILE_MODES = new Set(["100644", "100755"]);
 
+// src/worktrees/in-progress.ts
+var BISECT = { ending: "`git bisect reset`", what: "a bisect" };
+var REBASE = { ending: "`git rebase --abort`", what: "a rebase" };
+var AM = { ending: "`git am --abort`", what: "a git am" };
+var REBASE_OR_AM = {
+  ending: "`git rebase --abort`, or `git am --abort` for a git am",
+  what: "a rebase or a git am"
+};
+var MERGE = { ending: "`git merge --abort`", what: "a merge" };
+var CHERRY_PICK = { ending: "`git cherry-pick --abort`", what: "a cherry-pick" };
+var REVERT = { ending: "`git revert --abort`", what: "a revert" };
+var SERIES = {
+  ending: "`git cherry-pick --quit`, or `git revert --quit` for a revert series",
+  what: "a cherry-pick or revert series"
+};
+var OPERATIONS = [
+  { ...BISECT, kind: "file", namesBranch: true, path: "BISECT_START" },
+  { ...REBASE, kind: "file", namesBranch: true, path: "rebase-merge/head-name" },
+  { ...REBASE, kind: "file", namesBranch: true, path: "rebase-apply/head-name" },
+  { ...AM, kind: "file", namesBranch: false, path: "rebase-apply/applying" },
+  { ...REBASE, kind: "folder", namesBranch: false, path: "rebase-merge" },
+  { ...REBASE_OR_AM, kind: "folder", namesBranch: false, path: "rebase-apply" },
+  { ...MERGE, kind: "file", namesBranch: false, path: "MERGE_HEAD" },
+  { ...CHERRY_PICK, kind: "file", namesBranch: false, path: "CHERRY_PICK_HEAD" },
+  { ...REVERT, kind: "file", namesBranch: false, path: "REVERT_HEAD" },
+  { ...SERIES, kind: "folder", namesBranch: false, path: "sequencer" }
+];
+
 // src/hooks/worktree-leftovers.ts
 var REFLOG_TAIL_BYTES = 8 * 1024;
 
