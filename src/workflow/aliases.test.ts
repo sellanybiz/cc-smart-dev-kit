@@ -6,10 +6,13 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { cliPaths } from "../cli/paths";
-import { ccSmartDevKitConfigSchema } from "../project/config";
+import { ccSmartDevKitConfigSchema, WORKFLOW_ALLOW_KEYS_SINCE } from "../project/config";
+import { requiresFor } from "../project/init";
 import { hookEnv, makeRepo } from "../testing/hooks";
 import { tempDir } from "../testing/temp";
-import { runWorkflow, type WorkflowContext } from "./commands";
+import { describeIssues } from "../zod-issues";
+import { autoMergeOff } from "./auto-merge";
+import { runWorkflow, WORKFLOW_USAGE, type WorkflowContext } from "./commands";
 import { resolveWorkflow } from "./resolve";
 import {
   personalWorkflowSchema,
@@ -88,8 +91,31 @@ describe("an old name in a file", () => {
   });
 
   test("an old name with a wrong value is still refused, and a typo is still refused", () => {
-    expect(workflowSchema.safeParse({ autoPush: "yes" }).success).toBe(false);
     expect(workflowSchema.safeParse({ autoPushes: true }).success).toBe(false);
+    for (const schema of [workflowSchema, personalWorkflowSchema]) {
+      const refused = schema.safeParse({ autoPush: "yes" });
+      expect(refused.success).toBe(false);
+      // The error names the key as the file holds it, once, and says what it is now called.
+      expect(refused.error === undefined ? "" : describeIssues(refused.error.issues)).toBe(
+        "autoPush: Invalid input: expected boolean, received string (autoPush is the old name of allowPush)",
+      );
+    }
+    // A wrong value next to the new name is dropped with the old name: the new one wins.
+    expect(workflowSchema.parse({ autoPush: "yes", allowPush: true })).toEqual({ allowPush: true });
+  });
+
+  test("the usage text names the release from the constant", () => {
+    expect(WORKFLOW_USAGE).toContain(
+      `are the old names of allowCommit, allowPush, allowMerge (${WORKFLOW_ALLOW_KEYS_SINCE})`,
+    );
+  });
+
+  test("the refusal of a merge says how to turn allowMerge on, and what requires then needs", () => {
+    const resolved = resolveWorkflow(cliPaths(hookEnv()), null);
+    const why = autoMergeOff(resolved, "main");
+    expect(why).toContain("workflow set allowMerge true --project");
+    expect(why).toContain(`"requires": "${requiresFor(WORKFLOW_ALLOW_KEYS_SINCE)}"`);
+    expect(why).toContain(">=6.1");
   });
 
   test("the person's file: an old name resolves as set, from the person", () => {

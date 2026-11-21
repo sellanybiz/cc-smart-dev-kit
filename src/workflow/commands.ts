@@ -32,7 +32,7 @@ import { resolve } from "node:path";
 import { COMMAND } from "../build-info/names";
 import { type CliPaths, tildify } from "../cli/paths";
 import { runGit } from "../hooks/git";
-import type { CcSmartDevKitConfig } from "../project/config";
+import { type CcSmartDevKitConfig, WORKFLOW_ALLOW_KEYS_SINCE } from "../project/config";
 import { type Checkout, CONFIG_PATH, loadProjectConfig, locateCheckout } from "../project/resolve";
 import { clashesOf, clashLines } from "./clashes";
 import {
@@ -90,7 +90,7 @@ export interface WorkflowContext {
 }
 
 /** The old names, said once: what the usage and a renamed setting's line both name. */
-const OLD_NAMES_TEXT = `${Object.keys(WORKFLOW_KEY_ALIASES).join(", ")} are the old names of ${Object.values(WORKFLOW_KEY_ALIASES).join(", ")} (6.1.0): a file and this command still take them, and every write uses the new name`;
+const OLD_NAMES_TEXT = `${Object.keys(WORKFLOW_KEY_ALIASES).join(", ")} are the old names of ${Object.values(WORKFLOW_KEY_ALIASES).join(", ")} (${WORKFLOW_ALLOW_KEYS_SINCE}): a file and this command still take them, and every write uses the new name`;
 
 /**
  * The line that says a setting was typed under its old name, or null when the name is current.

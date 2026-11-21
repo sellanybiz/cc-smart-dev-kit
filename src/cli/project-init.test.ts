@@ -458,6 +458,50 @@ describe("the questions on a terminal", () => {
     { dryRun: false, yes: false },
   );
 
+  test("an old setting name in the file is offered under its new name, and Enter keeps the file's policy as it is", () => {
+    const answers = defaultAnswers(
+      { workflow: { autoPush: true, openPr: "ready" } },
+      { defaultBranch: "main", protectedFromGithub: [], fastCheck: null },
+      { dryRun: false, yes: false },
+    );
+    const { prompts, shown } = scripted([]);
+    const asked = askedAnswers(prompts, answers, BOTH_ENVS);
+    expect(shown.find((line) => line.startsWith("[5/9]"))).toContain(
+      "[allowPush=true,openPr=ready]",
+    );
+    const kept: unknown = asked.workflow;
+    expect(kept).toEqual({ autoPush: true, openPr: "ready" });
+    // A changed answer is the person's own words, in the new names.
+    const { prompts: typed } = scripted([null, null, null, null, "allowPush=true,openPr=draft"]);
+    expect(askedAnswers(typed, answers, BOTH_ENVS).workflow).toEqual({
+      allowPush: true,
+      openPr: "draft",
+    });
+  });
+
+  test("Enter on every question of a run on an old-name file takes no old-name line out of the plan", async () => {
+    const repo = makeRepo();
+    const file = join(repo, ".claude", "cc-smart-dev-kit.json");
+    mkdirSync(dirname(file), { recursive: true });
+    const before = {
+      requires: ">=1.0",
+      protectedBranches: ["main"],
+      sessionNames: true,
+      worktrees: {
+        base: "main",
+        bases: { "hotfix/": "main", "release/": "main" },
+        guardMainFolder: true,
+      },
+      workflow: { autoPush: true, openPr: "ready" },
+    };
+    writeFileSync(file, `${JSON.stringify(before, null, 2)}\n`);
+    const { prompts } = scripted([...Array(10).fill(null), "y"]);
+    const run = context(repo, { prompts });
+    await runProjectInit(["--no-deploy-block"], run.context, runner({}));
+    expect(run.lines.filter((line) => line.includes("workflow."))).toEqual([]);
+    expect(JSON.parse(readFileSync(file, "utf8")).workflow).toEqual(before.workflow);
+  });
+
   test("UX-12: Enter on every question keeps every default; each question is counted, with its default", async () => {
     const { prompts, shown } = scripted([]);
     expect(askedAnswers(prompts, DEFAULTS, BOTH_ENVS)).toEqual({ ...DEFAULTS, deployCommands: {} });
@@ -639,6 +683,28 @@ describe("the run", () => {
     );
     // The plan ran and wrote nothing: the warning is part of the plan, not of a later step.
     expect(existsSync(join(repo, ".claude", "cc-smart-dev-kit.json"))).toBe(false);
+  });
+
+  test("a project file that still holds an old setting name gives the same clash notes as the new name", async () => {
+    const notesFor = async (workflow: Record<string, unknown>, requires: string) => {
+      const repo = makeRepo();
+      const file = join(repo, ".claude", "cc-smart-dev-kit.json");
+      mkdirSync(dirname(file), { recursive: true });
+      writeFileSync(file, JSON.stringify({ requires, worktrees: { base: "main" }, workflow }));
+      const run = context(repo);
+      expect(
+        await runProjectInit(["--dry-run", "--no-deploy-block"], run.context, runner({})),
+      ).toBe(0);
+      return run.lines.filter(
+        (line) => line.trimStart().startsWith("! ") && line.includes("openPr"),
+      );
+    };
+    const old = await notesFor({ openPr: "draft", autoPush: true, autoMerge: true }, ">=1.0");
+    const current = await notesFor({ openPr: "draft", allowPush: true, allowMerge: true }, ">=6.1");
+    expect(old).toEqual(current);
+    // Pushing is on in both, so only the draft clash stands, and no "allowPush is off" note.
+    expect(old).toHaveLength(1);
+    expect(old[0]).toContain("openPr is draft and allowMerge is on");
   });
 
   test("D16: the person's own settings are part of the policy, so no clash is named wrongly", async () => {

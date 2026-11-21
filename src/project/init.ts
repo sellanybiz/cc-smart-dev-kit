@@ -44,7 +44,12 @@ import { atomicWrite, backupFile, fileMode, realTarget } from "../setup/write";
 import { deployTasksDir, envFolder } from "../tasks/deploy/files";
 import { DEPLOY_ENVS, type DeployEnv } from "../tasks/deploy/format";
 import { clashNote, workflowClashes } from "../workflow/clashes";
-import { WORKFLOW_KEY_ALIASES, type Workflow, workflowDefaults } from "../workflow/schema";
+import {
+  WORKFLOW_KEY_ALIASES,
+  type Workflow,
+  withCurrentNames,
+  workflowDefaults,
+} from "../workflow/schema";
 import {
   CHECKS_SINCE,
   ccSmartDevKitConfigSchema,
@@ -100,7 +105,11 @@ export interface ProjectInitAnswers {
     /** Send a heavy command through the job queue. */
     jobRoute: boolean;
   };
-  /** The policy written into the project's file; `{}` leaves the field out. */
+  /**
+   * The policy written into the project's file; `{}` leaves the field out. It is the file's own
+   * object, so it may still use an old setting name (`autoPush`): read it through
+   * `withCurrentNames`, never by key.
+   */
   workflow: Workflow;
 }
 
@@ -594,10 +603,13 @@ export function planProjectInit(
   // see: the person's own file, over the built-in defaults, and this file's answers over
   // both — the same order `resolveWorkflow` merges them in.
   const personal = input.personalWorkflow ?? {};
+  // The answers hold the file's own policy, which may still use an old setting name: read them
+  // as the guards do, through the alias.
+  const answered = withCurrentNames(answers.workflow) as Workflow;
   for (const clash of workflowClashes({
-    allowMerge: answers.workflow.allowMerge ?? personal.allowMerge ?? workflowDefaults.allowMerge,
-    allowPush: answers.workflow.allowPush ?? personal.allowPush ?? workflowDefaults.allowPush,
-    openPr: answers.workflow.openPr ?? personal.openPr ?? workflowDefaults.openPr,
+    allowMerge: answered.allowMerge ?? personal.allowMerge ?? workflowDefaults.allowMerge,
+    allowPush: answered.allowPush ?? personal.allowPush ?? workflowDefaults.allowPush,
+    openPr: answered.openPr ?? personal.openPr ?? workflowDefaults.openPr,
   })) {
     notes.push(clashNote(clash));
   }

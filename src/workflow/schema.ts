@@ -183,6 +183,7 @@ export const WORKFLOW_KEY_ALIASES = {
 } as const;
 
 type OldWorkflowKey = keyof typeof WORKFLOW_KEY_ALIASES;
+type CurrentKeyName = (typeof WORKFLOW_KEY_ALIASES)[OldWorkflowKey];
 
 /** True when `name` is one of the old names (`WORKFLOW_KEY_ALIASES`). */
 function isOldKeyName(name: string): name is OldWorkflowKey {
@@ -208,7 +209,7 @@ export function oldNamesOf(key: string): OldWorkflowKey[] {
  */
 export function oldNamesIn(
   raw: Record<string, unknown>,
-): { old: OldWorkflowKey; current: string; both: boolean }[] {
+): { old: OldWorkflowKey; current: CurrentKeyName; both: boolean }[] {
   return (Object.keys(WORKFLOW_KEY_ALIASES) as OldWorkflowKey[])
     .filter((old) => Object.hasOwn(raw, old))
     .map((old) => ({
@@ -224,7 +225,7 @@ export function oldNamesIn(
  * new one wins and the old one is dropped. Anything that is not a plain object passes through
  * for the schema to refuse in its own words.
  */
-function withCurrentNames(raw: unknown): unknown {
+export function withCurrentNames(raw: unknown): unknown {
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return raw;
   const moved: Record<string, unknown> = { ...raw };
   for (const old of Object.keys(WORKFLOW_KEY_ALIASES) as OldWorkflowKey[]) {
@@ -234,6 +235,32 @@ function withCurrentNames(raw: unknown): unknown {
     delete moved[old];
   }
   return moved;
+}
+
+/**
+ * `withCurrentNames` for a parse: a value moved from an old name is checked here, against the
+ * new name's own rule, so a wrong one is refused under the name the file holds
+ * (`autoPush: … (autoPush is the old name of allowPush)`), not under a name the person never
+ * wrote. The bad value is left out, so the object is not refused a second time.
+ */
+function readWithCurrentNames(raw: unknown, context: z.core.$RefinementCtx): unknown {
+  const moved = withCurrentNames(raw);
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return moved;
+  const current = moved as Record<string, unknown>;
+  for (const old of oldNamesIn(raw as Record<string, unknown>)) {
+    if (old.both) continue;
+    const checked = workflowObjectSchema.shape[old.current].safeParse(current[old.current]);
+    if (checked.success) continue;
+    const reason = checked.error.issues.map((issue) => issue.message).join(", ");
+    context.issues.push({
+      code: "custom",
+      input: current[old.current],
+      message: `${reason} (${old.old} is the old name of ${old.current})`,
+      path: [old.old],
+    });
+    delete current[old.current];
+  }
+  return current;
 }
 
 const workflowObjectSchema = z.strictObject({
@@ -352,7 +379,7 @@ const workflowObjectSchema = z.strictObject({
  * The `workflow` object of a project's file, and the base of the person's: the strict object
  * above, read after `withCurrentNames`, so an old key name loads as its new one in both files.
  */
-export const workflowSchema = z.preprocess(withCurrentNames, workflowObjectSchema);
+export const workflowSchema = z.preprocess(readWithCurrentNames, workflowObjectSchema);
 
 export type Workflow = z.infer<typeof workflowSchema>;
 
@@ -374,7 +401,7 @@ export const PERSONAL_FILE_SWITCH_NAMES = [
  * Claude Opus (default: on); a person who leads on a backend on purpose turns it off.
  */
 export const personalWorkflowSchema = z.preprocess(
-  withCurrentNames,
+  readWithCurrentNames,
   workflowObjectSchema.extend({
     /**
      * The person's `plans`: the cap, and `runMode`, how queued plans run (`ask` by default: one
@@ -498,8 +525,9 @@ export const POLICY_KEYS: readonly WorkflowKey[] = [
 /**
  * The settings merge-check judges a merge with: the **review gate**. The guard reads them
  * from the person's own file and from the project's file as committed on the pull request's
- * base, never a checkout's working copy (`resolveGate` in `resolve.ts`), and `workflow set`
- * and `unset` refuse them inside Claude Code (`commands.ts`): only the person changes the gate.
+ * base, never a checkout's working copy (`resolveGate` in `resolve.ts`). `workflow set`,
+ * `unset` and `propose` work on them inside Claude Code like on any setting (6.0.0): a change to
+ * the project's part counts only once it is committed to the base.
  */
 export const REVIEW_GATE_KEYS: readonly WorkflowKey[] = [
   "allowMerge",
