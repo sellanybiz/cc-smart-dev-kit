@@ -89,7 +89,9 @@ say in one line that the worktree looks finished, give these steps, and let the 
 - **Not finished:** say why and stop. A worktree with uncommitted work, local files or commits
   that are not merged is someone's work. `cc-smart-dev-kit worktrees` lists the repo's
   worktrees and `--clean` removes the finished ones of other sessions; when you run `--clean`,
-  run it with `run_in_background` too, for the same reason.
+  run it with `run_in_background` too, for the same reason. `--clean` also deletes the
+  `worktree-agent-*` branches whose work `origin/<base>` holds and that no worktree or open
+  task uses; the plain `worktrees` listing previews them.
 
 ## Finding a session again
 

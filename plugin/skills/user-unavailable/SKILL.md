@@ -64,7 +64,8 @@ reader without your context. Record every real choice (not a trivial one, like a
 
 ## 3. The end of a stretch
 
-At the end of each stretch (a phase done, a wave merged, the work running out) record one more
+A stretch is the work between two summaries: it ends when a phase is done, a wave is merged or
+the work runs out, and work may run on after it. At each end record one more
 decision whose text starts `Summary:` (not `Decision:`): what is done, what you chose, what runs on, and what the person
 should look at first. `/cc-smart-dev-kit:user-available` shows it first.
 
@@ -75,20 +76,24 @@ Use `/cc-smart-dev-kit:build` for subagent work. Resolve ambiguities in its task
 - **Work at full parallel width.** Nobody is there to wait for, so start every ready phase in one
   message (build § 2), keep reviews, hunts and checks running in the background, and never idle
   while ready work exists.
-- **A finished plan does not end the stretch.** When its phases are merged, run its review
+- **A finished plan does not stop the work.** When its phases are merged, run its review
   rounds, the full check and its pull request (build § 6). Merge it only by the one merge rule in
   `/cc-smart-dev-kit:commit` (`merge-check`, with `--asked` on the person's quoted yes). Then start
   the next queued plan at once. A plan that needs plan mode follows § 1's plan-mode line. Record
   the merge or the open pull request, and each next plan's start, as decisions (§ 2).
 - **Stack on an open pull request.** When the next plan starts while the previous plan's pull
-  request is not merged, its branch starts from the previous plan's branch, and its pull request
-  says "stacked on #n — merge after it" (`/cc-smart-dev-kit:pull-request`).
+  request is not merged, make its worktree as usual (`/cc-smart-dev-kit:worktree`), run
+  `git merge --ff-only <previous plan branch>` there before the first edit, and record that head
+  as the plan's `base`: its review reads only its own work. When it cannot fast-forward, do not
+  stack: leave the plan queued and record why. The pull request opens against the previous plan's
+  branch, and nothing merges before the one below
+  (`/cc-smart-dev-kit:commit`, § A stacked pull request; `/cc-smart-dev-kit:pull-request`).
 - **The run mode.** `plans.runMode` `ask` (the default) asks, and asking is refused while away.
   Nobody is waiting, so use the width: with two or more ready plans whose files do not
   overlap and a Herdr terminal, run as lead + children (build § Lead + children and coordinator
   modes); otherwise solo. Record the choice as a decision. A mode the person set is followed.
 
-When there is truly no work left that you may do, the stretch is done: write § 3 and stop.
+When there is truly no work left that you may do, write § 3 and stop.
 
 ## Never
 
