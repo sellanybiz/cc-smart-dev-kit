@@ -89,7 +89,8 @@ function whyFinished(worktree: ScannedWorktree, base: string): string {
  * Removes every worktree of `scanned` that can go, then forgets those whose folder is gone,
  * and says each step through `say` (the lines `worktrees --clean` prints). Never forces: a
  * worktree the fresh verdict keeps (a session, a program, a change) stays, and `said` has
- * why. `judged` is the options the scan ran with.
+ * why. `judged` is the options the scan ran with; its `recorded` keeps the branches an open
+ * task records (`tryDeleteBranch`).
  */
 export function cleanFinished(
   repo: string,
@@ -139,7 +140,9 @@ export function cleanFinished(
     forgotten.push(worktree.listed.path);
     say(forgottenLine(worktree.listed.path));
     if (worktree.listed.branch !== null) {
-      say(`  ${deleteMergedBranch(repo, judged.base, worktree.listed.branch, judged.env)}`);
+      say(
+        `  ${deleteMergedBranch(repo, judged.base, worktree.listed.branch, judged.env, judged.recorded)}`,
+      );
     }
   }
   for (const worktree of scanned) {

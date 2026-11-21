@@ -47,18 +47,28 @@ asked for (`src/sessions/`, `src/worktrees/`):
     `--remove` or the background clean — also judges the local `worktree-agent-*` branches that
     no worktree has checked out, with the same test as every removal (`tryDeleteBranch`:
     ancestry, replay, cherry-pick, merged pull request). The base holds its work: deleted. It
-    does not: kept, and its line says so. The base cannot be read: every branch is kept. A
-    branch an open task of the project records in its `branch` field is kept too, with
-    "task #n still records it": a phase that binds its builder's branch cannot close once the
-    branch is gone (`refuseEmptyHandBack`). The records are read through the task store
-    (`recordedBranches`, `readWorkStore`); a store that cannot be read keeps every branch. The
+    does not: kept, and its line says so. The base cannot be read: every branch is kept. The
     plain listing shows which would go (there is no `--dry-run`: the listing is the preview).
     A branch of any other name is never touched.
+  - **A branch an open task records stays, in every delete** (`recordedKeepWhy`, in
+    `tryDeleteBranch`, the one path of `--clean`'s removals, `--remove`, the background clean,
+    the forgetting of a gone folder and the sweep). A phase binds its builder's branch in the
+    task's `branch` field and cannot close once the branch is gone (`refuseEmptyHandBack`), so
+    the line is `kept branch <b>: task #<n> still records it`; the folder still goes. The
+    records are read through the task store (`recordedBranches`, `readWorkStore`) once per
+    run, by `worktrees` and by the background clean, and handed down as `ScanOptions.recorded`;
+    a store that cannot be read keeps every branch and removes the folders.
   - **The delete names the judged commit.** The judge reads the branch's commit once
     (`judgeBranchOnRef`) and the delete is `git update-ref -d refs/heads/<branch> <that commit>`
     (`deleteJudgedBranch`): git refuses it when the branch moved after the judge, so a commit
     added meanwhile is never lost, and the line says so. `update-ref` does not look at
-    worktrees, so a branch a worktree has checked out is refused first, by name of its folder.
+    worktrees, as `git branch -D` does, so a branch a worktree uses is refused first, by name of
+    its folder: one that has it checked out, and one that is bisecting or rebasing it (its HEAD
+    is detached then, so the worktree list does not show the branch; git's own files name it:
+    `BISECT_START`, `rebase-merge/head-name`, `rebase-apply/head-name`, read with
+    `git rev-parse --git-path` in each worktree). `branch -D` also removes the branch's
+    `[branch "<name>"]` config section, so the delete does the same (`git config
+    --remove-section`; no section is fine, any other failure is said in the line).
     A kept branch's line names the ref it was compared with (`origin/<base>`, `comparedWith`).
 
 ### Finished background sessions

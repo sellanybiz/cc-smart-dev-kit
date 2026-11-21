@@ -18,11 +18,15 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 import { COMMAND } from "../build-info/names";
-import { cliPaths } from "../cli/paths";
+import { type CliPaths, cliPaths } from "../cli/paths";
 import { detachedArgv } from "../hooks/detached";
 import { worktreeLeftoversHook } from "../hooks/specs";
 import { samePath } from "../path-compare";
 import { locateCheckout } from "../project/resolve";
+import { projectKey } from "../tasks/context";
+import { openWorkDb, workDbFile } from "../tasks/work/db";
+import { createTask } from "../tasks/work/store";
+import type { WorkStatus } from "../tasks/work/types";
 import {
   hookEnv,
   makeClone,
@@ -145,6 +149,29 @@ function deps(
   };
 }
 
+/** An open task of this repo's project that records a builder's branch, as a lead binds a phase. */
+function recordBranch(
+  paths: CliPaths,
+  repo: string,
+  branch: string,
+  status: WorkStatus = "pending",
+): number {
+  const db = openWorkDb(workDbFile(paths), { mode: "write" });
+  try {
+    const who = { pid: null, procStart: null, sessionId: "lead" };
+    const task = createTask(
+      db,
+      { branch, project: projectKey(repo), status, subject: `builder of ${branch}` },
+      who,
+      1,
+    );
+    if (!task.ok) throw new Error(task.why);
+    return task.value.number;
+  } finally {
+    db.close();
+  }
+}
+
 /** The repo's record, read from the file as written. */
 function recorded(env: Record<string, string>, repo: string): RepoRecord {
   const file = autoCleanFiles(cliPaths(env).stateDir, repo).result;
@@ -225,6 +252,33 @@ describe("the background clean removes what is finished, and keeps the rest", ()
       await runHook(worktreeLeftoversHook, sessionStart(repo), env, recordingStarter().start),
     ).toEqual({});
     expect(toldMark(env, repo)).toBe(1);
+  });
+
+  test("a branch an open task still records stays when its worktree goes", async () => {
+    const { add, env, repo, squash } = project();
+    const done = add("feature");
+    squash(done);
+    const number = recordBranch(cliPaths(env), repo, "feature");
+
+    expect(await runAutoClean(repo, "session", deps(env))).toBe("cleaned");
+
+    // The folder went; the branch stays, so the phase that records it can still close.
+    expect(existsSync(done)).toBe(false);
+    expect(git(repo, "branch", "--list", "feature")).toContain("feature");
+    expect(number).toBe(1);
+    expect(recorded(env, repo).removed.map((one) => one.branch)).toEqual(["feature"]);
+  });
+
+  test("a task that is done records nothing: the same worktree loses its branch", async () => {
+    const { add, env, repo, squash } = project();
+    const done = add("feature");
+    squash(done);
+    recordBranch(cliPaths(env), repo, "feature", "done");
+
+    expect(await runAutoClean(repo, "session", deps(env))).toBe("cleaned");
+
+    expect(existsSync(done)).toBe(false);
+    expect(git(repo, "branch", "--list", "feature")).toBe("");
   });
 
   test.skipIf(NO_POSIX_MODES)(
