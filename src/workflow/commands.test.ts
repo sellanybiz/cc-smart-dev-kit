@@ -1283,7 +1283,8 @@ describe("workflow merge-check", () => {
         `  "repo view") echo '{"defaultBranchRef":{"name":"main"}}' ;;`,
         `  "pr list") echo '[{"headRefOid":"${"c".repeat(40)}","number":9}]' ;;`,
         `  "pr checks") echo '[{"bucket":"pass","name":"ci"}]' ;;`,
-        '  api*) echo "diverged" ;;',
+        // The two heads share a commit main holds (the merge base), so neither is stacked.
+        `  api*) case "$2" in *compare/main...*) echo "behind ${"e".repeat(40)}" ;; *) echo "diverged ${"e".repeat(40)}" ;; esac ;;`,
         "esac",
         "",
       ].join("\n"),
@@ -1294,7 +1295,8 @@ describe("workflow merge-check", () => {
     expect(run.lines).toHaveLength(2);
     const calls = readFileSync(log, "utf8").trim().split("\n");
     expect(calls.filter((line) => line.startsWith("pr list --state open"))).toHaveLength(1);
-    expect(calls.filter((line) => line.startsWith("api "))).toHaveLength(1);
+    // The pair of heads once, and the base against their merge base once.
+    expect(calls.filter((line) => line.startsWith("api "))).toHaveLength(2);
   });
 
   test("the usage text names --asked and says what it sets aside", () => {

@@ -45,7 +45,8 @@ command that asks, and nobody is there to answer. Tell the person once, in one l
   merge section, a staging deploy a task owes).
   The steps that are the person's word every time (`/cc-smart-dev-kit:commit`: a deploy to
   production, a force-push, `reset --hard`, a direct push to the main branch) you do not run: take
-  the safe option, and record that you did not.
+  the safe option, and record that you did not. The one exception is § 4's start of a stacked
+  plan, in a fresh worktree that has nothing to lose.
 - **Plan mode.** Never enter plan mode while away: it cannot be left without the person. A
   session already in it writes its plan file, records a `Decision:` (what it would build, why,
   and that it stopped there) and stops that work; it never keeps trying `ExitPlanMode`.
@@ -83,9 +84,13 @@ Use `/cc-smart-dev-kit:build` for subagent work. Resolve ambiguities in its task
   the merge or the open pull request, and each next plan's start, as decisions (§ 2).
 - **Stack on an open pull request.** When the next plan starts while the previous plan's pull
   request is not merged, make its worktree as usual (`/cc-smart-dev-kit:worktree`), run
-  `git merge --ff-only <previous plan branch>` there before the first edit, and record that head
-  as the plan's `base`: its review reads only its own work. When it cannot fast-forward, do not
-  stack: leave the plan queued and record why. The pull request opens against the previous plan's
+  `git reset --hard <previous plan branch>` there before the first edit, and record that head
+  as the plan's `base`: its review reads only its own work. A fresh worktree starts at the
+  default branch's tip, so `git merge --ff-only` fails whenever that branch moved after the plan
+  below was cut; the reset does not. It is safe only in a worktree with no commits of its own
+  and a clean tree (`git status --short` prints nothing, and the log past the default branch is
+  empty), and it is the one `reset --hard` this skill runs. In any other worktree do not stack:
+  leave the plan queued and record why. The pull request opens against the previous plan's
   branch, and nothing merges before the one below
   (the stacked pull request rule in `/cc-smart-dev-kit:commit`; `/cc-smart-dev-kit:pull-request`).
 - **The run mode.** `plans.runMode` `ask` (the default) asks, and asking is refused while away.
