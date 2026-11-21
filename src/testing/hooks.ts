@@ -136,16 +136,27 @@ const noBackground: DetachedStarter = () => undefined;
 
 const ENTRIES = join(import.meta.dir, "..", "entries");
 
+/** What a hook run as a subprocess leaves: its exit code and what it printed. */
+export interface EntryRun {
+  exitCode: number;
+  stdout: string;
+  stderr: string;
+}
+
 /** Runs `src/entries/<name>.ts` as Claude Code would: the input on stdin. */
-export function runEntry(
-  name: string,
-  stdin: string,
-  env: Record<string, string>,
-): { exitCode: number; stdout: string; stderr: string } {
+export function runEntry(name: string, stdin: string, env: Record<string, string>): EntryRun {
+  return runBundle(join(ENTRIES, `${name}.ts`), stdin, env);
+}
+
+/**
+ * Runs one script as Claude Code runs a hook: a bun subprocess with the input on stdin. The
+ * script is a source entry (`runEntry`) or a built bundle, the file Claude Code really runs.
+ */
+export function runBundle(file: string, stdin: string, env: Record<string, string>): EntryRun {
   const guard = subprocessGuard();
   // `process.execPath`, never `bun`: the bun running the suite is the one the repo needs
   // (the preload refuses an older one), and PATH may hold another or none.
-  const result = Bun.spawnSync([process.execPath, ...guard.args, join(ENTRIES, `${name}.ts`)], {
+  const result = Bun.spawnSync([process.execPath, ...guard.args, file], {
     env: { ...env, ...guard.env },
     stdin: Buffer.from(stdin),
     stdout: "pipe",

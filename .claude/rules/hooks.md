@@ -115,13 +115,21 @@ Every entry in `plugin/hooks/hooks.json` uses the shell form, never the exec for
   bun is one stderr line and the session goes on: the heavy-job queue never asks.
 - `<name>` is a bundle built from `src/entries/<name>.ts` (`bundles-and-releases.md`).
   The hook's logic lives in `src/hooks/`, where it can be tested; the entry is two lines:
-  `runHookEntry(<its spec>)` from `src/hooks/run.ts`, with the spec from `specs.ts`.
+  `runHookEntry(<its spec>)` from `src/hooks/run.ts`, with the spec from **its own module**,
+  `src/hooks/specs/<name>.ts`. **Never import `specs.ts` in an entry**: it builds the whole
+  `HOOKS` list, so the bundle would carry every hook (583 KB each, against 266 to 357 KB
+  with the split). A spec that needs a helper another spec shares imports it from its own
+  module (`guard-crash.ts`), never from `specs.ts`: a cycle there throws at load, and
+  `user-away` runs with `onFailure: block`.
 - The command string is fixed: the quoted shim, the mode, the quoted bundle, nothing else.
   `entries.test.ts` asserts the whole string, so a stray quote or a bare path fails a test
   rather than a person's session.
-- A new plugin hook: its logic in `src/hooks/`, its spec in `specs.ts` (and in `HOOKS`), its
-  entry, its `hooks.json` entry, and a row in `src/hooks/matrix.test.ts`. `entries.test.ts`
-  fails when the four do not match.
+- A new plugin hook: its logic in `src/hooks/`, its spec in `src/hooks/specs/<name>.ts` (listed
+  in `HOOKS` and re-exported in `specs.ts`), its entry, its `hooks.json` entry, a row in
+  `src/hooks/matrix.test.ts` and a size budget in `entries.test.ts`. `entries.test.ts` fails
+  when they do not match: it also builds every entry into a temp folder, runs the built bundle
+  as a subprocess and checks that its log line names its own hook and that its size is inside
+  its budget.
 
 ## The frame: every hook runs through `run.ts`
 

@@ -29,340 +29,41 @@
  * (`src/hooks/settings-hooks.ts`).
  */
 
-import { recordsReview } from "../workflow/reviews";
-import { workflowDefaults } from "../workflow/schema";
-import { afterMerge, mergesPullRequest } from "./after-merge";
-import { recordAgentUsage } from "./agent-usage";
-import { builderFinish, builderFinishAnswer } from "./builder-finish";
-import { fableSession } from "./fable-session";
-import {
-  addContext,
-  type HookInput,
-  type HookResult,
-  SILENT,
-  stringField,
-  toolDecision,
-  toolInput,
-} from "./io";
-import { jobRoute, routeFacts } from "./job-route";
-import { KEEP_GOING, keepGoing, keepGoingAnswer } from "./keep-going";
-import { agentTypeOf, reviewRecord } from "./review-record";
 import type { HookSpec } from "./run";
-import { sessionName } from "./session-name";
-import { subagentBackground } from "./subagent-background";
-import { taskStart } from "./task-start";
-import { tierView } from "./tier-view";
-import { inAwayDomain, userAwayAnswer } from "./user-away";
-import { verifyGate } from "./verify-gate";
-import { worktreeLeftovers } from "./worktree-leftovers";
+import { afterMergeHook } from "./specs/after-merge";
+import { agentUsageHook } from "./specs/agent-usage";
+import { builderFinishHook } from "./specs/builder-finish";
+import { fableSessionHook } from "./specs/fable-session";
+import { jobRouteHook } from "./specs/job-route";
+import { keepGoingHook } from "./specs/keep-going";
+import { reviewRecordHook } from "./specs/review-record";
+import { sessionNameHook } from "./specs/session-name";
+import { subagentBackgroundHook } from "./specs/subagent-background";
+import { taskStartHook } from "./specs/task-start";
+import { tierViewHook } from "./specs/tier-view";
+import { userAwayHook } from "./specs/user-away";
+import { verifyGateHook } from "./specs/verify-gate";
+import { worktreeLeftoversHook } from "./specs/worktree-leftovers";
 
-/** Said to the person when a guard cannot read the project's cc-smart-dev-kit.json. */
-function cannotCheck(what: string, message: string): string {
-  return `cc-smart-dev-kit cannot check ${what}: ${message}`;
-}
-
-/**
- * A guard's answer when its own code throws: **ask the person about the call in the
- * guard's own domain**. A crash must never let a call through — that is the whole point of
- * the answer — and a guard that cannot judge a call asks.
- *
- * `inDomain` says whether the call is one the guard judges: a call outside its domain is
- * none of its business, and the guard stays silent. With an input the frame could not read
- * (the hook input was not JSON) the guard asks in general: it cannot tell what the call is.
- * A domain check that throws itself is no reason to let the call through: the guard asks.
- *
- * The event: a guard's bundle runs on PreToolUse, where it answers; the agent guard also
- * runs on PostToolUse, to record a launch that ran. A crash there has nothing to ask about —
- * the call already ran — so it says nothing, and the frame's one line on stderr is all. An
- * event the frame could not read counts as the guard's own, PreToolUse.
- */
-export function guardCrash(
-  what: string,
-  inDomain: (input: HookInput) => boolean,
-): NonNullable<HookSpec["onCrash"]> {
-  return (why: string, input: HookInput | null, event: string): HookResult => {
-    if (event !== "" && event !== "PreToolUse") return SILENT;
-    if (input !== null && !judgesCall(inDomain, input)) return SILENT;
-    return toolDecision("ask", cannotCheck(what, why));
-  };
-}
-
-/** True when the guard judges this call; true too when the check itself throws. */
-function judgesCall(inDomain: (input: HookInput) => boolean, input: HookInput): boolean {
-  try {
-    return inDomain(input);
-  } catch {
-    return true;
-  }
-}
-
-export const afterMergeHook: HookSpec = {
-  name: "after-merge",
-  events: ["PostToolUse", "PostToolUseFailure"],
-  onConfigProblem: (message, input, event) => {
-    const command = stringField(toolInput(input).command);
-    return command !== null && mergesPullRequest(command)
-      ? addContext(event, `cc-smart-dev-kit: ${message}`)
-      : SILENT;
-  },
-  run: afterMerge,
-};
-
-/**
- * The review record: SubagentStart notes the commit a review agent (`workflow.reviewAgents`,
- * default: the plugin's own reviewer) starts on, and SubagentStop records it when the agent
- * stops on that same commit — what merge-check reads before a merge it would make with
- * no person watching (`src/hooks/review-record.ts`, the whole story).
- *
- * A plugin-wired SubagentStop is safe for THIS hook because it never touches a worktree
- * (`.claude/rules/hooks.md`). SubagentStart cannot block a launch, and this hook adds no
- * context to either event, so its answers are silence and stderr only.
- */
-export const reviewRecordHook: HookSpec = {
-  name: "review-record",
-  events: ["SubagentStart", "SubagentStop"],
-  onConfigProblem: (message, input, event) => {
-    // Which agents record is in the project's file, so with no usable file the built-in list
-    // decides whether this is even about a review: one stderr line when it is, silence when
-    // it is not, like `after-merge` only speaks after a merge. Said once, at the stop, where
-    // the review would have been recorded.
-    const agent = agentTypeOf(input);
-    return event === "SubagentStop" &&
-      agent !== null &&
-      recordsReview(agent, workflowDefaults.reviewAgents)
-      ? { stderr: `cc-smart-dev-kit review-record: ${message}` }
-      : SILENT;
-  },
-  run: reviewRecord,
-};
-
-/**
- * The subagent's hand-back (`subagent-background.ts`): a subagent never ends its turn while
- * background work it started still runs — it waits for the work or stops it, then reports.
- * SubagentStop only, and like `review-record` it **touches no worktree**, the one kind of
- * plugin SubagentStop entry `hooks.md` allows. It reads no setting, but it is still
- * project-scoped: with no cc-smart-dev-kit.json it stays silent. A broken or too new file is
- * one stderr line, exit 0 (an informational hook never stops a subagent), and a transcript it
- * cannot read is no block at all: the hook cannot tell whose background work is running.
- */
-export const subagentBackgroundHook: HookSpec = {
-  name: "subagent-background",
-  events: ["SubagentStop"],
-  onConfigProblem: (message) => ({
-    stderr: `cc-smart-dev-kit subagent-background: ${message}`,
-  }),
-  run: subagentBackground,
-};
-
-/**
- * The builder's hand-back (`builder-finish.ts`): a builder subagent never hands back while the
- * task its brief names (`Your task: #<n>`) still has open blocking steps — it closes or drops
- * each, then reports. SubagentStop only, and like `subagent-background` it **touches no
- * worktree**, the one kind of plugin SubagentStop entry `hooks.md` allows; the two never
- * answer the same thing (that one blocks for running background work, this one for open
- * steps). **Machine-wide**, like `keep-going`: it reads only the person's own task list, so it
- * judges the same with no cc-smart-dev-kit.json and with a broken or too new one, and honors
- * `ownHooks` where a file lists it. Anything it cannot read lets the builder finish.
- */
-export const builderFinishHook: HookSpec = {
-  name: "builder-finish",
-  events: ["SubagentStop"],
-  onConfigProblem: (_message, input, event, checkout, context) =>
-    builderFinishAnswer(input, event, checkout, context.paths),
-  run: builderFinish,
-};
-
-/**
- * The verification gate (`verify-gate.ts`): Stop, one **block** when this session changed
- * files and no Bash call ran the project's fast check (`checks.fast`) after the last change.
- * It names the command, and it is silent on the stop its own block caused
- * (`stop_hook_active`), on a turn that
- * still waits on background work, with no `checks.fast`, and when it cannot read the
- * transcript. Project-scoped: with no cc-smart-dev-kit.json it stays silent. A broken or too
- * new file is one stderr line — an informational hook never stops a person's work.
- */
-export const verifyGateHook: HookSpec = {
-  name: "verify-gate",
-  events: ["Stop"],
-  onConfigProblem: (message) => ({ stderr: `cc-smart-dev-kit verify-gate: ${message}` }),
-  run: verifyGate,
-};
-
-/**
- * The keep-going guard (`keep-going.ts`): Stop, one **block per stalled state** when a phase of
- * a plan this Claude process works on is `in_progress`, no background work runs
- * (`background_tasks`), and the turn's last answer has no `Waiting for:` line. The same reason
- * already given, with no subagent started or resumed since, keeps it silent
- * (`stopFeedbackGiven`). It names the builder to resume with `SendMessage` (or a phase needing a
- * fresh builder), the next ready phase, and how to close or record a blocker, and warns against
- * moving a phase back to pending to end the turn. When the own plan gives no reason, it also
- * names what a lead's plans wait on (`leadPlansReason`), from the store's classifier alone:
- * `herdr wait` for plans with a running child, `herdr plans --wait` for closed plans whose pull
- * request is not merged yet, `herdr start --plan <slug>` for a child that is gone. It runs no
- * git, gh or hc. It reads no setting
- * and needs no cc-smart-dev-kit.json: the task store is the person's own, so it runs in a project
- * with no file and honors `ownHooks` where there is one. Silent outside git (the frame's
- * default), on the stop its own block caused (`stop_hook_active`), or with no readable task
- * store or caller. An unreadable transcript keeps the decision. A broken or too new file changes
- * nothing: the hook reads no setting of it, so it judges the same way
- * (`.claude/rules/hooks-guards.md` § Fail closed).
- */
-export const keepGoingHook: HookSpec = {
-  name: KEEP_GOING,
-  events: ["Stop"],
-  onConfigProblem: (_message, input, event, checkout, context) =>
-    event === "Stop" ? keepGoingAnswer(input, checkout, context.paths, context.env) : SILENT,
-  run: keepGoing,
-};
-
-/**
- * Each subagent's usage (`agent-usage.ts`): on its stop, one line in `agent-usage.jsonl` — the
- * time, the session, the agent and its type, and per model the replies, the four token counts
- * and the estimated USD — what `usage` shows and a portal can read. **Machine-wide**: the
- * person's spend is the machine's, not a project's, so it records with no
- * `cc-smart-dev-kit.json` and outside git, like the launch record `usage` reads. A project
- * that runs its own copy lists the name in `ownHooks`. It touches no worktree, the one kind of
- * plugin SubagentStop entry `hooks.md` allows, and it answers nothing on stdout: one stderr
- * line when its record cannot be made, exit 0.
- */
-export const agentUsageHook: HookSpec = {
-  name: "agent-usage",
-  events: ["SubagentStop"],
-  onConfigProblem: (_message, input, event, _checkout, context) =>
-    recordAgentUsage(input, event, context.paths, context.nowMs),
-  outsideGit: (input, event, _why, context) =>
-    recordAgentUsage(input, event, context.paths, context.nowMs),
-  run: ({ input, event, paths, nowMs }) => recordAgentUsage(input, event, paths, nowMs),
-};
-
-export const worktreeLeftoversHook: HookSpec = {
-  name: "worktree-leftovers",
-  events: ["SessionStart"],
-  onConfigProblem: (message, _input, event) => addContext(event, `cc-smart-dev-kit: ${message}`),
-  run: worktreeLeftovers,
-};
-
-export const sessionNameHook: HookSpec = {
-  name: "session-name",
-  events: ["SessionStart", "UserPromptSubmit"],
-  onConfigProblem: (message) => ({ stderr: `cc-smart-dev-kit session-name: ${message}` }),
-  run: sessionName,
-};
-
-/**
- * While the person cannot answer (`cc-smart-dev-kit user unavailable`): the two tools that ask
- * them are refused with the step to take the recommended option and record a decision (nothing
- * is parked), and one note per change is said at the prompt — or, for a session the person never
- * prompts, by one block at its stop (`user-away.ts`). Claude Code's own permission prompt is not
- * answered: a hook never approves for the person, so the event is not wired.
- *
- * **Machine-wide**, like `job-route`: the person is one for the whole machine, so the answer
- * reads the state file and never the project's, and a broken or too new project file, and a
- * folder outside git, are judged the same way. **`alwaysOn`**: `ownHooks` cannot switch it off —
- * the switch is the person's, and a project must not be able to turn it off for a session. A
- * crash asks about the calls in its domain (the two question tools), like any guard; on the other
- * two events it says one line on stderr and the session goes on.
- */
-export const userAwayHook: HookSpec = {
-  name: "user-away",
-  events: ["PreToolUse", "UserPromptSubmit", "Stop"],
-  alwaysOn: true,
-  onConfigProblem: (_message, input, event, _checkout, context) =>
-    userAwayAnswer(input, event, context.env, context.paths, context.nowMs),
-  outsideGit: (input, event, _why, context) =>
-    userAwayAnswer(input, event, context.env, context.paths, context.nowMs),
-  // The two tools that ask the person are a guard's domain: a crash asks about them, as any guard
-  // does. On the other two events there is no call to ask about; the crash is one line on
-  // stderr, and the prompt's text, or the stop goes on as it would without this hook.
-  onCrash: (why, input, event, context) =>
-    event === "UserPromptSubmit" || event === "Stop"
-      ? { stderr: `cc-smart-dev-kit user-away: ${why}` }
-      : guardCrash("whether the person is available", inAwayDomain)(why, input, event, context),
-  run: ({ input, event, env, paths, nowMs }) => userAwayAnswer(input, event, env, paths, nowMs),
-};
-
-/**
- * The Fable-session note: SessionStart, PostModelSwitch and Stop. **Machine-wide** like
- * `agent-guard`: it runs with or without cc-smart-dev-kit.json, and its answer never depends on
- * the project's file — it is about the model this session runs on (§ `fable-session.ts`). Its
- * SessionStart entry carries **no matcher**, so every source is judged, a `fork` included, as
- * `update-check`'s does. It says one line to the person, once in a session, and nothing to
- * Claude: never an error and never a block, so a project that runs its own copy silences it
- * through `ownHooks` like any other plugin hook.
- *
- * **Not UserPromptSubmit** (a live bug, 2026-10-17): the model read there is the transcript's
- * last answer — the PREVIOUS turn's model — so it missed the switch to Fable and then warned
- * while the person was back on Opus. PostModelSwitch names the model the session moved TO
- * (`to_model`), and Stop judges the answer that just finished. See `fable-session.ts`.
- */
-export const fableSessionHook: HookSpec = {
-  name: "fable-session",
-  events: ["SessionStart", "PostModelSwitch", "Stop"],
-  onConfigProblem: (_message, input, _event, _checkout, context) =>
-    fableSession(input, context.env, context.paths),
-  outsideGit: (input, _event, _why, context) => fableSession(input, context.env, context.paths),
-  run: ({ input, env, paths }) => fableSession(input, env, paths),
-};
-
-/**
- * The tier note (`tier-view.ts`): at every SessionStart, and at a UserPromptSubmit when it
- * changed, one note to Claude of what each subagent tier (`haiku`, `sonnet`, `opus`, `fable`)
- * runs now and the effort rule that follows, read the launch judge's way. **Machine-wide**, like
- * `agent-guard`: it runs with or without cc-smart-dev-kit.json and in a folder outside git, and
- * never a question or a block. Its SessionStart entry carries **no
- * matcher**, so a start, a resume, a clear and a compaction each say it. A project that runs its
- * own copy silences it through `ownHooks`.
- */
-export const tierViewHook: HookSpec = {
-  name: "tier-view",
-  events: ["SessionStart", "UserPromptSubmit"],
-  onConfigProblem: (_message, input, _event, _checkout, context) =>
-    tierView(input, context.env, context.paths),
-  outsideGit: (input, _event, _why, context) => tierView(input, context.env, context.paths),
-  run: ({ input, env, paths }) => tierView(input, env, paths),
-};
-
-/**
- * The job queue's door, the kit's one guard: PreToolUse on Bash and PowerShell, **machine-wide**,
- * and `alwaysOn` (`ownHooks` cannot switch it off). The route is the `switches.jobRoute` switch
- * (the project's `"jobs": { "route": true }` over the person's machine-wide default, one
- * resolver, off until one says on): a heavy command is rewritten to run through
- * `cc-smart-dev-kit job run` (or refused with that command line), a heavy run mixed with other
- * commands is refused, and a heavy PowerShell line is refused, naming the Bash tool, where Git
- * Bash lets that tool run. Off, a heavy command runs raw.
- *
- * It never asks the person. With a broken or too new `cc-smart-dev-kit.json` it routes by the
- * person's own default, as if the project's file were absent. Outside git there is no project to
- * route for, and after a crash there is nothing to answer: the line runs as written, and a crash
- * is one line on stderr.
- */
-export const jobRouteHook: HookSpec = {
-  name: "job-route",
-  events: ["PreToolUse"],
-  alwaysOn: true,
-  // The file cannot be read, so its `jobs` part is unknown: the person's own default decides.
-  onConfigProblem: (_message, input, event, checkout, context) =>
-    jobRoute({
-      input,
-      event,
-      cwd: stringField(input.cwd) ?? checkout.root,
-      project: { ...checkout, config: null, configFile: null },
-      env: context.env,
-      paths: context.paths,
-      nowMs: context.nowMs,
-    }),
-  logFacts: routeFacts,
-  run: jobRoute,
-};
-
-/** The hooks the plugin wires in `plugin/hooks/hooks.json`, by their bundle name. */
-export const taskStartHook: HookSpec = {
-  name: "task-start",
-  events: ["SessionStart"],
-  onConfigProblem: (_message, input, _event, _checkout, context) =>
-    taskStart(input, context.paths, context.env),
-  outsideGit: (input, _event, _why, context) => taskStart(input, context.paths, context.env),
-  run: ({ input, paths, env }) => taskStart(input, paths, env),
+// Each spec lives in `src/hooks/specs/<name>.ts`, so a bundle can import its own spec and
+// nothing else; this file is for the lists and for the code and tests that want them all.
+// An entry in `src/entries/` never imports this file: that would load every hook into it.
+export { guardCrash } from "./guard-crash";
+export {
+  afterMergeHook,
+  agentUsageHook,
+  builderFinishHook,
+  fableSessionHook,
+  jobRouteHook,
+  keepGoingHook,
+  reviewRecordHook,
+  sessionNameHook,
+  subagentBackgroundHook,
+  taskStartHook,
+  tierViewHook,
+  userAwayHook,
+  verifyGateHook,
+  worktreeLeftoversHook,
 };
 
 export const HOOKS: readonly HookSpec[] = [

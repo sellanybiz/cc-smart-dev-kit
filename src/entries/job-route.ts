@@ -1,5 +1,5 @@
 // The job-route hook: plugin/dist/job-route.js. Its logic and tests live in src/hooks/.
 import { runHookEntry } from "../hooks/run";
-import { jobRouteHook } from "../hooks/specs";
+import { jobRouteHook } from "../hooks/specs/job-route";
 
 await runHookEntry(jobRouteHook);
