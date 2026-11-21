@@ -29,7 +29,7 @@
  */
 import { extname, isAbsolute, resolve } from "node:path";
 import type { CcSmartDevKitConfig } from "../project/config";
-import { loadProjectConfig, locateCheckout } from "../project/resolve";
+import { locateCheckout } from "../project/locate";
 import {
   type Dialect,
   dialectOfTool,
@@ -268,21 +268,6 @@ export function verifyGateWouldBlock(
   // One reminder per change: a change already reminded about earns no second one, and a
   // change made after that reminder earns the next one.
   return seen.lastEdit > Math.max(seen.lastCheck, seen.lastReminder);
-}
-
-/** `verifyGateWouldBlock` at the input's own folder: the project read as the frame reads it. */
-export function verifyGateWouldBlockAt(input: HookInput, env: Env): boolean {
-  const cwd = stringField(input.cwd);
-  if (cwd === null) return false;
-  try {
-    const checkout = locateCheckout(cwd, { env });
-    return (
-      checkout !== null && verifyGateWouldBlock(input, loadProjectConfig(checkout).config, env)
-    );
-  } catch {
-    // A project that cannot be read asks nothing of a sibling hook either.
-    return false;
-  }
 }
 
 export function verifyGate(context: HookContext): HookResult {

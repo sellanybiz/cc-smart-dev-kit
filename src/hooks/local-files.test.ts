@@ -1,9 +1,11 @@
 import { expect, test } from "bun:test";
 import { mkdirSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { loadCcSmartDevKitConfig } from "../project/config";
+import { CONFIG_PATH } from "../project/config-facts";
 import { cleanGitEnv, git, tempDir } from "../testing/temp";
 import { scanWorktrees } from "../worktrees/scan";
-import { localFiles, safeIgnoredEntry } from "./local-files";
+import { localFiles, rebuildableGlobs, safeEntry } from "./local-files";
 
 function world(ignored = "supabase/.temp/\n") {
   const root = tempDir("local-files");
@@ -33,16 +35,22 @@ function world(ignored = "supabase/.temp/\n") {
   return { main, worktree, put, state };
 }
 
+/** The globs a hook or the scan builds from the project file `projectFile` wrote. */
+function declared(main: string): Bun.Glob[] {
+  return rebuildableGlobs(loadCcSmartDevKitConfig(join(main, CONFIG_PATH)));
+}
+
 function projectFile(main: string, text: string) {
   mkdirSync(join(main, ".claude"), { recursive: true });
   writeFileSync(join(main, ".claude", "cc-smart-dev-kit.json"), text);
 }
 
 test("a project's ignored cache blocks removal until it is declared rebuildable", () => {
-  const { main, worktree } = world(".tool-cache/\n");
+  const { main, worktree, state } = world(".tool-cache/\n");
   mkdirSync(join(worktree, ".tool-cache"));
   writeFileSync(join(worktree, ".tool-cache", "data"), "cache");
-  expect(localFiles(worktree, main, cleanGitEnv())).toEqual([".tool-cache/"]);
+  expect(localFiles(worktree, main, cleanGitEnv(), [])).toEqual([".tool-cache/"]);
+  expect(state()).toMatchObject({ finished: false });
   projectFile(
     main,
     JSON.stringify({
@@ -50,7 +58,8 @@ test("a project's ignored cache blocks removal until it is declared rebuildable"
       worktrees: { base: "main", rebuildable: [".tool-cache/"] },
     }),
   );
-  expect(localFiles(worktree, main, cleanGitEnv())).toEqual([]);
+  expect(localFiles(worktree, main, cleanGitEnv(), declared(main))).toEqual([]);
+  expect(state()).toEqual({ finished: true, note: null });
 });
 
 test("project rebuildable patterns match at depth and inside a collapsed ignored folder", () => {
@@ -65,9 +74,9 @@ test("project rebuildable patterns match at depth and inside a collapsed ignored
       worktrees: { base: "main", rebuildable: [".tool-cache/", "*.cache"] },
     }),
   );
-  expect(localFiles(worktree, main, cleanGitEnv())).toEqual([]);
+  expect(localFiles(worktree, main, cleanGitEnv(), declared(main))).toEqual([]);
   writeFileSync(join(worktree, "server", "notes.txt"), "keep");
-  expect(localFiles(worktree, main, cleanGitEnv())).toEqual(["server/"]);
+  expect(localFiles(worktree, main, cleanGitEnv(), declared(main))).toEqual(["server/"]);
 });
 
 test.each([
@@ -77,11 +86,14 @@ test.each([
     worktrees: { base: "main", rebuildable: [".tool-cache/"] },
   }),
 ])("an unusable project file keeps the strict ignored-file rule: %s", (text) => {
-  const { main, worktree } = world(".tool-cache/\n");
+  const { main, worktree, state } = world(".tool-cache/\n");
   mkdirSync(join(worktree, ".tool-cache"));
   writeFileSync(join(worktree, ".tool-cache", "data"), "cache");
   projectFile(main, text);
-  expect(localFiles(worktree, main, cleanGitEnv())).toEqual([".tool-cache/"]);
+  expect(state()).toMatchObject({
+    finished: false,
+    why: "local files git does not keep: .tool-cache/",
+  });
 });
 
 test("Supabase's version-check cache alone does not keep a finished worktree", () => {
@@ -181,35 +193,35 @@ function includedCopy() {
 
 test("an untouched ignored copy is safe after the main checkout's copy changes", () => {
   const { main, worktree } = includedCopy();
-  expect(localFiles(worktree, main, cleanGitEnv())).toEqual([]);
-  expect(safeIgnoredEntry(worktree, main, ".env.local")).toBe(true);
+  expect(localFiles(worktree, main, cleanGitEnv(), [])).toEqual([]);
+  expect(safeEntry(worktree, main, ".env.local", [])).toBe(true);
 });
 
 test("an ignored copy edited after setup and copy slack stays protected", () => {
   const { main, worktree } = includedCopy();
   writeFileSync(join(worktree, ".env.local"), "session edit");
   utimesSync(join(worktree, ".env.local"), SETUP_SECONDS + 121, SETUP_SECONDS + 121);
-  expect(localFiles(worktree, main, cleanGitEnv())).toEqual([".env.local"]);
+  expect(localFiles(worktree, main, cleanGitEnv(), [])).toEqual([".env.local"]);
 });
 
 test("an old ignored file absent from main stays protected", () => {
   const { main, worktree } = includedCopy();
   rmSync(join(main, ".env.local"));
-  expect(localFiles(worktree, main, cleanGitEnv())).toEqual([".env.local"]);
-  expect(safeIgnoredEntry(worktree, null, ".env.local")).toBe(false);
+  expect(localFiles(worktree, main, cleanGitEnv(), [])).toEqual([".env.local"]);
+  expect(safeEntry(worktree, null, ".env.local", [])).toBe(false);
 });
 
 test.each(["reflog", "commondir"])("setup time falls back when %s is missing", (missing) => {
   const { main, worktree, admin } = includedCopy();
   rmSync(join(admin, missing === "reflog" ? "logs/HEAD" : "commondir"));
-  expect(safeIgnoredEntry(worktree, main, ".env.local")).toBe(true);
+  expect(safeEntry(worktree, main, ".env.local", [])).toBe(true);
 });
 
 test("no readable setup time grants no extra permission", () => {
   const { main, worktree, admin } = includedCopy();
   writeFileSync(join(admin, "logs", "HEAD"), "malformed\n");
   rmSync(join(admin, "commondir"));
-  expect(safeIgnoredEntry(worktree, main, ".env.local")).toBe(false);
+  expect(safeEntry(worktree, main, ".env.local", [])).toBe(false);
 });
 
 test.each(["reflog", "commondir"])(
@@ -226,7 +238,7 @@ test.each(["reflog", "commondir"])(
       );
     }
     utimesSync(join(worktree, ".env.local"), SETUP_SECONDS + 121, SETUP_SECONDS + 121);
-    expect(safeIgnoredEntry(worktree, main, ".env.local")).toBe(false);
+    expect(safeEntry(worktree, main, ".env.local", [])).toBe(false);
   },
 );
 
@@ -239,8 +251,8 @@ test("folders and symbolic links do not gain timestamp permission", () => {
   utimesSync(join(worktree, "private"), SETUP_SECONDS, SETUP_SECONDS);
   symlinkSync("private/notes", join(worktree, ".env.local"));
   writeFileSync(join(main, ".env.local"), "main");
-  expect(safeIgnoredEntry(worktree, main, "private/")).toBe(false);
-  expect(safeIgnoredEntry(worktree, main, ".env.local")).toBe(false);
+  expect(safeEntry(worktree, main, "private/", [])).toBe(false);
+  expect(safeEntry(worktree, main, ".env.local", [])).toBe(false);
 });
 
 test("different Supabase link state stays protected; an identical main copy is safe", () => {

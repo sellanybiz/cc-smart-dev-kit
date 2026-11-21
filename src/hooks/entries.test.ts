@@ -11,15 +11,18 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  rmSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, join, relative, sep } from "node:path";
 import { buildEntry, ENTRIES_DIR } from "../../scripts/build-entry";
+import { reachableFiles } from "../build-info/import-walk";
 import { cliPaths } from "../cli/paths";
 import { recordMcpServer } from "../mcp/records";
 import { RESOLVE_GIT_TIMEOUT_MS } from "../project/resolve";
 import { bunConfigArg } from "../setup/bun-config";
 import { hookEnv, makeRepo, runBundle, runEntry, runHook, writeClaudeFile } from "../testing/hooks";
+import { subprocessGuard } from "../testing/port-guard";
 import { tempDir } from "../testing/temp";
 import { optOutDetail } from "../update/background";
 import { readLastCheck, updateFiles } from "../update/state";
@@ -433,11 +436,13 @@ describe("the hook bundles, built as Claude Code runs them", () => {
   /**
    * Builds one hook's entry the way `scripts/build.ts` does, into a temp folder (never
    * `plugin/dist`, which is the committed build), and returns the file `hooks.json` would run.
+   * The config checker it loads on a cache miss is built beside it, as in `plugin/dist`.
    * A temp folder lives for one test, so each test builds its own.
    */
   async function built(name: string): Promise<string> {
     const dist = tempDir("hook-bundle");
     await buildEntry(join(ENTRIES_DIR, `${name}.ts`), dist);
+    await buildEntry(join(ENTRIES_DIR, "config-check.ts"), dist);
     return join(dist, `${name}.js`);
   }
 
@@ -455,7 +460,9 @@ describe("the hook bundles, built as Claude Code runs them", () => {
    */
   const BUNDLE_BUDGET_BYTES: Record<string, number> = {
     "after-merge": 360_000,
-    "agent-usage": 300_000,
+    // agent-usage, session-name and verify-gate hold no zod module ("no zod on a warm run"
+    // below): a parser that creeps back in is about 200 KB over their budgets.
+    "agent-usage": 39_300,
     "builder-finish": 320_000,
     "fable-session": 330_000,
     "job-route": 390_000,
@@ -463,13 +470,13 @@ describe("the hook bundles, built as Claude Code runs them", () => {
     // 10 KB: it imports no spec and no frame, only the hook's own few modules.
     "playwright-output": 12_000,
     "review-record": 330_000,
-    "session-name": 300_000,
+    "session-name": 32_700,
     "subagent-background": 310_000,
     "task-start": 330_000,
     "tier-view": 330_000,
     "update-check": 355_000,
     "user-away": 330_000,
-    "verify-gate": 310_000,
+    "verify-gate": 96_000,
     "worktree-leftovers": 320_000,
   };
 
@@ -482,29 +489,9 @@ describe("the hook bundles, built as Claude Code runs them", () => {
     expect(size).toBeLessThanOrEqual(BUNDLE_BUDGET_BYTES[name] ?? 0);
   });
 
-  /**
-   * Every file `entry` loads, found from its source: its imports, and theirs, through relative
-   * paths only (a package is not ours to walk). Paths are relative to the repo root.
-   */
-  function reachableFrom(entry: string): Set<string> {
-    const transpiler = new Bun.Transpiler({ loader: "ts" });
-    const seen = new Set<string>();
-    const pending = [entry];
-    for (let file = pending.pop(); file !== undefined; file = pending.pop()) {
-      if (seen.has(file)) continue;
-      seen.add(file);
-      for (const { path } of transpiler.scanImports(readFileSync(file, "utf8"))) {
-        if (!path.startsWith(".")) continue;
-        const base = join(dirname(file), path);
-        const found = [`${base}.ts`, join(base, "index.ts")].find((one) => existsSync(one));
-        if (found !== undefined) pending.push(found);
-      }
-    }
-    return new Set([...seen].map((file) => relative(ROOT, file).split(sep).join("/")));
-  }
-
   test.each(BUNDLES)("%s: its entry reaches only its own hook spec, never specs.ts", (name) => {
-    const specFiles = [...reachableFrom(join(ENTRIES_DIR, `${name}.ts`))]
+    const specFiles = [...reachableFiles(join(ENTRIES_DIR, `${name}.ts`))]
+      .map((file) => relative(ROOT, file).split(sep).join("/"))
       .filter((file) => file.startsWith("src/hooks/specs"))
       .sort();
     // A `USER_HOOKS` bundle has no spec and never enters the frame: it reaches none.
@@ -582,5 +569,213 @@ describe("the hook bundles, built as Claude Code runs them", () => {
     const last = readLastCheck(updateFiles(cliPaths(env).stateDir));
     expect(last?.result).toBe("skipped");
     expect(last?.detail).toBe(optOutDetail("DISABLE_AUTOUPDATER"));
+  });
+
+  describe("the project file through a built hook", () => {
+    const jobRouteInput = (repo: string, command: string) =>
+      JSON.stringify({
+        hook_event_name: "PreToolUse",
+        cwd: repo,
+        tool_name: "Bash",
+        tool_input: { command },
+      });
+
+    test("job-route: the first run checks the file, the second reads the cache; the route works on both", async () => {
+      const file = await built("job-route");
+      const repo = makeRepo();
+      writeClaudeFile(repo, "cc-smart-dev-kit.json", { jobs: { route: true } });
+      const log = join(tempDir("config-log"), "hooks.log");
+      const env = { ...hookEnv(), [HOOK_LOG_ENV]: log };
+      for (let run = 0; run < 2; run += 1) {
+        const result = runBundle(file, jobRouteInput(repo, "bunx tsc --noEmit"), env);
+        expect(result.stderr).toBe("");
+        expect(JSON.parse(result.stdout).hookSpecificOutput.updatedInput.command).toContain(
+          "job run --kind tsc -- bunx tsc --noEmit",
+        );
+      }
+      const configs = readFileSync(log, "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line).config);
+      expect(configs).toEqual(["checked", "cached"]);
+    });
+
+    test("without the checker beside it, a hook fails closed in its own way with the one fix", async () => {
+      const file = await built("job-route");
+      const dist = dirname(file);
+      rmSync(join(dist, "config-check.js"));
+      const repo = makeRepo();
+      writeClaudeFile(repo, "cc-smart-dev-kit.json", { jobs: { route: true } });
+      // job-route cannot read the file's `jobs` part, so the person's own default decides: off.
+      const left = runBundle(file, jobRouteInput(repo, "bunx tsc --noEmit"), hookEnv());
+      expect(left).toEqual({ exitCode: 0, stdout: "", stderr: "" });
+      // An informational hook says the problem in one line.
+      const named = await built("session-name");
+      rmSync(join(dirname(named), "config-check.js"));
+      const said = runBundle(
+        named,
+        JSON.stringify({
+          hook_event_name: "UserPromptSubmit",
+          cwd: repo,
+          session_id: "s",
+          prompt: "hi",
+        }),
+        hookEnv(),
+      );
+      expect(said.exitCode).toBe(0);
+      expect(said.stdout).toBe("");
+      expect(said.stderr.split("\n").filter((line) => line !== "")).toHaveLength(1);
+      expect(said.stderr).toContain(
+        "cc-smart-dev-kit session-name: The plugin's config checker is not usable",
+      );
+      expect(said.stderr).toContain("claude plugin install cc-smart-dev-kit@cc-smart-dev-kit");
+    });
+
+    test("a checker that throws a plain error is a crash of the hook, not a config problem", async () => {
+      const file = await built("job-route");
+      const dist = dirname(file);
+      writeFileSync(
+        join(dist, "config-check.js"),
+        'export function checkProjectText() { throw new Error("a bug in the parser"); }\n',
+      );
+      const repo = makeRepo();
+      writeClaudeFile(repo, "cc-smart-dev-kit.json", { jobs: { route: true } });
+      const result = runBundle(file, jobRouteInput(repo, "bunx tsc --noEmit"), hookEnv());
+      expect(result).toEqual({
+        exitCode: 0,
+        stdout: "",
+        stderr: "cc-smart-dev-kit job-route: a bug in the parser\n",
+      });
+    });
+  });
+
+  describe("no zod on a warm run", () => {
+    /**
+     * zod writes `globalThis.__zod_globalConfig` when its core is evaluated. This preload gives
+     * that name a getter that leaves a mark file, and a setter, so zod's `?? (… = {})` still works:
+     * a getter alone would make a cold run crash and still write the mark.
+     */
+    const TRAP = `import { appendFileSync } from "node:fs";
+let stored;
+Object.defineProperty(globalThis, "__zod_globalConfig", {
+  configurable: true,
+  get() {
+    appendFileSync(process.env.ZOD_MARK, "x");
+    return stored;
+  },
+  set(value) {
+    stored = value;
+  },
+});
+`;
+
+    /**
+     * The hooks the frame change makes zod-free: those whose bundle came out with no zod module
+     * when `run.ts`'s project imports were stubbed (the baseline of this change), with the answer
+     * each gives to the input below, which a crash would not give.
+     */
+    const ZOD_FREE: Record<
+      string,
+      { input: (cwd: string) => object; stdout?: string; stderr?: string }
+    > = {
+      "agent-usage": {
+        input: (cwd) => ({ hook_event_name: "SubagentStop", session_id: "s", cwd }),
+        stderr: "cc-smart-dev-kit agent-usage: the input names no agent transcript\n",
+      },
+      "verify-gate": {
+        // An edit with no run of the project's fast check since: the one Stop block.
+        input: (cwd) => {
+          const transcript = join(tempDir("zod-transcript"), "session.jsonl");
+          const edit = {
+            type: "tool_use",
+            id: "t1",
+            name: "Edit",
+            input: { file_path: join(cwd, "a.ts") },
+          };
+          const line = { type: "assistant", message: { role: "assistant", content: [edit] } };
+          writeFileSync(transcript, `${JSON.stringify(line)}\n`);
+          return { hook_event_name: "Stop", session_id: "s", cwd, transcript_path: transcript };
+        },
+        stdout: "has not run the project's fast check since: run `bun test`",
+      },
+      "session-name": {
+        // A session names itself once, so each run is a new session.
+        input: (cwd) => ({
+          hook_event_name: "UserPromptSubmit",
+          session_id: crypto.randomUUID(),
+          cwd,
+          prompt: "hello",
+        }),
+        stdout: "This session has no name yet.",
+      },
+    };
+
+    test("the list is exactly the hooks whose bundles hold no zod module", async () => {
+      const withZod: string[] = [];
+      for (const name of BUNDLES) {
+        const dist = tempDir("zod-list");
+        await buildEntry(join(ENTRIES_DIR, `${name}.ts`), dist);
+        if (/^\/\/ node_modules\/zod\//m.test(readFileSync(join(dist, `${name}.js`), "utf8")))
+          withZod.push(name);
+      }
+      expect(BUNDLES.filter((name) => !withZod.includes(name)).sort()).toEqual(
+        ["playwright-output", ...Object.keys(ZOD_FREE)].sort(),
+      );
+    });
+
+    test.each(Object.keys(ZOD_FREE))(
+      "%s: a cold cache evaluates zod (the control) and a warm one does not, with the same answer",
+      async (name) => {
+        const dist = tempDir("hook-bundle");
+        await buildEntry(join(ENTRIES_DIR, `${name}.ts`), dist);
+        await buildEntry(join(ENTRIES_DIR, "config-check.ts"), dist);
+        const trap = join(tempDir("zod-trap"), "trap.js");
+        writeFileSync(trap, TRAP);
+        const repo = makeRepo();
+        writeClaudeFile(repo, "cc-smart-dev-kit.json", {
+          sessionNames: true,
+          checks: { fast: "bun test" },
+        });
+        const env = hookEnv();
+        const marks = tempDir("zod-marks");
+        const guard = subprocessGuard();
+        const run = (mark: string) => {
+          const result = Bun.spawnSync(
+            [
+              process.execPath,
+              "--no-env-file",
+              bunConfigArg(join(ROOT, "plugin")),
+              "--preload",
+              trap,
+              ...guard.args,
+              join(dist, `${name}.js`),
+            ],
+            {
+              env: { ...env, ...guard.env, ZOD_MARK: mark },
+              stdin: Buffer.from(JSON.stringify(ZOD_FREE[name]?.input(repo))),
+              stdout: "pipe",
+              stderr: "pipe",
+            },
+          );
+          return {
+            exitCode: result.exitCode,
+            stdout: result.stdout.toString(),
+            stderr: result.stderr.toString(),
+          };
+        };
+        const answers = (result: ReturnType<typeof run>) => {
+          const want = ZOD_FREE[name];
+          expect(result.exitCode).toBe(0);
+          if (want?.stdout !== undefined) expect(result.stdout).toContain(want.stdout);
+          if (want?.stderr !== undefined) expect(result.stderr).toBe(want.stderr);
+        };
+        const cold = run(join(marks, "cold"));
+        answers(cold);
+        expect(existsSync(join(marks, "cold"))).toBe(true);
+        const warm = run(join(marks, "warm"));
+        answers(warm);
+        expect(existsSync(join(marks, "warm"))).toBe(false);
+      },
+    );
   });
 });

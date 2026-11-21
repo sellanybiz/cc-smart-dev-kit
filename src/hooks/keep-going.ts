@@ -43,14 +43,11 @@
  * of the task store it cannot make. A store it cannot read and a broken or too-new project file
  * are one stderr line; a crash is the frame's one line. A reminder must never hold a person's
  * work.
- *
- * **`notify` may ask this module's decision** (`keepGoingWouldBlockAt`), as it asks
- * `verify-gate`'s: a stop this hook blocks is not the end of the turn.
  */
 import { COMMAND } from "../build-info/names";
-import { type CliPaths, cliPaths } from "../cli/paths";
+import type { CliPaths } from "../cli/paths";
 import { isHerdrAgent } from "../herdr/labels";
-import { locateCheckout, ownHooksOf, type Project } from "../project/resolve";
+import type { Project } from "../project/resolve";
 import { projectKey } from "../tasks/context";
 import { TASK_TOOL } from "../tasks/words";
 import { CLAIM_PROCESS, callerOf } from "../tasks/work/identity";
@@ -283,21 +280,4 @@ export function keepGoingAnswer(
 export function keepGoing(context: HookContext): HookResult {
   if (context.event !== "Stop") return SILENT;
   return keepGoingAnswer(context.input, context.project, context.paths, context.env);
-}
-
-/**
- * `keepGoing`'s decision at the input's own folder, read the way the frame reads it: the
- * project's `ownHooks` first; its file is never read (a broken one judges the same). For a
- * sibling Stop hook (the notifier). Never throws: what cannot be read blocks nothing.
- */
-export function keepGoingWouldBlockAt(input: HookInput, env: Env): boolean {
-  const cwd = stringField(input.cwd);
-  if (cwd === null) return false;
-  try {
-    const checkout = locateCheckout(cwd, { env });
-    if (checkout === null || ownHooksOf(checkout).includes(KEEP_GOING)) return false;
-    return keepGoingAnswer(input, checkout, cliPaths(env), env).stdout !== undefined;
-  } catch {
-    return false;
-  }
 }

@@ -22,6 +22,7 @@ import {
   loadProjectConfig,
   locateCheckout,
   locateCheckoutAsync,
+  type Project,
   type ResolveOptions,
 } from "../project/resolve";
 import { repoKey } from "../workflow/reviews";
@@ -69,7 +70,12 @@ export function projectKey(repo: string): string {
   return repoKey(repo);
 }
 
-export function taskContext(cwd: string, env: Env = process.env): TaskContext {
+/**
+ * `read`: the project a hook's frame already read for this folder. The context then takes its
+ * checkout and its file from it, so a hook run reads and parses the project file once.
+ */
+export function taskContext(cwd: string, env: Env = process.env, read?: Project): TaskContext {
+  if (read !== undefined) return contextOf(read, cwd, read);
   let checkout: Checkout | null;
   try {
     checkout = locateCheckout(cwd, { env });
@@ -112,8 +118,11 @@ export function folderProject(
   return projectKeyOf(locateCheckout(cwd, options), cwd);
 }
 
-/** The answer for a checkout already found (null: the folder is not in git). */
-function contextOf(checkout: Checkout | null, cwd: string): TaskContext {
+/**
+ * The answer for a checkout already found (null: the folder is not in git). The project file is
+ * read here unless `read` holds it.
+ */
+function contextOf(checkout: Checkout | null, cwd: string, read?: Project): TaskContext {
   if (checkout === null) {
     return {
       ok: true,
@@ -133,7 +142,7 @@ function contextOf(checkout: Checkout | null, cwd: string): TaskContext {
   };
   let config: CcSmartDevKitConfig | null;
   try {
-    config = loadProjectConfig(checkout).config;
+    config = (read ?? loadProjectConfig(checkout)).config;
   } catch (error) {
     const why = checkoutFailure(error);
     return { ...base, projectTasks: { ok: false, why }, projectConfig: { ok: false, why } };

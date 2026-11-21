@@ -50,11 +50,13 @@ Every hook runs in the same frame (`src/hooks/run.ts`), in this order:
    name; it still accepts `job-route`'s,
    because a project file written before 1.0.0 may carry it, and the name silences nothing
    (`UNSWITCHABLE_HOOK_NAMES`).
-3. **Read `cc-smart-dev-kit.json`.** When it is broken or needs a newer plugin, the hook
+3. **Read `cc-smart-dev-kit.json`**, through the checked cache (§ The checked project file).
+   When it is broken or needs a newer plugin, the hook
    **fails closed**, each in the way that suits its event: `user-away`'s question-tool entry asks
    the person, `job-route` leaves the line as written (with no project there is nothing to route
    for), an informational hook says one line. "Closed"
-   never means silent: a person must hear why.
+   never means silent: a person must hear why. A file that cannot be read at all (a folder, no
+   permission) is a crash, not a config problem.
 4. **Run.** An informational hook's error is one line on stderr and exit 0: its bug never
    stops work. A crash of `user-away`'s question-tool entry answers through its `onCrash`
    (`guardCrash` in `guard-crash.ts`): it asks about the call in its own domain, so a crash never lets
@@ -93,10 +95,12 @@ that want them all; **an entry never imports it**, because it builds all the hoo
 `guardCrash` has its own module (`guard-crash.ts`), so `user-away`'s spec can use it without a
 cycle through `specs.ts`.
 
-Before the split each hook bundle was about 585 KB and a run took about 32 ms. Now each bundle is
-266 to 357 KB and a run takes about 22 ms (`tier-view`, median of 40 runs on one machine). `entries.test.ts`
+Before the split each hook bundle was about 585 KB and a run took about 32 ms. After it each
+bundle was 266 to 357 KB and a run took about 22 to 27 ms (median of 40 runs on a quiet machine,
+against about 4 ms for an empty bun script). The checked project file (below) took the three
+hooks that need no zod of their own down to 29 to 87 KB. `entries.test.ts`
 builds every bundle `hooks.json` runs (the hooks with a spec, and `update-check` and
-`playwright-output`) into a temp folder and holds three proofs for them:
+`playwright-output`) into a temp folder and holds four proofs for them:
 
 - **A size budget** for each bundle (the measured size plus about a tenth). It catches an entry
   that loads the whole list of hooks, which is about 585 KB. It can miss one extra spec: a small
@@ -114,10 +118,66 @@ builds every bundle `hooks.json` runs (the hooks with a spec, and `update-check`
   its own proof that the built file is wired: the session-start record it writes, and the
   screenshot path it rewrites.
 
-What is left is mostly the frame's own load: `run.ts` reads the project's file, and that pulls
-in zod and the config schemas (about 235 KB of the bundle and about 17 ms of a run of about
-22 ms, against about 4 ms for an empty bun script). Making the frame lighter is a separate
-piece of work.
+- **A zod trap** for the hooks that carry no zod (below): the bundle runs under a preload that
+  marks any evaluation of zod, cold and warm.
+
+### The checked project file
+
+Reading `cc-smart-dev-kit.json` used to cost most of a hook run: the parse needs zod and the
+config schemas (about 235 KB of a bundle and about 17 ms of a run). The frame now reads the
+file's bytes once and looks them up in a cache of checked answers
+(`src/hooks/checked-config.ts`); the parser sits in a **sibling bundle**, `dist/config-check.js`
+(`src/entries/config-check.ts`), that a hook loads only on a miss. The sibling is loaded the way
+`cc-smart-dev-kit task mcp` loads `tasks-mcp.js`: a computed `import()` the bundler cannot inline.
+
+- **The key** is sha256 over the parser's build fingerprint, the kind of file and the bytes.
+  The fingerprint is a Bun macro (`src/build-info/parser-fingerprint.ts`) that hashes the source
+  of every module the sibling reaches, with the plugin version and the installed zod version. It
+  is not the version alone: a schema changed and rebuilt at the same version would serve an old
+  success, and the hook would fail open. The frame and the sibling both bake it in, and the
+  sibling returns its own with each answer, so a mixed install misses and says "reinstall the
+  plugin". The router bundle never imports it.
+- **The cache** is `<stateDir>/checked/<key>.json`, the folder `0700` and each entry `0600`,
+  written through `atomicWrite`. Only a success is written; a broken file is checked again every
+  run. At most 64 entries stay (the oldest by modified time go on the next miss), a temp file
+  from a killed writer goes once it is a minute old, and a file over 256 KB is parsed every time.
+  The cache holds only a project file, which has no secret field; `gateway.json` is never cached.
+- **Failing closed keeps its meaning.** A config problem arrives as data and goes to the hook's
+  `onConfigProblem`, with the same words as before. A sibling that cannot be loaded is the same
+  problem with one fix: reinstall the plugin. A bug in the parser, and a project file that
+  cannot be read at all (a folder, no permission), are thrown and stay crashes. A cache that
+  cannot be read or written is a miss, and `cc-smart-dev-kit doctor` warns (`!`) when the
+  `checked/` folder cannot be written, because every run then loads the sibling (about 20 to
+  46 ms).
+- **The hook log** (`CC_SMART_DEV_KIT_HOOK_LOG`) gains `config`: `none` (no file), `cached`,
+  `checked` (the sibling parsed it) or `broken`.
+- **One read per run.** `task-start` hands its frame's project to `taskContext`, and
+  `worktree-leftovers` reads the main checkout's file (not the worktree's) through the same
+  cache for `worktrees.rebuildable`. A module on a zod-free path imports `project/locate.ts` and
+  `project/config-facts.ts`, never `project/resolve.ts`: those two hold no zod, and
+  `resolve.ts` and `config.ts` re-export them, so their other importers did not change.
+
+**Which hooks are zod-free.** `agent-usage`, `session-name` and `verify-gate` hold no zod
+module: 272 KB to 36 KB, 266 KB to 30 KB and 283 KB to 87 KB, and a warm run evaluates none
+(`entries.test.ts` › "no zod on a warm run", with budgets of the measured size plus a tenth).
+The other hooks skip the parse on a hit and still load zod through their own imports; each
+chain below would have to go for one of them to join. Median of 40 runs of `session-name` and
+`verify-gate` on a machine at a load of about 20 on 12 cores (an empty bun script took 5 to
+8 ms): about 50 to 60 ms with the old bundles, 17 to 31 ms with these. `after-merge`,
+`job-route` and `tier-view` moved within the noise of that load. The chains left, by what keeps
+zod in the bundle:
+
+| Chain | Hooks |
+|---|---|
+| `workflow/resolve` (the personal file and `project/resolve`'s inline parser) | `after-merge`, `fable-session`, `job-route`, `review-record`, `builder-finish` |
+| `tasks/context` and `tasks/deploy/format` | `builder-finish`, `keep-going`, `task-start`, `user-away` |
+| `hooks/session-facts` and the gateway readers | `fable-session`, `keep-going`, `subagent-background`, `tier-view` |
+| `jobs/kinds` (the schemas) | `job-route`, and in `update-check` through `jobs/classify` |
+| `user-away/state.ts`, `gateway/limit-state.ts` | `user-away`, `tier-view` |
+| `worktrees/auto-state.ts` | `worktree-leftovers`, `after-merge` |
+
+`update-check` does not use the frame: its zod comes from `update/background`, which reaches
+`jobs/classify`, and from `portal/session-start`, which reaches the gateway.
 
 ### Worktrees: Claude Code's own
 

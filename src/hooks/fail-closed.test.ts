@@ -14,8 +14,9 @@ import { join } from "node:path";
 import { cliPaths } from "../cli/paths";
 import { hookEnv, makeRepo, runHook, writeClaudeFile } from "../testing/hooks";
 import { ASK_LOG_FILE, askLogFile } from "./ask-log";
+import { CHECKED_DIR } from "./checked-config";
 import { toolDecision } from "./io";
-import { type HookSpec, handleHook } from "./run";
+import { type HookObserved, type HookSpec, handleHook } from "./run";
 import { guardCrash, sessionNameHook, userAwayHook } from "./specs";
 
 const SESSION = "11111111-2222-3333-4444-555555555555";
@@ -307,7 +308,7 @@ describe("the record of an ask", () => {
     expect(text.trimEnd().split("\n").at(-1)).toContain(`"at":${NOW}`);
   });
 
-  test("the record is the one file in the state folder, and a call that is not asked about writes none", async () => {
+  test("the record is the one ask file in the state folder, and a call that is not asked about writes none", async () => {
     const repo = makeRepo();
     writeClaudeFile(repo, "cc-smart-dev-kit.json", {});
     const env = hookEnv();
@@ -339,9 +340,10 @@ describe("the record of an ask", () => {
       ),
     ).toEqual({});
     expect(existsSync(state)).toBe(false);
-    // A question: one file, the record, and no temp file or other leftover beside it.
+    // A question: one file, the record, and no temp file or other leftover beside it. The checked
+    // project file (`checked/`) is the frame's own read, not the ask's.
     await run("ls -la; true");
-    expect(readdirSync(state)).toEqual([ASK_LOG_FILE]);
+    expect(readdirSync(state).filter((name) => name !== CHECKED_DIR)).toEqual([ASK_LOG_FILE]);
     expect(readFileSync(join(state, ASK_LOG_FILE), "utf8")).toContain('"hook":"asking-hook"');
   });
 
@@ -356,5 +358,54 @@ describe("the record of an ask", () => {
     );
     expect(JSON.parse(result.stdout ?? "{}").hookSpecificOutput.permissionDecision).toBe("deny");
     expect(existsSync(askLogFile(cliPaths(env).stateDir))).toBe(false);
+  });
+});
+
+describe("the project file's read", () => {
+  test("a project file that cannot be read at all is a crash, not a config problem", async () => {
+    const repo = makeRepo();
+    mkdirSync(join(repo, ".claude", "cc-smart-dev-kit.json"), { recursive: true });
+    const informational = await runHook(
+      sessionNameHook,
+      { hook_event_name: "SessionStart", session_id: SESSION, cwd: repo, source: "startup" },
+      hookEnv(),
+    );
+    expect(informational.stderr?.startsWith("cc-smart-dev-kit session-name: EISDIR")).toBe(true);
+    const guard = await runHook(
+      userAwayHook,
+      {
+        hook_event_name: "PreToolUse",
+        session_id: SESSION,
+        cwd: repo,
+        tool_name: "AskUserQuestion",
+        tool_input: { questions: [] },
+      },
+      hookEnv(),
+    );
+    expect(
+      askOf(guard).startsWith(
+        "cc-smart-dev-kit cannot check whether the person is available: EISDIR",
+      ),
+    ).toBe(true);
+  });
+
+  test("the run says how it got the file: none, checked, cached, broken", async () => {
+    const env = hookEnv();
+    const factOf = async (repo: string): Promise<HookObserved> => {
+      const observed: HookObserved = {};
+      const input = { hook_event_name: "SessionStart", session_id: SESSION, cwd: repo };
+      await handleHook(sessionNameHook, JSON.stringify(input), env, NOW, undefined, observed);
+      return observed;
+    };
+    const none = makeRepo();
+    const good = makeRepo();
+    writeClaudeFile(good, "cc-smart-dev-kit.json", { sessionNames: true });
+    const broken = makeRepo();
+    mkdirSync(join(broken, ".claude"));
+    writeFileSync(join(broken, ".claude", "cc-smart-dev-kit.json"), "{nope");
+    expect((await factOf(none)).config).toBe("none");
+    expect((await factOf(good)).config).toBe("checked");
+    expect((await factOf(good)).config).toBe("cached");
+    expect((await factOf(broken)).config).toBe("broken");
   });
 });

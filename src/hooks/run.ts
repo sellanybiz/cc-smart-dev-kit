@@ -9,9 +9,13 @@
  *    here (`ownHooksOf`), so it works even when the rest of the file is broken or needs a
  *    newer plugin. Nothing else silences a plugin hook: a project hook on the same event does
  *    not (it may be a logger, and a guard must not go quiet for it).
- * 3. Read the project's cc-smart-dev-kit.json. When it is broken or needs a newer plugin, the
- *    hook **fails closed** in its own way (`onConfigProblem`): `user-away` asks, an informational
- *    hook prints one line.
+ * 3. Read the project's cc-smart-dev-kit.json, through the checked cache
+ *    (`src/hooks/checked-config.ts`): a file seen before is not parsed again, and a run that hits
+ *    the cache loads no parser. When the file is broken or needs a newer plugin, the hook
+ *    **fails closed** in its own way (`onConfigProblem`): `user-away` asks, an informational
+ *    hook prints one line. A parser that cannot be loaded is the same problem, with its own
+ *    words. A file that cannot be read at all (a folder, no permission) is a crash, as is a
+ *    bug in the parser.
  * 4. Run the hook. A hook with an `onCrash` (`user-away`, the one hook left that asks) answers
  *    a crash through it; every other hook's crash is one line on stderr and exit 0 — a bug
  *    never stops a person's work. Claude Code holds a second belt for `user-away`: its
@@ -27,20 +31,16 @@
  * `ownHooks` (which is read on its own, before the file).
  *
  * `CC_SMART_DEV_KIT_HOOK_LOG` (a file path), when set, gets one JSON line per hook run: what
- * `cc-smart-dev-kit doctor --live` reads to prove the hooks fired.
+ * `cc-smart-dev-kit doctor --live` reads to prove the hooks fired. It carries `config`, how the
+ * run got the project's file (`ConfigFact`), once the frame reached that step.
  */
 import { appendFileSync } from "node:fs";
 import { type CliPaths, cliPaths } from "../cli/paths";
 import { maskedLine } from "../gateway/plain-text";
-import { CcSmartDevKitConfigError } from "../project/config";
-import {
-  type Checkout,
-  loadProjectConfig,
-  locateCheckout,
-  ownHooksOf,
-  type Project,
-} from "../project/resolve";
+import { type Checkout, locateCheckout, ownHooksOf } from "../project/locate";
+import type { Project } from "../project/resolve";
 import { ASK_REASON_MAX, appendAsk, askLogFile } from "./ask-log";
+import { type ConfigFact, loadCheckedProject } from "./checked-config";
 import type { startDetached } from "./detached";
 import {
   askReason,
@@ -211,11 +211,20 @@ function recordAsk(
   return result;
 }
 
+/**
+ * What the frame learned on its way that the answer does not carry, for the hook log: how the
+ * run got the project's file. Set only once the frame reached that step.
+ */
+export interface HookObserved {
+  config?: ConfigFact;
+}
+
 /** The frame's steps 1 to 4 (the file's header): the hook's answer. Never throws. */
 async function answer(
   spec: HookSpec,
   input: HookInput | null,
   context: HookEnvContext,
+  observed: HookObserved,
 ): Promise<HookResult> {
   const { env } = context;
   let event = "";
@@ -243,20 +252,18 @@ async function answer(
 
     if (spec.alwaysOn !== true && ownHooksOf(checkout).includes(spec.name)) return SILENT;
 
-    let project: Project;
-    try {
-      project = loadProjectConfig(checkout);
-    } catch (error) {
-      if (error instanceof CcSmartDevKitConfigError) {
-        return await spec.onConfigProblem(error.message, input, event, checkout, context);
-      }
-      throw error;
+    // A config problem comes back as data; a read error on the file and a bug in the parser are
+    // thrown, and reach `crashResult` below.
+    const loaded = await loadCheckedProject(checkout, { paths: context.paths });
+    observed.config = loaded.fact;
+    if (!loaded.ok) {
+      return await spec.onConfigProblem(loaded.message, input, event, checkout, context);
     }
     return await spec.run({
       input,
       event,
       cwd,
-      project,
+      project: loaded.project,
       env,
       paths: context.paths,
       nowMs: context.nowMs,
@@ -270,7 +277,8 @@ async function answer(
 /**
  * Runs one hook on its input text: the answer of the frame's steps, then the record of an ask.
  * Never throws. `nowMs` is the time a recorded ask carries; `start` is the starter a test
- * hands in for a hook that starts a background program.
+ * hands in for a hook that starts a background program; `observed` is filled with what the
+ * frame learned for the hook log (`runHookEntry`).
  */
 export async function handleHook(
   spec: HookSpec,
@@ -278,6 +286,7 @@ export async function handleHook(
   env: Env,
   nowMs: number = Date.now(),
   start?: DetachedStarter,
+  observed: HookObserved = {},
 ): Promise<HookResult> {
   const context: HookEnvContext = {
     env,
@@ -286,15 +295,23 @@ export async function handleHook(
     ...(start !== undefined && { start }),
   };
   const input = parseHookInput(text);
-  const result = await answer(spec, input, context);
+  const result = await answer(spec, input, context, observed);
   return recordAsk(spec, input, result, context);
 }
 
 /**
  * Appends one line to the hook log, when `CC_SMART_DEV_KIT_HOOK_LOG` names one. Never throws.
- * `facts`: what the spec's own parser read (`logFacts`), for `doctor --live`.
+ * `facts`: what the spec's own parser read (`logFacts`), for `doctor --live`. `observed.config`:
+ * how the run got the project's file.
  */
-function logRun(spec: HookSpec, text: string, result: HookResult, env: Env, nowMs: number): void {
+function logRun(
+  spec: HookSpec,
+  text: string,
+  result: HookResult,
+  env: Env,
+  nowMs: number,
+  observed: HookObserved,
+): void {
   const file = env[HOOK_LOG_ENV];
   if (file === undefined || file === "") return;
   try {
@@ -308,6 +325,7 @@ function logRun(spec: HookSpec, text: string, result: HookResult, env: Env, nowM
         event: stringField(input?.hook_event_name),
         cwd: stringField(input?.cwd),
         exitCode: result.exitCode ?? 0,
+        ...(observed.config !== undefined && { config: observed.config }),
         stdout: (result.stdout ?? "").slice(0, 2000),
         ...(Object.keys(facts).length === 0 ? {} : { facts }),
       })}\n`,
@@ -324,8 +342,9 @@ function logRun(spec: HookSpec, text: string, result: HookResult, env: Env, nowM
 export async function runHookEntry(spec: HookSpec): Promise<never> {
   const text = await Bun.stdin.text();
   const nowMs = Date.now();
-  const result = await handleHook(spec, text, process.env, nowMs);
-  logRun(spec, text, result, process.env, nowMs);
+  const observed: HookObserved = {};
+  const result = await handleHook(spec, text, process.env, nowMs, undefined, observed);
+  logRun(spec, text, result, process.env, nowMs, observed);
   // Bun.write waits until the bytes are written, so the exit below cuts nothing off.
   if (result.stdout !== undefined) await Bun.write(Bun.stdout, result.stdout);
   if (result.stderr !== undefined) await Bun.write(Bun.stderr, `${result.stderr}\n`);
