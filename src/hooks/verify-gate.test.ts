@@ -1,12 +1,13 @@
 /** The verification gate: one Stop block when files changed and the fast check did not run. */
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, symlinkSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { cliPaths } from "../cli/paths";
+import { parseCcSmartDevKitConfig } from "../project/config";
 import { hookEnv, makeClone, runHook, writeClaudeFile } from "../testing/hooks";
 import { git, tempDir } from "../testing/temp";
 import { verifyGateHook } from "./specs";
-import { ranCheck } from "./verify-gate";
+import { ranCheck, verifyGateWouldBlock } from "./verify-gate";
 
 const SESSION = "11111111-2222-3333-4444-555555555555";
 const CHECK = "bun run typecheck";
@@ -407,6 +408,45 @@ describe("verify-gate", () => {
     const path = transcript([EDIT]);
     const input = { ...stop(repo, path), hook_event_name: "SubagentStop" };
     expect(await runHook(verifyGateHook, input, hookEnv())).toEqual({});
+  });
+});
+
+describe("verify-gate: one checkout under two spellings", () => {
+  // On Windows `realpathSync` keeps an 8.3 short name (`C:\Users\RUNNER~1\…`) as written, while
+  // git names the checkout by its long one: CI's temp folder has the short spelling, so the same
+  // checkout had two names and the edit looked outside it. A link gives a Linux checkout a second
+  // name too, but `realPath` follows it, so the test gives the hook the `realPath` of such a
+  // machine: it leaves every spelling as it is.
+  const keepsSpelling = (path: string) => resolve(path);
+
+  function wouldBlock(repo: string, file: string): boolean {
+    const config = parseCcSmartDevKitConfig(JSON.stringify({ checks: { fast: CHECK } }), "test");
+    const edit = toolUse("Edit", { file_path: file });
+    return verifyGateWouldBlock(stop(repo, transcript([edit])), config, hookEnv(), keepsSpelling);
+  }
+
+  function aliased(): { alias: string; repo: string } {
+    const repo = project();
+    const alias = join(tempDir("alias"), "repo");
+    symlinkSync(repo, alias, "dir");
+    return { alias, repo };
+  }
+
+  test("an edit named by the other spelling of the checkout counts as a change", () => {
+    const { alias, repo } = aliased();
+    expect(wouldBlock(repo, join(alias, "src", "new.ts"))).toBe(true);
+  });
+
+  test("a plan file named by the other spelling is still excluded", () => {
+    const { alias, repo } = aliased();
+    // The edit made the folder: a spelling is compared on disk only where the folder exists.
+    mkdirSync(join(repo, ".claude", "plans"), { recursive: true });
+    expect(wouldBlock(repo, join(alias, ".claude", "plans", "script.ts"))).toBe(false);
+  });
+
+  test("a file outside the checkout is no change under any spelling", () => {
+    const { repo } = aliased();
+    expect(wouldBlock(repo, join(tempDir("outside"), "a.ts"))).toBe(false);
   });
 });
 
