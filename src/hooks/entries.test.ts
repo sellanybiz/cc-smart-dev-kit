@@ -460,7 +460,8 @@ describe("the hook bundles, built as Claude Code runs them", () => {
    * grows on purpose raises its own number here, with its reason in the commit.
    */
   const BUNDLE_BUDGET_BYTES: Record<string, number> = {
-    "after-merge": 360_000,
+    // 376 KB measured: the task store's reader, behind a dynamic import, for the lead's Kept note.
+    "after-merge": 414_000,
     // agent-usage, session-name and verify-gate hold no zod module ("no zod on a warm run"
     // below): a parser that creeps back in is about 200 KB over their budgets.
     "agent-usage": 39_300,

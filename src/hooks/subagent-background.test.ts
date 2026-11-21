@@ -6,8 +6,9 @@
  * `docs/claude-code-contract.md` § Hooks.
  */
 import { describe, expect, test } from "bun:test";
-import { writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { cliPaths } from "../cli/paths";
 import { hookEnv, makeRepo, runHook, writeClaudeFile } from "../testing/hooks";
 import { tempDir } from "../testing/temp";
 import { subagentBackgroundHook } from "./specs";
@@ -354,6 +355,68 @@ describe("the hook", () => {
         hookEnv(),
       ),
     ).toEqual({});
+  });
+
+  describe("one block per background task, not one per stop", () => {
+    /** The stop of an agent whose transcript shows it started `shell`, still in the list. */
+    const stopWith = (repo: string, shell: string, overrides: Record<string, unknown> = {}) =>
+      stop(repo, {
+        agent_transcript_path: transcript(`Command running in background with ID: ${shell}.`),
+        background_tasks: [{ ...SHELL_TASK, id: shell }],
+        ...overrides,
+      });
+
+    test("a re-woken agent stops again with stop_hook_active false: the second stop goes through, saying why", async () => {
+      // Claude Code wakes the agent when its task reports, and the new stop carries
+      // `stop_hook_active: false`: the same block and report used to repeat 4 or 5 times.
+      const repo = repoWithConfig();
+      const env = hookEnv();
+      expect(await runHook(subagentBackgroundHook, stopWith(repo, "shell1234"), env)).toEqual({
+        stdout: BLOCK,
+      });
+      expect(await runHook(subagentBackgroundHook, stopWith(repo, "shell1234"), env)).toEqual({
+        stderr:
+          "cc-smart-dev-kit subagent-background: background work of this agent (shell1234) is still running, and it was told once: this stop goes through.",
+      });
+      // And it stays through: the record holds.
+      expect(await runHook(subagentBackgroundHook, stopWith(repo, "shell1234"), env)).toEqual({
+        stderr:
+          "cc-smart-dev-kit subagent-background: background work of this agent (shell1234) is still running, and it was told once: this stop goes through.",
+      });
+    });
+
+    test("a new background task of the same agent is blocked once more", async () => {
+      const repo = repoWithConfig();
+      const env = hookEnv();
+      expect((await runHook(subagentBackgroundHook, stopWith(repo, "shell1234"), env)).stdout).toBe(
+        BLOCK,
+      );
+      expect((await runHook(subagentBackgroundHook, stopWith(repo, "shell5678"), env)).stdout).toBe(
+        BLOCK,
+      );
+      expect(
+        (await runHook(subagentBackgroundHook, stopWith(repo, "shell5678"), env)).stdout,
+      ).toBeUndefined();
+    });
+
+    test("another agent with the same task id is its own record", async () => {
+      const repo = repoWithConfig();
+      const env = hookEnv();
+      await runHook(subagentBackgroundHook, stopWith(repo, "shell1234"), env);
+      const other = stopWith(repo, "shell1234", { agent_id: "9f8e7d6c5b4a39281" });
+      expect((await runHook(subagentBackgroundHook, other, env)).stdout).toBe(BLOCK);
+    });
+
+    test("a record that cannot be kept lets the stop through: a subagent must always be able to finish", async () => {
+      const repo = repoWithConfig();
+      const env = hookEnv();
+      // The record's folder is a file, so nothing can be written there.
+      mkdirSync(cliPaths(env).stateDir, { recursive: true });
+      writeFileSync(join(cliPaths(env).stateDir, "subagent-background"), "not a folder");
+      const result = await runHook(subagentBackgroundHook, stopWith(repo, "shell1234"), env);
+      expect(result.stdout).toBeUndefined();
+      expect(result.stderr).toStartWith("cc-smart-dev-kit subagent-background: ");
+    });
   });
 
   test("off with no cc-smart-dev-kit.json: a project that never opted in does not notice the plugin", async () => {

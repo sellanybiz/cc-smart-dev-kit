@@ -665,13 +665,15 @@ function inputDialect(input: HookInput): Dialect {
  * Any other PowerShell line is left exactly as the model wrote it.
  *
  * `personal` is the person's own workflow file, already read (`jobRouteAnswer`): the route
- * decision needs only its default, and a caller with no file passes none.
+ * decision needs its machine-wide default. It has no default value here on purpose: a caller
+ * that forgot it would drop the person's switch, and heavy commands would run raw. A caller
+ * with no file passes `{}` itself.
  */
 export function jobRoute(
   context: HookContext,
+  personal: PersonalWorkflow,
   bashTool: (env: Env) => boolean = bashToolExists,
   platform: NodeJS.Platform = process.platform,
-  personal: PersonalWorkflow = {},
 ): HookResult {
   const fields = toolInput(context.input);
   const command = stringField(fields.command);
@@ -710,7 +712,7 @@ export function jobRoute(
  */
 export async function jobRouteAnswer(context: HookContext): Promise<HookResult> {
   const personal = await loadPersonalWorkflow(context.paths);
-  return jobRoute(context, bashToolExists, process.platform, personal);
+  return jobRoute(context, personal, bashToolExists, process.platform);
 }
 
 /**

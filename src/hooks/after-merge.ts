@@ -6,7 +6,9 @@
  * are due:
  *
  * - **The worktree that was merged is finished.** When the session works in a worktree whose
- *   branch the pull request was, the note gives the steps that clear it.
+ *   branch the pull request was, the note gives the steps that clear it. A lead that still
+ *   holds another open plan keeps its worktree on purpose, so the note is one line instead:
+ *   `Kept: plan <slug> is still open here.` (`otherOpenPlans`, from the task store alone).
  * - **Finished worktrees can go.** When the pull request went into `worktrees.base`, in this
  *   repo's own remote, in the last 15 minutes, and was not seen before, the auto-clean starts
  *   (D48). Nothing is said to Claude about it, and **the other sessions are never told**: the
@@ -57,7 +59,11 @@ import {
 } from "../shell/command";
 import { gitCalls } from "../shell/git-calls";
 import { programName } from "../shell/program-name";
+import { TASK_TOOL } from "../tasks/words";
+import type { LeadPlanState } from "../tasks/work/lead-plans";
+import type { ReadState } from "../tasks/work/read";
 import { startBudget } from "./budget";
+import { cappedHookList } from "./capped-list";
 import { GUARD_GIT_TIMEOUT_MS, innermostWorktree, listWorktrees, runGit } from "./git";
 import { addContext, type HookResult, SILENT, stringField, toolInput } from "./io";
 import type { Env, HookContext } from "./run";
@@ -1450,6 +1456,60 @@ async function clearsAfterMerge(context: HookContext): Promise<boolean> {
   }
 }
 
+/** The states of a lead's plan that mean "another plan is open here": the rest are the plan just merged or already closed. */
+const KEPT_PLAN_STATES: ReadonlySet<LeadPlanState> = new Set([
+  "with-child",
+  "child-gone",
+  "waiting",
+  "no-files",
+  "ready",
+]);
+
+/** The one line for a lead that keeps its worktree: it still has other open plans here. */
+export function keptWorktreeNote(slugs: readonly string[]): string {
+  const one = slugs.length === 1;
+  return `Kept: ${one ? "plan" : "plans"} ${cappedHookList(slugs, (slug) => slug, TASK_TOOL.list)} ${one ? "is" : "are"} still open here.`;
+}
+
+/**
+ * The slugs of the plans this session holds open besides the one just merged: the plans it
+ * leads (handed to a child, or its child gone) and the ones it queued, from the task store
+ * alone (`classifyLeadPlans`, the reader the keep-going hook shares). A lead keeps its worktree
+ * on purpose while it has one, so the clear-the-worktree advice does not apply. The session's
+ * own plan in flight and a closed plan are not "another" plan and give none.
+ *
+ * The store reader loads here, on a merge only, like the workflow resolver: a run that saw no
+ * merge loads none of it. The caller is looked up like the task tools do, falling back to the
+ * input's session id when no running record is found.
+ */
+async function otherOpenPlans(context: HookContext): Promise<ReadState<string[]>> {
+  const { cwd, env, input, paths, project } = context;
+  try {
+    const [{ projectKey }, { callerOf }, { classifyLeadPlans }, { readWorkStore }] =
+      await Promise.all([
+        import("../tasks/context"),
+        import("../tasks/work/identity"),
+        import("../tasks/work/lead-plans"),
+        import("../tasks/work/read"),
+      ]);
+    const sessionId = stringField(input.session_id);
+    const who = callerOf({ env, cwd, claudeConfigDir: paths.claudeConfigDir }) ?? {
+      sessionId,
+      pid: null,
+      procStart: null,
+    };
+    if (who.sessionId === null && who.pid === null) return { state: "none" };
+    const key = projectKey(project.mainCheckout ?? project.root);
+    return readWorkStore(paths, (db) =>
+      classifyLeadPlans(db, key, who)
+        .filter((entry) => KEPT_PLAN_STATES.has(entry.state))
+        .map((entry) => entry.plan.plan ?? `#${entry.plan.number}`),
+    );
+  } catch (error) {
+    return { state: "unreadable", why: error instanceof Error ? error.message : String(error) };
+  }
+}
+
 /**
  * The pull request `ref` names (or the current branch's), or null when gh cannot say.
  * `timeoutMs`: the time this call may take (the caller's own limit or what is left).
@@ -1552,8 +1612,16 @@ export async function afterMerge(context: HookContext): Promise<HookResult> {
     startAutoClean(context, repo, "merge");
   }
   if (outcome.clear === null) return SILENT;
-  return addContext(
+  // A lead with another open plan keeps its worktree: one line instead of the clearing steps.
+  const others = await otherOpenPlans(context);
+  if (others.state === "ready" && others.value.length > 0)
+    return addContext(event, keptWorktreeNote(others.value));
+  const note = addContext(
     event,
     clearWorktreeNote(outcome.clear.path, outcome.clear.branch, await clearsAfterMerge(context)),
   );
+  // A store that cannot be read keeps the note as it was, and says why on stderr.
+  return others.state === "unreadable"
+    ? { ...note, stderr: `${COMMAND} after-merge: ${others.why}` }
+    : note;
 }

@@ -492,8 +492,8 @@ describe("a heavy PowerShell line", () => {
       paths: cliPaths(env),
       project: { config: { jobs: { route: true } }, mainCheckout: null, root: repo },
     } as unknown as HookContext;
-    expect(jobRoute(context, () => false)).toEqual({});
-    const refused = JSON.parse(jobRoute(context, () => true).stdout ?? "{}");
+    expect(jobRoute(context, {}, () => false)).toEqual({});
+    const refused = JSON.parse(jobRoute(context, {}, () => true).stdout ?? "{}");
     expect(refused.hookSpecificOutput.permissionDecision).toBe("deny");
   });
 });
@@ -540,14 +540,14 @@ function contextFor(
 
 /** The command the hook rewrites a Bash line to, or null when it answers nothing. */
 function rewrittenTo(repo: string, command: string): null | string {
-  const result = jobRoute(contextFor(repo, command));
+  const result = jobRoute(contextFor(repo, command), {});
   if (result.stdout === undefined) return null;
   return JSON.parse(result.stdout).hookSpecificOutput.updatedInput.command;
 }
 
 /** The decision the hook gives a PowerShell line, or null when it answers nothing. */
 function powerShellDecision(repo: string, command: string): null | Record<string, unknown> {
-  const result = jobRoute(contextFor(repo, command, "PowerShell"), () => true);
+  const result = jobRoute(contextFor(repo, command, "PowerShell"), {}, () => true);
   return result.stdout === undefined ? null : JSON.parse(result.stdout).hookSpecificOutput;
 }
 
@@ -652,7 +652,7 @@ describe("a light line stays raw, a heavy one is routed", () => {
       ...contextFor(repo, "bun test"),
       project: { config: { jobs: { route: false } }, mainCheckout: null, root: repo },
     } as unknown as HookContext;
-    expect(jobRoute(off)).toEqual({});
+    expect(jobRoute(off, {})).toEqual({});
   });
 });
 
@@ -752,7 +752,7 @@ describe("a routed call gets the Bash tool's longest timeout", () => {
   it("the hook's own rewrite carries the ceiling of its env when the call set none", () => {
     const repo = repoWith({});
     const timeoutOf = (more: Parameters<typeof contextFor>[3]) =>
-      updated(jobRoute(contextFor(repo, "bun test", "Bash", more))).updatedInput.timeout;
+      updated(jobRoute(contextFor(repo, "bun test", "Bash", more), {})).updatedInput.timeout;
     expect(timeoutOf({})).toBe(600_000);
     expect(timeoutOf({ env: { BASH_DEFAULT_TIMEOUT_MS: "1800000" } })).toBe(1_800_000);
     expect(timeoutOf({ env: { BASH_MAX_TIMEOUT_MS: "900000" } })).toBe(900_000);
@@ -805,7 +805,7 @@ function gitRewrite(
     ...more,
     env: { HOME: world.home, ...more.env },
   });
-  const result = jobRoute(context, () => true, platform);
+  const result = jobRoute(context, {}, () => true, platform);
   return result.stdout === undefined
     ? null
     : JSON.parse(result.stdout).hookSpecificOutput.updatedInput.command;
@@ -823,6 +823,7 @@ describe.skipIf(NATIVE_WINDOWS)(
       // The answer carries the Bash tool's longest timeout, as a routed heavy command does.
       const answer = jobRoute(
         contextFor(world.repo, "git push origin x", "Bash", { env: { HOME: world.home } }),
+        {},
         () => true,
       );
       expect(JSON.parse(answer.stdout ?? "{}").hookSpecificOutput.updatedInput).toEqual({
@@ -927,13 +928,13 @@ describe.skipIf(NATIVE_WINDOWS)("a git command that stays as written", () => {
       ...contextFor(world.repo, "git push", "Bash", { env: { HOME: world.home } }),
       project: { config: { jobs: { route: false } }, mainCheckout: null, root: world.repo },
     } as unknown as HookContext;
-    expect(jobRoute(off, () => true)).toEqual({});
+    expect(jobRoute(off, {}, () => true)).toEqual({});
     expect(gitRewrite(world, "git push", {}, "win32")).toBeNull();
     expect(gitRewrite(world, "git push", {}, "darwin")).toBe(`${prefixOf(world)} git push`);
     const powerShell = contextFor(world.repo, "git push", "PowerShell", {
       env: { HOME: world.home },
     });
-    expect(jobRoute(powerShell, () => true)).toEqual({});
+    expect(jobRoute(powerShell, {}, () => true)).toEqual({});
   });
 
   it("a git command the reader cannot place, or that is not plain git: unchanged", () => {
@@ -1025,6 +1026,7 @@ describe.skipIf(NATIVE_WINDOWS)("which repo's hook decides", () => {
     const line = "git commit -m x";
     const fromWeb = jobRoute(
       contextFor(web, line, "Bash", { env: { HOME: world.home } }),
+      {},
       () => true,
     );
     expect(JSON.parse(fromWeb.stdout ?? "{}").hookSpecificOutput.updatedInput.command).toBe(
@@ -1048,7 +1050,7 @@ describe.skipIf(NATIVE_WINDOWS)("which repo's hook decides", () => {
       "Bash",
       { env: { HOME: world.home } },
     );
-    expect(jobRoute(outside, () => true)).toEqual({});
+    expect(jobRoute(outside, {}, () => true)).toEqual({});
   });
 });
 
@@ -1134,6 +1136,7 @@ describe.skipIf(NATIVE_WINDOWS)("a line with a git command is never queued whole
     const line = "bun run lint && bun test && git commit -m x";
     const refused = jobRoute(
       contextFor(world.repo, line, "Bash", { env: { HOME: world.home } }),
+      {},
       () => true,
     );
     const answer = JSON.parse(refused.stdout ?? "{}").hookSpecificOutput;
@@ -1148,6 +1151,7 @@ describe.skipIf(NATIVE_WINDOWS)("a line with a git command is never queued whole
     // keeps this line from getting it (the same context gives `git push` its prefix below).
     const refused = jobRoute(
       contextFor(world.repo, "bun test && git push", "Bash", { env: { HOME: world.home } }),
+      {},
       () => true,
     );
     expect(JSON.parse(refused.stdout ?? "{}").hookSpecificOutput.permissionDecision).toBe("deny");
@@ -1365,7 +1369,7 @@ describe("the tool reader reads a script file: the route's answers are the same 
 
 /** The reason of the deny the hook gives a Bash line, or null when it answers anything else. */
 function denialOf(repo: string, command: string): null | string {
-  const result = jobRoute(contextFor(repo, command));
+  const result = jobRoute(contextFor(repo, command), {});
   if (result.stdout === undefined) return null;
   const answer = JSON.parse(result.stdout).hookSpecificOutput;
   return answer.permissionDecision === "deny" ? String(answer.permissionDecisionReason) : null;
@@ -1491,7 +1495,7 @@ describe("a mixed line: heavy work beside anything else is refused", () => {
   });
 
   it("a deny stays a deny: the answer has no rewrite", () => {
-    const result = jobRoute(contextFor(repo(), "bun test; git status"));
+    const result = jobRoute(contextFor(repo(), "bun test; git status"), {});
     const answer = JSON.parse(result.stdout ?? "{}").hookSpecificOutput;
     expect(answer.permissionDecision).toBe("deny");
     expect(answer.updatedInput).toBeUndefined();
@@ -1533,7 +1537,7 @@ describe("a mixed line: what is not refused", () => {
       "cc-smart-dev-kit job run --kind test:run -- bun test; echo done",
       "cc-smart-dev-kit job run --kind test:run -- bun test; git status",
     ]) {
-      expect([line, jobRoute(contextFor(repo, line))]).toEqual([line, {}]);
+      expect([line, jobRoute(contextFor(repo, line), {})]).toEqual([line, {}]);
     }
   });
 
@@ -1541,8 +1545,8 @@ describe("a mixed line: what is not refused", () => {
     const repo = repoWith({
       "package.json": JSON.stringify({ scripts: { check: "tsc --noEmit && rm -rf dist" } }),
     });
-    expect(jobRoute(contextFor(repo, "git status && ls"))).toEqual({});
-    expect(jobRoute(contextFor(repo, "bun install && git status"))).toEqual({});
+    expect(jobRoute(contextFor(repo, "git status && ls"), {})).toEqual({});
+    expect(jobRoute(contextFor(repo, "bun install && git status"), {})).toEqual({});
     // The person's rules see only the call, never the body: the call is queued whole.
     expect(rewrittenTo(repo, "bun run check")).toBe(
       `${LAUNCHER} job run --kind tsc -- bun run check`,
@@ -1575,7 +1579,7 @@ describe("a mixed line: what is not refused", () => {
     expect(denialOf(repo, "bun run check; git status")).toContain("beside other commands");
     expect(denialOf(repo, "bun run tsc && rm x")).toContain("beside other commands");
     // A script that calls itself cannot be read whole: the line runs raw, as it did.
-    expect(jobRoute(contextFor(repo, "bun run loop"))).toEqual({});
+    expect(jobRoute(contextFor(repo, "bun run loop"), {})).toEqual({});
     // A script call whose body runs no heavy work is still a command of its own.
     expect(denialOf(repo, "bun run lint && bun test")).toContain("beside other commands");
   });
@@ -1602,7 +1606,7 @@ describe("a mixed line: what is not refused", () => {
       "bun run w2",
       "bun run bg",
     ]) {
-      expect([command, jobRoute(contextFor(repo, command))]).toEqual([command, {}]);
+      expect([command, jobRoute(contextFor(repo, command), {})]).toEqual([command, {}]);
     }
     expect(rewrittenTo(repo, "bun run t")).toBe(`${LAUNCHER} job run --kind test:run -- bun run t`);
   });
@@ -1613,7 +1617,7 @@ describe("a mixed line: what is not refused", () => {
       ...contextFor(repo, "bun test; git status"),
       project: { config: { jobs: { route: false } }, mainCheckout: null, root: repo },
     } as unknown as HookContext;
-    expect(jobRoute(off)).toEqual({});
+    expect(jobRoute(off, {})).toEqual({});
   });
 
   it("a PowerShell line keeps its own refusal, a git-only line keeps the hooks prefix", () => {

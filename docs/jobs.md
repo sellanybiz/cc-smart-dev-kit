@@ -269,8 +269,10 @@ the `switches.jobRoute` switch. Where it is set, and which one wins:
 3. **Off.** Until someone says on.
 
 `cc-smart-dev-kit workflow show` prints the value and where it came from. The hook reads it
-through the one resolver (`resolveJobRoute`, `src/workflow/resolve.ts`), never a reader of its
-own; a personal file that cannot be read leaves the project's value and the default standing.
+through the person's file in the checked cache (`loadPersonalWorkflow`,
+`src/hooks/checked-config.ts`) and decides with `jobRouteFrom` (`src/workflow/merge.ts`), the
+function `resolveJobRoute` and `workflow show` use too, so they agree; a personal file that
+cannot be read leaves the project's value and the default standing.
 
 When it is on, the plugin's `job-route` hook (PreToolUse on Bash; `src/hooks/job-route.ts`)
 rewrites the call to

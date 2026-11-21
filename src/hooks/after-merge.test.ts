@@ -4,7 +4,19 @@ import { dirname, join } from "node:path";
 import { cliPaths } from "../cli/paths";
 import { escapeRegex } from "../regex-escape";
 import { RUNNER_PROGRAM_NAMES } from "../shell/command";
-import { hookEnv, makeClone, recordingStarter, runHook, writeClaudeFile } from "../testing/hooks";
+import { projectKey } from "../tasks/context";
+import { openWorkDb, workDbFile } from "../tasks/work/db";
+import { createTask, reservePlan, updateTask } from "../tasks/work/store";
+import type { Who } from "../tasks/work/types";
+import {
+  hookEnv,
+  makeClone,
+  recordingStarter,
+  runHook,
+  writeClaudeFile,
+  writeSessionRecord,
+} from "../testing/hooks";
+import { sessionProcessIdentity } from "../testing/session-record";
 import { git, tempDir } from "../testing/temp";
 import {
   clearWorktreeNote,
@@ -547,6 +559,118 @@ describe("the hook", () => {
       mkdirSync(dirname(file), { recursive: true });
       writeFileSync(file, "{ not json");
       expect(await noteOf(env, worktree)).toBe(clearWorktreeNote(worktree, "fix/a", false));
+    });
+  });
+
+  describe("a lead that keeps its worktree for another open plan", () => {
+    const SESSION = "11111111-2222-3333-4444-555555555555";
+    /** The Claude process the hook sees as its caller: the test's own parent. */
+    const ME: Who = {
+      sessionId: SESSION,
+      pid: process.ppid,
+      procStart: sessionProcessIdentity(process.ppid).procStart ?? null,
+    };
+    const OTHER: Who = { sessionId: "other-session", pid: 999_999, procStart: "1" };
+
+    /** The hook's project, its environment, and the task store open for writing. */
+    function lead(workflow?: Record<string, unknown>) {
+      const { repo, worktree } = project(undefined, workflow);
+      const env = fakeGh(merged);
+      writeSessionRecord(env, {
+        sessionId: SESSION,
+        cwd: worktree,
+        name: "lead",
+        pid: process.ppid,
+      });
+      const db = openWorkDb(workDbFile(cliPaths(env)), { mode: "write" });
+      const key = projectKey(repo);
+      const plan = (slug: string, by: Who) => {
+        const made = createTask(
+          db,
+          { project: key, subject: slug, kind: "plan", plan: slug, files: [`src/${slug}/`] },
+          by,
+          1,
+        );
+        if (!made.ok) throw new Error(made.why);
+        return made.value;
+      };
+      return { db, env, key, plan, worktree };
+    }
+
+    const noteIn = async (env: Record<string, string>, worktree: string) =>
+      runHook(afterMergeHook, ran(worktree, "gh pr merge --squash"), env);
+    const contextOf = (result: { stdout?: string }): string =>
+      JSON.parse(result.stdout ?? "{}").hookSpecificOutput.additionalContext;
+
+    test("a plan the lead queued: one line says the worktree is kept", async () => {
+      const w = lead();
+      w.plan("alpha", ME);
+      w.db.close();
+      expect(contextOf(await noteIn(w.env, w.worktree))).toBe(
+        "Kept: plan alpha is still open here.",
+      );
+    });
+
+    test("a plan handed to a child counts, and several are named", async () => {
+      const w = lead();
+      w.plan("alpha", ME);
+      w.plan("beta", ME);
+      const reserved = reservePlan(w.db, {
+        project: w.key,
+        plan: "alpha",
+        who: ME,
+        holder: "child",
+        ignore: [],
+        caseFold: false,
+        now: 5,
+      });
+      if (!reserved.ok) throw new Error(reserved.why);
+      w.db.close();
+      expect(contextOf(await noteIn(w.env, w.worktree))).toBe(
+        "Kept: plans alpha, beta are still open here.",
+      );
+    });
+
+    test("the setting that turns the clearing off changes nothing: the plan is still kept", async () => {
+      const w = lead({ clearWorktreeAfterMerge: false });
+      w.plan("alpha", ME);
+      w.db.close();
+      expect(contextOf(await noteIn(w.env, w.worktree))).toBe(
+        "Kept: plan alpha is still open here.",
+      );
+    });
+
+    test("no other open plan: the clear note, as before", async () => {
+      const w = lead();
+      // Another session's plan, and a plan of the lead's that is already closed.
+      w.plan("theirs", OTHER);
+      const mine = w.plan("finished", ME);
+      const closed = updateTask(w.db, mine.id, { status: "done" }, ME, 2);
+      if (!closed.ok) throw new Error(closed.why);
+      w.db.close();
+      expect(contextOf(await noteIn(w.env, w.worktree))).toBe(
+        clearWorktreeNote(w.worktree, "fix/a", true),
+      );
+    });
+
+    test("the plan the session builds itself and has in flight is not another plan", async () => {
+      const w = lead();
+      const own = w.plan("alpha", ME);
+      const started = updateTask(w.db, own.id, { status: "in_progress" }, ME, 2);
+      if (!started.ok) throw new Error(started.why);
+      w.db.close();
+      expect(contextOf(await noteIn(w.env, w.worktree))).toBe(
+        clearWorktreeNote(w.worktree, "fix/a", true),
+      );
+    });
+
+    test("a store the hook cannot read leaves the clear note, with one stderr line", async () => {
+      const w = lead();
+      w.db.close();
+      writeFileSync(workDbFile(cliPaths(w.env)), "not a database");
+      const result = await noteIn(w.env, w.worktree);
+      expect(contextOf(result)).toBe(clearWorktreeNote(w.worktree, "fix/a", true));
+      expect(result.stderr).toStartWith("cc-smart-dev-kit after-merge: ");
     });
   });
 

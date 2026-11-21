@@ -27,8 +27,12 @@
  * its own tool writes: a Bash background launch, or an Agent launch's child. A line that is
  * not JSON is skipped; an unreadable transcript is no block at all.
  *
- * **One block, never two**: the stop a block caused carries `stop_hook_active: true`, and the
- * hook is silent there. The answer is `decision: "block"` with a plain reason and **no
+ * **One block per background task, never two**: the stop a block caused carries
+ * `stop_hook_active: true`, and the hook is silent there. A re-woken agent (its task reported)
+ * starts a new stop with the flag false, so the hook also keeps a record per agent and task in
+ * the state folder (`blocksFile`): a task already blocked once lets the next stop through, with
+ * one stderr line saying the work still runs; a new task is blocked once more. A record that
+ * cannot be kept lets the stop through. The answer is `decision: "block"` with a plain reason and **no
  * `additionalContext`** (proved on 2.1.308: the subagent's next turn carries
  * `SubagentStop hook blocking error from command: …: <reason>`). The hook reads no setting
  * from `cc-smart-dev-kit.json`, but it is project-scoped like `review-record`: with no file it
@@ -36,10 +40,17 @@
  * that cannot be read is **no block**: the hook cannot tell whose work it is, and a subagent
  * must always be able to finish.
  */
-import { readFileSync } from "node:fs";
+import { mkdirSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { COMMAND } from "../build-info/names";
+import { withLock } from "../setup/lock";
+import { atomicWrite } from "../setup/write";
 import { type HookInput, type HookResult, SILENT, stringField } from "./io";
 import type { HookContext } from "./run";
 import { AGENT_TOOLS } from "./session-facts";
+
+/** The hook's name: its bundle, its `ownHooks` entry, its stderr prefix. */
+const SUBAGENT_BACKGROUND = "subagent-background";
 
 /** What the subagent reads when it hands back too early. */
 export const HAND_BACK_REASON =
@@ -109,14 +120,14 @@ function resultText(content: unknown): string {
 }
 
 /**
- * True when the agent itself started one of `ids`: an id is counted only in a `tool_result`
- * of the agent's own Bash call (a background launch's `Command running in background with ID:
- * <id>`) or Agent call (a launched child's `agentId: <id>`). Nothing else in the transcript
- * counts — not the brief, not a file it read, and not its own `agentId` on every line.
+ * The ones of `ids` the agent itself started: an id is counted only in a `tool_result` of the
+ * agent's own Bash call (a background launch's `Command running in background with ID: <id>`)
+ * or Agent call (a launched child's `agentId: <id>`). Nothing else in the transcript counts —
+ * not the brief, not a file it read, and not its own `agentId` on every line.
  */
-function startedByAgent(text: string, ids: readonly string[]): boolean {
+function startedByAgent(text: string, ids: readonly string[]): string[] {
   const wanted = new Set(ids);
-  if (wanted.size === 0) return false;
+  if (wanted.size === 0) return [];
   /** The tool each `tool_use` named, by its id: only that call's own result can count. */
   const tools = new Map<string, string>();
   const results: Array<{ text: string; tool: string | undefined }> = [];
@@ -136,6 +147,7 @@ function startedByAgent(text: string, ids: readonly string[]): boolean {
       }
     }
   }
+  const started = new Set<string>();
   for (const result of results) {
     const found =
       result.tool === "Bash"
@@ -143,13 +155,71 @@ function startedByAgent(text: string, ids: readonly string[]): boolean {
         : result.tool !== undefined &&
           (AGENT_TOOLS as readonly string[]).includes(result.tool) &&
           AGENT_ID.exec(result.text)?.[1];
-    if (typeof found === "string" && wanted.has(found)) return true;
+    if (typeof found === "string" && wanted.has(found)) started.add(found);
   }
-  return false;
+  return [...started];
 }
 
-export function subagentBackground(context: HookContext): HookResult {
-  const { input, event, project } = context;
+/** Where the blocks already given are kept: a folder of its own, so the lock is its own. */
+function blocksFile(stateDir: string): string {
+  return join(stateDir, "subagent-background", "blocked.json");
+}
+
+/** How long the hook waits for the record's lock: a write takes milliseconds, the hook has 10 s. */
+const BLOCKS_LOCK_WAIT_MS = 3_000;
+
+/** A block older than this is forgotten: no background task outlives a day, and the file stays small. */
+const BLOCKS_KEPT_MS = 24 * 60 * 60 * 1000;
+
+/** The blocks in `file`, as `<agent>:<task>` keys with the time each was given; none when unreadable. */
+function readBlocks(file: string): Record<string, number> {
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(file, "utf8"));
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return {};
+    return Object.fromEntries(
+      Object.entries(parsed).filter(
+        (entry): entry is [string, number] => typeof entry[1] === "number",
+      ),
+    );
+  } catch {
+    // No record yet, or one that cannot be read: nothing was blocked, as far as the hook knows.
+    return {};
+  }
+}
+
+/**
+ * Records that `agent` was told about each of `tasks`, and returns the ones it was NOT told
+ * about before. A re-woken agent starts a new stop with `stop_hook_active` false, so the stop
+ * flag alone cannot tell the second stop from a first one: this record, per agent and task,
+ * can. Throws when the record cannot be locked or written.
+ */
+async function newBlocks(
+  file: string,
+  agent: string,
+  tasks: readonly string[],
+  atMs: number,
+): Promise<string[]> {
+  const folder = dirname(file);
+  mkdirSync(folder, { mode: 0o700, recursive: true });
+  return await withLock(
+    folder,
+    () => {
+      const kept: Record<string, number> = {};
+      for (const [key, at] of Object.entries(readBlocks(file))) {
+        if (atMs - at <= BLOCKS_KEPT_MS) kept[key] = at;
+      }
+      const fresh = tasks.filter((task) => kept[`${agent}:${task}`] === undefined);
+      if (fresh.length === 0) return [];
+      for (const task of fresh) kept[`${agent}:${task}`] = atMs;
+      atomicWrite(file, `${JSON.stringify(kept, null, 2)}\n`, 0o600);
+      return fresh;
+    },
+    { waitMs: BLOCKS_LOCK_WAIT_MS },
+  );
+}
+
+export async function subagentBackground(context: HookContext): Promise<HookResult> {
+  const { input, event, paths, project } = context;
   // A project that never opted in must not notice the plugin (the frame reaches here with no
   // project file, `project.config === null`).
   if (project.config === null) return SILENT;
@@ -173,7 +243,25 @@ export function subagentBackground(context: HookContext): HookResult {
     // Fail open: without the transcript the hook cannot tell whose work is still running.
     return SILENT;
   }
-  return startedByAgent(text, ids)
-    ? { stdout: JSON.stringify({ decision: "block", reason: HAND_BACK_REASON }) }
-    : SILENT;
+  const running = startedByAgent(text, ids);
+  if (running.length === 0) return SILENT;
+  // One block per task: a re-woken agent stops again with `stop_hook_active` false, and the same
+  // block would repeat. The record is keyed by the agent (its transcript names it when the
+  // input gives no id) and the task.
+  let fresh: string[];
+  try {
+    fresh = await newBlocks(blocksFile(paths.stateDir), selfId ?? transcript, running, Date.now());
+  } catch (error) {
+    // Without the record the hook cannot keep its one-block promise, and a subagent must always
+    // be able to finish: the stop goes through.
+    const why = error instanceof Error ? error.message : String(error);
+    return {
+      stderr: `${COMMAND} ${SUBAGENT_BACKGROUND}: cannot keep the record of blocks: ${why}`,
+    };
+  }
+  if (fresh.length > 0)
+    return { stdout: JSON.stringify({ decision: "block", reason: HAND_BACK_REASON }) };
+  return {
+    stderr: `${COMMAND} ${SUBAGENT_BACKGROUND}: background work of this agent (${running.join(", ")}) is still running, and it was told once: this stop goes through.`,
+  };
 }
