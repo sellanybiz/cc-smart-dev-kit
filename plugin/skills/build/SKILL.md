@@ -97,7 +97,10 @@ record the real blocker.
 
 No reviewer reads a phase: the plan gets one review, in two rounds and, when round 2's fixes are big, a final review (§ 6). At a hand-back you
 check it yourself. Read its `Report:` note and check its claims against the actual branch.
-Record `agent`, `branch`, `worktree` and `base` on the phase task with `task_update`. Check
+Record `agent`, `branch`, `worktree` and `base` on the phase task with `task_update`: `branch` is
+the builder's own worktree branch (never the plan branch), and `base` is the commit of the plan
+head the builder started from, not a branch name that moves on. The plan task records the plan
+branch. Check
 its full `base..branch` diff and file list, and the tests it ran; a report is not proof. The
 commit the report names is the one to merge (§ 5): a builder may have committed on another
 branch than the worktree's default one.

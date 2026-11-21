@@ -228,8 +228,19 @@ checkout's working copy through the normal workflow resolver:
   destination plan in flight in the same write.
 - **Steps close with proof.** A task whose parent is a phase closes `done` only with `evidence`
   and `dropped` only with a `note` on `task_done` (`refuseBareClose`); `task_update` cannot close
-  one. A phase, a plan, a loose task and a waiting task keep the plain close, and the kit's own
-  closes (a merge, an import) go through the store directly and need neither.
+  one. A plan, a loose task and a waiting task keep the plain close, and the kit's own closes (a
+  merge, an import) go through the store directly and need neither. A phase has its own rule,
+  below.
+- **A phase closes with its work in the plan** (`refuseEmptyHandBack`, on `task_done` and on
+  `task_update` to done). When the phase records its builder's `branch` and `base`, the close needs
+  at least one commit in `base..branch`, and `branch` must be reachable from the plan task's
+  `branch` (`git merge-base --is-ancestor`). With no plan branch recorded, only the commit count is
+  judged; with no `branch` or `base` recorded, nothing is. Git that cannot answer refuses with its
+  own reason: a guess would close a phase with none of its work. `base` must be the commit the
+  builder started from, not a branch name that moves on (`main..branch` counts nothing once the
+  branch has been merged into it). A branch merged by a squash is refused: its commits are not in
+  the plan branch, so merge the builder's own commit (`/cc-smart-dev-kit:build` § 5). A dropped
+  close and a phase already done pass.
 - **Where it shows.** `task_list` with `scope: "plan"` lists the plans in number order and
   puts each open plan's place in the queue in its brackets in place of the status: `in flight`
   (`isInFlight`), `finishing` (pending, every phase closed and one done: a plan started under
