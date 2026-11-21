@@ -16,6 +16,7 @@ own pane, and the lead never relays it (4.10.1). The user workflow is
 | `machines.ts` | The remote approval rules, validated reads and managed writes. |
 | `identity.ts` | Live terminal and process-ancestry checks. |
 | `brief.ts` | Private brief files and unique report files, and the plan and follow-up trailers a child gets. |
+| `waiter.ts` | The one live `herdr wait` for a lead: a lock in `<stateDir>/herdr/waiters/`, and the details a second wait reports (§ Waiting without polling). |
 | `plans.ts` | The live side of plan hand-outs: the gates only git, gh and hc can answer, the start's reservation, and `herdr plans` (§ Handing out plans). |
 | `command.ts` | All nine verbs, dialog parsing and the event-stream barrier. |
 | `doctor.ts` | Optional hc discovery and conservative diagnostics. |
@@ -39,6 +40,7 @@ address forms the lead id: two cores can have the same short terminal address.
 | `kit.task` | Optional same-project task reference. |
 | `kit.plan` | A plan child's plan slug (`herdr start --plan`); a terminal that carries it never coordinates. |
 | `kit.followup` | `1` for a lead's follow-up child (`herdr start --followup`, § Follow-up children). A terminal that carries it never coordinates: `start --plan`, `plans --reserve` and `adopt` refuse it, as they refuse a plan child. It also carries `kit.lead`, so `start --followup` is refused in it. |
+| `kit.base` | The ref a child's worktree was started at (`herdr start --base`); `herdr list` shows it. Absent for a start from the default branch. |
 | `kit.independent` | `1` for a session without a lead link. |
 | `kit.started-by` | Independent session's initiating identity, when available. |
 
@@ -103,12 +105,35 @@ WorktreeCreate hook can put the worktree anywhere, so where it is comes from `gi
   `WORKTREE_BIND_WAIT_MS` (10 s). With no match it records no worktree, binds the pane, prints the
   binding-failed line with the `task_update` fix and exits 1. A hook that renames both the folder
   and the branch is out of scope: herdr says so with that line.
-- **The launch record.** A bound local worktree gets `{repo, worktree, branch, at}` in
+- **The launch record.** A bound local worktree gets `{repo, worktree, branch, at}` (and `base`, when
+  the start gave one) in
   `<stateDir>/herdr/launches/`, one private file keyed by the worktree's real path
   (`src/herdr/launch-record.ts`). A remote start writes none, so a remote resume of a worktree
   outside the default folder is refused until the live proof shows otherwise.
 - **The exit path** says from the post-exit listing whether a worktree with the launch's name
   exists, and where.
+
+**`--base <ref>`** starts the child's worktree at a branch, a tag or a commit of the lead's choice
+(the plan branch's head, say) instead of the default branch. Claude Code still makes the worktree
+from the default branch, so the brief carries the move. The start reads the ref once, with
+`git rev-parse --verify --quiet <ref>^{commit}` in the project (through hc's exec on a remote
+machine), before anything is reserved or launched: a ref that names no commit refuses the start,
+as does a folder that is no git project. The child gets the commit, not the name, so a branch that
+moves later changes nothing; read a remote branch after a `git fetch`. A plan child's step 2
+becomes `git reset --hard <commit>` (no fetch, and never the default branch); a task or plain child
+gets one "Your start point" step after its task trailer: `git status --porcelain` must print
+nothing, then the reset. The ref also goes in the `kit.base` label (`herdr list` shows it in the
+`base` column) and in the launch record. A start without `--base` is as before. `--base` is
+refused with `--followup` (that child's trailer uses one base for its reset, its pull request and
+its branches: it always starts from the default branch) and refused for a plan that resumes, which
+continues its own worktree. `--plan` still judges its gates against the default branch, and still
+needs one that can be found.
+
+**`--brief-file <path>`** reads the brief from a file in place of the words after `--`, so quotes,
+`$` and newlines never pass through a shell (`send <terminal> --brief-file <path>` does the same
+for a message). The path is read from the lead's folder; a missing, unreadable or empty (blank)
+file refuses with exit 1 and starts nothing, and words after `--` beside the option are a usage
+error (exit 2). The text loses only its trailing whitespace.
 
 `--task` must name an existing open task in the same project and machine; independent
 starts cannot use it. After launch the command records agent, branch and worktree through
@@ -493,7 +518,19 @@ barrier over initial live children not already settled-and-reported; it waits fo
 give news or leave, or until timeout. An empty all-barrier says there is nothing to wait for;
 any keeps listening for a new turn. With no live owned children either mode returns at once.
 A follow-up child (`kit.followup`) is left out of the `--all` barrier: it never settles on its own (§ Follow-up children).
-The default timeout is `WAIT_TIMEOUT_MS` in the command; timeout is not completion proof.
+The default timeout is `WAIT_TIMEOUT_MS` in the command; timeout is not completion proof. At the
+timeout the command reads each child that still lacks news and prints it by its real state: "still
+working" (working or idle, with the state), "blocked, waiting for the person" (blocked, or no
+status) and "gone since the wait began". A blocked child is never described as working.
+
+**One wait per lead.** A wait follows every child of its lead, so a second one only repeats the
+first and wakes the lead twice. The wait holds the kit's own lock (`withLock`, `waiter.ts`) in
+`<stateDir>/herdr/waiters/<lead id, percent-encoded>/`, and writes `waiter.json` beside it (its
+process, mode, timeout and start). A second `herdr wait` for the same lead finds the lock busy,
+says a wait is already running with those details, and exits 0 without waiting. A lock whose
+process is gone is stale and taken over, as the lock judges every holder; another lead's wait does
+not count. The lock covers the event stream only: a wait with no live child returns at once
+without it.
 
 The final continuation keeps the supplied cursor entries for the addresses in the wait's
 first snapshot, drops the rest, and then updates entries only from the news actually
@@ -523,7 +560,10 @@ These are policy checks, not a sandbox; keep that limit explicit.
 | First Claude status takes more than 20 seconds | Show screen, warn with attach command, exit 0 and bind the task. |
 | Login shell is unset or not in the supported shell family | Use sh login fallback; user arguments stay positional. |
 | Trust screen, booting child or unknown status | No text send; person uses the pane. |
-| Child blocked on a question or permission | The person answers in its pane; `wait` keeps waiting. |
+| Child blocked on a question or permission | The person answers in its pane; `wait` keeps waiting, and a timeout names it "blocked, waiting for the person". |
+| A second `herdr wait` for one lead | It names the live wait and exits 0; a dead wait's lock is taken over. |
+| `--base` names no commit, or is given with `--followup` | The first refuses the start before any reservation; the second is a usage error. |
+| `--brief-file` is missing, empty or beside words | The first two refuse with exit 1; the last is a usage error. |
 | Lead has become a shell or is blocked | Report falls back to a unique file. |
 | Old terminal name still has worktree/branch | Refuse reuse rather than resume old work. A plan's own child is the one exception (§ Handing out plans). |
 | A child finds a follow-up | It lists it in `herdr report`; a child cannot start `--followup` (`kit.lead`), so the lead decides. |

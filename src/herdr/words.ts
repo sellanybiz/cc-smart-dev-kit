@@ -12,6 +12,8 @@ export function normalizeMode(mode: string): HerdrMode | null {
 export function cliModeFlag(mode: HerdrMode): string {
   return mode === "default" ? "manual" : mode;
 }
+/** The option that reads a brief or a message from a file, so no shell ever sees its text. */
+const BRIEF_FILE = "--brief-file";
 export const HERDR_VERBS = [
   "start",
   "list",
@@ -24,9 +26,9 @@ export const HERDR_VERBS = [
   "machines",
 ] as const;
 const USAGE_LINES = {
-  start: `start --model <${CLAUDE_FAMILIES.join("|")}> --effort <${ALLOWED_EFFORTS.join("|")}> --mode <${MODE_ORDER.join("|")}|manual> [--cwd <dir>] [--on <machine>] [--name <name>] [--task <#n> | --plan <slug> | --followup [--issue <n>]…] [--independent] [--asked] -- <brief>`,
+  start: `start --model <${CLAUDE_FAMILIES.join("|")}> --effort <${ALLOWED_EFFORTS.join("|")}> --mode <${MODE_ORDER.join("|")}|manual> [--cwd <dir>] [--on <machine>] [--name <name>] [--task <#n> | --plan <slug> | --followup [--issue <n>]…] [--independent] [--asked] [--base <ref>] (-- <brief> | --brief-file <path>)`,
   list: "list [--all] [--json]",
-  send: "send <terminal> <text>",
+  send: "send <terminal> (<text> | --brief-file <path>)",
   wait: "wait [--any | --all] [--timeout <seconds>] [--seen <addr>:<turn|?>:<error|done|end>[,…]]",
   plans:
     "plans [--json] [--wait] [--timeout <seconds>] | plans --release <plan> | plans --reserve <plan>",
@@ -49,6 +51,8 @@ export const START_OPTIONS = [
   "--task",
   "--plan",
   "--issue",
+  "--base",
+  BRIEF_FILE,
 ];
 export const START_FLAGS = ["--independent", "--asked", "--followup"];
 /** The options of `start` that may be given more than once: each issue a follow-up child fixes. */
@@ -58,6 +62,11 @@ export const PLAN_EXCLUSION = "--plan cannot be combined with --task, --independ
 /** The one refusal for `--followup` beside an option it cannot share a start with. */
 export const FOLLOWUP_EXCLUSION =
   "--followup cannot be combined with --plan, --task, --independent or --on.";
+/** The one refusal for `--base` beside `--followup`: that child resets to the default branch. */
+export const BASE_FOLLOWUP_REFUSAL =
+  "--base cannot be combined with --followup: a follow-up child always starts from the default branch.";
+/** The one refusal for a brief given twice, as words and as a file. */
+export const BRIEF_AND_WORDS = "Give the brief as words after -- or as --brief-file, not both.";
 /** An issue number as `--issue` takes it: a positive whole number, no sign and no leading zero. */
 const ISSUE_NUMBER = /^[1-9]\d*$/;
 export type HerdrArgs =
@@ -78,10 +87,21 @@ export type HerdrArgs =
       issues?: string[];
       independent: boolean;
       asked: boolean;
+      /** The ref the child's worktree starts at (`--base`); the default branch when absent. */
+      base?: string;
+      /** The brief's words; empty while `briefFile` names a file that `runHerdr` has yet to read. */
       brief: string;
+      /** The file the brief is read from (`--brief-file`), instead of words after `--`. */
+      briefFile?: string;
     }
   | { verb: "list"; all: boolean; json: boolean }
-  | { verb: "send"; target: string; text: string }
+  | {
+      verb: "send";
+      target: string;
+      /** The message's words; empty while `briefFile` names a file that `runHerdr` has yet to read. */
+      text: string;
+      briefFile?: string;
+    }
   | {
       verb: "wait";
       mode: "any" | "all";
@@ -101,6 +121,9 @@ export type HerdrArgs =
   | { verb: "stop"; target: string }
   | { verb: "machines"; action: "list" }
   | { verb: "machines"; action: "allow" | "forget" | "production"; name: string };
+function isBriefFileArg(arg: string): boolean {
+  return arg === BRIEF_FILE || arg.startsWith(`${BRIEF_FILE}=`);
+}
 const TIMEOUT_WORDS = "A timeout needs a positive whole number of seconds.";
 function validTimeout(timeout: string | undefined): boolean {
   return (
@@ -117,15 +140,22 @@ export function parseHerdrArgs(args: string[]): HerdrArgs | { error: string } {
   const rest = args.slice(1);
   if (verb === "start") {
     const split = rest.indexOf("--");
-    if (split < 0) return fail("Put -- before the brief.");
-    const parsed = parseOptions(rest.slice(0, split), START_OPTIONS, START_FLAGS, START_REPEATABLE);
+    if (split < 0 && !rest.some(isBriefFileArg)) return fail("Put -- before the brief.");
+    const parsed = parseOptions(
+      split < 0 ? rest : rest.slice(0, split),
+      START_OPTIONS,
+      START_FLAGS,
+      START_REPEATABLE,
+    );
     if ("error" in parsed) return fail(parsed.error);
     const { options: o, flags: f, lists, positionals: p } = parsed;
     const model = CLAUDE_FAMILIES.find((v) => v === o.get("--model")),
       effort = ALLOWED_EFFORTS.find((v) => v === o.get("--effort")),
       mode = normalizeMode(o.get("--mode") ?? "");
-    const brief = rest.slice(split + 1).join(" ");
-    if (!model || !effort || !mode || p.length || !brief.trim())
+    const briefFile = o.get(BRIEF_FILE),
+      brief = split < 0 ? "" : rest.slice(split + 1).join(" ");
+    if (briefFile !== undefined && brief.trim()) return fail(BRIEF_AND_WORDS);
+    if (!model || !effort || !mode || p.length || (briefFile === undefined && !brief.trim()))
       return fail("Give a valid model, effort, mode and brief.");
     const independent = f.has("--independent"),
       task = o.get("--task"),
@@ -136,6 +166,8 @@ export function parseHerdrArgs(args: string[]): HerdrArgs | { error: string } {
     const followup = f.has("--followup"),
       issues = [...new Set(lists.get("--issue") ?? [])];
     if (followup && (plan || task || independent || o.has("--on"))) return fail(FOLLOWUP_EXCLUSION);
+    const base = o.get("--base");
+    if (base !== undefined && followup) return fail(BASE_FOLLOWUP_REFUSAL);
     if (issues.length && !followup) return fail("--issue belongs to --followup.");
     if (issues.some((issue) => !ISSUE_NUMBER.test(issue)))
       return fail("Use an issue number such as 12.");
@@ -143,6 +175,8 @@ export function parseHerdrArgs(args: string[]): HerdrArgs | { error: string } {
     if (name && !validChildName(name))
       return fail("A name needs 1–32 lower-case letters, digits, - or _.");
     for (const [key, value] of o) if (!value.trim()) return fail(`${key} needs a value.`);
+    if (base?.startsWith("-"))
+      return fail("--base needs a branch, a tag or a commit, not an option.");
     const cwd = o.get("--cwd"),
       on = o.get("--on");
     return {
@@ -159,6 +193,8 @@ export function parseHerdrArgs(args: string[]): HerdrArgs | { error: string } {
       ...(task ? { task } : {}),
       ...(plan ? { plan } : {}),
       ...(followup ? { followup: true as const, issues } : {}),
+      ...(base !== undefined ? { base } : {}),
+      ...(briefFile !== undefined ? { briefFile } : {}),
     };
   }
   const known =
@@ -166,7 +202,9 @@ export function parseHerdrArgs(args: string[]): HerdrArgs | { error: string } {
       ? ["--timeout", "--seen"]
       : verb === "plans"
         ? ["--timeout", "--release", "--reserve"]
-        : [];
+        : verb === "send"
+          ? [BRIEF_FILE]
+          : [];
   const flags =
     verb === "list"
       ? ["--all", "--json"]
@@ -256,10 +294,16 @@ export function parseHerdrArgs(args: string[]): HerdrArgs | { error: string } {
       return p.length ? fail("adopt takes no arguments.") : { verb };
     case "stop":
       return p.length === 1 ? { verb, target } : fail("Give one terminal.");
-    case "send":
+    case "send": {
+      const briefFile = o.get(BRIEF_FILE);
+      if (briefFile !== undefined)
+        return p.length === 1
+          ? { verb, target, text: "", briefFile }
+          : fail("Give a terminal, and the message as --brief-file alone.");
       return p.length === 2
         ? { verb, target, text: p[1] ?? "" }
         : fail("Give a terminal and text.");
+    }
     case "report":
       return p.length === 1 ? { verb, text: target } : fail("Give the report text.");
     case "machines": {

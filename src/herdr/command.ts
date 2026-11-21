@@ -17,7 +17,14 @@ import type { Who } from "../tasks/work/types";
 import { baseBranch } from "../worktrees/command";
 import { inDefaultFolder, listedNamed, worktreeBranch, worktreePath } from "../worktrees/paths";
 import { pullRequestState } from "../worktrees/scan";
-import { briefPath, type FollowupTrailer, reportPath, writeBrief, writePrivate } from "./brief";
+import {
+  briefPath,
+  type FollowupTrailer,
+  reportPath,
+  type StartBase,
+  writeBrief,
+  writePrivate,
+} from "./brief";
 import {
   coreId,
   defaultHcRunner,
@@ -46,6 +53,7 @@ import {
   HERDR_SPACE,
   HERDR_TAB,
   herdrAgent,
+  KIT_BASE,
   KIT_FOLLOWUP,
   KIT_INDEPENDENT,
   KIT_LEAD,
@@ -69,6 +77,7 @@ import {
   runPlans,
   UNKNOWN_BASE,
 } from "./plans";
+import { onlyWaiter, type WaiterDetails } from "./waiter";
 import {
   cliModeFlag,
   FOLLOWUP_EXCLUSION,
@@ -569,14 +578,14 @@ function count(ctx: HerdrContext, rows: Terminal[]): void {
 function show(ctx: HerdrContext, rows: Terminal[]): void {
   count(ctx, rows);
   ctx.out.say(
-    "address | name | kind | repo | machine | model | task, plan or follow-up | state | blocked kind | message | worktree",
+    "address | name | kind | repo | machine | model | task, plan or follow-up | state | blocked kind | message | base | worktree",
   );
   for (const t of rows) {
     const argv = t.foreground?.argv ?? t.argv ?? [];
     const modelIndex = argv.indexOf("--model");
     const machine = t.address.includes("/") ? t.address.split("/")[0] : "local";
     ctx.out.say(
-      `${t.address} | ${t.name ?? "-"} | ${t.labels[KIT_INDEPENDENT] ? "independent" : "linked child"} | ${t.labels[KIT_REPO] ?? "-"} | ${machine} | ${modelIndex >= 0 ? (argv[modelIndex + 1] ?? "-") : "-"} | ${t.labels[KIT_TASK] ?? (t.labels[KIT_PLAN] ? `plan ${t.labels[KIT_PLAN]}` : t.labels[KIT_FOLLOWUP] ? "follow-up" : "-")} | ${t.status?.state ?? t.state} | ${t.status?.kind ?? "-"} | ${t.status?.msg ?? "-"} | ${t.cwd ?? "-"}`,
+      `${t.address} | ${t.name ?? "-"} | ${t.labels[KIT_INDEPENDENT] ? "independent" : "linked child"} | ${t.labels[KIT_REPO] ?? "-"} | ${machine} | ${modelIndex >= 0 ? (argv[modelIndex + 1] ?? "-") : "-"} | ${t.labels[KIT_TASK] ?? (t.labels[KIT_PLAN] ? `plan ${t.labels[KIT_PLAN]}` : t.labels[KIT_FOLLOWUP] ? "follow-up" : "-")} | ${t.status?.state ?? t.state} | ${t.status?.kind ?? "-"} | ${t.status?.msg ?? "-"} | ${t.labels[KIT_BASE] ?? "-"} | ${t.cwd ?? "-"}`,
     );
   }
 }
@@ -711,6 +720,28 @@ async function boundWorktree(
     await ctx.sleep(Math.min(LAUNCH_POLL_MS, Math.max(0, deadline - ctx.now())));
   }
   return null;
+}
+/**
+ * The commit a `--base` ref names in the repo at `at`, here or on the machine `on`; null when it
+ * names none. The commit, not the name, goes to the child: a branch that moves later changes nothing.
+ */
+function resolveBase(
+  ctx: HerdrContext,
+  r: HcRunner,
+  on: string | undefined,
+  at: string,
+  ref: string,
+): string | null {
+  const args = ["git", "rev-parse", "--verify", "--quiet", `${ref}^{commit}`];
+  if (on) {
+    const found = remoteResult(r, on, args, at);
+    // git exits 1 for a name it does not know; any other failure is not an answer.
+    if (found.code === 1) return null;
+    if (found.code !== 0) throw new Error("The remote base could not be checked.");
+    return found.stdout.trim() || null;
+  }
+  const found = runGit(at, args.slice(1), ctx.env);
+  return found.ok && found.out !== "" ? found.out : null;
 }
 function remoteReportFolder(ctx: HerdrContext): string {
   const defaults = cliPaths({ HOME: ctx.paths.home });
@@ -986,6 +1017,20 @@ async function startChild(
         : "The full kit-prefixed terminal name must fit 32 characters.",
       slug !== null && a.name === undefined ? "Give a shorter --name." : undefined,
     );
+  const gitRoot = a.on ? remoteRepo(r, a.on, cwd) : project.repo;
+  // `--base` names a commit now, before anything is reserved: a wrong ref costs nothing.
+  let base: StartBase | null = null;
+  if (a.base !== undefined) {
+    if (gitRoot === null) return refuse(ctx, "--base needs a git project.");
+    const commit = resolveBase(ctx, r, a.on, a.on ? cwd : gitRoot, a.base);
+    if (commit === null)
+      return refuse(
+        ctx,
+        `--base ${a.base} names no commit in this project.`,
+        `git rev-parse --verify ${a.base}^{commit} shows what git finds; fetch first when it is a remote branch.`,
+      );
+    base = { ref: a.base, commit };
+  }
   // The gates, the diffs and the reservation (D6): after every cheap refusal above, before the launch.
   let handout: Extract<PlanStart, { ok: true }> | null = null;
   if (planWorld !== null && slug !== null) {
@@ -1011,8 +1056,13 @@ async function startChild(
   }
   // A resume or a relaunch continues the recorded worktree and branch: it is the one reuse allowed.
   const reuse = handout?.recorded ?? null;
+  if (reuse && base)
+    return refuse(
+      ctx,
+      "--base cannot start a plan that resumes: it continues its own worktree.",
+      "Start it again without --base.",
+    );
   const worktreeName = reuse ? basename(reuse.worktree) : childWorktreeName(name);
-  const gitRoot = a.on ? remoteRepo(r, a.on, cwd) : project.repo;
   const repo = gitRoot ?? cwd;
   const worktree = reuse ? reuse.worktree : gitRoot ? worktreePath(repo, worktreeName) : cwd;
   const branch = reuse ? reuse.branch : worktreeBranch(worktreeName);
@@ -1058,6 +1108,7 @@ async function startChild(
       ? { slug, handoutId: handout.handoutId, base: planWorld.base, resume: handout.resume }
       : undefined,
     followup ? { ...followup, name: terminalName } : undefined,
+    base ?? undefined,
   );
   const path = a.on ? await remoteBrief(r, ctx, a.on, file) : file;
   const first = escapeReport(`Read your brief at ${path} and do it.`, "lead");
@@ -1083,6 +1134,7 @@ async function startChild(
   if (a.task) labels[KIT_TASK] = a.task;
   if (slug !== null) labels[KIT_PLAN] = slug;
   if (followup !== null) labels[KIT_FOLLOWUP] = "1";
+  if (base) labels[KIT_BASE] = base.ref;
   // Only an independent session gets its own space: a linked child, local or remote, nests
   // under its lead through hc's parent (proved live for a remote child in 4.3.1).
   if (a.independent) {
@@ -1209,6 +1261,7 @@ async function startChild(
       branch: bound.branch,
       repo,
       worktree: bound.path,
+      ...(base ? { base } : {}),
     });
   if (recording) {
     const ops = createTaskOps({
@@ -1303,6 +1356,66 @@ async function report(text: string, ctx: HerdrContext, r: HcRunner): Promise<num
   ctx.out.line("warn", `The lead cannot receive a report. Saved it at ${file}`);
   return 0;
 }
+/** What the second `herdr wait` of a lead says: the first one is live, so this one did not start. */
+function anotherWaitWords(running: WaiterDetails | null): string {
+  const who = running
+    ? ` (process ${running.pid}, --${running.mode}, ${running.timeoutMs / 1000} seconds, started ${new Date(running.startedAt).toISOString()})`
+    : "";
+  return `A herdr wait is already running for your children${who}; it ends when a child settles or its time is up, and its news reaches you then. This wait did not start.`;
+}
+/**
+ * The lines a timed-out wait prints for the children still lacking news, split by what each does
+ * now: a working or idle child settles by itself, and a blocked one waits for the person, who
+ * answers it in its pane.
+ */
+function pendingLines(r: HcRunner, pending: readonly string[]): string[] {
+  const working: string[] = [];
+  const blocked: string[] = [];
+  const gone: string[] = [];
+  for (const address of pending) {
+    let child: Terminal;
+    try {
+      child = hcGet(r, address);
+    } catch (error) {
+      if (!terminalEnded(error)) throw error;
+      gone.push(address);
+      continue;
+    }
+    if (child.state !== "live") gone.push(address);
+    else if (!child.status || child.status.state === "blocked") blocked.push(address);
+    else working.push(`${address} (${child.status.state})`);
+  }
+  const lines = [
+    working.length ? `Not settled yet; still working: ${working.join(", ")}` : "",
+    blocked.length
+      ? `Not settled yet; blocked, waiting for the person (hc attach <terminal> to answer): ${blocked.join(", ")}`
+      : "",
+    gone.length ? `Not settled yet; gone since the wait began: ${gone.join(", ")}` : "",
+  ].filter(Boolean);
+  return lines.length ? lines : ["Not settled yet."];
+}
+/**
+ * A start or a send whose text lives in a file (`--brief-file`): the file is read here, so quotes,
+ * `$` and newlines never pass through a shell. Any other command is returned as it is.
+ */
+function withFileText(ctx: HerdrContext, args: HerdrArgs): HerdrArgs | { why: string } {
+  if ((args.verb !== "start" && args.verb !== "send") || args.briefFile === undefined) return args;
+  const file = resolve(ctx.cwd, args.briefFile);
+  let text: string;
+  try {
+    text = readFileSync(file, "utf8");
+  } catch (error) {
+    if (!(error instanceof Error)) throw error;
+    const missing = "code" in error && error.code === "ENOENT";
+    return {
+      why: `The brief file ${file} ${missing ? "does not exist" : `cannot be read (${error.message})`}.`,
+    };
+  }
+  if (!text.trim()) return { why: `The brief file ${file} is empty.` };
+  return args.verb === "start"
+    ? { ...args, brief: text.trimEnd() }
+    : { ...args, text: text.trimEnd() };
+}
 export async function runHerdr(args: string[], ctx: HerdrContext): Promise<number> {
   if (args[0] === "start") {
     const split = args.indexOf("--");
@@ -1336,11 +1449,13 @@ export async function runHerdr(args: string[], ctx: HerdrContext): Promise<numbe
         return refuse(ctx, FOLLOWUP_EXCLUSION);
     }
   }
-  const parsed = parseHerdrArgs(args);
-  if ("error" in parsed) {
-    ctx.out.line("fail", parsed.error);
+  const read = parseHerdrArgs(args);
+  if ("error" in read) {
+    ctx.out.line("fail", read.error);
     return 2;
   }
+  const parsed = withFileText(ctx, read);
+  if ("why" in parsed) return refuse(ctx, parsed.why);
   const r = ctx.runner ?? defaultHcRunner;
   try {
     const version = hcVersion(r);
@@ -1479,15 +1594,24 @@ export async function runHerdr(args: string[], ctx: HerdrContext): Promise<numbe
           );
           return 0;
         }
-        const news = await (ctx.events ?? followEvents)(
-          { [KIT_LEAD]: me.leadId },
-          parsed.timeoutMs ?? WAIT_TIMEOUT_MS,
-          {
-            mode: parsed.mode,
-            ...(parsed.seen ? { seen: parsed.seen } : {}),
-            ...(skip.size ? { skip } : {}),
-          },
+        const timeoutMs = parsed.timeoutMs ?? WAIT_TIMEOUT_MS;
+        // A wait covers every child of its lead: a second one would only repeat the first.
+        const waiting = await onlyWaiter(
+          ctx.paths.stateDir,
+          me.leadId,
+          { mode: parsed.mode, timeoutMs },
+          () =>
+            (ctx.events ?? followEvents)({ [KIT_LEAD]: me.leadId }, timeoutMs, {
+              mode: parsed.mode,
+              ...(parsed.seen ? { seen: parsed.seen } : {}),
+              ...(skip.size ? { skip } : {}),
+            }),
         );
+        if (!waiting.ran) {
+          ctx.out.line("info", anotherWaitWords(waiting.running));
+          return 0;
+        }
+        const news = waiting.value;
         if (news === "ended")
           return refuse(ctx, "The event stream ended; nothing is known about the children.");
         if (typeof news !== "string" && news.nothing === true) {
@@ -1504,10 +1628,11 @@ export async function runHerdr(args: string[], ctx: HerdrContext): Promise<numbe
               remoteReportHint(ctx, fact.terminal.split("/")[0] ?? "");
           }
           if (news.timeout)
-            ctx.out.line(
-              "info",
-              `Not settled yet (a blocked child waits for the person; see herdr list): ${Array.isArray(news.pending) ? news.pending.join(", ") : "unknown"}`,
-            );
+            for (const line of pendingLines(
+              r,
+              Array.isArray(news.pending) ? news.pending.map(String) : [],
+            ))
+              ctx.out.line("info", line);
         } else ctx.out.json(news);
         const cursor: Seen = Object.fromEntries(
           Object.entries(parsed.seen ?? {}).filter(
