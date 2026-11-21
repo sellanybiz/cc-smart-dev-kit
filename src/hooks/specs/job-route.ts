@@ -1,5 +1,5 @@
 import { stringField } from "../io";
-import { jobRoute, routeFacts } from "../job-route";
+import { jobRouteAnswer, routeFacts } from "../job-route";
 import type { HookSpec } from "../run";
 
 /**
@@ -22,7 +22,7 @@ export const jobRouteHook: HookSpec = {
   alwaysOn: true,
   // The file cannot be read, so its `jobs` part is unknown: the person's own default decides.
   onConfigProblem: (_message, input, event, checkout, context) =>
-    jobRoute({
+    jobRouteAnswer({
       input,
       event,
       cwd: stringField(input.cwd) ?? checkout.root,
@@ -32,5 +32,5 @@ export const jobRouteHook: HookSpec = {
       nowMs: context.nowMs,
     }),
   logFacts: routeFacts,
-  run: jobRoute,
+  run: jobRouteAnswer,
 };

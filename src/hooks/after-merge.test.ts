@@ -20,6 +20,37 @@ import {
 import { GUARD_BUDGET_ENV } from "./budget";
 import { afterMergeHook } from "./specs";
 
+const POINTING_REFUSAL =
+  "this command sets `GH_REPO`/`GH_HOST`, so which repository gh works on is not certain";
+
+describe("GH_REPO and GH_HOST point gh elsewhere", () => {
+  const refusals = (command: string, dialect: "bash" | "powershell") =>
+    pullRequestMerges(command, null, dialect).map((one) => one.refusal);
+
+  // PowerShell names the variable in any case, so `$env:gh_repo` is `GH_REPO`.
+  test.each([
+    "$env:GH_REPO='o/r'; gh pr merge 5",
+    "$env:gh_repo='o/r'; gh pr merge 5",
+    "$ENV:Gh_Host='x'; gh pr merge 5",
+    "$env:gh_host = 'x'; gh pr merge 5",
+  ])("on a PowerShell line, %j is seen", (command) => {
+    expect(refusals(command, "powershell")).toEqual([POINTING_REFUSAL]);
+  });
+
+  // Bash is case-sensitive: `gh_repo` is another variable, which gh ignores.
+  test.each([
+    "gh_repo=x gh pr merge 5",
+    "export gh_host=x && gh pr merge 5",
+    "Gh_Repo=o/r gh pr merge 5",
+  ])("on a bash line, %j is not seen", (command) => {
+    expect(refusals(command, "bash")).toEqual([null]);
+  });
+
+  test("on a bash line the exact names are still seen", () => {
+    expect(refusals("GH_REPO=o/r gh pr merge 5", "bash")).toEqual([POINTING_REFUSAL]);
+  });
+});
+
 describe("did the command merge a pull request?", () => {
   test.each([
     ["gh pr merge", true],
@@ -95,8 +126,6 @@ describe("did the command merge a pull request?", () => {
     ]);
     // The command moves the merge: the folder, the branch, or gh's own repository. One reason,
     // true for an earlier step and for the merge's own prefix, `=` or `+=` (append) alike.
-    const pointing =
-      "this command sets `GH_REPO`/`GH_HOST`, so which repository gh works on is not certain";
     for (const command of [
       "export GH_REPO=o/r && gh pr merge 5",
       "GH_REPO=o/r gh pr merge 5",
@@ -104,7 +133,7 @@ describe("did the command merge a pull request?", () => {
       "GH_HOST=example.com gh pr merge 5",
       "GH_HOST+=example.com gh pr merge 5",
     ])
-      expect(refusal(command)).toEqual([pointing]);
+      expect(refusal(command)).toEqual([POINTING_REFUSAL]);
     expect(refusal("gh pr checkout 11 && gh pr merge")).toEqual([
       "an earlier `gh pr checkout` in the same command changes the branch gh works on",
     ]);

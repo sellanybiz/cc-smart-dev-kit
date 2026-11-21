@@ -9,13 +9,14 @@ import {
   utimesSync,
   writeFileSync,
 } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { cliPaths } from "../cli/paths";
 import * as sibling from "../entries/config-check";
 import { parseCcSmartDevKitConfig } from "../project/config";
 import { atomicWrite } from "../setup/write";
 import { hookEnv, makeRepo } from "../testing/hooks";
 import { tempDir } from "../testing/temp";
+import { parseWorkflowText, personalWorkflowOrDefault } from "../workflow/resolve";
 import {
   CHECKED_CACHE_LIMIT,
   CHECKED_DIR,
@@ -24,6 +25,7 @@ import {
   checkedKey,
   loadCheckedFile,
   loadCheckedProject,
+  loadPersonalWorkflow,
   PARSER_FINGERPRINT,
   TEMP_NAME,
 } from "./checked-config";
@@ -310,6 +312,109 @@ describe("checkProjectText", () => {
     const answer = sibling.checkProjectText("{nope", "x.json");
     expect(!answer.ok && answer.message.startsWith("Invalid x.json: not valid JSON (")).toBe(true);
   });
+});
+
+const PERSONAL_TEXT = '{"allowCommit": true, "switches": {"jobRoute": true}}\n';
+const PERSONAL_VALUE = { allowCommit: true, switches: { jobRoute: true } };
+
+describe("the person's workflow file", () => {
+  /** A state folder in its own temp home, with the person's workflow file written as `text`. */
+  function personal(text: string | null) {
+    const w = world();
+    if (text !== null) {
+      mkdirSync(dirname(w.paths.workflowConfigFile), { recursive: true });
+      writeFileSync(w.paths.workflowConfigFile, text);
+    }
+    return w;
+  }
+  const VALID = PERSONAL_TEXT;
+  const VALUE = PERSONAL_VALUE;
+  /** Valid JSON that breaks the schema, plain text, and a value of the wrong kind. */
+  const BROKEN = ['{"switches": {"jobRoute": "yes"}}', "{nope", '{"allowCommit": 1}'];
+
+  test("a valid file: checked once, then a hit, with the value personalWorkflowOrDefault gives", async () => {
+    const w = personal(VALID);
+    expect(await loadPersonalWorkflow(w.paths)).toStrictEqual(VALUE);
+    expect(personalWorkflowOrDefault(w.paths)).toStrictEqual(VALUE);
+    expect(w.entries()).toHaveLength(1);
+    const spy = spyOn(sibling, "checkWorkflowText");
+    expect(await loadPersonalWorkflow(w.paths)).toStrictEqual(VALUE);
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  test.each(BROKEN)(
+    "a broken file %j is {}, as personalWorkflowOrDefault says, and never cached",
+    async (text) => {
+      const w = personal(text);
+      for (let run = 0; run < 2; run += 1) {
+        expect(await loadPersonalWorkflow(w.paths)).toStrictEqual({});
+      }
+      expect(personalWorkflowOrDefault(w.paths)).toStrictEqual({});
+      expect(w.entries()).toEqual([]);
+    },
+  );
+
+  test("a missing file is {}, and writes nothing", async () => {
+    const w = personal(null);
+    expect(await loadPersonalWorkflow(w.paths)).toStrictEqual({});
+    expect(personalWorkflowOrDefault(w.paths)).toStrictEqual({});
+    expect(w.entries()).toEqual([]);
+  });
+
+  test("a file that is a folder is {}, never a crash", async () => {
+    const w = world();
+    mkdirSync(w.paths.workflowConfigFile, { recursive: true });
+    expect(await loadPersonalWorkflow(w.paths)).toStrictEqual({});
+    expect(personalWorkflowOrDefault(w.paths)).toStrictEqual({});
+  });
+
+  test("a checker that fails, or comes from another build, leaves {} too", async () => {
+    const w = personal(VALID);
+    const spy = spyOn(sibling, "checkWorkflowText");
+    spy.mockImplementation(() => {
+      throw new Error("a bug in the parser");
+    });
+    expect(await loadPersonalWorkflow(w.paths)).toStrictEqual({});
+    spy.mockImplementation(() => ({ ok: true, value: VALUE, fingerprint: "another build" }));
+    expect(await loadPersonalWorkflow(w.paths)).toStrictEqual({});
+    expect(w.entries()).toEqual([]);
+  });
+
+  test("the same bytes as a project file and as a workflow file are two entries", async () => {
+    const w = personal("{}");
+    writeFileSync(w.file, "{}");
+    await loadCheckedFile(w.file, "project", w);
+    await loadPersonalWorkflow(w.paths);
+    expect(w.entries()).toHaveLength(2);
+    const bytes = Buffer.from("{}");
+    expect(checkedKey("a", "project", bytes)).not.toBe(checkedKey("a", "workflow", bytes));
+  });
+});
+
+describe("workflow text through the checker", () => {
+  test.each([
+    PERSONAL_TEXT,
+    "{}",
+    '{"plans": {"maxPhases": 4, "runMode": "solo"}, "alerts": {"usagePercent": 70}}',
+  ])("%j: the value equals the inline parse", (text) => {
+    const answer = sibling.checkWorkflowText(text, "w.json");
+    expect(answer.ok).toBe(true);
+    if (!answer.ok) return;
+    expect(answer.value).toStrictEqual(parseWorkflowText(text, "w.json"));
+    expect(JSON.parse(JSON.stringify(answer.value))).toStrictEqual(answer.value);
+    expect(answer.fingerprint).toBe(PARSER_FINGERPRINT);
+  });
+
+  test.each(["{nope", '{"switches": {"jobRoute": "yes"}}', '{"unknown": 1}'])(
+    "%j: the message is the inline parser's own words",
+    (text) => {
+      const answer = sibling.checkWorkflowText(text, "w.json");
+      expect(answer.ok).toBe(false);
+      if (answer.ok) return;
+      expect(answer.message.startsWith("Invalid w.json: ")).toBe(true);
+      expect(() => parseWorkflowText(text, "w.json")).toThrow(answer.message);
+    },
+  );
 });
 
 describe("loadCheckedProject", () => {

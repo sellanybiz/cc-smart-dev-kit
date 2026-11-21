@@ -56,6 +56,14 @@ import { statuslineSetting } from "../setup/statusline";
 import { isHeld, updateFiles } from "../update/state";
 import { describeIssues } from "../zod-issues";
 import {
+  current,
+  jobRouteFrom,
+  leadHintFrom,
+  mergeWorkflows,
+  type ResolvedValue,
+  type WorkflowSource,
+} from "./merge";
+import {
   type PersonalWorkflow,
   personalWorkflowSchema,
   type RunMode,
@@ -65,13 +73,8 @@ import {
   workflowValue,
 } from "./schema";
 
-/** Where a value came from. */
-export type WorkflowSource = "project" | "personal" | "default";
-
-export interface ResolvedValue<T> {
-  value: T;
-  source: WorkflowSource;
-}
+// The merge has its own zod-free home (`merge.ts`); these names stay importable from here.
+export { jobRouteFrom, leadHintFrom, type ResolvedValue, type WorkflowSource };
 
 export interface ResolvedWorkflow {
   allowCommit: ResolvedValue<boolean>;
@@ -130,21 +133,40 @@ export function personalWorkflowFile(paths: CliPaths): string {
   return paths.workflowConfigFile;
 }
 
-/** Reads the person's workflow file: `{}` when it does not exist, throws when it is broken. */
-export function loadWorkflow(file: string): PersonalWorkflow {
-  if (!existsSync(file)) return {};
+function invalidJson(file: string, error: unknown): WorkflowConfigError {
+  const reason = error instanceof Error ? error.message : String(error);
+  return new WorkflowConfigError(`Invalid ${file}: not valid JSON (${reason})`);
+}
+
+/**
+ * Parses the text of the person's workflow file; `file` names it in every message. Throws
+ * `WorkflowConfigError` when it is broken. The one parse: `loadWorkflow` reads the file into it,
+ * and the config checker (`src/entries/config-check.ts`) gives it the bytes a hook already read.
+ */
+export function parseWorkflowText(text: string, file: string): PersonalWorkflow {
   let raw: unknown;
   try {
-    raw = JSON.parse(readFileSync(file, "utf8"));
+    raw = JSON.parse(text);
   } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error);
-    throw new WorkflowConfigError(`Invalid ${file}: not valid JSON (${reason})`);
+    throw invalidJson(file, error);
   }
   const parsed = personalWorkflowSchema.safeParse(raw);
   if (!parsed.success) {
     throw new WorkflowConfigError(`Invalid ${file}: ${describeIssues(parsed.error.issues)}`);
   }
   return parsed.data;
+}
+
+/** Reads the person's workflow file: `{}` when it does not exist, throws when it is broken. */
+export function loadWorkflow(file: string): PersonalWorkflow {
+  if (!existsSync(file)) return {};
+  let text: string;
+  try {
+    text = readFileSync(file, "utf8");
+  } catch (error) {
+    throw invalidJson(file, error);
+  }
+  return parseWorkflowText(text, file);
 }
 
 /**
@@ -159,30 +181,6 @@ export function personalWorkflowOrDefault(paths: CliPaths): PersonalWorkflow {
   } catch {
     return {};
   }
-}
-
-/** One group of both objects, the project's fields over the person's. */
-function mergedGroup<T extends object>(personal: T | undefined, project: T | undefined) {
-  if (personal === undefined) return project;
-  if (project === undefined) return personal;
-  return { ...personal, ...project };
-}
-
-/**
- * The project's workflow object and the person's, the project's over it, field by field — a
- * group's fields too (`alerts`, `fixesAfterReview`).
- */
-export function mergeWorkflows(personal: Workflow, project: Workflow): Workflow {
-  const merged: Workflow = { ...personal, ...project };
-  const alerts = mergedGroup(personal.alerts, project.alerts);
-  if (alerts !== undefined) merged.alerts = alerts;
-  const fixes = mergedGroup(personal.fixesAfterReview, project.fixesAfterReview);
-  if (fixes !== undefined) merged.fixesAfterReview = fixes;
-  const issues = mergedGroup(personal.issues, project.issues);
-  if (issues !== undefined) merged.issues = issues;
-  const plans = mergedGroup(personal.plans, project.plans);
-  if (plans !== undefined) merged.plans = plans;
-  return merged;
 }
 
 /** Where the merged value of one key came from. */
@@ -286,29 +284,9 @@ function statusLineIsOurs(paths: CliPaths): boolean {
   }
 }
 
-/** A setting that lives elsewhere, as the resolver reports it: its value now, and where it lives. */
-function current<T>(value: T, source: WorkflowSource): ResolvedValue<T> {
-  return { value, source };
-}
-
 /** The project's value of a boolean field that lives in `.claude/cc-smart-dev-kit.json`. */
 function projectFlag(value: boolean | undefined): ResolvedValue<boolean> {
   return value === undefined ? current(false, "default") : current(value, "project");
-}
-
-/**
- * `switches.jobRoute`: the project's `jobs.route` when it sets one, else the person's
- * machine-wide default, else off. The project wins field by field, as every other workflow
- * setting does; the one place that decides it.
- */
-export function jobRouteFrom(
-  personal: PersonalWorkflow,
-  projectConfig: CcSmartDevKitConfig | null,
-): ResolvedValue<boolean> {
-  const project = projectConfig?.jobs?.route;
-  if (project !== undefined) return current(project, "project");
-  const own = personal.switches?.jobRoute;
-  return own === undefined ? current(false, "default") : current(own, "personal");
 }
 
 /**
@@ -322,18 +300,6 @@ export function resolveJobRoute(
   projectConfig: CcSmartDevKitConfig | null,
 ): ResolvedValue<boolean> {
   return jobRouteFrom(personalWorkflowOrDefault(paths), projectConfig);
-}
-
-/** Whether the lead-model hint is on when nothing turns it off: on. */
-export const LEAD_HINT_DEFAULT = true;
-
-/**
- * `switches.leadHint`: the person's own value in their workflow file, else on. A machine-wide
- * switch — the hint is about the session's model, not the project — so no project file sets it.
- */
-export function leadHintFrom(personal: PersonalWorkflow): ResolvedValue<boolean> {
-  const own = personal.switches?.leadHint;
-  return own === undefined ? current(LEAD_HINT_DEFAULT, "default") : current(own, "personal");
 }
 
 /**

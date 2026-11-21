@@ -13,17 +13,18 @@ import { dirname, join } from "node:path";
 import { PLUGIN_INSTALL_COMMAND } from "../build-info";
 import { parserFingerprint } from "../build-info/parser-fingerprint" with { type: "macro" };
 import type { CliPaths } from "../cli/paths";
-import type { CheckAnswer } from "../entries/config-check";
+import type { Answer } from "../entries/config-check";
 import type { CcSmartDevKitConfig } from "../project/config";
 import { type Checkout, projectFileFor } from "../project/locate";
 import type { Project } from "../project/resolve";
 import { setFileMode } from "../setup/file-mode";
 import { atomicWrite } from "../setup/write";
+import type { PersonalWorkflow } from "../workflow/schema";
 
 /**
- * The hooks' one read of a project file: its bytes, looked up in a cache of checked answers. The
- * parser (`src/entries/config-check.ts`, a sibling bundle) loads only on a miss, so a warm hook
- * evaluates no zod and no config schema.
+ * The hooks' one read of a config file (the project's, and the person's workflow file): its
+ * bytes, looked up in a cache of checked answers. The parsers (`src/entries/config-check.ts`, a
+ * sibling bundle) load only on a miss, so a warm hook evaluates no zod and no config schema.
  *
  * The key is sha256 over the parser's build fingerprint, the kind and the bytes
  * (`parser-fingerprint.ts` says why not the version alone). Only a success is written: a broken
@@ -32,12 +33,15 @@ import { atomicWrite } from "../setup/write";
  * Failing closed keeps today's meaning:
  * - a config problem, or a sibling that cannot be loaded or comes from another build, is
  *   `{ ok: false, message }`, and the hook answers as it does for any broken file;
- * - an error thrown inside the parser that is not a config error, and a read error on the project
- *   file (a folder, no permission), are thrown, so the hook takes its crash path;
+ * - an error thrown inside the parser that is not a config error, and a read error on the file
+ *   (a folder, no permission), are thrown, so the hook takes its crash path;
  * - a cache that cannot be read or written is a miss.
  *
- * The folder is the person's own (`0700`, entries `0600`). It holds project files only, which
- * have no secret field; `gateway.json` is never cached.
+ * The person's workflow file is the one exception (`loadPersonalWorkflow`): a hook never fails
+ * on it, as `personalWorkflowOrDefault` never does.
+ *
+ * The folder is the person's own (`0700`, entries `0600`). It holds project files and workflow
+ * files only, which have no secret field; `gateway.json` is never cached.
  */
 
 /** The parser's build fingerprint; the sibling bakes in the same one. */
@@ -61,8 +65,14 @@ const ENTRY_FORMAT = 1;
 /** The name `atomicWrite` gives its temp file (`src/setup/write.ts`); a test keeps them in step. */
 export const TEMP_NAME = /^\..+\.cc-smart-dev-kit-tmp-/;
 
+/** What each kind of checked file parses to. */
+interface CheckedValues {
+  project: CcSmartDevKitConfig;
+  workflow: PersonalWorkflow;
+}
+
 /** What kind of file is checked: the key names it, so two kinds never share an entry. */
-export type CheckedKind = "project";
+export type CheckedKind = keyof CheckedValues;
 
 /**
  * How the run got the project's file, for the hook log: `none` (no file), `cached` (an entry
@@ -70,8 +80,8 @@ export type CheckedKind = "project";
  */
 export type ConfigFact = "none" | "cached" | "checked" | "broken";
 
-export type CheckedFile =
-  | { ok: true; value: CcSmartDevKitConfig | null; fact: "none" | "cached" | "checked" }
+export type CheckedFile<K extends CheckedKind = "project"> =
+  | { ok: true; value: CheckedValues[K] | null; fact: "none" | "cached" | "checked" }
   | { ok: false; message: string; fact: "broken" };
 
 export type CheckedProject =
@@ -84,8 +94,21 @@ export interface CheckedOptions {
 }
 
 interface Sibling {
-  checkProjectText: (text: string, where: string) => CheckAnswer;
+  checkProjectText: (text: string, where: string) => Answer<CheckedValues["project"]>;
+  checkWorkflowText: (text: string, where: string) => Answer<CheckedValues["workflow"]>;
 }
+
+type Parse<K extends CheckedKind> = (
+  sibling: Sibling,
+  text: string,
+  where: string,
+) => Answer<CheckedValues[K]>;
+
+/** The sibling's parser for each kind: one entry per kind, so none is missed. */
+const PARSE: { readonly [K in CheckedKind]: Parse<K> } = {
+  project: (sibling, text, where) => sibling.checkProjectText(text, where),
+  workflow: (sibling, text, where) => sibling.checkWorkflowText(text, where),
+};
 
 function reinstallMessage(why: string): string {
   return `The plugin's config checker is not usable (${why}): run \`${PLUGIN_INSTALL_COMMAND}\` to reinstall the plugin, then try again.`;
@@ -101,8 +124,10 @@ async function loadSibling(): Promise<Sibling> {
     ? built
     : join(import.meta.dir, "..", "entries", "config-check.ts");
   const loaded: unknown = await import(entry);
-  if (typeof (loaded as Partial<Sibling>).checkProjectText !== "function") {
-    throw new Error(`${entry} exports no checkProjectText`);
+  for (const name of ["checkProjectText", "checkWorkflowText"] as const) {
+    if (typeof (loaded as Partial<Sibling>)[name] !== "function") {
+      throw new Error(`${entry} exports no ${name}`);
+    }
   }
   return loaded as Sibling;
 }
@@ -119,14 +144,18 @@ interface Entry {
 }
 
 /** The stored value, or null when the entry is missing, unreadable or not what `key` names. */
-function readEntry(file: string, key: string, kind: CheckedKind): CcSmartDevKitConfig | null {
+function readEntry<K extends CheckedKind>(
+  file: string,
+  key: string,
+  kind: K,
+): CheckedValues[K] | null {
   try {
     const entry = JSON.parse(readFileSync(file, "utf8")) as Partial<Entry> | null;
     if (entry?.format !== ENTRY_FORMAT || entry.key !== key || entry.kind !== kind) return null;
     const { value } = entry;
     // The key names the bytes and the parser build, so a matching entry holds that parser's value.
     const isObject = typeof value === "object" && value !== null && !Array.isArray(value);
-    return isObject ? (value as CcSmartDevKitConfig) : null;
+    return isObject ? (value as CheckedValues[K]) : null;
   } catch {
     return null;
   }
@@ -180,11 +209,11 @@ function writeEntry(dir: string, key: string, kind: CheckedKind, value: unknown)
  * The checked answer for one file; `value` null with fact `none` when the file does not exist.
  * The bytes are read once, so the key and the parse cannot disagree after an edit mid-run.
  */
-export async function loadCheckedFile(
+export async function loadCheckedFile<K extends CheckedKind>(
   file: string,
-  kind: CheckedKind,
+  kind: K,
   { paths }: CheckedOptions,
-): Promise<CheckedFile> {
+): Promise<CheckedFile<K>> {
   if (!existsSync(file)) return { ok: true, value: null, fact: "none" };
   const bytes = readFileSync(file);
   const cacheable = bytes.length <= CHECKED_FILE_MAX_BYTES;
@@ -201,7 +230,7 @@ export async function loadCheckedFile(
     const why = error instanceof Error ? error.message : String(error);
     return { ok: false, message: reinstallMessage(why), fact: "broken" };
   }
-  const answer = sibling.checkProjectText(bytes.toString("utf8"), file);
+  const answer = PARSE[kind](sibling, bytes.toString("utf8"), file);
   if (answer.fingerprint !== PARSER_FINGERPRINT) {
     const why = "it was built from another version of the plugin than this hook";
     return { ok: false, message: reinstallMessage(why), fact: "broken" };
@@ -227,6 +256,25 @@ export async function loadCheckedProject(
     project: { ...checkout, config: checked.value, configFile: file },
     fact: checked.fact,
   };
+}
+
+/**
+ * The person's own workflow values, read through the cache, or `{}` when the file is not there,
+ * is broken, or cannot be read: the answers of `personalWorkflowOrDefault`, which a hook uses so
+ * it never fails on the person's file (`workflow show` says what is wrong with it). A broken
+ * file is never cached, so it is checked again each run and stays broken until it is fixed.
+ */
+export async function loadPersonalWorkflow(
+  paths: Pick<CliPaths, "stateDir" | "workflowConfigFile">,
+): Promise<PersonalWorkflow> {
+  try {
+    const checked = await loadCheckedFile(paths.workflowConfigFile, "workflow", { paths });
+    return checked.ok ? (checked.value ?? {}) : {};
+  } catch {
+    // A file that cannot be read, or a parser that failed: the hook goes on without the
+    // person's defaults, as `personalWorkflowOrDefault` does for any failure.
+    return {};
+  }
 }
 
 /**

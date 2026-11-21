@@ -22,7 +22,7 @@
  *
  * **The job route** (the switch `switches.jobRoute`: the project's `"jobs": { "route": true }`
  * when it sets one, else the person's machine-wide default in their workflow file, else off;
- * one resolver decides it, `resolveJobRoute` in `src/workflow/resolve.ts`, and runs with no
+ * one resolver decides it, `jobRouteFrom` in `src/workflow/merge.ts`, and runs with no
  * project file too). A heavy command — one of the project's heavy-job kinds
  * (`classifyRoutableLine`, `src/jobs/`) — is sent through the machine's queue instead of running
  * raw: several sessions running builds, type checks and test runs at once run the machine out
@@ -108,7 +108,8 @@ import {
 } from "../jobs/classify";
 import { hookDecision } from "../jobs/git-hooks";
 import { gitHooksState } from "../jobs/hook-folder";
-import { type Kinds, mergeKinds } from "../jobs/kinds";
+import { mergeKinds } from "../jobs/kind-defaults";
+import type { Kinds } from "../jobs/kinds";
 import { packageScripts } from "../jobs/package-scripts";
 import { diskWeightSource } from "../jobs/weight-source";
 import { LAUNCHER_IN_SHELL } from "../setup/launcher";
@@ -130,8 +131,10 @@ import {
 import { gitCalls, longOption } from "../shell/git-calls";
 import { programName } from "../shell/program-name";
 import { shellQuote, shellWord } from "../shell/quote";
-import { resolveJobRoute } from "../workflow/resolve";
+import { jobRouteFrom } from "../workflow/merge";
+import type { PersonalWorkflow } from "../workflow/schema";
 import { SHORT_GUARD_BUDGET_MS, startBudget } from "./budget";
+import { loadPersonalWorkflow } from "./checked-config";
 import { GUARD_GIT_TIMEOUT_MS } from "./git";
 import {
   type HookInput,
@@ -634,16 +637,6 @@ export function routeDenial(routed: Routed): HookResult {
   );
 }
 
-/**
- * True when heavy commands go through the queue here: the resolved `switches.jobRoute` (the
- * project's `jobs.route` over the person's machine-wide default, `resolveJobRoute`). A personal
- * workflow file that cannot be read leaves the project's value and the default standing, so a
- * hook never fails on it.
- */
-export function routesHeavyCommands(context: HookContext): boolean {
-  return resolveJobRoute(context.paths, context.project.config).value;
-}
-
 /** The command of a shell call, or null when the input names none. */
 function commandOf(input: HookInput): null | string {
   return stringField(toolInput(input).command);
@@ -670,26 +663,29 @@ function inputDialect(input: HookInput): Dialect {
  * PowerShell line is refused instead, naming the Bash tool (`powerShellDenial`) — but only where
  * the Bash tool exists (`bashTool`, Git Bash on Windows): with none, the line is left as written.
  * Any other PowerShell line is left exactly as the model wrote it.
+ *
+ * `personal` is the person's own workflow file, already read (`jobRouteAnswer`): the route
+ * decision needs only its default, and a caller with no file passes none.
  */
 export function jobRoute(
   context: HookContext,
   bashTool: (env: Env) => boolean = bashToolExists,
   platform: NodeJS.Platform = process.platform,
+  personal: PersonalWorkflow = {},
 ): HookResult {
   const fields = toolInput(context.input);
   const command = stringField(fields.command);
   if (command === null) return SILENT;
+  if (!jobRouteFrom(personal, context.project.config).value) return SILENT;
   const dialect = inputDialect(context.input);
   const kinds = mergeKinds(context.project.config?.jobs?.kinds);
   // The Bash tool's shell starts in the input's `cwd`; the classifier follows a `cd`.
   const source = diskWeightSource(context.cwd);
   if (dialect !== "bash") {
-    if (!routesHeavyCommands(context)) return SILENT;
     // The Git Bash lookup reads files, so only a heavy line asks for it.
     const refused = powerShellDenial(command, kinds, source);
     return refused !== null && bashTool(context.env) ? refused : SILENT;
   }
-  if (!routesHeavyCommands(context)) return SILENT;
   // A line is queued whole (every command heavy or glue) or refused (heavy work beside any other
   // command, `mixedLineDenial`) or has a git command whose hook is heavy; never two of them,
   // because git is no heavy kind and a line with one is no queued line. So each is asked only
@@ -705,6 +701,16 @@ export function jobRoute(
   if (!REWRITE_SUPPORTED) return routeDenial(routed);
   const timeoutMs = REWRITE_TIMEOUT_SUPPORTED ? routedTimeoutMs(context.env) : null;
   return rewriteAnswer(fields, routed.command, timeoutMs);
+}
+
+/**
+ * The hook's answer: reads the person's workflow file through the checked cache (a warm run
+ * loads no parser), then judges the call. A file that cannot be used leaves the project's value
+ * and the default standing, so the hook never fails on it (`loadPersonalWorkflow`).
+ */
+export async function jobRouteAnswer(context: HookContext): Promise<HookResult> {
+  const personal = await loadPersonalWorkflow(context.paths);
+  return jobRoute(context, bashToolExists, process.platform, personal);
 }
 
 /**

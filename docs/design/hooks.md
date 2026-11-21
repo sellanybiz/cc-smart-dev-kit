@@ -98,7 +98,8 @@ cycle through `specs.ts`.
 Before the split each hook bundle was about 585 KB and a run took about 32 ms. After it each
 bundle was 266 to 357 KB and a run took about 22 to 27 ms (median of 40 runs on a quiet machine,
 against about 4 ms for an empty bun script). The checked project file (below) took the three
-hooks that need no zod of their own down to 29 to 87 KB. `entries.test.ts`
+hooks that need no zod of their own down to 29 to 87 KB, and `job-route` down to 160 KB.
+`entries.test.ts`
 builds every bundle `hooks.json` runs (the hooks with a spec, and `update-check` and
 `playwright-output`) into a temp folder and holds four proofs for them:
 
@@ -118,8 +119,8 @@ builds every bundle `hooks.json` runs (the hooks with a spec, and `update-check`
   its own proof that the built file is wired: the session-start record it writes, and the
   screenshot path it rewrites.
 
-- **A zod trap** for the hooks that carry no zod (below): the bundle runs under a preload that
-  marks any evaluation of zod, cold and warm.
+- **A zod trap** for the hooks whose warm run loads no zod (below): the bundle runs under a
+  preload that marks any evaluation of zod, cold and warm.
 
 ### The checked project file
 
@@ -141,7 +142,13 @@ file's bytes once and looks them up in a cache of checked answers
   written through `atomicWrite`. Only a success is written; a broken file is checked again every
   run. At most 64 entries stay (the oldest by modified time go on the next miss), a temp file
   from a killed writer goes once it is a minute old, and a file over 256 KB is parsed every time.
-  The cache holds only a project file, which has no secret field; `gateway.json` is never cached.
+  The cache holds only project files and the person's workflow file, which have no secret field;
+  `gateway.json` is never cached.
+- **The person's workflow file** goes through the same cache as a second kind (`workflow`, the
+  sibling's `checkWorkflowText`), for `job-route`'s machine-wide default. A hook never fails on
+  it: a missing, broken or unreadable file, a checker that fails, and one from another build all
+  give `{}`, the answers of `personalWorkflowOrDefault`, and a broken file is never cached
+  (`loadPersonalWorkflow`).
 - **Failing closed keeps its meaning.** A config problem arrives as data and goes to the hook's
   `onConfigProblem`, with the same words as before. A sibling that cannot be loaded is the same
   problem with one fix: reinstall the plugin. A bug in the parser, and a project file that
@@ -157,24 +164,40 @@ file's bytes once and looks them up in a cache of checked answers
   `project/config-facts.ts`, never `project/resolve.ts`: those two hold no zod, and
   `resolve.ts` and `config.ts` re-export them, so their other importers did not change.
 
-**Which hooks are zod-free.** `agent-usage`, `session-name` and `verify-gate` hold no zod
-module: 272 KB to 36 KB, 266 KB to 30 KB and 283 KB to 87 KB, and a warm run evaluates none
-(`entries.test.ts` › "no zod on a warm run", with budgets of the measured size plus a tenth).
+**Which hooks are zod-free.** Two kinds, both proved by `entries.test.ts` › "no zod on a warm run"
+(each hook runs cold, the control, and warm, with its normal answer both times):
+
+- **No zod module in the bundle.** `agent-usage`, `session-name`, `verify-gate` and `job-route`:
+  272 KB to 36 KB, 266 KB to 30 KB, 283 KB to 87 KB and 355 KB to 160 KB. Their budgets are the
+  measured size plus a tenth. `job-route` got there by cutting its own chain: `jobs/kind-defaults.ts`
+  holds the default kinds and the readers that judge a run (`jobs/kinds.ts` keeps only the
+  schemas), `workflow/merge.ts` holds the merge of the person's file and the project's, and the
+  person's workflow file comes through the checked cache like the project's. `resolve.ts` and
+  `kinds.ts` re-export what they gave up, so their other importers did not change.
+- **Zod behind a dynamic import.** `after-merge` still holds zod in the bundle (a lazy
+  `import()` is inlined by the bundler: 326 KB to 341 KB, so its budget is not lowered), but a run
+  that saw no merge evaluates none: the workflow resolver and the clean's start load only in the
+  branch that saw one. **Never put such an import in a module a bundle with the MCP SDK reaches**
+  (`tasks-mcp.js`): the bundler then wraps zod in lazy initialisers, and the SDK's own top-level
+  `zod` calls run before them (`TypeError: undefined is not a constructor (new ZodLazy)`; seen on
+  `worktree-leftovers.ts`, which `worktrees/scan.ts` imports for `idleMinutesOrNull`).
+  `src/tasks/bundle.test.ts` runs the built server and fails on it.
+
 The other hooks skip the parse on a hit and still load zod through their own imports; each
-chain below would have to go for one of them to join. Median of 40 runs of `session-name` and
-`verify-gate` on a machine at a load of about 20 on 12 cores (an empty bun script took 5 to
-8 ms): about 50 to 60 ms with the old bundles, 17 to 31 ms with these. `after-merge`,
-`job-route` and `tier-view` moved within the noise of that load. The chains left, by what keeps
-zod in the bundle:
+chain below would have to go for one of them to join. Median of 40 runs on a machine at a load
+of about 12 on 12 cores (an empty bun script took 4 ms), the two builds taking turns, so read
+them as rough: `job-route` 38 ms to 21 ms, `after-merge` 32 ms to 23 ms. Earlier, at a load of
+about 20, `session-name` and `verify-gate` went from about 50 to 60 ms to 17 to 31 ms. The chains
+left, by what keeps zod in the bundle:
 
 | Chain | Hooks |
 |---|---|
-| `workflow/resolve` (the personal file and `project/resolve`'s inline parser) | `after-merge`, `fable-session`, `job-route`, `review-record`, `builder-finish` |
+| `workflow/resolve` (the personal file and `project/resolve`'s inline parser) | `fable-session`, `review-record`, `builder-finish` |
 | `tasks/context` and `tasks/deploy/format` | `builder-finish`, `keep-going`, `task-start`, `user-away` |
 | `hooks/session-facts` and the gateway readers | `fable-session`, `keep-going`, `subagent-background`, `tier-view` |
-| `jobs/kinds` (the schemas) | `job-route`, and in `update-check` through `jobs/classify` |
+| `jobs/kinds` (the schemas) | `update-check` through `jobs/classify` |
 | `user-away/state.ts`, `gateway/limit-state.ts` | `user-away`, `tier-view` |
-| `worktrees/auto-state.ts` | `worktree-leftovers`, `after-merge` |
+| `worktrees/auto-state.ts` (the state files of the clean) | `worktree-leftovers` (through `takeToldLine`, `startAutoClean` and `readRepoRecord`), and `after-merge` behind its import |
 
 `update-check` does not use the frame: its zod comes from `update/background`, which reaches
 `jobs/classify`, and from `portal/session-start`, which reaches the gateway.

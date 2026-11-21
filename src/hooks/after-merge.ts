@@ -57,8 +57,6 @@ import {
 } from "../shell/command";
 import { gitCalls } from "../shell/git-calls";
 import { programName } from "../shell/program-name";
-import { resolveWorkflow, WorkflowConfigError } from "../workflow/resolve";
-import { startAutoClean } from "../worktrees/auto-start";
 import { startBudget } from "./budget";
 import { GUARD_GIT_TIMEOUT_MS, innermostWorktree, listWorktrees, runGit } from "./git";
 import { addContext, type HookResult, SILENT, stringField, toolInput } from "./io";
@@ -221,8 +219,13 @@ const ENV_PROGRAM = /^(?:.*[\\/])?env(?:\.(?:exe|cmd))?$/i;
 /**
  * `GH_REPO` / `GH_HOST` named anywhere in a step (`export GH_REPO=…`, `$env:GH_REPO='…'`,
  * `GH_REPO+=…`), the merge's own prefix (`GH_REPO=… gh pr merge`) included. The one rule for it.
+ * PowerShell names a variable in any case (`$env:gh_repo` is `GH_REPO`); in bash `gh_repo` is
+ * another variable, which gh ignores.
  */
-const GH_POINTING_TEXT = /GH_(?:REPO|HOST)/;
+const GH_POINTING_TEXT: Readonly<Record<Dialect, RegExp>> = {
+  bash: /GH_(?:REPO|HOST)/,
+  powershell: /GH_(?:REPO|HOST)/i,
+};
 
 /** `--auto` arms a merge for later. */
 const isAutoFlag = (word: string) => /^--auto(?:=|$)/.test(word);
@@ -315,7 +318,7 @@ function readMerges(
     // `set GH_REPO=…`, or the merge's own prefix `GH_REPO=… gh pr merge`) points this step's gh
     // call and every later one somewhere else, including a step that is nothing but the
     // assignment. The prefix is one of the step's words, so this one check covers it.
-    if (words.some((word) => GH_POINTING_TEXT.test(word))) {
+    if (words.some((word) => GH_POINTING_TEXT[dialect].test(word))) {
       moved ??=
         "this command sets `GH_REPO`/`GH_HOST`, so which repository gh works on is not certain";
     }
@@ -1431,8 +1434,12 @@ export function clearWorktreeNote(path: string, branch: string, clear: boolean):
  * Whether the session clears its own worktree after a merge: the resolved
  * `clearWorktreeAfterMerge`. A workflow file that cannot be read leaves it unknown, and the
  * folder is kept: the note only asks the person.
+ *
+ * The resolver loads here, on a merge only, because it holds the workflow's schemas (zod): a
+ * hook run that saw no merge loads none of them.
  */
-function clearsAfterMerge(context: HookContext): boolean {
+async function clearsAfterMerge(context: HookContext): Promise<boolean> {
+  const { resolveWorkflow, WorkflowConfigError } = await import("../workflow/resolve");
   try {
     return resolveWorkflow(context.paths, context.project.config).clearWorktreeAfterMerge.value;
   } catch (error) {
@@ -1537,14 +1544,16 @@ export async function afterMerge(context: HookContext): Promise<HookResult> {
   });
   if (outcome.intoBase !== null && record !== null) {
     // Each pull request is handled once: the marker says this one was. Then finished worktrees
-    // clean themselves, in a detached process (D48, `src/worktrees/auto-start.ts`).
+    // clean themselves, in a detached process (D48, `src/worktrees/auto-start.ts`). It loads
+    // here, in the branch that saw a merge: its auto-state reader holds zod.
     mkdirSync(join(record, ".."), { recursive: true });
     writeFileSync(record, "");
+    const { startAutoClean } = await import("../worktrees/auto-start");
     startAutoClean(context, repo, "merge");
   }
   if (outcome.clear === null) return SILENT;
   return addContext(
     event,
-    clearWorktreeNote(outcome.clear.path, outcome.clear.branch, clearsAfterMerge(context)),
+    clearWorktreeNote(outcome.clear.path, outcome.clear.branch, await clearsAfterMerge(context)),
   );
 }
