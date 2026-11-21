@@ -11,7 +11,7 @@
  * Every refusal and every line says what is wrong and how to fix it.
  */
 import { existsSync } from "node:fs";
-import { basename, join } from "node:path";
+import { basename } from "node:path";
 import { COMMAND } from "../build-info/names";
 import type { CliPaths } from "../cli/paths";
 import type { Out } from "../cli/ui/out";
@@ -36,6 +36,7 @@ import {
 import { releasePlan, reservePlan, swapPlanAgent } from "../tasks/work/store";
 import type { ClaimProcess, Who, WorkTask } from "../tasks/work/types";
 import { baseBranch } from "../worktrees/command";
+import { worktreePath } from "../worktrees/paths";
 import { type PullRequestState, pullRequestState } from "../worktrees/scan";
 import { HcError, type HcRunner, hcGet, hcList } from "./hc";
 import { HERDR_AGENT_PREFIX, isHerdrAgent, KIT_PLAN, parseLeadId } from "./labels";
@@ -867,7 +868,7 @@ export function prepareStart(world: PlansWorld, ref: string): PlanStart {
     // The recorded worktree is a task row, which any session may write: only the folder a child
     // starts in (`<repo>/.claude/worktrees/<name>`) is reused, never a path someone put there.
     if (recorded !== null) {
-      const home = join(world.repo, ".claude", "worktrees", basename(recorded.worktree));
+      const home = worktreePath(world.repo, basename(recorded.worktree));
       if (recorded.worktree !== home)
         return refuse(
           `Plan "${slug}": its recorded worktree ${recorded.worktree} is not a child's folder (${home}).`,

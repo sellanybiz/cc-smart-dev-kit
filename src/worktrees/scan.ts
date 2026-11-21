@@ -42,6 +42,7 @@ import {
   type RunningProgram,
   runningPrograms,
 } from "./machine-facts";
+import { worktreesFolder } from "./paths";
 import {
   type MergedBy,
   MIN_MERGE_TREE_GIT,
@@ -106,7 +107,7 @@ function innerWorktreeOf(worktree: string, all: ListedWorktree[]): null | string
     (other) => isInside(other.path, worktree) && !isInside(worktree, other.path),
   );
   if (listed !== undefined) return listed.path;
-  const claudeOwn = join(worktree, ".claude", "worktrees");
+  const claudeOwn = worktreesFolder(worktree);
   let entries: string[];
   try {
     entries = readdirSync(claudeOwn);

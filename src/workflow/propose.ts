@@ -51,6 +51,7 @@ import {
   locateCheckout,
   readCommittedConfig,
 } from "../project/resolve";
+import { worktreePath } from "../worktrees/paths";
 import { GH_TIMEOUT_MS, type GhRunner, ghMissing, spawnGh } from "./merge-check";
 import { type ResolvedWorkflow, resolvedValueOf, resolveWorkflow } from "./resolve";
 import { isProjectKey, PERSONAL_ONLY_REASONS, showValue, type WorkflowKey } from "./schema";
@@ -199,7 +200,7 @@ function placeOf(repo: string, name: string): Place {
   return {
     branch: `worktree-${name}`,
     name,
-    worktree: join(repo, ".claude", "worktrees", name),
+    worktree: worktreePath(repo, name),
   };
 }
 

@@ -80,7 +80,7 @@ import {
 import { GUARD_GIT_TIMEOUT_MS, runGit } from "./git";
 import { type HookResult, SILENT, stringField } from "./io";
 import type { Env, HookContext } from "./run";
-import { subagentWorktreeOf } from "./subagent-worktree";
+import { subagentWorktreeByShape, subagentWorktreeOf } from "./subagent-worktree";
 import { runPrompts } from "./transcript";
 
 /** Only an explicit review brief can write a review record. */
@@ -140,7 +140,7 @@ function said(why: string): HookResult {
  */
 export function inSubagentWorktree(cwd: string, agentId: string | null): boolean {
   if (subagentWorktreeOf(cwd, agentId) !== null) return true;
-  return /[\\/]\.claude[\\/]worktrees[\\/]agent-[0-9a-f]+(?:[\\/]|$)/.test(cwd);
+  return subagentWorktreeByShape(cwd) !== null;
 }
 
 export async function reviewRecord(context: HookContext): Promise<HookResult> {

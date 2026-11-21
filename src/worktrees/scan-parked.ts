@@ -28,6 +28,7 @@ import {
 } from "../hooks/git";
 import type { Env } from "../hooks/run";
 import { containersUsing, mountKeptWhy, programsInside } from "./machine-facts";
+import { worktreesFolder } from "./paths";
 import {
   forgottenLine,
   isParkedWorktree,
@@ -140,7 +141,7 @@ export function strayParkedFolders(
   } catch {
     return [];
   }
-  const folders = new Set<string>([join(repo, ".claude", "worktrees")]);
+  const folders = new Set<string>([worktreesFolder(repo)]);
   for (const listed of [...all.slice(1), ...earlier.slice(1)]) folders.add(dirname(listed.path));
   const found: StrayFolder[] = [];
   for (const folder of folders) {
