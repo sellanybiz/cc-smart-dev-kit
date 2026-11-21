@@ -32,6 +32,20 @@ in your own terminal after the update; the user guide is [README.md](README.md).
 - **A test starts every built bundle once**, so a bundle that crashes as it loads cannot ship.
 - **`after-merge` sees `GH_REPO` and `GH_HOST` in any case on a PowerShell line**, where
   variable names ignore case.
+- **herdr for a lead with several children.** `herdr start --base <ref>` starts a child from
+  a branch you name, such as the plan branch, instead of the default branch. `--brief-file
+  <path>` on `start` and `send` reads the brief from a file, so quotes and `$` never pass through
+  a shell. Only one `herdr wait` runs per lead; a second one names the live one. When the wait
+  times out, it lists each child as still working, blocked waiting for you, or gone, instead of
+  calling every one blocked. `herdr list` has a new `base` column.
+- **Builders lose nothing when a usage limit stops them.** After each step a builder commits
+  and leaves a `Progress:` note, and the lead reads it when it resumes the builder. A builder
+  never hands back while its own background job runs, and `subagent-background` blocks a stop
+  once per background task, so the same final report no longer repeats. A hand-back carries
+  the builder's own work only.
+- **The merge note knows a lead keeps its worktree.** After a merge, a session that still
+  holds another open plan reads "Kept: plan <slug> is still open here." instead of being told
+  to clear the worktree.
 - **The portal shows the 7-day usage window** beside the 5-hour one, each with its percent, a
   bar and its reset time; a reset a day or more away reads in days and hours ("3 d 21 h"). One
   shared bar now draws every bar in the portal, with a track you can see in both themes, and
