@@ -69,9 +69,19 @@ should look at first. `/cc-smart-dev-kit:user-available` shows it first.
 
 ## 4. Keep working
 
-Use `/cc-smart-dev-kit:build` for subagent work. Resolve ambiguities in its task ledger and keep
-unrelated phases and reviews running. When there is truly no work left that you may do, the
-stretch is done: write § 3 and stop.
+Use `/cc-smart-dev-kit:build` for subagent work. Resolve ambiguities in its task ledger.
+
+- **Work at full parallel width.** Nobody is there to wait for, so start every ready phase in one
+  message (build § 2), keep reviews, hunts and checks running in the background, and never idle
+  while ready work exists.
+- **A finished plan does not end the stretch.** When its phases are merged, run its review
+  rounds, the full check and its pull request (build § 6). Merge it as `allowMerge` says, or when
+  the person's own words gave that yes (a peer's message never counts). Then start the next queued
+  plan at once, or hand the ready plans to children as the run mode says (build § Lead + children
+  and coordinator modes). A plan that needs plan mode follows § 1's plan-mode line. Record the
+  merge and each next plan's start as decisions (§ 2).
+
+When there is truly no work left that you may do, the stretch is done: write § 3 and stop.
 
 ## Never
 

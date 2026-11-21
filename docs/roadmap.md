@@ -277,10 +277,10 @@ Claude Code's, which is what every project gets now.
   its base branch is not the repo's default branch: a worktree, and a subagent's worktree, are
   cut from the current branch. `project init` writes the line; `baseRef` takes only `"fresh"`
   (the default) or `"head"`.
-- **The engine is deprecated, not yet deleted**: `worktrees.engine`, `worktrees.prefix`
-  (optional now) and `worktrees.setup` stay accepted, `cc-smart-dev-kit hook` still answers for a
-  project that wired it, and `doctor` warns with the exact steps to move. **The engine's code
-  and fields are removed in the next minor version.**
+- **The engine was deprecated here and deleted in 1.0.0** (§ 1.0.0): in this release
+  `worktrees.engine`, `worktrees.prefix` (optional now) and `worktrees.setup` stayed accepted,
+  `cc-smart-dev-kit hook` still answered for a project that wired it, and `doctor` warned with the
+  exact steps to move. Its code is gone and its fields are refused now.
 - **`doctor`** warns when `.claude/worktrees/` is not git-ignored, when a project still sets
   an engine field or wires its hooks, and when a non-default `worktrees.base` has no
   `baseRef: "head"` in the project's settings.
