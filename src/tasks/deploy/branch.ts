@@ -52,8 +52,9 @@ function knowsRef(repo: string, ref: string, env: Env): boolean {
  * - A local branch whose `origin/<base>` is not here (never fetched, or not on origin), or any
  *   local branch with no `origin` remote, is read as written, and `note` says so. A name that
  *   resolves nowhere throws.
- * A local branch is read by its full name (`refs/heads/<base>`): git resolves a short name to a
- * tag first (gitrevisions), and the note would then name a ref the listing did not read.
+ * A branch is read by its full name (`refs/heads/<base>`, `refs/remotes/origin/<base>`): git
+ * resolves a short name to a tag or a local branch first (gitrevisions), and the listing would
+ * then read a ref other than the one it names.
  */
 export function resolveListBase(
   repo: string,
@@ -77,7 +78,7 @@ export function resolveListBase(
       ? Number(taskGit(repo, ["rev-list", "--count", `${remoteRef}..${localRef}`], env))
       : 0;
     return {
-      ref: `origin/${base}`,
+      ref: remoteRef,
       note:
         ahead > 0
           ? `local ${base} is ahead of origin/${base}: read against origin/${base}, as the release gates do.`

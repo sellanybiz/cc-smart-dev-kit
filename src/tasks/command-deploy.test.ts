@@ -734,6 +734,22 @@ test("list says when the local base is ahead of origin and reads origin's, as th
   });
 });
 
+test("list reads origin's branch by its full name: a stray local branch named origin/main never stands in", async () => {
+  const { run, add, cwd } = world();
+  git(cwd, "switch", "-c", "deploy-branch");
+  const id = await add("Branch only", "staging", "after", "non-blocking");
+  git(cwd, "add", "-A");
+  git(cwd, "commit", "-m", "the branch task");
+  // A local branch spelled like the remote one, at the deploy branch's tip: read by its short
+  // name, git would take it before refs/remotes/origin/main and see no change at all.
+  git(cwd, "branch", "origin/main", "deploy-branch");
+  expect(await run(["list", "--branch", "--base", "main"])).toEqual({
+    code: 0,
+    text: branchChange(id),
+    error: "",
+  });
+});
+
 test("list --branch --json is a usage error: the note never reaches a JSON answer", async () => {
   const { run } = world({ origin: false });
   for (const list of ["--branch", "--branches"]) {
