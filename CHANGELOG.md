@@ -37,6 +37,9 @@ in your own terminal after the update; the user guide is [README.md](README.md).
   same file, so two plans that each add a new migration can run at once. A plan can name the
   plan it is built on (`stacked_on`, or `--stacked-on` on the command line) and share that
   plan's files for as long as the parent holds them, until the parent's pull request merges.
+  Only the lead of both plans can stack them, and the exemption counts only when git shows the
+  stacked plan starts on its parent's work; anything git cannot prove keeps the two plans apart.
+  `herdr start --plan` starts a stacked plan on its parent's branch by default.
   When a phase starts, a warning names the plan's files that the default branch changed after
   the brief was written. The task tools' own descriptions now state the rules the store
   enforces: the phase name, a phase without a parent, steps before a start, and the base.

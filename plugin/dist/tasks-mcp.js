@@ -21681,7 +21681,7 @@ var TASK_COMMAND = `${COMMAND} task`;
 var MAX_PHASE = 8;
 var PHASE_RULE = `1-${MAX_PHASE} characters: ASCII letters, digits, ".", "_" and "-", a letter or a digit at each end, never "--"`;
 var PLAN_FILES_WORDS = "Plan task only: the repo-relative paths the plan changes, with / separators; a folder ends in /. Two plans overlap when a path is equal or inside the other's folder (inside a plans.appendOnly folder, only the same file); a plan that overlaps a reserved or running plan is not handed out. The list replaces the stored one; an empty list clears it.";
-var STACKED_ON_WORDS = "Plan task only: the slug of the plan this plan is built on. The overlap check skips that one plan, both ways, while it holds its files (open, or done and reserved until its pull request merges); every other plan still blocks. Never itself, a missing plan or a loop; null clears it.";
+var STACKED_ON_WORDS = "Plan task only: the slug of your own plan this plan is built on. The overlap check skips that one plan, both ways, while it holds its files (open, or done and reserved until its pull request merges) and this plan starts on its work: that plan records its branch and base, and this plan's start (its herdr start base, or its base) is on that branch; every other plan still blocks. Never itself, a missing plan, another lead's plan or a loop; null clears it.";
 
 // src/tasks/work/types.ts
 var SUBJECT_LIMIT = 200;
@@ -24879,6 +24879,10 @@ function isLead(lead, who) {
     return true;
   return claimHeldBy(leadProcess(lead), who);
 }
+function leadsPlan(who) {
+  const owns = ownerOf(who);
+  return (plan) => isLead(plan.lead, who) || owns(plan);
+}
 function leadProcess(lead) {
   return lead.pid === null ? null : { pid: lead.pid, procStart: lead.procStart, sessionId: lead.sessionId };
 }
@@ -24921,19 +24925,22 @@ function filesOverlap(a, b, options = {}) {
   }
   return found;
 }
-function isStackedPair(a, b) {
-  const holds = (parent) => isOpen(parent) || parent.lead !== null;
-  return a.stackedOn === b.plan && holds(b) || b.stackedOn === a.plan && holds(a);
+function parentHolds(parent) {
+  return isOpen(parent) || parent.lead !== null;
 }
-function rivalsOf(held, plan) {
-  return held.filter((h) => h.plan.id !== plan.id && !isStackedPair(plan, h.plan));
+function isStackedPair(a, b, proved) {
+  const stackedOn = (child, parent) => child.stackedOn === parent.plan && parentHolds(parent) && proved.has(child.id);
+  return stackedOn(a, b) || stackedOn(b, a);
+}
+function rivalsOf(held, plan, proved) {
+  return held.filter((h) => h.plan.id !== plan.id && !isStackedPair(plan, h.plan, proved));
 }
 function heldPlansIn(all, who, extraFiles = {}) {
-  const owns = ownerOf(who);
+  const mine = leadsPlan(who);
   return all.filter((t) => t.kind === "plan" && (t.lead !== null || isInFlight(all, t))).map((plan) => ({
     plan,
     why: plan.lead !== null ? "reserved" : "in-flight",
-    mine: isLead(plan.lead, who) || owns(plan),
+    mine: mine(plan),
     files: [...new Set([...plan.files, ...extraFiles[plan.id] ?? []])]
   }));
 }
@@ -25786,6 +25793,12 @@ var CHECKED_FILE_MAX_BYTES = 256 * 1024;
 // src/hooks/worktree-leftovers.ts
 var REFLOG_TAIL_BYTES = 8 * 1024;
 
+// src/workflow/review-cover.ts
+function parseGitVersion(out) {
+  const match = /git version (\d+)\.(\d+)(?:\.(\d+))?/.exec(out);
+  return match === null ? null : `${match[1]}.${match[2]}.${match[3] ?? "0"}`;
+}
+
 // src/worktrees/scan.ts
 var REMOVAL_TIMEOUT_MS = 10 * 60000;
 // src/worktrees/command.ts
@@ -25934,6 +25947,12 @@ function planNote(all, plan, cap) {
   return waiting.length ? `${phases} \xB7 waiting ${waiting.length}` : phases;
 }
 var STALE_BRIEF_FILES = 10;
+var MIN_SINCE_FILTER_GIT = "2.38.0";
+function sinceFlag(git) {
+  const asked = git(["--version"]);
+  const version = asked.ok ? parseGitVersion(asked.out) : null;
+  return version !== null && Bun.semver.order(version, MIN_SINCE_FILTER_GIT) >= 0 ? "--since-as-filter" : "--since";
+}
 function staleBriefWarning(check) {
   const { phase, files, writtenAt, base, git } = check;
   if (writtenAt === null || files.length === 0)
@@ -25950,7 +25969,7 @@ function staleBriefWarning(check) {
     "log",
     "--first-parent",
     "--diff-merges=first-parent",
-    `--since=${since}`,
+    `${sinceFlag(git)}=${since}`,
     "--format=%x1e%h%x09%ct%x09%s",
     "--name-only",
     ref,
@@ -25978,6 +25997,52 @@ function staleBriefWarning(check) {
   const shown = changed.slice(0, STALE_BRIEF_FILES);
   const more = changed.length > shown.length ? ` and ${changed.length - shown.length} more` : "";
   return `Warning: ${brief} may be stale: origin/${base} changed ${shown.join(", ")}${more} after it was written (newest: ${newest}). Read those changes before you build on it.`;
+}
+
+// src/tasks/stack-proof.ts
+function branchTip(git, branch) {
+  for (const ref of [`refs/heads/${branch}`, `refs/remotes/origin/${branch}`]) {
+    const run = git(["rev-parse", "--verify", "--quiet", `${ref}^{commit}`]);
+    if (run.ok && run.out !== "")
+      return run.out;
+  }
+  return null;
+}
+function commitOf(git, name) {
+  if (name.startsWith("-"))
+    return null;
+  const run = git(["rev-parse", "--verify", "--quiet", `${name}^{commit}`]);
+  return run.ok && run.out !== "" ? run.out : null;
+}
+function stackHolds(git, parent, start) {
+  if (parent.branch === null || parent.base === null || start === null)
+    return false;
+  const tip = branchTip(git, parent.branch);
+  const base = commitOf(git, parent.base);
+  const from = commitOf(git, start);
+  if (tip === null || base === null || from === null)
+    return false;
+  const line = git(["rev-list", "--first-parent", `${base}..${tip}`]);
+  if (!line.ok || line.out === "")
+    return false;
+  if (line.out.split(`
+`).includes(from))
+    return true;
+  return git(["merge-base", "--is-ancestor", tip, from]).code === 0;
+}
+function provedStacks(all, git, starts = {}) {
+  const plans = new Map(all.filter((t) => t.kind === "plan" && t.plan !== null).map((t) => [t.plan, t]));
+  const proved = [];
+  for (const plan of plans.values()) {
+    if (plan.stackedOn === null)
+      continue;
+    const parent = plans.get(plan.stackedOn);
+    if (parent === undefined || !parentHolds(parent))
+      continue;
+    if (stackHolds(git, parent, starts[plan.id] ?? plan.base))
+      proved.push(plan.id);
+  }
+  return proved;
 }
 
 // src/tasks/work/store.ts
@@ -26113,15 +26178,20 @@ function storeFiles(db, task, files) {
   for (const path of list)
     db.sqlite.query("INSERT INTO task_files(task_id,path) VALUES (?,?)").run(task.id, path);
 }
-function storeStack(db, task, slug) {
+function storeStack(db, task, slug, who) {
   if (task.kind !== "plan")
     throw new Error(`${label(task)} is a ${task.kind}: only a plan is stacked on another plan`);
   if (slug !== null) {
     if (slug === task.plan)
       throw new Error(`${label(task)} cannot be stacked on itself`);
     const plans = new Map(allTasks(db, task.project).filter((t) => t.kind === "plan" && t.plan !== null).map((t) => [t.plan, t]));
-    if (!plans.has(slug))
+    const parent = plans.get(slug);
+    if (parent === undefined)
       throw new Error(`Plan "${slug}" not found: stacked_on names a plan of this project`);
+    const leads = leadsPlan(who);
+    const foreign = [task, parent].filter((plan) => !leads(plan));
+    if (foreign.length > 0)
+      throw new Error(`${label(task)} cannot be stacked on "${slug}": ${foreign.map(label).join(" and ")} ${foreign.length > 1 ? "are" : "is"} not led by this session. A plan is stacked only on another plan of the same lead, whose branch it is built on`);
     const chain = [slug];
     for (let at = plans.get(slug)?.stackedOn ?? null;at !== null; ) {
       if (at === task.plan)
@@ -26156,17 +26226,20 @@ function refuseHeldOverlap(db, task, who, check) {
   if (!held.some((h) => h.plan.id === task.id))
     return;
   const current = taskById(db, task.id);
-  const clashes = overlapsWith(rivalsOf(held, current), current.files, check);
+  const clashes = overlapsWith(rivalsOf(held, current, provedOf(check)), current.files, check);
   if (clashes.length > 0)
     throw new Error(`${label(task)} is held, so its files may not overlap another held plan: overlaps ${clashes.map((c) => overlapText(c.plan, c.overlaps)).join("; ")}${mergeFilesNote(check)}`);
 }
 var NO_FILES_CHECK = { ignore: [], caseFold: false };
+function provedOf(check) {
+  return new Set(check.stacked ?? []);
+}
 function wayOut(held) {
   return held.why === "reserved" ? `${label(held.plan)} is reserved: wait until its pull request merges or closes` : `${label(held.plan)} is running: wait until it is done or parked; if its session is gone, take it (${TASK_TOOL.take}), or park or drop it`;
 }
 function refuseFlightOverlap(db, plan, who, check) {
   const row = taskById(db, plan.id);
-  const others = rivalsOf(heldPlansIn(allTasks(db, plan.project), who), row);
+  const others = rivalsOf(heldPlansIn(allTasks(db, plan.project), who), row, provedOf(check));
   if (others.length === 0)
     return;
   const files = row.files;
@@ -26266,7 +26339,7 @@ function applyUpdate(db, id, change, who, now) {
   if (change.files !== undefined)
     storeFiles(db, task, change.files);
   if (change.stackedOn !== undefined)
-    storeStack(db, task, change.stackedOn);
+    storeStack(db, task, change.stackedOn, who);
   if (change.files !== undefined || change.stackedOn !== undefined)
     refuseHeldOverlap(db, task, who, check);
   if (entering !== null)
@@ -26633,6 +26706,10 @@ function createTaskOps(options = {}) {
         claimedElsewhere,
         caller: guardCaller
       }) === null);
+      const readCheck = () => ({
+        ...(options.filesCheck ?? planFilesCheck)(cwd),
+        stacked: ctx.checkoutRoot === null ? [] : provedStacks(all, handBackGit)
+      });
       const filesWrite = (files) => {
         for (const raw of files) {
           const path = normalizePlanFile(raw);
@@ -26641,19 +26718,19 @@ function createTaskOps(options = {}) {
           if (isFolderOnDisk(ctx.checkoutRoot, path))
             throw new Error(`file "${raw}" is a folder: write it ${path}/`);
         }
-        return { files, filesCheck: (options.filesCheck ?? planFilesCheck)(cwd) };
+        return { files, filesCheck: readCheck() };
       };
       const planWrite = (files, stackedOn) => {
         if (files === undefined && stackedOn === undefined)
           return null;
         return {
-          ...files === undefined ? { filesCheck: (options.filesCheck ?? planFilesCheck)(cwd) } : filesWrite(files),
+          ...files === undefined ? { filesCheck: readCheck() } : filesWrite(files),
           ...stackedOn === undefined ? {} : { stackedOn }
         };
       };
       const startCheck = (plan) => {
         const row = all.find((t) => t.kind === "plan" && t.plan === plan);
-        return row === undefined || isInFlight(all, row) ? {} : { filesCheck: (options.filesCheck ?? planFilesCheck)(cwd) };
+        return row === undefined || isInFlight(all, row) ? {} : { filesCheck: readCheck() };
       };
       const enterFlight = (plan, check) => {
         const row = all.find((t) => t.kind === "plan" && t.plan === plan);

@@ -31384,7 +31384,7 @@ var init_task_server_name = __esm(() => {
 });
 
 // src/tasks/words.ts
-var TASK_TOOL, RETIRED_TASK_TOOLS, TASK_TOOLS_ALLOW_RULE, TASK_COMMAND, MAX_PHASE = 8, PHASE_RULE, PLAN_FILES_WORDS = "Plan task only: the repo-relative paths the plan changes, with / separators; a folder ends in /. Two plans overlap when a path is equal or inside the other's folder (inside a plans.appendOnly folder, only the same file); a plan that overlaps a reserved or running plan is not handed out. The list replaces the stored one; an empty list clears it.", STACKED_ON_WORDS = "Plan task only: the slug of the plan this plan is built on. The overlap check skips that one plan, both ways, while it holds its files (open, or done and reserved until its pull request merges); every other plan still blocks. Never itself, a missing plan or a loop; null clears it.";
+var TASK_TOOL, RETIRED_TASK_TOOLS, TASK_TOOLS_ALLOW_RULE, TASK_COMMAND, MAX_PHASE = 8, PHASE_RULE, PLAN_FILES_WORDS = "Plan task only: the repo-relative paths the plan changes, with / separators; a folder ends in /. Two plans overlap when a path is equal or inside the other's folder (inside a plans.appendOnly folder, only the same file); a plan that overlaps a reserved or running plan is not handed out. The list replaces the stored one; an empty list clears it.", STACKED_ON_WORDS = "Plan task only: the slug of your own plan this plan is built on. The overlap check skips that one plan, both ways, while it holds its files (open, or done and reserved until its pull request merges) and this plan starts on its work: that plan records its branch and base, and this plan's start (its herdr start base, or its base) is on that branch; every other plan still blocks. Never itself, a missing plan, another lead's plan or a loop; null clears it.";
 var init_words2 = __esm(() => {
   init_names();
   init_task_server_name();
@@ -31904,6 +31904,10 @@ function isLead(lead, who) {
     return true;
   return claimHeldBy(leadProcess(lead), who);
 }
+function leadsPlan(who) {
+  const owns = ownerOf(who);
+  return (plan) => isLead(plan.lead, who) || owns(plan);
+}
 function leadProcess(lead) {
   return lead.pid === null ? null : { pid: lead.pid, procStart: lead.procStart, sessionId: lead.sessionId };
 }
@@ -31946,19 +31950,22 @@ function filesOverlap(a, b, options = {}) {
   }
   return found;
 }
-function isStackedPair(a, b) {
-  const holds = (parent) => isOpen(parent) || parent.lead !== null;
-  return a.stackedOn === b.plan && holds(b) || b.stackedOn === a.plan && holds(a);
+function parentHolds(parent) {
+  return isOpen(parent) || parent.lead !== null;
 }
-function rivalsOf(held, plan) {
-  return held.filter((h) => h.plan.id !== plan.id && !isStackedPair(plan, h.plan));
+function isStackedPair(a, b, proved) {
+  const stackedOn = (child, parent) => child.stackedOn === parent.plan && parentHolds(parent) && proved.has(child.id);
+  return stackedOn(a, b) || stackedOn(b, a);
+}
+function rivalsOf(held, plan, proved) {
+  return held.filter((h) => h.plan.id !== plan.id && !isStackedPair(plan, h.plan, proved));
 }
 function heldPlansIn(all, who, extraFiles = {}) {
-  const owns = ownerOf(who);
+  const mine = leadsPlan(who);
   return all.filter((t) => t.kind === "plan" && (t.lead !== null || isInFlight(all, t))).map((plan) => ({
     plan,
     why: plan.lead !== null ? "reserved" : "in-flight",
-    mine: isLead(plan.lead, who) || owns(plan),
+    mine: mine(plan),
     files: [...new Set([...plan.files, ...extraFiles[plan.id] ?? []])]
   }));
 }
@@ -35924,6 +35931,11 @@ function planNote(all, plan, cap) {
   const waiting = all.filter((t) => t.parentId === plan.id && t.kind === "task" && isOpen(t));
   return waiting.length ? `${phases} \xB7 waiting ${waiting.length}` : phases;
 }
+function sinceFlag(git) {
+  const asked = git(["--version"]);
+  const version = asked.ok ? parseGitVersion(asked.out) : null;
+  return version !== null && Bun.semver.order(version, MIN_SINCE_FILTER_GIT) >= 0 ? "--since-as-filter" : "--since";
+}
 function staleBriefWarning(check) {
   const { phase, files, writtenAt, base, git } = check;
   if (writtenAt === null || files.length === 0)
@@ -35940,7 +35952,7 @@ function staleBriefWarning(check) {
     "log",
     "--first-parent",
     "--diff-merges=first-parent",
-    `--since=${since}`,
+    `${sinceFlag(git)}=${since}`,
     "--format=%x1e%h%x09%ct%x09%s",
     "--name-only",
     ref,
@@ -35969,9 +35981,59 @@ function staleBriefWarning(check) {
   const more = changed.length > shown.length ? ` and ${changed.length - shown.length} more` : "";
   return `Warning: ${brief} may be stale: origin/${base} changed ${shown.join(", ")}${more} after it was written (newest: ${newest}). Read those changes before you build on it.`;
 }
-var STALE_BRIEF_FILES = 10;
+var STALE_BRIEF_FILES = 10, MIN_SINCE_FILTER_GIT = "2.38.0";
 var init_plan_guards = __esm(() => {
+  init_review_cover();
   init_words2();
+  init_queries();
+});
+
+// src/tasks/stack-proof.ts
+function branchTip(git, branch) {
+  for (const ref of [`refs/heads/${branch}`, `refs/remotes/origin/${branch}`]) {
+    const run = git(["rev-parse", "--verify", "--quiet", `${ref}^{commit}`]);
+    if (run.ok && run.out !== "")
+      return run.out;
+  }
+  return null;
+}
+function commitOf3(git, name) {
+  if (name.startsWith("-"))
+    return null;
+  const run = git(["rev-parse", "--verify", "--quiet", `${name}^{commit}`]);
+  return run.ok && run.out !== "" ? run.out : null;
+}
+function stackHolds(git, parent, start) {
+  if (parent.branch === null || parent.base === null || start === null)
+    return false;
+  const tip = branchTip(git, parent.branch);
+  const base = commitOf3(git, parent.base);
+  const from = commitOf3(git, start);
+  if (tip === null || base === null || from === null)
+    return false;
+  const line = git(["rev-list", "--first-parent", `${base}..${tip}`]);
+  if (!line.ok || line.out === "")
+    return false;
+  if (line.out.split(`
+`).includes(from))
+    return true;
+  return git(["merge-base", "--is-ancestor", tip, from]).code === 0;
+}
+function provedStacks(all, git, starts = {}) {
+  const plans = new Map(all.filter((t) => t.kind === "plan" && t.plan !== null).map((t) => [t.plan, t]));
+  const proved = [];
+  for (const plan of plans.values()) {
+    if (plan.stackedOn === null)
+      continue;
+    const parent = plans.get(plan.stackedOn);
+    if (parent === undefined || !parentHolds(parent))
+      continue;
+    if (stackHolds(git, parent, starts[plan.id] ?? plan.base))
+      proved.push(plan.id);
+  }
+  return proved;
+}
+var init_stack_proof = __esm(() => {
   init_queries();
 });
 
@@ -36107,15 +36169,20 @@ function storeFiles(db, task, files) {
   for (const path of list)
     db.sqlite.query("INSERT INTO task_files(task_id,path) VALUES (?,?)").run(task.id, path);
 }
-function storeStack(db, task, slug) {
+function storeStack(db, task, slug, who) {
   if (task.kind !== "plan")
     throw new Error(`${label(task)} is a ${task.kind}: only a plan is stacked on another plan`);
   if (slug !== null) {
     if (slug === task.plan)
       throw new Error(`${label(task)} cannot be stacked on itself`);
     const plans = new Map(allTasks(db, task.project).filter((t) => t.kind === "plan" && t.plan !== null).map((t) => [t.plan, t]));
-    if (!plans.has(slug))
+    const parent = plans.get(slug);
+    if (parent === undefined)
       throw new Error(`Plan "${slug}" not found: stacked_on names a plan of this project`);
+    const leads = leadsPlan(who);
+    const foreign = [task, parent].filter((plan) => !leads(plan));
+    if (foreign.length > 0)
+      throw new Error(`${label(task)} cannot be stacked on "${slug}": ${foreign.map(label).join(" and ")} ${foreign.length > 1 ? "are" : "is"} not led by this session. A plan is stacked only on another plan of the same lead, whose branch it is built on`);
     const chain = [slug];
     for (let at = plans.get(slug)?.stackedOn ?? null;at !== null; ) {
       if (at === task.plan)
@@ -36158,16 +36225,19 @@ function refuseHeldOverlap(db, task, who, check) {
   if (!held.some((h) => h.plan.id === task.id))
     return;
   const current = taskById(db, task.id);
-  const clashes = overlapsWith(rivalsOf(held, current), current.files, check);
+  const clashes = overlapsWith(rivalsOf(held, current, provedOf(check)), current.files, check);
   if (clashes.length > 0)
     throw new Error(`${label(task)} is held, so its files may not overlap another held plan: overlaps ${clashes.map((c) => overlapText(c.plan, c.overlaps)).join("; ")}${mergeFilesNote(check)}`);
+}
+function provedOf(check) {
+  return new Set(check.stacked ?? []);
 }
 function wayOut(held) {
   return held.why === "reserved" ? `${label(held.plan)} is reserved: wait until its pull request merges or closes` : `${label(held.plan)} is running: wait until it is done or parked; if its session is gone, take it (${TASK_TOOL.take}), or park or drop it`;
 }
 function refuseFlightOverlap(db, plan, who, check) {
   const row = taskById(db, plan.id);
-  const others = rivalsOf(heldPlansIn(allTasks(db, plan.project), who), row);
+  const others = rivalsOf(heldPlansIn(allTasks(db, plan.project), who), row, provedOf(check));
   if (others.length === 0)
     return;
   const files = row.files;
@@ -36267,7 +36337,7 @@ function applyUpdate(db, id, change, who, now) {
   if (change.files !== undefined)
     storeFiles(db, task, change.files);
   if (change.stackedOn !== undefined)
-    storeStack(db, task, change.stackedOn);
+    storeStack(db, task, change.stackedOn, who);
   if (change.files !== undefined || change.stackedOn !== undefined)
     refuseHeldOverlap(db, task, who, check);
   if (entering !== null)
@@ -36441,7 +36511,7 @@ function reservePlan(db, input) {
     const open = openBlockers(plan, new Map(all.map((t) => [t.id, t])));
     if (open.length > 0)
       throw new Error(`${label(plan)} waits for ${open.map((t) => `${label(t)} (${t.status.replaceAll("_", " ")})`).join(", ")}`);
-    const others = rivalsOf(heldPlansIn(all, who, input.extraFiles), plan);
+    const others = rivalsOf(heldPlansIn(all, who, input.extraFiles), plan, new Set(input.stacked ?? []));
     refuseUnlisted(others);
     const clashes = overlapsWith(others, plan.files, input);
     if (clashes.length > 0)
@@ -36757,6 +36827,10 @@ function createTaskOps(options = {}) {
         claimedElsewhere,
         caller: guardCaller
       }) === null);
+      const readCheck = () => ({
+        ...(options.filesCheck ?? planFilesCheck)(cwd),
+        stacked: ctx.checkoutRoot === null ? [] : provedStacks(all, handBackGit)
+      });
       const filesWrite = (files) => {
         for (const raw of files) {
           const path = normalizePlanFile(raw);
@@ -36765,19 +36839,19 @@ function createTaskOps(options = {}) {
           if (isFolderOnDisk(ctx.checkoutRoot, path))
             throw new Error(`file "${raw}" is a folder: write it ${path}/`);
         }
-        return { files, filesCheck: (options.filesCheck ?? planFilesCheck)(cwd) };
+        return { files, filesCheck: readCheck() };
       };
       const planWrite = (files, stackedOn) => {
         if (files === undefined && stackedOn === undefined)
           return null;
         return {
-          ...files === undefined ? { filesCheck: (options.filesCheck ?? planFilesCheck)(cwd) } : filesWrite(files),
+          ...files === undefined ? { filesCheck: readCheck() } : filesWrite(files),
           ...stackedOn === undefined ? {} : { stackedOn }
         };
       };
       const startCheck = (plan) => {
         const row = all.find((t) => t.kind === "plan" && t.plan === plan);
-        return row === undefined || isInFlight(all, row) ? {} : { filesCheck: (options.filesCheck ?? planFilesCheck)(cwd) };
+        return row === undefined || isInFlight(all, row) ? {} : { filesCheck: readCheck() };
       };
       const enterFlight = (plan, check) => {
         const row = all.find((t) => t.kind === "plan" && t.plan === plan);
@@ -37308,6 +37382,7 @@ var init_ops = __esm(() => {
   init_format();
   init_files_check();
   init_plan_guards();
+  init_stack_proof();
   init_words2();
   init_db();
   init_history2();
@@ -57065,6 +57140,7 @@ init_git();
 init_resolve();
 init_context();
 init_ops();
+init_stack_proof();
 init_db();
 init_identity();
 init_queries();
@@ -57282,6 +57358,7 @@ init_git();
 init_resolve();
 init_context();
 init_files_check();
+init_stack_proof();
 init_db();
 init_identity();
 init_lead_plans();
@@ -57315,12 +57392,7 @@ function baseRef(world) {
   return null;
 }
 function tipOf(world, branch) {
-  for (const ref of [`refs/heads/${branch}`, `refs/remotes/origin/${branch}`]) {
-    const run = git(world, ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`]);
-    if (run.ok && run.out !== "")
-      return run.out;
-  }
-  return null;
+  return branchTip((args) => git(world, args), branch);
 }
 function branchDiff(world, plan) {
   if (plan.branch === null)
@@ -57493,7 +57565,7 @@ function settle2(world, owns) {
   }
   return released;
 }
-function judgePlans(input, only) {
+function judgePlans(input, only, start) {
   const answers = new Map;
   const world = {
     ...input,
@@ -57517,12 +57589,15 @@ function judgePlans(input, only) {
     if (held.plan.branch !== null)
       extraFiles[held.plan.id] = branchDiff(world, held.plan);
   const held = heldPlansIn(all, world.who, extraFiles);
+  const starting = all.find((t) => t.kind === "plan" && t.plan === only);
+  const stacked = provedStacks(all, (args) => git(world, args), starting !== undefined && start !== undefined ? { [starting.id]: start } : {});
+  const proved = new Set(stacked);
   const lines = [...released];
   for (const entry of stored) {
     const plan = entry.plan;
     const base = baseLine(plan);
     const slug = base.plan;
-    const drift = driftOf(world, held, extraFiles, plan);
+    const drift = driftOf(world, held, extraFiles, plan, proved);
     switch (entry.state) {
       case "own":
         lines.push(lineOf3(base, "own", "reserved for this session itself: it builds the plan", null, {
@@ -57569,13 +57644,13 @@ function judgePlans(input, only) {
           lines.push(lineOf3(base, entry.state, "not judged: another plan is being started"));
           break;
         }
-        lines.push(readiness(world, entry, held, byId, base));
+        lines.push(readiness(world, entry, held, byId, base, proved));
         break;
       }
     }
   }
   lines.sort((a, b) => a.number - b.number);
-  return { lines, extraFiles };
+  return { lines, extraFiles, stacked };
 }
 function prOf(world, plan) {
   if (plan.branch === null)
@@ -57583,12 +57658,12 @@ function prOf(world, plan) {
   const tip = tipOf(world, plan.branch);
   return tip === null ? null : world.pr(world.repo, plan.branch, tip, world.env);
 }
-function driftOf(world, held, extraFiles, plan) {
+function driftOf(world, held, extraFiles, plan, proved) {
   const diff = (extraFiles[plan.id] ?? []).filter((path) => filesOverlap(plan.files, [path], { caseFold: world.check.caseFold }).length === 0);
   if (diff.length === 0)
     return [];
   const found = [];
-  for (const other of rivalsOf(held, plan)) {
+  for (const other of rivalsOf(held, plan, proved)) {
     const touched = filesOverlap(diff, other.files, world.check);
     if (touched.length)
       found.push(`${label3(other.plan)}: ${[...new Set(touched.map((t) => t.path))].join(", ")}`);
@@ -57603,7 +57678,7 @@ function staleHandout(world, plan, pane, owns) {
     return null;
   return plan.worktree === null ? "release" : "relaunch";
 }
-function readiness(world, entry, held, byId, base) {
+function readiness(world, entry, held, byId, base, proved) {
   const plan = entry.plan;
   const line = (state, text, fix = null) => ({
     ...base,
@@ -57629,11 +57704,12 @@ function readiness(world, entry, held, byId, base) {
   }
   if (waiting.length)
     return line("waiting", `waiting on ${waiting.join(", ")}`);
-  const rivals = rivalsOf(held, plan);
+  const rivals = rivalsOf(held, plan, proved);
   const unlisted = rivals.filter((other) => other.files.length === 0);
   if (unlisted.length > 0)
     return line("blocked", `blocked: ${unlisted.map((other) => label3(other.plan)).join(", ")} ${unlisted.length > 1 ? "are" : "is"} held with no file list and no branch diff, so no overlap can be ruled out`, unlisted.map((other) => `task_update #${other.plan.number} with files: the paths and folders it changes, or finish, park or drop it`).join("; "));
   const clashes = [];
+  let parent = null;
   for (const other of rivals) {
     const touched = filesOverlap(plan.files, other.files, world.check);
     if (touched.length === 0)
@@ -57641,10 +57717,18 @@ function readiness(world, entry, held, byId, base) {
     const files = [...new Set(touched.map((t) => t.path))].join(", ");
     const closed = isOpen(other.plan) ? "" : " (finished: held until its pull request settles)";
     clashes.push(`${label3(other.plan)}${closed}: ${files}`);
+    if (plan.stackedOn !== null && other.plan.plan === plan.stackedOn)
+      parent = other.plan;
   }
   if (clashes.length)
-    return line("overlaps", `overlaps ${clashes.join("; ")}`);
+    return line("overlaps", `overlaps ${clashes.join("; ")}`, parent === null ? null : unprovedStackFix(plan, parent));
   return line("ready", "ready: nothing blocks it and no held plan shares its files");
+}
+function unprovedStackFix(plan, parent) {
+  const name = parent.plan ?? parent.subject;
+  if (parent.branch === null || parent.base === null)
+    return `the stack on ${name} counts only once ${name} records its branch and base: task_update #${parent.number} with branch and base`;
+  return `the stack on ${name} counts only when this plan starts on ${name}'s work: ${COMMAND} herdr start --plan ${plan.plan ?? plan.subject} starts it on ${parent.branch} when --base is left out; a plan built here records a base that holds ${parent.branch} (task_update #${plan.number} with base)`;
 }
 function summary(lines) {
   const count = (state) => lines.filter((line) => line.state === state).length;
@@ -57677,11 +57761,11 @@ function locatePlan(world, ref) {
     return refuse3(`#${plan.number} is a ${plan.kind}, not a plan.`, "name the plan's slug");
   return { ok: true, plan, slug: plan.plan ?? plan.subject };
 }
-function reserveReady(world, plan, slug, holder) {
+function reserveReady(world, plan, slug, holder, start) {
   const strayChild = world.labelled(slug);
   if (strayChild !== null)
     return refuse3(`Plan "${slug}": terminal ${strayChild} carries its label and is live.`, `if it is a child of this plan, leave it; if not: ${COMMAND} herdr stop ${strayChild}`);
-  const judged = judgePlans(world, slug);
+  const judged = judgePlans(world, slug, start);
   const line = judged.lines.find((one) => one.number === plan.number);
   if (line === undefined || line.state !== "ready")
     return refuse3(`Plan "${slug}" is not ready: ${line?.text ?? "it is not a queued plan of this session"}.`, line?.fix ?? undefined);
@@ -57694,6 +57778,7 @@ function reserveReady(world, plan, slug, holder) {
     caseFold: world.check.caseFold,
     appendOnly: world.check.appendOnly ?? [],
     extraFiles: judged.extraFiles,
+    stacked: judged.stacked,
     now: world.now()
   });
   if (!reserved.ok)
@@ -57730,7 +57815,7 @@ function prepareReserve(world, ref) {
     return refuse3(`Plan "${slug}" is already reserved (${stored.state}).`, `${COMMAND} herdr plans shows where it stands`);
   return reserveReady(world, plan, slug, "self");
 }
-function prepareStart(world, ref) {
+function prepareStart(world, ref, start) {
   const found = locatePlan(world, ref);
   if (!found.ok)
     return found;
@@ -57792,7 +57877,7 @@ function prepareStart(world, ref) {
       claim: { marker, previous: plan.agent }
     };
   }
-  return reserveReady(world, plan, slug, "child");
+  return reserveReady(world, plan, slug, "child", start);
 }
 function confirmClaim(world, plan, claim) {
   const again = swapPlanAgent(world.db, {
@@ -58709,6 +58794,7 @@ async function startChild(a, ctx, r, run) {
   }
   let planWorld = null;
   let slug = null;
+  let stackBase = null;
   if (a.plan) {
     if (!me || !caller.ok || project.project !== caller.project || project.repo === null)
       return refuse4(ctx, "A plan hand-out needs a git project, and the plan must be this session's own.");
@@ -58724,6 +58810,16 @@ async function startChild(a, ctx, r, run) {
     if (row === null)
       return refuse4(ctx, `Plan "${a.plan}" was not found in this project.`);
     slug = row.plan ?? a.plan;
+    if (a.base === undefined && row.kind === "plan" && row.stackedOn !== null && row.lead === null) {
+      const parent = planByRef(opened.world.db, opened.world.project, row.stackedOn);
+      const branch = parent?.kind === "plan" ? parent.branch : null;
+      if (branch === null)
+        return refuse4(ctx, `Plan "${slug}" is stacked on "${row.stackedOn}", which has no branch recorded, so its start cannot be found.`, `give --base <${row.stackedOn}'s branch>`);
+      const commit = branchTip((args) => runGit(cwd, args, ctx.env), branch);
+      if (commit === null)
+        return refuse4(ctx, `Plan "${slug}" is stacked on "${row.stackedOn}", whose branch ${branch} is not in this repository.`, `fetch it, or give --base <${row.stackedOn}'s branch>`);
+      stackBase = { ref: branch, commit };
+    }
   }
   if (a.on) {
     if (!a.asked && machineRule(readMachines(ctx.paths.machinesFile), a.on) !== "free")
@@ -58768,7 +58864,7 @@ async function startChild(a, ctx, r, run) {
   if (!validChildName(terminalName))
     return refuse4(ctx, slug !== null && a.name === undefined ? `The plan name ${slug} does not fit a terminal name: kit-<name> takes 1 to 32 lower-case letters, digits, - or _.` : "The full kit-prefixed terminal name must fit 32 characters.", slug !== null && a.name === undefined ? "Give a shorter --name." : undefined);
   const gitRoot = a.on ? remoteRepo(r, a.on, cwd) : project.repo;
-  let base = null;
+  let base = stackBase;
   if (a.base !== undefined) {
     if (gitRoot === null)
       return refuse4(ctx, "--base needs a git project.");
@@ -58779,7 +58875,7 @@ async function startChild(a, ctx, r, run) {
   }
   let handout = null;
   if (planWorld !== null && slug !== null) {
-    const prepared = prepareStart(planWorld, slug);
+    const prepared = prepareStart(planWorld, slug, base?.commit);
     if (!prepared.ok)
       return refuse4(ctx, prepared.why, prepared.fix);
     handout = prepared;
