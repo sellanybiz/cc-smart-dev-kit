@@ -470,11 +470,15 @@ The proof uses fork points. The default branch comes from `baseBranch` (`worktre
   records a branch, that plan's branch tip G. A parent with no base git knows proves nothing.
 - **The start shares it:** S is the commit a `herdr start` resets the child to, else the stacked
   plan's recorded `base`. Every fork point of S and T (`git merge-base --all`, so a criss-cross
-  history cannot pick a lucky one) must be an ancestor of none of D, the parent's base and G. So
-  a commit only missing from D (an unpushed default-branch commit, or the grandparent's work in a
-  chain of stacks) never counts as the parent's own. This holds when the parent keeps building
-  after the stacked plan started, and fails when the parent is rebased (the fork point then sits
-  on D or under the parent's start).
+  history cannot pick a lucky one) must be a commit of the parent's own first-parent line above
+  its base (`git rev-list --first-parent <base>..T`), and an ancestor of neither D nor G. So a
+  commit only missing from D (an unpushed default-branch commit, the grandparent's work in a chain
+  of stacks, or a branch the parent merged in) never counts as the parent's own. This holds when
+  the parent keeps building or merges the default branch after the stacked plan started, and
+  when the start is the parent's own merge commit; it fails when the parent is rebased (the fork
+  point then sits on D or under the parent's start). The base must be the exact commit the
+  parent's branch was created from, not its fork from the default branch: a parent built on an
+  unmerged branch would otherwise count that branch as its own line.
 - **The stacked plan is built on it, on its own branch:** its recorded branch is never the parent's,
   and S must be an ancestor of that branch's tip. A start that is only recorded (its `base`, not a
   `herdr start` about to happen) counts only with that branch recorded; `herdr start` records the
@@ -482,11 +486,14 @@ The proof uses fork points. The default branch comes from `baseBranch` (`worktre
   on it proves nothing.
 
 A parent with no branch git knows, a start that names no commit, and any git error all leave the
-pair as rivals: it fails closed. A stacked pair with one fork point costs nine git calls (T, T on
-D, the parent's base, S, the fork points, the fork point under D and under the base, the stacked
-plan's branch tip, S in it), two more when the parent is stacked on a plan with a branch (G, and the
-fork point under G), two fewer for a start `herdr start` gives before any branch is recorded, one
-or two more for each further fork point, and one more for each branch read from origin. D is read
+pair as rivals: it fails closed. When the grandparent is finished (it holds no files) and its
+branch is gone, as after a squash merge, the fix clears the parent's stack on it rather than asking
+for a fetch; the parent's own base still fences a wrong start. A stacked pair with one fork point
+costs nine git calls (T, T on D, the parent's base, S, the fork points, the parent's first-parent
+line, the fork point under D, the stacked plan's branch tip, S in it), two more when the parent is
+stacked on a plan with a branch (G, and the fork point under G), two fewer for a start `herdr
+start` gives before any branch is recorded, one or two more for each further fork point, and one
+more for each branch read from origin. D is read
 once per judgment, and the task tools read the default branch once more (two calls). A pair with
 two leads runs none, and a project with no stack runs none at all. The store refuses a stack on a task that is not a plan,
 on itself, on a slug with no plan, on a plan the caller does not lead, and one that

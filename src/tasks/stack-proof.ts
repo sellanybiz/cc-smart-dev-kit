@@ -8,11 +8,13 @@
  *
  * The proof uses fork points. With T the parent's branch tip and D `origin/<default branch>`: the
  * parent has work of its own (T is not on D), and the stacked plan's start S shares some of it:
- * every fork point of S and T (`git merge-base --all`) is on none of D, the parent's own start
- * (its recorded `base`) and the branch tip of the plan the parent is stacked on. So a commit that
- * is only missing from D (an unpushed default-branch commit, a grandparent's work) never counts
- * as the parent's. That holds when the parent moves on after the start, and fails when the parent
- * is rebased, since a fork point then sits on D or under its start. A branch the stacked plan
+ * every fork point of S and T (`git merge-base --all`) is a commit of the parent's own line above
+ * its own start (`git rev-list --first-parent <base>..T`, its recorded `base`), and is on neither D
+ * nor the branch tip of the plan the parent is stacked on. So a commit that is only missing from D
+ * (an unpushed default-branch commit, a grandparent's work, a branch the parent merged in) never
+ * counts as the parent's. That holds when the parent moves on or merges the default branch after
+ * the start, and fails when the parent is rebased, since a fork point then sits on D or under its
+ * start. A branch the stacked plan
  * records must hold S and differ from the parent's, and a start the plan only recorded (its
  * `base`, not the commit a `herdr start` is about to reset to) counts only with that branch
  * recorded: herdr records it at launch.
@@ -35,8 +37,8 @@ export type StackGit = (args: string[]) => GitRun;
  * - `no-start`: no start was given and the stacked plan records no base git knows;
  * - `own-branch`: the stacked plan has no branch of its own: none recorded for a recorded start,
  *   or the parent's branch;
- * - `start-lacks-parent`: the start holds none of the parent's own work (a parent rebased since
- *   the start is one way);
+ * - `start-lacks-parent`: a fork point of the start and the parent is not the parent's own work (a
+ *   parent rebased since the start, or a start on a branch the parent only merged in);
  * - `start-off-branch`: the stacked plan records a branch whose tip does not hold the start;
  * - `git`: a git command failed.
  */
@@ -114,8 +116,9 @@ export interface StackCase {
  * `onDefault` (D, `defaultTip`). The lead is judged by the caller (`judgeStacks`). In order: the
  * parent's branch T is known, is not the child's branch, and is not on D; the parent's recorded
  * start and the grandparent's branch tip (when it records one) are known; S names a commit; a
- * recorded S comes with a recorded child branch; every `git merge-base --all S T` is on none of D,
- * the parent's start and the grandparent's tip; and the child's branch, when recorded, holds S.
+ * recorded S comes with a recorded child branch; every `git merge-base --all S T` is on the
+ * parent's first-parent line above its start and on neither D nor the grandparent's tip; and the
+ * child's branch, when recorded, holds S.
  * Anything git cannot answer is not proved.
  */
 export function stackHolds(
@@ -133,7 +136,7 @@ export function stackHolds(
   if (empty) return gap("parent-empty");
   const parentStart = parent.base === null ? null : commitOf(git, parent.base);
   if (parentStart === null) return gap("parent-base");
-  const fences = [onDefault, parentStart];
+  const fences = [onDefault];
   if (grandparent !== null && grandparent.branch !== null) {
     const chain = branchTip(git, grandparent.branch);
     if (chain === null) return gap("chain-branch");
@@ -147,7 +150,13 @@ export function stackHolds(
   const forks = git(["merge-base", "--all", from, tip]);
   if (forks.code === 1) return gap("start-lacks-parent");
   if (!forks.ok || forks.out === "") return gap("git");
+  // The parent's own line: the commits it made itself above its start, never a branch it merged
+  // in. `<start>..` already leaves out everything under the parent's start.
+  const own = git(["rev-list", "--first-parent", `${parentStart}..${tip}`]);
+  if (!own.ok) return gap("git");
+  const line = new Set(own.out.split("\n"));
   for (const fork of forks.out.split("\n")) {
+    if (!line.has(fork)) return gap("start-lacks-parent");
     for (const fence of fences) {
       const under = isAncestor(git, fork, fence);
       if (under === null) return gap("git");

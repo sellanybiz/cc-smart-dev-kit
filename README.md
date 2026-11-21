@@ -521,8 +521,8 @@ that one parent plan, both ways, while the parent holds its files (open, or done
 merges and `herdr plans` releases it); every other plan still blocks. Only the session that leads
 both plans sets a stack, and it counts only while that session still leads both and the stacked plan
 is built on the parent's own work: the parent records its branch and where it started (`base`), its
-branch has a commit past `origin/<default>` and past that start (and past the branch of the plan it
-is stacked on), and the stacked plan's start (the `herdr start` base, else its recorded `base`,
+branch has a commit of its own, on its first-parent line above that start, past `origin/<default>`
+and past the branch of the plan it is stacked on, and the stacked plan's start (the `herdr start` base, else its recorded `base`,
 which needs its own recorded branch) shares some of that work and is on the stacked plan's own
 branch. A parent rebased after the start, or a take by another session, ends the pair. Otherwise
 the two are judged as rivals. `herdr start --plan` on a stacked plan with no `--base` starts on the parent's recorded

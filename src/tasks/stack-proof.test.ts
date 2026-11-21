@@ -352,6 +352,104 @@ test("a criss-cross history has several fork points, and every one must pass", (
   });
 });
 
+/** Merges `other` into `branch` with a merge commit, comes back to `main`, and returns the merge. */
+function mergeInto(repo: string, branch: string, other: string): string {
+  git(repo, "checkout", "-q", branch);
+  git(repo, "merge", "-q", "--no-ff", "--no-edit", other);
+  const made = git(repo, "rev-parse", "HEAD").trim();
+  git(repo, "checkout", "-q", "main");
+  return made;
+}
+
+test("PROBE 7: a branch the parent merged in is not its own work; its own commits and merges are", () => {
+  const g = stackRepo();
+  const { plan } = store();
+  // feature-x is merged nowhere else; alpha (from origin/main, its exact base) merges it in.
+  const f1 = g.onBranch("feature-x", { "f.txt": "1\n" }, g.base);
+  const merge = mergeInto(g.repo, "alpha-branch", "feature-x");
+  const alpha = plan("alpha", { branch: "alpha-branch", base: g.base });
+  const D = () => git(g.repo, "rev-parse", "origin/main").trim();
+  const on = (start: string) => {
+    git(g.repo, "branch", "-f", "beta-branch", start);
+    const beta = plan(`beta-${start.slice(0, 7)}`, {
+      stackedOn: "alpha",
+      branch: "beta-branch",
+      base: start,
+    });
+    return verdict(g.run, D(), alpha, beta, start, { given: false });
+  };
+  // Built on F1 alone, beta holds none of alpha's own commits.
+  expect(on(f1)).toEqual({ proved: false, gap: "start-lacks-parent" });
+  // Alpha's own commit, its merge commit, and a later commit of its own all prove the pair.
+  expect(on(g.tip)).toEqual({ proved: true });
+  expect(on(merge)).toEqual({ proved: true });
+  const a2 = g.onBranch("alpha-branch", { "alpha.txt": "2\n" });
+  expect(on(a2)).toEqual({ proved: true });
+  // A start on alpha's tip stays proved when alpha merges main after it.
+  git(g.repo, "branch", "-f", "beta-branch", g.tip);
+  const beta = plan("beta", { stackedOn: "alpha", branch: "beta-branch", base: g.tip });
+  g.onMain({ "m.txt": "1\n" });
+  mergeInto(g.repo, "alpha-branch", "main");
+  expect(verdict(g.run, D(), alpha, beta, g.tip, { given: false })).toEqual({ proved: true });
+});
+
+test("PROBE 8: a parent built on an unmerged branch is fenced by its exact start, the commit it branched from", () => {
+  const g = stackRepo();
+  const { plan } = store();
+  const f1 = g.onBranch("feature-x", { "f.txt": "1\n" }, g.base);
+  g.onBranch("built-alpha", { "alpha.txt": "1\n" }, "feature-x");
+  g.onBranch("beta-branch", { "beta.txt": "1\n" }, f1);
+  const alpha = plan("alpha", { branch: "built-alpha", base: f1 });
+  const beta = plan("beta", { stackedOn: "alpha", branch: "beta-branch", base: f1 });
+  const D = git(g.repo, "rev-parse", "origin/main").trim();
+  expect(verdict(g.run, D, alpha, beta, f1, { given: false })).toEqual({
+    proved: false,
+    gap: "start-lacks-parent",
+  });
+});
+
+test("PROBE 9: a parent rebased after the stacked plan started on its tip is a rival", () => {
+  const g = stackRepo();
+  const { plan } = store();
+  g.onBranch("beta-branch", { "beta.txt": "1\n" }, "alpha-branch");
+  const alpha = plan("alpha", { branch: "alpha-branch", base: g.base });
+  const beta = plan("beta", { stackedOn: "alpha", branch: "beta-branch", base: g.tip });
+  g.onMain({ "m.txt": "1\n" });
+  g.rebase("alpha-branch");
+  const D = git(g.repo, "rev-parse", "origin/main").trim();
+  expect(verdict(g.run, D, alpha, beta, g.tip, { given: false })).toEqual({
+    proved: false,
+    gap: "start-lacks-parent",
+  });
+});
+
+test("PROBE 10: a grandparent squash-merged with its branch deleted fails closed; with its stack cleared the parent's start still fences", () => {
+  const g = chainRepo();
+  const { plan } = store();
+  git(g.repo, "merge", "-q", "--squash", "p-branch");
+  git(g.repo, "commit", "-q", "-m", "squash p");
+  git(g.repo, "push", "-q", "origin", "main");
+  git(g.repo, "branch", "-q", "-D", "p-branch");
+  const pp = plan("pp", { branch: "p-branch", base: g.base });
+  const alpha = plan("alpha", { stackedOn: "pp", branch: "chain-alpha", base: g.p1 });
+  g.onBranch("on-alpha", { "b.txt": "1\n" }, "chain-alpha");
+  const beta = plan("beta", { stackedOn: "alpha", branch: "on-alpha", base: g.a1 });
+  const D = git(g.repo, "rev-parse", "origin/main").trim();
+  const recorded = { given: false, grandparent: pp };
+  expect(verdict(g.run, D, alpha, beta, g.a1, recorded)).toEqual({
+    proved: false,
+    gap: "chain-branch",
+  });
+  // Alpha's stack on pp cleared: the pair is proved on alpha's own commit, and a start on P1
+  // is still refused by alpha's own start.
+  expect(verdict(g.run, D, alpha, beta, g.a1, { given: false })).toEqual({ proved: true });
+  git(g.repo, "branch", "-f", "on-alpha", g.p1);
+  expect(verdict(g.run, D, alpha, { ...beta, base: g.p1 }, g.p1, { given: false })).toEqual({
+    proved: false,
+    gap: "start-lacks-parent",
+  });
+});
+
 test("judgeStacks proves pairs, never a plan alone, and runs no git for a pair with two leads", () => {
   const g = stackRepo();
   const { db, plan } = store();

@@ -1078,7 +1078,36 @@ test("a stacked plan is ready beside its held parent once it starts on its work,
     unstarted.git("rev-parse", "alpha-branch"),
   ).lines.find((one) => one.plan === "beta");
   expect(noBase?.fix).toBe(
-    "the stack on alpha counts only once alpha records where it started: task_update #1 with base set to the commit its branch started from",
+    "the stack on alpha counts only once alpha records where it started: task_update #1 with base set to the commit you created its branch from (`git rev-parse HEAD` at that moment), not its fork from the default branch",
+  );
+  // A parent stacked on a finished plan whose branch is gone (squash-merged, then deleted): no
+  // fetch brings it back, so the fix clears the parent's stack on it.
+  const gone = build();
+  const goneBase = gone.git("rev-parse", "HEAD");
+  gone.branch("alpha-branch", { "src/a/one.ts": "1\n" });
+  const pp = gone.plan("pp", ["src/p/"]);
+  gone.change(pp, { branch: "p-branch" });
+  ok(updateTask(gone.db, pp.id, { status: "dropped" }, LEAD, 51));
+  gone.change(gone.plan("alpha", ["src/a/"]), {
+    branch: "alpha-branch",
+    base: goneBase,
+    stackedOn: "pp",
+  });
+  gone.reserve("alpha");
+  gone.change(gone.plan("beta", ["src/a/x.ts"]), { stackedOn: "alpha" });
+  const cleared = judgePlans(gone.base, "beta", gone.git("rev-parse", "alpha-branch")).lines.find(
+    (one) => one.plan === "beta",
+  );
+  expect(cleared?.fix).toBe(
+    "the stack on alpha counts only once alpha no longer names pp, which holds no files and whose branch is gone: clear #2's stack on pp (task_update stacked_on null)",
+  );
+  // While the grandparent still holds its files, its branch is only missing here: fetch it.
+  ok(updateTask(gone.db, pp.id, { status: "pending" }, LEAD, 52));
+  const fetch = judgePlans(gone.base, "beta", gone.git("rev-parse", "alpha-branch")).lines.find(
+    (one) => one.plan === "beta",
+  );
+  expect(fetch?.fix).toBe(
+    "the stack on alpha counts only once the branch of pp, which alpha is stacked on, is in this repository: fetch it",
   );
   // A stacked plan that keeps a branch made apart from its parent's: the fix records the branch
   // built on the parent, since a new herdr start would not replace it.
