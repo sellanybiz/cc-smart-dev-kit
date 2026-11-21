@@ -41,7 +41,8 @@ command that asks, and nobody is there to answer. Tell the person once, in one l
   skills or the facts support. A finding outside the plan: the recommended option of the finding
   rule's list (`/cc-smart-dev-kit:tasks` § 1).
 - **An action that needed their yes just runs** when the work calls for it and the instructions
-  allow it (a push of your own branch, a merge when `merge-check` passes, a staging deploy a task owes).
+  allow it (a push of your own branch, a merge by the one rule in `/cc-smart-dev-kit:commit`'s
+  merge section, a staging deploy a task owes).
   The steps that are the person's word every time (`/cc-smart-dev-kit:commit`: a deploy to
   production, a force-push, `reset --hard`, a direct push to the main branch) you do not run: take
   the safe option, and record that you did not.
@@ -75,15 +76,15 @@ Use `/cc-smart-dev-kit:build` for subagent work. Resolve ambiguities in its task
   message (build § 2), keep reviews, hunts and checks running in the background, and never idle
   while ready work exists.
 - **A finished plan does not end the stretch.** When its phases are merged, run its review
-  rounds, the full check and its pull request (build § 6). Merge it only by the merge rule in
-  `/cc-smart-dev-kit:commit`: `merge-check` exits 0, else leave the pull request open. Then start
+  rounds, the full check and its pull request (build § 6). Merge it only by the one merge rule in
+  `/cc-smart-dev-kit:commit` (`merge-check`, with `--asked` on the person's quoted yes). Then start
   the next queued plan at once. A plan that needs plan mode follows § 1's plan-mode line. Record
   the merge or the open pull request, and each next plan's start, as decisions (§ 2).
 - **Stack on an open pull request.** When the next plan starts while the previous plan's pull
   request is not merged, its branch starts from the previous plan's branch, and its pull request
   says "stacked on #n — merge after it" (`/cc-smart-dev-kit:pull-request`).
 - **The run mode.** `plans.runMode` `ask` (the default) asks, and asking is refused while away.
-  The person asked for full parallel width, so with two or more ready plans whose files do not
+  Nobody is waiting, so use the width: with two or more ready plans whose files do not
   overlap and a Herdr terminal, run as lead + children (build § Lead + children and coordinator
   modes); otherwise solo. Record the choice as a decision. A mode the person set is followed.
 

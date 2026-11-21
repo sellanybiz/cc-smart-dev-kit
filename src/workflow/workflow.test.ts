@@ -10,7 +10,7 @@ import { hookEnv, makeClone, makeRepo, writeClaudeFile } from "../testing/hooks"
 import { git } from "../testing/temp";
 import { hold, updateFiles } from "../update/state";
 import { describeIssues } from "../zod-issues";
-import { autoMergeAllowed, autoMergeRefusal } from "./auto-merge";
+import { autoMergeAllowed, autoMergeOff, autoMergeRefusal, baseRefusal } from "./auto-merge";
 import {
   jobRouteFrom,
   leadHintFrom,
@@ -603,6 +603,17 @@ describe("autoMergeAllowed", () => {
     expect(autoMergeRefusal(resolved, project({ base: "dev" }), "main", "main")).toContain(
       "allowMerge is off",
     );
+  });
+
+  test("baseRefusal is the base rules alone: off does not matter, the base still does", () => {
+    const config = project({ base: "dev" });
+    expect(baseRefusal(config, "dev", "main")).toBeNull();
+    expect(baseRefusal(config, "main", "main")).toBeNull();
+    expect(baseRefusal(config, "release/1.0", "main")).toBe(
+      autoMergeRefusal(resolvedWith(true), config, "release/1.0", "main"),
+    );
+    expect(autoMergeOff(resolvedWith(false), "dev")).toContain("allowMerge is off");
+    expect(autoMergeOff(resolvedWith(true), "dev")).toBeNull();
   });
 
   test("a base another family of branches feeds is a plain base too", () => {

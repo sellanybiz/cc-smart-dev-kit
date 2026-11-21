@@ -18,7 +18,7 @@ import { hookEnv, makeClone, makeRepo, writeClaudeFile } from "../testing/hooks"
 import { subprocessGuard } from "../testing/port-guard";
 import { git, tempDir } from "../testing/temp";
 import { PROCESS_TEST_TIMEOUT_MS } from "../testing/timeouts";
-import { runWorkflow, type WorkflowContext } from "./commands";
+import { runWorkflow, WORKFLOW_USAGE, type WorkflowContext } from "./commands";
 import { personalWorkflowFile } from "./resolve";
 import { MERGE_FILES_RULE, WORKFLOW_KEYS } from "./schema";
 import { writePersonalSetting, writeProjectSetting } from "./write";
@@ -1250,6 +1250,22 @@ describe("workflow merge-check", () => {
     ]);
   });
 
+  test("--asked is a known option: a pull request with it still asks when gh is not there", async () => {
+    const { repo, env } = branchWorld();
+    const run = context(repo, envWithoutGh(env));
+    expect(await runWorkflow(["merge-check", "7", "--asked"], run.context)).toBe(1);
+    expect(run.errors).toEqual([]);
+    expect(run.lines).toEqual([
+      "#7: asks — cc-smart-dev-kit could not check this merge: gh is not installed. Approve the merge yourself if it is right.",
+    ]);
+  });
+
+  test("the usage text names --asked and says what it sets aside", () => {
+    expect(WORKFLOW_USAGE).toContain("merge-check [<pr>… [--asked] | --branch <b> --base <base>]");
+    expect(WORKFLOW_USAGE).toContain("sets aside allowMerge and nothing else");
+    expect(WORKFLOW_USAGE).toContain("the verdict says the merge rests on the person's yes");
+  });
+
   test("the usage mistakes: a pair of flags, numbers, or both refused", async () => {
     const { repo, env } = branchWorld();
     for (const [argv, why] of [
@@ -1261,6 +1277,14 @@ describe("workflow merge-check", () => {
       ],
       [["merge-check", "fix/login"], "Not a pull request number: fix/login"],
       [["merge-check", "7", "--since", "yesterday"], "Unknown option: --since"],
+      [
+        ["merge-check", "--asked"],
+        "merge-check needs a pull request number, or --branch with --base",
+      ],
+      [
+        ["merge-check", "--branch", "feat", "--base", "main", "--asked"],
+        "--asked is for a pull request: a local branch has no allowMerge to set aside",
+      ],
     ]) {
       const run = context(repo, env);
       expect(await runWorkflow(argv as string[], run.context)).toBe(2);

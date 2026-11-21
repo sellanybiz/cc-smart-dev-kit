@@ -160,9 +160,10 @@ to ask and never park a question or an action; take the recommended option, reco
 `decision` whose text starts `Decision:` (what, why, how to undo it), and keep going; an action
 that needed their yes runs when the work calls for it (the few steps that are always the
 person's word are not run, and the safe option is recorded). Away, a finished plan does not end
-the stretch: after its review the session merges only when `workflow merge-check` exits 0
-(which tests `allowMerge` first, so the person's earlier words never turn it on; the one rule is
-in `commit`), else leaves the pull request open; it stacks the next plan on a pull request that
+the stretch: after its review the session merges only when `workflow merge-check` exits 0, with
+`--asked` and the person's quoted yes when `allowMerge` is off (`--asked` sets aside that switch
+and nothing else; the one rule is in `commit`, the flag in `docs/design/workflow.md`), else leaves
+the pull request open; it stacks the next plan on a pull request that
 is still open; and under `plans.runMode` `ask`, which is refused away, it runs lead + children
 for two or more ready plans that share no file when a Herdr terminal exists, otherwise solo,
 and records the choice. `user-available` switches the

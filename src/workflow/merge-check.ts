@@ -14,6 +14,12 @@
  * (`gh pr view`, `gh repo view`, `gh pr checks`, the review record, git); a `gh` that is
  * missing or answers nothing is "could not read", never a guess.
  *
+ * **`asked`** (`workflow merge-check <pr> --asked`): the person said yes to this merge. That sets
+ * aside the `allowMerge` switch alone. The base rules, the required checks and the review are
+ * judged as always, so an unattended session can prove that the switch is the only thing left
+ * between it and a merge the person already asked for. A local branch has no switch, so it takes
+ * no such option.
+ *
  * **A local branch** is judged against a base without gh: the review gate's `reviewBeforePush`
  * and the record alone, the same limits. It is what the main session checks before it merges a
  * phase's branch locally (D22).
@@ -30,7 +36,7 @@ import type { CliPaths } from "../cli/paths";
 import { GUARD_GIT_TIMEOUT_MS, runGitAsync } from "../hooks/git";
 import type { Env } from "../hooks/run";
 import type { Checkout } from "../project/resolve";
-import { autoMergeRefusal } from "./auto-merge";
+import { autoMergeOff, autoMergeRefusal, baseRefusal } from "./auto-merge";
 import { type GateRead, type ResolvedWorkflow, resolveGateAsync } from "./resolve";
 import {
   allowanceOf,
@@ -377,6 +383,14 @@ function pullRequestAllowed(cover: Covered | null): string {
   return `the review of ${short(cover.review)} covers its head, and its required checks are green`;
 }
 
+/**
+ * The reason an allowed pull request gives when the person's yes (`asked`) stood in for the
+ * `allowMerge` switch: it says so first, so the verdict line never reads as `allowMerge` being on.
+ */
+function askedAllowed(reason: string): string {
+  return `the merge rests on the person's yes (--asked), not on allowMerge, which is off: ${reason}`;
+}
+
 /** The reason an allowed local branch gives. */
 function branchAllowed(branch: string, head: string, cover: Covered | null): string {
   if (cover === null) return `reviewBeforePush is off, so no review is required for ${branch}`;
@@ -562,6 +576,16 @@ async function gateFor(world: MergeWorld, branch: string): Promise<GateRead | "l
   });
 }
 
+/** What a caller may add to a pull request check. */
+export interface PullRequestOptions {
+  /**
+   * The person said yes to this merge, in their own words. It sets aside the `allowMerge`
+   * switch (`autoMergeOff`) and nothing else: the base rules, the required checks and the
+   * review under D17 are all still judged. Left out: off, and nothing changes.
+   */
+  asked?: boolean;
+}
+
 /**
  * The verdict for one pull request merge a command asks for. `defaultBranches` is the
  * caller's cache of the repository's default branch, read once per repository (`--repo` or
@@ -571,6 +595,7 @@ export async function checkPullRequest(
   world: MergeWorld,
   target: { ref: string | null; repo: string | null },
   defaultBranches: Map<string, string | null> = new Map(),
+  options: PullRequestOptions = {},
 ): Promise<MergeVerdict> {
   const viewLeft = world.timeFor(GH_TIMEOUT_MS);
   if (viewLeft <= 0) {
@@ -620,7 +645,12 @@ export async function checkPullRequest(
   if (defaultBranch === null) {
     return { kind: "unread", number: view.number, what: "this repository's default branch" };
   }
-  const branchRefusal = autoMergeRefusal(resolved, committed, view.base, defaultBranch);
+  // The person's yes replaces the switch only: the base rules run either way.
+  const asked = options.asked === true;
+  const branchRefusal = asked
+    ? baseRefusal(committed, view.base, defaultBranch)
+    : autoMergeRefusal(resolved, committed, view.base, defaultBranch);
+  const onTheYes = asked && autoMergeOff(resolved, view.base) !== null;
   let checks: RequiredCheck[] | null = null;
   if (branchRefusal === null) {
     const checksLeft = world.timeFor(GH_TIMEOUT_MS);
@@ -663,10 +693,11 @@ export async function checkPullRequest(
       reason: refused,
     };
   }
+  const allowed = pullRequestAllowed(cover?.covered === true ? cover : null);
   return {
     detail: detailOf(cover, review.limits),
     kind: "allowed",
-    reason: pullRequestAllowed(cover?.covered === true ? cover : null),
+    reason: onTheYes ? askedAllowed(allowed) : allowed,
   };
 }
 
