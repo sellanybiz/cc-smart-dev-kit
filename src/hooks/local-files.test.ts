@@ -108,6 +108,31 @@ test("an ignored logs/ folder and ignored .log files alone do not keep a finishe
   });
 });
 
+test("an ignored next-env.d.ts, at any depth, does not keep a finished worktree", () => {
+  // Next.js writes this file on every dev start and build, and says not to edit it.
+  const { worktree, state } = world("supabase/.temp/\nnext-env.d.ts\nnotes.txt\n");
+  writeFileSync(join(worktree, "next-env.d.ts"), '/// <reference types="next" />\n');
+  mkdirSync(join(worktree, "apps", "web"), { recursive: true });
+  writeFileSync(join(worktree, "apps", "web", "next-env.d.ts"), '/// <reference types="next" />\n');
+  expect(state()).toEqual({ finished: true, note: null });
+  // Another ignored file still keeps it.
+  writeFileSync(join(worktree, "notes.txt"), "keep my notes");
+  expect(state()).toMatchObject({
+    finished: false,
+    why: "local files git does not keep: notes.txt",
+  });
+});
+
+test("a folder named next-env.d.ts is read, never taken whole by the file pattern", () => {
+  const { worktree, state } = world("supabase/.temp/\nserver/\n");
+  mkdirSync(join(worktree, "server", "next-env.d.ts"), { recursive: true });
+  writeFileSync(join(worktree, "server", "next-env.d.ts", "notes.txt"), "keep my notes");
+  expect(state()).toMatchObject({
+    finished: false,
+    why: "local files git does not keep: server/",
+  });
+});
+
 test("a folder named like a log file is read, never taken whole by the .log pattern", () => {
   const { worktree, state } = world("supabase/.temp/\nserver/\n");
   mkdirSync(join(worktree, "server", "app.log"), { recursive: true });

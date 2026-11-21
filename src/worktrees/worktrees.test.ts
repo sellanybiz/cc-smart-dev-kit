@@ -1365,6 +1365,31 @@ describe("the worktrees command", () => {
     expect(found?.state).toMatchObject({ finished: false, why: "1 commit not on main" });
   });
 
+  test("D62: a detached folder whose commits the base holds does not count the removal's own deletions", () => {
+    const { main, worktree } = repo();
+    git(worktree, "checkout", "--detach");
+    const parked = `${worktree}-removing-1761300000000`;
+    git(main, "worktree", "move", worktree, parked);
+    // `git worktree remove` deleted a tracked file before it failed.
+    rmSync(join(parked, "README.md"));
+    const state = () =>
+      scanWorktrees(main, {
+        base: "main",
+        claudeConfigDir: tempDir("worktrees-config"),
+        env: cleanGitEnv(),
+        facts: { containers: [], programs: [], sessions: [] },
+        // The idle hour is the branch-less folder's own rule: this asks only about its files.
+        idleLimit: 0,
+      }).find((one) => one.listed.path === parked)?.state;
+    expect(state()).toEqual({ finished: true, note: null });
+    // A file someone changed, or one nobody tracks, is still not the removal's own work.
+    writeFileSync(join(parked, "README.md"), "# mine\n");
+    expect(state()).toMatchObject({ finished: false, why: "uncommitted changes" });
+    git(parked, "checkout", "--", "README.md");
+    writeFileSync(join(parked, "notes.txt"), "mine\n");
+    expect(state()).toMatchObject({ finished: false, why: "uncommitted changes" });
+  });
+
   test("D62: a folder already moved aside is removed where it stands, never moved again", () => {
     const { main, worktree } = repo();
     const parked = `${worktree}-removing-1761300000000`;
