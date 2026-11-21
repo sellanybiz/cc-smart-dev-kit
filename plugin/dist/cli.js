@@ -39,7 +39,7 @@ var MIN_BUN = "1.4.3";
 
 // src/build-info/index.ts
 var info = {
-  version: "6.1.0",
+  version: "6.1.1",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -27541,7 +27541,8 @@ async function acquireFrom(stores, job, options) {
         const place = placeText(jobsAhead(input, reason));
         options.onWaiting(`Heavy job waits for ${job.slot ? "a free slot" : "its exclusive name"}: ${job.what}. Why: ${reasonText(reason)}.${place === "" ? "" : ` ${place}`}`);
         if (first) {
-          options.onWaiting(pipeHint());
+          if (options.outputPiped ?? true)
+            options.onWaiting(pipeHint());
           options.onWaiting(backgroundHint());
         }
         for (const line of holderLines(held, store.label, at))
@@ -28006,6 +28007,28 @@ var init_status = __esm(() => {
   init_store();
 });
 
+// src/jobs/stdout-pipe.ts
+import { fstatSync } from "fs";
+function stdoutMayBePiped(facts = liveFacts) {
+  if (facts.platform === "win32")
+    return true;
+  try {
+    return facts.isPipe();
+  } catch {
+    return true;
+  }
+}
+var liveFacts;
+var init_stdout_pipe = __esm(() => {
+  liveFacts = {
+    platform: process.platform,
+    isPipe: () => {
+      const stat = fstatSync(1);
+      return stat.isFIFO() || stat.isSocket();
+    }
+  };
+});
+
 // src/jobs/weight-source.ts
 function diskWeightSource(folder) {
   return { folder, isFile: fileExistsIn, scriptsIn: packageScripts };
@@ -28173,6 +28196,7 @@ ${USAGE2}`);
         }
         const reservation = await acquireFrom(stores, job, {
           onWaiting,
+          outputPiped: stdoutMayBePiped(),
           person: hostname4(),
           signal: stop.signal,
           now
@@ -28280,6 +28304,7 @@ var init_commands2 = __esm(() => {
   init_queue();
   init_run();
   init_status();
+  init_stdout_pipe();
   init_weight_source();
   USAGE2 = `Usage: ${COMMAND} job <command>
 
@@ -31572,13 +31597,13 @@ function cappedHookList(items, render, command, separator = ", ") {
 var HOOK_LIST_LIMIT = 8;
 
 // src/hooks/worktree-leftovers.ts
-import { closeSync as closeSync8, existsSync as existsSync37, fstatSync, openSync as openSync8, readSync as readSync4, statSync as statSync16 } from "fs";
+import { closeSync as closeSync8, existsSync as existsSync37, fstatSync as fstatSync2, openSync as openSync8, readSync as readSync4, statSync as statSync16 } from "fs";
 import { basename as basename9, join as join43, resolve as resolve11 } from "path";
 function lastReflogTime(file, now) {
   try {
     const fd = openSync8(file, "r");
     try {
-      const size = fstatSync(fd).size;
+      const size = fstatSync2(fd).size;
       const start = Math.max(0, size - REFLOG_TAIL_BYTES);
       const buffer = Buffer.alloc(Math.min(size, REFLOG_TAIL_BYTES));
       const length = readSync4(fd, buffer, 0, buffer.length, start);
@@ -47581,7 +47606,7 @@ import {
   closeSync as closeSync13,
   constants as constants4,
   existsSync as existsSync72,
-  fstatSync as fstatSync3,
+  fstatSync as fstatSync4,
   openSync as openSync13,
   readdirSync as readdirSync30,
   readFileSync as readFileSync79,
@@ -48768,7 +48793,7 @@ function subagentWorktreeOf(cwd, agentId) {
 }
 
 // src/hooks/transcript.ts
-import { closeSync as closeSync12, fstatSync as fstatSync2, openSync as openSync12, readSync as readSync7 } from "fs";
+import { closeSync as closeSync12, fstatSync as fstatSync3, openSync as openSync12, readSync as readSync7 } from "fs";
 var TRANSCRIPT_TAIL_BYTES = 512 * 1024;
 function isJsonObject14(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -48822,7 +48847,7 @@ function tailLines(transcriptPath, bytes = TRANSCRIPT_TAIL_BYTES) {
   try {
     const fd = openSync12(transcriptPath, "r");
     try {
-      const size = fstatSync2(fd).size;
+      const size = fstatSync3(fd).size;
       const length = Math.min(size, bytes);
       const buffer = Buffer.alloc(length);
       readSync7(fd, buffer, 0, length, size - length);
@@ -49087,7 +49112,7 @@ function runPrompts(transcriptPath, maxBytes = PROMPT_SCAN_MAX_BYTES) {
   try {
     const fd = openSync12(transcriptPath, "r");
     try {
-      const size = fstatSync2(fd).size;
+      const size = fstatSync3(fd).size;
       if (size > maxBytes)
         return null;
       const buffer = Buffer.alloc(size);
@@ -51581,7 +51606,7 @@ var MAX_LINT_CONFIG_BYTES = 1024 * 1024;
 function readLintConfig(file) {
   const fd = openSync13(file, constants4.O_RDONLY | (constants4.O_NONBLOCK ?? 0));
   try {
-    const stat = fstatSync3(fd);
+    const stat = fstatSync4(fd);
     if (!stat.isFile() || stat.size > MAX_LINT_CONFIG_BYTES) {
       throw new Error("not a regular config file within the size limit");
     }
