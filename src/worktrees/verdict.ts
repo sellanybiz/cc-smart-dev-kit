@@ -12,6 +12,7 @@
  *   - no Docker container, running or stopped, mounts files from inside it;
  *   - every commit on it is on `origin/<base>`, or merging it into the base changes nothing
  *     (a squash or a rebase merge leaves the work there under a commit of its own);
+ *   - no bisect, rebase, merge, cherry-pick or revert is unfinished in it (`in-progress.ts`);
  *   - git has not touched it for an hour — a worktree made a minute ago is not finished, its
  *     session simply has not moved into it yet;
  *   - nothing in it is uncommitted, untracked files included, that the base's history does not
@@ -50,6 +51,13 @@ export interface WorktreeFacts {
   containers: "unknown" | string[];
   /** Minutes since git last wrote to it. */
   idleMinutes: number;
+  /**
+   * Why an operation of git's is unfinished in it, in words (`a bisect is in progress`), or null
+   * when none is (`inProgressWhy`, `in-progress.ts`): a bisect, a rebase, a merge, a cherry-pick
+   * or a revert. Removing the folder would throw the operation away, however finished its commits
+   * look. Also set when git cannot say, since nothing then proves that none runs.
+   */
+  inProgress: null | string;
   /**
    * Another worktree that lives INSIDE this one — Claude Code puts its own under
    * `.claude/worktrees/`, and git's exclude file hides them from `git status`. Removing the
@@ -185,6 +193,10 @@ export function verdict(
         ? ""
         : ` (git ${facts.gitTooOld} is too old to replay it onto ${facts.base}: git ${MIN_MERGE_TREE_GIT} or newer is needed)`;
     return { finished: false, held: false, why: `${commits} not on ${facts.base}${tooOld}` };
+  }
+  // Before the idle hour: a bisect left paused for a day is idle, and still not finished.
+  if (facts.inProgress !== null) {
+    return { finished: false, held: false, why: facts.inProgress };
   }
   if (facts.idleMinutes < idleLimit && !facts.parked) {
     return {

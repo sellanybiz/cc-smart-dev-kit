@@ -452,7 +452,7 @@ describe("the outcome of a branch deletion, as data", () => {
     git(main, "checkout", "-q", "fix/login");
     git(main, "commit", "--allow-empty", "-m", "late work");
     git(main, "checkout", "-q", "main");
-    const outcome = deleteJudgedBranch(main, "fix/login", judged.sha, env);
+    const outcome = deleteJudgedBranch(main, "fix/login", judged.sha, env, NO_TASK_RECORDS);
     expect(outcome).toEqual({
       kind: "git-error",
       text: "it moved after it was judged, so it stays",
@@ -460,7 +460,9 @@ describe("the outcome of a branch deletion, as data", () => {
     expect(git(main, "branch", "--list", "fix/login")).toContain("fix/login");
     // Still at the judged commit, it goes.
     git(main, "branch", "-f", "fix/login", judged.sha);
-    expect(deleteJudgedBranch(main, "fix/login", judged.sha, env)).toEqual({ kind: "deleted" });
+    expect(deleteJudgedBranch(main, "fix/login", judged.sha, env, NO_TASK_RECORDS)).toEqual({
+      kind: "deleted",
+    });
     expect(git(main, "branch", "--list", "fix/login")).toBe("");
   });
 
@@ -469,7 +471,7 @@ describe("the outcome of a branch deletion, as data", () => {
     git(main, "merge", "--ff-only", "fix/login");
     const judged = judgeBranchOnRef(main, "main", "main", "fix/login", env);
     if (judged.kind !== "on-ref") throw new Error("the merged branch should be on main");
-    expect(deleteJudgedBranch(main, "fix/login", judged.sha, env)).toEqual({
+    expect(deleteJudgedBranch(main, "fix/login", judged.sha, env, NO_TASK_RECORDS)).toEqual({
       kind: "git-error",
       text: `a worktree has it checked out, at ${worktree}`,
     });
@@ -488,7 +490,7 @@ describe("the outcome of a branch deletion, as data", () => {
     expect(git(worktree, "branch", "--show-current").trim()).toBe("");
     const judged = judgeBranchOnRef(main, "main", "main", "fix/login", env);
     if (judged.kind !== "on-ref") throw new Error("the merged branch should be on main");
-    expect(deleteJudgedBranch(main, "fix/login", judged.sha, env)).toEqual({
+    expect(deleteJudgedBranch(main, "fix/login", judged.sha, env, NO_TASK_RECORDS)).toEqual({
       kind: "git-error",
       text: `a worktree is bisecting or rebasing it, at ${worktree}`,
     });
@@ -496,7 +498,9 @@ describe("the outcome of a branch deletion, as data", () => {
     // Once the bisect is over, the branch goes.
     git(worktree, "bisect", "reset");
     git(worktree, "checkout", "--detach", "-q");
-    expect(deleteJudgedBranch(main, "fix/login", judged.sha, env)).toEqual({ kind: "deleted" });
+    expect(deleteJudgedBranch(main, "fix/login", judged.sha, env, NO_TASK_RECORDS)).toEqual({
+      kind: "deleted",
+    });
   });
 
   test("a branch a worktree is rebasing is kept too", () => {
@@ -513,7 +517,7 @@ describe("the outcome of a branch deletion, as data", () => {
     });
     expect(stopped.exitCode).not.toBe(0);
     const branchTip = git(main, "rev-parse", "fix/login").trim();
-    expect(deleteJudgedBranch(main, "fix/login", branchTip, env)).toEqual({
+    expect(deleteJudgedBranch(main, "fix/login", branchTip, env, NO_TASK_RECORDS)).toEqual({
       kind: "git-error",
       text: `a worktree is bisecting or rebasing it, at ${worktree}`,
     });
@@ -528,7 +532,9 @@ describe("the outcome of a branch deletion, as data", () => {
     git(main, "config", "branch.fix/login.merge", "refs/heads/fix/login");
     const judged = judgeBranchOnRef(main, "main", "main", "fix/login", env);
     if (judged.kind !== "on-ref") throw new Error("the merged branch should be on main");
-    expect(deleteJudgedBranch(main, "fix/login", judged.sha, env)).toEqual({ kind: "deleted" });
+    expect(deleteJudgedBranch(main, "fix/login", judged.sha, env, NO_TASK_RECORDS)).toEqual({
+      kind: "deleted",
+    });
     expect(git(main, "config", "--local", "--list")).not.toContain("branch.fix/login.");
   });
 
@@ -538,7 +544,9 @@ describe("the outcome of a branch deletion, as data", () => {
     git(main, "merge", "--ff-only", "fix/login");
     const judged = judgeBranchOnRef(main, "main", "main", "fix/login", env);
     if (judged.kind !== "on-ref") throw new Error("the merged branch should be on main");
-    expect(deleteJudgedBranch(main, "fix/login", judged.sha, env)).toEqual({ kind: "deleted" });
+    expect(deleteJudgedBranch(main, "fix/login", judged.sha, env, NO_TASK_RECORDS)).toEqual({
+      kind: "deleted",
+    });
   });
 
   test("a config section git cannot remove is said, and the branch still counts as deleted", () => {
@@ -555,7 +563,7 @@ describe("the outcome of a branch deletion, as data", () => {
         : realRun(cwd, args, givenEnv, timeout, own),
     );
     try {
-      const outcome = deleteJudgedBranch(main, "fix/login", judged.sha, env);
+      const outcome = deleteJudgedBranch(main, "fix/login", judged.sha, env, NO_TASK_RECORDS);
       expect(outcome).toEqual({
         kind: "deleted",
         note: "its [branch] config section stays: fatal: could not lock config file",
@@ -567,6 +575,62 @@ describe("the outcome of a branch deletion, as data", () => {
       spy.mockRestore();
     }
     expect(git(main, "branch", "--list", "fix/login")).toBe("");
+  });
+
+  test("git's `no such section` is read in any locale: the call pins LC_ALL=C", () => {
+    const { main, worktree } = withWork();
+    git(main, "worktree", "remove", "--force", worktree);
+    git(main, "merge", "--ff-only", "fix/login");
+    const judged = judgeBranchOnRef(main, "main", "main", "fix/login", env);
+    if (judged.kind !== "on-ref") throw new Error("the merged branch should be on main");
+    const realRun = gitTools.runGit;
+    const owns: Array<Record<string, string> | undefined> = [];
+    // Git translates its message by the locale it runs in: German unless the call pins it.
+    const spy = spyOn(gitTools, "runGit").mockImplementation(
+      (cwd, args, givenEnv, timeout, own) => {
+        if (args[0] !== "config" || args[1] !== "--remove-section") {
+          return realRun(cwd, args, givenEnv, timeout, own);
+        }
+        owns.push(own);
+        return {
+          ok: false,
+          out: "",
+          err:
+            own?.LC_ALL === "C"
+              ? "fatal: no such section: branch.fix/login"
+              : "fatal: Sektion nicht gefunden: branch.fix/login",
+          code: 128,
+        };
+      },
+    );
+    try {
+      expect(deleteJudgedBranch(main, "fix/login", judged.sha, env, NO_TASK_RECORDS)).toEqual({
+        kind: "deleted",
+      });
+    } finally {
+      spy.mockRestore();
+    }
+    expect(owns).toHaveLength(1);
+    expect(owns[0]?.LC_ALL).toBe("C");
+  });
+
+  test("a branch an open task records is kept by the delete itself, whoever calls it", () => {
+    const { main, worktree } = withWork();
+    git(main, "worktree", "remove", "--force", worktree);
+    git(main, "merge", "--ff-only", "fix/login");
+    const judged = judgeBranchOnRef(main, "main", "main", "fix/login", env);
+    if (judged.kind !== "on-ref") throw new Error("the merged branch should be on main");
+    const recorded = { byBranch: new Map([["fix/login", 7]]), ok: true } as const;
+    expect(deleteJudgedBranch(main, "fix/login", judged.sha, env, recorded)).toEqual({
+      kind: "recorded",
+      text: "task #7 still records it",
+    });
+    const unreadable = { ok: false, why: "the file is damaged" } as const;
+    expect(deleteJudgedBranch(main, "fix/login", judged.sha, env, unreadable)).toEqual({
+      kind: "recorded",
+      text: "the task store cannot be read (the file is damaged), so nothing proves no task records it",
+    });
+    expect(git(main, "branch", "--list", "fix/login")).toContain("fix/login");
   });
 
   test("a branch an open task records is kept, with the task named, before anything is judged", () => {

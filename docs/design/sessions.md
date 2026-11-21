@@ -56,8 +56,16 @@ asked for (`src/sessions/`, `src/worktrees/`):
     task's `branch` field and cannot close once the branch is gone (`refuseEmptyHandBack`), so
     the line is `kept branch <b>: task #<n> still records it`; the folder still goes. The
     records are read through the task store (`recordedBranches`, `readWorkStore`) once per
-    run, by `worktrees` and by the background clean, and handed down as `ScanOptions.recorded`;
-    a store that cannot be read keeps every branch and removes the folders.
+    run, by `worktrees` and by the background clean, and handed down as `DeleteOptions.recorded`
+    (`ScanOptions & { recorded }`: required on every delete, which is why `deleteJudgedBranch`
+    takes it too and keeps such a branch itself); a store that cannot be read keeps every branch
+    and removes the folders.
+  - **An operation in progress keeps the worktree** (`in-progress.ts`, the verdict's
+    `inProgress` fact): a bisect, a rebase, a merge, a cherry-pick or a revert that git has not
+    finished. The check comes before the idle hour, so a bisect left paused for a day still
+    keeps the folder, and with it the branch. When git or the disk cannot say, it keeps too.
+    The same file list serves the branch delete below: one `git rev-parse --git-path` call per
+    worktree asks for every file.
   - **The delete names the judged commit.** The judge reads the branch's commit once
     (`judgeBranchOnRef`) and the delete is `git update-ref -d refs/heads/<branch> <that commit>`
     (`deleteJudgedBranch`): git refuses it when the branch moved after the judge, so a commit
@@ -68,7 +76,10 @@ asked for (`src/sessions/`, `src/worktrees/`):
     `BISECT_START`, `rebase-merge/head-name`, `rebase-apply/head-name`, read with
     `git rev-parse --git-path` in each worktree). `branch -D` also removes the branch's
     `[branch "<name>"]` config section, so the delete does the same (`git config
-    --remove-section`; no section is fine, any other failure is said in the line).
+    --remove-section`). A missing section is fine and says nothing, in any locale: git words
+    "no such section" by the locale, so the call runs with `LC_ALL=C`. Any other failure is said
+    in the line. The listing (the sweep's `list` mode) applies the same keeps as `--clean`, in
+    the same order, so it never says a branch goes that `--clean` keeps.
     A kept branch's line names the ref it was compared with (`origin/<base>`, `comparedWith`).
 
 ### Finished background sessions

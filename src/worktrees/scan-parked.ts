@@ -283,6 +283,8 @@ export function strayKeptWhy(stray: StrayFolder, machine: MachineFacts): null | 
         : containersUsing(stray.path, machine.containers),
     gitTooOld: null,
     idleMinutes: 0,
+    // A leftover folder is no worktree git lists, so no bisect or rebase runs in it.
+    inProgress: null,
     innerWorktree: null,
     locked: false,
     mergedBy: null,

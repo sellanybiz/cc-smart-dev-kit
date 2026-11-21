@@ -34,6 +34,7 @@ import {
   recordedKeepWhy,
   type ScanOptions,
   tryDeleteBranch,
+  usedByWorktree,
 } from "./scan";
 
 /** What the open tasks of one project record (`RecordedBranches`), read from the task store. */
@@ -99,7 +100,8 @@ function lineOf(branch: string, label: string, outcome: BranchOutcome): BuilderB
 /**
  * Judge every unused builder branch against the base (`baseRefOf`): delete the ones it holds
  * (`mode: "delete"`, `--clean`), or only say which would go (`mode: "list"`, the listing). A
- * branch an open task records is kept, and so is every branch when `recorded` cannot be read.
+ * branch an open task records is kept, and so is every branch when `recorded` cannot be read. A
+ * branch a worktree is bisecting or rebasing is kept as well, in both modes.
  */
 export function sweepBuilderBranches(
   repo: string,
@@ -113,12 +115,15 @@ export function sweepBuilderBranches(
     if (mode === "delete") {
       return lineOf(branch, shown, tryDeleteBranch(repo, ref, shown, branch, env, recorded));
     }
-    // The listing judges only: the keep is the delete's own (`recordedKeepWhy`), said the same way.
+    // The listing judges only, but with the delete's own keeps, in the delete's own order
+    // (`tryDeleteBranch`), so it never says a branch goes that `--clean` keeps.
     const keep = recordedKeepWhy(branch, recorded);
     if (keep !== null) return lineOf(branch, shown, { kind: "recorded", text: keep });
     const judged = judgeBranchOnRef(repo, ref, shown, branch, env);
-    return judged.kind === "on-ref"
+    if (judged.kind !== "on-ref") return lineOf(branch, shown, judged);
+    const usedBy = usedByWorktree(repo, branch, env);
+    return usedBy === null
       ? { branch, state: "goes", text: `branch ${branch}: ${shown} holds its work` }
-      : lineOf(branch, shown, judged);
+      : lineOf(branch, shown, { kind: "git-error", text: usedBy });
   });
 }

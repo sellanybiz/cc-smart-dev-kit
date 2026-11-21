@@ -374,6 +374,57 @@ describe("every branch delete keeps a branch an open task records", () => {
     expect(w.branches()).toContain("fix/done");
   });
 
+  /**
+   * A builder's worktree whose work is on the base (two commits, merged and pushed) and that is
+   * paused in the middle of a bisect: its HEAD is detached, and git has left it alone for hours.
+   */
+  function bisecting(w: ReturnType<typeof world>, branch: string) {
+    const folder = join(w.root, `app-wt-${branch}`);
+    git(w.main, "worktree", "add", "-q", "-b", branch, folder);
+    git(folder, "commit", "--allow-empty", "-m", "two");
+    git(folder, "commit", "--allow-empty", "-m", "three");
+    git(w.main, "merge", "--ff-only", branch);
+    git(w.main, "push", "origin", "main");
+    git(folder, "bisect", "start", "HEAD", "HEAD~2");
+    leftAlone(folder);
+    return folder;
+  }
+
+  test("--clean keeps a merged worktree in the middle of a bisect, and its branch", async () => {
+    const w = world();
+    const folder = bisecting(w, "fix/bisecting");
+    const restore = quietMachine();
+    try {
+      const { code, text } = await w.run({ clean: true });
+      expect(code).toBe(0);
+      expect(text).toContain("a bisect is in progress");
+      expect(text).not.toContain(`removed ${folder}`);
+    } finally {
+      restore();
+    }
+    expect(existsSync(folder)).toBe(true);
+    expect(w.branches()).toContain("fix/bisecting");
+    expect(git(folder, "bisect", "log")).toContain("git bisect start");
+  });
+
+  test("a builder branch a worktree is bisecting stays, in the listing and in --clean alike", async () => {
+    const w = world();
+    const folder = bisecting(w, "worktree-agent-bisecting");
+    const keptLine = `kept branch worktree-agent-bisecting: a worktree is bisecting or rebasing it, at ${folder}`;
+    const restore = quietMachine();
+    try {
+      const listed = await w.run({ clean: false });
+      expect(listed.text).toContain(keptLine);
+      expect(listed.text).not.toContain("branch worktree-agent-bisecting: origin/main holds");
+      const cleaned = await w.run({ clean: true });
+      expect(cleaned.text).toContain(keptLine);
+    } finally {
+      restore();
+    }
+    expect(existsSync(folder)).toBe(true);
+    expect(w.branches()).toContain("worktree-agent-bisecting");
+  });
+
   test("the task store is read once for a whole run, however many removals it makes", async () => {
     const w = world();
     finished(w, "fix/one");
