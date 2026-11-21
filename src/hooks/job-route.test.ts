@@ -1580,6 +1580,33 @@ describe("a mixed line: what is not refused", () => {
     expect(denialOf(repo, "bun run lint && bun test")).toContain("beside other commands");
   });
 
+  // A body that never ends holds the one slot for as long as it runs: it stays raw, with a
+  // call's own words (`--watch`, `--ui`) read as the runners hand them to the body.
+  it("a script body that never ends, or runs in the background, is not queued", () => {
+    const repo = repoWith({
+      "package.json": JSON.stringify({
+        scripts: {
+          t: "next typegen && vitest",
+          pure: "tsc --noEmit && vitest",
+          e2e: "next typegen && playwright test",
+          w2: "next typegen && watch tsc --noEmit",
+          bg: "next dev & tsc --noEmit",
+        },
+      }),
+    });
+    for (const command of [
+      "bun run t --watch",
+      "bun run t -- --watch",
+      "bun run pure --watch",
+      "bun run e2e --ui",
+      "bun run w2",
+      "bun run bg",
+    ]) {
+      expect([command, jobRoute(contextFor(repo, command))]).toEqual([command, {}]);
+    }
+    expect(rewrittenTo(repo, "bun run t")).toBe(`${LAUNCHER} job run --kind test:run -- bun run t`);
+  });
+
   it("the route off, and outside git", () => {
     const repo = repoWith({});
     const off = {

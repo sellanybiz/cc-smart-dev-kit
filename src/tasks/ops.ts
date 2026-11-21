@@ -734,7 +734,14 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
         // This call carries no evidence or note, so a step cannot close here.
         if (status === "done" || status === "dropped") {
           refuseBareClose(all, task, status, {});
-          refuseEmptyHandBack(all, task, status, handBackGit);
+          // The close is judged on the binding this call writes: a call that records the branch
+          // and base and closes at once is judged on the new ones, not on what was there.
+          refuseEmptyHandBack(
+            all,
+            { ...task, ...bindings({ branch: input.branch, base: input.base }) },
+            status,
+            handBackGit,
+          );
         }
         // The plan that goes in flight is judged against the plans held for others (`startCheck`).
         const flight = entering ? startCheck(task.kind === "plan" ? task.plan : landing) : {};
