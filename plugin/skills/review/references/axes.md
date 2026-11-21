@@ -25,10 +25,11 @@ one line each.
    In UI code, a raw control or hand-made widget where the design system has one is a
    finding: select, table, textarea, radio group, tabs, date input, avatar, menu, combobox,
    dialog. Name the design-system component that replaces it.
-7. **Craft** — would a senior engineer be embarrassed to approve this? Dead code, debug
-   output left in, names that lie (`data2`), one function doing five things, nesting that
-   should be early returns, clever one-liners, user-facing errors that say "Something went
-   wrong". Structure and names: `/cc-smart-dev-kit:code-structure`.
+7. **Craft** — would a senior engineer be embarrassed to approve this? Names that lie, one
+   function doing five things, nesting that should be early returns, clever one-liners,
+   user-facing errors that say "Something went wrong". Structure and names:
+   `/cc-smart-dev-kit:code-structure`. Every item on its § 11 list (no AI slop) is a finding:
+   name the item and its `file:line`.
 8. **Security** — authentication and authorization checked inside the function, not only at
    the route; input validated at the boundary; no secrets in logs, client bundles or props
    sent to the browser.

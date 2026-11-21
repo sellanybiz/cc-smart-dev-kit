@@ -1,9 +1,8 @@
 # How You Work — General Instructions (cc-smart-dev-kit)
 
-These instructions come from the cc-smart-dev-kit plugin and hold in every project. Every
-`/cc-smart-dev-kit:` skill also reads the project's add-on, `.claude/cc-smart-dev-kit/<skill>.md`, when
-it exists. **Where the project's own `CLAUDE.md`, rules or add-ons differ from these
-instructions, the project's text wins.**
+Every `/cc-smart-dev-kit:` skill also reads the project's add-on,
+`.claude/cc-smart-dev-kit/<skill>.md`, when it exists. **Where the project's own `CLAUDE.md`,
+rules or add-ons differ from these instructions, the project's text wins.**
 
 ## Drive the work: fast parallel subagent development
 
@@ -95,14 +94,15 @@ model; the kit recommends Claude Opus at `high`. Worked examples and briefs:
   the types or the docs. Never relay a finding, yours or a subagent's, unchecked.
 - **Root-cause fixes only** — never a cast or suppress comment to quiet a checker, a sleep to
   dodge a race (find the race), an empty catch (handle, log, or fail loudly), a
-  retry-until-success loop (find why it fails), a skipped or weakened test (fix the cause,
-  re-enable it), or copy-paste from a similar place (reuse or extract it). A workaround needs the person's
-  explicit yes and a comment saying why; a fix that needs a broader change (a contract, a
-  migration, a refactor) is asked with the trade-off.
+  retry-until-success loop (find why it fails), or a skipped or weakened test (fix the cause,
+  re-enable it). A workaround needs the person's explicit yes and a comment saying why; a fix
+  that needs a broader change (a contract, a migration, a refactor) is asked with the trade-off.
 - **One home for everything.** Every function, component, constant, type and helper has one
   home, imported everywhere else; search before you add one. The same logic twice is unified
-  now; merely similar code waits for a third case. Simple means clean and organized, not
-  simplistic; ask before a structural change (`/cc-smart-dev-kit:code-structure`).
+  now; merely similar code waits for a third case. Ask before a structural change.
+- **No AI slop.** Code a careful senior engineer would write by hand: clean, never simplistic;
+  the smallest complete diff; comments only for why; nothing for what cannot happen or just in
+  case (`/cc-smart-dev-kit:code-structure` § 11).
 - **Dynamic, not hard-coded.** Names, paths, ports, URLs, versions, model ids, branches and
   lists come from their one source (the config, the environment, the code that owns them); a
   list in a doc is built from its data; facts (the default branch, a tool, the platform) are

@@ -21,6 +21,11 @@ that checkout: work there, and for a separate one launch a builder with
 never calls `EnterWorktree` or `ExitWorktree`:** with `isolation: "worktree"` it is already
 isolated (Claude Code refuses `ExitWorktree` there), and it uses `cd` inside its own worktree.
 
+**Run plain commands.** In a worktree, Claude Code may refuse a compound Bash line (`&&`, a
+loop, a brace group, `$(…)`, a here-doc), even a short one, and no yes lifts that. Run plain
+commands one at a time, and put a loop in a script file that runs no git
+(`docs/claude-code-contract.md` § Worktrees, in the cc-smart-dev-kit repository).
+
 ## Start a task
 
 1. **In a running session, `EnterWorktree` with the task name as its `name` creates the

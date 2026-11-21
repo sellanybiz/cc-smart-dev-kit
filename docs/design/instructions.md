@@ -165,9 +165,9 @@ the work: after its review the session merges only when `workflow merge-check` e
 and nothing else; the one rule is in `commit`, the flag in `docs/design/workflow.md`), else leaves
 the pull request open; it stacks the next plan on a pull request that
 is still open (its branch fast-forwarded to the plan below, its pull request opened against that
-plan's branch, and never merged before it, which `merge-check` also refuses); and under `plans.runMode` `ask`, which is refused away, it runs lead + children
-for two or more ready plans that share no file when a Herdr terminal exists, otherwise solo,
-and records the choice. `user-available` switches the
+plan's branch, and never merged before it, which `merge-check` also refuses); and under `plans.runMode` `ask`, which is refused away, it takes the option the
+run-mode question recommends (`plan-task` § 6: lead + children for two or more ready plans that
+share no file when a Herdr terminal exists, otherwise solo), and records the choice. `user-available` switches the
 state back, shows what was done, then shows the decisions; nothing is parked to answer.
 Neither skill duplicates the hooks (`hooks.md` § While the person is away): the hook refuses the
 two question tools and says the person is away, the skills say how to work in that state. The pointer to them is in the hooks' notes, not
@@ -286,7 +286,10 @@ docs, and the skill would be about two and a half times its own text on every la
 eight per research sweep); `rules-maintainer` also loads `cc-smart-dev-kit:self-evolve`, and `builder` also
 loads `cc-smart-dev-kit:verify-change`, the one home of which checks run when, and
 `cc-smart-dev-kit:code-structure`. Builders write most of the code, so the structure rule is
-in context before their first edit. The
+in context before their first edit. Its § 11, the "No AI slop" list (6.3.0, the owner's ask for
+code a person can maintain), is read three ways: the builder reads its whole diff against it
+before the report, the review's Craft dimension counts each item as a finding, and `core.md`
+holds one line that points to it. The
 `senior-engineer` does not load the review skill: half of it is the author's (commit, fix, start
 the second opinion), which contradicts a reviewer that writes its findings before it touches anything.
 It reads the review dimensions, edge-case axes and severity scale from
