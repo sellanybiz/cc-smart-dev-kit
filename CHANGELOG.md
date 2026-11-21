@@ -3,6 +3,43 @@
 What each release changed, newest first. A release's **What to run** steps are the ones to do
 in your own terminal after the update; the user guide is [README.md](README.md).
 
+## 6.3.0
+
+- **No AI slop.** Code-structure § 11 names what makes code read as machine-written: comments
+  that narrate, defensive code for what cannot happen, fallbacks that hide a bug, options and
+  shims nobody asked for, dead code, debug output, churn, tests that prove nothing, placeholders
+  and names that say nothing. A builder reads its whole diff against that list before it hands
+  back, a review counts each item as a Craft finding, and one line in the core instructions
+  points every session to it.
+- **Planning for parallel work.** plan-task orders phases by what they really use from each
+  other: a shared database, port or number sequence orders two phases only when both write the
+  same state, and numbers can be reserved in the plan up front. A plan lists the exact files it
+  writes, never folders it only reads, so fewer plans clash. When two or more ready plans share
+  no file, the run-mode question recommends lead + children. A builder that a usage limit
+  stopped is resumed with the others once the limit lifts, and that is not a fix round. In a
+  worktree, the lead runs plain commands one at a time, as Claude Code's own check may refuse a
+  compound line.
+- **The portal shows the 7-day usage window** beside the 5-hour one, each with its percent, a
+  bar and its reset time; a reset a day or more away reads in days and hours ("3 d 21 h"). One
+  shared bar now draws every bar in the portal.
+- **A Settings row for the lead-model hint.** The switch rows are built from the switch list, so
+  a new switch cannot be left off the page.
+- **The mobile sidebar works under the portal's strict page policy.** It no longer breaks the
+  policy when it opens, the page behind it does not scroll, one Escape closes it, focus goes
+  back to the menu button, and its targets are 44px. It closes on any link tap and when the
+  window grows to desktop width. A guard test fails anything that would inject a style again,
+  and `scripts/portal-preview.ts` serves the built portal under the real policy for checks.
+- **Next.js 16.4.6 for the portal's build.** 16.4.2 had seven moderate advisories, so Next.js
+  refused the first build of each session. The portal ships as static files, so none of them
+  reached a machine.
+- **The task store's repair applies the store's own rules.** It loads each project's tasks once
+  and skips a hold the store would refuse, recording why. `doctor` names any task an older
+  repair left blocked by a task above it, with the command that removes the block.
+- **herdr and sessions find worktrees wherever a project's hook puts them.** They read git's own
+  list, herdr binds only a worktree whose name matches its launch exactly and keeps its own
+  launch record, and a resume of a worktree outside `.claude/worktrees` starts in its folder.
+- **The shadcn guide names `npx shadcn@<pin>` for npm projects again.**
+
 ## 6.2.0
 
 - **Each hook loads only itself.** Every hook bundle carried every other hook (583 KB each),
