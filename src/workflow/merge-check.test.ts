@@ -15,9 +15,9 @@ import { git } from "../testing/temp";
 import {
   checkBranch,
   checkPullRequest,
-  GH_COMMITS_CAP,
   type GhRunner,
   type MergeWorld,
+  newStackCache,
   OPEN_PULL_REQUESTS_LIMIT,
   policyUnread,
 } from "./merge-check";
@@ -204,20 +204,15 @@ describe("checkBranch's review detail", () => {
   });
 });
 
-/** The commit of another open pull request, which a stacked pull request carries. */
+/** The head of another open pull request, which a stacked pull request carries. */
 const BELOW = "b".repeat(40);
 
-/** What gh answers to the two stacked questions; null is a gh that cannot answer. */
+/** What gh answers to the stacked questions; null is a gh that cannot answer. */
 interface StackAnswers {
-  /** `gh pr view 7 --json commits`. */
-  commits: string | null;
+  /** `gh api repos/{owner}/{repo}/compare/<basehead> --jq .status`: the status, by `BASE...HEAD`. */
+  compare: (basehead: string) => string | null;
   /** `gh pr list --state open --json number,headRefOid`. */
   open: string | null;
-}
-
-/** The commits `gh pr view --json commits` prints for these commit ids. */
-function commitsJson(...oids: string[]): string {
-  return JSON.stringify({ commits: oids.map((oid) => ({ messageHeadline: "a commit", oid })) });
 }
 
 /** The open pull requests `gh pr list --json number,headRefOid` prints. */
@@ -225,15 +220,34 @@ function openJson(...open: Array<[number, string]>): string {
   return JSON.stringify(open.map(([number, headRefOid]) => ({ headRefOid, number })));
 }
 
-/** Nothing below it: the pull request carries its own head alone, and no other is open. */
-function notStacked(head: string): StackAnswers {
-  return { commits: commitsJson(head), open: "[]" };
+/**
+ * GitHub's compare over a small history: `descends` lists [ancestor, commit] pairs, `inBase`
+ * the commits `main` already holds. `A...B` is `ahead` when B holds A and more, `behind` when A
+ * holds B, `identical` for one commit, and `diverged` for anything else.
+ */
+function history(
+  descends: Array<[string, string]> = [],
+  inBase: string[] = [],
+): (basehead: string) => string {
+  return (basehead) => {
+    const [a = "", b = ""] = basehead.split("...");
+    if (a === b) return "identical";
+    if (a === "main") return inBase.includes(b) ? "behind" : "diverged";
+    if (descends.some(([ancestor, commit]) => ancestor === a && commit === b)) return "ahead";
+    if (descends.some(([ancestor, commit]) => ancestor === b && commit === a)) return "behind";
+    return "diverged";
+  };
+}
+
+/** Nothing below it: no other pull request is open, so gh is never asked to compare. */
+function notStacked(): StackAnswers {
+  return { compare: () => null, open: "[]" };
 }
 
 /** gh's answer to a stacked question, or undefined when `args` is not one. */
 function stackAnswer(args: string[], answers: StackAnswers): string | null | undefined {
-  if (args[0] === "pr" && args[1] === "view" && args.includes("commits")) return answers.commits;
   if (args[0] === "pr" && args[1] === "list") return answers.open;
+  if (args[0] === "api") return answers.compare(args[1]?.split("/compare/")[1] ?? "");
   return undefined;
 }
 
@@ -249,7 +263,7 @@ describe("checkPullRequest: every condition of an unattended merge", () => {
     base: string,
     head: string,
     checks: string | null,
-    stack: StackAnswers = notStacked(head),
+    stack: StackAnswers = notStacked(),
   ): GhRunner {
     return async (args) => {
       const stacked = stackAnswer(args, stack);
@@ -360,21 +374,21 @@ describe("checkPullRequest: every condition of an unattended merge", () => {
     });
   });
 
-  test("a pull request that carries another open pull request's head: refused, that one goes first", async () => {
-    const { world } = prWorld(
-      ON,
-      "main",
-      (built) => built.reviewed,
-      GREEN,
-      true,
-      (head) => ({ commits: commitsJson(BELOW, head), open: openJson([5, BELOW], [7, head]) }),
-    );
+  /** The stack where #5 (head `BELOW`) is below #7 (head `head`): #7 holds #5's head. */
+  const below = (head: string): StackAnswers => ({
+    compare: history([[BELOW, head]]),
+    open: openJson([5, BELOW], [7, head]),
+  });
+  const STACKED_ON_5 =
+    "pull request #7 is stacked on open pull request #5: merge #5 first, then check again";
+
+  test("another open pull request's head is one it carries: refused, that one goes first", async () => {
+    const { world } = prWorld(ON, "main", (built) => built.reviewed, GREEN, true, below);
     expect(await check(world)).toEqual({
       detail: null,
       kind: "refused",
       number: 7,
-      reason:
-        "pull request #7 is stacked on open pull request #5: merge #5 first, then check again",
+      reason: STACKED_ON_5,
     });
   });
 
@@ -386,54 +400,118 @@ describe("checkPullRequest: every condition of an unattended merge", () => {
       GREEN,
       true,
       (head) => ({
-        commits: commitsJson("c".repeat(40), BELOW, head),
+        compare: history([
+          ["c".repeat(40), head],
+          [BELOW, head],
+        ]),
         open: openJson([9, "c".repeat(40)], [5, BELOW]),
       }),
     );
-    expect(reasonOf(await check(world))).toBe(
-      "pull request #7 is stacked on open pull request #5: merge #5 first, then check again",
-    );
+    expect(reasonOf(await check(world))).toBe(STACKED_ON_5);
   });
 
-  test("other open pull requests whose heads it does not carry, and its own entry in the list: allowed as before", async () => {
+  test("an open pull request whose head it does not carry: allowed, as without it", async () => {
+    // Diverged: neither holds the other. Behind: it is the other that holds this head.
+    const histories: Array<(head: string) => Array<[string, string]>> = [
+      () => [],
+      (head) => [[head, BELOW]],
+    ];
+    for (const descends of histories) {
+      const { world } = prWorld(
+        ON,
+        "main",
+        (built) => built.reviewed,
+        GREEN,
+        true,
+        (head) => ({
+          compare: history(descends(head)),
+          open: openJson([5, BELOW], [7, head]),
+        }),
+      );
+      expect((await check(world)).kind).toBe("allowed");
+    }
+  });
+
+  test("an open pull request whose head its base already holds does not stop it", async () => {
     const { world } = prWorld(
       ON,
       "main",
       (built) => built.reviewed,
       GREEN,
       true,
-      (head) => ({
-        commits: commitsJson("c".repeat(40), head),
-        open: openJson([5, BELOW], [7, head]),
-      }),
+      (head) => ({ compare: history([[BELOW, head]], [BELOW]), open: openJson([5, BELOW]) }),
     );
     expect((await check(world)).kind).toBe("allowed");
   });
 
+  test("the base is compared only when the first compare says it is carried", async () => {
+    const asked: string[] = [];
+    const { world } = prWorld(
+      ON,
+      "main",
+      (built) => built.reviewed,
+      GREEN,
+      true,
+      () => ({
+        compare: (basehead) => {
+          asked.push(basehead);
+          return history()(basehead);
+        },
+        open: openJson([5, BELOW]),
+      }),
+    );
+    expect((await check(world)).kind).toBe("allowed");
+    expect(asked).toHaveLength(1);
+    expect(asked[0]).not.toContain("main...");
+  });
+
   test("the stacked refusal comes before the required checks, and after the base rule", async () => {
-    const stack = (head: string): StackAnswers => ({
-      commits: commitsJson(BELOW, head),
-      open: openJson([5, BELOW]),
-    });
-    const red = prWorld(ON, "main", (built) => built.reviewed, RED, true, stack);
+    const red = prWorld(ON, "main", (built) => built.reviewed, RED, true, below);
     expect(reasonOf(await check(red.world))).toContain("is stacked on open pull request #5");
-    const wrongBase = prWorld(ON, "release/1", (built) => built.reviewed, GREEN, true, stack);
+    const wrongBase = prWorld(ON, "release/1", (built) => built.reviewed, GREEN, true, below);
     expect(reasonOf(await check(wrongBase.world))).toContain("not the project's integration base");
   });
 
   test.each([
-    ["the pull request's commits cannot be read", { commits: null, open: "[]" }],
-    ["the open pull requests cannot be read", { commits: "head", open: null }],
-    ["the commits are not JSON", { commits: "not json", open: "[]" }],
-    ["the commits have no list", { commits: JSON.stringify({ commits: "x" }), open: "[]" }],
-    ["a commit has no id", { commits: JSON.stringify({ commits: [{ oid: 5 }] }), open: "[]" }],
-    ["the open pull requests are not JSON", { commits: "head", open: "{" }],
-    ["an open pull request has no head", { commits: "head", open: '[{"number":5}]' }],
+    ["the open pull requests cannot be listed", () => ({ compare: () => null, open: null })],
+    ["the open list is not JSON", () => ({ compare: () => null, open: "{" })],
+    ["an open pull request has no head", () => ({ compare: () => null, open: '[{"number":5}]' })],
     [
       "an open pull request has no number",
-      { commits: "head", open: `[{"headRefOid":"${BELOW}"}]` },
+      () => ({ compare: () => null, open: `[{"headRefOid":"${BELOW}"}]` }),
     ],
-  ])("a gh that cannot answer (%s): refused, never read as not stacked", async (_what, answers) => {
+    [
+      "gh cannot compare the two heads",
+      (head: string) => ({ compare: () => null, open: openJson([5, BELOW], [7, head]) }),
+    ],
+    [
+      "gh answers a status it does not know",
+      (head: string) => ({ compare: () => "ancestor", open: openJson([5, BELOW], [7, head]) }),
+    ],
+    [
+      "gh answers nothing useful",
+      (head: string) => ({
+        compare: () => "ahead or behind",
+        open: openJson([5, BELOW], [7, head]),
+      }),
+    ],
+    [
+      "gh cannot compare the base once the head is carried",
+      (head: string) => ({
+        compare: (basehead: string) =>
+          basehead.startsWith("main...") ? null : history([[BELOW, head]])(basehead),
+        open: openJson([5, BELOW], [7, head]),
+      }),
+    ],
+  ])("a gh that cannot answer (%s): refused, never read as not stacked", async (_what, stack) => {
+    const { world } = prWorld(ON, "main", (built) => built.reviewed, GREEN, true, stack);
+    const verdict = await check(world);
+    expect(verdict.kind).toBe("refused");
+    expect(reasonOf(verdict)).toContain("cannot prove it is not stacked");
+  });
+
+  test("a stack found is named even when gh could not compare another open pull request", async () => {
+    const other = "c".repeat(40);
     const { world } = prWorld(
       ON,
       "main",
@@ -441,54 +519,31 @@ describe("checkPullRequest: every condition of an unattended merge", () => {
       GREEN,
       true,
       (head) => ({
-        commits: answers.commits === "head" ? commitsJson(head) : answers.commits,
-        open: answers.open,
+        compare: (basehead) =>
+          basehead.includes(other) ? null : history([[BELOW, head]])(basehead),
+        open: openJson([4, other], [5, BELOW]),
       }),
     );
-    const verdict = await check(world);
-    expect(verdict.kind).toBe("refused");
-    expect(reasonOf(verdict)).toContain("cannot prove it is not stacked");
+    expect(reasonOf(await check(world))).toBe(STACKED_ON_5);
   });
 
-  test("the pull request's commits do not hold its own head (it moved between two reads): refused", async () => {
-    const { world } = prWorld(
-      ON,
-      "main",
-      (built) => built.reviewed,
-      GREEN,
-      true,
-      () => ({ commits: commitsJson("c".repeat(40)), open: "[]" }),
-    );
-    const verdict = await check(world);
-    expect(verdict.kind).toBe("refused");
-    expect(reasonOf(verdict)).toContain("cannot prove it is not stacked");
-  });
-
-  test("gh may have cut the commits at its cap: a list that long is refused, one shorter is read", async () => {
-    const many = (count: number, head: string) => [
-      ...Array.from({ length: count - 1 }, (_, index) => index.toString(16).padStart(40, "0")),
-      head,
-    ];
-    const full = prWorld(
-      ON,
-      "main",
-      (built) => built.reviewed,
-      GREEN,
-      true,
-      (head) => ({ commits: commitsJson(...many(GH_COMMITS_CAP, head)), open: "[]" }),
-    );
-    const refused = await check(full.world);
-    expect(refused.kind).toBe("refused");
-    expect(reasonOf(refused)).toContain(`${GH_COMMITS_CAP} commits`);
-    const shorter = prWorld(
-      ON,
-      "main",
-      (built) => built.reviewed,
-      GREEN,
-      true,
-      (head) => ({ commits: commitsJson(...many(GH_COMMITS_CAP - 1, head)), open: "[]" }),
-    );
-    expect((await check(shorter.world)).kind).toBe("allowed");
+  test("a pull request with 150 commits is not refused for its size: no commit list is read", async () => {
+    const asked: string[][] = [];
+    const { world } = prWorld(ON, "main", (built) => built.reviewed, GREEN, true);
+    const inner = world.gh;
+    const counted: MergeWorld = {
+      ...world,
+      gh: async (args, call) => {
+        asked.push(args);
+        // gh would cut the commits at 100; the check never asks for them.
+        if (args.includes("commits")) {
+          return JSON.stringify({ commits: Array.from({ length: 100 }, () => ({ oid: BELOW })) });
+        }
+        return (await inner?.(args, call)) ?? null;
+      },
+    };
+    expect((await check(counted)).kind).toBe("allowed");
+    expect(asked.some((args) => args.includes("commits"))).toBe(false);
   });
 
   test("gh may have cut the open pull requests at its limit: a list that long is refused", async () => {
@@ -498,8 +553,8 @@ describe("checkPullRequest: every condition of an unattended merge", () => {
       (built) => built.reviewed,
       GREEN,
       true,
-      (head) => ({
-        commits: commitsJson(head),
+      () => ({
+        compare: () => "diverged",
         open: openJson(
           ...Array.from({ length: OPEN_PULL_REQUESTS_LIMIT }, (_, index): [number, string] => [
             100 + index,
@@ -511,6 +566,27 @@ describe("checkPullRequest: every condition of an unattended merge", () => {
     const verdict = await check(world);
     expect(verdict.kind).toBe("refused");
     expect(reasonOf(verdict)).toContain("cannot prove it is not stacked");
+  });
+
+  test("a shared run asks the open list once, and each pair of commits once", async () => {
+    const asked: string[][] = [];
+    const { world } = prWorld(ON, "main", (built) => built.reviewed, GREEN, true, below);
+    const inner = world.gh;
+    const counted: MergeWorld = {
+      ...world,
+      gh: async (args, call) => {
+        asked.push(args);
+        return (await inner?.(args, call)) ?? null;
+      },
+    };
+    const stack = newStackCache();
+    const run = () => checkPullRequest(counted, { ref: "7", repo: null }, new Map(), { stack });
+    const [one, two] = await Promise.all([run(), run()]);
+    expect(reasonOf(one)).toBe(STACKED_ON_5);
+    expect(reasonOf(two)).toBe(STACKED_ON_5);
+    expect(asked.filter((args) => args[0] === "pr" && args[1] === "list")).toHaveLength(1);
+    // One compare of the pair, and one of the base: not one more for the second look.
+    expect(asked.filter((args) => args[0] === "api")).toHaveLength(2);
   });
 
   test("a base that is neither the integration base nor the default branch: refused", async () => {
@@ -545,7 +621,7 @@ describe("checkPullRequest: the person's yes sets aside only allowMerge", () => 
     base: string,
     head: string,
     checks: string | null,
-    stack: StackAnswers = notStacked(head),
+    stack: StackAnswers = notStacked(),
   ): GhRunner {
     return async (args) => {
       const stacked = stackAnswer(args, stack);
@@ -639,7 +715,7 @@ describe("checkPullRequest: the person's yes sets aside only allowMerge", () => 
 
   test("allowMerge off, asked, stacked on an open pull request: refused for it, the yes does not set it aside", async () => {
     const stack = (head: string): StackAnswers => ({
-      commits: commitsJson(BELOW, head),
+      compare: history([[BELOW, head]]),
       open: openJson([5, BELOW]),
     });
     expect(await check(prWorld({ checks: GREEN, stack }), true)).toEqual({
@@ -658,7 +734,7 @@ describe("checkPullRequest: the person's yes sets aside only allowMerge", () => 
 
   test("allowMerge off, asked, a gh that cannot list the open pull requests: refused", async () => {
     const verdict = await check(
-      prWorld({ checks: GREEN, stack: (head) => ({ commits: commitsJson(head), open: null }) }),
+      prWorld({ checks: GREEN, stack: () => ({ compare: () => null, open: null }) }),
       true,
     );
     expect(verdict.kind).toBe("refused");

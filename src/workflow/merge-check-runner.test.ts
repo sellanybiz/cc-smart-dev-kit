@@ -74,9 +74,6 @@ describe("the merge check never blocks its caller (B8)", () => {
     const asked: string[][] = [];
     const gh: GhRunner = async (args) => {
       asked.push(args);
-      if (args[0] === "pr" && args[1] === "view" && args.includes("commits")) {
-        return JSON.stringify({ commits: [{ oid: "a".repeat(40) }] });
-      }
       if (args[0] === "pr" && args[1] === "list") return "[]";
       if (args[0] === "pr" && args[1] === "view") {
         return JSON.stringify({
@@ -114,7 +111,6 @@ describe("the merge check never blocks its caller (B8)", () => {
     expect(asked).toEqual([
       ["pr", "view", "7", "--json", "number,baseRefName,headRefName,headRefOid"],
       ["repo", "view", "--json", "defaultBranchRef"],
-      ["pr", "view", "7", "--json", "commits"],
       ["pr", "list", "--state", "open", "--limit", "500", "--json", "number,headRefOid"],
       ["pr", "checks", "7", "--required", "--json", "name,bucket"],
     ]);
@@ -131,13 +127,74 @@ describe("the merge check never blocks its caller (B8)", () => {
     });
   });
 
+  test("a pair of commits is compared once, in the lower id's order, and its answer turned round", async () => {
+    // The pull request's head is "a…"; #5 is at "9…" (compared as 9…...a…) and #6 at "c…"
+    // (compared as a…...c…, then the answer turned round: a… holds c…).
+    const asked: string[][] = [];
+    const nine = "9".repeat(40);
+    const see = "c".repeat(40);
+    const gh: GhRunner = async (args) => {
+      asked.push(args);
+      if (args[0] === "pr" && args[1] === "view") {
+        return JSON.stringify({
+          baseRefName: "main",
+          headRefName: "feat",
+          headRefOid: "a".repeat(40),
+          number: 7,
+        });
+      }
+      if (args[0] === "repo" && args[1] === "view") {
+        return JSON.stringify({ defaultBranchRef: { name: "main" } });
+      }
+      if (args[0] === "pr" && args[1] === "list") {
+        return JSON.stringify([
+          { headRefOid: nine, number: 5 },
+          { headRefOid: see, number: 6 },
+        ]);
+      }
+      if (args[0] === "api") {
+        const basehead = args[1]?.split("/compare/")[1];
+        // #5's head neither holds nor is held; #6's head is held by the pull request's own.
+        if (basehead === `${nine}...${"a".repeat(40)}`) return "diverged";
+        if (basehead === `${"a".repeat(40)}...${see}`) return "behind";
+        if (basehead === `main...${see}`) return "diverged";
+      }
+      return null;
+    };
+    const verdict = await checkPullRequest(
+      world(gh, undefined, (repo) =>
+        commitConfig(repo, { workflow: { allowMerge: true, reviewBeforePush: false } }, ["main"]),
+      ),
+      { ref: "7", repo: null },
+      new Map(),
+    );
+    expect(verdict).toMatchObject({
+      kind: "refused",
+      reason:
+        "pull request #7 is stacked on open pull request #6: merge #6 first, then check again",
+    });
+    const compares = asked
+      .filter((one) => one[0] === "api")
+      .map((one) => one.slice(1))
+      .sort();
+    const at = (basehead: string) => [
+      `repos/{owner}/{repo}/compare/${basehead}`,
+      "--jq",
+      ".status",
+    ];
+    expect(compares).toEqual(
+      [
+        at(`${nine}...${"a".repeat(40)}`),
+        at(`${"a".repeat(40)}...${see}`),
+        at(`main...${see}`),
+      ].sort(),
+    );
+  });
+
   /** gh as a pull request into `base` meets it: the view, the default branch, the checks. */
   const ghFor =
     (base: string, bucket: string): GhRunner =>
     async (args) => {
-      if (args[0] === "pr" && args[1] === "view" && args.includes("commits")) {
-        return JSON.stringify({ commits: [{ oid: "a".repeat(40) }] });
-      }
       if (args[0] === "pr" && args[1] === "list") return "[]";
       if (args[0] === "pr" && args[1] === "view") {
         return JSON.stringify({

@@ -205,10 +205,7 @@ function mergeableRepo(name: string): string {
 function mergeableRunner(numbers: number[], onCall?: (args: string[]) => Promise<void>): GhRunner {
   return async (args) => {
     if (onCall !== undefined) await onCall(args);
-    // The stacked questions of the merge check: it carries its own head alone, nothing is below it.
-    if (args[0] === "pr" && args[1] === "view" && args.includes("commits")) {
-      return JSON.stringify({ commits: [{ oid: "c".repeat(40) }] });
-    }
+    // The stacked question of the merge check: no other pull request is open, so nothing is below.
     if (args[0] === "pr" && args[1] === "list" && args.includes("number,headRefOid")) return "[]";
     if (args[0] === "pr" && args[1] === "list") {
       return JSON.stringify(
@@ -585,12 +582,13 @@ describe("/api/projects/<id> (B8)", () => {
       [8, "allowed"],
       [9, "allowed"],
     ]);
-    // One default branch for the page, and one view per pull request (and, for the stacked
-    // question, one more view of its commits and one list of the open heads).
+    // One default branch for the page, one view per pull request, and (for the stacked
+    // question) one list of the open heads for all three rows.
     expect(asked.filter((one) => one[0] === "repo" && one[1] === "view")).toHaveLength(1);
-    const views = asked.filter((one) => one[0] === "pr" && one[1] === "view");
-    expect(views.filter((one) => !one.includes("commits"))).toHaveLength(3);
-    expect(views.filter((one) => one.includes("commits"))).toHaveLength(3);
+    expect(asked.filter((one) => one[0] === "pr" && one[1] === "view")).toHaveLength(3);
+    expect(
+      asked.filter((one) => one[1] === "list" && one.includes("number,headRefOid")),
+    ).toHaveLength(1);
   });
 
   test("the pull request verdicts run together, at most PROJECT_VERDICTS_AT_ONCE at a time", async () => {
@@ -977,9 +975,6 @@ test("an open pull request with the merge guard's own verdict", async () => {
   const asked: string[][] = [];
   const run: GhRunner = async (args) => {
     asked.push(args);
-    if (args[0] === "pr" && args[1] === "view" && args.includes("commits")) {
-      return JSON.stringify({ commits: [{ oid: "c".repeat(40) }] });
-    }
     if (args[0] === "pr" && args[1] === "list" && args.includes("number,headRefOid")) return "[]";
     if (args[0] === "pr" && args[1] === "list") {
       return JSON.stringify([

@@ -42,6 +42,7 @@ import {
   checkPullRequest,
   type MergeVerdict,
   type MergeWorld,
+  newStackCache,
   notChecked,
   notInTime,
 } from "./merge-check";
@@ -146,9 +147,10 @@ merge-check judges a merge without making it: each
 pull request number, or a local branch against a base (--branch <b> --base <base>). A pull
 request is allowed when the committed policy passes: allowMerge on, its base the project's
 integration base or the repository's default branch, not stacked on another open pull request
-(none of its commits is the head of another open one: that one is merged first), every required
-check green, and a review covering its head under fixesAfterReview. When gh cannot say, or may
-have cut a list, it asks: a stack is never read as absent. A branch is allowed when the review
+(no other open one's head is among its ancestors, by GitHub's compare, unless its base holds it:
+that one is merged first), every required check green, and a review covering its head under
+fixesAfterReview. When gh cannot say, or may have cut the open list, it asks: a stack is never
+read as absent. A branch is allowed when the review
 record covers its head. One line per verdict; exit 0 when every merge is allowed, 1 when any asks.
 --asked (one pull request only) says the person gave their own yes to this merge. It
 sets aside allowMerge and nothing else: the base rules, the stacked check, the required checks and
@@ -565,14 +567,14 @@ async function mergeCheck(context: WorkflowContext, argv: string[]): Promise<num
   }
   let everyAllowed = true;
   const defaultBranches = new Map<string, string | null>();
+  // One list of the open pull requests, and each compare of two commits once, for the whole line.
+  const stack = newStackCache();
   for (const pr of parsed.prs) {
     const verdict = await checkPullRequest(
       world,
       { ref: String(pr), repo: null },
       defaultBranches,
-      {
-        asked: parsed.asked,
-      },
+      { asked: parsed.asked, stack },
     );
     if (verdict.kind !== "allowed") everyAllowed = false;
     context.print(verdictLine(verdict, `#${pr}`, context.env));
