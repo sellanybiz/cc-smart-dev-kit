@@ -7,6 +7,7 @@
  * resolver.
  */
 import type { GitRun } from "../hooks/git";
+import { parseGitVersion } from "../workflow/review-cover";
 import { TASK_TOOL } from "./words";
 import { isOpen, livePhaseCount, PARK_NOTE_PREFIX, runningTasksOf } from "./work/queries";
 import type { WorkStatus, WorkTask } from "./work/types";
@@ -271,6 +272,23 @@ export interface StaleBriefCheck {
   git: (args: string[]) => GitRun;
 }
 
+/** The first git whose `log` has `--since-as-filter`, which filters by date without stopping the walk. */
+export const MIN_SINCE_FILTER_GIT = "2.38.0";
+
+/**
+ * The date option `staleBriefWarning`'s log takes. `--since` stops the walk at the first commit
+ * older than the date, so a fast-forwarded commit dated before the brief at the tip hides every
+ * change behind it; `--since-as-filter` (git 2.38) only skips such commits. An older git, or one
+ * whose version cannot be read, gets `--since`: the repository's floor is 2.31.
+ */
+function sinceFlag(git: (args: string[]) => GitRun): "--since-as-filter" | "--since" {
+  const asked = git(["--version"]);
+  const version = asked.ok ? parseGitVersion(asked.out) : null;
+  return version !== null && Bun.semver.order(version, MIN_SINCE_FILTER_GIT) >= 0
+    ? "--since-as-filter"
+    : "--since";
+}
+
 /**
  * The warning a phase's start adds when its brief may be stale: commits that reached the default
  * branch (`origin/<base>`, first parent, so a merge counts when it landed) after the phase's
@@ -293,7 +311,7 @@ export function staleBriefWarning(check: StaleBriefCheck): string | null {
     "log",
     "--first-parent",
     "--diff-merges=first-parent",
-    `--since=${since}`,
+    `${sinceFlag(git)}=${since}`,
     "--format=%x1e%h%x09%ct%x09%s",
     "--name-only",
     ref,

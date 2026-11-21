@@ -262,9 +262,14 @@ checkout's working copy through the normal workflow resolver:
   starts with a `base` gets one more line in the answer when commits reached `origin/<default>`
   (the default branch from `baseBranch`, first parent, so a merge counts when it landed) after the
   phase's description was last written (its history) and changed any of the plan's files. The line
-  names the files and the newest commit. One `rev-parse` and one `git log` with the plan's paths as
-  literal pathspecs; nothing is fetched. No description, no files, no checkout and no
-  `origin/<default>` add nothing; git that fails says so in the line.
+  names the files and the newest commit. One `rev-parse`, one `git --version` and one `git log`
+  with the plan's paths as literal pathspecs; nothing is fetched. A commit counts by its own
+  commit date, so a commit fast-forwarded onto the default branch keeps the date it was made, and
+  one dated before the brief is not named. Git 2.38 and newer filters by that date
+  (`--since-as-filter`), so such a commit at the tip never hides the changes behind it; an older
+  git, or one whose version cannot be read, gets `--since`, which stops at the first older commit.
+  No description, no files, no checkout and no `origin/<default>` add nothing; git that fails says
+  so in the line.
 - **The tools say these rules.** `task_create`'s `phase` field states the phase id rule
   (`PHASE_RULE` and `MAX_PHASE`, `words.ts`, the words the refusal uses), that a phase takes no
   parent and starts only with tasks; `task_update` says a phase takes no parent; `base` says what it
@@ -418,7 +423,9 @@ one is a folder holding the other. Paths in `plans.mergeFiles` take no part, and
 from the committed copy only (`docs/design/workflow.md`). Inside a `plans.appendOnly` folder
 (6.3.0, a folder where plans add new files, such as a migrations folder) a path overlaps only the
 same file named exactly: no folder entry holds it, whether that folder, one inside it or one around
-it, so `db/` still holds `db/schema.ts` but not `db/migrations/3.sql`. `planFilesCheck` reads it in
+it, so `db/` still holds `db/schema.ts` but not `db/migrations/3.sql`. A shared file inside such a
+folder that every plan edits (a migrations journal) clashes only when both plans list it by name,
+so list it in each plan that edits it. `planFilesCheck` reads it in
 the same read of the committed file as `mergeFiles` (`resolvePlanFiles`); a file it cannot read gives no folders, so more paths
 overlap, never fewer.
 
