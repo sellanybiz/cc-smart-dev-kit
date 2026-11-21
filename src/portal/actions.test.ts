@@ -112,6 +112,19 @@ describe("an action runs the CLI's own command in a child", () => {
     expect(cleaned.ok).toBe(true);
     expect(runsOf(w.log)).toMatchObject([{ args: ["worktrees", "--clean"], cwd: w.home }]);
   });
+
+  test("the page's confirmation for that clean says it also deletes the merged builder branches", () => {
+    // `worktrees --clean` sweeps `worktree-agent-*` branches (branch-sweep.ts), so the card the
+    // person confirms on says so. The card is in the Next app, whose own tests need its
+    // node_modules: this reads its source text.
+    const card = readFileSync(
+      join(import.meta.dir, "..", "..", "portal", "src", "components", "machine-cards.tsx"),
+      "utf8",
+    );
+    expect(card).toContain(
+      "Each one goes with its branch. A worktree that is not finished is kept, with its reason. Builder branches (worktree-agent-*) that no worktree uses and whose work the base holds are deleted too; one with commits the base lacks is kept.",
+    );
+  });
 });
 
 describe("project.workflow.propose runs the CLI's own command in a child", () => {

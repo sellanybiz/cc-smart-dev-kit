@@ -149,7 +149,7 @@ export function WorktreesCard() {
             disabled={finished === 0}
             confirm={{
               title: `Remove ${finished} finished worktree${finished === 1 ? "" : "s"}?`,
-              body: "Each one goes with its branch. A worktree that is not finished is kept, with its reason.",
+              body: "Each one goes with its branch. A worktree that is not finished is kept, with its reason. Builder branches (worktree-agent-*) that no worktree uses and whose work the base holds are deleted too; one with commits the base lacks is kept.",
               yes: "Remove them",
               tone: "destructive",
             }}
