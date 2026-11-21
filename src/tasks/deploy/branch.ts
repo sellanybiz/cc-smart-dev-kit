@@ -42,7 +42,9 @@ function knowsRef(repo: string, ref: string, env: Env): boolean {
 }
 /**
  * The ref a listing reads as the base, so it sees what the release gates see (`origin/<base>`).
- * What the name is decides:
+ * A short name that means more than one ref (a tag beside a branch, a stray local branch
+ * `origin/main` beside origin's) is refused and the refs named, as the gates do. Otherwise what the
+ * name is decides:
  * - A name git knows that is not a local branch (a commit id, a tag, `HEAD`, `origin/main`, any
  *   remote-tracking ref) is read as written.
  * - A local branch, or a name git does not know, reads `origin/<base>` when origin has it, even
@@ -62,6 +64,18 @@ export function resolveListBase(
   env: Env = process.env,
 ): { ref: string; note: string | null } {
   const localRef = `refs/heads/${base}`;
+  const originRef = `refs/remotes/origin/${base}`;
+  if (!base.startsWith("refs/")) {
+    // The refs the name could mean, in git's own order, with origin's copy of the bare name too:
+    // the listing reads that one. A local branch and origin's copy of it are one branch, so that
+    // pair is no clash; a tag, or a stray local `origin/<x>`, beside either is.
+    const found = existingRefs(repo, [...new Set([...refCandidates(base), originRef])], env);
+    const oneBranch = found.length === 2 && found.includes(localRef) && found.includes(originRef);
+    if (found.length > 1 && !oneBranch)
+      throw new Error(
+        ambiguousRefMessage(base, found, "name the one you mean in full with --base"),
+      );
+  }
   const isLocalBranch = refExists(repo, localRef, env);
   if (!isLocalBranch && knowsRef(repo, base, env)) return { ref: base, note: null };
   const remotes = taskGit(repo, ["remote"], env).split("\n");
@@ -72,13 +86,12 @@ export function resolveListBase(
       `Cannot read ${base}: git does not know it. Pass a ref git knows (a branch, a tag or a commit id).`,
     );
   }
-  const remoteRef = `refs/remotes/origin/${base}`;
-  if (knowsRef(repo, remoteRef, env)) {
+  if (knowsRef(repo, originRef, env)) {
     const ahead = isLocalBranch
-      ? Number(taskGit(repo, ["rev-list", "--count", `${remoteRef}..${localRef}`], env))
+      ? Number(taskGit(repo, ["rev-list", "--count", `${originRef}..${localRef}`], env))
       : 0;
     return {
-      ref: remoteRef,
+      ref: originRef,
       note:
         ahead > 0
           ? `local ${base} is ahead of origin/${base}: read against origin/${base}, as the release gates do.`
@@ -298,6 +311,19 @@ function refCandidates(ref: string): string[] {
   ];
 }
 
+/** The full names among `names` that exist. */
+function existingRefs(repo: string, names: string[], env: Env): string[] {
+  return names.filter((name) => refExists(repo, name, env));
+}
+
+/**
+ * The words for a short name that means more than one ref: the gates (`refBranchOf`) and the
+ * listings (`resolveListBase`) both say it, so there is one text. `instead` is what to name.
+ */
+function ambiguousRefMessage(ref: string, found: string[], instead: string): string {
+  return `${ref} names more than one ref (${found.join(", ")}): ${instead}, or delete the one that should not be there`;
+}
+
 /**
  * The branch `ref` names, read by git (`rev-parse --symbolic-full-name`): `refs/heads/<x>` gives
  * `<x>`, and `refs/remotes/<remote>/<x>` gives `<x>` for the longest remote name that fits (a
@@ -316,10 +342,10 @@ function refBranchOf(repo: string, ref: string, env: Env): string | null {
   // Counted for every short name, never only when git prints nothing: with
   // `core.warnAmbiguousRefs` off, git takes the first match and says nothing.
   if (!ref.startsWith("refs/")) {
-    const found = refCandidates(ref).filter((name) => refExists(repo, name, env));
+    const found = existingRefs(repo, refCandidates(ref), env);
     if (found.length > 1)
       throw new Error(
-        `${ref} names more than one ref (${found.join(", ")}): name the one that ships in full with --ref, or delete the one that should not be there`,
+        ambiguousRefMessage(ref, found, "name the one that ships in full with --ref"),
       );
   }
   const named = taskGit(repo, ["rev-parse", "--symbolic-full-name", ref], env);

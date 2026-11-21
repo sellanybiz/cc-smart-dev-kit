@@ -133,7 +133,10 @@ Every entry in `plugin/hooks/hooks.json` uses the shell form, never the exec for
   `src/hooks/matrix.test.ts` and a size budget in `entries.test.ts`. `entries.test.ts` fails
   when they do not match: it also builds every entry into a temp folder, runs the built bundle
   as a subprocess and checks that its log line names its own hook and that its size is inside
-  its budget.
+  its budget. Its import walk (each entry reaches only its own spec, never `specs.ts`) catches
+  an extra spec that the size budget misses. The `paths:` list above must hold
+  `src/entries/<name>.ts` for every bundle `hooks.json` runs, and a test fails when one is missing:
+  add the entry to the list in the same change.
 
 ## The frame: every hook runs through `run.ts`
 
