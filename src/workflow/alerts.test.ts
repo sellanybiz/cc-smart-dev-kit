@@ -5,12 +5,18 @@
  */
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname } from "node:path";
 import { cliPaths } from "../cli/paths";
+import { type Checkout, locateCheckout } from "../project/resolve";
 import { hookEnv, makeRepo, writeClaudeFile } from "../testing/hooks";
 import { tempDir } from "../testing/temp";
 import { alertsAt } from "./alerts";
 import { personalWorkflowFile } from "./resolve";
+
+/** The checkout of `folder`, as the status line locates it once and hands to `alertsAt`. */
+function checkoutOf(folder: string, env: Record<string, string>): Checkout | null {
+  return locateCheckout(folder, { env });
+}
 
 /** The person's own workflow file, written with `value`. */
 function writePersonal(env: Record<string, string>, value: unknown): void {
@@ -22,7 +28,7 @@ function writePersonal(env: Record<string, string>, value: unknown): void {
 describe("where the alerts come from", () => {
   test("nothing set anywhere: every value is the built-in default", () => {
     const env = hookEnv();
-    const here = alertsAt(cliPaths(env), tempDir("not-git"), env);
+    const here = alertsAt(cliPaths(env), checkoutOf(tempDir("not-git"), env));
     expect(here.problem).toBeNull();
     expect(here.alerts.usagePercent).toEqual({ value: 85, source: "default" });
   });
@@ -32,7 +38,7 @@ describe("where the alerts come from", () => {
     writePersonal(env, {
       alerts: { events: ["finished", "failed"], sound: true, usagePercent: 70 },
     });
-    const here = alertsAt(cliPaths(env), tempDir("not-git"), env);
+    const here = alertsAt(cliPaths(env), checkoutOf(tempDir("not-git"), env));
     expect(here.problem).toBeNull();
     expect(here.alerts.usagePercent).toEqual({ value: 70, source: "personal" });
   });
@@ -45,7 +51,7 @@ describe("where the alerts come from", () => {
       requires: ">=0.4",
       workflow: { alerts: { events: ["needs-you"], usagePercent: 90 } },
     });
-    const here = alertsAt(cliPaths(env), repo, env);
+    const here = alertsAt(cliPaths(env), checkoutOf(repo, env));
     expect(here.problem).toBeNull();
     expect(here.alerts.usagePercent).toEqual({ value: 90, source: "project" });
   });
@@ -53,25 +59,25 @@ describe("where the alerts come from", () => {
   test("a repo that never opted in: the person's file and the defaults", () => {
     const env = hookEnv();
     const repo = makeRepo();
-    const here = alertsAt(cliPaths(env), repo, env);
+    const here = alertsAt(cliPaths(env), checkoutOf(repo, env));
     expect(here.problem).toBeNull();
     expect(here.alerts.usagePercent).toEqual({ value: 85, source: "default" });
   });
 });
 
 describe("a folder that is no project: no line at all", () => {
-  test("a hook input with no cwd: the person's file and the defaults", () => {
+  test("no checkout (an input with no folder, or one outside git): the person's file and the defaults", () => {
     const env = hookEnv();
     writePersonal(env, { alerts: { usagePercent: 70 } });
-    const here = alertsAt(cliPaths(env), null, env);
+    const here = alertsAt(cliPaths(env), null);
     expect(here.problem).toBeNull();
+    expect(here.alerts.usagePercent).toEqual({ value: 70, source: "personal" });
   });
 
-  test("a cwd that is not a folder, and one not in git: silent, not a failure", () => {
+  test("a folder not in git has no checkout to hand in: silent, not a failure", () => {
     const env = hookEnv();
-    const missing = join(tempDir("gone"), "not-here");
-    expect(alertsAt(cliPaths(env), missing, env).problem).toBeNull();
-    expect(alertsAt(cliPaths(env), tempDir("not-git"), env).problem).toBeNull();
+    expect(checkoutOf(tempDir("not-git"), env)).toBeNull();
+    expect(alertsAt(cliPaths(env), checkoutOf(tempDir("not-git"), env)).problem).toBeNull();
   });
 });
 
@@ -80,7 +86,7 @@ describe("a file it cannot use: what can be read, and one line", () => {
     const env = hookEnv();
     const repo = makeRepo();
     writeClaudeFile(repo, "cc-smart-dev-kit.json", { worktree: {} });
-    const here = alertsAt(cliPaths(env), repo, env);
+    const here = alertsAt(cliPaths(env), checkoutOf(repo, env));
     expect(here.problem).toContain("cc-smart-dev-kit.json: worktree: unknown field");
     expect(here.problem).toStartWith(
       "cc-smart-dev-kit: the alerts use the settings that can be read (",
@@ -92,7 +98,7 @@ describe("a file it cannot use: what can be read, and one line", () => {
     const file = personalWorkflowFile(cliPaths(env));
     mkdirSync(dirname(file), { recursive: true });
     writeFileSync(file, "{ not json");
-    const here = alertsAt(cliPaths(env), tempDir("not-git"), env);
+    const here = alertsAt(cliPaths(env), checkoutOf(tempDir("not-git"), env));
     expect(here.alerts.usagePercent.value).toBe(85);
     expect(here.problem).toContain(`Invalid ${file}: not valid JSON`);
   });
@@ -110,7 +116,7 @@ describe("a file it cannot use: what can be read, and one line", () => {
       requires: ">=0.4",
       workflow: { alerts: { events: ["needs-you"], usagePercent: 90 } },
     });
-    const here = alertsAt(cliPaths(env), repo, env);
+    const here = alertsAt(cliPaths(env), checkoutOf(repo, env));
     expect(here.problem).toContain(`Invalid ${file}: not valid JSON`);
     expect(here.alerts.usagePercent).toEqual({ value: 90, source: "project" });
   });
@@ -119,7 +125,7 @@ describe("a file it cannot use: what can be read, and one line", () => {
     const env = hookEnv();
     const repo = makeRepo();
     writeClaudeFile(repo, "cc-smart-dev-kit.json", { requires: ">=99", fieldFromTheFuture: true });
-    const here = alertsAt(cliPaths(env), repo, env);
+    const here = alertsAt(cliPaths(env), checkoutOf(repo, env));
     expect(here.problem).toContain("cc-smart-dev-kit.json");
   });
 });

@@ -70,7 +70,7 @@ function world() {
     folder,
     paths,
     run: async (input: unknown, env: Record<string, string | undefined> = {}) => {
-      await runStatusline(paths, async () => JSON.stringify(input), NOW, undefined, env);
+      await runStatusline(paths, async () => JSON.stringify(input), NOW, env);
       return printed.at(-1) ?? "";
     },
     user: join(paths.claudeConfigDir, "settings.json"),
