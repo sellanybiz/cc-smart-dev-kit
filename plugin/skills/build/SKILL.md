@@ -130,7 +130,9 @@ record a ruling; do not repeat the failed loop or silently waive a material defe
 **A usage limit is not a fix round.** A `task_notification` with status `failed` and a
 rate-limit error means the builder hit a usage limit; its work is not wrong. Read the reset
 time from the status line or `gateway status`. Once it has passed, or the account changed,
-resume every builder it stopped with `SendMessage`, all in one message. Where setup turned on
+resume every builder it stopped with `SendMessage`, all in one message. Read its last
+`Progress:` note (`cc-smart-dev-kit:builder` owns the shape) and its branch, and tell it where
+it stopped: its uncommitted files may be all that is left of the last step. Where setup turned on
 Claude Code's retry watchdog, it waits out in process a limit that resets within 24 hours
 (`docs/design/retry-watchdog.md` in the cc-smart-dev-kit repository).
 
