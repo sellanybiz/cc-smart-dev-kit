@@ -1,7 +1,7 @@
 import { isAbsolute } from "node:path";
 import { z } from "zod";
 import { DEPLOY_ENVS, DEPLOY_TYPES, deployTaskSchema } from "./deploy/format";
-import { PLAN_FILES_WORDS } from "./words";
+import { PHASE_RULE, PLAN_FILES_WORDS, STACKED_ON_WORDS } from "./words";
 import { DESCRIPTION_LIMIT, NOTE_LIMIT, SUBJECT_LIMIT } from "./work/types";
 
 const fields = deployTaskSchema.shape;
@@ -18,6 +18,7 @@ const blockedBy = z
   .array(ref)
   .describe("Tasks (#n) it waits for: it cannot start or be done while one of them is open.");
 const files = z.array(z.string().min(1)).describe(PLAN_FILES_WORDS);
+const stackedOn = z.string().trim().min(1);
 const bindings = {
   agent: z.string().describe("The builder subagent's name or id.").optional(),
   branch: z.string().describe("The builder's git branch.").optional(),
@@ -26,7 +27,12 @@ const bindings = {
     .refine(isAbsolute, "worktree must be an absolute path")
     .describe("The builder's absolute worktree path.")
     .optional(),
-  base: z.string().describe("The commit sha the builder started from.").optional(),
+  base: z
+    .string()
+    .describe(
+      "The commit the builder started from: any name git reads, a full or a short sha (a short one is not refused). A phase started with a base warns when the default branch changed the plan's files since its brief was written.",
+    )
+    .optional(),
 };
 /** The fields only a deploy task (kind prod or staging) has; a work task refuses each of them. */
 const deployFields = {
@@ -66,7 +72,15 @@ export const taskSchemas = {
       type: type.optional(),
       blocked_by: blockedBy.optional(),
       files: files.optional(),
-      phase: z.string().trim().min(1).optional().describe("Create the plan phase once, by its id."),
+      stacked_on: stackedOn.optional().describe(STACKED_ON_WORDS),
+      phase: z
+        .string()
+        .trim()
+        .min(1)
+        .optional()
+        .describe(
+          `Create the plan phase once, by its id: ${PHASE_RULE}. A phase takes no parent (it sits under its plan), and it starts only once it holds tasks.`,
+        ),
       plan: z
         .string()
         .trim()
@@ -102,6 +116,8 @@ export const taskSchemas = {
       blocked_by_add: blockedBy.optional(),
       blocked_by_remove: z.array(ref).optional(),
       files: files.optional(),
+      // Described outside the null: a description inside it never reaches the tool's schema.
+      stacked_on: stackedOn.nullable().optional().describe(STACKED_ON_WORDS),
       ...deployFields,
     })
     .strict(),

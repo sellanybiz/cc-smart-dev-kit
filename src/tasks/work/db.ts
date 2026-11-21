@@ -10,7 +10,7 @@ import type { Result, WorkTask } from "./types";
  * code from an older version folder still reads and writes the store, and a column it does not
  * know takes its default.
  */
-export const WORK_SCHEMA_VERSION = 6;
+export const WORK_SCHEMA_VERSION = 7;
 export const LEGACY_LIFT_REASON = "lift legacy nested task";
 export const WRITE_TIMEOUT_MS = 3000;
 export const HOOK_TIMEOUT_MS = 200;
@@ -61,7 +61,9 @@ CREATE INDEX task_event_number ON task_events(project,number);
  * (`lead_session`, `lead_pid`, `lead_start`, moved like `created_by` when its session or
  * process changes), the holder kind (`lead_child`: 0 the lead builds it itself, 1 a child does),
  * and the hand-out id (`lead_handout`, written once, the `from` a child takes the plan with).
- * All null while the plan is unreserved.
+ * All null while the plan is unreserved. Schema 7: the plan a plan is stacked on (`stacked_on`,
+ * its slug), null when none: an older kit never reads it, so it judges the pair as overlapping,
+ * which only refuses more.
  */
 const MIGRATIONS: (string | ((sqlite: Database, file: string) => void))[] = [
   "ALTER TABLE tasks ADD COLUMN blocking INTEGER NOT NULL DEFAULT 1 CHECK(blocking IN (0,1))",
@@ -79,6 +81,7 @@ const MIGRATIONS: (string | ((sqlite: Database, file: string) => void))[] = [
    ALTER TABLE tasks ADD COLUMN lead_start TEXT;
    ALTER TABLE tasks ADD COLUMN lead_child INTEGER NOT NULL DEFAULT 0 CHECK(lead_child IN (0,1));
    ALTER TABLE tasks ADD COLUMN lead_handout TEXT;`,
+  "ALTER TABLE tasks ADD COLUMN stacked_on TEXT",
 ];
 class BackupFailure extends Error {}
 /** What the lift's moves changed of a task: where it sits, and whether it holds its parent. */

@@ -5,6 +5,7 @@
 import { expect, test } from "bun:test";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { createOut } from "../cli/ui/out";
 import { openWorkDb, workDbFile } from "../tasks/work/db";
 import { allTasks, eventsOf, taskById } from "../tasks/work/queries";
 import { createTask, releasePlan, reservePlan, takeTasks, updateTask } from "../tasks/work/store";
@@ -26,6 +27,7 @@ import {
   prepareReserve,
   prepareStart,
   releaseByHand,
+  showPlanLines,
 } from "./plans";
 
 const LEAD: Who = { sessionId: "lead", pid: 4101, procStart: "41010" };
@@ -405,6 +407,7 @@ test("what changed between two readings, and when a wait has nothing to wait for
     fix: null,
     pr,
     pane: null,
+    stackedOn: null,
     drift: [],
   });
   const before = [line(1, "with-child", "open"), line(2, "waiting"), line(3, "overlaps")];
@@ -943,4 +946,30 @@ test("a held plan with a file list, or a branch diff, still allows a disjoint ha
   w.plan("gamma", ["docs/"]);
   expect(w.line("gamma").state).toBe("overlaps");
   expect(prepareStart(w.base, "beta").ok).toBe(true);
+});
+
+test("a stacked plan is ready beside its held parent, says what it is stacked on, and drift skips the pair", () => {
+  const w = build();
+  w.plan("alpha", ["src/a/"]);
+  w.reserve("alpha");
+  const beta = w.change(w.plan("beta", ["src/a/x.ts"]), { stackedOn: "alpha" });
+  w.plan("gamma", ["src/a/y.ts"]);
+  const line = w.line("beta");
+  expect([line.state, line.stackedOn]).toEqual(["ready", "alpha"]);
+  expect(w.line("gamma").text).toBe("overlaps #1 alpha: src/a/y.ts");
+  // The stacked plan's branch holds its parent's work: that is no drift against the parent.
+  w.reserve("beta");
+  w.branch("beta-branch", { "src/a/x.ts": "x\n", "src/a/z.ts": "z\n" });
+  w.change(beta, { branch: "beta-branch" });
+  expect(w.line("beta").drift).toEqual([]);
+  // The stack is shown on the line the command prints.
+  const shown: string[] = [];
+  const out = createOut(
+    { color: false, unicode: true, width: 200, rich: false },
+    { line: (text) => shown.push(text), raw: (text) => shown.push(text) },
+  );
+  showPlanLines(out, [line]);
+  expect(shown).toEqual([
+    "✓ #2 beta (stacked on alpha): ready: nothing blocks it and no held plan shares its files",
+  ]);
 });

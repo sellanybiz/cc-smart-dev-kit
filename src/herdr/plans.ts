@@ -32,8 +32,9 @@ import {
   isOpen,
   ownerOf,
   planByRef,
+  rivalsOf,
 } from "../tasks/work/queries";
-import { releasePlan, reservePlan, swapPlanAgent } from "../tasks/work/store";
+import { type FilesCheck, releasePlan, reservePlan, swapPlanAgent } from "../tasks/work/store";
 import type { ClaimProcess, Who, WorkTask } from "../tasks/work/types";
 import { baseBranch } from "../worktrees/command";
 import { inDefaultFolder, worktreePath } from "../worktrees/paths";
@@ -87,6 +88,8 @@ export interface PlanLine {
   /** The plan's own branch's pull request, for a plan with a child or one that is closing. */
   pr: PrState | null;
   pane: Pane | null;
+  /** The slug of the plan this plan is stacked on (`stacked_on`), or null. */
+  stackedOn: string | null;
   /** Held plans whose files this plan's branch reaches (D7): `#n: path`. */
   drift: string[];
 }
@@ -112,8 +115,8 @@ export interface PlansWorld {
    * worktree outside the default folder is a child's only when the record says so.
    */
   launched: (worktree: string) => boolean;
-  /** `plans.mergeFiles` and `core.ignorecase` (`planFilesCheck`), read before any write lock. */
-  check: { ignore: readonly string[]; caseFold: boolean };
+  /** `plans.mergeFiles`, `plans.appendOnly` and `core.ignorecase` (`planFilesCheck`), read before any write lock. */
+  check: FilesCheck;
   /** The clock, read fresh each time: a store write is stamped when it happens, not when this opened. */
   now: () => number;
 }
@@ -324,6 +327,7 @@ function baseLine(plan: WorkTask) {
     subject: plan.subject,
     pr: null,
     pane: null,
+    stackedOn: plan.stackedOn,
     drift: [] as string[],
   };
 }
@@ -580,8 +584,7 @@ function driftOf(
   );
   if (diff.length === 0) return [];
   const found: string[] = [];
-  for (const other of held) {
-    if (other.plan.id === plan.id) continue;
+  for (const other of rivalsOf(held, plan)) {
     const touched = filesOverlap(diff, other.files, world.check);
     if (touched.length)
       found.push(`${label(other.plan)}: ${[...new Set(touched.map((t) => t.path))].join(", ")}`);
@@ -616,7 +619,7 @@ function readiness(
   entry: LeadPlan,
   held: readonly HeldPlan[],
   byId: ReadonlyMap<string, WorkTask>,
-  base: Pick<PlanLine, "number" | "plan" | "subject" | "pr" | "pane" | "drift">,
+  base: Pick<PlanLine, "number" | "plan" | "subject" | "pr" | "pane" | "stackedOn" | "drift">,
 ): PlanLine {
   const plan = entry.plan;
   const line = (state: PlanState, text: string, fix: string | null = null): PlanLine => ({
@@ -643,8 +646,10 @@ function readiness(
     waiting.push(verdict.text);
   }
   if (waiting.length) return line("waiting", `waiting on ${waiting.join(", ")}`);
+  // The plan it is stacked on, or that is stacked on it, is not judged (`rivalsOf`).
+  const rivals = rivalsOf(held, plan);
   // Unknown is never clear (D5): a held plan with no list and no branch diff shares nothing a check can find.
-  const unlisted = held.filter((other) => other.plan.id !== plan.id && other.files.length === 0);
+  const unlisted = rivals.filter((other) => other.files.length === 0);
   if (unlisted.length > 0)
     return line(
       "blocked",
@@ -657,8 +662,7 @@ function readiness(
         .join("; "),
     );
   const clashes: string[] = [];
-  for (const other of held) {
-    if (other.plan.id === plan.id) continue;
+  for (const other of rivals) {
     const touched = filesOverlap(plan.files, other.files, world.check);
     if (touched.length === 0) continue;
     const files = [...new Set(touched.map((t) => t.path))].join(", ");
@@ -765,6 +769,7 @@ function reserveReady(
     holder,
     ignore: world.check.ignore,
     caseFold: world.check.caseFold,
+    appendOnly: world.check.appendOnly ?? [],
     extraFiles: judged.extraFiles,
     now: world.now(),
   });
@@ -1076,8 +1081,8 @@ export interface PlansEnv {
   process?: ClaimProcess;
   /** A branch's pull request; tests fake gh. */
   pr?: PrReader;
-  /** `plans.mergeFiles` and case; tests fake the committed read. */
-  filesCheck?: (cwd: string) => { ignore: readonly string[]; caseFold: boolean };
+  /** `plans.mergeFiles`, `plans.appendOnly` and case; tests fake the committed read. */
+  filesCheck?: (cwd: string) => FilesCheck;
 }
 
 /** The pane a plan's `agent` names (`herdr:<core>/<address>`), read through hc. */
@@ -1177,7 +1182,11 @@ export function openPlansWorld(
         pane: paneProbe(r, core),
         labelled: labelledProbe(r),
         launched: (worktree) => launchedHere(ctx.paths.stateDir, repo, worktree),
-        check: { ignore: check.ignore, caseFold: check.caseFold },
+        check: {
+          ignore: check.ignore,
+          caseFold: check.caseFold,
+          ...(check.appendOnly === undefined ? {} : { appendOnly: check.appendOnly }),
+        },
         now: ctx.now,
       },
     };
@@ -1187,11 +1196,14 @@ export function openPlansWorld(
   }
 }
 
-function show(out: Out, lines: readonly PlanLine[]): void {
-  for (const line of lines)
-    out.line(markOf(line.state), `#${line.number} ${line.plan}: ${line.text}`, {
+/** The lines `herdr plans` prints: one per plan, its stack beside its name, and the fix under it. */
+export function showPlanLines(out: Out, lines: readonly PlanLine[]): void {
+  for (const line of lines) {
+    const stacked = line.stackedOn === null ? "" : ` (stacked on ${line.stackedOn})`;
+    out.line(markOf(line.state), `#${line.number} ${line.plan}${stacked}: ${line.text}`, {
       fix: line.fix ?? undefined,
     });
+  }
 }
 
 /**
@@ -1253,7 +1265,7 @@ export async function runPlans(
       else if (lines.length === 0) ctx.out.say("No plans led by this session.");
       else {
         ctx.out.say(`Plans: ${summary(lines)}`);
-        show(ctx.out, lines);
+        showPlanLines(ctx.out, lines);
       }
       return 0;
     };
@@ -1278,7 +1290,7 @@ export async function runPlans(
       if (changed.length) {
         if (!args.json) {
           ctx.out.line("info", "A plan changed:");
-          show(ctx.out, changed);
+          showPlanLines(ctx.out, changed);
         }
         return finish(now, changed);
       }

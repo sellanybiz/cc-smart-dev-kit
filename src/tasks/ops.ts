@@ -8,7 +8,9 @@ import { cliPaths } from "../cli/paths";
 import { cappedHookList } from "../hooks/capped-list";
 import { type GitRun, runGit } from "../hooks/git";
 import { DEPLOY_TASKS_SINCE } from "../project/config";
+import { locateCheckout } from "../project/resolve";
 import { resolvePlans } from "../workflow/resolve";
+import { baseBranch } from "../worktrees/command";
 import { type TaskContext, taskContext } from "./context";
 import {
   addDeployNote,
@@ -31,8 +33,9 @@ import {
   refuseOtherPlan,
   refuseParkWhileBusy,
   refuseStepEscape,
+  staleBriefWarning,
 } from "./plan-guards";
-import { TASK_COMMAND, TASK_TOOL } from "./words";
+import { MAX_PHASE, PHASE_RULE, TASK_COMMAND, TASK_TOOL } from "./words";
 import { openWorkDb, type WorkDb, workDbFile, writeWork } from "./work/db";
 import { historyText } from "./work/history";
 import { CLAIM_PROCESS, callerOf, claimGone, claimLive, sessionEnded } from "./work/identity";
@@ -74,12 +77,6 @@ import {
   takeTasks,
 } from "./work/store";
 import type { Result, Who, WorkTask } from "./work/types";
-
-/** The longest phase id (`K`, `W1a`, `D17b`, `E1a-E1b`): short enough for a branch and a list. */
-const MAX_PHASE = 8;
-
-/** The phase id's rule, in the words a refusal says it. */
-const PHASE_RULE = `1-${MAX_PHASE} characters: ASCII letters, digits, ".", "_" and "-", a letter or a digit at each end, never "--"`;
 
 /** True when `value` is a phase id as written: `PHASE_RULE`, never changed into one. */
 function isPhaseId(value: string): boolean {
@@ -207,11 +204,15 @@ function freedText(
   const list = cappedHookList(freed, (t) => `#${t.number} ${t.subject}`, TASK_TOOL.list);
   return ` · now ready: ${list}: start ${freed.length === 1 ? "it" : "them together"}`;
 }
-/** What a task's line adds to its status (D76): its type when non-blocking, its open blockers. */
+/**
+ * What a task's line adds to its status (D76): its type when non-blocking, the plan it is stacked
+ * on, its open blockers.
+ */
 function marks(task: WorkTask, byId: ReadonlyMap<string, WorkTask>): string[] {
   const blockers = isOpen(task) ? openBlockers(task, byId) : [];
   return [
     ...(task.type === "non-blocking" ? ["non-blocking"] : []),
+    ...(task.stackedOn === null ? [] : [`stacked on ${task.stackedOn}`]),
     ...(blockers.length ? [`blocked by ${blockers.map((t) => `#${t.number}`).join(", ")}`] : []),
   ];
 }
@@ -358,6 +359,27 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
         return { files, filesCheck: (options.filesCheck ?? planFilesCheck)(cwd) };
       };
       /**
+       * A plan's new file list and stack, as one update: a stack set or cleared on a held plan is
+       * judged like a new list (`refuseHeldOverlap`), so it reads the same check before the lock.
+       * Null when the call changes neither.
+       */
+      const planWrite = (
+        files: readonly string[] | undefined,
+        stackedOn: string | null | undefined,
+      ): {
+        files?: readonly string[];
+        stackedOn?: string | null;
+        filesCheck: FilesCheck;
+      } | null => {
+        if (files === undefined && stackedOn === undefined) return null;
+        return {
+          ...(files === undefined
+            ? { filesCheck: (options.filesCheck ?? planFilesCheck)(cwd) }
+            : filesWrite(files)),
+          ...(stackedOn === undefined ? {} : { stackedOn }),
+        };
+      };
+      /**
        * How a plan's start is judged against the plans held for others (the store refuses an
        * overlap in the start's own write): the real `plans.mergeFiles` and case read, taken before
        * the lock, whenever this start puts a plan into flight (it has a plan row that is not in
@@ -383,6 +405,31 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
         const row = all.find((t) => t.kind === "plan" && t.plan === plan);
         if (row === undefined || row.status !== "pending" || !owns(row)) return;
         applyUpdate(store, row.id, { status: "in_progress", ...check }, who, now);
+      };
+      /**
+       * The stale-brief line a phase's start adds (`staleBriefWarning`), or null: only for a
+       * phase that starts with a base, in a checkout. Read after the write, so a call that
+       * writes the brief and starts the phase at once finds nothing stale. A start never fails
+       * here: what keeps the check from running is said in the line instead.
+       */
+      const staleBrief = (phase: WorkTask, after: readonly WorkTask[]): string | null => {
+        if (phase.kind !== "phase" || phase.base === null || ctx.checkoutRoot === null) return null;
+        const root = ctx.checkoutRoot;
+        const files = after.find((t) => t.kind === "plan" && t.plan === phase.plan)?.files ?? [];
+        const written = eventsOf(store, phase)
+          .filter((event) => event.changes.description !== undefined)
+          .at(-1);
+        try {
+          return staleBriefWarning({
+            phase,
+            files,
+            writtenAt: written?.at ?? null,
+            base: baseBranch(locateCheckout(root, { env }), env, root).base,
+            git: handBackGit,
+          });
+        } catch (error) {
+          return `Warning: the brief of #${phase.number} was not checked against the default branch: ${error instanceof Error ? error.message : String(error)}`;
+        }
       };
       const deployTasksOf = () => {
         const here = deployContext();
@@ -452,10 +499,11 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
             input.status ||
             input.phase ||
             input.plan ||
-            input.files !== undefined
+            input.files !== undefined ||
+            input.stacked_on !== undefined
           )
             throw new Error(
-              "Deploy tasks have no parent, blocked-by, work status, phase, plan or files",
+              "Deploy tasks have no parent, blocked-by, work status, phase, plan, files or stacked_on",
             );
           if (input.deploy === undefined)
             throw new Error("A deploy task needs deploy (before or after)");
@@ -500,13 +548,16 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
         });
         // Every blocker is found before anything is written: a wrong one leaves no task behind.
         const blockedBy = input.blocked_by?.map((r) => work(r).id) ?? [];
-        // Only the plan task itself carries a file list: a plan made without a phase or a parent.
-        if (
-          input.files !== undefined &&
-          (input.phase !== undefined || input.plan === undefined || input.parent !== undefined)
-        )
+        // Only the plan task itself carries a file list and a stack: a plan made without a phase or a parent.
+        const notPlanTask =
+          input.phase !== undefined || input.plan === undefined || input.parent !== undefined;
+        if (input.files !== undefined && notPlanTask)
           throw new Error(
             "files belong to a plan task: create the plan with plan and a subject (no phase, no parent), or set files on it with task_update",
+          );
+        if (input.stacked_on !== undefined && notPlanTask)
+          throw new Error(
+            "stacked_on belongs to a plan task: create the plan with plan and a subject (no phase, no parent), or set it with task_update",
           );
         if (input.phase !== undefined || (input.plan !== undefined && input.parent === undefined)) {
           if (input.parent !== undefined)
@@ -528,8 +579,8 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
           if (input.phase === undefined) {
             const existing = all.find((t) => t.kind === "plan" && t.plan === slug);
             const there = existing !== undefined;
-            // A plan that is there takes the list as an update, held or not (`applyUpdate`).
-            const listed = input.files === undefined ? undefined : filesWrite(input.files);
+            // A plan that is there takes the list and the stack as an update, held or not (`applyUpdate`).
+            const listed = planWrite(input.files, input.stacked_on);
             const made = value(
               writeWork(store, () => {
                 const row = planTask(
@@ -538,7 +589,7 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
                   who,
                   now,
                 );
-                return listed === undefined ? row : applyUpdate(store, row.id, listed, who, now);
+                return listed === null ? row : applyUpdate(store, row.id, listed, who, now);
               }),
             );
             return {
@@ -639,9 +690,12 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
             input.parent !== undefined ||
             input.blocked_by_add !== undefined ||
             input.blocked_by_remove !== undefined ||
-            input.files !== undefined
+            input.files !== undefined ||
+            input.stacked_on !== undefined
           )
-            throw new Error("Deploy tasks have no parent, blocked-by, files or builder bindings");
+            throw new Error(
+              "Deploy tasks have no parent, blocked-by, files, stacked_on or builder bindings",
+            );
           if (input.status !== undefined && input.status !== "open")
             throw new Error(
               `A deploy task closes through ${TASK_TOOL.done} (done with evidence, dropped with a note); status open reopens a closed one`,
@@ -708,7 +762,11 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
           throw new Error(
             `${label(task)} is a ${task.kind}: only a plan task has a file list (set files on the plan's own #n)`,
           );
-        const listed = input.files === undefined ? undefined : filesWrite(input.files);
+        if (input.stacked_on !== undefined && task.kind !== "plan")
+          throw new Error(
+            `${label(task)} is a ${task.kind}: only a plan task is stacked on another plan (set stacked_on on the plan's own #n)`,
+          );
+        const listed = planWrite(input.files, input.stacked_on);
         // A dropped phase coming back is a phase laid again: the cap judges it.
         if (
           task.kind === "phase" &&
@@ -761,7 +819,7 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
                   : { parentId: input.parent === null ? null : work(input.parent).id }),
                 ...(input.type === undefined ? {} : { type: input.type }),
                 ...flight,
-                ...listed,
+                ...(listed ?? {}),
                 waitsFor: {
                   add: (input.blocked_by_add ?? []).map((r) => work(r).id),
                   remove: (input.blocked_by_remove ?? []).map((r) => work(r).id),
@@ -777,12 +835,15 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
         const afterAll = allTasks(store, ctx.project);
         const byId = new Map(afterAll.map((t) => [t.id, t]));
         const closed = updated.status === "done" || updated.status === "dropped";
+        const stale = starting ? staleBrief(updated, afterAll) : null;
         return {
           ok: true,
           text:
             [label(updated), updated.status.replaceAll("_", " "), ...marks(updated, byId)].join(
               " · ",
-            ) + (closed ? freedAfter(afterAll, updated) : ""),
+            ) +
+            (closed ? freedAfter(afterAll, updated) : "") +
+            (stale === null ? "" : `\n${stale}`),
         };
       }
       if (operation === "done") {

@@ -53,9 +53,25 @@ export const TASK_TOOLS_ALLOW_RULE = `mcp__${TASKS_SERVER_NAME}__*`;
 /** The command a person or a session without the tools runs: `cc-smart-dev-kit task`. */
 export const TASK_COMMAND = `${COMMAND} task`;
 
+/** The longest phase id (`K`, `W1a`, `D17b`, `E1a-E1b`): short enough for a branch and a list. */
+export const MAX_PHASE = 8;
+
+/**
+ * The phase id's rule, in the words a refusal says it (`isPhaseId` in `ops.ts` checks it), and
+ * the words the tool schema describes a phase with.
+ */
+export const PHASE_RULE = `1-${MAX_PHASE} characters: ASCII letters, digits, ".", "_" and "-", a letter or a digit at each end, never "--"`;
+
 /**
  * What a plan's file list is, said once for the tool schemas, the command's help and the
  * server's instructions: the list the store checks before it reserves a plan for a child.
  */
 export const PLAN_FILES_WORDS =
-  "Plan task only: the repo-relative paths the plan changes, with / separators; a folder ends in /. Two plans overlap when a path is equal or inside the other's folder; a plan that overlaps a reserved or running plan is not handed out. The list replaces the stored one; an empty list clears it.";
+  "Plan task only: the repo-relative paths the plan changes, with / separators; a folder ends in /. Two plans overlap when a path is equal or inside the other's folder (inside a plans.appendOnly folder, only the same file); a plan that overlaps a reserved or running plan is not handed out. The list replaces the stored one; an empty list clears it.";
+
+/**
+ * What a plan's `stacked_on` is, said once for the tool schemas and the command's help: the
+ * plan it is built on, which the overlap check then skips (`isStackedPair`).
+ */
+export const STACKED_ON_WORDS =
+  "Plan task only: the slug of the plan this plan is built on. The overlap check skips that one plan, both ways, while it is open; every other plan still blocks. Never itself, a missing plan or a loop; null clears it.";

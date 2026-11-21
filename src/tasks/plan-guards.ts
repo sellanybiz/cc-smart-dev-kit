@@ -253,3 +253,68 @@ export function planNote(all: readonly WorkTask[], plan: WorkTask, cap: number |
   const waiting = all.filter((t) => t.parentId === plan.id && t.kind === "task" && isOpen(t));
   return waiting.length ? `${phases} · waiting ${waiting.length}` : phases;
 }
+
+/** The most changed files a stale-brief warning names; the rest are counted. */
+export const STALE_BRIEF_FILES = 10;
+
+/** What `staleBriefWarning` reads: the phase that starts, its plan's files, and where git looks. */
+export interface StaleBriefCheck {
+  /** The phase that starts: only its number is said. */
+  phase: Pick<WorkTask, "number">;
+  /** The plan's file list, as stored (a folder ends in `/`). */
+  files: readonly string[];
+  /** When the phase's description was last written (ms), from its history; null when it never was. */
+  writtenAt: number | null;
+  /** The default branch's name (`baseBranch`); its remote tracking ref is read as it is, never fetched. */
+  base: string;
+  /** One git command in the caller's checkout. */
+  git: (args: string[]) => GitRun;
+}
+
+/**
+ * The warning a phase's start adds when its brief may be stale: commits that reached the default
+ * branch (`origin/<base>`, first parent, so a merge counts when it landed) after the phase's
+ * description was last written, and that change any of the plan's files. One `git log` with the
+ * plan's paths as literal pathspecs; nothing is fetched. Null when nothing changed, when the phase
+ * has no description or the plan no files, and when this checkout has no `origin/<base>` to read.
+ * It never refuses: git that fails says so in the line it returns.
+ */
+export function staleBriefWarning(check: StaleBriefCheck): string | null {
+  const { phase, files, writtenAt, base, git } = check;
+  if (writtenAt === null || files.length === 0) return null;
+  const ref = `refs/remotes/origin/${base}`;
+  const known = git(["rev-parse", "--verify", "--quiet", `${ref}^{commit}`]);
+  if (!known.ok && known.code === 1) return null;
+  const since = new Date(Math.floor(writtenAt / 1000) * 1000).toISOString();
+  const log = git([
+    "-c",
+    "core.quotePath=false",
+    "--literal-pathspecs",
+    "log",
+    "--first-parent",
+    "--diff-merges=first-parent",
+    `--since=${since}`,
+    "--format=%x1e%h%x09%ct%x09%s",
+    "--name-only",
+    ref,
+    "--",
+    ...files,
+  ]);
+  const brief = `the brief of #${phase.number}`;
+  if (!known.ok || !log.ok)
+    return `Warning: ${brief} was not checked against origin/${base}: git could not read it (${(known.ok ? log.err : known.err) || "no reason given"})`;
+  const changed: string[] = [];
+  let newest: string | null = null;
+  for (const entry of log.out.split("\x1e")) {
+    const [head = "", ...paths] = entry.split("\n");
+    const [sha = "", seconds = "", subject = ""] = head.split("\t");
+    // `--since` counts whole seconds: a commit in the same second as the write is not after it.
+    if (sha === "" || Number(seconds) * 1000 <= writtenAt) continue;
+    newest ??= `${sha} "${subject}"`;
+    for (const path of paths) if (path !== "" && !changed.includes(path)) changed.push(path);
+  }
+  if (newest === null || changed.length === 0) return null;
+  const shown = changed.slice(0, STALE_BRIEF_FILES);
+  const more = changed.length > shown.length ? ` and ${changed.length - shown.length} more` : "";
+  return `Warning: ${brief} may be stale: origin/${base} changed ${shown.join(", ")}${more} after it was written (newest: ${newest}). Read those changes before you build on it.`;
+}
