@@ -79,8 +79,8 @@ export interface HookContext {
 /**
  * What a hook gets besides the input when the frame's project steps do not apply (no
  * checkouts, a broken cc-smart-dev-kit.json, outside git): the environment and the paths. A
- * machine-wide hook (agent-guard) judges the model and effort from these alone, so its answer
- * does not change with the project's file.
+ * machine-wide hook (the tier note, agent-usage, user-away) answers from these alone, so its
+ * answer does not change with the project's file.
  */
 export interface HookEnvContext {
   env: Env;
@@ -99,7 +99,7 @@ export interface HookSpec {
   /**
    * The answer when cc-smart-dev-kit.json is broken or needs a newer plugin: fail closed.
    * `context` (the environment and paths): for a hook whose answer does not depend on the
-   * project's file, so it can judge the same way (`agent-guard`).
+   * project's file, so it can answer the same way (`agent-usage`, `user-away`).
    */
   onConfigProblem: (
     message: string,
