@@ -127,7 +127,8 @@ nothing, then the reset. The ref also goes in the `kit.base` label (`herdr list`
 refused with `--followup` (that child's trailer uses one base for its reset, its pull request and
 its branches: it always starts from the default branch) and refused for a plan that resumes, which
 continues its own worktree. `--plan` still judges its gates against the default branch, and still
-needs one that can be found.
+needs one that can be found, even with `--base`. The ref is read in the lead's own folder (the
+worktree it runs in, not the main checkout), so `HEAD`, `HEAD~2`, `@` and `@{-1}` mean the lead's.
 
 **`--brief-file <path>`** reads the brief from a file in place of the words after `--`, so quotes,
 `$` and newlines never pass through a shell (`send <terminal> --brief-file <path>` does the same
@@ -179,10 +180,11 @@ take) is `docs/design/tasks.md` § Plans handed to children.
 - The slug resolves with the take path's resolver (`planByRef`), so `#n` works as well. The
   plan must be one this session laid and not started.
 - It refuses when the default branch is only a guess (no `origin/HEAD`, no `worktrees.base`),
-  with the fix `git remote set-head origin --auto`: the child resets onto that branch. A start
-  with `--base` is not refused for it: that child resets to the commit `--base` named, never to the
-  default branch (`prepareStart`'s `baseGiven`). `plans --reserve` has no `--base`, so it still
-  refuses.
+  with the fix `git remote set-head origin --auto`: the child resets onto that branch, and every
+  held plan's branch diff is read against it. With a guess those diffs read as empty, so a held
+  branch that already changes this plan's files would go unseen. So `--base` does not skip the
+  refusal: `start --plan --base` and `plans --reserve` both need a default branch that can be
+  found (`locatePlan`). `--base` still works for a task or a plain child.
 - The child's name is the slug. When `kit-<slug>` is not a valid child name, `--name` is the fix.
 
 **The order** is: those refusals, then the name check (`kit-<slug>` must be a valid child name),
@@ -335,7 +337,7 @@ The refusals, in the command's words:
 | `--issue` is used wrongly | "--issue belongs to --followup." or "Use an issue number such as 12." |
 | Not in a git project, or no lead terminal | "A follow-up child needs a git project and the lead's own terminal." Fix: run it in the project's folder, or give `--cwd`, from the lead's terminal. |
 | The caller's terminal carries `kit.lead` (any child) | "A child never starts a follow-up child: only a lead does." Fix: put the finding in `cc-smart-dev-kit herdr report`. |
-| The default branch is only a guess | The text `start --plan` uses (`UNKNOWN_BASE`): "… so a child would reset to a guess." Fix: `git remote set-head origin --auto`, or set `worktrees.base`. A start with `--base` skips it: the child resets to that commit. |
+| The default branch is only a guess | The text `start --plan` uses (`UNKNOWN_BASE`): "… so a child would reset to a guess." Fix: `git remote set-head origin --auto`, or set `worktrees.base`. `--base` does not skip it for `--plan`: the held plans' diffs are read against that branch. |
 | This lead already has a live follow-up child in this repository | "This lead already has a follow-up child for this repository: `<addr>`." The fix depends on its state (below). |
 | A live follow-up child of a lead that has **ended** is here | "A follow-up child of a lead that has ended is still live in this repository: `<addr>`." Fix: take it over with `cc-smart-dev-kit herdr adopt`, then send the finding. |
 | An ended follow-up child left unmerged commits | "A follow-up child in this repository ended (`<addr>`) and left commits on `<branch>` that are not on origin/`<base>`, with no merged pull request. Its worktree is `<path>`." Fix: push and merge that work, or remove the worktree and branch once checked (`cc-smart-dev-kit worktrees --clean`), then start again. |
