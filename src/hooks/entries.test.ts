@@ -14,8 +14,9 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
+import { buildEntry, ENTRIES_DIR } from "../../scripts/build-entry";
 import { RESOLVE_GIT_TIMEOUT_MS } from "../project/resolve";
-import { hookEnv, makeRepo, runEntry, runHook, writeClaudeFile } from "../testing/hooks";
+import { hookEnv, makeRepo, runBundle, runEntry, runHook, writeClaudeFile } from "../testing/hooks";
 import { tempDir } from "../testing/temp";
 import { GH_TIMEOUT_MS } from "../workflow/merge-check";
 import { GUARD_BUDGET_MS, SHORT_GUARD_BUDGET_MS } from "./budget";
@@ -409,4 +410,72 @@ describe("the entries, run as Claude Code runs them", () => {
   test("no plugin hook exits 1 on a bad input: a bug never stops work", () => {
     expect(HOOKS.filter((spec) => spec.crashExitCode !== undefined)).toEqual([]);
   });
+});
+
+describe("the hook bundles, built as Claude Code runs them", () => {
+  /**
+   * Builds one hook's entry the way `scripts/build.ts` does, into a temp folder (never
+   * `plugin/dist`, which is the committed build), and returns the file `hooks.json` would run.
+   * A temp folder lives for one test, so each test builds its own.
+   */
+  async function built(name: string): Promise<string> {
+    const dist = tempDir("hook-bundle");
+    await buildEntry(join(ENTRIES_DIR, `${name}.ts`), dist);
+    return join(dist, `${name}.js`);
+  }
+
+  /**
+   * The most bytes each hook's bundle may have, written by hand: the measured build (bun
+   * 1.4.4, one entry built alone) plus about a tenth. Every hook bundle was 583 KB when each
+   * entry loaded `specs.ts`, which builds every hook; one that imports its own spec is 266 to
+   * 357 KB, so a bundle that pulls in another hook, or all of them, goes over. A hook that
+   * grows on purpose raises its own number here, with its reason in the commit.
+   */
+  const BUNDLE_BUDGET_BYTES: Record<string, number> = {
+    "after-merge": 360_000,
+    "agent-usage": 300_000,
+    "builder-finish": 320_000,
+    "fable-session": 330_000,
+    "job-route": 390_000,
+    "keep-going": 350_000,
+    "review-record": 330_000,
+    "session-name": 300_000,
+    "subagent-background": 310_000,
+    "task-start": 330_000,
+    "tier-view": 330_000,
+    "user-away": 330_000,
+    "verify-gate": 310_000,
+    "worktree-leftovers": 320_000,
+  };
+
+  test("every hook has a size budget, and no budget is left for a hook that is gone", () => {
+    expect(Object.keys(BUNDLE_BUDGET_BYTES).sort()).toEqual(HOOKS.map((spec) => spec.name).sort());
+  });
+
+  test.each(HOOKS.map((spec) => spec.name))(
+    "%s: the built bundle stays inside its size budget",
+    async (name) => {
+      const size = Bun.file(await built(name)).size;
+      expect(size).toBeLessThanOrEqual(BUNDLE_BUDGET_BYTES[name] ?? 0);
+    },
+  );
+
+  test.each(HOOKS.map((spec) => [spec.name, spec.crashExitCode ?? 0] as const))(
+    "%s: the built bundle runs as a subprocess, and its log line names this hook",
+    async (name, exitCode) => {
+      // The log line is the proof that the entry wired its own spec: an entry that imports
+      // another hook's spec type-checks, and runs, and logs the other name.
+      const log = join(tempDir("bundle-log"), "hooks.log");
+      const run = runBundle(await built(name), "not json", {
+        ...hookEnv(),
+        [HOOK_LOG_ENV]: log,
+      });
+      expect(run.exitCode).toBe(exitCode);
+      const logged = readFileSync(log, "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line));
+      expect(logged.map((line) => line.hook)).toEqual([name]);
+    },
+  );
 });
