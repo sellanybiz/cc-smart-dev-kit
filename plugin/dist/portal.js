@@ -17721,6 +17721,7 @@ function readFinishedSessions(paths, deps) {
 // src/worktrees/paths.ts
 import { join as join19 } from "path";
 var WORKTREES_FOLDER_SEGMENTS = [".claude", "worktrees"];
+var WORKTREES_GITIGNORE_ENTRY = `${WORKTREES_FOLDER_SEGMENTS.join("/")}/`;
 function worktreesFolder(repoRoot) {
   return join19(repoRoot, ...WORKTREES_FOLDER_SEGMENTS);
 }
@@ -19945,6 +19946,30 @@ function parseDefaultBranch(json) {
     return null;
   }
 }
+var OPEN_PULL_REQUESTS_LIMIT = 500;
+var COMPARE_STATUSES = new Set(["ahead", "behind", "diverged", "identical"]);
+var STACK_COMPARES_AT_ONCE = 4;
+function parseOpenHeads(json) {
+  try {
+    const parsed = JSON.parse(json);
+    if (!Array.isArray(parsed))
+      return null;
+    const open = [];
+    for (const entry of parsed) {
+      if (typeof entry !== "object" || entry === null)
+        return null;
+      const { headRefOid, number } = entry;
+      if (typeof number !== "number" || !Number.isInteger(number))
+        return null;
+      if (typeof headRefOid !== "string" || !COMMIT_SHA.test(headRefOid))
+        return null;
+      open.push({ headOid: headRefOid, number });
+    }
+    return open;
+  } catch {
+    return null;
+  }
+}
 function parseRequiredChecks(json) {
   try {
     const parsed = JSON.parse(json);
@@ -20093,6 +20118,136 @@ async function gateFor(world, branch) {
     timeoutMs: left
   });
 }
+function newStackCache() {
+  return { compares: new Map, open: new Map };
+}
+async function askOpenHeads(world, target) {
+  const left = world.timeFor(GH_TIMEOUT_MS);
+  if (left <= 0)
+    return { late: true, ok: false, why: "" };
+  const out = await ghStdout([
+    "pr",
+    "list",
+    "--state",
+    "open",
+    ...target.repo === null ? [] : ["--repo", target.repo],
+    "--limit",
+    String(OPEN_PULL_REQUESTS_LIMIT),
+    "--json",
+    "number,headRefOid"
+  ], world.folder, world.env, left, world.gh ?? spawnGh);
+  const open = out === null ? null : parseOpenHeads(out);
+  if (open === null) {
+    return { late: false, ok: false, why: "gh could not list the open pull requests" };
+  }
+  if (open.length >= OPEN_PULL_REQUESTS_LIMIT) {
+    return {
+      late: false,
+      ok: false,
+      why: `gh listed ${OPEN_PULL_REQUESTS_LIMIT} open pull requests, the most it was asked for`
+    };
+  }
+  return { ok: true, value: open };
+}
+function openHeadsOf(world, target, cache) {
+  const key = target.repo ?? "";
+  let read = cache.open.get(key);
+  if (read === undefined) {
+    read = askOpenHeads(world, target);
+    cache.open.set(key, read);
+  }
+  return read;
+}
+async function askCompare(world, target, basehead) {
+  const left = world.timeFor(GH_TIMEOUT_MS);
+  if (left <= 0)
+    return { late: true, ok: false, why: "" };
+  const out = await ghStdout(["api", `repos/${target.repo ?? "{owner}/{repo}"}/compare/${basehead}`, "--jq", ".status"], world.folder, world.env, left, world.gh ?? spawnGh);
+  if (out === null)
+    return { late: false, ok: false, why: `gh could not compare ${basehead}` };
+  const status = out.trim();
+  if (!COMPARE_STATUSES.has(status)) {
+    return {
+      late: false,
+      ok: false,
+      why: `gh answered "${status.slice(0, 40)}" when comparing ${basehead}, a status merge-check does not know`
+    };
+  }
+  return { ok: true, value: status };
+}
+function compareOf(world, target, cache, basehead) {
+  const key = `${target.repo ?? ""} ${basehead}`;
+  let read = cache.compares.get(key);
+  if (read === undefined) {
+    read = askCompare(world, target, basehead);
+    cache.compares.set(key, read);
+  }
+  return read;
+}
+async function standing(world, target, cache, held, other) {
+  if (held <= other)
+    return await compareOf(world, target, cache, `${held}...${other}`);
+  const read = await compareOf(world, target, cache, `${other}...${held}`);
+  if (!read.ok || read.value === "diverged" || read.value === "identical")
+    return read;
+  return { ok: true, value: read.value === "ahead" ? "behind" : "ahead" };
+}
+async function carriesOpen(world, target, cache, view, other) {
+  const first = await standing(world, target, cache, other.headOid, view.headOid);
+  if (!first.ok)
+    return { kind: "unread", late: first.late, why: first.why };
+  if (first.value !== "ahead" && first.value !== "identical")
+    return { kind: "clear" };
+  const inBase = await compareOf(world, target, cache, `${view.base}...${other.headOid}`);
+  if (!inBase.ok)
+    return { kind: "unread", late: inBase.late, why: inBase.why };
+  return inBase.value === "behind" || inBase.value === "identical" ? { kind: "clear" } : { kind: "stacked" };
+}
+function cannotProve(number, why) {
+  return {
+    detail: null,
+    kind: "refused",
+    number,
+    reason: `${why}, so merge-check cannot prove it is not stacked on an open pull request`
+  };
+}
+async function stackedVerdict(world, view, target, cache) {
+  const listed = await openHeadsOf(world, target, cache);
+  if (!listed.ok) {
+    if (listed.late)
+      return { kind: "late", number: view.number, what: "the open pull requests" };
+    return cannotProve(view.number, listed.why);
+  }
+  const others = listed.value.filter((other) => other.number !== view.number).sort((left, right) => left.number - right.number);
+  const found = [];
+  for (let at = 0;at < others.length; at += STACK_COMPARES_AT_ONCE) {
+    const batch = others.slice(at, at + STACK_COMPARES_AT_ONCE);
+    const ons = await Promise.all(batch.map((other) => carriesOpen(world, target, cache, view, other)));
+    batch.forEach((other, index) => {
+      const on = ons[index];
+      if (on !== undefined)
+        found.push({ number: other.number, on });
+    });
+  }
+  const below = found.find((one) => one.on.kind === "stacked");
+  if (below !== undefined) {
+    return {
+      detail: null,
+      kind: "refused",
+      number: view.number,
+      reason: `pull request #${view.number} is stacked on open pull request #${below.number}: merge #${below.number} first, then check again`
+    };
+  }
+  for (const { on } of found) {
+    if (on.kind !== "unread")
+      continue;
+    if (on.late) {
+      return { kind: "late", number: view.number, what: `whether #${view.number} is stacked` };
+    }
+    return cannotProve(view.number, on.why);
+  }
+  return null;
+}
 async function checkPullRequest(world, target, defaultBranches = new Map, options = {}) {
   const viewLeft = world.timeFor(GH_TIMEOUT_MS);
   if (viewLeft <= 0) {
@@ -20137,6 +20292,9 @@ async function checkPullRequest(world, target, defaultBranches = new Map, option
   const onTheYes = asked && autoMergeOff(resolved, view.base) !== null;
   let checks = null;
   if (branchRefusal === null) {
+    const stacked = await stackedVerdict(world, view, target, options.stack ?? newStackCache());
+    if (stacked !== null)
+      return stacked;
     const checksLeft = world.timeFor(GH_TIMEOUT_MS);
     if (checksLeft <= 0) {
       return { kind: "late", number: view.number, what: `the required checks of #${view.number}` };
@@ -20379,7 +20537,7 @@ var QUICK_GIT_TIMEOUT_MS = 1e4;
 var GH_CREATE_TIMEOUT_MS = 60000;
 var PROPOSE_WORST_CASE_MS = GH_TIMEOUT_MS + FETCH_TIMEOUT_MS + 2 * FETCH_TIMEOUT_MS + 2 * WORKTREE_TIMEOUT_MS + COMMIT_TIMEOUT_MS + PUSH_TIMEOUT_MS + GH_CREATE_TIMEOUT_MS + WORKTREE_TIMEOUT_MS + PUSH_TIMEOUT_MS + 8 * QUICK_GIT_TIMEOUT_MS + 30000;
 function proposeTimeoutLine(setting) {
-  return `workflow propose did not answer in time, so it may have left a worktree and a branch behind (the folder .claude/worktrees/workflow-${setting.replace(/[^A-Za-z0-9]+/g, "-")}-\u2026) or opened the pull request: look at the project's pull requests and at \`git worktree list\` before running it again.`;
+  return `workflow propose did not answer in time, so it may have left a worktree and a branch behind (the folder ${WORKTREES_GITIGNORE_ENTRY}workflow-${setting.replace(/[^A-Za-z0-9]+/g, "-")}-\u2026) or opened the pull request: look at the project's pull requests and at \`git worktree list\` before running it again.`;
 }
 async function ghLoginState(folder, env, run = spawnGh, timeoutMs = GH_TIMEOUT_MS) {
   if (ghMissing(env))
@@ -29341,8 +29499,9 @@ async function readBranches(world, project, at) {
       defaultBranches.set("", await defaultBranchOf(project.root, world.env, null, left, gh));
     }
   }
+  const stack = newStackCache();
   const branches = await mapLimit(pullRequests, PROJECT_VERDICTS_AT_ONCE, async (pullRequest) => {
-    const verdict = mergeWorld === null ? unreadVerdict(pullRequest.number, "this project's folder is not in a git checkout") : await checkPullRequest(mergeWorld, { ref: String(pullRequest.number), repo: null }, defaultBranches);
+    const verdict = mergeWorld === null ? unreadVerdict(pullRequest.number, "this project's folder is not in a git checkout") : await checkPullRequest(mergeWorld, { ref: String(pullRequest.number), repo: null }, defaultBranches, { stack });
     const cut = verdict.kind === "unread" && timeFor(GH_TIMEOUT_MS) <= 0 ? { kind: "late", number: verdict.number, what: verdict.what } : verdict;
     return {
       base: pullRequest.base,
@@ -34877,18 +35036,17 @@ function cappedHookList(items, render, command, separator = ", ") {
   return shown.join(separator);
 }
 
-// src/hooks/subagent-worktree.ts
-function literal2(text) {
+// src/regex-escape.ts
+function escapeRegex2(text) {
   return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
-var FOLDER_PATTERN = WORKTREES_FOLDER_SEGMENTS.map(literal2).join(String.raw`[\\/]`);
-var NAME_PREFIX_PATTERN = literal2(SUBAGENT_NAME_PREFIX);
-function subagentWorktreeMatching(cwd, idPattern) {
-  const found = new RegExp(String.raw`^(.*[\\/]${FOLDER_PATTERN}[\\/]${NAME_PREFIX_PATTERN}${idPattern})(?:[\\/]|$)`).exec(cwd);
-  return found?.[1] ?? null;
-}
+
+// src/hooks/subagent-worktree.ts
+var FOLDER_PATTERN = WORKTREES_FOLDER_SEGMENTS.map(escapeRegex2).join(String.raw`[\\/]`);
+var NAME_PREFIX_PATTERN = escapeRegex2(SUBAGENT_NAME_PREFIX);
 function subagentWorktreeByShape(cwd) {
-  return subagentWorktreeMatching(cwd, "[0-9a-f]+");
+  const found = new RegExp(String.raw`^(.*[\\/]${FOLDER_PATTERN}[\\/]${NAME_PREFIX_PATTERN}[0-9a-f]+)(?:[\\/]|$)`).exec(cwd);
+  return found?.[1] ?? null;
 }
 
 // src/hooks/transcript.ts
@@ -37960,12 +38118,12 @@ async function worktreeLines(config, sources, checkout, env) {
   const worktrees = config?.worktrees;
   const lines = [];
   if (worktrees !== undefined) {
-    const ignored = (await runGitAsync(checkout.root, ["check-ignore", "-q", ".claude/worktrees/"], env)).ok;
+    const ignored = (await runGitAsync(checkout.root, ["check-ignore", "-q", WORKTREES_GITIGNORE_ENTRY], env)).ok;
     if (!ignored) {
       lines.push({
         ok: true,
         warn: true,
-        text: `project: .claude/worktrees/ is not git-ignored here, so Claude Code's own worktrees show up in git status: add ".claude/worktrees/" to the repo's .gitignore and commit it`
+        text: `project: ${WORKTREES_GITIGNORE_ENTRY} is not git-ignored here, so Claude Code's own worktrees show up in git status: add "${WORKTREES_GITIGNORE_ENTRY}" to the repo's .gitignore and commit it`
       });
     }
     const defaultBranch = await defaultBranchOf2(realRunnerAsync(env), checkout.root);

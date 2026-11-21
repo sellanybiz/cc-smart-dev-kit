@@ -25576,6 +25576,8 @@ function callerOf(facts = {}) {
 }
 
 // src/worktrees/paths.ts
+var WORKTREES_FOLDER_SEGMENTS = [".claude", "worktrees"];
+var WORKTREES_GITIGNORE_ENTRY = `${WORKTREES_FOLDER_SEGMENTS.join("/")}/`;
 function worktreeBranch(name) {
   return `worktree-${name}`;
 }

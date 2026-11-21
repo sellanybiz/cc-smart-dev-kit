@@ -8912,8 +8912,14 @@ function resolveWorkflow(paths, projectConfig) {
   };
 }
 
+// src/regex-escape.ts
+function escapeRegex2(text) {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 // src/worktrees/paths.ts
 var WORKTREES_FOLDER_SEGMENTS = [".claude", "worktrees"];
+var WORKTREES_GITIGNORE_ENTRY = `${WORKTREES_FOLDER_SEGMENTS.join("/")}/`;
 function worktreeBranch(name) {
   return `worktree-${name}`;
 }
@@ -8921,17 +8927,11 @@ var SUBAGENT_NAME_PREFIX = "agent-";
 var SUBAGENT_BRANCH_PREFIX = worktreeBranch(SUBAGENT_NAME_PREFIX);
 
 // src/hooks/subagent-worktree.ts
-function literal(text) {
-  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-var FOLDER_PATTERN = WORKTREES_FOLDER_SEGMENTS.map(literal).join(String.raw`[\\/]`);
-var NAME_PREFIX_PATTERN = literal(SUBAGENT_NAME_PREFIX);
-function subagentWorktreeMatching(cwd, idPattern) {
-  const found = new RegExp(String.raw`^(.*[\\/]${FOLDER_PATTERN}[\\/]${NAME_PREFIX_PATTERN}${idPattern})(?:[\\/]|$)`).exec(cwd);
-  return found?.[1] ?? null;
-}
+var FOLDER_PATTERN = WORKTREES_FOLDER_SEGMENTS.map(escapeRegex2).join(String.raw`[\\/]`);
+var NAME_PREFIX_PATTERN = escapeRegex2(SUBAGENT_NAME_PREFIX);
 function subagentWorktreeByShape(cwd) {
-  return subagentWorktreeMatching(cwd, "[0-9a-f]+");
+  const found = new RegExp(String.raw`^(.*[\\/]${FOLDER_PATTERN}[\\/]${NAME_PREFIX_PATTERN}[0-9a-f]+)(?:[\\/]|$)`).exec(cwd);
+  return found?.[1] ?? null;
 }
 
 // src/hooks/transcript.ts

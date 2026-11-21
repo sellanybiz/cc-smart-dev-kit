@@ -8717,8 +8717,14 @@ var FIND_INSTALL_JS = [
   "process.stdout.write(e.installPath);"
 ].join("");
 
+// src/regex-escape.ts
+function escapeRegex2(text) {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 // src/worktrees/paths.ts
 var WORKTREES_FOLDER_SEGMENTS = [".claude", "worktrees"];
+var WORKTREES_GITIGNORE_ENTRY = `${WORKTREES_FOLDER_SEGMENTS.join("/")}/`;
 function worktreeBranch(name) {
   return `worktree-${name}`;
 }
@@ -8726,11 +8732,8 @@ var SUBAGENT_NAME_PREFIX = "agent-";
 var SUBAGENT_BRANCH_PREFIX = worktreeBranch(SUBAGENT_NAME_PREFIX);
 
 // src/hooks/subagent-worktree.ts
-function literal(text) {
-  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-var FOLDER_PATTERN = WORKTREES_FOLDER_SEGMENTS.map(literal).join(String.raw`[\\/]`);
-var NAME_PREFIX_PATTERN = literal(SUBAGENT_NAME_PREFIX);
+var FOLDER_PATTERN = WORKTREES_FOLDER_SEGMENTS.map(escapeRegex2).join(String.raw`[\\/]`);
+var NAME_PREFIX_PATTERN = escapeRegex2(SUBAGENT_NAME_PREFIX);
 
 // src/hooks/transcript.ts
 import { closeSync as closeSync2, fstatSync, openSync as openSync2, readSync } from "fs";
