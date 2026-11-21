@@ -33,9 +33,9 @@ without asking. Until 6.1.0 they were `autoCommit`, `autoPush` and `autoMerge`, 
 still work. One alias table maps an old key to its new key before the schema parses, in both
 files; a file that holds both names uses the new one. A value set under an old name counts as set,
 not as a default (`sourceOf`). `workflow set|unset|propose` accept either name and write the new
-one, with one line saying so. Every write raises a project file's `requires` to 6.1.0
-(`WORKFLOW_ALLOW_KEYS_SINCE`), so an older plugin is told to update and is never handed a key it
-would refuse. `doctor` prints one line for a file that still uses an old name, with the rename to
+one, with one line saying so. A project file that names a new key needs `requires` 6.1.0 or newer
+(`WORKFLOW_ALLOW_KEYS_SINCE`; a write that sets one raises it, a file with none of them keeps its
+floor), so an older plugin is told to update and is never handed a key it would refuse. `doctor` prints one line for a file that still uses an old name, with the rename to
 do; it is never a failure. An alias never rewrites a file by itself. `openPr` keeps its name: it
 is a choice of three, not a yes.
 

@@ -132,5 +132,8 @@ The main session does the version, `dist`, the portal export, one review round (
 
 ## Rollback
 
-A new version with the old names as the only names. An alias never rewrites a file by itself,
-so nothing needs migrating back.
+A new version that still reads the new names, with the old names as the ones it writes. An alias
+never rewrites a file by itself, but `workflow set` writes the new names into the person's file
+(and `requires` into a project's), and a plugin older than 6.1.0 refuses a file that holds them
+(the person's own file has no `requires` to warn it). So a rollback to a pre-6.1.0 plugin is not
+safe once a value was set; roll forward with a new version instead.

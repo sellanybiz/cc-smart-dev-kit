@@ -749,10 +749,11 @@ route gave no queue command, and before the git prefix, so a heavy run never sit
 command. It is a deny whoever is away: the session reads the fix and retries, and nothing is
 parked. A light run, a watch run, a line that queues itself, and a line whose other command sits in
 a package script's body are no mix. A `<pm> run <script>` that is the line's own command, whose
-body runs heavy work, is queued whole even when a light command comes first in the body
-(`next typegen && tsc --noEmit`); a script that calls itself or nests too deep, and a line the
-person mixed themselves (`bun run tsc && rm x`), are not (`docs/jobs.md` § Scripts are read by
-their body).
+body runs heavy work, is queued whole even when a command that is not heavy work comes first in
+the body (`next typegen && tsc --noEmit`). A body that never ends, runs in the background or as
+another user, calls itself or nests too deep still runs raw. A line the person mixed themselves
+is refused, and since 6.1.0 so is `bun run check; git status` (a script of that kind beside
+another command; `docs/jobs.md` § Scripts are read by their body).
 
 Two more rules sit on the route. **A line is wrapped only when it is also heavy:**
 `routableLine` says the line may be queued, and `runWeight` (the one judge, `src/jobs/classify.ts`)
