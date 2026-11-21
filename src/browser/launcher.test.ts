@@ -23,6 +23,7 @@ import { join } from "node:path";
 import { type ChromeWorld, chromeWorld, writeWorldToken } from "../testing/chrome-world";
 import { subprocessGuard } from "../testing/port-guard";
 import { tempDir } from "../testing/temp";
+import { childEnv } from "../testing/test-home";
 import type { DesktopEnvironment } from "./chrome-start";
 import {
   type BrowserMcpDeps,
@@ -77,7 +78,7 @@ function launcher(
     chrome: chromeDeps,
     desktop: () => desktop,
     // No DISPLAY here: the desktop's own value must be the one that reaches Chrome.
-    env: { PATH: "/usr/bin" },
+    env: childEnv({ PATH: "/usr/bin" }),
     log: (line) => lines.push(line),
     spawn: (argv, options) => {
       mcp.push({ argv, cwd: options.cwd, env: options.env });
@@ -305,7 +306,7 @@ describe("runBrowserMcp", () => {
           "--no-default-browser-check",
         ],
         // The desktop's variables, so Chrome can open a window from a session without one.
-        env: { DISPLAY: ":0", PATH: "/usr/bin" },
+        env: childEnv({ DISPLAY: ":0", PATH: "/usr/bin" }),
       },
     ]);
     expect(run.mcp).toHaveLength(1);

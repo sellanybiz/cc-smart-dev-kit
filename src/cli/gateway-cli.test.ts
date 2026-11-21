@@ -29,6 +29,7 @@ import { listBackups } from "../setup/write";
 import { shellQuote } from "../shell/quote";
 import { subprocessGuard } from "../testing/port-guard";
 import { git, tempDir } from "../testing/temp";
+import { childEnv } from "../testing/test-home";
 import { PROCESS_TEST_TIMEOUT_MS } from "../testing/timeouts";
 import { checkLine } from "./doctor";
 import { cliPaths } from "./paths";
@@ -391,7 +392,7 @@ function machine(
   /** The fake systemctl, called the way the CLI's own runner calls the real one. */
   const runner = (cmd: string[]) => {
     const result = Bun.spawnSync([join(fakeBin, "systemctl"), ...cmd.slice(1)], {
-      env: { PATH: fakeBin },
+      env: childEnv({ PATH: fakeBin }),
       stdout: "pipe",
       stderr: "pipe",
     });

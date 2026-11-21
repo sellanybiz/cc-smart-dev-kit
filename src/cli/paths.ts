@@ -116,6 +116,13 @@ function userConfigFile(env: Record<string, string | undefined>, home: string): 
  * `docs/windows-setup.md`.
  */
 export function cliPaths(env: Record<string, string | undefined> = process.env): CliPaths {
+  // The type forbids it, but a test once passed a home folder (a string): it has no HOME, so
+  // the paths fell back to the real home folder and the test wrote there. Refuse it.
+  if (env === null || typeof env !== "object" || Array.isArray(env)) {
+    throw new TypeError(
+      `cliPaths takes an environment object (like process.env), not ${env === null ? "null" : Array.isArray(env) ? "an array" : typeof env}`,
+    );
+  }
   const router = routerPaths(env);
   const claudeConfigDir = env.CLAUDE_CONFIG_DIR || join(router.home, ".claude");
   return {
