@@ -327,7 +327,8 @@ export function isLead(lead: WorkLead | null, who: Who | null | undefined): bool
  * Whether `who` leads a plan: it holds the plan's reservation (`isLead`), or it owns the plan's
  * task (`ownerOf`). A plan handed to a child keeps its lead in the reservation after the child
  * takes it, and an unreserved plan's lead is the session that laid it. The one rule a held plan's
- * `mine` and a stack (`stacked_on`: both plans the caller's) are judged by.
+ * `mine` and a stack (`stacked_on`: both plans the caller's when set, `sameLead` when judged) are
+ * judged by.
  */
 export function leadsPlan(who: Who): (plan: WorkTask) => boolean {
   const owns = ownerOf(who);
@@ -428,15 +429,67 @@ export function parentHolds(parent: WorkTask): boolean {
 }
 
 /**
+ * The session that leads a plan, as a caller: the lead its reservation names, else the session
+ * that owns its task (its maker, which a take moves). Null when the plan names neither.
+ */
+function planLead(plan: WorkTask): Who | null {
+  if (plan.lead !== null)
+    return plan.lead.sessionId === null && plan.lead.pid === null
+      ? null
+      : { sessionId: plan.lead.sessionId, pid: plan.lead.pid, procStart: plan.lead.procStart };
+  if (plan.createdBy === null && plan.creator === null) return null;
+  return {
+    sessionId: plan.createdBy,
+    pid: plan.creator?.pid ?? null,
+    procStart: plan.creator?.procStart ?? null,
+  };
+}
+
+/**
+ * True when one lead leads both plans now (`leadsPlan`): each plan's lead (`planLead`) leads the
+ * other plan too. A stack counts only while it holds, not only when it was set: a take that moves
+ * either plan to another session, or a reservation for another lead, ends the pair.
+ */
+export function sameLead(a: WorkTask, b: WorkTask): boolean {
+  const leadA = planLead(a);
+  const leadB = planLead(b);
+  return leadA !== null && leadB !== null && leadsPlan(leadA)(b) && leadsPlan(leadB)(a);
+}
+
+/**
+ * One proved stack (`provedStacks`): the stacked plan's task id and the slug of the parent it was
+ * proved on. A proof names the pair, never the stacked plan alone, so a stack moved to another
+ * parent carries no proof with it.
+ */
+export interface StackPair {
+  child: string;
+  parent: string;
+}
+
+/** The proved pairs as the overlap check looks them up (`isStackedPair`). */
+export function provedSet(pairs: readonly StackPair[] = []): ReadonlySet<string> {
+  return new Set(pairs.map((pair) => stackKey(pair.child, pair.parent)));
+}
+
+function stackKey(child: string, parent: string): string {
+  return JSON.stringify([child, parent]);
+}
+
+/**
  * True when one of the two plans is stacked on the other (`stacked_on`), that parent still holds
- * its files (`parentHolds`), and the stack is proved: the stacked plan's id is in `proved`, the
- * plans whose start holds their parent's branch (`provedStacks`, read from git before any write
- * lock). The overlap check skips the pair, both ways: a plan built on its parent's branch shares
- * the parent's files by construction. A stack that is not proved is no pair: the two are rivals.
+ * its files (`parentHolds`), one lead leads both now (`sameLead`), and that very pair is proved:
+ * `{child, parent}` is in `proved` (`provedSet` of `provedStacks`, read from git before any write
+ * lock, from the values the call writes). The overlap check skips the pair, both ways: a plan
+ * built on its parent's work shares the parent's files by construction. A stack that is not
+ * proved is no pair: the two are rivals.
  */
 export function isStackedPair(a: WorkTask, b: WorkTask, proved: ReadonlySet<string>): boolean {
   const stackedOn = (child: WorkTask, parent: WorkTask) =>
-    child.stackedOn === parent.plan && parentHolds(parent) && proved.has(child.id);
+    parent.plan !== null &&
+    child.stackedOn === parent.plan &&
+    parentHolds(parent) &&
+    proved.has(stackKey(child.id, parent.plan)) &&
+    sameLead(child, parent);
   return stackedOn(a, b) || stackedOn(b, a);
 }
 

@@ -445,18 +445,39 @@ A stack lifts a check, so it is never taken on a session's word alone (6.3.0 fix
 the store refuses a stack unless the caller leads both plans (`leadsPlan`: it holds the plan's
 reservation, `isLead`, or owns its task, `ownerOf`). The reservation counts because a plan handed to
 a child becomes the child's task once the child takes it, while the lead stays in its `lead_*`
-columns; the lead stacks its next plan on its own held plan. Clearing a stack only adds checks, so
-anyone may. **Proved:** a pair counts only when the stacked plan's start holds its parent's work
-(`provedStacks`, `src/tasks/stack-proof.ts`), read from git before the write lock the way
-`planFilesCheck` is, and passed in as `FilesCheck.stacked` (the task tools, for a held plan's new
-list or stack and for a start into flight) or `ReservePlan.stacked` (`herdr start --plan` and
-`plans --reserve`). The start is the commit a `herdr start` resets the child to, else the plan's
-recorded `base`. It holds the parent's work when the parent records its `branch` and `base`, its
-branch has a commit past that base, and either the branch tip is an ancestor of the start (`git
-merge-base --is-ancestor`), or the start is a commit of the parent's own first-parent line from its
-base (so a parent that keeps building after the stacked plan started does not undo the proof). A
-parent with no branch, no base or no work, a start that is unknown, and git that cannot answer all
-leave the pair as rivals: it fails closed. The store refuses a stack on a task that is not a plan,
+columns; the lead stacks its next plan on its own held plan. The lead is asked again each time the
+overlap is judged (`sameLead`, in `isStackedPair`): each plan's lead (its reservation's lead, else
+the session that owns its task) must lead the other plan too, so a take that moves either plan to
+another session ends the pair. Clearing a stack only adds checks, so anyone may.
+
+**Proved, per pair.** A pair counts only when that very pair `{stacked plan's id, parent's slug}`
+is proved (`provedStacks`, `src/tasks/stack-proof.ts`): a proof of the same plan on another parent
+proves nothing. It is read from git before the write lock the way `planFilesCheck` is, from the task
+rows **as the call will write them** (`asWritten` in `ops.ts`: the call's own `stacked_on`, `base`,
+`branch` and `status` applied), and passed in as `FilesCheck.stacked` (the task tools, for a held
+plan's new list or stack and for a start into flight, a create that starts included) or
+`ReservePlan.stacked` (`herdr start --plan` and `plans --reserve`, which read it in `judgePlans`). So
+a call that moves a stack to another parent, or sets a base and starts, is judged on what it writes.
+The proof uses fork points, never a recorded base of the parent. The default branch comes from
+`baseBranch` (`worktrees.base`, else `origin/HEAD`); when it is only guessed nothing is proved. With
+T the parent's recorded branch tip (`refs/heads`, then origin) and D `origin/<default>`:
+
+- **The parent has work of its own:** T is not an ancestor of D. A parent with no commit past the
+  default branch yet (or whose work already merged) proves nothing, and the fix says to wait for
+  its first commit.
+- **The start shares it:** S is the commit a `herdr start` resets the child to, else the stacked
+  plan's recorded `base`. `git merge-base S T` must exist and not be an ancestor of D. This holds
+  when the parent keeps building after the stacked plan started, and fails when the parent is
+  rebased (the fork point then sits on D).
+- **The stacked plan is built on it:** when the stacked plan records a branch, S must be an
+  ancestor of that branch's tip, so a base written down without building on it proves nothing.
+
+A parent with no branch git knows, a start that names no commit, and any git error all leave the
+pair as rivals: it fails closed. A stacked pair costs seven git calls (T, T on D, S, the fork
+point, the fork point on D, the stacked plan's branch tip, S in it), five when the stacked plan
+records no branch, and one more for each branch read from origin; D is read once
+per judgment, and the task tools read the default branch once more (two calls). A pair with two
+leads runs none, and a project with no stack runs none at all. The store refuses a stack on a task that is not a plan,
 on itself, on a slug with no plan, on a plan the caller does not lead, and one that
 closes a loop. Setting or clearing a stack on a held plan is judged like a new list, so clearing it
 while the two held plans share files is refused. A plan another plan is stacked on is not deleted

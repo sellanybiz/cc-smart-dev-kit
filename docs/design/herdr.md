@@ -206,10 +206,14 @@ and case folds when `core.ignorecase` is on. All three come from `planFilesCheck
 from one read of the committed copy on `origin/<default>` (`resolvePlanFiles`), never the working
 copy. A plan's stacked pair (`stacked_on`: its parent while the parent holds its files, or a plan
 stacked on it) is left out of the judgment both ways (`rivalsOf`), but only once the stack is
-proved: the stacked plan's start holds the parent's work (`provedStacks`, the rule is in
-`docs/design/tasks.md`, under "Stacked plans"). `judgePlans` reads that proof before the
-transaction, with the commit a start resets the child to, and passes it to `reservePlan`; a stack
-it cannot prove leaves the parent a rival, and the line's fix says what proves it. `herdr plans`
+proved for that pair and one lead leads both plans: the stacked plan's start shares the parent's
+own work (`judgeStacks`, the rule is in `docs/design/tasks.md`, under "Stacked plans"). `judgePlans`
+reads that proof before the transaction, with the commit a start resets the child to and the
+default branch it found (a guessed one proves nothing), and passes the proved pairs to
+`reservePlan`; a stack it cannot prove leaves the parent a rival, and the line's fix says why: the
+parent records no branch, has no commit of its own yet (wait for it), another session holds one of
+the two plans, or the plan is not built on the parent's work (start it with `herdr start --plan`
+and no `--base`, or rebuild its branch on the parent's branch). `herdr plans`
 shows `(stacked on <slug>)` after the plan's name. The reservation
 records the lead (session and process), a holder kind (`child`, or `self` for the lead's own plan)
 and a **hand-out id**, the key a child takes the plan with. A launch proved failed releases the

@@ -1,22 +1,23 @@
 /**
- * A plan stacked on another (`stacked_on`): the overlap check skips that one parent plan, both
- * ways, while that parent holds its files (open, or done and still reserved until its pull request
- * merges) and the stack is proved (the stacked plan's start holds the parent's work); every other
- * plan still blocks. Only the lead of both plans sets a stack. What is refused, what the history
- * and the task tools show, and the schema step that brought the column.
+ * A plan stacked on another (`stacked_on`), in the store: the overlap check skips that one parent
+ * plan, both ways, while that parent holds its files (open, or done and still reserved until its
+ * pull request merges), that very pair is proved, and one lead leads both; every other plan still
+ * blocks. Only the lead of both plans sets a stack. What is refused, what the history shows, and
+ * the schema step that brought the column. The proof from git and the task tools:
+ * `src/tasks/stack-proof.test.ts`.
  */
 import { expect, test } from "bun:test";
-import { writeFileSync } from "node:fs";
-import { join } from "node:path";
-import { cliPaths } from "../../cli/paths";
-import { runGit } from "../../hooks/git";
-import { hookEnv, makeRepo } from "../../testing/hooks";
-import { git, tempDir } from "../../testing/temp";
-import { folderProject } from "../context";
-import { createTaskOps, type TaskAnswer } from "../ops";
-import { provedStacks, type StackGit, stackHolds } from "../stack-proof";
+import { tempDir } from "../../testing/temp";
 import { openWorkDb, workDbFile } from "./db";
-import { allTasks, eventsOf, filesOverlap, isStackedPair, rivalsOf, taskById } from "./queries";
+import {
+  allTasks,
+  eventsOf,
+  filesOverlap,
+  isStackedPair,
+  provedSet,
+  rivalsOf,
+  taskById,
+} from "./queries";
 import { readWorkStore } from "./read";
 import {
   createTask,
@@ -41,13 +42,10 @@ function why<T>(result: Result<T>): string {
   if (result.ok) throw new Error("expected a refusal");
   return result.why;
 }
-function said(answer: TaskAnswer): string {
-  if (!answer.ok) throw new Error(answer.why);
-  return answer.text;
-}
-function refused(answer: TaskAnswer): string {
-  if (answer.ok) throw new Error(`expected a refusal, got: ${answer.text}`);
-  return answer.why;
+
+/** The proof of one stack, as `provedStacks` gives it: the plan and the parent it names. */
+function on(task: WorkTask) {
+  return { child: task.id, parent: task.stackedOn ?? "" };
 }
 
 function setup() {
@@ -80,13 +78,13 @@ test("a proved stack is held beside its parent although they share files, both w
   plan(first.db, "alpha", ["src/a/"]);
   const beta = plan(first.db, "beta", ["src/a/x.ts", "lib/b.ts"], "alpha");
   ok(reserve(first.db, "alpha"));
-  expect(ok(reserve(first.db, "beta", { stacked: [beta.id] })).lead).not.toBeNull();
+  expect(ok(reserve(first.db, "beta", { stacked: [on(beta)] })).lead).not.toBeNull();
   // The parent judged after the stacked plan skips it too.
   const second = setup();
   plan(second.db, "alpha", ["src/a/"]);
   const stacked = plan(second.db, "beta", ["src/a/x.ts"], "alpha");
-  ok(reserve(second.db, "beta", { stacked: [stacked.id] }));
-  expect(ok(reserve(second.db, "alpha", { stacked: [stacked.id] })).lead).not.toBeNull();
+  ok(reserve(second.db, "beta", { stacked: [on(stacked)] }));
+  expect(ok(reserve(second.db, "alpha", { stacked: [on(stacked)] })).lead).not.toBeNull();
 });
 
 test("a stack that is not proved is judged as rivals, both ways", () => {
@@ -96,13 +94,18 @@ test("a stack that is not proved is judged as rivals, both ways", () => {
   ok(reserve(first.db, "alpha"));
   // No proof given (the store's own default), or a proof of another plan: the pair are rivals.
   expect(why(reserve(first.db, "beta"))).toBe('#2 "beta" overlaps #1 "alpha": src/a/x.ts (src/a/)');
-  expect(why(reserve(first.db, "beta", { stacked: ["w-another"] }))).toBe(
+  expect(
+    why(reserve(first.db, "beta", { stacked: [{ child: "w-another", parent: "alpha" }] })),
+  ).toBe('#2 "beta" overlaps #1 "alpha": src/a/x.ts (src/a/)');
+  // A proof of the same plan on another parent is no proof of this pair.
+  const first2 = allTasks(first.db, "p")[1] as WorkTask;
+  expect(why(reserve(first.db, "beta", { stacked: [{ child: first2.id, parent: "gamma" }] }))).toBe(
     '#2 "beta" overlaps #1 "alpha": src/a/x.ts (src/a/)',
   );
   const reversed = setup();
   plan(reversed.db, "alpha", ["src/a/"]);
   const beta = plan(reversed.db, "beta", ["src/a/x.ts"], "alpha");
-  ok(reserve(reversed.db, "beta", { stacked: [beta.id] }));
+  ok(reserve(reversed.db, "beta", { stacked: [on(beta)] }));
   expect(why(reserve(reversed.db, "alpha"))).toBe(
     '#1 "alpha" overlaps #2 "beta": src/a/ (src/a/x.ts)',
   );
@@ -114,7 +117,7 @@ test("every other plan still blocks: a third plan, and a plan stacked on the sta
   const beta = plan(db, "beta", ["src/a/x.ts"], "alpha");
   plan(db, "gamma", ["src/a/y.ts"]);
   const delta = plan(db, "delta", ["src/a/x.ts"], "beta");
-  const stacked = [beta.id, delta.id];
+  const stacked = [on(beta), on(delta)];
   ok(reserve(db, "alpha", { stacked }));
   ok(reserve(db, "beta", { stacked }));
   expect(why(reserve(db, "gamma", { stacked }))).toBe(
@@ -131,14 +134,14 @@ test("a parent done but still reserved is skipped while it holds its files; rele
   const alpha = plan(db, "alpha", ["src/a/"]);
   const beta = plan(db, "beta", ["src/a/x.ts"], "alpha");
   plan(db, "gamma", ["src/a/y.ts"]);
-  const proved = new Set([beta.id]);
+  const proved = provedSet([on(beta)]);
   ok(reserve(db, "alpha"));
   const done = ok(updateTask(db, alpha.id, { status: "done" }, LEAD, 5));
   // Built on alpha's branch, beta shares alpha's files by construction until alpha's pull request merges.
   expect(isStackedPair(beta, done, proved)).toBe(true);
-  expect(ok(reserve(db, "beta", { stacked: [beta.id] })).lead).not.toBeNull();
+  expect(ok(reserve(db, "beta", { stacked: [on(beta)] })).lead).not.toBeNull();
   // A plan that is not stacked on alpha is still held off by it.
-  expect(why(reserve(db, "gamma", { stacked: [beta.id] }))).toBe(
+  expect(why(reserve(db, "gamma", { stacked: [on(beta)] }))).toBe(
     '#3 "gamma" overlaps #1 "alpha" (done, not released: `cc-smart-dev-kit herdr plans` releases it when its pull request merges): src/a/y.ts (src/a/)',
   );
   const released = ok(releasePlan(db, { project: "p", plan: "alpha", who: LEAD, now: 6 }));
@@ -150,7 +153,7 @@ test("the stacked pair is the one filter: open parent, either way, proved, never
   const alpha = plan(db, "alpha", ["src/a/"]);
   const beta = plan(db, "beta", ["src/a/x.ts"], "alpha");
   const gamma = plan(db, "gamma", ["src/a/y.ts"]);
-  const proved = new Set([beta.id]);
+  const proved = provedSet([on(beta)]);
   expect([isStackedPair(beta, alpha, proved), isStackedPair(alpha, beta, proved)]).toEqual([
     true,
     true,
@@ -159,7 +162,7 @@ test("the stacked pair is the one filter: open parent, either way, proved, never
     false,
     false,
   ]);
-  const none = new Set<string>();
+  const none = provedSet();
   expect([isStackedPair(beta, alpha, none), isStackedPair(alpha, beta, none)]).toEqual([
     false,
     false,
@@ -236,12 +239,28 @@ test("only the lead of both plans stacks one on the other: another lead's stack 
   expect(ok(updateTask(db, mine.id, { stackedOn: null }, CHILD, 5)).stackedOn).toBeNull();
 });
 
+test("the lead is judged when the overlap is, not only when the stack was set: a proved pair taken apart is rivals", () => {
+  const { db } = setup();
+  const alpha = plan(db, "alpha", ["src/a/"]);
+  const beta = plan(db, "beta", ["src/a/x.ts"], "alpha");
+  ok(reserve(db, "alpha"));
+  expect(isStackedPair(beta, taskById(db, alpha.id), provedSet([on(beta)]))).toBe(true);
+  // Another session takes beta: the store still holds the stack and the caller still brings its proof.
+  ok(takeTasks(db, "p", beta.id, OTHER, 3, { isLive: () => false }));
+  const taken = taskById(db, beta.id);
+  expect([taken.createdBy, taken.stackedOn]).toEqual(["other", "alpha"]);
+  expect(isStackedPair(taken, taskById(db, alpha.id), provedSet([on(taken)]))).toBe(false);
+  expect(why(reserve(db, "beta", { who: OTHER, stacked: [on(taken)] }))).toBe(
+    '#2 "beta" overlaps #1 "alpha": src/a/x.ts (src/a/)',
+  );
+});
+
 test("clearing the stack of a held plan that shares its parent's files is refused", () => {
   const { db } = setup();
   plan(db, "alpha", ["src/a/"]);
   const beta = plan(db, "beta", ["src/a/x.ts"], "alpha");
   ok(reserve(db, "alpha"));
-  ok(reserve(db, "beta", { stacked: [beta.id] }));
+  ok(reserve(db, "beta", { stacked: [on(beta)] }));
   expect(why(updateTask(db, beta.id, { stackedOn: null }, LEAD, 5))).toBe(
     '#2 "beta" is held, so its files may not overlap another held plan: overlaps #1 "alpha": src/a/x.ts (src/a/)',
   );
@@ -278,224 +297,5 @@ test("a schema 6 store moves to 7: a hook reads no stack before, and the column 
     expect(allTasks(moved, "p").map((t) => t.stackedOn)).toEqual([null, "alpha"]);
   } finally {
     moved.close();
-  }
-});
-
-/** Commits `files` on the checked-out branch and returns the new commit. */
-function commit(repo: string, files: Record<string, string>): string {
-  for (const [path, text] of Object.entries(files)) writeFileSync(join(repo, path), text);
-  git(repo, "add", "-A");
-  git(repo, "commit", "-q", "-m", `change ${Object.keys(files).join(" ")}`);
-  return git(repo, "rev-parse", "HEAD").trim();
-}
-
-/**
- * A repo whose `alpha-branch` leaves `main` at `base` and holds one commit (`tip`), and a `main`
- * that moved on by one commit of its own (`later`). Checked out on `main`.
- */
-function stackRepo() {
-  const repo = makeRepo();
-  const base = git(repo, "rev-parse", "HEAD").trim();
-  git(repo, "checkout", "-q", "-b", "alpha-branch");
-  const tip = commit(repo, { "alpha.txt": "1\n" });
-  git(repo, "checkout", "-q", "main");
-  const later = commit(repo, { "main.txt": "1\n" });
-  const env = hookEnv();
-  const run: StackGit = (args) => runGit(repo, args, env);
-  return { repo, base, tip, later, run };
-}
-
-test("a stack is proved only when its start holds the parent's work on the parent's own line", () => {
-  const { repo, base, tip, later, run } = stackRepo();
-  const { db } = setup();
-  const alpha = ok(
-    updateTask(db, plan(db, "alpha", ["src/a/"]).id, { branch: "alpha-branch", base }, LEAD, 3),
-  );
-  // Started on the parent's tip, or on a commit past it: proved.
-  expect(stackHolds(run, alpha, tip)).toBe(true);
-  git(repo, "checkout", "-q", "-b", "beta-branch", "alpha-branch");
-  const past = commit(repo, { "beta.txt": "1\n" });
-  expect(stackHolds(run, alpha, past)).toBe(true);
-  // The parent's branch moves on after the start: the start is still on its own line.
-  git(repo, "checkout", "-q", "alpha-branch");
-  const moved = commit(repo, { "alpha.txt": "2\n" });
-  expect(stackHolds(run, alpha, tip)).toBe(true);
-  expect(stackHolds(run, alpha, moved)).toBe(true);
-  // Started on the default branch (the honest mistake: no --base), at the parent's own base, or
-  // on nothing git knows: not proved.
-  expect(stackHolds(run, alpha, later)).toBe(false);
-  expect(stackHolds(run, alpha, base)).toBe(false);
-  expect(stackHolds(run, alpha, null)).toBe(false);
-  expect(stackHolds(run, alpha, "no-such-ref")).toBe(false);
-  expect(stackHolds(run, alpha, "--all")).toBe(false);
-  // A parent with no branch, no base, or no work past its base proves nothing.
-  expect(stackHolds(run, { ...alpha, branch: null }, tip)).toBe(false);
-  expect(stackHolds(run, { ...alpha, base: null }, tip)).toBe(false);
-  expect(stackHolds(run, { ...alpha, branch: "gone-branch" }, tip)).toBe(false);
-  expect(stackHolds(run, { ...alpha, base: moved }, moved)).toBe(false);
-});
-
-test("provedStacks names the stacked plans whose start, or recorded base, holds a parent that holds its files", () => {
-  const { base, tip, later, run } = stackRepo();
-  const { db } = setup();
-  const alpha = plan(db, "alpha", ["src/a/"]);
-  ok(updateTask(db, alpha.id, { branch: "alpha-branch", base }, LEAD, 3));
-  const onTip = plan(db, "on-tip", ["src/a/x.ts"], "alpha");
-  ok(updateTask(db, onTip.id, { base: tip }, LEAD, 3));
-  const onMain = plan(db, "on-main", ["src/a/y.ts"], "alpha");
-  ok(updateTask(db, onMain.id, { base: later }, LEAD, 3));
-  const unbased = plan(db, "unbased", ["src/a/z.ts"], "alpha");
-  plan(db, "plain", ["src/a/w.ts"]);
-  const all = () => allTasks(db, "p");
-  expect(provedStacks(all(), run)).toEqual([onTip.id]);
-  // A start given for a plan wins over its recorded base.
-  expect(provedStacks(all(), run, { [onMain.id]: tip, [unbased.id]: tip })).toEqual([
-    onTip.id,
-    onMain.id,
-    unbased.id,
-  ]);
-  expect(provedStacks(all(), run, { [onTip.id]: later })).toEqual([]);
-  // A parent that no longer holds its files (dropped) proves no stack.
-  ok(updateTask(db, alpha.id, { status: "dropped" }, LEAD, 4));
-  expect(provedStacks(all(), run)).toEqual([]);
-});
-
-/** The task tools in a temp repo, for any caller, with nothing ignored and case compared. */
-function world() {
-  const repo = makeRepo();
-  const env = hookEnv();
-  const paths = cliPaths(env);
-  const ops = (who: Who) =>
-    createTaskOps({
-      stateDir: paths.stateDir,
-      env,
-      cwd: () => repo,
-      caller: () => ({ ...who, cwd: repo }),
-      filesCheck: () => ({ ignore: [], caseFold: false }),
-    });
-  const store = () => openWorkDb(workDbFile(paths), { mode: "write" });
-  return { repo, project: folderProject(repo), ops, store };
-}
-
-test("the task tools set a stack on create and update, show it, and refuse it off a plan", () => {
-  const w = world();
-  const ops = w.ops(LEAD);
-  try {
-    said(ops.call("create", { subject: "Alpha", plan: "alpha", files: ["src/a/"] }));
-    expect(
-      said(
-        ops.call("create", {
-          subject: "Beta",
-          plan: "beta",
-          files: ["src/a/x.ts"],
-          stacked_on: "alpha",
-        }),
-      ),
-    ).toBe('#2 "Beta" · plan beta');
-    said(ops.call("create", { subject: "Beta phase", plan: "beta", phase: "A" }));
-    expect(said(ops.call("list", { scope: "plan", plan: "beta" }))).toContain(
-      "#2 [queued · plan · stacked on alpha] Beta",
-    );
-    expect(said(ops.call("get", { task: "#2" }))).toContain(
-      '#2 "Beta" [plan · pending · stacked on alpha]',
-    );
-    expect(
-      refused(ops.call("create", { subject: "B", plan: "beta", phase: "B", stacked_on: "alpha" })),
-    ).toBe(
-      "stacked_on belongs to a plan task: create the plan with plan and a subject (no phase, no parent), or set it with task_update",
-    );
-    expect(refused(ops.call("update", { task: "#3", stacked_on: "alpha" }))).toBe(
-      '#3 "Beta phase" is a phase: only a plan task is stacked on another plan (set stacked_on on the plan\'s own #n)',
-    );
-    expect(refused(ops.call("update", { task: "#2", stacked_on: "beta" }))).toBe(
-      '#2 "Beta" cannot be stacked on itself',
-    );
-    expect(said(ops.call("update", { task: "#2", stacked_on: null }))).toBe('#2 "Beta" · pending');
-  } finally {
-    ops.close();
-  }
-  // Another session's plan is never stacked on this lead's plan through the tools either.
-  const other = w.ops(OTHER);
-  try {
-    said(other.call("create", { subject: "Theirs", plan: "theirs", files: ["src/a/y.ts"] }));
-    expect(refused(other.call("update", { task: "#4", stacked_on: "alpha" }))).toBe(
-      '#4 "Theirs" cannot be stacked on "alpha": #1 "Alpha" is not led by this session. A plan is stacked only on another plan of the same lead, whose branch it is built on',
-    );
-  } finally {
-    other.close();
-  }
-});
-
-test("a stacked plan starts beside its reserved parent only when its base holds the parent's work", () => {
-  const w = world();
-  const base = git(w.repo, "rev-parse", "HEAD").trim();
-  git(w.repo, "checkout", "-q", "-b", "alpha-branch");
-  const tip = commit(w.repo, { "alpha.txt": "1\n" });
-  git(w.repo, "checkout", "-q", "main");
-  const lay = (who: Who, slug: string, files: string[], stackedOn?: string) => {
-    const ops = w.ops(who);
-    try {
-      said(
-        ops.call("create", {
-          subject: slug,
-          plan: slug,
-          files,
-          ...(stackedOn === undefined ? {} : { stacked_on: stackedOn }),
-        }),
-      );
-      said(ops.call("create", { subject: `${slug} phase`, plan: slug, phase: "A" }));
-      const db = w.store();
-      try {
-        const phase = allTasks(db, w.project).find((t) => t.plan === slug && t.kind === "phase");
-        said(ops.call("create", { subject: `${slug} step`, parent: `#${phase?.number}` }));
-        return `#${phase?.number}`;
-      } finally {
-        db.close();
-      }
-    } finally {
-      ops.close();
-    }
-  };
-  lay(LEAD, "alpha", ["src/a/"]);
-  const beta = lay(LEAD, "beta", ["src/a/x.ts"], "alpha");
-  const gamma = lay(THIRD, "gamma", ["src/a/y.ts"]);
-  const db = w.store();
-  const row = (slug: string) =>
-    allTasks(db, w.project).find((t) => t.kind === "plan" && t.plan === slug) as WorkTask;
-  try {
-    ok(updateTask(db, row("alpha").id, { branch: "alpha-branch", base }, LEAD, 5));
-    ok(
-      reservePlan(db, {
-        project: w.project,
-        plan: "alpha",
-        who: LEAD,
-        holder: "child",
-        ignore: [],
-        caseFold: false,
-        now: 10,
-      }),
-    );
-    // Beta records the default branch as its start: its stack is not proved, so alpha is a rival.
-    ok(updateTask(db, row("beta").id, { base }, LEAD, 11));
-  } finally {
-    db.close();
-  }
-  const lead = w.ops(LEAD);
-  const third = w.ops(THIRD);
-  try {
-    expect(refused(lead.call("update", { task: beta, status: "in_progress" }))).toContain(
-      '"beta" cannot start, since it overlaps #1 "alpha": src/a/x.ts (src/a/)',
-    );
-    // Built on alpha's branch, it starts beside alpha in parallel.
-    said(lead.call("update", { task: "#4", base: tip }));
-    expect(said(lead.call("update", { task: beta, status: "in_progress" }))).toBe(
-      `${beta} "beta phase" · in progress`,
-    );
-    expect(refused(third.call("update", { task: gamma, status: "in_progress" }))).toContain(
-      '"gamma" cannot start, since it overlaps #1 "alpha": src/a/y.ts (src/a/)',
-    );
-  } finally {
-    lead.close();
-    third.close();
   }
 });

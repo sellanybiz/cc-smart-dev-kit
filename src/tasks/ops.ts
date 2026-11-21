@@ -88,6 +88,34 @@ function isPhaseId(value: string): boolean {
   );
 }
 
+/**
+ * The task rows as a call will leave them: the one task `id` takes the stack, base, branch and
+ * status the call gives (each left out keeps the stored one). The stack proof reads these
+ * (`provedStacks`), so the judgment sees what the call writes, never what it replaces.
+ */
+function asWritten(
+  all: readonly WorkTask[],
+  id: string,
+  change: {
+    stackedOn?: string | null | undefined;
+    base?: string | undefined;
+    branch?: string | undefined;
+    status?: WorkTask["status"] | undefined;
+  },
+): WorkTask[] {
+  return all.map((t) =>
+    t.id !== id
+      ? t
+      : {
+          ...t,
+          ...(change.stackedOn === undefined ? {} : { stackedOn: change.stackedOn }),
+          ...(change.base === undefined ? {} : { base: change.base }),
+          ...(change.branch === undefined ? {} : { branch: change.branch }),
+          ...(change.status === undefined ? {} : { status: change.status }),
+        },
+  );
+}
+
 function bindings(input: {
   agent?: string | undefined;
   branch?: string | undefined;
@@ -345,14 +373,25 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
             }) === null,
         );
       /**
-       * What an overlap is judged by, read from git before the write lock: the files check
-       * (`planFilesCheck`, or the test's own) and the stacked plans whose start holds their
-       * parent's work (`provedStacks`, in the session's checkout). Outside a checkout no stack is
-       * proved, so every stacked pair is judged as rivals.
+       * The stacked pairs proved in the session's checkout (`provedStacks`), judged on `seen`: the
+       * task rows as this call will leave them (`asWritten`). Outside a checkout, with no stack at
+       * all, or with the default branch unknown (`baseBranch` only guessed it) no stack is proved,
+       * so every stacked pair is judged as rivals.
        */
-      const readCheck = (): FilesCheck => ({
+      const readStacks = (seen: readonly WorkTask[]) => {
+        const root = ctx.checkoutRoot;
+        if (root === null || !seen.some((t) => t.kind === "plan" && t.stackedOn !== null))
+          return [];
+        const chosen = baseBranch(locateCheckout(root, { env }), env, root);
+        return provedStacks(seen, handBackGit, chosen.from === "default" ? null : chosen.base);
+      };
+      /**
+       * What an overlap is judged by, read from git before the write lock: the files check
+       * (`planFilesCheck`, or the test's own) and the proved stacks (`readStacks`) of `seen`.
+       */
+      const readCheck = (seen: readonly WorkTask[]): FilesCheck => ({
         ...(options.filesCheck ?? planFilesCheck)(cwd),
-        stacked: ctx.checkoutRoot === null ? [] : provedStacks(all, handBackGit),
+        stacked: readStacks(seen),
       });
       /**
        * A plan's new file list, checked before the write lock: each entry is normalised (D2) and
@@ -360,23 +399,24 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
        * and case from git here (whether the plan is held is only known inside the transaction), so
        * no git runs under the lock; the store then judges an overlap there.
        */
-      const filesWrite = (files: readonly string[]) => {
+      const filesWrite = (files: readonly string[], seen: readonly WorkTask[]) => {
         for (const raw of files) {
           const path = normalizePlanFile(raw);
           if (ctx.checkoutRoot === null || path.endsWith("/")) continue;
           if (isFolderOnDisk(ctx.checkoutRoot, path))
             throw new Error(`file "${raw}" is a folder: write it ${path}/`);
         }
-        return { files, filesCheck: readCheck() };
+        return { files, filesCheck: readCheck(seen) };
       };
       /**
        * A plan's new file list and stack, as one update: a stack set or cleared on a held plan is
-       * judged like a new list (`refuseHeldOverlap`), so it reads the same check before the lock.
-       * Null when the call changes neither.
+       * judged like a new list (`refuseHeldOverlap`), so it reads the same check before the lock,
+       * on `seen` (`asWritten`). Null when the call changes neither.
        */
       const planWrite = (
         files: readonly string[] | undefined,
         stackedOn: string | null | undefined,
+        seen: readonly WorkTask[],
       ): {
         files?: readonly string[];
         stackedOn?: string | null;
@@ -384,7 +424,7 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
       } | null => {
         if (files === undefined && stackedOn === undefined) return null;
         return {
-          ...(files === undefined ? { filesCheck: readCheck() } : filesWrite(files)),
+          ...(files === undefined ? { filesCheck: readCheck(seen) } : filesWrite(files, seen)),
           ...(stackedOn === undefined ? {} : { stackedOn }),
         };
       };
@@ -398,9 +438,12 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
        * in flight, then its last running task closes before the lock, so the start is judged with
        * that default.
        */
-      const startCheck = (plan: string | null): { filesCheck?: FilesCheck } => {
+      const startCheck = (
+        plan: string | null,
+        seen: readonly WorkTask[] = all,
+      ): { filesCheck?: FilesCheck } => {
         const row = all.find((t) => t.kind === "plan" && t.plan === plan);
-        return row === undefined || isInFlight(all, row) ? {} : { filesCheck: readCheck() };
+        return row === undefined || isInFlight(all, row) ? {} : { filesCheck: readCheck(seen) };
       };
       /**
        * Marks the caller's own plan in flight when work in it starts: its task goes from pending
@@ -587,7 +630,13 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
             const existing = all.find((t) => t.kind === "plan" && t.plan === slug);
             const there = existing !== undefined;
             // A plan that is there takes the list and the stack as an update, held or not (`applyUpdate`).
-            const listed = planWrite(input.files, input.stacked_on);
+            const listed = planWrite(
+              input.files,
+              input.stacked_on,
+              existing === undefined
+                ? all
+                : asWritten(all, existing.id, { stackedOn: input.stacked_on }),
+            );
             const made = value(
               writeWork(store, () => {
                 const row = planTask(
@@ -773,7 +822,15 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
           throw new Error(
             `${label(task)} is a ${task.kind}: only a plan task is stacked on another plan (set stacked_on on the plan's own #n)`,
           );
-        const listed = planWrite(input.files, input.stacked_on);
+        // The stacks are proved on the rows as this call writes them: its own stack, base,
+        // branch and status, never the ones it replaces.
+        const seen = asWritten(all, task.id, {
+          stackedOn: input.stacked_on,
+          base: input.base,
+          branch: input.branch,
+          status,
+        });
+        const listed = planWrite(input.files, input.stacked_on, seen);
         // A dropped phase coming back is a phase laid again: the cap judges it.
         if (
           task.kind === "phase" &&
@@ -809,7 +866,7 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
           );
         }
         // The plan that goes in flight is judged against the plans held for others (`startCheck`).
-        const flight = entering ? startCheck(task.kind === "plan" ? task.plan : landing) : {};
+        const flight = entering ? startCheck(task.kind === "plan" ? task.plan : landing, seen) : {};
         // Starting work puts its plan in flight, in the same write (a plan's own start sets it).
         const updated = value(
           writeWork(store, () => {
