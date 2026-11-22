@@ -20,7 +20,7 @@ import { git, tempDir } from "../testing/temp";
 import { PROCESS_TEST_TIMEOUT_MS } from "../testing/timeouts";
 import { runWorkflow, WORKFLOW_USAGE, type WorkflowContext } from "./commands";
 import { personalWorkflowFile } from "./resolve";
-import { MERGE_FILES_RULE, WORKFLOW_KEYS } from "./schema";
+import { APPEND_ONLY_RULE, MERGE_FILES_RULE, WORKFLOW_KEYS } from "./schema";
 import { writePersonalSetting, writeProjectSetting } from "./write";
 
 // This file starts the CLI as a real process: its own speed limit (src/testing/timeouts.ts).
@@ -86,6 +86,7 @@ describe("workflow show", () => {
       "plans.maxPhases = 10 (default)",
       "plans.runMode = ask (default)",
       "plans.mergeFiles = (nothing) (default)",
+      "plans.appendOnly = (nothing) (default)",
       "switches.statusLine = false (default)",
       "switches.sessionNames = false (default)",
       "switches.jobRoute = false (default)",
@@ -1004,7 +1005,7 @@ describe("the review gate (CM-1)", () => {
         expect(await runWorkflow([sub, key, ...value], run.context)).toBe(2);
         expect(run.lines).toEqual([]);
         expect(run.errors).toEqual([
-          `Unknown setting: ${key}. The settings are: allowCommit, allowPush, openPr, allowMerge, mergeMethod, deleteBranch, reviewBeforePush, reviewAgents, fixesAfterReview.lines, fixesAfterReview.files, fixesAfterReview.percent, clearWorktreeAfterMerge, issues.enabled, issues.allowPublic, issues.foundLabel, issues.fixedLabel, issues.readyLabel, alerts.usagePercent, plans.maxPhases, plans.runMode, plans.mergeFiles, switches.statusLine, switches.sessionNames, switches.jobRoute, switches.updateHold, switches.leadHint`,
+          `Unknown setting: ${key}. The settings are: allowCommit, allowPush, openPr, allowMerge, mergeMethod, deleteBranch, reviewBeforePush, reviewAgents, fixesAfterReview.lines, fixesAfterReview.files, fixesAfterReview.percent, clearWorktreeAfterMerge, issues.enabled, issues.allowPublic, issues.foundLabel, issues.fixedLabel, issues.readyLabel, alerts.usagePercent, plans.maxPhases, plans.runMode, plans.mergeFiles, plans.appendOnly, switches.statusLine, switches.sessionNames, switches.jobRoute, switches.updateHold, switches.leadHint`,
         ]);
       }
       expect(existsSync(cliPaths(env).workflowConfigFile)).toBe(false);
@@ -1470,6 +1471,18 @@ describe("plans.runMode and plans.mergeFiles", () => {
       [],
       `${COMMAND} workflow unset plans.mergeFiles cannot run inside a Claude Code session: plans.mergeFiles names the paths the plans' overlap check leaves out, so a session that could widen it would lift its own check; the kit reads only the copy committed on origin/<worktrees.base>. Run it in your own terminal with --project and commit it to the base. \`workflow propose\` opens a pull request you review instead.`,
     ],
+    [
+      "set",
+      "plans.appendOnly",
+      ["db/migrations/"],
+      `${COMMAND} workflow set plans.appendOnly cannot run inside a Claude Code session: plans.appendOnly names the folders where the plans' overlap check compares files only, so a session that could widen it would lift its own check; the kit reads only the copy committed on origin/<worktrees.base>. Run it in your own terminal with --project and commit it to the base. \`workflow propose\` opens a pull request you review instead.`,
+    ],
+    [
+      "unset",
+      "plans.appendOnly",
+      [],
+      `${COMMAND} workflow unset plans.appendOnly cannot run inside a Claude Code session: plans.appendOnly names the folders where the plans' overlap check compares files only, so a session that could widen it would lift its own check; the kit reads only the copy committed on origin/<worktrees.base>. Run it in your own terminal with --project and commit it to the base. \`workflow propose\` opens a pull request you review instead.`,
+    ],
   ] as const)(
     "workflow %s %s refuses inside Claude Code, in both files, and writes nothing",
     async (sub, key, value, message) => {
@@ -1488,20 +1501,78 @@ describe("plans.runMode and plans.mergeFiles", () => {
     },
   );
 
-  test("mergeFiles without --project is refused: it is the project's, read as committed", async () => {
+  test("mergeFiles and appendOnly without --project are refused: they are the project's, read as committed", async () => {
     const env = hookEnv();
-    for (const [sub, value] of [
-      ["set", ["CHANGELOG.md"]],
-      ["unset", []],
+    for (const [sub, key, value] of [
+      ["set", "plans.mergeFiles", ["CHANGELOG.md"]],
+      ["unset", "plans.mergeFiles", []],
+      ["set", "plans.appendOnly", ["db/migrations/"]],
+      ["unset", "plans.appendOnly", []],
     ] as const) {
       const run = context(tempDir("not-git"), env);
-      expect(await runWorkflow([sub, "plans.mergeFiles", ...value], run.context)).toBe(1);
+      expect(await runWorkflow([sub, key, ...value], run.context)).toBe(1);
       expect(run.lines).toEqual([]);
       expect(run.errors).toEqual([
-        "plans.mergeFiles is the project's setting, not yours: run it with --project inside the project, and commit it to the base (it counts only as committed on origin/<worktrees.base>)",
+        `${key} is the project's setting, not yours: run it with --project inside the project, and commit it to the base (it counts only as committed on origin/<worktrees.base>)`,
       ]);
     }
     expect(existsSync(cliPaths(env).workflowConfigFile)).toBe(false);
+  });
+
+  // The same floor logic as mergeFiles: this build meets 6.3 (the list is written) or says to update.
+  test("appendOnly: --project writes the folders and raises requires to 6.3, or on an older build says to update; a bare name is refused", async () => {
+    const env = hookEnv();
+    const repo = makeRepo();
+    const file = writeClaudeFile(repo, "cc-smart-dev-kit.json", SETTINGS);
+    const before = readFileSync(file, "utf8");
+    const bare = context(repo, env);
+    expect(
+      await runWorkflow(["set", "plans.appendOnly", "db/migrations", "--project"], bare.context),
+    ).toBe(2);
+    expect(bare.errors[0]).toStartWith(`${APPEND_ONLY_RULE}; `);
+    expect(readFileSync(file, "utf8")).toBe(before);
+    const run = context(repo, env);
+    const code = await runWorkflow(
+      ["set", "plans.appendOnly", "./db/migrations/", "--project"],
+      run.context,
+    );
+    if (Bun.semver.order(VERSION, "6.3.0") < 0) {
+      expect(code).toBe(1);
+      expect(run.errors).toEqual([
+        `${file}: this project needs cc-smart-dev-kit >=6.3; you have ${VERSION}; run ${PLUGIN_UPDATE_COMMAND}`,
+      ]);
+      expect(readFileSync(file, "utf8")).toBe(before);
+      return;
+    }
+    expect(code).toBe(0);
+    expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({
+      ...SETTINGS,
+      requires: ">=6.3",
+      workflow: { plans: { appendOnly: ["db/migrations/"] } },
+    });
+  });
+
+  test("show: the committed appendOnly is what the plan tools read, not the working copy's", async () => {
+    const { repo } = makeClone();
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", {
+      ...SETTINGS,
+      requires: ">=6.3",
+      workflow: { plans: { appendOnly: ["db/migrations/"] } },
+    });
+    git(repo, "add", "-A");
+    git(repo, "commit", "-q", "-m", "policy");
+    git(repo, "update-ref", "refs/remotes/origin/main", "HEAD");
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", {
+      ...SETTINGS,
+      requires: ">=6.3",
+      workflow: { plans: { appendOnly: ["src/"] } },
+    });
+    const run = context(repo, hookEnv());
+    expect(await runWorkflow(["show"], run.context)).toBe(0);
+    expect(run.lines).toContain("plans.appendOnly = src/ (project)");
+    expect(run.lines).toContain(
+      "plans.appendOnly as the plan tools read it, from origin/main:.claude/cc-smart-dev-kit.json = db/migrations/",
+    );
   });
 
   test("mergeFiles: a bad path is refused with the rule, nothing written", async () => {
@@ -1600,6 +1671,9 @@ describe("plans.runMode and plans.mergeFiles", () => {
     expect(await runWorkflow(["show"], run.context)).toBe(0);
     expect(run.lines).toContain(
       "plans.mergeFiles as the plan tools read it, from origin/main:.claude/cc-smart-dev-kit.json = (nothing) (origin/main is not known in this repository (no origin, or the branch was never fetched))",
+    );
+    expect(run.lines).toContain(
+      "plans.appendOnly as the plan tools read it, from origin/main:.claude/cc-smart-dev-kit.json = (nothing) (origin/main is not known in this repository (no origin, or the branch was never fetched))",
     );
   });
 

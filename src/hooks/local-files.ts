@@ -25,8 +25,7 @@ import {
   readSync,
 } from "node:fs";
 import { join } from "node:path";
-import { loadCcSmartDevKitConfig } from "../project/config";
-import { CONFIG_PATH } from "../project/resolve";
+import type { CcSmartDevKitConfig } from "../project/config";
 import { reflogEntryTime, runGit, worktreeAdminDir } from "./git";
 import type { Env } from "./run";
 
@@ -157,28 +156,12 @@ export function sameAsMain(worktree: string, mainCheckout: string, path: string)
 }
 
 /**
- * Project patterns only widen the disposable ignored-entry rule. A missing or unusable
- * project file proves nothing safe, so keep the built-in policy in that case.
+ * The globs of the project's `worktrees.rebuildable`. They only widen the disposable ignored-entry
+ * rule, so a caller that cannot use the project file (invalid, too new, unreadable) passes none:
+ * an unusable file proves nothing safe.
  */
-export function projectRebuildable(mainCheckout: string | null): Bun.Glob[] {
-  if (mainCheckout === null) return [];
-  try {
-    const patterns =
-      loadCcSmartDevKitConfig(join(mainCheckout, CONFIG_PATH))?.worktrees?.rebuildable ?? [];
-    return patterns.map((pattern) => new Bun.Glob(`**/${pattern}`));
-  } catch {
-    // Invalid or too-new config grants no additional permission to lose local files.
-    return [];
-  }
-}
-
-/** The one disposable-entry policy, shared by removal and explicit archival. */
-export function safeIgnoredEntry(
-  worktree: string,
-  mainCheckout: string | null,
-  entry: string,
-): boolean {
-  return safeEntry(worktree, mainCheckout, entry, projectRebuildable(mainCheckout));
+export function rebuildableGlobs(config: CcSmartDevKitConfig | null): Bun.Glob[] {
+  return (config?.worktrees?.rebuildable ?? []).map((pattern) => new Bun.Glob(`**/${pattern}`));
 }
 
 /** Judge an entry using the project patterns already read for this walk. */
@@ -212,7 +195,7 @@ export function localFiles(
   worktree: string,
   mainCheckout: string | null,
   env: Env,
-  patterns: readonly Bun.Glob[] = projectRebuildable(mainCheckout),
+  patterns: readonly Bun.Glob[],
 ): string[] | null {
   // `--untracked-files=normal`: an ignored folder is one entry, not every file in it (and a
   // `status.showUntrackedFiles` setting does not change that).

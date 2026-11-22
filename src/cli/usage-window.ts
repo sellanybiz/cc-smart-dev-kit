@@ -7,8 +7,9 @@
  * on stdin, filled from Anthropic's `anthropic-ratelimit-unified-5h-*` / `-7d-*` headers
  * (`docs/claude-code-contract.md` § Usage limits). Nothing else on the machine is told them —
  * not the router's state file, not a transcript, no hook input — so the status line writes them
- * down when it reads them. The portal reads the 5-hour window back for its plan-usage number
- * (`planWindow`, `src/portal/facts.ts`). No hook reads it: Claude is not told the plan's usage.
+ * down when it reads them. The portal's Overview reads both windows back through
+ * `readUsageWindows` (`planWindows`, `src/portal/facts.ts`). No hook reads them: Claude is not
+ * told the plan's usage.
  *
  * The file is `<stateDir>/usage-window.json`, mode 600, the kit's own state:
  * `{"fiveHour": {"percent": 87, "resetsAt": 1792600800}, "sevenDay": {…}, "readAt": "2026-10-23T…"}`.
@@ -168,12 +169,4 @@ export function readUsageWindows(paths: CliPaths, nowMs: number): UsageWindows {
     readAt: Number.isFinite(readAt) ? readAt : null,
     sevenDay: currentWindow(stored.sevenDay, stored.readAt, SEVEN_DAY_SPAN_MS, nowMs),
   };
-}
-
-/**
- * The last recorded 5-hour window, as of `nowMs`; null when there is none, it cannot be read,
- * or the window it measured is over.
- */
-export function readUsageWindow(paths: CliPaths, nowMs: number): UsageWindow | null {
-  return readUsageWindows(paths, nowMs).fiveHour;
 }

@@ -5,19 +5,27 @@ import { COMMAND } from "../build-info/names";
 import { isOlder } from "../build-info/semver";
 import { parseOptions } from "../cli/args";
 import { cliPaths } from "../cli/paths";
-import { runGit } from "../hooks/git";
+import { type ListedWorktree, parseWorktreeList, runGit } from "../hooks/git";
 import { locateCheckout } from "../project/resolve";
 import { taskContext } from "../tasks/context";
 import { createTaskOps } from "../tasks/ops";
+import { branchTip } from "../tasks/stack-proof";
 import { openWorkDb, workDbFile } from "../tasks/work/db";
 import { CLAIM_PROCESS, callerOf } from "../tasks/work/identity";
 import { getTask, heldPlans, isOpen, planByRef } from "../tasks/work/queries";
 import { adoptLeadPlans, releasePlan, swapPlanAgent } from "../tasks/work/store";
 import type { Who } from "../tasks/work/types";
 import { baseBranch } from "../worktrees/command";
-import { worktreeBranch, worktreePath } from "../worktrees/paths";
+import { inDefaultFolder, listedNamed, worktreeBranch, worktreePath } from "../worktrees/paths";
 import { pullRequestState } from "../worktrees/scan";
-import { briefPath, type FollowupTrailer, reportPath, writeBrief, writePrivate } from "./brief";
+import {
+  briefPath,
+  type FollowupTrailer,
+  reportPath,
+  type StartBase,
+  writeBrief,
+  writePrivate,
+} from "./brief";
 import {
   coreId,
   defaultHcRunner,
@@ -46,6 +54,7 @@ import {
   HERDR_SPACE,
   HERDR_TAB,
   herdrAgent,
+  KIT_BASE,
   KIT_FOLLOWUP,
   KIT_INDEPENDENT,
   KIT_LEAD,
@@ -57,6 +66,7 @@ import {
   parseLeadId,
   validChildName,
 } from "./labels";
+import { writeLaunchRecord } from "./launch-record";
 import { MachinesFileError, machineRule, readMachines, writeMachines } from "./machines";
 import {
   confirmClaim,
@@ -68,6 +78,7 @@ import {
   runPlans,
   UNKNOWN_BASE,
 } from "./plans";
+import { onlyWaiter, type WaiterDetails } from "./waiter";
 import {
   cliModeFlag,
   FOLLOWUP_EXCLUSION,
@@ -83,6 +94,15 @@ export const WAIT_TIMEOUT_MS = 180_000;
 export const LAUNCH_CHECK_MS = 20_000;
 export const LAUNCH_POLL_MS = 250;
 export const LAUNCH_POLL_LIMIT = Math.ceil(LAUNCH_CHECK_MS / LAUNCH_POLL_MS) + 1;
+/**
+ * How long a start that must record its child's worktree waits, after hc reports Claude Code, for
+ * git to list a worktree that launch made: a project's own WorktreeCreate hook, or a slow
+ * `git worktree add`, may finish after the app is up. The wait is bounded, and a start that finds
+ * nothing records nothing.
+ */
+export const WORKTREE_BIND_WAIT_MS = 10_000;
+/** Like `LAUNCH_POLL_LIMIT`: a finite number of looks, so a stationary clock cannot spin forever. */
+const WORKTREE_BIND_POLL_LIMIT = Math.ceil(WORKTREE_BIND_WAIT_MS / LAUNCH_POLL_MS) + 1;
 function terminalEnded(error: unknown): boolean {
   return error instanceof HcError && ["finished", "not_found"].includes(error.kind);
 }
@@ -496,9 +516,12 @@ function followupGate(
     return { why, fix: `It is in the ${state} state: look at its pane: hc attach ${live.address}` };
   }
   // An ended child of any lead of this core: its work is not lost when its lead is another.
-  for (const gone of inRepo.filter((t) => t.state !== "live")) {
+  const ended = inRepo.filter((t) => t.state !== "live");
+  // A project's own WorktreeCreate hook may have put its worktree outside the default folder.
+  const listing = ended.length > 0 ? (listedWorktrees(ctx, r, undefined, repo) ?? []) : [];
+  for (const gone of ended) {
     if (!gone.name) continue;
-    const worktree = worktreePath(repo, gone.name);
+    const worktree = listedNamed(listing, gone.name)[0]?.path ?? worktreePath(repo, gone.name);
     const left = leftBehind(ctx, repo, worktree, gone.name);
     if (left === null) continue;
     const { branch, tip } = left;
@@ -556,14 +579,14 @@ function count(ctx: HerdrContext, rows: Terminal[]): void {
 function show(ctx: HerdrContext, rows: Terminal[]): void {
   count(ctx, rows);
   ctx.out.say(
-    "address | name | kind | repo | machine | model | task, plan or follow-up | state | blocked kind | message | worktree",
+    "address | name | kind | repo | machine | model | task, plan or follow-up | state | blocked kind | message | base | worktree",
   );
   for (const t of rows) {
     const argv = t.foreground?.argv ?? t.argv ?? [];
     const modelIndex = argv.indexOf("--model");
     const machine = t.address.includes("/") ? t.address.split("/")[0] : "local";
     ctx.out.say(
-      `${t.address} | ${t.name ?? "-"} | ${t.labels[KIT_INDEPENDENT] ? "independent" : "linked child"} | ${t.labels[KIT_REPO] ?? "-"} | ${machine} | ${modelIndex >= 0 ? (argv[modelIndex + 1] ?? "-") : "-"} | ${t.labels[KIT_TASK] ?? (t.labels[KIT_PLAN] ? `plan ${t.labels[KIT_PLAN]}` : t.labels[KIT_FOLLOWUP] ? "follow-up" : "-")} | ${t.status?.state ?? t.state} | ${t.status?.kind ?? "-"} | ${t.status?.msg ?? "-"} | ${t.cwd ?? "-"}`,
+      `${t.address} | ${t.name ?? "-"} | ${t.labels[KIT_INDEPENDENT] ? "independent" : "linked child"} | ${t.labels[KIT_REPO] ?? "-"} | ${machine} | ${modelIndex >= 0 ? (argv[modelIndex + 1] ?? "-") : "-"} | ${t.labels[KIT_TASK] ?? (t.labels[KIT_PLAN] ? `plan ${t.labels[KIT_PLAN]}` : t.labels[KIT_FOLLOWUP] ? "follow-up" : "-")} | ${t.status?.state ?? t.state} | ${t.status?.kind ?? "-"} | ${t.status?.msg ?? "-"} | ${t.labels[KIT_BASE] ?? "-"} | ${t.cwd ?? "-"}`,
     );
   }
 }
@@ -655,6 +678,71 @@ function remoteCollision(
   if (ref.code === 0) return true;
   if (ref.code !== 1) throw new Error("The remote branch could not be checked.");
   return false;
+}
+/**
+ * The worktrees git lists for the repo at `at`, here or on the machine `on`; null when git cannot
+ * say. Where worktrees are is git's to tell: a project's own WorktreeCreate hook may put them
+ * anywhere, so no path is guessed from a name.
+ */
+function listedWorktrees(
+  ctx: HerdrContext,
+  r: HcRunner,
+  on: string | undefined,
+  at: string,
+): ListedWorktree[] | null {
+  const args = ["git", "worktree", "list", "--porcelain"];
+  if (on) {
+    const listed = remoteResult(r, on, args, at);
+    return listed.code === 0 ? parseWorktreeList(listed.stdout) : null;
+  }
+  const listed = runGit(at, args.slice(1), ctx.env);
+  return listed.ok ? parseWorktreeList(listed.out) : null;
+}
+/**
+ * The one worktree on a branch that `listedNamed` finds for the launch's `name`, waiting up to
+ * `waitMs` and listing again every `LAUNCH_POLL_MS`. Null when nothing matches in time, when two
+ * match (which is the child's is not known), or when git cannot list. A count of one new
+ * worktree is never enough: a builder's `agent-<id>` worktree may appear while the launch waits.
+ */
+async function boundWorktree(
+  ctx: HerdrContext,
+  r: HcRunner,
+  on: string | undefined,
+  at: string,
+  name: string,
+  waitMs: number,
+): Promise<{ branch: string; path: string } | null> {
+  const deadline = ctx.now() + waitMs;
+  for (let look = 0; look < WORKTREE_BIND_POLL_LIMIT; look++) {
+    const found = listedNamed(listedWorktrees(ctx, r, on, at) ?? [], name);
+    const only = found[0];
+    if (found.length === 1 && only?.branch) return { branch: only.branch, path: only.path };
+    if (ctx.now() >= deadline) return null;
+    await ctx.sleep(Math.min(LAUNCH_POLL_MS, Math.max(0, deadline - ctx.now())));
+  }
+  return null;
+}
+/**
+ * The commit a `--base` ref names in the repo at `at`, here or on the machine `on`; null when it
+ * names none. The commit, not the name, goes to the child: a branch that moves later changes nothing.
+ */
+function resolveBase(
+  ctx: HerdrContext,
+  r: HcRunner,
+  on: string | undefined,
+  at: string,
+  ref: string,
+): string | null {
+  const args = ["git", "rev-parse", "--verify", "--quiet", `${ref}^{commit}`];
+  if (on) {
+    const found = remoteResult(r, on, args, at);
+    // git exits 1 for a name it does not know; any other failure is not an answer.
+    if (found.code === 1) return null;
+    if (found.code !== 0) throw new Error("The remote base could not be checked.");
+    return found.stdout.trim() || null;
+  }
+  const found = runGit(at, args.slice(1), ctx.env);
+  return found.ok && found.out !== "" ? found.out : null;
 }
 function remoteReportFolder(ctx: HerdrContext): string {
   const defaults = cliPaths({ HOME: ctx.paths.home });
@@ -851,6 +939,8 @@ async function startChild(
   // A plan child builds one plan and never coordinates (D1): its own terminal carries `kit.plan`.
   let planWorld: PlansWorld | null = null;
   let slug: string | null = null;
+  /** Where a stacked plan starts when the lead gives no --base: its parent's branch. */
+  let stackBase: StartBase | null = null;
   if (a.plan) {
     if (!me || !caller.ok || project.project !== caller.project || project.repo === null)
       return refuse(
@@ -866,6 +956,31 @@ async function startChild(
     const row = planByRef(opened.world.db, opened.world.project, a.plan);
     if (row === null) return refuse(ctx, `Plan "${a.plan}" was not found in this project.`);
     slug = row.plan ?? a.plan;
+    // A stacked plan's first start builds on its parent: with no --base, the child starts on the
+    // parent's recorded branch, never on the default branch (a reserved plan resumes or relaunches).
+    if (
+      a.base === undefined &&
+      row.kind === "plan" &&
+      row.stackedOn !== null &&
+      row.lead === null
+    ) {
+      const parent = planByRef(opened.world.db, opened.world.project, row.stackedOn);
+      const branch = parent?.kind === "plan" ? parent.branch : null;
+      if (branch === null)
+        return refuse(
+          ctx,
+          `Plan "${slug}" is stacked on "${row.stackedOn}", which has no branch recorded, so its start cannot be found.`,
+          `give --base <${row.stackedOn}'s branch>`,
+        );
+      const commit = branchTip((args) => runGit(cwd, args, ctx.env), branch);
+      if (commit === null)
+        return refuse(
+          ctx,
+          `Plan "${slug}" is stacked on "${row.stackedOn}", whose branch ${branch} is not in this repository.`,
+          `fetch it, or give --base <${row.stackedOn}'s branch>`,
+        );
+      stackBase = { ref: branch, commit };
+    }
   }
   if (a.on) {
     if (!a.asked && machineRule(readMachines(ctx.paths.machinesFile), a.on) !== "free")
@@ -930,10 +1045,27 @@ async function startChild(
         : "The full kit-prefixed terminal name must fit 32 characters.",
       slug !== null && a.name === undefined ? "Give a shorter --name." : undefined,
     );
+  const gitRoot = a.on ? remoteRepo(r, a.on, cwd) : project.repo;
+  // `--base` names a commit now, before anything is reserved: a wrong ref costs nothing. It reads
+  // in the lead's own folder, never the main checkout (`gitRoot`): HEAD, HEAD~2 and @{-1} are the
+  // lead's, and a linked worktree's HEAD is not the main checkout's.
+  let base: StartBase | null = stackBase;
+  if (a.base !== undefined) {
+    if (gitRoot === null) return refuse(ctx, "--base needs a git project.");
+    const commit = resolveBase(ctx, r, a.on, cwd, a.base);
+    if (commit === null)
+      return refuse(
+        ctx,
+        `--base ${a.base} names no commit in this project.`,
+        `git rev-parse --verify ${a.base}^{commit} shows what git finds; fetch first when it is a remote branch.`,
+      );
+    base = { ref: a.base, commit };
+  }
   // The gates, the diffs and the reservation (D6): after every cheap refusal above, before the launch.
   let handout: Extract<PlanStart, { ok: true }> | null = null;
   if (planWorld !== null && slug !== null) {
-    const prepared = prepareStart(planWorld, slug);
+    // A stacked plan's stack counts only when the commit it starts on holds its parent's work.
+    const prepared = prepareStart(planWorld, slug, base?.commit);
     if (!prepared.ok) return refuse(ctx, prepared.why, prepared.fix);
     handout = prepared;
     if (prepared.reserved)
@@ -955,8 +1087,13 @@ async function startChild(
   }
   // A resume or a relaunch continues the recorded worktree and branch: it is the one reuse allowed.
   const reuse = handout?.recorded ?? null;
+  if (reuse && base)
+    return refuse(
+      ctx,
+      "--base cannot start a plan that resumes: it continues its own worktree.",
+      "Start it again without --base.",
+    );
   const worktreeName = reuse ? basename(reuse.worktree) : childWorktreeName(name);
-  const gitRoot = a.on ? remoteRepo(r, a.on, cwd) : project.repo;
   const repo = gitRoot ?? cwd;
   const worktree = reuse ? reuse.worktree : gitRoot ? worktreePath(repo, worktreeName) : cwd;
   const branch = reuse ? reuse.branch : worktreeBranch(worktreeName);
@@ -972,9 +1109,17 @@ async function startChild(
         ? remoteCollision(r, a.on, cwd, worktree, branch)
         : runGit(cwd, ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`], ctx.env).ok
       : false;
+  // A project's own WorktreeCreate hook may have put a worktree of this name outside the default
+  // folder. A remote list that cannot be read refuses, as every other remote check does.
+  const listedBefore = gitRoot && !reuse ? listedWorktrees(ctx, r, a.on, a.on ? cwd : repo) : null;
+  if (a.on && gitRoot && !reuse && listedBefore === null)
+    throw new Error("The remote worktrees could not be listed.");
+  const listedCollision =
+    listedBefore !== null && listedNamed(listedBefore, worktreeName).length > 0;
   if (
     all.some((t) => t.name === terminalName && (!reuse || t.state === "live")) ||
     (!reuse && !a.on && gitRoot && existsSync(worktree)) ||
+    listedCollision ||
     branchExists
   )
     return refuse(
@@ -994,9 +1139,13 @@ async function startChild(
       ? { slug, handoutId: handout.handoutId, base: planWorld.base, resume: handout.resume }
       : undefined,
     followup ? { ...followup, name: terminalName } : undefined,
+    base ?? undefined,
   );
   const path = a.on ? await remoteBrief(r, ctx, a.on, file) : file;
   const first = escapeReport(`Read your brief at ${path} and do it.`, "lead");
+  // A resume of a worktree outside the default folder starts Claude Code in that folder with no
+  // `-w`: the project's own WorktreeCreate hook must never run again for a folder that exists.
+  const resumeInFolder = reuse !== null && !inDefaultFolder(repo, reuse.worktree);
   const args = [
     "--bg",
     ...(a.independent ? ["--keep"] : []),
@@ -1005,7 +1154,7 @@ async function startChild(
     "--name",
     terminalName,
     "--cwd",
-    a.on ? (a.cwd ?? ctx.cwd) : cwd,
+    a.on ? (a.cwd ?? ctx.cwd) : resumeInFolder ? worktree : cwd,
     ...(a.on ? ["--on", a.on] : []),
   ];
   const labels: Record<string, string> = { [KIT_REPO]: repo };
@@ -1016,6 +1165,7 @@ async function startChild(
   if (a.task) labels[KIT_TASK] = a.task;
   if (slug !== null) labels[KIT_PLAN] = slug;
   if (followup !== null) labels[KIT_FOLLOWUP] = "1";
+  if (base) labels[KIT_BASE] = base.ref;
   // Only an independent session gets its own space: a linked child, local or remote, nests
   // under its lead through hc's parent (proved live for a remote child in 4.3.1).
   if (a.independent) {
@@ -1036,7 +1186,7 @@ async function startChild(
     "-n",
     name,
   ];
-  if (gitRoot) programArgs.push("-w", worktreeName);
+  if (gitRoot && !resumeInFolder) programArgs.push("-w", worktreeName);
   programArgs.push(first);
   args.push("--", ...loginShellArgv("claude", ...programArgs));
   // A start that stalled past the grace may have lost its claim to another start: check once more.
@@ -1095,19 +1245,18 @@ async function startChild(
             `The child ${child.address} exited during launch.`,
             "Resolve the screen error above, then retry.",
           );
-        const folderExists = a.on
-          ? remoteResult(r, a.on, ["test", "-d", worktree]).code
-          : existsSync(worktree)
-            ? 0
-            : 1;
-        if (folderExists !== 0 && folderExists !== 1)
+        const after = listedWorktrees(ctx, r, a.on, a.on ? cwd : repo);
+        if (after === null)
           return refuse(
             ctx,
             "The child exited; its worktree folder could not be checked.",
-            `Check ${worktree} before retrying.`,
+            "Check git worktree list before retrying.",
           );
+        const made = listedNamed(after, worktreeName)[0];
         ctx.out.say(
-          `Worktree folder ${folderExists === 0 ? "exists" : "does not exist"}: ${worktree}`,
+          made
+            ? `Worktree folder exists: ${made.path}`
+            : `Worktree folder does not exist: git lists no worktree named ${worktreeName} or on ${worktreeBranch(worktreeName)}.`,
         );
         return refuse(
           ctx,
@@ -1123,7 +1272,29 @@ async function startChild(
     }
     await ctx.sleep(Math.min(LAUNCH_POLL_MS, Math.max(0, deadline - ctx.now())));
   }
-  if (a.task || handout) {
+  // Only a start that records the worktree waits for it; any other looks once, to print it.
+  const recording = a.task !== undefined || handout !== null;
+  const bound: { branch: string; path: string } | null = !gitRoot
+    ? { branch, path: worktree }
+    : reuse
+      ? { branch: reuse.branch, path: reuse.worktree }
+      : await boundWorktree(
+          ctx,
+          r,
+          a.on,
+          a.on ? cwd : repo,
+          worktreeName,
+          recording ? WORKTREE_BIND_WAIT_MS : 0,
+        );
+  if (bound !== null && gitRoot && !reuse && !a.on)
+    await writeLaunchRecord(ctx.paths.stateDir, {
+      at: ctx.nowMs,
+      branch: bound.branch,
+      repo,
+      worktree: bound.path,
+      ...(base ? { base } : {}),
+    });
+  if (recording) {
     const ops = createTaskOps({
       stateDir: ctx.paths.stateDir,
       env: ctx.env,
@@ -1133,16 +1304,31 @@ async function startChild(
     try {
       // A plan's branch and worktree are written once: a resume or a relaunch binds the new pane
       // only, and a plan that already records them keeps them.
+      const taskRef = handout ? `#${handout.plan.number}` : (a.task ?? "");
       const answer = ops.call("update", {
-        task: handout ? `#${handout.plan.number}` : (a.task ?? ""),
+        task: taskRef,
         agent: herdrAgent(core, child.address),
-        ...(handout && (handout.plan.worktree !== null || reuse) ? {} : { worktree }),
-        ...(handout && (handout.plan.branch !== null || reuse) ? {} : { branch }),
+        ...(bound === null || (handout && (handout.plan.worktree !== null || reuse))
+          ? {}
+          : { worktree: bound.path }),
+        ...(bound === null || (handout && (handout.plan.branch !== null || reuse))
+          ? {}
+          : { branch: bound.branch }),
       });
       if (!answer.ok) {
         ctx.out.line(
           "warn",
           `The child started, but its ${handout ? "plan" : "task"} binding failed: ${answer.why}`,
+        );
+        return 1;
+      }
+      if (bound === null) {
+        ctx.out.line(
+          "warn",
+          `The child started, but its ${handout ? "plan" : "task"} binding failed: git lists no worktree named ${worktreeName} or on ${worktreeBranch(worktreeName)} within ${WORKTREE_BIND_WAIT_MS / 1000} seconds.`,
+          {
+            fix: `find its worktree (git worktree list), then task_update ${taskRef} with worktree and branch`,
+          },
         );
         return 1;
       }
@@ -1152,7 +1338,7 @@ async function startChild(
   }
   ctx.out.line(
     "created",
-    `${a.independent ? "independent session" : "linked child"}: ${child.address}; name ${terminalName}; worktree ${worktree}`,
+    `${a.independent ? "independent session" : "linked child"}: ${child.address}; name ${terminalName}; worktree ${bound?.path ?? worktree}`,
   );
   if (child.first_message == null) {
     const screen = hcRead(r, child.address, SCREEN_LINES);
@@ -1201,6 +1387,66 @@ async function report(text: string, ctx: HerdrContext, r: HcRunner): Promise<num
   ctx.out.line("warn", `The lead cannot receive a report. Saved it at ${file}`);
   return 0;
 }
+/** What the second `herdr wait` of a lead says: the first one is live, so this one did not start. */
+function anotherWaitWords(running: WaiterDetails | null): string {
+  const who = running
+    ? ` (process ${running.pid}, --${running.mode}, ${running.timeoutMs / 1000} seconds, started ${new Date(running.startedAt).toISOString()})`
+    : "";
+  return `A herdr wait is already running for your children${who}; it ends when a child settles or its time is up, and its news reaches you then. This wait did not start.`;
+}
+/**
+ * The lines a timed-out wait prints for the children still lacking news, split by what each does
+ * now: a working or idle child settles by itself, and a blocked one waits for the person, who
+ * answers it in its pane.
+ */
+function pendingLines(r: HcRunner, pending: readonly string[]): string[] {
+  const working: string[] = [];
+  const blocked: string[] = [];
+  const gone: string[] = [];
+  for (const address of pending) {
+    let child: Terminal;
+    try {
+      child = hcGet(r, address);
+    } catch (error) {
+      if (!terminalEnded(error)) throw error;
+      gone.push(address);
+      continue;
+    }
+    if (child.state !== "live") gone.push(address);
+    else if (!child.status || child.status.state === "blocked") blocked.push(address);
+    else working.push(`${address} (${child.status.state})`);
+  }
+  const lines = [
+    working.length ? `Not settled yet; still working: ${working.join(", ")}` : "",
+    blocked.length
+      ? `Not settled yet; blocked, waiting for the person (hc attach <terminal> to answer): ${blocked.join(", ")}`
+      : "",
+    gone.length ? `Not settled yet; gone since the wait began: ${gone.join(", ")}` : "",
+  ].filter(Boolean);
+  return lines.length ? lines : ["Not settled yet."];
+}
+/**
+ * A start or a send whose text lives in a file (`--brief-file`): the file is read here, so quotes,
+ * `$` and newlines never pass through a shell. Any other command is returned as it is.
+ */
+function withFileText(ctx: HerdrContext, args: HerdrArgs): HerdrArgs | { why: string } {
+  if ((args.verb !== "start" && args.verb !== "send") || args.briefFile === undefined) return args;
+  const file = resolve(ctx.cwd, args.briefFile);
+  let text: string;
+  try {
+    text = readFileSync(file, "utf8");
+  } catch (error) {
+    if (!(error instanceof Error)) throw error;
+    const missing = "code" in error && error.code === "ENOENT";
+    return {
+      why: `The brief file ${file} ${missing ? "does not exist" : `cannot be read (${error.message})`}.`,
+    };
+  }
+  if (!text.trim()) return { why: `The brief file ${file} is empty.` };
+  return args.verb === "start"
+    ? { ...args, brief: text.trimEnd() }
+    : { ...args, text: text.trimEnd() };
+}
 export async function runHerdr(args: string[], ctx: HerdrContext): Promise<number> {
   if (args[0] === "start") {
     const split = args.indexOf("--");
@@ -1234,11 +1480,13 @@ export async function runHerdr(args: string[], ctx: HerdrContext): Promise<numbe
         return refuse(ctx, FOLLOWUP_EXCLUSION);
     }
   }
-  const parsed = parseHerdrArgs(args);
-  if ("error" in parsed) {
-    ctx.out.line("fail", parsed.error);
+  const read = parseHerdrArgs(args);
+  if ("error" in read) {
+    ctx.out.line("fail", read.error);
     return 2;
   }
+  const parsed = withFileText(ctx, read);
+  if ("why" in parsed) return refuse(ctx, parsed.why);
   const r = ctx.runner ?? defaultHcRunner;
   try {
     const version = hcVersion(r);
@@ -1377,15 +1625,24 @@ export async function runHerdr(args: string[], ctx: HerdrContext): Promise<numbe
           );
           return 0;
         }
-        const news = await (ctx.events ?? followEvents)(
-          { [KIT_LEAD]: me.leadId },
-          parsed.timeoutMs ?? WAIT_TIMEOUT_MS,
-          {
-            mode: parsed.mode,
-            ...(parsed.seen ? { seen: parsed.seen } : {}),
-            ...(skip.size ? { skip } : {}),
-          },
+        const timeoutMs = parsed.timeoutMs ?? WAIT_TIMEOUT_MS;
+        // A wait covers every child of its lead: a second one would only repeat the first.
+        const waiting = await onlyWaiter(
+          ctx.paths.stateDir,
+          me.leadId,
+          { mode: parsed.mode, timeoutMs },
+          () =>
+            (ctx.events ?? followEvents)({ [KIT_LEAD]: me.leadId }, timeoutMs, {
+              mode: parsed.mode,
+              ...(parsed.seen ? { seen: parsed.seen } : {}),
+              ...(skip.size ? { skip } : {}),
+            }),
         );
+        if (!waiting.ran) {
+          ctx.out.line("info", anotherWaitWords(waiting.running));
+          return 0;
+        }
+        const news = waiting.value;
         if (news === "ended")
           return refuse(ctx, "The event stream ended; nothing is known about the children.");
         if (typeof news !== "string" && news.nothing === true) {
@@ -1402,10 +1659,11 @@ export async function runHerdr(args: string[], ctx: HerdrContext): Promise<numbe
               remoteReportHint(ctx, fact.terminal.split("/")[0] ?? "");
           }
           if (news.timeout)
-            ctx.out.line(
-              "info",
-              `Not settled yet (a blocked child waits for the person; see herdr list): ${Array.isArray(news.pending) ? news.pending.join(", ") : "unknown"}`,
-            );
+            for (const line of pendingLines(
+              r,
+              Array.isArray(news.pending) ? news.pending.map(String) : [],
+            ))
+              ctx.out.line("info", line);
         } else ctx.out.json(news);
         const cursor: Seen = Object.fromEntries(
           Object.entries(parsed.seen ?? {}).filter(

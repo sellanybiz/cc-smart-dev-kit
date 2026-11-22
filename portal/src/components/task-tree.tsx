@@ -3,6 +3,7 @@
 import { ChevronRightIcon, MessageSquareTextIcon } from "lucide-react";
 import { createContext, useContext, useId } from "react";
 import type { WorkTaskNode } from "@/api/types";
+import { Meter } from "@/components/meter";
 import { TonePill } from "@/components/status";
 import { Badge } from "@/components/ui/badge";
 import { isClosed, ledgerOf, type ShownTask } from "@/lib/tasks";
@@ -51,8 +52,8 @@ const TreeContext = createContext<TreeActions>({
 export const TreeActionsProvider = TreeContext.Provider;
 
 /**
- * How far a subtree is: a thin bar and `closed/total`. The native meter speaks; the SVG draws.
- * With `steps`, it counts a phase's steps done instead (G3), and says so.
+ * How far a subtree is: a thin bar and `closed/total`. With `steps`, it counts a phase's steps
+ * done instead (G3), and says so.
  */
 export function Progress({
   closed,
@@ -63,16 +64,11 @@ export function Progress({
   total: number;
   steps?: boolean;
 }) {
-  const share = total === 0 ? 0 : Math.min(1, closed / total);
   return (
     <span className="inline-flex shrink-0 items-center gap-1.5 text-xs text-muted-foreground tabular-nums">
-      <meter className="sr-only" min={0} max={total} value={closed}>
+      <Meter value={closed} max={total} size="sm" tone="ok" className="w-12">
         {closed} of {total} {steps ? "steps done" : "closed"}
-      </meter>
-      <svg className="h-1.5 w-12" aria-hidden="true" preserveAspectRatio="none">
-        <rect width="100%" height="100%" rx="3" className="fill-muted" />
-        <rect width={`${share * 100}%`} height="100%" rx="3" className="fill-ok" />
-      </svg>
+      </Meter>
       <span aria-hidden="true">
         {closed}/{total}
       </span>

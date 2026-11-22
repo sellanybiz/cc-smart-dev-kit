@@ -130,10 +130,35 @@ code imports from. What the task or approved plan names is already agreed. Ask o
 structural work beyond it; a subagent reports it to its caller. Unasked cleanup of files the
 task does not change stays out of the diff.
 
-## 11. Comments say why; unused code goes
+## 11. No AI slop
 
-Explain a reason code cannot show, not what the next line does. Delete unused code and
-imports instead of keeping them for a possible future.
+Code reads as if written by hand, by someone who will maintain it: the smallest complete
+diff, with no line the task does not need and none missing that it does. Read your diff for
+these and remove each one:
+
+- **Narration comments:** what the next line does, step banners (`// Step 1`), a comment per
+  line, words to the reviewer ("now we…", "this fixes…"). A comment gives a reason the code
+  cannot show.
+- **Docstrings** that repeat the name or the signature.
+- **Defensive code for what cannot happen:** a `try`/`catch`, null check or type guard around
+  something that cannot fail, or a catch that logs and carries on when the caller needed to
+  know. Handle the case that can happen; let the rest fail loudly.
+- **A fallback that hides a bug:** `?? []`, `|| ""` or a default on a value that must exist.
+- **Nothing just in case** (§§ 2 and 4): an option, flag or config key no caller uses; a
+  compatibility shim, re-export or alias nobody asked for.
+- **Unused code:** dead code, unused imports, commented-out blocks. Delete them; git keeps
+  the history.
+- **Debug output:** logging added while building, and log lines that narrate a normal run.
+- **Churn:** reformatting, reordered imports or renames in lines the task does not change.
+  A cleaner edit (§ 10) makes the code truer; churn only moves text.
+- **Tests that prove nothing:** a test that asserts what its own mock returns, tests the
+  language or the framework, only checks that something exists, or snapshots output nobody
+  reads.
+- **Placeholders:** `TODO`, a stubbed branch, `not implemented`, or invented example values.
+- **Names that narrate** (`processAndValidateUserDataIfNeeded`) or say nothing (§ 8).
+
+Two more have their own homes: a cast or ignore comment that quiets a checker (the core
+instructions' root-cause rule), and code unlike its siblings (§ 8, and § 12's pattern check).
 
 ## 12. Before the commit
 
@@ -146,3 +171,4 @@ imports instead of keeping them for a possible future.
 7. One job per unit?
 8. Names true?
 9. Nothing built for a need that does not exist?
+10. Nothing from § 11's list?

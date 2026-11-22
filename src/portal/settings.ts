@@ -13,10 +13,18 @@
  * is the person's, in `~/.config/cc-smart-dev-kit/workflow.json`; `switches.sessionNames` is the
  * project's `sessionNames`, so it is written into the project's committed file;
  * `switches.jobRoute` is the person's machine-wide default (the project's `jobs.route` wins
- * over it). A row whose value the project sets is never changed from this page at all: the
- * Project card on Machine is where the project's own settings are made.
+ * over it); `switches.leadHint` is the person's alone. The switch rows take that from the
+ * module's own lists (`switchWhere`), never from a second list here. A row whose value the
+ * project sets is never changed from this page at all: the Project card on Machine is where
+ * the project's own settings are made.
  */
 
+import {
+  isPersonalFileSwitch,
+  PERSONAL_ONLY_REASONS,
+  SWITCH_NAMES,
+  type SwitchName,
+} from "../workflow/schema";
 import {
   type ResolvedWorkflow,
   resolvedValueOf,
@@ -48,7 +56,58 @@ export interface SettingSpec {
   where: "personal" | "project";
 }
 
-/** Every row, in the design's order, with the design's words. */
+/**
+ * Each switch's row words, by the switch's name. A `Record` over every `SwitchName`, so a new
+ * switch with no words here is a type error, never a switch the page leaves out.
+ */
+const SWITCH_WORDS: Record<SwitchName, Pick<SettingSpec, "help" | "id" | "label">> = {
+  statusLine: {
+    help: "Show the slot and the model answering in Claude Code's status line.",
+    id: "set-status",
+    label: "Status line",
+  },
+  sessionNames: {
+    help: "Name each Claude session after the branch it works on, so a window is easy to find.",
+    id: "set-names",
+    label: "Session names",
+  },
+  jobRoute: {
+    help: "The type check, the build, the tests and the coverage run go through the queue: a few at a time, the rest wait for a free slot. A project can set its own.",
+    id: "set-jobs",
+    label: "Heavy jobs through the queue",
+  },
+  updateHold: {
+    help: "No new kit version installs until you turn this off again.",
+    id: "set-upd",
+    label: "Hold self-updates",
+  },
+  leadHint: {
+    help: "Once a session, tell me when the session's model is not Claude Opus, the lead the kit works best with. It never switches the model.",
+    id: "set-lead",
+    label: "Lead-model hint",
+  },
+};
+
+/**
+ * Where a change of one switch is written, from the workflow module's own lists: the person's
+ * file when it holds the switch (`isPersonalFileSwitch`) or the switch is the person's alone
+ * (`PERSONAL_ONLY_REASONS`), else the project's committed file.
+ */
+function switchWhere(key: `switches.${SwitchName}`): SettingSpec["where"] {
+  return isPersonalFileSwitch(key) || PERSONAL_ONLY_REASONS[key] !== undefined
+    ? "personal"
+    : "project";
+}
+
+function switchRow(name: SwitchName): SettingSpec {
+  const key = `switches.${name}` as const;
+  return { card: "switches", ...SWITCH_WORDS[name], key, kind: "boolean", where: switchWhere(key) };
+}
+
+/**
+ * Every row, in the design's order, with the design's words: the policy rows by hand, then one
+ * row per switch, in the module's own order (`SWITCH_NAMES`).
+ */
 export const SETTINGS: readonly SettingSpec[] = [
   {
     card: "flow",
@@ -142,42 +201,7 @@ export const SETTINGS: readonly SettingSpec[] = [
     unit: "%",
     where: "personal",
   },
-  {
-    card: "switches",
-    help: "Show the slot and the model answering in Claude Code's status line.",
-    id: "set-status",
-    key: "switches.statusLine",
-    kind: "boolean",
-    label: "Status line",
-    where: "personal",
-  },
-  {
-    card: "switches",
-    help: "Name each Claude session after the branch it works on, so a window is easy to find.",
-    id: "set-names",
-    key: "switches.sessionNames",
-    kind: "boolean",
-    label: "Session names",
-    where: "project",
-  },
-  {
-    card: "switches",
-    help: "The type check, the build, the tests and the coverage run go through the queue: a few at a time, the rest wait for a free slot. A project can set its own.",
-    id: "set-jobs",
-    key: "switches.jobRoute",
-    kind: "boolean",
-    label: "Heavy jobs through the queue",
-    where: "personal",
-  },
-  {
-    card: "switches",
-    help: "No new kit version installs until you turn this off again.",
-    id: "set-upd",
-    key: "switches.updateHold",
-    kind: "boolean",
-    label: "Hold self-updates",
-    where: "personal",
-  },
+  ...SWITCH_NAMES.map(switchRow),
 ];
 
 /** The card headings, in the design's words, in the design's order. */

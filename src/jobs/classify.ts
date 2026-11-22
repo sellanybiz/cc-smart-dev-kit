@@ -61,7 +61,8 @@ import {
 } from "../shell/command";
 import { programName } from "../shell/program-name";
 import { ruleMatches, type ToolCall, toolOf } from "../shell/tool";
-import { isPrintOnly, isWatchRun, type Kinds, namesOnlyFiles } from "./kinds";
+import { isPrintOnly, isWatchRun, namesOnlyFiles } from "./kind-defaults";
+import type { Kinds } from "./kinds";
 
 /**
  * The scripts of a folder's `package.json`: each name with its body. `folder` is the folder of

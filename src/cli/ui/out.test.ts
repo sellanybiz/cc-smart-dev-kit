@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { readdirSync } from "node:fs";
+import { join } from "node:path";
+import { reachableFiles } from "../../build-info/import-walk";
 import {
   asciiText,
   createOut,
@@ -294,41 +295,6 @@ describe("Out", () => {
   });
 });
 
-/**
- * The relative imports a file makes, resolved to files: `Bun.Transpiler` reads them from the
- * real code (a type-only import is dropped, the way the bundle drops it).
- */
-function importsOf(file: string, transpiler: Bun.Transpiler): string[] {
-  // A macro import (`src/build-info/`) runs at build time; read here, it is a plain import.
-  const source = readFileSync(file, "utf8").replace(/\bwith\s*\{\s*type:\s*"macro"\s*\}/g, "");
-  return transpiler
-    .scanImports(source)
-    .map((entry) => entry.path)
-    .filter((path) => path.startsWith("."))
-    .map((path) => {
-      const base = resolve(dirname(file), path);
-      const found = [base, `${base}.ts`, join(base, "index.ts")].find(
-        (candidate) => existsSync(candidate) && statSync(candidate).isFile(),
-      );
-      if (found === undefined) throw new Error(`${file} imports ${path}, which is not a file`);
-      return found;
-    });
-}
-
-/** Every file `entry` reaches through its imports. */
-function reachable(entry: string): Set<string> {
-  const transpiler = new Bun.Transpiler({ loader: "ts" });
-  const seen = new Set<string>();
-  const queue = [entry];
-  while (queue.length > 0) {
-    const file = queue.pop() as string;
-    if (seen.has(file)) continue;
-    seen.add(file);
-    queue.push(...importsOf(file, transpiler));
-  }
-  return seen;
-}
-
 describe("who never imports it", () => {
   const src = join(import.meta.dir, "..", "..");
   const ui = join(src, "cli", "ui");
@@ -347,19 +313,19 @@ describe("who never imports it", () => {
 
   test("the router bundle and every hook bundle reach no file of the output module", () => {
     for (const entry of programs) {
-      const touched = [...reachable(entry)].filter((file) => file.startsWith(`${ui}/`));
+      const touched = [...reachableFiles(entry)].filter((file) => file.startsWith(`${ui}/`));
       expect({ entry, touched }).toEqual({ entry, touched: [] });
     }
   });
 
   test("`browser mcp`'s launcher reaches no file of it either: its stdout is the MCP stream", () => {
-    const touched = [...reachable(join(src, "browser", "launcher.ts"))].filter((file) =>
+    const touched = [...reachableFiles(join(src, "browser", "launcher.ts"))].filter((file) =>
       file.startsWith(`${ui}/`),
     );
     expect(touched).toEqual([]);
   });
 
   test("the walk finds the module where it is imported: the CLI entry", () => {
-    expect(reachable(join(entries, "cli.ts")).has(join(ui, "out.ts"))).toBe(true);
+    expect(reachableFiles(join(entries, "cli.ts")).has(join(ui, "out.ts"))).toBe(true);
   });
 });

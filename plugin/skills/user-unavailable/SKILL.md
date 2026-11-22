@@ -94,10 +94,9 @@ Use `/cc-smart-dev-kit:build` for subagent work. Resolve ambiguities in its task
   leave the plan queued and record why. The pull request opens against the previous plan's
   branch, and nothing merges before the one below
   (the stacked pull request rule in `/cc-smart-dev-kit:commit`; `/cc-smart-dev-kit:pull-request`).
-- **The run mode.** `plans.runMode` `ask` (the default) asks, and asking is refused while away.
-  Nobody is waiting, so use the width: with two or more ready plans whose files do not
-  overlap and a Herdr terminal, run as lead + children (build § Lead + children and coordinator
-  modes); otherwise solo. Record the choice as a decision. A mode the person set is followed.
+- **The run mode.** `plans.runMode` `ask` (the default) asks, and asking is refused while away:
+  take the option the run-mode question would recommend (`/cc-smart-dev-kit:plan-task` § 6),
+  and record the choice as a decision. A mode the person set is followed.
 
 When there is truly no work left that you may do, write § 3 and stop.
 

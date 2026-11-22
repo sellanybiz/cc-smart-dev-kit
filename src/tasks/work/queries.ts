@@ -1,5 +1,6 @@
 import { normalizeRepoPath, type RepoPathProblem } from "../../workflow/repo-path";
 import type { WorkDb } from "./db";
+import { inProgressFirst, isOpen, TaskGraph } from "./graph";
 import type {
   ClaimProcess,
   Who,
@@ -14,6 +15,9 @@ import type {
   WorkTask,
   WorkTree,
 } from "./types";
+
+// `isOpen` lives with the graph walks that need it; every caller still reads it from here.
+export { isOpen };
 
 interface TaskRow {
   id: string;
@@ -48,6 +52,8 @@ interface TaskRow {
   lead_start?: string | null;
   lead_child?: number;
   lead_handout?: string | null;
+  /** Absent in a store a hook reads before a writer moved it to schema 7. */
+  stacked_on?: string | null;
 }
 /** False in a store a hook reads before a writer moved it to schema 6: no file list is stored yet. */
 function hasFilesTable(db: WorkDb): boolean {
@@ -131,6 +137,7 @@ export function allTasks(db: WorkDb, project: string): WorkTask[] {
               holder: row.lead_child === 1 ? "child" : "self",
               handoutId: row.lead_handout,
             },
+      stackedOn: row.stacked_on ?? null,
     }));
 }
 export function getTask(db: WorkDb, project: string, ref: string): WorkTask | null {
@@ -157,9 +164,6 @@ export function taskById(db: WorkDb, id: string): WorkTask {
   const task = getTask(db, row.project, id);
   if (!task) throw new Error("task not found");
   return task;
-}
-export function isOpen(task: WorkTask): boolean {
-  return task.status === "pending" || task.status === "in_progress";
 }
 /**
  * What a plan counts, by the plan column: its phases, or its tasks when it has no phase. Each
@@ -319,6 +323,18 @@ export function isLead(lead: WorkLead | null, who: Who | null | undefined): bool
   return claimHeldBy(leadProcess(lead), who);
 }
 
+/**
+ * Whether `who` leads a plan: it holds the plan's reservation (`isLead`), or it owns the plan's
+ * task (`ownerOf`). A plan handed to a child keeps its lead in the reservation after the child
+ * takes it, and an unreserved plan's lead is the session that laid it. The one rule a held plan's
+ * `mine` and a stack (`stacked_on`: both plans the caller's when set, `sameLead` when judged) are
+ * judged by.
+ */
+export function leadsPlan(who: Who): (plan: WorkTask) => boolean {
+  const owns = ownerOf(who);
+  return (plan) => isLead(plan.lead, who) || owns(plan);
+}
+
 /** The lead's process in the shape of a claim (`claimHeldBy`, `claimGone` judge both); null without a process. */
 export function leadProcess(lead: WorkLead): WorkClaim | null {
   return lead.pid === null
@@ -359,20 +375,37 @@ export interface FileOverlap {
 }
 
 /**
+ * How two plans' file lists are compared: `ignore` is `plans.mergeFiles`, `appendOnly` is
+ * `plans.appendOnly`, both as committed (`planFilesCheck`), and `caseFold` is `core.ignorecase`.
+ */
+export interface OverlapRule {
+  ignore?: readonly string[];
+  appendOnly?: readonly string[];
+  caseFold?: boolean;
+}
+
+/**
  * Where two plans' file lists touch (D2): two paths touch when they are equal, or one is a
  * folder (ends in `/`) that holds the other. `ignore` is `plans.mergeFiles`: a path equal to an
- * ignored entry, or inside an ignored folder, takes no part. `caseFold` compares without case
- * (`core.ignorecase`), the ignore list included. Lists are as stored (`normalizePlanFile`).
+ * ignored entry, or inside an ignored folder, takes no part. `appendOnly` is `plans.appendOnly`,
+ * folders where plans add new files: a path inside one (or the folder itself) touches only the
+ * same file, named exactly, so no folder entry holds it, whether it is that folder, a folder
+ * inside it or a folder around it. `caseFold` compares without case (`core.ignorecase`), both
+ * lists included. Lists are as stored (`normalizePlanFile`). The one home of the overlap rule.
  */
 export function filesOverlap(
   a: readonly string[],
   b: readonly string[],
-  options: { ignore?: readonly string[]; caseFold?: boolean } = {},
+  options: OverlapRule = {},
 ): FileOverlap[] {
   const fold = (path: string) => (options.caseFold ? path.toLowerCase() : path);
   const holds = (folder: string, path: string) => folder.endsWith("/") && path.startsWith(folder);
   const ignore = (options.ignore ?? []).map(fold);
+  const appendOnly = (options.appendOnly ?? []).map(fold);
   const taken = (path: string) => ignore.some((one) => one === path || holds(one, path));
+  const added = (path: string) => appendOnly.some((folder) => path.startsWith(folder));
+  const touch = (x: string, y: string) =>
+    added(x) || added(y) ? x === y && !x.endsWith("/") : x === y || holds(x, y) || holds(y, x);
   const found: FileOverlap[] = [];
   for (const path of a) {
     const x = fold(path);
@@ -380,10 +413,96 @@ export function filesOverlap(
     for (const other of b) {
       const y = fold(other);
       if (taken(y)) continue;
-      if (x === y || holds(x, y) || holds(y, x)) found.push({ path, other });
+      if (touch(x, y)) found.push({ path, other });
     }
   }
   return found;
+}
+
+/**
+ * True when the parent a plan is stacked on (`stacked_on`) still holds its files: open, or closed
+ * and still reserved (`lead`) until its pull request merges and `herdr plans` releases it. A
+ * released or dropped parent holds nothing (a drop releases it), so the stack ends with it.
+ */
+export function parentHolds(parent: WorkTask): boolean {
+  return isOpen(parent) || parent.lead !== null;
+}
+
+/**
+ * The session that leads a plan, as a caller: the lead its reservation names, else the session
+ * that owns its task (its maker, which a take moves). Null when the plan names neither.
+ */
+function planLead(plan: WorkTask): Who | null {
+  if (plan.lead !== null)
+    return plan.lead.sessionId === null && plan.lead.pid === null
+      ? null
+      : { sessionId: plan.lead.sessionId, pid: plan.lead.pid, procStart: plan.lead.procStart };
+  if (plan.createdBy === null && plan.creator === null) return null;
+  return {
+    sessionId: plan.createdBy,
+    pid: plan.creator?.pid ?? null,
+    procStart: plan.creator?.procStart ?? null,
+  };
+}
+
+/**
+ * True when one lead leads both plans now (`leadsPlan`): each plan's lead (`planLead`) leads the
+ * other plan too. A stack counts only while it holds, not only when it was set: a take that moves
+ * either plan to another session, or a reservation for another lead, ends the pair.
+ */
+export function sameLead(a: WorkTask, b: WorkTask): boolean {
+  const leadA = planLead(a);
+  const leadB = planLead(b);
+  return leadA !== null && leadB !== null && leadsPlan(leadA)(b) && leadsPlan(leadB)(a);
+}
+
+/**
+ * One proved stack (`provedStacks`): the stacked plan's task id and the slug of the parent it was
+ * proved on. A proof names the pair, never the stacked plan alone, so a stack moved to another
+ * parent carries no proof with it.
+ */
+export interface StackPair {
+  child: string;
+  parent: string;
+}
+
+/** The proved pairs as the overlap check looks them up (`isStackedPair`). */
+export function provedSet(pairs: readonly StackPair[] = []): ReadonlySet<string> {
+  return new Set(pairs.map((pair) => stackKey(pair.child, pair.parent)));
+}
+
+function stackKey(child: string, parent: string): string {
+  return JSON.stringify([child, parent]);
+}
+
+/**
+ * True when one of the two plans is stacked on the other (`stacked_on`), that parent still holds
+ * its files (`parentHolds`), one lead leads both now (`sameLead`), and that very pair is proved:
+ * `{child, parent}` is in `proved` (`provedSet` of `provedStacks`, read from git before any write
+ * lock, from the values the call writes). The overlap check skips the pair, both ways: a plan
+ * built on its parent's work shares the parent's files by construction. A stack that is not
+ * proved is no pair: the two are rivals.
+ */
+export function isStackedPair(a: WorkTask, b: WorkTask, proved: ReadonlySet<string>): boolean {
+  const stackedOn = (child: WorkTask, parent: WorkTask) =>
+    parent.plan !== null &&
+    child.stackedOn === parent.plan &&
+    parentHolds(parent) &&
+    proved.has(stackKey(child.id, parent.plan)) &&
+    sameLead(child, parent);
+  return stackedOn(a, b) || stackedOn(b, a);
+}
+
+/**
+ * The held plans `plan` is judged against: every one but itself and its proved stacked pair
+ * (`isStackedPair`). The one filter the store and herdr's plan lines use before `filesOverlap`.
+ */
+export function rivalsOf<H extends { plan: WorkTask }>(
+  held: readonly H[],
+  plan: WorkTask,
+  proved: ReadonlySet<string>,
+): H[] {
+  return held.filter((h) => h.plan.id !== plan.id && !isStackedPair(plan, h.plan, proved));
 }
 
 /** One plan's stored file list, in path order; empty before schema 6 (no table yet). */
@@ -415,13 +534,13 @@ export function heldPlansIn(
   who: Who,
   extraFiles: Readonly<Record<string, readonly string[]>> = {},
 ): HeldPlan[] {
-  const owns = ownerOf(who);
+  const mine = leadsPlan(who);
   return all
     .filter((t) => t.kind === "plan" && (t.lead !== null || isInFlight(all, t)))
     .map((plan) => ({
       plan,
       why: plan.lead !== null ? ("reserved" as const) : ("in-flight" as const),
-      mine: isLead(plan.lead, who) || owns(plan),
+      mine: mine(plan),
       files: [...new Set([...plan.files, ...(extraFiles[plan.id] ?? [])])],
     }));
 }
@@ -537,12 +656,6 @@ function descendantsIn(tasks: readonly WorkTask[], id: string): WorkTask[] {
   }
   return result;
 }
-/** In progress first, then by number: the order every list of open tasks is said in. */
-function inProgressFirst(a: WorkTask, b: WorkTask): number {
-  return (
-    Number(b.status === "in_progress") - Number(a.status === "in_progress") || a.number - b.number
-  );
-}
 export function openChildren(db: WorkDb, id: string): WorkTask[] {
   return descendants(db, id).filter(isOpen).sort(inProgressFirst);
 }
@@ -591,32 +704,9 @@ export function freedBy(
   const byId = new Map(all.map((t) => [t.id, t]));
   return all.filter((t) => t.waitsFor.includes(closed.id) && owns(t) && isStartable(all, byId, t));
 }
-/**
- * The open tasks under a task that hold it (D76), in progress first: each open blocking task
- * reached through blocking tasks only. A non-blocking task holds nothing, and what is under it
- * holds only it. Below a closed blocking task the walk goes on, so a task an older kit or a
- * system close left open there still holds.
- */
+/** The open tasks under a task that hold it (D76), in progress first: `TaskGraph.holdingUnder`. */
 export function holdingUnder(tasks: readonly WorkTask[], id: string): WorkTask[] {
-  const children = new Map<string, WorkTask[]>();
-  for (const t of tasks) {
-    if (!t.parentId) continue;
-    const siblings = children.get(t.parentId);
-    if (siblings) siblings.push(t);
-    else children.set(t.parentId, [t]);
-  }
-  const seen = new Set([id]);
-  const result: WorkTask[] = [];
-  const walk = (parent: string) => {
-    for (const child of children.get(parent) ?? []) {
-      if (seen.has(child.id) || child.type === "non-blocking") continue;
-      seen.add(child.id);
-      if (isOpen(child)) result.push(child);
-      walk(child.id);
-    }
-  };
-  walk(id);
-  return result.sort(inProgressFirst);
+  return new TaskGraph(tasks).holdingUnder(id);
 }
 export interface ListOptions {
   project: string;
@@ -793,18 +883,5 @@ export function claimState(
 
 /** Whether start already waits for target, through explicit blockers or parent completion holds. */
 export function waitsForTask(tasks: readonly WorkTask[], start: string, target: string): boolean {
-  const byId = new Map(tasks.map((task) => [task.id, task]));
-  const reached = new Set<string>();
-  const pending = [start];
-  while (pending.length) {
-    const id = pending.pop();
-    if (!id || reached.has(id)) continue;
-    if (id === target) return true;
-    reached.add(id);
-    pending.push(
-      ...(byId.get(id)?.waitsFor ?? []),
-      ...holdingUnder(tasks, id).map((task) => task.id),
-    );
-  }
-  return false;
+  return new TaskGraph(tasks).waitsFor(start, target);
 }

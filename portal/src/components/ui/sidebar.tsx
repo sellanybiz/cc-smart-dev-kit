@@ -37,6 +37,8 @@ type SidebarContextProps = {
   setOpenMobile: (open: boolean) => void
   isMobile: boolean
   toggleSidebar: () => void
+  /** The header's switch, where focus goes back when the mobile sheet closes. */
+  triggerRef: React.RefObject<HTMLButtonElement | null>
 }
 
 const SidebarContext = React.createContext<SidebarContextProps | null>(null)
@@ -64,6 +66,11 @@ function SidebarProvider({
 }) {
   const isMobile = useIsMobile()
   const [openMobile, setOpenMobile] = React.useState(false)
+  const triggerRef = React.useRef<HTMLButtonElement | null>(null)
+
+  // A portal change: a window that grows past the mobile width unmounts the sheet, so its
+  // open state is reset here. Otherwise shrinking the window again reopens it and traps focus.
+  if (!isMobile && openMobile) setOpenMobile(false)
 
   // This is the internal state of the sidebar.
   // We use openProp and setOpenProp for control from outside the component.
@@ -132,6 +139,7 @@ function SidebarProvider({
       openMobile,
       setOpenMobile,
       toggleSidebar,
+      triggerRef,
     }),
     [state, open, setOpen, isMobile, openMobile, setOpenMobile, toggleSidebar]
   )
@@ -152,6 +160,20 @@ function SidebarProvider({
   )
 }
 
+/**
+ * The mobile sheet's close handler: it stops Radix's own focus return and focuses the header's
+ * switch instead. The header is not sticky, so a plain focus would scroll the page back up to
+ * show the switch; `preventScroll` keeps the reader where they were.
+ */
+function returnFocusWithoutScroll(trigger: {
+  current: Pick<HTMLElement, "focus"> | null
+}) {
+  return (event: Pick<Event, "preventDefault">) => {
+    event.preventDefault()
+    trigger.current?.focus({ preventScroll: true })
+  }
+}
+
 function Sidebar({
   side = "left",
   variant = "sidebar",
@@ -165,7 +187,8 @@ function Sidebar({
   variant?: "sidebar" | "floating" | "inset"
   collapsible?: "offcanvas" | "icon" | "none"
 }) {
-  const { isMobile, state, openMobile, setOpenMobile } = useSidebar()
+  const { isMobile, state, openMobile, setOpenMobile, triggerRef } =
+    useSidebar()
 
   if (collapsible === "none") {
     return (
@@ -182,6 +205,10 @@ function Sidebar({
     )
   }
 
+  // A portal change: the sheet keeps its close button (a touch screen has no Escape key, and
+  // the open sheet hides the header's switch from a screen reader), and focus goes back to the
+  // header's switch when it closes. The switch is a plain button, not Radix's Dialog.Trigger,
+  // so Radix's own return finds no trigger and leaves focus on the body.
   if (isMobile) {
     return (
       <Sheet open={openMobile} onOpenChange={setOpenMobile} {...props}>
@@ -190,8 +217,9 @@ function Sidebar({
           data-sidebar="sidebar"
           data-slot="sidebar"
           data-mobile="true"
-          className="w-(--sidebar-width-mobile) bg-sidebar p-0 text-sidebar-foreground [&>button]:hidden"
+          className="w-(--sidebar-width-mobile) bg-sidebar p-0 text-sidebar-foreground"
           side={side}
+          onCloseAutoFocus={returnFocusWithoutScroll(triggerRef)}
         >
           <SheetHeader className="sr-only">
             <SheetTitle>Sidebar</SheetTitle>
@@ -249,12 +277,15 @@ function Sidebar({
   )
 }
 
+// A portal change: the switch holds the sidebar's `triggerRef` (focus returns here when the
+// mobile sheet closes), so it takes no ref of its own; and it is 44px at the mobile width,
+// the same 768px `useIsMobile` uses, and on a touch screen.
 function SidebarTrigger({
   className,
   onClick,
   ...props
-}: React.ComponentProps<typeof Button>) {
-  const { toggleSidebar } = useSidebar()
+}: Omit<React.ComponentProps<typeof Button>, "ref">) {
+  const { toggleSidebar, triggerRef } = useSidebar()
 
   return (
     <Button
@@ -262,12 +293,13 @@ function SidebarTrigger({
       data-slot="sidebar-trigger"
       variant="ghost"
       size="icon-sm"
-      className={cn(className)}
+      className={cn("max-md:size-11 pointer-coarse:size-11", className)}
       onClick={(event) => {
         onClick?.(event)
         toggleSidebar()
       }}
       {...props}
+      ref={triggerRef}
     >
       <PanelLeftIcon />
       <span className="sr-only">Toggle Sidebar</span>
@@ -478,9 +510,11 @@ const sidebarMenuButtonVariants = cva(
         outline:
           "bg-background shadow-[0_0_0_1px_var(--sidebar-border)] hover:bg-sidebar-accent hover:text-sidebar-accent-foreground hover:shadow-[0_0_0_1px_var(--sidebar-accent)]",
       },
+      // A portal change: 44px in the mobile sheet and on a touch screen (`lg` is 48px already).
+      // The folded desktop sidebar keeps its 32px icons (`size-8!` above wins).
       size: {
-        default: "h-8 text-sm",
-        sm: "h-7 text-xs",
+        default: "h-8 text-sm in-data-[mobile=true]:h-11 pointer-coarse:h-11",
+        sm: "h-7 text-xs in-data-[mobile=true]:h-11 pointer-coarse:h-11",
         lg: "h-12 text-sm group-data-[collapsible=icon]:p-0!",
       },
     },
@@ -506,6 +540,13 @@ function SidebarMenuButton({
 } & VariantProps<typeof sidebarMenuButtonVariants>) {
   const Comp = asChild ? Slot.Root : "button"
   const { isMobile, state } = useSidebar()
+  // A portal change: the tooltip may open only on the folded desktop sidebar. Left to itself,
+  // a tooltip opened by a hover while hidden stayed open, and the next fold showed it; in the
+  // mobile sheet an open tooltip took the first Escape from the sheet. Radix reports a change
+  // only when it differs from `open`, so the setter itself refuses an open that is not allowed.
+  const tooltipAllowed = state === "collapsed" && !isMobile
+  const [tooltipOpen, setTooltipOpen] = React.useState(false)
+  if (tooltipOpen && !tooltipAllowed) setTooltipOpen(false)
 
   const button = (
     <Comp
@@ -529,12 +570,15 @@ function SidebarMenuButton({
   }
 
   return (
-    <Tooltip>
+    <Tooltip
+      open={tooltipOpen && tooltipAllowed}
+      onOpenChange={(next) => setTooltipOpen(next && tooltipAllowed)}
+    >
       <TooltipTrigger asChild>{button}</TooltipTrigger>
       <TooltipContent
         side="right"
         align="center"
-        hidden={state !== "collapsed" || isMobile}
+        hidden={!tooltipAllowed}
         {...tooltip}
       />
     </Tooltip>
@@ -666,6 +710,7 @@ function SidebarMenuSubButton({
 }
 
 export {
+  returnFocusWithoutScroll,
   Sidebar,
   SidebarContent,
   SidebarFooter,

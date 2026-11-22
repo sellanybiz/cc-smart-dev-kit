@@ -3,7 +3,7 @@ import { Children, type ComponentProps, isValidElement, type ReactNode } from "r
 import { renderToStaticMarkup } from "react-dom/server";
 import type { SwitchFacts } from "@/api/types";
 import { SavedSwitch } from "@/components/saved-switch";
-import { SwitchesCard } from "@/views/overview";
+import { PlanCard, SwitchesCard } from "@/views/overview";
 
 const OFFLINE: SwitchFacts = {
   gateway: false,
@@ -50,4 +50,57 @@ test("Overview keeps two switches and gates the auto-mode judge without changing
     expect(judgeSwitch?.body(false)).toEqual({ name: "judge", on: false });
     expect(judgeSwitch?.body(true)).toEqual({ name: "judge", on: true });
   }
+});
+
+const NOW = Date.UTC(2026, 9, 23, 12, 0, 0);
+const FIVE_HOUR = { percent: 61, resetsAt: Date.UTC(2026, 9, 23, 14, 7, 0) };
+const SEVEN_DAY = { percent: 33, resetsAt: Date.UTC(2026, 9, 27, 9, 0, 0) };
+
+test("the plan card shows one labelled row for each window the status line recorded", () => {
+  const both = renderToStaticMarkup(
+    <PlanCard fiveHour={FIVE_HOUR} sevenDay={SEVEN_DAY} limit={undefined} now={NOW} />,
+  );
+  // Two rows, each with its label, its percent, a meter that speaks and its reset.
+  expect(both.match(/<meter /g)).toHaveLength(2);
+  expect(both).toContain("5-hour window");
+  expect(both).toContain("7-day window");
+  expect(both).toContain("61 %");
+  expect(both).toContain("33 %");
+  expect(both).toContain('max="100" value="61"');
+  expect(both).toContain('max="100" value="33"');
+  expect(both).toContain("Resets in 2 h 7 min");
+  // More than a day away, a clock time alone would not say which day: the span says it.
+  expect(both).toContain("Resets in 3 d 21 h<");
+  expect(both).toContain("From the status line");
+  expect(both).not.toContain("written nowhere");
+  // The page policy forbids a style attribute: the bar's width is an SVG attribute.
+  expect(both).not.toContain("style=");
+
+  // A file from before 2.2.0, or a 7-day window that is over: the 5-hour row alone.
+  const fiveOnly = renderToStaticMarkup(
+    <PlanCard fiveHour={FIVE_HOUR} sevenDay={null} limit={undefined} now={NOW} />,
+  );
+  expect(fiveOnly.match(/<meter /g)).toHaveLength(1);
+  expect(fiveOnly).toContain("5-hour window");
+  expect(fiveOnly).not.toContain("7-day window");
+
+  // No reading at all: the card's empty state, and no row.
+  const none = renderToStaticMarkup(
+    <PlanCard fiveHour={null} sevenDay={null} limit={undefined} now={NOW} />,
+  );
+  expect(none).not.toContain("<meter");
+  expect(none).toContain("no reading");
+  expect(none).toContain("The status line has recorded none yet");
+
+  // A limit the router saw names the model and the window that ran out.
+  const limited = renderToStaticMarkup(
+    <PlanCard
+      fiveHour={FIVE_HOUR}
+      sevenDay={SEVEN_DAY}
+      limit={{ claim: "the 5-hour window", model: "claude-opus-5-5", resets: "14:07" }}
+      now={NOW}
+    />,
+  );
+  expect(limited).toContain("limit until 14:07");
+  expect(limited).toContain("claude-opus-5-5 ran out of the 5-hour window");
 });

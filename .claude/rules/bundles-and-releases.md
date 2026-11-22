@@ -19,7 +19,12 @@ Claude Code copies only `plugin/` into
   `node_modules`. Keep `bunfig.toml` empty: plugin Bun calls select it so a project's
   preload cannot run. See `docs/design/parts.md`.
 - **Nothing in `plugin/` imports from outside it.** Every script in it is a bundle that
-  carries all its code (`zod` included), or a small shell script.
+  carries all its code (`zod` included), or a small shell script. A hook bundle may also load the
+  sibling `dist/config-check.js` (the config parsers, `src/entries/config-check.ts`) through a
+  computed `import()`, as `task mcp` loads `tasks-mcp.js`; it is committed and rebuilt like the rest.
+- **Nothing on the hit path of a zod-free hook may import zod**, directly or through
+  `project/resolve.ts`. The budgets and the warm-run trap in `src/hooks/entries.test.ts` guard
+  those hooks (`.claude/rules/hooks.md` § The project file).
 - **The router bundle never changes by accident.** Code that `src/entries/router.ts`
   imports (`src/gateway/`, its paths in `src/gateway/paths.ts`) changes
   `plugin/dist/router.js`, which makes every machine restart its router. The router reads
@@ -34,8 +39,7 @@ Claude Code copies only `plugin/` into
   copied by `gateway setup`) and the portal (`src/entries/portal.ts` → `dist/portal.js`
   beside `plugin/portal-ui/`, its export; the session-start part's starter and `portal` copy
   both through `writeManagedFile` and `writeManagedFolder`, so `restore` removes them). The
-  portal stays up from session start to session start (D10), so
-  this is not a rule about a short run: its process outlives many version folders.
+  portal stays up from session start to session start (D10): its process outlives many version folders.
 
 ## Bundles are committed
 

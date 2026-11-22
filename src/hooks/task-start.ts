@@ -2,6 +2,7 @@ import { COMMAND, PLUGIN } from "../build-info/names";
 import type { CliPaths } from "../cli/paths";
 import { readMcpRecords } from "../mcp/records";
 import { TASKS_SERVER_NAME } from "../mcp/task-server-name";
+import type { Project } from "../project/resolve";
 import { taskContext } from "../tasks/context";
 import { DAY_MS, DEFAULT_STALE_DAYS } from "../tasks/deploy/check";
 import { oldTaskFiles, scanDeployTasks } from "../tasks/deploy/files";
@@ -58,11 +59,12 @@ export function taskStart(
   input: HookInput,
   paths: CliPaths,
   env: Env,
+  project?: Project,
   now: () => number = Date.now,
 ): HookResult {
   const cwd = stringField(input.cwd);
   if (cwd === null) return SILENT;
-  const context = taskContext(cwd, env);
+  const context = taskContext(cwd, env, project);
   if (!context.ok) return { stderr: `${COMMAND} task-start: ${context.why}` };
   const who = callerOf({ env, cwd, claudeConfigDir: paths.claudeConfigDir }) ?? {
     sessionId: stringField(input.session_id),

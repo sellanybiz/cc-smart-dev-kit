@@ -86,18 +86,21 @@ export function overviewOf(answer: OverviewAnswer): OverviewData {
       answer.router,
       Object.fromEntries(answer.slots.map((row) => [row.key, row.targets.map((t) => t.target)])),
     ),
-    fiveHour:
-      answer.fiveHour === null
-        ? null
-        : {
-            percent: answer.fiveHour.percent,
-            resetsAt:
-              answer.fiveHour.resetsAt === null ? null : Date.parse(answer.fiveHour.resetsAt),
-          },
+    fiveHour: planWindowOf(answer.fiveHour),
     jobs: answer.jobs,
     limits: answer.limits,
     requests: answer.requests,
+    sevenDay: planWindowOf(answer.sevenDay),
     switches: answer.switches,
+  };
+}
+
+/** One plan window, with its reset as a time in ms. */
+function planWindowOf(window: OverviewAnswer["fiveHour"]): OverviewData["fiveHour"] {
+  if (window === null) return null;
+  return {
+    percent: window.percent,
+    resetsAt: window.resetsAt === null ? null : Date.parse(window.resetsAt),
   };
 }
 

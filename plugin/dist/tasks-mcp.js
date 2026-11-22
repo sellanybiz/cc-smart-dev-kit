@@ -21525,7 +21525,7 @@ var COMMAND = "cc-smart-dev-kit";
 
 // src/build-info/index.ts
 var info = {
-  version: "6.2.0",
+  version: "6.3.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -21678,7 +21678,10 @@ var TASK_TOOL = {
 };
 var TASK_TOOLS_ALLOW_RULE = `mcp__${TASKS_SERVER_NAME}__*`;
 var TASK_COMMAND = `${COMMAND} task`;
-var PLAN_FILES_WORDS = "Plan task only: the repo-relative paths the plan changes, with / separators; a folder ends in /. Two plans overlap when a path is equal or inside the other's folder; a plan that overlaps a reserved or running plan is not handed out. The list replaces the stored one; an empty list clears it.";
+var MAX_PHASE = 8;
+var PHASE_RULE = `1-${MAX_PHASE} characters: ASCII letters, digits, ".", "_" and "-", a letter or a digit at each end, never "--"`;
+var PLAN_FILES_WORDS = "Plan task only: the repo-relative paths the plan changes, with / separators; a folder ends in /. Two plans overlap when a path is equal or inside the other's folder (inside a plans.appendOnly folder, only the same file); a plan that overlaps a reserved or running plan is not handed out. The list replaces the stored one; an empty list clears it.";
+var STACKED_ON_WORDS = "Plan task only: the slug of your own plan this plan is built on. The overlap check skips that one plan, both ways, while it holds its files (open, or done and reserved until its pull request merges), one lead leads both, and this plan is built on its work: that plan records its branch and base, its branch has commits past the default branch and past that base, and this plan's start (its herdr start base, or its base with its own branch recorded) holds some of them and is on this plan's own branch; every other plan still blocks. Never itself, a missing plan, another lead's plan or a loop; null clears it.";
 
 // src/tasks/work/types.ts
 var SUBJECT_LIMIT = 200;
@@ -21697,11 +21700,12 @@ var ref = string2().min(1);
 var type = _enum(DEPLOY_TYPES).describe("blocking or non-blocking. A work task: blocking (the default) holds its parent while it is open; non-blocking holds nothing. A prod or staging deploy task: required; blocking holds the release gate until it is done, non-blocking is done or dropped with a reason.");
 var blockedBy = array(ref).describe("Tasks (#n) it waits for: it cannot start or be done while one of them is open.");
 var files = array(string2().min(1)).describe(PLAN_FILES_WORDS);
+var stackedOn = string2().trim().min(1);
 var bindings = {
   agent: string2().describe("The builder subagent's name or id.").optional(),
   branch: string2().describe("The builder's git branch.").optional(),
   worktree: string2().refine(isAbsolute, "worktree must be an absolute path").describe("The builder's absolute worktree path.").optional(),
-  base: string2().describe("The commit sha the builder started from.").optional()
+  base: string2().describe("The commit the builder started from: any name git reads, a full or a short sha (a short one is not refused). A phase started with a base warns when the default branch changed the plan's files since its brief was written.").optional()
 };
 var deployFields = {
   deploy: fields.deploy.optional().describe("Deploy task only, required there: when the step is owed, before or after the deploy."),
@@ -21721,7 +21725,8 @@ var taskSchemas = {
     type: type.optional(),
     blocked_by: blockedBy.optional(),
     files: files.optional(),
-    phase: string2().trim().min(1).optional().describe("Create the plan phase once, by its id."),
+    stacked_on: stackedOn.optional().describe(STACKED_ON_WORDS),
+    phase: string2().trim().min(1).optional().describe(`Create the plan phase once, by its id: ${PHASE_RULE}. A phase takes no parent (it sits under its plan), and it starts only once it holds tasks.`),
     plan: string2().trim().min(1).optional().describe("The plan's slug. For a phase it defaults to the caller's plan in flight, else the plan being finished, else the next queued plan (the lowest-numbered own open plan with an open phase), else its latest own open plan, never an older one; with no open default a phase needs plan. With no phase or parent, it makes the plan task. A task with neither plan nor parent is loose, whatever plans are open; to add a task to a plan, name its phase, or its plan, as parent."),
     ...deployFields
   }).strict(),
@@ -21741,6 +21746,7 @@ var taskSchemas = {
     blocked_by_add: blockedBy.optional(),
     blocked_by_remove: array(ref).optional(),
     files: files.optional(),
+    stacked_on: stackedOn.nullable().optional().describe(STACKED_ON_WORDS),
     ...deployFields
   }).strict(),
   done: object({
@@ -21915,6 +21921,9 @@ function spawnGit(cwd, args, env, timeoutMs, own, trim) {
 import { existsSync as existsSync2, readFileSync as readFileSync2 } from "fs";
 import { posix, win32 } from "path";
 
+// src/jobs/kind-defaults.ts
+var KIND_NAME = /^[a-z0-9][a-z0-9:._-]*$/;
+
 // src/jobs/kinds.ts
 var matchRuleSchema = union([
   strictObject({
@@ -21941,7 +21950,6 @@ var kindSpecSchema = strictObject({
   workers: unknown().optional(),
   light: unknown().optional()
 });
-var KIND_NAME = /^[a-z0-9][a-z0-9:._-]*$/;
 var kindsSchema = record(string2().regex(KIND_NAME, "a kind's name is lower-case letters, digits and : . _ -"), kindSpecSchema);
 
 // src/setup/user-json.ts
@@ -23492,6 +23500,28 @@ var mergeFilesSchema = array(string2()).transform((paths, context) => {
   }
   return normalised;
 });
+function normalizeAppendOnlyFolder(raw) {
+  const parsed = normalizeMergeFile(raw);
+  if (!parsed.ok || parsed.path.endsWith("/"))
+    return parsed;
+  return {
+    ok: false,
+    why: `${JSON.stringify(raw)} is not a folder: plans.appendOnly names folders, each ending in /`
+  };
+}
+var appendOnlySchema = array(string2()).transform((paths, context) => {
+  const folders = [];
+  for (const [index, raw] of paths.entries()) {
+    const parsed = normalizeAppendOnlyFolder(raw);
+    if (!parsed.ok) {
+      context.issues.push({ code: "custom", input: raw, message: parsed.why, path: [index] });
+      return NEVER;
+    }
+    if (!folders.includes(parsed.path))
+      folders.push(parsed.path);
+  }
+  return folders;
+});
 var WORKFLOW_KEY_ALIASES = {
   autoCommit: "allowCommit",
   autoPush: "allowPush",
@@ -23557,7 +23587,8 @@ var workflowObjectSchema = strictObject({
   clearWorktreeAfterMerge: boolean2().optional(),
   plans: strictObject({
     maxPhases: numberField("plans.maxPhases"),
-    mergeFiles: mergeFilesSchema.optional()
+    mergeFiles: mergeFilesSchema.optional(),
+    appendOnly: appendOnlySchema.optional()
   }).optional(),
   issues: strictObject({
     enabled: boolean2().optional(),
@@ -23619,6 +23650,7 @@ var workflowDefaults = {
   plans: {
     maxPhases: 10,
     mergeFiles: [],
+    appendOnly: [],
     runMode: "ask"
   }
 };
@@ -23650,7 +23682,8 @@ var POLICY_KEYS = [
   "alerts.usagePercent",
   "plans.maxPhases",
   "plans.runMode",
-  "plans.mergeFiles"
+  "plans.mergeFiles",
+  "plans.appendOnly"
 ];
 var PERSONAL_ONLY_KEYS = ["plans.runMode"];
 var SWITCH_KEYS = SWITCH_NAMES.map((name) => `switches.${name}`);
@@ -23669,6 +23702,21 @@ function workflowValue(workflow, key) {
   if (typeof group !== "object" || group === null)
     return;
   return group[tail];
+}
+
+// src/project/config-facts.ts
+var CONFIG_PATH = ".claude/cc-smart-dev-kit.json";
+
+class CcSmartDevKitConfigError extends Error {
+  name = "CcSmartDevKitConfigError";
+}
+
+class CcSmartDevKitVersionError extends CcSmartDevKitConfigError {
+  name = "CcSmartDevKitVersionError";
+}
+
+class CcSmartDevKitRetiredFieldError extends CcSmartDevKitConfigError {
+  name = "CcSmartDevKitRetiredFieldError";
 }
 
 // src/project/version-range.ts
@@ -23819,17 +23867,6 @@ var ccSmartDevKitConfigSchema = strictObject({
   workflow: workflowSchema.optional(),
   ownHooks: array(_enum([...PLUGIN_HOOK_NAMES, ...RETIRED_HOOK_NAMES, ...UNSWITCHABLE_HOOK_NAMES])).optional()
 });
-class CcSmartDevKitConfigError extends Error {
-  name = "CcSmartDevKitConfigError";
-}
-
-class CcSmartDevKitVersionError extends CcSmartDevKitConfigError {
-  name = "CcSmartDevKitVersionError";
-}
-
-class CcSmartDevKitRetiredFieldError extends CcSmartDevKitConfigError {
-  name = "CcSmartDevKitRetiredFieldError";
-}
 function describeIssue(issue) {
   const field = issue.path.length > 0 ? issue.path.join(".") : "(top level)";
   if (issue.code === "unrecognized_keys") {
@@ -23908,10 +23945,7 @@ function checkCcSmartDevKitConfig(raw, where, pluginVersion = VERSION) {
   return parsed.data;
 }
 
-// src/workflow/resolve.ts
-import { existsSync as existsSync4, readFileSync as readFileSync3 } from "fs";
-
-// src/project/resolve.ts
+// src/project/locate.ts
 import { existsSync as existsSync3, realpathSync as realpathSync2, statSync as statSync2 } from "fs";
 import { join as join4 } from "path";
 var MIN_GIT_VERSION = "2.31.0";
@@ -24050,19 +24084,23 @@ function locateCheckout(cwd, options = {}) {
     mainCheckout: roots.isWorktree ? findMainCheckout(git, cwd) : roots.root
   };
 }
-function loadProjectConfig(checkout, pluginVersion) {
+function projectFileFor(checkout) {
   const { root, mainCheckout } = checkout;
-  const own = join4(root, ".claude", "cc-smart-dev-kit.json");
-  let config = loadCcSmartDevKitConfig(own, pluginVersion);
-  let configFile = config === null ? null : own;
-  if (config === null && mainCheckout !== null && mainCheckout !== root) {
-    const main = join4(mainCheckout, ".claude", "cc-smart-dev-kit.json");
-    config = loadCcSmartDevKitConfig(main, pluginVersion);
-    configFile = config === null ? null : main;
-  }
-  return { ...checkout, config, configFile };
+  const own = join4(root, CONFIG_PATH);
+  if (existsSync3(own))
+    return own;
+  if (mainCheckout === null || mainCheckout === root)
+    return null;
+  const main = join4(mainCheckout, CONFIG_PATH);
+  return existsSync3(main) ? main : null;
 }
-var CONFIG_PATH = ".claude/cc-smart-dev-kit.json";
+
+// src/project/resolve.ts
+function loadProjectConfig(checkout, pluginVersion) {
+  const file = projectFileFor(checkout);
+  const config = file === null ? null : loadCcSmartDevKitConfig(file, pluginVersion);
+  return { ...checkout, config, configFile: config === null ? null : file };
+}
 function gitTimedOut(where) {
   return { found: false, where, why: GIT_TIMED_OUT2 };
 }
@@ -24108,6 +24146,9 @@ function readCommittedConfig(checkout, branch, options = {}) {
   return committedOf(text, where, options);
 }
 
+// src/workflow/resolve.ts
+import { existsSync as existsSync4, readFileSync as readFileSync3 } from "fs";
+
 // src/setup/launcher.ts
 var LAUNCHER_NAME = "cc-smart-dev-kit";
 var LAUNCHER_IN_SHELL = `"$HOME/.local/bin/${LAUNCHER_NAME}"`;
@@ -24136,28 +24177,9 @@ function describeIssues(issues) {
   }).join("; ");
 }
 
-// src/workflow/resolve.ts
-class WorkflowConfigError extends Error {
-  name = "WorkflowConfigError";
-}
-function personalWorkflowFile(paths) {
-  return paths.workflowConfigFile;
-}
-function loadWorkflow(file) {
-  if (!existsSync4(file))
-    return {};
-  let raw;
-  try {
-    raw = JSON.parse(readFileSync3(file, "utf8"));
-  } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error);
-    throw new WorkflowConfigError(`Invalid ${file}: not valid JSON (${reason})`);
-  }
-  const parsed = personalWorkflowSchema.safeParse(raw);
-  if (!parsed.success) {
-    throw new WorkflowConfigError(`Invalid ${file}: ${describeIssues(parsed.error.issues)}`);
-  }
-  return parsed.data;
+// src/workflow/merge.ts
+function current(value, source) {
+  return { value, source };
 }
 function mergedGroup(personal, project) {
   if (personal === undefined)
@@ -24182,6 +24204,42 @@ function mergeWorkflows(personal, project) {
     merged.plans = plans;
   return merged;
 }
+
+// src/workflow/resolve.ts
+class WorkflowConfigError extends Error {
+  name = "WorkflowConfigError";
+}
+function personalWorkflowFile(paths) {
+  return paths.workflowConfigFile;
+}
+function invalidJson(file, error) {
+  const reason = error instanceof Error ? error.message : String(error);
+  return new WorkflowConfigError(`Invalid ${file}: not valid JSON (${reason})`);
+}
+function parseWorkflowText(text, file) {
+  let raw;
+  try {
+    raw = JSON.parse(text);
+  } catch (error) {
+    throw invalidJson(file, error);
+  }
+  const parsed = personalWorkflowSchema.safeParse(raw);
+  if (!parsed.success) {
+    throw new WorkflowConfigError(`Invalid ${file}: ${describeIssues(parsed.error.issues)}`);
+  }
+  return parsed.data;
+}
+function loadWorkflow(file) {
+  if (!existsSync4(file))
+    return {};
+  let text;
+  try {
+    text = readFileSync3(file, "utf8");
+  } catch (error) {
+    throw invalidJson(file, error);
+  }
+  return parseWorkflowText(text, file);
+}
 function sourceOf(personal, project, key) {
   if (workflowValue(project, key) !== undefined)
     return "project";
@@ -24190,6 +24248,7 @@ function sourceOf(personal, project, key) {
 function plansFrom(personal, project) {
   const plans = mergeWorkflows(personal, project).plans ?? {};
   const mergeFiles = project.plans?.mergeFiles;
+  const appendOnly = project.plans?.appendOnly;
   const runMode = personal.plans?.runMode;
   return {
     maxPhases: {
@@ -24197,19 +24256,18 @@ function plansFrom(personal, project) {
       source: sourceOf(personal, project, "plans.maxPhases")
     },
     mergeFiles: mergeFiles === undefined ? current([...workflowDefaults.plans.mergeFiles], "default") : current(mergeFiles, "project"),
+    appendOnly: appendOnly === undefined ? current([...workflowDefaults.plans.appendOnly], "default") : current(appendOnly, "project"),
     runMode: runMode === undefined ? current(workflowDefaults.plans.runMode, "default") : current(runMode, "personal")
   };
 }
 function resolvePlans(paths, projectConfig) {
   return plansFrom(loadWorkflow(personalWorkflowFile(paths)), projectConfig?.workflow ?? {});
 }
-function current(value, source) {
-  return { value, source };
-}
-function resolveMergeFiles(checkout, base, options = {}) {
+function resolvePlanFiles(checkout, base, options = {}) {
   if (base === null) {
     return {
       files: [],
+      appendOnly: [],
       reason: "this project names no worktrees.base, so there is no committed copy of plans.mergeFiles to read"
     };
   }
@@ -24217,11 +24275,19 @@ function resolveMergeFiles(checkout, base, options = {}) {
   try {
     committed = readCommittedConfig(checkout, base, options);
   } catch (error) {
-    return { files: [], reason: error instanceof Error ? error.message : String(error) };
+    return {
+      files: [],
+      appendOnly: [],
+      reason: error instanceof Error ? error.message : String(error)
+    };
   }
   if (!committed.found)
-    return { files: [], reason: committed.why };
-  return settleMergeFiles(checkout, base, committed.config.workflow?.plans?.mergeFiles ?? [], options);
+    return { files: [], appendOnly: [], reason: committed.why };
+  const plans = committed.config.workflow?.plans;
+  return {
+    ...settleMergeFiles(checkout, base, plans?.mergeFiles ?? [], options),
+    appendOnly: [...plans?.appendOnly ?? []]
+  };
 }
 function settleMergeFiles(checkout, base, listed, options = {}) {
   const files = [];
@@ -24508,7 +24574,9 @@ var DEFAULT_STALE_DAYS = 30;
 function projectKey(repo) {
   return repoKey(repo);
 }
-function taskContext(cwd, env = process.env) {
+function taskContext(cwd, env = process.env, read) {
+  if (read !== undefined)
+    return contextOf(read, cwd, read);
   let checkout;
   try {
     checkout = locateCheckout(cwd, { env });
@@ -24520,7 +24588,7 @@ function taskContext(cwd, env = process.env) {
 function projectKeyOf(checkout, cwd) {
   return projectKey(checkout === null ? realpathSync3(cwd) : checkout.mainCheckout ?? checkout.root);
 }
-function contextOf(checkout, cwd) {
+function contextOf(checkout, cwd, read) {
   if (checkout === null) {
     return {
       ok: true,
@@ -24540,7 +24608,7 @@ function contextOf(checkout, cwd) {
   };
   let config;
   try {
-    config = loadProjectConfig(checkout).config;
+    config = (read ?? loadProjectConfig(checkout)).config;
   } catch (error) {
     const why = checkoutFailure(error);
     return { ...base, projectTasks: { ok: false, why }, projectConfig: { ok: false, why } };
@@ -24577,6 +24645,105 @@ var recordSchema = object({
   seq: number2()
 });
 var toldSchema = object({ seq: number2() });
+
+// src/tasks/work/graph.ts
+function isOpen(task) {
+  return task.status === "pending" || task.status === "in_progress";
+}
+function inProgressFirst(a, b) {
+  return Number(b.status === "in_progress") - Number(a.status === "in_progress") || a.number - b.number;
+}
+var BLOCK_REFUSAL_WORDS = {
+  under: "it sits above this task",
+  cycle: "it would make a blocker cycle",
+  through: "it already waits for this task, through a parent"
+};
+
+class TaskGraph {
+  byId;
+  children = new Map;
+  added = new Map;
+  constructor(tasks) {
+    this.byId = new Map(tasks.map((task) => [task.id, task]));
+    for (const task of tasks) {
+      if (!task.parentId)
+        continue;
+      const siblings = this.children.get(task.parentId);
+      if (siblings)
+        siblings.push(task);
+      else
+        this.children.set(task.parentId, [task]);
+    }
+  }
+  childrenOf(id) {
+    return this.children.get(id) ?? [];
+  }
+  waitsOf(id) {
+    return [...this.byId.get(id)?.waitsFor ?? [], ...this.added.get(id) ?? []];
+  }
+  addWait(id, ref) {
+    const waits = this.added.get(id);
+    if (waits)
+      waits.push(ref);
+    else
+      this.added.set(id, [ref]);
+  }
+  ancestorsOf(task) {
+    const up = [];
+    const seen = new Set([task.id]);
+    for (let parent = this.byId.get(task.parentId ?? "");parent && !seen.has(parent.id); parent = this.byId.get(parent.parentId ?? "")) {
+      seen.add(parent.id);
+      up.push(parent);
+    }
+    return up;
+  }
+  holdingUnder(id) {
+    const seen = new Set([id]);
+    const result = [];
+    const walk = (parent) => {
+      for (const child of this.childrenOf(parent)) {
+        if (seen.has(child.id) || child.type === "non-blocking")
+          continue;
+        seen.add(child.id);
+        if (isOpen(child))
+          result.push(child);
+        walk(child.id);
+      }
+    };
+    walk(id);
+    return result.sort(inProgressFirst);
+  }
+  waitsFor(start, target) {
+    const reached = new Set;
+    const pending = [start];
+    while (pending.length) {
+      const id = pending.pop();
+      if (!id || reached.has(id))
+        continue;
+      if (id === target)
+        return true;
+      reached.add(id);
+      pending.push(...this.waitsOf(id), ...this.holdingUnder(id).map((held) => held.id));
+    }
+    return false;
+  }
+}
+function blockRefusal(graph, task, other) {
+  if (graph.ancestorsOf(task).some((up) => up.id === other.id))
+    return "under";
+  const seen = new Set;
+  const pending = [other.id];
+  while (pending.length) {
+    const id = pending.pop();
+    if (!id || seen.has(id))
+      continue;
+    if (id === task.id)
+      return "cycle";
+    seen.add(id);
+    pending.push(...graph.waitsOf(id));
+  }
+  return graph.waitsFor(other.id, task.id) ? "through" : null;
+}
 
 // src/tasks/work/queries.ts
 function hasFilesTable(db) {
@@ -24635,7 +24802,8 @@ function allTasks(db, project) {
       procStart: row.lead_start ?? null,
       holder: row.lead_child === 1 ? "child" : "self",
       handoutId: row.lead_handout
-    }
+    },
+    stackedOn: row.stacked_on ?? null
   }));
 }
 function getTask(db, project, ref) {
@@ -24654,9 +24822,6 @@ function taskById(db, id) {
   if (!task)
     throw new Error("task not found");
   return task;
-}
-function isOpen(task) {
-  return task.status === "pending" || task.status === "in_progress";
 }
 function planCounted(all, plan) {
   if (plan === null)
@@ -24714,6 +24879,10 @@ function isLead(lead, who) {
     return true;
   return claimHeldBy(leadProcess(lead), who);
 }
+function leadsPlan(who) {
+  const owns = ownerOf(who);
+  return (plan) => isLead(plan.lead, who) || owns(plan);
+}
 function leadProcess(lead) {
   return lead.pid === null ? null : { pid: lead.pid, procStart: lead.procStart, sessionId: lead.sessionId };
 }
@@ -24737,7 +24906,10 @@ function filesOverlap(a, b, options = {}) {
   const fold = (path) => options.caseFold ? path.toLowerCase() : path;
   const holds = (folder, path) => folder.endsWith("/") && path.startsWith(folder);
   const ignore = (options.ignore ?? []).map(fold);
+  const appendOnly = (options.appendOnly ?? []).map(fold);
   const taken = (path) => ignore.some((one) => one === path || holds(one, path));
+  const added = (path) => appendOnly.some((folder) => path.startsWith(folder));
+  const touch = (x, y) => added(x) || added(y) ? x === y && !x.endsWith("/") : x === y || holds(x, y) || holds(y, x);
   const found = [];
   for (const path of a) {
     const x = fold(path);
@@ -24747,18 +24919,50 @@ function filesOverlap(a, b, options = {}) {
       const y = fold(other);
       if (taken(y))
         continue;
-      if (x === y || holds(x, y) || holds(y, x))
+      if (touch(x, y))
         found.push({ path, other });
     }
   }
   return found;
 }
+function parentHolds(parent) {
+  return isOpen(parent) || parent.lead !== null;
+}
+function planLead(plan) {
+  if (plan.lead !== null)
+    return plan.lead.sessionId === null && plan.lead.pid === null ? null : { sessionId: plan.lead.sessionId, pid: plan.lead.pid, procStart: plan.lead.procStart };
+  if (plan.createdBy === null && plan.creator === null)
+    return null;
+  return {
+    sessionId: plan.createdBy,
+    pid: plan.creator?.pid ?? null,
+    procStart: plan.creator?.procStart ?? null
+  };
+}
+function sameLead(a, b) {
+  const leadA = planLead(a);
+  const leadB = planLead(b);
+  return leadA !== null && leadB !== null && leadsPlan(leadA)(b) && leadsPlan(leadB)(a);
+}
+function provedSet(pairs = []) {
+  return new Set(pairs.map((pair) => stackKey(pair.child, pair.parent)));
+}
+function stackKey(child, parent) {
+  return JSON.stringify([child, parent]);
+}
+function isStackedPair(a, b, proved) {
+  const stackedOn = (child, parent) => parent.plan !== null && child.stackedOn === parent.plan && parentHolds(parent) && proved.has(stackKey(child.id, parent.plan)) && sameLead(child, parent);
+  return stackedOn(a, b) || stackedOn(b, a);
+}
+function rivalsOf(held, plan, proved) {
+  return held.filter((h) => h.plan.id !== plan.id && !isStackedPair(plan, h.plan, proved));
+}
 function heldPlansIn(all, who, extraFiles = {}) {
-  const owns = ownerOf(who);
+  const mine = leadsPlan(who);
   return all.filter((t) => t.kind === "plan" && (t.lead !== null || isInFlight(all, t))).map((plan) => ({
     plan,
     why: plan.lead !== null ? "reserved" : "in-flight",
-    mine: isLead(plan.lead, who) || owns(plan),
+    mine: mine(plan),
     files: [...new Set([...plan.files, ...extraFiles[plan.id] ?? []])]
   }));
 }
@@ -24805,9 +25009,6 @@ function descendantsIn(tasks, id) {
   }
   return result;
 }
-function inProgressFirst(a, b) {
-  return Number(b.status === "in_progress") - Number(a.status === "in_progress") || a.number - b.number;
-}
 function layerOf(task, _byId) {
   return task.kind;
 }
@@ -24825,30 +25026,7 @@ function freedBy(all, closed, owns) {
   return all.filter((t) => t.waitsFor.includes(closed.id) && owns(t) && isStartable(all, byId, t));
 }
 function holdingUnder(tasks, id) {
-  const children = new Map;
-  for (const t of tasks) {
-    if (!t.parentId)
-      continue;
-    const siblings = children.get(t.parentId);
-    if (siblings)
-      siblings.push(t);
-    else
-      children.set(t.parentId, [t]);
-  }
-  const seen = new Set([id]);
-  const result = [];
-  const walk = (parent) => {
-    for (const child of children.get(parent) ?? []) {
-      if (seen.has(child.id) || child.type === "non-blocking")
-        continue;
-      seen.add(child.id);
-      if (isOpen(child))
-        result.push(child);
-      walk(child.id);
-    }
-  };
-  walk(id);
-  return result.sort(inProgressFirst);
+  return new TaskGraph(tasks).holdingUnder(id);
 }
 function searchTasks(db, project, text) {
   const pattern = `%${text.replace(/[\\%_]/g, "\\$&")}%`;
@@ -24897,27 +25075,12 @@ function claimState(task, process2, who) {
     return resumedClaim(task.claim, who, process2.gone) ? "mine" : "free";
   return claimHeldBy(task.claim, who) ? "mine" : "another session";
 }
-function waitsForTask(tasks, start, target) {
-  const byId = new Map(tasks.map((task) => [task.id, task]));
-  const reached = new Set;
-  const pending = [start];
-  while (pending.length) {
-    const id = pending.pop();
-    if (!id || reached.has(id))
-      continue;
-    if (id === target)
-      return true;
-    reached.add(id);
-    pending.push(...byId.get(id)?.waitsFor ?? [], ...holdingUnder(tasks, id).map((task) => task.id));
-  }
-  return false;
-}
 
 // src/tasks/work/db.ts
 import { Database } from "bun:sqlite";
 import { chmodSync as chmodSync2, existsSync as existsSync6, mkdirSync as mkdirSync3, renameSync as renameSync2, rmSync as rmSync2, writeFileSync as writeFileSync3 } from "fs";
 import { dirname as dirname3, join as join6 } from "path";
-var WORK_SCHEMA_VERSION = 6;
+var WORK_SCHEMA_VERSION = 7;
 var LEGACY_LIFT_REASON = "lift legacy nested task";
 var WRITE_TIMEOUT_MS = 3000;
 var HOOK_TIMEOUT_MS = 200;
@@ -24962,10 +25125,42 @@ var MIGRATIONS = [
    ALTER TABLE tasks ADD COLUMN lead_pid INTEGER;
    ALTER TABLE tasks ADD COLUMN lead_start TEXT;
    ALTER TABLE tasks ADD COLUMN lead_child INTEGER NOT NULL DEFAULT 0 CHECK(lead_child IN (0,1));
-   ALTER TABLE tasks ADD COLUMN lead_handout TEXT;`
+   ALTER TABLE tasks ADD COLUMN lead_handout TEXT;`,
+  "ALTER TABLE tasks ADD COLUMN stacked_on TEXT"
 ];
 
 class BackupFailure extends Error {
+}
+function restoreHolds(sqlite, projects, originalHolds, moved) {
+  for (const tasks of projects.values()) {
+    const graph = new TaskGraph(tasks.map((task) => {
+      const row = moved.get(task.id);
+      if (!row)
+        return task;
+      return {
+        ...task,
+        parentId: row.parent_id,
+        type: row.blocking === 0 ? "non-blocking" : "blocking"
+      };
+    }));
+    for (const task of graph.byId.values())
+      for (const held of originalHolds.get(task.id) ?? []) {
+        if (graph.waitsOf(task.id).includes(held.id))
+          continue;
+        const refusal = blockRefusal(graph, task, held);
+        if (refusal) {
+          sqlite.query("INSERT INTO task_events(task_id,project,number,at,action,changes,reason) VALUES (?,?,?,?,'noted',?,?)").run(task.id, task.project, task.number, Date.now(), JSON.stringify({
+            note: [
+              null,
+              `hold on #${held.number} not restored: ${BLOCK_REFUSAL_WORDS[refusal]}`
+            ]
+          }), LEGACY_LIFT_REASON);
+          continue;
+        }
+        sqlite.query("INSERT OR IGNORE INTO task_deps(task_id,waits_for) VALUES (?,?)").run(task.id, held.id);
+        graph.addWait(task.id, held.id);
+      }
+  }
 }
 function repairTaskLayers(sqlite, file) {
   const nestedExists = sqlite.query("SELECT 1 FROM tasks t JOIN tasks p ON p.id=t.parent_id WHERE t.kind='task' AND p.kind='task' LIMIT 1").get();
@@ -24975,10 +25170,14 @@ function repairTaskLayers(sqlite, file) {
   const byId = new Map(rows.map((row) => [row.id, row]));
   const originalHolds = new Map;
   const reader = { sqlite, writable: false, close() {} };
+  const projects = new Map;
   for (const project of new Set(rows.map((row) => row.project))) {
     const tasks = allTasks(reader, project);
-    for (const task of tasks.filter((task) => task.kind === "task" && tasks.some((child) => child.kind === "task" && child.parentId === task.id)))
-      originalHolds.set(task.id, holdingUnder(tasks, task.id).map((held) => held.id));
+    projects.set(project, tasks);
+    const before = new TaskGraph(tasks);
+    for (const task of tasks)
+      if (task.kind === "task" && before.childrenOf(task.id).some((child) => child.kind === "task"))
+        originalHolds.set(task.id, before.holdingUnder(task.id));
   }
   let backed = false;
   const move = (row, parent, above) => {
@@ -25011,12 +25210,7 @@ function repairTaskLayers(sqlite, file) {
   for (;; ) {
     const nested = rows.find((row) => row.kind === "task" && byId.get(row.parent_id ?? "")?.kind === "task");
     if (!nested) {
-      for (const [id, held] of originalHolds)
-        for (const h of held) {
-          if (waitsForTask(allTasks(reader, byId.get(id)?.project ?? ""), h, id))
-            continue;
-          sqlite.query("INSERT OR IGNORE INTO task_deps(task_id,waits_for) VALUES (?,?)").run(id, h);
-        }
+      restoreHolds(sqlite, projects, originalHolds, byId);
       return;
     }
     const chain = [];
@@ -25615,8 +25809,17 @@ var OPERATIONS = [
   { ...SERIES, kind: "folder", namesBranch: false, path: "sequencer" }
 ];
 
+// src/hooks/checked-config.ts
+var CHECKED_FILE_MAX_BYTES = 256 * 1024;
+
 // src/hooks/worktree-leftovers.ts
 var REFLOG_TAIL_BYTES = 8 * 1024;
+
+// src/workflow/review-cover.ts
+function parseGitVersion(out) {
+  const match = /git version (\d+)\.(\d+)(?:\.(\d+))?/.exec(out);
+  return match === null ? null : `${match[1]}.${match[2]}.${match[3] ?? "0"}`;
+}
 
 // src/worktrees/scan.ts
 var REMOVAL_TIMEOUT_MS = 10 * 60000;
@@ -25638,13 +25841,16 @@ function baseBranch(checkout, env, repo) {
 function planFilesCheck(cwd, env = process.env) {
   const checkout = locateCheckout(cwd, { env });
   if (checkout === null)
-    return { ignore: [], caseFold: false, reason: null };
-  const merge = resolveMergeFiles(checkout, baseBranch(checkout, env, checkout.root).base, { env });
+    return { ignore: [], appendOnly: [], caseFold: false, reason: null };
+  const committed = resolvePlanFiles(checkout, baseBranch(checkout, env, checkout.root).base, {
+    env
+  });
   const ignorecase = runGit(checkout.root, ["config", "--type=bool", "core.ignorecase"], env);
   return {
-    ignore: merge.files,
+    ignore: committed.files,
+    appendOnly: committed.appendOnly,
     caseFold: ignorecase.ok && ignorecase.out === "true",
-    reason: merge.reason
+    reason: committed.reason
   };
 }
 
@@ -25762,6 +25968,188 @@ function planNote(all, plan, cap) {
   const waiting = all.filter((t) => t.parentId === plan.id && t.kind === "task" && isOpen(t));
   return waiting.length ? `${phases} \xB7 waiting ${waiting.length}` : phases;
 }
+var STALE_BRIEF_FILES = 10;
+var MIN_SINCE_FILTER_GIT = "2.38.0";
+function sinceFlag(git) {
+  const asked = git(["--version"]);
+  const version = asked.ok ? parseGitVersion(asked.out) : null;
+  return version !== null && Bun.semver.order(version, MIN_SINCE_FILTER_GIT) >= 0 ? "--since-as-filter" : "--since";
+}
+function staleBriefWarning(check) {
+  const { phase, files, writtenAt, base, git } = check;
+  if (writtenAt === null || files.length === 0)
+    return null;
+  const ref = `refs/remotes/origin/${base}`;
+  const known = git(["rev-parse", "--verify", "--quiet", `${ref}^{commit}`]);
+  if (!known.ok && known.code === 1)
+    return null;
+  const since = new Date(Math.floor(writtenAt / 1000) * 1000).toISOString();
+  const log = git([
+    "-c",
+    "core.quotePath=false",
+    "--literal-pathspecs",
+    "log",
+    "--first-parent",
+    "--diff-merges=first-parent",
+    `${sinceFlag(git)}=${since}`,
+    "--format=%x1e%h%x09%ct%x09%s",
+    "--name-only",
+    ref,
+    "--",
+    ...files
+  ]);
+  const brief = `the brief of #${phase.number}`;
+  if (!known.ok || !log.ok)
+    return `Warning: ${brief} was not checked against origin/${base}: git could not read it (${(known.ok ? log.err : known.err) || "no reason given"})`;
+  const changed = [];
+  let newest = null;
+  for (const entry of log.out.split("\x1E")) {
+    const [head = "", ...paths] = entry.split(`
+`);
+    const [sha = "", seconds = "", subject = ""] = head.split("\t");
+    if (sha === "" || Number(seconds) * 1000 <= writtenAt)
+      continue;
+    newest ??= `${sha} "${subject}"`;
+    for (const path of paths)
+      if (path !== "" && !changed.includes(path))
+        changed.push(path);
+  }
+  if (newest === null || changed.length === 0)
+    return null;
+  const shown = changed.slice(0, STALE_BRIEF_FILES);
+  const more = changed.length > shown.length ? ` and ${changed.length - shown.length} more` : "";
+  return `Warning: ${brief} may be stale: origin/${base} changed ${shown.join(", ")}${more} after it was written (newest: ${newest}). Read those changes before you build on it.`;
+}
+
+// src/tasks/stack-proof.ts
+var gap = (why) => ({ proved: false, gap: why });
+function branchTip(git, branch) {
+  for (const ref of [`refs/heads/${branch}`, `refs/remotes/origin/${branch}`]) {
+    const run = git(["rev-parse", "--verify", "--quiet", `${ref}^{commit}`]);
+    if (run.ok && run.out !== "")
+      return run.out;
+  }
+  return null;
+}
+function defaultTip(git, defaultBranch) {
+  if (defaultBranch === null)
+    return null;
+  const run = git([
+    "rev-parse",
+    "--verify",
+    "--quiet",
+    `refs/remotes/origin/${defaultBranch}^{commit}`
+  ]);
+  return run.ok && run.out !== "" ? run.out : null;
+}
+function commitOf(git, name) {
+  if (name.startsWith("-"))
+    return null;
+  const run = git(["rev-parse", "--verify", "--quiet", `${name}^{commit}`]);
+  return run.ok && run.out !== "" ? run.out : null;
+}
+function isAncestor(git, commit, tip) {
+  const run = git(["merge-base", "--is-ancestor", commit, tip]);
+  return run.code === 0 ? true : run.code === 1 ? false : null;
+}
+function stackHolds(git, onDefault, { parent, child, grandparent, start, given }) {
+  if (onDefault === null)
+    return gap("default-unknown");
+  if (parent.branch === null)
+    return gap("parent-branch");
+  if (child.branch === parent.branch)
+    return gap("own-branch");
+  const tip = branchTip(git, parent.branch);
+  if (tip === null)
+    return gap("parent-branch");
+  const empty = isAncestor(git, tip, onDefault);
+  if (empty === null)
+    return gap("git");
+  if (empty)
+    return gap("parent-empty");
+  const parentStart = parent.base === null ? null : commitOf(git, parent.base);
+  if (parentStart === null)
+    return gap("parent-base");
+  const fences = [onDefault];
+  if (grandparent !== null && grandparent.branch !== null) {
+    const chain = branchTip(git, grandparent.branch);
+    if (chain === null)
+      return gap("chain-branch");
+    fences.push(chain);
+  }
+  const from = start === null ? null : commitOf(git, start);
+  if (from === null)
+    return gap("no-start");
+  if (!given && child.branch === null)
+    return gap("own-branch");
+  const forks = git(["merge-base", "--all", from, tip]);
+  if (forks.code === 1)
+    return gap("start-lacks-parent");
+  if (!forks.ok || forks.out === "")
+    return gap("git");
+  const own = git(["rev-list", "--first-parent", `${parentStart}..${tip}`]);
+  if (!own.ok)
+    return gap("git");
+  const line = new Set(own.out.split(`
+`));
+  for (const fork of forks.out.split(`
+`)) {
+    if (!line.has(fork))
+      return gap("start-lacks-parent");
+    for (const fence of fences) {
+      const under = isAncestor(git, fork, fence);
+      if (under === null)
+        return gap("git");
+      if (under)
+        return gap("start-lacks-parent");
+    }
+  }
+  if (child.branch !== null) {
+    const built = branchTip(git, child.branch);
+    if (built === null)
+      return gap("start-off-branch");
+    const holds = isAncestor(git, from, built);
+    if (holds === null)
+      return gap("git");
+    if (!holds)
+      return gap("start-off-branch");
+  }
+  return { proved: true };
+}
+function judgeStacks(all, git, defaultBranch, starts = {}) {
+  const plans = new Map(all.filter((t) => t.kind === "plan" && t.plan !== null).map((t) => [t.plan, t]));
+  const judged = new Map;
+  let onDefault = null;
+  for (const plan of plans.values()) {
+    if (plan.stackedOn === null)
+      continue;
+    const parent = plans.get(plan.stackedOn);
+    if (parent === undefined || !parentHolds(parent))
+      continue;
+    const pair = { child: plan.id, parent: plan.stackedOn };
+    if (!sameLead(plan, parent)) {
+      judged.set(plan.id, { pair, verdict: gap("other-lead") });
+      continue;
+    }
+    onDefault ??= { tip: defaultTip(git, defaultBranch) };
+    const given = starts[plan.id];
+    const verdict = stackHolds(git, onDefault.tip, {
+      parent,
+      child: plan,
+      grandparent: parent.stackedOn === null ? null : plans.get(parent.stackedOn) ?? null,
+      start: given ?? plan.base,
+      given: given !== undefined
+    });
+    judged.set(plan.id, { pair, verdict });
+  }
+  return judged;
+}
+function provedStacks(all, git, defaultBranch, starts = {}) {
+  return provedPairs(judgeStacks(all, git, defaultBranch, starts));
+}
+function provedPairs(judged) {
+  return [...judged.values()].filter((one) => one.verdict.proved).map((one) => one.pair);
+}
 
 // src/tasks/work/store.ts
 var NOTE_PREVIEW = 120;
@@ -25781,6 +26169,7 @@ function shape(db, task) {
     claim: task.claim === null ? null : claimText(task.claim),
     waitsFor: task.waitsFor.map(numberOf).sort(),
     files: task.files,
+    stackedOn: task.stackedOn,
     lead: task.lead === null ? null : `${task.lead.sessionId ?? `process ${task.lead.pid}`} (${task.lead.holder})`
   };
 }
@@ -25860,29 +26249,27 @@ function unblockedValid(db, task) {
     throw new Error(`${label(task)} is blocked by ${open.map((t) => `${label(t)} (${t.status.replaceAll("_", " ")})`).join(", ")}: finish or drop ${open.length > 1 ? "them" : "it"} first, or remove the block`);
 }
 function addBlockers(db, task, refs) {
+  let graph = null;
   for (const ref of refs) {
     const other = taskById(db, ref);
     if (other.project !== task.project)
       throw new Error("dependency belongs to another project");
-    const byId = new Map(allTasks(db, task.project).map((t) => [t.id, t]));
-    for (let up = byId.get(task.parentId ?? "");up; up = byId.get(up.parentId ?? ""))
-      if (up.id === other.id)
-        throw new Error(`${label(task)} cannot be blocked by ${label(other)}: it sits under it, and a parent waits for its tasks`);
-    const seen = new Set;
-    const pending = [ref];
-    while (pending.length) {
-      const id = pending.pop();
-      if (!id || seen.has(id))
-        continue;
-      if (id === task.id)
-        throw new Error("blocked-by would make a cycle");
-      seen.add(id);
-      pending.push(...byId.get(id)?.waitsFor ?? []);
-    }
-    const tasks = [...byId.values()];
-    if (waitsForTask(tasks, ref, task.id))
-      throw new Error(`${label(task)} cannot be blocked by ${label(other)}: ${label(other)} already waits for it, through what it is blocked by and the tasks a parent waits for, so neither could ever be done`);
+    graph ??= new TaskGraph(allTasks(db, task.project));
+    const refusal = blockRefusal(graph, task, other);
+    if (refusal)
+      throw new Error(blockMessage(refusal, task, other));
     db.sqlite.query("INSERT OR IGNORE INTO task_deps VALUES (?,?)").run(task.id, ref);
+    graph.addWait(task.id, ref);
+  }
+}
+function blockMessage(refusal, task, other) {
+  switch (refusal) {
+    case "under":
+      return `${label(task)} cannot be blocked by ${label(other)}: it sits under it, and a parent waits for its tasks`;
+    case "cycle":
+      return "blocked-by would make a cycle";
+    case "through":
+      return `${label(task)} cannot be blocked by ${label(other)}: ${label(other)} already waits for it, through what it is blocked by and the tasks a parent waits for, so neither could ever be done`;
   }
 }
 function openPlanValid(tasks, plan) {
@@ -25896,6 +26283,32 @@ function storeFiles(db, task, files) {
   db.sqlite.query("DELETE FROM task_files WHERE task_id=?").run(task.id);
   for (const path of list)
     db.sqlite.query("INSERT INTO task_files(task_id,path) VALUES (?,?)").run(task.id, path);
+}
+function storeStack(db, task, slug, who) {
+  if (task.kind !== "plan")
+    throw new Error(`${label(task)} is a ${task.kind}: only a plan is stacked on another plan`);
+  if (slug !== null) {
+    if (slug === task.plan)
+      throw new Error(`${label(task)} cannot be stacked on itself`);
+    const plans = new Map(allTasks(db, task.project).filter((t) => t.kind === "plan" && t.plan !== null).map((t) => [t.plan, t]));
+    const parent = plans.get(slug);
+    if (parent === undefined)
+      throw new Error(`Plan "${slug}" not found: stacked_on names a plan of this project`);
+    const leads = leadsPlan(who);
+    const foreign = [task, parent].filter((plan) => !leads(plan));
+    if (foreign.length > 0)
+      throw new Error(`${label(task)} cannot be stacked on "${slug}": ${foreign.map(label).join(" and ")} ${foreign.length > 1 ? "are" : "is"} not led by this session. A plan is stacked only on another plan of the same lead, whose branch it is built on`);
+    const chain = [slug];
+    for (let at = plans.get(slug)?.stackedOn ?? null;at !== null; ) {
+      if (at === task.plan)
+        throw new Error(`${label(task)} cannot be stacked on "${slug}": that would make a loop (${[task.plan, ...chain, at].join(" \u2192 ")})`);
+      if (chain.includes(at))
+        break;
+      chain.push(at);
+      at = plans.get(at)?.stackedOn ?? null;
+    }
+  }
+  db.sqlite.query("UPDATE tasks SET stacked_on=? WHERE id=?").run(slug, task.id);
 }
 function overlapText(held, overlaps) {
   const shown = [
@@ -25918,19 +26331,24 @@ function refuseHeldOverlap(db, task, who, check) {
   const held = heldPlansIn(allTasks(db, task.project), who);
   if (!held.some((h) => h.plan.id === task.id))
     return;
-  const clashes = overlapsWith(held.filter((h) => h.plan.id !== task.id), taskById(db, task.id).files, check);
+  const current = taskById(db, task.id);
+  const clashes = overlapsWith(rivalsOf(held, current, provedOf(check)), current.files, check);
   if (clashes.length > 0)
     throw new Error(`${label(task)} is held, so its files may not overlap another held plan: overlaps ${clashes.map((c) => overlapText(c.plan, c.overlaps)).join("; ")}${mergeFilesNote(check)}`);
 }
 var NO_FILES_CHECK = { ignore: [], caseFold: false };
+function provedOf(check) {
+  return provedSet(check.stacked);
+}
 function wayOut(held) {
   return held.why === "reserved" ? `${label(held.plan)} is reserved: wait until its pull request merges or closes` : `${label(held.plan)} is running: wait until it is done or parked; if its session is gone, take it (${TASK_TOOL.take}), or park or drop it`;
 }
 function refuseFlightOverlap(db, plan, who, check) {
-  const others = heldPlansIn(allTasks(db, plan.project), who).filter((h) => h.plan.id !== plan.id);
+  const row = taskById(db, plan.id);
+  const others = rivalsOf(heldPlansIn(allTasks(db, plan.project), who), row, provedOf(check));
   if (others.length === 0)
     return;
-  const files = taskById(db, plan.id).files;
+  const files = row.files;
   if (files.length === 0) {
     const reserved = others.filter((h) => h.why === "reserved");
     if (reserved.length > 0)
@@ -26024,10 +26442,12 @@ function applyUpdate(db, id, change, who, now) {
   if (status === "dropped" && task.kind === "plan")
     clearLead(db, id);
   const check = change.filesCheck ?? NO_FILES_CHECK;
-  if (change.files !== undefined) {
+  if (change.files !== undefined)
     storeFiles(db, task, change.files);
+  if (change.stackedOn !== undefined)
+    storeStack(db, task, change.stackedOn, who);
+  if (change.files !== undefined || change.stackedOn !== undefined)
     refuseHeldOverlap(db, task, who, check);
-  }
   if (entering !== null)
     refuseFlightOverlap(db, entering, who, check);
   const changed = taskById(db, id);
@@ -26057,6 +26477,9 @@ function deleteTask(db, id, who, now) {
       throw new Error("task has tasks");
     if (db.sqlite.query("SELECT 1 FROM task_notes WHERE task_id=?").get(id))
       throw new Error("task has notes");
+    const stacked = task.kind === "plan" ? allTasks(db, task.project).filter((t) => t.kind === "plan" && t.stackedOn === task.plan) : [];
+    if (stacked.length > 0)
+      throw new Error(`${stacked.map(label).join(", ")} ${stacked.length > 1 ? "are" : "is"} stacked on it: clear that first (${TASK_TOOL.update} with stacked_on null)`);
     const last = {};
     for (const [key, value] of Object.entries(shape(db, task)))
       if (!empty(key, value))
@@ -26243,10 +26666,17 @@ function reclaimResumed(db, who, now, isGone) {
 }
 
 // src/tasks/ops.ts
-var MAX_PHASE = 8;
-var PHASE_RULE = `1-${MAX_PHASE} characters: ASCII letters, digits, ".", "_" and "-", a letter or a digit at each end, never "--"`;
 function isPhaseId(value) {
   return value.length <= MAX_PHASE && /^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$/.test(value) && !value.includes("--");
+}
+function asWritten(all, id, change) {
+  return all.map((t) => t.id !== id ? t : {
+    ...t,
+    ...change.stackedOn === undefined ? {} : { stackedOn: change.stackedOn },
+    ...change.base === undefined ? {} : { base: change.base },
+    ...change.branch === undefined ? {} : { branch: change.branch },
+    ...change.status === undefined ? {} : { status: change.status }
+  });
 }
 function bindings2(input) {
   return {
@@ -26301,6 +26731,7 @@ function marks(task, byId) {
   const blockers = isOpen(task) ? openBlockers(task, byId) : [];
   return [
     ...task.type === "non-blocking" ? ["non-blocking"] : [],
+    ...task.stackedOn === null ? [] : [`stacked on ${task.stackedOn}`],
     ...blockers.length ? [`blocked by ${blockers.map((t) => `#${t.number}`).join(", ")}`] : []
   ];
 }
@@ -26390,7 +26821,18 @@ function createTaskOps(options = {}) {
         claimedElsewhere,
         caller: guardCaller
       }) === null);
-      const filesWrite = (files) => {
+      const readStacks = (seen) => {
+        const root = ctx.checkoutRoot;
+        if (root === null || !seen.some((t) => t.kind === "plan" && t.stackedOn !== null))
+          return [];
+        const chosen = baseBranch(locateCheckout(root, { env }), env, root);
+        return provedStacks(seen, handBackGit, chosen.from === "default" ? null : chosen.base);
+      };
+      const readCheck = (seen) => ({
+        ...(options.filesCheck ?? planFilesCheck)(cwd),
+        stacked: readStacks(seen)
+      });
+      const filesWrite = (files, seen) => {
         for (const raw of files) {
           const path = normalizePlanFile(raw);
           if (ctx.checkoutRoot === null || path.endsWith("/"))
@@ -26398,17 +26840,43 @@ function createTaskOps(options = {}) {
           if (isFolderOnDisk(ctx.checkoutRoot, path))
             throw new Error(`file "${raw}" is a folder: write it ${path}/`);
         }
-        return { files, filesCheck: (options.filesCheck ?? planFilesCheck)(cwd) };
+        return { files, filesCheck: readCheck(seen) };
       };
-      const startCheck = (plan) => {
+      const planWrite = (files, stackedOn, seen) => {
+        if (files === undefined && stackedOn === undefined)
+          return null;
+        return {
+          ...files === undefined ? { filesCheck: readCheck(seen) } : filesWrite(files, seen),
+          ...stackedOn === undefined ? {} : { stackedOn }
+        };
+      };
+      const startCheck = (plan, seen = all) => {
         const row = all.find((t) => t.kind === "plan" && t.plan === plan);
-        return row === undefined || isInFlight(all, row) ? {} : { filesCheck: (options.filesCheck ?? planFilesCheck)(cwd) };
+        return row === undefined || isInFlight(all, row) ? {} : { filesCheck: readCheck(seen) };
       };
       const enterFlight = (plan, check) => {
         const row = all.find((t) => t.kind === "plan" && t.plan === plan);
         if (row === undefined || row.status !== "pending" || !owns(row))
           return;
         applyUpdate(store, row.id, { status: "in_progress", ...check }, who, now);
+      };
+      const staleBrief = (phase, after) => {
+        if (phase.kind !== "phase" || phase.base === null || ctx.checkoutRoot === null)
+          return null;
+        const root = ctx.checkoutRoot;
+        const files = after.find((t) => t.kind === "plan" && t.plan === phase.plan)?.files ?? [];
+        const written = eventsOf(store, phase).filter((event) => event.changes.description !== undefined).at(-1);
+        try {
+          return staleBriefWarning({
+            phase,
+            files,
+            writtenAt: written?.at ?? null,
+            base: baseBranch(locateCheckout(root, { env }), env, root).base,
+            git: handBackGit
+          });
+        } catch (error) {
+          return `Warning: the brief of #${phase.number} was not checked against the default branch: ${error instanceof Error ? error.message : String(error)}`;
+        }
       };
       const deployTasksOf = () => {
         const here = deployContext();
@@ -26466,8 +26934,8 @@ function createTaskOps(options = {}) {
       if (operation === "create") {
         const input = taskSchemas.create.parse(raw);
         if (input.kind !== "work") {
-          if (Object.keys(bindings2(input)).length || input.parent || input.blocked_by?.length || input.status || input.phase || input.plan || input.files !== undefined)
-            throw new Error("Deploy tasks have no parent, blocked-by, work status, phase, plan or files");
+          if (Object.keys(bindings2(input)).length || input.parent || input.blocked_by?.length || input.status || input.phase || input.plan || input.files !== undefined || input.stacked_on !== undefined)
+            throw new Error("Deploy tasks have no parent, blocked-by, work status, phase, plan, files or stacked_on");
           if (input.deploy === undefined)
             throw new Error("A deploy task needs deploy (before or after)");
           if (input.type === undefined)
@@ -26506,8 +26974,11 @@ function createTaskOps(options = {}) {
           from: input.from
         });
         const blockedBy = input.blocked_by?.map((r) => work(r).id) ?? [];
-        if (input.files !== undefined && (input.phase !== undefined || input.plan === undefined || input.parent !== undefined))
+        const notPlanTask = input.phase !== undefined || input.plan === undefined || input.parent !== undefined;
+        if (input.files !== undefined && notPlanTask)
           throw new Error("files belong to a plan task: create the plan with plan and a subject (no phase, no parent), or set files on it with task_update");
+        if (input.stacked_on !== undefined && notPlanTask)
+          throw new Error("stacked_on belongs to a plan task: create the plan with plan and a subject (no phase, no parent), or set it with task_update");
         if (input.phase !== undefined || input.plan !== undefined && input.parent === undefined) {
           if (input.parent !== undefined)
             throw new Error("A plan stays at the top and a phase under its plan: leave out parent");
@@ -26521,10 +26992,10 @@ function createTaskOps(options = {}) {
           if (input.phase === undefined) {
             const existing = all.find((t) => t.kind === "plan" && t.plan === slug);
             const there = existing !== undefined;
-            const listed = input.files === undefined ? undefined : filesWrite(input.files);
+            const listed = planWrite(input.files, input.stacked_on, existing === undefined ? all : asWritten(all, existing.id, { stackedOn: input.stacked_on }));
             const made = value(writeWork(store, () => {
               const row = planTask(store, { project: ctx.project, plan: slug, subject: input.subject }, who, now);
-              return listed === undefined ? row : applyUpdate(store, row.id, listed, who, now);
+              return listed === null ? row : applyUpdate(store, row.id, listed, who, now);
             }));
             return {
               ok: true,
@@ -26594,8 +27065,8 @@ function createTaskOps(options = {}) {
       if (operation === "update") {
         const input = taskSchemas.update.parse(raw);
         if (isDeployTaskId(input.task)) {
-          if (Object.keys(bindings2(input)).length || input.parent !== undefined || input.blocked_by_add !== undefined || input.blocked_by_remove !== undefined || input.files !== undefined)
-            throw new Error("Deploy tasks have no parent, blocked-by, files or builder bindings");
+          if (Object.keys(bindings2(input)).length || input.parent !== undefined || input.blocked_by_add !== undefined || input.blocked_by_remove !== undefined || input.files !== undefined || input.stacked_on !== undefined)
+            throw new Error("Deploy tasks have no parent, blocked-by, files, stacked_on or builder bindings");
           if (input.status !== undefined && input.status !== "open")
             throw new Error(`A deploy task closes through ${TASK_TOOL.done} (done with evidence, dropped with a note); status open reopens a closed one`);
           const current = project(input.task);
@@ -26633,7 +27104,15 @@ function createTaskOps(options = {}) {
         const task = work(input.task);
         if (input.files !== undefined && task.kind !== "plan")
           throw new Error(`${label2(task)} is a ${task.kind}: only a plan task has a file list (set files on the plan's own #n)`);
-        const listed = input.files === undefined ? undefined : filesWrite(input.files);
+        if (input.stacked_on !== undefined && task.kind !== "plan")
+          throw new Error(`${label2(task)} is a ${task.kind}: only a plan task is stacked on another plan (set stacked_on on the plan's own #n)`);
+        const seen = asWritten(all, task.id, {
+          stackedOn: input.stacked_on,
+          base: input.base,
+          branch: input.branch,
+          status
+        });
+        const listed = planWrite(input.files, input.stacked_on, seen);
         if (task.kind === "phase" && task.status === "dropped" && (status === "pending" || status === "in_progress") && task.plan !== null) {
           const cap = phaseCap();
           refuseOverCap(all, task.plan, cap);
@@ -26653,7 +27132,7 @@ function createTaskOps(options = {}) {
           refuseBareClose(all, task, status, {});
           refuseEmptyHandBack(all, { ...task, ...bindings2({ branch: input.branch, base: input.base }) }, status, handBackGit);
         }
-        const flight = entering ? startCheck(task.kind === "plan" ? task.plan : landing) : {};
+        const flight = entering ? startCheck(task.kind === "plan" ? task.plan : landing, seen) : {};
         const updated = value(writeWork(store, () => {
           const changed = applyUpdate(store, task.id, {
             ...input.subject === undefined ? {} : { subject: input.subject },
@@ -26663,7 +27142,7 @@ function createTaskOps(options = {}) {
             ...input.parent === undefined ? {} : { parentId: input.parent === null ? null : work(input.parent).id },
             ...input.type === undefined ? {} : { type: input.type },
             ...flight,
-            ...listed,
+            ...listed ?? {},
             waitsFor: {
               add: (input.blocked_by_add ?? []).map((r) => work(r).id),
               remove: (input.blocked_by_remove ?? []).map((r) => work(r).id)
@@ -26676,9 +27155,11 @@ function createTaskOps(options = {}) {
         const afterAll = allTasks(store, ctx.project);
         const byId = new Map(afterAll.map((t) => [t.id, t]));
         const closed = updated.status === "done" || updated.status === "dropped";
+        const stale = starting ? staleBrief(updated, afterAll) : null;
         return {
           ok: true,
-          text: [label2(updated), updated.status.replaceAll("_", " "), ...marks(updated, byId)].join(" \xB7 ") + (closed ? freedAfter(afterAll, updated) : "")
+          text: [label2(updated), updated.status.replaceAll("_", " "), ...marks(updated, byId)].join(" \xB7 ") + (closed ? freedAfter(afterAll, updated) : "") + (stale === null ? "" : `
+${stale}`)
         };
       }
       if (operation === "done") {
@@ -26910,7 +27391,7 @@ Save notes as you go with ${TASK_TOOL.note}.`;
 var descriptions = {
   take: "Take a plan or task into the calling session. Live claims need force; a refusal changes nothing.",
   create: "Create a work task (kind work, the default), or a deploy task for prod or staging (deploy and type required; pair true with staging also creates its prod twin): a file to commit with this branch. Create the plan's phases here (phase): at most plans.maxPhases per plan, each holding its tasks. A plan without parent creates the plan itself; to add a task to a plan, give its phase as parent, or the plan as parent to make it wait there for a phase. A task with neither plan nor parent is loose, whatever plans are open. Phases may be laid in any of your plans; one plan is in flight at a time.",
-  update: `Update a task: its status, type, parent or blockers; status open reopens a closed deploy task. Starting work claims it for this Claude process and puts its plan in flight; a phase starts only with tasks, and not while another plan of yours is in flight. Setting an in-flight plan's task to pending parks it, refused while its phases run. A task waiting under a plan moves under a phase of that plan with parent. Close a step with ${TASK_TOOL.done}.`,
+  update: `Update a task: its status, type, parent or blockers; status open reopens a closed deploy task. Starting work claims it for this Claude process and puts its plan in flight; a phase starts only with tasks, and not while another plan of yours is in flight. A phase takes no parent: it stays under its plan. Setting an in-flight plan's task to pending parks it, refused while its phases run. A task waiting under a plan moves under a phase of that plan with parent. Close a step with ${TASK_TOOL.done}.`,
   done: 'Finish or drop a task. Its open blocking tasks must be finished or dropped first. A step of a phase, and every deploy task, finishes with evidence or drops with a note; only the person drops a blocking deploy task. A phase with a recorded branch closes done only once that branch has a commit past its base and is in the plan branch. The answer lists your own work this close freed ("now ready"): start it, phases together.',
   note: "Save a note on a task as work proceeds.",
   list: "List the caller's tasks as a tree, or list the plan or project (scope project also lists the open deploy tasks).",

@@ -18,13 +18,15 @@ import {
   runGit,
   samePath,
 } from "../hooks/git";
-import { localFiles } from "../hooks/local-files";
+import { localFiles, rebuildableGlobs } from "../hooks/local-files";
 import type { Env } from "../hooks/run";
 import { liveSessions, type SessionRecord } from "../hooks/sessions";
 import { folderFingerprint, hasUnsavedChanges, savedFingerprint } from "../hooks/unsaved-changes";
 import { idleMinutesOrNull } from "../hooks/worktree-leftovers";
 import { ancestorsBy } from "../jobs/ancestry";
 import { processIsGone } from "../jobs/windows";
+import { loadCcSmartDevKitConfig } from "../project/config";
+import { CONFIG_PATH } from "../project/config-facts";
 import { ownPidNamespace, processStartTime } from "../setup/lock";
 import { parseGitVersion } from "../workflow/review-cover";
 import { COMMIT_SHA } from "../workflow/reviews";
@@ -127,6 +129,15 @@ function innerWorktreeOf(worktree: string, all: ListedWorktree[]): null | string
   return null;
 }
 
+/** The project's own rebuildable patterns; a file that is invalid, too new or unreadable grants none. */
+function projectRebuildable(mainCheckout: string): Bun.Glob[] {
+  try {
+    return rebuildableGlobs(loadCcSmartDevKitConfig(join(mainCheckout, CONFIG_PATH)));
+  } catch {
+    return [];
+  }
+}
+
 /**
  * What removing the worktree would lose. An uncommitted file whose exact bytes `ref`'s history
  * already holds at that path is not lost (`hasUnsavedChanges`). `parked`: a folder a removal
@@ -141,7 +152,7 @@ function contentsOf(
 ): WorktreeContents {
   const changed = hasUnsavedChanges(worktree, ref, env, { ownDeletions: parked });
   if (changed) return { localFiles: [], uncommitted: true };
-  const ignored = localFiles(worktree, mainCheckout, env);
+  const ignored = localFiles(worktree, mainCheckout, env, projectRebuildable(mainCheckout));
   if (ignored === null) {
     return { localFiles: ["(git could not list the ignored files)"], uncommitted: false };
   }

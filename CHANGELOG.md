@@ -3,6 +3,91 @@
 What each release changed, newest first. A release's **What to run** steps are the ones to do
 in your own terminal after the update; the user guide is [README.md](README.md).
 
+## 6.3.0
+
+- **No AI slop.** Code-structure § 11 names what makes code read as machine-written: comments
+  that narrate, defensive code for what cannot happen, fallbacks that hide a bug, options and
+  shims nobody asked for, dead code, debug output, churn, tests that prove nothing, placeholders
+  and names that say nothing. A builder reads its whole diff against that list before it hands
+  back, a review counts each item as a Craft finding, and one line in the core instructions
+  points every session to it.
+- **Planning for parallel work.** plan-task orders phases by what they really use from each
+  other: a shared database, port or number sequence orders two phases only when both write the
+  same state, and numbers can be reserved in the plan up front. A plan lists the exact files it
+  writes, never folders it only reads, so fewer plans clash. When two or more ready plans share
+  no file, the run-mode question recommends lead + children. A builder that a usage limit
+  stopped is resumed with the others once the limit lifts, and that is not a fix round. In a
+  worktree, the lead runs plain commands one at a time, as Claude Code's own check may refuse a
+  compound line.
+- **Four hooks no longer load the config checker on a normal run.** A hook now reads the
+  project's `.claude/cc-smart-dev-kit.json` through a small cache of files it has already
+  checked, kept in the kit's state folder. The checker, with its zod library, sits in its own
+  bundle (`config-check.js`) and loads only when the file is new or changed. `agent-usage`,
+  `session-name`, `verify-gate` and `job-route` hold no zod at all: their bundles went from
+  266-355 KB to 30-160 KB. `after-merge` loads it only on a line that merges. A test fails any
+  change that brings zod back into those hooks, and `doctor` warns when the cache folder cannot
+  be written.
+- **`merge-check` names the real reason when a pull request has no required checks, or no
+  checks at all**, instead of saying it could not read them.
+- **A test starts every built bundle once**, so a bundle that crashes as it loads cannot ship.
+- **`after-merge` sees `GH_REPO` and `GH_HOST` in any case on a PowerShell line**, where
+  variable names ignore case.
+- **Plans block each other less.** A project can list folders in `plans.appendOnly` (set with
+  `workflow set`, like `plans.mergeFiles`): inside them, two plans clash only when they list the
+  same file, so two plans that each add a new migration can run at once. A plan can name the
+  plan it is built on (`stacked_on`, or `--stacked-on` on the command line) and share that
+  plan's files for as long as the parent holds them, until the parent's pull request merges.
+  Only the lead of both plans can stack them, and the exemption counts only when git shows the
+  stacked plan starts on its parent's work; anything git cannot prove keeps the two plans apart.
+  `herdr start --plan` starts a stacked plan on its parent's branch by default.
+  When a phase starts, a warning names the plan's files that the default branch changed after
+  the brief was written. The task tools' own descriptions now state the rules the store
+  enforces: the phase name, a phase without a parent, steps before a start, and the base.
+- **herdr for a lead with several children.** `herdr start --base <ref>` starts a child from
+  a branch you name, such as the plan branch, instead of the default branch. `--brief-file
+  <path>` on `start` and `send` reads the brief from a file, so quotes and `$` never pass through
+  a shell. Only one `herdr wait` runs per lead; a second one names the live one. When the wait
+  times out, it lists each child as still working, blocked waiting for you, or gone, instead of
+  calling every one blocked. `herdr list` has a new `base` column.
+- **Builders lose nothing when a usage limit stops them.** After each step a builder commits
+  and leaves a `Progress:` note, and the lead reads it when it resumes the builder. A builder
+  never hands back while its own background job runs, and `subagent-background` blocks a stop
+  once per background task, so the same final report no longer repeats. A hand-back carries
+  the builder's own work only.
+- **Heavy-command routing works in auto mode.** Auto mode's check on Anthropic's side gives no
+  verdict for a call a hook changed, and it cancels every other call in the same response. In
+  auto mode, `job-route` no longer rewrites a heavy command; it refuses it and names the exact
+  `cc-smart-dev-kit job run` line to send, with the longest timeout. Other modes keep the rewrite.
+- **The merge note knows a lead keeps its worktree.** After a merge, a session that still
+  holds another open plan reads "Kept: plan <slug> is still open here." instead of being told
+  to clear the worktree.
+- **The portal shows the 7-day usage window** beside the 5-hour one, each with its percent, a
+  bar and its reset time; a reset a day or more away reads in days and hours ("3 d 21 h"). One
+  shared bar now draws every bar in the portal, with a track you can see in both themes, and
+  the bars of a list line up whatever the width of their numbers.
+- **A Settings row for the lead-model hint.** The switch rows are built from the switch list, so
+  a new switch cannot be left off the page.
+- **The mobile sidebar works under the portal's strict page policy.** It no longer breaks the
+  policy when it opens, the page behind it does not scroll, one Escape closes it, focus goes
+  back to the menu button without scrolling the page, and its targets are 44px. It closes on any link tap and when the
+  window grows to desktop width. A guard test fails anything that would inject a style again,
+  and `scripts/portal-preview.ts` serves the built portal under the real policy for checks.
+- **Next.js 16.4.6 for the portal's build.** 16.4.2 had seven moderate advisories, so Next.js
+  refused the first build of each session. The portal ships as static files, so none of them
+  reached a machine.
+- **The task store's repair applies the store's own rules.** It loads each project's tasks once
+  and skips a hold the store would refuse, recording why. `doctor` names any task an older
+  repair left blocked by a task above it, with the command that removes the block.
+- **herdr and sessions find worktrees wherever a project's hook puts them.** They read git's own
+  list, herdr binds only a worktree whose name matches its launch exactly and keeps its own
+  launch record, and a resume of a worktree outside `.claude/worktrees` starts in its folder.
+- **`verify-gate` on Windows compares folders on disk.** A path written with an 8.3 short name
+  (`RUNNER~1`) was read as outside the checkout, so the reminder to run the fast check never
+  came.
+- **The shadcn guide names `npx shadcn@<pin>` for npm projects again.**
+
+**What to run:** `cc-smart-dev-kit update`.
+
 ## 6.2.0
 
 - **Each hook loads only itself.** Every hook bundle carried every other hook (583 KB each),

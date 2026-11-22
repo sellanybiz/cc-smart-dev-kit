@@ -234,6 +234,42 @@ test("the server refuses to weaken or delete a blocking deploy task too", async 
   }
 });
 
+test("task_create and task_update say the rules the store enforces: the phase id, parent, steps and base", async () => {
+  const { kit, request } = await connectKit(tempDir());
+  try {
+    const property = z.object({ description: z.string().optional() });
+    const listed = z
+      .object({
+        tools: z.array(
+          z.object({
+            name: z.string(),
+            description: z.string(),
+            inputSchema: z.object({ properties: z.record(z.string(), property) }),
+          }),
+        ),
+      })
+      .parse(await request("tools/list"));
+    const tool = (name: string) => listed.tools.find((t) => t.name === name);
+    expect(tool("task_create")?.inputSchema.properties.phase?.description).toBe(
+      'Create the plan phase once, by its id: 1-8 characters: ASCII letters, digits, ".", "_" and "-", a letter or a digit at each end, never "--". A phase takes no parent (it sits under its plan), and it starts only once it holds tasks.',
+    );
+    for (const name of ["task_create", "task_update"])
+      expect(tool(name)?.inputSchema.properties.base?.description).toBe(
+        "The commit the builder started from: any name git reads, a full or a short sha (a short one is not refused). A phase started with a base warns when the default branch changed the plan's files since its brief was written.",
+      );
+    expect(tool("task_update")?.description).toContain(
+      "a phase starts only with tasks, and not while another plan of yours is in flight. A phase takes no parent: it stays under its plan.",
+    );
+    // Said on both tools, the nullable update field too.
+    for (const name of ["task_create", "task_update"])
+      expect(tool(name)?.inputSchema.properties.stacked_on?.description).toBe(
+        "Plan task only: the slug of your own plan this plan is built on. The overlap check skips that one plan, both ways, while it holds its files (open, or done and reserved until its pull request merges), one lead leads both, and this plan is built on its work: that plan records its branch and base, its branch has commits past the default branch and past that base, and this plan's start (its herdr start base, or its base with its own branch recorded) holds some of them and is on this plan's own branch; every other plan still blocks. Never itself, a missing plan, another lead's plan or a loop; null clears it.",
+      );
+  } finally {
+    await kit.close();
+  }
+});
+
 test("the server's instructions name deploy tasks, never project tasks", () => {
   expect(TASK_SERVER_INSTRUCTIONS).toContain(
     "A step owed before or after a deploy to prod or staging is a deploy task",

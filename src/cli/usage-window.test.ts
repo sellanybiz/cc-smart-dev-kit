@@ -6,12 +6,7 @@ import { describe, expect, it } from "bun:test";
 import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tempDir } from "../testing/temp";
 import { cliPaths } from "./paths";
-import {
-  readUsageWindow,
-  readUsageWindows,
-  recordUsageWindow,
-  usageWindowFile,
-} from "./usage-window";
+import { readUsageWindows, recordUsageWindow, usageWindowFile } from "./usage-window";
 
 /** 2026-10-15 10:00 UTC. */
 const NOW = Date.UTC(2026, 9, 15, 10, 0, 0);
@@ -110,7 +105,6 @@ describe("readUsageWindows", () => {
       readAt: Date.UTC(2026, 9, 15, 9, 50, 0),
       sevenDay: null,
     });
-    expect(readUsageWindow(paths, NOW)).toEqual({ percent: 61, resetsAt: AT_13 });
   });
 
   it("a window past its reset is no number, each on its own", () => {

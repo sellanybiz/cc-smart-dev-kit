@@ -18,6 +18,10 @@ import {
 
 const root = join(import.meta.dir, "..");
 
+/** The upstream shadcn SKILL.md head, as fetched, written by hand: the frontmatter and runner sentence. */
+const UPSTREAM_SKILL_HEAD =
+  "---\nname: example\nuser-invocable: false\nallowed-tools: Bash(npx shadcn@latest *), Bash(pnpm dlx shadcn@latest *), Bash(bunx --bun shadcn@latest *)\n---\n> **IMPORTANT:** Run all CLI commands using the project's package runner: `npx shadcn@latest`, `pnpm dlx shadcn@latest`, or `bunx --bun shadcn@latest` — based on the project. Examples below use `npx shadcn@latest` but substitute.";
+
 function filesIn(folder: string): string[] {
   return readdirSync(folder, { recursive: true, withFileTypes: true })
     .filter((entry) => !entry.isDirectory())
@@ -167,6 +171,29 @@ describe("vendored skills (offline)", () => {
     );
   });
 
+  test("the npm-runner-entry patch rejects a runner sentence or tools line that drifted", () => {
+    const skill = VENDORED_SKILLS[0];
+    if (!skill) throw new Error("missing shadcn skill");
+    const cliSentence =
+      "Always run commands using the project's package runner: `npx shadcn@latest`, `pnpm dlx shadcn@latest`, or `bunx --bun shadcn@latest`.";
+    expect(patchSkill(skill, "cli.md", cliSentence).text).toBe(
+      `Always run commands using the project's package runner: \`npx shadcn@${MCP_VERSIONS.shadcn}\`, \`pnpm dlx shadcn@${MCP_VERSIONS.shadcn}\`, or \`bunx --bun shadcn@${MCP_VERSIONS.shadcn}\`.`,
+    );
+    const drifted = cliSentence.replace("or `bunx --bun", "and `bunx --bun");
+    expect(() => patchSkill(skill, "cli.md", drifted)).toThrow("npm-runner-entry");
+    expect(() => patchSkill(skill, "SKILL.md", UPSTREAM_SKILL_HEAD)).not.toThrow();
+    expect(() =>
+      patchSkill(
+        skill,
+        "SKILL.md",
+        UPSTREAM_SKILL_HEAD.replace("allowed-tools: Bash(npx", "allowed-tools: Bash(npm"),
+      ),
+    ).toThrow("npm-runner-entry");
+    expect(() => patchSkill(skill, "SKILL.md", `${cliSentence}\n${cliSentence}`)).toThrow(
+      "npm-runner-entry",
+    );
+  });
+
   test("exact secret and runner-wording patches reject upstream drift", () => {
     const skill = VENDORED_SKILLS.find((entry) =>
       entry.folder.endsWith("/shadcncraft-generate-code"),
@@ -195,6 +222,24 @@ describe("vendored skills (offline)", () => {
     expect(readFileSync(join(folder, "component-mapping.md"), "utf8")).toContain(
       `The commands above show \`bunx shadcn@${MCP_VERSIONS.shadcn}\``,
     );
+  });
+
+  test("the shipped shadcn guide lists npx once in each runner sentence and keeps one bunx for the context line", () => {
+    const pin = MCP_VERSIONS.shadcn;
+    const folder = join(root, "plugin/skills/shadcn");
+    const skill = readFileSync(join(folder, "SKILL.md"), "utf8");
+    const cli = readFileSync(join(folder, "cli.md"), "utf8");
+    expect(skill).toContain(
+      `allowed-tools: Bash(npx shadcn@${pin} *), Bash(pnpm dlx shadcn@${pin} *), Bash(bunx --bun shadcn@${pin} *), Bash(bunx shadcn@${pin} *)\n`,
+    );
+    for (const text of [skill, cli]) {
+      const sentences = text.split("\n").filter((line) => line.includes("package runner:"));
+      expect(sentences).toHaveLength(1);
+      const [sentence = ""] = sentences;
+      expect(sentence.split(`\`npx shadcn@${pin}\``)).toHaveLength(2);
+      expect(sentence.split(`bunx shadcn@${pin}`).length - 1).toBeLessThanOrEqual(1);
+    }
+    expect(skill).toContain(`!\`bunx shadcn@${pin} info --json\``);
   });
 
   test("every shadcn package pin matches the MCP pin and latest is absent", () => {
@@ -241,10 +286,10 @@ describe("vendored skills (offline)", () => {
     const result = patchSkill(
       skill,
       "SKILL.md",
-      "---\nname: example\nuser-invocable: false\nallowed-tools: Bash(npx shadcn@latest *)\n---\n!`npx shadcn@latest info --json`\nshadcn@latest",
+      `${UPSTREAM_SKILL_HEAD}\n!\`npx shadcn@latest info --json\`\nshadcn@latest`,
     );
     expect(result.text).toBe(
-      `---\nname: example\nallowed-tools: Bash(bunx shadcn@${MCP_VERSIONS.shadcn} *)\ndisable-model-invocation: true\n---\n!\`bunx shadcn@${MCP_VERSIONS.shadcn} info --json\`\nshadcn@${MCP_VERSIONS.shadcn}`,
+      `---\nname: example\nallowed-tools: Bash(npx shadcn@${MCP_VERSIONS.shadcn} *), Bash(pnpm dlx shadcn@${MCP_VERSIONS.shadcn} *), Bash(bunx --bun shadcn@${MCP_VERSIONS.shadcn} *), Bash(bunx shadcn@${MCP_VERSIONS.shadcn} *)\ndisable-model-invocation: true\n---\n> **IMPORTANT:** Run all CLI commands using the project's package runner: \`npx shadcn@${MCP_VERSIONS.shadcn}\`, \`pnpm dlx shadcn@${MCP_VERSIONS.shadcn}\`, or \`bunx --bun shadcn@${MCP_VERSIONS.shadcn}\` — based on the project. Examples below use \`bunx shadcn@${MCP_VERSIONS.shadcn}\` but substitute.\n!\`bunx shadcn@${MCP_VERSIONS.shadcn} info --json\`\nshadcn@${MCP_VERSIONS.shadcn}`,
     );
     expect(result.counts).toEqual({
       runner: 2,

@@ -6,12 +6,12 @@
  * a review of 100 lines in 2 files, then a fix, exactly as `workflow merge-check` sees them.
  */
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { chmodSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { delimiter, dirname, join } from "node:path";
 import { cliPaths } from "../cli/paths";
 import { locateCheckout } from "../project/resolve";
 import { hookEnv, makeClone, writeClaudeFile } from "../testing/hooks";
-import { cleanGitEnv, git } from "../testing/temp";
+import { cleanGitEnv, git, tempDir } from "../testing/temp";
 import {
   checkBranch,
   checkPullRequest,
@@ -21,9 +21,15 @@ import {
   newStackCache,
   OPEN_PULL_REQUESTS_LIMIT,
   policyUnread,
+  requiredChecks,
   STACK_COMMITS_LIMIT,
 } from "./merge-check";
 import { reviewsFile } from "./reviews";
+
+/** What gh prints on a branch with no required checks (the branch is the test's own). */
+const NO_REQUIRED_CHECKS_LINE = "no required checks reported on the 'feat' branch";
+/** What gh prints for a pull request with no checks at all. */
+const NO_CHECKS_AT_ALL_LINE = "no checks reported on the 'feat' branch";
 
 test("a missing origin base names the first push and repeat check", () => {
   const reason = policyUnread(
@@ -372,6 +378,9 @@ describe("checkPullRequest: every condition of an unattended merge", () => {
       "ci (fail)",
     ],
     ["missing: gh lists none", "[]", "gh reports no required checks"],
+    // gh's own line when the branch has none: the same reason, not "could not read".
+    ["missing: gh says there are none", NO_REQUIRED_CHECKS_LINE, "gh reports no required checks"],
+    ["missing: no checks at all", NO_CHECKS_AT_ALL_LINE, "gh reports no required checks"],
   ])("a required check that is %s refuses, with its reason", async (_what, checks, reason) => {
     const { world } = prWorld(ON, "main", (built) => built.reviewed, checks, true);
     const verdict = await check(world);
@@ -384,6 +393,17 @@ describe("checkPullRequest: every condition of an unattended merge", () => {
     const verdict = await check(world);
     expect(verdict.kind).toBe("unread");
     expect(reasonOf(verdict)).toContain("required checks");
+  });
+
+  test.each([
+    [
+      "a pull request gh cannot find",
+      "GraphQL: Could not resolve to a PullRequest with the number of 7.",
+    ],
+    ["gh's line inside other words", `gh: ${NO_REQUIRED_CHECKS_LINE}`],
+  ])("%s: not read, never allowed", async (_what, said) => {
+    const { world } = prWorld(ON, "main", (built) => built.reviewed, said, true);
+    expect((await check(world)).kind).toBe("unread");
   });
 
   test("no recorded review of the head: refused, and the detail has no review", async () => {
@@ -1510,5 +1530,49 @@ describe("the stacked check over real git histories", () => {
         ".total_commits, .commits[].sha",
       ],
     ]);
+  });
+});
+
+/**
+ * `gh pr checks --required` on a branch with none prints `no required checks reported on the
+ * '<branch>' branch` on stderr and exits 1. That is an answer ("none"), so the verdict names the
+ * reason for it (`checkPullRequest`'s own cases, above); every other failure of the call stays
+ * "gh could not read". Here, the real executor reads the line.
+ */
+describe("requiredChecks: a branch with no required checks", () => {
+  const NONE = NO_REQUIRED_CHECKS_LINE;
+
+  describe.skipIf(process.platform === "win32")("through the real gh executor", () => {
+    /** A PATH of one fake `gh` that runs `script`, then the system's own basics. */
+    function withGh(script: string): Record<string, string> {
+      const bin = tempDir("fake-gh-bin");
+      writeFileSync(join(bin, "gh"), `#!/bin/sh\n${script}\n`);
+      chmodSync(join(bin, "gh"), 0o755);
+      return { ...cleanGitEnv(), PATH: `${bin}${delimiter}/usr/bin${delimiter}/bin` };
+    }
+    const checksOf = (script: string) =>
+      requiredChecks(7, null, tempDir("gh-folder"), withGh(script), 5_000);
+
+    test("stderr and exit 1: no checks, as an empty list", async () => {
+      expect(await checksOf(`echo "${NONE}" >&2; exit 1`)).toEqual([]);
+    });
+
+    test("the same words on stdout with exit 1: no checks too", async () => {
+      expect(await checksOf(`echo "${NONE}"; exit 1`)).toEqual([]);
+    });
+
+    test("a pull request with no checks at all: the same, an empty list", async () => {
+      expect(await checksOf(`echo "${NO_CHECKS_AT_ALL_LINE}" >&2; exit 1`)).toEqual([]);
+    });
+
+    test("another failure is still null", async () => {
+      expect(await checksOf(`echo "gh: ${NO_CHECKS_AT_ALL_LINE}" >&2; exit 1`)).toBeNull();
+      expect(await checksOf('echo "HTTP 502" >&2; exit 1')).toBeNull();
+    });
+
+    test("required checks, as before: the JSON on stdout, whatever the exit", async () => {
+      const json = '[{"bucket":"pending","name":"ci"}]';
+      expect(await checksOf(`echo '${json}'; exit 8`)).toEqual([{ bucket: "pending", name: "ci" }]);
+    });
   });
 });

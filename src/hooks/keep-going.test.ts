@@ -21,12 +21,7 @@ import { hookEnv, makeRepo, runHook, writeClaudeFile, writeSessionRecord } from 
 import { sessionProcessIdentity } from "../testing/session-record";
 import { tempDir } from "../testing/temp";
 import type { HookResult } from "./io";
-import {
-  keepGoingAnswer,
-  keepGoingReason,
-  keepGoingWouldBlockAt,
-  waitsOnSomething,
-} from "./keep-going";
+import { keepGoingAnswer, keepGoingReason, waitsOnSomething } from "./keep-going";
 import { keepGoingHook } from "./specs";
 
 const SESSION = "11111111-2222-3333-4444-555555555555";
@@ -289,7 +284,6 @@ describe("keep-going: stalled state", () => {
     writeFileSync(file, `broken first line\n${JSON.stringify(entry)}\n{`);
     const input = stop(w.repo, { transcript_path: file });
     expect(await runHook(keepGoingHook, input, w.env)).toEqual(expected);
-    expect(keepGoingWouldBlockAt(input, w.env)).toBe("stdout" in expected);
   });
 
   /** A main-session answer that calls `name`, as Claude Code records a tool call. */
@@ -1113,20 +1107,5 @@ describe("keep-going: a lead's plans", () => {
     expect(spawned).toEqual([]);
     expect(asked).toEqual([]);
     expect(existsSync(log)).toBe(false);
-  });
-});
-
-describe("keepGoingWouldBlockAt: what the notifier asks", () => {
-  test("true where the hook blocks, false where it is silent or switched off", () => {
-    const w = world();
-    busyPlan(w);
-    w.db.close();
-    expect(keepGoingWouldBlockAt(stop(w.repo), w.env)).toBe(true);
-    expect(keepGoingWouldBlockAt(stop(w.repo, { stop_hook_active: true }), w.env)).toBe(false);
-    writeClaudeFile(w.repo, "cc-smart-dev-kit.json", { ownHooks: ["keep-going"] });
-    expect(keepGoingWouldBlockAt(stop(w.repo), w.env)).toBe(false);
-    // A broken file judges the same as the hook does: it reads no setting of it.
-    writeClaudeFile(w.repo, "cc-smart-dev-kit.json", { worktree: {} });
-    expect(keepGoingWouldBlockAt(stop(w.repo), w.env)).toBe(true);
   });
 });

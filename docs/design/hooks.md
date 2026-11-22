@@ -50,11 +50,13 @@ Every hook runs in the same frame (`src/hooks/run.ts`), in this order:
    name; it still accepts `job-route`'s,
    because a project file written before 1.0.0 may carry it, and the name silences nothing
    (`UNSWITCHABLE_HOOK_NAMES`).
-3. **Read `cc-smart-dev-kit.json`.** When it is broken or needs a newer plugin, the hook
+3. **Read `cc-smart-dev-kit.json`**, through the checked cache (§ The checked project file).
+   When it is broken or needs a newer plugin, the hook
    **fails closed**, each in the way that suits its event: `user-away`'s question-tool entry asks
    the person, `job-route` leaves the line as written (with no project there is nothing to route
    for), an informational hook says one line. "Closed"
-   never means silent: a person must hear why.
+   never means silent: a person must hear why. A file that cannot be read at all (a folder, no
+   permission) is a crash, not a config problem.
 4. **Run.** An informational hook's error is one line on stderr and exit 0: its bug never
    stops work. A crash of `user-away`'s question-tool entry answers through its `onCrash`
    (`guardCrash` in `guard-crash.ts`): it asks about the call in its own domain, so a crash never lets
@@ -93,10 +95,13 @@ that want them all; **an entry never imports it**, because it builds all the hoo
 `guardCrash` has its own module (`guard-crash.ts`), so `user-away`'s spec can use it without a
 cycle through `specs.ts`.
 
-Before the split each hook bundle was about 585 KB and a run took about 32 ms. Now each bundle is
-266 to 357 KB and a run takes about 22 ms (`tier-view`, median of 40 runs on one machine). `entries.test.ts`
+Before the split each hook bundle was about 585 KB and a run took about 32 ms. After it each
+bundle was 266 to 357 KB and a run took about 22 to 27 ms (median of 40 runs on a quiet machine,
+against about 4 ms for an empty bun script). The checked project file (below) took the three
+hooks that need no zod of their own down to 29 to 87 KB, and `job-route` down to 160 KB.
+`entries.test.ts`
 builds every bundle `hooks.json` runs (the hooks with a spec, and `update-check` and
-`playwright-output`) into a temp folder and holds three proofs for them:
+`playwright-output`) into a temp folder and holds four proofs for them:
 
 - **A size budget** for each bundle (the measured size plus about a tenth). It catches an entry
   that loads the whole list of hooks, which is about 585 KB. It can miss one extra spec: a small
@@ -114,10 +119,88 @@ builds every bundle `hooks.json` runs (the hooks with a spec, and `update-check`
   its own proof that the built file is wired: the session-start record it writes, and the
   screenshot path it rewrites.
 
-What is left is mostly the frame's own load: `run.ts` reads the project's file, and that pulls
-in zod and the config schemas (about 235 KB of the bundle and about 17 ms of a run of about
-22 ms, against about 4 ms for an empty bun script). Making the frame lighter is a separate
-piece of work.
+- **A zod trap** for the hooks whose warm run loads no zod (below): the bundle runs under a
+  preload that marks any evaluation of zod, cold and warm.
+
+### The checked project file
+
+Reading `cc-smart-dev-kit.json` used to cost most of a hook run: the parse needs zod and the
+config schemas (about 235 KB of a bundle and about 17 ms of a run). The frame now reads the
+file's bytes once and looks them up in a cache of checked answers
+(`src/hooks/checked-config.ts`); the parser sits in a **sibling bundle**, `dist/config-check.js`
+(`src/entries/config-check.ts`), that a hook loads only on a miss. The sibling is loaded the way
+`cc-smart-dev-kit task mcp` loads `tasks-mcp.js`: a computed `import()` the bundler cannot inline.
+
+- **The key** is sha256 over the parser's build fingerprint, the kind of file and the bytes.
+  The fingerprint is a Bun macro (`src/build-info/parser-fingerprint.ts`) that hashes the source
+  of every module the sibling reaches, with the plugin version and the installed zod version. It
+  is not the version alone: a schema changed and rebuilt at the same version would serve an old
+  success, and the hook would fail open. The frame and the sibling both bake it in, and the
+  sibling returns its own with each answer, so a mixed install misses and says "reinstall the
+  plugin". The router bundle never imports it.
+- **The cache** is `<stateDir>/checked/<key>.json`, the folder `0700` and each entry `0600`,
+  written through `atomicWrite`. Only a success is written; a broken file is checked again every
+  run. At most 64 entries stay (the oldest by modified time go on the next miss), a temp file
+  from a killed writer goes once it is a minute old, and a file over 256 KB is parsed every time.
+  The cache holds only project files and the person's workflow file, which have no secret field;
+  `gateway.json` is never cached.
+- **The person's workflow file** goes through the same cache as a second kind (`workflow`, the
+  sibling's `checkWorkflowText`), for `job-route`'s machine-wide default. A hook never fails on
+  it: a missing, broken or unreadable file, a checker that fails, and one from another build all
+  give `{}`, the answers of `personalWorkflowOrDefault`, and a broken file is never cached
+  (`loadPersonalWorkflow`).
+- **Failing closed keeps its meaning.** A config problem arrives as data and goes to the hook's
+  `onConfigProblem`, with the same words as before. A sibling that cannot be loaded is the same
+  problem with one fix: reinstall the plugin. A bug in the parser, and a project file that
+  cannot be read at all (a folder, no permission), are thrown and stay crashes. A cache that
+  cannot be read or written is a miss, and `cc-smart-dev-kit doctor` warns (`!`) when the
+  `checked/` folder cannot be written, because every run then loads the sibling (about 20 to
+  46 ms).
+- **The hook log** (`CC_SMART_DEV_KIT_HOOK_LOG`) gains `config`: `none` (no file), `cached`,
+  `checked` (the sibling parsed it) or `broken`.
+- **One read per run.** `task-start` hands its frame's project to `taskContext`, and
+  `worktree-leftovers` reads the main checkout's file (not the worktree's) through the same
+  cache for `worktrees.rebuildable`. A module on a zod-free path imports `project/locate.ts` and
+  `project/config-facts.ts`, never `project/resolve.ts`: those two hold no zod, and
+  `resolve.ts` and `config.ts` re-export them, so their other importers did not change.
+
+**Which hooks are zod-free.** Two kinds, both proved by `entries.test.ts` › "no zod on a warm run"
+(each hook runs cold, the control, and warm, with its normal answer both times):
+
+- **No zod module in the bundle.** `agent-usage`, `session-name`, `verify-gate` and `job-route`:
+  272 KB to 36 KB, 266 KB to 30 KB, 283 KB to 87 KB and 355 KB to 160 KB. Their budgets are the
+  measured size plus a tenth. `job-route` got there by cutting its own chain: `jobs/kind-defaults.ts`
+  holds the default kinds and the readers that judge a run (`jobs/kinds.ts` keeps only the
+  schemas), `workflow/merge.ts` holds the merge of the person's file and the project's, and the
+  person's workflow file comes through the checked cache like the project's. `resolve.ts` and
+  `kinds.ts` re-export what they gave up, so their other importers did not change.
+- **Zod behind a dynamic import.** `after-merge` still holds zod in the bundle (a lazy
+  `import()` is inlined by the bundler: 326 KB to 341 KB, so its budget is not lowered), but a run
+  that saw no merge evaluates none: the workflow resolver and the clean's start load only in the
+  branch that saw one. **Never put such an import in a module a bundle with the MCP SDK reaches**
+  (`tasks-mcp.js`): the bundler then wraps zod in lazy initialisers, and the SDK's own top-level
+  `zod` calls run before them (`TypeError: undefined is not a constructor (new ZodLazy)`; seen on
+  `worktree-leftovers.ts`, which `worktrees/scan.ts` imports for `idleMinutesOrNull`).
+  `src/entries/bundles-load.test.ts` starts every built bundle once and fails on it.
+
+The other hooks skip the parse on a hit and still load zod through their own imports; each
+chain below would have to go for one of them to join. Median of 40 runs on a machine at a load
+of about 12 on 12 cores (an empty bun script took 4 ms), the two builds taking turns, so read
+them as rough: `job-route` 38 ms to 21 ms, `after-merge` 32 ms to 23 ms. Earlier, at a load of
+about 20, `session-name` and `verify-gate` went from about 50 to 60 ms to 17 to 31 ms. The chains
+left, by what keeps zod in the bundle:
+
+| Chain | Hooks |
+|---|---|
+| `workflow/resolve` (the personal file and `project/resolve`'s inline parser) | `fable-session`, `review-record`, `builder-finish` |
+| `tasks/context` and `tasks/deploy/format` | `builder-finish`, `keep-going`, `task-start`, `user-away` |
+| `hooks/session-facts` and the gateway readers | `fable-session`, `keep-going`, `subagent-background`, `tier-view` |
+| `jobs/kinds` (the schemas) | `update-check` through `jobs/classify` |
+| `user-away/state.ts`, `gateway/limit-state.ts` | `user-away`, `tier-view` |
+| `worktrees/auto-state.ts` (the state files of the clean) | `worktree-leftovers` (through `takeToldLine`, `startAutoClean` and `readRepoRecord`), and `after-merge` behind its import |
+
+`update-check` does not use the frame: its zod comes from `update/background`, which reaches
+`jobs/classify`, and from `portal/session-start`, which reaches the gateway.
 
 ### Worktrees: Claude Code's own
 
@@ -239,9 +322,9 @@ that, so the plugin ships no worktree hook at all.
 | `fable-session` | SessionStart, PostModelSwitch, Stop | **machine-wide** | One `systemMessage` to the person, once a session, when the session's own model is the **`fable` tier**; nothing to Claude, never an error and never a block — the line itself was seen live (2026-10-17), but not on `PostModelSwitch` or `Stop` yet. The model: at a start, the `model` the input names (no fallback); at a switch, `to_model` — the model the session moved TO; at a stop, the one that answered in the transcript, then `ANTHROPIC_MODEL` — the hook's own reading of the tier. Not `UserPromptSubmit`: it judged the PREVIOUS answer's model, so it missed the switch and warned after a switch back (the live bug of 2026-10-17). § The Fable-session note. |
 | `tier-view` | SessionStart (every source), UserPromptSubmit | **machine-wide** | One note to Claude (`additionalContext`) of what each subagent tier (`haiku`, `sonnet`, `opus`, `fable`) runs now and the effort rule that follows, read through the session's own gateway view. While auto mode's safety checks fail for the session's scope, one more line says so, with what the person can do. Said at every start, and at a prompt only when it differs from the note said last in this session. § The tier note. |
 | `job-route` | PreToolUse (Bash, PowerShell) | **machine-wide**, and `ownHooks` cannot switch it off | The heavy-job queue's door, and the kit's one guard. It never asks the person and judges nothing else: a launch, a push, a merge and a deploy are Claude's own to run. It reads each line in the dialect of the tool that runs it, so the PowerShell tool is judged the same. **The route** is the `switches.jobRoute` switch — the project's `jobs.route` over the person's machine-wide default, off until one says on — Bash lines only, and not outside git: a line whose every command is heavy, a `cd`, an assignment or glue (`GLUE_COMMANDS`, the readers of a pipe, the structure of a group), or one heavy command piped into read-only filters (`tail`, `grep`, `wc`, …; the filters stay outside the wrapper as written), is rewritten to `cc-smart-dev-kit job run --kind <kind> -- <command>` through `updatedInput` (proved live on 2.1.301); a line that mixes heavy work that takes a slot with a command that is not heavy or glue is **refused**, and the reason says to run the heavy command on its own line (`mixedLineDenial`; HK hunch 1). A light line (named files, print-only) stays raw too, and so does a watch run (`runWeight`). A call that set no `timeout` gets the Bash tool's longest. **A `git commit`, `git merge` or `git push` whose own hook is heavy** gets the kit's git-hooks folder as a prefix of three `GIT_CONFIG_*` assignments (`routeGitHooks`), never a wrapper (`docs/jobs.md` § Git hooks). With the route on, a heavy PowerShell line is refused with the Bash line to run instead, where the Bash tool can exist. § The job route. |
-| `after-merge` | PostToolUse, PostToolUseFailure (Bash, PowerShell) | `worktrees` | After a pull-request merge (`gh pr merge`, `gh pr -R owner/repo merge 5`, a readable `gh api` merge path, a `gh` alias for one): the steps that clear the merged worktree (with `clearWorktreeAfterMerge` off or unreadable, that it looks finished and the person decides), and, when it went into `worktrees.base`, it starts the background clean of finished worktrees once (§ Finished worktrees clean themselves). It never tells the other sessions about the merge: that message is gone (the owner, 2026-11-11). A form that names no pull request gets no note. |
+| `after-merge` | PostToolUse, PostToolUseFailure (Bash, PowerShell) | `worktrees` | After a pull-request merge (`gh pr merge`, `gh pr -R owner/repo merge 5`, a readable `gh api` merge path, a `gh` alias for one): the steps that clear the merged worktree (with `clearWorktreeAfterMerge` off or unreadable, that it looks finished and the person decides; a lead that still holds another open plan — a plan it leads or queued, read from the task store through `classifyLeadPlans` — gets one line instead, `Kept: plan <slug> is still open here.`, because it keeps the worktree on purpose; the store is read in the merge branch only, so a run that saw no merge loads none of it, and a store it cannot read leaves the clear note with one stderr line), and, when it went into `worktrees.base`, it starts the background clean of finished worktrees once (§ Finished worktrees clean themselves). It never tells the other sessions about the merge: that message is gone (the owner, 2026-11-11). A form that names no pull request gets no note. |
 | `review-record` | SubagentStart, SubagentStop | `cc-smart-dev-kit.json` exists | When a review agent (`workflow.reviewAgents`) starts, notes the commit the working folder is on and its branch; when it stops, records that start commit on that branch — the record a session reads (`workflow show`, `review-done`) before it merges. Commits made during the review count as change after it. A stop records only for a run that was a review from start to end: the brief (the transcript's first user entry; for a workflow agent, read through the workflow harness's wrapper: the exact preamble, then the task with its two-space indent removed, only when every line carries it) and every prompt given after it each hold `Mode: review` alone on a line (trailing spaces and tabs allowed). Tool results and Claude Code's own skill-load and system-reminder entries (a reminder must end at its closing tag) are no prompt, and neither is the text of a skill the agent itself loaded (its `sourceToolUseID` names the agent's own earlier `Skill` call); any other later entry is — a resume, a message from the session that started the agent (a `user` entry, or a `queued_command` attachment with a `prompt` and an `origin`), a task notification, Stop hook feedback. One kind of notice is no prompt: the end of a task the agent **itself** started — a background command (the five tags alone, `Background command "…"` in the summary) or a Monitor (`Monitor "…" stream ended`, at most one event, Claude Code's PushNotification line) — when the origin is Claude Code's own (`task-notification`, producer `session-task`) and the notice's `<tool-use-id>` names a call the agent made earlier in its transcript (`isOwnTaskNotice`), so a reviewer that runs its tests in the background, or whose own Monitor's stream ended, still records (a Monitor that expired, failed or ended with no output stays a prompt). A transcript line that starts with NUL bytes is read without them. The whole transcript is read, up to 16 MB. A consult, a resumed consult, a review a Stop hook sent back, a review that compacted (the summary is a prompt), and a missing, unreadable or larger transcript record nothing. Nothing for an agent that stopped inside its own worktree. § The review record. |
-| `subagent-background` | SubagentStop | `cc-smart-dev-kit.json` exists | A subagent that ends its turn with background work **it started** still running (a Bash command, or a subagent it launched) is blocked **once**, with one plain reason: wait for the work or stop it, then report. The input's `background_tasks` is the session's list, so the hook reads the agent's own transcript (`agent_transcript_path`) as JSONL, line by line, and keeps only an id named in a **tool result of the agent's own call** — a Bash background launch (`Command running in background with ID: …`) or an Agent launch (`agentId: …`) — never one in its brief or in a file it read; the ending agent's own entry is dropped (a background subagent appears in its own list). No `additionalContext`, never a second block (`stop_hook_active`), and nothing when the transcript cannot be read. § One frame for every hook. |
+| `subagent-background` | SubagentStop | `cc-smart-dev-kit.json` exists | A subagent that ends its turn with background work **it started** still running (a Bash command, or a subagent it launched) is blocked **once per task**, with one plain reason: wait for the work or stop it, then report. A re-woken agent (its task reported) starts a new stop with `stop_hook_active` false, so the hook also keeps a record per agent and task in the state folder (`subagent-background/blocked.json`, under the state lock, entries forgotten after a day): a task already blocked lets the next stop through with one stderr line saying the work still runs, and a new task is blocked once more; a record that cannot be kept lets the stop through. The input's `background_tasks` is the session's list, so the hook reads the agent's own transcript (`agent_transcript_path`) as JSONL, line by line, and keeps only an id named in a **tool result of the agent's own call** — a Bash background launch (`Command running in background with ID: …`) or an Agent launch (`agentId: …`) — never one in its brief or in a file it read; the ending agent's own entry is dropped (a background subagent appears in its own list). No `additionalContext`, never a second block (`stop_hook_active`), and nothing when the transcript cannot be read. § One frame for every hook. |
 | `verify-gate` | Stop | `checks.fast` | One **block** when this session changed files after the last Bash or PowerShell call that ran the project's fast check, naming the command — once per change: the block's own feedback line in the transcript is the mark, so a change made after it earns the next reminder, and a check that fails never traps the turn. It reads the session's own transcript (JSONL) in order: an Edit, Write or NotebookEdit counts only for a file inside the session's current checkout, after resolving symlinks (new code files count too). Relative paths use the edit record's own `cwd`, not the Stop folder. Missing or unusable paths, and relative paths without a known edit folder, count as changes: only a known path can prove an exclusion. Markdown (`.md`, `.mdx`), the repo's `.claude/plans/`, and Claude Code's `plansDirectory` (default `<Claude config>/plans`, with user, project and project-local settings read in that order) do not count. An edit whose result was an error or a refusal changed nothing. A shell line that runs the check is the check (through the one shell reader, in that tool's dialect), and a subagent's own calls are in its own transcript. Silent on the stop its own block caused (`stop_hook_active`), on a turn that still waits on background work, with no `checks.fast`, and when the transcript cannot be read — a reminder never stops a person's work. |
 | `builder-finish` | SubagentStop | **machine-wide** | A builder (an `agent_type` ending in `builder` or `rules-maintainer`, the two agents the build skill gives a phase) whose brief holds the line `Your task: #<n>` is blocked **once** while task #n still has open blocking steps, each named with the `task_done` call that closes or drops it. Silent for any other agent, without the line, and when the task or the task list is not there. § A builder's hand-back. |
 | `keep-going` | Stop | **machine-wide**: it needs no cc-smart-dev-kit.json; `ownHooks` silences it | The main session's turn end is blocked **once per stalled state** when a phase of a plan this Claude process works on is `in_progress`, or the plan in flight has ready phases and none runs, no background work runs and the last answer has no `Waiting for:` line. The same reason already given, with no subagent started or resumed since, keeps it silent. The reason names the builder to resume with `SendMessage` (or the phase needing a fresh builder), every ready phase to start together, and how to close or record a blocker, and warns against moving a phase back to pending to end the turn. A lead whose plans run in Herdr children also gets the wait to name (`herdr wait`, `herdr plans --wait`) or the child to resume. An unreadable transcript keeps the decision; an unreadable task store blocks nothing. § The keep-going guard. |
@@ -746,17 +829,24 @@ a light or print-only line is left as it was written.
 `switches.jobRoute` switch): the project's `"jobs": { "route": true }` (or `false`) in its
 `.claude/cc-smart-dev-kit.json`, and under it the person's machine-wide default,
 `switches.jobRoute` in their own `workflow.json`. The project's value wins, field by field, as
-every workflow setting does; with neither it is off. The hook asks the one resolver
-(`resolveJobRoute`, `src/workflow/resolve.ts`), never a reader of its own, and it asks it with
-or without a project file: this hook runs machine-wide. A personal file the resolver cannot read
-leaves the project's value and the default standing, so the hook never fails on it. Outside git
+every workflow setting does; with neither it is off. The hook reads the person's file through
+the checked cache (`loadPersonalWorkflow`, `src/hooks/checked-config.ts`) and decides with
+`jobRouteFrom` (`src/workflow/merge.ts`), the function `resolveJobRoute` and `workflow show` use
+too, so they agree; it does so with or without a project file: this hook runs machine-wide. A
+personal file it cannot read leaves the project's value and the default standing, so the hook
+never fails on it. Outside git
 there is no project, and a heavy command runs raw. With the route on, a command its kinds
 classify as heavy is sent through the queue instead of running raw (`docs/jobs.md` § The
 route). It answers with Claude Code's `updatedInput` — the same tool input,
 its `command` replaced by `"$HOME/.local/bin/cc-smart-dev-kit" job run --kind <kind> --
 <command>` — proved live on 2.1.301 (`claude-code-contract.md`). It gives no
 `permissionDecision`: the rewrite replaces the input and the permission system still decides
-about the new command, so a person's own rule for Bash keeps working. **A line is queued whole
+about the new command, so a person's own rule for Bash keeps working. **In auto mode
+(`permission_mode: "auto"`) it never rewrites**: auto mode's server-side check gives no verdict for
+a call a hook changed and voids its review of the other calls in that response (proved live
+2026-11-22, `claude-code-contract.md`). It denies instead, and the reason names the exact line the
+rewrite would have given, built by the same function (`jobRunCommand`; the prefixed line for a git
+command), plus the longest `timeout` when the call set none. **A line is queued whole
 only when every command in it is heavy, a `cd`, an assignment or glue, and one is heavy**
 (`routableLine`, `classifyRoutableLine`). Glue is what nobody writes a permission rule against:
 the commands of `GLUE_COMMANDS` under their argument rules, the readers of `READ_ONLY_FILTERS`

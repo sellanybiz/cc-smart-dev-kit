@@ -533,6 +533,7 @@ export function mockTaskDetail(
         phase: one.phase,
         plan: one.plan,
         project,
+        stackedOn: null,
         status: one.status,
         subject: one.subject,
         type: one.type,

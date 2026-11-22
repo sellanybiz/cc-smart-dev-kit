@@ -35,7 +35,7 @@ const FILE_HASHES: Record<string, Record<string, string>> = {
       "8d9e3cec24dd01b11c5ba12196d0376a131797d9ad247ea624e66eb8bbf61b0e",
     "assets/showcase/state-matrix.tsx":
       "07794119fe05ff735358b3f8ca30a8297617ab64dfb3901dce4d89fe5f443458",
-    "cli.md": "ea3757ba5790d51dd4328a12e51db9fd7afbc993d6fd7aca17b9c8d9b4360b81",
+    "cli.md": "5b0934c209ff7b0530216328cba490e4ddab30df8431ce9190ef1974d24725fe",
     "customization.md": "fb51ff154a1d5fed9fc2748dad9ecfc72c523a76bad2c6c10ef8bb9968b161f8",
     "design-system-page.md": "c541d661af159548744be3e27f79e7da710ab83f9afd448a4346f7ff1531d328",
     "design-system.md": "487b0858b1a06152af5743a0ef2a04bd16b4431cf3fc89ef3ba35f0bfe93b37b",
@@ -50,8 +50,8 @@ const FILE_HASHES: Record<string, Record<string, string>> = {
     "rules/styling.md": "f88fbd72dff862805b786dc7d7e4c74c83030fc278c5b97c993e4e665001798c",
     "scripts/showcase-coverage.mjs":
       "fb593e0806414d23b51354a46881f0b2873afc226bda0926a22f83cbd60af2fa",
-    "SKILL.md": "fb93457cd7bb9c9840ab567d1efb239d3cebcd2611164f74febd821f725b1c1b",
-    "VENDORED.md": "1af9c6065061e6966d9a93724eb201b8d2fb45a8ad0d8370f9f40d1a4a99a960",
+    "SKILL.md": "1472a8bf37c0a2304f7e883531204f8ed6352fdf02e8e4f3834a4090c0426e7e",
+    "VENDORED.md": "e5e41c23eff4c17dc6cbc54933d997a10718231bedc42dcfe4fd5f58f764bafe",
   },
   "migrate-radix-to-base": {
     "class-mapping.md": "c288738167c663c6188caf958cdac6d72061b0ce44d6bce14d9dc6d40b4e79f9",
@@ -132,7 +132,12 @@ const FILE_HASHES: Record<string, Record<string, string>> = {
 // END GENERATED HASHES
 
 const PATCHES = ["bun-runner-and-pin", "pin-unversioned-runner", "user-only"] as const;
-type Patch = (typeof PATCHES)[number] | "registered-mcp" | "local-license-key" | "runner-wording";
+type Patch =
+  | (typeof PATCHES)[number]
+  | "npm-runner-entry"
+  | "registered-mcp"
+  | "local-license-key"
+  | "runner-wording";
 export interface VendoredSkill {
   folder: string;
   source: typeof SHADCN | typeof CRAFT;
@@ -148,7 +153,7 @@ export const VENDORED_SKILLS: VendoredSkill[] = [
   {
     name: "shadcn",
     source: SHADCN,
-    patches: [...PATCHES, "registered-mcp"] as const,
+    patches: ["npm-runner-entry", ...PATCHES, "registered-mcp"] as const,
     leftOut: ["assets/shadcn-small.png", "assets/shadcn.png"],
   },
   { name: "migrate-radix-to-base", source: SHADCN, patches: PATCHES },
@@ -212,6 +217,28 @@ export interface PatchCounts {
   wording: number;
 }
 
+/**
+ * Upstream's runner list names `npx`, `pnpm dlx` and `bunx --bun`. The global `npx` to `bunx`
+ * replacement would make the first entry a second `bunx`, so these exact sentences keep `npx`
+ * as the npm runner, pinned. The frontmatter also keeps a plain `bunx` entry for the `!` line.
+ */
+function npmRunnerEntries(path: string): [from: string, to: string][] {
+  const pin = MCP_VERSIONS.shadcn;
+  const list = {
+    from: "package runner: `npx shadcn@latest`, `pnpm dlx shadcn@latest`, or `bunx --bun shadcn@latest`",
+    to: `package runner: \`npx shadcn@${pin}\`, \`pnpm dlx shadcn@${pin}\`, or \`bunx --bun shadcn@${pin}\``,
+  };
+  if (path === "cli.md") return [[list.from, list.to]];
+  if (path !== "SKILL.md") return [];
+  return [
+    [list.from, list.to],
+    [
+      "allowed-tools: Bash(npx shadcn@latest *), Bash(pnpm dlx shadcn@latest *), Bash(bunx --bun shadcn@latest *)",
+      `allowed-tools: Bash(npx shadcn@${pin} *), Bash(pnpm dlx shadcn@${pin} *), Bash(bunx --bun shadcn@${pin} *), Bash(bunx shadcn@${pin} *)`,
+    ],
+  ];
+}
+
 /** Text-only patches; binary assets pass through unchanged in prepareSkill. */
 export function patchSkill(
   skill: VendoredSkill,
@@ -231,6 +258,14 @@ export function patchSkill(
     wording: 0,
   };
   let text = input;
+  // Must run before bun-runner-and-pin: its replaceAll would turn this npx entry into a second bunx.
+  if (skill.patches.includes("npm-runner-entry")) {
+    for (const [from, to] of npmRunnerEntries(path)) {
+      if (text.split(from).length !== 2)
+        throw new Error(`${path}: npm-runner-entry text changed; inspect the patch`);
+      text = text.replace(from, () => to);
+    }
+  }
   if (skill.patches.includes("bun-runner-and-pin")) {
     text = text
       .replaceAll("npx shadcn@latest", () => {

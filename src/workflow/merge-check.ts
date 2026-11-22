@@ -130,8 +130,18 @@ export const runGh: GhExec = async (args, { folder, env, input, timeoutMs }) => 
 };
 
 /**
+ * What `gh pr checks --required` says when the branch has none, as gh words it: a line on
+ * stderr and exit 1, not a list. gh has two such lines: `no required checks reported` (checks
+ * exist, none is required) and `no checks reported` (a pull request with no checks at all).
+ * Both are an answer ("none"), so `spawnGh` hands it on and `requiredChecks` reads it as an
+ * empty list; every other failure stays a failure.
+ */
+const NO_REQUIRED_CHECKS = /^no (?:required )?checks reported on the '.*' branch$/;
+
+/**
  * One read-only `gh` command's stdout, or null when gh is not there, the call fails, or it
- * printed nothing. **It never blocks**: `spawnGh` is `Bun.spawn`, because the portal makes
+ * printed nothing (the one failure that is an answer, `NO_REQUIRED_CHECKS`, comes back as its
+ * line). **It never blocks**: `spawnGh` is `Bun.spawn`, because the portal makes
  * this check inside its own process and a blocking spawn there freezes every page and the
  * live stream (`.claude/rules/portal.md`). A test hands in its own runner.
  */
@@ -139,10 +149,11 @@ export type GhRunner = (args: string[], call: GhCall) => Promise<string | null>;
 
 /** The `gh` runner in use: the same command, environment and timeout as `ghStdout` always had. */
 export const spawnGh: GhRunner = async (args, call) => {
-  const { kind, out } = await runGh(args, call);
+  const { err, kind, out } = await runGh(args, call);
   // No gh on PATH, or a call that timed out: nothing. Any other exit keeps what gh printed.
   if (kind === "missing" || kind === "timeout") return null;
-  return out.trim() === "" ? null : out;
+  if (out.trim() === "") return kind === "failed" && NO_REQUIRED_CHECKS.test(err) ? err : null;
+  return out;
 };
 
 /** The fields `gh pr view --json` gives: the number, the base, and the head's branch and commit. */
@@ -601,7 +612,10 @@ export async function viewPullRequest(
   return out === null ? null : parsePullRequestFacts(out);
 }
 
-/** The required checks of one pull request, or null when gh cannot say. */
+/**
+ * The required checks of one pull request, or null when gh cannot say. A branch with none is an
+ * empty list (`NO_REQUIRED_CHECKS`), which `mergeRefusal` refuses in its own words.
+ */
 export async function requiredChecks(
   number: number,
   repo: string | null,
@@ -625,7 +639,8 @@ export async function requiredChecks(
     timeoutMs,
     run,
   );
-  return out === null ? null : parseRequiredChecks(out);
+  if (out === null) return null;
+  return NO_REQUIRED_CHECKS.test(out.trim()) ? [] : parseRequiredChecks(out);
 }
 
 /**

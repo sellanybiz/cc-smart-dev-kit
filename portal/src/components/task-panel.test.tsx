@@ -50,6 +50,7 @@ const DETAIL: TaskDetailAnswer = {
     phase: "K",
     plan: "web",
     project: "key",
+    stackedOn: null,
     status: "in_progress",
     subject: "Write the docs page",
     type: "blocking",

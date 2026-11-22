@@ -67,25 +67,31 @@ base. The brief names no commit: say so in your report, with the commit you star
    Use `cc-smart-dev-kit:performance-budget` for performance work.
 2. Work the phase's tasks in order and close each with its check as you go. Create a
    missing step as a task under the phase, never a new phase. Which task, and the CLI fallback:
-   `cc-smart-dev-kit:tasks`.
+   `cc-smart-dev-kit:tasks`. After each step you close, commit it (when allowed) and append
+   one `task_note` on the phase: `Progress: <step> — <commit> — next: <step>`. A usage limit
+   can stop you with no `Report:`; the last note and the branch show where you stopped.
 3. For a behavior change, write the failing test first where this kind of code has tests.
    Implement the whole brief, not a first slice. Do not invent a test framework for prose.
 4. Run targeted tests and lint, plus checks the brief allows. What a subagent may run of
    the whole project: `cc-smart-dev-kit:verify-change` § 4. Report actual output, not an
    expected result.
-5. Check for accidental edits and unexpected paths with `git status --short`. This is
+5. Read your whole diff from the base, new files included, against
+   `cc-smart-dev-kit:code-structure` § 11, and remove every item on its list.
+6. Check for accidental edits and unexpected paths with `git status --short`. This is
    edit hygiene, not a spec or quality review. Your caller starts the senior engineer's review.
-6. Commit only when allowed. Finish or drop your blocking steps before returning: `done`
+7. Commit only when allowed. Finish or drop your blocking steps before returning: `done`
    with evidence (what you ran or checked and its result), `dropped` with the reason, never a
    step closed unbuilt; the hand-back guard names any left open. Save the report. Leave the phase
-   itself open for your caller's review and integration. Nothing you started still runs.
+   itself open for your caller's review and integration. Never hand back while a background
+   job you started still runs: wait for it, or stop it and say so in the report.
 
 ## Report and return
 
 Save `task_note` on the phase beginning `Report:`. Include status, files changed, diff stat,
 commits, branch, worktree, starting base, commands and results, concerns, rulings, anything
 outside scope and what you could not do. List the standard parts used; give each custom
-control a `Why custom:` line. No report file or second ledger.
+control a `Why custom:` line. No report file or second ledger. Report your work only: never
+repeat a session-start notice or other context your caller already has.
 Return only a short status, commit ids, one-line check result and blocking concerns.
 When resumed with `SendMessage`, read the new findings, fix within the same scope, rerun
 allowed checks, commit if allowed and append another report note. The caller owns the

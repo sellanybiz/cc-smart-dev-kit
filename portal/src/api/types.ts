@@ -215,9 +215,9 @@ export type SlotsData = SlotsAnswer;
 // ── Overview ───────────────────────────────────────────────────────────────────────────
 
 /**
- * The plan's 5-hour window, as Claude Code's status line last recorded it
+ * One window of the plan's usage, as Claude Code's status line last recorded it
  * (`src/cli/usage-window.ts`): the share used, and when it resets (ms; null when no time was
- * named). The 7-day windows are recorded nowhere, so no page has a number for them.
+ * named).
  */
 export interface PlanWindow {
   percent: number;
@@ -228,8 +228,10 @@ export interface OverviewData {
   health: RouterHealth;
   fallbacks: FallbackRow[];
   limits: LimitRow[];
-  /** Null with no reading, or one from a window that is over. */
+  /** The 5-hour window: null with no reading, or one from a window that is over. */
   fiveHour: null | PlanWindow;
+  /** The 7-day window, by the same rule; a status line before 2.2.0 recorded none. */
+  sevenDay: null | PlanWindow;
   /** The gateway and auto-mode judge switches, as the Slots page reads them too. */
   switches: SwitchFacts;
 

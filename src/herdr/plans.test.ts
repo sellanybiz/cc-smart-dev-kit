@@ -3,14 +3,16 @@
  * `prepareStart` decides a start. Real git in a temp clone; gh and hc are fakes.
  */
 import { expect, test } from "bun:test";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { createOut } from "../cli/ui/out";
 import { openWorkDb, workDbFile } from "../tasks/work/db";
-import { allTasks, eventsOf, taskById } from "../tasks/work/queries";
+import { allTasks, eventsOf, type StackPair, taskById } from "../tasks/work/queries";
 import { createTask, releasePlan, reservePlan, takeTasks, updateTask } from "../tasks/work/store";
 import type { ClaimProcess, Result, Who, WorkTask } from "../tasks/work/types";
 import { makeClone } from "../testing/hooks";
 import { cleanGitEnv, git, tempDir } from "../testing/temp";
+import { launchedHere, writeLaunchRecord } from "./launch-record";
 import {
   changesBetween,
   confirmClaim,
@@ -25,6 +27,7 @@ import {
   prepareReserve,
   prepareStart,
   releaseByHand,
+  showPlanLines,
 } from "./plans";
 
 const LEAD: Who = { sessionId: "lead", pid: 4101, procStart: "41010" };
@@ -62,6 +65,7 @@ function build() {
     pr: (_repo, branch) => prs[branch] ?? "none",
     pane: (agent) => (agent === null ? NONE : (panes[agent] ?? GONE)),
     labelled: (slug) => strays[slug] ?? null,
+    launched: (worktree) => launchedHere(paths.stateDir, repo, worktree),
     check: { ignore: [], caseFold: false },
     now: () => 1000,
   };
@@ -88,7 +92,10 @@ function build() {
     );
   const change = (task: WorkTask, to: Parameters<typeof updateTask>[2]) =>
     ok(updateTask(db, task.id, to, LEAD, 50));
-  const reserve = (slug: string, over: { files?: Record<string, string[]> } = {}) =>
+  const reserve = (
+    slug: string,
+    over: { files?: Record<string, string[]>; stacked?: StackPair[] } = {},
+  ) =>
     ok(
       reservePlan(db, {
         project: "p",
@@ -98,6 +105,7 @@ function build() {
         ignore: [],
         caseFold: false,
         extraFiles: over.files ?? {},
+        ...(over.stacked === undefined ? {} : { stacked: over.stacked }),
         now: 10,
       }),
     );
@@ -120,6 +128,7 @@ function build() {
   };
   return {
     repo,
+    stateDir: paths.stateDir,
     db,
     prs,
     panes,
@@ -402,6 +411,7 @@ test("what changed between two readings, and when a wait has nothing to wait for
     fix: null,
     pr,
     pane: null,
+    stackedOn: null,
     drift: [],
   });
   const before = [line(1, "with-child", "open"), line(2, "waiting"), line(3, "overlaps")];
@@ -676,6 +686,38 @@ test("a start is refused when the default branch can only be guessed", () => {
   expect(prepareStart({ ...w.base, baseFrom: "config" }, "alpha").ok).toBe(true);
 });
 
+test("a start refuses a guessed default branch even with --base: a held branch could hide in the unread diff", () => {
+  const w = build();
+  const holder = w.plan("holder", ["src/a/"]);
+  w.plan("mover", ["src/b/x.ts"]);
+  w.reserve("holder");
+  // The holder's branch drifted into the mover's file, which its stored list never named.
+  w.branch("holder-branch", { "src/b/x.ts": "drift\n" });
+  w.change(holder, { branch: "holder-branch" });
+  // The real default branch is not `main`: a guessed one finds no branch to diff against.
+  const guessed = { ...w.base, base: "no-such-branch", baseFrom: "default" as const };
+  expect(w.line("mover", guessed).state).toBe("ready");
+  const answer = prepareStart(guessed, "mover");
+  if (answer.ok) throw new Error("expected a refusal");
+  expect(answer.why).toContain("The default branch cannot be found");
+  expect(answer.fix).toBe(
+    "run `git remote set-head origin --auto`, or set worktrees.base in .claude/cc-smart-dev-kit.json",
+  );
+  expect(allTasks(w.db, "p").find((t) => t.plan === "mover")?.lead).toBeNull();
+  // With the default branch known, the same start is refused for the overlap the guess hid.
+  const known = prepareStart(w.base, "mover");
+  if (known.ok) throw new Error("expected a refusal");
+  expect(known.why).toContain("src/b/x.ts");
+});
+
+test("the lead's own reservation also needs the default branch", () => {
+  const w = build();
+  w.plan("beta", ["src/b/"]);
+  const reserve = prepareReserve({ ...w.base, baseFrom: "default" }, "beta");
+  if (reserve.ok) throw new Error("expected a refusal");
+  expect(reserve.why).toContain("The default branch cannot be found");
+});
+
 test("a resume claims the plan before it launches, and a second reading of it finds a child starting", () => {
   const w = build();
   const first = w.plan("first", ["src/one/"]);
@@ -782,6 +824,67 @@ test("a recorded worktree outside .claude/worktrees is never reused", () => {
   expect(answer.fix).toContain("task_update #1 worktree");
 });
 
+/** A plan whose child is gone, its worktree recorded at `worktree`; the resume reads it. */
+function goneAt(w: ReturnType<typeof build>, worktree: string) {
+  const first = w.plan("first", ["src/one/"]);
+  const handout = w.reserve("first").lead?.handoutId ?? "";
+  ok(takeTasks(w.db, "p", first.id, CHILD, 20, { from: handout, isLive: () => false }));
+  w.change(first, { agent: "herdr:core/t2", worktree, branch: "feat-x" });
+  return () => prepareStart({ ...w.base, process: ENDED }, "first");
+}
+
+/** The words of a refused start, or a failure when it started. */
+function refusedWhy(answer: ReturnType<typeof prepareStart>): string {
+  if (answer.ok) throw new Error("expected a refusal");
+  return answer.why;
+}
+
+test("a worktree outside the default folder is reused only when git lists it and herdr's launch record names it", async () => {
+  const w = build();
+  const elsewhere = join(tempDir("elsewhere"), "feature-x");
+  git(w.repo, "worktree", "add", "-q", "-b", "feat-x", elsewhere);
+  const resume = goneAt(w, elsewhere);
+  // Listed by git, but herdr never launched a child there: a hand-made worktree for a task row.
+  expect(refusedWhy(resume())).toContain(
+    `its recorded worktree ${elsewhere} is not a child's folder`,
+  );
+  await writeLaunchRecord(w.stateDir, {
+    at: 1,
+    branch: "feat-x",
+    repo: w.repo,
+    worktree: elsewhere,
+  });
+  const resumed = resume();
+  if (!resumed.ok) throw new Error(resumed.why);
+  expect(resumed.recorded).toEqual({ worktree: elsewhere, branch: "feat-x" });
+});
+
+test("a launch record alone is not enough: the main checkout, an unlisted path and a gone folder stay refused", async () => {
+  const gone = join(tempDir("elsewhere"), "feature-g");
+  const cases: Record<string, (repo: string) => string> = {
+    main: (repo) => repo,
+    unlisted: () => join(tempDir("unlisted"), "x"),
+    gone: (repo) => {
+      git(repo, "worktree", "add", "-q", "-b", "feat-g", gone);
+      rmSync(gone, { recursive: true });
+      return gone;
+    },
+  };
+  for (const [kind, where] of Object.entries(cases)) {
+    const w = build();
+    const target = where(w.repo);
+    await writeLaunchRecord(w.stateDir, { at: 1, branch: "b", repo: w.repo, worktree: target });
+    expect(refusedWhy(goneAt(w, target)()), kind).toContain("is not a child's folder");
+  }
+});
+
+test("a worktree git lists in the default folder keeps today's rule, with no record needed", () => {
+  const w = build();
+  const home = join(w.repo, ".claude", "worktrees", "kit-first");
+  git(w.repo, "worktree", "add", "-q", "-b", "worktree-kit-first", home);
+  expect(goneAt(w, home)().ok).toBe(true);
+});
+
 test("plans.ts holds no gh code of its own: pullRequestState is the one home", () => {
   const source = readFileSync(join(import.meta.dir, "plans.ts"), "utf8");
   expect(source).not.toContain("Bun.spawn");
@@ -879,4 +982,160 @@ test("a held plan with a file list, or a branch diff, still allows a disjoint ha
   w.plan("gamma", ["docs/"]);
   expect(w.line("gamma").state).toBe("overlaps");
   expect(prepareStart(w.base, "beta").ok).toBe(true);
+});
+
+test("a stacked plan is ready beside its held parent once it starts on its work, says what it is stacked on, and drift skips the pair", () => {
+  const w = build();
+  const base = w.git("rev-parse", "HEAD");
+  w.branch("alpha-branch", { "src/a/one.ts": "1\n" });
+  const tip = w.git("rev-parse", "alpha-branch");
+  const alpha = w.plan("alpha", ["src/a/"]);
+  w.change(alpha, { branch: "alpha-branch", base });
+  w.reserve("alpha");
+  const beta = w.change(w.plan("beta", ["src/a/x.ts"]), { stackedOn: "alpha" });
+  w.plan("gamma", ["src/a/y.ts"]);
+  // No start yet and no base recorded: nothing proves beta is built on alpha, so alpha is a rival.
+  const unproved = w.line("beta");
+  expect([unproved.state, unproved.text, unproved.fix]).toEqual([
+    "overlaps",
+    "overlaps #1 alpha: src/a/x.ts",
+    "the stack on alpha counts only when this plan is built on alpha's work: cc-smart-dev-kit herdr start --plan beta starts it on alpha-branch when --base is left out; a plan built here rebuilds its branch on alpha-branch",
+  ]);
+  // A start on alpha's tip proves it; a start on the default branch does not.
+  const started = (start: string) =>
+    judgePlans(w.base, "beta", start).lines.find((one) => one.plan === "beta");
+  const line = started(tip);
+  expect([line?.state, line?.stackedOn]).toEqual(["ready", "alpha"]);
+  expect(started(base)?.state).toBe("overlaps");
+  expect(prepareStart(w.base, "beta", base).ok).toBe(false);
+  expect(w.line("gamma").text).toBe("overlaps #1 alpha: src/a/y.ts");
+  // The stacked plan's branch holds its parent's work: that is no drift against the parent.
+  w.reserve("beta", { stacked: [{ child: beta.id, parent: "alpha" }] });
+  git(w.repo, "checkout", "-q", "-b", "beta-branch", "alpha-branch");
+  writeFileSync(join(w.repo, "src/a/x.ts"), "x\n");
+  writeFileSync(join(w.repo, "src/a/z.ts"), "z\n");
+  git(w.repo, "add", "-A");
+  git(w.repo, "commit", "-q", "-m", "work on beta");
+  git(w.repo, "checkout", "-q", "main");
+  w.change(beta, { branch: "beta-branch", base: tip });
+  expect(w.line("beta").drift).toEqual([]);
+  // A parent with no branch recorded proves no stack, and the fix says so.
+  const parentless = build();
+  parentless.plan("alpha", ["src/a/"]);
+  parentless.reserve("alpha");
+  parentless.change(parentless.plan("beta", ["src/a/x.ts"]), { stackedOn: "alpha" });
+  expect(parentless.line("beta").fix).toBe(
+    "the stack on alpha counts only once alpha records its branch: task_update #1 with branch",
+  );
+  // A parent whose branch holds no commit of its own yet proves no stack: the fix waits for one,
+  // whatever the start.
+  const empty = build();
+  git(empty.repo, "branch", "alpha-branch", "main");
+  empty.change(empty.plan("alpha", ["src/a/"]), { branch: "alpha-branch" });
+  empty.reserve("alpha");
+  empty.change(empty.plan("beta", ["src/a/x.ts"]), { stackedOn: "alpha" });
+  const waiting = judgePlans(empty.base, "beta", empty.git("rev-parse", "alpha-branch")).lines.find(
+    (one) => one.plan === "beta",
+  );
+  expect([waiting?.state, waiting?.fix]).toEqual([
+    "overlaps",
+    "the stack on alpha counts only once alpha has work of its own: wait for its first commit on alpha-branch",
+  ]);
+  // A stacked plan another session took is no pair, and the fix names it.
+  const taken = build();
+  taken.branch("alpha-branch", { "src/a/one.ts": "1\n" });
+  taken.change(taken.plan("alpha", ["src/a/"]), { branch: "alpha-branch" });
+  taken.reserve("alpha");
+  const theirs = taken.change(taken.plan("beta", ["src/a/x.ts"]), { stackedOn: "alpha" });
+  ok(takeTasks(taken.db, "p", theirs.id, OTHER, 60, { isLive: () => false }));
+  const after = judgePlans(
+    { ...taken.base, who: OTHER },
+    "beta",
+    taken.git("rev-parse", "alpha-branch"),
+  );
+  expect(after.stacked).toEqual([]);
+  expect(after.lines.find((one) => one.plan === "beta")?.fix).toBe(
+    "the stack on alpha counts only while one lead leads both plans, and another session now holds this plan or alpha: take it back (task_take), or clear the stack (task_update #2 with stacked_on null)",
+  );
+  // The default branch only guessed proves nothing either.
+  const guessed = judgePlans(
+    { ...empty.base, baseFrom: "default" },
+    "beta",
+    empty.git("rev-parse", "alpha-branch"),
+  ).lines.find((one) => one.plan === "beta");
+  expect(guessed?.fix).toBe(
+    "the stack on alpha counts only once the default branch is known: run `git remote set-head origin --auto`, or set worktrees.base in .claude/cc-smart-dev-kit.json",
+  );
+  // A parent that records no start has no lower end to its own work: the fix asks for it.
+  const unstarted = build();
+  unstarted.branch("alpha-branch", { "src/a/one.ts": "1\n" });
+  unstarted.change(unstarted.plan("alpha", ["src/a/"]), { branch: "alpha-branch" });
+  unstarted.reserve("alpha");
+  unstarted.change(unstarted.plan("beta", ["src/a/x.ts"]), { stackedOn: "alpha" });
+  const noBase = judgePlans(
+    unstarted.base,
+    "beta",
+    unstarted.git("rev-parse", "alpha-branch"),
+  ).lines.find((one) => one.plan === "beta");
+  expect(noBase?.fix).toBe(
+    "the stack on alpha counts only once alpha records where it started: task_update #1 with base set to the commit you created its branch from (`git rev-parse HEAD` at that moment), not its fork from the default branch",
+  );
+  // A parent stacked on a finished plan whose branch is gone (squash-merged, then deleted): no
+  // fetch brings it back, so the fix clears the parent's stack on it.
+  const gone = build();
+  const goneBase = gone.git("rev-parse", "HEAD");
+  gone.branch("alpha-branch", { "src/a/one.ts": "1\n" });
+  const pp = gone.plan("pp", ["src/p/"]);
+  gone.change(pp, { branch: "p-branch" });
+  ok(updateTask(gone.db, pp.id, { status: "dropped" }, LEAD, 51));
+  gone.change(gone.plan("alpha", ["src/a/"]), {
+    branch: "alpha-branch",
+    base: goneBase,
+    stackedOn: "pp",
+  });
+  gone.reserve("alpha");
+  gone.change(gone.plan("beta", ["src/a/x.ts"]), { stackedOn: "alpha" });
+  const cleared = judgePlans(gone.base, "beta", gone.git("rev-parse", "alpha-branch")).lines.find(
+    (one) => one.plan === "beta",
+  );
+  expect(cleared?.fix).toBe(
+    "the stack on alpha counts only once alpha no longer names pp, which holds no files and whose branch is gone: clear #2's stack on pp (task_update stacked_on null)",
+  );
+  // While the grandparent still holds its files, its branch is only missing here: fetch it.
+  ok(updateTask(gone.db, pp.id, { status: "pending" }, LEAD, 52));
+  const fetch = judgePlans(gone.base, "beta", gone.git("rev-parse", "alpha-branch")).lines.find(
+    (one) => one.plan === "beta",
+  );
+  expect(fetch?.fix).toBe(
+    "the stack on alpha counts only once the branch of pp, which alpha is stacked on, is in this repository: fetch it",
+  );
+  // A stacked plan that keeps a branch made apart from its parent's: the fix records the branch
+  // built on the parent, since a new herdr start would not replace it.
+  const offBranch = build();
+  const offBase = offBranch.git("rev-parse", "HEAD");
+  offBranch.branch("alpha-branch", { "src/a/one.ts": "1\n" });
+  offBranch.branch("beta-branch", { "src/b/one.ts": "1\n" });
+  offBranch.change(offBranch.plan("alpha", ["src/a/"]), {
+    branch: "alpha-branch",
+    base: offBase,
+  });
+  offBranch.reserve("alpha");
+  offBranch.change(offBranch.plan("beta", ["src/a/x.ts"]), {
+    stackedOn: "alpha",
+    branch: "beta-branch",
+    base: offBranch.git("rev-parse", "alpha-branch"),
+  });
+  expect(offBranch.line("beta").fix).toBe(
+    "the stack on alpha counts only when this plan records its own branch, built on alpha's work: task_update #2 branch=<branch built on alpha>",
+  );
+  // The stack is shown on the line the command prints.
+  const shown: string[] = [];
+  const out = createOut(
+    { color: false, unicode: true, width: 200, rich: false },
+    { line: (text) => shown.push(text), raw: (text) => shown.push(text) },
+  );
+  showPlanLines(out, line === undefined ? [] : [line]);
+  expect(shown).toEqual([
+    "✓ #2 beta (stacked on alpha): ready: nothing blocks it and no held plan shares its files",
+  ]);
 });

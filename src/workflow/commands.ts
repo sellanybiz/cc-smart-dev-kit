@@ -136,8 +136,10 @@ ${PLAN_KEYS.join(", ")} bound a session's own work, so they refuse there as well
 plans.maxPhases is the most phases a plan may hold. plans.runMode (${RUN_MODES.join(" | ")}; default ask) is how
 queued plans run when two or more are laid: it is yours alone, in your file, and a project's
 file that sets it is refused. plans.mergeFiles (a comma-separated list; a folder ends in /) names
-the paths every plan touches and each merge settles; it is the project's, needs --project, and
-counts only as committed on origin/<base>.
+the paths every plan touches and each merge settles. plans.appendOnly (a comma-separated list of
+folders, each ending in /) names the folders where plans add new files: there two plans overlap
+only on the same file. Both are the project's, need --project, and count only as committed on
+origin/<base>.
 review-done records that the change set up to a commit (default: HEAD, or --sha <commit>)
 had its one premium review and its fixes. merge-check reads it before a merge that
 allowMerge would make by itself, while reviewBeforePush is on. Inside Claude Code the review-record
@@ -239,8 +241,8 @@ function reviewLine(
  * The gate's lines: the review gate exactly as merge-check reads it — the policy committed
  * on `origin/<worktrees.base>`, the same read (`resolveGate`) — so `show` never disagrees with
  * the guard, even while this checkout's own file says something else. Nothing for a folder
- * with no project file: there the guard is silent. It ends with the `plans.mergeFiles` line, from the
- * same read.
+ * with no project file: there the guard is silent. It ends with the `plans.mergeFiles` and
+ * `plans.appendOnly` lines, from the same read.
  */
 function gateLines(
   paths: CliPaths,
@@ -263,7 +265,8 @@ function gateLines(
     return {
       lines: [
         `gate: merge-check cannot read the policy committed on ${base} (${read.why}), so it allows no merge`,
-        mergeFilesLine(base, [], read.why),
+        committedPlanLine("plans.mergeFiles", base, [], read.why),
+        committedPlanLine("plans.appendOnly", base, [], read.why),
       ],
       gate: null,
     };
@@ -282,19 +285,28 @@ function gateLines(
     env,
     timeoutMs: WORKFLOW_GIT_TIMEOUT_MS,
   });
-  lines.push(mergeFilesLine(base, settled.files, settled.reason));
+  lines.push(committedPlanLine("plans.mergeFiles", base, settled.files, settled.reason));
+  lines.push(
+    committedPlanLine("plans.appendOnly", base, gate.resolved.plans.appendOnly.value, null),
+  );
   return { lines, gate };
 }
 
 /**
- * The line `show` prints for `plans.mergeFiles` as the plan store and herdr read it: the list
- * committed on `origin/<worktrees.base>`, never this checkout's own copy, with why it is empty or
- * short when that is so. Built from the gate's own read of the committed file (`gateLines`), so
- * the file is read once.
+ * The line `show` prints for a committed plan list (`plans.mergeFiles`, `plans.appendOnly`) as the
+ * plan store and herdr read it (`resolvePlanFiles`): the list committed on
+ * `origin/<worktrees.base>`, never this checkout's own copy, with why it is empty or short when
+ * that is so. Built from the gate's own read of the committed file (`gateLines`), so the file is
+ * read once.
  */
-function mergeFilesLine(base: string, files: readonly string[], reason: string | null): string {
-  const value = showValue("plans.mergeFiles", files);
-  return `plans.mergeFiles as the plan tools read it, from origin/${base}:${CONFIG_PATH} = ${value}${reason === null ? "" : ` (${reason})`}`;
+function committedPlanLine(
+  key: "plans.mergeFiles" | "plans.appendOnly",
+  base: string,
+  values: readonly string[],
+  reason: string | null,
+): string {
+  const value = showValue(key, values);
+  return `${key} as the plan tools read it, from origin/${base}:${CONFIG_PATH} = ${value}${reason === null ? "" : ` (${reason})`}`;
 }
 
 /**
@@ -372,8 +384,8 @@ function issueKeyRefusal(sub: "set" | "unset", key: WorkflowKey): string {
  * The refusal of a plan key (`PLAN_KEYS`) in `set` and `unset` inside a Claude Code session, in the
  * words of each key's own reason. The cap: the task store holds the session to it, so the person
  * raises it (read from the working copy, so the words name no committed file). The run mode: the
- * person's alone, so the words are the command to run. The merge files: read only as committed on
- * the base. `propose` stays open for the two project settings.
+ * person's alone, so the words are the command to run. The merge files and the append-only
+ * folders: read only as committed on the base. `propose` stays open for the project settings.
  */
 function planKeyRefusal(sub: "set" | "unset", key: WorkflowKey): string {
   const head = `${COMMAND} workflow ${sub} ${key} cannot run inside a Claude Code session: ${key}`;
@@ -382,8 +394,12 @@ function planKeyRefusal(sub: "set" | "unset", key: WorkflowKey): string {
     const value = sub === "set" ? ` <${RUN_MODES.join("|")}>` : "";
     return `${head} decides how many sessions spend your usage on queued plans, so only you choose it. Run this in your own terminal: ${COMMAND} workflow ${sub} ${key}${value}`;
   }
-  if (key === "plans.mergeFiles") {
-    return `${head} names the paths the plans' overlap check leaves out, so a session that could widen it would lift its own check; the kit reads only the copy committed on origin/<worktrees.base>. Run it in your own terminal with --project and commit it to the base. \`workflow propose\` opens a pull request you review instead.`;
+  if (key === "plans.mergeFiles" || key === "plans.appendOnly") {
+    const what =
+      key === "plans.mergeFiles"
+        ? "names the paths the plans' overlap check leaves out"
+        : "names the folders where the plans' overlap check compares files only";
+    return `${head} ${what}, so a session that could widen it would lift its own check; the kit reads only the copy committed on origin/<worktrees.base>. Run it in your own terminal with --project and commit it to the base. \`workflow propose\` opens a pull request you review instead.`;
   }
   return `${head} is the limit the task tools hold this session to, so only you change it. Run it in your own terminal. \`workflow propose\` opens a pull request you review instead.`;
 }

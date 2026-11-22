@@ -8,14 +8,15 @@
 import { expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import type { Check } from "../cli/check";
 import { cliPaths } from "../cli/paths";
-import { planCapChecks } from "../cli/project-checks";
+import { ancestorHoldChecks, planCapChecks } from "../cli/project-checks";
 import { taskSegment } from "../cli/statusline";
 import { hookEnv, makeRepo, writeClaudeFile } from "../testing/hooks";
 import { git, tempDir } from "../testing/temp";
 import { folderProject } from "./context";
 import { createTaskOps, type TaskAnswer } from "./ops";
-import { openWorkDb, workDbFile, writeWork } from "./work/db";
+import { openWorkDb, type WorkDb, workDbFile, writeWork } from "./work/db";
 import { allTasks, inFlightPlanOf, livePhaseCount } from "./work/queries";
 import { planProgress } from "./work/read";
 import { applyUpdate, layPhase } from "./work/store";
@@ -688,6 +689,73 @@ test("doctor: one ! line for each open plan over the cap, with its fix", () => {
     said(ops.call("done", { task: "#1" }));
     expect(planCapChecks(w.repo, w.env, w.paths, config(2))).toEqual([]);
     expect(planCapChecks(makeRepo(), hookEnv(), cliPaths(hookEnv()), null)).toEqual([]);
+  } finally {
+    ops.close();
+  }
+});
+
+/** Step #3 blocked by its phase #2: the hold a store lifted by an older release may still carry. */
+function holdOnAncestor(db: WorkDb): void {
+  db.sqlite.run(
+    "INSERT INTO task_deps(task_id,waits_for) SELECT t.id,p.id FROM tasks t, tasks p WHERE t.number=3 AND p.number=2",
+  );
+}
+
+test("doctor: a ! line for each open task blocked by an open task above it, with the way to lift it", () => {
+  const w = world();
+  const ops = w.ops();
+  try {
+    said(ops.call("create", { subject: "Plan", plan: "p" }));
+    said(ops.call("create", { subject: "Area", plan: "p", phase: "A" }));
+    said(ops.call("create", { subject: "Step", parent: "#2" }));
+    expect(ancestorHoldChecks(w.repo, w.env, w.paths)).toEqual([]);
+    expect(refused(ops.call("update", { task: "#3", blocked_by_add: ["#2"] }))).toContain(
+      "it sits under it",
+    );
+    const db = openWorkDb(workDbFile(w.paths), { mode: "write" });
+    try {
+      holdOnAncestor(db);
+      expect(db.sqlite.query("PRAGMA user_version").get()).toEqual({ user_version: 7 });
+    } finally {
+      db.close();
+    }
+    const line: Check = {
+      ok: true,
+      warn: true,
+      text: "project tasks: #3 is blocked by #2, which it sits under, so neither can be done",
+      fix: 'task_update #3 with blocked_by_remove ["#2"]',
+    };
+    expect(ancestorHoldChecks(w.repo, w.env, w.paths)).toEqual([line]);
+    // The fix the line names lifts the hold.
+    said(ops.call("update", { task: "#3", blocked_by_remove: ["#2"] }));
+    expect(ancestorHoldChecks(w.repo, w.env, w.paths)).toEqual([]);
+    // A folder with no store says nothing.
+    expect(ancestorHoldChecks(makeRepo(), hookEnv(), cliPaths(hookEnv()))).toEqual([]);
+  } finally {
+    ops.close();
+  }
+});
+
+test("doctor: a hold on an ancestor says nothing once either task is closed", () => {
+  const w = world();
+  const ops = w.ops();
+  try {
+    said(ops.call("create", { subject: "Plan", plan: "p" }));
+    said(ops.call("create", { subject: "Area", plan: "p", phase: "A" }));
+    said(ops.call("create", { subject: "Step", parent: "#2" }));
+    const db = openWorkDb(workDbFile(w.paths), { mode: "write" });
+    try {
+      holdOnAncestor(db);
+      expect(ancestorHoldChecks(w.repo, w.env, w.paths)).toHaveLength(1);
+      // A closed blocker lets its task go, and a closed task waits for nothing: no deadlock.
+      db.sqlite.run("UPDATE tasks SET status='done' WHERE number=2");
+      expect(ancestorHoldChecks(w.repo, w.env, w.paths)).toEqual([]);
+      db.sqlite.run("UPDATE tasks SET status='pending' WHERE number=2");
+      db.sqlite.run("UPDATE tasks SET status='dropped' WHERE number=3");
+      expect(ancestorHoldChecks(w.repo, w.env, w.paths)).toEqual([]);
+    } finally {
+      db.close();
+    }
   } finally {
     ops.close();
   }

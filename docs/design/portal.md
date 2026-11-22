@@ -414,6 +414,23 @@ owner's yes to D49's one loosening, for the exact values the export writes. `scr
 server-rendered page, and with no export folder at all the server-rendered pages answer as
 before: the switch-over costs nothing.
 
+**The sidebar under the strict policy.** On a phone the sidebar is a sheet (a Radix Dialog). A
+Radix `Overlay`, and any modal menu, popover or select, mounts `RemoveScroll`, which writes a
+measured `<style>` at run time that `style-src 'self'` blocks (a policy error on every open, seen
+live), so the sheet draws its own plain backdrop (`SheetBackdrop`, `portal/src/components/ui/sheet.tsx`)
+and the scroll lock is one static `:has()` rule in `globals.css`. `csp-safe.test.ts` reads the
+source and fails on a rendered Overlay, an import of `ui/dialog` or `ui/popover`, a Radix Select
+or a `DropdownMenu` without `modal={false}`. The rest of the sheet's behaviour: the nav tooltips
+exist only on the folded desktop sidebar, so one Escape closes the sheet; a tap on any nav item, a
+route change and a wider window close it; focus goes back to the trigger on close, without
+scrolling the page; and the targets are 44 px at the mobile width and on a coarse pointer. A bar
+anywhere on a page is `Meter` or `MeterBar` (`portal/src/components/meter.tsx`): an SVG whose width
+is an attribute, never a `style`, with a track that stays visible in both themes. The built export
+cannot be judged under `next dev`, which runs with no page policy: `scripts/portal-preview.ts`
+serves `portal/out` through the real server, on a free `127.0.0.1` port with a temp home and no
+effect allowed, for a browser check. A touch scroll through the backdrop, WebKit and a real phone
+are not proved.
+
 ### The page side: the client, the stream, the actions (B6c)
 
 **One client, chosen in one place** (`portal/src/api/client.ts` › `portalClient()`): the live
@@ -422,7 +439,7 @@ or under `next dev` (and then the header says "Mock data"). The live client fetc
 `GET /api/…` on the same origin and nothing else; each answer goes through `adapt.ts`, the one
 translation into the shape its page draws. A fact the machine cannot give is `null` there and
 the page says it does not know (a version `claude --version` did not name, a project with no
-session record, the plan's 7-day windows): never a value made up to fill a field.
+session record, a usage window the status line has not recorded): never a value made up to fill a field.
 
 **The API types have one mirror** (`portal/src/api/wire.ts`): every type
 `src/portal/api/types.ts` exports, by the same name, written out because the server's file
@@ -573,9 +590,10 @@ API's builders (`src/portal/api/data.ts`, `work.ts`), never a second reader:
   and says "Works only with the gateway on", from the existing `switches.gateway` fact.
   It runs only `gateway slot judge custom|claude`, never `gateway on|off`: changing the judge
   leaves `ANTHROPIC_BASE_URL` and the gateway state alone. The combined opus/fable switch is
-  gone; each model slot keeps its own switch on Slots. The plan's 5-hour window as the status line recorded it
-  (`src/cli/usage-window.ts`, null for a window that is over). The file holds the 7-day window
-  too since 2.2.0, but no page shows it yet, so the page says there is none. Counting Claude's replies from the transcripts was the other
+  gone; each model slot keeps its own switch on Slots. The plan's 5-hour and 7-day windows as the status line recorded
+  them (`src/cli/usage-window.ts`, read once by `planWindows`), one row each in one card, so the
+  five-column grid keeps its shape; a window the file does not hold (a status line before 2.2.0
+  wrote the 5-hour one alone), or one that is over, has no row. Counting Claude's replies from the transcripts was the other
   choice: it was not taken, because a busy machine writes gigabytes of them a week, and a page
   read must never block the server. **The request rate comes from the history database**, not
   the router's own list (`requestsSince`): that list is capped at 200 entries and holds Claude
@@ -816,12 +834,12 @@ reports it as one failed check — rather than reading a path that is gone.
 
 Two numbers the design's mockups show are not invented, and the pages say so instead:
 
-- **Claude Code's plan-usage percentages, but the 5-hour window's.** Claude Code computes them
-  from the headers of its own answers and hands them to the status line on stdin
+- **Claude Code's plan-usage percentages, beyond the status line's last reading.** Claude Code
+  computes them from the headers of its own answers and hands them to the status line on stdin
   (`src/cli/statusline.ts`), which writes down the 5-hour and (since 2.2.0) the 7-day window
-  (`<stateDir>/usage-window.json`, D54; the Overview above shows the 5-hour one). No page shows
-  the 7-day one yet, and the plan's other windows are stored nowhere; the router records only
-  the limits it saw — which model, which window, when it resets.
+  (`<stateDir>/usage-window.json`, D54; the Overview above shows both). Nothing else of the
+  plan's usage is stored; the router records only the limits it saw — which model, which
+  window, when it resets.
 - **OmniRoute's prices and image support.** They are in OmniRoute's own catalog, which the
   gateway never reads: `/v1/models` carries an id and a context length, and that is all the
   model table shows.

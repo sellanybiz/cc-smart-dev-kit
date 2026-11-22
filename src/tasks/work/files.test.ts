@@ -8,14 +8,16 @@ import { expect, test } from "bun:test";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { cliPaths } from "../../cli/paths";
-import { hookEnv, makeRepo } from "../../testing/hooks";
+import { commitConfig, hookEnv, makeClone, makeRepo, writeClaudeFile } from "../../testing/hooks";
 import { tempDir } from "../../testing/temp";
-import { normalizeMergeFile } from "../../workflow/schema";
+import { normalizeMergeFile, workflowSchema } from "../../workflow/schema";
+import { folderProject } from "../context";
+import { planFilesCheck } from "../files-check";
 import { createTaskOps, type TaskAnswer } from "../ops";
 import { openWorkDb, workDbFile } from "./db";
 import { allTasks, eventsOf, filesOverlap, normalizePlanFile, planFiles } from "./queries";
 import { readWorkStore } from "./read";
-import { createTask, deleteTask, updateTask } from "./store";
+import { createTask, deleteTask, reservePlan, updateTask } from "./store";
 import type { Result } from "./types";
 
 const LEAD = { sessionId: "lead", pid: 4101, procStart: "41010" };
@@ -126,6 +128,58 @@ test("merge files take no part in an overlap, as an equal path or inside a merge
   expect(filesOverlap(["a.ts"], ["a.ts"], { ignore })).toHaveLength(1);
 });
 
+test("inside a plans.appendOnly folder, two plans overlap only on the same file", () => {
+  const appendOnly = ["db/migrations/"];
+  // Two plans that each add a new file there do not overlap; the same file does.
+  expect(
+    filesOverlap(["db/migrations/002.sql"], ["db/migrations/003.sql"], { appendOnly }),
+  ).toEqual([]);
+  expect(
+    filesOverlap(["db/migrations/002.sql"], ["db/migrations/002.sql"], { appendOnly }),
+  ).toEqual([{ path: "db/migrations/002.sql", other: "db/migrations/002.sql" }]);
+  // No folder entry holds a path in there: the folder itself, a folder inside it, a folder around it.
+  expect(filesOverlap(["db/migrations/"], ["db/migrations/003.sql"], { appendOnly })).toEqual([]);
+  expect(filesOverlap(["db/migrations/"], ["db/migrations/"], { appendOnly })).toEqual([]);
+  expect(filesOverlap(["db/migrations/old/"], ["db/migrations/old/1.sql"], { appendOnly })).toEqual(
+    [],
+  );
+  expect(filesOverlap(["db/"], ["db/migrations/003.sql"], { appendOnly })).toEqual([]);
+  // Outside it, the folder around it still holds its other files.
+  expect(filesOverlap(["db/"], ["db/schema.ts"], { appendOnly })).toEqual([
+    { path: "db/", other: "db/schema.ts" },
+  ]);
+  // A folder outside the list behaves as before, and so does a name that only starts the same.
+  expect(filesOverlap(["src/"], ["src/a.ts"], { appendOnly })).toHaveLength(1);
+  expect(filesOverlap(["db/migrations-old/"], ["db/migrations-old/1.sql"], { appendOnly })).toEqual(
+    [{ path: "db/migrations-old/", other: "db/migrations-old/1.sql" }],
+  );
+  // It folds with case like every list, and a merge file still takes no part.
+  expect(
+    filesOverlap(["DB/Migrations/"], ["db/migrations/3.sql"], { appendOnly, caseFold: true }),
+  ).toEqual([]);
+  expect(
+    filesOverlap(["db/migrations/3.sql"], ["db/migrations/3.sql"], {
+      appendOnly,
+      ignore: ["db/migrations/3.sql"],
+    }),
+  ).toEqual([]);
+});
+
+test("plans.appendOnly in the project file takes folders only, normalised, once each", () => {
+  const read = (appendOnly: string[]) => workflowSchema.safeParse({ plans: { appendOnly } });
+  const parsed = read(["./db/migrations/", "db\\migrations\\", "docs/adr/"]);
+  expect(parsed.success && parsed.data?.plans?.appendOnly).toEqual(["db/migrations/", "docs/adr/"]);
+  const bare = read(["db/migrations"]);
+  expect(bare.success).toBe(false);
+  expect(bare.error?.issues[0]?.message).toBe(
+    '"db/migrations" is not a folder: plans.appendOnly names folders, each ending in /',
+  );
+  expect(read(["/"]).error?.issues[0]?.message).toBe(
+    '"/" is the root: name the files or folders under it',
+  );
+  expect(read(["../x/"]).success).toBe(false);
+});
+
 test("case counts unless the file system ignores it, and then the ignore list folds too", () => {
   expect(filesOverlap(["Src/A.ts"], ["src/a.ts"])).toEqual([]);
   expect(filesOverlap(["Src/A.ts"], ["src/a.ts"], { caseFold: true })).toEqual([
@@ -226,10 +280,12 @@ test("the kit's own delete of a plan with files works and its history keeps the 
   expect(JSON.parse(last?.changes ?? "{}").files).toEqual([["src/a.ts"], null]);
 });
 
-test("a schema 5 store moves to 6: the table and columns appear, old plans have no files and no lead", () => {
+test("a schema 5 store moves to the current schema: the table and columns appear, old plans have no files and no lead", () => {
   const { paths, db } = setup();
   plan(db, "alpha");
   db.sqlite.run("DROP TABLE task_files");
+  // Schema 7 added the stack column: the older store has none.
+  db.sqlite.run("ALTER TABLE tasks DROP COLUMN stacked_on");
   for (const column of ["lead_session", "lead_pid", "lead_start", "lead_child", "lead_handout"])
     db.sqlite.run(`ALTER TABLE tasks DROP COLUMN ${column}`);
   db.sqlite.run("PRAGMA user_version = 5");
@@ -240,7 +296,7 @@ test("a schema 5 store moves to 6: the table and columns appear, old plans have 
   ).toEqual({ state: "ready", value: [["alpha", [], null]] });
   const moved = openWorkDb(workDbFile(paths), { mode: "write" });
   try {
-    expect(moved.sqlite.query("PRAGMA user_version").get()).toEqual({ user_version: 6 });
+    expect(moved.sqlite.query("PRAGMA user_version").get()).toEqual({ user_version: 7 });
     expect(
       moved.sqlite
         .query<{ name: string }, []>("PRAGMA table_info(tasks)")
@@ -321,7 +377,9 @@ test("the task tools set, show and clear a plan's files, and refuse them on anyt
           files: ["x"],
         }),
       ),
-    ).toContain("Deploy tasks have no parent, blocked-by, work status, phase, plan or files");
+    ).toContain(
+      "Deploy tasks have no parent, blocked-by, work status, phase, plan, files or stacked_on",
+    );
   } finally {
     ops.close();
   }
@@ -353,6 +411,71 @@ test("the task tools refuse an absolute path, a .., the root, and a folder writt
     said(ops.call("update", { task: "#1", files: ["src/new.ts", "README.md", "src/"] }));
     expect(said(ops.call("get", { task: "#1" }))).toContain("Files: README.md, src/, src/new.ts");
   } finally {
+    ops.close();
+  }
+});
+
+test("plans.appendOnly counts only as committed on origin/<base>, and lets two plans add files there", () => {
+  const { repo } = makeClone();
+  const env = hookEnv();
+  // No committed file yet: no folders, and the merge list's reason says why.
+  const none = planFilesCheck(repo, env);
+  expect([none.appendOnly, none.reason]).toEqual([
+    [],
+    "origin/main has no .claude/cc-smart-dev-kit.json committed",
+  ]);
+  commitConfig(repo, { workflow: { plans: { appendOnly: ["db/migrations/"] } } }, ["main"]);
+  // A working copy that widens the list changes nothing: only the committed copy counts.
+  writeClaudeFile(repo, "cc-smart-dev-kit.json", {
+    workflow: { plans: { appendOnly: ["db/migrations/", "src/"] } },
+  });
+  const check = planFilesCheck(repo, env);
+  expect([check.appendOnly, check.reason]).toEqual([["db/migrations/"], null]);
+  const stateDir = cliPaths(env).stateDir;
+  const ops = createTaskOps({
+    stateDir,
+    env,
+    cwd: () => repo,
+    caller: () => ({ ...LEAD, cwd: repo }),
+  });
+  const db = openWorkDb(workDbFile({ stateDir }), { mode: "write" });
+  const reserve = (plan: string) =>
+    ok(
+      reservePlan(db, {
+        project: folderProject(repo),
+        plan,
+        who: LEAD,
+        holder: "child",
+        ignore: check.ignore,
+        caseFold: check.caseFold,
+        appendOnly: check.appendOnly,
+        now: 5,
+      }),
+    );
+  try {
+    said(
+      ops.call("create", {
+        subject: "Alpha",
+        plan: "alpha",
+        files: ["db/migrations/", "src/a.ts"],
+      }),
+    );
+    said(ops.call("create", { subject: "Beta", plan: "beta", files: ["db/migrations/"] }));
+    // Both add files to the folder, so both are held at once.
+    reserve("alpha");
+    reserve("beta");
+    // A folder outside the list overlaps as before.
+    expect(refused(ops.call("update", { task: "#2", files: ["db/migrations/", "src/"] }))).toBe(
+      '#2 "Beta" is held, so its files may not overlap another held plan: overlaps #1 "Alpha": src/ (src/a.ts)',
+    );
+    // Two new files are clear; the same file named by both is not.
+    said(ops.call("update", { task: "#1", files: ["db/migrations/003.sql", "src/a.ts"] }));
+    said(ops.call("update", { task: "#2", files: ["db/migrations/004.sql"] }));
+    expect(refused(ops.call("update", { task: "#2", files: ["db/migrations/003.sql"] }))).toBe(
+      '#2 "Beta" is held, so its files may not overlap another held plan: overlaps #1 "Alpha": db/migrations/003.sql',
+    );
+  } finally {
+    db.close();
     ops.close();
   }
 });

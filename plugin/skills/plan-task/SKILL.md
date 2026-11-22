@@ -80,7 +80,11 @@ What the recommended option must be, and how a workaround is labelled: the core 
 Answer eight questions; they are the plan's sections:
 
 1. **Goal** — the real outcome, not the literal request.
-2. **Files to change** — every path, repo-relative, a folder as `dir/`. Approval copies the list into the store (§ 4), where it decides which plans may run together.
+2. **Files to change** — the files the plan writes, never the ones it only reads: exact
+   paths, repo-relative, and a folder as `dir/` only when the plan adds or changes most of it.
+   A path every plan touches (a changelog, a lockfile) belongs in `plans.mergeFiles`, which
+   the person commits. Approval copies the list into the store (§ 4), where it decides which
+   plans may run together.
 3. **Patterns to follow** — from step 1.
 4. **Edge cases** — walk the axes in the review skill's `references/axes.md`
    (`../review/references/axes.md` from this skill's folder) and write down every one this
@@ -148,7 +152,7 @@ with its done-check: tasks whose `parent` is the phase. A task holds no tasks, a
 with no tasks will not start.
 Tasks that waited under the plan (§ 6) move under their phases with `task_update` and
 `parent`; a plan cannot close while one still waits. Set `blocked_by` for real dependencies
-and shared-file phases.
+and shared-file phases; a shared resource alone is neither (§ 5).
 
 Names, so every list and status line reads the same way:
 
@@ -179,6 +183,10 @@ CLI fallback: `/cc-smart-dev-kit:tasks`.
   plans that share no file can run side by side (§ 6). Set `blocked_by` between plans only for a
   real dependency (one needs the other's merged code), never to order plans that merely share
   a file you could split.
+- **Stack a plan only on your own plan whose branch it is built on** (`stacked_on`). The store
+  refuses a stack on another lead's plan. The pair counts only while you lead both, the parent
+  records its branch and base with a commit past both the default branch and that base, and the
+  stacked plan's own branch is built on that commit; else they are rivals.
 - **A phase is one area of the code with its own file set.** One fresh subagent builds it
   and the lead checks its hand-back (`/cc-smart-dev-kit:build` § 3). Its real steps are its
   tasks, usually 3 to 10, each with a done-check. Size a phase by files and area, not by
@@ -189,11 +197,16 @@ CLI fallback: `/cc-smart-dev-kit:tasks`.
   Name its agent type, model and effort using the core instructions' table. Keep shared
   integration work in the main session.
 - **Name exact files.** Disjoint file sets run in parallel worktrees; any shared file orders
-  those phases. Batch small edits of the same shape into one dispatch, not one agent per line.
+  those phases, and a shared resource does not by itself (below). Batch small edits of the
+  same shape into one dispatch, not one agent per line.
 - **Name contracts and dependencies.** Contracts (a type, an API shape, a shared constant) go
   first, in a phase of their own; the phases that use them are `blocked_by` it, so they start
   from its merged code. Put every other real wait in `blocked_by` too. Do not hold work for
   an unrelated review, merge or answer.
+- **A shared resource orders phases only when two phases write the same state.** A
+  database, a port or a number sequence is not a reason to chain phases: give each builder
+  its own copy, or reserve the numbers in the plan up front. How a project does that (a
+  database per builder, how it reserves numbers) is its add-on's.
 - **List waves.** The first wave contains all phases with no blockers. Execution and the
   hand-back, review, fix, merge and cleanup loop belong to `/cc-smart-dev-kit:build`.
 - **The last wave is a heavy cleanup**, run only once everything is verified live: the
@@ -201,8 +214,9 @@ CLI fallback: `/cc-smart-dev-kit:tasks`.
   and worktrees, and docs that still name what was removed.
 - **Give each phase a targeted done-check.**
 - **Keep shared writes with the main session:** lockfiles, new dependencies, version bumps,
-  shared indexes, migrations, dev servers and the final full check
-  (`/cc-smart-dev-kit:verify-change` § 4). Never assign the same file to parallel builders.
+  shared indexes, dev servers and the final full check (`/cc-smart-dev-kit:verify-change` § 4).
+  A phase may write a migration when the main session numbers it or the plan reserves its
+  number (above). Never assign the same file to parallel builders.
 
 ## 6. Keep tasks live, the design stable
 
@@ -237,7 +251,9 @@ CLI fallback: `/cc-smart-dev-kit:tasks`.
   (ready or not), `plans.runMode` in `cc-smart-dev-kit workflow show` decides how they run:
   `solo`, `lead-children` or `coordinator` (`/cc-smart-dev-kit:build` § Lead + children and
   coordinator modes). With one open plan the mode is solo and nothing is asked. Under `ask`
-  (the default), ask once with `AskUserQuestion`, and say what each costs:
+  (the default), ask once with `AskUserQuestion`, and say what each costs. When `herdr plans`
+  shows two or more ready plans that share no file and a Herdr terminal exists, lead +
+  children is the recommended option (§ 2); otherwise solo is:
   - **Solo:** one session builds the plans one after another. The cheapest, and the slowest.
   - **Lead + children:** the lead builds one plan itself, keeping its full build context, and
     hands each other ready plan to a linked session. One full session per child on top.

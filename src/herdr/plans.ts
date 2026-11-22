@@ -15,11 +15,12 @@ import { basename } from "node:path";
 import { COMMAND } from "../build-info/names";
 import type { CliPaths } from "../cli/paths";
 import type { Out } from "../cli/ui/out";
-import { runGit, runGitRaw } from "../hooks/git";
+import { type ListedWorktree, listWorktrees, runGit, runGitRaw, samePath } from "../hooks/git";
 import type { Env } from "../hooks/run";
 import { locateCheckout } from "../project/resolve";
 import { taskContext } from "../tasks/context";
 import { planFilesCheck } from "../tasks/files-check";
+import { branchTip, judgeStacks, provedPairs, type StackJudgment } from "../tasks/stack-proof";
 import { openWorkDb, type WorkDb, workDbFile } from "../tasks/work/db";
 import { CLAIM_PROCESS, callerOf } from "../tasks/work/identity";
 import { classifyLeadPlans, type LeadPlan, type LeadPlanState } from "../tasks/work/lead-plans";
@@ -31,15 +32,20 @@ import {
   isLead,
   isOpen,
   ownerOf,
+  parentHolds,
   planByRef,
+  provedSet,
+  rivalsOf,
+  type StackPair,
 } from "../tasks/work/queries";
-import { releasePlan, reservePlan, swapPlanAgent } from "../tasks/work/store";
+import { type FilesCheck, releasePlan, reservePlan, swapPlanAgent } from "../tasks/work/store";
 import type { ClaimProcess, Who, WorkTask } from "../tasks/work/types";
 import { baseBranch } from "../worktrees/command";
-import { worktreePath } from "../worktrees/paths";
+import { inDefaultFolder, worktreePath } from "../worktrees/paths";
 import { type PullRequestState, pullRequestState } from "../worktrees/scan";
 import { HcError, type HcRunner, hcGet, hcList } from "./hc";
 import { HERDR_AGENT_PREFIX, isHerdrAgent, KIT_PLAN, parseLeadId } from "./labels";
+import { launchedHere } from "./launch-record";
 
 /** How often `herdr plans --wait` looks again: a gh call per plan with a child, so not often. */
 export const PLAN_POLL_MS = 15_000;
@@ -86,6 +92,8 @@ export interface PlanLine {
   /** The plan's own branch's pull request, for a plan with a child or one that is closing. */
   pr: PrState | null;
   pane: Pane | null;
+  /** The slug of the plan this plan is stacked on (`stacked_on`), or null. */
+  stackedOn: string | null;
   /** Held plans whose files this plan's branch reaches (D7): `#n: path`. */
   drift: string[];
 }
@@ -106,14 +114,39 @@ export interface PlansWorld {
   pane: PaneProbe;
   /** The address of a live terminal labelled `kit.plan=<slug>`, or null: a child that no plan row names. */
   labelled: (slug: string) => string | null;
-  /** `plans.mergeFiles` and `core.ignorecase` (`planFilesCheck`), read before any write lock. */
-  check: { ignore: readonly string[]; caseFold: boolean };
+  /**
+   * Whether herdr's own launch record names this worktree of this repo (`launchedHere`). A
+   * worktree outside the default folder is a child's only when the record says so.
+   */
+  launched: (worktree: string) => boolean;
+  /** `plans.mergeFiles`, `plans.appendOnly` and `core.ignorecase` (`planFilesCheck`), read before any write lock. */
+  check: FilesCheck;
   /** The clock, read fresh each time: a store write is stamped when it happens, not when this opened. */
   now: () => number;
 }
 
 function git(world: PlansWorld, args: string[]) {
   return runGit(world.repo, args, world.env);
+}
+
+/**
+ * Is this worktree outside the default folder one herdr launched a child in? Git must list it for
+ * this repo (not the main checkout, not one it finds gone), and herdr's launch record must name
+ * it: a project's own WorktreeCreate hook may put a worktree anywhere, but a path someone typed
+ * into a task row is in neither.
+ */
+function launchedOutsideDefault(world: PlansWorld, worktree: string): boolean {
+  let listed: ListedWorktree[];
+  try {
+    listed = listWorktrees(world.repo, world.env);
+  } catch {
+    // Git cannot say what it lists: nothing outside the default folder is proved a child's.
+    return false;
+  }
+  return (
+    listed.slice(1).some((one) => !one.prunable && samePath(one.path, worktree)) &&
+    world.launched(worktree)
+  );
 }
 
 /** `origin/<base>` when the checkout knows it, else the local default branch; null when neither exists. */
@@ -124,13 +157,9 @@ function baseRef(world: PlansWorld): string | null {
   return null;
 }
 
-/** The commit a recorded branch is at, here or on origin; null when the branch is unknown. */
+/** The commit a recorded branch is at, here or on origin (`branchTip`); null when the branch is unknown. */
 function tipOf(world: PlansWorld, branch: string): string | null {
-  for (const ref of [`refs/heads/${branch}`, `refs/remotes/origin/${branch}`]) {
-    const run = git(world, ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`]);
-    if (run.ok && run.out !== "") return run.out;
-  }
-  return null;
+  return branchTip((args) => git(world, args), branch);
 }
 
 /**
@@ -288,6 +317,8 @@ export interface Judgment {
   lines: PlanLine[];
   /** Each held plan's branch diff by its plan task id: what `reservePlan` is given. */
   extraFiles: Record<string, string[]>;
+  /** The proved stacks (`provedStacks`): what `reservePlan` is given. */
+  stacked: StackPair[];
 }
 
 /** The line a plan starts from: its identity, and no live facts yet. */
@@ -298,6 +329,7 @@ function baseLine(plan: WorkTask) {
     subject: plan.subject,
     pr: null,
     pane: null,
+    stackedOn: plan.stackedOn,
     drift: [] as string[],
   };
 }
@@ -375,7 +407,7 @@ function settle(world: PlansWorld, owns: (task: WorkTask) => boolean): PlanLine[
  * gates of one plan (a start); reserved plans are always read, since they hold files. Settling
  * runs first (`settle`), so a plan whose pull request just merged no longer holds its files.
  */
-export function judgePlans(input: PlansWorld, only?: string): Judgment {
+export function judgePlans(input: PlansWorld, only?: string, start?: string): Judgment {
   const answers = new Map<string, PrState>();
   const world: PlansWorld = {
     ...input,
@@ -398,12 +430,23 @@ export function judgePlans(input: PlansWorld, only?: string): Judgment {
   for (const held of heldPlansIn(all, world.who))
     if (held.plan.branch !== null) extraFiles[held.plan.id] = branchDiff(world, held.plan);
   const held = heldPlansIn(all, world.who, extraFiles);
+  // A stack counts only when proved (`judgeStacks`): the plan being started is judged from the
+  // commit it starts on, every other plan from its recorded base. A guessed default branch proves none.
+  const starting = all.find((t) => t.kind === "plan" && t.plan === only);
+  const stacks = judgeStacks(
+    all,
+    (args) => git(world, args),
+    world.baseFrom === "default" ? null : world.base,
+    starting !== undefined && start !== undefined ? { [starting.id]: start } : {},
+  );
+  const stacked = provedPairs(stacks);
+  const proved = provedSet(stacked);
   const lines: PlanLine[] = [...released];
   for (const entry of stored) {
     const plan = entry.plan;
     const base = baseLine(plan);
     const slug = base.plan;
-    const drift = driftOf(world, held, extraFiles, plan);
+    const drift = driftOf(world, held, extraFiles, plan, proved);
     switch (entry.state) {
       case "own":
         lines.push(
@@ -522,13 +565,13 @@ export function judgePlans(input: PlansWorld, only?: string): Judgment {
           lines.push(lineOf(base, entry.state, "not judged: another plan is being started"));
           break;
         }
-        lines.push(readiness(world, entry, held, byId, base));
+        lines.push(readiness(world, entry, held, byId, base, proved, stacks));
         break;
       }
     }
   }
   lines.sort((a, b) => a.number - b.number);
-  return { lines, extraFiles };
+  return { lines, extraFiles, stacked };
 }
 
 /** The pull request of a plan's own branch; null when no branch is recorded or it is not here. */
@@ -547,6 +590,7 @@ function driftOf(
   held: readonly HeldPlan[],
   extraFiles: Readonly<Record<string, readonly string[]>>,
   plan: WorkTask,
+  proved: ReadonlySet<string>,
 ): string[] {
   // A changed path inside the plan's own list (a file of a declared folder) is no drift.
   const diff = (extraFiles[plan.id] ?? []).filter(
@@ -554,8 +598,7 @@ function driftOf(
   );
   if (diff.length === 0) return [];
   const found: string[] = [];
-  for (const other of held) {
-    if (other.plan.id === plan.id) continue;
+  for (const other of rivalsOf(held, plan, proved)) {
     const touched = filesOverlap(diff, other.files, world.check);
     if (touched.length)
       found.push(`${label(other.plan)}: ${[...new Set(touched.map((t) => t.path))].join(", ")}`);
@@ -590,7 +633,9 @@ function readiness(
   entry: LeadPlan,
   held: readonly HeldPlan[],
   byId: ReadonlyMap<string, WorkTask>,
-  base: Pick<PlanLine, "number" | "plan" | "subject" | "pr" | "pane" | "drift">,
+  base: Pick<PlanLine, "number" | "plan" | "subject" | "pr" | "pane" | "stackedOn" | "drift">,
+  proved: ReadonlySet<string>,
+  stacks: ReadonlyMap<string, StackJudgment>,
 ): PlanLine {
   const plan = entry.plan;
   const line = (state: PlanState, text: string, fix: string | null = null): PlanLine => ({
@@ -617,8 +662,10 @@ function readiness(
     waiting.push(verdict.text);
   }
   if (waiting.length) return line("waiting", `waiting on ${waiting.join(", ")}`);
+  // The plan it is stacked on, or that is stacked on it, is not judged once proved (`rivalsOf`).
+  const rivals = rivalsOf(held, plan, proved);
   // Unknown is never clear (D5): a held plan with no list and no branch diff shares nothing a check can find.
-  const unlisted = held.filter((other) => other.plan.id !== plan.id && other.files.length === 0);
+  const unlisted = rivals.filter((other) => other.files.length === 0);
   if (unlisted.length > 0)
     return line(
       "blocked",
@@ -631,16 +678,65 @@ function readiness(
         .join("; "),
     );
   const clashes: string[] = [];
-  for (const other of held) {
-    if (other.plan.id === plan.id) continue;
+  let parent: WorkTask | null = null;
+  for (const other of rivals) {
     const touched = filesOverlap(plan.files, other.files, world.check);
     if (touched.length === 0) continue;
     const files = [...new Set(touched.map((t) => t.path))].join(", ");
     const closed = isOpen(other.plan) ? "" : " (finished: held until its pull request settles)";
     clashes.push(`${label(other.plan)}${closed}: ${files}`);
+    if (plan.stackedOn !== null && other.plan.plan === plan.stackedOn) parent = other.plan;
   }
-  if (clashes.length) return line("overlaps", `overlaps ${clashes.join("; ")}`);
+  if (clashes.length)
+    return line(
+      "overlaps",
+      `overlaps ${clashes.join("; ")}`,
+      parent === null ? null : unprovedStackFix(plan, parent, stacks.get(plan.id), byId),
+    );
   return line("ready", "ready: nothing blocks it and no held plan shares its files");
+}
+
+/**
+ * What a stacked plan needs when its stack is not proved (`judgeStacks`), so its parent counts as
+ * a rival, by why it is not: the fix always rebuilds on the parent's work, or waits for it, and
+ * never only writes a start down (a recorded start proves nothing its branch does not hold).
+ */
+function unprovedStackFix(
+  plan: WorkTask,
+  parent: WorkTask,
+  judged: StackJudgment | undefined,
+  byId: ReadonlyMap<string, WorkTask>,
+): string {
+  const name = parent.plan ?? parent.subject;
+  const slug = plan.plan ?? plan.subject;
+  const counts = `the stack on ${name} counts only`;
+  const gap = judged === undefined || judged.verdict.proved ? null : judged.verdict.gap;
+  if (gap === "default-unknown")
+    return `${counts} once the default branch is known: ${UNKNOWN_BASE.fix}`;
+  if (gap === "other-lead")
+    return `${counts} while one lead leads both plans, and another session now holds this plan or ${name}: take it back (task_take), or clear the stack (task_update #${plan.number} with stacked_on null)`;
+  if (parent.branch === null)
+    return `${counts} once ${name} records its branch: task_update #${parent.number} with branch`;
+  if (gap === "parent-branch")
+    return `${counts} once ${name}'s branch ${parent.branch} is in this repository: fetch it`;
+  if (gap === "parent-empty")
+    return `${counts} once ${name} has work of its own: wait for its first commit on ${parent.branch}`;
+  if (gap === "parent-base")
+    return `${counts} once ${name} records where it started: task_update #${parent.number} with base set to the commit you created its branch from (\`git rev-parse HEAD\` at that moment), not its fork from the default branch`;
+  if (gap === "chain-branch") {
+    const above = parent.stackedOn ?? "the plan it is stacked on";
+    const chain = [...byId.values()].find((t) => t.kind === "plan" && t.plan === parent.stackedOn);
+    // A finished plan's branch is often deleted after its merge: no fetch brings it back, and the
+    // parent's own start still fences a wrong start once the stack on it is cleared.
+    return chain !== undefined && !parentHolds(chain)
+      ? `${counts} once ${name} no longer names ${above}, which holds no files and whose branch is gone: clear #${parent.number}'s stack on ${above} (task_update stacked_on null)`
+      : `${counts} once the branch of ${above}, which ${name} is stacked on, is in this repository: fetch it`;
+  }
+  if (gap === "own-branch" || gap === "start-off-branch")
+    return `${counts} when this plan records its own branch, built on ${name}'s work: task_update #${plan.number} branch=<branch built on ${name}>`;
+  if (gap === "git")
+    return `${counts} once git can read ${name}'s branch and this plan's start: run ${COMMAND} herdr plans again`;
+  return `${counts} when this plan is built on ${name}'s work: ${COMMAND} herdr start --plan ${slug} starts it on ${parent.branch} when --base is left out; a plan built here rebuilds its branch on ${parent.branch}`;
 }
 
 /** The `plans` summary line's words for each count. */
@@ -694,7 +790,12 @@ export const UNKNOWN_BASE = {
   fix: "run `git remote set-head origin --auto`, or set worktrees.base in .claude/cc-smart-dev-kit.json",
 } as const;
 
-/** The plan a ref names, after the checks every plan command shares: a session, a real default branch, a plan. */
+/**
+ * The plan a ref names, after the checks every plan command shares: a session, a real default
+ * branch, a plan. The default branch is needed even when the lead names the child's start commit
+ * (`herdr start --base`): the held plans' diffs are read against it, and with a guess they read as
+ * empty, so a held branch that already changes this plan's files would go unseen.
+ */
 type Located = { ok: true; plan: WorkTask; slug: string } | Refusal;
 
 function locatePlan(world: PlansWorld, ref: string): Located {
@@ -718,6 +819,7 @@ function reserveReady(
   plan: WorkTask,
   slug: string,
   holder: "self" | "child",
+  start?: string,
 ): PlanStart {
   const strayChild = world.labelled(slug);
   if (strayChild !== null)
@@ -725,7 +827,7 @@ function reserveReady(
       `Plan "${slug}": terminal ${strayChild} carries its label and is live.`,
       `if it is a child of this plan, leave it; if not: ${COMMAND} herdr stop ${strayChild}`,
     );
-  const judged = judgePlans(world, slug);
+  const judged = judgePlans(world, slug, start);
   const line = judged.lines.find((one) => one.number === plan.number);
   if (line === undefined || line.state !== "ready")
     return refuse(
@@ -739,7 +841,9 @@ function reserveReady(
     holder,
     ignore: world.check.ignore,
     caseFold: world.check.caseFold,
+    appendOnly: world.check.appendOnly ?? [],
     extraFiles: judged.extraFiles,
+    stacked: judged.stacked,
     now: world.now(),
   });
   // A refusal here is a lost race: the plan moved between the gates and the transaction.
@@ -811,7 +915,7 @@ export function prepareReserve(world: PlansWorld, ref: string): PlanStart {
  *    plan back (`releasePlan`) if the launch fails.
  * Everything else is refused with its reason and fix.
  */
-export function prepareStart(world: PlansWorld, ref: string): PlanStart {
+export function prepareStart(world: PlansWorld, ref: string, start?: string): PlanStart {
   const found = locatePlan(world, ref);
   if (!found.ok) return found;
   const { plan, slug } = found;
@@ -866,10 +970,15 @@ export function prepareStart(world: PlansWorld, ref: string): PlanStart {
         `find its worktree (git worktree list), then task_update #${plan.number} with worktree and branch`,
       );
     // The recorded worktree is a task row, which any session may write: only the folder a child
-    // starts in (`<repo>/.claude/worktrees/<name>`) is reused, never a path someone put there.
+    // starts in (`<repo>/.claude/worktrees/<name>`) is reused, or one outside it that git lists and
+    // herdr's launch record names (a project's own WorktreeCreate hook), never a path someone
+    // put there.
     if (recorded !== null) {
       const home = worktreePath(world.repo, basename(recorded.worktree));
-      if (recorded.worktree !== home)
+      if (
+        !inDefaultFolder(world.repo, recorded.worktree) &&
+        !launchedOutsideDefault(world, recorded.worktree)
+      )
         return refuse(
           `Plan "${slug}": its recorded worktree ${recorded.worktree} is not a child's folder (${home}).`,
           `correct it with task_update #${plan.number} worktree, or release the plan`,
@@ -909,7 +1018,7 @@ export function prepareStart(world: PlansWorld, ref: string): PlanStart {
       claim: { marker, previous: plan.agent },
     };
   }
-  return reserveReady(world, plan, slug, "child");
+  return reserveReady(world, plan, slug, "child", start);
 }
 
 /**
@@ -1045,8 +1154,8 @@ export interface PlansEnv {
   process?: ClaimProcess;
   /** A branch's pull request; tests fake gh. */
   pr?: PrReader;
-  /** `plans.mergeFiles` and case; tests fake the committed read. */
-  filesCheck?: (cwd: string) => { ignore: readonly string[]; caseFold: boolean };
+  /** `plans.mergeFiles`, `plans.appendOnly` and case; tests fake the committed read. */
+  filesCheck?: (cwd: string) => FilesCheck;
 }
 
 /** The pane a plan's `agent` names (`herdr:<core>/<address>`), read through hc. */
@@ -1129,6 +1238,7 @@ export function openPlansWorld(
   try {
     const chosen = baseBranch(locateCheckout(cwd, { env: ctx.env }), ctx.env, project.repo);
     const check = ctx.filesCheck ? ctx.filesCheck(cwd) : planFilesCheck(cwd, ctx.env);
+    const repo = project.repo;
     return {
       ok: true,
       close: () => db.close(),
@@ -1144,7 +1254,12 @@ export function openPlansWorld(
         pr: ctx.pr ?? pullRequestState,
         pane: paneProbe(r, core),
         labelled: labelledProbe(r),
-        check: { ignore: check.ignore, caseFold: check.caseFold },
+        launched: (worktree) => launchedHere(ctx.paths.stateDir, repo, worktree),
+        check: {
+          ignore: check.ignore,
+          caseFold: check.caseFold,
+          ...(check.appendOnly === undefined ? {} : { appendOnly: check.appendOnly }),
+        },
         now: ctx.now,
       },
     };
@@ -1154,11 +1269,14 @@ export function openPlansWorld(
   }
 }
 
-function show(out: Out, lines: readonly PlanLine[]): void {
-  for (const line of lines)
-    out.line(markOf(line.state), `#${line.number} ${line.plan}: ${line.text}`, {
+/** The lines `herdr plans` prints: one per plan, its stack beside its name, and the fix under it. */
+export function showPlanLines(out: Out, lines: readonly PlanLine[]): void {
+  for (const line of lines) {
+    const stacked = line.stackedOn === null ? "" : ` (stacked on ${line.stackedOn})`;
+    out.line(markOf(line.state), `#${line.number} ${line.plan}${stacked}: ${line.text}`, {
       fix: line.fix ?? undefined,
     });
+  }
 }
 
 /**
@@ -1220,7 +1338,7 @@ export async function runPlans(
       else if (lines.length === 0) ctx.out.say("No plans led by this session.");
       else {
         ctx.out.say(`Plans: ${summary(lines)}`);
-        show(ctx.out, lines);
+        showPlanLines(ctx.out, lines);
       }
       return 0;
     };
@@ -1245,7 +1363,7 @@ export async function runPlans(
       if (changed.length) {
         if (!args.json) {
           ctx.out.line("info", "A plan changed:");
-          show(ctx.out, changed);
+          showPlanLines(ctx.out, changed);
         }
         return finish(now, changed);
       }

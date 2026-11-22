@@ -9,8 +9,7 @@ description: Use to execute an approved plan - parallel builders, merges, a two-
 The project's instructions win where they differ from this skill.
 
 The main session coordinates. Fresh builders implement phases; they never start agents or
-review themselves. Keep narration to a short line. Do not ask whether to continue between
-phases. Speed comes from parallel work, not skipped checks.
+review themselves. Keep narration to a short line. Do not ask whether to continue between phases.
 
 The kit's plan, build, review and commit flows, and the project's own release steps, govern
 the work the kit drives. Another plugin's build, run or release skills (claude-mem's `build`,
@@ -28,7 +27,7 @@ Task fields and the CLI fallback belong to `/cc-smart-dev-kit:tasks`.
 
 Work on the plan branch in its worktree. Read `cc-smart-dev-kit workflow show` before git
 side effects. Record the plan's starting commit (`base`) and its `branch` on its task, in every mode: `herdr plans` judges a
-blocker's merge and a held plan's files from them. Check each phase's files,
+blocker's merge and a held plan's files from them, and a stacked plan's proof (`/cc-smart-dev-kit:plan-task` § 5). Check each phase's files,
 contracts and blockers. Set `blocked_by` only for a real dependency or a shared file;
 disjoint phases run together. Noted work that holds nothing is `non-blocking`, and a
 follow-up inside the plan is a task in it, never a blocker (one outside it: `/cc-smart-dev-kit:tasks` § 1). Batch small same-shape edits into one phase
@@ -50,8 +49,7 @@ plan (plan-task § 6). Leave the others queued until it is closed, unless the ru
 children (§ Lead + children and coordinator modes).
 
 The kit defaults to 10 running subagents per session through Claude Code's own
-`CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS`. Setup writes the managed value and preserves a
-person's own value; `setup --max-subagents <n>` changes the kit's. This is not a kit queue.
+`CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS` (`setup --max-subagents <n>` changes the kit's value).
 If a launch fails at the cap, wait for a hand-back, then dispatch the next ready task;
 never retry the refused launch in a loop. Count reviews, hunts and scouts in the same capacity.
 
@@ -128,6 +126,15 @@ fresh builder on a stronger model, using the same task, current branch, findings
 Update the task's execution fields. Escalation does not permit Fable building without the
 person's request. If no permitted stronger model is available, reassess the approach and
 record a ruling; do not repeat the failed loop or silently waive a material defect.
+
+**A usage limit is not a fix round.** A `task_notification` with status `failed` and a
+rate-limit error means the builder hit a usage limit; its work is not wrong. Read the reset
+time from the status line or `gateway status`. Once it has passed, or the account changed,
+resume every builder it stopped with `SendMessage`, all in one message. Read its last
+`Progress:` note (`cc-smart-dev-kit:builder` owns the shape) and its branch, and tell it where
+it stopped: its uncommitted files may be all that is left of the last step. Where setup turned on
+Claude Code's retry watchdog, it waits out in process a limit that resets within 24 hours
+(`docs/design/retry-watchdog.md` in the cc-smart-dev-kit repository).
 
 ## 5. Merge, close, unblock
 

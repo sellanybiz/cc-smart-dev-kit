@@ -1,6 +1,6 @@
 /** `doctor`'s line for the user-level `Notification` hook setup writes for agent view. */
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { PLUGIN_ID, VERSION } from "../build-info";
 import { applyClaudeMem, claudeMemPlan, TODO_TOOLS_KEY } from "../machine/claude-mem";
@@ -9,6 +9,7 @@ import { applyTaskPermissions } from "../setup/task-tools";
 import { hookEnv } from "../testing/hooks";
 import { tempDir } from "../testing/temp";
 import {
+  checkedCacheCheck,
   checkLine,
   checkPlugin,
   checkPortal,
@@ -39,6 +40,27 @@ describe("doctor: plan folder", () => {
     writeFileSync(paths.settingsFile, JSON.stringify({ plansDirectory: value }));
     expect(checkLine(plansDirectoryCheck(paths))).toBe(line);
   });
+});
+
+describe("doctor: the hooks' checked folder", () => {
+  test("says nothing when the folder can be written, or is not made yet", () => {
+    expect(checkedCacheCheck(cliPaths(hookEnv()))).toBeNull();
+  });
+
+  // Root writes anywhere, so a folder without write permission is no problem for it.
+  test.skipIf(process.getuid?.() === 0 || process.platform === "win32")(
+    "a read-only folder is a warning with its fix",
+    () => {
+      const paths = cliPaths(hookEnv());
+      const dir = join(paths.stateDir, "checked");
+      mkdirSync(dir, { recursive: true });
+      chmodSync(dir, 0o500);
+      const check = checkedCacheCheck(paths);
+      expect(check === null ? null : checkLine(check)).toBe(
+        "! hook cache: ~/.claude/cc-smart-dev-kit/checked cannot be written (EACCES), so every hook run parses the project file again Fix: make ~/.claude/cc-smart-dev-kit/checked, or the folder above it when it is not made yet, yours with mode 700: chmod 700 ~/.claude/cc-smart-dev-kit/checked",
+      );
+    },
+  );
 });
 
 describe("doctor: personal review agent migration", () => {

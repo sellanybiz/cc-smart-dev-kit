@@ -17,7 +17,7 @@
  *   mount, and no file in it is newer than its move. Anything else stays, with the reason.
  */
 import { existsSync, lstatSync, readdirSync, rmSync, type Stats } from "node:fs";
-import { dirname, join, relative } from "node:path";
+import { join, relative } from "node:path";
 import {
   isInside,
   type ListedWorktree,
@@ -28,7 +28,7 @@ import {
 } from "../hooks/git";
 import type { Env } from "../hooks/run";
 import { containersUsing, mountKeptWhy, programsInside } from "./machine-facts";
-import { worktreesFolder } from "./paths";
+import { worktreeFolders } from "./paths";
 import {
   type DeleteOptions,
   forgottenLine,
@@ -142,8 +142,10 @@ export function strayParkedFolders(
   } catch {
     return [];
   }
-  const folders = new Set<string>([worktreesFolder(repo)]);
-  for (const listed of [...all.slice(1), ...earlier.slice(1)]) folders.add(dirname(listed.path));
+  const folders = new Set<string>([
+    ...worktreeFolders(repo, all),
+    ...worktreeFolders(repo, earlier),
+  ]);
   const found: StrayFolder[] = [];
   for (const folder of folders) {
     let names: string[];

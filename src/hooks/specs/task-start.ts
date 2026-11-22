@@ -7,5 +7,5 @@ export const taskStartHook: HookSpec = {
   onConfigProblem: (_message, input, _event, _checkout, context) =>
     taskStart(input, context.paths, context.env),
   outsideGit: (input, _event, _why, context) => taskStart(input, context.paths, context.env),
-  run: ({ input, paths, env }) => taskStart(input, paths, env),
+  run: ({ input, paths, env, project }) => taskStart(input, paths, env, project),
 };

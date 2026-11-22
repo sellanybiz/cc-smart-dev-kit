@@ -22,7 +22,7 @@
  *
  * **The job route** (the switch `switches.jobRoute`: the project's `"jobs": { "route": true }`
  * when it sets one, else the person's machine-wide default in their workflow file, else off;
- * one resolver decides it, `resolveJobRoute` in `src/workflow/resolve.ts`, and runs with no
+ * one resolver decides it, `jobRouteFrom` in `src/workflow/merge.ts`, and runs with no
  * project file too). A heavy command — one of the project's heavy-job kinds
  * (`classifyRoutableLine`, `src/jobs/`) — is sent through the machine's queue instead of running
  * raw: several sessions running builds, type checks and test runs at once run the machine out
@@ -49,7 +49,10 @@
  * Two ways to send it, and the hook uses the first its Claude Code supports:
  *   - **rewrite** (`updatedInput`, proved live on 2.1.301): the call runs
  *     `cc-smart-dev-kit job run --kind <kind> -- <command>` instead, byte for byte the same command.
- *   - **deny**: the same command line, named in the reason, for the session to run.
+ *   - **deny**: the same command line, named in the reason, for the session to run. It is the
+ *     answer in **auto mode** (`permission_mode: "auto"`) whatever this Claude Code supports:
+ *     auto mode's server-side check gives no verdict for a call a hook changed, and voids the
+ *     review of every other call in that response (`isAutoMode`). Every other mode keeps the rewrite.
  *
  * The command is passed through as argv words when it is one plain command
  * (`bun run test:run x.ts`), and through a shell otherwise (`a && b`, a pipe, an expansion):
@@ -108,7 +111,8 @@ import {
 } from "../jobs/classify";
 import { hookDecision } from "../jobs/git-hooks";
 import { gitHooksState } from "../jobs/hook-folder";
-import { type Kinds, mergeKinds } from "../jobs/kinds";
+import { mergeKinds } from "../jobs/kind-defaults";
+import type { Kinds } from "../jobs/kinds";
 import { packageScripts } from "../jobs/package-scripts";
 import { diskWeightSource } from "../jobs/weight-source";
 import { LAUNCHER_IN_SHELL } from "../setup/launcher";
@@ -130,8 +134,10 @@ import {
 import { gitCalls, longOption } from "../shell/git-calls";
 import { programName } from "../shell/program-name";
 import { shellQuote, shellWord } from "../shell/quote";
-import { resolveJobRoute } from "../workflow/resolve";
+import { jobRouteFrom } from "../workflow/merge";
+import type { PersonalWorkflow } from "../workflow/schema";
 import { SHORT_GUARD_BUDGET_MS, startBudget } from "./budget";
+import { loadPersonalWorkflow } from "./checked-config";
 import { GUARD_GIT_TIMEOUT_MS } from "./git";
 import {
   type HookInput,
@@ -458,6 +464,17 @@ export function routedTimeoutMs(env: Env): number {
 }
 
 /**
+ * The timeout a routed call is given: the `timeoutMs` ceiling when the call set no `timeout` and
+ * runs in the foreground, else null. The rewrite sets it and the auto-mode denial asks for it, so
+ * the two agree on which call gets one.
+ */
+function timeoutGiven(fields: Record<string, unknown>, timeoutMs: number | null): number | null {
+  return timeoutMs !== null && fields.timeout === undefined && fields.run_in_background !== true
+    ? timeoutMs
+    : null;
+}
+
+/**
  * The answer that makes the call run `command` instead: the same tool input, its `command`
  * replaced, and, given a `timeoutMs` ceiling, its `timeout` raised to it when the call set none.
  * A timeout the call chose is kept, and a call sent to the background (`run_in_background`) is
@@ -471,10 +488,8 @@ export function rewriteAnswer(
   command: string,
   timeoutMs: number | null = null,
 ): HookResult {
-  const timeout =
-    timeoutMs !== null && fields.timeout === undefined && fields.run_in_background !== true
-      ? { timeout: timeoutMs }
-      : {};
+  const given = timeoutGiven(fields, timeoutMs);
+  const timeout = given === null ? {} : { timeout: given };
   return {
     stdout: JSON.stringify({
       hookSpecificOutput: {
@@ -622,26 +637,36 @@ export function mixedLineDenial(
   );
 }
 
-/** The answer that refuses the raw call and names the command to run instead. */
-export function routeDenial(routed: Routed): HookResult {
+/**
+ * The answer that refuses the raw call and names the command to run instead. Given a
+ * `timeoutMs`, it also asks for that timeout: the rewrite would have set it, and the call that
+ * runs this line is the model's own, with the Bash tool's default one, which a wait for a slot
+ * can outlast.
+ */
+export function routeDenial(routed: Routed, timeoutMs: number | null = null): HookResult {
   return toolDecision(
     "deny",
     [
       `This is a heavy command (${routed.kind}): running it raw does not wait for a free slot, and many heavy runs at once have run machines out of memory.`,
       "Run it through the queue instead:",
       routed.command,
+      ...(timeoutMs === null
+        ? []
+        : [
+            `Give that call a timeout of ${timeoutMs} ms (the Bash tool's longest): it may wait for a free slot.`,
+          ]),
     ].join("\n"),
   );
 }
 
 /**
- * True when heavy commands go through the queue here: the resolved `switches.jobRoute` (the
- * project's `jobs.route` over the person's machine-wide default, `resolveJobRoute`). A personal
- * workflow file that cannot be read leaves the project's value and the default standing, so a
- * hook never fails on it.
+ * Is the session in auto mode? PreToolUse names the mode (`permission_mode`; Manual arrives as
+ * `default`). Claude Code's server-side check gives no verdict for a call a hook changed after
+ * auto mode reviewed it, and voids every other call of the same response (docs/claude-code-contract.md
+ * § Hooks, proved live 2026-11-22), so in auto mode a rewrite must never be answered.
  */
-export function routesHeavyCommands(context: HookContext): boolean {
-  return resolveJobRoute(context.paths, context.project.config).value;
+function isAutoMode(input: HookInput): boolean {
+  return input.permission_mode === "auto";
 }
 
 /** The command of a shell call, or null when the input names none. */
@@ -670,26 +695,31 @@ function inputDialect(input: HookInput): Dialect {
  * PowerShell line is refused instead, naming the Bash tool (`powerShellDenial`) — but only where
  * the Bash tool exists (`bashTool`, Git Bash on Windows): with none, the line is left as written.
  * Any other PowerShell line is left exactly as the model wrote it.
+ *
+ * `personal` is the person's own workflow file, already read (`jobRouteAnswer`): the route
+ * decision needs its machine-wide default. It has no default value here on purpose: a caller
+ * that forgot it would drop the person's switch, and heavy commands would run raw. A caller
+ * with no file passes `{}` itself.
  */
 export function jobRoute(
   context: HookContext,
+  personal: PersonalWorkflow,
   bashTool: (env: Env) => boolean = bashToolExists,
   platform: NodeJS.Platform = process.platform,
 ): HookResult {
   const fields = toolInput(context.input);
   const command = stringField(fields.command);
   if (command === null) return SILENT;
+  if (!jobRouteFrom(personal, context.project.config).value) return SILENT;
   const dialect = inputDialect(context.input);
   const kinds = mergeKinds(context.project.config?.jobs?.kinds);
   // The Bash tool's shell starts in the input's `cwd`; the classifier follows a `cd`.
   const source = diskWeightSource(context.cwd);
   if (dialect !== "bash") {
-    if (!routesHeavyCommands(context)) return SILENT;
     // The Git Bash lookup reads files, so only a heavy line asks for it.
     const refused = powerShellDenial(command, kinds, source);
     return refused !== null && bashTool(context.env) ? refused : SILENT;
   }
-  if (!routesHeavyCommands(context)) return SILENT;
   // A line is queued whole (every command heavy or glue) or refused (heavy work beside any other
   // command, `mixedLineDenial`) or has a git command whose hook is heavy; never two of them,
   // because git is no heavy kind and a line with one is no queued line. So each is asked only
@@ -702,9 +732,23 @@ export function jobRoute(
     routed = routeGitHooks(command, context, kinds, platform);
   }
   if (routed === null) return SILENT;
-  if (!REWRITE_SUPPORTED) return routeDenial(routed);
   const timeoutMs = REWRITE_TIMEOUT_SUPPORTED ? routedTimeoutMs(context.env) : null;
+  // Auto mode: the same line, named for the model to send itself. A deny changes no input, so
+  // the other calls of the response keep their review.
+  if (!REWRITE_SUPPORTED || isAutoMode(context.input)) {
+    return routeDenial(routed, timeoutGiven(fields, timeoutMs));
+  }
   return rewriteAnswer(fields, routed.command, timeoutMs);
+}
+
+/**
+ * The hook's answer: reads the person's workflow file through the checked cache (a warm run
+ * loads no parser), then judges the call. A file that cannot be used leaves the project's value
+ * and the default standing, so the hook never fails on it (`loadPersonalWorkflow`).
+ */
+export async function jobRouteAnswer(context: HookContext): Promise<HookResult> {
+  const personal = await loadPersonalWorkflow(context.paths);
+  return jobRoute(context, personal, bashToolExists, process.platform);
 }
 
 /**

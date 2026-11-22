@@ -13,6 +13,15 @@ export function briefPath(stateDir: string, core: string, name: string): string 
     "brief.md",
   );
 }
+/**
+ * Where the lead wants a child's worktree to start (`herdr start --base`): the ref it gave, and
+ * the commit that ref named at the start, so a branch that moves later changes nothing.
+ */
+export interface StartBase {
+  ref: string;
+  commit: string;
+}
+
 /** What a plan child's brief says about its plan (D6). */
 export interface PlanTrailer {
   /** The plan's slug, as `task_take` names it. */
@@ -29,11 +38,17 @@ export interface PlanTrailer {
  * The plan trailer (D6, steps 1 to 5). It replaces the task trailer for a plan child and
  * overrides the build skill's "start the next queued plan": a plan child never takes another.
  */
-export function planTrailer(plan: PlanTrailer): string {
+export function planTrailer(plan: PlanTrailer, base?: StartBase): string {
   const sync = plan.resume
     ? "2. This is a resume: the worktree already holds this plan's work. Do not fetch and do not reset it."
-    : `2. Run \`git fetch origin ${plan.base}\`. If it fails, run it once more; if it fails again, stop and report the error, and never build on a stale ref. Then run \`git reset --hard origin/${plan.base}\`: your worktree's own branch is the plan branch. Then save where you started: task_update on the plan with base set to the output of \`git rev-parse HEAD\`.`;
+    : base
+      ? `2. Run \`git reset --hard ${base.commit}\`: it is the commit of ${base.ref} when your lead started you, and your worktree's own branch is the plan branch. Never reset to the default branch. Then save where you started: task_update on the plan with base set to the output of \`git rev-parse HEAD\`.`
+      : `2. Run \`git fetch origin ${plan.base}\`. If it fails, run it once more; if it fails again, stop and report the error, and never build on a stale ref. Then run \`git reset --hard origin/${plan.base}\`: your worktree's own branch is the plan branch. Then save where you started: task_update on the plan with base set to the output of \`git rev-parse HEAD\`.`;
   return `\nYour plan: ${plan.slug}. You build this one plan and nothing else.\n1. Take it with task_take: task "${plan.slug}", from "${plan.handoutId}".\n${sync}\n3. Run \`/${PLUGIN}:build\` on this plan only. Builder subagents are allowed; start no other sessions. Never start the next queued plan, whatever the build skill says.\n4. Push, pull request and merge follow \`workflow show\`. Where they are off, ask the person in this terminal.\n5. Report with \`${COMMAND} herdr report "<the pull request link, what shipped, what failed>"\`. Then stop. Never take another plan.\n`;
+}
+/** The step a task or plain child gets when its lead gave a base: its worktree starts on the default branch. */
+function startPointTrailer(base: StartBase): string {
+  return `\nYour start point: ${base.ref}, commit ${base.commit}. Your worktree starts from the default branch, not from this commit. Before anything else, run \`git status --porcelain\`: if it prints anything, stop and report. Otherwise run \`git reset --hard ${base.commit}\`.\n`;
 }
 /** What a follow-up child's brief says about its work (`herdr start --followup`). */
 export interface FollowupTrailer {
@@ -70,15 +85,17 @@ export async function writeBrief(
   task?: string,
   plan?: PlanTrailer,
   followup?: FollowupTrailer,
+  base?: StartBase,
 ): Promise<string> {
   const file = briefPath(stateDir, core, name);
+  const taskTrailer = task
+    ? `\nYour task: ${task}\nsave a \`Report:\` note with task_note; never take, update or close the task.\n`
+    : "";
   const trailer = plan
-    ? planTrailer(plan)
+    ? planTrailer(plan, base)
     : followup
       ? followupTrailer(followup)
-      : task
-        ? `\nYour task: ${task}\nsave a \`Report:\` note with task_note; never take, update or close the task.\n`
-        : "";
+      : `${taskTrailer}${base ? startPointTrailer(base) : ""}`;
   await writePrivate(
     file,
     `${text}\n${trailer}${linked ? `\nWhen done or stuck, report with: \`${COMMAND} herdr report "<one paragraph>"\`; write long results to a file and report its path. Start no sessions or agents of your own unless this brief says so. A finding outside your work goes in your report: never ask the person, file an issue or start a session for it.\n` : ""}`,

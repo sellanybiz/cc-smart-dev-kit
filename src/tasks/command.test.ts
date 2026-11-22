@@ -3,6 +3,7 @@ import { mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { cliPaths } from "../cli/paths";
 import { claudeMemDb, mistakenImport } from "../testing/claude-mem-db";
+import { writeSessionRecord } from "../testing/hooks";
 import { subprocessGuard } from "../testing/port-guard";
 import { cleanGitEnv, git, tempDir } from "../testing/temp";
 import { taskContext } from "./context";
@@ -189,7 +190,12 @@ test("task command holds the plan shape: a phase starts with tasks, a step close
   expect((await run("done", "#1")).error).toBe("open tasks: #4 A later ask\n");
 });
 
-test("task command sets a plan's files with --path, replaces them on set, and clears them with --no-files", async () => {
+/** `task <args>` run as its own process in a fresh repo with its own home: its exit code and output. */
+/**
+ * The task command as a process in a fresh repo. With `session`, a live-session record names this
+ * test's process, so every command runs as that Claude session (`callerOf` finds its ancestor).
+ */
+function taskCli(session?: string) {
   const home = tempDir();
   const cwd = tempDir();
   git(cwd, "init", "-b", "main");
@@ -202,19 +208,24 @@ test("task command sets a plan's files with --path, replaces them on set, and cl
     CLAUDE_CONFIG_DIR: join(home, ".claude"),
     PATH: `${dirname(process.execPath)}:${dirname(Bun.which("git") ?? "/usr/bin/git")}`,
   };
-  async function run(...args: string[]) {
-    const process = Bun.spawn([Bun.which("bun") ?? "bun", ...guard.args, CLI, "task", ...args], {
+  if (session !== undefined) writeSessionRecord(env, { sessionId: session, cwd, name: session });
+  return async (...args: string[]) => {
+    const child = Bun.spawn([Bun.which("bun") ?? "bun", ...guard.args, CLI, "task", ...args], {
       cwd,
       env,
       stdout: "pipe",
       stderr: "pipe",
     });
     return {
-      code: await process.exited,
-      text: await new Response(process.stdout).text(),
-      error: await new Response(process.stderr).text(),
+      code: await child.exited,
+      text: await new Response(child.stdout).text(),
+      error: await new Response(child.stderr).text(),
     };
-  }
+  };
+}
+
+test("task command sets a plan's files with --path, replaces them on set, and clears them with --no-files", async () => {
+  const run = taskCli();
   expect(
     (await run("add", "The plan", "--plan", "p", "--path", "src/a/", "--path", "./docs/x.md")).code,
   ).toBe(0);
@@ -240,6 +251,26 @@ test("task command sets a plan's files with --path, replaces them on set, and cl
   expect((await run("set", "#2", "--path", "x")).error).toContain(
     "only a plan task has a file list",
   );
+});
+
+test("task command stacks a plan on another with --stacked-on and clears it with --no-stack", async () => {
+  // Only the lead of both plans stacks one: a terminal with no session leads none.
+  const terminal = taskCli();
+  expect((await terminal("add", "Base plan", "--plan", "p")).code).toBe(0);
+  expect((await terminal("add", "Built on p", "--plan", "q", "--stacked-on", "p")).error).toBe(
+    '#2 "Built on p" cannot be stacked on "p": #2 "Built on p" and #1 "Base plan" are not led by this session. A plan is stacked only on another plan of the same lead, whose branch it is built on\n',
+  );
+  const run = taskCli("lead");
+  expect((await run("add", "Base plan", "--plan", "p")).code).toBe(0);
+  expect((await run("add", "Built on p", "--plan", "q", "--stacked-on", "p")).code).toBe(0);
+  expect((await run("show", "#2")).text).toContain(
+    '#2 "Built on p" [plan · pending · stacked on p]',
+  );
+  expect((await run("set", "#2", "--stacked-on", "q")).error).toBe(
+    '#2 "Built on p" cannot be stacked on itself\n',
+  );
+  expect((await run("set", "#2", "--no-stack")).text).toBe('#2 "Built on p" · pending\n');
+  expect((await run("set", "#2", "--stacked-on", "p", "--no-stack")).code).toBe(2);
 });
 
 test("task import claude-mem leaves claude-mem's own lists out, and drops what an earlier import took", async () => {

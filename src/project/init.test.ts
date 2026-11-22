@@ -562,6 +562,16 @@ describe("requiresFloor", () => {
     });
   });
 
+  test("plans.appendOnly asks for 6.3 on its own, beside a cap or a merge list", () => {
+    expect(requiresFloor({ workflow: { plans: { appendOnly: ["db/migrations/"] } } })).toEqual({
+      floor: ">=6.3",
+      version: "6.3.0",
+    });
+    expect(
+      requiresFloor({ workflow: { plans: { maxPhases: 5, mergeFiles: ["a/"], appendOnly: [] } } }),
+    ).toEqual({ floor: ">=6.3", version: "6.3.0" });
+  });
+
   test("allowCommit, allowPush and allowMerge ask for 6.1.0; the old names ask for nothing more", () => {
     for (const key of ["allowCommit", "allowPush", "allowMerge"]) {
       expect(requiresFloor({ workflow: { [key]: true } })).toEqual({

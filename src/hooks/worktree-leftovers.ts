@@ -46,12 +46,15 @@
  */
 import { closeSync, existsSync, fstatSync, openSync, readSync, statSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
+import type { CliPaths } from "../cli/paths";
+import { CONFIG_PATH } from "../project/config-facts";
 import type { Project } from "../project/resolve";
 import { startAutoClean, takeToldLine } from "../worktrees/auto-start";
 import { autoCleanFiles, readRepoRecord } from "../worktrees/auto-state";
 import { inProgressWhy } from "../worktrees/in-progress";
 import { isAttended } from "./attended";
 import { cappedHookList } from "./capped-list";
+import { loadCheckedFile } from "./checked-config";
 import {
   GUARD_GIT_TIMEOUT_MS,
   hasChanges,
@@ -63,7 +66,7 @@ import {
   worktreeAdminDir,
 } from "./git";
 import { addContext, addContextAndMessage, type HookResult, SILENT, systemMessage } from "./io";
-import { localFiles } from "./local-files";
+import { localFiles, rebuildableGlobs } from "./local-files";
 import type { Env, HookContext } from "./run";
 import { liveSessions, type SessionRecord } from "./sessions";
 
@@ -156,6 +159,7 @@ export function judgeWorktree(
   sessions: SessionRecord[],
   env: Env,
   now: number,
+  patterns: readonly Bun.Glob[],
 ): Verdict {
   if (listed.locked) return "kept";
   if (listed.prunable) return "gone";
@@ -177,7 +181,7 @@ export function judgeWorktree(
   if (idleMinutes(listed.path, now) < IDLE_MINUTES) return "kept";
   if (hasChanges(listed.path, env)) return "kept";
   // An ignored file that cannot come back (an edited `.env.local`): removing it loses work.
-  return localFiles(listed.path, repo, env)?.length === 0 ? "finished" : "kept";
+  return localFiles(listed.path, repo, env, patterns)?.length === 0 ? "finished" : "kept";
 }
 
 export function leftoversNote(
@@ -332,7 +336,21 @@ export function mainCheckoutNudge(project: Project, env: Env): string | null {
   return `This session is in the main checkout. Make the first change in a worktree: ${ENTER_WORKTREE_PHRASE}, or \`claude -w <name>\` from a terminal.`;
 }
 
-export function worktreeLeftovers(context: HookContext): HookResult {
+/**
+ * The project's own rebuildable patterns, from the main checkout's file (not the worktree's)
+ * through the checked cache. A file that is invalid, too new or unreadable grants no extra
+ * pattern: it proves nothing safe to lose.
+ */
+async function projectPatterns(repo: string, paths: CliPaths): Promise<Bun.Glob[]> {
+  try {
+    const checked = await loadCheckedFile(join(repo, CONFIG_PATH), "project", { paths });
+    return checked.ok ? rebuildableGlobs(checked.value) : [];
+  } catch {
+    return [];
+  }
+}
+
+export async function worktreeLeftovers(context: HookContext): Promise<HookResult> {
   const { project, env, paths, event } = context;
   const base = project.config?.worktrees?.base;
   if (base === undefined) return SILENT;
@@ -369,11 +387,12 @@ export function worktreeLeftovers(context: HookContext): HookResult {
     // Nobody can say who works where: no worktree counts as finished.
     return answer(null);
   }
+  const patterns = await projectPatterns(repo, paths);
   const now = Date.now();
   const finished: ListedWorktree[] = [];
   const gone: ListedWorktree[] = [];
   for (const listed of linked) {
-    const verdict = judgeWorktree(repo, listed, base, sessions, env, now);
+    const verdict = judgeWorktree(repo, listed, base, sessions, env, now, patterns);
     if (verdict === "finished") finished.push(listed);
     if (verdict === "gone") gone.push(listed);
   }

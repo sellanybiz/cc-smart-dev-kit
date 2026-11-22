@@ -80,13 +80,53 @@ export function projectFolderName(path: string): string {
 }
 
 /**
+ * The ways one folder's path may have been written when Claude Code made its project folder's
+ * name. A name over 200 characters carries a hash of the raw path (`projectFolderName`), so the
+ * separator and the drive letter's case change it: git prints `C:/work/app`, Claude Code's own
+ * cwd is `C:\work\app`, and a lower-case drive letter is a third spelling of the same place.
+ */
+function pathSpellings(path: string): string[] {
+  const separators = [path, path.replaceAll("/", "\\"), path.replaceAll("\\", "/")];
+  const spellings = new Set<string>();
+  for (const spelled of separators) {
+    spellings.add(spelled);
+    if (/^[A-Za-z]:/.test(spelled)) {
+      const drive = spelled.charAt(0);
+      spellings.add(`${drive.toUpperCase()}${spelled.slice(1)}`);
+      spellings.add(`${drive.toLowerCase()}${spelled.slice(1)}`);
+    }
+  }
+  return [...spellings];
+}
+
+/**
+ * The project folder names of the worktrees git lists for a repo, wherever a project's own
+ * WorktreeCreate hook put them (`belongsToRepo`). Each path is encoded in every spelling
+ * Claude Code may have used (`pathSpellings`). The caller adds the real path of a folder that is
+ * reached through a link: this file touches no disk.
+ */
+export function worktreeProjectFolders(paths: readonly string[]): Set<string> {
+  const names = new Set<string>();
+  for (const path of paths)
+    for (const spelled of pathSpellings(path)) names.add(projectFolderName(spelled));
+  return names;
+}
+
+/**
  * Is this project folder the repo's main checkout, or one of its worktrees? Claude Code makes
  * a session's own worktree inside the repo, `<main checkout>/.claude/worktrees/<name>`, and a
- * session launched with `claude -w <name>` works there.
+ * session launched with `claude -w <name>` works there. A project's own WorktreeCreate hook may
+ * put a worktree anywhere, so a worktree git lists counts by its exact folder
+ * (`worktreeProjectFolders`). A folder's parent never counts: worktrees placed beside the repo
+ * would claim every sibling project's sessions.
  */
-export function belongsToRepo(projectFolder: string, mainCheckout: string): boolean {
+export function belongsToRepo(
+  projectFolder: string,
+  mainCheckout: string,
+  worktrees: ReadonlySet<string> = new Set(),
+): boolean {
   const main = projectFolderName(mainCheckout);
-  if (projectFolder === main) return true;
+  if (projectFolder === main || worktrees.has(projectFolder)) return true;
   // The folder name of a path under `<main>/.claude/worktrees/`, built the same way Claude
   // Code names a project folder: every character that is not a letter or a digit is a dash.
   const claudeOwn = `${projectFolderName(worktreesFolder(mainCheckout))}-`;
