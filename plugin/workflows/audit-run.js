@@ -95,8 +95,8 @@ const TASK_WRITES = [
 const READ_ONLY = ['Edit', 'Write', 'NotebookEdit', 'Agent'].concat(TASK_WRITES)
 
 // One auditor per track, in parallel, on `sonnet` at `high`: the breadth, which `high` covers.
-// Each track is the caller's: the audit skill takes them from the review skill's edge-case axes,
-// so the list of tracks has one home (`references/axes.md`). The auditor's own file already
+// Each track is the caller's: the audit skill takes them from the review skill's edge-case axes
+// or review dimensions, so the list of tracks has one home (`references/axes.md`). The auditor's own file already
 // denies the editing tools; each launch denies them too, so no track edits the checkout the
 // others read even if that file changes. Each launch also denies `Agent`: the budget counts the
 // agents this run starts, and an agent a track started on its own would escape that count.
