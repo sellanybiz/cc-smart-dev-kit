@@ -64,7 +64,9 @@ already drifted and caused a bug. Reuse an existing implementation or extract th
 
 **Merely similar — wait for the third.** Two things that look alike need not be a repeat;
 a third shows which parts are shared and which are coincidence. Extracting to *name* a
-block stays in its file; extracting for *reuse* needs a real second caller.
+block stays in its file; extracting for *reuse* needs a real second caller. A composite
+of shared UI parts is the same case: an *identical* one follows § 7 (extract before shipping
+it twice); a merely similar one goes to the shared UI layer when a third screen builds it.
 
 A parameter carries data that varies. A flag or branch that picks a code path for one
 caller means the logic was not the same: keep the common core shared and move the
@@ -77,7 +79,7 @@ site at its right home and remove the copies. Elsewhere: the core instructions' 
 ## 6. Helper, service, module
 
 - A **helper** is a pure function: no state or I/O (reading or writing outside itself).
-  Keep it beside its callers.
+  Keep it beside its callers, unless it has no feature words in it (§ 7).
 - A **service** coordinates state changes across several things, called from an edge such
   as a route, handler or command.
 - A **module** puts one concept behind a small public entry point. Make it deep: a simple
@@ -93,13 +95,19 @@ function (review axes § Security).
 
 ## 7. Where the shared piece lives; reusable components
 
-Scope it as narrowly as its use, widening only when another caller appears:
+Scope it as narrowly as its use, widening only when another caller appears (one exception
+follows the list):
 
 1. **Both sides**, such as browser and server: the project's shared layer, kept pure —
    no UI framework or server-only imports.
 2. **One side:** close to its callers, in the feature's folder or the one file.
 3. **Another feature needs it:** through that feature's public entry point, never its
-   private folders.
+   private folders. Never copy a feature's private helper into a second feature: export it
+   or move it to the shared layer.
+
+**One exception, for placement only:** a helper with no feature words in it (a cursor, a page
+cut, a retry tail, a formatter) goes to the shared layer on its first write, even with one
+caller. It lands in a layer that already exists, so § 2 still holds.
 
 Use the project's layer names, import aliases and boundaries from its add-on and rules.
 A boundary violation is Critical in review.
@@ -133,7 +141,9 @@ A name that lies is a bug.
 Follow the project's layout; put new code beside its feature. One concept per file, one
 main export for a major type (a component, service or hook). Split by concept, not line count.
 One helpers folder per layer: never add `utils/` beside `helpers/` beside `lib/`. An existing
-folder stays the home; name the files inside by their job.
+folder stays the home; name the files inside by their job. Name a folder for the concept it
+owns, never for its first user. Test doubles and fixtures live in the project's test-support
+home, and product code never branches on one.
 
 ## 10. Cleaner vs structural change
 
