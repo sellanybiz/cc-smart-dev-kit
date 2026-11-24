@@ -133,6 +133,9 @@ describe("the review-split workflow", () => {
     expect(refute?.prompt).toContain(
       "A sibling copy of the code is evidence for a duplicate finding, never a refutation of it; only a written project rule refutes one.",
     );
+    expect(refute?.prompt).toContain(
+      "Any other design finding is refuted when a written project rule or a documented convention allows its shape.",
+    );
     expect(refute?.prompt).not.toContain("sibling files with that shape refute it");
   });
 

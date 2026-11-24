@@ -128,6 +128,9 @@ describe("the audit-run workflow", () => {
     expect(verify?.prompt).toContain(
       "For a duplicate finding, a file with the same shape confirms the copy and never excuses it: only a written project rule that allows the copy refutes it.",
     );
+    expect(verify?.prompt).toContain(
+      "Every other design finding falls when the project's written rules, or a convention it documents, justify the shape.",
+    );
     expect(verify?.prompt).not.toContain("sibling files with that shape refute it");
   });
 

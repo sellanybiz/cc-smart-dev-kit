@@ -238,8 +238,9 @@ proved nor refuted: it is listed under **Hunches** with the refuter's reason, it
 fix (the audit's writer gets the trigger and the missing guard), never only counted; with no
 finding confirmed, the headline points to the Hunches. A refuted one is counted and left out.
 A refuter may not refute a duplicate finding because a sibling file has the same copy: that is
-evidence for the finding, and only a written project rule that allows the copy refutes it. Both
-scripts say so, in different words, because `check:duplicates` reads `plugin/workflows`.
+evidence for the finding, and only a written project rule that allows the copy refutes it. Any
+other design finding is refuted by a written rule or a documented convention that allows its
+shape. Both scripts say so, in different words, because `check:duplicates` reads `plugin/workflows`.
 The reviewers carry `cc-smart-dev-kit:senior-engineer`, the type `reviewAgents` lists by default,
 and each track's brief holds the line `Mode: review` alone and asks for the StructuredOutput
 call, so the run's return records the review (Claude Code's nudge to make
