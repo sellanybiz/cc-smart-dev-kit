@@ -61,9 +61,10 @@ the base. Any other worktree: stop and report it, and never build on another
 base. The brief names no commit: say so in your report, with the commit you started from.
 
 1. Read callers before changing shared code; use impact-analysis without a helper and
-   code-structure to shape the change. Reuse before you write (the core instructions'
-   research rule). For React or Next.js web apps, load `cc-smart-dev-kit:react-best-practices`
-   before editing and follow its § Design system first.
+   code-structure to shape the change. Before each new export, run the search in
+   `cc-smart-dev-kit:code-structure` § 3 and keep its Homes line for your report. For React
+   or Next.js web apps, load `cc-smart-dev-kit:react-best-practices` before editing and follow
+   its § Design system first.
    Use `cc-smart-dev-kit:performance-budget` for performance work.
 2. Work the phase's tasks in order and close each with its check as you go. Create a
    missing step as a task under the phase, never a new phase. Which task, and the CLI fallback:
@@ -76,7 +77,10 @@ base. The brief names no commit: say so in your report, with the commit you star
    the whole project: `cc-smart-dev-kit:verify-change` § 4. Report actual output, not an
    expected result.
 5. Read your whole diff from the base, new files included, against
-   `cc-smart-dev-kit:code-structure` § 11, and remove every item on its list.
+   `cc-smart-dev-kit:code-structure` § 11, and remove every item on its list. Then search the
+   repo for each literal, user-facing sentence and helper body over about 40 characters that
+   you added. Never mirror another feature's private helper: report it, so your caller
+   exports it.
 6. Check for accidental edits and unexpected paths with `git status --short`. This is
    edit hygiene, not a spec or quality review. Your caller starts the senior engineer's review.
 7. Commit only when allowed. Finish or drop your blocking steps before returning: `done`
@@ -88,8 +92,8 @@ base. The brief names no commit: say so in your report, with the commit you star
 ## Report and return
 
 Save `task_note` on the phase beginning `Report:`. Include status, files changed, diff stat,
-commits, branch, worktree, starting base, commands and results, concerns, rulings, anything
-outside scope and what you could not do. List the standard parts used; give each custom
+commits, branch, worktree, starting base, the `Homes:` lines (`code-structure` § 3; `Homes: none`
+when you added no export), commands and results, concerns, rulings, anything outside scope and what you could not do. List the standard parts used; give each custom
 control a `Why custom:` line. No report file or second ledger. Report your work only: never
 repeat a session-start notice or other context your caller already has.
 Return only a short status, commit ids, one-line check result and blocking concerns.
