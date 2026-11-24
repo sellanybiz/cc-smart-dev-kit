@@ -46,6 +46,7 @@ import { type PullRequestState, pullRequestState } from "../worktrees/scan";
 import { HcError, type HcRunner, hcGet, hcList } from "./hc";
 import { HERDR_AGENT_PREFIX, isHerdrAgent, KIT_PLAN, parseLeadId } from "./labels";
 import { launchedHere } from "./launch-record";
+import { planStartCommand } from "./start-words";
 
 /** How often `herdr plans --wait` looks again: a gh call per plan with a child, so not often. */
 export const PLAN_POLL_MS = 15_000;
@@ -308,11 +309,6 @@ function paneOf(world: PlansWorld, plan: WorkTask): Pane {
   return world.pane(plan.agent, plan.plan ?? plan.subject);
 }
 
-/** The resume command a line suggests: the person fills in the model, effort, mode and brief. */
-function startWords(slug: string): string {
-  return `${COMMAND} herdr start --plan ${slug} --model <model> --effort <effort> --mode <mode> -- "<brief>"`;
-}
-
 export interface Judgment {
   lines: PlanLine[];
   /** Each held plan's branch diff by its plan task id: what `reservePlan` is given. */
@@ -501,7 +497,7 @@ export function judgePlans(input: PlansWorld, only?: string, start?: string): Ju
               base,
               "stale",
               "its child never took the plan and its pane is gone",
-              `relaunch it in its own worktree: ${startWords(slug)}`,
+              `relaunch it in its own worktree: ${planStartCommand(slug)}`,
               { pane },
             ),
           );
@@ -542,7 +538,7 @@ export function judgePlans(input: PlansWorld, only?: string, start?: string): Ju
               base,
               "child-gone",
               `its child is gone (${paneWords(pane)})${driftText}`,
-              `resume it in its own worktree: ${startWords(slug)}`,
+              `resume it in its own worktree: ${planStartCommand(slug)}`,
               { pr, pane, drift },
             ),
           );

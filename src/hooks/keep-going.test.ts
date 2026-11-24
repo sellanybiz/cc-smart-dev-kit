@@ -893,14 +893,15 @@ describe("keep-going: a lead's plans", () => {
     );
   });
 
-  test("a plan whose child is gone names herdr start --plan <slug> to resume it", async () => {
+  test("a plan whose child is gone names the full herdr start --plan line to resume it", async () => {
     const w = world();
     plan(w, "alpha");
     handOut(w, "alpha", DEAD);
     w.db.close();
     const answer = await runHook(keepGoingHook, stop(w.repo), w.env);
+    // The whole line: `herdr start` refuses one without --model, --effort, --mode and a brief.
     expect(reasonOf(answer.stdout)).toBe(
-      `The child of #1 alpha is gone: resume it with \`${COMMAND} herdr start --plan alpha\`. ${WAIT}`,
+      `The child of #1 alpha is gone: resume it with \`${COMMAND} herdr start --plan alpha --model <model> --effort <effort> --mode <mode> -- "<brief>"\`. ${WAIT}`,
     );
   });
 

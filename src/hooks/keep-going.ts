@@ -27,8 +27,8 @@
  *    **Then the lead's plans** (`leadPlansReason`), only when the own plan gives no reason: a
  *    plan with a running Herdr child names `herdr wait`; a plan closed and still reserved for
  *    this lead (its pull request not merged, and what waits behind it) names `herdr plans --wait`;
- *    a plan whose child is gone names `herdr start --plan <slug>`. They come from the store's
- *    classifier alone (`classifyLeadPlans`): no git, no gh, no hc, and no session record read for
+ *    a plan whose child is gone names `herdr start --plan <slug>` with its model, effort, mode
+ *    and brief. They come from the store's classifier alone (`classifyLeadPlans`): no git, no gh, no hc, and no session record read for
  *    a child that runs. The caller is looked up only when some plan is reserved.
  * 5. **This reason not already given** (`stopFeedbackGiven`): read only after a phase in
  *    progress or a ready phase is found, from the transcript's default tail (`TRANSCRIPT_TAIL_BYTES`). The same
@@ -47,6 +47,7 @@
 import { COMMAND } from "../build-info/names";
 import type { CliPaths } from "../cli/paths";
 import { isHerdrAgent } from "../herdr/labels";
+import { planStartCommand } from "../herdr/start-words";
 import type { Project } from "../project/resolve";
 import { projectKey } from "../tasks/context";
 import { TASK_TOOL } from "../tasks/words";
@@ -204,7 +205,8 @@ export function leadPlansReason(led: readonly LeadPlan[]): string | null {
     parts.push(
       `The child of ${names(gone)} is gone: resume ${gone.length === 1 ? "it" : "each"} with ${gone
         .slice(0, HOOK_LIST_LIMIT)
-        .map((entry) => `\`${COMMAND} herdr start --plan ${entry.plan.plan}\``)
+        // `--plan` takes a slug or `#n`; quoted, since a bare `#` starts a shell comment.
+        .map((entry) => `\`${planStartCommand(entry.plan.plan ?? `'#${entry.plan.number}'`)}\``)
         .join(", ")}`,
     );
   if (parts.length === 0) return null;

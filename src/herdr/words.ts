@@ -3,11 +3,16 @@ import { parseOptions } from "../cli/args";
 import { CLAUDE_FAMILIES, type ClaudeFamily } from "../gateway/targets";
 import { ALLOWED_EFFORTS, type Effort } from "../models/launch-policy";
 import { validChildName } from "./labels";
-export const MODE_ORDER = ["plan", "default", "acceptEdits", "auto", "dontAsk"] as const;
-export type HerdrMode = (typeof MODE_ORDER)[number];
+/**
+ * The permission modes `herdr start --mode` accepts (`manual` is read as `default`). A list, not a
+ * ranking: `dontAsk` denies what would prompt, so it is not broader than `auto`, and since 6.0.0
+ * nothing compares a child's mode with its lead's (the herdr skill tells the lead what to pass).
+ */
+export const HERDR_MODES = ["plan", "default", "acceptEdits", "auto", "dontAsk"] as const;
+export type HerdrMode = (typeof HERDR_MODES)[number];
 export function normalizeMode(mode: string): HerdrMode | null {
   const value = mode === "manual" ? "default" : mode;
-  return MODE_ORDER.find((one) => one === value) ?? null;
+  return HERDR_MODES.find((one) => one === value) ?? null;
 }
 export function cliModeFlag(mode: HerdrMode): string {
   return mode === "default" ? "manual" : mode;
@@ -26,7 +31,7 @@ export const HERDR_VERBS = [
   "machines",
 ] as const;
 const USAGE_LINES = {
-  start: `start --model <${CLAUDE_FAMILIES.join("|")}> --effort <${ALLOWED_EFFORTS.join("|")}> --mode <${MODE_ORDER.join("|")}|manual> [--cwd <dir>] [--on <machine>] [--name <name>] [--task <#n> | --plan <slug> | --followup [--issue <n>]…] [--independent] [--asked] [--base <ref>] (-- <brief> | --brief-file <path>)`,
+  start: `start --model <${CLAUDE_FAMILIES.join("|")}> --effort <${ALLOWED_EFFORTS.join("|")}> --mode <${HERDR_MODES.join("|")}|manual> [--cwd <dir>] [--on <machine>] [--name <name>] [--task <#n> | --plan <slug> | --followup [--issue <n>]…] [--independent] [--asked] [--base <ref>] (-- <brief> | --brief-file <path>)`,
   list: "list [--all] [--json]",
   send: "send <terminal> (<text> | --brief-file <path>)",
   wait: "wait [--any | --all] [--timeout <seconds>] [--seen <addr>:<turn|?>:<error|done|end>[,…]]",

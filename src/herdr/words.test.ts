@@ -3,15 +3,15 @@ import {
   BASE_FOLLOWUP_REFUSAL,
   BRIEF_AND_WORDS,
   cliModeFlag,
+  HERDR_MODES,
   HERDR_USAGE,
-  MODE_ORDER,
   normalizeMode,
   PLAN_EXCLUSION,
   parseHerdrArgs,
 } from "./words";
 
 test("the modes, and the words a mode goes by", () => {
-  expect(MODE_ORDER).toEqual(["plan", "default", "acceptEdits", "auto", "dontAsk"]);
+  expect(HERDR_MODES).toEqual(["plan", "default", "acceptEdits", "auto", "dontAsk"]);
   expect(normalizeMode("manual")).toBe("default");
   expect(normalizeMode("default")).toBe("default");
   expect(normalizeMode("bypassPermissions")).toBeNull();

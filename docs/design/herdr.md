@@ -11,7 +11,7 @@ own pane, and the lead never relays it (4.10.1). The user workflow is
 | File under `src/herdr/` | Job |
 |---|---|
 | `hc.ts` | The argv-only runner, tolerant JSON shapes, errors and minimum hc version. |
-| `words.ts` | Shared verbs, flags, permission-mode order and parser. |
+| `words.ts` | Shared verbs, flags, the accepted permission modes (a list, not a ranking) and parser. |
 | `labels.ts` | Label names, core/address identities, child names, report escaping and agent prefix. |
 | `machines.ts` | The remote approval rules, validated reads and managed writes. |
 | `identity.ts` | Live terminal and process-ancestry checks. |
