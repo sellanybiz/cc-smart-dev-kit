@@ -22,9 +22,9 @@ imagined caller locks in the wrong shape, and the real second caller never fits 
 
 ## 3. Search before you write
 
-Before adding a helper, component, hook, constant, type, schema, mapper or error class, look
-for one already there. Search three ways, the shared layers first (§ 7), then the feature
-folders:
+Before adding a function, component, hook, constant, type, schema, SQL function, mapper or
+error class, look for one already there. Search three ways, the shared layers first (§ 7),
+then the feature folders:
 
 1. **By name** (`Grep` as a whole word), then by the words it shows: the sentence, label or
    message a user sees, and the domain words.
@@ -36,12 +36,13 @@ If one exists, import it.
 
 **Record the search.** For every new export, write one line under `Homes:` in your `Report:`:
 
-`<name> (<kind>) — searched: <name>; <words it shows | n/a>; <a distinctive body line | n/a> — found: <paths | none> — why new: <reason>`
+`<name> (<kind>) — searched: <name and the words it shows>; <what it does: the query | n/a>; <a distinctive body line | n/a> — found: <paths | none> — why new: <reason>`
 
-The kinds are function, component, hook, constant, type, schema, SQL function and error
-class. A props or arguments type rides on its unit's line. With no new export, write
-`Homes: none`. The lead checks that every line is there; the review spot-checks what is in
-them. Outside a plan, the main session writes its own lines into the review's brief.
+The three searches are the ones above, in order; the kind is one from the list above. A props
+or arguments type rides on its unit's line. With no new export, write `Homes: none`. The lead
+checks that every line is there; the review spot-checks what is in them. Outside a plan, the
+main session writes its own lines and passes them to the review (the `homes` arg of
+`/cc-smart-dev-kit:review` § A big change set).
 
 ## 4. Split by responsibility
 
@@ -105,9 +106,12 @@ follows the list):
    private folders. Never copy a feature's private helper into a second feature: export it
    or move it to the shared layer.
 
-**One exception, for placement only:** a helper with no feature words in it (a cursor, a page
-cut, a retry tail, a formatter) goes to the shared layer on its first write, even with one
-caller. It lands in a layer that already exists, so § 2 still holds.
+**One exception, for placement only:** a pure helper extracted for reuse that has no feature
+words in it (a page cut, a list or count formatter, a date formatter) goes to the project's
+shared layer for that side (the list above) on its first write, even with one caller. With
+no such layer, keep it beside its caller and say so in its Homes line. It lands in a layer
+that already exists, so § 2 still holds. A block extracted only to name it stays in its file
+(§§ 4, 5).
 
 Use the project's layer names, import aliases and boundaries from its add-on and rules.
 A boundary violation is Critical in review.
@@ -173,7 +177,9 @@ these and remove each one:
 - **Nothing just in case** (§§ 2 and 4): an option, flag or config key no caller uses; a
   compatibility shim, re-export or alias nobody asked for.
 - **Unused code:** dead code, unused imports, commented-out blocks. Delete them; git keeps
-  the history. Code that only its own tests call is dead; so is a `v1` left beside its `v2`.
+  the history. Code that only its own tests call is dead. A `v1` kept beside its `v2` is dead
+  when nothing calls it (delete it), and a half-finished move when callers remain (move them,
+  then delete it).
 - **A copy of a shared home:** something a shared layer already exports, written again; a
   composite of shared parts built by hand when the project has one; plumbing every feature
   needs (a fetch wrapper, a retry, a cache key) rebuilt inside one feature; a rule on words
@@ -218,6 +224,8 @@ these guards; each is a ratchet, so the count may only go down:
 - an import lint that sends callers through a feature's front door.
 
 The project lists its commands in its review add-on, `.claude/cc-smart-dev-kit/review.md`,
-under a `Reuse signals` heading. The lead runs them once, or the main session when there is
-no plan, and hands the output to the reviewers. A reviewer never runs a repo-wide tool
-itself. A project with none of these guards says so in one line, and the work goes on.
+under a `Reuse signals` heading. The lead runs them before each review round, or the main
+session when there is no plan, and hands the output to the reviewers. A reviewer never runs
+the project's guard commands itself; searching the repo for an existing home stays its job.
+A project with no `Reuse signals` heading: whoever runs them (the lead, or the main session
+outside a plan) says so in one line and goes on.

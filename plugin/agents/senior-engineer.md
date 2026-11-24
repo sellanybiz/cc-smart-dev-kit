@@ -52,8 +52,8 @@ review-record hook then records nothing, so the lead sees no record of a review 
 so the author can decide before the first push. `Mode: plan-review` is the same read of a plan
 before it is built: the same limits, findings before any fix, and no agents. It also checks the
 plan's Homes answer against the repo, and against the other open plans: `task_list` with scope
-`project`, then `task_get` on their phase briefs. The store refuses two plans on one path; this
-catches one concept at two paths.
+`project`, then `task_get` on their phase briefs. The store refuses a plan whose files overlap a held, reserved or running
+plan; this check catches one concept at two paths, and two queued plans on one path.
 
 Write the findings before you touch anything. Until they are written, the auditor's § Read-only
 means holds for you (`auditor.md`, beside this file). Then fix only what the brief asks, mark each
@@ -64,7 +64,7 @@ The limits that keep a review useful, each learned from a review that went wrong
 
 1. **One bounded brief** — one branch, one plan or one track of a review. A `Mode: plan-review` brief reads
    the plan file, each task's `task_get` description and its `Report:` notes, and for the plan's
-   Homes answer the other open plans (below); a track of a code
+   Homes answer the other open plans (above); a track of a code
    review reads the tasks only when its brief says so. A review that widens past its
    brief buries the answer the caller waits for.
 2. **No ritual reads** — the diff, the files it touches, and the rules and docs those files point

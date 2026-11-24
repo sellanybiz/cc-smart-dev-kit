@@ -29,8 +29,8 @@ Four answers, before anything starts:
 1. **Target** — the folders or subsystem, named exactly. "The codebase" is not a target.
 2. **Question** — one class of defect in one line: "missing authorization checks", "a retry that
    can double-charge", "an unbounded query". One class per run.
-3. **Tracks** — how the run splits the question, one auditor each. Take the review skill's
-   edge-case axes that apply (`references/axes.md` in the review skill; load
+3. **Tracks** — how the run splits the question, one auditor each. Take the edge-case axes or
+   the review dimensions that apply (`../review/references/axes.md`; load
    `/cc-smart-dev-kit:review` if you have not read them), and name two to four. More tracks is a
    second run.
 4. **Budget** — the findings verified, and so the Opus agents the run starts. Twelve unless the
@@ -102,18 +102,21 @@ Code written fast tends to copy what already exists, leave dead code and drift i
 ready-made runs find it. Each is one class (§ 1), so a run holds one question; run them one at a
 time, and ask first (§ 2) unless the person asked.
 
-| Run | Question | Tracks (`references/axes.md`) |
+| Run | Question | Tracks (`../review/references/axes.md`) |
 |---|---|---|
 | Duplication and bypassed homes | a copy of code, text or a type that a shared layer or another feature already holds, or a shared home the code goes around | reuse over reinvent, pattern consistency, craft |
-| Dead code and `v1` beside `v2` | code with no live caller: an export only a test uses, an old version left beside its replacement, an unused unit | craft, pattern consistency |
-| Structure, naming and oversized units | a file or function far over the project's size, a name that lies, a unit in the wrong folder | architecture, craft |
+| Dead code and `v1` beside `v2` | code with no live caller: an export only a test uses, a `v1` kept beside its `v2` that nothing calls (`code-structure` § 11), an unused unit | craft, pattern consistency |
+| Oversized and misplaced units | a file or function far over the project's size, or a unit in the wrong folder | architecture, craft |
 
 - **The target is one named area** (a feature folder, a layer). A large codebase gets one run
   per area, and a small one may name its whole source folder as one.
 - **Seed it:** run the project's `Reuse signals` commands (its review add-on) first and name the
   worst hits in the `target`. Never ask an auditor to run a repo-wide tool itself.
-- **The spec is the project's:** its rules, `code-structure` §§ 3, 5, 11 and 13, and its guards.
-  Another copy of the same logic breaks § 5, so a sibling copy is a finding's evidence, never
-  its excuse.
+- **The spec is the project's:** its rules and guards, and `code-structure`. `audit-run` has no
+  spec arg, so write "judge by code-structure §§ 3, 5, 11 and 13" into `question`. A name that
+  lies is a Craft finding in the first two runs. **Refuting:** a duplicate finding is refuted only
+  by a written project rule that allows the copy; a sibling copy is its evidence, never its
+  excuse. Any other design finding is refuted by a written project rule, a documented
+  convention, or an established pattern its sibling files share.
 - **Offer these runs** after a plan's review found a bypassed home or a drifted copy: the same
   class is likely in the code the plan did not touch.
