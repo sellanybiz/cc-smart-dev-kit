@@ -203,13 +203,17 @@ CLI fallback: `/cc-smart-dev-kit:tasks`.
 - **Name exact files.** Disjoint file sets run in parallel worktrees; any shared file orders
   those phases, and a shared resource does not by itself (below). Batch small edits of the
   same shape into one dispatch, not one agent per line. A phase that needs an export from
-  files outside the plan's list stops: the lead adds that file to the plan's `files` with
-  `task_update`, adds a step, and tells the person in one line. A guard whose file is outside
-  the plan goes to the person (the core instructions' one-plan rule).
+  files outside the plan's list reports it and stops that step (`/cc-smart-dev-kit:build`);
+  the lead asks the person once (`AskUserQuestion`) to add the file. On yes, the lead
+  updates the plan's `files` with `task_update` and adds the step under the phase that
+  needs it. When the store refuses because another held plan holds the file, the phase waits
+  for that plan, or the person decides. A guard whose file is outside the plan goes to the
+  person (the core instructions' one-plan rule).
 - **Name contracts and dependencies.** Contracts (a type, an API shape, a shared constant) go
   first, in a phase of their own; the phases that use them are `blocked_by` it, so they start
-  from its merged code. A new shared home is a contract: two phases that would build the same
-  one get one owner and a `blocked_by`. Put every other real wait in `blocked_by` too. Do not hold work for
+  from its merged code. A new shared home is a contract: it goes in the contract phase, or the
+  owning phase builds it first and the other phase is `blocked_by` that phase, so two phases never
+  build the same one. Put every other real wait in `blocked_by` too. Do not hold work for
   an unrelated review, merge or answer.
 - **A shared resource orders phases only when two phases write the same state.** A
   database, a port or a number sequence is not a reason to chain phases: give each builder
@@ -219,8 +223,8 @@ CLI fallback: `/cc-smart-dev-kit:tasks`.
   hand-back, review, fix, merge and cleanup loop belong to `/cc-smart-dev-kit:build`.
 - **The last wave is a heavy cleanup**, run only once everything is verified live: the
   fallbacks and legacy paths a "play safe" plan kept for the move (§ 2), leftover branches
-  and worktrees, docs that still name what was removed, and the delete step for a `v2` whose
-  `v1` still has callers.
+  and worktrees, docs that still name what was removed, and the delete step for a `v1` kept beside its
+  `v2` (code-structure § 11: move the callers that remain, then delete it).
 - **Give each phase a targeted done-check.**
 - **Keep shared writes with the main session:** lockfiles, new dependencies, version bumps,
   shared indexes, dev servers and the final full check (`/cc-smart-dev-kit:verify-change` § 4).

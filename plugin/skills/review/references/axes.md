@@ -14,6 +14,7 @@ one line each.
 2. **Performance** — waterfalls, N+1 queries, bundle weight, re-renders, missing cache. In a
    React or Next.js app, a broken playbook rule is a finding: `/cc-smart-dev-kit:react-best-practices`.
 3. **Pattern consistency** — does it match its sibling files? A new pattern needs a reason.
+   A sibling copy of a helper is not a pattern (§ Design findings).
    If the old pattern is the wrong one, fix it across the plan's files (beyond them: the core
    instructions' one-plan rule).
 4. **Boundaries** — the project's layering and import rules. A violation is Critical.
@@ -25,11 +26,13 @@ one line each.
    In UI code, a raw control or hand-made widget where the design system has one is a
    finding: select, table, textarea, radio group, tabs, date input, avatar, menu, combobox,
    dialog. Name the design-system component that replaces it.
-   For each export the diff adds, search the repo for an existing home: its name, the words it
-   shows a user, and one distinctive line of its body, shared layers first. A hit is a finding
-   (import it, or move the helper to the shared layer both callers use). Read the brief's
-   `Reuse signals` and the author's `Homes:` lines first when it has them. In a plan's review
-   the `reuse` track of `review-split` runs this search.
+   For each export the diff adds, search the repo for an existing home the three ways of
+   `code-structure` § 3, shared layers first. A hit is a finding (import it, or move the helper
+   to the shared layer both callers use). Read the brief's `Reuse signals` and the author's
+   `Homes:` lines first when it has them. In a plan's round the `reuse` track of `review-split`
+   runs this search; another track names a copy it meets but does not run the search. A plan's
+   review with no reuse track (a docs or instruction plan) has the spec track or the lead say
+   in one line whether a new unit copies an existing one.
 7. **Craft** — would a senior engineer be embarrassed to approve this? Names that lie, one
    function doing five things, nesting that should be early returns, clever one-liners,
    user-facing errors that say "Something went wrong". Structure and names:
@@ -58,15 +61,16 @@ Design findings use the same four evidence fields:
 | **Outcome** | The concrete cost: copies that will drift, a boolean saying the opposite, a function doing three jobs. |
 | **Why allowed** | The rule it breaks: a `code-structure` section, the project's add-on or rule. |
 
-Refute it against the project's written rules: a documented convention may justify the shape.
-Taste with no rule is a hunch. A sibling file with the same shape is no excuse for a copy: it
-is the copy's evidence, and only a written project rule that allows the copy refutes the
-finding.
+Refute it against the project's written rules. A duplicate finding: a sibling copy is its
+evidence, never its excuse; only a written project rule that allows the copy refutes it. Any
+other design finding: a written project rule, a documented convention, or an established
+pattern its sibling files share refutes it. Taste with none of these is a hunch.
 
 Concrete triggers for a copy, each with its `file:line`s (the full list is `code-structure`
 § 11): another copy of a helper, with the drift between the copies shown; a composite that
 several files build from the same shared parts; feature-local plumbing that the shared layer
-already offers; a `v1` left beside its `v2` with live callers; a function whose only caller is
+already offers; a `v1` left beside its `v2` (`code-structure` § 11: dead when nothing calls it, a
+half-finished move when callers remain); a function whose only caller is
 a test; a third place that switches on the same mode; a "one home" claim in code with no guard.
 
 Apply § Severity below: most design findings are Suggestions; a lying name or a boundary

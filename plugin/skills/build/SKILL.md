@@ -187,10 +187,12 @@ of the session's own folder. In order:
    cross-layer track that follows state and timing, or access and money, through every layer.
    A docs or instruction plan's areas are its own (accuracy against the code, one home per
    rule, contradictions). The run adds a spec-compliance track, and with `spec` set every track
-   reads the plan. For a code plan, run the project's `Reuse signals` once
-   (`/cc-smart-dev-kit:code-structure` § 13), save the output as a `Reuse signals:` note on the
-   plan task, and pass `reuse: true` and `signals`; with one layer, the reuse track replaces
-   the cross-layer track. Choose `budget` so the round's agents (tracks, the spec and reuse
+   reads the plan. For a code plan, run the project's `Reuse signals`
+   (`/cc-smart-dev-kit:code-structure` § 13) before each round, save the output as a
+   `Reuse signals:` note on the plan task (its summary when it is longer than a note holds,
+   64,000 characters), and pass `reuse: true` and `signals`; never name a track `reuse` in
+   `tracks`, the arg adds it. With one layer, the reuse track replaces the cross-layer track.
+   With no `Reuse signals` commands, say so in one line and go on. Choose `budget` so the round's agents (tracks, the spec and reuse
    tracks and the budget) stay within the session's workflow size guideline (default under 10
    agents); the reuse track is one more, so more findings land under Unchecked.
 3. **Save and fix round 1:** save the report whole on the plan task as a `task_note` that
@@ -199,7 +201,7 @@ of the session's own folder. In order:
    The builder that owns its files fixes it, resumed (§ 4) only while its worktree remains
    (§ 5 removes it after the merge); otherwise a fresh builder starts from the plan head.
 4. **Round 2:** the same args except `head`, which is the plan branch's head after round 1's
-   fixes, with `prior` set. `prior` is the whole text of the `Review round 1:` note, its
+   fixes, `prior` and a fresh `signals`, run again at that head, not round 1's output. `prior` is the whole text of the `Review round 1:` note, its
    Unchecked and Hunches included, never a condensed list and never just "no findings".
 5. **Save and fix round 2:** save its report as `Review round 2:`. Fix it the same way: its
    confirmed findings, and every round 1 finding the report marks NOT FIXED or WORSE; check
@@ -227,12 +229,12 @@ act on them: check the unchecked findings and the hunches yourself, against the 
 turn each that holds into a fix task under the plan. An "Incomplete review" line means that
 track returned no answer: review its area yourself, with no extra run. Do not declare success
 while a material defect remains; record the blocker and remaining work. If the review leaves
-the plan open, move the plan file back out of `archive/`. A review that found a bypassed home
-or a drifted copy ends with an offer of the slop audit (`/cc-smart-dev-kit:audit`).
+the plan open, move the plan file back out of `archive/`.
 
 Once the review and the full check pass, the one pull request of the plan opens, as `openPr` and the person's permissions allow
 (`/cc-smart-dev-kit:commit`, `/cc-smart-dev-kit:pull-request`). Include the reviews that ran (both rounds, and the final review when it ran) and real checks. A fix after it opens (a late review finding, a CI failure) follows the
-batch rule in `/cc-smart-dev-kit:commit` § Pushing. Close the plan task with evidence in that
+batch rule in `/cc-smart-dev-kit:commit` § Pushing. A review that found a bypassed home or a drifted copy ends, once the pull request is open,
+with an offer of the slop audit (`/cc-smart-dev-kit:audit`). Close the plan task with evidence in that
 same turn. A reserved plan's files stay held until its pull request merges or closes; an
 unreserved plan's files are free once its task closes. After that `task_done`, start the next queued plan yourself (a plan child never does: § Lead +
 children and coordinator modes); until then it stays queued, with its phases already laid. A plan nobody laid is a fresh plan task from

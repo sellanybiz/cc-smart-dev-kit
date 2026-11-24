@@ -80,7 +80,7 @@ base. The brief names no commit: say so in your report, with the commit you star
    `cc-smart-dev-kit:code-structure` § 11, and remove every item on its list. Then search the
    repo for each literal, user-facing sentence and helper body over about 40 characters that
    you added. Never mirror another feature's private helper: report it, so your caller
-   exports it.
+   asks whether to add its file to the plan and export it.
 6. Check for accidental edits and unexpected paths with `git status --short`. This is
    edit hygiene, not a spec or quality review. Your caller starts the senior engineer's review.
 7. Commit only when allowed. Finish or drop your blocking steps before returning: `done`
