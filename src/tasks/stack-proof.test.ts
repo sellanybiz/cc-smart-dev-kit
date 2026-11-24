@@ -45,7 +45,6 @@ function refused(answer: TaskAnswer): string {
   return answer.why;
 }
 
-/** Commits `files` on the checked-out branch and returns the new commit. */
 /** Commits `files` in `repo`, dated `date` when given (else now), and returns the commit. */
 function commit(repo: string, files: Record<string, string>, date?: string): string {
   for (const [path, text] of Object.entries(files)) writeFileSync(join(repo, path), text);

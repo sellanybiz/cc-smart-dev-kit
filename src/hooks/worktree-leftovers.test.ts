@@ -11,7 +11,7 @@ import {
   writeClaudeFile,
   writeSessionRecord,
 } from "../testing/hooks";
-import { cleanGitEnv, git, tempDir } from "../testing/temp";
+import { git, gitAt, tempDir } from "../testing/temp";
 import { makeWorktreeIdle, worktreeAdmin } from "../testing/worktree-idle";
 import { autoCleanFiles, recordRun, recordStart } from "../worktrees/auto-state";
 import { worktreeLeftoversHook } from "./specs";
@@ -76,15 +76,7 @@ describe("idleMinutesOrNull", () => {
 
   test("rewriting the reflog file does not make an old real commit recent", () => {
     const { worktree, admin, log } = fixture();
-    const committed = Bun.spawnSync(["git", "commit", "--allow-empty", "-q", "-m", "old"], {
-      cwd: worktree,
-      env: {
-        ...cleanGitEnv(),
-        GIT_AUTHOR_DATE: "2020-01-01T10:00:00Z",
-        GIT_COMMITTER_DATE: "2020-01-01T10:00:00Z",
-      },
-    });
-    expect(committed.exitCode).toBe(0);
+    gitAt("2020-01-01T10:00:00Z", worktree, "commit", "--allow-empty", "-q", "-m", "old");
     for (const file of ["index", "HEAD", "logs/HEAD"]) {
       utimesSync(join(admin, file), old, old);
     }

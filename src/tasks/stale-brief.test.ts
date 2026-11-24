@@ -9,7 +9,7 @@ import { dirname, join } from "node:path";
 import { cliPaths } from "../cli/paths";
 import { type GitRun, runGit } from "../hooks/git";
 import { hookEnv, makeClone, makeRepo } from "../testing/hooks";
-import { git } from "../testing/temp";
+import { git, gitAt } from "../testing/temp";
 import { createTaskOps, type TaskAnswer } from "./ops";
 import { staleBriefWarning } from "./plan-guards";
 import type { Who } from "./work/types";
@@ -176,9 +176,7 @@ test("git that fails is said in the line, never a refusal; nothing to judge runs
 function commitDated(repo: string, iso: string, message: string, files: Record<string, string>) {
   for (const [path, text] of Object.entries(files)) writeFileSync(join(repo, path), text);
   git(repo, "add", "-A");
-  const env = { ...hookEnv(), GIT_AUTHOR_DATE: iso, GIT_COMMITTER_DATE: iso };
-  const made = Bun.spawnSync(["git", "commit", "-q", "-m", message], { cwd: repo, env });
-  if (made.exitCode !== 0) throw new Error(made.stderr.toString());
+  gitAt(iso, repo, "commit", "-q", "-m", message);
 }
 
 test("a change behind an older-dated commit at the tip still counts: the date filters, never stops the walk", () => {
