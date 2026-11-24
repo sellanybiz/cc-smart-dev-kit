@@ -11,15 +11,16 @@ one line each.
    config-driven design where the domain is truly open and change is already coming, and
    guard the opposite just as hard (deliver what was asked; build for a future only when asked):
    an interface with one implementation is a finding too.
-2. **Performance** — waterfalls, N+1 queries, bundle weight, re-renders, missing cache. In a
-   React or Next.js app, a broken playbook rule is a finding: `/cc-smart-dev-kit:react-best-practices`.
+2. **Performance** — waterfalls, N+1 queries, bundle weight, re-renders, missing cache, an index
+   on a column rewritten on every event that no frequent read needs, a tenant-blind index on a
+   multi-tenant table. In a React or Next.js app, a broken playbook rule is a finding:
+   `/cc-smart-dev-kit:react-best-practices`.
    **The scale class**, for a change that adds shared capacity (a queue, a cap or pool, a
-   per-event read, a notifying trigger, a row lock or an append-only table): a global cap or pool
+   per-event read, a notifying trigger, a lock or an append-only table): a global cap or pool
    with no stated limit; interactive work in a bulk lane; no per-tenant fairness; a per-event
-   fan-out of reads to every client; a lock held across a read; no lock timeout; an index on a
-   column rewritten on every event that no frequent read needs; a tenant-blind index on a
-   multi-tenant table; a table that only grows. In a plan, shared capacity with no **Capacity**
-   answer (`/cc-smart-dev-kit:plan-task` § 3) is a finding.
+   fan-out of reads to every client; a lock held across a read; no lock timeout; a table that
+   only grows. In a plan, shared capacity with no **Capacity** answer
+   (`/cc-smart-dev-kit:plan-task` § 3) is a finding.
 3. **Pattern consistency** — does it match its sibling files? A new pattern needs a reason.
    A sibling copy of a helper is not a pattern (§ Design findings).
    If the old pattern is the wrong one, fix it across the plan's files (beyond them: the core
@@ -57,7 +58,8 @@ one line each.
     next bypass (a lint rule, a test or a script): inside the plan's files, or handed to the
     person when its file lies outside them. A change that adds a guard to a shared-looking
     pattern (a limit, a lock, a timeout, a scope filter) also searches the sibling features for
-    that pattern; a hit outside the plan's files goes to the person (the core instructions'
+    that pattern; a hit outside the plan's files goes where `/cc-smart-dev-kit:tasks` § 1 sends a
+    finding (a task in a held plan that owns the file, else the person; the core instructions'
     one-plan rule), never fixed in passing.
 
 ## Design findings

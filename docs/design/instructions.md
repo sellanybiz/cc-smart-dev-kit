@@ -183,9 +183,9 @@ the rule hold in a project. The split (4.10.0) keeps one home each: the builder'
 brief's "patterns and tools" slot (`plan-task` § 4) point to `react-best-practices`; review axis 6
 holds the matching finding. `performance-budget` keeps the performance and UX budgets, and since
 6.5.0 a backend and scale section for a change that adds shared capacity (its defects are review
-axis 2's scale class, and a plan prices it in plan-task § 3's **Capacity** answer). The new skill
-reads the old `performance-budget.md` add-on when its own is absent, so a project's React Compiler
-opt-out keeps working.
+axis 2's scale class, and a plan prices it in plan-task § 3's **Capacity** answer).
+`react-best-practices` reads the old `performance-budget.md` add-on when its own is absent, so a
+project's React Compiler opt-out keeps working.
 
 **Third-party skills only the person starts.** The seven vendored skills (`shadcn`,
 `migrate-radix-to-base` and the five `shadcncraft-*`) keep their authors' text, changed only by the
