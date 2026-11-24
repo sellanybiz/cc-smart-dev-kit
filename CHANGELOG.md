@@ -3,6 +3,27 @@
 What each release changed, newest first. A release's **What to run** steps are the ones to do
 in your own terminal after the update; the user guide is [README.md](README.md).
 
+## 6.5.0
+
+- **Plans price shared capacity.** A plan that adds a queue, a cap, a per-event read, a
+  notifying trigger, a row lock or an append-only table answers **Capacity** in plan-task § 3:
+  what it costs per user and per event, and the scale where it bites. The plan's second read
+  checks that answer.
+- **Reviews name scale defects.** Review axis 2 gains the scale class: a cap or pool with no
+  stated limit, interactive work in a bulk lane, no per-tenant fairness, a per-event fan-out of
+  reads, a lock held across a read, no lock timeout, an index on a column written on every
+  event, a tenant-blind index, and a table that only grows.
+- **A guard learned in one feature reaches its siblings.** When a change adds a guard to a
+  pattern its sibling features share, the review searches those siblings; a hit outside the plan
+  goes to you, never fixed in passing.
+- **performance-budget covers the backend.** A new section for a change that adds shared
+  capacity: connection budget, queue caps, fan-out, herds after a restart, growth and retention,
+  scale tests with many small tenants, and a capacity page kept current like any doc.
+- **React checks a project can adopt.** react-best-practices lists a virtualizer or a row cap
+  for long lists, render-count tests for frequent frames, split contexts for fast state and
+  stable actions, and the `react-hooks/set-state-in-effect` lint. The compiler lint now sits in
+  the `recommended` preset of `eslint-plugin-react-hooks` 7 or later.
+
 ## 6.4.0
 
 - **A builder proves its search for an existing home.** Code-structure § 3 searches three
