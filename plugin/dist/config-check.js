@@ -5745,7 +5745,7 @@ var COMMAND = "cc-smart-dev-kit";
 
 // src/build-info/index.ts
 var info = {
-  version: "6.3.0",
+  version: "6.4.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -7790,7 +7790,7 @@ function parseWorkflowText(text, file) {
 }
 
 // src/entries/config-check.ts
-var FINGERPRINT = "7fc5bd214566a6afa4b5b0cd48a956f6fb94efee5260d617936fbf08d92f4145";
+var FINGERPRINT = "0d1886da3a6bab3865da0d05631fb12c450607c32f626acd796abeb82c7ccb18";
 function answerOf(parse, isConfigError) {
   try {
     return { ok: true, value: parse(), fingerprint: FINGERPRINT };

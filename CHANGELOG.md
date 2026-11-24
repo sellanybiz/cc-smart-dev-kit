@@ -3,6 +3,41 @@
 What each release changed, newest first. A release's **What to run** steps are the ones to do
 in your own terminal after the update; the user guide is [README.md](README.md).
 
+## 6.4.0
+
+- **A builder proves its search for an existing home.** Code-structure § 3 searches three
+  ways (the name and the words it shows, what it does, a distinctive body line), shared
+  layers first. Every new export gets a `Homes:` line in the builder's report: what it
+  searched, what it found, and why the new one is not a copy. The lead checks every line is
+  there at hand-back. Outside a plan, the main session puts its own lines in the review's
+  brief.
+- **Reviews look for copies across the repo.** Searching for an existing home of what a change
+  adds is now part of a review, not side work, and its read-only searches may pass the usual
+  call limit. `review-split` takes two new optional arguments: `reuse: true` adds a `reuse`
+  track that searches the repo and spot-checks the `Homes:` lines, and `signals` hands every
+  track the project's own guard output. A plan's review rounds pass both for a code plan.
+- **A sibling copy no longer refutes a duplicate.** Both refuter prompts, and the review axes,
+  said that sibling files with the same shape refute a finding; for a copy, they are its
+  evidence. Only a written project rule that allows the copy refutes it now. Other design
+  findings are still refuted by a written rule or a documented convention. A drifted copy whose
+  difference users can see ranks Warning.
+- **Mechanical guards are the project's.** Code-structure § 13 names the guards that hold a
+  "one home" rule (unused exports, a duplicate detector, a size ratchet, a front-door import
+  lint), each a ratchet whose count may only go down. A project lists their commands under a
+  `Reuse signals` heading in its review add-on (`.claude/cc-smart-dev-kit/review.md`); the lead
+  runs them once and hands the output to the reviewers.
+- **Where shared code lives.** A helper with no feature words in it (a cursor, a page cut, a
+  retry tail, a formatter) goes to the shared layer on its first write. A merely similar
+  composite of shared UI parts moves there when a third screen builds it. Folders are named
+  for the concept they own, and test doubles live in the project's test-support home. § 11's
+  slop list gains copies of a shared home, code only its tests call, a `v1` beside its `v2`,
+  a "one home" claim with no guard, and one mode switched on in many places.
+- **Plans name their homes.** plan-task's ninth question, **Homes**, lists the shared pieces a
+  plan reuses, the homes it creates and the copies it deletes, checked against other open plans
+  too. A new shared home is a contract with one owning phase. The audit skill gains a slop
+  preset: three one-class runs (duplication and bypassed homes, dead code and `v1` beside
+  `v2`, structure and size), offered after a review finds a bypassed home.
+
 ## 6.3.0
 
 - **No AI slop.** Code-structure § 11 names what makes code read as machine-written: comments
