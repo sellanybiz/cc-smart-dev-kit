@@ -90,9 +90,9 @@ Answer nine questions; they are the plan's sections:
    (`../review/references/axes.md` from this skill's folder) and write down every one this
    change can hit: what triggers it and what the plan does about it. An axis that cannot
    apply gets one line. Findings that reshape the design go into the approach, not a footnote.
-   A plan that adds a queue, a cap, a per-event read, a notifying trigger, a row lock or an
-   append-only table also answers **Capacity**: the cost per user and per event, and the scale
-   where it bites (the scale class under Performance in that file).
+   A plan that adds shared capacity (the scale class under Performance in that file) also
+   answers **Capacity**: the cost per user and per event, and the scale where it bites, priced
+   as `/cc-smart-dev-kit:performance-budget` § Backend and scale says.
 5. **What could break** — the consumers of every shared symbol.
 6. **A simpler approach?** — the best code is no code.
 7. **Rollback** — how to undo it cleanly.
@@ -117,7 +117,7 @@ Re-read the plan as a skeptic: a simpler path, an unverified assumption, an edge
 two agents in one message: the `cc-smart-dev-kit:edge-case-hunter` for every scenario that can break the plan, and the
 `cc-smart-dev-kit:senior-engineer`'s second read (both `opus` at `xhigh`; `fable` only with the person's yes; a read of the plan,
 not of a change set), its brief with the line `Mode: plan-review` alone on its line — never `Mode: review`, which would record the
-plan read as a code review. Fold what they find into the plan's approach and edge cases; the second read checks the Capacity answer. When the plan adds UI or a new
+plan read as a code review. Fold what they find into the plan's approach and edge cases. When the plan adds UI or a new
 architecture, show it — a diagram or a mockup — rather than only describing it.
 
 Then ask for approval. In plan mode that is `ExitPlanMode`: it shows the plan, and the person

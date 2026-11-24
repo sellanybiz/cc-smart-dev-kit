@@ -1,6 +1,6 @@
 ---
 name: performance-budget
-description: Use for performance work - slow loading, re-renders, bundle size, N+1 queries, Core Web Vitals, and a backend change that adds a queue, a cap, a pool or a lock. Sets performance and UX budgets; React code also follows react-best-practices. Not for routine CLI or script changes.
+description: Use for performance work - slow loading, re-renders, bundle size, N+1 queries, Core Web Vitals, backend capacity and scale. Sets performance and UX budgets; React code also follows react-best-practices. Not for routine CLI or script changes.
 ---
 
 # Performance And UX Budget
@@ -42,11 +42,10 @@ Over a target is a bug: fix it before it ships, or get the person's yes to ship 
 
 ## Backend and scale
 
-Only when the change adds shared capacity: a queue, a cap or pool, a per-event read, a notifying
-trigger, a row lock or an append-only table. A change with none skips this in one line. Price it
-at 10x and 100x today's users and events, and put the answer in the plan (`/cc-smart-dev-kit:plan-task`
-§ 3, **Capacity**). The defects a review names are its scale class (`../review/references/axes.md`,
-Performance, from this skill's folder).
+Only when the change adds shared capacity (the scale class in `../review/references/axes.md`,
+Performance, from this skill's folder). A change with none skips this in one line. Price it at
+10x and 100x today's users and events, and put the answer in the plan (`/cc-smart-dev-kit:plan-task`
+§ 3, **Capacity**). The review names the defects there.
 
 - **Connection budget:** connections per process × processes, against the database's limit; every
   per-event read counts.
@@ -54,14 +53,15 @@ Performance, from this skill's folder).
 - **Fan-out:** one event that makes every client read again costs clients × events. Push the
   change, or batch it.
 - **Herds after a restart:** every client reconnects and re-reads at once. Add backoff with
-  jitter, and a cap on the first load.
+  jitter, and a cap on the first load. The cause is known (the restart), so this backoff is not
+  core's banned retry-until-success loop.
 - **Growth and retention:** a table that only grows has an owner, a retention period and a way to
   archive or delete. Price its biggest query at 100x the rows.
 - **Scale tests seed many small tenants,** not one big one: that shows unfair sharing and an
   index that ignores the tenant.
 - **A capacity page** in the project's docs lists each cap, pool and queue: its limit, what sets
-  it and the scale where it bites. Keep it current like any other doc: change a limit, change the
-  page.
+  it and the scale where it bites. Generate it from the config or code that sets each limit where
+  the project can; a hand-written page changes in the same change as the limit.
 
 ## UX non-negotiables
 
