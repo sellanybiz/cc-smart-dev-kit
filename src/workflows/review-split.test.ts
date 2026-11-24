@@ -131,10 +131,10 @@ describe("the review-split workflow", () => {
     expect(refute?.prompt).toContain("missing guard");
     expect(refute?.prompt).toContain("A design finding's missing guard is the rule it breaks.");
     expect(refute?.prompt).toContain(
-      "A sibling copy of the code is evidence for a duplicate finding, never a refutation of it; only a written project rule refutes one.",
+      "A sibling copy of the code is evidence for a duplicate finding, never a refutation of it; only a written project rule that allows the copy refutes it.",
     );
     expect(refute?.prompt).toContain(
-      "Any other design finding is refuted when a written project rule or a documented convention allows its shape.",
+      "Any other design finding is refuted when a written project rule, a documented convention or an established pattern its sibling files share allows its shape.",
     );
     expect(refute?.prompt).not.toContain("sibling files with that shape refute it");
   });
@@ -363,6 +363,8 @@ describe("the review-split workflow", () => {
       ["reuse", 1],
       ["signals", ["unused exports: 0"]],
       ["signals", 3],
+      ["homes", ["Homes: formatPrice"]],
+      ["homes", 3],
     ];
     for (const [key, value] of bad) {
       await expect(
@@ -1184,7 +1186,8 @@ const REUSE_TRACK = "reuse";
 const REUSE_LINES = [
   "Your track: reuse",
   "literal longer than about 40 characters",
-  "by name, by the words it shows and by a distinctive body line",
+  "with the method of code-structure § 3, three ways",
+  "by name and the words it shows; by what it does, the same job under another name; and by a distinctive body line",
   "the drift between copies",
   "unproven reuse",
   "Homes:",
@@ -1215,6 +1218,72 @@ describe("the review-split reuse track and signals", () => {
       model: "sonnet",
     });
     expect(String(run.result)).toContain("tracks: 3");
+  });
+
+  test("with no spec, homes reaches the reuse track alone, and only an empty homes calls every new export unproven", async () => {
+    const homes = "Homes: formatPrice; searched: formatPrice, price text, `toFixed(2)`";
+    const withHomes = await runScript(REVIEW_SPLIT, {
+      answer: answers([]),
+      args: { base: "main", homes, reuse: true, tracks: ["craft"] },
+    });
+    const [craft, reuse] = withHomes.calls.filter(isReview);
+    expect(reuse?.prompt).toContain("The author's `Homes:` lines follow.");
+    expect(reuse?.prompt).toContain(homes);
+    expect(reuse?.prompt).not.toContain("every new export is unproven reuse");
+    expect(craft?.prompt).not.toContain(homes);
+
+    const without = await runScript(REVIEW_SPLIT, {
+      answer: answers([]),
+      args: { base: "main", reuse: true, tracks: ["craft"] },
+    });
+    const bare = without.calls.filter(isReview)[1];
+    expect(bare?.prompt).toContain("every new export is unproven reuse");
+    expect(bare?.prompt).not.toContain("The author's `Homes:` lines follow.");
+  });
+
+  test("with a spec, the reuse track reads the notes of each phase and each task under the plan", async () => {
+    const run = await runScript(REVIEW_SPLIT, {
+      answer: answers([]),
+      args: {
+        base: "main",
+        reuse: true,
+        spec: ".claude/plans/2026-01-02-the-plan.md",
+        tracks: ["craft"],
+      },
+    });
+    const reuse = run.calls.filter(isReview)[1];
+    expect(reuse?.prompt).toContain(
+      "`Report:` notes of each phase and of each task set directly under the plan",
+    );
+    expect(reuse?.prompt).toContain('whose plan is "the-plan"');
+    expect(reuse?.prompt).toContain("task_get each phase and each task under the plan");
+    expect(reuse?.prompt).not.toContain("every new export is unproven reuse");
+  });
+
+  test("a track named like the reuse track is refused with reuse on, before any agent starts", async () => {
+    await expect(
+      runScript(REVIEW_SPLIT, {
+        args: { base: "main", reuse: true, tracks: ["craft", REUSE_TRACK] },
+      }),
+    ).rejects.toThrow(/"tracks" names "reuse"/);
+    const run = await runScript(REVIEW_SPLIT, {
+      answer: answers([]),
+      args: { base: "main", reuse: false, tracks: [REUSE_TRACK] },
+    });
+    expect(run.calls.filter(isReview).map(labelOf)).toEqual([`review: ${REUSE_TRACK}`]);
+  });
+
+  test("with reuse off, the spec track does not get the reuse method", async () => {
+    const run = await runScript(REVIEW_SPLIT, {
+      answer: answers([]),
+      args: { base: "main", spec: ".claude/plans/2026-01-02-the-plan.md", tracks: ["craft"] },
+    });
+    const reviews = run.calls.filter(isReview);
+    expect(reviews.map(labelOf)).toEqual(["review: craft", `review: ${SPEC_TRACK}`]);
+    for (const call of reviews) {
+      expect(call.prompt).not.toContain("Your track: reuse");
+      expect(call.prompt).not.toContain("unproven reuse");
+    }
   });
 
   test("without reuse, or with reuse: false, no reuse track runs", async () => {
@@ -1286,6 +1355,9 @@ describe("the review-split reuse track and signals", () => {
     for (const call of reviews) {
       expect(call.prompt).toContain(signals);
       expect(call.prompt).toContain("Run none of it");
+      expect(call.prompt).toContain(
+        "run once by the caller (the lead, or the main session outside a plan)",
+      );
     }
   });
 
