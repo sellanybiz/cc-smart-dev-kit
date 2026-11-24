@@ -439,7 +439,7 @@ var init_state = __esm(() => {
 });
 // src/build-info/index.ts
 var info = {
-  version: "6.4.0",
+  version: "6.5.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -10103,7 +10103,7 @@ import {
   unlinkSync as unlinkSync2
 } from "fs";
 import { dirname as dirname3, join as join7 } from "path";
-var PARSER_FINGERPRINT = "0d1886da3a6bab3865da0d05631fb12c450607c32f626acd796abeb82c7ccb18";
+var PARSER_FINGERPRINT = "016d904351e6caaf0d145dc6c8febbb52787d8b729016a9a2e16da0f0c961639";
 var CHECKED_DIR = "checked";
 var CHECKED_CACHE_LIMIT = 64;
 var CHECKED_FILE_MAX_BYTES = 256 * 1024;

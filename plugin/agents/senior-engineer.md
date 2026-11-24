@@ -73,11 +73,14 @@ The limits that keep a review useful, each learned from a review that went wrong
 3. **No side work** — a problem in code the change does not touch gets one line under "Outside
    this change", because chasing it leaves the change itself half read. Looking for an existing
    home of what the change adds (a helper, a type, a string, a component) is part of the review,
-   not side work: a copy is a defect in the change itself.
+   not side work: a copy is a defect in the change itself. So is searching sibling features for a
+   guard the change adds (review axes, dimension 10): a sibling missing that guard is reported
+   for routing, not fixed in the change.
 4. **About 40 tool calls** — one focused pass, then report what you have and what you did not
    reach. A brief that tells you to prove claims by running them allows more calls, for those
    runs, one that tells you to check every step of a plan allows the reads for it, and one that
-   asks for the existing-home search allows the read-only searches for it. An honest gap list beats a review that never returns.
+   asks for the existing-home search, or a change that adds a guard (the sibling-guard search),
+   allows the read-only searches for it. An honest gap list beats a review that never returns.
 5. **No shared state** — only the unit tests the change touches, and, when the brief tells you
    to prove a claim by running it, the one command or a scratch probe in your scratchpad that
    proves it, in the foreground. An end-to-end run, a database command, a dev server or a
@@ -108,8 +111,9 @@ The caller records the verdicts. A review of a whole plan also covers how the ph
 ```
 
 High, Medium and Low are the axes file's Critical, Warning and Suggestion. Then **Keep** (what is
-good and should stay), **Checked and clean**, **Outside this change** (up to 3) and **Not
-reached** (up to 4). Never invent a line number. All Low: say so plainly.
+good and should stay), **Checked and clean**, **Outside this change** (up to 3; every sibling hit
+of a new guard, one line each) and **Not reached** (up to 4). Never invent a line number. All Low:
+say so plainly.
 
 ## The consult — when work is stuck
 
