@@ -72,9 +72,26 @@ export function cleanGitEnv(): Record<string, string> {
 
 /** Runs git in `cwd`; throws with git's own message when it fails. */
 export function git(cwd: string, ...args: string[]): string {
+  return runTestGit(cwd, args, cleanGitEnv());
+}
+
+/**
+ * Runs git in `cwd` with `date` as the author and committer date of any commit it makes. Git
+ * orders commits by that date, so a test whose history depends on the order pins it here
+ * rather than on the wall clock, which can cross a second between two commits.
+ */
+export function gitAt(date: string, cwd: string, ...args: string[]): string {
+  return runTestGit(cwd, args, {
+    ...cleanGitEnv(),
+    GIT_AUTHOR_DATE: date,
+    GIT_COMMITTER_DATE: date,
+  });
+}
+
+function runTestGit(cwd: string, args: string[], env: Record<string, string>): string {
   const result = Bun.spawnSync(["git", ...args], {
     cwd,
-    env: cleanGitEnv(),
+    env,
     stdout: "pipe",
     stderr: "pipe",
   });

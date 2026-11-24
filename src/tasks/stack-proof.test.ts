@@ -12,7 +12,7 @@ import { join } from "node:path";
 import { cliPaths } from "../cli/paths";
 import { runGit } from "../hooks/git";
 import { hookEnv, makeClone } from "../testing/hooks";
-import { git, tempDir } from "../testing/temp";
+import { git, gitAt, tempDir } from "../testing/temp";
 import { folderProject } from "./context";
 import { createTaskOps, type TaskAnswer } from "./ops";
 import {
@@ -45,11 +45,13 @@ function refused(answer: TaskAnswer): string {
   return answer.why;
 }
 
-/** Commits `files` on the checked-out branch and returns the new commit. */
-function commit(repo: string, files: Record<string, string>): string {
+/** Commits `files` in `repo`, dated `date` when given (else now), and returns the commit. */
+function commit(repo: string, files: Record<string, string>, date?: string): string {
   for (const [path, text] of Object.entries(files)) writeFileSync(join(repo, path), text);
   git(repo, "add", "-A");
-  git(repo, "commit", "-q", "-m", `change ${Object.keys(files).join(" ")}`);
+  const message = `change ${Object.keys(files).join(" ")}`;
+  if (date === undefined) git(repo, "commit", "-q", "-m", message);
+  else gitAt(date, repo, "commit", "-q", "-m", message);
   return git(repo, "rev-parse", "HEAD").trim();
 }
 
@@ -66,9 +68,9 @@ function stackRepo() {
   const tip = commit(repo, { "alpha.txt": "1\n" });
   git(repo, "checkout", "-q", "main");
   const run: StackGit = (args) => runGit(repo, args, env);
-  const onMain = (files: Record<string, string>) => {
+  const onMain = (files: Record<string, string>, date?: string) => {
     git(repo, "checkout", "-q", "main");
-    const made = commit(repo, files);
+    const made = commit(repo, files, date);
     git(repo, "push", "-q", "origin", "main");
     return made;
   };
@@ -332,8 +334,11 @@ test("a criss-cross history has several fork points, and every one must pass", (
   const { plan } = store();
   // The parent merges main in, and so does a start made apart from it: the two share two best
   // fork points, alpha's own commit and main's, which is on origin/main. A plain `git merge-base`
-  // names alpha's commit here, so one fork point alone would prove the pair.
-  const m1 = g.onMain({ "m.txt": "1\n" });
+  // names alpha's commit here, so one fork point alone would prove the pair. It names it only
+  // while the two fork points share a date (git takes the newer one first), so main's commit
+  // takes alpha's commit date: on the wall clock a second could pass between the two.
+  const tipDate = git(g.repo, "log", "-1", "--format=%cI", g.tip).trim();
+  const m1 = g.onMain({ "m.txt": "1\n" }, tipDate);
   git(g.repo, "checkout", "-q", "-b", "start-branch", g.tip);
   git(g.repo, "merge", "-q", "--no-edit", m1);
   const start = git(g.repo, "rev-parse", "HEAD").trim();
