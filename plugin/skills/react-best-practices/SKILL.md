@@ -139,12 +139,12 @@ React Compiler memoizes components and hooks at build time, so hand-written `use
 
 ## Checks a project can adopt
 
-A project adds these in its linter, its tests or its add-on. Adopting one across an existing app
-is its own change (the core instructions' one-plan rule), not a side step; a list or frame the
-current change adds already follows the playbook.
+A project adds these in its linter, its tests or its add-on. Adopting a check across an existing
+app (a lint rule, a test suite) is its own change (the core instructions' one-plan rule), not a
+side step. A list, frame or context the current change adds follows these checks now.
 
-- **Long lists:** a virtualizer, or a cap on the rows drawn, for any list that can
-  grow past a screen (a table, a feed, a chat log).
+- **Long lists:** any list that can grow past a screen (a table, a feed, a chat log) follows
+  `/cc-smart-dev-kit:performance-budget` § Four commandments: virtualize it, or cap the rows drawn.
 - **High-frequency frames:** a render-count test for a frame that arrives often (a clock tick, a
   presence or typing frame). The count stays flat for every component that does not show it.
 - **Context:** never mix fast-changing state and stable actions in one value. Each tick would

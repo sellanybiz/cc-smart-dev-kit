@@ -1830,8 +1830,8 @@ names such a missing import.
 | `memory-routing` | Where a fact or a preference belongs, and which tool saves it; tasks go to `tasks`. |
 | `tasks` | Which task fits (loose, plan › phase › task, a prod or staging deploy task, a finding), how to create, close, drop and reopen it, and the deploy run. |
 | `explain` | Teaching code or an idea in plain words. |
-| `react-best-practices` | Every React or Next.js web app change: the design system first (the project's parts, then shadcn/ui with its guide and MCP server, then a library, then your own with a `Why custom:` line), the lint rule that enforces it, the React playbook, React Compiler on. Its project add-on is `.claude/cc-smart-dev-kit/react-best-practices.md`; without it, the older `performance-budget.md` add-on is read. |
-| `performance-budget` | Performance work: slow loading, re-renders, bundle size, N+1 queries, Core Web Vitals; the performance and UX budget. Also backend capacity and scale: queues, caps, pools, locks and a capacity page. |
+| `react-best-practices` | Every React or Next.js web app change: the design system first (the project's parts, then shadcn/ui with its guide and MCP server, then a library, then your own with a `Why custom:` line), the lint rule that enforces it, the React playbook, React Compiler on, and checks a project can adopt (long lists, a render-count test for high-frequency frames, split contexts, the set-state-in-effect lint rule). Its project add-on is `.claude/cc-smart-dev-kit/react-best-practices.md`; without it, the older `performance-budget.md` add-on is read. |
+| `performance-budget` | Performance work: slow loading, re-renders, bundle size, N+1 queries, Core Web Vitals; the performance and UX budget. Also backend capacity and scale, with a capacity page. |
 | `ui-verify` | A browser check of a UI change, and your design verdict. |
 | `worktree` | The steps of one-worktree-per-session work (for projects that opt in). |
 | `gateway` | The optional AI gateway. |

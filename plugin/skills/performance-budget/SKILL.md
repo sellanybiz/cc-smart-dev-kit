@@ -28,7 +28,9 @@ Over a target is a bug: fix it before it ships, or get the person's yes to ship 
 
 1. **Cached?** On the server, and on the client (the data library's cache, with a stale time
    that fits the data).
-2. **Indexed?** Every column in a `WHERE`, `ORDER BY` or join.
+2. **Indexed?** Every column a frequent read filters, sorts or joins on; a column rewritten on
+   every event that only a rare read uses stays unindexed (`../review/references/axes.md`,
+   Performance).
 3. **N+1?** One query per item in a loop → a join or one batched query.
 4. **Re-renders?** New objects or arrays created inline as props; selectors that return a
    new object each time.
@@ -45,7 +47,8 @@ Over a target is a bug: fix it before it ships, or get the person's yes to ship 
 Only when the change adds shared capacity (the scale class in `../review/references/axes.md`,
 Performance, from this skill's folder). A change with none skips this in one line. Price it at
 10x and 100x today's users and events, and put the answer in the plan (`/cc-smart-dev-kit:plan-task`
-§ 3, **Capacity**). The review names the defects there.
+§ 3, **Capacity**) or, for a change with no plan, on its task. The review names them from that
+scale class.
 
 - **Connection budget:** connections per process × processes, against the database's limit; every
   per-event read counts.
@@ -59,9 +62,12 @@ Performance, from this skill's folder). A change with none skips this in one lin
   archive or delete. Price its biggest query at 100x the rows.
 - **Scale tests seed many small tenants,** not one big one: that shows unfair sharing and an
   index that ignores the tenant.
+- **Locks:** hold a lock only across writes, never across a read or a network call, and give it
+  a timeout.
 - **A capacity page** in the project's docs lists each cap, pool and queue: its limit, what sets
   it and the scale where it bites. Generate it from the config or code that sets each limit where
-  the project can; a hand-written page changes in the same change as the limit.
+  the project can; a hand-written page changes in the same change as the limit. A project with no
+  page says so in one line; creating it is its own change.
 
 ## UX non-negotiables
 
@@ -80,7 +86,7 @@ Performance, from this skill's folder). A change with none skips this in one lin
 
 ## Banned
 
-- A query with no limit; a new filter column with no index; a query inside a loop.
+- A query with no limit; a new filter column of a frequent read with no index; a query inside a loop.
 - The same expensive request on every mount, with no cache.
 - Heavy synchronous work on the main thread (parsing huge JSON, a giant regex).
 - A plain `<img>` where the framework has an optimized image component.
@@ -92,7 +98,7 @@ Performance, from this skill's folder). A change with none skips this in one lin
 
 ## Four commandments
 
-1. **Cache what is read often and changes rarely.** A long list → virtualize it.
+1. **Cache what is read often and changes rarely.** A long list → virtualize it, or cap the rows drawn.
 2. **Measure, do not guess:** the browser's `performance` APIs and network log (through the
    Playwright MCP server), the React profiler for re-renders.
 3. **The critical path first:** the largest element, what is above the fold, the main
