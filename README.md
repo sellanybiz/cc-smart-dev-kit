@@ -1831,7 +1831,7 @@ names such a missing import.
 | `tasks` | Which task fits (loose, plan › phase › task, a prod or staging deploy task, a finding), how to create, close, drop and reopen it, and the deploy run. |
 | `explain` | Teaching code or an idea in plain words. |
 | `react-best-practices` | Every React or Next.js web app change: the design system first (the project's parts, then shadcn/ui with its guide and MCP server, then a library, then your own with a `Why custom:` line), the lint rule that enforces it, the React playbook, React Compiler on. Its project add-on is `.claude/cc-smart-dev-kit/react-best-practices.md`; without it, the older `performance-budget.md` add-on is read. |
-| `performance-budget` | Performance work: slow loading, re-renders, bundle size, N+1 queries, Core Web Vitals; the performance and UX budget. |
+| `performance-budget` | Performance work: slow loading, re-renders, bundle size, N+1 queries, Core Web Vitals; the performance and UX budget. Also backend capacity and scale: queues, caps, pools, locks and a capacity page. |
 | `ui-verify` | A browser check of a UI change, and your design verdict. |
 | `worktree` | The steps of one-worktree-per-session work (for projects that opt in). |
 | `gateway` | The optional AI gateway. |

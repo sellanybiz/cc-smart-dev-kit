@@ -119,9 +119,10 @@ React Compiler memoizes components and hooks at build time, so hand-written `use
   They change between versions, so read them, never from memory.
 - **The kit's order around it:**
   1. Add the compiler's lint rules through the project's linter: with ESLint, the
-     `recommended` preset of `eslint-plugin-react-hooks` 7 or later (an older 6.1 plugin keeps
-     them in `recommended-latest`). A linter without them: say so,
-     and rely on the compiler's own report instead. The compiler silently skips a component
+     `recommended` preset of `eslint-plugin-react-hooks` 7 or later (`configs.flat.recommended`
+     in a flat config; a 6.1 plugin has them only in `recommended-latest`, which 7 keeps for its
+     experimental rules). A linter without them: say so, and rely on the compiler's own report
+     instead. The compiler silently skips a component
      that breaks the Rules of React, and the lint shows which.
   2. Fix what the lint finds in a small app. In a large one, roll out in parts, as
      [react.dev/learn/react-compiler/incremental-adoption](https://react.dev/learn/react-compiler/incremental-adoption)
@@ -138,16 +139,17 @@ React Compiler memoizes components and hooks at build time, so hand-written `use
 
 ## Checks a project can adopt
 
-A project adds these in its linter, its tests or its add-on; on an existing app each is its own
-change (the core instructions' one-plan rule), not a side step.
+A project adds these in its linter, its tests or its add-on. Adopting one across an existing app
+is its own change (the core instructions' one-plan rule), not a side step; a list or frame the
+current change adds already follows the playbook.
 
-- **Long lists:** a virtualizer, or an allow-list that caps the rows drawn, for any list that can
+- **Long lists:** a virtualizer, or a cap on the rows drawn, for any list that can
   grow past a screen (a table, a feed, a chat log).
 - **High-frequency frames:** a render-count test for a frame that arrives often (a clock tick, a
   presence or typing frame). The count stays flat for every component that does not show it.
 - **Context:** never mix fast-changing state and stable actions in one value. Each tick would
   re-render every consumer of the actions. Use two contexts.
 - **Set-state in an effect:** the lint rule `react-hooks/set-state-in-effect` of
-  `eslint-plugin-react-hooks` flags a synchronous `setState` in an effect. Compute the value
-  during render instead. It ships with the compiler rules above, and it works before the
+  `eslint-plugin-react-hooks` flags a synchronous `setState` in an effect (the playbook's § 5.1
+  says what to do instead). It ships with the compiler rules above, and it works before the
   compiler is on ([react.dev reference](https://react.dev/reference/eslint-plugin-react-hooks)).
