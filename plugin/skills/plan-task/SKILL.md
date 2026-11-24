@@ -202,7 +202,7 @@ CLI fallback: `/cc-smart-dev-kit:tasks`.
   those phases, and a shared resource does not by itself (below). Batch small edits of the
   same shape into one dispatch, not one agent per line. A phase that needs an export from a
   file outside the plan's list reports it and stops that step (`cc-smart-dev-kit:builder`, step 5);
-  the lead asks the person once to add the file (on yes: `task_update` the plan's `files` and a
+  the lead asks the person once to add the file (on yes: `task_update` the plan's `files`, `task_create` a
   step under that phase; refused by a held plan: wait for it, or the person decides). A guard
   outside the plan goes to the person.
 - **Name contracts and dependencies.** Contracts (a type, an API shape, a shared constant) go

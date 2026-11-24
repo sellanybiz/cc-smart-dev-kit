@@ -1897,7 +1897,7 @@ Every skill first reads the project's own add-on file when it exists:
 `.claude/cc-smart-dev-kit/<skill>.md` — for example `.claude/cc-smart-dev-kit/review.md` or
 `.claude/cc-smart-dev-kit/ui-verify.md` (how to find this project's dev server). A review add-on may
 carry a `Reuse signals` heading: the project's own guard commands (unused exports, a duplicate
-detector, a size count), which the review runs once and hands to its reviewers. Where the project's
+detector, a size count), which the review runs before each round and hands to its reviewers. Where the project's
 `CLAUDE.md`, its rules or an add-on file differ from the plugin's general text, the project's
 text wins. So the plugin stays general, and each project keeps its own rules in its own repo.
 

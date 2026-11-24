@@ -37,7 +37,7 @@ session cap for a large plan with clearly divided files. Model and effort per jo
 
 A plan is one pull request and holds at most `plans.maxPhases` phases; a phase is one area
 with its tasks (`/cc-smart-dev-kit:plan-task` § 5). **Add no phase while building:** new
-in-scope work becomes a task under the phase that owns its files, or, for a file the plan adds,
+in-scope work becomes a task under the phase that owns its files, or, for a file added to its `files`,
 the phase that needs it (a review finding is the exception: § 6 puts it under the plan), and a
 later ask waits as a task in the next queued plan (plan-task § 6). The store refuses a phase beyond the cap, a phase with no tasks (add one
 with `task_create` and `parent` set to the phase's `#n`), and work in a plan while another is
@@ -107,7 +107,7 @@ builder stopped by Claude Code's worktree check needs no yes from the person, si
 lifts that check: resume it with `SendMessage` and the ruling to split its commands. Ask the
 person only for a real permission they alone can give, and pass their answer on the same way.
 Record the check and its evidence on the task. A report that needs an export from a file outside
-the plan's `files` follows `/cc-smart-dev-kit:plan-task` § 5. A finding outside the plan, in a
+the plan's `files` follows `/cc-smart-dev-kit:plan-task` § 5. Any other finding outside the plan, in a
 report or a review, goes to the person at once (`/cc-smart-dev-kit:tasks` § 1).
 
 ## 4. Fix with the same builder, then escalate
@@ -190,7 +190,7 @@ of the session's own folder. In order:
    reads the plan. For a code plan, run the project's `Reuse signals`
    (`/cc-smart-dev-kit:code-structure` § 13) before each round, save the output as a
    `Reuse signals:` note on the plan task (its summary when it is longer than a note holds,
-   64,000 characters), and pass `reuse: true` and `signals`. With one layer, the reuse track replaces the cross-layer
+   64,000 characters), and pass `reuse: true`, `signals` and `homes` (your own `Homes:` lines). With one layer, the reuse track replaces the cross-layer
    track. Choose `budget` so the round's agents (tracks, the spec and reuse tracks and the budget)
    stay within the session's workflow size guideline (default under 10 agents); the reuse track
    is one more, so more findings land under Unchecked.

@@ -113,7 +113,7 @@ time, and ask first (§ 2) unless the person asked.
 - **Seed it:** run the project's `Reuse signals` commands (its review add-on) first and name the
   worst hits in the `target`. Never ask an auditor to run the project's guard commands itself.
 - **The spec is the project's:** its rules and guards, and `code-structure`. `audit-run` has no
-  spec arg, so write "judge by code-structure §§ 3, 5, 11 and 13" into `question`. Refuting
+  spec arg, so write "judge by code-structure §§ 3, 4, 5, 11 and 13" into `question`. Refuting
   follows `../review/references/axes.md` § Design findings.
 - **Offer these runs** after a plan's review found a bypassed home or a drifted copy: the same
   class is likely in the code the plan did not touch.

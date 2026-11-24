@@ -49,7 +49,7 @@ in `homes` too.
 
 A unit does one job you can name in a short sentence without "and". Split when it does
 several jobs, or a block needs a comment to say *what* it does: name that block as a
-function in the same file. A long function that reads as one straight sequence of one job
+function in the same file (a pure one with no feature words: § 7). A long function that reads as one straight sequence of one job
 stays. About 100 lines per function and 500 per file are a reason to look, never on their
 own a reason to split.
 Keep together what changes together; do not split what must be read together.
@@ -66,7 +66,7 @@ already drifted and caused a bug. Reuse an existing implementation or extract th
 
 **Merely similar — wait for the third.** Two things that look alike need not be a repeat;
 a third shows which parts are shared and which are coincidence. Extracting to *name* a
-block stays in its file (a helper with no feature words: § 7); extracting for *reuse* needs a
+block stays in its file, except a pure helper with no feature words (§ 7); extracting for *reuse* needs a
 real second caller. A composite of shared UI parts is the same case: an *identical* one follows § 7 (extract before shipping
 it twice); a merely similar one goes to the shared UI layer when a third screen builds it.
 
@@ -110,7 +110,7 @@ follows the list):
 **One exception, for placement only:** a new pure helper with no feature words in it (a page
 cut, a list or count formatter, a date formatter) goes to the shared layer the project names for
 its side on its first write, even with one caller. This decides where it lives, not whether to
-extract it (§ 5). With no such layer, keep it beside its caller and say so in its Homes line.
+extract it (§ 5). With no such layer, keep it beside its caller and say so in your report's `Homes:` section.
 
 Use the project's layer names, import aliases and boundaries from its add-on and rules.
 A boundary violation is Critical in review.
