@@ -16,6 +16,7 @@ test("the modes, and the words a mode goes by", () => {
   expect(normalizeMode("default")).toBe("default");
   expect(normalizeMode("bypassPermissions")).toBeNull();
   expect(cliModeFlag("default")).toBe("manual");
+  expect(cliModeFlag("auto")).toBe("auto");
 });
 test("every verb", () => {
   expect(

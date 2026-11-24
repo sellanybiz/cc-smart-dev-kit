@@ -46,7 +46,8 @@ The first message is wrapped as lead evidence, never the person’s approval.
 - Add `--independent` only for the independent kind.
 - Pass `--mode` the lead's own current mode: a lead in auto mode starts its children in
   `auto`, so they do not stop for approvals the lead would not. Narrow it only when the brief
-  needs it; never broader. A plan-mode lead must get its plan approved first; never use
+  needs it; never broader (nothing checks this for you). When you cannot tell your own mode,
+  pass `default`. A plan-mode lead must get its plan approved first; never use
   `bypassPermissions`.
 - Use `--task '#n'` only for an existing open task in this repository on this machine.
   Else put the scope in the brief, not a task id from another project. The child works on

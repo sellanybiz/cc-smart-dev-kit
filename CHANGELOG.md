@@ -8,7 +8,8 @@ in your own terminal after the update; the user guide is [README.md](README.md).
 - **A Herdr child starts in its lead's mode.** The herdr skill now tells a lead to pass its own
   permission mode to `herdr start`, so a lead in auto mode starts its children in auto mode.
   Before, its examples showed `--mode default`, so a child stopped for approvals its lead never
-  needed. The child's mode still never exceeds the lead's.
+  needed. The skill still tells a lead never to pass a mode broader than its own, and to pass
+  `default` when it cannot tell its own mode; no hook or command checks this since 6.0.0.
 
 ## 6.5.0
 
