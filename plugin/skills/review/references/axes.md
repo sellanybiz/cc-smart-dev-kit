@@ -25,6 +25,11 @@ one line each.
    In UI code, a raw control or hand-made widget where the design system has one is a
    finding: select, table, textarea, radio group, tabs, date input, avatar, menu, combobox,
    dialog. Name the design-system component that replaces it.
+   For each export the diff adds, search the repo for an existing home: its name, the words it
+   shows a user, and one distinctive line of its body, shared layers first. A hit is a finding
+   (import it, or move the helper to the shared layer both callers use). Read the brief's
+   `Reuse signals` and the author's `Homes:` lines first when it has them. In a plan's review
+   the `reuse` track of `review-split` runs this search.
 7. **Craft** — would a senior engineer be embarrassed to approve this? Names that lie, one
    function doing five things, nesting that should be early returns, clever one-liners,
    user-facing errors that say "Something went wrong". Structure and names:
@@ -38,7 +43,9 @@ one line each.
    idempotent (safe to run twice).
 10. **Fix the class, inside the plan** — for every finding, search the files the plan changes
     for the same pattern and fix every instance there (`/cc-smart-dev-kit:impact-analysis` § Fix the
-    pattern).
+    pattern). When the finding is a bypassed home, the fix also adds the guard that fails on the
+    next bypass (a lint rule, a test or a script): inside the plan's files, or handed to the
+    person when its file lies outside them.
 
 ## Design findings
 
@@ -51,9 +58,20 @@ Design findings use the same four evidence fields:
 | **Outcome** | The concrete cost: copies that will drift, a boolean saying the opposite, a function doing three jobs. |
 | **Why allowed** | The rule it breaks: a `code-structure` section, the project's add-on or rule. |
 
-Refute it against project conventions and sibling files: an established shape may already
-justify it. Taste with no rule is a hunch. Apply § Severity below: most design findings are
-Suggestions; a lying name or a boundary violation ranks higher for its concrete outcome.
+Refute it against the project's written rules: a documented convention may justify the shape.
+Taste with no rule is a hunch. A sibling file with the same shape is no excuse for a copy: it
+is the copy's evidence, and only a written project rule that allows the copy refutes the
+finding.
+
+Concrete triggers for a copy, each with its `file:line`s (the full list is `code-structure`
+§ 11): another copy of a helper, with the drift between the copies shown; a composite that
+several files build from the same shared parts; feature-local plumbing that the shared layer
+already offers; a `v1` left beside its `v2` with live callers; a function whose only caller is
+a test; a third place that switches on the same mode; a "one home" claim in code with no guard.
+
+Apply § Severity below: most design findings are Suggestions; a lying name or a boundary
+violation ranks higher for its concrete outcome, and so does a drifted copy whose difference
+users can see (different text, a different result), which is a Warning.
 
 ## Edge-case axes
 

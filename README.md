@@ -1835,7 +1835,7 @@ names such a missing import.
 | `ui-verify` | A browser check of a UI change, and your design verdict. |
 | `worktree` | The steps of one-worktree-per-session work (for projects that opt in). |
 | `gateway` | The optional AI gateway. |
-| `audit` | A sweep of an area for one class of defect, not a diff: scope, tracks and budget, the `audit-run` workflow, then every finding proved in the code. |
+| `audit` | A sweep of an area for one class of defect, not a diff: scope, tracks and budget, the `audit-run` workflow, then every finding proved in the code. A slop preset gives three ready-made runs: duplication, dead code, structure. |
 | `user-unavailable` | While you cannot answer (`user unavailable`): never stop to ask, never park or wait. It takes the recommended option of every question, records each choice as a decision (`Decision: …`, with its reason and how to undo it), keeps going at full parallel width, and writes the stretch's summary. After a plan's review it merges only when `workflow merge-check` exits 0 (with `--asked`, and your quoted words, when `allowMerge` is off and you said yes to that merge), else leaves the pull request open; it stacks the next plan on a pull request still open ("stacked on #n"); and under the default `plans.runMode` (`ask`, refused while away) it runs lead + children when two or more ready plans do not overlap and a Herdr terminal exists, otherwise solo. |
 | `user-available` | When you are back: switches the state off, shows what was done while you were away, then shows the decisions taken for you (undone as their own words say, if you dislike one). Nothing waits for an answer. |
 
@@ -1859,7 +1859,8 @@ finding, and a `builder` to write the report. For a big change set, the `review`
 second opinion from `review-split` (`plugin/workflows/review-split.js`) instead of one reviewer:
 one `senior-engineer` per track, kept from editing, a second one to refute each finding, and the
 verified findings merged and ranked; a finding nobody could prove or refute is listed under
-Hunches, never dropped. The `research-first` skill starts `research-sweep`
+Hunches, never dropped. A `reuse` track, when asked for, searches the repo for an existing home
+of what the change adds. The `research-first` skill starts `research-sweep`
 (`plugin/workflows/research-sweep.js`) for a question with several sources: one `researcher`
 per angle, then one refuter per claim that opens the cited source, and the verified
 claims come back with their sources. Each script fixes its agents' models and efforts — `review-split`'s on `opus` at
@@ -1894,7 +1895,9 @@ pick it with `/output-style`. The plugin never switches it on.
 
 Every skill first reads the project's own add-on file when it exists:
 `.claude/cc-smart-dev-kit/<skill>.md` — for example `.claude/cc-smart-dev-kit/review.md` or
-`.claude/cc-smart-dev-kit/ui-verify.md` (how to find this project's dev server). Where the project's
+`.claude/cc-smart-dev-kit/ui-verify.md` (how to find this project's dev server). A review add-on may
+carry a `Reuse signals` heading: the project's own guard commands (unused exports, a duplicate
+detector, a size count), which the review runs once and hands to its reviewers. Where the project's
 `CLAUDE.md`, its rules or an add-on file differ from the plugin's general text, the project's
 text wins. So the plugin stays general, and each project keeps its own rules in its own repo.
 
