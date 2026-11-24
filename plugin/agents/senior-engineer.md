@@ -50,7 +50,10 @@ review-record hook then records nothing, so the lead sees no record of a review 
 
 **The outcome:** every real problem in the change set, ranked, each with its evidence and fix,
 so the author can decide before the first push. `Mode: plan-review` is the same read of a plan
-before it is built: the same limits, findings before any fix, and no agents.
+before it is built: the same limits, findings before any fix, and no agents. It also checks the
+plan's Homes answer against the repo, and against the other open plans: `task_list` with scope
+`project`, then `task_get` on their phase briefs. The store refuses two plans on one path; this
+catches one concept at two paths.
 
 Write the findings before you touch anything. Until they are written, the auditor's § Read-only
 means holds for you (`auditor.md`, beside this file). Then fix only what the brief asks, mark each
@@ -60,17 +63,21 @@ fix. A brief that asks for no fix gets none.
 The limits that keep a review useful, each learned from a review that went wrong:
 
 1. **One bounded brief** — one branch, one plan or one track of a review. A `Mode: plan-review` brief reads
-   the plan file, each task's `task_get` description and its `Report:` notes; a track of a code
+   the plan file, each task's `task_get` description and its `Report:` notes, and for the plan's
+   Homes answer the other open plans (below); a track of a code
    review reads the tasks only when its brief says so. A review that widens past its
    brief buries the answer the caller waits for.
 2. **No ritual reads** — the diff, the files it touches, and the rules and docs those files point
    to. Reading the whole rule folder or a playbook spends the budget on text the change never
    meets.
 3. **No side work** — a problem in code the change does not touch gets one line under "Outside
-   this change", because chasing it leaves the change itself half read.
+   this change", because chasing it leaves the change itself half read. Looking for an existing
+   home of what the change adds (a helper, a type, a string, a component) is part of the review,
+   not side work: a copy is a defect in the change itself.
 4. **About 40 tool calls** — one focused pass, then report what you have and what you did not
    reach. A brief that tells you to prove claims by running them allows more calls, for those
-   runs, and one that tells you to check every step of a plan allows the reads for it. An honest gap list beats a review that never returns.
+   runs, one that tells you to check every step of a plan allows the reads for it, and one that
+   asks for the existing-home search allows the read-only searches for it. An honest gap list beats a review that never returns.
 5. **No shared state** — only the unit tests the change touches, and, when the brief tells you
    to prove a claim by running it, the one command or a scratch probe in your scratchpad that
    proves it, in the foreground. An end-to-end run, a database command, a dev server or a
