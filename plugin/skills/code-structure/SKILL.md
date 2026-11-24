@@ -173,7 +173,15 @@ these and remove each one:
 - **Nothing just in case** (§§ 2 and 4): an option, flag or config key no caller uses; a
   compatibility shim, re-export or alias nobody asked for.
 - **Unused code:** dead code, unused imports, commented-out blocks. Delete them; git keeps
-  the history.
+  the history. Code that only its own tests call is dead; so is a `v1` left beside its `v2`.
+- **A copy of a shared home:** something a shared layer already exports, written again; a
+  composite of shared parts built by hand when the project has one; plumbing every feature
+  needs (a fetch wrapper, a retry, a cache key) rebuilt inside one feature; a rule on words
+  (a plural, a label, a date format) written inline when the project has a home for words.
+- **A claim with no guard:** a comment or doc that says "the one place for X" while no test or
+  lint fails on a second place.
+- **One mode, many switches:** the same flag or mode tested in three or more places; one
+  function or table should decide it.
 - **Debug output:** logging added while building, and log lines that narrate a normal run.
 - **Churn:** reformatting, reordered imports or renames in lines the task does not change.
   A cleaner edit (§ 10) makes the code truer; churn only moves text.
@@ -198,3 +206,18 @@ instructions' root-cause rule), and code unlike its siblings (§ 8, and § 12's 
 8. Names true?
 9. Nothing built for a need that does not exist?
 10. Nothing from § 11's list?
+
+## 13. Mechanical guards
+
+A rule that says "one home" holds only when a tool fails on a second one. The project owns
+these guards; each is a ratchet, so the count may only go down:
+
+- unused exports, where use in a test alone counts as unused;
+- a duplicate detector over the source;
+- a size ratchet on files and functions;
+- an import lint that sends callers through a feature's front door.
+
+The project lists its commands in its review add-on, `.claude/cc-smart-dev-kit/review.md`,
+under a `Reuse signals` heading. The lead runs them once, or the main session when there is
+no plan, and hands the output to the reviewers. A reviewer never runs a repo-wide tool
+itself. A project with none of these guards says so in one line, and the work goes on.
