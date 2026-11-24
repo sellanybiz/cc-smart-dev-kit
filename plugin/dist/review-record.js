@@ -724,7 +724,7 @@ import { dirname as dirname3, join as join8 } from "path";
 
 // src/build-info/index.ts
 var info = {
-  version: "6.5.0",
+  version: "6.5.1",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -746,7 +746,7 @@ var PLUGIN_INSTALL_COMMAND = `claude plugin install ${PLUGIN_ID}`;
 var PLUGIN_UPDATE_COMMAND = `claude plugin update ${PLUGIN_ID}`;
 
 // src/hooks/checked-config.ts
-var PARSER_FINGERPRINT = "016d904351e6caaf0d145dc6c8febbb52787d8b729016a9a2e16da0f0c961639";
+var PARSER_FINGERPRINT = "8d3c0f13896e8a6132f745b8cb0da701de71e30e23fa2c2f66654fb9d1fe8ea2";
 var CHECKED_DIR = "checked";
 var CHECKED_CACHE_LIMIT = 64;
 var CHECKED_FILE_MAX_BYTES = 256 * 1024;
