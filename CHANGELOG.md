@@ -13,30 +13,35 @@ in your own terminal after the update; the user guide is [README.md](README.md).
   brief.
 - **Reviews look for copies across the repo.** Searching for an existing home of what a change
   adds is now part of a review, not side work, and its read-only searches may pass the usual
-  call limit. `review-split` takes two new optional arguments: `reuse: true` adds a `reuse`
-  track that searches the repo and spot-checks the `Homes:` lines, and `signals` hands every
-  track the project's own guard output. A plan's review rounds pass both for a code plan.
+  call limit. `review-split` takes three new optional arguments: `reuse: true` adds a `reuse`
+  track that searches the repo for each new export, long literal, user-facing sentence and
+  helper body, and spot-checks the `Homes:` lines; `signals` hands every track the project's
+  own guard output; `homes` (with `reuse` only) carries Homes lines the plan's task notes do
+  not hold. A plan's review rounds pass `reuse` and fresh `signals` for a code plan.
 - **A sibling copy no longer refutes a duplicate.** Both refuter prompts, and the review axes,
   said that sibling files with the same shape refute a finding; for a copy, they are its
   evidence. Only a written project rule that allows the copy refutes it now. Other design
-  findings are still refuted by a written rule or a documented convention. A drifted copy whose
-  difference users can see ranks Warning.
+  findings are refuted by a written rule, a documented convention, or an established pattern
+  their sibling files share. A drifted copy whose difference users can see ranks Warning.
 - **Mechanical guards are the project's.** Code-structure § 13 names the guards that hold a
   "one home" rule (unused exports, a duplicate detector, a size ratchet, a front-door import
   lint), each a ratchet whose count may only go down. A project lists their commands under a
   `Reuse signals` heading in its review add-on (`.claude/cc-smart-dev-kit/review.md`); the lead
-  runs them once and hands the output to the reviewers.
-- **Where shared code lives.** A helper with no feature words in it (a cursor, a page cut, a
-  retry tail, a formatter) goes to the shared layer on its first write. A merely similar
-  composite of shared UI parts moves there when a third screen builds it. Folders are named
-  for the concept they own, and test doubles live in the project's test-support home. § 11's
-  slop list gains copies of a shared home, code only its tests call, a `v1` beside its `v2`,
-  a "one home" claim with no guard, and one mode switched on in many places.
+  runs them before each review round and hands the output to the reviewers, who never run
+  them themselves.
+- **Where shared code lives.** A new pure helper with no feature words in it (a page cut, a
+  list or date formatter) goes to the shared layer the project names for its side on its
+  first write. A merely similar composite of shared UI parts moves there when a third screen
+  builds it. Folders are named for the concept they own, and test doubles live in the
+  project's test-support home. § 11's slop list gains copies of a shared home, code only its
+  tests call, a `v1` kept beside its `v2`, a "one home" claim with no guard, and one mode
+  switched on in many places.
 - **Plans name their homes.** plan-task's ninth question, **Homes**, lists the shared pieces a
   plan reuses, the homes it creates and the copies it deletes, checked against other open plans
-  too. A new shared home is a contract with one owning phase. The audit skill gains a slop
-  preset: three one-class runs (duplication and bypassed homes, dead code and `v1` beside
-  `v2`, structure and size), offered after a review finds a bypassed home.
+  too. A new shared home is a contract. A phase that needs an export from a file outside the
+  plan stops that step, and the lead asks you before the file joins the plan. The audit skill
+  gains a slop preset: three one-class runs (duplication and bypassed homes, dead code and
+  `v1` beside `v2`, oversized units), offered after a review finds a bypassed home.
 
 ## 6.3.0
 
