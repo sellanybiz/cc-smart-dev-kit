@@ -39,7 +39,7 @@ var MIN_BUN = "1.4.3";
 
 // src/build-info/index.ts
 var info = {
-  version: "6.3.0",
+  version: "6.4.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -33769,7 +33769,7 @@ function checkedCacheProblem(paths, exists = existsSync41) {
     return `cannot be written${code === undefined ? "" : ` (${code})`}`;
   }
 }
-var PARSER_FINGERPRINT = "7fc5bd214566a6afa4b5b0cd48a956f6fb94efee5260d617936fbf08d92f4145", CHECKED_DIR = "checked", CHECKED_CACHE_LIMIT = 64, CHECKED_FILE_MAX_BYTES, CHECKED_TEMP_MAX_AGE_MS = 60000, ENTRY_FORMAT = 1, TEMP_NAME, PARSE;
+var PARSER_FINGERPRINT = "0d1886da3a6bab3865da0d05631fb12c450607c32f626acd796abeb82c7ccb18", CHECKED_DIR = "checked", CHECKED_CACHE_LIMIT = 64, CHECKED_FILE_MAX_BYTES, CHECKED_TEMP_MAX_AGE_MS = 60000, ENTRY_FORMAT = 1, TEMP_NAME, PARSE;
 var init_checked_config = __esm(() => {
   init_build_info();
   init_locate();

@@ -97,9 +97,12 @@ describe("every shipped workflow script", () => {
       expect(meta.description).toContain(`/cc-smart-dev-kit:${skill}`);
       const shape = checkArgumentContract(script);
       const fields = shape.map((field) => field.key);
+      // An optional key another key needs goes with it: review-split refuses `homes` without
+      // `reuse`, so dropping `reuse` alone would test a call the script rightly refuses.
+      const needs: Record<string, string[]> = { reuse: ["homes"] };
       for (const field of shape) {
         const without = { ...input.args };
-        delete without[field.key];
+        for (const key of [field.key, ...(needs[field.key] ?? [])]) delete without[key];
         if (field.optional) {
           expect((await runScript(file, { args: without })).calls.length).toBeGreaterThan(0);
         } else {

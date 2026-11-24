@@ -95,8 +95,8 @@ const TASK_WRITES = [
 const READ_ONLY = ['Edit', 'Write', 'NotebookEdit', 'Agent'].concat(TASK_WRITES)
 
 // One auditor per track, in parallel, on `sonnet` at `high`: the breadth, which `high` covers.
-// Each track is the caller's: the audit skill takes them from the review skill's edge-case axes,
-// so the list of tracks has one home (`references/axes.md`). The auditor's own file already
+// Each track is the caller's: the audit skill takes them from the review skill's edge-case axes
+// or review dimensions, so the list of tracks has one home (`references/axes.md`). The auditor's own file already
 // denies the editing tools; each launch denies them too, so no track edits the checkout the
 // others read even if that file changes. Each launch also denies `Agent`: the budget counts the
 // agents this run starts, and an agent a track started on its own would escape that count.
@@ -139,7 +139,7 @@ log(
 // reported: the evidence bar is the review's (`plugin/instructions/core.md` § Review).
 const verdicts = await pipeline(checked, (finding) =>
   agent(
-    `Try to refute this audit finding in the code. Read the file and line it names, then the code path around it, then look for the guard that would already stop it. Answer \`confirmed\` only when the trigger, the path, the outcome and the missing guard all hold in the code; \`refuted\` when a guard or a constraint already stops it; \`unproven\` when the code does not settle it. A design finding's missing guard is the rule it breaks. A project convention or sibling files with that shape refute it. Put the lines you read in \`evidence\`.\n\n${JSON.stringify(finding, null, 2)}`,
+    `Try to refute this audit finding in the code. Read the file and line it names, then the code path around it, then look for the guard that would already stop it. Answer \`confirmed\` only when the trigger, the path, the outcome and the missing guard all hold in the code; \`refuted\` when a guard or a constraint already stops it; \`unproven\` when the code does not settle it. A design finding's missing guard is the rule it breaks. For a duplicate finding, a file with the same shape confirms the copy and never excuses it: only a written project rule that allows the copy refutes it. Every other design finding falls when the project's written rules, a convention it documents or an established pattern its sibling files share justify the shape. Put the lines you read in \`evidence\`.\n\n${JSON.stringify(finding, null, 2)}`,
     {
       label: 'verify',
       model: 'opus',

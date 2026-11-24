@@ -77,7 +77,7 @@ What the recommended option must be, and how a workaround is labelled: the core 
 
 ## 3. Write the plan, before the first code edit
 
-Answer eight questions; they are the plan's sections:
+Answer nine questions; they are the plan's sections:
 
 1. **Goal** — the real outcome, not the literal request.
 2. **Files to change** — the files the plan writes, never the ones it only reads: exact
@@ -98,23 +98,24 @@ Answer eight questions; they are the plan's sections:
    (`/cc-smart-dev-kit:verify-change` § 6). Each phase's done-check (§ 5) comes from here. Name
    the plan's two review runs and its final review (`/cc-smart-dev-kit:build` § 6, which says when
    the final one runs): approving the plan approves them.
+9. **Homes** — the shared pieces the plan reuses, the new shared homes it makes with their
+   paths, and the copies it deletes. Search first, other open plans included (`task_list`
+   with `scope: "project"`, then `task_get` for their briefs): `/cc-smart-dev-kit:code-structure` § 3.
 
 Put a three-line **Summary** at the top. Keep approval and build status out of the design.
 Write it so a fresh session can build from the file alone: the approval screen may offer to
 clear the context and start from the plan (the person's `showClearContextOnPlanAccept`
-setting). The built-in `Plan` agent is read-only: it returns the text, and you write the file. A planning
-agent runs on `opus` at `xhigh` (`/cc-smart-dev-kit:subagent-decision`).
+setting). The built-in `Plan` agent is read-only: it returns the text, and you write the
+file. A planning agent runs on `opus` at `xhigh` (`/cc-smart-dev-kit:subagent-decision`).
 
 ## 4. Self-check, then approval
 
-Re-read the plan as a skeptic: a simpler path, an unverified assumption, an edge case waved
-away? For a big or risky plan, start two agents in one message: the
-`cc-smart-dev-kit:edge-case-hunter` for every scenario that can break the plan, and the
-`cc-smart-dev-kit:senior-engineer`'s second read (both `opus` at `xhigh`; `fable` only with the
-person's yes; a read of the plan, not of a change set), its brief with the line `Mode: plan-review` alone on its line — never
-`Mode: review`, which would record the plan read as a code review. Fold what they find into
-the plan's approach and edge cases. When the plan adds UI or a new architecture, show it — a
-diagram or a mockup — rather than only describing it.
+Re-read the plan as a skeptic: a simpler path, an unverified assumption, an edge case waved away? For a big or risky plan, start
+two agents in one message: the `cc-smart-dev-kit:edge-case-hunter` for every scenario that can break the plan, and the
+`cc-smart-dev-kit:senior-engineer`'s second read (both `opus` at `xhigh`; `fable` only with the person's yes; a read of the plan,
+not of a change set), its brief with the line `Mode: plan-review` alone on its line — never `Mode: review`, which would record the
+plan read as a code review. Fold what they find into the plan's approach and edge cases. When the plan adds UI or a new
+architecture, show it — a diagram or a mockup — rather than only describing it.
 
 Then ask for approval. In plan mode that is `ExitPlanMode`: it shows the plan, and the person
 approves it there or keeps planning — never a second "Start building?" with
@@ -127,8 +128,8 @@ the plan in the main checkout's plans folder, and nothing there is for editing: 
 `EnterWorktree` first (the plan's slug as its `name`), then copy the approved plan into the
 worktree's plans folder (`Read`, then `Write`) and remove the original, so the plan and the
 build are on the worktree's branch. Commit the plan file on the current branch as the workflow allows. Move full research to
-`.claude/research/archive/<YYYY-MM-DD>-<slug>.md` (or the add-on's home), linked from the plan.
-Changes wanted: revise and ask again; never build without approval.
+`.claude/research/archive/<YYYY-MM-DD>-<slug>.md` (or the add-on's home), linked from the plan. Changes wanted: revise and ask
+again; never build without approval.
 
 After approval, use `task_create` for the plan (`plan`: its slug, subject: its title); a plan
 queued earlier (§ 6) already has its plan task, so use that one and make no second. Then
@@ -143,7 +144,8 @@ queued (§ 6). Put the complete builder brief in each phase's description, in
 four parts: objective; files and boundaries; patterns and tools; output format (`Report:`
 task note and short status). Include interfaces, edge cases and done-check.
 In **patterns and tools**, name the standard components or libraries to use — for example,
-the design system's Select or a table library — or explain why none fits.
+the design system's Select or a table library — or explain why none fits — and the homes
+the Homes answer names.
 Put caller rulings up front: commit permission, allowed checks, the refusal handling the
 builder agent gives, decide small calls and note them as `Ruling:`.
 The dispatch includes `Your task: #<n>` for the phase; the build skill explains the
@@ -198,10 +200,16 @@ CLI fallback: `/cc-smart-dev-kit:tasks`.
   integration work in the main session.
 - **Name exact files.** Disjoint file sets run in parallel worktrees; any shared file orders
   those phases, and a shared resource does not by itself (below). Batch small edits of the
-  same shape into one dispatch, not one agent per line.
+  same shape into one dispatch, not one agent per line. A phase that needs an export from a
+  file outside the plan's list reports it and stops that step (`cc-smart-dev-kit:builder`, step 5);
+  the lead asks the person once to add the file (on yes: `task_update` the plan's `files`, `task_create` a
+  step under that phase; refused by a held plan: wait for it, or the person decides). A guard
+  outside the plan goes to the person.
 - **Name contracts and dependencies.** Contracts (a type, an API shape, a shared constant) go
   first, in a phase of their own; the phases that use them are `blocked_by` it, so they start
-  from its merged code. Put every other real wait in `blocked_by` too. Do not hold work for
+  from its merged code. A new shared home is a contract: it goes in the contract phase, or the
+  owning phase builds it first and the other phase is `blocked_by` that phase, so two phases never
+  build the same one. Put every other real wait in `blocked_by` too. Do not hold work for
   an unrelated review, merge or answer.
 - **A shared resource orders phases only when two phases write the same state.** A
   database, a port or a number sequence is not a reason to chain phases: give each builder
@@ -211,7 +219,8 @@ CLI fallback: `/cc-smart-dev-kit:tasks`.
   hand-back, review, fix, merge and cleanup loop belong to `/cc-smart-dev-kit:build`.
 - **The last wave is a heavy cleanup**, run only once everything is verified live: the
   fallbacks and legacy paths a "play safe" plan kept for the move (§ 2), leftover branches
-  and worktrees, and docs that still name what was removed.
+  and worktrees, docs that still name what was removed, and the delete step for a `v1` kept beside its
+  `v2` (code-structure § 11: move the callers that remain, then delete it).
 - **Give each phase a targeted done-check.**
 - **Keep shared writes with the main session:** lockfiles, new dependencies, version bumps,
   shared indexes, dev servers and the final full check (`/cc-smart-dev-kit:verify-change` § 4).
@@ -234,11 +243,10 @@ CLI fallback: `/cc-smart-dev-kit:tasks`.
   start the lowest-numbered queued plan.
   **To park** a plan, stop or finish its running work, `task_update` the plan task to
   `pending`, then `task_note` it with a note that starts `parked: <why>`; the store refuses
-  while any of its work is `in_progress`.
-  Nothing is dropped: phases, steps and briefs stay as they are. **To resume**, start one of its
-  phases; a parked plan with no open phase resumes by starting the plan task itself
-  (`task_update` it to `in_progress`). Resuming is refused while another plan is in flight: park
-  or finish that one first.
+  while any of its work is `in_progress`. Nothing is dropped: phases, steps and briefs stay.
+  **To resume**, start one of its phases; a parked plan with no open phase resumes by starting
+  the plan task itself (`task_update` it to `in_progress`). Resuming is refused while another
+  plan is in flight: park or finish that one first.
   Name the intended plan with `plan` on `task_list` and on `task_create` with `phase`; never on
   a deploy task, which refuses it. A call that names no plan goes to the plan in flight; else
   to the plan being finished (every phase closed, one done, the plan task still open); else to
@@ -254,11 +262,10 @@ CLI fallback: `/cc-smart-dev-kit:tasks`.
   (the default), ask once with `AskUserQuestion`, and say what each costs. When `herdr plans`
   shows two or more ready plans that share no file and a Herdr terminal exists, lead +
   children is the recommended option (§ 2); otherwise solo is:
-  - **Solo:** one session builds the plans one after another. The cheapest, and the slowest.
-  - **Lead + children:** the lead builds one plan itself, keeping its full build context, and
-    hands each other ready plan to a linked session. One full session per child on top.
-  - **Coordinator:** the lead builds nothing and stays light; every ready plan goes to a linked
-    session, one full session each.
+  - **Solo:** one session builds the plans one after another: the cheapest and the slowest.
+  - **Lead + children:** the lead builds one plan itself and hands each other ready plan to a
+    linked session: one full session per child on top.
+  - **Coordinator:** the lead builds nothing; each ready plan goes to its own linked session.
 
   The key is the person's own: `workflow set` of it is refused inside Claude Code. Never set
   it. To keep the answer, give the person the command, `cc-smart-dev-kit workflow set

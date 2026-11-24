@@ -203,7 +203,28 @@ it a plan's review (`build` § 6). `spec` is the plan file: every track reads it
 spec-compliance track checks each decision, edge case and step's done-check against the code.
 `prior` is round 1's whole report: it makes the run round 2, where the spec track (or the first
 track) judges every round 1 finding, fixed, not fixed or worse, and each other track judges the
-findings of its own area. Every call, old or new, also gets two strict rules in each
+findings of its own area. Three more optional args serve the reuse check. `reuse: true` adds one
+track, named `reuse`, before the spec track, so the spec track stays the last one and the judge of
+every finding in round 2; a caller's own track with that name is refused, so two tracks never
+carry the label. That track's prompt runs the method of `code-structure` § 3: for each new or
+changed export, long literal, user-facing sentence and helper body in the diff, search the whole
+repo three ways (by name and the words it shows; by what it does, the same job under another
+name; by a distinctive body line), and report every existing home the change should have used,
+with the drift between copies. The record it checks is the `Homes:` line: each builder writes one
+for each new export in its `Report:` note, the lead checks the lines at each hand-back, and this
+track spot-checks them. In a plan's review (`spec` set) it reads the notes of each phase and of
+each task set directly under the plan, where round 1's fix tasks sit. Outside a plan the author
+passes the lines as `homes`, and only an empty `homes` makes every new export an "unproven reuse"
+finding. `homes` needs `reuse`: without the reuse track no prompt would carry it, so the script
+refuses it before any agent starts. With `spec` set, `homes` holds the lead's own `Homes:` lines for
+its integration work, and the reuse track reads them after the plan's task notes. Its brief allows
+the repo-wide read-only searches that the senior engineer's limit on calls would otherwise cut
+short; the other tracks keep the limits. `signals` is the output of the
+project's own guard tools (the review add-on's `Reuse signals`), run once by the caller (the lead
+before each round of a plan's review, the main session outside a plan): every track's prompt
+carries it as evidence to judge, never as commands to run, because no reviewer runs the project's
+guard commands itself. Without any of these args the run is as before.
+Every call, old or new, also gets two strict rules in each
 track's brief: prove a claim by running it where that can be done, and a track with no findings
 names what it read and ran, or the report says it gave no evidence of coverage. Its launches follow
 D46's tier for the change set the caller names with `risky` — `opus` at `xhigh` for a risky one,
@@ -225,6 +246,11 @@ prompt, so the review record would record nothing. A finding its refuter leaves 
 proved nor refuted: it is listed under **Hunches** with the refuter's reason, its trigger and its
 fix (the audit's writer gets the trigger and the missing guard), never only counted; with no
 finding confirmed, the headline points to the Hunches. A refuted one is counted and left out.
+A refuter may not refute a duplicate finding because a sibling file has the same copy: that is
+evidence for the finding, and only a written project rule that allows the copy refutes it. Any
+other design finding is refuted by a written rule, a documented convention or an established
+pattern its sibling files share that allows its shape. Both scripts say so, in different words,
+because `check:duplicates` reads `plugin/workflows`.
 The reviewers carry `cc-smart-dev-kit:senior-engineer`, the type `reviewAgents` lists by default,
 and each track's brief holds the line `Mode: review` alone and asks for the StructuredOutput
 call, so the run's return records the review (Claude Code's nudge to make
@@ -370,7 +396,14 @@ to use when they are missing.
 phase, parallel worktrees for disjoint files, and a quick check of each hand-back against the
 branch (no reviewer reads a phase). The plan gets one review, in two rounds of the `review-split`
 workflow with `risky: true`, so every agent is the senior engineer on `opus` at `xhigh`; both
-rounds get the plan file as `spec`, and round 2 also gets round 1's whole report as `prior`. When round 2's fixes are bigger than `fixesAfterReview` or touch an access check, security, money, permissions or data, one final review follows: a senior engineer on `opus` at `xhigh` reads only those fixes, with round 2's whole report as context. Each reviewer's
+rounds get the plan file as `spec`, and round 2 also gets round 1's whole report as `prior`. A
+code plan's rounds also pass `reuse: true`, and the lead runs the project's guard tools before
+each round and passes their output as `signals`. The reuse track proves the builders' `Homes:`
+lines (one for each new export, each saying how the author searched for an existing home: by
+name and the words it shows, by what it does, by a distinctive body line, the three searches of
+`code-structure` § 3), which the lead also checks when a phase hands back. After each merge the
+lead searches the merged tree for the names the phase added, since phases built in parallel
+cannot see each other's exports. When round 2's fixes are bigger than `fixesAfterReview` or touch an access check, security, money, permissions or data, one final review follows: a senior engineer on `opus` at `xhigh` reads only those fixes, with round 2's whole report as context. Each reviewer's
 brief carries the line `Mode: review` alone on its line; the review-record hook records a review
 only with it, so a consult of the same agent records nothing. Agents run in the background (Claude Code's default), `Monitor` watches CI and
 logs, and the lead waits only for what the next step needs. `blocked_by` marks only a real

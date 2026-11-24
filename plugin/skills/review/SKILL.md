@@ -87,7 +87,10 @@ Unsure between two rows, take the higher one. `fable` only when the person asks 
   new change set.
 - **The brief:** the line `Mode: review` alone on its own line, then the diff (or how to get
   it: base and branch), what the change is meant to do, your own edge-case list, and the
-  checkout's absolute path (in a worktree, the worktree's). Ask for no fixes: the findings come
+  checkout's absolute path (in a worktree, the worktree's). Add the reuse evidence: run the
+  commands under the `Reuse signals` heading of the project's review add-on once, and paste their
+  output with your own `Homes:` lines for what the change adds (`/cc-smart-dev-kit:code-structure`
+  § 3). With no such heading, say so in one line and go on (the same case as code-structure § 13). Ask for no fixes: the findings come
   back to you. Without that line the agent treats the brief as a consult, and nothing records
   the review.
 - **A risky change set also gets the edge-case hunter.** In the same message as the senior
@@ -130,7 +133,8 @@ build skill's § 6 sets their args. This section is where each arg is defined.
 Workflow({ name: "cc-smart-dev-kit:review-split",
   args: { base: "main", head: "HEAD", folder: "<the checkout's path, a worktree only>",
           intent: "what this change does", tracks: ["state and timing", "access and money"],
-          risky: true, budget: 6, spec: "<plan file>", prior: "<round 1 report>" } })
+          risky: true, budget: 5, spec: "<plan file>", prior: "<round 1 report>",
+          reuse: true, homes: "<your Homes: lines>", signals: "<the Reuse signals output>" } })
 ```
 
 - `args` is one object, as shown — never a string of JSON. The run refuses a string, an unknown
@@ -143,12 +147,23 @@ Workflow({ name: "cc-smart-dev-kit:review-split",
 - `budget` is how many findings the second reviewers refute, most severe first; the rest come
   back in an **Unchecked** section of the report. Read it: check those findings yourself, or run
   again with a larger budget. The agents of a run are the tracks (the spec track too) plus the
-  budget; the example's two tracks, its spec track and its budget of 6 make nine. A plan's
+  budget; the example's two tracks, its spec and reuse tracks and its budget of 5 make nine. A plan's
   rounds take no extra run: the lead checks the Unchecked findings itself (build § 6).
 - `tracks` are two to four review dimensions or edge-case axes from `references/axes.md` that
-  this diff touches. A plan's tracks are chosen by area (build § 6).
+  this diff touches. A plan's tracks are chosen by area (build § 6). Never name a track `reuse`
+  here: the `reuse` arg adds it.
 - `spec` is a plan file's path: every track reads it, and one more track checks the plan's
   compliance. Leave the key out for a change with no plan.
+- `reuse` adds one track, named `reuse`. It searches the repo for an existing home of each
+  new export, long literal, user-facing sentence and helper body the diff adds, and spot-checks
+  the author's `Homes:` lines. The method's one home is `/cc-smart-dev-kit:code-structure`
+  § 3, and the script's prompt applies it. Pass it when the diff adds code, not only exports.
+- `homes` is the author's `Homes:` lines (a string) for the `reuse` track; it needs `reuse: true`
+  and is refused without it. Outside a plan, pass your own lines. With `spec` set, pass only the
+  lead's own lines for its integration work: the track reads the phases' and fix tasks' `Report:`
+  notes itself.
+- `signals` is the `Reuse signals` output (a string): every track gets it with its brief. When
+  the project lists no such commands, say so in one line and leave the key out.
 - `prior` is round 1's whole report, its Unchecked and Hunches included: it makes the run
   round 2. Leave the key out for a first run. The example shows every key; a real call sets
   `spec` and `prior` only for a plan, and `prior` only in round 2.

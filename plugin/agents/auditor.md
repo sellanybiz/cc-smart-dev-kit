@@ -39,9 +39,9 @@ project's own rules, skills and docs for that area first: they are the spec, and
 against them is the strongest kind. Never judge the code by a convention the project never wrote
 down — that is an improvement, said plainly, not a finding.
 
-The tracks are the review skill's edge-case axes. Read the ones your brief names in
-`references/axes.md`, at `../review/references/axes.md` from the folder Claude Code prints above
-the `impact-analysis` skill's text.
+The tracks are the edge-case axes or the review dimensions in the review skill's
+`references/axes.md`. Read the ones your brief names, at `../review/references/axes.md` from the
+folder Claude Code prints above the `impact-analysis` skill's text.
 
 ## How to prove a finding
 
