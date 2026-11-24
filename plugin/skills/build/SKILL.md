@@ -13,17 +13,16 @@ review themselves. Keep narration to a short line. Do not ask whether to continu
 
 The kit's plan, build, review and commit flows, and the project's own release steps, govern
 the work the kit drives. Another plugin's build, run or release skills (claude-mem's `build`,
-`do`, `release`, `version-bump`, `build-and-release`) run only when the person asks; the
-project's workflow settings (`cc-smart-dev-kit workflow show`) still decide what is committed,
-pushed or merged.
+`do`, `release`, `version-bump`) run only when the person asks; the project's workflow settings
+(`cc-smart-dev-kit workflow show`) still decide what is committed, pushed or merged.
 
 ## 1. Read the design and ledger
 
-Read the approved plan and its binding spec. Run `task_list` with `scope: "plan"`,
-`open_only: false` and `plan`: its slug (which calls name it: `/cc-smart-dev-kit:plan-task`
-§ 6), then `task_get` for each relevant phase and its notes. If the tree is missing, create it as `/cc-smart-dev-kit:plan-task` describes: plan, phase tasks, steps.
-The phase description is its complete brief; never make a second brief or progress file.
-Task fields and the CLI fallback belong to `/cc-smart-dev-kit:tasks`.
+Read the approved plan and its binding spec. Run `task_list` with `scope: "plan"`, `open_only: false`
+and `plan`: its slug (which calls name it: `/cc-smart-dev-kit:plan-task` § 6), then `task_get` for each
+relevant phase and its notes. If the tree is missing, create it as `/cc-smart-dev-kit:plan-task`
+describes: plan, phase tasks, steps. The phase description is its complete brief; never make a second
+brief or progress file.
 
 Work on the plan branch in its worktree. Read `cc-smart-dev-kit workflow show` before git
 side effects. Record the plan's starting commit (`base`) and its `branch` on its task, in every
@@ -38,9 +37,9 @@ session cap for a large plan with clearly divided files. Model and effort per jo
 
 A plan is one pull request and holds at most `plans.maxPhases` phases; a phase is one area
 with its tasks (`/cc-smart-dev-kit:plan-task` § 5). **Add no phase while building:** new
-in-scope work becomes a task under the phase that owns its files (a review finding is the
-exception: § 6 puts it under the plan), and a later ask waits as a task in the next queued
-plan (plan-task § 6). The store refuses a phase beyond the cap, a phase with no tasks (add one
+in-scope work becomes a task under the phase that owns its files, or, for a file the plan adds,
+the phase that needs it (a review finding is the exception: § 6 puts it under the plan), and a
+later ask waits as a task in the next queued plan (plan-task § 6). The store refuses a phase beyond the cap, a phase with no tasks (add one
 with `task_create` and `parent` set to the phase's `#n`), and work in a plan while another is
 in flight: finish that plan or park it (plan-task § 6 holds the whole model, the default plan
 of a call that names none included). Build the plan in flight, or, when none is, the
@@ -107,8 +106,9 @@ A blocked builder gets a ruling or the missing context, not an automatic phase c
 builder stopped by Claude Code's worktree check needs no yes from the person, since no yes
 lifts that check: resume it with `SendMessage` and the ruling to split its commands. Ask the
 person only for a real permission they alone can give, and pass their answer on the same way.
-Record the check and its evidence on the task. A finding outside the plan, in a report or a
-review, goes to the person at once (`/cc-smart-dev-kit:tasks` § 1).
+Record the check and its evidence on the task. A report that needs an export from a file outside
+the plan's `files` follows `/cc-smart-dev-kit:plan-task` § 5. A finding outside the plan, in a
+report or a review, goes to the person at once (`/cc-smart-dev-kit:tasks` § 1).
 
 ## 4. Fix with the same builder, then escalate
 
@@ -119,10 +119,10 @@ resulting commits on the phase task. Check the fix yourself as in § 3.
 
 Allow at most three fix rounds with that builder. If it is still stuck, ask the senior
 engineer's consult (`opus`, `xhigh`, no `Mode: review` line) for the root cause, or dispatch a
-fresh builder on a stronger model, using the same task, current branch, findings and rulings.
-Update the task's execution fields. Escalation does not permit Fable building without the
-person's request. If no permitted stronger model is available, reassess the approach and
-record a ruling; do not repeat the failed loop or silently waive a material defect.
+fresh builder on a stronger model with the same task, branch, findings and rulings, and update
+the task's execution fields. Escalation never permits Fable building without the person's
+request. With no permitted stronger model, reassess and record a ruling; never repeat the
+failed loop or silently waive a material defect.
 
 **A usage limit is not a fix round.** A `task_notification` with status `failed` and a
 rate-limit error means the builder hit a usage limit; its work is not wrong. Once the reset
@@ -190,11 +190,10 @@ of the session's own folder. In order:
    reads the plan. For a code plan, run the project's `Reuse signals`
    (`/cc-smart-dev-kit:code-structure` § 13) before each round, save the output as a
    `Reuse signals:` note on the plan task (its summary when it is longer than a note holds,
-   64,000 characters), and pass `reuse: true` and `signals`; never name a track `reuse` in
-   `tracks`, the arg adds it. With one layer, the reuse track replaces the cross-layer track.
-   With no `Reuse signals` commands, say so in one line and go on. Choose `budget` so the round's agents (tracks, the spec and reuse
-   tracks and the budget) stay within the session's workflow size guideline (default under 10
-   agents); the reuse track is one more, so more findings land under Unchecked.
+   64,000 characters), and pass `reuse: true` and `signals`. With one layer, the reuse track replaces the cross-layer
+   track. Choose `budget` so the round's agents (tracks, the spec and reuse tracks and the budget)
+   stay within the session's workflow size guideline (default under 10 agents); the reuse track
+   is one more, so more findings land under Unchecked.
 3. **Save and fix round 1:** save the report whole on the plan task as a `task_note` that
    starts `Review round 1:` (it fits: a note holds 64,000 characters). Then each confirmed
    finding becomes a task with `parent` set to the plan's `#n` (with no parent it is loose).
@@ -232,13 +231,12 @@ while a material defect remains; record the blocker and remaining work. If the r
 the plan open, move the plan file back out of `archive/`.
 
 Once the review and the full check pass, the one pull request of the plan opens, as `openPr` and the person's permissions allow
-(`/cc-smart-dev-kit:commit`, `/cc-smart-dev-kit:pull-request`). Include the reviews that ran (both rounds, and the final review when it ran) and real checks. A fix after it opens (a late review finding, a CI failure) follows the
-batch rule in `/cc-smart-dev-kit:commit` § Pushing. A review that found a bypassed home or a drifted copy ends, once the pull request is open,
-with an offer of the slop audit (`/cc-smart-dev-kit:audit`). Close the plan task with evidence in that
-same turn. A reserved plan's files stay held until its pull request merges or closes; an
-unreserved plan's files are free once its task closes. After that `task_done`, start the next queued plan yourself (a plan child never does: § Lead +
-children and coordinator modes); until then it stays queued, with its phases already laid. A plan nobody laid is a fresh plan task from
-`/cc-smart-dev-kit:plan-task`, never more phases on the closed one.
+(`/cc-smart-dev-kit:commit`, `/cc-smart-dev-kit:pull-request`). Include the reviews that ran and the real checks. A fix after it opens (a late review
+finding, a CI failure) follows the batch rule in `/cc-smart-dev-kit:commit` § Pushing. A review that found a bypassed home or a drifted copy ends,
+once the pull request is open, with an offer of the slop audit (`/cc-smart-dev-kit:audit`). Close the plan task with evidence in that same turn. A
+reserved plan's files stay held until its pull request merges or closes; an unreserved plan's files are free once its task closes. After that
+`task_done`, start the next queued plan yourself (a plan child never does: § Lead + children and coordinator modes); until then it stays queued, with
+its phases already laid. A plan nobody laid is a fresh plan task from `/cc-smart-dev-kit:plan-task`, never more phases on the closed one.
 
 ## Lead + children and coordinator modes
 

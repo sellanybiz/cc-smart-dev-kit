@@ -41,8 +41,9 @@ If one exists, import it.
 The three searches are the ones above, in order; the kind is one from the list above. A props
 or arguments type rides on its unit's line. With no new export, write `Homes: none`. The lead
 checks that every line is there; the review spot-checks what is in them. Outside a plan, the
-main session writes its own lines and passes them to the review (the `homes` arg of
-`/cc-smart-dev-kit:review` § A big change set).
+main session's own lines go in the single senior engineer's brief, or in the `homes` arg of a
+split review (`/cc-smart-dev-kit:review`); inside a plan, the lead's own integration exports go
+in `homes` too.
 
 ## 4. Split by responsibility
 
@@ -65,8 +66,8 @@ already drifted and caused a bug. Reuse an existing implementation or extract th
 
 **Merely similar — wait for the third.** Two things that look alike need not be a repeat;
 a third shows which parts are shared and which are coincidence. Extracting to *name* a
-block stays in its file; extracting for *reuse* needs a real second caller. A composite
-of shared UI parts is the same case: an *identical* one follows § 7 (extract before shipping
+block stays in its file (a helper with no feature words: § 7); extracting for *reuse* needs a
+real second caller. A composite of shared UI parts is the same case: an *identical* one follows § 7 (extract before shipping
 it twice); a merely similar one goes to the shared UI layer when a third screen builds it.
 
 A parameter carries data that varies. A flag or branch that picks a code path for one
@@ -106,12 +107,10 @@ follows the list):
    private folders. Never copy a feature's private helper into a second feature: export it
    or move it to the shared layer.
 
-**One exception, for placement only:** a pure helper extracted for reuse that has no feature
-words in it (a page cut, a list or count formatter, a date formatter) goes to the project's
-shared layer for that side (the list above) on its first write, even with one caller. With
-no such layer, keep it beside its caller and say so in its Homes line. It lands in a layer
-that already exists, so § 2 still holds. A block extracted only to name it stays in its file
-(§§ 4, 5).
+**One exception, for placement only:** a new pure helper with no feature words in it (a page
+cut, a list or count formatter, a date formatter) goes to the shared layer the project names for
+its side on its first write, even with one caller. This decides where it lives, not whether to
+extract it (§ 5). With no such layer, keep it beside its caller and say so in its Homes line.
 
 Use the project's layer names, import aliases and boundaries from its add-on and rules.
 A boundary violation is Critical in review.

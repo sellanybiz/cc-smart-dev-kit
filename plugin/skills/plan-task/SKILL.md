@@ -110,14 +110,12 @@ file. A planning agent runs on `opus` at `xhigh` (`/cc-smart-dev-kit:subagent-de
 
 ## 4. Self-check, then approval
 
-Re-read the plan as a skeptic: a simpler path, an unverified assumption, an edge case waved
-away? For a big or risky plan, start two agents in one message: the
-`cc-smart-dev-kit:edge-case-hunter` for every scenario that can break the plan, and the
-`cc-smart-dev-kit:senior-engineer`'s second read (both `opus` at `xhigh`; `fable` only with the
-person's yes; a read of the plan, not of a change set), its brief with the line `Mode: plan-review` alone on its line — never
-`Mode: review`, which would record the plan read as a code review. Fold what they find into
-the plan's approach and edge cases. When the plan adds UI or a new architecture, show it — a
-diagram or a mockup — rather than only describing it.
+Re-read the plan as a skeptic: a simpler path, an unverified assumption, an edge case waved away? For a big or risky plan, start
+two agents in one message: the `cc-smart-dev-kit:edge-case-hunter` for every scenario that can break the plan, and the
+`cc-smart-dev-kit:senior-engineer`'s second read (both `opus` at `xhigh`; `fable` only with the person's yes; a read of the plan,
+not of a change set), its brief with the line `Mode: plan-review` alone on its line — never `Mode: review`, which would record the
+plan read as a code review. Fold what they find into the plan's approach and edge cases. When the plan adds UI or a new
+architecture, show it — a diagram or a mockup — rather than only describing it.
 
 Then ask for approval. In plan mode that is `ExitPlanMode`: it shows the plan, and the person
 approves it there or keeps planning — never a second "Start building?" with
@@ -130,8 +128,8 @@ the plan in the main checkout's plans folder, and nothing there is for editing: 
 `EnterWorktree` first (the plan's slug as its `name`), then copy the approved plan into the
 worktree's plans folder (`Read`, then `Write`) and remove the original, so the plan and the
 build are on the worktree's branch. Commit the plan file on the current branch as the workflow allows. Move full research to
-`.claude/research/archive/<YYYY-MM-DD>-<slug>.md` (or the add-on's home), linked from the plan.
-Changes wanted: revise and ask again; never build without approval.
+`.claude/research/archive/<YYYY-MM-DD>-<slug>.md` (or the add-on's home), linked from the plan. Changes wanted: revise and ask
+again; never build without approval.
 
 After approval, use `task_create` for the plan (`plan`: its slug, subject: its title); a plan
 queued earlier (§ 6) already has its plan task, so use that one and make no second. Then
@@ -202,13 +200,11 @@ CLI fallback: `/cc-smart-dev-kit:tasks`.
   integration work in the main session.
 - **Name exact files.** Disjoint file sets run in parallel worktrees; any shared file orders
   those phases, and a shared resource does not by itself (below). Batch small edits of the
-  same shape into one dispatch, not one agent per line. A phase that needs an export from
-  files outside the plan's list reports it and stops that step (`/cc-smart-dev-kit:build`);
-  the lead asks the person once (`AskUserQuestion`) to add the file. On yes, the lead
-  updates the plan's `files` with `task_update` and adds the step under the phase that
-  needs it. When the store refuses because another held plan holds the file, the phase waits
-  for that plan, or the person decides. A guard whose file is outside the plan goes to the
-  person (the core instructions' one-plan rule).
+  same shape into one dispatch, not one agent per line. A phase that needs an export from a
+  file outside the plan's list reports it and stops that step (`cc-smart-dev-kit:builder`, step 5);
+  the lead asks the person once to add the file (on yes: `task_update` the plan's `files` and a
+  step under that phase; refused by a held plan: wait for it, or the person decides). A guard
+  outside the plan goes to the person.
 - **Name contracts and dependencies.** Contracts (a type, an API shape, a shared constant) go
   first, in a phase of their own; the phases that use them are `blocked_by` it, so they start
   from its merged code. A new shared home is a contract: it goes in the contract phase, or the
