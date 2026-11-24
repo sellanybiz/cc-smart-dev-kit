@@ -1273,6 +1273,47 @@ describe("the review-split reuse track and signals", () => {
     expect(run.calls.filter(isReview).map(labelOf)).toEqual([`review: ${REUSE_TRACK}`]);
   });
 
+  test("homes without reuse is refused before any agent starts; an empty homes is the same as none", async () => {
+    await expect(
+      runScript(REVIEW_SPLIT, {
+        args: { base: "main", homes: "Homes: formatPrice", tracks: ["craft"] },
+      }),
+    ).rejects.toThrow(/"homes" is for the reuse track: pass reuse: true too/);
+    const run = await runScript(REVIEW_SPLIT, {
+      answer: answers([]),
+      args: { base: "main", homes: "", tracks: ["craft"] },
+    });
+    expect(run.calls.filter(isReview).map(labelOf)).toEqual(["review: craft"]);
+  });
+
+  test("with a spec, homes is the lead's own integration lines and reaches the reuse track alone", async () => {
+    const homes = "Homes: mergeNotes; searched: mergeNotes, note merge, `notes.concat(`";
+    const spec = ".claude/plans/2026-01-02-the-plan.md";
+    const run = await runScript(REVIEW_SPLIT, {
+      answer: answers([]),
+      args: { base: "main", homes, reuse: true, spec, tracks: ["craft"] },
+    });
+    const byLabel = new Map(run.calls.filter(isReview).map((call) => [labelOf(call), call]));
+    const reuse = byLabel.get(`review: ${REUSE_TRACK}`);
+    expect(reuse?.prompt).toContain(
+      "The lead's own `Homes:` lines for its integration work follow.",
+    );
+    expect(reuse?.prompt).toContain(homes);
+    expect(reuse?.prompt).toContain("task_get each phase and each task under the plan");
+    for (const label of ["review: craft", `review: ${SPEC_TRACK}`]) {
+      expect(byLabel.get(label)?.prompt).not.toContain(homes);
+    }
+
+    const bare = await runScript(REVIEW_SPLIT, {
+      answer: answers([]),
+      args: { base: "main", reuse: true, spec, tracks: ["craft"] },
+    });
+    const noHomes = bare.calls
+      .filter(isReview)
+      .find((call) => labelOf(call) === `review: ${REUSE_TRACK}`);
+    expect(noHomes?.prompt).not.toContain("The lead's own `Homes:` lines");
+  });
+
   test("with reuse off, the spec track does not get the reuse method", async () => {
     const run = await runScript(REVIEW_SPLIT, {
       answer: answers([]),
