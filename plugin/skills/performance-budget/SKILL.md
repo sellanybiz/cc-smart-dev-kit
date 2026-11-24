@@ -1,6 +1,6 @@
 ---
 name: performance-budget
-description: Use for performance work - slow loading, re-renders, bundle size, N+1 queries, Core Web Vitals. Sets performance and UX budgets; React code also follows react-best-practices. Not for routine CLI or script changes.
+description: Use for performance work - slow loading, re-renders, bundle size, N+1 queries, Core Web Vitals, and a backend change that adds a queue, a cap, a pool or a lock. Sets performance and UX budgets; React code also follows react-best-practices. Not for routine CLI or script changes.
 ---
 
 # Performance And UX Budget
@@ -39,6 +39,29 @@ Over a target is a bug: fix it before it ships, or get the person's yes to ship 
 7. **Instant feedback?** Optimistic updates for writes, a skeleton for reads. Never a blank
    page.
 8. **Payload size?** Paginate; select only the fields the screen shows.
+
+## Backend and scale
+
+Only when the change adds shared capacity: a queue, a cap or pool, a per-event read, a notifying
+trigger, a row lock or an append-only table. A change with none skips this in one line. Price it
+at 10x and 100x today's users and events, and put the answer in the plan (`/cc-smart-dev-kit:plan-task`
+§ 3, **Capacity**). The defects a review names are its scale class (`../review/references/axes.md`,
+Performance, from this skill's folder).
+
+- **Connection budget:** connections per process × processes, against the database's limit; every
+  per-event read counts.
+- **Queue caps:** each queue and pool has a stated size, a place to wait and a share per tenant.
+- **Fan-out:** one event that makes every client read again costs clients × events. Push the
+  change, or batch it.
+- **Herds after a restart:** every client reconnects and re-reads at once. Add backoff with
+  jitter, and a cap on the first load.
+- **Growth and retention:** a table that only grows has an owner, a retention period and a way to
+  archive or delete. Price its biggest query at 100x the rows.
+- **Scale tests seed many small tenants,** not one big one: that shows unfair sharing and an
+  index that ignores the tenant.
+- **A capacity page** in the project's docs lists each cap, pool and queue: its limit, what sets
+  it and the scale where it bites. Keep it current like any other doc: change a limit, change the
+  page.
 
 ## UX non-negotiables
 
