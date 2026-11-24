@@ -302,7 +302,7 @@ log(
 // A second reviewer tries to refute each finding. Only what survives the code is reported: the
 // evidence bar is the review's (`plugin/instructions/core.md` § Review).
 const verdicts = await pipeline(checked, (finding) => {
-  const prompt = `Refute one finding before it reaches the author: read the file and line it names, then the path around it, and look for what already stops it — a validator upstream, a database constraint, a type, a caller that can never pass that value. Change no file.\n\nAnswer \`confirmed\` only when the trigger, the path, the outcome and the missing guard all hold in the code; \`refuted\` when something already stops it; \`unproven\` when the code does not settle it. A design finding's missing guard is the rule it breaks. A project convention or sibling files with that shape refute it. Put the lines you read in \`evidence\`. ${docsPart}\n\n${JSON.stringify(finding, null, 2)}`
+  const prompt = `Refute one finding before it reaches the author: read the file and line it names, then the path around it, and look for what already stops it — a validator upstream, a database constraint, a type, a caller that can never pass that value. Change no file.\n\nAnswer \`confirmed\` only when the trigger, the path, the outcome and the missing guard all hold in the code; \`refuted\` when something already stops it; \`unproven\` when the code does not settle it. A design finding's missing guard is the rule it breaks. A sibling copy of the code is evidence for a duplicate finding, never a refutation of it; only a written project rule refutes one. Put the lines you read in \`evidence\`. ${docsPart}\n\n${JSON.stringify(finding, null, 2)}`
   return risky
     ? agent(prompt, {
         label: `refute: ${finding.file}`,
