@@ -3,6 +3,20 @@
 What each release changed, newest first. A release's **What to run** steps are the ones to do
 in your own terminal after the update; the user guide is [README.md](README.md).
 
+## 6.5.2
+
+- **The resume hint for a gone plan child is the whole command line, ready to fill in.** When
+  a plan's Herdr child is gone, the keep-going note told the lead to run `herdr start --plan
+  <slug>`, which the command refuses without `--model`, `--effort`, `--mode` and a brief. It now
+  prints the whole line, the same one `herdr plans` prints (one home:
+  `src/herdr/start-words.ts`), and the herdr and build skills name the same flags.
+- **A plan's name in a printed command is one shell word.** The resume line and the
+  `herdr plans --release`, `--reserve` and stacked-start hints quote a plan name the shell would
+  split or misread (a space, a `#`).
+- **The herdr mode list is called a list, not an order.** It ranked `dontAsk` above `auto`, but
+  `dontAsk` denies what would prompt, so it is not broader. Nothing compares modes since 6.0.0;
+  the list and the design page now say so.
+
 ## 6.5.1
 
 - **A Herdr child starts in its lead's mode.** The herdr skill now tells a lead to pass its own

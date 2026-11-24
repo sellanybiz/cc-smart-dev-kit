@@ -481,7 +481,7 @@ import { dirname as dirname3, join as join6 } from "path";
 
 // src/build-info/index.ts
 var info = {
-  version: "6.5.1",
+  version: "6.5.2",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -503,7 +503,7 @@ var PLUGIN_INSTALL_COMMAND = `claude plugin install ${PLUGIN_ID}`;
 var PLUGIN_UPDATE_COMMAND = `claude plugin update ${PLUGIN_ID}`;
 
 // src/hooks/checked-config.ts
-var PARSER_FINGERPRINT = "8d3c0f13896e8a6132f745b8cb0da701de71e30e23fa2c2f66654fb9d1fe8ea2";
+var PARSER_FINGERPRINT = "67415bc2078f50f1e70856616fa8d4ef14f9bd13052a2621e862a776d34766a2";
 var CHECKED_DIR = "checked";
 var CHECKED_CACHE_LIMIT = 64;
 var CHECKED_FILE_MAX_BYTES = 256 * 1024;
@@ -781,6 +781,19 @@ function parseLeadId(value) {
 var HERDR_AGENT_PREFIX = "herdr:";
 function isHerdrAgent(value) {
   return value.startsWith(HERDR_AGENT_PREFIX) && parseLeadId(value.slice(HERDR_AGENT_PREFIX.length)) !== null;
+}
+
+// src/shell/quote.ts
+function shellQuote(value) {
+  return `'${value.replaceAll("'", "'\\''")}'`;
+}
+function shellWord(value) {
+  return /^[\w./-]+$/.test(value) ? value : shellQuote(value);
+}
+
+// src/herdr/start-words.ts
+function planStartCommand(ref) {
+  return `${COMMAND} herdr start --plan ${shellWord(ref)} --model <model> --effort <effort> --mode <mode> -- "<brief>"`;
 }
 
 // src/project/config.ts
@@ -9872,7 +9885,7 @@ function leadPlansReason(led) {
   if (merging.length > 0)
     parts.push(`${merging.length === 1 ? "Plan" : "Plans"} ${names(merging)} ${merging.length === 1 ? "is" : "are"} closed, and ${merging.length === 1 ? "its" : "their"} pull request may not be merged yet: wait for the merge, and for what it frees, with \`${COMMAND} herdr plans --wait\` in the background`);
   if (gone.length > 0)
-    parts.push(`The child of ${names(gone)} is gone: resume ${gone.length === 1 ? "it" : "each"} with ${gone.slice(0, HOOK_LIST_LIMIT).map((entry) => `\`${COMMAND} herdr start --plan ${entry.plan.plan}\``).join(", ")}`);
+    parts.push(`The child of ${names(gone)} is gone: resume ${gone.length === 1 ? "it" : "each"} with ${gone.slice(0, HOOK_LIST_LIMIT).map((entry) => `\`${planStartCommand(entry.plan.plan ?? `#${entry.plan.number}`)}\``).join(", ")}`);
   if (parts.length === 0)
     return null;
   return `${parts.join(". ")}. Or record what you wait on with \`${TASK_TOOL.note}\` and end the turn with a \`${WAIT_MARK} <what>\` line.`;

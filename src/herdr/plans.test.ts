@@ -5,6 +5,7 @@
 import { expect, test } from "bun:test";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { COMMAND } from "../build-info/names";
 import { createOut } from "../cli/ui/out";
 import { openWorkDb, workDbFile } from "../tasks/work/db";
 import { allTasks, eventsOf, type StackPair, taskById } from "../tasks/work/queries";
@@ -314,7 +315,9 @@ test("a plan whose child is gone offers the resume; a pane still open must be cl
   w.change(first, { agent: "herdr:core/t2", worktree: "/repo/wt", branch: "b" });
   const gone = w.line("first", { process: ENDED });
   expect(gone.state).toBe("child-gone");
-  expect(gone.fix).toContain("herdr start --plan first");
+  expect(gone.fix).toBe(
+    `resume it in its own worktree: ${COMMAND} herdr start --plan first --model <model> --effort <effort> --mode <mode> -- "<brief>"`,
+  );
   w.panes["herdr:core/t2"] = LIVE;
   const open = w.line("first", { process: ENDED });
   expect(open.state).toBe("child-gone");

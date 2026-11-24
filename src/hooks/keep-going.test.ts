@@ -21,7 +21,7 @@ import { hookEnv, makeRepo, runHook, writeClaudeFile, writeSessionRecord } from 
 import { sessionProcessIdentity } from "../testing/session-record";
 import { tempDir } from "../testing/temp";
 import type { HookResult } from "./io";
-import { keepGoingAnswer, keepGoingReason, waitsOnSomething } from "./keep-going";
+import { keepGoingAnswer, keepGoingReason, leadPlansReason, waitsOnSomething } from "./keep-going";
 import { keepGoingHook } from "./specs";
 
 const SESSION = "11111111-2222-3333-4444-555555555555";
@@ -893,14 +893,30 @@ describe("keep-going: a lead's plans", () => {
     );
   });
 
-  test("a plan whose child is gone names herdr start --plan <slug> to resume it", async () => {
+  test("a plan whose child is gone names the full herdr start --plan line to resume it", async () => {
     const w = world();
     plan(w, "alpha");
     handOut(w, "alpha", DEAD);
     w.db.close();
     const answer = await runHook(keepGoingHook, stop(w.repo), w.env);
+    // The whole line: `herdr start` refuses one without --model, --effort, --mode and a brief.
     expect(reasonOf(answer.stdout)).toBe(
-      `The child of #1 alpha is gone: resume it with \`${COMMAND} herdr start --plan alpha\`. ${WAIT}`,
+      `The child of #1 alpha is gone: resume it with \`${COMMAND} herdr start --plan alpha --model <model> --effort <effort> --mode <mode> -- "<brief>"\`. ${WAIT}`,
+    );
+  });
+
+  test("a gone child's resume line quotes a slug the shell would split, and names #n when the plan has no slug", () => {
+    const w = world();
+    const spaced = plan(w, "fix auth");
+    const slugless = { ...plan(w, "beta"), plan: null };
+    w.db.close();
+    expect(
+      leadPlansReason([
+        { plan: spaced, state: "child-gone", waitingOn: [] },
+        { plan: slugless, state: "child-gone", waitingOn: [] },
+      ]),
+    ).toBe(
+      `The child of #1 fix auth, #2 beta is gone: resume each with \`${COMMAND} herdr start --plan 'fix auth' --model <model> --effort <effort> --mode <mode> -- "<brief>"\`, \`${COMMAND} herdr start --plan '#2' --model <model> --effort <effort> --mode <mode> -- "<brief>"\`. ${WAIT}`,
     );
   });
 

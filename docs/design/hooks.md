@@ -479,8 +479,10 @@ once:
 1. plans `with-child`: wait for them with `cc-smart-dev-kit herdr wait`, in the background;
 2. plans `merging` (finished, their pull request not yet merged or closed, and what waits behind
    them): wait with `cc-smart-dev-kit herdr plans --wait`, in the background;
-3. plans `child-gone`: resume each with `cc-smart-dev-kit herdr start --plan <slug>` (one command
-   per plan, the first eight).
+3. plans `child-gone`: resume each with `cc-smart-dev-kit herdr start --plan <slug> --model <model>
+   --effort <effort> --mode <mode> -- "<brief>"` (one command per plan, the first eight). The line
+   is `planStartCommand` (`src/herdr/start-words.ts`), the one `herdr plans` prints too: `herdr
+   start` refuses a line without the model, effort, mode and brief.
 
 The paragraph ends with the usual way out: record what the lead waits on with `task_note` and end
 the turn with a `Waiting for:` line. A lead with only `waiting`, `no-files` or `ready` plans gets no

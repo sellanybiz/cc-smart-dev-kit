@@ -39,7 +39,7 @@ var MIN_BUN = "1.4.3";
 
 // src/build-info/index.ts
 var info = {
-  version: "6.5.1",
+  version: "6.5.2",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -21615,7 +21615,7 @@ var init_labels = __esm(() => {
 // src/herdr/words.ts
 function normalizeMode(mode) {
   const value = mode === "manual" ? "default" : mode;
-  return MODE_ORDER.find((one) => one === value) ?? null;
+  return HERDR_MODES.find((one) => one === value) ?? null;
 }
 function cliModeFlag(mode) {
   return mode === "default" ? "manual" : mode;
@@ -21784,13 +21784,13 @@ ${verb ? `Usage: ${COMMAND} herdr ${USAGE_LINES[verb]}` : HERDR_USAGE}`
     }
   }
 }
-var MODE_ORDER, BRIEF_FILE = "--brief-file", HERDR_VERBS, USAGE_LINES, HERDR_USAGE, START_OPTIONS, START_FLAGS, START_REPEATABLE, PLAN_EXCLUSION = "--plan cannot be combined with --task, --independent or --on.", FOLLOWUP_EXCLUSION = "--followup cannot be combined with --plan, --task, --independent or --on.", BASE_FOLLOWUP_REFUSAL = "--base cannot be combined with --followup: a follow-up child always starts from the default branch.", BRIEF_AND_WORDS = "Give the brief as words after -- or as --brief-file, not both.", ISSUE_NUMBER, TIMEOUT_WORDS = "A timeout needs a positive whole number of seconds.";
+var HERDR_MODES, BRIEF_FILE = "--brief-file", HERDR_VERBS, USAGE_LINES, HERDR_USAGE, START_OPTIONS, START_FLAGS, START_REPEATABLE, PLAN_EXCLUSION = "--plan cannot be combined with --task, --independent or --on.", FOLLOWUP_EXCLUSION = "--followup cannot be combined with --plan, --task, --independent or --on.", BASE_FOLLOWUP_REFUSAL = "--base cannot be combined with --followup: a follow-up child always starts from the default branch.", BRIEF_AND_WORDS = "Give the brief as words after -- or as --brief-file, not both.", ISSUE_NUMBER, TIMEOUT_WORDS = "A timeout needs a positive whole number of seconds.";
 var init_words = __esm(() => {
   init_names();
   init_targets();
   init_launch_policy();
   init_labels();
-  MODE_ORDER = ["plan", "default", "acceptEdits", "auto", "dontAsk"];
+  HERDR_MODES = ["plan", "default", "acceptEdits", "auto", "dontAsk"];
   HERDR_VERBS = [
     "start",
     "list",
@@ -21803,7 +21803,7 @@ var init_words = __esm(() => {
     "machines"
   ];
   USAGE_LINES = {
-    start: `start --model <${CLAUDE_FAMILIES.join("|")}> --effort <${ALLOWED_EFFORTS.join("|")}> --mode <${MODE_ORDER.join("|")}|manual> [--cwd <dir>] [--on <machine>] [--name <name>] [--task <#n> | --plan <slug> | --followup [--issue <n>]\u2026] [--independent] [--asked] [--base <ref>] (-- <brief> | --brief-file <path>)`,
+    start: `start --model <${CLAUDE_FAMILIES.join("|")}> --effort <${ALLOWED_EFFORTS.join("|")}> --mode <${HERDR_MODES.join("|")}|manual> [--cwd <dir>] [--on <machine>] [--name <name>] [--task <#n> | --plan <slug> | --followup [--issue <n>]\u2026] [--independent] [--asked] [--base <ref>] (-- <brief> | --brief-file <path>)`,
     list: "list [--all] [--json]",
     send: "send <terminal> (<text> | --brief-file <path>)",
     wait: "wait [--any | --all] [--timeout <seconds>] [--seen <addr>:<turn|?>:<error|done|end>[,\u2026]]",
@@ -33769,7 +33769,7 @@ function checkedCacheProblem(paths, exists = existsSync41) {
     return `cannot be written${code === undefined ? "" : ` (${code})`}`;
   }
 }
-var PARSER_FINGERPRINT = "8d3c0f13896e8a6132f745b8cb0da701de71e30e23fa2c2f66654fb9d1fe8ea2", CHECKED_DIR = "checked", CHECKED_CACHE_LIMIT = 64, CHECKED_FILE_MAX_BYTES, CHECKED_TEMP_MAX_AGE_MS = 60000, ENTRY_FORMAT = 1, TEMP_NAME, PARSE;
+var PARSER_FINGERPRINT = "67415bc2078f50f1e70856616fa8d4ef14f9bd13052a2621e862a776d34766a2", CHECKED_DIR = "checked", CHECKED_CACHE_LIMIT = 64, CHECKED_FILE_MAX_BYTES, CHECKED_TEMP_MAX_AGE_MS = 60000, ENTRY_FORMAT = 1, TEMP_NAME, PARSE;
 var init_checked_config = __esm(() => {
   init_build_info();
   init_locate();
@@ -51415,6 +51415,14 @@ init_io();
 // src/hooks/keep-going.ts
 init_names();
 init_labels();
+
+// src/herdr/start-words.ts
+init_names();
+function planStartCommand(ref) {
+  return `${COMMAND} herdr start --plan ${shellWord(ref)} --model <model> --effort <effort> --mode <mode> -- "<brief>"`;
+}
+
+// src/hooks/keep-going.ts
 init_context();
 init_words2();
 init_identity();
@@ -51538,7 +51546,7 @@ function leadPlansReason(led) {
   if (merging.length > 0)
     parts.push(`${merging.length === 1 ? "Plan" : "Plans"} ${names(merging)} ${merging.length === 1 ? "is" : "are"} closed, and ${merging.length === 1 ? "its" : "their"} pull request may not be merged yet: wait for the merge, and for what it frees, with \`${COMMAND} herdr plans --wait\` in the background`);
   if (gone.length > 0)
-    parts.push(`The child of ${names(gone)} is gone: resume ${gone.length === 1 ? "it" : "each"} with ${gone.slice(0, HOOK_LIST_LIMIT).map((entry) => `\`${COMMAND} herdr start --plan ${entry.plan.plan}\``).join(", ")}`);
+    parts.push(`The child of ${names(gone)} is gone: resume ${gone.length === 1 ? "it" : "each"} with ${gone.slice(0, HOOK_LIST_LIMIT).map((entry) => `\`${planStartCommand(entry.plan.plan ?? `#${entry.plan.number}`)}\``).join(", ")}`);
   if (parts.length === 0)
     return null;
   return `${parts.join(". ")}. Or record what you wait on with \`${TASK_TOOL.note}\` and end the turn with a \`${WAIT_MARK} <what>\` line.`;
@@ -57657,9 +57665,6 @@ function paneOf(world, plan) {
     return world.now() - plan.updatedAt <= HANDOUT_GRACE_MS ? { state: "live", status: "starting", address: null } : { state: "gone", status: null, address: null };
   return world.pane(plan.agent, plan.plan ?? plan.subject);
 }
-function startWords(slug) {
-  return `${COMMAND} herdr start --plan ${slug} --model <model> --effort <effort> --mode <mode> -- "<brief>"`;
-}
 function baseLine(plan) {
   return {
     number: plan.number,
@@ -57764,7 +57769,7 @@ function judgePlans(input, only, start) {
         if (pr === "merged" || pr === "closed")
           lines.push(lineOf3(base, "merging", `finished, and its pull request ${pr}, but the store did not release its files`, `run ${COMMAND} herdr plans again`, { pr }));
         else {
-          const out = `the person decides: if its work is merged or given up, release its files with ${COMMAND} herdr plans --release ${slug}`;
+          const out = `the person decides: if its work is merged or given up, release its files with ${COMMAND} herdr plans --release ${shellWord(slug)}`;
           lines.push(lineOf3(base, "merging", pr === null ? "finished, but no branch is recorded: its files stay held" : pr === "open" ? "finished: its files stay held until its pull request merges or closes (open)" : pr === "unknown" ? `finished: gh cannot say whether its pull request merged, and its branch is not proved on ${baseRef(world) ?? world.base}: its files stay held` : `finished: no pull request was found, and its branch is not proved on ${baseRef(world) ?? world.base}: its files stay held`, pr === null ? `task_update #${plan.number} with branch, so its pull request can be found; or ${out}` : pr === "open" ? null : out, { pr }));
         }
         break;
@@ -57774,7 +57779,7 @@ function judgePlans(input, only, start) {
         const pane = paneOf(world, plan);
         const handout = entry.state === "with-child" ? staleHandout(world, plan, pane, owns) : null;
         if (handout === "relaunch") {
-          lines.push(lineOf3(base, "stale", "its child never took the plan and its pane is gone", `relaunch it in its own worktree: ${startWords(slug)}`, { pane }));
+          lines.push(lineOf3(base, "stale", "its child never took the plan and its pane is gone", `relaunch it in its own worktree: ${planStartCommand(slug)}`, { pane }));
           break;
         }
         if (handout === "release") {
@@ -57787,7 +57792,7 @@ function judgePlans(input, only, start) {
         if (entry.state === "with-child")
           lines.push(lineOf3(base, "with-child", `with a child (${paneWords(pane)}${pr === "open" ? "; pull request open" : pr === "merged" ? "; pull request merged" : ""})${driftText}`, null, { pr, pane, drift }));
         else if (pane.state === "gone" || pane.state === "none")
-          lines.push(lineOf3(base, "child-gone", `its child is gone (${paneWords(pane)})${driftText}`, `resume it in its own worktree: ${startWords(slug)}`, { pr, pane, drift }));
+          lines.push(lineOf3(base, "child-gone", `its child is gone (${paneWords(pane)})${driftText}`, `resume it in its own worktree: ${planStartCommand(slug)}`, { pr, pane, drift }));
         else
           lines.push(lineOf3(base, "child-gone", `its child's session ended, but ${paneWords(pane)}`, `close that pane first: ${COMMAND} herdr stop ${pane.address ?? "<terminal>"}`, { pr, pane, drift }));
         break;
@@ -57905,7 +57910,7 @@ function unprovedStackFix(plan, parent, judged, byId) {
     return `${counts} when this plan records its own branch, built on ${name}'s work: task_update #${plan.number} branch=<branch built on ${name}>`;
   if (gap === "git")
     return `${counts} once git can read ${name}'s branch and this plan's start: run ${COMMAND} herdr plans again`;
-  return `${counts} when this plan is built on ${name}'s work: ${COMMAND} herdr start --plan ${slug} starts it on ${parent.branch} when --base is left out; a plan built here rebuilds its branch on ${parent.branch}`;
+  return `${counts} when this plan is built on ${name}'s work: ${COMMAND} herdr start --plan ${shellWord(slug)} starts it on ${parent.branch} when --base is left out; a plan built here rebuilds its branch on ${parent.branch}`;
 }
 function summary(lines) {
   const count = (state) => lines.filter((line) => line.state === state).length;
@@ -57985,7 +57990,7 @@ function prepareReserve(world, ref) {
     if (!isOpen(plan))
       return refuse3(`Plan "${slug}" is ${plan.status}: nothing to reserve.`, `${COMMAND} herdr plans lists the plans this session can reserve`);
     if (ownerOf(world.who)(plan))
-      return refuse3(`Plan "${slug}" is running: this session started it, and only a queued plan is reserved.`, `park it: task_update #${plan.number} with status pending once its phases stop, then run ${COMMAND} herdr plans --reserve ${slug}`);
+      return refuse3(`Plan "${slug}" is running: this session started it, and only a queued plan is reserved.`, `park it: task_update #${plan.number} with status pending once its phases stop, then run ${COMMAND} herdr plans --reserve ${shellWord(slug)}`);
     return refuse3(`Plan "${slug}" is not one of this session's queued plans: another session owns it.`, "a lead reserves only a plan it laid and has not started");
   }
   if (["own", "with-child", "child-gone", "merging"].includes(stored.state))

@@ -12,8 +12,8 @@ import type { HookSpec } from "../run";
  * moving a phase back to pending to end the turn. When the own plan gives no reason, it also
  * names what a lead's plans wait on (`leadPlansReason`), from the store's classifier alone:
  * `herdr wait` for plans with a running child, `herdr plans --wait` for closed plans whose pull
- * request is not merged yet, `herdr start --plan <slug>` for a child that is gone. It runs no
- * git, gh or hc. It reads no setting
+ * request is not merged yet, `herdr start --plan <slug>` (with its model, effort, mode and
+ * brief) for a child that is gone. It runs no git, gh or hc. It reads no setting
  * and needs no cc-smart-dev-kit.json: the task store is the person's own, so it runs in a project
  * with no file and honors `ownHooks` where there is one. Silent outside git (the frame's
  * default), on the stop its own block caused (`stop_hook_active`), or with no readable task
