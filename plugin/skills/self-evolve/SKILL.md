@@ -81,6 +81,8 @@ in the wrong place: move it and leave a pointer.
 - **Anything the code already says.**
 - **Vague virtue** — "write clean code". Make it specific and testable, or drop it.
 - **Prose where a hook belongs** — instructions are advice; hooks are certain.
+- **An unguarded claim** — a rule that says "X has one home" comes with the test or lint that
+  fails on a second one, or is marked advice, with the reason.
 
 ## Editing safely
 

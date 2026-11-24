@@ -22,10 +22,26 @@ imagined caller locks in the wrong shape, and the real second caller never fits 
 
 ## 3. Search before you write
 
-Before adding a helper, component, constant, type, mapper or hook, look for one already
-there: by name (`Grep` as a whole word), by what it does, and by structure. claude-mem's
-`smart_search` lists matching functions and types; when absent or unhelpful, use `Grep`.
-If it exists, import it.
+Before adding a helper, component, hook, constant, type, schema, mapper or error class, look
+for one already there. Search three ways, the shared layers first (§ 7), then the feature
+folders:
+
+1. **By name** (`Grep` as a whole word), then by the words it shows: the sentence, label or
+   message a user sees, and the domain words.
+2. **By what it does:** the same job under another name. claude-mem's `smart_search` lists
+   matching functions and types; when absent or unhelpful, use `Grep`.
+3. **By structure:** one distinctive line of the body, such as a literal or a call chain.
+
+If one exists, import it.
+
+**Record the search.** For every new export, write one line under `Homes:` in your `Report:`:
+
+`<name> (<kind>) — searched: <name>; <words it shows | n/a>; <a distinctive body line | n/a> — found: <paths | none> — why new: <reason>`
+
+The kinds are function, component, hook, constant, type, schema, SQL function and error
+class. A props or arguments type rides on its unit's line. With no new export, write
+`Homes: none`. The lead checks that every line is there; the review spot-checks what is in
+them. Outside a plan, the main session writes its own lines into the review's brief.
 
 ## 4. Split by responsibility
 
@@ -48,7 +64,9 @@ already drifted and caused a bug. Reuse an existing implementation or extract th
 
 **Merely similar — wait for the third.** Two things that look alike need not be a repeat;
 a third shows which parts are shared and which are coincidence. Extracting to *name* a
-block stays in its file; extracting for *reuse* needs a real second caller.
+block stays in its file; extracting for *reuse* needs a real second caller. A composite
+of shared UI parts is the same case: an *identical* one follows § 7 (extract before shipping
+it twice); a merely similar one goes to the shared UI layer when a third screen builds it.
 
 A parameter carries data that varies. A flag or branch that picks a code path for one
 caller means the logic was not the same: keep the common core shared and move the
@@ -61,7 +79,7 @@ site at its right home and remove the copies. Elsewhere: the core instructions' 
 ## 6. Helper, service, module
 
 - A **helper** is a pure function: no state or I/O (reading or writing outside itself).
-  Keep it beside its callers.
+  Keep it beside its callers, unless it has no feature words in it (§ 7).
 - A **service** coordinates state changes across several things, called from an edge such
   as a route, handler or command.
 - A **module** puts one concept behind a small public entry point. Make it deep: a simple
@@ -77,13 +95,19 @@ function (review axes § Security).
 
 ## 7. Where the shared piece lives; reusable components
 
-Scope it as narrowly as its use, widening only when another caller appears:
+Scope it as narrowly as its use, widening only when another caller appears (one exception
+follows the list):
 
 1. **Both sides**, such as browser and server: the project's shared layer, kept pure —
    no UI framework or server-only imports.
 2. **One side:** close to its callers, in the feature's folder or the one file.
 3. **Another feature needs it:** through that feature's public entry point, never its
-   private folders.
+   private folders. Never copy a feature's private helper into a second feature: export it
+   or move it to the shared layer.
+
+**One exception, for placement only:** a helper with no feature words in it (a cursor, a page
+cut, a retry tail, a formatter) goes to the shared layer on its first write, even with one
+caller. It lands in a layer that already exists, so § 2 still holds.
 
 Use the project's layer names, import aliases and boundaries from its add-on and rules.
 A boundary violation is Critical in review.
@@ -117,7 +141,9 @@ A name that lies is a bug.
 Follow the project's layout; put new code beside its feature. One concept per file, one
 main export for a major type (a component, service or hook). Split by concept, not line count.
 One helpers folder per layer: never add `utils/` beside `helpers/` beside `lib/`. An existing
-folder stays the home; name the files inside by their job.
+folder stays the home; name the files inside by their job. Name a folder for the concept it
+owns, never for its first user. Test doubles and fixtures live in the project's test-support
+home, and product code never branches on one.
 
 ## 10. Cleaner vs structural change
 
@@ -147,7 +173,15 @@ these and remove each one:
 - **Nothing just in case** (§§ 2 and 4): an option, flag or config key no caller uses; a
   compatibility shim, re-export or alias nobody asked for.
 - **Unused code:** dead code, unused imports, commented-out blocks. Delete them; git keeps
-  the history.
+  the history. Code that only its own tests call is dead; so is a `v1` left beside its `v2`.
+- **A copy of a shared home:** something a shared layer already exports, written again; a
+  composite of shared parts built by hand when the project has one; plumbing every feature
+  needs (a fetch wrapper, a retry, a cache key) rebuilt inside one feature; a rule on words
+  (a plural, a label, a date format) written inline when the project has a home for words.
+- **A claim with no guard:** a comment or doc that says "the one place for X" while no test or
+  lint fails on a second place.
+- **One mode, many switches:** the same flag or mode tested in three or more places; one
+  function or table should decide it.
 - **Debug output:** logging added while building, and log lines that narrate a normal run.
 - **Churn:** reformatting, reordered imports or renames in lines the task does not change.
   A cleaner edit (§ 10) makes the code truer; churn only moves text.
@@ -163,7 +197,7 @@ instructions' root-cause rule), and code unlike its siblings (§ 8, and § 12's 
 ## 12. Before the commit
 
 1. Right folder, layer and name?
-2. Any duplicate to reuse or extract?
+2. Any duplicate to reuse or extract, and the search recorded (§ 3)?
 3. Boundaries intact?
 4. Files and functions a sensible size?
 5. Matches the existing pattern?
@@ -172,3 +206,18 @@ instructions' root-cause rule), and code unlike its siblings (§ 8, and § 12's 
 8. Names true?
 9. Nothing built for a need that does not exist?
 10. Nothing from § 11's list?
+
+## 13. Mechanical guards
+
+A rule that says "one home" holds only when a tool fails on a second one. The project owns
+these guards; each is a ratchet, so the count may only go down:
+
+- unused exports, where use in a test alone counts as unused;
+- a duplicate detector over the source;
+- a size ratchet on files and functions;
+- an import lint that sends callers through a feature's front door.
+
+The project lists its commands in its review add-on, `.claude/cc-smart-dev-kit/review.md`,
+under a `Reuse signals` heading. The lead runs them once, or the main session when there is
+no plan, and hands the output to the reviewers. A reviewer never runs a repo-wide tool
+itself. A project with none of these guards says so in one line, and the work goes on.

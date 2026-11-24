@@ -98,8 +98,9 @@ model; the kit recommends Claude Opus at `high`. Worked examples and briefs:
   re-enable it). A workaround needs the person's explicit yes and a comment saying why; a fix
   that needs a broader change (a contract, a migration, a refactor) is asked with the trade-off.
 - **One home for everything.** Every function, component, constant, type and helper has one
-  home, imported everywhere else; search before you add one. The same logic twice is unified
-  now; merely similar code waits for a third case. Ask before a structural change.
+  home, imported everywhere else. Search before you add one and record it (`/cc-smart-dev-kit:code-structure`
+  § 3); outside a plan, put your Homes lines in the review's brief. The same logic twice is
+  unified now; merely similar code waits for a third case. Ask before a structural change.
 - **No AI slop.** Code a careful senior engineer would write by hand: clean, never simplistic;
   the smallest complete diff; comments only for why; nothing for what cannot happen or just in
   case (`/cc-smart-dev-kit:code-structure` § 11).
