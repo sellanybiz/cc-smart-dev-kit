@@ -18,6 +18,7 @@ import type { Out } from "../cli/ui/out";
 import { type ListedWorktree, listWorktrees, runGit, runGitRaw, samePath } from "../hooks/git";
 import type { Env } from "../hooks/run";
 import { locateCheckout } from "../project/resolve";
+import { shellWord } from "../shell/quote";
 import { taskContext } from "../tasks/context";
 import { planFilesCheck } from "../tasks/files-check";
 import { branchTip, judgeStacks, provedPairs, type StackJudgment } from "../tasks/stack-proof";
@@ -464,7 +465,7 @@ export function judgePlans(input: PlansWorld, only?: string, start?: string): Ju
             ),
           );
         else {
-          const out = `the person decides: if its work is merged or given up, release its files with ${COMMAND} herdr plans --release ${slug}`;
+          const out = `the person decides: if its work is merged or given up, release its files with ${COMMAND} herdr plans --release ${shellWord(slug)}`;
           lines.push(
             lineOf(
               base,
@@ -732,7 +733,7 @@ function unprovedStackFix(
     return `${counts} when this plan records its own branch, built on ${name}'s work: task_update #${plan.number} branch=<branch built on ${name}>`;
   if (gap === "git")
     return `${counts} once git can read ${name}'s branch and this plan's start: run ${COMMAND} herdr plans again`;
-  return `${counts} when this plan is built on ${name}'s work: ${COMMAND} herdr start --plan ${slug} starts it on ${parent.branch} when --base is left out; a plan built here rebuilds its branch on ${parent.branch}`;
+  return `${counts} when this plan is built on ${name}'s work: ${COMMAND} herdr start --plan ${shellWord(slug)} starts it on ${parent.branch} when --base is left out; a plan built here rebuilds its branch on ${parent.branch}`;
 }
 
 /** The `plans` summary line's words for each count. */
@@ -886,7 +887,7 @@ export function prepareReserve(world: PlansWorld, ref: string): PlanStart {
     if (ownerOf(world.who)(plan))
       return refuse(
         `Plan "${slug}" is running: this session started it, and only a queued plan is reserved.`,
-        `park it: task_update #${plan.number} with status pending once its phases stop, then run ${COMMAND} herdr plans --reserve ${slug}`,
+        `park it: task_update #${plan.number} with status pending once its phases stop, then run ${COMMAND} herdr plans --reserve ${shellWord(slug)}`,
       );
     return refuse(
       `Plan "${slug}" is not one of this session's queued plans: another session owns it.`,

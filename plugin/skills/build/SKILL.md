@@ -261,7 +261,8 @@ after a rebase is the project's `.claude/cc-smart-dev-kit/build.md`.
 3. When a pull request merges, run `herdr plans`: it releases the plan's files, and what
    waited on them turns ready. Start those the same way. While a merge is pending,
    `herdr plans --wait` in the background returns when a plan changes.
-4. A plan whose child is gone resumes with `herdr start --plan <slug>`, in the child's own worktree. The
+4. A plan whose child is gone resumes with `herdr start --plan <slug>` (and the usual model, effort,
+   mode and brief), in the child's own worktree. The
    store never gives the plan to a second child while the first lives.
 5. Release a reservation by hand only when the person says so (`herdr plans --release <slug>`).
 

@@ -17,6 +17,8 @@ own pane, and the lead never relays it (4.10.1). The user workflow is
 | `identity.ts` | Live terminal and process-ancestry checks. |
 | `brief.ts` | Private brief files and unique report files, and the plan and follow-up trailers a child gets. |
 | `waiter.ts` | The one live `herdr wait` for a lead: a lock in `<stateDir>/herdr/waiters/`, and the details a second wait reports (§ Waiting without polling). |
+| `start-words.ts` | The `herdr start --plan` line the kit suggests (`planStartCommand`), printed by `herdr plans` and the keep-going hook; it imports only the command name and the shell quoter, so a hook can carry it. |
+| `launch-record.ts` | herdr's own record of each worktree it launched a child in, so a plan's binding check trusts only a path it made (`launchedHere`). |
 | `plans.ts` | The live side of plan hand-outs: the gates only git, gh and hc can answer, the start's reservation, and `herdr plans` (§ Handing out plans). |
 | `command.ts` | All nine verbs, dialog parsing and the event-stream barrier. |
 | `doctor.ts` | Optional hc discovery and conservative diagnostics. |

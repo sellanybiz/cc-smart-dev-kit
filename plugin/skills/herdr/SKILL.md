@@ -186,7 +186,8 @@ cc-smart-dev-kit herdr send <terminal> "Follow-up [#n]: <finding> [files now hel
 
 ## Stop or recover
 
-A plan whose child is gone restarts with `cc-smart-dev-kit herdr start --plan <slug>`: the child
+A plan whose child is gone restarts with `cc-smart-dev-kit herdr start --plan <slug>`, plus the
+usual `--model`, `--effort`, `--mode` and brief: the child
 continues in its own worktree and branch, and takes no fresh start. It is refused while that
 child's pane still lives.
 

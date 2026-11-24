@@ -51418,8 +51418,8 @@ init_labels();
 
 // src/herdr/start-words.ts
 init_names();
-function planStartCommand(slug) {
-  return `${COMMAND} herdr start --plan ${slug} --model <model> --effort <effort> --mode <mode> -- "<brief>"`;
+function planStartCommand(ref) {
+  return `${COMMAND} herdr start --plan ${shellWord(ref)} --model <model> --effort <effort> --mode <mode> -- "<brief>"`;
 }
 
 // src/hooks/keep-going.ts
@@ -51546,7 +51546,7 @@ function leadPlansReason(led) {
   if (merging.length > 0)
     parts.push(`${merging.length === 1 ? "Plan" : "Plans"} ${names(merging)} ${merging.length === 1 ? "is" : "are"} closed, and ${merging.length === 1 ? "its" : "their"} pull request may not be merged yet: wait for the merge, and for what it frees, with \`${COMMAND} herdr plans --wait\` in the background`);
   if (gone.length > 0)
-    parts.push(`The child of ${names(gone)} is gone: resume ${gone.length === 1 ? "it" : "each"} with ${gone.slice(0, HOOK_LIST_LIMIT).map((entry) => `\`${planStartCommand(entry.plan.plan ?? `'#${entry.plan.number}'`)}\``).join(", ")}`);
+    parts.push(`The child of ${names(gone)} is gone: resume ${gone.length === 1 ? "it" : "each"} with ${gone.slice(0, HOOK_LIST_LIMIT).map((entry) => `\`${planStartCommand(entry.plan.plan ?? `#${entry.plan.number}`)}\``).join(", ")}`);
   if (parts.length === 0)
     return null;
   return `${parts.join(". ")}. Or record what you wait on with \`${TASK_TOOL.note}\` and end the turn with a \`${WAIT_MARK} <what>\` line.`;
@@ -57769,7 +57769,7 @@ function judgePlans(input, only, start) {
         if (pr === "merged" || pr === "closed")
           lines.push(lineOf3(base, "merging", `finished, and its pull request ${pr}, but the store did not release its files`, `run ${COMMAND} herdr plans again`, { pr }));
         else {
-          const out = `the person decides: if its work is merged or given up, release its files with ${COMMAND} herdr plans --release ${slug}`;
+          const out = `the person decides: if its work is merged or given up, release its files with ${COMMAND} herdr plans --release ${shellWord(slug)}`;
           lines.push(lineOf3(base, "merging", pr === null ? "finished, but no branch is recorded: its files stay held" : pr === "open" ? "finished: its files stay held until its pull request merges or closes (open)" : pr === "unknown" ? `finished: gh cannot say whether its pull request merged, and its branch is not proved on ${baseRef(world) ?? world.base}: its files stay held` : `finished: no pull request was found, and its branch is not proved on ${baseRef(world) ?? world.base}: its files stay held`, pr === null ? `task_update #${plan.number} with branch, so its pull request can be found; or ${out}` : pr === "open" ? null : out, { pr }));
         }
         break;
@@ -57910,7 +57910,7 @@ function unprovedStackFix(plan, parent, judged, byId) {
     return `${counts} when this plan records its own branch, built on ${name}'s work: task_update #${plan.number} branch=<branch built on ${name}>`;
   if (gap === "git")
     return `${counts} once git can read ${name}'s branch and this plan's start: run ${COMMAND} herdr plans again`;
-  return `${counts} when this plan is built on ${name}'s work: ${COMMAND} herdr start --plan ${slug} starts it on ${parent.branch} when --base is left out; a plan built here rebuilds its branch on ${parent.branch}`;
+  return `${counts} when this plan is built on ${name}'s work: ${COMMAND} herdr start --plan ${shellWord(slug)} starts it on ${parent.branch} when --base is left out; a plan built here rebuilds its branch on ${parent.branch}`;
 }
 function summary(lines) {
   const count = (state) => lines.filter((line) => line.state === state).length;
@@ -57990,7 +57990,7 @@ function prepareReserve(world, ref) {
     if (!isOpen(plan))
       return refuse3(`Plan "${slug}" is ${plan.status}: nothing to reserve.`, `${COMMAND} herdr plans lists the plans this session can reserve`);
     if (ownerOf(world.who)(plan))
-      return refuse3(`Plan "${slug}" is running: this session started it, and only a queued plan is reserved.`, `park it: task_update #${plan.number} with status pending once its phases stop, then run ${COMMAND} herdr plans --reserve ${slug}`);
+      return refuse3(`Plan "${slug}" is running: this session started it, and only a queued plan is reserved.`, `park it: task_update #${plan.number} with status pending once its phases stop, then run ${COMMAND} herdr plans --reserve ${shellWord(slug)}`);
     return refuse3(`Plan "${slug}" is not one of this session's queued plans: another session owns it.`, "a lead reserves only a plan it laid and has not started");
   }
   if (["own", "with-child", "child-gone", "merging"].includes(stored.state))

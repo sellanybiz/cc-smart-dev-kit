@@ -37475,8 +37475,8 @@ init_names();
 
 // src/herdr/start-words.ts
 init_names();
-function planStartCommand(slug) {
-  return `${COMMAND} herdr start --plan ${slug} --model <model> --effort <effort> --mode <mode> -- "<brief>"`;
+function planStartCommand(ref) {
+  return `${COMMAND} herdr start --plan ${shellWord(ref)} --model <model> --effort <effort> --mode <mode> -- "<brief>"`;
 }
 
 // src/hooks/keep-going.ts
@@ -37602,7 +37602,7 @@ function leadPlansReason(led) {
   if (merging.length > 0)
     parts.push(`${merging.length === 1 ? "Plan" : "Plans"} ${names(merging)} ${merging.length === 1 ? "is" : "are"} closed, and ${merging.length === 1 ? "its" : "their"} pull request may not be merged yet: wait for the merge, and for what it frees, with \`${COMMAND} herdr plans --wait\` in the background`);
   if (gone.length > 0)
-    parts.push(`The child of ${names(gone)} is gone: resume ${gone.length === 1 ? "it" : "each"} with ${gone.slice(0, HOOK_LIST_LIMIT).map((entry) => `\`${planStartCommand(entry.plan.plan ?? `'#${entry.plan.number}'`)}\``).join(", ")}`);
+    parts.push(`The child of ${names(gone)} is gone: resume ${gone.length === 1 ? "it" : "each"} with ${gone.slice(0, HOOK_LIST_LIMIT).map((entry) => `\`${planStartCommand(entry.plan.plan ?? `#${entry.plan.number}`)}\``).join(", ")}`);
   if (parts.length === 0)
     return null;
   return `${parts.join(". ")}. Or record what you wait on with \`${TASK_TOOL.note}\` and end the turn with a \`${WAIT_MARK} <what>\` line.`;
