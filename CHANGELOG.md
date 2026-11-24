@@ -5,24 +5,30 @@ in your own terminal after the update; the user guide is [README.md](README.md).
 
 ## 6.5.0
 
-- **Plans price shared capacity.** A plan that adds a queue, a cap, a per-event read, a
-  notifying trigger, a row lock or an append-only table answers **Capacity** in plan-task § 3:
-  what it costs per user and per event, and the scale where it bites. The plan's second read
-  checks that answer.
+- **Plans price shared capacity.** A plan that adds shared capacity (a queue, a cap or pool, a
+  per-event read, a notifying trigger, a lock or an append-only table) answers **Capacity** in
+  plan-task § 3: what it costs per user and per event, and the scale where it bites. Review
+  axis 2 holds that list once, and a plan with shared capacity and no Capacity answer is a
+  finding there, so the plan's second read checks it.
 - **Reviews name scale defects.** Review axis 2 gains the scale class: a cap or pool with no
   stated limit, interactive work in a bulk lane, no per-tenant fairness, a per-event fan-out of
-  reads, a lock held across a read, no lock timeout, an index on a column written on every
-  event, a tenant-blind index, and a table that only grows.
+  reads, a lock held across a read, no lock timeout, and a table that only grows. Two index
+  defects join axis 2 for every change: an index on a column rewritten on every event that no
+  frequent read needs, and a tenant-blind index on a multi-tenant table.
 - **A guard learned in one feature reaches its siblings.** When a change adds a guard to a
-  pattern its sibling features share, the review searches those siblings; a hit outside the plan
-  goes to you, never fixed in passing.
+  pattern its sibling features share, the review searches those siblings. A hit outside the plan
+  goes where the tasks skill sends it (a held plan that owns the file, else you), never fixed in
+  passing; the senior engineer reports every such hit.
 - **performance-budget covers the backend.** A new section for a change that adds shared
-  capacity: connection budget, queue caps, fan-out, herds after a restart, growth and retention,
-  scale tests with many small tenants, and a capacity page kept current like any doc.
+  capacity: connection budget, queue caps, fan-out, herds after a restart, locks, growth and
+  retention, scale tests with many small tenants, and a capacity page generated from the config
+  that sets each limit where the project can. Its index rule now covers the columns a frequent
+  read uses.
 - **React checks a project can adopt.** react-best-practices lists a virtualizer or a row cap
   for long lists, render-count tests for frequent frames, split contexts for fast state and
   stable actions, and the `react-hooks/set-state-in-effect` lint. The compiler lint now sits in
-  the `recommended` preset of `eslint-plugin-react-hooks` 7 or later.
+  the `recommended` preset of `eslint-plugin-react-hooks` 7 or later (`configs.flat.recommended`
+  in a flat config).
 
 ## 6.4.0
 
