@@ -56,8 +56,10 @@ const risky = given.risky === true
 // report: it makes this run round 2. An empty string for either is the same as leaving it out.
 // `reuse` adds the reuse track, before the spec track, so the spec track stays the last one and
 // judges every finding in round 2. `signals` is the project's own guard output (its unused-export
-// and duplicate tools, run once by the caller): every track reads it, none runs it. `homes` is the
-// author's `Homes:` lines for a run with no plan: with `spec`, the lines are in the plan's task notes.
+// and duplicate tools, run once by the caller): every track reads it, none runs it. `homes` is
+// the `Homes:` lines the caller carries to the reuse track, so it needs `reuse`: the author's own
+// lines for a run with no plan; with `spec`, the lead's own integration lines, since the builders'
+// are in the plan's task notes.
 const spec = given.spec || ''
 const prior = given.prior || ''
 const reuse = given.reuse === true
@@ -69,6 +71,10 @@ const REUSE_TRACK = 'reuse'
 // and only one of them the reuse method.
 if (reuse && named.includes(REUSE_TRACK)) {
   refuse(`"tracks" names "${REUSE_TRACK}", which "reuse" adds itself: leave it out of "tracks"`)
+}
+// Without the reuse track no prompt would carry `homes`: the lines would be dropped without a word.
+if (homes !== '' && !reuse) {
+  refuse('"homes" is for the reuse track: pass reuse: true too')
 }
 const tracks = named.concat(reuse ? [REUSE_TRACK] : [], spec === '' ? [] : [SPEC_TRACK])
 
@@ -217,6 +223,11 @@ const specPart = `For each Decision and each Edge case in the plan, say met, or 
 // Without a plan they come in the `homes` arg.
 const reusePart = `Your track is reuse: did the change write what the repo already has? For each new or changed export, each literal longer than about 40 characters, each user-facing sentence and each helper body in the diff, search the whole repo with the method of code-structure § 3, three ways: by name and the words it shows; by what it does, the same job under another name; and by a distinctive body line. Report every existing home it should have used, with the drift between copies: one finding with both paths and what differs. A drifted copy that users can see (a sentence, a label, a message) ranks at least warning. The builders record their own searches in \`Homes:\` lines, one for each new export: spot-check them. Rerun one or two of the searches a line names, and try one the builder did not. A new export with no \`Homes:\` line is a finding titled "unproven reuse". Searching the repo for these is this track's job, not side work, and this brief allows the read-only calls it takes, more than the ordinary limit on calls.`
 const reusePlanPart = `The \`Homes:\` lines are in the \`Report:\` notes of each phase and of each task set directly under the plan (the fix tasks of an earlier round sit there). Read the plan's tasks as the spec track does: task_list with scope "mine" and open_only false, the subtree of the plan task whose plan is "${planSlug}", then task_get each phase and each task under the plan.`
+// With a plan the builders' lines are in the task notes; `homes` then holds only the lead's own.
+const reuseHomesPart =
+  homes === ''
+    ? ''
+    : `The lead's own \`Homes:\` lines for its integration work follow. They are a record to prove, not to trust.\n\n${homes}`
 const reuseBriefPart =
   homes === ''
     ? 'No `Homes:` lines came with this review, so every new export is unproven reuse.'
@@ -247,6 +258,7 @@ const trackPrompt = (item) =>
     item.isSpec ? specPart : '',
     item.isReuse ? reusePart : '',
     item.isReuse ? (spec === '' ? reuseBriefPart : reusePlanPart) : '',
+    item.isReuse && spec !== '' ? reuseHomesPart : '',
     signals === '' ? '' : signalsPart,
     prior === '' ? '' : roundTwoPart(item),
     runPart,

@@ -215,15 +215,15 @@ for each new export in its `Report:` note, the lead checks the lines at each han
 track spot-checks them. In a plan's review (`spec` set) it reads the notes of each phase and of
 each task set directly under the plan, where round 1's fix tasks sit. Outside a plan the author
 passes the lines as `homes`, and only an empty `homes` makes every new export an "unproven reuse"
-finding. Its brief allows the repo-wide read-only searches that the senior engineer's limit on
-calls would otherwise cut short; the other tracks keep the limits. `signals` is the output of the
+finding. `homes` needs `reuse`: without the reuse track no prompt would carry it, so the script
+refuses it before any agent starts. With `spec` set, `homes` holds the lead's own `Homes:` lines for
+its integration work, and the reuse track reads them after the plan's task notes. Its brief allows
+the repo-wide read-only searches that the senior engineer's limit on calls would otherwise cut
+short; the other tracks keep the limits. `signals` is the output of the
 project's own guard tools (the review add-on's `Reuse signals`), run once by the caller (the lead
 before each round of a plan's review, the main session outside a plan): every track's prompt
-carries it as evidence to judge, never as commands to run, because no reviewer runs a repo-wide
-tool itself. Without any of these args the run is as before. In both scripts a refuter treats a
-sibling copy as evidence for a duplicate finding, never as its refutation: only a written project
-rule that allows the copy refutes it. Any other design finding falls to a written rule, a
-documented convention or an established pattern its sibling files share.
+carries it as evidence to judge, never as commands to run, because no reviewer runs the project's
+guard commands itself. Without any of these args the run is as before.
 Every call, old or new, also gets two strict rules in each
 track's brief: prove a claim by running it where that can be done, and a track with no findings
 names what it read and ran, or the report says it gave no evidence of coverage. Its launches follow
@@ -248,8 +248,9 @@ fix (the audit's writer gets the trigger and the missing guard), never only coun
 finding confirmed, the headline points to the Hunches. A refuted one is counted and left out.
 A refuter may not refute a duplicate finding because a sibling file has the same copy: that is
 evidence for the finding, and only a written project rule that allows the copy refutes it. Any
-other design finding is refuted by a written rule or a documented convention that allows its
-shape. Both scripts say so, in different words, because `check:duplicates` reads `plugin/workflows`.
+other design finding is refuted by a written rule, a documented convention or an established
+pattern its sibling files share that allows its shape. Both scripts say so, in different words,
+because `check:duplicates` reads `plugin/workflows`.
 The reviewers carry `cc-smart-dev-kit:senior-engineer`, the type `reviewAgents` lists by default,
 and each track's brief holds the line `Mode: review` alone and asks for the StructuredOutput
 call, so the run's return records the review (Claude Code's nudge to make
