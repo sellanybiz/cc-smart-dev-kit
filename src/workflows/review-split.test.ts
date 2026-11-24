@@ -1185,7 +1185,7 @@ const REUSE_LINES = [
   "the drift between copies",
   "unproven reuse",
   "Homes:",
-  "searching the repo for these is this track's job",
+  "Searching the repo for these is this track's job",
 ];
 
 describe("the review-split reuse track and signals", () => {
