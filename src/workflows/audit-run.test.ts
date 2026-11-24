@@ -126,8 +126,12 @@ describe("the audit-run workflow", () => {
     expect(verify?.prompt).toContain("refute");
     expect(verify?.prompt).toContain("A design finding's missing guard is the rule it breaks.");
     expect(verify?.prompt).toContain(
-      "A project convention or sibling files with that shape refute it.",
+      "For a duplicate finding, a file with the same shape confirms the copy and never excuses it: only a written project rule that allows the copy refutes it.",
     );
+    expect(verify?.prompt).toContain(
+      "Every other design finding falls when the project's written rules, or a convention it documents, justify the shape.",
+    );
+    expect(verify?.prompt).not.toContain("sibling files with that shape refute it");
   });
 
   test("the caller's budget caps the findings verified, so a run costs what the person agreed to", async () => {

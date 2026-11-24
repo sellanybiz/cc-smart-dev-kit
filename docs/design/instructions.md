@@ -203,7 +203,19 @@ it a plan's review (`build` § 6). `spec` is the plan file: every track reads it
 spec-compliance track checks each decision, edge case and step's done-check against the code.
 `prior` is round 1's whole report: it makes the run round 2, where the spec track (or the first
 track) judges every round 1 finding, fixed, not fixed or worse, and each other track judges the
-findings of its own area. Every call, old or new, also gets two strict rules in each
+findings of its own area. Two more optional args serve the reuse check. `reuse: true` adds one
+track, named `reuse`, before the spec track, so the spec track stays the last one and the judge of
+every finding in round 2. That track's prompt is the one home of the method: for each new or
+changed export, long literal, user-facing sentence and helper body in the diff, search the whole
+repo by name, by the words it shows and by a distinctive body line, and report every existing home
+the change should have used, with the drift between copies. It spot-checks the builders' `Homes:`
+lines, from each phase's `Report:` notes when `spec` is set, and a new export with no line is an
+"unproven reuse" finding. Its brief allows the repo-wide read-only searches that the senior
+engineer's limit on calls would otherwise cut short; the other tracks keep the limits.
+`signals` is the output of the project's own guard tools (the review add-on's `Reuse signals`),
+run once by the caller: every track's prompt carries it as evidence to judge, never as commands to
+run, because no reviewer runs a repo-wide tool itself. Without either arg the run is as before.
+Every call, old or new, also gets two strict rules in each
 track's brief: prove a claim by running it where that can be done, and a track with no findings
 names what it read and ran, or the report says it gave no evidence of coverage. Its launches follow
 D46's tier for the change set the caller names with `risky` — `opus` at `xhigh` for a risky one,
@@ -225,6 +237,10 @@ prompt, so the review record would record nothing. A finding its refuter leaves 
 proved nor refuted: it is listed under **Hunches** with the refuter's reason, its trigger and its
 fix (the audit's writer gets the trigger and the missing guard), never only counted; with no
 finding confirmed, the headline points to the Hunches. A refuted one is counted and left out.
+A refuter may not refute a duplicate finding because a sibling file has the same copy: that is
+evidence for the finding, and only a written project rule that allows the copy refutes it. Any
+other design finding is refuted by a written rule or a documented convention that allows its
+shape. Both scripts say so, in different words, because `check:duplicates` reads `plugin/workflows`.
 The reviewers carry `cc-smart-dev-kit:senior-engineer`, the type `reviewAgents` lists by default,
 and each track's brief holds the line `Mode: review` alone and asks for the StructuredOutput
 call, so the run's return records the review (Claude Code's nudge to make
