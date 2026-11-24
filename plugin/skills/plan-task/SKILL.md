@@ -77,7 +77,7 @@ What the recommended option must be, and how a workaround is labelled: the core 
 
 ## 3. Write the plan, before the first code edit
 
-Answer eight questions; they are the plan's sections:
+Answer nine questions; they are the plan's sections:
 
 1. **Goal** — the real outcome, not the literal request.
 2. **Files to change** — the files the plan writes, never the ones it only reads: exact
@@ -98,12 +98,15 @@ Answer eight questions; they are the plan's sections:
    (`/cc-smart-dev-kit:verify-change` § 6). Each phase's done-check (§ 5) comes from here. Name
    the plan's two review runs and its final review (`/cc-smart-dev-kit:build` § 6, which says when
    the final one runs): approving the plan approves them.
+9. **Homes** — the shared pieces the plan reuses, the new shared homes it makes with their
+   paths, and the copies it deletes. Search first, other open plans included (`task_list`
+   with `scope: "project"`, then `task_get` for their briefs): `/cc-smart-dev-kit:code-structure` § 3.
 
 Put a three-line **Summary** at the top. Keep approval and build status out of the design.
 Write it so a fresh session can build from the file alone: the approval screen may offer to
 clear the context and start from the plan (the person's `showClearContextOnPlanAccept`
-setting). The built-in `Plan` agent is read-only: it returns the text, and you write the file. A planning
-agent runs on `opus` at `xhigh` (`/cc-smart-dev-kit:subagent-decision`).
+setting). The built-in `Plan` agent is read-only: it returns the text, and you write the
+file. A planning agent runs on `opus` at `xhigh` (`/cc-smart-dev-kit:subagent-decision`).
 
 ## 4. Self-check, then approval
 
@@ -143,7 +146,8 @@ queued (§ 6). Put the complete builder brief in each phase's description, in
 four parts: objective; files and boundaries; patterns and tools; output format (`Report:`
 task note and short status). Include interfaces, edge cases and done-check.
 In **patterns and tools**, name the standard components or libraries to use — for example,
-the design system's Select or a table library — or explain why none fits.
+the design system's Select or a table library — or explain why none fits — and the homes
+the Homes answer names.
 Put caller rulings up front: commit permission, allowed checks, the refusal handling the
 builder agent gives, decide small calls and note them as `Ruling:`.
 The dispatch includes `Your task: #<n>` for the phase; the build skill explains the
@@ -198,10 +202,14 @@ CLI fallback: `/cc-smart-dev-kit:tasks`.
   integration work in the main session.
 - **Name exact files.** Disjoint file sets run in parallel worktrees; any shared file orders
   those phases, and a shared resource does not by itself (below). Batch small edits of the
-  same shape into one dispatch, not one agent per line.
+  same shape into one dispatch, not one agent per line. A phase that needs an export from
+  files outside the plan's list stops: the lead adds that file to the plan's `files` with
+  `task_update`, adds a step, and tells the person in one line. A guard whose file is outside
+  the plan goes to the person (the core instructions' one-plan rule).
 - **Name contracts and dependencies.** Contracts (a type, an API shape, a shared constant) go
   first, in a phase of their own; the phases that use them are `blocked_by` it, so they start
-  from its merged code. Put every other real wait in `blocked_by` too. Do not hold work for
+  from its merged code. A new shared home is a contract: two phases that would build the same
+  one get one owner and a `blocked_by`. Put every other real wait in `blocked_by` too. Do not hold work for
   an unrelated review, merge or answer.
 - **A shared resource orders phases only when two phases write the same state.** A
   database, a port or a number sequence is not a reason to chain phases: give each builder
@@ -211,7 +219,8 @@ CLI fallback: `/cc-smart-dev-kit:tasks`.
   hand-back, review, fix, merge and cleanup loop belong to `/cc-smart-dev-kit:build`.
 - **The last wave is a heavy cleanup**, run only once everything is verified live: the
   fallbacks and legacy paths a "play safe" plan kept for the move (§ 2), leftover branches
-  and worktrees, and docs that still name what was removed.
+  and worktrees, docs that still name what was removed, and the delete step for a `v2` whose
+  `v1` still has callers.
 - **Give each phase a targeted done-check.**
 - **Keep shared writes with the main session:** lockfiles, new dependencies, version bumps,
   shared indexes, dev servers and the final full check (`/cc-smart-dev-kit:verify-change` § 4).
@@ -234,11 +243,10 @@ CLI fallback: `/cc-smart-dev-kit:tasks`.
   start the lowest-numbered queued plan.
   **To park** a plan, stop or finish its running work, `task_update` the plan task to
   `pending`, then `task_note` it with a note that starts `parked: <why>`; the store refuses
-  while any of its work is `in_progress`.
-  Nothing is dropped: phases, steps and briefs stay as they are. **To resume**, start one of its
-  phases; a parked plan with no open phase resumes by starting the plan task itself
-  (`task_update` it to `in_progress`). Resuming is refused while another plan is in flight: park
-  or finish that one first.
+  while any of its work is `in_progress`. Nothing is dropped: phases, steps and briefs stay.
+  **To resume**, start one of its phases; a parked plan with no open phase resumes by starting
+  the plan task itself (`task_update` it to `in_progress`). Resuming is refused while another
+  plan is in flight: park or finish that one first.
   Name the intended plan with `plan` on `task_list` and on `task_create` with `phase`; never on
   a deploy task, which refuses it. A call that names no plan goes to the plan in flight; else
   to the plan being finished (every phase closed, one done, the plan task still open); else to
@@ -254,11 +262,10 @@ CLI fallback: `/cc-smart-dev-kit:tasks`.
   (the default), ask once with `AskUserQuestion`, and say what each costs. When `herdr plans`
   shows two or more ready plans that share no file and a Herdr terminal exists, lead +
   children is the recommended option (§ 2); otherwise solo is:
-  - **Solo:** one session builds the plans one after another. The cheapest, and the slowest.
-  - **Lead + children:** the lead builds one plan itself, keeping its full build context, and
-    hands each other ready plan to a linked session. One full session per child on top.
-  - **Coordinator:** the lead builds nothing and stays light; every ready plan goes to a linked
-    session, one full session each.
+  - **Solo:** one session builds the plans one after another: the cheapest and the slowest.
+  - **Lead + children:** the lead builds one plan itself and hands each other ready plan to a
+    linked session: one full session per child on top.
+  - **Coordinator:** the lead builds nothing; each ready plan goes to its own linked session.
 
   The key is the person's own: `workflow set` of it is refused inside Claude Code. Never set
   it. To keep the answer, give the person the command, `cc-smart-dev-kit workflow set
