@@ -31,7 +31,7 @@ coordinator modes.
 Judge model and effort with `/cc-smart-dev-kit:subagent-decision`. For example:
 
 ```sh
-cc-smart-dev-kit herdr start --model sonnet --effort high --mode default --cwd /path/to/repo --name repair -- "Read the brief and fix the scoped bug. Start no sessions or agents."
+cc-smart-dev-kit herdr start --model sonnet --effort high --mode auto --cwd /path/to/repo --name repair -- "Read the brief and fix the scoped bug. Start no sessions or agents."
 ```
 
 Replace the example scope with a complete brief: goal, exact boundaries, relevant files,
@@ -44,8 +44,11 @@ Every child starts through the person’s login shell so it gets their own PATH.
 The first message is wrapped as lead evidence, never the person’s approval.
 
 - Add `--independent` only for the independent kind.
-- Select `--mode` no broader than the lead's current mode. A plan-mode lead must get its
-  plan approved first; never use `bypassPermissions`.
+- Pass `--mode` the lead's own current mode: a lead in auto mode starts its children in
+  `auto`, so they do not stop for approvals the lead would not. Narrow it only when the brief
+  needs it; never broader (nothing checks this for you). When you cannot tell your own mode,
+  pass `default`. A plan-mode lead must get its plan approved first; never use
+  `bypassPermissions`.
 - Use `--task '#n'` only for an existing open task in this repository on this machine.
   Else put the scope in the brief, not a task id from another project. The child works on
   that task and never takes it.
@@ -126,7 +129,7 @@ request at a time. When to start or send, and what to ask first: `/cc-smart-dev-
 the finding rule. Here are the commands.
 
 ```sh
-cc-smart-dev-kit herdr start --followup [--issue <n>]... --model sonnet --effort high --mode default -- "<finding>"
+cc-smart-dev-kit herdr start --followup [--issue <n>]... --model sonnet --effort high --mode auto -- "<finding>"
 cc-smart-dev-kit herdr send <terminal> "Follow-up [#n]: <finding> [files now held: …]"
 ```
 

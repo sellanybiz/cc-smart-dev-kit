@@ -446,12 +446,13 @@ A phase inside the lead's plan normally uses a subagent instead. This is separat
 With Herdr and a compatible hc installed, for example:
 
 ```sh
-cc-smart-dev-kit herdr start --model sonnet --effort high --mode default --cwd /path/to/repo --name repair -- "Fix the scoped bug; report the result. Start no sessions or agents."
+cc-smart-dev-kit herdr start --model sonnet --effort high --mode auto --cwd /path/to/repo --name repair -- "Fix the scoped bug; report the result. Start no sessions or agents."
 ```
 
-Model, effort and mode are required. The child's mode cannot exceed the lead's; plan mode
-must be approved first and bypass mode is refused. Fable and Opus at max effort require
-`--asked`: Claude asks you first when you are available, and passes it only after your yes (no
+Model, effort and mode are required. Claude passes its own mode, so a lead in auto mode starts
+its children in auto mode; it never passes a broader one (no hook or command checks this since
+6.0.0). Plan mode must be approved first, and the command refuses bypass mode. Fable and Opus
+at max effort require `--asked`: Claude asks you first when you are available, and passes it only after your yes (no
 hook checks it since 6.0.0).
 Linked operations require a live lead inside Herdr, verified through process ancestry.
 Add `--independent` for a session with no lead link; it cannot use `--task`.
