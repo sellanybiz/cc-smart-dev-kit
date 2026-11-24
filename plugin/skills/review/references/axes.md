@@ -26,13 +26,13 @@ one line each.
    In UI code, a raw control or hand-made widget where the design system has one is a
    finding: select, table, textarea, radio group, tabs, date input, avatar, menu, combobox,
    dialog. Name the design-system component that replaces it.
-   For each export the diff adds, search the repo for an existing home the three ways of
-   `code-structure` § 3, shared layers first. A hit is a finding (import it, or move the helper
-   to the shared layer both callers use). Read the brief's `Reuse signals` and the author's
-   `Homes:` lines first when it has them. In a plan's round the `reuse` track of `review-split`
-   runs this search; another track names a copy it meets but does not run the search. A plan's
-   review with no reuse track (a docs or instruction plan) has the spec track or the lead say
-   in one line whether a new unit copies an existing one.
+   For each new export, long literal, user-facing sentence and helper body the diff adds, search
+   the repo for an existing home the three ways of `code-structure` § 3, shared layers first. A
+   hit is a finding (import it, or move the helper to the shared layer both callers use). Read
+   the brief's `Reuse signals` and the author's `Homes:` lines first when it has them. In a
+   plan's round the `reuse` track of `review-split` runs this search; another track names a copy
+   it meets but does not run the search. A docs or instruction plan has no reuse track; its
+   one-home-per-rule track (`/cc-smart-dev-kit:build` § 6) covers copies.
 7. **Craft** — would a senior engineer be embarrassed to approve this? Names that lie, one
    function doing five things, nesting that should be early returns, clever one-liners,
    user-facing errors that say "Something went wrong". Structure and names:

@@ -158,9 +158,10 @@ Workflow({ name: "cc-smart-dev-kit:review-split",
   new export, long literal, user-facing sentence and helper body the diff adds, and spot-checks
   the author's `Homes:` lines. The method's one home is `/cc-smart-dev-kit:code-structure`
   § 3, and the script's prompt applies it. Pass it when the diff adds code, not only exports.
-- `homes` is the author's `Homes:` lines (a string) for the `reuse` track. Outside a plan, pass
-  your own lines. With `spec` set, leave it out: the track reads the phases' and fix tasks'
-  `Report:` notes instead.
+- `homes` is the author's `Homes:` lines (a string) for the `reuse` track; it needs `reuse: true`
+  and is refused without it. Outside a plan, pass your own lines. With `spec` set, pass only the
+  lead's own lines for its integration work: the track reads the phases' and fix tasks' `Report:`
+  notes itself.
 - `signals` is the `Reuse signals` output (a string): every track gets it with its brief. When
   the project lists no such commands, say so in one line and leave the key out.
 - `prior` is round 1's whole report, its Unchecked and Hunches included: it makes the run
