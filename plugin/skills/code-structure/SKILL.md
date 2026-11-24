@@ -22,10 +22,26 @@ imagined caller locks in the wrong shape, and the real second caller never fits 
 
 ## 3. Search before you write
 
-Before adding a helper, component, constant, type, mapper or hook, look for one already
-there: by name (`Grep` as a whole word), by what it does, and by structure. claude-mem's
-`smart_search` lists matching functions and types; when absent or unhelpful, use `Grep`.
-If it exists, import it.
+Before adding a helper, component, hook, constant, type, schema, mapper or error class, look
+for one already there. Search three ways, the shared layers first (§ 7), then the feature
+folders:
+
+1. **By name** (`Grep` as a whole word), then by the words it shows: the sentence, label or
+   message a user sees, and the domain words.
+2. **By what it does:** the same job under another name. claude-mem's `smart_search` lists
+   matching functions and types; when absent or unhelpful, use `Grep`.
+3. **By structure:** one distinctive line of the body, such as a literal or a call chain.
+
+If one exists, import it.
+
+**Record the search.** For every new export, write one line under `Homes:` in your `Report:`:
+
+`<name> (<kind>) — searched: <name>; <words it shows | n/a>; <a distinctive body line | n/a> — found: <paths | none> — why new: <reason>`
+
+The kinds are function, component, hook, constant, type, schema, SQL function and error
+class. A props or arguments type rides on its unit's line. With no new export, write
+`Homes: none`. The lead checks that every line is there; the review spot-checks what is in
+them. Outside a plan, the main session writes its own lines into the review's brief.
 
 ## 4. Split by responsibility
 
@@ -163,7 +179,7 @@ instructions' root-cause rule), and code unlike its siblings (§ 8, and § 12's 
 ## 12. Before the commit
 
 1. Right folder, layer and name?
-2. Any duplicate to reuse or extract?
+2. Any duplicate to reuse or extract, and the search recorded (§ 3)?
 3. Boundaries intact?
 4. Files and functions a sensible size?
 5. Matches the existing pattern?
