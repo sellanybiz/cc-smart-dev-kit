@@ -89,7 +89,7 @@ Unsure between two rows, take the higher one. `fable` only when the person asks 
   it: base and branch), what the change is meant to do, your own edge-case list, and the
   checkout's absolute path (in a worktree, the worktree's). Add the reuse evidence: run the
   commands under the `Reuse signals` heading of the project's review add-on once, with
-  `cc-smart-dev-kit workflow claims --base <the review's base>`, and paste their output with your own `Homes:` lines for what the change adds (`/cc-smart-dev-kit:code-structure`
+  `cc-smart-dev-kit workflow claims --base <the review's base>` (it reads commits only: commit first), and paste their output with your own `Homes:` lines for what the change adds (`/cc-smart-dev-kit:code-structure`
   § 3). With no such heading, say so in one line and go on (the same case as code-structure § 13). Ask for no fixes: the findings come
   back to you. Without that line the agent treats the brief as a consult, and nothing records
   the review.
@@ -163,8 +163,9 @@ Workflow({ name: "cc-smart-dev-kit:review-split",
   lead's own lines for its integration work: the track reads the phases' and fix tasks' `Report:`
   notes itself.
 - `signals` is the `Reuse signals` output and the `cc-smart-dev-kit workflow claims` output (a
-  string): every track gets it with its brief. Run `workflow claims --base <the call's `base`>` always; when the project lists no
-  Reuse signals, say so in one line and pass the claims alone.
+  string): every track gets it with its brief. Run `workflow claims --base <base>`, with the call's
+  own `base`, whenever you pass `signals`; when the project lists no Reuse signals, say so in one
+  line and pass the claims alone.
 - `prior` is round 1's whole report, its Unchecked and Hunches included: it makes the run
   round 2. Leave the key out for a first run. The example shows every key; a real call sets
   `spec` and `prior` only for a plan, and `prior` only in round 2.

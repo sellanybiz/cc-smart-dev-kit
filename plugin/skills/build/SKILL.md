@@ -212,8 +212,7 @@ of the session's own folder. In order:
    takes the head it reads). It reads only the diff of round 2's fixes, from the head round 2
    reviewed to the plan head, with the whole `Review round 2:` note as its context, never a
    condensed list. Save its report on the plan task as `Final review:`. Fix its confirmed
-   findings the same way; nothing reviews those fixes. When round 2's fixes are small and
-   touch none of those areas, there is no final review.
+   findings the same way; nothing reviews those fixes.
 7. **The full check,** once, in the main session (`/cc-smart-dev-kit:verify-change` § 4).
 8. **The pull request,** below.
 
@@ -234,10 +233,10 @@ Once the review and the full check pass, the one pull request of the plan opens,
 (`/cc-smart-dev-kit:commit`, `/cc-smart-dev-kit:pull-request`). Include the reviews that ran and the real checks. A fix after it opens (a late review
 finding, a CI failure) follows the batch rule in `/cc-smart-dev-kit:commit` § Pushing. Before the plan task closes, run
 `cc-smart-dev-kit workflow slop record --plan <slug> --bypassed <n> --drifted <n>`: the counts of confirmed review
-findings titled "bypassed home: …" and "drifted copy: …" (`../review/references/axes.md` dimension 6). When `slop record` or
+findings titled "bypassed home: …" and "drifted copy: …" (`../review/references/axes.md` dimension 6), each finding once
+across the rounds (round 2 reports round 1's again). When `slop record` or
 `workflow slop status` prints that an audit is due, offer the slop audit once the pull request is open, and follow
-`/cc-smart-dev-kit:audit` § The slop preset for the run and for what to record after it. A plan child records the counts
-and leaves the offer to its lead, who sees `workflow slop status`. Close the plan task with evidence in that same turn. A
+`/cc-smart-dev-kit:audit` § The slop preset for the run and for what to record after it. Close the plan task with evidence in that same turn. A
 reserved plan's files stay held until its pull request merges or closes; an unreserved plan's files are free once its task closes. After that
 `task_done`, start the next queued plan yourself (a plan child never does: § Lead + children and coordinator modes); until then it stays queued, with
 its phases already laid. A plan nobody laid is a fresh plan task from `/cc-smart-dev-kit:plan-task`, never more phases on the closed one.
@@ -261,7 +260,10 @@ after a rebase is the project's `.claude/cc-smart-dev-kit/build.md`.
    message. The store reserves a plan before its child launches, so two starts that share a
    file cannot both pass: the second is refused and names the plan in its way.
 2. Run `herdr wait` in the background. Each child's `herdr report` names its pull request, what
-   shipped and what failed. Read the pull request itself: a report is evidence, not proof.
+   shipped and what failed. Read the pull request itself: a report is evidence, not proof. A
+   report that says a slop audit is due, or that the project has no `Reuse signals` heading, is
+   your offer to make (§ 6, `/cc-smart-dev-kit:code-structure` § 13). Once the children's plans
+   have closed, run `workflow slop status` once; a later record can hide an earlier due.
 3. When a pull request merges, run `herdr plans`: it releases the plan's files, and what
    waited on them turns ready. Start those the same way. While a merge is pending,
    `herdr plans --wait` in the background returns when a plan changes.
@@ -285,8 +287,10 @@ after a rebase is the project's `.claude/cc-smart-dev-kit/build.md`.
 **A plan child** is a session started by `herdr start --plan`; its brief holds the line
 `Your plan: <slug>.`, after the lead's own text. It
 builds only that plan with this skill, starts no session, takes no other plan, reports once with
-the pull request link and stops. This overrides § 6's "start the next queued plan" and its audit offer. It never
-coordinates: `herdr start --plan`, `adopt` and `plans --reserve` refuse a plan child.
+the pull request link and stops. This overrides § 6's "start the next queued plan" and its audit offer,
+and `/cc-smart-dev-kit:code-structure` § 13's guard-setup offer: it still runs `slop record`, and its
+report copies the status lines that printed and says when the project has no `Reuse signals`
+heading, so its lead offers. It never coordinates: `herdr start --plan`, `adopt` and `plans --reserve` refuse a plan child.
 
 ## Rulings, not stalls
 

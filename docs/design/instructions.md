@@ -228,7 +228,7 @@ names), run once by the caller (the lead
 before each round of a plan's review, the main session outside a plan): every track's prompt
 carries it as evidence to judge, never as commands to run, because no reviewer runs the project's
 guard commands itself. The reuse track reads the claims in it and greps the code for `Similar to`
-markers (`git grep "Similar to <path:symbol>"`); its rules for a claim hit, a second marker and the
+markers (`git grep "Similar to "`); its rules for a claim hit, a third copy and the
 finding titles are one home, the reuse dimension of the review skill's `references/axes.md`, which
 the script's reuse prompt points at. Without any of these args the run is as before.
 Every call, old or new, also gets two strict rules in each
@@ -423,8 +423,9 @@ early helper grows a flag per caller (§ 11). What changed is that the second co
 in the code and not only in a report: it carries a comment at its definition (`Similar to
 <path:symbol>; not shared yet: <why>`), besides the `similar to` part of its `Homes:` line (also
 in the `builder` agent). A task note lives on one machine and in one plan; the comment travels with
-the repo, so the third copy's author and the reuse track find it with `git grep`, and extract.
-The rules for a claim hit, a second marker and the finding titles ("bypassed home: …", "drifted
+the repo, so the third copy's author and the reuse track find it with `git grep`, and extract;
+a marker that names an already marked copy (a chain) is a third copy too.
+The rules for a claim hit, a third copy and the finding titles ("bypassed home: …", "drifted
 copy: …", which `build` § 6 counts) sit in `review/references/axes.md` and nowhere else.
 § 13 adds `workflow claims --base <ref>` as a signal that always runs with the `Reuse signals`, and
 offers a project with no `Reuse signals` heading guard setup as a plan of its own; a person who
@@ -439,8 +440,13 @@ is installed without the person's yes.
 record`, and an audit is offered when `record` or `workflow slop status` prints that it is due
 (the command owns the rule, so no skill restates it); this replaces the old "offer after a review
 that found one" sentence. `audit` § The slop preset owns the step after an audit (`workflow slop
-audited --area <each audited area>`), and `build` § 6 points at it. A plan child records the count
-and leaves the offer to its lead, since nobody watches the child. The commands are in
+audited --area <each audited area>`), and `build` § 6 points at it. Each confirmed finding counts
+once across the review rounds, since round 2 reports round 1's again. A plan child records the
+count but makes neither the audit offer nor the guard-setup offer, since nobody watches the child:
+its report carries the status lines `slop record` printed (and a missing `Reuse signals`
+heading), and its lead offers from the report. A due state is momentary (a later record can hide
+it), so the lead also runs `workflow slop status` once after its children's plans close. The
+commands are in
 [workflow](workflow.md).
 
 The kit's plan, build, review and commit flows govern the work the kit drives. claude-mem
