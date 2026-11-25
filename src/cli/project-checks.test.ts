@@ -23,6 +23,7 @@ import type { Check } from "./check";
 import { checkLine } from "./doctor";
 import { cliPaths } from "./paths";
 import { projectChecks, projectTaskChecks, renamedCommand } from "./project-checks";
+import { NO_REUSE_GUARDS } from "./project-init";
 
 const PLUGIN_HOOKS = join(import.meta.dir, "..", "..", "plugin", "hooks", "hooks.json");
 const NOT_IGNORED =
@@ -76,16 +77,18 @@ const engineLine = (file: string, names: string[]) =>
 const fakeGhExec = () => fakeGh().exec;
 
 /**
- * The default-on issues switch adds one `· issues:` line to a repository with no origin. The tests
- * that match whole reports are about the other lines, so they drop it; the issues line has its own
- * test at the end of this file.
+ * Two information lines come with most projects: the default-on issues switch adds `· issues:` to
+ * a repository with no origin, and a project with no `Reuse signals` heading gets the reuse-guards
+ * line. The tests that match whole reports are about the other lines, so they drop both; each has
+ * its own test (the issues line at the end of this file, the reuse line under "reuse guards").
  */
-const notIssuesLine = (line: Check) =>
-  !(line.text.startsWith("issues:") && line.ok && line.info === true);
+const notAmbientLine = (line: Check) =>
+  !(line.ok && line.info === true && line.text.startsWith("issues:")) &&
+  !(line.ok && line.info === true && line.text === `project: ${NO_REUSE_GUARDS}`);
 
 async function check(repo: string, env = hookEnv(), hooksFile = PLUGIN_HOOKS) {
   return (await projectChecks(repo, env, cliPaths(env), hooksFile, fakeGhExec()))
-    .filter(notIssuesLine)
+    .filter(notAmbientLine)
     .map(checkLine);
 }
 
@@ -1293,7 +1296,7 @@ describe("the heavy-job queue counts jobs: size fields in jobs.kinds", () => {
     ignoreWorktrees(repo);
     const lines = (
       await projectChecks(repo, hookEnv(), cliPaths(hookEnv()), PLUGIN_HOOKS, fakeGhExec())
-    ).filter(notIssuesLine);
+    ).filter(notAmbientLine);
     expect(lines).toHaveLength(1);
     expect(lines[0]).toMatchObject({ info: true, ok: true });
   });
@@ -1547,5 +1550,59 @@ describe("the deploy-skill block in doctor", () => {
       "✓ deploy tasks: no findings",
       "· project: .claude/skills is a link outside this checkout: not searched, so the deploy-skill block there is not checked",
     ]);
+  });
+});
+
+describe("reuse guards: a project with no Reuse signals heading", () => {
+  const SENTENCE =
+    '· project: no reuse guards yet (.claude/cc-smart-dev-kit/review.md has no "Reuse signals" heading): ask Claude to set them up (code-structure § 13)';
+
+  /** The report of a project with a `cc-smart-dev-kit.json`, nothing filtered out. */
+  async function report(repo: string): Promise<string[]> {
+    const env = hookEnv();
+    const lines = await projectChecks(repo, env, cliPaths(env), PLUGIN_HOOKS, fakeGhExec());
+    return lines.filter((line) => line.text.startsWith("project:")).map(checkLine);
+  }
+
+  function project(): string {
+    const repo = makeRepo();
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", { sessionNames: true });
+    ignoreWorktrees(repo);
+    return repo;
+  }
+
+  test("a project with no review add-on gets one information line, not a failure", async () => {
+    const repo = project();
+    expect(await report(repo)).toEqual([SENTENCE]);
+    const env = hookEnv();
+    const lines = await projectChecks(repo, env, cliPaths(env), PLUGIN_HOOKS, fakeGhExec());
+    const found = lines.find((line) => line.text.startsWith("project: no reuse guards"));
+    expect(found).toMatchObject({ ok: true, info: true });
+    expect(found?.fix).toBeUndefined();
+  });
+
+  test("an add-on with other headings only gets the line too", async () => {
+    const repo = project();
+    mkdirSync(join(repo, ".claude", "cc-smart-dev-kit"), { recursive: true });
+    writeFileSync(
+      join(repo, ".claude", "cc-smart-dev-kit", "review.md"),
+      "# Review\n\nUse the reuse signals the team likes.\n",
+    );
+    expect(await report(repo)).toEqual([SENTENCE]);
+  });
+
+  test("a Reuse signals heading in the add-on: no line", async () => {
+    const repo = project();
+    mkdirSync(join(repo, ".claude", "cc-smart-dev-kit"), { recursive: true });
+    writeFileSync(
+      join(repo, ".claude", "cc-smart-dev-kit", "review.md"),
+      "# Review\n\n## Reuse signals\n\n- `bun run check:unused`\n",
+    );
+    expect(await report(repo)).toEqual([]);
+  });
+
+  test("a folder with no cc-smart-dev-kit.json is not a kit project: no line", async () => {
+    const repo = makeRepo();
+    expect(await report(repo)).toEqual([]);
   });
 });

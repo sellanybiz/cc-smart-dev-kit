@@ -62,6 +62,10 @@ function scripted(answers: (string | null)[]): { prompts: Prompts; shown: string
 const NO_DEPLOY_SKILL_TEXT = "no deploy block found in .claude/skills: nothing to remove";
 const NO_DEPLOY_SKILL = `· ${NO_DEPLOY_SKILL_TEXT}`;
 
+/** The last next step of a run in a project with no `Reuse signals` heading, by hand. */
+const NO_GUARDS_STEP =
+  'This project has no reuse guards yet (.claude/cc-smart-dev-kit/review.md has no "Reuse signals" heading): ask Claude to set them up (code-structure § 13).';
+
 // This file starts the CLI as a real process: its own speed limit (src/testing/timeouts.ts).
 setDefaultTimeout(PROCESS_TEST_TIMEOUT_MS);
 
@@ -631,6 +635,7 @@ describe("the run", () => {
       "  1. Commit the files with the project:",
       "       git add .claude/cc-smart-dev-kit.json .claude/settings.json && git commit",
       `  2. Tell your teammates: the file asks for cc-smart-dev-kit ${written.requires}, so each of them needs that plugin version or newer.`,
+      `  3. ${NO_GUARDS_STEP}`,
     ]);
   });
 
@@ -662,6 +667,8 @@ describe("the run", () => {
       "       git add .claude/cc-smart-dev-kit.json && git commit",
       "  2. Tell your teammates: the file asks for cc-smart-dev-kit >=0.5.2, so each of them needs that",
       "     plugin version or newer.",
+      '  3. This project has no reuse guards yet (.claude/cc-smart-dev-kit/review.md has no "Reuse signals"',
+      "     heading): ask Claude to set them up (code-structure § 13).",
     ]);
   });
 
@@ -1038,7 +1045,7 @@ describe("the run", () => {
     });
     expect(readFileSync(local, "utf8")).toBe("{}\n");
     // Each file, changed; and settings.local.json, each person's own, is not one to commit.
-    expect(run.lines.slice(-11)).toEqual([
+    expect(run.lines.slice(-12)).toEqual([
       "",
       "~ .claude/cc-smart-dev-kit.json: changed",
       "~ .claude/settings.json: changed",
@@ -1050,6 +1057,7 @@ describe("the run", () => {
       "  1. Commit the files with the project:",
       "       git add .claude/cc-smart-dev-kit.json .claude/settings.json && git commit",
       "  2. Tell your teammates: the file asks for cc-smart-dev-kit >=0.5.2, so each of them needs that plugin version or newer.",
+      `  3. ${NO_GUARDS_STEP}`,
     ]);
   });
 
@@ -1067,6 +1075,27 @@ describe("the run", () => {
     expect(await runProjectInit(["--help"], run.context, runner({}))).toBe(0);
     expect(run.lines[0]).toStartWith("Usage: cc-smart-dev-kit project init");
     expect(existsSync(join(repo, ".claude", "cc-smart-dev-kit.json"))).toBe(false);
+  });
+
+  test("a project whose review add-on has a Reuse signals heading gets no reuse-guards step", async () => {
+    const repo = makeRepo();
+    mkdirSync(join(repo, ".claude", "cc-smart-dev-kit"), { recursive: true });
+    writeFileSync(
+      join(repo, ".claude", "cc-smart-dev-kit", "review.md"),
+      "# Review\n\n## Reuse signals\n\n- `bun run check:unused`\n",
+    );
+    const run = context(repo);
+    expect(await runProjectInit(["--yes", "--no-deploy-block"], run.context, runner({}))).toBe(0);
+    expect(run.lines.at(-1)).toStartWith("  2. Tell your teammates:");
+    expect(run.lines.join("\n")).not.toContain("reuse guards");
+  });
+
+  test("a dry run and a run that writes nothing print no next steps, so no reuse-guards step", async () => {
+    const run = context(makeRepo());
+    expect(
+      await runProjectInit(["--yes", "--no-deploy-block", "--dry-run"], run.context, runner({})),
+    ).toBe(0);
+    expect(run.lines.join("\n")).not.toContain("reuse guards");
   });
 });
 
@@ -1086,7 +1115,7 @@ describe("what the file asks for", () => {
     expect((JSON.parse(readFileSync(file, "utf8")) as { requires: string }).requires).toBe(
       ">=0.5.2",
     );
-    expect(run.lines.at(-1)).toBe(
+    expect(run.lines.at(-2)).toBe(
       "  2. Tell your teammates: the file asks for cc-smart-dev-kit >=0.5.2, so each of them needs that plugin version or newer.",
     );
   });

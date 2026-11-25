@@ -104,6 +104,10 @@ export interface ResolvedWorkflow {
   alerts: {
     usagePercent: ResolvedValue<number>;
   };
+  /** How many plans close between two slop audits (`workflow slop`); 0 turns the count off. */
+  slopAudit: {
+    everyPlans: ResolvedValue<number>;
+  };
   /**
    * How the kit's plans are shaped: the most phases one plan may hold, how queued plans run
    * (`runMode`, the person's alone), the paths the plans' overlap check leaves out, and the
@@ -535,6 +539,7 @@ const RESOLVED: {
   "issues.fixedLabel": (r) => r.issues.fixedLabel,
   "issues.readyLabel": (r) => r.issues.readyLabel,
   "alerts.usagePercent": (r) => r.alerts.usagePercent,
+  "slopAudit.everyPlans": (r) => r.slopAudit.everyPlans,
   "plans.maxPhases": (r) => r.plans.maxPhases,
   "plans.runMode": (r) => r.plans.runMode,
   "plans.mergeFiles": (r) => r.plans.mergeFiles,
@@ -574,6 +579,7 @@ export function resolveWorkflow(
   });
   const fixes = merged.fixesAfterReview ?? {};
   const issues = merged.issues ?? {};
+  const slopAudit = merged.slopAudit ?? {};
   return {
     allowCommit: of("allowCommit", merged.allowCommit ?? workflowDefaults.allowCommit),
     allowPush: of("allowPush", merged.allowPush ?? workflowDefaults.allowPush),
@@ -610,6 +616,12 @@ export function resolveWorkflow(
     },
     // One home with `resolveAlerts` (below): the alerts are resolved the same way here.
     alerts: alertsFrom(personal, project),
+    slopAudit: {
+      everyPlans: of(
+        "slopAudit.everyPlans",
+        slopAudit.everyPlans ?? workflowDefaults.slopAudit.everyPlans,
+      ),
+    },
     plans: plansFrom(personal, project),
     switches: {
       statusLine: statusLineIsOurs(paths) ? current(true, "personal") : current(false, "default"),

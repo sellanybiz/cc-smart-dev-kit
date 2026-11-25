@@ -452,6 +452,7 @@ export type WorkflowKey =
   | "issues.fixedLabel"
   | "issues.readyLabel"
   | "alerts.usagePercent"
+  | "slopAudit.everyPlans"
   | "plans.maxPhases"
   | "plans.runMode"
   | "plans.mergeFiles"
