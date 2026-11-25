@@ -36,13 +36,15 @@ export const CLAIM_PHRASES: readonly string[] = [
  * The forms that define a symbol on an added line, one expression each, written for no language
  * in particular. Each has one capture group: the name it defines. A re-export (`export { X }
  * from`) matches none of them, and neither does a type-only import or re-export (`import type X`,
- * `import { type X }`, `export { type X } from`): they define nothing. The one home of the list.
+ * `import { type X }`, `export { type X } from`, or `  type X,` on a line of its own in a wrapped
+ * one): they define nothing. The one home of the list.
  */
 export const DEFINITION_FORMS: readonly RegExp[] = [
   /\bfunction\s+([A-Za-z_$][\w$]*)/g,
   /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)/g,
   /\bclass\s+([A-Za-z_$][\w$]*)/g,
-  /(?<![{,]\s*|\bimport\s+)\btype\s+([A-Za-z_$][\w$]*)/g,
+  // A specifier is followed by `,`, `}`, `as` or the line's end; the name is never cut short.
+  /(?<![{,]\s*|\bimport\s+)\btype\s+([A-Za-z_$][\w$]*)(?![\w$]|\s*(?:[,}]|$|as\b))/g,
   /\binterface\s+([A-Za-z_$][\w$]*)/g,
   /\bdef\s+([A-Za-z_$][\w$]*)/g,
   /\bfn\s+([A-Za-z_$][\w$]*)/g,
@@ -57,8 +59,16 @@ export const DEFINITION_FORMS: readonly RegExp[] = [
 export const BUILD_OUTPUT_FOLDERS: readonly string[] = ["dist", "node_modules"];
 
 /**
- * Paths a claim or a definition is never read from: lockfiles, build output and generated
- * bundles. Git pathspecs (`*` crosses `/`), so a folder matches at any depth.
+ * The kit's plan and research folders: they describe what was true then, so no claim or
+ * definition is read from one, and no slop audit area is made of one (`slop.ts`). Named here, not
+ * read from `plansFolders` (`hooks/plans-folders.ts`): that answers with real absolute paths, the
+ * person's own plans folder outside the repository among them, and a pathspec takes neither.
+ */
+export const HISTORY_FOLDERS: readonly string[] = [".claude/plans", ".claude/research"];
+
+/**
+ * Paths a claim or a definition is never read from: lockfiles, build output, generated bundles,
+ * and what describes the past. Git pathspecs (`*` crosses `/`), so a folder matches at any depth.
  */
 const SKIPPED_PATHS: readonly string[] = [
   "*.lock",
@@ -68,14 +78,9 @@ const SKIPPED_PATHS: readonly string[] = [
   "*.min.js",
   "*.map",
   ...BUILD_OUTPUT_FOLDERS.flatMap((folder) => [`${folder}/*`, `*/${folder}/*`]),
-  // A changelog and the kit's plan and research folders describe what was true then. The plan
-  // folder is named here, not read from `plansFolders` (`hooks/plans-folders.ts`): that answers
-  // with real absolute paths, the person's own plans folder outside the repository among them,
-  // and a pathspec takes neither.
   "CHANGELOG*",
   "*/CHANGELOG*",
-  ".claude/plans/*",
-  ".claude/research/*",
+  ...HISTORY_FOLDERS.map((folder) => `${folder}/*`),
 ];
 
 /**
@@ -88,8 +93,8 @@ const GENERATED_PATHS: readonly string[] = [
 ];
 
 /**
- * Test files, left out of the diff only: a test that defines a claimed name builds a fixture, not
- * a second home. A claim written in a test is still read.
+ * Test files: a test that defines a claimed name builds a fixture, not a second home, and a claim
+ * written in one is fixture text, not the project's own.
  */
 const TEST_PATHS: readonly string[] = [
   "*.test.*",
@@ -101,11 +106,8 @@ const TEST_PATHS: readonly string[] = [
 
 const excluded = (paths: readonly string[]) => paths.map((path) => `:(exclude)${path}`);
 
-/** The pathspec that reads every tracked file but the skipped ones. */
-const PATHSPEC = [".", ...excluded(SKIPPED_PATHS), ...GENERATED_PATHS];
-
-/** The diff's pathspec: the same, and no test file. */
-const DIFF_PATHSPEC = [...PATHSPEC, ...excluded(TEST_PATHS)];
+/** The pathspec of every git call here: every tracked file but the skipped, test and generated ones. */
+const PATHSPEC = [".", ...excluded(SKIPPED_PATHS), ...excluded(TEST_PATHS), ...GENERATED_PATHS];
 
 /** A name shorter than this is too common a word to treat as a symbol a claim names. */
 const MIN_NAME_LENGTH = 3;
@@ -119,8 +121,8 @@ const CLAIM_PHRASE = new RegExp(`\\b(?:${CLAIM_PHRASES.join("|")})\\b`, "i");
 /** A backticked word that is an identifier, with or without call parentheses. */
 const BACKTICKED_NAME = /`([A-Za-z_$][\w$]*)(?:\(\))?`/g;
 
-/** A file of prose: a definition written in one is an example, never code. */
-const PROSE_FILE = /\.(?:md|mdx|markdown|txt|rst|adoc)$/i;
+/** A file of prose: a definition written in one is an example, never code, and no audit area. */
+export const PROSE_FILE = /\.(?:md|mdx|markdown|txt|rst|adoc)$/i;
 
 /** A line that is a comment in the common languages: its words are prose. */
 const COMMENT_LINE = /^\s*(?:\/\/|\/\*|\*|#|--)/;
@@ -215,26 +217,43 @@ function unquoteGitPath(quoted: string): string {
   return Buffer.from(bytes).toString("utf8");
 }
 
-/** The lines `git diff --unified=0` adds: each with its file and its line number in the new file. */
+/**
+ * The lines `git diff --unified=0` adds: each with its file and its line number in the new file.
+ * A hunk's header says how many lines it holds, and those are read as content, so an added line
+ * that starts with `++ ` (`+++ ` in the diff) is never taken for a file header.
+ */
 export function parseAddedLines(diff: string): AddedLine[] {
   const added: AddedLine[] = [];
   let file: string | null = null;
   let next = 0;
+  let oldLeft = 0;
+  let newLeft = 0;
   for (const text of diff.split("\n")) {
+    if (oldLeft > 0 || newLeft > 0) {
+      if (text.startsWith("+")) {
+        if (file !== null) added.push({ file, line: next, text: text.slice(1) });
+        next += 1;
+        newLeft -= 1;
+      } else if (text.startsWith("-")) oldLeft -= 1;
+      else if (text.startsWith(" ")) {
+        next += 1;
+        oldLeft -= 1;
+        newLeft -= 1;
+      }
+      continue;
+    }
     if (text.startsWith("+++ ")) {
       const header = text.slice(4).replace(/\t.*$/, "");
       const path = header.startsWith('"') ? unquoteGitPath(header) : header;
       file = path.startsWith("b/") ? path.slice(2) : null;
       continue;
     }
-    const hunk = /^@@ -\S+ \+(\d+)(?:,\d+)? @@/.exec(text);
+    // A count left out is 1 (`@@ -20 +22 @@`).
+    const hunk = /^@@ -\d+(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(text);
     if (hunk !== null) {
-      next = Number(hunk[1]);
-      continue;
-    }
-    if (file !== null && text.startsWith("+")) {
-      added.push({ file, line: next, text: text.slice(1) });
-      next += 1;
+      oldLeft = Number(hunk[1] ?? 1);
+      next = Number(hunk[2]);
+      newLeft = Number(hunk[3] ?? 1);
     }
   }
   return added;
@@ -346,7 +365,7 @@ export function collectClaims(
       "--dst-prefix=b/",
       `${base.ref}...HEAD`,
       "--",
-      ...DIFF_PATHSPEC,
+      ...PATHSPEC,
     ],
     env,
     CLAIMS_GIT_TIMEOUT_MS,
@@ -384,7 +403,7 @@ function definingFiles(
       ...[...names].flatMap((name) => ["-e", name]),
       "HEAD",
       "--",
-      ...DIFF_PATHSPEC,
+      ...PATHSPEC,
     ],
     env,
     CLAIMS_GIT_TIMEOUT_MS,
