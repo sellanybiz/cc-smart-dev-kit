@@ -45,7 +45,7 @@ import { runGit } from "../hooks/git";
 import { type CcSmartDevKitConfig, WORKFLOW_ALLOW_KEYS_SINCE } from "../project/config";
 import { type Checkout, CONFIG_PATH, loadProjectConfig, locateCheckout } from "../project/resolve";
 import { taskContext } from "../tasks/context";
-import { planFilesCheck } from "../tasks/files-check";
+import { ignoresCase } from "../tasks/files-check";
 import { TASK_TOOL } from "../tasks/words";
 import { planByRef, planFiles } from "../tasks/work/queries";
 import { readWorkStore } from "../tasks/work/read";
@@ -100,6 +100,7 @@ import {
   recordAudit,
   recordSlop,
   SLOP_COUNT_MAX,
+  SLOP_PLANS_KEPT,
   slopFile,
   slopStatus,
   slopStatusLines,
@@ -192,11 +193,12 @@ home, not an edit of the home or its first definition. It is a signal for a revi
 whatever it finds; --json prints { claims, hits, diffWhy }.
 slop keeps this machine's count of the plans closed that no slop audit has cleared yet: record
 stores one plan's bypassed homes and drifted copies, each a whole number up to ${SLOP_COUNT_MAX} (its
-areas come from the plan's own file list in the task store, without plans.mergeFiles and build
-output; a second record of the same plan replaces the first), status says whether an audit is due
-(the count reaches a multiple of slopAudit.everyPlans, or the plan just recorded left a finding),
-and audited clears every plan, or with --area the plan areas at or under each path named, and
-says how many plans it cleared. A plan that named no area is cleared only with no --area.`;
+areas come from the plan's own file list in the task store, without plans.mergeFiles, build
+output, prose files and the kit's plan and research folders; a second record of the same plan replaces the first), status says whether an audit is due
+(the count reaches a multiple of slopAudit.everyPlans, or the plan just recorded left a finding,
+when it closed after the last audit), and audited clears every plan, or with --area the plan areas
+at or under each path named, and says how many plans it cleared. A plan that named no area, and a
+plan counted past the ${SLOP_PLANS_KEPT} the record keeps, is cleared only with no --area.`;
 
 /** One git call a `workflow` run makes (a `rev-parse`): milliseconds, never a hang. */
 const WORKFLOW_GIT_TIMEOUT_MS = 5_000;
@@ -664,7 +666,9 @@ function readArgs(
  * Where the claims diff starts: `--base` as given, else the merge base with `origin/<the default
  * branch>`, which git's `A...B` finds. The default branch is the project's `worktrees.base`, else
  * the remote's (`baseBranch`); when neither is known, or origin has no such branch here, the reason
- * comes back instead, so the claims are listed with it.
+ * comes back instead, so the claims are listed with it. Origin's branch is read by its full name,
+ * as `resolveListBase` reads it: git resolves a short name to a local branch first, so a stray
+ * local `origin/main` would move the base.
  */
 function claimsBase(
   checkout: Checkout,
@@ -685,9 +689,9 @@ function claimsBase(
   if (named.from === "default") {
     return { why: `the default branch is unknown: pass --base <ref>, or ${UNKNOWN_BASE.fix}` };
   }
-  const ref = `origin/${named.base}`;
+  const ref = `refs/remotes/origin/${named.base}`;
   return commitOf(checkout.root, ref, env) === null
-    ? { why: `${ref} is not in this clone: fetch it, or pass --base <ref>` }
+    ? { why: `origin/${named.base} is not in this clone: fetch it, or pass --base <ref>` }
     : { ref };
 }
 
@@ -749,7 +753,7 @@ function slopWorld(
       // The working copy's list: an area is a hint, not a gate, and a repository with no remote
       // has no committed list. Case follows the overlap check (`core.ignorecase`).
       mergeFiles: resolved.plans.mergeFiles.value,
-      caseFold: planFilesCheck(context.cwd, context.env).caseFold,
+      caseFold: ignoresCase(here.checkout.root, context.env),
     };
   } catch (error) {
     context.error(error instanceof Error ? error.message : String(error));
@@ -781,22 +785,25 @@ function planFilesOf(
 ): { ok: true; slug: string; files: string[] } | { ok: false; why: string } {
   const tasks = taskContext(context.cwd, context.env);
   if (!tasks.ok) return { ok: false, why: tasks.why };
+  const useSlug = `Use the slug of the plan task, as the task list shows it (${TASK_TOOL.list}, scope plan).`;
   const read = readWorkStore(context.paths, (db) => {
-    const plan = planByRef(db, tasks.project, ref);
-    return plan === null || plan.kind !== "plan"
-      ? null
-      : { slug: plan.plan ?? ref, files: planFiles(db, plan) };
+    const task = planByRef(db, tasks.project, ref);
+    if (task === null) return null;
+    if (task.kind !== "plan") {
+      return {
+        ok: false as const,
+        why: `#${task.number} is a ${task.kind}, not a plan. ${useSlug}`,
+      };
+    }
+    return { ok: true as const, slug: task.plan ?? ref, files: planFiles(db, task) };
   });
   if (read.state === "unreadable") {
     return { ok: false, why: `the task store cannot be read: ${read.why}` };
   }
   if (read.state === "none" || read.value === null) {
-    return {
-      ok: false,
-      why: `plan "${ref}" is not in this project's task store. Use the slug of the plan task, as the task list shows it (${TASK_TOOL.list}, scope plan).`,
-    };
+    return { ok: false, why: `plan "${ref}" is not in this project's task store. ${useSlug}` };
   }
-  return { ok: true, ...read.value };
+  return read.value;
 }
 
 /** `workflow slop record --plan <slug> --bypassed <n> --drifted <n>`: one closed plan into the count. */
@@ -852,7 +859,11 @@ async function slopAudited(context: WorkflowContext, argv: string[]): Promise<nu
   for (const typed of options.lists.get("--area") ?? []) {
     const path = normalizeRepoPath(typed);
     if (!path.ok) {
-      context.error(`--area needs a path inside the repository: ${typed}\n\n${WORKFLOW_USAGE}`);
+      const why =
+        path.problem === "root"
+          ? `--area "${typed}" names the whole repository: after an audit of everything, run ${COMMAND} workflow slop audited with no --area`
+          : `--area needs a path inside the repository: ${typed}`;
+      context.error(`${why}\n\n${WORKFLOW_USAGE}`);
       return 2;
     }
     paths.push(path.path.replace(/\/$/, ""));
@@ -860,7 +871,7 @@ async function slopAudited(context: WorkflowContext, argv: string[]): Promise<nu
   const world = slopWorld(context, "audited");
   if (world === null) return 1;
   try {
-    const { cleared } = await recordAudit(world.file, paths, Date.now());
+    const { cleared } = await recordAudit(world.file, paths, Date.now(), world.caseFold);
     const named = paths.length === 0 ? "every area" : paths.join(", ");
     context.print(
       `+ ${tildify(world.file, context.paths.home)}: audit recorded for ${named} (${plural(cleared, "plan", "plans")} cleared)`,

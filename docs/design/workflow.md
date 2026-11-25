@@ -515,16 +515,18 @@ see the claims and the second definitions that make them false.
 
 - **Two or three git calls.** The claims are the tracked, non-binary lines that hold a phrase of
   `CLAIM_PHRASES` as whole words, in any case (`CLAIM_PHRASE`: "the one placeholder" is no claim).
-  The diff is `git diff --unified=0 <base>...HEAD`. Both skip lockfiles, build output
-  (`BUILD_OUTPUT_FOLDERS`: `dist/`, `node_modules/`), minified files, source maps, a changelog and
-  the kit's own `.claude/plans/` and `.claude/research/`, which describe what was true then
-  (`SKIPPED_PATHS`; the plan folder is named there, since `plansFolders` answers with real absolute
-  paths a pathspec cannot take), and the files the project marks `linguist-generated`, the mark
-  the review count reads too (`GENERATED_PATHS`, git's attribute pathspec). The diff also skips
-  test files (`TEST_PATHS`): a test that defines a claimed name builds a fixture, not a second
-  home. Only when the diff defines a claimed name does a third call run: one `git grep` at HEAD
-  for those names as whole words. No git call is made per file, so the cost grows with the
-  repository and the diff only.
+  The diff is `git diff --unified=0 <base>...HEAD`. Every call reads through one pathspec
+  (`PATHSPEC`), which skips lockfiles, build output (`BUILD_OUTPUT_FOLDERS`: `dist/`,
+  `node_modules/`), minified files, source maps, a changelog and the kit's own `.claude/plans/` and
+  `.claude/research/`, which describe what was true then (`HISTORY_FOLDERS`, named there since
+  `plansFolders` answers with real absolute paths a pathspec cannot take), the files the project
+  marks `linguist-generated`, the mark the review count reads too (`GENERATED_PATHS`, git's
+  attribute pathspec), and test files (`TEST_PATHS`): a claim written in a test is fixture text, and
+  a test that defines a claimed name builds a fixture, not a second home. Only when the diff defines
+  a claimed name does a third call run: one `git grep` at HEAD for those names as whole words. No
+  git call is made per file, so the cost grows with the repository and the diff only. The added
+  lines are read by each hunk's own line counts, so an added line that starts with `++` is never
+  taken for a file header.
 - **Named symbols.** The backticked words of a claim line that read as identifiers (three characters
   or more, so a path or a dotted name is never one) are the names the claim gives to one home. A
   claim that names nothing is still listed: the reviewer reads it.
@@ -532,23 +534,28 @@ see the claims and the second definitions that make them false.
   (`function X`, `const|let|var X`, `class X`, `type X`, `interface X`, `def X`, `fn X`, `func X`,
   `X = (`) in a file other than the claim's own (`claimedDefinitions`). The forms name no language.
   A re-export (`export { X } from`) and a type-only import or re-export (`import type X`,
-  `export { type X } from`) match none, since they define nothing. Nothing in a prose file
-  (`.md`, `.txt` and the like) or on a comment line defines a name, and neither does a local
-  binding: an indented `const`, `let` or `var` (`LOCAL_BINDING`) or a loop's own variable
-  (`LOOP_HEAD`). Such a definition is a **hit** only when another file defines the same name at
-  HEAD (`secondHomes`): a second home beside the old one, or one the diff writes in two files. An
-  edit of the home's own line, a home moved to a new file and the first definition of a new home
-  written with its claim are not. HEAD, not the base, is read because it holds both the homes the
-  base had that still stand and every file the diff defines. A name that two files claim reports
-  a claim in a file other than the hit's. One scan of each added line finds every name it
+  `export { type X } from`, and `type X,` on a line of its own in a wrapped one: the `type` form
+  never matches a name followed by `,`, `}`, `as` or the line's end) match none, since they define
+  nothing.
+  Nothing in a prose file (`.md`, `.txt` and the like) or on a comment line defines a name, and
+  neither does a local binding: an indented `const`, `let` or `var` (`LOCAL_BINDING`) or a loop's
+  own variable (`LOOP_HEAD`). Such a definition is a **hit** only when another file defines the same
+  name at HEAD (`secondHomes`): a second home beside the old one, or one the diff writes in two
+  files. An edit of the home's own line, a home moved to a new file and the first definition of a
+  new home written with its claim are not. HEAD, not the base, is read because it holds both the
+  homes the base had that still stand and every file the diff defines. A name that two files claim
+  reports a claim in a file other than the hit's. One scan of each added line finds every name it
   defines, so the work does not grow with the number of claims.
 - **Paths git quotes.** A diff header path with a double quote, a backslash or a control
   character comes C-quoted even with `core.quotePath=false`; it is read back, octal bytes as UTF-8.
 - **The base.** `--base <ref>` as given (a ref that is no commit is one error line and exit 1).
-  Without it, the merge base with `origin/<default branch>`: the project's `worktrees.base`, else the
-  remote's default (`baseBranch` in `src/worktrees/command.ts`, the one lookup the worktree commands
-  use). Where the default branch is unknown (no `worktrees.base`, no `origin/HEAD`), or origin has no
-  such branch in this clone, the claims are still listed and one line says why no diff was read.
+  Without it, the merge base with `origin/<default branch>`: the project's `worktrees.base`, else
+  the remote's default (`baseBranch` in `src/worktrees/command.ts`, the one lookup the worktree
+  commands use), read in full as `refs/remotes/origin/<branch>`, since git resolves a short name to
+  a local branch first and a stray local `origin/main` would move the base (as `resolveListBase`
+  reads it). Where the default branch is unknown (no `worktrees.base`, no `origin/HEAD`), or origin
+  has no such branch in this clone, the claims are still listed and one line says why no diff was
+  read.
 - **Output.** `Claims (N):` with `file:line — the phrase — names: a, b`, cut at the kit's usual cap
   (`cappedHookList`) with `+K more: <the --json command>`, then `Re-defined in this diff (M):` with
   `file:line defines X, which <claim file:line> calls its one home`, never cut: the reviewers read
@@ -584,31 +591,40 @@ an audit offer on each.
 **record.** `slop record --plan <slug> --bypassed <n> --drifted <n>` takes the plan from the task
 store (`planByRef`: the slug, `#n` or an id) and its **areas** from the plan's own file list
 (`planFiles`), each path cut to its first two segments, so the lead passes no paths. A path every
-plan touches (`plans.mergeFiles`, as the working copy resolves it) and build output
-(`BUILD_OUTPUT_FOLDERS`) are no area: an audit there reads what no plan wrote by hand. A plan with
-no file list has no areas and is still counted. A second record of the same plan replaces the first
-and leaves `unaudited` as it was, so the lead may run it twice. Each count is a whole number up to
-`SLOP_COUNT_MAX` (1000); a larger one is refused before anything is written. A plan that is not in
-this project's store is refused with the fix (the slug `task_list` shows); a store that cannot be
-read is the command's own error line (`readWorkStore`). It then prints the status.
+plan touches (`plans.mergeFiles`, as the working copy resolves it, by the overlap check's own rule,
+`settledBy`, without case when `core.ignorecase` is set, read by `ignoresCase`) and build output
+(`BUILD_OUTPUT_FOLDERS`) are no area: an audit there reads what no plan wrote by hand. Nor are a
+prose file (`PROSE_FILE`) and the kit's plan and research folders (`HISTORY_FOLDERS`), the ones the
+claims skip too: a slop audit reads code. A plan with no file list has no areas and is still
+counted. A second record of the same plan replaces the first and leaves `unaudited` as it was, so
+the lead may run it twice. Each count is a whole number up to `SLOP_COUNT_MAX` (1000); a larger one
+is refused before anything is written. A plan that is not in this project's store, or a `#n` that
+names a phase or a task, is refused with the fix (the slug `task_list` shows); a store that cannot
+be read is the command's own error line (`readWorkStore`). It then prints the status.
 
 **status.** `slop status [--json]` prints how many plans no audit has cleared yet, their totals and
 the areas. An audit is **due** when either holds: that count reaches a multiple of
 `slopAudit.everyPlans` (5, 10, 15… by default; `0` turns that off), so a declined offer comes back
-`everyPlans` plans later instead of at every close; or the newest plan still in the record left a
-bypassed home or a drifted copy (the trigger the lead had before the count, kept). The line says
-which; when not due it names the next multiple. The lines say "not audited yet", never "since the
-last audit", so after a partial audit `Last audit:` and the plans still counted do not contradict.
-A plan that named no area gets a `No area:` line: only an audit with no `--area` clears it.
-`--json`: `{ since, unaudited, plans, bypassed, drifted, areas, due, why }`.
+`everyPlans` plans later instead of at every close; or the plan just recorded left a bypassed home
+or a drifted copy (the trigger the lead had before the count, kept). Either counts only when the
+plan just recorded closed after the last audit (`fresh`: its time is past `auditedAt`, or there is
+no audit yet): an audit of some areas takes plans out of the record, and what is left, an older
+plan's finding or a count that lands on a multiple, must not make the audit due again before the
+next plan closes. A second record of a plan moves its time, so it is again the plan just recorded.
+The line says which; when not due it names the next multiple. The lines say "not audited yet", never
+"since the last audit", so after a partial audit `Last audit:` and the plans still counted do not
+contradict. A plan that named no area gets a `No area:` line: only an audit with no `--area` clears
+it. Plans counted past the 50 kept get a `Not listed:` line with how many, and the same one audit
+that clears them. `--json`: `{ since, unaudited, plans, bypassed, drifted, areas, due, why }`.
 
-**audited.** `slop audited [--area <path>]...` records an audit. With no area, every plan leaves
-and `unaudited` is 0. With areas, each `--area` is a repository path as typed (`normalizeRepoPath`:
-`./` dropped, never cut to two segments; the root, an absolute path or `..` is a usage error), and
-a plan area equal to it or under it is cleared (`--area src` clears `src/cli`): a plan whose areas
-are all cleared leaves the count, one with areas left stays with them, and a plan that named no
-area stays until an audit of everything. It prints how many plans it cleared, and a `!` line with
-the fix when an `--area` audit cleared none.
+**audited.** `slop audited [--area <path>]...` records an audit. With no area, every plan leaves and
+`unaudited` is 0. With areas, each `--area` is a repository path as typed (`normalizeRepoPath`: `./`
+dropped, never cut to two segments; an absolute path or `..` is a usage error, and so is the root,
+whose error says to run it with no `--area` after an audit of everything), and a plan area equal to
+it or under it is cleared (`--area src` clears `src/cli`; `settledBy`, folded like the areas when
+the checkout ignores case): a plan whose areas are all cleared leaves the count, one with areas left
+stays with them, and a plan that named no area stays until an audit of everything. It prints how
+many plans it cleared, and a `!` line with the fix when an `--area` audit cleared none.
 
 The lead runs the three (`build` § 6, `audit` § The slop preset); nothing runs an audit by itself, and
 away from the person it records a decision and starts no paid audit run unasked.

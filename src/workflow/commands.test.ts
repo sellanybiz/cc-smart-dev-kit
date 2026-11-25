@@ -1773,6 +1773,18 @@ describe("workflow claims", () => {
     ]);
   });
 
+  test("a local branch named origin/main does not move the default base", async () => {
+    const repo = cloneWithBranch();
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", SETTINGS);
+    git(repo, "branch", "origin/main", "HEAD");
+    const run = context(repo, hookEnv());
+    expect(await runWorkflow(["claims"], run.context)).toBe(0);
+    expect(run.lines.slice(-2)).toEqual([
+      "Re-defined in this diff (1):",
+      "  cart.ts:2 defines formatPrice, which docs/prices.md:3 calls its one home",
+    ]);
+  });
+
   test("--json prints the claims, the hits and why no diff was read, and nothing else", async () => {
     const run = context(cloneWithBranch(), hookEnv());
     expect(await runWorkflow(["claims", "--json"], run.context)).toBe(0);
@@ -1862,7 +1874,9 @@ describe("workflow claims", () => {
 });
 
 describe("workflow slop", () => {
-  /** A repo with plan `alpha` (files in three areas) in the task store of `env`. */
+  const LEAD = { sessionId: "lead", pid: 1, procStart: "1" };
+
+  /** A repo with plan `alpha` (code in two areas, and a prose file) in the task store of `env`. */
   function repoWithPlan(env: Record<string, string>): string {
     const repo = makeRepo();
     const tasks = taskContext(repo, env);
@@ -1880,10 +1894,10 @@ describe("workflow slop", () => {
             "src/workflow/claims.ts",
             "src/workflow/slop.ts",
             "README.md",
-            "docs/design/workflow.md",
+            "scripts/build/run.ts",
           ],
         },
-        { sessionId: "lead", pid: 1, procStart: "1" },
+        LEAD,
         1,
       );
       if (!made.ok) throw new Error(made.why);
@@ -1917,7 +1931,7 @@ describe("workflow slop", () => {
       "Last audit: never",
       "Not audited yet: 1 bypassed, 0 drifted",
       "Plans: alpha (1 bypassed, 0 drifted)",
-      "Areas: README.md, docs/design, src/workflow",
+      "Areas: scripts/build, src/workflow",
     ]);
     expect(statSync(file).mode & 0o777).toBe(0o600);
   });
@@ -1928,7 +1942,7 @@ describe("workflow slop", () => {
     writeClaudeFile(repo, "cc-smart-dev-kit.json", {
       ...SETTINGS,
       requires: ">=6.6",
-      workflow: { plans: { mergeFiles: ["README.md", "docs/design/"] } },
+      workflow: { plans: { mergeFiles: ["scripts/build/"] } },
     });
     const run = context(repo, env);
     expect(await runWorkflow(RECORD, run.context)).toBe(0);
@@ -1947,7 +1961,7 @@ describe("workflow slop", () => {
       "Last audit: never",
       "Not audited yet: 0 bypassed, 0 drifted",
       "Plans: alpha (0 bypassed, 0 drifted)",
-      "Areas: README.md, docs/design, src/workflow",
+      "Areas: scripts/build, src/workflow",
     ]);
   });
 
@@ -1959,6 +1973,26 @@ describe("workflow slop", () => {
     expect(await runWorkflow(unknown, run.context)).toBe(1);
     expect(run.errors).toEqual([
       `${COMMAND} workflow slop record: plan "nope" is not in this project's task store. Use the slug of the plan task, as the task list shows it (task_list, scope plan).`,
+    ]);
+    expect(existsSync(slopFileOf(env, repo))).toBe(false);
+  });
+
+  test("a #n that names a task, not a plan, is refused as one, and nothing is written", async () => {
+    const env = hookEnv();
+    const repo = repoWithPlan(env);
+    const tasks = taskContext(repo, env);
+    if (!tasks.ok) throw new Error(tasks.why);
+    const db = openWorkDb(workDbFile(cliPaths(env)), { mode: "write" });
+    try {
+      createTask(db, { project: tasks.project, subject: "Loose" }, LEAD, 2);
+    } finally {
+      db.close();
+    }
+    const run = context(repo, env);
+    const task = ["slop", "record", "--plan", "#2", "--bypassed", "0", "--drifted", "0"];
+    expect(await runWorkflow(task, run.context)).toBe(1);
+    expect(run.errors).toEqual([
+      `${COMMAND} workflow slop record: #2 is a task, not a plan. Use the slug of the plan task, as the task list shows it (task_list, scope plan).`,
     ]);
     expect(existsSync(slopFileOf(env, repo))).toBe(false);
   });
@@ -2017,7 +2051,7 @@ describe("workflow slop", () => {
       unaudited: 1,
       bypassed: 0,
       drifted: 0,
-      areas: ["README.md", "docs/design", "src/workflow"],
+      areas: ["scripts/build", "src/workflow"],
       due: true,
       why: "1 plan closed and not audited yet (every 1)",
     });
@@ -2037,12 +2071,10 @@ describe("workflow slop", () => {
     const repo = repoWithPlan(env);
     await runWorkflow(RECORD, context(repo, env).context);
     const part = context(repo, env);
-    const named = ["slop", "audited", "--area", "src/workflow", "--area", "docs/design/"];
+    const named = ["slop", "audited", "--area", "src/workflow/"];
     expect(await runWorkflow(named, part.context)).toBe(0);
-    expect(part.lines[0]).toEndWith(
-      ": audit recorded for src/workflow, docs/design (0 plans cleared)",
-    );
-    expect(part.lines.at(-1)).toBe("Areas: README.md");
+    expect(part.lines[0]).toEndWith(": audit recorded for src/workflow (0 plans cleared)");
+    expect(part.lines.at(-1)).toBe("Areas: scripts/build");
     const all = context(repo, env);
     expect(await runWorkflow(["slop", "audited"], all.context)).toBe(0);
     expect(all.lines[0]).toEndWith(": audit recorded for every area (1 plan cleared)");
@@ -2057,12 +2089,35 @@ describe("workflow slop", () => {
     const repo = repoWithPlan(env);
     await runWorkflow(RECORD, context(repo, env).context);
     const run = context(repo, env);
-    const named = ["slop", "audited", "--area", "./src", "--area", "docs", "--area", "README.md"];
+    const named = ["slop", "audited", "--area", "./src", "--area", "scripts"];
     expect(await runWorkflow(named, run.context)).toBe(0);
-    expect(run.lines[0]).toEndWith(": audit recorded for src, docs, README.md (1 plan cleared)");
+    expect(run.lines[0]).toEndWith(": audit recorded for src, scripts (1 plan cleared)");
     expect(run.lines[1]).toBe(
       "Slop audit: not due (0 plans not audited yet; cadence every 5 plans, next at 5)",
     );
+  });
+
+  test("audited --area in another case clears the plan when the checkout ignores case", async () => {
+    const env = hookEnv();
+    const repo = repoWithPlan(env);
+    git(repo, "config", "core.ignorecase", "true");
+    await runWorkflow(RECORD, context(repo, env).context);
+    const run = context(repo, env);
+    const named = ["slop", "audited", "--area", "SRC", "--area", "Scripts"];
+    expect(await runWorkflow(named, run.context)).toBe(0);
+    expect(run.lines[0]).toEndWith(": audit recorded for SRC, Scripts (1 plan cleared)");
+  });
+
+  test("audited --area . is refused, and the error says how to record an audit of everything", async () => {
+    const env = hookEnv();
+    const repo = repoWithPlan(env);
+    for (const area of [".", "./"]) {
+      const run = context(repo, env);
+      expect(await runWorkflow(["slop", "audited", "--area", area], run.context)).toBe(2);
+      expect(run.errors[0]).toStartWith(
+        `--area "${area}" names the whole repository: after an audit of everything, run ${COMMAND} workflow slop audited with no --area\n\nUsage:`,
+      );
+    }
   });
 
   test("audited --area that clears no plan says so on a ! line", async () => {

@@ -375,10 +375,6 @@ export interface FileOverlap {
 }
 
 /**
- * How two plans' file lists are compared: `ignore` is `plans.mergeFiles`, `appendOnly` is
- * `plans.appendOnly`, both as committed (`planFilesCheck`), and `caseFold` is `core.ignorecase`.
- */
-/**
  * True when `entries` (`plans.mergeFiles`) settle `path`: it equals an entry, or sits inside an
  * entry that is a folder (ends in `/`). A caller that compares without case folds both first.
  */
@@ -386,6 +382,10 @@ export function settledBy(entries: readonly string[], path: string): boolean {
   return entries.some((one) => one === path || (one.endsWith("/") && path.startsWith(one)));
 }
 
+/**
+ * How two plans' file lists are compared: `ignore` is `plans.mergeFiles`, `appendOnly` is
+ * `plans.appendOnly`, both as committed (`planFilesCheck`), and `caseFold` is `core.ignorecase`.
+ */
 export interface OverlapRule {
   ignore?: readonly string[];
   appendOnly?: readonly string[];

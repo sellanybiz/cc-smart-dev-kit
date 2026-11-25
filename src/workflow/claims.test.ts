@@ -10,6 +10,7 @@ import {
   claimedDefinitions,
   claimsLines,
   collectClaims,
+  DEFINITION_FORMS,
   type Hit,
   parseAddedLines,
   parseClaims,
@@ -109,6 +110,21 @@ describe("parseAddedLines", () => {
       "sp ace.ts",
     ]);
   });
+
+  test("an added line that starts with ++ is content, not a file header", () => {
+    const diff = [
+      "--- a/src/a.ts",
+      "+++ b/src/a.ts",
+      "@@ -3 +3,2 @@",
+      "--- old",
+      "+++ counter;",
+      "+const two = 2;",
+    ].join("\n");
+    expect(parseAddedLines(diff)).toEqual([
+      { file: "src/a.ts", line: 3, text: "++ counter;" },
+      { file: "src/a.ts", line: 4, text: "const two = 2;" },
+    ]);
+  });
 });
 
 describe("claimedDefinitions", () => {
@@ -181,6 +197,10 @@ describe("claimedDefinitions", () => {
       "export type { formatPrice };",
       'import type formatPrice from "./prices";',
       'import { type formatPrice } from "./prices";',
+      // Lines of an import or re-export wrapped one specifier a line.
+      "  type formatPrice,",
+      "  type formatPrice",
+      "  type formatPrice as Price,",
       "const total = formatPrice(10);",
       'import { formatPrice } from "./prices";',
       "if (formatPrice == (1)) {}",
@@ -191,6 +211,13 @@ describe("claimedDefinitions", () => {
         lines.map((text) => added("src/cart.ts", text)),
       ),
     ).toEqual([]);
+  });
+
+  test("a wrapped type specifier is not read as a shorter name either", () => {
+    const line = "  type GhExec,";
+    expect(DEFINITION_FORMS.flatMap((form) => [...line.matchAll(form)].map((m) => m[1]))).toEqual(
+      [],
+    );
   });
 
   test("a prose file and a comment line define nothing", () => {
@@ -285,6 +312,8 @@ function repoWithBranch(): string {
   writeFileSync(join(repo, ".gitattributes"), "generated/** linguist-generated=true\n");
   mkdirSync(join(repo, "generated"));
   writeFileSync(join(repo, "generated/api.ts"), "// the one home for `generatedExample`\n");
+  // A claim written in a test is fixture text.
+  writeFileSync(join(repo, "prices.test.ts"), 'const doc = "the one home for `testExample`";\n');
   git(repo, "add", ".");
   git(repo, "commit", "-q", "-m", "first");
   git(repo, "checkout", "-q", "-b", "feature");
@@ -355,6 +384,22 @@ describe("collectClaims", () => {
       { "src/prices.ts": "export function formatPrice(cents: number) {}\n" },
     );
     expect(collectClaims(repo, cleanGitEnv(), { ref: "main" })).toMatchObject({
+      hits: [],
+      diffWhy: null,
+    });
+  });
+
+  test("an edit of a claimed type's home, with a wrapped type import of it at HEAD, is no hit", () => {
+    const repo = branchOf(
+      {
+        "README.md": "The one home for prices is `PriceShape`.\n",
+        "src/prices.ts": "export type PriceShape = number;\n",
+        "src/cart.ts": 'import {\n  total,\n  type PriceShape,\n} from "./prices";\n',
+      },
+      { "src/prices.ts": "export type PriceShape = bigint;\n" },
+    );
+    expect(collectClaims(repo, cleanGitEnv(), { ref: "main" })).toMatchObject({
+      claims: [{ file: "README.md", names: ["PriceShape"] }],
       hits: [],
       diffWhy: null,
     });
