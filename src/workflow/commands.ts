@@ -45,6 +45,7 @@ import { runGit } from "../hooks/git";
 import { type CcSmartDevKitConfig, WORKFLOW_ALLOW_KEYS_SINCE } from "../project/config";
 import { type Checkout, CONFIG_PATH, loadProjectConfig, locateCheckout } from "../project/resolve";
 import { taskContext } from "../tasks/context";
+import { planFilesCheck } from "../tasks/files-check";
 import { TASK_TOOL } from "../tasks/words";
 import { planByRef, planFiles } from "../tasks/work/queries";
 import { readWorkStore } from "../tasks/work/read";
@@ -734,7 +735,7 @@ function claims(context: WorkflowContext, argv: string[]): number {
 function slopWorld(
   context: WorkflowContext,
   sub: string,
-): { file: string; everyPlans: number; mergeFiles: string[] } | null {
+): { file: string; everyPlans: number; mergeFiles: string[]; caseFold: boolean } | null {
   const here = project(context.cwd, context.env);
   if (here.checkout === null) {
     context.error(`${COMMAND} workflow slop ${sub}: ${here.why}`);
@@ -745,7 +746,10 @@ function slopWorld(
     return {
       file: slopFile(context.paths.stateDir, repoOf(here.checkout)),
       everyPlans: resolved.slopAudit.everyPlans.value,
+      // The working copy's list: an area is a hint, not a gate, and a repository with no remote
+      // has no committed list. Case follows the overlap check (`core.ignorecase`).
       mergeFiles: resolved.plans.mergeFiles.value,
+      caseFold: planFilesCheck(context.cwd, context.env).caseFold,
     };
   } catch (error) {
     context.error(error instanceof Error ? error.message : String(error));
@@ -818,7 +822,12 @@ async function slopRecord(context: WorkflowContext, argv: string[]): Promise<num
   try {
     await recordSlop(
       world.file,
-      { plan: found.slug, bypassed, drifted, areas: areasOf(found.files, world.mergeFiles) },
+      {
+        plan: found.slug,
+        bypassed,
+        drifted,
+        areas: areasOf(found.files, world.mergeFiles, world.caseFold),
+      },
       Date.now(),
     );
     context.print(

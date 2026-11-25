@@ -19,6 +19,7 @@ import { COMMAND } from "../build-info/names";
 import { plural } from "../cli/ui/out";
 import { cappedHookList } from "../hooks/capped-list";
 import { atomicWrite } from "../setup/write";
+import { settledBy } from "../tasks/work/queries";
 import { BUILD_OUTPUT_FOLDERS } from "./claims";
 import { repoKey, underRecordLock } from "./reviews";
 
@@ -77,16 +78,20 @@ export function slopFile(stateDir: string, repo: string): string {
 /**
  * The areas a plan's file list touches: each path cut to its first two segments (a folder's
  * trailing `/` and a deeper path both count as the folder they sit in), each once, sorted. A path
- * every plan touches (`plans.mergeFiles`: equal to an entry, or inside an entry that is a folder)
- * and build output (`BUILD_OUTPUT_FOLDERS`) are no area: an audit there would read what no plan
- * wrote by hand.
+ * every plan touches (`plans.mergeFiles`, judged by the overlap check's own rule, `settledBy`,
+ * without case when the checkout ignores case) and build output (`BUILD_OUTPUT_FOLDERS`) are no
+ * area: an audit there would read what no plan wrote by hand.
  */
-export function areasOf(paths: readonly string[], mergeFiles: readonly string[]): string[] {
-  const settled = (path: string) =>
-    mergeFiles.some((entry) => entry === path || (entry.endsWith("/") && path.startsWith(entry)));
+export function areasOf(
+  paths: readonly string[],
+  mergeFiles: readonly string[],
+  caseFold = false,
+): string[] {
+  const fold = (path: string) => (caseFold ? path.toLowerCase() : path);
+  const settled = mergeFiles.map(fold);
   const areas = new Set<string>();
   for (const path of paths) {
-    if (settled(path)) continue;
+    if (settledBy(settled, fold(path))) continue;
     const segments = path.split("/").filter((segment) => segment !== "" && segment !== ".");
     if (segments.some((segment) => BUILD_OUTPUT_FOLDERS.includes(segment))) continue;
     const area = segments.slice(0, 2).join("/");

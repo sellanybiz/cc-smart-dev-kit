@@ -70,6 +70,12 @@ describe("slopFile and areasOf", () => {
     ).toEqual(["src/dist.ts"]);
   });
 
+  test("a checkout that ignores case settles a merge file named in another case, as the overlap check does", () => {
+    const paths = ["Changelog.md", "Docs/Notes.md"];
+    expect(areasOf(paths, ["CHANGELOG.md", "docs/"], true)).toEqual([]);
+    expect(areasOf(paths, ["CHANGELOG.md", "docs/"])).toEqual(["Changelog.md", "Docs/Notes.md"]);
+  });
+
   test("no path, no area", () => {
     expect(areasOf([], [])).toEqual([]);
   });

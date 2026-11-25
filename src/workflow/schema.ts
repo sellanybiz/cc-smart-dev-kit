@@ -417,9 +417,10 @@ const workflowObjectSchema = z.strictObject({
     .transform(({ events: _events, sound: _sound, ...usage }) => usage)
     .optional(),
   /**
-   * How often the kit offers a slop audit (`workflow slop`, `slop.ts`): after this many plans
-   * closed since the last audit. `0` turns the count off; a plan that left a bypassed home or a
-   * drifted copy still makes one due.
+   * How often the kit offers a slop audit (`workflow slop`, `slop.ts`): each time the plans not
+   * yet audited reach a multiple of this number, so a declined offer comes back that many plans
+   * later. `0` turns the count off; a plan that left a bypassed home or a drifted copy still makes
+   * one due.
    */
   slopAudit: z
     .strictObject({
