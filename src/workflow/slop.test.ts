@@ -43,13 +43,36 @@ describe("slopFile and areasOf", () => {
           "src/workflow/claims.ts",
           "src/workflow/slop.ts",
           "plugin/skills/",
-          "README.md",
-          "docs/design/workflow.md",
           "./src/cli/",
+          "Makefile",
         ],
         [],
       ),
-    ).toEqual(["README.md", "docs/design", "plugin/skills", "src/cli", "src/workflow"]);
+    ).toEqual(["Makefile", "plugin/skills", "src/cli", "src/workflow"]);
+  });
+
+  test("a prose file and the kit's plan and research folders are no area", () => {
+    expect(
+      areasOf(
+        [
+          "README.md",
+          "docs/design/workflow.md",
+          "docs/notes.TXT",
+          ".claude/plans/2026-11-25-slop.md",
+          ".claude/plans/",
+          ".claude/research/data/run.json",
+          ".claude/rules/testing.md",
+          ".claude/settings.json",
+          "src/a.ts",
+        ],
+        [],
+      ),
+    ).toEqual([".claude/settings.json", "src/a.ts"]);
+  });
+
+  test("a checkout that ignores case skips the plan folder named in another case", () => {
+    expect(areasOf([".Claude/Plans/x.json"], [], true)).toEqual([]);
+    expect(areasOf([".Claude/Plans/x.json"], [])).toEqual([".Claude/Plans"]);
   });
 
   test("the merge files and build output are no area", () => {
@@ -71,9 +94,9 @@ describe("slopFile and areasOf", () => {
   });
 
   test("a checkout that ignores case settles a merge file named in another case, as the overlap check does", () => {
-    const paths = ["Changelog.md", "Docs/Notes.md"];
-    expect(areasOf(paths, ["CHANGELOG.md", "docs/"], true)).toEqual([]);
-    expect(areasOf(paths, ["CHANGELOG.md", "docs/"])).toEqual(["Changelog.md", "Docs/Notes.md"]);
+    const paths = ["Package.json", "Docs/notes.ts"];
+    expect(areasOf(paths, ["package.json", "docs/"], true)).toEqual([]);
+    expect(areasOf(paths, ["package.json", "docs/"])).toEqual(["Docs/notes.ts", "Package.json"]);
   });
 
   test("no path, no area", () => {
@@ -299,6 +322,26 @@ describe("status: when an audit is due", () => {
     );
   });
 
+  test("an audit after the newest plan makes nothing due, by count or by finding", () => {
+    const audited = "2026-11-03T00:00:00.000Z";
+    const found = slopStatus(record([plan("a", 1, 0)], audited), 5);
+    expect(found).toMatchObject({ due: false, why: null, bypassed: 1 });
+    const five = ["a", "b", "c", "d", "e"].map((name) => plan(name));
+    expect(slopStatus(record(five, audited), 5)).toMatchObject({ due: false, why: null });
+  });
+
+  test("plans past the ones kept are counted, and a line says only an audit of everything clears them", () => {
+    const lines = slopStatusLines(
+      slopStatus({ auditedAt: null, unaudited: 53, plans: [plan("a")] }, 5),
+      5,
+    );
+    expect(lines.slice(3)).toEqual([
+      "Plans: a (0 bypassed, 0 drifted)",
+      "Areas: src/cli",
+      `Not listed: 52 plans past the ${SLOP_PLANS_KEPT} kept. Only cc-smart-dev-kit workflow slop audited with no --area clears them.`,
+    ]);
+  });
+
   test("a plan that named no area is listed with the one audit that clears it", () => {
     const lines = slopStatusLines(slopStatus(record([{ ...plan("a"), areas: [] }]), 5), 5);
     expect(lines.slice(3)).toEqual([
@@ -344,6 +387,41 @@ describe("audited", () => {
     expect(cleared).toBe(2);
     expect(record.unaudited).toBe(1);
     expect(record.plans.map((one) => one.plan)).toEqual(["gamma"]);
+  });
+
+  test("an audit of some areas makes nothing due until the next plan closes", async () => {
+    const file = freshFile();
+    await recordSlop(file, closed("a", 1, 0, ["src/a", "src/b"]), AT);
+    await recordSlop(file, closed("b", 0, 0, ["src/c"]), AT + DAY);
+    expect(slopStatus(readSlop(file), 5).due).toBe(false);
+    await recordAudit(file, ["src/c"], AT + 2 * DAY);
+    expect(slopStatus(readSlop(file), 5)).toMatchObject({ unaudited: 1, due: false, why: null });
+    await recordSlop(file, closed("c", 0, 2, ["src/d"]), AT + 3 * DAY);
+    expect(slopStatus(readSlop(file), 5)).toMatchObject({
+      due: true,
+      why: "plan c left 0 bypassed homes and 2 drifted copies",
+    });
+  });
+
+  test("an audit that leaves the count on a multiple does not make it due", async () => {
+    const file = freshFile();
+    for (let index = 0; index < 7; index += 1) {
+      await recordSlop(
+        file,
+        closed(`p${index}`, 0, 0, [index < 2 ? "src/x" : "src/y"]),
+        AT + index * 1000,
+      );
+    }
+    const { cleared } = await recordAudit(file, ["src/x"], AT + DAY);
+    expect(cleared).toBe(2);
+    expect(slopStatus(readSlop(file), 5)).toMatchObject({ unaudited: 5, due: false });
+  });
+
+  test("a checkout that ignores case clears an area named in another case", async () => {
+    const file = freshFile();
+    await recordSlop(file, closed("alpha", 0, 0, ["Src/CLI"]), AT);
+    expect((await recordAudit(file, ["src"], AT + DAY)).cleared).toBe(0);
+    expect((await recordAudit(file, ["src"], AT + DAY, true)).cleared).toBe(1);
   });
 
   test("a path deeper than an area, or one that only starts like it, clears nothing", async () => {

@@ -20,7 +20,7 @@ import { plural } from "../cli/ui/out";
 import { cappedHookList } from "../hooks/capped-list";
 import { atomicWrite } from "../setup/write";
 import { settledBy } from "../tasks/work/queries";
-import { BUILD_OUTPUT_FOLDERS } from "./claims";
+import { BUILD_OUTPUT_FOLDERS, HISTORY_FOLDERS, PROSE_FILE } from "./claims";
 import { repoKey, underRecordLock } from "./reviews";
 
 /** How many plans one repository's record keeps: the newest, older ones dropped. */
@@ -80,7 +80,9 @@ export function slopFile(stateDir: string, repo: string): string {
  * trailing `/` and a deeper path both count as the folder they sit in), each once, sorted. A path
  * every plan touches (`plans.mergeFiles`, judged by the overlap check's own rule, `settledBy`,
  * without case when the checkout ignores case) and build output (`BUILD_OUTPUT_FOLDERS`) are no
- * area: an audit there would read what no plan wrote by hand.
+ * area: an audit there would read what no plan wrote by hand. Nor are a prose file (`PROSE_FILE`)
+ * and the kit's plan and research folders (`HISTORY_FOLDERS`), which the claims skip too: a slop
+ * audit reads code.
  */
 export function areasOf(
   paths: readonly string[],
@@ -88,10 +90,10 @@ export function areasOf(
   caseFold = false,
 ): string[] {
   const fold = (path: string) => (caseFold ? path.toLowerCase() : path);
-  const settled = mergeFiles.map(fold);
+  const settled = [...mergeFiles, ...HISTORY_FOLDERS.map((folder) => `${folder}/`)].map(fold);
   const areas = new Set<string>();
   for (const path of paths) {
-    if (settledBy(settled, fold(path))) continue;
+    if (settledBy(settled, fold(path)) || PROSE_FILE.test(path)) continue;
     const segments = path.split("/").filter((segment) => segment !== "" && segment !== ".");
     if (segments.some((segment) => BUILD_OUTPUT_FOLDERS.includes(segment))) continue;
     const area = segments.slice(0, 2).join("/");
@@ -163,13 +165,15 @@ export interface AuditResult {
 /**
  * Records an audit at `atMs`. With no `paths`, every plan is audited and the count starts again.
  * With paths (repository paths, no trailing `/`), an area is cleared when it is one of them or
- * lies under one: a plan whose areas are all cleared leaves the count, one with areas left stays
- * with those, and a plan that named no area stays until an audit of everything.
+ * lies under one (`settledBy`, without case when `caseFold`, as `areasOf` made it): a plan whose
+ * areas are all cleared leaves the count, one with areas left stays with those, and a plan that
+ * named no area stays until an audit of everything.
  */
 export async function recordAudit(
   file: string,
   paths: readonly string[],
   atMs: number,
+  caseFold = false,
 ): Promise<AuditResult> {
   return await underRecordLock(file, () => {
     const before = readSlop(file);
@@ -180,8 +184,9 @@ export async function recordAudit(
         cleared: before.unaudited,
       };
     }
-    const covered = (area: string) =>
-      paths.some((path) => area === path || area.startsWith(`${path}/`));
+    const fold = (path: string) => (caseFold ? path.toLowerCase() : path);
+    const audited = paths.map((path) => fold(`${path}/`));
+    const covered = (area: string) => settledBy(audited, fold(`${area}/`));
     const plans = before.plans.flatMap((one) => {
       const left = one.areas.filter((area) => !covered(area));
       if (one.areas.length > 0 && left.length === 0) return [];
@@ -214,7 +219,9 @@ export interface SlopStatus {
 /**
  * Whether a slop audit is due: the plans no audit has cleared reach a multiple of `everyPlans`
  * (5, 10, 15…, so a declined offer comes back `everyPlans` plans later; 0 turns that count off),
- * or the newest plan recorded left a bypassed home or a drifted copy.
+ * or the plan just recorded left a bypassed home or a drifted copy. Either counts only when that
+ * plan closed after the last audit: an audit of some areas takes plans out of the record, and what
+ * is left must not make the audit due again before the next plan closes.
  */
 export function slopStatus(record: SlopRecord, everyPlans: number): SlopStatus {
   const { plans, unaudited } = record;
@@ -222,13 +229,14 @@ export function slopStatus(record: SlopRecord, everyPlans: number): SlopStatus {
     (latest, one) => (latest === null || one.at >= latest.at ? one : latest),
     null,
   );
+  const fresh = newest !== null && (record.auditedAt === null || newest.at > record.auditedAt);
   const reasons: string[] = [];
-  if (everyPlans > 0 && unaudited > 0 && unaudited % everyPlans === 0) {
+  if (fresh && everyPlans > 0 && unaudited % everyPlans === 0) {
     reasons.push(
       `${plural(unaudited, "plan", "plans")} closed and not audited yet (every ${everyPlans})`,
     );
   }
-  if (newest !== null && newest.bypassed + newest.drifted > 0) {
+  if (fresh && newest.bypassed + newest.drifted > 0) {
     reasons.push(
       `plan ${newest.plan} left ${plural(newest.bypassed, "bypassed home", "bypassed homes")} and ${plural(newest.drifted, "drifted copy", "drifted copies")}`,
     );
@@ -272,6 +280,12 @@ export function slopStatusLines(status: SlopStatus, everyPlans: number): string[
   if (unscoped.length > 0) {
     lines.push(
       `No area: ${cappedHookList(unscoped, (one) => one.plan, rest)}. Only an audit with no --area clears a plan that named no area.`,
+    );
+  }
+  const unlisted = status.unaudited - status.plans.length;
+  if (unlisted > 0) {
+    lines.push(
+      `Not listed: ${plural(unlisted, "plan", "plans")} past the ${SLOP_PLANS_KEPT} kept. Only ${COMMAND} workflow slop audited with no --area clears them.`,
     );
   }
   return lines;
