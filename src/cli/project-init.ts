@@ -40,7 +40,7 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { VERSION } from "../build-info";
-import { COMMAND } from "../build-info/names";
+import { COMMAND, PLUGIN } from "../build-info/names";
 import { runGit, runGitAsync } from "../hooks/git";
 import {
   ccSmartDevKitConfigSchema,
@@ -951,7 +951,7 @@ function readText(file: string): string | null {
 }
 
 /** The project's review add-on, relative to its root: where its `Reuse signals` heading lives. */
-const REVIEW_ADDON = ".claude/cc-smart-dev-kit/review.md";
+const REVIEW_ADDON = `.claude/${PLUGIN}/review.md`;
 
 /**
  * What `doctor` (after `project:`) and `project init` (after "This project has") say about a

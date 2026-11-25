@@ -1,15 +1,18 @@
 /**
  * The claims signal (`cc-smart-dev-kit workflow claims`): the project's "one home" claims, and
- * the lines a diff adds that define a symbol such a claim names, in a file other than the claim's.
+ * the lines a diff adds that write a second definition of a symbol such a claim names.
  *
  * A claim is a sentence in a tracked file that says one place owns a rule ("the one home for
  * prices is `formatPrice`"). A claim with no guard is a finding (`code-structure` § 11): this
  * command hands the claims to a reviewer, and shows where a diff writes a second definition of a
- * name a claim gives to one home. It judges nothing: a hit is a signal the reviewer reads, and the
- * command exits 0 whatever it finds.
+ * name a claim gives to one home. A definition is a second one when, after the change, another
+ * file defines the name too: an edit of the home's own line, a home moved to a new file and the
+ * first definition of a new home are not. It judges nothing: a hit is a signal the reviewer reads,
+ * and the command exits 0 whatever it finds.
  *
- * One `git grep` finds the claims and one `git diff` the added lines, so the cost is linear in
- * the size of the repository and the diff, never one git call per file.
+ * One `git grep` finds the claims, one `git diff` the added lines, and, only when the diff defines
+ * a claimed name, one `git grep` at HEAD finds every file that defines those names. The cost is
+ * linear in the size of the repository and the diff, never one git call per file.
  */
 import { cappedHookList } from "../hooks/capped-list";
 import { type GitRun, runGitRaw } from "../hooks/git";
@@ -32,13 +35,14 @@ export const CLAIM_PHRASES: readonly string[] = [
 /**
  * The forms that define a symbol on an added line, one expression each, written for no language
  * in particular. Each has one capture group: the name it defines. A re-export (`export { X }
- * from`) matches none of them: it defines nothing. The one home of the list.
+ * from`) matches none of them, and neither does a type-only import or re-export (`import type X`,
+ * `import { type X }`, `export { type X } from`): they define nothing. The one home of the list.
  */
 export const DEFINITION_FORMS: readonly RegExp[] = [
   /\bfunction\s+([A-Za-z_$][\w$]*)/g,
   /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)/g,
   /\bclass\s+([A-Za-z_$][\w$]*)/g,
-  /\btype\s+([A-Za-z_$][\w$]*)/g,
+  /(?<![{,]\s*|\bimport\s+)\btype\s+([A-Za-z_$][\w$]*)/g,
   /\binterface\s+([A-Za-z_$][\w$]*)/g,
   /\bdef\s+([A-Za-z_$][\w$]*)/g,
   /\bfn\s+([A-Za-z_$][\w$]*)/g,
@@ -47,8 +51,14 @@ export const DEFINITION_FORMS: readonly RegExp[] = [
 ];
 
 /**
- * Paths a claim or a definition is never read from: lockfiles, dependency folders, build output
- * and generated bundles. Git pathspecs (`*` crosses `/`), so a folder matches at any depth.
+ * Folders of build output and installed dependencies, at any depth: no claim or definition is
+ * read from one, and no slop audit area is made of one (`slop.ts`). The one home of the list.
+ */
+export const BUILD_OUTPUT_FOLDERS: readonly string[] = ["dist", "node_modules"];
+
+/**
+ * Paths a claim or a definition is never read from: lockfiles, build output and generated
+ * bundles. Git pathspecs (`*` crosses `/`), so a folder matches at any depth.
  */
 const SKIPPED_PATHS: readonly string[] = [
   "*.lock",
@@ -57,15 +67,24 @@ const SKIPPED_PATHS: readonly string[] = [
   "pnpm-lock.yaml",
   "*.min.js",
   "*.map",
-  "dist/*",
-  "*/dist/*",
-  "node_modules/*",
-  "*/node_modules/*",
-  // A changelog and the kit's plan and research folders describe what was true then.
+  ...BUILD_OUTPUT_FOLDERS.flatMap((folder) => [`${folder}/*`, `*/${folder}/*`]),
+  // A changelog and the kit's plan and research folders describe what was true then. The plan
+  // folder is named here, not read from `plansFolders` (`hooks/plans-folders.ts`): that answers
+  // with real absolute paths, the person's own plans folder outside the repository among them,
+  // and a pathspec takes neither.
   "CHANGELOG*",
   "*/CHANGELOG*",
   ".claude/plans/*",
   ".claude/research/*",
+];
+
+/**
+ * The files a project marks generated (`linguist-generated`, set or `true`): the mark the review
+ * count leaves out too (`review-cover.ts`), read here as git's attribute pathspec.
+ */
+const GENERATED_PATHS: readonly string[] = [
+  ":(exclude,attr:linguist-generated)",
+  ":(exclude,attr:linguist-generated=true)",
 ];
 
 /**
@@ -83,7 +102,7 @@ const TEST_PATHS: readonly string[] = [
 const excluded = (paths: readonly string[]) => paths.map((path) => `:(exclude)${path}`);
 
 /** The pathspec that reads every tracked file but the skipped ones. */
-const PATHSPEC = [".", ...excluded(SKIPPED_PATHS)];
+const PATHSPEC = [".", ...excluded(SKIPPED_PATHS), ...GENERATED_PATHS];
 
 /** The diff's pathspec: the same, and no test file. */
 const DIFF_PATHSPEC = [...PATHSPEC, ...excluded(TEST_PATHS)];
@@ -94,8 +113,23 @@ const MIN_NAME_LENGTH = 3;
 /** One call may read a large repository: longer than a rev-parse, still never a hang. */
 const CLAIMS_GIT_TIMEOUT_MS = 30_000;
 
+/** A claim phrase standing as whole words: "the one place" is not in "the one placeholder". */
+const CLAIM_PHRASE = new RegExp(`\\b(?:${CLAIM_PHRASES.join("|")})\\b`, "i");
+
 /** A backticked word that is an identifier, with or without call parentheses. */
 const BACKTICKED_NAME = /`([A-Za-z_$][\w$]*)(?:\(\))?`/g;
+
+/** A file of prose: a definition written in one is an example, never code. */
+const PROSE_FILE = /\.(?:md|mdx|markdown|txt|rst|adoc)$/i;
+
+/** A line that is a comment in the common languages: its words are prose. */
+const COMMENT_LINE = /^\s*(?:\/\/|\/\*|\*|#|--)/;
+
+/** An indented `const`, `let` or `var` is a local variable inside a body, never a home. */
+const LOCAL_BINDING = /^\s+(?:const|let|var)\s/;
+
+/** The head of a `for (const x of …)` loop: its binding is a local, wherever the loop stands. */
+const LOOP_HEAD = /\bfor\s*(?:await\s*)?\(\s*(?:const|let|var)\s+/g;
 
 export interface Claim {
   file: string;
@@ -145,12 +179,40 @@ export function parseClaims(output: string): Claim[] {
     const [file, line, ...rest] = record.split("\0");
     if (file === undefined || line === undefined || rest.length === 0) continue;
     const text = rest.join("\0");
-    const lower = text.toLowerCase();
-    const phrase = CLAIM_PHRASES.find((one) => lower.includes(one));
+    const phrase = CLAIM_PHRASE.exec(text)?.[0].toLowerCase();
     if (phrase === undefined) continue;
     claims.push({ file, line: Number(line), phrase, names: namesIn(text) });
   }
   return claims;
+}
+
+/** The bytes git writes as a C-style escape in a quoted path, by the character after the backslash. */
+const GIT_ESCAPES: Readonly<Record<string, number>> = {
+  a: 0x07,
+  b: 0x08,
+  t: 0x09,
+  n: 0x0a,
+  v: 0x0b,
+  f: 0x0c,
+  r: 0x0d,
+  '"': 0x22,
+  "\\": 0x5c,
+};
+
+/**
+ * A path git quoted in a diff header because it holds a double quote, a backslash or a control
+ * character (`"b/a\"b.ts"`): the quotes taken off, each escape undone, an octal escape read as
+ * one byte, and the bytes read as UTF-8.
+ */
+function unquoteGitPath(quoted: string): string {
+  const bytes: number[] = [];
+  for (const [, escaped, plain] of quoted.slice(1, -1).matchAll(/\\([0-7]{3}|.)|([^\\]+)/gs)) {
+    if (plain !== undefined) bytes.push(...Buffer.from(plain, "utf8"));
+    else if (escaped !== undefined && /^[0-7]{3}$/.test(escaped)) {
+      bytes.push(Number.parseInt(escaped, 8));
+    } else if (escaped !== undefined) bytes.push(GIT_ESCAPES[escaped] ?? escaped.charCodeAt(0));
+  }
+  return Buffer.from(bytes).toString("utf8");
 }
 
 /** The lines `git diff --unified=0` adds: each with its file and its line number in the new file. */
@@ -160,7 +222,8 @@ export function parseAddedLines(diff: string): AddedLine[] {
   let next = 0;
   for (const text of diff.split("\n")) {
     if (text.startsWith("+++ ")) {
-      const path = text.slice(4).replace(/\t.*$/, "");
+      const header = text.slice(4).replace(/\t.*$/, "");
+      const path = header.startsWith('"') ? unquoteGitPath(header) : header;
       file = path.startsWith("b/") ? path.slice(2) : null;
       continue;
     }
@@ -177,31 +240,38 @@ export function parseAddedLines(diff: string): AddedLine[] {
   return added;
 }
 
-const LOCAL_BINDING = /^\s+(?:const|let|var)\s/;
+/**
+ * The names line `text` of `file` defines (`DEFINITION_FORMS`). None in a prose file, a comment
+ * line or a local binding (an indented `const`, `let` or `var`, or a loop's own variable).
+ */
+function definitionsIn(file: string, text: string): Set<string> {
+  const names = new Set<string>();
+  if (PROSE_FILE.test(file) || COMMENT_LINE.test(text) || LOCAL_BINDING.test(text)) return names;
+  const code = text.replace(LOOP_HEAD, "for (");
+  for (const form of DEFINITION_FORMS) {
+    for (const match of code.matchAll(form)) {
+      if (match[1] !== undefined) names.add(match[1]);
+    }
+  }
+  return names;
+}
 
 /**
  * The added lines that define a name a claim gives to one home, in a file other than the
- * claim's own. One scan of each added line, whatever the number of claims.
+ * claim's own. Each is a hit only when the name has a second home (`secondHomes`). One scan of
+ * each added line, whatever the number of claims.
  */
-export function findHits(claims: readonly Claim[], added: readonly AddedLine[]): Hit[] {
+export function claimedDefinitions(claims: readonly Claim[], added: readonly AddedLine[]): Hit[] {
   const claimed = new Map<string, Claim[]>();
   for (const claim of claims) {
     for (const name of claim.names) claimed.set(name, [...(claimed.get(name) ?? []), claim]);
   }
-  const hits: Hit[] = [];
+  const found: Hit[] = [];
   for (const one of added) {
-    // An indented `const`, `let` or `var` is a local variable inside a body, never a home.
-    if (LOCAL_BINDING.test(one.text)) continue;
-    const defined = new Set<string>();
-    for (const form of DEFINITION_FORMS) {
-      for (const match of one.text.matchAll(form)) {
-        if (match[1] !== undefined) defined.add(match[1]);
-      }
-    }
-    for (const name of defined) {
+    for (const name of definitionsIn(one.file, one.text)) {
       const claim = claimed.get(name)?.find((candidate) => candidate.file !== one.file);
       if (claim !== undefined) {
-        hits.push({
+        found.push({
           file: one.file,
           line: one.line,
           name,
@@ -210,7 +280,21 @@ export function findHits(claims: readonly Claim[], added: readonly AddedLine[]):
       }
     }
   }
-  return hits;
+  return found;
+}
+
+/** The files that define each name after the change, as one `git grep` at HEAD found them. */
+export type DefiningFiles = ReadonlyMap<string, ReadonlySet<string>>;
+
+/**
+ * The definitions whose name another file also defines after the change: a second home. An edit
+ * of the home's own line, a home moved to another file and the first definition of a new home
+ * have no other file; a definition beside the old home, or one the diff writes in two files, has.
+ */
+export function secondHomes(definitions: readonly Hit[], defining: DefiningFiles): Hit[] {
+  return definitions.filter((one) =>
+    [...(defining.get(one.name) ?? [])].some((file) => file !== one.file),
+  );
 }
 
 /** A failed git call as one sentence: git's own words, or that it timed out. */
@@ -220,8 +304,8 @@ function failure(run: GitRun): string {
 
 /**
  * The claims of the project in `folder`, and, when `base` names a ref, the lines `base...HEAD`
- * adds that define a symbol they name. A claims search that git cannot answer, or a diff it
- * cannot read, is a sentence in the report, never a throw: this is a signal.
+ * adds that write a second home of a symbol they name. A diff git cannot read is a sentence in
+ * the report, never a throw: this is a signal. A `git grep` that fails is the error it returns.
  */
 export function collectClaims(
   folder: string,
@@ -270,12 +354,60 @@ export function collectClaims(
   if (!diff.ok) {
     return { claims, hits: [], diffWhy: `git diff ${base.ref}...HEAD failed: ${failure(diff)}` };
   }
-  return { claims, hits: findHits(claims, parseAddedLines(diff.out)), diffWhy: null };
+  const definitions = claimedDefinitions(claims, parseAddedLines(diff.out));
+  if (definitions.length === 0) return { claims, hits: [], diffWhy: null };
+  const defining = definingFiles(folder, env, new Set(definitions.map((one) => one.name)));
+  if ("error" in defining) return defining;
+  return { claims, hits: secondHomes(definitions, defining), diffWhy: null };
+}
+
+/** The prefix `git grep` puts before each path it finds in a commit's tree. */
+const AT_HEAD = "HEAD:";
+
+/**
+ * The files that define each of `names` at HEAD, the commit the diff ends at: one `git grep` for
+ * the names as whole words, each line it finds read with the same forms as an added line.
+ */
+function definingFiles(
+  folder: string,
+  env: Env,
+  names: ReadonlySet<string>,
+): DefiningFiles | { error: string } {
+  const grep = runGitRaw(
+    folder,
+    [
+      "grep",
+      "-z",
+      "-I",
+      "-w",
+      "-F",
+      ...[...names].flatMap((name) => ["-e", name]),
+      "HEAD",
+      "--",
+      ...DIFF_PATHSPEC,
+    ],
+    env,
+    CLAIMS_GIT_TIMEOUT_MS,
+  );
+  if (!grep.ok && grep.code !== 1) {
+    return { error: `git grep for the claimed names at HEAD failed: ${failure(grep)}` };
+  }
+  const defining = new Map<string, Set<string>>();
+  for (const record of grep.ok ? grep.out.split("\n") : []) {
+    const at = record.indexOf("\0");
+    if (at === -1) continue;
+    const file = record.slice(AT_HEAD.length, at);
+    for (const name of definitionsIn(file, record.slice(at + 1))) {
+      if (names.has(name)) defining.set(name, (defining.get(name) ?? new Set()).add(file));
+    }
+  }
+  return defining;
 }
 
 /**
- * The report as a person reads it: the claims, then what the diff re-defines. Each list stops at
- * the kit's usual cap and says how to read the rest (`rest`: the command that prints them all).
+ * The report as a person reads it: the claims, then what the diff re-defines. The claims stop at
+ * the kit's usual cap and say how to read the rest (`rest`: the command that prints them all).
+ * The hits are never cut: a reviewer reads this output and is told not to run the command.
  */
 export function claimsLines(report: ClaimsReport, rest: string): string[] {
   const lines = [`Claims (${report.claims.length}):`];
@@ -289,9 +421,10 @@ export function claimsLines(report: ClaimsReport, rest: string): string[] {
     return lines;
   }
   lines.push(`Re-defined in this diff (${report.hits.length}):`);
-  const hitLine = (hit: Hit) =>
-    `  ${hit.file}:${hit.line} defines ${hit.name}, which ${hit.claim.file}:${hit.claim.line} calls its one home`;
-  if (report.hits.length > 0)
-    lines.push(...cappedHookList(report.hits, hitLine, rest, "\n").split("\n"));
+  for (const hit of report.hits) {
+    lines.push(
+      `  ${hit.file}:${hit.line} defines ${hit.name}, which ${hit.claim.file}:${hit.claim.line} calls its one home`,
+    );
+  }
   return lines;
 }

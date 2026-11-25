@@ -1739,7 +1739,7 @@ describe("slopAudit.everyPlans through set, unset and show", () => {
 });
 
 describe("workflow claims", () => {
-  /** A clone whose main holds a claim, on a branch that defines the claimed name again. */
+  /** A clone whose main holds a claim and its home, on a branch that defines the name again. */
   function cloneWithBranch(): string {
     const { repo } = makeClone();
     mkdirSync(join(repo, "docs"));
@@ -1747,6 +1747,7 @@ describe("workflow claims", () => {
       join(repo, "docs/prices.md"),
       "# Prices\n\nThe one home for prices is `formatPrice`.\n",
     );
+    writeFileSync(join(repo, "prices.ts"), "export function formatPrice() {}\n");
     git(repo, "add", ".");
     git(repo, "commit", "-q", "-m", "claim");
     git(repo, "push", "-q", "origin", "main");
@@ -1772,7 +1773,7 @@ describe("workflow claims", () => {
     ]);
   });
 
-  test("--json prints the claims and the hits, and nothing else", async () => {
+  test("--json prints the claims, the hits and why no diff was read, and nothing else", async () => {
     const run = context(cloneWithBranch(), hookEnv());
     expect(await runWorkflow(["claims", "--json"], run.context)).toBe(0);
     expect(run.lines).toHaveLength(1);
@@ -1786,6 +1787,18 @@ describe("workflow claims", () => {
           claim: { file: "docs/prices.md", line: 3 },
         },
       ],
+      diffWhy: null,
+    });
+  });
+
+  test("--json with no default branch known carries the reason", async () => {
+    const run = context(makeRepo(), hookEnv());
+    expect(await runWorkflow(["claims", "--json"], run.context)).toBe(0);
+    expect(JSON.parse(run.lines.join("\n"))).toEqual({
+      claims: [],
+      hits: [],
+      diffWhy:
+        "the default branch is unknown: pass --base <ref>, or run `git remote set-head origin --auto`, or set worktrees.base in .claude/cc-smart-dev-kit.json",
     });
   });
 
@@ -1809,7 +1822,7 @@ describe("workflow claims", () => {
     expect(run.lines).toEqual([
       "Claims (1):",
       "  NOTES.md:1 — single source of truth — names: none",
-      "No diff was read: this project names no worktrees.base and origin/HEAD is not set, so its default branch is unknown: pass --base <ref>",
+      "No diff was read: the default branch is unknown: pass --base <ref>, or run `git remote set-head origin --auto`, or set worktrees.base in .claude/cc-smart-dev-kit.json",
     ]);
   });
 
@@ -1826,6 +1839,13 @@ describe("workflow claims", () => {
     const run = context(tempDir("not-git"), hookEnv());
     expect(await runWorkflow(["claims"], run.context)).toBe(0);
     expect(run.lines).toEqual(["No claims read: this folder is not in a git project"]);
+    const json = context(tempDir("not-git"), hookEnv());
+    expect(await runWorkflow(["claims", "--json"], json.context)).toBe(0);
+    expect(JSON.parse(json.lines.join("\n"))).toEqual({
+      claims: [],
+      hits: [],
+      diffWhy: "this folder is not in a git project",
+    });
   });
 
   test("a wrong option or a stray word is exit 2 with the usage", async () => {
@@ -1895,11 +1915,24 @@ describe("workflow slop", () => {
       `+ ${tildify(file, env.HOME ?? "")}: plan alpha recorded (1 bypassed, 0 drifted)`,
       "Slop audit: due — plan alpha left 1 bypassed home and 0 drifted copies",
       "Last audit: never",
-      "Since then: 1 bypassed, 0 drifted",
+      "Not audited yet: 1 bypassed, 0 drifted",
       "Plans: alpha (1 bypassed, 0 drifted)",
       "Areas: README.md, docs/design, src/workflow",
     ]);
     expect(statSync(file).mode & 0o777).toBe(0o600);
+  });
+
+  test("the project's merge files are no area", async () => {
+    const env = hookEnv();
+    const repo = repoWithPlan(env);
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", {
+      ...SETTINGS,
+      requires: ">=6.6",
+      workflow: { plans: { mergeFiles: ["README.md", "docs/design/"] } },
+    });
+    const run = context(repo, env);
+    expect(await runWorkflow(RECORD, run.context)).toBe(0);
+    expect(run.lines.at(-1)).toBe("Areas: src/workflow");
   });
 
   test("a second record of the same plan replaces the first, and #n names the plan too", async () => {
@@ -1910,9 +1943,9 @@ describe("workflow slop", () => {
     const byNumber = ["slop", "record", "--plan", "#1", "--bypassed", "0", "--drifted", "0"];
     expect(await runWorkflow(byNumber, again.context)).toBe(0);
     expect(again.lines.slice(1)).toEqual([
-      "Slop audit: not due (1 plan since the last audit; cadence every 5 plans)",
+      "Slop audit: not due (1 plan not audited yet; cadence every 5 plans, next at 5)",
       "Last audit: never",
-      "Since then: 0 bypassed, 0 drifted",
+      "Not audited yet: 0 bypassed, 0 drifted",
       "Plans: alpha (0 bypassed, 0 drifted)",
       "Areas: README.md, docs/design, src/workflow",
     ]);
@@ -1928,6 +1961,31 @@ describe("workflow slop", () => {
       `${COMMAND} workflow slop record: plan "nope" is not in this project's task store. Use the slug of the plan task, as the task list shows it (task_list, scope plan).`,
     ]);
     expect(existsSync(slopFileOf(env, repo))).toBe(false);
+  });
+
+  test("a count past the bound is refused with the rule, and nothing is written", async () => {
+    const env = hookEnv();
+    const repo = repoWithPlan(env);
+    const run = context(repo, env);
+    const huge = ["slop", "record", "--plan", "alpha", "--bypassed", "99999999999999999999"];
+    expect(await runWorkflow([...huge, "--drifted", "0"], run.context)).toBe(2);
+    expect(run.errors[0]).toStartWith(
+      "slop record needs --plan <slug>, --bypassed <n> and --drifted <n>, each count a whole number from 0 to 1000\n\nUsage:",
+    );
+    expect(existsSync(slopFileOf(env, repo))).toBe(false);
+  });
+
+  test("a task store that cannot be read is the command's own error line", async () => {
+    const env = hookEnv();
+    const repo = makeRepo();
+    const store = workDbFile(cliPaths(env));
+    mkdirSync(dirname(store), { recursive: true });
+    writeFileSync(store, "not a database, but long enough to look like a file to open");
+    const run = context(repo, env);
+    expect(await runWorkflow(RECORD, run.context)).toBe(1);
+    expect(run.errors).toEqual([
+      `${COMMAND} workflow slop record: the task store cannot be read: file is not a database`,
+    ]);
   });
 
   test("a project with no task store yet refuses the same way", async () => {
@@ -1946,6 +2004,7 @@ describe("workflow slop", () => {
     const status = JSON.parse(run.lines.join("\n")) as Record<string, unknown>;
     expect(Object.keys(status)).toEqual([
       "since",
+      "unaudited",
       "plans",
       "bypassed",
       "drifted",
@@ -1955,11 +2014,12 @@ describe("workflow slop", () => {
     ]);
     expect(status).toMatchObject({
       since: null,
+      unaudited: 1,
       bypassed: 0,
       drifted: 0,
       areas: ["README.md", "docs/design", "src/workflow"],
       due: true,
-      why: "1 plan closed since the last audit (every 1)",
+      why: "1 plan closed and not audited yet (every 1)",
     });
   });
 
@@ -1969,7 +2029,7 @@ describe("workflow slop", () => {
     writePersonalSetting(cliPaths(env), "slopAudit.everyPlans", 0);
     const run = context(repo, env);
     await runWorkflow(CLEAN, run.context);
-    expect(run.lines[1]).toBe("Slop audit: not due (1 plan since the last audit; cadence off)");
+    expect(run.lines[1]).toBe("Slop audit: not due (1 plan not audited yet; cadence off)");
   });
 
   test("audited starts the count again, for every area or the named ones", async () => {
@@ -1979,14 +2039,41 @@ describe("workflow slop", () => {
     const part = context(repo, env);
     const named = ["slop", "audited", "--area", "src/workflow", "--area", "docs/design/"];
     expect(await runWorkflow(named, part.context)).toBe(0);
-    expect(part.lines[0]).toEndWith(": audit recorded for docs/design, src/workflow");
+    expect(part.lines[0]).toEndWith(
+      ": audit recorded for src/workflow, docs/design (0 plans cleared)",
+    );
     expect(part.lines.at(-1)).toBe("Areas: README.md");
     const all = context(repo, env);
     expect(await runWorkflow(["slop", "audited"], all.context)).toBe(0);
-    expect(all.lines[0]).toEndWith(": audit recorded for every area");
+    expect(all.lines[0]).toEndWith(": audit recorded for every area (1 plan cleared)");
     expect(all.lines.slice(1, 3)).toEqual([
-      "Slop audit: not due (0 plans since the last audit; cadence every 5 plans)",
+      "Slop audit: not due (0 plans not audited yet; cadence every 5 plans, next at 5)",
       expect.stringMatching(/^Last audit: \d{4}-\d\d-\d\dT/),
+    ]);
+  });
+
+  test("audited --area of a parent folder, typed with ./, clears the plan and says so", async () => {
+    const env = hookEnv();
+    const repo = repoWithPlan(env);
+    await runWorkflow(RECORD, context(repo, env).context);
+    const run = context(repo, env);
+    const named = ["slop", "audited", "--area", "./src", "--area", "docs", "--area", "README.md"];
+    expect(await runWorkflow(named, run.context)).toBe(0);
+    expect(run.lines[0]).toEndWith(": audit recorded for src, docs, README.md (1 plan cleared)");
+    expect(run.lines[1]).toBe(
+      "Slop audit: not due (0 plans not audited yet; cadence every 5 plans, next at 5)",
+    );
+  });
+
+  test("audited --area that clears no plan says so on a ! line", async () => {
+    const env = hookEnv();
+    const repo = repoWithPlan(env);
+    await runWorkflow(RECORD, context(repo, env).context);
+    const run = context(repo, env);
+    expect(await runWorkflow(["slop", "audited", "--area", "lib"], run.context)).toBe(0);
+    expect(run.lines.slice(0, 2)).toEqual([
+      `+ ${tildify(slopFileOf(env, repo), env.HOME ?? "")}: audit recorded for lib (0 plans cleared)`,
+      `! No plan cleared: no plan in the count has all its areas at or under lib. Name the areas the status lists, or run ${COMMAND} workflow slop audited with no --area after an audit of everything.`,
     ]);
   });
 
@@ -2012,9 +2099,12 @@ describe("workflow slop", () => {
       ["slop", "record", "--plan", "alpha"],
       ["slop", "record", "--plan", "alpha", "--bypassed", "x", "--drifted", "0"],
       ["slop", "record", "--plan", "alpha", "--bypassed", "-1", "--drifted", "0"],
+      ["slop", "record", "--plan", "alpha", "--bypassed", "1001", "--drifted", "0"],
+      ["slop", "record", "--plan", "alpha", "--bypassed", "0", "--drifted", "99999999999999999999"],
       ["slop", "status", "--nope"],
       ["slop", "audited", "--area"],
       ["slop", "audited", "--area", "/"],
+      ["slop", "audited", "--area", "../elsewhere"],
     ]) {
       const run = context(repo, env);
       expect(await runWorkflow(argv, run.context)).toBe(2);
