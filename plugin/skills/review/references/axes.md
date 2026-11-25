@@ -41,6 +41,15 @@ one line each.
    plan's round the `reuse` track of `review-split` runs this search; another track names a copy
    it meets but does not run the search. A docs or instruction plan has no reuse track; its
    one-home-per-rule track (`/cc-smart-dev-kit:build` § 6) covers copies.
+   Three more rules, with the evidence in the brief's `Reuse signals`:
+   - A diff line that re-defines a symbol a claim names (`workflow claims` lists them) is a
+     finding: name the claim and the line.
+   - Merely similar code carries a `Similar to <path:symbol>` comment at its definition
+     (`code-structure` § 5). Search the code with `git grep "Similar to <path:symbol>"`: a second
+     marker naming the same copy is a finding, "third copy: extract now".
+   - Title a finding where the code goes around an existing home "bypassed home: …", and one where
+     two copies differ "drifted copy: …". The lead counts the confirmed findings with these two
+     titles (`/cc-smart-dev-kit:build` § 6).
 7. **Craft** — would a senior engineer be embarrassed to approve this? Names that lie, one
    function doing five things, nesting that should be early returns, clever one-liners,
    user-facing errors that say "Something went wrong". Structure and names:

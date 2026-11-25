@@ -188,7 +188,7 @@ of the session's own folder. In order:
    A docs or instruction plan's areas are its own (accuracy against the code, one home per
    rule, contradictions). The run adds a spec-compliance track, and with `spec` set every track
    reads the plan. For a code plan, run the project's `Reuse signals`
-   and `cc-smart-dev-kit workflow claims` (`/cc-smart-dev-kit:code-structure` § 13) before each round, save the output of both as a
+   and `cc-smart-dev-kit workflow claims --base <the plan's recorded base>` (`/cc-smart-dev-kit:code-structure` § 13) before each round, save the output of both as a
    `Reuse signals:` note on the plan task (its summary when it is longer than a note holds,
    64,000 characters), and pass `reuse: true`, `signals` and `homes` (your own `Homes:` lines). With one layer, the reuse track replaces the cross-layer
    track. Choose `budget` so the round's agents (tracks, the spec and reuse tracks and the budget)
@@ -233,10 +233,11 @@ the plan open, move the plan file back out of `archive/`.
 Once the review and the full check pass, the one pull request of the plan opens, as `openPr` and the person's permissions allow
 (`/cc-smart-dev-kit:commit`, `/cc-smart-dev-kit:pull-request`). Include the reviews that ran and the real checks. A fix after it opens (a late review
 finding, a CI failure) follows the batch rule in `/cc-smart-dev-kit:commit` § Pushing. Before the plan task closes, run
-`cc-smart-dev-kit workflow slop record --plan <slug> --bypassed <n> --drifted <n>`, the counts of
-bypassed homes and drifted copies the review reports confirmed. When it prints that an audit is due, offer the slop audit
-(`/cc-smart-dev-kit:audit`) on the areas it names, once the pull request is open; after an audit
-runs, `cc-smart-dev-kit workflow slop audited`. Close the plan task with evidence in that same turn. A
+`cc-smart-dev-kit workflow slop record --plan <slug> --bypassed <n> --drifted <n>`: the counts of confirmed review
+findings titled "bypassed home: …" and "drifted copy: …" (`../review/references/axes.md` dimension 6). When `slop record` or
+`workflow slop status` prints that an audit is due, offer the slop audit once the pull request is open, and follow
+`/cc-smart-dev-kit:audit` § The slop preset for the run and for what to record after it. A plan child records the counts
+and leaves the offer to its lead, who sees `workflow slop status`. Close the plan task with evidence in that same turn. A
 reserved plan's files stay held until its pull request merges or closes; an unreserved plan's files are free once its task closes. After that
 `task_done`, start the next queued plan yourself (a plan child never does: § Lead + children and coordinator modes); until then it stays queued, with
 its phases already laid. A plan nobody laid is a fresh plan task from `/cc-smart-dev-kit:plan-task`, never more phases on the closed one.
@@ -284,7 +285,7 @@ after a rebase is the project's `.claude/cc-smart-dev-kit/build.md`.
 **A plan child** is a session started by `herdr start --plan`; its brief holds the line
 `Your plan: <slug>.`, after the lead's own text. It
 builds only that plan with this skill, starts no session, takes no other plan, reports once with
-the pull request link and stops. This overrides § 6's "start the next queued plan". It never
+the pull request link and stops. This overrides § 6's "start the next queued plan" and its audit offer. It never
 coordinates: `herdr start --plan`, `adopt` and `plans --reserve` refuse a plan child.
 
 ## Rulings, not stalls

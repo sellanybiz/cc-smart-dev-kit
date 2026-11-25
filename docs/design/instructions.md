@@ -227,9 +227,10 @@ claims` (the project's "one home" claims, and the added lines that re-define a s
 names), run once by the caller (the lead
 before each round of a plan's review, the main session outside a plan): every track's prompt
 carries it as evidence to judge, never as commands to run, because no reviewer runs the project's
-guard commands itself. The reuse track reads the claims in it: a diff that re-defines a claimed
-symbol is a finding, and so are two `Homes:` lines that say `similar to` the same earlier copy
-("third copy: extract now"). Without any of these args the run is as before.
+guard commands itself. The reuse track reads the claims in it and greps the code for `Similar to`
+markers (`git grep "Similar to <path:symbol>"`); its rules for a claim hit, a second marker and the
+finding titles are one home, the reuse dimension of the review skill's `references/axes.md`, which
+the script's reuse prompt points at. Without any of these args the run is as before.
 Every call, old or new, also gets two strict rules in each
 track's brief: prove a claim by running it where that can be done, and a track with no findings
 names what it read and ran, or the report says it gave no evidence of coverage. Its launches follow
@@ -404,7 +405,7 @@ branch (no reviewer reads a phase). The plan gets one review, in two rounds of t
 workflow with `risky: true`, so every agent is the senior engineer on `opus` at `xhigh`; both
 rounds get the plan file as `spec`, and round 2 also gets round 1's whole report as `prior`. A
 code plan's rounds also pass `reuse: true`, and the lead runs the project's guard tools and
-`workflow claims` before each round and passes their output as `signals`. The reuse track proves the builders' `Homes:`
+`workflow claims --base <the plan's recorded base>` before each round and passes their output as `signals`. The reuse track proves the builders' `Homes:`
 lines (one for each new export, each saying how the author searched for an existing home: by
 name and the words it shows, by what it does, by a distinctive body line, the three searches of
 `code-structure` § 3), which the lead also checks when a phase hands back. After each merge the
@@ -418,19 +419,28 @@ and rulings; see [tasks](tasks.md).
 
 **Slop follow-ups (6.6.0).** Six gaps of the AI-slop work were closed in the owner's form.
 `code-structure` § 5 still waits for the third copy: two copies often only look alike, and an
-early helper grows a flag per caller (§ 11). What changed is that the second copy is now visible:
-a builder names the earlier copy on its `Homes:` line (`similar to <path:symbol>, not shared:
-<why>`, also in the `builder` agent), so the third copy's author sees two named copies and extracts.
-§ 13 adds `workflow claims` as a signal that always runs with the `Reuse signals`, and offers a
-project with no `Reuse signals` heading guard setup once, as a plan of its own. The setup is the
+early helper grows a flag per caller (§ 11). What changed is that the second copy is now visible,
+in the code and not only in a report: it carries a comment at its definition (`Similar to
+<path:symbol>; not shared yet: <why>`), besides the `similar to` part of its `Homes:` line (also
+in the `builder` agent). A task note lives on one machine and in one plan; the comment travels with
+the repo, so the third copy's author and the reuse track find it with `git grep`, and extract.
+The rules for a claim hit, a second marker and the finding titles ("bypassed home: …", "drifted
+copy: …", which `build` § 6 counts) sit in `review/references/axes.md` and nowhere else.
+§ 13 adds `workflow claims --base <ref>` as a signal that always runs with the `Reuse signals`, and
+offers a project with no `Reuse signals` heading guard setup as a plan of its own; a person who
+declines leaves a `## Reuse signals` heading whose body says `none: declined on <date>`, so the
+offer is not made again and `doctor` stays quiet. The setup is the
 new `skills/code-structure/references/guards.md` (read on demand, so it costs no always-on
-context): which tool to pick per stack, the ratchet and its baselines, CI and pre-push, the
-`Reuse signals` heading, and a front-door gate that a script generates from the feature folders,
-so a new feature gets its rule with no edit. Nothing is installed without the person's yes.
+context): which tool to pick per stack, the ratchet and its baselines (jscpd's own `--baseline`,
+not a whole-tree percent), CI and pre-push, the `Reuse signals` heading, and a front-door gate that
+a script generates from the feature folders, so a new feature gets its rule with no edit. Nothing
+is installed without the person's yes.
 `build` § 6 and `audit` read the running count: at plan close the lead runs `workflow slop
-record`, and an audit is offered when `workflow slop status` says it is due (every
-`workflow.slopAudit.everyPlans` plans, or when a plan found a bypassed home or a drifted copy);
-this replaces the old "offer after a review that found one" sentence. The commands are in
+record`, and an audit is offered when `record` or `workflow slop status` prints that it is due
+(the command owns the rule, so no skill restates it); this replaces the old "offer after a review
+that found one" sentence. `audit` § The slop preset owns the step after an audit (`workflow slop
+audited --area <each audited area>`), and `build` § 6 points at it. A plan child records the count
+and leaves the offer to its lead, since nobody watches the child. The commands are in
 [workflow](workflow.md).
 
 The kit's plan, build, review and commit flows govern the work the kit drives. claude-mem
