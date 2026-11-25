@@ -39,7 +39,7 @@ var MIN_BUN = "1.4.3";
 
 // src/build-info/index.ts
 var info = {
-  version: "6.5.2",
+  version: "6.6.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -10115,7 +10115,8 @@ var init_schema = __esm(() => {
     "fixesAfterReview.lines": AT_LEAST_ZERO,
     "fixesAfterReview.files": AT_LEAST_ZERO,
     "fixesAfterReview.percent": AT_LEAST_ZERO,
-    "plans.maxPhases": PHASE_COUNT
+    "plans.maxPhases": PHASE_COUNT,
+    "slopAudit.everyPlans": AT_LEAST_ZERO
   };
   labelSchema = string2().refine(isLabelName, LABEL_RULE);
   RUN_MODES = ["ask", "solo", "lead-children", "coordinator"];
@@ -10192,6 +10193,9 @@ var init_schema = __esm(() => {
       sound: unknown().optional(),
       usagePercent: numberField("alerts.usagePercent")
     }).transform(({ events: _events, sound: _sound, ...usage }) => usage).optional(),
+    slopAudit: strictObject({
+      everyPlans: numberField("slopAudit.everyPlans")
+    }).optional(),
     crew: unknown().optional()
   });
   workflowSchema = preprocess(readWithCurrentNames, workflowObjectSchema);
@@ -10231,6 +10235,9 @@ var init_schema = __esm(() => {
     alerts: {
       usagePercent: 85
     },
+    slopAudit: {
+      everyPlans: 5
+    },
     plans: {
       maxPhases: 10,
       mergeFiles: [],
@@ -10264,6 +10271,7 @@ var init_schema = __esm(() => {
     "issues.fixedLabel",
     "issues.readyLabel",
     "alerts.usagePercent",
+    "slopAudit.everyPlans",
     "plans.maxPhases",
     "plans.runMode",
     "plans.mergeFiles",
@@ -10430,7 +10438,7 @@ function checkCcSmartDevKitConfig(raw, where, pluginVersion = VERSION) {
   }
   return parsed.data;
 }
-var PLUGIN_HOOK_NAMES, RETIRED_HOOK_NAMES, UNSWITCHABLE_HOOK_NAMES, WORKTREE_PREFIX_OPTIONAL_SINCE = "0.5.2", WORKTREE_ENGINE_RETIRED_IN = "1.0.0", RETIRED_WORKTREE_FIELDS, WORKFLOW_FIXES_SINCE = "1.0.0", WORKTREE_AUTO_CLEAN_SINCE = "1.0.0", WORKTREE_REBUILDABLE_SINCE = "1.9.0", CHECKS_SINCE = "1.1.0", WORKFLOW_ISSUES_SINCE = "1.4.0", WORKFLOW_PLANS_SINCE = "4.8.0", WORKFLOW_MERGE_FILES_SINCE = "5.2.0", WORKFLOW_APPEND_ONLY_SINCE = "6.3.0", WORKFLOW_ALLOW_KEYS_SINCE = "6.1.0", JOB_KIND_KEYS_SINCE, DEPLOY_GUARD_SINCE = "5.3.0", OWN_HOOK_NAMES_SINCE, TASKS_SINCE = "1.10.0", DEPLOY_TASKS_SINCE = "5.0.0", deployCommandEntry, deployCommandList, inCheckout, IGNORED_TASK_SCHEMAS, IGNORED_TASK_FIELDS, ccSmartDevKitConfigSchema;
+var PLUGIN_HOOK_NAMES, RETIRED_HOOK_NAMES, UNSWITCHABLE_HOOK_NAMES, WORKTREE_PREFIX_OPTIONAL_SINCE = "0.5.2", WORKTREE_ENGINE_RETIRED_IN = "1.0.0", RETIRED_WORKTREE_FIELDS, WORKFLOW_FIXES_SINCE = "1.0.0", WORKTREE_AUTO_CLEAN_SINCE = "1.0.0", WORKTREE_REBUILDABLE_SINCE = "1.9.0", CHECKS_SINCE = "1.1.0", WORKFLOW_ISSUES_SINCE = "1.4.0", WORKFLOW_PLANS_SINCE = "4.8.0", WORKFLOW_MERGE_FILES_SINCE = "5.2.0", WORKFLOW_APPEND_ONLY_SINCE = "6.3.0", WORKFLOW_SLOP_AUDIT_SINCE = "6.6.0", WORKFLOW_ALLOW_KEYS_SINCE = "6.1.0", JOB_KIND_KEYS_SINCE, DEPLOY_GUARD_SINCE = "5.3.0", OWN_HOOK_NAMES_SINCE, TASKS_SINCE = "1.10.0", DEPLOY_TASKS_SINCE = "5.0.0", deployCommandEntry, deployCommandList, inCheckout, IGNORED_TASK_SCHEMAS, IGNORED_TASK_FIELDS, ccSmartDevKitConfigSchema;
 var init_config = __esm(() => {
   init_zod();
   init_build_info();
@@ -11499,6 +11507,9 @@ function mergeWorkflows(personal, project) {
   const fixes = mergedGroup(personal.fixesAfterReview, project.fixesAfterReview);
   if (fixes !== undefined)
     merged.fixesAfterReview = fixes;
+  const slopAudit = mergedGroup(personal.slopAudit, project.slopAudit);
+  if (slopAudit !== undefined)
+    merged.slopAudit = slopAudit;
   const issues = mergedGroup(personal.issues, project.issues);
   if (issues !== undefined)
     merged.issues = issues;
@@ -11707,6 +11718,7 @@ function resolveWorkflow(paths, projectConfig) {
   });
   const fixes = merged.fixesAfterReview ?? {};
   const issues = merged.issues ?? {};
+  const slopAudit = merged.slopAudit ?? {};
   return {
     allowCommit: of("allowCommit", merged.allowCommit ?? workflowDefaults.allowCommit),
     allowPush: of("allowPush", merged.allowPush ?? workflowDefaults.allowPush),
@@ -11730,6 +11742,9 @@ function resolveWorkflow(paths, projectConfig) {
       readyLabel: of("issues.readyLabel", issues.readyLabel ?? workflowDefaults.issues.readyLabel)
     },
     alerts: alertsFrom(personal, project),
+    slopAudit: {
+      everyPlans: of("slopAudit.everyPlans", slopAudit.everyPlans ?? workflowDefaults.slopAudit.everyPlans)
+    },
     plans: plansFrom(personal, project),
     switches: {
       statusLine: statusLineIsOurs(paths) ? current2(true, "personal") : current2(false, "default"),
@@ -11769,6 +11784,7 @@ var init_resolve2 = __esm(() => {
     "issues.fixedLabel": (r) => r.issues.fixedLabel,
     "issues.readyLabel": (r) => r.issues.readyLabel,
     "alerts.usagePercent": (r) => r.alerts.usagePercent,
+    "slopAudit.everyPlans": (r) => r.slopAudit.everyPlans,
     "plans.maxPhases": (r) => r.plans.maxPhases,
     "plans.runMode": (r) => r.plans.runMode,
     "plans.mergeFiles": (r) => r.plans.mergeFiles,
@@ -21233,6 +21249,8 @@ function requiresFloor(file, options = {}) {
   if (isObject2(workflow.plans) && Object.hasOwn(workflow.plans, "appendOnly")) {
     needs.push(WORKFLOW_APPEND_ONLY_SINCE);
   }
+  if (Object.hasOwn(workflow, "slopAudit"))
+    needs.push(WORKFLOW_SLOP_AUDIT_SINCE);
   if (Object.hasOwn(worktrees, "autoClean"))
     needs.push(WORKTREE_AUTO_CLEAN_SINCE);
   if (Object.hasOwn(worktrees, "rebuildable"))
@@ -22940,7 +22958,7 @@ import {
   unlinkSync as unlinkSync4
 } from "fs";
 import { dirname as dirname15, join as join31 } from "path";
-var PARSER_FINGERPRINT = "67415bc2078f50f1e70856616fa8d4ef14f9bd13052a2621e862a776d34766a2";
+var PARSER_FINGERPRINT = "d32d3b57ffd705b789e644e52687c3ca3272e88ab10a88489d06dcddc6dbca27";
 var CHECKED_DIR = "checked";
 var CHECKED_CACHE_LIMIT = 64;
 var CHECKED_FILE_MAX_BYTES = 256 * 1024;
@@ -29792,6 +29810,12 @@ var QUESTIONS = [
 var QUESTIONS_INTRO = `${QUESTIONS.length} questions. Enter keeps the answer in [brackets].`;
 function readText(file) {
   return existsSync41(file) ? readFileSync50(file, "utf8") : null;
+}
+var REVIEW_ADDON = ".claude/cc-smart-dev-kit/review.md";
+var NO_REUSE_GUARDS = `no reuse guards yet (${REVIEW_ADDON} has no "Reuse signals" heading): ask Claude to set them up (code-structure \xA7 13)`;
+function lacksReuseGuards(root) {
+  const addon = readText(join42(root, REVIEW_ADDON));
+  return addon === null || !/^#{1,6}[ \t]+Reuse signals\b/im.test(addon);
 }
 function readExisting(file) {
   const text = readText(file);
@@ -39939,6 +39963,9 @@ async function projectChecks2(cwd, env, paths, pluginHooksFile, gh = runGh) {
   if (config !== null) {
     lines.push(...ownCopyLines(config, sources, pluginHooksFile, projectDir, paths.home));
     lines.push(...await coverGitLines(checkout, env));
+    if (lacksReuseGuards(checkout.root)) {
+      lines.push({ ok: true, info: true, text: `project: ${NO_REUSE_GUARDS}` });
+    }
   }
   lines.push(...await issuesChecks({ cwd: checkout.root, env, gh, paths }));
   lines.push(...await projectTaskChecks(checkout.root, env));

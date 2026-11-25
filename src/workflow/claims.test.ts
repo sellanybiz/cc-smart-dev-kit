@@ -108,6 +108,16 @@ describe("findHits", () => {
     ).toEqual([]);
   });
 
+  test("an indented const, let or var is a local variable, not a hit", () => {
+    const lines = ["  const formatPrice = 1;", "\tlet formatPrice;", "    var formatPrice = 2;"];
+    expect(
+      findHits(
+        [PRICES_CLAIM],
+        lines.map((text, at) => added("src/cart.ts", text, at + 1)),
+      ),
+    ).toEqual([]);
+  });
+
   test("a re-export, a call and an import define nothing", () => {
     const lines = [
       'export { formatPrice } from "./prices";',
@@ -163,18 +173,27 @@ function repoWithBranch(): string {
   );
   writeFileSync(join(repo, "src.ts"), "export function formatPrice() {}\n");
   writeFileSync(join(repo, "dist/bundle.js"), "// the one home for `skipped`\n");
+  mkdirSync(join(repo, ".claude/plans/archive"), { recursive: true });
+  mkdirSync(join(repo, ".claude/research"), { recursive: true });
+  writeFileSync(join(repo, ".claude/plans/archive/old.md"), "The one home is `planExample`.\n");
+  writeFileSync(join(repo, ".claude/research/notes.md"), "The one place for `researchExample`.\n");
+  writeFileSync(join(repo, "CHANGELOG.md"), "- `formatPrice` is now the one home for prices.\n");
   git(repo, "add", ".");
   git(repo, "commit", "-q", "-m", "first");
   git(repo, "checkout", "-q", "-b", "feature");
   writeFileSync(join(repo, "cart.ts"), "const x = 1;\nexport const formatPrice = (n) => n;\n");
   writeFileSync(join(repo, "dist/other.js"), "function formatPrice() {}\n");
+  // Test fixtures that define the claimed name: not a second home.
+  writeFileSync(join(repo, "cart.test.ts"), "function formatPrice() {}\n");
+  mkdirSync(join(repo, "src/__tests__"), { recursive: true });
+  writeFileSync(join(repo, "src/__tests__/cart.ts"), "const formatPrice = () => 0;\n");
   git(repo, "add", ".");
   git(repo, "commit", "-q", "-m", "second");
   return repo;
 }
 
 describe("collectClaims", () => {
-  test("finds the claims, skips build output, and finds the second definition in the diff", () => {
+  test("finds the claims, skips build output, a changelog, plans, research and test fixtures, and finds the second definition in the diff", () => {
     const repo = repoWithBranch();
     expect(collectClaims(repo, cleanGitEnv(), { ref: "main" })).toEqual({
       claims: [

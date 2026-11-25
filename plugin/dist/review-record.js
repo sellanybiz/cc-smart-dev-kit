@@ -724,7 +724,7 @@ import { dirname as dirname3, join as join8 } from "path";
 
 // src/build-info/index.ts
 var info = {
-  version: "6.5.2",
+  version: "6.6.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -746,7 +746,7 @@ var PLUGIN_INSTALL_COMMAND = `claude plugin install ${PLUGIN_ID}`;
 var PLUGIN_UPDATE_COMMAND = `claude plugin update ${PLUGIN_ID}`;
 
 // src/hooks/checked-config.ts
-var PARSER_FINGERPRINT = "67415bc2078f50f1e70856616fa8d4ef14f9bd13052a2621e862a776d34766a2";
+var PARSER_FINGERPRINT = "d32d3b57ffd705b789e644e52687c3ca3272e88ab10a88489d06dcddc6dbca27";
 var CHECKED_DIR = "checked";
 var CHECKED_CACHE_LIMIT = 64;
 var CHECKED_FILE_MAX_BYTES = 256 * 1024;
@@ -6905,7 +6905,8 @@ var NUMBER_RULES = {
   "fixesAfterReview.lines": AT_LEAST_ZERO,
   "fixesAfterReview.files": AT_LEAST_ZERO,
   "fixesAfterReview.percent": AT_LEAST_ZERO,
-  "plans.maxPhases": PHASE_COUNT
+  "plans.maxPhases": PHASE_COUNT,
+  "slopAudit.everyPlans": AT_LEAST_ZERO
 };
 function numberField(key) {
   return numberSchema(NUMBER_RULES[key]).optional();
@@ -7068,6 +7069,9 @@ var workflowObjectSchema = strictObject({
     sound: unknown().optional(),
     usagePercent: numberField("alerts.usagePercent")
   }).transform(({ events: _events, sound: _sound, ...usage }) => usage).optional(),
+  slopAudit: strictObject({
+    everyPlans: numberField("slopAudit.everyPlans")
+  }).optional(),
   crew: unknown().optional()
 });
 var workflowSchema = preprocess(readWithCurrentNames, workflowObjectSchema);
@@ -7103,6 +7107,9 @@ var workflowDefaults = {
   alerts: {
     usagePercent: 85
   },
+  slopAudit: {
+    everyPlans: 5
+  },
   plans: {
     maxPhases: 10,
     mergeFiles: [],
@@ -7136,6 +7143,7 @@ var POLICY_KEYS = [
   "issues.fixedLabel",
   "issues.readyLabel",
   "alerts.usagePercent",
+  "slopAudit.everyPlans",
   "plans.maxPhases",
   "plans.runMode",
   "plans.mergeFiles",
@@ -8801,6 +8809,9 @@ function mergeWorkflows(personal, project) {
   const fixes = mergedGroup(personal.fixesAfterReview, project.fixesAfterReview);
   if (fixes !== undefined)
     merged.fixesAfterReview = fixes;
+  const slopAudit = mergedGroup(personal.slopAudit, project.slopAudit);
+  if (slopAudit !== undefined)
+    merged.slopAudit = slopAudit;
   const issues = mergedGroup(personal.issues, project.issues);
   if (issues !== undefined)
     merged.issues = issues;
@@ -8912,6 +8923,7 @@ function resolveWorkflow(paths, projectConfig) {
   });
   const fixes = merged.fixesAfterReview ?? {};
   const issues = merged.issues ?? {};
+  const slopAudit = merged.slopAudit ?? {};
   return {
     allowCommit: of("allowCommit", merged.allowCommit ?? workflowDefaults.allowCommit),
     allowPush: of("allowPush", merged.allowPush ?? workflowDefaults.allowPush),
@@ -8935,6 +8947,9 @@ function resolveWorkflow(paths, projectConfig) {
       readyLabel: of("issues.readyLabel", issues.readyLabel ?? workflowDefaults.issues.readyLabel)
     },
     alerts: alertsFrom(personal, project),
+    slopAudit: {
+      everyPlans: of("slopAudit.everyPlans", slopAudit.everyPlans ?? workflowDefaults.slopAudit.everyPlans)
+    },
     plans: plansFrom(personal, project),
     switches: {
       statusLine: statusLineIsOurs(paths) ? current(true, "personal") : current(false, "default"),

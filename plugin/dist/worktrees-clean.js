@@ -6088,7 +6088,7 @@ function preprocess(fn, schema) {
 }
 // src/build-info/index.ts
 var info = {
-  version: "6.5.2",
+  version: "6.6.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -7670,7 +7670,8 @@ var NUMBER_RULES = {
   "fixesAfterReview.lines": AT_LEAST_ZERO,
   "fixesAfterReview.files": AT_LEAST_ZERO,
   "fixesAfterReview.percent": AT_LEAST_ZERO,
-  "plans.maxPhases": PHASE_COUNT
+  "plans.maxPhases": PHASE_COUNT,
+  "slopAudit.everyPlans": AT_LEAST_ZERO
 };
 function numberField(key) {
   return numberSchema(NUMBER_RULES[key]).optional();
@@ -7833,6 +7834,9 @@ var workflowObjectSchema = strictObject({
     sound: unknown().optional(),
     usagePercent: numberField("alerts.usagePercent")
   }).transform(({ events: _events, sound: _sound, ...usage }) => usage).optional(),
+  slopAudit: strictObject({
+    everyPlans: numberField("slopAudit.everyPlans")
+  }).optional(),
   crew: unknown().optional()
 });
 var workflowSchema = preprocess(readWithCurrentNames, workflowObjectSchema);
@@ -7868,6 +7872,9 @@ var workflowDefaults = {
   alerts: {
     usagePercent: 85
   },
+  slopAudit: {
+    everyPlans: 5
+  },
   plans: {
     maxPhases: 10,
     mergeFiles: [],
@@ -7901,6 +7908,7 @@ var POLICY_KEYS = [
   "issues.fixedLabel",
   "issues.readyLabel",
   "alerts.usagePercent",
+  "slopAudit.everyPlans",
   "plans.maxPhases",
   "plans.runMode",
   "plans.mergeFiles",

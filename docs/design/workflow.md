@@ -515,8 +515,11 @@ claims and the second definitions that make them false.
 
 - **One `git grep`, one `git diff`.** The claims are the tracked, non-binary lines that hold a phrase
   of `CLAIM_PHRASES` (case-insensitive). The diff is `git diff --unified=0 <base>...HEAD`. Both skip
-  lockfiles, `dist/`, `node_modules/`, minified files and source maps (`SKIPPED_PATHS`). No git
-  call is made per file, so the cost grows with the repository and the diff only.
+  lockfiles, `dist/`, `node_modules/`, minified files, source maps, a changelog and the kit's
+  own `.claude/plans/` and `.claude/research/`, which describe what was true then (`SKIPPED_PATHS`). The
+  diff also skips test files (`TEST_PATHS`): a test that defines a claimed name builds a fixture,
+  not a second home. An indented `const`, `let` or `var` is a local variable, never a
+  re-definition (`LOCAL_BINDING`). No git call is made per file, so the cost grows with the repository and the diff only.
 - **Named symbols.** The backticked words of a claim line that read as identifiers (three characters
   or more, so a path or a dotted name is never one) are the names the claim gives to one home. A
   claim that names nothing is still listed: the reviewer reads it.

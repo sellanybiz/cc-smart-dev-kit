@@ -61,10 +61,32 @@ const SKIPPED_PATHS: readonly string[] = [
   "*/dist/*",
   "node_modules/*",
   "*/node_modules/*",
+  // A changelog and the kit's plan and research folders describe what was true then.
+  "CHANGELOG*",
+  "*/CHANGELOG*",
+  ".claude/plans/*",
+  ".claude/research/*",
 ];
 
+/**
+ * Test files, left out of the diff only: a test that defines a claimed name builds a fixture, not
+ * a second home. A claim written in a test is still read.
+ */
+const TEST_PATHS: readonly string[] = [
+  "*.test.*",
+  "*.spec.*",
+  "*_test.*",
+  "__tests__/*",
+  "*/__tests__/*",
+];
+
+const excluded = (paths: readonly string[]) => paths.map((path) => `:(exclude)${path}`);
+
 /** The pathspec that reads every tracked file but the skipped ones. */
-const PATHSPEC = [".", ...SKIPPED_PATHS.map((path) => `:(exclude)${path}`)];
+const PATHSPEC = [".", ...excluded(SKIPPED_PATHS)];
+
+/** The diff's pathspec: the same, and no test file. */
+const DIFF_PATHSPEC = [...PATHSPEC, ...excluded(TEST_PATHS)];
 
 /** A name shorter than this is too common a word to treat as a symbol a claim names. */
 const MIN_NAME_LENGTH = 3;
@@ -155,6 +177,8 @@ export function parseAddedLines(diff: string): AddedLine[] {
   return added;
 }
 
+const LOCAL_BINDING = /^\s+(?:const|let|var)\s/;
+
 /**
  * The added lines that define a name a claim gives to one home, in a file other than the
  * claim's own. One scan of each added line, whatever the number of claims.
@@ -166,6 +190,8 @@ export function findHits(claims: readonly Claim[], added: readonly AddedLine[]):
   }
   const hits: Hit[] = [];
   for (const one of added) {
+    // An indented `const`, `let` or `var` is a local variable inside a body, never a home.
+    if (LOCAL_BINDING.test(one.text)) continue;
     const defined = new Set<string>();
     for (const form of DEFINITION_FORMS) {
       for (const match of one.text.matchAll(form)) {
@@ -236,7 +262,7 @@ export function collectClaims(
       "--dst-prefix=b/",
       `${base.ref}...HEAD`,
       "--",
-      ...PATHSPEC,
+      ...DIFF_PATHSPEC,
     ],
     env,
     CLAIMS_GIT_TIMEOUT_MS,

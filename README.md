@@ -3148,7 +3148,8 @@ diff from `--base` (default: the merge base with `origin/<the default branch>`, 
 being the project's `worktrees.base`, else the remote's) and lists each added line that **defines**
 a named symbol (`function`, `const`, `class`, `type`, `def`, `fn` and the like) in a file other than
 the claim's own: `file:line defines X, which <claim> calls its one home`. A re-export defines
-nothing. Lockfiles, `dist/` and `node_modules/` are skipped. The lists stop at 8 lines and say how
+nothing. Lockfiles, `dist/`, `node_modules/`, a changelog and the `.claude/plans/` and
+`.claude/research/` folders are skipped, and neither a test file nor a local variable counts as a re-definition. The lists stop at 8 lines and say how
 to read the rest; `--json` prints `{ claims, hits }`. It exits 0 whatever it finds, since it is a
 signal for a reviewer; with no default branch known, or no `origin/<branch>` in the clone, it lists
 the claims and says in one line why it read no diff. A `--base` that is no commit is one error

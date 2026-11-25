@@ -5745,7 +5745,7 @@ var COMMAND = "cc-smart-dev-kit";
 
 // src/build-info/index.ts
 var info = {
-  version: "6.5.2",
+  version: "6.6.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -7258,7 +7258,8 @@ var NUMBER_RULES = {
   "fixesAfterReview.lines": AT_LEAST_ZERO,
   "fixesAfterReview.files": AT_LEAST_ZERO,
   "fixesAfterReview.percent": AT_LEAST_ZERO,
-  "plans.maxPhases": PHASE_COUNT
+  "plans.maxPhases": PHASE_COUNT,
+  "slopAudit.everyPlans": AT_LEAST_ZERO
 };
 function numberField(key) {
   return numberSchema(NUMBER_RULES[key]).optional();
@@ -7421,6 +7422,9 @@ var workflowObjectSchema = strictObject({
     sound: unknown().optional(),
     usagePercent: numberField("alerts.usagePercent")
   }).transform(({ events: _events, sound: _sound, ...usage }) => usage).optional(),
+  slopAudit: strictObject({
+    everyPlans: numberField("slopAudit.everyPlans")
+  }).optional(),
   crew: unknown().optional()
 });
 var workflowSchema = preprocess(readWithCurrentNames, workflowObjectSchema);
@@ -7456,6 +7460,9 @@ var workflowDefaults = {
   alerts: {
     usagePercent: 85
   },
+  slopAudit: {
+    everyPlans: 5
+  },
   plans: {
     maxPhases: 10,
     mergeFiles: [],
@@ -7489,6 +7496,7 @@ var POLICY_KEYS = [
   "issues.fixedLabel",
   "issues.readyLabel",
   "alerts.usagePercent",
+  "slopAudit.everyPlans",
   "plans.maxPhases",
   "plans.runMode",
   "plans.mergeFiles",
@@ -7790,7 +7798,7 @@ function parseWorkflowText(text, file) {
 }
 
 // src/entries/config-check.ts
-var FINGERPRINT = "67415bc2078f50f1e70856616fa8d4ef14f9bd13052a2621e862a776d34766a2";
+var FINGERPRINT = "d32d3b57ffd705b789e644e52687c3ca3272e88ab10a88489d06dcddc6dbca27";
 function answerOf(parse, isConfigError) {
   try {
     return { ok: true, value: parse(), fingerprint: FINGERPRINT };
