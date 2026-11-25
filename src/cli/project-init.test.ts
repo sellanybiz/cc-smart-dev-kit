@@ -221,7 +221,9 @@ describe("the flags", () => {
 describe("the defaults from the repo", () => {
   test("the default branch comes from origin/HEAD; a git that cannot answer leaves main", async () => {
     const root = tempDir("project-init");
-    const known = runner({ "symbolic-ref --quiet --short refs/remotes/origin/HEAD": "origin/dev" });
+    const known = runner({
+      "rev-parse --symbolic-full-name refs/remotes/origin/HEAD": "refs/remotes/origin/dev",
+    });
     expect((await detectFacts(known, root)).defaultBranch).toBe("dev");
     expect((await detectFacts(runner({}), root)).defaultBranch).toBe("main");
   });
@@ -231,7 +233,9 @@ describe("the defaults from the repo", () => {
     // (`realRunnerAsync`, `Bun.spawn`): `gh api` can take seconds, and a page load must never
     // freeze on it. The reads are awaited the same way, and the facts are the same.
     const root = tempDir("project-init-async");
-    const answers = { "symbolic-ref --quiet --short refs/remotes/origin/HEAD": "origin/dev" };
+    const answers = {
+      "rev-parse --symbolic-full-name refs/remotes/origin/HEAD": "refs/remotes/origin/dev",
+    };
     const sync = await detectFacts(runner(answers), root);
     const awaited = await detectFacts(asyncRunner(answers), root);
     expect(awaited).toEqual(sync);
@@ -270,6 +274,18 @@ describe("the defaults from the repo", () => {
       expect(await defaultBranchOf(gitRunner(), repoWith(["dev", "main"]))).toBe("main");
       expect(await defaultBranchOf(gitRunner(), repoWith(["dev", "master"]))).toBe("master");
       expect(await defaultBranchOf(gitRunner(), repoWith(["dev", "work"]))).toBe("dev");
+    });
+
+    test("a local branch named origin/<base> does not change the base; a dangling origin/HEAD is no base", async () => {
+      const gitRunner = () => realRunner(cleanGitEnv());
+      // The short forms print `remotes/origin/dev` once a local `origin/dev` exists.
+      const shadowed = repoWith(["main", "work"], "dev");
+      git(shadowed, "branch", "origin/dev");
+      expect(await defaultBranchOf(gitRunner(), shadowed)).toBe("dev");
+      // origin renamed its default and a prune took the old branch: origin/HEAD still names it.
+      const dangling = repoWith(["main", "work"], "master");
+      git(dangling, "update-ref", "-d", "refs/remotes/origin/master");
+      expect(await defaultBranchOf(gitRunner(), dangling)).toBe("main");
     });
 
     test("a repo with one branch is set up around that branch", async () => {

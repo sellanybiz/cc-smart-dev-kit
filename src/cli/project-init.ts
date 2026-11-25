@@ -79,6 +79,7 @@ import {
   type WorkflowKey,
   withCurrentNames,
 } from "../workflow/schema";
+import { ORIGIN_HEAD_ARGS, originHeadName } from "../worktrees/command";
 import { cliPaths, tildify } from "./paths";
 import { dryRunEnding, leadingMark, type Mark, type Out, plural } from "./ui/out";
 import type { Prompts } from "./ui/prompt";
@@ -211,14 +212,9 @@ async function localBranchesOf(runner: ProjectInitRunner, root: string): Promise
  * A git that cannot answer at all (no git, not a repo) leaves `main`, as it always did.
  */
 export async function defaultBranchOf(runner: ProjectInitRunner, root: string): Promise<string> {
-  const known = await runner.git(root, [
-    "symbolic-ref",
-    "--quiet",
-    "--short",
-    "refs/remotes/origin/HEAD",
-  ]);
+  const known = await runner.git(root, ORIGIN_HEAD_ARGS);
   if (known.ok) {
-    const branch = known.out.trim().replace(/^origin\//, "");
+    const branch = originHeadName(known.out);
     if (branch !== "") return branch;
   }
   const locals = await localBranchesOf(runner, root);

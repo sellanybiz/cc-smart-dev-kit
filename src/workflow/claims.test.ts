@@ -324,6 +324,9 @@ function repoWithBranch(): string {
   writeFileSync(join(repo, "cart.test.ts"), "function formatPrice() {}\n");
   mkdirSync(join(repo, "src/__tests__"), { recursive: true });
   writeFileSync(join(repo, "src/__tests__/cart.ts"), "const formatPrice = () => 0;\n");
+  mkdirSync(join(repo, "tests"));
+  writeFileSync(join(repo, "tests/test_cart.py"), "def formatPrice(n):\n    return n\n");
+  writeFileSync(join(repo, "cart_spec.rb"), "def formatPrice(n)\nend\n");
   git(repo, "add", ".");
   git(repo, "commit", "-q", "-m", "second");
   return repo;

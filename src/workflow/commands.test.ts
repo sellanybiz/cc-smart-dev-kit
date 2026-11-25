@@ -1877,7 +1877,10 @@ describe("workflow slop", () => {
   const LEAD = { sessionId: "lead", pid: 1, procStart: "1" };
 
   /** A repo with plan `alpha` (code in two areas, and a prose file) in the task store of `env`. */
-  function repoWithPlan(env: Record<string, string>): string {
+  function repoWithPlan(
+    env: Record<string, string>,
+    files = ["src/workflow/claims.ts", "src/workflow/slop.ts", "README.md", "scripts/build/run.ts"],
+  ): string {
     const repo = makeRepo();
     const tasks = taskContext(repo, env);
     if (!tasks.ok) throw new Error(tasks.why);
@@ -1890,12 +1893,7 @@ describe("workflow slop", () => {
           subject: "Alpha",
           kind: "plan",
           plan: "alpha",
-          files: [
-            "src/workflow/claims.ts",
-            "src/workflow/slop.ts",
-            "README.md",
-            "scripts/build/run.ts",
-          ],
+          files,
         },
         LEAD,
         1,
@@ -1934,6 +1932,25 @@ describe("workflow slop", () => {
       "Areas: scripts/build, src/workflow",
     ]);
     expect(statSync(file).mode & 0o777).toBe(0o600);
+  });
+
+  test("a clean plan that touched only prose is not counted; one with a finding is", async () => {
+    const env = hookEnv();
+    const repo = repoWithPlan(env, ["README.md", "docs/design/workflow.md"]);
+    const clean = context(repo, env);
+    expect(await runWorkflow(CLEAN, clean.context)).toBe(0);
+    expect(clean.lines).toEqual([
+      "· plan alpha touched no code area and left no finding: not counted",
+      "Slop audit: not due (0 plans not audited yet; cadence every 5 plans, next at 5)",
+      "Last audit: never",
+      "Not audited yet: 0 bypassed, 0 drifted",
+    ]);
+    expect(existsSync(slopFileOf(env, repo))).toBe(false);
+    const found = context(repo, env);
+    expect(await runWorkflow(RECORD, found.context)).toBe(0);
+    expect(found.lines[0]).toBe(
+      `+ ${tildify(slopFileOf(env, repo), env.HOME ?? "")}: plan alpha recorded (1 bypassed, 0 drifted)`,
+    );
   });
 
   test("the project's merge files are no area", async () => {

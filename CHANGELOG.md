@@ -21,25 +21,28 @@ Closes the slop gaps a code-quality audit found still open after 6.5.2.
   `slopAudit.everyPlans` (new workflow setting, default 5, `0` turns the cadence off) or that
   plan's review found one. `audited --area <path>` clears every recorded area at or under the
   path and says how many plans it cleared; with no `--area` it clears them all. The areas leave
-  out merge files, build output, prose files, and the plan and research folders. The build skill
+  out merge files, build output, prose files, and the plan and research folders, and a clean plan
+  that leaves no area is not counted. The build skill
   records each plan at its close and offers the audit on the areas the status lists.
 - **The second similar copy is named, in the code.** Merely similar code still waits for a
   third copy before it is shared (an early helper grows a flag per caller), but its author now
   marks the second copy with a comment at its definition, `Similar to <path:symbol>; not shared
   yet: <why>`, and on its `Homes:` line. The marker travels with the repo, so a later plan finds
   it with `git grep`. Two markers naming the same copy, or a marker naming a copy that carries
-  one itself, mean a third copy: a review finding, extract now. Reuse findings are titled "bypassed home: …" or "drifted copy: …", and those are
-  the counts `slop record` takes.
+  one itself, mean a third copy: a review finding, extract now. Reuse findings are titled
+  "bypassed home: …" or "drifted copy: …", and those are the counts `slop record` takes.
 - **Setting up the reuse guards.** A new code-structure reference (`references/guards.md`) shows
   how to set up the § 13 guards for the project's own stack, with baselines, CI and pre-push,
   including a front-door import rule generated from the feature folders. `doctor` and
   `project init` point a project with no `Reuse signals` at it. When the person declines the
   setup, a `## Reuse signals` heading saying `none: declined on <date>` goes into the review
   add-on, so neither the skills nor `doctor` ask again.
-- **Fix: the default branch.** When `worktrees.base` is not set, the kit reads it from
-  `refs/remotes/origin/HEAD` in full. Before, a local branch named `origin/<name>` made the
-  short form read as `remotes/origin/<name>`, and every command that needs the base (worktree
-  cleanup, `herdr`, `workflow claims`) got a wrong one.
+- **Fix: the default branch.** When `worktrees.base` is not set, the kit reads origin's default
+  branch as a full ref, in one place for every reader (worktree cleanup, `herdr`, `workflow
+  claims`, `project init`, `doctor`). Before, a local branch named `origin/<name>` made the
+  short form read as `remotes/origin/<name>`, and a base that wrong went into commands and into
+  the project file `project init` writes. An `origin/HEAD` left naming a branch origin no
+  longer has (a renamed default after a prune) is now no base at all, as before.
 
 ## 6.5.2
 

@@ -194,7 +194,9 @@ whatever it finds; --json prints { claims, hits, diffWhy }.
 slop keeps this machine's count of the plans closed that no slop audit has cleared yet: record
 stores one plan's bypassed homes and drifted copies, each a whole number up to ${SLOP_COUNT_MAX} (its
 areas come from the plan's own file list in the task store, without plans.mergeFiles, build
-output, prose files and the kit's plan and research folders; a second record of the same plan replaces the first), status says whether an audit is due
+output, prose files and the kit's plan and research folders; a clean plan that leaves no area is
+not counted; a second record of the same plan replaces the first), status says whether an audit
+is due
 (the count reaches a multiple of slopAudit.everyPlans, or the plan just recorded left a finding,
 when it closed after the last audit), and audited clears every plan, or with --area the plan areas
 at or under each path named, and says how many plans it cleared. A plan that named no area, and a
@@ -826,17 +828,17 @@ async function slopRecord(context: WorkflowContext, argv: string[]): Promise<num
     context.error(`${COMMAND} workflow slop record: ${found.why}`);
     return 1;
   }
+  const areas = areasOf(found.files, world.mergeFiles, world.caseFold);
+  // A plan whose files are all prose, merge files or build output has no code to audit, and no
+  // area audit could ever clear it: counted, it would make paid audits due for nothing. A plan
+  // with no file list is unknown, so it still counts, and so does any plan with a finding.
+  if (found.files.length > 0 && areas.length === 0 && bypassed === 0 && drifted === 0) {
+    context.print(`· plan ${found.slug} touched no code area and left no finding: not counted`);
+    printSlopStatus(context, world.file, world.everyPlans);
+    return 0;
+  }
   try {
-    await recordSlop(
-      world.file,
-      {
-        plan: found.slug,
-        bypassed,
-        drifted,
-        areas: areasOf(found.files, world.mergeFiles, world.caseFold),
-      },
-      Date.now(),
-    );
+    await recordSlop(world.file, { plan: found.slug, bypassed, drifted, areas }, Date.now());
     context.print(
       `+ ${tildify(world.file, context.paths.home)}: plan ${found.slug} recorded (${bypassed} bypassed, ${drifted} drifted)`,
     );

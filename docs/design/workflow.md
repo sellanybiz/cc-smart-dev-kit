@@ -596,7 +596,9 @@ plan touches (`plans.mergeFiles`, as the working copy resolves it, by the overla
 (`BUILD_OUTPUT_FOLDERS`) are no area: an audit there reads what no plan wrote by hand. Nor are a
 prose file (`PROSE_FILE`) and the kit's plan and research folders (`HISTORY_FOLDERS`), the ones the
 claims skip too: a slop audit reads code. A plan with no file list has no areas and is still
-counted. A second record of the same plan replaces the first and leaves `unaudited` as it was, so
+counted, since what it touched is unknown. A plan with a file list that leaves no area and no
+finding is not counted (`slopRecord` says so in one `·` line): no area audit could ever clear it,
+and counted it would make paid audits due for nothing; with a finding it counts as usual. A second record of the same plan replaces the first and leaves `unaudited` as it was, so
 the lead may run it twice. Each count is a whole number up to `SLOP_COUNT_MAX` (1000); a larger one
 is refused before anything is written. A plan that is not in this project's store, or a `#n` that
 names a phase or a task, is refused with the fix (the slug `task_list` shows); a store that cannot

@@ -100,6 +100,9 @@ const TEST_PATHS: readonly string[] = [
   "*.test.*",
   "*.spec.*",
   "*_test.*",
+  "*_spec.*",
+  "test_*.py",
+  "*/test_*.py",
   "__tests__/*",
   "*/__tests__/*",
 ];

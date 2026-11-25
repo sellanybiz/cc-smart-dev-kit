@@ -1179,6 +1179,16 @@ describe("the base branch a project works against", () => {
     git(main, "branch", "origin/dev");
     expect(baseBranch(null, env, main)).toEqual({ base: "dev", from: "origin" });
   });
+
+  test("an origin/HEAD left naming a branch origin no longer has is no base", () => {
+    const { main } = repo();
+    const env = cleanGitEnv();
+    const head = git(main, "rev-parse", "HEAD").trim();
+    git(main, "update-ref", "refs/remotes/origin/master", head);
+    git(main, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/master");
+    git(main, "update-ref", "-d", "refs/remotes/origin/master");
+    expect(baseBranch(null, env, main)).toEqual({ base: DEFAULT_BASE, from: "default" });
+  });
 });
 
 describe("the worktrees command", () => {
