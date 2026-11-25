@@ -1190,6 +1190,8 @@ const REUSE_LINES = [
   "by name and the words it shows; by what it does, the same job under another name; and by a distinctive body line",
   "the drift between copies",
   "unproven reuse",
+  "A diff that re-defines a claimed symbol is a finding",
+  'when two lines name the same earlier copy, that is a finding titled "third copy: extract now"',
   "Homes:",
   "Searching the repo for these is this track's job",
 ];

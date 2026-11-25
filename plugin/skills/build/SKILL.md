@@ -188,7 +188,7 @@ of the session's own folder. In order:
    A docs or instruction plan's areas are its own (accuracy against the code, one home per
    rule, contradictions). The run adds a spec-compliance track, and with `spec` set every track
    reads the plan. For a code plan, run the project's `Reuse signals`
-   (`/cc-smart-dev-kit:code-structure` § 13) before each round, save the output as a
+   and `cc-smart-dev-kit workflow claims` (`/cc-smart-dev-kit:code-structure` § 13) before each round, save the output of both as a
    `Reuse signals:` note on the plan task (its summary when it is longer than a note holds,
    64,000 characters), and pass `reuse: true`, `signals` and `homes` (your own `Homes:` lines). With one layer, the reuse track replaces the cross-layer
    track. Choose `budget` so the round's agents (tracks, the spec and reuse tracks and the budget)
@@ -232,8 +232,11 @@ the plan open, move the plan file back out of `archive/`.
 
 Once the review and the full check pass, the one pull request of the plan opens, as `openPr` and the person's permissions allow
 (`/cc-smart-dev-kit:commit`, `/cc-smart-dev-kit:pull-request`). Include the reviews that ran and the real checks. A fix after it opens (a late review
-finding, a CI failure) follows the batch rule in `/cc-smart-dev-kit:commit` § Pushing. A review that found a bypassed home or a drifted copy ends,
-once the pull request is open, with an offer of the slop audit (`/cc-smart-dev-kit:audit`). Close the plan task with evidence in that same turn. A
+finding, a CI failure) follows the batch rule in `/cc-smart-dev-kit:commit` § Pushing. Before the plan task closes, run
+`cc-smart-dev-kit workflow slop record --plan <slug> --bypassed <n> --drifted <n>`, the counts of
+bypassed homes and drifted copies the review reports confirmed. When it prints that an audit is due, offer the slop audit
+(`/cc-smart-dev-kit:audit`) on the areas it names, once the pull request is open; after an audit
+runs, `cc-smart-dev-kit workflow slop audited`. Close the plan task with evidence in that same turn. A
 reserved plan's files stay held until its pull request merges or closes; an unreserved plan's files are free once its task closes. After that
 `task_done`, start the next queued plan yourself (a plan child never does: § Lead + children and coordinator modes); until then it stays queued, with
 its phases already laid. A plan nobody laid is a fresh plan task from `/cc-smart-dev-kit:plan-task`, never more phases on the closed one.

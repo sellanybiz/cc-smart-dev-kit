@@ -70,6 +70,11 @@ block stays in its file, except a pure helper with no feature words (§ 7); extr
 real second caller. A composite of shared UI parts is the same case: an *identical* one follows § 7 (extract before shipping
 it twice); a merely similar one goes to the shared UI layer when a third screen builds it.
 
+**Make the second copy visible.** Why wait: two copies often only look alike, and a helper made
+too early grows a flag per caller (§ 11). So a builder that writes merely similar code names the
+earlier copy in the `why new` part of its `Homes:` line (§ 3): `similar to <path:symbol>, not
+shared: <why>`. The author of the third copy then sees two named copies, and extracts.
+
 A parameter carries data that varies. A flag or branch that picks a code path for one
 caller means the logic was not the same: keep the common core shared and move the
 caller-specific path back to that caller. Decide once and say why; do not flip between
@@ -224,7 +229,11 @@ these guards; each is a ratchet, so the count may only go down:
 
 The project lists its commands in its review add-on, `.claude/cc-smart-dev-kit/review.md`,
 under a `Reuse signals` heading. The lead runs them before each review round, or the main
-session when there is no plan, and hands the output to the reviewers. A reviewer never runs
+session when there is no plan, and hands the output to the reviewers. Run
+`cc-smart-dev-kit workflow claims` with them, always: it lists the project's own "one home"
+claims, and any added line in the diff that re-defines a symbol a claim names. A reviewer never runs
 the project's guard commands itself; searching the repo for an existing home stays its job.
 A project with no `Reuse signals` heading: whoever runs them (the lead, or the main session
-outside a plan) says so in one line and goes on.
+outside a plan) says so in one line and goes on, and offers the person guard setup once, as a
+plan of its own (`/cc-smart-dev-kit:plan-task`). How to set the guards up for the project's
+stack: `references/guards.md`.
