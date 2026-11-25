@@ -36,7 +36,7 @@ test("a plan brief carries the plan trailer in place of the task trailer", async
       "2. Run `git fetch origin trunk`. If it fails, run it once more; if it fails again, stop and report the error, and never build on a stale ref. Then run `git reset --hard origin/trunk`: your worktree's own branch is the plan branch. Then save where you started: task_update on the plan with base set to the output of `git rev-parse HEAD`.",
       `3. Run \`/${PLUGIN}:build\` on this plan only. Builder subagents are allowed; start no other sessions. Never start the next queued plan, whatever the build skill says.`,
       "4. Push, pull request and merge follow `workflow show`. Where they are off, ask the person in this terminal.",
-      `5. Report with \`${COMMAND} herdr report "<the pull request link, what shipped, what failed>"\`. Then stop. Never take another plan.`,
+      `5. Report with \`${COMMAND} herdr report "<the pull request link, what shipped, what failed>"\`, with the report lines \`/${PLUGIN}:build\` asks of a plan child. Then stop. Never take another plan.`,
       "",
       LINKED_TAIL,
       "",
