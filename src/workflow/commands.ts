@@ -40,6 +40,7 @@ import { resolve } from "node:path";
 import { COMMAND } from "../build-info/names";
 import { type ParsedOptions, parseOptions } from "../cli/args";
 import { type CliPaths, tildify } from "../cli/paths";
+import { UNKNOWN_BASE } from "../herdr/plans";
 import { runGit } from "../hooks/git";
 import { type CcSmartDevKitConfig, WORKFLOW_ALLOW_KEYS_SINCE } from "../project/config";
 import { type Checkout, CONFIG_PATH, loadProjectConfig, locateCheckout } from "../project/resolve";
@@ -182,8 +183,9 @@ the review still decide, and the verdict says the merge rests on the person's ye
 merge, so --asked takes exactly one pull request. Use it only with that yes in hand.
 claims lists the project's "one home" claims (sentences like "the one home for X is \`X\`") and,
 against --base (default: the merge base with origin/<the default branch>), the lines this branch
-adds that define a name a claim gives to one home, in another file. It is a signal for a reviewer
-and exits 0 whatever it finds; --json prints { claims, hits }.
+adds that define a name a claim gives to one home while another file defines it too: a second
+home, not an edit of the home or its first definition. It is a signal for a reviewer and exits 0
+whatever it finds; --json prints { claims, hits, diffWhy }.
 slop keeps this machine's count of the plans closed since the last slop audit: record stores one
 plan's bypassed homes and drifted copies (its areas come from the plan's own file list in the task
 store; a second record of the same plan replaces the first), status says whether an audit is due
@@ -675,9 +677,7 @@ function claimsBase(
     return { why: error instanceof Error ? error.message : String(error) };
   }
   if (named.from === "default") {
-    return {
-      why: "this project names no worktrees.base and origin/HEAD is not set, so its default branch is unknown: pass --base <ref>",
-    };
+    return { why: `the default branch is unknown: pass --base <ref>, or ${UNKNOWN_BASE.fix}` };
   }
   const ref = `origin/${named.base}`;
   return commitOf(checkout.root, ref, env) === null
@@ -687,7 +687,7 @@ function claimsBase(
 
 /**
  * `workflow claims [--base <ref>] [--json]`: the project's "one home" claims, and the lines this
- * branch adds that define a symbol a claim names, in another file (`claims.ts`). A signal for a
+ * branch adds that write a second home of a symbol a claim names (`claims.ts`). A signal for a
  * reviewer: it exits 0 whatever it finds. Only a wrong option (2), a base that is no commit (1) or
  * a git that cannot answer (1) are not 0.
  */
@@ -697,7 +697,11 @@ function claims(context: WorkflowContext, argv: string[]): number {
   const json = options.flags.has("--json");
   const here = checkoutOf(context.cwd, context.env);
   if (here.checkout === null) {
-    context.print(json ? JSON.stringify({ claims: [], hits: [] }) : `No claims read: ${here.why}`);
+    context.print(
+      json
+        ? JSON.stringify({ claims: [], hits: [], diffWhy: here.why })
+        : `No claims read: ${here.why}`,
+    );
     return 0;
   }
   const base = claimsBase(here.checkout, options.options.get("--base") ?? null, context.env);
@@ -711,7 +715,7 @@ function claims(context: WorkflowContext, argv: string[]): number {
     return 1;
   }
   const lines = json
-    ? [JSON.stringify({ claims: report.claims, hits: report.hits }, null, 2)]
+    ? [JSON.stringify(report, null, 2)]
     : claimsLines(report, `${COMMAND} workflow claims --json`);
   for (const line of lines) context.print(line);
   return 0;

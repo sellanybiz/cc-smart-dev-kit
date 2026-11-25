@@ -1739,7 +1739,7 @@ describe("slopAudit.everyPlans through set, unset and show", () => {
 });
 
 describe("workflow claims", () => {
-  /** A clone whose main holds a claim, on a branch that defines the claimed name again. */
+  /** A clone whose main holds a claim and its home, on a branch that defines the name again. */
   function cloneWithBranch(): string {
     const { repo } = makeClone();
     mkdirSync(join(repo, "docs"));
@@ -1747,6 +1747,7 @@ describe("workflow claims", () => {
       join(repo, "docs/prices.md"),
       "# Prices\n\nThe one home for prices is `formatPrice`.\n",
     );
+    writeFileSync(join(repo, "prices.ts"), "export function formatPrice() {}\n");
     git(repo, "add", ".");
     git(repo, "commit", "-q", "-m", "claim");
     git(repo, "push", "-q", "origin", "main");
@@ -1772,7 +1773,7 @@ describe("workflow claims", () => {
     ]);
   });
 
-  test("--json prints the claims and the hits, and nothing else", async () => {
+  test("--json prints the claims, the hits and why no diff was read, and nothing else", async () => {
     const run = context(cloneWithBranch(), hookEnv());
     expect(await runWorkflow(["claims", "--json"], run.context)).toBe(0);
     expect(run.lines).toHaveLength(1);
@@ -1786,6 +1787,18 @@ describe("workflow claims", () => {
           claim: { file: "docs/prices.md", line: 3 },
         },
       ],
+      diffWhy: null,
+    });
+  });
+
+  test("--json with no default branch known carries the reason", async () => {
+    const run = context(makeRepo(), hookEnv());
+    expect(await runWorkflow(["claims", "--json"], run.context)).toBe(0);
+    expect(JSON.parse(run.lines.join("\n"))).toEqual({
+      claims: [],
+      hits: [],
+      diffWhy:
+        "the default branch is unknown: pass --base <ref>, or run `git remote set-head origin --auto`, or set worktrees.base in .claude/cc-smart-dev-kit.json",
     });
   });
 
@@ -1809,7 +1822,7 @@ describe("workflow claims", () => {
     expect(run.lines).toEqual([
       "Claims (1):",
       "  NOTES.md:1 — single source of truth — names: none",
-      "No diff was read: this project names no worktrees.base and origin/HEAD is not set, so its default branch is unknown: pass --base <ref>",
+      "No diff was read: the default branch is unknown: pass --base <ref>, or run `git remote set-head origin --auto`, or set worktrees.base in .claude/cc-smart-dev-kit.json",
     ]);
   });
 
@@ -1826,6 +1839,13 @@ describe("workflow claims", () => {
     const run = context(tempDir("not-git"), hookEnv());
     expect(await runWorkflow(["claims"], run.context)).toBe(0);
     expect(run.lines).toEqual(["No claims read: this folder is not in a git project"]);
+    const json = context(tempDir("not-git"), hookEnv());
+    expect(await runWorkflow(["claims", "--json"], json.context)).toBe(0);
+    expect(JSON.parse(json.lines.join("\n"))).toEqual({
+      claims: [],
+      hits: [],
+      diffWhy: "this folder is not in a git project",
+    });
   });
 
   test("a wrong option or a stray word is exit 2 with the usage", async () => {
