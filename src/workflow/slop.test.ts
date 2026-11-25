@@ -192,7 +192,7 @@ describe("status: when an audit is due", () => {
     drifted,
     areas: ["src/cli"],
   });
-  /** A record of these plans, each closed since the last audit. */
+  /** A record of these plans, none of them cleared by an audit. */
   const record = (plans: SlopRecord["plans"], auditedAt: string | null = null): SlopRecord => ({
     auditedAt,
     unaudited: plans.length,

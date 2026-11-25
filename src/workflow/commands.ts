@@ -28,8 +28,8 @@
  * `allowMerge` and nothing else, so a pull request stacked on another open one is refused with it.
  *
  * `claims [--base <ref>] [--json]` hands a reviewer the project's "one home" claims and the diff's
- * re-definitions of what they name (`claims.ts`); `slop record | status | audited` keeps the count
- * of plans closed since the last slop audit and says when one is due (`slop.ts`). Both are signals,
+ * second homes of what they name (`claims.ts`); `slop record | status | audited` keeps the count of
+ * plans no slop audit has cleared yet and says when one is due (`slop.ts`). Both are signals,
  * read and appended, never a gate.
  *
  * Exit codes, the same as the rest of the command: 0 done, 1 a file that cannot be read or
@@ -869,7 +869,7 @@ async function slopAudited(context: WorkflowContext, argv: string[]): Promise<nu
   }
 }
 
-/** `workflow slop status [--json]`: the count since the last audit, and whether an audit is due. */
+/** `workflow slop status [--json]`: the plans no audit has cleared yet, and whether one is due. */
 function slopStatusCommand(context: WorkflowContext, argv: string[]): number {
   const options = readArgs(context, argv, [], ["--json"]);
   if (options === null) return 2;
