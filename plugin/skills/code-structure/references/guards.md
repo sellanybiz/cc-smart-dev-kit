@@ -29,13 +29,15 @@ tightens:
 
 - Record the current findings once, as a **baseline** file in the repo (a count, or a list of
   entries: files, exports, pairs of copies).
-- The check fails on a **new** entry, and also on a **gone** entry: when someone fixes one, the
-  baseline must shrink in the same change. The count can only go down.
+- The check fails on a **new** entry. A script that compares the tool's output with the baseline
+  file also fails on a **gone** entry: when someone fixes one, the baseline shrinks in the same
+  change, so the count can only go down.
 - `--update` rewrites the baseline. A change that runs it says why in the pull request
   description (what was added or removed, and the reason), so a reviewer sees every loosening.
 - Some tools have a baseline of their own (`dependency-cruiser` has `--ignore-known`, `jscpd` has
-  `--baseline`). Use it when it exists; otherwise a script that compares the tool's output with the baseline file does the
-  same.
+  `--baseline`). Use it when it exists. It fails only on a new entry, so a fixed entry stays in
+  the baseline and could come back unseen: rewrite the baseline with the tool's own command in
+  the change that fixes one.
 
 The size guard is the simplest: a script lists files over the limit, compares with
 `size-baseline.json`, and fails on a new or a gone entry unless called with `--update`.

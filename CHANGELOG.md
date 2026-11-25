@@ -8,23 +8,34 @@ in your own terminal after the update; the user guide is [README.md](README.md).
 Closes the slop gaps a code-quality audit found still open after 6.5.2.
 
 - **`cc-smart-dev-kit workflow claims`** lists the project's own "one home" claims (a comment or
-  doc that says "the one place for X") and flags an added line in the diff that re-defines a
-  symbol a claim names. The lead runs it with the project's `Reuse signals` before each review
-  round, and the reuse track treats such a re-definition as a finding.
+  doc that says "the one place for X") and flags an added line in the diff that makes a second
+  home for a symbol a claim names: a definition in a file while another file already defines
+  it. An edit of the home itself, or the first definition of a new home, is no hit; nor are
+  prose, comments, type-only imports and test files. The hits are never cut short. The lead
+  runs it with the project's `Reuse signals` before each review round, and the reuse track
+  treats a hit as a finding.
 - **`cc-smart-dev-kit workflow slop`** keeps a running count, per repository on this machine, of
   the bypassed homes and drifted copies each plan's review confirmed (`record`), says when a slop
-  audit is due (`status`), and starts the count again after one (`audited`). An audit is due
-  every `slopAudit.everyPlans` plans (new workflow setting, default 5, `0` turns the cadence off),
-  or right after a plan whose review found one. The build skill records each plan at its close
-  and offers the audit on the areas the plans touched.
-- **The second similar copy is named.** Merely similar code still waits for a third copy before
-  it is shared (an early helper grows a flag per caller), but a builder now names the earlier
-  copy on its `Homes:` line (`similar to <path:symbol>`), and two such lines naming the same copy
-  are a review finding: extract now.
+  audit is due (`status`), and clears what an audit covered (`audited`). An audit is due when a
+  plan closes after the last audit and either the plans not yet audited reach a multiple of
+  `slopAudit.everyPlans` (new workflow setting, default 5, `0` turns the cadence off) or that
+  plan's review found one. `audited --area <path>` clears every recorded area at or under the
+  path and says how many plans it cleared; with no `--area` it clears them all. The areas leave
+  out merge files, build output, prose files, and the plan and research folders. The build skill
+  records each plan at its close and offers the audit on the areas the status lists.
+- **The second similar copy is named, in the code.** Merely similar code still waits for a
+  third copy before it is shared (an early helper grows a flag per caller), but its author now
+  marks the second copy with a comment at its definition, `Similar to <path:symbol>; not shared
+  yet: <why>`, and on its `Homes:` line. The marker travels with the repo, so a later plan finds
+  it with `git grep`. Two markers naming the same copy, or a marker naming a copy that carries
+  one itself, mean a third copy: a review finding, extract now. Reuse findings are titled "bypassed home: …" or "drifted copy: …", and those are
+  the counts `slop record` takes.
 - **Setting up the reuse guards.** A new code-structure reference (`references/guards.md`) shows
   how to set up the § 13 guards for the project's own stack, with baselines, CI and pre-push,
   including a front-door import rule generated from the feature folders. `doctor` and
-  `project init` point a project with no `Reuse signals` at it.
+  `project init` point a project with no `Reuse signals` at it. When the person declines the
+  setup, a `## Reuse signals` heading saying `none: declined on <date>` goes into the review
+  add-on, so neither the skills nor `doctor` ask again.
 
 ## 6.5.2
 
