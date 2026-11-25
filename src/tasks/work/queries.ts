@@ -147,6 +147,11 @@ export function getTask(db: WorkDb, project: string, ref: string): WorkTask | nu
     null
   );
 }
+/** The refusal when a `#n` names a task of another kind than a plan (a phase, a step). */
+export function notAPlan(task: Pick<WorkTask, "number" | "kind">): string {
+  return `#${task.number} is a ${task.kind}, not a plan.`;
+}
+
 /**
  * The task a plan reference names, the way the take names it: a plan's slug first, then `#n` or
  * an id (`getTask`). The one resolver for `task_take` and `herdr start --plan`: a slug is not

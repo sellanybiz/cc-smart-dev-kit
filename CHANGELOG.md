@@ -36,6 +36,10 @@ Closes the slop gaps a code-quality audit found still open after 6.5.2.
   `project init` point a project with no `Reuse signals` at it. When the person declines the
   setup, a `## Reuse signals` heading saying `none: declined on <date>` goes into the review
   add-on, so neither the skills nor `doctor` ask again.
+- **Fix: the default branch.** When `worktrees.base` is not set, the kit reads it from
+  `refs/remotes/origin/HEAD` in full. Before, a local branch named `origin/<name>` made the
+  short form read as `remotes/origin/<name>`, and every command that needs the base (worktree
+  cleanup, `herdr`, `workflow claims`) got a wrong one.
 
 ## 6.5.2
 

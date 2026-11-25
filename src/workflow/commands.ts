@@ -47,7 +47,7 @@ import { type Checkout, CONFIG_PATH, loadProjectConfig, locateCheckout } from ".
 import { taskContext } from "../tasks/context";
 import { ignoresCase } from "../tasks/files-check";
 import { TASK_TOOL } from "../tasks/words";
-import { planByRef, planFiles } from "../tasks/work/queries";
+import { notAPlan, planByRef, planFiles } from "../tasks/work/queries";
 import { readWorkStore } from "../tasks/work/read";
 import { baseBranch } from "../worktrees/command";
 import { claimsLines, collectClaims, type DiffBase } from "./claims";
@@ -792,7 +792,7 @@ function planFilesOf(
     if (task.kind !== "plan") {
       return {
         ok: false as const,
-        why: `#${task.number} is a ${task.kind}, not a plan. ${useSlug}`,
+        why: `${notAPlan(task)} ${useSlug}`,
       };
     }
     return { ok: true as const, slug: task.plan ?? ref, files: planFiles(db, task) };

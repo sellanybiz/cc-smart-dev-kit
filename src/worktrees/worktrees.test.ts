@@ -1167,6 +1167,18 @@ describe("the base branch a project works against", () => {
     expect(baseBranch(checkout, env, main)).toEqual({ base: "trunk", from: "config" });
     expect(loadProjectConfig(checkout as Checkout).config?.worktrees?.base).toBe("trunk");
   });
+
+  test("origin/HEAD names the base, even when a local branch is named origin/<base>", () => {
+    const { main } = repo();
+    const env = cleanGitEnv();
+    const head = git(main, "rev-parse", "HEAD").trim();
+    git(main, "update-ref", "refs/remotes/origin/dev", head);
+    git(main, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/dev");
+    expect(baseBranch(null, env, main)).toEqual({ base: "dev", from: "origin" });
+    // `rev-parse --abbrev-ref origin/HEAD` would print `remotes/origin/dev` from here on.
+    git(main, "branch", "origin/dev");
+    expect(baseBranch(null, env, main)).toEqual({ base: "dev", from: "origin" });
+  });
 });
 
 describe("the worktrees command", () => {
