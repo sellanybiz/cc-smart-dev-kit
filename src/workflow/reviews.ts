@@ -187,7 +187,7 @@ export interface RecordedReview {
 }
 
 /** Runs `write` holding the record's own lock, in the folder of `file` (mode 0700). */
-async function underRecordLock<T>(file: string, write: () => T): Promise<T> {
+export async function underRecordLock<T>(file: string, write: () => T): Promise<T> {
   const folder = dirname(file);
   mkdirSync(folder, { mode: 0o700, recursive: true });
   return await withLock(folder, write, { waitMs: REVIEWS_LOCK_WAIT_MS });

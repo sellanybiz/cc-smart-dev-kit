@@ -68,6 +68,7 @@ import {
   WORKFLOW_ISSUES_SINCE,
   WORKFLOW_MERGE_FILES_SINCE,
   WORKFLOW_PLANS_SINCE,
+  WORKFLOW_SLOP_AUDIT_SINCE,
   WORKTREE_AUTO_CLEAN_SINCE,
   WORKTREE_ENGINE_RETIRED_IN,
   WORKTREE_PREFIX_OPTIONAL_SINCE,
@@ -297,6 +298,7 @@ export function requiresFloor(
   if (isObject(workflow.plans) && Object.hasOwn(workflow.plans, "appendOnly")) {
     needs.push(WORKFLOW_APPEND_ONLY_SINCE);
   }
+  if (Object.hasOwn(workflow, "slopAudit")) needs.push(WORKFLOW_SLOP_AUDIT_SINCE);
   if (Object.hasOwn(worktrees, "autoClean")) needs.push(WORKTREE_AUTO_CLEAN_SINCE);
   if (Object.hasOwn(worktrees, "rebuildable")) needs.push(WORKTREE_REBUILDABLE_SINCE);
   const jobs = isObject(file.jobs) ? file.jobs : {};

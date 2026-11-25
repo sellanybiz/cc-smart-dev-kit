@@ -27,6 +27,7 @@ import {
   UNSWITCHABLE_HOOK_NAMES,
   WORKFLOW_ALLOW_KEYS_SINCE,
   WORKFLOW_APPEND_ONLY_SINCE,
+  WORKFLOW_SLOP_AUDIT_SINCE,
   WORKTREE_PREFIX_OPTIONAL_SINCE,
 } from "./config";
 import { requiresFloor } from "./init";
@@ -95,6 +96,8 @@ const FIRST_ACCEPTED_IN: Record<string, string> = {
   "workflow.plans.maxPhases": "4.8.0",
   "workflow.plans.mergeFiles": "5.2.0",
   "workflow.plans.appendOnly": "6.3.0",
+  "workflow.slopAudit": "6.6.0",
+  "workflow.slopAudit.everyPlans": "6.6.0",
   // 2.0 removed the crew; the key stays in the schema so an old file's `crew` loads and is ignored.
   "workflow.crew": "0.5.2",
   checks: "1.1.0",
@@ -492,6 +495,7 @@ describe("the since-tables", () => {
       ...Object.values(JOB_KIND_KEYS_SINCE),
       WORKFLOW_ALLOW_KEYS_SINCE,
       WORKFLOW_APPEND_ONLY_SINCE,
+      WORKFLOW_SLOP_AUDIT_SINCE,
     ];
     for (const since of versions) {
       expect(since).toMatch(/^\d+\.\d+\.\d+$/);

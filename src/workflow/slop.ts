@@ -12,14 +12,13 @@
  * Nothing here runs an audit or decides to: `slopStatus` says whether one is due and why, and the
  * lead (`build` § 6) offers it to the person.
  */
-import { mkdirSync, readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { z } from "zod";
 import { COMMAND } from "../build-info/names";
 import { cappedHookList } from "../hooks/capped-list";
-import { withLock } from "../setup/lock";
 import { atomicWrite } from "../setup/write";
-import { REVIEWS_LOCK_WAIT_MS, repoKey } from "./reviews";
+import { repoKey, underRecordLock } from "./reviews";
 
 /** How many plans one repository's record keeps: the newest, older ones dropped. */
 export const SLOP_PLANS_KEPT = 50;
@@ -101,13 +100,6 @@ export function readSlop(file: string): SlopRecord {
   }
 }
 
-/** Runs `write` holding the record's own lock, in the folder of `file` (mode 0700). */
-async function underLock<T>(file: string, write: (record: SlopRecord) => T): Promise<T> {
-  const folder = dirname(file);
-  mkdirSync(folder, { mode: 0o700, recursive: true });
-  return await withLock(folder, () => write(readSlop(file)), { waitMs: REVIEWS_LOCK_WAIT_MS });
-}
-
 function save(file: string, record: SlopRecord): SlopRecord {
   atomicWrite(file, `${JSON.stringify(record, null, 2)}\n`, 0o600);
   return record;
@@ -123,15 +115,16 @@ export async function recordSlop(
   closed: Omit<SlopPlan, "at">,
   atMs: number,
 ): Promise<SlopRecord> {
-  return await underLock(file, (record) =>
-    save(file, {
+  return await underRecordLock(file, () => {
+    const record = readSlop(file);
+    return save(file, {
       auditedAt: record.auditedAt,
       plans: [
         ...record.plans.filter((one) => one.plan !== closed.plan),
         { ...closed, at: new Date(atMs).toISOString() },
       ].slice(-SLOP_PLANS_KEPT),
-    }),
-  );
+    });
+  });
 }
 
 /**
@@ -144,12 +137,12 @@ export async function recordAudit(
   areas: readonly string[],
   atMs: number,
 ): Promise<SlopRecord> {
-  return await underLock(file, (record) => {
+  return await underRecordLock(file, () => {
     const audited = new Set(areas);
     const plans =
       audited.size === 0
         ? []
-        : record.plans.flatMap((one) => {
+        : readSlop(file).plans.flatMap((one) => {
             const left = one.areas.filter((area) => !audited.has(area));
             if (one.areas.length > 0 && left.length === 0) return [];
             return [{ ...one, areas: left }];
