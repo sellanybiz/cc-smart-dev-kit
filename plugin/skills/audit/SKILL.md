@@ -110,10 +110,14 @@ time, and ask first (§ 2) unless the person asked.
 
 - **The target is one named area** (a feature folder, a layer). A large codebase gets one run
   per area, and a small one may name its whole source folder as one.
-- **Seed it:** run the project's `Reuse signals` commands (its review add-on) first and name the
-  worst hits in the `target`. Never ask an auditor to run the project's guard commands itself.
+- **Seed it:** run the project's `Reuse signals` commands (its review add-on) and
+  `cc-smart-dev-kit workflow slop status` first, and name the worst hits and the areas the status lists in the `target`. Never ask an auditor to run the project's guard commands itself.
 - **The spec is the project's:** its rules and guards, and `code-structure`. `audit-run` has no
   spec arg, so write "judge by code-structure §§ 3, 4, 5, 11 and 13" into `question`. Refuting
   follows `../review/references/axes.md` § Design findings.
-- **Offer these runs** after a plan's review found a bypassed home or a drifted copy: the same
-  class is likely in the code the plan did not touch.
+- **Offer these runs** when `cc-smart-dev-kit workflow slop status` says an audit is due: a count
+  of plans since the last audit (`workflow.slopAudit.everyPlans`), or a plan that found a bypassed
+  home or a drifted copy, which is likely also in code the plan did not touch. It names the areas.
+  Ask first, as above. When the person is away, record a decision and start no paid run unasked.
+  After a run, `cc-smart-dev-kit workflow slop audited` (with `--area <path>` for each area audited)
+  starts the count again.

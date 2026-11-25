@@ -222,10 +222,14 @@ refuses it before any agent starts. With `spec` set, `homes` holds the lead's ow
 its integration work, and the reuse track reads them after the plan's task notes. Its brief allows
 the repo-wide read-only searches that the senior engineer's limit on calls would otherwise cut
 short; the other tracks keep the limits. `signals` is the output of the
-project's own guard tools (the review add-on's `Reuse signals`), run once by the caller (the lead
+project's own guard tools (the review add-on's `Reuse signals`) and of `cc-smart-dev-kit workflow
+claims` (the project's "one home" claims, and the added lines that re-define a symbol a claim
+names), run once by the caller (the lead
 before each round of a plan's review, the main session outside a plan): every track's prompt
 carries it as evidence to judge, never as commands to run, because no reviewer runs the project's
-guard commands itself. Without any of these args the run is as before.
+guard commands itself. The reuse track reads the claims in it: a diff that re-defines a claimed
+symbol is a finding, and so are two `Homes:` lines that say `similar to` the same earlier copy
+("third copy: extract now"). Without any of these args the run is as before.
 Every call, old or new, also gets two strict rules in each
 track's brief: prove a claim by running it where that can be done, and a track with no findings
 names what it read and ran, or the report says it gave no evidence of coverage. Its launches follow
@@ -399,8 +403,8 @@ phase, parallel worktrees for disjoint files, and a quick check of each hand-bac
 branch (no reviewer reads a phase). The plan gets one review, in two rounds of the `review-split`
 workflow with `risky: true`, so every agent is the senior engineer on `opus` at `xhigh`; both
 rounds get the plan file as `spec`, and round 2 also gets round 1's whole report as `prior`. A
-code plan's rounds also pass `reuse: true`, and the lead runs the project's guard tools before
-each round and passes their output as `signals`. The reuse track proves the builders' `Homes:`
+code plan's rounds also pass `reuse: true`, and the lead runs the project's guard tools and
+`workflow claims` before each round and passes their output as `signals`. The reuse track proves the builders' `Homes:`
 lines (one for each new export, each saying how the author searched for an existing home: by
 name and the words it shows, by what it does, by a distinctive body line, the three searches of
 `code-structure` § 3), which the lead also checks when a phase hands back. After each merge the
@@ -411,6 +415,23 @@ only with it, so a consult of the same agent records nothing. Agents run in the 
 logs, and the lead waits only for what the next step needs. `blocked_by` marks only a real
 dependency or a shared file; noted work is `non-blocking`. The task system holds briefs, reports
 and rulings; see [tasks](tasks.md).
+
+**Slop follow-ups (6.6.0).** Six gaps of the AI-slop work were closed in the owner's form.
+`code-structure` § 5 still waits for the third copy: two copies often only look alike, and an
+early helper grows a flag per caller (§ 11). What changed is that the second copy is now visible:
+a builder names the earlier copy on its `Homes:` line (`similar to <path:symbol>, not shared:
+<why>`, also in the `builder` agent), so the third copy's author sees two named copies and extracts.
+§ 13 adds `workflow claims` as a signal that always runs with the `Reuse signals`, and offers a
+project with no `Reuse signals` heading guard setup once, as a plan of its own. The setup is the
+new `skills/code-structure/references/guards.md` (read on demand, so it costs no always-on
+context): which tool to pick per stack, the ratchet and its baselines, CI and pre-push, the
+`Reuse signals` heading, and a front-door gate that a script generates from the feature folders,
+so a new feature gets its rule with no edit. Nothing is installed without the person's yes.
+`build` § 6 and `audit` read the running count: at plan close the lead runs `workflow slop
+record`, and an audit is offered when `workflow slop status` says it is due (every
+`workflow.slopAudit.everyPlans` plans, or when a plan found a bypassed home or a drifted copy);
+this replaces the old "offer after a review that found one" sentence. The commands are in
+[workflow](workflow.md).
 
 The kit's plan, build, review and commit flows govern the work the kit drives. claude-mem
 also ships `build`, `do`, `release`, `version-bump` and `build-and-release` skills, and some of
