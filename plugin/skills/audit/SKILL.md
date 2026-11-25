@@ -115,9 +115,10 @@ time, and ask first (§ 2) unless the person asked.
 - **The spec is the project's:** its rules and guards, and `code-structure`. `audit-run` has no
   spec arg, so write "judge by code-structure §§ 3, 4, 5, 11 and 13" into `question`. Refuting
   follows `../review/references/axes.md` § Design findings.
-- **Offer these runs** when `cc-smart-dev-kit workflow slop status` says an audit is due: a count
-  of plans since the last audit (`workflow.slopAudit.everyPlans`), or a plan that found a bypassed
-  home or a drifted copy, which is likely also in code the plan did not touch. It names the areas.
-  Ask first, as above. When the person is away, record a decision and start no paid run unasked.
-  After a run, `cc-smart-dev-kit workflow slop audited` (with `--area <path>` for each area audited)
-  starts the count again.
+- **Offer these runs** when `cc-smart-dev-kit workflow slop record` or `workflow slop status` prints that
+  an audit is due, and name the areas it lists in the `target`. Ask first, as above. When the
+  person is away, record a decision and start no paid run unasked.
+- **After a run,** `cc-smart-dev-kit workflow slop audited --area <path>` for each area audited,
+  or no `--area` after an audit of the whole source folder. An area clears every recorded plan
+  area equal to it or under it, and the command prints how many plans it cleared. A plan recorded with no area clears only when no
+  `--area` is given.

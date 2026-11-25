@@ -71,9 +71,13 @@ real second caller. A composite of shared UI parts is the same case: an *identic
 it twice); a merely similar one goes to the shared UI layer when a third screen builds it.
 
 **Make the second copy visible.** Why wait: two copies often only look alike, and a helper made
-too early grows a flag per caller (§ 11). So a builder that writes merely similar code names the
-earlier copy in the `why new` part of its `Homes:` line (§ 3): `similar to <path:symbol>, not
-shared: <why>`. The author of the third copy then sees two named copies, and extracts.
+too early grows a flag per caller (§ 11). So whoever writes merely similar code marks the second
+copy twice. The `why new` part of its `Homes:` line (§ 3) says `similar to <path:symbol>, not
+shared: <why>`. And a comment at the new definition says `Similar to <path:symbol>; not shared
+yet: <why> (code-structure § 5)`. The comment lives in the code, so it holds across plans and
+machines, and it covers similar code that is not a new export. The author of a third copy, and
+the review's reuse track, find the marker with `git grep "Similar to <path:symbol>"`, see two
+named copies, and extract now.
 
 A parameter carries data that varies. A flag or branch that picks a code path for one
 caller means the logic was not the same: keep the common core shared and move the
@@ -230,10 +234,13 @@ these guards; each is a ratchet, so the count may only go down:
 The project lists its commands in its review add-on, `.claude/cc-smart-dev-kit/review.md`,
 under a `Reuse signals` heading. The lead runs them before each review round, or the main
 session when there is no plan, and hands the output to the reviewers. Run
-`cc-smart-dev-kit workflow claims` with them, always: it lists the project's own "one home"
+`cc-smart-dev-kit workflow claims --base <the review's base>` with them, always: it lists the project's own "one home"
 claims, and any added line in the diff that re-defines a symbol a claim names. A reviewer never runs
 the project's guard commands itself; searching the repo for an existing home stays its job.
 A project with no `Reuse signals` heading: whoever runs them (the lead, or the main session
-outside a plan) says so in one line and goes on, and offers the person guard setup once, as a
-plan of its own (`/cc-smart-dev-kit:plan-task`). How to set the guards up for the project's
-stack: `references/guards.md`.
+outside a plan) says so in one line and goes on, and offers the person guard setup as a plan of
+its own (`/cc-smart-dev-kit:plan-task`). When the person declines, write a `## Reuse signals`
+heading into the review add-on whose body says `none: declined on <date>`. The heading then
+exists, so neither this section nor `cc-smart-dev-kit doctor` asks again, and a body that starts
+with `none` lists no commands to run. How to set the guards up for the project's stack:
+`references/guards.md`.
