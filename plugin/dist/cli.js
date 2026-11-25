@@ -34057,6 +34057,11 @@ var init_clean = __esm(() => {
 
 // src/worktrees/command.ts
 import { basename as basename14, resolve as resolve13 } from "path";
+function originHeadName(out) {
+  const prefix = "refs/remotes/origin/";
+  const ref = out.trim();
+  return ref.startsWith(prefix) ? ref.slice(prefix.length) : "";
+}
 function baseBranch(checkout, env, repo) {
   if (checkout !== null) {
     const config = loadProjectConfig(checkout).config;
@@ -34064,9 +34069,8 @@ function baseBranch(checkout, env, repo) {
     if (base !== undefined)
       return { base, from: "config" };
   }
-  const head = runGit(repo, ["symbolic-ref", "refs/remotes/origin/HEAD"], env);
-  const prefix = "refs/remotes/origin/";
-  const name = head.ok && head.out.startsWith(prefix) ? head.out.slice(prefix.length) : "";
+  const head = runGit(repo, ORIGIN_HEAD_ARGS, env);
+  const name = head.ok ? originHeadName(head.out) : "";
   return name === "" ? { base: DEFAULT_BASE, from: "default" } : { base: name, from: "origin" };
 }
 function describe2(worktree) {
@@ -34321,7 +34325,7 @@ async function runWorktrees(paths, options, env, cwd = process.cwd(), sinks = CO
     lock?.close();
   }
 }
-var DEFAULT_BASE = "main", CLEAN_LOCK_INTERVAL_MS = 250, CONSOLE_SINKS;
+var DEFAULT_BASE = "main", CLEAN_LOCK_INTERVAL_MS = 250, ORIGIN_HEAD_ARGS, CONSOLE_SINKS;
 var init_command4 = __esm(() => {
   init_names();
   init_git();
@@ -34332,6 +34336,7 @@ var init_command4 = __esm(() => {
   init_clean();
   init_scan();
   init_scan_parked();
+  ORIGIN_HEAD_ARGS = ["rev-parse", "--symbolic-full-name", "refs/remotes/origin/HEAD"];
   CONSOLE_SINKS = {
     error: (line) => console.error(line),
     print: (line) => console.log(line)
@@ -36540,6 +36545,9 @@ var init_claims = __esm(() => {
     "*.test.*",
     "*.spec.*",
     "*_test.*",
+    "*_spec.*",
+    "test_*.py",
+    "*/test_*.py",
     "__tests__/*",
     "*/__tests__/*"
   ];
@@ -37663,13 +37671,14 @@ ${WORKFLOW_USAGE}`);
     context.error(`${COMMAND} workflow slop record: ${found.why}`);
     return 1;
   }
+  const areas = areasOf(found.files, world.mergeFiles, world.caseFold);
+  if (found.files.length > 0 && areas.length === 0 && bypassed === 0 && drifted === 0) {
+    context.print(`\xB7 plan ${found.slug} touched no code area and left no finding: not counted`);
+    printSlopStatus(context, world.file, world.everyPlans);
+    return 0;
+  }
   try {
-    await recordSlop(world.file, {
-      plan: found.slug,
-      bypassed,
-      drifted,
-      areas: areasOf(found.files, world.mergeFiles, world.caseFold)
-    }, Date.now());
+    await recordSlop(world.file, { plan: found.slug, bypassed, drifted, areas }, Date.now());
     context.print(`+ ${tildify(world.file, context.paths.home)}: plan ${found.slug} recorded (${bypassed} bypassed, ${drifted} drifted)`);
     printSlopStatus(context, world.file, world.everyPlans);
     return 0;
@@ -37992,7 +38001,9 @@ whatever it finds; --json prints { claims, hits, diffWhy }.
 slop keeps this machine's count of the plans closed that no slop audit has cleared yet: record
 stores one plan's bypassed homes and drifted copies, each a whole number up to ${SLOP_COUNT_MAX} (its
 areas come from the plan's own file list in the task store, without plans.mergeFiles, build
-output, prose files and the kit's plan and research folders; a second record of the same plan replaces the first), status says whether an audit is due
+output, prose files and the kit's plan and research folders; a clean plan that leaves no area is
+not counted; a second record of the same plan replaces the first), status says whether an audit
+is due
 (the count reaches a multiple of slopAudit.everyPlans, or the plan just recorded left a finding,
 when it closed after the last audit), and audited clears every plan, or with --area the plan areas
 at or under each path named, and says how many plans it cleared. A plan that named no area, and a
@@ -41007,14 +41018,9 @@ async function localBranchesOf(runner, root) {
 `).map((line) => line.trim()).filter((name) => name !== "");
 }
 async function defaultBranchOf2(runner, root) {
-  const known = await runner.git(root, [
-    "symbolic-ref",
-    "--quiet",
-    "--short",
-    "refs/remotes/origin/HEAD"
-  ]);
+  const known = await runner.git(root, ORIGIN_HEAD_ARGS);
   if (known.ok) {
-    const branch = known.out.trim().replace(/^origin\//, "");
+    const branch = originHeadName(known.out);
     if (branch !== "")
       return branch;
   }
@@ -41685,6 +41691,7 @@ var init_project_init = __esm(() => {
   init_format();
   init_resolve2();
   init_schema();
+  init_command4();
   init_paths2();
   init_out();
   FAST_CHECK_SCRIPTS = ["typecheck", "lint", "check", "test"];

@@ -25839,6 +25839,12 @@ function parseGitVersion(out) {
 var REMOVAL_TIMEOUT_MS = 10 * 60000;
 // src/worktrees/command.ts
 var DEFAULT_BASE = "main";
+var ORIGIN_HEAD_ARGS = ["rev-parse", "--symbolic-full-name", "refs/remotes/origin/HEAD"];
+function originHeadName(out) {
+  const prefix = "refs/remotes/origin/";
+  const ref = out.trim();
+  return ref.startsWith(prefix) ? ref.slice(prefix.length) : "";
+}
 function baseBranch(checkout, env, repo) {
   if (checkout !== null) {
     const config = loadProjectConfig(checkout).config;
@@ -25846,9 +25852,8 @@ function baseBranch(checkout, env, repo) {
     if (base !== undefined)
       return { base, from: "config" };
   }
-  const head = runGit(repo, ["symbolic-ref", "refs/remotes/origin/HEAD"], env);
-  const prefix = "refs/remotes/origin/";
-  const name = head.ok && head.out.startsWith(prefix) ? head.out.slice(prefix.length) : "";
+  const head = runGit(repo, ORIGIN_HEAD_ARGS, env);
+  const name = head.ok ? originHeadName(head.out) : "";
   return name === "" ? { base: DEFAULT_BASE, from: "default" } : { base: name, from: "origin" };
 }
 
