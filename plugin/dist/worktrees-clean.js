@@ -10791,8 +10791,9 @@ function baseBranch(checkout, env, repo) {
     if (base !== undefined)
       return { base, from: "config" };
   }
-  const head = runGit(repo, ["rev-parse", "--abbrev-ref", "origin/HEAD"], env);
-  const name = head.ok ? head.out.replace(/^origin\//, "") : "";
+  const head = runGit(repo, ["symbolic-ref", "refs/remotes/origin/HEAD"], env);
+  const prefix = "refs/remotes/origin/";
+  const name = head.ok && head.out.startsWith(prefix) ? head.out.slice(prefix.length) : "";
   return name === "" ? { base: DEFAULT_BASE, from: "default" } : { base: name, from: "origin" };
 }
 

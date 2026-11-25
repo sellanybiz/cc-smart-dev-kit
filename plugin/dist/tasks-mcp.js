@@ -24913,12 +24913,15 @@ function normalizePlanFile(raw) {
 function normalizePlanFiles(raw) {
   return [...new Set(raw.map(normalizePlanFile))].sort();
 }
+function settledBy(entries, path) {
+  return entries.some((one) => one === path || one.endsWith("/") && path.startsWith(one));
+}
 function filesOverlap(a, b, options = {}) {
   const fold = (path) => options.caseFold ? path.toLowerCase() : path;
   const holds = (folder, path) => folder.endsWith("/") && path.startsWith(folder);
   const ignore = (options.ignore ?? []).map(fold);
   const appendOnly = (options.appendOnly ?? []).map(fold);
-  const taken = (path) => ignore.some((one) => one === path || holds(one, path));
+  const taken = (path) => settledBy(ignore, path);
   const added = (path) => appendOnly.some((folder) => path.startsWith(folder));
   const touch = (x, y) => added(x) || added(y) ? x === y && !x.endsWith("/") : x === y || holds(x, y) || holds(y, x);
   const found = [];
@@ -25843,8 +25846,9 @@ function baseBranch(checkout, env, repo) {
     if (base !== undefined)
       return { base, from: "config" };
   }
-  const head = runGit(repo, ["rev-parse", "--abbrev-ref", "origin/HEAD"], env);
-  const name = head.ok ? head.out.replace(/^origin\//, "") : "";
+  const head = runGit(repo, ["symbolic-ref", "refs/remotes/origin/HEAD"], env);
+  const prefix = "refs/remotes/origin/";
+  const name = head.ok && head.out.startsWith(prefix) ? head.out.slice(prefix.length) : "";
   return name === "" ? { base: DEFAULT_BASE, from: "default" } : { base: name, from: "origin" };
 }
 
@@ -25856,13 +25860,16 @@ function planFilesCheck(cwd, env = process.env) {
   const committed = resolvePlanFiles(checkout, baseBranch(checkout, env, checkout.root).base, {
     env
   });
-  const ignorecase = runGit(checkout.root, ["config", "--type=bool", "core.ignorecase"], env);
   return {
     ignore: committed.files,
     appendOnly: committed.appendOnly,
-    caseFold: ignorecase.ok && ignorecase.out === "true",
+    caseFold: ignoresCase(checkout.root, env),
     reason: committed.reason
   };
+}
+function ignoresCase(root, env = process.env) {
+  const ignorecase = runGit(root, ["config", "--type=bool", "core.ignorecase"], env);
+  return ignorecase.ok && ignorecase.out === "true";
 }
 
 // src/tasks/plan-guards.ts
