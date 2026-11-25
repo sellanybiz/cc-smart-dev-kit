@@ -19,7 +19,7 @@ default:
 `cc-smart-dev-kit workflow show` (and the portal's settings page) can say *why* a value is what
 it is; both read a key's value through one map, `resolvedValueOf`, so a new setting is one
 entry there (the type checker refuses a key without one). A group (`alerts`,
-`fixesAfterReview`, `plans`) merges field by field like the rest. The one schema is reused by
+`fixesAfterReview`, `plans`, `slopAudit`) merges field by field like the rest. The one schema is reused by
 `src/project/config.ts` for the project's `workflow` object, so a field can never mean two
 things in the two files. A broken personal file throws `WorkflowConfigError`, which names the
 file and the field: the person must hear it. A field with a wrong kind can never be written
@@ -155,6 +155,7 @@ place (`auto-merge.ts`).
 | `reviewAgents` | the **review-record hook** records only an agent listed there. A project that runs its own reviewer names it (the plugin's `cc-smart-dev-kit:senior-engineer` by default). |
 | `alerts.events`, `alerts.sound` | Retired load-only keys: ignored, omitted by `workflow show`, and refused by `workflow set`. Existing values survive unrelated writes. |
 | `alerts.usagePercent` | the status line (`src/cli/statusline.ts`), whose warning share it is. |
+| `slopAudit.everyPlans` | `workflow slop` (§ The slop record): how many plans closed since the last audit make the next one due. A whole number from 0 (`NUMBER_RULES`, the rule the other counts share), default 5; `0` turns the count off, and a plan that left a finding still makes an audit due. The project's file wins over the person's. It is no limit on a session, so `set` and `unset` of it work inside Claude Code. |
 | `plans.maxPhases` | the kit's task store (`docs/design/tasks.md`): the most phases one plan may hold, a whole number 1-50, default 10. Like every number setting it has one rule (`NUMBER_RULES` in `schema.ts`) that the file check and `workflow set` share, and a file that holds another value is refused with the field named. The project's file wins over the person's, and the cap is read from the checkout's working copy, not the committed file. The task tools hold a session to it, so `workflow set` and `unset` of it refuse inside Claude Code (`PLAN_KEYS` in `schema.ts`): only the person raises it, and the cap refusal says to ask them. `propose` stays open, since a person reviews its pull request. A project that sets it needs `requires` `>=4.8` (`WORKFLOW_PLANS_SINCE`). |
 | `plans.runMode`, `plans.mergeFiles`, `plans.appendOnly` | the plan tools and herdr's plan hand-outs, and the skills that ask for the mode: see the two paragraphs above, and `docs/design/herdr.md` § Handing out plans. All three are in `PLAN_KEYS` and refuse `set`/`unset` inside Claude Code. |
 | `fixesAfterReview.*` | `readCover` (`src/workflow/review-cover.ts`, § The review record): the limits a change after a review may reach and still be covered. Resolved, shown by `workflow show` with their source (and as one `in force` line), and written by `workflow set`; `merge-check.ts` judges with them. |
@@ -503,6 +504,78 @@ the command from the main checkout. A folder that cannot be read at all (gone, g
 did not answer) leaves the person's own settings for the alerts and no task rows. The same lookup is one
 `git rev-parse` in a main checkout, plus one `git worktree list` in a linked worktree; it used to
 run twice. `subagent-statusline` reads no folder, no alerts and no tasks, so it has no lookup.
+
+## The claims signal
+
+`cc-smart-dev-kit workflow claims [--base <ref>] [--json]` (`src/workflow/claims.ts`, dispatched
+from `commands.ts`) hands a reviewer the project's "one home" claims, and the lines a diff adds
+that define what they name. It is a signal: it reads, prints and exits 0, whatever it finds. A
+claim with no guard is a finding (`code-structure` § 11), and this is the cheap way to see the
+claims and the second definitions that make them false.
+
+- **One `git grep`, one `git diff`.** The claims are the tracked, non-binary lines that hold a phrase
+  of `CLAIM_PHRASES` (case-insensitive). The diff is `git diff --unified=0 <base>...HEAD`. Both skip
+  lockfiles, `dist/`, `node_modules/`, minified files and source maps (`SKIPPED_PATHS`). No git
+  call is made per file, so the cost grows with the repository and the diff only.
+- **Named symbols.** The backticked words of a claim line that read as identifiers (three characters
+  or more, so a path or a dotted name is never one) are the names the claim gives to one home. A
+  claim that names nothing is still listed: the reviewer reads it.
+- **Hits.** An added line is a hit when it matches a form of `DEFINITION_FORMS` (`function X`,
+  `const|let|var X`, `class X`, `type X`, `interface X`, `def X`, `fn X`, `func X`, `X = (`) for a
+  claimed name, in a file other than the claim's own. The forms name no language, and a re-export
+  (`export { X } from`) matches none, since it defines nothing. A name that two files claim
+  reports a claim in a file other than the hit's. One scan of each added line finds every name it
+  defines, so the work does not grow with the number of claims.
+- **The base.** `--base <ref>` as given (a ref that is no commit is one error line and exit 1).
+  Without it, the merge base with `origin/<default branch>`: the project's `worktrees.base`, else the
+  remote's default (`baseBranch` in `src/worktrees/command.ts`, the one lookup the worktree commands
+  use). Where the default branch is unknown (no `worktrees.base`, no `origin/HEAD`), or origin has no
+  such branch in this clone, the claims are still listed and one line says why no diff was read.
+- **Output.** `Claims (N):` with `file:line — the phrase — names: a, b`, then `Re-defined in this
+  diff (M):` with `file:line defines X, which <claim file:line> calls its one home`, each list cut at
+  the kit's usual cap (`cappedHookList`) with `+K more: <the --json command>`. `--json` prints
+  `{ claims: [{ file, line, phrase, names }], hits: [{ file, line, name, claim: { file, line } }] }`
+  for a workflow script, and nothing else.
+
+Exit codes: 0 for every answer, including no git and no diff; 2 for a wrong option; 1 for a base
+that is no commit and for a `git grep` that fails (not "no match": git exits 1 for that, and it is an
+empty answer).
+
+## The slop record
+
+`cc-smart-dev-kit workflow slop record | status | audited` (`src/workflow/slop.ts`) is the running
+count the lead keeps across plans, so a slop audit is offered on a rhythm and not only after a
+review finds something (`build` § 6).
+
+**The file.** One small JSON file per repository, `<stateDir>/slop/<key>.json` (mode 0600, written
+atomically), with the same key as the review record (`repoKey`): every worktree of a repository
+shares one count. It holds `{ auditedAt, plans: [{ plan, at, bypassed, drifted, areas }] }`, read
+with a strict schema. Every write holds the record's own lock (`withLock`, the review record's wait),
+so two leads that close plans at once both land; a busy lock fails with the lock's own fix line. A
+file that is not a record is named, with "delete it to start the count again": the count is all it
+holds, and a quiet reset would hide that it was lost. The newest 50 plans stay. The count is
+machine-local, like the review record: a team on several machines gets an audit offer on each.
+
+**record.** `slop record --plan <slug> --bypassed <n> --drifted <n>` takes the plan from the task
+store (`planByRef`: the slug, `#n` or an id) and its **areas** from the plan's own file list
+(`planFiles`), each path cut to its first two segments, so the lead passes no paths. A plan with no
+file list has no areas and is still counted. A second record of the same plan replaces the first, so
+the lead may run it twice. A plan that is not in this project's store is refused with the fix (the slug
+`task_list` shows). It then prints the status.
+
+**status.** `slop status [--json]` prints the plans since the last audit, their totals and the areas.
+An audit is **due** when either holds: the plans since the last audit reach `slopAudit.everyPlans`
+(5 by default, `0` turns that off), or the plan recorded last left a bypassed home or a drifted copy
+(the trigger the lead had before the count, kept). The line says which, and the areas name where to
+audit. `--json`: `{ since, plans, bypassed, drifted, areas, due, why }`.
+
+**audited.** `slop audited [--area <path>]...` starts the count again. With no area, every plan
+leaves. With areas (each cut the same way), only those areas are cleared from each plan: a plan whose
+areas are all cleared leaves, one with areas left stays with them, and a plan that named no area stays
+until an audit of everything.
+
+The lead runs the three (`build` § 6, `audit` § The slop preset); nothing runs an audit by itself, and
+away from the person it records a decision and starts no paid audit run unasked.
 
 ## Fewer pull requests
 

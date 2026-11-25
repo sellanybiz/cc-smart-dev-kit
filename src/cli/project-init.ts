@@ -950,6 +950,21 @@ function readText(file: string): string | null {
   return existsSync(file) ? readFileSync(file, "utf8") : null;
 }
 
+/** The project's review add-on, relative to its root: where its `Reuse signals` heading lives. */
+const REVIEW_ADDON = ".claude/cc-smart-dev-kit/review.md";
+
+/**
+ * What `doctor` (after `project:`) and `project init` (after "This project has") say about a
+ * project with no reuse guards. The one home of the sentence.
+ */
+export const NO_REUSE_GUARDS = `no reuse guards yet (${REVIEW_ADDON} has no "Reuse signals" heading): ask Claude to set them up (code-structure § 13)`;
+
+/** True when the project at `root` has no `Reuse signals` heading in its review add-on. */
+export function lacksReuseGuards(root: string): boolean {
+  const addon = readText(join(root, REVIEW_ADDON));
+  return addon === null || !/^#{1,6}[ \t]+Reuse signals\b/im.test(addon);
+}
+
 /**
  * The parsed project's file, or null when it is not there (a broken one is the plan's error).
  * Exported for the portal's Project card, which builds its answers the way `project init`
@@ -1298,6 +1313,7 @@ export async function runProjectInit(
           },
         ]),
     `Tell your teammates: the file asks for ${COMMAND} ${requires}, so each of them needs that plugin version or newer.`,
+    ...(lacksReuseGuards(context.root) ? [`This project has ${NO_REUSE_GUARDS}.`] : []),
   ]);
   return skillFailures > 0 ? 1 : 0;
 }
