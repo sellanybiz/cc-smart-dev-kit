@@ -38,19 +38,40 @@ describe("slopFile and areasOf", () => {
 
   test("an area is a path cut to its first two segments, each once, sorted", () => {
     expect(
-      areasOf([
-        "src/workflow/claims.ts",
-        "src/workflow/slop.ts",
-        "plugin/skills/",
-        "README.md",
-        "docs/design/workflow.md",
-        "src/cli/",
-      ]),
+      areasOf(
+        [
+          "src/workflow/claims.ts",
+          "src/workflow/slop.ts",
+          "plugin/skills/",
+          "README.md",
+          "docs/design/workflow.md",
+          "./src/cli/",
+        ],
+        [],
+      ),
     ).toEqual(["README.md", "docs/design", "plugin/skills", "src/cli", "src/workflow"]);
   });
 
+  test("the merge files and build output are no area", () => {
+    expect(
+      areasOf(
+        [
+          "CHANGELOG.md",
+          "plugin/dist/cli.js",
+          "plugin/dist/",
+          "plugin/.claude-plugin/plugin.json",
+          "app/dist/",
+          "packages/web/dist/index.js",
+          "node_modules/zod/index.js",
+          "src/dist.ts",
+        ],
+        ["CHANGELOG.md", "plugin/dist/", "plugin/.claude-plugin/plugin.json"],
+      ),
+    ).toEqual(["src/dist.ts"]);
+  });
+
   test("no path, no area", () => {
-    expect(areasOf([])).toEqual([]);
+    expect(areasOf([], [])).toEqual([]);
   });
 });
 
@@ -60,6 +81,7 @@ describe("record", () => {
     const record = await recordSlop(file, closed("alpha", 1, 2, ["src/cli"]), AT);
     expect(record).toEqual({
       auditedAt: null,
+      unaudited: 1,
       plans: [
         {
           plan: "alpha",
@@ -75,7 +97,7 @@ describe("record", () => {
   });
 
   test("no file is an empty record", () => {
-    expect(readSlop(freshFile())).toEqual({ auditedAt: null, plans: [] });
+    expect(readSlop(freshFile())).toEqual({ auditedAt: null, unaudited: 0, plans: [] });
   });
 
   test("a second record of the same plan replaces the first", async () => {
@@ -87,17 +109,19 @@ describe("record", () => {
       ["beta", 0, 0, "2026-11-02T10:00:00.000Z"],
       ["alpha", 0, 1, "2026-11-03T10:00:00.000Z"],
     ]);
+    expect(record.unaudited).toBe(2);
   });
 
-  test("only the newest plans stay", async () => {
+  test("only the newest plans stay, and the count still holds every one", async () => {
     const file = freshFile();
     for (let index = 0; index <= SLOP_PLANS_KEPT; index += 1) {
       await recordSlop(file, closed(`plan-${index}`), AT + index * 1000);
     }
-    const { plans } = readSlop(file);
+    const { plans, unaudited } = readSlop(file);
     expect(plans).toHaveLength(SLOP_PLANS_KEPT);
     expect(plans[0]?.plan).toBe("plan-1");
     expect(plans.at(-1)?.plan).toBe(`plan-${SLOP_PLANS_KEPT}`);
+    expect(unaudited).toBe(SLOP_PLANS_KEPT + 1);
   });
 
   test("a write waits for the record's own lock and keeps what the holder wrote", async () => {
@@ -110,6 +134,7 @@ describe("record", () => {
         file,
         JSON.stringify({
           auditedAt: null,
+          unaudited: 1,
           plans: [
             { plan: "alpha", at: "2026-11-01T10:00:00.000Z", bypassed: 0, drifted: 0, areas: [] },
           ],
@@ -140,10 +165,22 @@ describe("record", () => {
       file,
       JSON.stringify({
         auditedAt: null,
+        unaudited: 1,
         plans: [{ plan: "a", at: "x", bypassed: -1, drifted: 0, areas: [] }],
       }),
     );
     expect(() => readSlop(file)).toThrow("is not a slop record");
+  });
+
+  test("a field a newer version added is read past, and the count is kept", () => {
+    const file = freshFile();
+    mkdirSync(dirname(file), { recursive: true });
+    const plan = { plan: "a", at: "x", bypassed: 1, drifted: 0, areas: [] };
+    writeFileSync(
+      file,
+      JSON.stringify({ auditedAt: null, unaudited: 1, later: true, plans: [{ ...plan, more: 1 }] }),
+    );
+    expect(readSlop(file)).toEqual({ auditedAt: null, unaudited: 1, plans: [plan] });
   });
 });
 
@@ -155,10 +192,17 @@ describe("status: when an audit is due", () => {
     drifted,
     areas: ["src/cli"],
   });
+  /** A record of these plans, each closed since the last audit. */
+  const record = (plans: SlopRecord["plans"], auditedAt: string | null = null): SlopRecord => ({
+    auditedAt,
+    unaudited: plans.length,
+    plans,
+  });
 
   test("a new record is not due", () => {
-    expect(slopStatus({ auditedAt: null, plans: [] }, 5)).toEqual({
+    expect(slopStatus(record([]), 5)).toEqual({
       since: null,
+      unaudited: 0,
       plans: [],
       bypassed: 0,
       drifted: 0,
@@ -170,18 +214,29 @@ describe("status: when an audit is due", () => {
 
   test("four clean plans of five are not due; the fifth makes it due, by count", () => {
     const four = ["a", "b", "c", "d"].map((name) => plan(name));
-    expect(slopStatus({ auditedAt: null, plans: four }, 5).due).toBe(false);
-    const status = slopStatus({ auditedAt: null, plans: [...four, plan("e")] }, 5);
+    expect(slopStatus(record(four), 5).due).toBe(false);
+    const status = slopStatus(record([...four, plan("e")]), 5);
     expect(status.due).toBe(true);
-    expect(status.why).toBe("5 plans closed since the last audit (every 5)");
+    expect(status.why).toBe("5 plans closed and not audited yet (every 5)");
+  });
+
+  test("by count it is due at each multiple only: a declined offer comes back five plans later", () => {
+    const at = (unaudited: number) =>
+      slopStatus({ auditedAt: null, unaudited, plans: [plan("a")] }, 5).due;
+    expect([5, 6, 9, 10, 11, 15].map(at)).toEqual([true, false, false, true, false, true]);
+  });
+
+  test("a cadence above the plans kept still comes due: the count is not the list", () => {
+    const status = slopStatus({ auditedAt: null, unaudited: 60, plans: [plan("a")] }, 60);
+    expect(status).toMatchObject({
+      due: true,
+      why: "60 plans closed and not audited yet (every 60)",
+    });
   });
 
   test("the plan just recorded left a bypassed home or a drifted copy: due at once, by finding", () => {
     const status = slopStatus(
-      {
-        auditedAt: "2026-10-01T00:00:00.000Z",
-        plans: [plan("a"), plan("b", 1, 2, "2026-11-02T10:00:00.000Z")],
-      },
+      record([plan("a"), plan("b", 1, 2, "2026-11-02T10:00:00.000Z")], "2026-10-01T00:00:00.000Z"),
       5,
     );
     expect(status).toMatchObject({
@@ -196,7 +251,7 @@ describe("status: when an audit is due", () => {
 
   test("a finding in an older plan does not make a later clean one due", () => {
     const status = slopStatus(
-      { auditedAt: null, plans: [plan("a", 2, 0), plan("b", 0, 0, "2026-11-02T10:00:00.000Z")] },
+      record([plan("a", 2, 0), plan("b", 0, 0, "2026-11-02T10:00:00.000Z")]),
       5,
     );
     expect(status).toMatchObject({ due: false, why: null, bypassed: 2 });
@@ -205,34 +260,44 @@ describe("status: when an audit is due", () => {
   test("both reasons are named", () => {
     const plans = ["a", "b", "c"].map((name) => plan(name));
     plans.push(plan("d", 0, 1, "2026-11-05T10:00:00.000Z"));
-    expect(slopStatus({ auditedAt: null, plans }, 4).why).toBe(
-      "4 plans closed since the last audit (every 4); plan d left 0 bypassed homes and 1 drifted copy",
+    expect(slopStatus(record(plans), 4).why).toBe(
+      "4 plans closed and not audited yet (every 4); plan d left 0 bypassed homes and 1 drifted copy",
     );
   });
 
   test("everyPlans 0 turns the count off, and a finding still makes an audit due", () => {
     const clean = ["a", "b", "c", "d", "e", "f"].map((name) => plan(name));
-    expect(slopStatus({ auditedAt: null, plans: clean }, 0).due).toBe(false);
+    expect(slopStatus(record(clean), 0).due).toBe(false);
     const found = [...clean, plan("g", 1, 0, "2026-11-09T10:00:00.000Z")];
-    expect(slopStatus({ auditedAt: null, plans: found }, 0).due).toBe(true);
+    expect(slopStatus(record(found), 0).due).toBe(true);
   });
 
-  test("the lines say due or not, the last audit, the totals, the plans and the areas", () => {
-    const record: SlopRecord = {
-      auditedAt: "2026-10-01T00:00:00.000Z",
-      plans: [plan("a", 1, 0)],
-    };
-    expect(slopStatusLines(slopStatus(record, 5), 5)).toEqual([
+  test("the lines say due or not, the last audit, what is not audited yet, the plans and the areas", () => {
+    expect(
+      slopStatusLines(slopStatus(record([plan("a", 1, 0)], "2026-10-01T00:00:00.000Z"), 5), 5),
+    ).toEqual([
       "Slop audit: due — plan a left 1 bypassed home and 0 drifted copies",
       "Last audit: 2026-10-01T00:00:00.000Z",
-      "Since then: 1 bypassed, 0 drifted",
+      "Not audited yet: 1 bypassed, 0 drifted",
       "Plans: a (1 bypassed, 0 drifted)",
       "Areas: src/cli",
     ]);
-    expect(slopStatusLines(slopStatus({ auditedAt: null, plans: [] }, 0), 0)).toEqual([
-      "Slop audit: not due (0 plans since the last audit; cadence off)",
+    expect(slopStatusLines(slopStatus(record([]), 0), 0)).toEqual([
+      "Slop audit: not due (0 plans not audited yet; cadence off)",
       "Last audit: never",
-      "Since then: 0 bypassed, 0 drifted",
+      "Not audited yet: 0 bypassed, 0 drifted",
+    ]);
+    const six = { auditedAt: null, unaudited: 6, plans: [plan("a")] };
+    expect(slopStatusLines(slopStatus(six, 5), 5)[0]).toBe(
+      "Slop audit: not due (6 plans not audited yet; cadence every 5 plans, next at 10)",
+    );
+  });
+
+  test("a plan that named no area is listed with the one audit that clears it", () => {
+    const lines = slopStatusLines(slopStatus(record([{ ...plan("a"), areas: [] }]), 5), 5);
+    expect(lines.slice(3)).toEqual([
+      "Plans: a (0 bypassed, 0 drifted)",
+      "No area: a. Only an audit with no --area clears a plan that named no area.",
     ]);
   });
 });
@@ -249,25 +314,38 @@ describe("audited", () => {
   test("with no area, every plan is audited and the count starts again", async () => {
     const file = await filled();
     expect(await recordAudit(file, [], AT + 3 * DAY)).toEqual({
-      auditedAt: "2026-11-04T10:00:00.000Z",
-      plans: [],
+      record: { auditedAt: "2026-11-04T10:00:00.000Z", unaudited: 0, plans: [] },
+      cleared: 3,
     });
     expect(slopStatus(readSlop(file), 5).due).toBe(false);
   });
 
   test("named areas: a plan with every area audited leaves, one with areas left keeps them", async () => {
     const file = await filled();
-    const record = await recordAudit(file, ["src/workflow"], AT + 3 * DAY);
+    const { record, cleared } = await recordAudit(file, ["src/workflow"], AT + 3 * DAY);
+    expect(cleared).toBe(1);
     expect(record.auditedAt).toBe("2026-11-04T10:00:00.000Z");
+    expect(record.unaudited).toBe(2);
     expect(record.plans.map((one) => [one.plan, one.areas])).toEqual([
       ["alpha", ["src/cli"]],
       ["gamma", []],
     ]);
   });
 
-  test("an area nothing recorded changes no plan", async () => {
+  test("a parent folder clears every area under it; a plan that named no area stays", async () => {
     const file = await filled();
-    const record = await recordAudit(file, ["docs/design"], AT + 3 * DAY);
-    expect(record.plans.map((one) => one.plan)).toEqual(["alpha", "beta", "gamma"]);
+    const { record, cleared } = await recordAudit(file, ["src"], AT + 3 * DAY);
+    expect(cleared).toBe(2);
+    expect(record.unaudited).toBe(1);
+    expect(record.plans.map((one) => one.plan)).toEqual(["gamma"]);
+  });
+
+  test("a path deeper than an area, or one that only starts like it, clears nothing", async () => {
+    const file = await filled();
+    for (const path of ["src/workflow/claims.ts", "src/work", "docs/design"]) {
+      const { record, cleared } = await recordAudit(file, [path], AT + 3 * DAY);
+      expect(cleared).toBe(0);
+      expect(record.plans.map((one) => one.plan)).toEqual(["alpha", "beta", "gamma"]);
+    }
   });
 });
