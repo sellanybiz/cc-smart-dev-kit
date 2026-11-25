@@ -242,5 +242,6 @@ outside a plan) says so in one line and goes on, and offers the person guard set
 its own (`/cc-smart-dev-kit:plan-task`). When the person declines, write a `## Reuse signals`
 heading into the review add-on whose body says `none: declined on <date>`. The heading then
 exists, so neither this section nor `cc-smart-dev-kit doctor` asks again, and a body that starts
-with `none` lists no commands to run. How to set the guards up for the project's stack:
+with `none` lists no commands to run. While the person is away, make no offer and write no
+heading: the offer waits for their return. How to set the guards up for the project's stack:
 `references/guards.md`.
