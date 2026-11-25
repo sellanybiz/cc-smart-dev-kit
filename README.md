@@ -3150,11 +3150,11 @@ a named symbol (`function`, `const`, `class`, `type`, `def`, `fn` and the like) 
 the claim's own, **when another file defines it too** after the change: `file:line defines X, which
 <claim> calls its one home`. So a second home is a hit, and an edit of the home itself, a home moved
 to a new file and the first definition of a new home are not. A re-export or a type-only import
-defines nothing, and neither does a line in a prose file (`.md`, `.txt` and the like), a comment
-line, a local variable or a loop's own variable. A phrase counts only as whole words ("the one
-placeholder" is no claim). Lockfiles, `dist/`, `node_modules/`, files the project marks
-`linguist-generated` in `.gitattributes`, a changelog and the `.claude/plans/` and
-`.claude/research/` folders are skipped, and a test file never counts as a re-definition. The claims
+defines nothing (a wrapped one, with `type X,` on a line of its own, included), and neither does a
+line in a prose file (`.md`, `.txt` and the like), a comment line, a local variable or a loop's own
+variable. A phrase counts only as whole words ("the one placeholder" is no claim). Lockfiles, `dist/`, `node_modules/`, files the project marks
+`linguist-generated` in `.gitattributes`, a changelog, the `.claude/plans/` and `.claude/research/`
+folders and test files are skipped: a claim or a definition in a test is fixture text. The claims
 list stops at 8 lines and says how to read the rest; the re-definitions are never cut. `--json`
 prints `{ claims, hits, diffWhy }`. It exits 0 whatever it finds, since it is a signal for a
 reviewer; with no default branch known, or no `origin/<branch>` in the clone, it lists the claims
@@ -3165,9 +3165,9 @@ cleared yet, one file per repository (`<state>/slop/<key>.json`, mode 0600, like
 
 | Command | What it does |
 |---|---|
-| `slop record --plan <slug> --bypassed <n> --drifted <n>` | The lead runs it when a plan closes: `n` homes a builder bypassed, `n` copies that drifted (each a whole number up to 1000). The areas come from the plan's own file list in the task store (each path cut to its first two folders), so no path is passed; the project's `plans.mergeFiles` and build output (`dist/`, `node_modules/`) are never an area. A second record of the same plan replaces the first. An unknown plan is refused with the fix: use the slug `task_list` shows. It then prints the status. |
-| `slop status [--json]` | The plans no audit has cleared yet, their totals, the areas they touched, and whether an audit is **due**: their count reaches a multiple of `slopAudit.everyPlans` (5 by default, `0` off), so a declined offer comes back that many plans later, or the plan just recorded left a bypassed home or a drifted copy. A plan that named no area is listed on its own line: only an audit with no `--area` clears it. `--json` prints `{ since, unaudited, plans, bypassed, drifted, areas, due, why }`; `plans` keeps the newest 50, `unaudited` counts them all. |
-| `slop audited [--area <path>]...` | The lead runs it after an audit: with no `--area` every plan is cleared and the count starts again; with areas, each plan area equal to or under a path named is cleared (`--area src` clears `src/cli` and `src/workflow`; `./` is fine), a plan whose areas are all cleared leaves the count, and a plan that named no area stays. It says how many plans it cleared, with a `!` line when an `--area` audit cleared none. |
+| `slop record --plan <slug> --bypassed <n> --drifted <n>` | The lead runs it when a plan closes: `n` homes a builder bypassed, `n` copies that drifted (each a whole number up to 1000). The areas come from the plan's own file list in the task store (each path cut to its first two folders), so no path is passed; the project's `plans.mergeFiles`, build output (`dist/`, `node_modules/`), prose files (`.md`, `.txt` and the like) and the `.claude/plans/` and `.claude/research/` folders are never an area, since a slop audit reads code. A second record of the same plan replaces the first. An unknown plan, or a `#n` that is a phase or a task, is refused with the fix: use the slug `task_list` shows. It then prints the status. |
+| `slop status [--json]` | The plans no audit has cleared yet, their totals, the areas they touched, and whether an audit is **due**: their count reaches a multiple of `slopAudit.everyPlans` (5 by default, `0` off), so a declined offer comes back that many plans later, or the plan just recorded left a bypassed home or a drifted copy. Either counts only when the plan just recorded closed after the last audit, so an audit of some areas makes nothing due until the next plan closes. A plan that named no area is listed on its own line: only an audit with no `--area` clears it. `--json` prints `{ since, unaudited, plans, bypassed, drifted, areas, due, why }`; `plans` keeps the newest 50, `unaudited` counts them all, and a `Not listed:` line says how many plans are counted past those 50: only an audit with no `--area` clears them. |
+| `slop audited [--area <path>]...` | The lead runs it after an audit: with no `--area` every plan is cleared and the count starts again; with areas, each plan area equal to or under a path named is cleared (`--area src` clears `src/cli` and `src/workflow`; `./` is fine; without case when the checkout ignores case, like the overlap check), a plan whose areas are all cleared leaves the count, and a plan that named no area stays. `--area .` is refused: run it with no `--area` after an audit of everything. It says how many plans it cleared, with a `!` line when an `--area` audit cleared none. |
 
 The count is machine-local, so a team on several machines gets an audit offer on each. A file in the
 state folder that is not a slop record is named with the fix (delete it to start again).
