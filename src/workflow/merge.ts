@@ -30,7 +30,7 @@ function mergedGroup<T extends object>(personal: T | undefined, project: T | und
 
 /**
  * The project's workflow object and the person's, the project's over it, field by field — a
- * group's fields too (`alerts`, `fixesAfterReview`).
+ * group's fields too (`alerts`, `fixesAfterReview`, `slopAudit`).
  */
 export function mergeWorkflows(personal: Workflow, project: Workflow): Workflow {
   const merged: Workflow = { ...personal, ...project };
@@ -38,6 +38,8 @@ export function mergeWorkflows(personal: Workflow, project: Workflow): Workflow 
   if (alerts !== undefined) merged.alerts = alerts;
   const fixes = mergedGroup(personal.fixesAfterReview, project.fixesAfterReview);
   if (fixes !== undefined) merged.fixesAfterReview = fixes;
+  const slopAudit = mergedGroup(personal.slopAudit, project.slopAudit);
+  if (slopAudit !== undefined) merged.slopAudit = slopAudit;
   const issues = mergedGroup(personal.issues, project.issues);
   if (issues !== undefined) merged.issues = issues;
   const plans = mergedGroup(personal.plans, project.plans);

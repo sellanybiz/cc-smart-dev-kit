@@ -109,11 +109,18 @@ time, and ask first (§ 2) unless the person asked.
 | Oversized units | a file or function far over the project's size | architecture, craft |
 
 - **The target is one named area** (a feature folder, a layer). A large codebase gets one run
-  per area, and a small one may name its whole source folder as one.
-- **Seed it:** run the project's `Reuse signals` commands (its review add-on) first and name the
-  worst hits in the `target`. Never ask an auditor to run the project's guard commands itself.
+  per area, and a small one may name its whole source folder as one. The areas
+  `cc-smart-dev-kit workflow slop status` lists are the candidates: one run each, or the whole
+  source folder when they cover most of it.
+- **Seed it:** run the project's `Reuse signals` commands (its review add-on) first, and name
+  their worst hits inside the run's area in the `target`. Never ask an auditor to run the project's guard commands itself.
 - **The spec is the project's:** its rules and guards, and `code-structure`. `audit-run` has no
   spec arg, so write "judge by code-structure §§ 3, 4, 5, 11 and 13" into `question`. Refuting
   follows `../review/references/axes.md` § Design findings.
-- **Offer these runs** after a plan's review found a bypassed home or a drifted copy: the same
-  class is likely in the code the plan did not touch.
+- **Offer these runs** when `cc-smart-dev-kit workflow slop record` or `workflow slop status` prints that
+  an audit is due, on the areas it lists (above). Ask first, as above. When the
+  person is away, record a decision and start no paid run unasked.
+- **After the runs,** `cc-smart-dev-kit workflow slop audited --area <path>` for each area audited,
+  or no `--area` after an audit of the whole source folder. An area clears every recorded plan
+  area equal to it or under it, and the command prints how many plans it cleared. A plan recorded with no area clears only when no
+  `--area` is given.

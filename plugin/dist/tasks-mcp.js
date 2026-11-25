@@ -21525,7 +21525,7 @@ var COMMAND = "cc-smart-dev-kit";
 
 // src/build-info/index.ts
 var info = {
-  version: "6.5.2",
+  version: "6.6.0",
   repo: "sellanybiz/cc-smart-dev-kit",
   dependencies: [
     {
@@ -23449,7 +23449,8 @@ var NUMBER_RULES = {
   "fixesAfterReview.lines": AT_LEAST_ZERO,
   "fixesAfterReview.files": AT_LEAST_ZERO,
   "fixesAfterReview.percent": AT_LEAST_ZERO,
-  "plans.maxPhases": PHASE_COUNT
+  "plans.maxPhases": PHASE_COUNT,
+  "slopAudit.everyPlans": AT_LEAST_ZERO
 };
 function numberField(key) {
   return numberSchema(NUMBER_RULES[key]).optional();
@@ -23612,6 +23613,9 @@ var workflowObjectSchema = strictObject({
     sound: unknown().optional(),
     usagePercent: numberField("alerts.usagePercent")
   }).transform(({ events: _events, sound: _sound, ...usage }) => usage).optional(),
+  slopAudit: strictObject({
+    everyPlans: numberField("slopAudit.everyPlans")
+  }).optional(),
   crew: unknown().optional()
 });
 var workflowSchema = preprocess(readWithCurrentNames, workflowObjectSchema);
@@ -23647,6 +23651,9 @@ var workflowDefaults = {
   alerts: {
     usagePercent: 85
   },
+  slopAudit: {
+    everyPlans: 5
+  },
   plans: {
     maxPhases: 10,
     mergeFiles: [],
@@ -23680,6 +23687,7 @@ var POLICY_KEYS = [
   "issues.fixedLabel",
   "issues.readyLabel",
   "alerts.usagePercent",
+  "slopAudit.everyPlans",
   "plans.maxPhases",
   "plans.runMode",
   "plans.mergeFiles",
@@ -24196,6 +24204,9 @@ function mergeWorkflows(personal, project) {
   const fixes = mergedGroup(personal.fixesAfterReview, project.fixesAfterReview);
   if (fixes !== undefined)
     merged.fixesAfterReview = fixes;
+  const slopAudit = mergedGroup(personal.slopAudit, project.slopAudit);
+  if (slopAudit !== undefined)
+    merged.slopAudit = slopAudit;
   const issues = mergedGroup(personal.issues, project.issues);
   if (issues !== undefined)
     merged.issues = issues;
@@ -24902,12 +24913,15 @@ function normalizePlanFile(raw) {
 function normalizePlanFiles(raw) {
   return [...new Set(raw.map(normalizePlanFile))].sort();
 }
+function settledBy(entries, path) {
+  return entries.some((one) => one === path || one.endsWith("/") && path.startsWith(one));
+}
 function filesOverlap(a, b, options = {}) {
   const fold = (path) => options.caseFold ? path.toLowerCase() : path;
   const holds = (folder, path) => folder.endsWith("/") && path.startsWith(folder);
   const ignore = (options.ignore ?? []).map(fold);
   const appendOnly = (options.appendOnly ?? []).map(fold);
-  const taken = (path) => ignore.some((one) => one === path || holds(one, path));
+  const taken = (path) => settledBy(ignore, path);
   const added = (path) => appendOnly.some((folder) => path.startsWith(folder));
   const touch = (x, y) => added(x) || added(y) ? x === y && !x.endsWith("/") : x === y || holds(x, y) || holds(y, x);
   const found = [];
@@ -25825,6 +25839,12 @@ function parseGitVersion(out) {
 var REMOVAL_TIMEOUT_MS = 10 * 60000;
 // src/worktrees/command.ts
 var DEFAULT_BASE = "main";
+var ORIGIN_HEAD_ARGS = ["rev-parse", "--symbolic-full-name", "refs/remotes/origin/HEAD"];
+function originHeadName(out) {
+  const prefix = "refs/remotes/origin/";
+  const ref = out.trim();
+  return ref.startsWith(prefix) ? ref.slice(prefix.length) : "";
+}
 function baseBranch(checkout, env, repo) {
   if (checkout !== null) {
     const config = loadProjectConfig(checkout).config;
@@ -25832,8 +25852,8 @@ function baseBranch(checkout, env, repo) {
     if (base !== undefined)
       return { base, from: "config" };
   }
-  const head = runGit(repo, ["rev-parse", "--abbrev-ref", "origin/HEAD"], env);
-  const name = head.ok ? head.out.replace(/^origin\//, "") : "";
+  const head = runGit(repo, ORIGIN_HEAD_ARGS, env);
+  const name = head.ok ? originHeadName(head.out) : "";
   return name === "" ? { base: DEFAULT_BASE, from: "default" } : { base: name, from: "origin" };
 }
 
@@ -25845,13 +25865,16 @@ function planFilesCheck(cwd, env = process.env) {
   const committed = resolvePlanFiles(checkout, baseBranch(checkout, env, checkout.root).base, {
     env
   });
-  const ignorecase = runGit(checkout.root, ["config", "--type=bool", "core.ignorecase"], env);
   return {
     ignore: committed.files,
     appendOnly: committed.appendOnly,
-    caseFold: ignorecase.ok && ignorecase.out === "true",
+    caseFold: ignoresCase(checkout.root, env),
     reason: committed.reason
   };
+}
+function ignoresCase(root, env = process.env) {
+  const ignorecase = runGit(root, ["config", "--type=bool", "core.ignorecase"], env);
+  return ignorecase.ok && ignorecase.out === "true";
 }
 
 // src/tasks/plan-guards.ts

@@ -37,11 +37,19 @@ export function planFilesCheck(cwd: string, env: Env = process.env): PlanFilesCh
   const committed = resolvePlanFiles(checkout, baseBranch(checkout, env, checkout.root).base, {
     env,
   });
-  const ignorecase = runGit(checkout.root, ["config", "--type=bool", "core.ignorecase"], env);
   return {
     ignore: committed.files,
     appendOnly: committed.appendOnly,
-    caseFold: ignorecase.ok && ignorecase.out === "true",
+    caseFold: ignoresCase(checkout.root, env),
     reason: committed.reason,
   };
+}
+
+/**
+ * Whether the checkout at `root` compares paths without case (`core.ignorecase`). A setting git
+ * cannot read is false: paths then compare with case.
+ */
+export function ignoresCase(root: string, env: Env = process.env): boolean {
+  const ignorecase = runGit(root, ["config", "--type=bool", "core.ignorecase"], env);
+  return ignorecase.ok && ignorecase.out === "true";
 }

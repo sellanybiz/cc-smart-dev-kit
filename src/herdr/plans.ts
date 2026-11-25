@@ -32,6 +32,7 @@ import {
   heldPlansIn,
   isLead,
   isOpen,
+  notAPlan,
   ownerOf,
   parentHolds,
   planByRef,
@@ -801,8 +802,7 @@ function locatePlan(world: PlansWorld, ref: string): Located {
   if (world.baseFrom === "default") return refuse(UNKNOWN_BASE.why, UNKNOWN_BASE.fix);
   const plan = planByRef(world.db, world.project, ref);
   if (plan === null) return refuse(`Plan "${ref}" was not found in this project.`);
-  if (plan.kind !== "plan")
-    return refuse(`#${plan.number} is a ${plan.kind}, not a plan.`, "name the plan's slug");
+  if (plan.kind !== "plan") return refuse(notAPlan(plan), "name the plan's slug");
   return { ok: true, plan, slug: plan.plan ?? plan.subject };
 }
 

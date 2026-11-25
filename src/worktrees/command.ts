@@ -81,6 +81,22 @@ export interface WorktreesOptions {
   noFetch: boolean;
 }
 
+/**
+ * The git call that names origin's default branch, and its parse: one home for both readers
+ * (`baseBranch`, project init's `defaultBranchOf`). `--symbolic-full-name` prints the full
+ * ref, so a local branch named `origin/<name>` cannot turn it into `remotes/origin/<name>`
+ * (the short forms do), and it fails on an `origin/HEAD` left pointing at a branch origin no
+ * longer has (a renamed default after `fetch --prune`), where `symbolic-ref` would trust it.
+ */
+export const ORIGIN_HEAD_ARGS = ["rev-parse", "--symbolic-full-name", "refs/remotes/origin/HEAD"];
+
+/** The branch name in `ORIGIN_HEAD_ARGS`' output; empty when it names no origin branch. */
+export function originHeadName(out: string): string {
+  const prefix = "refs/remotes/origin/";
+  const ref = out.trim();
+  return ref.startsWith(prefix) ? ref.slice(prefix.length) : "";
+}
+
 /** The base branch this project works against, and where that came from. */
 export function baseBranch(
   checkout: Checkout | null,
@@ -92,8 +108,8 @@ export function baseBranch(
     const base = config?.worktrees?.base;
     if (base !== undefined) return { base, from: "config" };
   }
-  const head = runGit(repo, ["rev-parse", "--abbrev-ref", "origin/HEAD"], env);
-  const name = head.ok ? head.out.replace(/^origin\//, "") : "";
+  const head = runGit(repo, ORIGIN_HEAD_ARGS, env);
+  const name = head.ok ? originHeadName(head.out) : "";
   return name === "" ? { base: DEFAULT_BASE, from: "default" } : { base: name, from: "origin" };
 }
 

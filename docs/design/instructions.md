@@ -222,10 +222,15 @@ refuses it before any agent starts. With `spec` set, `homes` holds the lead's ow
 its integration work, and the reuse track reads them after the plan's task notes. Its brief allows
 the repo-wide read-only searches that the senior engineer's limit on calls would otherwise cut
 short; the other tracks keep the limits. `signals` is the output of the
-project's own guard tools (the review add-on's `Reuse signals`), run once by the caller (the lead
+project's own guard tools (the review add-on's `Reuse signals`) and of `cc-smart-dev-kit workflow
+claims` (the project's "one home" claims, and the added lines that re-define a symbol a claim
+names), run once by the caller (the lead
 before each round of a plan's review, the main session outside a plan): every track's prompt
 carries it as evidence to judge, never as commands to run, because no reviewer runs the project's
-guard commands itself. Without any of these args the run is as before.
+guard commands itself. The reuse track reads the claims in it and greps the code for `Similar to`
+markers (`git grep "Similar to "`); its rules for a claim hit, a third copy and the
+finding titles are one home, the reuse dimension of the review skill's `references/axes.md`, which
+the script's reuse prompt points at. Without any of these args the run is as before.
 Every call, old or new, also gets two strict rules in each
 track's brief: prove a claim by running it where that can be done, and a track with no findings
 names what it read and ran, or the report says it gave no evidence of coverage. Its launches follow
@@ -399,8 +404,8 @@ phase, parallel worktrees for disjoint files, and a quick check of each hand-bac
 branch (no reviewer reads a phase). The plan gets one review, in two rounds of the `review-split`
 workflow with `risky: true`, so every agent is the senior engineer on `opus` at `xhigh`; both
 rounds get the plan file as `spec`, and round 2 also gets round 1's whole report as `prior`. A
-code plan's rounds also pass `reuse: true`, and the lead runs the project's guard tools before
-each round and passes their output as `signals`. The reuse track proves the builders' `Homes:`
+code plan's rounds also pass `reuse: true`, and the lead runs the project's guard tools and
+`workflow claims --base <the plan's recorded base>` before each round and passes their output as `signals`. The reuse track proves the builders' `Homes:`
 lines (one for each new export, each saying how the author searched for an existing home: by
 name and the words it shows, by what it does, by a distinctive body line, the three searches of
 `code-structure` § 3), which the lead also checks when a phase hands back. After each merge the
@@ -411,6 +416,38 @@ only with it, so a consult of the same agent records nothing. Agents run in the 
 logs, and the lead waits only for what the next step needs. `blocked_by` marks only a real
 dependency or a shared file; noted work is `non-blocking`. The task system holds briefs, reports
 and rulings; see [tasks](tasks.md).
+
+**Slop follow-ups (6.6.0).** Six gaps of the AI-slop work were closed in the owner's form.
+`code-structure` § 5 still waits for the third copy: two copies often only look alike, and an
+early helper grows a flag per caller (§ 11). What changed is that the second copy is now visible,
+in the code and not only in a report: it carries a comment at its definition (`Similar to
+<path:symbol>; not shared yet: <why>`), besides the `similar to` part of its `Homes:` line (also
+in the `builder` agent). A task note lives on one machine and in one plan; the comment travels with
+the repo, so the third copy's author and the reuse track find it with `git grep`, and extract;
+a marker that names an already marked copy (a chain) is a third copy too.
+The rules for a claim hit, a third copy and the finding titles ("bypassed home: …", "drifted
+copy: …", which `build` § 6 counts) sit in `review/references/axes.md` and nowhere else.
+§ 13 adds `workflow claims --base <ref>` as a signal that always runs with the `Reuse signals`, and
+offers a project with no `Reuse signals` heading guard setup as a plan of its own; a person who
+declines leaves a `## Reuse signals` heading whose body says `none: declined on <date>`, so the
+offer is not made again and `doctor` stays quiet. The setup is the
+new `skills/code-structure/references/guards.md` (read on demand, so it costs no always-on
+context): which tool to pick per stack, the ratchet and its baselines (jscpd's own `--baseline`,
+not a whole-tree percent), CI and pre-push, the `Reuse signals` heading, and a front-door gate that
+a script generates from the feature folders, so a new feature gets its rule with no edit. Nothing
+is installed without the person's yes.
+`build` § 6 and `audit` read the running count: at plan close the lead runs `workflow slop
+record`, and an audit is offered when `record` or `workflow slop status` prints that it is due
+(the command owns the rule, so no skill restates it); this replaces the old "offer after a review
+that found one" sentence. `audit` § The slop preset owns the step after an audit (`workflow slop
+audited --area <each audited area>`), and `build` § 6 points at it. Each confirmed finding counts
+once across the review rounds, since round 2 reports round 1's again. A plan child records the
+count but makes neither the audit offer nor the guard-setup offer, since nobody watches the child:
+its report carries the status lines `slop record` printed (and a missing `Reuse signals`
+heading), and its lead offers from the report. A due state is momentary (a later record can hide
+it), so the lead also runs `workflow slop status` once after its children's plans close. The
+commands are in
+[workflow](workflow.md).
 
 The kit's plan, build, review and commit flows govern the work the kit drives. claude-mem
 also ships `build`, `do`, `release`, `version-bump` and `build-and-release` skills, and some of

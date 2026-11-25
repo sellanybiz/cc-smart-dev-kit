@@ -49,6 +49,7 @@ export function defaultResolved(): ResolvedWorkflow {
     plans: { maxPhases: at(10), mergeFiles: at([]), appendOnly: at([]), runMode: at("ask") },
     reviewBeforePush: at(true),
     reviewAgents: at(["cc-smart-dev-kit:senior-engineer"]),
+    slopAudit: { everyPlans: at(5) },
     switches: {
       jobRoute: at(false),
       leadHint: at(true),

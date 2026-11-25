@@ -31,6 +31,10 @@
  *   are only read, never executed or edited; a read failure stays information too.
  * - **A git too old for the review gate's measure.** In a project with a `cc-smart-dev-kit.json`,
  *   git older than 2.40 is a warning: a review then counts for its exact commit only (D17).
+ * - **A project with no reuse guards.** A project with a `cc-smart-dev-kit.json` whose review
+ *   add-on has no `Reuse signals` heading gets one information line (never a failure) saying how
+ *   to get them: ask Claude to set them up (`code-structure` § 13). `project init` ends with the
+ *   same sentence (`NO_REUSE_GUARDS`).
  * - **Deploy tasks (5.0.0).** A `✗` line for each kind of finding in the task folders (fix:
  *   `task check`); the 4.x top-level files as a `!` line (recreate or delete); each `tasks`
  *   field nothing reads any more (`IGNORED_TASK_FIELDS`) as a `!` line (fix: `project init`);
@@ -102,7 +106,12 @@ import { oldNamesIn, workflowDefaults } from "../workflow/schema";
 import { WORKTREES_GITIGNORE_ENTRY } from "../worktrees/paths";
 import type { Check } from "./check";
 import { type CliPaths, tildify } from "./paths";
-import { defaultBranchOf, realRunnerAsync } from "./project-init";
+import {
+  defaultBranchOf,
+  lacksReuseGuards,
+  NO_REUSE_GUARDS,
+  realRunnerAsync,
+} from "./project-init";
 
 /** One project line of doctor's report: a check like any other (`check.ts`). */
 export type ProjectLine = Check;
@@ -989,6 +998,9 @@ export async function projectChecks(
   if (config !== null) {
     lines.push(...ownCopyLines(config, sources, pluginHooksFile, projectDir, paths.home));
     lines.push(...(await coverGitLines(checkout, env)));
+    if (lacksReuseGuards(checkout.root)) {
+      lines.push({ ok: true, info: true, text: `project: ${NO_REUSE_GUARDS}` });
+    }
   }
   // GitHub Issues (D67): a line only while the switch is on, from the person's file or the base's.
   lines.push(...(await issuesChecks({ cwd: checkout.root, env, gh, paths })));

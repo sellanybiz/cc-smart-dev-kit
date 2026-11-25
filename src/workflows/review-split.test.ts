@@ -1190,6 +1190,9 @@ const REUSE_LINES = [
   "by name and the words it shows; by what it does, the same job under another name; and by a distinctive body line",
   "the drift between copies",
   "unproven reuse",
+  "the added lines that re-define a symbol a claim names",
+  "references/axes.md, dimension 6",
+  'git grep "Similar to "',
   "Homes:",
   "Searching the repo for these is this track's job",
 ];

@@ -62,7 +62,9 @@ base. The brief names no commit: say so in your report, with the commit you star
 
 1. Read callers before changing shared code; use impact-analysis without a helper and
    code-structure to shape the change. Before each new export, run the search in
-   `cc-smart-dev-kit:code-structure` § 3 and keep its Homes line for your report. For React
+   `cc-smart-dev-kit:code-structure` § 3 and keep its Homes line for your report. If you write
+   code merely similar to an earlier copy, mark it in that line and in a comment at the new
+   definition, in the forms code-structure § 5 gives. For React
    or Next.js web apps, load `cc-smart-dev-kit:react-best-practices` before editing and follow
    its § Design system first.
    Use `cc-smart-dev-kit:performance-budget` for performance work.

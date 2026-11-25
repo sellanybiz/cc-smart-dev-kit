@@ -27,15 +27,30 @@
  * request only: a yes names one merge) is the person's own yes to that merge: it sets aside
  * `allowMerge` and nothing else, so a pull request stacked on another open one is refused with it.
  *
+ * `claims [--base <ref>] [--json]` hands a reviewer the project's "one home" claims and the diff's
+ * second homes of what they name (`claims.ts`); `slop record | status | audited` keeps the count of
+ * plans no slop audit has cleared yet and says when one is due (`slop.ts`). Both are signals,
+ * read and appended, never a gate.
+ *
  * Exit codes, the same as the rest of the command: 0 done, 1 a file that cannot be read or
  * written (or a merge that asks), 2 a setting or a value that is not one of the settings there are.
  */
 import { resolve } from "node:path";
 import { COMMAND } from "../build-info/names";
+import { type ParsedOptions, parseOptions } from "../cli/args";
 import { type CliPaths, tildify } from "../cli/paths";
+import { plural } from "../cli/ui/out";
+import { UNKNOWN_BASE } from "../herdr/plans";
 import { runGit } from "../hooks/git";
 import { type CcSmartDevKitConfig, WORKFLOW_ALLOW_KEYS_SINCE } from "../project/config";
 import { type Checkout, CONFIG_PATH, loadProjectConfig, locateCheckout } from "../project/resolve";
+import { taskContext } from "../tasks/context";
+import { ignoresCase } from "../tasks/files-check";
+import { TASK_TOOL } from "../tasks/words";
+import { notAPlan, planByRef, planFiles } from "../tasks/work/queries";
+import { readWorkStore } from "../tasks/work/read";
+import { baseBranch } from "../worktrees/command";
+import { claimsLines, collectClaims, type DiffBase } from "./claims";
 import { clashesOf, clashLines } from "./clashes";
 import {
   checkBranch,
@@ -47,6 +62,7 @@ import {
   notInTime,
 } from "./merge-check";
 import { proposeWorkflow } from "./propose";
+import { normalizeRepoPath } from "./repo-path";
 import {
   type Gate,
   type ResolvedWorkflow,
@@ -78,6 +94,17 @@ import {
   WORKFLOW_KEY_ALIASES,
   WORKFLOW_KEYS,
 } from "./schema";
+import {
+  areasOf,
+  readSlop,
+  recordAudit,
+  recordSlop,
+  SLOP_COUNT_MAX,
+  SLOP_PLANS_KEPT,
+  slopFile,
+  slopStatus,
+  slopStatusLines,
+} from "./slop";
 import { writePersonalSetting, writeProjectSetting } from "./write";
 
 type Env = Record<string, string | undefined>;
@@ -105,7 +132,7 @@ function renamedLine(typed: string, current: string): string | null {
     : `${typed} is now called ${current}: using ${current} (the old name still works in a file)`;
 }
 
-export const WORKFLOW_USAGE = `Usage: ${COMMAND} workflow [show] | set <setting> <value> [--project] | unset <setting> [--project] | propose <setting> <value> [--unset] [--folder <project>] [--json] | review-done [--sha <commit>] | merge-check [<pr>… | <pr> --asked | --branch <b> --base <base>]
+export const WORKFLOW_USAGE = `Usage: ${COMMAND} workflow [show] | set <setting> <value> [--project] | unset <setting> [--project] | propose <setting> <value> [--unset] [--folder <project>] [--json] | review-done [--sha <commit>] | merge-check [<pr>… | <pr> --asked | --branch <b> --base <base>] | claims [--base <ref>] [--json] | slop record --plan <slug> --bypassed <n> --drifted <n> | slop status [--json] | slop audited [--area <path>]...
 
 The settings are: ${WORKFLOW_KEYS.join(", ")}
 ${OLD_NAMES_TEXT}.
@@ -158,7 +185,22 @@ record covers its head. One line per verdict; exit 0 when every merge is allowed
 --asked (one pull request only) says the person gave their own yes to this merge. It
 sets aside allowMerge and nothing else: the base rules, the stacked check, the required checks and
 the review still decide, and the verdict says the merge rests on the person's yes. A yes names one
-merge, so --asked takes exactly one pull request. Use it only with that yes in hand.`;
+merge, so --asked takes exactly one pull request. Use it only with that yes in hand.
+claims lists the project's "one home" claims (sentences like "the one home for X is \`X\`") and,
+against --base (default: the merge base with origin/<the default branch>), the lines this branch
+adds that define a name a claim gives to one home while another file defines it too: a second
+home, not an edit of the home or its first definition. It is a signal for a reviewer and exits 0
+whatever it finds; --json prints { claims, hits, diffWhy }.
+slop keeps this machine's count of the plans closed that no slop audit has cleared yet: record
+stores one plan's bypassed homes and drifted copies, each a whole number up to ${SLOP_COUNT_MAX} (its
+areas come from the plan's own file list in the task store, without plans.mergeFiles, build
+output, prose files and the kit's plan and research folders; a clean plan that leaves no area is
+not counted; a second record of the same plan replaces the first), status says whether an audit
+is due
+(the count reaches a multiple of slopAudit.everyPlans, or the plan just recorded left a finding,
+when it closed after the last audit), and audited clears every plan, or with --area the plan areas
+at or under each path named, and says how many plans it cleared. A plan that named no area, and a
+plan counted past the ${SLOP_PLANS_KEPT} the record keeps, is cleared only with no --area.`;
 
 /** One git call a `workflow` run makes (a `rev-parse`): milliseconds, never a hang. */
 const WORKFLOW_GIT_TIMEOUT_MS = 5_000;
@@ -599,6 +641,285 @@ async function mergeCheck(context: WorkflowContext, argv: string[]): Promise<num
   return everyAllowed ? 0 : 1;
 }
 
+/**
+ * The options of `claims` or `slop` (`parseOptions`, the one reader every subcommand uses), or
+ * null after the usage error is printed: a command that takes no word refuses one.
+ */
+function readArgs(
+  context: WorkflowContext,
+  argv: string[],
+  known: readonly string[],
+  flags: readonly string[],
+  repeatable: readonly string[] = [],
+): ParsedOptions | null {
+  const parsed = parseOptions(argv, known, flags, repeatable);
+  const why =
+    "error" in parsed
+      ? parsed.error
+      : parsed.positionals.length > 0
+        ? `Unexpected word: ${parsed.positionals.join(" ")}`
+        : null;
+  if (why === null && !("error" in parsed)) return parsed;
+  context.error(`${why}\n\n${WORKFLOW_USAGE}`);
+  return null;
+}
+
+/**
+ * Where the claims diff starts: `--base` as given, else the merge base with `origin/<the default
+ * branch>`, which git's `A...B` finds. The default branch is the project's `worktrees.base`, else
+ * the remote's (`baseBranch`); when neither is known, or origin has no such branch here, the reason
+ * comes back instead, so the claims are listed with it. Origin's branch is read by its full name,
+ * as `resolveListBase` reads it: git resolves a short name to a local branch first, so a stray
+ * local `origin/main` would move the base.
+ */
+function claimsBase(
+  checkout: Checkout,
+  base: string | null,
+  env: Env,
+): DiffBase | { error: string } {
+  if (base !== null) {
+    return commitOf(checkout.root, base, env) === null
+      ? { error: `${base} is not a commit in this repository` }
+      : { ref: base };
+  }
+  let named: ReturnType<typeof baseBranch>;
+  try {
+    named = baseBranch(checkout, env, repoOf(checkout));
+  } catch (error) {
+    return { why: error instanceof Error ? error.message : String(error) };
+  }
+  if (named.from === "default") {
+    return { why: `the default branch is unknown: pass --base <ref>, or ${UNKNOWN_BASE.fix}` };
+  }
+  const ref = `refs/remotes/origin/${named.base}`;
+  return commitOf(checkout.root, ref, env) === null
+    ? { why: `origin/${named.base} is not in this clone: fetch it, or pass --base <ref>` }
+    : { ref };
+}
+
+/**
+ * `workflow claims [--base <ref>] [--json]`: the project's "one home" claims, and the lines this
+ * branch adds that write a second home of a symbol a claim names (`claims.ts`). A signal for a
+ * reviewer: it exits 0 whatever it finds. Only a wrong option (2), a base that is no commit (1) or
+ * a git that cannot answer (1) are not 0.
+ */
+function claims(context: WorkflowContext, argv: string[]): number {
+  const options = readArgs(context, argv, ["--base"], ["--json"]);
+  if (options === null) return 2;
+  const json = options.flags.has("--json");
+  const here = checkoutOf(context.cwd, context.env);
+  if (here.checkout === null) {
+    context.print(
+      json
+        ? JSON.stringify({ claims: [], hits: [], diffWhy: here.why })
+        : `No claims read: ${here.why}`,
+    );
+    return 0;
+  }
+  const base = claimsBase(here.checkout, options.options.get("--base") ?? null, context.env);
+  if ("error" in base) {
+    context.error(`${COMMAND} workflow claims: ${base.error}`);
+    return 1;
+  }
+  const report = collectClaims(here.checkout.root, context.env, base);
+  if ("error" in report) {
+    context.error(`${COMMAND} workflow claims: ${report.error}`);
+    return 1;
+  }
+  const lines = json
+    ? [JSON.stringify(report, null, 2)]
+    : claimsLines(report, `${COMMAND} workflow claims --json`);
+  for (const line of lines) context.print(line);
+  return 0;
+}
+
+/**
+ * `slop`'s record file, the cadence in force and the paths every plan touches
+ * (`plans.mergeFiles`, never an audit area); null after it said why not. A project with no
+ * `cc-smart-dev-kit.json` still has a count: the settings are then the person's and the defaults.
+ */
+function slopWorld(
+  context: WorkflowContext,
+  sub: string,
+): { file: string; everyPlans: number; mergeFiles: string[]; caseFold: boolean } | null {
+  const here = project(context.cwd, context.env);
+  if (here.checkout === null) {
+    context.error(`${COMMAND} workflow slop ${sub}: ${here.why}`);
+    return null;
+  }
+  try {
+    const resolved = resolveWorkflow(context.paths, here.config);
+    return {
+      file: slopFile(context.paths.stateDir, repoOf(here.checkout)),
+      everyPlans: resolved.slopAudit.everyPlans.value,
+      // The working copy's list: an area is a hint, not a gate, and a repository with no remote
+      // has no committed list. Case follows the overlap check (`core.ignorecase`).
+      mergeFiles: resolved.plans.mergeFiles.value,
+      caseFold: ignoresCase(here.checkout.root, context.env),
+    };
+  } catch (error) {
+    context.error(error instanceof Error ? error.message : String(error));
+    return null;
+  }
+}
+
+/** The status lines of the record in `file`, printed after the line of a write. */
+function printSlopStatus(context: WorkflowContext, file: string, everyPlans: number): void {
+  for (const line of slopStatusLines(slopStatus(readSlop(file), everyPlans), everyPlans)) {
+    context.print(line);
+  }
+}
+
+/** A count option as a person typed it: digits only, at most `SLOP_COUNT_MAX`. */
+function countOption(value: string | undefined): number | null {
+  return value !== undefined && /^\d+$/.test(value) && Number(value) <= SLOP_COUNT_MAX
+    ? Number(value)
+    : null;
+}
+
+/**
+ * The files of the plan `ref` names in this project's task store, and the slug it is stored
+ * under; or why there is no such plan. `ref` may be the slug, `#n` or an id (`planByRef`).
+ */
+function planFilesOf(
+  context: WorkflowContext,
+  ref: string,
+): { ok: true; slug: string; files: string[] } | { ok: false; why: string } {
+  const tasks = taskContext(context.cwd, context.env);
+  if (!tasks.ok) return { ok: false, why: tasks.why };
+  const useSlug = `Use the slug of the plan task, as the task list shows it (${TASK_TOOL.list}, scope plan).`;
+  const read = readWorkStore(context.paths, (db) => {
+    const task = planByRef(db, tasks.project, ref);
+    if (task === null) return null;
+    if (task.kind !== "plan") {
+      return {
+        ok: false as const,
+        why: `${notAPlan(task)} ${useSlug}`,
+      };
+    }
+    return { ok: true as const, slug: task.plan ?? ref, files: planFiles(db, task) };
+  });
+  if (read.state === "unreadable") {
+    return { ok: false, why: `the task store cannot be read: ${read.why}` };
+  }
+  if (read.state === "none" || read.value === null) {
+    return { ok: false, why: `plan "${ref}" is not in this project's task store. ${useSlug}` };
+  }
+  return read.value;
+}
+
+/** `workflow slop record --plan <slug> --bypassed <n> --drifted <n>`: one closed plan into the count. */
+async function slopRecord(context: WorkflowContext, argv: string[]): Promise<number> {
+  const options = readArgs(context, argv, ["--plan", "--bypassed", "--drifted"], []);
+  if (options === null) return 2;
+  const plan = options.options.get("--plan");
+  const bypassed = countOption(options.options.get("--bypassed"));
+  const drifted = countOption(options.options.get("--drifted"));
+  if (plan === undefined || bypassed === null || drifted === null) {
+    context.error(
+      `slop record needs --plan <slug>, --bypassed <n> and --drifted <n>, each count a whole number from 0 to ${SLOP_COUNT_MAX}\n\n${WORKFLOW_USAGE}`,
+    );
+    return 2;
+  }
+  const world = slopWorld(context, "record");
+  if (world === null) return 1;
+  const found = planFilesOf(context, plan);
+  if (!found.ok) {
+    context.error(`${COMMAND} workflow slop record: ${found.why}`);
+    return 1;
+  }
+  const areas = areasOf(found.files, world.mergeFiles, world.caseFold);
+  // A plan whose files are all prose, merge files or build output has no code to audit, and no
+  // area audit could ever clear it: counted, it would make paid audits due for nothing. A plan
+  // with no file list is unknown, so it still counts, and so does any plan with a finding.
+  if (found.files.length > 0 && areas.length === 0 && bypassed === 0 && drifted === 0) {
+    context.print(`· plan ${found.slug} touched no code area and left no finding: not counted`);
+    printSlopStatus(context, world.file, world.everyPlans);
+    return 0;
+  }
+  try {
+    await recordSlop(world.file, { plan: found.slug, bypassed, drifted, areas }, Date.now());
+    context.print(
+      `+ ${tildify(world.file, context.paths.home)}: plan ${found.slug} recorded (${bypassed} bypassed, ${drifted} drifted)`,
+    );
+    printSlopStatus(context, world.file, world.everyPlans);
+    return 0;
+  } catch (error) {
+    context.error(error instanceof Error ? error.message : String(error));
+    return 1;
+  }
+}
+
+/**
+ * `workflow slop audited [--area <path>]...`: the count starts again, for every area, or for the
+ * plan areas at or under the paths named (each as typed, never cut to an area's two segments).
+ */
+async function slopAudited(context: WorkflowContext, argv: string[]): Promise<number> {
+  const options = readArgs(context, argv, ["--area"], [], ["--area"]);
+  if (options === null) return 2;
+  const paths: string[] = [];
+  for (const typed of options.lists.get("--area") ?? []) {
+    const path = normalizeRepoPath(typed);
+    if (!path.ok) {
+      const why =
+        path.problem === "root"
+          ? `--area "${typed}" names the whole repository: after an audit of everything, run ${COMMAND} workflow slop audited with no --area`
+          : `--area needs a path inside the repository: ${typed}`;
+      context.error(`${why}\n\n${WORKFLOW_USAGE}`);
+      return 2;
+    }
+    paths.push(path.path.replace(/\/$/, ""));
+  }
+  const world = slopWorld(context, "audited");
+  if (world === null) return 1;
+  try {
+    const { cleared } = await recordAudit(world.file, paths, Date.now(), world.caseFold);
+    const named = paths.length === 0 ? "every area" : paths.join(", ");
+    context.print(
+      `+ ${tildify(world.file, context.paths.home)}: audit recorded for ${named} (${plural(cleared, "plan", "plans")} cleared)`,
+    );
+    if (paths.length > 0 && cleared === 0) {
+      context.print(
+        `! No plan cleared: no plan in the count has all its areas at or under ${named}. Name the areas the status lists, or run ${COMMAND} workflow slop audited with no --area after an audit of everything.`,
+      );
+    }
+    printSlopStatus(context, world.file, world.everyPlans);
+    return 0;
+  } catch (error) {
+    context.error(error instanceof Error ? error.message : String(error));
+    return 1;
+  }
+}
+
+/** `workflow slop status [--json]`: the plans no audit has cleared yet, and whether one is due. */
+function slopStatusCommand(context: WorkflowContext, argv: string[]): number {
+  const options = readArgs(context, argv, [], ["--json"]);
+  if (options === null) return 2;
+  const world = slopWorld(context, "status");
+  if (world === null) return 1;
+  try {
+    if (options.flags.has("--json")) {
+      context.print(JSON.stringify(slopStatus(readSlop(world.file), world.everyPlans), null, 2));
+    } else {
+      printSlopStatus(context, world.file, world.everyPlans);
+    }
+    return 0;
+  } catch (error) {
+    context.error(error instanceof Error ? error.message : String(error));
+    return 1;
+  }
+}
+
+/** `workflow slop record | status | audited` (`slop.ts`). */
+async function slop(context: WorkflowContext, argv: string[]): Promise<number> {
+  const [verb, ...rest] = argv;
+  if (verb === "record") return await slopRecord(context, rest);
+  if (verb === "audited") return await slopAudited(context, rest);
+  if (verb === "status") return slopStatusCommand(context, rest);
+  context.error(`slop needs record, status or audited\n\n${WORKFLOW_USAGE}`);
+  return 2;
+}
+
 function setOrUnset(context: WorkflowContext, sub: string, argv: string[]): number {
   const [key, ...rest] = argv;
   const projectFlag = rest.includes("--project");
@@ -789,6 +1110,8 @@ export async function runWorkflow(argv: string[], context: WorkflowContext): Pro
   if (sub === "propose") return await propose(context, rest);
   if (sub === "review-done") return await reviewDone(context, rest);
   if (sub === "merge-check") return await mergeCheck(context, rest);
+  if (sub === "claims") return claims(context, rest);
+  if (sub === "slop") return await slop(context, rest);
   context.error(`Unknown workflow command: ${sub}\n\n${WORKFLOW_USAGE}`);
   return 2;
 }

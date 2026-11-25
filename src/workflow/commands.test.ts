@@ -14,6 +14,9 @@ import { dirname, join } from "node:path";
 import { PLUGIN_UPDATE_COMMAND, VERSION } from "../build-info";
 import { COMMAND } from "../build-info/names";
 import { cliPaths, tildify } from "../cli/paths";
+import { taskContext } from "../tasks/context";
+import { openWorkDb, workDbFile } from "../tasks/work/db";
+import { createTask } from "../tasks/work/store";
 import { hookEnv, makeClone, makeRepo, writeClaudeFile } from "../testing/hooks";
 import { subprocessGuard } from "../testing/port-guard";
 import { git, tempDir } from "../testing/temp";
@@ -83,6 +86,7 @@ describe("workflow show", () => {
       "issues.fixedLabel = fixed-unreleased (default)",
       "issues.readyLabel = kit:ready (default)",
       "alerts.usagePercent = 85 (default)",
+      "slopAudit.everyPlans = 5 (default)",
       "plans.maxPhases = 10 (default)",
       "plans.runMode = ask (default)",
       "plans.mergeFiles = (nothing) (default)",
@@ -1005,7 +1009,7 @@ describe("the review gate (CM-1)", () => {
         expect(await runWorkflow([sub, key, ...value], run.context)).toBe(2);
         expect(run.lines).toEqual([]);
         expect(run.errors).toEqual([
-          `Unknown setting: ${key}. The settings are: allowCommit, allowPush, openPr, allowMerge, mergeMethod, deleteBranch, reviewBeforePush, reviewAgents, fixesAfterReview.lines, fixesAfterReview.files, fixesAfterReview.percent, clearWorktreeAfterMerge, issues.enabled, issues.allowPublic, issues.foundLabel, issues.fixedLabel, issues.readyLabel, alerts.usagePercent, plans.maxPhases, plans.runMode, plans.mergeFiles, plans.appendOnly, switches.statusLine, switches.sessionNames, switches.jobRoute, switches.updateHold, switches.leadHint`,
+          `Unknown setting: ${key}. The settings are: allowCommit, allowPush, openPr, allowMerge, mergeMethod, deleteBranch, reviewBeforePush, reviewAgents, fixesAfterReview.lines, fixesAfterReview.files, fixesAfterReview.percent, clearWorktreeAfterMerge, issues.enabled, issues.allowPublic, issues.foundLabel, issues.fixedLabel, issues.readyLabel, alerts.usagePercent, slopAudit.everyPlans, plans.maxPhases, plans.runMode, plans.mergeFiles, plans.appendOnly, switches.statusLine, switches.sessionNames, switches.jobRoute, switches.updateHold, switches.leadHint`,
         ]);
       }
       expect(existsSync(cliPaths(env).workflowConfigFile)).toBe(false);
@@ -1689,5 +1693,499 @@ describe("plans.runMode and plans.mergeFiles", () => {
     expect(run.lines.at(-1)).toContain(
       "workflow.plans.runMode is your own setting, not the project's",
     );
+  });
+});
+
+describe("slopAudit.everyPlans through set, unset and show", () => {
+  test("set writes the number, show says where it came from, unset brings the default back", async () => {
+    const env = hookEnv();
+    const run = context(tempDir("not-git"), env);
+    expect(await runWorkflow(["set", "slopAudit.everyPlans", "0"], run.context)).toBe(0);
+    expect(JSON.parse(readFileSync(personalWorkflowFile(cliPaths(env)), "utf8"))).toEqual({
+      slopAudit: { everyPlans: 0 },
+    });
+    const shown = context(tempDir("not-git"), env);
+    await runWorkflow(["show"], shown.context);
+    expect(shown.lines).toContain("slopAudit.everyPlans = 0 (personal)");
+    const off = context(tempDir("not-git"), env);
+    expect(await runWorkflow(["unset", "slopAudit.everyPlans"], off.context)).toBe(0);
+    const again = context(tempDir("not-git"), env);
+    await runWorkflow(["show"], again.context);
+    expect(again.lines).toContain("slopAudit.everyPlans = 5 (default)");
+  });
+
+  test("the project's value wins over the person's", async () => {
+    const env = hookEnv();
+    const repo = makeRepo();
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", {
+      ...SETTINGS,
+      workflow: { slopAudit: { everyPlans: 2 } },
+    });
+    writePersonalSetting(cliPaths(env), "slopAudit.everyPlans", 9);
+    const run = context(repo, env);
+    await runWorkflow(["show"], run.context);
+    expect(run.lines).toContain("slopAudit.everyPlans = 2 (project)");
+  });
+
+  test("a value that is not a whole number from 0 is refused, nothing written", async () => {
+    const env = hookEnv();
+    for (const bad of ["-1", "2.5", "often"]) {
+      const run = context(tempDir("not-git"), env);
+      expect(await runWorkflow(["set", "slopAudit.everyPlans", bad], run.context)).toBe(2);
+      expect(run.errors[0]).toStartWith("slopAudit.everyPlans is a whole number, 0 or more");
+    }
+    expect(existsSync(personalWorkflowFile(cliPaths(env)))).toBe(false);
+  });
+});
+
+describe("workflow claims", () => {
+  /** A clone whose main holds a claim and its home, on a branch that defines the name again. */
+  function cloneWithBranch(): string {
+    const { repo } = makeClone();
+    mkdirSync(join(repo, "docs"));
+    writeFileSync(
+      join(repo, "docs/prices.md"),
+      "# Prices\n\nThe one home for prices is `formatPrice`.\n",
+    );
+    writeFileSync(join(repo, "prices.ts"), "export function formatPrice() {}\n");
+    git(repo, "add", ".");
+    git(repo, "commit", "-q", "-m", "claim");
+    git(repo, "push", "-q", "origin", "main");
+    git(repo, "checkout", "-q", "-b", "feature");
+    writeFileSync(
+      join(repo, "cart.ts"),
+      "const total = 1;\nexport const formatPrice = (n) => n;\n",
+    );
+    git(repo, "add", ".");
+    git(repo, "commit", "-q", "-m", "second copy");
+    return repo;
+  }
+
+  test("the default base is the merge base with origin's default branch", async () => {
+    const run = context(cloneWithBranch(), hookEnv());
+    expect(await runWorkflow(["claims"], run.context)).toBe(0);
+    expect(run.errors).toEqual([]);
+    expect(run.lines).toEqual([
+      "Claims (1):",
+      "  docs/prices.md:3 — the one home — names: formatPrice",
+      "Re-defined in this diff (1):",
+      "  cart.ts:2 defines formatPrice, which docs/prices.md:3 calls its one home",
+    ]);
+  });
+
+  test("a local branch named origin/main does not move the default base", async () => {
+    const repo = cloneWithBranch();
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", SETTINGS);
+    git(repo, "branch", "origin/main", "HEAD");
+    const run = context(repo, hookEnv());
+    expect(await runWorkflow(["claims"], run.context)).toBe(0);
+    expect(run.lines.slice(-2)).toEqual([
+      "Re-defined in this diff (1):",
+      "  cart.ts:2 defines formatPrice, which docs/prices.md:3 calls its one home",
+    ]);
+  });
+
+  test("--json prints the claims, the hits and why no diff was read, and nothing else", async () => {
+    const run = context(cloneWithBranch(), hookEnv());
+    expect(await runWorkflow(["claims", "--json"], run.context)).toBe(0);
+    expect(run.lines).toHaveLength(1);
+    expect(JSON.parse(run.lines[0] ?? "")).toEqual({
+      claims: [{ file: "docs/prices.md", line: 3, phrase: "the one home", names: ["formatPrice"] }],
+      hits: [
+        {
+          file: "cart.ts",
+          line: 2,
+          name: "formatPrice",
+          claim: { file: "docs/prices.md", line: 3 },
+        },
+      ],
+      diffWhy: null,
+    });
+  });
+
+  test("--json with no default branch known carries the reason", async () => {
+    const run = context(makeRepo(), hookEnv());
+    expect(await runWorkflow(["claims", "--json"], run.context)).toBe(0);
+    expect(JSON.parse(run.lines.join("\n"))).toEqual({
+      claims: [],
+      hits: [],
+      diffWhy:
+        "the default branch is unknown: pass --base <ref>, or run `git remote set-head origin --auto`, or set worktrees.base in .claude/cc-smart-dev-kit.json",
+    });
+  });
+
+  test("--base names the start: HEAD against itself re-defines nothing", async () => {
+    const run = context(cloneWithBranch(), hookEnv());
+    expect(await runWorkflow(["claims", "--base", "HEAD"], run.context)).toBe(0);
+    expect(run.lines).toEqual([
+      "Claims (1):",
+      "  docs/prices.md:3 — the one home — names: formatPrice",
+      "Re-defined in this diff (0):",
+    ]);
+  });
+
+  test("no default branch known: the claims are listed and the line says why no diff was read", async () => {
+    const repo = makeRepo();
+    writeFileSync(join(repo, "NOTES.md"), "Single source of truth.\n");
+    git(repo, "add", ".");
+    git(repo, "commit", "-q", "-m", "note");
+    const run = context(repo, hookEnv());
+    expect(await runWorkflow(["claims"], run.context)).toBe(0);
+    expect(run.lines).toEqual([
+      "Claims (1):",
+      "  NOTES.md:1 — single source of truth — names: none",
+      "No diff was read: the default branch is unknown: pass --base <ref>, or run `git remote set-head origin --auto`, or set worktrees.base in .claude/cc-smart-dev-kit.json",
+    ]);
+  });
+
+  test("a base that is no commit is one error line, exit 1", async () => {
+    const run = context(cloneWithBranch(), hookEnv());
+    expect(await runWorkflow(["claims", "--base", "no-such-ref"], run.context)).toBe(1);
+    expect(run.lines).toEqual([]);
+    expect(run.errors).toEqual([
+      `${COMMAND} workflow claims: no-such-ref is not a commit in this repository`,
+    ]);
+  });
+
+  test("outside git it says so and exits 0", async () => {
+    const run = context(tempDir("not-git"), hookEnv());
+    expect(await runWorkflow(["claims"], run.context)).toBe(0);
+    expect(run.lines).toEqual(["No claims read: this folder is not in a git project"]);
+    const json = context(tempDir("not-git"), hookEnv());
+    expect(await runWorkflow(["claims", "--json"], json.context)).toBe(0);
+    expect(JSON.parse(json.lines.join("\n"))).toEqual({
+      claims: [],
+      hits: [],
+      diffWhy: "this folder is not in a git project",
+    });
+  });
+
+  test("a wrong option or a stray word is exit 2 with the usage", async () => {
+    for (const argv of [
+      ["claims", "--nope"],
+      ["claims", "extra"],
+      ["claims", "--base"],
+    ]) {
+      const run = context(makeRepo(), hookEnv());
+      expect(await runWorkflow(argv, run.context)).toBe(2);
+      expect(run.errors[0]).toContain("Usage:");
+    }
+  });
+});
+
+describe("workflow slop", () => {
+  const LEAD = { sessionId: "lead", pid: 1, procStart: "1" };
+
+  /** A repo with plan `alpha` (code in two areas, and a prose file) in the task store of `env`. */
+  function repoWithPlan(
+    env: Record<string, string>,
+    files = ["src/workflow/claims.ts", "src/workflow/slop.ts", "README.md", "scripts/build/run.ts"],
+  ): string {
+    const repo = makeRepo();
+    const tasks = taskContext(repo, env);
+    if (!tasks.ok) throw new Error(tasks.why);
+    const db = openWorkDb(workDbFile(cliPaths(env)), { mode: "write" });
+    try {
+      const made = createTask(
+        db,
+        {
+          project: tasks.project,
+          subject: "Alpha",
+          kind: "plan",
+          plan: "alpha",
+          files,
+        },
+        LEAD,
+        1,
+      );
+      if (!made.ok) throw new Error(made.why);
+    } finally {
+      db.close();
+    }
+    return repo;
+  }
+
+  function slopFileOf(env: Record<string, string>, repo: string): string {
+    return join(
+      cliPaths(env).stateDir,
+      "slop",
+      `${createHash("sha256").update(repo).digest("hex").slice(0, 16)}.json`,
+    );
+  }
+
+  const RECORD = ["slop", "record", "--plan", "alpha", "--bypassed", "1", "--drifted", "0"];
+  const CLEAN = ["slop", "record", "--plan", "alpha", "--bypassed", "0", "--drifted", "0"];
+
+  test("record takes the areas from the plan's own file list, then prints the status", async () => {
+    const env = hookEnv();
+    const repo = repoWithPlan(env);
+    const run = context(repo, env);
+    expect(await runWorkflow(RECORD, run.context)).toBe(0);
+    const file = slopFileOf(env, repo);
+    expect(run.errors).toEqual([]);
+    expect(run.lines).toEqual([
+      `+ ${tildify(file, env.HOME ?? "")}: plan alpha recorded (1 bypassed, 0 drifted)`,
+      "Slop audit: due — plan alpha left 1 bypassed home and 0 drifted copies",
+      "Last audit: never",
+      "Not audited yet: 1 bypassed, 0 drifted",
+      "Plans: alpha (1 bypassed, 0 drifted)",
+      "Areas: scripts/build, src/workflow",
+    ]);
+    expect(statSync(file).mode & 0o777).toBe(0o600);
+  });
+
+  test("a clean plan that touched only prose is not counted; one with a finding is", async () => {
+    const env = hookEnv();
+    const repo = repoWithPlan(env, ["README.md", "docs/design/workflow.md"]);
+    const clean = context(repo, env);
+    expect(await runWorkflow(CLEAN, clean.context)).toBe(0);
+    expect(clean.lines).toEqual([
+      "· plan alpha touched no code area and left no finding: not counted",
+      "Slop audit: not due (0 plans not audited yet; cadence every 5 plans, next at 5)",
+      "Last audit: never",
+      "Not audited yet: 0 bypassed, 0 drifted",
+    ]);
+    expect(existsSync(slopFileOf(env, repo))).toBe(false);
+    const found = context(repo, env);
+    expect(await runWorkflow(RECORD, found.context)).toBe(0);
+    expect(found.lines[0]).toBe(
+      `+ ${tildify(slopFileOf(env, repo), env.HOME ?? "")}: plan alpha recorded (1 bypassed, 0 drifted)`,
+    );
+  });
+
+  test("the project's merge files are no area", async () => {
+    const env = hookEnv();
+    const repo = repoWithPlan(env);
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", {
+      ...SETTINGS,
+      requires: ">=6.6",
+      workflow: { plans: { mergeFiles: ["scripts/build/"] } },
+    });
+    const run = context(repo, env);
+    expect(await runWorkflow(RECORD, run.context)).toBe(0);
+    expect(run.lines.at(-1)).toBe("Areas: src/workflow");
+  });
+
+  test("a second record of the same plan replaces the first, and #n names the plan too", async () => {
+    const env = hookEnv();
+    const repo = repoWithPlan(env);
+    await runWorkflow(RECORD, context(repo, env).context);
+    const again = context(repo, env);
+    const byNumber = ["slop", "record", "--plan", "#1", "--bypassed", "0", "--drifted", "0"];
+    expect(await runWorkflow(byNumber, again.context)).toBe(0);
+    expect(again.lines.slice(1)).toEqual([
+      "Slop audit: not due (1 plan not audited yet; cadence every 5 plans, next at 5)",
+      "Last audit: never",
+      "Not audited yet: 0 bypassed, 0 drifted",
+      "Plans: alpha (0 bypassed, 0 drifted)",
+      "Areas: scripts/build, src/workflow",
+    ]);
+  });
+
+  test("an unknown plan is refused with the fix, and nothing is written", async () => {
+    const env = hookEnv();
+    const repo = repoWithPlan(env);
+    const run = context(repo, env);
+    const unknown = ["slop", "record", "--plan", "nope", "--bypassed", "0", "--drifted", "0"];
+    expect(await runWorkflow(unknown, run.context)).toBe(1);
+    expect(run.errors).toEqual([
+      `${COMMAND} workflow slop record: plan "nope" is not in this project's task store. Use the slug of the plan task, as the task list shows it (task_list, scope plan).`,
+    ]);
+    expect(existsSync(slopFileOf(env, repo))).toBe(false);
+  });
+
+  test("a #n that names a task, not a plan, is refused as one, and nothing is written", async () => {
+    const env = hookEnv();
+    const repo = repoWithPlan(env);
+    const tasks = taskContext(repo, env);
+    if (!tasks.ok) throw new Error(tasks.why);
+    const db = openWorkDb(workDbFile(cliPaths(env)), { mode: "write" });
+    try {
+      createTask(db, { project: tasks.project, subject: "Loose" }, LEAD, 2);
+    } finally {
+      db.close();
+    }
+    const run = context(repo, env);
+    const task = ["slop", "record", "--plan", "#2", "--bypassed", "0", "--drifted", "0"];
+    expect(await runWorkflow(task, run.context)).toBe(1);
+    expect(run.errors).toEqual([
+      `${COMMAND} workflow slop record: #2 is a task, not a plan. Use the slug of the plan task, as the task list shows it (task_list, scope plan).`,
+    ]);
+    expect(existsSync(slopFileOf(env, repo))).toBe(false);
+  });
+
+  test("a count past the bound is refused with the rule, and nothing is written", async () => {
+    const env = hookEnv();
+    const repo = repoWithPlan(env);
+    const run = context(repo, env);
+    const huge = ["slop", "record", "--plan", "alpha", "--bypassed", "99999999999999999999"];
+    expect(await runWorkflow([...huge, "--drifted", "0"], run.context)).toBe(2);
+    expect(run.errors[0]).toStartWith(
+      "slop record needs --plan <slug>, --bypassed <n> and --drifted <n>, each count a whole number from 0 to 1000\n\nUsage:",
+    );
+    expect(existsSync(slopFileOf(env, repo))).toBe(false);
+  });
+
+  test("a task store that cannot be read is the command's own error line", async () => {
+    const env = hookEnv();
+    const repo = makeRepo();
+    const store = workDbFile(cliPaths(env));
+    mkdirSync(dirname(store), { recursive: true });
+    writeFileSync(store, "not a database, but long enough to look like a file to open");
+    const run = context(repo, env);
+    expect(await runWorkflow(RECORD, run.context)).toBe(1);
+    expect(run.errors).toEqual([
+      `${COMMAND} workflow slop record: the task store cannot be read: file is not a database`,
+    ]);
+  });
+
+  test("a project with no task store yet refuses the same way", async () => {
+    const run = context(makeRepo(), hookEnv());
+    expect(await runWorkflow(RECORD, run.context)).toBe(1);
+    expect(run.errors[0]).toContain('plan "alpha" is not in this project\'s task store');
+  });
+
+  test("status --json is the contract, and the cadence comes from the setting", async () => {
+    const env = hookEnv();
+    const repo = repoWithPlan(env);
+    writePersonalSetting(cliPaths(env), "slopAudit.everyPlans", 1);
+    await runWorkflow(CLEAN, context(repo, env).context);
+    const run = context(repo, env);
+    expect(await runWorkflow(["slop", "status", "--json"], run.context)).toBe(0);
+    const status = JSON.parse(run.lines.join("\n")) as Record<string, unknown>;
+    expect(Object.keys(status)).toEqual([
+      "since",
+      "unaudited",
+      "plans",
+      "bypassed",
+      "drifted",
+      "areas",
+      "due",
+      "why",
+    ]);
+    expect(status).toMatchObject({
+      since: null,
+      unaudited: 1,
+      bypassed: 0,
+      drifted: 0,
+      areas: ["scripts/build", "src/workflow"],
+      due: true,
+      why: "1 plan closed and not audited yet (every 1)",
+    });
+  });
+
+  test("everyPlans 0 turns the count off: a clean plan is not due", async () => {
+    const env = hookEnv();
+    const repo = repoWithPlan(env);
+    writePersonalSetting(cliPaths(env), "slopAudit.everyPlans", 0);
+    const run = context(repo, env);
+    await runWorkflow(CLEAN, run.context);
+    expect(run.lines[1]).toBe("Slop audit: not due (1 plan not audited yet; cadence off)");
+  });
+
+  test("audited starts the count again, for every area or the named ones", async () => {
+    const env = hookEnv();
+    const repo = repoWithPlan(env);
+    await runWorkflow(RECORD, context(repo, env).context);
+    const part = context(repo, env);
+    const named = ["slop", "audited", "--area", "src/workflow/"];
+    expect(await runWorkflow(named, part.context)).toBe(0);
+    expect(part.lines[0]).toEndWith(": audit recorded for src/workflow (0 plans cleared)");
+    expect(part.lines.at(-1)).toBe("Areas: scripts/build");
+    const all = context(repo, env);
+    expect(await runWorkflow(["slop", "audited"], all.context)).toBe(0);
+    expect(all.lines[0]).toEndWith(": audit recorded for every area (1 plan cleared)");
+    expect(all.lines.slice(1, 3)).toEqual([
+      "Slop audit: not due (0 plans not audited yet; cadence every 5 plans, next at 5)",
+      expect.stringMatching(/^Last audit: \d{4}-\d\d-\d\dT/),
+    ]);
+  });
+
+  test("audited --area of a parent folder, typed with ./, clears the plan and says so", async () => {
+    const env = hookEnv();
+    const repo = repoWithPlan(env);
+    await runWorkflow(RECORD, context(repo, env).context);
+    const run = context(repo, env);
+    const named = ["slop", "audited", "--area", "./src", "--area", "scripts"];
+    expect(await runWorkflow(named, run.context)).toBe(0);
+    expect(run.lines[0]).toEndWith(": audit recorded for src, scripts (1 plan cleared)");
+    expect(run.lines[1]).toBe(
+      "Slop audit: not due (0 plans not audited yet; cadence every 5 plans, next at 5)",
+    );
+  });
+
+  test("audited --area in another case clears the plan when the checkout ignores case", async () => {
+    const env = hookEnv();
+    const repo = repoWithPlan(env);
+    git(repo, "config", "core.ignorecase", "true");
+    await runWorkflow(RECORD, context(repo, env).context);
+    const run = context(repo, env);
+    const named = ["slop", "audited", "--area", "SRC", "--area", "Scripts"];
+    expect(await runWorkflow(named, run.context)).toBe(0);
+    expect(run.lines[0]).toEndWith(": audit recorded for SRC, Scripts (1 plan cleared)");
+  });
+
+  test("audited --area . is refused, and the error says how to record an audit of everything", async () => {
+    const env = hookEnv();
+    const repo = repoWithPlan(env);
+    for (const area of [".", "./"]) {
+      const run = context(repo, env);
+      expect(await runWorkflow(["slop", "audited", "--area", area], run.context)).toBe(2);
+      expect(run.errors[0]).toStartWith(
+        `--area "${area}" names the whole repository: after an audit of everything, run ${COMMAND} workflow slop audited with no --area\n\nUsage:`,
+      );
+    }
+  });
+
+  test("audited --area that clears no plan says so on a ! line", async () => {
+    const env = hookEnv();
+    const repo = repoWithPlan(env);
+    await runWorkflow(RECORD, context(repo, env).context);
+    const run = context(repo, env);
+    expect(await runWorkflow(["slop", "audited", "--area", "lib"], run.context)).toBe(0);
+    expect(run.lines.slice(0, 2)).toEqual([
+      `+ ${tildify(slopFileOf(env, repo), env.HOME ?? "")}: audit recorded for lib (0 plans cleared)`,
+      `! No plan cleared: no plan in the count has all its areas at or under lib. Name the areas the status lists, or run ${COMMAND} workflow slop audited with no --area after an audit of everything.`,
+    ]);
+  });
+
+  test("a record file that is not one is named, with the fix, and left alone", async () => {
+    const env = hookEnv();
+    const repo = repoWithPlan(env);
+    const file = slopFileOf(env, repo);
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, "nope");
+    const run = context(repo, env);
+    expect(await runWorkflow(["slop", "status"], run.context)).toBe(1);
+    expect(run.errors[0]).toContain(`${file} is not a slop record`);
+    expect(run.errors[0]).toContain("Delete it to start the count again.");
+    expect(readFileSync(file, "utf8")).toBe("nope");
+  });
+
+  test("wrong arguments are exit 2 with the usage; outside git is exit 1", async () => {
+    const env = hookEnv();
+    const repo = repoWithPlan(env);
+    for (const argv of [
+      ["slop"],
+      ["slop", "later"],
+      ["slop", "record", "--plan", "alpha"],
+      ["slop", "record", "--plan", "alpha", "--bypassed", "x", "--drifted", "0"],
+      ["slop", "record", "--plan", "alpha", "--bypassed", "-1", "--drifted", "0"],
+      ["slop", "record", "--plan", "alpha", "--bypassed", "1001", "--drifted", "0"],
+      ["slop", "record", "--plan", "alpha", "--bypassed", "0", "--drifted", "99999999999999999999"],
+      ["slop", "status", "--nope"],
+      ["slop", "audited", "--area"],
+      ["slop", "audited", "--area", "/"],
+      ["slop", "audited", "--area", "../elsewhere"],
+    ]) {
+      const run = context(repo, env);
+      expect(await runWorkflow(argv, run.context)).toBe(2);
+      expect(run.errors[0]).toContain("Usage:");
+    }
+    const outside = context(tempDir("not-git"), env);
+    expect(await runWorkflow(["slop", "status"], outside.context)).toBe(1);
+    expect(outside.errors).toEqual([
+      `${COMMAND} workflow slop status: this folder is not in a git project`,
+    ]);
   });
 });

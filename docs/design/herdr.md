@@ -247,7 +247,7 @@ its pull request merges or closes (or the settle proof below holds; an unreserve
    sessions are not.
 4. Push, pull request and merge follow `workflow show`; where they are off, ask the person in
    that terminal.
-5. `herdr report` with the pull request link, what shipped and what failed. Then stop.
+5. `herdr report` with the pull request link, what shipped and what failed, and the report lines the build skill asks of a plan child (its `workflow slop record` status, and a note when the project has no `Reuse signals` heading), so its lead can make the audit and guard-setup offers. Then stop.
 
 **Resume.** A plan whose child is gone comes back with `start --plan <slug>`. "Gone" needs two
 proofs. The store's classifier reads `child-gone`: the child's process is gone and no running

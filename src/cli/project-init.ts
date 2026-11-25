@@ -40,7 +40,7 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { VERSION } from "../build-info";
-import { COMMAND } from "../build-info/names";
+import { COMMAND, PLUGIN } from "../build-info/names";
 import { runGit, runGitAsync } from "../hooks/git";
 import {
   ccSmartDevKitConfigSchema,
@@ -79,6 +79,7 @@ import {
   type WorkflowKey,
   withCurrentNames,
 } from "../workflow/schema";
+import { ORIGIN_HEAD_ARGS, originHeadName } from "../worktrees/command";
 import { cliPaths, tildify } from "./paths";
 import { dryRunEnding, leadingMark, type Mark, type Out, plural } from "./ui/out";
 import type { Prompts } from "./ui/prompt";
@@ -211,14 +212,9 @@ async function localBranchesOf(runner: ProjectInitRunner, root: string): Promise
  * A git that cannot answer at all (no git, not a repo) leaves `main`, as it always did.
  */
 export async function defaultBranchOf(runner: ProjectInitRunner, root: string): Promise<string> {
-  const known = await runner.git(root, [
-    "symbolic-ref",
-    "--quiet",
-    "--short",
-    "refs/remotes/origin/HEAD",
-  ]);
+  const known = await runner.git(root, ORIGIN_HEAD_ARGS);
   if (known.ok) {
-    const branch = known.out.trim().replace(/^origin\//, "");
+    const branch = originHeadName(known.out);
     if (branch !== "") return branch;
   }
   const locals = await localBranchesOf(runner, root);
@@ -950,6 +946,21 @@ function readText(file: string): string | null {
   return existsSync(file) ? readFileSync(file, "utf8") : null;
 }
 
+/** The project's review add-on, relative to its root: where its `Reuse signals` heading lives. */
+const REVIEW_ADDON = `.claude/${PLUGIN}/review.md`;
+
+/**
+ * What `doctor` (after `project:`) and `project init` (after "This project has") say about a
+ * project with no reuse guards. The one home of the sentence.
+ */
+export const NO_REUSE_GUARDS = `no reuse guards yet (${REVIEW_ADDON} has no "Reuse signals" heading): ask Claude to set them up (code-structure § 13)`;
+
+/** True when the project at `root` has no `Reuse signals` heading in its review add-on. */
+export function lacksReuseGuards(root: string): boolean {
+  const addon = readText(join(root, REVIEW_ADDON));
+  return addon === null || !/^#{1,6}[ \t]+Reuse signals\b/im.test(addon);
+}
+
 /**
  * The parsed project's file, or null when it is not there (a broken one is the plan's error).
  * Exported for the portal's Project card, which builds its answers the way `project init`
@@ -1298,6 +1309,7 @@ export async function runProjectInit(
           },
         ]),
     `Tell your teammates: the file asks for ${COMMAND} ${requires}, so each of them needs that plugin version or newer.`,
+    ...(lacksReuseGuards(context.root) ? [`This project has ${NO_REUSE_GUARDS}.`] : []),
   ]);
   return skillFailures > 0 ? 1 : 0;
 }

@@ -24,7 +24,7 @@
  * **The built-in defaults are the safe ones:** nothing is committed, pushed or merged
  * without the person, and the status-line usage warning starts at 85 percent.
  *
- * **A group** (`alerts`, `fixesAfterReview`, `plans`) is merged field by field like the rest,
+ * **A group** (`alerts`, `fixesAfterReview`, `plans`, `slopAudit`) is merged field by field like the rest,
  * and its fields are named with a dot (`alerts.usagePercent`).
  */
 import { z } from "zod";
@@ -55,6 +55,7 @@ const NUMBER_RULES = {
   "fixesAfterReview.files": AT_LEAST_ZERO,
   "fixesAfterReview.percent": AT_LEAST_ZERO,
   "plans.maxPhases": PHASE_COUNT,
+  "slopAudit.everyPlans": AT_LEAST_ZERO,
 } as const satisfies Partial<Record<WorkflowKey, NumberRule>>;
 
 type NumberKey = keyof typeof NUMBER_RULES;
@@ -415,6 +416,18 @@ const workflowObjectSchema = z.strictObject({
     })
     .transform(({ events: _events, sound: _sound, ...usage }) => usage)
     .optional(),
+  /**
+   * How often the kit offers a slop audit (`workflow slop`, `slop.ts`): each time the plans not
+   * yet audited reach a multiple of this number, so a declined offer comes back that many plans
+   * later. `0` turns the count off; a plan that left a bypassed home or a drifted copy still makes
+   * one due.
+   */
+  slopAudit: z
+    .strictObject({
+      /** Plans closed between two slop audits. Default: 5. */
+      everyPlans: numberField("slopAudit.everyPlans"),
+    })
+    .optional(),
   /** 2.0 removed the crew; an old file's `crew` keys load and are ignored. */
   crew: z.unknown().optional(),
 });
@@ -496,6 +509,9 @@ export const workflowDefaults = {
   alerts: {
     usagePercent: 85,
   },
+  slopAudit: {
+    everyPlans: 5,
+  },
   plans: {
     maxPhases: 10,
     mergeFiles: [],
@@ -537,6 +553,7 @@ export type WorkflowKey =
   | "issues.fixedLabel"
   | "issues.readyLabel"
   | "alerts.usagePercent"
+  | "slopAudit.everyPlans"
   | "plans.maxPhases"
   | "plans.runMode"
   | "plans.mergeFiles"
@@ -563,6 +580,7 @@ export const POLICY_KEYS: readonly WorkflowKey[] = [
   "issues.fixedLabel",
   "issues.readyLabel",
   "alerts.usagePercent",
+  "slopAudit.everyPlans",
   "plans.maxPhases",
   "plans.runMode",
   "plans.mergeFiles",

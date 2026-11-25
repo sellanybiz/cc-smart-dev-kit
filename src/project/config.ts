@@ -162,6 +162,14 @@ export const WORKFLOW_MERGE_FILES_SINCE = "5.2.0";
 export const WORKFLOW_APPEND_ONLY_SINCE = "6.3.0";
 
 /**
+ * The release that brought `workflow.slopAudit` (how many closed plans make a slop audit due,
+ * `workflow slop`). A plugin before this one reads `workflow` strictly and refuses a file that
+ * names `slopAudit`, so the floor makes it say "update". Written as the release it was, like
+ * `WORKFLOW_APPEND_ONLY_SINCE`.
+ */
+export const WORKFLOW_SLOP_AUDIT_SINCE = "6.6.0";
+
+/**
  * The release that renamed `workflow.autoCommit`, `autoPush` and `autoMerge` to `allowCommit`,
  * `allowPush` and `allowMerge` (`WORKFLOW_KEY_ALIASES`, `src/workflow/schema.ts`). A project file
  * that holds a new name needs that plugin version or newer, for the same reason as
