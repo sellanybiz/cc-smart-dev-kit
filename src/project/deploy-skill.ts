@@ -36,7 +36,8 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, dirname, join, relative, resolve } from "node:path";
+import { isInside } from "../path-compare";
 import { setFileMode } from "../setup/file-mode";
 import {
   BLOCK_BEGIN,
@@ -66,14 +67,8 @@ function skillsFolder(root: string): string {
  */
 export function skillsFolderLink(root: string): string | null {
   const folder = skillsFolder(root);
-  if (!existsSync(folder) || isInside(realTarget(root), realTarget(folder))) return null;
+  if (!existsSync(folder) || isInside(realTarget(folder), realTarget(root))) return null;
   return `${shownPath(root, folder)} is a link outside this checkout: not searched`;
-}
-
-/** True when `real` is the checkout's real root or a path under it. */
-function isInside(realRoot: string, real: string): boolean {
-  const rel = relative(realRoot, real);
-  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
 }
 
 /** A path from the project's root, as a person reads it (`/` on every system). */
@@ -172,7 +167,7 @@ function skillFilesUnder(
   if (existsSync(join(folder, SKILL_FILE))) found.push(join(folder, SKILL_FILE));
   // A folder linked in from outside the checkout is looked at, never walked: the plan refuses
   // its skill by name, and a link to a big tree costs nothing.
-  if (depth === 0 || !isInside(realRoot, real)) return found;
+  if (depth === 0 || !isInside(real, realRoot)) return found;
   for (const entry of readdirSync(folder).sort()) {
     if (entry !== "node_modules") {
       found.push(...skillFilesUnder(join(folder, entry), depth - 1, realRoot, seen));
@@ -280,7 +275,7 @@ export function planDeploySkill(
 ): DeploySkillPlan {
   const shown = shownPath(root, file);
   const real = realTarget(file);
-  if (!isInside(realTarget(root), real)) {
+  if (!isInside(real, realTarget(root))) {
     return refused(root, file, outsideMessage(root, file, real));
   }
   if (!existsSync(real) || !statSync(real).isFile()) {
@@ -405,7 +400,7 @@ export function planNewDeploySkill(
         note: `${shown} already exists: not overwritten; --deploy-skill <path> names the deploy skill`,
       };
     }
-    if (!isInside(realTarget(root), realTarget(file))) {
+    if (!isInside(realTarget(file), realTarget(root))) {
       return { note: `${shown} would be outside this checkout: not created` };
     }
   } catch (error) {
@@ -476,7 +471,7 @@ export function applyDeploySkill(
 ): ProjectInitWrite | null {
   if (!plan.changed) return null;
   const real = realTarget(plan.file);
-  if (!isInside(realTarget(root), real)) {
+  if (!isInside(real, realTarget(root))) {
     throw new Error(outsideMessage(root, plan.file, real));
   }
   const created = plan.action === "create";

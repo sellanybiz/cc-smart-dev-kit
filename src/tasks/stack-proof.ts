@@ -19,7 +19,7 @@
  * `base`, not the commit a `herdr start` is about to reset to) counts only with that branch
  * recorded: herdr records it at launch.
  */
-import type { GitRun } from "../hooks/git";
+import { commitArgs, commitIn, type GitRun } from "../hooks/git";
 import { parentHolds, type StackPair, sameLead } from "./work/queries";
 import type { WorkTask } from "./work/types";
 
@@ -62,8 +62,8 @@ const gap = (why: StackGap): StackVerdict => ({ proved: false, gap: why });
 /** The commit a recorded branch is at, here or on origin; null when the branch is unknown. */
 export function branchTip(git: StackGit, branch: string): string | null {
   for (const ref of [`refs/heads/${branch}`, `refs/remotes/origin/${branch}`]) {
-    const run = git(["rev-parse", "--verify", "--quiet", `${ref}^{commit}`]);
-    if (run.ok && run.out !== "") return run.out;
+    const commit = commitIn(git(commitArgs(ref)));
+    if (commit !== null) return commit;
   }
   return null;
 }
@@ -74,23 +74,7 @@ export function branchTip(git: StackGit, branch: string): string | null {
  */
 export function defaultTip(git: StackGit, defaultBranch: string | null): string | null {
   if (defaultBranch === null) return null;
-  const run = git([
-    "rev-parse",
-    "--verify",
-    "--quiet",
-    `refs/remotes/origin/${defaultBranch}^{commit}`,
-  ]);
-  return run.ok && run.out !== "" ? run.out : null;
-}
-
-/**
- * The full commit a stored name says (a plan's `base`, a start's commit); null when it names
- * none. A name that starts with `-` would reach git as an option, so it names nothing here.
- */
-function commitOf(git: StackGit, name: string): string | null {
-  if (name.startsWith("-")) return null;
-  const run = git(["rev-parse", "--verify", "--quiet", `${name}^{commit}`]);
-  return run.ok && run.out !== "" ? run.out : null;
+  return commitIn(git(commitArgs(`refs/remotes/origin/${defaultBranch}`)));
 }
 
 /** Whether `commit` is in `tip`'s history: null when git cannot say. */
@@ -134,7 +118,7 @@ export function stackHolds(
   const empty = isAncestor(git, tip, onDefault);
   if (empty === null) return gap("git");
   if (empty) return gap("parent-empty");
-  const parentStart = parent.base === null ? null : commitOf(git, parent.base);
+  const parentStart = parent.base === null ? null : commitIn(git(commitArgs(parent.base)));
   if (parentStart === null) return gap("parent-base");
   const fences = [onDefault];
   if (grandparent !== null && grandparent.branch !== null) {
@@ -142,7 +126,7 @@ export function stackHolds(
     if (chain === null) return gap("chain-branch");
     fences.push(chain);
   }
-  const from = start === null ? null : commitOf(git, start);
+  const from = start === null ? null : commitIn(git(commitArgs(start)));
   if (from === null) return gap("no-start");
   if (!given && child.branch === null) return gap("own-branch");
   // Exit 1 with no output: the two share no history at all. A criss-cross history has several

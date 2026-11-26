@@ -4,12 +4,11 @@
  * `<tasks.dir>/<env>/x.md` and `<tasks.dir>/<env>/archive/x.md`; git's paths always use `/`.
  */
 import { existsSync, readFileSync } from "node:fs";
-import { isAbsolute, join, relative, resolve, sep } from "node:path";
-import { runGit } from "../../hooks/git";
+import { join, relative, resolve, sep } from "node:path";
+import { commitArgs, commitIn, runGit, runGitRaw } from "../../hooks/git";
 import type { Env } from "../../hooks/run";
-import { gitEnv } from "../../project/git-env";
 import { RESOLVE_GIT_TIMEOUT_MS } from "../../project/resolve";
-import { isTaskFile } from "./files";
+import { isTaskFile, taskFolderIn } from "./files";
 import { type DeployTask, folderPlace, parseDeployTask } from "./format";
 import { type GitFacts, underTasks } from "./release";
 
@@ -33,12 +32,7 @@ export function unreadableRefMessage(ref: string, cause: unknown, instead: strin
 }
 /** True when git knows `ref` as a commit. Any git answer other than success counts as unknown. */
 function knowsRef(repo: string, ref: string, env: Env): boolean {
-  return runGit(
-    repo,
-    ["rev-parse", "--verify", "--quiet", "--end-of-options", `${ref}^{commit}`],
-    env,
-    RESOLVE_GIT_TIMEOUT_MS,
-  ).ok;
+  return commitIn(runGit(repo, commitArgs(ref), env, RESOLVE_GIT_TIMEOUT_MS)) !== null;
 }
 /**
  * The ref a listing reads as the base, so it sees what the release gates see (`origin/<base>`).
@@ -118,10 +112,7 @@ export function resolveListBase(
   return { ref: named, note: null };
 }
 export function taskRepoPath(repo: string, dir: string): string {
-  const path = relative(resolve(repo), resolve(repo, dir));
-  if (path === ".." || path.startsWith(`..${sep}`) || isAbsolute(path))
-    throw new Error("Task folder must be inside the checkout");
-  return path.split(sep).join("/");
+  return relative(resolve(repo), taskFolderIn(repo, dir)).split(sep).join("/");
 }
 /** The environment a git path belongs to, or null when it is not a deploy task file under `prefix`. */
 function taskPlace(path: string, prefix: string) {
@@ -160,18 +151,16 @@ export function tasksOn(
   for (const file of paths) {
     const place = taskPlace(file, prefix);
     if (!place) continue;
-    // runGit trims stdout. Blob contents must keep the Markdown body's exact whitespace.
-    const result = Bun.spawnSync(["git", "show", `${commit}:${file}`], {
-      cwd: repo,
-      env: { ...gitEnv(process.env), GIT_TERMINAL_PROMPT: "0" },
-      stdin: "ignore",
-      stdout: "pipe",
-      stderr: "pipe",
-      timeout: RESOLVE_GIT_TIMEOUT_MS,
-      windowsHide: true,
-    });
-    if (result.exitCode !== 0) throw new Error(`git show failed: ${result.stderr.toString()}`);
-    const parsed = parseDeployTask(result.stdout.toString(), file, place.env);
+    // Raw: the Markdown body keeps its exact whitespace.
+    const result = runGitRaw(
+      repo,
+      ["show", `${commit}:${file}`],
+      process.env,
+      RESOLVE_GIT_TIMEOUT_MS,
+      { GIT_TERMINAL_PROMPT: "0" },
+    );
+    if (!result.ok) throw new Error(`git show failed: ${result.err}`);
+    const parsed = parseDeployTask(result.out, file, place.env);
     if (parsed.ok) tasks.push(parsed.task);
     else broken.push({ file, why: parsed.why });
   }
@@ -398,9 +387,7 @@ export function readGitFacts(
   // Origin's own copy of the branch, not `@{upstream}`: a branch cut from origin/main tracks main
   // until it is pushed with -u, and "ahead of origin/main" would then never end.
   const remoteRef = branch === null ? null : `refs/remotes/origin/${branch}`;
-  const remoteKnown =
-    remoteRef !== null &&
-    runGit(repo, ["rev-parse", "--verify", "--quiet", remoteRef], env, RESOLVE_GIT_TIMEOUT_MS).ok;
+  const remoteKnown = remoteRef !== null && knowsRef(repo, remoteRef, env);
   const ahead =
     remoteKnown && remoteRef !== null
       ? Number(taskGit(repo, ["rev-list", "--count", `${remoteRef}..HEAD`], env))

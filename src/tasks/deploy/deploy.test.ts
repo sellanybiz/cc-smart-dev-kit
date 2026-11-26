@@ -1402,6 +1402,38 @@ test("branch changes, archived tasks, deleted paths and unmerged branches read t
   expect(unmerged.broken).toEqual([]);
 });
 
+test("tasksOn reads a task's body byte for byte: leading, trailing and inner whitespace stay", () => {
+  const root = tempDir();
+  git(root, "init", "-b", "main");
+  const dir = join(root, "tasks");
+  const body = "\n  # Step\n\n\tindented  \r\nlast line  \n\n\n";
+  put(dir, "prod", `${task.id}.md`, { body, twin: undefined });
+  git(root, "add", ".");
+  git(root, "commit", "-m", "task");
+  const read = tasksOn(root, dir, "main");
+  expect(read.broken).toEqual([]);
+  expect(read.tasks.map((t) => t.body)).toEqual([body]);
+});
+
+test("the task folder may sit under a name that starts with .., never outside the checkout", () => {
+  const root = tempDir();
+  git(root, "init", "-b", "main");
+  const dir = join(root, "..tasks");
+  put(dir, "prod", `${task.id}.md`, { twin: undefined });
+  git(root, "add", ".");
+  git(root, "commit", "-m", "task");
+  expect(deployTasksDir(root, { dir: "..tasks" })).toBe(dir);
+  expect(tasksOn(root, dir, "main").tasks.map((t) => t.id)).toEqual([task.id]);
+  for (const outside of ["..", "../tasks"]) {
+    expect(() => deployTasksDir(root, { dir: outside })).toThrow(
+      "Task folder must be inside the checkout",
+    );
+    expect(() => tasksOn(root, join(root, outside), "main")).toThrow(
+      "Task folder must be inside the checkout",
+    );
+  }
+});
+
 test("a close pushed on an unmerged branch is reported for a task the base still has open", () => {
   const root = tempDir();
   git(root, "init", "-b", "main");

@@ -1,5 +1,6 @@
 import { existsSync, realpathSync } from "node:fs";
-import { basename, isAbsolute, relative, resolve, sep } from "node:path";
+import { basename, isAbsolute, resolve } from "node:path";
+import { isInside } from "../../path-compare";
 import { DEPLOY_TASKS_SINCE } from "../../project/config";
 import { TASK_COMMAND } from "../words";
 import { type DeployTaskSettings, isArchived, oldTaskFiles, scanDeployTasks } from "./files";
@@ -35,10 +36,6 @@ export function twinIsMissing(task: DeployTask, known: ReadonlySet<string>): boo
  */
 export function twinMissingFix(task: DeployTask, place: string = task.file): string {
   return `remove the \`twin\` line from ${place}, or drop ${task.id} (only the person drops a blocking one) and make a new pair with \`${TASK_COMMAND} add "<title>" --kind staging --pair --deploy <${DEPLOY_STEPS.join("|")}> --type <${DEPLOY_TYPES.join("|")}>\``;
-}
-function inside(root: string, target: string): boolean {
-  const rel = relative(root, target);
-  return rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
 }
 export function checkDeployTasks(options: {
   checkoutRoot: string;
@@ -85,9 +82,9 @@ export function checkDeployTasks(options: {
       const target = resolve(checkoutRoot, ref);
       if (
         isAbsolute(ref) ||
-        !inside(resolve(checkoutRoot), target) ||
+        !isInside(target, checkoutRoot) ||
         !existsSync(target) ||
-        !inside(root, realpathSync(target))
+        !isInside(realpathSync(target), root)
       )
         findings.push({
           ...common,
