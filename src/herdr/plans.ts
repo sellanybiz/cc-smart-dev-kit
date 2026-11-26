@@ -38,6 +38,7 @@ import {
   warnOverlaps,
 } from "../tasks/files-check";
 import { branchTip, judgeStacks, provedPairs, type StackJudgment } from "../tasks/stack-proof";
+import { TASK_TOOL } from "../tasks/words";
 import { openWorkDb, type WorkDb, workDbFile } from "../tasks/work/db";
 import { CLAIM_PROCESS, callerOf } from "../tasks/work/identity";
 import { classifyLeadPlans, type LeadPlan, type LeadPlanState } from "../tasks/work/lead-plans";
@@ -233,7 +234,7 @@ function onDefaultBranch(
       proved: false,
       kind: "blocked",
       text: `${name}: ${asked}, and no start commit is recorded, so a merge cannot be proved`,
-      fix: `log in to gh, or record where it started: task_update #${plan.number} with base`,
+      fix: `log in to gh, or record where it started: ${TASK_TOOL.update} #${plan.number} with base`,
     };
   const past = git(world, ["rev-list", "--count", `${plan.base}..${tip}`]);
   if (!past.ok)
@@ -241,7 +242,7 @@ function onDefaultBranch(
       proved: false,
       kind: "blocked",
       text: `${name}: git cannot compare its branch with its recorded start`,
-      fix: `check it with task_update #${plan.number} base`,
+      fix: `check it with ${TASK_TOOL.update} #${plan.number} base`,
     };
   if (Number(past.out) === 0)
     return {
@@ -278,7 +279,7 @@ function judgeBlocker(world: PlansWorld, blocker: WorkTask): Blocker {
       clear: false,
       kind: "blocked",
       text: `blocker ${name} has no branch recorded`,
-      fix: `task_update #${blocker.number} with branch set to the branch of its pull request`,
+      fix: `${TASK_TOOL.update} #${blocker.number} with branch set to the branch of its pull request`,
     };
   const tip = tipOf(world, blocker.branch);
   if (tip === null)
@@ -286,7 +287,7 @@ function judgeBlocker(world: PlansWorld, blocker: WorkTask): Blocker {
       clear: false,
       kind: "blocked",
       text: `blocker ${name}: branch ${blocker.branch} is not in this repository`,
-      fix: `fetch it, or correct it with task_update #${blocker.number} branch`,
+      fix: `fetch it, or correct it with ${TASK_TOOL.update} #${blocker.number} branch`,
     };
   const pr = world.pr(world.repo, blocker.branch, tip, world.env);
   if (pr === "merged") return CLEAR;
@@ -295,7 +296,7 @@ function judgeBlocker(world: PlansWorld, blocker: WorkTask): Blocker {
       clear: false,
       kind: "blocked",
       text: `blocker ${name}: its pull request was closed without merging`,
-      fix: `the person decides: reopen it, or lift the block with task_update blocked_by_remove`,
+      fix: `the person decides: reopen it, or lift the block with ${TASK_TOOL.update} blocked_by_remove`,
     };
   if (pr === "open")
     return { clear: false, kind: "waiting", text: `${name} (its pull request is open)`, fix: null };
@@ -498,7 +499,7 @@ export function judgePlans(input: PlansWorld, only?: string, start?: string): Ju
                     ? `finished: gh cannot say whether its pull request merged, and its branch is not proved on ${baseRef(world) ?? world.base}: its files stay held`
                     : `finished: no pull request was found, and its branch is not proved on ${baseRef(world) ?? world.base}: its files stay held`,
               pr === null
-                ? `task_update #${plan.number} with branch, so its pull request can be found; or ${out}`
+                ? `${TASK_TOOL.update} #${plan.number} with branch, so its pull request can be found; or ${out}`
                 : pr === "open"
                   ? null
                   : out,
@@ -719,26 +720,26 @@ function unprovedStackFix(
   if (gap === "default-unknown")
     return `${counts} once the default branch is known: ${UNKNOWN_BASE.fix}`;
   if (gap === "other-lead")
-    return `${counts} while one lead leads both plans, and another session now holds this plan or ${name}: take it back (task_take), or clear the stack (task_update #${plan.number} with stacked_on null)`;
+    return `${counts} while one lead leads both plans, and another session now holds this plan or ${name}: take it back (${TASK_TOOL.take}), or clear the stack (${TASK_TOOL.update} #${plan.number} with stacked_on null)`;
   if (parent.branch === null)
-    return `${counts} once ${name} records its branch: task_update #${parent.number} with branch`;
+    return `${counts} once ${name} records its branch: ${TASK_TOOL.update} #${parent.number} with branch`;
   if (gap === "parent-branch")
     return `${counts} once ${name}'s branch ${parent.branch} is in this repository: fetch it`;
   if (gap === "parent-empty")
     return `${counts} once ${name} has work of its own: wait for its first commit on ${parent.branch}`;
   if (gap === "parent-base")
-    return `${counts} once ${name} records where it started: task_update #${parent.number} with base set to the commit you created its branch from (\`git rev-parse HEAD\` at that moment), not its fork from the default branch`;
+    return `${counts} once ${name} records where it started: ${TASK_TOOL.update} #${parent.number} with base set to the commit you created its branch from (\`git rev-parse HEAD\` at that moment), not its fork from the default branch`;
   if (gap === "chain-branch") {
     const above = parent.stackedOn ?? "the plan it is stacked on";
     const chain = [...byId.values()].find((t) => t.kind === "plan" && t.plan === parent.stackedOn);
     // A finished plan's branch is often deleted after its merge: no fetch brings it back, and the
     // parent's own start still fences a wrong start once the stack on it is cleared.
     return chain !== undefined && !parentHolds(chain)
-      ? `${counts} once ${name} no longer names ${above}, which holds no files and whose branch is gone: clear #${parent.number}'s stack on ${above} (task_update stacked_on null)`
+      ? `${counts} once ${name} no longer names ${above}, which holds no files and whose branch is gone: clear #${parent.number}'s stack on ${above} (${TASK_TOOL.update} stacked_on null)`
       : `${counts} once the branch of ${above}, which ${name} is stacked on, is in this repository: fetch it`;
   }
   if (gap === "own-branch" || gap === "start-off-branch")
-    return `${counts} when this plan records its own branch, built on ${name}'s work: task_update #${plan.number} branch=<branch built on ${name}>`;
+    return `${counts} when this plan records its own branch, built on ${name}'s work: ${TASK_TOOL.update} #${plan.number} branch=<branch built on ${name}>`;
   if (gap === "git")
     return `${counts} once git can read ${name}'s branch and this plan's start: run ${COMMAND} herdr plans again`;
   return `${counts} when this plan is built on ${name}'s work: ${COMMAND} herdr start --plan ${shellWord(slug)} starts it on ${parent.branch} when --base is left out; a plan built here rebuilds its branch on ${parent.branch}`;
@@ -900,7 +901,7 @@ export function prepareReserve(world: PlansWorld, ref: string): PlanStart {
     if (ownerOf(world.who)(plan))
       return refuse(
         `Plan "${slug}" is running: this session started it, and only a queued plan is reserved.`,
-        `park it: task_update #${plan.number} with status pending once its phases stop, then run ${COMMAND} herdr plans --reserve ${shellWord(slug)}`,
+        `park it: ${TASK_TOOL.update} #${plan.number} with status pending once its phases stop, then run ${COMMAND} herdr plans --reserve ${shellWord(slug)}`,
       );
     return refuse(
       `Plan "${slug}" is not one of this session's queued plans: another session owns it.`,
@@ -977,7 +978,7 @@ export function prepareStart(world: PlansWorld, ref: string, start?: string): Pl
     if (recorded === null && stored.state === "child-gone")
       return refuse(
         `Plan "${slug}": no worktree is recorded, so the first launch's binding failed.`,
-        `find its worktree (git worktree list), then task_update #${plan.number} with worktree and branch`,
+        `find its worktree (git worktree list), then ${TASK_TOOL.update} #${plan.number} with worktree and branch`,
       );
     // The recorded worktree is a task row, which any session may write: only the folder a child
     // starts in (`<repo>/.claude/worktrees/<name>`) is reused, or one outside it that git lists and
@@ -991,7 +992,7 @@ export function prepareStart(world: PlansWorld, ref: string, start?: string): Pl
       )
         return refuse(
           `Plan "${slug}": its recorded worktree ${recorded.worktree} is not a child's folder (${home}).`,
-          `correct it with task_update #${plan.number} worktree, or release the plan`,
+          `correct it with ${TASK_TOOL.update} #${plan.number} worktree, or release the plan`,
         );
     }
     // A live terminal labelled for this plan is a child no row names: never start a second.
@@ -1095,7 +1096,7 @@ export function releaseByHand(
     return {
       ok: false,
       why: `Plan "${slug}" is still open: a child or this session is building it, and its files stay held.`,
-      fix: "finish it (task_done) or drop it, or stop its child; then release it",
+      fix: `finish it (${TASK_TOOL.done}) or drop it, or stop its child; then release it`,
     };
   const released = releasePlan(world.db, {
     project: world.project,

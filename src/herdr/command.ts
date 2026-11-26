@@ -10,6 +10,7 @@ import { locateCheckout } from "../project/resolve";
 import { type ProjectConfigRead, taskContext, taskWriteRefusal } from "../tasks/context";
 import { createTaskOps } from "../tasks/ops";
 import { branchTip } from "../tasks/stack-proof";
+import { TASK_TOOL } from "../tasks/words";
 import { openWorkDb, workDbFile } from "../tasks/work/db";
 import { CLAIM_PROCESS, callerOf } from "../tasks/work/identity";
 import { getTask, heldPlans, isOpen, planByRef } from "../tasks/work/queries";
@@ -839,7 +840,7 @@ function adoptPlans(ctx: HerdrContext, project: string, projectConfig: ProjectCo
     for (const plan of moved.value)
       ctx.out.line(
         "changed",
-        `Adopted plan #${plan.number} ${plan.plan ?? plan.subject}: its lead had ended, so ${plan.lead?.holder === "child" ? "its child's" : "its"} reservation is yours now${plan.lead?.holder === "self" ? `; take it first (task_take ${plan.plan ?? plan.subject}) before you start its next phase` : ""}`,
+        `Adopted plan #${plan.number} ${plan.plan ?? plan.subject}: its lead had ended, so ${plan.lead?.holder === "child" ? "its child's" : "its"} reservation is yours now${plan.lead?.holder === "self" ? `; take it first (${TASK_TOOL.take} ${plan.plan ?? plan.subject}) before you start its next phase` : ""}`,
       );
   } finally {
     db.close();
@@ -1110,7 +1111,7 @@ async function startChild(
     return refuse(
       ctx,
       `The recorded worktree ${worktree} is gone.`,
-      `Restore it, or record where the work is: task_update #${handout?.plan.number} with worktree and branch.`,
+      `Restore it, or record where the work is: ${TASK_TOOL.update} #${handout?.plan.number} with worktree and branch.`,
     );
   const branchExists =
     gitRoot && !reuse
@@ -1336,7 +1337,7 @@ async function startChild(
           "warn",
           `The child started, but its ${handout ? "plan" : "task"} binding failed: git lists no worktree named ${worktreeName} or on ${worktreeBranch(worktreeName)} within ${WORKTREE_BIND_WAIT_MS / 1000} seconds.`,
           {
-            fix: `find its worktree (git worktree list), then task_update ${taskRef} with worktree and branch`,
+            fix: `find its worktree (git worktree list), then ${TASK_TOOL.update} ${taskRef} with worktree and branch`,
           },
         );
         return 1;

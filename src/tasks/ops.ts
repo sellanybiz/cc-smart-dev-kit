@@ -191,8 +191,7 @@ function isFolderOnDisk(root: string, path: string): boolean {
 /** What a read adds when the project file stopped it from reading the deploy task folder. */
 const DEPLOY_NOT_READ = "Deploy tasks were not read.";
 
-const DELETE_TRACKED =
-  "Tracked deploy task: it is part of a commit, so close it with task_done instead";
+const DELETE_TRACKED = `Tracked deploy task: it is part of a commit, so close it with ${TASK_TOOL.done} instead`;
 
 export const TASK_LINE_CAP = 200;
 export const TASK_TEXT_CAP = 20_000;
@@ -631,11 +630,11 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
           input.phase !== undefined || input.plan === undefined || input.parent !== undefined;
         if (input.files !== undefined && notPlanTask)
           throw new Error(
-            "files belong to a plan task: create the plan with plan and a subject (no phase, no parent), or set files on it with task_update",
+            `files belong to a plan task: create the plan with plan and a subject (no phase, no parent), or set files on it with ${TASK_TOOL.update}`,
           );
         if (input.stacked_on !== undefined && notPlanTask)
           throw new Error(
-            "stacked_on belongs to a plan task: create the plan with plan and a subject (no phase, no parent), or set it with task_update",
+            `stacked_on belongs to a plan task: create the plan with plan and a subject (no phase, no parent), or set it with ${TASK_TOOL.update}`,
           );
         if (input.phase !== undefined || (input.plan !== undefined && input.parent === undefined)) {
           if (input.parent !== undefined)
