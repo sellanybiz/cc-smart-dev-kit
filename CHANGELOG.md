@@ -3,6 +3,28 @@
 What each release changed, newest first. A release's **What to run** steps are the ones to do
 in your own terminal after the update; the user guide is [README.md](README.md).
 
+## 6.7.2
+
+A second slop audit (`.claude/audits/2026-11-26-slop-homes-2.md`) found seven more copies of a
+shared home, in the parts the first one did not cover. Each now uses its home.
+
+- **Files you edit by hand read when they start with a byte order mark.** Windows Notepad adds
+  one. Until now these refused such a file:
+  - `gateway.json`: a router that restarted then ran with every slot off;
+  - a project's `.claude/settings.json` and `settings.local.json` in `doctor`: it missed
+    retired hook lines, and warned that nothing answers in a hook's place or that
+    `worktree.baseRef` is unset when it is set;
+  - `package.json` in the heavy-job queue: a script was judged by its name, not its body;
+  - `~/.claude/settings.json` in `migrate`: the check refused a file the write accepts.
+- **The blocking `gh` calls** of `worktrees clean` and the after-merge hook use one shared runner.
+  It opens no console window on Windows, and the time limit is written once.
+- **The worktree list** has one parser, which also reads Windows line ends.
+- **The error-message helper** has one home.
+
+**What to run:** `cc-smart-dev-kit update`. If you use the gateway, then run
+`cc-smart-dev-kit gateway setup`: the router's code changed (the `gateway.json` reader), so it
+asks before it restarts the router (a restart cuts answers in flight).
+
 ## 6.7.1
 
 Moves seven copies that a slop audit found back onto their one shared home
