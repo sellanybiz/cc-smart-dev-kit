@@ -567,16 +567,17 @@ exec "${realGit}" "$@"
       "mktree",
       "config",
       "commit-tree",
-      // One name pick: origin's branches, then this repository's.
+      // Where the push goes, then one name pick: its branches, then this repository's.
+      "remote",
       "ls-remote",
       "for-each-ref",
       "push",
     ]);
     // From the limits, by hand: two checkout reads of 5 s; the fetch 60 s; gh 10 s; the commit
     // 120 s; two name picks and pushes of 60 + 120 s; gh pr create 60 s; the take-back's delete
-    // 120 s; twelve quick calls of 10 s (the eleven above, and the second pick's branch list); 30 s.
+    // 120 s; thirteen quick calls of 10 s (the twelve above, and the second pick's branch list); 30 s.
     expect(PROPOSE_WORST_CASE_MS).toBe(
-      10_000 + 60_000 + 10_000 + 120_000 + 360_000 + 60_000 + 120_000 + 120_000 + 30_000,
+      10_000 + 60_000 + 10_000 + 120_000 + 360_000 + 60_000 + 120_000 + 130_000 + 30_000,
     );
   });
 
@@ -768,6 +769,22 @@ exec "${realGit}" "$@"
       "; the pushed branch was deleted from origin again; nothing was left behind",
     );
     expect(branchesIn(pushTo, "worktree-workflow-*")).toEqual([]);
+  });
+
+  test("a push URL apart from the fetch URL: names taken there and not on the fetch side are skipped", async () => {
+    const w = world();
+    const name = "worktree-workflow-allowCommit-20261023";
+    const pushTo = join(tempDir("propose-push-names"), "push.git");
+    git(dirname(pushTo), "init", "-q", "--bare", pushTo);
+    for (const taken of [name, `${name}-2`]) {
+      git(w.repo, "push", "-q", pushTo, `refs/remotes/origin/main:refs/heads/${taken}`);
+    }
+    git(w.repo, "config", "remote.origin.pushurl", pushTo);
+    const run = await w.run(["propose", "allowCommit", "true"]);
+    expect(run.errors).toEqual([]);
+    expect(run.status).toBe(0);
+    expect(run.lines[1]).toBe(`+ ${name}-3, cut from origin/main and pushed`);
+    expect(branchesIn(pushTo, "worktree-workflow-*")).toEqual([name, `${name}-2`, `${name}-3`]);
   });
 
   test("a base that cannot be fetched: refused with the fix, and nothing made", async () => {

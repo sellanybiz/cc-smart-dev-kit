@@ -335,7 +335,9 @@ and the plugin never writes the project's main checkout. `cc-smart-dev-kit workf
    change takes `-2`; the prefix stays so proposals from before 6.7.0 keep the day's count), with
    `git push --no-verify --porcelain --force-with-lease=refs/heads/<branch>:`: the empty lease
    lets the push create the branch only, so a name already on origin is refused (`[rejected]
-   (stale info)`), never overwritten, and the run tries the next free name once. Then it opens the
+   (stale info)`), never overwritten, and the run tries the next free name once. The name picks
+   read the push side (`git remote get-url --push origin`), so a separate `pushurl` is asked
+   where the push goes, not where the fetch reads. Then it opens the
    pull request with `gh pr create` into the base, with a body saying what changed, any raised
    `requires`, that it counts once merged, and `MADE_WITHOUT_HOOKS`. `--json` prints one
    `ProposedJson` line, `{ branch, from, setting, to, url }` (an unset value is `null`), and
