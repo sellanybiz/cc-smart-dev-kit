@@ -54,10 +54,17 @@ Root causes, traced in the code on origin/main (task descriptions #929/#930/#931
    - `runGit` gets a stdin option (`src/hooks/git.ts`), not a second spawner.
    - **The `--json` shape changes:** `worktree` is dropped. The portal's `proposedLine`, its success line and its fake move with it (the fake is built from the real output type). So do `PROPOSE_WORST_CASE_MS` and the timeout line.
    - Rejected: installing packages in a temp worktree (stack-specific, slow), and `commit --no-verify` in a worktree (still a checkout, still post-checkout).
-2. **#930, the person stays in the loop; the refusal does the work.**
-   - The overlap check is unchanged. A `.gitattributes` mark never loosens it: that would bypass `plans.mergeFiles`, a person-only control.
-   - When an overlap refusal (store, task_update, herdr) names paths the base marks `linguist-generated`, it says so. It prints the ready line `cc-smart-dev-kit workflow propose plans.mergeFiles "<current list>,<those paths>"`, which a session can now run (#929). The person merges that pull request.
-   - The generated reader moves into one shared home, `src/project/generated.ts`. It holds the pure parts (the arguments, the isolated environment, batching, the `-z` parse, the attribute name and the values that count) and is used by review-cover, claims and the refusal. Each caller runs git its own way: review-cover asynchronously with its deadline, the refusal synchronously.
+2. **#930 and the two later overlap reports: an overlap warns, it never blocks (the owner's ruling, 2026-11-26: "Always warn, no block option").**
+   - Two plans that share files may now run at the same time: a start, a reserve, a `task_update` of `files` and a herdr hand-out no longer refuse for an overlap. The git merge (and the rebase of the plan that merges second) settles the conflict. There is no setting that brings the block back.
+   - What replaces the refusal:
+     - The tool's answer gets one warning line naming the other plan and the shared paths.
+     - The same text is saved as an `Overlap:` note on both plans, once per pair and path set, so a later or other session sees it. It names the other plan's lead session when one is known.
+     - The note says the rule: the plan that merges second rebases onto the first one's merged code, resolves the conflicts, reruns the full check, and lists the overlapping plan and the shared files in its pull request.
+   - `plans.mergeFiles`, `plans.appendOnly` and `stacked_on` keep their meaning, now for the warning: paths they settle are not warned about.
+   - When the shared paths include files the base marks `linguist-generated`, the warning names them and prints the ready line `cc-smart-dev-kit workflow propose plans.mergeFiles "<current list>,<those paths>"`. That quiets the warning for good once the person merges that pull request.
+   - herdr's `plans` view shows an overlapping plan as ready, with its overlap named. The run-mode advice ("ready plans that share no file") becomes "ready plans", with the overlap noted.
+   - The generated reader moves into one shared home, `src/project/generated.ts`. It holds the pure parts (the arguments, the isolated environment, batching, the `-z` parse, the attribute name and the values that count) and is used by review-cover, claims and the warning. Each caller runs git its own way: review-cover asynchronously with its deadline, the warning synchronously.
+   - Not built, since the block is gone: per-phase files and a "start anyway" field, both asked for in the reports.
 3. **Security: generated marks from the base only.**
    - The shared reader ignores `info/attributes`, `core.attributesFile` and the system file.
    - Tests write `* linguist-generated` into each local source and expect an empty set, and a large fix after a review must not be covered.
@@ -79,10 +86,16 @@ Play safe vs new: play safe. Old behaviour stays where it was right: the branch-
 
 ## Files to change
 
-- **propose:** `src/workflow/propose.ts` (+test), `src/workflow/write.ts` (+test), `src/hooks/git.ts` (+ its test: the stdin option), `src/portal/actions.ts` (+test).
+- **propose:** `src/workflow/propose.ts` (+test), `src/workflow/write.ts` (+test), `src/hooks/git.ts` (+ its test: the stdin option), `src/portal/actions.ts` (+test), `src/setup/managed-json.ts` (+test: one `parseJsonObject(text, file)` that `readJsonObject` calls) and `src/project/init.ts` (its private `parseObject` copy goes) — the person's yes, 2026-11-26.
 - **gate:** `src/tasks/context.ts` (+test), `src/tasks/ops.ts`, a new `src/tasks/requires-gate.test.ts`, `src/herdr/plans.ts`, `src/herdr/command.ts` (+ the herdr plans tests).
 - **review:** `src/hooks/review-record.ts` (+test), `src/workflow/review-cover.ts` (+test), new `src/project/generated.ts` (+test), `src/workflow/claims.ts` (import only).
-- **refusal:** `src/tasks/work/store.ts`, `src/tasks/work/files.test.ts`, `src/tasks/files-check.ts` (+test). The herdr refusal text is in `src/herdr/plans.ts`, so this phase is blocked by gate.
+- **overlap:**
+  - the store and its tests: `src/tasks/work/store.ts`, `src/tasks/work/queries.ts`, `src/tasks/work/files.test.ts`, `src/tasks/work/reserve.test.ts`, `src/tasks/work/stacked.test.ts`;
+  - `src/tasks/files-check.ts` (+test), `src/tasks/ops.ts` (the warning line and the note), `src/tasks/words.ts`;
+  - `src/tasks/mcp.ts` (the server's instructions text);
+  - `src/herdr/plans.ts` (hand-out, `plans` view) and its tests.
+  - Blocked by gate (`ops.ts`, `herdr/plans.ts`) and review (`generated.ts`).
+- **skills:** `plugin/skills/plan-task/SKILL.md`, `plugin/skills/build/SKILL.md` (the second to merge rebases, reruns the check, names the overlap in the PR), `plugin/skills/herdr/SKILL.md` and `plugin/skills/tasks/SKILL.md` where they promise the block, `plugin/skills/pull-request/SKILL.md` if its body list needs the overlap line, `docs/design/instructions.md`.
 - **docs:**
   - `README.md` (propose, `plans.mergeFiles`, the review and task-tool rows);
   - `docs/design/workflow.md` (propose, the review record);
@@ -100,11 +113,12 @@ Play safe vs new: play safe. Old behaviour stays where it was right: the branch-
 | `propose` — Propose: plumbing commit, no worktree, no project hook; the portal's shape (#929) | propose files | builder, sonnet high (opus high while Sonnet is limited) | — |
 | `gate` — Gate: one up-front refusal for task writes and herdr (#931) | gate files | builder, sonnet high | — |
 | `review` — Review: record from a builder worktree, the PR's own branches, base-only generated marks (#934 + security) | review files | builder, opus high (merge gating, security) | — |
-| `refusal` — Refusal: name generated paths, print the ready propose line (#930) | refusal files | builder, sonnet high | `review` (uses `generated.ts`), `gate` (`herdr/plans.ts`) |
-| `docs` — Docs: the pages for all of it | docs files | rules-maintainer, sonnet high | all four |
+| `refusal` — Overlap: warn and record, never block; generated paths and the ready propose line (#930 + the two overlap reports) | overlap files | builder, sonnet high (opus high while Sonnet is limited) | `review` (uses `generated.ts`), `gate` (`ops.ts`, `herdr/plans.ts`) |
+| `skills` — Skills: plans may overlap; the second to merge rebases and reruns the check | skills files | rules-maintainer, sonnet high | — |
+| `docs` — Docs: the pages for all of it | docs files | rules-maintainer, sonnet high | all others |
 
-- Wave 1: propose, gate, review.
-- Wave 2: refusal.
+- Wave 1: propose, gate, review, skills.
+- Wave 2: refusal (overlap).
 - Wave 3: docs.
 - The lead: the live repro of #934 before the review phase starts (so its builder gets the facts), then the version, the CHANGELOG, the build and the full check.
 
@@ -125,12 +139,16 @@ Play safe vs new: play safe. Old behaviour stays where it was right: the branch-
   - A shallow or partial clone: `mktree` needs only the two trees and the blob, which the fetch brings.
   - `GIT_DIR` or `GIT_INDEX_FILE` from a hook: stripped by `gitEnv`.
   - Windows: no shell, `/` paths.
-- **refusal:**
-  - Generated paths are named only when they cause the overlap.
-  - A folder entry that holds a generated file still overlaps, and the line names the file.
-  - git < 2.40 or no `.gitattributes`: no generated list, plain refusal.
-  - A broad `*` mark on base: named as is. It loosens nothing, because the person decides.
-  - The current `mergeFiles` list is kept in the printed line, comma-joined as `propose` takes it.
+- **overlap:**
+  - The warning and the note name only paths that really overlap; `mergeFiles`, `appendOnly` and a proved stack still settle theirs.
+  - One `Overlap:` note per pair of plans and path set: a repeat start or update with the same overlap adds no second note. A wider overlap adds a new one.
+  - Both plans get the note, including a plan another session leads. Notes are append-only, so writing one into another lead's plan is safe.
+  - A folder entry that holds a generated file: the line names the file.
+  - git < 2.40 or no `.gitattributes`: no generated list, only the plain warning.
+  - A broad `*` mark on base: named as is.
+  - The current `mergeFiles` list is kept in the printed propose line, comma-joined as `propose` takes it.
+  - herdr reserve and hand-out of overlapping plans: allowed, each child is told the overlap in its brief or its first note.
+  - Old tests that asserted the refusal now assert the warning and the note (the change is deliberate, not a weakened test). Each new assertion is seen red on the old code.
 - **security:**
   - Each local attribute source is ignored (three tests).
   - A mark set only on the branch is ignored, as today.
@@ -182,7 +200,7 @@ Revert the merge; a 6.7.1 with the old behaviour if needed (never a lower versio
   - Expected before the fix: no start and no record when the hook `cwd` is the agent worktree. If the hook `cwd` stays the main checkout after a `cd`, the cause is elsewhere: the review phase's brief changes before it starts.
 - **Tests that fail first:**
   - propose: a project pre-commit hook that always fails, and a pre-push hook that always fails, are both bypassed, and the proposal lands; `commit.gpgSign=true` gives `-S`; a taken name is refused by the lease; the portal parses the real `--json` shape.
-  - refusal: a base-marked generated file in an overlap is named with the ready propose line, in both orders and for herdr.
+  - overlap: two plans sharing a file both start (and reserve, and update files); each gets one `Overlap:` note and the tool answer a warning line; a base-marked generated file in the overlap is named with the ready propose line, in both orders and for herdr; a repeat adds no second note.
   - security: `info/attributes`, `core.attributesFile` and a branch-only mark each give an empty set; a 500-line fix after a review is not covered.
   - gate: `task_update` with `files` and a too-new `requires` gives the same refusal as `task_create`; a broken file too; `task_list` still lists and names the problem; herdr refuses before reserving.
   - review:
