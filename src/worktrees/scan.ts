@@ -9,6 +9,7 @@ import { existsSync, mkdtempSync, readdirSync, rmSync, statSync } from "node:fs"
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { COMMAND } from "../build-info";
+import { GH_TIMEOUT_MS, runGhSync } from "../hooks/gh";
 import {
   GUARD_GIT_TIMEOUT_MS,
   isInside,
@@ -236,9 +237,6 @@ export interface ScanOptions {
  */
 export type DeleteOptions = ScanOptions & { recorded: RecordedBranches };
 
-/** How long a `gh` call may take: the same 10 s the guards give one read-only call. */
-const GH_TIMEOUT_MS = 10_000;
-
 /**
  * Is every commit on this branch on `baseRef` under another sha? `git cherry` says so with a
  * `-` for each commit whose change is already there: what a rebase merge or a cherry-pick
@@ -275,40 +273,38 @@ export function pullRequestState(
   head: string,
   env: Env,
 ): PullRequestState {
+  const run = runGhSync(
+    [
+      "pr",
+      "list",
+      "--head",
+      branch,
+      "--state",
+      "all",
+      "--json",
+      "state,headRefOid",
+      "--limit",
+      GH_PR_LIMIT,
+    ],
+    { env, folder: repo, timeoutMs: GH_TIMEOUT_MS },
+  );
+  if (run.kind !== "ok") return "unknown";
+  let parsed: unknown;
   try {
-    if (Bun.which("gh", { PATH: env.PATH ?? "" }) === null) return "unknown";
-    const run = Bun.spawnSync(
-      [
-        "gh",
-        "pr",
-        "list",
-        "--head",
-        branch,
-        "--state",
-        "all",
-        "--json",
-        "state,headRefOid",
-        "--limit",
-        GH_PR_LIMIT,
-      ],
-      { cwd: repo, env, stdin: "ignore", stderr: "pipe", stdout: "pipe", timeout: GH_TIMEOUT_MS },
-    );
-    if (run.exitCode !== 0) return "unknown";
-    const parsed: unknown = JSON.parse(run.stdout.toString() || "null");
-    if (!Array.isArray(parsed)) return "unknown";
-    const rows = parsed.filter(
-      (row): row is { state?: unknown; headRefOid?: unknown } =>
-        row !== null && typeof row === "object",
-    );
-    const at = (state: string) =>
-      rows.some((row) => row.state === state && row.headRefOid === head);
-    if (at("MERGED")) return "merged";
-    if (rows.some((row) => row.state === "OPEN")) return "open";
-    return at("CLOSED") ? "closed" : "none";
+    parsed = JSON.parse(run.out || "null");
   } catch {
-    // A call that timed out, or an answer that is not JSON: not known either way.
+    // An answer that is not JSON: not known either way.
     return "unknown";
   }
+  if (!Array.isArray(parsed)) return "unknown";
+  const rows = parsed.filter(
+    (row): row is { state?: unknown; headRefOid?: unknown } =>
+      row !== null && typeof row === "object",
+  );
+  const at = (state: string) => rows.some((row) => row.state === state && row.headRefOid === head);
+  if (at("MERGED")) return "merged";
+  if (rows.some((row) => row.state === "OPEN")) return "open";
+  return at("CLOSED") ? "closed" : "none";
 }
 
 /** Is this branch's pull request merged at exactly this head? False when gh cannot say. */

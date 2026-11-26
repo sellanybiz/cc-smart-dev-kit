@@ -64,6 +64,7 @@ import type { LeadPlanState } from "../tasks/work/lead-plans";
 import type { ReadState } from "../tasks/work/read";
 import { startBudget } from "./budget";
 import { cappedHookList } from "./capped-list";
+import { GH_TIMEOUT_MS, runGhSync } from "./gh";
 import { GUARD_GIT_TIMEOUT_MS, innermostWorktree, listWorktrees, runGit } from "./git";
 import { addContext, type HookResult, SILENT, stringField, toolInput } from "./io";
 import type { Env, HookContext } from "./run";
@@ -1174,9 +1175,6 @@ export function pullRequestCallsWithAliases(
   return pullRequestCalls(command, aliases, dialect);
 }
 
-/** How long one `gh` call in this hook may take: both hooks allow a gh call 10 s. */
-const GH_TIMEOUT_MS = 10_000;
-
 /**
  * How long `gh alias list` may take. It reads the person's own config file (no network), so a
  * gh that hangs on it is broken — and a guard has 30 s of its own, which its other gh calls
@@ -1212,25 +1210,10 @@ export function readGhAliases(
   timeoutMs: number = ALIAS_TIMEOUT_MS,
 ): Map<string, string> | null {
   if (timeoutMs <= 0) return null;
-  try {
-    const run = Bun.spawnSync(["gh", "alias", "list"], {
-      cwd: folder,
-      env,
-      stdin: "ignore",
-      stdout: "pipe",
-      stderr: "pipe",
-      timeout: timeoutMs,
-    });
-    const out = run.stdout.toString();
-    if (run.exitCode !== 0) {
-      // gh's own answer for a person with no aliases at all (checked against 2.102.0's source).
-      return /no aliases configured/i.test(`${out}${run.stderr.toString()}`) ? new Map() : null;
-    }
-    return parseAliasList(out);
-  } catch {
-    // No gh on PATH, or a call that timed out.
-    return null;
-  }
+  const run = runGhSync(["alias", "list"], { env, folder, timeoutMs });
+  if (run.kind === "ok") return parseAliasList(run.out);
+  // gh's own answer for a person with no aliases at all (checked against 2.102.0's source).
+  return /no aliases configured/i.test(`${run.out}${run.err}`) ? new Map() : null;
 }
 
 /**
@@ -1523,24 +1506,18 @@ function viewPullRequest(
 ): PullRequestView | null {
   // Nothing left: the call is not made at all (a spawn with `timeout: 0` has no limit).
   if (timeoutMs <= 0) return null;
-  try {
-    const view = Bun.spawnSync(
-      [
-        "gh",
-        "pr",
-        "view",
-        ...(ref === null ? [] : [ref]),
-        ...(repo === null ? [] : ["--repo", repo]),
-        "--json",
-        PULL_REQUEST_FIELDS,
-      ],
-      { cwd: folder, env, stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: timeoutMs },
-    );
-    return view.exitCode === 0 ? parsePullRequestView(view.stdout.toString()) : null;
-  } catch {
-    // No gh on PATH.
-    return null;
-  }
+  const view = runGhSync(
+    [
+      "pr",
+      "view",
+      ...(ref === null ? [] : [ref]),
+      ...(repo === null ? [] : ["--repo", repo]),
+      "--json",
+      PULL_REQUEST_FIELDS,
+    ],
+    { env, folder, timeoutMs },
+  );
+  return view.kind === "ok" ? parsePullRequestView(view.out) : null;
 }
 
 /** The file that records one handled pull request of one repo. */
