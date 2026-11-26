@@ -35,7 +35,9 @@ export const GUARD_GIT_TIMEOUT_MS = 5_000;
 /**
  * A git command in `cwd`, without the GIT_* variables that point at another repo. `own` is set
  * after those are dropped: the variables this one call needs on purpose (a temporary object
- * folder, `src/workflow/review-cover.ts`), never ones inherited from outside.
+ * folder, `src/workflow/review-cover.ts`), never ones inherited from outside. `input` is the
+ * text git reads on stdin, as UTF-8 bytes exactly (`hash-object --stdin`, `mktree`); without it
+ * git reads nothing.
  */
 export function runGit(
   cwd: string,
@@ -43,8 +45,9 @@ export function runGit(
   env: Env,
   timeoutMs = 15_000,
   own: Record<string, string> = {},
+  input?: string,
 ): GitRun {
-  return spawnGit(cwd, args, env, timeoutMs, own, true);
+  return spawnGit(cwd, args, env, timeoutMs, own, true, input);
 }
 
 /**
@@ -62,12 +65,13 @@ function spawnGit(
   timeoutMs: number,
   own: Record<string, string>,
   trim: boolean,
+  input?: string,
 ): GitRun {
   try {
     const result = Bun.spawnSync(["git", ...args], {
       cwd,
       env: { ...gitEnv(env), ...own },
-      stdin: "ignore",
+      stdin: input === undefined ? "ignore" : new TextEncoder().encode(input),
       stdout: "pipe",
       stderr: "pipe",
       timeout: timeoutMs,

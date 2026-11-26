@@ -70,7 +70,12 @@ import {
   readLastCheck,
   updateFiles,
 } from "../update/state";
-import { PROPOSE_WORST_CASE_MS, proposeTimeoutLine } from "../workflow/propose";
+import {
+  MADE_WITHOUT_HOOKS,
+  PROPOSE_WORST_CASE_MS,
+  type ProposedJson,
+  proposeTimeoutLine,
+} from "../workflow/propose";
 import { WORKFLOW_KEYS, type WorkflowKey } from "../workflow/schema";
 import { readPortalAgents } from "./api/agents-read";
 import { forgetPageReads } from "./api/page-reads";
@@ -894,7 +899,7 @@ async function projectWorkflowPropose(
   if (!unset && value.startsWith("-")) {
     return { lines: [`"${value}" is not a value: it starts with "-".`], ok: false };
   }
-  // `--json`: on success the command prints one line `{ url, branch, worktree, … }` — a contract
+  // `--json`: on success the command prints one line `{ url, branch, … }` (`ProposedJson`) — a contract
   // that does not move with its human words — and on any refusal it prints none, so a URL can
   // never come out of a failure. The child gets the command's own worst case and more
   // (`PROPOSE_WORST_CASE_MS`): its limits fire, and its take-back runs, before it is ended.
@@ -914,7 +919,7 @@ async function projectWorkflowPropose(
   const opened = ok ? proposedLine(run.lines) : null;
   if (opened === null) return { lines, ok };
   return {
-    lines: [`Opened ${opened.url}`, `Branch ${opened.branch}, in ${opened.worktree}.`],
+    lines: [`Opened ${opened.url}`, `Branch ${opened.branch}. ${MADE_WITHOUT_HOOKS}`],
     ok,
     url: opened.url,
   };
@@ -1090,10 +1095,10 @@ async function projectGatewayProfile(
 
 /**
  * The pull request a successful `workflow propose --json` printed: its one JSON line, read as
- * the command's contract (`url`, `branch`, `worktree`). Null for any other output — "already
- * set" and "was not set" are plain lines, and a refusal prints no JSON.
+ * the command's contract (`ProposedJson`: the card needs its `url` and `branch`). Null for any
+ * other output — "already set" and "was not set" are plain lines, and a refusal prints no JSON.
  */
-function proposedLine(lines: string[]): { branch: string; url: string; worktree: string } | null {
+function proposedLine(lines: string[]): Pick<ProposedJson, "branch" | "url"> | null {
   for (const line of [...lines].reverse()) {
     let parsed: unknown;
     try {
@@ -1101,13 +1106,8 @@ function proposedLine(lines: string[]): { branch: string; url: string; worktree:
     } catch {
       continue;
     }
-    if (
-      isObject(parsed) &&
-      typeof parsed.url === "string" &&
-      typeof parsed.branch === "string" &&
-      typeof parsed.worktree === "string"
-    ) {
-      return { branch: parsed.branch, url: parsed.url, worktree: parsed.worktree };
+    if (isObject(parsed) && typeof parsed.url === "string" && typeof parsed.branch === "string") {
+      return { branch: parsed.branch, url: parsed.url };
     }
   }
   return null;

@@ -20,9 +20,30 @@ import {
   formatKeyPath,
   type KeyPath,
   type OwnedRecord,
+  parseJsonObject,
 } from "./managed-json";
 import { restore } from "./restore";
 import { ConcurrentChangeError, listBackups, readChanged, writeManagedFile } from "./write";
+
+describe("parseJsonObject", () => {
+  test("a text keeps its own indent and its exact text; a leading byte order mark is skipped", () => {
+    const text = '﻿{\r\n\t"a": 1\r\n}';
+    expect(parseJsonObject(text, "x.json")).toEqual({ data: { a: 1 }, indent: "\t", text });
+  });
+
+  test("a blank text is an empty object", () => {
+    expect(parseJsonObject(" \n", "x.json")).toEqual({ data: {}, indent: "  ", text: " \n" });
+  });
+
+  test("text that is not JSON, or not an object, is refused naming the file", () => {
+    expect(() => parseJsonObject("{,}", "origin/main:x.json")).toThrow(
+      /^origin\/main:x\.json is not valid JSON \(.+\)\. Fix it by hand, then run again\.$/,
+    );
+    expect(() => parseJsonObject("[1]", "origin/main:x.json")).toThrow(
+      "origin/main:x.json must hold a JSON object.",
+    );
+  });
+});
 
 const AUTO_UPDATE = ["extraKnownMarketplaces", "cc-smart-dev-kit", "autoUpdate"] as const;
 
