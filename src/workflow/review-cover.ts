@@ -25,11 +25,12 @@
  * it came in: a fix commit, a rebase that edits, a conflict resolved by hand, a new file.
  *
  * **What a count leaves out, and what it refuses.** Files the base marks `linguist-generated`
- * (read with `git check-attr --source=origin/<base>`: the base's attributes, never the branch's
- * own, so a pull request cannot hide a file by marking it) are listed, not counted. A binary file
- * changed after the review is never covered: its lines cannot be counted. A review whose change
- * is already all in the base (its branch was squash-merged, and the name was used again) is no
- * candidate at all.
+ * (read with `git check-attr --source=origin/<base>` and no local attribute file,
+ * `project/generated.ts`: the base's attributes, never the branch's own or the checkout's, so
+ * neither a pull request nor a session can hide a file by marking it) are listed, not counted.
+ * A binary file changed after the review is never covered: its lines cannot be counted. A review
+ * whose change is already all in the base (its branch was squash-merged, and the name was used
+ * again) is no candidate at all.
  *
  * Anything it cannot read is "not covered", with the reason: the head or the reviewed commit not
  * in this checkout (fetch it), no `origin/<base>`, git older than 2.40 (`check-attr --source`
@@ -44,14 +45,12 @@ import { join } from "node:path";
 import { COMMAND } from "../build-info/names";
 import { GIT_TIMED_OUT, type GitRun, GUARD_GIT_TIMEOUT_MS, runGitAsync } from "../hooks/git";
 import type { Env } from "../hooks/run";
+import { generatedChecks, generatedIn, openBaseOnlyGit } from "../project/generated";
 import type { Checkout } from "../project/resolve";
 import { COMMIT_SHA, type TrustedReview } from "./reviews";
 
 /** `git check-attr --source` came in git 2.40: an older git can only match the exact head. */
 export const MIN_COVER_GIT = "2.40.0";
-
-/** How many paths one `git check-attr` call names: well inside every system's argument limit. */
-const PATHS_PER_CALL = 200;
 
 /** `workflow.fixesAfterReview` as resolved: each a whole number, 0 or more. */
 export interface FixLimits {
@@ -358,10 +357,10 @@ async function measure(
     GIT_OBJECT_DIRECTORY: objects,
     GIT_ALTERNATE_OBJECT_DIRECTORIES: alternateEntry(join(checkout.commonDir, "objects")),
   };
-  const run = async (args: string[]): Promise<GitRun> => {
+  const run = async (args: string[], vars: Record<string, string> = own): Promise<GitRun> => {
     const left = (git.timeFor ?? ((limit: number) => limit))(GUARD_GIT_TIMEOUT_MS);
     if (left <= 0) throw new OutOfTime();
-    const result = await (git.run ?? runGitAsync)(checkout.root, args, git.env, left, own);
+    const result = await (git.run ?? runGitAsync)(checkout.root, args, git.env, left, vars);
     if (result.code === null && result.err === GIT_TIMED_OUT) throw new OutOfTime();
     return result;
   };
@@ -377,7 +376,8 @@ async function measure(
   if (!COMMIT_SHA.test(head) || (await commit(head)) === null) {
     throw new Uncovered(`${short(head)} is not in this checkout: fetch it (git fetch origin)`);
   }
-  if ((await commit(baseRef)) === null) {
+  const baseSha = await commit(baseRef);
+  if (baseSha === null) {
     throw new Uncovered(
       `origin/${base} is not in this checkout: fetch it (git fetch origin ${base})`,
     );
@@ -411,29 +411,23 @@ async function measure(
     return parseNumstat(diff.out);
   };
   const generatedOf = async (paths: readonly string[]): Promise<Set<string>> => {
-    const generated = new Set<string>();
-    for (let at = 0; at < paths.length; at += PATHS_PER_CALL) {
-      const some = paths.slice(at, at + PATHS_PER_CALL);
-      const attrs = await run([
-        "check-attr",
-        `--source=${baseRef}`,
-        "-z",
-        "linguist-generated",
-        "--",
-        ...some,
-      ]);
-      if (!attrs.ok) {
-        throw new Uncovered(
-          `which files origin/${base} marks as generated cannot be read (${attrs.err})`,
-        );
+    // The base's own marks, never a local attribute file (`project/generated.ts`).
+    const isolated = openBaseOnlyGit(checkout.commonDir, baseSha);
+    try {
+      const generated = new Set<string>();
+      for (const args of generatedChecks(baseSha, paths)) {
+        const attrs = await run(args, isolated.env);
+        if (!attrs.ok) {
+          throw new Uncovered(
+            `which files origin/${base} marks as generated cannot be read (${attrs.err})`,
+          );
+        }
+        for (const path of generatedIn(attrs.out)) generated.add(path);
       }
-      const fields = attrs.out.split("\0");
-      for (let index = 0; index + 2 < fields.length; index += 3) {
-        const value = fields[index + 2];
-        if (value === "set" || value === "true") generated.add(fields[index] ?? "");
-      }
+      return generated;
+    } finally {
+      isolated.remove();
     }
-    return generated;
   };
   const tally = (changed: readonly Changed[], generated: ReadonlySet<string>): ChangeCount => {
     const count: ChangeCount = { lines: 0, files: 0, generated: [], binary: [] };

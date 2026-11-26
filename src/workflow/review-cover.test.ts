@@ -9,7 +9,7 @@ import { dirname, join } from "node:path";
 import { GIT_TIMED_OUT, runGitAsync } from "../hooks/git";
 import { type Checkout, locateCheckout } from "../project/resolve";
 import { makeClone } from "../testing/hooks";
-import { cleanGitEnv, git, withGitVersion } from "../testing/temp";
+import { cleanGitEnv, git, tempDir, withGitVersion } from "../testing/temp";
 import {
   allowanceOf,
   type ChangeCount,
@@ -632,6 +632,53 @@ describe("D17: what is listed, not counted, and what is never covered", () => {
     },
     SLOW,
   );
+
+  // A checkout's own attribute files are not the base: a session could write one with no commit.
+  for (const [name, mark] of [
+    [
+      "the repository's info/attributes",
+      (w: World) => {
+        writeFileSync(join(w.repo, ".git", "info", "attributes"), "* linguist-generated\n");
+        return w.env;
+      },
+    ],
+    [
+      "a core.attributesFile",
+      (w: World) => {
+        const file = join(tempDir("attributes"), "attributes");
+        writeFileSync(file, "* linguist-generated=true\n");
+        git(w.repo, "config", "core.attributesFile", file);
+        return w.env;
+      },
+    ],
+    [
+      "the person's own attributes file ($XDG_CONFIG_HOME/git/attributes)",
+      (w: World) => {
+        const config = tempDir("xdg");
+        mkdirSync(join(config, "git"));
+        writeFileSync(join(config, "git", "attributes"), "* linguist-generated\n");
+        return { ...w.env, XDG_CONFIG_HOME: config };
+      },
+    ],
+  ] as const) {
+    test(
+      `security: a mark in ${name} hides nothing: a 500-line fix is not covered`,
+      async () => {
+        const w = world();
+        const R = reviewed(w.repo);
+        commit(w.repo, { "big.js": numbered(500, "big") });
+        const env = mark(w);
+        expect(await cover(w, [record(R)], {}, LIMITS, env)).toEqual({
+          covered: false,
+          delta: count(500, 1),
+          review: R,
+          reviewed: REVIEWED,
+          why: `500 lines in 1 file changed after the review of ${short(R)}, over the limit of 200 lines and 10 files (fixesAfterReview: 200 lines, 10 files, or 20% of the reviewed 100 lines in 2 files)`,
+        });
+      },
+      SLOW,
+    );
+  }
 
   test(
     "D17: a binary file changed after the review: not covered",
