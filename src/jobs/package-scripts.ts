@@ -14,6 +14,7 @@
 
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import { parseUserJson, readUserJson } from "../setup/user-json";
 import type { ScriptBodies } from "./classify";
 
 /** Read errors that mean "no package.json in this folder": the search goes on above it. */
@@ -57,7 +58,7 @@ export function packageScripts(folder: string): ScriptBodies | null {
 function scriptsOf(text: string, folder: string): ScriptBodies | null {
   let parsed: unknown;
   try {
-    parsed = JSON.parse(text);
+    parsed = parseUserJson(text);
   } catch {
     return null; // Not JSON: the classifier keeps its old answer.
   }
@@ -97,7 +98,7 @@ function usesYarnBerry(packageJson: object, folder: string): boolean {
 /** The parsed `package.json` in `dir`, or null when there is none it can read. */
 function packageJsonAt(dir: string): object | null {
   try {
-    const parsed: unknown = JSON.parse(readFileSync(join(dir, "package.json"), "utf8"));
+    const parsed = readUserJson(join(dir, "package.json"));
     return parsed !== null && typeof parsed === "object" ? parsed : null;
   } catch {
     return null; // No file, or not JSON: it names no package manager.

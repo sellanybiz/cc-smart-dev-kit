@@ -710,7 +710,7 @@ export function settingsChanges(
   const remove: string[] = [];
   const kept: string[] = [];
   if (!existsSync(settingsFile)) return { set, remove, kept };
-  const parsed: unknown = JSON.parse(readFileSync(settingsFile, "utf8"));
+  const parsed = readUserJson(settingsFile);
   const settings = isObject(parsed) ? parsed : {};
   const records = ownedRecords(stateDir, realTarget(settingsFile));
   for (const key of new Set([...Object.keys(newEnv), ...Object.keys(oldEnv)])) {
@@ -1010,7 +1010,7 @@ export function readPlan(
   const stateDir = oldStateFolder(old);
   if (existsSync(paths.settingsFile)) {
     try {
-      const parsed: unknown = JSON.parse(readFileSync(paths.settingsFile, "utf8"));
+      const parsed = readUserJson(paths.settingsFile);
       if (!isObject(parsed)) {
         return {
           error: `${paths.settingsFile} must hold a JSON object. Fix it by hand, then run again.`,
