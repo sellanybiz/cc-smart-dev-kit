@@ -4,6 +4,7 @@ import { hostname } from "node:os";
 import type { ZodNumber } from "zod";
 import { COMMAND } from "../build-info";
 import type { CliPaths } from "../cli/paths";
+import { messageOf } from "../error-message";
 import { resolveProject } from "../project/resolve";
 import { shellWord } from "../shell/quote";
 import { isInsideHeavyJob, readProcStat } from "./ancestry";
@@ -141,8 +142,6 @@ function parseRunArgs(args: readonly string[]): RunArgs | { error: string } {
   if (program === undefined || program === "") return { error: "no command after --" };
   return { kind, exclusive, hook, command: [program, ...rest] };
 }
-
-const messageOf = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
 /**
  * The limits for one queued job: this machine's facts, the settings as they are NOW (a limit

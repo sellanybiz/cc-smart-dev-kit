@@ -29,6 +29,7 @@
 import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import type { CliPaths } from "../cli/paths";
+import { messageOf } from "../error-message";
 import { samePath } from "../hooks/git";
 import type { Env } from "../hooks/run";
 import { liveSessions, type SessionRecord } from "../hooks/sessions";
@@ -123,10 +124,6 @@ function sessionsToKeep(deps: AutoCleanDeps, claudeConfigDir: string): SessionRe
     ...running,
     { cwd: deps.keep, name: "the session that started the clean", pid: 0, sessionId: "starting" },
   ];
-}
-
-function messageOf(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 /** One line for the log: what the run removed, forgot, failed at and kept. */

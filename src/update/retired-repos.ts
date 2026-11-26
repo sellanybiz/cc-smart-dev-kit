@@ -18,6 +18,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { COMMAND } from "../build-info";
 import { type CliPaths, tildify } from "../cli/paths";
+import { messageOf } from "../error-message";
 import {
   allWiredHandlers,
   projectSettingsFiles,
@@ -46,10 +47,6 @@ export interface RetiredRepo {
   engineFiles: string[];
   /** Why its cc-smart-dev-kit.json could not be read (not JSON); null when it could. */
   error: null | string;
-}
-
-function messageOf(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 /**

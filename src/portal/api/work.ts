@@ -98,11 +98,6 @@ async function listedWorktrees(repo: string, env: Env): Promise<ListedWorktree[]
   return listed.ok ? parseWorktreeList(listed.out) : null;
 }
 
-/** Why a thrown thing happened, in one line. */
-function _reasonOf(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
 export async function workAnswer(deps: PageDataDeps): Promise<WorkAnswer> {
   const paths = deps.action.portal.paths;
   const now = deps.action.portal.now();
