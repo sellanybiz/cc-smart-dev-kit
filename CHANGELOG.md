@@ -25,7 +25,9 @@ at the same time.
   plumbing from the base branch (no worktree, no checkout), signs it when `commit.gpgSign` is on,
   and pushes with `--no-verify` and a lease that only creates the branch. So a project hook that
   needs installed packages (a lefthook or husky pre-commit) no longer stops it. The pull request
-  says the commit was made without the project's hooks. Its `--json` line has no `worktree` field.
+  says the commit was made without the project's hooks. A failed proposal takes its branch back
+  where the push went (a separate push URL too), and each run's commit is its own
+  (`Proposal-Id:` trailer). Its `--json` line has no `worktree` field.
   A project `reference-transaction` hook still runs on the fetch, the push and a take-back
   delete.
 - **Task writes refuse up front when the project file cannot be used.** When `requires` asks
@@ -45,8 +47,10 @@ at the same time.
   claims` leave out files marked `linguist-generated` only by the base commit's own
   `.gitattributes`. A mark in `.git/info/attributes`, in a `core.attributesFile` or in the
   system file no longer counts, so a local file cannot hide a big change from the review limit.
-  What counts as binary comes from the base only too, so a local `* binary` cannot zero a big
-  change's lines. `workflow claims` reads every file as text, so a local `binary` mark or an
+  What counts as binary is the base's too, and so is the replay's merge: no local attribute
+  (a `* binary` that would zero a big change's lines), merge driver, inherited
+  `GIT_ATTR_SOURCE`, config passed in the environment or replace ref can change what the limit
+  measures. `workflow claims` reads every file as text, so a local `binary` mark or an
   empty textconv cannot hide a claim either.
 
 **What to run:** `cc-smart-dev-kit update`, then restart open Claude Code sessions: a session keeps

@@ -356,10 +356,14 @@ A setting the project's file cannot hold — the status-line and update-hold swi
 the person's, per machine — is refused before the fetch, with the command that does change it.
 
 **Nothing is left half made.** A step that fails after the push deletes the branch on origin
-again — leased at this run's commit, with `--no-verify`, so a branch another run pushed under
-the name is never deleted — and the line says what is left if that fails. A push that failed or
-was ended may still have landed, so origin is asked first (`ls-remote`) before the line says
-nothing is left. A `gh pr create` that does not answer in time leaves the pushed branch, since
+again — leased at this run's commit, with `--no-verify` and `--porcelain`, so it goes where the
+push went (a separate `pushurl` too) and a branch another run pushed under the name is never
+deleted — and the line says what is left if that fails. Each run's commit carries its own
+`Proposal-Id:` trailer, so two runs in the same second never make the same commit and a lease can
+only ever match this run's own push. A push or a delete is judged by git's porcelain line for its
+ref, not by the exit code alone: a push that landed but exited non-zero goes on, a delete that
+worked is reported as deleted, and a name the delete finds absent or someone else's is no branch
+of this run. A `gh pr create` that does not answer in time leaves the pushed branch, since
 the pull request may be open. `PROPOSE_WORST_CASE_MS` sums the step limits, so a caller that runs
 the command in a child (the portal) lets its take-back run. The command pushes a branch and
 opens a pull request in a child no hook sees. Until 5.6.x the shell judge asked the person first
@@ -424,12 +428,20 @@ review of H itself covers H on any branch, as before. The one home is
   repository config); `-c core.attributesFile=<folder>/none`, a file that never exists (no
   personal file, its XDG default included, on any git version) and `-c core.ignoreCase=false`;
   `GIT_CONFIG_GLOBAL=<folder>/none` and `GIT_CONFIG_NOSYSTEM=1` (no personal or system config);
-  and `GIT_ATTR_NOSYSTEM=1` (no system file; no manual page lists it, git's `attr.c` reads it, and
-  a test cannot write the system file). **What counts as binary is the base's too** (6.7.0): the
+  `GIT_CONFIG_COUNT=0` and an empty `GIT_CONFIG_PARAMETERS` (no config passed in the environment,
+  `attr.tree` included); `GIT_ATTR_SOURCE=<the base commit>` (an inherited one cannot point the
+  attributes at another tree; git 2.42 and later read it, an older git reads the folder's work
+  tree, which holds the same base files); and `GIT_ATTR_NOSYSTEM=1` (no system file; no manual page
+  lists it, git's `attr.c` reads it, and a test cannot write the system file). **What counts as binary is the base's too** (6.7.0): the
   `git diff --numstat` runs in that folder's own work tree, which a sparse `read-tree` fills with
   the base's `.gitattributes` files and nothing else, so a local `* binary` cannot zero a text
   change's lines, and a local mark cannot make a real binary count as text. A binary file in the
-  change is never covered.
+  change is never covered. The replay's `merge-tree`, and the diff that compares its result, run
+  in that folder too, so a local `merge=<driver>` attribute or a driver in the local config can
+  neither shape the replayed tree nor run a command. Every git call of the measure sets
+  `GIT_NO_REPLACE_OBJECTS=1`, so a local replace ref cannot stand in for a reviewed commit. The
+  base's files go into that folder only once a review is a candidate, so a pull request no
+  review could cover pays nothing.
 - Anything it cannot read is "not covered", with the reason: the head or the reviewed commit not in
   this checkout ("fetch it"), no `origin/<base>`, the caller's time running out, or git older than
   2.40 (`check-attr --source` came in 2.40; `doctor` warns with one `!` line, and such a machine

@@ -462,16 +462,15 @@ export function projectMocks(now: number, empty: boolean): ProjectMocks {
           // One refusal, so the card's refused state is seen in mock data too.
           return {
             lines: [
-              "gh pr create failed: HTTP 403 (mock). Check that gh is logged in (`gh auth login`) and that your account may open a pull request on this repository, then try again; the branch and its worktree were taken back.",
+              "gh pr create failed: HTTP 403 (mock). Check that gh is logged in (`gh auth login`) and that your account may open a pull request on this repository, then try again; the pushed branch was deleted from origin again; nothing was left behind",
             ],
             ok: false,
           };
         }
         return {
           lines: [
-            `+ ${setting} in .claude/cc-smart-dev-kit.json`,
-            "+ worktree-workflow-mock (mock), cut from origin/main and pushed",
-            "+ pull request into main: https://github.com/example-org/my-app/pull/44",
+            "Opened https://github.com/example-org/my-app/pull/44",
+            "Branch worktree-workflow-mock (mock). The commit was made without the project's git hooks: a line a hook adds (such as a sign-off) is missing, and a clean filter on the file did not run. The review and CI are its gate.",
           ],
           ok: true,
           url: "https://github.com/example-org/my-app/pull/44",
