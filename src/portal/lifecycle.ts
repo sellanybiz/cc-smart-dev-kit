@@ -25,6 +25,7 @@ import { join } from "node:path";
 import { COMMAND } from "../build-info";
 import { isOlder } from "../build-info/semver";
 import type { CliPaths } from "../cli/paths";
+import { messageOf } from "../error-message";
 import { DEFAULT_PORTAL_PORT } from "../ports";
 import { bunConfigArg } from "../setup/bun-config";
 import { LockBusyError, withLock } from "../setup/lock";
@@ -344,8 +345,4 @@ export function clearHeldPort(paths: CliPaths): void {
   } catch {
     // Nothing to forget.
   }
-}
-
-function messageOf(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }

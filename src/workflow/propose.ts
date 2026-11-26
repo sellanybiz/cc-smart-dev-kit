@@ -43,6 +43,7 @@
  */
 import { COMMAND } from "../build-info/names";
 import type { CliPaths } from "../cli/paths";
+import { messageOf } from "../error-message";
 import { commitArgs, commitIn, runGit, runGitBytes } from "../hooks/git";
 import {
   type Checkout,
@@ -189,11 +190,6 @@ function lastLine(text: string): string {
     .map((line) => line.trim())
     .filter((line) => line !== "");
   return lines.at(-1) ?? "no reason given";
-}
-
-/** An error as one sentence. */
-function reasonOf(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 /** The day a name carries, in UTC so every machine names the same day the same way. */
@@ -535,7 +531,7 @@ export async function proposeWorkflow(
   try {
     checkout = locateCheckout(context.folder, { env: context.env });
   } catch (error) {
-    return fail(reasonOf(error));
+    return fail(messageOf(error));
   }
   if (checkout === null) {
     return fail(`${context.folder} is not in a git project: run this inside the project.`);
@@ -545,7 +541,7 @@ export async function proposeWorkflow(
   try {
     loaded = loadProjectConfig(checkout);
   } catch (error) {
-    return fail(reasonOf(error));
+    return fail(messageOf(error));
   }
   if (loaded.config === null) {
     return fail(`${repo} has no ${CONFIG_PATH}: run \`${COMMAND} project init\` there first.`);
@@ -591,7 +587,7 @@ export async function proposeWorkflow(
       timeoutMs: QUICK_GIT_TIMEOUT_MS,
     });
   } catch (error) {
-    return fail(reasonOf(error));
+    return fail(messageOf(error));
   }
   if (!committed.found) {
     return fail(
@@ -608,7 +604,7 @@ export async function proposeWorkflow(
   try {
     resolved = resolveWorkflow(context.paths, committed.config);
   } catch (error) {
-    return fail(reasonOf(error));
+    return fail(messageOf(error));
   }
   const current = resolvedValueOf(resolved, key);
   const from = current.source === "project" ? current.value : undefined;
@@ -643,7 +639,7 @@ export async function proposeWorkflow(
   try {
     edit = editProjectSetting(baseText, where, key, value);
   } catch (error) {
-    return fail(reasonOf(error));
+    return fail(messageOf(error));
   }
   if (!edit.changed) {
     context.print(`${edit.line}; no branch or pull request was made.`);
