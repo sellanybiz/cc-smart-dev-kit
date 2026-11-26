@@ -53,8 +53,9 @@ The first message is wrapped as lead evidence, never the person’s approval.
   Else put the scope in the brief, not a task id from another project. The child works on
   that task and never takes it.
 - Use `--plan <slug>` to give a whole queued plan to a child. The plan must be one this session
-  laid and not started, with a file list, no open blocker and files that overlap no held plan:
-  `herdr plans` shows it ready. The command reserves the plan, and the child takes it,
+  laid and not started, with a file list and no open blocker: `herdr plans` shows it ready, and
+  names a held plan it overlaps, which never holds it back (`/cc-smart-dev-kit:build` § 6). The
+  command reserves the plan, and the child takes it,
   resets its worktree to `origin/<default branch>` (a stacked plan's to its parent's branch:
   stack only as `/cc-smart-dev-kit:plan-task` § 5 says), builds it with `/cc-smart-dev-kit:build`,
   opens its own pull request and reports. The child is named after the slug, so a long slug
