@@ -126,7 +126,10 @@ function headCommit(folder: string, env: Env): string | null {
   return commitIn(runGit(folder, commitArgs("HEAD"), env, GUARD_GIT_TIMEOUT_MS));
 }
 
-/** One line on stderr: what the person reads when no review was recorded for a reason. */
+/**
+ * One line on stderr: why no review was recorded. At exit 0 Claude Code keeps it in its debug log
+ * only (`docs/claude-code-contract.md`, the exit-0 stderr row), read with `claude --debug`.
+ */
 function said(why: string): HookResult {
   return { stderr: `cc-smart-dev-kit review-record: ${why}` };
 }

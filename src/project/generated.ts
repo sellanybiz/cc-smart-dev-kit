@@ -23,7 +23,12 @@
  *   config is read (git(1); `GIT_CONFIG_GLOBAL` came in git 2.32);
  * - `GIT_ATTR_NOSYSTEM=1`, so the system attributes file is not read. No manual page lists this
  *   variable (git(1) and gitattributes(5) of git 2.53 checked); git's attr.c reads it
- *   (`git_attr_system_is_enabled`), and a test cannot write the system file.
+ *   (`git_attr_system_is_enabled`), and a test cannot write the system file;
+ * - `GIT_ATTR_SOURCE=<the commit>`, so an inherited one cannot name another tree's attributes
+ *   (git 2.42 reads it; an older git has none and reads the work tree, which holds the same
+ *   files), and `GIT_CONFIG_COUNT=0` with an empty `GIT_CONFIG_PARAMETERS`, so no config passed
+ *   in the environment (an `attr.tree`, a diff driver's `binary`) is read: the `-c` options
+ *   still are, as git(1) says.
  *
  * `check-attr --source` came in git 2.40: on an older git the call fails, and a caller takes a
  * failed call on the safe side (no file is generated, or no answer), never as a mark.
@@ -32,7 +37,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { COMMAND } from "../build-info/names";
-import { runGit } from "../hooks/git";
+import { pathBatches, runGitRaw } from "../hooks/git";
 import type { Env } from "../hooks/run";
 
 /** The attribute that marks a file generated: GitHub Linguist's name, which projects use. */
@@ -40,9 +45,6 @@ const GENERATED_ATTRIBUTE = "linguist-generated";
 
 /** The values of `GENERATED_ATTRIBUTE` that mark a file generated, as `check-attr` prints them. */
 const MARKED_VALUES: ReadonlySet<string> = new Set(["set", "true"]);
-
-/** How many paths one `git check-attr` call names: well inside every system's argument limit. */
-const PATHS_PER_CALL = 200;
 
 /**
  * A commit id of 64 hex digits: only a repository that uses sha-256 has one. Its throwaway folder
@@ -76,8 +78,8 @@ export interface BaseOnlyGit {
   args(command: readonly string[]): string[];
   /**
    * The `check-attr` calls that ask which of `paths` the commit marks generated, one for each
-   * batch of `PATHS_PER_CALL` paths (similar to `unsaved-changes.ts`'s `chunks`; not shared yet:
-   * that one batches `hash-object`), none for no paths.
+   * batch of `pathBatches`, none for no paths. A trimmed answer loses the mark of a first path
+   * that starts with a space.
    */
   checks(paths: readonly string[]): string[][];
   /**
@@ -133,18 +135,15 @@ export function openBaseOnlyGit(commonDir: string, source: string): BaseOnlyGit 
       GIT_CONFIG_GLOBAL: none,
       GIT_CONFIG_NOSYSTEM: "1",
       GIT_ATTR_NOSYSTEM: "1",
+      GIT_ATTR_SOURCE: source,
+      GIT_CONFIG_COUNT: "0",
+      GIT_CONFIG_PARAMETERS: "",
     },
     args,
-    checks: (paths) => {
-      const checks: string[][] = [];
-      for (let at = 0; at < paths.length; at += PATHS_PER_CALL) {
-        const batch = paths.slice(at, at + PATHS_PER_CALL);
-        checks.push(
-          args(["check-attr", `--source=${source}`, "-z", GENERATED_ATTRIBUTE, "--", ...batch]),
-        );
-      }
-      return checks;
-    },
+    checks: (paths) =>
+      pathBatches(paths).map((batch) =>
+        args(["check-attr", `--source=${source}`, "-z", GENERATED_ATTRIBUTE, "--", ...batch]),
+      ),
     readBase: args([
       "-c",
       "core.sparseCheckout=true",
@@ -178,7 +177,7 @@ export function readGenerated(
     try {
       const marked = new Set<string>();
       for (const args of isolated.checks(paths)) {
-        const run = runGit(isolated.cwd, args, env, timeoutMs, isolated.env);
+        const run = runGitRaw(isolated.cwd, args, env, timeoutMs, isolated.env);
         if (!run.ok) return null;
         for (const path of generatedIn(run.out)) marked.add(path);
       }

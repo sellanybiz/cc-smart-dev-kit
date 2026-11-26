@@ -375,7 +375,11 @@ async function measure(
   ): Promise<GitRun> => {
     const left = (git.timeFor ?? ((limit: number) => limit))(GUARD_GIT_TIMEOUT_MS);
     if (left <= 0) throw new OutOfTime();
-    const result = await (git.run ?? runGitAsync)(cwd, args, git.env, left, vars);
+    // No call reads a replace ref: a local one could show the replay another commit's tree.
+    const result = await (git.run ?? runGitAsync)(cwd, args, git.env, left, {
+      ...vars,
+      GIT_NO_REPLACE_OBJECTS: "1",
+    });
     if (result.code === null && result.err === GIT_TIMED_OUT) throw new OutOfTime();
     return result;
   };
@@ -395,13 +399,12 @@ async function measure(
       `origin/${base} is not in this checkout: fetch it (git fetch origin ${base})`,
     );
   }
-  // What counts as generated, and as binary, is the base's alone (`project/generated.ts`).
+  // What counts as generated, as binary, and how a replay merges, is the base's alone
+  // (`project/generated.ts`): every call that reads attributes runs in this folder.
   const isolated = openBaseOnlyGit(checkout.commonDir, baseSha);
   attributes.opened = isolated;
-  const marks = await run(isolated.readBase, isolated.env, isolated.cwd);
-  if (!marks.ok) {
-    throw new Uncovered(`the attributes of origin/${base} cannot be read (${marks.err})`);
-  }
+  const inBase = async (args: string[]): Promise<GitRun> =>
+    await run(isolated.args(args), { ...own, ...isolated.env }, isolated.cwd);
   const mergeBase = async (a: string, b: string): Promise<string> => {
     const found = await run(["merge-base", a, b]);
     if (!found.ok) {
@@ -411,13 +414,17 @@ async function measure(
   };
   const numstat = async (from: string, to: string, review: string): Promise<Changed[]> => {
     // No textconv and no external diff: what is counted is the bytes in the commits, never what
-    // a checkout's own attributes or config turn them into. Run in the throwaway folder, whose
-    // work tree holds the base's attribute files: only the base says which file is binary.
-    const diff = await run(
-      isolated.args(["diff", "--no-textconv", "--no-ext-diff", "--numstat", "-z", "-M", from, to]),
-      { ...own, ...isolated.env },
-      isolated.cwd,
-    );
+    // a checkout's own attributes or config turn them into.
+    const diff = await inBase([
+      "diff",
+      "--no-textconv",
+      "--no-ext-diff",
+      "--numstat",
+      "-z",
+      "-M",
+      from,
+      to,
+    ]);
     if (!diff.ok) {
       throw new Uncovered(
         `the change after the review of ${short(review)} cannot be read (${diff.err})`,
@@ -481,6 +488,10 @@ async function measure(
     ),
   ];
   if (candidates.length === 0) throw new Uncovered(noReview(head, branch, true));
+  const marks = await run(isolated.readBase, isolated.env, isolated.cwd);
+  if (!marks.ok) {
+    throw new Uncovered(`the attributes of origin/${base} cannot be read (${marks.err})`);
+  }
 
   const onBase = await mergeBase(head, baseRef);
   const measured: Measured[] = [];
@@ -493,7 +504,8 @@ async function measure(
           review,
         );
       }
-      const replay = await run(["merge-tree", "--write-tree", "--no-messages", onBase, review]);
+      // No local merge attribute, driver or config shapes the replay, nor runs a command.
+      const replay = await inBase(["merge-tree", "--write-tree", "--no-messages", onBase, review]);
       // Exit 1 is a conflicted replay: its tree is still valid, and the conflict counts as change.
       const tree = replay.out.split("\n")[0] ?? "";
       if ((replay.code !== 0 && replay.code !== 1) || !COMMIT_SHA.test(tree)) {
@@ -502,7 +514,14 @@ async function measure(
           review,
         );
       }
-      const same = await run(["diff", "--no-textconv", "--no-ext-diff", "--quiet", onBase, tree]);
+      const same = await inBase([
+        "diff",
+        "--no-textconv",
+        "--no-ext-diff",
+        "--quiet",
+        onBase,
+        tree,
+      ]);
       if (same.code === 0) continue; // its change is all in the base already: no candidate
       if (same.code !== 1) {
         throw new Uncovered(

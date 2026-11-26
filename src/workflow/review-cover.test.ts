@@ -546,6 +546,27 @@ describe("D17: which reviews are candidates", () => {
   );
 
   test(
+    "D17: with no candidate review, the base's attribute files are never written out",
+    async () => {
+      const w = world();
+      const R = reviewed(w.repo);
+      git(w.repo, "checkout", "-q", "-b", "other", "origin/main");
+      commit(w.repo, { "src/o.txt": numbered(5, "o") }, "unreviewed");
+      const calls: string[][] = [];
+      const run: CoverGit["run"] = async (cwd, args, env, timeoutMs, own) => {
+        calls.push(args);
+        return await runGitAsync(cwd, args, env, timeoutMs, own);
+      };
+      const target = { head: head(w.repo), branch: "other", base: "main" };
+      expect(
+        await readCover(w.checkout, target, [record(R)], LIMITS, { env: w.env, run }),
+      ).toMatchObject({ covered: false, review: null });
+      expect(calls.some((args) => args.includes("read-tree"))).toBe(false);
+    },
+    SLOW,
+  );
+
+  test(
     "D17: a review of the head itself covers it on any branch, with no git run",
     async () => {
       const w = world();
@@ -782,6 +803,144 @@ describe("D17: what is listed, not counted, and what is never covered", () => {
       expect(
         await cover(w, [record(R)], {}, LIMITS, { ...w.env, GIT_CONFIG_GLOBAL: global }),
       ).toEqual(binaryRefused(R));
+    },
+    SLOW,
+  );
+
+  /** A commit off the history whose `.gitattributes` is `text`: what a session could point at. */
+  const sideCommit = (w: World, text: string): string => {
+    git(w.repo, "checkout", "-q", "-b", "side", "origin/main");
+    const sha = commit(w.repo, { ".gitattributes": text }, "side");
+    git(w.repo, "checkout", "-q", "feat");
+    return sha;
+  };
+
+  test(
+    "security: GIT_ATTR_SOURCE in the environment does not let a binary file pass as text",
+    async () => {
+      const w = world();
+      const R = reviewed(w.repo);
+      commit(w.repo, { "logo.bin": new Uint8Array([0, 1, 2, 0, 255, 0]) });
+      const side = sideCommit(w, "*.bin diff\n");
+      expect(await cover(w, [record(R)], {}, LIMITS, { ...w.env, GIT_ATTR_SOURCE: side })).toEqual(
+        binaryRefused(R),
+      );
+    },
+    SLOW,
+  );
+
+  for (const [name, vars] of [
+    [
+      "GIT_CONFIG_COUNT",
+      { GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "diff.raw.binary", GIT_CONFIG_VALUE_0: "false" },
+    ],
+    ["GIT_CONFIG_PARAMETERS", { GIT_CONFIG_PARAMETERS: "'diff.raw.binary'='false'" }],
+  ] as const) {
+    test(
+      `security: config passed in the environment (${name}) cannot call a base-named diff driver text`,
+      async () => {
+        const w = world();
+        toBase(w.repo, { ".gitattributes": "*.bin diff=raw\n" }, "main");
+        const R = reviewed(w.repo);
+        commit(w.repo, { "logo.bin": new Uint8Array([0, 1, 2, 0, 255, 0]) });
+        expect(await cover(w, [record(R)], {}, LIMITS, { ...w.env, ...vars })).toEqual(
+          binaryRefused(R),
+        );
+      },
+      SLOW,
+    );
+  }
+
+  test(
+    "security: attr.tree passed in the environment does not let a binary file pass as text",
+    async () => {
+      const w = world();
+      const R = reviewed(w.repo);
+      commit(w.repo, { "logo.bin": new Uint8Array([0, 1, 2, 0, 255, 0]) });
+      const side = sideCommit(w, "*.bin diff\n");
+      const vars = {
+        GIT_CONFIG_COUNT: "1",
+        GIT_CONFIG_KEY_0: "attr.tree",
+        GIT_CONFIG_VALUE_0: side,
+      };
+      expect(await cover(w, [record(R)], {}, LIMITS, { ...w.env, ...vars })).toEqual(
+        binaryRefused(R),
+      );
+    },
+    SLOW,
+  );
+
+  test(
+    "security: a local merge driver cannot write the head's text into the replayed review",
+    async () => {
+      const w = world();
+      toBase(w.repo, { "shared.txt": "one\ntwo\nthree\n" }, "main");
+      git(w.repo, "checkout", "-q", "-b", "feat");
+      const R = commit(w.repo, {
+        "src/a.txt": numbered(60, "a"),
+        "src/b.txt": numbered(40, "b"),
+        "shared.txt": "one\ntwo (review)\nthree\n",
+      });
+      toBase(w.repo, { "shared.txt": "one\ntwo (base)\nthree\n" });
+      const merge = Bun.spawnSync(["git", "merge", "-q", "--no-edit", "origin/main"], {
+        cwd: w.repo,
+        env: w.env,
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      expect(merge.exitCode).toBe(1);
+      // The resolution adds 500 lines after the review.
+      const resolved = `one\ntwo (both)\n${numbered(500, "x")}three\n`;
+      commit(w.repo, { "shared.txt": resolved }, "merge");
+      const copy = join(tempDir("driver"), "shared.txt");
+      writeFileSync(copy, resolved);
+      git(w.repo, "config", "merge.copy.driver", `cp ${copy} %A`);
+      writeFileSync(join(w.repo, ".git", "info", "attributes"), "shared.txt merge=copy\n");
+      // The replay holds the five conflict lines; the resolution is 501 lines: 506 in 1 file.
+      expect(await cover(w, [record(R)])).toMatchObject({ covered: false, delta: count(506, 1) });
+    },
+    SLOW,
+  );
+
+  test(
+    "security: a local replace ref on the reviewed commit is not what the replay reads",
+    async () => {
+      const w = world();
+      const R = reviewed(w.repo);
+      const H = commit(w.repo, { "src/c.txt": numbered(500, "c") }, "big fix");
+      // A stand-in for R with the head's tree and R's own parent.
+      const tree = git(w.repo, "rev-parse", `${H}^{tree}`).trim();
+      const parent = git(w.repo, "rev-parse", `${R}^`).trim();
+      const standIn = git(w.repo, "commit-tree", tree, "-p", parent, "-m", "stand-in").trim();
+      git(w.repo, "replace", R, standIn);
+      expect(await cover(w, [record(R)])).toMatchObject({
+        covered: false,
+        review: R,
+        delta: count(500, 1),
+        reviewed: REVIEWED,
+      });
+    },
+    SLOW,
+  );
+
+  test(
+    "security: a local replace ref cannot move the reviewed commit's merge base to raise its allowance",
+    async () => {
+      const w = world();
+      const root = git(w.repo, "rev-parse", "HEAD").trim();
+      toBase(w.repo, { "big.txt": numbered(5000, "big") }, "main");
+      const R = reviewed(w.repo);
+      commit(w.repo, { "src/c.txt": numbered(500, "c") }, "big fix");
+      // A stand-in for R on the first commit: 5,000 base lines would count as reviewed.
+      const tree = git(w.repo, "rev-parse", `${R}^{tree}`).trim();
+      const standIn = git(w.repo, "commit-tree", tree, "-p", root, "-m", "stand-in").trim();
+      git(w.repo, "replace", R, standIn);
+      expect(await cover(w, [record(R)])).toMatchObject({
+        covered: false,
+        review: R,
+        delta: count(500, 1),
+        reviewed: REVIEWED,
+      });
     },
     SLOW,
   );

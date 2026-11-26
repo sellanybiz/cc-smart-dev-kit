@@ -118,6 +118,23 @@ describe("security: no local attribute file widens the base's marks", () => {
     expect(generated(repo, base, env, ["DIST/app.js"])).toEqual([]);
   });
 
+  test("GIT_ATTR_SOURCE, and attr.tree passed in the environment, point nowhere else", () => {
+    const { repo, base } = baseRepo();
+    git(repo, "checkout", "-q", "-b", "side");
+    writeFileSync(join(repo, ".gitattributes"), EVERYTHING);
+    git(repo, "commit", "-q", "-am", "mark everything");
+    const side = git(repo, "rev-parse", "HEAD").trim();
+    const source = { ...cleanGitEnv(), GIT_ATTR_SOURCE: side };
+    expect(generated(repo, base, source)).toEqual(BASE_MARKED);
+    const tree = {
+      ...cleanGitEnv(),
+      GIT_CONFIG_COUNT: "1",
+      GIT_CONFIG_KEY_0: "attr.tree",
+      GIT_CONFIG_VALUE_0: side,
+    };
+    expect(generated(repo, base, tree)).toEqual(BASE_MARKED);
+  });
+
   test("a mark only on the branch, committed or in the working tree", () => {
     const { repo, base } = baseRepo();
     git(repo, "checkout", "-q", "-b", "feat");
@@ -171,6 +188,16 @@ describe("the parts", () => {
       .join("");
     expect(generatedIn(out)).toEqual(["a.js", "c d.js"]);
     expect(generatedIn("")).toEqual([]);
+  });
+
+  test("a first path that starts with a space keeps it, and its mark", () => {
+    const repo = tempDir("generated-space");
+    git(repo, "init", "-q", "-b", "main");
+    writeFileSync(join(repo, ".gitattributes"), "*lead.js linguist-generated\n");
+    git(repo, "add", "-A");
+    git(repo, "commit", "-q", "-m", "base");
+    const base = git(repo, "rev-parse", "HEAD").trim();
+    expect(generated(repo, base, cleanGitEnv(), [" lead.js"])).toEqual([" lead.js"]);
   });
 
   test("readGenerated has no answer, and throws nothing, when git cannot run", () => {
