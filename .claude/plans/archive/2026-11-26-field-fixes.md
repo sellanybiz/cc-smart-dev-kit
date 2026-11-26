@@ -2,7 +2,7 @@
 
 **Summary.** Fix four problems that sessions in a real project hit (kit tasks #929, #930, #931, #934), plus one security hole in the review gate that the plan's edge-case pass found:
 - `workflow propose` commits by git plumbing, so a project's hooks never run in a folder without its packages.
-- An overlap refusal names generated files and prints the ready `propose` line.
+- A plan overlap warns and notes both plans, never refuses (the owner's ruling during the build); the warning names generated files and, when listing them would end the overlap, prints the ready `propose` line.
 - Every task write refuses up front when the project file is too new or broken.
 - The review hook records a review run from a builder's worktree, and the review counts for the PR it was pushed as.
 - The base's `linguist-generated` marks can no longer be widened by local attribute files.
@@ -95,7 +95,8 @@ Play safe vs new: play safe. Old behaviour stays where it was right: the branch-
   - `src/tasks/mcp.ts` (the server's instructions text);
   - `src/herdr/plans.ts` (hand-out, `plans` view) and its tests.
   - Blocked by gate (`ops.ts`, `herdr/plans.ts`) and review (`generated.ts`).
-- **skills:** `plugin/skills/plan-task/SKILL.md`, `plugin/skills/build/SKILL.md` (the second to merge rebases, reruns the check, names the overlap in the PR), `plugin/skills/herdr/SKILL.md` and `plugin/skills/tasks/SKILL.md` where they promise the block, `plugin/skills/pull-request/SKILL.md` if its body list needs the overlap line, `docs/design/instructions.md`.
+- **Grown during the build** (each on a ruling noted on #935): `src/setup/managed-json.ts` and `src/project/init.ts` (one JSON-text parser), `src/project/resolve.ts` (one committed-file reader), `src/tasks/command.ts`, `src/tasks/work/read.ts`, `src/testing/overlap-lines.ts`, `src/tasks/stack-proof.test.ts`, `src/tasks/mcp.test.ts`, `src/workflow/claims.test.ts`, `src/workflow/commands.ts` and `src/workflow/merge-check.ts` (one commit-lookup home), `plugin/agents/senior-engineer.md`, `.claude/cc-smart-dev-kit/build.md`, `docs/roadmap.md`. The plan task's `files` holds the full list, from the real diff.
+- **skills:** `plugin/skills/plan-task/SKILL.md`, `plugin/skills/build/SKILL.md` (the second to merge brings its branch up to date, reruns the check, names the overlap in the PR), `plugin/skills/herdr/SKILL.md` and `plugin/skills/tasks/SKILL.md` where they promise the block, `plugin/skills/pull-request/SKILL.md` if its body list needs the overlap line, `docs/design/instructions.md`.
 - **docs:**
   - `README.md` (propose, `plans.mergeFiles`, the review and task-tool rows);
   - `docs/design/workflow.md` (propose, the review record);
@@ -184,7 +185,7 @@ Play safe vs new: play safe. Old behaviour stays where it was right: the branch-
 ## A simpler approach?
 
 - #929: "run propose from a terminal" leaves sessions without the path the report asks for.
-- #930: auto-skipping generated files was simpler, but it loosens a person-only control. The refusal with a ready line is nearly as fast for the person, and safe.
+- #930: auto-skipping generated files was simpler, but it loosens a person-only control. The owner then ruled that no overlap refuses at all, which is simpler still: the warning keeps the ready line, so the person can still quiet the generated files for good.
 - #934(b): the PR-range match was simpler, but unsafe. `for-each-ref --contains` is one call, and safe.
 
 ## Rollback
