@@ -365,8 +365,8 @@ deleted — and the line says what is left if that fails. Each run's commit carr
 only ever match this run's own push. A push or a delete is judged by git's porcelain line for its
 ref, not by the exit code alone: a push that landed but exited non-zero goes on, a delete that
 worked is reported as deleted, and a name the delete finds absent or someone else's is no branch
-of this run. A `gh pr create` that does not answer in time leaves the pushed branch, since
-the pull request may be open. `PROPOSE_WORST_CASE_MS` sums the step limits, so a caller that runs
+of this run. A `gh pr create` that does not answer in time, or is ended by another signal,
+leaves the pushed branch, since the pull request may be open. `PROPOSE_WORST_CASE_MS` sums the step limits, so a caller that runs
 the command in a child (the portal) lets its take-back run. The command pushes a branch and
 opens a pull request in a child no hook sees. Until 5.6.x the shell judge asked the person first
 when `allowPush` was off or `openPr` short of `ready`; that judge is gone (§ Retired in 6.0.0 in

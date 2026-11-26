@@ -3171,8 +3171,8 @@ updates a local ref; a failing one at the fetch stops the proposal before anythi
 
 The push uses an empty lease, so a branch name already on origin is refused, never overwritten,
 and the run tries the next free name once. A step that fails after the push deletes the pushed branch again,
-but only while it still holds this run's commit. A `gh pr create` that does not answer in time
-leaves the branch, since the pull request may be open.
+but only while it still holds this run's commit. A `gh pr create` that does not answer in time,
+or is ended by another signal, leaves the branch, since the pull request may be open.
 Every key may be proposed, inside Claude Code or outside it, because the pull request's review
 is the gate.
 Since 6.0.0 no hook asks before a session runs it: the command pushes a branch and opens a
