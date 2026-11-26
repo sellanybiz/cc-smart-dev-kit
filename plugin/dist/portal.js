@@ -21009,7 +21009,7 @@ function ghEnded(code, signal, out, err) {
 function ghNotStarted(error, env) {
   return {
     code: null,
-    err: error instanceof Error ? error.message : String(error),
+    err: messageOf(error),
     kind: ghMissing(env) ? "missing" : "failed",
     out: ""
   };

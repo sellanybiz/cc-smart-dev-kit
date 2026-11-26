@@ -22172,7 +22172,7 @@ function ghEnded(code, signal, out, err) {
 function ghNotStarted(error, env) {
   return {
     code: null,
-    err: error instanceof Error ? error.message : String(error),
+    err: messageOf(error),
     kind: ghMissing(env) ? "missing" : "failed",
     out: ""
   };
@@ -22186,6 +22186,7 @@ function runGhSync(args, call) {
   }
 }
 var GH_TIMEOUT_MS = 1e4;
+var init_gh = () => {};
 
 // src/hooks/settings-hooks.ts
 import { existsSync as existsSync23 } from "fs";
@@ -24768,6 +24769,7 @@ var GH_WRITE_TIMEOUT_MS = 30000, runGh = async (args, call) => {
   return out;
 }, PULL_REQUEST_FACTS = "number,baseRefName,headRefName,headRefOid", OPEN_PULL_REQUESTS_LIMIT = 500, OPEN_PULL_REQUEST_FIELDS = "number,headRefOid,headRefName,baseRefName,isCrossRepository", COMMITS_FIELDS = ".total_commits, .commits[].sha", COMMITS_PER_PAGE = 100, STACK_COMMITS_LIMIT = 1000, STACK_READS_AT_ONCE = 4, PASSING_BUCKETS;
 var init_merge_check = __esm(() => {
+  init_gh();
   init_git();
   init_auto_merge();
   init_resolve2();
@@ -33833,6 +33835,7 @@ function pruneWorktrees(repo, env) {
 var PARKED_END, GH_PR_LIMIT = "30", INITIAL_PID_NAMESPACE, REMOVAL_TIMEOUT_MS;
 var init_scan = __esm(() => {
   init_build_info();
+  init_gh();
   init_git();
   init_local_files();
   init_sessions();
@@ -51311,6 +51314,7 @@ function gitCalls(args) {
 
 // src/hooks/after-merge.ts
 init_words2();
+init_gh();
 init_git();
 init_io();
 var GH_COMMANDS = new Set([
@@ -59385,6 +59389,7 @@ init_launch_record();
 // src/herdr/machines.ts
 init_zod();
 init_lock();
+init_user_json();
 init_write();
 import { readFileSync as readFileSync89 } from "fs";
 var MachinesSchema = object({
@@ -59404,7 +59409,7 @@ function readMachines(file) {
     throw new MachinesFileError(`${file} cannot be read: ${error.message}`);
   }
   try {
-    return MachinesSchema.parse(JSON.parse(text));
+    return MachinesSchema.parse(parseUserJson(text));
   } catch (error) {
     throw new MachinesFileError(`${file} is not a machine list (${error.message.split(`
 `)[0]}). Fix it or remove it.`);
