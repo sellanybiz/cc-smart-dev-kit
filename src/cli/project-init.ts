@@ -120,17 +120,13 @@ const RUN_TIMEOUT_MS = 10_000;
 
 /**
  * `gh` for both real runners, or null when it is not on PATH. Never blocking: every caller awaits
- * a runner's answer. It runs in the process's own folder, since a runner's `gh` is given none:
- * `gh api` names the repository in its path.
+ * a runner's answer. It is given no folder, since `gh api` names the repository in its path, so
+ * the child inherits the process's own (`GhCall.folder`).
  */
 function realGh(env: Env): ProjectInitRunner["gh"] {
   if (ghMissing(env)) return null;
   return async (args) => {
-    const { kind, out, err } = await runGh(args, {
-      env,
-      folder: process.cwd(),
-      timeoutMs: RUN_TIMEOUT_MS,
-    });
+    const { kind, out, err } = await runGh(args, { env, timeoutMs: RUN_TIMEOUT_MS });
     return { ok: kind === "ok", out, err };
   };
 }

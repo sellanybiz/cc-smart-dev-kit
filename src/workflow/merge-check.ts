@@ -63,7 +63,12 @@ export const GH_WRITE_TIMEOUT_MS = 30_000;
 /** Where and how one `gh` call runs: the repository's folder, the environment, its time. */
 export interface GhCall {
   env: Env;
-  folder: string;
+  /**
+   * The folder gh runs in. Left out, gh runs in the process's own folder as the child inherits
+   * it, which still works after that folder was removed (a long-lived portal started from a
+   * worktree that is gone now); asking `process.cwd()` there would throw.
+   */
+  folder?: string;
   /** Text written to gh's stdin (`--body-file -`); none when left out. */
   input?: string;
   timeoutMs: number;
@@ -101,7 +106,7 @@ export type GhExec = (args: string[], call: GhCall) => Promise<GhResult>;
 export const runGh: GhExec = async (args, { folder, env, input, timeoutMs }) => {
   try {
     const child = Bun.spawn(["gh", ...args], {
-      cwd: folder,
+      ...(folder === undefined ? {} : { cwd: folder }),
       env,
       stdin: input === undefined ? "ignore" : new Blob([input]),
       stdout: "pipe",
