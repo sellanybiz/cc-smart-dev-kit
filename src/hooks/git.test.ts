@@ -1,12 +1,23 @@
 /**
  * `parseWorktreeList` (`git.ts`): what `git worktree list --porcelain` says about each worktree,
- * the reason of a lock included.
+ * the reason of a lock included; and `runGit`'s text on stdin.
  */
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { tempDir } from "../testing/temp";
-import { parseWorktreeList, reflogEntryTime, worktreeAdminDir } from "./git";
+import { cleanGitEnv, git, tempDir } from "../testing/temp";
+import { parseWorktreeList, reflogEntryTime, runGit, runGitRaw, worktreeAdminDir } from "./git";
+
+describe("runGit with input", () => {
+  test("git reads the text on stdin byte for byte: CRLF, no last newline, non-ASCII", () => {
+    const repo = tempDir("git-input");
+    git(repo, "init", "-q");
+    const text = '{\r\n  "name": "café"\r\n}';
+    const hashed = runGit(repo, ["hash-object", "-w", "--stdin"], cleanGitEnv(), 15_000, {}, text);
+    expect(hashed).toMatchObject({ ok: true, code: 0 });
+    expect(runGitRaw(repo, ["cat-file", "blob", hashed.out], cleanGitEnv()).out).toBe(text);
+  });
+});
 
 describe("parseWorktreeList", () => {
   test("a lock keeps its reason: Claude Code's own lock can be told from a person's", () => {
