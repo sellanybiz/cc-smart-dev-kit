@@ -38602,7 +38602,7 @@ function taskGit(repo, args, env = process.env) {
   return result.out;
 }
 function refCommit(repo, ref, env = process.env) {
-  return taskGit(repo, ["rev-parse", "--verify", "--end-of-options", `${ref}^{commit}`], env);
+  return taskGit(repo, ["rev-parse", "--verify", `${ref}^{commit}`], env);
 }
 function unreadableRefMessage(ref, cause, instead) {
   return `Cannot read ${ref} (${cause instanceof Error ? cause.message : String(cause)}): run \`git fetch origin\`, or ${instead}`;
