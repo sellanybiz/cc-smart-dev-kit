@@ -37,6 +37,15 @@
  * would freeze every page and the live stream (`.claude/rules/portal.md`).
  */
 import type { CliPaths } from "../cli/paths";
+import {
+  GH_TIMEOUT_MS,
+  type GhCall,
+  type GhResult,
+  ghEnded,
+  ghMissing,
+  ghNotStarted,
+  ghSpawnOptions,
+} from "../hooks/gh";
 import { commitArgs, commitIn, GUARD_GIT_TIMEOUT_MS, runGitAsync } from "../hooks/git";
 import type { Env } from "../hooks/run";
 import type { Checkout } from "../project/resolve";
@@ -51,8 +60,9 @@ import {
 } from "./review-cover";
 import { COMMIT_SHA, reviewsFile, trustedReviews } from "./reviews";
 
-/** How long one `gh` call may take: a read-only network call, and a guard has 30 s. */
-export const GH_TIMEOUT_MS = 10_000;
+// The gh call's time limit, shapes and missing test live in `src/hooks/gh.ts`, which a hook may
+// load; the kit has always imported them from here, so this file hands them on.
+export { GH_TIMEOUT_MS, type GhCall, type GhResult, ghMissing };
 
 /**
  * How long one `gh` call that WRITES may take (`issue file`: create, edit, label): GitHub
@@ -60,86 +70,30 @@ export const GH_TIMEOUT_MS = 10_000;
  */
 export const GH_WRITE_TIMEOUT_MS = 30_000;
 
-/** Where and how one `gh` call runs: the repository's folder, the environment, its time. */
-export interface GhCall {
-  env: Env;
-  /**
-   * The folder gh runs in. Left out, gh runs in the process's own folder as the child inherits
-   * it, which still works after that folder was removed (a long-lived portal started from a
-   * worktree that is gone now); asking `process.cwd()` there would throw.
-   */
-  folder?: string;
-  /** Text written to gh's stdin (`--body-file -`); none when left out. */
-  input?: string;
-  timeoutMs: number;
-}
-
-/** What one `gh` call did: its streams and why it ended. */
-export interface GhResult {
-  /** gh's exit code; null when it did not exit on its own. */
-  code: number | null;
-  /** stderr, trimmed. */
-  err: string;
-  /** `ok` exit 0; `failed` another exit; `missing` no gh on PATH; `timeout` the time ran out. */
-  kind: "failed" | "missing" | "ok" | "timeout";
-  /** stdout, as gh printed it. */
-  out: string;
-  /**
-   * The signal that ended gh, when one did (its number when it has no name): SIGTERM for a
-   * timeout, another for gh dying. Left out when gh exited or never started. A caller whose
-   * call may have acted before the end (`workflow propose`'s `gh pr create`) tells a signal
-   * from a spawn that failed by it.
-   */
-  signal?: NodeJS.Signals | number;
-}
-
 /**
  * One `gh` call, awaited, with how it ended told apart: a timeout, no console window on
  * Windows, no blocking spawn. Every awaited `gh` call of the kit starts through it: `spawnGh`,
  * `issue file` (which must tell a missing gh from a timeout from a refusal), `workflow
- * propose`'s `gh pr create` and `project init`'s runners. A few blocking reads in hooks and the
- * worktree scan still spawn `gh` themselves.
+ * propose`'s `gh pr create` and `project init`'s runners. Its blocking twin, for the hooks and the
+ * worktree scan, is `runGhSync` (`src/hooks/gh.ts`): the same options, the same answers.
  */
 export type GhExec = (args: string[], call: GhCall) => Promise<GhResult>;
 
 /** The `gh` executor in use. */
-export const runGh: GhExec = async (args, { folder, env, input, timeoutMs }) => {
+export const runGh: GhExec = async (args, call) => {
   try {
     const child = Bun.spawn(["gh", ...args], {
-      ...(folder === undefined ? {} : { cwd: folder }),
-      env,
-      stdin: input === undefined ? "ignore" : new Blob([input]),
-      stdout: "pipe",
-      stderr: "pipe",
-      timeout: timeoutMs,
-      // A guard runs with no console of its own on Windows: without this, gh opens one.
-      windowsHide: true,
+      ...ghSpawnOptions(call),
+      stdin: call.input === undefined ? "ignore" : new Blob([call.input]),
     });
     const [out, err] = await Promise.all([
       new Response(child.stdout).text(),
       new Response(child.stderr).text(),
       child.exited,
     ]);
-    if (child.signalCode !== null) {
-      // The time limit stops the child with SIGTERM; any other signal is gh dying, not time.
-      const kind = child.signalCode === "SIGTERM" ? "timeout" : "failed";
-      return { code: null, err: err.trim(), kind, out, signal: child.signalCode };
-    }
-    return {
-      code: child.exitCode,
-      err: err.trim(),
-      kind: child.exitCode === 0 ? "ok" : "failed",
-      out,
-    };
+    return ghEnded(child.exitCode, child.signalCode, out, err);
   } catch (error) {
-    // The spawn threw: no gh on the PATH the call runs with, or something else (a folder that
-    // is not there). Only the first is "missing".
-    return {
-      code: null,
-      err: error instanceof Error ? error.message : String(error),
-      kind: Bun.which("gh", { PATH: env.PATH ?? "" }) === null ? "missing" : "failed",
-      out: "",
-    };
+    return ghNotStarted(error, call.env);
   }
 };
 
@@ -574,15 +528,6 @@ export function notChecked(what: string, env: Env): string {
  */
 export function notInTime(what: string): string {
   return `cc-smart-dev-kit could not check this merge in time: reading ${what} would have taken longer than the guard's own budget allows. Approve the merge yourself if it is right.`;
-}
-
-/** True when no `gh` is on the PATH `env` names. */
-export function ghMissing(env: Env): boolean {
-  try {
-    return Bun.which("gh", { PATH: env.PATH ?? "" }) === null;
-  } catch {
-    return false;
-  }
 }
 
 /**
