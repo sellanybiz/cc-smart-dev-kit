@@ -463,9 +463,7 @@ function leftBehind(
     if (head.ok && head.out !== "") branch = head.out;
     tip = commitIn(runGit(worktree, commitArgs("HEAD"), ctx.env)) ?? undefined;
   }
-  tip ??= [`refs/heads/${branch}`, `refs/remotes/origin/${branch}`]
-    .map((ref) => commitIn(runGit(repo, commitArgs(ref), ctx.env)))
-    .find((commit) => commit !== null);
+  tip ??= branchTip((args) => runGit(repo, args, ctx.env), branch) ?? undefined;
   return tip === undefined ? null : { branch, tip };
 }
 /**
