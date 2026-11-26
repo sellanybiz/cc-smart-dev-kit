@@ -72,6 +72,17 @@ test("a broken project file leaves the work store usable and says why project ta
   );
 });
 
+test("a requires this kit does not meet keeps its file; any other error keeps none", () => {
+  const tooNew = repoWith({ requires: ">=99.0" });
+  const version = taskContext(tooNew, cleanGitEnv());
+  if (!version.ok || version.projectConfig.ok) throw new Error("expected a project-file error");
+  expect(version.projectConfig.requiresFile).toBe(join(tooNew, ".claude", "cc-smart-dev-kit.json"));
+  expect(version.projectConfig.why).toContain("needs cc-smart-dev-kit >=99.0");
+  const broken = taskContext(repoWith({ tasks: { folder: "x" } }), cleanGitEnv());
+  if (!broken.ok || broken.projectConfig.ok) throw new Error("expected a project-file error");
+  expect(broken.projectConfig.requiresFile).toBeNull();
+});
+
 test("outside git: the folder is its own project, with no project tasks", () => {
   const dir = realpathSync(tempDir());
   const context = taskContext(dir, cleanGitEnv());

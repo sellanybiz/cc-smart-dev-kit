@@ -11,7 +11,7 @@ import { DEPLOY_TASKS_SINCE } from "../project/config";
 import { locateCheckout } from "../project/resolve";
 import { resolvePlans } from "../workflow/resolve";
 import { baseBranch } from "../worktrees/command";
-import { type TaskContext, taskContext } from "./context";
+import { type TaskContext, taskContext, taskWriteRefusal } from "./context";
 import {
   addDeployNote,
   closeDeployTask,
@@ -185,6 +185,9 @@ function isFolderOnDisk(root: string, path: string): boolean {
   return existsSync(full) && statSync(full).isDirectory();
 }
 
+/** What a read adds when the project file stopped it from reading the deploy task folder. */
+const DEPLOY_NOT_READ = "Deploy tasks were not read.";
+
 const DELETE_TRACKED =
   "Tracked deploy task: it is part of a commit, so close it with task_done instead";
 
@@ -303,6 +306,15 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
       const cwd = caller?.cwd ?? options.cwd?.() ?? process.cwd();
       const ctx = taskContext(cwd, env);
       if (!ctx.ok) throw new Error(ctx.why);
+      // A project file this kit cannot use stops a write here, before the store is opened or a
+      // claim moved, so no write lands half done. A read answers and names it on a line of its own.
+      const reading = READ_ONLY_OPERATIONS.has(operation);
+      const gate = taskWriteRefusal(ctx.projectConfig, env);
+      const gateWhy = gate === null ? null : `${gate.why}. ${gate.fix}`;
+      if (gateWhy !== null) {
+        if (!reading) throw new Error(gateWhy);
+        notes.push(gateWhy);
+      }
       // Deploy task files are written where the command runs: an explicit `cwd` (the CLI's own
       // folder) wins over the session record's, so a close lands in the checkout the gates read.
       // Work-task identity and project stay with `ctx`. Read once, and only when it differs.
@@ -322,7 +334,7 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
         if (!reclaimed.ok) {
           // A read still answers, with the failure on a line of its own; a write fails loudly.
           const why = `claims of this session not moved: ${reclaimed.why}`;
-          if (!READ_ONLY_OPERATIONS.has(operation)) throw new Error(why);
+          if (!reading) throw new Error(why);
           notes.push(`${why}; the next call retries`);
         }
       }
@@ -1104,6 +1116,7 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
               (input.include_closed || t.status === "open") &&
               `${t.title}\n${t.body}`.toLowerCase().includes(input.text.toLowerCase()),
           );
+        else if (gateWhy !== null) notes.push(DEPLOY_NOT_READ);
       } else {
         const input = taskSchemas.list.parse(raw);
         planLedger = input.scope === "plan";
@@ -1139,6 +1152,7 @@ export function createTaskOps(options: TaskOpsOptions = {}) {
           );
         } else if (deployReadable())
           projects = projectTasks(!openOnly).filter((t) => !openOnly || t.status === "open");
+        else if (gateWhy !== null) notes.push(DEPLOY_NOT_READ);
       }
       const selectedIds = new Set(selected.map((t) => t.id));
       const byId = new Map(all.map((t) => [t.id, t]));
