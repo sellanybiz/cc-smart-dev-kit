@@ -59,9 +59,9 @@ Root causes, traced in the code on origin/main (task descriptions #929/#930/#931
    - What replaces the refusal:
      - The tool's answer gets one warning line naming the other plan and the shared paths.
      - The same text is saved as an `Overlap:` note on both plans, once per pair and path set, so a later or other session sees it. It names the other plan's lead session when one is known.
-     - The note says the rule: the plan that merges second rebases onto the first one's merged code, resolves the conflicts, reruns the full check, and lists the overlapping plan and the shared files in its pull request.
+     - The note points to the rule's one home, build § 6 "An overlapping plan" (round 1 review): the plan that merges second brings its branch up to date with the first one's merged code, resolves the conflicts and reruns the full check; both pull requests name the overlap.
    - `plans.mergeFiles`, `plans.appendOnly` and `stacked_on` keep their meaning, now for the warning: paths they settle are not warned about.
-   - When the shared paths include files the base marks `linguist-generated`, the warning names them and prints the ready line `cc-smart-dev-kit workflow propose plans.mergeFiles "<current list>,<those paths>"`. That quiets the warning for good once the person merges that pull request.
+   - When the shared paths include files the base marks `linguist-generated`, the warning names them and prints the ready line `cc-smart-dev-kit workflow propose plans.mergeFiles '<current list>,<those paths>'` (shell-quoted), but only when listing those files would settle them (round 1 review). For a folder both plans list, it says to narrow the folder entry or put the folder in `plans.mergeFiles` instead. That quiets the warning for good once the person merges that pull request.
    - herdr's `plans` view shows an overlapping plan as ready, with its overlap named. The run-mode advice ("ready plans that share no file") becomes "ready plans", with the overlap noted.
    - The generated reader moves into one shared home, `src/project/generated.ts`. It holds the pure parts (the arguments, the isolated environment, batching, the `-z` parse, the attribute name and the values that count) and is used by review-cover, claims and the warning. Each caller runs git its own way: review-cover asynchronously with its deadline, the warning synchronously.
    - Not built, since the block is gone: per-phase files and a "start anyway" field, both asked for in the reports.
@@ -82,7 +82,7 @@ Root causes, traced in the code on origin/main (task descriptions #929/#930/#931
    - (d) For a listed reviewer whose run records nothing, the hook prints one stderr line with the reason through `said()`. The hook log is written only under `doctor --live`, so `logFacts` cannot carry it.
    - Dropped from the first draft: noting the upstream name (it usually names the base) and the PR-range match (it let one PR's review cover another).
 
-Play safe vs new: play safe. Old behaviour stays where it was right: the branch-name match, `mergeFiles`, reads in a stale session, the isolated-reviewer skip, and `baseBranch`. There are no legacy paths to delete later. The one deliberate break is propose's `--json` (`worktree` dropped), with its one consumer (the portal) changed in the same plan.
+Play safe vs new: play safe. Old behaviour stays where it was right: the branch-name match, `mergeFiles`, reads in a stale session, the isolated-reviewer skip, and `baseBranch`. There are no legacy paths to delete later. Two deliberate `--json` breaks: propose's (`worktree` dropped), with its one consumer (the portal) changed in the same plan; and `herdr plans --json`, which lost its `overlaps` state with the overlap ruling (no consumer in the repo; named in the CHANGELOG).
 
 ## Files to change
 
@@ -144,7 +144,7 @@ Play safe vs new: play safe. Old behaviour stays where it was right: the branch-
   - The warning and the note name only paths that really overlap; `mergeFiles`, `appendOnly` and a proved stack still settle theirs.
   - One `Overlap:` note per pair of plans and path set: a repeat start or update with the same overlap adds no second note. A wider overlap adds a new one.
   - Both plans get the note, including a plan another session leads. Notes are append-only, so writing one into another lead's plan is safe.
-  - A folder entry that holds a generated file: the line names the file.
+  - A folder entry that holds a generated file: the note names the file, and gives the folder advice instead of the propose line when listing files would not settle the overlap.
   - git < 2.40 or no `.gitattributes`: no generated list, only the plain warning.
   - A broad `*` mark on base: named as is.
   - The current `mergeFiles` list is kept in the printed propose line, comma-joined as `propose` takes it.

@@ -13,11 +13,11 @@ at the same time.
   The answer gets one warning line naming the other plan and the shared paths, and both plans
   get the same text as an `Overlap:` note, once per pair and set of shared paths. The note
   points to the build skill's § 6: the plan that merges second brings its branch up to date with
-  the merged base, resolves the conflicts, reruns the full check and names the overlap in its
-  pull request. `plans.mergeFiles`, `plans.appendOnly` and a proved stack still settle their
+  the merged base, resolves the conflicts and reruns the full check, and both pull requests name
+  the overlap. `plans.mergeFiles`, `plans.appendOnly` and a proved stack still settle their
   paths. When the shared paths include files the base marks `linguist-generated`, the warning
   names them, and prints a ready `cc-smart-dev-kit workflow propose plans.mergeFiles '…'` line
-  only when that list would end the overlap; for a folder both plans list, it says to narrow the
+  only when listing them would settle those files; for a folder both plans list, it says to narrow the
   folder entry or put the folder in `plans.mergeFiles`. There is no setting to bring the block
   back. `herdr plans` shows an overlapping plan as ready, and its `--json` has no
   `overlaps` state any more.
@@ -31,8 +31,7 @@ at the same time.
 - **Task writes refuse up front when the project file cannot be used.** When `requires` asks
   for a newer kit, or the file is broken, every task write (create, update, done, note, take,
   delete, and `task import claude-mem`) refuses before anything changes, with the same message
-  and its fix. Reads still
-  answer and name the problem. `herdr plans`, `start --plan`, `start --task` and `adopt` check
+  and its fix. Reads still answer and name the problem. `herdr plans`, `start --plan`, `start --task` and `adopt` check
   the same. Before, `task_create` of a plan could pass and the next `task_update` refuse,
   leaving half a plan.
 - **The review record finds reviews run from a builder's worktree.** The hook skips only a

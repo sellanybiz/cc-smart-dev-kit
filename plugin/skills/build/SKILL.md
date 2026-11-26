@@ -228,14 +228,16 @@ track returned no answer: review its area yourself, with no extra run. Do not de
 while a material defect remains; record the blocker and remaining work. If the review leaves
 the plan open, move the plan file back out of `archive/`.
 
-**An overlapping plan** has an `Overlap:` note naming the other plan and the shared paths: the
-store warns, never refuses. The plan that merges first does nothing extra. Before the full
+**An overlapping plan** has an `Overlap:` note on its plan task naming the other plan and the
+shared paths (`task_get` on the plan; the tool's answer also warns once): the store warns,
+never refuses. Before the full
 check, and again before this pull request merges: once a plan a note names has merged, bring
 the plan branch up to date with your pull request's base (rebase while unpushed; once pushed,
 `git merge origin/<base>`, since rewriting pushed history is the person's word:
 `/cc-smart-dev-kit:commit`), resolve the conflicts and rerun the full check. The resolution is a
-change after the last review (above). The pull request names each overlapping plan and the
-shared files; a plan child does the same.
+change after the last review (above). The plan that merges first has nothing to catch up. Each
+plan's pull request names the plans its notes name and the shared files; a plan child does the
+same.
 
 Once the review and the full check pass, the one pull request of the plan opens, as `openPr` and the person's permissions allow
 (`/cc-smart-dev-kit:commit`, `/cc-smart-dev-kit:pull-request`). Include the reviews that ran and the real checks. A fix after it opens (a late review

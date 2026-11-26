@@ -616,8 +616,9 @@ and a note is no move of the plan. The text, in this order:
   the files the base holds in it): `origin/<base> marks <files> generated`, then one of:
   - the ready line `cc-smart-dev-kit workflow propose plans.mergeFiles <list>` (the current list
     and those files, comma-joined), which opens the pull request that leaves them out of every overlap once the person
-    merges it. It is printed only when listing them would end the overlap: the warning runs
-    `filesOverlap` again on the two lists as compared, with that list. The value is written by
+    merges it. It is printed only when listing them would settle those files: the warning runs
+    `filesOverlap` again on the two lists as compared, with that list, and prints it when no shared
+    folder still holds one of them (other shared files may still overlap). The value is written by
     `shellWord`: bare when it holds only letters, digits and `_ . / -` (one plain path), else in
     single quotes (any list of two, since a comma is quoted), so a `$` or a backtick stays literal;
   - for a folder both plans list, which a merge file never settles (`settledBy`), the folder and

@@ -108,7 +108,7 @@ manifest, a changelog, a lockfile, build output); the plans' overlap warning (`d
 § Plans handed to children; an overlap warns and never refuses since 6.7.0) leaves them out, and
 when an overlap's shared files include ones the base marks `linguist-generated` the warning names
 them, and prints the ready `workflow propose plans.mergeFiles '<current list>,<those files>'` line
-only when listing them would end the overlap (`docs/design/tasks.md` § Plans handed to children,
+only when listing them would settle those files (`docs/design/tasks.md` § Plans handed to children,
 "The warning and the note"). `appendOnly` (6.3.0) is a list of folders where plans
 add new files (a migrations folder): inside one, two plans overlap only when they list the same
 file. A session that could widen either would hide its own plan's overlaps from every other
@@ -433,7 +433,9 @@ review of H itself covers H on any branch, as before. The one home is
 - Anything it cannot read is "not covered", with the reason: the head or the reviewed commit not in
   this checkout ("fetch it"), no `origin/<base>`, the caller's time running out, or git older than
   2.40 (`check-attr --source` came in 2.40; `doctor` warns with one `!` line, and such a machine
-  matches the exact head only). It never fetches.
+  matches the exact head only). It never fetches: in a blobless or treeless partial clone, a blob
+  or tree the measure needs that is not local makes it "not covered" until that object is fetched,
+  since the throwaway folder has no promisor remote to fetch from.
 
 The limits come from this repo's own fix rounds: 10% of the reviewed change is covered, 105% and
 160% are not covered. A limit is a trade: up to 200 lines written after the review merge unread, which is the
