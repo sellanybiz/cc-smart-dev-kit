@@ -22,11 +22,15 @@ No user-facing behaviour changes beyond those three.
 
 - **Play safe vs new:** neither applies. No stored value, flag or output shape changes. Each fix is
   a call moved onto its home.
-- **`commitArgs` gets `--end-of-options`** (finding 3). Then a name that starts with `-` can never
-  reach git as an option, for every caller. The per-copy `startsWith("-")` guards in
-  `stack-proof.ts` and `issues/fixed.ts` are then deleted. `refCommit` (`deploy/branch.ts:25`)
-  keeps its own spelling: it leaves out `--quiet` on purpose, so git's error reaches
-  `unreadableRefMessage`.
+- **`commitArgs` keeps its arguments, with no `--end-of-options`** (finding 3). The plan first
+  said to add it, from the belief that git 2.24 took it. The git builder found that `rev-parse`
+  takes it only from git 2.30 (git's 2.30.0 release notes), and nothing else gives the kit a
+  floor that high. On git 2.25 to 2.29 every lookup, the review-record hook's included, would
+  then find no commit. The `^{commit}` suffix already makes a name that starts with `-` answer as
+  no commit (exit 1, proved for option-like names in `git.test.ts`). So the per-copy
+  `startsWith("-")` guards in `stack-proof.ts` and `issues/fixed.ts` go. `refCommit`
+  (`deploy/branch.ts:25`) keeps its own spelling: it leaves out `--quiet` on purpose, so git's
+  error reaches `unreadableRefMessage`.
 - **propose keeps its timeout safety** (finding 2). `createPullRequest` on `runGh` counts every
   signal (`code === null` with kind `timeout` or `failed` from a signal) as `timedOut`. The pushed
   branch is then kept, because the pull request may exist.
@@ -53,8 +57,8 @@ The lead does the release files: the version in `plugin/.claude-plugin/plugin.js
   spawn error. A non-zero exit keeps `lastLine(err)` as the reason. `project-init`'s copy gains
   `windowsHide` through `runGh`. Its sync twin stays only if no async caller can take it; the
   builder says which.
-- **Finding 3, `--end-of-options`:** git has had it since 2.24. The kit's floor
-  (`MIN_COVER_GIT`, 2.40) is above that. Every `commitArgs` caller is re-run in tests.
+- **Finding 3, a name that starts with `-`:** `^{commit}` makes it no commit on every git, with
+  no new git version needed (Decisions). Every `commitArgs` caller is re-run in tests.
 - **Finding 5, paths:** `..config` is inside, `../x` is outside, and the same folder is inside, on
   POSIX and on Windows separators (`path-compare`'s own tests cover the home). The three deploy
   copies keep the message "Task folder must be inside the checkout".

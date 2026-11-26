@@ -75,11 +75,12 @@ describe("commitArgs and commitIn", () => {
     const repo = tempDir("git-commit-dash");
     git(repo, "init", "-q", "-b", "main");
     git(repo, "commit", "-q", "--allow-empty", "-m", "first");
-    const args = commitArgs("--show-toplevel");
-    expect(args.slice(-2)).toEqual(["--end-of-options", "--show-toplevel^{commit}"]);
-    const run = runGit(repo, args, cleanGitEnv());
-    expect(run.code).toBe(1);
-    expect(commitIn(run)).toBeNull();
+    for (const option of ["--show-toplevel", "--all", "--since=yesterday", "-q", "--git-dir"]) {
+      const run = runGit(repo, commitArgs(option), cleanGitEnv());
+      expect(run.code).toBe(1);
+      expect(run.out).toBe("");
+      expect(commitIn(run)).toBeNull();
+    }
   });
 });
 

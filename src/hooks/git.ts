@@ -187,12 +187,13 @@ export async function runGitAsync(
 
 /**
  * The arguments of the call that asks which commit `rev` names; `commitIn` reads its answer.
- * Each caller runs it its own way (sync or async, with its own time limit). `--end-of-options`
- * (git 2.30 for `rev-parse`) keeps a stored name that starts with `-` from reaching git as an
- * option, so no caller needs its own dash test.
+ * Each caller runs it its own way (sync or async, with its own time limit). The `^{commit}`
+ * suffix keeps a stored name that starts with `-` from working as an option: git answers it as
+ * no commit (exit 1), so no caller needs its own dash test. `--end-of-options` would say the
+ * same, but `rev-parse` takes it only from git 2.30, and these lookups run on any git.
  */
 export function commitArgs(rev: string): string[] {
-  return ["rev-parse", "--verify", "--quiet", "--end-of-options", `${rev}^{commit}`];
+  return ["rev-parse", "--verify", "--quiet", `${rev}^{commit}`];
 }
 
 /** The full commit id a `commitArgs` call answered, or null when git named none. */

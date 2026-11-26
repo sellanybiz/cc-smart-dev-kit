@@ -21,8 +21,7 @@ Moves seven copies that a slop audit found back onto their one shared home
 
 The other four behave as before:
 
-- commit lookups use one helper, which now passes `--end-of-options`, so a name that starts with
-  `-` never reaches git as an option;
+- commit lookups use one helper, and a name that starts with `-` still names no commit;
 - the deploy-task reader reads files through the shared git runner;
 - herdr's texts build the task tool names from their one table, and a test fails on a typed name;
 - herdr's follow-up gate reads a branch's commit the same way the start does.
