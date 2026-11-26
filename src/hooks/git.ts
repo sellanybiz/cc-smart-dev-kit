@@ -67,11 +67,47 @@ function spawnGit(
   trim: boolean,
   input?: string,
 ): GitRun {
+  const bytes = input === undefined ? undefined : new TextEncoder().encode(input);
+  const run = spawnGitBytes(cwd, args, env, timeoutMs, own, bytes);
+  // `ignoreBOM`: a byte order mark git wrote stays in the text, as a file's own first character.
+  const out = new TextDecoder("utf-8", { ignoreBOM: true }).decode(run.out);
+  return { ...run, out: trim ? out.trim() : out };
+}
+
+/** What `runGitBytes` answers: a `GitRun` whose stdout is the bytes git wrote. */
+export interface GitBytesRun extends Omit<GitRun, "out"> {
+  out: Uint8Array;
+}
+
+/**
+ * `runGit` in bytes both ways: `input` and stdout exactly as git reads and writes them, never
+ * decoded. For a tree listing (`ls-tree -z`, `mktree -z`), whose names are any bytes: a UTF-8
+ * round trip renames one that is not UTF-8.
+ */
+export function runGitBytes(
+  cwd: string,
+  args: string[],
+  env: Env,
+  timeoutMs = 15_000,
+  input?: Uint8Array,
+): GitBytesRun {
+  return spawnGitBytes(cwd, args, env, timeoutMs, {}, input);
+}
+
+/** The one blocking spawn of git: bytes in, bytes out. */
+function spawnGitBytes(
+  cwd: string,
+  args: string[],
+  env: Env,
+  timeoutMs: number,
+  own: Record<string, string>,
+  input?: Uint8Array,
+): GitBytesRun {
   try {
     const result = Bun.spawnSync(["git", ...args], {
       cwd,
       env: { ...gitEnv(env), ...own },
-      stdin: input === undefined ? "ignore" : new TextEncoder().encode(input),
+      stdin: input ?? "ignore",
       stdout: "pipe",
       stderr: "pipe",
       timeout: timeoutMs,
@@ -80,11 +116,10 @@ function spawnGit(
     });
     const err = result.signalCode ? GIT_TIMED_OUT : result.stderr.toString().trim();
     const code = result.signalCode ? null : result.exitCode;
-    const out = result.stdout.toString();
-    return { ok: result.exitCode === 0, out: trim ? out.trim() : out, err, code };
+    return { ok: result.exitCode === 0, out: result.stdout, err, code };
   } catch (error) {
     const err = error instanceof Error ? error.message : String(error);
-    return { ok: false, out: "", err, code: null };
+    return { ok: false, out: new Uint8Array(), err, code: null };
   }
 }
 

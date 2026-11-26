@@ -22,6 +22,7 @@ import { runWorkflow, type WorkflowContext } from "./commands";
 import {
   ghLoginState,
   MADE_WITHOUT_HOOKS,
+  PROPOSE_WORST_CASE_MS,
   type ProposedJson,
   proposeTimeoutLine,
   proposeWorkflow,
@@ -382,12 +383,13 @@ ${MADE_WITHOUT_HOOKS}`,
       plans: { mergeFiles: ["plugin/dist/", "CHANGELOG.md"] },
     });
     expect(fileOn(w.origin, branch).requires).toBe(">=5.2");
-    // The raise is part of the diff, so the output and the body name it.
+    // The raise is part of the diff, so the output and the body name it, in the words
+    // `workflow set --project` prints.
     expect(run.lines[1]).toBe(
-      `+ requires ">=0.1" -> ">=5.2" in .claude/cc-smart-dev-kit.json (the file's fields need it)`,
+      `+ .claude/cc-smart-dev-kit.json: requires ">=0.1" -> ">=5.2" (the file's fields need it)`,
     );
     expect(w.ghLog()[1]).toContain(
-      `\nIt also raises requires ">=0.1" -> ">=5.2": the file's fields need it.\n`,
+      `\nIt also raises requires ">=0.1" -> ">=5.2" (the file's fields need it).\n`,
     );
     expect(fileOn(w.origin, "main").workflow).toBeUndefined();
   });
@@ -443,6 +445,103 @@ ${MADE_WITHOUT_HOOKS}`,
     expect(branchesIn(w.origin, "worktree-workflow-*")).toEqual([]);
   });
 
+  test("names that are not UTF-8, at the root and in .claude/, stay as they are: the commit changes the one file", async () => {
+    const w = world();
+    // "café.txt" in Latin-1: the byte 0xE9 alone is not UTF-8.
+    const latin1 = Buffer.from([0x63, 0x61, 0x66, 0xe9, 0x2e, 0x74, 0x78, 0x74]);
+    writeFileSync(Buffer.concat([Buffer.from(`${w.repo}/`), latin1]), "root\n");
+    writeFileSync(Buffer.concat([Buffer.from(`${w.repo}/.claude/`), latin1]), "inside\n");
+    git(w.repo, "add", "-A");
+    git(w.repo, "commit", "-q", "-m", "Latin-1 names");
+    git(w.repo, "push", "-q", "origin", "main");
+
+    const run = await w.run(["propose", "allowCommit", "true"]);
+    expect(run.errors).toEqual([]);
+    expect(run.status).toBe(0);
+    expect(
+      git(
+        w.origin,
+        "diff-tree",
+        "-r",
+        "--name-only",
+        "main",
+        "worktree-workflow-allowCommit-20261023",
+      ),
+    ).toBe(".claude/cc-smart-dev-kit.json\n");
+  });
+
+  test("another run that pushed this very commit a moment before: its branch is a taken name, never this run's", async () => {
+    const w = world();
+    // The same identity, setting and second make the same commit, and so the same id.
+    const sameSecond = {
+      GIT_AUTHOR_DATE: "2026-10-23T09:00:00Z",
+      GIT_COMMITTER_DATE: "2026-10-23T09:00:00Z",
+    };
+    const other = "worktree-workflow-allowCommit-20261023";
+    expect((await w.run(["propose", "allowCommit", "true"], sameSecond)).status).toBe(0);
+    const theirs = git(w.origin, "rev-parse", other);
+    // This run's name check misses the other branch, as it would just before the other push.
+    const realGit = Bun.which("git") ?? "/usr/bin/git";
+    const mark = join(w.bin, "listed");
+    rmSync(join(w.bin, "git"));
+    writeFileSync(
+      join(w.bin, "git"),
+      `#!/bin/sh
+if [ "$1" = "ls-remote" ] && [ "$2" = "--heads" ] && [ ! -e "${mark}" ]; then
+  touch "${mark}"
+  exit 0
+fi
+exec "${realGit}" "$@"
+`,
+    );
+    chmodSync(join(w.bin, "git"), 0o755);
+
+    const run = await w.run(["propose", "allowCommit", "true"], sameSecond);
+    expect(run.errors).toEqual([]);
+    expect(run.status).toBe(0);
+    expect(run.lines[1]).toBe(`+ ${other}-2, cut from origin/main and pushed`);
+    expect(git(w.origin, "rev-parse", `${other}-2`)).toBe(theirs);
+    expect(git(w.origin, "rev-parse", other)).toBe(theirs);
+  });
+
+  test("the git calls a run makes, in order: the worst case counts each one", async () => {
+    const w = world();
+    const realGit = Bun.which("git") ?? "/usr/bin/git";
+    const log = join(w.bin, "git.log");
+    rmSync(join(w.bin, "git"));
+    writeFileSync(join(w.bin, "git"), `#!/bin/sh\necho "$1" >> "${log}"\nexec "${realGit}" "$@"\n`);
+    chmodSync(join(w.bin, "git"), 0o755);
+    expect((await w.run(["propose", "allowCommit", "true"])).status).toBe(0);
+    expect(readFileSync(log, "utf8").trim().split("\n")).toEqual([
+      // Finding the checkout, and the fetch.
+      "rev-parse",
+      "fetch",
+      // The base's commit, and the committed file's three reads.
+      "rev-parse",
+      "rev-parse",
+      "rev-parse",
+      "cat-file",
+      // The blob, and a listing and a mktree for each of the two tree levels.
+      "hash-object",
+      "ls-tree",
+      "ls-tree",
+      "mktree",
+      "mktree",
+      "config",
+      "commit-tree",
+      // One name pick: origin's branches, then this repository's.
+      "ls-remote",
+      "for-each-ref",
+      "push",
+    ]);
+    // From the limits, by hand: two checkout reads of 5 s; the fetch 60 s; gh 10 s; the commit
+    // 120 s; two name picks and pushes of 60 + 120 s; gh pr create 60 s; the take-back's 60 + 120 s;
+    // twelve quick calls of 10 s (the eleven above, and the second pick's branch list); 30 s.
+    expect(PROPOSE_WORST_CASE_MS).toBe(
+      10_000 + 60_000 + 10_000 + 120_000 + 360_000 + 60_000 + 180_000 + 120_000 + 30_000,
+    );
+  });
+
   test("a fetch that moves origin/main mid-run: the title's old value and the commit's parent come from the one commit read first", async () => {
     const w = world();
     const first = git(w.repo, "rev-parse", "origin/main").trim();
@@ -455,15 +554,25 @@ ${MADE_WITHOUT_HOOKS}`,
     git(w.repo, "commit", "-q", "-am", "allowCommit off");
     const moved = git(w.repo, "rev-parse", "HEAD").trim();
     const realGit = Bun.which("git") ?? "/usr/bin/git";
-    const mark = join(w.bin, "moved");
+    const marks = {
+      fetched: join(w.bin, "fetched"),
+      moved: join(w.bin, "moved"),
+      once: join(w.bin, "once"),
+    };
     rmSync(join(w.bin, "git"));
-    // At the first `cat-file`, origin/main moves: after a run has picked its one commit.
+    // At the second `rev-parse` after the fetch, origin/main moves: after a run has picked its
+    // one commit, and before it reads anything of it.
     writeFileSync(
       join(w.bin, "git"),
       `#!/bin/sh
-if [ "$1" = "cat-file" ] && [ ! -e "${mark}" ]; then
-  touch "${mark}"
-  "${realGit}" update-ref refs/remotes/origin/main ${moved}
+[ "$1" = "fetch" ] && touch "${marks.fetched}"
+if [ "$1" = "rev-parse" ] && [ -e "${marks.fetched}" ] && [ ! -e "${marks.moved}" ]; then
+  if [ -e "${marks.once}" ]; then
+    touch "${marks.moved}"
+    "${realGit}" update-ref refs/remotes/origin/main ${moved}
+  else
+    touch "${marks.once}"
+  fi
 fi
 exec "${realGit}" "$@"
 `,

@@ -6,7 +6,14 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { cleanGitEnv, git, tempDir } from "../testing/temp";
-import { parseWorktreeList, reflogEntryTime, runGit, runGitRaw, worktreeAdminDir } from "./git";
+import {
+  parseWorktreeList,
+  reflogEntryTime,
+  runGit,
+  runGitBytes,
+  runGitRaw,
+  worktreeAdminDir,
+} from "./git";
 
 describe("runGit with input", () => {
   test("git reads the text on stdin byte for byte: CRLF, no last newline, non-ASCII", () => {
@@ -16,6 +23,33 @@ describe("runGit with input", () => {
     const hashed = runGit(repo, ["hash-object", "-w", "--stdin"], cleanGitEnv(), 15_000, {}, text);
     expect(hashed).toMatchObject({ ok: true, code: 0 });
     expect(runGitRaw(repo, ["cat-file", "blob", hashed.out], cleanGitEnv()).out).toBe(text);
+  });
+
+  test("a byte order mark git writes stays the text's first character", () => {
+    const repo = tempDir("git-bom");
+    git(repo, "init", "-q");
+    const text = '﻿{ "a": 1 }\n';
+    const hashed = runGit(repo, ["hash-object", "-w", "--stdin"], cleanGitEnv(), 15_000, {}, text);
+    expect(runGitRaw(repo, ["cat-file", "blob", hashed.out], cleanGitEnv()).out).toBe(text);
+  });
+});
+
+describe("runGitBytes", () => {
+  test("bytes that are not UTF-8 go in and come out as they are", () => {
+    const repo = tempDir("git-bytes");
+    git(repo, "init", "-q");
+    // "café" in Latin-1: 0xE9 alone is not UTF-8, and a decode would make it U+FFFD.
+    const latin1 = new Uint8Array([0x63, 0x61, 0x66, 0xe9, 0x0a]);
+    const hashed = runGitBytes(
+      repo,
+      ["hash-object", "-w", "--stdin"],
+      cleanGitEnv(),
+      15_000,
+      latin1,
+    );
+    expect(hashed).toMatchObject({ ok: true, code: 0 });
+    const id = new TextDecoder().decode(hashed.out).trim();
+    expect(runGitBytes(repo, ["cat-file", "blob", id], cleanGitEnv()).out).toEqual(latin1);
   });
 });
 
