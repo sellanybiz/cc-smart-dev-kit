@@ -25,7 +25,7 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
-import { join, relative, win32 } from "node:path";
+import { dirname, join, relative, win32 } from "node:path";
 import { COMMAND, MARKETPLACE_SOURCE, VERSION } from "../build-info";
 import { loadConfigFile } from "../gateway/config";
 import type { HealthProbe } from "../gateway/health";
@@ -47,6 +47,7 @@ import {
   migrateUnits,
   OLD,
   oldGatewayEnv,
+  oldPiecesPresent,
   progressFile,
   readOldConfig,
   rewriteStateFolder,
@@ -1199,6 +1200,32 @@ describe("readOldConfig — the mode rule", () => {
     const file = configFile();
     expect(readOldConfig(file, "linux")).toEqual(config);
     expect(readOldConfig(file, "win32")).toEqual(config);
+  });
+});
+
+/**
+ * `settings.json` and `gateway.json` are files a person edits, and Windows Notepad saves them
+ * with a byte order mark (U+FEFF). Setup and the gateway read them past the mark, so migrate
+ * must too: a pre-check that refuses what the write accepts would stop the move for nothing.
+ */
+describe("a settings file and a gateway config saved with a byte order mark", () => {
+  test("readOldConfig reads the config past the mark", () => {
+    const file = join(tempDir("migrate-old-config"), "gateway.json");
+    writeFileSync(file, '\uFEFF{"slots":{},"version":1}', { mode: 0o600 });
+    expect(readOldConfig(file, "linux")).toEqual({ slots: {}, version: 1 });
+  });
+
+  test("a moved config that still names an old slot counts as an old piece", () => {
+    const home = tempDir("migrate-pieces");
+    const paths = cliPaths({ HOME: home, CLAUDE_CONFIG_DIR: join(home, ".claude") });
+    const units = migrateUnits(paths);
+    const old = migratePaths(paths, units);
+    mkdirSync(dirname(paths.gatewayConfigFile), { recursive: true });
+    writeFileSync(
+      paths.gatewayConfigFile,
+      `\uFEFF${JSON.stringify({ slots: { [`${OLD.name}-scout`]: [] }, version: 1 })}`,
+    );
+    expect(oldPiecesPresent(paths, old, makeRenamer(old, units))).toBe(true);
   });
 });
 

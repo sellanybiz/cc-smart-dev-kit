@@ -85,6 +85,7 @@ import { withLock } from "../setup/lock";
 import { ownedEntries } from "../setup/managed-entries";
 import { applyManagedJson, getKey, isObject, ownedRecords, ownership } from "../setup/managed-json";
 import { BLOCK_BEGIN, BLOCK_END } from "../setup/managed-markdown";
+import { parseUserJson, readUserJson } from "../setup/user-json";
 import {
   atomicWrite,
   BACKUP_INFIX,
@@ -481,7 +482,7 @@ function oldNamesInConfig(file: string, renamer: Renamer): boolean {
   const text = readText(file);
   if (text === null) return false;
   try {
-    const raw: unknown = JSON.parse(text);
+    const raw = parseUserJson(text);
     if (!isObject(raw)) return false;
     const slots = isObject(raw.slots) ? Object.keys(raw.slots) : [];
     const modelSlots = isObject(raw.modelSlots) ? Object.values(raw.modelSlots) : [];
@@ -756,7 +757,7 @@ export function readOldConfig(
     );
   }
   try {
-    const parsed: unknown = JSON.parse(readFileSync(file, "utf8"));
+    const parsed = readUserJson(file);
     if (!isObject(parsed)) throw new Error("not an object");
     return parsed;
   } catch {

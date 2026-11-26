@@ -15,13 +15,14 @@
  */
 
 import { createHash } from "node:crypto";
-import { mkdirSync, readFileSync, statSync } from "node:fs";
+import { mkdirSync, statSync } from "node:fs";
 import { dirname } from "node:path";
 import { z } from "zod";
 // From ./names, not the index: the index bakes in the version, and the router bundle
 // must not change with it (a changed bundle restarts every machine's router).
 import { hostPlatform } from "../machine/host";
 import { isOwnerOnly } from "../setup/file-mode";
+import { readUserJson } from "../setup/user-json";
 import { atomicWrite } from "../setup/write";
 import { HISTORY_MAX_RETENTION_DAYS, HISTORY_RETENTION_DAYS } from "./history";
 import {
@@ -900,7 +901,7 @@ export function loadConfigFile(
   }
   let raw: unknown;
   try {
-    raw = JSON.parse(readFileSync(path, "utf8"));
+    raw = readUserJson(path);
   } catch (error) {
     // Not the parser's message: it can quote the text around the mistake, a key included.
     throw new ConfigError(`${path} is not valid JSON. Fix it by hand.`, { cause: error });
