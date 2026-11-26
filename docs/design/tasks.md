@@ -541,7 +541,8 @@ before the transaction (`extraFiles`). `task_update` of `files` (or `stacked_on`
 is judged against the other held plans, from stored lists only, in the transaction
 (`heldOverlaps`). A held plan with no stored list and no branch diff holds nothing a check can
 find, and unknown is never clear: a reservation or a hand-out beside it gets an
-`Overlap unknown:` line that names it and the fix (`task_update` on it with files), and no note,
+`Overlap unknown with <plan>:` line (`<plan> has no file list, so no overlap with it can be
+ruled out`, `unlistedWords`) with the fix (`task_update` on it with files), and no note,
 since there are no paths to note. A plan already in flight when 5.2.0 is installed has no list, so
 it reads this way.
 
@@ -606,8 +607,9 @@ and a note is no move of the plan. The text, in this order:
   sorted;
 - `Leads: #<n> session <id>; …`, when a lead is known (the reservation's session, else the task's
   owner);
-- for a plan that is done but still reserved, that `herdr plans` releases it when its pull request
-  merges;
+- for a plan that is done but still reserved, that it is finished and holds its files until its
+  pull request merges or closes, and that `herdr plans` then releases them (`finishedWords`, the
+  words `herdr plans` uses too);
 - a pointer to the rule, never a copy of it: ``Both may run at once; the plan that merges second
   catches up (`/cc-smart-dev-kit:build` § 6, An overlapping plan).``;
 - when `plans.mergeFiles` was not read in full, that a merge file may count, and why;
@@ -624,7 +626,9 @@ and a note is no move of the plan. The text, in this order:
   - for a folder both plans list, which a merge file never settles (`settledBy`), the folder and
     the two ways that do: narrow that folder entry to the files the plan changes, or put the
     folder itself in `plans.mergeFiles`;
-  - for a list too long for one line, the same advice to put their folder in `plans.mergeFiles`.
+  - for a list too long for one line, the same advice to put their folder in `plans.mergeFiles`;
+  - for a path that holds a comma, or a space at either end, which the propose value would split
+    or trim, no propose line: the note names it and says to list it in `plans.mergeFiles` by hand.
 
   With a list not read in full there is no propose line, since the line replaces the whole list.
   Git older than 2.40, or no base ref, gives the plain warning. A reader that throws adds one line,
@@ -633,7 +637,11 @@ and a note is no move of the plan. The text, in this order:
 
 Each list of paths in a note (the shared paths, the generated files, the folders) is capped at
 about 2,000 characters, the first path always shown, then `and <k> more`, so a note always fits
-under the note limit and is saved on both plans.
+under the note limit and is saved on both plans. When the head's list is cut short, the head also
+carries a short hash of the whole path set, so two sets that differ only past the cut each get a
+note. The kit marks its own overlap notes in the note's history, and `task_delete` lets a task go
+when every note on it is such a note (a plan that only ever got overlap notes); any other note,
+a hand-written one that starts with `Overlap:` included, still keeps it.
 
 **The classifier** (`classifyLeadPlans`, `src/tasks/work/lead-plans.ts`) is the store-only reader
 the status line and the keep-going hook share: no git, no gh, no hc. For the plans this caller

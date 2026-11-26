@@ -22044,8 +22044,15 @@ import { basename as basename4, dirname as dirname9, join as join19, resolve as 
 function runGit(cwd, args, env, timeoutMs = 15000, own = {}, input) {
   return spawnGit(cwd, args, env, timeoutMs, own, true, input);
 }
-function runGitRaw(cwd, args, env, timeoutMs = 15000) {
-  return spawnGit(cwd, args, env, timeoutMs, {}, false);
+function runGitRaw(cwd, args, env, timeoutMs = 15000, own = {}) {
+  return spawnGit(cwd, args, env, timeoutMs, own, false);
+}
+function pathBatches(paths) {
+  const batches = [];
+  for (let at = 0;at < paths.length; at += PATHS_PER_GIT_CALL) {
+    batches.push(paths.slice(at, at + PATHS_PER_GIT_CALL));
+  }
+  return batches;
 }
 function spawnGit(cwd, args, env, timeoutMs, own, trim, input) {
   const bytes = input === undefined ? undefined : new TextEncoder().encode(input);
@@ -22182,7 +22189,7 @@ function reflogEntryTime(line) {
   const time = Number(epoch) * 1000;
   return Number.isFinite(time) ? time : null;
 }
-var GIT_TIMED_OUT2 = "timed out", GUARD_GIT_TIMEOUT_MS = 5000, REFLOG_HEADER;
+var GIT_TIMED_OUT2 = "timed out", GUARD_GIT_TIMEOUT_MS = 5000, PATHS_PER_GIT_CALL = 200, REFLOG_HEADER;
 var init_git = __esm(() => {
   init_path_compare();
   init_git_env();
@@ -23823,17 +23830,13 @@ function openBaseOnlyGit(commonDir, source) {
       GIT_INDEX_FILE: join26(folder, "index"),
       GIT_CONFIG_GLOBAL: none,
       GIT_CONFIG_NOSYSTEM: "1",
-      GIT_ATTR_NOSYSTEM: "1"
+      GIT_ATTR_NOSYSTEM: "1",
+      GIT_ATTR_SOURCE: source,
+      GIT_CONFIG_COUNT: "0",
+      GIT_CONFIG_PARAMETERS: ""
     },
     args,
-    checks: (paths) => {
-      const checks = [];
-      for (let at = 0;at < paths.length; at += PATHS_PER_CALL) {
-        const batch = paths.slice(at, at + PATHS_PER_CALL);
-        checks.push(args(["check-attr", `--source=${source}`, "-z", GENERATED_ATTRIBUTE, "--", ...batch]));
-      }
-      return checks;
-    },
+    checks: (paths) => pathBatches(paths).map((batch) => args(["check-attr", `--source=${source}`, "-z", GENERATED_ATTRIBUTE, "--", ...batch])),
     readBase: args([
       "-c",
       "core.sparseCheckout=true",
@@ -23855,7 +23858,7 @@ function readGenerated(commonDir, source, paths, env, timeoutMs) {
     try {
       const marked = new Set;
       for (const args of isolated.checks(paths)) {
-        const run = runGit(isolated.cwd, args, env, timeoutMs, isolated.env);
+        const run = runGitRaw(isolated.cwd, args, env, timeoutMs, isolated.env);
         if (!run.ok)
           return null;
         for (const path of generatedIn(run.out))
@@ -23869,7 +23872,7 @@ function readGenerated(commonDir, source, paths, env, timeoutMs) {
     return null;
   }
 }
-var GENERATED_ATTRIBUTE = "linguist-generated", MARKED_VALUES, PATHS_PER_CALL = 200, SHA256_ID;
+var GENERATED_ATTRIBUTE = "linguist-generated", MARKED_VALUES, SHA256_ID;
 var init_generated = __esm(() => {
   init_names();
   init_git();
@@ -24002,7 +24005,10 @@ async function measure(checkout, { head, branch, base }, records, limits, git, o
     const left = (git.timeFor ?? ((limit) => limit))(GUARD_GIT_TIMEOUT_MS);
     if (left <= 0)
       throw new OutOfTime;
-    const result = await (git.run ?? runGitAsync)(cwd, args, git.env, left, vars);
+    const result = await (git.run ?? runGitAsync)(cwd, args, git.env, left, {
+      ...vars,
+      GIT_NO_REPLACE_OBJECTS: "1"
+    });
     if (result.code === null && result.err === GIT_TIMED_OUT2)
       throw new OutOfTime;
     return result;
@@ -24023,10 +24029,7 @@ async function measure(checkout, { head, branch, base }, records, limits, git, o
   }
   const isolated = openBaseOnlyGit(checkout.commonDir, baseSha);
   attributes.opened = isolated;
-  const marks = await run(isolated.readBase, isolated.env, isolated.cwd);
-  if (!marks.ok) {
-    throw new Uncovered(`the attributes of origin/${base} cannot be read (${marks.err})`);
-  }
+  const inBase = async (args) => await run(isolated.args(args), { ...own, ...isolated.env }, isolated.cwd);
   const mergeBase = async (a, b) => {
     const found = await run(["merge-base", a, b]);
     if (!found.ok) {
@@ -24035,7 +24038,16 @@ async function measure(checkout, { head, branch, base }, records, limits, git, o
     return found.out;
   };
   const numstat = async (from, to, review) => {
-    const diff = await run(isolated.args(["diff", "--no-textconv", "--no-ext-diff", "--numstat", "-z", "-M", from, to]), { ...own, ...isolated.env }, isolated.cwd);
+    const diff = await inBase([
+      "diff",
+      "--no-textconv",
+      "--no-ext-diff",
+      "--numstat",
+      "-z",
+      "-M",
+      from,
+      to
+    ]);
     if (!diff.ok) {
       throw new Uncovered(`the change after the review of ${short(review)} cannot be read (${diff.err})`, review);
     }
@@ -24088,6 +24100,10 @@ async function measure(checkout, { head, branch, base }, records, limits, git, o
   ];
   if (candidates.length === 0)
     throw new Uncovered(noReview(head, branch, true));
+  const marks = await run(isolated.readBase, isolated.env, isolated.cwd);
+  if (!marks.ok) {
+    throw new Uncovered(`the attributes of origin/${base} cannot be read (${marks.err})`);
+  }
   const onBase = await mergeBase(head, baseRef);
   const measured = [];
   const unread = [];
@@ -24096,13 +24112,20 @@ async function measure(checkout, { head, branch, base }, records, limits, git, o
       if (await commit(review) === null) {
         throw new Uncovered(`the reviewed commit ${short(review)} is not in this checkout: fetch it (git fetch origin)`, review);
       }
-      const replay = await run(["merge-tree", "--write-tree", "--no-messages", onBase, review]);
+      const replay = await inBase(["merge-tree", "--write-tree", "--no-messages", onBase, review]);
       const tree = replay.out.split(`
 `)[0] ?? "";
       if (replay.code !== 0 && replay.code !== 1 || !COMMIT_SHA.test(tree)) {
         throw new Uncovered(`the review of ${short(review)} cannot be replayed on origin/${base} (${replay.err})`, review);
       }
-      const same = await run(["diff", "--no-textconv", "--no-ext-diff", "--quiet", onBase, tree]);
+      const same = await inBase([
+        "diff",
+        "--no-textconv",
+        "--no-ext-diff",
+        "--quiet",
+        onBase,
+        tree
+      ]);
       if (same.code === 0)
         continue;
       if (same.code !== 1) {
@@ -30485,7 +30508,7 @@ var init_task_server_name = __esm(() => {
 });
 
 // src/tasks/words.ts
-var TASK_TOOL, RETIRED_TASK_TOOLS, TASK_TOOLS_ALLOW_RULE, TASK_COMMAND, MAX_PHASE = 8, PHASE_RULE, PLAN_FILES_WORDS = "Plan task only: the repo-relative paths the plan changes, with / separators; a folder ends in /. Two plans overlap when a path is equal or inside the other's folder (inside a plans.appendOnly folder, only the same file). An overlap with a reserved or running plan never refuses: the answer warns, and both plans get an Overlap: note. The list replaces the stored one; an empty list clears it.", STACKED_ON_WORDS = "Plan task only: the slug of your own plan this plan is built on. The overlap warning skips that one plan, both ways, while it holds its files (open, or done and reserved until its pull request merges), one lead leads both, and this plan is built on its work: that plan records its branch and base, its branch has commits past the default branch and past that base, and this plan's start (its herdr start base, or its base with its own branch recorded) holds some of them and is on this plan's own branch; every other plan is still warned about. Never itself, a missing plan, another lead's plan or a loop; null clears it.";
+var TASK_TOOL, RETIRED_TASK_TOOLS, TASK_TOOLS_ALLOW_RULE, TASK_COMMAND, MAX_PHASE = 8, PHASE_RULE, OVERLAP_NOTE = "Overlap:", OVERLAP_WARNS, PLAN_FILES_WORDS, STACKED_ON_WORDS = "Plan task only: the slug of your own plan this plan is built on. The overlap warning skips that one plan, both ways, while it holds its files (open, or done and reserved until its pull request merges), one lead leads both, and this plan is built on its work: that plan records its branch and base, its branch has commits past the default branch and past that base, and this plan's start (its herdr start base, or its base with its own branch recorded) holds some of them and is on this plan's own branch; every other plan is still warned about. Never itself, a missing plan, another lead's plan or a loop; null clears it.";
 var init_words2 = __esm(() => {
   init_names();
   init_task_server_name();
@@ -30510,6 +30533,8 @@ var init_words2 = __esm(() => {
   TASK_TOOLS_ALLOW_RULE = `mcp__${TASKS_SERVER_NAME}__*`;
   TASK_COMMAND = `${COMMAND} task`;
   PHASE_RULE = `1-${MAX_PHASE} characters: ASCII letters, digits, ".", "_" and "-", a letter or a digit at each end, never "--"`;
+  OVERLAP_WARNS = `the answer warns, and both plans get an ${OVERLAP_NOTE} note`;
+  PLAN_FILES_WORDS = `Plan task only: the repo-relative paths the plan changes, with / separators; a folder ends in /. Two plans overlap when a path is equal or inside the other's folder (inside a plans.appendOnly folder, only the same file). An overlap with a reserved or running plan never refuses: ${OVERLAP_WARNS}. The list replaces the stored one; an empty list clears it.`;
 });
 
 // src/tasks/deploy/check.ts
@@ -32541,7 +32566,7 @@ function hashFiles(folder, paths, env) {
 }
 function filteredPaths(folder, paths, env) {
   const filtered = new Set;
-  for (const chunk of chunks(paths)) {
+  for (const chunk of pathBatches(paths)) {
     const run = runGitRaw(folder, ["check-attr", "-z", "filter", "ident", "--", ...chunk], env);
     if (!run.ok)
       return null;
@@ -32556,7 +32581,7 @@ function filteredPaths(folder, paths, env) {
 }
 function hashChunks(folder, paths, flags, env) {
   const versions = [];
-  for (const chunk of chunks(paths)) {
+  for (const chunk of pathBatches(paths)) {
     const run = runGit(folder, ["hash-object", ...flags, "--", ...chunk], env);
     if (!run.ok)
       return null;
@@ -32575,7 +32600,7 @@ function hashChunks(folder, paths, flags, env) {
   return versions;
 }
 function allAbsent(folder, ref, paths, env) {
-  for (const chunk of chunks(paths)) {
+  for (const chunk of pathBatches(paths)) {
     const run = runGitRaw(folder, ["--literal-pathspecs", "ls-tree", "-r", "-z", "--name-only", ref, "--", ...chunk], env);
     if (!run.ok)
       return false;
@@ -32588,7 +32613,7 @@ function allAbsent(folder, ref, paths, env) {
 function allInHistory(folder, ref, versions, env) {
   const paths = [...new Set(versions.map((item) => item.path))];
   const seen = new Set;
-  for (const chunk of chunks(paths)) {
+  for (const chunk of pathBatches(paths)) {
     const run = runGitRaw(folder, [
       "--literal-pathspecs",
       "log",
@@ -32620,14 +32645,7 @@ function allInHistory(folder, ref, versions, env) {
   }
   return versions.every((item) => seen.has(`${item.path}\x00${item.version}`));
 }
-function chunks(paths) {
-  const out = [];
-  for (let at = 0;at < paths.length; at += PATHS_PER_CALL2) {
-    out.push(paths.slice(at, at + PATHS_PER_CALL2));
-  }
-  return out;
-}
-var NO_FILE = "000000", FILE_MODES, PATHS_PER_CALL2 = 200;
+var NO_FILE = "000000", FILE_MODES;
 var init_unsaved_changes = __esm(() => {
   init_git();
   FILE_MODES = new Set(["100644", "100755"]);
@@ -32924,7 +32942,7 @@ function checkedCacheProblem(paths, exists = existsSync40) {
     return `cannot be written${code === undefined ? "" : ` (${code})`}`;
   }
 }
-var PARSER_FINGERPRINT = "355ceaa25995a0131f97db3b83e953e1f220691e0189bc13356caa94fd1ea6c8", CHECKED_DIR = "checked", CHECKED_CACHE_LIMIT = 64, CHECKED_FILE_MAX_BYTES, CHECKED_TEMP_MAX_AGE_MS = 60000, ENTRY_FORMAT = 1, TEMP_NAME, PARSE;
+var PARSER_FINGERPRINT = "e8f36a50af9582ba2986fcdc57a830efb02c05b6c3ee3fb6e5eb73c29a6778d5", CHECKED_DIR = "checked", CHECKED_CACHE_LIMIT = 64, CHECKED_FILE_MAX_BYTES, CHECKED_TEMP_MAX_AGE_MS = 60000, ENTRY_FORMAT = 1, TEMP_NAME, PARSE;
 var init_checked_config = __esm(() => {
   init_build_info();
   init_locate();
@@ -34840,7 +34858,7 @@ function addNotesOnce(db, notes, who, now) {
       for (const id of note.taskIds) {
         if (holdsNoteStarting(db, id, `${note.head} `))
           continue;
-        saveNote(db, id, note.text, who, now, null);
+        saveNote(db, id, note.text, who, now, OVERLAP_NOTE_REASON);
         saved += 1;
       }
     return saved;
@@ -34851,7 +34869,8 @@ function deleteTask(db, id, who, now) {
     const task = taskById(db, id);
     if (db.sqlite.query("SELECT 1 FROM tasks WHERE parent_id=?").get(id))
       throw new Error("task has tasks");
-    if (db.sqlite.query("SELECT 1 FROM task_notes WHERE task_id=?").get(id))
+    const kept = db.sqlite.query("SELECT 1 FROM task_notes AS note WHERE note.task_id=? AND NOT (substr(note.text,1,length(?))=? AND EXISTS (SELECT 1 FROM task_events AS event WHERE event.task_id=note.task_id AND event.action='noted' AND event.at=note.at AND event.session_id IS note.session_id AND event.reason=?))").get(id, OVERLAP_NOTE, OVERLAP_NOTE, OVERLAP_NOTE_REASON);
+    if (kept)
       throw new Error("task has notes");
     const stacked = task.kind === "plan" ? allTasks(db, task.project).filter((t) => t.kind === "plan" && t.stackedOn === task.plan) : [];
     if (stacked.length > 0)
@@ -34860,6 +34879,7 @@ function deleteTask(db, id, who, now) {
     for (const [key, value] of Object.entries(shape(db, task)))
       if (!empty(key, value))
         last[key] = [value, null];
+    db.sqlite.query("DELETE FROM task_notes WHERE task_id=?").run(id);
     db.sqlite.query("DELETE FROM tasks WHERE id=?").run(id);
     recordEvent(db, task, "deleted", last, who, now, null);
     return true;
@@ -35159,7 +35179,7 @@ function reclaimResumed(db, who, now, isGone) {
     return rows.length;
   });
 }
-var NOTE_PREVIEW = 120, CAP_ORIGIN;
+var NOTE_PREVIEW = 120, OVERLAP_NOTE_REASON = "the overlap warning", CAP_ORIGIN;
 var init_store2 = __esm(() => {
   init_names();
   init_words2();
@@ -35174,6 +35194,7 @@ var init_store2 = __esm(() => {
 });
 
 // src/tasks/files-check.ts
+import { createHash as createHash7 } from "crypto";
 function planFilesCheck(cwd, env = process.env) {
   const checkout = locateCheckout(cwd, { env });
   if (checkout === null)
@@ -35231,14 +35252,29 @@ function leadWords(plan) {
     return `#${plan.number} session ${lead.sessionId}`;
   return lead?.pid ? `#${plan.number} process ${lead.pid}` : null;
 }
-function overlapSummary(plan, other, overlaps) {
+function sharedPaths(plan, other, overlaps) {
   const flip = plan.number > other.number;
-  const [low, high] = flip ? [other, plan] : [plan, other];
   const shown = overlaps.map(({ path, other: theirs }) => {
     const [mine, them] = flip ? [theirs, path] : [path, theirs];
     return mine === them ? mine : `${mine} (${them})`;
   });
-  return `${label(low)} and ${label(high)} share ${cappedList([...new Set(shown)].sort())}`;
+  return [...new Set(shown)].sort();
+}
+function overlapSummary(plan, other, overlaps, name = label) {
+  const [low, high] = plan.number > other.number ? [other, plan] : [plan, other];
+  return `${name(low)} and ${name(high)} share ${cappedList(sharedPaths(plan, other, overlaps))}`;
+}
+function finishedWords(name) {
+  return `${name} is finished and holds its files until its pull request merges or closes; \`${COMMAND} herdr plans\` then releases them`;
+}
+function unlistedWords(name) {
+  return `${name} has no file list, so no overlap with it can be ruled out`;
+}
+function unlistedFix(plan) {
+  return `${TASK_TOOL.update} #${plan.number} with files: the paths and folders it changes`;
+}
+function breaksProposeLine(path) {
+  return path.includes(",") || path !== path.trim();
 }
 function generatedWords(overlap, marks, generated, check) {
   const named = `${marks.ref} marks ${cappedList(generated)} generated`;
@@ -35249,16 +35285,22 @@ function generatedWords(overlap, marks, generated, check) {
   const folders = left.filter((path) => generated.some((file) => settledBy([path], file)));
   if (folders.length > 0)
     return `${named}, but a merge file does not settle a folder both plans list (${cappedList([...new Set(folders)].sort())}): narrow that folder entry to the files the plan changes, or put the folder itself in plans.mergeFiles.`;
+  const unsafe = proposed.filter(breaksProposeLine);
+  if (unsafe.length > 0)
+    return `${named}, but a propose line splits its value at commas and trims each entry, so it cannot carry ${cappedList(unsafe)}: list them in plans.mergeFiles by hand.`;
   const list = proposed.join(",");
   if (list.length > NOTE_LIST_CHARS)
     return `${named}: too many for one propose line, so put the folder that holds them in plans.mergeFiles.`;
   return `${named}: \`${COMMAND} workflow propose plans.mergeFiles ${shellWord(list)}\` opens the pull request that leaves them out of every overlap once the person merges it.`;
 }
 function overlapNote(overlap, marks, check) {
-  const head = `${OVERLAP_NOTE} ${overlapSummary(overlap.plan, overlap.other, overlap.overlaps)}.`;
+  const paths = sharedPaths(overlap.plan, overlap.other, overlap.overlaps);
+  const key = cappedList(paths) === paths.join(", ") ? "" : ` (path set ${createHash7("sha256").update(paths.join(`
+`)).digest("hex").slice(0, 12)})`;
+  const head = `${OVERLAP_NOTE} ${overlapSummary(overlap.plan, overlap.other, overlap.overlaps)}${key}.`;
   const pair = [overlap.plan, overlap.other].sort((a, b) => a.number - b.number);
   const leads = pair.map(leadWords).filter((words) => words !== null);
-  const settling = pair.filter((plan) => plan.status === "done").map((plan) => `${label(plan)} is done, not released: \`${COMMAND} herdr plans\` releases it when its pull request merges.`);
+  const settling = pair.filter((plan) => plan.status === "done").map((plan) => `${finishedWords(label(plan))}.`);
   const parts = [
     head,
     ...leads.length > 0 ? [`Leads: ${leads.join("; ")}.`] : [],
@@ -35275,7 +35317,7 @@ function overlapNote(overlap, marks, check) {
 }
 function unlistedLine({ plan, other }, unlisted) {
   const rival = unlisted.id === plan.id ? other : plan;
-  return `Overlap unknown: ${label(unlisted)} has no file list, so it cannot be compared with ${label(rival)}: set its files (${TASK_TOOL.update} on #${unlisted.number} with files).`;
+  return `Overlap unknown with ${label(rival)}: ${unlistedWords(label(unlisted))}; ${unlistedFix(unlisted)}.`;
 }
 function warnOverlaps(db, found, check, who, now) {
   const regions = [...new Set(found.flatMap((overlap) => overlap.overlaps.map(sharedPath)))].sort();
@@ -35308,7 +35350,7 @@ function warnOverlaps(db, found, check, who, now) {
   }
   return lines;
 }
-var OVERLAP_NOTE = "Overlap:", NOTE_LIST_CHARS = 2000;
+var NOTE_LIST_CHARS = 2000;
 var init_files_check = __esm(() => {
   init_names();
   init_git();
@@ -35734,14 +35776,14 @@ var init_brief = __esm(() => {
 });
 
 // src/herdr/launch-record.ts
-import { createHash as createHash7 } from "crypto";
+import { createHash as createHash8 } from "crypto";
 import { readFileSync as readFileSync47 } from "fs";
 import { join as join51 } from "path";
 function launchRecordsFolder(stateDir) {
   return join51(stateDir, "herdr", "launches");
 }
 function launchRecordPath(stateDir, worktree) {
-  const key = createHash7("sha256").update(pathForm(realPath(worktree))).digest("hex");
+  const key = createHash8("sha256").update(pathForm(realPath(worktree))).digest("hex");
   return join51(launchRecordsFolder(stateDir), `${key.slice(0, 32)}.json`);
 }
 async function writeLaunchRecord(stateDir, record) {
@@ -35800,7 +35842,7 @@ function launchedOutsideDefault(world, worktree) {
 }
 function baseRef(world) {
   for (const ref of [`refs/remotes/origin/${world.base}`, `refs/heads/${world.base}`])
-    if (git(world, ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`]).ok)
+    if (commitIn(git(world, commitArgs(ref))) !== null)
       return ref.replace(/^refs\/(remotes|heads)\//, "");
   return null;
 }
@@ -36098,7 +36140,7 @@ function readiness(world, entry, held, byId, base, proved, stacks) {
   if (entry.state === "waiting")
     return line("waiting", `waiting on ${entry.waitingOn.map(label2).join(", ")}`);
   if (entry.state === "no-files")
-    return line("no-files", "has no file list, so it is never handed out", `task_update #${plan.number} with files: the paths and folders it changes`);
+    return line("no-files", "has no file list, so it is never handed out", unlistedFix(plan));
   const waiting = [];
   for (const id of plan.waitsFor) {
     const blocker = byId.get(id);
@@ -36116,16 +36158,15 @@ function readiness(world, entry, held, byId, base, proved, stacks) {
   const rivals = rivalsOf(held, plan, proved);
   const unlisted = rivals.filter((other) => other.files.length === 0);
   const shared = [];
-  const fixes = unlisted.map((other) => `task_update #${other.plan.number} with files: the paths and folders it changes, so overlaps with it can be named`);
-  if (unlisted.length > 0)
-    shared.push(`${unlisted.map((other) => label2(other.plan)).join(", ")} ${unlisted.length > 1 ? "are" : "is"} held with no file list and no branch diff, so no overlap can be ruled out`);
+  const fixes = unlisted.map((other) => unlistedFix(other.plan));
+  shared.push(...unlisted.map((other) => unlistedWords(label2(other.plan))));
   const clashes = [];
   for (const other of rivals) {
     const touched = filesOverlap(plan.files, other.files, world.check);
     if (touched.length === 0)
       continue;
-    const closed = isOpen(other.plan) ? "" : ` (${label2(other.plan)} is finished: held until its pull request settles)`;
-    clashes.push(`${overlapSummary(plan, other.plan, touched)}${closed}`);
+    const closed = isOpen(other.plan) ? "" : ` (${finishedWords(label2(other.plan))})`;
+    clashes.push(`${overlapSummary(plan, other.plan, touched, label2)}${closed}`);
     if (plan.stackedOn !== null && other.plan.plan === plan.stackedOn)
       fixes.push(unprovedStackFix(plan, other.plan, stacks.get(plan.id), byId));
   }
@@ -37181,10 +37222,10 @@ function localBranches(repo, prefix, env) {
   return listed.ok ? listed.out.split(`
 `).filter((name) => name !== "") : [];
 }
-function freeBranch(repo, wanted, env) {
+function freeBranch(repo, wanted, env, refused = new Set) {
   const first = worktreeBranch(wanted);
   const taken = remoteBranches(repo, first, env);
-  for (const name of localBranches(repo, first, env))
+  for (const name of [...localBranches(repo, first, env), ...refused])
     taken.add(name);
   if (!taken.has(first))
     return first;
@@ -37193,7 +37234,7 @@ function freeBranch(repo, wanted, env) {
     if (!taken.has(branch))
       return branch;
   }
-  return first;
+  return null;
 }
 function treeEntries(repo, tree, env) {
   const listed = runGitBytes(repo, ["ls-tree", "-z", tree], env, QUICK_GIT_TIMEOUT_MS);
@@ -37233,35 +37274,39 @@ function treeWith(repo, tree, path, blob, env) {
   const made = runGitBytes(repo, ["mktree", "-z", "--missing"], env, QUICK_GIT_TIMEOUT_MS, Buffer.concat(parts));
   return made.ok ? new TextDecoder().decode(made.out).trim() : { why: `git mktree failed: ${lastLine2(made.err)}` };
 }
+function pushedRef(out, ref) {
+  for (const line of out.split(`
+`)) {
+    const [flag = "", refs, summary = ""] = line.split("\t");
+    if (refs?.endsWith(`:${ref}`))
+      return { flag, summary };
+  }
+  return null;
+}
 function pushBranch(repo, sha, branch, env) {
   const ref = `refs/heads/${branch}`;
   const pushed = runGit(repo, ["push", "--no-verify", "--porcelain", `--force-with-lease=${ref}:`, "origin", `${sha}:${ref}`], env, PUSH_TIMEOUT_MS, { LC_ALL: "C" });
-  const line = pushed.out.split(`
-`).find((one) => one.split("\t")[1] === `${sha}:${ref}`);
-  const taken = { ok: false, taken: true, why: `${branch} is already on origin` };
-  if (line?.startsWith("=\t"))
-    return taken;
-  if (pushed.ok)
+  const line = pushedRef(pushed.out, ref);
+  if (line?.flag === "*")
     return { ok: true };
-  if (line?.startsWith("!\t") && line.includes("(stale info)"))
-    return taken;
-  return { ok: false, taken: false, why: line?.split("\t")[2] ?? lastLine2(pushed.err) };
+  if (line?.flag === "!" && line.summary.includes(LEASE_REFUSED)) {
+    return { ok: false, taken: true, why: `${branch} is already on origin` };
+  }
+  return { ok: false, taken: false, why: line?.summary ?? lastLine2(pushed.err) };
 }
 function takeBack(repo, branch, sha, env) {
   const ref = `refs/heads/${branch}`;
-  const listed = runGit(repo, ["ls-remote", "origin", ref], env, FETCH_TIMEOUT_MS);
-  if (!listed.ok) {
-    return {
-      deleted: false,
-      left: [`maybe the branch ${branch} on origin (git could not ask: ${lastLine2(listed.err)})`]
-    };
-  }
-  if (!listed.out.split(`
-`).some((line) => line.startsWith(`${sha}	`))) {
+  const gone = runGit(repo, ["push", "--no-verify", "--porcelain", `--force-with-lease=${ref}:${sha}`, "origin", `:${ref}`], env, PUSH_TIMEOUT_MS, { LC_ALL: "C" });
+  const line = pushedRef(gone.out, ref);
+  if (line?.flag === "-")
+    return { deleted: true, left: [] };
+  if (line?.flag === "!" && line.summary.includes(LEASE_REFUSED)) {
     return { deleted: false, left: [] };
   }
-  const gone = runGit(repo, ["push", "--no-verify", `--force-with-lease=${ref}:${sha}`, "origin", `:${ref}`], env, PUSH_TIMEOUT_MS);
-  return gone.ok ? { deleted: true, left: [] } : { deleted: false, left: [`the branch ${branch} on origin (${lastLine2(gone.err)})`] };
+  return {
+    deleted: false,
+    left: [`maybe the branch ${branch} on origin (${line?.summary ?? lastLine2(gone.err)})`]
+  };
 }
 function tailOf(back) {
   if (back.left.length > 0)
@@ -37430,22 +37475,32 @@ async function proposeWorkflow(context, key, value, options) {
     "-m",
     title,
     "-m",
-    MADE_WITHOUT_HOOKS
+    MADE_WITHOUT_HOOKS,
+    "-m",
+    `Proposal-Id: ${crypto.randomUUID()}`
   ], context.env, COMMIT_TIMEOUT_MS);
   if (!commit.ok) {
     return fail(`git commit-tree failed: ${lastLine2(commit.err)}. Check your git name and email (\`git config user.name\`, \`git config user.email\`)${signed.sign ? " and that git can sign your commits (commit.gpgSign is on)" : ""}, then try again. Nothing was pushed.`);
   }
   const sha = commit.out;
   const wanted = `workflow-${settingSlug(key)}-${dayStamp(now())}`;
+  const allTaken = `all ${NAME_TRIES} branch names for ${key} today (${worktreeBranch(wanted)} to ${worktreeBranch(`${wanted}-${NAME_TRIES}`)}) are taken, here or on origin: delete the proposal branches you no longer need, then run it again. Nothing was pushed.`;
   let branch = freeBranch(repo, wanted, context.env);
+  if (branch === null)
+    return fail(allTaken);
   let pushed = pushBranch(repo, sha, branch, context.env);
   if (!pushed.ok && pushed.taken) {
-    branch = freeBranch(repo, wanted, context.env);
+    const refused = branch;
+    branch = freeBranch(repo, wanted, context.env, new Set([refused]));
+    if (branch === null)
+      return fail(allTaken);
     pushed = pushBranch(repo, sha, branch, context.env);
+    if (!pushed.ok && pushed.taken) {
+      return fail(`the branch names ${refused} and ${branch} were both taken on origin while this proposal ran: other proposals of ${key} are being pushed now. Nothing was pushed; run it again in a moment.`);
+    }
   }
   if (!pushed.ok) {
-    const tail = pushed.taken ? "; nothing was left behind" : tailOf(takeBack(repo, branch, sha, context.env));
-    return fail(`git push origin ${branch} failed: ${pushed.why}. Check that you may push to this repository, then try again${tail}`);
+    return fail(`git push origin ${branch} failed: ${pushed.why}. Check that you may push to this repository, then try again${tailOf(takeBack(repo, branch, sha, context.env))}`);
   }
   const created = await createPullRequest(repo, context.env, [
     "pr",
@@ -37485,7 +37540,7 @@ async function proposeWorkflow(context, key, value, options) {
   context.print(`+ pull request into ${base}: ${created.url}`);
   return 0;
 }
-var FETCH_TIMEOUT_MS = 60000, COMMIT_TIMEOUT_MS = 120000, PUSH_TIMEOUT_MS = 120000, QUICK_GIT_TIMEOUT_MS = 1e4, GH_CREATE_TIMEOUT_MS = 60000, TREE_LEVELS, QUICK_GIT_CALLS, PROPOSE_WORST_CASE_MS, NAME_TRIES = 50, MADE_WITHOUT_HOOKS = "The commit was made without the project's git hooks: a line a hook adds (such as a sign-off) is missing, and a clean filter on the file did not run. The review and CI are its gate.", encoder2;
+var FETCH_TIMEOUT_MS = 60000, COMMIT_TIMEOUT_MS = 120000, PUSH_TIMEOUT_MS = 120000, QUICK_GIT_TIMEOUT_MS = 1e4, GH_CREATE_TIMEOUT_MS = 60000, TREE_LEVELS, QUICK_GIT_CALLS, PROPOSE_WORST_CASE_MS, NAME_TRIES = 50, MADE_WITHOUT_HOOKS = "The commit was made without the project's git hooks: a line a hook adds (such as a sign-off) is missing, and a clean filter on the file did not run. The review and CI are its gate.", encoder2, LEASE_REFUSED = "(stale info)";
 var init_propose = __esm(() => {
   init_names();
   init_git();
@@ -37497,7 +37552,7 @@ var init_propose = __esm(() => {
   init_write2();
   TREE_LEVELS = CONFIG_PATH.split("/").length;
   QUICK_GIT_CALLS = 1 + 3 + 1 + 2 * TREE_LEVELS + 1 + 2;
-  PROPOSE_WORST_CASE_MS = 2 * RESOLVE_GIT_TIMEOUT_MS + FETCH_TIMEOUT_MS + GH_TIMEOUT_MS + COMMIT_TIMEOUT_MS + 2 * (FETCH_TIMEOUT_MS + PUSH_TIMEOUT_MS) + GH_CREATE_TIMEOUT_MS + FETCH_TIMEOUT_MS + PUSH_TIMEOUT_MS + QUICK_GIT_CALLS * QUICK_GIT_TIMEOUT_MS + 30000;
+  PROPOSE_WORST_CASE_MS = 2 * RESOLVE_GIT_TIMEOUT_MS + FETCH_TIMEOUT_MS + GH_TIMEOUT_MS + COMMIT_TIMEOUT_MS + 2 * (FETCH_TIMEOUT_MS + PUSH_TIMEOUT_MS) + GH_CREATE_TIMEOUT_MS + PUSH_TIMEOUT_MS + QUICK_GIT_CALLS * QUICK_GIT_TIMEOUT_MS + 30000;
   encoder2 = new TextEncoder;
 });
 
@@ -51254,7 +51309,7 @@ import { isAbsolute as isAbsolute8, join as join88, relative as relative10, reso
 // src/hooks/after-merge.ts
 init_names();
 init_command();
-import { createHash as createHash8 } from "crypto";
+import { createHash as createHash9 } from "crypto";
 import { existsSync as existsSync68, mkdirSync as mkdirSync26, writeFileSync as writeFileSync11 } from "fs";
 import { tmpdir as tmpdir9 } from "os";
 import { join as join81 } from "path";
@@ -52292,7 +52347,7 @@ function viewPullRequest2(ref, repo, folder, env, timeoutMs) {
   }
 }
 function seenFile(repo, number, env) {
-  const key = createHash8("sha256").update(repo).digest("hex").slice(0, 16);
+  const key = createHash9("sha256").update(repo).digest("hex").slice(0, 16);
   return join81(env.TMPDIR || tmpdir9(), "cc-smart-dev-kit-merges", `${key}-${number}`);
 }
 async function afterMerge(context) {
@@ -52883,7 +52938,7 @@ init_targets();
 init_launch_policy();
 init_resolve2();
 init_io();
-import { createHash as createHash9 } from "crypto";
+import { createHash as createHash10 } from "crypto";
 import { existsSync as existsSync70, mkdirSync as mkdirSync28, writeFileSync as writeFileSync13 } from "fs";
 import { dirname as dirname30, join as join83 } from "path";
 
@@ -53033,7 +53088,7 @@ function sessionMark(env, sessionId, kind) {
 }
 function judgedMark(env, sessionId, model, served = false) {
   const key = served ? `served:${model}` : model;
-  const hash = createHash9("sha256").update(key).digest("hex").slice(0, 16);
+  const hash = createHash10("sha256").update(key).digest("hex").slice(0, 16);
   return join83(namesDir(env), `${sessionId}.judged-${hash}`);
 }
 function firstTime(mark) {
@@ -59834,11 +59889,9 @@ function leftBehind(ctx, repo, worktree, name) {
     const head = runGit(worktree, ["symbolic-ref", "--short", "HEAD"], ctx.env);
     if (head.ok && head.out !== "")
       branch = head.out;
-    const commit = runGit(worktree, ["rev-parse", "--verify", "--quiet", "HEAD^{commit}"], ctx.env);
-    if (commit.ok && commit.out !== "")
-      tip = commit.out;
+    tip = commitIn(runGit(worktree, commitArgs("HEAD"), ctx.env)) ?? undefined;
   }
-  tip ??= [`refs/heads/${branch}`, `refs/remotes/origin/${branch}`].map((ref) => runGit(repo, ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], ctx.env)).find((run) => run.ok && run.out !== "")?.out;
+  tip ??= [`refs/heads/${branch}`, `refs/remotes/origin/${branch}`].map((ref) => commitIn(runGit(repo, commitArgs(ref), ctx.env))).find((commit) => commit !== null);
   return tip === undefined ? null : { branch, tip };
 }
 function followupGate(ctx, r, me, repo, base, all) {
@@ -60006,17 +60059,15 @@ async function boundWorktree(ctx, r, on, at, name, waitMs) {
   return null;
 }
 function resolveBase(ctx, r, on, at, ref) {
-  const args = ["git", "rev-parse", "--verify", "--quiet", `${ref}^{commit}`];
   if (on) {
-    const found = remoteResult(r, on, args, at);
+    const found = remoteResult(r, on, ["git", ...commitArgs(ref)], at);
     if (found.code === 1)
       return null;
     if (found.code !== 0)
       throw new Error("The remote base could not be checked.");
     return found.stdout.trim() || null;
   }
-  const found = runGit(at, args.slice(1), ctx.env);
-  return found.ok && found.out !== "" ? found.out : null;
+  return commitIn(runGit(at, commitArgs(ref), ctx.env));
 }
 function remoteReportFolder(ctx) {
   const defaults = cliPaths({ HOME: ctx.paths.home });
@@ -60717,7 +60768,7 @@ init_merge_check();
 init_propose();
 init_resolve2();
 init_schema();
-import { createHash as createHash10 } from "crypto";
+import { createHash as createHash11 } from "crypto";
 import { existsSync as existsSync83, mkdirSync as mkdirSync34, readFileSync as readFileSync94 } from "fs";
 import { basename as basename26, dirname as dirname40, join as join101, relative as relative13 } from "path";
 
@@ -60969,7 +61020,7 @@ var SESSION_WORKING_MS = 2 * 60000;
 // src/portal/api/projects.ts
 var PROJECT_ID_HEX = 12;
 function projectId(root) {
-  return createHash10("sha256").update(root).digest("hex").slice(0, PROJECT_ID_HEX);
+  return createHash11("sha256").update(root).digest("hex").slice(0, PROJECT_ID_HEX);
 }
 var PROJECTS_LIST_CACHE_MS = 1e4;
 var PROJECT_GIT_AT_ONCE = 8;

@@ -21680,7 +21680,9 @@ var TASK_TOOLS_ALLOW_RULE = `mcp__${TASKS_SERVER_NAME}__*`;
 var TASK_COMMAND = `${COMMAND} task`;
 var MAX_PHASE = 8;
 var PHASE_RULE = `1-${MAX_PHASE} characters: ASCII letters, digits, ".", "_" and "-", a letter or a digit at each end, never "--"`;
-var PLAN_FILES_WORDS = "Plan task only: the repo-relative paths the plan changes, with / separators; a folder ends in /. Two plans overlap when a path is equal or inside the other's folder (inside a plans.appendOnly folder, only the same file). An overlap with a reserved or running plan never refuses: the answer warns, and both plans get an Overlap: note. The list replaces the stored one; an empty list clears it.";
+var OVERLAP_NOTE = "Overlap:";
+var OVERLAP_WARNS = `the answer warns, and both plans get an ${OVERLAP_NOTE} note`;
+var PLAN_FILES_WORDS = `Plan task only: the repo-relative paths the plan changes, with / separators; a folder ends in /. Two plans overlap when a path is equal or inside the other's folder (inside a plans.appendOnly folder, only the same file). An overlap with a reserved or running plan never refuses: ${OVERLAP_WARNS}. The list replaces the stored one; an empty list clears it.`;
 var STACKED_ON_WORDS = "Plan task only: the slug of your own plan this plan is built on. The overlap warning skips that one plan, both ways, while it holds its files (open, or done and reserved until its pull request merges), one lead leads both, and this plan is built on its work: that plan records its branch and base, its branch has commits past the default branch and past that base, and this plan's start (its herdr start base, or its base with its own branch recorded) holds some of them and is on this plan's own branch; every other plan is still warned about. Never itself, a missing plan, another lead's plan or a loop; null clears it.";
 
 // src/tasks/work/types.ts
@@ -21976,8 +21978,16 @@ var GIT_TIMED_OUT = "timed out";
 function runGit(cwd, args, env, timeoutMs = 15000, own = {}, input) {
   return spawnGit(cwd, args, env, timeoutMs, own, true, input);
 }
-function runGitRaw(cwd, args, env, timeoutMs = 15000) {
-  return spawnGit(cwd, args, env, timeoutMs, {}, false);
+function runGitRaw(cwd, args, env, timeoutMs = 15000, own = {}) {
+  return spawnGit(cwd, args, env, timeoutMs, own, false);
+}
+var PATHS_PER_GIT_CALL = 200;
+function pathBatches(paths) {
+  const batches = [];
+  for (let at = 0;at < paths.length; at += PATHS_PER_GIT_CALL) {
+    batches.push(paths.slice(at, at + PATHS_PER_GIT_CALL));
+  }
+  return batches;
 }
 function spawnGit(cwd, args, env, timeoutMs, own, trim, input) {
   const bytes = input === undefined ? undefined : new TextEncoder().encode(input);
@@ -25931,7 +25941,6 @@ import { tmpdir } from "os";
 import { join as join8 } from "path";
 var GENERATED_ATTRIBUTE = "linguist-generated";
 var MARKED_VALUES = new Set(["set", "true"]);
-var PATHS_PER_CALL = 200;
 var SHA256_ID = /^[0-9a-f]{64}$/;
 function generatedIn(out) {
   const fields = out.split("\x00");
@@ -25983,17 +25992,13 @@ function openBaseOnlyGit(commonDir, source) {
       GIT_INDEX_FILE: join8(folder, "index"),
       GIT_CONFIG_GLOBAL: none,
       GIT_CONFIG_NOSYSTEM: "1",
-      GIT_ATTR_NOSYSTEM: "1"
+      GIT_ATTR_NOSYSTEM: "1",
+      GIT_ATTR_SOURCE: source,
+      GIT_CONFIG_COUNT: "0",
+      GIT_CONFIG_PARAMETERS: ""
     },
     args,
-    checks: (paths) => {
-      const checks = [];
-      for (let at = 0;at < paths.length; at += PATHS_PER_CALL) {
-        const batch = paths.slice(at, at + PATHS_PER_CALL);
-        checks.push(args(["check-attr", `--source=${source}`, "-z", GENERATED_ATTRIBUTE, "--", ...batch]));
-      }
-      return checks;
-    },
+    checks: (paths) => pathBatches(paths).map((batch) => args(["check-attr", `--source=${source}`, "-z", GENERATED_ATTRIBUTE, "--", ...batch])),
     readBase: args([
       "-c",
       "core.sparseCheckout=true",
@@ -26015,7 +26020,7 @@ function readGenerated(commonDir, source, paths, env, timeoutMs) {
     try {
       const marked = new Set;
       for (const args of isolated.checks(paths)) {
-        const run = runGit(isolated.cwd, args, env, timeoutMs, isolated.env);
+        const run = runGitRaw(isolated.cwd, args, env, timeoutMs, isolated.env);
         if (!run.ok)
           return null;
         for (const path of generatedIn(run.out))
@@ -26057,6 +26062,9 @@ function baseBranch(checkout, env, repo) {
   const name = head.ok ? originHeadName(head.out) : "";
   return name === "" ? { base: DEFAULT_BASE, from: "default" } : { base: name, from: "origin" };
 }
+
+// src/tasks/files-check.ts
+import { createHash as createHash2 } from "crypto";
 
 // src/tasks/work/store.ts
 var NOTE_PREVIEW = 120;
@@ -26372,6 +26380,7 @@ function saveNote(db, id, text, who, now, reason) {
     at: now
   };
 }
+var OVERLAP_NOTE_REASON = "the overlap warning";
 function addNotesOnce(db, notes, who, now) {
   return writeWork(db, () => {
     let saved = 0;
@@ -26379,7 +26388,7 @@ function addNotesOnce(db, notes, who, now) {
       for (const id of note.taskIds) {
         if (holdsNoteStarting(db, id, `${note.head} `))
           continue;
-        saveNote(db, id, note.text, who, now, null);
+        saveNote(db, id, note.text, who, now, OVERLAP_NOTE_REASON);
         saved += 1;
       }
     return saved;
@@ -26390,7 +26399,8 @@ function deleteTask(db, id, who, now) {
     const task = taskById(db, id);
     if (db.sqlite.query("SELECT 1 FROM tasks WHERE parent_id=?").get(id))
       throw new Error("task has tasks");
-    if (db.sqlite.query("SELECT 1 FROM task_notes WHERE task_id=?").get(id))
+    const kept = db.sqlite.query("SELECT 1 FROM task_notes AS note WHERE note.task_id=? AND NOT (substr(note.text,1,length(?))=? AND EXISTS (SELECT 1 FROM task_events AS event WHERE event.task_id=note.task_id AND event.action='noted' AND event.at=note.at AND event.session_id IS note.session_id AND event.reason=?))").get(id, OVERLAP_NOTE, OVERLAP_NOTE, OVERLAP_NOTE_REASON);
+    if (kept)
       throw new Error("task has notes");
     const stacked = task.kind === "plan" ? allTasks(db, task.project).filter((t) => t.kind === "plan" && t.stackedOn === task.plan) : [];
     if (stacked.length > 0)
@@ -26399,6 +26409,7 @@ function deleteTask(db, id, who, now) {
     for (const [key, value] of Object.entries(shape(db, task)))
       if (!empty(key, value))
         last[key] = [value, null];
+    db.sqlite.query("DELETE FROM task_notes WHERE task_id=?").run(id);
     db.sqlite.query("DELETE FROM tasks WHERE id=?").run(id);
     recordEvent(db, task, "deleted", last, who, now, null);
     return true;
@@ -26617,7 +26628,6 @@ function baseGenerated(checkout, base, paths, env) {
   const marked = readGenerated(checkout.commonDir, commit, [...files], env);
   return marked === null ? null : { ref, files: [...marked].sort() };
 }
-var OVERLAP_NOTE = "Overlap:";
 var NOTE_LIST_CHARS = 2000;
 function cappedList(items) {
   let shown = 0;
@@ -26640,14 +26650,29 @@ function leadWords(plan) {
     return `#${plan.number} session ${lead.sessionId}`;
   return lead?.pid ? `#${plan.number} process ${lead.pid}` : null;
 }
-function overlapSummary(plan, other, overlaps) {
+function sharedPaths(plan, other, overlaps) {
   const flip = plan.number > other.number;
-  const [low, high] = flip ? [other, plan] : [plan, other];
   const shown = overlaps.map(({ path, other: theirs }) => {
     const [mine, them] = flip ? [theirs, path] : [path, theirs];
     return mine === them ? mine : `${mine} (${them})`;
   });
-  return `${label(low)} and ${label(high)} share ${cappedList([...new Set(shown)].sort())}`;
+  return [...new Set(shown)].sort();
+}
+function overlapSummary(plan, other, overlaps, name = label) {
+  const [low, high] = plan.number > other.number ? [other, plan] : [plan, other];
+  return `${name(low)} and ${name(high)} share ${cappedList(sharedPaths(plan, other, overlaps))}`;
+}
+function finishedWords(name) {
+  return `${name} is finished and holds its files until its pull request merges or closes; \`${COMMAND} herdr plans\` then releases them`;
+}
+function unlistedWords(name) {
+  return `${name} has no file list, so no overlap with it can be ruled out`;
+}
+function unlistedFix(plan) {
+  return `${TASK_TOOL.update} #${plan.number} with files: the paths and folders it changes`;
+}
+function breaksProposeLine(path) {
+  return path.includes(",") || path !== path.trim();
 }
 function generatedWords(overlap, marks, generated, check) {
   const named = `${marks.ref} marks ${cappedList(generated)} generated`;
@@ -26658,16 +26683,22 @@ function generatedWords(overlap, marks, generated, check) {
   const folders = left.filter((path) => generated.some((file) => settledBy([path], file)));
   if (folders.length > 0)
     return `${named}, but a merge file does not settle a folder both plans list (${cappedList([...new Set(folders)].sort())}): narrow that folder entry to the files the plan changes, or put the folder itself in plans.mergeFiles.`;
+  const unsafe = proposed.filter(breaksProposeLine);
+  if (unsafe.length > 0)
+    return `${named}, but a propose line splits its value at commas and trims each entry, so it cannot carry ${cappedList(unsafe)}: list them in plans.mergeFiles by hand.`;
   const list = proposed.join(",");
   if (list.length > NOTE_LIST_CHARS)
     return `${named}: too many for one propose line, so put the folder that holds them in plans.mergeFiles.`;
   return `${named}: \`${COMMAND} workflow propose plans.mergeFiles ${shellWord(list)}\` opens the pull request that leaves them out of every overlap once the person merges it.`;
 }
 function overlapNote(overlap, marks, check) {
-  const head = `${OVERLAP_NOTE} ${overlapSummary(overlap.plan, overlap.other, overlap.overlaps)}.`;
+  const paths = sharedPaths(overlap.plan, overlap.other, overlap.overlaps);
+  const key = cappedList(paths) === paths.join(", ") ? "" : ` (path set ${createHash2("sha256").update(paths.join(`
+`)).digest("hex").slice(0, 12)})`;
+  const head = `${OVERLAP_NOTE} ${overlapSummary(overlap.plan, overlap.other, overlap.overlaps)}${key}.`;
   const pair = [overlap.plan, overlap.other].sort((a, b) => a.number - b.number);
   const leads = pair.map(leadWords).filter((words) => words !== null);
-  const settling = pair.filter((plan) => plan.status === "done").map((plan) => `${label(plan)} is done, not released: \`${COMMAND} herdr plans\` releases it when its pull request merges.`);
+  const settling = pair.filter((plan) => plan.status === "done").map((plan) => `${finishedWords(label(plan))}.`);
   const parts = [
     head,
     ...leads.length > 0 ? [`Leads: ${leads.join("; ")}.`] : [],
@@ -26684,7 +26715,7 @@ function overlapNote(overlap, marks, check) {
 }
 function unlistedLine({ plan, other }, unlisted) {
   const rival = unlisted.id === plan.id ? other : plan;
-  return `Overlap unknown: ${label(unlisted)} has no file list, so it cannot be compared with ${label(rival)}: set its files (${TASK_TOOL.update} on #${unlisted.number} with files).`;
+  return `Overlap unknown with ${label(rival)}: ${unlistedWords(label(unlisted))}; ${unlistedFix(unlisted)}.`;
 }
 function warnOverlaps(db, found, check, who, now) {
   const regions = [...new Set(found.flatMap((overlap) => overlap.overlaps.map(sharedPath)))].sort();
@@ -27760,7 +27791,7 @@ Finish or drop every blocking task before marking its parent done.
 Three layers: plan \u203A phase \u203A task. A non-blocking task holds nothing; a task blocked by an open task waits for it.
 A plan holds at most plans.maxPhases phases, and a phase starts only once it holds tasks. Lay phases in any of your plans, up front; run one plan at a time: starting work in a plan puts it in flight, and a start in another plan is refused until the first is finished or parked (park = its plan task to pending, once its phases stop; resume = start a phase again). A later ask waits as a task under its plan (parent = the plan's #n). A task made with no plan and no parent is loose: a small fix needs no plan, and it never joins or starts one.
 A step of a phase closes done with evidence, or dropped with a note that gives the reason. A phase with a recorded branch closes done only once that branch has a commit past its base and is in the plan branch.
-A plan task holds its file list (files on task_create or task_update): repo-relative paths, a folder ends in /. Plans whose files overlap may run at once: the answer warns, and both plans get an Overlap: note.
+A plan task holds its file list (files on task_create or task_update): repo-relative paths, a folder ends in /. Plans whose files overlap may run at once: ${OVERLAP_WARNS}.
 Save notes as you go with ${TASK_TOOL.note}.`;
 var descriptions = {
   take: "Take a plan or task into the calling session. Live claims need force; a refusal changes nothing.",

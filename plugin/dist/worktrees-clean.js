@@ -278,8 +278,16 @@ var GUARD_GIT_TIMEOUT_MS = 5000;
 function runGit(cwd, args, env, timeoutMs = 15000, own = {}, input) {
   return spawnGit(cwd, args, env, timeoutMs, own, true, input);
 }
-function runGitRaw(cwd, args, env, timeoutMs = 15000) {
-  return spawnGit(cwd, args, env, timeoutMs, {}, false);
+function runGitRaw(cwd, args, env, timeoutMs = 15000, own = {}) {
+  return spawnGit(cwd, args, env, timeoutMs, own, false);
+}
+var PATHS_PER_GIT_CALL = 200;
+function pathBatches(paths) {
+  const batches = [];
+  for (let at = 0;at < paths.length; at += PATHS_PER_GIT_CALL) {
+    batches.push(paths.slice(at, at + PATHS_PER_GIT_CALL));
+  }
+  return batches;
 }
 function spawnGit(cwd, args, env, timeoutMs, own, trim, input) {
   const bytes = input === undefined ? undefined : new TextEncoder().encode(input);
@@ -8398,6 +8406,9 @@ var TASK_TOOLS_ALLOW_RULE = `mcp__${TASKS_SERVER_NAME}__*`;
 var TASK_COMMAND = `${COMMAND} task`;
 var MAX_PHASE = 8;
 var PHASE_RULE = `1-${MAX_PHASE} characters: ASCII letters, digits, ".", "_" and "-", a letter or a digit at each end, never "--"`;
+var OVERLAP_NOTE = "Overlap:";
+var OVERLAP_WARNS = `the answer warns, and both plans get an ${OVERLAP_NOTE} note`;
+var PLAN_FILES_WORDS = `Plan task only: the repo-relative paths the plan changes, with / separators; a folder ends in /. Two plans overlap when a path is equal or inside the other's folder (inside a plans.appendOnly folder, only the same file). An overlap with a reserved or running plan never refuses: ${OVERLAP_WARNS}. The list replaces the stored one; an empty list clears it.`;
 
 // src/tasks/context.ts
 function projectKey(repo) {
@@ -9415,7 +9426,6 @@ import { lstatSync as lstatSync3 } from "fs";
 import { join as join12 } from "path";
 var NO_FILE = "000000";
 var FILE_MODES = new Set(["100644", "100755"]);
-var PATHS_PER_CALL = 200;
 function hasUnsavedChanges(folder, ref, env, options = {}) {
   return savedFingerprint(folder, ref, env, options) === null;
 }
@@ -9541,7 +9551,7 @@ function hashFiles(folder, paths, env) {
 }
 function filteredPaths(folder, paths, env) {
   const filtered = new Set;
-  for (const chunk of chunks(paths)) {
+  for (const chunk of pathBatches(paths)) {
     const run = runGitRaw(folder, ["check-attr", "-z", "filter", "ident", "--", ...chunk], env);
     if (!run.ok)
       return null;
@@ -9556,7 +9566,7 @@ function filteredPaths(folder, paths, env) {
 }
 function hashChunks(folder, paths, flags, env) {
   const versions = [];
-  for (const chunk of chunks(paths)) {
+  for (const chunk of pathBatches(paths)) {
     const run = runGit(folder, ["hash-object", ...flags, "--", ...chunk], env);
     if (!run.ok)
       return null;
@@ -9575,7 +9585,7 @@ function hashChunks(folder, paths, flags, env) {
   return versions;
 }
 function allAbsent(folder, ref, paths, env) {
-  for (const chunk of chunks(paths)) {
+  for (const chunk of pathBatches(paths)) {
     const run = runGitRaw(folder, ["--literal-pathspecs", "ls-tree", "-r", "-z", "--name-only", ref, "--", ...chunk], env);
     if (!run.ok)
       return false;
@@ -9588,7 +9598,7 @@ function allAbsent(folder, ref, paths, env) {
 function allInHistory(folder, ref, versions, env) {
   const paths = [...new Set(versions.map((item) => item.path))];
   const seen = new Set;
-  for (const chunk of chunks(paths)) {
+  for (const chunk of pathBatches(paths)) {
     const run = runGitRaw(folder, [
       "--literal-pathspecs",
       "log",
@@ -9619,13 +9629,6 @@ function allInHistory(folder, ref, versions, env) {
     }
   }
   return versions.every((item) => seen.has(`${item.path}\x00${item.version}`));
-}
-function chunks(paths) {
-  const out = [];
-  for (let at = 0;at < paths.length; at += PATHS_PER_CALL) {
-    out.push(paths.slice(at, at + PATHS_PER_CALL));
-  }
-  return out;
 }
 
 // src/hooks/worktree-leftovers.ts
