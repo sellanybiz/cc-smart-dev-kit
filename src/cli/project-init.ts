@@ -68,6 +68,7 @@ import { isObject } from "../setup/managed-json";
 import { parseUserJson } from "../setup/user-json";
 import { realTarget } from "../setup/write";
 import { DEPLOY_ENVS, type DeployEnv } from "../tasks/deploy/format";
+import { ghMissing, runGh } from "../workflow/merge-check";
 import { personalWorkflowOrDefault } from "../workflow/resolve";
 import {
   currentKeyName,
@@ -117,50 +118,26 @@ export interface ProjectInitRunner {
 
 const RUN_TIMEOUT_MS = 10_000;
 
-/** One `gh` command, awaited: what `runGhSync` does without blocking the caller. */
-async function runGh(ghPath: string, args: string[], env: Env): Promise<RunnerAnswer> {
-  try {
-    const child = Bun.spawn([ghPath, ...args], {
+/**
+ * `gh` for both real runners, or null when it is not on PATH. Never blocking: every caller awaits
+ * a runner's answer. It runs in the process's own folder, since a runner's `gh` is given none:
+ * `gh api` names the repository in its path.
+ */
+function realGh(env: Env): ProjectInitRunner["gh"] {
+  if (ghMissing(env)) return null;
+  return async (args) => {
+    const { kind, out, err } = await runGh(args, {
       env,
-      stdin: "ignore",
-      stdout: "pipe",
-      stderr: "pipe",
-      timeout: RUN_TIMEOUT_MS,
+      folder: process.cwd(),
+      timeoutMs: RUN_TIMEOUT_MS,
     });
-    const [out, err, code] = await Promise.all([
-      new Response(child.stdout).text(),
-      new Response(child.stderr).text(),
-      child.exited,
-    ]);
-    return { ok: code === 0, out, err };
-  } catch (error) {
-    return { ok: false, out: "", err: error instanceof Error ? error.message : "" };
-  }
-}
-
-/** One `gh` command, where it stands (`runGh` is its awaited twin). */
-function runGhSync(ghPath: string, args: string[], env: Env): RunnerAnswer {
-  try {
-    const run = Bun.spawnSync([ghPath, ...args], {
-      env,
-      stdin: "ignore",
-      stdout: "pipe",
-      stderr: "pipe",
-      timeout: RUN_TIMEOUT_MS,
-    });
-    return { ok: run.exitCode === 0, out: run.stdout.toString(), err: run.stderr.toString() };
-  } catch (error) {
-    return { ok: false, out: "", err: error instanceof Error ? error.message : "" };
-  }
+    return { ok: kind === "ok", out, err };
+  };
 }
 
 /** The real runner: git in the repo, `gh` only when it is on PATH. */
 export function realRunner(env: Env): ProjectInitRunner {
-  const ghPath = Bun.which("gh", { PATH: env.PATH ?? "" });
-  return {
-    git: (cwd, args) => runGit(cwd, args, env, RUN_TIMEOUT_MS),
-    gh: ghPath === null ? null : (args) => runGhSync(ghPath, args, env),
-  };
+  return { git: (cwd, args) => runGit(cwd, args, env, RUN_TIMEOUT_MS), gh: realGh(env) };
 }
 
 /**
@@ -170,11 +147,7 @@ export function realRunner(env: Env): ProjectInitRunner {
  * page and the live stream (`.claude/rules/portal.md`).
  */
 export function realRunnerAsync(env: Env): ProjectInitRunner {
-  const ghPath = Bun.which("gh", { PATH: env.PATH ?? "" });
-  return {
-    git: (cwd, args) => runGitAsync(cwd, args, env, RUN_TIMEOUT_MS),
-    gh: ghPath === null ? null : (args) => runGh(ghPath, args, env),
-  };
+  return { git: (cwd, args) => runGitAsync(cwd, args, env, RUN_TIMEOUT_MS), gh: realGh(env) };
 }
 
 /** The branch HEAD is on; null when it is detached, or git cannot say. */

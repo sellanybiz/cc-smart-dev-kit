@@ -5,15 +5,19 @@
  * command's own tests; these prove the shape of the path.
  */
 import { describe, expect, test } from "bun:test";
+import { chmodSync, writeFileSync } from "node:fs";
+import { delimiter, join } from "node:path";
 import { cliPaths } from "../cli/paths";
 import { locateCheckout } from "../project/resolve";
 import { commitConfig, makeRepo } from "../testing/hooks";
-import { cleanGitEnv } from "../testing/temp";
+import { cleanGitEnv, tempDir } from "../testing/temp";
 import {
   checkBranch,
   checkPullRequest,
+  type GhCall,
   type GhRunner,
   type MergeWorld,
+  runGh,
   viewPullRequest,
 } from "./merge-check";
 
@@ -304,5 +308,41 @@ describe("the merge check never blocks its caller (B8)", () => {
     expect(
       await viewPullRequest({ ref: "7", repo: null }, "/tmp", {}, 1_000, async () => null),
     ).toBeNull();
+  });
+});
+
+describe.skipIf(process.platform === "win32")("runGh: how a gh call ended", () => {
+  /** A call to a fake `gh` that runs `script`, with the system's own basics on PATH. */
+  function call(script: string, timeoutMs = 5_000): GhCall {
+    const bin = tempDir("run-gh-bin");
+    writeFileSync(join(bin, "gh"), `#!/bin/sh\n${script}\n`);
+    chmodSync(join(bin, "gh"), 0o755);
+    const env = { ...cleanGitEnv(), PATH: `${bin}${delimiter}/usr/bin${delimiter}/bin` };
+    return { env, folder: tempDir("run-gh-folder"), timeoutMs };
+  }
+
+  test("a signal is named: SIGTERM is the time running out, any other one is gh dying", async () => {
+    expect(await runGh(["pr", "create"], call("exec sleep 30", 300))).toMatchObject({
+      code: null,
+      kind: "timeout",
+      signal: "SIGTERM",
+    });
+    expect(await runGh(["pr", "create"], call("kill -9 $$"))).toMatchObject({
+      code: null,
+      kind: "failed",
+      signal: "SIGKILL",
+    });
+  });
+
+  test("an exit or a spawn that failed names no signal", async () => {
+    const exited = await runGh(["pr", "create"], call('echo "refused" >&2; exit 1'));
+    expect(exited).toMatchObject({ code: 1, err: "refused", kind: "failed" });
+    expect(exited.signal).toBeUndefined();
+    const notStarted = await runGh(["pr", "create"], {
+      ...call("exit 0"),
+      folder: join(tempDir("run-gh-gone"), "gone"),
+    });
+    expect(notStarted).toMatchObject({ code: null, kind: "failed" });
+    expect(notStarted.signal).toBeUndefined();
   });
 });

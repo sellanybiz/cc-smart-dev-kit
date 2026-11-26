@@ -1,7 +1,14 @@
 /** `cc-smart-dev-kit project init`: the flags, the defaults from the repo, and the run. */
 import { describe, expect, setDefaultTimeout, test } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { delimiter, dirname, join } from "node:path";
 import { COMMAND } from "../build-info/names";
 import { parseCcSmartDevKitConfig } from "../project/config";
 import { staleBlocks } from "../project/deploy-skill";
@@ -22,6 +29,7 @@ import {
   parseFlags,
   protectedFromGithub,
   realRunner,
+  realRunnerAsync,
   runProjectInit,
   shownBases,
   shownWorkflow,
@@ -329,6 +337,26 @@ describe("the defaults from the repo", () => {
       ),
     ).toEqual([]);
   });
+
+  test.skipIf(process.platform === "win32")(
+    "both real runners ask the gh on PATH the same way, and have no gh without one",
+    async () => {
+      const repo = makeRepo("project-init-gh");
+      git(repo, "remote", "add", "origin", "git@github.com:example-org/my-app.git");
+      const bin = tempDir("project-init-gh-bin");
+      writeFileSync(
+        join(bin, "gh"),
+        '#!/bin/sh\n[ "$2" = "repos/example-org/my-app/rulesets?per_page=100" ] || exit 1\necho refs/heads/main\n',
+      );
+      chmodSync(join(bin, "gh"), 0o755);
+      const env = { ...cleanGitEnv(), PATH: `${bin}${delimiter}/usr/bin${delimiter}/bin` };
+      expect(await protectedFromGithub(realRunner(env), repo)).toEqual(["main"]);
+      expect(await protectedFromGithub(realRunnerAsync(env), repo)).toEqual(["main"]);
+      const noGh = { ...env, PATH: tempDir("project-init-no-gh") };
+      expect(realRunner(noGh).gh).toBeNull();
+      expect(realRunnerAsync(noGh).gh).toBeNull();
+    },
+  );
 
   test("the fast check comes from package.json's scripts, with the lockfile's package manager", async () => {
     const root = tempDir("project-init");
