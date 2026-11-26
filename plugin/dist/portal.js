@@ -22089,7 +22089,7 @@ var GH_TIMEOUT_MS = 1e4;
 var runGh = async (args, { folder, env, input, timeoutMs }) => {
   try {
     const child = Bun.spawn(["gh", ...args], {
-      cwd: folder,
+      ...folder === undefined ? {} : { cwd: folder },
       env,
       stdin: input === undefined ? "ignore" : new Blob([input]),
       stdout: "pipe",
@@ -30346,11 +30346,7 @@ function realGh(env) {
   if (ghMissing(env))
     return null;
   return async (args) => {
-    const { kind, out, err } = await runGh(args, {
-      env,
-      folder: process.cwd(),
-      timeoutMs: RUN_TIMEOUT_MS2
-    });
+    const { kind, out, err } = await runGh(args, { env, timeoutMs: RUN_TIMEOUT_MS2 });
     return { ok: kind === "ok", out, err };
   };
 }
