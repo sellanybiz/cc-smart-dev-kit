@@ -414,14 +414,15 @@ function baseRefOf(sources: string[]): string | null {
   for (const file of sources) {
     if (!existsSync(file)) continue;
     try {
-      const parsed: unknown = JSON.parse(readFileSync(file, "utf8"));
+      const parsed = readUserJson(file);
       if (typeof parsed !== "object" || parsed === null) continue;
       const worktree = (parsed as { worktree?: unknown }).worktree;
       if (typeof worktree !== "object" || worktree === null) continue;
       const value = (worktree as { baseRef?: unknown }).baseRef;
       if (typeof value === "string") baseRef = value;
     } catch {
-      // A settings file that is not JSON: Claude Code cannot read it either.
+      // Not JSON even past a byte order mark (which Claude Code skips, as readUserJson does):
+      // Claude Code cannot read it either.
     }
   }
   return baseRef;
