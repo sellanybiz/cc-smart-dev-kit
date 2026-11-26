@@ -42,7 +42,7 @@
  */
 import { COMMAND } from "../build-info/names";
 import type { CliPaths } from "../cli/paths";
-import { runGit, runGitBytes } from "../hooks/git";
+import { commitArgs, commitIn, runGit, runGitBytes } from "../hooks/git";
 import {
   type Checkout,
   CONFIG_PATH,
@@ -566,14 +566,14 @@ export async function proposeWorkflow(
   // the run two.
   const baseCommit = runGit(
     repo,
-    ["rev-parse", "--verify", "--quiet", `refs/remotes/origin/${base}^{commit}`],
+    commitArgs(`refs/remotes/origin/${base}`),
     context.env,
     QUICK_GIT_TIMEOUT_MS,
   );
-  if (!baseCommit.ok) {
+  const baseSha = commitIn(baseCommit);
+  if (baseSha === null) {
     return fail(`origin/${base} is not known here after the fetch: ${lastLine(baseCommit.err)}.`);
   }
-  const baseSha = baseCommit.out;
   let committed: ReturnType<typeof readCommittedFile>;
   try {
     committed = readCommittedFile(checkout, base, {

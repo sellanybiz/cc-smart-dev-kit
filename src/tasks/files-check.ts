@@ -30,7 +30,7 @@ import {
 } from "./work/store";
 import type { Who, WorkTask } from "./work/types";
 
-/** The files a base marks generated (`GENERATED_ATTRIBUTE`) among some shared paths. */
+/** The files a base marks generated (`linguist-generated`, `src/project/generated.ts`) among some shared paths. */
 export interface BaseGenerated {
   /** The base they were read from: `origin/<base>`. */
   ref: string;
