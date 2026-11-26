@@ -1171,7 +1171,7 @@ test("the plan is reserved before the launch, bound after it, and its brief carr
   expect(brief).not.toContain("Your task:");
 });
 
-test("two hand-outs that share files: both launch, and each plan's first note names the overlap", async () => {
+test("two hand-outs that share files: both launch, the second warns, and each plan's first note names the overlap", async () => {
   const p = planWorld();
   p.plan("alpha", ["src/shared/"]);
   p.plan("beta", ["src/shared/inner.ts"]);
@@ -1184,6 +1184,9 @@ test("two hand-outs that share files: both launch, and each plan's first note na
   expect(p.calls.some((c) => c.args[0] === "run")).toBe(true);
   expect(p.row("beta").lead).not.toBeNull();
   const shared = ['Overlap: #1 "alpha" and #2 "beta" share src/shared/ (src/shared/inner.ts)'];
+  expect(p.lines.filter((line) => line.includes("Overlap: "))).toEqual([
+    expect.stringContaining(`${shared[0]}. Leads:`),
+  ]);
   expect([p.overlapNotes("alpha"), p.overlapNotes("beta")]).toEqual([shared, shared]);
 });
 
