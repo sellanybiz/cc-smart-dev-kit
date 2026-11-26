@@ -283,7 +283,7 @@ test("a held plan's branch diff counts in an overlap, and a rename counts on bot
   const line = w.line("mover");
   expect(line.state).toBe("ready");
   expect(line.text).toBe(
-    'ready: nothing blocks it; #1 "holder" and #2 "mover" share src/old.ts (an overlap warns and never holds a plan back)',
+    "ready: nothing blocks it; #1 holder and #2 mover share src/old.ts (an overlap warns and never holds a plan back)",
   );
 });
 
@@ -351,7 +351,9 @@ test("a closed plan whose pull request merged or closed is released, and holds n
     const waiting = w.line("first");
     expect(waiting.state).toBe("merging");
     expect(w.line("second").state).toBe("ready");
-    expect(w.line("second").text).toContain("finished: held until its pull request settles");
+    expect(w.line("second").text).toContain(
+      "(#1 first is finished and holds its files until its pull request merges or closes; `cc-smart-dev-kit herdr plans` then releases them)",
+    );
     w.prs["first-branch"] = settled;
     const released = judgePlans(w.base).lines;
     expect(released.find((one) => one.plan === "first")).toMatchObject({
@@ -431,6 +433,27 @@ test("an Overlap: note written into another lead's reserved plans moves nothing 
   // The unstarted hand-out's grace still runs from its reservation, not from the note.
   const late = judgePlans({ ...w.base, now: () => 10 + HANDOUT_GRACE_MS + 1 }).lines;
   expect(late.find((one) => one.plan === "unstarted")).toMatchObject({ state: "released" });
+});
+
+test("the readiness line names every plan herdr's way, by slug, whatever its subject says", () => {
+  const w = build();
+  const made = (slug: string, subject: string, files: string[] | undefined, who: Who) =>
+    ok(
+      createTask(
+        w.db,
+        { project: "p", subject, kind: "plan", plan: slug, ...(files ? { files } : {}) },
+        who,
+        1,
+      ),
+    );
+  made("alpha", "Build the alpha part", ["src/a/"], LEAD);
+  made("beta", "Then the beta part", ["src/a/x.ts"], LEAD);
+  const solo = made("solo", "A plan with no list", undefined, OTHER);
+  w.reserve("alpha");
+  ok(updateTask(w.db, solo.id, { status: "in_progress" }, OTHER, 5));
+  expect(w.line("beta").text).toBe(
+    "ready: nothing blocks it; #3 solo has no file list, so no overlap with it can be ruled out; #1 alpha and #2 beta share src/a/ (src/a/x.ts) (an overlap warns and never holds a plan back)",
+  );
 });
 
 test("a hand-out whose child never started: relaunch with a worktree, release without one, a grace first", () => {
@@ -1033,13 +1056,11 @@ test("a held plan with no file list and no branch diff is named, never a block: 
   const line = w.line("beta");
   expect(line.state).toBe("ready");
   expect(line.text).toBe(
-    "ready: nothing blocks it; #1 solo is held with no file list and no branch diff, so no overlap can be ruled out (an overlap warns and never holds a plan back)",
+    "ready: nothing blocks it; #1 solo has no file list, so no overlap with it can be ruled out (an overlap warns and never holds a plan back)",
   );
-  expect(line.fix).toBe(
-    "task_update #1 with files: the paths and folders it changes, so overlaps with it can be named",
-  );
+  expect(line.fix).toBe("task_update #1 with files: the paths and folders it changes");
   const unknown =
-    'Overlap unknown: #1 "solo" has no file list, so it cannot be compared with #2 "beta": set its files (task_update on #1 with files).';
+    'Overlap unknown with #2 "beta": #1 "solo" has no file list, so no overlap with it can be ruled out; task_update #1 with files: the paths and folders it changes.';
   for (const prepare of [prepareReserve, prepareStart]) {
     const answer = prepare(w.base, "beta");
     if (!answer.ok) throw new Error(answer.why);
@@ -1062,7 +1083,7 @@ test("a held plan with a file list, or a branch diff, still allows a disjoint ha
   expect(w.line("beta").state).toBe("ready");
   w.plan("gamma", ["docs/"]);
   expect(w.line("gamma").text).toBe(
-    'ready: nothing blocks it; #3 "branched" and #4 "gamma" share docs/x.md (docs/) (an overlap warns and never holds a plan back)',
+    "ready: nothing blocks it; #3 branched and #4 gamma share docs/x.md (docs/) (an overlap warns and never holds a plan back)",
   );
   expect(prepareStart(w.base, "beta").ok).toBe(true);
 });
@@ -1081,7 +1102,7 @@ test("a stacked plan is ready beside its held parent once it starts on its work,
   const unproved = w.line("beta");
   expect([unproved.state, unproved.text, unproved.fix]).toEqual([
     "ready",
-    'ready: nothing blocks it; #1 "alpha" and #2 "beta" share src/a/ (src/a/x.ts) (an overlap warns and never holds a plan back)',
+    "ready: nothing blocks it; #1 alpha and #2 beta share src/a/ (src/a/x.ts) (an overlap warns and never holds a plan back)",
     "the stack on alpha counts only when this plan is built on alpha's work: cc-smart-dev-kit herdr start --plan beta starts it on alpha-branch when --base is left out; a plan built here rebuilds its branch on alpha-branch",
   ]);
   // A start on alpha's tip proves it; a start on the default branch does not.
@@ -1094,7 +1115,7 @@ test("a stacked plan is ready beside its held parent once it starts on its work,
     "alpha",
   ]);
   expect(started(base)?.text).toBe(
-    'ready: nothing blocks it; #1 "alpha" and #2 "beta" share src/a/ (src/a/x.ts) (an overlap warns and never holds a plan back)',
+    "ready: nothing blocks it; #1 alpha and #2 beta share src/a/ (src/a/x.ts) (an overlap warns and never holds a plan back)",
   );
   // Started on the default branch, the hand-out goes ahead and warns of its parent.
   const offWork = prepareStart(w.base, "beta", base);
@@ -1104,7 +1125,7 @@ test("a stacked plan is ready beside its held parent once it starts on its work,
   ]);
   ok(releasePlan(w.db, { project: "p", plan: "beta", who: LEAD, now: 30 }));
   expect(w.line("gamma").text).toBe(
-    'ready: nothing blocks it; #1 "alpha" and #3 "gamma" share src/a/ (src/a/y.ts) (an overlap warns and never holds a plan back)',
+    "ready: nothing blocks it; #1 alpha and #3 gamma share src/a/ (src/a/y.ts) (an overlap warns and never holds a plan back)",
   );
   // The stacked plan's branch holds its parent's work: that is no drift against the parent.
   w.reserve("beta", { stacked: [{ child: beta.id, parent: "alpha" }] });

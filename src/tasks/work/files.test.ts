@@ -495,7 +495,7 @@ test("plans.appendOnly counts only as committed on origin/<base>, and lets two p
  * `plans.mergeFiles` (`CHANGELOG.md` unless given); then the task tools of two sessions, each
  * reading the real check of the checkout.
  */
-function generatedWorld(options: { mergeFiles?: string[]; more?: number } = {}) {
+function generatedWorld(options: { mergeFiles?: string[]; more?: number; named?: string[] } = {}) {
   const { repo } = makeClone();
   const env = hookEnv();
   mkdirSync(join(repo, "db", "many"), { recursive: true });
@@ -504,7 +504,15 @@ function generatedWorld(options: { mergeFiles?: string[]; more?: number } = {}) 
     { length: options.more ?? 0 },
     (_, n) => `db/many/${"generated-client-for-one-service".repeat(2)}-${n}.gen.ts`,
   );
-  for (const file of ["db/types.gen.ts", "db/client.gen.ts", "db/schema.ts", "src.ts", ...many])
+  const named = options.named ?? [];
+  for (const file of [
+    "db/types.gen.ts",
+    "db/client.gen.ts",
+    "db/schema.ts",
+    "src.ts",
+    ...many,
+    ...named,
+  ])
     writeFileSync(join(repo, file), "export {};\n");
   git(repo, "add", ".");
   git(repo, "commit", "-q", "-m", "generated files");
@@ -606,7 +614,7 @@ test("a folder of many generated files names the first ones, counts the rest, an
     const lines = warned(second.call("update", { task: "#2", status: "in_progress" }));
     expect(lines).toHaveLength(1);
     expect(lines[0]).toMatch(
-      /^Overlap: #1 "Alpha" and #2 "Beta" share db\/ \(db\/many\/[^)]+\), .+ and \d+ more\. Leads: /,
+      /^Overlap: #1 "Alpha" and #2 "Beta" share db\/ \(db\/many\/[^)]+\), .+ and \d+ more \(path set [0-9a-f]{12}\)\. Leads: /,
     );
     expect(lines[0]).toMatch(
       /\.gen\.ts and \d+ more generated: too many for one propose line, so put the folder that holds them in plans\.mergeFiles\.$/,
@@ -615,6 +623,109 @@ test("a folder of many generated files names the first ones, counts the rest, an
   } finally {
     lead.close();
     second.close();
+  }
+});
+
+test("a generated file whose name a propose line would split is named, and no propose line is given", () => {
+  const w = generatedWorld({ named: ["db/a,b.gen.ts"] });
+  const lead = w.ops(LEAD);
+  const second = w.ops(SECOND);
+  try {
+    said(lead.call("create", { subject: "Alpha", plan: "alpha", files: ["db/"] }));
+    said(
+      second.call("create", {
+        subject: "Beta",
+        plan: "beta",
+        files: ["db/a,b.gen.ts", "db/types.gen.ts"],
+      }),
+    );
+    said(lead.call("update", { task: "#1", status: "in_progress" }));
+    const [line] = warned(second.call("update", { task: "#2", status: "in_progress" }));
+    expect(line).toEndWith(
+      "origin/main marks db/a,b.gen.ts, db/types.gen.ts generated, but a propose line splits its value at commas and trims each entry, so it cannot carry db/a,b.gen.ts: list them in plans.mergeFiles by hand.",
+    );
+    expect(line).not.toContain("workflow propose");
+  } finally {
+    lead.close();
+    second.close();
+  }
+});
+
+/** The task tools of `who` over a plain repo, whose overlap check reads no git. */
+function plainWorld() {
+  const repo = makeRepo();
+  const env = hookEnv();
+  const stateDir = cliPaths(env).stateDir;
+  const ops = (who: typeof LEAD) =>
+    createTaskOps({
+      stateDir,
+      env,
+      cwd: () => repo,
+      caller: () => ({ ...who, cwd: repo }),
+      filesCheck: () => ({ ignore: [], caseFold: false }),
+    });
+  const notes = (number: number) => {
+    const db = openWorkDb(workDbFile({ stateDir }), { mode: "write" });
+    try {
+      const task = allTasks(db, folderProject(repo)).find((t) => t.number === number);
+      return overlapNotes(db, task?.id ?? "");
+    } finally {
+      db.close();
+    }
+  };
+  return { ops, notes };
+}
+
+test("two path sets that differ only past the cap of a note's list get a note each", () => {
+  const w = plainWorld();
+  const lead = w.ops(LEAD);
+  const second = w.ops(SECOND);
+  // Over the cap of a note's list, the same count, and the last path differs.
+  const files = (last: string) => [
+    ...Array.from({ length: 80 }, (_, n) => `src/${"one-module-of-the-service".repeat(2)}-${n}.ts`),
+    last,
+  ];
+  try {
+    said(lead.call("create", { subject: "Alpha", plan: "alpha", files: ["src/"] }));
+    said(second.call("create", { subject: "Beta", plan: "beta", files: files("src/zz-first.ts") }));
+    said(lead.call("update", { task: "#1", status: "in_progress" }));
+    said(second.call("update", { task: "#2", status: "in_progress" }));
+    said(second.call("update", { task: "#2", files: files("src/zz-second.ts") }));
+    const heads = w.notes(2).map(sharedWords);
+    expect(heads).toHaveLength(2);
+    expect(heads[0]).not.toBe(heads[1]);
+    for (const head of heads) expect(head).toMatch(/ and \d+ more \(path set [0-9a-f]{12}\)$/);
+  } finally {
+    lead.close();
+    second.close();
+  }
+});
+
+test("a plan with no tasks whose only notes are the kit's overlap notes is deleted; any other note keeps it", () => {
+  for (const hand of [null, "Overlap: written by hand", "a plain note"]) {
+    const w = plainWorld();
+    const lead = w.ops(LEAD);
+    const second = w.ops(SECOND);
+    try {
+      said(lead.call("create", { subject: "Alpha", plan: "alpha", files: ["src/"] }));
+      said(second.call("create", { subject: "Beta", plan: "beta", files: ["src/a.ts"] }));
+      said(lead.call("update", { task: "#1", status: "in_progress" }));
+      // Another session's start notes the overlap on #1 too.
+      said(second.call("update", { task: "#2", status: "in_progress" }));
+      said(lead.call("update", { task: "#1", status: "pending" }));
+      expect(w.notes(1)).toHaveLength(1);
+      if (hand !== null) said(lead.call("note", { task: "#1", text: hand }));
+      const deleted = lead.call("delete", { task: "#1" });
+      if (hand === null) expect(said(deleted)).toContain("#1");
+      else
+        expect(deleted).toMatchObject({
+          ok: false,
+          why: expect.stringContaining("task has notes"),
+        });
+    } finally {
+      lead.close();
+      second.close();
+    }
   }
 });
 

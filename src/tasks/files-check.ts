@@ -9,6 +9,7 @@
  * An overlap never refuses. After the write, `warnOverlaps` gives the caller's answer one line
  * for each, and saves the same text as an `Overlap:` note on both plans, once.
  */
+import { createHash } from "node:crypto";
 import { COMMAND, PLUGIN } from "../build-info/names";
 import { commitArgs, commitIn, runGit, runGitRaw } from "../hooks/git";
 import type { Env } from "../hooks/run";
@@ -18,7 +19,7 @@ import { locateCheckout } from "../project/resolve";
 import { shellWord } from "../shell/quote";
 import { resolvePlanFiles } from "../workflow/resolve";
 import { baseBranch } from "../worktrees/command";
-import { TASK_TOOL } from "./words";
+import { OVERLAP_NOTE, TASK_TOOL } from "./words";
 import type { WorkDb } from "./work/db";
 import { type FileOverlap, filesOverlap, planLead, settledBy } from "./work/queries";
 import {
@@ -127,9 +128,6 @@ function baseGenerated(
   return marked === null ? null : { ref, files: [...marked].sort() };
 }
 
-/** How every overlap note starts, so a later session finds it among a plan's notes. */
-const OVERLAP_NOTE = "Overlap:";
-
 /**
  * About how many characters one list of paths may take in a note; the rest are counted. A folder
  * can hold thousands of generated files, and a note longer than `NOTE_LIMIT` is never saved.
@@ -162,22 +160,50 @@ function leadWords(plan: WorkTask): string | null {
 }
 
 /**
- * Two plans and the paths they share, in number order, each path from the lower plan's list with
- * the higher plan's beside it when they differ: `#1 "a" and #2 "b" share src/b/ (src/b/x.ts)`.
- * `overlaps` holds `plan`'s paths first (`filesOverlap(plan's list, other's list)`).
+ * The paths two plans share, sorted, each from the lower plan's list with the higher plan's beside
+ * it when they differ (`src/b/ (src/b/x.ts)`). `overlaps` holds `plan`'s paths first.
+ */
+function sharedPaths(plan: WorkTask, other: WorkTask, overlaps: readonly FileOverlap[]): string[] {
+  const flip = plan.number > other.number;
+  const shown = overlaps.map(({ path, other: theirs }) => {
+    const [mine, them] = flip ? [theirs, path] : [path, theirs];
+    return mine === them ? mine : `${mine} (${them})`;
+  });
+  return [...new Set(shown)].sort();
+}
+
+/**
+ * Two plans and the paths they share, in number order: `#1 "a" and #2 "b" share src/b/ (src/b/x.ts)`.
+ * `name` says a plan the caller's way: the store's label, or herdr's slug form.
  */
 export function overlapSummary(
   plan: WorkTask,
   other: WorkTask,
   overlaps: readonly FileOverlap[],
+  name: (plan: WorkTask) => string = label,
 ): string {
-  const flip = plan.number > other.number;
-  const [low, high] = flip ? [other, plan] : [plan, other];
-  const shown = overlaps.map(({ path, other: theirs }) => {
-    const [mine, them] = flip ? [theirs, path] : [path, theirs];
-    return mine === them ? mine : `${mine} (${them})`;
-  });
-  return `${label(low)} and ${label(high)} share ${cappedList([...new Set(shown)].sort())}`;
+  const [low, high] = plan.number > other.number ? [other, plan] : [plan, other];
+  return `${name(low)} and ${name(high)} share ${cappedList(sharedPaths(plan, other, overlaps))}`;
+}
+
+/** A plan that is done but still holds its files, in words: what it waits for, and what releases it. */
+export function finishedWords(name: string): string {
+  return `${name} is finished and holds its files until its pull request merges or closes; \`${COMMAND} herdr plans\` then releases them`;
+}
+
+/** A held plan with no file list, in words: nothing can be compared with it. */
+export function unlistedWords(name: string): string {
+  return `${name} has no file list, so no overlap with it can be ruled out`;
+}
+
+/** The fix for a plan with no file list. */
+export function unlistedFix(plan: WorkTask): string {
+  return `${TASK_TOOL.update} #${plan.number} with files: the paths and folders it changes`;
+}
+
+/** A path the propose line cannot carry: its value is split at commas, and each entry trimmed. */
+function breaksProposeLine(path: string): boolean {
+  return path.includes(",") || path !== path.trim();
 }
 
 /**
@@ -200,6 +226,9 @@ function generatedWords(
   const folders = left.filter((path) => generated.some((file) => settledBy([path], file)));
   if (folders.length > 0)
     return `${named}, but a merge file does not settle a folder both plans list (${cappedList([...new Set(folders)].sort())}): narrow that folder entry to the files the plan changes, or put the folder itself in plans.mergeFiles.`;
+  const unsafe = proposed.filter(breaksProposeLine);
+  if (unsafe.length > 0)
+    return `${named}, but a propose line splits its value at commas and trims each entry, so it cannot carry ${cappedList(unsafe)}: list them in plans.mergeFiles by hand.`;
   const list = proposed.join(",");
   if (list.length > NOTE_LIST_CHARS)
     return `${named}: too many for one propose line, so put the folder that holds them in plans.mergeFiles.`;
@@ -216,16 +245,20 @@ function overlapNote(
   marks: BaseGenerated | null,
   check: OverlapCheck,
 ): { head: string; text: string } {
-  const head = `${OVERLAP_NOTE} ${overlapSummary(overlap.plan, overlap.other, overlap.overlaps)}.`;
+  const paths = sharedPaths(overlap.plan, overlap.other, overlap.overlaps);
+  // The head is the note's once-only key, and its list is capped: past the cap, a short hash of
+  // the whole path set keeps two sets that differ only there apart.
+  const key =
+    cappedList(paths) === paths.join(", ")
+      ? ""
+      : ` (path set ${createHash("sha256").update(paths.join("\n")).digest("hex").slice(0, 12)})`;
+  const head = `${OVERLAP_NOTE} ${overlapSummary(overlap.plan, overlap.other, overlap.overlaps)}${key}.`;
   const pair = [overlap.plan, overlap.other].sort((a, b) => a.number - b.number);
   const leads = pair.map(leadWords).filter((words) => words !== null);
   // A plan closed but still reserved holds its files until its pull request settles.
   const settling = pair
     .filter((plan) => plan.status === "done")
-    .map(
-      (plan) =>
-        `${label(plan)} is done, not released: \`${COMMAND} herdr plans\` releases it when its pull request merges.`,
-    );
+    .map((plan) => `${finishedWords(label(plan))}.`);
   const parts = [
     head,
     ...(leads.length > 0 ? [`Leads: ${leads.join("; ")}.`] : []),
@@ -246,7 +279,7 @@ function overlapNote(
 /** The line for two plans that cannot be compared, since `unlisted`, one of them, lists no file. */
 function unlistedLine({ plan, other }: PlanOverlap, unlisted: WorkTask): string {
   const rival = unlisted.id === plan.id ? other : plan;
-  return `Overlap unknown: ${label(unlisted)} has no file list, so it cannot be compared with ${label(rival)}: set its files (${TASK_TOOL.update} on #${unlisted.number} with files).`;
+  return `Overlap unknown with ${label(rival)}: ${unlistedWords(label(unlisted))}; ${unlistedFix(unlisted)}.`;
 }
 
 /**

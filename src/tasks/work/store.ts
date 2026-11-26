@@ -1,6 +1,6 @@
 import { COMMAND } from "../../build-info/names";
 import type { WorkflowSource } from "../../workflow/resolve";
-import { TASK_TOOL } from "../words";
+import { OVERLAP_NOTE, TASK_TOOL } from "../words";
 import { type WorkDb, writeWork } from "./db";
 import { type BlockRefusal, blockRefusal, TaskGraph } from "./graph";
 import {
@@ -704,7 +704,13 @@ export function addNote(db: WorkDb, id: string, text: string, who: Who, now: num
   return writeWork(db, () => insertNote(db, id, text, who, now));
 }
 
-/** A note for several tasks, saved once on each (`addNotesOnce`). */
+/**
+ * The reason the history keeps for an overlap note the kit wrote (`addNotesOnce`): what tells it
+ * from a note a session wrote with the same words, so `deleteTask` lets only the kit's go.
+ */
+const OVERLAP_NOTE_REASON = "the overlap warning";
+
+/** An overlap note for several tasks, saved once on each (`addNotesOnce`). */
 export interface NoteOnce {
   taskIds: readonly string[];
   /** The note's first sentence: a task that holds a note opening with that sentence gets no second one. */
@@ -714,7 +720,8 @@ export interface NoteOnce {
 }
 
 /**
- * Saves each note on each of its tasks that holds none with its head yet, in one transaction.
+ * Saves each overlap note on each of its tasks that holds none with its head yet, in one
+ * transaction, marked in the history as the kit's own (`OVERLAP_NOTE_REASON`).
  * Answers how many it saved. The tasks' `updated_at` stays: a note may land in another lead's
  * plan, and that lead's release, its launch claim (`swapPlanAgent`) and a hand-out's grace all
  * key on `updated_at`, so moving it would refuse or delay them for a write that changed nothing
@@ -732,7 +739,7 @@ export function addNotesOnce(
       for (const id of note.taskIds) {
         // The space ends the head, so a shorter path set is not read as a longer one already noted.
         if (holdsNoteStarting(db, id, `${note.head} `)) continue;
-        saveNote(db, id, note.text, who, now, null);
+        saveNote(db, id, note.text, who, now, OVERLAP_NOTE_REASON);
         saved += 1;
       }
     return saved;
@@ -744,8 +751,14 @@ export function deleteTask(db: WorkDb, id: string, who: Who, now: number) {
     const task = taskById(db, id);
     if (db.sqlite.query("SELECT 1 FROM tasks WHERE parent_id=?").get(id))
       throw new Error("task has tasks");
-    if (db.sqlite.query("SELECT 1 FROM task_notes WHERE task_id=?").get(id))
-      throw new Error("task has notes");
+    // An overlap note the kit wrote (another session's warning may land on any held plan) goes
+    // with the task; any other note keeps it.
+    const kept = db.sqlite
+      .query(
+        "SELECT 1 FROM task_notes AS note WHERE note.task_id=? AND NOT (substr(note.text,1,length(?))=? AND EXISTS (SELECT 1 FROM task_events AS event WHERE event.task_id=note.task_id AND event.action='noted' AND event.at=note.at AND event.session_id IS note.session_id AND event.reason=?))",
+      )
+      .get(id, OVERLAP_NOTE, OVERLAP_NOTE, OVERLAP_NOTE_REASON);
+    if (kept) throw new Error("task has notes");
     // A stack names its plan by slug: a new plan made under the same slug must never inherit it.
     const stacked =
       task.kind === "plan"
@@ -758,6 +771,7 @@ export function deleteTask(db: WorkDb, id: string, who: Who, now: number) {
     const last: Record<string, [unknown, unknown]> = {};
     for (const [key, value] of Object.entries(shape(db, task)))
       if (!empty(key, value)) last[key] = [value, null];
+    db.sqlite.query("DELETE FROM task_notes WHERE task_id=?").run(id);
     db.sqlite.query("DELETE FROM tasks WHERE id=?").run(id);
     recordEvent(db, task, "deleted", last, who, now, null);
     return true;

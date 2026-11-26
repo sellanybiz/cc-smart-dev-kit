@@ -1939,13 +1939,13 @@ test("a plan the lead reserved for itself keeps its files held in flight, and af
     expect(await runHerdr(["plans"], p.ctx)).toBe(0);
     return p.lines.join("\n");
   };
-  const ready = '#2 beta: ready: nothing blocks it; #1 "alpha" and #2 "beta" share src/shared/';
+  const ready = "#2 beta: ready: nothing blocks it; #1 alpha and #2 beta share src/shared/";
   expect(await plans()).toContain(`${ready} (src/shared/inner.ts)`);
   p.change("alpha", { status: "in_progress" });
   expect(await plans()).toContain(`${ready} (src/shared/inner.ts)`);
   p.change("alpha", { status: "done" });
   expect(await plans()).toContain(
-    `${ready} (src/shared/inner.ts) (#1 alpha is finished: held until its pull request settles)`,
+    `${ready} (src/shared/inner.ts) (#1 alpha is finished and holds its files until its pull request merges or closes; \`cc-smart-dev-kit herdr plans\` then releases them)`,
   );
   expect(p.row("alpha").lead).toMatchObject({ holder: "self" });
   p.noRun();
