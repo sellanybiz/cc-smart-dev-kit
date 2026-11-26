@@ -98,8 +98,8 @@ import { existsSync as existsSync12, readdirSync as readdirSync9 } from "fs";
 import { join as join17 } from "path";
 
 // src/hooks/git.ts
-import { readFileSync, realpathSync } from "fs";
-import { basename, dirname as dirname2, join as join3, resolve as resolve2 } from "path";
+import { readFileSync as readFileSync3, realpathSync as realpathSync2 } from "fs";
+import { basename as basename2, dirname as dirname3, join as join4, resolve as resolve3 } from "path";
 
 // src/path-compare.ts
 import { dirname, resolve } from "path";
@@ -137,6 +137,141 @@ function gitEnv(base) {
   return env;
 }
 
+// src/workflow/reviews.ts
+import { createHash } from "crypto";
+
+// src/setup/lock.ts
+import {
+  closeSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  readlinkSync,
+  statSync,
+  unlinkSync,
+  writeSync
+} from "fs";
+
+// src/setup/file-mode.ts
+import { chmodSync, fchmodSync } from "fs";
+function failureIsFatal(platform) {
+  return platform !== "win32";
+}
+function setFileMode(fileOrFd, mode, platform = hostPlatform()) {
+  try {
+    if (typeof fileOrFd === "number")
+      fchmodSync(fileOrFd, mode);
+    else
+      chmodSync(fileOrFd, mode);
+  } catch (error) {
+    if (failureIsFatal(platform))
+      throw error;
+  }
+}
+
+// src/setup/lock.ts
+var FALLBACK_STALE_MS = 10 * 60 * 1000;
+function procStartTime(pid) {
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
+    const start = fields[22 - 3];
+    return start && /^\d+$/.test(start) ? start : null;
+  } catch {
+    return null;
+  }
+}
+function psStartTime(pid) {
+  try {
+    const result = Bun.spawnSync(["ps", "-o", "lstart=", "-p", String(pid)], {
+      env: { ...process.env, LC_ALL: "C" },
+      stdout: "pipe",
+      stderr: "ignore"
+    });
+    const text = result.stdout.toString().trim();
+    return result.exitCode === 0 && text !== "" ? text : null;
+  } catch {
+    return null;
+  }
+}
+function processStartTime(pid, like) {
+  if (like === undefined || like.startsWith("proc:")) {
+    const proc = procStartTime(pid);
+    if (proc !== null)
+      return `proc:${proc}`;
+  }
+  if (like === undefined || like.startsWith("ps:")) {
+    const ps = psStartTime(pid);
+    if (ps !== null)
+      return `ps:${ps}`;
+  }
+  return null;
+}
+function ownPidNamespace() {
+  try {
+    return readlinkSync("/proc/self/ns/pid");
+  } catch {
+    return null;
+  }
+}
+
+// src/setup/write.ts
+import {
+  closeSync as closeSync2,
+  existsSync,
+  fsyncSync,
+  lstatSync,
+  mkdirSync as mkdirSync2,
+  openSync as openSync2,
+  readdirSync,
+  readFileSync as readFileSync2,
+  readlinkSync as readlinkSync2,
+  realpathSync,
+  renameSync,
+  statSync as statSync2,
+  unlinkSync as unlinkSync2,
+  writeFileSync
+} from "fs";
+import { basename, dirname as dirname2, join as join3, resolve as resolve2 } from "path";
+function writeTemp(file, content, mode) {
+  const dir = dirname2(file);
+  mkdirSync2(dir, { recursive: true });
+  const temp = join3(dir, `.${basename(file)}.cc-smart-dev-kit-tmp-${process.pid}-${crypto.randomUUID()}`);
+  try {
+    const fd = openSync2(temp, "wx", mode);
+    try {
+      writeFileSync(fd, content);
+      fsyncSync(fd);
+    } finally {
+      closeSync2(fd);
+    }
+    setFileMode(temp, mode);
+  } catch (error) {
+    if (existsSync(temp))
+      unlinkSync2(temp);
+    throw error;
+  }
+  return temp;
+}
+function atomicWrite(file, content, mode, beforeRename) {
+  const temp = writeTemp(file, content, mode);
+  try {
+    beforeRename?.();
+    renameSync(temp, file);
+  } catch (error) {
+    if (existsSync(temp))
+      unlinkSync2(temp);
+    throw error;
+  }
+}
+
+// src/workflow/reviews.ts
+var START_KEPT_MS = 24 * 60 * 60 * 1000;
+var COMMIT_SHA = /^[0-9a-f]{40,64}$/;
+function repoKey(repo) {
+  return createHash("sha256").update(repo).digest("hex").slice(0, 16);
+}
+
 // src/hooks/git.ts
 var GIT_TIMED_OUT = "timed out";
 var GUARD_GIT_TIMEOUT_MS = 5000;
@@ -147,11 +282,17 @@ function runGitRaw(cwd, args, env, timeoutMs = 15000) {
   return spawnGit(cwd, args, env, timeoutMs, {}, false);
 }
 function spawnGit(cwd, args, env, timeoutMs, own, trim, input) {
+  const bytes = input === undefined ? undefined : new TextEncoder().encode(input);
+  const run = spawnGitBytes(cwd, args, env, timeoutMs, own, bytes);
+  const out = new TextDecoder("utf-8", { ignoreBOM: true }).decode(run.out);
+  return { ...run, out: trim ? out.trim() : out };
+}
+function spawnGitBytes(cwd, args, env, timeoutMs, own, input) {
   try {
     const result = Bun.spawnSync(["git", ...args], {
       cwd,
       env: { ...gitEnv(env), ...own },
-      stdin: input === undefined ? "ignore" : new TextEncoder().encode(input),
+      stdin: input ?? "ignore",
       stdout: "pipe",
       stderr: "pipe",
       timeout: timeoutMs,
@@ -159,24 +300,23 @@ function spawnGit(cwd, args, env, timeoutMs, own, trim, input) {
     });
     const err = result.signalCode ? GIT_TIMED_OUT : result.stderr.toString().trim();
     const code = result.signalCode ? null : result.exitCode;
-    const out = result.stdout.toString();
-    return { ok: result.exitCode === 0, out: trim ? out.trim() : out, err, code };
+    return { ok: result.exitCode === 0, out: result.stdout, err, code };
   } catch (error) {
     const err = error instanceof Error ? error.message : String(error);
-    return { ok: false, out: "", err, code: null };
+    return { ok: false, out: new Uint8Array, err, code: null };
   }
 }
 function realPath(path) {
   const rest = [];
-  let at = resolve2(path);
+  let at = resolve3(path);
   for (;; ) {
     try {
-      return join3(realpathSync(at), ...rest);
+      return join4(realpathSync2(at), ...rest);
     } catch {
-      const parent = dirname2(at);
+      const parent = dirname3(at);
       if (parent === at)
-        return resolve2(path);
-      rest.unshift(basename(at));
+        return resolve3(path);
+      rest.unshift(basename2(at));
       at = parent;
     }
   }
@@ -211,12 +351,12 @@ function listWorktrees(cwd, env, timeoutMs = 15000) {
 function worktreeAdminDir(worktree) {
   let text;
   try {
-    text = readFileSync(join3(worktree, ".git"), "utf8");
+    text = readFileSync3(join4(worktree, ".git"), "utf8");
   } catch {
     return null;
   }
   const target = /^gitdir:\s*(.+)$/.exec(text.trim())?.[1]?.trim();
-  return target === undefined || target === "" ? null : resolve2(worktree, target);
+  return target === undefined || target === "" ? null : resolve3(worktree, target);
 }
 var REFLOG_HEADER = /^[a-f0-9]+ [a-f0-9]+ .*<[^<>]*> (\d+) [+-]\d{4}$/;
 function reflogEntryTime(line) {
@@ -229,12 +369,12 @@ function reflogEntryTime(line) {
 }
 
 // src/hooks/sessions.ts
-import { existsSync, readdirSync, readFileSync as readFileSync3, statSync } from "fs";
+import { existsSync as existsSync2, readdirSync as readdirSync2, readFileSync as readFileSync5, statSync as statSync3 } from "fs";
 import { uptime } from "os";
-import { join as join4 } from "path";
+import { join as join5 } from "path";
 
 // src/jobs/ancestry.ts
-import { readFileSync as readFileSync2 } from "fs";
+import { readFileSync as readFileSync4 } from "fs";
 var MAX_DEPTH = 128;
 function parentPidFromStat(stat) {
   const end = stat.lastIndexOf(")");
@@ -260,7 +400,7 @@ function ancestorsBy(pid, parentOf) {
 }
 function readProcStat(pid) {
   try {
-    return readFileSync2(`/proc/${String(pid)}/stat`, "utf8");
+    return readFileSync4(`/proc/${String(pid)}/stat`, "utf8");
   } catch {
     return null;
   }
@@ -307,14 +447,14 @@ function isRunning(pid) {
 function sessionRecordOf(claudeConfigDir, pid, facts = {}) {
   if (!(facts.running ?? isRunning)(pid))
     return null;
-  const dir = join4(claudeConfigDir, "sessions");
-  const file = join4(dir, `${pid}.json`);
+  const dir = join5(claudeConfigDir, "sessions");
+  const file = join5(dir, `${pid}.json`);
   const bootedAt = Date.now() - uptime() * 1000;
   let text;
   try {
-    if (statSync(file).mtimeMs < bootedAt)
+    if (statSync3(file).mtimeMs < bootedAt)
       return null;
-    text = readFileSync3(file, "utf8");
+    text = readFileSync5(file, "utf8");
   } catch (error) {
     if (error.code === "ENOENT")
       return null;
@@ -332,11 +472,11 @@ function sessionRecordOf(claudeConfigDir, pid, facts = {}) {
   return record;
 }
 function liveSessions(claudeConfigDir, facts = {}) {
-  const dir = join4(claudeConfigDir, "sessions");
-  if (!existsSync(dir))
+  const dir = join5(claudeConfigDir, "sessions");
+  if (!existsSync2(dir))
     return [];
   const live = [];
-  for (const file of readdirSync(dir)) {
+  for (const file of readdirSync2(dir)) {
     const pid = Number(file.replace(/\.json$/, ""));
     if (!file.endsWith(".json") || !Number.isInteger(pid))
       continue;
@@ -348,7 +488,7 @@ function liveSessions(claudeConfigDir, facts = {}) {
 }
 
 // src/project/config.ts
-import { existsSync as existsSync3, readFileSync as readFileSync5 } from "fs";
+import { existsSync as existsSync3, readFileSync as readFileSync6 } from "fs";
 import { posix, win32 } from "path";
 
 // node_modules/zod/v4/core/util.js
@@ -6149,75 +6289,6 @@ function parseUserJson(text) {
   return JSON.parse(withoutBom(text));
 }
 
-// src/setup/write.ts
-import {
-  closeSync,
-  existsSync as existsSync2,
-  fsyncSync,
-  lstatSync,
-  mkdirSync,
-  openSync,
-  readdirSync as readdirSync2,
-  readFileSync as readFileSync4,
-  readlinkSync,
-  realpathSync as realpathSync2,
-  renameSync,
-  statSync as statSync2,
-  unlinkSync,
-  writeFileSync
-} from "fs";
-import { basename as basename2, dirname as dirname3, join as join5, resolve as resolve3 } from "path";
-
-// src/setup/file-mode.ts
-import { chmodSync, fchmodSync } from "fs";
-function failureIsFatal(platform) {
-  return platform !== "win32";
-}
-function setFileMode(fileOrFd, mode, platform = hostPlatform()) {
-  try {
-    if (typeof fileOrFd === "number")
-      fchmodSync(fileOrFd, mode);
-    else
-      chmodSync(fileOrFd, mode);
-  } catch (error) {
-    if (failureIsFatal(platform))
-      throw error;
-  }
-}
-
-// src/setup/write.ts
-function writeTemp(file, content, mode) {
-  const dir = dirname3(file);
-  mkdirSync(dir, { recursive: true });
-  const temp = join5(dir, `.${basename2(file)}.cc-smart-dev-kit-tmp-${process.pid}-${crypto.randomUUID()}`);
-  try {
-    const fd = openSync(temp, "wx", mode);
-    try {
-      writeFileSync(fd, content);
-      fsyncSync(fd);
-    } finally {
-      closeSync(fd);
-    }
-    setFileMode(temp, mode);
-  } catch (error) {
-    if (existsSync2(temp))
-      unlinkSync(temp);
-    throw error;
-  }
-  return temp;
-}
-function atomicWrite(file, content, mode, beforeRename) {
-  const temp = writeTemp(file, content, mode);
-  try {
-    beforeRename?.();
-    renameSync(temp, file);
-  } catch (error) {
-    if (existsSync2(temp))
-      unlinkSync(temp);
-    throw error;
-  }
-}
-
 // src/setup/managed-json.ts
 function isObject2(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -8140,7 +8211,7 @@ function checkPersonalOnlyFields(where, raw) {
 function loadCcSmartDevKitConfig(file, pluginVersion = VERSION) {
   if (!existsSync3(file))
     return null;
-  return parseCcSmartDevKitConfig(readFileSync5(file, "utf8"), file, pluginVersion);
+  return parseCcSmartDevKitConfig(readFileSync6(file, "utf8"), file, pluginVersion);
 }
 function parseCcSmartDevKitConfig(text, where, pluginVersion = VERSION) {
   let raw;
@@ -8165,7 +8236,7 @@ function checkCcSmartDevKitConfig(raw, where, pluginVersion = VERSION) {
 }
 
 // src/project/locate.ts
-import { existsSync as existsSync4, realpathSync as realpathSync3, statSync as statSync3 } from "fs";
+import { existsSync as existsSync4, realpathSync as realpathSync3, statSync as statSync4 } from "fs";
 import { join as join6 } from "path";
 var MIN_GIT_VERSION = "2.31.0";
 var RESOLVE_GIT_TIMEOUT_MS = 5000;
@@ -8269,7 +8340,7 @@ function checkoutRoots(parts) {
   return { commonDir, isWorktree: realpathSync3(parts.gitDir) !== commonDir, root };
 }
 function locateCheckout(cwd, options = {}) {
-  if (!existsSync4(cwd) || !statSync3(cwd).isDirectory()) {
+  if (!existsSync4(cwd) || !statSync4(cwd).isDirectory()) {
     throw new Error(`resolveProject: ${cwd} is not a folder`);
   }
   const git = gitIn(cwd, gitEnv(options.env ?? process.env), undefined, options.timeFor);
@@ -8318,72 +8389,6 @@ function loadProjectConfig(checkout, pluginVersion) {
 
 // src/tasks/context.ts
 import { realpathSync as realpathSync4 } from "fs";
-
-// src/workflow/reviews.ts
-import { createHash } from "crypto";
-
-// src/setup/lock.ts
-import {
-  closeSync as closeSync2,
-  mkdirSync as mkdirSync2,
-  openSync as openSync2,
-  readFileSync as readFileSync6,
-  readlinkSync as readlinkSync2,
-  statSync as statSync4,
-  unlinkSync as unlinkSync2,
-  writeSync
-} from "fs";
-var FALLBACK_STALE_MS = 10 * 60 * 1000;
-function procStartTime(pid) {
-  try {
-    const stat = readFileSync6(`/proc/${pid}/stat`, "utf8");
-    const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
-    const start = fields[22 - 3];
-    return start && /^\d+$/.test(start) ? start : null;
-  } catch {
-    return null;
-  }
-}
-function psStartTime(pid) {
-  try {
-    const result = Bun.spawnSync(["ps", "-o", "lstart=", "-p", String(pid)], {
-      env: { ...process.env, LC_ALL: "C" },
-      stdout: "pipe",
-      stderr: "ignore"
-    });
-    const text = result.stdout.toString().trim();
-    return result.exitCode === 0 && text !== "" ? text : null;
-  } catch {
-    return null;
-  }
-}
-function processStartTime(pid, like) {
-  if (like === undefined || like.startsWith("proc:")) {
-    const proc = procStartTime(pid);
-    if (proc !== null)
-      return `proc:${proc}`;
-  }
-  if (like === undefined || like.startsWith("ps:")) {
-    const ps = psStartTime(pid);
-    if (ps !== null)
-      return `ps:${ps}`;
-  }
-  return null;
-}
-function ownPidNamespace() {
-  try {
-    return readlinkSync2("/proc/self/ns/pid");
-  } catch {
-    return null;
-  }
-}
-
-// src/workflow/reviews.ts
-var START_KEPT_MS = 24 * 60 * 60 * 1000;
-var COMMIT_SHA = /^[0-9a-f]{40,64}$/;
-function repoKey(repo) {
-  return createHash("sha256").update(repo).digest("hex").slice(0, 16);
-}
 
 // src/mcp/task-server-name.ts
 var TASKS_SERVER_NAME = `${COMMAND}-tasks`;

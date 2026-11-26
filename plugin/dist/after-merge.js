@@ -2251,16 +2251,34 @@ var init_path_compare = __esm(() => {
   IGNORE_CASE = process.platform === "win32";
 });
 
+// src/workflow/reviews.ts
+import { createHash as createHash2 } from "crypto";
+function repoKey(repo) {
+  return createHash2("sha256").update(repo).digest("hex").slice(0, 16);
+}
+var START_KEPT_MS;
+var init_reviews = __esm(() => {
+  init_lock();
+  init_write();
+  START_KEPT_MS = 24 * 60 * 60 * 1000;
+});
+
 // src/hooks/git.ts
 function runGit(cwd, args, env, timeoutMs = 15000, own = {}, input) {
   return spawnGit(cwd, args, env, timeoutMs, own, true, input);
 }
 function spawnGit(cwd, args, env, timeoutMs, own, trim, input) {
+  const bytes = input === undefined ? undefined : new TextEncoder().encode(input);
+  const run = spawnGitBytes(cwd, args, env, timeoutMs, own, bytes);
+  const out = new TextDecoder("utf-8", { ignoreBOM: true }).decode(run.out);
+  return { ...run, out: trim ? out.trim() : out };
+}
+function spawnGitBytes(cwd, args, env, timeoutMs, own, input) {
   try {
     const result = Bun.spawnSync(["git", ...args], {
       cwd,
       env: { ...gitEnv(env), ...own },
-      stdin: input === undefined ? "ignore" : new TextEncoder().encode(input),
+      stdin: input ?? "ignore",
       stdout: "pipe",
       stderr: "pipe",
       timeout: timeoutMs,
@@ -2268,11 +2286,10 @@ function spawnGit(cwd, args, env, timeoutMs, own, trim, input) {
     });
     const err = result.signalCode ? GIT_TIMED_OUT2 : result.stderr.toString().trim();
     const code = result.signalCode ? null : result.exitCode;
-    const out = result.stdout.toString();
-    return { ok: result.exitCode === 0, out: trim ? out.trim() : out, err, code };
+    return { ok: result.exitCode === 0, out: result.stdout, err, code };
   } catch (error) {
     const err = error instanceof Error ? error.message : String(error);
-    return { ok: false, out: "", err, code: null };
+    return { ok: false, out: new Uint8Array, err, code: null };
   }
 }
 function parseWorktreeList(porcelain) {
@@ -2315,6 +2332,7 @@ var GIT_TIMED_OUT2 = "timed out", GUARD_GIT_TIMEOUT_MS = 5000;
 var init_git = __esm(() => {
   init_path_compare();
   init_git_env();
+  init_reviews();
   init_path_compare();
 });
 
@@ -8916,18 +8934,6 @@ var init_installed_plugins = __esm(() => {
   init_build_info();
 });
 
-// src/workflow/reviews.ts
-import { createHash as createHash2 } from "crypto";
-function repoKey(repo) {
-  return createHash2("sha256").update(repo).digest("hex").slice(0, 16);
-}
-var START_KEPT_MS;
-var init_reviews = __esm(() => {
-  init_lock();
-  init_write();
-  START_KEPT_MS = 24 * 60 * 60 * 1000;
-});
-
 // src/tasks/deploy/files.ts
 var init_files = __esm(() => {
   init_write();
@@ -10127,7 +10133,7 @@ import {
   unlinkSync as unlinkSync2
 } from "fs";
 import { dirname as dirname3, join as join7 } from "path";
-var PARSER_FINGERPRINT = "8d80e248e350839b3aa7d198f4e1bcf3cffd3d14511b535e61df6364bb4a0699";
+var PARSER_FINGERPRINT = "355ceaa25995a0131f97db3b83e953e1f220691e0189bc13356caa94fd1ea6c8";
 var CHECKED_DIR = "checked";
 var CHECKED_CACHE_LIMIT = 64;
 var CHECKED_FILE_MAX_BYTES = 256 * 1024;

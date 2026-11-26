@@ -977,6 +977,9 @@ function gitEnv(base) {
   }
   return env;
 }
+
+// src/workflow/reviews.ts
+var START_KEPT_MS = 24 * 60 * 60 * 1000;
 // src/shell/kit-invocation.ts
 var INERT = new Set([
   "[",

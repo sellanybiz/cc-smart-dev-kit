@@ -503,7 +503,7 @@ var PLUGIN_INSTALL_COMMAND = `claude plugin install ${PLUGIN_ID}`;
 var PLUGIN_UPDATE_COMMAND = `claude plugin update ${PLUGIN_ID}`;
 
 // src/hooks/checked-config.ts
-var PARSER_FINGERPRINT = "8d80e248e350839b3aa7d198f4e1bcf3cffd3d14511b535e61df6364bb4a0699";
+var PARSER_FINGERPRINT = "355ceaa25995a0131f97db3b83e953e1f220691e0189bc13356caa94fd1ea6c8";
 var CHECKED_DIR = "checked";
 var CHECKED_CACHE_LIMIT = 64;
 var CHECKED_FILE_MAX_BYTES = 256 * 1024;
@@ -8833,11 +8833,6 @@ var FIND_INSTALL_JS = [
   "process.stdout.write(e.installPath);"
 ].join("");
 
-// src/regex-escape.ts
-function escapeRegex2(text) {
-  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
 // src/worktrees/paths.ts
 var WORKTREES_FOLDER_SEGMENTS = [".claude", "worktrees"];
 var WORKTREES_GITIGNORE_ENTRY = `${WORKTREES_FOLDER_SEGMENTS.join("/")}/`;
@@ -8846,6 +8841,11 @@ function worktreeBranch(name) {
 }
 var SUBAGENT_NAME_PREFIX = "agent-";
 var SUBAGENT_BRANCH_PREFIX = worktreeBranch(SUBAGENT_NAME_PREFIX);
+
+// src/regex-escape.ts
+function escapeRegex2(text) {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
 
 // src/hooks/subagent-worktree.ts
 var FOLDER_PATTERN = WORKTREES_FOLDER_SEGMENTS.map(escapeRegex2).join(String.raw`[\\/]`);

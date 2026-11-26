@@ -746,7 +746,7 @@ var PLUGIN_INSTALL_COMMAND = `claude plugin install ${PLUGIN_ID}`;
 var PLUGIN_UPDATE_COMMAND = `claude plugin update ${PLUGIN_ID}`;
 
 // src/hooks/checked-config.ts
-var PARSER_FINGERPRINT = "8d80e248e350839b3aa7d198f4e1bcf3cffd3d14511b535e61df6364bb4a0699";
+var PARSER_FINGERPRINT = "355ceaa25995a0131f97db3b83e953e1f220691e0189bc13356caa94fd1ea6c8";
 var CHECKED_DIR = "checked";
 var CHECKED_CACHE_LIMIT = 64;
 var CHECKED_FILE_MAX_BYTES = 256 * 1024;
@@ -7174,11 +7174,17 @@ function runGit(cwd, args, env, timeoutMs = 15000, own = {}, input) {
   return spawnGit(cwd, args, env, timeoutMs, own, true, input);
 }
 function spawnGit(cwd, args, env, timeoutMs, own, trim, input) {
+  const bytes = input === undefined ? undefined : new TextEncoder().encode(input);
+  const run = spawnGitBytes(cwd, args, env, timeoutMs, own, bytes);
+  const out = new TextDecoder("utf-8", { ignoreBOM: true }).decode(run.out);
+  return { ...run, out: trim ? out.trim() : out };
+}
+function spawnGitBytes(cwd, args, env, timeoutMs, own, input) {
   try {
     const result = Bun.spawnSync(["git", ...args], {
       cwd,
       env: { ...gitEnv(env), ...own },
-      stdin: input === undefined ? "ignore" : new TextEncoder().encode(input),
+      stdin: input ?? "ignore",
       stdout: "pipe",
       stderr: "pipe",
       timeout: timeoutMs,
@@ -7186,12 +7192,17 @@ function spawnGit(cwd, args, env, timeoutMs, own, trim, input) {
     });
     const err = result.signalCode ? GIT_TIMED_OUT2 : result.stderr.toString().trim();
     const code = result.signalCode ? null : result.exitCode;
-    const out = result.stdout.toString();
-    return { ok: result.exitCode === 0, out: trim ? out.trim() : out, err, code };
+    return { ok: result.exitCode === 0, out: result.stdout, err, code };
   } catch (error) {
     const err = error instanceof Error ? error.message : String(error);
-    return { ok: false, out: "", err, code: null };
+    return { ok: false, out: new Uint8Array, err, code: null };
   }
+}
+function commitArgs(rev) {
+  return ["rev-parse", "--verify", "--quiet", `${rev}^{commit}`];
+}
+function commitIn(run) {
+  return run.ok && COMMIT_SHA.test(run.out) ? run.out : null;
 }
 
 // src/project/config.ts
@@ -8961,11 +8972,6 @@ function resolveWorkflow(paths, projectConfig) {
   };
 }
 
-// src/regex-escape.ts
-function escapeRegex2(text) {
-  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
 // src/worktrees/paths.ts
 var WORKTREES_FOLDER_SEGMENTS = [".claude", "worktrees"];
 var WORKTREES_GITIGNORE_ENTRY = `${WORKTREES_FOLDER_SEGMENTS.join("/")}/`;
@@ -8974,6 +8980,11 @@ function worktreeBranch(name) {
 }
 var SUBAGENT_NAME_PREFIX = "agent-";
 var SUBAGENT_BRANCH_PREFIX = worktreeBranch(SUBAGENT_NAME_PREFIX);
+
+// src/regex-escape.ts
+function escapeRegex2(text) {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
 
 // src/hooks/subagent-worktree.ts
 var FOLDER_PATTERN = WORKTREES_FOLDER_SEGMENTS.map(escapeRegex2).join(String.raw`[\\/]`);
@@ -9218,8 +9229,7 @@ function headBranch(folder, env) {
   return run.ok && run.out !== "" ? run.out : null;
 }
 function headCommit(folder, env) {
-  const run = runGit(folder, ["rev-parse", "--verify", "--quiet", "HEAD^{commit}"], env, GUARD_GIT_TIMEOUT_MS);
-  return run.ok && /^[0-9a-f]{40,64}$/.test(run.out) ? run.out : null;
+  return commitIn(runGit(folder, commitArgs("HEAD"), env, GUARD_GIT_TIMEOUT_MS));
 }
 function said(why) {
   return { stderr: `cc-smart-dev-kit review-record: ${why}` };
@@ -9228,8 +9238,8 @@ function inOwnWorktree(cwd, agentId) {
   const folder = subagentWorktreeByShape(cwd);
   if (folder === null)
     return false;
-  const name = folder.split(/[\\/]/).at(-1) ?? "";
-  return agentIdKey(name) === agentIdKey(agentId);
+  const hex = (folder.split(/[\\/]/).at(-1) ?? "").slice(SUBAGENT_NAME_PREFIX.length);
+  return hex === agentIdKey(agentId);
 }
 async function reviewRecord(context) {
   const { project, input, event, env, cwd, paths } = context;
@@ -9265,12 +9275,12 @@ async function reviewRecord(context) {
       return SILENT;
     }
     const start = await takeReviewStart(reviewStartsFile(paths.stateDir, repository), agentId);
-    if (isolated) {
-      return notRecorded("this review agent worked in its own worktree, a branch cut from the base rather than the commit under review", ": run the reviewer without isolation");
-    }
     const transcript = stringField(input.agent_transcript_path);
     if (transcript === null || !isReviewRun(transcript)) {
       return notRecorded(`this run was not a review from start to end (its brief and every later prompt need the line "${REVIEW_MODE_MARKER}"), or its transcript cannot be read`);
+    }
+    if (isolated) {
+      return notRecorded("this review agent worked in its own worktree, a branch cut from the base rather than the commit under review", ": run the reviewer without isolation");
     }
     if (headCommit(cwd, env) === null)
       return notRecorded("the folder has no commit yet");

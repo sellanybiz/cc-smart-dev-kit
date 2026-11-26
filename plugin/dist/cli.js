@@ -17840,14 +17840,27 @@ function committedOf(text, where, options) {
   return {
     found: true,
     where,
-    config: parseCcSmartDevKitConfig(text.stdout, where, options.pluginVersion)
+    config: parseCcSmartDevKitConfig(text.stdout, where, options.pluginVersion),
+    text: text.stdout
   };
 }
-function readCommittedConfig(checkout, branch, options = {}) {
+function withoutText(read) {
+  if (!read.found)
+    return read;
+  return { found: true, config: read.config, where: read.where };
+}
+function readTarget(branch, options) {
   const ref = `origin/${branch}`;
-  const where = `${ref}:${CONFIG_PATH}`;
+  const at = options.commit ?? `refs/remotes/${ref}`;
+  return { at: `${at}^{commit}`, ref, where: `${ref}:${CONFIG_PATH}` };
+}
+function readCommittedConfig(checkout, branch, options = {}) {
+  return withoutText(readCommittedFile(checkout, branch, options));
+}
+function readCommittedFile(checkout, branch, options = {}) {
+  const { at, ref, where } = readTarget(branch, options);
   const git = gitIn(checkout.root, gitEnv(options.env ?? process.env), options.timeoutMs, options.timeFor);
-  const commit = git(["rev-parse", "--verify", "--quiet", `refs/remotes/${ref}^{commit}`]);
+  const commit = git(["rev-parse", "--verify", "--quiet", at]);
   if (!commit.ok)
     return refNotKnown(where, ref, commit);
   const blob = git(["rev-parse", "--verify", "--quiet", `${commit.stdout.trim()}:${CONFIG_PATH}`]);
@@ -17859,10 +17872,9 @@ function readCommittedConfig(checkout, branch, options = {}) {
   return committedOf(text, where, options);
 }
 async function readCommittedConfigAsync(checkout, branch, options = {}) {
-  const ref = `origin/${branch}`;
-  const where = `${ref}:${CONFIG_PATH}`;
+  const { at, ref, where } = readTarget(branch, options);
   const git = gitInAsync(checkout.root, gitEnv(options.env ?? process.env), options.timeoutMs, options.timeFor);
-  const commit = await git(["rev-parse", "--verify", "--quiet", `refs/remotes/${ref}^{commit}`]);
+  const commit = await git(["rev-parse", "--verify", "--quiet", at]);
   if (!commit.ok)
     return refNotKnown(where, ref, commit);
   const blob = await git([
@@ -17876,7 +17888,7 @@ async function readCommittedConfigAsync(checkout, branch, options = {}) {
   const text = await git(["cat-file", "blob", blob.stdout.trim()]);
   if (!text.ok)
     return unreadableCommitted(where, text);
-  return committedOf(text, where, options);
+  return withoutText(committedOf(text, where, options));
 }
 function resolveProject(cwd, options = {}) {
   const checkout = locateCheckout(cwd, options);
@@ -21890,9 +21902,145 @@ var init_path_compare = __esm(() => {
   IGNORE_CASE = process.platform === "win32";
 });
 
+// src/workflow/reviews.ts
+import { createHash as createHash4 } from "crypto";
+import { mkdirSync as mkdirSync9, readFileSync as readFileSync22 } from "fs";
+import { dirname as dirname8, join as join18 } from "path";
+function recordsReview(agent, agents) {
+  return agents.some((name) => name === agent);
+}
+function repoKey(repo) {
+  return createHash4("sha256").update(repo).digest("hex").slice(0, 16);
+}
+function reviewsFile(stateDir, repo) {
+  return join18(stateDir, "reviews", `${repoKey(repo)}.json`);
+}
+function reviewStartsFile(stateDir, repo) {
+  return join18(stateDir, "reviews", `${repoKey(repo)}.starts.json`);
+}
+function readObject(file) {
+  try {
+    const parsed = JSON.parse(readFileSync22(file, "utf8"));
+    return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+function stringList(value) {
+  if (!Array.isArray(value) || value.length === 0)
+    return null;
+  return value.every((one) => typeof one === "string" && one !== "") ? value : null;
+}
+function readReviews(file) {
+  const record = {};
+  for (const [sha, entry] of Object.entries(readObject(file))) {
+    if (!COMMIT_SHA.test(sha) || typeof entry !== "object" || entry === null)
+      continue;
+    const { at, by, branches } = entry;
+    const writers = stringList(by);
+    if (typeof at !== "string" || writers === null)
+      continue;
+    const named = stringList(branches);
+    record[sha] = named === null ? { at, by: writers } : { at, by: writers, branches: named };
+  }
+  return record;
+}
+function trusted(entry, agents) {
+  return entry.by.some((by) => by === BY_HAND || recordsReview(by, agents));
+}
+function hasReview(file, sha, agents) {
+  const entry = readReviews(file)[sha];
+  return entry !== undefined && trusted(entry, agents);
+}
+function trustedReviews(file, agents) {
+  return Object.entries(readReviews(file)).filter(([, entry]) => trusted(entry, agents)).sort(([, a], [, b]) => b.at.localeCompare(a.at)).map(([sha, entry]) => ({ sha, at: entry.at, branches: entry.branches ?? [] }));
+}
+async function underRecordLock(file, write) {
+  const folder = dirname8(file);
+  mkdirSync9(folder, { mode: 448, recursive: true });
+  return await withLock(folder, write, { waitMs: REVIEWS_LOCK_WAIT_MS });
+}
+async function recordReview(file, sha, by, atMs, branch = null) {
+  return await underRecordLock(file, () => {
+    const record = readReviews(file);
+    const before = record[sha];
+    const branches = before?.branches ?? [];
+    const newBranch = branch !== null && branch !== "" && !branches.includes(branch);
+    if (before?.by.includes(by) && !newBranch)
+      return { added: false, at: before.at };
+    const at = before?.at ?? new Date(atMs).toISOString();
+    const writers = before?.by.includes(by) ? before.by : [...before?.by ?? [], by];
+    const named = newBranch ? [...branches, branch] : branches;
+    record[sha] = named.length === 0 ? { at, by: writers } : { at, by: writers, branches: named };
+    const kept = {};
+    for (const [commit, entry] of Object.entries(record).sort(([, a], [, b]) => b.at.localeCompare(a.at)).slice(0, REVIEWS_KEPT)) {
+      kept[commit] = entry;
+    }
+    atomicWrite(file, `${JSON.stringify(kept, null, 2)}
+`, 384);
+    return { added: true, at };
+  });
+}
+function agentIdKey(agentId) {
+  const key = agentId.replace(/^agent-/, "");
+  return key === "" ? null : key;
+}
+function readStarts(file) {
+  const starts = {};
+  for (const [key, entry] of Object.entries(readObject(file))) {
+    if (typeof entry !== "object" || entry === null)
+      continue;
+    const { head, at, branch } = entry;
+    if (typeof head === "string" && COMMIT_SHA.test(head) && typeof at === "number") {
+      starts[key] = typeof branch === "string" && branch !== "" ? { head, at, branch } : { head, at };
+    }
+  }
+  return starts;
+}
+async function noteReviewStart(file, agentId, head, atMs, branch = null) {
+  const key = agentIdKey(agentId);
+  if (key === null)
+    return;
+  await underRecordLock(file, () => {
+    const starts = readStarts(file);
+    const kept = {};
+    for (const [one, start] of Object.entries(starts)) {
+      if (atMs - start.at <= START_KEPT_MS)
+        kept[one] = start;
+    }
+    if (kept[key] !== undefined)
+      return;
+    kept[key] = branch === null || branch === "" ? { head, at: atMs } : { head, at: atMs, branch };
+    atomicWrite(file, `${JSON.stringify(kept, null, 2)}
+`, 384);
+  });
+}
+async function takeReviewStart(file, agentId) {
+  const key = agentIdKey(agentId);
+  if (key === null)
+    return null;
+  return await underRecordLock(file, () => {
+    const starts = readStarts(file);
+    const start = starts[key];
+    if (start === undefined)
+      return null;
+    delete starts[key];
+    atomicWrite(file, `${JSON.stringify(starts, null, 2)}
+`, 384);
+    return { head: start.head, branch: start.branch ?? null };
+  });
+}
+var REVIEWS_KEPT = 50, REVIEWS_LOCK_WAIT_MS = 3000, START_KEPT_MS, BY_HAND = "workflow review-done", COMMIT_SHA;
+var init_reviews = __esm(() => {
+  init_lock();
+  init_write();
+  START_KEPT_MS = 24 * 60 * 60 * 1000;
+  COMMIT_SHA = /^[0-9a-f]{40,64}$/;
+});
+
 // src/hooks/git.ts
-import { readFileSync as readFileSync22, realpathSync as realpathSync4 } from "fs";
-import { basename as basename4, dirname as dirname8, join as join18, resolve as resolve5 } from "path";
+import { readFileSync as readFileSync23, realpathSync as realpathSync4 } from "fs";
+import { basename as basename4, dirname as dirname9, join as join19, resolve as resolve5 } from "path";
 function runGit(cwd, args, env, timeoutMs = 15000, own = {}, input) {
   return spawnGit(cwd, args, env, timeoutMs, own, true, input);
 }
@@ -21900,11 +22048,20 @@ function runGitRaw(cwd, args, env, timeoutMs = 15000) {
   return spawnGit(cwd, args, env, timeoutMs, {}, false);
 }
 function spawnGit(cwd, args, env, timeoutMs, own, trim, input) {
+  const bytes = input === undefined ? undefined : new TextEncoder().encode(input);
+  const run = spawnGitBytes(cwd, args, env, timeoutMs, own, bytes);
+  const out = new TextDecoder("utf-8", { ignoreBOM: true }).decode(run.out);
+  return { ...run, out: trim ? out.trim() : out };
+}
+function runGitBytes(cwd, args, env, timeoutMs = 15000, input) {
+  return spawnGitBytes(cwd, args, env, timeoutMs, {}, input);
+}
+function spawnGitBytes(cwd, args, env, timeoutMs, own, input) {
   try {
     const result = Bun.spawnSync(["git", ...args], {
       cwd,
       env: { ...gitEnv(env), ...own },
-      stdin: input === undefined ? "ignore" : new TextEncoder().encode(input),
+      stdin: input ?? "ignore",
       stdout: "pipe",
       stderr: "pipe",
       timeout: timeoutMs,
@@ -21912,11 +22069,10 @@ function spawnGit(cwd, args, env, timeoutMs, own, trim, input) {
     });
     const err = result.signalCode ? GIT_TIMED_OUT2 : result.stderr.toString().trim();
     const code = result.signalCode ? null : result.exitCode;
-    const out = result.stdout.toString();
-    return { ok: result.exitCode === 0, out: trim ? out.trim() : out, err, code };
+    return { ok: result.exitCode === 0, out: result.stdout, err, code };
   } catch (error) {
     const err = error instanceof Error ? error.message : String(error);
-    return { ok: false, out: "", err, code: null };
+    return { ok: false, out: new Uint8Array, err, code: null };
   }
 }
 async function runGitAsync(cwd, args, env, timeoutMs = 15000, own = {}) {
@@ -21947,14 +22103,20 @@ async function runGitAsync(cwd, args, env, timeoutMs = 15000, own = {}) {
     return { ok: false, out: "", err, code: null };
   }
 }
+function commitArgs(rev) {
+  return ["rev-parse", "--verify", "--quiet", `${rev}^{commit}`];
+}
+function commitIn(run) {
+  return run.ok && COMMIT_SHA.test(run.out) ? run.out : null;
+}
 function realPath(path) {
   const rest = [];
   let at = resolve5(path);
   for (;; ) {
     try {
-      return join18(realpathSync4(at), ...rest);
+      return join19(realpathSync4(at), ...rest);
     } catch {
-      const parent = dirname8(at);
+      const parent = dirname9(at);
       if (parent === at)
         return resolve5(path);
       rest.unshift(basename4(at));
@@ -22005,7 +22167,7 @@ function hasChanges(folder, env) {
 function worktreeAdminDir(worktree) {
   let text;
   try {
-    text = readFileSync22(join18(worktree, ".git"), "utf8");
+    text = readFileSync23(join19(worktree, ".git"), "utf8");
   } catch {
     return null;
   }
@@ -22024,13 +22186,14 @@ var GIT_TIMED_OUT2 = "timed out", GUARD_GIT_TIMEOUT_MS = 5000, REFLOG_HEADER;
 var init_git = __esm(() => {
   init_path_compare();
   init_git_env();
+  init_reviews();
   init_path_compare();
   REFLOG_HEADER = /^[a-f0-9]+ [a-f0-9]+ .*<[^<>]*> (\d+) [+-]\d{4}$/;
 });
 
 // src/hooks/settings-hooks.ts
-import { existsSync as existsSync23, readFileSync as readFileSync23 } from "fs";
-import { join as join19 } from "path";
+import { existsSync as existsSync23, readFileSync as readFileSync24 } from "fs";
+import { join as join20 } from "path";
 function retiredEngineHookOf(command) {
   return RETIRED_ENGINE_LINE.exec(command)?.[3] ?? null;
 }
@@ -22054,7 +22217,7 @@ function hooksOf(file) {
   if (!existsSync23(file))
     return null;
   try {
-    const parsed = JSON.parse(readFileSync23(file, "utf8"));
+    const parsed = JSON.parse(readFileSync24(file, "utf8"));
     if (typeof parsed !== "object" || parsed === null)
       return null;
     const hooks = parsed.hooks;
@@ -22087,8 +22250,8 @@ function wiredHandlers(file, event, subject) {
 }
 function projectSettingsFiles(projectDir) {
   return [
-    join19(projectDir, ".claude", "settings.json"),
-    join19(projectDir, ".claude", "settings.local.json")
+    join20(projectDir, ".claude", "settings.json"),
+    join20(projectDir, ".claude", "settings.local.json")
   ];
 }
 function allWiredHandlers(file) {
@@ -22341,8 +22504,8 @@ var init_json_edit = __esm(() => {
 });
 
 // src/tasks/deploy/files.ts
-import { existsSync as existsSync24, mkdirSync as mkdirSync9, readdirSync as readdirSync8, readFileSync as readFileSync24, rmSync as rmSync5, writeFileSync as writeFileSync3 } from "fs";
-import { basename as basename5, dirname as dirname9, isAbsolute, join as join20, relative, resolve as resolve6, sep as sep2 } from "path";
+import { existsSync as existsSync24, mkdirSync as mkdirSync10, readdirSync as readdirSync8, readFileSync as readFileSync25, rmSync as rmSync5, writeFileSync as writeFileSync3 } from "fs";
+import { basename as basename5, dirname as dirname10, isAbsolute, join as join21, relative, resolve as resolve6, sep as sep2 } from "path";
 function deployTasksDir(checkoutRoot, settings) {
   const dir = settings.dir ?? DEFAULT_TASKS_DIR;
   const target = resolve6(checkoutRoot, dir);
@@ -22355,13 +22518,13 @@ function isTaskFile(name) {
   return !name.startsWith(".") && name !== "README.md" && name.endsWith(".md");
 }
 function envFolder(dir, env) {
-  return join20(dir, env);
+  return join21(dir, env);
 }
 function isArchived(file) {
-  return basename5(dirname9(file)) === ARCHIVE;
+  return basename5(dirname10(file)) === ARCHIVE;
 }
 function archiveFolder(dir, env) {
-  return join20(dir, env, ARCHIVE);
+  return join21(dir, env, ARCHIVE);
 }
 function scanDeployTasks(dir, options) {
   const found = [];
@@ -22373,8 +22536,8 @@ function scanDeployTasks(dir, options) {
       for (const entry of readdirSync8(folder, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
         if (!entry.isFile() || !isTaskFile(entry.name))
           continue;
-        const file = join20(folder, entry.name);
-        const result = parseDeployTask(readFileSync24(file, "utf8"), file, env);
+        const file = join21(folder, entry.name);
+        const result = parseDeployTask(readFileSync25(file, "utf8"), file, env);
         if (result.ok)
           found.push(result.task);
         else
@@ -22410,7 +22573,7 @@ function scanDeployTasks(dir, options) {
 function oldTaskFiles(dir) {
   if (!existsSync24(dir))
     return [];
-  return readdirSync8(dir, { withFileTypes: true }).filter((entry) => entry.isFile() && isTaskFile(entry.name)).map((entry) => join20(dir, entry.name)).sort();
+  return readdirSync8(dir, { withFileTypes: true }).filter((entry) => entry.isFile() && isTaskFile(entry.name)).map((entry) => join21(dir, entry.name)).sort();
 }
 function newDeployId(env, now, used) {
   const stamp = now.toISOString().replace(/\.\d+Z$/, "").replace(/[-:]/g, "").replace("T", "-");
@@ -22447,7 +22610,7 @@ function planDeployTask(dir, input, sources, used) {
   return {
     ...validated,
     body,
-    file: join20(envFolder(dir, validated.env), `${id}-${slugOf(validated.title)}.md`)
+    file: join21(envFolder(dir, validated.env), `${id}-${slugOf(validated.title)}.md`)
   };
 }
 function save2(task) {
@@ -22470,7 +22633,7 @@ function claim2(dir, task, sources) {
   return !rival;
 }
 function createDeployTask(dir, input, sources) {
-  mkdirSync9(envFolder(dir, input.env), { recursive: true });
+  mkdirSync10(envFolder(dir, input.env), { recursive: true });
   for (let attempt = 0;attempt < CLAIM_ATTEMPTS; attempt++) {
     const task = planDeployTask(dir, input, sources, takenDeployIds(dir, input.env));
     if (claim2(dir, task, sources))
@@ -22482,8 +22645,8 @@ function createDeployPair(dir, input, sources, envs) {
   for (const env of DEPLOY_ENVS)
     if (!envs.includes(env))
       throw new Error(`A staging and prod pair needs both environments; this project lists only: ${envs.join(", ")}`);
-  mkdirSync9(envFolder(dir, "staging"), { recursive: true });
-  mkdirSync9(envFolder(dir, "prod"), { recursive: true });
+  mkdirSync10(envFolder(dir, "staging"), { recursive: true });
+  mkdirSync10(envFolder(dir, "prod"), { recursive: true });
   for (let attempt = 0;attempt < CLAIM_ATTEMPTS; attempt++) {
     const staging = planDeployTask(dir, { ...input, env: "staging" }, sources, takenDeployIds(dir, "staging"));
     const prod = planDeployTask(dir, { ...input, env: "prod" }, sources, takenDeployIds(dir, "prod"));
@@ -22562,8 +22725,8 @@ function closeDeployTask(dir, id, options, now) {
     ...options.evidence === undefined ? {} : { evidence: options.evidence }
   }, options.note ?? `${options.status}: ${options.evidence ?? ""}`, now);
   const archive = archiveFolder(dir, task.env);
-  mkdirSync9(archive, { recursive: true });
-  const destination = join20(archive, basename5(task.file));
+  mkdirSync10(archive, { recursive: true });
+  const destination = join21(archive, basename5(task.file));
   if (destination !== task.file && existsSync24(destination))
     throw new Error(`Archive task already exists: ${destination}`);
   const saved = save2({ ...closed, file: destination });
@@ -22581,7 +22744,7 @@ function reopenDeployTask(dir, id, now, note) {
     const { closed: _closed, evidence: _evidence, ...rest } = task;
     reopened = save2(withNote({ ...rest, status: "open" }, note?.trim() ? `reopened: ${note}` : "reopened", now));
   }
-  const destination = join20(envFolder(dir, task.env), basename5(task.file));
+  const destination = join21(envFolder(dir, task.env), basename5(task.file));
   const saved = save2({ ...reopened, file: destination });
   if (destination !== task.file)
     rmSync5(task.file, { force: true });
@@ -22631,7 +22794,7 @@ var init_clashes = __esm(() => {
 
 // src/project/init.ts
 import { existsSync as existsSync25 } from "fs";
-import { join as join21 } from "path";
+import { join as join22 } from "path";
 function orderKeys(data, order) {
   const ordered = {};
   for (const key of order) {
@@ -22836,7 +22999,7 @@ function hasDeployTaskFolders(root, tasks) {
 }
 function planProjectInit(input, extras = {}) {
   const { root, existing, existingSettings, existingLocalSettings, defaultBranch, answers } = input;
-  const file = join21(root, ".claude", "cc-smart-dev-kit.json");
+  const file = join22(root, ".claude", "cc-smart-dev-kit.json");
   const before = parseObject(existing, file);
   const beforeWorktrees = isObject(before.worktrees) ? before.worktrees : {};
   const beforeJobs = isObject(before.jobs) ? before.jobs : {};
@@ -22926,8 +23089,8 @@ function planProjectInit(input, extras = {}) {
     throw new Error(`${file} would not be a valid project file (${prettifyError(valid.error)}). ` + `Change the answer, then run again.`);
   }
   const text = jsonTextFor(existing, after, detectIndent(existing ?? ""));
-  const settings = settingsPlan(join21(root, ".claude", "settings.json"), existingSettings, answers.base !== defaultBranch);
-  const localSettings = settingsPlan(join21(root, ".claude", "settings.local.json"), existingLocalSettings, false);
+  const settings = settingsPlan(join22(root, ".claude", "settings.json"), existingSettings, answers.base !== defaultBranch);
+  const localSettings = settingsPlan(join22(root, ".claude", "settings.local.json"), existingLocalSettings, false);
   const notes = [];
   if (answers.base !== defaultBranch) {
     notes.push(`base ${answers.base} is not the repo's default branch ${defaultBranch}: .claude/settings.json gets "worktree": {"baseRef": "head"}, so a new worktree starts from the branch the session is on`);
@@ -23010,7 +23173,7 @@ var init_init = __esm(() => {
 });
 
 // src/setup/launcher.ts
-import { join as join22 } from "path";
+import { join as join23 } from "path";
 function bakedBunPath(script) {
   const match = /^baked_bun=('(?:[^']|'\\'')*')$/m.exec(script);
   if (!match?.[1])
@@ -23059,7 +23222,7 @@ exec "$bun" --no-env-file "$@"
 `;
 }
 function installLauncher(binDir, options) {
-  const path = join22(binDir, LAUNCHER_NAME);
+  const path = join23(binDir, LAUNCHER_NAME);
   const { outcome } = writeManagedFile(path, launcherScript(options.bunPath), {
     stateDir: options.stateDir,
     kind: "whole-file",
@@ -23083,9 +23246,9 @@ var init_launcher = __esm(() => {
 });
 
 // src/setup/statusline.ts
-import { join as join23 } from "path";
+import { join as join24 } from "path";
 function statuslineSetting(paths) {
-  return { command: `${shellWord(join23(paths.binDir, LAUNCHER_NAME))} statusline`, type: "command" };
+  return { command: `${shellWord(join24(paths.binDir, LAUNCHER_NAME))} statusline`, type: "command" };
 }
 var STATUSLINE_KEY;
 var init_statusline = __esm(() => {
@@ -23097,23 +23260,23 @@ var init_statusline = __esm(() => {
 import {
   appendFileSync,
   existsSync as existsSync26,
-  mkdirSync as mkdirSync10,
+  mkdirSync as mkdirSync11,
   readdirSync as readdirSync9,
-  readFileSync as readFileSync25,
+  readFileSync as readFileSync26,
   rmSync as rmSync6,
   statSync as statSync10,
   writeFileSync as writeFileSync4
 } from "fs";
-import { join as join24 } from "path";
+import { join as join25 } from "path";
 function updateFiles(stateDir) {
   return {
-    hold: join24(stateDir, "update-hold"),
-    check: join24(stateDir, "update-check.json"),
-    reported: join24(stateDir, "update-reported"),
-    major: join24(stateDir, "update-major.json"),
-    log: join24(stateDir, "update.log"),
-    lockDir: join24(stateDir, "update"),
-    sessions: join24(stateDir, "sessions")
+    hold: join25(stateDir, "update-hold"),
+    check: join25(stateDir, "update-check.json"),
+    reported: join25(stateDir, "update-reported"),
+    major: join25(stateDir, "update-major.json"),
+    log: join25(stateDir, "update.log"),
+    lockDir: join25(stateDir, "update"),
+    sessions: join25(stateDir, "sessions")
   };
 }
 function unreachableSince(check) {
@@ -23133,11 +23296,11 @@ function unreachableCheck(previous, at, nowMs, detail) {
   };
 }
 function ensureDir(dir) {
-  mkdirSync10(dir, { recursive: true, mode: 448 });
+  mkdirSync11(dir, { recursive: true, mode: 448 });
 }
 function readLastCheck(files) {
   try {
-    const parsed = JSON.parse(readFileSync25(files.check, "utf8"));
+    const parsed = JSON.parse(readFileSync26(files.check, "utf8"));
     if (typeof parsed?.at !== "string" || Number.isNaN(Date.parse(parsed.at)) || !RESULTS.includes(parsed.result) || typeof parsed.detail !== "string") {
       return null;
     }
@@ -23155,7 +23318,7 @@ function readLastCheck(files) {
   }
 }
 function writeLastCheck(files, check) {
-  ensureDir(join24(files.check, ".."));
+  ensureDir(join25(files.check, ".."));
   atomicWrite(files.check, `${JSON.stringify(check, null, 2)}
 `, 384);
 }
@@ -23164,7 +23327,7 @@ function isHeld(files) {
 }
 function heldSince(files) {
   try {
-    const text = readFileSync25(files.hold, "utf8").trim();
+    const text = readFileSync26(files.hold, "utf8").trim();
     return text === "" ? "an unknown time" : text;
   } catch {
     return null;
@@ -23173,7 +23336,7 @@ function heldSince(files) {
 function hold(files, nowMs) {
   if (isHeld(files))
     return false;
-  ensureDir(join24(files.hold, ".."));
+  ensureDir(join25(files.hold, ".."));
   atomicWrite(files.hold, `${isoSeconds(nowMs)}
 `, 384);
   return true;
@@ -23191,10 +23354,10 @@ function isoSeconds(ms) {
   return `${new Date(ms).toISOString().slice(0, 19)}Z`;
 }
 function appendLogLine(logFile, line, nowMs) {
-  ensureDir(join24(logFile, ".."));
+  ensureDir(join25(logFile, ".."));
   try {
     if (statSync10(logFile).size > LOG_MAX_BYTES) {
-      const text = readFileSync25(logFile, "utf8");
+      const text = readFileSync26(logFile, "utf8");
       const keep = text.slice(text.length - LOG_MAX_BYTES / 2);
       writeFileSync4(logFile, keep.slice(keep.indexOf(`
 `) + 1), { mode: 384 });
@@ -23205,7 +23368,7 @@ function appendLogLine(logFile, line, nowMs) {
 }
 function readHeldMajor(files) {
   try {
-    const parsed = JSON.parse(readFileSync25(files.major, "utf8"));
+    const parsed = JSON.parse(readFileSync26(files.major, "utf8"));
     if (typeof parsed?.version !== "string" || typeof parsed.at !== "string" || parsed.from !== null && typeof parsed.from !== "string" || !Array.isArray(parsed.notes) || !parsed.notes.every((note) => typeof note === "string")) {
       return null;
     }
@@ -23219,7 +23382,7 @@ function clearHeldMajor(files) {
 }
 function readSession(file) {
   try {
-    const parsed = JSON.parse(readFileSync25(file, "utf8"));
+    const parsed = JSON.parse(readFileSync26(file, "utf8"));
     if (typeof parsed?.pid !== "number" || typeof parsed.start !== "string" || typeof parsed.version !== "string") {
       return null;
     }
@@ -23238,7 +23401,7 @@ function runningSessions(files) {
   } catch {
     return [];
   }
-  return names.filter((name) => SESSION_FILE.test(name)).map((name) => readSession(join24(files.sessions, name))).filter((session) => session !== null && isRunning(session));
+  return names.filter((name) => SESSION_FILE.test(name)).map((name) => readSession(join25(files.sessions, name))).filter((session) => session !== null && isRunning(session));
 }
 var CHECK_INTERVAL_MS, LOG_MAX_BYTES, RESULTS, UNREACHABLE_FAILS_AFTER_HOURS = 24, UNREACHABLE_FAILS_AFTER_MS, UNREACHABLE_WORDS = "cannot read the marketplace", SESSION_FILE;
 var init_state = __esm(() => {
@@ -23310,7 +23473,7 @@ function leadHintFrom(personal) {
 var LEAD_HINT_DEFAULT = true;
 
 // src/workflow/resolve.ts
-import { existsSync as existsSync27, readFileSync as readFileSync26 } from "fs";
+import { existsSync as existsSync27, readFileSync as readFileSync27 } from "fs";
 function personalWorkflowFile(paths) {
   return paths.workflowConfigFile;
 }
@@ -23336,7 +23499,7 @@ function loadWorkflow(file) {
     return {};
   let text;
   try {
-    text = readFileSync26(file, "utf8");
+    text = readFileSync27(file, "utf8");
   } catch (error) {
     throw invalidJson(file, error);
   }
@@ -23389,7 +23552,7 @@ function resolveAlerts(paths, projectConfig) {
 }
 function statusLineIsOurs(paths) {
   try {
-    const parsed = JSON.parse(readFileSync26(paths.settingsFile, "utf8"));
+    const parsed = JSON.parse(readFileSync27(paths.settingsFile, "utf8"));
     if (typeof parsed !== "object" || parsed === null)
       return false;
     const statusLine = parsed.statusLine;
@@ -23607,25 +23770,9 @@ var init_auto_merge = __esm(() => {
 });
 
 // src/project/generated.ts
-import { mkdirSync as mkdirSync11, mkdtempSync as mkdtempSync3, rmSync as rmSync7, writeFileSync as writeFileSync5 } from "fs";
+import { mkdirSync as mkdirSync12, mkdtempSync as mkdtempSync3, rmSync as rmSync7, writeFileSync as writeFileSync5 } from "fs";
 import { tmpdir as tmpdir4 } from "os";
-import { join as join25 } from "path";
-function generatedChecks(source, paths) {
-  const checks = [];
-  for (let at = 0;at < paths.length; at += PATHS_PER_CALL) {
-    checks.push([
-      "-c",
-      "core.attributesFile=",
-      "check-attr",
-      `--source=${source}`,
-      "-z",
-      GENERATED_ATTRIBUTE,
-      "--",
-      ...paths.slice(at, at + PATHS_PER_CALL)
-    ]);
-  }
-  return checks;
-}
+import { join as join26 } from "path";
 function generatedIn(out) {
   const fields = out.split("\x00");
   const generated = [];
@@ -23637,16 +23784,21 @@ function generatedIn(out) {
   return generated;
 }
 function openBaseOnlyGit(commonDir, source) {
-  const folder = mkdtempSync3(join25(tmpdir4(), `${COMMAND}-attributes-`));
+  const folder = mkdtempSync3(join26(tmpdir4(), `${COMMAND}-attributes-`));
+  const none = join26(folder, "none");
   try {
-    mkdirSync11(join25(folder, "refs"));
-    mkdirSync11(join25(folder, "objects", "info"), { recursive: true });
-    writeFileSync5(join25(folder, "HEAD"), `ref: refs/heads/none
+    mkdirSync12(join26(folder, "refs"));
+    mkdirSync12(join26(folder, "objects", "info"), { recursive: true });
+    mkdirSync12(join26(folder, "info"));
+    mkdirSync12(join26(folder, "tree"));
+    writeFileSync5(join26(folder, "info", "sparse-checkout"), `.gitattributes
 `);
-    writeFileSync5(join25(folder, "objects", "info", "alternates"), `${join25(commonDir, "objects")}
+    writeFileSync5(join26(folder, "HEAD"), `ref: refs/heads/none
+`);
+    writeFileSync5(join26(folder, "objects", "info", "alternates"), `${join26(commonDir, "objects")}
 `);
     if (SHA256_ID.test(source)) {
-      writeFileSync5(join25(folder, "config"), `[core]
+      writeFileSync5(join26(folder, "config"), `[core]
 	repositoryformatversion = 1
 [extensions]
 	objectFormat = sha256
@@ -23656,152 +23808,73 @@ function openBaseOnlyGit(commonDir, source) {
     rmSync7(folder, { recursive: true, force: true });
     throw error;
   }
+  const args = (command) => [
+    "-c",
+    `core.attributesFile=${none}`,
+    "-c",
+    "core.ignoreCase=false",
+    ...command
+  ];
   return {
-    env: { GIT_DIR: folder, GIT_ATTR_NOSYSTEM: "1" },
+    cwd: join26(folder, "tree"),
+    env: {
+      GIT_DIR: folder,
+      GIT_WORK_TREE: join26(folder, "tree"),
+      GIT_INDEX_FILE: join26(folder, "index"),
+      GIT_CONFIG_GLOBAL: none,
+      GIT_CONFIG_NOSYSTEM: "1",
+      GIT_ATTR_NOSYSTEM: "1"
+    },
+    args,
+    checks: (paths) => {
+      const checks = [];
+      for (let at = 0;at < paths.length; at += PATHS_PER_CALL) {
+        const batch = paths.slice(at, at + PATHS_PER_CALL);
+        checks.push(args(["check-attr", `--source=${source}`, "-z", GENERATED_ATTRIBUTE, "--", ...batch]));
+      }
+      return checks;
+    },
+    readBase: args([
+      "-c",
+      "core.sparseCheckout=true",
+      "-c",
+      "core.sparseCheckoutCone=false",
+      "read-tree",
+      "-m",
+      "-u",
+      source
+    ]),
     remove: () => rmSync7(folder, { recursive: true, force: true })
   };
+}
+function readGenerated(commonDir, source, paths, env, timeoutMs) {
+  if (paths.length === 0)
+    return new Set;
+  try {
+    const isolated = openBaseOnlyGit(commonDir, source);
+    try {
+      const marked = new Set;
+      for (const args of isolated.checks(paths)) {
+        const run = runGit(isolated.cwd, args, env, timeoutMs, isolated.env);
+        if (!run.ok)
+          return null;
+        for (const path of generatedIn(run.out))
+          marked.add(path);
+      }
+      return marked;
+    } finally {
+      isolated.remove();
+    }
+  } catch {
+    return null;
+  }
 }
 var GENERATED_ATTRIBUTE = "linguist-generated", MARKED_VALUES, PATHS_PER_CALL = 200, SHA256_ID;
 var init_generated = __esm(() => {
   init_names();
+  init_git();
   MARKED_VALUES = new Set(["set", "true"]);
   SHA256_ID = /^[0-9a-f]{64}$/;
-});
-
-// src/workflow/reviews.ts
-import { createHash as createHash4 } from "crypto";
-import { mkdirSync as mkdirSync12, readFileSync as readFileSync27 } from "fs";
-import { dirname as dirname10, join as join26 } from "path";
-function recordsReview(agent, agents) {
-  return agents.some((name) => name === agent);
-}
-function repoKey(repo) {
-  return createHash4("sha256").update(repo).digest("hex").slice(0, 16);
-}
-function reviewsFile(stateDir, repo) {
-  return join26(stateDir, "reviews", `${repoKey(repo)}.json`);
-}
-function reviewStartsFile(stateDir, repo) {
-  return join26(stateDir, "reviews", `${repoKey(repo)}.starts.json`);
-}
-function readObject(file) {
-  try {
-    const parsed = JSON.parse(readFileSync27(file, "utf8"));
-    return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed) ? parsed : {};
-  } catch {
-    return {};
-  }
-}
-function stringList(value) {
-  if (!Array.isArray(value) || value.length === 0)
-    return null;
-  return value.every((one) => typeof one === "string" && one !== "") ? value : null;
-}
-function readReviews(file) {
-  const record = {};
-  for (const [sha, entry] of Object.entries(readObject(file))) {
-    if (!COMMIT_SHA.test(sha) || typeof entry !== "object" || entry === null)
-      continue;
-    const { at, by, branches } = entry;
-    const writers = stringList(by);
-    if (typeof at !== "string" || writers === null)
-      continue;
-    const named = stringList(branches);
-    record[sha] = named === null ? { at, by: writers } : { at, by: writers, branches: named };
-  }
-  return record;
-}
-function trusted(entry, agents) {
-  return entry.by.some((by) => by === BY_HAND || recordsReview(by, agents));
-}
-function hasReview(file, sha, agents) {
-  const entry = readReviews(file)[sha];
-  return entry !== undefined && trusted(entry, agents);
-}
-function trustedReviews(file, agents) {
-  return Object.entries(readReviews(file)).filter(([, entry]) => trusted(entry, agents)).sort(([, a], [, b]) => b.at.localeCompare(a.at)).map(([sha, entry]) => ({ sha, at: entry.at, branches: entry.branches ?? [] }));
-}
-async function underRecordLock(file, write) {
-  const folder = dirname10(file);
-  mkdirSync12(folder, { mode: 448, recursive: true });
-  return await withLock(folder, write, { waitMs: REVIEWS_LOCK_WAIT_MS });
-}
-async function recordReview(file, sha, by, atMs, branch = null) {
-  return await underRecordLock(file, () => {
-    const record = readReviews(file);
-    const before = record[sha];
-    const branches = before?.branches ?? [];
-    const newBranch = branch !== null && branch !== "" && !branches.includes(branch);
-    if (before?.by.includes(by) && !newBranch)
-      return { added: false, at: before.at };
-    const at = before?.at ?? new Date(atMs).toISOString();
-    const writers = before?.by.includes(by) ? before.by : [...before?.by ?? [], by];
-    const named = newBranch ? [...branches, branch] : branches;
-    record[sha] = named.length === 0 ? { at, by: writers } : { at, by: writers, branches: named };
-    const kept = {};
-    for (const [commit, entry] of Object.entries(record).sort(([, a], [, b]) => b.at.localeCompare(a.at)).slice(0, REVIEWS_KEPT)) {
-      kept[commit] = entry;
-    }
-    atomicWrite(file, `${JSON.stringify(kept, null, 2)}
-`, 384);
-    return { added: true, at };
-  });
-}
-function agentIdKey(agentId) {
-  const key = agentId.replace(/^agent-/, "");
-  return key === "" ? null : key;
-}
-function readStarts(file) {
-  const starts = {};
-  for (const [key, entry] of Object.entries(readObject(file))) {
-    if (typeof entry !== "object" || entry === null)
-      continue;
-    const { head, at, branch } = entry;
-    if (typeof head === "string" && COMMIT_SHA.test(head) && typeof at === "number") {
-      starts[key] = typeof branch === "string" && branch !== "" ? { head, at, branch } : { head, at };
-    }
-  }
-  return starts;
-}
-async function noteReviewStart(file, agentId, head, atMs, branch = null) {
-  const key = agentIdKey(agentId);
-  if (key === null)
-    return;
-  await underRecordLock(file, () => {
-    const starts = readStarts(file);
-    const kept = {};
-    for (const [one, start] of Object.entries(starts)) {
-      if (atMs - start.at <= START_KEPT_MS)
-        kept[one] = start;
-    }
-    if (kept[key] !== undefined)
-      return;
-    kept[key] = branch === null || branch === "" ? { head, at: atMs } : { head, at: atMs, branch };
-    atomicWrite(file, `${JSON.stringify(kept, null, 2)}
-`, 384);
-  });
-}
-async function takeReviewStart(file, agentId) {
-  const key = agentIdKey(agentId);
-  if (key === null)
-    return null;
-  return await underRecordLock(file, () => {
-    const starts = readStarts(file);
-    const start = starts[key];
-    if (start === undefined)
-      return null;
-    delete starts[key];
-    atomicWrite(file, `${JSON.stringify(starts, null, 2)}
-`, 384);
-    return { head: start.head, branch: start.branch ?? null };
-  });
-}
-var REVIEWS_KEPT = 50, REVIEWS_LOCK_WAIT_MS = 3000, START_KEPT_MS, BY_HAND = "workflow review-done", COMMIT_SHA;
-var init_reviews = __esm(() => {
-  init_lock();
-  init_write();
-  START_KEPT_MS = 24 * 60 * 60 * 1000;
-  COMMIT_SHA = /^[0-9a-f]{40,64}$/;
 });
 
 // src/workflow/review-cover.ts
@@ -23900,9 +23973,10 @@ async function readCover(checkout, target, records, limits, git) {
     };
   }
   let objects = null;
+  const attributes = { opened: null };
   try {
     objects = mkdtempSync4(join27(tmpdir5(), `${COMMAND}-cover-`));
-    return await measure(checkout, target, branched, limits, git, objects);
+    return await measure(checkout, target, branched, limits, git, objects, attributes);
   } catch (error) {
     if (error instanceof Uncovered)
       return { covered: false, review: error.review, why: error.message };
@@ -23915,27 +23989,25 @@ async function readCover(checkout, target, records, limits, git) {
   } finally {
     if (objects !== null)
       rmSync8(objects, { recursive: true, force: true });
+    attributes.opened?.remove();
   }
 }
-async function measure(checkout, { head, branch, base }, records, limits, git, objects) {
+async function measure(checkout, { head, branch, base }, records, limits, git, objects, attributes) {
   const baseRef = `refs/remotes/origin/${base}`;
   const own = {
     GIT_OBJECT_DIRECTORY: objects,
     GIT_ALTERNATE_OBJECT_DIRECTORIES: alternateEntry(join27(checkout.commonDir, "objects"))
   };
-  const run = async (args, vars = own) => {
+  const run = async (args, vars = own, cwd = checkout.root) => {
     const left = (git.timeFor ?? ((limit) => limit))(GUARD_GIT_TIMEOUT_MS);
     if (left <= 0)
       throw new OutOfTime;
-    const result = await (git.run ?? runGitAsync)(checkout.root, args, git.env, left, vars);
+    const result = await (git.run ?? runGitAsync)(cwd, args, git.env, left, vars);
     if (result.code === null && result.err === GIT_TIMED_OUT2)
       throw new OutOfTime;
     return result;
   };
-  const commit = async (rev) => {
-    const found = await run(["rev-parse", "--verify", "--quiet", `${rev}^{commit}`]);
-    return found.ok && COMMIT_SHA.test(found.out) ? found.out : null;
-  };
+  const commit = async (rev) => commitIn(await run(commitArgs(rev)));
   const asked = await run(["--version"]);
   if (!asked.ok)
     throw new Uncovered(`git cannot be run here (${asked.err})`);
@@ -23949,6 +24021,12 @@ async function measure(checkout, { head, branch, base }, records, limits, git, o
   if (baseSha === null) {
     throw new Uncovered(`origin/${base} is not in this checkout: fetch it (git fetch origin ${base})`);
   }
+  const isolated = openBaseOnlyGit(checkout.commonDir, baseSha);
+  attributes.opened = isolated;
+  const marks = await run(isolated.readBase, isolated.env, isolated.cwd);
+  if (!marks.ok) {
+    throw new Uncovered(`the attributes of origin/${base} cannot be read (${marks.err})`);
+  }
   const mergeBase = async (a, b) => {
     const found = await run(["merge-base", a, b]);
     if (!found.ok) {
@@ -23957,37 +24035,23 @@ async function measure(checkout, { head, branch, base }, records, limits, git, o
     return found.out;
   };
   const numstat = async (from, to, review) => {
-    const diff = await run([
-      "diff",
-      "--no-textconv",
-      "--no-ext-diff",
-      "--numstat",
-      "-z",
-      "-M",
-      from,
-      to
-    ]);
+    const diff = await run(isolated.args(["diff", "--no-textconv", "--no-ext-diff", "--numstat", "-z", "-M", from, to]), { ...own, ...isolated.env }, isolated.cwd);
     if (!diff.ok) {
       throw new Uncovered(`the change after the review of ${short(review)} cannot be read (${diff.err})`, review);
     }
     return parseNumstat(diff.out);
   };
   const generatedOf = async (paths) => {
-    const isolated = openBaseOnlyGit(checkout.commonDir, baseSha);
-    try {
-      const generated = new Set;
-      for (const args of generatedChecks(baseSha, paths)) {
-        const attrs = await run(args, isolated.env);
-        if (!attrs.ok) {
-          throw new Uncovered(`which files origin/${base} marks as generated cannot be read (${attrs.err})`);
-        }
-        for (const path of generatedIn(attrs.out))
-          generated.add(path);
+    const generated = new Set;
+    for (const args of isolated.checks(paths)) {
+      const attrs = await run(args, isolated.env, isolated.cwd);
+      if (!attrs.ok) {
+        throw new Uncovered(`which files origin/${base} marks as generated cannot be read (${attrs.err})`);
       }
-      return generated;
-    } finally {
-      isolated.remove();
+      for (const path of generatedIn(attrs.out))
+        generated.add(path);
     }
+    return generated;
   };
   const tally = (changed, generated) => {
     const count = { lines: 0, files: 0, generated: [], binary: [] };
@@ -24618,8 +24682,7 @@ async function commitOf(world, rev) {
   const left = world.timeFor(GUARD_GIT_TIMEOUT_MS);
   if (left <= 0)
     return null;
-  const run = await runGitAsync(world.checkout.root, ["rev-parse", "--verify", "--quiet", `${rev}^{commit}`], world.env, left);
-  return run.ok && COMMIT_SHA.test(run.out) ? run.out : null;
+  return commitIn(await runGitAsync(world.checkout.root, commitArgs(rev), world.env, left));
 }
 async function checkBranch(world, target) {
   const firstLeft = world.timeFor(GUARD_GIT_TIMEOUT_MS);
@@ -31161,6 +31224,9 @@ function searchTasks(db, project, text) {
 function notesOf(db, task) {
   return db.sqlite.query("SELECT id, task_id AS taskId,text,session_id AS sessionId,at FROM task_notes WHERE task_id=? ORDER BY id").all(typeof task === "string" ? task : task.id);
 }
+function holdsNoteStarting(db, task, start) {
+  return notesOf(db, task).some((note) => note.text.startsWith(start));
+}
 function eventsOf(db, task) {
   return db.sqlite.query("SELECT * FROM task_events WHERE task_id=? ORDER BY id").all(typeof task === "string" ? task : task.id).map((row) => ({
     id: row.id,
@@ -32154,7 +32220,7 @@ function planProgress(paths, project, who) {
       return { task, plan, phase, phases: null, tasks: null, waiting: null };
     const ofPlan = layerProgress(all, { id: "", kind: "plan", plan: task.plan });
     const hasPhases = all.some((t) => t.kind === "phase" && t.plan === task.plan);
-    const waiting = waitingPlans(all, ownerOf(who), task.plan, (p) => notesOf(db, p).some((n) => n.text.startsWith(PARK_NOTE_PREFIX)));
+    const waiting = waitingPlans(all, ownerOf(who), task.plan, (p) => holdsNoteStarting(db, p, PARK_NOTE_PREFIX));
     return {
       task,
       plan,
@@ -32858,7 +32924,7 @@ function checkedCacheProblem(paths, exists = existsSync40) {
     return `cannot be written${code === undefined ? "" : ` (${code})`}`;
   }
 }
-var PARSER_FINGERPRINT = "8d80e248e350839b3aa7d198f4e1bcf3cffd3d14511b535e61df6364bb4a0699", CHECKED_DIR = "checked", CHECKED_CACHE_LIMIT = 64, CHECKED_FILE_MAX_BYTES, CHECKED_TEMP_MAX_AGE_MS = 60000, ENTRY_FORMAT = 1, TEMP_NAME, PARSE;
+var PARSER_FINGERPRINT = "355ceaa25995a0131f97db3b83e953e1f220691e0189bc13356caa94fd1ea6c8", CHECKED_DIR = "checked", CHECKED_CACHE_LIMIT = 64, CHECKED_FILE_MAX_BYTES, CHECKED_TEMP_MAX_AGE_MS = 60000, ENTRY_FORMAT = 1, TEMP_NAME, PARSE;
 var init_checked_config = __esm(() => {
   init_build_info();
   init_locate();
@@ -34617,6 +34683,7 @@ function overlapsWith(plan, held, files, check) {
     plan,
     other,
     overlaps: filesOverlap(files, theirs, check),
+    lists: [files, theirs],
     unlisted: null
   })).filter((one) => one.overlaps.length > 0);
 }
@@ -34643,7 +34710,13 @@ function flightOverlaps(db, plan, who, check) {
   }
   for (const held of others)
     if (held.why === "reserved")
-      check.found.push({ plan: row, other: held.plan, overlaps: [], unlisted: row });
+      check.found.push({
+        plan: row,
+        other: held.plan,
+        overlaps: [],
+        lists: [[], []],
+        unlisted: row
+      });
 }
 function enteringPlan(db, task, status, plan) {
   if (status !== "in_progress" || plan === null)
@@ -34765,7 +34838,7 @@ function addNotesOnce(db, notes, who, now) {
     let saved = 0;
     for (const note of notes)
       for (const id of note.taskIds) {
-        if (notesOf(db, id).some((one) => one.text.startsWith(note.head)))
+        if (holdsNoteStarting(db, id, `${note.head} `))
           continue;
         saveNote(db, id, note.text, who, now, null);
         saved += 1;
@@ -34924,7 +34997,13 @@ function reservePlan(db, input) {
       throw new Error(`${label(plan)} waits for ${open.map((t) => `${label(t)} (${t.status.replaceAll("_", " ")})`).join(", ")}`);
     const others = rivalsOf(heldPlansIn(all, who, input.extraFiles), plan, provedSet(input.stacked));
     const found = [
-      ...others.filter((h) => h.files.length === 0).map((h) => ({ plan, other: h.plan, overlaps: [], unlisted: h.plan })),
+      ...others.filter((h) => h.files.length === 0).map((h) => ({
+        plan,
+        other: h.plan,
+        overlaps: [],
+        lists: [[], []],
+        unlisted: h.plan
+      })),
       ...overlapsWith(plan, others, plan.files, input)
     ];
     const before = shape(db, plan);
@@ -35115,39 +35194,36 @@ function ignoresCase(root, env = process.env) {
 }
 function baseGenerated(checkout, base, paths, env) {
   const ref = `origin/${base}`;
-  const commit = runGit(checkout.root, ["rev-parse", "--verify", "--quiet", `refs/remotes/${ref}^{commit}`], env);
-  if (!commit.ok)
+  const commit = commitIn(runGit(checkout.root, commitArgs(`refs/remotes/${ref}`), env));
+  if (commit === null)
     return null;
   const files = new Set(paths.filter((path) => !path.endsWith("/")));
   const folders = paths.filter((path) => path.endsWith("/"));
   if (folders.length > 0) {
-    const listed = runGitRaw(checkout.root, ["ls-tree", "-r", "-z", "--name-only", commit.out, "--", ...folders], env);
+    const listed = runGitRaw(checkout.root, ["ls-tree", "-r", "-z", "--name-only", commit, "--", ...folders], env);
     if (!listed.ok)
       return null;
     for (const path of listed.out.split("\x00"))
       if (path !== "")
         files.add(path);
   }
-  const isolated = openBaseOnlyGit(checkout.commonDir, commit.out);
-  try {
-    const marked = new Set;
-    for (const args of generatedChecks(commit.out, [...files])) {
-      const attrs = runGit(checkout.root, args, env, undefined, isolated.env);
-      if (!attrs.ok)
-        return null;
-      for (const path of generatedIn(attrs.out))
-        marked.add(path);
-    }
-    return { ref, files: [...marked].sort() };
-  } finally {
-    isolated.remove();
+  const marked = readGenerated(checkout.commonDir, commit, [...files], env);
+  return marked === null ? null : { ref, files: [...marked].sort() };
+}
+function cappedList(items) {
+  let shown = 0;
+  let size = 0;
+  for (const item of items) {
+    if (shown > 0 && size + item.length > NOTE_LIST_CHARS)
+      break;
+    shown += 1;
+    size += item.length + 2;
   }
+  const listed = items.slice(0, shown).join(", ");
+  return shown < items.length ? `${listed} and ${items.length - shown} more` : listed;
 }
 function sharedPath(overlap) {
   return overlap.path.length >= overlap.other.length ? overlap.path : overlap.other;
-}
-function within(file, path) {
-  return file === path || path.endsWith("/") && file.startsWith(path);
 }
 function leadWords(plan) {
   const lead = planLead(plan);
@@ -35155,31 +35231,46 @@ function leadWords(plan) {
     return `#${plan.number} session ${lead.sessionId}`;
   return lead?.pid ? `#${plan.number} process ${lead.pid}` : null;
 }
-function overlapNote(overlap, marks, check) {
-  const flip = overlap.plan.number > overlap.other.number;
-  const [low, high] = flip ? [overlap.other, overlap.plan] : [overlap.plan, overlap.other];
-  const shown = overlap.overlaps.map(({ path, other }) => {
-    const [mine, theirs] = flip ? [other, path] : [path, other];
-    return mine === theirs ? mine : `${mine} (${theirs})`;
+function overlapSummary(plan, other, overlaps) {
+  const flip = plan.number > other.number;
+  const [low, high] = flip ? [other, plan] : [plan, other];
+  const shown = overlaps.map(({ path, other: theirs }) => {
+    const [mine, them] = flip ? [theirs, path] : [path, theirs];
+    return mine === them ? mine : `${mine} (${them})`;
   });
-  const head = `${OVERLAP_NOTE} ${label(low)} and ${label(high)} share ${[...new Set(shown)].sort().join(", ")}.`;
-  const leads = [low, high].map(leadWords).filter((words) => words !== null);
-  const settling = [low, high].filter((plan) => plan.status === "done").map((plan) => `${label(plan)} is done, not released: \`${COMMAND} herdr plans\` releases it when its pull request merges.`);
+  return `${label(low)} and ${label(high)} share ${cappedList([...new Set(shown)].sort())}`;
+}
+function generatedWords(overlap, marks, generated, check) {
+  const named = `${marks.ref} marks ${cappedList(generated)} generated`;
+  if (check.reason)
+    return `${named}; no propose line, since the current plans.mergeFiles is not known in full.`;
+  const proposed = [...new Set([...check.ignore, ...generated])];
+  const left = filesOverlap(...overlap.lists, { ...check, ignore: proposed }).map(sharedPath);
+  const folders = left.filter((path) => generated.some((file) => settledBy([path], file)));
+  if (folders.length > 0)
+    return `${named}, but a merge file does not settle a folder both plans list (${cappedList([...new Set(folders)].sort())}): narrow that folder entry to the files the plan changes, or put the folder itself in plans.mergeFiles.`;
+  const list = proposed.join(",");
+  if (list.length > NOTE_LIST_CHARS)
+    return `${named}: too many for one propose line, so put the folder that holds them in plans.mergeFiles.`;
+  return `${named}: \`${COMMAND} workflow propose plans.mergeFiles ${shellWord(list)}\` opens the pull request that leaves them out of every overlap once the person merges it.`;
+}
+function overlapNote(overlap, marks, check) {
+  const head = `${OVERLAP_NOTE} ${overlapSummary(overlap.plan, overlap.other, overlap.overlaps)}.`;
+  const pair = [overlap.plan, overlap.other].sort((a, b) => a.number - b.number);
+  const leads = pair.map(leadWords).filter((words) => words !== null);
+  const settling = pair.filter((plan) => plan.status === "done").map((plan) => `${label(plan)} is done, not released: \`${COMMAND} herdr plans\` releases it when its pull request merges.`);
   const parts = [
     head,
     ...leads.length > 0 ? [`Leads: ${leads.join("; ")}.`] : [],
     ...settling,
-    "Both may run at once: the plan that merges second rebases onto the first one's merged code (or merges it in, once pushed), resolves the conflicts, reruns the full check, and names the other plan and these files in its pull request."
+    `Both may run at once; the plan that merges second catches up (\`/${PLUGIN}:build\` \xA7 6, An overlapping plan).`
   ];
   if (check.reason)
     parts.push(`plans.mergeFiles was not read in full, so a merge file may count: ${check.reason}.`);
   const regions = overlap.overlaps.map(sharedPath);
-  const generated = marks === null ? [] : marks.files.filter((file) => regions.some((path) => within(file, path)));
-  if (marks !== null && generated.length > 0) {
-    const named = `${marks.ref} marks ${generated.join(", ")} generated`;
-    const list = [...new Set([...check.ignore, ...generated])].join(",");
-    parts.push(check.reason ? `${named}; no propose line, since the current plans.mergeFiles is not known in full.` : `${named}: \`${COMMAND} workflow propose plans.mergeFiles ${shellWord(list)}\` opens the pull request that leaves them out of every overlap once the person merges it.`);
-  }
+  const generated = marks === null ? [] : marks.files.filter((file) => settledBy(regions, file));
+  if (marks !== null && generated.length > 0)
+    parts.push(generatedWords(overlap, marks, generated, check));
   return { head, text: parts.join(" ") };
 }
 function unlistedLine({ plan, other }, unlisted) {
@@ -35188,8 +35279,14 @@ function unlistedLine({ plan, other }, unlisted) {
 }
 function warnOverlaps(db, found, check, who, now) {
   const regions = [...new Set(found.flatMap((overlap) => overlap.overlaps.map(sharedPath)))].sort();
-  const marks = regions.length > 0 && check.generated ? check.generated(regions) : null;
   const lines = [];
+  let marks = null;
+  if (regions.length > 0 && check.generated)
+    try {
+      marks = check.generated(regions);
+    } catch (error) {
+      lines.push(`The generated files could not be read: ${error instanceof Error ? error.message : String(error)}`);
+    }
   const notes = [];
   for (const overlap of found) {
     if (overlap.unlisted !== null) {
@@ -35211,7 +35308,7 @@ function warnOverlaps(db, found, check, who, now) {
   }
   return lines;
 }
-var OVERLAP_NOTE = "Overlap:";
+var OVERLAP_NOTE = "Overlap:", NOTE_LIST_CHARS = 2000;
 var init_files_check = __esm(() => {
   init_names();
   init_git();
@@ -36027,14 +36124,13 @@ function readiness(world, entry, held, byId, base, proved, stacks) {
     const touched = filesOverlap(plan.files, other.files, world.check);
     if (touched.length === 0)
       continue;
-    const files = [...new Set(touched.map((t) => t.path))].join(", ");
-    const closed = isOpen(other.plan) ? "" : " (finished: held until its pull request settles)";
-    clashes.push(`${label2(other.plan)}${closed}: ${files}`);
+    const closed = isOpen(other.plan) ? "" : ` (${label2(other.plan)} is finished: held until its pull request settles)`;
+    clashes.push(`${overlapSummary(plan, other.plan, touched)}${closed}`);
     if (plan.stackedOn !== null && other.plan.plan === plan.stackedOn)
       fixes.push(unprovedStackFix(plan, other.plan, stacks.get(plan.id), byId));
   }
   if (clashes.length > 0)
-    shared.push(`overlaps ${clashes.join("; ")}`);
+    shared.push(...clashes);
   if (shared.length > 0)
     return line("ready", `ready: nothing blocks it; ${shared.join("; ")} (an overlap warns and never holds a plan back)`, fixes.length > 0 ? fixes.join("; ") : null);
   return line("ready", "ready: nothing blocks it and no held plan shares its files");
@@ -36638,26 +36734,20 @@ function sourceOf3(folder, rev, env) {
     return null;
   return COMMIT_SHA.test(commit) ? { commonDir, commit } : null;
 }
-function openBaseMarks(folder, env, base) {
+function baseMarks(folder, env, base) {
   const source = ("ref" in base ? sourceOf3(folder, base.ref, env) : null) ?? sourceOf3(folder, "HEAD", env);
-  if (source === null)
-    return null;
-  const isolated = openBaseOnlyGit(source.commonDir, source.commit);
   const marked = new Map;
-  const keep = (items, fileOf) => {
+  return (items, fileOf) => {
+    if (source === null)
+      return [...items];
     const asked = [...new Set(items.map(fileOf))].filter((file) => !marked.has(file));
     for (const file of asked)
       marked.set(file, false);
-    for (const args of generatedChecks(source.commit, asked)) {
-      const run = runGit(folder, args, env, CLAIMS_GIT_TIMEOUT_MS, isolated.env);
-      if (!run.ok)
-        break;
-      for (const file of generatedIn(run.out))
-        marked.set(file, true);
-    }
+    const found = readGenerated(source.commonDir, source.commit, asked, env, CLAIMS_GIT_TIMEOUT_MS);
+    for (const file of found ?? [])
+      marked.set(file, true);
     return items.filter((item) => marked.get(fileOf(item)) !== true);
   };
-  return { keep, close: () => isolated.remove() };
 }
 function collectClaims(folder, env, base) {
   const grep = runGitRaw(folder, [
@@ -36673,42 +36763,37 @@ function collectClaims(folder, env, base) {
   ], env, CLAIMS_GIT_TIMEOUT_MS);
   if (!grep.ok && grep.code !== 1)
     return { error: `git grep failed: ${failure3(grep)}` };
-  const marks = openBaseMarks(folder, env, base);
-  const keep = (items, fileOf) => marks === null ? [...items] : marks.keep(items, fileOf);
-  try {
-    const claims = keep(parseClaims(grep.ok ? grep.out : ""), (claim) => claim.file);
-    if ("why" in base)
-      return { claims, hits: [], diffWhy: base.why };
-    const diff = runGitRaw(folder, [
-      "-c",
-      "core.quotePath=false",
-      "diff",
-      "--unified=0",
-      "--no-color",
-      "--no-ext-diff",
-      "--no-textconv",
-      "--text",
-      "--no-renames",
-      "--src-prefix=a/",
-      "--dst-prefix=b/",
-      `${base.ref}...HEAD`,
-      "--",
-      ...PATHSPEC
-    ], env, CLAIMS_GIT_TIMEOUT_MS);
-    if (!diff.ok) {
-      return { claims, hits: [], diffWhy: `git diff ${base.ref}...HEAD failed: ${failure3(diff)}` };
-    }
-    const added = keep(parseAddedLines(diff.out), (line) => line.file);
-    const definitions = claimedDefinitions(claims, added);
-    if (definitions.length === 0)
-      return { claims, hits: [], diffWhy: null };
-    const defining = definingFiles(folder, env, new Set(definitions.map((one) => one.name)), keep);
-    if ("error" in defining)
-      return defining;
-    return { claims, hits: secondHomes(definitions, defining), diffWhy: null };
-  } finally {
-    marks?.close();
+  const keep = baseMarks(folder, env, base);
+  const claims = keep(parseClaims(grep.ok ? grep.out : ""), (claim) => claim.file);
+  if ("why" in base)
+    return { claims, hits: [], diffWhy: base.why };
+  const diff = runGitRaw(folder, [
+    "-c",
+    "core.quotePath=false",
+    "diff",
+    "--unified=0",
+    "--no-color",
+    "--no-ext-diff",
+    "--no-textconv",
+    "--text",
+    "--no-renames",
+    "--src-prefix=a/",
+    "--dst-prefix=b/",
+    `${base.ref}...HEAD`,
+    "--",
+    ...PATHSPEC
+  ], env, CLAIMS_GIT_TIMEOUT_MS);
+  if (!diff.ok) {
+    return { claims, hits: [], diffWhy: `git diff ${base.ref}...HEAD failed: ${failure3(diff)}` };
   }
+  const added = keep(parseAddedLines(diff.out), (line) => line.file);
+  const definitions = claimedDefinitions(claims, added);
+  if (definitions.length === 0)
+    return { claims, hits: [], diffWhy: null };
+  const defining = definingFiles(folder, env, new Set(definitions.map((one) => one.name)), keep);
+  if ("error" in defining)
+    return defining;
+  return { claims, hits: secondHomes(definitions, defining), diffWhy: null };
 }
 function definingFiles(folder, env, names, keep) {
   const grep = runGitRaw(folder, [
@@ -36933,6 +37018,9 @@ function writeProjectSetting(cwd, key, value, env = process.env) {
   atomicWrite(realTarget(file), edit.text, 420);
   return edit.line;
 }
+function requiresRaiseText(raised) {
+  return `requires ${JSON.stringify(raised.from ?? null)} -> ${JSON.stringify(raised.to)} (the file's fields need it)`;
+}
 function editProjectSetting(text, file, key, value) {
   return editProjectLeaf(text, file, projectLeaf(key, value), value);
 }
@@ -36988,7 +37076,7 @@ function editProjectLeaf(text, file, { key, path }, value) {
 function shownProjectWrite(file, key, value, before, after) {
   if (before.requires === after.requires)
     return shownWrite(file, key, value, false);
-  const raised = `requires ${JSON.stringify(before.requires ?? null)} -> ${JSON.stringify(after.requires)} (the file's fields need it)`;
+  const raised = requiresRaiseText({ from: before.requires, to: after.requires });
   const { requires: _was, ...restBefore } = before;
   const { requires: _now, ...restAfter } = after;
   if (Bun.deepEquals(restBefore, restAfter, true)) {
@@ -37088,79 +37176,76 @@ function remoteBranches(repo, prefix, env) {
   }
   return names;
 }
-function nameFree(repo, branch, env, taken) {
-  if (taken.has(branch))
-    return false;
-  return !runGit(repo, ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`], env, QUICK_GIT_TIMEOUT_MS).ok;
+function localBranches(repo, prefix, env) {
+  const listed = runGit(repo, ["for-each-ref", "--format=%(refname:lstrip=2)", `refs/heads/${prefix}*`], env, QUICK_GIT_TIMEOUT_MS);
+  return listed.ok ? listed.out.split(`
+`).filter((name) => name !== "") : [];
 }
 function freeBranch(repo, wanted, env) {
   const first = worktreeBranch(wanted);
   const taken = remoteBranches(repo, first, env);
-  if (nameFree(repo, first, env, taken))
+  for (const name of localBranches(repo, first, env))
+    taken.add(name);
+  if (!taken.has(first))
     return first;
   for (let count = 2;count <= NAME_TRIES; count += 1) {
     const branch = worktreeBranch(`${wanted}-${count}`);
-    if (nameFree(repo, branch, env, taken))
+    if (!taken.has(branch))
       return branch;
   }
   return first;
 }
-function baseFile(repo, base, env) {
-  const commit = runGit(repo, ["rev-parse", "--verify", "--quiet", `refs/remotes/origin/${base}^{commit}`], env, QUICK_GIT_TIMEOUT_MS);
-  if (!commit.ok)
-    return { why: `origin/${base} is not known here` };
-  const entry = runGitRaw(repo, ["ls-tree", "-z", commit.out, "--", CONFIG_PATH], env, QUICK_GIT_TIMEOUT_MS);
-  if (!entry.ok)
-    return { why: lastLine2(entry.err) };
-  if (entry.out === "")
-    return { sha: commit.out, text: null };
-  const blob = /^100(?:644|755) blob ([0-9a-f]+)\t/.exec(entry.out)?.[1];
-  if (blob === undefined)
-    return { why: "it is not a plain file there" };
-  const text = runGitRaw(repo, ["cat-file", "blob", blob], env, QUICK_GIT_TIMEOUT_MS);
-  return text.ok ? { sha: commit.out, text: text.out } : { why: lastLine2(text.err) };
-}
 function treeEntries(repo, tree, env) {
-  const listed = runGitRaw(repo, ["ls-tree", "-z", tree], env, QUICK_GIT_TIMEOUT_MS);
+  const listed = runGitBytes(repo, ["ls-tree", "-z", tree], env, QUICK_GIT_TIMEOUT_MS);
   if (!listed.ok)
     return { why: lastLine2(listed.err) };
-  return listed.out.split("\x00").filter((entry) => entry !== "").map((entry) => {
-    const tab = entry.indexOf("\t");
-    const [mode = "", type = "", id = ""] = entry.slice(0, tab).split(" ");
-    return { mode, type, id, name: entry.slice(tab + 1) };
-  });
+  const entries = [];
+  let start = 0;
+  for (let end = listed.out.indexOf(0);end !== -1; end = listed.out.indexOf(0, start)) {
+    const bytes = listed.out.subarray(start, end);
+    const tab = bytes.indexOf(9);
+    const [mode = "", type = "", id = ""] = new TextDecoder().decode(bytes.subarray(0, tab)).split(" ");
+    entries.push({ mode, type, id, name: bytes.subarray(tab + 1), bytes });
+    start = end + 1;
+  }
+  return entries;
+}
+function sameBytes(a, b) {
+  return a.length === b.length && a.every((byte, index) => byte === b[index]);
 }
 function treeWith(repo, tree, path, blob, env) {
-  const [name, ...rest] = path;
+  const [name = "", ...rest] = path;
   const entries = treeEntries(repo, tree, env);
   if (!Array.isArray(entries))
     return entries;
-  const at = entries.find((entry) => entry.name === name);
-  if (at === undefined || at.type !== (rest.length === 0 ? "blob" : "tree")) {
-    return { why: `${name} is not where the base holds it` };
+  const wanted = encoder2.encode(name);
+  const at = entries.find((entry) => sameBytes(entry.name, wanted));
+  const isFile = rest.length === 0;
+  if (at === undefined || at.type !== (isFile ? "blob" : "tree") || at.mode === "120000") {
+    return { why: `${name} is not a plain ${isFile ? "file" : "folder"} on the base` };
   }
-  const id = rest.length === 0 ? blob : treeWith(repo, at.id, rest, blob, env);
+  const id = isFile ? blob : treeWith(repo, at.id, rest, blob, env);
   if (typeof id !== "string")
     return id;
-  const text = entries.map((entry) => {
-    const entryId = entry === at ? id : entry.id;
-    return `${entry.mode} ${entry.type} ${entryId}	${entry.name}\x00`;
-  }).join("");
-  const made = runGit(repo, ["mktree", "-z", "--missing"], env, QUICK_GIT_TIMEOUT_MS, {}, text);
-  return made.ok ? made.out : { why: `git mktree failed: ${lastLine2(made.err)}` };
+  const header = encoder2.encode(`${at.mode} ${at.type} ${id}	`);
+  const nul = new Uint8Array([0]);
+  const parts = entries.flatMap((entry) => entry === at ? [header, entry.name, nul] : [entry.bytes, nul]);
+  const made = runGitBytes(repo, ["mktree", "-z", "--missing"], env, QUICK_GIT_TIMEOUT_MS, Buffer.concat(parts));
+  return made.ok ? new TextDecoder().decode(made.out).trim() : { why: `git mktree failed: ${lastLine2(made.err)}` };
 }
 function pushBranch(repo, sha, branch, env) {
   const ref = `refs/heads/${branch}`;
   const pushed = runGit(repo, ["push", "--no-verify", "--porcelain", `--force-with-lease=${ref}:`, "origin", `${sha}:${ref}`], env, PUSH_TIMEOUT_MS, { LC_ALL: "C" });
+  const line = pushed.out.split(`
+`).find((one) => one.split("\t")[1] === `${sha}:${ref}`);
+  const taken = { ok: false, taken: true, why: `${branch} is already on origin` };
+  if (line?.startsWith("=\t"))
+    return taken;
   if (pushed.ok)
     return { ok: true };
-  const line = pushed.out.split(`
-`).find((one) => one.startsWith("!\t") && one.includes(ref));
-  if (line?.includes("(stale info)")) {
-    return { ok: false, taken: true, why: `${branch} is already on origin` };
-  }
-  const said = line?.split("\t")[2];
-  return { ok: false, taken: false, why: said ?? lastLine2(pushed.err) };
+  if (line?.startsWith("!\t") && line.includes("(stale info)"))
+    return taken;
+  return { ok: false, taken: false, why: line?.split("\t")[2] ?? lastLine2(pushed.err) };
 }
 function takeBack(repo, branch, sha, env) {
   const ref = `refs/heads/${branch}`;
@@ -37189,13 +37274,10 @@ function saidValue2(key, value) {
 function titleOf(key, from, to) {
   return `workflow: ${key} ${saidValue2(key, from)} \u2192 ${saidValue2(key, to)}`;
 }
-function raisedLine(raised) {
-  return `requires ${JSON.stringify(raised.from ?? null)} -> ${JSON.stringify(raised.to)}`;
-}
 function bodyOf(key, from, to, base, raised) {
   return [
     `Updated by \`${COMMAND} workflow propose\`: the project's workflow setting ${key}, from ${saidValue2(key, from)} to ${saidValue2(key, to)}.`,
-    ...raised === null ? [] : [`It also raises ${raisedLine(raised)}: the file's fields need it.`],
+    ...raised === null ? [] : [`It also raises ${requiresRaiseText(raised)}.`],
     `It counts once this pull request is merged into ${base}: merge-check reads the review gate from the file committed on the base, and a session's own checkout never counts.`,
     MADE_WITHOUT_HOOKS
   ].join(`
@@ -37273,23 +37355,28 @@ async function proposeWorkflow(context, key, value, options) {
   if (!fetched.ok) {
     return fail(`git fetch origin ${base} failed: ${lastLine2(fetched.err)}. Check the network and that origin has ${base}, then try again.`);
   }
-  const where = `origin/${base}:${CONFIG_PATH}`;
-  const read = baseFile(repo, base, context.env);
-  if ("why" in read)
-    return fail(`git could not read ${where}: ${read.why}.`);
-  if (read.text === null) {
-    return fail(`origin/${base} has no ${CONFIG_PATH}: commit the project's file to ${base} and push it first \u2014 a change counts once it is merged.`);
+  const baseCommit = runGit(repo, commitArgs(`refs/remotes/origin/${base}`), context.env, QUICK_GIT_TIMEOUT_MS);
+  const baseSha = commitIn(baseCommit);
+  if (baseSha === null) {
+    return fail(`origin/${base} is not known here after the fetch: ${lastLine2(baseCommit.err)}.`);
   }
-  const { sha: baseSha, text: baseText } = read;
   let committed;
   try {
-    committed = parseCcSmartDevKitConfig(baseText, where);
+    committed = readCommittedFile(checkout, base, {
+      commit: baseSha,
+      env: context.env,
+      timeoutMs: QUICK_GIT_TIMEOUT_MS
+    });
   } catch (error) {
     return fail(reasonOf2(error));
   }
+  if (!committed.found) {
+    return fail(`origin/${base} has no ${CONFIG_PATH}: commit the project's file to ${base} and push it first \u2014 a change counts once it is merged.`);
+  }
+  const { text: baseText, where } = committed;
   let resolved;
   try {
-    resolved = resolveWorkflow(context.paths, committed);
+    resolved = resolveWorkflow(context.paths, committed.config);
   } catch (error) {
     return fail(reasonOf2(error));
   }
@@ -37391,25 +37478,27 @@ async function proposeWorkflow(context, key, value, options) {
   }
   context.print(`+ ${key} = ${saidValue2(key, value)} in ${CONFIG_PATH}`);
   if (edit.raised !== null) {
-    context.print(`+ ${raisedLine(edit.raised)} in ${CONFIG_PATH} (the file's fields need it)`);
+    context.print(`+ ${CONFIG_PATH}: ${requiresRaiseText(edit.raised)}`);
   }
   context.print(`+ ${branch}, cut from origin/${base} and pushed`);
   context.print(`! ${MADE_WITHOUT_HOOKS}`);
   context.print(`+ pull request into ${base}: ${created.url}`);
   return 0;
 }
-var FETCH_TIMEOUT_MS = 60000, COMMIT_TIMEOUT_MS = 120000, PUSH_TIMEOUT_MS = 120000, QUICK_GIT_TIMEOUT_MS = 1e4, GH_CREATE_TIMEOUT_MS = 60000, PROPOSE_WORST_CASE_MS, NAME_TRIES = 50, MADE_WITHOUT_HOOKS = "The commit was made without the project's git hooks: a line a hook adds (such as a sign-off) is missing, and a clean filter on the file did not run. The review and CI are its gate.";
+var FETCH_TIMEOUT_MS = 60000, COMMIT_TIMEOUT_MS = 120000, PUSH_TIMEOUT_MS = 120000, QUICK_GIT_TIMEOUT_MS = 1e4, GH_CREATE_TIMEOUT_MS = 60000, TREE_LEVELS, QUICK_GIT_CALLS, PROPOSE_WORST_CASE_MS, NAME_TRIES = 50, MADE_WITHOUT_HOOKS = "The commit was made without the project's git hooks: a line a hook adds (such as a sign-off) is missing, and a clean filter on the file did not run. The review and CI are its gate.", encoder2;
 var init_propose = __esm(() => {
   init_names();
   init_git();
-  init_config2();
   init_resolve();
   init_paths3();
   init_merge_check();
   init_resolve2();
   init_schema();
   init_write2();
-  PROPOSE_WORST_CASE_MS = GH_TIMEOUT_MS + FETCH_TIMEOUT_MS + 2 * FETCH_TIMEOUT_MS + COMMIT_TIMEOUT_MS + 2 * PUSH_TIMEOUT_MS + GH_CREATE_TIMEOUT_MS + FETCH_TIMEOUT_MS + PUSH_TIMEOUT_MS + 10 * QUICK_GIT_TIMEOUT_MS + 30000;
+  TREE_LEVELS = CONFIG_PATH.split("/").length;
+  QUICK_GIT_CALLS = 1 + 3 + 1 + 2 * TREE_LEVELS + 1 + 2;
+  PROPOSE_WORST_CASE_MS = 2 * RESOLVE_GIT_TIMEOUT_MS + FETCH_TIMEOUT_MS + GH_TIMEOUT_MS + COMMIT_TIMEOUT_MS + 2 * (FETCH_TIMEOUT_MS + PUSH_TIMEOUT_MS) + GH_CREATE_TIMEOUT_MS + FETCH_TIMEOUT_MS + PUSH_TIMEOUT_MS + QUICK_GIT_CALLS * QUICK_GIT_TIMEOUT_MS + 30000;
+  encoder2 = new TextEncoder;
 });
 
 // src/workflow/slop.ts
@@ -37599,8 +37688,7 @@ function checkoutOf(cwd, env) {
   }
 }
 function commitOf3(folder, rev, env) {
-  const run = runGit(folder, ["rev-parse", "--verify", "--quiet", `${rev}^{commit}`], env, WORKFLOW_GIT_TIMEOUT_MS);
-  return run.ok && COMMIT_SHA.test(run.out) ? run.out : null;
+  return commitIn(runGit(folder, commitArgs(rev), env, WORKFLOW_GIT_TIMEOUT_MS));
 }
 function repoOf(checkout) {
   return checkout.mainCheckout ?? checkout.root;
@@ -39687,7 +39775,7 @@ ${t.body}`.toLowerCase().includes(input.text.toLowerCase()));
         const progress = (count.total || task.kind === "phase" ? ` \xB7 ${count.closed}/${count.total}` : "") + (task.kind === "plan" && (cap !== null || capWhy !== null) ? ` \xB7 ${planNote(all, task, cap)}` : "");
         const binding = task.kind === "phase" ? ` \xB7 agent ${task.agent ?? "none"} \xB7 branch ${task.branch ?? "none"}` : "";
         const state = claimState(task, CLAIM_PROCESS, who);
-        const queue = planLedger && task.kind === "plan" && isOpen(task) ? planQueueState(all, task, notesOf(store, task).some((n) => n.text.startsWith(PARK_NOTE_PREFIX))) : undefined;
+        const queue = planLedger && task.kind === "plan" && isOpen(task) ? planQueueState(all, task, holdsNoteStarting(store, task, PARK_NOTE_PREFIX)) : undefined;
         lines.push(`${"  ".repeat(depth)}#${task.number} [${stateWords(task, byId, false, queue)}] ${task.subject}${progress}${binding}${state === "another session" ? " (another session)" : ""}`);
         for (const child of selected.filter((t) => t.parentId === task.id))
           visit(child, depth + 1);
@@ -39998,6 +40086,9 @@ async function runTaskCommand(argv) {
       if (command === "import") {
         if (args[0] !== "claude-mem")
           return bad("Use import claude-mem [--project <name>] [--dry-run]");
+        const gate = has("dry-run") ? null : taskWriteRefusal(ctx.projectConfig, process.env);
+        if (gate !== null)
+          throw new Error(`${gate.why}. ${gate.fix}`);
         const db = openWorkDb(workDbFile(paths), { mode: "write" });
         try {
           const answer = importClaudeMem({
@@ -52297,6 +52388,7 @@ init_io();
 // src/hooks/review-record.ts
 init_resolve2();
 init_reviews();
+init_paths3();
 init_git();
 init_io();
 
@@ -52661,8 +52753,7 @@ function headBranch(folder, env) {
   return run.ok && run.out !== "" ? run.out : null;
 }
 function headCommit(folder, env) {
-  const run = runGit(folder, ["rev-parse", "--verify", "--quiet", "HEAD^{commit}"], env, GUARD_GIT_TIMEOUT_MS);
-  return run.ok && /^[0-9a-f]{40,64}$/.test(run.out) ? run.out : null;
+  return commitIn(runGit(folder, commitArgs("HEAD"), env, GUARD_GIT_TIMEOUT_MS));
 }
 function said2(why) {
   return { stderr: `cc-smart-dev-kit review-record: ${why}` };
@@ -52671,8 +52762,8 @@ function inOwnWorktree(cwd, agentId) {
   const folder = subagentWorktreeByShape(cwd);
   if (folder === null)
     return false;
-  const name = folder.split(/[\\/]/).at(-1) ?? "";
-  return agentIdKey(name) === agentIdKey(agentId);
+  const hex = (folder.split(/[\\/]/).at(-1) ?? "").slice(SUBAGENT_NAME_PREFIX.length);
+  return hex === agentIdKey(agentId);
 }
 async function reviewRecord(context) {
   const { project, input, event, env, cwd, paths } = context;
@@ -52708,12 +52799,12 @@ async function reviewRecord(context) {
       return SILENT;
     }
     const start = await takeReviewStart(reviewStartsFile(paths.stateDir, repository), agentId);
-    if (isolated) {
-      return notRecorded("this review agent worked in its own worktree, a branch cut from the base rather than the commit under review", ": run the reviewer without isolation");
-    }
     const transcript = stringField(input.agent_transcript_path);
     if (transcript === null || !isReviewRun(transcript)) {
       return notRecorded(`this run was not a review from start to end (its brief and every later prompt need the line "${REVIEW_MODE_MARKER}"), or its transcript cannot be read`);
+    }
+    if (isolated) {
+      return notRecorded("this review agent worked in its own worktree, a branch cut from the base rather than the commit under review", ": run the reviewer without isolation");
     }
     if (headCommit(cwd, env) === null)
       return notRecorded("the folder has no commit yet");

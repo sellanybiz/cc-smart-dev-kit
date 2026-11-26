@@ -503,7 +503,7 @@ var PLUGIN_INSTALL_COMMAND = `claude plugin install ${PLUGIN_ID}`;
 var PLUGIN_UPDATE_COMMAND = `claude plugin update ${PLUGIN_ID}`;
 
 // src/hooks/checked-config.ts
-var PARSER_FINGERPRINT = "8d80e248e350839b3aa7d198f4e1bcf3cffd3d14511b535e61df6364bb4a0699";
+var PARSER_FINGERPRINT = "355ceaa25995a0131f97db3b83e953e1f220691e0189bc13356caa94fd1ea6c8";
 var CHECKED_DIR = "checked";
 var CHECKED_CACHE_LIMIT = 64;
 var CHECKED_FILE_MAX_BYTES = 256 * 1024;
@@ -2511,6 +2511,10 @@ function nestedDialect(program) {
 // src/hooks/git.ts
 import { readFileSync as readFileSync5, realpathSync as realpathSync3 } from "fs";
 import { basename as basename2, dirname as dirname5, join as join7, resolve as resolve3 } from "path";
+
+// src/workflow/reviews.ts
+var START_KEPT_MS = 24 * 60 * 60 * 1000;
+// src/hooks/git.ts
 function realPath(path) {
   const rest = [];
   let at = resolve3(path);
