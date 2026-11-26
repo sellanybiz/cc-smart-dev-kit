@@ -23531,6 +23531,7 @@ function normalizeMergeFile(raw) {
   };
   return { ok: false, why: why[parsed.problem] };
 }
+var MERGE_FILES_RULE = "plans.mergeFiles is a list of paths inside the repository, written with / (a folder ends in /), with no absolute path, no .. and not the root";
 var mergeFilesSchema = array(string2()).transform((paths, context) => {
   const normalised = [];
   for (const [index, raw] of paths.entries()) {
@@ -23553,6 +23554,7 @@ function normalizeAppendOnlyFolder(raw) {
     why: `${JSON.stringify(raw)} is not a folder: plans.appendOnly names folders, each ending in /`
   };
 }
+var APPEND_ONLY_RULE = "plans.appendOnly is a list of folders inside the repository, each written with / and ending in /, with no absolute path, no .. and not the root";
 var appendOnlySchema = array(string2()).transform((paths, context) => {
   const folders = [];
   for (const [index, raw] of paths.entries()) {
@@ -23753,6 +23755,65 @@ function workflowValue(workflow, key) {
   if (typeof group !== "object" || group === null)
     return;
   return group[tail];
+}
+function isNumberKey(key) {
+  return Object.hasOwn(NUMBER_RULES, key);
+}
+function numberRuleText(key) {
+  const rule = NUMBER_RULES[key];
+  return rule.max === undefined ? `${key} is a whole number, ${rule.min} or more` : `${key} is a whole number ${rule.min}-${rule.max}`;
+}
+function parseNumber(key, value) {
+  const rule = NUMBER_RULES[key];
+  const shape = /^\d+$/;
+  const number = Number(value);
+  return shape.test(value) && numberSchema(rule).safeParse(number).success ? { ok: true, value: number } : { ok: false, why: numberRuleText(key) };
+}
+function parsePathList(value, rule, normalize) {
+  const named = value.split(/[,\n]/).map((word) => word.trim()).filter((word) => word !== "");
+  if (named.length === 0)
+    return { ok: false, why: rule };
+  const paths = [];
+  for (const raw of named) {
+    const parsed = normalize(raw);
+    if (!parsed.ok)
+      return { ok: false, why: `${rule}; ${parsed.why}` };
+    if (!paths.includes(parsed.path))
+      paths.push(parsed.path);
+  }
+  return { ok: true, value: paths };
+}
+function parseWorkflowValue(key, text) {
+  const value = text.trim();
+  if (key === "openPr" || key === "mergeMethod") {
+    const words = key === "openPr" ? ["off", "draft", "ready"] : ["merge", "squash", "rebase"];
+    return words.includes(value) ? { ok: true, value } : { ok: false, why: `${key} is one of ${words.join(", ")}` };
+  }
+  if (isNumberKey(key))
+    return parseNumber(key, value);
+  if (key === "issues.foundLabel" || key === "issues.fixedLabel" || key === "issues.readyLabel") {
+    return isLabelName(value) ? { ok: true, value } : { ok: false, why: `${key} is ${LABEL_RULE}` };
+  }
+  if (key === "plans.runMode") {
+    return RUN_MODES.includes(value) ? { ok: true, value } : { ok: false, why: `${key} is one of ${RUN_MODES.join(", ")}` };
+  }
+  if (key === "plans.mergeFiles")
+    return parsePathList(value, MERGE_FILES_RULE, normalizeMergeFile);
+  if (key === "plans.appendOnly")
+    return parsePathList(value, APPEND_ONLY_RULE, normalizeAppendOnlyFolder);
+  if (key === "reviewAgents") {
+    const named = value.split(/[,\s]+/).map((word) => word.trim()).filter((word) => word !== "");
+    if (named.length === 0) {
+      return {
+        ok: false,
+        why: "reviewAgents is a list of agent types, like cc-smart-dev-kit:senior-engineer"
+      };
+    }
+    return { ok: true, value: [...new Set(named)] };
+  }
+  if (value === "true" || value === "false")
+    return { ok: true, value: value === "true" };
+  return { ok: false, why: `${key} is true or false` };
 }
 
 // src/project/config-facts.ts
@@ -25952,6 +26013,9 @@ function generatedIn(out) {
   }
   return generated;
 }
+function committedHistory(none) {
+  return { GIT_NO_REPLACE_OBJECTS: "1", GIT_GRAFT_FILE: none, GIT_SHALLOW_FILE: none };
+}
 function openBaseOnlyGit(commonDir, source) {
   const folder = mkdtempSync(join8(tmpdir(), `${COMMAND}-attributes-`));
   const none = join8(folder, "none");
@@ -25995,7 +26059,8 @@ function openBaseOnlyGit(commonDir, source) {
       GIT_ATTR_NOSYSTEM: "1",
       GIT_ATTR_SOURCE: source,
       GIT_CONFIG_COUNT: "0",
-      GIT_CONFIG_PARAMETERS: ""
+      GIT_CONFIG_PARAMETERS: "",
+      ...committedHistory(none)
     },
     args,
     checks: (paths) => pathBatches(paths).map((batch) => args(["check-attr", `--source=${source}`, "-z", GENERATED_ATTRIBUTE, "--", ...batch])),
@@ -26671,8 +26736,9 @@ function unlistedWords(name) {
 function unlistedFix(plan) {
   return `${TASK_TOOL.update} #${plan.number} with files: the paths and folders it changes`;
 }
-function breaksProposeLine(path) {
-  return path.includes(",") || path !== path.trim();
+function proposeCarries(paths) {
+  const parsed = parseWorkflowValue("plans.mergeFiles", paths.join(","));
+  return parsed.ok && Array.isArray(parsed.value) && parsed.value.length === paths.length && parsed.value.every((path, n) => path === paths[n]);
 }
 function generatedWords(overlap, marks, generated, check) {
   const named = `${marks.ref} marks ${cappedList(generated)} generated`;
@@ -26683,9 +26749,8 @@ function generatedWords(overlap, marks, generated, check) {
   const folders = left.filter((path) => generated.some((file) => settledBy([path], file)));
   if (folders.length > 0)
     return `${named}, but a merge file does not settle a folder both plans list (${cappedList([...new Set(folders)].sort())}): narrow that folder entry to the files the plan changes, or put the folder itself in plans.mergeFiles.`;
-  const unsafe = proposed.filter(breaksProposeLine);
-  if (unsafe.length > 0)
-    return `${named}, but a propose line splits its value at commas and trims each entry, so it cannot carry ${cappedList(unsafe)}: list them in plans.mergeFiles by hand.`;
+  if (!proposeCarries(proposed))
+    return `${named}, but the propose value cannot carry ${cappedList(proposed.filter((path) => !proposeCarries([path])))} as it is: list them in plans.mergeFiles by hand.`;
   const list = proposed.join(",");
   if (list.length > NOTE_LIST_CHARS)
     return `${named}: too many for one propose line, so put the folder that holds them in plans.mergeFiles.`;
@@ -27802,7 +27867,7 @@ var descriptions = {
   list: "List the caller's tasks as a tree, or list the plan or project (scope project also lists the open deploy tasks).",
   get: "Read a task, its notes and its history: each change with its time, the values before and after, and the session that made it. Use offset to read the next part; history true also prints every earlier description.",
   search: "Search work tasks and deploy tasks.",
-  delete: "Delete a mistaken task with no notes or tasks, or an untracked deploy task file."
+  delete: "Delete a mistaken task with no notes of its own (the kit's Overlap: notes do not count) or tasks, or an untracked deploy task file."
 };
 function createTaskServer(options = {}) {
   const ops = createTaskOps({ ...options, refuseBlockingDrop: true });

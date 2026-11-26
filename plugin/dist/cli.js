@@ -23790,6 +23790,9 @@ function generatedIn(out) {
   }
   return generated;
 }
+function committedHistory(none) {
+  return { GIT_NO_REPLACE_OBJECTS: "1", GIT_GRAFT_FILE: none, GIT_SHALLOW_FILE: none };
+}
 function openBaseOnlyGit(commonDir, source) {
   const folder = mkdtempSync3(join26(tmpdir4(), `${COMMAND}-attributes-`));
   const none = join26(folder, "none");
@@ -23833,7 +23836,8 @@ function openBaseOnlyGit(commonDir, source) {
       GIT_ATTR_NOSYSTEM: "1",
       GIT_ATTR_SOURCE: source,
       GIT_CONFIG_COUNT: "0",
-      GIT_CONFIG_PARAMETERS: ""
+      GIT_CONFIG_PARAMETERS: "",
+      ...committedHistory(none)
     },
     args,
     checks: (paths) => pathBatches(paths).map((batch) => args(["check-attr", `--source=${source}`, "-z", GENERATED_ATTRIBUTE, "--", ...batch])),
@@ -23999,16 +24003,14 @@ async function measure(checkout, { head, branch, base }, records, limits, git, o
   const baseRef = `refs/remotes/origin/${base}`;
   const own = {
     GIT_OBJECT_DIRECTORY: objects,
-    GIT_ALTERNATE_OBJECT_DIRECTORIES: alternateEntry(join27(checkout.commonDir, "objects"))
+    GIT_ALTERNATE_OBJECT_DIRECTORIES: alternateEntry(join27(checkout.commonDir, "objects")),
+    ...committedHistory(join27(objects, "none"))
   };
   const run = async (args, vars = own, cwd = checkout.root) => {
     const left = (git.timeFor ?? ((limit) => limit))(GUARD_GIT_TIMEOUT_MS);
     if (left <= 0)
       throw new OutOfTime;
-    const result = await (git.run ?? runGitAsync)(cwd, args, git.env, left, {
-      ...vars,
-      GIT_NO_REPLACE_OBJECTS: "1"
-    });
+    const result = await (git.run ?? runGitAsync)(cwd, args, git.env, left, vars);
     if (result.code === null && result.err === GIT_TIMED_OUT2)
       throw new OutOfTime;
     return result;
@@ -35273,8 +35275,9 @@ function unlistedWords(name) {
 function unlistedFix(plan) {
   return `${TASK_TOOL.update} #${plan.number} with files: the paths and folders it changes`;
 }
-function breaksProposeLine(path) {
-  return path.includes(",") || path !== path.trim();
+function proposeCarries(paths) {
+  const parsed = parseWorkflowValue("plans.mergeFiles", paths.join(","));
+  return parsed.ok && Array.isArray(parsed.value) && parsed.value.length === paths.length && parsed.value.every((path, n) => path === paths[n]);
 }
 function generatedWords(overlap, marks, generated, check) {
   const named = `${marks.ref} marks ${cappedList(generated)} generated`;
@@ -35285,9 +35288,8 @@ function generatedWords(overlap, marks, generated, check) {
   const folders = left.filter((path) => generated.some((file) => settledBy([path], file)));
   if (folders.length > 0)
     return `${named}, but a merge file does not settle a folder both plans list (${cappedList([...new Set(folders)].sort())}): narrow that folder entry to the files the plan changes, or put the folder itself in plans.mergeFiles.`;
-  const unsafe = proposed.filter(breaksProposeLine);
-  if (unsafe.length > 0)
-    return `${named}, but a propose line splits its value at commas and trims each entry, so it cannot carry ${cappedList(unsafe)}: list them in plans.mergeFiles by hand.`;
+  if (!proposeCarries(proposed))
+    return `${named}, but the propose value cannot carry ${cappedList(proposed.filter((path) => !proposeCarries([path])))} as it is: list them in plans.mergeFiles by hand.`;
   const list = proposed.join(",");
   if (list.length > NOTE_LIST_CHARS)
     return `${named}: too many for one propose line, so put the folder that holds them in plans.mergeFiles.`;
@@ -35357,6 +35359,7 @@ var init_files_check = __esm(() => {
   init_generated();
   init_resolve();
   init_resolve2();
+  init_schema();
   init_command4();
   init_words2();
   init_queries();
@@ -37204,8 +37207,8 @@ function dayStamp(now) {
   const day = String(date.getUTCDate()).padStart(2, "0");
   return `${date.getUTCFullYear()}${month}${day}`;
 }
-function remoteBranches(repo, prefix, env) {
-  const listed = runGit(repo, ["ls-remote", "--heads", "origin", `${prefix}*`], env, FETCH_TIMEOUT_MS);
+function remoteBranches(repo, pushUrl, prefix, env) {
+  const listed = runGit(repo, ["ls-remote", "--heads", pushUrl, `${prefix}*`], env, FETCH_TIMEOUT_MS);
   if (!listed.ok)
     return new Set;
   const names = new Set;
@@ -37222,9 +37225,9 @@ function localBranches(repo, prefix, env) {
   return listed.ok ? listed.out.split(`
 `).filter((name) => name !== "") : [];
 }
-function freeBranch(repo, wanted, env, refused = new Set) {
+function freeBranch(repo, pushUrl, wanted, env, refused = new Set) {
   const first = worktreeBranch(wanted);
-  const taken = remoteBranches(repo, first, env);
+  const taken = remoteBranches(repo, pushUrl, first, env);
   for (const name of [...localBranches(repo, first, env), ...refused])
     taken.add(name);
   if (!taken.has(first))
@@ -37485,13 +37488,17 @@ async function proposeWorkflow(context, key, value, options) {
   const sha = commit.out;
   const wanted = `workflow-${settingSlug(key)}-${dayStamp(now())}`;
   const allTaken = `all ${NAME_TRIES} branch names for ${key} today (${worktreeBranch(wanted)} to ${worktreeBranch(`${wanted}-${NAME_TRIES}`)}) are taken, here or on origin: delete the proposal branches you no longer need, then run it again. Nothing was pushed.`;
-  let branch = freeBranch(repo, wanted, context.env);
+  const pushUrl = runGit(repo, ["remote", "get-url", "--push", "origin"], context.env, QUICK_GIT_TIMEOUT_MS);
+  if (!pushUrl.ok) {
+    return fail(`git remote get-url --push origin failed: ${lastLine2(pushUrl.err)}. Check the origin remote (\`git remote -v\`), then try again. Nothing was pushed.`);
+  }
+  let branch = freeBranch(repo, pushUrl.out, wanted, context.env);
   if (branch === null)
     return fail(allTaken);
   let pushed = pushBranch(repo, sha, branch, context.env);
   if (!pushed.ok && pushed.taken) {
     const refused = branch;
-    branch = freeBranch(repo, wanted, context.env, new Set([refused]));
+    branch = freeBranch(repo, pushUrl.out, wanted, context.env, new Set([refused]));
     if (branch === null)
       return fail(allTaken);
     pushed = pushBranch(repo, sha, branch, context.env);
@@ -37551,7 +37558,7 @@ var init_propose = __esm(() => {
   init_schema();
   init_write2();
   TREE_LEVELS = CONFIG_PATH.split("/").length;
-  QUICK_GIT_CALLS = 1 + 3 + 1 + 2 * TREE_LEVELS + 1 + 2;
+  QUICK_GIT_CALLS = 1 + 3 + 1 + 2 * TREE_LEVELS + 1 + 1 + 2;
   PROPOSE_WORST_CASE_MS = 2 * RESOLVE_GIT_TIMEOUT_MS + FETCH_TIMEOUT_MS + GH_TIMEOUT_MS + COMMIT_TIMEOUT_MS + 2 * (FETCH_TIMEOUT_MS + PUSH_TIMEOUT_MS) + GH_CREATE_TIMEOUT_MS + PUSH_TIMEOUT_MS + QUICK_GIT_CALLS * QUICK_GIT_TIMEOUT_MS + 30000;
   encoder2 = new TextEncoder;
 });

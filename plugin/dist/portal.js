@@ -21682,6 +21682,9 @@ function generatedIn(out) {
   }
   return generated;
 }
+function committedHistory(none) {
+  return { GIT_NO_REPLACE_OBJECTS: "1", GIT_GRAFT_FILE: none, GIT_SHALLOW_FILE: none };
+}
 function openBaseOnlyGit(commonDir, source) {
   const folder = mkdtempSync2(join28(tmpdir2(), `${COMMAND}-attributes-`));
   const none = join28(folder, "none");
@@ -21725,7 +21728,8 @@ function openBaseOnlyGit(commonDir, source) {
       GIT_ATTR_NOSYSTEM: "1",
       GIT_ATTR_SOURCE: source,
       GIT_CONFIG_COUNT: "0",
-      GIT_CONFIG_PARAMETERS: ""
+      GIT_CONFIG_PARAMETERS: "",
+      ...committedHistory(none)
     },
     args,
     checks: (paths) => pathBatches(paths).map((batch) => args(["check-attr", `--source=${source}`, "-z", GENERATED_ATTRIBUTE, "--", ...batch])),
@@ -21897,16 +21901,14 @@ async function measure(checkout, { head, branch, base }, records, limits, git, o
   const baseRef = `refs/remotes/origin/${base}`;
   const own = {
     GIT_OBJECT_DIRECTORY: objects,
-    GIT_ALTERNATE_OBJECT_DIRECTORIES: alternateEntry(join29(checkout.commonDir, "objects"))
+    GIT_ALTERNATE_OBJECT_DIRECTORIES: alternateEntry(join29(checkout.commonDir, "objects")),
+    ...committedHistory(join29(objects, "none"))
   };
   const run = async (args, vars = own, cwd = checkout.root) => {
     const left = (git.timeFor ?? ((limit) => limit))(GUARD_GIT_TIMEOUT_MS);
     if (left <= 0)
       throw new OutOfTime;
-    const result = await (git.run ?? runGitAsync)(cwd, args, git.env, left, {
-      ...vars,
-      GIT_NO_REPLACE_OBJECTS: "1"
-    });
+    const result = await (git.run ?? runGitAsync)(cwd, args, git.env, left, vars);
     if (result.code === null && result.err === GIT_TIMED_OUT)
       throw new OutOfTime;
     return result;
@@ -22848,7 +22850,7 @@ var PUSH_TIMEOUT_MS = 120000;
 var QUICK_GIT_TIMEOUT_MS = 1e4;
 var GH_CREATE_TIMEOUT_MS = 60000;
 var TREE_LEVELS = CONFIG_PATH.split("/").length;
-var QUICK_GIT_CALLS = 1 + 3 + 1 + 2 * TREE_LEVELS + 1 + 2;
+var QUICK_GIT_CALLS = 1 + 3 + 1 + 2 * TREE_LEVELS + 1 + 1 + 2;
 var PROPOSE_WORST_CASE_MS = 2 * RESOLVE_GIT_TIMEOUT_MS + FETCH_TIMEOUT_MS + GH_TIMEOUT_MS + COMMIT_TIMEOUT_MS + 2 * (FETCH_TIMEOUT_MS + PUSH_TIMEOUT_MS) + GH_CREATE_TIMEOUT_MS + PUSH_TIMEOUT_MS + QUICK_GIT_CALLS * QUICK_GIT_TIMEOUT_MS + 30000;
 function settingSlug(key) {
   return key.replace(/[^A-Za-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
@@ -42790,6 +42792,7 @@ init_git();
 import { createHash as createHash11 } from "crypto";
 init_resolve();
 init_resolve2();
+init_schema();
 init_words();
 init_queries();
 
@@ -43403,8 +43406,9 @@ function unlistedWords(name) {
 function unlistedFix(plan) {
   return `${TASK_TOOL.update} #${plan.number} with files: the paths and folders it changes`;
 }
-function breaksProposeLine(path) {
-  return path.includes(",") || path !== path.trim();
+function proposeCarries(paths) {
+  const parsed = parseWorkflowValue("plans.mergeFiles", paths.join(","));
+  return parsed.ok && Array.isArray(parsed.value) && parsed.value.length === paths.length && parsed.value.every((path, n) => path === paths[n]);
 }
 function generatedWords(overlap, marks, generated, check) {
   const named = `${marks.ref} marks ${cappedList(generated)} generated`;
@@ -43415,9 +43419,8 @@ function generatedWords(overlap, marks, generated, check) {
   const folders = left.filter((path) => generated.some((file) => settledBy([path], file)));
   if (folders.length > 0)
     return `${named}, but a merge file does not settle a folder both plans list (${cappedList([...new Set(folders)].sort())}): narrow that folder entry to the files the plan changes, or put the folder itself in plans.mergeFiles.`;
-  const unsafe = proposed.filter(breaksProposeLine);
-  if (unsafe.length > 0)
-    return `${named}, but a propose line splits its value at commas and trims each entry, so it cannot carry ${cappedList(unsafe)}: list them in plans.mergeFiles by hand.`;
+  if (!proposeCarries(proposed))
+    return `${named}, but the propose value cannot carry ${cappedList(proposed.filter((path) => !proposeCarries([path])))} as it is: list them in plans.mergeFiles by hand.`;
   const list = proposed.join(",");
   if (list.length > NOTE_LIST_CHARS)
     return `${named}: too many for one propose line, so put the folder that holds them in plans.mergeFiles.`;
