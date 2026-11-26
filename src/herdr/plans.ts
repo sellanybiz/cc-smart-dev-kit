@@ -15,15 +15,26 @@ import { basename } from "node:path";
 import { COMMAND } from "../build-info/names";
 import type { CliPaths } from "../cli/paths";
 import type { Out } from "../cli/ui/out";
-import { type ListedWorktree, listWorktrees, runGit, runGitRaw, samePath } from "../hooks/git";
+import {
+  commitArgs,
+  commitIn,
+  type ListedWorktree,
+  listWorktrees,
+  runGit,
+  runGitRaw,
+  samePath,
+} from "../hooks/git";
 import type { Env } from "../hooks/run";
 import { locateCheckout } from "../project/resolve";
 import { shellWord } from "../shell/quote";
 import { taskContext, taskWriteRefusal } from "../tasks/context";
 import {
+  finishedWords,
   type OverlapCheck,
   overlapSummary,
   planFilesCheck,
+  unlistedFix,
+  unlistedWords,
   warnOverlaps,
 } from "../tasks/files-check";
 import { branchTip, judgeStacks, provedPairs, type StackJudgment } from "../tasks/stack-proof";
@@ -163,7 +174,7 @@ function launchedOutsideDefault(world: PlansWorld, worktree: string): boolean {
 /** `origin/<base>` when the checkout knows it, else the local default branch; null when neither exists. */
 function baseRef(world: PlansWorld): string | null {
   for (const ref of [`refs/remotes/origin/${world.base}`, `refs/heads/${world.base}`])
-    if (git(world, ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`]).ok)
+    if (commitIn(git(world, commitArgs(ref))) !== null)
       return ref.replace(/^refs\/(remotes|heads)\//, "");
   return null;
 }
@@ -653,11 +664,7 @@ function readiness(
   if (entry.state === "waiting")
     return line("waiting", `waiting on ${entry.waitingOn.map(label).join(", ")}`);
   if (entry.state === "no-files")
-    return line(
-      "no-files",
-      "has no file list, so it is never handed out",
-      `task_update #${plan.number} with files: the paths and folders it changes`,
-    );
+    return line("no-files", "has no file list, so it is never handed out", unlistedFix(plan));
   const waiting: string[] = [];
   for (const id of plan.waitsFor) {
     const blocker = byId.get(id);
@@ -673,22 +680,14 @@ function readiness(
   // An overlap, known or not, never holds a plan back: the line names it, and the reservation warns.
   const unlisted = rivals.filter((other) => other.files.length === 0);
   const shared: string[] = [];
-  const fixes = unlisted.map(
-    (other) =>
-      `task_update #${other.plan.number} with files: the paths and folders it changes, so overlaps with it can be named`,
-  );
-  if (unlisted.length > 0)
-    shared.push(
-      `${unlisted.map((other) => label(other.plan)).join(", ")} ${unlisted.length > 1 ? "are" : "is"} held with no file list and no branch diff, so no overlap can be ruled out`,
-    );
+  const fixes = unlisted.map((other) => unlistedFix(other.plan));
+  shared.push(...unlisted.map((other) => unlistedWords(label(other.plan))));
   const clashes: string[] = [];
   for (const other of rivals) {
     const touched = filesOverlap(plan.files, other.files, world.check);
     if (touched.length === 0) continue;
-    const closed = isOpen(other.plan)
-      ? ""
-      : ` (${label(other.plan)} is finished: held until its pull request settles)`;
-    clashes.push(`${overlapSummary(plan, other.plan, touched)}${closed}`);
+    const closed = isOpen(other.plan) ? "" : ` (${finishedWords(label(other.plan))})`;
+    clashes.push(`${overlapSummary(plan, other.plan, touched, label)}${closed}`);
     if (plan.stackedOn !== null && other.plan.plan === plan.stackedOn)
       fixes.push(unprovedStackFix(plan, other.plan, stacks.get(plan.id), byId));
   }

@@ -62,12 +62,17 @@ export const MAX_PHASE = 8;
  */
 export const PHASE_RULE = `1-${MAX_PHASE} characters: ASCII letters, digits, ".", "_" and "-", a letter or a digit at each end, never "--"`;
 
+/** How every overlap note starts, so a later session finds it among a plan's notes. */
+export const OVERLAP_NOTE = "Overlap:";
+
+/** What an overlap of two plans' files does, said once for the tool schemas and the server's instructions. */
+export const OVERLAP_WARNS = `the answer warns, and both plans get an ${OVERLAP_NOTE} note`;
+
 /**
  * What a plan's file list is, said once for the tool schemas and the command's help: the list
  * the store compares with the held plans' lists when a plan starts or is reserved for a child.
  */
-export const PLAN_FILES_WORDS =
-  "Plan task only: the repo-relative paths the plan changes, with / separators; a folder ends in /. Two plans overlap when a path is equal or inside the other's folder (inside a plans.appendOnly folder, only the same file). An overlap with a reserved or running plan never refuses: the answer warns, and both plans get an Overlap: note. The list replaces the stored one; an empty list clears it.";
+export const PLAN_FILES_WORDS = `Plan task only: the repo-relative paths the plan changes, with / separators; a folder ends in /. Two plans overlap when a path is equal or inside the other's folder (inside a plans.appendOnly folder, only the same file). An overlap with a reserved or running plan never refuses: ${OVERLAP_WARNS}. The list replaces the stored one; an empty list clears it.`;
 
 /**
  * What a plan's `stacked_on` is, said once for the tool schemas and the command's help: the

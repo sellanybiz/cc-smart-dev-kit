@@ -5,7 +5,7 @@ import { COMMAND } from "../build-info/names";
 import { isOlder } from "../build-info/semver";
 import { parseOptions } from "../cli/args";
 import { cliPaths } from "../cli/paths";
-import { type ListedWorktree, parseWorktreeList, runGit } from "../hooks/git";
+import { commitArgs, commitIn, type ListedWorktree, parseWorktreeList, runGit } from "../hooks/git";
 import { locateCheckout } from "../project/resolve";
 import { type ProjectConfigRead, taskContext, taskWriteRefusal } from "../tasks/context";
 import { createTaskOps } from "../tasks/ops";
@@ -460,12 +460,11 @@ function leftBehind(
   if (existsSync(worktree)) {
     const head = runGit(worktree, ["symbolic-ref", "--short", "HEAD"], ctx.env);
     if (head.ok && head.out !== "") branch = head.out;
-    const commit = runGit(worktree, ["rev-parse", "--verify", "--quiet", "HEAD^{commit}"], ctx.env);
-    if (commit.ok && commit.out !== "") tip = commit.out;
+    tip = commitIn(runGit(worktree, commitArgs("HEAD"), ctx.env)) ?? undefined;
   }
   tip ??= [`refs/heads/${branch}`, `refs/remotes/origin/${branch}`]
-    .map((ref) => runGit(repo, ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], ctx.env))
-    .find((run) => run.ok && run.out !== "")?.out;
+    .map((ref) => commitIn(runGit(repo, commitArgs(ref), ctx.env)))
+    .find((commit) => commit !== null);
   return tip === undefined ? null : { branch, tip };
 }
 /**
@@ -733,16 +732,14 @@ function resolveBase(
   at: string,
   ref: string,
 ): string | null {
-  const args = ["git", "rev-parse", "--verify", "--quiet", `${ref}^{commit}`];
   if (on) {
-    const found = remoteResult(r, on, args, at);
+    const found = remoteResult(r, on, ["git", ...commitArgs(ref)], at);
     // git exits 1 for a name it does not know; any other failure is not an answer.
     if (found.code === 1) return null;
     if (found.code !== 0) throw new Error("The remote base could not be checked.");
     return found.stdout.trim() || null;
   }
-  const found = runGit(at, args.slice(1), ctx.env);
-  return found.ok && found.out !== "" ? found.out : null;
+  return commitIn(runGit(at, commitArgs(ref), ctx.env));
 }
 function remoteReportFolder(ctx: HerdrContext): string {
   const defaults = cliPaths({ HOME: ctx.paths.home });

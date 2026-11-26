@@ -1017,7 +1017,7 @@ test("L3: an overlap with a done plan that is not released says so, and what rel
   ok(updateTask(db, alpha.id, { status: "done" }, LEAD, 5));
   const [line] = reserveWarned(db, "beta").lines;
   expect(line).toBe(
-    `Overlap: #1 "alpha" and #2 "beta" share src/a/ (src/a/x.ts). Leads: #1 session lead; #2 session lead. #1 "alpha" is done, not released: \`${COMMAND} herdr plans\` releases it when its pull request merges. ${SECOND_RULE}`,
+    `Overlap: #1 "alpha" and #2 "beta" share src/a/ (src/a/x.ts). Leads: #1 session lead; #2 session lead. #1 "alpha" is finished and holds its files until its pull request merges or closes; \`${COMMAND} herdr plans\` then releases them. ${SECOND_RULE}`,
   );
 });
 
@@ -1058,7 +1058,7 @@ test("a held plan with no file list and no branch diff is warned of at a reserva
   const beta = plan(db, "beta", ["src/b/"], { now: 2 });
   ok(updateTask(db, solo.id, { status: "in_progress" }, OTHER, 3));
   expect(reserveWarned(db, "beta").lines).toEqual([
-    'Overlap unknown: #1 "solo" has no file list, so it cannot be compared with #2 "beta": set its files (task_update on #1 with files).',
+    'Overlap unknown with #2 "beta": #1 "solo" has no file list, so no overlap with it can be ruled out; task_update #1 with files: the paths and folders it changes.',
   ]);
   expect(leadOf(db, beta.id)?.sessionId).toBe("lead");
   expect([overlapNotes(db, solo.id), overlapNotes(db, beta.id)]).toEqual([[], []]);
@@ -1125,7 +1125,7 @@ test("a start of a plan with no file list beside a reserved plan starts, with th
   const beta = laidPlan(w, OTHER, "beta", []);
   expect(ok(reserveIn(w, "alpha", LEAD)).lead).not.toBeNull();
   expect(overlapLines(said(startPhase(w, OTHER, beta.phase)))).toEqual([
-    'Overlap unknown: #4 "beta" has no file list, so it cannot be compared with #1 "alpha": set its files (task_update on #4 with files).',
+    'Overlap unknown with #1 "alpha": #4 "beta" has no file list, so no overlap with it can be ruled out; task_update #4 with files: the paths and folders it changes.',
   ]);
   expect(planStatus(w, "beta")).toBe("in_progress");
   expect([notesIn(w, "#1"), notesIn(w, "#4")]).toEqual([[], []]);
