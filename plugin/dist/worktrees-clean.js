@@ -315,7 +315,7 @@ function spawnGitBytes(cwd, args, env, timeoutMs, own, input) {
     const code = result.signalCode ? null : result.exitCode;
     return { ok: result.exitCode === 0, out: result.stdout, err, code };
   } catch (error) {
-    const err = error instanceof Error ? error.message : String(error);
+    const err = messageOf(error);
     return { ok: false, out: new Uint8Array, err, code: null };
   }
 }
@@ -8256,7 +8256,7 @@ var MIN_GIT_VERSION = "2.31.0";
 var RESOLVE_GIT_TIMEOUT_MS = 5000;
 var GIT_NOT_FOUND = "git was not found, so this project's own values cannot be read. Install git, then try again.";
 function gitNotFound(error) {
-  const why = error instanceof Error ? error.message : String(error);
+  const why = messageOf(error);
   return /not found in \$PATH|ENOENT/.test(why) ? new Error(GIT_NOT_FOUND) : error;
 }
 var GIT_TIMED_OUT2 = "git did not answer in time";
@@ -10467,7 +10467,7 @@ function usedByWorktree(repo, branch, env) {
   try {
     worktrees = listWorktrees(repo, env);
   } catch (error) {
-    const why = error instanceof Error ? error.message : String(error);
+    const why = messageOf(error);
     return `${why}, so it is not proved that no worktree uses it`;
   }
   const checkedOut = worktrees.find((worktree) => worktree.branch === branch);

@@ -30,11 +30,13 @@
  * `gh <word>` that is no gh command, and only the first merge of the line is looked up: a
  * note names one pull request.
  */
+
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { COMMAND } from "../build-info/names";
+import { messageOf } from "../error-message";
 import {
   anyFill,
   CHANGE_DIR,
@@ -1489,7 +1491,7 @@ async function otherOpenPlans(context: HookContext): Promise<ReadState<string[]>
         .map((entry) => entry.plan.plan ?? `#${entry.plan.number}`),
     );
   } catch (error) {
-    return { state: "unreadable", why: error instanceof Error ? error.message : String(error) };
+    return { state: "unreadable", why: messageOf(error) };
   }
 }
 

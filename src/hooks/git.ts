@@ -2,8 +2,10 @@
  * The git the hooks need: run a command with a timeout, list the worktrees, compare folders,
  * and ask whether anything would be lost.
  */
+
 import { readFileSync, realpathSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
+import { messageOf } from "../error-message";
 import { isInside } from "../path-compare";
 import { gitEnv } from "../project/git-env";
 import { COMMIT_SHA } from "../workflow/reviews";
@@ -137,7 +139,7 @@ function spawnGitBytes(
     const code = result.signalCode ? null : result.exitCode;
     return { ok: result.exitCode === 0, out: result.stdout, err, code };
   } catch (error) {
-    const err = error instanceof Error ? error.message : String(error);
+    const err = messageOf(error);
     return { ok: false, out: new Uint8Array(), err, code: null };
   }
 }
@@ -180,7 +182,7 @@ export async function runGitAsync(
       code: signaled ? null : code,
     };
   } catch (error) {
-    const err = error instanceof Error ? error.message : String(error);
+    const err = messageOf(error);
     return { ok: false, out: "", err, code: null };
   }
 }

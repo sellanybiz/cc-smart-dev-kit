@@ -14677,7 +14677,7 @@ function spawnGitBytes(cwd, args, env, timeoutMs, own, input) {
     const code = result.signalCode ? null : result.exitCode;
     return { ok: result.exitCode === 0, out: result.stdout, err, code };
   } catch (error) {
-    const err = error instanceof Error ? error.message : String(error);
+    const err = messageOf(error);
     return { ok: false, out: new Uint8Array, err, code: null };
   }
 }
@@ -14705,7 +14705,7 @@ async function runGitAsync(cwd, args, env, timeoutMs = 15000, own = {}) {
       code: signaled ? null : code
     };
   } catch (error) {
-    const err = error instanceof Error ? error.message : String(error);
+    const err = messageOf(error);
     return { ok: false, out: "", err, code: null };
   }
 }
@@ -17948,13 +17948,13 @@ var init_config2 = __esm(() => {
 import { existsSync as existsSync18, realpathSync as realpathSync3, statSync as statSync8 } from "fs";
 import { join as join17 } from "path";
 function gitNotFound(error) {
-  const why = error instanceof Error ? error.message : String(error);
+  const why = messageOf(error);
   return /not found in \$PATH|ENOENT/.test(why) ? new Error(GIT_NOT_FOUND) : error;
 }
 function checkoutFailure(error) {
   if (error instanceof GitTimedOutError)
     return GIT_TIMED_OUT2;
-  return error instanceof Error ? error.message : String(error);
+  return messageOf(error);
 }
 function callLimit(timeoutMs, timeFor) {
   return timeFor === undefined ? timeoutMs : timeFor(timeoutMs);
@@ -24362,7 +24362,7 @@ function policyUnread(branch, why, policy = "merge policy") {
   return `${where} cannot be read: ${why}; a policy counts once it is committed, pushed and fetched`;
 }
 function workflowUnread(error) {
-  return `the workflow settings cannot be read (${error instanceof Error ? error.message : String(error)})`;
+  return `the workflow settings cannot be read (${messageOf(error)})`;
 }
 function notChecked(what, env) {
   const why = ghMissing(env) ? "gh is not installed" : `gh could not read ${what}`;
@@ -32911,7 +32911,7 @@ function checkedCacheProblem(paths, exists = existsSync40) {
     return `cannot be written${code === undefined ? "" : ` (${code})`}`;
   }
 }
-var PARSER_FINGERPRINT = "1fe75b2f95408e56c9ced0e05df3707f931e4a6b8d2641c848d57436130e8457", CHECKED_DIR = "checked", CHECKED_CACHE_LIMIT = 64, CHECKED_FILE_MAX_BYTES, CHECKED_TEMP_MAX_AGE_MS = 60000, ENTRY_FORMAT = 1, TEMP_NAME, PARSE;
+var PARSER_FINGERPRINT = "adbdedec7c35207e52adf49e3ba468ec42d013c04b44e64d9d6afd2b186ceccd", CHECKED_DIR = "checked", CHECKED_CACHE_LIMIT = 64, CHECKED_FILE_MAX_BYTES, CHECKED_TEMP_MAX_AGE_MS = 60000, ENTRY_FORMAT = 1, TEMP_NAME, PARSE;
 var init_checked_config = __esm(() => {
   init_build_info();
   init_locate();
@@ -33778,7 +33778,7 @@ function usedByWorktree(repo, branch, env) {
   try {
     worktrees = listWorktrees(repo, env);
   } catch (error) {
-    const why = error instanceof Error ? error.message : String(error);
+    const why = messageOf(error);
     return `${why}, so it is not proved that no worktree uses it`;
   }
   const checkedOut = worktrees.find((worktree) => worktree.branch === branch);
@@ -52210,7 +52210,7 @@ async function otherOpenPlans(context) {
     const key = projectKey(project.mainCheckout ?? project.root);
     return readWorkStore(paths, (db) => classifyLeadPlans(db, key, who).filter((entry) => KEPT_PLAN_STATES.has(entry.state)).map((entry) => entry.plan.plan ?? `#${entry.plan.number}`));
   } catch (error) {
-    return { state: "unreadable", why: error instanceof Error ? error.message : String(error) };
+    return { state: "unreadable", why: messageOf(error) };
   }
 }
 function viewPullRequest2(ref, repo, folder, env, timeoutMs) {

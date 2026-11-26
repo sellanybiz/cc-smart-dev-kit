@@ -120,6 +120,11 @@ var init_paths2 = __esm(() => {
   init_paths();
 });
 
+// src/error-message.ts
+function messageOf(error) {
+  return error instanceof Error ? error.message : String(error);
+}
+
 // src/path-compare.ts
 import { dirname, resolve } from "path";
 function isInside(path, folder, ignoreCase = IGNORE_CASE) {
@@ -274,7 +279,7 @@ function spawnGitBytes(cwd, args, env, timeoutMs, own, input) {
     const code = result.signalCode ? null : result.exitCode;
     return { ok: result.exitCode === 0, out: result.stdout, err, code };
   } catch (error) {
-    const err = error instanceof Error ? error.message : String(error);
+    const err = messageOf(error);
     return { ok: false, out: new Uint8Array, err, code: null };
   }
 }
@@ -361,7 +366,7 @@ var init_config_facts = __esm(() => {
 import { existsSync as existsSync3, realpathSync as realpathSync2, statSync as statSync2 } from "fs";
 import { join as join4 } from "path";
 function gitNotFound(error) {
-  const why = error instanceof Error ? error.message : String(error);
+  const why = messageOf(error);
   return /not found in \$PATH|ENOENT/.test(why) ? new Error(GIT_NOT_FOUND) : error;
 }
 function callLimit(timeoutMs, timeFor) {
@@ -10025,11 +10030,6 @@ var init_auto_start = __esm(() => {
 init_paths2();
 import { appendFileSync as appendFileSync3 } from "fs";
 
-// src/error-message.ts
-function messageOf(error) {
-  return error instanceof Error ? error.message : String(error);
-}
-
 // src/gateway/plain-text.ts
 var CONTROL = /[\p{Cc}\p{Cf}]/gu;
 var CONTROL_BUT_LINES = /[^\P{Cc}\n\t]|\p{Cf}/gu;
@@ -10138,7 +10138,7 @@ import {
   unlinkSync as unlinkSync2
 } from "fs";
 import { dirname as dirname4, join as join7 } from "path";
-var PARSER_FINGERPRINT = "1fe75b2f95408e56c9ced0e05df3707f931e4a6b8d2641c848d57436130e8457";
+var PARSER_FINGERPRINT = "adbdedec7c35207e52adf49e3ba468ec42d013c04b44e64d9d6afd2b186ceccd";
 var CHECKED_DIR = "checked";
 var CHECKED_CACHE_LIMIT = 64;
 var CHECKED_FILE_MAX_BYTES = 256 * 1024;
@@ -11483,7 +11483,7 @@ async function otherOpenPlans(context) {
     const key = projectKey(project.mainCheckout ?? project.root);
     return readWorkStore(paths, (db) => classifyLeadPlans(db, key, who).filter((entry) => KEPT_PLAN_STATES.has(entry.state)).map((entry) => entry.plan.plan ?? `#${entry.plan.number}`));
   } catch (error) {
-    return { state: "unreadable", why: error instanceof Error ? error.message : String(error) };
+    return { state: "unreadable", why: messageOf(error) };
   }
 }
 function viewPullRequest(ref, repo, folder, env, timeoutMs) {

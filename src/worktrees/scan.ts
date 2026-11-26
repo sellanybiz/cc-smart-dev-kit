@@ -5,10 +5,12 @@
  * `hooks/worktree-leftovers.ts`, which names the questions again in its own words and says
  * there why it leaves the machine's facts out.
  */
+
 import { existsSync, mkdtempSync, readdirSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { COMMAND } from "../build-info";
+import { messageOf } from "../error-message";
 import { GH_TIMEOUT_MS, runGhSync } from "../hooks/gh";
 import {
   GUARD_GIT_TIMEOUT_MS,
@@ -1117,7 +1119,7 @@ export function usedByWorktree(repo: string, branch: string, env: Env): string |
   try {
     worktrees = listWorktrees(repo, env);
   } catch (error) {
-    const why = error instanceof Error ? error.message : String(error);
+    const why = messageOf(error);
     return `${why}, so it is not proved that no worktree uses it`;
   }
   const checkedOut = worktrees.find((worktree) => worktree.branch === branch);

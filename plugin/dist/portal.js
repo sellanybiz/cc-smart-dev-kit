@@ -6446,6 +6446,11 @@ var init_zod = __esm(() => {
   init_external();
 });
 
+// src/error-message.ts
+function messageOf(error) {
+  return error instanceof Error ? error.message : String(error);
+}
+
 // src/setup/user-json.ts
 import { readFileSync as readFileSync6 } from "fs";
 function withoutBom(text) {
@@ -7424,7 +7429,7 @@ function spawnGitBytes(cwd, args, env, timeoutMs, own, input) {
     const code = result.signalCode ? null : result.exitCode;
     return { ok: result.exitCode === 0, out: result.stdout, err, code };
   } catch (error) {
-    const err = error instanceof Error ? error.message : String(error);
+    const err = messageOf(error);
     return { ok: false, out: new Uint8Array, err, code: null };
   }
 }
@@ -7452,7 +7457,7 @@ async function runGitAsync(cwd, args, env, timeoutMs = 15000, own = {}) {
       code: signaled ? null : code
     };
   } catch (error) {
-    const err = error instanceof Error ? error.message : String(error);
+    const err = messageOf(error);
     return { ok: false, out: "", err, code: null };
   }
 }
@@ -10722,13 +10727,13 @@ var init_config = __esm(() => {
 import { existsSync as existsSync13, realpathSync as realpathSync3, statSync as statSync9 } from "fs";
 import { join as join16 } from "path";
 function gitNotFound(error) {
-  const why = error instanceof Error ? error.message : String(error);
+  const why = messageOf(error);
   return /not found in \$PATH|ENOENT/.test(why) ? new Error(GIT_NOT_FOUND) : error;
 }
 function checkoutFailure(error) {
   if (error instanceof GitTimedOutError)
     return GIT_TIMED_OUT2;
-  return error instanceof Error ? error.message : String(error);
+  return messageOf(error);
 }
 function callLimit(timeoutMs, timeFor) {
   return timeFor === undefined ? timeoutMs : timeFor(timeoutMs);
@@ -14250,19 +14255,12 @@ init_paths2();
 
 // src/gateway/config.ts
 init_zod();
-import { createHash } from "crypto";
-import { mkdirSync as mkdirSync4, statSync as statSync4 } from "fs";
-import { dirname as dirname4 } from "path";
-
-// src/error-message.ts
-function messageOf(error) {
-  return error instanceof Error ? error.message : String(error);
-}
-
-// src/gateway/config.ts
 init_file_mode();
 init_user_json();
 init_write();
+import { createHash } from "crypto";
+import { mkdirSync as mkdirSync4, statSync as statSync4 } from "fs";
+import { dirname as dirname4 } from "path";
 
 // src/gateway/history.ts
 init_file_mode();
@@ -20979,7 +20977,6 @@ function retiredRepoLine(found, home) {
 function retiredRepoLines(paths, env) {
   return reposWithRetiredParts(paths, env).map((found) => retiredRepoLine(found, paths.home));
 }
-
 // src/hooks/gh.ts
 var GH_TIMEOUT_MS = 1e4;
 function ghMissing(env) {
@@ -22314,7 +22311,7 @@ function policyUnread(branch, why, policy = "merge policy") {
   return `${where} cannot be read: ${why}; a policy counts once it is committed, pushed and fetched`;
 }
 function workflowUnread(error) {
-  return `the workflow settings cannot be read (${error instanceof Error ? error.message : String(error)})`;
+  return `the workflow settings cannot be read (${messageOf(error)})`;
 }
 async function ghStdout(args, folder, env, timeoutMs, run) {
   return await run(args, { env, folder, timeoutMs });
@@ -23227,7 +23224,7 @@ import {
   unlinkSync as unlinkSync4
 } from "fs";
 import { dirname as dirname15, join as join32 } from "path";
-var PARSER_FINGERPRINT = "1fe75b2f95408e56c9ced0e05df3707f931e4a6b8d2641c848d57436130e8457";
+var PARSER_FINGERPRINT = "adbdedec7c35207e52adf49e3ba468ec42d013c04b44e64d9d6afd2b186ceccd";
 var CHECKED_DIR = "checked";
 var CHECKED_CACHE_LIMIT = 64;
 var CHECKED_FILE_MAX_BYTES = 256 * 1024;
@@ -31975,7 +31972,7 @@ async function repoOf(deps) {
       return { kind: "none" };
     return { kind: "repo", repo: checkout.mainCheckout ?? checkout.root };
   } catch (error) {
-    return { kind: "error", why: error instanceof Error ? error.message : String(error) };
+    return { kind: "error", why: messageOf(error) };
   }
 }
 async function listedWorktrees(repo, env) {
@@ -35774,6 +35771,7 @@ init_paths2();
 // src/cli/project-checks.ts
 init_build_info();
 init_names();
+init_git();
 import {
   closeSync as closeSync11,
   constants as constants4,
@@ -35787,7 +35785,6 @@ import {
   statSync as statSync25
 } from "fs";
 import { isAbsolute as isAbsolute5, join as join73, relative as relative6, resolve as resolve18 } from "path";
-init_git();
 
 // src/hooks/after-merge.ts
 init_names();
@@ -36809,7 +36806,7 @@ async function otherOpenPlans(context) {
     const key = projectKey(project.mainCheckout ?? project.root);
     return readWorkStore(paths, (db) => classifyLeadPlans(db, key, who).filter((entry) => KEPT_PLAN_STATES.has(entry.state)).map((entry) => entry.plan.plan ?? `#${entry.plan.number}`));
   } catch (error) {
-    return { state: "unreadable", why: error instanceof Error ? error.message : String(error) };
+    return { state: "unreadable", why: messageOf(error) };
   }
 }
 function viewPullRequest2(ref, repo, folder, env, timeoutMs) {

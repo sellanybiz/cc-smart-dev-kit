@@ -1,5 +1,6 @@
 import { existsSync, realpathSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { messageOf } from "../error-message";
 import { parseWorktreeList } from "../hooks/git";
 import { CONFIG_PATH, readOwnHooks } from "./config-facts";
 import { gitEnv } from "./git-env";
@@ -74,7 +75,7 @@ type GitAsync = (args: string[]) => Promise<GitResult>;
 
 /** What a failed spawn says when there is no git at all, in words a page can act on. */
 function gitNotFound(error: unknown): unknown {
-  const why = error instanceof Error ? error.message : String(error);
+  const why = messageOf(error);
   // No git on this machine's PATH at all — on Windows without Git for Windows, or in a
   // container. The spawner's own words for it (`Executable not found in $PATH: "git"`)
   // reach a portal page, where they read as a crash rather than as a fact to act on. A
@@ -109,7 +110,7 @@ export class GitTimedOutError extends Error {
  */
 export function checkoutFailure(error: unknown): string {
   if (error instanceof GitTimedOutError) return GIT_TIMED_OUT;
-  return error instanceof Error ? error.message : String(error);
+  return messageOf(error);
 }
 
 /** What a call answers when its shared budget has no time left: it was never made. */

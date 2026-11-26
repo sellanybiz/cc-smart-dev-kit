@@ -36,7 +36,9 @@
  * `readCover`): the portal makes this check inside its own process, where a blocking spawn
  * would freeze every page and the live stream (`.claude/rules/portal.md`).
  */
+
 import type { CliPaths } from "../cli/paths";
+import { messageOf } from "../error-message";
 import {
   GH_TIMEOUT_MS,
   type GhCall,
@@ -513,7 +515,7 @@ export function policyUnread(branch: string | null, why: string, policy = "merge
 /** Why the guard cannot judge when the person's own workflow file cannot be read. */
 export function workflowUnread(error: unknown): string {
   // The person's own workflow file cannot be read, so whether allowMerge is on is unknown.
-  return `the workflow settings cannot be read (${error instanceof Error ? error.message : String(error)})`;
+  return `the workflow settings cannot be read (${messageOf(error)})`;
 }
 
 /** The question when the guard could not read what it needs: gh is missing, or did not answer. */
