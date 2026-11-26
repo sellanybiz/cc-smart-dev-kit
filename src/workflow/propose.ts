@@ -42,14 +42,20 @@
  */
 import { COMMAND } from "../build-info/names";
 import type { CliPaths } from "../cli/paths";
-import { runGit, runGitRaw } from "../hooks/git";
-import { type CcSmartDevKitConfig, parseCcSmartDevKitConfig } from "../project/config";
-import { type Checkout, CONFIG_PATH, loadProjectConfig, locateCheckout } from "../project/resolve";
+import { runGit, runGitBytes } from "../hooks/git";
+import {
+  type Checkout,
+  CONFIG_PATH,
+  loadProjectConfig,
+  locateCheckout,
+  RESOLVE_GIT_TIMEOUT_MS,
+  readCommittedFile,
+} from "../project/resolve";
 import { worktreeBranch } from "../worktrees/paths";
 import { GH_TIMEOUT_MS, type GhRunner, ghMissing, spawnGh } from "./merge-check";
 import { type ResolvedWorkflow, resolvedValueOf, resolveWorkflow } from "./resolve";
 import { isProjectKey, PERSONAL_ONLY_REASONS, showValue, type WorkflowKey } from "./schema";
-import { editProjectSetting, type ProjectEdit } from "./write";
+import { editProjectSetting, type ProjectEdit, requiresRaiseText } from "./write";
 
 type Env = Record<string, string | undefined>;
 
@@ -68,24 +74,36 @@ const QUICK_GIT_TIMEOUT_MS = 10_000;
 /** How long `gh pr create` may take: a write, so longer than a read — see `createPullRequest`. */
 const GH_CREATE_TIMEOUT_MS = 60_000;
 
+/** The trees on the way to the project's file: `treeWith` lists and rebuilds one at each level. */
+const TREE_LEVELS = CONFIG_PATH.split("/").length;
+
 /**
- * The longest a run can take, from its own step limits: the `gh` read, the fetch, two `ls-remote`
- * and two pushes (a name taken once), the commit, `gh pr create`, and then the take-back (an
- * `ls-remote` and the remote branch's deletion), a few local object and ref calls, plus the
- * process's own start. A caller that runs the command in a child gives it **at least this**, so
- * the command's own limits always fire — and its take-back always runs — before the child is
- * ended from outside (the portal's action, `src/portal/actions.ts`).
+ * The local git calls one run makes at most, each held to `QUICK_GIT_TIMEOUT_MS`, in the order it
+ * makes them: the base's commit, the committed file's three reads (`readCommittedFile`), the
+ * blob, a listing and a `mktree` per tree level, `commit.gpgSign`, and the local branch list once
+ * per name pick (twice, when a name is taken once).
+ */
+const QUICK_GIT_CALLS = 1 + 3 + 1 + 2 * TREE_LEVELS + 1 + 2;
+
+/**
+ * The longest a run can take, from its own step limits, in the order the run meets them: finding
+ * the checkout (`rev-parse`, and `worktree list` from a worktree), the fetch, the `gh` read, the
+ * commit, then up to two name picks and pushes (an `ls-remote` and a push each, when a name is
+ * taken once), `gh pr create`, the take-back (an `ls-remote` and the remote branch's deletion),
+ * every quick local call, and the process's own start. A caller that runs the command in a child
+ * gives it **at least this**, so the command's own limits always fire — and its take-back always
+ * runs — before the child is ended from outside (the portal's action, `src/portal/actions.ts`).
  */
 export const PROPOSE_WORST_CASE_MS =
-  GH_TIMEOUT_MS +
+  2 * RESOLVE_GIT_TIMEOUT_MS +
   FETCH_TIMEOUT_MS +
-  2 * FETCH_TIMEOUT_MS +
+  GH_TIMEOUT_MS +
   COMMIT_TIMEOUT_MS +
-  2 * PUSH_TIMEOUT_MS +
+  2 * (FETCH_TIMEOUT_MS + PUSH_TIMEOUT_MS) +
   GH_CREATE_TIMEOUT_MS +
   FETCH_TIMEOUT_MS +
   PUSH_TIMEOUT_MS +
-  10 * QUICK_GIT_TIMEOUT_MS +
+  QUICK_GIT_CALLS * QUICK_GIT_TIMEOUT_MS +
   30_000;
 
 /** A setting as a name's part: `alerts.sound` is `alerts-sound`. */
@@ -208,95 +226,83 @@ function remoteBranches(repo: string, prefix: string, env: Env): Set<string> {
   return names;
 }
 
-/** True when neither this repository nor origin (`taken`) has a branch of that name. */
-function nameFree(repo: string, branch: string, env: Env, taken: ReadonlySet<string>): boolean {
-  if (taken.has(branch)) return false;
-  return !runGit(
+/**
+ * This repository's own branches whose name starts with `prefix`, in one local call. A list that
+ * cannot be read counts as none: the push's lease still guards the name on origin.
+ */
+function localBranches(repo: string, prefix: string, env: Env): string[] {
+  const listed = runGit(
     repo,
-    ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`],
+    ["for-each-ref", "--format=%(refname:lstrip=2)", `refs/heads/${prefix}*`],
     env,
     QUICK_GIT_TIMEOUT_MS,
-  ).ok;
+  );
+  return listed.ok ? listed.out.split("\n").filter((name) => name !== "") : [];
 }
 
 /**
  * The first free branch name from `wanted` on: the same day's second change is `-2`, then `-3`.
- * The `worktree-` prefix stays though no worktree is made: proposals pushed before the
- * plumbing commit carry it, so one prefix finds every proposal of a day and keeps the count
- * going across both.
+ * A name is taken when origin or this repository has it, each asked once. The `worktree-` prefix
+ * stays though no worktree is made: proposals pushed before the plumbing commit carry it, so one
+ * prefix finds every proposal of a day and keeps the count going across both.
  */
 function freeBranch(repo: string, wanted: string, env: Env): string {
   const first = worktreeBranch(wanted);
   const taken = remoteBranches(repo, first, env);
-  if (nameFree(repo, first, env, taken)) return first;
+  for (const name of localBranches(repo, first, env)) taken.add(name);
+  if (!taken.has(first)) return first;
   for (let count = 2; count <= NAME_TRIES; count += 1) {
     const branch = worktreeBranch(`${wanted}-${count}`);
-    if (nameFree(repo, branch, env, taken)) return branch;
+    if (!taken.has(branch)) return branch;
   }
   return first;
 }
 
-/**
- * `origin/<base>`'s commit and the project file's text in it, exactly as committed (no trim, no
- * filter); `text` null when that commit has no such file. Everything a run reads of the base —
- * the value it changes, the text it edits, the parent and the trees of its commit — comes from
- * this one commit, so a fetch in another process cannot mix two. A file that is not a plain
- * file there — a symbolic link, a folder — is refused: the commit could only replace the link,
- * never change what it points to.
- */
-function baseFile(
-  repo: string,
-  base: string,
-  env: Env,
-): { sha: string; text: string | null } | { why: string } {
-  const commit = runGit(
-    repo,
-    ["rev-parse", "--verify", "--quiet", `refs/remotes/origin/${base}^{commit}`],
-    env,
-    QUICK_GIT_TIMEOUT_MS,
-  );
-  if (!commit.ok) return { why: `origin/${base} is not known here` };
-  const entry = runGitRaw(
-    repo,
-    ["ls-tree", "-z", commit.out, "--", CONFIG_PATH],
-    env,
-    QUICK_GIT_TIMEOUT_MS,
-  );
-  if (!entry.ok) return { why: lastLine(entry.err) };
-  if (entry.out === "") return { sha: commit.out, text: null };
-  const blob = /^100(?:644|755) blob ([0-9a-f]+)\t/.exec(entry.out)?.[1];
-  if (blob === undefined) return { why: "it is not a plain file there" };
-  const text = runGitRaw(repo, ["cat-file", "blob", blob], env, QUICK_GIT_TIMEOUT_MS);
-  return text.ok ? { sha: commit.out, text: text.out } : { why: lastLine(text.err) };
-}
+/** The bytes a tree entry's name is matched by: names are bytes, and a path's part is UTF-8. */
+const encoder = new TextEncoder();
 
-/** One entry of `git ls-tree -z`: `<mode> <type> <id>\t<name>`. */
+/** One entry of `git ls-tree -z`, `<mode> <type> <id>\t<name>`: the header read, the rest bytes. */
 interface TreeEntry {
   mode: string;
   type: string;
   id: string;
-  name: string;
+  /** The name exactly as git holds it: any bytes but NUL and `/`, not always UTF-8. */
+  name: Uint8Array;
+  /** The whole entry as git listed it, without its NUL. */
+  bytes: Uint8Array;
 }
 
-/** The entries of one tree, or git's reason it could not list them. */
+/** The entries of one tree, kept as bytes, or git's reason it could not list them. */
 function treeEntries(repo: string, tree: string, env: Env): TreeEntry[] | { why: string } {
-  const listed = runGitRaw(repo, ["ls-tree", "-z", tree], env, QUICK_GIT_TIMEOUT_MS);
+  const listed = runGitBytes(repo, ["ls-tree", "-z", tree], env, QUICK_GIT_TIMEOUT_MS);
   if (!listed.ok) return { why: lastLine(listed.err) };
-  return listed.out
-    .split("\0")
-    .filter((entry) => entry !== "")
-    .map((entry) => {
-      const tab = entry.indexOf("\t");
-      const [mode = "", type = "", id = ""] = entry.slice(0, tab).split(" ");
-      return { mode, type, id, name: entry.slice(tab + 1) };
-    });
+  const entries: TreeEntry[] = [];
+  let start = 0;
+  for (let end = listed.out.indexOf(0); end !== -1; end = listed.out.indexOf(0, start)) {
+    const bytes = listed.out.subarray(start, end);
+    const tab = bytes.indexOf(0x09);
+    // The header is ASCII: a mode, a type and an id.
+    const [mode = "", type = "", id = ""] = new TextDecoder()
+      .decode(bytes.subarray(0, tab))
+      .split(" ");
+    entries.push({ mode, type, id, name: bytes.subarray(tab + 1), bytes });
+    start = end + 1;
+  }
+  return entries;
+}
+
+/** `a` and `b` hold the same bytes. */
+function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
+  return a.length === b.length && a.every((byte, index) => byte === b[index]);
 }
 
 /**
- * `tree` with the blob at `path` replaced by `blob`, every other entry — and the file's own
- * mode — as it was: one `mktree` per folder on the way, innermost first. `--missing`: the entries
- * come from trees that exist, and a partial clone need not hold their blobs. Answers the new
- * tree's id, or what went wrong.
+ * `tree` with the blob at `path` replaced by `blob`: one `mktree` per folder on the way,
+ * innermost first. Only that one entry's id changes; every other entry goes back to git byte for
+ * byte, so a name that is not UTF-8 keeps its name, and the file keeps its own mode. A symbolic
+ * link at `path` is refused: the commit could only replace the link, never change what it points
+ * to. `--missing`: the entries come from trees that exist, and a partial clone need not hold
+ * their blobs. Answers the new tree's id, or what went wrong.
  */
 function treeWith(
   repo: string,
@@ -305,23 +311,32 @@ function treeWith(
   blob: string,
   env: Env,
 ): string | { why: string } {
-  const [name, ...rest] = path;
+  const [name = "", ...rest] = path;
   const entries = treeEntries(repo, tree, env);
   if (!Array.isArray(entries)) return entries;
-  const at = entries.find((entry) => entry.name === name);
-  if (at === undefined || at.type !== (rest.length === 0 ? "blob" : "tree")) {
-    return { why: `${name} is not where the base holds it` };
+  const wanted = encoder.encode(name);
+  const at = entries.find((entry) => sameBytes(entry.name, wanted));
+  const isFile = rest.length === 0;
+  if (at === undefined || at.type !== (isFile ? "blob" : "tree") || at.mode === "120000") {
+    return { why: `${name} is not a plain ${isFile ? "file" : "folder"} on the base` };
   }
-  const id = rest.length === 0 ? blob : treeWith(repo, at.id, rest, blob, env);
+  const id = isFile ? blob : treeWith(repo, at.id, rest, blob, env);
   if (typeof id !== "string") return id;
-  const text = entries
-    .map((entry) => {
-      const entryId = entry === at ? id : entry.id;
-      return `${entry.mode} ${entry.type} ${entryId}\t${entry.name}\0`;
-    })
-    .join("");
-  const made = runGit(repo, ["mktree", "-z", "--missing"], env, QUICK_GIT_TIMEOUT_MS, {}, text);
-  return made.ok ? made.out : { why: `git mktree failed: ${lastLine(made.err)}` };
+  const header = encoder.encode(`${at.mode} ${at.type} ${id}\t`);
+  const nul = new Uint8Array([0]);
+  const parts = entries.flatMap((entry) =>
+    entry === at ? [header, entry.name, nul] : [entry.bytes, nul],
+  );
+  const made = runGitBytes(
+    repo,
+    ["mktree", "-z", "--missing"],
+    env,
+    QUICK_GIT_TIMEOUT_MS,
+    Buffer.concat(parts),
+  );
+  return made.ok
+    ? new TextDecoder().decode(made.out).trim()
+    : { why: `git mktree failed: ${lastLine(made.err)}` };
 }
 
 /** What the push answered: the branch is origin's now, the name was taken, or it failed. */
@@ -332,7 +347,10 @@ type Pushed = { ok: true } | { ok: false; taken: boolean; why: string };
  * hook needs what a session may not have, and the review and CI are this commit's gate. The
  * empty lease (`refs/heads/<branch>:` with no value) lets the push create the branch only: a name
  * that exists on origin is refused (`[rejected] (stale info)` in the porcelain line), never
- * overwritten. In English (`LC_ALL=C`), so the line reads the same in any locale.
+ * overwritten. A name that already holds this very commit — another run of the same proposal in
+ * the same second makes the same commit — is `=` (`[up to date]`), with exit 0: that branch is
+ * the other run's, so it is a taken name too, never this run's push. In English (`LC_ALL=C`), so
+ * the line reads the same in any locale.
  */
 function pushBranch(repo: string, sha: string, branch: string, env: Env): Pushed {
   const ref = `refs/heads/${branch}`;
@@ -343,13 +361,12 @@ function pushBranch(repo: string, sha: string, branch: string, env: Env): Pushed
     PUSH_TIMEOUT_MS,
     { LC_ALL: "C" },
   );
+  const line = pushed.out.split("\n").find((one) => one.split("\t")[1] === `${sha}:${ref}`);
+  const taken = { ok: false, taken: true, why: `${branch} is already on origin` } as const;
+  if (line?.startsWith("=\t")) return taken;
   if (pushed.ok) return { ok: true };
-  const line = pushed.out.split("\n").find((one) => one.startsWith("!\t") && one.includes(ref));
-  if (line?.includes("(stale info)")) {
-    return { ok: false, taken: true, why: `${branch} is already on origin` };
-  }
-  const said = line?.split("\t")[2];
-  return { ok: false, taken: false, why: said ?? lastLine(pushed.err) };
+  if (line?.startsWith("!\t") && line.includes("(stale info)")) return taken;
+  return { ok: false, taken: false, why: line?.split("\t")[2] ?? lastLine(pushed.err) };
 }
 
 /** What a take-back left: what is still there, and whether it deleted a pushed branch. */
@@ -409,11 +426,6 @@ function titleOf(key: WorkflowKey, from: unknown, to: unknown): string {
   return `workflow: ${key} ${saidValue(key, from)} → ${saidValue(key, to)}`;
 }
 
-/** A raised `requires`, as the output and the body say it. */
-function raisedLine(raised: NonNullable<ProjectEdit["raised"]>): string {
-  return `requires ${JSON.stringify(raised.from ?? null)} -> ${JSON.stringify(raised.to)}`;
-}
-
 /** The pull request's body: what changed, why it counts only once merged, and how it was made. */
 function bodyOf(
   key: WorkflowKey,
@@ -424,9 +436,7 @@ function bodyOf(
 ): string {
   return [
     `Updated by \`${COMMAND} workflow propose\`: the project's workflow setting ${key}, from ${saidValue(key, from)} to ${saidValue(key, to)}.`,
-    ...(raised === null
-      ? []
-      : [`It also raises ${raisedLine(raised)}: the file's fields need it.`]),
+    ...(raised === null ? [] : [`It also raises ${requiresRaiseText(raised)}.`]),
     `It counts once this pull request is merged into ${base}: merge-check reads the review gate from the file committed on the base, and a session's own checkout never counts.`,
     MADE_WITHOUT_HOOKS,
   ].join("\n");
@@ -552,21 +562,34 @@ export async function proposeWorkflow(
       `git fetch origin ${base} failed: ${lastLine(fetched.err)}. Check the network and that origin has ${base}, then try again.`,
     );
   }
-  const where = `origin/${base}:${CONFIG_PATH}`;
-  const read = baseFile(repo, base, context.env);
-  if ("why" in read) return fail(`git could not read ${where}: ${read.why}.`);
-  if (read.text === null) {
+  // Every later read of the base is of this one commit: a fetch in another process cannot give
+  // the run two.
+  const baseCommit = runGit(
+    repo,
+    ["rev-parse", "--verify", "--quiet", `refs/remotes/origin/${base}^{commit}`],
+    context.env,
+    QUICK_GIT_TIMEOUT_MS,
+  );
+  if (!baseCommit.ok) {
+    return fail(`origin/${base} is not known here after the fetch: ${lastLine(baseCommit.err)}.`);
+  }
+  const baseSha = baseCommit.out;
+  let committed: ReturnType<typeof readCommittedFile>;
+  try {
+    committed = readCommittedFile(checkout, base, {
+      commit: baseSha,
+      env: context.env,
+      timeoutMs: QUICK_GIT_TIMEOUT_MS,
+    });
+  } catch (error) {
+    return fail(reasonOf(error));
+  }
+  if (!committed.found) {
     return fail(
       `origin/${base} has no ${CONFIG_PATH}: commit the project's file to ${base} and push it first — a change counts once it is merged.`,
     );
   }
-  const { sha: baseSha, text: baseText } = read;
-  let committed: CcSmartDevKitConfig;
-  try {
-    committed = parseCcSmartDevKitConfig(baseText, where);
-  } catch (error) {
-    return fail(reasonOf(error));
-  }
+  const { text: baseText, where } = committed;
 
   // 3. The value **as the base commits it**, never this checkout's working copy: an uncommitted
   //    edit here must not read as "already set", and a change that counts is one to the base.
@@ -574,7 +597,7 @@ export async function proposeWorkflow(
   //    the project's own file holds is ever a `from`: the person's defaults stay private.
   let resolved: ResolvedWorkflow;
   try {
-    resolved = resolveWorkflow(context.paths, committed);
+    resolved = resolveWorkflow(context.paths, committed.config);
   } catch (error) {
     return fail(reasonOf(error));
   }
@@ -725,7 +748,7 @@ export async function proposeWorkflow(
   }
   context.print(`+ ${key} = ${saidValue(key, value)} in ${CONFIG_PATH}`);
   if (edit.raised !== null) {
-    context.print(`+ ${raisedLine(edit.raised)} in ${CONFIG_PATH} (the file's fields need it)`);
+    context.print(`+ ${CONFIG_PATH}: ${requiresRaiseText(edit.raised)}`);
   }
   context.print(`+ ${branch}, cut from origin/${base} and pushed`);
   context.print(`! ${MADE_WITHOUT_HOOKS}`);

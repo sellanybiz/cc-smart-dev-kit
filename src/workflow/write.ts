@@ -181,6 +181,11 @@ export function writeProjectSetting(
   return edit.line;
 }
 
+/** A raised `requires` in words: the one spelling `workflow set --project` and propose print. */
+export function requiresRaiseText(raised: NonNullable<ProjectEdit["raised"]>): string {
+  return `requires ${JSON.stringify(raised.from ?? null)} -> ${JSON.stringify(raised.to)} (the file's fields need it)`;
+}
+
 /** What one setting does to the project file's text. */
 export interface ProjectEdit {
   /** The file's next text: the text as it was when nothing changes. */
@@ -299,7 +304,7 @@ function shownProjectWrite(
 ): string {
   // The project's file is there before any write (`projectFile`), so a write never creates it.
   if (before.requires === after.requires) return shownWrite(file, key, value, false);
-  const raised = `requires ${JSON.stringify(before.requires ?? null)} -> ${JSON.stringify(after.requires)} (the file's fields need it)`;
+  const raised = requiresRaiseText({ from: before.requires, to: after.requires });
   const { requires: _was, ...restBefore } = before;
   const { requires: _now, ...restAfter } = after;
   if (Bun.deepEquals(restBefore, restAfter, true)) {
