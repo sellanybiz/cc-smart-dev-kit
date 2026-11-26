@@ -233,6 +233,8 @@ export interface ListedWorktree {
   lockReason?: string;
   /** git found its folder gone. */
   prunable: boolean;
+  /** A bare repo's own entry: no folder of files, no HEAD and no branch. Absent otherwise. */
+  bare?: true;
 }
 
 export function parseWorktreeList(porcelain: string): ListedWorktree[] {
@@ -252,6 +254,7 @@ export function parseWorktreeList(porcelain: string): ListedWorktree[] {
       locked: flag("locked"),
       ...(lockReason === undefined || lockReason === "" ? {} : { lockReason }),
       prunable: flag("prunable"),
+      ...(flag("bare") ? { bare: true } : {}),
     });
   }
   return worktrees;
