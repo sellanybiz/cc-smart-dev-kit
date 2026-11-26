@@ -55,8 +55,26 @@ export function runGit(
  * `runGit`, with stdout exactly as git wrote it. For `-z` output, where a name may start or
  * end with a space: trimming would cut it off the first or the last name.
  */
-export function runGitRaw(cwd: string, args: string[], env: Env, timeoutMs = 15_000): GitRun {
-  return spawnGit(cwd, args, env, timeoutMs, {}, false);
+export function runGitRaw(
+  cwd: string,
+  args: string[],
+  env: Env,
+  timeoutMs = 15_000,
+  own: Record<string, string> = {},
+): GitRun {
+  return spawnGit(cwd, args, env, timeoutMs, own, false);
+}
+
+/** Paths per git call, so a long list stays far below the system's argument limit. */
+const PATHS_PER_GIT_CALL = 200;
+
+/** `paths` cut into the lists one git call each names, `PATHS_PER_GIT_CALL` at most; none for none. */
+export function pathBatches(paths: readonly string[]): string[][] {
+  const batches: string[][] = [];
+  for (let at = 0; at < paths.length; at += PATHS_PER_GIT_CALL) {
+    batches.push(paths.slice(at, at + PATHS_PER_GIT_CALL));
+  }
+  return batches;
 }
 
 function spawnGit(
