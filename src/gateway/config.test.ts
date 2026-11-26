@@ -398,6 +398,15 @@ describe("a file with a bad breaker key", () => {
   });
 });
 
+describe("a file saved with a byte order mark (Windows Notepad)", () => {
+  it("loads like the same file without the mark", () => {
+    const path = join(tempDir("gateway-config"), "gateway.json");
+    writeFileSync(path, `\uFEFF${JSON.stringify(raw())}`, { mode: 0o600 });
+    chmodSync(path, 0o600);
+    expect(loadConfigFile(path)).toEqual(parsed(raw()));
+  });
+});
+
 describe("the judge's targets (D44)", () => {
   /**
    * The proofs of two targets on the test backend, worked out by hand: `printf 'cc-smart-dev-kit

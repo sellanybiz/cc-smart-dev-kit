@@ -118,6 +118,16 @@ describe("packageScripts", () => {
     }
   });
 
+  test("reads a file saved with a byte order mark (Windows Notepad), its own and the root's", () => {
+    const own = packageScripts(folderWith('\uFEFF{"scripts":{"build":"next build"}}'));
+    expect([...(own ?? [])]).toEqual([["build", "next build"]]);
+    const workspace = checkoutWith({
+      ".": '\uFEFF{"packageManager":"yarn@4.5.0","workspaces":["packages/*"]}',
+      "packages/a": '{"scripts":{"test":"vitest"}}',
+    });
+    expect(packageScripts(join(workspace, "packages/a"))?.yarnBerry).toBe(true);
+  });
+
   test("a package.json that is a folder is no package.json", () => {
     const folder = tempDir("package-scripts-dir");
     mkdirSync(join(folder, "package.json"));

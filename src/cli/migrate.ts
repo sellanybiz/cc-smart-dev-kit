@@ -85,6 +85,7 @@ import { withLock } from "../setup/lock";
 import { ownedEntries } from "../setup/managed-entries";
 import { applyManagedJson, getKey, isObject, ownedRecords, ownership } from "../setup/managed-json";
 import { BLOCK_BEGIN, BLOCK_END } from "../setup/managed-markdown";
+import { parseUserJson, readUserJson } from "../setup/user-json";
 import {
   atomicWrite,
   BACKUP_INFIX,
@@ -481,7 +482,7 @@ function oldNamesInConfig(file: string, renamer: Renamer): boolean {
   const text = readText(file);
   if (text === null) return false;
   try {
-    const raw: unknown = JSON.parse(text);
+    const raw = parseUserJson(text);
     if (!isObject(raw)) return false;
     const slots = isObject(raw.slots) ? Object.keys(raw.slots) : [];
     const modelSlots = isObject(raw.modelSlots) ? Object.values(raw.modelSlots) : [];
@@ -709,7 +710,7 @@ export function settingsChanges(
   const remove: string[] = [];
   const kept: string[] = [];
   if (!existsSync(settingsFile)) return { set, remove, kept };
-  const parsed: unknown = JSON.parse(readFileSync(settingsFile, "utf8"));
+  const parsed = readUserJson(settingsFile);
   const settings = isObject(parsed) ? parsed : {};
   const records = ownedRecords(stateDir, realTarget(settingsFile));
   for (const key of new Set([...Object.keys(newEnv), ...Object.keys(oldEnv)])) {
@@ -756,7 +757,7 @@ export function readOldConfig(
     );
   }
   try {
-    const parsed: unknown = JSON.parse(readFileSync(file, "utf8"));
+    const parsed = readUserJson(file);
     if (!isObject(parsed)) throw new Error("not an object");
     return parsed;
   } catch {
@@ -1009,7 +1010,7 @@ export function readPlan(
   const stateDir = oldStateFolder(old);
   if (existsSync(paths.settingsFile)) {
     try {
-      const parsed: unknown = JSON.parse(readFileSync(paths.settingsFile, "utf8"));
+      const parsed = readUserJson(paths.settingsFile);
       if (!isObject(parsed)) {
         return {
           error: `${paths.settingsFile} must hold a JSON object. Fix it by hand, then run again.`,

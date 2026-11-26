@@ -3,7 +3,12 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { makeRepo, wireProjectHook } from "../testing/hooks";
 import { tempDir } from "../testing/temp";
-import { matcherSelects, projectSettingsFiles, wiredHandlers } from "./settings-hooks";
+import {
+  allWiredHandlers,
+  matcherSelects,
+  projectSettingsFiles,
+  wiredHandlers,
+} from "./settings-hooks";
 
 describe("matcherSelects: Claude Code's matcher rules", () => {
   test.each([
@@ -89,6 +94,14 @@ describe("wiredHandlers", () => {
     const broken = join(dir, "broken.json");
     writeFileSync(broken, "{ not json");
     expect(wiredHandlers(broken, "WorktreeCreate", null)).toEqual([]);
+  });
+
+  test("a file saved with a byte order mark (Windows Notepad) wires its hooks, as Claude Code reads it", () => {
+    const file = join(tempDir("settings"), "settings.json");
+    const hooks = { PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: "x" }] }] };
+    writeFileSync(file, `\uFEFF${JSON.stringify({ hooks })}`);
+    expect(wiredHandlers(file, "PreToolUse", "Bash")).toEqual([{ file, command: "x" }]);
+    expect(allWiredHandlers(file)).toEqual([{ file, command: "x" }]);
   });
 });
 

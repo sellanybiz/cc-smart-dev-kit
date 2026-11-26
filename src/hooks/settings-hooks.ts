@@ -8,9 +8,10 @@
  * hook (a worktree's settings may differ from the ones the session started with), so a
  * plugin hook steps aside only for what the project's cc-smart-dev-kit.json says (`ownHooks`).
  */
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { COMMAND } from "../build-info/names";
+import { readUserJson } from "../setup/user-json";
 
 /**
  * The hooks the plugin's worktree engine had a project wire itself, as
@@ -70,14 +71,15 @@ export function matcherSelects(matcher: unknown, subject: string | null): boolea
 function hooksOf(file: string): Record<string, unknown> | null {
   if (!existsSync(file)) return null;
   try {
-    const parsed: unknown = JSON.parse(readFileSync(file, "utf8"));
+    const parsed = readUserJson(file);
     if (typeof parsed !== "object" || parsed === null) return null;
     const hooks = (parsed as { hooks?: unknown }).hooks;
     return typeof hooks === "object" && hooks !== null && !Array.isArray(hooks)
       ? (hooks as Record<string, unknown>)
       : null;
   } catch {
-    // A settings file that is not JSON: Claude Code cannot run its hooks either.
+    // Not JSON even past a byte order mark (which Claude Code skips, as readUserJson does):
+    // Claude Code cannot run its hooks either.
     return null;
   }
 }
