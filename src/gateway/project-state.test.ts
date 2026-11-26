@@ -14,7 +14,7 @@
  * sees no global config and no real repository.
  */
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { git, tempDir } from "../testing/temp";
 import { DEFAULT_ANTHROPIC_BASE_URL, DEFAULT_PORT, type GatewayConfig, saveConfig } from "./config";
@@ -120,6 +120,23 @@ function configOn(port: number): GatewayConfig {
     timeouts: { firstByteMs: 1000 },
     version: 1,
   };
+}
+
+/**
+ * A folder holding a fake `git` that answers `git worktree list` with CRLF line ends, which
+ * `parseWorktreeList` reads, and passes every other command to the real git.
+ */
+function crlfWorktreeListGit(): string {
+  const realGit = Bun.which("git");
+  if (!realGit) throw new Error("git is not on PATH");
+  const dir = tempDir("gf1-crlf-git");
+  const real = JSON.stringify(realGit);
+  writeFileSync(
+    join(dir, "git"),
+    `#!/bin/sh\ncase "$1" in\n  worktree) ${real} "$@" | awk '{ printf "%s\\r\\n", $0 }' ;;\n  *) exec ${real} "$@" ;;\nesac\n`,
+  );
+  chmodSync(join(dir, "git"), 0o755);
+  return dir;
 }
 
 /** The two twins of the one reader: every case below runs against each (FU1's awaited reads). */
@@ -494,6 +511,34 @@ for (const twin of TWINS) {
       mkdirSync(plain, { recursive: true });
       expect((await stateOf(plain, files)).worktreeFiles).toEqual([]);
     });
+
+    // The fake git is a shell script, so the case runs where `sh` does.
+    test.skipIf(process.platform === "win32")(
+      "a worktree listing with CRLF line ends finds the same files",
+      async () => {
+        const files = machine();
+        const root = repo("gf1-wtcrlf");
+        const one = join(tempDir("gf1-wtcrlf-one"), "one");
+        git(root, "worktree", "add", "-q", one, "-b", "feat/one");
+        writeSettings(join(one, ".claude", "settings.local.json"), withUrl(ROUTER));
+        const before = process.env.PATH;
+        process.env.PATH = `${crlfWorktreeListGit()}:${before ?? ""}`;
+        try {
+          const state = await stateOf(root, files);
+          expect(state.checkoutProblem).toBeNull();
+          expect(state.worktreeFiles.map((file) => file.path)).toEqual([
+            join(one, ".claude", "settings.local.json"),
+          ]);
+          // Asked from the worktree, the main checkout is read from the same listing.
+          const fromOne = await stateOf(one, files);
+          expect(fromOne.checkoutProblem).toBeNull();
+          expect(fromOne.checkout?.mainCheckout).toBe(realpathSync(root));
+        } finally {
+          if (before === undefined) delete process.env.PATH;
+          else process.env.PATH = before;
+        }
+      },
+    );
 
     test("a folder reached through a symlink to the main root does not list the root's file twice", async () => {
       const files = machine();

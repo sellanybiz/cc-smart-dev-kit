@@ -30,6 +30,7 @@
  */
 import { existsSync, realpathSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { type GitRun, parseWorktreeList, runGit, runGitAsync } from "../hooks/git";
 import { gitEnv } from "../project/git-env";
 import {
   type Checkout,
@@ -216,21 +217,8 @@ export function ownPersonalFileOf(folder: string): string {
   return join(folder, ".claude", PERSONAL_FILE);
 }
 
-/**
- * The linked worktrees' paths in `listing` (`git worktree list --porcelain`): the main checkout
- * and a bare entry left out.
- */
-function linkedWorktreePaths(listing: string, mainCheckout: string): string[] {
-  const main = realFolder(mainCheckout);
-  const paths: string[] = [];
-  for (const block of listing.split("\n\n")) {
-    const lines = block.split("\n");
-    const path = lines.find((line) => line.startsWith("worktree "))?.slice("worktree ".length);
-    if (path === undefined || lines.includes("bare") || realFolder(path) === main) continue;
-    paths.push(path);
-  }
-  return paths;
-}
+/** The call both readers of the linked worktrees make. */
+const WORKTREE_LIST_ARGS = ["worktree", "list", "--porcelain"];
 
 /** The own personal files that exist, of these worktrees. */
 function ownFilesOf(paths: readonly string[]): SettingsFileState[] {
@@ -241,6 +229,19 @@ function ownFilesOf(paths: readonly string[]): SettingsFileState[] {
 }
 
 /**
+ * The own personal files of the linked worktrees `listing` names: the main checkout and a bare
+ * entry left out. A listing git did not give (no git, a timeout) names none.
+ */
+function linkedWorktreeFilesIn(listing: GitRun, mainCheckout: string): SettingsFileState[] {
+  if (!listing.ok) return [];
+  const main = realFolder(mainCheckout);
+  const linked = parseWorktreeList(listing.out).filter(
+    (worktree) => worktree.bare !== true && realFolder(worktree.path) !== main,
+  );
+  return ownFilesOf(linked.map((worktree) => worktree.path));
+}
+
+/**
  * Every linked worktree's own `settings.local.json` of a repo, read (P6, 2.1.310): a project's
  * `.worktreeinclude` makes them as copies of the main root's personal file. The main root's key
  * wins key by key while it is there; once it is removed (`gateway project default`, `restore`), a
@@ -248,43 +249,21 @@ function ownFilesOf(paths: readonly string[]): SettingsFileState[] {
  * none: a warning's input, never a state.
  */
 export function linkedWorktreeFilesOf(mainCheckout: string): SettingsFileState[] {
-  try {
-    const result = Bun.spawnSync(["git", "worktree", "list", "--porcelain"], {
-      cwd: mainCheckout,
-      env: gitEnv(process.env),
-      stderr: "ignore",
-      stdout: "pipe",
-      timeout: RESOLVE_GIT_TIMEOUT_MS,
-    });
-    return result.exitCode === 0
-      ? ownFilesOf(linkedWorktreePaths(result.stdout.toString(), mainCheckout))
-      : [];
-  } catch {
-    return [];
-  }
+  const listing = runGit(mainCheckout, WORKTREE_LIST_ARGS, process.env, RESOLVE_GIT_TIMEOUT_MS);
+  return linkedWorktreeFilesIn(listing, mainCheckout);
 }
 
-/** `linkedWorktreeFilesOf`, without blocking (`Bun.spawn`): the portal's and doctor's twin. */
+/** `linkedWorktreeFilesOf`, without blocking (`runGitAsync`): the portal's and doctor's twin. */
 export async function linkedWorktreeFilesOfAsync(
   mainCheckout: string,
 ): Promise<SettingsFileState[]> {
-  try {
-    const child = Bun.spawn(["git", "worktree", "list", "--porcelain"], {
-      cwd: mainCheckout,
-      env: gitEnv(process.env),
-      stderr: "ignore",
-      stdin: "ignore",
-      stdout: "pipe",
-      timeout: RESOLVE_GIT_TIMEOUT_MS,
-    });
-    const [listing, code] = await Promise.all([new Response(child.stdout).text(), child.exited]);
-    // A timeout's kill ends with a signal: no answer, as the blocking twin reads it.
-    return code === 0 && child.signalCode === null
-      ? ownFilesOf(linkedWorktreePaths(listing, mainCheckout))
-      : [];
-  } catch {
-    return [];
-  }
+  const listing = await runGitAsync(
+    mainCheckout,
+    WORKTREE_LIST_ARGS,
+    process.env,
+    RESOLVE_GIT_TIMEOUT_MS,
+  );
+  return linkedWorktreeFilesIn(listing, mainCheckout);
 }
 
 /**

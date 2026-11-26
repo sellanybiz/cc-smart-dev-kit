@@ -1,5 +1,6 @@
 import { existsSync, realpathSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { parseWorktreeList } from "../hooks/git";
 import { CONFIG_PATH, readOwnHooks } from "./config-facts";
 import { gitEnv } from "./git-env";
 
@@ -217,25 +218,21 @@ async function requireGitVersionAsync(git: GitAsync): Promise<void> {
 }
 
 /**
- * The first `worktree` entry of `git worktree list --porcelain` is the main checkout: the
- * one parse both readers of the list use.
+ * The first entry of `git worktree list --porcelain` is the main checkout: the one answer
+ * both readers of the list give.
  */
 function mainCheckoutFrom(list: GitResult, cwd: string): string | null {
   if (list.timedOut === true) throw new GitTimedOutError();
   if (!list.ok) throw new Error(`git worktree list failed in ${cwd}: ${list.stderr.trim()}`);
-  const [firstEntry = ""] = list.stdout.split("\n\n");
-  const lines = firstEntry.split("\n");
-  if (lines.includes("bare")) return null;
-  const pathLine = lines.find((line) => line.startsWith("worktree "));
-  if (!pathLine) return null;
-  const path = pathLine.slice("worktree ".length);
-  if (!existsSync(path) || lines.some((line) => line.startsWith("prunable"))) {
+  const [main] = parseWorktreeList(list.stdout);
+  if (main === undefined || main.bare === true) return null;
+  if (!existsSync(main.path) || main.prunable) {
     throw new Error(
-      `The main checkout of the repo at ${cwd} is missing: ${path} was moved or deleted. ` +
+      `The main checkout of the repo at ${cwd} is missing: ${main.path} was moved or deleted. ` +
         'If you moved it, run "git worktree repair" in its new folder.',
     );
   }
-  return realpathSync(path);
+  return realpathSync(main.path);
 }
 
 function findMainCheckout(git: Git, cwd: string): string | null {
