@@ -28,7 +28,8 @@ const descriptions: Record<TaskOperation, string> = {
   list: "List the caller's tasks as a tree, or list the plan or project (scope project also lists the open deploy tasks).",
   get: "Read a task, its notes and its history: each change with its time, the values before and after, and the session that made it. Use offset to read the next part; history true also prints every earlier description.",
   search: "Search work tasks and deploy tasks.",
-  delete: "Delete a mistaken task with no notes or tasks, or an untracked deploy task file.",
+  delete:
+    "Delete a mistaken task with no notes of its own (the kit's Overlap: notes do not count) or tasks, or an untracked deploy task file.",
 };
 
 export function createTaskServer(options: TaskOpsOptions = {}) {

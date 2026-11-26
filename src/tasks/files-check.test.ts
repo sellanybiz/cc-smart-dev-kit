@@ -140,3 +140,34 @@ test("an old git, or no base ref, cannot say: the reader answers null and the wa
     db.close();
   }
 });
+
+// Plan lists are normalised, so these names reach the note only through the reader: the seam.
+for (const name of ["db/a?b.gen.ts", "db/a\\b.gen.ts", "db/a\nb.gen.ts"])
+  test(`a generated path the propose value would not read back as itself (${JSON.stringify(name)}) gets the by-hand words, never a propose line`, () => {
+    const db = openWorkDb(workDbFile({ stateDir: tempDir() }), { mode: "write" });
+    try {
+      const plan = (slug: string) =>
+        ok(createTask(db, { project: "p", subject: slug, kind: "plan", plan: slug }, LEAD, 1));
+      const found: PlanOverlap[] = [
+        {
+          plan: plan("alpha"),
+          other: plan("beta"),
+          overlaps: [{ path: name, other: "db/" }],
+          lists: [[name], ["db/"]],
+          unlisted: null,
+        },
+      ];
+      const check = {
+        ignore: ["CHANGELOG.md"],
+        caseFold: false,
+        generated: () => ({ ref: "origin/main", files: [name] }),
+      };
+      const [line] = warnOverlaps(db, found, check, LEAD, 3);
+      expect(line).toEndWith(
+        `origin/main marks ${name} generated, but the propose value cannot carry ${name} as it is: list them in plans.mergeFiles by hand.`,
+      );
+      expect(line).not.toContain("workflow propose");
+    } finally {
+      db.close();
+    }
+  });

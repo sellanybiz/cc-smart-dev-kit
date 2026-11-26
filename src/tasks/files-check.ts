@@ -18,6 +18,7 @@ import type { Checkout } from "../project/locate";
 import { locateCheckout } from "../project/resolve";
 import { shellWord } from "../shell/quote";
 import { resolvePlanFiles } from "../workflow/resolve";
+import { parseWorkflowValue } from "../workflow/schema";
 import { baseBranch } from "../worktrees/command";
 import { OVERLAP_NOTE, TASK_TOOL } from "./words";
 import type { WorkDb } from "./work/db";
@@ -201,9 +202,18 @@ export function unlistedFix(plan: WorkTask): string {
   return `${TASK_TOOL.update} #${plan.number} with files: the paths and folders it changes`;
 }
 
-/** A path the propose line cannot carry: its value is split at commas, and each entry trimmed. */
-function breaksProposeLine(path: string): boolean {
-  return path.includes(",") || path !== path.trim();
+/**
+ * True when `workflow propose plans.mergeFiles` reads `paths`, comma-joined, back as exactly these
+ * paths: its own parser (`parseWorkflowValue`) splits, trims and normalises the value.
+ */
+function proposeCarries(paths: readonly string[]): boolean {
+  const parsed = parseWorkflowValue("plans.mergeFiles", paths.join(","));
+  return (
+    parsed.ok &&
+    Array.isArray(parsed.value) &&
+    parsed.value.length === paths.length &&
+    parsed.value.every((path, n) => path === paths[n])
+  );
 }
 
 /**
@@ -226,9 +236,9 @@ function generatedWords(
   const folders = left.filter((path) => generated.some((file) => settledBy([path], file)));
   if (folders.length > 0)
     return `${named}, but a merge file does not settle a folder both plans list (${cappedList([...new Set(folders)].sort())}): narrow that folder entry to the files the plan changes, or put the folder itself in plans.mergeFiles.`;
-  const unsafe = proposed.filter(breaksProposeLine);
-  if (unsafe.length > 0)
-    return `${named}, but a propose line splits its value at commas and trims each entry, so it cannot carry ${cappedList(unsafe)}: list them in plans.mergeFiles by hand.`;
+  // The paths it cannot carry alone are the ones the whole list breaks on.
+  if (!proposeCarries(proposed))
+    return `${named}, but the propose value cannot carry ${cappedList(proposed.filter((path) => !proposeCarries([path])))} as it is: list them in plans.mergeFiles by hand.`;
   const list = proposed.join(",");
   if (list.length > NOTE_LIST_CHARS)
     return `${named}: too many for one propose line, so put the folder that holds them in plans.mergeFiles.`;

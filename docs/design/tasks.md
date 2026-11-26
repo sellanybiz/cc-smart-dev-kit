@@ -79,8 +79,9 @@ The store enforces these rules, not the caller:
   the transaction that inserts it. The other plan-shape rules (a phase starts only once it
   holds a task, one plan in flight, a step closes with proof) are enforced by the task tools
   (`ops.ts`), not the store: § Layers, Plan shape.
-- Delete is for a mistake with no notes or tasks, not for finished work. A deleted task's
-  number is never given again: its history still answers to it.
+- Delete is for a mistake with no notes of its own (the kit's `Overlap:` notes do not count) or
+  tasks, not for finished work. A deleted task's number is never given again: its history still
+  answers to it.
 
 ### Layers, types and blocked-by (D76)
 
@@ -627,8 +628,9 @@ and a note is no move of the plan. The text, in this order:
     the two ways that do: narrow that folder entry to the files the plan changes, or put the
     folder itself in `plans.mergeFiles`;
   - for a list too long for one line, the same advice to put their folder in `plans.mergeFiles`;
-  - for a path that holds a comma, or a space at either end, which the propose value would split
-    or trim, no propose line: the note names it and says to list it in `plans.mergeFiles` by hand.
+  - for a path the propose value cannot carry (`workflow propose`'s own parser would not read the
+    list back as it is), no propose line: the note names it and says to list it in
+    `plans.mergeFiles` by hand.
 
   With a list not read in full there is no propose line, since the line replaces the whole list.
   Git older than 2.40, or no base ref, gives the plain warning. A reader that throws adds one line,
