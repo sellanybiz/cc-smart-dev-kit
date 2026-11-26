@@ -1300,8 +1300,8 @@ test("a start beside a running and a reserved plan warns of each, and notes each
     '#1 "solo" and #7 "beta" share src/s/ (src/s/y.ts)',
     '#4 "alpha" and #7 "beta" share src/a/ (src/a/x.ts)',
   ]);
-  expect(notesIn(w, "#1")).toEqual([lines[0]]);
-  expect(notesIn(w, "#4")).toEqual([lines[1]]);
+  expect(notesIn(w, "#1")).toEqual(lines.slice(0, 1));
+  expect(notesIn(w, "#4")).toEqual(lines.slice(1));
   expect(notesIn(w, "#7")).toEqual(lines);
 });
 

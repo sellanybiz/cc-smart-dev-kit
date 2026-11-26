@@ -21,7 +21,13 @@ import { baseBranch } from "../worktrees/command";
 import { TASK_TOOL } from "./words";
 import type { WorkDb } from "./work/db";
 import { type FileOverlap, planLead } from "./work/queries";
-import { addNotesOnce, type FilesCheck, label, type PlanOverlap } from "./work/store";
+import {
+  addNotesOnce,
+  type FilesCheck,
+  label,
+  type NoteOnce,
+  type PlanOverlap,
+} from "./work/store";
 import type { Who, WorkTask } from "./work/types";
 
 /** The files a base marks generated (`GENERATED_ATTRIBUTE`) among some shared paths. */
@@ -193,9 +199,8 @@ function overlapNote(
       `plans.mergeFiles was not read in full, so a merge file may count: ${check.reason}.`,
     );
   const regions = overlap.overlaps.map(sharedPath);
-  const generated = (marks?.files ?? []).filter((file) =>
-    regions.some((path) => within(file, path)),
-  );
+  const generated =
+    marks === null ? [] : marks.files.filter((file) => regions.some((path) => within(file, path)));
   if (marks !== null && generated.length > 0) {
     const named = `${marks.ref} marks ${generated.join(", ")} generated`;
     const list = [...new Set([...check.ignore, ...generated])].join(",");
@@ -231,7 +236,7 @@ export function warnOverlaps(
   const regions = [...new Set(found.flatMap((overlap) => overlap.overlaps.map(sharedPath)))].sort();
   const marks = regions.length > 0 && check.generated ? check.generated(regions) : null;
   const lines: string[] = [];
-  const notes: { taskIds: string[]; head: string; text: string }[] = [];
+  const notes: NoteOnce[] = [];
   for (const overlap of found) {
     if (overlap.unlisted !== null) {
       const line = unlistedLine(overlap, overlap.unlisted);
