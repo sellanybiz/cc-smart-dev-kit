@@ -15,11 +15,12 @@ shared home, in the parts the first one did not cover. Each now uses its home.
     retired hook lines, and warned that nothing answers in a hook's place or that
     `worktree.baseRef` is unset when it is set;
   - `package.json` in the heavy-job queue: a script was judged by its name, not its body;
-  - `~/.claude/settings.json` in `migrate`: the check refused a file the write accepts.
+  - `~/.claude/settings.json` in `migrate`: the check refused a file the write accepts;
+  - herdr's `machines.json`: it was called "not a machine list".
 - **The blocking `gh` calls** of `worktrees clean` and the after-merge hook use one shared runner.
   It opens no console window on Windows, and the time limit is written once.
 - **The worktree list** has one parser, which also reads Windows line ends.
-- **The error-message helper** has one home.
+- **The error-message helper** has one home, and its eight private copies are gone.
 
 **What to run:** `cc-smart-dev-kit update`. If you use the gateway, then run
 `cc-smart-dev-kit gateway setup`: the router's code changed (the `gateway.json` reader), so it

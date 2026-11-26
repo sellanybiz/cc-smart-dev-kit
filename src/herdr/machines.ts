@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { z } from "zod";
 import { withLock } from "../setup/lock";
+import { parseUserJson } from "../setup/user-json";
 import { atomicWrite } from "../setup/write";
 export const MachinesSchema = z
   .object({
@@ -29,7 +30,7 @@ export function readMachines(file: string): Machines {
     throw new MachinesFileError(`${file} cannot be read: ${(error as Error).message}`);
   }
   try {
-    return MachinesSchema.parse(JSON.parse(text));
+    return MachinesSchema.parse(parseUserJson(text));
   } catch (error) {
     throw new MachinesFileError(
       `${file} is not a machine list (${(error as Error).message.split("\n")[0]}). Fix it or remove it.`,

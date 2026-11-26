@@ -4,6 +4,7 @@
  * limit, its spawn options, how it ended, and whether gh is there at all. It loads no zod, so a
  * hook may import it (`.claude/rules/hooks.md`); `merge-check.ts` loads zod and hands these on.
  */
+import { messageOf } from "../error-message";
 import type { Env } from "./run";
 
 /** How long one `gh` call may take: a read-only network call, and a guard has 30 s. */
@@ -86,7 +87,7 @@ export function ghEnded(
 export function ghNotStarted(error: unknown, env: Env): GhResult {
   return {
     code: null,
-    err: error instanceof Error ? error.message : String(error),
+    err: messageOf(error),
     kind: ghMissing(env) ? "missing" : "failed",
     out: "",
   };

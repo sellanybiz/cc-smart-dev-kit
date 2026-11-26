@@ -1,7 +1,7 @@
 import { describe, expect, spyOn, test } from "bun:test";
-import { chmodSync, writeFileSync } from "node:fs";
-import { delimiter, join } from "node:path";
-import { cleanGitEnv, tempDir } from "../testing/temp";
+import { join } from "node:path";
+import { fakeGhEnv } from "../testing/fake-gh";
+import { tempDir } from "../testing/temp";
 import { type GhCall, ghMissing, ghSpawnOptions, runGhSync } from "./gh";
 
 describe("the options every gh call starts with", () => {
@@ -41,11 +41,7 @@ describe("the options every gh call starts with", () => {
 describe.skipIf(process.platform === "win32")("runGhSync: how a gh call ended", () => {
   /** A call to a fake `gh` that runs `script`, with the system's own basics on PATH. */
   function call(script: string, timeoutMs = 5_000): GhCall {
-    const bin = tempDir("gh-sync-bin");
-    writeFileSync(join(bin, "gh"), `#!/bin/sh\n${script}\n`);
-    chmodSync(join(bin, "gh"), 0o755);
-    const env = { ...cleanGitEnv(), PATH: `${bin}${delimiter}/usr/bin${delimiter}/bin` };
-    return { env, folder: tempDir("gh-sync-folder"), timeoutMs };
+    return { env: fakeGhEnv(script), folder: tempDir("gh-sync-folder"), timeoutMs };
   }
 
   test("exit 0 is ok, with stdout as gh printed it and stderr trimmed", () => {

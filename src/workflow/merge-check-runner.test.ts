@@ -5,10 +5,10 @@
  * command's own tests; these prove the shape of the path.
  */
 import { describe, expect, test } from "bun:test";
-import { chmodSync, writeFileSync } from "node:fs";
-import { delimiter, join } from "node:path";
+import { join } from "node:path";
 import { cliPaths } from "../cli/paths";
 import { locateCheckout } from "../project/resolve";
+import { fakeGhEnv } from "../testing/fake-gh";
 import { commitConfig, makeRepo } from "../testing/hooks";
 import { cleanGitEnv, tempDir } from "../testing/temp";
 import {
@@ -314,11 +314,7 @@ describe("the merge check never blocks its caller (B8)", () => {
 describe.skipIf(process.platform === "win32")("runGh: how a gh call ended", () => {
   /** A call to a fake `gh` that runs `script`, with the system's own basics on PATH. */
   function call(script: string, timeoutMs = 5_000): GhCall {
-    const bin = tempDir("run-gh-bin");
-    writeFileSync(join(bin, "gh"), `#!/bin/sh\n${script}\n`);
-    chmodSync(join(bin, "gh"), 0o755);
-    const env = { ...cleanGitEnv(), PATH: `${bin}${delimiter}/usr/bin${delimiter}/bin` };
-    return { env, folder: tempDir("run-gh-folder"), timeoutMs };
+    return { env: fakeGhEnv(script), folder: tempDir("run-gh-folder"), timeoutMs };
   }
 
   test("a signal is named: SIGTERM is the time running out, any other one is gh dying", async () => {
