@@ -7,6 +7,8 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { cleanGitEnv, git, tempDir } from "../testing/temp";
 import {
+  commitArgs,
+  commitIn,
   parseWorktreeList,
   reflogEntryTime,
   runGit,
@@ -50,6 +52,23 @@ describe("runGitBytes", () => {
     expect(hashed).toMatchObject({ ok: true, code: 0 });
     const id = new TextDecoder().decode(hashed.out).trim();
     expect(runGitBytes(repo, ["cat-file", "blob", id], cleanGitEnv()).out).toEqual(latin1);
+  });
+});
+
+describe("commitArgs and commitIn", () => {
+  test("a rev that names a commit gives its full id, a tag of it too; anything else gives null", () => {
+    const repo = tempDir("git-commit");
+    git(repo, "init", "-q", "-b", "main");
+    writeFileSync(join(repo, "a.txt"), "a\n");
+    git(repo, "add", "a.txt");
+    git(repo, "commit", "-q", "-m", "first");
+    git(repo, "tag", "-a", "-m", "tag", "v1");
+    const head = git(repo, "rev-parse", "HEAD").trim();
+    const ask = (rev: string) => commitIn(runGit(repo, commitArgs(rev), cleanGitEnv()));
+    expect(ask("HEAD")).toBe(head);
+    expect(ask("v1")).toBe(head);
+    expect(ask("main:a.txt")).toBeNull();
+    expect(ask("no-such-ref")).toBeNull();
   });
 });
 

@@ -3,11 +3,11 @@
  * a checkout may hold is written with a mark on every file, and the answer must not change.
  */
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { runGit } from "../hooks/git";
 import { cleanGitEnv, git, tempDir } from "../testing/temp";
-import { generatedChecks, generatedIn, openBaseOnlyGit } from "./generated";
+import { generatedIn, openBaseOnlyGit, readGenerated } from "./generated";
 
 /** Every file the cases ask about: two the base marks, one it unmarks, one it says nothing of. */
 const PATHS = ["dist/app.js", "lib/made.js", "lib/kept.js", "src/main.js"];
@@ -39,18 +39,11 @@ function baseRepo(objectFormat = "sha1"): { repo: string; base: string } {
   return { repo, base: git(repo, "rev-parse", "HEAD").trim() };
 }
 
-/** The paths of `PATHS` that `base` marks generated, read the way the home says to. */
-function generated(repo: string, base: string, env = cleanGitEnv()): string[] {
-  const isolated = openBaseOnlyGit(join(repo, ".git"), base);
-  try {
-    return generatedChecks(base, PATHS).flatMap((args) => {
-      const run = runGit(repo, args, env, 15_000, isolated.env);
-      if (!run.ok) throw new Error(run.err);
-      return generatedIn(run.out);
-    });
-  } finally {
-    isolated.remove();
-  }
+/** The paths of `paths` that `base` marks generated, read through the home's one reader. */
+function generated(repo: string, base: string, env = cleanGitEnv(), paths = PATHS): string[] {
+  const marked = readGenerated(join(repo, ".git"), base, paths, env);
+  if (marked === null) throw new Error("no answer");
+  return paths.filter((path) => marked.has(path));
 }
 
 /** The same question asked of git plainly, as review-cover asked it before: what a mark reaches. */
@@ -111,6 +104,20 @@ describe("security: no local attribute file widens the base's marks", () => {
     expect(generated(repo, base, env)).toEqual(BASE_MARKED);
   });
 
+  test("a personal core.ignoreCase does not stretch a mark to a path of another case", () => {
+    const { repo, base } = baseRepo();
+    const global = join(tempDir("gitconfig"), "gitconfig");
+    writeFileSync(global, "[core]\n\tignoreCase = true\n");
+    const env = { ...cleanGitEnv(), GIT_CONFIG_GLOBAL: global };
+    const run = runGit(
+      repo,
+      ["check-attr", `--source=${base}`, "-z", "linguist-generated", "--", "DIST/app.js"],
+      env,
+    );
+    expect(generatedIn(run.out)).toEqual(["DIST/app.js"]);
+    expect(generated(repo, base, env, ["DIST/app.js"])).toEqual([]);
+  });
+
   test("a mark only on the branch, committed or in the working tree", () => {
     const { repo, base } = baseRepo();
     git(repo, "checkout", "-q", "-b", "feat");
@@ -123,22 +130,33 @@ describe("security: no local attribute file widens the base's marks", () => {
 });
 
 describe("the parts", () => {
-  test("generatedChecks: one call per 200 paths, the local files switched off", () => {
-    const paths = Array.from({ length: 450 }, (_, index) => `f${index}`);
-    const checks = generatedChecks("a".repeat(40), paths);
-    expect(checks.map((args) => args.length - 7)).toEqual([200, 200, 50]);
-    expect(checks[0]?.slice(0, 8)).toEqual([
-      "-c",
-      "core.attributesFile=",
-      "check-attr",
-      `--source=${"a".repeat(40)}`,
-      "-z",
-      "linguist-generated",
-      "--",
-      "f0",
-    ]);
-    expect(checks[2]?.at(-1)).toBe("f449");
-    expect(generatedChecks("a".repeat(40), [])).toEqual([]);
+  test("checks: one call per 200 paths, the local files switched off", () => {
+    const { repo, base } = baseRepo();
+    const isolated = openBaseOnlyGit(join(repo, ".git"), base);
+    try {
+      const none = join(isolated.env.GIT_DIR ?? "", "none");
+      const paths = Array.from({ length: 450 }, (_, index) => `f${index}`);
+      const checks = isolated.checks(paths);
+      expect(checks.map((args) => args.length - 9)).toEqual([200, 200, 50]);
+      expect(checks[0]?.slice(0, 11)).toEqual([
+        "-c",
+        `core.attributesFile=${none}`,
+        "-c",
+        "core.ignoreCase=false",
+        "check-attr",
+        `--source=${base}`,
+        "-z",
+        "linguist-generated",
+        "--",
+        "f0",
+        "f1",
+      ]);
+      expect(checks[2]?.at(-1)).toBe("f449");
+      expect(isolated.checks([])).toEqual([]);
+      expect(existsSync(none)).toBe(false);
+    } finally {
+      isolated.remove();
+    }
   });
 
   test("generatedIn reads the -z triples: set and true only", () => {
@@ -153,6 +171,48 @@ describe("the parts", () => {
       .join("");
     expect(generatedIn(out)).toEqual(["a.js", "c d.js"]);
     expect(generatedIn("")).toEqual([]);
+  });
+
+  test("readGenerated has no answer, and throws nothing, when git cannot run", () => {
+    const { repo, base } = baseRepo();
+    const env = { ...cleanGitEnv(), PATH: "/nonexistent" };
+    expect(readGenerated(join(repo, ".git"), base, PATHS, env)).toBe(null);
+  });
+
+  test("readGenerated has no answer, and throws nothing, when no temp folder can be made", () => {
+    const { repo, base } = baseRepo();
+    const before = process.env.TMPDIR;
+    process.env.TMPDIR = join(tempDir("tmp"), "missing");
+    try {
+      expect(readGenerated(join(repo, ".git"), base, PATHS, cleanGitEnv())).toBe(null);
+    } finally {
+      if (before === undefined) delete process.env.TMPDIR;
+      else process.env.TMPDIR = before;
+    }
+  });
+
+  test("readBase writes the commit's .gitattributes files into the work tree, and nothing else", () => {
+    const { repo, base } = baseRepo();
+    git(repo, "checkout", "-q", "-b", "nested");
+    mkdirSync(join(repo, "lib"), { recursive: true });
+    writeFileSync(join(repo, "lib", ".gitattributes"), "*.js text\n");
+    writeFileSync(join(repo, "lib", "made.js"), "made\n");
+    git(repo, "add", "-A");
+    git(repo, "commit", "-q", "-m", "nested");
+    const nested = git(repo, "rev-parse", "HEAD").trim();
+    expect(nested).not.toBe(base);
+    const isolated = openBaseOnlyGit(join(repo, ".git"), nested);
+    try {
+      const read = runGit(isolated.cwd, isolated.readBase, cleanGitEnv(), 15_000, isolated.env);
+      expect(read).toMatchObject({ ok: true });
+      expect(readdirSync(isolated.cwd, { recursive: true }).sort()).toEqual([
+        ".gitattributes",
+        "lib",
+        join("lib", ".gitattributes"),
+      ]);
+    } finally {
+      isolated.remove();
+    }
   });
 
   test("the throwaway folder is gone after remove", () => {

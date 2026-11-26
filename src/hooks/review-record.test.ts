@@ -956,6 +956,18 @@ describe("what it never records", () => {
     expect(existsSync(recordFile(env, repo, ".starts.json"))).toBe(false);
   });
 
+  test("a consult in its own worktree is told it was no review, not to drop the isolation", async () => {
+    const env = hookEnv();
+    const repo = makeRepo();
+    writeClaudeFile(repo, "cc-smart-dev-kit.json", CONFIG);
+    const folder = join(repo, ".claude", "worktrees", `agent-${AGENT_ID}`);
+    git(repo, "worktree", "add", "-q", "-b", `worktree-agent-${AGENT_ID}`, folder);
+    const consult = reviewTranscript("Mode: consult");
+    expect(
+      await review(env, folder, { agent_type: REVIEWER, agent_transcript_path: consult }),
+    ).toEqual([{}, { stderr: NOT_A_REVIEW_LINE }]);
+  });
+
   test("no agent id in a subagent's worktree: nothing recorded", async () => {
     const env = hookEnv();
     const repo = makeRepo();

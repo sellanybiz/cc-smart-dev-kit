@@ -10,9 +10,9 @@
  * for each, and saves the same text as an `Overlap:` note on both plans, once.
  */
 import { COMMAND, PLUGIN } from "../build-info/names";
-import { runGit, runGitRaw } from "../hooks/git";
+import { commitArgs, commitIn, runGit, runGitRaw } from "../hooks/git";
 import type { Env } from "../hooks/run";
-import { generatedChecks, generatedIn, openBaseOnlyGit } from "../project/generated";
+import { readGenerated } from "../project/generated";
 import type { Checkout } from "../project/locate";
 import { locateCheckout } from "../project/resolve";
 import { shellWord } from "../shell/quote";
@@ -110,35 +110,21 @@ function baseGenerated(
   env: Env,
 ): BaseGenerated | null {
   const ref = `origin/${base}`;
-  const commit = runGit(
-    checkout.root,
-    ["rev-parse", "--verify", "--quiet", `refs/remotes/${ref}^{commit}`],
-    env,
-  );
-  if (!commit.ok) return null;
+  const commit = commitIn(runGit(checkout.root, commitArgs(`refs/remotes/${ref}`), env));
+  if (commit === null) return null;
   const files = new Set(paths.filter((path) => !path.endsWith("/")));
   const folders = paths.filter((path) => path.endsWith("/"));
   if (folders.length > 0) {
     const listed = runGitRaw(
       checkout.root,
-      ["ls-tree", "-r", "-z", "--name-only", commit.out, "--", ...folders],
+      ["ls-tree", "-r", "-z", "--name-only", commit, "--", ...folders],
       env,
     );
     if (!listed.ok) return null;
     for (const path of listed.out.split("\0")) if (path !== "") files.add(path);
   }
-  const isolated = openBaseOnlyGit(checkout.commonDir, commit.out);
-  try {
-    const marked = new Set<string>();
-    for (const args of generatedChecks(commit.out, [...files])) {
-      const attrs = runGit(checkout.root, args, env, undefined, isolated.env);
-      if (!attrs.ok) return null;
-      for (const path of generatedIn(attrs.out)) marked.add(path);
-    }
-    return { ref, files: [...marked].sort() };
-  } finally {
-    isolated.remove();
-  }
+  const marked = readGenerated(checkout.commonDir, commit, [...files], env);
+  return marked === null ? null : { ref, files: [...marked].sort() };
 }
 
 /** How every overlap note starts, so a later session finds it among a plan's notes. */

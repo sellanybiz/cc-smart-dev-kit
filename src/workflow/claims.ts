@@ -24,7 +24,7 @@
 import { cappedHookList } from "../hooks/capped-list";
 import { type GitRun, runGit, runGitRaw } from "../hooks/git";
 import type { Env } from "../hooks/run";
-import { generatedChecks, generatedIn, openBaseOnlyGit } from "../project/generated";
+import { readGenerated } from "../project/generated";
 import { COMMIT_SHA } from "./reviews";
 
 /**
@@ -330,13 +330,6 @@ function failure(run: GitRun): string {
 /** `items` without the ones in a file the base marks generated. */
 type Keep = <T>(items: readonly T[], fileOf: (item: T) => string) => T[];
 
-/** The files a commit marks generated, asked of that commit alone, each file once. */
-interface BaseMarks {
-  keep: Keep;
-  /** Removes the throwaway git folder the questions run in. */
-  close(): void;
-}
-
 /** The repository's common git folder and the commit `rev` names, or null when git cannot say. */
 function sourceOf(
   folder: string,
@@ -355,28 +348,23 @@ function sourceOf(
 }
 
 /**
- * The generated marks of the diff's base (`base.ref`), else of HEAD: a run with no base still
- * reads committed marks only. Null when git names neither commit (no commit yet), and then nothing
- * is left out. A question git cannot answer (git before 2.40 has no `check-attr --source`) marks
- * nothing either: the signal shows more, never less.
+ * What leaves out the files the diff's base (`base.ref`), else HEAD, marks generated, asked of
+ * that commit alone, each file once: a run with no base still reads committed marks only. When
+ * git names neither commit (no commit yet), or cannot answer (`readGenerated` has none), nothing
+ * is left out: the signal shows more, never less.
  */
-function openBaseMarks(folder: string, env: Env, base: DiffBase): BaseMarks | null {
+function baseMarks(folder: string, env: Env, base: DiffBase): Keep {
   const source =
     ("ref" in base ? sourceOf(folder, base.ref, env) : null) ?? sourceOf(folder, "HEAD", env);
-  if (source === null) return null;
-  const isolated = openBaseOnlyGit(source.commonDir, source.commit);
   const marked = new Map<string, boolean>();
-  const keep: Keep = (items, fileOf) => {
+  return (items, fileOf) => {
+    if (source === null) return [...items];
     const asked = [...new Set(items.map(fileOf))].filter((file) => !marked.has(file));
     for (const file of asked) marked.set(file, false);
-    for (const args of generatedChecks(source.commit, asked)) {
-      const run = runGit(folder, args, env, CLAIMS_GIT_TIMEOUT_MS, isolated.env);
-      if (!run.ok) break;
-      for (const file of generatedIn(run.out)) marked.set(file, true);
-    }
+    const found = readGenerated(source.commonDir, source.commit, asked, env, CLAIMS_GIT_TIMEOUT_MS);
+    for (const file of found ?? []) marked.set(file, true);
     return items.filter((item) => marked.get(fileOf(item)) !== true);
   };
-  return { keep, close: () => isolated.remove() };
 }
 
 /**
@@ -407,44 +395,39 @@ export function collectClaims(
   );
   // git grep exits 1 when nothing matches: that is an answer, not a failure.
   if (!grep.ok && grep.code !== 1) return { error: `git grep failed: ${failure(grep)}` };
-  const marks = openBaseMarks(folder, env, base);
-  const keep: Keep = (items, fileOf) => (marks === null ? [...items] : marks.keep(items, fileOf));
-  try {
-    const claims = keep(parseClaims(grep.ok ? grep.out : ""), (claim) => claim.file);
-    if ("why" in base) return { claims, hits: [], diffWhy: base.why };
-    const diff = runGitRaw(
-      folder,
-      [
-        "-c",
-        "core.quotePath=false",
-        "diff",
-        "--unified=0",
-        "--no-color",
-        "--no-ext-diff",
-        "--no-textconv",
-        "--text",
-        "--no-renames",
-        "--src-prefix=a/",
-        "--dst-prefix=b/",
-        `${base.ref}...HEAD`,
-        "--",
-        ...PATHSPEC,
-      ],
-      env,
-      CLAIMS_GIT_TIMEOUT_MS,
-    );
-    if (!diff.ok) {
-      return { claims, hits: [], diffWhy: `git diff ${base.ref}...HEAD failed: ${failure(diff)}` };
-    }
-    const added = keep(parseAddedLines(diff.out), (line) => line.file);
-    const definitions = claimedDefinitions(claims, added);
-    if (definitions.length === 0) return { claims, hits: [], diffWhy: null };
-    const defining = definingFiles(folder, env, new Set(definitions.map((one) => one.name)), keep);
-    if ("error" in defining) return defining;
-    return { claims, hits: secondHomes(definitions, defining), diffWhy: null };
-  } finally {
-    marks?.close();
+  const keep = baseMarks(folder, env, base);
+  const claims = keep(parseClaims(grep.ok ? grep.out : ""), (claim) => claim.file);
+  if ("why" in base) return { claims, hits: [], diffWhy: base.why };
+  const diff = runGitRaw(
+    folder,
+    [
+      "-c",
+      "core.quotePath=false",
+      "diff",
+      "--unified=0",
+      "--no-color",
+      "--no-ext-diff",
+      "--no-textconv",
+      "--text",
+      "--no-renames",
+      "--src-prefix=a/",
+      "--dst-prefix=b/",
+      `${base.ref}...HEAD`,
+      "--",
+      ...PATHSPEC,
+    ],
+    env,
+    CLAIMS_GIT_TIMEOUT_MS,
+  );
+  if (!diff.ok) {
+    return { claims, hits: [], diffWhy: `git diff ${base.ref}...HEAD failed: ${failure(diff)}` };
   }
+  const added = keep(parseAddedLines(diff.out), (line) => line.file);
+  const definitions = claimedDefinitions(claims, added);
+  if (definitions.length === 0) return { claims, hits: [], diffWhy: null };
+  const defining = definingFiles(folder, env, new Set(definitions.map((one) => one.name)), keep);
+  if ("error" in defining) return defining;
+  return { claims, hits: secondHomes(definitions, defining), diffWhy: null };
 }
 
 /** The prefix `git grep` puts before each path it finds in a commit's tree. */

@@ -550,6 +550,19 @@ describe("collectClaims", () => {
     expect((report as ClaimsReport).diffWhy).toStartWith("git diff no-such-ref...HEAD failed:");
   });
 
+  test("no temp folder for the base's marks: the claims are still read, nothing left out", () => {
+    const repo = repoWithBranch();
+    const before = process.env.TMPDIR;
+    process.env.TMPDIR = join(tempDir("claims-tmp"), "missing");
+    try {
+      const report = collectClaims(repo, cleanGitEnv(), { ref: "main" }) as ClaimsReport;
+      expect(report.claims.map((claim) => claim.file)).toContain("generated/api.ts");
+    } finally {
+      if (before === undefined) delete process.env.TMPDIR;
+      else process.env.TMPDIR = before;
+    }
+  });
+
   test("a folder that is not a git repository is an error line", () => {
     const folder = tempDir("claims-not-git");
     const report = collectClaims(folder, cleanGitEnv(), { ref: "main" });
