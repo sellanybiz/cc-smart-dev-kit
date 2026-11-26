@@ -55,6 +55,7 @@ import {
   readCommittedConfigAsync,
 } from "../project/resolve";
 import { statuslineSetting } from "../setup/statusline";
+import { parseUserJson, readUserJson } from "../setup/user-json";
 import { isHeld, updateFiles } from "../update/state";
 import { describeIssues } from "../zod-issues";
 import {
@@ -153,7 +154,7 @@ function invalidJson(file: string, error: unknown): WorkflowConfigError {
 export function parseWorkflowText(text: string, file: string): PersonalWorkflow {
   let raw: unknown;
   try {
-    raw = JSON.parse(text);
+    raw = parseUserJson(text);
   } catch (error) {
     throw invalidJson(file, error);
   }
@@ -286,7 +287,7 @@ export function defaultAlerts(): ResolvedWorkflow["alerts"] {
 /** A `statusLine` someone else set: not cc-smart-dev-kit's, so the switch reads as off. */
 function statusLineIsOurs(paths: CliPaths): boolean {
   try {
-    const parsed: unknown = JSON.parse(readFileSync(paths.settingsFile, "utf8"));
+    const parsed = readUserJson(paths.settingsFile);
     if (typeof parsed !== "object" || parsed === null) return false;
     const statusLine = (parsed as { statusLine?: unknown }).statusLine;
     return Bun.deepEquals(statusLine, statuslineSetting(paths), true);
